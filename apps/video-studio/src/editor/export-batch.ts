@@ -1,6 +1,7 @@
 import { validateExportProfile, type ExportProfile } from "./export-settings";
 import type { EditorDocument } from "./types";
 import { sequenceDuration, validateEditorDocument } from "./validation";
+import { validateExportRange, type ExportRange } from "./export-range";
 
 export interface ExportBatchProgress {
   completed: number;
@@ -15,8 +16,14 @@ export class EditorExportBatch {
   private readonly items: { sequenceId: string; sequence: string; profile: ExportProfile }[];
   private completed = 0;
   private running = false;
+  private readonly range?: ExportRange;
 
-  constructor(document: EditorDocument, sequenceIds: string[], profiles: ExportProfile[]) {
+  constructor(
+    document: EditorDocument,
+    sequenceIds: string[],
+    profiles: ExportProfile[],
+    range?: ExportRange,
+  ) {
     this.document = validateEditorDocument(document);
     for (const values of [sequenceIds, profiles]) {
       if (Array.isArray(values) && values.length > 512)
@@ -33,6 +40,7 @@ export class EditorExportBatch {
       throw new Error("请选择要导出的序列");
     if (!profiles.length || new Set(profiles.map((profile) => profile.id)).size !== profiles.length)
       throw new Error("请选择不同的导出预设");
+    if (range !== undefined && sequenceIds.length !== 1) throw new Error("范围导出只能选择一个序列");
     if (sequenceIds.length * profiles.length > 512)
       throw new Error("每批最多提交 512 个成片，请分批选择");
     const valid = profiles.map(validateExportProfile);
@@ -43,6 +51,12 @@ export class EditorExportBatch {
         throw new Error(`序列“${sequence.name}”没有可导出的内容`);
       return valid.map((profile) => ({ sequenceId: id, sequence: sequence.name, profile }));
     });
+    this.range = range !== undefined
+      ? validateExportRange(
+          range,
+          sequenceDuration(this.document.sequences.find((sequence) => sequence.id === sequenceIds[0])!),
+        )
+      : undefined;
   }
 
   get progress(): { completed: number; total: number } {
@@ -55,6 +69,7 @@ export class EditorExportBatch {
       sequenceId: string,
       profile: ExportProfile,
       signal: AbortSignal,
+      range?: ExportRange,
     ) => Promise<void>,
     signal: AbortSignal,
     changed?: (progress: ExportBatchProgress) => void,
@@ -72,6 +87,7 @@ export class EditorExportBatch {
           item.sequenceId,
           structuredClone(item.profile),
           signal,
+          this.range ? structuredClone(this.range) : undefined,
         );
         // The adapter's resolved receipt means accepted, even when cancellation arrives at this boundary.
         this.completed++;

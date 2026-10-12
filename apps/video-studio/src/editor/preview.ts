@@ -1,10 +1,11 @@
-import { FrameCompositor } from "./compositor";
+import { FrameCompositor, type PreviewResolution } from "./compositor";
 import { prepareEvaluator } from "./evaluate";
 import { EditorMediaPool, type EditorMediaPoolOptions } from "./media-pool";
 import { frameToTicks, ticksToFrame, ticksToSeconds, secondsToTicks, type Tick } from "./time";
 import type { EditorDocument, EditorSequence } from "./types";
 import { sequenceDuration, validateEditorDocument } from "./validation";
 import { StreamingPreviewAudio, type PreviewPcmStream } from "./stream-audio";
+import type { EditorAudioMixReport } from "./audio-mix-report";
 import {
   editorFontWarnings,
   resetFontAvailabilityCache,
@@ -15,6 +16,7 @@ export type PreviewAudio = {
   documentId: string;
   revision: number;
   sequenceId: string;
+  mix?: EditorAudioMixReport;
 } & (
   | {
       /** Short full-sequence PCM from the shared audio renderer. */ buffer: AudioBuffer;
@@ -70,6 +72,9 @@ export class EditorPreview {
   private disposed = false;
   private isPlaying = false;
   private playhead = 0;
+  /** Only a committed frame can be reused when resuming; pointer drafts cannot. */
+  private renderedTime?: Tick;
+  private resolution: PreviewResolution = 1;
   private animationFrame?: number;
   private frameWork: Promise<void> = Promise.resolve();
   private fontWarningSignature = "";
@@ -111,6 +116,7 @@ export class EditorPreview {
     if (!sequence) throw new Error("预览序列不存在");
     this.pause();
     this.pool.reset();
+    this.renderedTime = undefined;
     this.document = valid;
     this.sequence = sequence;
     this.evaluator = prepareEvaluator(valid);
@@ -137,9 +143,24 @@ export class EditorPreview {
     const frame = (draft ?? evaluator).evaluate(sequence.id, time);
     const media = await this.pool.prepare(frame, signal);
     if (signal.aborted || generation !== this.generation || this.disposed) return;
-    this.compositor.draw(this.canvas, frame, media);
+    this.compositor.draw(this.canvas, frame, media, this.resolution);
+    this.renderedTime = draft ? undefined : time;
     this.playhead = time;
     this.options.onFrame?.(time);
+  }
+  /** A viewer setting only; reports whether this request committed a frame. */
+  async setResolution(value: PreviewResolution, time = this.playhead): Promise<boolean> {
+    this.active();
+    if (![1, 0.5, 0.25].includes(value)) throw new Error("预览质量无效");
+    if (value === this.resolution) return false;
+    this.pause();
+    this.resolution = value;
+    this.renderedTime = undefined;
+    this.compositor.dispose();
+    const operation = this.seek(time, { exact: true }),
+      generation = this.generation;
+    await operation;
+    return !this.disposed && generation === this.generation && this.renderedTime !== undefined;
   }
   /** A pointer gesture previews a candidate using the existing decoders; it never becomes
    * the playback document or modifies history. seek() restores the committed frame. */
@@ -187,6 +208,30 @@ export class EditorPreview {
       if (!request.signal.aborted) throw error;
     }
   }
+  /** Capture one committed composition at the viewer resolution; superseded work never returns PNG. */
+  async captureFrame(time: Tick, signal: AbortSignal): Promise<{ blob: Blob; time: Tick; width: number; height: number }> {
+    const { document, sequence } = this.snapshot(), duration = sequenceDuration(sequence);
+    if (!duration) throw new Error("时间轴没有可保存的画面");
+    if (signal.aborted) throw new DOMException("已取消保存画面", "AbortError");
+    const target = Math.min(time, duration - 1), resolution = this.resolution,
+      work = this.seek(target, { exact: true }), generation = this.generation;
+    const abort = () => { if (generation === this.generation) this.pause(); };
+    signal.addEventListener("abort", abort, { once: true });
+    const current = () => !signal.aborted && !this.disposed && generation === this.generation &&
+      this.document === document && this.sequence === sequence && this.resolution === resolution &&
+      this.renderedTime === target;
+    try {
+      await work;
+      if (!current()) throw new DOMException("画面已变化，请重新保存", "AbortError");
+      const width = this.canvas.width, height = this.canvas.height,
+        blob = await new Promise<Blob>((resolve, reject) => this.canvas.toBlob(
+          (value) => value?.size ? resolve(value) : reject(new Error("无法编码画面 PNG")), "image/png"));
+      if (!current()) throw new DOMException("画面已变化，请重新保存", "AbortError");
+      return { blob, time: target, width, height };
+    } finally {
+      signal.removeEventListener("abort", abort);
+    }
+  }
   async play(audio?: PreviewAudio): Promise<void> {
     const { document, sequence } = this.snapshot();
     const duration = sequenceDuration(sequence);
@@ -217,7 +262,7 @@ export class EditorPreview {
         if (this.audioContext.state !== "running") throw new Error("请点击播放按钮启用声音");
       }
       const start = this.playhead >= duration ? 0 : this.snap(this.playhead, sequence);
-      await this.draw(start, request.signal, generation);
+      if (this.renderedTime !== start) await this.draw(start, request.signal, generation);
       if (request.signal.aborted || generation !== this.generation) return;
       const clock = audio ? () => this.audioContext!.currentTime : () => performance.now() / 1000;
       // The audio and image clock share this origin; decoder currentTime is never a clock.

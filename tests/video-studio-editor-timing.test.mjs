@@ -8,7 +8,7 @@ let browser, page;
 before(async () => {
   const bundle = await build({
     stdin: {
-      contents: `export * from './apps/video-studio/src/editor/timing-ui';export * from './apps/video-studio/src/editor/defaults';export {EditorHistory} from './apps/video-studio/src/editor/history';`,
+      contents: `export * from './apps/video-studio/src/editor/timing-ui';export * from './apps/video-studio/src/editor/defaults';export {EditorHistory} from './apps/video-studio/src/editor/history';export * from './apps/video-studio/src/editor/timing-edits';export {applyEditorOperations,prepareEditorOperationPreview} from './apps/video-studio/src/editor/operations';export {trimClip,prepareClipTrim} from './apps/video-studio/src/editor/clip-edits';export {validateEditorDocument} from './apps/video-studio/src/editor/validation';`,
       resolveDir: fileURLToPath(new URL("../", import.meta.url)),
     },
     bundle: true,
@@ -41,7 +41,7 @@ before(async () => {
       const caption=(id,owner,start)=>({id,kind:'text',role:'subtitle',label:'中文字幕',trackId:'text',start:start*T,duration:4*T,text:'你好世界',style:api.defaultTextStyle(),words:[{text:'你好',start:0,end:2*T},{text:'世界',start:2*T,end:4*T}],sourceBinding:{clipId:owner,sourceStart:0,sourceEnd:4*T},transform:api.defaultTransform(),color:api.defaultColorAdjustment(),blendMode:'normal'});
       return {schemaVersion:2,timebase:T,id:'project',name:'交互时序',revision:0,activeSequenceId:'main',exportProfiles:[],assets:[{id:'asset',name:'素材',kind:'video',duration:20*T,width:1920,height:1080}],sequences:[{id:'main',name:'主序列',width:1920,height:1080,frameRate:{numerator:30,denominator:1},background:'#000000',timelineMode:'free',tracks:[api.createTrack('v','video','主画面'),api.createTrack('audio','audio','同期声'),api.createTrack('text','text','字幕')],clips:[a,b,c,sound,caption('ca','a',0),caption('cb','b',4)],transitions:[],markers:[]}]};
     };
-    globalThis.reset=(ids=['a'],initial=fixture())=>{globalThis.timing?.dispose();globalThis.editorHistory=new api.EditorHistory(initial);globalThis.selected=ids;globalThis.now=T;globalThis.errors=[];globalThis.calls=[];globalThis.waitApply=null;globalThis.timing=api.mountEditorTiming(document.querySelector('#mount'),{read:()=>editorHistory.read(),selection:()=>({sequenceId:'main',clipIds:selected}),time:()=>now,onError:error=>errors.push(error.message),apply:async(ops,label)=>{calls.push({ops,label});if(waitApply)await waitApply;editorHistory.apply(ops,editorHistory.revision,label);}});};
+    globalThis.reset=(ids=['a'],initial=fixture())=>{globalThis.timing?.dispose();globalThis.editorHistory=new api.EditorHistory(initial);globalThis.selected=ids;globalThis.generation=(globalThis.generation??0)+1;globalThis.now=T;globalThis.errors=[];globalThis.calls=[];globalThis.waitApply=null;globalThis.timing=api.mountEditorTiming(document.querySelector('#mount'),{read:()=>editorHistory.read(),identity:()=>({documentId:editorHistory.read().id,generation,revision:editorHistory.revision}),selection:()=>({sequenceId:'main',clipIds:selected}),time:()=>now,onError:error=>errors.push(error.message),apply:async(ops,label)=>{calls.push({ops,label});if(waitApply)await waitApply;editorHistory.apply(ops,editorHistory.revision,label);}});};
     globalThis.clip=id=>editorHistory.read().sequences[0].clips.find(clip=>clip.id===id);
     globalThis.select=ids=>{selected=ids;timing.render();};
   `,
@@ -131,6 +131,59 @@ test("editable source/output seconds and graph produce a real nonlinear time map
   ]);
   assert.equal((await read("ca")).words[0].end, 240000);
   assert.equal((await read("b")).start, 6 * 240000);
+  assert.match(await page.locator("[data-playback-direction]").innerText(), /正放 1/);
+});
+
+test("playback direction describes every source segment, including holds and a net-reverse round trip", async () => {
+  for (const { points, direction, button } of [
+    { points: [[0, 0], [4, 4]], direction: "正放 1", button: "倒放所选片段" },
+    { points: [[0, 4], [4, 0]], direction: "倒放 1", button: "恢复正放" },
+    { points: [[0, 2], [4, 2]], direction: "静帧 1", button: "反转所选片段播放顺序" },
+    { points: [[0, 4], [1, 1], [2, 3], [4, 0]], direction: "往返 1", button: "反转所选片段播放顺序" },
+    { points: [[0, 4], [1, 3], [2, 3], [4, 0]], direction: "倒放（含静帧段） 1", button: "恢复正放" },
+  ]) {
+    await page.evaluate((points) => {
+      const doc = fixture();
+      doc.sequences[0].clips = doc.sequences[0].clips.filter((clip) => clip.id === "a");
+      doc.sequences[0].clips[0].timeMap.points = points.map(([time, source]) => ({ time: time * T, source: source * T }));
+      reset(["a"], doc);
+    }, points);
+    assert.equal(await page.locator("[data-playback-direction]").innerText(), `所选来源片段（1 个）的播放方向：${direction}。`);
+    assert.equal(await page.getByRole("button", { name: button, exact: true }).count(), 1);
+    if (direction.startsWith("倒放")) assert.match(await page.getByRole("button", { name: button, exact: true }).getAttribute("title"), /改为正放/);
+    if (direction === "静帧 1") assert.match(await page.getByRole("button", { name: button, exact: true }).getAttribute("title"), /来源时间不变/);
+  }
+});
+
+test("mixed playback directions reverse each source once and exclude unsupported text from the source count", async () => {
+  await page.evaluate(() => {
+    const doc = fixture();
+    doc.sequences[0].clips = doc.sequences[0].clips.filter((clip) => ["a", "b"].includes(clip.id));
+    const b = doc.sequences[0].clips[1]; delete b.linkGroupId;
+    b.timeMap.points = [{ time: 0, source: 4 * T }, { time: 4 * T, source: 0 }];
+    reset(["a", "b"], doc);
+    globalThis.beforeDirections = editorHistory.read();
+  });
+  assert.equal(await page.locator("[data-playback-direction]").innerText(), "所选来源片段（2 个）的播放方向：正放 1、倒放 1。");
+  await click("反转所选片段播放顺序");
+  assert.deepEqual((await read("a")).timeMap.points.map((point) => point.source), [960000, 0]);
+  assert.deepEqual((await read("b")).timeMap.points.map((point) => point.source), [0, 960000]);
+  assert.equal(await page.evaluate(() => calls.length), 1);
+  await page.evaluate(() => { editorHistory.undo(); timing.render(); });
+  assert.equal(await page.evaluate(() => JSON.stringify(editorHistory.read().sequences) === JSON.stringify(beforeDirections.sequences)), true);
+  await page.evaluate(() => {
+    const doc = fixture();
+    doc.sequences[0].clips = doc.sequences[0].clips.filter((clip) => ["a", "ca"].includes(clip.id));
+    delete doc.sequences[0].clips[1].sourceBinding;
+    reset(["a", "ca"], doc);
+  });
+  assert.equal(await page.locator("[data-playback-direction]").innerText(), "所选来源片段（1 个）的播放方向：正放 1。");
+  const reverse = page.getByRole("button", { name: "反转所选片段播放顺序", exact: true });
+  assert.match(await reverse.getAttribute("title"), /独立文字或图形不支持/);
+  await click("反转所选片段播放顺序");
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.equal((await read("a")).timeMap.points[0].source, 0);
+  assert.match(await page.getByRole("alert").innerText(), /媒体或嵌套序列/);
 });
 
 test("invalid point ordering cannot save and playhead renders preserve in-progress curve fields", async () => {
@@ -175,6 +228,82 @@ test("source/output fields retain tick precision finer than a millisecond", asyn
   assert.deepEqual(await page.evaluate(() => errors), []);
 });
 
+test("source range shows retained media bounds, accepts the final subframe tick and recovers from an invalid native change", async () => {
+  await page.evaluate(() => {
+    const doc = fixture(); doc.assets[0].duration = 10 * T + 3;
+    doc.sequences[0].clips = doc.sequences[0].clips.filter((clip) => clip.id === "a");
+    doc.sequences[0].clips[0].timeMap.points = [{ time: 0, source: 2 * T }, { time: 4 * T, source: 6 * T }];
+    reset(["a"], doc);
+  });
+  await details("分段速度曲线");
+  const source = page.getByLabel("节点 2 来源（秒）", { exact: true });
+  assert.equal(await source.getAttribute("max"), "10.000013");
+  assert.equal(await page.locator("[data-source-range]").innerText(), "素材源范围 0—10.000013 秒。当前曲线来源范围 2—6 秒。");
+  await source.fill("10.000017"); await source.press("Tab");
+  assert.equal(await source.evaluate((input) => input.validity.rangeOverflow), true);
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.equal((await read()).timeMap.points[1].source, 6 * 240000);
+  await source.fill("10.000013");
+  assert.equal(await source.evaluate((input) => input.validity.valid), true);
+  await click("应用分段曲线");
+  assert.equal((await read()).timeMap.points[1].source, 10 * 240000 + 3);
+  assert.equal(await page.evaluate(() => calls.length), 1);
+});
+
+test("nested source range uses child sequence length rather than the underlying media length", async () => {
+  await page.evaluate(() => {
+    const doc = fixture(), sequence = doc.sequences[0], original = structuredClone(sequence.clips[0]);
+    const child = { ...structuredClone(sequence), id: "child", name: "子序列", clips: [{ ...original, duration: 10 * T, timeMap: { points: [{ time: 0, source: 0 }, { time: 10 * T, source: 10 * T }] } }] };
+    const parent = { ...original, kind: "sequence", sequenceId: "child", timeMap: { points: [{ time: 0, source: 2 * T }, { time: 4 * T, source: 6 * T }] } };
+    delete parent.assetId; sequence.clips = [parent]; doc.sequences.push(child); reset(["a"], doc);
+  });
+  await details("分段速度曲线");
+  const source = page.getByLabel("节点 2 来源（秒）", { exact: true });
+  assert.equal(await source.getAttribute("max"), "10");
+  assert.equal(await page.locator("[data-source-range]").innerText(), "子序列范围 0—10 秒。当前曲线来源范围 2—6 秒。");
+  await source.fill("11"); await click("应用分段曲线");
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  await source.fill("10"); await click("应用分段曲线");
+  assert.equal((await read()).timeMap.points[1].source, 10 * 240000);
+});
+
+test("held source labels show one actual coordinate and static images can extend their output length", async () => {
+  await page.evaluate(() => {
+    const doc = fixture(); doc.sequences[0].clips = doc.sequences[0].clips.filter((clip) => clip.id === "a");
+    doc.sequences[0].clips[0].timeMap.points = [{ time: 0, source: 2 * T }, { time: 4 * T, source: 2 * T }]; reset(["a"], doc);
+  });
+  await details("分段速度曲线");
+  assert.match(await page.getByRole("img", { name: "输出时间与素材时间曲线" }).textContent(), /源 2—2 秒/);
+  assert.match(await page.locator("[data-source-range]").innerText(), /当前曲线来源范围 2—2 秒/);
+  assert.doesNotMatch(await page.getByRole("img", { name: "输出时间与素材时间曲线" }).locator("polyline").getAttribute("points"), /NaN|Infinity/);
+  await page.evaluate(() => {
+    const doc = fixture(); doc.assets[0].kind = "image"; doc.assets[0].duration = 0;
+    doc.sequences[0].clips = doc.sequences[0].clips.filter((clip) => clip.id === "a");
+    doc.sequences[0].clips[0].timeMap.points = [{ time: 0, source: 0 }, { time: 4 * T, source: 0 }]; reset(["a"], doc);
+  });
+  await details("分段速度曲线");
+  assert.match(await page.locator("[data-source-range]").innerText(), /静态图片源范围 0—0 秒，片段长度由输出时长决定/);
+  assert.equal(await page.getByLabel("节点 2 来源（秒）", { exact: true }).getAttribute("max"), "0");
+  await set("节点 2 输出（秒）", 6); await click("应用分段曲线");
+  assert.equal((await read()).duration, 6 * 240000);
+  assert.deepEqual((await read()).timeMap.points.map((point) => point.source), [0, 0]);
+});
+
+test("multicam range describes angle constraints without capping a valid edit to an unused short angle", async () => {
+  await page.evaluate(() => {
+    const doc = fixture(), sequence = doc.sequences[0];
+    doc.assets.push({ ...doc.assets[0], id: "short", duration: 2 * T });
+    const camera = { ...sequence.clips[0], kind: "multicam", angles: [{ id: "long", name: "长机位", assetId: "asset", offset: 0 }, { id: "short", name: "短机位", assetId: "short", offset: 0 }], switches: [{ time: 0, angleId: "long" }], audioAngleId: "long" };
+    delete camera.assetId; sequence.clips = [camera]; reset(["a"], doc);
+  });
+  await details("分段速度曲线");
+  assert.match(await page.locator("[data-source-range]").innerText(), /切换机位、同步偏移及主声音机位共同约束/);
+  assert.equal(await page.getByLabel("节点 2 来源（秒）", { exact: true }).getAttribute("max"), null);
+  await set("节点 2 来源（秒）", 8); await click("应用分段曲线");
+  assert.equal((await read()).timeMap.points[1].source, 8 * 240000);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
 test("reverse and held frames require explicit caption detachment and retain caption wording", async () => {
   await click("倒放所选片段");
   assert.match(await page.getByRole("alert").innerText(), /解除字幕绑定/);
@@ -186,6 +315,8 @@ test("reverse and held frames require explicit caption detachment and retain cap
   );
   assert.equal((await read("ca")).text, "你好世界");
   assert.equal((await read("ca")).sourceBinding, undefined);
+  assert.match(await page.locator("[data-playback-direction]").innerText(), /倒放 1/);
+  assert.equal(await page.getByRole("button", { name: "恢复正放", exact: true }).count(), 1);
   await page.evaluate(() => reset());
   await page.getByLabel("联动后续片段", { exact: true }).check();
   await page.getByLabel("保留字幕时间并解除来源绑定", { exact: true }).check();
@@ -197,6 +328,7 @@ test("reverse and held frames require explicit caption detachment and retain cap
     [240000, 240000],
   );
   assert.equal((await read("b")).start, 360000);
+  assert.match(await page.locator("[data-playback-direction]").innerText(), /静帧 1/);
 });
 
 test("keep-right button trims source, wording and animation then moves the retained caption exactly once", async () => {
@@ -279,6 +411,8 @@ test("locked direct selection disables controls and a locked linked track blocks
   await page.evaluate(() => {
     const doc = fixture();
     doc.sequences[0].tracks[0].locked = true;
+    doc.sequences[0].clips[0].timeMap.points.reverse();
+    doc.sequences[0].clips[0].timeMap.points.forEach((point, index) => point.time = index * 960000);
     reset(["a"], doc);
   });
   assert.equal(
@@ -286,6 +420,7 @@ test("locked direct selection disables controls and a locked linked track blocks
     true,
   );
   assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.equal(await page.getByRole("button", { name: "恢复正放", exact: true }).isDisabled(), true);
   await page.evaluate(() => {
     const doc = fixture();
     doc.sequences[0].tracks[1].locked = true;
@@ -336,4 +471,159 @@ test("pending parent persistence disables repeated submits and disposal removes 
   await page.evaluate(() => timing.dispose());
   assert.equal(await page.getByRole("region", { name: "时间与转场" }).count(), 0);
   assert.equal(await page.locator(".editor-timing").count(), 0);
+});
+
+test("ripple trim keeps a later transition, audio and subtitles aligned through one parent edit and undo", async () => {
+  const before = await page.evaluate(() => {
+    const initial = fixture();
+    const document = api.applyEditorOperations(initial, api.planTransition(initial, "main", "b", "c", {
+      id: "bc", kind: "dissolve", duration: 240000,
+    }), initial.revision);
+    reset(["a"], document);
+    now = 480000;
+    timing.render();
+    return editorHistory.read();
+  });
+  await page.getByLabel("联动后续片段", { exact: true }).check();
+  await click("保留播放头左侧");
+  const result = await page.evaluate(() => ({ document: editorHistory.read(), calls, errors }));
+  assert.equal(result.calls.length, 1);
+  assert.equal(result.calls[0].ops.filter((operation) => operation.type === "clip.move").length, 1);
+  for (const id of ["b", "sound", "cb"]) assert.equal((await read(id)).start, 480000);
+  assert.equal((await read("c")).start, 1200000);
+  assert.equal(result.document.sequences[0].transitions[0].start, 1200000);
+  assert.deepEqual(result.errors, []);
+  await page.evaluate(() => { editorHistory.undo(); timing.render(); });
+  assert.deepEqual(await page.evaluate(() => editorHistory.read()), { ...before, revision: before.revision + 2 });
+  assert.equal(await page.evaluate(() => editorHistory.canUndo), false);
+});
+
+for (const count of [1000, 5000]) {
+  test(`Chromium planning benchmark retains legal sequence limits for ${count} media clips`, async (t) => {
+    const results = await page.evaluate((count) => {
+      const make = (mode, spacing) => {
+        const document = {
+          schemaVersion: 2, timebase: 240000, id: "large", name: "规划基准", revision: 3,
+          activeSequenceId: "main", exportProfiles: [], sequences: [],
+          assets: [{ id: "demo", kind: "demo", name: "测试视频", duration: 8000, width: 320, height: 180 }],
+        };
+        for (let offset = 0; offset < count; offset += 2000) document.sequences.push({
+          id: offset ? `sequence-${offset}` : "main", name: "序列", width: 320, height: 180,
+          frameRate: { numerator: 30, denominator: 1 }, background: "#000000", timelineMode: mode,
+          tracks: [api.createTrack("v", "video")], transitions: [], markers: [],
+          clips: Array.from({ length: Math.min(2000, count - offset) }, (_, index) => ({
+            id: `clip-${offset + index}`, kind: "media", assetId: "demo", trackId: "v", label: "视频",
+            start: index * spacing, duration: 8000,
+            timeMap: { points: [{ time: 0, source: 0 }, { time: 8000, source: 8000 }] },
+            audio: api.defaultAudioMix(), transform: api.defaultTransform(),
+            color: api.defaultColorAdjustment(), blendMode: "normal",
+          })),
+        });
+        return api.validateEditorDocument(document);
+      };
+      const free = make("free", 16000),
+        magnetic = make("magnetic", 16000),
+        contiguous = make("magnetic", 8000),
+        movePreview = api.prepareEditorOperationPreview(free),
+        trimPreview = api.prepareClipTrim(free, "main", "clip-0"),
+        functions = {
+          prepareMove: () => api.prepareEditorOperationPreview(free).dispose(),
+          prepareTrim: () => api.prepareClipTrim(free, "main", "clip-0").dispose(),
+          ownedMove: () => movePreview.preview([{
+            type: "clip.move", sequenceId: "main", clipIds: ["clip-0"], delta: 4000,
+          }]),
+          ownedTrim: () => trimPreview.plan(1000, 7000),
+          freeMove: () => api.applyEditorOperations(free, [{
+            type: "clip.move", sequenceId: "main", clipIds: ["clip-0"], delta: 4000,
+          }], free.revision),
+          freeTrim: () => api.trimClip(free, "main", "clip-0", 1000, 7000),
+          gappedMagneticMove: () => api.planMagneticMove(magnetic, "main", ["clip-0"], { delta: 16000 }),
+          gappedMagneticTrim: () => api.planClipTiming(magnetic, "main", ["clip-0"], { kind: "keep-left", time: 4000 }, { ripple: true }),
+          contiguousMagneticMove: () => api.planMagneticMove(contiguous, "main", ["clip-0"], { delta: 8000 }),
+          contiguousMagneticTrim: () => api.planClipTiming(contiguous, "main", ["clip-0"], { kind: "keep-left", time: 4000 }, { ripple: true }),
+        },
+        timings = [];
+      for (const [name, plan] of Object.entries(functions)) {
+        for (let index = 0; index < 2; index++) plan();
+        const samples = [];
+        for (let index = 0; index < 6; index++) {
+          const started = performance.now();
+          plan();
+          samples.push(performance.now() - started);
+        }
+        timings.push({ name, mean: samples.reduce((sum, value) => sum + value, 0) / samples.length });
+      }
+      const operations = functions.contiguousMagneticTrim(),
+        result = api.applyEditorOperations(contiguous, operations, contiguous.revision);
+      movePreview.dispose(); trimPreview.dispose();
+      let disposedMove = false, disposedTrim = false;
+      try { movePreview.read(); } catch (error) { disposedMove = /预览已结束/.test(error.message); }
+      try { trimPreview.plan(1000, 7000); } catch (error) { disposedTrim = /预览已结束/.test(error.message); }
+      return {
+        timings,
+        disposedMove, disposedTrim,
+        sequenceLengths: contiguous.sequences.map((sequence) => sequence.clips.length),
+        movementCount: operations.filter((operation) => operation.type === "clip.move").length,
+        afterStart: result.sequences[0].clips.at(-1).start,
+        expectedStart: (contiguous.sequences[0].clips.length - 1) * 8000 - 4000,
+        inactiveUnchanged: JSON.stringify(result.sequences.slice(1)) === JSON.stringify(contiguous.sequences.slice(1)),
+      };
+    }, count);
+    assert.deepEqual(results.sequenceLengths, count === 5000 ? [2000, 2000, 1000] : [1000]);
+    assert.equal(results.movementCount, 1);
+    assert.equal(results.afterStart, results.expectedStart);
+    assert.equal(results.inactiveUnchanged, true);
+    assert.equal(results.disposedMove, true);
+    assert.equal(results.disposedTrim, true);
+    t.diagnostic(`${count} media clips: ${results.timings.map(({ name, mean }) => `${name} ${mean.toFixed(2)}ms`).join(", ")}`);
+  });
+}
+
+test("same-id revision successor drops a focused speed draft and detached timing actions", async () => {
+  await set("恒定速度（倍）", 2);
+  await page.evaluate(() => {
+    globalThis.oldTimingAction = [...document.querySelectorAll(".editor-timing button")].find((button) => button.textContent === "应用恒定速度");
+    editorHistory = new api.EditorHistory(fixture());
+    generation++;
+    timing.render();
+    oldTimingAction.click();
+  });
+  assert.equal(await page.getByLabel("恒定速度（倍）", { exact: true }).inputValue(), "1");
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.equal((await read()).duration, 4 * 240000);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+
+test("old native curve changes and connected stale buttons stay inert before and after generation render", async () => {
+  await details("分段速度曲线");
+  const source = await page.getByLabel("节点 2 来源（秒）", { exact: true }).elementHandle();
+  await page.evaluate(() => {
+    globalThis.oldTimingButton = [...document.querySelectorAll(".editor-timing button")].find((button) => button.textContent === "倒放所选片段");
+    editorHistory = new api.EditorHistory(fixture());
+    generation++;
+    oldTimingButton.click();
+    timing.render();
+  });
+  await source.evaluate((input) => { input.value = "-1"; input.dispatchEvent(new Event("change", { bubbles: true })); });
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+  assert.equal((await read()).timeMap.points[1].source, 4 * 240000);
+});
+
+test("late timing persistence errors cannot add an alert to a replacement generation", async () => {
+  await page.evaluate(() => {
+    timing.context.apply = () => new Promise((_resolve, reject) => globalThis.rejectOldTiming = reject);
+  });
+  await set("恒定速度（倍）", 2);
+  await page.getByRole("button", { name: "应用恒定速度", exact: true }).click();
+  await page.evaluate(() => {
+    editorHistory = new api.EditorHistory(fixture());
+    generation++;
+    timing.render();
+    rejectOldTiming(new Error("旧工程写入失败"));
+  });
+  await page.waitForFunction(() => !document.querySelector(".editor-timing fieldset").disabled);
+  assert.equal(await page.getByRole("alert").count(), 0);
+  assert.deepEqual(await page.evaluate(() => errors), []);
 });

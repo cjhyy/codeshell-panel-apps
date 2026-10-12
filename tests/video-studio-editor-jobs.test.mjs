@@ -148,6 +148,7 @@ async function fixture(t, specifications = [], options = {}) {
         finished,
         track: (id, name = id) => panel.track(structuredClone(jobs.get(id)), name),
         savedTitles: () => structuredClone(savedTitles),
+        summaries: () => panel.summaries(),
         load: () => panel.loadMore(),
         remount: () =>
           panel.mountTrigger(
@@ -195,6 +196,88 @@ async function open(page) {
 }
 const calls = (page, method) =>
   page.evaluate((method) => fixture.calls.filter((call) => call.method === method), method);
+
+test("export overload stays in its verified snapshot record and task summary without stale retry warnings", async (t) => {
+  const request = { action: "render", documentHash: "a".repeat(64), sequenceId: "main" };
+  const audioMix = { ...request, sampleCount: 48000, peak: 1.2, samplesOverFullScale: 100 };
+  const result = { verified: true, video: { id: assetId }, audioMix };
+  const jobs = [
+    job("overload", 10, "succeeded", { input: { request }, result }),
+    job("wrong-document", 9, "succeeded", {
+      input: { request },
+      result: { ...result, audioMix: { ...audioMix, documentHash: "b".repeat(64) } },
+    }),
+    job("wrong-sequence", 8, "succeeded", {
+      input: { request },
+      result: { ...result, audioMix: { ...audioMix, sequenceId: "other" } },
+    }),
+    job("safe", 7, "succeeded", {
+      input: { request },
+      result: { ...result, audioMix: { ...audioMix, peak: 0.4, samplesOverFullScale: 0 } },
+    }),
+    job("unverified", 6, "succeeded", {
+      input: { request },
+      result: { ...result, verified: false },
+    }),
+    job("cancelled", 5, "cancelled", { input: { request }, result }),
+    job("failed", 4, "failed", {
+      input: { request },
+      result,
+      error: { message: "渲染失败", retryable: true },
+    }),
+  ];
+  const page = await fixture(t, jobs);
+  await page.evaluate(() => fixture.load());
+  await open(page);
+  assert.match(
+    await row(page, "overload").locator("output").textContent(),
+    /导出完成.*\+1\.6 dBFS.*降低音轨或片段音量/,
+  );
+  assert.match(
+    (await page.evaluate(() => fixture.summaries())).find((item) => item.id === "overload").message,
+    /可能导致失真/,
+  );
+  for (const id of [
+    "wrong-document",
+    "wrong-sequence",
+    "safe",
+    "unverified",
+    "cancelled",
+    "failed",
+  ])
+    assert.doesNotMatch(await row(page, id).locator("output").textContent(), /可能导致失真/);
+  await page.evaluate(() =>
+    fixture.publish("overload", {
+      attempt: 2,
+      status: "running",
+      updatedAt: 20,
+      progress: { message: "重新准备声音" },
+    }),
+  );
+  assert.equal(await row(page, "overload").locator("output").textContent(), "重新准备声音");
+  await page.evaluate(
+    (result) =>
+      fixture.publish("overload", { attempt: 1, status: "succeeded", updatedAt: 30, result }),
+    result,
+  );
+  assert.equal(
+    await row(page, "overload").locator("output").textContent(),
+    "重新准备声音",
+    "An old attempt cannot replace retry progress",
+  );
+  await page.evaluate(
+    (result) =>
+      fixture.publish("overload", {
+        attempt: 2,
+        status: "succeeded",
+        updatedAt: 40,
+        result: { ...result, audioMix: { ...result.audioMix, peak: 0.4, samplesOverFullScale: 0 } },
+      }),
+    result,
+  );
+  assert.equal(await row(page, "overload").locator("output").textContent(), "导出完成");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
 
 test("cloud completed exports open the authorized preview for saving on this device", async (t) => {
   const page = await fixture(t, [job("cloud", 1)], { deliveryMethods: ["resources.open"] });
@@ -753,7 +836,7 @@ test("an export first seen already finished also refreshes readiness, once", asy
   ]);
 });
 
-test("export titles stay readable after a reload instead of showing the internal sequence id", async (t) => {
+test("remembered export titles survive reload while older receipts use their real sequence ID", async (t) => {
   const exported = job("export-a", 10, "succeeded", {
     input: {
       request: { action: "render", sequenceId: "sequence-main", profile: { name: "自定义导出" } },
@@ -776,10 +859,69 @@ test("export titles stay readable after a reload instead of showing the internal
     await row(page, "export-a").locator("strong").textContent(),
     "未命名项目 · 自定义导出",
   );
-  // Without a remembered title the preset still names it; the internal id never shows.
+  // Old receipts contain an ID, so show that fact instead of inventing a sequence name.
   assert.equal(
     await row(page, "export-b").locator("strong").textContent(),
-    "视频导出 · 1080p 横屏",
+    "视频导出 · 序列 ID：sequence-main · 1080p 横屏",
   );
-  assert.doesNotMatch(await page.locator(".editor-export-jobs").textContent(), /sequence-main/);
+  assert.match(await row(page, "export-b").textContent(), /序列 ID：sequence-main/);
 });
+
+
+test("recovered range export titles retain their precise interval without a remembered project title", async (t) => {
+  const make = (id, range) => job(id, 10, "succeeded", {
+    input: { request: { action: "render", sequenceId: "internal-sequence", profile: { name: "审核版" }, range } },
+  });
+  const page = await fixture(t, [
+    make("review-range", { start: 80085, duration: 240240 }),
+    make("tiny-range", { start: 0, duration: 1 }),
+    make("invalid-range", { start: 0, duration: 0 }),
+  ]);
+  await page.evaluate(() => fixture.load());
+  await open(page);
+  assert.equal(await row(page, "review-range").locator("strong").textContent(), "视频导出 · 序列 ID：internal-sequence · 0.333688–1.334688 秒 · 审核版");
+  assert.equal(await row(page, "tiny-range").locator("strong").textContent(), "视频导出 · 序列 ID：internal-sequence · 0–0.000004 秒 · 审核版");
+  assert.equal(await row(page, "invalid-range").locator("strong").textContent(), "视频导出 · 序列 ID：internal-sequence · 审核版");
+  assert.match(await page.locator(".editor-export-jobs").textContent(), /序列 ID：internal-sequence/);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const width of [390, 620])
+  test(`complete legal export names survive title persistence and wrap at ${width}px`, async (t) => {
+    const title =
+        '<项目>&"' +
+        "P".repeat(194) +
+        " · " +
+        "S".repeat(200) +
+        " · 0.333688–1.334688 秒 · " +
+        "F".repeat(200),
+      first = await fixture(t, [job("long", 1)], { width });
+    await first.evaluate((title) => fixture.track("long", title), title);
+    await first.waitForFunction(() => fixture.savedTitles()?.long);
+    const titles = await first.evaluate(() => fixture.savedTitles()),
+      page = await fixture(t, [job("long", 1)], { width, titles });
+    await page.evaluate(() => fixture.load());
+    await open(page);
+    assert.equal(await row(page, "long").locator("strong").textContent(), title);
+    assert.equal(await row(page, "long").locator("img,script").count(), 0);
+    const bounds = await row(page, "long").evaluate((node) => {
+      const rect = node.getBoundingClientRect(),
+        dialog = node.closest('[role="dialog"]');
+      return {
+        left: rect.left,
+        right: rect.right,
+        width: innerWidth,
+        scroll: dialog.scrollWidth,
+        client: dialog.clientWidth,
+      };
+    });
+    assert.ok(bounds.left >= 0 && bounds.right <= width, JSON.stringify(bounds));
+    assert.ok(bounds.scroll <= bounds.client + 1, JSON.stringify(bounds));
+    const save = row(page, "long").getByRole("button", { name: "保存视频", exact: true });
+    await save.scrollIntoViewIfNeeded();
+    await save.click();
+    assert.deepEqual(
+      (await calls(page, "media.export")).map((item) => item.args),
+      [{ assetId }],
+    );
+  });

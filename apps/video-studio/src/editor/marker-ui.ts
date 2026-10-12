@@ -28,6 +28,19 @@ const field = (name: string, control: HTMLElement) => {
   control.setAttribute("aria-label", name);
   return label;
 };
+type MarkerForm = {
+  node: HTMLFormElement;
+  baseline: TimelineMarker;
+  creating: boolean;
+  identity: SessionIdentity;
+  sequenceId: string;
+  dirty(): boolean;
+  request(): MarkerEditRequest;
+  update(identity: SessionIdentity, marker?: TimelineMarker): void;
+};
+const equalMarker = (a: TimelineMarker | undefined, b: TimelineMarker) => !!a &&
+  a.id === b.id && Object.is(a.time, b.time) && Object.is(a.duration, b.duration) &&
+  a.name === b.name && a.note === b.note && a.color === b.color;
 
 /** The parent Session owns all mutations, save and undo; this module holds only view/form state. */
 export class EditorMarkers {
@@ -41,12 +54,21 @@ export class EditorMarkers {
   private disposed = false;
   private error = "";
   private page = 0;
+  private formState?: MarkerForm;
+  private shortcutKeyHeld = false;
   constructor(
     container: HTMLElement,
     private readonly context: EditorMarkersContext,
   ) {
     this.root.className = "editor-markers";
     this.root.setAttribute("aria-label", "标记与范围");
+    this.root.addEventListener("keydown", (event) => {
+      if (this.shortcutKeyHeld && event.repeat && !event.isComposing &&
+        event.key.toLowerCase() === "m" && !event.ctrlKey && !event.metaKey && !event.altKey)
+        event.preventDefault();
+    });
+    window.addEventListener("keyup", this.releaseShortcutKey);
+    window.addEventListener("blur", this.releaseShortcutKey);
     container.append(this.root);
     this.render();
   }
@@ -64,17 +86,61 @@ export class EditorMarkers {
     const button = element("button", text);
     button.type = "button";
     button.disabled = disabled || this.pending;
-    button.addEventListener("click", action);
+    const identity = this.context.identity(),
+      sequenceId = this.context.selection().sequenceId;
+    button.addEventListener("click", () => {
+      if (
+        !this.disposed &&
+        !this.pending &&
+        !button.disabled &&
+        this.root.contains(button) &&
+        sameIdentity(identity, this.context.identity(), false) &&
+        sequenceId === this.context.selection().sequenceId
+      )
+        action();
+    });
     return button;
   }
   begin(kind: "point" | "range" = "point"): void {
+    this.beginDraft(kind, false);
+  }
+  /** Keyboard creation never replaces a retained form or invents an unselected range. */
+  beginShortcut(kind: "point" | "range"): void {
+    this.beginDraft(kind, true);
+  }
+  private releaseShortcutKey = (event: Event): void => {
+    if (!(event instanceof KeyboardEvent) || event.key.toLowerCase() === "m")
+      this.shortcutKeyHeld = false;
+  };
+  private beginDraft(kind: "point" | "range", shortcut: boolean): void {
     if (this.pending || this.disposed) return;
-    const selection = this.context.selection();
-    const clips = this.sequence().clips.filter((clip) => selection.clipIds.includes(clip.id));
+    const owner = this.formState, previousDraft = this.draft, previousSelected = this.selectedId,
+      identity = this.context.identity(), selection = this.context.selection(),
+      clock = this.context.time(), document = this.context.read(),
+      currentSelection = this.context.selection(), currentTime = this.context.time(),
+      currentIdentity = this.context.identity();
+    if (this.pending || this.disposed || this.formState !== owner || this.draft !== previousDraft ||
+      this.selectedId !== previousSelected || !sameIdentity(identity, currentIdentity) ||
+      document.id !== identity.documentId || document.revision !== identity.revision ||
+      selection.sequenceId !== currentSelection.sequenceId || clock !== currentTime ||
+      JSON.stringify(selection.clipIds) !== JSON.stringify(currentSelection.clipIds)) return;
+    const sequence = document.sequences.find((item) => item.id === selection.sequenceId);
+    if (!sequence) return;
+    const clips = sequence.clips.filter((clip) => selection.clipIds.includes(clip.id));
+    if (shortcut) {
+      const retained = this.formState && this.formOwned(this.formState, identity, sequence.id) && this.formState.dirty();
+      if (retained || (kind === "range" && !clips.length)) {
+        this.error = retained ? "已有未保存的标记草稿，请先保存或取消；快捷键不会覆盖草稿。"
+          : "请先在时间轴选择片段，再按 Shift+M 创建范围草稿。";
+        const notice = this.root.querySelector(".emarker-error");
+        if (notice) notice.textContent = this.error;
+        return;
+      }
+    }
     const time =
       kind === "range" && clips.length
         ? Math.min(...clips.map((clip) => clip.start))
-        : this.context.time();
+        : clock;
     const end =
       kind === "range"
         ? clips.length
@@ -82,7 +148,7 @@ export class EditorMarkers {
           : Math.min(MAX_EDITOR_TICK, time + 240000)
         : time;
     this.selectedId = undefined;
-    this.draft = {
+    const draft = this.draft = {
       id: `marker-${randomId()}`,
       time,
       duration: end - time,
@@ -94,26 +160,59 @@ export class EditorMarkers {
     this.context.onSelection(undefined);
     this.signature = "";
     this.render();
+    const form = this.formState, afterSelection = this.context.selection(), afterIdentity = this.context.identity();
+    if (this.disposed || this.draft !== draft || this.formState !== form || !form?.node.isConnected ||
+      !sameIdentity(identity, afterIdentity) || selection.sequenceId !== afterSelection.sequenceId) return;
+    if (shortcut && kind === "range") this.formState?.node.append(element("p", "范围覆盖所选片段的最早开始至最晚结束，包含中间空隙；保存后才会添加标记。"));
+    this.shortcutKeyHeld = shortcut;
     this.root.querySelector<HTMLInputElement>('[aria-label="标记名称"]')?.focus();
   }
   select(markerId: string): void {
     if (this.pending || this.disposed) return;
+    const identity = this.context.identity(),
+      sequenceId = this.context.selection().sequenceId;
     const marker = this.sequence().markers.find((m) => m.id === markerId);
     if (!marker) return;
-    this.selectedId = markerId;
-    this.draft = undefined;
-    this.error = "";
+    // Keep the connected form and native IME when only navigating the current marker.
+    const reselecting = this.selectedId === markerId && !this.draft &&
+      this.renderedIdentity && sameIdentity(this.renderedIdentity, identity) &&
+      this.renderedSequence === sequenceId;
+    if (!reselecting) {
+      this.selectedId = markerId;
+      this.draft = undefined;
+      this.error = "";
+    }
     this.context.onSelection(markerId);
-    this.signature = "";
-    this.render();
+    if (!reselecting) {
+      this.signature = "";
+      this.render();
+    }
+    if (this.disposed || !sameIdentity(identity, this.context.identity()) ||
+      sequenceId !== this.context.selection().sequenceId || this.selectedId !== markerId) return;
+    const report = (error: unknown) => {
+      if (
+        !this.disposed &&
+        sameIdentity(identity, this.context.identity(), false) &&
+        sequenceId === this.context.selection().sequenceId
+      )
+        this.report(error);
+    };
     try {
-      void Promise.resolve(this.context.seek(marker.time)).catch((error) => this.report(error));
+      void Promise.resolve(this.context.seek(marker.time)).catch(report);
     } catch (error) {
-      this.report(error);
+      report(error);
     }
   }
-  private async commit(request: MarkerEditRequest, identity: SessionIdentity, sequenceId: string) {
+  private formOwned(state: MarkerForm, identity: SessionIdentity, sequenceId: string): boolean {
+    return !this.disposed && this.formState === state &&
+      this.root.contains(state.node) &&
+      sameIdentity(state.identity, identity, false) && state.sequenceId === sequenceId &&
+      (state.creating ? this.draft?.id === state.baseline.id : !this.draft && this.selectedId === state.baseline.id);
+  }
+  private async commit(request: MarkerEditRequest, identity: SessionIdentity, sequenceId: string,
+    rebased?: MarkerForm) {
     if (this.pending || this.disposed) return;
+    const owner = this.formState;
     try {
       if (
         !sameIdentity(identity, this.context.identity()) ||
@@ -126,7 +225,19 @@ export class EditorMarkers {
           : this.selectedId !== request.markerId
       )
         throw new Error("标记选择已变化，请重新选择后编辑");
-      const plan = planMarkerEdit(this.context.read(), sequenceId, request);
+      const document = this.context.read(), sequence = document.sequences.find((seq) => seq.id === sequenceId);
+      if (rebased) {
+        if (!this.formOwned(rebased, identity, sequenceId)) throw new Error("标记草稿已变化，请重新操作");
+        const marker = sequence?.markers.find((marker) => marker.id === rebased.baseline.id);
+        if (rebased.creating ? !!marker : !equalMarker(marker, rebased.baseline))
+          throw new Error(marker ? "标记已被其他编辑修改，草稿已保留，请载入最新后重新编辑" : "标记已删除，草稿已保留，不能覆盖或重新添加");
+      }
+      const plan = planMarkerEdit(document, sequenceId, request);
+      if (document.id !== identity.documentId || document.revision !== identity.revision ||
+        !sameIdentity(identity, this.context.identity()) || sequenceId !== this.context.selection().sequenceId)
+        throw new Error("工程已变化，请重新选择标记后重试");
+      if (!owner || !this.formOwned(owner, identity, sequenceId))
+        throw new Error("标记选择已变化，请重新选择后编辑");
       this.pending = true;
       this.error = "";
       this.root
@@ -146,9 +257,15 @@ export class EditorMarkers {
         return;
       this.draft = undefined;
       this.selectedId = request.action === "remove" ? undefined : plan.markerId;
+      this.formState = undefined;
       this.context.onSelection(this.selectedId);
     } catch (error) {
-      if (!this.disposed) this.report(error);
+      if (
+        !this.disposed &&
+        sameIdentity(identity, this.context.identity(), false) &&
+        sequenceId === this.context.selection().sequenceId
+      )
+        this.report(error);
     } finally {
       this.pending = false;
       if (!this.disposed) {
@@ -163,30 +280,36 @@ export class EditorMarkers {
       seq = this.sequence();
     const signature = `${identity.documentId}:${identity.generation}:${identity.revision}:${seq.id}:${this.selectedId}:${this.draft?.id}:${this.page}`;
     if (signature === this.signature) return;
-    // Any external document change invalidates an unsaved form. Its captured identity also rejects detached submits.
+    const state = this.formState, preserve = state && this.formOwned(state, identity, seq.id) &&
+      (this.pending || state.dirty());
+    // A new document generation or sequence ends ownership. An ordinary revision retains
+    // the connected dirty form, but never silently changes its captured submit identity.
     if (
       this.renderedIdentity &&
       (!sameIdentity(this.renderedIdentity, identity) || this.renderedSequence !== seq.id)
     ) {
-      this.draft = undefined;
-      if (!sameIdentity(this.renderedIdentity, identity, false) || this.renderedSequence !== seq.id)
+      if (!preserve) this.draft = undefined;
+      if (!sameIdentity(this.renderedIdentity, identity, false) || this.renderedSequence !== seq.id) {
         this.selectedId = undefined;
+        this.formState = undefined;
+      }
     }
     this.renderedIdentity = { ...identity };
     this.renderedSequence = seq.id;
-    if (this.selectedId && !seq.markers.some((marker) => marker.id === this.selectedId)) {
+    if (!preserve && this.selectedId && !seq.markers.some((marker) => marker.id === this.selectedId)) {
       this.selectedId = undefined;
       this.context.onSelection(undefined);
     }
     this.signature = signature;
-    this.root.replaceChildren(element("h3", "标记与范围"));
+    const view = element("div");
+    view.append(element("h3", "标记与范围"));
     const tools = element("div");
     tools.className = "emarker-tools";
     tools.append(
       this.button("添加点标记", () => this.begin("point")),
       this.button("添加范围", () => this.begin("range")),
     );
-    this.root.append(tools);
+    view.append(tools);
     const ordered = [...seq.markers].sort((a, b) => a.time - b.time || a.id.localeCompare(b.id));
     this.page = Math.min(this.page, Math.max(0, Math.ceil(ordered.length / 30) - 1));
     const list = element("div");
@@ -201,7 +324,7 @@ export class EditorMarkers {
       button.style.borderLeftColor = marker.color;
       list.append(button);
     }
-    this.root.append(list);
+    view.append(list);
     if (ordered.length > 30) {
       const pages = element("div");
       pages.className = "emarker-tools";
@@ -227,11 +350,20 @@ export class EditorMarkers {
           (this.page + 1) * 30 >= ordered.length,
         ),
       );
-      this.root.append(pages);
+      view.append(pages);
     }
     const marker = this.draft ?? seq.markers.find((m) => m.id === this.selectedId);
-    if (marker) this.form(marker, !!this.draft, identity, seq.id);
-    else this.root.append(element("p", "选择时间轴标记可定位并编辑；范围结束位置不包含在范围内。"));
+    if (preserve) {
+      // Leave the form attached throughout; moving it through replaceChildren ends native IME.
+      for (const child of [...this.root.children]) if (child !== state.node) child.remove();
+      this.root.insertBefore(view, state.node);
+      state.update(identity, seq.markers.find((marker) => marker.id === state.baseline.id));
+    } else {
+      this.formState = undefined;
+      this.root.replaceChildren(view);
+      if (marker) this.form(marker, !!this.draft, identity, seq.id);
+      else this.root.append(element("p", "选择时间轴标记可定位并编辑；范围结束位置不包含在范围内。"));
+    }
     const error = element("p", this.error);
     error.className = "emarker-error";
     error.setAttribute("role", "alert");
@@ -243,6 +375,9 @@ export class EditorMarkers {
     identity: SessionIdentity,
     sequenceId: string,
   ) {
+    const owns = () =>
+      !this.disposed && sameIdentity(identity, this.context.identity(), false) &&
+      sequenceId === this.context.selection().sequenceId;
     const form = element("form");
     form.className = "emarker-form";
     const kind = element("select");
@@ -324,28 +459,25 @@ export class EditorMarkers {
     const save = element("button", creating ? "添加标记" : "保存标记");
     save.type = "submit";
     footer.append(save);
-    if (!creating)
+    const navigation: HTMLButtonElement[] = [];
+    let remove: HTMLButtonElement | undefined;
+    if (!creating) {
+      navigation.push(this.button("定位开始", () => this.select(marker.id)));
+      if (marker.duration)
+        navigation.push(this.button("定位结束", () => {
+          try {
+            void Promise.resolve(this.context.seek(marker.time + marker.duration)).catch(
+              (error) => { if (owns()) this.report(error); },
+            );
+          } catch (error) { if (owns()) this.report(error); }
+        }));
+      remove = this.button("删除标记",
+        () => void this.commit({ action: "remove", markerId: marker.id }, identity, sequenceId));
       footer.append(
-        this.button("定位开始", () => this.select(marker.id)),
-        ...(marker.duration
-          ? [
-              this.button("定位结束", () => {
-                try {
-                  void Promise.resolve(this.context.seek(marker.time + marker.duration)).catch(
-                    (error) => this.report(error),
-                  );
-                } catch (error) {
-                  this.report(error);
-                }
-              }),
-            ]
-          : []),
-        this.button(
-          "删除标记",
-          () => void this.commit({ action: "remove", markerId: marker.id }, identity, sequenceId),
-        ),
+        ...navigation,
+        remove,
       );
-    else
+    } else
       footer.append(
         this.button("取消添加", () => {
           this.draft = undefined;
@@ -353,37 +485,88 @@ export class EditorMarkers {
           this.render();
         }),
       );
-    form.append(footer);
+    const notice = element("p"), updates = element("div");
+    notice.setAttribute("role", "status");
+    updates.className = "emarker-tools";
+    notice.hidden = updates.hidden = true;
+    form.append(notice, updates, footer);
+    const request = (): MarkerEditRequest => {
+      const time = readTime(start, originalStart, marker.time);
+      const stop = kind.value === "point" ? time : readTime(end, originalEnd, marker.time + marker.duration);
+      if (kind.value === "range" && stop <= time) throw new Error("范围结束必须晚于开始");
+      const patch = { time, duration: stop - time, name: name.value, note: note.value, color: color.value };
+      return creating ? { action: "add", marker: { id: marker.id, ...patch } }
+        : { action: "update", markerId: marker.id, patch };
+    };
+    const values = () => JSON.stringify([kind.value, name.value, start.value, end.value, color.value, note.value]),
+      initial = values();
+    let composing = false;
+    form.addEventListener("compositionstart", () => { composing = true; });
+    form.addEventListener("compositionend", () => { composing = false; });
+    const state: MarkerForm = {
+      node: form, baseline: { ...marker }, creating, identity: { ...identity }, sequenceId,
+      dirty: () => creating || composing || values() !== initial,
+      request,
+      update: (currentIdentity, currentMarker) => {
+        const stale = !sameIdentity(identity, currentIdentity),
+          conflict = creating ? !!currentMarker : !equalMarker(currentMarker, state.baseline);
+        for (const control of [kind, name, start, end, color, picker, note])
+          control.disabled = this.pending || (control === end && kind.value === "point");
+        for (const button of footer.querySelectorAll<HTMLButtonElement>("button")) button.disabled = this.pending;
+        save.disabled = this.pending || stale;
+        if (remove) remove.disabled = this.pending || stale;
+        for (const button of navigation) button.disabled = this.pending || conflict;
+        notice.hidden = updates.hidden = !stale;
+        updates.replaceChildren();
+        if (!stale) return;
+        notice.textContent = conflict
+          ? creating ? "同一标记 ID 已存在，草稿已保留，不能覆盖。请载入最新。"
+            : currentMarker ? "标记已被其他编辑修改，草稿已保留。请载入最新后重新编辑。"
+              : "标记已删除，草稿已保留，不能覆盖或重新添加。"
+          : "工程已更新，草稿已保留。请明确选择载入最新或保存当前草稿。";
+        updates.append(
+          this.button("载入最新（放弃草稿）", () => {
+            if (!this.formOwned(state, this.context.identity(), this.context.selection().sequenceId)) return;
+            this.formState = undefined;
+            this.draft = undefined;
+            this.error = "";
+            this.signature = "";
+            this.render();
+          }),
+          this.button("保存当前草稿", () => {
+            if (!this.formOwned(state, this.context.identity(), this.context.selection().sequenceId)) return;
+            try { void this.commit(state.request(), { ...this.context.identity() }, sequenceId, state); }
+            catch (error) { this.report(error); this.signature = ""; this.render(); }
+          }, conflict),
+        );
+      },
+    };
+    this.formState = state;
     form.addEventListener("submit", (event) => {
       event.preventDefault();
+      if (
+        this.disposed ||
+        !sameIdentity(identity, this.context.identity(), false) ||
+        sequenceId !== this.context.selection().sequenceId
+      )
+        return;
       try {
-        const time = readTime(start, originalStart, marker.time);
-        const stop =
-          kind.value === "point" ? time : readTime(end, originalEnd, marker.time + marker.duration);
-        if (kind.value === "range" && stop <= time) throw new Error("范围结束必须晚于开始");
-        const patch = {
-          time,
-          duration: stop - time,
-          name: name.value,
-          note: note.value,
-          color: color.value,
-        };
-        void this.commit(
-          creating
-            ? { action: "add", marker: { id: marker.id, ...patch } }
-            : { action: "update", markerId: marker.id, patch },
-          identity,
-          sequenceId,
-        );
+        if (!this.formOwned(state, this.context.identity(), sequenceId))
+          throw new Error("标记选择已变化，请重新选择后编辑");
+        void this.commit(request(), identity, sequenceId);
       } catch (error) {
         this.report(error);
         this.root.querySelector(".emarker-error")!.textContent = this.error;
       }
     });
     this.root.append(form);
+    state.update(identity, creating ? undefined : marker);
   }
   dispose(): void {
     this.disposed = true;
+    window.removeEventListener("keyup", this.releaseShortcutKey);
+    window.removeEventListener("blur", this.releaseShortcutKey);
+    this.formState = undefined;
     this.root.remove();
   }
 }

@@ -37,6 +37,10 @@ before(async () => {
   const isolatedOutput = resolve(directory, "package");
   await buildProject({ ...project, output: isolatedOutput }, { log: false });
   const output = resolve(isolatedOutput, "app");
+  // Expose the bundled class only in this isolated test output for real-session read budgets.
+  const modulePath = resolve(output, "main.mjs");
+  await writeFile(modulePath, (await readFile(modulePath, "utf8")) +
+    "\nglobalThis.__mainReadSession = EditorSession; globalThis.__mainReadAudit = { session: () => editorSession, project: () => structuredClone(project), remountWorkspace: async () => { const options = editorWorkspace.options; await editorWorkspace.dispose(); editorWorkspace = new EditorWorkspace(editorRoot, options); } };\n");
   server = createServer(async (request, response) => {
     const path = resolve(
       output,
@@ -144,7 +148,19 @@ async function openPage(t, options = {}) {
         "video-studio-current": [{ revision: 1, updatedAt: 1, label: "原始 V1", data: seed }],
         ...options.records,
       };
-      const preferences = JSON.parse(localStorage.getItem("editor-main-preferences") ?? "{}");
+      const preferences = { ...options.preferences, ...JSON.parse(localStorage.getItem("editor-main-preferences") ?? "{}") };
+      if (options.localQualityPreference !== undefined && localStorage.getItem("video-studio-preview-quality-v1") === null)
+        localStorage.setItem("video-studio-preview-quality-v1", JSON.stringify(options.localQualityPreference));
+      if (options.blockQualityLocalStorage || options.failQualityLocalWrite) {
+        for (const name of ["getItem", "setItem"]) {
+          const original = Storage.prototype[name];
+          Storage.prototype[name] = function (key, ...args) {
+            if (key === "video-studio-preview-quality-v1" && (options.blockQualityLocalStorage || name === "setItem"))
+              throw new Error("浏览器偏好存储不可用");
+            return original.call(this, key, ...args);
+          };
+        }
+      }
       let failCurrent = false;
       const calls = [],
         attempted = [],
@@ -160,6 +176,7 @@ async function openPage(t, options = {}) {
         attempted,
         tools,
         events,
+        preference: (key) => structuredClone(preferences[key]),
         current: () => {
           const value = records["video-studio-current"][0].data;
           return structuredClone(
@@ -438,8 +455,19 @@ async function openPage(t, options = {}) {
             if (method === "media.assets.get" && options.voiceover.assets?.[args.id])
               return { asset: structuredClone(options.voiceover.assets[args.id]) };
           }
-          if (method === "storage.get") return structuredClone(preferences[args.key] ?? null);
+          if (method === "storage.get") {
+            const saved = structuredClone(preferences[args.key] ?? null);
+            if (args.key === "video-studio-preview-quality-v1") {
+              if (options.failQualityStorage) throw new Error("Host偏好存储不可用");
+              if (options.holdQualityLoad) await new Promise((resolve) => globalThis.releaseMainQualityLoad = resolve);
+            }
+            return saved;
+          }
           if (method === "storage.set") {
+            if (args.key === "video-studio-preview-quality-v1") {
+              if (options.failQualityStorage || options.failQualityWritesOnly) throw new Error("Host偏好存储不可用");
+              if (options.holdQualityWrites) await new Promise((resolve) => (globalThis.mainQualityWrites ??= []).push({ value: args.value, resolve }));
+            }
             preferences[args.key] = structuredClone(args.value);
             persist();
             return true;
@@ -697,14 +725,14 @@ test("the 任务 page lists video exports beside production tasks and opens thei
   const exports = page.locator("#studio .export-job-list");
   await exports.locator("[data-export-job-id]").first().waitFor();
   const running = exports.locator('[data-export-job-id="export-running"]');
-  assert.match(await running.textContent(), /视频导出 · 自定义导出/);
+  assert.match(await running.textContent(), /视频导出 · 序列 ID：sequence-main · 自定义导出/);
   assert.match(await running.textContent(), /进行中/);
   assert.equal(await running.locator("progress").getAttribute("value"), "40");
   assert.match(
     await exports.locator('[data-export-job-id="export-failed"]').textContent(),
     /失败.*磁盘空间不足/s,
   );
-  assert.doesNotMatch(await exports.textContent(), /sequence-main/);
+  assert.match(await exports.textContent(), /序列 ID：sequence-main/);
   await running.getByRole("button", { name: "在导出记录中查看" }).click();
   const record = page.getByRole("dialog", { name: "导出任务", exact: true });
   assert.equal(await record.isVisible(), true);
@@ -829,6 +857,100 @@ test("workspace dividers resize the fixed editor and keep their sizes across tab
   await page.locator("#editor-workspace").waitFor({ state: "visible" });
   assert.ok(Math.abs((await width(".library-panel")) - resizedLibrary) <= 1);
   assert.ok(Math.abs((await height("[data-ew-timeline]")) - resizedTimeline) <= 1);
+});
+
+test("main remembers an explicitly chosen preview quality across reopening without editing the project", async (t) => {
+  const page = await openPage(t), before = await saved(page), quality = page.getByLabel("预览质量", { exact: true });
+  assert.equal(await quality.inputValue(), "1");
+  await quality.selectOption("0.25");
+  await page.waitForFunction(() => document.querySelector("[data-ew-canvas]").width === 160);
+  assert.deepEqual(await saved(page), before);
+  await page.reload(); await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.25");
+  assert.equal(await quality.inputValue(), "0.25");
+  assert.deepEqual(await saved(page), before);
+});
+
+test("main serializes fast quality preference writes across remounts and the last manual value survives reload", async (t) => {
+  const page = await openPage(t, { holdQualityWrites: true }), quality = page.getByLabel("预览质量", { exact: true });
+  const before = await saved(page);
+  await quality.selectOption("1"); await quality.selectOption("0.5");
+  await page.evaluate(() => __mainReadAudit.remountWorkspace());
+  await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.5");
+  await quality.selectOption("0.25");
+  await page.waitForFunction(() => mainQualityWrites.length === 1);
+  assert.deepEqual(await page.evaluate(() => mainQualityWrites.map((write) => write.value.value)), [1]);
+  await page.evaluate(() => mainQualityWrites[0].resolve()); await page.waitForFunction(() => mainQualityWrites.length === 2);
+  assert.deepEqual(await page.evaluate(() => mainQualityWrites.map((write) => write.value.value)), [1, 0.5]);
+  await page.evaluate(() => mainQualityWrites[1].resolve()); await page.waitForFunction(() => mainQualityWrites.length === 3);
+  await page.evaluate(() => mainQualityWrites[2].resolve());
+  await page.waitForFunction(() => __mainHost.preference("video-studio-preview-quality-v1")?.value === 0.25);
+  await page.reload(); await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.25");
+  assert.deepEqual(await saved(page), before);
+});
+
+test("a late saved quality never pauses already started main playback", async (t) => {
+  const page = await openPage(t, { holdQualityLoad: true, preferences: { "video-studio-preview-quality-v1": 0.25 } });
+  await action(page, "play").click(); await page.waitForFunction(() => document.querySelector('[data-ew-action="play"]').getAttribute("aria-label") === "暂停");
+  await page.evaluate(() => releaseMainQualityLoad()); await settle(page);
+  assert.equal(await page.getByLabel("预览质量", { exact: true }).inputValue(), "1");
+  assert.equal(await action(page, "play").getAttribute("aria-label"), "暂停");
+  assert.equal(await page.locator("[data-ew-canvas]").evaluate((canvas) => canvas.width), 640);
+});
+
+test("main quality preferences fall back to browser storage and remain editable if both stores fail", async (t) => {
+  const page = await openPage(t, { failQualityStorage: true });
+  await page.getByLabel("预览质量", { exact: true }).selectOption("0.5");
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("video-studio-preview-quality-v1"))?.value === 0.5);
+  await page.reload(); await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.5");
+  const failed = await openPage(t, { failQualityStorage: true, blockQualityLocalStorage: true });
+  await failed.getByLabel("预览质量", { exact: true }).selectOption("0.25");
+  await failed.waitForFunction(() => document.querySelector("[data-ew-canvas]").width === 160);
+  const name = failed.locator("#project-name");
+  await name.fill("偏好失败后继续剪辑"); await name.press("Tab");
+  await waitSaved(failed); assert.equal((await saved(failed)).name, "偏好失败后继续剪辑");
+});
+
+test("a failed Host preference write cannot make its older readable value defeat a newer browser choice", async (t) => {
+  const page = await openPage(t, { failQualityWritesOnly: true, preferences: { "video-studio-preview-quality-v1": 1 } });
+  const before = await saved(page);
+  await page.getByLabel("预览质量", { exact: true }).selectOption("0.5");
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("video-studio-preview-quality-v1"))?.value === 0.5);
+  assert.equal(await page.evaluate(() => __mainHost.preference("video-studio-preview-quality-v1")), 1);
+  await page.reload(); await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.5");
+  assert.deepEqual(await saved(page), before);
+});
+
+test("a failed browser preference write cannot make its older value defeat a newer Host choice", async (t) => {
+  const page = await openPage(t, { failQualityLocalWrite: true, localQualityPreference: { value: 0.25, updatedAt: 1 } });
+  await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.25");
+  await page.getByLabel("预览质量", { exact: true }).selectOption("0.5");
+  await page.waitForFunction(() => __mainHost.preference("video-studio-preview-quality-v1")?.value === 0.5);
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("video-studio-preview-quality-v1")).value), 0.25);
+  await page.reload(); await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.5");
+});
+
+test("quality records validate both value and clock before competing with a valid legacy preference", async (t) => {
+  for (const record of [{ value: 0.5, updatedAt: "later" }, { value: 0, updatedAt: 99999 }, { value: 0.5, updatedAt: -1 }, { value: 0.5, updatedAt: NaN }, { value: 0.5, updatedAt: Number.MAX_SAFE_INTEGER }]) {
+    const page = await openPage(t, { preferences: { "video-studio-preview-quality-v1": record }, localQualityPreference: 0.25 });
+    await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.25");
+  }
+});
+
+test("a delayed valid preference with a later clock cannot defeat a manual choice after reload", async (t) => {
+  const updatedAt = Date.now() + 60000;
+  const page = await openPage(t, { holdQualityLoad: true, preferences: { "video-studio-preview-quality-v1": { value: 0.5, updatedAt } } });
+  await page.getByLabel("预览质量", { exact: true }).selectOption("0.25");
+  await page.evaluate(() => releaseMainQualityLoad());
+  await page.waitForFunction((stamp) => __mainHost.preference("video-studio-preview-quality-v1")?.updatedAt > stamp, updatedAt);
+  assert.equal(await page.getByLabel("预览质量", { exact: true }).inputValue(), "0.25");
+  await page.reload(); await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  await page.evaluate(() => releaseMainQualityLoad());
+  await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.25");
 });
 
 test("saved video and audio reopen without starting native proxies, waveforms or voice probes", async (t) => {
@@ -1669,7 +1791,19 @@ test("composition shortcut help matches the active editor and cut navigation pre
   await dialog.waitFor({ state: "visible" });
   assert.match(await dialog.innerText(), /10 帧/);
   assert.match(await dialog.innerText(), /跨轨/);
-  assert.doesNotMatch(await dialog.innerText(), /5 秒|Alt|切换磁吸/);
+  assert.match(await dialog.innerText(), /临时关闭吸附/);
+  assert.match(await dialog.innerText(), /Alt/);
+  assert.match(await dialog.innerText(), /以鼠标位置缩放/);
+  assert.match(await dialog.innerText(), /横向滚动时间轴/);
+  assert.match(await dialog.innerText(), /复制 \/ 剪切 \/ 粘贴 \/ 原位复制/);
+  assert.match(await dialog.innerText(), /Ctrl C · X · V · D/);
+  assert.match(await dialog.innerText(), /粘贴从播放头开始，跨序列按第 N 条同类轨道对应/);
+  assert.match(await dialog.innerText(), /原位复制会为副本新建平行轨/);
+  assert.match(await dialog.innerText(), /打开点标记 \/ 所选片段范围草稿/);
+  assert.match(await dialog.innerText(), /M \/ Shift \+ M/);
+  assert.match(await dialog.innerText(), /裁头保留右侧 \/ 裁尾保留左侧/);
+  assert.match(await dialog.innerText(), /Q \/ W/);
+  assert.doesNotMatch(await dialog.innerText(), /5 秒|切换磁吸/);
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
   await timeline.getByRole("button", { name: "剪辑快捷键", exact: true }).click();
@@ -1679,6 +1813,17 @@ test("composition shortcut help matches the active editor and cut navigation pre
   await page.locator('[data-et-track-name="v1"]').focus();
   await page.keyboard.press("?");
   assert.equal(await dialog.count(), 0, "Typing a question mark must not open shortcut help");
+  assert.deepEqual(await saved(page), before);
+});
+
+test("composition marker shortcut reveals its draft in the narrow inspector panel", async (t) => {
+  const page = await openPage(t, { seed: realMediaSeed, viewport: { width: 390, height: 844 } }), before = await waitSaved(page);
+  assert.equal(await page.locator(".workspace").getAttribute("data-narrow-panel"), "viewer");
+  await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("m");
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).isVisible(), true);
+  assert.equal(await page.locator(".workspace").getAttribute("data-narrow-panel"), "inspector");
+  assert.equal(await page.locator('button[data-narrow-panel="inspector"]').getAttribute("aria-pressed"), "true");
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).evaluate((node) => document.activeElement === node), true);
   assert.deepEqual(await saved(page), before);
 });
 
@@ -4219,4 +4364,252 @@ test("stable project scope keeps actual editor saves across chat selection and f
   assert.match(outcome.error, /重新打开视频面板/);
   assert.deepEqual(await saved(page), stored);
   assert.deepEqual(await page.evaluate(() => window.__mainHost.calls), []);
+});
+
+
+test("main freezes distinguishable sequence export titles through range export, later renames and reload", async (t) => {
+  const page = await openPage(t, { automatic: true });
+  await waitSaved(page);
+  const projectName = '批量工程 <项目>&"',
+    firstName = '横屏 <正式>&"',
+    secondName = '竖屏 <社交>&"';
+  await page.locator("#project-name").fill(projectName);
+  await page.locator("#project-name").press("Tab");
+  await waitSaved(page);
+  const dialog = page.locator("#editor-workspace .ew-dialog[open]");
+  await page.locator('[data-ew-action="sequence-settings"]').click();
+  await dialog.locator('[name="name"]').fill(firstName);
+  await dialog.locator('[type="submit"]').click();
+  await dialog.waitFor({ state: "detached" });
+  await page.locator('[data-ew-action="new-sequence"]').click();
+  await dialog.locator('[name="name"]').fill(secondName);
+  await dialog.locator('[name="width"]').fill("360");
+  await dialog.locator('[name="height"]').fill("640");
+  await dialog.locator('[type="submit"]').click();
+  await dialog.waitFor({ state: "detached" });
+  await page.locator('[data-add-asset="demo"]').click();
+  await waitSaved(page);
+  await oldAction(page, "export").click();
+  await dialog.locator('[name="custom"]').uncheck();
+  await dialog.locator('[name="profiles"][value="landscape-1080p"]').check();
+  const choices = dialog.locator('[name="sequences"]');
+  for (let index = 0; index < (await choices.count()); index++) await choices.nth(index).check();
+  await dialog.locator('[type="submit"]').click();
+  await page.waitForFunction(() => window.__editorRenderRequests.length === 2);
+  await dialog.waitFor({ state: "detached" });
+  const submitted = await page.evaluate(() => window.__editorRenderRequests);
+  assert.equal(new Set(submitted.map((item) => item.request.sequenceId)).size, 2);
+  assert.deepEqual(
+    submitted.map((item) => item.request.profile.name),
+    ["横屏 1080p", "横屏 1080p"],
+  );
+  const titles = page.locator(".editor-export-job-list section strong");
+  assert.deepEqual(
+    (await titles.allTextContents()).sort(),
+    [
+      `${projectName} · ${firstName} · 横屏 1080p`,
+      `${projectName} · ${secondName} · 横屏 1080p`,
+    ].sort(),
+  );
+  await page.getByRole("button", { name: "关闭导出任务", exact: true }).click();
+  await page.locator('[data-ew-action="marker"]').click();
+  await page.getByRole("button", { name: "添加范围", exact: true }).click();
+  await page.getByLabel("开始（秒）", { exact: true }).fill("0.3336875");
+  await page.getByLabel("结束（秒）", { exact: true }).fill("1.3346875");
+  await page.getByLabel("标记名称", { exact: true }).fill("审核范围");
+  await page.getByRole("button", { name: "添加标记", exact: true }).click();
+  const beforeRange = await waitSaved(page),
+    current = beforeRange.sequences.find((item) => item.id === beforeRange.activeSequenceId);
+  await oldAction(page, "export").click();
+  await dialog.locator('[name="range"]').selectOption(current.markers[0].id);
+  await dialog.locator('[name="presetName"]').fill("审核版");
+  await dialog.locator('[type="submit"]').click();
+  await page.waitForFunction(() => window.__editorRenderRequests.length === 3);
+  await dialog.waitFor({ state: "detached" });
+  const rangeTitle = `${projectName} · ${secondName} · 0.333688–1.334688 秒 · 审核版`;
+  assert.ok((await titles.allTextContents()).includes(rangeTitle));
+  const frozen = await titles.allTextContents();
+  assert.equal(
+    await page.locator(".editor-export-job-list img,.editor-export-job-list script").count(),
+    0,
+  );
+  await page.getByRole("button", { name: "关闭导出任务", exact: true }).click();
+  await page.locator("#project-name").fill("继续编辑工程");
+  await page.locator("#project-name").press("Tab");
+  await waitSaved(page);
+  await page.locator('[data-ew-action="sequence-settings"]').click();
+  await dialog.locator('[name="name"]').fill("继续编辑序列");
+  await dialog.locator('[type="submit"]').click();
+  await dialog.waitFor({ state: "detached" });
+  assert.deepEqual(await titles.allTextContents(), frozen);
+  await page.reload();
+  await waitSaved(page);
+  await page.waitForFunction(
+    () => document.querySelectorAll(".editor-export-job-list section").length === 3,
+  );
+  assert.deepEqual((await titles.allTextContents()).sort(), [...frozen].sort());
+  assert.equal(
+    await page.evaluate(() => window.__editorRenderRequests.length),
+    0,
+    "Reload never submits duplicates",
+  );
+});
+
+
+for (const editing of ["project-name", "inspector"]) test(`save-status notifications avoid repeated full-project reads after ${editing}`, async (t) => {
+  const page = await openPage(t), before = await saved(page);
+  await page.evaluate(() => {
+    const original = __mainReadSession.prototype.read;
+    globalThis.mainReadCalls = [];
+    __mainReadSession.prototype.read = function () {
+      mainReadCalls.push({ identity: this.getState().identity, stack: new Error().stack });
+      return original.call(this);
+    };
+  });
+  if (editing === "project-name") {
+    await page.locator("#project-name").fill("通知仍只更新保存状态");
+    await page.locator("#project-name").press("Tab");
+  } else {
+    await page.locator('[data-et-clip="picture"]').click();
+    await page.evaluate(() => { mainReadCalls.length = 0; });
+    await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+    await page.getByLabel("水平位置（%）", { exact: true }).press("Tab");
+  }
+  const after = await waitSaved(page); await settle(page);
+  const counts = await page.evaluate(() => Object.fromEntries(
+    ["synchronizeLegacyView", "editorStatusClipCount", "editorCaptionList"].map((name) =>
+      [name, mainReadCalls.filter((call) => call.stack.includes(name)).length]),
+  ));
+  console.log("Main shell project-read budget:", counts);
+  assert.equal(after.revision, before.revision + 1);
+  assert.equal(after.name, editing === "project-name" ? "通知仍只更新保存状态" : before.name);
+  if (editing === "inspector") assert.equal(after.sequences[0].clips.find((clip) => clip.id === "picture").transform.x, 0.25);
+  // Renaming also redraws the original shell once; an inspector edit only updates its document status.
+  assert.deepEqual(counts, { synchronizeLegacyView: 1, editorStatusClipCount: Number(editing === "project-name"), editorCaptionList: Number(editing === "project-name") });
+  assert.equal(await page.locator("[data-studio-clip-count]").textContent(), "1");
+  assert.equal(await page.locator("[data-studio-caption-count]").textContent(), "1");
+  assert.equal(await page.locator("#save-state").textContent(), "已自动保存");
+});
+
+async function mainAuditCounts(page) {
+  return page.evaluate(() => ({
+    name: document.querySelector("#project-name").value,
+    revision: document.querySelector("#revision").textContent,
+    clips: document.querySelector("[data-studio-clip-count]").textContent,
+    captions: document.querySelector("[data-studio-caption-count]").textContent,
+    exportDisabled: document.querySelector('.topbar [data-action="export"]').getAttribute("aria-disabled"),
+    save: document.querySelector("#save-state").textContent,
+    error: document.querySelector("#save-state").title,
+  }));
+}
+test("main durable phase preserves old counters until the committed document becomes visible", async (t) => {
+  const page = await openPage(t), before = await saved(page), original = await mainAuditCounts(page);
+  await page.evaluate(() => {
+    const call = codeshellPanel.call;
+    codeshellPanel.call = async (method, args) => {
+      if (method === "media.document.set" && args.key === "video-studio-current") {
+        codeshellPanel.call = call;
+        await new Promise((resolve) => globalThis.releaseMainAuditWrite = resolve);
+      }
+      return call(method, args);
+    };
+    const session = __mainReadAudit.session(), doc = session.read(), seq = doc.sequences.find((s) => s.id === doc.activeSequenceId);
+    globalThis.mainAuditCommit = session.dispatchDurable([{ type: "clip.remove", sequenceId: seq.id, clipIds: seq.clips.map((c) => c.id) }], session.getState().identity, "审核删除片段");
+  });
+  await page.waitForFunction(() => !!globalThis.releaseMainAuditWrite);
+  const held = await mainAuditCounts(page);
+  assert.equal(held.save, "保存中…"); assert.equal(held.revision, original.revision);
+  assert.equal(held.clips, "1"); assert.equal(held.captions, "1");
+  assert.equal(held.exportDisabled, original.exportDisabled);
+  assert.equal(await page.evaluate(() => __mainReadAudit.session().getState().phase), "committing");
+  await page.evaluate(async () => { releaseMainAuditWrite(); await mainAuditCommit; });
+  const after = await waitSaved(page); await settle(page);
+  const committed = await mainAuditCounts(page);
+  assert.equal(after.revision, before.revision + 1);
+  assert.equal(committed.clips, "0"); assert.equal(committed.captions, "0");
+  assert.equal(committed.exportDisabled, "true");
+  assert.equal(committed.revision, `rev ${after.revision}`);
+});
+test("main synchronous read reentry cannot publish the outer stale document", async (t) => {
+  const page = await openPage(t), before = await saved(page);
+  await page.evaluate(() => {
+    const session = __mainReadAudit.session(), read = session.read;
+    session.read = function () {
+      const doc = read.call(this);
+      if (new Error().stack.includes("synchronizeLegacyView")) {
+        session.read = read;
+        const seq = doc.sequences.find((s) => s.id === doc.activeSequenceId), clip = seq.clips.find((c) => c.kind === "media");
+        session.dispatch([{ type: "project.rename", name: "审核最终同期工程" }, { type: "clip.add", sequenceId: seq.id, clip: {...structuredClone(clip), id: "audit-tail", start: clip.start + clip.duration} }], session.getState().identity, "审核同步新版本");
+      }
+      return doc;
+    };
+    session.dispatch([{ type: "project.rename", name: "不得晚写的外层旧名" }], session.getState().identity, "审核外层版本");
+  });
+  const after = await waitSaved(page); await settle(page);
+  assert.equal(after.revision, before.revision + 2);
+  const state = await mainAuditCounts(page);
+  assert.equal(state.name, "审核最终同期工程"); assert.equal(state.clips, "2"); assert.equal(state.captions, "1");
+  assert.equal(state.revision, `rev ${after.revision}`);
+  assert.equal(await page.evaluate(() => __mainReadAudit.project().name), after.name);
+});
+
+
+test("main downloads the current applied composition PNG at the selected viewer quality",async(t)=>{
+  const page=await openPage(t),before=await saved(page);
+  await page.getByLabel("预览质量",{exact:true}).selectOption("0.5");
+  const downloading=page.waitForEvent("download");await page.getByRole("button",{name:"保存已应用画面 PNG",exact:true}).click();
+  const download=await downloading,bytes=await readFile(await download.path());
+  assert.deepEqual([...bytes.subarray(0,8)],[137,80,78,71,13,10,26,10]);
+  assert.equal(bytes.readUInt32BE(16),320);assert.equal(bytes.readUInt32BE(20),180);
+  assert.match(download.suggestedFilename(),/_t0_320x180\.png$/);assert.deepEqual(await saved(page),before);
+  assert.equal(await page.getByLabel("预览质量",{exact:true}).inputValue(),"0.5");
+});
+
+for (const width of [280, 390]) test(`composition text double click reveals and focuses saved wording at ${width}px`, async (t) => {
+  const page = await openPage(t, { seed: realMediaSeed, viewport: { width, height: 844 } });
+  const before = await waitSaved(page), caption = page.locator('[data-et-clip="existing-caption"]');
+  await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("Shift+Z");
+  await caption.scrollIntoViewIfNeeded(); await caption.click();
+  await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("Shift+F");
+  await caption.dblclick(); await settle(page);
+  const field = page.getByLabel("文字内容（保留换行）", { exact: true });
+  assert.equal(await field.isVisible(), true); assert.equal(await field.inputValue(), "实拍里的现有字幕");
+  assert.equal(await field.evaluate((node) => document.activeElement === node), true);
+  assert.equal(await page.locator(".workspace").getAttribute("data-narrow-panel"), "inspector");
+  assert.equal(await page.getByRole("tab", { name: "文字", exact: true }).getAttribute("aria-selected"), "true");
+  assert.equal(await field.evaluate((node) => { const box = node.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight; }), true);
+  assert.deepEqual(await saved(page), before);
+  await page.screenshot({ path: `/tmp/video-studio-text-double-click-${width}.png` });
+});
+
+test("main export entry preserves invalid inspector draft from the native Main topbar", async (t) => {
+  const page = await openPage(t, { nativeTasks: true });
+  await page.locator('[data-et-clip="picture"]').click();
+  const field=page.getByLabel("不透明度（%）",{exact:true}); await field.fill("101");
+  await oldAction(page,"export").click();
+  assert.equal(await field.inputValue(),"101");
+  assert.equal(await field.evaluate(node=>node===document.activeElement),true);
+  assert.equal(await page.locator('dialog[open]').count(),0);
+});
+
+
+test("main export entry saves the focused valid Inspector value once before opening", async (t) => {
+  const page=await openPage(t,{nativeTasks:true}); await page.locator('[data-et-clip="picture"]').click();
+  const before=await page.evaluate(()=>__mainReadAudit.session().read());
+  await page.getByLabel("不透明度（%）",{exact:true}).fill("60");await oldAction(page,"export").click();
+  await page.locator('dialog[open]').waitFor();const after=await page.evaluate(()=>__mainReadAudit.session().read());
+  assert.equal(after.revision,before.revision+1);assert.equal(after.sequences[0].clips.find(c=>c.id==="picture").transform.opacity,0.6);
+  await page.locator('[data-ew-close]').click();await page.locator('[data-ew-action="undo"]').click();await settle(page);
+  assert.deepEqual((await page.evaluate(()=>__mainReadAudit.session().read())).sequences,before.sequences);
+});
+test("main export entry does not force native Inspector composition to finish",async(t)=>{
+  const page=await openPage(t,{nativeTasks:true});await page.locator('[data-et-clip="picture"]').click();
+  await page.getByRole("button",{name:"添加文字",exact:true}).click();
+  const field=page.getByLabel("文字内容（保留换行）",{exact:true});await field.focus();await field.evaluate(node=>{node.select();globalThis.mainExportImeEnds=[];node.addEventListener("compositionend",e=>mainExportImeEnds.push(e.data));});
+  const before=await page.evaluate(()=>__mainReadAudit.session().read()),cdp=await page.context().newCDPSession(page);
+  await cdp.send("Input.imeSetComposition",{text:"导出中文草稿",selectionStart:6,selectionEnd:6});await oldAction(page,"export").click();
+  assert.equal(await field.inputValue(),"导出中文草稿");assert.equal(await field.evaluate(node=>node===document.activeElement),true);
+  assert.deepEqual(await page.evaluate(()=>mainExportImeEnds),[]);assert.equal(await page.locator('dialog[open]').count(),0);
+  assert.match(await page.locator("#toast").textContent(),/完成文字输入后再导出/);
+  assert.deepEqual(await page.evaluate(()=>__mainReadAudit.session().read()),before);
 });

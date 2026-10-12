@@ -9,17 +9,30 @@ import { planCaptionText } from "./captions";
 import { unavailableFontFamilies, fontWarningMessage } from "./font-availability";
 import type { EditorClipPatch, EditorOperation } from "./operations";
 import type { EditorClip, EditorDocument, EditorSequence, Mask } from "./types";
+import { sameIdentity, type SessionIdentity } from "./session";
+import { clipCanReceiveColor, copyClipColor, pasteClipColor, resetClipColor } from "./color-edits";
+import type { ResolvedColorAdjustment } from "./color";
+import {
+  canvasAlignmentReason,
+  planCanvasAlignment,
+  type CanvasAlignment,
+} from "./canvas-alignment";
 
 export interface EditorInspectorContext {
   read(): EditorDocument;
+  identity?(): SessionIdentity;
   selection(): { sequenceId: string; clipIds: string[] };
   apply(operations: EditorOperation[], label: string): unknown | Promise<unknown>;
   time(): Tick;
+  /** View-only navigation; the parent keeps exact ticks and reveals the destination. */
+  seek?(time: Tick): void | Promise<void>;
   onError(error: Error): void;
   /** Open the voiceover page to regenerate this clip's script and replace the clip in place. */
   editVoiceover?(sequenceId: string, clipId: string): void | Promise<void>;
 }
 interface Scope {
+  identity?: SessionIdentity;
+  document: EditorDocument;
   revision: number;
   sequence: EditorSequence;
   selectionIds: string[];
@@ -36,7 +49,23 @@ interface NumberField {
   animated?: boolean;
   integer?: boolean;
 }
+interface KeyframeNavigation {
+  scope: Scope;
+  time: Tick;
+  tab: Tab;
+  controller: AbortController;
+  destination?: Tick;
+  revision?: number;
+}
+type KeyframeDirection = "previous" | "next";
 type Tab = "visual" | "color" | "mask" | "text" | "audio";
+interface KeyframeAction {
+  scope: Scope;
+  time: Tick;
+  tab: Tab;
+  revision: number;
+  controller: AbortController;
+}
 const TABS: Array<[Tab, string]> = [
   ["visual", "画面"],
   ["color", "调色"],
@@ -89,6 +118,11 @@ function patchAt(clip: EditorClip, path: Path, value: unknown): EditorClipPatch 
 }
 function equal(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+function hasKeyframes(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  if ("keyframes" in value && Array.isArray(value.keyframes)) return true;
+  return Object.values(value).some(hasKeyframes);
 }
 function common<T>(values: T[]): T | undefined {
   return values.every((value) => equal(value, values[0])) ? values[0] : undefined;
@@ -144,34 +178,65 @@ export class EditorInspector {
   private individuals = new Map<string, string>();
   private pages = new Map<string, number>();
   private renderedSignature = "";
+  private renderedAnimation = false;
+  private replacingControls = false;
+  private readonly fieldCommitters = new WeakMap<HTMLInputElement | HTMLTextAreaElement, { initial: string; signature: string; commit: () => void }>();
+  private fieldFinish?: { signal: AbortSignal; failed: boolean; result?: Promise<boolean> };
+  private keyframeNavigation?: KeyframeNavigation;
+  private keyframeNeighbors: Array<{
+    button: HTMLButtonElement; clipId: string; path: Path; direction: KeyframeDirection;
+  }> = [];
+  private keyframeAction?: KeyframeAction;
+  private copiedColor?: {
+    documentId: string;
+    generation?: number;
+    label: string;
+    value: ResolvedColorAdjustment;
+  };
   constructor(
     container: HTMLElement,
     private readonly context: EditorInspectorContext,
   ) {
     this.root.setAttribute("aria-label", "片段属性");
+    this.root.tabIndex = -1;
+    this.root.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && this.keyframeNavigation) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.cancelKeyframeNavigation();
+      }
+    });
+    this.root.addEventListener("change", (event) => {
+      if (this.replacingControls) event.stopImmediatePropagation();
+    }, true);
     container.append(this.root);
     this.render();
   }
   /** Shows the text tab for the selection and puts the cursor in its wording, ready to type. */
-  editText(): void {
-    if (this.disposed) return;
+  editText(current: () => boolean = () => true): void {
+    if (this.disposed || !current()) return;
     this.tab = "text";
     this.error = "";
     this.render();
+    if (this.disposed || !current()) return;
     const field = this.root.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="文字内容（保留换行）"]',
     );
-    if (!field || field.disabled) return;
+    if (!field || field.matches(":disabled") || !current()) return;
     field.focus({ preventScroll: true });
     field.select();
     field.scrollIntoView({ block: "nearest" });
   }
   dispose(): void {
     this.disposed = true;
+    this.cancelKeyframeNavigation();
+    this.cancelKeyframeAction(this.keyframeAction);
+    this.keyframeNeighbors = [];
     this.root.remove();
     this.expanded.clear();
     this.individuals.clear();
     this.pages.clear();
+    this.copiedColor = undefined;
   }
   private scope(): Scope | undefined {
     const selection = this.context.selection();
@@ -182,7 +247,14 @@ export class EditorInspector {
     const clips = selectionIds
       .map((id) => sequence.clips.find((clip) => clip.id === id))
       .filter((clip): clip is EditorClip => !!clip);
-    return { revision: document.revision, sequence, selectionIds, clips };
+    return {
+      document,
+      identity: this.context.identity ? { ...this.context.identity() } : undefined,
+      revision: document.revision,
+      sequence,
+      selectionIds,
+      clips,
+    };
   }
   private locked(scope: Scope): boolean {
     return scope.selectionIds.some((id) => {
@@ -194,17 +266,31 @@ export class EditorInspector {
   }
   private report(error: unknown): void {
     const result = error instanceof Error ? error : new Error(String(error));
+    if (this.fieldFinish) this.fieldFinish.failed = true;
     this.error = result.message;
     this.context.onError(result);
   }
-  private async edit(
+  private edit(scope: Scope, label: string, patch: (clip: EditorClip) => EditorClipPatch): Promise<boolean> {
+    const result = this.editAttempt(scope, label, patch);
+    if (this.fieldFinish) this.fieldFinish.result = result;
+    return result;
+  }
+  private async editAttempt(
     scope: Scope,
     label: string,
     patch: (clip: EditorClip) => EditorClipPatch,
-  ): Promise<void> {
-    if (this.disposed || this.pending) return;
+  ): Promise<boolean> {
+    const finish = this.fieldFinish;
+    if (this.disposed || this.pending || this.replacingControls) return false;
     try {
       const fresh = this.scope();
+      if (
+        !equal(
+          [scope.identity?.documentId, scope.identity?.generation],
+          [fresh?.identity?.documentId, fresh?.identity?.generation],
+        )
+      )
+        throw new Error("工程已切换，请重新调整属性");
       if (
         !fresh ||
         fresh.sequence.id !== scope.sequence.id ||
@@ -222,16 +308,290 @@ export class EditorInspector {
           patch: patch(current),
         };
       });
-      if (!operations.length) return;
+      if (!operations.length) return false;
       this.pending = true;
       this.error = "";
       this.render();
       await this.context.apply(operations, label);
+      return true;
     } catch (error) {
-      this.report(error);
+      if (!finish?.signal.aborted) this.report(error);
+      return false;
     } finally {
       this.pending = false;
       this.render();
+    }
+  }
+  /** Finish a managed field before editing; success means dispatch completed, not autosave. */
+  finishFocusedField(signal: AbortSignal): boolean | Promise<boolean> | undefined {
+    if ((this.fieldFinish && !this.fieldFinish.signal.aborted) ||
+      (this.keyframeNavigation && this.keyframeNavigation.controller.signal !== signal) ||
+      (this.keyframeAction && this.keyframeAction.controller.signal !== signal)) return false;
+    const input = document.activeElement;
+    if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) || !this.root.contains(input)) return;
+    const field = this.fieldCommitters.get(input);
+    if (!field) return;
+    if (input.value === field.initial) return true;
+    return this.finishField(input, field, signal);
+  }
+  private fieldScopeCurrent(scope: Scope, time: Tick, revision?: number): boolean {
+    const fresh = this.scope();
+    return !this.disposed && !!fresh && this.context.time() === time &&
+      equal([scope.document.id, scope.identity?.generation, scope.sequence.id, scope.selectionIds],
+        [fresh.document.id, fresh.identity?.generation, fresh.sequence.id, fresh.selectionIds]) &&
+      (revision === undefined || fresh.revision === revision);
+  }
+  private async finishField(input: HTMLInputElement | HTMLTextAreaElement,
+    field: { signature: string; commit: () => void }, signal: AbortSignal): Promise<boolean> {
+    const scope = this.scope(), time = this.context.time(), label = input.getAttribute("aria-label")!,
+      finish = { signal, failed: false } as { signal: AbortSignal; failed: boolean; result?: Promise<boolean> };
+    let value = input.value, complete = false;
+    if (!scope || this.pending || this.disposed || signal.aborted ||
+      field.signature !== JSON.stringify([scope.identity, scope.revision, scope.sequence.id, scope.selectionIds, this.tab])) return false;
+    this.fieldFinish = finish;
+    try {
+      this.replacingControls = true;
+      try { input.blur(); } finally { this.replacingControls = false; }
+      value = input.value;
+      await Promise.resolve(); // Let the caller install its pending owner before dispatch.
+      if (signal.aborted || !this.fieldScopeCurrent(scope, time, scope.revision)) return false;
+      field.commit();
+      complete = !finish.failed && (finish.result ? await finish.result : true);
+      return complete && !signal.aborted && this.fieldScopeCurrent(scope, time, scope.revision + Number(!!finish.result));
+    } finally {
+      if (this.fieldFinish === finish) this.fieldFinish = undefined;
+      if (!complete && !signal.aborted && this.fieldScopeCurrent(scope, time, scope.revision)) {
+        this.render();
+        const current = this.root.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[aria-label="${CSS.escape(label)}"]`);
+        if (current && !current.disabled) { current.value = value; current.focus({ preventScroll: true }); }
+      }
+    }
+  }
+  private manageField(input: HTMLInputElement | HTMLTextAreaElement, commit: () => void): void {
+    this.fieldCommitters.set(input, { initial: input.value, signature: this.renderedSignature, commit });
+    input.addEventListener("change", commit);
+  }
+  private cancelKeyframeNavigation(navigation = this.keyframeNavigation): void {
+    if (!navigation || this.keyframeNavigation !== navigation) return;
+    this.keyframeNavigation = undefined;
+    navigation.controller.abort();
+  }
+  private navigationMatches(navigation: KeyframeNavigation, scope: Scope | undefined, time = this.context.time()): boolean {
+    return !this.disposed && !navigation.controller.signal.aborted && !!scope &&
+      this.tab === navigation.tab &&
+      equal([scope.document.id, scope.identity?.documentId, scope.identity?.generation, scope.sequence.id, scope.selectionIds],
+        [navigation.scope.document.id, navigation.scope.identity?.documentId, navigation.scope.identity?.generation,
+          navigation.scope.sequence.id, navigation.scope.selectionIds]) &&
+      (navigation.revision === undefined || scope.revision === navigation.revision) &&
+      (time === navigation.time || time === navigation.destination) && this.keyframeNavigation === navigation;
+  }
+  /** A fresh read is paired with identity on both sides, including synchronous read observers. */
+  private navigationScope(navigation: KeyframeNavigation, revision: number): Scope | undefined {
+    if (this.keyframeNavigation !== navigation) return;
+    const before = this.context.identity ? { ...this.context.identity() } : undefined,
+      selection = this.context.selection(), time = this.context.time(), scope = this.scope(),
+      selectionAfter = this.context.selection(), timeAfter = this.context.time(),
+      after = this.context.identity?.();
+    if (this.keyframeNavigation !== navigation || !this.navigationMatches(navigation, scope, timeAfter) ||
+      time !== timeAfter || !equal(selection, selectionAfter) ||
+      scope?.revision !== revision || (before && (!after || !sameIdentity(before, after) ||
+        scope.document.id !== before.documentId || scope.revision !== before.revision)) ||
+      this.keyframeNavigation !== navigation) return;
+    return scope;
+  }
+  private keyframeLocation(parent: HTMLElement, scope: Scope, spec: NumberField, time: Tick, index: number, readOnly = false): void {
+    if (!this.context.seek) return;
+    const clip = scope.clips[0]!, button = el("button", "ei-button",
+      readOnly ? `关键帧 ${index + 1} · ${display(time / TICKS_PER_SECOND)} 秒` : "定位");
+    button.type = "button";
+    button.setAttribute("aria-label", `定位关键帧 ${index + 1}`);
+    button.title = `${clip.label || "未命名片段"} · ${spec.label} · ${display(time / TICKS_PER_SECOND)} 秒` +
+      (time === clip.duration ? "；末端关键帧定位到片段内最后时刻" : "");
+    this.bindKeyframeNavigation(button, scope, spec.path, time);
+    parent.append(button);
+  }
+  private bindKeyframeNavigation(button: HTMLButtonElement, scope: Scope, path: Path, target: Tick | KeyframeDirection): void {
+    button.addEventListener("pointerdown", (event) => {
+      if (event.button === 0 && event.isPrimary) event.preventDefault();
+    });
+    button.addEventListener("keydown", (event) => {
+      if (event.repeat && (event.key === "Enter" || event.key === " ")) event.preventDefault();
+    });
+    button.addEventListener("click", () => {
+      const blocked = () => !this.root.contains(button) || this.disposed || this.pending ||
+        (this.fieldFinish && !this.fieldFinish.signal.aborted) || this.keyframeNavigation || this.keyframeAction;
+      if (blocked()) return;
+      const clock = this.context.time();
+      if (blocked()) return; // A public clock getter can synchronously start a newer navigation.
+      const navigation: KeyframeNavigation = { scope, time: clock, tab: this.tab,
+        revision: scope.revision, controller: new AbortController() };
+      this.keyframeNavigation = navigation;
+      void this.locateKeyframe(navigation, path, target);
+    });
+  }
+  /** Keys are sorted; compare the reachable endpoint so Next cannot jump repeatedly to duration − 1. */
+  private neighboringKey(clip: EditorClip, path: Path, clock: Tick, direction: KeyframeDirection): Tick | undefined {
+    const value = at(clip, path) as AnimatedNumber;
+    if (typeof value === "number") return;
+    let left = 0, right = value.keyframes.length;
+    while (left < right) {
+      const middle = Math.floor((left + right) / 2), key = value.keyframes[middle]!,
+        position = clip.start + Math.min(key.time, clip.duration - 1);
+      if (position < clock || (direction === "next" && position === clock)) left = middle + 1;
+      else right = middle;
+    }
+    return value.keyframes[direction === "previous" ? left - 1 : left]?.time;
+  }
+  private refreshKeyframeNeighbors(scope: Scope | undefined, controls = this.keyframeNeighbors): void {
+    const owner = this.keyframeNeighbors, clock = this.context.time();
+    if (this.disposed || owner !== this.keyframeNeighbors) return;
+    for (const control of controls) {
+      const clip = scope?.clips.find((clip) => clip.id === control.clipId),
+        available = !!clip && this.neighboringKey(clip, control.path, clock, control.direction) !== undefined;
+      control.button.disabled = !available;
+      control.button.title = available ? "按当前播放头定位，可跨页；列表页码保持不变。末端关键帧定位到片段内最后时刻。"
+        : control.direction === "previous" ? "播放头之前没有关键帧" : "播放头之后没有关键帧";
+    }
+  }
+  private keyframeNeighborButtons(parent: HTMLElement, scope: Scope, spec: NumberField): void {
+    if (!this.context.seek) return;
+    const first = this.keyframeNeighbors.length;
+    const controls = el("div", "ei-actions");
+    controls.setAttribute("aria-label", `${spec.label}关键帧导航`);
+    parent.append(controls);
+    for (const direction of ["previous", "next"] as const) {
+      const button = el("button", "ei-button", direction === "previous" ? "上一个关键帧" : "下一个关键帧");
+      button.type = "button";
+      this.bindKeyframeNavigation(button, scope, spec.path, direction);
+      this.keyframeNeighbors.push({ button, clipId: scope.clips[0]!.id, path: spec.path, direction });
+      controls.append(button);
+    }
+    const neighbors = this.keyframeNeighbors.slice(first);
+    this.refreshKeyframeNeighbors(scope, neighbors);
+    if (parent instanceof HTMLDetailsElement) parent.addEventListener("toggle", () => {
+      if (this.root.contains(parent) && parent.open) this.refreshKeyframeNeighbors(scope, neighbors);
+    });
+  }
+  private async locateKeyframe(navigation: KeyframeNavigation, path: Path, target: Tick | KeyframeDirection): Promise<void> {
+    let finish: typeof this.fieldFinish;
+    try {
+      const initial = this.navigationScope(navigation, navigation.scope.revision),
+        anchor = initial?.clips.find((clip) => clip.id === navigation.scope.clips[0]!.id),
+        time = typeof target === "number" ? target : anchor && this.neighboringKey(anchor, path, navigation.time, target);
+      if (!initial || time === undefined) return;
+      const ready = this.finishFocusedField(navigation.controller.signal);
+      finish = this.fieldFinish;
+      if (ready instanceof Promise) {
+        navigation.revision = undefined; // The finisher alone may commit its one field revision.
+      }
+      this.root.focus({ preventScroll: true });
+      if (ready !== undefined && !await ready) return;
+      navigation.revision = navigation.scope.revision + Number(!!finish?.result);
+      const fresh = this.navigationScope(navigation, navigation.revision);
+      if (!fresh) return;
+      const clip = fresh.clips.find((item) => item.id === navigation.scope.clips[0]!.id),
+        value = clip && at(clip, path) as AnimatedNumber;
+      if (!clip || typeof value === "number" || !value?.keyframes.some((key) => key.time === time)) {
+        this.report(new Error(typeof target === "number" ? "关键帧已变化，请点击当前行重新定位" : "关键帧已变化，请重新定位"));
+        this.render();
+        return;
+      }
+      navigation.destination = clip.start + Math.min(time, clip.duration - 1);
+      // Reading a public context may synchronously change its owner or clock.
+      if (!this.navigationScope(navigation, fresh.revision)) return;
+      this.error = "";
+      await this.context.seek!(navigation.destination);
+    } catch (error) {
+      // Failures from a former project or a cancelled jump must not enter the new inspector.
+      try {
+        if (this.navigationScope(navigation, navigation.revision ?? navigation.scope.revision + Number(!!finish?.result))) {
+          this.report(error);
+          this.render();
+        }
+      } catch { /* A failing read cannot establish ownership of an error. */ }
+    } finally {
+      this.cancelKeyframeNavigation(navigation);
+    }
+  }
+  private cancelKeyframeAction(action: KeyframeAction | undefined): void {
+    if (!action || this.keyframeAction !== action) return;
+    this.keyframeAction = undefined;
+    action.controller.abort();
+  }
+  private keyframeActionCurrent(action: KeyframeAction, scope: Scope | undefined, revision?: number): boolean {
+    const identity = this.context.identity?.(), selection = this.context.selection(), time = this.context.time();
+    return !!scope && !this.disposed && !action.controller.signal.aborted && this.keyframeAction === action &&
+      this.tab === action.tab && time === action.time &&
+      equal([action.scope.document.id, action.scope.identity?.generation, action.scope.sequence.id, action.scope.selectionIds],
+        [scope.document.id, scope.identity?.generation, scope.sequence.id, scope.selectionIds]) &&
+      selection.sequenceId === scope.sequence.id && equal([...new Set(selection.clipIds)], scope.selectionIds) &&
+      (!identity || (identity.documentId === scope.document.id && identity.revision === scope.revision && identity.generation === scope.identity?.generation)) &&
+      (revision === undefined
+        ? scope.revision === action.revision || scope.revision === action.revision + 1
+        : scope.revision === revision);
+  }
+  /** A diamond owns its original intent while its focused field finishes. */
+  private startKeyframeAction(button: HTMLButtonElement, scope: Scope, time: Tick, spec: NumberField): void {
+    if (this.disposed || this.pending || (this.fieldFinish && !this.fieldFinish.signal.aborted) || this.keyframeAction || this.keyframeNavigation || !this.root.contains(button)) return;
+    const action: KeyframeAction = { scope, time, tab: this.tab, revision: scope.revision, controller: new AbortController() };
+    this.keyframeAction = action;
+    try {
+      const fresh = this.scope();
+      if (!this.keyframeActionCurrent(action, fresh, scope.revision) || !fresh) {
+        this.cancelKeyframeAction(action);
+        return;
+      }
+      const remove = fresh.clips.every((clip) => {
+        const value = at(clip, spec.path) as AnimatedNumber;
+        return typeof value !== "number" && value.keyframes.some((key) => key.time === localTime(clip, time));
+      });
+      const ready = this.finishFocusedField(action.controller.signal);
+      const complete = (accepted: boolean | undefined, revision: number) => {
+        if (!accepted && accepted !== undefined) { this.cancelKeyframeAction(action); return; }
+        void this.applyKeyframeAction(action, spec, remove, revision);
+      };
+      if (ready instanceof Promise) {
+        void ready.then((accepted) => complete(accepted, scope.revision + 1), (error) => {
+          if (this.keyframeAction === action && !action.controller.signal.aborted) this.report(error);
+          this.cancelKeyframeAction(action);
+        });
+      } else complete(ready, scope.revision);
+    } catch (error) {
+      if (this.keyframeAction === action && !action.controller.signal.aborted) this.report(error);
+      this.cancelKeyframeAction(action);
+    }
+  }
+  private async applyKeyframeAction(action: KeyframeAction, spec: NumberField, remove: boolean, revision: number): Promise<void> {
+    let applying = false;
+    try {
+      const fresh = this.scope();
+      if (!this.keyframeActionCurrent(action, fresh, revision) || !fresh) return;
+      if (this.locked(fresh)) throw new Error("所选片段包含已锁定轨道，请先解锁轨道");
+      const operations: EditorOperation[] = action.scope.clips.map((selected) => {
+        const clip = fresh.clips.find((item) => item.id === selected.id);
+        if (!clip || clip.kind !== selected.kind) throw new Error("片段已变化，请重新选择");
+        const value = at(clip, spec.path) as AnimatedNumber, time = localTime(clip, action.time),
+          current = evaluateAnimatedNumber(value, time),
+          keys = typeof value === "number" ? [] : structuredClone(value.keyframes),
+          keyframes = keys.filter((key) => key.time !== time);
+        if (!remove) keyframes.push({ time, value: current, easing: "linear" });
+        keyframes.sort((a, b) => a.time - b.time);
+        return { type: "clip.update", sequenceId: fresh.sequence.id, clipId: clip.id,
+          patch: patchAt(clip, spec.path, keyframes.length ? { keyframes } : current) };
+      });
+      if (!operations.length) return;
+      action.revision = revision;
+      this.pending = applying = true;
+      this.error = "";
+      this.render();
+      // Rendering and public reads may synchronously change the current owner.
+      if (!this.keyframeActionCurrent(action, this.scope(), revision)) return;
+      await this.context.apply(operations, `${remove ? "移除" : "添加"}${spec.label}当前关键帧`);
+    } catch (error) {
+      if (this.keyframeAction === action && !action.controller.signal.aborted) this.report(error);
+    } finally {
+      this.cancelKeyframeAction(action);
+      if (applying) { this.pending = false; this.render(); }
     }
   }
   private action(
@@ -298,7 +658,7 @@ export class EditorInspector {
     input.value = value === undefined ? "" : display(value);
     input.placeholder = value === undefined ? "多个值" : "";
     input.disabled = disabled;
-    input.addEventListener("change", () => {
+    this.manageField(input, () => {
       try {
         if (input.value.trim() === "" || !Number.isFinite(input.valueAsNumber))
           throw new Error(`${label}需要填写数值`);
@@ -372,12 +732,38 @@ export class EditorInspector {
     input.value = value ?? "";
     input.placeholder = value === undefined ? "多个值" : "";
     if (input instanceof HTMLTextAreaElement) input.rows = 3;
-    input.addEventListener("change", () => {
+    this.manageField(input, () => {
       void this.edit(scope, `修改${label}`, (clip) =>
         this.fieldPatch(scope, clip, path, input.value),
       );
     });
     this.inputRow(parent, label, input);
+  }
+  private clipName(parent: HTMLElement, scope: Scope): void {
+    if (scope.clips.length !== 1) return;
+    const clip = scope.clips[0]!, input = el("input", "ei-input");
+    input.value = clip.label;
+    input.maxLength = 256;
+    input.placeholder = "未命名片段";
+    input.disabled = this.pending || this.locked(scope);
+    input.title = "仅修改这个片段的名称；素材名称和文字内容保持不变。Enter 提交，Escape 取消。";
+    this.manageField(input, () => {
+      if (this.disposed || this.replacingControls || !this.root.contains(input) ||
+        input.disabled || input.value === clip.label) return;
+      const value = input.value;
+      void this.edit(scope, "重命名片段", (current) => {
+        if (!this.root.contains(input) || current.label !== clip.label)
+          throw new Error("片段名称已变化，请重新编辑");
+        return { label: value };
+      });
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.isComposing || !["Enter", "Escape"].includes(event.key)) return;
+      event.preventDefault(); event.stopPropagation();
+      if (event.key === "Escape") input.value = clip.label;
+      input.blur();
+    });
+    this.inputRow(parent, "片段名称", input);
   }
   /**
    * Add a native picker beside a typed #RRGGBB(AA) field. Picking keeps any typed transparency;
@@ -438,7 +824,7 @@ export class EditorInspector {
     const value = common(scope.clips.map((clip) => String(at(clip, path))));
     input.value = value ?? "";
     input.placeholder = value === undefined ? "多个值" : "";
-    input.addEventListener("change", () => {
+    this.manageField(input, () => {
       void this.edit(scope, `修改${label}`, (clip) =>
         this.fieldPatch(scope, clip, path, input.value),
       );
@@ -546,30 +932,14 @@ export class EditorInspector {
         );
       });
       const title = `${allHere ? "移除" : "添加"}${spec.label}当前关键帧`;
-      const button = this.action(group, allHere ? "◆" : "◇", () => {
-        const now = this.context.time();
-        const currentClips = this.scope()?.clips ?? [];
-        const remove = scope.clips.every((selected) => {
-          const current = currentClips.find((clip) => clip.id === selected.id);
-          if (!current) return false;
-          const value = at(current, spec.path) as AnimatedNumber;
-          return (
-            typeof value !== "number" &&
-            value.keyframes.some((key) => key.time === localTime(current, now))
-          );
-        });
-        void this.edit(scope, `${remove ? "移除" : "添加"}${spec.label}当前关键帧`, (clip) => {
-          const value = at(clip, spec.path) as AnimatedNumber,
-            time = localTime(clip, now);
-          const current = evaluateAnimatedNumber(value, time);
-          const keys = typeof value === "number" ? [] : structuredClone(value.keyframes);
-          const keyframes = keys.filter((key) => key.time !== time);
-          if (!remove) keyframes.push({ time, value: current, easing: "linear" });
-          keyframes.sort((a, b) => a.time - b.time);
-          return patchAt(clip, spec.path, keyframes.length ? { keyframes } : current);
-        });
+      const button = el("button", "ei-button ei-key-button", allHere ? "◆" : "◇");
+      button.type = "button";
+      button.addEventListener("pointerdown", (event) => { if (event.button === 0) event.preventDefault(); });
+      button.addEventListener("keydown", (event) => {
+        if (event.repeat && (event.key === "Enter" || event.key === " ")) event.preventDefault();
       });
-      button.classList.add("ei-key-button");
+      button.addEventListener("click", () => this.startKeyframeAction(button, scope, this.context.time(), spec));
+      group.append(button);
       button.setAttribute("aria-label", title);
       button.title = `${title}；播放头在片段外时使用最近边界`;
       if (scope.clips.some((clip) => typeof at(clip, spec.path) !== "number")) {
@@ -619,6 +989,7 @@ export class EditorInspector {
       this.pages.get(pageKey) ?? 0,
       Math.floor((value.keyframes.length - 1) / 20),
     );
+    const locked = this.locked(scope);
     const change = (index: number, update: (key: Keyframe) => void) => {
       void this.edit(scope, `修改${spec.label}关键帧`, (current) => {
         const original = at(current, spec.path) as AnimatedNumber;
@@ -633,12 +1004,40 @@ export class EditorInspector {
         return patchAt(current, spec.path, { keyframes });
       });
     };
+    if (locked && this.context.seek) {
+      let group: HTMLElement | undefined;
+      const drawLocations = () => {
+        if (this.disposed) return;
+        if (group) this.keyframeNeighbors = this.keyframeNeighbors.filter((control) => !group!.contains(control.button));
+        group?.remove();
+        group = undefined;
+        let readonly = this.root.querySelector<HTMLElement>(".ei-keyframe-locations");
+        if (this.root.contains(parent) && (parent as HTMLDetailsElement).open) {
+          if (!readonly) {
+            readonly = this.section(this.root, "关键帧定位（只读）");
+            readonly.classList.add("ei-keyframe-locations");
+          }
+          group = el("div", "ei-card");
+          group.append(el("h4", "ei-hint", `${clip.label || "未命名片段"} · ${spec.label}`));
+          readonly.append(group);
+          this.keyframeNeighborButtons(group, scope, spec);
+          value.keyframes.slice(page * 20, (page + 1) * 20).forEach((key, offset) =>
+            this.keyframeLocation(group!, scope, spec, key.time, page * 20 + offset, true));
+        }
+        if (readonly && !readonly.querySelector(".ei-card")) readonly.remove();
+      };
+      parent.addEventListener("toggle", drawLocations);
+      // Render attaches the fieldset after its contents have been prepared.
+      queueMicrotask(drawLocations);
+    }
+    if (!locked) this.keyframeNeighborButtons(parent, scope, spec);
     parent.append(el("p", "ei-hint", "时间从片段起点计算；缓动控制它到下一关键帧的变化。"));
     value.keyframes.slice(page * 20, (page + 1) * 20).forEach((key, offset) => {
       const index = page * 20 + offset;
       const row = el("div", "ei-card");
       row.append(el("h4", "", `关键帧 ${index + 1}`));
       parent.append(row);
+      if (!locked) this.keyframeLocation(row, scope, spec, key.time, index);
       this.numberInput(
         row,
         `关键帧 ${index + 1} 时间（秒）`,
@@ -780,16 +1179,37 @@ export class EditorInspector {
     const key = JSON.stringify([scope?.sequence.id, scope?.selectionIds]);
     if (!scope?.clips.length || key === this.tabSelection) return;
     this.tabSelection = key;
-    const doc = this.context.read(),
+    const doc = scope.document,
       lists = scope.clips.map((clip) => clipTabs(clip, scope.sequence, doc)),
       valid = lists[0]!.filter((tab) => lists.every((list) => list.includes(tab)));
     if (valid.length && !valid.includes(this.tab)) this.tab = valid[0]!;
   }
   render(): void {
-    if (this.disposed) return;
+    this.renderView(false);
+  }
+  /** Static controls need no DOM work when only the preview clock has changed. */
+  renderFrame(): void {
+    this.renderView(true);
+  }
+  private renderView(playheadOnly: boolean): void {
+    if (this.disposed || this.replacingControls) return;
+    const navigation = this.keyframeNavigation, action = this.keyframeAction;
     const scope = this.scope();
+    if (this.disposed || this.keyframeNavigation !== navigation || this.keyframeAction !== action) return;
+    const navigationCurrent = !navigation || (this.navigationMatches(navigation, scope) && !!scope &&
+      scope.revision >= navigation.scope.revision && scope.revision <= navigation.scope.revision + 1);
+    const actionCurrent = !action || (this.keyframeActionCurrent(action, scope) && !!scope && !this.locked(scope));
+    // Clock and identity getters may synchronously install a newer operation.
+    if (this.disposed || this.keyframeNavigation !== navigation || this.keyframeAction !== action) return;
+    if (!navigationCurrent) this.cancelKeyframeNavigation(navigation);
+    if (!actionCurrent) this.cancelKeyframeAction(action);
+    if (this.copiedColor &&
+      (this.copiedColor.documentId !== scope?.document.id ||
+        this.copiedColor.generation !== scope?.identity?.generation))
+      this.copiedColor = undefined;
     this.followSelection(scope);
     const signature = JSON.stringify([
+      scope?.identity,
       scope?.revision,
       scope?.sequence.id,
       scope?.selectionIds,
@@ -797,21 +1217,44 @@ export class EditorInspector {
     ]);
     const focused = document.activeElement;
     if (
+      playheadOnly &&
+      !this.pending &&
+      !this.error &&
+      signature === this.renderedSignature &&
+      !this.renderedAnimation
+    ) {
+      this.refreshAlignment(scope);
+      this.refreshKeyframeNeighbors(scope);
+      return;
+    }
+    if (
       !this.pending &&
       !this.error &&
       signature === this.renderedSignature &&
       (focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement) &&
       this.root.contains(focused) &&
       !focused.disabled
-    )
+    ) {
+      this.refreshAlignment(scope);
+      this.refreshKeyframeNeighbors(scope);
       return; // Playhead refreshes must not erase an in-progress text or number draft.
+    }
     this.renderedSignature = signature;
+    this.renderedAnimation = scope?.clips.some(hasKeyframes) ?? false;
     const scrollTop = this.root.scrollTop;
     // A native details toggle event may still be queued when a form commits.
     // Capture its current state synchronously before rebuilding the controls.
     for (const details of this.root.querySelectorAll<HTMLDetailsElement>("details[data-state-key]"))
       this.expanded.set(details.dataset.stateKey!, details.open);
-    this.root.replaceChildren();
+    // Removing a focused native input can synchronously fire change. Disposal must not
+    // commit its draft into a new selection or a newly opened project.
+    this.replacingControls = true;
+    try {
+      this.keyframeNeighbors = [];
+      this.root.replaceChildren();
+    } finally {
+      this.replacingControls = false;
+    }
     const header = el("header", "ei-header");
     this.root.append(header);
     header.append(
@@ -828,6 +1271,7 @@ export class EditorInspector {
       this.root.append(el("p", "ei-empty", "选择时间线中的片段，调整画面、文字与声音。"));
       return;
     }
+    this.clipName(header, scope);
     const nav = el("div", "ei-tabs");
     nav.setAttribute("role", "tablist");
     nav.setAttribute("aria-label", "属性分类");
@@ -924,7 +1368,96 @@ export class EditorInspector {
       this.pending || this.locked(scope),
     );
   }
+  private async align(scope: Scope, alignment: CanvasAlignment, label: string): Promise<void> {
+    if (this.disposed || this.pending || this.replacingControls) return;
+    try {
+      const fresh = this.scope();
+      if (
+        !fresh ||
+        fresh.document.id !== scope.document.id ||
+        !equal(
+          [scope.identity?.documentId, scope.identity?.generation],
+          [fresh.identity?.documentId, fresh.identity?.generation],
+        ) ||
+        fresh.sequence.id !== scope.sequence.id ||
+        !equal(fresh.selectionIds, scope.selectionIds)
+      )
+        throw new Error("选择已变化，请重新调整属性");
+      const operations = planCanvasAlignment(
+        fresh.document,
+        fresh.sequence.id,
+        fresh.selectionIds,
+        this.context.time(),
+        alignment,
+      );
+      this.error = "";
+      if (!operations.length) return;
+      this.pending = true;
+      this.render();
+      await this.context.apply(operations, `画布${label}`);
+    } catch (error) {
+      this.report(error);
+    } finally {
+      this.pending = false;
+      this.render();
+    }
+  }
+  private alignment(parent: HTMLElement, scope: Scope): void {
+    const section = this.section(
+      parent,
+      "快速对齐到画布",
+      "多选时每个片段分别对齐。按旋转、裁切后的画面框，透明素材边距仍计入；复合片段按子画布框，文字按完整排版框。已有位置动画只更新或添加当前关键帧。",
+    );
+    const reason = canvasAlignmentReason(
+      scope.document,
+      scope.sequence.id,
+      scope.selectionIds,
+      this.context.time(),
+    );
+    const notice = el("p", "ei-notice ei-alignment-reason", reason);
+    notice.hidden = !reason;
+    section.append(notice);
+    const actions = el("div", "ei-alignment-actions");
+    actions.setAttribute("role", "group");
+    actions.setAttribute("aria-label", "对齐到画布");
+    section.append(actions);
+    for (const [alignment, label] of [
+      ["left", "左侧对齐"],
+      ["center-x", "水平居中"],
+      ["right", "右侧对齐"],
+      ["top", "顶部对齐"],
+      ["center-y", "垂直居中"],
+      ["bottom", "底部对齐"],
+    ] as const) {
+      const button = this.action(
+        actions,
+        label,
+        () => void this.align(scope, alignment, label),
+        Boolean(reason),
+      );
+      button.title = reason || `${label}到画布；多选逐个对齐`;
+    }
+  }
+  /** Clock-only eligibility changes must not replace a focused property draft. */
+  private refreshAlignment(scope: Scope | undefined): void {
+    if (!scope || this.tab !== "visual") return;
+    const notice = this.root.querySelector<HTMLElement>(".ei-alignment-reason");
+    if (!notice) return;
+    const reason = canvasAlignmentReason(
+      scope.document,
+      scope.sequence.id,
+      scope.selectionIds,
+      this.context.time(),
+    );
+    notice.textContent = reason;
+    notice.hidden = !reason;
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>(".ei-alignment-actions button")) {
+      button.disabled = this.pending || Boolean(reason);
+      button.title = reason || `${button.textContent}到画布；多选逐个对齐`;
+    }
+  }
   private visual(parent: HTMLElement, scope: Scope): void {
+    this.alignment(parent, scope);
     const transform = this.section(
       parent,
       "构图",
@@ -1012,6 +1545,7 @@ export class EditorInspector {
     }
   }
   private color(parent: HTMLElement, scope: Scope): void {
+    this.colorClipboard(parent, scope);
     const basic = this.section(
       parent,
       "基础调色",
@@ -1036,6 +1570,76 @@ export class EditorInspector {
       this.colorCurves(advanced, selected);
       this.hsl(advanced, selected);
     });
+  }
+  private colorScopeCurrent(scope: Scope): boolean {
+    if (this.disposed) return false;
+    const fresh = this.scope();
+    return !!fresh && fresh.document.id === scope.document.id &&
+      fresh.identity?.generation === scope.identity?.generation &&
+      fresh.sequence.id === scope.sequence.id && equal(fresh.selectionIds, scope.selectionIds);
+  }
+  private async applyColorClipboard(scope: Scope, reset: boolean): Promise<void> {
+    if (this.pending || this.replacingControls || !this.colorScopeCurrent(scope)) return;
+    try {
+      const fresh = this.scope()!;
+      if (this.locked(fresh)) throw new Error("所选片段包含已锁定轨道，请先解锁轨道");
+      const copied = this.copiedColor;
+      if (!reset && (!copied || copied.documentId !== fresh.document.id || copied.generation !== fresh.identity?.generation))
+        throw new Error("请先从当前工程的单个片段复制调色");
+      const operations = reset
+        ? resetClipColor(fresh.document, fresh.sequence.id, fresh.selectionIds)
+        : pasteClipColor(fresh.document, fresh.sequence.id, fresh.selectionIds, this.context.time(), copied!.value);
+      this.pending = true;
+      this.error = "";
+      this.render();
+      await this.context.apply(operations, reset ? "重置全部调色" : "粘贴当前调色");
+    } catch (error) {
+      if (this.colorScopeCurrent(scope)) this.report(error);
+    } finally {
+      this.pending = false;
+      this.render();
+    }
+  }
+  private colorClipboard(parent: HTMLElement, scope: Scope): void {
+    const section = this.section(parent, "调色复用", "复制单个片段在播放头处的调色（片段外取最近边界），包含曲线与 HSL。粘贴到多选片段时，已有调色动画只写当前关键帧；曲线与 HSL 整体替换。"),
+      controls = el("div", "ei-color-actions"),
+      visual = scope.clips.every((clip) => clipCanReceiveColor(scope.document, scope.sequence, clip)),
+      copyReason = !visual ? "声音片段不能应用调色" : scope.clips.length !== 1 ? "请选择一个画面或文字片段作为来源" : "",
+      pasteReason = !visual ? "请只选择画面或文字片段" : !this.copiedColor ? "请先复制当前调色" : "";
+    section.append(controls);
+    const copy = this.action(controls, "复制当前调色", () => {
+      if (!this.root.contains(copy) || !this.colorScopeCurrent(scope)) return;
+      const fresh = this.scope()!;
+      this.copiedColor = {
+        documentId: fresh.document.id,
+        generation: fresh.identity?.generation,
+        label: fresh.clips[0]!.label || "未命名片段",
+        value: copyClipColor(fresh.document, fresh.sequence.id, fresh.clips[0]!.id, this.context.time()),
+      };
+      this.error = "";
+      this.root.querySelector(".ei-error")?.remove();
+      paste.disabled = !visual;
+      paste.title = "应用到所选片段并覆盖未提交的调色草稿，可一次撤销";
+      status.textContent = `已复制「${this.copiedColor.label}」的调色，可在本工程其他序列粘贴。`;
+      status.hidden = false;
+    }, Boolean(copyReason));
+    // Copy is read-only: do not blur and commit a native input's unfinished draft.
+    copy.addEventListener("pointerdown", (event) => event.preventDefault());
+    copy.title = copyReason || "复制播放头处已保存的调色；未提交的输入草稿不会计入";
+    const paste = this.action(controls, "粘贴当前调色", () => {
+      if (this.root.contains(paste)) void this.applyColorClipboard(scope, false);
+    }, Boolean(pasteReason));
+    paste.addEventListener("pointerdown", (event) => event.preventDefault());
+    paste.title = pasteReason || "应用到所选片段并覆盖未提交的调色草稿，可一次撤销";
+    const reset = this.action(controls, "重置全部调色", () => {
+      if (this.root.contains(reset)) void this.applyColorClipboard(scope, true);
+    }, !visual);
+    reset.addEventListener("pointerdown", (event) => event.preventDefault());
+    reset.title = visual ? "恢复默认并移除全部调色关键帧、曲线和 HSL，覆盖未提交的调色草稿；可一次撤销" : "请只选择画面或文字片段";
+    const status = el("p", "ei-hint", this.copiedColor ? `已复制「${this.copiedColor.label}」的调色，可在本工程其他序列粘贴。` : "");
+    status.hidden = !this.copiedColor;
+    status.setAttribute("role", "status");
+    section.append(status);
   }
   private colorCurves(parent: HTMLElement, scope: Scope): void {
     const clip = scope.clips[0]!;
@@ -1299,7 +1903,7 @@ export class EditorInspector {
     const content = this.section(
       parent,
       "文字内容",
-      `样式应用于 ${scope.clips.length} 个文字片段；内容和逐词时间单独编辑。修改文字会清除旧词时间和翻译标记，保留来源绑定。`,
+      `样式应用于 ${scope.clips.length} 个文字片段；内容和逐词时间单独编辑。字幕只改词间标点或空白可保留词时间；改词或改标题会清除旧词时间。修改后的翻译标记会清除，来源绑定保留。`,
     );
     this.individual(content, scope, "text", (selected) => {
       this.plain(content, selected, "文字内容（保留换行）", ["text"], true);
@@ -1544,6 +2148,35 @@ export class EditorInspector {
       "声音",
       `应用于 ${scope.clips.length} 个含声音属性的片段。声像 -100% 为左，100% 为右。`,
     );
+    const audibleAssets = new Set(
+      scope.document.assets
+        .filter((asset) => asset.kind === "audio" || asset.kind === "video")
+        .map((asset) => asset.id),
+    );
+    const audibleClips = scope.clips.filter(
+      (clip) => clip.kind !== "media" || audibleAssets.has(clip.assetId),
+    );
+    const trackCounts = new Map<string, number>();
+    for (const clip of audibleClips)
+      trackCounts.set(clip.trackId, (trackCounts.get(clip.trackId) ?? 0) + 1);
+    const silentTracks = scope.sequence.tracks.filter(
+      (track) => trackCounts.has(track.id) && (track.muted || track.volume === 0),
+    );
+    if (silentTracks.length) {
+      const affected = silentTracks.reduce((count, track) => count + trackCounts.get(track.id)!, 0);
+      const reasons = silentTracks.map((track) => {
+        const states = [track.muted ? "已静音" : "", track.volume === 0 ? "音量为 0%" : ""];
+        return `“${track.name}”${states.filter(Boolean).join("且")}`;
+      });
+      const notice = el(
+        "p",
+        "ei-notice ei-hint",
+        `所选 ${audibleClips.length} 个音视频片段中，${affected} 个所在轨道无声：${reasons.join("；")}。片段声音设置仍会保存；播放和导出时，这些轨道保持无声。请在时间轴取消轨道静音或提高轨道音量。`,
+      );
+      notice.dataset.audioTrackNotice = "";
+      notice.setAttribute("role", "status");
+      section.append(notice);
+    }
     this.number(section, scope, {
       label: "音量（%）",
       path: ["audio", "volume"],

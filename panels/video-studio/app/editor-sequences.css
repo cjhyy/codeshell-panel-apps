@@ -130,3 +130,17 @@
   color: #bce2cd;
   background: #203b33;
 }
+.editor-sequences .eseq-remove-confirmation {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #806044;
+  border-radius: 6px;
+  background: #30271e;
+}
+.editor-sequences .eseq-remove-confirmation p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

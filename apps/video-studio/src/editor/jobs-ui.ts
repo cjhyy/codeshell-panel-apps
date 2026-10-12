@@ -4,10 +4,14 @@ import {
   type RuntimeBridge,
   type RuntimeJob,
 } from "../sdk/panel-runtime";
+import { exportAudioMixWarning } from "./audio-mix-report";
+import { exportRangeLabel, validateExportRange } from "./export-range";
 
 let nextExportJobsId = 0;
 /** Remembered export titles; the newest are kept when the bound is reached. */
 const MAX_EXPORT_TITLES = 200;
+/** Three legal 200-character names plus the precise range and separators. */
+const MAX_EXPORT_TITLE_LENGTH = 700;
 
 /** Where the panel keeps the titles people saw when they submitted each export. */
 export interface ExportTitleStore {
@@ -25,11 +29,25 @@ export interface ExportJobSummary {
   fraction?: number;
 }
 /** A readable name for an export found in Host history without a remembered title. */
-function historyTitle(request: { profile?: { name?: unknown } }): string {
+function historyTitle(request: {
+  profile?: { name?: unknown };
+  range?: unknown;
+  sequenceId?: unknown;
+}): string {
   const preset = request.profile?.name;
-  return typeof preset === "string" && preset.trim()
-    ? `视频导出 · ${preset.trim().slice(0, 200)}`
-    : "视频导出";
+  const sequence =
+    typeof request.sequenceId === "string" &&
+    /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(request.sequenceId)
+      ? ` · 序列 ID：${request.sequenceId}`
+      : "";
+  let range = "";
+  try {
+    if (request.range !== undefined)
+      range = ` · ${exportRangeLabel(validateExportRange(request.range))}`;
+  } catch {
+    /* An unrecognized receipt must not acquire a fabricated interval. */
+  }
+  return `视频导出${sequence}${range}${typeof preset === "string" && preset.trim() ? ` · ${preset.trim().slice(0, 200)}` : ""}`;
 }
 
 /** A view of Host-owned durable exports. Reloads discover the original jobs rather than submitting new work. */
@@ -44,7 +62,7 @@ export class EditorExportJobs {
   private readonly observationErrors = new Set<string>();
   /** Exports whose completion was already reported through onFinished. */
   private readonly finished = new Set<string>();
-  /** Job id → the title shown when it was submitted (project name · preset). */
+  /** Job id → the project, sequence and preset names shown at submission. */
   private titles = new Map<string, string>();
   private titlesLoaded?: Promise<void>;
   private titleWrite: Promise<void> = Promise.resolve();
@@ -188,7 +206,7 @@ export class EditorExportJobs {
       if (!saved || typeof saved !== "object" || Array.isArray(saved)) return;
       for (const [id, title] of Object.entries(saved))
         if (typeof title === "string" && title && !this.titles.has(id))
-          this.titles.set(id, title.slice(0, 400));
+          this.titles.set(id, title.slice(0, MAX_EXPORT_TITLE_LENGTH));
     })();
     return this.titlesLoaded;
   }
@@ -319,6 +337,11 @@ export class EditorExportJobs {
       if (previous && !terminal(previous)) this.reportFinished(job);
     }
     row.dataset.status = job.status;
+    const result = job.result?.result ?? job.result;
+    const mixWarning =
+      job.status === "succeeded"
+        ? exportAudioMixWarning(result, (job.input as any)?.request)
+        : "";
     row.querySelector("output")!.textContent = this.observationErrors.has(job.id)
       ? "状态暂未同步，请刷新查看"
       : job.status === "failed"
@@ -327,7 +350,7 @@ export class EditorExportJobs {
             {
               queued: "等待导出",
               running: job.progress?.message || "正在导出",
-              succeeded: "导出完成",
+              succeeded: ["导出完成", mixWarning].filter(Boolean).join(" · "),
               cancelled: "已取消",
             } as const
           )[job.status];
@@ -389,7 +412,6 @@ export class EditorExportJobs {
         this.watching.delete(job.id);
         this.track(retried, row.querySelector("strong")!.textContent!);
       });
-    const result = job.result?.result ?? job.result;
     if (
       job.status === "succeeded" &&
       result?.verified === true &&

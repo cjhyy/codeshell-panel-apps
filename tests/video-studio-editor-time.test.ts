@@ -25,9 +25,42 @@ import {
   sliceAnimatedNumber,
   type AnimatedNumber,
 } from "../apps/video-studio/src/editor/animation";
+import { resolvePlayheadPosition } from "../apps/video-studio/src/editor/playhead-position";
 
 const near = (actual: number, expected: number, tolerance = 1e-9) =>
   assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} differs from ${expected}`);
+
+test("explicit playhead positions retain integral and NTSC frame clocks without decimal fps drift", () => {
+  const rates = [
+    ...[24, 25, 30, 48, 50, 60].map((numerator) => ({ numerator, denominator: 1 })),
+    ...[24000, 30000, 60000].map((numerator) => ({ numerator, denominator: 1001 })),
+  ];
+  for (const rate of rates) {
+    const duration = frameToTicks(1_000_002, rate) - 1;
+    assert.equal(resolvePlayheadPosition("1000001", "frames", rate, duration), frameToTicks(1_000_001, rate));
+    assert.throws(() => resolvePlayheadPosition("1000002", "frames", rate, duration), /超出/);
+  }
+  const rate = { numerator: 30000, denominator: 1001 };
+  assert.equal(resolvePlayheadPosition("1.001", "seconds", rate, 480000), 240240);
+  assert.equal(resolvePlayheadPosition(".5", "seconds", rate, 480000), 120000);
+  assert.equal(resolvePlayheadPosition("0.000004", "seconds", rate, 480000), 1);
+  assert.equal(resolvePlayheadPosition("12.0", "frames", rate, 480000), 96096);
+  assert.equal(resolvePlayheadPosition("0", "seconds", rate, 1), 0);
+});
+
+test("playhead positions reject invalid drafts and endpoints rather than silently clamping", () => {
+  const rate = { numerator: 30, denominator: 1 };
+  for (const value of ["", " ", "-1", "NaN", "Infinity", "1e2", "00:01", "1,5"])
+    assert.throws(() => resolvePlayheadPosition(value, "seconds", rate, 240000));
+  for (const value of [".5", "1.25", "9007199254740992"])
+    assert.throws(() => resolvePlayheadPosition(value, "frames", rate, 240000), /整数/);
+  assert.throws(() => resolvePlayheadPosition("1", "seconds", rate, 240000), /超出/);
+  assert.throws(() => resolvePlayheadPosition("30", "frames", rate, 240000), /超出/);
+  assert.throws(() => resolvePlayheadPosition("0", "seconds", rate, 0), /添加片段/);
+  assert.throws(() => resolvePlayheadPosition("0", "timecode", rate, 240000), /请选择/);
+  assert.throws(() => resolvePlayheadPosition("0", "seconds", rate, -1), /序列时长/);
+  assert.throws(() => resolvePlayheadPosition("999999999999999999999", "seconds", rate, 240000));
+});
 
 test("integer and NTSC frame clocks remain exact over long sequences", () => {
   const rates: FrameRate[] = [

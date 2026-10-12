@@ -108,6 +108,7 @@ export const suites = [
         "tests/video-studio-editor-color.test.ts",
         "tests/video-studio-editor-history.test.ts",
         "tests/video-studio-editor-clip-edits.test.ts",
+        "tests/video-studio-editor-canvas-alignment.test.ts",
         "tests/video-studio-process-input.test.ts",
         "tests/video-studio-editor-session.test.ts",
         "tests/video-studio-editor-audio.test.ts",

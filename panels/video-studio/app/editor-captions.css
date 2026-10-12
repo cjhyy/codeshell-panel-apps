@@ -105,6 +105,40 @@
   color: #f0c987;
   overflow-wrap: anywhere;
 }
+.editor-captions .ec-find {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  padding: 12px 0;
+  border-bottom: 1px solid #303b4c;
+}
+.editor-captions .ec-find h3 {
+  font-size: 14px;
+}
+.editor-captions .ec-find textarea {
+  width: 100%;
+  resize: vertical;
+}
+.editor-captions .ec-find-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+}
+.editor-captions .ec-find-actions > * {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.editor-captions .ec-find-count {
+  margin: 0;
+  color: #b9d4f8;
+  overflow-wrap: anywhere;
+}
+.editor-captions .ec-find small {
+  color: #99a8bd;
+  overflow-wrap: anywhere;
+}
 .editor-captions details {
   width: 100%;
 }
@@ -150,6 +184,19 @@
 }
 .editor-captions .ec-row-actions {
   justify-content: flex-end;
+}
+.editor-captions .ec-split-manual label {
+  flex-wrap: wrap;
+}
+.editor-captions .ec-split-manual input {
+  flex: 1 1 120px;
+  width: 150px;
+  min-width: 0;
+}
+.editor-captions .ec-split-manual small {
+  display: block;
+  margin: 6px 0;
+  color: #b7c4d6;
 }
 .editor-captions .ec-row-time label,
 .editor-captions .ec-preset {

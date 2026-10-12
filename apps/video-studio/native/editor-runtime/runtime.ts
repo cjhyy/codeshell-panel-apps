@@ -10,8 +10,11 @@ import {
   type PreparedEditorAudio,
 } from "../../src/editor/task-bridge.js";
 import type { EditorDocument } from "../../src/editor/types.js";
+import { sequenceDuration } from "../../src/editor/validation.js";
+import { validateExportRange } from "../../src/editor/export-range.js";
+import { audioMixWarning, validateAudioMixReport } from "../../src/editor/audio-mix-report.js";
 import { renderEditorAudio } from "../media/editor-audio-renderer.js";
-import { exportEditorSequence } from "../media/editor-export.js";
+import { exportEditorSequence, measureEditorExportAudioRange } from "../media/editor-export.js";
 import { runMediaProcess } from "../process-runner.js";
 import { findExecutable } from "../media/media-executables.js";
 import {
@@ -133,9 +136,11 @@ export async function runEditorRequest(
   const cache = await directory(scope, ["cache"]);
   const artifacts: EditorArtifact[] = [];
   let succeeded = false;
+  let mixWarning = "";
   const progress = async (fraction: number, stage: string, message?: string) => {
     abort(context.signal);
-    await context.reportProgress({ fraction, stage, ...(message ? { message } : {}) });
+    const detail = [message, mixWarning].filter(Boolean).join(" ");
+    await context.reportProgress({ fraction, stage, ...(detail ? { message: detail } : {}) });
   };
   const add = async (path: string, extension: string, mimeType: string, role: string) => {
     const artifact = await publish(root, path, extension, mimeType, role, context.signal);
@@ -613,6 +618,19 @@ export async function runEditorRequest(
         : editorTaskDocument(manifest.document, manifest.sequenceId);
     if (bytesHash(Buffer.from(JSON.stringify(selected.document))) !== request.documentHash)
       throw new EditorTaskError("SNAPSHOT_MISMATCH", "保存的工程快照内容已变化");
+    if (request.range) {
+      try {
+        validateExportRange(
+          request.range,
+          sequenceDuration(selected.document.sequences.find((item) => item.id === manifest.sequenceId)!),
+        );
+      } catch (error) {
+        throw new EditorTaskError(
+          "INVALID_REQUEST",
+          error instanceof Error ? error.message : "导出范围无效",
+        );
+      }
+    }
     if (
       !Array.isArray(manifest.bindings) ||
       manifest.bindings.length !== selected.resourceIds.length
@@ -915,6 +933,20 @@ export async function runEditorRequest(
         artifacts,
       };
     }
+    const audioMix = {
+      documentHash: manifest.documentHash,
+      sequenceId: manifest.sequenceId,
+      ...(request.range ? { range: request.range } : {}),
+      ...(request.range
+        ? await measureEditorExportAudioRange({
+            audioFile: await regular(mixes, ["audio.wav"]),
+            range: request.range,
+            ffmpegPath,
+            signal: context.signal,
+          })
+        : validateAudioMixReport(mix)),
+    };
+    mixWarning = audioMixWarning(audioMix);
     if (bytesHash(Buffer.from(context.runtimeSource)) !== context.runtimeSha)
       throw new EditorTaskError("RUNTIME_CHANGED", "安装的渲染运行代码校验失败");
     const mediaFiles = new Map<string, { path: string; mimeType: string }>();
@@ -954,6 +986,7 @@ export async function runEditorRequest(
       document: selected.document,
       sequenceId: manifest.sequenceId,
       profile: request.profile!,
+      ...(request.range ? { range: request.range } : {}),
       mediaFiles,
       runtimeSource: context.runtimeSource,
       workDir: work,
@@ -981,7 +1014,9 @@ export async function runEditorRequest(
     const details = await report({
       documentHash: manifest.documentHash,
       sequenceId: manifest.sequenceId,
+      ...(request.range ? { range: request.range } : {}),
       preparedAudio,
+      audioMix,
       runtimeSha: context.runtimeSha,
       profile: request.profile,
       frameCount: output.frameCount,
@@ -998,11 +1033,13 @@ export async function runEditorRequest(
         video: exported,
         audio,
         preparedAudio,
+        audioMix,
         reusedAudio: reused,
         report: details,
         frameCount: output.frameCount,
         durationSeconds: output.durationSeconds,
         verified: true,
+        ...(request.range ? { range: request.range } : {}),
       },
       artifacts,
     };

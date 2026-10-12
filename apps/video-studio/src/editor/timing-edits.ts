@@ -1,7 +1,7 @@
 import { freezeClip, reverseClip, setClipSpeed, setClipTimeMap, trimClip } from "./clip-edits";
 import { applyEditorOperations, type EditorClipPatch, type EditorOperation } from "./operations";
 import { assertTick, type Tick, type TimeMap } from "./time";
-import type { EditorClip, EditorDocument, EditorSequence, Transition } from "./types";
+import type { EditorClip, EditorDocument, EditorSequence, EditorTrack, Transition } from "./types";
 import { validateEditorDocument } from "./validation";
 
 export type ClipTimingAction =
@@ -104,9 +104,21 @@ function selected(sequence: EditorSequence, ids: readonly string[]): Set<string>
     if (size === chosen.size) return chosen;
   }
 }
-function unlocked(sequence: EditorSequence, ids: Iterable<string>): void {
+function unlocked(
+  sequence: EditorSequence,
+  ids: Iterable<string>,
+  index?: {
+    clips: ReadonlyMap<string, EditorClip>;
+    tracks: ReadonlyMap<string, EditorTrack>;
+  },
+): void {
   for (const id of ids)
-    if (sequence.tracks.find((track) => track.id === find(sequence, id).trackId)?.locked !== false)
+    if (
+      (index
+        ? index.tracks.get(index.clips.get(id)!.trackId)
+        : sequence.tracks.find((track) => track.id === find(sequence, id).trackId)
+      )?.locked !== false
+    )
       throw new Error("操作涉及已锁定轨道，请先解锁；所有片段均未修改");
 }
 function ordered(sequence: EditorSequence, trackId: string): EditorClip[] {
@@ -127,19 +139,24 @@ function moveTargets(
   after: EditorSequence,
   targets: Map<string, Tick>,
 ): Map<string, Tick> {
-  const shifts = new Map<string, Tick>();
+  const shifts = new Map<string, Tick>(),
+    afterClips = new Map(after.clips.map((clip) => [clip.id, clip])),
+    beforeIndex = {
+      clips: new Map(before.clips.map((clip) => [clip.id, clip])),
+      tracks: new Map(before.tracks.map((track) => [track.id, track])),
+    };
   for (const group of components(before)) {
     const requests = [...group]
-      .filter((id) => targets.has(id) && after.clips.some((clip) => clip.id === id))
-      .map((id) => targets.get(id)! - find(after, id).start);
+      .filter((id) => targets.has(id) && afterClips.has(id))
+      .map((id) => targets.get(id)! - afterClips.get(id)!.start);
     if (!requests.length) continue;
     if (requests.some((delta) => delta !== requests[0]))
       throw new Error("成组或关联片段需要不同位移，无法保持相对位置；请先调整分组或间隙");
     const delta = requests[0]!;
     if (!delta) continue;
-    unlocked(before, group);
+    unlocked(before, group, beforeIndex);
     for (const id of group) {
-      const clip = after.clips.find((clip) => clip.id === id);
+      const clip = afterClips.get(id);
       if (clip) {
         clip.start += delta;
         assertTick(clip.start, "移动后起点");
@@ -163,17 +180,23 @@ function finish(
   shifts = new Map<string, Tick>(),
 ): EditorOperation[] {
   const operations: EditorOperation[] = [],
-    sequenceId = before.id;
+    sequenceId = before.id,
+    beforeClips = new Map(before.clips.map((clip) => [clip.id, clip])),
+    afterClips = new Map(after.clips.map((clip) => [clip.id, clip])),
+    beforeTransitions = new Map(before.transitions.map((item) => [item.id, item])),
+    afterTransitions = new Map(after.transitions.map((item) => [item.id, item]));
   for (const transition of before.transitions)
-    if (!after.transitions.some((item) => item.id === transition.id && equal(item, transition)))
+    if (!equal(afterTransitions.get(transition.id), transition))
       operations.push({ type: "transition.remove", sequenceId, transitionId: transition.id });
   const removed = before.clips
-    .filter((item) => !after.clips.some((next) => next.id === item.id))
-    .map((item) => item.id);
+    .filter((item) => !afterClips.has(item.id))
+    .map((item) => item.id),
+    removedIds = new Set(removed);
   if (removed.length) operations.push({ type: "clip.remove", sequenceId, clipIds: removed });
   for (const next of after.clips) {
-    const original = find(before, next.id),
+    const original = beforeClips.get(next.id)!,
       unshifted = { ...next, start: next.start - (shifts.get(next.id) ?? 0) };
+    if (!original) throw new Error("片段不存在，请重新选择");
     if (equal(original, unshifted)) continue;
     // Apply source trims before ripple movement: moving a clip that began at zero left first would fail.
     const { id: _id, kind: _kind, ...rest } = structuredClone(unshifted);
@@ -187,19 +210,26 @@ function finish(
       patch: patch as EditorClipPatch,
     });
   }
+  const movement = new Map<Tick, string[]>();
   for (const group of components(before)) {
-    const members = [...group].filter((id) => shifts.has(id) && !removed.includes(id));
+    const members = [...group].filter((id) => shifts.has(id) && !removedIds.has(id));
     if (!members.length) continue;
+    const delta = shifts.get(members[0]!)!;
+    if (!movement.has(delta)) movement.set(delta, []);
+    movement.get(delta)!.push(...members);
+  }
+  for (const [delta, members] of movement) {
     // Source-bound text is moved by clip.move itself; including it in this same operation moves it once.
+    // Disjoint components with the same shift can share one checked movement batch.
     operations.push({
       type: "clip.move",
       sequenceId,
       clipIds: members,
-      delta: shifts.get(members[0]!)!,
+      delta,
     });
   }
   for (const transition of after.transitions)
-    if (!before.transitions.some((item) => item.id === transition.id && equal(item, transition)))
+    if (!equal(beforeTransitions.get(transition.id), transition))
       operations.push({ type: "transition.add", sequenceId, transition });
   if (before.timelineMode !== after.timelineMode)
     operations.push({
@@ -329,6 +359,7 @@ export function planClipTiming(
             (options.ripple !== undefined || isMagneticTrack(before, id)),
         ),
     );
+    const afterClips = new Map(after.clips.map((clip) => [clip.id, clip]));
     for (const trackId of tracks) {
       const trackClips = ordered(before, trackId);
       let cursor = trackClips[0]?.start ?? 0,
@@ -340,7 +371,7 @@ export function planClipTiming(
             0,
             original.start - previousOriginal.start - previousOriginal.duration,
           );
-        const next = after.clips.find((item) => item.id === original.id);
+        const next = afterClips.get(original.id);
         if (next) {
           const overlap = previousNext
             ? (pairTransition(after, previousNext.id, next.id)?.duration ?? 0)
@@ -467,19 +498,17 @@ function blocks(
   trackId: string,
   ids?: ReadonlySet<string>,
 ): MagneticBlock[] {
-  return components(sequence, true, true)
-    .map((group) => {
-      const clips = ordered(sequence, trackId).filter(
-        (clip) => group.has(clip.id) && (!ids || ids.has(clip.id)),
-      );
-      const start = clips[0]?.start ?? 0;
-      return {
-        clips,
-        start,
-        duration:
-          clips.reduce((end, clip) => Math.max(end, clip.start + clip.duration), start) - start,
-      };
-    })
+  const groups = components(sequence, true, true),
+    groupByClip = new Map(groups.flatMap((group, index) => [...group].map((id) => [id, index] as const))),
+    values: MagneticBlock[] = groups.map(() => ({ clips: [], start: 0, duration: 0 }));
+  for (const clip of ordered(sequence, trackId)) {
+    if (ids && !ids.has(clip.id)) continue;
+    const block = values[groupByClip.get(clip.id)!]!;
+    if (!block.clips.length) block.start = clip.start;
+    block.clips.push(clip);
+    block.duration = Math.max(block.duration, clip.start + clip.duration - block.start);
+  }
+  return values
     .filter((block) => block.clips.length)
     .sort((a, b) => a.start - b.start);
 }

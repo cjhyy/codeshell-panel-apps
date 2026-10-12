@@ -11,6 +11,7 @@ import {
   planDetachCaptions,
   planRemoveCaptions,
   planCaptionText,
+  planCaptionReplace,
   planCaptionTranslation,
   planSrtImport,
   planTranscriptCaptions,
@@ -20,6 +21,7 @@ import {
 } from "./captions";
 import { planCaptionPreset, type CaptionPreset } from "./caption-presets";
 import { narrationDraftClipIds, recordedNarrationClipIds } from "./narration-edits";
+import { planCaptionMerge, planCaptionSplit } from "./caption-sentence-edits";
 
 /** Temporary narration captions: the narration workflow replaces them, so they never block. */
 function workflowCaptions(doc: EditorDocument, sequenceId: string): Set<string> {
@@ -68,6 +70,10 @@ export interface CaptionCandidate {
   notices: string[];
   added: number;
   skipped: number;
+  /** Lets the workbench guard against row drafts created after preparing a replacement. */
+  replacement?: { query: string; text: string; matched: number; occurrences: number; scope: "sequence" | "selected" | "current" };
+  /** Sentence edits include rows removed by a merge, not only rows shown in the result. */
+  sentence?: { affectedIds: string[]; action: "split" | "merge" };
 }
 export interface CaptionControllerState {
   phase:
@@ -149,7 +155,13 @@ export function createCaptionController(context: CaptionControllerContext) {
     state.candidate = undefined;
     return { snapshot, controller, token };
   };
-  const preview = (snapshot: ReturnType<typeof read>, plan: CaptionPlan, label: string) => {
+  const preview = (
+    snapshot: ReturnType<typeof read>,
+    plan: CaptionPlan,
+    label: string,
+    replacement?: CaptionCandidate["replacement"],
+    sentence?: CaptionCandidate["sentence"],
+  ) => {
     const after = applyEditorOperations(
       snapshot.document,
       plan.operations,
@@ -186,6 +198,8 @@ export function createCaptionController(context: CaptionControllerContext) {
             ]
           : [],
       ),
+      ...(replacement ? { replacement } : {}),
+      ...(sentence ? { sentence } : {}),
     };
     set({
       phase: "preview",
@@ -384,6 +398,59 @@ export function createCaptionController(context: CaptionControllerContext) {
       } finally {
         work = undefined;
       }
+    },
+    previewReplace(options: {
+      sequenceId: string;
+      query: string;
+      text: string;
+      clipIds?: readonly string[];
+      scope?: "sequence" | "selected" | "current";
+    }) {
+      const running = start();
+      try {
+        const plan = planCaptionReplace(
+          running.snapshot.document,
+          options.sequenceId,
+          options.query,
+          options.text,
+          options.clipIds,
+        );
+        preview(running.snapshot, plan, "替换字幕文字", {
+          query: options.query,
+          text: options.text,
+          matched: plan.matched,
+          occurrences: plan.occurrences,
+          scope: options.scope ?? (options.clipIds ? "selected" : "sequence"),
+        });
+      } catch (error) {
+        failure(error, running.token);
+        throw error;
+      } finally {
+        work = undefined;
+      }
+    },
+    previewSplit(options: { sequenceId: string; clipId: string; caret: number; time?: number }) {
+      const running = start();
+      try {
+        const plan = planCaptionSplit(running.snapshot.document, options.sequenceId, options.clipId, {
+          caret: options.caret, ...(options.time === undefined ? {} : { time: options.time }),
+          ...(context.idFactory ? { idFactory: context.idFactory } : {}),
+        });
+        preview(running.snapshot, plan, "在光标处分句", undefined, { affectedIds: plan.affectedIds, action: "split" });
+      } catch (error) {
+        failure(error, running.token);
+        throw error;
+      } finally { work = undefined; }
+    },
+    previewMerge(options: { sequenceId: string; clipIds: string[] }) {
+      const running = start();
+      try {
+        const plan = planCaptionMerge(running.snapshot.document, options.sequenceId, options.clipIds);
+        preview(running.snapshot, plan, "合并相邻字幕", undefined, { affectedIds: plan.affectedIds, action: "merge" });
+      } catch (error) {
+        failure(error, running.token);
+        throw error;
+      } finally { work = undefined; }
     },
     async translate(options: {
       sequenceId: string;

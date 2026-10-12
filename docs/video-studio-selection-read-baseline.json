@@ -1,0 +1,537 @@
+{
+  "commit": "891f04821bae09de18b8ce929d15588818bad0bf",
+  "measuredUTC": "2026-10-11T20:56:31.263087+00:00",
+  "results": [
+    {
+      "count": 1000,
+      "sequenceClipCounts": [
+        1000
+      ],
+      "same": {
+        "selection": {
+          "n": 9,
+          "medianMs": 9.199999988079071,
+          "p95Ms": 9.400000005960464,
+          "reads": [
+            4
+          ],
+          "medianReadMs": 6.5999999940395355
+        },
+        "begin": {
+          "n": 9,
+          "medianMs": 11.199999988079071,
+          "p95Ms": 11.5,
+          "reads": [
+            5
+          ],
+          "medianReadMs": 8.400000005960464
+        }
+      },
+      "changed": {
+        "selection": {
+          "n": 10,
+          "medianMs": 11.699999988079071,
+          "p95Ms": 15.5,
+          "reads": [
+            4
+          ],
+          "medianReadMs": 6.300000041723251
+        },
+        "begin": {
+          "n": 10,
+          "medianMs": 13.399999976158142,
+          "p95Ms": 17.400000005960464,
+          "reads": [
+            5
+          ],
+          "medianReadMs": 7.999999970197678
+        }
+      },
+      "drafts": [
+        {
+          "label": "track draft",
+          "reads": 30,
+          "readMs": 45.69999998807907,
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 8,
+              "reads": 4,
+              "readMs": 6
+            },
+            {
+              "name": "beginGesture",
+              "ms": 9.700000017881393,
+              "reads": 5,
+              "readMs": 7.5
+            }
+          ]
+        },
+        {
+          "label": "track draft",
+          "reads": 30,
+          "readMs": 47.09999993443489,
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 8.400000005960464,
+              "reads": 4,
+              "readMs": 6.199999988079071
+            },
+            {
+              "name": "beginGesture",
+              "ms": 10.099999994039536,
+              "reads": 5,
+              "readMs": 7.799999982118607
+            }
+          ]
+        },
+        {
+          "label": "track draft",
+          "reads": 30,
+          "readMs": 51.69999995827675,
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 8.5,
+              "reads": 4,
+              "readMs": 6.200000017881393
+            },
+            {
+              "name": "beginGesture",
+              "ms": 10.400000005960464,
+              "reads": 5,
+              "readMs": 7.9000000059604645
+            }
+          ]
+        },
+        {
+          "label": "track draft",
+          "reads": 30,
+          "readMs": 50.40000006556511,
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 9.900000005960464,
+              "reads": 4,
+              "readMs": 7.4000000059604645
+            },
+            {
+              "name": "beginGesture",
+              "ms": 11.899999976158142,
+              "reads": 5,
+              "readMs": 9.099999994039536
+            }
+          ]
+        },
+        {
+          "label": "inspector draft",
+          "reads": 23,
+          "readMs": 36.40000003576279,
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 8.099999994039536,
+              "reads": 4,
+              "readMs": 6.0999999940395355
+            },
+            {
+              "name": "beginGesture",
+              "ms": 11.200000017881393,
+              "reads": 5,
+              "readMs": 8.900000005960464
+            }
+          ]
+        },
+        {
+          "label": "inspector draft",
+          "reads": 23,
+          "readMs": 35.099999994039536,
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 8,
+              "reads": 4,
+              "readMs": 6
+            },
+            {
+              "name": "beginGesture",
+              "ms": 9.800000011920929,
+              "reads": 5,
+              "readMs": 7.600000023841858
+            }
+          ]
+        },
+        {
+          "label": "inspector draft",
+          "reads": 23,
+          "readMs": 35.60000005364418,
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 7.9000000059604645,
+              "reads": 4,
+              "readMs": 6.0999999940395355
+            },
+            {
+              "name": "beginGesture",
+              "ms": 9.900000005960464,
+              "reads": 5,
+              "readMs": 7.9000000059604645
+            }
+          ]
+        },
+        {
+          "label": "inspector draft",
+          "reads": 23,
+          "readMs": 36.40000003576279,
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 8,
+              "reads": 4,
+              "readMs": 6.200000017881393
+            },
+            {
+              "name": "beginGesture",
+              "ms": 9.5,
+              "reads": 5,
+              "readMs": 7.600000023841858
+            }
+          ]
+        }
+      ],
+      "boundaries": [
+        {
+          "label": "ordinary revision",
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 13.199999988079071,
+              "reads": 4,
+              "readMs": 6.399999976158142
+            },
+            {
+              "name": "beginGesture",
+              "ms": 15.100000023841858,
+              "reads": 5,
+              "readMs": 8
+            }
+          ]
+        },
+        {
+          "label": "generation",
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 13.100000023841858,
+              "reads": 4,
+              "readMs": 6.4000000059604645
+            },
+            {
+              "name": "beginGesture",
+              "ms": 15,
+              "reads": 5,
+              "readMs": 8.099999994039536
+            }
+          ]
+        }
+      ],
+      "firstMove": [
+        {
+          "name": "selection",
+          "ms": 8.799999982118607,
+          "reads": 4,
+          "readMs": 6.199999988079071
+        },
+        {
+          "name": "beginGesture",
+          "ms": 10.5,
+          "reads": 5,
+          "readMs": 7.5999999940395355
+        },
+        {
+          "name": "firstMovePlan",
+          "ms": 10.099999994039536,
+          "reads": 0,
+          "readMs": 0
+        }
+      ]
+    },
+    {
+      "count": 5000,
+      "sequenceClipCounts": [
+        2000,
+        2000,
+        1000
+      ],
+      "same": {
+        "selection": {
+          "n": 9,
+          "medianMs": 36.29999998211861,
+          "p95Ms": 37.69999998807907,
+          "reads": [
+            4
+          ],
+          "medianReadMs": 33.50000002980232
+        },
+        "begin": {
+          "n": 9,
+          "medianMs": 44.900000005960464,
+          "p95Ms": 51.69999998807907,
+          "reads": [
+            5
+          ],
+          "medianReadMs": 41.69999998807907
+        }
+      },
+      "changed": {
+        "selection": {
+          "n": 10,
+          "medianMs": 40.599999994039536,
+          "p95Ms": 42.30000001192093,
+          "reads": [
+            4
+          ],
+          "medianReadMs": 33.19999998807907
+        },
+        "begin": {
+          "n": 10,
+          "medianMs": 48.69999998807907,
+          "p95Ms": 50.5,
+          "reads": [
+            5
+          ],
+          "medianReadMs": 41.30000001192093
+        }
+      },
+      "drafts": [
+        {
+          "label": "track draft",
+          "reads": 30,
+          "readMs": 247.39999997615814,
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 33.89999997615814,
+              "reads": 4,
+              "readMs": 31.400000005960464
+            },
+            {
+              "name": "beginGesture",
+              "ms": 43.900000005960464,
+              "reads": 5,
+              "readMs": 41
+            }
+          ]
+        },
+        {
+          "label": "track draft",
+          "reads": 30,
+          "readMs": 250.4000000357628,
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 36.099999994039536,
+              "reads": 4,
+              "readMs": 33.90000003576279
+            },
+            {
+              "name": "beginGesture",
+              "ms": 44.29999998211861,
+              "reads": 5,
+              "readMs": 41.80000004172325
+            }
+          ]
+        },
+        {
+          "label": "track draft",
+          "reads": 30,
+          "readMs": 243.79999995231628,
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 33.89999997615814,
+              "reads": 4,
+              "readMs": 31.399999976158142
+            },
+            {
+              "name": "beginGesture",
+              "ms": 42.20000001788139,
+              "reads": 5,
+              "readMs": 39.49999997019768
+            }
+          ]
+        },
+        {
+          "label": "track draft",
+          "reads": 30,
+          "readMs": 241.7999999821186,
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 34,
+              "reads": 4,
+              "readMs": 31.500000029802322
+            },
+            {
+              "name": "beginGesture",
+              "ms": 42.20000001788139,
+              "reads": 5,
+              "readMs": 39.30000004172325
+            }
+          ]
+        },
+        {
+          "label": "inspector draft",
+          "reads": 23,
+          "readMs": 191.10000002384186,
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 34.599999994039536,
+              "reads": 4,
+              "readMs": 32.20000001788139
+            },
+            {
+              "name": "beginGesture",
+              "ms": 43,
+              "reads": 5,
+              "readMs": 40.20000001788139
+            }
+          ]
+        },
+        {
+          "label": "inspector draft",
+          "reads": 23,
+          "readMs": 190.2000000178814,
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 36.29999998211861,
+              "reads": 4,
+              "readMs": 33.900000005960464
+            },
+            {
+              "name": "beginGesture",
+              "ms": 44.60000002384186,
+              "reads": 5,
+              "readMs": 42.00000002980232
+            }
+          ]
+        },
+        {
+          "label": "inspector draft",
+          "reads": 23,
+          "readMs": 190.99999997019768,
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 36.69999998807907,
+              "reads": 4,
+              "readMs": 34.30000001192093
+            },
+            {
+              "name": "beginGesture",
+              "ms": 45,
+              "reads": 5,
+              "readMs": 42.30000001192093
+            }
+          ]
+        },
+        {
+          "label": "inspector draft",
+          "reads": 23,
+          "readMs": 188.40000009536743,
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 35.400000005960464,
+              "reads": 4,
+              "readMs": 33.20000001788139
+            },
+            {
+              "name": "beginGesture",
+              "ms": 43.900000005960464,
+              "reads": 5,
+              "readMs": 41.30000001192093
+            }
+          ]
+        }
+      ],
+      "boundaries": [
+        {
+          "label": "ordinary revision",
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 41.5,
+              "reads": 4,
+              "readMs": 33.400000005960464
+            },
+            {
+              "name": "beginGesture",
+              "ms": 50,
+              "reads": 5,
+              "readMs": 41.69999998807907
+            }
+          ]
+        },
+        {
+          "label": "generation",
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 42.30000001192093,
+              "reads": 4,
+              "readMs": 34.20000001788139
+            },
+            {
+              "name": "beginGesture",
+              "ms": 51,
+              "reads": 5,
+              "readMs": 42.60000002384186
+            }
+          ]
+        },
+        {
+          "label": "sequence",
+          "spans": [
+            {
+              "name": "selection",
+              "ms": 40.900000005960464,
+              "reads": 4,
+              "readMs": 33.19999998807907
+            },
+            {
+              "name": "beginGesture",
+              "ms": 49.599999994039536,
+              "reads": 5,
+              "readMs": 41.5
+            }
+          ]
+        }
+      ],
+      "firstMove": [
+        {
+          "name": "selection",
+          "ms": 41.099999994039536,
+          "reads": 4,
+          "readMs": 33.599999994039536
+        },
+        {
+          "name": "beginGesture",
+          "ms": 49.400000005960464,
+          "reads": 5,
+          "readMs": 41.599999994039536
+        },
+        {
+          "name": "firstMovePlan",
+          "ms": 40.39999997615814,
+          "reads": 0,
+          "readMs": 0
+        }
+      ]
+    }
+  ]
+}

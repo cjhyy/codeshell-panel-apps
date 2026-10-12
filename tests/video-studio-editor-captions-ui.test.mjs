@@ -53,9 +53,12 @@ async function fixture(t, options = {}) {
     globalThis.errors = [];
     globalThis.waitRead = null;
     globalThis.waitTranslate = null;
+    globalThis.waitSeek = null;
     globalThis.abortSignal = null;
     globalThis.selection = [];
+    globalThis.selectionCalls = [];
     globalThis.sought = [];
+    globalThis.soughtExact = [];
     globalThis.playhead = 0;
     const clip = (id, assetId, start) => ({
       id,
@@ -210,8 +213,11 @@ async function fixture(t, options = {}) {
       session: () => session,
       controller,
       ...(options.inline ? { presentation: "inline", currentTime: () => playhead } : {}),
-      select: (sequenceId, ids) => (selection = ids),
-      seek: (tick) => sought.push(tick),
+      select: (sequenceId, ids) => { selectionCalls.push({ sequenceId, ids }); selection = ids; },
+      seek: async (tick, exact) => {
+        sought.push(tick); soughtExact.push(Boolean(exact));
+        if (waitSeek) await waitSeek;
+      },
       onError: (error) => errors.push(error.message),
       ...(options.recheck
         ? {
@@ -246,6 +252,39 @@ async function generate(page) {
   await page.locator('[data-caption-source="other"]').uncheck();
   await page.getByRole("button", { name: "生成所选声音字幕" }).click();
   await page.locator(".ec-preview").waitFor({ state: "visible" });
+}
+async function selectSrt(page, name = "等待.srt", text = "等待内容") {
+  await page.locator("[data-caption-srt-input]").setInputFiles({
+    name,
+    mimeType: "application/x-subrip",
+    buffer: Buffer.from(`1\n00:00:00,033 --> 00:00:01,067\n${text}\n`),
+  });
+}
+async function holdSrtRead(page) {
+  await page.evaluate(() => {
+    const original = File.prototype.text;
+    globalThis.fileReadStarted = false;
+    globalThis.fileReadFinished = false;
+    File.prototype.text = async function () {
+      if (this.name !== "等待.srt" || globalThis.fileReadStarted) return original.call(this);
+      globalThis.fileReadStarted = true;
+      try {
+        const fail = await new Promise((resolve) => (globalThis.releaseFileRead = resolve));
+        if (fail) throw new Error("旧文件读取失败");
+        return await original.call(this);
+      } finally {
+        globalThis.fileReadFinished = true;
+      }
+    };
+  });
+  await selectSrt(page);
+  await page.waitForFunction(() => fileReadStarted);
+}
+async function releaseSrtRead(page, fail = false) {
+  await page.evaluate((fail) => releaseFileRead(fail), fail);
+  await page.waitForFunction(() => fileReadFinished);
+  // Allow the async file handler and its guarded error callback to finish before observing state.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
 }
 
 test("real source checkboxes preview then apply one saved transaction, with one Undo", async (t) => {
@@ -310,6 +349,197 @@ test("translation shows original and bilingual preview before applying, preserve
   await page.waitForFunction(() => !captions()[0].translation);
 });
 
+test("a late earlier SRT file read cannot replace the newest selected file preview", async (t) => {
+  const page = await fixture(t, { disabled: true });
+  await page.evaluate(() => {
+    const original = File.prototype.text;
+    globalThis.oldFileStarted = false;
+    globalThis.oldFileFinished = false;
+    File.prototype.text = async function () {
+      if (this.name === "较早.srt") {
+        globalThis.oldFileStarted = true;
+        await new Promise((resolve) => (globalThis.releaseOldFile = resolve));
+        try {
+          return await original.call(this);
+        } finally {
+          globalThis.oldFileFinished = true;
+        }
+      }
+      return original.call(this);
+    };
+  });
+  const input = page.locator("[data-caption-srt-input]");
+  await input.setInputFiles({
+    name: "较早.srt",
+    mimeType: "application/x-subrip",
+    buffer: Buffer.from("1\n00:00:00,033 --> 00:00:01,067\n较早内容\n"),
+  });
+  await page.waitForFunction(() => oldFileStarted);
+  await input.setInputFiles({
+    name: "最新.srt",
+    mimeType: "application/x-subrip",
+    buffer: Buffer.from("1\n00:00:02,033 --> 00:00:03,067\n最新内容\n"),
+  });
+  await page.waitForFunction(() => controller.getState().candidate?.rows[0]?.text === "最新内容");
+  await page.evaluate(() => releaseOldFile());
+  await page.waitForFunction(() => oldFileFinished);
+  assert.equal(
+    await page.evaluate(() => controller.getState().candidate?.rows[0]?.text),
+    "最新内容",
+  );
+  assert.equal(await page.evaluate(() => captions().length), 0);
+});
+
+for (const action of [
+  "cancel",
+  "close",
+  "escape",
+  "open",
+  "inline-close",
+  "sequence",
+  "track",
+  "revision",
+  "restore",
+  "session",
+  "dispose",
+]) {
+  for (const fail of [false, true]) {
+    test(`late SRT read ${fail ? "failure" : "success"} is retired by ${action} without publishing or changing status`, async (t) => {
+      const page = await fixture(t, { disabled: true, inline: action === "inline-close" });
+      if (action === "sequence" || action === "track") {
+        await page.evaluate((action) => {
+          if (action === "sequence") {
+            const sequence = structuredClone(session.read().sequences[0]);
+            sequence.id = "second";
+            session.dispatch([{ type: "sequence.add", sequence }], session.getState().identity);
+          } else {
+            session.dispatch(
+              [
+                {
+                  type: "track.add",
+                  sequenceId: "main",
+                  track: editor.createTrack("second-text", "text"),
+                },
+              ],
+              session.getState().identity,
+            );
+          }
+        }, action);
+      }
+      await holdSrtRead(page);
+      if (action === "cancel")
+        await page.getByRole("button", { name: "取消任务 / 丢弃预览" }).click();
+      else if (action === "escape") await page.keyboard.press("Escape");
+      else if (action === "track") {
+        await page.getByLabel("目标字幕轨").selectOption("second-text");
+        await page.getByLabel("目标字幕轨").selectOption("");
+      } else {
+        await page.evaluate(async (action) => {
+          if (action === "close" || action === "inline-close") {
+            ui.close();
+            ui.open();
+          } else if (action === "open") ui.open();
+          else if (action === "sequence") {
+            ui.open("second");
+            ui.open("main");
+          } else if (action === "revision")
+            session.dispatch(
+              [{ type: "project.rename", name: "读取期间的新版本" }],
+              session.getState().identity,
+            );
+          else if (action === "restore") await session.replace(session.read());
+          else if (action === "session") {
+            const before = session.read();
+            session = await editor.EditorSession.open({
+              read: async () => ({ data: before, revision: 1 }),
+              write: async () => ({ revision: 2 }),
+              backupLegacy: async () => {},
+            });
+            ui.open();
+          } else if (action === "dispose") ui.dispose();
+        }, action);
+      }
+      const before = await page.evaluate(() => ({
+        document: session.read(),
+        controller: controller.getState(),
+        status: document.querySelector(".ec-status")?.textContent,
+      }));
+      assert.equal(before.controller.candidate, undefined);
+      await releaseSrtRead(page, fail);
+      assert.deepEqual(
+        await page.evaluate(() => ({
+          document: session.read(),
+          controller: controller.getState(),
+          status: document.querySelector(".ec-status")?.textContent,
+        })),
+        before,
+      );
+      assert.deepEqual(await page.evaluate(() => errors), []);
+    });
+  }
+}
+
+test("late older file read failure cannot overwrite the newer SRT preview or its status", async (t) => {
+  const page = await fixture(t, { disabled: true });
+  await holdSrtRead(page);
+  await selectSrt(page, "最新.srt", "最新内容");
+  await page.waitForFunction(() => controller.getState().candidate?.rows[0]?.text === "最新内容");
+  const before = await page.evaluate(() => ({
+    controller: controller.getState(),
+    status: document.querySelector(".ec-status").textContent,
+  }));
+  await releaseSrtRead(page, true);
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      controller: controller.getState(),
+      status: document.querySelector(".ec-status").textContent,
+    })),
+    before,
+  );
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("same SRT file can retry after a current read error and after a revision retires its read", async (t) => {
+  for (const retire of ["error", "revision"]) {
+    const page = await fixture(t, { disabled: true });
+    await holdSrtRead(page);
+    if (retire === "revision")
+      await page.evaluate(() =>
+        session.dispatch([{ type: "project.rename", name: "新版本" }], session.getState().identity),
+      );
+    await releaseSrtRead(page, retire === "error");
+    assert.equal(await page.evaluate(() => controller.getState().candidate), undefined);
+    assert.deepEqual(
+      await page.evaluate(() => errors),
+      retire === "error" ? ["旧文件读取失败"] : [],
+    );
+    assert.equal(await page.locator("[data-caption-srt-input]").inputValue(), "");
+    await selectSrt(page);
+    await page.waitForFunction(() => controller.getState().candidate?.rows[0]?.text === "等待内容");
+    await page.getByRole("button", { name: "应用预览" }).click();
+    await page.waitForFunction(() => captions().length === 1);
+    assert.equal(await page.evaluate(() => captions()[0].start), 7920);
+    assert.equal(await page.evaluate(() => captions()[0].duration), 248160);
+    await page.evaluate(() => session.undo());
+    assert.equal(await page.evaluate(() => captions().length), 0);
+  }
+});
+
+test("same inline open and mount preserve a pending SRT read when its version and target are unchanged", async (t) => {
+  const page = await fixture(t, { inline: true, disabled: true });
+  await holdSrtRead(page);
+  await page.evaluate(() => {
+    ui.mount(document.querySelector("#mount"));
+    ui.open("main");
+  });
+  await releaseSrtRead(page);
+  assert.equal(
+    await page.evaluate(() => controller.getState().candidate?.rows[0]?.text),
+    "等待内容",
+  );
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
 test("SRT file input and real browser download preserve multiline exact millisecond cues", async (t) => {
   const page = await fixture(t, { disabled: true });
   await page.locator("[data-caption-srt-input]").setInputFiles({
@@ -321,12 +551,215 @@ test("SRT file input and real browser download preserve multiline exact millisec
   await page.getByRole("button", { name: "应用预览" }).click();
   await page.waitForFunction(() => captions().length === 1);
   await page.getByRole("button", { name: "全选字幕" }).click();
+  const before = await page.evaluate(() => session.read());
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出所选 SRT" }).click();
   const download = await downloadPromise;
   const result = await readFile(await download.path(), "utf8");
   assert.match(result, /00:00:00,033 --> 00:00:01,067/);
   assert.match(result, /你好🙂\nHello/);
+  assert.deepEqual(await page.evaluate((text) => editor.parseEditorSrt(text), result), [
+    { start: 7920, end: 256080, text: "你好🙂\nHello" },
+  ]);
+  assert.deepEqual(
+    await page.evaluate(() => session.read()),
+    before,
+    "Export never mutates the project",
+  );
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      words: captions()[0].words,
+      binding: captions()[0].sourceBinding,
+      translation: captions()[0].translation,
+    })),
+    {
+      words: [],
+      binding: undefined,
+      translation: undefined,
+    },
+    "A plain SRT does not invent word timing, source provenance or translation metadata",
+  );
+});
+
+test("SRT export explains an internal blank line without downloading; corrected text then downloads and reimports", async (t) => {
+  const page = await fixture(t, { inline: true, disabled: true });
+  let downloads = 0;
+  page.on("download", () => downloads++);
+  const id = await page.evaluate(() =>
+    controller.add("main", { start: 7920, duration: 248160, text: "第一段\n \t\n第二段" }),
+  );
+  await page.getByRole("button", { name: "全选字幕" }).click();
+  const before = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "第1条字幕含空白分隔行，请删除中间空白行后导出 SRT" })
+    .waitFor();
+  assert.equal(downloads, 0);
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  const row = page.locator(`[data-caption-id="${id}"]`);
+  await row.getByLabel("字幕文字", { exact: true }).fill("第一段\n第二段");
+  await row.getByRole("button", { name: "保存文字", exact: true }).click();
+  await page.waitForFunction(() => captions()[0].text === "第一段\n第二段");
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  const result = await readFile(await (await downloadPromise).path(), "utf8");
+  assert.equal(downloads, 1);
+  assert.deepEqual(await page.evaluate((text) => editor.parseEditorSrt(text), result), [
+    { start: 7920, end: 256080, text: "第一段\n第二段" },
+  ]);
+  await page.evaluate(async (id) => {
+    session.dispatch(
+      [{ type: "clip.remove", sequenceId: "main", clipIds: [id] }],
+      session.getState().identity,
+    );
+    await session.flush();
+  }, id);
+  await page
+    .locator("[data-caption-srt-input]")
+    .setInputFiles({
+      name: "修正.srt",
+      mimeType: "application/x-subrip",
+      buffer: Buffer.from(result),
+    });
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "应用预览" }).click();
+  await page.waitForFunction(() => captions().length === 1);
+  assert.deepEqual(
+    await page.evaluate(() => [captions()[0].text, captions()[0].start, captions()[0].duration]),
+    ["第一段\n第二段", 7920, 248160],
+  );
+});
+
+test("selected SRT export preserves a focused multiline text draft until it is explicitly saved", async (t) => {
+  const page = await fixture(t, { inline: true, disabled: true, width: 390 });
+  let downloads = 0;
+  page.on("download", () => downloads++);
+  const id = await page.evaluate(() =>
+    controller.add("main", { start: 7920, duration: 248160, text: "保存前" }),
+  );
+  await page.getByRole("button", { name: "全选字幕" }).click();
+  const row = page.locator(`[data-caption-id="${id}"]`),
+    input = row.getByLabel("字幕文字", { exact: true });
+  await input.fill("未保存中文🙂\n第二行");
+  await input.evaluate((node) => {
+    globalThis.exportDraftInput = node;
+    node.setSelectionRange(1, 5);
+  });
+  const before = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(downloads, 0, "A real browser download must not silently contain the old saved text");
+  assert.match(await page.locator(".ec-status").textContent(), /请先保存再导出.*草稿已保留/);
+  assert.deepEqual(await input.evaluate((node) => [
+    node === exportDraftInput, node.isConnected, node === document.activeElement,
+    node.value, node.selectionStart, node.selectionEnd,
+  ]), [true, true, true, "未保存中文🙂\n第二行", 1, 5]);
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  await row.getByRole("button", { name: "保存文字", exact: true }).click();
+  await page.waitForFunction(() => captions()[0].text === "未保存中文🙂\n第二行");
+  const saved = await page.evaluate(() => session.read()), downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  const result = await readFile(await (await downloadPromise).path(), "utf8");
+  assert.match(result, /未保存中文🙂\n第二行/);
+  assert.deepEqual(await page.evaluate(() => session.read()), saved, "Download creates no edit or undo entry");
+  await page.evaluate(() => session.undo());
+  assert.equal(await page.evaluate(() => captions()[0].text), "保存前");
+});
+
+test("selected SRT export protects invalid and corrected unsaved time fields before a real download", async (t) => {
+  const page = await fixture(t, { inline: true, disabled: true });
+  let downloads = 0;
+  page.on("download", () => downloads++);
+  const id = await page.evaluate(() => controller.add("main", { start: 7920, duration: 4 * 240000, text: "时间草稿" }));
+  await page.getByRole("button", { name: "全选字幕" }).click();
+  const row = page.locator(`[data-caption-id="${id}"]`),
+    start = row.getByLabel("开始（秒）"), end = row.getByLabel("结束（秒）");
+  await start.fill("1.001");
+  await end.fill("0");
+  await end.evaluate((node) => { globalThis.exportTimeInput = node; });
+  const before = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(downloads, 0);
+  assert.deepEqual(await end.evaluate((node) => [node === exportTimeInput, node.isConnected, node === document.activeElement, node.value]), [true, true, true, "0"]);
+  assert.match(await page.locator(".ec-status").textContent(), /请先保存再导出/);
+  await end.fill("3.003");
+  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(downloads, 0, "A valid time draft still requires an explicit save");
+  assert.equal(await start.inputValue(), "1.001");
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  await row.getByRole("button", { name: "保存时间", exact: true }).click();
+  await page.waitForFunction(() => captions()[0].start === 240240 && captions()[0].duration === 480480);
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  const result = await readFile(await (await downloadPromise).path(), "utf8");
+  assert.deepEqual(await page.evaluate((text) => editor.parseEditorSrt(text), result), [
+    { start: 240240, end: 720720, text: "时间草稿" },
+  ]);
+});
+
+test("selected SRT export ignores another row's draft and permits read-only locked-track download", async (t) => {
+  const page = await fixture(t, { inline: true, disabled: true });
+  const [first, second] = await page.evaluate(async () => [
+    await controller.add("main", { start: 0, text: "所选已保存" }),
+    await controller.add("main", { start: 6 * 240000, text: "其它已保存" }),
+  ]);
+  const a = page.locator(`[data-caption-id="${first}"]`),
+    b = page.locator(`[data-caption-id="${second}"]`);
+  await a.locator('input[type="checkbox"]').check();
+  await b.getByLabel("字幕文字", { exact: true }).fill("未选文字草稿");
+  await b.getByLabel("结束（秒）").fill("0");
+  await page.evaluate(() => session.dispatch([
+    { type: "track.update", sequenceId: "main", trackId: "text", patch: { locked: true } },
+  ], session.getState().identity));
+  const before = await page.evaluate(() => session.read()), downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  const result = await readFile(await (await downloadPromise).path(), "utf8");
+  assert.deepEqual(await page.evaluate((text) => editor.parseEditorSrt(text), result), [
+    { start: 0, end: 3 * 240000, text: "所选已保存" },
+  ]);
+  assert.equal(await b.getByLabel("字幕文字", { exact: true }).inputValue(), "未选文字草稿");
+  assert.equal(await b.getByLabel("结束（秒）").inputValue(), "0");
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("selected SRT export keeps real Chinese IME composition connected and focused on a narrow screen", async (t) => {
+  const page = await fixture(t, { inline: true, disabled: true, width: 390 });
+  let downloads = 0;
+  page.on("download", () => downloads++);
+  const id = await page.evaluate(() => controller.add("main", { start: 0, text: "原文" }));
+  await page.getByRole("button", { name: "全选字幕" }).click();
+  const input = page.locator(`[data-caption-id="${id}"] textarea`);
+  await input.fill("");
+  await input.evaluate((node) => {
+    globalThis.exportImeInput = node;
+    globalThis.exportComposition = [];
+    node.addEventListener("compositionstart", (event) => exportComposition.push([event.type, event.isTrusted]));
+    node.addEventListener("compositionend", (event) => exportComposition.push([event.type, event.isTrusted]));
+  });
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("Input.imeSetComposition", { text: "正在输入中文", selectionStart: 6, selectionEnd: 6 });
+    const before = await page.evaluate(() => session.read());
+    await page.getByRole("button", { name: "导出所选 SRT" }).click();
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(downloads, 0);
+    assert.match(await page.locator(".ec-status").textContent(), /请先保存再导出/);
+    assert.deepEqual(await input.evaluate((node) => [
+      node === exportImeInput, node.isConnected, node === document.activeElement, node.value, exportComposition,
+    ]), [true, true, true, "正在输入中文", [["compositionstart", true]]]);
+    assert.deepEqual(await page.evaluate(() => session.read()), before);
+    await cdp.send("Input.insertText", { text: "输入完成中文" });
+    await page.locator(`[data-caption-id="${id}"]`).getByRole("button", { name: "保存文字", exact: true }).click();
+    await page.waitForFunction(() => captions()[0].text === "输入完成中文");
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出所选 SRT" }).click();
+    const result = await readFile(await (await downloadPromise).path(), "utf8");
+    assert.match(result, /输入完成中文/);
+  } finally { await cdp.detach(); }
 });
 
 test("failed save leaves preview and original document intact; retry saves once", async (t) => {
@@ -630,4 +1063,773 @@ test("unsaved text and times in one row survive rebuilds caused by other edits",
     "A saved draft is not kept over Undo",
   );
   assert.equal(await a.getByLabel("开始（秒）").inputValue(), "0.5", "Unsaved time is kept");
+});
+
+test("literal multiline caption search navigates preview, replaces one row or all rows, and undoes once on a narrow screen", async (t) => {
+  const page = await fixture(t, { width: 390 }),
+    query = "中文.*[$&]\\\n下一行",
+    replacement = "$&\\校对";
+  const [first, second] = await page.evaluate(async (query) => [
+    await controller.add("main", { start: 0, text: `${query} ${query}` }),
+    await controller.add("main", { start: 6 * 240000, text: query }),
+  ], query);
+  await page.getByLabel("查找字幕文字", { exact: true }).fill(query);
+  await page.getByLabel("替换为", { exact: true }).fill(replacement);
+  assert.match(await page.locator(".ec-find-count").textContent(), /2 条字幕 \/ 3 处匹配/);
+  await page.getByRole("button", { name: "下一条匹配", exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => [selection, sought.at(-1)]), [[first], 0]);
+  await page.getByRole("button", { name: "下一条匹配", exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => [selection, sought.at(-1)]), [[second], 6 * 240000]);
+  await page.getByRole("button", { name: "上一条匹配", exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => selection), [first]);
+  const before = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "预览替换此条", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  assert.match(await page.locator(".ec-candidates").innerText(), /当前匹配字幕.*1 条字幕中的 2 处匹配/);
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction((text) => captions()[0].text === `${text} ${text}`, replacement);
+  assert.equal(await page.evaluate(() => session.read().revision), before.revision + 1);
+  assert.equal(await page.evaluate(() => captions()[1].text), query);
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction((text) => captions()[0].text === `${text} ${text}`, query);
+  await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  assert.match(await page.locator(".ec-candidates").innerText(), /当前序列全部字幕.*2 条字幕中的 3 处匹配/);
+  const allBefore = await page.evaluate(() => session.read().revision);
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction((text) => captions().every((clip) => clip.text.includes(text)), replacement);
+  assert.equal(await page.evaluate(() => session.read().revision), allBefore + 1);
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction((text) => captions().every((clip) => clip.text.includes(text)), query);
+  const bounds = await page.locator(".editor-captions").evaluate((node) => ({
+    left: node.getBoundingClientRect().left,
+    right: node.getBoundingClientRect().right,
+    inner: node.querySelector(".ec-body").scrollWidth,
+    width: node.querySelector(".ec-body").clientWidth,
+  }));
+  assert.ok(bounds.left >= 0 && bounds.right <= 390 && bounds.inner <= bounds.width + 1);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("find and row navigation request the exact original tick of an off-frame caption", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const id = await page.evaluate(() => controller.add("main", { start: 1_234_567, duration: 480_001, text: "帧间字幕" }));
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("帧间");
+  await page.getByRole("button", { name: "下一条匹配", exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => [selection, sought.at(-1), soughtExact.at(-1)]), [[id], 1_234_567, true]);
+  await page.locator(`[data-caption-id="${id}"] .ec-seek`).click();
+  assert.deepEqual(await page.evaluate(() => [sought.at(-1), soughtExact.at(-1)]), [1_234_567, true]);
+});
+
+test("selected-caption replacement preserves other drafts and refuses affected drafts before preview and before apply", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const [first, second] = await page.evaluate(async () => [
+    await controller.add("main", { start: 0, text: "目标 第一" }),
+    await controller.add("main", { start: 6 * 240000, text: "目标 第二" }),
+  ]);
+  const a = page.locator(`[data-caption-id="${first}"]`),
+    b = page.locator(`[data-caption-id="${second}"]`);
+  await a.locator('input[type="checkbox"]').check();
+  await b.getByLabel("字幕文字", { exact: true }).fill("保留的未保存字幕");
+  await b.getByLabel("开始（秒）").fill("6.2");
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("目标");
+  await page.getByLabel("替换为", { exact: true }).fill("已改");
+  await page.getByLabel("查找替换范围", { exact: true }).selectOption("selected");
+  assert.match(await page.locator(".ec-find-count").textContent(), /仅所选 1 条字幕 · 1 条字幕 \/ 1 处匹配/);
+  await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  assert.match(await page.locator(".ec-candidates").innerText(), /仅所选字幕/);
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().some((clip) => clip.text === "已改 第一"));
+  assert.equal(await b.getByLabel("字幕文字", { exact: true }).inputValue(), "保留的未保存字幕");
+  assert.equal(await b.getByLabel("开始（秒）").inputValue(), "6.2");
+  assert.equal(await page.evaluate((id) => captions().find((clip) => clip.id === id).text, second), "目标 第二");
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("已改");
+  await page.getByLabel("替换为", { exact: true }).fill("最终");
+  await a.getByLabel("字幕文字", { exact: true }).fill("正在校对的草稿");
+  const before = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.match(await page.locator(".ec-status").textContent(), /未保存.*草稿已保留/);
+  assert.equal(await page.evaluate(() => controller.getState().candidate), undefined);
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  await a.getByLabel("字幕文字", { exact: true }).fill("已改 第一");
+  await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  await a.getByLabel("字幕文字", { exact: true }).fill("预览后的新草稿");
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 2);
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  await page.getByRole("button", { name: "取消任务 / 丢弃预览", exact: true }).click();
+  assert.equal(await page.evaluate(() => controller.getState().candidate), undefined);
+  assert.equal(await a.getByLabel("字幕文字", { exact: true }).inputValue(), "预览后的新草稿");
+});
+
+test("replacement rejects stale and locked previews, retries a failed save, and narration approval undoes with the replacement", async (t) => {
+  const page = await fixture(t, { narration: true });
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("字幕");
+  await page.getByLabel("替换为", { exact: true }).fill("文句");
+  await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  await page.evaluate(() => session.dispatch([{ type: "project.rename", name: "新版本" }], session.getState().identity));
+  await page.waitForFunction(() => controller.getState().phase === "stale");
+  assert.equal(await page.locator(".ec-preview button").isDisabled(), true);
+  await page.evaluate(() => session.dispatch([{ type: "track.update", sequenceId: "main", trackId: "text", patch: { locked: true } }], session.getState().identity));
+  const locked = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.match(await page.locator(".ec-status").textContent(), /锁定/);
+  assert.deepEqual(await page.evaluate(() => session.read()), locked);
+  await page.evaluate(() => session.dispatch([{ type: "track.update", sequenceId: "main", trackId: "text", patch: { locked: false } }], session.getState().identity));
+  await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  const before = await page.evaluate(() => session.read());
+  await page.evaluate(() => { globalThis.fail = true; });
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 2);
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  assert.ok(await page.evaluate(() => controller.getState().candidate));
+  await page.evaluate(() => { globalThis.fail = false; });
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().every((clip) => clip.text.includes("文句")));
+  assert.equal(await page.evaluate(() => session.read().revision), before.revision + 1);
+  assert.equal(await page.evaluate(() => session.read().production.narration.phase), "review");
+  assert.match(await page.locator(".ec-status").textContent(), /回到待确认/);
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction(() => captions().every((clip) => clip.text.includes("字幕")));
+  assert.equal(await page.evaluate(() => session.read().production.narration.phase), "approved");
+});
+
+test("a thousand matching subtitles preview and save as one reversible batch", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(() => {
+    const clips = Array.from({ length: 1000 }, (_, index) => ({
+      id: `bulk-caption-${index}`, kind: "text", role: "subtitle", label: "字幕",
+      trackId: "text", start: index * 240000, duration: 240000,
+      text: `目标 字幕 ${index}`, words: [], style: editor.defaultTextStyle(),
+      transform: editor.defaultTransform(), color: editor.defaultColorAdjustment(), blendMode: "normal",
+    }));
+    session.dispatch(clips.map((clip) => ({ type: "clip.add", sequenceId: "main", clip })),
+      session.getState().identity, "导入字幕");
+  });
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("目标");
+  await page.getByLabel("替换为", { exact: true }).fill("已校对");
+  assert.match(await page.locator(".ec-find-count").textContent(), /1000 条字幕 \/ 1000 处匹配/);
+  const before = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
+  assert.equal(await page.evaluate(() => controller.getState().candidate.operations.length), 1000);
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  // A real click includes the synchronous 1000-row update on two-core CI runners.
+  await page.getByRole("button", { name: "应用预览", exact: true }).click({ timeout: 15000 });
+  await page.waitForFunction(() => captions().every((clip) => clip.text.startsWith("已校对 字幕")));
+  assert.equal(await page.evaluate(() => session.read().revision), before.revision + 1);
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction(() => captions().every((clip) => clip.text.startsWith("目标 字幕")));
+  const restored = await page.evaluate(() => session.read());
+  assert.deepEqual(restored.sequences, before.sequences);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("unchanged caption rows retain native IME ownership through unrelated edits, neighboring saves and Undo", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const [first, second] = await page.evaluate(async () => [
+    await controller.add("main", { start: 0, text: "第一条" }),
+    await controller.add("main", { start: 6 * 240000, text: "第二条" }),
+  ]);
+  const input = page.locator(`[data-caption-id="${second}"] textarea`);
+  await input.focus();
+  await input.evaluate((node) => {
+    globalThis.nativeCaptionInput = node;
+    globalThis.captionCompositionEnds = 0;
+    node.addEventListener("compositionend", () => captionCompositionEnds++);
+    node.setSelectionRange(0, 0);
+  });
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("Input.imeSetComposition", { text: "尚未提交", selectionStart: 4, selectionEnd: 4 });
+    const composing = await input.evaluate((node) => [node.value, node.selectionStart, node.selectionEnd]);
+    await page.evaluate(() => session.dispatch(
+      [{ type: "project.rename", name: "后台更新" }], session.getState().identity,
+    ));
+    await page.evaluate((id) => controller.updateText("main", id, "邻行已保存"), first);
+    await page.evaluate(() => session.undo());
+    assert.deepEqual(await input.evaluate((node) => [
+      node === nativeCaptionInput, node === document.activeElement,
+      node.value, node.selectionStart, node.selectionEnd, captionCompositionEnds,
+    ]), [true, true, ...composing, 0]);
+    await cdp.send("Input.insertText", { text: "确认输入" });
+    assert.equal(await page.evaluate(() => captionCompositionEnds), 1);
+    assert.ok((await input.inputValue()).includes("确认输入"));
+    assert.equal(await page.evaluate((id) => captions().find((clip) => clip.id === id).text, second), "第二条");
+    assert.deepEqual(await page.evaluate(() => errors), []);
+  } finally {
+    await cdp.detach();
+  }
+});
+
+test("keyed caption signatures refresh timing, word counts and narration badges while retained actions use fresh locks", async (t) => {
+  const page = await fixture(t, { inline: true, narration: true });
+  await page.evaluate(() => {
+    globalThis.draftRow = document.querySelector('[data-caption-id="draft-clip"]');
+    globalThis.ownRow = document.querySelector('[data-caption-id="own-clip"]');
+    const clip = captions().find((clip) => clip.id === "own-clip");
+    session.dispatch([{ type: "clip.update", sequenceId: "main", clipId: clip.id,
+      patch: { style: { ...clip.style, fontSize: 72 } } }], session.getState().identity);
+  });
+  assert.equal(await page.evaluate(() => document.querySelector('[data-caption-id="own-clip"]') === ownRow), true);
+  await page.evaluate(() => session.dispatch([{ type: "clip.update", sequenceId: "main", clipId: "own-clip",
+    patch: { words: [{ text: "用户自己的字幕", start: 0, end: 240000 }] } }], session.getState().identity));
+  assert.match(await page.locator('[data-caption-id="own-clip"] small').textContent(), /1 个真实词时间/);
+  assert.equal(await page.evaluate(() => document.querySelector('[data-caption-id="own-clip"]') === ownRow), false);
+  await page.evaluate(() => controller.updateTiming("main", "draft-clip", { start: 6 * 240000, end: 7 * 240000 }));
+  assert.deepEqual(await page.locator(".ec-row").evaluateAll((nodes) => nodes.map((node) => node.dataset.captionId)), ["own-clip", "draft-clip"]);
+  assert.equal(await page.locator('[data-caption-id="draft-clip"] input[data-caption-field="start"]').inputValue(), "6.000");
+  await page.evaluate(() => {
+    const production = session.read().production;
+    session.dispatch([{ type: "project.production", data: { ...production,
+      narration: { ...production.narration, draftCaptionIds: [] } } }], session.getState().identity);
+  });
+  assert.equal(await page.locator(".ec-badge").count(), 0);
+  const own = page.locator('[data-caption-id="own-clip"]');
+  await own.locator('input[type="checkbox"]').uncheck();
+  await page.evaluate(() => {
+    globalThis.lockedRow = document.querySelector('[data-caption-id="own-clip"]');
+    session.dispatch([{ type: "track.update", sequenceId: "main", trackId: "text", patch: { locked: true } }], session.getState().identity);
+  });
+  assert.equal(await page.evaluate(() => document.querySelector('[data-caption-id="own-clip"]') === lockedRow), true);
+  assert.equal(await own.locator('input[type="checkbox"]').isChecked(), false);
+  await own.getByLabel("字幕文字", { exact: true }).fill("保留的锁轨草稿");
+  await own.getByRole("button", { name: "保存文字", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.match(await page.locator(".ec-status").textContent(), /锁定/);
+  assert.equal(await page.evaluate(() => captions().find((clip) => clip.id === "own-clip").text), "用户自己的字幕");
+  await page.evaluate(() => session.dispatch([{ type: "track.update", sequenceId: "main", trackId: "text", patch: { locked: false } }], session.getState().identity));
+  await own.getByRole("button", { name: "保存文字", exact: true }).click();
+  await page.waitForFunction(() => captions().some((clip) => clip.text === "保留的锁轨草稿"));
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction(() => captions().some((clip) => clip.text === "用户自己的字幕"));
+  assert.equal(await own.getByLabel("字幕文字", { exact: true }).inputValue(), "用户自己的字幕");
+  assert.equal(await page.evaluate(() => errors.length), 1);
+});
+
+test("another sequence and a new document generation never reuse old caption rows with identical displayed values", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const id = await page.evaluate(() => controller.add("main", { start: 0, text: "同一字幕" }));
+  await page.evaluate(async (id) => {
+    globalThis.previousCaptionRow = document.querySelector(`[data-caption-id="${id}"]`);
+    const sequence = structuredClone(session.read().sequences[0]);
+    sequence.id = "other";
+    session.dispatch([{ type: "sequence.add", sequence }], session.getState().identity);
+    ui.open("other");
+  }, id);
+  assert.equal(await page.locator(`[data-caption-id="${id}"]`).evaluate((node) => node !== previousCaptionRow), true);
+  await page.evaluate(async (id) => {
+    globalThis.previousCaptionRow = document.querySelector(`[data-caption-id="${id}"]`);
+    await session.replace(session.read());
+  }, id);
+  assert.deepEqual(await page.locator(`[data-caption-id="${id}"]`).evaluate((node) => [
+    node !== previousCaptionRow, previousCaptionRow.isConnected, node.querySelector("textarea").value,
+  ]), [true, false, "同一字幕"]);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("same-document restore discards old text/timing/IME drafts and fences detached row events", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const id = await page.evaluate(() => controller.add("main", { start: 0, text: "同一字幕" }));
+  const row = page.locator(`[data-caption-id="${id}"]`), input = row.getByLabel("字幕文字", { exact: true });
+  await input.fill("旧版本未保存文字");
+  await row.locator('[data-caption-field="start"]').fill("0.25");
+  await row.locator('[data-caption-field="end"]').fill("1.5");
+  await input.focus();
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("Input.imeSetComposition", { text: "旧输入法内容", selectionStart: 6, selectionEnd: 6 });
+    const result = await page.evaluate(async (id) => {
+      const old = document.querySelector(`[data-caption-id="${id}"]`), oldInput = old.querySelector("textarea");
+      const saved = session.read();
+      await session.replace(saved);
+      const identity = session.getState().identity, successor = session.read();
+      oldInput.value = "移除时迟到的输入";
+      oldInput.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertCompositionText", data: "迟到" }));
+      oldInput.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "旧输入法内容" }));
+      for (const button of old.querySelectorAll("button")) button.click();
+      const checkbox = old.querySelector('input[type="checkbox"]');
+      checkbox.checked = false;
+      checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const current = document.querySelector(`[data-caption-id="${id}"]`);
+      return { sameDocument: saved.id === identity.documentId,
+        newNode: current !== old, text: current.querySelector("textarea").value,
+        times: [...current.querySelectorAll('[data-caption-field="start"], [data-caption-field="end"]')].map((field) => field.value),
+        unchanged: JSON.stringify(session.read()) === JSON.stringify(successor),
+        oldFocused: document.activeElement === oldInput,
+        errors: [...errors] };
+    }, id);
+    assert.deepEqual(result, { sameDocument: true, newNode: true, text: "同一字幕", times: ["0.000", "3.000"], unchanged: true, oldFocused: false, errors: [] });
+    // A later unrelated revision must not resurrect events written by the old detached row.
+    await page.evaluate(() => session.dispatch([{ type: "sequence.rename", sequenceId: "main", name: "恢复后" }], session.getState().identity));
+    assert.equal(await input.inputValue(), "同一字幕");
+  } finally { await cdp.detach(); }
+});
+
+test("a successor session at the same document ID and revision owns fresh drafts and listeners", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const id = await page.evaluate(() => controller.add("main", { start: 0, text: "相同版本字幕" }));
+  const input = page.locator(`[data-caption-id="${id}"] textarea`);
+  await input.fill("上一会话草稿");
+  const result = await page.evaluate(async (id) => {
+    const before = session.read(), oldIdentity = session.getState().identity,
+      old = document.querySelector(`[data-caption-id="${id}"]`), previous = session;
+    session = await editor.EditorSession.open({ read: async () => ({ data: before, revision: 1 }),
+      write: async () => ({ revision: 2 }), backupLegacy: async () => {} }, { autosaveDelayMs: 60000 });
+    ui.open("main");
+    for (const button of old.querySelectorAll("button")) button.click();
+    old.querySelector("textarea").dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const next = session.getState().identity;
+    globalThis.previousSession = previous;
+    return { sameId: next.documentId === oldIdentity.documentId, sameRevision: next.revision === oldIdentity.revision,
+      newGeneration: next.generation !== oldIdentity.generation,
+      text: document.querySelector(`[data-caption-id="${id}"] textarea`).value,
+      unchanged: JSON.stringify(session.read()) === JSON.stringify(before) };
+  }, id);
+  assert.deepEqual(result, { sameId: true, sameRevision: true, newGeneration: true, text: "相同版本字幕", unchanged: true });
+  await input.fill("新会话草稿");
+  await page.evaluate(() => session.dispatch([{ type: "sequence.rename", sequenceId: "main", name: "新会话修订" }], session.getState().identity));
+  assert.equal(await input.inputValue(), "新会话草稿");
+  await page.evaluate((id) => session.dispatch([{ type: "clip.update", sequenceId: "main", clipId: id, patch: { text: "新会话已保存值" } }], session.getState().identity), id);
+  assert.equal(await page.locator(`[data-caption-id="${id}"] small`).textContent(), "无词时间，可使用普通字幕");
+  assert.equal(await input.inputValue(), "新会话草稿");
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("switching to a same-ID caption in another sequence never inherits the first sequence's drafts", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const id = await page.evaluate(() => controller.add("main", { start: 0, text: "已保存字幕" }));
+  await page.locator(`[data-caption-id="${id}"] textarea`).fill("第一序列草稿");
+  await page.evaluate(() => {
+    const seq = structuredClone(session.read().sequences[0]);
+    seq.id = "second";
+    session.dispatch([{ type: "sequence.add", sequence: seq }], session.getState().identity);
+    ui.open("second");
+  });
+  assert.equal(await page.locator(`[data-caption-id="${id}"] textarea`).inputValue(), "已保存字幕");
+});
+
+test("a thousand-row refresh retains every unchanged node and replaces only the edited row", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const result = await page.evaluate(async () => {
+    const clips = Array.from({ length: 1000 }, (_, index) => ({
+      id: `stable-caption-${index}`, kind: "text", role: "subtitle", label: "字幕",
+      trackId: "text", start: index * 240000, duration: 240000, text: `字幕 ${index}`, words: [],
+      style: editor.defaultTextStyle(), transform: editor.defaultTransform(),
+      color: editor.defaultColorAdjustment(), blendMode: "normal",
+    }));
+    session.dispatch(clips.map((clip) => ({ type: "clip.add", sequenceId: "main", clip })), session.getState().identity);
+    const rows = document.querySelector(".ec-rows"),
+      initial = [...rows.children],
+      observer = new MutationObserver(() => {});
+    observer.observe(rows, { childList: true });
+    session.dispatch([{ type: "project.rename", name: "仅改工程名" }], session.getState().identity);
+    const unchanged = [...rows.children].every((node, index) => node === initial[index]),
+      unrelatedMutations = observer.takeRecords().length;
+    await controller.updateText("main", "stable-caption-500", "只改这一条");
+    const retained = [...rows.children].filter((node, index) => node === initial[index]).length;
+    session.undo();
+    observer.disconnect();
+    return { unchanged, unrelatedMutations, retained, count: rows.children.length,
+      restored: captions().find((clip) => clip.id === "stable-caption-500").text };
+  });
+  assert.deepEqual(result, { unchanged: true, unrelatedMutations: 0, retained: 999, count: 1000, restored: "字幕 500" });
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("saving punctuation-only corrections keeps real timed highlighting and Undo restores the exact caption", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(async () => {
+    await seed();
+    const caption = captions()[0];
+    session.dispatch([{
+      type: "clip.update", sequenceId: "main", clipId: caption.id,
+      patch: { words: [{ text: "Hello", start: 0, end: 240000 }, { text: "world", start: 240000, end: 480000 }],
+        style: { ...caption.style, animation: "word-highlight" } },
+    }], session.getState().identity);
+    await session.flush();
+  });
+  const before = await page.evaluate(() => captions()[0]);
+  await page.getByLabel("字幕文字", { exact: true }).fill("Hello,\nworld!");
+  await page.getByRole("button", { name: "保存文字", exact: true }).click();
+  await page.waitForFunction(() => captions()[0].text === "Hello,\nworld!");
+  const after = await page.evaluate(() => captions()[0]);
+  assert.deepEqual(after.words, before.words);
+  assert.equal(after.style.animation, "word-highlight");
+  assert.deepEqual(after.sourceBinding, before.sourceBinding);
+  assert.match(await page.locator(".ec-row").innerText(), /词间标点可保留/);
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction(() => captions()[0].text === "Hello world");
+  assert.deepEqual(await page.evaluate(() => captions()[0]), before);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("real textarea caret previews a precise word split, saves once and restores words/bindings with one Undo", async (t) => {
+  const page = await fixture(t, { inline: true, width: 420 });
+  const original = await page.evaluate(async () => {
+    transcript[0].words[0].end = (2 * 240000 - 7) / 240000;
+    transcript[0].words[1].start = (2 * 240000 + 13) / 240000;
+    await seed();
+    return session.read();
+  });
+  const row = page.locator(".ec-row");
+  await row.locator("textarea").evaluate((node) => { node.focus(); node.setSelectionRange(6, 6); });
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  assert.equal(await page.evaluate(() => captions().length), 1);
+  assert.deepEqual(await page.evaluate(() => controller.getState().candidate.rows.map((item) => [item.text, item.start, item.duration, item.wordCount])), [
+    ["Hello ", 240000, 240013, 1], ["world", 480013, 239987, 1],
+  ]);
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 2);
+  assert.equal(await page.evaluate(() => session.read().revision), original.revision + 1);
+  assert.equal(await page.evaluate(() => selection.length), 2);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  const divided = await page.evaluate(() => session.read());
+  assert.equal(divided.sequences[0].clips.find((clip) => clip.kind === "text" && clip.text === "world").sourceBinding.provenance.start, 480013);
+  await page.evaluate(() => session.undo());
+  assert.deepEqual(await page.evaluate(() => session.read().sequences), original.sequences);
+  await page.evaluate(() => session.redo());
+  assert.deepEqual(await page.evaluate(() => session.read().sequences), divided.sequences);
+});
+
+test("untimed captions require an explicit interior split time and never split an emoji grapheme or a text selection", async (t) => {
+  const page = await fixture(t, { inline: true, width: 320 });
+  const id = await page.evaluate(() => controller.add("main", { start: 0, duration: 2 * 240000, text: "A👩‍💻 B" }));
+  const row = page.locator(`[data-caption-id="${id}"]`), input = row.locator("textarea");
+  await input.evaluate((node) => node.setSelectionRange(6, 6));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.match(await page.locator(".ec-status").textContent(), /没有可靠的真实词边界/);
+  assert.equal(await row.locator("details").getAttribute("open"), "");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.evaluate(() => { playhead = 240017; });
+  await row.getByRole("button", { name: "使用播放头时间", exact: true }).click();
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  assert.match(await page.locator(".ec-candidates").textContent(), /手动分割时间/);
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 2);
+  assert.deepEqual(await page.evaluate(() => captions().map((clip) => [clip.text, clip.start, clip.duration, clip.words.length])), [["A👩‍💻", 0, 240017, 0], [" B", 240017, 239983, 0]]);
+  await page.evaluate(() => session.undo());
+  await row.locator("summary").click();
+  await row.getByLabel("手动分割时间（秒）", { exact: true }).fill("0");
+  await input.evaluate((node) => node.setSelectionRange(6, 6));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 2);
+  assert.match(await page.locator(".ec-status").textContent(), /严格位于/);
+  await row.getByLabel("手动分割时间（秒）", { exact: true }).fill("1");
+  await input.evaluate((node) => node.setSelectionRange(3, 3));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 3);
+  assert.match(await page.locator(".ec-status").textContent(), /完整字符/);
+  await input.evaluate((node) => node.setSelectionRange(0, 1));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 4);
+  assert.match(await page.locator(".ec-status").textContent(), /取消文字选区/);
+  assert.equal(await page.evaluate(() => captions().length), 1);
+});
+
+test("caption split protects text and timing drafts before preview and again before apply while preserving other row drafts", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(async () => { await seed(); await controller.add("main", { start: 6 * 240000, text: "旁边的字幕" }); });
+  const first = page.locator(".ec-row").first(), other = page.locator(".ec-row").last();
+  await other.locator("textarea").fill("不受影响的草稿");
+  await first.locator("textarea").fill("尚未保存文字");
+  await first.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.match(await page.locator(".ec-status").textContent(), /未保存/);
+  await first.locator("textarea").fill("Hello world");
+  await first.locator('[data-caption-field="start"]').fill("1.1");
+  await first.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 2);
+  await first.locator('[data-caption-field="start"]').fill("1.000");
+  await first.locator("textarea").evaluate((node) => node.setSelectionRange(6, 6));
+  await first.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  await first.locator('[data-caption-field="end"]').fill("2.9");
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 3);
+  assert.equal(await page.evaluate(() => captions().length), 2);
+  assert.equal(await other.locator("textarea").inputValue(), "不受影响的草稿");
+  await first.locator('[data-caption-field="end"]').fill("3.000");
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 3);
+  assert.equal(await other.locator("textarea").inputValue(), "不受影响的草稿");
+});
+
+test("caption merge previews both lines, guards the removed row's draft and saves one undoable change", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const ids = await page.evaluate(async () => [await controller.add("main", { start: 0, duration: 240000, text: "第一句" }), await controller.add("main", { start: 240000, duration: 240000, text: "第二句" })]);
+  await page.getByRole("button", { name: "全选字幕", exact: true }).click();
+  const before = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "预览合并所选两条字幕", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  assert.equal(await page.locator(".ec-result").textContent(), "第一句\n第二句");
+  const removed = page.locator(`[data-caption-id="${ids[1]}"] textarea`);
+  await removed.fill("第二句的未保存草稿");
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.equal(await page.evaluate(() => captions().length), 2);
+  assert.equal(await removed.inputValue(), "第二句的未保存草稿");
+  await removed.fill("第二句");
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 1);
+  assert.deepEqual(await page.evaluate(() => selection), [ids[0]]);
+  assert.equal(await page.evaluate(() => session.read().revision), before.revision + 1);
+  await page.evaluate(() => session.undo());
+  assert.deepEqual(await page.evaluate(() => session.read().sequences), before.sequences);
+});
+
+test("caption sentence previews retry failed durable saves and restore narration approval with a single Undo", async (t) => {
+  const page = await fixture(t, { inline: true, narration: true });
+  const row = page.locator('[data-caption-id="draft-clip"]');
+  await row.locator("textarea").evaluate((node) => node.setSelectionRange(2, 2));
+  await row.locator("summary").click();
+  await row.getByLabel("手动分割时间（秒）", { exact: true }).fill("0.5");
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  const before = await page.evaluate(() => { fail = true; return session.read(); });
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => controller.getState().phase === "error");
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  assert.equal(await page.locator(".ec-preview").isVisible(), true);
+  await page.evaluate(() => { fail = false; });
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 3);
+  assert.equal(await page.evaluate(() => session.read().production.narration.phase), "review");
+  assert.match(await page.locator(".ec-status").textContent(), /回到待确认/);
+  await page.evaluate(() => session.undo());
+  assert.deepEqual(await page.evaluate(() => session.read().sequences), before.sequences);
+  assert.deepEqual(await page.evaluate(() => session.read().production), before.production);
+});
+
+test("caption split and merge reject locked, translated and incompatible rows with visible explanations and stale previews cannot apply", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(() => seed());
+  const row = page.locator(".ec-row");
+  await row.locator("textarea").evaluate((node) => node.setSelectionRange(6, 6));
+  await page.evaluate(() => session.dispatch([{ type: "track.update", sequenceId: "main", trackId: "text", patch: { locked: true } }], session.getState().identity));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.match(await page.locator(".ec-status").textContent(), /锁定/);
+  await page.evaluate(() => session.dispatch([{ type: "track.update", sequenceId: "main", trackId: "text", patch: { locked: false } }], session.getState().identity));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  await page.evaluate(() => session.replace(session.read()));
+  assert.equal(await page.evaluate(() => controller.getState().phase), "stale");
+  assert.equal(await page.locator(".ec-preview").isVisible(), false);
+  await page.evaluate(async () => { try { await controller.apply(); } catch (error) { errors.push(error.message); } });
+  assert.equal(await page.evaluate(() => captions().length), 1);
+  await page.evaluate(async () => {
+    await controller.translate({ sequenceId: "main", clipIds: [captions()[0].id], language: "英语", mode: "bilingual" });
+    await controller.apply();
+  });
+  await row.locator("textarea").evaluate((node) => node.setSelectionRange(6, 6));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 3);
+  assert.match(await page.locator(".ec-status").textContent(), /含译文字幕暂不支持.*重新生成原字幕/);
+  await page.evaluate(() => session.undo());
+  await row.locator("textarea").evaluate((node) => node.setSelectionRange(6, 6));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 2);
+  await page.evaluate(() => {
+    const right = captions()[1];
+    session.dispatch([{ type: "clip.update", sequenceId: "main", clipId: right.id, patch: { style: { ...right.style, fontSize: right.style.fontSize + 1 } } }], session.getState().identity);
+  });
+  await page.getByRole("button", { name: "全选字幕", exact: true }).click();
+  await page.getByRole("button", { name: "预览合并所选两条字幕", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 4);
+  assert.match(await page.locator(".ec-status").textContent(), /属性不同/);
+  assert.equal(await page.evaluate(() => captions().length), 2);
+});
+
+test("changing manual split time or merge selection discards its previous candidate", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(() => seed());
+  const row = page.locator(".ec-row");
+  await row.locator("textarea").evaluate((node) => node.setSelectionRange(6, 6));
+  await row.locator("summary").click();
+  const time = row.getByLabel("手动分割时间（秒）", { exact: true });
+  await time.fill("2");
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  await time.fill("2.1");
+  assert.equal(await page.locator(".ec-preview").isVisible(), false);
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  await page.evaluate(() => { playhead = 2 * 240000; });
+  await row.getByRole("button", { name: "使用播放头时间", exact: true }).click();
+  assert.equal(await page.locator(".ec-preview").isVisible(), false);
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 2);
+  await page.getByRole("button", { name: "预览合并所选两条字幕", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  await page.locator('.ec-row input[type="checkbox"]').last().uncheck();
+  assert.equal(await page.locator(".ec-preview").isVisible(), false);
+  assert.equal(await page.evaluate(() => captions().length), 2);
+});
+
+test("unproven caption provenance visibly requires detach and the existing detach action allows a safe split", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(async () => {
+    await seed();
+    const doc = session.read(), owner = doc.sequences[0].clips.find((clip) => clip.id === "voice-clip");
+    owner.timeMap.points = [{ time: 0, source: 4 * 240000 }, { time: 4 * 240000, source: 0 }];
+    await session.replace(doc);
+  });
+  const row = page.locator(".ec-row");
+  await row.locator("textarea").evaluate((node) => node.setSelectionRange(6, 6));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.match(await page.locator(".ec-status").textContent(), /解除所选来源绑定/);
+  assert.equal(await page.evaluate(() => captions().length), 1);
+  await page.getByRole("button", { name: "全选字幕", exact: true }).click();
+  await page.getByRole("button", { name: "解除所选来源绑定", exact: true }).click();
+  await page.waitForFunction(() => !captions()[0].sourceBinding);
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 2);
+  await page.evaluate(() => session.undo());
+  assert.equal(await page.evaluate(() => captions().length), 1);
+  assert.equal(await page.evaluate(() => Boolean(captions()[0].sourceBinding)), false);
+});
+
+test("manual split inside a timed word keeps other proven words and visibly drops only the crossing alignment", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(async () => {
+    await seed();
+    await controller.updateStyle("main", [captions()[0].id], { animation: "word-highlight" });
+    session.dispatch([{ type: "track.update", sequenceId: "main", trackId: "audio", patch: { locked: true } }], session.getState().identity);
+  });
+  const row = page.locator(".ec-row"), before = await page.evaluate(() => session.read().sequences);
+  await row.locator("textarea").evaluate((node) => node.setSelectionRange(8, 8));
+  await row.locator("summary").click();
+  await row.getByLabel("手动分割时间（秒）", { exact: true }).fill("2.5");
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  assert.match(await page.locator(".ec-candidates").textContent(), /1 个词时间将清除/);
+  assert.match(await page.locator(".ec-candidates").textContent(), /关闭逐词高亮/);
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 2);
+  assert.deepEqual(await page.evaluate(() => captions().map((clip) => ({ text: clip.text, words: clip.words, animation: clip.style.animation }))), [
+    { text: "Hello wo", words: [{ text: "Hello", start: 0, end: 240000 }], animation: "none" },
+    { text: "rld", words: [], animation: "none" },
+  ]);
+  assert.deepEqual(await page.evaluate(() => session.read().sequences[0].clips.filter((clip) => clip.kind === "media")), before[0].clips.filter((clip) => clip.kind === "media"));
+  await page.evaluate(() => session.undo());
+  assert.deepEqual(await page.evaluate(() => session.read().sequences), before);
+});
+
+test("a row seek finishing after generation replacement never selects its old caption in the successor", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const id = await page.evaluate(async () => {
+    const id = await controller.add("main", { start: 0, text: "延迟定位字幕" });
+    waitSeek = new Promise((resolve) => { globalThis.finishSeek = resolve; });
+    return id;
+  });
+  await page.locator(`[data-caption-id="${id}"] .ec-seek`).click();
+  await page.waitForFunction(() => sought.length === 1);
+  await page.evaluate(async () => {
+    await session.replace(session.read());
+    selectionCalls = [];
+    selection = [];
+    finishSeek();
+    waitSeek = null;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+  assert.deepEqual(await page.evaluate(() => selectionCalls), []);
+  assert.deepEqual(await page.evaluate(() => selection), []);
+  await page.locator(`[data-caption-id="${id}"] .ec-seek`).click();
+  await page.waitForFunction(() => selectionCalls.length === 1);
+  assert.deepEqual(await page.evaluate(() => selectionCalls), [{ sequenceId: "main", ids: [id] }]);
+});
+
+test("queued split and merge clicks belong to their initiating generation", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(async () => {
+    await seed();
+    const doc = session.read();
+    const successor = await editor.EditorSession.open({ read: async () => ({ data: doc, revision: 1 }),
+      write: async () => ({ revision: 2 }), backupLegacy: async () => {} }, { autosaveDelayMs: 60000 });
+    const row = document.querySelector(".ec-row"), input = row.querySelector("textarea");
+    input.setSelectionRange(6, 6);
+    [...row.querySelectorAll("button")].find((button) => button.textContent === "在光标处分句").click();
+    [...document.querySelectorAll("button")].find((button) => button.textContent === "预览合并所选两条字幕").click();
+    session = successor;
+    ui.open("main");
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  assert.equal(await page.evaluate(() => controller.getState().candidate), undefined);
+  assert.equal(await page.evaluate(() => captions().length), 1);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("queued find navigation never reveals a same-ID successor or a disposed workbench", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(() => controller.add("main", { start: 0, text: "查找目标" }));
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("目标");
+  await page.evaluate(async () => {
+    const doc = session.read(), successor = await editor.EditorSession.open({ read: async () => ({ data: doc, revision: 1 }),
+      write: async () => ({ revision: 2 }), backupLegacy: async () => {} }, { autosaveDelayMs: 60000 });
+    [...document.querySelectorAll("button")].find((button) => button.textContent === "下一条匹配").click();
+    session = successor;
+    ui.open("main");
+    selectionCalls = [];
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  assert.deepEqual(await page.evaluate(() => [selectionCalls, sought]), [[], []]);
+  await page.evaluate(async () => {
+    [...document.querySelectorAll("button")].find((button) => button.textContent === "下一条匹配").click();
+    ui.dispose();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  assert.deepEqual(await page.evaluate(() => [selectionCalls, sought]), [[], []]);
+});
+
+test("queued find navigation rejects a changed query and uses an exact updated tick within the same generation", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const id = await page.evaluate(() => controller.add("main", { start: 0, text: "查找目标" }));
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("目标");
+  await page.evaluate(async () => {
+    [...document.querySelectorAll("button")].find((button) => button.textContent === "下一条匹配").click();
+    const input = document.querySelector('[aria-label="查找字幕文字"]');
+    input.value = "没有匹配";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  assert.deepEqual(await page.evaluate(() => [selectionCalls, sought]), [[], []]);
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("目标");
+  await page.evaluate(async (id) => {
+    [...document.querySelectorAll("button")].find((button) => button.textContent === "下一条匹配").click();
+    session.dispatch([{ type: "clip.update", sequenceId: "main", clipId: id, patch: { start: 400013 } }], session.getState().identity);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }, id);
+  assert.deepEqual(await page.evaluate(() => [selectionCalls, sought, soughtExact]), [[{ sequenceId: "main", ids: [id] }], [400013], [true]]);
+});
+
+test("find navigation queued immediately before a busy caption job cannot seek behind that job", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(() => controller.add("main", { start: 0, text: "查找目标" }));
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("目标");
+  await page.evaluate(async () => {
+    waitRead = new Promise((resolve) => { globalThis.finishRead = resolve; });
+    [...document.querySelectorAll("button")].find((button) => button.textContent === "下一条匹配").click();
+    globalThis.findBusyJob = controller.generate({ sequenceId: "main", assetIds: ["voice"] }).catch(() => {});
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  assert.deepEqual(await page.evaluate(() => [selectionCalls, sought]), [[], []]);
+  await page.evaluate(async () => { controller.cancel(); finishRead(); waitRead = null; await findBusyJob; });
+  assert.equal(await page.evaluate(() => captions().length), 1);
+  assert.deepEqual(await page.evaluate(() => errors), []);
 });

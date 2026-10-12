@@ -11,11 +11,14 @@ import {
 } from "../../src/editor/export-settings.js";
 import { validateEditorDocument, sequenceDuration } from "../../src/editor/validation.js";
 import { frameToTicks, ticksToFrame, ticksToSeconds } from "../../src/editor/time.js";
+import { validateExportRange, type ExportRange } from "../../src/editor/export-range.js";
+import { validateAudioMixReport, type EditorAudioMixReport } from "../../src/editor/audio-mix-report.js";
 import { runMediaProcess } from "../process-runner.js";
 
 export interface EditorExportOptions extends EditorFrameRendererOptions {
   /** Completed full-sequence stereo 48 kHz PCM mix, shared with preview. */
   audioFile: string;
+  range?: ExportRange;
   outputPath: string;
   ffmpegPath?: string;
   ffprobePath?: string;
@@ -24,6 +27,45 @@ export interface EditorExportOptions extends EditorFrameRendererOptions {
     completedFrames: number;
     totalFrames: number;
   }): void | Promise<void>;
+}
+
+/** Select original 48 kHz samples in the half-open tick interval; never restart mixing or ducking. */
+export function exportRangeAudioFilter(value: ExportRange): string {
+  const range = validateExportRange(value);
+  return `atrim=start_sample=${Math.ceil(range.start / 5)}:end_sample=${Math.ceil((range.start + range.duration) / 5)},asetpts=PTS-STARTPTS`;
+}
+
+/** Stream the same pre-encoding PCM selection used by the muxer, with bounded memory. */
+export async function measureEditorExportAudioRange(options: {
+  audioFile: string;
+  range: ExportRange;
+  ffmpegPath: string;
+  signal: AbortSignal;
+}): Promise<EditorAudioMixReport> {
+  const range = validateExportRange(options.range),
+    expected = Math.ceil((range.start + range.duration) / 5) - Math.ceil(range.start / 5);
+  let sampleCount = 0, peak = 0, samplesOverFullScale = 0, pending = Buffer.alloc(0);
+  await runMediaProcess(options.ffmpegPath, [
+    "-nostdin", "-v", "error", "-i", options.audioFile,
+    "-map", "0:a:0", "-af", exportRangeAudioFilter(range),
+    "-ac", "2", "-ar", "48000", "-c:a", "pcm_f32le", "-f", "f32le", "pipe:1",
+  ], {
+    signal: options.signal,
+    onStdout(chunk) {
+      const bytes = pending.length ? Buffer.concat([pending, chunk]) : chunk,
+        complete = bytes.length - bytes.length % 8;
+      for (let index = 0; index < complete; index += 8) {
+        const level = Math.max(Math.abs(bytes.readFloatLE(index)), Math.abs(bytes.readFloatLE(index + 4)));
+        if (!Number.isFinite(level) || ++sampleCount > expected)
+          throw new Error("导出范围混音数据无效");
+        peak = Math.max(peak, level);
+        if (level > 1) samplesOverFullScale++;
+      }
+      pending = Buffer.from(bytes.subarray(complete));
+    },
+  });
+  if (pending.length || sampleCount !== expected) throw new Error("导出范围混音数据不完整");
+  return validateAudioMixReport({ sampleCount, peak, samplesOverFullScale });
 }
 
 async function publishWithoutOverwrite(source: string, destination: string) {
@@ -39,12 +81,14 @@ async function publishWithoutOverwrite(source: string, destination: string) {
 /** Produce and verify a real video using the same browser frame renderer as preview. */
 export async function exportEditorSequence(
   options: EditorExportOptions,
-): Promise<{ path: string; frameCount: number; durationSeconds: number; probe: unknown }> {
+): Promise<{ path: string; frameCount: number; durationSeconds: number; probe: unknown; range?: ExportRange }> {
   const document = validateEditorDocument(options.document);
   const profile = validateExportProfile(options.profile);
   const sequence = document.sequences.find((item) => item.id === options.sequenceId);
   if (!sequence) throw new Error("导出序列不存在");
-  const duration = sequenceDuration(sequence);
+  const fullDuration = sequenceDuration(sequence),
+    range = options.range === undefined ? undefined : validateExportRange(options.range, fullDuration),
+    duration = range?.duration ?? fullDuration;
   const frameCount = ticksToFrame(duration, profile.frameRate, "ceil");
   if (!frameCount) throw new Error("空序列无法导出");
   const durationSeconds =
@@ -87,7 +131,7 @@ export async function exportEditorSequence(
     Number(tracks[0].sample_rate) !== 48000 ||
     tracks[0].channels !== 2 ||
     !Number.isFinite(seconds) ||
-    Math.abs(seconds - ticksToSeconds(duration)) > 1 / 48000 + 0.000001
+    Math.abs(seconds - ticksToSeconds(fullDuration)) > 1 / 48000 + 0.000001
   )
     throw new Error("音频混音的格式或时长与序列不一致");
   await mkdir(dirname(options.outputPath), { recursive: true });
@@ -125,7 +169,7 @@ export async function exportEditorSequence(
         // can otherwise negotiate RGB here and insert a later default BT.601 conversion.
         `scale=out_color_matrix=bt709:out_range=limited,format=${profile.videoCodec === "prores" ? "yuv422p10le" : "yuv420p"},setparams=colorspace=bt709:range=limited`,
         "-af",
-        `apad,atrim=end_sample=${Math.ceil(durationSeconds * 48000)}`,
+        `${range ? `${exportRangeAudioFilter(range)},` : ""}apad,atrim=end_sample=${Math.ceil(durationSeconds * 48000)}`,
         ...exportEncodingArguments(profile),
         "-color_primaries",
         "bt709",
@@ -150,7 +194,7 @@ export async function exportEditorSequence(
           try {
             for (let frame = 0; frame < frameCount; frame++) {
               if (inputSignal.aborted) throw new DOMException("视频编码已取消", "AbortError");
-              yield await renderer!.render(frameToTicks(frame, profile.frameRate));
+              yield await renderer!.render((range?.start ?? 0) + frameToTicks(frame, profile.frameRate));
               await options.onProgress?.({
                 phase: "render",
                 completedFrames: frame + 1,
@@ -175,10 +219,12 @@ export async function exportEditorSequence(
       { signal },
     );
     const probe = JSON.parse(result.stdout.toString("utf8"));
-    verifyExportOutput(profile, probe, ticksToSeconds(duration));
+    // A sub-frame range still owns one complete output frame. Container timestamp
+    // rounding must be compared with that encoded length, not the original few ticks.
+    verifyExportOutput(profile, probe, range ? durationSeconds : ticksToSeconds(duration));
     if (signal.aborted) throw new DOMException("视频导出已取消", "AbortError");
     await publishWithoutOverwrite(temporary, options.outputPath);
-    return { path: options.outputPath, frameCount, durationSeconds, probe };
+    return { path: options.outputPath, frameCount, durationSeconds, probe, ...(range ? { range } : {}) };
   } finally {
     await renderer?.close();
     await rm(temporary, { force: true });

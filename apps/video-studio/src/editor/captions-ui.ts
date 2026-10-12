@@ -1,8 +1,9 @@
 import type { CaptionController, CaptionControllerState } from "./caption-controller";
+import { CaptionFindUI } from "./caption-find-ui";
 import { exportEditorSrt, listCaptions } from "./captions";
 import { CAPTION_PRESETS, currentCaptionPreset, type CaptionPreset } from "./caption-presets";
 import { narrationDraftClipIds } from "./narration-edits";
-import type { EditorSession } from "./session";
+import { sameIdentity, type EditorSession } from "./session";
 import { secondsToTicks, snapToFrame, type Tick } from "./time";
 import type { EditorDocument, EditorSequence, TextClip } from "./types";
 export interface EditorCaptionsUIContext {
@@ -13,7 +14,7 @@ export interface EditorCaptionsUIContext {
   /** Playhead of the shown sequence; enables “在播放头添加字幕”. */
   currentTime?(): Tick;
   select?(sequenceId: string, clipIds: string[]): void;
-  seek?(tick: number): void | Promise<void>;
+  seek?(tick: number, exact?: boolean): void | Promise<void>;
   onError?(error: Error): void;
   /** Explains why local transcription is unavailable, naming the missing piece. */
   transcriptionHint?(): string;
@@ -27,6 +28,16 @@ const element = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string) =
 };
 const seconds = (tick: number) => (tick / 240000).toFixed(3);
 const APPROVED = new Set(["approved", "recorded", "aligned"]);
+interface CaptionRow {
+  element: HTMLElement;
+  checkbox: HTMLInputElement;
+  /** Every saved value used by the row's display or event closures. */
+  text: string;
+  start: Tick;
+  duration: Tick;
+  wordCount: number;
+  temporary: boolean;
+}
 function narration(doc: EditorDocument): {
   phase: string;
   captionBasis: string;
@@ -79,16 +90,24 @@ export class EditorCaptionsUI {
   private readonly newText = element("textarea");
   private readonly addButton = element("button", "在播放头添加字幕");
   private readonly exportButton = element("button", "导出所选 SRT");
+  private readonly mergeButton = element("button", "预览合并所选两条字幕");
+  private readonly find: CaptionFindUI;
   private readonly disposers: Array<() => void> = [];
   private unwatch: (() => void) | undefined;
+  private watchedSession?: EditorSession;
   private selected = new Set<string>();
   private sourceIds = new Set<string>();
   private sequenceId = "";
   private revision = "";
   private opened = false;
   private disposed = false;
+  /** File.text() cannot be aborted; retired reads must never publish a candidate or an error. */
+  private fileReadSerial = 0;
   private focused: HTMLElement | undefined;
-  /** Unsaved row edits by clip ID; rows are rebuilt whenever the document changes. */
+  private rowSession?: EditorSession;
+  private rowScope = "";
+  private readonly rowNodes = new Map<string, CaptionRow>();
+  /** Unsaved row edits survive changes to other rows and unrelated project revisions. */
   private readonly drafts = new Map<string, { text?: string; start?: string; end?: string }>();
   constructor(
     container: HTMLElement,
@@ -106,6 +125,27 @@ export class EditorCaptionsUI {
     this.status.className = "ec-status";
     this.narrationNote.className = "ec-narration";
     this.narrationNote.hidden = true;
+    this.find = new CaptionFindUI({
+      session: context.session,
+      controller: context.controller,
+      sequenceId: () => this.sequenceId,
+      selected: () => [...this.selected],
+      assertSaved: (ids) => this.assertSavedRows(ids),
+      run: (task) => this.run(task),
+      reveal: async (match, query) => {
+        const row = [...this.rows.querySelectorAll<HTMLElement>("[data-caption-id]")]
+          .find((item) => item.dataset.captionId === match.clipId);
+        row?.scrollIntoView({ block: "nearest" });
+        const input = row?.querySelector<HTMLTextAreaElement>('[data-caption-field="text"]');
+        if (input) {
+          input.focus({ preventScroll: true });
+          const index = input.value.indexOf(query);
+          if (index >= 0) input.setSelectionRange(index, index + query.length);
+        }
+        context.select?.(this.sequenceId, [match.clipId]);
+        await context.seek?.(match.start, true);
+      },
+    });
     const adding = element("section");
     adding.className = "ec-add";
     this.newText.rows = 2;
@@ -121,6 +161,7 @@ export class EditorCaptionsUI {
     sources.open = true;
     sources.append(element("summary", "声音来源"), this.sourceList);
     this.track.setAttribute("aria-label", "目标字幕轨");
+    this.track.addEventListener("change", () => this.cancelFileRead());
     this.generateButton.dataset.captionGenerate = "";
     this.recheckButton.dataset.captionRecheck = "";
     this.recheckButton.hidden = true;
@@ -140,8 +181,19 @@ export class EditorCaptionsUI {
     const detachButton = element("button", "解除所选来源绑定");
     const importButton = element("button", "导入 SRT"),
       all = element("button", "全选字幕");
-    tools.append(importButton, this.exportButton, all, this.file);
+    tools.append(importButton, this.exportButton, all, this.mergeButton, this.file);
     tools.append(detachButton);
+    this.mergeButton.title = "同轨相邻的两条已保存字幕；文字以换行连接，检查预览后应用";
+    this.mergeButton.addEventListener("click", () => {
+      const session = context.session(), identity = session.getState().identity,
+        sequenceId = this.sequenceId, ids = [...this.selected];
+      this.run(() => {
+        if (context.session() !== session || !sameIdentity(session.getState().identity, identity, false) ||
+            this.sequenceId !== sequenceId) return;
+        this.assertSavedRows(ids, "合并");
+        context.controller.previewMerge({ sequenceId, clipIds: ids });
+      });
+    });
     detachButton.addEventListener("click", () =>
       this.edit(() => context.controller.detach(this.sequenceId, [...this.selected])),
     );
@@ -207,6 +259,7 @@ export class EditorCaptionsUI {
       this.narrationNote,
       presetRow,
       adding,
+      this.find.element,
       this.rows,
       tools,
       this.preview,
@@ -220,6 +273,7 @@ export class EditorCaptionsUI {
     for (const button of this.root.querySelectorAll("button")) button.type = "button";
     close.addEventListener("click", () => this.close());
     this.root.addEventListener("cancel", () => {
+      this.cancelFileRead();
       context.controller.cancel();
     });
     // Rebuilding the surrounding panel detaches this section; remember focus so mount() restores it.
@@ -232,17 +286,29 @@ export class EditorCaptionsUI {
           this.focused = undefined;
       }),
     );
-    this.cancelButton.addEventListener("click", () => context.controller.cancel());
-    this.applyButton.addEventListener("click", () =>
+    this.cancelButton.addEventListener("click", () => {
+      this.cancelFileRead();
+      context.controller.cancel();
+    });
+    this.applyButton.addEventListener("click", () => {
+      const session = context.session(), identity = session.getState().identity,
+        sequenceId = this.sequenceId;
+      const owns = () => !this.disposed && context.session() === session &&
+        sameIdentity(session.getState().identity, identity, false) && this.sequenceId === sequenceId;
       this.edit(async () => {
-        const ids = context.controller.getState().candidate?.rows.map((row) => row.id) ?? [];
+        if (!owns()) return;
+        const candidate = context.controller.getState().candidate,
+          ids = candidate?.rows.map((row) => row.id) ?? [];
+        if (candidate?.replacement) this.assertSavedRows(ids);
+        if (candidate?.sentence) this.assertSavedRows(candidate.sentence.affectedIds, "分句或合并");
         await context.controller.apply();
-        if (this.disposed) return;
-        this.selected = new Set(ids.filter((id) => this.captions().some((clip) => clip.id === id)));
+        if (!owns()) return;
+        const savedIds = new Set(this.captions().map((clip) => clip.id));
+        this.selected = new Set(ids.filter((id) => savedIds.has(id)));
         this.renderRows();
         this.selectionChanged();
-      }),
-    );
+      });
+    });
     this.generateButton.addEventListener("click", () =>
       this.run(() =>
         context.controller.generate({
@@ -318,33 +384,45 @@ export class EditorCaptionsUI {
     });
     importButton.addEventListener("click", () => this.file.click());
     this.file.addEventListener("change", () => {
-      const chosen = this.file.files?.[0];
+      const chosen = this.file.files?.[0],
+        serial = ++this.fileReadSerial,
+        session = context.session(),
+        identity = session.getState().identity,
+        sequenceId = this.sequenceId,
+        trackId = this.track.value;
       this.file.value = "";
+      const owns = () =>
+        !this.disposed &&
+        serial === this.fileReadSerial &&
+        context.session() === session &&
+        sameIdentity(session.getState().identity, identity) &&
+        this.sequenceId === sequenceId &&
+        this.track.value === trackId;
       if (chosen)
-        this.run(async () => {
-          const session = context.session(),
-            identity = session.getState().identity,
-            sequenceId = this.sequenceId;
-          if (chosen.size > 4 * 1024 * 1024) throw new Error("SRT 文件超过4 MiB");
-          const text = await chosen.text();
-          if (this.disposed) return;
-          if (
-            context.session() !== session ||
-            JSON.stringify(context.session().getState().identity) !== JSON.stringify(identity)
-          )
-            throw new Error("读取SRT期间工程已切换，请重新选择文件");
-          context.controller.importSrt({
-            sequenceId,
-            text,
-            ...(this.track.value ? { trackId: this.track.value } : {}),
-          });
-        });
+        this.run(
+          async () => {
+            if (chosen.size > 4 * 1024 * 1024) throw new Error("SRT 文件超过4 MiB");
+            const text = await chosen.text();
+            if (!owns()) return;
+            context.controller.importSrt({
+              sequenceId,
+              text,
+              ...(trackId ? { trackId } : {}),
+            });
+          },
+          owns,
+        );
+    });
+    this.exportButton.addEventListener("pointerdown", (event) => {
+      if (event.button === 0) event.preventDefault();
     });
     this.exportButton.addEventListener("click", () =>
       this.run(async () => {
-        if (!this.selected.size) throw new Error("请先选择字幕");
+        const ids = [...this.selected];
+        if (!ids.length) throw new Error("请先选择字幕");
+        this.assertSavedRows(ids, "导出");
         const doc = context.session().read(),
-          srt = exportEditorSrt(doc, this.sequenceId, [...this.selected]);
+          srt = exportEditorSrt(doc, this.sequenceId, ids);
         const url = URL.createObjectURL(
           new Blob([srt], { type: "application/x-subrip;charset=utf-8" }),
         );
@@ -357,11 +435,16 @@ export class EditorCaptionsUI {
     );
     this.disposers.push(context.controller.subscribe((state) => this.renderState(state)));
   }
-  private run(task: () => void | Promise<void>): void {
+  private cancelFileRead(): void {
+    this.fileReadSerial++;
+  }
+  private run(task: () => void | Promise<void>, owns: () => boolean = () => true): void {
     void Promise.resolve()
-      .then(task)
+      .then(() => {
+        if (!this.disposed && owns()) return task();
+      })
       .catch((error) => {
-        if (this.disposed) return;
+        if (this.disposed || !owns()) return;
         this.status.textContent = (error as Error).message ?? String(error);
         this.context.onError?.(error instanceof Error ? error : new Error(String(error)));
       });
@@ -369,9 +452,12 @@ export class EditorCaptionsUI {
   /** A saved caption change may revoke an approved narration draft; say so right away. */
   private edit(task: () => Promise<unknown>): void {
     this.run(async () => {
-      const before = narration(this.context.session().read()).phase;
+      const session = this.context.session(), identity = session.getState().identity,
+        sequenceId = this.sequenceId,
+        before = narration(session.read()).phase;
       await task();
-      if (this.disposed) return;
+      if (this.disposed || this.context.session() !== session ||
+          !sameIdentity(session.getState().identity, identity, false) || this.sequenceId !== sequenceId) return;
       const after = narration(this.context.session().read()).phase;
       if (APPROVED.has(before) && after === "review")
         this.status.textContent =
@@ -389,7 +475,10 @@ export class EditorCaptionsUI {
     return this.sequence() ? listCaptions(this.context.session().read(), this.sequenceId) : [];
   }
   private selectionChanged() {
+    if (this.context.controller.getState().candidate?.sentence?.action === "merge")
+      this.context.controller.cancel();
     this.syncStyles();
+    this.find.selectionChanged();
     this.context.select?.(this.sequenceId, [...this.selected]);
   }
   private syncStyles() {
@@ -440,6 +529,7 @@ export class EditorCaptionsUI {
     clipId: string,
     field: "text" | "start" | "end",
     saved: string,
+    owns: () => boolean,
   ) {
     input.dataset.captionField = field;
     input.value = saved;
@@ -447,6 +537,7 @@ export class EditorCaptionsUI {
     if (draft?.[field] !== undefined && draft[field] !== saved) input.value = draft[field]!;
     else if (draft) delete draft[field];
     input.addEventListener("input", () => {
+      if (!owns()) return;
       this.drafts.set(clipId, { ...this.drafts.get(clipId), [field]: input.value });
     });
   }
@@ -456,13 +547,37 @@ export class EditorCaptionsUI {
     for (const field of fields) delete draft[field];
     if (!Object.keys(draft).length) this.drafts.delete(clipId);
   }
+  private assertSavedRows(ids: string[], action = "替换"): void {
+    const affected = new Set(ids);
+    if (this.captions().some((clip) => {
+      if (!affected.has(clip.id)) return false;
+      const draft = this.drafts.get(clip.id);
+      return draft && (
+        (draft.text !== undefined && draft.text !== clip.text) ||
+        (draft.start !== undefined && draft.start !== seconds(clip.start)) ||
+        (draft.end !== undefined && draft.end !== seconds(clip.start + clip.duration))
+      );
+    }))
+      throw new Error(`匹配字幕含未保存的文字或时间，请先保存再${action}；草稿已保留。`);
+  }
   private renderRows() {
-    const clips = this.captions(),
+    const session = this.context.session(),
+      identity = session.getState().identity,
+      scope = JSON.stringify([identity.documentId, identity.generation, this.sequenceId]),
+      clips = this.captions(),
       seq = this.sequence(),
-      drafts = this.draftIds(this.context.session().read());
+      drafts = this.draftIds(session.read());
+    const changedScope = this.rowSession !== session || this.rowScope !== scope;
+    if (changedScope) {
+      this.rowSession = session;
+      this.rowScope = scope;
+      this.rowNodes.clear();
+      this.drafts.clear();
+      this.focused = undefined;
+    }
     const active = document.activeElement;
     const focus =
-      active instanceof HTMLElement && this.rows.contains(active) && active.dataset.captionField
+      !changedScope && active instanceof HTMLElement && this.rows.contains(active) && active.dataset.captionField
         ? {
             clipId: active.closest<HTMLElement>("[data-caption-id]")?.dataset.captionId,
             field: active.dataset.captionField,
@@ -474,11 +589,11 @@ export class EditorCaptionsUI {
         : undefined;
     const alive = new Set(clips.map((clip) => clip.id));
     for (const id of this.drafts.keys()) if (!alive.has(id)) this.drafts.delete(id);
-    this.rows.replaceChildren();
+    for (const id of this.rowNodes.keys()) if (!alive.has(id)) this.rowNodes.delete(id);
     this.exportButton.disabled = !clips.length;
     this.exportButton.title = clips.length ? "" : "当前序列还没有字幕";
     if (!clips.length || !seq) {
-      this.rows.append(
+      this.rows.replaceChildren(
         element(
           "p",
           this.context.currentTime
@@ -488,10 +603,30 @@ export class EditorCaptionsUI {
       );
       return;
     }
+    const ordered: HTMLElement[] = [];
     for (const clip of clips) {
+      const cached = this.rowNodes.get(clip.id),
+        temporary = drafts.has(clip.id);
+      if (
+        cached?.text === clip.text &&
+        cached.start === clip.start &&
+        cached.duration === clip.duration &&
+        cached.wordCount === clip.words.length &&
+        cached.temporary === temporary
+      ) {
+        cached.checkbox.checked = this.selected.has(clip.id);
+        ordered.push(cached.element);
+        continue;
+      }
       const row = element("article");
       row.className = "ec-row";
       row.dataset.captionId = clip.id;
+      const sequenceId = this.sequenceId,
+        ownsScope = () => !this.disposed && this.context.session() === session &&
+          sameIdentity(session.getState().identity, identity, false) && this.sequenceId === sequenceId,
+        owns = () => ownsScope() && row.isConnected && this.rowNodes.get(clip.id)?.element === row,
+        runRow = (task: () => void | Promise<void>) => this.run(async () => { if (owns()) await task(); }),
+        editRow = (task: () => Promise<unknown>) => this.edit(async () => { if (owns()) await task(); });
       const head = element("div");
       head.className = "ec-row-head";
       const checkbox = element("input");
@@ -499,6 +634,7 @@ export class EditorCaptionsUI {
       checkbox.checked = this.selected.has(clip.id);
       checkbox.setAttribute("aria-label", `选择字幕 ${clip.text.slice(0, 30)}`);
       checkbox.addEventListener("change", () => {
+        if (!owns()) return;
         if (checkbox.checked) this.selected.add(clip.id);
         else this.selected.delete(clip.id);
         this.selectionChanged();
@@ -510,28 +646,28 @@ export class EditorCaptionsUI {
       seek.type = "button";
       seek.className = "ec-seek";
       seek.addEventListener("click", () =>
-        this.run(async () => {
-          await this.context.seek?.(clip.start);
-          this.context.select?.(this.sequenceId, [clip.id]);
+        runRow(async () => {
+          await this.context.seek?.(clip.start, true);
+          if (owns()) this.context.select?.(sequenceId, [clip.id]);
         }),
       );
       head.append(checkbox, seek);
-      if (drafts.has(clip.id)) {
+      if (temporary) {
         const badge = element("span", "临时字幕");
         badge.className = "ec-badge";
         badge.title = "按文案估时，录音后会按真实口播重排";
         head.append(badge);
       }
       const input = element("textarea");
-      this.draft(input, clip.id, "text", clip.text);
+      this.draft(input, clip.id, "text", clip.text, owns);
       input.setAttribute("aria-label", "字幕文字");
       input.rows = Math.min(4, clip.text.split("\n").length + 1);
       const save = element("button", "保存文字");
       save.type = "button";
       save.addEventListener("click", () =>
-        this.edit(async () => {
+        editRow(async () => {
           await this.context.controller.updateText(this.sequenceId, clip.id, input.value);
-          this.saved(clip.id, ["text"]);
+          if (ownsScope()) this.saved(clip.id, ["text"]);
         }),
       );
       const timing = element("div");
@@ -543,7 +679,7 @@ export class EditorCaptionsUI {
         value.min = "0";
         value.step = "0.001";
         value.inputMode = "decimal";
-        this.draft(value, clip.id, name, seconds(tick));
+        this.draft(value, clip.id, name, seconds(tick), owns);
         wrapper.append(element("span", label), value);
         timing.append(wrapper);
         return value;
@@ -556,36 +692,102 @@ export class EditorCaptionsUI {
       remove.className = "ec-remove";
       remove.title = "删除这条字幕";
       saveTime.addEventListener("click", () =>
-        this.edit(async () => {
+        editRow(async () => {
           const current = this.sequence();
           if (!current) throw new Error("字幕时间线不存在");
           await this.context.controller.updateTiming(this.sequenceId, clip.id, {
             start: inputTick(start, clip.start, current),
             end: inputTick(end, clip.start + clip.duration, current),
           });
-          this.saved(clip.id, ["start", "end"]);
+          if (ownsScope()) this.saved(clip.id, ["start", "end"]);
         }),
       );
       remove.addEventListener("click", () =>
-        this.edit(async () => {
+        editRow(async () => {
           await this.context.controller.remove(this.sequenceId, [clip.id]);
-          this.selected.delete(clip.id);
+          if (ownsScope()) this.selected.delete(clip.id);
         }),
       );
       timing.append(saveTime, remove);
       const actions = element("div");
       actions.className = "ec-row-actions";
-      actions.append(save);
+      const split = element("button", "在光标处分句"), manual = element("details");
+      manual.className = "ec-split-manual";
+      let splitTime: HTMLInputElement | undefined;
+      split.type = "button";
+      split.title = "先在已保存的文字中放置光标；有真实词边界时使用精确词时间，否则填写手动分割时间";
+      const invalidateSplit = () => {
+        const sentence = this.context.controller.getState().candidate?.sentence;
+        if (owns() && sentence?.action === "split" && sentence.affectedIds.includes(clip.id))
+          this.context.controller.cancel();
+      };
+      manual.append(element("summary", "手动分句时间"));
+      const prepareManual = () => {
+        if (splitTime || !owns()) return;
+        splitTime = element("input");
+        splitTime.type = "number";
+        splitTime.min = "0";
+        splitTime.step = "any";
+        splitTime.setAttribute("aria-label", "手动分割时间（秒）");
+        splitTime.placeholder = "请输入片段内部的秒数";
+        splitTime.addEventListener("input", invalidateSplit);
+        const manualLabel = element("label");
+        manualLabel.append(element("span", "手动分割时间（秒）"), splitTime);
+        manual.append(manualLabel,
+          element("small", "留空时仅使用真实词边界。手动时间不估算词时；无法证明归属的词时间将清除。"));
+        if (this.context.currentTime) {
+          const usePlayhead = element("button", "使用播放头时间");
+          usePlayhead.type = "button";
+          usePlayhead.addEventListener("click", () => {
+            if (!owns()) return;
+            splitTime!.value = String(this.context.currentTime!() / 240000);
+            invalidateSplit();
+          });
+          manual.append(usePlayhead);
+        }
+      };
+      manual.addEventListener("toggle", () => { if (manual.open) prepareManual(); });
+      split.addEventListener("click", () => runRow(() => {
+        this.assertSavedRows([clip.id], "分句");
+        if (input.selectionStart !== input.selectionEnd) throw new Error("请取消文字选区，将光标放在需要分句的位置");
+        let time: number | undefined;
+        if (splitTime?.validity.badInput) throw new Error("请输入有效的手动分割秒数");
+        if (splitTime?.value.trim()) time = secondsToTicks(Number(splitTime.value));
+        try {
+          this.context.controller.previewSplit({ sequenceId: this.sequenceId, clipId: clip.id, caret: input.selectionStart,
+            ...(time === undefined ? {} : { time }) });
+        } catch (error) {
+          if (/没有可靠的真实词边界/.test((error as Error).message)) {
+            prepareManual();
+            manual.open = true;
+          }
+          throw error;
+        }
+      }));
+      actions.append(save, split, manual);
       const info = element(
         "small",
         clip.words.length
-          ? `${clip.words.length} 个真实词时间 · 修改文字会清除旧词时间`
+          ? `${clip.words.length} 个真实词时间 · 改词会清除，词间标点可保留`
           : "无词时间，可使用普通字幕",
       );
       row.append(head, input, actions, timing, info);
-      this.rows.append(row);
+      this.rowNodes.set(clip.id, {
+        element: row, checkbox, text: clip.text, start: clip.start, duration: clip.duration,
+        wordCount: clip.words.length, temporary,
+      });
+      ordered.push(row);
     }
-    if (!focus?.clipId) return;
+    // Remove old rows first, so inserting one changed row never detaches its unchanged neighbor.
+    const retained = new Set(ordered);
+    for (const child of [...this.rows.children])
+      if (!retained.has(child as HTMLElement)) child.remove();
+    let cursor = this.rows.firstChild;
+    for (const row of ordered) {
+      if (row === cursor) cursor = cursor.nextSibling;
+      else this.rows.insertBefore(row, cursor);
+    }
+    if (!focus?.clipId || (active instanceof HTMLElement && document.activeElement === active)) return;
     const target = [...this.rows.querySelectorAll<HTMLElement>("[data-caption-id]")]
       .find((row) => row.dataset.captionId === focus.clipId)
       ?.querySelector<HTMLInputElement | HTMLTextAreaElement>(
@@ -653,12 +855,14 @@ export class EditorCaptionsUI {
     this.syncStyles();
     this.syncPreset();
     this.renderNarration();
+    this.find.render();
   }
   private renderState(state: CaptionControllerState) {
     if (this.disposed) return;
     this.status.textContent =
       state.message + (state.total ? ` · ${state.completed}/${state.total}` : "");
     const busy = ["preparing", "transcribing", "translating", "applying"].includes(state.phase);
+    this.find.render(busy);
     this.generateButton.disabled = busy || !state.canTranscribe;
     this.translateButton.disabled = busy || !state.canTranslate;
     // An empty hint means local media support is unavailable, so installing tools cannot help.
@@ -671,6 +875,7 @@ export class EditorCaptionsUI {
     this.recheckButton.hidden = !hint || !this.context.recheckTranscription;
     this.translateButton.title = state.canTranslate ? "" : "当前环境未连接翻译服务";
     this.styleButton.disabled = busy;
+    this.mergeButton.disabled = busy;
     this.addButton.disabled = busy;
     this.preset.disabled = busy;
     this.applyButton.disabled = busy || !state.candidate?.operations.length;
@@ -678,6 +883,13 @@ export class EditorCaptionsUI {
     this.preview.hidden = !state.candidate;
     this.candidateRows.replaceChildren();
     if (state.candidate) {
+      if (state.candidate.replacement) {
+        const change = state.candidate.replacement;
+        const scope = { sequence: "当前序列全部字幕", selected: "仅所选字幕", current: "当前匹配字幕" }[change.scope];
+        this.candidateRows.append(element("p", `${scope}：将替换 ${change.matched} 条字幕中的 ${change.occurrences} 处匹配。检查预览后应用；可一次撤销。`));
+      }
+      if (state.candidate.sentence) this.candidateRows.append(element("p",
+        `${state.candidate.sentence.action === "split" ? "将一条字幕分为两条" : "将相邻两条字幕合为一条"}；仅修改这些字幕，检查文字与时间后应用，可一次撤销。`));
       for (const notice of state.candidate.notices) this.candidateRows.append(element("p", notice));
       for (const row of state.candidate.rows) {
         const item = element("article");
@@ -725,18 +937,21 @@ export class EditorCaptionsUI {
     if (this.disposed) throw new Error("字幕面板已关闭");
     // Inline panels are reopened after every host render; keep selection for the same sequence.
     const reopened = this.inline && this.opened && sequenceId === this.sequenceId;
+    if (!reopened || this.watchedSession !== this.context.session()) this.cancelFileRead();
     this.sequenceId = sequenceId;
     if (!reopened) this.selected = new Set(this.captions().map((clip) => clip.id));
     if (this.inline) this.opened = true;
     else if (!(this.root as HTMLDialogElement).open) (this.root as HTMLDialogElement).showModal();
     this.renderDocument(!reopened);
-    if (!reopened || !this.unwatch) {
+    if (!reopened || !this.unwatch || this.watchedSession !== this.context.session()) {
       this.unwatch?.();
-      this.unwatch = this.context.session().subscribe(() => this.renderDocument());
+      this.watchedSession = this.context.session();
+      this.unwatch = this.watchedSession.subscribe(() => this.renderDocument());
     }
   }
   close() {
     if (this.disposed) return;
+    this.cancelFileRead();
     this.unwatch?.();
     this.unwatch = undefined;
     if (this.inline) {
@@ -749,6 +964,7 @@ export class EditorCaptionsUI {
   }
   dispose() {
     if (this.disposed) return;
+    this.cancelFileRead();
     this.disposed = true;
     this.context.controller.cancel();
     this.unwatch?.();

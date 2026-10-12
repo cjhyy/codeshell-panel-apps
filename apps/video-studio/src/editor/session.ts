@@ -57,6 +57,8 @@ export interface EditorSessionState {
   dirty: boolean;
   canUndo: boolean;
   canRedo: boolean;
+  undoLabel?: string;
+  redoLabel?: string;
   legacyBackupPending: boolean;
   error: SessionError | null;
 }
@@ -251,9 +253,12 @@ export class EditorSession {
     return this.history.read();
   }
   getState(): EditorSessionState {
-    const value = this.history.read();
     return {
-      identity: { documentId: value.id, generation: this.generation, revision: value.revision },
+      identity: {
+        documentId: this.history.documentId,
+        generation: this.generation,
+        revision: this.history.revision,
+      },
       storageRevision: this.storageRevision,
       phase: this.phase,
       saveState:
@@ -269,6 +274,8 @@ export class EditorSession {
       dirty: this.requested > this.saved,
       canUndo: this.history.canUndo,
       canRedo: this.history.canRedo,
+      undoLabel: this.history.undoLabel,
+      redoLabel: this.history.redoLabel,
       legacyBackupPending: this.legacy !== undefined,
       error: this.fault ? { ...this.fault } : null,
     };

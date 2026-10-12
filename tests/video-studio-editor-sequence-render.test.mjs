@@ -221,7 +221,7 @@ function fixture() {
   };
 }
 const apply = (doc, plan) => api.applyEditorOperations(doc, plan.operations, doc.revision);
-async function render(doc, name) {
+async function render(doc, name, range, includeCaptions = true) {
   const workDir = await mkdtemp(join(temporary, `${name}-`)),
     signal = new AbortController().signal,
     audioFile = join(workDir, "mix.wav"),
@@ -243,6 +243,7 @@ async function render(doc, name) {
     height: 64,
     frameRate: { numerator: 30000, denominator: 1001 },
     quality: { mode: "quality", value: 100 },
+    includeCaptions,
   };
   const result = await api.exportEditorSequence({
     document: doc,
@@ -252,6 +253,7 @@ async function render(doc, name) {
     runtimeSource,
     workDir,
     audioFile,
+    range,
     outputPath,
     signal,
   });
@@ -259,6 +261,23 @@ async function render(doc, name) {
     samples = ffmpeg(["-i", audioFile, "-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"]);
   return { result, audio, pixels, samples };
 }
+test("range frames equal the original NTSC frame window through nested source-bound subtitles, transitions and alpha", async () => {
+  const original = fixture();
+  original.sequences[0].background = "#08102080";
+  original.sequences[0].clips.find((clip) => clip.id === "background").transform.opacity = 0.4;
+  const doc = apply(original, api.planCreateCompound(original, "main", ["a"], { name: "原始嵌套" })),
+    before = structuredClone(doc), range = { start: 80080, duration: 80080 },
+    full = await render(doc, "full-source-clock"),
+    part = await render(doc, "range-source-clock", range),
+    noCaptions = await render(doc, "range-no-captions", range, false),
+    bytesPerFrame = 96 * 64 * 3;
+  assert.equal(part.result.frameCount, 10);
+  assert.equal(part.result.durationSeconds, 1001 / 3000);
+  assert.deepEqual(part.result.range, range);
+  assert.deepEqual(part.pixels, full.pixels.subarray(10 * bytesPerFrame, 20 * bytesPerFrame), compareBytes(part.pixels, full.pixels.subarray(10 * bytesPerFrame, 20 * bytesPerFrame), "range RGB"));
+  assert.notDeepEqual(part.pixels, noCaptions.pixels, "includeCaptions reaches the source-bound nested subtitle");
+  assert.deepEqual(doc, before);
+});
 test("real native NTSC export and PCM remain identical before compound creation and after unpack, including transparency, transitions, nonlinear/reverse source times and Chinese text", async () => {
   const doc = fixture(),
     plan = api.planCreateCompound(doc, "main", ["a"], { name: "开场复合" }),

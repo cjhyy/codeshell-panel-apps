@@ -4,6 +4,10 @@ import { EditorExportBatch } from "../apps/video-studio/src/editor/export-batch"
 import { createExportPresets } from "../apps/video-studio/src/editor/export-settings";
 import { migrateLegacyProject } from "../apps/video-studio/src/editor/migration";
 import { createDemoProject } from "../apps/video-studio/src/model";
+import { validateExportRange, type ExportRange } from "../apps/video-studio/src/editor/export-range";
+import { sequenceDuration } from "../apps/video-studio/src/editor/validation";
+import { exportAudioMixWarning } from "../apps/video-studio/src/editor/audio-mix-report";
+import { canonicalRenderMediaJob } from "../apps/video-studio/src/editor/render-media-job";
 function document() {
   const doc = migrateLegacyProject(createDemoProject()),
     first = doc.sequences[0]!;
@@ -193,4 +197,62 @@ test("sparse selections cannot silently turn a requested export batch into an em
     profiles = createExportPresets();
   assert.throws(() => new EditorExportBatch(doc, new Array<string>(1), profiles));
   assert.throws(() => new EditorExportBatch(doc, [doc.sequences[0]!.id], new Array(1)));
+});
+
+test("range export freezes its original sequence and interval across partial retries", async () => {
+  const doc = document(),
+    before = structuredClone(doc),
+    source = doc.sequences[0]!,
+    range = { start: 80085, duration: 240240 },
+    expected = { ...range },
+    batch = new EditorExportBatch(doc, [source.id], createExportPresets().slice(0, 2), range);
+  range.start = 100000;
+  const received: string[] = [];
+  let failed = false;
+  const accept = async (snapshot: typeof doc, sequenceId: string, _profile: unknown, _signal: AbortSignal, receivedRange?: ExportRange) => {
+    assert.equal(sequenceId, source.id);
+    assert.deepEqual(snapshot, before);
+    assert.deepEqual(receivedRange, expected);
+    receivedRange!.start = 0;
+    if (received.length === 1 && !failed) { failed = true; throw new Error("retry"); }
+    received.push(sequenceId);
+  };
+  await assert.rejects(batch.submit(accept, signal()), /retry/);
+  await batch.submit(accept, signal());
+  assert.deepEqual(received, [source.id, source.id]);
+  assert.deepEqual(doc, before);
+});
+
+test("empty, out-of-bounds, unsafe and unavailable export ranges reject before submission", () => {
+  const doc = document(), id = doc.sequences[0]!.id;
+  for (const range of [
+    { start: -1, duration: 10 },
+    { start: 0, duration: 0 },
+    { start: 0.5, duration: 10 },
+    { start: Number.NaN, duration: 10 },
+    { start: sequenceDuration(doc.sequences[0]!), duration: 1 },
+    { start: 0, duration: Number.MAX_SAFE_INTEGER },
+  ]) assert.throws(() => validateExportRange(range, sequenceDuration(doc.sequences[0]!)));
+  for (const range of [null, [], { start: 0, duration: 10, extra: true }, { start: 0 }, "range"])
+    {
+      assert.throws(() => validateExportRange(range));
+      assert.throws(() => new EditorExportBatch(doc, [id], createExportPresets(), range as ExportRange));
+    }
+  assert.throws(() => new EditorExportBatch(doc, ["missing"], createExportPresets(), { start: 0, duration: 10 }), /不存在/);
+  assert.throws(() => new EditorExportBatch(doc, doc.sequences.map((item) => item.id), createExportPresets(), { start: 0, duration: 10 }), /只能选择一个序列/);
+});
+
+test("export range receipts and overload warnings cannot masquerade as another interval", () => {
+  const range = { start: 80085, duration: 240240 },
+    request = { action: "render", documentHash: "a".repeat(64), sequenceId: "main", range },
+    audioMix = { documentHash: request.documentHash, sequenceId: "main", range, sampleCount: 48048, peak: 1.2, samplesOverFullScale: 100 },
+    result = { verified: true, range, audioMix, video: { id: `asset-${"b".repeat(64)}`, sha256: "b".repeat(64), bytes: 100, mimeType: "video/mp4" }, frameCount: 31, durationSeconds: 31 / 30 },
+    job = { id: "range-job", entry: { name: "editor-runtime" }, input: { request }, result, status: "succeeded", attempt: 1, createdAt: 1, updatedAt: 1 };
+  assert.match(exportAudioMixWarning(result, request), /降低音轨/);
+  assert.equal(exportAudioMixWarning({ ...result, audioMix: { ...audioMix, range: { start: 0, duration: range.duration } } }, request), "");
+  assert.equal(exportAudioMixWarning({ ...result, audioMix: { ...audioMix, range: undefined } }, request), "");
+  assert.equal(exportAudioMixWarning(result, { ...request, range: undefined }), "");
+  assert.equal(canonicalRenderMediaJob(job).type, "render");
+  assert.throws(() => canonicalRenderMediaJob({ ...job, result: { ...result, range: { start: 0, duration: range.duration } } }), /已核验/);
+  assert.throws(() => canonicalRenderMediaJob({ ...job, result: { ...result, range: undefined } }), /已核验/);
 });

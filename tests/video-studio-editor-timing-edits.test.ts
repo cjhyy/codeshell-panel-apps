@@ -8,7 +8,7 @@ import {
   planMagneticRemove,
 } from "../apps/video-studio/src/editor/timing-edits";
 import { setClipTimeMap } from "../apps/video-studio/src/editor/clip-edits";
-import { applyEditorOperations } from "../apps/video-studio/src/editor/operations";
+import { applyEditorOperations, type EditorOperation } from "../apps/video-studio/src/editor/operations";
 import {
   createTrack,
   defaultAudioMix,
@@ -19,6 +19,7 @@ import {
 import { EditorHistory } from "../apps/video-studio/src/editor/history";
 import type { EditorDocument, MediaClip, TextClip } from "../apps/video-studio/src/editor/types";
 import { validateEditorDocument } from "../apps/video-studio/src/editor/validation";
+import { dragReadoutRange, dragReadoutSeconds } from "../apps/video-studio/src/editor/timeline-drag-readout";
 const T = 240000;
 function fixture(): EditorDocument {
   const media = (id: string, start: number, trackId = "video"): MediaClip => ({
@@ -543,4 +544,119 @@ test("magnetic operations reject locked affected dependencies and leave audio-on
   );
   assert.equal(read(moved, "sound").start, 4 * T + 8000);
   assert.deepEqual(read(moved, "b"), read(audio, "b"));
+});
+
+test("equal ripple shifts batch disconnected components without double-moving linked audio, captions or transitions", () => {
+  const initial = fixture(),
+    before = apply(initial, planTransition(initial, "main", "b", "c", {
+      id: "bc", kind: "dissolve", duration: T,
+    })),
+    snapshot = structuredClone(before),
+    history = new EditorHistory(before),
+    operations = planClipTiming(before, "main", ["a"], { kind: "keep-left", time: 2 * T }, { ripple: true }),
+    movements = operations.filter((operation) => operation.type === "clip.move");
+  assert.equal(movements.length, 1);
+  assert.deepEqual(new Set(movements[0]!.clipIds), new Set(["b", "sound", "cb", "c"]));
+  assert.equal(movements[0]!.delta, -2 * T);
+  history.apply(operations, history.revision, "同步裁切");
+  const after = history.read();
+  for (const id of ["b", "sound", "cb"]) assert.equal(read(after, id).start, 2 * T);
+  assert.equal(read(after, "c").start, 5 * T);
+  assert.equal(read(after, "ca").duration, 2 * T);
+  assert.equal(after.sequences[0]!.transitions[0]!.start, 5 * T);
+  assert.equal(after.sequences[0]!.transitions[0]!.duration, T);
+  assert.deepEqual(before, snapshot);
+  history.undo();
+  assert.deepEqual(history.read(), { ...before, revision: before.revision + 2 });
+  assert.equal(history.canUndo, false);
+});
+
+test("a locked later movement component rejects the whole merged ripple and magnetic move", () => {
+  const before = fixture(),
+    sequence = before.sequences[0]!,
+    companion = structuredClone(read(before, "sound"));
+  sequence.tracks.push({ ...createTrack("later-audio", "audio"), locked: true });
+  companion.id = "later-sound";
+  companion.trackId = "later-audio";
+  companion.start = 8 * T;
+  companion.linkGroupId = "later-link";
+  read(before, "c").linkGroupId = "later-link";
+  sequence.clips.push(companion);
+  const snapshot = structuredClone(before),
+    history = new EditorHistory(before);
+  assert.throws(() => planClipTiming(before, "main", ["a"], { kind: "keep-left", time: 2 * T }, { ripple: true }), /锁定/);
+  assert.throws(() => planMagneticMove(before, "main", ["a"], { delta: 12 * T }), /锁定/);
+  assert.deepEqual(before, snapshot);
+  assert.deepEqual(history.read(), snapshot);
+  assert.equal(history.canUndo, false);
+});
+
+test("indexed magnetic planning retains strict whole-document validation and nested source bounds", () => {
+  const malformed = fixture();
+  let getterCalls = 0;
+  Object.defineProperty(malformed, "name", { enumerable: true, get() { getterCalls++; return "unsafe"; } });
+  assert.throws(() => planMagneticMove(malformed, "main", ["a"], { delta: 0 }), /访问器/);
+  assert.throws(() => planClipTiming(malformed, "main", ["a"], { kind: "keep-left", time: 2 * T }), /访问器/);
+  assert.equal(getterCalls, 0);
+  const before = fixture();
+  before.sequences.push({
+    ...structuredClone(before.sequences[0]!),
+    id: "outer",
+    clips: [{
+      id: "nested", kind: "sequence", sequenceId: "main", label: "嵌套实例", trackId: "video",
+      start: 0, duration: 12 * T,
+      timeMap: { points: [{ time: 0, source: 0 }, { time: 12 * T, source: 12 * T }] },
+      audio: defaultAudioMix(), transform: defaultTransform(), color: defaultColorAdjustment(), blendMode: "normal",
+    }],
+    transitions: [], markers: [],
+  });
+  const valid = validateEditorDocument(before), snapshot = structuredClone(valid);
+  assert.throws(() => planClipTiming(valid, "main", ["a"], { kind: "keep-left", time: 2 * T }, { ripple: true }), /来源|素材|超出|映射/);
+  assert.deepEqual(valid, snapshot);
+});
+
+test("drag readout follows validated magnetic operation order, trims and no-op ranges without changing the source", () => {
+  const document = fixture();
+  document.sequences[0]!.timelineMode = "magnetic";
+  document.sequences[0]!.magneticTrackId = "video";
+  const before = structuredClone(document), anchor = read(document, "b");
+  const plans = [
+    planMagneticMove(document, "main", ["b", "sound"], { delta: 5 * T, anchorClipId: "b" }),
+    planMagneticMove(document, "main", ["b", "sound"], { delta: 0, anchorClipId: "b" }),
+    planClipTiming(document, "main", ["b"], { kind: "keep-right", time: 5 * T + 13 }, { ripple: true }),
+    planClipTiming(document, "main", ["b"], { kind: "keep-left", time: 7 * T + 19 }, { ripple: true }),
+  ];
+  for (const operations of plans) {
+    const committed = read(apply(document, operations), "b");
+    assert.deepEqual(dragReadoutRange("main", anchor, operations), {
+      start: committed.start, end: committed.start + committed.duration, duration: committed.duration,
+    });
+  }
+  assert.deepEqual(document, before);
+});
+
+test("drag readout projects repeated moves and updates exactly and never invents a deleted clip range", () => {
+  const anchor = Object.freeze({ id: "a", start: 240013, duration: 480019 });
+  const operations: EditorOperation[] = [
+    { type: "clip.move", sequenceId: "main", clipIds: ["a", "b"], delta: 8008 },
+    { type: "clip.update", sequenceId: "main", clipId: "a", patch: { start: 12, duration: 240019 } },
+    { type: "clip.move", sequenceId: "main", clipIds: ["a"], delta: 240013 },
+    { type: "clip.move", sequenceId: "other", clipIds: ["a"], delta: 1 },
+    { type: "clip.update", sequenceId: "main", clipId: "other", patch: { start: 0 } },
+  ];
+  // The helper needs no document/evaluator, validation pass or structured clone.
+  const clone = globalThis.structuredClone;
+  globalThis.structuredClone = () => { throw new Error("unexpected copy"); };
+  try {
+    assert.deepEqual(dragReadoutRange("main", anchor, operations), {
+      start: 240025, end: 480044, duration: 240019,
+    });
+    assert.equal(dragReadoutRange("main", anchor, [
+      { type: "clip.remove", sequenceId: "main", clipIds: ["a"] },
+    ]), undefined);
+    assert.equal(dragReadoutSeconds(1), "0.000004 秒");
+    assert.equal(dragReadoutSeconds(-1, true), "-0.000004 秒");
+    assert.equal(dragReadoutSeconds(0, true), "+0.000000 秒");
+    assert.equal(dragReadoutSeconds(240013), "1.000054 秒");
+  } finally { globalThis.structuredClone = clone; }
 });

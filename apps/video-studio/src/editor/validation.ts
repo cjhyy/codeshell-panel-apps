@@ -221,6 +221,10 @@ function transform(value: unknown, duration: Tick): Transform {
     crop: bounds,
   };
 }
+/** Validate and detach a standalone color value using the same JSON and color contract as documents. */
+export function validateColorAdjustment(value: unknown, duration: Tick): ColorAdjustment {
+  return adjustment(copyData(value), tick(duration, "调色时长"));
+}
 function adjustment(value: unknown, duration: Tick): ColorAdjustment {
   const data = object(
     value,

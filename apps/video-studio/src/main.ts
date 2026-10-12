@@ -88,6 +88,7 @@ import { RoughCutAIController, type RoughCutAISnapshot } from "./rough-cut-ai";
 import type { EditReceipt } from "./editor/history";
 import { EditorSession, sameIdentity, type SessionIdentity } from "./editor/session";
 import { EditorWorkspace } from "./editor/workspace-ui";
+import type { PreviewResolution } from "./editor/compositor";
 import { migrateLegacyProject, readEditorDocument } from "./editor/migration";
 import {
   projectLegacyView,
@@ -102,6 +103,7 @@ import type { EditorDocument } from "./editor/types";
 import { applyEditorOperations, type EditorOperation } from "./editor/operations";
 import { sequenceDuration } from "./editor/validation";
 import { formatFrameRate, secondsToTicks, ticksToSeconds } from "./editor/time";
+import { exportRangeLabel, type ExportRange } from "./editor/export-range";
 import { browserExportReason, recordEditorSequence } from "./editor/browser-export";
 import {
   legacyClipIssue,
@@ -255,6 +257,58 @@ const workspaceLayout = createWorkspaceLayout(studio, {
   },
 });
 window.addEventListener("pagehide", () => workspaceLayout.dispose(), { once: true });
+const previewQualityKey = "video-studio-preview-quality-v1";
+let previewQualityChoice: PreviewResolution | undefined;
+let previewQualityStamp = 0;
+let previewQualityChoiceStamp = 0;
+let previewQualityWrite = Promise.resolve();
+function readPreviewQuality(value: unknown): { value: PreviewResolution; updatedAt: number } | undefined {
+  if (typeof value === "number" && [1, 0.5, 0.25].includes(value))
+    return { value: value as PreviewResolution, updatedAt: 0 };
+  if (!value || typeof value !== "object") return;
+  const record = value as { value?: unknown; updatedAt?: unknown };
+  if (typeof record.value === "number" && [1, 0.5, 0.25].includes(record.value) &&
+      typeof record.updatedAt === "number" && Number.isSafeInteger(record.updatedAt) && record.updatedAt >= 0 &&
+      Number.isFinite(new Date(record.updatedAt).getTime()))
+    return { value: record.value as PreviewResolution, updatedAt: record.updatedAt };
+}
+const previewQualityPreference = {
+  async load(): Promise<unknown> {
+    if (previewQualityChoice !== undefined) return previewQualityChoice;
+    let host: ReturnType<typeof readPreviewQuality>, local: ReturnType<typeof readPreviewQuality>;
+    if (panel)
+      try {
+        host = readPreviewQuality(await panel.call("storage.get", { key: previewQualityKey }));
+      } catch { /* Browser storage remains available when Host storage is unavailable. */ }
+    try {
+      local = readPreviewQuality(JSON.parse(localStorage.getItem(previewQualityKey) ?? "null"));
+    } catch { /* Either valid copy can restore a viewer preference. */ }
+    const latest = host && (!local || host.updatedAt >= local.updatedAt) ? host : local;
+    previewQualityStamp = Math.max(previewQualityStamp, latest?.updatedAt ?? 0);
+    if (previewQualityChoice !== undefined) {
+      // A late older choice with a newer clock must not defeat this page's explicit selection.
+      if (latest && latest.updatedAt > previewQualityChoiceStamp && latest.value !== previewQualityChoice)
+        void previewQualityPreference.save(previewQualityChoice).catch(() => {});
+      return previewQualityChoice;
+    }
+    return latest?.value ?? null;
+  },
+  save(value: PreviewResolution): Promise<void> {
+    previewQualityChoice = value;
+    previewQualityStamp = Math.max(Date.now(), previewQualityStamp + 1);
+    previewQualityChoiceStamp = previewQualityStamp;
+    const record = { value, updatedAt: previewQualityStamp };
+    try { localStorage.setItem(previewQualityKey, JSON.stringify(record)); }
+    catch { /* A current Host copy remains useful if browser storage cannot be written. */ }
+    previewQualityWrite = previewQualityWrite.catch(() => {}).then(async () => {
+      if (panel)
+        try {
+          await panel.call("storage.set", { key: previewQualityKey, value: record });
+        } catch { /* A preference failure must never block the video document. */ }
+    });
+    return previewQualityWrite;
+  },
+};
 const library = new MediaLibrary({ resolveManagedUrl: (id) => resourcePreviewUrl(panel, id) });
 let panelVisible = true;
 let thumbnailObserver: IntersectionObserver | undefined;
@@ -283,6 +337,10 @@ let sourceFrame = 0;
 let mediaPreview = false;
 const selectedMedia = new Set<string>();
 const mediaPreferences = readMediaLibraryPreferences();
+let mediaSelectionAnchor: { id: string; scope: string } | undefined;
+let mediaCheckboxActivation: {
+  input: HTMLInputElement; scope: string; click: MouseEvent; timer: number;
+} | undefined;
 let mediaMenuGeneration = -1;
 let pendingMediaDeletion: { project: Project; generation: number; ids: string[] } | undefined;
 const mediaMenu = createMediaLibraryMenu({
@@ -402,6 +460,11 @@ let generation = 0;
 let inspectorDraftKey = "";
 let renderedProjectId = "";
 let renderedGeneration = -1;
+let renderedLegacyZoomScope = "";
+let legacyZoomPress: { input: HTMLInputElement; pointerId: number; scope: string } | undefined;
+let mediaActionPress: { button: HTMLElement; pointerId: number; scope: string; timer?: number } | undefined;
+let deferredMediaRender: "full" | "library" | undefined;
+const cancelledMediaButtons = new WeakSet<HTMLElement>();
 const processedTasks = new Set<string>();
 let playback: AbortController | null = null;
 let exporting: AbortController | null = null;
@@ -1649,12 +1712,17 @@ function assertEditorEditable(): void {
   )
     throw new Error("自动制作正在处理当前工程，请等待完成或先停止制作");
 }
-function synchronizeLegacyView(): void {
+function synchronizeLegacyView(): EditorDocument | undefined {
   if (!editorSession) return;
-  const doc = editorSession.read();
-  const identity = editorSession.getState().identity;
+  const session = editorSession,
+    identity = session.getState().identity;
   const signature = `${identity.documentId}:${identity.generation}:${identity.revision}`;
   if (signature === legacySignature) return;
+  const doc = session.read(), current = session.getState().identity;
+  if (
+    session !== editorSession || doc.id !== identity.documentId || doc.revision !== identity.revision ||
+    !sameIdentity(identity, current)
+  ) return;
   const previousSequence = legacyView?.sequenceId;
   const previousId = project.id;
   legacyView = projectLegacyView(doc);
@@ -1672,6 +1740,7 @@ function synchronizeLegacyView(): void {
   frame = Math.min(frame, Math.max(0, duration() - 1));
   if (![...project.clips, ...(project.audioClips ?? [])].some((clip) => clip.id === selected))
     selected = project.clips[0]?.id ?? "";
+  return doc;
 }
 function legacyCandidateKey(value: Project): string {
   return JSON.stringify(validateProject(value), (_key, item) =>
@@ -2023,14 +2092,56 @@ async function replace(next: unknown, expectedIdentity?: SessionIdentity): Promi
   if (production.enabled) await production.refresh();
 }
 
+/** The browser-only frame timeline may keep a live native range in this exact view. */
+function legacyZoomScope(): string {
+  return JSON.stringify([
+    editorSession?.getState().identity, generation, project.id, project.revision,
+    legacyView?.sequenceId, tab, sourcePreviewActive(),
+  ]);
+}
+
+/** Patch only the range's connected ancestor path; a detach/reattach loses native dragging. */
+function patchLegacyZoomBranch(previous: Element, next: Element, input: HTMLInputElement): void {
+  const uncommitted = previous === input && input.value !== input.defaultValue &&
+    input.defaultValue === (next as HTMLInputElement).value;
+  for (const attribute of [...previous.attributes])
+    if (!next.hasAttribute(attribute.name)) previous.removeAttribute(attribute.name);
+  for (const attribute of [...next.attributes])
+    if (!(uncommitted && attribute.name === "value"))
+      previous.setAttribute(attribute.name, attribute.value);
+  if (previous === input) {
+    if (!uncommitted) input.value = (next as HTMLInputElement).value;
+    return;
+  }
+  for (const child of [...next.children]) {
+    const existing = [...previous.children].find((element) =>
+      child.id ? element.id === child.id : child.getAttribute("data-action")
+        ? element.getAttribute("data-action") === child.getAttribute("data-action")
+        : element.className === child.className,
+    );
+    if (existing === input || existing?.contains(input))
+      patchLegacyZoomBranch(existing, child, input);
+    else if (existing) existing.replaceWith(child);
+    else previous.append(child);
+  }
+}
+
 /** Keep the editor mounted while production/library views refresh around it.
  * Detaching its canvas would lose pointer capture, focus and open editor dialogs. */
 function renderStudioShell(): void {
   const markup = views().shell();
   const workspace = studio.querySelector<HTMLElement>(".workspace");
-  if (!editorRoot || !workspace || !workspace.contains(editorRoot)) {
+  const zoomScope = legacyWorkspacePreview ? legacyZoomScope() : "";
+  if (legacyZoomPress && (legacyZoomPress.scope !== zoomScope || !legacyZoomPress.input.isConnected))
+    legacyZoomPress = undefined;
+  const active = legacyZoomPress?.input ?? document.activeElement;
+  const liveZoom = legacyWorkspacePreview && zoomScope === renderedLegacyZoomScope &&
+    active instanceof HTMLInputElement && active.id === "timeline-zoom" &&
+    workspace?.contains(active) ? active : undefined;
+  if (!workspace || (!workspace.contains(editorRoot ?? null) && !liveZoom)) {
     studio.innerHTML = markup;
     if (editorRoot) studio.querySelector(".workspace")!.append(editorRoot);
+    renderedLegacyZoomScope = zoomScope;
     return;
   }
   const next = document.createElement("div");
@@ -2042,8 +2153,13 @@ function renderStudioShell(): void {
     const previous = [...workspace.children].find(
       (element) => element !== editorRoot && element.classList.contains(child.classList[0]!),
     );
-    if (previous) previous.replaceWith(child);
-    else workspace.insertBefore(child, editorRoot);
+    if (previous && liveZoom && previous.contains(liveZoom))
+      patchLegacyZoomBranch(previous, child, liveZoom);
+    else if (showingMediaLibrary() && previous?.classList.contains("library-panel") &&
+        previous.querySelector(".library-find #asset-search"))
+      renderMediaLibrary(previous as HTMLElement, child.innerHTML);
+    else if (previous) previous.replaceWith(child);
+    else workspace.insertBefore(child, editorRoot ?? null);
   }
   for (const child of [...next.children]) {
     if (child === nextWorkspace) continue;
@@ -2053,9 +2169,13 @@ function renderStudioShell(): void {
     if (previous) previous.replaceWith(child);
     else studio.append(child);
   }
+  renderedLegacyZoomScope = zoomScope;
 }
 
 function render(): void {
+  reconcileMediaSelectionAnchor();
+  if (deferMediaActionRender("full")) return;
+  deferredMediaRender = undefined;
   if (timelineGestures.deferRender()) return;
   if (renderedFeatureTab !== tab) {
     libraryView = "feature";
@@ -2327,15 +2447,125 @@ function rememberTimelineClipFocus(): (() => void) | undefined {
 }
 
 function refreshMediaLibrary(): void {
+  reconcileMediaSelectionAnchor();
   // A feature page (e.g. 字幕) owns the panel; rewriting it in place would drop its mounted
   // content until the next full render, which background imports and job results defer.
   if (!showingMediaLibrary()) return;
+  if (deferMediaActionRender("library")) return;
+  if (deferredMediaRender === "library") deferredMediaRender = undefined;
   const restoreAssetFocus = rememberMediaAssetFocus();
   const scroll = $(".library-panel").scrollTop;
-  $(".library-panel").innerHTML = views().renderLibrary();
+  renderMediaLibrary($(".library-panel"), views().renderLibrary());
   $(".library-panel").scrollTop = scroll;
   restoreAssetFocus?.();
   observeVisibleThumbnails();
+}
+
+/** Keep the native search editor connected while presentation and results refresh. */
+function renderMediaLibrary(container: HTMLElement, markup: string): void {
+  const find = container.querySelector<HTMLElement>(".library-find"),
+    input = find?.querySelector<HTMLInputElement>("#asset-search");
+  if (!find || !input || renderedProjectId !== project.id || renderedGeneration !== generation ||
+    !showingMediaLibrary()) {
+    container.innerHTML = markup;
+    return;
+  }
+  const next = document.createElement("div");
+  next.innerHTML = markup;
+  const nextFind = next.querySelector<HTMLElement>(".library-find"),
+    nextInput = nextFind?.querySelector<HTMLInputElement>("#asset-search");
+  if (!nextFind || !nextInput) {
+    container.innerHTML = markup;
+    return;
+  }
+  if (input.value !== nextInput.value &&
+    (document.activeElement !== input || input.defaultValue !== nextInput.value))
+    input.value = nextInput.value;
+  input.defaultValue = nextInput.value;
+  for (const button of find.querySelectorAll<HTMLButtonElement>("[data-action='media-view']")) {
+    const replacement = nextFind.querySelector<HTMLButtonElement>(
+      `[data-action='media-view'][data-id='${CSS.escape(button.dataset.id!)}']`,
+    );
+    if (replacement) button.setAttribute("aria-pressed", replacement.getAttribute("aria-pressed")!);
+  }
+  // Replace siblings around this live island; detaching/reinserting an input can lose native IME.
+  for (const child of [...container.childNodes]) if (child !== find) child.remove();
+  let beforeFind = true;
+  for (const child of [...next.childNodes]) {
+    if (child === nextFind) { beforeFind = false; continue; }
+    if (beforeFind) container.insertBefore(child, find);
+    else container.append(child);
+  }
+}
+
+function mediaSelectionScope(): { key: string; ids: string[] } {
+  const ids = visibleMedia(project.assets, search, mediaPreferences).map((asset) => asset.id);
+  return { ids, key: JSON.stringify([
+    project.id, project.revision, generation, editorSession?.getState().identity,
+    tab, libraryView, search, mediaPreferences.filter, mediaPreferences.sort, ids,
+  ]) };
+}
+function reconcileMediaSelectionAnchor(): void {
+  if (mediaSelectionAnchor && (!showingMediaLibrary() || mediaSelectionAnchor.scope !== mediaSelectionScope().key))
+    mediaSelectionAnchor = undefined;
+}
+function clearMediaCheckboxActivation(): void {
+  clearTimeout(mediaCheckboxActivation?.timer);
+  mediaCheckboxActivation = undefined;
+}
+function selectMediaCheckbox(input: HTMLInputElement): boolean {
+  const activation = mediaCheckboxActivation;
+  clearMediaCheckboxActivation();
+  const id = input.dataset.selectMedia!, scope = mediaSelectionScope();
+  if (!showingMediaLibrary() || !input.isConnected || !scope.ids.includes(id) ||
+      studio.querySelector(`.library-panel [data-select-media="${CSS.escape(id)}"]`) !== input ||
+      (activation?.input === input && activation.scope !== scope.key)) return false;
+  const anchorIndex = mediaSelectionAnchor?.scope === scope.key
+    ? scope.ids.indexOf(mediaSelectionAnchor.id) : -1;
+  const range = activation?.input === input && !activation.click.defaultPrevented &&
+    activation.click.shiftKey && anchorIndex >= 0;
+  const index = scope.ids.indexOf(id);
+  const ids = range ? scope.ids.slice(Math.min(anchorIndex, index), Math.max(anchorIndex, index) + 1) : [id];
+  for (const selectedId of ids) {
+    if (input.checked) selectedMedia.add(selectedId);
+    else selectedMedia.delete(selectedId);
+  }
+  if (!range) mediaSelectionAnchor = { id, scope: scope.key };
+  return true;
+}
+
+/** Keep the native pressed button mounted through a presentation-only background refresh. */
+function mediaActionScope(): string {
+  return JSON.stringify([
+    project.id, project.revision, generation, editorSession?.getState().identity,
+    tab, libraryView, search, mediaPreferences, [...selectedMedia].sort(),
+  ]);
+}
+function mediaActionPressCurrent(press: NonNullable<typeof mediaActionPress>): boolean {
+  return press.button.isConnected && showingMediaLibrary() && press.scope === mediaActionScope();
+}
+function finishMediaActionPress(press: NonNullable<typeof mediaActionPress>, cancelled: boolean): void {
+  if (mediaActionPress !== press) return;
+  mediaActionPress = undefined;
+  clearTimeout(press.timer);
+  if (cancelled) cancelledMediaButtons.add(press.button);
+  // pointerup and its native click must finish before replacing the pressed element.
+  if (deferredMediaRender) window.setTimeout(() => {
+    const pending = deferredMediaRender;
+    deferredMediaRender = undefined;
+    if (pending === "full") render();
+    else if (pending === "library") refreshMediaLibrary();
+  }, 0);
+}
+function deferMediaActionRender(kind: "full" | "library"): boolean {
+  const press = mediaActionPress;
+  if (!press) return false;
+  if (!mediaActionPressCurrent(press)) {
+    finishMediaActionPress(press, true);
+    return false;
+  }
+  if (kind === "full" || !deferredMediaRender) deferredMediaRender = kind;
+  return true;
 }
 
 function observeVisibleThumbnails(): void {
@@ -3638,6 +3868,7 @@ async function action(name: string, id?: string): Promise<void> {
       break;
     }
     case "select-media":
+      mediaSelectionAnchor = undefined;
       for (const asset of visibleMedia(project.assets, search, mediaPreferences))
         selectedMedia.add(asset.id);
       refreshMediaLibrary();
@@ -3649,6 +3880,7 @@ async function action(name: string, id?: string): Promise<void> {
       refreshMediaLibrary();
       break;
     case "clear-media-selection":
+      mediaSelectionAnchor = undefined;
       selectedMedia.clear();
       refreshMediaLibrary();
       break;
@@ -3980,11 +4212,21 @@ async function action(name: string, id?: string): Promise<void> {
         ${editorVisible ? `<dl class="shortcut-list"><dt>播放 / 暂停</dt><dd>Space</dd>
         <dt>前 / 后一帧</dt><dd>← / →</dd><dt>前 / 后 10 帧</dt><dd>Shift + ← / →</dd>
         <dt>上一 / 下一片段边缘（跨轨）</dt><dd>↑ / ↓</dd><dt>开头 / 最后一帧</dt><dd>Home / End</dd>
-        <dt>切分选中片段，继续选中右半段</dt><dd>S</dd><dt>删除选中片段</dt><dd>Delete / Backspace</dd>
-        <dt>复制 / 粘贴 / 原位复制</dt><dd>⌘/Ctrl C · V · D</dd><dt>分组 / 解组</dt><dd>⌘/Ctrl G · ⌘/Ctrl Shift G</dd>
+        <dt>上一 / 下一标记边界（含范围起止）</dt><dd>Shift + ↑ / ↓</dd>
+        <dt>同步切分所选片段，继续选中右侧</dt><dd>S</dd><dt>删除选中片段</dt><dd>Delete / Backspace</dd>
+        <dt>复制 / 剪切 / 粘贴 / 原位复制</dt><dd>⌘/Ctrl C · X · V · D</dd><dt>分组 / 解组</dt><dd>⌘/Ctrl G · ⌘/Ctrl Shift G</dd>
         <dt>移动选中片段</dt><dd>⌘/Ctrl ← / →</dd><dt>撤销 / 重做</dt><dd>⌘/Ctrl Z · ⌘/Ctrl Shift Z</dd>
-        <dt>一屏看全</dt><dd>Shift + Z</dd><dt>开关边缘吸附</dt><dd>N</dd><dt>取消拖动 / 清空选择</dt><dd>Esc</dd></dl>
-        <p>时间轴快捷键在时间轴获得焦点时生效。磁吸主画面轨用移动键调整片段顺序；自由模式及声音、文字轨逐帧移动。输入文字和编辑数字时暂停生效；片段获得键盘焦点时，Space 用于选中片段。按 ? 可打开此说明。</p>` : `
+        <dt>一屏看全</dt><dd>Shift + Z</dd><dt>适合所选片段</dt><dd>Shift + F</dd><dt>放大 / 缩小时间轴</dt><dd>+ / −</dd>
+        <dt>以鼠标位置缩放</dt><dd>⌘/Ctrl + 滚轮</dd><dt>横向滚动时间轴</dt><dd>Shift + 滚轮</dd>
+        <dt>拖动平移时间轴视图</dt><dd>按住鼠标中键拖动</dd>
+        <dt>编辑文字正文</dt><dd>双击单选文字片段</dd>
+        <dt>开关边缘吸附</dt><dd>N</dd><dt>拖动时临时关闭吸附</dt><dd>Alt</dd><dt>取消拖动 / 清空选择</dt><dd>Esc</dd>
+        <dt>裁头保留右侧 / 裁尾保留左侧</dt><dd>Q / W</dd>
+        <dt>打开点标记 / 所选片段范围草稿</dt><dd>M / Shift + M</dd>
+        <dt>调整声音淡化边界（手柄聚焦时）</dt><dd>← / → · Shift 十帧 · Home / End</dd></dl>
+        <p>选中有声音的片段后，可拖动上角的淡入手柄和下角的淡出手柄。片段太短时先放大时间轴，也可在音频属性里输入秒数。</p>
+        <p>单选视频后可右键“分离原声”，默认音画联动；点击“解除链接”会保留普通分组；已有普通分组仍会联动，需独立移动时先解组。字幕来源绑定保留。</p>
+        <p>复制保留分组、关联声音与来源字幕。粘贴从播放头开始，跨序列按第 N 条同类轨道对应；缺轨时先添加对应轨道。原位复制会为副本新建平行轨。剪切关联字幕时须同时选择来源片段。</p><p>时间轴快捷键在时间轴获得焦点时生效。磁吸主画面轨用移动键调整片段顺序；自由模式及声音、文字轨逐帧移动。输入文字和编辑数字时暂停生效；片段获得键盘焦点时，Space 用于选中片段。按 ? 可打开此说明。</p>` : `
         <dl class="shortcut-list"><dt>播放 / 暂停</dt><dd>Space</dd>
         <dt>前 / 后一帧</dt><dd>← / →</dd><dt>前 / 后 5 秒</dt><dd>Shift + ← / →</dd>
         <dt>上一 / 下一画面切点</dt><dd>↑ / ↓</dd><dt>开头 / 结尾</dt><dd>Home / End</dd>
@@ -4243,6 +4485,90 @@ studio.addEventListener(
   true,
 );
 
+// Export is an editor boundary: keep native drafts focused for its owned finisher.
+const editorExportEntry = (target: EventTarget | null): boolean => {
+  if (!(target instanceof Element) || !editorWorkspace) return false;
+  const action = target.closest<HTMLElement>("[data-action]")?.dataset.action;
+  return action === "render-mp4" || action === "export" && !!editorTasks ||
+    action === "record" && !!editorTasks && !!legacyView && !legacyView.renderSafe;
+};
+studio.addEventListener("pointerdown", (event) => {
+  if (event.button === 0 && event.isPrimary && editorExportEntry(event.target) &&
+      document.activeElement instanceof Element &&
+      document.activeElement.closest("[data-ew-inspector],[data-ew-timeline]")) event.preventDefault();
+}, true);
+studio.addEventListener("keydown", (event) => {
+  if (event.repeat && ["Enter", " "].includes(event.key) && editorExportEntry(event.target)) event.preventDefault();
+}, true);
+
+// Touch ranges need not receive focus. Keep their browser-owned gesture connected too.
+studio.addEventListener("pointerdown", (event) => {
+  const input = event.target;
+  if (legacyWorkspacePreview && event.button === 0 && event.isPrimary &&
+      input instanceof HTMLInputElement && input.id === "timeline-zoom" &&
+      input === studio.querySelector("#timeline-zoom") && renderedLegacyZoomScope === legacyZoomScope())
+    legacyZoomPress = { input, pointerId: event.pointerId, scope: renderedLegacyZoomScope };
+}, true);
+for (const type of ["pointerup", "pointercancel", "lostpointercapture"] as const)
+  document.addEventListener(type, (event) => {
+    if (legacyZoomPress?.pointerId === event.pointerId) legacyZoomPress = undefined;
+  }, true);
+studio.addEventListener("focusout", (event) => {
+  if (legacyZoomPress?.input === event.target) legacyZoomPress = undefined;
+});
+window.addEventListener("blur", () => { legacyZoomPress = undefined; });
+window.addEventListener("pagehide", () => { legacyZoomPress = undefined; });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) legacyZoomPress = undefined;
+});
+
+// Keep click modifiers through native checkbox activation, including browsers that run
+// a microtask checkpoint before the default action emits its synchronous input event.
+studio.addEventListener("click", (event) => {
+  clearMediaCheckboxActivation();
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement) || !input.matches("[data-select-media]") ||
+      !showingMediaLibrary() || !studio.contains(input)) return;
+  const activation = { input, scope: mediaSelectionScope().key, click: event, timer: 0 };
+  mediaCheckboxActivation = activation;
+  activation.timer = window.setTimeout(() => {
+    if (mediaCheckboxActivation === activation) clearMediaCheckboxActivation();
+  }, 0);
+}, true);
+
+studio.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || !event.isPrimary) return;
+  if (mediaActionPress) finishMediaActionPress(mediaActionPress, true);
+  const button = (event.target as Element).closest<HTMLElement>(
+    '.library-panel [data-action="select-media"],.library-panel [data-action="delete-media"]',
+  );
+  if (!button || unavailable(button) || !showingMediaLibrary()) return;
+  cancelledMediaButtons.delete(button);
+  mediaActionPress = { button, pointerId: event.pointerId, scope: mediaActionScope() };
+}, true);
+document.addEventListener("pointerup", (event) => {
+  const press = mediaActionPress;
+  if (!press || press.pointerId !== event.pointerId) return;
+  const box = press.button.getBoundingClientRect();
+  if (!mediaActionPressCurrent(press) || event.clientX < box.left || event.clientX > box.right ||
+      event.clientY < box.top || event.clientY > box.bottom) finishMediaActionPress(press, true);
+  // Touch compatibility clicks can follow a browser double-tap delay; never synthesize them.
+  else press.timer = window.setTimeout(() => finishMediaActionPress(press, true), event.pointerType === "touch" ? 500 : 0);
+}, true);
+const cancelMediaActionPress = () => {
+  if (mediaActionPress) finishMediaActionPress(mediaActionPress, true);
+};
+document.addEventListener("pointercancel", (event) => {
+  if (mediaActionPress?.pointerId === event.pointerId) cancelMediaActionPress();
+}, true);
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") cancelMediaActionPress(); }, true);
+window.addEventListener("blur", cancelMediaActionPress);
+window.addEventListener("pagehide", () => {
+  deferredMediaRender = undefined;
+  cancelMediaActionPress();
+});
+document.addEventListener("visibilitychange", () => { if (document.hidden) cancelMediaActionPress(); });
+
 studio.addEventListener("click", (event) => {
   const target = event.target as HTMLElement;
   const buttonTarget = target.closest<HTMLElement>("[data-action]");
@@ -4261,6 +4587,16 @@ studio.addEventListener("click", (event) => {
     return;
   }
   if (buttonTarget) {
+    if (event.detail !== 0 && cancelledMediaButtons.has(buttonTarget)) {
+      cancelledMediaButtons.delete(buttonTarget);
+      return;
+    }
+    const press = mediaActionPress;
+    if (press?.button === buttonTarget) {
+      const current = mediaActionPressCurrent(press);
+      finishMediaActionPress(press, !current);
+      if (!current) return;
+    }
     // A focusable but unavailable action explains itself through its description instead.
     if (unavailable(buttonTarget)) return;
     void action(buttonTarget.dataset.action!, buttonTarget.dataset.id).catch(fail);
@@ -4387,10 +4723,9 @@ studio.addEventListener("input", (event) => {
     return;
   }
   if (sourceScrub.matches("[data-select-media]")) {
-    if (sourceScrub.checked) selectedMedia.add(sourceScrub.dataset.selectMedia!);
-    else selectedMedia.delete(sourceScrub.dataset.selectMedia!);
+    if (!selectMediaCheckbox(sourceScrub)) return;
     const scroll = $(".library-panel").scrollTop;
-    $(".library-panel").innerHTML = views().renderLibrary();
+    renderMediaLibrary($(".library-panel"), views().renderLibrary());
     $(".library-panel").scrollTop = scroll;
     studio
       .querySelector<HTMLInputElement>(
@@ -4420,11 +4755,12 @@ studio.addEventListener("input", (event) => {
   }
   if (target.id === "asset-search") {
     search = target.value;
+    reconcileMediaSelectionAnchor();
     const cursor = target.selectionStart;
-    $(".library-panel").innerHTML = views().renderLibrary();
+    renderMediaLibrary($(".library-panel"), views().renderLibrary());
     const input = $<HTMLInputElement>("#asset-search");
     input.focus();
-    input.setSelectionRange(cursor, cursor);
+    if (!(event instanceof InputEvent && event.isComposing)) input.setSelectionRange(cursor, cursor);
   }
 });
 studio.addEventListener("change", (event) => {
@@ -4460,6 +4796,8 @@ studio.addEventListener("change", (event) => {
       edit([{ type: "settings", width, height }]);
     }
     if (target.id === "timeline-zoom") {
+      if (target !== studio.querySelector("#timeline-zoom") ||
+          (legacyWorkspacePreview && renderedLegacyZoomScope !== legacyZoomScope())) return;
       stop();
       setTimelineZoom(Number(target.value));
     }
@@ -5407,8 +5745,8 @@ function mountEditorCaptions(root: HTMLElement): void {
         ? (editorWorkspace?.currentTime() ?? 0)
         : frame * LEGACY_FRAME_TICKS,
     select: (sequenceId, ids) => editorWorkspace?.selectClips(sequenceId, ids),
-    seek: (time) =>
-      editorVisible ? editorWorkspace?.seek(time) : seek(Math.floor(time / LEGACY_FRAME_TICKS)),
+    seek: (time, exact) =>
+      editorVisible ? editorWorkspace?.seek(time, exact) : seek(Math.floor(time / LEGACY_FRAME_TICKS)),
     onError: fail,
     ...(editorCaptionServices
       ? {
@@ -5471,16 +5809,14 @@ function mountCaptionPanel(): void {
     .catch(fail);
 }
 /** The status bar counts the active editor sequence's clips; its subtitles are counted beside them. */
-function editorStatusClipCount(): number | undefined {
-  if (!editorSession) return undefined;
-  const doc = editorSession.read();
+function editorStatusClipCount(doc = editorSession?.read()): number | undefined {
+  if (!doc) return undefined;
   return (doc.sequences.find((sequence) => sequence.id === doc.activeSequenceId)?.clips ?? []).filter(
     (clip) => !isSubtitleClip(clip),
   ).length;
 }
-function editorCaptionList() {
-  if (!editorSession) return undefined;
-  const doc = editorSession.read();
+function editorCaptionList(doc = editorSession?.read()) {
+  if (!doc) return undefined;
   try {
     return listCaptions(doc, doc.activeSequenceId);
   } catch {
@@ -5557,10 +5893,15 @@ async function submitEditorExport(
   signal?: AbortSignal,
   origin: "editor" | "production" = "editor",
   beforeSubmit?: () => void,
+  range?: ExportRange,
 ): Promise<{ jobId: string; job: ReturnType<typeof taskValue> }> {
   if (origin === "production") assertProductionPublicationEditable();
   else assertEditorEditable();
   if (!editorTasks) throw new Error("本地媒体任务尚未连接");
+  const sequence = doc.sequences.find((item) => item.id === sequenceId);
+  if (!sequence) throw new Error("所选导出序列不存在");
+  // Keep the submitted names even if editing continues while media is being prepared.
+  const title = `${doc.name} · ${sequence.name}${range ? ` · ${exportRangeLabel(range)}` : ""} · ${profile.name}`;
   const prepared =
     preparedNative?.key === editorDocumentKey(doc, sequenceId) ? preparedNative : undefined;
   const key = editorDocumentKey(doc, sequenceId);
@@ -5577,11 +5918,12 @@ async function submitEditorExport(
     transferId: transfer.transferId,
     snapshot: prepared?.snapshot ?? transfer.snapshot,
     preparedAudio: prepared?.audio,
+    ...(range ? { range } : {}),
     beforeSubmit,
     onProgress: (item) => toast(`准备导出 · ${item.completed}/${item.total}`),
   });
   transfer.snapshot = snapshot;
-  editorExportJobs?.track(job, `${doc.name} · ${profile.name}`);
+  editorExportJobs?.track(job, title);
   toast("导出已进入后台任务，可继续编辑；任务会保留这次提交的工程版本");
   return { jobId: job.id, job };
 }
@@ -5775,6 +6117,8 @@ function mountEditorWorkspace(): void {
   editorRoot = root;
   studio.querySelector(".workspace")!.append(root);
   editorWorkspace = new EditorWorkspace(root, {
+    previewQuality: previewQualityPreference,
+    showInspector: () => showNarrowPanel("inspector"),
     showShortcuts: () => action("timeline-shortcuts"),
     layout: "embedded",
     showComposition: showEditorWorkspace,
@@ -5899,11 +6243,18 @@ function mountEditorWorkspace(): void {
         signal,
       );
       activateTimelineMedia();
-      return audio;
+      return {
+        ...audio,
+        mix: {
+          sampleCount: result.sampleCount,
+          peak: result.peak,
+          samplesOverFullScale: result.samplesOverFullScale,
+        },
+      };
     },
     exportSequence: panel
-      ? async (doc, sequenceId, profile, signal) => {
-          await submitEditorExport(doc, sequenceId, profile, signal);
+      ? async (doc, sequenceId, profile, signal, range) => {
+          await submitEditorExport(doc, sequenceId, profile, signal, "editor", undefined, range);
         }
       : undefined,
     importMedia: () => {
@@ -5914,6 +6265,7 @@ function mountEditorWorkspace(): void {
       $("#project-input").click();
     },
     newProject: () => requestNewProject(),
+    downloadFrame: (blob, name) => download(blob, name),
     downloadProject: (doc) =>
       download(
         new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }),
@@ -6118,22 +6470,23 @@ async function boot(): Promise<void> {
       refreshEditorSaveStatus();
       const previous = legacySignature;
       const previousAssets = JSON.stringify(project.assets);
-      synchronizeLegacyView();
+      const doc = synchronizeLegacyView();
       updateSave();
+      // Save-state-only notifications do not change any document-derived controls.
+      if (!doc) return;
       if (editorVisible && productionBooted && !projectSwitching) {
         const nameInput = studio.querySelector<HTMLInputElement>("#project-name");
         if (nameInput && document.activeElement !== nameInput) nameInput.value = project.name;
         const revision = studio.querySelector("#revision");
         if (revision) revision.textContent = `rev ${project.revision}`;
         const clipCount = studio.querySelector("[data-studio-clip-count]");
-        if (clipCount) clipCount.textContent = String(editorStatusClipCount() ?? 0);
+        if (clipCount) clipCount.textContent = String(editorStatusClipCount(doc) ?? 0);
         const captionCount = studio.querySelector("[data-studio-caption-count]");
-        if (captionCount) captionCount.textContent = String(editorCaptionList()?.length ?? 0);
+        if (captionCount) captionCount.textContent = String(editorCaptionList(doc)?.length ?? 0);
         const exportButton = studio.querySelector<HTMLButtonElement>(
           '.topbar [data-action="export"]',
         );
         if (exportButton) {
-          const doc = editorSession!.read();
           setAnnouncedDisabled(
             exportButton,
             "export-reason",

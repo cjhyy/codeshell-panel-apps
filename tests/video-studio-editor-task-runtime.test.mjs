@@ -298,6 +298,15 @@ test(
     assert.equal(rendered.result.verified, true);
     assert.equal(rendered.result.reusedAudio, true);
     assert.equal(rendered.result.audio.id, prepared.result.audio.id);
+    assert.deepEqual(rendered.result.audioMix, {
+      documentHash: snapshot.documentHash,
+      sequenceId: snapshot.sequenceId,
+      sampleCount: prepared.result.sampleCount,
+      peak: prepared.result.peak,
+      samplesOverFullScale: prepared.result.samplesOverFullScale,
+    });
+    assert.equal(rendered.result.audioMix.samplesOverFullScale, 0);
+    assert.doesNotMatch(JSON.stringify(rendered.messages), /可能导致失真/);
     assert.equal(rendered.result.frameCount, 15);
     const probe = spawnSync("ffprobe", [
       "-v",
@@ -327,6 +336,108 @@ test(
     assert.equal((await readdir(mismatch.jobDir)).includes("outputs"), false);
   },
 );
+test(
+  "native export exposes real two-track overload throughout progress and in its bound result",
+  { timeout: 60000 },
+  async () => {
+    const d = document(),
+      seq = d.sequences[0];
+    const resourceId = `asset-${sha(await readFile(tone))}`;
+    d.assets.push({ id: "tone", name: "Tone", kind: "audio", duration: 480000, resourceId });
+    seq.tracks.push(api.createTrack("second-audio", "audio"));
+    const first = clip("tone", "audio"),
+      second = clip("tone", "second-audio");
+    second.id = "clip-second-tone";
+    first.audio.volume = second.audio.volume = 4;
+    seq.clips.push(clip(), first, second);
+    const snapshot = await stage(d, new Map([[resourceId, tone]]));
+    const prepared = await call({ action: "prepare-audio", ...snapshot });
+    assert.ok(prepared.result.peak > 1);
+    assert.ok(prepared.result.samplesOverFullScale > 0);
+    const rendered = await call({
+      action: "render",
+      ...snapshot,
+      profile: profile(),
+      preparedAudio: prepared.result.preparedAudio,
+    });
+    assert.equal(rendered.result.verified, true);
+    assert.equal(rendered.result.audioMix.documentHash, snapshot.documentHash);
+    assert.equal(rendered.result.audioMix.sequenceId, snapshot.sequenceId);
+    assert.equal(rendered.result.audioMix.peak, prepared.result.peak);
+    assert.equal(
+      rendered.result.audioMix.samplesOverFullScale,
+      prepared.result.samplesOverFullScale,
+    );
+    const progress = rendered.messages.filter((message) => message.type === "progress");
+    assert.ok(progress.some((message) => JSON.stringify(message).includes("降低音轨或片段音量")));
+    assert.match(JSON.stringify(progress.at(-1)), /可能导致失真/);
+    const report = JSON.parse(await readFile(artifactPath(rendered, "editor-report"), "utf8"));
+    assert.deepEqual(report.audioMix, rendered.result.audioMix);
+  },
+);
+
+test("native range export preserves settled ducking from the full mix and binds the range in receipts", { timeout: 60000 }, async () => {
+  const d = document(), seq = d.sequences[0], T = 240000,
+    resourceId = `asset-${sha(await readFile(tone))}`;
+  d.assets[0].duration = 2 * T;
+  d.assets.push({ id: "tone", name: "Tone", kind: "audio", duration: 2 * T, resourceId });
+  seq.tracks.push(api.createTrack("bed", "audio"));
+  const voice = clip("tone", "audio", 2 * T), bed = clip("tone", "bed", 2 * T);
+  bed.id = "bed";
+  voice.audio.pan = 1;
+  bed.audio.pan = -1;
+  bed.audio.ducking = { sidechainTrackIds: ["audio"], thresholdDb: -24, attenuationDb: 12, attack: 7200, release: 19200 };
+  seq.clips.push(clip("demo-intro", "video", 2 * T), voice, bed);
+  const snapshot = await stage(d, new Map([[resourceId, tone]])),
+    prepared = await call({ action: "prepare-audio", ...snapshot }),
+    range = { start: T + 1, duration: 80080 },
+    rendered = await call({ action: "render", ...snapshot, range, profile: { ...profile(), container: "mov", videoCodec: "prores", audioCodec: "pcm", audioBitrate: 1536000, frameRate: { numerator: 30000, denominator: 1001 } }, preparedAudio: prepared.result.preparedAudio });
+  assert.equal(rendered.result.verified, true);
+  assert.equal(rendered.result.reusedAudio, true);
+  assert.equal(rendered.result.audio.id, prepared.result.audio.id);
+  assert.equal(rendered.result.frameCount, 10);
+  assert.deepEqual(rendered.result.range, range);
+  assert.deepEqual(rendered.result.audioMix.range, range);
+  assert.equal(rendered.result.audioMix.sampleCount, 16016);
+  const report = JSON.parse(await readFile(artifactPath(rendered, "editor-report"), "utf8"));
+  assert.deepEqual(report.range, range);
+  assert.deepEqual(report.audioMix, rendered.result.audioMix);
+  const decode = (path) => ff(["-i", path, "-map", "0:a:0", "-f", "f32le", "-c:a", "pcm_f32le", "pipe:1"]),
+    full = decode(artifactPath(prepared, "editor-preview-audio")),
+    cropped = decode(artifactPath(rendered, "editor-video")),
+    from = Math.ceil(range.start / 5);
+  assert.equal(cropped.length / 8, 16016);
+  for (let sample = 0; sample < 16016; sample++)
+    for (let channel = 0; channel < 2; channel++)
+      assert.ok(Math.abs(cropped.readFloatLE(sample * 8 + channel * 4) - full.readFloatLE((from + sample) * 8 + channel * 4)) < 0.00004, `Original ducking envelope at sample ${sample}`);
+  const invalid = await call({ action: "render", ...snapshot, range: { start: 2 * T, duration: 1 }, profile: profile() }, [], { fail: true });
+  assert.equal(invalid.error.code, "INVALID_REQUEST");
+  assert.equal((await readdir(invalid.jobDir)).includes("outputs"), false);
+});
+
+test("range overload warnings measure only the selected PCM rather than the whole sequence", { timeout: 60000 }, async () => {
+  const d = document(), seq = d.sequences[0], T = 240000,
+    resourceId = `asset-${sha(await readFile(tone))}`;
+  d.assets[0].duration = 2 * T;
+  d.assets.push({ id: "tone", name: "Tone", kind: "audio", duration: 2 * T, resourceId });
+  seq.tracks.push(api.createTrack("second", "audio"));
+  const first = clip("tone", "audio", T / 2), second = clip("tone", "second", T / 2), quiet = clip("tone", "audio", T / 2);
+  first.audio.volume = second.audio.volume = 4;
+  second.id = "second";
+  quiet.id = "quiet";
+  quiet.start = T;
+  seq.clips.push(clip("demo-intro", "video", 2 * T), first, second, quiet);
+  const snapshot = await stage(d, new Map([[resourceId, tone]])), prepared = await call({ action: "prepare-audio", ...snapshot });
+  assert.ok(prepared.result.peak > 1 && prepared.result.samplesOverFullScale > 0);
+  for (const [range, overloaded] of [[{ start: T + 1, duration: 80080 }, false], [{ start: 0, duration: 80080 }, true]]) {
+    const rendered = await call({ action: "render", ...snapshot, range, profile: profile(), preparedAudio: prepared.result.preparedAudio });
+    assert.equal(rendered.result.audioMix.peak > 1, overloaded);
+    assert.equal(rendered.result.audioMix.samplesOverFullScale > 0, overloaded);
+    assert.equal(/可能导致失真/.test(JSON.stringify(rendered.messages)), overloaded);
+    assert.deepEqual(rendered.result.audioMix.range, range);
+  }
+});
+
 test(
   "installed built-in narration is hash checked and genuinely audible without Host materialization",
   { timeout: 60000 },

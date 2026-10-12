@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { evaluateFrame, prepareEvaluator } from "../apps/video-studio/src/editor/evaluate";
+import {
+  evaluateFrame,
+  prepareEvaluator,
+  prepareTimelineSnapshot,
+  isPreparedTimelineSnapshot,
+} from "../apps/video-studio/src/editor/evaluate";
 import {
   createTrack,
   defaultAudioMix,
@@ -456,4 +461,151 @@ test("prepared evaluator owns a validated copy and never leaks mutable source re
   assert.throws(() => evaluator.evaluate("missing", 100));
   assert.throws(() => evaluator.evaluate("main", -1));
   assert.throws(() => prepareEvaluator({ ...doc, futureTimeline: [] }));
+});
+
+test("prepared nested transitions retain sequence ownership and isolate later input and output changes", () => {
+  const main = sequence(), child = sequence("child");
+  for (const seq of [main, child]) {
+    const from = media("from"), to = media("to");
+    to.start = 800;
+    seq.clips = [from, to];
+    seq.transitions = [{ id: "join", fromClipId: "from", toClipId: "to", start: 800,
+      duration: 200, kind: seq.id === "main" ? "dissolve" : "wipe-left" }];
+  }
+  main.tracks.unshift(createTrack("nested-track", "video"));
+  main.clips.push({ ...nested("nested", "child", "nested-track"), duration: 1800,
+    timeMap: constantTimeMap(0, 1800).timeMap });
+  const input = document(main, child), evaluator = prepareEvaluator(input),
+    expected = evaluator.evaluate("main", 900), snapshot = prepareTimelineSnapshot(input,
+      { documentId: input.id, revision: input.revision, generation: 1 });
+  assert.equal(expected.layers[0]?.kind, "group");
+  assert.equal(expected.layers[1]?.kind === "transition" && expected.layers[1].transitionKind, "dissolve");
+  const group = expected.layers[0];
+  assert.ok(group?.kind === "group" && group.layers[0]?.kind === "transition");
+  assert.equal(group.layers[0].transitionKind, "wipe-left");
+  main.transitions[0]!.kind = "push-right";
+  child.transitions.length = 0;
+  child.tracks[0]!.hidden = true;
+  const altered = evaluator.evaluate("main", 900);
+  altered.layers.length = 0;
+  assert.deepEqual(evaluator.evaluate("main", 900), expected);
+  assert.deepEqual(snapshot.evaluate("main", 900), expected);
+  snapshot.dispose();
+});
+
+test("timeline snapshot owns one isolated graph and returns detached display, frame and plan data", () => {
+  const seq = sequence();
+  seq.clips = [media("camera")];
+  const doc = document(seq),
+    identity = { documentId: doc.id, revision: 0, generation: 3 },
+    snapshot = prepareTimelineSnapshot(doc, identity),
+    expected = snapshot.evaluate("main", 100);
+  identity.generation = 4;
+  seq.clips[0]!.start = 9999;
+  doc.assets[0]!.duration = 1;
+  const strip = snapshot.stripInfo("main", ["camera"]),
+    lanes = snapshot.compileVisibleAudio("main", ["camera"]),
+    frame = snapshot.evaluate("main", 100);
+  strip.assets[0]!.duration = 1;
+  strip.sequences[0]!.tracks[0]!.hidden = true;
+  strip.sequences[0]!.clips[0]!.start = 9999;
+  strip.sequences[0]!.clips[0]!.audio!.volume = 0;
+  lanes[0]!.stages[0]!.audio.volume = 0;
+  lanes[0]!.stages[0]!.timeMap.points[0]!.source = 9999;
+  lanes[0]!.spans.length = 0;
+  frame.layers.length = 0;
+  frame.audio[0]!.trackInstancePath.push("bad");
+  assert.deepEqual(snapshot.evaluate("main", 100), expected);
+  assert.equal(snapshot.stripInfo("main", ["camera"]).sequences[0]!.clips[0]!.start, 0);
+  assert.equal(snapshot.stripInfo("main", ["camera"]).sequences[0]!.clips[0]!.audio!.volume, 1);
+  assert.equal(snapshot.compileVisibleAudio("main", ["camera"])[0]!.stages[0]!.audio.volume, 1);
+  assert.ok(snapshot.compileVisibleAudio("main", ["camera"])[0]!.spans.length);
+  assert.equal(snapshot.generation, 3);
+  assert.ok(Object.isFrozen(snapshot));
+  snapshot.dispose();
+});
+
+test("timeline snapshot validates inactive graphs and identity without executing getters", () => {
+  for (const kind of ["source", "missing", "getter"]) {
+    const active = sequence(),
+      inactive = sequence("inactive");
+    active.clips = [media("a")];
+    inactive.clips = [media("b")];
+    const doc = document(active, inactive),
+      identity = { documentId: doc.id, revision: 0, generation: 1 };
+    let calls = 0;
+    if (kind === "source") (inactive.clips[0] as MediaClip).timeMap.points[1]!.source = 10001;
+    if (kind === "missing") delete (inactive.clips[0] as unknown as { trackId?: string }).trackId;
+    if (kind === "getter")
+      Object.defineProperty(inactive.clips[0], "duration", {
+        enumerable: true,
+        get() {
+          calls++;
+          return 1000;
+        },
+      });
+    assert.throws(() => prepareTimelineSnapshot(doc, identity));
+    assert.throws(() => prepareEvaluator(doc));
+    assert.equal(calls, 0);
+  }
+  const seq = sequence();
+  seq.clips = [media("camera")];
+  const doc = document(seq),
+    identity = { documentId: doc.id, revision: 0, generation: 1 };
+  for (const invalid of [
+    undefined,
+    { ...identity, documentId: "other" },
+    { ...identity, revision: 1 },
+    { ...identity, generation: NaN },
+  ])
+    assert.throws(() => prepareTimelineSnapshot(doc, invalid!));
+  let calls = 0;
+  Object.defineProperty(identity, "generation", {
+    get() {
+      calls++;
+      return 1;
+    },
+  });
+  assert.throws(() => prepareTimelineSnapshot(doc, identity));
+  assert.equal(calls, 0);
+});
+
+test("timeline snapshot genuine registry and disposal survive hostile observers without retaining data", () => {
+  const seq = sequence();
+  seq.clips = [media("camera")];
+  const doc = document(seq),
+    snapshot = prepareTimelineSnapshot(doc, { documentId: doc.id, revision: 0, generation: 1 });
+  assert.ok(isPreparedTimelineSnapshot(snapshot));
+  for (const fake of [
+    { ...snapshot },
+    Object.create(snapshot),
+    new Proxy(snapshot, {}),
+    null,
+    undefined,
+  ])
+    assert.equal(isPreparedTimelineSnapshot(fake), false);
+  let calls = 0;
+  const remove = snapshot.onDispose(() => {
+    throw new Error("removed");
+  });
+  remove();
+  snapshot.onDispose(() => {
+    calls++;
+    throw new Error("caller");
+  });
+  snapshot.onDispose(() => {
+    calls++;
+    snapshot.dispose();
+  });
+  snapshot.dispose();
+  snapshot.dispose();
+  assert.equal(calls, 2);
+  assert.equal(isPreparedTimelineSnapshot(snapshot), false);
+  assert.throws(() => snapshot.evaluate("main", 0), /释放/);
+  assert.throws(() => snapshot.stripInfo("main", []), /释放/);
+  assert.throws(() => snapshot.compileVisibleAudio("main", []), /释放/);
+  snapshot.onDispose(() => {
+    calls++;
+  });
+  assert.equal(calls, 3);
 });

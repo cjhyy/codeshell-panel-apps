@@ -53,7 +53,7 @@ async function fixture(t, options = {}) {
   // A localhost origin supplies the same secure-context randomUUID API as the installed desktop document.
   await page.route("http://127.0.0.1:41789/**", (route) =>
     route.fulfill({
-      contentType: "text/html",
+      contentType: "text/html; charset=utf-8",
       body: '<!doctype html><html><body><div id="timeline"></div><button id="undo">撤销最后一步</button><button id="redo">重做最后一步</button><input id="outside" aria-label="外部输入"></body></html>',
     }),
   );
@@ -162,17 +162,34 @@ async function fixture(t, options = {}) {
       activeSequenceId: "main",
       exportProfiles: [],
     };
-    const history = new editor.EditorHistory(doc);
+    if (options.destinationTracks)
+      doc.sequences.push({
+        ...structuredClone(doc.sequences[0]),
+        id: "target",
+        name: "目标序列",
+        tracks: options.destinationTracks.map(({ id, kind }) => editor.createTrack(id, kind)),
+        clips: [],
+        transitions: [],
+      });
+    if (options.secondSequence) doc.sequences.push({
+      ...structuredClone(doc.sequences[0]), id: "secondary", name: "第二序列",
+    });
+    let history = new editor.EditorHistory(doc);
     let selection = [],
       time = 0,
       generation = 1,
-      timeline;
+      timeline,
+      deferNext = false,
+      pendingEdit,
+      activeSequenceId = doc.activeSequenceId,
+      documentId = doc.id;
     const applied = [],
+      drops = [],
       errors = [];
     timeline = new editor.EditorTimeline(document.querySelector("#timeline"), {
       read: () => history.read(),
-      identity: () => ({ documentId: doc.id, revision: history.revision, generation }),
-      selection: () => ({ sequenceId: "main", clipIds: [...selection] }),
+      identity: options.noIdentity ? undefined : () => ({ documentId, revision: history.revision, generation }),
+      selection: () => ({ sequenceId: activeSequenceId, clipIds: [...selection] }),
       // Selection alone is parent view state; the component owns its own render lifecycle.
       select: (ids) => {
         selection = [...ids];
@@ -182,14 +199,34 @@ async function fixture(t, options = {}) {
         time = value;
         timeline.updatePlayhead();
       },
+      addAsset: (assetId, placement) => {
+        drops.push({ assetId, ...placement });
+      },
       apply: (operations, label) => {
-        const before = history.revision;
-        history.apply(operations, before, label);
-        applied.push({
-          operations: structuredClone(operations),
-          label,
-          before,
-          after: history.revision,
+        const owner = history,
+          before = owner.revision;
+        const commit = () => {
+          owner.apply(operations, before, label);
+          applied.push({
+            operations: structuredClone(operations),
+            label,
+            before,
+            after: owner.revision,
+          });
+        };
+        if (!deferNext) return commit();
+        deferNext = false;
+        return new Promise((resolve, reject) => {
+          pendingEdit = (failed) => {
+            pendingEdit = undefined;
+            if (failed) return reject(new Error("保存失败"));
+            try {
+              commit();
+              resolve();
+            } catch (error) {
+              reject(error);
+            }
+          };
         });
       },
       onError: (error) => {
@@ -205,22 +242,72 @@ async function fixture(t, options = {}) {
       timeline.render();
     };
     globalThis.fixture = {
+      internals: { timeline },
       read: () => ({
         document: history.read(),
         audio: editor.evaluateFrame(history.read(), "main", 600000).audio,
         selected: [...selection],
         time,
         applied: structuredClone(applied),
+        drops: structuredClone(drops),
         errors: [...errors],
       }),
+      updateClip: (clipId, patch) => { history.apply([{ type: "clip.update", sequenceId: activeSequenceId, clipId, patch }], history.revision); timeline.render(); },
+      select: (ids) => { selection = [...ids]; timeline.render(); },
       externalChange: () => {
         history.apply([{ type: "project.rename", name: "外部更新" }], history.revision);
       },
-      replaceGeneration: () => {
+      replaceGeneration: (render = true) => {
+        generation++;
+        if (render) timeline.render();
+      },
+      restoreSameIdentity: () => {
+        history = new editor.EditorHistory(history.read());
         generation++;
         timeline.render();
       },
+      render: () => timeline.render(),
+      fitView: () => ({ scale: timeline.scale, left: timeline.viewport().scrollLeft, width: timeline.viewport().clientWidth }),
+      gestureState: () => {
+        const pending = timeline.pendingTrackGesture, drag = timeline.drag,
+          pointerId = pending?.intent.pointer.pointerId ?? drag?.pointerId;
+        return { pending: !!pending, drag: !!drag, pointerId, destroyed: timeline.destroyed,
+          capture: pointerId !== undefined && timeline.container.hasPointerCapture(pointerId) };
+      },
+      externalTrackEdit: (trackId, patch) => {
+        history.apply([{ type: "track.update", sequenceId: activeSequenceId, trackId, patch }], history.revision);
+        timeline.render();
+      },
+      reorderTracks: () => {
+        history.apply([{ type: "track.reorder", sequenceId: activeSequenceId,
+          trackIds: [...history.read().sequences[0].tracks].reverse().map((track) => track.id) }], history.revision);
+        timeline.render();
+      },
+      replaceDocument: () => {
+        const next = history.read();
+        next.id = "another-document";
+        history = new editor.EditorHistory(next);
+        documentId = next.id;
+        selection = [];
+        timeline.render();
+      },
+      setSequence: (sequenceId) => {
+        history.apply([{ type: "sequence.activate", sequenceId }], history.revision);
+        activeSequenceId = sequenceId;
+        selection = [];
+        timeline.render();
+      },
+      holdNextEdit: () => {
+        deferNext = true;
+      },
+      finishEdit: (failed = false) => pendingEdit?.(failed),
+      takePendingEdit: () => pendingEdit,
+      switchSequence: (id = "secondary") => { activeSequenceId = id; selection = []; timeline.render(); },
       dispose: () => timeline.dispose(),
+      seek: (value) => {
+        time = value;
+        timeline.updatePlayhead();
+      },
     };
   }, options);
   return page;
@@ -228,6 +315,608 @@ async function fixture(t, options = {}) {
 async function state(page) {
   return page.evaluate(() => fixture.read());
 }
+
+test("native middle-button panning crosses virtual redraws without selecting or editing clips", async (t) => {
+  const page = await fixture(t, { clips: [{ id: "a", trackId: "v1", start: 0, duration: 3600 }] });
+  const before = await state(page), view = await page.locator(".et-scroll").boundingBox();
+  const x = view.x + 500, y = view.y + 80;
+  await page.mouse.move(x, y); await page.mouse.down({ button: "middle" });
+  await page.mouse.move(x - 180, y); await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 180);
+  await page.mouse.move(x - 300, y); await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 300);
+  await page.mouse.up({ button: "middle" });
+  await page.mouse.move(x - 350, y); await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 300);
+  assert.deepEqual(await state(page), before);
+});
+
+test("native middle-button panning clamps both axes and suspends playback following only after scrolling", async (t) => {
+  const page = await fixture(t, { tracks: Array.from({ length: 20 }, (_, index) => `v${index}`),
+    clips: [{ id: "a", trackId: "v0", start: 0, duration: 3600 }] });
+  const before = await state(page), view = await page.locator(".et-scroll").boundingBox();
+  await page.evaluate(() => fixture.internals.timeline.setPlaybackActive(true));
+  await page.mouse.move(view.x + 400, view.y + 120); await page.mouse.down({ button: "middle" });
+  await page.evaluate(() => fixture.seek(240000 * 1000));
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 0, "An unmoved held pan owns the current viewport before auto-follow can page it");
+  await page.mouse.up({ button: "middle" });
+  assert.equal(await page.evaluate(() => fixture.internals.timeline.followSuspended), false);
+  await page.mouse.down({ button: "middle" });
+  await page.mouse.move(view.x + 280, view.y + 50); await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 120);
+  assert.equal(await page.locator(".et-body").evaluate((node) => node.scrollTop), 70);
+  assert.equal(await page.evaluate(() => fixture.internals.timeline.followSuspended), true);
+  await page.mouse.move(view.x + 500, view.y + 180); await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 0);
+  assert.equal(await page.locator(".et-body").evaluate((node) => node.scrollTop), 0);
+  await page.mouse.up({ button: "middle" });
+  await page.evaluate(() => fixture.seek(240000 * 1000));
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 0);
+  await page.evaluate(() => { fixture.internals.timeline.setPlaybackActive(false); fixture.internals.timeline.setPlaybackActive(true); fixture.seek(240000 * 1001); });
+  assert.ok(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft) > 0);
+  assert.deepEqual((await state(page)).document, before.document);
+  assert.deepEqual((await state(page)).applied, []);
+});
+
+test("native middle-button panning cancels on interruption and scope changes without resuming on hover", async (t) => {
+  for (const ending of ["Escape", "pointercancel", "lostcapture", "blur", "hidden", "surface-hidden", "revision", "generation", "sequence", "resize", "dispose"]) {
+    const page = await fixture(t, { secondSequence: true, clips: [{ id: "a", trackId: "v1", start: 0, duration: 3600 }] });
+    await page.evaluate(() => fixture.select(["a"])); await page.locator("#timeline").focus();
+    const view = await page.locator(".et-scroll").boundingBox(), x = view.x + 400, y = view.y + 80;
+    await page.mouse.move(x, y); await page.mouse.down({ button: "middle" });
+    await page.mouse.move(x - 80, y); await settle(page);
+    if (ending === "Escape") await page.keyboard.press("Escape");
+    else if (ending === "pointercancel") await page.locator("#timeline").dispatchEvent("pointercancel", { pointerId: 1 });
+    else if (ending === "lostcapture") await page.evaluate(() => {
+      const c = fixture.internals.timeline; c.container.releasePointerCapture(c.viewPan.pointerId);
+    });
+    else if (ending === "blur") await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    else if (ending === "hidden") await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      document.dispatchEvent(new Event("visibilitychange")); delete document.visibilityState;
+    });
+    else if (ending === "surface-hidden") await page.locator("#timeline").evaluate((node) => node.hidden = true);
+    else if (ending === "revision") await page.evaluate(() => { fixture.externalChange(); fixture.render(); });
+    else if (ending === "generation") await page.evaluate(() => fixture.replaceGeneration());
+    else if (ending === "sequence") await page.evaluate(() => fixture.switchSequence());
+    else if (ending === "resize") await page.locator("#timeline").evaluate((node) => node.style.width = "1000px");
+    else await page.evaluate(() => fixture.dispose());
+    // Explicit release changes the pending capture override; the next native pointer
+    // event delivers lostpointercapture before its move can reach the old owner.
+    if (ending === "lostcapture") await page.mouse.move(x - 81, y);
+    await settle(page);
+    assert.equal(await page.evaluate(() => !!fixture.internals.timeline.viewPan), false, ending);
+    const position = ending === "dispose" ? undefined : await page.locator(".et-scroll").evaluate((node) => node.scrollLeft);
+    await page.mouse.move(x - 160, y); await page.mouse.up({ button: "middle" }); await settle(page);
+    if (position !== undefined) assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), position, ending);
+    assert.deepEqual((await state(page)).applied, [], ending);
+    if (ending !== "sequence") assert.deepEqual((await state(page)).selected, ["a"], ending);
+    assert.equal(await page.locator("#timeline").evaluate((node) => node.classList.contains("et-panning")), false, ending);
+  }
+});
+async function captureOwnedPreviews(page) {
+  await page.evaluate(() => {
+    globalThis.ownedPreviews = [];
+    globalThis.ownedPlanCalls = 0;
+    const plan = editor.EditorTimeline.prototype.planDrag;
+    editor.EditorTimeline.prototype.planDrag = function (...args) {
+      ownedPlanCalls++;
+      try { return plan.apply(this, args); }
+      finally {
+        const drag = args[2], preview = drag.movePreview ?? drag.trimPreview ?? drag.fadePreview;
+        if (preview && !ownedPreviews.includes(preview)) ownedPreviews.push(preview);
+      }
+    };
+  });
+}
+
+test("free gestures lazily own one preview across stationary Alt and release, then commit through history once", async (t) => {
+  const page = await fixture(t), before = (await state(page)).document;
+  await captureOwnedPreviews(page);
+  await clip(page, "a").click();
+  assert.equal(await page.evaluate(() => ownedPreviews.length), 0, "A click does not prepare a graph");
+  const point = await center(clip(page, "a"));
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  await page.mouse.move(point.x + 32, point.y);
+  await settle(page);
+  await page.mouse.move(point.x + 80, point.y);
+  await settle(page);
+  await page.keyboard.down("Alt");
+  await page.keyboard.up("Alt");
+  await settle(page);
+  const plans = await page.evaluate(() => ownedPlanCalls);
+  assert.equal(await page.evaluate(() => ownedPreviews.length), 1);
+  await page.mouse.up();
+  await settle(page);
+  assert.equal(await page.evaluate(() => ownedPlanCalls), plans, "Same-key release reuses its fully checked plan");
+  assert.equal((await state(page)).applied.length, 1);
+  assert.equal(await page.evaluate(() => {
+    try { ownedPreviews[0].read(); return false; } catch (error) { return /预览已结束/.test(error.message); }
+  }), true);
+  assert.deepEqual((await state(page)).errors, []);
+  await undo(page, before);
+});
+
+test("restoring a same-id and revision history discards focused track drafts without applying them", async (t) => {
+  for (const [label, draft, saved] of [
+    ["轨道名称 v1", "旧轨道草稿", "v1"],
+    ["v1 音量百分比", "37.5", "100"],
+    ["v1 声像", "-80", "0"],
+  ]) {
+    const page = await fixture(t), before = (await state(page)).document;
+    const input = page.getByLabel(label, { exact: true });
+    await input.fill(draft);
+    const stale = await input.elementHandle();
+    await page.evaluate(() => fixture.restoreSameIdentity());
+    await settle(page);
+    assert.deepEqual((await state(page)).document, before);
+    assert.equal((await state(page)).applied.length, 0);
+    assert.equal(await input.inputValue(), saved);
+    await stale.evaluate((node) => node.dispatchEvent(new Event("change", { bubbles: true })));
+    assert.deepEqual((await state(page)).document, before);
+    assert.deepEqual((await state(page)).errors, []);
+  }
+});
+
+test("track drafts cannot cross sequences with shared track ids or a generation change before rendering", async (t) => {
+  const page = await fixture(t, { secondSequence: true }), before = (await state(page)).document;
+  await page.getByLabel("轨道名称 v1", { exact: true }).fill("旧序列名称");
+  await page.evaluate(() => fixture.switchSequence());
+  await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  assert.equal((await state(page)).applied.length, 0);
+  assert.equal(await page.getByLabel("轨道名称 v1", { exact: true }).inputValue(), "v1");
+  await page.getByLabel("v1 音量百分比", { exact: true }).fill("50");
+  await page.evaluate(() => fixture.replaceGeneration(false));
+  await page.getByLabel("v1 音量百分比", { exact: true }).dispatchEvent("change");
+  assert.deepEqual((await state(page)).document, before);
+  assert.equal((await state(page)).applied.length, 0);
+});
+
+test("a removed track input cannot submit again even if reattached after an ordinary render", async (t) => {
+  const page = await fixture(t), before = (await state(page)).document,
+    stale = await page.getByLabel("轨道名称 v1", { exact: true }).elementHandle();
+  await page.evaluate(() => fixture.render());
+  await stale.evaluate((node) => {
+    node.value = "已移除控件的草稿";
+    document.querySelector("#timeline").append(node);
+    node.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  assert.deepEqual((await state(page)).document, before);
+  assert.equal((await state(page)).applied.length, 0);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
+test("ordinary revision refresh retains the focused track input and commits its draft exactly once", async (t) => {
+  const page = await fixture(t), input = page.getByLabel("v1 音量百分比", { exact: true });
+  await input.fill("37.5");
+  const focused = await input.elementHandle();
+  await page.evaluate(() => { fixture.externalChange(); fixture.render(); });
+  await settle(page);
+  assert.equal(await focused.evaluate((node) => node === document.activeElement), true);
+  assert.equal(await input.inputValue(), "37.5");
+  assert.equal((await state(page)).applied.length, 0);
+  await input.press("Tab");
+  await settle(page);
+  const after = await state(page);
+  assert.equal(after.document.name, "外部更新");
+  assert.equal(after.document.sequences[0].tracks.find((track) => track.id === "v1").volume, 0.375);
+  assert.equal(after.applied.length, 1);
+  assert.equal(after.applied[0].label, "调整轨道音量");
+});
+
+test("a real native IME composition stays connected through ordinary timeline refreshes", async (t) => {
+  const page = await fixture(t), input = page.getByLabel("轨道名称 v1", { exact: true });
+  await input.fill("");
+  const focused = await input.elementHandle();
+  await input.evaluate((node) => {
+    globalThis.compositionEvents = [];
+    for (const type of ["compositionstart", "compositionupdate", "compositionend"])
+      node.addEventListener(type, (event) => compositionEvents.push({ type, trusted: event.isTrusted }));
+  });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.imeSetComposition", { text: "临时", selectionStart: 2, selectionEnd: 2 });
+  await page.evaluate(() => { fixture.externalChange(); fixture.render(); });
+  await settle(page);
+  assert.equal(await focused.evaluate((node) => node === document.activeElement), true);
+  assert.equal(await input.inputValue(), "临时");
+  assert.equal((await state(page)).applied.length, 0);
+  let events = await page.evaluate(() => compositionEvents);
+  assert.equal(events[0].type, "compositionstart");
+  assert.ok(events.every((event) => event.trusted));
+  assert.equal(events.filter((event) => event.type === "compositionend").length, 0);
+  await cdp.send("Input.imeSetComposition", { text: "完整轨道", selectionStart: 4, selectionEnd: 4 });
+  await cdp.send("Input.insertText", { text: "完整轨道" });
+  await input.press("Tab");
+  await settle(page);
+  events = await page.evaluate(() => compositionEvents);
+  assert.equal(events.filter((event) => event.type === "compositionend").length, 1);
+  const after = await state(page);
+  assert.equal(after.document.sequences[0].tracks.find((track) => track.id === "v1").name, "完整轨道");
+  assert.equal(after.applied.length, 1);
+  assert.equal(after.document.name, "外部更新");
+});
+
+test("locking a track during a volume draft disables it without committing a native blur", async (t) => {
+  const page = await fixture(t), input = page.getByLabel("v1 音量百分比", { exact: true });
+  await input.fill("37.5");
+  const before = (await state(page)).document;
+  await page.evaluate(() => fixture.externalTrackEdit("v1", { locked: true }));
+  await settle(page);
+  const after = await state(page);
+  assert.equal(await input.isDisabled(), true);
+  assert.equal(await input.inputValue(), "100");
+  assert.equal(after.document.revision, before.revision + 1);
+  assert.equal(after.document.sequences[0].tracks.find((track) => track.id === "v1").volume, 1);
+  assert.equal(after.applied.length, 0);
+  assert.deepEqual(after.errors, []);
+  assert.match(await page.locator(".et-notice").innerText(), /轨道已锁定.*输入已取消/);
+});
+
+test("a track reorder cancels its unfinished draft rather than committing while rebuilding", async (t) => {
+  const page = await fixture(t), input = page.getByLabel("轨道名称 v1", { exact: true });
+  await input.fill("尚未保存");
+  const before = (await state(page)).document;
+  await page.evaluate(() => fixture.reorderTracks());
+  await settle(page);
+  const after = await state(page);
+  assert.equal(after.document.revision, before.revision + 1);
+  assert.equal(after.document.sequences[0].tracks.find((track) => track.id === "v1").name, "v1");
+  assert.equal(after.applied.length, 0);
+  assert.deepEqual(after.errors, []);
+  assert.match(await page.locator(".et-notice").innerText(), /轨道结构已变化.*输入已取消/);
+});
+
+for (const operation of ["muted", "hidden", "locked", "delete"]) {
+  test(`a first track ${operation} click saves a valid volume draft and still performs the intended action`, async (t) => {
+    const page = await fixture(t);
+    await page.getByLabel("v1 音量百分比", { exact: true }).fill("37.5");
+    await page.locator(operation === "delete"
+      ? '[data-et-delete-track="v1"]'
+      : `[data-et-track="v1"][data-et-toggle="${operation}"]`).click();
+    await settle(page);
+    const result = await state(page), track = result.document.sequences[0].tracks.find((item) => item.id === "v1");
+    assert.equal(track.volume, 0.375, "the valid draft is kept before the button action");
+    if (operation === "delete") assert.equal(await page.locator('[data-et-delete-confirm="v1"]').count(), 1);
+    else assert.equal(track[operation], true);
+    assert.deepEqual(result.errors, []);
+  });
+}
+
+test("a track name draft and its lock action remain two separately undoable edits", async (t) => {
+  const page = await fixture(t), before = (await state(page)).document;
+  await page.getByLabel("轨道名称 v1", { exact: true }).fill("已编辑轨道名");
+  await page.getByLabel("锁定v1", { exact: true }).click();
+  await settle(page);
+  let result = await state(page), track = result.document.sequences[0].tracks.find((item) => item.id === "v1");
+  assert.equal(track.name, "已编辑轨道名");
+  assert.equal(track.locked, true);
+  assert.deepEqual(result.applied.map((item) => item.label), ["重命名轨道", "调整轨道"]);
+  await page.locator("#undo").click(); await settle(page);
+  track = (await state(page)).document.sequences[0].tracks.find((item) => item.id === "v1");
+  assert.equal(track.name, "已编辑轨道名"); assert.equal(track.locked, false);
+  await undo(page, before);
+});
+
+test("confirming or cancelling track deletion first saves a valid name draft without losing its intent", async (t) => {
+  for (const confirmed of [true, false]) {
+    const page = await fixture(t);
+    await page.getByLabel("删除轨道v1", { exact: true }).click();
+    assert.equal(await page.locator('[data-et-delete-confirm="v1"]').evaluate((node) => node === document.activeElement), true);
+    await page.getByLabel("轨道名称 v1", { exact: true }).fill("删除前的名称");
+    await page.locator(confirmed ? '[data-et-delete-confirm="v1"]' : '[data-track-head="v1"] [data-et-delete-cancel]').click();
+    await settle(page);
+    const result = await state(page), track = result.document.sequences[0].tracks.find((item) => item.id === "v1");
+    assert.deepEqual(result.errors, []);
+    if (confirmed) {
+      assert.equal(track, undefined);
+      assert.deepEqual(result.applied.map((item) => item.label), ["重命名轨道", "删除轨道"]);
+      await page.locator("#undo").click(); await settle(page);
+      assert.equal((await state(page)).document.sequences[0].tracks.find((item) => item.id === "v1").name, "删除前的名称");
+    } else {
+      assert.equal(track.name, "删除前的名称");
+      assert.equal(await page.locator('[data-et-delete-confirm="v1"]').count(), 0);
+      assert.deepEqual(result.applied.map((item) => item.label), ["重命名轨道"]);
+    }
+  }
+});
+
+test("a failed asynchronous track draft blocks the toggle and keeps the draft available for correction", async (t) => {
+  const page = await fixture(t), before = (await state(page)).document;
+  await page.evaluate(() => fixture.holdNextEdit());
+  await page.getByLabel("v1 音量百分比", { exact: true }).fill("37.5");
+  await page.getByLabel("静音v1", { exact: true }).click();
+  await page.evaluate(() => fixture.finishEdit(true));
+  await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  assert.equal(await page.getByLabel("v1 音量百分比", { exact: true }).inputValue(), "37.5");
+  assert.equal(await page.getByLabel("v1 音量百分比", { exact: true }).evaluate((node) => node === document.activeElement), true);
+  assert.match((await state(page)).errors[0], /保存失败/);
+  await page.getByLabel("v1 音量百分比", { exact: true }).fill("50");
+  await page.getByLabel("静音v1", { exact: true }).click(); await settle(page);
+  const result = await state(page), track = result.document.sequences[0].tracks.find((item) => item.id === "v1");
+  assert.equal(track.volume, 0.5); assert.equal(track.muted, true);
+  assert.equal(result.applied.length, 2);
+});
+
+test("pending track controls reject double clicks and cannot finish an old intent in a successor scope", async (t) => {
+  for (const change of ["none", "generation", "sequence"]) {
+    const page = await fixture(t, { secondSequence: true });
+    await page.evaluate(() => fixture.holdNextEdit());
+    await page.getByLabel("v1 音量百分比", { exact: true }).fill("37.5");
+    const button = page.getByLabel("静音v1", { exact: true }), box = await button.boundingBox();
+    await button.click();
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    if (change === "generation") await page.evaluate(() => fixture.restoreSameIdentity());
+    if (change === "sequence") await page.evaluate(() => fixture.switchSequence());
+    await page.evaluate(() => fixture.finishEdit()); await settle(page);
+    const result = await state(page);
+    assert.deepEqual(result.errors, []);
+    if (change === "none") {
+      assert.equal(result.applied.length, 2);
+      assert.equal(result.document.sequences[0].tracks.find((item) => item.id === "v1").muted, true);
+    } else {
+      assert.equal(result.applied.length, 1, "only the initial draft belongs to the old history");
+      assert.equal(result.document.sequences.find((item) => item.id === (change === "sequence" ? "secondary" : "main")).tracks.find((item) => item.id === "v1").muted, false);
+    }
+  }
+});
+
+test("invalid volume input blocks the track button without discarding the correctable draft", async (t) => {
+  const page = await fixture(t), before = (await state(page)).document;
+  await page.getByLabel("v1 音量百分比", { exact: true }).fill("401");
+  await page.getByLabel("静音v1", { exact: true }).click(); await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  assert.equal(await page.getByLabel("v1 音量百分比", { exact: true }).inputValue(), "401");
+  assert.match((await state(page)).errors[0], /400/);
+});
+
+test("track buttons finish native IME once before saving the name and retain reorder intent", async (t) => {
+  const page = await fixture(t), input = page.getByLabel("轨道名称 v1", { exact: true });
+  await input.fill("");
+  await input.evaluate((node) => {
+    globalThis.nativeEnds = [];
+    globalThis.nativeStarts = [];
+    node.addEventListener("compositionstart", (event) => nativeStarts.push(event.isTrusted));
+    node.addEventListener("compositionend", (event) => nativeEnds.push(event.isTrusted));
+  });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.imeSetComposition", { text: "正式轨道", selectionStart: 4, selectionEnd: 4 });
+  await page.locator('[data-et-up="v1"]').click(); await settle(page);
+  const result = await state(page);
+  assert.equal(result.document.sequences[0].tracks.find((item) => item.id === "v1").name, "正式轨道");
+  assert.deepEqual(result.document.sequences[0].tracks.map((item) => item.id), ["v2", "v1", "v3", "audio", "text"]);
+  assert.deepEqual(result.applied.map((item) => item.label), ["重命名轨道", "轨道排序"]);
+  assert.deepEqual(await page.evaluate(() => nativeStarts), [true]);
+  assert.equal(await page.evaluate(() => nativeEnds.length), 1);
+  assert.deepEqual(result.errors, []);
+});
+
+test("a newly locked track stops the button's second step after an awaited draft", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(() => fixture.holdNextEdit());
+  await page.getByLabel("v1 音量百分比", { exact: true }).fill("37.5");
+  await page.getByLabel("静音v1", { exact: true }).click();
+  await page.evaluate(() => { fixture.finishEdit(); fixture.externalTrackEdit("v1", { locked: true }); });
+  await settle(page);
+  const result = await state(page), track = result.document.sequences[0].tracks.find((item) => item.id === "v1");
+  assert.equal(track.volume, 0.375); assert.equal(track.muted, false); assert.equal(track.locked, true);
+  assert.equal(result.applied.length, 1);
+  assert.match(result.errors[0], /轨道已锁定/);
+});
+
+for (const released of [false, true]) {
+  test(`an asynchronous track draft replays the latest pointer ${released ? "release" : "move"} without leaving an old gesture`, async (t) => {
+    const page = await fixture(t), before = (await state(page)).document,
+      point = await center(clip(page, "a")), cdp = await page.context().newCDPSession(page);
+    await page.evaluate(() => fixture.holdNextEdit());
+    await page.getByLabel("v1 音量百分比", { exact: true }).fill("37.5");
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", buttons: 1, clickCount: 1 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x + 32, y: point.y, button: "left", buttons: 1 });
+    assert.equal((await page.evaluate(() => fixture.gestureState())).pending, true);
+    if (released) await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x + 64, y: point.y, button: "left", buttons: 0, clickCount: 1 });
+    await page.evaluate(() => fixture.finishEdit()); await settle(page);
+    if (!released) {
+      assert.equal((await page.evaluate(() => fixture.gestureState())).drag, true);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x + 64, y: point.y, button: "left", buttons: 0, clickCount: 1 });
+      await settle(page);
+    }
+    const result = await state(page), gesture = await page.evaluate(() => fixture.gestureState());
+    assert.equal(result.document.sequences[0].clips.find((item) => item.id === "a").start, 480000);
+    assert.equal(result.document.sequences[0].tracks.find((item) => item.id === "v1").volume, 0.375);
+    assert.deepEqual(result.applied.map((item) => item.label), ["调整轨道音量", "移动片段"]);
+    assert.deepEqual([gesture.pending, gesture.drag, gesture.capture], [false, false, false]);
+    assert.deepEqual(result.errors, []);
+    await page.locator("#undo").click(); await settle(page);
+    assert.equal((await state(page)).document.sequences[0].clips.find((item) => item.id === "a").start, 240000);
+    await undo(page, before);
+  });
+}
+
+for (const ending of ["escape", "blur", "lostcapture", "generation", "document", "sequence", "dispose"]) {
+  test(`an asynchronous track draft cannot start a gesture after ${ending}`, async (t) => {
+    const page = await fixture(t, { secondSequence: true }), point = await center(clip(page, "a"));
+    await page.evaluate(() => fixture.holdNextEdit());
+    await page.getByLabel("v1 音量百分比", { exact: true }).fill("37.5");
+    await page.mouse.move(point.x, point.y); await page.mouse.down();
+    await page.mouse.move(point.x + 64, point.y);
+    const pending = await page.evaluate(() => fixture.gestureState());
+    assert.equal(pending.pending, true);
+    if (ending === "escape") await page.keyboard.press("Escape");
+    if (ending === "blur") await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    if (ending === "lostcapture") {
+      await page.evaluate((pointerId) => document.querySelector("#timeline").releasePointerCapture(pointerId), pending.pointerId);
+      await page.mouse.move(point.x + 65, point.y);
+    }
+    if (ending === "generation") await page.evaluate(() => fixture.restoreSameIdentity());
+    if (ending === "document") await page.evaluate(() => fixture.replaceDocument());
+    if (ending === "sequence") await page.evaluate(() => fixture.switchSequence());
+    if (ending === "dispose") await page.evaluate(() => fixture.dispose());
+    await page.mouse.up();
+    await page.evaluate(() => fixture.finishEdit()); await settle(page);
+    const result = await state(page), after = await page.evaluate(() => fixture.gestureState());
+    assert.deepEqual([after.pending, after.drag, after.capture], [false, false, false]);
+    assert.equal(result.applied.length, 1, "only the already-submitted track draft may finish in its captured history");
+    assert.equal(result.document.sequences[0].clips.find((item) => item.id === "a").start, 240000);
+    assert.deepEqual(result.errors, []);
+  });
+}
+
+test("native touch cancellation ends a pending track draft gesture before its asynchronous completion", async (t) => {
+  const page = await fixture(t, { touch: true }), point = { ...await center(clip(page, "a")), id: 1 },
+    input = await touchInput(page, "#timeline");
+  await page.evaluate(() => fixture.holdNextEdit());
+  await page.getByLabel("v1 音量百分比", { exact: true }).fill("37.5");
+  await input.send("touchStart", [point]);
+  await input.send("touchMove", [{ ...point, x: point.x + 64 }]);
+  assert.equal((await page.evaluate(() => fixture.gestureState())).pending, true);
+  await input.send("touchCancel");
+  await page.evaluate(() => fixture.finishEdit()); await settle(page);
+  const result = await state(page), after = await page.evaluate(() => fixture.gestureState());
+  assert.deepEqual([after.pending, after.drag, after.capture], [false, false, false]);
+  assert.equal(result.applied.length, 1);
+  assert.equal(result.document.sequences[0].clips.find((item) => item.id === "a").start, 240000);
+  assert.ok(await page.evaluate(() => touchTrace.some((event) => event.type === "pointercancel" && event.trusted)));
+  assert.deepEqual(result.errors, []);
+});
+
+for (const failed of [false, true]) {
+  test(`${failed ? "failed asynchronous" : "invalid"} track draft blocks and retains a correctable gesture input`, async (t) => {
+    const page = await fixture(t), before = (await state(page)).document;
+    if (failed) await page.evaluate(() => fixture.holdNextEdit());
+    await page.getByLabel("v1 音量百分比", { exact: true }).fill(failed ? "37.5" : "401");
+    await clip(page, "a").click();
+    if (failed) await page.evaluate(() => fixture.finishEdit(true));
+    await settle(page);
+    const result = await state(page), after = await page.evaluate(() => fixture.gestureState());
+    assert.deepEqual(result.document, before);
+    assert.deepEqual(result.selected, []);
+    assert.equal(await page.getByLabel("v1 音量百分比", { exact: true }).inputValue(), failed ? "37.5" : "401");
+    assert.equal(await page.getByLabel("v1 音量百分比", { exact: true }).evaluate((node) => node === document.activeElement), true);
+    assert.match(result.errors[0], failed ? /保存失败/ : /400/);
+    assert.deepEqual([after.pending, after.drag, after.capture], [false, false, false]);
+    await page.getByLabel("v1 音量百分比", { exact: true }).fill("50");
+    await clip(page, "a").click(); await settle(page);
+    assert.equal((await state(page)).document.sequences[0].tracks.find((item) => item.id === "v1").volume, 0.5);
+    assert.deepEqual((await state(page)).selected, ["a"]);
+  });
+}
+
+test("an old cancelled draft cannot release a newer pending gesture's capture on the same pointer", async (t) => {
+  const page = await fixture(t), point = await center(clip(page, "a"));
+  await page.evaluate(() => fixture.holdNextEdit());
+  await page.getByLabel("v1 音量百分比", { exact: true }).fill("37.5");
+  await page.mouse.move(point.x, point.y); await page.mouse.down();
+  await page.mouse.move(point.x + 32, point.y);
+  await page.evaluate(() => { globalThis.firstEdit = fixture.takePendingEdit(); });
+  await page.keyboard.press("Escape"); await page.mouse.up();
+  await page.evaluate(() => fixture.holdNextEdit());
+  await page.getByLabel("轨道名称 v1", { exact: true }).fill("第二次草稿");
+  await page.mouse.move(point.x, point.y); await page.mouse.down();
+  await page.mouse.move(point.x + 64, point.y);
+  await page.evaluate(() => { globalThis.secondEdit = fixture.takePendingEdit(); firstEdit(); });
+  await settle(page);
+  await page.mouse.move(point.x + 65, point.y);
+  const active = await page.evaluate(() => fixture.gestureState());
+  assert.deepEqual([active.pending, active.capture], [true, true]);
+  await page.keyboard.press("Escape"); await page.mouse.up();
+  await page.evaluate(() => secondEdit(true)); await settle(page);
+  const result = await state(page), final = await page.evaluate(() => fixture.gestureState());
+  assert.equal(result.applied.length, 1);
+  assert.deepEqual(result.errors, [], "a late cancelled failure cannot overwrite the new interaction");
+  assert.deepEqual([final.pending, final.drag, final.capture], [false, false, false]);
+});
+
+test("pending track drafts retain stationary Alt and freeze zoom until their pointer intent completes", async (t) => {
+  for (const alt of [false, true]) {
+    const page = await fixture(t, { ntsc: true, clips: [
+      { id: "a", trackId: "v1", start: 1, duration: 2 },
+      { id: "c", trackId: "v1", start: 6, duration: 2 },
+    ] }), point = await center(clip(page, "a"));
+    await page.evaluate(() => fixture.holdNextEdit());
+    await page.getByLabel("v1 音量百分比", { exact: true }).fill("37.5");
+    await page.mouse.move(point.x, point.y); await page.mouse.down();
+    await page.mouse.move(point.x + 64 * 2.94, point.y);
+    const zoom = await page.locator("[data-et-zoom]").inputValue();
+    assert.equal(await page.locator("[data-et-zoom]").isDisabled(), true);
+    for (const action of ["fit", "fit-selection", "zoom-in", "zoom-out"])
+      assert.equal(await page.locator(`[data-et-action="${action}"]`).isDisabled(), true);
+    await page.keyboard.down("Control"); await page.mouse.wheel(0, 200); await page.keyboard.up("Control");
+    assert.equal(await page.locator("[data-et-zoom]").inputValue(), zoom);
+    if (alt) await page.keyboard.down("Alt");
+    else { await page.keyboard.down("Alt"); await page.keyboard.up("Alt"); }
+    await page.evaluate(() => fixture.finishEdit()); await settle(page);
+    await page.mouse.up(); if (alt) await page.keyboard.up("Alt"); await settle(page);
+    const result = await state(page), expected = alt ? await page.evaluate(() => editor.frameToTicks(
+      editor.ticksToFrame(Math.round(3.94 * 240000), { numerator: 30000, denominator: 1001 }),
+      { numerator: 30000, denominator: 1001 },
+    )) : 4 * 240000;
+    assert.equal(result.document.sequences[0].clips.find((item) => item.id === "a").start, expected);
+    assert.equal(await page.locator("[data-et-snap]").isChecked(), true);
+    assert.equal(await page.locator("[data-et-zoom]").isDisabled(), false);
+    assert.deepEqual(result.errors, []);
+  }
+});
+
+test("a second physical click cannot overwrite a released gesture while its track draft is pending", async (t) => {
+  const page = await fixture(t), point = await center(clip(page, "a"));
+  await page.evaluate(() => fixture.holdNextEdit());
+  await page.getByLabel("v1 音量百分比", { exact: true }).fill("37.5");
+  await page.mouse.move(point.x, point.y); await page.mouse.down();
+  await page.mouse.move(point.x + 64, point.y); await page.mouse.up();
+  await page.mouse.click(point.x + 128, point.y);
+  await page.evaluate(() => fixture.finishEdit()); await settle(page);
+  const result = await state(page), after = await page.evaluate(() => fixture.gestureState());
+  assert.equal(result.document.sequences[0].clips.find((item) => item.id === "a").start, 480000);
+  assert.equal(result.applied.length, 2);
+  assert.deepEqual([after.pending, after.drag, after.capture], [false, false, false]);
+  assert.deepEqual(result.errors, []);
+});
+
+test("owned move and trim capabilities release on every interruption and old generation releases cannot commit", async (t) => {
+  for (const kind of ["move", "trim"]) for (const ending of ["escape", "blur", "generation", "sequence", "dispose"]) {
+    const page = await fixture(t, { secondSequence: ending === "sequence" }), before = (await state(page)).document;
+    await captureOwnedPreviews(page);
+    const point = await center(kind === "move" ? clip(page, "a") : clip(page, "a").locator('[data-et-edge="right"]'));
+    await page.mouse.move(point.x, point.y);
+    await page.mouse.down();
+    await page.mouse.move(point.x + (kind === "move" ? 32 : -32), point.y);
+    await settle(page);
+    assert.equal(await page.evaluate(() => ownedPreviews.length), 1);
+    if (ending === "escape") await page.keyboard.press("Escape");
+    if (ending === "blur") await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    if (ending === "generation") await page.evaluate(() => fixture.replaceGeneration());
+    if (ending === "sequence") await page.evaluate(() => fixture.switchSequence());
+    if (ending === "dispose") await page.evaluate(() => fixture.dispose());
+    assert.equal(await page.evaluate((kind) => {
+      try {
+        if (kind === "move") ownedPreviews[0].read();
+        else ownedPreviews[0].plan(0, 240000);
+        return false;
+      } catch (error) { return /预览已结束/.test(error.message); }
+    }, kind), true, `${kind}/${ending} must release its capability immediately`);
+    await page.mouse.up();
+    await settle(page);
+    assert.equal((await state(page)).applied.length, 0);
+    assert.deepEqual((await state(page)).document, before);
+  }
+});
+
+test("contexts without a session identity retain the public per-candidate move and trim path", async (t) => {
+  for (const kind of ["move", "trim"]) {
+    const page = await fixture(t, { noIdentity: true }), before = (await state(page)).document;
+    await captureOwnedPreviews(page);
+    const point = await center(kind === "move" ? clip(page, "a") : clip(page, "a").locator('[data-et-edge="right"]'));
+    await page.mouse.move(point.x, point.y); await page.mouse.down();
+    await page.mouse.move(point.x + (kind === "move" ? 32 : -32), point.y); await settle(page);
+    await page.mouse.up(); await settle(page);
+    assert.equal(await page.evaluate(() => ownedPreviews.length), 0);
+    assert.equal((await state(page)).applied.length, 1);
+    assert.deepEqual((await state(page)).errors, []);
+    await undo(page, before);
+  }
+});
 test("two native touches retain the first timeline owner, commit once and undo together", async (t) => {
   const page = await fixture(t, { touch: true }),
     before = (await state(page)).document,
@@ -306,6 +995,147 @@ async function settle(page) {
     () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
   );
 }
+
+for (const { key, modifiers = [], grouped = false, pasted = false } of [
+  { key: "s" },
+  { key: "Delete" },
+  { key: "Backspace" },
+  { key: "x", modifiers: ["Control"] },
+  { key: "d", modifiers: ["Meta"] },
+  { key: "g", modifiers: ["Control"], grouped: true },
+  { key: "g", modifiers: ["Meta", "Shift"], grouped: true },
+  { key: "v", modifiers: ["Control"], pasted: true },
+]) {
+  test(`holding ${modifiers.join("+")}${key} runs one edit and a fresh press remains available`, async (t) => {
+    const page = await fixture(t);
+    await clip(page, "a").click();
+    if (grouped) {
+      await page.keyboard.down("Control");
+      await clip(page, "b").click();
+      await page.keyboard.up("Control");
+      if (modifiers.includes("Shift")) await page.keyboard.press("Control+g");
+    }
+    if (pasted) await page.keyboard.press("Control+c");
+    await page.evaluate((pasted) => {
+      fixture.seek(pasted ? 2400000 : 480000);
+      globalThis.heldEvents = [];
+      window.addEventListener(
+        "keydown",
+        (event) => heldEvents.push({ key: event.key, repeat: event.repeat }),
+        true,
+      );
+    }, pasted);
+    const before = await state(page);
+    for (const modifier of modifiers) await page.keyboard.down(modifier);
+    await page.keyboard.down(key);
+    await settle(page);
+    const first = await state(page);
+    for (let index = 0; index < 3; index++) {
+      await page.keyboard.down(key);
+      await settle(page);
+    }
+    await page.keyboard.up(key);
+    for (const modifier of [...modifiers].reverse()) await page.keyboard.up(modifier);
+    const held = await state(page);
+    assert.deepEqual(held.document, first.document, "OS repeat must not add another edit");
+    assert.deepEqual(held.applied, first.applied);
+    assert.deepEqual(held.errors, []);
+    assert.equal(first.applied.length, before.applied.length + 1);
+    assert.deepEqual(
+      await page.evaluate(
+        (key) => heldEvents.filter((event) => event.key === key).map((event) => event.repeat),
+        key,
+      ),
+      [false, true, true, true],
+    );
+    if (!modifiers.includes("Shift")) {
+      if (["Delete", "Backspace", "x"].includes(key)) await clip(page, "b").click();
+      if (key === "s") await page.evaluate(() => fixture.seek(600000));
+      if (pasted) await page.evaluate(() => fixture.seek(3360000));
+      for (const modifier of modifiers) await page.keyboard.down(modifier);
+      await page.keyboard.press(key);
+      for (const modifier of [...modifiers].reverse()) await page.keyboard.up(modifier);
+      await settle(page);
+      const fresh = await state(page);
+      assert.equal(fresh.applied.length, first.applied.length + 1);
+      assert.deepEqual(fresh.errors, []);
+    }
+  });
+}
+
+test("holding copy preserves the original clipboard when selection changes before key release", async (t) => {
+  const page = await fixture(t);
+  await clip(page, "a").click();
+  await page.keyboard.down("Control");
+  await page.keyboard.down("c");
+  await clip(page, "a").click();
+  await clip(page, "b").click();
+  assert.deepEqual((await state(page)).selected, ["b"]);
+  await page.keyboard.down("c");
+  await page.keyboard.down("c");
+  await page.keyboard.up("c");
+  await page.keyboard.up("Control");
+  await page.evaluate(() => fixture.seek(2400000));
+  await page.keyboard.press("Control+v");
+  await settle(page);
+  const result = await state(page),
+    pasted = result.document.sequences[0].clips.find((item) => result.selected.includes(item.id));
+  assert.equal(pasted.label, "a");
+  assert.equal(result.applied.length, 1);
+  assert.deepEqual(result.errors, []);
+});
+
+test("held arrows still seek and move every frame while editable track input retains native repeats", async (t) => {
+  const page = await fixture(t);
+  await clip(page, "a").click();
+  for (let index = 0; index < 4; index++) await page.keyboard.down("ArrowRight");
+  await page.keyboard.up("ArrowRight");
+  assert.equal((await state(page)).time, 32000);
+  assert.equal((await state(page)).applied.length, 0);
+  await page.keyboard.down("Control");
+  for (let index = 0; index < 4; index++) {
+    await page.keyboard.down("ArrowRight");
+    await settle(page);
+  }
+  await page.keyboard.up("ArrowRight");
+  await page.keyboard.up("Control");
+  const moved = await state(page);
+  assert.equal(moved.document.sequences[0].clips.find((item) => item.id === "a").start, 272000);
+  assert.equal(moved.applied.length, 4);
+  assert.deepEqual(moved.errors, []);
+  const input = page.locator('[data-et-track-name="v1"]');
+  await input.fill("abcde");
+  await page.keyboard.press("End");
+  for (let index = 0; index < 4; index++) await page.keyboard.down("Backspace");
+  await page.keyboard.up("Backspace");
+  assert.equal(await input.inputValue(), "a");
+  assert.equal((await state(page)).applied.length, 4);
+});
+
+test("a held cut stays one command before and after its asynchronous save finishes", async (t) => {
+  const page = await fixture(t);
+  await clip(page, "a").click();
+  await page.evaluate(() => fixture.holdNextEdit());
+  await page.keyboard.down("Control");
+  await page.keyboard.down("x");
+  await page.keyboard.down("x");
+  await page.keyboard.down("x");
+  assert.equal((await state(page)).applied.length, 0);
+  await page.evaluate(() => fixture.finishEdit());
+  await settle(page);
+  await page.keyboard.down("x");
+  await page.keyboard.down("x");
+  await page.keyboard.up("x");
+  await page.keyboard.up("Control");
+  const result = await state(page);
+  assert.equal(result.applied.length, 1);
+  assert.deepEqual(result.errors, []);
+  await page.evaluate(() => fixture.seek(2400000));
+  await page.keyboard.press("Control+v");
+  await settle(page);
+  assert.equal((await state(page)).applied.length, 2);
+  assert.deepEqual((await state(page)).errors, []);
+});
 const clip = (page, id) => page.locator(`[data-et-clip="${id}"]`);
 async function center(locator) {
   const bounds = await locator.boundingBox();
@@ -548,6 +1378,309 @@ test("a new session generation invalidates a menu even when document id and revi
   assert.deepEqual(after.errors, []);
 });
 
+const menuAction = (page, action) => page.locator(`[data-timeline-menu-action="${action}"]`);
+async function openClipMenu(page, id = "a") {
+  await clip(page, id).click({ button: "right" });
+  await settle(page);
+}
+
+test("clip menu copy and paste share the clipboard and return keyboard focus to the timeline", async (t) => {
+  const page = await fixture(t);
+  await clickClip(page, "a");
+  await clip(page, "a").focus();
+  await page.keyboard.press("Shift+F10");
+  assert.equal(await menuAction(page, "paste").isDisabled(), true);
+  await page.keyboard.press("Enter");
+  assert.equal(await page.locator("#timeline-context-menu").count(), 0);
+  assert.equal(await clip(page, "a").evaluate((node) => node === document.activeElement), true);
+  assert.equal((await state(page)).document.revision, 3, "Copy does not edit the document");
+  await page.evaluate(() => fixture.seek(9 * 240000));
+  await openClipMenu(page);
+  await menuAction(page, "paste").click();
+  await settle(page);
+  const result = await state(page), pasted = result.document.sequences[0].clips.find((item) => result.selected.includes(item.id));
+  assert.equal(pasted.start, 9 * 240000);
+  assert.equal(pasted.duration, 2 * 240000);
+  assert.equal(result.applied.length, 1);
+  assert.equal(result.applied[0].label, "粘贴片段");
+  await page.locator("#undo").click();
+  assert.deepEqual((await state(page)).document.sequences[0].clips.map((item) => item.id), ["a", "b", "c"]);
+});
+
+test("clip menu trims exact free-clock boundaries and source captions in one undo", async (t) => {
+  const page = await fixture(t, { caption: true });
+  const before = (await state(page)).document;
+  const cut = 509628; // 2.12345 seconds: a valid tick, deliberately not a video-frame boundary.
+  for (const side of ["right", "left"]) {
+    await page.evaluate((time) => fixture.seek(time), cut);
+    await openClipMenu(page);
+    await menuAction(page, `keep-${side}`).click();
+    await settle(page);
+    const result = await state(page), sequence = result.document.sequences[0],
+      owner = sequence.clips.find((item) => item.id === "a"),
+      caption = sequence.clips.find((item) => item.id === "caption");
+    assert.equal(owner.start, side === "right" ? cut : 240000);
+    assert.equal(owner.duration, side === "right" ? 720000 - cut : cut - 240000);
+    assert.equal(caption.start, owner.start);
+    assert.equal(caption.duration, owner.duration);
+    assert.equal(caption.sourceBinding.sourceStart, side === "right" ? cut - 240000 : 0);
+    assert.equal(caption.sourceBinding.sourceEnd, side === "right" ? 480000 : cut - 240000);
+    assert.equal(sequence.clips.find((item) => item.id === "c").start, 6 * 240000);
+    assert.equal(result.applied.at(-1).label, `保留播放头${side === "right" ? "右" : "左"}侧`);
+    await page.locator("#undo").click();
+    assert.deepEqual((await state(page)).document.sequences, before.sequences);
+  }
+});
+
+for (const magnetic of [false, true]) for (const [key, side] of [["q", "right"], ["w", "left"]]) {
+  test(`timeline trim shortcut ${key} keeps the exact ${side} side and bound captions in ${magnetic ? "magnetic" : "free"} mode`, async (t) => {
+    const page = await fixture(t, { magnetic, caption: true, clips: [
+      { id: "a", trackId: "v1", start: 0, duration: 2, linkGroupId: "voice" },
+      { id: "voice", trackId: "audio", start: 0, duration: 2, linkGroupId: "voice" },
+      { id: "c", trackId: "v1", start: 2, duration: 2 },
+    ] }), before = (await state(page)).document, cut = 240013,
+      duration = side === "right" ? 480000 - cut : cut;
+    await clickClip(page, "a"); await page.evaluate((time) => fixture.seek(time), cut);
+    await page.locator("#timeline").focus(); await page.keyboard.press(key); await settle(page);
+    const result = await state(page), clips = result.document.sequences[0].clips;
+    assert.equal(result.applied.length, 1);
+    for (const id of ["a", "voice", "caption"]) {
+      assert.equal(clips.find((clip) => clip.id === id).duration, duration);
+      assert.equal(clips.find((clip) => clip.id === id).start, side === "right" && !magnetic ? cut : 0);
+    }
+    const caption = clips.find((clip) => clip.id === "caption");
+    assert.deepEqual(caption.sourceBinding, { clipId: "a", sourceStart: side === "right" ? cut : 0, sourceEnd: side === "right" ? 480000 : cut });
+    assert.equal(clips.find((clip) => clip.id === "c").start, magnetic ? duration : 480000);
+    assert.equal(result.time, cut);
+    assert.equal(result.applied[0].label, `保留播放头${side === "right" ? "右" : "左"}侧`);
+    await page.locator("#undo").click();
+    assert.deepEqual((await state(page)).document.sequences, before.sequences);
+  });
+}
+
+test("timeline trim shortcut rejects endpoints and a selection not wholly under the playhead", async (t) => {
+  const page = await fixture(t);
+  await clickClip(page, "a");
+  const before = (await state(page)).document;
+  for (const [time, key] of [[240000, "q"], [720000, "w"]]) {
+    await page.evaluate((time) => fixture.seek(time), time);
+    await page.locator("#timeline").focus(); await page.keyboard.press(key);
+  }
+  await page.evaluate(() => { fixture.select(["a", "c"]); fixture.seek(480013); });
+  await page.locator("#timeline").focus(); await page.keyboard.press("q"); await settle(page);
+  const result = await state(page);
+  assert.deepEqual(result.document, before); assert.equal(result.applied.length, 0);
+  assert.equal(result.errors.length, 3); assert.match(result.errors[0], /每个所选片段内部/);
+});
+
+test("timeline trim shortcut atomically refuses a locked bound-caption dependency", async (t) => {
+  const page = await fixture(t, { caption: true });
+  await clickClip(page, "a");
+  await page.evaluate(() => { fixture.externalTrackEdit("text", { locked: true }); fixture.seek(480013); });
+  const before = (await state(page)).document;
+  await page.locator("#timeline").focus(); await page.keyboard.press("q"); await settle(page);
+  const result = await state(page);
+  assert.deepEqual(result.document, before); assert.equal(result.applied.length, 0);
+  assert.match(result.errors[0], /锁定/);
+});
+
+test("timeline trim shortcut ignores modifiers, IME, fields, dialogs, menus and held repeats", async (t) => {
+  const page = await fixture(t);
+  await clickClip(page, "a"); await page.evaluate(() => fixture.seek(480013));
+  const before = (await state(page)).document;
+  for (const key of ["Shift+q", "Control+w", "Meta+q", "Alt+w"]) {
+    await page.locator("#timeline").focus(); await page.keyboard.press(key);
+  }
+  await page.locator('[data-et-track-name="v1"]').focus(); await page.keyboard.press("q");
+  // Stay in the same field so the unsubmitted name does not itself create an edit.
+  assert.match(await page.locator('[data-et-track-name="v1"]').inputValue(), /q/);
+  await page.locator('[data-et-track-name="v1"]').fill("v1");
+  await page.locator("#timeline").focus();
+  await page.locator("#timeline").dispatchEvent("keydown", { key: "q", isComposing: true });
+  await page.evaluate(() => { const dialog = document.createElement("dialog"); document.body.append(dialog); dialog.show(); });
+  await page.keyboard.press("w"); await page.evaluate(() => document.querySelector("dialog").remove());
+  await openClipMenu(page); assert.equal(await menuAction(page, "keep-left").locator("kbd").innerText(), "W");
+  assert.equal(await menuAction(page, "keep-right").locator("kbd").innerText(), "Q");
+  await page.keyboard.press("q"); await page.keyboard.press("Escape");
+  assert.deepEqual((await state(page)).document, before);
+  await page.locator("#timeline").focus(); await page.keyboard.down("w");
+  await page.keyboard.down("w"); await page.keyboard.down("w"); await page.keyboard.up("w"); await settle(page);
+  const result = await state(page); assert.equal(result.applied.length, 1); assert.deepEqual(result.errors, []);
+});
+
+test("timeline trim shortcut refuses a same-id same-revision generation replaced during its snapshot read", async (t) => {
+  const page = await fixture(t);
+  await clickClip(page, "a"); await page.evaluate(() => fixture.seek(480013));
+  const before = (await state(page)).document;
+  await page.evaluate(() => {
+    const context = fixture.internals.timeline.context, read = context.read;
+    context.read = () => { const old = read(); context.read = read; fixture.replaceGeneration(false); return old; };
+  });
+  await page.locator("#timeline").focus(); await page.keyboard.press("q"); await settle(page);
+  assert.deepEqual((await state(page)).document, before); assert.deepEqual((await state(page)).errors, []);
+});
+
+test("timeline trim shortcut blocks a second action while apply is pending and isolates a late error", async (t) => {
+  const page = await fixture(t);
+  await clickClip(page, "a"); await page.evaluate(() => { fixture.seek(480013); fixture.holdNextEdit(); });
+  await page.locator("#timeline").focus(); await page.keyboard.press("w"); await page.keyboard.press("q");
+  assert.equal(await page.evaluate(() => !!fixture.internals.timeline.trimShortcutPending), true);
+  assert.equal((await state(page)).applied.length, 0);
+  await page.evaluate(() => fixture.finishEdit()); await settle(page);
+  assert.equal((await state(page)).applied.length, 1);
+  await page.locator("#undo").click();
+  await page.evaluate(() => fixture.holdNextEdit());
+  await page.locator("#timeline").focus(); await page.keyboard.press("w");
+  await page.evaluate(() => { fixture.replaceGeneration(); fixture.finishEdit(true); }); await settle(page);
+  assert.deepEqual((await state(page)).errors, []);
+  assert.equal(await page.evaluate(() => !!fixture.internals.timeline.trimShortcutPending), false);
+});
+
+test("clip menu magnetic trim keeps linked sound and captions with the following picture", async (t) => {
+  const page = await fixture(t, { magnetic: true, caption: true, clips: [
+    { id: "a", trackId: "v1", start: 0, duration: 2, linkGroupId: "voice" },
+    { id: "voice", trackId: "audio", start: 0, duration: 2, linkGroupId: "voice" },
+    { id: "c", trackId: "v1", start: 2, duration: 2 },
+  ] });
+  const before = (await state(page)).document;
+  await page.evaluate(() => fixture.seek(240000));
+  await openClipMenu(page);
+  await menuAction(page, "keep-left").click();
+  await settle(page);
+  const result = await state(page), clips = result.document.sequences[0].clips;
+  for (const id of ["a", "voice", "caption"])
+    assert.equal(clips.find((item) => item.id === id).duration, 240000);
+  assert.equal(clips.find((item) => item.id === "c").start, 240000);
+  assert.equal(result.applied.length, 1);
+  await page.locator("#undo").click();
+  assert.deepEqual((await state(page)).document.sequences, before.sequences);
+});
+
+test("clip menu group, ungroup, duplicate and cut reuse the selected clips and undo history", async (t) => {
+  const page = await fixture(t);
+  await clickClip(page, "a");
+  await clickClip(page, "b", "Control");
+  await openClipMenu(page);
+  await menuAction(page, "group").click();
+  await settle(page);
+  let result = await state(page), members = result.document.sequences[0].clips.filter((item) => ["a", "b"].includes(item.id));
+  assert.ok(members[0].groupId);
+  assert.equal(members[0].groupId, members[1].groupId);
+  await openClipMenu(page);
+  await menuAction(page, "ungroup").click();
+  await settle(page);
+  assert.ok((await state(page)).document.sequences[0].clips.every((item) => !item.groupId));
+  await openClipMenu(page);
+  await menuAction(page, "duplicate").click();
+  await settle(page);
+  result = await state(page);
+  assert.equal(result.document.sequences[0].clips.length, 5);
+  assert.equal(result.selected.length, 2);
+  assert.equal(result.applied.at(-1).label, "原位复制片段");
+  await page.locator("#undo").click();
+  await clickClip(page, "a");
+  await openClipMenu(page);
+  await menuAction(page, "cut").click();
+  await settle(page);
+  assert.equal(await clip(page, "a").count(), 0);
+  assert.equal((await state(page)).applied.at(-1).label, "剪切片段");
+  await page.locator("#undo").click();
+  assert.equal(await clip(page, "a").count(), 1);
+});
+
+test("clip menu split uses the displayed opening clock even if playback moves afterwards", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(() => fixture.seek(2 * 240000));
+  await openClipMenu(page);
+  assert.match(await page.locator("#timeline-context-menu-note").textContent(), /2\.000000 秒/);
+  await page.evaluate(() => fixture.seek(2.75 * 240000));
+  await menuAction(page, "split").click();
+  await settle(page);
+  const result = await state(page), clips = result.document.sequences[0].clips;
+  assert.equal(clips.find((item) => item.id === "a").duration, 240000);
+  assert.equal(clips.find((item) => result.selected.includes(item.id)).start, 480000);
+  assert.equal(result.time, 660000);
+  assert.equal(result.applied.length, 1);
+});
+
+test("clip menu explains unavailable time and lock actions while readonly copy stays usable", async (t) => {
+  const page = await fixture(t);
+  await openClipMenu(page);
+  for (const action of ["split", "keep-left", "keep-right"])
+    assert.equal(await menuAction(page, action).isDisabled(), true);
+  assert.match(await page.locator("#timeline-context-menu-note").textContent(), /每个所选片段内部/);
+  await page.keyboard.press("Escape");
+  await page.locator('[data-et-track="v1"][data-et-toggle="locked"]').click();
+  await page.evaluate(() => fixture.seek(2 * 240000));
+  await openClipMenu(page);
+  for (const action of ["cut", "split", "keep-left", "keep-right", "group", "ungroup", "remove"])
+    assert.equal(await menuAction(page, action).isDisabled(), true);
+  assert.equal(await menuAction(page, "copy").isDisabled(), false);
+  const before = (await state(page)).document;
+  await menuAction(page, "copy").click();
+  assert.deepEqual((await state(page)).document, before);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
+test("all clip menu actions fence an unrendered replacement generation", async (t) => {
+  for (const action of ["copy", "cut", "duplicate", "split", "keep-left", "keep-right", "remove"]) {
+    const page = await fixture(t);
+    await page.evaluate(() => fixture.seek(2 * 240000));
+    await openClipMenu(page);
+    const before = (await state(page)).document;
+    await page.evaluate(() => fixture.replaceGeneration(false));
+    await menuAction(page, action).click();
+    const after = await state(page);
+    assert.deepEqual(after.document, before, action);
+    assert.equal(after.applied.length, 0, action);
+    assert.match(after.errors.at(-1), /工程或选择已变化/);
+  }
+});
+
+test("clip menu keyboard skips unavailable actions and stays inside a short narrow viewport", async (t) => {
+  const page = await fixture(t, { tracks: ["v1"], clips: [{ id: "a", trackId: "v1", start: 0, duration: 2 }] });
+  await page.setViewportSize({ width: 280, height: 340 });
+  await page.addStyleTag({ content: "body{padding:0}#timeline{width:280px}" });
+  await settle(page);
+  await clip(page, "a").focus();
+  await page.keyboard.press("Shift+F10");
+  assert.equal(await menuAction(page, "copy").evaluate((node) => node === document.activeElement), true);
+  const assertFocusVisible = async () => {
+    assert.equal(await page.locator("#timeline-context-menu").evaluate((node) => {
+      const active = document.activeElement.getBoundingClientRect(), menu = node.getBoundingClientRect();
+      return active.top >= menu.top + node.clientTop && active.bottom <= menu.top + node.clientTop + node.clientHeight;
+    }), true, "The keyboard-focused menu action must be visible inside its scroller");
+  };
+  await page.keyboard.press("End");
+  assert.equal(await menuAction(page, "cancel").evaluate((node) => node === document.activeElement), true);
+  await assertFocusVisible();
+  await page.keyboard.press("ArrowUp");
+  assert.equal(await menuAction(page, "remove").evaluate((node) => node === document.activeElement), true);
+  await assertFocusVisible();
+  await page.keyboard.press("Home");
+  await assertFocusVisible();
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await menuAction(page, "cut").evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await menuAction(page, "duplicate").evaluate((node) => node === document.activeElement), true);
+  const bounds = await page.locator("#timeline-context-menu").boundingBox();
+  assert.ok(bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= 280 && bounds.y + bounds.height <= 340);
+  assert.equal(await page.locator("#timeline-context-menu").evaluate((node) => node.scrollHeight > node.clientHeight), true);
+  await page.keyboard.press("End");
+  await assertFocusVisible();
+  await page.keyboard.press("Enter");
+  assert.equal(await clip(page, "a").evaluate((node) => node === document.activeElement), true);
+  assert.equal((await state(page)).document.revision, 3);
+  await page.keyboard.press("Shift+F10");
+  await page.keyboard.press("End");
+  await page.keyboard.press("ArrowUp");
+  await assertFocusVisible();
+  await page.keyboard.press("Enter");
+  await settle(page);
+  assert.equal(await clip(page, "a").count(), 0);
+  assert.equal((await state(page)).applied.at(-1).label, "删除片段");
+});
+
 test("multi-selection drag preserves relative time and track positions in one undoable batch", async (t) => {
   const page = await fixture(t);
   await clickClip(page, "a");
@@ -596,6 +1729,441 @@ test("moving a clip snaps its trailing edge to the next clip start", async (t) =
       a.duration,
     6 * 240000,
   );
+});
+
+test("stationary Alt bypasses and restores edge snapping without changing its global toggle or undo batch", async (t) => {
+  const page = await fixture(t, {
+    ntsc: true,
+    clips: [
+      { id: "a", trackId: "v1", start: 1, duration: 2 },
+      { id: "c", trackId: "v1", start: 6, duration: 2 },
+    ],
+  });
+  const before = (await state(page)).document,
+    initial = await clip(page, "a").boundingBox(),
+    point = await center(clip(page, "a"));
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  await page.mouse.move(point.x + 64 * 2.94, point.y, { steps: 8 });
+  const snapped = await clip(page, "a").boundingBox();
+  assert.ok(Math.abs(snapped.x - initial.x - 192) < 1);
+  await page.keyboard.down("Alt");
+  const bypassed = await clip(page, "a").boundingBox();
+  assert.ok(bypassed.x < snapped.x - 1, "Alt must recompute the held ghost without a mouse move");
+  assert.equal(await page.locator("[data-et-snap]").isChecked(), true);
+  await page.keyboard.up("Alt");
+  assert.ok(Math.abs((await clip(page, "a").boundingBox()).x - snapped.x) < 1);
+  await page.keyboard.down("Alt");
+  await page.mouse.up();
+  await page.keyboard.up("Alt");
+  await settle(page);
+  const after = await state(page),
+    moved = after.document.sequences[0].clips.find((value) => value.id === "a"),
+    expected = await page.evaluate(() => editor.frameToTicks(
+      editor.ticksToFrame(Math.round(3.94 * 240000), { numerator: 30000, denominator: 1001 }),
+      { numerator: 30000, denominator: 1001 },
+    ));
+  assert.equal(moved.start, expected, "Bypassing edge snapping still uses exact NTSC frame quantization");
+  assert.equal(after.applied.length, 1);
+  assert.deepEqual(after.errors, []);
+  await undo(page, before);
+});
+
+test("Alt applies to held trim handles and ruler seeking, including restoration while stationary", async (t) => {
+  const page = await fixture(t, {
+    clips: [{ id: "a", trackId: "v1", start: 1, duration: 2 }],
+    markers: [{ id: "cut", time: 480000, duration: 0, name: "切点", note: "", color: "#f88" }],
+  });
+  const before = (await state(page)).document,
+    handle = await center(clip(page, "a").locator('[data-et-edge="right"]'));
+  await page.mouse.move(handle.x, handle.y);
+  await page.mouse.down();
+  await page.mouse.move(handle.x - 64 * 0.95, handle.y, { steps: 8 });
+  const snapped = await clip(page, "a").boundingBox();
+  await page.keyboard.down("Alt");
+  assert.ok((await clip(page, "a").boundingBox()).width > snapped.width + 1);
+  await page.keyboard.up("Alt");
+  assert.ok(Math.abs((await clip(page, "a").boundingBox()).width - snapped.width) < 1);
+  await page.keyboard.down("Alt");
+  await page.mouse.up();
+  await page.keyboard.up("Alt");
+  await settle(page);
+  const after = await state(page),
+    trimmed = after.document.sequences[0].clips[0];
+  assert.equal(trimmed.duration, 256000);
+  assert.equal(trimmed.timeMap.points.at(-1).source, 256000);
+  assert.equal(after.applied.length, 1);
+  await undo(page, before);
+
+  const ruler = await page.locator(".et-ruler").boundingBox(),
+    viewport = await page.locator(".et-scroll").boundingBox();
+  await page.mouse.move(viewport.x + 2.05 * 64, ruler.y + 4);
+  await page.mouse.down();
+  await page.mouse.move(viewport.x + 2.05 * 64 + 0.1, ruler.y + 4);
+  assert.equal((await state(page)).time, 480000);
+  await page.keyboard.down("Alt");
+  assert.equal((await state(page)).time, 496000);
+  await page.keyboard.up("Alt");
+  assert.equal((await state(page)).time, 480000);
+  await page.keyboard.down("Alt");
+  await page.mouse.up();
+  await page.keyboard.up("Alt");
+  assert.equal((await state(page)).time, 496000);
+  assert.equal((await state(page)).applied.length, 1, "Ruler navigation must not create an edit");
+  assert.deepEqual((await state(page)).errors, []);
+});
+
+test("Alt asset drops bypass edge snapping and disabled snapping stays disabled after Alt is released", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(() => {
+    const lane = document.querySelector('[data-et-lane="v1"]'),
+      view = document.querySelector(".et-scroll").getBoundingClientRect(),
+      rect = lane.getBoundingClientRect();
+    for (const altKey of [false, true]) {
+      const dataTransfer = new DataTransfer();
+      dataTransfer.setData("text/plain", JSON.stringify({ assetId: "asset" }));
+      lane.dispatchEvent(new DragEvent("drop", {
+        bubbles: true, cancelable: true, dataTransfer, altKey,
+        clientX: view.left + 5.95 * 64, clientY: rect.top + 10,
+      }));
+    }
+  });
+  await settle(page);
+  assert.deepEqual((await state(page)).drops, [
+    { assetId: "asset", at: 1440000, trackId: "v1" },
+    { assetId: "asset", at: 1424000, trackId: "v1" },
+  ]);
+  await page.locator("[data-et-snap]").uncheck();
+  const point = await center(clip(page, "a"));
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  await page.mouse.move(point.x + 64 * 2.94, point.y, { steps: 8 });
+  const bypassed = await clip(page, "a").boundingBox();
+  await page.keyboard.down("Alt");
+  await page.keyboard.up("Alt");
+  assert.ok(Math.abs((await clip(page, "a").boundingBox()).x - bypassed.x) < 1);
+  assert.equal(await page.locator("[data-et-snap]").isChecked(), false);
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  assert.equal((await state(page)).applied.length, 0);
+});
+
+test("Alt keeps zero bounds and locked tracks intact and Escape cancels its preview", async (t) => {
+  const page = await fixture(t),
+    before = (await state(page)).document;
+  await page.keyboard.down("Alt");
+  await drag(page, "a", -64 * 1.1);
+  await page.keyboard.up("Alt");
+  assert.equal((await state(page)).document.sequences[0].clips.find((value) => value.id === "a").start, 0);
+  await undo(page, before);
+  await page.locator('[data-et-track="v1"][data-et-toggle="locked"]').click();
+  const locked = (await state(page)).document;
+  await page.keyboard.down("Alt");
+  await drag(page, "a", 64);
+  await page.keyboard.up("Alt");
+  assert.deepEqual((await state(page)).document, locked);
+  assert.match((await state(page)).errors.at(-1), /锁定/);
+  const point = await center(clip(page, "a"));
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  await page.mouse.move(point.x + 32, point.y);
+  await page.keyboard.down("Alt");
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await page.keyboard.up("Alt");
+  assert.deepEqual((await state(page)).document, locked);
+  assert.equal(await clip(page, "a").evaluate((element) => element.style.transform), "");
+});
+
+test("marquee uses visible clip bounds at track borders and does not select the adjacent track or empty gutter", async (t) => {
+  const page = await fixture(t, {
+    tracks: ["v1", "v2"],
+    clips: [
+      { id: "a", trackId: "v1", start: 1, duration: 2 },
+      { id: "b", trackId: "v2", start: 1, duration: 2 },
+    ],
+  });
+  const before = (await state(page)).document,
+    lane = await page.locator('[data-et-lane="v1"]').boundingBox(),
+    a = await clip(page, "a").boundingBox();
+  for (const [top, bottom, expected] of [[lane.y + 1, a.y + 2, ["a"]], [a.y + a.height + 0.5, lane.y + lane.height - 0.5, []]]) {
+    await page.mouse.move(a.x - 12, top);
+    await page.mouse.down();
+    await page.mouse.move(a.x + a.width + 12, bottom, { steps: 8 });
+    await page.mouse.up();
+    await settle(page);
+    assert.deepEqual((await state(page)).selected, expected);
+  }
+  assert.deepEqual((await state(page)).document, before);
+  assert.equal((await state(page)).applied.length, 0);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
+test("collision feedback appears before release and clears when dragged back to a valid one-step edit", async (t) => {
+  const page = await fixture(t),
+    before = (await state(page)).document,
+    point = await center(clip(page, "a"));
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  await page.mouse.move(point.x + 64 * 4, point.y, { steps: 8 });
+  assert.match(await page.locator(".et-notice").textContent(), /同轨画面重叠/);
+  assert.equal(await clip(page, "a").evaluate((element) => element.classList.contains("drag-invalid")), true);
+  assert.equal(await page.locator('[data-et-lane="v1"].drop-target-invalid').count(), 1);
+  assert.deepEqual((await state(page)).document, before);
+  assert.equal((await state(page)).applied.length, 0);
+  assert.deepEqual((await state(page)).errors, [], "Expected preview rejection must not emit an error on each move");
+  await page.mouse.move(point.x + 64, point.y, { steps: 8 });
+  assert.equal(await page.locator(".et-notice").textContent(), "");
+  assert.equal(await page.locator(".drag-invalid,.drop-target-invalid").count(), 0);
+  await page.mouse.up();
+  await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips.find((value) => value.id === "a").start, 480000);
+  assert.equal((await state(page)).applied.length, 1);
+  assert.deepEqual((await state(page)).errors, []);
+  await undo(page, before);
+
+  const restored = (await state(page)).document;
+  await drag(page, "a", 64 * 4);
+  assert.deepEqual((await state(page)).document, restored);
+  assert.equal((await state(page)).errors.length, 1, "Release reports exactly one error for an invalid preview");
+  assert.match((await state(page)).errors[0], /同轨画面重叠/);
+  assert.equal(await page.locator(".drag-invalid,.drop-target-invalid").count(), 0);
+});
+
+test("incompatible destination and locked subtitle dependencies explain invalid movement before committing", async (t) => {
+  for (const scenario of ["incompatible", "locked-caption"]) {
+    const page = await fixture(t, { caption: scenario === "locked-caption" });
+    if (scenario === "locked-caption")
+      await page.locator('[data-et-track="text"][data-et-toggle="locked"]').click();
+    const before = await state(page),
+      point = await center(clip(page, "a")),
+      y = scenario === "incompatible"
+        ? (await center(page.locator('[data-et-lane="text"]'))).y
+        : point.y;
+    await page.mouse.move(point.x, point.y);
+    await page.mouse.down();
+    await page.mouse.move(point.x + 64, y, { steps: 8 });
+    const reason = scenario === "incompatible" ? /轨道类型不兼容/ : /锁定/;
+    assert.match(await page.locator(".et-notice").textContent(), reason);
+    assert.equal(await clip(page, "a").evaluate((element) => element.classList.contains("drag-invalid")), true);
+    assert.deepEqual((await state(page)).document, before.document);
+    assert.equal((await state(page)).applied.length, before.applied.length);
+    assert.deepEqual((await state(page)).errors, []);
+    await page.mouse.up();
+    await settle(page);
+    const after = await state(page);
+    assert.deepEqual(after.document, before.document);
+    assert.equal(after.applied.length, before.applied.length);
+    assert.equal(after.errors.length, 1);
+    assert.match(after.errors[0], reason);
+  }
+});
+
+test("out-of-range trim shows its reason immediately and can recover without spending undo history", async (t) => {
+  const page = await fixture(t),
+    before = (await state(page)).document,
+    handle = await center(clip(page, "a").locator('[data-et-edge="right"]'));
+  await page.mouse.move(handle.x, handle.y);
+  await page.mouse.down();
+  await page.mouse.move(handle.x + 32, handle.y, { steps: 8 });
+  assert.match(await page.locator(".et-notice").textContent(), /裁剪范围须位于片段内/);
+  assert.equal(await clip(page, "a").evaluate((element) => element.classList.contains("drag-invalid")), true);
+  assert.deepEqual((await state(page)).document, before);
+  assert.equal((await state(page)).applied.length, 0);
+  assert.deepEqual((await state(page)).errors, []);
+  await page.keyboard.down("Alt");
+  assert.match(await page.locator(".et-notice").textContent(), /裁剪范围须位于片段内/);
+  await page.mouse.move(handle.x - 32, handle.y, { steps: 8 });
+  await page.keyboard.up("Alt");
+  assert.equal(await page.locator(".et-notice").textContent(), "");
+  assert.equal(await page.locator(".drag-invalid").count(), 0);
+  await page.mouse.up();
+  await settle(page);
+  const trimmed = (await state(page)).document.sequences[0].clips.find((value) => value.id === "a");
+  assert.equal(trimmed.duration, 360000);
+  assert.equal(trimmed.timeMap.points.at(-1).source, 360000);
+  assert.equal((await state(page)).applied.length, 1);
+  assert.deepEqual((await state(page)).errors, []);
+  await undo(page, before);
+});
+
+test("subframe pointer movement reuses the validated plan without cloning the project and cancellation clears feedback", async (t) => {
+  const page = await fixture(t),
+    before = (await state(page)).document,
+    point = await center(clip(page, "a"));
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  await page.mouse.move(point.x + 4.4, point.y);
+  await page.evaluate(() => {
+    globalThis.originalStructuredClone = globalThis.structuredClone;
+    globalThis.dragCloneCalls = 0;
+    globalThis.structuredClone = (...args) => {
+      globalThis.dragCloneCalls++;
+      return originalStructuredClone(...args);
+    };
+  });
+  for (let step = 1; step <= 12; step++)
+    await page.mouse.move(point.x + 4.4 + step * 0.04, point.y);
+  assert.equal(await page.evaluate(() => dragCloneCalls), 0,
+    "No full document clone is needed while the quantized move and destination are unchanged");
+  await page.evaluate(() => { globalThis.structuredClone = originalStructuredClone; });
+  await page.mouse.move(point.x + 64 * 4, point.y);
+  assert.match(await page.locator(".et-notice").textContent(), /同轨画面重叠/);
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  assert.equal(await page.locator(".et-notice").textContent(), "");
+  assert.equal(await page.locator(".drag-invalid,.drop-target-invalid").count(), 0);
+  assert.deepEqual((await state(page)).document, before);
+  assert.equal((await state(page)).applied.length, 0);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
+test("a burst of changed drag coordinates validates once before paint and release synchronously checks its final position", async (t) => {
+  const page = await fixture(t),
+    before = (await state(page)).document,
+    point = await center(clip(page, "a"));
+  await page.evaluate(() => {
+    globalThis.dragPlanCalls = 0;
+    const plan = editor.EditorTimeline.prototype.planDrag;
+    editor.EditorTimeline.prototype.planDrag = function (...args) {
+      dragPlanCalls++;
+      return plan.apply(this, args);
+    };
+    document.querySelector("#timeline").addEventListener("pointerdown", (event) => {
+      globalThis.dragPointerId = event.pointerId;
+    }, { once: true });
+  });
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  const duringBurst = await page.evaluate(({ x, y }) => {
+    const timeline = document.querySelector("#timeline");
+    for (let step = 1; step <= 40; step++)
+      timeline.dispatchEvent(new PointerEvent("pointermove", {
+        bubbles: true, pointerId: dragPointerId, buttons: 1,
+        clientX: x + step * 4, clientY: y,
+      }));
+    return dragPlanCalls;
+  }, point);
+  assert.equal(duringBurst, 0, "Pointer events only queue the latest candidate before paint");
+  await settle(page);
+  assert.equal(await page.evaluate(() => dragPlanCalls), 1);
+  assert.deepEqual((await state(page)).document, before);
+  await page.evaluate(({ x, y }) => {
+    // The release coordinate differs from the pending candidate and must be checked immediately.
+    document.querySelector("#timeline").dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true, pointerId: dragPointerId, buttons: 0,
+      clientX: x + 64, clientY: y,
+    }));
+  }, point);
+  await page.mouse.up();
+  await settle(page);
+  assert.equal(await page.evaluate(() => dragPlanCalls), 2);
+  assert.equal((await state(page)).applied.length, 1);
+  assert.equal((await state(page)).document.sequences[0].clips.find((value) => value.id === "a").start, 480000);
+  assert.deepEqual((await state(page)).errors, []);
+  await undo(page, before);
+});
+
+test("release validates a pending collision synchronously and Escape or stale identity cancels queued planning", async (t) => {
+  for (const ending of ["release", "escape", "stale"]) {
+    const page = await fixture(t),
+      before = (await state(page)).document,
+      point = await center(clip(page, "a"));
+    await page.evaluate(() => {
+      globalThis.dragPlanCalls = 0;
+      const plan = editor.EditorTimeline.prototype.planDrag;
+      editor.EditorTimeline.prototype.planDrag = function (...args) {
+        dragPlanCalls++;
+        return plan.apply(this, args);
+      };
+      document.querySelector("#timeline").addEventListener("pointerdown", (event) => {
+        globalThis.dragPointerId = event.pointerId;
+      }, { once: true });
+    });
+    await page.mouse.move(point.x, point.y);
+    await page.mouse.down();
+    const result = await page.evaluate(({ point, ending }) => {
+      const timeline = document.querySelector("#timeline");
+      timeline.dispatchEvent(new PointerEvent("pointermove", {
+        bubbles: true, pointerId: dragPointerId, buttons: 1,
+        clientX: point.x + 256, clientY: point.y,
+      }));
+      if (ending === "escape")
+        timeline.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+      if (ending === "stale") fixture.externalChange();
+      timeline.dispatchEvent(new PointerEvent("pointerup", {
+        bubbles: true, pointerId: dragPointerId, buttons: 0,
+        clientX: point.x + 256, clientY: point.y,
+      }));
+      return { plans: dragPlanCalls, errors: fixture.read().errors };
+    }, { point, ending });
+    await page.mouse.up();
+    await settle(page);
+    assert.equal((await state(page)).applied.length, 0);
+    assert.equal(await page.evaluate(() => dragPlanCalls), ending === "release" ? 1 : 0);
+    if (ending === "release") {
+      assert.equal(result.plans, 1);
+      assert.equal((await state(page)).errors.length, 1);
+      assert.match((await state(page)).errors[0], /同轨画面重叠/);
+    } else if (ending === "escape") {
+      assert.deepEqual((await state(page)).document, before);
+      assert.deepEqual((await state(page)).errors, []);
+      assert.equal(await page.locator(".et-notice").textContent(), "");
+    } else {
+      assert.equal((await state(page)).document.name, "外部更新");
+      assert.equal((await state(page)).errors.length, 1);
+      assert.match((await state(page)).errors[0], /工程已变化/);
+    }
+    assert.equal(await page.locator(".drag-invalid,.drop-target-invalid").count(), 0);
+  }
+});
+
+test("stationary Alt flushes pending movement before paint and restores its snapped plan synchronously", async (t) => {
+  const page = await fixture(t),
+    before = (await state(page)).document,
+    point = await center(clip(page, "a"));
+  await page.evaluate(() => {
+    globalThis.dragPlanDeltas = [];
+    const plan = editor.EditorTimeline.prototype.planDrag;
+    editor.EditorTimeline.prototype.planDrag = function (document, sequence, drag) {
+      dragPlanDeltas.push(drag.delta);
+      return plan.call(this, document, sequence, drag);
+    };
+    document.querySelector("#timeline").addEventListener("pointerdown", (event) => {
+      globalThis.dragPointerId = event.pointerId;
+    }, { once: true });
+  });
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  const deltas = await page.evaluate(({ x, y }) => {
+    const timeline = document.querySelector("#timeline");
+    timeline.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true, pointerId: dragPointerId, buttons: 1,
+      clientX: x + 64 * 2.94, clientY: y,
+    }));
+    timeline.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Alt", altKey: true }));
+    const bypassed = [...dragPlanDeltas];
+    timeline.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Alt" }));
+    return { bypassed, restored: [...dragPlanDeltas] };
+  }, point);
+  assert.deepEqual(deltas.bypassed, [704000]);
+  assert.deepEqual(deltas.restored, [704000, 720000]);
+  await settle(page);
+  assert.deepEqual(await page.evaluate(() => dragPlanDeltas), [704000, 720000],
+    "The canceled frame must not revalidate either stationary modifier result");
+  assert.deepEqual((await state(page)).document, before);
+  await page.evaluate(({ x, y }) => {
+    document.querySelector("#timeline").dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true, pointerId: dragPointerId, buttons: 0,
+      clientX: x + 64 * 2.94, clientY: y,
+    }));
+  }, point);
+  await page.mouse.up();
+  await settle(page);
+  assert.equal((await state(page)).applied.length, 1);
+  assert.equal((await state(page)).document.sequences[0].clips.find((value) => value.id === "a").start, 960000);
+  assert.deepEqual((await state(page)).errors, []);
+  await undo(page, before);
 });
 
 test("left and right handles preview actual trim geometry and preserve source time with one undo", async (t) => {
@@ -657,6 +2225,180 @@ test("locked tracks reject mouse and keyboard edits atomically and keep unlock a
     (await state(page)).document.sequences[0].clips.find((item) => item.id === "a").start,
     480000,
   );
+});
+
+test("cross-sequence paste maps picture, sound and bound subtitles at an exact playhead in one undo", async (t) => {
+  const page = await fixture(t, {
+    caption: true,
+    clips: [
+      { id: "a", trackId: "v1", start: 1, duration: 2, groupId: "group", linkGroupId: "av" },
+      { id: "b", trackId: "v1", start: 2, duration: 2, groupId: "group" },
+      { id: "voice", trackId: "audio", start: 1, duration: 3, linkGroupId: "av" },
+    ],
+    transitions: [
+      { id: "transition", fromClipId: "a", toClipId: "b", start: 2, duration: 1, kind: "dissolve" },
+    ],
+    destinationTracks: [
+      { id: "target-text", kind: "text" },
+      { id: "target-audio", kind: "audio" },
+      { id: "target-video", kind: "video" },
+    ],
+  });
+  await clickClip(page, "a");
+  await page.keyboard.press("Control+c");
+  await page.evaluate(() => {
+    fixture.setSequence("target");
+    fixture.seek(1920007);
+  });
+  const before = (await state(page)).document;
+  await page.locator("#timeline").focus();
+  await page.keyboard.press("Control+v");
+  await settle(page);
+  const after = await state(page),
+    target = after.document.sequences[1],
+    owner = target.clips.find((clip) => clip.label === "a"),
+    voice = target.clips.find((clip) => clip.label === "voice"),
+    caption = target.clips.find((clip) => clip.kind === "text");
+  assert.equal(target.clips.length, 4);
+  assert.equal(owner.start, 1920007);
+  assert.equal(target.clips.find((clip) => clip.label === "b").start, 2160007);
+  assert.equal(owner.trackId, "target-video");
+  assert.equal(voice.trackId, "target-audio");
+  assert.equal(caption.trackId, "target-text");
+  assert.equal(caption.sourceBinding.clipId, owner.id);
+  assert.equal(owner.linkGroupId, voice.linkGroupId);
+  assert.equal(owner.groupId, target.clips.find((clip) => clip.label === "b").groupId);
+  assert.notEqual(owner.groupId, "group");
+  assert.equal(target.transitions[0].start, 2160007);
+  assert.equal(target.transitions[0].fromClipId, owner.id);
+  assert.equal(after.selected.length, 4);
+  assert.equal(after.applied.length, 1);
+  assert.deepEqual(after.errors, []);
+  await undo(page, before);
+});
+
+test("missing cross-sequence subtitle track gives an actionable reason and permits retry after adding it", async (t) => {
+  const page = await fixture(t, {
+    caption: true,
+    destinationTracks: [{ id: "target-video", kind: "video" }],
+  });
+  await clickClip(page, "a");
+  await page.keyboard.press("Control+c");
+  await page.evaluate(() => fixture.setSequence("target"));
+  await page.locator('[data-et-action="paste"]').click();
+  await settle(page);
+  let after = await state(page);
+  assert.match(after.errors[0], /第 1 条文字轨.*添加/);
+  assert.equal(after.document.sequences[1].clips.length, 0);
+  assert.equal(after.applied.length, 0);
+  await page.getByRole("button", { name: "新建文字轨", exact: true }).click();
+  await page.locator('[data-et-action="paste"]').click();
+  await settle(page);
+  after = await state(page);
+  assert.equal(after.document.sequences[1].clips.length, 2);
+  assert.equal(after.applied.length, 2);
+});
+
+test("cross-sequence locked captions and occupied picture tracks refuse the entire paste", async (t) => {
+  const page = await fixture(t, {
+    caption: true,
+    destinationTracks: [
+      { id: "target-video", kind: "video" },
+      { id: "target-text", kind: "text" },
+    ],
+  });
+  await clickClip(page, "a");
+  await page.keyboard.press("Control+c");
+  await page.evaluate(() => fixture.setSequence("target"));
+  const lock = page.locator('[data-et-track="target-text"][data-et-toggle="locked"]');
+  await lock.click();
+  let before = await state(page);
+  await page.locator('[data-et-action="paste"]').click();
+  await settle(page);
+  let after = await state(page);
+  assert.deepEqual(after.document, before.document);
+  assert.match(after.errors[0], /锁定/);
+  assert.equal(after.applied.length, before.applied.length);
+  await lock.click();
+  await page.locator('[data-et-action="paste"]').click();
+  await settle(page);
+  before = await state(page);
+  assert.equal(before.document.sequences[1].clips.length, 2);
+  await page.locator('[data-et-action="paste"]').click();
+  await settle(page);
+  after = await state(page);
+  assert.deepEqual(after.document, before.document);
+  assert.match(after.errors.at(-1), /重叠/);
+  assert.equal(after.applied.length, before.applied.length);
+});
+
+test("clipboard stays within its document and open generation, but survives sequence switches", async (t) => {
+  for (const method of ["replaceGeneration", "replaceDocument"]) {
+    const page = await fixture(t);
+    await clickClip(page, "a");
+    await page.keyboard.press("Control+c");
+    assert.equal(await page.locator('[data-et-action="paste"]').isDisabled(), false);
+    await page.evaluate((method) => fixture[method](), method);
+    assert.equal(await page.locator('[data-et-action="paste"]').isDisabled(), true);
+    await page.locator("#timeline").focus();
+    await page.keyboard.press("Control+v");
+    await settle(page);
+    assert.equal((await state(page)).applied.length, 0);
+  }
+});
+
+test("failed pending cut retains the prior clipboard and blocks duplicate submissions", async (t) => {
+  const page = await fixture(t);
+  assert.match(
+    await page.getByRole("button", { name: "剪切", exact: true }).getAttribute("title"),
+    /Ctrl X/,
+  );
+  assert.match(
+    await page.getByRole("button", { name: "粘贴", exact: true }).getAttribute("title"),
+    /播放头.*同类轨道/,
+  );
+  assert.match(
+    await page.getByRole("button", { name: "原位复制", exact: true }).getAttribute("title"),
+    /平行轨/,
+  );
+  await clickClip(page, "b");
+  await page.keyboard.press("Control+c");
+  await clickClip(page, "a");
+  await page.evaluate(() => fixture.holdNextEdit());
+  await page.keyboard.press("Control+x");
+  assert.equal(await page.locator('[data-et-action="paste"]').isDisabled(), true);
+  await page.keyboard.press("Control+d");
+  await page.evaluate(() => fixture.finishEdit(true));
+  await settle(page);
+  assert.equal((await state(page)).applied.length, 0);
+  assert.match((await state(page)).errors[0], /保存失败/);
+  await page.evaluate(() => fixture.seek(2400001));
+  await page.locator('[data-et-action="paste"]').click();
+  await settle(page);
+  const after = await state(page),
+    added = after.document.sequences[0].clips.filter((clip) => !["a", "b", "c"].includes(clip.id));
+  assert.equal(added.length, 1);
+  assert.equal(added[0].label, "b");
+  assert.equal(after.applied.length, 1);
+});
+
+test("a cut finishing after a document or generation switch cannot publish its old clipboard", async (t) => {
+  for (const method of ["replaceGeneration", "replaceDocument"]) {
+    const page = await fixture(t);
+    await clickClip(page, "b");
+    await page.keyboard.press("Control+c");
+    await clickClip(page, "a");
+    await page.evaluate(() => fixture.holdNextEdit());
+    await page.keyboard.press("Control+x");
+    await page.evaluate((method) => {
+      fixture[method]();
+      fixture.finishEdit();
+    }, method);
+    await settle(page);
+    assert.equal(await page.locator('[data-et-action="paste"]').isDisabled(), true);
+    assert.deepEqual((await state(page)).errors, []);
+    if (method === "replaceDocument") assert.ok(findStateClip(await state(page), "a"));
+  }
 });
 
 test("group, clipboard paste and duplicate each commit one complete undoable operation", async (t) => {
@@ -755,6 +2497,201 @@ test("successive S cuts keep the right-hand NTSC source selected and bound capti
   assert.deepEqual(second.errors, []);
   await undo(page, first.document);
   await undo(page, original);
+});
+
+test("S synchronously cuts linked picture and audio with a selected caption, retaining only right-side links", async (t) => {
+  const page = await fixture(t, {
+    ntsc: true,
+    caption: true,
+    clips: [
+      { id: "a", trackId: "v1", start: 0, duration: 10, linkGroupId: "sync", groupId: "group" },
+      { id: "voice", trackId: "audio", start: 0, duration: 10, linkGroupId: "sync", groupId: "group" },
+      { id: "later", trackId: "v2", start: 12, duration: 2, groupId: "group" },
+    ],
+  });
+  await clickClip(page, "a");
+  assert.deepEqual((await state(page)).selected.sort(), ["a", "later", "voice"]);
+  await clickClip(page, "caption", "Control");
+  assert.equal(await page.locator('[data-et-action="split"]').getAttribute("aria-disabled"), null);
+  const original = (await state(page)).document;
+  await seek(page, 3);
+  await page.keyboard.press("s");
+  await settle(page);
+  const first = await state(page),
+    firstRight = first.document.sequences[0].clips.filter((clip) => first.selected.includes(clip.id) && clip.start === first.time);
+  assert.equal(first.applied.length, 1);
+  assert.equal(first.document.sequences[0].clips.length, 7, "A selected bound caption splits just once");
+  assert.equal(firstRight.length, 2);
+  assert.equal(first.selected.length, 3);
+  assert.ok(first.selected.includes("later"));
+  assert.ok(firstRight.every((clip) => clip.kind === "media" && clip.start === first.time));
+  assert.equal(firstRight[0].linkGroupId, firstRight[1].linkGroupId);
+  assert.notEqual(firstRight[0].linkGroupId, "sync");
+  assert.equal(firstRight[0].groupId, firstRight[1].groupId);
+  assert.notEqual(firstRight[0].groupId, "group");
+  assert.equal(findStateClip(first, "later").groupId, firstRight[0].groupId);
+  await seek(page, 6);
+  await page.keyboard.press("s");
+  await settle(page);
+  const second = await state(page),
+    sources = second.document.sequences[0].clips.filter((clip) => clip.kind === "media");
+  assert.equal(second.applied.length, 2);
+  assert.equal(second.document.revision, original.revision + 2);
+  assert.equal(second.selected.length, 3);
+  assert.ok(second.selected.includes("later"));
+  for (const trackId of ["v1", "audio"]) {
+    const pieces = sources.filter((clip) => clip.trackId === trackId).sort((a, b) => a.start - b.start);
+    assert.equal(pieces.length, 3);
+    assert.equal(pieces[0].start + pieces[0].duration, pieces[1].start);
+    assert.equal(pieces[1].start + pieces[1].duration, pieces[2].start);
+    assert.equal(pieces[2].timeMap.points[0].source, second.time);
+    assert.ok(second.selected.includes(pieces[2].id));
+  }
+  for (const caption of second.document.sequences[0].clips.filter((clip) => clip.kind === "text")) {
+    const owner = sources.find((clip) => clip.id === caption.sourceBinding.clipId);
+    assert.ok(owner);
+    assert.equal(caption.start, owner.start);
+    assert.equal(caption.duration, owner.duration);
+  }
+  assert.deepEqual(second.errors, []);
+  // Clicking the new picture must expand only the right-hand group, never the old left halves.
+  await clickClip(page, sources.find((clip) => clip.trackId === "v1" && second.selected.includes(clip.id)).id);
+  assert.deepEqual((await state(page)).selected.sort(), second.selected.sort());
+  await undo(page, first.document);
+  await undo(page, original);
+});
+
+test("toolbar splits unrelated selected clips under the playhead and rejects a locked linked track atomically", async (t) => {
+  const page = await fixture(t, {
+    clips: [
+      { id: "a", trackId: "v1", start: 0, duration: 4 },
+      { id: "b", trackId: "v2", start: 1, duration: 5 },
+      { id: "later", trackId: "v3", start: 8, duration: 2 },
+    ],
+  });
+  for (const [index, id] of ["a", "b", "later"].entries())
+    await clickClip(page, id, index ? "Control" : undefined);
+  const original = (await state(page)).document;
+  await seek(page, 2);
+  await page.locator('[data-et-action="split"]').click();
+  await settle(page);
+  const after = await state(page);
+  assert.equal(after.document.sequences[0].clips.length, 5);
+  assert.equal(after.selected.length, 2);
+  assert.deepEqual(findStateClip(after, "later"), findStateClip({ document: original }, "later"));
+  assert.equal(after.applied.length, 1);
+  assert.deepEqual(after.errors, []);
+  await undo(page, original);
+
+  const locked = await fixture(t, {
+    caption: true,
+    clips: [
+      { id: "a", trackId: "v1", start: 0, duration: 4, linkGroupId: "sync" },
+      { id: "voice", trackId: "audio", start: 0, duration: 4, linkGroupId: "sync" },
+    ],
+  });
+  await locked.locator('[data-et-track="audio"][data-et-toggle="locked"]').click();
+  await settle(locked);
+  await clickClip(locked, "a");
+  await seek(locked, 2);
+  const before = await state(locked);
+  await locked.keyboard.press("s");
+  await settle(locked);
+  const refused = await state(locked);
+  assert.deepEqual(refused.document, before.document);
+  assert.deepEqual(refused.selected, before.selected);
+  assert.equal(refused.applied.length, before.applied.length);
+  assert.match(refused.errors[0], /锁定/);
+});
+
+test("a split selects the entire right-hand group for immediate nudging and deletion without selecting left halves", async (t) => {
+  const page = await fixture(t, {
+    caption: true,
+    clips: [
+      { id: "a", trackId: "v1", start: 0, duration: 4, linkGroupId: "sync", groupId: "group" },
+      { id: "voice", trackId: "audio", start: 0, duration: 4, linkGroupId: "sync", groupId: "group" },
+      { id: "later", trackId: "v2", start: 8, duration: 2, groupId: "group" },
+    ],
+  });
+  await clickClip(page, "a");
+  await seek(page, 2);
+  await page.keyboard.press("s");
+  await settle(page);
+  const split = await state(page);
+  assert.equal(split.selected.length, 3);
+  assert.ok(split.selected.includes("later"));
+  assert.ok(!split.selected.includes("a") && !split.selected.includes("voice"));
+  assert.ok(split.selected.every((id) => findStateClip(split, id).kind === "media"));
+  await page.keyboard.press("Control+ArrowRight");
+  await settle(page);
+  const moved = await state(page);
+  for (const id of split.selected)
+    assert.equal(findStateClip(moved, id).start, findStateClip(split, id).start + 8000);
+  for (const id of ["a", "voice", "caption"])
+    assert.deepEqual(findStateClip(moved, id), findStateClip(split, id));
+  const rightCaption = split.document.sequences[0].clips.find((item) => item.kind === "text" && item.id !== "caption");
+  assert.equal(findStateClip(moved, rightCaption.id).start, rightCaption.start + 8000);
+  assert.deepEqual(moved.errors, []);
+  await undo(page, split.document);
+  await page.locator("#timeline").focus();
+  await page.keyboard.press("Delete");
+  await settle(page);
+  const deleted = await state(page);
+  assert.deepEqual(deleted.document.sequences[0].clips.map((item) => item.id).sort(), ["a", "caption", "voice"]);
+  assert.deepEqual(deleted.errors, []);
+  await undo(page, split.document);
+});
+
+test("splitting an independently selected bound caption keeps only its right caption selected", async (t) => {
+  const page = await fixture(t, { caption: true });
+  const original = await state(page);
+  await clickClip(page, "caption");
+  await seek(page, 2);
+  await page.keyboard.press("s");
+  await settle(page);
+  const after = await state(page),
+    selected = after.selected.map((id) => findStateClip(after, id));
+  assert.equal(selected.length, 1);
+  assert.equal(selected[0].kind, "text");
+  assert.equal(selected[0].sourceBinding.clipId, "a");
+  assert.equal(selected[0].start, after.time);
+  assert.deepEqual(findStateClip(after, "a"), findStateClip(original, "a"));
+  assert.deepEqual(after.errors, []);
+  await undo(page, original.document);
+});
+
+test("a future group member's link cannot select a clip before the cut for a nudge or Delete", async (t) => {
+  const page = await fixture(t, {
+    clips: [
+      { id: "a", trackId: "v1", start: 2, duration: 4, groupId: "group" },
+      { id: "future", trackId: "v2", start: 8, duration: 1, groupId: "group", linkGroupId: "link" },
+      { id: "past", trackId: "v3", start: 0, duration: 1, linkGroupId: "link" },
+      { id: "further", trackId: "audio", start: 10, duration: 1, linkGroupId: "link" },
+    ],
+  });
+  await clickClip(page, "a");
+  assert.deepEqual((await state(page)).selected.sort(), ["a", "further", "future", "past"]);
+  await seek(page, 4);
+  await page.keyboard.press("s");
+  await settle(page);
+  const split = await state(page),
+    right = split.document.sequences[0].clips.find((item) => item.id !== "a" && item.trackId === "v1");
+  assert.deepEqual(split.selected.sort(), [right.id, "future", "further"].sort());
+  await page.keyboard.press("Control+ArrowRight");
+  await settle(page);
+  const moved = await state(page);
+  for (const id of ["a", "past"]) assert.deepEqual(findStateClip(moved, id), findStateClip(split, id));
+  for (const id of split.selected)
+    assert.equal(findStateClip(moved, id).start, findStateClip(split, id).start + 8000);
+  assert.deepEqual(moved.errors, []);
+  await undo(page, split.document);
+  await page.locator("#timeline").focus();
+  await page.keyboard.press("Delete");
+  await settle(page);
+  const removed = await state(page);
+  assert.deepEqual(removed.document.sequences[0].clips.map((item) => item.id).sort(), ["a", "past"]);
+  assert.deepEqual(removed.errors, []);
+  await undo(page, split.document);
 });
 
 test("paste and duplicate select only the new instances so immediate Delete preserves original clips", async (t) => {
@@ -1362,6 +3299,173 @@ test("long sequence wheel scroll and real zoom controls stay responsive with bou
   assert.equal((await state(page)).document.revision, 3);
 });
 
+test("native slider zoom stays live throughout a drag and anchors the visible playhead", async (t) => {
+  const page = await fixture(t, {
+    clips: [
+      { id: "a", trackId: "v1", start: 0, duration: 120 },
+      { id: "b", trackId: "v2", start: 1, duration: 2 },
+    ],
+  });
+  await clickClip(page, "b");
+  assert.deepEqual((await state(page)).selected, ["b"]);
+  await page.evaluate(() => fixture.seek(12 * 240000));
+  await page.locator(".et-scroll").evaluate((element) => { element.scrollLeft = 200; });
+  await settle(page);
+  const before = await state(page);
+  const position = () => page.evaluate(() => {
+    const viewport = document.querySelector(".et-scroll").getBoundingClientRect();
+    return document.querySelector(".et-playhead").getBoundingClientRect().left - viewport.left;
+  });
+  const anchor = await position();
+  await page.evaluate(() => { globalThis.originalZoom = document.querySelector("[data-et-zoom]"); });
+  const bounds = await page.locator("[data-et-zoom]").boundingBox();
+  const x = bounds.x + 8 + (bounds.width - 16) * (Math.log10(64) + 2) / 5;
+  await page.mouse.move(x, bounds.y + bounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(x + 5, bounds.y + bounds.height / 2, { steps: 4 });
+  await settle(page);
+  const during = Number(await page.locator("[data-et-zoom]").inputValue());
+  assert.ok(during > Math.log10(64), "input events must zoom before the pointer is released");
+  assert.ok(Math.abs((await position()) - anchor) <= 2);
+  await page.mouse.move(x + 10, bounds.y + bounds.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await settle(page);
+  assert.ok(Number(await page.locator("[data-et-zoom]").inputValue()) > during);
+  assert.equal(await page.evaluate(() => originalZoom === document.querySelector("[data-et-zoom]")), true);
+  assert.equal(await page.locator("[data-et-zoom]").evaluate((element) => element === document.activeElement), true);
+  assert.ok(Math.abs((await position()) - anchor) <= 2);
+  assert.deepEqual((await state(page)).document, before.document);
+  assert.deepEqual((await state(page)).selected, before.selected);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
+test("resizing during a native zoom drag preserves the slider and its next input", async (t) => {
+  const page = await fixture(t, {
+    clips: [{ id: "a", trackId: "v1", start: 0, duration: 120 }],
+  });
+  await page.evaluate(() => { globalThis.originalZoom = document.querySelector("[data-et-zoom]"); });
+  const bounds = await page.locator("[data-et-zoom]").boundingBox(),
+    x = bounds.x + 8 + (bounds.width - 16) * (Math.log10(64) + 2) / 5,
+    y = bounds.y + bounds.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 4, y, { steps: 3 });
+  await page.locator("#timeline").evaluate((element) => { element.style.width = "1000px"; });
+  await settle(page);
+  const during = Number(await page.locator("[data-et-zoom]").inputValue());
+  assert.equal(await page.evaluate(() => originalZoom === document.querySelector("[data-et-zoom]")), true);
+  await page.mouse.move(x + 9, y, { steps: 3 });
+  await page.mouse.up();
+  await settle(page);
+  assert.ok(Number(await page.locator("[data-et-zoom]").inputValue()) > during);
+  assert.equal(await page.evaluate(() => originalZoom === document.querySelector("[data-et-zoom]")), true);
+  assert.equal((await state(page)).applied.length, 0);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
+test("Ctrl and Meta wheel zoom around the pointer, with keyboard zoom and horizontal navigation", async (t) => {
+  const page = await fixture(t, {
+    clips: [
+      { id: "a", trackId: "v1", start: 0, duration: 120 },
+      { id: "b", trackId: "v2", start: 1, duration: 2 },
+    ],
+  });
+  await clickClip(page, "b");
+  assert.deepEqual((await state(page)).selected, ["b"]);
+  await page.locator(".et-scroll").evaluate((element) => { element.scrollLeft = 1200; });
+  await settle(page);
+  const before = await state(page);
+  const snapshot = () => page.evaluate(() => ({
+    left: document.querySelector(".et-scroll").scrollLeft,
+    scale: parseFloat(document.querySelector('[data-et-clip="a"]').style.width) / 120,
+    width: document.querySelector(".et-scroll").clientWidth,
+  }));
+  let view = await snapshot();
+  const bounds = await page.locator(".et-scroll").boundingBox(),
+    offset = bounds.width * 0.4;
+  await page.mouse.move(bounds.x + offset, bounds.y + 70);
+  for (const modifier of ["Control", "Meta"]) {
+    const anchor = (view.left + offset) / view.scale;
+    await page.keyboard.down(modifier);
+    await page.mouse.wheel(0, -120);
+    await page.keyboard.up(modifier);
+    await settle(page);
+    const after = await snapshot();
+    assert.ok(after.scale > view.scale);
+    assert.ok(Math.abs((after.left + offset) / after.scale - anchor) < 0.03, JSON.stringify({ modifier, view, after, offset, anchor }));
+    view = after;
+  }
+  await page.locator("#timeline").focus();
+  await page.keyboard.press("-");
+  await settle(page);
+  const smaller = await snapshot();
+  assert.ok(smaller.scale < view.scale);
+  assert.ok(Math.abs((smaller.left + smaller.width / 2) / smaller.scale - (view.left + view.width / 2) / view.scale) < 0.03,
+    "keyboard zoom must keep the visible center when the playhead is off screen");
+  await page.keyboard.press("=");
+  await settle(page);
+  assert.ok((await snapshot()).scale > smaller.scale);
+  view = await snapshot();
+  await page.keyboard.down("Shift");
+  await page.mouse.wheel(0, 180);
+  await page.keyboard.up("Shift");
+  await settle(page);
+  assert.ok((await snapshot()).left > view.left);
+  assert.equal((await snapshot()).scale, view.scale);
+  await page.locator("#outside").focus();
+  await page.keyboard.press("-");
+  assert.equal(await page.locator("#outside").inputValue(), "-");
+  assert.equal((await snapshot()).scale, view.scale);
+  assert.deepEqual((await state(page)).document, before.document);
+  assert.deepEqual((await state(page)).selected, before.selected);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
+test("zoom at the end of a long timeline clamps scroll and redraws the actual visible clips", async (t) => {
+  const page = await fixture(t, {
+    clips: [
+      { id: "a", trackId: "v1", start: 0, duration: 2 },
+      { id: "late", trackId: "v1", start: 3600, duration: 3 },
+    ],
+  });
+  await page.locator(".et-scroll").evaluate((element) => { element.scrollLeft = element.scrollWidth; });
+  await settle(page);
+  await page.locator("[data-et-zoom]").focus();
+  await page.keyboard.press("Home");
+  await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((element) => element.scrollLeft), 0);
+  assert.equal(await clip(page, "a").count(), 1);
+  assert.equal(await clip(page, "late").count(), 1);
+  assert.equal(await page.locator("[data-et-zoom]").evaluate((element) => element === document.activeElement), true);
+  assert.equal((await state(page)).applied.length, 0);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
+test("a day-long timeline keeps its zoom slider truthful at the bounded pixel limit", async (t) => {
+  const page = await fixture(t, {
+    clips: [
+      { id: "a", trackId: "v1", start: 0, duration: 2 },
+      { id: "late", trackId: "v1", start: 86399, duration: 1 },
+    ],
+  });
+  const slider = page.locator("[data-et-zoom]"),
+    limit = Math.log10(12000000 / 86400);
+  await slider.focus();
+  for (const key of ["End", "End", "ArrowRight", "ArrowRight"]) {
+    await page.keyboard.press(key);
+    await settle(page);
+    assert.ok(Math.abs(Number(await slider.inputValue()) - limit) <= 0.025);
+    const width = await page.locator(".et-content").evaluate((element) => ({
+      style: element.style.width,
+      pixels: element.getBoundingClientRect().width,
+    }));
+    assert.ok(width.pixels <= 12000151, JSON.stringify(width));
+    assert.ok((await page.locator(".et-ruler > span").count()) <= 301);
+  }
+  assert.equal((await state(page)).applied.length, 0);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
 test("resizing a docked timeline fills the expanded viewport and preserves selection and scroll", async (t) => {
   const page = await fixture(t, {
     clips: [{ id: "a", trackId: "v1", start: 1, duration: 7 }],
@@ -1940,8 +4044,8 @@ test("disabled timeline tools say what they need, also to keyboard and screen-re
   await clickClip(page, "a");
   await clickClip(page, "b", "Shift");
   const split = await describe("split");
-  assert.equal(split.ariaDisabled, "true");
-  assert.equal(split.reason, "一次只能切分一个片段");
+  assert.equal(split.ariaDisabled, null);
+  assert.equal(split.reason, undefined);
   assert.equal((await describe("delete")).ariaDisabled, null);
   assert.equal((await describe("group")).disabled, false);
   assert.equal((await describe("group")).title, "分组 · ⌘/Ctrl G");
@@ -1996,10 +4100,663 @@ test("tracks can be deleted from their header: empty at once, occupied after con
   assert.match(await locked.getAttribute("title"), /锁定/);
 });
 
+test("track deletion asks again after reopening the same document generation", async (t) => {
+  const page = await fixture(t);
+  await page.locator('[data-et-delete-track="v2"]').click();
+  await page.locator('[data-et-delete-confirm="v2"]').waitFor();
+  await page.evaluate(() => fixture.replaceGeneration());
+  assert.equal(await page.locator('[data-et-delete-confirm="v2"]').count(), 0);
+  assert.equal((await state(page)).applied.length, 0);
+  await page.locator('[data-et-delete-track="v2"]').click();
+  await page.locator('[data-et-delete-confirm="v2"]').waitFor();
+});
+
+for (const change of ["revision", "generation"]) {
+  test(`a retained track deletion confirmation cannot delete after a ${change} change`, async (t) => {
+    const page = await fixture(t);
+    await page.locator('[data-et-delete-track="v2"]').click();
+    await page.locator('[data-et-delete-confirm="v2"]').waitFor();
+    await page.evaluate((change) => {
+      if (change === "generation") fixture.replaceGeneration(false);
+      else fixture.externalChange();
+    }, change);
+    const before = (await state(page)).document;
+    await page.locator('[data-et-delete-confirm="v2"]').click();
+    await settle(page);
+    assert.deepEqual((await state(page)).document, before);
+    assert.equal((await state(page)).applied.length, 0);
+    assert.equal(await page.locator('[data-et-delete-confirm="v2"]').count(), 0);
+    await page.locator('[data-et-delete-track="v2"]').click();
+    await page.locator('[data-et-delete-confirm="v2"]').waitFor();
+    await page.locator('[data-et-delete-confirm="v2"]').click();
+    await settle(page);
+    assert.equal((await state(page)).document.sequences[0].tracks.some((track) => track.id === "v2"), false);
+    await undo(page, before);
+  });
+}
+
+test("track deletion confirmation belongs to its sequence even when track IDs are shared", async (t) => {
+  const page = await fixture(t, { secondSequence: true });
+  await page.locator('[data-et-delete-track="v2"]').click();
+  await page.locator('[data-et-delete-confirm="v2"]').waitFor();
+  await page.evaluate(() => fixture.switchSequence("secondary"));
+  assert.equal(await page.locator('[data-et-delete-confirm="v2"]').count(), 0);
+  assert.equal((await state(page)).applied.length, 0);
+  await page.locator('[data-et-delete-track="v2"]').click();
+  await page.locator('[data-et-delete-confirm="v2"]').waitFor();
+  await page.evaluate(() => fixture.switchSequence("main"));
+  assert.equal(await page.locator('[data-et-delete-confirm="v2"]').count(), 0);
+});
+
 test("the magnetic main track keeps its delete button disabled with a reason", async (t) => {
   const page = await fixture(t, { magnetic: true, magneticTrackId: "v1" });
   const button = page.locator('[data-et-delete-track="v1"]');
   assert.equal(await button.isDisabled(), true);
   assert.match(await button.getAttribute("title"), /磁吸主轨/);
   assert.equal(await page.locator('[data-et-delete-track="v3"]').isDisabled(), false);
+});
+
+
+test("audio fade handles edit only the chosen grouped clip with one undo and keep timeline timing", async (t) => {
+  const page = await fixture(t, { magnetic: true, clips: [
+    { id: "a", trackId: "v1", start: 0, duration: 2, groupId: "pair", linkGroupId: "pair" },
+    { id: "b", trackId: "audio", start: 0, duration: 2, groupId: "pair", linkGroupId: "pair" },
+    { id: "c", trackId: "v1", start: 2, duration: 2 },
+  ] });
+  await clip(page, "a").click(); await settle(page);
+  const before = (await state(page)).document;
+  const handle = clip(page, "a").locator('[data-et-fade="fadeIn"]');
+  assert.equal(await handle.count(), 1);
+  const p = await center(handle);
+  await page.mouse.move(p.x, p.y); await page.mouse.down();
+  await page.mouse.move(p.x + 32, p.y, { steps: 4 }); await settle(page);
+  assert.match(await handle.getAttribute("aria-valuetext"), /0.500000/);
+  await page.mouse.up(); await settle(page);
+  const after = await state(page), expected = structuredClone(before);
+  expected.revision++; expected.sequences[0].clips[0].audio.fadeIn = 120000;
+  assert.deepEqual(after.document, expected);
+  assert.equal(after.applied.length, 1); assert.equal(after.applied[0].label, "调整声音淡入");
+  assert.deepEqual(after.errors, []);
+  await undo(page, before);
+});
+
+test("audio fade out uses the final release coordinate and Escape restores its visual preview", async (t) => {
+  const page = await fixture(t); await clip(page, "a").click(); await settle(page);
+  const before = (await state(page)).document, handle = clip(page, "a").locator('[data-et-fade="fadeOut"]'), p = await center(handle);
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x - 32, p.y); await settle(page);
+  assert.match(await handle.getAttribute("aria-valuetext"), /0.500000/);
+  await page.keyboard.press("Escape"); await page.mouse.up(); await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  await clip(page, "a").click(); await settle(page);
+  const q = await center(clip(page, "a").locator('[data-et-fade="fadeOut"]'));
+  await page.mouse.move(q.x, q.y); await page.mouse.down(); await page.mouse.move(q.x - 16, q.y);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: q.x - 32, y: q.y, button: "left", buttons: 0 });
+  await cdp.detach(); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.fadeOut, 120000);
+  assert.deepEqual((await state(page)).errors, []); await undo(page, before);
+});
+
+test("audio fade keyboard boundaries use the actual NTSC frame clock and retain slider focus", async (t) => {
+  const page = await fixture(t, { ntsc: true }); await clip(page, "a").click(); await settle(page);
+  let handle = clip(page, "a").locator('[data-et-fade="fadeIn"]');
+  await handle.focus(); await page.keyboard.press("ArrowRight"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.fadeIn, 8008);
+  assert.equal(await handle.evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press("Shift+ArrowRight"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.fadeIn, 88088);
+  handle = clip(page, "a").locator('[data-et-fade="fadeOut"]'); await handle.focus();
+  await page.keyboard.press("ArrowLeft"); await settle(page);
+  const after = await state(page); assert.equal(after.document.sequences[0].clips[0].audio.fadeOut, 7528);
+  assert.deepEqual(after.errors, []);
+  await page.keyboard.press("End"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.fadeOut, 0);
+});
+
+test("audio fade controls reject old generations and locked tracks without editing", async (t) => {
+  const page = await fixture(t); await clip(page, "a").click(); await settle(page);
+  const stale = await clip(page, "a").locator('[data-et-fade="fadeIn"]').elementHandle(), before = (await state(page)).document;
+  await page.evaluate(() => fixture.replaceGeneration());
+  await stale.evaluate((node) => document.querySelector('[data-et-clip="a"]').append(node));
+  await stale.focus(); await page.keyboard.press("ArrowRight"); await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  await page.evaluate(() => fixture.externalTrackEdit("v1", { locked: true })); await settle(page);
+  const locked = clip(page, "a").locator('[data-et-fade="fadeIn"]');
+  assert.equal(await locked.getAttribute("aria-disabled"), "true");
+  const p = await center(locked); await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x + 32, p.y); await page.mouse.up(); await settle(page);
+  const after = await state(page); assert.equal(after.document.sequences[0].clips[0].audio.fadeIn, 0);
+  assert.equal(after.applied.length, 0);
+});
+
+test("audio fade drags clamp to clip duration and repeating the boundary adds no undo", async (t) => {
+  const page = await fixture(t); await clip(page, "a").click(); await settle(page);
+  const before = (await state(page)).document;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const p = await center(clip(page, "a").locator('[data-et-fade="fadeIn"]'));
+    await page.mouse.move(p.x, p.y); await page.mouse.down();
+    await page.mouse.move(p.x + 200, p.y, { steps: 4 }); await page.mouse.up(); await settle(page);
+    const result = await state(page);
+    assert.equal(result.document.sequences[0].clips[0].audio.fadeIn, 480000);
+    assert.equal(result.applied.length, 1);
+    assert.deepEqual(result.errors, []);
+  }
+  await undo(page, before);
+});
+
+test("audio fade keyboard waits for apply and remains correctable after a rejected save", async (t) => {
+  const page = await fixture(t); await clip(page, "a").click(); await settle(page);
+  const before = (await state(page)).document, handle = clip(page, "a").locator('[data-et-fade="fadeIn"]');
+  await handle.focus(); await page.evaluate(() => fixture.holdNextEdit());
+  await page.keyboard.press("ArrowRight"); await page.keyboard.press("ArrowRight"); await settle(page);
+  assert.equal(await handle.getAttribute("aria-busy"), "true");
+  assert.deepEqual((await state(page)).document, before);
+  await page.evaluate(() => fixture.finishEdit(true)); await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  assert.deepEqual((await state(page)).errors, ["Error: 保存失败"]);
+  assert.equal(await handle.getAttribute("aria-busy"), "false");
+  assert.equal(await handle.evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press("ArrowRight"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.fadeIn, 8000);
+  assert.equal((await state(page)).applied.length, 1);
+  await undo(page, before);
+});
+
+test("audio fade handles support native touch and cancellation leaves no partial edit", async (t) => {
+  const page = await fixture(t, { touch: true }); await clip(page, "a").click(); await settle(page);
+  const before = (await state(page)).document, input = await touchInput(page, "#timeline");
+  let p = { ...await center(clip(page, "a").locator('[data-et-fade="fadeIn"]')), id: 1 };
+  await input.send("touchStart", [p]); await input.send("touchMove", [{ ...p, x: p.x + 32 }]);
+  await input.send("touchEnd"); await settle(page); await input.assertNative();
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.fadeIn, 120000);
+  assert.equal((await state(page)).applied.length, 1);
+  await undo(page, before);
+  const afterUndo = (await state(page)).document;
+  p = { ...await center(clip(page, "a").locator('[data-et-fade="fadeOut"]')), id: 2 };
+  await input.send("touchStart", [p]); await input.send("touchMove", [{ ...p, x: p.x - 32 }]);
+  await input.send("touchCancel"); await settle(page);
+  assert.deepEqual((await state(page)).document, afterUndo);
+  assert.deepEqual((await state(page)).errors, []);
+  assert.equal((await page.evaluate(() => fixture.gestureState())).drag, false);
+});
+
+
+test("fixed gain grip previews without modifying PCM state, commits one target and undoes once", async (t) => {
+  const page = await fixture(t, { magnetic: true, clips: [
+    { id: "a", trackId: "v1", start: 0, duration: 2, groupId: "pair", linkGroupId: "pair" },
+    { id: "b", trackId: "audio", start: 0, duration: 2, groupId: "pair", linkGroupId: "pair" },
+    { id: "c", trackId: "v1", start: 2, duration: 2 },
+  ] });
+  await captureOwnedPreviews(page);
+  await clip(page, "a").click(); await settle(page); const before = (await state(page)).document;
+  const handle = clip(page, "a").locator('[data-et-gain]'), p = await center(handle);
+  assert.equal(await page.evaluate(() => ownedPreviews.length), 0);
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y - 50, { steps: 4 }); await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  assert.equal(await page.evaluate(() => ownedPreviews.length), 1);
+  assert.equal(await handle.getAttribute("aria-valuenow"), "150"); assert.match(await handle.getAttribute("aria-valuetext"), /3.5 dB/);
+  assert.match(await page.locator(".et-notice").textContent(), /仅预览.*松开保存/);
+  const line = clip(page, "a").locator('[data-et-gain-line]'); assert.match(await line.getAttribute("style"), /37.5%/);
+  await page.mouse.up(); await settle(page); const after = await state(page), expected = structuredClone(before);
+  expected.revision++; expected.sequences[0].clips[0].audio.volume = 1.5;
+  assert.deepEqual(after.document, expected); assert.equal(after.applied.length, 1); assert.deepEqual(after.errors, []);
+  assert.equal(await handle.evaluate((node) => node === document.activeElement), true);
+  assert.equal(await page.evaluate(() => { try { ownedPreviews[0].read(); return false; } catch (error) { return /预览已结束/.test(error.message); } }), true);
+  await undo(page, before);
+});
+
+test("fixed gain release uses final coordinates and Escape, horizontal/noop drags do not create undo", async (t) => {
+  const page = await fixture(t); await clip(page, "a").click(); await settle(page); const before = (await state(page)).document;
+  let p = await center(clip(page, "a").locator('[data-et-gain]'));
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y - 20);
+  await page.keyboard.press("Escape"); await page.mouse.up(); await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  await page.evaluate(() => fixture.select(["a"])); p = await center(clip(page, "a").locator('[data-et-gain]'));
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x + 40, p.y); await page.mouse.up(); await settle(page);
+  assert.equal((await state(page)).applied.length, 0);
+  p = await center(clip(page, "a").locator('[data-et-gain]'));
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y - 10);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y - 33, button: "left", buttons: 0 });
+  await cdp.detach(); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.33);
+  assert.equal((await state(page)).applied.length, 1);
+});
+
+test("fixed gain keyboard supports fine steps, 0/400 limits, focus and no-op limits", async (t) => {
+  const page = await fixture(t); await clip(page, "a").click(); await settle(page);
+  const handle = clip(page, "a").locator('[data-et-gain]'); await handle.focus();
+  await page.keyboard.press("ArrowUp"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.01);
+  await page.keyboard.press("Shift+ArrowDown"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, .91);
+  await page.keyboard.press("Home"); await settle(page); assert.match(await handle.getAttribute("aria-valuetext"), /0%.*−∞/);
+  await page.keyboard.press("Home"); await page.keyboard.press("ArrowDown"); await settle(page);
+  assert.equal((await state(page)).applied.length, 3);
+  await page.keyboard.press("End"); await settle(page); assert.match(await handle.getAttribute("aria-valuetext"), /400%.*12.0 dB/);
+  await page.keyboard.press("ArrowUp"); await settle(page);
+  assert.equal((await state(page)).applied.length, 4); assert.equal(await handle.evaluate((node) => node === document.activeElement), true);
+});
+
+test("fixed gain is read only for automation, locked tracks refuse, mute stays editable with a warning", async (t) => {
+  const page = await fixture(t); await clip(page, "a").click(); await settle(page);
+  await page.evaluate(() => fixture.externalTrackEdit("v1", { muted: true }));
+  let handle = clip(page, "a").locator('[data-et-gain]'); assert.equal(await handle.getAttribute("aria-disabled"), "false");
+  await handle.focus(); assert.match(await page.locator(".et-notice").textContent(), /静音.*无声/);
+  await page.keyboard.press("ArrowUp"); await settle(page); assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.01);
+  await page.evaluate(() => fixture.externalTrackEdit("v1", { locked: true }));
+  assert.equal(await handle.getAttribute("aria-disabled"), "true"); assert.match(await handle.getAttribute("title"), /锁定/);
+  const before = (await state(page)).document, p = await center(handle);
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y - 30); await page.mouse.up(); await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  await page.evaluate(() => { const doc = fixture.read().document, audio = doc.sequences[0].clips[0].audio;
+    fixture.externalTrackEdit("v1", { locked: false });
+    fixture.updateClip("a", { audio: { ...audio, volume: { keyframes: [{ time: 0, value: 1, easing: "linear" }, { time: 480000, value: .2, easing: "linear" }] } } }); });
+  assert.equal(await handle.count(), 0); assert.match(await clip(page, "a").locator(".et-gain-status").textContent(), /自动化.*属性/);
+  assert.equal(await clip(page, "a").locator('[data-et-gain-line]').count(), 0);
+});
+
+test("fixed gain old owners and generation changes cannot edit a successor", async (t) => {
+  const page = await fixture(t); await clip(page, "a").click(); await settle(page);
+  const stale = await clip(page, "a").locator('[data-et-gain]').elementHandle(), before = (await state(page)).document;
+  await page.evaluate(() => fixture.replaceGeneration());
+  await stale.evaluate((node) => document.querySelector('[data-et-clip="a"]').append(node));
+  await stale.focus(); await page.keyboard.press("ArrowUp"); await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  await page.evaluate(() => fixture.render());
+  const p = await center(clip(page, "a").locator('[data-et-gain]'));
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y - 40);
+  await page.evaluate(() => fixture.replaceGeneration()); await page.mouse.up(); await settle(page);
+  assert.deepEqual((await state(page)).document, before); assert.equal((await state(page)).applied.length, 0);
+});
+
+test("fixed gain remains reachable in the visible middle of a long clip and leaves trim/fade/move targets", async (t) => {
+  const page = await fixture(t, { clips: [{ id: "a", trackId: "v1", start: 0, duration: 120 }] });
+  await page.evaluate(() => fixture.select(["a"]));
+  await page.locator(".et-scroll").evaluate((node) => node.scrollLeft = 3000); await settle(page);
+  const handle = clip(page, "a").locator('[data-et-gain]'), h = await handle.boundingBox(), view = await page.locator(".et-scroll").boundingBox();
+  assert.ok(h.x >= view.x + 7 && h.x + h.width <= view.x + view.width); assert.equal(h.width, 44);
+  const p = await center(handle); await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y - 20); await page.mouse.up(); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.2);
+  await page.evaluate(() => fixture.select([])); assert.equal(await handle.count(), 0);
+});
+
+test("fixed gain supports native touch and cancellation without changing the document", async (t) => {
+  const page = await fixture(t, { touch: true }); await clip(page, "a").click(); await settle(page);
+  const before = (await state(page)).document, input = await touchInput(page, "#timeline");
+  let p = { ...await center(clip(page, "a").locator('[data-et-gain]')), id: 1 };
+  await input.send("touchStart", [p]); await input.send("touchMove", [{ ...p, y: p.y - 25 }]); await input.send("touchEnd");
+  await settle(page); await input.assertNative(); assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.25);
+  const after = (await state(page)).document;
+  p = { ...await center(clip(page, "a").locator('[data-et-gain]')), id: 2 };
+  await input.send("touchStart", [p]); await input.send("touchMove", [{ ...p, y: p.y - 25 }]); await input.send("touchCancel"); await settle(page);
+  assert.deepEqual((await state(page)).document, after); assert.equal((await state(page)).applied.length, 1);
+  await undo(page, before);
+});
+
+test("fixed gain pointer clamps at 0/400 and a return to the original value adds no undo", async (t) => {
+  const page = await fixture(t); await page.evaluate(() => fixture.select(["a"]));
+  const handle = clip(page, "a").locator('[data-et-gain]');
+  for (const [dy, expected, count] of [[400, 0, 1], [400, 0, 1], [-500, 4, 2], [-500, 4, 2]]) {
+    const p = await center(handle); await page.mouse.move(p.x, p.y); await page.mouse.down();
+    await page.mouse.move(p.x, p.y + dy); await page.mouse.up(); await settle(page);
+    assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, expected);
+    assert.equal((await state(page)).applied.length, count);
+  }
+  const before = (await state(page)).document, p = await center(handle);
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y + 30); await settle(page);
+  await page.mouse.move(p.x, p.y); await page.mouse.up(); await settle(page);
+  assert.deepEqual((await state(page)).document, before); assert.equal((await state(page)).applied.length, 2);
+});
+
+test("fixed gain leaves a short clip's move and trim areas usable and appears after zooming", async (t) => {
+  const page = await fixture(t, { clips: [{ id: "a", trackId: "v1", start: 1, duration: 1 }] });
+  await clip(page, "a").click(); await settle(page);
+  assert.equal(await clip(page, "a").locator('[data-et-gain]').count(), 0);
+  assert.match(await clip(page, "a").locator('.et-gain-status').textContent(), /放大可调/);
+  const p = await center(clip(page, "a")); await page.mouse.move(p.x, p.y); await page.mouse.down();
+  await page.mouse.move(p.x + 64, p.y); await page.mouse.up(); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].start, 480000);
+  await page.locator('[data-et-action="zoom-in"]').click(); await settle(page);
+  assert.equal(await clip(page, "a").locator('[data-et-gain]').count(), 1);
+  const edge = await center(clip(page, "a").locator('[data-et-edge="right"]'));
+  await page.mouse.move(edge.x, edge.y); await page.mouse.down(); await page.mouse.move(edge.x - 20, edge.y); await page.mouse.up(); await settle(page);
+  assert.ok((await state(page)).document.sequences[0].clips[0].duration < 240000, JSON.stringify(await state(page)));
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1);
+});
+
+test("fixed gain waits for a save, permits correction after rejection, and checks fresh read ownership", async (t) => {
+  const page = await fixture(t); await page.evaluate(() => fixture.select(["a"]));
+  const handle = clip(page, "a").locator('[data-et-gain]'), before = (await state(page)).document;
+  await handle.focus(); await page.evaluate(() => fixture.holdNextEdit());
+  await page.keyboard.press("ArrowUp"); await page.keyboard.press("ArrowUp"); await settle(page);
+  assert.equal(await handle.getAttribute("aria-disabled"), "true"); assert.deepEqual((await state(page)).document, before);
+  await page.evaluate(() => fixture.finishEdit(true)); await settle(page);
+  assert.equal(await handle.getAttribute("aria-disabled"), "false"); assert.deepEqual((await state(page)).errors, ["Error: 保存失败"]);
+  await page.keyboard.press("ArrowUp"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.01);
+  await page.evaluate(() => {
+    const original = editor.EditorTimeline.prototype.current; let armed = true;
+    editor.EditorTimeline.prototype.current = function (...args) { const result = original.apply(this, args);
+      if (armed) { armed = false; fixture.externalChange(); } return result; };
+  });
+  await page.keyboard.press("ArrowUp"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.01);
+  assert.equal((await state(page)).applied.length, 1);
+});
+
+test("fixed gain uses the fully validated public planner without a session identity context", async (t) => {
+  const page = await fixture(t, { noIdentity: true }); await page.evaluate(() => fixture.select(["a"]));
+  const handle = clip(page, "a").locator('[data-et-gain]'), p = await center(handle);
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y - 10); await page.mouse.up(); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.1);
+  await handle.focus(); await page.keyboard.press("ArrowDown"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.09);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
+async function readDragReadout(page) {
+  return page.locator(".et-drag-readout b").allTextContents().then((values) =>
+    values.map((value) => Math.round(parseFloat(value) * 240000)));
+}
+async function beginReadoutDrag(page, id, dx, edge) {
+  const target = edge ? clip(page, id).locator(`[data-et-edge="${edge}"]`) : clip(page, id),
+    point = await center(target);
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  await page.mouse.move(point.x + dx, point.y);
+  await settle(page);
+  return point;
+}
+
+test("drag readout shows the actual grouped free move range and leaves one undoable edit", async (t) => {
+  const page = await fixture(t, { clips: [
+    { id: "a", trackId: "v1", start: 240013 / 240000, duration: 480019 / 240000, groupId: "pair" },
+    { id: "b", trackId: "v2", start: 2, duration: 2, groupId: "pair" },
+  ] }), before = (await state(page)).document;
+  await beginReadoutDrag(page, "a", 80);
+  const readout = await readDragReadout(page);
+  assert.equal(await page.locator(".et-drag-readout").isVisible(), true);
+  assert.match(await page.locator(".et-drag-readout").textContent(), /位置变化/);
+  assert.equal(await page.locator(".et-notice").textContent(), "");
+  assert.deepEqual((await state(page)).document, before);
+  await page.mouse.up(); await settle(page);
+  const after = await state(page), anchor = findStateClip(after, "a"), companion = findStateClip(after, "b");
+  assert.deepEqual(readout, [anchor.start, anchor.start + anchor.duration, anchor.duration,
+    anchor.start - before.sequences[0].clips[0].start]);
+  assert.equal(companion.start - before.sequences[0].clips[1].start, readout[3]);
+  assert.equal(after.applied.length, 1);
+  assert.equal(await page.locator(".et-drag-readout").isVisible(), false);
+  await undo(page, before);
+});
+
+test("drag readout shows packed magnetic position instead of the desired pointer delta", async (t) => {
+  const page = await fixture(t, { magnetic: true, clips: magneticClips, caption: true });
+  await beginReadoutDrag(page, "a", 256);
+  assert.deepEqual(await readDragReadout(page), [480000, 960000, 480000, 480000]);
+  assert.equal(await page.locator(".et-notice").textContent(), "");
+  await page.mouse.up(); await settle(page);
+  assert.equal(findStateClip(await state(page), "a").start, 480000);
+  assert.equal(await page.locator(".et-drag-readout").isVisible(), false);
+});
+
+test("drag readout follows left and right free or magnetic trims including exact nonframe endpoints", async (t) => {
+  for (const magnetic of [false, true]) for (const edge of ["left", "right"]) {
+    const page = await fixture(t, { magnetic, clips: [
+      { id: "a", trackId: "v1", start: magnetic ? 0 : 240013 / 240000, duration: 480019 / 240000 },
+      { id: "b", trackId: "v1", start: magnetic ? 480019 / 240000 : 6, duration: 2 },
+    ] }), before = (await state(page)).document, original = before.sequences[0].clips[0];
+    await beginReadoutDrag(page, "a", edge === "left" ? 32 : -32, edge);
+    assert.equal(await page.locator(".et-notice").textContent(), "");
+    assert.match(await page.locator(".et-drag-readout").textContent(), /时长变化/);
+    const readout = await readDragReadout(page);
+    await page.mouse.up(); await settle(page);
+    const result = findStateClip(await state(page), "a");
+    assert.deepEqual(readout, [result.start, result.start + result.duration, result.duration,
+      result.duration - original.duration]);
+    assert.equal((await state(page)).applied.length, 1);
+  }
+});
+
+test("drag readout hides invalid candidates, recovers in the same DOM and clears on cancellation or owner changes", async (t) => {
+  for (const ending of ["escape", "revision", "generation", "document", "sequence", "dispose"]) {
+    const page = await fixture(t, { secondSequence: true }), before = (await state(page)).document;
+    const point = await beginReadoutDrag(page, "a", 32, "right"), readout = page.locator(".et-drag-readout");
+    assert.equal(await readout.isVisible(), false);
+    assert.match(await page.locator(".et-notice").textContent(), /裁剪范围/);
+    await page.mouse.move(point.x - 32, point.y); await settle(page);
+    assert.equal(await readout.isVisible(), true);
+    const node = await readout.elementHandle();
+    await page.mouse.move(point.x - 48, point.y); await settle(page);
+    assert.equal(await node.evaluate((node) => node === document.querySelector(".et-drag-readout")), true);
+    assert.equal(await page.locator(".et-notice").textContent(), "");
+    if (ending === "escape") await page.keyboard.press("Escape");
+    else if (ending === "revision") await page.evaluate(() => { fixture.externalChange(); fixture.render(); });
+    else if (ending === "generation") await page.evaluate(() => fixture.replaceGeneration());
+    else if (ending === "document") await page.evaluate(() => fixture.replaceDocument());
+    else if (ending === "sequence") await page.evaluate(() => fixture.switchSequence());
+    else await page.evaluate(() => fixture.dispose());
+    await page.mouse.up(); await settle(page);
+    assert.equal(await node.evaluate((node) => node.hidden), true);
+    assert.equal((await state(page)).applied.length, 0);
+    if (ending === "escape" || ending === "dispose") assert.deepEqual((await state(page)).document, before);
+  }
+});
+
+test("drag readout checks final release coordinates before clearing without extra plan or document copies", async (t) => {
+  const page = await fixture(t), point = await center(clip(page, "a"));
+  await captureOwnedPreviews(page);
+  await page.evaluate(() => {
+    const preview = editor.EditorTimeline.prototype.previewPlan;
+    editor.EditorTimeline.prototype.previewPlan = function (...args) {
+      preview.apply(this, args);
+      globalThis.lastDragReadout = [...document.querySelectorAll(".et-drag-readout b")].map((node) => node.textContent);
+    };
+    document.querySelector("#timeline").addEventListener("pointerdown", (event) => { globalThis.readoutPointerId = event.pointerId; }, { once: true });
+  });
+  await page.mouse.move(point.x, point.y); await page.mouse.down();
+  await page.mouse.move(point.x + 32, point.y); await settle(page);
+  assert.equal(await page.evaluate(() => ownedPlanCalls), 1);
+  await page.evaluate(({ x, y }) => document.querySelector("#timeline").dispatchEvent(new PointerEvent("pointerup", {
+    bubbles: true, pointerId: readoutPointerId, buttons: 0, clientX: x + 64, clientY: y,
+  })), point);
+  await page.mouse.up(); await settle(page);
+  assert.equal(await page.evaluate(() => ownedPlanCalls), 2);
+  const range = await page.evaluate(() => lastDragReadout.map((value) => Math.round(parseFloat(value) * 240000)));
+  assert.deepEqual(range, [480000, 960000, 480000, 240000]);
+  assert.equal(findStateClip(await state(page), "a").start, range[0]);
+  assert.equal(await page.locator(".et-drag-readout").isVisible(), false);
+});
+
+test("drag readout wraps at 390 pixels without changing timeline height or intercepting handles", async (t) => {
+  const page = await fixture(t, { clips: [{ id: "a", trackId: "v1", start: 0, duration: 1.5 }] });
+  await page.setViewportSize({ width: 390, height: 620 });
+  await page.addStyleTag({ content: "#timeline{width:100%}body{padding:12px}" }); await settle(page);
+  const before = await page.locator("#timeline").boundingBox();
+  await beginReadoutDrag(page, "a", -20, "right");
+  const readout = page.locator(".et-drag-readout"), box = await readout.boundingBox();
+  assert.equal(await readout.isVisible(), true);
+  assert.ok(box.x >= 12 && box.x + box.width <= 378);
+  assert.ok(box.height > 36, "Narrow layout wraps the fixed readout instead of widening the timeline");
+  assert.equal((await page.locator("#timeline").boundingBox()).height, before.height);
+  assert.equal(await readout.evaluate((node) => getComputedStyle(node).pointerEvents), "none");
+  assert.equal(await readout.getAttribute("aria-live"), null);
+  assert.equal(await page.locator(".et-notice").getAttribute("role"), "status");
+  await page.locator("#timeline").screenshot({ path: "/tmp/video-studio-drag-readout-390.png" });
+  await page.mouse.up(); await settle(page);
+  assert.equal((await state(page)).applied.length, 1);
+});
+
+test("drag readout retains the original range for a packed no-op and hides a valid clip removal", async (t) => {
+  for (const remove of [false, true]) {
+    const page = await fixture(t, { magnetic: true, clips: magneticClips, caption: true });
+    await beginReadoutDrag(page, "a", remove ? 192 : 32, remove ? "left" : undefined);
+    assert.equal(await page.locator(".et-notice").textContent(), "");
+    assert.equal(await page.locator(".et-drag-readout").isVisible(), !remove);
+    if (!remove) assert.deepEqual(await readDragReadout(page), [0, 480000, 480000, 0]);
+    await page.mouse.up(); await settle(page);
+    const result = await state(page);
+    assert.equal(result.applied.length, remove ? 1 : 0);
+    assert.deepEqual(result.errors, []);
+    if (remove) assert.equal(findStateClip(result, "a"), undefined);
+    else assert.equal(findStateClip(result, "a").start, 0);
+    assert.equal(await page.locator(".et-drag-readout").isVisible(), false);
+  }
+});
+
+test("fit selection frames a distant exact-tick multi-selection without changing its locked clips, clock or history", async (t) => {
+  const page = await fixture(t, { ntsc: true, clips: [
+    { id: "long", trackId: "v1", start: 0, duration: 7200 },
+    { id: "a", trackId: "v2", start: 3600 + 13 / 240000, duration: 2 + 7 / 240000 },
+    { id: "b", trackId: "v3", start: 3604 + 7 / 240000, duration: 3 + 19 / 240000 },
+  ] });
+  await page.evaluate(() => { fixture.externalTrackEdit("v2", { locked: true }); fixture.select(["b", "a"]); fixture.seek(13); });
+  const before = await state(page);
+  await page.getByRole("button", { name: "适合所选片段", exact: true }).click(); await settle(page);
+  const view = await page.evaluate(() => fixture.fitView()), a = await clip(page, "a").boundingBox(), b = await clip(page, "b").boundingBox(), viewport = await page.locator(".et-scroll").boundingBox();
+  assert.ok(a.x >= viewport.x + 28 && a.x <= viewport.x + 32);
+  assert.ok(b.x + b.width <= viewport.x + viewport.width - 28);
+  assert.ok(b.x + b.width - a.x > view.width - 64);
+  assert.deepEqual(await state(page), before);
+});
+
+test("fit selection Shift F runs once while held and leaves input, IME and unmodified F alone", async (t) => {
+  const page = await fixture(t, { clips: [
+    { id: "long", trackId: "v1", start: 0, duration: 7200 }, { id: "a", trackId: "v2", start: 3600, duration: 2 },
+  ] });
+  await page.evaluate(() => {
+    fixture.select(["a"]); globalThis.fitSelectionCalls = 0;
+    const action = editor.EditorTimeline.prototype.action;
+    editor.EditorTimeline.prototype.action = function (name, ...args) { if (name === "fit-selection") fitSelectionCalls++; return action.call(this, name, ...args); };
+  });
+  const before = await state(page);
+  await page.locator("#timeline").focus(); await page.keyboard.down("Shift");
+  await page.keyboard.down("f"); await page.keyboard.down("f"); await page.keyboard.down("f");
+  await page.keyboard.up("f"); await page.keyboard.up("Shift"); await settle(page);
+  assert.equal(await page.evaluate(() => fitSelectionCalls), 1);
+  const view = await page.evaluate(() => fixture.fitView());
+  await page.keyboard.press("f");
+  await page.locator("#timeline").dispatchEvent("keydown", { key: "F", shiftKey: true, isComposing: true });
+  await page.getByLabel("轨道名称 v1", { exact: true }).fill("中文草稿"); await page.keyboard.press("Shift+F");
+  assert.equal(await page.evaluate(() => fitSelectionCalls), 1);
+  assert.deepEqual(await page.evaluate(() => fixture.fitView()), view);
+  assert.deepEqual(await state(page), before);
+});
+
+test("fit selection is unavailable when empty and respects the full timeline pixel budget for a tiny selection", async (t) => {
+  const page = await fixture(t, { clips: [
+    { id: "long", trackId: "v1", start: 0, duration: 86400 },
+    { id: "a", trackId: "v2", start: 43200 + 13 / 240000, duration: 13 / 240000 },
+  ] });
+  assert.equal(await page.getByRole("button", { name: "适合所选片段", exact: true }).isDisabled(), true);
+  const empty = await page.evaluate(() => fixture.fitView());
+  await page.locator("#timeline").focus(); await page.keyboard.press("Shift+F");
+  assert.deepEqual(await page.evaluate(() => fixture.fitView()), empty);
+  await page.evaluate(() => fixture.select(["a"])); const before = await state(page);
+  await page.getByRole("button", { name: "适合所选片段", exact: true }).click(); await settle(page);
+  const view = await page.evaluate(() => fixture.fitView());
+  assert.equal(view.scale, 12000000 / 86400);
+  assert.ok((await clip(page, "a").boundingBox()).x >= (await page.locator(".et-scroll").boundingBox()).x);
+  assert.deepEqual(await state(page), before);
+  await page.evaluate(() => fixture.select(["unknown"]));
+  assert.equal(await page.getByRole("button", { name: "适合所选片段", exact: true }).isDisabled(), true);
+});
+
+for (const width of [280, 390]) {
+  test(`fit selection remains reachable in the ${width} pixel timeline toolbar`, async (t) => {
+    const page = await fixture(t, { clips: [
+      { id: "long", trackId: "v1", start: 0, duration: 7200 }, { id: "a", trackId: "v2", start: 3600, duration: 2 },
+    ] });
+    await page.setViewportSize({ width, height: 900 });
+    await page.locator("#timeline").evaluate((node, width) => { node.style.width = `${width - 24}px`; }, width);
+    await page.evaluate(() => { fixture.select(["a"]); fixture.render(); });
+    const before = await state(page);
+    await page.getByRole("button", { name: "适合所选片段", exact: true }).click(); await settle(page);
+    const selected = await clip(page, "a").boundingBox(), viewport = await page.locator(".et-scroll").boundingBox(),
+      button = await page.getByRole("button", { name: "适合所选片段", exact: true }).boundingBox();
+    assert.ok(button.x >= 0 && button.x + button.width <= width, "The toolbar keeps the view button reachable after fitting");
+    assert.ok(selected.x >= viewport.x && selected.x + selected.width <= viewport.x + viewport.width);
+    assert.deepEqual(await state(page), before);
+    await page.screenshot({ path: `/tmp/video-studio-fit-selection-${width}.png` });
+  });
+}
+
+test("fit selection finishes its own track draft even without a parent property finisher", async (t) => {
+  const page = await fixture(t); await page.evaluate(() => fixture.select(["a"]));
+  const before = await state(page);
+  await page.getByLabel("轨道名称 v1", { exact: true }).fill("审核画面");
+  await page.getByRole("button", { name: "适合所选片段", exact: true }).click(); await settle(page);
+  const after = await state(page), view = await page.evaluate(() => fixture.fitView());
+  assert.equal(after.document.revision, before.document.revision + 1);
+  assert.equal(after.document.sequences[0].tracks[0].name, "审核画面");
+  assert.equal(view.scale, (view.width - 60) / 2);
+  assert.equal(after.applied.length, before.applied.length + 1);
+  await page.locator("#undo").click(); await settle(page);
+  assert.deepEqual((await state(page)).document.sequences, before.document.sequences);
+});
+
+const trackHeightButton = (page) => page.getByRole("button", { name: "加高轨道", exact: true });
+test("track height view preserves the vertical track fraction, horizontal view, clock and history", async (t) => {
+  const page = await fixture(t, { tracks: Array.from({ length: 16 }, (_, index) => `v${index + 1}`),
+    clips: [{ id: "a", trackId: "v1", start: 1, duration: 2 }, { id: "future", trackId: "v1", start: 600, duration: 2 }] });
+  await page.evaluate(() => { fixture.select(["a"]); fixture.seek(123457); document.querySelector(".et-scroll").scrollLeft = 500; });
+  await settle(page);
+  await page.locator(".et-body").evaluate((body) => body.scrollTop = 137);
+  await settle(page);
+  const before = await state(page);
+  await trackHeightButton(page).click(); await settle(page);
+  assert.equal(await page.locator(".et-lane").first().evaluate((lane) => lane.offsetHeight), 80);
+  assert.ok(Math.abs(await page.locator(".et-body").evaluate((body) => body.scrollTop) / 80 - 137 / 48) < .02);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 500);
+  await page.evaluate(() => fixture.render()); await settle(page);
+  assert.equal(await trackHeightButton(page).getAttribute("aria-pressed"), "true");
+  assert.deepEqual(await state(page), before);
+  await trackHeightButton(page).focus(); await page.keyboard.down("Enter"); await page.keyboard.down("Enter"); await page.keyboard.up("Enter");
+  await settle(page);
+  assert.equal(await trackHeightButton(page).getAttribute("aria-pressed"), "false", "A held activation toggles once");
+  assert.equal(await page.locator(".et-body").evaluate((body) => body.scrollTop), 137);
+  assert.equal(await page.locator(".et-lane").first().evaluate((lane) => lane.offsetHeight), 48);
+  assert.deepEqual(await state(page), before);
+  await trackHeightButton(page).click(); await page.evaluate(() => fixture.dispose());
+  assert.equal(await page.locator("#timeline").evaluate((node) => node.classList.contains("et-tall-tracks")), false);
+});
+
+for (const tall of [false, true]) {
+  test(`track height ${tall ? 80 : 48} uses actual lane coordinates for moves and trims`, async (t) => {
+    const page = await fixture(t, { tracks: ["v1", "v2"], clips: [{ id: "a", trackId: "v1", start: 1, duration: 2 }] });
+    if (tall) await trackHeightButton(page).click();
+    await drag(page, "a", 32, "v2");
+    const moved = (await state(page)).document.sequences[0].clips[0];
+    assert.equal(moved.start, 360000); assert.equal(moved.trackId, "v2");
+    await drag(page, "a", -32, undefined, "right");
+    const after = await state(page);
+    assert.equal(after.document.sequences[0].clips[0].duration, 360000);
+    assert.equal(after.applied.length, 2); assert.deepEqual(after.errors, []);
+    await page.getByRole("button", { name: "撤销最后一步", exact: true }).click();
+    assert.equal((await state(page)).document.sequences[0].clips[0].duration, 480000);
+    assert.equal(await page.locator(".et-lane").first().evaluate((lane) => lane.offsetHeight), tall ? 80 : 48);
+  });
+}
+
+test("tall track box selection uses the full virtualized clip height", async (t) => {
+  const page = await fixture(t, { tracks: ["v1"], clips: [{ id: "a", trackId: "v1", start: 30, duration: 1 }] });
+  await trackHeightButton(page).click(); await settle(page);
+  assert.equal(await clip(page, "a").count(), 0, "No visible clip can supply fallback geometry");
+  const lane = await page.locator('[data-et-lane="v1"]').boundingBox(), view = await page.locator(".et-scroll").boundingBox();
+  await page.mouse.move(view.x + 100, lane.y + 60); await page.mouse.down();
+  await page.mouse.move(view.x + 30 * 64 + 20, lane.y + 65); await page.mouse.up(); await settle(page);
+  assert.deepEqual((await state(page)).selected, ["a"]);
+  assert.equal((await state(page)).applied.length, 0);
+});
+
+test("track height stays fixed during a real drag and becomes available after cancellation", async (t) => {
+  const page = await fixture(t), before = await state(page), point = await center(clip(page, "a"));
+  await page.mouse.move(point.x, point.y); await page.mouse.down(); await page.mouse.move(point.x + 20, point.y);
+  assert.equal(await trackHeightButton(page).isDisabled(), true);
+  await trackHeightButton(page).dispatchEvent("click");
+  assert.equal(await page.locator(".et-lane").first().evaluate((lane) => lane.offsetHeight), 48);
+  await page.keyboard.press("Escape"); await page.mouse.up(); await settle(page);
+  assert.equal(await trackHeightButton(page).isDisabled(), false);
+  await trackHeightButton(page).click();
+  assert.equal(await page.locator(".et-lane").first().evaluate((lane) => lane.offsetHeight), 80);
+  assert.deepEqual((await state(page)).document, before.document);
 });

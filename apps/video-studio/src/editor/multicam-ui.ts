@@ -12,11 +12,13 @@ import { FrameCompositor } from "./compositor";
 import { defaultColorAdjustment, defaultTransform } from "./defaults";
 import type { EvaluatedFrame, EvaluatedMediaLayer } from "./evaluate";
 import type { EditorOperation } from "./operations";
+import { sameIdentity, type SessionIdentity } from "./session";
 import { secondsToTicks, snapToFrame, sourceTimeAt, TICKS_PER_SECOND, type Tick } from "./time";
 import type { EditorDocument, MulticamClip } from "./types";
 
 export interface EditorMulticamContext {
   read(): EditorDocument;
+  identity?(): SessionIdentity;
   selection(): { sequenceId: string; clipIds: string[] };
   time(): Tick;
   apply(operations: EditorOperation[], label: string): void | Promise<void>;
@@ -73,6 +75,7 @@ function value(element: HTMLInputElement) {
   return element.valueAsNumber;
 }
 interface Recording {
+  identity?: SessionIdentity;
   documentId: string;
   revision: number;
   sequenceId: string;
@@ -92,6 +95,7 @@ export class EditorMulticam {
   private error = "";
   private status = "";
   private signature = "";
+  private renderedIdentity?: SessionIdentity;
   private picked = new Set<string>();
   private assetPage = 0;
   private anglePage = 0;
@@ -177,11 +181,17 @@ export class EditorMulticam {
     this.error = value.message;
     this.context.onError(value);
   }
+  private owns(identity?: SessionIdentity): boolean {
+    return !this.disposed && (!identity || sameIdentity(identity, this.context.identity?.(), false));
+  }
   private button(text: string, action: () => void, disabled = false) {
     const result = node("button", "", text);
     result.type = "button";
     result.disabled = disabled;
-    result.addEventListener("click", action);
+    const identity = this.context.identity?.();
+    result.addEventListener("click", () => {
+      if (!this.pending && this.visible && this.root.contains(result) && this.owns(identity)) action();
+    });
     return result;
   }
   private section(title: string) {
@@ -203,6 +213,11 @@ export class EditorMulticam {
     selectNew = false,
   ) {
     if (this.pending || this.disposed) return;
+    const identity = this.context.identity?.(),
+      selection = this.context.selection(),
+      sequenceId = selection.sequenceId,
+      selectedIds = [...selection.clipIds].sort();
+    const owns = () => this.owns(identity) && this.context.selection().sequenceId === sequenceId;
     try {
       const before = this.context.read(),
         ops = make(before);
@@ -211,9 +226,14 @@ export class EditorMulticam {
       this.status = "";
       this.root.querySelector("fieldset")!.disabled = true;
       await this.context.apply(ops, label);
-      if (this.disposed) return;
+      if (!owns()) return;
       const after = this.context.read();
-      if (selectNew && after.id === before.id && after.revision === before.revision + 1) {
+      if (
+        selectNew &&
+        after.id === before.id &&
+        after.revision === before.revision + 1 &&
+        JSON.stringify([...this.context.selection().clipIds].sort()) === JSON.stringify(selectedIds)
+      ) {
         const added = ops.find((operation) => operation.type === "clip.add");
         if (added?.type === "clip.add")
           this.context.select({ sequenceId: added.sequenceId, clipIds: [added.clip.id] });
@@ -221,7 +241,7 @@ export class EditorMulticam {
       this.status = `${label}已完成，可整体撤销。`;
       this.alignment = undefined;
     } catch (error) {
-      if (!this.disposed) this.report(error);
+      if (owns()) this.report(error);
     } finally {
       this.pending = false;
       if (!this.disposed) {
@@ -291,6 +311,7 @@ export class EditorMulticam {
       return;
     }
     this.recording = {
+      identity: this.context.identity?.(),
       documentId: document.id,
       revision: document.revision,
       sequenceId: sequence.id,
@@ -306,10 +327,11 @@ export class EditorMulticam {
     const recording = this.recording;
     try {
       await this.context.play();
+      if (!this.owns(recording.identity)) return;
       if (this.recording === recording) recording.started = true;
       else this.context.pause?.();
     } catch (error) {
-      if (this.recording === recording) {
+      if (this.owns(recording.identity) && this.recording === recording) {
         this.recording = undefined;
         this.report(error);
         this.signature = "";
@@ -320,6 +342,11 @@ export class EditorMulticam {
   private async stopRecord() {
     const record = this.recording;
     if (!record) return;
+    if (!this.owns(record.identity)) {
+      this.recording = undefined;
+      this.render();
+      return;
+    }
     this.recording = undefined;
     this.context.pause?.();
     const { document, sequence, clip } = this.scope();
@@ -354,11 +381,13 @@ export class EditorMulticam {
   }
   private tick() {
     if (this.disposed || !this.visible) return;
+    if (this.renderedIdentity && !this.owns(this.renderedIdentity)) this.render();
     const scope = this.view ?? this.scope();
     if (this.recording) {
       const record = this.recording,
         local = this.context.time() - (scope.clip?.start ?? 0);
       if (
+        !this.owns(record.identity) ||
         scope.document.id !== record.documentId ||
         scope.document.revision !== record.revision ||
         scope.clip?.id !== record.clipId ||
@@ -395,7 +424,8 @@ export class EditorMulticam {
       return;
     const local = this.context.time() - clip.start,
       source = sourceTimeAt(clip.timeMap, Math.max(0, Math.min(clip.duration - 1, local))),
-      generation = this.monitorGeneration;
+      generation = this.monitorGeneration,
+      identity = this.context.identity?.();
     const layers: EvaluatedMediaLayer[] = [];
     const active = this.active(clip, Math.max(0, local)),
       visible = clip.angles.slice(this.anglePage * 4, this.anglePage * 4 + 4);
@@ -446,7 +476,7 @@ export class EditorMulticam {
     };
     try {
       const media = await this.pool.prepare(frame);
-      if (this.disposed || generation !== this.monitorGeneration) return;
+      if (!this.owns(identity) || generation !== this.monitorGeneration) return;
       for (const layer of layers) {
         if (layer.angleId === active && this.program) {
           this.compositor.draw(this.program, { ...frame, layers: [layer] }, media);
@@ -461,7 +491,7 @@ export class EditorMulticam {
       }
     } catch (error) {
       if (
-        !this.disposed &&
+        this.owns(identity) &&
         generation === this.monitorGeneration &&
         (error as Error).name !== "AbortError"
       ) {
@@ -480,7 +510,8 @@ export class EditorMulticam {
     maxOffsetSeconds: number,
   ) {
     if (!this.context.alignSources || this.pending || this.recording) return;
-    const before = this.context.read();
+    const before = this.context.read(),
+      identity = this.context.identity?.();
     const selection = JSON.stringify(this.context.selection());
     this.pending = true;
     this.error = "";
@@ -493,7 +524,7 @@ export class EditorMulticam {
         signal: this.controller.signal,
       });
       const after = this.context.read();
-      if (this.disposed || !this.visible || this.controller?.signal.aborted) return;
+      if (!this.owns(identity) || !this.visible || this.controller?.signal.aborted) return;
       if (
         after.id !== before.id ||
         after.revision !== before.revision ||
@@ -506,7 +537,7 @@ export class EditorMulticam {
       this.alignment = result;
       this.status = "声音匹配已完成；请检查置信度和偏移后应用。";
     } catch (error) {
-      if (!this.disposed && (error as Error).name !== "AbortError") this.report(error);
+      if (this.owns(identity) && (error as Error).name !== "AbortError") this.report(error);
     } finally {
       this.pending = false;
       this.controller = undefined;
@@ -517,9 +548,24 @@ export class EditorMulticam {
     }
   }
   render() {
-    if (this.disposed || this.pending || !this.visible) return;
+    if (this.disposed || !this.visible) return;
+    const identity = this.context.identity?.();
+    if (this.renderedIdentity && !sameIdentity(this.renderedIdentity, identity, false)) {
+      this.controller?.abort();
+      this.recording = undefined;
+      this.alignment = undefined;
+      this.picked.clear();
+      this.assetPage = this.anglePage = this.cutPage = 0;
+      this.error = this.status = this.signature = "";
+      this.monitorGeneration++;
+      this.pool?.reset();
+      this.tiles.clear();
+      this.program = undefined;
+    }
+    this.renderedIdentity = identity;
     const scope = this.scope();
     this.view = scope;
+    if (this.pending) return;
     const { document, sequence, clip, locked } = scope;
     if (
       this.alignment &&
@@ -542,6 +588,8 @@ export class EditorMulticam {
       Math.max(0, Math.ceil((clip?.switches.length ?? 0) / 50) - 1),
     );
     const signature = JSON.stringify([
+      identity?.documentId,
+      identity?.generation,
       document.id,
       document.revision,
       this.context.selection(),
@@ -571,6 +619,7 @@ export class EditorMulticam {
       const check = input(`选择机位素材 ${asset.name}`, asset.id, "checkbox");
       check.checked = this.picked.has(asset.id);
       check.addEventListener("change", () => {
+        if (!this.root.contains(check) || !this.owns(identity)) return;
         if (check.checked) this.picked.add(asset.id);
         else this.picked.delete(asset.id);
         this.alignment = undefined;
@@ -762,6 +811,7 @@ export class EditorMulticam {
       monitor.tabIndex = 0;
       monitor.setAttribute("aria-label", "机位切换键盘区");
       monitor.addEventListener("keydown", (event) => {
+        if (!this.root.contains(monitor) || !this.owns(identity) || this.pending) return;
         if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement)
           return;
         const index = Number(event.key) - 1;

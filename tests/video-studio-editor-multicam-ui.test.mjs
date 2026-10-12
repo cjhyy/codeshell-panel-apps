@@ -96,7 +96,7 @@ before(async () => {
   });
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
   await page.addScriptTag({
-    content: `const T=240000;globalThis.fixture=()=>({schemaVersion:2,timebase:T,id:'doc',name:'多机位录制',revision:0,activeSequenceId:'main',exportProfiles:[],assets:[{id:'a',name:'正面',kind:'video',duration:8*T,width:96,height:64},{id:'b',name:'侧面',kind:'video',duration:8*T,width:96,height:64}],sequences:[{id:'main',name:'节目',width:96,height:64,frameRate:{numerator:30,denominator:1},background:'#000000',timelineMode:'free',tracks:[api.createTrack('v','video')],clips:[],transitions:[],markers:[]}]});globalThis.reset=(group=true)=>{globalThis.multicam?.dispose();let doc=fixture();if(group)doc=api.applyEditorOperations(doc,api.planCreateMulticam(doc,'main',{assetIds:['a','b'],name:'双机位',at:0,offsets:{b:2*T}}),doc.revision);globalThis.editorHistory=new api.EditorHistory(doc);globalThis.selected={sequenceId:'main',clipIds:doc.sequences[0].clips.map(c=>c.id)};globalThis.now=T/2;globalThis.playing=false;globalThis.errors=[];globalThis.calls=[];globalThis.readCalls=0;globalThis.playWait=null;globalThis.alignWait=null;globalThis.uncertain=false;globalThis.resolveCalls=0;globalThis.multicam=api.mountEditorMulticam(document.querySelector('#mount'),{read:()=>{readCalls++;return editorHistory.read();},selection:()=>selected,time:()=>now,select:value=>selected=value,onError:e=>errors.push(e.message),apply:async(ops,label)=>{calls.push({ops,label});editorHistory.apply(ops,editorHistory.revision,label);},resolveAsset:()=>{resolveCalls++;return location.origin+'/video';},play:async()=>{if(playWait)await playWait;playing=true;},pause:()=>playing=false,playing:()=>playing,alignSources:async(ids,reference,options)=>{globalThis.alignmentSignal=options.signal;const document=editorHistory.read();if(alignWait)await alignWait;return{documentId:document.id,revision:document.revision,documentHash:'a'.repeat(64),referenceAssetId:reference,reused:false,results:ids.map((assetId,index)=>({assetId,offset:index?T/4:0,confidence:uncertain?.3:1,secondPeak:0,overlapSeconds:5,precisionTicks:1200,reliable:!uncertain,reason:uncertain?'相似度不足':undefined}))};}});};globalThis.clip=()=>editorHistory.read().sequences[0].clips[0];globalThis.advance=t=>{now=t*T;};`,
+    content: `const T=240000;globalThis.fixture=()=>({schemaVersion:2,timebase:T,id:'doc',name:'多机位录制',revision:0,activeSequenceId:'main',exportProfiles:[],assets:[{id:'a',name:'正面',kind:'video',duration:8*T,width:96,height:64},{id:'b',name:'侧面',kind:'video',duration:8*T,width:96,height:64}],sequences:[{id:'main',name:'节目',width:96,height:64,frameRate:{numerator:30,denominator:1},background:'#000000',timelineMode:'free',tracks:[api.createTrack('v','video')],clips:[],transitions:[],markers:[]}]});globalThis.reset=(group=true)=>{globalThis.multicam?.dispose();let doc=fixture();if(group)doc=api.applyEditorOperations(doc,api.planCreateMulticam(doc,'main',{assetIds:['a','b'],name:'双机位',at:0,offsets:{b:2*T}}),doc.revision);globalThis.editorHistory=new api.EditorHistory(doc);globalThis.generation=(globalThis.generation??0)+1;globalThis.selected={sequenceId:'main',clipIds:doc.sequences[0].clips.map(c=>c.id)};globalThis.now=T/2;globalThis.playing=false;globalThis.errors=[];globalThis.calls=[];globalThis.readCalls=0;globalThis.playWait=null;globalThis.alignWait=null;globalThis.uncertain=false;globalThis.resolveCalls=0;globalThis.multicam=api.mountEditorMulticam(document.querySelector('#mount'),{read:()=>{readCalls++;return editorHistory.read();},identity:()=>({documentId:editorHistory.read().id,generation,revision:editorHistory.revision}),selection:()=>selected,time:()=>now,select:value=>selected=value,onError:e=>errors.push(e.message),apply:async(ops,label)=>{calls.push({ops,label});editorHistory.apply(ops,editorHistory.revision,label);},resolveAsset:()=>{resolveCalls++;return location.origin+'/video';},play:async()=>{if(playWait)await playWait;playing=true;},pause:()=>playing=false,playing:()=>playing,alignSources:async(ids,reference,options)=>{globalThis.alignmentSignal=options.signal;const document=editorHistory.read();if(alignWait)await alignWait;return{documentId:document.id,revision:document.revision,documentHash:'a'.repeat(64),referenceAssetId:reference,reused:false,results:ids.map((assetId,index)=>({assetId,offset:index?T/4:0,confidence:uncertain?.3:1,secondPeak:0,overlapSeconds:5,precisionTicks:1200,reliable:!uncertain,reason:uncertain?'相似度不足':undefined}))};}});};globalThis.clip=()=>editorHistory.read().sequences[0].clips[0];globalThis.advance=t=>{now=t*T;};`,
   });
 });
 after(async () => {
@@ -322,4 +322,171 @@ test("backwards playback seeks discard even when no cut was recorded at the late
   assert.match(await page.getByRole("alert").innerText(), /向后移动/);
   assert.equal(await page.evaluate(() => calls.length), 0);
   assert.equal(await page.evaluate(() => clip().switches.length), 1);
+});
+
+
+test("same-id revision successor drops focused camera drafts and detached save actions", async () => {
+  await details("机位偏移与主声音");
+  await page.getByLabel("机位 正面 名称", { exact: true }).fill("旧机位草稿");
+  await page.evaluate(() => {
+    const old = [...document.querySelectorAll(".editor-multicam button")].find((button) => button.textContent === "保存机位设置");
+    editorHistory = new api.EditorHistory(editorHistory.read());
+    generation++;
+    multicam.render();
+    old.click();
+  });
+  await page.waitForTimeout(30);
+  assert.equal(await page.getByLabel("机位 正面 名称", { exact: true }).inputValue(), "正面");
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("sound alignment finishing in a same-id revision successor is discarded", async () => {
+  await details("声音同步");
+  await page.evaluate(() => { alignWait = new Promise((resolve) => globalThis.releaseAlignment = resolve); });
+  await page.getByRole("button", { name: "分析真实声音", exact: true }).click();
+  await page.evaluate(() => {
+    editorHistory = new api.EditorHistory(editorHistory.read());
+    generation++;
+    multicam.render();
+    releaseAlignment();
+  });
+  await page.waitForFunction(() => !document.querySelector(".editor-multicam fieldset").disabled);
+  assert.equal(await page.getByRole("button", { name: "应用同步并裁剪共同范围", exact: true }).count(), 0);
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+
+test("a generation change discards recorded cuts and old keyboard/stop controls without pausing successor playback", async () => {
+  await click("播放并录制切换");
+  await page.evaluate(() => advance(1));
+  await click("切换到机位 侧面");
+  await page.evaluate(() => {
+    globalThis.oldMonitor = document.querySelector('[aria-label="机位切换键盘区"]');
+    globalThis.oldStop = [...document.querySelectorAll(".editor-multicam button")].find((button) => button.textContent === "停止并保存切换");
+    editorHistory = new api.EditorHistory(editorHistory.read());
+    generation++;
+    multicam.render();
+    oldMonitor.dispatchEvent(new KeyboardEvent("keydown", { key: "2", bubbles: true }));
+    oldStop.click();
+  });
+  assert.equal(await page.evaluate(() => multicam.recording), undefined);
+  assert.equal(await page.evaluate(() => playing), true);
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.equal(await page.evaluate(() => clip().switches.length), 1);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("late old record playback completion does not mark or pause a successor recording", async () => {
+  await page.evaluate(() => { playWait = new Promise((resolve) => globalThis.releaseOldPlay = resolve); });
+  await page.getByRole("button", { name: "播放并录制切换", exact: true }).click();
+  await page.evaluate(() => {
+    editorHistory = new api.EditorHistory(editorHistory.read());
+    generation++;
+    multicam.render();
+    playWait = null;
+  });
+  await click("播放并录制切换");
+  await page.evaluate(async () => { releaseOldPlay(); await Promise.resolve(); });
+  assert.equal(await page.evaluate(() => playing), true);
+  assert.equal(await page.evaluate(() => multicam.recording.started), true);
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("old camera apply completion cannot select or announce a successor clip", async () => {
+  await page.evaluate(() => reset(false));
+  await details("创建机位组");
+  await page.getByLabel("选择机位素材 正面", { exact: true }).check();
+  await page.getByLabel("选择机位素材 侧面", { exact: true }).check();
+  await page.evaluate(() => {
+    multicam.context.apply = async (ops, label) => {
+      editorHistory.apply(ops, editorHistory.revision, label);
+      await new Promise((resolve) => globalThis.releaseCompletedCamera = resolve);
+    };
+  });
+  await page.getByRole("button", { name: "创建多机位片段", exact: true }).click();
+  await page.evaluate(() => {
+    editorHistory = new api.EditorHistory(editorHistory.read());
+    generation++;
+    multicam.render();
+    releaseCompletedCamera();
+  });
+  await page.waitForFunction(() => !document.querySelector(".editor-multicam fieldset").disabled);
+  assert.deepEqual(await page.evaluate(() => selected.clipIds), []);
+  assert.equal(await page.locator("[data-emc-status]").innerText(), "");
+  assert.equal(await page.getByLabel("选择机位素材 正面", { exact: true }).isChecked(), false);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+
+test("camera creation finishing after a same-generation sequence switch does not pull selection or status back", async () => {
+  await page.evaluate(() => {
+    reset(false);
+    const doc = editorHistory.read();
+    doc.sequences.push({ ...structuredClone(doc.sequences[0]), id: "other", name: "另一个序列" });
+    editorHistory = new api.EditorHistory(doc);
+    multicam.render();
+    multicam.context.apply = async (ops, label) => {
+      editorHistory.apply(ops, editorHistory.revision, label);
+      await new Promise((resolve) => globalThis.finishOldSequenceCamera = resolve);
+    };
+  });
+  await details("创建机位组");
+  await page.getByLabel("选择机位素材 正面", { exact: true }).check();
+  await page.getByLabel("选择机位素材 侧面", { exact: true }).check();
+  await page.getByRole("button", { name: "创建多机位片段", exact: true }).click();
+  await page.evaluate(() => {
+    selected = { sequenceId: "other", clipIds: [] };
+    multicam.render();
+    finishOldSequenceCamera();
+  });
+  await page.waitForFunction(() => !document.querySelector(".editor-multicam fieldset").disabled);
+  assert.deepEqual(await page.evaluate(() => selected), { sequenceId: "other", clipIds: [] });
+  assert.equal(await page.locator("[data-emc-status]").innerText(), "");
+  assert.equal(await page.evaluate(() => editorHistory.read().sequences[0].clips.length), 1);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+
+test("camera creation preserves a newer same-sequence clip selection while still reporting completion", async () => {
+  await page.evaluate(() => {
+    selected.clipIds = [];
+    multicam.render();
+    multicam.context.apply = async (ops, label) => {
+      editorHistory.apply(ops, editorHistory.revision, label);
+      await new Promise((resolve) => globalThis.finishSelectedCamera = resolve);
+    };
+  });
+  await details("创建机位组");
+  await page.getByLabel("选择机位素材 正面", { exact: true }).check();
+  await page.getByLabel("选择机位素材 侧面", { exact: true }).check();
+  await page.getByRole("button", { name: "创建多机位片段", exact: true }).click();
+  const expected = await page.evaluate(() => {
+    selected = { sequenceId: "main", clipIds: [editorHistory.read().sequences[0].clips[0].id] };
+    finishSelectedCamera();
+    return selected;
+  });
+  await page.waitForFunction(() => !document.querySelector(".editor-multicam fieldset").disabled);
+  assert.deepEqual(await page.evaluate(() => selected), expected);
+  assert.match(await page.locator("[data-emc-status]").innerText(), /已完成/);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("old camera persistence errors stay out of another same-generation sequence", async () => {
+  await page.evaluate(() => {
+    const doc = editorHistory.read();
+    doc.sequences.push({ ...structuredClone(doc.sequences[0]), id: "other", name: "另一个序列", clips: [] });
+    editorHistory = new api.EditorHistory(doc);
+    multicam.context.apply = () => new Promise((_resolve, reject) => globalThis.failOldCamera = reject);
+  });
+  await page.getByRole("button", { name: "切换到机位 侧面", exact: true }).click();
+  await page.evaluate(() => {
+    selected = { sequenceId: "other", clipIds: [] };
+    failOldCamera(new Error("旧序列写入失败"));
+  });
+  await page.waitForFunction(() => !document.querySelector(".editor-multicam fieldset").disabled);
+  assert.equal(await page.locator("[data-emc-error]").innerText(), "");
+  assert.deepEqual(await page.evaluate(() => errors), []);
 });

@@ -33,6 +33,10 @@ before(async () => {
   const isolatedOutput = resolve(buildDirectory, "package");
   await buildProject({ ...project, output: isolatedOutput }, { log: false });
   output = resolve(isolatedOutput, "app");
+  // Exercise genuine presentation refreshes without shipping a production test API.
+  const main = resolve(output, "main.mjs");
+  await writeFile(main, (await readFile(main, "utf8")) +
+    "\nglobalThis.__legacyZoomAudit = { render, zoom: () => zoom, session: () => editorSession, ready: () => productionBooted };\n");
   await mkdir(screenshots, { recursive: true });
   server = createServer(async (request, response) => {
     if (
@@ -2457,7 +2461,8 @@ test("fine timeline editing fits an hour-long project and limits ruler labels wh
     assert.equal(fitted.left, 0);
     assert.ok(fitted.labels > 0 && fitted.labels < 100);
 
-    await page.locator("#timeline-zoom").evaluate((input) => {
+    await page.evaluate(() => {
+      const input = document.querySelector("#timeline-zoom");
       input.value = "240";
       input.dispatchEvent(new Event("change", { bubbles: true }));
     });
@@ -2466,7 +2471,8 @@ test("fine timeline editing fits an hour-long project and limits ruler labels wh
         Number(document.querySelector("#timeline-zoom").value) === 240 &&
         document.querySelector("#timeline-scroll").scrollWidth > 800000,
     );
-    await page.locator("#timeline-scroll").evaluate((scroll) => {
+    await page.evaluate(() => {
+      const scroll = document.querySelector("#timeline-scroll");
       scroll.scrollLeft = scroll.scrollWidth - scroll.clientWidth;
       scroll.dispatchEvent(new Event("scroll"));
     });
@@ -2491,12 +2497,162 @@ test("fine timeline editing fits an hour-long project and limits ruler labels wh
       ),
     );
     await page.locator('[data-action="fit-timeline"]').click();
-    assert.equal(await page.locator("#timeline-scroll").evaluate((scroll) => scroll.scrollLeft), 0);
+    assert.equal(await page.evaluate(() => document.querySelector("#timeline-scroll").scrollLeft), 0);
     assert.deepEqual(await readProject(page), imported);
   } finally {
     await page.close();
   }
 });
+
+async function legacyZoomPage() {
+  const page = await pageWithBridge(true);
+  await demo(page);
+  await page.waitForFunction(() => __legacyZoomAudit.ready());
+  await page.evaluate(() => {
+    const input = document.querySelector("#timeline-zoom");
+    input.value = "120";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  return page;
+}
+
+test("legacy zoom keeps native keyboard focus across a background render", async () => {
+  const page = await legacyZoomPage();
+  try {
+    const before = await readProject(page);
+    await page.evaluate(() => {
+      window.__zoomInput = document.querySelector("#timeline-zoom");
+      document.addEventListener("focusin", function redraw(event) {
+        if (event.target.id !== "timeline-zoom") return;
+        document.removeEventListener("focusin", redraw);
+        queueMicrotask(() => __legacyZoomAudit.render());
+      });
+    });
+    await page.locator("#timeline-zoom").focus();
+    await page.keyboard.press("End");
+    const result = await page.evaluate(() => ({
+      zoom: __legacyZoomAudit.zoom(),
+      connected: __zoomInput.isConnected,
+      current: __zoomInput === document.querySelector("#timeline-zoom"),
+      focused: document.activeElement === __zoomInput,
+    }));
+    assert.equal(result.zoom, 240, JSON.stringify(result));
+    assert.equal(result.connected && result.current && result.focused, true);
+    // Subsequent native keys must also commit exactly once without losing their owner.
+    await page.keyboard.press("Home");
+    assert.equal(await page.evaluate(() => __legacyZoomAudit.zoom()), 0.01);
+    assert.deepEqual(await readProject(page), before);
+  } finally { await page.close(); }
+});
+
+for (const pointer of ["mouse", "touch"])
+  test(`legacy zoom keeps a native ${pointer} drag connected across a background render`, async () => {
+    const page = await legacyZoomPage();
+    try {
+      const before = await readProject(page);
+      await page.evaluate(() => { window.__zoomInput = document.querySelector("#timeline-zoom"); });
+      const box = await page.locator("#timeline-zoom").boundingBox();
+      const y = box.y + box.height / 2;
+      const cdp = pointer === "touch" ? await page.context().newCDPSession(page) : undefined;
+      if (cdp) await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchStart", touchPoints: [{ x: box.x + box.width / 2, y, id: 1 }],
+      });
+      else {
+        await page.mouse.move(box.x + box.width / 2, y);
+        await page.mouse.down();
+      }
+      await page.evaluate(() => __legacyZoomAudit.render());
+      const retained = await page.evaluate(() => __zoomInput.isConnected &&
+        __zoomInput === document.querySelector("#timeline-zoom"));
+      if (cdp) await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchMove", touchPoints: [{ x: box.x + box.width * 0.75, y, id: 1 }],
+      });
+      else await page.mouse.move(box.x + box.width * 0.75, y);
+      const draggingValue = await page.evaluate(() => document.querySelector("#timeline-zoom").value);
+      await page.evaluate(() => __legacyZoomAudit.render());
+      assert.equal(await page.evaluate(() => document.querySelector("#timeline-zoom").value), draggingValue);
+      if (cdp) {
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchMove", touchPoints: [{ x: box.x + box.width + 20, y, id: 1 }],
+        });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      } else {
+        await page.mouse.move(box.x + box.width + 20, y);
+        await page.mouse.up();
+      }
+      const result = await page.evaluate(() => ({
+        zoom: __legacyZoomAudit.zoom(),
+        connected: __zoomInput.isConnected,
+        current: __zoomInput === document.querySelector("#timeline-zoom"),
+      }));
+      assert.equal(result.zoom, 240, JSON.stringify(result));
+      assert.equal(retained, true);
+      if (!cdp) assert.equal(result.connected && result.current, true);
+      assert.deepEqual(await readProject(page), before);
+      await cdp?.detach();
+    } finally { await page.close(); }
+  });
+
+test("legacy zoom releases a cancelled native touch and accepts the next keyboard edit", async () => {
+  const page = await legacyZoomPage();
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    const before = await readProject(page);
+    const box = await page.locator("#timeline-zoom").boundingBox();
+    await page.evaluate(() => { window.__zoomInput = document.querySelector("#timeline-zoom"); });
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchStart", touchPoints: [{ x: box.x + box.width / 2, y: box.y + box.height / 2, id: 1 }],
+    });
+    await page.evaluate(() => __legacyZoomAudit.render());
+    assert.equal(await page.evaluate(() => __zoomInput.isConnected), true);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+    await page.evaluate(() => __legacyZoomAudit.render());
+    assert.equal(await page.evaluate(() => __zoomInput.isConnected), false);
+    assert.equal(await page.evaluate(() => __legacyZoomAudit.zoom()), 120);
+    await page.locator("#timeline-zoom").focus();
+    await page.keyboard.press("End");
+    assert.equal(await page.evaluate(() => __legacyZoomAudit.zoom()), 240);
+    assert.deepEqual(await readProject(page), before);
+  } finally { await cdp.detach(); await page.close(); }
+});
+
+for (const scope of ["revision", "generation", "sequence", "blur"])
+  test(`legacy zoom replaces its focused control after a ${scope} change`, async () => {
+    const page = await legacyZoomPage();
+    try {
+      await page.locator("#timeline-zoom").focus();
+      const input = await page.locator("#timeline-zoom").elementHandle();
+      const box = await page.locator("#timeline-zoom").boundingBox();
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await input.evaluate((element) => { element.value = "177"; });
+      await page.evaluate(async (scope) => {
+        const session = __legacyZoomAudit.session();
+        if (scope === "revision")
+          session.dispatch([{ type: "project.rename", name: "后台修订" }], session.getState().identity, "后台修订");
+        else if (scope === "generation") await session.replace(session.read());
+        else if (scope === "sequence") {
+          const sequence = structuredClone(session.read().sequences[0]);
+          sequence.id = "zoom-other-sequence";
+          sequence.name = "另一序列";
+          session.dispatch([
+            { type: "sequence.add", sequence },
+            { type: "sequence.activate", sequenceId: sequence.id },
+          ], session.getState().identity, "切换序列");
+        } else document.querySelector("#project-name").focus();
+        __legacyZoomAudit.render();
+      }, scope);
+      const before = await readProject(page);
+      assert.equal(await input.evaluate((element) => element.isConnected), false);
+      await page.mouse.up();
+      await input.evaluate((element) => {
+        element.value = "240";
+        element.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      assert.equal(await page.evaluate(() => __legacyZoomAudit.zoom()), 120);
+      assert.deepEqual(await readProject(page), before);
+    } finally { await page.close(); }
+  });
 
 test("fine timeline editing extends a trimmed source left of timeline zero and restores it with one undo", async () => {
   const page = await pageWithBridge(true);

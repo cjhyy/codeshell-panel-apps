@@ -17,7 +17,38 @@ import type { EditorDocument, MediaClip } from "../apps/video-studio/src/editor/
 import type { RuntimeBridge, RuntimeJob } from "../apps/video-studio/src/sdk/panel-runtime";
 import { validateEditorRequest } from "../apps/video-studio/native/editor-runtime/protocol";
 import { createExportPresets } from "../apps/video-studio/src/editor/export-settings";
+import {
+  audioMixWarning,
+  exportAudioMixWarning,
+} from "../apps/video-studio/src/editor/audio-mix-report";
 const resource = (index: number) => `asset-${index.toString(16).padStart(64, "0")}`;
+test("mix warnings validate actual measurement bounds and export snapshot identity", () => {
+  const measurement = { sampleCount: 48000, peak: 1.2, samplesOverFullScale: 120 };
+  assert.match(audioMixWarning(measurement), /\+1\.6 dBFS.*降低音轨或片段音量/);
+  assert.equal(audioMixWarning({ sampleCount: 48000, peak: 1, samplesOverFullScale: 0 }), "");
+  assert.equal(audioMixWarning({ sampleCount: 0, peak: 0, samplesOverFullScale: 0 }), "");
+  for (const report of [
+    { ...measurement, peak: NaN },
+    { ...measurement, peak: Infinity },
+    { ...measurement, sampleCount: 0 },
+    { ...measurement, samplesOverFullScale: -1 },
+    { ...measurement, samplesOverFullScale: 48001 },
+    { ...measurement, samplesOverFullScale: 1.5 },
+    { ...measurement, samplesOverFullScale: 0 },
+    { ...measurement, peak: 0.4 },
+  ])
+    assert.throws(() => audioMixWarning(report), /混音测量结果无效/);
+  const request = { documentHash: "a".repeat(64), sequenceId: "main" };
+  const result = { verified: true, audioMix: { ...measurement, ...request } };
+  assert.match(exportAudioMixWarning(result, request), /可能导致失真/);
+  assert.equal(exportAudioMixWarning(result, { ...request, documentHash: "b".repeat(64) }), "");
+  assert.equal(exportAudioMixWarning(result, { ...request, sequenceId: "other" }), "");
+  assert.equal(exportAudioMixWarning({ ...result, verified: false }, request), "");
+  assert.equal(
+    exportAudioMixWarning({ ...result, audioMix: { ...result.audioMix, peak: NaN } }, request),
+    "",
+  );
+});
 function document(count = 1): EditorDocument {
   return {
     schemaVersion: 2,
@@ -265,6 +296,42 @@ test("the final render guard runs after staging and prevents a revoked productio
   );
   bridge.dispose();
 });
+test("range exports validate before staging, retain the original snapshot and separate render request keys", async () => {
+  const m = mock(), bridge = createEditorTaskBridge(m.raw), doc = document(),
+    profile = createExportPresets()[0]!;
+  for (const range of [
+    { start: 240000, duration: 1 }, { start: 0, duration: 0 },
+    { start: -1, duration: 8000 }, { start: 0.5, duration: 8000 },
+  ]) await assert.rejects(bridge.startExport(doc, "main", profile, { range }));
+  assert.equal(m.calls.length, 0);
+  const snapshot = await bridge.stage(doc, "main"),
+    first = { start: 1, duration: 80080 }, second = { start: 80085, duration: 80080 };
+  await bridge.startExport(doc, "main", profile, { snapshot, range: first });
+  await bridge.startExport(doc, "main", profile, { snapshot, range: second });
+  await bridge.render(snapshot, profile);
+  await bridge.render(snapshot, profile, { range: first });
+  const requests = m.calls.filter((call) => call.params?.input?.request?.action === "render").map((call) => call.params);
+  assert.deepEqual(requests.map((item) => item.input.request.range), [first, second, undefined, first]);
+  assert.equal(new Set(requests.map((item) => item.requestKey)).size, 3);
+  assert.equal(requests[0].requestKey, requests[3].requestKey);
+  assert.ok(requests.every((item) => item.input.request.documentHash === snapshot.documentHash && item.input.request.sequenceId === "main"));
+  assert.equal(doc.sequences.length, 1);
+  bridge.dispose();
+});
+test("only render requests accept a strict positive tick range", () => {
+  const render = { action: "render", transferId: "editor-00000000-0000-0000-0000-000000000000", documentHash: "a".repeat(64), sequenceId: "main", profile: createExportPresets()[0]! };
+  assert.deepEqual(validateEditorRequest({ ...render, range: { start: 1, duration: 80080 } }).range, { start: 1, duration: 80080 });
+  assert.equal(Object.hasOwn(validateEditorRequest(render), "range"), false);
+  for (const range of [null, [], { start: 0, duration: 0 }, { start: -1, duration: 1 }, { start: 1.5, duration: 1 }, { start: 0, duration: 1, source: "hidden" }, { start: 0, duration: Number.MAX_SAFE_INTEGER }])
+    assert.throws(() => validateEditorRequest({ ...render, range }));
+  for (const action of ["prepare-audio", "prepare-video", "commit", "discard"])
+    assert.throws(() => validateEditorRequest({
+      action, transferId: render.transferId, documentHash: render.documentHash, sequenceId: "main",
+      ...(action === "prepare-video" ? { assetIds: ["source"] } : {}),
+      ...(action === "commit" ? { chunkCount: 1, byteLength: 100 } : {}),
+      range: { start: 0, duration: 8000 },
+    }));
+});
 test("a render task created during cancellation still returns its actual ID for owned cancellation", async () => {
   const m = mock(),
     abort = new AbortController(),
@@ -280,6 +347,7 @@ test("a render task created during cancellation still returns its actual ID for 
   const bridge = createEditorTaskBridge(m.raw);
   const result = await bridge.startExport(document(), "main", createExportPresets()[0]!, {
     signal: abort.signal,
+    range: { start: 80085, duration: 80080 },
   });
   assert.match(result.job.id, /^job-/);
   assert.equal(abort.signal.aborted, true);

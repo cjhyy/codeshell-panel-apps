@@ -232,6 +232,7 @@
 }
 .ew-player {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 9px;
   min-height: 48px;
@@ -243,9 +244,32 @@
   font-size: 11px;
   white-space: nowrap;
 }
+.ew-player [data-ew-action="loop-playback"] {
+  min-height: 28px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.ew-player [data-ew-action="loop-playback"][aria-pressed="true"] {
+  border-color: var(--accent, #b8edc8);
+  color: var(--accent, #b8edc8);
+}
+.ew-player [data-ew-time] {
+  padding: 4px 6px;
+  min-height: 28px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .ew-player input {
   flex: 1;
   width: 60px;
+}
+.ew-player [data-ew-quality] {
+  flex: 0 0 auto;
+  width: 86px;
+  min-height: 28px;
+  padding: 4px;
+  font-size: 11px;
 }
 .ew-player [data-ew-fps] {
   color: var(--ew-muted);
@@ -574,6 +598,23 @@
 .ew-dialog fieldset label {
   margin-bottom: 8px;
 }
+.ew-export-summary {
+  padding: 10px 12px;
+  border: 1px solid #426755;
+  border-radius: 8px;
+  background: #1b2c23;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.ew-export-summary output {
+  display: block;
+  margin-top: 4px;
+  white-space: pre-line;
+}
+.ew-export-summary [data-pending] {
+  color: #edc183;
+}
 .ew-dialog [hidden],
 .editor-import-status[hidden],
 .editor-import-status [hidden] {
@@ -599,6 +640,18 @@
   color: #edc183;
 }
 
+.editor-composition-guides {
+  position: absolute;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+.editor-composition-guides line {
+  stroke: #ffffffb3;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 1px #000c);
+}
 .editor-canvas-controls {
   position: absolute;
   overflow: hidden;
@@ -664,7 +717,8 @@
   color: #a4efca;
 }
 
-[data-ew-font-warning] {
+[data-ew-font-warning],
+[data-ew-audio-warning] {
   flex: 0 0 auto;
   max-height: 72px;
   overflow: auto;

@@ -8,7 +8,8 @@ import {
 } from "../sdk/panel-runtime";
 import { isResourceId } from "../external-media";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
-import { validateEditorDocument } from "./validation";
+import { sequenceDuration, validateEditorDocument } from "./validation";
+import { validateExportRange, type ExportRange } from "./export-range";
 import {
   validatePortableProjectManifest,
   remapPortableProjectResources,
@@ -20,6 +21,7 @@ import { decodeEditorWaveform, WAVEFORM_LIMITS, type EditorWaveform } from "./wa
 import type { Tick } from "./time";
 import type { EditorAsset, EditorDocument } from "./types";
 import type { MulticamAlignment, MulticamAlignmentOptions } from "./multicam-edits";
+import { validateAudioMixReport } from "./audio-mix-report";
 
 /** Fixed installed example audio; ordinary resources always take precedence. */
 export const EDITOR_DEMO_NARRATION_SHA =
@@ -1271,9 +1273,7 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         job,
         preparedAudio: result.preparedAudio,
         audioResource: result.audio,
-        sampleCount: result.sampleCount,
-        peak: result.peak,
-        samplesOverFullScale: result.samplesOverFullScale,
+        ...validateAudioMixReport(result),
         report: result.report,
         reused: result.reused === true,
       };
@@ -1285,10 +1285,17 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
       options: EditorPrepareOptions & {
         preparedAudio?: PreparedEditorAudio;
         beforeSubmit?: () => void;
+        range?: ExportRange;
       } = {},
     ) {
-      const snapshot = await selectedSnapshot(value, sequenceId, options),
-        job = await bridge.render(snapshot, profile, options);
+      const document = validateEditorDocument(value),
+        sequence = document.sequences.find((item) => item.id === sequenceId);
+      if (!sequence) throw new Error("所选导出序列不存在");
+      const range = options.range === undefined
+          ? undefined
+          : validateExportRange(options.range, sequenceDuration(sequence)),
+        snapshot = await selectedSnapshot(document, sequenceId, options),
+        job = await bridge.render(snapshot, profile, { ...options, range });
       (options.onTask ?? defaults.onTask)?.(job);
       return { snapshot, job };
     },
@@ -1349,9 +1356,11 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         preparedAudio?: PreparedEditorAudio;
         signal?: AbortSignal;
         beforeSubmit?: () => void;
+        range?: ExportRange;
       } = {},
     ) {
-      const prepared = options.preparedAudio;
+      const prepared = options.preparedAudio,
+        range = options.range === undefined ? undefined : validateExportRange(options.range);
       if (
         prepared &&
         (prepared.documentHash !== snapshot.documentHash ||
@@ -1366,6 +1375,7 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         {
           profile: validateExportProfile(profile),
           ...(prepared ? { preparedAudio: prepared } : {}),
+          ...(range ? { range } : {}),
         },
         options.signal,
         options.beforeSubmit,

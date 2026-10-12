@@ -30,8 +30,17 @@ export class EditorHistory {
   get canRedo(): boolean {
     return this.future.length > 0;
   }
+  get undoLabel(): string | undefined {
+    return this.past.at(-1)?.label;
+  }
+  get redoLabel(): string | undefined {
+    return this.future.at(-1)?.label;
+  }
   get revision(): number {
     return this.value.revision;
+  }
+  get documentId(): string {
+    return this.value.id;
   }
 
   read(): EditorDocument {

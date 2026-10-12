@@ -182,6 +182,49 @@ test("output verification rejects wrong frames, timing, dimensions, stream codec
 });
 
 const mediaEnabled = process.env.VIDEO_STUDIO_REAL_EXPORT_TESTS === "1";
+test("WebM accepts nanosecond frame-period quantization while rejecting wrong or inconsistent rates", () => {
+  const p = profile({
+    container: "webm",
+    videoCodec: "vp9",
+    audioCodec: "opus",
+    frameRate: { numerator: 60000, denominator: 1001 },
+  });
+  const quantized: any = probe(p);
+  quantized.streams[0].avg_frame_rate = "19001/317";
+  quantized.streams[0].r_frame_rate = "19001/317";
+  assert.doesNotThrow(() => verifyExportOutput(p, quantized, 1));
+  for (const rates of [
+    ["60/1", "60/1"],
+    ["60000/1001", "60/1"],
+    ["60/1", "60000/1001"],
+    ["59939/1000", "59939/1000"],
+  ]) {
+    const invalid = structuredClone(quantized);
+    [invalid.streams[0].avg_frame_rate, invalid.streams[0].r_frame_rate] = rates;
+    assert.throws(() => verifyExportOutput(p, invalid, 1), /实际帧率/);
+  }
+  const mp4 = profile({ frameRate: p.frameRate });
+  const invalid = probe(mp4);
+  invalid.streams[0]!.avg_frame_rate = "19001/317";
+  assert.throws(() => verifyExportOutput(mp4, invalid, 1), /实际帧率/);
+});
+
+test("the 24-hour NTSC range can own its final whole frame without accepting an extra frame", () => {
+  const p = profile({ frameRate: { numerator: 60000, denominator: 1001 } });
+  const seconds =
+    (Math.ceil((86400 * p.frameRate.numerator) / p.frameRate.denominator) *
+      p.frameRate.denominator) /
+    p.frameRate.numerator;
+  assert.ok(seconds > 86400);
+  const rounded = probe(p);
+  rounded.streams[0]!.duration = rounded.format.duration = String(seconds);
+  assert.doesNotThrow(() => verifyExportOutput(p, rounded, seconds));
+  assert.throws(
+    () => verifyExportOutput(p, rounded, seconds + p.frameRate.denominator / p.frameRate.numerator),
+    /预期成片时长无效/,
+  );
+});
+
 test(
   "real FFmpeg exports verify H264, HEVC, VP9 and ProRes at rational frame rates",
   { skip: !mediaEnabled },

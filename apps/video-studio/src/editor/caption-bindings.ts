@@ -61,6 +61,68 @@ function sample(path: NonNullable<ReturnType<typeof route>>, tick: number): numb
   }
   return tick + path.offset;
 }
+/**
+ * Prove a caption slice is one exact, unique forward source interval. Reuse the same route and
+ * integral inverse used by dependency reconciliation; endpoint min/max cannot prove this.
+ * The caller supplies a validated document and may only shorten this caption's saved range.
+ */
+export function sliceCaptionBinding(
+  document: EditorDocument,
+  sequenceId: string,
+  caption: TextClip,
+  start: number,
+  end: number,
+): NonNullable<TextClip["sourceBinding"]> {
+  const fail = () => new Error("无法证明字幕来源范围连续且精确；请先解除所选来源绑定，再分句或合并");
+  const binding = caption.sourceBinding,
+    path = binding && route(document, sequenceId, binding);
+  if (
+    !binding || !path || start < caption.start ||
+    end > caption.start + caption.duration || start >= end
+  )
+    throw fail();
+  // A single inverse interval can still contain a source loop. Prove each traversed stage's
+  // actual local span is strictly forward at its map segments (rounded slow-motion ticks may repeat).
+  let fromTick = start, toTick = end;
+  for (const { clip } of path.stages) {
+    const from = fromTick - clip.start, to = toTick - clip.start;
+    if (from < 0 || to > clip.duration || from >= to || clip.timeMap.points.some((point, index, points) => {
+      const next = points[index + 1];
+      return next && point.time < to && next.time > from && next.source <= point.source;
+    })) throw fail();
+    fromTick = sourceTimeAt(clip.timeMap, from);
+    toTick = sourceTimeAt(clip.timeMap, to);
+  }
+  const root = path.stages[0]!.clip,
+    localStart = start - root.start,
+    localEnd = end - root.start;
+  if (localStart < 0 || localEnd > root.duration) throw fail();
+  const sourceStart = sourceTimeAt(root.timeMap, localStart),
+    sourceEnd = sourceTimeAt(root.timeMap, localEnd),
+    lastSource = sourceTimeAt(root.timeMap, localEnd - 1);
+  const sameRange = (ranges: TimeRange[]) =>
+    ranges.length === 1 && ranges[0]!.start === start && ranges[0]!.end === end;
+  if (
+    sourceStart >= sourceEnd || sourceStart < binding.sourceStart || sourceEnd > binding.sourceEnd ||
+    lastSource >= binding.sourceEnd ||
+    !sameRange(sourceRangesToTimeline(root.timeMap, sourceStart, sourceEnd).map((range) => ({
+      start: range.start + root.start, end: range.end + root.start,
+    })))
+  )
+    throw fail();
+  let provenance: NonNullable<TextClip["sourceBinding"]>["provenance"];
+  if (binding.provenance) {
+    const from = sample(path, start), to = sample(path, end), last = sample(path, end - 1);
+    if (
+      path.assetId !== binding.provenance.assetId || from >= to ||
+      from < binding.provenance.start || last >= binding.provenance.end ||
+      to > binding.provenance.end || !sameRange(map(path, from, to))
+    )
+      throw fail();
+    provenance = { ...binding.provenance, path: [...binding.provenance.path], start: from, end: to };
+  }
+  return { clipId: binding.clipId, sourceStart, sourceEnd, ...(provenance ? { provenance } : {}) };
+}
 const signature = (path: NonNullable<ReturnType<typeof route>>) =>
   JSON.stringify([
     path.assetId,

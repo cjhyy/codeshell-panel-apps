@@ -704,7 +704,10 @@ export function exportEditorSrt(
       .map((clip, index) => {
         if (Math.round(clip.start / 240) >= Math.round((clip.start + clip.duration) / 240))
           throw new Error("字幕短于SRT毫秒精度，请先调整时长");
-        return `${index + 1}\n${time(clip.start)} --> ${time(clip.start + clip.duration)}\n${clip.text}`;
+        const body = clip.text.replace(/\r\n?/g, "\n").trim();
+        if (/\n[^\S\n]*\n/.test(body))
+          throw new Error(`第${index + 1}条字幕含空白分隔行，请删除中间空白行后导出 SRT`);
+        return `${index + 1}\n${time(clip.start)} --> ${time(clip.start + clip.duration)}\n${body}`;
       })
       .join("\n\n") + (clips.length ? "\n" : "")
   );
@@ -806,6 +809,72 @@ export function planCaptionStyle(
   applyEditorOperations(doc, operations, doc.revision);
   return operations;
 }
+/** Only separators between unchanged, ordered spoken words may retain their alignment.
+ * Never infer timestamps for new wording or rewrite a timed token to fit the edit. */
+function retainedCaptionWords(clip: TextClip, text: string): TextClip["words"] | undefined {
+  if (clip.role !== "subtitle" || !clip.words.length) return undefined;
+  const gaps = (value: string, words: TextClip["words"]): string[] | undefined => {
+    let cursor = 0;
+    const result: string[] = [];
+    for (const word of words) {
+      if (!word.text) return undefined;
+      const start = value.indexOf(word.text, cursor);
+      if (start < 0) return undefined;
+      const gap = value.slice(cursor, start);
+      if (!/^[\s\p{P}]*$/u.test(gap)) return undefined;
+      result.push(gap);
+      cursor = start + word.text.length;
+    }
+    const tail = value.slice(cursor);
+    if (!/^[\s\p{P}]*$/u.test(tail)) return undefined;
+    return [...result, tail];
+  };
+  // ASR tokens may own leading/trailing spaces. Their timing can still be retained
+  // when that whitespace moves into the separators, without changing spoken text.
+  for (const words of [clip.words, clip.words.map((word) => ({ ...word, text: word.text.trim() }))]) {
+    const before = gaps(clip.text, words), after = gaps(text, words);
+    if (!before || !after) continue;
+    const safe = before.every((gap, index) => {
+      if (gap === after[index]) return true;
+      // Apostrophes, hyphens and slashes can change a word's reading. Numeric
+      // separators and joining written word tokens are equally ambiguous, so clear them.
+      if (/['’ʼ‐‑/\\-]/u.test(gap + after[index]!)) return false;
+      const left = words[index - 1]?.text ?? "", right = words[index]?.text ?? "";
+      if (/\p{N}$/u.test(left) && /^\p{N}/u.test(right)) return false;
+      return !(/[\p{L}\p{N}\p{M}]$/u.test(left) && /^[\p{L}\p{N}\p{M}]/u.test(right) &&
+        (!gap || !after[index]));
+    });
+    if (safe) return structuredClone(words);
+  }
+  return undefined;
+}
+
+/** Build from an already validated, detached snapshot; the caller validates the complete batch. */
+function captionTextOperations(
+  sequenceId: string,
+  clip: TextClip,
+  text: string,
+): EditorOperation[] {
+  cleanText(text, "字幕文字");
+  if (text === clip.text) return [];
+  const retained = retainedCaptionWords(clip, text);
+  return [
+    {
+      type: "clip.update",
+      sequenceId,
+      clipId: clip.id,
+      patch: {
+        text,
+        words: retained ?? [],
+        translation: null,
+        style: {
+          ...clip.style,
+          animation: !retained && clip.style.animation === "word-highlight" ? "none" : clip.style.animation,
+        },
+      },
+    },
+  ];
+}
 export function planCaptionText(
   value: EditorDocument,
   sequenceId: string,
@@ -817,26 +886,81 @@ export function planCaptionText(
       (item): item is TextClip => item.id === clipId && item.kind === "text",
     );
   if (!clip) throw new Error("请选择有效的字幕或文字片段");
-  cleanText(text, "字幕文字");
-  if (text === clip.text) return [];
-  const operations: EditorOperation[] = [
-    {
-      type: "clip.update",
-      sequenceId,
-      clipId,
-      patch: {
-        text,
-        words: [],
-        translation: null,
-        style: {
-          ...clip.style,
-          animation: clip.style.animation === "word-highlight" ? "none" : clip.style.animation,
-        },
-      },
-    },
-  ];
+  const operations = captionTextOperations(sequenceId, clip, text);
+  if (!operations.length) return [];
   applyEditorOperations(doc, operations, doc.revision);
   return operations;
+}
+
+export interface CaptionTextMatch {
+  clipId: string;
+  start: Tick;
+  text: string;
+  occurrences: number;
+}
+function captionQuery(query: string): void {
+  if (typeof query !== "string" || !query.length || query.length > 10000 || query.includes("\0"))
+    throw new Error("请输入 1–10000 字的查找文字");
+}
+function captionTextMatches(clips: TextClip[], query: string): CaptionTextMatch[] {
+  return clips
+    .flatMap((clip) => {
+      const occurrences = clip.text.split(query).length - 1;
+      return occurrences ? [{ clipId: clip.id, start: clip.start, text: clip.text, occurrences }] : [];
+    })
+    .sort((a, b) => a.start - b.start || a.clipId.localeCompare(b.clipId));
+}
+/** Case-sensitive, non-overlapping literal matches; titles and other sequences are excluded. */
+export function findCaptionText(
+  value: EditorDocument,
+  sequenceId: string,
+  query: string,
+  clipIds?: readonly string[],
+): CaptionTextMatch[] {
+  captionQuery(query);
+  const doc = validateEditorDocument(value),
+    clips = selectedCaptions(sequence(doc, sequenceId), clipIds);
+  return captionTextMatches(clips, query);
+}
+
+/** Uses ordinary text-edit semantics: retain proven unchanged words, clear stale alignment and translation. */
+export function planCaptionReplace(
+  value: EditorDocument,
+  sequenceId: string,
+  query: string,
+  replacement: string,
+  clipIds?: readonly string[],
+): CaptionPlan & { matched: number; occurrences: number } {
+  if (typeof replacement !== "string" || replacement.length > 10000 || replacement.includes("\0"))
+    throw new Error("替换文字须在 10000 字以内");
+  if (query === replacement) throw new Error("查找与替换文字相同，无需修改");
+  const doc = validateEditorDocument(value);
+  captionQuery(query);
+  const clips = selectedCaptions(sequence(doc, sequenceId), clipIds),
+    byId = new Map(clips.map((clip) => [clip.id, clip])),
+    matches = captionTextMatches(clips, query),
+    operations = matches.flatMap((match) =>
+      captionTextOperations(sequenceId, byId.get(match.clipId)!, match.text.split(query).join(replacement)),
+    );
+  if (!matches.length) throw new Error("当前范围没有匹配的字幕");
+  applyEditorOperations(doc, operations, doc.revision);
+  const retained = operations.filter((operation) =>
+    operation.type === "clip.update" && "words" in operation.patch &&
+      Array.isArray(operation.patch.words) && operation.patch.words.length,
+  ).length;
+  return {
+    sequenceId,
+    operations,
+    added: 0,
+    skipped: 0,
+    matched: matches.length,
+    occurrences: matches.reduce((count, match) => count + match.occurrences, 0),
+    notices: [
+      ...(retained ? [`${retained} 条字幕只修改词间标点或空白，已保留真实词时间与逐字高亮设置。`] : []),
+      ...(retained < matches.length ? ["其余字幕的旧词时间已清除，逐字高亮已关闭；请按需要重新对齐声音。"] : []),
+      "已清除修改字幕的旧译文；保留来源绑定。",
+    ],
+  };
 }
 
 /** An explicit user edit preserves text/words/style while ending automatic source following. */

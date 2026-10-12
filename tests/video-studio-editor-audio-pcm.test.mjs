@@ -52,6 +52,85 @@ function frequency(pcm, start, end, channel = 0) {
 const near = (actual, expected, tolerance) =>
   assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} ≈ ${expected} ± ${tolerance}`);
 
+test("ordinary video audio detachment retains actual PCM through track mix, ducking and nested retiming", { timeout: 60000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "editor-detach-pcm-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const bundle = join(directory, "detach.mjs");
+  await build({ stdin: { resolveDir: repository, contents: `
+    export {renderEditorAudio} from './apps/video-studio/native/media/editor-audio-renderer';
+    export {createTrack,defaultAudioMix,defaultTransform,defaultColorAdjustment} from './apps/video-studio/src/editor/defaults';
+    export {planDetachOriginalAudio,planUnlinkAudio} from './apps/video-studio/src/editor/original-audio';
+    export {applyEditorOperations} from './apps/video-studio/src/editor/operations';
+    export {planClipAudioGain} from './apps/video-studio/src/editor/audio-gain-edits';
+  ` }, bundle: true, platform: "node", format: "esm", outfile: bundle, logLevel: "silent" });
+  const api = await import(pathToFileURL(bundle).href), video = join(directory, "original.mkv"), voice = join(directory, "voice.wav");
+  ffmpeg(["-f", "lavfi", "-i", "color=red:s=32x32:r=10:d=4", "-f", "lavfi", "-i", `aevalsrc=0.2*sin(2*PI*440*t)|0.13*sin(2*PI*660*t):s=${S}:d=4`, "-c:v", "ffv1", "-c:a", "pcm_f32le", "-y", video]);
+  ffmpeg(["-f", "lavfi", "-i", `aevalsrc=0.35*sin(2*PI*880*t)*between(t\\,0.5\\,1.5):s=${S}:d=4`, "-c:a", "pcm_f32le", "-y", voice]);
+  const visual = () => ({ transform: api.defaultTransform(), color: api.defaultColorAdjustment(), blendMode: "normal" }),
+    media = (id, trackId, assetId) => ({ id, label: id, trackId, kind: "media", assetId, start: 10013, duration: 2*T,
+      timeMap: { points: [{ time: 0, source: 3*T }, { time: T, source: 2*T }, { time: 2*T, source: 2.5*T }] },
+      audio: api.defaultAudioMix(), ...visual() }),
+    sequence = (id) => ({ id, name: id, width: 32, height: 32, frameRate: { numerator: 30000, denominator: 1001 }, background: "#000000", timelineMode: "free",
+      tracks: [api.createTrack("video", "video"), api.createTrack("voice", "audio"), api.createTrack("bed", "audio")], clips: [], transitions: [], markers: [] }),
+    child = sequence("child"), source = media("source", "video", "video"), speaker = media("speaker", "voice", "voice"), bed = media("bed", "bed", "video"),
+    ducking = (sidechainTrackIds) => ({ sidechainTrackIds, thresholdDb: -30, attenuationDb: 14, attack: 2000, release: 12000 });
+  child.tracks[0].volume = 0.63; child.tracks[0].pan = -0.23;
+  source.audio = { ...source.audio, volume: { keyframes: [{ time: 0, value: 0.3 }, { time: 2*T, value: 1.1 }] },
+    pan: { keyframes: [{ time: 0, value: 0.15 }, { time: 2*T, value: 0.7 }] }, fadeIn: 20013, fadeOut: 40013,
+    pitchSemitones: 2, preservePitch: true, ducking: ducking(["voice"]) };
+  speaker.timeMap = { points: [{ time: 0, source: 0 }, { time: 2*T, source: 2*T }] };
+  bed.audio.volume = 0.25; bed.audio.ducking = ducking(["video"]);
+  // A second source-track clip must remain in the dependent sidechain bus.
+  const neighbor = { ...media("neighbor", "video", "video"), start: 2*T+10013, duration: T,
+    timeMap: { points: [{ time: 0, source: 0 }, { time: T, source: T }] } };
+  child.clips = [source, speaker, bed, neighbor];
+  const parent = sequence("parent");
+  parent.tracks[0].volume = 0.8; parent.tracks[0].pan = 0.17;
+  parent.clips = [{ id: "nested", label: "嵌套", kind: "sequence", trackId: "video", sequenceId: "child", start: 13,
+    duration: 3*T, timeMap: { points: [{ time: 0, source: 0 }, { time: 3*T, source: 3*T }] }, audio: { ...api.defaultAudioMix(), fadeIn: 1000 }, ...visual() }];
+  const document = { schemaVersion: 2, timebase: T, id: "detach", name: "原声", revision: 0, activeSequenceId: "child", exportProfiles: [],
+    assets: [{ id: "video", name: "原片", kind: "video", duration: 4*T, resourceId: "original-video" }, { id: "voice", name: "说话", kind: "audio", duration: 4*T, resourceId: "voice-audio" }], sequences: [child, parent] };
+  let serial = 0;
+  const plan = api.planDetachOriginalAudio(document, "child", "source", () => `detach-${++serial}`),
+    detached = api.applyEditorOperations(document, plan.operations, 0), paths = new Map([["video", video], ["voice", voice]]);
+  const render = async (doc, sequenceId) => {
+    const result = await api.renderEditorAudio({ document: doc, sequenceId, resolveAssetPath: (id) => paths.get(id),
+      ffmpegPath: "ffmpeg", ffprobePath: "ffprobe", workDir: join(directory, "work"), cacheDir: join(directory, "cache"),
+      outputPath: join(directory, `mix-${++serial}.wav`), signal: new AbortController().signal });
+    return decode(result.path);
+  };
+  for (const id of ["child", "parent"]) {
+    const before = await render(document, id), after = await render(detached, id);
+    assert.equal(before.length, after.length);
+    let maximum = 0;
+    for (let index = 0; index < before.length; index++) maximum = Math.max(maximum, Math.abs(before[index] - after[index]));
+    assert.ok(maximum < 1e-6, `${id}: maximum PCM difference ${maximum}`);
+    assert.ok(rms(after, 0.2, 1.8) > 0.01, "equality must cover non-silent audio");
+  }
+  assert.deepEqual(detached.assets, document.assets);
+  const unlinked = api.applyEditorOperations(detached, api.planUnlinkAudio(detached, "child", [plan.audioClipId]), 1),
+    moved = api.applyEditorOperations(unlinked, [{ type: "clip.move", sequenceId: "child", clipIds: [plan.audioClipId], delta: 8000 }], 2);
+  assert.equal(moved.sequences[0].clips.find((clip) => clip.id === "source").start, source.start);
+  assert.equal(moved.sequences[0].clips.find((clip) => clip.id === plan.audioClipId).start, source.start + 8000);
+  const fixed = structuredClone(detached), extracted = fixed.sequences[0].clips.find((clip) => clip.id === plan.audioClipId);
+  extracted.audio.volume = 1;
+  const gained = api.applyEditorOperations(fixed, api.planClipAudioGain(fixed, "child", extracted.id, 0.5), 1);
+  assert.equal(gained.sequences[0].clips.find((clip) => clip.id === "source").audio.volume, 0);
+  assert.equal(gained.sequences[0].clips.find((clip) => clip.id === extracted.id).audio.volume, 0.5);
+  for (const doc of [fixed, gained]) {
+    doc.sequences = [doc.sequences[0]];
+    doc.sequences[0].clips = doc.sequences[0].clips.filter((clip) => clip.id === "source" || clip.id === extracted.id);
+  }
+  const unity = await render(fixed, "child"), half = await render(gained, "child");
+  assert.equal(unity.length, half.length);
+  for (let index = 0; index < unity.length; index++) near(half[index], unity[index] * 0.5, 1e-6);
+  const muted = structuredClone(document); muted.sequences[0].tracks[0].muted = true;
+  const mutedPlan = api.planDetachOriginalAudio(muted, "child", "source", () => `muted-${++serial}`),
+    mutedAfter = api.applyEditorOperations(muted, mutedPlan.operations, 0),
+    mutedPCM = await render(muted, "child"), mutedDetachedPCM = await render(mutedAfter, "child");
+  assert.deepEqual(mutedDetachedPCM, mutedPCM, "muted source and its dry sidechain bus must remain silent");
+});
+
 test(
   "editor audio renders real local PCM for preview and export",
   { timeout: 120000 },
@@ -67,6 +146,9 @@ test(
     export {renderEditorAudio} from "./apps/video-studio/native/media/editor-audio-renderer.ts";
     export {createTrack,defaultAudioMix,defaultTransform,defaultColorAdjustment} from "./apps/video-studio/src/editor/defaults.ts";
     export {constantTimeMap,freezeTimeMap} from "./apps/video-studio/src/editor/time.ts";
+    export {planClipAudioGain} from "./apps/video-studio/src/editor/audio-gain-edits.ts";
+    export {applyEditorOperations} from "./apps/video-studio/src/editor/operations.ts";
+    export {audioMixWarning} from "./apps/video-studio/src/editor/audio-mix-report.ts";
   `,
       },
       outfile: bundle,
@@ -493,6 +575,21 @@ test(
       },
     );
 
+    await t.test("a fixed clip gain edit scales real PCM and preserves pan, fades, pitch and ducking", async () => {
+      const seq = sequence(), media = clip();
+      media.audio = { ...media.audio, pan: -.4, fadeIn: T / 4, fadeOut: T / 2, pitchSemitones: 3,
+        preservePitch: false, ducking: { sidechainTrackIds: ["sound"], thresholdDb: -24,
+          attenuationDb: 8, attack: T / 100, release: T / 10 } };
+      seq.clips = [media]; const doc = document(seq), original = await render(seq);
+      const next = api.applyEditorOperations(doc, api.planClipAudioGain(doc, "main", media.id, .5), doc.revision),
+        edited = await render(next.sequences[0]);
+      assert.deepEqual(next.sequences[0].clips[0].audio, { ...media.audio, volume: .5 });
+      assert.equal(edited.pcm.length, original.pcm.length);
+      for (let sample = 0; sample < original.pcm.length; sample++) near(edited.pcm[sample], original.pcm[sample] * .5, 1e-6);
+      near(edited.result.peak, original.result.peak * .5, 1e-6);
+      assert.ok(rms(edited.pcm, .4, 1.4) > rms(edited.pcm, .4, 1.4, 1));
+    });
+
     await t.test(
       "float WAV preserves chosen gain and reports overload instead of normalizing it",
       async () => {
@@ -505,6 +602,58 @@ test(
         near(result.peak, 3.2, 0.0001);
         assert.ok(result.samplesOverFullScale > 0);
         near(rms(pcm, 0.2, 1.8), 3.2 / Math.sqrt(2), 0.001);
+      },
+    );
+
+    await t.test(
+      "muted and zero-gain tracks stay silent at 400 percent clip gain and restore the saved fades",
+      async () => {
+        const seq = sequence(), media = clip();
+        media.audio.volume = 4;
+        media.audio.fadeIn = T / 4;
+        media.audio.fadeOut = T / 2;
+        seq.clips = [media];
+        const savedMix = structuredClone(media.audio);
+        seq.tracks[0].muted = true;
+        const muted = await render(seq);
+        assert.equal(muted.result.peak, 0);
+        assert.ok(muted.pcm.every((sample) => sample === 0));
+        seq.tracks[0].muted = false;
+        seq.tracks[0].volume = 0;
+        const zero = await render(seq);
+        assert.equal(zero.result.peak, 0);
+        assert.ok(zero.pcm.every((sample) => sample === 0));
+        seq.tracks[0].volume = 1;
+        const restored = await render(seq);
+        near(restored.result.peak, 0.8, 0.0001);
+        near(rms(restored.pcm, 0.4, 1.4), 0.8 / Math.sqrt(2), 0.001);
+        assert.ok(rms(restored.pcm, 0, 0.02) < rms(restored.pcm, 0.4, 0.5) / 10);
+        assert.ok(rms(restored.pcm, 1.98, 2) < rms(restored.pcm, 0.4, 0.5) / 10);
+        assert.deepEqual(media.audio, savedMix);
+      },
+    );
+
+    await t.test(
+      "two real sine tracks warn about overload and clear after lowering gain",
+      async () => {
+        const seq = sequence();
+        seq.clips = [clip("first", "tone", 2 * T, "video"), clip("second", "tone", 2 * T, "sound")];
+        for (const media of seq.clips) media.audio.volume = 3;
+        const overloaded = await render(seq);
+        near(overloaded.result.peak, 1.2, 0.0001);
+        const measured = overloaded.pcm.reduce(
+          (peak, sample) => Math.max(peak, Math.abs(sample)),
+          0,
+        );
+        near(measured, overloaded.result.peak, 0.0001);
+        assert.ok(overloaded.result.samplesOverFullScale > 0);
+        assert.match(api.audioMixWarning(overloaded.result), /\+1\.6 dBFS.*降低音轨或片段音量/);
+        assert.equal(seq.clips[0].audio.volume, 3, "A warning must preserve the chosen gain");
+        for (const media of seq.clips) media.audio.volume = 1;
+        const corrected = await render(seq);
+        near(corrected.result.peak, 0.4, 0.0001);
+        assert.equal(corrected.result.samplesOverFullScale, 0);
+        assert.equal(api.audioMixWarning(corrected.result), "");
       },
     );
 

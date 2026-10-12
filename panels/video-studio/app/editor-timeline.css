@@ -3,6 +3,8 @@
   --et-border: #303135;
   --et-muted: #858990;
   --et-accent: #75ddcf;
+  --et-track-height: 48px;
+  --et-strip-height: 32px;
   position: relative;
   min-width: 0;
   background: #17181a;
@@ -10,6 +12,14 @@
   font: 12px system-ui;
   outline: none;
   color-scheme: dark;
+}
+.editor-timeline.et-tall-tracks {
+  --et-track-height: 80px;
+  --et-strip-height: 48px;
+}
+.editor-timeline.et-panning,
+.editor-timeline.et-panning * {
+  cursor: grabbing !important;
 }
 .editor-timeline svg {
   flex: 0 0 auto;
@@ -105,6 +115,21 @@
   color: var(--et-accent);
   background: #75ddcf0d;
 }
+.et-toolbar .et-follow {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  flex-shrink: 0;
+  background: #202124;
+}
+.et-toolbar [data-et-track-height] {
+  flex: 0 0 auto;
+}
+.et-toolbar .et-follow[aria-pressed="true"],
+.et-toolbar [data-et-track-height][aria-pressed="true"] {
+  color: var(--et-accent);
+  background: #263633;
+}
 .et-snap:hover {
   background: #35363a;
 }
@@ -151,6 +176,32 @@
   background: #75ddcf14;
 }
 /* Anchored to the timeline, not the scrolling toolbar, so long wording can wrap. */
+.et-drag-readout {
+  position: absolute;
+  top: 46px;
+  left: 50%;
+  z-index: 19;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  padding: 8px 12px;
+  transform: translateX(-50%);
+  border: 1px solid #44635f;
+  border-radius: 6px;
+  color: #c4d5d2;
+  background: #182522f2;
+  box-shadow: 0 6px 20px #0006;
+  font-size: 12px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.et-drag-readout[hidden] { display: none; }
+.et-drag-readout span { white-space: nowrap; }
+.et-drag-readout b { color: #e6f8f4; font-weight: 500; }
+.et-drag-readout i { font-style: normal; }
 .et-notice {
   position: absolute;
   top: 46px;
@@ -218,7 +269,7 @@
 }
 /* Two compact rows (name + switches, mix + order) keep five tracks in a default-height timeline. */
 .et-track-head {
-  height: 48px;
+  height: var(--et-track-height);
   border-bottom: 1px solid var(--et-border);
   padding: 3px 6px;
   transition: background 120ms ease;
@@ -378,7 +429,7 @@
 }
 .et-lane {
   position: relative;
-  height: 48px;
+  height: var(--et-track-height);
   border-bottom: 1px solid #292b2f;
   background: #1a1b1e;
 }
@@ -394,7 +445,7 @@
 .et-clip {
   position: absolute;
   top: 4px;
-  height: 39px;
+  height: calc(var(--et-track-height) - 9px);
   background: #3c495c;
   border: 1px solid #637085;
   border-radius: 5px;
@@ -480,6 +531,48 @@
 }
 .et-edge:hover {
   background: #75ddcf66;
+}
+.et-fade-area {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: #d4fff826;
+  pointer-events: none;
+  z-index: 2;
+}
+.et-fade-area.et-fadeIn {
+  left: 0;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+.et-fade-area.et-fadeOut {
+  right: 0;
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+}
+.et-fade-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  border: 1px solid #152e29;
+  border-radius: 50%;
+  background: #c2f4df;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 5;
+}
+.et-fade-handle.et-fadeIn {
+  top: 2px;
+}
+.et-fade-handle.et-fadeOut {
+  bottom: 2px;
+}
+.et-fade-handle:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+.et-fade-handle[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .et-playhead {
   position: absolute;
@@ -634,6 +727,20 @@
   box-shadow: inset 0 0 0 1px #75ddcf88;
   background: #263934;
 }
+.et-lane.drop-target-invalid {
+  box-shadow: inset 0 0 0 1px #ef8c8c;
+  background: #432a2d;
+}
+.et-clip.drag-invalid {
+  outline: 2px solid #ef8c8c;
+  outline-offset: -2px;
+  opacity: 0.75;
+}
+.editor-timeline:has(.drag-invalid),
+.editor-timeline:has(.drag-invalid) .et-clip,
+.editor-timeline:has(.drag-invalid) .et-edge {
+  cursor: not-allowed;
+}
 /* Only visible intervals allocate a canvas; labels and trim handles stay above it. */
 .et-media-strip {
   position: absolute;
@@ -671,6 +778,7 @@
     display: grid;
     grid-template-columns: 14px minmax(0, 1fr) auto auto;
     grid-template-rows: 20px 18px;
+    align-content: center;
     align-items: center;
     column-gap: 3px;
     row-gap: 3px;
@@ -709,3 +817,28 @@
     display: none;
   }
 }
+.editor-clip-menu button {
+  justify-content: space-between;
+}
+.editor-clip-menu kbd {
+  flex: none;
+  color: #a9bbaf;
+  font: inherit;
+  font-size: 10px;
+}
+.editor-clip-menu [role="separator"] {
+  height: 1px;
+  margin: 4px 7px;
+  background: #3d4d43;
+}
+.editor-clip-menu button:disabled {
+  opacity: 0.45;
+}
+
+/* The fixed-gain grip stays in the visible part of a selected clip, away from edge/fade grips. */
+.et-gain-lines { position:absolute; left:0; right:0; bottom:1px; height:calc(100% - 2px); max-height:var(--et-strip-height); pointer-events:none; z-index:2; }
+.et-gain-lines > span { position:absolute; left:0; right:0; height:1.5px; background:#e5ed97; }
+.et-gain-handle { position:absolute; bottom:0; width:44px; height:16px; box-sizing:border-box; border:1px solid #e5ed97; border-radius:5px; background:#222a22ed; color:#fff5ad; font:10px/14px system-ui; text-align:center; cursor:ns-resize; touch-action:none; z-index:4; }
+.et-gain-handle:focus-visible { outline:2px solid white; outline-offset:1px; }
+.et-gain-handle[aria-disabled="true"] { opacity:.65; cursor:not-allowed; }
+.et-gain-status { position:absolute; bottom:2px; max-width:calc(100% - 16px); color:#fff5ad; font:10px/15px system-ui; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; pointer-events:none; z-index:2; background:#222a22d9; }

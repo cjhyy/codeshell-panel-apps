@@ -1,4 +1,5 @@
 import { validateExportProfile } from "../../src/editor/export-settings.js";
+import { validateExportRange, type ExportRange } from "../../src/editor/export-range.js";
 import { EDITOR_TASK_LIMITS, type PreparedEditorAudio } from "../../src/editor/task-bridge.js";
 
 export class EditorTaskError extends Error {
@@ -62,6 +63,7 @@ export interface EditorRequest {
   dataBase64?: string;
   profile?: ReturnType<typeof validateExportProfile>;
   preparedAudio?: PreparedEditorAudio;
+  range?: ExportRange;
 }
 export function record(value: unknown, keys: string[], label: string): Record<string, any> {
   if (
@@ -123,6 +125,7 @@ export function validateEditorRequest(value: unknown): EditorRequest {
       "dataBase64",
       "profile",
       "preparedAudio",
+      "range",
       "sourceDuration",
       "alignment",
       "bundleHash",
@@ -148,7 +151,7 @@ export function validateEditorRequest(value: unknown): EditorRequest {
     "discard-project-import": ["bundleHash"],
     "prepare-audio": ["documentHash", "sequenceId"],
     "prepare-video": ["documentHash", "sequenceId", "assetIds"],
-    render: ["documentHash", "sequenceId", "profile", "preparedAudio"],
+    render: ["documentHash", "sequenceId", "profile", "preparedAudio", "range"],
     discard: ["documentHash", "sequenceId"],
   };
   if (typeof input.action !== "string" || !Object.hasOwn(actions, input.action))
@@ -300,6 +303,16 @@ export function validateEditorRequest(value: unknown): EditorRequest {
     result.byteLength = integer(input.byteLength, 1, EDITOR_TASK_LIMITS.documentBytes);
   if (action === "render") {
     result.profile = validateExportProfile(input.profile);
+    if (input.range !== undefined) {
+      try {
+        result.range = validateExportRange(record(input.range, ["start", "duration"], "导出范围"));
+      } catch (error) {
+        throw new EditorTaskError(
+          "INVALID_REQUEST",
+          error instanceof Error ? error.message : "导出范围无效",
+        );
+      }
+    }
     if (input.preparedAudio !== undefined) {
       const audio = record(
         input.preparedAudio,

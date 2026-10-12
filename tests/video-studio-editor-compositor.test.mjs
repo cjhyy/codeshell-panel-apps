@@ -47,6 +47,7 @@ before(async () => {
       transition(from,to,kind='dissolve',progress=.5) {return {kind:'transition',instanceId:'join',sequenceId:'main',trackId:'video',transitionId:'join',transitionKind:kind,progress,from,to};},
       pixel(c,x,y) {return Array.from(c.getContext('2d').getImageData(x,y,1,1).data);},
       draw(frame,media=new Map()) {const canvas=this.canvas();editor.drawEvaluatedFrame(canvas,frame,media);return canvas;},
+      reduced(frame,media=new Map(),resolution=.25) {const canvas=this.canvas(),compositor=new editor.FrameCompositor();try {compositor.draw(canvas,frame,media,resolution);return canvas;}finally {compositor.dispose();}},
       mask(patch={}) {return {kind:'rectangle',x:0,y:0,width:1,height:1,rotation:0,feather:0,inverted:false,...patch};},
       stats(c) {const x=c.getContext('2d'),p=x.getImageData(0,0,c.width,c.height).data;let left=c.width,right=-1,top=c.height,bottom=-1,count=0,maxAlpha=0,rows=[];
         for(let y=0;y<c.height;y++){let ink=false;for(let j=0;j<c.width;j++){const a=p[(y*c.width+j)*4+3];if(a){count++;ink=true;left=Math.min(left,j);right=Math.max(right,j);top=Math.min(top,y);bottom=Math.max(bottom,y);maxAlpha=Math.max(maxAlpha,a);}}if(ink)rows.push(y);}
@@ -58,6 +59,224 @@ before(async () => {
 });
 after(async () => {
   await browser?.close();
+});
+
+test("reduced preview keeps odd-sized nested text, shadows, strokes, crops and feathered masks in export coordinates", async () => {
+  const result = await page.evaluate(() => {
+    const source = tools.canvas(96, 64),
+      s = source.getContext("2d");
+    s.fillStyle = "#e84431";
+    s.fillRect(0, 0, 48, 64);
+    s.fillStyle = "#247fca";
+    s.fillRect(48, 0, 48, 64);
+    const group = (id, width, height, layers, patch = {}) => ({
+      ...tools.base(id, patch),
+      kind: "group",
+      width,
+      height,
+      background: "#00000000",
+      sourceSequenceId: id,
+      sourceTime: 0,
+      layers,
+    });
+    const inner = group(
+      "inner",
+      773,
+      389,
+      [
+        tools.media("picture", {
+          transform: { fit: "cover", crop: { left: 0.13, right: 0.07, top: 0.05, bottom: 0.11 } },
+          color: { saturation: 0.7, contrast: 0.2 },
+        }),
+        tools.shape("ellipse", {
+          shape: "ellipse",
+          fill: "#ffff0040",
+          stroke: "#ffffff",
+          strokeWidth: 20,
+          transform: { scaleX: 0.55, scaleY: 0.6, x: -0.1, rotation: 13 },
+        }),
+        tools.text("title", "AB CD\n标题", {
+          style: {
+            fontSize: 96,
+            letterSpacing: 8,
+            strokeWidth: 12,
+            strokeColor: "#111111",
+            padding: 28,
+            background: "#22222280",
+            backgroundRadius: 36,
+            shadow: { color: "#fc1c10", blur: 28, x: 52, y: 36 },
+          },
+          transform: { scaleX: 0.8, scaleY: 0.8 },
+        }),
+      ],
+      { mask: tools.mask({ kind: "ellipse", width: 0.95, height: 0.9, feather: 0.06 }) },
+    );
+    const outer = group("outer", 1029, 517, [inner], {
+      transform: {
+        x: -0.08,
+        y: 0.04,
+        scaleX: 0.86,
+        scaleY: 0.91,
+        rotation: -11,
+        crop: { left: 0.03, right: 0.09, top: 0.04, bottom: 0.02 },
+      },
+      mask: tools.mask({ x: 0.03, width: 0.9, height: 0.95, feather: 0.035 }),
+      color: { exposure: 0.2 },
+    });
+    const frame = tools.frame([outer], { width: 1285, height: 725, background: "#192737" });
+    const frozen = JSON.stringify(frame),
+      media = new Map([["picture", source]]),
+      full = tools.draw(frame, media);
+    const results = [];
+    for (const quality of [0.5, 0.25]) {
+      const actual = tools.reduced(frame, media, quality),
+        expected = tools.canvas(actual.width, actual.height);
+      expected.getContext("2d").drawImage(full, 0, 0, actual.width, actual.height);
+      const a = actual.getContext("2d").getImageData(0, 0, actual.width, actual.height).data;
+      const b = expected.getContext("2d").getImageData(0, 0, actual.width, actual.height).data;
+      let error = 0,
+        displaced = 0;
+      for (let i = 0; i < a.length; i += 4) {
+        const distance = Math.max(
+          ...[0, 1, 2].map((channel) => Math.abs(a[i + channel] - b[i + channel])),
+        );
+        error += distance;
+        if (distance > 50) displaced++;
+      }
+      results.push({
+        quality,
+        width: actual.width,
+        height: actual.height,
+        mean: error / (a.length / 4),
+        displaced: displaced / (a.length / 4),
+      });
+    }
+    return {
+      full: [full.width, full.height],
+      results,
+      unchanged: JSON.stringify(frame) === frozen,
+    };
+  });
+  assert.deepEqual(result.full, [1285, 725]);
+  assert.equal(result.unchanged, true);
+  for (const quality of result.results) {
+    assert.equal(quality.width, Math.round(1285 * quality.quality));
+    assert.equal(quality.height, Math.round(725 * quality.quality));
+    assert.ok(quality.mean < 10, JSON.stringify(quality));
+    assert.ok(quality.displaced < 0.05, JSON.stringify(quality));
+  }
+});
+
+test("all reduced transitions preserve opaque backdrops and grade only physical readback pixels", async () => {
+  const result = await page.evaluate(() => {
+    const outcomes = [],
+      reads = [],
+      writes = [],
+      allocations = [],
+      Original = OffscreenCanvas;
+    const prototypes = [
+      OffscreenCanvasRenderingContext2D.prototype,
+      CanvasRenderingContext2D.prototype,
+    ];
+    const methods = prototypes.map((prototype) => ({
+      prototype,
+      get: prototype.getImageData,
+      put: prototype.putImageData,
+    }));
+    globalThis.OffscreenCanvas = class extends Original {
+      constructor(width, height) {
+        super(width, height);
+        allocations.push([width, height]);
+      }
+    };
+    for (const { prototype, get, put } of methods) {
+      prototype.getImageData = function (x, y, width, height, ...rest) {
+        reads.push([width, height, this.canvas.width, this.canvas.height]);
+        return get.call(this, x, y, width, height, ...rest);
+      };
+      prototype.putImageData = function (image, ...args) {
+        writes.push([image.width, image.height, this.canvas.width, this.canvas.height]);
+        return put.call(this, image, ...args);
+      };
+    }
+    try {
+      for (const kind of [
+        "dissolve",
+        "fade-black",
+        "wipe-left",
+        "wipe-right",
+        "push-left",
+        "push-right",
+      ]) {
+        const from = tools.shape("from", {
+          fill: "#e05a26",
+          blendMode: "multiply",
+          color: { saturation: 0.65 },
+          transform: { opacity: 0.7 },
+        });
+        const to = tools.shape("to", {
+          fill: "#368dd4",
+          blendMode: "screen",
+          transform: { opacity: 0.8 },
+        });
+        const frame = tools.frame([tools.transition(from, to, kind, 0.37)], {
+          width: 321,
+          height: 181,
+          background: "#825c49",
+        });
+        const full = tools.draw(frame),
+          reduced = tools.reduced(frame),
+          expected = tools.canvas(reduced.width, reduced.height);
+        expected.getContext("2d").drawImage(full, 0, 0, reduced.width, reduced.height);
+        const a = reduced.getContext("2d").getImageData(0, 0, reduced.width, reduced.height).data;
+        const b = expected.getContext("2d").getImageData(0, 0, reduced.width, reduced.height).data;
+        let error = 0,
+          alpha = 255;
+        for (let i = 0; i < a.length; i += 4) {
+          error += Math.max(
+            Math.abs(a[i] - b[i]),
+            Math.abs(a[i + 1] - b[i + 1]),
+            Math.abs(a[i + 2] - b[i + 2]),
+          );
+          alpha = Math.min(alpha, a[i + 3]);
+        }
+        outcomes.push({ kind, mean: error / (a.length / 4), alpha });
+      }
+      allocations.length = reads.length = writes.length = 0;
+      const frame = tools.frame(
+        [
+          tools.transition(
+            tools.shape("a", { blendMode: "multiply", color: { exposure: 0.2 } }),
+            tools.shape("b"),
+            "push-right",
+            0.4,
+          ),
+        ],
+        { width: 321, height: 181 },
+      );
+      tools.reduced(frame);
+      return { outcomes, allocations, reads, writes };
+    } finally {
+      globalThis.OffscreenCanvas = Original;
+      for (const { prototype, get, put } of methods) {
+        prototype.getImageData = get;
+        prototype.putImageData = put;
+      }
+    }
+  });
+  for (const transition of result.outcomes) {
+    assert.ok(transition.mean < 2, JSON.stringify(transition));
+    assert.equal(transition.alpha, 255, transition.kind);
+  }
+  assert.ok(result.reads.length >= 4, "Color and blended push paths must both read real pixels");
+  assert.ok(result.writes.length >= 2, "Grading and blended push must write their reduced bitmap");
+  for (const [width, height, bitmapWidth, bitmapHeight] of [...result.reads, ...result.writes]) {
+    assert.equal(width, bitmapWidth);
+    assert.equal(height, bitmapHeight);
+    assert.deepEqual([width, height], [80, 45]);
+  }
+  assert.ok(result.allocations.length > 0);
+  assert.ok(result.allocations.every(([width, height]) => width <= 80 && height <= 45));
 });
 
 test("neutral transparent groups preserve every source-over pixel without extra alpha rounding", async () => {

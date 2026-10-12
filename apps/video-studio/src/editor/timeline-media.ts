@@ -2,7 +2,11 @@ import { EditorMediaPool, type EditorMediaPoolOptions } from "./media-pool";
 import { FrameCompositor } from "./compositor";
 import {
   prepareEvaluator,
+  isPreparedTimelineSnapshot,
   type PreparedEvaluator,
+  type PreparedTimelineSnapshot,
+  type TimelineStripInfo,
+  type TimelineStripClip,
   type EvaluatedFrame,
   type EvaluatedLayer,
   type EvaluatedVisualLayer,
@@ -12,6 +16,7 @@ import { evaluateAnimatedNumber } from "./animation";
 import { type Tick } from "./time";
 import type { EditorClip, EditorDocument, EditorSequence } from "./types";
 import { waveformEnvelope, type EditorWaveform } from "./waveform";
+import type { SessionIdentity } from "./session";
 export type { EditorWaveform } from "./waveform";
 export interface EditorTimelineMediaOptions {
   resolveAsset?: EditorMediaPoolOptions["resolveAsset"];
@@ -28,6 +33,8 @@ export interface TimelineMediaStrip {
   localEnd: Tick;
   width: number;
   height: number;
+  /** A selected fixed-gain control draws its own preview line above the source waveform. */
+  hideVolumeLine?: boolean;
 }
 export const TIMELINE_MEDIA_LIMITS = Object.freeze({
   strips: 96,
@@ -167,6 +174,13 @@ export class EditorTimelineMedia {
   private work: Promise<void> = Promise.resolve();
   private evaluator?: PreparedEvaluator;
   private documentKey = "";
+  private lifetimeKey = "";
+  #snapshot?: PreparedTimelineSnapshot;
+  #unsubscribeSnapshot?: () => void;
+  #audioPlan?: { key: string; lanes: AudioPlanLane[] };
+  #preparedLoader?: EditorTimelineMediaOptions["loadWaveform"];
+  #preparedEnabled = false;
+  #resetting = false;
   private disposed = false;
   constructor(private readonly options: EditorTimelineMediaOptions = {}) {
     this.pool = new EditorMediaPool({
@@ -190,25 +204,135 @@ export class EditorTimelineMedia {
     this.pending = undefined;
     this.pool.reset();
   }
+  private clearCaches(): void {
+    this.#audioPlan = undefined;
+    for (const canvas of this.thumbnails.values()) disposeCanvas(canvas);
+    this.thumbnails.clear();
+    this.waveforms.clear();
+    this.waveformBytes = 0;
+    this.errors.clear();
+    this.evaluator = undefined;
+    this.documentKey = "";
+    this.lifetimeKey = "";
+  }
+  /** Resource reconnection can change bytes without changing the document revision. */
+  reset(): void {
+    if (this.#resetting) return;
+    this.#resetting = true;
+    try {
+      this.cancel();
+      this.clearCaches();
+      this.releaseSnapshot();
+    } finally {
+      this.#resetting = false;
+    }
+  }
+  private releaseSnapshot(): void {
+    const snapshot = this.#snapshot,
+      unsubscribe = this.#unsubscribeSnapshot;
+    this.#snapshot = undefined;
+    this.#unsubscribeSnapshot = undefined;
+    this.#audioPlan = undefined;
+    unsubscribe?.();
+    snapshot?.dispose();
+  }
   render(
     document: EditorDocument,
     sequenceId: string,
     strips: readonly TimelineMediaStrip[],
+    identity?: SessionIdentity,
+  ): Promise<void> {
+    if (this.#resetting) return Promise.resolve();
+    if (this.#snapshot) this.reset();
+    return this.#renderStrips(document, sequenceId, strips, identity);
+  }
+  /** Explicit capability path; ordinary mutable documents always use render(). */
+  renderPrepared(
+    snapshot: PreparedTimelineSnapshot,
+    sequenceId: string,
+    strips: readonly TimelineMediaStrip[],
+    identity: SessionIdentity,
+  ): Promise<void> {
+    // Check the private registry before reading any property from an untrusted lookalike.
+    if (!isPreparedTimelineSnapshot(snapshot)) throw new Error("时间线快照无效或已释放");
+    if (this.#resetting) throw new Error("时间线媒体正在重置，请稍后重试");
+    const fields = identity && Object.getOwnPropertyDescriptors(identity);
+    if (
+      !fields ||
+      ["documentId", "revision", "generation"].some(
+        (key) => !fields[key] || !("value" in fields[key]!),
+      )
+    )
+      throw new Error("时间线快照身份无效");
+    const documentId = fields.documentId!.value,
+      revision = fields.revision!.value,
+      generation = fields.generation!.value;
+    if (
+      documentId !== snapshot.documentId ||
+      revision !== snapshot.revision ||
+      generation !== snapshot.generation
+    )
+      throw new Error("时间线快照身份不匹配");
+    const captured: SessionIdentity = {
+      documentId: documentId!,
+      revision: revision!,
+      generation: generation!,
+    };
+    if (this.disposed) throw new Error("时间线媒体已释放");
+    if (this.#snapshot !== snapshot) {
+      this.reset();
+      this.#snapshot = snapshot;
+      this.#unsubscribeSnapshot = snapshot.onDispose(() => {
+        if (this.#snapshot !== snapshot) return;
+        this.releaseSnapshot();
+        this.cancel();
+        this.clearCaches();
+      });
+    }
+    const loader = this.options.loadWaveform,
+      enabled = !!loader && this.options.canLoadWaveform?.() !== false;
+    if (loader !== this.#preparedLoader || enabled !== this.#preparedEnabled) {
+      this.#audioPlan = undefined;
+      if (loader !== this.#preparedLoader) {
+        this.waveforms.clear();
+        this.waveformBytes = 0;
+      }
+      this.#preparedLoader = loader;
+      this.#preparedEnabled = enabled;
+    }
+    const document = snapshot.stripInfo(
+      sequenceId,
+      strips.slice(0, TIMELINE_MEDIA_LIMITS.strips).map((strip) => strip.clipId),
+    );
+    return this.#renderStrips(document, sequenceId, strips, captured, snapshot);
+  }
+  #renderStrips(
+    document: EditorDocument | TimelineStripInfo,
+    sequenceId: string,
+    strips: readonly TimelineMediaStrip[],
+    identity?: SessionIdentity,
+    prepared?: PreparedTimelineSnapshot,
   ): Promise<void> {
     this.cancel();
     if (this.disposed) return Promise.resolve();
     const controller = new AbortController();
     this.pending = controller;
     const requests = strips.slice(0, TIMELINE_MEDIA_LIMITS.strips);
+    // Capture values before asynchronous work; callers own the identity object.
+    const lifetimeKey = JSON.stringify([document.id, identity?.generation ?? null]);
     this.work = this.work
       .catch(() => {})
       .then(async () => {
         aborted(controller.signal);
         const sequence = document.sequences.find((item) => item.id === sequenceId);
         if (!sequence) throw new Error("时间轴序列不存在");
-        const key = `${document.id}:${document.revision}`;
+        if (this.lifetimeKey !== lifetimeKey) {
+          this.clearCaches();
+          this.lifetimeKey = lifetimeKey;
+        }
+        const key = JSON.stringify([lifetimeKey, document.revision]);
         if (this.documentKey !== key) {
-          this.evaluator = prepareEvaluator(document);
+          this.evaluator = prepared ?? prepareEvaluator(document);
           this.documentKey = key;
           for (const canvas of this.thumbnails.values()) disposeCanvas(canvas);
           this.thumbnails.clear();
@@ -220,30 +344,48 @@ export class EditorTimelineMedia {
           audioError: unknown;
         if (
           this.options.loadWaveform &&
-          this.options.canLoadWaveform?.() !== false &&
+          (prepared ? this.#preparedEnabled : this.options.canLoadWaveform?.() !== false) &&
           requests.length
         ) {
           try {
-            lanes = compileAudioPlan(
-              {
-                ...document,
-                sequences: document.sequences.map((item) =>
-                  item.id === sequenceId
-                    ? {
-                        ...item,
-                        clips: item.clips.filter(
-                          (clip) =>
-                            selectedIds.has(clip.id) &&
-                            ["media", "sequence", "multicam"].includes(clip.kind),
-                        ),
-                        transitions: [],
-                      }
-                    : item,
-                ),
-              },
-              sequenceId,
-              { maxLanes: TIMELINE_MEDIA_LIMITS.audioLanes },
-            ).lanes;
+            if (prepared) {
+              const roots = sequence.clips
+                .filter(
+                  (clip) =>
+                    selectedIds.has(clip.id) &&
+                    ["media", "sequence", "multicam"].includes(clip.kind),
+                )
+                .map((clip) => clip.id)
+                .sort();
+              const planKey = JSON.stringify([this.documentKey, sequenceId, roots]);
+              if (this.#audioPlan?.key === planKey) lanes = this.#audioPlan.lanes;
+              else {
+                this.#audioPlan = undefined;
+                lanes = prepared.compileVisibleAudio(sequenceId, roots);
+                aborted(controller.signal);
+                this.#audioPlan = { key: planKey, lanes };
+              }
+            } else
+              lanes = compileAudioPlan(
+                {
+                  ...document,
+                  sequences: document.sequences.map((item) =>
+                    item.id === sequenceId
+                      ? {
+                          ...item,
+                          clips: item.clips.filter(
+                            (clip) =>
+                              selectedIds.has(clip.id) &&
+                              ["media", "sequence", "multicam"].includes(clip.kind),
+                          ),
+                          transitions: [],
+                        }
+                      : item,
+                  ),
+                },
+                sequenceId,
+                { maxLanes: TIMELINE_MEDIA_LIMITS.audioLanes },
+              ).lanes;
           } catch (error) {
             audioError = error;
           }
@@ -340,6 +482,7 @@ export class EditorTimelineMedia {
           }
           aborted(controller.signal);
           this.drawAudio(strip, clip, clipLanes, available, picture);
+          aborted(controller.signal);
           if (strip.canvas.dataset.etMediaState !== "error")
             strip.canvas.dataset.etMediaState = "ready";
         }
@@ -370,8 +513,8 @@ export class EditorTimelineMedia {
   }
   private async drawThumbnails(
     strip: TimelineMediaStrip,
-    clip: EditorClip,
-    sequence: EditorSequence,
+    clip: Pick<EditorClip, "id" | "kind" | "start" | "duration">,
+    sequence: Pick<EditorSequence, "id">,
     signal: AbortSignal,
   ) {
     const width = strip.canvas.width,
@@ -407,6 +550,10 @@ export class EditorTimelineMedia {
         aborted(signal);
         tile = globalThis.document.createElement("canvas");
         this.compositor.draw(tile, small, media);
+        if (signal.aborted) {
+          disposeCanvas(tile);
+          aborted(signal);
+        }
         this.thumbnails.set(key, tile);
         while (this.thumbnails.size > TIMELINE_MEDIA_LIMITS.thumbnails) {
           const oldest = this.thumbnails.keys().next().value!;
@@ -435,12 +582,12 @@ export class EditorTimelineMedia {
   }
   private drawAudio(
     strip: TimelineMediaStrip,
-    clip: EditorClip,
+    clip: TimelineStripClip,
     lanes: AudioPlanLane[],
     waveforms: Map<string, EditorWaveform>,
     picture: boolean,
   ) {
-    if (!("audio" in clip)) return;
+    if (!clip.audio) return;
     const ctx = strip.canvas.getContext("2d")!,
       width = strip.canvas.width,
       height = strip.canvas.height;
@@ -474,6 +621,7 @@ export class EditorTimelineMedia {
       ctx.stroke();
       strip.canvas.title ||= `源音频包络（混音前，分辨率 ${Math.max(...[...waveforms.values()].map((waveform) => waveform.samplesPerBin / waveform.sampleRate)).toFixed(3)} 秒）；音量线 0–400%，关键帧可在属性面板编辑`;
     }
+    if (strip.hideVolumeLine) return;
     const y = (value: number) => height - 2 - (Math.max(0, Math.min(4, value)) / 4) * (height - 4);
     ctx.strokeStyle = "#e5ed97";
     ctx.lineWidth = 1.5;
@@ -499,13 +647,8 @@ export class EditorTimelineMedia {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.cancel();
+    this.reset();
     this.pool.dispose();
     this.compositor.dispose();
-    for (const canvas of this.thumbnails.values()) disposeCanvas(canvas);
-    this.thumbnails.clear();
-    this.waveforms.clear();
-    this.waveformBytes = 0;
-    this.evaluator = undefined;
   }
 }

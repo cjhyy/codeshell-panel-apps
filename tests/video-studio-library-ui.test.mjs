@@ -7,7 +7,7 @@ import { before, after, test } from "node:test";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +31,24 @@ before(async () => {
   const isolatedOutput = join(directory, "package");
   await buildProject({ ...project, output: isolatedOutput }, { log: false });
   output = join(isolatedOutput, "app");
+  // Exercise the real background media restoration without adding a production test API.
+  const main = join(output, "main.mjs");
+  await writeFile(main, (await readFile(main, "utf8")) +
+    `\nglobalThis.__libraryPressAudit = {
+      restore: restoreManagedMedia, render, session: () => editorSession,
+      pressed: () => Boolean(mediaActionPress),
+      snapshot: () => ({
+        scope: mediaActionScope(), editor: editorSession?.getState(),
+        selected: [...selectedMedia], deferredRender: deferredMediaRender,
+        press: mediaActionPress && {
+          action: mediaActionPress.button.dataset.action,
+          connected: mediaActionPress.button.isConnected,
+          pointerId: mediaActionPress.pointerId, scope: mediaActionPress.scope
+        },
+        aiApplying, mediaImporting, projectSwitching, taskStarting,
+        pendingDeletion: pendingMediaDeletion?.ids
+      })
+    };\n`);
   const video = join(directory, "library-source.mp4");
   const made = spawnSync(
     "ffmpeg",
@@ -242,6 +260,103 @@ async function mixedPage(viewport) {
   await saved(page);
   return page;
 }
+
+test("native Shift checkbox selection covers the visible range without changing the project", { timeout: 60_000 }, async () => {
+  const page = await mixedPage();
+  try {
+    const before = await canonical(page);
+    await page.locator("#asset-search").fill("Library-");
+    const ids = await visibleIds(page);
+    assert.equal(ids.length, 3);
+    await page.locator(`[data-select-media="${ids[0]}"]`).click();
+    await page.locator(`[data-select-media="${ids[2]}"]`).click({ modifiers: ["Shift"] });
+    assert.deepEqual(await page.locator("[data-select-media]:checked").evaluateAll((items) => items.map((item) => item.dataset.selectMedia)), ids);
+    assert.deepEqual(await canonical(page), before);
+  } finally {
+    await page.close();
+  }
+});
+
+test("native Shift checkbox cancellation preserves hidden selections and works with keyboard activation", { timeout: 60_000 }, async () => {
+  const page = await mixedPage();
+  try {
+    const before = await canonical(page);
+    const hidden = (await state(page)).project.assets.find((asset) => asset.kind === "demo").id;
+    await page.locator(`[data-select-media="${hidden}"]`).click();
+    await page.locator("#asset-search").fill("Library-");
+    const ids = await visibleIds(page);
+    // A microtask during click must not erase the modifier before native input.
+    await page.evaluate(() => document.querySelector("#studio").addEventListener("click", (event) => {
+      if (event.target.matches("[data-select-media]")) queueMicrotask(() => { window.__rangeClickCheckpoint = true; });
+    }, true));
+    await page.locator(`[data-select-media="${ids[2]}"]`).click();
+    await page.locator(`[data-select-media="${ids[0]}"]`).focus();
+    await page.keyboard.press("Shift+Space");
+    assert.deepEqual(new Set(await page.evaluate(() => __libraryPressAudit.snapshot().selected)), new Set([hidden, ...ids]));
+    assert.equal(await page.evaluate(() => window.__rangeClickCheckpoint), true);
+    await page.locator(`[data-select-media="${ids[0]}"]`).click({ modifiers: ["Shift"] });
+    assert.deepEqual(await page.evaluate(() => __libraryPressAudit.snapshot().selected), [hidden]);
+    assert.deepEqual(await canonical(page), before);
+  } finally { await page.close(); }
+});
+
+for (const change of ["filter", "sort", "search", "generation"])
+  test(`native Shift checkbox anchor is invalidated by a ${change} change`, { timeout: 60_000 }, async () => {
+    const page = await mixedPage();
+    try {
+      await page.locator("#asset-search").fill("Library-");
+      const ids = await visibleIds(page);
+      await page.locator(`[data-select-media="${ids[0]}"]`).click();
+      if (change === "generation") await page.evaluate(() => {
+        const session = __libraryPressAudit.session();
+        return session.replace(session.read());
+      });
+      else if (change === "search") {
+        await page.locator("#asset-search").fill("Library-Bravo");
+        await page.locator("#asset-search").fill("Library-");
+      } else {
+        const control = page.locator(`[data-media-${change}]`);
+        await control.selectOption(change === "filter" ? "image" : "name");
+        await control.selectOption(change === "filter" ? "all" : "original");
+      }
+      await page.locator(`[data-select-media="${ids[2]}"]`).click({ modifiers: ["Shift"] });
+      assert.deepEqual(new Set(await page.evaluate(() => __libraryPressAudit.snapshot().selected)), new Set([ids[0], ids[2]]));
+    } finally { await page.close(); }
+  });
+
+test("native Shift checkbox range keeps its anchor across view changes and rejects a stale click scope", { timeout: 60_000 }, async () => {
+  const page = await mixedPage();
+  try {
+    await page.locator("#asset-search").fill("Library-");
+    const ids = await visibleIds(page);
+    await page.locator(`[data-select-media="${ids[0]}"]`).click();
+    await page.locator('[data-action="media-view"][data-id="list"]').click();
+    await page.locator(`[data-select-media="${ids[2]}"]`).click({ modifiers: ["Shift"] });
+    assert.equal(await page.locator("[data-select-media]:checked").count(), 3);
+    await page.locator('[data-action="clear-media-selection"]').click();
+    await page.locator(`[data-select-media="${ids[0]}"]`).click();
+    await page.evaluate((last) => {
+      document.querySelector("#studio").addEventListener("click", function change(event) {
+        if (event.target.dataset.selectMedia !== last) return;
+        this.removeEventListener("click", change, true);
+        window.__oldRangeCheckbox = event.target;
+        const session = __libraryPressAudit.session();
+        session.dispatch([{ type: "project.rename", name: "范围点击期间后台更新" }], session.getState().identity, "后台更新");
+        __libraryPressAudit.render();
+      }, true);
+    }, ids[2]);
+    await page.locator(`[data-select-media="${ids[2]}"]`).click({ modifiers: ["Shift"] });
+    assert.equal(await page.evaluate(() => __oldRangeCheckbox.isConnected), false);
+    assert.deepEqual(await page.evaluate(() => __libraryPressAudit.snapshot().selected), [ids[0]]);
+    await page.evaluate(() => {
+      __oldRangeCheckbox.checked = true;
+      __oldRangeCheckbox.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    assert.deepEqual(await page.evaluate(() => __libraryPressAudit.snapshot().selected), [ids[0]]);
+    await page.locator(`[data-select-media="${ids[2]}"]`).click({ modifiers: ["Shift"] });
+    assert.deepEqual(new Set(await page.evaluate(() => __libraryPressAudit.snapshot().selected)), new Set([ids[0], ids[2]]));
+  } finally { await page.close(); }
+});
 async function menu(page, id) {
   await page.locator(`[data-action="media-menu"][data-id="${id}"]`).click();
   await page.locator("#media-context-menu").waitFor({ state: "visible" });
@@ -260,6 +375,74 @@ async function assertNoResourceDeletion(page) {
     ),
     "Removing project entries must never delete managed resources or original files",
   );
+}
+
+async function observeLibraryDeletion(page) {
+  // No layout reads or action replay: retain only the native events for this one fixture.
+  await page.evaluate(() => {
+    const events = (window.__libraryDeletionEvents = []);
+    for (const type of ["pointerdown", "pointerup", "click", "pointercancel"])
+      document.addEventListener(type, (event) => {
+        if (!(event.target instanceof Element)) return;
+        const button = event.target.closest?.("[data-action]");
+        const record = {
+          time: performance.now(), type, trusted: event.isTrusted,
+          pointerId: event.pointerId, pointerType: event.pointerType,
+          x: event.clientX, y: event.clientY, detail: event.detail,
+          target: { tag: event.target.tagName, id: event.target.id, action: button?.dataset.action,
+            connected: event.target.isConnected, controlConnected: button?.isConnected,
+            disabled: button?.disabled, ariaDisabled: button?.getAttribute("aria-disabled") },
+          state: __libraryPressAudit.snapshot(),
+        };
+        events.push(record);
+        if (events.length > 80) events.shift();
+        queueMicrotask(() => {
+          record.connectedAfter = event.target.isConnected;
+          record.controlConnectedAfter = button?.isConnected;
+          record.defaultPrevented = event.defaultPrevented;
+        });
+      }, true);
+  });
+}
+
+async function retainLibraryDeletionFailure(page, error) {
+  const evidence = resolve(process.env.VIDEO_STUDIO_EXACT_EVIDENCE ??
+    resolve(root, "artifacts/video-studio/exact-browser-duration"), "library-deletion");
+  try {
+    const receipt = await page.evaluate(() => ({
+      events: window.__libraryDeletionEvents,
+      state: __libraryPressAudit.snapshot(),
+      assets: __libraryTools.read_video_project().project.assets,
+      checked: [...document.querySelectorAll("[data-select-media]:checked")]
+        .map((input) => input.dataset.selectMedia),
+      buttons: [...document.querySelectorAll('.library-panel [data-action="select-media"],.library-panel [data-action="delete-media"]')]
+        .map((button) => ({ action: button.dataset.action, connected: button.isConnected,
+          disabled: button.disabled, ariaDisabled: button.getAttribute("aria-disabled"),
+          bounds: button.getBoundingClientRect().toJSON() })),
+      dialog: { open: document.querySelector("#media-delete-dialog")?.open,
+        text: document.querySelector("#media-delete-dialog")?.textContent },
+      toast: { text: document.querySelector("#toast")?.textContent,
+        className: document.querySelector("#toast")?.className },
+      save: document.querySelector("#save-state")?.textContent,
+      writes: __libraryHostCalls.filter((call) => call.method === "media.document.set")
+        .map(({ params }) => ({ key: params.key, baseRevision: params.baseRevision })),
+      storedRevision: JSON.parse(localStorage.getItem("document:video-studio-current") ?? "null")?.revision,
+    }));
+    receipt.error = { message: error.message, stack: error.stack };
+    receipt.driver = { node: process.version, platform: process.platform,
+      arch: process.arch, chromium: browser.version() };
+    await mkdir(evidence, { recursive: true });
+    await writeFile(resolve(evidence, "receipt.json"), JSON.stringify(receipt, null, 2));
+    console.error("Synthetic library deletion failure:", JSON.stringify({
+      evidence, error: receipt.error.message, state: receipt.state,
+      events: receipt.events?.slice(-12), assets: receipt.assets.map(({ id, name }) => ({ id, name })),
+      checked: receipt.checked, dialog: receipt.dialog, toast: receipt.toast,
+      save: receipt.save, writes: receipt.writes, storedRevision: receipt.storedRevision,
+    }));
+    await page.screenshot({ path: resolve(evidence, "screen.png"), fullPage: true });
+  } catch (diagnosticError) {
+    console.error("Could not retain synthetic library deletion diagnostics:", diagnosticError);
+  }
 }
 
 test(
@@ -281,7 +464,7 @@ test(
       assert.deepEqual(await selectedClipIds(page), [second.id]);
       assert.equal(await page.locator("[data-ew-seek]").inputValue(), beforeMenu);
       assert.deepEqual((await state(page)).project, before);
-      assert.match(await context.textContent(), /素材库与原文件保留，可撤销/);
+      assert.match(await context.textContent(), /编辑可撤销/);
       await context.locator('[data-timeline-menu-action="remove"]').click();
       await saved(page);
       const changed = (await state(page)).project;
@@ -371,6 +554,15 @@ test(
       await target.focus();
       await page.keyboard.press("Shift+F10");
       await context.waitFor({ state: "visible" });
+      assert.equal(
+        await context
+          .locator('[data-timeline-menu-action="copy"]')
+          .evaluate((element) => element === document.activeElement),
+        true,
+        "The expanded menu begins at its first available command",
+      );
+      await page.keyboard.press("End");
+      await page.keyboard.press("ArrowUp");
       await page.screenshot({
         path: resolve(artifacts, "timeline-context-menu-390px.png"),
         fullPage: false,
@@ -825,6 +1017,7 @@ test(
   async () => {
     const page = await mixedPage();
     try {
+      await observeLibraryDeletion(page);
       const before = (await state(page)).project;
       const imported = before.assets.filter((asset) => asset.name.startsWith("Library-"));
       assert.ok(imported.some((asset) => asset.kind === "image"));
@@ -855,11 +1048,149 @@ test(
         ),
       );
       await assertNoResourceDeletion(page);
+    } catch (error) {
+      await retainLibraryDeletionFailure(page, error);
+      throw error;
     } finally {
       await page.close();
     }
   },
 );
+
+async function pressLibraryAction(page, name) {
+  const button = page.locator(`.library-panel [data-action="${name}"]`).first();
+  await button.hover();
+  const box = await button.boundingBox(), element = await button.elementHandle();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  return { box, element };
+}
+
+for (const name of ["select-media", "delete-media"])
+  test(`a native ${name} click survives background media restoration without replaying the action`, async () => {
+    const page = await mixedPage();
+    try {
+      const before = (await state(page)).project;
+      await page.locator("#asset-search").fill("Library-");
+      if (name === "delete-media") await page.locator('[data-action="select-media"]').click();
+      const { element } = await pressLibraryAction(page, name);
+      await page.evaluate(() => __libraryPressAudit.restore());
+      assert.equal(await element.evaluate((button) => button.isConnected), true);
+      await page.mouse.up();
+      await page.waitForFunction(() => !__libraryPressAudit.pressed());
+      if (name === "select-media") {
+        assert.equal(await page.locator("[data-select-media]:checked").count(), 3);
+        assert.deepEqual((await state(page)).project, before);
+      } else {
+        await page.waitForFunction(() => !__libraryTools.read_video_project().project.assets.some((asset) => asset.name.startsWith("Library-")));
+        await saved(page);
+        await page.locator('[data-ew-action="undo"]').click();
+        await saved(page);
+        assert.deepEqual((await state(page)).project.assets, before.assets);
+        await assertNoResourceDeletion(page);
+      }
+    } finally { await page.close(); }
+  });
+
+for (const cancellation of ["Escape", "blur", "visibility", "pointercancel", "outside release"])
+  test(`a ${cancellation} cancellation releases a deferred library render and consumes the old pointer click`, async () => {
+    const page = await mixedPage();
+    try {
+      await page.locator("#asset-search").fill("Library-");
+      const before = (await state(page)).project, { box, element } = await pressLibraryAction(page, "select-media");
+      await page.evaluate(() => __libraryPressAudit.restore());
+      if (cancellation === "Escape") await page.keyboard.press("Escape");
+      else if (cancellation === "blur") await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+      else if (cancellation === "visibility") await page.evaluate(() => {
+        Object.defineProperty(document, "hidden", { configurable: true, value: true });
+        document.dispatchEvent(new Event("visibilitychange"));
+        delete document.hidden;
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      else if (cancellation === "pointercancel") await page.dispatchEvent(".library-panel", "pointercancel", { pointerId: 1, isPrimary: true });
+      else await page.mouse.move(box.x + box.width + 200, box.y + box.height / 2);
+      await page.mouse.up();
+      await page.waitForFunction(() => !__libraryPressAudit.pressed());
+      await page.waitForFunction((button) => !button.isConnected, element);
+      assert.equal(await page.locator("[data-select-media]:checked").count(), 0);
+      assert.deepEqual((await state(page)).project, before);
+      await page.locator('[data-action="select-media"]').focus();
+      await page.keyboard.press("Enter");
+      assert.equal(await page.locator("[data-select-media]:checked").count(), 3);
+    } finally { await page.close(); }
+  });
+
+for (const change of ["revision", "generation", "selection", "search", "filter"])
+  test(`a library delete press cannot survive a ${change} scope change`, async () => {
+    const page = await mixedPage();
+    try {
+      await page.locator("#asset-search").fill("Library-");
+      await page.locator('[data-action="select-media"]').click();
+      const { element } = await pressLibraryAction(page, "delete-media");
+      await page.evaluate(() => __libraryPressAudit.restore());
+      if (change === "revision") await page.evaluate(() => {
+        const session = __libraryPressAudit.session();
+        session.dispatch([{ type: "project.rename", name: "后台编辑" }], session.getState().identity, "后台编辑");
+      });
+      else if (change === "generation") await page.evaluate(() => {
+        const session = __libraryPressAudit.session();
+        return session.replace(session.read());
+      });
+      else if (change === "selection") await page.locator("[data-select-media]").first().evaluate((input) => {
+        input.checked = false; input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      else if (change === "search") await page.locator("#asset-search").fill("Library-Bravo");
+      else await page.locator("[data-media-filter]").selectOption("image");
+      await page.evaluate(() => __libraryPressAudit.restore());
+      const changed = (await state(page)).project;
+      assert.equal(await element.evaluate((button) => button.isConnected), false);
+      await page.mouse.up();
+      await page.waitForFunction(() => !__libraryPressAudit.pressed());
+      assert.deepEqual((await state(page)).project, changed);
+      assert.equal(changed.assets.filter((asset) => asset.name.startsWith("Library-")).length, 3);
+    } finally { await page.close(); }
+  });
+
+test("a native touch click survives a deferred library refresh and releases its press", async () => {
+  const page = await mixedPage();
+  try {
+    await page.locator("#asset-search").fill("Library-");
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    const button = page.locator('[data-action="select-media"]');
+    await button.hover();
+    const box = await button.boundingBox();
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: box.x + box.width / 2, y: box.y + box.height / 2 }] });
+    assert.equal(await page.evaluate(() => __libraryPressAudit.pressed()), true);
+    await page.evaluate(() => __libraryPressAudit.restore());
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await page.waitForFunction(() => !__libraryPressAudit.pressed());
+    assert.equal(await page.locator("[data-select-media]:checked").count(), 3);
+  } finally { await page.close(); }
+});
+
+test("a native touch release without a delivered click cannot hold library rendering indefinitely", async () => {
+  const page = await mixedPage();
+  try {
+    await page.locator("#asset-search").fill("Library-");
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    const button = page.locator('[data-action="select-media"]');
+    await button.hover();
+    const box = await button.boundingBox(), element = await button.elementHandle();
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: box.x + box.width / 2, y: box.y + box.height / 2 }] });
+    await page.evaluate(async () => {
+      await __libraryPressAudit.restore();
+      document.addEventListener("click", (event) => event.stopPropagation(), { capture: true, once: true });
+    });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await page.waitForFunction(() => !__libraryPressAudit.pressed());
+    await page.waitForFunction((button) => !button.isConnected, element);
+    assert.equal(await page.locator("[data-select-media]:checked").count(), 0);
+    await button.click();
+    assert.equal(await page.locator("[data-select-media]:checked").count(), 3);
+  } finally { await page.close(); }
+});
 
 test(
   "failed project persistence leaves an unused image available for a safe deletion retry",
@@ -1093,3 +1424,95 @@ test(
     }
   },
 );
+
+test("native library search retains its editor across a background render between focus and text input", async () => {
+  const page = await mixedPage();
+  try {
+    await page.evaluate(() => {
+      const search = document.querySelector('#asset-search');
+      window.__searchBefore = search;
+      window.__searchFocusEvents = [];
+      let once = false;
+      document.addEventListener('focusin', event => {
+        if (event.target.id !== 'asset-search' || once) return;
+        once = true;
+        queueMicrotask(() => {
+          __libraryPressAudit.render();
+          __searchFocusEvents.push({connected: search.isConnected, active: document.activeElement?.id});
+        });
+      });
+    });
+    await page.locator('#asset-search').fill('Library-');
+    const receipt = await page.evaluate(() => ({events: __searchFocusEvents, value: document.querySelector('#asset-search').value, retained: __searchBefore === document.querySelector('#asset-search')}));
+    await page.locator('[data-action="select-media"]').click();
+    assert.equal(await page.locator('[data-select-media]:checked').count(), 3);
+    assert.equal(receipt.value, "Library-");
+    assert.deepEqual(receipt.events, [{ connected: true, active: "asset-search" }]);
+    assert.equal(receipt.retained, true, 'Background presentation must keep the actual search input connected');
+  } finally { await page.close(); }
+});
+
+
+test("native library search composition remains connected through full and media refreshes", async () => {
+  const page = await mixedPage(), client = await page.context().newCDPSession(page);
+  try {
+    await page.locator('#asset-search').click();
+    await page.evaluate(() => {
+      __searchBefore = document.querySelector('#asset-search');
+      __searchComposition = [];
+      for (const name of ['compositionstart', 'compositionupdate', 'compositionend', 'input'])
+        __searchBefore.addEventListener(name, event => __searchComposition.push({type: event.type, trusted: event.isTrusted, composing: event.isComposing}));
+    });
+    await client.send('Input.imeSetComposition', {text: '素材', selectionStart: 2, selectionEnd: 2});
+    await page.evaluate(async () => { __libraryPressAudit.render(); await __libraryPressAudit.restore(); });
+    assert.equal(await page.evaluate(() => __searchBefore.isConnected && document.activeElement === __searchBefore), true);
+    await client.send('Input.imeSetComposition', {text: '素材片', selectionStart: 3, selectionEnd: 3});
+    await client.send('Input.insertText', {text: '素材片'});
+    assert.equal(await page.locator('#asset-search').inputValue(), '素材片');
+    assert.equal(await page.evaluate(() => __searchBefore === document.querySelector('#asset-search')), true);
+    const composition = await page.evaluate(() => __searchComposition);
+    assert.ok(composition.some(event => event.type === 'compositionend'));
+    assert.ok(composition.some(event => event.type === 'input' && event.trusted && event.composing), JSON.stringify(composition));
+    assert.equal((await visibleIds(page)).length, 0);
+    await page.locator('#asset-search').fill('Library-');
+    await page.locator('[data-action="select-media"]').click();
+    assert.equal(await page.locator('[data-select-media]:checked').count(), 3);
+  } finally { await client.detach(); await page.close(); }
+});
+
+test("library search applies explicit filter clears and retains the live editor through view changes", async () => {
+  const page = await mixedPage();
+  try {
+    await page.locator('#asset-search').fill('Library-');
+    await page.evaluate(() => { __searchBefore = document.querySelector('#asset-search'); });
+    await page.locator('[data-action="media-view"][data-id="list"]').click();
+    assert.equal(await page.locator('[data-action="media-view"][data-id="list"]').getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.evaluate(() => __searchBefore === document.querySelector('#asset-search')), true);
+    await page.locator('#asset-search').fill('no-matching-library-item');
+    await page.locator('#asset-search').focus();
+    // An explicit action can clear the query while the search input still has focus.
+    await page.evaluate(() => document.querySelector('[data-action="clear-media-filter"]').click());
+    assert.equal(await page.locator('#asset-search').inputValue(), '');
+    assert.equal((await visibleIds(page)).length, (await state(page)).project.assets.length);
+    assert.equal(await page.evaluate(() => __searchBefore === document.querySelector('#asset-search')), true);
+  } finally { await page.close(); }
+});
+
+test("a same-id project replacement retires the previous native library search editor", async () => {
+  const page = await mixedPage();
+  try {
+    await page.locator('#asset-search').fill('Library-');
+    const project = (await state(page)).project;
+    project.name = 'Search generation replacement';
+    await page.evaluate(() => { __searchBefore = document.querySelector('#asset-search'); });
+    await page.locator('#project-input').setInputFiles({name: 'search-project.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(project))});
+    await page.waitForFunction(() => __libraryTools.read_video_project().project.name === 'Search generation replacement');
+    await saved(page);
+    await page.waitForFunction(() => document.querySelector('#project-input').value === '');
+    assert.equal(await page.evaluate(() => __searchBefore.isConnected), false);
+    assert.equal(await page.evaluate(() => __searchBefore === document.querySelector('#asset-search')), false);
+    await page.locator('#asset-search').fill('Library-');
+    await page.locator('[data-action="select-media"]').click();
+    assert.equal(await page.locator('[data-select-media]:checked').count(), 3);
+  } finally { await page.close(); }
+});
