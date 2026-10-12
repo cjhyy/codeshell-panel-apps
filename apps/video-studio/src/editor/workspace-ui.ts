@@ -48,6 +48,7 @@ import type { EditorTimelineContext } from "./timeline-ui";
 import { panelRuntimeErrorMessage } from "../sdk/panel-runtime";
 import { audioMixWarning } from "./audio-mix-report";
 import type { PreviewResolution } from "./compositor";
+import { trackAuditionDocument, clipGainAuditionDocument } from "./audio-audition";
 import { resolvePlayheadPosition } from "./playhead-position";
 
 export interface EditorWorkspaceOptions {
@@ -70,6 +71,7 @@ export interface EditorWorkspaceOptions {
     sequenceId: string,
     signal: AbortSignal,
     onProgress?: (message: string) => void,
+    purpose?: "audition",
   ): Promise<PreviewAudio | undefined>;
   exportSequence?(
     document: EditorDocument,
@@ -175,6 +177,11 @@ export class EditorWorkspace {
   /** Task start can wait minutes without progress while the Host copies originals. */
   private preparationClock?: { started: number; timer: ReturnType<typeof setInterval> };
   private audio?: PreviewAudio;
+  private soloTracks = new Set<string>();
+  private auditionSequence = "";
+  private gainAudition?: { clipId: string; volume: number; audio?: PreviewAudio };
+  private auditionEpoch = 0;
+  private gainOpening?: AbortController;
   /** Includes the session generation, so restoring the same revision cannot reuse old media. */
   private preparedRevision = "";
   private dialog?: HTMLDialogElement;
@@ -200,7 +207,7 @@ export class EditorWorkspace {
     container.innerHTML = `<header class="ew-header"><strong>Mimi 视频工作台</strong><input class="ew-project-name" data-ew-project-name aria-label="工程名称"><span data-ew-save role="status"></span><div class="ew-header-actions">${button("new", "新建")}${button("open", "打开")}${button("download", "工程备份")}${options.packProject ? button("pack-project", "打包工程") : ""}${options.importProjectBundle ? button("import-project-bundle", "打开工程包") : ""}${options.syncProject ? button("sync-project", "工程同步") : ""}${button("production", "制作与录音")}${button("export", "导出", 'class="ew-primary"')}</div></header>
       <nav class="ew-tools" aria-label="工程操作">${button("undo", "撤销")}${button("redo", "重做")}<label>序列 <select data-ew-sequence aria-label="当前序列"></select></label>${button("new-sequence", "新序列")}${button("sequence-settings", "画布与帧率")}${button("sequences", "序列与复合")}${button("multicam", "多机位")}<span class="ew-spacer"></span>${button("marker", "标记与范围")}${button("retry-save", "重试保存", "hidden")}</nav>
       <div class="ew-main"><aside class="ew-library" aria-label="素材与创作"><div class="ew-library-top"><h2>素材</h2>${button("import", "导入素材")}</div><input data-ew-search type="search" placeholder="搜索素材" aria-label="搜索素材"><div class="ew-create">${button("title", "文字")}${button("rectangle", "矩形")}${button("ellipse", "圆形")}</div><div class="ew-assets" data-ew-assets></div><div class="ew-production-links">${button("captions", "语音字幕")}${options.showSeparation ? button("separate", "人声与伴奏分离") : ""}${options.showAudioEnhancement ? button("enhance-audio", "降噪与响度") : ""}${button("voiceover", "配音")}${button("recording", "录音与录屏")}${button("roughcut", "AI 粗剪")}</div></aside>
-      <section class="ew-viewer" aria-label="视频预览"><div class="ew-canvas-wrap"><canvas data-ew-canvas aria-label="当前画面"></canvas><p data-ew-preview-error hidden role="status"></p></div><p data-ew-font-warning hidden role="status"></p><p data-ew-audio-warning hidden role="status"></p><div class="ew-player">${button("play", "播放", 'aria-label="播放"')}${button("loop-playback", "循环播放", 'aria-pressed="false" title="播放到当前序列末尾后从头继续"')}<button type="button" data-ew-time data-ew-action="jump-playhead" aria-label="定位播放头" title="输入秒数或帧序号定位">00:00.00</button><input data-ew-seek type="range" min="0" max="0" value="0" step="1" aria-label="播放位置"><output data-ew-duration>00:00.00</output><span data-ew-fps></span><select data-ew-quality aria-label="预览质量" title="仅影响预览，工程和导出尺寸保持不变"><option value="1">原始质量</option><option value="0.5">1/2 质量</option><option value="0.25">1/4 质量</option></select>${options.downloadFrame ? button("save-frame", "保存已应用画面 PNG", 'aria-label="保存已应用画面 PNG"') : ""}</div></section>
+      <section class="ew-viewer" aria-label="视频预览"><div class="ew-canvas-wrap"><canvas data-ew-canvas aria-label="当前画面"></canvas><p data-ew-preview-error hidden role="status"></p></div><p data-ew-font-warning hidden role="status"></p><p data-ew-audio-warning hidden role="status"></p><p data-ew-audition-status hidden role="status"></p><div class="ew-player">${button("play", "播放", 'aria-label="播放"')}${button("gain-audition", "调音试听", 'aria-pressed="false" title="选择固定音量的片段，准备后拖动音量线可实时试听"')}${button("clear-solo", "结束独轨试听", 'hidden')}${button("loop-playback", "循环播放", 'aria-pressed="false" title="播放到当前序列末尾后从头继续"')}<button type="button" data-ew-time data-ew-action="jump-playhead" aria-label="定位播放头" title="输入秒数或帧序号定位">00:00.00</button><input data-ew-seek type="range" min="0" max="0" value="0" step="1" aria-label="播放位置"><output data-ew-duration>00:00.00</output><span data-ew-fps></span><select data-ew-quality aria-label="预览质量" title="仅影响预览，工程和导出尺寸保持不变"><option value="1">原始质量</option><option value="0.5">1/2 质量</option><option value="0.25">1/4 质量</option></select>${options.downloadFrame ? button("save-frame", "保存已应用画面 PNG", 'aria-label="保存已应用画面 PNG"') : ""}</div></section>
       <aside class="ew-properties"><div data-ew-inspector></div><div data-ew-timing></div><div data-ew-sequences hidden></div><div data-ew-multicam hidden></div><div data-ew-markers hidden></div></aside></div><section data-ew-timeline></section>`;
     if (options.layout === "embedded") {
       for (const [action, glyph] of [
@@ -304,6 +311,15 @@ export class EditorWorkspace {
     });
     this.timeline = new EditorTimeline(this.get("[data-ew-timeline]"), {
       beforeGesture: (signal) => this.inspector.finishFocusedField(signal) ?? true,
+      soloTracks: () => this.soloTracks,
+      toggleSolo: (trackId) => this.toggleSolo(trackId),
+      previewGain: (clipId, volume) => {
+        const audition = this.gainAudition;
+        if (!audition || audition.clipId !== clipId || !audition.audio || !this.preview.playing) return false;
+        this.preview.setAuditionGain(volume - audition.volume);
+        return true;
+      },
+      endGainPreview: () => this.preview.setAuditionGain(0),
       read,
       identity: () => options.session.getState().identity,
       prepareMediaSnapshot: (document, identity) => this.prepareTimelineMedia(document, identity),
@@ -324,7 +340,9 @@ export class EditorWorkspace {
       seek: (time, exact) => this.seek(time, exact),
       select: (ids) => {
         this.cancelFrameCapture();
+        if (JSON.stringify(this.selected) !== JSON.stringify(ids)) this.clearGainAudition();
         this.selected = ids;
+        this.updateAuditionControls();
         this.withReadSnapshot(() => {
           this.inspector.render();
           this.timing.render();
@@ -436,7 +454,9 @@ export class EditorWorkspace {
       time: () => this.playhead,
       select: (ids) => {
         this.cancelFrameCapture();
+        if (JSON.stringify(this.selected) !== JSON.stringify(ids)) this.clearGainAudition();
         this.selected = ids;
+        this.updateAuditionControls();
         this.timeline.render();
         this.inspector.render();
         this.timing.render();
@@ -465,6 +485,8 @@ export class EditorWorkspace {
     window.addEventListener("blur", this.frameCaptureBlur);
     container.addEventListener("pointerdown", this.frameCaptureDown, true);
     container.addEventListener("pointerdown", this.loopPlaybackDown, true);
+    window.addEventListener("blur", this.cancelGainOpening);
+    window.addEventListener("keydown", this.gainAuditionKeydown, true);
     container.addEventListener("pointerdown", this.activateComposition, true);
     if (options.layout === "embedded")
       for (const type of this.embeddedEvents)
@@ -498,6 +520,7 @@ export class EditorWorkspace {
         if (drawn && !this.disposed && !this.preparing)
           this.get("[data-ew-preview-error]").hidden = true;
       } catch (error) {
+        this.clearGainAudition();
         this.previewError(error);
         throw error;
       }
@@ -636,17 +659,22 @@ export class EditorWorkspace {
     const doc = this.options.session.read();
     this.sequenceId = doc.activeSequenceId;
     const sequence = this.sequence();
+    if (opened || this.auditionSequence !== sequence.id) this.soloTracks.clear();
+    else this.soloTracks = new Set([...this.soloTracks].filter((id) => sequence.tracks.some((track) => track.id === id && track.kind !== "text")));
+    this.auditionSequence = sequence.id;
     if (this.frameCapture && this.frameCapture.sequenceId !== sequence.id) this.cancelFrameCapture();
     if (this.exportOpening && this.exportOpening.sequenceId !== sequence.id) this.cancelExportOpening();
     this.frameCaptureSize = { width: sequence.width, height: sequence.height, duration: sequenceDuration(sequence) };
     this.updateFrameCaptureControl();
     this.selected = this.selected.filter((id) => sequence.clips.some((clip) => clip.id === id));
+    this.clearGainAudition(true);
     this.cancelPreparation();
     this.audio?.stream?.dispose();
     this.audio = undefined;
     this.preparedRevision = "";
     this.clearAudioWarning();
-    this.preview.setDocument(doc, sequence.id);
+    this.preview.setDocument(this.auditionDocument(doc), sequence.id);
+    this.updateAuditionControls();
     this.playhead = Math.min(this.playhead, Math.max(0, sequenceDuration(sequence) - 1));
     const name = this.get<HTMLInputElement>("[data-ew-project-name]");
     if (opened || document.activeElement !== name) name.value = doc.name;
@@ -793,6 +821,7 @@ export class EditorWorkspace {
    * contains it, which would still be the previous clip. Re-seeking the same spot keeps it.
    */
   async seek(time: Tick, exact = this.exactPlayhead && time === this.playhead): Promise<void> {
+    this.clearGainAudition();
     this.timeline.cancelTextNavigation();
     this.cancelExportOpening();
     if (this.disposed) return;
@@ -810,12 +839,77 @@ export class EditorWorkspace {
       this.previewError(error);
     }
   }
+  private auditionDocument(document = this.options.session.read()): EditorDocument {
+    return this.soloTracks.size ? trackAuditionDocument(document, this.sequenceId, this.soloTracks) : document;
+  }
+  private playbackSignature(): string {
+    return `${this.revision}:${JSON.stringify([...this.soloTracks].sort())}`;
+  }
+  private updateAuditionControls(): void {
+    if (this.disposed) return;
+    const clip = this.sequence().clips.find((item) => item.id === this.selected[0]),
+      control = this.get<HTMLButtonElement>('[data-ew-action="gain-audition"]');
+    control.disabled = !this.options.prepareAudio || this.selected.length !== 1 || !clip || !("audio" in clip) || typeof clip.audio.volume !== "number";
+    control.setAttribute("aria-pressed", String(Boolean(this.gainAudition)));
+    control.textContent = this.gainAudition ? "结束调音试听" : "调音试听";
+    this.get('[data-ew-action="clear-solo"]').hidden = !this.soloTracks.size;
+    const names = this.sequence().tracks.filter((track) => this.soloTracks.has(track.id)).map((track) => track.name),
+      output = this.get('[data-ew-audition-status]');
+    output.textContent = [names.length ? `独轨试听：${names.join("、")}（保留轨道静音）` : "", this.gainAudition ? "调音试听：拖动所选片段音量线即可听效果，松开保存，Esc 取消" : ""].filter(Boolean).join(" · ") + (names.length || this.gainAudition ? " · 试听不影响导出" : "");
+    output.hidden = !output.textContent;
+  }
+  private clearGainAudition(preserveOpening = false): void {
+    if (!preserveOpening) { this.auditionEpoch++; this.gainOpening?.abort(); this.gainOpening = undefined; }
+    if (!this.gainAudition) return;
+    this.cancelPreparation();
+    this.gainAudition.audio?.stream?.dispose();
+    this.gainAudition = undefined;
+    this.updateAuditionControls();
+  }
+  private toggleSolo(trackId?: string): void {
+    if (this.disposed || !this.visible || this.sourcePreview) return;
+    if (trackId && !this.sequence().tracks.some((track) => track.id === trackId && track.kind !== "text")) return;
+    this.clearGainAudition();
+    this.cancelPreparation();
+    if (!trackId) this.soloTracks.clear();
+    else if (this.soloTracks.has(trackId)) this.soloTracks.delete(trackId);
+    else this.soloTracks.add(trackId);
+    this.audio?.stream?.dispose(); this.audio = undefined; this.preparedRevision = "";
+    this.preview.setDocument(this.auditionDocument(), this.sequenceId);
+    this.timeline.render();
+    this.updateAuditionControls();
+    this.run(() => this.seek(this.playhead));
+  }
+  private async toggleGainAudition(): Promise<void> {
+    if (this.gainOpening) { this.clearGainAudition(); return; }
+    if (this.gainAudition) { this.clearGainAudition(); return; }
+    const identity = { ...this.options.session.getState().identity }, sequenceId = this.sequenceId,
+      selection = JSON.stringify(this.selected), time = this.playhead, epoch = ++this.auditionEpoch,
+      controller = new AbortController();
+    this.gainOpening = controller;
+    let ready: boolean | Promise<boolean> | undefined;
+    try {
+      ready = this.inspector.finishFocusedField(controller.signal);
+      if (ready !== undefined && !(typeof ready === "boolean" ? ready : await ready)) return;
+    } finally { if (this.gainOpening === controller) this.gainOpening = undefined; }
+    const latest = this.options.session.getState().identity;
+    if (controller.signal.aborted || this.disposed || !this.visible || this.sourcePreview || epoch !== this.auditionEpoch ||
+      !sameIdentity(identity, latest, false) || latest.revision < identity.revision || latest.revision > identity.revision + 1 ||
+      sequenceId !== this.sequenceId || selection !== JSON.stringify(this.selected) || time !== this.playhead) return;
+    if (this.selected.length !== 1) throw new Error("请选择一个固定音量的声音片段");
+    const candidate = clipGainAuditionDocument(this.auditionDocument(), sequenceId, this.selected[0]!);
+    this.cancelPreparation();
+    this.gainAudition = { clipId: this.selected[0]!, volume: candidate.volume };
+    this.updateAuditionControls();
+    await this.togglePlayback();
+  }
   async togglePlayback(): Promise<void> {
     if (this.disposed) return;
     this.loopReplay = undefined;
     this.previewQualityInteracted = true;
     this.cancelFrameCapture();
     if (this.preparing) {
+      this.clearGainAudition();
       this.cancelPreparation();
       return;
     }
@@ -827,9 +921,9 @@ export class EditorWorkspace {
     this.preparing = controller;
     this.updatePlayButton(false);
     this.preparationStatus(controller, "正在准备播放素材，首次准备可能需要一些时间。");
-    const doc = this.options.session.read(),
+    const doc = this.auditionDocument(),
       sequenceId = this.sequenceId,
-      signature = this.revision;
+      signature = this.playbackSignature(), audition = this.gainAudition;
     try {
       const preparedCurrent = this.preparedRevision === signature;
       if (!preparedCurrent) this.clearAudioWarning();
@@ -838,10 +932,11 @@ export class EditorWorkspace {
         : (this.audio ??
           (await this.options.prepareAudio?.(doc, sequenceId, controller.signal, (message) =>
             this.preparationStatus(controller, message),
+            this.soloTracks.size ? "audition" : undefined,
           )));
       if (
         controller.signal.aborted ||
-        signature !== this.revision ||
+        signature !== this.playbackSignature() ||
         this.disposed ||
         !this.visible
       ) {
@@ -849,6 +944,16 @@ export class EditorWorkspace {
         return;
       }
       this.audio = prepared;
+      if (audition && !audition.audio) {
+        const candidate = clipGainAuditionDocument(doc, sequenceId, audition.clipId);
+        const stem = await this.options.prepareAudio?.(candidate.document, sequenceId, controller.signal,
+          (message) => this.preparationStatus(controller, `正在准备调音试听 · ${message}`), "audition");
+        if (controller.signal.aborted || audition !== this.gainAudition || signature !== this.playbackSignature() || this.disposed || !this.visible) {
+          stem?.stream?.dispose(); return;
+        }
+        if (!stem) throw new Error("无法准备所选片段的调音试听声音");
+        audition.audio = stem;
+      }
       // Validate the measurements before starting Web Audio, so a bad report cannot
       // leave playback running behind an error or publish a warning for another mix.
       const warning = this.audio?.mix ? audioMixWarning(this.audio.mix) : "";
@@ -868,15 +973,15 @@ export class EditorWorkspace {
         await this.preview.seek(target, { exact: !ended && this.exactPlayhead });
       if (
         controller.signal.aborted ||
-        signature !== this.revision ||
+        signature !== this.playbackSignature() ||
         this.disposed ||
         !this.visible
       )
         return;
-      await this.preview.play(this.audio);
+      await this.preview.play(this.audio, audition?.audio ? { audio: audition.audio, gain: 0 } : undefined);
       if (
         !controller.signal.aborted &&
-        signature === this.revision &&
+        signature === this.playbackSignature() &&
         !this.disposed &&
         this.visible &&
         this.preview.playing
@@ -889,6 +994,7 @@ export class EditorWorkspace {
       if (!this.disposed) this.get("[data-ew-preview-error]").hidden = true;
     } catch (error) {
       if (!controller.signal.aborted) {
+        this.clearGainAudition();
         this.previewError(error);
         throw error;
       }
@@ -908,6 +1014,7 @@ export class EditorWorkspace {
     this.multicam?.setVisible(visible && !this.get("[data-ew-multicam]").hidden);
     this.updateFrameCaptureControl();
     if (!visible) {
+      this.clearGainAudition();
       this.timeline.cancelTextNavigation();
       this.cancelFrameCapture();
       this.canvasEditor.cancel();
@@ -922,13 +1029,14 @@ export class EditorWorkspace {
   refreshMedia(): void {
     if (this.disposed) return;
     this.releaseTimelineMedia();
+    this.clearGainAudition();
     this.cancelPreparation();
     this.clearAudioWarning();
     this.audio?.stream?.dispose();
     this.audio = undefined;
     this.preparedRevision = "";
     // Resource URLs may change while the document identity stays exactly the same.
-    this.preview.setDocument(this.options.session.read(), this.sequenceId);
+    this.preview.setDocument(this.auditionDocument(), this.sequenceId);
     this.timeline.refreshMedia();
     if (this.visible && !this.sourcePreview) this.run(() => this.seek(this.playhead));
   }
@@ -937,6 +1045,7 @@ export class EditorWorkspace {
     if (this.sourcePreview === active || this.disposed) return;
     this.previewQualityInteracted = true;
     this.cancelExportOpening();
+    this.clearGainAudition();
     this.sourcePreview = active;
     this.cancelFrameCapture();
     this.updateFrameCaptureControl();
@@ -960,7 +1069,9 @@ export class EditorWorkspace {
     this.cancelFrameCapture();
     this.canvasEditor.cancel();
     const existing = new Set(this.sequence().clips.map((clip) => clip.id));
+    this.clearGainAudition();
     this.selected = [...new Set(clipIds)].filter((id) => existing.has(id));
+    this.updateAuditionControls();
     this.timeline.render();
     this.inspector.render();
     this.timing.render();
@@ -1100,6 +1211,7 @@ export class EditorWorkspace {
       "添加片段",
     );
     this.selected = [clip.id];
+    this.updateAuditionControls();
     this.timeline.render();
     this.inspector.render();
     this.timing.render();
@@ -1205,9 +1317,15 @@ export class EditorWorkspace {
     }
     this.run(() => this.action(target.dataset.ewAction!));
   };
+  private cancelGainOpening = (): void => { this.gainOpening?.abort(); this.gainOpening = undefined; };
+  private gainAuditionKeydown = (event: KeyboardEvent): void => {
+    if (event.key === "Escape" && (this.gainOpening || this.preparing && this.gainAudition)) {
+      this.clearGainAudition(); this.cancelPreparation();
+    }
+  };
   private loopPlaybackDown = (event: PointerEvent): void => {
     if (event.button === 0 && event.isPrimary && event.target instanceof Element &&
-      event.target.closest('[data-ew-action="loop-playback"]')) event.preventDefault();
+      event.target.closest('[data-ew-action="loop-playback"],[data-ew-action="gain-audition"],[data-ew-action="clear-solo"]')) event.preventDefault();
   };
   private queueLoopReplay(time: Tick, revision: string, owner?: symbol): void {
     if (!owner || this.loopReplay !== owner) return;
@@ -1281,7 +1399,7 @@ export class EditorWorkspace {
   private keydown = (event: KeyboardEvent) => {
     this.previewQualityInteracted = true;
     if (event.repeat && event.target instanceof Element &&
-      event.target.closest('[data-ew-action="loop-playback"]') &&
+      event.target.closest('[data-ew-action="loop-playback"],[data-ew-action="gain-audition"],[data-ew-action="clear-solo"]') &&
       ["Enter", " ", "Spacebar"].includes(event.key)) event.preventDefault();
     if (
       (event.target as Element).closest(
@@ -1301,6 +1419,8 @@ export class EditorWorkspace {
     }
   };
   private async action(action: string): Promise<void> {
+    if (action === "gain-audition") return this.toggleGainAudition();
+    if (action === "clear-solo") { this.toggleSolo(); return; }
     if (action === "loop-playback") {
       this.loopReplay = undefined;
       this.loopPlayback = !this.loopPlayback;
@@ -1737,7 +1857,7 @@ export class EditorWorkspace {
       <p data-export-pcm hidden>PCM 音频：48 kHz · 16 位 · 立体声</p>
       <label><input name="captions" type="checkbox" checked>包含字幕</label>
       <div class="ew-form-row"><button type="button" data-save-export-preset>保存为工程预设</button><button type="button" data-remove-export-preset disabled>删除所选工程预设</button></div>
-      </fieldset><fieldset><legend>导出范围</legend><label>范围<select name="range"><option value="">完整所选序列</option>${ranges.map((marker) => `<option value="${esc(marker.id)}"${marker.time + marker.duration > sequenceDuration(sequence) ? " disabled" : ""}>${esc(marker.name)} · ${exportRangeLabel({ start: marker.time, duration: marker.duration })}${marker.time + marker.duration > sequenceDuration(sequence) ? "（超出序列时长）" : ""}</option>`).join("")}</select></label><p>范围标记只导出当前序列的这一段。可先在“标记与范围”中添加范围。</p><p data-export-range-hint hidden>仍需准备完整序列的素材与声音，长序列可能需要较长时间。</p></fieldset><fieldset><legend>导出序列</legend>${doc.sequences.map((item) => `<label><input type="checkbox" name="sequences" value="${esc(item.id)}" ${item.id === sequence.id ? "checked" : ""} ${sequenceDuration(item) ? "" : "disabled"}>${esc(item.name)}${sequenceDuration(item) ? "" : "（空序列）"}</label>`).join("")}</fieldset>
+      </fieldset><fieldset><legend>导出范围</legend><label>范围<select name="range"><option value="">完整所选序列</option>${ranges.map((marker) => `<option value="${esc(marker.id)}"${marker.time + marker.duration > sequenceDuration(sequence) ? " disabled" : ""}>${esc(marker.name)} · ${exportRangeLabel({ start: marker.time, duration: marker.duration })}${marker.time + marker.duration > sequenceDuration(sequence) ? "（超出序列时长）" : ""}</option>`).join("")}</select></label><p>范围标记只导出当前序列的这一段。可先在“标记与范围”中添加范围。</p><p data-export-range-hint hidden>仅准备范围内可能出现的画面；普通原速音频按范围混音，已有完整混音可复用。自动闪避、变速音高等情况仍准备完整混音。首次仍需暂存完整序列素材，参与混音的素材声音仍完整解码。</p></fieldset><fieldset><legend>导出序列</legend>${doc.sequences.map((item) => `<label><input type="checkbox" name="sequences" value="${esc(item.id)}" ${item.id === sequence.id ? "checked" : ""} ${sequenceDuration(item) ? "" : "disabled"}>${esc(item.name)}${sequenceDuration(item) ? "" : "（空序列）"}</label>`).join("")}</fieldset>
       <fieldset><legend>批量输出格式</legend><label><input type="checkbox" name="custom" checked>使用上方设置</label>${presets.map((item) => `<label><input type="checkbox" name="profiles" value="${esc(item.id)}">${esc(item.name)} · ${item.width} × ${item.height} · ${item.videoCodec.toUpperCase()}</label>`).join("")}</fieldset>
       </fieldset><p data-export-progress role="status">每个所选序列都会按所选格式分别导出。</p>`,
       async (form, signal) => {
@@ -1996,6 +2116,7 @@ export class EditorWorkspace {
   }
   async dispose(): Promise<void> {
     if (this.disposed) return;
+    this.clearGainAudition();
     this.disposed = true;
     this.cancelExportOpening();
     this.cancelFrameCapture();
@@ -2026,6 +2147,8 @@ export class EditorWorkspace {
     window.removeEventListener("blur", this.frameCaptureBlur);
     this.container.removeEventListener("pointerdown", this.frameCaptureDown, true);
     this.container.removeEventListener("pointerdown", this.loopPlaybackDown, true);
+    window.removeEventListener("blur", this.cancelGainOpening);
+    window.removeEventListener("keydown", this.gainAuditionKeydown, true);
     this.container.removeEventListener("pointerdown", this.activateComposition, true);
     for (const type of this.embeddedEvents)
       this.container.removeEventListener(type, this.stopLegacyEvent);

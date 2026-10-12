@@ -600,9 +600,10 @@ async function fixture(t, options = {}) {
     );
     let prepareAudio;
     if (options.audio)
-      prepareAudio = (doc, sequenceId, signal, onProgress) =>
+      prepareAudio = (doc, sequenceId, signal, onProgress, purpose) =>
         new Promise((resolve, reject) => {
           const request = {
+            doc: structuredClone(doc), purpose,
             documentId: doc.id,
             revision: doc.revision,
             sequenceId,
@@ -766,6 +767,7 @@ async function fixture(t, options = {}) {
         releaseWrite = undefined;
         release?.();
       },
+      auditionRequests: () => audioRequests.map(({ doc, purpose }) => ({ doc, purpose })),
       audio: () =>
         audioRequests.map(({ documentId, revision, sequenceId, signal, disposed }) => ({
           documentId,
@@ -8966,4 +8968,77 @@ test("export entry preserves the ordinary project-name native blur submission",a
   const page=await fixture(t),before=await documentState(page);await page.getByLabel("工程名称",{exact:true}).fill("导出前工程名称");
   await action(page,"export").click();await page.locator('dialog[open]').waitFor();
   const after=await documentState(page);assert.equal(after.name,"导出前工程名称");assert.equal(after.revision,before.revision+1);
+});
+
+
+test("track solo is temporary, supports multiple tracks and prepares a detached mix", async (t) => {
+  const page = await fixture(t, { audio: true });
+  const before = await documentState(page);
+  const solo = (id) => page.locator(`[data-et-track="${id}"][data-et-toggle="solo"]`);
+  await solo("audio").click();
+  assert.equal(await solo("audio").getAttribute("aria-pressed"), "true");
+  assert.deepEqual(await documentState(page), before);
+  await action(page, "play").click(); await page.waitForFunction(() => fixture.audio().length === 1);
+  const request = await page.evaluate(() => fixture.auditionRequests()[0]);
+  assert.equal(request.purpose, "audition");
+  assert.deepEqual(request.doc.sequences[0].tracks.map((track) => [track.id, track.muted]), [["video", true], ["audio", false], ["text", true]]);
+  await page.evaluate(() => fixture.resolveAudio(0)); await page.waitForFunction(() => fixture.playing());
+  await action(page, "play").click();
+  await solo("video").click(); assert.equal(await solo("video").getAttribute("aria-pressed"), "true");
+  await action(page, "clear-solo").click();
+  assert.equal(await solo("audio").getAttribute("aria-pressed"), "false");
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("live gain prepares one isolated unit stem, auditions drag immediately and saves only on release", async (t) => {
+  const page = await fixture(t, { audio: true });
+  await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["sound"]));
+  const before = await documentState(page);
+  await page.evaluate(() => {
+    const preview = fixture.internals.workspace.preview, set = preview.setAuditionGain.bind(preview);
+    globalThis.auditionGains = []; preview.setAuditionGain = (value) => { auditionGains.push(value); set(value); };
+  });
+  await action(page, "gain-audition").click();
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.evaluate(() => fixture.resolveAudio(0, true));
+  await page.waitForFunction(() => fixture.audio().length === 2);
+  const stem = await page.evaluate(() => fixture.auditionRequests()[1]);
+  assert.equal(stem.purpose, "audition");
+  assert.equal(stem.doc.sequences[0].clips.find((clip) => clip.id === "sound").audio.volume, 1);
+  assert.equal(stem.doc.sequences[0].clips.find((clip) => clip.id === "a").audio.volume, 0);
+  await page.evaluate(() => fixture.resolveAudio(1)); await page.waitForFunction(() => fixture.playing());
+  const handle = clip(page, "sound").locator("[data-et-gain]"), box = await handle.boundingBox(), x = box.x + box.width / 2, y = box.y + box.height / 2;
+  await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.move(x, y - 30, { steps: 3 });
+  assert.deepEqual(await documentState(page), before);
+  assert.ok((await page.evaluate(() => auditionGains)).some((value) => Math.abs(value - 0.3) < 1e-9));
+  assert.match(await page.locator(".et-notice").textContent(), /正在实时试听/);
+  await page.keyboard.press("Escape"); await page.mouse.up();
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.evaluate(() => auditionGains.at(-1)), 0);
+  await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["sound"]));
+  await action(page, "gain-audition").click(); await page.waitForFunction(() => fixture.audio().length === 3);
+  await page.evaluate(() => fixture.resolveAudio(2, true)); await page.waitForFunction(() => fixture.playing());
+  const next = await handle.boundingBox(); await page.mouse.move(next.x + next.width / 2, next.y + next.height / 2); await page.mouse.down();
+  await page.mouse.move(next.x + next.width / 2, next.y + next.height / 2 - 20); await page.mouse.up(); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].clips.find((clip) => clip.id === "sound").audio.volume, 1.2);
+  assert.equal((await documentState(page)).revision, before.revision + 1);
+  assert.equal(await page.evaluate(() => fixture.playing()), false);
+  await action(page, "undo").click(); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].clips.find((clip) => clip.id === "sound").audio.volume, 1);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("late live gain preparation is disposed after selection changes and cannot start playback", async (t) => {
+  const page = await fixture(t, { audio: true });
+  await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["sound"]));
+  await action(page, "gain-audition").click(); await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.evaluate(() => fixture.resolveAudio(0)); await page.waitForFunction(() => fixture.audio().length === 2);
+  await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["a"]));
+  assert.equal((await page.evaluate(() => fixture.audio()))[1].aborted, true);
+  await page.evaluate(() => fixture.resolveAudio(1, true)); await settle(page);
+  assert.equal((await page.evaluate(() => fixture.audio()))[1].disposed, 1);
+  assert.equal(await page.evaluate(() => fixture.playing()), false);
+  assert.equal(await action(page, "gain-audition").getAttribute("aria-pressed"), "false");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });

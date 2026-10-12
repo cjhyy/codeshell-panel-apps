@@ -337,3 +337,43 @@ test("gain handles never flatten a volume curve automatically baked by a fade tr
   assert.equal(typeof (trimmed.sequences[0]!.clips[0] as MediaClip).audio.volume, "object");
   assert.throws(() => planClipAudioGain(trimmed, "main", "a", .5), /自动化/);
 });
+
+
+test("audition snapshots keep saved tracks, nesting, silence and linear root gain independent", async () => {
+  const { trackAuditionDocument, clipGainAuditionDocument } = await import("../apps/video-studio/src/editor/audio-audition");
+  const parent = sequence(), child = sequence("child");
+  parent.clips.push(nested("nested", "child"), media("other", 500, "sound", "other"));
+  child.clips.push(media("inside", 500));
+  parent.clips[0]!.audio.volume = 0;
+  child.clips[0]!.audio.volume = { keyframes: [{ time: 0, value: 0.4, easing: "linear" }, { time: 500, value: 0.8, easing: "linear" }] };
+  parent.tracks[0]!.pan = 0.3; child.tracks[0]!.volume = 0.7;
+  const saved = document(parent, child), original = structuredClone(saved);
+  const solo = trackAuditionDocument(saved, "main", new Set(["video"]));
+  assert.equal(solo.sequences[0]!.tracks[1]!.muted, true);
+  assert.equal(solo.sequences[1]!.tracks[1]!.muted, false);
+  const unit = clipGainAuditionDocument(solo, "main", "nested");
+  assert.equal(unit.volume, 0);
+  const stemPlan = compileAudioPlan(unit.document, "main");
+  const adjusted = structuredClone(solo); adjusted.sequences[0]!.clips[0]!.audio.volume = 1.8;
+  const targetPlan = compileAudioPlan(adjusted, "main");
+  for (const sample of [0, 1, 13, 57, 99]) {
+    const stem = sampleAudioLane(stemPlan.lanes[0]!, sample), target = sampleAudioLane(targetPlan.lanes[0]!, sample);
+    assert.ok(Math.abs(stem.gain * 1.8 - target.gain) < 1e-12);
+    assert.equal(stem.pan, target.pan); assert.equal(stem.sourceSample, target.sourceSample);
+  }
+  assert.deepEqual(saved, original);
+  saved.sequences[0]!.tracks[0]!.muted = true;
+  assert.equal(trackAuditionDocument(saved, "main", new Set(["video"])).sequences[0]!.tracks[0]!.muted, true);
+  assert.throws(() => clipGainAuditionDocument(saved, "main", "nested"), /已静音/);
+});
+
+test("live gain refuses animated gains and nonlinear ducking rather than approximating their mix", async () => {
+  const { clipGainAuditionDocument } = await import("../apps/video-studio/src/editor/audio-audition");
+  const main = sequence(); main.clips.push(media("clip", 500), media("voice", 500, "sound", "other"));
+  const saved = document(main);
+  main.clips[0]!.audio.volume = { keyframes: [{ time: 0, value: 1, easing: "linear" }] };
+  assert.throws(() => clipGainAuditionDocument(saved, "main", "clip"), /固定音量/);
+  main.clips[0]!.audio.volume = 1;
+  main.clips[0]!.audio.ducking = { sidechainTrackIds: ["sound"], thresholdDb: -24, attenuationDb: 12, attack: 2400, release: 24000 };
+  assert.throws(() => clipGainAuditionDocument(saved, "main", "clip"), /自动闪避/);
+});

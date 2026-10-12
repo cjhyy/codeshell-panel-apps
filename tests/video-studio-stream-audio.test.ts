@@ -5,7 +5,7 @@ import {
   type PreviewPcmStream,
 } from "../apps/video-studio/src/editor/stream-audio";
 const turn = () => new Promise((resolve) => setTimeout(resolve, 0));
-function fixture(read?: PreviewPcmStream["read"], sampleCount = 48000 * 3600) {
+function fixture(read?: PreviewPcmStream["read"], sampleCount = 48000 * 3600, correction?: { pcm: PreviewPcmStream; destination: AudioNode }) {
   const nodes: any[] = [],
     reads: Array<{ start: number; count: number; signal: AbortSignal }> = [],
     errors: unknown[] = [];
@@ -24,7 +24,8 @@ function fixture(read?: PreviewPcmStream["read"], sampleCount = 48000 * 3600) {
         startAt: 0,
         stopped: false,
         connected: false,
-        connect() {
+        connect(destination: unknown) {
+          (node as any).destination = destination;
           node.connected = true;
         },
         disconnect() {
@@ -63,6 +64,7 @@ function fixture(read?: PreviewPcmStream["read"], sampleCount = 48000 * 3600) {
       123,
       own.signal,
       (error) => errors.push(error),
+      correction,
     );
   return { player, context, nodes, reads, errors, own };
 }
@@ -159,4 +161,25 @@ test("invalid or incomplete chunks stop audio and final partial chunks end on th
   } finally {
     f.player.stop();
   }
+});
+
+
+test("live gain schedules both PCM sources at one sample clock and cancels both on late reads", async () => {
+  let finish: ((value: [Float32Array, Float32Array]) => void) | undefined;
+  const destination = {} as AudioNode, reads: number[] = [];
+  const pcm: PreviewPcmStream = { sampleRate: 48000, numberOfChannels: 2, sampleCount: 48000 * 3600,
+    dispose() {}, read: async (start, count) => { reads.push(start); return new Promise((resolve) => { finish = resolve; }); } };
+  const f = fixture(undefined, pcm.sampleCount, { pcm, destination });
+  const pending = f.player.start();
+  while (!finish) await turn();
+  assert.equal(f.nodes.length, 0, "base must wait for the exact corresponding stem block");
+  finish([new Float32Array(96000).fill(0.2), new Float32Array(96000).fill(-0.3)]);
+  await pending; await turn();
+  assert.equal(f.nodes.length, 2); assert.equal(f.nodes[0].startAt, f.nodes[1].startAt);
+  assert.equal((f.nodes[1] as any).destination, destination);
+  assert.ok(Math.abs(f.nodes[1].buffer.arrays[1][1] + 0.3) < 1e-7);
+  assert.deepEqual(reads, [123, 96123]);
+  f.own.abort(); finish!([new Float32Array(96000), new Float32Array(96000)]); await turn();
+  assert.equal(f.nodes.length, 2); assert.ok(f.nodes.every((node) => node.stopped && !node.connected));
+  assert.deepEqual(f.errors, []);
 });
