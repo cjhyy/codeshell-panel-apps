@@ -841,6 +841,190 @@ const action = (page, value) => page.locator(`[data-ew-action="${value}"]`);
 const documentState = (page) => page.evaluate(() => fixture.read());
 const clip = (page, id = "a") => page.locator(`[data-et-clip="${id}"]`);
 
+test("video clip context menu offers ordinary original-audio detachment without an AI model", async (t) => {
+  const page = await fixture(t, { separation: true });
+  await page.evaluate(() => fixture.dispatch([{ type: "asset.update", assetId: "demo", patch: {
+    kind: "video", resourceId: "authorized-original-video",
+  } }], "载入含原声的视频"));
+  await clip(page).click({ button: "right" });
+  assert.equal(await page.getByRole("menuitem", { name: "分离原声", exact: true }).count(), 1);
+  assert.equal(await page.getByRole("button", { name: "人声与伴奏分离", exact: true }).count(), 1);
+});
+async function originalVideo(page) {
+  await page.evaluate(() => fixture.dispatch([{ type: "asset.update", assetId: "demo", patch: {
+    kind: "video", resourceId: "authorized-original-video",
+  } }], "载入含原声的视频"));
+  await settle(page);
+}
+async function detachOriginal(page) {
+  await clip(page).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "分离原声", exact: true }).click(); await settle(page);
+  return page.evaluate(() => fixture.read().sequences[0].clips.find((clip) => clip.id !== "a" && clip.kind === "media").id);
+}
+test("original audio detaches and unlinks with independent native gain and movement, each in one undo", async (t) => {
+  const page = await fixture(t); await originalVideo(page);
+  const before = await documentState(page), id = await detachOriginal(page), detached = await documentState(page);
+  assert.equal(detached.revision, before.revision + 1); assert.deepEqual(detached.assets, before.assets);
+  assert.equal(detached.sequences[0].clips.find((clip) => clip.id === "a").audio.volume, 0);
+  assert.equal(detached.sequences[0].clips.find((clip) => clip.id === id).assetId, "demo");
+  await clip(page, id).click({ button: "right" }); await page.getByRole("menuitem", { name: "解除链接", exact: true }).click(); await settle(page);
+  const unlinked = await documentState(page);
+  assert.equal(unlinked.revision, detached.revision + 1);
+  assert.ok(unlinked.sequences[0].clips.every((clip) => !clip.linkGroupId));
+  const gain = page.locator(`[data-et-clip="${id}"] [data-et-gain]`); await gain.focus(); await page.keyboard.press("ArrowDown"); await settle(page);
+  const gained = await documentState(page);
+  assert.equal(gained.sequences[0].clips.find((clip) => clip.id === id).audio.volume, 0.99);
+  assert.equal(gained.sequences[0].clips.find((clip) => clip.id === "a").audio.volume, 0);
+  await clip(page, id).focus(); await page.keyboard.press("Control+ArrowRight"); await settle(page);
+  const moved = await documentState(page);
+  assert.equal(moved.sequences[0].clips.find((clip) => clip.id === id).start, 8000);
+  assert.equal(moved.sequences[0].clips.find((clip) => clip.id === "a").start, 0);
+  for (const expected of [gained, unlinked, detached, before]) {
+    await action(page, "undo").click(); await settle(page);
+    assert.deepEqual((await documentState(page)).sequences, expected.sequences);
+  }
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+for (const change of ["revision", "generation", "selection"]) {
+  test(`original audio old context buttons cannot detach after ${change} changes`, async (t) => {
+    const page = await fixture(t); await originalVideo(page); await clip(page).click({ button: "right" });
+    const button = await page.getByRole("menuitem", { name: "分离原声", exact: true }).elementHandle();
+    await page.evaluate(async (change) => {
+      if (change === "revision") fixture.externalEdit();
+      else if (change === "generation") await fixture.replaceGeneration();
+      else fixture.internals.workspace.selectClips("main", []);
+    }, change); await settle(page);
+    const before = await documentState(page);
+    await button.evaluate((node) => node.click()); await settle(page);
+    assert.deepEqual(await documentState(page), before);
+  });
+}
+test("original audio durable failure can retry while a held submit cannot repeat", async (t) => {
+  const page = await fixture(t); await originalVideo(page); const before = await documentState(page);
+  await page.evaluate(() => fixture.writeMode("fail"));
+  await clip(page).click({ button: "right" }); await page.getByRole("menuitem", { name: "分离原声", exact: true }).click(); await settle(page);
+  assert.deepEqual((await documentState(page)).sequences, before.sequences);
+  assert.equal((await page.evaluate(() => fixture.errors)).length, 1);
+  await page.evaluate(() => { fixture.writeMode("hold"); fixture.errors.length = 0; });
+  await clip(page).click({ button: "right" }); await page.getByRole("menuitem", { name: "分离原声", exact: true }).click();
+  await page.evaluate(() => { fixture.internals.workspace.timeline.action("detach-audio"); fixture.internals.workspace.timeline.action("unlink-audio"); });
+  assert.equal((await documentState(page)).sequences[0].clips.length, 1);
+  await page.evaluate(() => fixture.releaseWrite()); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].clips.length, 2);
+  assert.equal((await documentState(page)).revision, before.revision + 1);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+for (const width of [280, 390]) {
+  test(`original audio context actions remain reachable at ${width}px and explain readonly sources`, async (t) => {
+    const page = await fixture(t, { width, layout: "embedded" }); await originalVideo(page);
+    await clip(page).click({ button: "right" });
+    const menu = page.getByRole("menu", { name: "时间轴片段操作" }), bounds = await menu.boundingBox();
+    assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width);
+    await page.getByRole("menuitem", { name: "分离原声", exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `/tmp/video-studio-detach-audio-${width}.png` });
+    await page.getByRole("menuitem", { name: "分离原声", exact: true }).click(); await settle(page);
+    await clip(page).click({ button: "right" });
+    const item = page.getByRole("menuitem", { name: "分离原声", exact: true });
+    assert.equal(await item.isDisabled(), true); assert.match(await item.getAttribute("title"), /静音|一个视频素材片段/);
+  });
+}
+test("original audio context detachment finishes a focused inspector draft before taking its fresh source", async (t) => {
+  const page = await fixture(t); await originalVideo(page); await clip(page).click();
+  const before = await documentState(page);
+  await page.getByLabel("不透明度（%）", { exact: true }).fill("60");
+  await clip(page).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "分离原声", exact: true }).click(); await settle(page);
+  const after = await documentState(page);
+  assert.equal(after.sequences[0].clips.length, 2);
+  assert.equal(after.sequences[0].clips.find((clip) => clip.id === "a").transform.opacity, 0.6);
+  assert.equal(after.revision, before.revision + 2);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+for (const change of ["selection", "revision", "clock", "generation", "hidden", "dispose"]) {
+  test(`original audio fresh source read cancels when the actual workspace changes ${change}`, async (t) => {
+    const page = await fixture(t); await originalVideo(page); await clip(page).click();
+    await page.evaluate((change) => {
+      const { workspace } = fixture.internals, context = workspace.timeline.context, read = context.read;
+      context.read = () => {
+        const doc = read(); context.read = read;
+        if (change === "selection") workspace.selectClips("main", []);
+        else if (change === "revision") fixture.externalEdit();
+        else if (change === "clock") workspace.seek(13, true);
+        else if (change === "generation") void fixture.replaceGeneration();
+        else if (change === "hidden") fixture.hide();
+        else workspace.dispose();
+        return doc;
+      };
+      void workspace.timeline.action("detach-audio");
+    }, change); await settle(page);
+    assert.equal((await documentState(page)).sequences[0].clips.length, 1);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+test("original audio held field finisher cannot detach into a later selection or replay after cancel", async (t) => {
+  const page = await fixture(t); await originalVideo(page); await clip(page).click();
+  await page.evaluate(() => {
+    const timeline = fixture.internals.workspace.timeline;
+    timeline.context.beforeGesture = () => new Promise((resolve) => globalThis.finishOriginalField = resolve);
+    void timeline.action("detach-audio");
+    fixture.internals.workspace.selectClips("main", []);
+    finishOriginalField(true);
+  }); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].clips.length, 1);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+test("original audio detachment refuses invalid inspector drafts and linked locked members", async (t) => {
+  const page = await fixture(t); await originalVideo(page); await clip(page).click();
+  const before = await documentState(page);
+  await page.getByLabel("不透明度（%）", { exact: true }).fill("101");
+  await page.evaluate(() => fixture.internals.workspace.timeline.action("detach-audio")); await settle(page);
+  assert.deepEqual((await documentState(page)).sequences, before.sequences);
+  assert.equal(await page.getByLabel("不透明度（%）", { exact: true }).inputValue(), "101");
+  assert.equal(await page.getByLabel("不透明度（%）", { exact: true }).evaluate((node) => document.activeElement === node), true);
+  await page.getByLabel("不透明度（%）", { exact: true }).fill("100");
+  const id = await detachOriginal(page);
+  await page.evaluate(() => fixture.dispatch([{ type: "track.update", sequenceId: "main", trackId: "video", patch: { locked: true } }], "锁定音画链接的画面"));
+  const locked = await documentState(page);
+  await clip(page, id).click({ button: "right" });
+  const unlink = page.getByRole("menuitem", { name: "解除链接", exact: true });
+  assert.equal(await unlink.isDisabled(), true); assert.match(await unlink.getAttribute("title"), /锁定/);
+  await page.evaluate(() => fixture.internals.workspace.timeline.action("unlink-audio")); await settle(page);
+  assert.deepEqual((await documentState(page)).sequences, locked.sequences);
+});
+for (const change of ["revision", "clock"]) {
+  test(`original audio final planning ${change} getter cannot consume a stale prepared source`, async (t) => {
+    const page = await fixture(t); await originalVideo(page); await clip(page).click();
+    await page.evaluate((change) => {
+      const { workspace } = fixture.internals, timeline = workspace.timeline, scopeCurrent = timeline.fieldScopeCurrent;
+      timeline.fieldScopeCurrent = function (field, exact) {
+        if (this.audioEdit?.prepared && !this.audioEdit.applying) {
+          timeline.fieldScopeCurrent = scopeCurrent;
+          const key = change === "revision" ? "identity" : "time", read = this.context[key];
+          this.context[key] = () => {
+            const value = read(); this.context[key] = read;
+            if (change === "revision") fixture.externalEdit(); else workspace.seek(13, true);
+            return value;
+          };
+        }
+        return scopeCurrent.call(this, field, exact);
+      };
+      void timeline.action("detach-audio");
+    }, change); await settle(page);
+    assert.equal((await documentState(page)).sequences[0].clips.length, 1);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+test("original audio menu validation read does not dereference or consume an owner revoked by a synchronous edit", async (t) => {
+  const page = await fixture(t); await originalVideo(page); await clip(page).click({ button: "right" });
+  await page.evaluate(() => {
+    const context = fixture.internals.workspace.timeline.context, read = context.read;
+    context.read = () => { const doc = read(); context.read = read; fixture.externalEdit(); return doc; };
+    document.querySelector('[data-timeline-menu-action="detach-audio"]').click();
+  }); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].clips.length, 1);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
 async function countSelectionBatchReads(page) {
   await page.evaluate(() => {
     const { session, workspace } = fixture.internals,
@@ -8109,4 +8293,184 @@ test("single clip names finish native Chinese IME before the first clipboard act
   await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["a", "sound"])); await settle(page);
   assert.equal(await page.getByLabel("片段名称", { exact: true }).count(), 0);
   assert.deepEqual(await documentState(page), after); assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+
+for (const operation of ["copy", "remove", "detach-audio"]) {
+  test(`native clip menu blocks ${operation} while retaining an invalid inspector draft`, async (t) => {
+    const page = await fixture(t); await originalVideo(page); await clip(page).click();
+    const before = await documentState(page), input = page.getByLabel("不透明度（%）", { exact: true });
+    await input.fill("101");
+    await clip(page).click({ button: "right" }); await settle(page);
+    assert.equal(await page.getByRole("menu", { name: "时间轴片段操作" }).count(), 0);
+    // A late/duplicate contextmenu from this physical press cannot bypass the failed finisher.
+    await clip(page).dispatchEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
+    assert.equal(await page.getByRole("menu", { name: "时间轴片段操作" }).count(), 0);
+    assert.equal(await input.inputValue(), "101");
+    assert.equal(await input.evaluate((node) => node === document.activeElement), true);
+    assert.deepEqual(await documentState(page), before);
+    assert.equal((await page.evaluate(() => fixture.errors)).length, 1);
+    await input.fill("60");
+    await clip(page).click({ button: "right" });
+    await page.locator(`[data-timeline-menu-action="${operation}"]`).click(); await settle(page);
+    const after = await documentState(page);
+    assert.equal(after.revision, before.revision + (operation === "copy" ? 1 : 2));
+    if (operation !== "remove") assert.equal(after.sequences[0].clips.find((clip) => clip.id === "a").transform.opacity, 0.6);
+    assert.equal(after.sequences[0].clips.length, operation === "remove" ? 0 : operation === "detach-audio" ? 2 : 1);
+  });
+}
+
+test("native clip menu finishes a track Chinese IME once before detaching audio", async (t) => {
+  const page = await fixture(t); await originalVideo(page); await clip(page).click();
+  const before = await documentState(page), input = page.getByLabel("轨道名称 画面轨", { exact: true }),
+    cdp = await page.context().newCDPSession(page);
+  await input.focus(); await input.evaluate((node) => { node.select(); globalThis.menuImeEnds = []; globalThis.menuImeStarts = []; node.addEventListener("compositionstart", (event) => menuImeStarts.push(event.isTrusted)); node.addEventListener("compositionend", (event) => menuImeEnds.push(event.data)); });
+  await cdp.send("Input.imeSetComposition", { text: "中文原声", selectionStart: 4, selectionEnd: 4 });
+  await clip(page).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "分离原声", exact: true }).click(); await settle(page);
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 2);
+  assert.equal(after.sequences[0].tracks.find((track) => track.id === "video").name, "中文原声");
+  assert.deepEqual(await page.evaluate(() => menuImeStarts), [true]);
+  assert.deepEqual(await page.evaluate(() => menuImeEnds), ["中文原声"]);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []); await cdp.detach();
+});
+
+test("native clip menu finishes actual inspector text IME before copying its current wording", async (t) => {
+  const page = await fixture(t); await page.getByRole("button", { name: "添加文字", exact: true }).click(); await settle(page);
+  const before = await documentState(page), id = before.sequences[0].clips.find((clip) => clip.kind === "text").id,
+    input = page.getByLabel("文字内容（保留换行）", { exact: true }), cdp = await page.context().newCDPSession(page);
+  await input.focus(); await input.evaluate((node) => { node.select(); globalThis.menuTextImeEnds = []; node.addEventListener("compositionend", (event) => menuTextImeEnds.push(event.data)); });
+  await cdp.send("Input.imeSetComposition", { text: "保留中文草稿", selectionStart: 6, selectionEnd: 6 });
+  await clip(page, id).click({ button: "right" });
+  await page.locator('[data-timeline-menu-action="copy"]').click(); await settle(page);
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 1);
+  assert.equal(after.sequences[0].clips.find((clip) => clip.id === id).text, "保留中文草稿");
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.timeline.clipboard.payload.document.sequences[0].clips[0].text), "保留中文草稿");
+  assert.deepEqual(await page.evaluate(() => menuTextImeEnds), ["保留中文草稿"]);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []); await cdp.detach();
+});
+
+for (const change of ["Escape", "blur", "generation", "sequence", "selection", "clock", "dispose"]) {
+  test(`an awaited native clip menu cannot reopen after ${change} cancels its original press`, async (t) => {
+    const page = await fixture(t, { sequenceCount: 2 }); await originalVideo(page); await clip(page).click();
+    await holdCanvasField(page); await page.getByLabel("不透明度（%）", { exact: true }).fill("60");
+    await clip(page).click({ button: "right" }); await settle(page);
+    assert.equal(await page.getByRole("menu", { name: "时间轴片段操作" }).count(), 0);
+    const oldClip = await clip(page).elementHandle();
+    await page.evaluate(async (change) => {
+      const { workspace } = fixture.internals;
+      if (change === "blur") window.dispatchEvent(new Event("blur"));
+      else if (change === "generation") await fixture.replaceGeneration();
+      else if (change === "sequence") fixture.dispatch([{ type: "sequence.activate", sequenceId: "sequence-2" }], "切换序列");
+      else if (change === "selection") workspace.selectClips("main", []);
+      else if (change === "clock") void workspace.seek(13, true);
+      else if (change === "dispose") workspace.dispose();
+    }, change);
+    if (change === "Escape") await page.keyboard.press("Escape");
+    await releaseCanvasField(page); await oldClip.evaluate((node) => node.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 }))); await settle(page);
+    assert.equal(await page.getByRole("menu", { name: "时间轴片段操作" }).count(), 0);
+    assert.equal((await documentState(page)).sequences[0].clips.length, 1);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+test("an awaited native clip menu retains the first target through release and opens only once", async (t) => {
+  const page = await fixture(t); await originalVideo(page); await clip(page).click();
+  await holdCanvasField(page); await page.getByLabel("不透明度（%）", { exact: true }).fill("60");
+  await clip(page).click({ button: "right" });
+  await clip(page).click({ button: "right" });
+  await releaseCanvasField(page);
+  assert.equal(await page.getByRole("menu", { name: "时间轴片段操作" }).count(), 1);
+  await page.getByRole("menuitem", { name: "分离原声", exact: true }).click(); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].clips.length, 2);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const phase of ["completion", "menu-read"]) {
+  test(`native clip menu ${phase} fences a synchronous fresh-read revision change`, async (t) => {
+    const page = await fixture(t); await originalVideo(page); await clip(page).click();
+    await page.evaluate((phase) => {
+      const timeline = fixture.internals.workspace.timeline, context = timeline.context,
+        method = phase === "completion" ? "finishControl" : "openMenu", original = timeline[method];
+      timeline[method] = function (...args) {
+        const pending = phase === "completion" ? args[0] : args[3];
+        if (pending && (phase !== "completion" || pending.ready && pending.up)) {
+          timeline[method] = original; const read = context.read;
+          context.read = () => { const value = read(); context.read = read; fixture.externalEdit(); return value; };
+        }
+        return original.apply(this, args);
+      };
+    }, phase);
+    await clip(page).click({ button: "right" }); await settle(page);
+    assert.equal(await page.getByRole("menu", { name: "时间轴片段操作" }).count(), 0);
+    assert.equal((await documentState(page)).sequences[0].clips.length, 1);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+test("an outer native menu read cannot replace a new synchronous menu owner", async (t) => {
+  const page = await fixture(t); await originalVideo(page); await clip(page).click();
+  await page.evaluate(() => {
+    const timeline = fixture.internals.workspace.timeline, context = timeline.context, open = timeline.openMenu;
+    timeline.openMenu = function (...args) {
+      if (args[3]) {
+        timeline.openMenu = open; const read = context.read;
+        context.read = () => {
+          const value = read(); context.read = read; timeline.cancelControl();
+          timeline.controlGesture(new PointerEvent("pointerdown", { pointerId: 1, isPrimary: true, button: 2 }),
+            { kind: "menu", clipId: "a", x: 130, y: 200 });
+          globalThis.newMenuOwner = timeline.menu; return value;
+        };
+      }
+      return open.apply(this, args);
+    };
+  });
+  await clip(page).click({ button: "right" }); await settle(page);
+  assert.equal(await page.getByRole("menu", { name: "时间轴片段操作" }).count(), 1);
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.timeline.menu === newMenuOwner), true);
+  await page.getByRole("menuitem", { name: "分离原声", exact: true }).click(); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].clips.length, 2);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+
+test("original audio cannot edit while native middle pan owns the view", async (t) => {
+  const page = await fixture(t, { duration: 3600 * 240000 });
+  await originalVideo(page); await clip(page).click();
+  const before = await documentState(page), bounds = await page.locator(".et-scroll").boundingBox(),
+    x = bounds.x + 300, y = bounds.y + 80;
+  const left = await page.locator(".et-scroll").evaluate((node) => node.scrollLeft);
+  await page.mouse.move(x, y); await page.mouse.down({ button: "middle" });
+  await page.mouse.move(x - 120, y); await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), left + 120);
+  await page.evaluate(() => { void fixture.internals.workspace.timeline.action("detach-audio"); });
+  await settle(page);
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.audioEdit), false);
+  await page.mouse.up({ button: "middle" });
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("native middle pan cannot scroll during held original audio persistence", async (t) => {
+  const page = await fixture(t, { duration: 3600 * 240000 });
+  await originalVideo(page); await clip(page).click();
+  const before = await documentState(page), bounds = await page.locator(".et-scroll").boundingBox(),
+    x = bounds.x + 300, y = bounds.y + 80;
+  await page.evaluate(() => fixture.writeMode("hold"));
+  await clip(page).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "分离原声", exact: true }).click();
+  await page.waitForFunction(() => fixture.internals.workspace.timeline.audioEdit?.applying);
+  const left = await page.locator(".et-scroll").evaluate((node) => node.scrollLeft);
+  await page.mouse.move(x, y); await page.mouse.down({ button: "middle" });
+  await page.mouse.move(x - 120, y); await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), left);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.viewPan), false);
+  await page.mouse.up({ button: "middle" });
+  assert.equal((await documentState(page)).sequences[0].clips.length, 1);
+  await page.evaluate(() => fixture.releaseWrite()); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].clips.length, 2);
+  assert.equal((await documentState(page)).revision, before.revision + 1);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });

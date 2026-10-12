@@ -1,6 +1,7 @@
 import { randomId } from "../ids.js";
 import { planClipAudioFade, type AudioFadeSide } from "./audio-fade-edits";
 import { planClipAudioGain } from "./audio-gain-edits";
+import { originalAudioReason, planDetachOriginalAudio, planUnlinkAudio } from "./original-audio";
 import {
   EditorTimelineMedia,
   TIMELINE_MEDIA_LIMITS,
@@ -176,6 +177,7 @@ const CONTROL_ACTIONS = [
   "track-text",
 ] as const;
 type ControlIntent =
+  | { kind: "menu"; clipId: string; x: number; y: number }
   | { kind: "action"; action: (typeof CONTROL_ACTIONS)[number] }
   | { kind: "mode"; mode: "free" | "magnetic" }
   | {
@@ -282,7 +284,9 @@ export class EditorTimeline {
   private pendingTrackGesture?: PendingTrackGesture;
   private canvasFieldFinish?: object;
   private pendingControl?: PendingControl;
+  private audioEdit?: { field: NonNullable<PendingTrackGesture["field"]>; applying: boolean; prepared: boolean };
   private suppressedControlClick?: number;
+  private suppressContextMenu = false;
   private readonly gainOwners = new WeakMap<HTMLElement, Omit<FadeOwner, "side">>();
   private currentGainControls = new WeakSet<HTMLElement>();
   private readonly fadeOwners = new WeakMap<HTMLElement, FadeOwner>();
@@ -506,6 +510,7 @@ export class EditorTimeline {
   }
   render(options: { preserveToolbar?: boolean; scrollLeft?: number } = {}): void {
     this.cancelMarkerNavigation();
+    const renderedAudioEdit = this.audioEdit;
     // A synchronous view update revokes a shortcut even if a getter returns its older value.
     if (this.trimShortcutPending) this.trimShortcutPending.cancelled = true;
     if (this.destroyed || this.replacingControls) return;
@@ -526,6 +531,10 @@ export class EditorTimeline {
       identity = before ? { ...before } : undefined,
       sequenceId = identity ? this.context.selection().sequenceId : undefined;
     const { document: project, sequence, selected } = this.current();
+    if (this.audioEdit !== renderedAudioEdit) return;
+    const audioEdit = renderedAudioEdit;
+    if (audioEdit && !audioEdit.applying && !this.fieldScopeCurrent(audioEdit.field, audioEdit.prepared) && this.audioEdit === audioEdit)
+      this.cancelAudioEdit();
     const candidate =
       identity && sequenceId === sequence.id ? { document: project, sequence, identity } : undefined;
     const mediaScope = candidate && this.mediaScopeCurrent(candidate) ? candidate : undefined;
@@ -923,7 +932,7 @@ export class EditorTimeline {
     const x = ticksToSeconds(time) * this.scale;
     if (
       this.playbackActive && this.followPlayback && !this.followSuspended &&
-      !this.drag && !this.viewPan && !this.menu && !this.confirmTrack && !this.pendingControl &&
+      !this.drag && !this.viewPan && !this.audioEdit && !this.menu && !this.confirmTrack && !this.pendingControl &&
       !this.pendingTrackGesture && !this.canvasFieldFinish && !this.trackControlPending &&
       !this.fadePending && !this.clipboardPending && !editableTarget(globalThis.document.activeElement)
     ) {
@@ -972,7 +981,7 @@ export class EditorTimeline {
         : "开启播放跟随；只影响时间轴视图";
   }
   private trackHeightBlocked(): boolean {
-    return !!(this.destroyed || this.drag || this.viewPan || this.pendingControl || this.pendingTrackGesture ||
+    return !!(this.destroyed || this.drag || this.viewPan || this.audioEdit || this.pendingControl || this.pendingTrackGesture ||
       this.trackControlPending || this.canvasFieldFinish || this.fadePending || this.clipboardPending);
   }
   private updateTrackHeightControl(): void {
@@ -1352,7 +1361,75 @@ export class EditorTimeline {
       "切换时间线排列",
     );
   }
+  private cancelAudioEdit(): void {
+    const pending = this.audioEdit;
+    this.audioEdit = undefined;
+    pending?.field.controller.abort();
+    this.updateTrackHeightControl();
+  }
+  private async editOriginalAudio(action: "detach-audio" | "unlink-audio", expected?: NonNullable<EditorTimeline["menu"]>): Promise<void> {
+    if (this.destroyed || this.audioEdit || this.viewPan || this.drag || this.pendingControl || this.pendingTrackGesture ||
+      this.clipboardPending || this.trackControlPending || this.canvasFieldFinish || this.fadePending) return;
+    const identity = this.context.identity?.(), selection = this.context.selection(), time = this.context.time(),
+      ids = [...selection.clipIds], signature = JSON.stringify(selection),
+      document = identity ? undefined : this.current().document;
+    if (expected && (expected.documentId !== (identity?.documentId ?? document!.id) ||
+      expected.revision !== (identity?.revision ?? document!.revision) || expected.generation !== identity?.generation ||
+      expected.sequenceId !== selection.sequenceId || expected.selected.length !== ids.length ||
+      !expected.selected.every((id) => ids.includes(id)))) return;
+    const pending = { applying: false, prepared: false, field: { controller: new AbortController(), identity: {
+      documentId: identity?.documentId ?? document!.id, revision: identity?.revision ?? document!.revision,
+      generation: identity?.generation }, selection: signature, time, viewport: this.gestureViewport() } };
+    this.audioEdit = pending;
+    this.updateTrackHeightControl();
+    const current = () => {
+      const valid = this.fieldScopeCurrent(pending.field, pending.prepared), available = this.context.canTrimAtPlayhead?.(time) ?? true;
+      return valid && available && this.audioEdit === pending && !pending.field.controller.signal.aborted;
+    };
+    try {
+      if (!current()) return;
+      const signal = pending.field.controller.signal,
+        ready = this.finishFocusedField(signal) ?? this.context.beforeGesture?.(signal) ?? true,
+        accepted = ready instanceof Promise ? await ready : ready;
+      if (!accepted || !current()) return;
+      const before = this.context.identity?.(), scope = before ? { ...before } : undefined,
+        fresh = this.current();
+      if (!current() || fresh.sequence.id !== selection.sequenceId ||
+        (scope && (fresh.document.id !== scope.documentId || fresh.document.revision !== scope.revision))) return;
+      pending.field.identity.revision = fresh.document.revision;
+      pending.prepared = true;
+      const plan = action === "detach-audio"
+        ? planDetachOriginalAudio(fresh.document, fresh.sequence.id, ids.length === 1 ? ids[0]! : "", () => uid("audio"))
+        : { operations: planUnlinkAudio(fresh.document, fresh.sequence.id, ids), audioClipId: undefined },
+        after = this.context.identity?.();
+      if (!current() || (scope && !sameIdentity(scope, after))) return;
+      pending.applying = true;
+      await (this.context.applyClipboard ?? this.context.apply)(plan.operations,
+        action === "detach-audio" ? "分离原声" : "解除音画链接");
+      pending.field.identity.revision = fresh.document.revision + 1;
+      pending.applying = false;
+      const latest = this.context.identity?.(), selected = this.context.selection(), clock = this.context.time(),
+        available = this.context.canTrimAtPlayhead?.(time) ?? true;
+      if (!current() || !available || clock !== time ||
+        JSON.stringify(selected) !== signature || (scope && (latest?.documentId !== scope.documentId ||
+          latest.generation !== scope.generation || latest.revision !== scope.revision + 1))) return;
+      this.select([plan.audioClipId ?? expected?.clipId ?? ids[0]!]);
+      this.notice.textContent = action === "detach-audio"
+        ? "原声已分离，默认音画联动；右键解除链接可单独移动声音。原轨若静音，新音轨也静音。"
+        : "音画链接已解除；普通分组和字幕来源绑定保持不变。";
+    } catch (error) {
+      pending.applying = false;
+      if (current()) this.context.onError(error);
+    } finally {
+      if (this.audioEdit === pending) { this.cancelAudioEdit(); if (!this.destroyed) this.render(); }
+    }
+  }
   async action(action: string, at = this.context.time()): Promise<void> {
+    if (this.audioEdit) return;
+    if (action === "detach-audio" || action === "unlink-audio") {
+      await this.editOriginalAudio(action);
+      return;
+    }
     if (action === "zoom-in" || action === "zoom-out") {
       this.zoom(this.scale * (action === "zoom-in" ? 1.5 : 1 / 1.5));
       return;
@@ -1607,6 +1684,11 @@ export class EditorTimeline {
   }
   private keydown = (event: KeyboardEvent) => {
     if (event.isComposing || editableTarget(event.target)) return;
+    if (this.audioEdit) {
+      event.preventDefault(); event.stopPropagation();
+      if (event.key === "Escape" && !this.audioEdit.applying) this.cancelAudioEdit();
+      return;
+    }
     if (event.repeat && ["Enter", " "].includes(event.key) &&
       event.target instanceof Element && event.target.closest("[data-et-track-height]")) {
       event.preventDefault();
@@ -1879,21 +1961,28 @@ export class EditorTimeline {
     event.stopPropagation();
     // Some platforms emit a native context menu for Control-click; here that gesture selects additively.
     if (event.ctrlKey) return;
+    if (this.suppressContextMenu) return;
     this.openMenu(target.dataset.etClip!, event.clientX, event.clientY);
   };
-  private openMenu(clipId: string, x: number, y: number): void {
+  private openMenu(clipId: string, x: number, y: number, press?: PendingControl): void {
+    if (this.audioEdit || this.clipboardPending || (this.pendingControl && this.pendingControl !== press) || this.pendingTrackGesture || this.fadePending) return;
+    const pressCurrent = () => !press || (this.fieldScopeCurrent(press.field, true) &&
+      (this.context.canTrimAtPlayhead?.(press.field.time) ?? true) && this.pendingControl === press);
     this.closeMenu();
-    this.cancel();
+    if (!press) this.cancel();
     const current = this.current();
+    if (!pressCurrent()) return;
     const clip = current.sequence.clips.find((clip) => clip.id === clipId);
     if (!clip) return;
-    this.select(
-      current.selected.has(clipId) ? current.selected : this.expanded(current.sequence, [clipId]),
-    );
+    const wanted = current.selected.has(clipId) ? current.selected : this.expanded(current.sequence, [clipId]);
+    if (press) press.field.selection = JSON.stringify({ sequenceId: current.sequence.id, clipIds: [...wanted] });
+    this.select(wanted);
     const { document, sequence, selected } = this.current();
+    if (!pressCurrent() || !sequence.clips.some((item) => item.id === clipId)) return;
     this.clearStaleClipboard(document);
-    const time = this.context.time(),
-      chosen = sequence.clips.filter((clip) => selected.has(clip.id)),
+    const time = this.context.time();
+    if (!pressCurrent()) return;
+    const chosen = sequence.clips.filter((clip) => selected.has(clip.id)),
       inside = chosen.every((clip) => time > clip.start && time < clip.start + clip.duration),
       pending = this.clipboardPending ? "正在保存剪贴板操作，请稍候" : "";
     const locked = sequence.clips.some(
@@ -1909,20 +1998,27 @@ export class EditorTimeline {
     const item = (action: string, label: string, shortcut = "", reason = "", danger = false) =>
       `<button type="button" role="menuitem" data-timeline-menu-action="${action}"${danger ? ' class="danger"' : ""}${reason ? ` disabled title="${esc(reason)}"` : ""}><span>${label}</span>${shortcut ? `<kbd aria-hidden="true">${shortcut}</kbd>` : ""}</button>`,
       lockReason = locked ? "所选片段的轨道已锁定，请先解锁" : "",
-      timeReason = inside ? "" : "请把播放头移到每个所选片段内部";
+      timeReason = inside ? "" : "请把播放头移到每个所选片段内部",
+      detachReason = originalAudioReason(document, sequence, [...selected]),
+      links = new Set(chosen.flatMap((item) => item.linkGroupId ? [item.linkGroupId] : [])),
+      unlinkLocked = sequence.clips.some((item) => item.linkGroupId && links.has(item.linkGroupId) &&
+        sequence.tracks.find((track) => track.id === item.trackId)?.locked);
     element.innerHTML = `<div class="timeline-context-menu-title">${esc(clipLabel(clip))}${selected.size > 1 ? ` · ${selected.size} 个片段` : ""}</div>
       ${item("copy", "复制", "⌘/Ctrl C", pending)}${item("cut", "剪切", "⌘/Ctrl X", pending || lockReason)}${item("paste", "粘贴到播放头", "⌘/Ctrl V", pending || (!this.clipboard ? "请先复制片段" : ""))}${item("duplicate", "原位复制", "⌘/Ctrl D", pending)}
       <div role="separator"></div>${item("split", "在播放头切分", "S", lockReason || timeReason)}${item("keep-left", "保留播放头左侧", "W", lockReason || timeReason)}${item("keep-right", "保留播放头右侧", "Q", lockReason || timeReason)}
+      <div role="separator"></div>${item("detach-audio", "分离原声", "", pending || detachReason)}${item("unlink-audio", "解除链接", "", pending || (unlinkLocked ? "链接中有锁定轨道的片段，请先解锁" : !links.size ? "所选片段没有音画链接" : ""))}
       <div role="separator"></div>${item("group", "分组", "⌘/Ctrl G", lockReason || (selected.size < 2 ? "至少选择两个片段" : ""))}${item("ungroup", "解组", "⇧ ⌘/Ctrl G", lockReason || (!chosen.some((clip) => clip.groupId) ? "所选片段没有分组" : ""))}
       <div role="separator"></div>${item("remove", `从时间轴删除${selected.size > 1 ? ` ${selected.size} 个片段` : ""}`, "⌫", lockReason, true)}${item("cancel", "取消")}
-      <p id="timeline-context-menu-note">播放头：${ticksToSeconds(time).toFixed(6)} 秒（打开菜单时）。${lockReason || timeReason || ""} 编辑可撤销；磁吸主画面轨的裁剪会联动后续片段。</p>`;
+      <p id="timeline-context-menu-note">播放头：${ticksToSeconds(time).toFixed(6)} 秒（打开菜单时）。${lockReason || timeReason || ""} 编辑可撤销；分离原声复用原素材并默认音画联动，未含声音的素材会得到静音。解除链接保留普通分组和字幕来源绑定。</p>`;
+    const generation = this.context.identity?.().generation;
+    if (!pressCurrent()) return;
     const lifetime = new AbortController();
     this.menu = {
       element,
       lifetime,
       documentId: document.id,
       revision: document.revision,
-      generation: this.context.identity?.().generation,
+      generation,
       sequenceId: sequence.id,
       clipId,
       selected: [...selected],
@@ -1935,10 +2031,15 @@ export class EditorTimeline {
       );
       if (!button || button.disabled) return;
       if (button.dataset.timelineMenuAction === "cancel") return this.closeMenu(true);
-      const current = this.menuCurrent();
-      const action = button.dataset.timelineMenuAction!, at = this.menu.time;
+      const menu = this.menu, current = this.menuCurrent();
+      if (this.menu !== menu) return;
+      const action = button.dataset.timelineMenuAction!, at = menu.time;
       this.closeMenu(current);
       if (!current) return this.context.onError(new Error("工程或选择已变化，请重新打开片段菜单"));
+      if (action === "detach-audio" || action === "unlink-audio") {
+        this.run(() => this.editOriginalAudio(action, menu));
+        return;
+      }
       this.run(() => this.action(action === "remove" ? "delete" : action, at));
     });
     element.addEventListener("contextmenu", (event) => event.preventDefault());
@@ -1946,6 +2047,7 @@ export class EditorTimeline {
     const rect = element.getBoundingClientRect();
     element.style.left = `${Math.max(8, Math.min(x, innerWidth - rect.width - 8))}px`;
     element.style.top = `${Math.max(8, Math.min(y, innerHeight - rect.height - 8))}px`;
+    if (press && this.pendingControl === press) this.cancelControl();
     element
       .querySelector<HTMLButtonElement>("button:not(:disabled)")
       ?.focus({ preventScroll: true });
@@ -2129,7 +2231,7 @@ export class EditorTimeline {
         event.target instanceof Element && event.target.closest(".et-scroll") && !editableTarget(event.target)) {
       // A view-only gesture keeps the original input focused, including invalid/IME drafts.
       event.preventDefault();
-      if (this.destroyed || this.viewPan || this.drag || this.pendingControl || this.pendingTrackGesture ||
+      if (this.destroyed || this.viewPan || this.audioEdit || this.drag || this.pendingControl || this.pendingTrackGesture ||
           this.trackControlPending || this.canvasFieldFinish || this.fadePending || this.clipboardPending ||
           this.menu || globalThis.document.querySelector("dialog[open]")) return;
       this.run(() => {
@@ -2149,7 +2251,14 @@ export class EditorTimeline {
       return;
     }
     if (this.viewPan) { event.preventDefault(); return; }
-    if (event.isPrimary) this.suppressedControlClick = undefined;
+    if (event.isPrimary) { this.suppressedControlClick = undefined; this.suppressContextMenu = false; }
+    const menuTarget = event.button === 2 && event.target instanceof Element && !editableTarget(event.target)
+      ? event.target.closest<HTMLElement>("[data-et-clip]") : undefined;
+    if (menuTarget) {
+      // Cancel native mousedown before it blurs (and can discard) a managed draft.
+      this.suppressContextMenu = true;
+      event.preventDefault();
+    }
     if (this.pendingControl && event.isPrimary && event.button === 0)
       this.suppressedControlClick = event.pointerId;
     if (
@@ -2163,6 +2272,7 @@ export class EditorTimeline {
       return;
     }
     if (
+      this.audioEdit ||
       this.pendingControl ||
       this.pendingTrackGesture ||
       this.trackControlPending ||
@@ -2185,6 +2295,10 @@ export class EditorTimeline {
         this.run(() => this.controlGesture(event, intent));
         return;
       }
+    }
+    if (menuTarget && !event.ctrlKey && !this.drag) {
+      this.run(() => this.controlGesture(event, { kind: "menu", clipId: menuTarget.dataset.etClip!, x: event.clientX, y: event.clientY }));
+      return;
     }
     if (event.button !== 0 || this.drag || editableTarget(event.target)) return;
     const target = event.target instanceof HTMLElement ? event.target : undefined;
@@ -2333,7 +2447,7 @@ export class EditorTimeline {
     let ready: boolean | Promise<boolean>;
     try {
       const signal = pending.field.controller.signal;
-      ready = (intent.kind === "action" && intent.action === "fit-selection"
+      ready = (intent.kind === "menu" || (intent.kind === "action" && intent.action === "fit-selection")
         ? this.finishFocusedField(signal) : undefined) ?? this.context.beforeGesture?.(signal) ?? true;
     } catch (error) {
       event.preventDefault();
@@ -2347,6 +2461,11 @@ export class EditorTimeline {
       if (this.pendingControl === pending) this.cancelControl();
       else pending.field.controller.abort();
       if (ready instanceof Promise) void ready.catch(() => {});
+      return;
+    }
+    if (ready === true && intent.kind === "menu") {
+      pending.up = pending.ready = true;
+      void this.finishControl(pending);
       return;
     }
     if (ready === true) {
@@ -2397,29 +2516,34 @@ export class EditorTimeline {
       return;
     }
     try {
-      const before = this.context.identity?.(),
+      const intent = pending.intent, before = this.context.identity?.(),
         identity = before ? { ...before } : undefined,
         { document, sequence } = this.current(),
-        button = this.matchingControl(pending.intent),
+        button = intent.kind === "menu" ? undefined : this.matchingControl(intent),
         after = this.context.identity?.(),
         current = after ? undefined : this.current().document;
       if (
         this.pendingControl !== pending ||
         !this.fieldScopeCurrent(pending.field) ||
-        !button ||
+        (intent.kind === "menu" ? !sequence.clips.some((clip) => clip.id === intent.clipId) : !button) ||
         document.id !== pending.field.identity.documentId ||
         document.revision !== (identity?.revision ?? document.revision) ||
         document.id !== (after?.documentId ?? current!.id) ||
         document.revision !== (after?.revision ?? current!.revision) ||
         identity?.generation !== after?.generation ||
-        sequence.id !== JSON.parse(pending.field.selection).sequenceId
+        sequence.id !== JSON.parse(pending.field.selection).sequenceId ||
+        (pending.intent.kind === "menu" && !(this.context.canTrimAtPlayhead?.(pending.field.time) ?? true)) ||
+        this.pendingControl !== pending
       )
         return;
       pending.applying = true;
-      if (pending.intent.kind === "action")
+      if (pending.intent.kind === "menu") {
+        pending.field.identity.revision = document.revision;
+        this.openMenu(pending.intent.clipId, pending.intent.x, pending.intent.y, pending);
+      } else if (pending.intent.kind === "action")
         await this.action(pending.intent.action, pending.field.time);
       else if (pending.intent.kind === "mode") await this.setMode(pending.intent.mode);
-      else await this.trackControl(button);
+      else await this.trackControl(button!);
     } catch (error) {
       const identity = this.context.identity?.(),
         document = identity ? undefined : this.current().document;
@@ -3152,11 +3276,11 @@ export class EditorTimeline {
     const control = this.pendingControl;
     if (control?.pointerId === event.pointerId) {
       if (control.up === undefined) {
-        const target = globalThis.document
-          .elementFromPoint(event.clientX, event.clientY)
-          ?.closest<HTMLButtonElement>("button");
-        control.up =
-          !!target && JSON.stringify(this.controlIntent(target)) === JSON.stringify(control.intent);
+        const target = globalThis.document.elementFromPoint(event.clientX, event.clientY);
+        control.up = control.intent.kind === "menu"
+          ? target?.closest<HTMLElement>("[data-et-clip]")?.dataset.etClip === control.intent.clipId
+          : target instanceof Element && !!target.closest("button") &&
+            JSON.stringify(this.controlIntent(target.closest<HTMLButtonElement>("button")!)) === JSON.stringify(control.intent);
         void this.finishControl(control);
       }
       return;
@@ -3215,6 +3339,7 @@ export class EditorTimeline {
   private cancel = () => {
     this.cancelMarkerNavigation();
     this.cancelPan();
+    if (!this.audioEdit?.applying) this.cancelAudioEdit();
     this.cancelControl();
     this.cancelTrackGesture();
     this.notice.textContent = "";
@@ -3271,7 +3396,7 @@ export class EditorTimeline {
     if (event.type !== "visibilitychange" || hidden) this.cancelMarkerNavigation();
     if (event.type !== "visibilitychange" || hidden) this.cancelPan();
     if (
-      (!this.drag && !this.pendingTrackGesture && !this.pendingControl) ||
+      (!this.drag && !this.pendingTrackGesture && !this.pendingControl && !this.audioEdit) ||
       (event.type === "visibilitychange" && !hidden)
     )
       return;
@@ -3282,6 +3407,7 @@ export class EditorTimeline {
     });
   };
   dispose(): void {
+    this.cancelAudioEdit();
     this.closeMenu();
     this.cancel();
     this.destroyed = true;

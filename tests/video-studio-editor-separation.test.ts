@@ -14,11 +14,13 @@ import { createSeparationController } from "../apps/video-studio/src/editor/sepa
 import { createAudioSeparationBridge } from "../apps/video-studio/src/editor/separation-bridge";
 import { EditorSession } from "../apps/video-studio/src/editor/session";
 import { applyEditorOperations } from "../apps/video-studio/src/editor/operations";
+import { planDetachOriginalAudio, planUnlinkAudio } from "../apps/video-studio/src/editor/original-audio";
 import {
   createTrack,
   defaultAudioMix,
   defaultColorAdjustment,
   defaultTransform,
+  defaultTextStyle,
 } from "../apps/video-studio/src/editor/defaults";
 import { validateEditorDocument } from "../apps/video-studio/src/editor/validation";
 import {
@@ -124,6 +126,83 @@ const ids = () => {
   let n = 0;
   return () => `added-${++n}`;
 };
+test("ordinary original audio detaches without new assets, preserving exact mix and linking atomically", () => {
+  const document = fixture(), source = structuredClone(document.sequences[0]!.clips[0]!) as MediaClip;
+  document.sequences[0]!.tracks[0]!.volume = 0.6;
+  document.sequences[0]!.tracks[0]!.pan = -0.4;
+  document.sequences[0]!.tracks[0]!.muted = true;
+  const plan = planDetachOriginalAudio(document, "main", "clip", ids()),
+    next = applyEditorOperations(document, plan.operations, 0),
+    original = next.sequences[0]!.clips[0]! as MediaClip,
+    detached = next.sequences[0]!.clips.find((item) => item.id === plan.audioClipId)! as MediaClip;
+  assert.deepEqual(next.assets, document.assets);
+  assert.deepEqual(detached.audio, source.audio); assert.deepEqual(detached.timeMap, source.timeMap);
+  assert.equal(detached.start, source.start); assert.equal(detached.duration, source.duration);
+  assert.equal(detached.assetId, source.assetId); assert.equal(original.audio.volume, 0);
+  assert.equal(detached.linkGroupId, original.linkGroupId);
+  assert.deepEqual(next.sequences[0]!.tracks.find((track) => track.id === detached.trackId), {
+    ...createTrack(detached.trackId, "audio", "片段 · 原声"), volume: 0.6, pan: -0.4, muted: true,
+  });
+  assert.deepEqual(original.transform, source.transform);
+  plan.operations.length = 0; assert.equal(document.sequences[0]!.clips.length, 1);
+});
+test("ordinary detachment and unlink reject locked dependencies, transitions and malformed documents atomically", () => {
+  const document = fixture(), seq = document.sequences[0]!, before = structuredClone(document);
+  seq.tracks[0]!.locked = true;
+  assert.throws(() => planDetachOriginalAudio(document, "main", "clip", ids()), /锁/);
+  seq.tracks[0]!.locked = false;
+  const other = { ...structuredClone(seq.clips[0]!) as MediaClip, id: "other", start: 2*T+12345 };
+  seq.clips.push(other); seq.transitions.push({ id: "transition", fromClipId: "clip", toClipId: "other", start: 2*T+12345-8000, duration: 16000, kind: "dissolve" });
+  assert.throws(() => planDetachOriginalAudio(document, "main", "clip", ids()), /转场/);
+  const invalid = fixture(); let called = 0;
+  Object.defineProperty(invalid.sequences[0]!.clips[0]!, "audio", { get() { called++; return defaultAudioMix(); } });
+  assert.throws(() => planDetachOriginalAudio(invalid, "main", "clip", ids()), /访问器|getter|数据/); assert.equal(called, 0);
+  assert.throws(() => planDetachOriginalAudio(before, "main", "clip", () => "clip"), /ID/);
+  const plan = planDetachOriginalAudio(before, "main", "clip", ids()), next = applyEditorOperations(before, plan.operations, 0);
+  next.sequences[0]!.clips[0]!.groupId = "ordinary";
+  next.sequences[0]!.clips[1]!.groupId = "ordinary";
+  next.sequences[0]!.tracks[0]!.locked = true;
+  assert.throws(() => planUnlinkAudio(next, "main", [plan.audioClipId]), /锁/);
+  next.sequences[0]!.tracks[0]!.locked = false;
+  const unlinked = applyEditorOperations(next, planUnlinkAudio(next, "main", [plan.audioClipId]), 1);
+  assert.ok(unlinked.sequences[0]!.clips.every((clip) => !clip.linkGroupId && clip.groupId === "ordinary"));
+});
+test("ordinary detachment preserves caption ownership and updates dependent dry buses without bypassing locks", () => {
+  const document = fixture(), sequence = document.sequences[0]!, source = sequence.clips[0]! as MediaClip;
+  source.timeMap = { points: [{ time: 0, source: 0 }, { time: 2*T, source: 2*T }] };
+  sequence.tracks.push(createTrack("bed", "audio"), createTrack("captions", "text"));
+  sequence.tracks.find((track) => track.id === "captions")!.locked = true;
+  const bed: MediaClip = { ...structuredClone(source), id: "bed", trackId: "bed", audio: { ...defaultAudioMix(),
+    ducking: { sidechainTrackIds: ["v"], thresholdDb: -30, attenuationDb: 12, attack: 2400, release: 4800 } } };
+  sequence.clips.push(bed, { id: "caption", kind: "text", trackId: "captions", start: source.start, duration: T,
+    label: "字幕", role: "subtitle", text: "保留来源", words: [], style: defaultTextStyle(),
+    transform: defaultTransform(), color: defaultColorAdjustment(), blendMode: "normal",
+    sourceBinding: { clipId: "clip", sourceStart: 0, sourceEnd: T } });
+  const before = structuredClone(document), plan = planDetachOriginalAudio(document, "main", "clip", ids()),
+    next = applyEditorOperations(document, plan.operations, 0), audio = next.sequences[0]!.clips.find((clip) => clip.id === plan.audioClipId)!;
+  assert.deepEqual(next.sequences[0]!.clips.find((clip) => clip.id === "caption"), sequence.clips.find((clip) => clip.id === "caption"));
+  assert.deepEqual((next.sequences[0]!.clips.find((clip) => clip.id === "bed") as MediaClip).audio.ducking!.sidechainTrackIds, ["v", audio.trackId]);
+  sequence.tracks.find((track) => track.id === "bed")!.locked = true;
+  assert.throws(() => planDetachOriginalAudio(document, "main", "clip", ids()), /锁/);
+  sequence.tracks.find((track) => track.id === "bed")!.locked = false;
+  assert.deepEqual(document, before);
+});
+test("ordinary detachment checks expanded parent audio capacity rather than the waveform-only 256 lane limit", () => {
+  const document = fixture(), child = document.sequences[0]!, original = child.clips[0]! as MediaClip;
+  const nested = (id: string, sequenceId: string) => ({ ...structuredClone(original), id, kind: "sequence" as const,
+    sequenceId, start: 0, timeMap: { points: [{ time: 0, source: 0 }, { time: original.duration, source: original.duration }] } });
+  const middle = { ...structuredClone(child), id: "middle", name: "middle",
+    tracks: [createTrack("v", "audio")],
+    clips: Array.from({ length: 64 }, (_, index) => { const clip = nested(`middle-${index}`, "main"); delete (clip as any).assetId; return clip; }) },
+    parent = { ...structuredClone(child), id: "parent", name: "parent",
+      tracks: [createTrack("v", "audio")],
+      clips: Array.from({ length: 64 }, (_, index) => { const clip = nested(`parent-${index}`, "middle"); delete (clip as any).assetId; return clip; }) };
+  document.sequences.push(middle);
+  assert.ok(planDetachOriginalAudio(document, "main", "clip", ids()).operations.length);
+  document.sequences.push(parent);
+  assert.throws(() => planDetachOriginalAudio(document, "main", "clip", ids()), /容量/);
+  assert.equal(child.clips.length, 1);
+});
 async function session() {
   let data = fixture(),
     revision = 1,

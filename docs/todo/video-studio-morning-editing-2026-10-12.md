@@ -846,3 +846,55 @@ PCM数组相同，仍只属于候选证据；未用它宣称已合入本批。
 00:56 UTC核实第十八批4e3d7e5的PR38188624599与push38188620003都completed
 success，各7 jobs全成功，包含完整Video Studio UI/media及其余Panel门禁。
 这是该提交实际远端结果，不替代第十九批未结束的完整UI或后续新候选门禁。
+
+
+## 第二十批：原声分离、完整解除链接与受管右键入口
+
+只挑ef81c8b的唯一增量（parent3ba），不重放父提交。普通原声分离复用已授权
+视频素材，无新素材/重编码/AI模型；新音轨复制原track gain/pan/mute及完整clip
+音频、timeMap，原video volume0并默认link。完整解除link保留ordinary group和
+字幕sourceBinding/words/text，任何link成员锁轨则整体拒绝。视频端点转场明确
+拒绝并说明先移除；dependent ducking保留旧bus并加入新track，锁依赖或64来源
+上限拒绝；最终文档及全部nested祖先使用正常4096音频实例预算校验。
+
+独立领域15/15、35实际feature/menu目标、48相关既有menu/controls/touch目标
+及类型通过。PCM正式比较共四组/8次native render：非静音child/parent逐sample
+最大误差<1e-6，固定gain0.5为unity一半且误差≤1e-6，muted前后PCM数组精确
+相同。前两组同时包含reverse/variable timeMap、pitch/fades、gain/pan自动化、
+源自身ducking、依赖bus和同track邻居；unlink→move用实际UI/operations验证，
+不声称移动前后混音相同。
+
+原声独立peer实际找到的P2扩展为共用右键修复：native右键pointerdown先取消
+浏览器mousedown默认夺焦点，再沿既有pendingControl/finisher验证新menu intent。
+无效101保焦点/值且菜单0；合法60先保存再分离。真实中文IME按明确右键意图
+完成组合并只保存一次，之后才开菜单，不宣称组合候选保持未结束。first-up、
+Escape/blur/gen/seq/select/clock/dispose、fresh-read重入及补发contextmenu均不能
+复活旧owner。三个native invalid copy/remove/detach同formal旧源0/3红→当前3/3绿；
+独立native invalid/valid/IME3/3及ShiftF10菜单1/1通过。
+
+根手合保留marker navigation、pan、audio三种cancel/interrupt/dispose和trackHeight
+阻挡并集；root19 pan/nav helper及cfa候选audio/menu/control各段独立逐字等价，
+新增viewPan/audioEdit两方互斥与audio等待时follow阻挡。根最终类型与统一回归
+需重新执行，以下不借用上一批UI1401或media230计数。
+
+
+根组合新增两条formal native目标：最初一轮pan→audio前置误假设scrollLeft为0，
+实际clip聚焦先滚1px，未达到产品断言；夹具改为记录真实initial+120后，
+同一修正测试在无guard基线两项均RED（pan中分离修改doc、audio持保存仍滚120px），
+加双向guard后2/2GREEN。独立peer组合2/2：audio持保存时中键/越界follow不移动，
+release后pan恢复、一次undo还原；native opacity101继续保值保焦点且菜单0。
+正式根源冻结Timeline e2e61af、planner e3700bd2，无改断言容差或timeout。
+
+
+第二十批根完整UI1439/1439通过（816528ms）、媒体231/231（170204ms）；
+offline1136通过3可选跳过、voice5通过1可选跳过、workspace docs5/5，类型、
+build/build:check、validate39和diffcheck通过。额外独立3/3实测：Main帮助及
+NTSC逐帧/十帧、文字/数字/轨名快捷键隔离，280/390×340原声菜单overflow、
+unlink/End末项可达及两步undo。
+
+01:21 UTC第十九批e0e4ce1的PR38190065104/push38190061915均completed failure：
+各UI1398/1401、只有native middle pan保留合法25/无效1001/轨名IME三条失败；
+字段分别成250.000000、10010.000000、正在输入画面轨0.000000。其余6jobs全成功。
+这与第十六批hourzoom/select失败不同；Linux middle-button PRIMARY paste目前
+只是优先假设，需原生event trace及修复后的最终CI核验，未写为已知根因。
+第二十批本地通过不替代此远端失败，也不借用第十八批全绿证明当前远端状态。
