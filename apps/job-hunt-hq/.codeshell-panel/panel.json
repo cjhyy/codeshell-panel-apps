@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "job-hunt-hq",
-  "version": "4.2.0",
+  "version": "4.2.1",
   "title": {
     "default": "Job Hunt HQ",
     "en": "Job Hunt HQ",
@@ -35,7 +35,7 @@
     },
     "job-hunt": {
       "entry": "app/tools/job-hunt.mjs",
-      "sha256": "41148353564d6921ac46fff7a677d4a9098cce128a05170a0db24c1961279b34"
+      "sha256": "0e85a9a18dc93e966ffae05d0f69da499a8358a31c023664442454cb5c35cf4e"
     },
     "resume-pdf": {
       "entry": "app/tools/resume-pdf.mjs",

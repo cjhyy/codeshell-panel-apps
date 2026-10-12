@@ -1,14 +1,53 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, lstat, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { createNodeWorkspaceScope } from "../../../apps/job-hunt-hq/app/tools/node-workspace-scope.mjs";
 import { hydrateProjectSnapshotDocuments, prepareProjectSnapshotDocuments, projectSnapshotShardDescriptors } from "../../../apps/job-hunt-hq/app/snapshot-sharding-model.mjs";
 import { writeProjectSnapshotDocuments } from "../../../apps/job-hunt-hq/app/snapshot-storage.mjs";
 import { applyOp, emptyProjectSnapshot } from "../../../apps/job-hunt-hq/app/snapshot-codec.mjs";
 import { jobHuntOperations } from "../../../apps/job-hunt-hq/app/ops/index.mjs";
-import { candidateInput, cli, fileInventory, resumeInput, run, snapshotPath, tempProject } from "./fixtures/headless-runtime.mjs";
+import { candidateInput, cli, cliPath, fileInventory, resumeInput, run, snapshotPath, tempProject } from "./fixtures/headless-runtime.mjs";
+
+const exec = promisify(execFile);
+
+test("CLI runs through a symbolic directory alias and emits the same operation JSON", async t => {
+  const project = await tempProject(t);
+  const packageAlias = join(project, "package-alias");
+  await symlink(dirname(dirname(dirname(cliPath))), packageAlias, process.platform === "win32" ? "junction" : "dir");
+  const direct = await exec(process.execPath, [cliPath, "ops"], { cwd: project });
+  assert.equal(JSON.parse(direct.stdout).ok, true);
+  assert.equal(direct.stderr, "");
+  for (const flags of [[], ["--preserve-symlinks-main"]]) {
+    const aliased = await exec(process.execPath, [...flags, join(packageAlias, "app/tools/job-hunt.mjs"), "ops"], { cwd: project });
+    assert.equal(aliased.stdout, direct.stdout, "a path alias must execute rather than silently exit");
+    assert.equal(aliased.stderr, "");
+  }
+});
+
+test("async CLI imports never execute main with another, absent or unreadable entry path", async t => {
+  const project = await tempProject(t);
+  const driver = join(project, "import-driver.mjs");
+  const moduleUrl = pathToFileURL(cliPath).href;
+  await writeFile(driver, `
+    const mode = process.argv[2];
+    if (mode === "absent") process.argv.splice(1);
+    if (mode === "missing") process.argv[1] = ${JSON.stringify(join(project, "missing-entry.mjs"))};
+    if (mode === "invalid") process.argv[1] = "\\0";
+    const cli = await import(${JSON.stringify(moduleUrl)});
+    if (typeof cli.main !== "function") throw new Error("CLI export missing");
+    process.stdout.write("imported\\n");
+  `);
+  for (const mode of ["driver", "absent", "missing", "invalid"]) {
+    const imported = await exec(process.execPath, ["--unhandled-rejections=strict", driver, mode], { cwd: project });
+    assert.equal(imported.stdout, "imported\n", mode);
+    assert.equal(imported.stderr, "", mode);
+  }
+});
 
 async function snapshot(project) {
   const root = JSON.parse(await readFile(join(project, snapshotPath), "utf8"));

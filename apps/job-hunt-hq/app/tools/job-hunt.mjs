@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -215,7 +215,20 @@ export async function main(argv, { cwd = process.cwd() } = {}) {
   return { ok: true, result };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+async function isMainEntry() {
+  if (!process.argv[1]) return false;
+  try {
+    const [entryPath, modulePath] = await Promise.all([
+      realpath(process.argv[1]),
+      realpath(fileURLToPath(import.meta.url)),
+    ]);
+    return entryPath === modulePath;
+  } catch {
+    return false;
+  }
+}
+
+if (await isMainEntry()) {
   try {
     process.stdout.write(`${JSON.stringify(await main(process.argv.slice(2)))}\n`);
   } catch (error) {

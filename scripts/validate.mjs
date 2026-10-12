@@ -379,7 +379,7 @@ async function validatePackage(packagePath) {
     const queriedIds = [...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g)].map(
       (match) => match[1],
     );
-    assert.equal(manifest.version, "4.2.0", `${packagePath}: headless resume workflow version mismatch`);
+    assert.equal(manifest.version, "4.2.1", `${packagePath}: headless resume workflow version mismatch`);
     for (const id of ["view-today", "view-dashboard", "view-resumes", "view-interviews", "view-materials"]) {
       assert.match(html, new RegExp(`id="${id}"`), `${packagePath}: missing v4 primary workspace ${id}`);
     }

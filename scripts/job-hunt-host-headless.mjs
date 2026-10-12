@@ -47,7 +47,7 @@ try {
     return core.installReviewedLocalPanelApp(input, preview.reviewToken, new Date().toISOString(), { overwrite });
   };
   const installed = await install(source);
-  assert.equal(installed.version, "4.2.0");
+  assert.equal(installed.version, "4.2.1");
   const pin = async (cwd, selected) => {
     await mkdir(join(cwd, ".code-shell"), { recursive: true });
     await writeFile(join(cwd, ".code-shell/settings.json"), JSON.stringify({
