@@ -44,6 +44,23 @@
 .career-library-message { min-height: 20px; font-size: 12px; line-height: 1.6; }
 .career-library-message[data-error="true"] { color: #f49b9b; }
 .career-helper { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.career-chat-entry { display: grid; gap: 10px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin-bottom: 18px; }
+.career-chat-entry h2 { font-size: 23px; margin: 8px 0; }
+.career-chat-entry p, .career-version-section p { color: var(--muted); font-size: 12px; line-height: 1.7; }
+.career-chat-entry blockquote { margin: 14px 0 0; padding: 10px 14px; border-left: 3px solid var(--accent); font-size: 12px; line-height: 1.8; }
+.career-version-section { border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 18px; }
+.career-version-heading { display: flex; justify-content: space-between; align-items: start; gap: 12px; flex-wrap: wrap; }
+.career-version-heading h2 { margin: 0; font-size: 17px; }
+.career-version-section select, .career-version-name input { max-width: 100%; border: 1px solid var(--line-strong); border-radius: 8px; padding: 9px; background: var(--surface); color: var(--text); }
+.career-version-name { display: grid; gap: 6px; font-size: 12px; margin: 12px 0; }
+.career-version-diff, #career-version-records { margin-top: 18px; }
+.career-version-section details { border-top: 1px solid var(--line); padding: 10px 0; overflow-wrap: anywhere; }
+.career-version-section summary { cursor: pointer; font-size: 12px; line-height: 1.7; }
+.career-version-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.career-version-section dl { font-size: 12px; max-height: 360px; overflow: auto; }
+.career-version-section dt { font-weight: 600; margin-top: 10px; }
+.career-version-section dd { margin: 4px 0 12px; white-space: pre-wrap; line-height: 1.7; }
+@media (max-width: 620px) { .career-version-comparison { grid-template-columns: 1fr; } .career-version-heading select { width: 100%; } }
 @media (max-width: 850px) {
   .career-layout { grid-template-columns: 1fr; }
   .career-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 320px; overflow: auto; }

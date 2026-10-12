@@ -12,6 +12,8 @@ export const suites = [
     commands: [[
       "--test",
       "tests/apps/job-hunt-hq/career-library-model.test.mjs",
+      "tests/apps/job-hunt-hq/career-library-version-model.test.mjs",
+      "tests/apps/job-hunt-hq/career-library-version-store.test.mjs",
       "tests/apps/job-hunt-hq/career-contract.test.mjs",
       "tests/apps/job-hunt-hq/career-storage.test.mjs",
       "tests/apps/job-hunt-hq/snapshot-generations.test.mjs",

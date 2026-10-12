@@ -6,6 +6,7 @@ export const PROJECT_SNAPSHOT_SHARD_FIELDS = [
   "sourceMaterials",
   "careerEpisodes",
   "careerQa",
+  "careerLibraryVersions",
   "jdIntakeItems",
   "jobLeads",
   "jobs",

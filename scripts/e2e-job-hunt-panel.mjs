@@ -473,6 +473,26 @@ try {
   assert(await execute(view, `!document.querySelector('#resume-preview')?.textContent.includes('PRIVATE CAREER ANSWER')`), 'private career QA leaked into the public resume');
   console.log('Career source → decision → factual QA → reopen: passed');
   await new Promise(resolvePromise => setTimeout(resolvePromise, 10_100));
+  const invokeCareerTool = (toolName, args) => win.evaluate(
+    ({ appDescriptorId, toolName, args }) => window.codeshell.invokePanelAppAgentTool({ appDescriptorId, bucket: "job-hunt-e2e", toolName, arguments: args }),
+    { appDescriptorId: panel.id, toolName, args },
+  );
+  const chatQa = await invokeCareerTool("save_candidate_context", { qa: { question: "E2E 聊天里补充的取舍是什么？", answer: "CHAT FACT: 我先保证资料恢复，再考虑交互速度。", draftAnswer: "CHAT EXPRESSION: 先保护数据，再提升体验。" } });
+  assert(chatQa.qa.answer.startsWith("CHAT FACT") && chatQa.qa.status === "draft", "chat original answer was lost or automatically confirmed");
+  const knowledgePreview = await invokeCareerTool("save_candidate_context", { library_version: { action: "preview" } });
+  assert(knowledgePreview.preview && !knowledgePreview.saved && knowledgePreview.counts.added > 0, "chat knowledge version preview failed");
+  const knowledgeSaved = await invokeCareerTool("save_candidate_context", { library_version: { action: "save", id: "career-version-electron-chat", title: "E2E 当前聊天整理版", summary: "保存经历、决策原因、事实原话和未核实标记" } });
+  assert(knowledgeSaved.saved && knowledgeSaved.libraryVersion.counts.unresolved > 0, "chat could not save a named knowledge version with unconfirmed facts");
+  await waitForSnapshot(current => current.careerLibraryVersions?.some(version => version.id === "career-version-electron-chat"), "chat library version index did not reach real project files");
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 10_100));
+  await invokeCareerTool("save_candidate_context", { qa: { id: chatQa.qa.id, question: chatQa.qa.question, answer: "CHAT LATER: 补充后来的事实。" } });
+  const knowledgeHistory = await invokeCareerTool("get_job_search_context", { scope: "career_qa", version_id: "career-version-electron-chat", qa_id: chatQa.qa.id });
+  assert(knowledgeHistory.historical && knowledgeHistory.careerQa.items[0].answer.startsWith("CHAT FACT"), "historical knowledge version changed with live chat edits");
+  await execute(view, `(() => { const history = document.querySelector('#career-version-history'); history.value = 'career-version-electron-chat'; history.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await waitForGuest(view, `document.querySelector('#career-version-detail h3')?.textContent === 'E2E 当前聊天整理版'`, "saved chat version did not open in the history panel");
+  assert(await execute(view, `!document.querySelector('#resume-preview')?.textContent.includes('CHAT FACT')`), "chat library original answer leaked into the public resume");
+  console.log('Current-session tools → knowledge preview → named immutable version → historical reopen: passed');
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 10_100));
   assert(
     await execute(
       view,

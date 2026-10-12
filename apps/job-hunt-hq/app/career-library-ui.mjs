@@ -1,4 +1,5 @@
 import { searchCareerLibrary } from "./career-library-model.mjs";
+import { mountCareerLibraryVersions } from "./career-library-version-ui.mjs";
 
 const COLLECTIONS = { sources: "sourceMaterials", episodes: "careerEpisodes", qa: "careerQa" };
 const TITLES = { sources: "原始材料", episodes: "经历与决策", qa: "长期问答" };
@@ -12,9 +13,9 @@ const label = (title, field, value, { multiline = false, max = 3000, placeholder
   : `<input data-career-field="${field}" maxlength="${max}" value="${escape(value)}" placeholder="${escape(placeholder)}" />`}</label>`;
 const titleOf = (kind, record) => record.title || record.question || record.url || `${record.provider || "手动"}材料`;
 
-export function mountCareerLibrary({ root, getState, getScopeKey, setDraft, mutate, reviewPending, requestAgent, openSource }) {
+export function mountCareerLibrary({ root, getState, getScopeKey, setDraft, mutate, reviewPending, requestAgent, openSource, versionActions }) {
   let scopeKey, kind = "sources", search = "", status = "active", cursor = 0, selectedId = "", editor = null, dirty = false, busy = false, draftStamp = "";
-  root.innerHTML = `<header class="career-heading"><div><span class="career-eyebrow">YOUR EXPERIENCE, OVER TIME</span><h1>把经历留下，把选择说清楚。</h1><p>从 Slack 讨论、GitHub 项目或自己的记录开始。保存当时的问题、选择和原因，慢慢积累成你的经历与问答库。</p></div></header>
+  root.innerHTML = `<header class="career-heading"><h1>经历与问答库</h1></header><div id="career-session-workspace"></div>
     <div class="career-stats" id="career-stats"></div>
     <div class="career-toolbar"><div class="career-tabs" aria-label="经历库分类">${Object.entries(TITLES).map(([key, title]) => `<button type="button" data-career-kind="${key}" aria-pressed="false">${title}</button>`).join("")}</div><input id="career-search" type="search" maxlength="200" aria-label="搜索材料、经历与问答" placeholder="搜索项目、决策、关键词…" /><select id="career-filter" aria-label="核验状态">${options({ active: "未归档", draft: "待确认", confirmed: "已确认", needs_review: "来源已更新", archived: "已归档", all: "全部" }, status)}</select><button class="button button-primary" id="career-add" type="button">＋ 添加材料</button></div>
     <p class="career-library-message" id="career-message" role="status" aria-live="polite"></p>
@@ -40,7 +41,7 @@ export function mountCareerLibrary({ root, getState, getScopeKey, setDraft, muta
   function renderList() {
     const result = searchCareerLibrary(getState(), { kind, search, status, cursor, limit: 12 });
     el("list").innerHTML = result.items.length ? result.items.map(record => `<button type="button" class="career-card" data-career-record="${escape(record.id)}" aria-current="${record.id === selectedId}"><span class="career-status" data-status="${escape(record.status)}">${STATUS[record.status] || "待确认"}${record.pendingRevision ? " · 有待审修订" : ""}</span><strong>${escape(titleOf(kind, record))}</strong><p>${escape(String(record.reason || record.answer || record.excerpt || record.background || "还可以继续补充。").slice(0, 110))}</p><small>${escape(record.project || record.provider || CATEGORIES[record.category] || "经历问答")} · v${record.version || 1}</small></button>`).join("")
-      : `<div class="career-empty"><h2>${search ? "没有找到匹配内容" : `还没有${TITLES[kind]}`}</h2><p>${kind === "sources" ? "粘贴一段讨论、保存 Slack 链接，或添加一个自己的 GitHub 项目。先保存，再慢慢整理。" : kind === "episodes" ? "一次项目选择、一次协作、一次失败，都可以成为独立的经历。" : "同一个问题，可以在不同项目里拥有不同答案。"}</p></div>`;
+      : `<div class="career-empty"><h2>${search ? "没有找到匹配内容" : `还没有${TITLES[kind]}`}</h2><p>${kind === "sources" ? "在当前聊天贴 Slack / GitHub 链接，让 Agent 读取并整理；材料会写回这里。也可以手动补充。" : kind === "episodes" ? "和 Agent 聊清楚你做了什么、为什么这样选，经历会从聊天沉淀到这里。" : "在聊天中回答当时的选择、原因和复盘。事实原话与表达草稿会分别保存。"}</p></div>`;
     el("pagination").innerHTML = `<button type="button" class="button button-quiet" data-career-page="prev" ${cursor === 0 ? "disabled" : ""}>上一页</button><span>${result.total} 条 · 第 ${Math.floor(cursor / 12) + 1} 页</span><button type="button" class="button button-quiet" data-career-page="next" ${result.nextCursor == null ? "disabled" : ""}>下一页</button>`;
   }
   function sourcePicker() {
@@ -49,7 +50,7 @@ export function mountCareerLibrary({ root, getState, getScopeKey, setDraft, muta
   }
   function renderEditor() {
     if (!editor) {
-      el("editor").innerHTML = `<div class="career-empty"><h2>你的经历，比一份简历更完整。</h2><p>选择左侧记录，或添加第一份材料。AI 提取的内容会先待确认；简历和面试故事从你确认过的经历派生。</p><p>内部讨论和原始证据保存在项目中，公开简历只保留你审核过的表达。</p></div>`;
+      el("editor").innerHTML = `<div class="career-empty"><h2>聊天沉淀，随时回看。</h2><p>这里查看材料、经历和问答。你可以继续在当前 session 里补充，聊完保存一个知识库版本；也可以在这里修正单条内容。</p><p>保存知识库版本会保留未核实标记。需要写简历时，再选择并核实可公开的经历。</p></div>`;
       return;
     }
     const record = records().find(item => item.id === selectedId);
@@ -149,10 +150,14 @@ export function mountCareerLibrary({ root, getState, getScopeKey, setDraft, muta
     }
     const pending = Object.values(COLLECTIONS).flatMap(field => state[field] || []).filter(record => record.status === "draft" || record.status === "needs_review" || record.pendingRevision).length;
     el("stats").innerHTML = `<span><b>${(state.sourceMaterials || []).length}</b>材料</span><span><b>${(state.careerEpisodes || []).length}</b>经历</span><span><b>${(state.careerQa || []).length}</b>问答</span><span><b>${pending}</b>待确认</span>`;
-    renderToolbar(); renderList(); if (!editor) renderEditor();
+    versionsUI.render(); renderToolbar(); renderList(); if (!editor) renderEditor();
   }
+  const versionsUI = mountCareerLibraryVersions({ root: root.querySelector("#career-session-workspace"), getState, getScopeKey, hasUnsavedChanges: () => dirty || busy, ...versionActions });
   render();
-  return { render, hasUnsavedChanges: () => dirty || busy, open(nextKind, id) {
+  return { render, hasUnsavedChanges: () => dirty || busy || versionsUI.hasUnsavedChanges(), openVersion(id) {
+    if (dirty || busy) { message("请先保存或退出当前编辑，再回看知识库版本。", true); return false; }
+    return versionsUI.open(id);
+  }, open(nextKind, id) {
     if (dirty || busy) { message("请先保存当前编辑，再打开活动结果。输入仍保留。", true); return false; }
     const record = getState()[COLLECTIONS[nextKind]]?.find(item => item.id === id);
     if (!record) return false;
