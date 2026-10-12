@@ -3,7 +3,7 @@
   "builder": "esbuild@0.28.2",
   "entry": "src/main.ts",
   "files": {
-    ".codeshell-panel/panel.json": "5e80f08f4cd3f185d5b853ad8f43a2e7bf13cf3f5e92f53203683fffd9a4622b",
+    ".codeshell-panel/panel.json": "6dacc6762cc71dc6405535bfa905d963addb9d4a1864c5137d2e1a306e81eb28",
     "agent/skills/editor-v2/SKILL.md": "21812b375d4994d18162ba4087ec0c8a00b1c01f191285ca09aeabf056fac7fa",
     "agent/skills/narration-workflow/SKILL.md": "23c63ea09d8055246608601cb068d4489e03e91a74924ab541288760b66c4b78",
     "agent/skills/tts-setup/SKILL.md": "8ab87da83a5b38641e6f2f5422f2dff7bfd5ac0d1a4f6f7b2c3a06f8484a1038",
@@ -28,7 +28,7 @@
     "app/editor-workspace.css": "f6240b754c63493886b711c294c9d01e444214404f2497e2ae260302005414a8",
     "app/index.html": "d8a6e7c3a8cca976c3040430f35f2d64c43b15d317cc449ffab040f6cd1af334",
     "app/main.css": "cbad0ccc7e4b88a16b50c6a195d6aef19d592be9793ae90d54f83db1ebd3743d",
-    "app/main.mjs": "8a0cb92e8135cff2f1e1c71f6d1eb7f6c0b98b3a4e94b66f351e34e556881b56",
+    "app/main.mjs": "b07fe28054f34b231d4375b5d92f5dd46648fa419abf001c65b12c4e333a6631",
     "app/panel-select.css": "33fdaafa5b361003b553c86e1b18b41a36e9ec3d9dd80e2e7fab6020bcf7bae2",
     "app/panel-select.js": "761d4ba289275ae7deeefee2804c0c995dbb01e2d1e302e1ad4ac2d34bdb29d6",
     "app/rough-cut.css": "b70a117467b919bf5c27cc93db53c569a8b58d6bd8f1646c19f67e846c29c6af",
@@ -40,6 +40,6 @@
     "app/tools/folder-scan.mjs": "524b085b5cbb4c5750ba7345b22711fb314ea5338a67822752a95cc150613d25",
     "app/tools/media-runtime.mjs": "3763726d176e1c72515c364f253a876b2945fcd1c8b11497bcd038dc584c5a49",
     "app/tools/voice-runtime.mjs": "b031343db0f19e6a1b85c7410f41ea762edf5cd9f47b3e5410fdee4eb694410d",
-    "README.md": "bbf5a2560a075a25746d92068a37087140c187d149a0a7f2aaf788e3f9a91c7c"
+    "README.md": "115dfb68ad07c5358b90a647fbabed315f8a7117eceb216ff1d52ade4e7d808f"
   }
 }
