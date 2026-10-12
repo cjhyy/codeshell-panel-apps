@@ -315,6 +315,10 @@ test("range exports validate before staging, retain the original snapshot and se
   assert.equal(new Set(requests.map((item) => item.requestKey)).size, 3);
   assert.equal(requests[0].requestKey, requests[3].requestKey);
   assert.ok(requests.every((item) => item.input.request.documentHash === snapshot.documentHash && item.input.request.sequenceId === "main"));
+  const prepared = { documentHash: snapshot.documentHash, sequenceId: "main", recipeHash: "b".repeat(64), assetId: resource(999), range: first };
+  await bridge.render(snapshot, profile, { range: first, preparedAudio: prepared });
+  await assert.rejects(bridge.render(snapshot, profile, { range: second, preparedAudio: prepared }), /不一致/);
+  await assert.rejects(bridge.render(snapshot, profile, { preparedAudio: prepared }), /不一致/);
   assert.equal(doc.sequences.length, 1);
   bridge.dispose();
 });
@@ -322,6 +326,12 @@ test("only render requests accept a strict positive tick range", () => {
   const render = { action: "render", transferId: "editor-00000000-0000-0000-0000-000000000000", documentHash: "a".repeat(64), sequenceId: "main", profile: createExportPresets()[0]! };
   assert.deepEqual(validateEditorRequest({ ...render, range: { start: 1, duration: 80080 } }).range, { start: 1, duration: 80080 });
   assert.equal(Object.hasOwn(validateEditorRequest(render), "range"), false);
+  const range = { start: 1, duration: 80080 }, preparedAudio = {
+    documentHash: render.documentHash, sequenceId: "main", recipeHash: "b".repeat(64), assetId: resource(999), range,
+  };
+  assert.deepEqual(validateEditorRequest({ ...render, range, preparedAudio }).preparedAudio?.range, range);
+  assert.throws(() => validateEditorRequest({ ...render, preparedAudio }), /混音|声音/);
+  assert.throws(() => validateEditorRequest({ ...render, range: { start: 2, duration: 80080 }, preparedAudio }), /混音|声音/);
   for (const range of [null, [], { start: 0, duration: 0 }, { start: -1, duration: 1 }, { start: 1.5, duration: 1 }, { start: 0, duration: 1, source: "hidden" }, { start: 0, duration: Number.MAX_SAFE_INTEGER }])
     assert.throws(() => validateEditorRequest({ ...render, range }));
   for (const action of ["prepare-audio", "prepare-video", "commit", "discard"])

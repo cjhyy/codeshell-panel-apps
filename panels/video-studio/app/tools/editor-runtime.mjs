@@ -2344,6 +2344,16 @@ var isResourceId = (id3) => typeof id3 === "string" && /^(?:asset|external)-[a-f
 
 // src/editor/time.ts
 var TICKS_PER_SECOND = 24e4;
+function mergeTimeRanges(ranges, gap = 0) {
+  const result = [];
+  for (const range of [...ranges].sort((a, b) => a.start - b.start || a.end - b.end)) {
+    if (range.end <= range.start) continue;
+    const last = result.at(-1);
+    if (last && range.start <= last.end + gap) last.end = Math.max(last.end, range.end);
+    else result.push({ ...range });
+  }
+  return result;
+}
 var MAX_TICK = BigInt(Number.MAX_SAFE_INTEGER);
 var SUPPORTED_RATES = /* @__PURE__ */ new Set([
   "24/1",
@@ -3624,6 +3634,15 @@ function validateExportRange(value, sequenceDuration2) {
   if (!range.duration || range.start + range.duration > MAX_EDITOR_TICK || sequenceDuration2 !== void 0 && range.start + range.duration > sequenceDuration2) throw new Error("导出范围须位于当前序列内，且结束晚于开始");
   return { start: range.start, duration: range.duration };
 }
+function sameExportRange(expected, actual) {
+  if (expected === void 0 || actual === void 0) return expected === actual;
+  try {
+    const first = validateExportRange(expected), second = validateExportRange(actual);
+    return first.start === second.start && first.duration === second.duration;
+  } catch {
+    return false;
+  }
+}
 
 // src/editor/portable-project.ts
 var PORTABLE_PROJECT_FORMAT = "mimi-video-project";
@@ -3820,13 +3839,6 @@ function editorProjectDocument(value) {
   }
   return { document: document2, resourceIds: [...resources].sort() };
 }
-
-// native/media/editor-audio-renderer.ts
-import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, closeSync, openSync, readSync, statSync, writeSync } from "node:fs";
-import { mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
-import { setImmediate as yieldTask } from "node:timers/promises";
 
 // src/editor/audio-plan.ts
 var AUDIO_SAMPLE_RATE = 48e3;
@@ -4082,6 +4094,13 @@ function compileAudioPlan(value, sequenceId, options2 = {}) {
   return freeze(plan);
 }
 
+// native/media/editor-audio-renderer.ts
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream, closeSync, openSync, readSync, statSync, writeSync } from "node:fs";
+import { mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises";
+import { dirname, isAbsolute, join } from "node:path";
+import { setImmediate as yieldTask } from "node:timers/promises";
+
 // native/process-runner.ts
 import { spawn } from "node:child_process";
 function mediaAbortError() {
@@ -4279,6 +4298,61 @@ async function runMediaProcess(executable, args, options2) {
   });
 }
 
+// native/media/editor-range-preparation.ts
+function editorRangeVisualAssets(value, sequenceId, valueRange) {
+  const document2 = validateEditorDocument(value), sequences = new Map(document2.sequences.map((sequence2) => [sequence2.id, sequence2])), selected = sequences.get(sequenceId);
+  if (!selected) throw new Error("导出序列不存在");
+  const range = validateExportRange(valueRange, sequenceDuration(selected)), assets = /* @__PURE__ */ new Set();
+  let expanded = 0;
+  const mapped = (map, ranges) => mergeTimeRanges(ranges.flatMap((range2) => {
+    const result = [];
+    for (let index = 0; index + 1 < map.points.length; index++) {
+      const start = Math.max(range2.start, map.points[index].time), end = Math.min(range2.end, map.points[index + 1].time);
+      if (start >= end) continue;
+      const a = sourceTimeAt(map, start), b = sourceTimeAt(map, end - 1);
+      result.push({ start: Math.min(a, b), end: Math.max(a, b) + 1 });
+    }
+    return result;
+  }));
+  const visit = (id3, ranges) => {
+    const sequence2 = sequences.get(id3), tracks = new Map(sequence2.tracks.map((track2) => [track2.id, track2]));
+    for (const clip2 of sequence2.clips) {
+      if (++expanded > 1e5) throw new RangeError("导出范围的嵌套素材超过准备上限");
+      const track2 = tracks.get(clip2.trackId);
+      if (track2.hidden || track2.kind === "audio") continue;
+      const local = ranges.flatMap((range2) => {
+        const start = Math.max(range2.start, clip2.start), end = Math.min(range2.end, clip2.start + clip2.duration);
+        return start < end ? [{ start: start - clip2.start, end: end - clip2.start }] : [];
+      });
+      if (!local.length) continue;
+      if (clip2.kind === "media") assets.add(clip2.assetId);
+      else if (clip2.kind === "sequence") visit(clip2.sequenceId, mapped(clip2.timeMap, local));
+      else if (clip2.kind === "multicam") {
+        for (let index = 0; index < clip2.switches.length; index++) {
+          const item = clip2.switches[index], end = clip2.switches[index + 1]?.time ?? clip2.duration;
+          if (local.some((range2) => range2.start < end && range2.end > item.time))
+            assets.add(clip2.angles.find((angle) => angle.id === item.angleId).assetId);
+        }
+      }
+    }
+  };
+  visit(sequenceId, [{ start: range.start, end: range.start + range.duration }]);
+  return assets;
+}
+function editorRangeAudioPreparation(plan, value) {
+  const range = validateExportRange(value, plan.duration), start = Math.ceil(range.start / 5), end = Math.ceil((range.start + range.duration) / 5);
+  if (start === end) return { fallback: "sub-sample" };
+  if (plan.ducking.length) return { fallback: "ducking" };
+  for (const lane of plan.lanes)
+    for (const span of lane.spans) {
+      if (span.startSample >= end || span.endSample <= start) continue;
+      const state = sampleAudioLane(lane, Math.max(start, span.startSample));
+      if (state.playbackRate && (Math.abs(state.playbackRate) !== 1 || state.pitchSemitones !== 0))
+        return { fallback: "stretch" };
+    }
+  return { range };
+}
+
 // native/media/editor-audio-renderer.ts
 var RATE = AUDIO_SAMPLE_RATE;
 var CHANNELS = 2;
@@ -4419,7 +4493,9 @@ async function renderEditorAudio(options2) {
   }))
     if (!isAbsolute(path)) throw new Error(`${name} must be an absolute authorized path`);
   const plan = compileAudioPlan(options2.document, options2.sequenceId);
-  const lanes = plan.lanes.filter((lane) => lane.spans.length > 0);
+  const preparation = options2.range === void 0 ? {} : editorRangeAudioPreparation(plan, options2.range), range = preparation.range, mixStart = range ? Math.ceil(range.start / TICKS_PER_AUDIO_SAMPLE) : 0, mixEnd = range ? Math.ceil((range.start + range.duration) / TICKS_PER_AUDIO_SAMPLE) : plan.sampleCount, sampleCount = mixEnd - mixStart, lanes = plan.lanes.map((lane) => ({ ...lane, spans: lane.spans.filter(
+    (span) => span.startSample < mixEnd && span.endSample > mixStart
+  ) })).filter((lane) => lane.spans.length > 0);
   const budget = options2.maxPcmBytes ?? 64 * 1024 ** 3;
   const mixBudget = options2.maxMixBytes ?? 256 * 1024 ** 2;
   if (!Number.isSafeInteger(mixBudget) || mixBudget < BYTES)
@@ -4432,7 +4508,7 @@ async function renderEditorAudio(options2) {
       throw new Error(`Audio PCM exceeds the configured ${budget} byte disk budget`);
     reserved += bytes;
   };
-  reserve(plan.sampleCount * BYTES * 2);
+  reserve(sampleCount * BYTES * 2);
   await mkdir(options2.workDir, { recursive: true });
   await mkdir(options2.cacheDir, { recursive: true });
   await mkdir(dirname(options2.outputPath), { recursive: true });
@@ -4444,7 +4520,9 @@ async function renderEditorAudio(options2) {
     path: options2.outputPath,
     sampleRate: RATE,
     channels: CHANNELS,
-    sampleCount: plan.sampleCount,
+    sampleCount,
+    ...range ? { range } : {},
+    ...preparation.fallback ? { rangeFallback: preparation.fallback } : {},
     peak: 0,
     samplesOverFullScale: 0,
     assets: [],
@@ -4561,16 +4639,16 @@ async function renderEditorAudio(options2) {
           throw new Error(`Audio asset ${lane.assetId} changed during rendering`);
         await rename(scratch, cachePath);
       }
-      const sampleCount = (await stat(cachePath)).size / BYTES;
-      if (!sampleCount) throw new Error(`Audio stream for ${lane.assetId} decoded to no samples`);
-      if (sampleCount > samples)
+      const sampleCount2 = (await stat(cachePath)).size / BYTES;
+      if (!sampleCount2) throw new Error(`Audio stream for ${lane.assetId} decoded to no samples`);
+      if (sampleCount2 > samples)
         throw new Error(`Decoder exceeded the expected PCM bound for ${lane.assetId}`);
       assets.set(lane.assetId, { path: cachePath, hash: hash2 });
       result.assets.push({
         assetId: lane.assetId,
         status: "decoded",
         sourceHash: hash2,
-        sampleCount,
+        sampleCount: sampleCount2,
         cacheHit
       });
     }
@@ -4673,8 +4751,8 @@ async function renderEditorAudio(options2) {
     const cursors = new Map(lanes.map((lane) => [lane, 0]));
     const raw = join(temporary, "mix.f32"), fd = openSync(raw, "wx");
     try {
-      for (let start = 0; start < plan.sampleCount; start += BLOCK) {
-        const count = Math.min(BLOCK, plan.sampleCount - start), end = start + count;
+      for (let start = mixStart; start < mixEnd; start += BLOCK) {
+        const count = Math.min(BLOCK, mixEnd - start), end = start + count;
         let mixBytes = count * BYTES * 3;
         if (mixBytes > mixBudget)
           throw new Error(`Audio mixing exceeds the configured ${mixBudget} byte memory budget`);
@@ -4767,7 +4845,7 @@ async function renderEditorAudio(options2) {
         }
         writeAll(fd, bytes);
         await yieldTask();
-        await progress2(0.5 + 0.45 * end / Math.max(1, plan.sampleCount), "mix-audio");
+        await progress2(0.5 + 0.45 * (end - mixStart) / Math.max(1, sampleCount), "mix-audio");
       }
     } finally {
       closeSync(fd);
@@ -5348,6 +5426,10 @@ async function exportEditorSequence(options2) {
   const sequence2 = document2.sequences.find((item) => item.id === options2.sequenceId);
   if (!sequence2) throw new Error("导出序列不存在");
   const fullDuration = sequenceDuration(sequence2), range = options2.range === void 0 ? void 0 : validateExportRange(options2.range, fullDuration), duration = range?.duration ?? fullDuration;
+  const audioRange = options2.audioRange === void 0 ? void 0 : validateExportRange(options2.audioRange, fullDuration);
+  if (audioRange && !sameExportRange(range, audioRange))
+    throw new Error("音频混音范围与导出范围不一致");
+  const audioDurationSeconds = audioRange ? (Math.ceil((audioRange.start + audioRange.duration) / 5) - Math.ceil(audioRange.start / 5)) / 48e3 : ticksToSeconds(fullDuration);
   const frameCount = ticksToFrame(duration, profile.frameRate, "ceil");
   if (!frameCount) throw new Error("空序列无法导出");
   const durationSeconds = frameCount * profile.frameRate.denominator / profile.frameRate.numerator;
@@ -5370,7 +5452,7 @@ async function exportEditorSequence(options2) {
   const audioProbe = JSON.parse(audioResult.stdout.toString("utf8"));
   const tracks = audioProbe.streams;
   const seconds = Number(tracks?.[0]?.duration ?? audioProbe.format?.duration);
-  if (!Array.isArray(tracks) || tracks.length !== 1 || tracks[0].codec_type !== "audio" || !["pcm_s16le", "pcm_f32le"].includes(tracks[0].codec_name) || Number(tracks[0].sample_rate) !== 48e3 || tracks[0].channels !== 2 || !Number.isFinite(seconds) || Math.abs(seconds - ticksToSeconds(fullDuration)) > 1 / 48e3 + 1e-6)
+  if (!Array.isArray(tracks) || tracks.length !== 1 || tracks[0].codec_type !== "audio" || !["pcm_s16le", "pcm_f32le"].includes(tracks[0].codec_name) || Number(tracks[0].sample_rate) !== 48e3 || tracks[0].channels !== 2 || !Number.isFinite(seconds) || Math.abs(seconds - audioDurationSeconds) > 1 / 48e3 + 1e-6)
     throw new Error("音频混音的格式或时长与序列不一致");
   await mkdir4(dirname3(options2.outputPath), { recursive: true });
   const temporary = join4(
@@ -5407,7 +5489,7 @@ async function exportEditorSequence(options2) {
         // can otherwise negotiate RGB here and insert a later default BT.601 conversion.
         `scale=out_color_matrix=bt709:out_range=limited,format=${profile.videoCodec === "prores" ? "yuv422p10le" : "yuv420p"},setparams=colorspace=bt709:range=limited`,
         "-af",
-        `${range ? `${exportRangeAudioFilter(range)},` : ""}apad,atrim=end_sample=${Math.ceil(durationSeconds * 48e3)}`,
+        `${range && !audioRange ? `${exportRangeAudioFilter(range)},` : ""}apad,atrim=end_sample=${Math.ceil(durationSeconds * 48e3)}`,
         ...exportEncodingArguments(profile),
         "-color_primaries",
         "bt709",
@@ -5726,16 +5808,17 @@ function validateEditorRequest(value) {
     if (input.preparedAudio !== void 0) {
       const audio2 = record(
         input.preparedAudio,
-        ["documentHash", "sequenceId", "recipeHash", "assetId"],
+        ["documentHash", "sequenceId", "recipeHash", "assetId", "range"],
         "已准备声音"
       );
       result.preparedAudio = {
         documentHash: hash(audio2.documentHash),
         sequenceId: id2(audio2.sequenceId),
         recipeHash: hash(audio2.recipeHash),
-        assetId: resourceId(audio2.assetId)
+        assetId: resourceId(audio2.assetId),
+        ...audio2.range === void 0 ? {} : { range: validateExportRange(record(audio2.range, ["start", "duration"], "已准备声音范围")) }
       };
-      if (!result.preparedAudio.assetId.startsWith("asset-") || audio2.documentHash !== result.documentHash || audio2.sequenceId !== result.sequenceId)
+      if (!result.preparedAudio.assetId.startsWith("asset-") || audio2.documentHash !== result.documentHash || audio2.sequenceId !== result.sequenceId || audio2.range !== void 0 && !sameExportRange(audio2.range, result.range))
         throw new EditorTaskError("MIX_MISMATCH", "已准备声音与当前工程快照不一致");
     }
   }
@@ -8211,7 +8294,7 @@ async function runEditorRequest(raw, context) {
         artifacts
       };
     }
-    const recipeHash = digest2({
+    const fullRecipeHash = digest2({
       recipe: "editor-audio-v2-timestamps",
       builtinNarration: installedNarration?.binding,
       documentHash: manifest.documentHash,
@@ -8219,16 +8302,15 @@ async function runEditorRequest(raw, context) {
       bindings: manifest.bindings,
       ffmpegVersion
     });
-    const mixes = await directory(cache, ["mixes", recipeHash]);
-    let mix = await optionalJson(mixes, ["receipt.json"]);
-    const expected = request.preparedAudio;
-    if (expected && (expected.recipeHash !== recipeHash || expected.documentHash !== manifest.documentHash || expected.sequenceId !== manifest.sequenceId))
+    const expected = request.preparedAudio, fullMixes = await directory(cache, ["mixes", fullRecipeHash]), fullMix = await optionalJson(fullMixes, ["receipt.json"]), preparation = request.range && (expected?.range || !expected && !fullMix) ? editorRangeAudioPreparation(compileAudioPlan(selected.document, manifest.sequenceId), request.range) : {}, audioRange = preparation.range, recipeHash = audioRange ? digest2({ recipe: "editor-audio-range-v1", fullRecipeHash, range: audioRange }) : fullRecipeHash, mixes = audioRange ? await directory(cache, ["mixes", recipeHash]) : fullMixes;
+    let mix = audioRange ? await optionalJson(mixes, ["receipt.json"]) : fullMix;
+    if (expected && (expected.recipeHash !== recipeHash || expected.documentHash !== manifest.documentHash || expected.sequenceId !== manifest.sequenceId || !sameExportRange(expected.range, audioRange)))
       throw new EditorTaskError("MIX_MISMATCH", "声音处理配方或源素材已变化，请重新准备声音");
     if (expected && !mix)
       throw new EditorTaskError("MIX_UNAVAILABLE", "已准备声音缓存已释放，请重新准备声音");
     let reused = Boolean(mix);
     if (mix) {
-      if (mix.recipeHash !== recipeHash || mix.documentHash !== manifest.documentHash || mix.sequenceId !== manifest.sequenceId || expected && expected.assetId !== mix.assetId)
+      if (mix.recipeHash !== recipeHash || mix.documentHash !== manifest.documentHash || mix.sequenceId !== manifest.sequenceId || !sameExportRange(mix.range, audioRange) || expected && expected.assetId !== mix.assetId)
         throw new EditorTaskError("MIX_MISMATCH", "已准备声音回执不匹配");
       const audioPath = await regular(mixes, ["audio.wav"]);
       if (`asset-${await fileHash(audioPath, context.signal)}` !== mix.assetId || await fileHash(await regular(mixes, ["report.json"]), context.signal) !== mix.reportHash)
@@ -8237,6 +8319,7 @@ async function runEditorRequest(raw, context) {
       const rendered = await renderEditorAudio({
         document: selected.document,
         sequenceId: manifest.sequenceId,
+        ...audioRange ? { range: audioRange } : {},
         resolveAssetPath: async (id3) => original(id3).path,
         ffmpegPath: ffmpegPath2,
         ffprobePath: ffprobePath2,
@@ -8260,6 +8343,7 @@ async function runEditorRequest(raw, context) {
         recipeHash,
         assetId,
         sampleCount: rendered.sampleCount,
+        ...rendered.range ? { range: rendered.range } : {},
         peak: rendered.peak,
         samplesOverFullScale: rendered.samplesOverFullScale,
         reportHash: bytesHash(reportBytes)
@@ -8270,7 +8354,8 @@ async function runEditorRequest(raw, context) {
       documentHash: mix.documentHash,
       sequenceId: mix.sequenceId,
       recipeHash: mix.recipeHash,
-      assetId: mix.assetId
+      assetId: mix.assetId,
+      ...mix.range ? { range: mix.range } : {}
     };
     const audio2 = await add2(
       await regular(mixes, ["audio.wav"]),
@@ -8306,7 +8391,7 @@ async function runEditorRequest(raw, context) {
       ...request.range ? { range: request.range } : {},
       ...request.range ? await measureEditorExportAudioRange({
         audioFile: await regular(mixes, ["audio.wav"]),
-        range: request.range,
+        range: mix.range ? { start: 0, duration: mix.sampleCount * 5 } : request.range,
         ffmpegPath: ffmpegPath2,
         signal: context.signal
       }) : validateAudioMixReport(mix)
@@ -8315,8 +8400,9 @@ async function runEditorRequest(raw, context) {
     if (bytesHash(Buffer.from(context.runtimeSource)) !== context.runtimeSha)
       throw new EditorTaskError("RUNTIME_CHANGED", "安装的渲染运行代码校验失败");
     const mediaFiles = /* @__PURE__ */ new Map();
-    for (let index = 0; index < selected.document.assets.length; index++) {
-      const asset2 = selected.document.assets[index];
+    const visualAssets = request.range ? editorRangeVisualAssets(selected.document, manifest.sequenceId, request.range) : void 0, pictureAssets = selected.document.assets.filter((asset2) => !visualAssets || visualAssets.has(asset2.id));
+    for (let index = 0; index < pictureAssets.length; index++) {
+      const asset2 = pictureAssets[index];
       if (asset2.kind === "video") {
         const proxy = await video(asset2.id, true);
         mediaFiles.set(asset2.id, { path: proxy.path, mimeType: proxy.mimeType });
@@ -8331,7 +8417,7 @@ async function runEditorRequest(raw, context) {
         mediaFiles.set(asset2.id, { path: input.path, mimeType: mimeType2 });
       }
       await progress2(
-        0.25 + (index + 1) / Math.max(1, selected.document.assets.length) * 0.15,
+        0.25 + (index + 1) / Math.max(1, pictureAssets.length) * 0.15,
         "prepare-video"
       );
     }
@@ -8345,6 +8431,7 @@ async function runEditorRequest(raw, context) {
       runtimeSource: context.runtimeSource,
       workDir: work,
       audioFile: await regular(mixes, ["audio.wav"]),
+      ...mix.range ? { audioRange: mix.range } : {},
       outputPath: outputPath2,
       ffmpegPath: ffmpegPath2,
       ffprobePath: ffprobePath2,
@@ -8363,6 +8450,11 @@ async function runEditorRequest(raw, context) {
       ...request.range ? { range: request.range } : {},
       preparedAudio,
       audioMix,
+      preparation: {
+        pictureAssetCount: pictureAssets.filter((asset2) => ["video", "image"].includes(asset2.kind)).length,
+        audio: mix.range ? "range" : "full",
+        ...preparation.fallback ? { audioFallback: preparation.fallback } : {}
+      },
       runtimeSha: context.runtimeSha,
       profile: request.profile,
       frameCount: output.frameCount,

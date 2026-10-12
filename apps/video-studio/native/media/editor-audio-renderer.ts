@@ -12,6 +12,8 @@ import {
   type AudioPlanSpan,
 } from "../../src/editor/audio-plan.js";
 import { mediaAbortError, runMediaProcess } from "./media-process-runner.js";
+import { editorRangeAudioPreparation } from "./editor-range-preparation.js";
+import type { ExportRange } from "../../src/editor/export-range.js";
 
 export interface EditorAudioRenderOptions {
   document: unknown;
@@ -24,6 +26,8 @@ export interface EditorAudioRenderOptions {
   cacheDir: string;
   outputPath: string;
   signal: AbortSignal;
+  /** Optional original-clock export window; unsafe stateful processing retains a full mix. */
+  range?: ExportRange;
   onProgress?: (progress: { fraction: number; stage: string }) => void | Promise<void>;
   /** Explicit disk budget, applied before decoding or writing PCM; no media is silently omitted. */
   maxPcmBytes?: number;
@@ -45,6 +49,9 @@ export interface EditorAudioRenderResult {
   peak: number;
   /** Float WAV retains headroom instead of silently normalizing the user's mix. */
   samplesOverFullScale: number;
+  /** Present only when this WAV contains the requested original-clock sample window. */
+  range?: ExportRange;
+  rangeFallback?: "ducking" | "stretch" | "sub-sample";
   assets: EditorAudioAssetReport[];
   processing: {
     algorithm: "sample-mapped-pcm+ffmpeg-atempo-wsola-v1";
@@ -208,7 +215,7 @@ function tempoFilters(factor: number): string[] {
 }
 
 /**
- * Produce the same reusable 48k stereo float WAV for preview and final video muxing.
+ * Produce a reusable 48k stereo float WAV, or a safe original-clock export window.
  * Tick maps, envelopes and placement are evaluated per sample. Pitch-preserving retiming uses
  * FFmpeg's WSOLA, with 250ms context around each constant-rate span; it can change waveform phase.
  * Sidechain detection uses the actual dry mix, so cycles have deterministic, feedback-free meaning.
@@ -225,7 +232,14 @@ export async function renderEditorAudio(
   }))
     if (!isAbsolute(path)) throw new Error(`${name} must be an absolute authorized path`);
   const plan = compileAudioPlan(options.document, options.sequenceId);
-  const lanes = plan.lanes.filter((lane) => lane.spans.length > 0);
+  const preparation = options.range === undefined ? {} : editorRangeAudioPreparation(plan, options.range),
+    range = preparation.range,
+    mixStart = range ? Math.ceil(range.start / TICKS_PER_AUDIO_SAMPLE) : 0,
+    mixEnd = range ? Math.ceil((range.start + range.duration) / TICKS_PER_AUDIO_SAMPLE) : plan.sampleCount,
+    sampleCount = mixEnd - mixStart,
+    lanes = plan.lanes.map((lane) => ({ ...lane, spans: lane.spans.filter((span) =>
+      span.startSample < mixEnd && span.endSample > mixStart,
+    ) })).filter((lane) => lane.spans.length > 0);
   const budget = options.maxPcmBytes ?? 64 * 1024 ** 3;
   const mixBudget = options.maxMixBytes ?? 256 * 1024 ** 2;
   if (!Number.isSafeInteger(mixBudget) || mixBudget < BYTES)
@@ -238,7 +252,7 @@ export async function renderEditorAudio(
       throw new Error(`Audio PCM exceeds the configured ${budget} byte disk budget`);
     reserved += bytes;
   };
-  reserve(plan.sampleCount * BYTES * 2);
+  reserve(sampleCount * BYTES * 2);
   await mkdir(options.workDir, { recursive: true });
   await mkdir(options.cacheDir, { recursive: true });
   await mkdir(dirname(options.outputPath), { recursive: true });
@@ -250,7 +264,9 @@ export async function renderEditorAudio(
     path: options.outputPath,
     sampleRate: RATE,
     channels: CHANNELS,
-    sampleCount: plan.sampleCount,
+    sampleCount,
+    ...(range ? { range } : {}),
+    ...(preparation.fallback ? { rangeFallback: preparation.fallback } : {}),
     peak: 0,
     samplesOverFullScale: 0,
     assets: [],
@@ -490,8 +506,8 @@ export async function renderEditorAudio(
     const raw = join(temporary, "mix.f32"),
       fd = openSync(raw, "wx");
     try {
-      for (let start = 0; start < plan.sampleCount; start += BLOCK) {
-        const count = Math.min(BLOCK, plan.sampleCount - start),
+      for (let start = mixStart; start < mixEnd; start += BLOCK) {
+        const count = Math.min(BLOCK, mixEnd - start),
           end = start + count;
         let mixBytes = count * BYTES * 3;
         if (mixBytes > mixBudget)
@@ -602,7 +618,7 @@ export async function renderEditorAudio(
         }
         writeAll(fd, bytes);
         await yieldTask();
-        await progress(0.5 + (0.45 * end) / Math.max(1, plan.sampleCount), "mix-audio");
+        await progress(0.5 + (0.45 * (end - mixStart)) / Math.max(1, sampleCount), "mix-audio");
       }
     } finally {
       closeSync(fd);

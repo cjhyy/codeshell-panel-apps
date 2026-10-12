@@ -11,13 +11,14 @@ import {
 } from "../../src/editor/export-settings.js";
 import { validateEditorDocument, sequenceDuration } from "../../src/editor/validation.js";
 import { frameToTicks, ticksToFrame, ticksToSeconds } from "../../src/editor/time.js";
-import { validateExportRange, type ExportRange } from "../../src/editor/export-range.js";
+import { sameExportRange, validateExportRange, type ExportRange } from "../../src/editor/export-range.js";
 import { validateAudioMixReport, type EditorAudioMixReport } from "../../src/editor/audio-mix-report.js";
 import { runMediaProcess } from "../process-runner.js";
 
 export interface EditorExportOptions extends EditorFrameRendererOptions {
-  /** Completed full-sequence stereo 48 kHz PCM mix, shared with preview. */
+  /** Completed stereo 48 kHz PCM mix. Without audioRange this is the full preview mix. */
   audioFile: string;
+  audioRange?: ExportRange;
   range?: ExportRange;
   outputPath: string;
   ffmpegPath?: string;
@@ -89,6 +90,12 @@ export async function exportEditorSequence(
   const fullDuration = sequenceDuration(sequence),
     range = options.range === undefined ? undefined : validateExportRange(options.range, fullDuration),
     duration = range?.duration ?? fullDuration;
+  const audioRange = options.audioRange === undefined ? undefined : validateExportRange(options.audioRange, fullDuration);
+  if (audioRange && !sameExportRange(range, audioRange))
+    throw new Error("音频混音范围与导出范围不一致");
+  const audioDurationSeconds = audioRange
+    ? (Math.ceil((audioRange.start + audioRange.duration) / 5) - Math.ceil(audioRange.start / 5)) / 48000
+    : ticksToSeconds(fullDuration);
   const frameCount = ticksToFrame(duration, profile.frameRate, "ceil");
   if (!frameCount) throw new Error("空序列无法导出");
   const durationSeconds =
@@ -131,7 +138,7 @@ export async function exportEditorSequence(
     Number(tracks[0].sample_rate) !== 48000 ||
     tracks[0].channels !== 2 ||
     !Number.isFinite(seconds) ||
-    Math.abs(seconds - ticksToSeconds(fullDuration)) > 1 / 48000 + 0.000001
+    Math.abs(seconds - audioDurationSeconds) > 1 / 48000 + 0.000001
   )
     throw new Error("音频混音的格式或时长与序列不一致");
   await mkdir(dirname(options.outputPath), { recursive: true });
@@ -169,7 +176,7 @@ export async function exportEditorSequence(
         // can otherwise negotiate RGB here and insert a later default BT.601 conversion.
         `scale=out_color_matrix=bt709:out_range=limited,format=${profile.videoCodec === "prores" ? "yuv422p10le" : "yuv420p"},setparams=colorspace=bt709:range=limited`,
         "-af",
-        `${range ? `${exportRangeAudioFilter(range)},` : ""}apad,atrim=end_sample=${Math.ceil(durationSeconds * 48000)}`,
+        `${range && !audioRange ? `${exportRangeAudioFilter(range)},` : ""}apad,atrim=end_sample=${Math.ceil(durationSeconds * 48000)}`,
         ...exportEncodingArguments(profile),
         "-color_primaries",
         "bt709",

@@ -31,7 +31,7 @@ before(async () => {
   const native = join(temporary, "native.mjs");
   await build({
     stdin: {
-      contents: `export * from './apps/video-studio/src/editor/sequence-edits';export * from './apps/video-studio/src/editor/defaults';export * from './apps/video-studio/src/editor/operations';export * from './apps/video-studio/src/editor/export-settings';export * from './apps/video-studio/native/media/editor-frame-renderer';export * from './apps/video-studio/native/media/editor-export';export * from './apps/video-studio/native/media/editor-audio-renderer';`,
+      contents: `export * from './apps/video-studio/src/editor/sequence-edits';export * from './apps/video-studio/src/editor/defaults';export * from './apps/video-studio/src/editor/operations';export * from './apps/video-studio/src/editor/export-settings';export * from './apps/video-studio/native/media/editor-frame-renderer';export * from './apps/video-studio/native/media/editor-export';export * from './apps/video-studio/native/media/editor-audio-renderer';export * from './apps/video-studio/native/media/editor-range-preparation';`,
       resolveDir: root,
     },
     bundle: true,
@@ -221,7 +221,7 @@ function fixture() {
   };
 }
 const apply = (doc, plan) => api.applyEditorOperations(doc, plan.operations, doc.revision);
-async function render(doc, name, range, includeCaptions = true) {
+async function render(doc, name, range, includeCaptions = true, bounded = false) {
   const workDir = await mkdtemp(join(temporary, `${name}-`)),
     signal = new AbortController().signal,
     audioFile = join(workDir, "mix.wav"),
@@ -236,6 +236,7 @@ async function render(doc, name, range, includeCaptions = true) {
     cacheDir: join(temporary, "audio-cache"),
     outputPath: audioFile,
     signal,
+    ...(bounded ? { range } : {}),
   });
   const profile = {
     ...api.createExportPresets()[0],
@@ -249,11 +250,12 @@ async function render(doc, name, range, includeCaptions = true) {
     document: doc,
     sequenceId: "main",
     profile,
-    mediaFiles: new Map([["video", { path: videoPath, mimeType: "video/webm" }]]),
+    mediaFiles: new Map([...(bounded && !api.editorRangeVisualAssets(doc, "main", range).has("video") ? [] : [["video", { path: videoPath, mimeType: "video/webm" }]])]),
     runtimeSource,
     workDir,
     audioFile,
     range,
+    audioRange: audio.range,
     outputPath,
     signal,
   });
@@ -269,12 +271,16 @@ test("range frames equal the original NTSC frame window through nested source-bo
     before = structuredClone(doc), range = { start: 80080, duration: 80080 },
     full = await render(doc, "full-source-clock"),
     part = await render(doc, "range-source-clock", range),
+    bounded = await render(doc, "range-bounded", range, true, true),
     noCaptions = await render(doc, "range-no-captions", range, false),
     bytesPerFrame = 96 * 64 * 3;
   assert.equal(part.result.frameCount, 10);
   assert.equal(part.result.durationSeconds, 1001 / 3000);
   assert.deepEqual(part.result.range, range);
   assert.deepEqual(part.pixels, full.pixels.subarray(10 * bytesPerFrame, 20 * bytesPerFrame), compareBytes(part.pixels, full.pixels.subarray(10 * bytesPerFrame, 20 * bytesPerFrame), "range RGB"));
+  assert.deepEqual(bounded.pixels, part.pixels, "bounded dependencies preserve original transition/subtitle/alpha pixels");
+  assert.deepEqual(bounded.samples, part.samples, "retiming retains the original full mix instead of changing WSOLA phase");
+  assert.equal(bounded.audio.rangeFallback, "stretch");
   assert.notDeepEqual(part.pixels, noCaptions.pixels, "includeCaptions reaches the source-bound nested subtitle");
   assert.deepEqual(doc, before);
 });
