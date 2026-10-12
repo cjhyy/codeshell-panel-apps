@@ -92,6 +92,11 @@
   margin: 0;
   white-space: normal;
 }
+.editor-inspector .ei-scale-ratio[aria-pressed="true"] {
+  color: #b8f3d9;
+  background: #314539;
+  border-color: var(--ei-accent);
+}
 .editor-inspector .ei-section {
   padding-bottom: 16px;
   margin-bottom: 16px;
