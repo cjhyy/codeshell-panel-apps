@@ -898,3 +898,69 @@ unlink/End末项可达及两步undo。
 这与第十六批hourzoom/select失败不同；Linux middle-button PRIMARY paste目前
 只是优先假设，需原生event trace及修复后的最终CI核验，未写为已知根因。
 第二十批本地通过不替代此远端失败，也不借用第十八批全绿证明当前远端状态。
+
+
+## 第二十一批：文字两击入口、字幕导出草稿与工程预设归属
+
+只挑0f7f499（parent4e）、672dfb6（parente0）、21ec4ec（parente0）的唯一增量。
+文字入口沿既有鼠标capture，只识别两次同scope、同片段、未移动的primary mouse
+completed release（≤500ms/4px）；原生trace无click/dblclick，未装无效dblclick listener。
+打开当前Inspector文字页和正文，窄窗通过既有showInspector展开；锁轨说明、
+ordinary group/link多选保持，字幕words/sourceBinding不改。合法草稿正常保存一次，
+invalid/rejected保值保焦点；source/hidden/gen/seq/clock/selection/viewport/dispose取消
+旧owner。两项独立实证P2已修：initial read不能覆盖较新owner，旧finally不能清新
+第一击记录。候选最后修补前affected854/854，最后修补后18目标、Main280/390两项、
+独立2/2与类型通过；不把前854计作最后源全量证明。
+
+SRT只有所选ids复用assertSavedRows，primary pointerdown保原IME焦点；所选文字/
+非法时间/实际CDP中文组合三条旧源各真实下载旧SRT为RED，修后4/4，完整Captions
+75/75、类型、源码peer通过。未选草稿不阻，锁轨只读导出允许，保存后下载新文
+且保存的一次undo保留；导出本身不写history。
+
+预设Save/Remove捕获原session与openedIdentity，reportValidity/assertEditable/read
+前后assertSnapshot，保留apply/reconcile语义，最终session.dispatch严格expected
+identity写入，cleanup只关原dialog。旧ID/revision相同但generation已变、以及
+assertEditable/read重入两路共6个正式RED，最终8/8、独立2/2、类型通过。280/390
+实际摘要明确区分自定义59.94和固定预设30、保exact范围，bottom按钮可原生滚达。
+
+根文字手合5处冲突，保root20 audio/rightmenu与root19 pan/marker，并仅追加218行
+文字测试到现有根文件，不以旧文件替换。新增text/audio/pan/marker/trim互斥、
+follow/trackHeight阻挡，安装/取消text owner更新按钮状态。两个真实组合在无根
+guard基线为1RED（待text navigation轨高仍可用）+1GREEN（audio持保存），补guard
+后2/2GREEN；正文、audio/pan共20目标通过。合并preset后的26定向、完整Captions
+75/75，以及含两owner和Main窄窗的20目标通过，互不借用全量计数。独立源逐段
+复核：audio/menu去掉新text guard仍与ac96145相同，text owner去掉root组合guard
+仍与0f候选相同，Workspace文字与modifyPresets各与候选逐段相同。
+
+最终合并后的source/generated/types/fullUI/media/offline需另跑，未借用第二十批
+1439或231数值。本批还在整合Linux中键release默认粘贴修复，远端CI19三项失败
+仍如实保留。
+
+
+Linux中键release默认保护只挑6244ce6（parente0）的17行源和47行正式native tests，
+根冲突保既有audio/text/pan阻挡，并仅追加新测试。独立Linux Chromium154实际
+trace为pointerdown→pointerup→trusted paste→beforeinput/input(insertFromPaste)，
+没有DOM mousedown/mouseup/auxclick；仅拦auxclick无效。owned view中键按下记录
+pointerId，document capture同id/button1 up只消费一次preventDefault，仍传播原
+pointerup；Escape/blur结束pan后原release仍保护，下一次任何down先清记录，
+editable自身新middlepress沿native语义，dispose清/拆listener，无timer。
+
+同正式tests配旧源Linux两条RED（未cancel release及trusted paste路径），新源
+Linux/Darwin各5/5（含原3草稿/IME），类型、独立源码peer通过。限制：此次容器
+PRIMARY为空，真实selection/CtrlC准备也未稳定得到CI的0.000000追加，未宣称
+CI三字符串已经本机精确重现；最终远端新head需确认。Linux命令以host源码bundle
+只读挂已有容器、--network none/--pull never，没有下载依赖或更改生产环境。
+
+根最终Timeline b04f272、Workspace 0dd1bb7冻结后的Linux原生5/5、Darwin中键/文字
+组合9/9通过，独立held-text/pan/follow/native-input组合1/1通过；完整媒体231/231
+（165838ms），offline1136通过3可选跳过、voice5通过1可选跳过、workspace docs5/5。
+类型、build、build:check、validate39及diffcheck通过。完整UI1474/1474通过，
+无跳过或取消，耗时833364ms；这才是本批最终组合源码的完整回归计数。
+
+下一轮只处理实际RED：Inspector opacity101尚未blur时，native点击Workspace导出
+或Main外部导出按钮，旧入口把草稿复位100并打开窗口。两入口均已有原生RED，
+将复用现有字段finisher，先完成合法输入，再校验原工程归属后开窗。
+
+只读后续摩擦保留：精确等比缩放目前需分别提交横纵数值（画布已有等比手柄）；
+多轨临时单独试听需修改工程mute并还原。前者涉及动画/零比例/多选，后者涉及
+ducking/嵌套/cache与preview-only语义，均不扩入最后一轮。

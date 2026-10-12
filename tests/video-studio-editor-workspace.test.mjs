@@ -3208,6 +3208,68 @@ async function selectExportMatrix(page) {
   await page.locator('dialog [name="profiles"][value="landscape-1080p"]').check();
   await page.locator('dialog [name="profiles"][value="portrait-1080p"]').check();
 }
+
+for (const operation of ["save", "remove"]) {
+  for (const change of ["generation", "read-reentry", "editable-reentry"]) {
+    test(`export preset ${operation} refuses ${change} without modifying the successor project`, async (t) => {
+      const page = await fixture(t);
+      await action(page, "export").click();
+      await page.locator('dialog [name="presetName"]').fill("已保存预设");
+      await page.locator("[data-save-export-preset]").click();
+      await page.locator("dialog").waitFor({ state: "detached" });
+      const profile = (await documentState(page)).exportProfiles[0];
+      await action(page, "export").click();
+      if (operation === "remove") await page.locator('dialog [name="preset"]').selectOption(profile.id);
+      else await page.locator('dialog [name="presetName"]').fill("旧窗口预设草稿");
+      const identity = await page.evaluate(() => fixture.state().identity);
+      const before = await documentState(page);
+      if (change === "generation") await replaceExportProject(page, "same-id-same-revision-reopen");
+      else await page.evaluate((change) => {
+        const { workspace, session } = fixture.internals;
+        if (change === "editable-reentry") workspace.options.assertEditable = () => {
+          workspace.options.assertEditable = undefined; fixture.externalEdit();
+        };
+        else {
+          const read = session.read.bind(session);
+          session.read = () => { const old = read(); session.read = read; fixture.externalEdit(); return old; };
+        }
+      }, change);
+      await page.locator(operation === "save" ? "[data-save-export-preset]" : "[data-remove-export-preset]").click();
+      await settle(page);
+      const after = await documentState(page);
+      assert.deepEqual(after.exportProfiles, before.exportProfiles);
+      if (change === "generation") {
+        const current = await page.evaluate(() => fixture.state().identity);
+        assert.equal(current.documentId, identity.documentId); assert.equal(current.revision, identity.revision);
+        assert.notEqual(current.generation, identity.generation);
+      }
+      assert.match(await page.locator(".ew-form-error").innerText(), /工程已|重新打开|修订/);
+      assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+    });
+  }
+}
+
+test("export preset save and remove each remain one undo and invalid fields remain correctable", async (t) => {
+  const page = await fixture(t), before = await documentState(page);
+  await action(page, "export").click();
+  const width = page.locator('dialog [name="width"]'); await width.fill("321");
+  await page.locator("[data-save-export-preset]").click();
+  assert.deepEqual(await documentState(page), before); assert.equal(await width.inputValue(), "321");
+  await width.fill("320"); await page.locator('dialog [name="presetName"]').fill("精确帧率预设");
+  await page.locator('dialog [name="rate"]').selectOption("60000/1001");
+  await page.locator("[data-save-export-preset]").click(); await page.locator("dialog").waitFor({ state: "detached" });
+  const saved = await documentState(page); assert.equal(saved.exportProfiles.length, 1);
+  assert.deepEqual(saved.exportProfiles[0].frameRate, { numerator: 60000, denominator: 1001 });
+  await action(page, "undo").click(); await settle(page); assert.deepEqual((await documentState(page)).exportProfiles, []);
+  await action(page, "redo").click(); await settle(page);
+  await action(page, "export").click();
+  await page.locator('dialog [name="preset"]').selectOption(saved.exportProfiles[0].id);
+  await page.locator("[data-remove-export-preset]").click(); await page.locator("dialog").waitFor({ state: "detached" });
+  assert.deepEqual((await documentState(page)).exportProfiles, []);
+  await action(page, "undo").click(); await settle(page);
+  assert.deepEqual((await documentState(page)).exportProfiles, saved.exportProfiles);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
 const exportMatrix = [
   ["main", "landscape-1080p"],
   ["main", "portrait-1080p"],
@@ -8473,4 +8535,335 @@ test("native middle pan cannot scroll during held original audio persistence", a
   assert.equal((await documentState(page)).sequences[0].clips.length, 2);
   assert.equal((await documentState(page)).revision, before.revision + 1);
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("timeline text double click opens the wording tab and focuses saved text without editing", async (t) => {
+  const page = await fixture(t);
+  await page.getByRole("button", { name: "添加文字", exact: true }).click();
+  const title = (await documentState(page)).sequences[0].clips.at(-1);
+  await page.getByRole("tab", { name: "画面", exact: true }).click();
+  await clip(page, "a").click();
+  const before = await documentState(page), history = await page.evaluate(() => ({ canUndo: fixture.state().canUndo, canRedo: fixture.state().canRedo, undoLabel: fixture.state().undoLabel }));
+  await clip(page, title.id).dblclick(); await settle(page);
+  assert.equal(await page.getByRole("tab", { name: "文字", exact: true }).getAttribute("aria-selected"), "true");
+  const field = page.getByLabel("文字内容（保留换行）", { exact: true });
+  assert.equal(await field.inputValue(), title.text);
+  assert.equal(await field.evaluate((node) => node === document.activeElement), true);
+  assert.deepEqual(await page.evaluate(() => fixture.selection()), [title.id]);
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => ({ canUndo: fixture.state().canUndo, canRedo: fixture.state().canRedo, undoLabel: fixture.state().undoLabel })), history);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+async function textDoubleClickFixture(t, options = {}) {
+  const page = await fixture(t, options);
+  await page.getByRole("button", { name: "添加文字", exact: true }).click();
+  page.textClipId = (await documentState(page)).sequences[0].clips.at(-1).id;
+  await page.getByRole("tab", { name: "画面", exact: true }).click();
+  await clip(page, "a").click();
+  return page;
+}
+const textWordingFocused = (page) => page.getByLabel("文字内容（保留换行）", { exact: true }).evaluateAll((nodes) => nodes.some((node) => node === document.activeElement));
+
+test("timeline text double click finishes a valid Inspector draft in one edit and retains invalid or rejected drafts", async (t) => {
+  for (const value of ["25", "1001", "rejected"]) {
+    const page = await textDoubleClickFixture(t), before = await documentState(page);
+    const field = page.getByLabel("水平位置（%）", { exact: true }); await field.fill(value === "rejected" ? "25" : value);
+    if (value === "rejected") await page.evaluate(() => { fixture.internals.workspace.inspector.context.apply = async () => { throw new Error("草稿提交失败"); }; });
+    await clip(page, page.textClipId).dblclick(); await settle(page);
+    const after = await documentState(page);
+    if (value === "25") {
+      assert.equal(await textWordingFocused(page), true); assert.equal(after.revision, before.revision + 1);
+      assert.equal(after.sequences[0].clips.find((item) => item.id === "a").transform.x, .25);
+      await action(page, "undo").click(); await settle(page);
+      assert.deepEqual((await documentState(page)).sequences, before.sequences);
+      assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+    } else {
+      assert.deepEqual(after, before); assert.equal(await textWordingFocused(page), false);
+      assert.equal(await field.inputValue(), value === "rejected" ? "25" : value);
+      assert.equal(await field.evaluate((node) => node === document.activeElement), true);
+      assert.match((await page.evaluate(() => fixture.errors)).at(-1), value === "rejected" ? /草稿提交失败/ : /水平位置/);
+    }
+  }
+});
+
+for (const label of ["片段名称", "轨道名称 画面轨"]) test(`timeline text double click finishes native Chinese IME ${label} exactly once`, async (t) => {
+  const page = await textDoubleClickFixture(t), before = await documentState(page), input = page.getByLabel(label, { exact: true });
+  await input.focus(); await input.selectText();
+  await input.evaluate((node) => { globalThis.textImeEnds = 0; node.addEventListener("compositionend", () => textImeEnds++); });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.imeSetComposition", { text: "中文草稿", selectionStart: 4, selectionEnd: 4 });
+  await clip(page, page.textClipId).dblclick(); await settle(page);
+  const after = await documentState(page); assert.equal(after.revision, before.revision + 1);
+  assert.equal(await page.evaluate(() => textImeEnds), 1); assert.equal(await textWordingFocused(page), true);
+  assert.equal(label === "片段名称" ? after.sequences[0].clips.find((item) => item.id === "a").label
+    : after.sequences[0].tracks.find((item) => item.id === "video").name, "中文草稿");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("timeline text double click preserves caption alignment and group/link selection and explains locked text", async (t) => {
+  for (const mode of ["caption", "group", "link", "locked"]) {
+    const page = await textDoubleClickFixture(t);
+    await page.evaluate(({ id, mode }) => {
+      const title = fixture.read().sequences[0].clips.find((item) => item.id === id);
+      const operations = mode === "locked"
+        ? [{ type: "track.update", sequenceId: "main", trackId: title.trackId, patch: { locked: true } }]
+        : mode === "caption"
+          ? [{ type: "clip.update", sequenceId: "main", clipId: id, patch: { role: "subtitle", sourceBinding: { clipId: "a", sourceStart: 0, sourceEnd: title.duration }, words: [{ text: title.text, start: 0, end: title.duration }] } }]
+          : [id, "a"].map((clipId) => ({ type: "clip.update", sequenceId: "main", clipId, patch: { [mode === "group" ? "groupId" : "linkGroupId"]: "paired-text" } }));
+      fixture.dispatch(operations, "准备文字入口");
+    }, { id: page.textClipId, mode });
+    const before = await documentState(page);
+    await clip(page, page.textClipId).dblclick(); await settle(page);
+    assert.deepEqual(await documentState(page), before);
+    if (mode === "caption") { assert.equal(await textWordingFocused(page), true); assert.deepEqual(await page.evaluate(() => fixture.selection()), [page.textClipId]); }
+    else {
+      assert.equal(await textWordingFocused(page), false);
+      assert.match(await page.locator(".et-notice").innerText(), mode === "locked" ? /锁定/ : /多选.*逐个编辑/);
+      if (mode !== "locked") assert.deepEqual(new Set(await page.evaluate(() => fixture.selection())), new Set(["a", page.textClipId]));
+    }
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  }
+});
+
+for (const change of ["generation", "sequence", "selection", "clock", "source", "hidden", "escape", "dispose"])
+  test(`timeline text double click cancels a delayed navigation after ${change}`, async (t) => {
+    const page = await textDoubleClickFixture(t, { sequenceCount: 2 });
+    await page.evaluate(() => {
+      const context = fixture.internals.workspace.timeline.context, before = context.beforeGesture; let calls = 0;
+      context.beforeGesture = (signal) => ++calls === 3 ? new Promise((resolve) => globalThis.releaseTextNavigation = () => resolve(true)) : before(signal);
+    });
+    await clip(page, page.textClipId).dblclick();
+    await page.waitForFunction(() => !!fixture.internals.workspace.timeline.textNavigation && !!globalThis.releaseTextNavigation);
+    if (change === "escape") await page.keyboard.press("Escape");
+    else await page.evaluate(async (change) => {
+      const { workspace, session } = fixture.internals;
+      if (change === "generation") await session.replace({ ...fixture.read(), name: "新代际" });
+      if (change === "sequence") fixture.dispatch([{ type: "sequence.activate", sequenceId: "sequence-2" }], "切换序列");
+      if (change === "selection") workspace.selectClips("main", ["a"]);
+      if (change === "clock") workspace.seek(13, true);
+      if (change === "source") workspace.setSourcePreview(true);
+      if (change === "hidden") workspace.setVisible(false);
+      if (change === "dispose") await workspace.dispose();
+    }, change);
+    const before = await documentState(page);
+    await page.evaluate(() => releaseTextNavigation()); await settle(page);
+    assert.equal(await textWordingFocused(page), false); assert.deepEqual(await documentState(page), before);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.textNavigation), false);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+
+test("timeline text double click guards Inspector expansion and fresh reads against synchronous scope changes", async (t) => {
+  for (const change of ["read", "expand-revision", "expand-selection", "expand-dispose"]) {
+    const page = await textDoubleClickFixture(t);
+    await page.evaluate((change) => {
+      const { workspace } = fixture.internals;
+      if (change === "read") {
+        const open = workspace.timeline.openText;
+        workspace.timeline.openText = function (...args) {
+          workspace.timeline.openText = open; const context = this.context, read = context.read;
+          context.read = () => { const old = read(); context.read = read; fixture.externalEdit(); return old; };
+          return open.apply(this, args);
+        };
+      } else workspace.options.showInspector = () => {
+        if (change === "expand-revision") fixture.externalEdit();
+        if (change === "expand-selection") workspace.selectClips("main", ["a"]);
+        if (change === "expand-dispose") workspace.dispose();
+      };
+    }, change);
+    await clip(page, page.textClipId).dblclick(); await settle(page);
+    assert.equal(await textWordingFocused(page), false);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.textNavigation), false);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  }
+});
+
+test("a cancelled text navigation cannot clear the first mouse click of a newer pair", async (t) => {
+  const page = await textDoubleClickFixture(t);
+  await page.evaluate(() => {
+    const context = fixture.internals.workspace.timeline.context, before = context.beforeGesture; let calls = 0;
+    context.beforeGesture = (signal) => ++calls === 3 ? new Promise((resolve) => globalThis.releaseOldTextNavigation = () => resolve(true)) : before(signal);
+  });
+  await clip(page, page.textClipId).dblclick();
+  await page.waitForFunction(() => !!fixture.internals.workspace.timeline.textNavigation && !!globalThis.releaseOldTextNavigation);
+  await page.keyboard.press("Escape");
+  await clip(page, page.textClipId).click();
+  await page.evaluate(() => releaseOldTextNavigation()); await settle(page);
+  await clip(page, page.textClipId).click(); await settle(page);
+  assert.equal(await textWordingFocused(page), true);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("a text navigation snapshot read cannot replace a newer navigation owner", async (t) => {
+  const page = await textDoubleClickFixture(t);
+  await page.evaluate(() => {
+    const timeline = fixture.internals.workspace.timeline, open = timeline.openText;
+    timeline.openText = function (id) {
+      timeline.openText = open; const read = this.context.read;
+      this.context.read = () => {
+        const document = read(); this.context.read = read;
+        this.context.beforeGesture = () => new Promise((resolve) => (globalThis.textNavigationResolvers ??= []).push(resolve));
+        open.call(this, id); globalThis.innerTextNavigation = this.textNavigation;
+        return document;
+      };
+      return open.call(this, id);
+    };
+  });
+  await clip(page, page.textClipId).dblclick(); await settle(page);
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.timeline.textNavigation === innerTextNavigation), true);
+  assert.equal(await page.evaluate(() => textNavigationResolvers.length), 1);
+  await page.evaluate(() => textNavigationResolvers[0](true)); await settle(page);
+  assert.equal(await textWordingFocused(page), true);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("timeline text double click excludes slow clicks, keys, other gestures, touch and stale detached clips", async (t) => {
+  for (const interrupt of ["slow", "key", "outside", "clock-ABA", "selection-ABA", "touch", "detached", "edge"]) {
+    const page = await textDoubleClickFixture(t), title = page.textClipId;
+    if (interrupt === "touch") {
+      const input = await touchInput(page, "[data-ew-timeline]"), bounds = await clip(page, title).boundingBox();
+      for (let i = 0; i < 2; i++) { await input.send("touchStart", [{ id: 1, x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }]); await input.send("touchEnd"); }
+    } else if (interrupt === "edge") await clip(page, title).locator('[data-et-edge="left"]').dblclick();
+    else if (interrupt === "detached") {
+      const old = await clip(page, title).elementHandle();
+      await page.evaluate((id) => fixture.dispatch([{ type: "clip.remove", sequenceId: "main", clipIds: [id] }], "移除文字"), title);
+      await old.evaluate((node) => node.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, button: 0 })));
+    } else {
+      await clip(page, title).click();
+      if (interrupt === "slow") await page.evaluate(() => fixture.internals.workspace.timeline.lastTextClick.at -= 501);
+      if (interrupt === "key") { await page.keyboard.down("Shift"); await page.keyboard.up("Shift"); }
+      if (interrupt === "outside") await page.getByRole("tab", { name: "画面", exact: true }).click();
+      if (interrupt === "clock-ABA") await page.evaluate(async () => { const w = fixture.internals.workspace; await w.seek(13, true); await w.seek(0, true); });
+      if (interrupt === "selection-ABA") await page.evaluate((id) => { const w = fixture.internals.workspace; w.selectClips("main", ["a"]); w.selectClips("main", [id]); }, title);
+      await clip(page, title).click();
+    }
+    await settle(page); assert.equal(await textWordingFocused(page), false, interrupt);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), [], interrupt);
+  }
+});
+
+test("timeline text double click stays unavailable in source preview and on hidden or disposed surfaces", async (t) => {
+  for (const mode of ["source", "hidden", "disposed"]) {
+    const page = await textDoubleClickFixture(t), old = await clip(page, page.textClipId).elementHandle(), before = await documentState(page);
+    if (mode === "source") { await page.evaluate(() => fixture.sourcePreview(true)); await clip(page, page.textClipId).dblclick(); }
+    else {
+      await page.evaluate((mode) => mode === "hidden" ? fixture.hide() : fixture.dispose(), mode);
+      await old.evaluate((node) => node.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, button: 0 })));
+    }
+    await settle(page); assert.equal(await textWordingFocused(page), false, mode);
+    assert.deepEqual(await documentState(page), before); assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  }
+});
+
+
+test("text navigation and middle pan retain one owner across a held native double click", async (t) => {
+  const page = await textDoubleClickFixture(t, { duration: 3600 * 240000 });
+  await page.evaluate(async () => {
+    fixture.dispatch([{ type: "marker.add", sequenceId: "main", marker: {
+      id: "pending-text-marker", time: 8 * 240000, duration: 0, name: "后续审阅", note: "", color: "#ffcc00",
+    } }], "准备导航组合");
+    await fixture.internals.workspace.seek(2 * 240000, true);
+  });
+  await settle(page);
+  await page.evaluate(() => {
+    const context = fixture.internals.workspace.timeline.context, before = context.beforeGesture; let calls = 0;
+    context.beforeGesture = (signal) => ++calls === 3 ? new Promise((resolve) => globalThis.releaseTextNavigation = () => resolve(true)) : before(signal);
+  });
+  await clip(page, page.textClipId).dblclick();
+  await page.waitForFunction(() => !!fixture.internals.workspace.timeline.textNavigation && !!globalThis.releaseTextNavigation);
+  const before = await documentState(page), clock = await page.evaluate(() => fixture.internals.workspace.playhead);
+  assert.equal(await page.getByRole("button", { name: "加高轨道", exact: true }).isDisabled(), true);
+  await page.keyboard.press("Shift+ArrowDown"); await page.keyboard.press("q"); await page.keyboard.press("w");
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.playhead), clock);
+  const bounds = await page.locator(".et-scroll").boundingBox(), x = bounds.x + 300, y = bounds.y + 80,
+    left = await page.locator(".et-scroll").evaluate((node) => node.scrollLeft);
+  await page.mouse.move(x, y); await page.mouse.down({ button: "middle" });
+  await page.mouse.move(x - 120, y); await settle(page);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.textNavigation), false);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.viewPan), true);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), left + 120);
+  await page.evaluate(() => releaseTextNavigation()); await settle(page);
+  assert.equal(await textWordingFocused(page), false);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.viewPan), true);
+  await page.mouse.up({ button: "middle" });
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("held original audio persistence rejects text navigation and native view gestures", async (t) => {
+  const page = await textDoubleClickFixture(t, { duration: 3600 * 240000 });
+  await originalVideo(page); await clip(page).click();
+  const before = await documentState(page);
+  await page.evaluate(() => fixture.writeMode("hold"));
+  await clip(page).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "分离原声", exact: true }).click();
+  await page.waitForFunction(() => fixture.internals.workspace.timeline.audioEdit?.applying);
+  await clip(page, page.textClipId).dblclick(); await settle(page);
+  assert.equal(await textWordingFocused(page), false);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.textNavigation), false);
+  assert.equal(await page.getByRole("button", { name: "加高轨道", exact: true }).isDisabled(), true);
+  const bounds = await page.locator(".et-scroll").boundingBox(), x = bounds.x + 300, y = bounds.y + 80,
+    left = await page.locator(".et-scroll").evaluate((node) => node.scrollLeft);
+  await page.mouse.move(x, y); await page.mouse.down({ button: "middle" });
+  await page.mouse.move(x - 120, y); await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), left);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.viewPan), false);
+  await page.mouse.up({ button: "middle" });
+  assert.deepEqual(await documentState(page), before);
+  await page.evaluate(() => fixture.releaseWrite()); await settle(page);
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 1);
+  assert.equal(after.sequences[0].clips.length, before.sequences[0].clips.length + 1);
+  await clip(page, page.textClipId).dblclick(); await settle(page);
+  assert.equal(await textWordingFocused(page), true);
+  assert.deepEqual(await documentState(page), after);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("owned middle pan prevents native release from pasting into a focused draft", async (t) => {
+  const page = await fixture(t, { duration: 3600 * 240000 });
+  await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["a"]));
+  const field = page.getByLabel("水平位置（%）", { exact: true });
+  await field.fill("25");
+  await page.evaluate(() => {
+    globalThis.panNativeTrace = [];
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "auxclick", "paste", "beforeinput", "input"]) {
+      document.addEventListener(type, (event) => {
+        const record = { type, button: event.button, inputType: event.inputType, data: event.data,
+          trusted: event.isTrusted, prevented: event.defaultPrevented, active: document.activeElement?.getAttribute("aria-label") };
+        panNativeTrace.push(record);
+        queueMicrotask(() => { record.prevented = event.defaultPrevented; });
+      });
+    }
+  });
+  const before = await documentState(page), view = await page.locator(".et-scroll").boundingBox(), x = view.x + 300, y = view.y + 80;
+  await page.mouse.move(x, y); await page.mouse.down({ button: "middle" });
+  await page.mouse.move(x - 120, y); await settle(page); await page.mouse.up({ button: "middle" });
+  const trace = await page.evaluate(() => panNativeTrace);
+  console.log("owned middle pan native trace", JSON.stringify(trace));
+  assert.equal(trace.find((event) => event.type === "pointerup")?.prevented, true);
+  assert.equal(trace.filter((event) => event.type === "paste").length, 0, "The owned release must not paste PRIMARY selection into the focused draft");
+  assert.equal(await field.inputValue(), "25");
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 120);
+});
+
+test("cancelled middle pan still owns its release but a new editable press keeps native defaults", async (t) => {
+  const page = await fixture(t, { duration: 3600 * 240000 });
+  const field = page.getByLabel("轨道名称 画面轨", { exact: true }); await field.fill("保留轨道草稿");
+  await page.evaluate(() => {
+    globalThis.panReleases = [];
+    document.addEventListener("pointerup", (event) => panReleases.push({ button: event.button, prevented: event.defaultPrevented }));
+  });
+  const before = await documentState(page), view = await page.locator(".et-scroll").boundingBox(), x = view.x + 300, y = view.y + 80;
+  await page.mouse.move(x, y); await page.mouse.down({ button: "middle" });
+  await page.mouse.move(x - 40, y); await page.keyboard.press("Escape");
+  await page.mouse.up({ button: "middle" });
+  assert.deepEqual(await page.evaluate(() => panReleases), [{ button: 1, prevented: true }]);
+  assert.equal(await field.inputValue(), "保留轨道草稿");
+  assert.deepEqual(await documentState(page), before);
+  await field.click({ button: "middle" });
+  assert.equal(await page.evaluate(() => panReleases.at(-1).prevented), false, "An editable field's own middle press is not a pan");
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.timeline.panRelease), undefined);
 });

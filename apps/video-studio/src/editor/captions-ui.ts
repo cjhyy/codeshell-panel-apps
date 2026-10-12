@@ -413,11 +413,16 @@ export class EditorCaptionsUI {
           owns,
         );
     });
+    this.exportButton.addEventListener("pointerdown", (event) => {
+      if (event.button === 0) event.preventDefault();
+    });
     this.exportButton.addEventListener("click", () =>
       this.run(async () => {
-        if (!this.selected.size) throw new Error("请先选择字幕");
+        const ids = [...this.selected];
+        if (!ids.length) throw new Error("请先选择字幕");
+        this.assertSavedRows(ids, "导出");
         const doc = context.session().read(),
-          srt = exportEditorSrt(doc, this.sequenceId, [...this.selected]);
+          srt = exportEditorSrt(doc, this.sequenceId, ids);
         const url = URL.createObjectURL(
           new Blob([srt], { type: "application/x-subrip;charset=utf-8" }),
         );

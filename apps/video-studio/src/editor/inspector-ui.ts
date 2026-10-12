@@ -213,15 +213,16 @@ export class EditorInspector {
     this.render();
   }
   /** Shows the text tab for the selection and puts the cursor in its wording, ready to type. */
-  editText(): void {
-    if (this.disposed) return;
+  editText(current: () => boolean = () => true): void {
+    if (this.disposed || !current()) return;
     this.tab = "text";
     this.error = "";
     this.render();
+    if (this.disposed || !current()) return;
     const field = this.root.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="文字内容（保留换行）"]',
     );
-    if (!field || field.disabled) return;
+    if (!field || field.matches(":disabled") || !current()) return;
     field.focus({ preventScroll: true });
     field.select();
     field.scrollIntoView({ block: "nearest" });

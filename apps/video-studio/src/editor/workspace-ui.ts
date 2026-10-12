@@ -323,6 +323,24 @@ export class EditorWorkspace {
       },
       selectedMarker: () => this.markers.selected,
       canTrimAtPlayhead: (time) => !this.disposed && this.visible && !this.sourcePreview && this.playhead === time,
+      canEditText: (time) => {
+        const state = options.session.getState();
+        return state.phase === "ready" && !this.disposed && this.visible && !this.sourcePreview && this.playhead === time;
+      },
+      editText: (clipId, current) => {
+        if (this.selected.length !== 1 || this.selected[0] !== clipId) return;
+        const identity = { ...options.session.getState().identity }, sequenceId = this.sequenceId,
+          time = this.playhead, selection = JSON.stringify(this.selected),
+          owns = () => {
+            const latest = options.session.getState().identity;
+            return current() && !this.disposed && this.visible && !this.sourcePreview &&
+              this.sequenceId === sequenceId && this.playhead === time &&
+              JSON.stringify(this.selected) === selection && sameIdentity(identity, latest);
+          };
+        if (!owns()) return;
+        options.showInspector?.();
+        if (owns()) this.inspector.editText(owns);
+      },
       beginMarker: (kind) => {
         if (this.disposed || !this.visible || this.sourcePreview) return;
         const identity = this.options.session.getState().identity, sequenceId = this.sequenceId,
@@ -753,6 +771,7 @@ export class EditorWorkspace {
    * contains it, which would still be the previous clip. Re-seeking the same spot keeps it.
    */
   async seek(time: Tick, exact = this.exactPlayhead && time === this.playhead): Promise<void> {
+    this.timeline.cancelTextNavigation();
     if (this.disposed) return;
     this.cancelFrameCapture();
     if (time === this.playhead) this.canvasEditor?.refreshDocument();
@@ -865,6 +884,7 @@ export class EditorWorkspace {
     this.multicam?.setVisible(visible && !this.get("[data-ew-multicam]").hidden);
     this.updateFrameCaptureControl();
     if (!visible) {
+      this.timeline.cancelTextNavigation();
       this.cancelFrameCapture();
       this.canvasEditor.cancel();
       this.cancelPreparation();
@@ -896,6 +916,7 @@ export class EditorWorkspace {
     this.cancelFrameCapture();
     this.updateFrameCaptureControl();
     if (active) {
+      this.timeline.cancelTextNavigation();
       this.cancelPreparation();
       this.clearAudioWarning();
       this.preview.pause();
@@ -1832,18 +1853,30 @@ export class EditorWorkspace {
     });
     const modifyPresets = (remove: boolean) => {
       try {
-        if (batch || !form.reportValidity()) return;
-        const current = this.options.session.read();
+        const dialog = form.closest("dialog");
+        if (batch || this.disposed || !form.isConnected || this.dialog !== dialog) return;
+        assertSnapshot();
+        if (!form.reportValidity()) return;
+        this.options.assertEditable?.();
+        assertSnapshot();
+        const current = session.read();
+        assertSnapshot();
         if (current.id !== doc.id || current.revision !== doc.revision)
           throw new Error("工程已变化，请重新打开导出设置");
         const profiles = remove
           ? current.exportProfiles.filter((item) => item.id !== input("preset").value)
           : [...current.exportProfiles, { ...readProfile(form), id: uid("export") }];
-        this.apply(
-          [{ type: "project.exportProfiles", profiles }],
+        const operations: EditorOperation[] = [{ type: "project.exportProfiles", profiles }],
+          after = applyEditorOperations(current, operations, current.revision),
+          reconciled = [...operations, ...reconcileEditorProduction(current, after)];
+        assertSnapshot();
+        if (this.disposed || !form.isConnected || this.dialog !== dialog) return;
+        session.dispatch(
+          reconciled,
+          openedIdentity,
           remove ? "删除导出预设" : "保存导出预设",
         );
-        this.dialog?.close();
+        if (this.dialog === dialog) dialog.close();
       } catch (error) {
         form.querySelector(".ew-form-error")!.textContent =
           error instanceof Error ? error.message : String(error);

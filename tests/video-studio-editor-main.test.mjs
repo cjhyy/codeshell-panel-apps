@@ -4564,3 +4564,20 @@ test("main downloads the current applied composition PNG at the selected viewer 
   assert.match(download.suggestedFilename(),/_t0_320x180\.png$/);assert.deepEqual(await saved(page),before);
   assert.equal(await page.getByLabel("预览质量",{exact:true}).inputValue(),"0.5");
 });
+
+for (const width of [280, 390]) test(`composition text double click reveals and focuses saved wording at ${width}px`, async (t) => {
+  const page = await openPage(t, { seed: realMediaSeed, viewport: { width, height: 844 } });
+  const before = await waitSaved(page), caption = page.locator('[data-et-clip="existing-caption"]');
+  await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("Shift+Z");
+  await caption.scrollIntoViewIfNeeded(); await caption.click();
+  await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("Shift+F");
+  await caption.dblclick(); await settle(page);
+  const field = page.getByLabel("文字内容（保留换行）", { exact: true });
+  assert.equal(await field.isVisible(), true); assert.equal(await field.inputValue(), "实拍里的现有字幕");
+  assert.equal(await field.evaluate((node) => document.activeElement === node), true);
+  assert.equal(await page.locator(".workspace").getAttribute("data-narrow-panel"), "inspector");
+  assert.equal(await page.getByRole("tab", { name: "文字", exact: true }).getAttribute("aria-selected"), "true");
+  assert.equal(await field.evaluate((node) => { const box = node.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight; }), true);
+  assert.deepEqual(await saved(page), before);
+  await page.screenshot({ path: `/tmp/video-studio-text-double-click-${width}.png` });
+});

@@ -72,6 +72,9 @@ export interface EditorTimelineContext {
   addAsset?(assetId: string, placement: { at: Tick; trackId: string }): void | Promise<void>;
   /** Adds a visible title at the playhead; shown as the 添加文字 tool when provided. */
   addText?(): void | Promise<void>;
+  /** View-only access to one saved text clip; the parent expands its inspector. */
+  editText?(clipId: string, current: () => boolean): void;
+  canEditText?(time: Tick): boolean;
   showShortcuts?(): void | Promise<void>;
   onError(error: unknown): void;
 }
@@ -98,6 +101,7 @@ type Drag = {
   time: Tick;
   moved: boolean;
   additive: boolean;
+  textClick?: Tick;
   altKey: boolean;
   movePreview?: EditorOperationPreview;
   trimPreview?: ClipTrimPreview;
@@ -141,6 +145,7 @@ type GestureIntent = {
   clipKind?: EditorClip["kind"];
   trackId?: string;
   additive: boolean;
+  textClick?: Tick;
   scroll: number;
   verticalScroll: number;
 };
@@ -194,6 +199,7 @@ type PendingControl = {
   ready?: boolean;
   applying?: boolean;
 };
+type TextNavigation = { clipId: string; field: NonNullable<PendingTrackGesture["field"]>; exact?: boolean };
 type FadeOwner = {
   documentId: string;
   revision: number;
@@ -272,6 +278,7 @@ export class EditorTimeline {
   private trimShortcutPending?: { cancelled: boolean };
   private drag?: Drag;
   private viewPan?: ViewPan;
+  private panRelease?: number;
   private gestureSerial = 0;
   private dragPlanFrame?: number;
   private destroyed = false;
@@ -285,6 +292,8 @@ export class EditorTimeline {
   private canvasFieldFinish?: object;
   private pendingControl?: PendingControl;
   private audioEdit?: { field: NonNullable<PendingTrackGesture["field"]>; applying: boolean; prepared: boolean };
+  private textNavigation?: TextNavigation;
+  private lastTextClick?: { clipId: string; scope: string; x: number; y: number; at: number };
   private suppressedControlClick?: number;
   private suppressContextMenu = false;
   private readonly gainOwners = new WeakMap<HTMLElement, Omit<FadeOwner, "side">>();
@@ -348,9 +357,13 @@ export class EditorTimeline {
     window.addEventListener("blur", this.interrupt);
     globalThis.document.addEventListener("visibilitychange", this.interrupt);
     globalThis.document.addEventListener("keydown", this.panEscape, true);
+    globalThis.document.addEventListener("pointerdown", this.panReleaseDefault, true);
+    globalThis.document.addEventListener("pointerup", this.panReleaseDefault, true);
     container.addEventListener("dragover", this.dragover);
     container.addEventListener("drop", this.drop);
     container.addEventListener("contextmenu", this.contextmenu);
+    globalThis.document.addEventListener("keydown", this.clearTextClick, true);
+    globalThis.document.addEventListener("pointerdown", this.textNavigationPointer, true);
     this.render();
     this.resizeObserver = new ResizeObserver(() => {
       const width = container.clientWidth;
@@ -509,6 +522,9 @@ export class EditorTimeline {
     return true;
   }
   render(options: { preserveToolbar?: boolean; scrollLeft?: number } = {}): void {
+    if (this.lastTextClick && this.lastTextClick.scope !== this.textClickScope()) this.clearTextClick();
+    const textNavigation = this.textNavigation;
+    if (textNavigation && !this.textNavigationCurrent(textNavigation)) this.cancelTextNavigation(textNavigation);
     this.cancelMarkerNavigation();
     const renderedAudioEdit = this.audioEdit;
     // A synchronous view update revokes a shortcut even if a getter returns its older value.
@@ -705,7 +721,7 @@ export class EditorTimeline {
               )
               .map(
                 (clip) =>
-                  `<div role="option" aria-selected="${selected.has(clip.id)}" tabindex="0" class="et-clip et-${clip.kind} et-clip-${track.kind}${selected.has(clip.id) ? " selected" : ""}" data-et-clip="${esc(clip.id)}" style="left:${ticksToSeconds(clip.start) * this.scale}px;width:${Math.max(3, ticksToSeconds(clip.duration) * this.scale)}px" title="${esc(clipLabel(clip))} · ${stamp(clip.start)} — ${stamp(clip.start + clip.duration)}"><span class="et-edge left" data-et-edge="left" aria-label="裁剪开头"></span><span class="et-clip-label">${esc(clipLabel(clip))}</span>${clip.groupId ? '<span class="et-group">▣</span>' : ""}${selected.has(clip.id) ? this.fadeMarkup(clip, track, audibleAssets) + this.gainMarkup(clip, track, audibleAssets, left, right) : ""}<span class="et-edge right" data-et-edge="right" aria-label="裁剪结尾"></span></div>`,
+                  `<div role="option" aria-selected="${selected.has(clip.id)}" tabindex="0" class="et-clip et-${clip.kind} et-clip-${track.kind}${selected.has(clip.id) ? " selected" : ""}" data-et-clip="${esc(clip.id)}" style="left:${ticksToSeconds(clip.start) * this.scale}px;width:${Math.max(3, ticksToSeconds(clip.duration) * this.scale)}px" title="${esc(clipLabel(clip))} · ${stamp(clip.start)} — ${stamp(clip.start + clip.duration)}${clip.kind === "text" && this.context.editText ? " · 双击编辑文字" : ""}"><span class="et-edge left" data-et-edge="left" aria-label="裁剪开头"></span><span class="et-clip-label">${esc(clipLabel(clip))}</span>${clip.groupId ? '<span class="et-group">▣</span>' : ""}${selected.has(clip.id) ? this.fadeMarkup(clip, track, audibleAssets) + this.gainMarkup(clip, track, audibleAssets, left, right) : ""}<span class="et-edge right" data-et-edge="right" aria-label="裁剪结尾"></span></div>`,
               )
               .join("")}</div>`,
         )
@@ -790,6 +806,7 @@ export class EditorTimeline {
         // A scroll event queued for a scroller this render replaced still fires after it is
         // detached, where scrollLeft reads 0. Rendering for it would queue the next stale event.
         if (scroll !== this.viewport() || scroll.scrollLeft === this.scrollPosition) return;
+        this.clearTextClick();
         if (this.playbackActive) this.suspendPlaybackFollow();
         this.scrollPosition = scroll.scrollLeft;
         if (!this.drag) this.render({ preserveToolbar: true });
@@ -815,6 +832,7 @@ export class EditorTimeline {
     const body = this.container.querySelector<HTMLElement>(".et-body");
     // Restoring a replaced body's scrollTop queues an event for an already-rendered view.
     if (!body || body.scrollTop === this.verticalPosition) return;
+    this.clearTextClick();
     this.syncVerticalPosition(body);
     this.scheduleMedia();
   };
@@ -932,7 +950,7 @@ export class EditorTimeline {
     const x = ticksToSeconds(time) * this.scale;
     if (
       this.playbackActive && this.followPlayback && !this.followSuspended &&
-      !this.drag && !this.viewPan && !this.audioEdit && !this.menu && !this.confirmTrack && !this.pendingControl &&
+      !this.drag && !this.viewPan && !this.audioEdit && !this.textNavigation && !this.menu && !this.confirmTrack && !this.pendingControl &&
       !this.pendingTrackGesture && !this.canvasFieldFinish && !this.trackControlPending &&
       !this.fadePending && !this.clipboardPending && !editableTarget(globalThis.document.activeElement)
     ) {
@@ -981,7 +999,7 @@ export class EditorTimeline {
         : "开启播放跟随；只影响时间轴视图";
   }
   private trackHeightBlocked(): boolean {
-    return !!(this.destroyed || this.drag || this.viewPan || this.audioEdit || this.pendingControl || this.pendingTrackGesture ||
+    return !!(this.destroyed || this.drag || this.viewPan || this.audioEdit || this.textNavigation || this.pendingControl || this.pendingTrackGesture ||
       this.trackControlPending || this.canvasFieldFinish || this.fadePending || this.clipboardPending);
   }
   private updateTrackHeightControl(): void {
@@ -1265,6 +1283,7 @@ export class EditorTimeline {
     this.render({ preserveToolbar: true, scrollLeft: time * next - anchor });
   }
   private wheel = (event: WheelEvent): void => {
+    this.clearTextClick();
     const target = event.target;
     if (!(target instanceof Element) || !target.closest(".et-scroll")) return;
     if (this.viewPan) { event.preventDefault(); return; }
@@ -1368,7 +1387,7 @@ export class EditorTimeline {
     this.updateTrackHeightControl();
   }
   private async editOriginalAudio(action: "detach-audio" | "unlink-audio", expected?: NonNullable<EditorTimeline["menu"]>): Promise<void> {
-    if (this.destroyed || this.audioEdit || this.viewPan || this.drag || this.pendingControl || this.pendingTrackGesture ||
+    if (this.destroyed || this.audioEdit || this.viewPan || this.textNavigation || this.drag || this.pendingControl || this.pendingTrackGesture ||
       this.clipboardPending || this.trackControlPending || this.canvasFieldFinish || this.fadePending) return;
     const identity = this.context.identity?.(), selection = this.context.selection(), time = this.context.time(),
       ids = [...selection.clipIds], signature = JSON.stringify(selection),
@@ -1425,7 +1444,7 @@ export class EditorTimeline {
     }
   }
   async action(action: string, at = this.context.time()): Promise<void> {
-    if (this.audioEdit) return;
+    if (this.audioEdit || this.textNavigation) return;
     if (action === "detach-audio" || action === "unlink-audio") {
       await this.editOriginalAudio(action);
       return;
@@ -1607,7 +1626,7 @@ export class EditorTimeline {
     await this.apply(operations, kind === "keep-left" ? "保留播放头左侧" : "保留播放头右侧");
   }
   private async shortcutTrim(kind: "keep-left" | "keep-right"): Promise<void> {
-    if (this.trimShortcutPending || this.markerNavigationPending) return;
+    if (this.trimShortcutPending || this.markerNavigationPending || this.textNavigation || this.audioEdit || this.viewPan) return;
     const owner = { cancelled: false };
     this.trimShortcutPending = owner;
     let current = () => !this.destroyed && this.trimShortcutPending === owner && !owner.cancelled;
@@ -1640,7 +1659,7 @@ export class EditorTimeline {
     this.markerNavigationPending = undefined;
   }
   private async navigateMarker(next: boolean): Promise<void> {
-    if (this.markerNavigationPending || this.trimShortcutPending || this.destroyed) return;
+    if (this.markerNavigationPending || this.trimShortcutPending || this.textNavigation || this.audioEdit || this.viewPan || this.destroyed) return;
     const owner: { cancelled: boolean; target?: Tick } = { cancelled: false };
     this.markerNavigationPending = owner;
     let current = (_time: Tick) => !this.destroyed && this.markerNavigationPending === owner && !owner.cancelled;
@@ -1658,7 +1677,7 @@ export class EditorTimeline {
           !this.destroyed && this.markerNavigationPending === owner && !owner.cancelled &&
           !this.drag && !this.pendingControl && !this.pendingTrackGesture && !this.trackControlPending &&
           !this.canvasFieldFinish && !this.fadePending && !this.clipboardPending && !this.trimShortcutPending &&
-          !this.menu && !this.confirmTrack;
+          !this.menu && !this.confirmTrack && !this.textNavigation && !this.audioEdit && !this.viewPan;
       };
       if (!current(time)) return;
       const { document, sequence } = this.current();
@@ -1687,6 +1706,11 @@ export class EditorTimeline {
     if (this.audioEdit) {
       event.preventDefault(); event.stopPropagation();
       if (event.key === "Escape" && !this.audioEdit.applying) this.cancelAudioEdit();
+      return;
+    }
+    if (this.textNavigation) {
+      if (event.key === "Escape") this.cancelTextNavigation();
+      event.preventDefault(); event.stopPropagation();
       return;
     }
     if (event.repeat && ["Enter", " "].includes(event.key) &&
@@ -1964,8 +1988,113 @@ export class EditorTimeline {
     if (this.suppressContextMenu) return;
     this.openMenu(target.dataset.etClip!, event.clientX, event.clientY);
   };
+  private clearTextClick = (): void => { this.lastTextClick = undefined; };
+  private textClickScope(): string {
+    const identity = this.context.identity?.(), document = identity ? undefined : this.current().document;
+    return JSON.stringify([identity ?? [document!.id, document!.revision], this.context.selection(),
+      this.context.time(), this.gestureViewport()]);
+  }
+  private textNavigationPointer = (event: PointerEvent): void => {
+    if (!(event.target instanceof Node) || !this.container.contains(event.target)) {
+      this.clearTextClick();
+      this.cancelTextNavigation();
+    }
+  };
+  /** Capture suppresses native click/dblclick: recognize two completed mouse clicks locally. */
+  private recordTextClick(drag: Drag, event: GesturePointer): void {
+    const previous = this.lastTextClick;
+    this.clearTextClick();
+    if (drag.textClick === undefined || drag.moved || !drag.clip || !this.context.editText) return;
+    const identity = this.context.identity?.(), selection = this.context.selection(), time = this.context.time();
+    if (this.destroyed || this.audioEdit || this.viewPan || time !== drag.textClick || !(this.context.canEditText?.(time) ?? true) ||
+      (identity && (identity.documentId !== drag.documentId || identity.revision !== drag.revision ||
+        identity.generation !== drag.generation)) || selection.sequenceId !== drag.sequenceId) return;
+    const scope = this.textClickScope(),
+      click = { clipId: drag.clip.id, scope, x: event.clientX, y: event.clientY, at: performance.now() };
+    if (previous && previous.clipId === click.clipId && previous.scope === scope &&
+      click.at - previous.at <= 500 && Math.hypot(click.x - previous.x, click.y - previous.y) <= 4)
+      this.openText(click.clipId);
+    else this.lastTextClick = click;
+  }
+  private textNavigationCurrent(owner: TextNavigation, exactRevision = false): boolean {
+    const current = this.fieldScopeCurrent(owner.field, exactRevision || owner.exact),
+      available = this.context.canEditText?.(owner.field.time) ?? true;
+    return current && available && !this.destroyed && this.container.isConnected && !this.audioEdit && !this.viewPan &&
+      this.textNavigation === owner && !owner.field.controller.signal.aborted;
+  }
+  /** Cancel only this navigation; an older completion must not abort a newer field owner. */
+  cancelTextNavigation(expected = this.textNavigation): void {
+    if (expected && this.textNavigation !== expected) return;
+    this.clearTextClick();
+    if (!expected) return;
+    this.textNavigation = undefined;
+    expected.field.controller.abort();
+    this.updateTrackHeightControl();
+  }
+  private openText(clipId: string): void {
+    if (!this.context.editText || this.destroyed || this.textNavigation || this.audioEdit || this.viewPan ||
+      this.markerNavigationPending || this.trimShortcutPending || this.drag || this.menu ||
+      this.pendingControl || this.pendingTrackGesture || this.trackControlPending || this.canvasFieldFinish ||
+      this.fadePending || this.clipboardPending || globalThis.document.querySelector("dialog[open]")) return;
+    const startingOwner = this.textNavigation,
+      identity = this.context.identity?.(), captured = identity ? { ...identity } : undefined,
+      { document, sequence, selected } = this.current(), clip = sequence.clips.find((item) => item.id === clipId),
+      owner: TextNavigation = { clipId, field: {
+        controller: new AbortController(),
+        identity: captured ?? { documentId: document.id, revision: document.revision },
+        selection: JSON.stringify(this.context.selection()), time: this.context.time(), viewport: this.gestureViewport(),
+      } };
+    if (this.destroyed || this.textNavigation !== startingOwner || this.audioEdit || this.viewPan ||
+      this.markerNavigationPending || this.trimShortcutPending || clip?.kind !== "text") return;
+    if (selected.size !== 1 || !selected.has(clipId)) {
+      this.notice.textContent = "多选时请在属性的文字页逐个编辑，分组和关联选择保持不变";
+      return;
+    }
+    if (sequence.tracks.find((track) => track.id === clip.trackId)?.locked) {
+      this.notice.textContent = "文字轨道已锁定，请先解锁后编辑文字";
+      return;
+    }
+    this.textNavigation = owner;
+    this.updateTrackHeightControl();
+    const fail = (error: unknown) => {
+      try { if (this.textNavigationCurrent(owner)) this.context.onError(error); } catch { /* unavailable scope */ }
+      this.cancelTextNavigation(owner);
+    };
+    const complete = (accepted: boolean) => {
+      try {
+        if (!accepted || !this.textNavigationCurrent(owner)) return;
+        const value = this.context.identity?.(), before = value ? { ...value } : undefined,
+          fresh = this.current(), after = this.context.identity?.(),
+          target = fresh.sequence.clips.find((item) => item.id === clipId);
+        if (!this.textNavigationCurrent(owner) || target?.kind !== "text" ||
+          fresh.sequence.tracks.find((track) => track.id === target.trackId)?.locked ||
+          fresh.document.id !== owner.field.identity.documentId ||
+          (before && (!after || !sameIdentity(before, after) || fresh.document.id !== before.documentId ||
+            fresh.document.revision !== before.revision))) return;
+        owner.field.identity.revision = fresh.document.revision;
+        owner.exact = true;
+        if (!this.textNavigationCurrent(owner, true)) return;
+        this.context.editText!(clipId, () => this.textNavigationCurrent(owner, true));
+      } catch (error) { fail(error); }
+      finally { this.cancelTextNavigation(owner); }
+    };
+    try {
+      if (!this.textNavigationCurrent(owner, true) || document.id !== owner.field.identity.documentId ||
+        document.revision !== owner.field.identity.revision) return this.cancelTextNavigation(owner);
+      const ready = this.finishFocusedField(owner.field.controller.signal) ??
+        this.context.beforeGesture?.(owner.field.controller.signal) ?? true;
+      if (!this.textNavigationCurrent(owner)) {
+        this.cancelTextNavigation(owner);
+        if (ready instanceof Promise) void ready.catch(() => {});
+      } else if (typeof ready === "boolean") complete(ready);
+      else {
+        this.container.focus({ preventScroll: true });
+        void Promise.resolve(ready).then(complete, fail);
+      }
+    } catch (error) { fail(error); }
+  }
   private openMenu(clipId: string, x: number, y: number, press?: PendingControl): void {
-    if (this.audioEdit || this.clipboardPending || (this.pendingControl && this.pendingControl !== press) || this.pendingTrackGesture || this.fadePending) return;
+    if (this.audioEdit || this.textNavigation || this.clipboardPending || (this.pendingControl && this.pendingControl !== press) || this.pendingTrackGesture || this.fadePending) return;
     const pressCurrent = () => !press || (this.fieldScopeCurrent(press.field, true) &&
       (this.context.canTrimAtPlayhead?.(press.field.time) ?? true) && this.pendingControl === press);
     this.closeMenu();
@@ -2227,11 +2356,18 @@ export class EditorTimeline {
     return delta;
   }
   private pointerdown = (event: PointerEvent) => {
+    if (this.textNavigation) this.cancelTextNavigation();
+    const textTarget = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(".et-text") : undefined,
+      textClick = event.isPrimary && event.button === 0 && event.pointerType === "mouse" && !!textTarget &&
+        !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey &&
+        !(event.target as HTMLElement).closest("[data-et-edge],[data-et-fade],[data-et-gain]");
+    if (!textClick) this.clearTextClick();
     if (event.button === 1 && event.pointerType === "mouse" && event.isPrimary &&
         event.target instanceof Element && event.target.closest(".et-scroll") && !editableTarget(event.target)) {
       // A view-only gesture keeps the original input focused, including invalid/IME drafts.
       event.preventDefault();
-      if (this.destroyed || this.viewPan || this.audioEdit || this.drag || this.pendingControl || this.pendingTrackGesture ||
+      this.panRelease = event.pointerId;
+      if (this.destroyed || this.viewPan || this.audioEdit || this.textNavigation || this.drag || this.pendingControl || this.pendingTrackGesture ||
           this.trackControlPending || this.canvasFieldFinish || this.fadePending || this.clipboardPending ||
           this.menu || globalThis.document.querySelector("dialog[open]")) return;
       this.run(() => {
@@ -2240,7 +2376,7 @@ export class EditorTimeline {
           left: viewport.scrollLeft, top: this.container.querySelector<HTMLElement>(".et-body")!.scrollTop,
           scope: this.panScope(),
         };
-        if (this.destroyed || !this.container.isConnected || this.viewPan) return;
+        if (this.destroyed || !this.container.isConnected || this.viewPan || this.audioEdit || this.textNavigation) return;
         this.viewPan = pan;
         this.container.classList.add("et-panning");
         this.updateTrackHeightControl();
@@ -2312,6 +2448,8 @@ export class EditorTimeline {
       scroll: this.viewport().scrollLeft,
       verticalScroll: this.container.querySelector<HTMLElement>(".et-body")!.scrollTop,
     };
+    intent.textClick = textClick && intent.kind === "move" ? this.context.time() : undefined;
+    if (intent.textClick === undefined) this.clearTextClick();
     event.preventDefault();
     const gain = target.closest<HTMLElement>("[data-et-gain]");
     if (gain && (!this.gainCurrent(gain) || gain.getAttribute("aria-disabled") === "true")) return;
@@ -2359,6 +2497,16 @@ export class EditorTimeline {
     event.preventDefault();
     event.stopPropagation();
     this.cancelPan();
+  };
+  private panReleaseDefault = (event: PointerEvent): void => {
+    if (event.type === "pointerdown") {
+      this.panRelease = undefined;
+    } else if (event.button === 1 && event.pointerId === this.panRelease) {
+      // Linux can paste PRIMARY on release even when pointerdown suppressed mouse events.
+      // Keep this physical release owned after Escape/blur has already ended the pan.
+      this.panRelease = undefined;
+      event.preventDefault();
+    }
   };
   private fieldGestureCurrent(pending: PendingTrackGesture, exactRevision = false): boolean {
     const field = pending.field;
@@ -2717,6 +2865,7 @@ export class EditorTimeline {
     }
     const drag: Drag = {
       kind,
+      textClick: intent.textClick,
       pointerId: pointer.pointerId,
       x: pointer.clientX,
       y: pointer.clientY,
@@ -3334,9 +3483,11 @@ export class EditorTimeline {
           : drag.kind === "gain" ? "调整片段音量" : drag.kind === "fadeIn" ? "调整声音淡入" : drag.kind === "fadeOut" ? "调整声音淡出" : "裁剪片段");
       }
       this.render();
+      this.recordTextClick(drag, event);
     });
   };
   private cancel = () => {
+    if (this.textNavigation) this.cancelTextNavigation();
     this.cancelMarkerNavigation();
     this.cancelPan();
     if (!this.audioEdit?.applying) this.cancelAudioEdit();
@@ -3376,6 +3527,7 @@ export class EditorTimeline {
       lane.classList.remove("drop-target", "drop-target-invalid");
   };
   private cancelPointer = (event: PointerEvent) => {
+    if (event.type === "pointercancel") this.clearTextClick();
     if (this.viewPan?.pointerId === event.pointerId) this.cancelPan();
     const control = this.pendingControl;
     if (
@@ -3393,6 +3545,7 @@ export class EditorTimeline {
   /** Leaving the window or hiding the document ends a gesture whose release may never arrive. */
   private interrupt = (event: Event) => {
     const hidden = globalThis.document.visibilityState === "hidden";
+    if (event.type !== "visibilitychange" || hidden) { this.clearTextClick(); this.cancelTextNavigation(); }
     if (event.type !== "visibilitychange" || hidden) this.cancelMarkerNavigation();
     if (event.type !== "visibilitychange" || hidden) this.cancelPan();
     if (
@@ -3432,9 +3585,14 @@ export class EditorTimeline {
     window.removeEventListener("blur", this.interrupt);
     globalThis.document.removeEventListener("visibilitychange", this.interrupt);
     globalThis.document.removeEventListener("keydown", this.panEscape, true);
+    globalThis.document.removeEventListener("pointerdown", this.panReleaseDefault, true);
+    globalThis.document.removeEventListener("pointerup", this.panReleaseDefault, true);
+    this.panRelease = undefined;
     this.container.removeEventListener("dragover", this.dragover);
     this.container.removeEventListener("drop", this.drop);
     this.container.removeEventListener("contextmenu", this.contextmenu);
+    globalThis.document.removeEventListener("keydown", this.clearTextClick, true);
+    globalThis.document.removeEventListener("pointerdown", this.textNavigationPointer, true);
     this.container.classList.remove("et-tall-tracks");
     this.container.innerHTML = "";
   }

@@ -631,6 +631,137 @@ test("SRT export explains an internal blank line without downloading; corrected 
   );
 });
 
+test("selected SRT export preserves a focused multiline text draft until it is explicitly saved", async (t) => {
+  const page = await fixture(t, { inline: true, disabled: true, width: 390 });
+  let downloads = 0;
+  page.on("download", () => downloads++);
+  const id = await page.evaluate(() =>
+    controller.add("main", { start: 7920, duration: 248160, text: "保存前" }),
+  );
+  await page.getByRole("button", { name: "全选字幕" }).click();
+  const row = page.locator(`[data-caption-id="${id}"]`),
+    input = row.getByLabel("字幕文字", { exact: true });
+  await input.fill("未保存中文🙂\n第二行");
+  await input.evaluate((node) => {
+    globalThis.exportDraftInput = node;
+    node.setSelectionRange(1, 5);
+  });
+  const before = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(downloads, 0, "A real browser download must not silently contain the old saved text");
+  assert.match(await page.locator(".ec-status").textContent(), /请先保存再导出.*草稿已保留/);
+  assert.deepEqual(await input.evaluate((node) => [
+    node === exportDraftInput, node.isConnected, node === document.activeElement,
+    node.value, node.selectionStart, node.selectionEnd,
+  ]), [true, true, true, "未保存中文🙂\n第二行", 1, 5]);
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  await row.getByRole("button", { name: "保存文字", exact: true }).click();
+  await page.waitForFunction(() => captions()[0].text === "未保存中文🙂\n第二行");
+  const saved = await page.evaluate(() => session.read()), downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  const result = await readFile(await (await downloadPromise).path(), "utf8");
+  assert.match(result, /未保存中文🙂\n第二行/);
+  assert.deepEqual(await page.evaluate(() => session.read()), saved, "Download creates no edit or undo entry");
+  await page.evaluate(() => session.undo());
+  assert.equal(await page.evaluate(() => captions()[0].text), "保存前");
+});
+
+test("selected SRT export protects invalid and corrected unsaved time fields before a real download", async (t) => {
+  const page = await fixture(t, { inline: true, disabled: true });
+  let downloads = 0;
+  page.on("download", () => downloads++);
+  const id = await page.evaluate(() => controller.add("main", { start: 7920, duration: 4 * 240000, text: "时间草稿" }));
+  await page.getByRole("button", { name: "全选字幕" }).click();
+  const row = page.locator(`[data-caption-id="${id}"]`),
+    start = row.getByLabel("开始（秒）"), end = row.getByLabel("结束（秒）");
+  await start.fill("1.001");
+  await end.fill("0");
+  await end.evaluate((node) => { globalThis.exportTimeInput = node; });
+  const before = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(downloads, 0);
+  assert.deepEqual(await end.evaluate((node) => [node === exportTimeInput, node.isConnected, node === document.activeElement, node.value]), [true, true, true, "0"]);
+  assert.match(await page.locator(".ec-status").textContent(), /请先保存再导出/);
+  await end.fill("3.003");
+  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(downloads, 0, "A valid time draft still requires an explicit save");
+  assert.equal(await start.inputValue(), "1.001");
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  await row.getByRole("button", { name: "保存时间", exact: true }).click();
+  await page.waitForFunction(() => captions()[0].start === 240240 && captions()[0].duration === 480480);
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  const result = await readFile(await (await downloadPromise).path(), "utf8");
+  assert.deepEqual(await page.evaluate((text) => editor.parseEditorSrt(text), result), [
+    { start: 240240, end: 720720, text: "时间草稿" },
+  ]);
+});
+
+test("selected SRT export ignores another row's draft and permits read-only locked-track download", async (t) => {
+  const page = await fixture(t, { inline: true, disabled: true });
+  const [first, second] = await page.evaluate(async () => [
+    await controller.add("main", { start: 0, text: "所选已保存" }),
+    await controller.add("main", { start: 6 * 240000, text: "其它已保存" }),
+  ]);
+  const a = page.locator(`[data-caption-id="${first}"]`),
+    b = page.locator(`[data-caption-id="${second}"]`);
+  await a.locator('input[type="checkbox"]').check();
+  await b.getByLabel("字幕文字", { exact: true }).fill("未选文字草稿");
+  await b.getByLabel("结束（秒）").fill("0");
+  await page.evaluate(() => session.dispatch([
+    { type: "track.update", sequenceId: "main", trackId: "text", patch: { locked: true } },
+  ], session.getState().identity));
+  const before = await page.evaluate(() => session.read()), downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  const result = await readFile(await (await downloadPromise).path(), "utf8");
+  assert.deepEqual(await page.evaluate((text) => editor.parseEditorSrt(text), result), [
+    { start: 0, end: 3 * 240000, text: "所选已保存" },
+  ]);
+  assert.equal(await b.getByLabel("字幕文字", { exact: true }).inputValue(), "未选文字草稿");
+  assert.equal(await b.getByLabel("结束（秒）").inputValue(), "0");
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("selected SRT export keeps real Chinese IME composition connected and focused on a narrow screen", async (t) => {
+  const page = await fixture(t, { inline: true, disabled: true, width: 390 });
+  let downloads = 0;
+  page.on("download", () => downloads++);
+  const id = await page.evaluate(() => controller.add("main", { start: 0, text: "原文" }));
+  await page.getByRole("button", { name: "全选字幕" }).click();
+  const input = page.locator(`[data-caption-id="${id}"] textarea`);
+  await input.fill("");
+  await input.evaluate((node) => {
+    globalThis.exportImeInput = node;
+    globalThis.exportComposition = [];
+    node.addEventListener("compositionstart", (event) => exportComposition.push([event.type, event.isTrusted]));
+    node.addEventListener("compositionend", (event) => exportComposition.push([event.type, event.isTrusted]));
+  });
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("Input.imeSetComposition", { text: "正在输入中文", selectionStart: 6, selectionEnd: 6 });
+    const before = await page.evaluate(() => session.read());
+    await page.getByRole("button", { name: "导出所选 SRT" }).click();
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(downloads, 0);
+    assert.match(await page.locator(".ec-status").textContent(), /请先保存再导出/);
+    assert.deepEqual(await input.evaluate((node) => [
+      node === exportImeInput, node.isConnected, node === document.activeElement, node.value, exportComposition,
+    ]), [true, true, true, "正在输入中文", [["compositionstart", true]]]);
+    assert.deepEqual(await page.evaluate(() => session.read()), before);
+    await cdp.send("Input.insertText", { text: "输入完成中文" });
+    await page.locator(`[data-caption-id="${id}"]`).getByRole("button", { name: "保存文字", exact: true }).click();
+    await page.waitForFunction(() => captions()[0].text === "输入完成中文");
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出所选 SRT" }).click();
+    const result = await readFile(await (await downloadPromise).path(), "utf8");
+    assert.match(result, /输入完成中文/);
+  } finally { await cdp.detach(); }
+});
+
 test("failed save leaves preview and original document intact; retry saves once", async (t) => {
   const page = await fixture(t);
   await generate(page);
