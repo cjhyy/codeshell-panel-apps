@@ -10,8 +10,10 @@ strengths and gaps. Never manufacture an interview, answer, or accomplishment.
 
 ## Coordinate with Job Hunt HQ
 
-- Use `job-hunt-hq:job-hunt-workflow` for Panel context, selected job IDs,
-  Trace correlation, project reads, and structured writes.
+- Use `job-hunt-hq:job-hunt-workflow` for selected job IDs, Trace correlation,
+  project reads, and structured writes. Its supported context reads can use
+  the CLI for direct Chat / TUI requests. Interview writes still require the
+  Panel in this version; explain that requirement before using those tools.
 - Invoke `get_job_search_context` before creating or updating an artifact.
   Use `scope=practice` with the exact `bank_question_id` and
   `practice_attempt_id` for answer scoring; add `interview_set_id` or

@@ -806,6 +806,8 @@
         "updatedAt"
       ],
       "properties": {
+        "source": { "type": "string", "enum": ["panel", "cli"] },
+        "sessionId": { "type": "string", "maxLength": 100 },
         "id": { "type": "string", "maxLength": 100 },
         "versionId": { "type": "string", "maxLength": 100 },
         "parentVersionId": { "type": "string", "maxLength": 100 },

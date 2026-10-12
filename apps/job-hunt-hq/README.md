@@ -12,6 +12,7 @@ CodeShell Session 中进行；模拟面试则全程留在面板中逐题作答�
 
 ## 当前能力
 
+- v4.2.0 把简历样板四个操作抽成共享纯模块，直接 Chat / TUI 可调用包内 CLI；无界面写入需要 Node.js ≥20.10 在 PATH 中，Skill 先检查当前 Bash 的 Host 写入协议标记，保证 Host 与 CLI 共用文件写入锁
 - v4.1.0 为“历史版本”补齐 Base Resume 与岗位定制版的安全删除：非当前版本可在卡片上直接删除；当前正在编辑的版本禁止删除，仍被岗位版引用的 Base 会明确列出阻塞数量；删除中断或项目写入失败会完整回滚，删除中间 revision 时自动重连后续来源链，已保存的 Markdown/PDF 文件不会被连带移除
 - v4.0.4 修复旧 Cookie 登录损坏后渠道卡片持续抛出 `Saved login ... is corrupted` 的问题：CodeShell 只向面板暴露脱敏的可用性状态，面板会把无法解密的记录明确标为“保存的登录已失效”，不再把它计入可用登录或反复尝试恢复，并直接提供“重新登录并保存”；同时兼容尚未更新的旧宿主，将底层英文异常转成可操作提示
 - v4.0.3 修复简历预览与 PDF 中残留 `**` 的问题：标题、普通段落、列表项和带 Source 注解的简历要点现在统一安全渲染行内 Markdown，支持粗体、斜体与行内代码；PDF 继续复用同一份已渲染公开简历 DOM，避免预览和导出不一致
@@ -184,11 +185,32 @@ PDF 新鲜度按真实时间比较，而不是依赖数组顺序或 ISO 字符�
 
 不需要在面板中选择或打开其他 Repo。切换到另一个 CodeShell 项目时，只有那个项目自己的开关和数据会生效。
 
+### 不打开面板处理简历
+
+无界面写入需要 **PATH 中存在 Node.js ≥20.10，且运行中的 CodeShell Host ≥0.9.36**。
+Skill 在实际 CodeShell Bash 中读取 `CODESHELL_WORKSPACE_WRITE_PROTOCOL`，仅值为 `1`
+时允许初始化或写入。该通用能力标记由 Host 注入，项目环境不能覆盖；禁止自行设置来
+绕过检查。缺少标记时可继续只读查询。全局 `code-shell --version`、Panel API 版本号和
+本包版本都不能代替实际 Host 能力探针；manifest 目前也不强制最低 Host 版本。
+独立终端仍可直接运行 CLI，无需设置该标记；若同一项目同时由 Host 使用，该 Host 必须
+支持共用文件锁协议（0.9.36 或更高版本）。
+
+当前项目启用 Job Hunt HQ 后，直接在 Chat 或 TUI 中整理候选人事实、读取项目上下文、
+回答私有简历问答或保存 Base / JD 简历时，`project-runtime` Skill 会运行安装包里的
+`app/tools/job-hunt.mjs`，写回同一份 `job-hunt-panel.json` 和分片，面板不会弹出。
+面板发起的任务仍通过原 Tool 写入并结束 Trace。已打开的面板会检测外部修改：无未保存
+编辑时自动重新读取，有编辑时提示冲突并停止覆盖。
+
+第一版 CLI 仅支持 `get_job_search_context`、`save_candidate_context`、
+`save_resume_qa_answer`、`save_resume_draft` 四个操作。其余十二个 Tool、可视化预览和
+PDF 导出仍走面板。决策先保存在简历私有问答的 `decision` 分类中。
+终端用法和后续分期见[能力包方案](../../docs/todo/job-hunt-capability-pack-design.md)。
+
 ## 安装
 
 在 CodeShell 中打开 **扩展 → Panel Apps → 选择源码文件夹**，选择本目录并完成权限审查。
 安装后只为当前求职项目开启它，再从右侧面板的 `+` 菜单打开。项目开关关闭后，这个面板、
-它的结构化工具以及五个 `job-hunt-hq:*` Skills 会一起从该项目的 Session 中消失。
+它的结构化工具以及六个 `job-hunt-hq:*` Skills 会一起从该项目的 Session 中消失。
 
 开发修改后，在 Panel Apps 管理页点击 **从源码更新** 即可加载新版本。
 

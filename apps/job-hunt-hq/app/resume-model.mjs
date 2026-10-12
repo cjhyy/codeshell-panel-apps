@@ -1066,6 +1066,8 @@ export function normalizeResumeRecord(record, options = {}) {
     variantChanges: kind === "variant" ? normalizeResumeVariantChanges(source.variantChanges) : [],
     notes: boundedList(source.notes, 12, 300),
     updatedAt: boundedText(source.updatedAt, 80),
+    ...(boundedText(source.source, 40) ? { source: boundedText(source.source, 40) } : {}),
+    ...(boundedText(source.sessionId, 100) ? { sessionId: boundedText(source.sessionId, 100) } : {}),
   };
 }
 

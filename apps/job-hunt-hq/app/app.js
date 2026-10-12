@@ -64,7 +64,6 @@ import {
 } from "./trace-model.mjs";
 import { compactPanelLocalState } from "./storage-model.mjs";
 import {
-  compactProjectSnapshotPayload,
   hydrateProjectSnapshotDocuments,
   prepareProjectSnapshotDocuments,
   projectSnapshotSemanticKey,
@@ -155,7 +154,8 @@ import {
   normalizeInterviewAnswerDraft,
   resolveInterviewAnswerDraft,
 } from "./interview-practice-model.mjs";
-import { buildJobSearchContext } from "./job-search-context-model.mjs";
+import { JOB_PROVIDERS, jobSearchContextQuery, runJobHuntOperation } from "./ops/index.mjs";
+import { projectSnapshotPayload as buildProjectSnapshotPayload } from "./snapshot-codec.mjs";
 
 const STORAGE_KEY = "job-hunt-state-v1";
 const CRITICAL_DRAFT_STORAGE_KEY = LEGACY_DRAFT_KEY;
@@ -166,22 +166,6 @@ const PROJECT_SHARD_HOST_CALL_BATCH = 12;
 const PROJECT_SHARD_HOST_CALL_PAUSE_MS = 10_100;
 const PANEL_AUDIO_API_VERSION = 6;
 const PANEL_INTERVIEW_MAX_RECORDING_MS = 120_000;
-
-const JOB_PROVIDERS = [
-  { id: "boss", label: "BOSS 直聘", domain: "zhipin.com", url: "https://www.zhipin.com" },
-  {
-    id: "linkedin",
-    label: "LinkedIn",
-    domain: "linkedin.com/jobs",
-    url: "https://www.linkedin.com/jobs",
-  },
-  { id: "lagou", label: "拉勾", domain: "lagou.com", url: "https://www.lagou.com" },
-  { id: "liepin", label: "猎聘", domain: "liepin.com", url: "https://www.liepin.com" },
-  { id: "maimai", label: "脉脉", domain: "maimai.cn", url: "https://maimai.cn" },
-  { id: "51job", label: "前程无忧", domain: "51job.com", url: "https://www.51job.com" },
-  { id: "zhaopin", label: "智联招聘", domain: "zhaopin.com", url: "https://www.zhaopin.com" },
-  { id: "official", label: "公司官网", domain: "company career pages" },
-];
 
 const PROVIDER_BY_ID = new Map(JOB_PROVIDERS.map((provider) => [provider.id, provider]));
 const MANUAL_SOURCE_RULES = [
@@ -3578,34 +3562,7 @@ function persist({ quiet = true } = {}) {
 }
 
 function projectSnapshotPayload() {
-  return compactProjectSnapshotPayload({
-    ...(state.snapshotRestoreId ? { snapshotRestoreId: state.snapshotRestoreId } : {}),
-    schemaVersion: 2,
-    updatedAt: new Date().toISOString(),
-    selectedJobId: state.selectedJobId,
-    selectedInterviewSetId: state.selectedInterviewSetId,
-    selectedBaseResumeId: state.selectedBaseResumeId,
-    discoveryPreferences: clone(state.discoveryPreferences),
-    channelVerifications: clone(state.channelVerifications),
-    customProviders: clone(state.customProviders),
-    jdIntakeItems: clone(state.jdIntakeItems),
-    jobLeads: clone(state.jobLeads),
-    discoveryRunReceipts: clone(state.discoveryRunReceipts),
-    discoveryReceiptCutoff: state.discoveryReceiptCutoff,
-    profile: clone(state.profile),
-    jobs: clone(state.jobs),
-    repos: clone(state.repos),
-    experiences: clone(state.experiences),
-    jobResearch: clone(state.jobResearch),
-    workflowRuns: clone(state.workflowRuns),
-    resume: clone(state.resume),
-    versions: clone(state.versions),
-    questionBank: clone(state.questionBank),
-    interviewSets: clone(state.interviewSets),
-    mockInterviewSessions: clone(state.mockInterviewSessions),
-    preparationPlans: clone(state.preparationPlans),
-    interviewDebriefs: clone(state.interviewDebriefs),
-  });
+  return buildProjectSnapshotPayload(state, { now: new Date().toISOString() });
 }
 
 async function readProjectSnapshotShards(root, scope = currentProject()) {
@@ -4118,7 +4075,14 @@ async function checkProjectSnapshotRevision({ notifyOnReload = true } = {}) {
       quiet: true,
       localStateSource: compactPanelLocalState(state),
     });
-    if (scope.active() && notifyOnReload) notify("检测到项目数据更新，面板已自动重新读取", "success");
+    if (scope.active() && notifyOnReload) {
+      notify(
+        state.resume.source === "cli"
+          ? "检测到项目数据更新，面板已自动重新读取；当前简历由 Chat / CLI 保存"
+          : "检测到项目数据更新，面板已自动重新读取",
+        "success",
+      );
+    }
   } catch (error) {
     if (!scope.active()) return;
     const message = error instanceof Error ? error.message : String(error || "");
@@ -11413,6 +11377,8 @@ function archiveCurrentResume() {
     variantChanges: state.resume.variantChanges || [],
     notes: state.resume.notes || [],
     updatedAt: state.resume.updatedAt,
+    ...(state.resume.source ? { source: state.resume.source } : {}),
+    ...(state.resume.sessionId ? { sessionId: state.resume.sessionId } : {}),
   };
   state.versions = [version, ...state.versions.filter((item) => item.id !== version.id)].slice(
     0,
@@ -13903,6 +13869,38 @@ function normalizeIncomingOpportunity(job, index, label = "jobs") {
   });
 }
 
+function jobHuntOperationContext() {
+  const project = clone(projectContext);
+  delete project.snapshotSemanticKey;
+  return {
+    now: new Date().toISOString(), uid, source: "panel",
+    project, sessionId: context.sessionId || null,
+    projectStatePath: PROJECT_STATE_PATH, traceId: activeTrace()?.id || null,
+    workflowSelection: { jobIds: clone(state.workflowJobIds), taskIds: clone(state.workflowTaskIds) },
+    providerCatalog: clone(providerCatalog()),
+    channelVerifications: providerCatalog().map((provider) => channelVerification(provider.id)),
+  };
+}
+
+async function applyJobHuntPanelOperation(name, args, { fields, onApplied, onRollback }) {
+  const previous = Object.fromEntries(fields.map((field) => [field, clone(state[field])]));
+  const operation = runJobHuntOperation(name, projectSnapshotPayload(), args, jobHuntOperationContext());
+  for (const field of fields) state[field] = operation.snapshot[field];
+  onApplied?.();
+  persist();
+  renderAll();
+  const projectSaved = await writeProjectSnapshot();
+  if (!projectSaved) {
+    for (const field of fields) state[field] = previous[field];
+    onRollback?.();
+    persist();
+    renderAll();
+    renderMaterials();
+    requireProjectSnapshot(false);
+  }
+  return { ...operation.result, projectSaved };
+}
+
 function registerAgentTools(ready) {
   const registerTool = window.codeshellPanel?.registerTool;
   if (!registerTool) return;
@@ -13944,76 +13942,17 @@ function registerAgentTools(ready) {
 
   register("get_job_search_context", async (args = {}) => {
     await ready;
-    assertPlainObject(args, "get_job_search_context");
-    const scope = cleanText(args.scope, 40) || "summary";
-    const query = {
-      scope,
-      jobId: cleanText(args.job_id, 100),
-      resumeId: cleanText(args.resume_id, 100),
-      interviewSetId: cleanText(args.interview_set_id, 100),
-      bankQuestionId: cleanText(args.bank_question_id, 100),
-      mockSessionId: cleanText(args.mock_session_id, 100),
-      practiceAttemptId: cleanText(args.practice_attempt_id, 100),
-      status: cleanText(args.status, 40),
-      search: cleanText(args.search, 200),
-      cursor: Number.isInteger(args.cursor) ? args.cursor : 0,
-      limit: Number.isInteger(args.limit) ? args.limit : 25,
-    };
+    const query = jobSearchContextQuery(args);
     recordActiveTraceEvent(
       "running",
-      `读取 Panel 项目上下文 · ${scope}`,
-      [
-        query.jobId,
-        query.resumeId,
-        query.interviewSetId,
-        query.bankQuestionId,
-        query.mockSessionId,
-        query.practiceAttemptId,
-      ]
-        .filter(Boolean)
-        .join(" · ") ||
+      `读取 Panel 项目上下文 · ${query.scope}`,
+      [query.jobId, query.resumeId, query.interviewSetId, query.bankQuestionId,
+        query.mockSessionId, query.practiceAttemptId].filter(Boolean).join(" · ") ||
         `${state.jobs.length} 个岗位 · ${resumeRecords().length} 份简历 · ${state.questionBank.length} 道长期题目 · ${state.interviewSets.length} 套题单`,
     );
-    return buildJobSearchContext(
-      {
-        project: clone(projectContext),
-        sessionId: context.sessionId || null,
-        projectStatePath: PROJECT_STATE_PATH,
-        activeTraceId: activeTrace()?.id || null,
-        selectedJobId: state.selectedJobId,
-        selectedBaseResumeId: state.selectedBaseResumeId,
-        selectedInterviewSetId: state.selectedInterviewSetId,
-        jobs: state.jobs,
-        jobLeads: clone(state.jobLeads),
-        jdInboxPath: JD_INBOX_PATH,
-        jdIntakeItems: clone(state.jdIntakeItems),
-        profile: clone(state.profile),
-        repositories: clone(state.repos),
-        workHistory: clone(state.experiences),
-        jobResearch: clone(state.jobResearch),
-        workflowRuns: clone(state.workflowRuns),
-        resumes: resumeRecords(),
-        questionBank: state.questionBank,
-        interviewSets: clone(state.interviewSets),
-        mockSessions: state.mockInterviewSessions,
-        preparationPlans: clone(state.preparationPlans),
-        interviewDebriefs: clone(state.interviewDebriefs),
-        workflowSelection: {
-          jobIds: clone(state.workflowJobIds),
-          taskIds: clone(state.workflowTaskIds),
-        },
-        discoveryPreferences: clone(state.discoveryPreferences),
-        channelVerifications: providerCatalog().map((provider) => channelVerification(provider.id)),
-        providerCatalog: clone(providerCatalog()),
-        evidencePolicy:
-          "Read panel context first. Check the current project's CODESHELL.md once and follow it when present; its absence is not a blocker. Use only verifiable project evidence; never invent facts or metrics.",
-        collectionPolicy:
-          "Use public pages or the connected visible browser, preserve source attribution, and never bypass access controls. Never export cookies or replay authenticated recruiting-site requests outside the browser. Listing cards and partial descriptions are leads, not formal opportunities; only a complete JD with responsibilities and requirements is counted in opportunities.",
-        applicationPolicy:
-          "Update application progress only from an explicit user action or user-provided recruiting event. Resume generation and mock interviews are preparation, not proof of real application stages.",
-      },
-      query,
-    );
+    return runJobHuntOperation(
+      "get_job_search_context", projectSnapshotPayload(), args, jobHuntOperationContext(),
+    ).result;
   });
 
   register("complete_execution_trace", async (args = {}) => {
@@ -14194,105 +14133,16 @@ function registerAgentTools(ready) {
 
   register("save_candidate_context", async (args = {}) => {
     await ready;
-    assertPlainObject(args, "save_candidate_context");
-    assertPlainObject(args.profile, "profile");
-    if (!Array.isArray(args.repositories) || !Array.isArray(args.work_history)) {
-      throw new Error("repositories 和 work_history 必须是数组");
-    }
-    const text = (value, maxLength) =>
-      String(value || "")
-        .trim()
-        .slice(0, maxLength);
-    const previousCandidateState = {
-      profile: clone(state.profile),
-      repos: clone(state.repos),
-      experiences: clone(state.experiences),
-      resume: clone(state.resume),
-      versions: clone(state.versions),
-    };
-    const previousPublicProfile = JSON.stringify({
-      name: state.profile.name,
-      role: state.profile.role,
-      contact: state.profile.contact,
-      target: state.profile.target,
-      summary: state.profile.summary,
+    const result = await applyJobHuntPanelOperation("save_candidate_context", args, {
+      fields: ["profile", "repos", "experiences", "resume", "versions", "workflowRuns"],
     });
-    state.profile = {
-      name: text(args.profile.name, 100) || "姓名待确认",
-      role: text(args.profile.role, 120) || "目标职位待确认",
-      contact: text(args.profile.contact, 300),
-      target: text(args.profile.target, 500),
-      summary: text(args.profile.summary, 3000),
-      photoDataUrl: state.profile.photoDataUrl || "",
-      photoName: state.profile.photoName || "",
-    };
-    const nextPublicProfile = JSON.stringify({
-      name: state.profile.name,
-      role: state.profile.role,
-      contact: state.profile.contact,
-      target: state.profile.target,
-      summary: state.profile.summary,
-    });
-    if (previousPublicProfile !== nextPublicProfile) {
-      touchResumePresentation({ allVersions: true });
-    }
-    state.repos = args.repositories.slice(0, 30).map((repo, index) => {
-      assertPlainObject(repo, `repositories[${index}]`);
-      if (!text(repo.name, 100) || !text(repo.summary, 3000)) {
-        throw new Error(`repositories[${index}] 缺少 name 或 summary`);
-      }
-      return {
-        id: text(repo.id, 100) || uid("repo"),
-        name: text(repo.name, 100),
-        path: text(repo.path, 1000),
-        tech: text(repo.tech, 500),
-        summary: text(repo.summary, 3000),
-      };
-    });
-    state.experiences = args.work_history.slice(0, 30).map((experience, index) => {
-      assertPlainObject(experience, `work_history[${index}]`);
-      if (!text(experience.company, 100) || !text(experience.role, 120)) {
-        throw new Error(`work_history[${index}] 缺少 company 或 role`);
-      }
-      return {
-        id: text(experience.id, 100) || uid("exp"),
-        company: text(experience.company, 100),
-        role: text(experience.role, 120),
-        period: text(experience.period, 100),
-        achievements: Array.isArray(experience.achievements)
-          ? experience.achievements
-              .map((item) => text(item, 1000))
-              .filter(Boolean)
-              .slice(0, 20)
-          : [],
-      };
-    });
-    persist();
-    renderAll();
-    const projectSaved = await writeProjectSnapshot();
-    if (!projectSaved) {
-      state.profile = previousCandidateState.profile;
-      state.repos = previousCandidateState.repos;
-      state.experiences = previousCandidateState.experiences;
-      state.resume = previousCandidateState.resume;
-      state.versions = previousCandidateState.versions;
-      persist();
-      renderAll();
-      renderMaterials();
-      requireProjectSnapshot(false);
-    }
     recordTraceArtifact(
       "candidate-context",
       `candidate:${state.profile.name}`,
       `${state.profile.name} · ${state.repos.length} Repo · ${state.experiences.length} 段经历`,
     );
     renderMaterials();
-    return {
-      saved: true,
-      projectSaved,
-      repositories: state.repos.length,
-      workHistory: state.experiences.length,
-    };
+    return result;
   });
 
   register("save_job_opportunities", async (args = {}) => {
@@ -15423,243 +15273,46 @@ function registerAgentTools(ready) {
 
   register("save_resume_draft", async (args = {}) => {
     await ready;
-    assertPlainObject(args, "save_resume_draft");
-    const requestedJobId = cleanText(args.job_id, 80);
-    const resumeKind =
-      args.resume_kind === "base" || args.resume_kind === "variant"
-        ? args.resume_kind
-        : requestedJobId
-          ? "variant"
-          : "base";
-    const job = requestedJobId ? state.jobs.find((item) => item.id === requestedJobId) : null;
-    if (requestedJobId && !job) throw new Error("job_id 不存在，请先读取面板上下文");
-    if (resumeKind === "base" && requestedJobId) {
-      throw new Error("Base Resume 不能绑定 job_id");
-    }
-    if (resumeKind === "variant" && !job) {
-      throw new Error("岗位定制版必须提供有效 job_id");
-    }
-    const category = normalizeResumeCategory(
-      args.category,
-      selectedBaseResume()?.category || state.profile.target || state.profile.role,
-    );
-    const requestedBaseResumeId = cleanText(args.base_resume_id, 100);
-    const base =
-      resumeKind === "variant"
-        ? baseResumes().find((item) => resumeRecordId(item) === requestedBaseResumeId)
-        : null;
-    if (resumeKind === "variant" && !base) {
-      throw new Error("请先保存 Base Resume，并传入有效 base_resume_id 后再生成岗位定制版");
-    }
-    if (
-      typeof args.title !== "string" ||
-      !args.title.trim() ||
-      typeof args.markdown !== "string" ||
-      args.markdown.trim().length < 80
-    ) {
-      throw new Error("title 和至少 80 字符的 markdown 为必填");
-    }
-    const markdown = args.markdown.trim().slice(0, 50000);
-    const claimEvidence = normalizeClaimEvidence(args.claim_evidence);
-    const incomingCandidateQuestions = normalizeResumeQaQuestions(
-      Array.isArray(args.candidate_questions)
-        ? args.candidate_questions.map((item) => ({
-            ...item,
-            id: cleanText(item?.id, 100) || uid("resume-qa"),
-          }))
-        : [],
-    );
-    const predecessor = resumeRecords().find((record) =>
-      resumeKind === "base"
-        ? record.kind === "base" &&
-          record.category.toLocaleLowerCase() === category.toLocaleLowerCase()
-        : record.kind === "variant" && record.jobId === requestedJobId,
-    );
-    const candidateQuestions = mergeResumeQaQuestions(
-      predecessor?.candidateQuestions,
-      incomingCandidateQuestions,
-    );
-    const evidenceCoverage = resumeEvidenceCoverage(markdown, claimEvidence);
-    if (!claimEvidence.length) {
-      throw new Error("claim_evidence 为必填；每条简历能力与成果都必须关联 Source");
-    }
-    if (!evidenceCoverage.total) {
-      throw new Error("简历至少需要一条可映射的专业概述、能力或成果表述");
-    }
-    if (evidenceCoverage.missing.length) {
-      throw new Error(
-        `以下简历表述缺少逐字匹配的 Source：${evidenceCoverage.missing.slice(0, 3).join("；")}`,
-      );
-    }
-    if (evidenceCoverage.missingDetails.length) {
-      throw new Error(
-        `以下简历表述缺少重点说明、证据内容或面试追问：${evidenceCoverage.missingDetails.slice(0, 3).join("；")}`,
-      );
-    }
-    const minimumCoreClaims = Math.min(3, evidenceCoverage.total);
-    if (evidenceCoverage.core < minimumCoreClaims) {
-      throw new Error(`至少标记 ${minimumCoreClaims} 条 importance=core 的核心重点`);
-    }
-    if (evidenceCoverage.core > 6) {
-      throw new Error("核心重点最多 6 条；请把其余要点标为 supporting，避免重点失焦");
-    }
-    if (candidateQuestions.length < 3) {
-      throw new Error("candidate_questions 至少需要 3 个针对真实信息缺口的候选人自问 QA");
-    }
-    if (candidateQuestions.some((question) => question.status === "answered" && !question.answer)) {
-      throw new Error("状态为 answered 的 candidate_questions 必须保留实际回答");
-    }
-    const previousDraftState = {
-      resume: clone(state.resume),
-      versions: clone(state.versions),
-      jobs: clone(state.jobs),
-      selectedJobId: state.selectedJobId,
-      selectedBaseResumeId: state.selectedBaseResumeId,
-      activeView: state.activeView,
-      resumeMode,
-      resumeManualEditRevisionStarted,
-    };
-    if (state.resume.markdown) archiveCurrentResume();
-    const now = new Date().toISOString();
-    if (resumeKind === "variant") state.selectedJobId = requestedJobId;
-    state.activeView = "resumes";
-    if (job) job.status = "tailoring";
-    const versionId = uid("resume");
-    state.resume = {
-      kind: resumeKind,
-      category: resumeKind === "variant" ? base.category : category,
-      baseResumeId: resumeKind === "variant" ? resumeRecordId(base) : "",
-      jobId: resumeKind === "variant" ? requestedJobId : "",
-      versionId,
-      parentVersionId: resumeRecordId(predecessor),
-      revisionReason: predecessor
-        ? resumeKind === "base"
-          ? "Agent 更新 Base Resume"
-          : "Agent 更新岗位版"
-        : "",
-      title: args.title.trim().slice(0, 120),
-      markdown,
-      style: normalizeResumeStyle(state.resume.style),
-      pdfExports: [],
-      claimEvidence,
-      candidateQuestions,
-      variantChanges: [],
-      notes: Array.isArray(args.notes)
-        ? args.notes.map((note) => String(note).slice(0, 300)).slice(0, 12)
-        : [],
-      updatedAt: now,
-    };
-    if (resumeKind === "variant") {
-      state.resume.variantChanges = deriveResumeVariantChanges(base, state.resume, job);
-      elements.resumeVariantReview.open = state.resume.variantChanges.length > 0;
-    }
-    state.selectedBaseResumeId = resumeKind === "base" ? versionId : resumeRecordId(base);
-    resumeMode = "preview";
-    resumeManualEditRevisionStarted = false;
-    elements.resumeQaPanel.open = candidateQuestions.some((item) => item.status === "open");
-    persist();
-    renderAll();
-    const projectSaved = await writeProjectSnapshot();
-    if (!projectSaved) {
-      state.resume = previousDraftState.resume;
-      state.versions = previousDraftState.versions;
-      state.jobs = previousDraftState.jobs;
-      state.selectedJobId = previousDraftState.selectedJobId;
-      state.selectedBaseResumeId = previousDraftState.selectedBaseResumeId;
-      state.activeView = previousDraftState.activeView;
-      resumeMode = previousDraftState.resumeMode;
-      resumeManualEditRevisionStarted = previousDraftState.resumeManualEditRevisionStarted;
-      persist();
-      renderAll();
-      renderMaterials();
-      requireProjectSnapshot(false);
-    }
+    const previousUi = { activeView: state.activeView, resumeMode, resumeManualEditRevisionStarted };
+    const result = await applyJobHuntPanelOperation("save_resume_draft", args, {
+      fields: ["resume", "versions", "jobs", "selectedJobId", "selectedBaseResumeId", "workflowRuns"],
+      onApplied() {
+        state.activeView = "resumes";
+        if (state.resume.kind === "variant") {
+          elements.resumeVariantReview.open = state.resume.variantChanges.length > 0;
+        }
+        resumeMode = "preview";
+        resumeManualEditRevisionStarted = false;
+        elements.resumeQaPanel.open = state.resume.candidateQuestions.some((item) => item.status === "open");
+      },
+      onRollback() {
+        state.activeView = previousUi.activeView;
+        resumeMode = previousUi.resumeMode;
+        resumeManualEditRevisionStarted = previousUi.resumeManualEditRevisionStarted;
+      },
+    });
     recordTraceArtifact(
-      "resume",
-      versionId,
-      `${state.resume.title} · Source ${evidenceCoverage.supported}/${evidenceCoverage.total}`,
+      "resume", resumeRecordId(state.resume),
+      `${state.resume.title} · Source ${result.evidenceCoverage}`,
     );
     renderMaterials();
-    return {
-      saved: true,
-      resumeKind,
-      category: state.resume.category,
-      baseResumeId: state.resume.baseResumeId || null,
-      jobId: requestedJobId || null,
-      title: state.resume.title,
-      updatedAt: now,
-      characterCount: state.resume.markdown.length,
-      evidenceCoverage: `${evidenceCoverage.supported}/${evidenceCoverage.total}`,
-      completePointCount: evidenceCoverage.complete,
-      corePointCount: evidenceCoverage.core,
-      strongEvidenceCount: evidenceCoverage.strong,
-      verifiedClaimCount: evidenceCoverage.verified,
-      candidateQuestionCount: candidateQuestions.length,
-      openCandidateQuestionCount: resumeQaCounts(state.resume).open,
-      projectSaved,
-    };
+    return result;
   });
 
   register("save_resume_qa_answer", async (args = {}) => {
     await ready;
-    assertPlainObject(args, "save_resume_qa_answer");
-    const resumeId = cleanText(args.resume_id, 100);
-    const questionId = cleanText(args.question_id, 100);
-    if (!resumeId || resumeId !== resumeRecordId(state.resume)) {
-      throw new Error("resume_id 必须指向当前正在查看的简历版本");
-    }
-    state.resume.candidateQuestions = normalizeResumeQaQuestions(state.resume.candidateQuestions);
-    const question = state.resume.candidateQuestions.find((item) => item.id === questionId);
-    if (!question) throw new Error("question_id 不属于当前简历版本");
-    const status = cleanText(args.status, 40);
-    const answer = cleanText(args.answer, 3000);
-    const sourceRefs = cleanTextList(args.source_refs, 8, 500);
-    if (!["answered", "needs_source", "skipped"].includes(status) || !answer) {
-      throw new Error("status 和候选人的实际 answer 为必填");
-    }
-    if (status === "answered" && !sourceRefs.length) {
-      throw new Error(
-        "标记 answered 时至少需要一个 Source；用户明确确认可使用 user:resume-qa:<id>",
-      );
-    }
-    const previousResume = clone(state.resume);
     const previousActiveView = state.activeView;
-    const updatedAnswer = updateResumeQaAnswer(state.resume.candidateQuestions, {
-      questionId: question.id,
-      status,
-      answer,
-      sourceRefs,
-      suggestedChange: args.suggested_change,
-      answeredAt: new Date().toISOString(),
+    const result = await applyJobHuntPanelOperation("save_resume_qa_answer", args, {
+      fields: ["resume", "workflowRuns"],
+      onApplied() { state.activeView = "resumes"; },
+      onRollback() { state.activeView = previousActiveView; },
     });
-    state.resume.candidateQuestions = updatedAnswer.questions;
-    state.activeView = "resumes";
-    persist();
-    renderAll();
-    const projectSaved = await writeProjectSnapshot();
-    if (!projectSaved) {
-      state.resume = previousResume;
-      state.activeView = previousActiveView;
-      persist();
-      renderAll();
-      renderMaterials();
-      requireProjectSnapshot(false);
-    }
+    const question = state.resume.candidateQuestions.find((item) => item.id === result.questionId);
     recordTraceArtifact(
-      "resume-qa-answer",
-      `${resumeId}:${question.id}`,
-      `${RESUME_QA_CATEGORY_LABELS[question.category] || "简历事实"} · ${RESUME_QA_STATUS_LABELS[status]}`,
+      "resume-qa-answer", `${result.resumeId}:${result.questionId}`,
+      `${RESUME_QA_CATEGORY_LABELS[question.category] || "简历事实"} · ${RESUME_QA_STATUS_LABELS[result.status]}`,
     );
-    const counts = resumeQaCounts(state.resume);
-    return {
-      saved: true,
-      resumeId,
-      questionId: question.id,
-      status,
-      answeredCount: counts.answered,
-      remainingCount: counts.open + counts.needsSource,
-      projectSaved,
-    };
+    return result;
   });
 }
 

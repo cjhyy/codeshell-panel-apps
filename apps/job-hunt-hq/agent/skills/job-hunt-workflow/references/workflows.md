@@ -11,7 +11,10 @@ not evidence of user interest.
 Use this module when the Panel target kind is `project-bootstrap` or the user
 asks the Panel to initialize, repair, scan, or complete the current project.
 
-1. Invoke `get_job_search_context` with `scope=candidate`, inspect its bounded
+1. Use the workflow's selected execution path. For a direct Chat / TUI request
+   with no project snapshot, run the bundled CLI's create-only `init` first;
+   do not call a Panel tool merely to initialize this snapshot.
+   Invoke `get_job_search_context` with `scope=candidate`, inspect its bounded
    source and resume indexes, and read the
    current `CODESHELL.md` when present. Scan only obvious resume, biography,
    work-history, portfolio, project-summary, and interview-note files. Exclude
@@ -37,7 +40,7 @@ asks the Panel to initialize, repair, scan, or complete the current project.
    change are verified.
 7. Invoke `save_candidate_context` with every verified fact and empty arrays
    for categories with no evidence. This creates or updates the current
-   project's `job-hunt-panel.json` through the Panel.
+   project's `job-hunt-panel.json` through the selected Panel or CLI path.
 8. Generate a first Base Resume only when one broad target category can be
    inferred and at least three resume claims can be supported. Otherwise finish
    initialization and report the smallest set of real facts still needed.

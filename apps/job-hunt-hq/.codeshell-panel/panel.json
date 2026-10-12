@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "id": "job-hunt-hq",
-  "version": "4.1.2",
+  "version": "4.2.0",
   "title": {
     "default": "Job Hunt HQ",
     "en": "Job Hunt HQ",
     "zh-CN": "求职作战室"
   },
-  "description": "Run an evidence-backed resume pipeline and a durable interview system that separates the canonical question bank, practice sets, mock sessions, and real interview debriefs.",
+  "description": "Run an evidence-backed resume pipeline and a durable interview system that separates the canonical question bank, practice sets, mock sessions, and real interview debriefs. Headless writes require CodeShell 0.9.36 or later.",
   "entry": "app/index.html",
   "icon": "layout-dashboard",
   "placement": "right-dock",
@@ -32,6 +32,10 @@
     "interview-transcribe": {
       "entry": "app/tools/interview-transcribe.mjs",
       "sha256": "1b7ddc280937609978961bb90a8076b70f2da645df80dc00bd4165dcd6ffaff7"
+    },
+    "job-hunt": {
+      "entry": "app/tools/job-hunt.mjs",
+      "sha256": "41148353564d6921ac46fff7a677d4a9098cce128a05170a0db24c1961279b34"
     },
     "resume-pdf": {
       "entry": "app/tools/resume-pdf.mjs",
@@ -1681,7 +1685,8 @@
       "agent/skills/job-intelligence/SKILL.md",
       "agent/skills/resume-writing/SKILL.md",
       "agent/skills/resume-design/SKILL.md",
-      "agent/skills/interview-coach/SKILL.md"
+      "agent/skills/interview-coach/SKILL.md",
+      "agent/skills/project-runtime/SKILL.md"
     ]
   }
 }
