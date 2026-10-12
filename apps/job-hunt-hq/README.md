@@ -7,6 +7,43 @@
 面板用于查看整理结果、版本差异和历史内容，手工表单作为补充。知识库的命名版本与软件版本、
 简历版本、面试练习和 AI 评分分别维护，保存知识库版本不会自动生成简历。
 
+## 不开面板也能读写
+
+内置 Skill 可通过本地 Node CLI 读写当前项目，无需先打开面板。当前支持四个操作：
+
+| 操作 | 范围 |
+| --- | --- |
+| `get_job_search_context` | 有边界的项目上下文、知识库记录和历史版本 |
+| `save_candidate_context` | 五种互斥增量模式：`source`、`episode`、`qa`、`library_version`、`career_update` |
+| `save_resume_draft` | 按需保存 Base Resume 或 JD 定制版 |
+| `save_resume_qa_answer` | 保存已有简历事实条目的回答 |
+
+CLI 不支持旧的候选人档案全量替换；岗位导入、调研、面试评分、Trace 等其余工作流仍使用
+原有 Panel 工具。保存经历和问答不会触发简历生成。
+
+Agent 使用 Skill 中由 Host 展开后的安装路径，例如：
+
+```sh
+node "${CODESHELL_SKILL_DIR}/../../../app/tools/job-hunt-cli.mjs" ops
+node "${CODESHELL_SKILL_DIR}/../../../app/tools/job-hunt-cli.mjs" get_job_search_context --project "$PWD" --input-file career-data/requests/read.json
+```
+
+`${CODESHELL_SKILL_DIR}` 是 Skill 文本中的 Host 路径替换，不是环境变量；直接在终端运行时，
+请使用实际安装目录或已明确指定的项目固定包路径。以上读取示例的 `read.json` 内容为
+`{"scope":"career_versions"}`。指定操作名时，文件只包含该操作的参数；也可省略操作名，
+从 stdin 传入完整 `{operation,input,expectedRevision,sessionId?}` JSON。需要本地 Node；
+运行环境或安装路径不可访问时会说明限制，操作系统沙箱隐藏 `~/.code-shell` 时不能绕过。
+
+请求最多 64 KiB，引用的知识库更新文件仍最多 128 KiB。每次修改前先读取上下文，使用返回的
+`revision` 作为 `expectedRevision`（命令行参数为 `--expected-revision`）；尚无根快照时返回
+`null`，新建时也必须明确传入 `null`。预览不写项目，不要求 revision；JSON apply 还必须带上
+预览返回的 token。文件或知识库变化需要重新预览；revision 冲突时重新读取并协调修改，
+不能用旧数据覆盖其他写入。相同文件与版本的 apply 重试保留后续编辑。
+
+CLI 和面板共享同一份 `job-hunt-panel.json`、引用分片及 `career-data/` 历史，并使用相同的
+根文件版本检查和提交锁。已保存结果会在面板读取项目后显示；未保存的表单文字和浏览器草稿
+不属于 CLI 可读的项目内容。CLI 不会代替 Panel 完成执行 Trace。
+
 ## 在聊天中积累一个版本
 
 1. 在当前聊天贴 Slack 消息链接、GitHub 仓库 / PR / Commit 链接，或让 Agent 使用已连接并由你指定的数据。例如：“整理这段讨论，问我当时为什么选这个方案。”
@@ -110,7 +147,7 @@ CodeShell Session 中进行；模拟面试则全程留在面板中逐题作答�
 - 内置渠道和用户添加的 HTTPS 招聘页都在独立“渠道管理”中逐个处理；添加只保存渠道，不会搜索岗位。用户可直接“登录并保存”，由 CodeShell Host 打开隔离登录窗口、保存 Cookie 凭证并恢复到当前任务浏览器；已有登录可“恢复并验证”。每次 Agent 仍只打开一个渠道并写回“已可用 / 需要登录 / 需要验证码 / 访问受限 / 暂不可用”。当前任务未通过的渠道不能进入搜索；面板和 Agent 不读取、导出或物化 Cookie
 - 根据当前项目资料、Base Resume、待筛选岗位、关注岗位和投递提醒，在首页给出一个可直接执行的“当前下一步”
 - 岗位区可在“待筛选 / 关注中 / 全部”间快速切换；任务编排器放在岗位与简历工作区之后，先看对象再组合任务
-- 在“当前项目上下文”中一键初始化：自动复用已有简历和经历、补齐缺失的 `CODESHELL.md` / `career-data` 模板、同步面板快照，并在证据足够时生成第一份 Base Resume
+- 在“当前项目上下文”中一键初始化：自动复用已有简历和经历、补齐缺失的 `CODESHELL.md` / `career-data` 模板、同步面板快照；第一份 Base Resume 在用户另行要求且证据足够时生成
 - 可在“当前项目”中清空岗位池与全部面板产物后重新开始；只重写 `job-hunt-panel.json`，不会删除原始简历、经历、Repo、`CODESHELL.md` 或其他项目文件
 - 在首页选择零个、一个或多个岗位，再自由组合本次需要的任务
 - 用“简历优化、面试准备、面试复盘、完整岗位包”预设快速勾选，但仍可继续增减任务

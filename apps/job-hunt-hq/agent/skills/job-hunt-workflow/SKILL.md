@@ -1,13 +1,92 @@
 ---
 name: job-hunt-workflow
-description: Operate project-bound Job Hunt HQ from the current CodeShell chat. Maintain private experiences, decisions and factual QA; produce strict JSON updates and named library versions; or perform requested job, resume and interview tasks.
+description: Operate project-bound Job Hunt HQ from the current CodeShell chat. Use its Node CLI without opening the Panel to maintain private experiences, decisions, factual QA and named library versions, or save requested resumes. Use Panel tools for other job and interview tasks.
 ---
 
 # Job Hunt Workflow
 
 Keep the conversation in the current CodeShell session. Do not create a second
-chat surface or ask the user to open another repository. The enabled Panel App,
-its tools, and this Skill are one project-scoped product.
+chat surface or ask the user to open another repository. The installed package,
+its tools, CLI, and this Skill operate on the same project data. The four CLI
+operations below do not require opening the Panel.
+
+## Use the capability without opening the Panel
+
+Use the local Node CLI for these operations when working directly in chat:
+
+| Operation | Supported work |
+| --- | --- |
+| `get_job_search_context` | Bounded current context and saved knowledge-library history |
+| `save_candidate_context` | Exactly one incremental `source`, `episode`, `qa`, `library_version`, or `career_update` mode |
+| `save_resume_draft` | Save a requested Base Resume or JD Variant |
+| `save_resume_qa_answer` | Save a factual answer associated with an existing resume claim |
+
+The legacy complete `profile` + `repositories` + `work_history` replacement is
+not supported by the CLI. Other operations in the 16-tool workflow, including
+job intake, research, interview scoring, and execution traces, still use the
+Panel tool protocol below. Saving knowledge does not request a resume.
+
+`CODESHELL_SKILL_DIR` in the following commands is substituted by the Host in
+this Skill's text with its installed absolute directory. It is not a shell
+environment variable; do not export or guess it. Use the substituted path, or
+an explicitly provided project-pinned package path. Local Node is required.
+If the runtime or installed path is unavailable, report that limitation. If an
+OS sandbox makes an installation under `~/.code-shell` inaccessible, report
+the inaccessible path rather than bypassing the sandbox.
+
+Read the CLI contract once when it is not already visible:
+
+```sh
+node "${CODESHELL_SKILL_DIR}/../../../app/tools/job-hunt-cli.mjs" ops
+```
+
+For a positional operation, the JSON file contains only that operation's
+input. Write `career-data/requests/read.json` with `{"scope":"career_versions"}`,
+then read the active project:
+
+```sh
+node "${CODESHELL_SKILL_DIR}/../../../app/tools/job-hunt-cli.mjs" get_job_search_context --project "$PWD" --input-file career-data/requests/read.json
+```
+
+Keep `--project` bound to the user's active project, or an explicitly selected
+absolute project path. Request files are project-relative. Each UTF-8 request
+is limited to 64 KiB; the separately referenced `career_update` document keeps
+its 128 KiB limit. Do not move a batch into the request envelope to evade these
+limits. The CLI validates the same operation input schemas as the Panel.
+
+Alternatively, omit the positional operation and send a complete JSON envelope
+on stdin. This read example does not change project data:
+
+```sh
+node "${CODESHELL_SKILL_DIR}/../../../app/tools/job-hunt-cli.mjs" --project "$PWD" <<'JSON'
+{"operation":"get_job_search_context","input":{"scope":"career_versions"}}
+JSON
+```
+
+For every mutation, first read the project and retain the returned top-level
+`revision`. Supply that exact value as envelope `expectedRevision`, or as
+`--expected-revision` with a positional operation. A missing root returns
+`revision: null`; use JSON `null` or `--expected-revision null` for that new
+project. Never guess a revision or force an overwrite. The optional envelope
+`sessionId` (or `--session-id`) identifies this chat when available.
+
+`library_version` preview and `career_update` preview are read-only and do not
+require `expectedRevision`. For JSON batches, preview first, show the changes,
+then apply the exact returned `preview_token` with the read revision when
+saving is authorized. The token binds the update file, project identity, career
+records and version index; it is separate from the root revision. If the file
+or career library changes, preview again. On a revision conflict, read current
+context and reconcile changes before retrying; never replace another writer's
+work. On a busy project, let the current save finish before retrying.
+
+The CLI and Panel share `job-hunt-panel.json`, its referenced shards, and
+`career-data/` history, using the same root revision check and commit lock.
+Successful writes appear when the Panel reads the project. This does not
+include unsaved form text or browser drafts. A successful same-file,
+same-version `career_update` apply retry returns the saved version without
+overwriting subsequent edits. If a receipt is lost, query that exact version
+before deciding to retry, as described below. An error or inaccessible file
+is not a successful save. CLI calls do not complete Panel execution traces.
 
 ## Build knowledge-library versions through the current chat
 
@@ -209,9 +288,11 @@ structured write whose fields are not already clear from the Panel tool schema.
 
 ## Start with project context
 
-1. Use `Panel` with `action: "tools"` and
-   `panel_id: "panel-app:job-hunt-hq"` as the first useful tool call unless the
-   current tool contract is already visible.
+1. For the four CLI operations above, read `ops` unless their current contract
+   is already visible. For other workflows, use `Panel` with `action: "tools"`
+   and `panel_id: "panel-app:job-hunt-hq"`. Do not require an open Panel for
+   supported CLI work. Use Panel tools for a Panel-launched task that requires
+   its execution Trace.
 2. Invoke `get_job_search_context` before browsing or drafting, but never ask
    it for a full project dump. With no arguments it returns only counts,
    selected-object summaries, available scopes, and policy. Then read the
@@ -228,7 +309,7 @@ structured write whose fields are not already clear from the Panel tool schema.
    - `discovery` for providers and search preferences; `intake` for the JD
      inbox.
      Follow `nextCursor` for a catalog only when the requested task genuinely
-     needs the rest of that catalog. Do not bypass a bounded Panel read by loading
+     needs the rest of that catalog. Do not bypass a bounded context read by loading
      the entire project snapshot file. Preserve existing `claimEvidence` when
      its claims remain unchanged.
 3. Check once for the active project's root `CODESHELL.md`. If present, follow
@@ -240,10 +321,10 @@ structured write whose fields are not already clear from the Panel tool schema.
 5. Treat project files and the user-confirmed career library as candidate
    sources of truth. The project snapshot persists these facts and their
    provenance; it is not disposable UI state. Use `save_candidate_context`'s
-   legacy complete `profile` + `repositories` + `work_history` replacement only
-   when those verified facts changed. The incremental career modes may save
-   draft/pending records and named library versions without changing those
-   legacy fields; saving does not confirm unresolved facts.
+   legacy complete `profile` + `repositories` + `work_history` replacement
+   through the Panel tool only when those verified facts changed. The incremental
+   career modes may save draft/pending records and named library versions without
+   changing those legacy fields; saving does not confirm unresolved facts.
 6. When the Panel requests project initialization, follow the initialization
    module in `references/workflows.md`. Reuse existing files, preserve unrelated
    `CODESHELL.md` instructions, and create only missing candidate-data homes.
@@ -385,10 +466,11 @@ success.
 
 ## Finish
 
-Write every requested structured artifact through the appropriate Panel App
-tool before the final response. For multiple selected jobs, write one
-job-specific artifact at a time so each output keeps its `job_id`. When a Panel
+Write every requested structured artifact through the supported CLI operation
+or appropriate Panel App tool before the final response; stop at a file or
+preview when that is all the user requested. For multiple selected jobs, write
+one job-specific artifact at a time so each output keeps its `job_id`. When a Panel
 Trace ID is present, finish with `complete_execution_trace` so the Panel shows
 an explicit output summary instead of inferring success from Session busy
-state. Then summarize briefly what changed in the panel, what remains
+state. Then summarize briefly what was saved in the project, what remains
 unverified, and the highest-value next step.
