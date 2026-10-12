@@ -52,6 +52,81 @@ function frequency(pcm, start, end, channel = 0) {
 const near = (actual, expected, tolerance) =>
   assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} ≈ ${expected} ± ${tolerance}`);
 
+test("live root-gain correction matches native PCM after nested, multicam and pitch-preserving retiming", { timeout: 60000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "editor-gain-audition-pcm-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const bundle = join(directory, "api.mjs");
+  await build({ stdin: { resolveDir: repository, contents: `
+    export {renderEditorAudio} from './apps/video-studio/native/media/editor-audio-renderer';
+    export {clipGainAuditionDocument} from './apps/video-studio/src/editor/audio-audition';
+    export {createTrack,defaultAudioMix,defaultTransform,defaultColorAdjustment} from './apps/video-studio/src/editor/defaults';
+  ` }, bundle: true, platform: "node", format: "esm", outfile: bundle, logLevel: "silent" });
+  const api = await import(pathToFileURL(bundle)), tone = join(directory, "tone.mkv"), bed = join(directory, "bed.mkv");
+  ffmpeg(["-f", "lavfi", "-i", "color=red:s=32x32:r=10:d=4", "-f", "lavfi", "-i", "aevalsrc=0.17*sin(2*PI*440*t)|0.13*sin(2*PI*733*t):s=48000:d=4", "-c:v", "ffv1", "-c:a", "pcm_f32le", "-y", tone]);
+  ffmpeg(["-f", "lavfi", "-i", "color=blue:s=32x32:r=10:d=4", "-f", "lavfi", "-i", "aevalsrc=0.09*sin(2*PI*997*t)|0.11*sin(2*PI*191*t):s=48000:d=4", "-c:v", "ffv1", "-c:a", "pcm_f32le", "-y", bed]);
+  const visual = () => ({ transform: api.defaultTransform(), color: api.defaultColorAdjustment(), blendMode: "normal" }),
+    sequence = (id) => ({ id, name: id, width: 32, height: 32, frameRate: { numerator: 30000, denominator: 1001 }, background: "#000000", timelineMode: "free",
+      tracks: [api.createTrack("v", "video"), api.createTrack("a", "audio")], clips: [], transitions: [], markers: [] }),
+    media = (id, assetId = "tone", trackId = "v") => ({ id, label: id, kind: "media", assetId, trackId, start: 13, duration: T,
+      timeMap: { points: [{ time: 0, source: 0 }, { time: T, source: T }] }, audio: api.defaultAudioMix(), ...visual() });
+  let serial = 0;
+  const render = async (document, range) => {
+    const result = await api.renderEditorAudio({ document, sequenceId: "main", range, resolveAssetPath: (id) => id === "tone" ? tone : bed,
+      ffmpegPath: "ffmpeg", ffprobePath: "ffprobe", workDir: join(directory, "work"), cacheDir: join(directory, "cache"),
+      outputPath: join(directory, `mix-${++serial}.wav`), signal: new AbortController().signal });
+    return { result, pcm: decode(result.path) };
+  };
+  for (const kind of ["media", "sequence", "multicam"]) {
+    const root = sequence("main"), child = sequence("child"), leaf = media("leaf"), selected = media("selected"), other = media("other", "bed", "a");
+    root.tracks[0].volume = 0.73; root.tracks[0].pan = -0.22;
+    child.tracks[0].volume = 0.61; child.tracks[0].pan = 0.19;
+    leaf.audio.volume = { keyframes: [{ time: 0, value: 0.3 }, { time: T, value: 1.2 }] };
+    leaf.audio.pan = { keyframes: [{ time: 0, value: -0.3 }, { time: T, value: 0.7 }] };
+    leaf.audio.fadeIn = 12013; leaf.audio.fadeOut = 20013;
+    leaf.audio.pitchSemitones = 2; leaf.timeMap.points[1].source = 2*T;
+    child.clips = [leaf];
+    selected.audio.volume = kind === "media" ? 0 : 0.8;
+    selected.audio.fadeIn = 20013; selected.audio.fadeOut = 12013; selected.audio.pan = 0.23;
+    selected.audio.pitchSemitones = -3; selected.audio.preservePitch = kind !== "multicam";
+    selected.timeMap = { points: [{ time: 0, source: T }, { time: T/2, source: 0 }, { time: T, source: T/2 }] };
+    if (kind === "sequence") { selected.kind = kind; delete selected.assetId; selected.sequenceId = "child"; }
+    if (kind === "multicam") {
+      selected.kind = kind; delete selected.assetId;
+      selected.angles = [{ id: "one", name: "one", assetId: "bed", offset: 13 }, { id: "two", name: "two", assetId: "tone", offset: 113 }];
+      selected.switches = [{ time: 0, angleId: "one" }, { time: 40013, angleId: "two" }]; selected.audioAngleId = "two";
+    }
+    root.clips = [selected, other];
+    const document = { schemaVersion: 2, timebase: T, id: `audition-${kind}`, name: "Audition", revision: 0, activeSequenceId: "main", exportProfiles: [],
+      assets: [{ id: "tone", name: "Tone", kind: "video", width: 32, height: 32, duration: 4*T }, { id: "bed", name: "Bed", kind: "video", width: 32, height: 32, duration: 4*T }], sequences: [root, child] },
+      before = structuredClone(document), unit = api.clipGainAuditionDocument(document, "main", selected.id),
+      adjusted = structuredClone(document), target = 1.7;
+    adjusted.sequences[0].clips[0].audio.volume = target;
+    const full = await render(document), stem = await render(unit.document), changed = await render(adjusted);
+    assert.equal(full.pcm.length, stem.pcm.length); assert.equal(full.pcm.length, changed.pcm.length);
+    assert.ok(stem.pcm.some((value) => Math.abs(value) > 0.01), `${kind}: nonzero actual processed stem`);
+    let maximum = 0;
+    for (let index = 0; index < changed.pcm.length; index++) maximum = Math.max(maximum,
+      Math.abs(full.pcm[index] + (target - unit.volume) * stem.pcm[index] - changed.pcm[index]));
+    assert.ok(maximum < 1e-6, `${kind}: max native PCM correction difference ${maximum}`);
+    t.diagnostic(`${kind}: maximum native PCM difference ${maximum}`);
+    assert.ok(stem.result.processing.processedSpans > 0, "comparison must exercise actual FFmpeg time stretching/pitch processing");
+    const range = { start: 40013, duration: 80080 }, partial = await render(unit.document, range);
+    assert.equal(partial.result.rangeFallback, "stretch", "range export must preserve original unit-stem retiming phase");
+    assert.deepEqual(partial.pcm, stem.pcm);
+    if (kind === "media") {
+      const safeUnit = structuredClone(unit.document), safeClip = safeUnit.sequences[0].clips[0];
+      safeClip.audio.pitchSemitones = 0;
+      safeClip.timeMap.points = [{ time: 0, source: 0 }, { time: T, source: T }];
+      const safeFull = await render(safeUnit), safeRange = await render(safeUnit, range);
+      assert.deepEqual(safeRange.result.range, range);
+      assert.equal(safeRange.result.rangeFallback, undefined);
+      assert.deepEqual(safeRange.pcm, safeFull.pcm.slice(Math.ceil(range.start / 5) * 2, Math.ceil((range.start + range.duration) / 5) * 2));
+      assert.ok(safeRange.pcm.some((value) => Math.abs(value) > 0.01));
+    }
+    assert.deepEqual(document, before);
+  }
+});
+
 test("bounded original-clock PCM skips unrelated sources and equals full mix samples through nested reverse, fades and animation", { timeout: 60000 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "editor-range-pcm-"));
   t.after(() => rm(directory, { recursive: true, force: true }));

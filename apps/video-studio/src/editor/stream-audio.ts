@@ -19,6 +19,11 @@ const RATE = 48000,
   AHEAD = 6,
   LEAD = 0.035;
 const cancelled = () => new DOMException("声音播放已取消", "AbortError");
+function releaseSource(source: AudioBufferSourceNode): void {
+  // Setup may fail before start(), when native stop() throws InvalidStateError.
+  try { source.stop(); } catch {}
+  try { source.disconnect(); } catch {}
+}
 
 /** Schedules bounded contiguous PCM blocks. The clock advances only through scheduled
  * audio: if a read stalls, video holds at the last heard sample instead of skipping sound. */
@@ -100,17 +105,24 @@ export class StreamingPreviewAudio {
     }
     // Slow reads start a new contiguous interval; the clock freezes through the gap.
     const at = Math.max(this.nextTime, this.context.currentTime + LEAD), end = at + count / RATE;
-    const sources = blocks.map(([left, right], index) => {
-      const buffer = this.context.createBuffer(2, count, RATE);
-      buffer.getChannelData(0).set(left!);
-      buffer.getChannelData(1).set(right!);
-      const source = this.context.createBufferSource();
-      source.buffer = buffer;
-      source.connect(index ? this.correction!.destination : this.context.destination);
-      return source;
-    });
+    const sources: AudioBufferSourceNode[] = [];
+    try {
+      for (const [index, [left, right]] of blocks.entries()) {
+        const buffer = this.context.createBuffer(2, count, RATE);
+        buffer.getChannelData(0).set(left!);
+        buffer.getChannelData(1).set(right!);
+        const source = this.context.createBufferSource();
+        sources.push(source);
+        source.buffer = buffer;
+        source.connect(index ? this.correction!.destination : this.context.destination);
+        this.check();
+      }
+      for (const source of sources) { source.start(at); this.check(); }
+    } catch (error) {
+      for (const source of sources) releaseSource(source);
+      throw error;
+    }
     this.chunks.push({ source: sources[0]!, correction: sources[1], start: at, end, sample: start, count });
-    for (const source of sources) source.start(at);
     this.nextSample += count;
     this.nextTime = end;
   }
@@ -172,10 +184,8 @@ export class StreamingPreviewAudio {
     this.detach();
     clearTimeout(this.timer);
     for (const chunk of this.chunks.splice(0)) {
-      chunk.source.stop();
-      chunk.correction?.stop();
-      chunk.source.disconnect();
-      chunk.correction?.disconnect();
+      releaseSource(chunk.source);
+      if (chunk.correction) releaseSource(chunk.correction);
     }
   }
 }
