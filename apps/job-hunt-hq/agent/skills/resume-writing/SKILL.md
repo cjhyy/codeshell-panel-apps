@@ -201,12 +201,13 @@ Require all of the following:
 Do not raise the score by inventing data. Report the missing proof as the next
 improvement instead.
 
-## Write back through the Panel
+## Write back to the project
 
 When Job Hunt HQ is active, invoke `save_resume_draft` with the complete public
 Markdown, complete `claim_evidence`, 3–8 private `candidate_questions`,
-unresolved `notes`, and the correct resume hierarchy fields. Preserve the Panel
-Trace ID on the write and finish the Trace through the workflow Skill.
+unresolved `notes`, and the correct resume hierarchy fields. Use the Panel or
+CLI path selected by the workflow Skill. For a Panel-launched task, preserve
+the Panel Trace ID on the write and finish the Trace through that Skill.
 
 For an Audit without requested revision, explain the hiring thesis currently
 visible, the three strongest signals, the competing noise, unsupported claims,

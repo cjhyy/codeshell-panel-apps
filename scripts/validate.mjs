@@ -365,6 +365,13 @@ async function validatePackage(packagePath) {
     const snapshotSchema = JSON.parse(
       await readFile(join(root, "app", "formats", "job-hunt-panel-v2.schema.json"), "utf8"),
     );
+    const resumeOperationsScript = await readFile(join(root, "app", "ops", "resume.mjs"), "utf8");
+    const sharedOperationHandler = (name) => {
+      const start = appScript.indexOf(`  register("${name}"`);
+      assert(start >= 0, `${packagePath}: missing shared-operation handler ${name}`);
+      const next = appScript.indexOf("\n  register(", start + 1);
+      return appScript.slice(start, next < 0 ? appScript.indexOf("\n}\n", start) : next);
+    };
     const toolNames = new Set(manifest.agent.tools.map((tool) => tool.name));
     const registeredToolNames = new Set(
       [...appScript.matchAll(/register\(\s*"([a-z][a-z0-9_]*)"/g)].map((match) => match[1]),
@@ -372,7 +379,7 @@ async function validatePackage(packagePath) {
     const queriedIds = [...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g)].map(
       (match) => match[1],
     );
-    assert.equal(manifest.version, "4.1.2", `${packagePath}: guided workflow version mismatch`);
+    assert.equal(manifest.version, "4.2.0", `${packagePath}: headless resume workflow version mismatch`);
     for (const id of ["view-today", "view-dashboard", "view-resumes", "view-interviews", "view-materials"]) {
       assert.match(html, new RegExp(`id="${id}"`), `${packagePath}: missing v4 primary workspace ${id}`);
     }
@@ -2322,6 +2329,7 @@ async function validatePackage(packagePath) {
         "agent/skills/resume-writing/SKILL.md",
         "agent/skills/resume-design/SKILL.md",
         "agent/skills/interview-coach/SKILL.md",
+        "agent/skills/project-runtime/SKILL.md",
       ],
       `${packagePath}: complete job-hunt Skill suite is required`,
     );
@@ -2861,9 +2869,14 @@ async function validatePackage(packagePath) {
       `${packagePath}: resume evidence UI must distinguish found sources from publishable claims`,
     );
     assert.match(
-      appScript,
-      /register\("save_candidate_context"[\s\S]*?previousPublicProfile[\s\S]*?touchResumePresentation\(\{ allVersions: true \}\)/,
-      `${packagePath}: profile changes must invalidate PDFs for every resume version`,
+      resumeOperationsScript,
+      /publicProfile\(previousProfile\) !== publicProfile\(next\.profile\)[\s\S]*?next\.resume[\s\S]*?updatedAt: now[\s\S]*?next\.versions = [\s\S]*?updatedAt: now/,
+      `${packagePath}: shared candidate operation must invalidate PDFs for every resume version`,
+    );
+    assert.match(
+      sharedOperationHandler("save_candidate_context"),
+      /await applyJobHuntPanelOperation\("save_candidate_context"[\s\S]*?fields: \["profile", "repos", "experiences", "resume", "versions", "workflowRuns"\][\s\S]*?recordTraceArtifact/,
+      `${packagePath}: candidate handler must persist and roll back every field changed by the shared operation before publishing its Trace artifact`,
     );
     assert.match(appScript, /currentExportStatus\.fresh \? "" : " · 已过期"/);
     assert.match(
@@ -3193,7 +3206,7 @@ async function validatePackage(packagePath) {
     );
     assert.match(
       skill,
-      /finish with `complete_execution_trace`/,
+      /Panel-launched task, finish with\s+`complete_execution_trace`/,
       `${packagePath}: Skill must explicitly finish Panel traces`,
     );
     assert.doesNotMatch(
@@ -3247,13 +3260,18 @@ async function validatePackage(packagePath) {
     );
     assert.match(
       appScript,
-      /register\("save_resume_draft"[\s\S]*?previousDraftState[\s\S]*?await writeProjectSnapshot\(\)[\s\S]*?state\.resume = previousDraftState\.resume[\s\S]*?recordTraceArtifact/,
-      `${packagePath}: Agent resume drafts must roll back before publishing their Trace artifact`,
+      /async function applyJobHuntPanelOperation[\s\S]*?const previous = Object\.fromEntries\(fields\.map[\s\S]*?runJobHuntOperation\(name[\s\S]*?for \(const field of fields\) state\[field\] = operation\.snapshot\[field\][\s\S]*?await writeProjectSnapshot\(\)[\s\S]*?if \(!projectSaved\)[\s\S]*?for \(const field of fields\) state\[field\] = previous\[field\][\s\S]*?onRollback\?\.\(\)[\s\S]*?requireProjectSnapshot\(false\)/,
+      `${packagePath}: shared Panel operation adapter must checkpoint, persist, and restore changed state on failure`,
     );
     assert.match(
-      appScript,
-      /register\("save_resume_qa_answer"[\s\S]*?previousResume = clone\(state\.resume\)[\s\S]*?await writeProjectSnapshot\(\)[\s\S]*?state\.resume = previousResume[\s\S]*?recordTraceArtifact/,
-      `${packagePath}: Agent resume QA writes must roll back before publishing their Trace artifact`,
+      sharedOperationHandler("save_resume_draft"),
+      /await applyJobHuntPanelOperation\("save_resume_draft"[\s\S]*?fields: \["resume", "versions", "jobs", "selectedJobId", "selectedBaseResumeId", "workflowRuns"\][\s\S]*?onRollback\(\)[\s\S]*?state\.activeView = previousUi\.activeView[\s\S]*?resumeMode = previousUi\.resumeMode[\s\S]*?recordTraceArtifact/,
+      `${packagePath}: Agent resume drafts must restore both business and UI state before publishing their Trace artifact`,
+    );
+    assert.match(
+      sharedOperationHandler("save_resume_qa_answer"),
+      /await applyJobHuntPanelOperation\("save_resume_qa_answer"[\s\S]*?fields: \["resume", "workflowRuns"\][\s\S]*?onRollback\(\)[\s\S]*?state\.activeView = previousActiveView[\s\S]*?recordTraceArtifact/,
+      `${packagePath}: Agent resume QA writes must roll back through the shared adapter before publishing their Trace artifact`,
     );
     for (const id of [
       "resume-qa-panel",
@@ -3379,7 +3397,6 @@ async function validatePackage(packagePath) {
         "state.jdIntakeItems",
         "recordTraceArtifact",
       ],
-      ["save_candidate_context", "previousCandidateState", "state.profile", "recordTraceArtifact"],
       ["save_job_opportunities", "previousOpportunityState", "state.jobs", "recordTraceArtifact"],
       [
         "update_application_progress",

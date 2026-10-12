@@ -233,6 +233,11 @@ the same shape:
   `baseResumeId` / `jobId`.
 - A variant has `kind: "variant"`, inherits its base's `category`, and
   requires valid `baseResumeId` and `jobId`.
+- Resume records may carry optional `source: "panel" | "cli"` and a
+  `sessionId` of at most 100 characters. These identify the write origin;
+  existing records without them remain valid. The CLI sets its own origin and
+  the supplied Session ID; they are not new Tool arguments. Decisions remain
+  private `candidateQuestions` with `category: "decision"`.
 - Treat IDs as opaque. Read the resume index with `scope=resumes`, then read the
   selected base with `scope=resume` and its exact `resume_id` before deriving a
   variant.

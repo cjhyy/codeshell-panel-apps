@@ -10,9 +10,12 @@ on screen, prints cleanly on A4, and keeps one reliable text reading order.
 
 ## Coordinate with Job Hunt HQ
 
-- Use `job-hunt-hq:job-hunt-workflow` for project context, Panel writes, and
-  Trace completion. Use `job-hunt-hq:resume-writing` for claims, emphasis, and
-  wording. This Skill owns presentation and visual QA, not candidate facts.
+- Use `job-hunt-hq:job-hunt-workflow` to select Panel or CLI project reads and
+  writes, and to complete a Panel-launched Trace. Use
+  `job-hunt-hq:resume-writing` for claims, emphasis, and wording. This Skill owns
+  presentation and visual QA, not candidate facts. A direct Chat / TUI draft
+  save uses the supported CLI path; a rendered preview or PDF export requires
+  opening the Panel. Do not claim a visual gate passed without inspecting it.
 - Read [references/layout-rubric.md](references/layout-rubric.md) before making
   a template decision or approving a final layout.
 - Preserve the selected Panel template and density unless the user requests a

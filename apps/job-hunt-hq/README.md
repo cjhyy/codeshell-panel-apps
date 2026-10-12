@@ -184,11 +184,24 @@ PDF 新鲜度按真实时间比较，而不是依赖数组顺序或 ISO 字符�
 
 不需要在面板中选择或打开其他 Repo。切换到另一个 CodeShell 项目时，只有那个项目自己的开关和数据会生效。
 
+### 不打开面板处理简历
+
+当前项目启用 Job Hunt HQ 后，直接在 Chat 或 TUI 中整理候选人事实、读取项目上下文、
+回答私有简历问答或保存 Base / JD 简历时，`project-runtime` Skill 会运行安装包里的
+`app/tools/job-hunt.mjs`，写回同一份 `job-hunt-panel.json` 和分片，面板不会弹出。
+面板发起的任务仍通过原 Tool 写入并结束 Trace。已打开的面板会检测外部修改：无未保存
+编辑时自动重新读取，有编辑时提示冲突并停止覆盖。
+
+第一版 CLI 仅支持 `get_job_search_context`、`save_candidate_context`、
+`save_resume_qa_answer`、`save_resume_draft` 四个操作。其余十二个 Tool、可视化预览和
+PDF 导出仍走面板。决策先保存在简历私有问答的 `decision` 分类中。
+终端用法和后续分期见[能力包方案](../../docs/todo/job-hunt-capability-pack-design.md)。
+
 ## 安装
 
 在 CodeShell 中打开 **扩展 → Panel Apps → 选择源码文件夹**，选择本目录并完成权限审查。
 安装后只为当前求职项目开启它，再从右侧面板的 `+` 菜单打开。项目开关关闭后，这个面板、
-它的结构化工具以及五个 `job-hunt-hq:*` Skills 会一起从该项目的 Session 中消失。
+它的结构化工具以及六个 `job-hunt-hq:*` Skills 会一起从该项目的 Session 中消失。
 
 开发修改后，在 Panel Apps 管理页点击 **从源码更新** 即可加载新版本。
 

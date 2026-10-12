@@ -6,8 +6,9 @@ description: Operate the project-bound Job Hunt HQ panel from the current CodeSh
 # Job Hunt Workflow
 
 Keep the conversation in the current CodeShell session. Do not create a second
-chat surface or ask the user to open another repository. The enabled Panel App,
-its tools, and this Skill are one project-scoped product.
+chat surface or ask the user to open another repository. The selected package
+provides project-scoped Panel tools and a CLI; choose the path below before
+reading or writing project data.
 
 ## Resolve jobs and tasks independently
 
@@ -109,9 +110,20 @@ structured write whose fields are not already clear from the Panel tool schema.
 
 ## Start with project context
 
-1. Use `Panel` with `action: "tools"` and
-   `panel_id: "panel-app:job-hunt-hq"` as the first useful tool call unless the
-   current tool contract is already visible.
+1. Resolve the execution path before the first project-data call:
+   - For a prompt submitted by the Panel with a `Panel Trace ID` / `trace_id`,
+     use `Panel` with `action: "tools"` and
+     `panel_id: "panel-app:job-hunt-hq"` unless its current contract is visible.
+     Continue through Panel tools, including Trace completion.
+   - For a direct Chat or TUI request, load `job-hunt-hq:project-runtime` and
+     use its bundled CLI. In this version it supports only
+     `get_job_search_context`, `save_candidate_context`,
+     `save_resume_qa_answer`, and `save_resume_draft`. Read their schemas with
+     `ops`; initialize a missing snapshot with `init`. These calls do not open
+     the Panel.
+   - If a direct request needs any of the other 12 tools, explain that this
+     version requires opening the Panel for that operation, then use the Panel
+     path. An explicit request to view or export also uses the Panel.
 2. Invoke `get_job_search_context` before browsing or drafting, but never ask
    it for a full project dump. With no arguments it returns only counts,
    selected-object summaries, available scopes, and policy. Then read the
@@ -160,7 +172,15 @@ structured write whose fields are not already clear from the Panel tool schema.
    follow `references/channel-login.md`. After manual login or CAPTCHA, wait
    for a new one-provider verification task.
 
-## Panel tool protocol
+## Structured operation protocol
+
+For direct Chat / TUI requests, use `project-runtime` for the four supported
+operations. A successful CLI JSON receipt confirms the project write. Keep
+operation names and arguments identical to the Panel schema, and do not call
+Panel just to read the supported context or save a supported resume artifact.
+
+For Panel-launched requests or operations not yet in the CLI, use the protocol
+below. This path opens the Panel when needed.
 
 Call Panel App tools through:
 
@@ -279,10 +299,11 @@ success.
 
 ## Finish
 
-Write every requested structured artifact through the appropriate Panel App
-tool before the final response. For multiple selected jobs, write one
+Write every requested structured artifact through the selected execution path
+before the final response. For multiple selected jobs, write one
 job-specific artifact at a time so each output keeps its `job_id`. When a Panel
-Trace ID is present, finish with `complete_execution_trace` so the Panel shows
-an explicit output summary instead of inferring success from Session busy
-state. Then summarize briefly what changed in the panel, what remains
-unverified, and the highest-value next step.
+Trace ID is present on a Panel-launched task, finish with
+`complete_execution_trace` so the Panel shows an explicit output summary
+instead of inferring success from Session busy state. Direct CLI tasks do not
+create or complete a Panel Trace. Then summarize briefly what changed in the
+project, what remains unverified, and the highest-value next step.
