@@ -65,6 +65,7 @@ async function fixture(t, options = {}) {
         project.files['job-hunt-panel.json'].resume.markdown = '# Example Candidate\n\nexample@example.com\n\n## 项目经验\n\n- 完成公开项目功能';
         project.files['job-hunt-panel.json'].resume.claimEvidence = [{ claim: '完成公开项目功能', status: 'verified', importance: 'core', whyItMatters: '实际功能', sources: [{ kind: 'user', label: '本人确认', locator: '用户输入', evidence: 'PRIVATE EVIDENCE' }], interviewQuestions: [{ question: 'PRIVATE INTERVIEW QUESTION' }] }];
       }
+      if (options.missingSnapshots?.includes(id)) delete project.files['job-hunt-panel.json'];
     }
     let current = 'a'; const listeners = [], calls = [], tools = {};
     const methods = ['storage.getSnapshot', 'storage.compareAndSet', 'workspace.info', 'workspace.list', 'workspace.readText', 'workspace.writeText', ...(options.extraMethods || [])];
@@ -1076,6 +1077,57 @@ test('partial project snapshots never inherit demo identity, evidence or intervi
   const summary = await page.evaluate(() => window.__fixture.tools.get_job_search_context({ scope: 'summary' }));
   assert.equal(summary.counts.interviewQuestions, 0);
   assert.equal(summary.counts.careerEpisodes, 0);
+});
+
+test('focus reads the first root created externally without reopening the panel', async t => {
+  const page = await fixture(t, { missingSnapshots: ['a'], scoped: true }); await ready(page);
+  assert.equal(await page.evaluate(() => 'job-hunt-panel.json' in window.__fixture.projects.a.files), false);
+  await page.evaluate(() => {
+    window.__fixture.projects.a.files['job-hunt-panel.json'] = {
+      schemaVersion: 2, careerLibraryMigrationVersion: 1, profile: { name: 'CLI Candidate' }, jobs: [], resume: {}, versions: [],
+      sourceMaterials: [{ id: 'career-source-external', provider: 'user', title: 'CLI新增来源', excerpt: '聊天整理的真实来源。', status: 'draft' }],
+      careerEpisodes: [{ id: 'career-episode-external', title: 'CLI新增选择', decision: '先保存再确认成功', sourceIds: ['career-source-external'], status: 'draft' }],
+      careerQa: [{ id: 'career-qa-external', question: '为什么这样选择？', answer: '失败时需要保留原始输入。', episodeId: 'career-episode-external', sourceIds: ['career-source-external'], status: 'draft' }],
+      careerLibraryVersions: [],
+    };
+    window.dispatchEvent(new Event('focus'));
+  });
+  await page.locator('.career-card').filter({ hasText: 'CLI新增来源' }).waitFor();
+  assert.equal(await page.locator('#profile-name').inputValue(), 'CLI Candidate');
+  const summary = await page.evaluate(() => window.__fixture.tools.get_job_search_context({ scope: 'summary' }));
+  assert.equal(summary.counts.sourceMaterials, 1); assert.equal(summary.counts.careerEpisodes, 1); assert.equal(summary.counts.careerQa, 1);
+  assert.match(await page.locator('#project-snapshot-state').textContent(), /已同步/);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'workspace.writeText' && call.params.path === 'job-hunt-panel.json').length), 0);
+  await page.locator('[data-career-kind="qa"]').click();
+  await page.locator('.career-card').filter({ hasText: '为什么这样选择' }).click();
+  assert.equal(await page.locator('[data-career-field="answer"]').inputValue(), '失败时需要保留原始输入。');
+});
+
+test('external root changes preserve the dirty career editor and block later root writes', async t => {
+  const page = await fixture(t, { scoped: true }); await ready(page);
+  await page.locator('#career-add').click();
+  await page.locator('[data-career-field="title"]').fill('本地尚未保存的选择');
+  await page.locator('[data-career-field="excerpt"]').fill('这段正在编辑的输入必须保留。');
+  await page.evaluate(() => {
+    const current = window.__fixture.projects.a.files['job-hunt-panel.json'];
+    window.__fixture.projects.a.files['job-hunt-panel.json'] = { ...current, profile: { name: 'External winner' },
+      sourceMaterials: [{ id: 'career-source-winner', provider: 'user', title: '外部已保存来源', excerpt: '由其他进程保存的事实。', status: 'draft' }] };
+    window.__externalRootText = JSON.stringify(window.__fixture.projects.a.files['job-hunt-panel.json']);
+    window.dispatchEvent(new Event('focus'));
+  });
+  await page.waitForFunction(() => document.querySelector('#project-snapshot-state').textContent.includes('发现外部更新'));
+  assert.equal(await page.locator('[data-career-field="title"]').inputValue(), '本地尚未保存的选择');
+  assert.equal(await page.locator('[data-career-field="excerpt"]').inputValue(), '这段正在编辑的输入必须保留。');
+  await page.locator('[data-career-action="save"]').click();
+  await page.locator('#career-message').filter({ hasText: '当前输入仍保留' }).waitFor();
+  // Let the ordinary snapshot/debounce deadlines elapse, then focus once more.
+  // A conflict is a durable stop condition, not just one failed save attempt.
+  await page.waitForTimeout(600);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  assert.equal(await page.locator('[data-career-field="title"]').inputValue(), '本地尚未保存的选择');
+  assert.equal(await page.locator('[data-career-field="excerpt"]').inputValue(), '这段正在编辑的输入必须保留。');
+  assert.equal(await page.evaluate(() => JSON.stringify(window.__fixture.projects.a.files['job-hunt-panel.json']) === window.__externalRootText), true);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'workspace.writeText' && call.params.path === 'job-hunt-panel.json').length), 0);
 });
 
 test('career materials, decisions and factual answers persist independently and can be found after reopening', async t => {
