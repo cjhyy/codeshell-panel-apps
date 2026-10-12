@@ -11,6 +11,9 @@ export const suites = [
     label: "Job Hunt HQ project draft persistence",
     commands: [[
       "--test",
+      "tests/apps/job-hunt-hq/career-library-model.test.mjs",
+      "tests/apps/job-hunt-hq/career-contract.test.mjs",
+      "tests/apps/job-hunt-hq/career-storage.test.mjs",
       "tests/apps/job-hunt-hq/snapshot-generations.test.mjs",
       "tests/apps/job-hunt-hq/snapshot-backup.test.mjs",
       "tests/apps/job-hunt-hq/snapshot-recovery-model.test.mjs",

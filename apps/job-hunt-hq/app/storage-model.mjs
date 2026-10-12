@@ -1,4 +1,5 @@
 export const PANEL_LOCAL_STORAGE_TARGET_BYTES = 220 * 1024;
+import { normalizeCareerDraft } from "./career-draft-model.mjs";
 
 const LOCAL_FIELDS = [
   "snapshotRestoreId",
@@ -147,6 +148,7 @@ export function compactPanelLocalState(state, maxBytes = PANEL_LOCAL_STORAGE_TAR
     : [];
   payload.interviewDraft = compactInterviewDraft(source.interviewDraft);
   payload.resumeDraft = compactResumeDraft(source.resumeDraft);
+  payload.careerDraft = normalizeCareerDraft(source.careerDraft);
 
   if (encodedJsonBytes(payload) <= maxBytes) return payload;
   payload.sessionActivity = payload.sessionActivity.map((activity) => ({

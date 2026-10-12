@@ -3,6 +3,9 @@ export const PROJECT_SNAPSHOT_SAFE_BYTES = 360 * 1024;
 export const PROJECT_SNAPSHOT_SHARD_TARGET_BYTES = 300 * 1024;
 export const PROJECT_SNAPSHOT_MAX_SHARDS = 128;
 export const PROJECT_SNAPSHOT_SHARD_FIELDS = [
+  "sourceMaterials",
+  "careerEpisodes",
+  "careerQa",
   "jdIntakeItems",
   "jobLeads",
   "jobs",
