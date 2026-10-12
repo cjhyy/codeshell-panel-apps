@@ -145,6 +145,21 @@ test("identical reingestion cannot undo a user title or confirmation", () => {
   assert.equal(repeated.sourceMaterials[0].pendingRevision, null);
 });
 
+test("saving a different field retains an outstanding source proposal in full revision history", () => {
+  let state = reviewedLibrary();
+  const id = state.sourceMaterials[0].id;
+  state = upsertCareerSource(state, { id, excerpt: "待核验的新材料全文", author: "新材料作者" }, agent);
+  const proposed = freeze(state.sourceMaterials[0].pendingRevision.content);
+  const saved = upsertCareerSource(freeze(state), { id, title: "本人只修改了标题" }, { actor: "user", now: later });
+  const record = saved.sourceMaterials[0];
+  assert.equal(record.excerpt, material.excerpt);
+  assert.equal(record.title, "本人只修改了标题");
+  assert.equal(record.pendingRevision, null);
+  assert.deepEqual(record.history.find((item) => item.reason === "reviewed_proposal").content, proposed);
+  assert.ok(record.history.some((item) => item.content.excerpt === material.excerpt));
+  assert.equal(state.sourceMaterials[0].pendingRevision.content.excerpt, "待核验的新材料全文");
+});
+
 test("withdrawing source or episode confirmation invalidates dependent facts even without text changes", () => {
   let state = reviewedLibrary();
   const episodeId = state.careerEpisodes[0].id;
