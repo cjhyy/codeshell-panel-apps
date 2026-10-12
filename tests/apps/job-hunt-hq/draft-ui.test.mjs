@@ -1138,7 +1138,8 @@ test('failed career saves and project switches preserve the current editing buff
 
 test('agent collection stays a draft and cannot confirm personal contribution', async t => {
   const page = await fixture(t); await ready(page);
-  const saved = await page.evaluate(() => window.__fixture.tools.save_candidate_context({ source: { provider: 'github', externalId: 'repo:example/project', url: 'https://github.com/example/project', excerpt: 'Repository readme', status: 'confirmed' } }));
+  await assert.rejects(page.evaluate(() => window.__fixture.tools.save_candidate_context({ source: { provider: 'github', excerpt: 'Repository readme', status: 'confirmed' } })), /status只允许draft/);
+  const saved = await page.evaluate(() => window.__fixture.tools.save_candidate_context({ source: { provider: 'github', externalId: 'repo:example/project', url: 'https://github.com/example/project', excerpt: 'Repository readme' } }));
   assert.equal(saved.source.status, 'draft');
   assert.equal(saved.source.confirmedBy, '');
   const duplicate = await page.evaluate(() => window.__fixture.tools.save_candidate_context({ source: { provider: 'github', externalId: 'repo:example/project', url: 'https://github.com/example/project', excerpt: 'Repository readme' } }));
