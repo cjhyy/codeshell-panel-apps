@@ -5,7 +5,7 @@
  * typed interview answers and private resume QA never touch developer data.
  */
 /* global document, window */
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -24,7 +24,7 @@ const {
 } = await import(pathToFileURL(join(desktopDir, "scripts", "electron-harness.mjs")).href);
 const isolated = await makeIsolatedElectronHome("codeshell-job-hunt-e2e-");
 const panelInstallDir = join(isolated.codeShellHome, "panel-apps", "job-hunt-hq");
-const projectDir = join(isolated.home, "job-hunt-project");
+const projectDir = join(await realpath(isolated.home), "job-hunt-project");
 const snapshotPath = join(projectDir, "job-hunt-panel.json");
 const now = new Date().toISOString();
 let app;
@@ -301,6 +301,7 @@ async function waitForGuest(view, predicate, message, timeout = 10_000) {
     if (await execute(view, predicate).catch(() => false)) return;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
   }
+  console.error(await execute(view, `(async () => { const context = await window.codeshellPanel.getContext(); return JSON.stringify({ cwd: context.cwd, methods: context.availableMethods, fileList: document.querySelector('#resume-file-list')?.textContent, projectError: document.querySelector('#project-snapshot-error')?.textContent, draftStatus: document.querySelector('#draft-storage-status')?.textContent }); })()`).catch(() => 'guest diagnostic unavailable'));
   throw new Error(message);
 }
 
@@ -369,10 +370,15 @@ try {
   });
   const win = await findCodeShellWindow(app);
   const rendererErrors = captureRendererErrors(win);
-  const panels = await win.evaluate(
-    (cwd) => window.codeshell.listPanelApps(cwd, "zh-CN"),
-    projectDir,
-  );
+  let panels = [];
+  // Startup also discovers project packages. A superseded discovery deliberately
+  // returns no descriptors, so wait for one stable read before binding the guest.
+  const discoveryDeadline = Date.now() + 10_000;
+  while (Date.now() < discoveryDeadline) {
+    panels = await win.evaluate((cwd) => window.codeshell.listPanelApps(cwd, "zh-CN"), projectDir);
+    if (panels.some(item => item.appId === "job-hunt-hq")) break;
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 100));
+  }
   const panel = panels.find((item) => item.appId === "job-hunt-hq");
   assert(panel, "Job Hunt HQ was not listed for the bound project");
   assert(panel.version === panelVersion, `expected Job Hunt HQ ${panelVersion}, got ${panel.version}`);
@@ -459,10 +465,14 @@ try {
   const qa = qaSaved.careerQa.find(item => item.question === 'E2E 为什么分阶段交付？');
   assert(qa.episodeId === episode.id && qa.sourceIds.includes(sourceId) && qa.answer !== qa.draftAnswer, 'career QA lost its associations or factual answer');
   await waitForGuest(view, `document.querySelector('[data-career-action="polish"]')?.disabled === false`, 'career QA did not finish saving');
+  // These scripted edits are much faster than typing. Keep the real Host's
+  // production call budget intact when reopening and starting the next flow.
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 10_100));
   await view.evaluate(candidate => candidate.reload());
   await waitForGuest(view, `document.querySelector('[data-career-field="answer"]')?.value.includes('PRIVATE CAREER ANSWER')`, 'career QA editing location did not survive reopening');
   assert(await execute(view, `!document.querySelector('#resume-preview')?.textContent.includes('PRIVATE CAREER ANSWER')`), 'private career QA leaked into the public resume');
   console.log('Career source → decision → factual QA → reopen: passed');
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 10_100));
   assert(
     await execute(
       view,
@@ -1429,7 +1439,7 @@ try {
   await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   const criticalDraftBeforeReload = await execute(
     view,
-    `JSON.parse(localStorage.getItem("job-hunt-critical-drafts-v1") || "null")`,
+    `Object.keys(localStorage).filter(key => key.startsWith('job-hunt-critical-drafts-v2:')).map(key => JSON.parse(localStorage.getItem(key))).filter(item => !item.archived).sort((a, b) => b.savedAt - a.savedAt)[0]?.drafts`,
   );
   assert(
     criticalDraftBeforeReload?.resumeDraft?.markdown?.includes("E2E 未同步简历恢复验证"),
@@ -1453,7 +1463,7 @@ try {
     const recoveryState = await execute(
       view,
       `(async () => ({
-        critical: JSON.parse(localStorage.getItem("job-hunt-critical-drafts-v1") || "null"),
+        critical: Object.keys(localStorage).filter(key => key.startsWith('job-hunt-critical-drafts-v2:')).map(key => JSON.parse(localStorage.getItem(key))).filter(item => !item.archived).sort((a, b) => b.savedAt - a.savedAt)[0]?.drafts,
         cached: await window.codeshellPanel.call("storage.get", { key: "job-hunt-state-v1" }).catch((failure) => ({ error: String(failure) })),
         editor: document.querySelector("#resume-editor")?.value,
         view: document.querySelector("#view-resumes")?.hidden,

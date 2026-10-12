@@ -9593,7 +9593,7 @@ async function saveQuestionBankEditor(form, { practiceAfterSave = false } = {}) 
   notify("面试题已保存，并已在长期题库中定位", "success");
 }
 
-async function practiceBankQuestion(item, { confirmed = false } = {}) {
+async function practiceBankQuestion(item, { confirmed = false, returnFocus = null } = {}) {
   if (!item) return notify("这道题已经不存在", "error");
   if (item.status === "inbox") {
     if (questionBankSavePendingId) return;
@@ -9635,6 +9635,7 @@ async function practiceBankQuestion(item, { confirmed = false } = {}) {
   state.interviewWorkspaceMode = "practice";
   persist();
   startPanelInterview({ title: "单题面板练习", questionIds: [item.id] });
+  if (returnFocus?.isConnected) panelInterviewReturnFocus = returnFocus;
   notify(
     confirmed ? "已确认并保留到长期题库；现在直接练习这道题" : "已打开这道题的面板练习",
     "success",
@@ -9795,6 +9796,8 @@ async function repairInterviewLibrary() {
 }
 
 async function quickPracticeFirstInterviewQuestion() {
+  const scope = currentProject();
+  const returnFocus = document.activeElement;
   let first = dailyInterviewPracticeQueue(1)[0]?.question || null;
   if (!first) {
     const repairable = repairableInterviewQuestions(state.questionBank)[0];
@@ -9811,9 +9814,10 @@ async function quickPracticeFirstInterviewQuestion() {
     ) {
       return;
     }
+    scope.check();
     first = state.questionBank.find((item) => item.id === repairable.question.id) || null;
   }
-  void practiceBankQuestion(first);
+  void practiceBankQuestion(first, { returnFocus });
 }
 
 async function quickStartTimedInterview() {
