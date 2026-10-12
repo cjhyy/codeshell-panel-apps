@@ -98,6 +98,15 @@ server/core、macOS arm64、Node 25.8.1、Chromium 148。提供产物的联合�
 - Host runtime：`2e10a8b144ae2e8fd2f8e2ce16165a9081db5c6c4e3d1213eb59def56872314e`
 - Core installer：`802b06ceed09725c3b4c2340da52be6a7de28cb122785bdb4b3365a1ad137c4e`
 
+主线推进后已正常合入 `4879420`（Video Studio PR #72），组合提交为
+`d152cdc8d1fa3d113481ace920b0b250a745fd62`，重新执行同一真实 Host 门禁，
+**7/7 场景通过**。最新包摘要与逐项结果见[组合回执](evidence/p1-panel-upgrade-rollback-combined-2026-10-12.json)；
+当前 Video 仍为 0.7.2，但安装字节包含新主线改动，不能复用上一份 digest 当作验证。
+同一组合的 `npm run check` 为 **1,968 tests / 1,964 pass / 0 fail / 4 optional skips**。
+运行使用独立 HOME，现有 Playwright cache 只读提供浏览器可执行文件，不复用个人浏览器 profile。
+实际 Host 入口摘要仍与上面完全一致；其源码 checkout 为 `b99bc14d`，编译产物仍来自
+`4083718c`，不把后续 fetch/merge 当作重新构建。
+
 六 Panel 的电脑云端、手机本地和手机云端还需要目标部署/真实配对/实体手机的
 同版本执行记录；电脑本地也仍需 Desktop 壳层、原生后端及完整真实业务的安装
 升级回滚验收。真实账号/通知、弱网、服务商、外部目录授权、实际媒体/模型任务
