@@ -16,7 +16,7 @@ function fixture() {
   } };
   return { files, scope, deactivate() { active = false; }, fail(path) { failAt = path; } };
 }
-const metadata = { id: "career-version-test", title: "一次聊天的整理", summary: "保留本人原话与待核对内容", createdAt: "2026-10-12T00:00:00Z", sessionId: "test-session" };
+const metadata = { id: "career-version-test", title: "一次聊天的整理", summary: "保留本人原话与待核对内容", createdAt: "2026-10-12T00:00:00Z", sessionId: "test-session", updateSha256: "a".repeat(64) };
 function largeSnapshot() {
   return createCareerLibrarySnapshot({
     sourceMaterials: Array.from({ length: 30 }, (_, n) => ({ id: `s-${n}`, provider: "manual", excerpt: "真实材料".repeat(3000), status: "draft", history: [] })),
@@ -37,6 +37,7 @@ test("saved chat versions reopen exact facts and pending text after live records
   assert.equal(historical.snapshot.careerEpisodes[0].pendingRevision.content.reason, "后续讨论的理由");
   assert.equal(historical.snapshot.resume, undefined);
   assert.match(saved.sha256, /^[0-9a-f]{64}$/);
+  assert.equal(historical.version.updateSha256, metadata.updateSha256);
   await assert.rejects(writeCareerLibraryVersion(version, snapshot, host), /already exists/);
   assert.deepEqual((await readCareerLibraryVersion(saved, host)).snapshot, source);
 });
@@ -52,6 +53,7 @@ test("a partial version write is not a completed version and cannot replace exis
 test("changed history content and changed project scope fail closed", async () => {
   const host = fixture(); const prepared = prepareCareerLibraryVersion({ careerQa: [{ id: "q", question: "为何？", answer: "原话" }] }, metadata);
   const saved = await writeCareerLibraryVersion(prepared.version, prepared.snapshot, host);
+  await assert.rejects(readCareerLibraryVersion({ ...saved, updateSha256: "b".repeat(64) }, host), /清单无效/);
   const manifest = JSON.parse(host.files.get(saved.path)); manifest.root.careerQa[0].answer = "被篡改"; host.files.set(saved.path, JSON.stringify(manifest));
   await assert.rejects(readCareerLibraryVersion(saved, host), /校验失败/);
   host.deactivate(); await assert.rejects(readCareerLibraryVersion(saved, host), /project switched/);

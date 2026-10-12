@@ -25,7 +25,7 @@ export async function readCareerLibraryVersion(versionInput, { scope, beforeOper
   const call = scopedCalls(scope, beforeOperation);
   const file = await call("workspace.readText", { path: version.path });
   const manifest = JSON.parse(file.content);
-  if (manifest?.format !== FORMAT || manifest.schemaVersion !== 1 || manifest.version?.id !== version.id || manifest.version?.path !== version.path || !/^[0-9a-f]{64}$/.test(manifest.sha256 || "") || (version.sha256 && version.sha256 !== manifest.sha256)) throw new Error("知识库版本清单无效或已变化");
+  if (manifest?.format !== FORMAT || manifest.schemaVersion !== 1 || manifest.version?.id !== version.id || manifest.version?.path !== version.path || !/^[0-9a-f]{64}$/.test(manifest.sha256 || "") || (version.sha256 && version.sha256 !== manifest.sha256) || (version.updateSha256 && version.updateSha256 !== manifest.version?.updateSha256)) throw new Error("知识库版本清单无效或已变化");
   const documents = new Map();
   for (const descriptor of projectSnapshotShardDescriptors(manifest.root)) {
     if (!fields.has(descriptor.field) || manifest.root.artifactStorage?.schemaVersion !== 2) throw new Error("知识库版本含无关或可变分片");

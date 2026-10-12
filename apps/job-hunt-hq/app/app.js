@@ -5,6 +5,8 @@ import { normalizeCareerDraft } from "./career-draft-model.mjs";
 import { projectContextChanged } from "./project-context.mjs";
 import { createCareerLibrarySnapshot, compareCareerLibrarySnapshots, prepareCareerLibraryVersion, normalizeCareerLibraryVersions } from "./career-library-version-model.mjs";
 import { readCareerLibraryVersion, writeCareerLibraryVersion } from "./career-library-version-store.mjs";
+import { prepareCareerUpdate } from "./career-update-model.mjs";
+import { readCareerUpdate, careerUpdatePreviewToken } from "./career-update-io.mjs";
 let careerLibraryUI = null;
 let careerMutationPending = false;
 import { DISCOVERY_AUTOMATION_KEY, discoveryAutomationMethod, readDiscoveryAutomation, saveDiscoveryAutomationTask, controlDiscoveryAutomationTask } from "./discovery-automation.mjs";
@@ -14288,9 +14290,14 @@ function registerAgentTools(ready) {
   register("save_candidate_context", async (args = {}) => {
     await ready;
     assertPlainObject(args, "save_candidate_context");
-    const careerOperations = ["source", "episode", "qa", "library_version"].filter(key => Object.hasOwn(args, key));
+    const careerOperations = ["source", "episode", "qa", "library_version", "career_update"].filter(key => Object.hasOwn(args, key));
     if (careerOperations.length) {
       if (careerOperations.length !== 1 || ["profile", "repositories", "work_history"].some(key => Object.hasOwn(args, key))) throw new Error("每次仅使用一个经历库操作，不能与全量候选人资料混合");
+      if (careerOperations[0] === "career_update") {
+        if (Object.hasOwn(args, "confirmation")) throw new Error("JSON 更新保留草稿与待审标记，不能整批确认事实");
+        assertPlainObject(args.career_update, "career_update");
+        return processCareerUpdate(args.career_update);
+      }
       if (careerOperations[0] === "library_version") {
         if (Object.hasOwn(args, "confirmation")) throw new Error("保存知识库版本与确认单条事实是两个操作");
         assertPlainObject(args.library_version, "library_version");
@@ -17680,35 +17687,98 @@ async function saveCareerLibraryVersion(input) {
   let saved;
   await commitCareerMutation(async current => {
     const scope = currentProject();
-    const existing = input.id && current.careerLibraryVersions.find(item => item.id === input.id);
-    if (existing) {
-      const snapshot = createCareerLibrarySnapshot(current);
-      const historical = await readCareerLibraryVersion(existing, { scope, beforeOperation: pauseSnapshotRecoveryCalls });
-      if (JSON.stringify(historical.snapshot) !== JSON.stringify(snapshot) || existing.title !== input.title.trim() || existing.summary !== (input.summary || "").trim()) throw new Error("这个版本ID已保存另一份内容，请使用新的版本ID；历史内容没有覆盖");
-      saved = existing; return current;
-    }
-    const snapshot = createCareerLibrarySnapshot(current);
-    if (input.expectedSnapshot && JSON.stringify(input.expectedSnapshot) !== JSON.stringify(snapshot)) throw new Error("知识库已有新的改动，请重新预览后保存；当前内容与旧版本均已保留");
-    const base = current.careerLibraryVersions.at(-1);
-    const previousSnapshot = base ? (await readCareerLibraryVersion(base, { scope, beforeOperation: pauseSnapshotRecoveryCalls })).snapshot : createCareerLibrarySnapshot({});
-    scope.check();
-    const prepared = prepareCareerLibraryVersion(current, { id: input.id || `career-version-${crypto.randomUUID()}`, title: input.title, summary: input.summary || "", createdAt: new Date().toISOString(), sessionId: context.sessionId || "", baseVersionId: base?.id || "" }, { versions: current.careerLibraryVersions, previousSnapshot });
-    if (!prepared.comparison.changes.length) throw new Error("当前没有新的知识库改动，可以继续在聊天中补充。");
-    try {
-      const recovered = await readCareerLibraryVersion(prepared.version, { scope, beforeOperation: pauseSnapshotRecoveryCalls });
-      if (JSON.stringify(recovered.snapshot) !== JSON.stringify(snapshot) || recovered.version.title !== prepared.version.title || recovered.version.summary !== prepared.version.summary || recovered.version.baseVersionId !== prepared.version.baseVersionId) throw new Error("这个版本ID已保存另一份内容，请使用新的版本ID；历史内容没有覆盖");
-      saved = recovered.version;
-    } catch (error) {
-      scope.check();
-      if (!/ENOENT|no such file|file not found/i.test(error.message)) throw error;
-      saved = await writeCareerLibraryVersion(prepared.version, prepared.snapshot, { scope, beforeOperation: pauseSnapshotRecoveryCalls });
-    }
-    return { ...current, careerLibraryVersions: [...current.careerLibraryVersions, saved] };
+    const result = await storeCareerLibraryVersion(current, input, scope);
+    saved = result.version;
+    return result.state;
   });
   return saved;
 }
+async function storeCareerLibraryVersion(current, input, scope) {
+  const existing = input.id && current.careerLibraryVersions.find(item => item.id === input.id);
+  if (existing) {
+    const snapshot = createCareerLibrarySnapshot(current);
+    const historical = await readCareerLibraryVersion(existing, { scope, beforeOperation: pauseSnapshotRecoveryCalls });
+    if (JSON.stringify(historical.snapshot) !== JSON.stringify(snapshot) || existing.title !== input.title.trim() || existing.summary !== (input.summary || "").trim()) throw new Error("这个版本ID已保存另一份内容，请使用新的版本ID；历史内容没有覆盖");
+    return { version: existing, state: current };
+  }
+  const snapshot = createCareerLibrarySnapshot(current);
+  if (input.expectedSnapshot && JSON.stringify(input.expectedSnapshot) !== JSON.stringify(snapshot)) throw new Error("知识库已有新的改动，请重新预览后保存；当前内容与旧版本均已保留");
+  const base = current.careerLibraryVersions.at(-1);
+  const previousSnapshot = base ? (await readCareerLibraryVersion(base, { scope, beforeOperation: pauseSnapshotRecoveryCalls })).snapshot : createCareerLibrarySnapshot({});
+  scope.check();
+  const prepared = prepareCareerLibraryVersion(current, { id: input.id || `career-version-${crypto.randomUUID()}`, title: input.title, summary: input.summary || "", createdAt: input.createdAt || new Date().toISOString(), sessionId: context.sessionId || "", baseVersionId: base?.id || "", ...(input.updateSha256 ? { updateSha256: input.updateSha256 } : {}) }, { versions: current.careerLibraryVersions, previousSnapshot });
+  if (!prepared.comparison.changes.length) throw new Error("当前没有新的知识库改动，可以继续在聊天中补充。");
+  let saved;
+  try {
+    const recovered = await readCareerLibraryVersion(prepared.version, { scope, beforeOperation: pauseSnapshotRecoveryCalls });
+    if (JSON.stringify(recovered.snapshot) !== JSON.stringify(snapshot) || recovered.version.title !== prepared.version.title || recovered.version.summary !== prepared.version.summary || recovered.version.baseVersionId !== prepared.version.baseVersionId || recovered.version.updateSha256 !== prepared.version.updateSha256) throw new Error("这个版本ID已保存另一份内容，请使用新的版本ID；历史内容没有覆盖");
+    saved = recovered.version;
+  } catch (error) {
+    scope.check();
+    if (!/ENOENT|no such file|file not found/i.test(error.message)) throw error;
+    saved = await writeCareerLibraryVersion(prepared.version, prepared.snapshot, { scope, beforeOperation: pauseSnapshotRecoveryCalls });
+  }
+  return { version: saved, state: { ...current, careerLibraryVersions: [...current.careerLibraryVersions, saved] } };
+}
+async function processCareerUpdate(input) {
+  if (!["preview", "apply"].includes(input.action)) throw new Error("career_update.action必须是preview或apply");
+  if (input.action === "preview" && Object.hasOwn(input, "preview_token")) throw new Error("preview不使用preview_token");
+  if (input.action === "apply" && (typeof input.preview_token !== "string" || !/^[0-9a-f]{64}$/.test(input.preview_token))) throw new Error("apply需要最近一次preview返回的preview_token");
+  if (!projectReady || draftImportBusy || careerMutationPending) throw new Error("请等待当前项目读取或保存完成");
+  if (state.careerDraft?.dirty) throw new Error("请先保存或退出未保存的手工编辑，再接收聊天整理的JSON");
+  const scope = currentProject();
+  const artifact = await readCareerUpdate(input.path, { scope });
+  const { document, sha256 } = artifact;
+  const projectKey = JSON.stringify({ scope: context.projectScope || context.cwd, epoch: projectEpoch });
+  const assertSameUpdate = version => {
+    if (version.updateSha256 !== sha256 || version.title !== document.version.title.trim() || version.summary !== (document.version.summary || "").trim()) throw new Error("这个版本ID已用于另一份内容，请为新的JSON使用新版本ID；历史没有覆盖");
+  };
+  const existing = state.careerLibraryVersions.find(item => item.id === document.version.id);
+  if (existing) assertSameUpdate(existing);
+  if (input.action === "preview") {
+    const basis = captureCareerState();
+    const preview_token = await careerUpdatePreviewToken(artifact, basis, projectKey);
+    scope.check();
+    if (existing) return { saved: false, preview: true, alreadyApplied: true, path: artifact.path, preview_token, libraryVersion: existing, message: "这份JSON已经保存；重复接收会返回原版本，后续编辑会保留。" };
+    const plan = prepareCareerUpdate(basis, document);
+    return { ...careerVersionToolPreview(plan), path: artifact.path, preview_token, version: document.version, incoming: plan.counts,
+      message: "JSON已校验，尚未写入。apply会一次保存这些增量和命名知识库版本，保留已有资料与待核对标记。" };
+  }
+  let saved, idempotent = false;
+  await commitCareerMutation(async current => {
+    scope.check();
+    const attached = current.careerLibraryVersions.find(item => item.id === document.version.id);
+    if (attached) {
+      assertSameUpdate(attached);
+      const historical = await readCareerLibraryVersion(attached, { scope, beforeOperation: pauseSnapshotRecoveryCalls });
+      assertSameUpdate(historical.version);
+      saved = attached; idempotent = true;
+      return current;
+    }
+    if (await careerUpdatePreviewToken(artifact, current, projectKey) !== input.preview_token) throw new Error("JSON或知识库已变化，请重新preview后再apply；已有资料未改动");
+    scope.check();
+    let now = new Date().toISOString();
+    try {
+      // A failed project CAS may leave a complete immutable version. Reuse its
+      // record timestamps so the exact file can recover without rewriting it.
+      const orphan = await readCareerLibraryVersion(document.version, { scope, beforeOperation: pauseSnapshotRecoveryCalls });
+      assertSameUpdate(orphan.version);
+      now = orphan.version.createdAt;
+    } catch (error) {
+      scope.check();
+      if (!/ENOENT|no such file|file not found/i.test(error.message)) throw error;
+    }
+    const plan = prepareCareerUpdate(current, document, { now });
+    const result = await storeCareerLibraryVersion(plan.state, { ...document.version, createdAt: now, updateSha256: sha256 }, scope);
+    saved = result.version;
+    return result.state;
+  });
+  recordTraceArtifact("career-version", saved.id, saved.title);
+  return { saved: true, projectSaved: true, idempotent, path: artifact.path, libraryVersion: saved,
+    message: idempotent ? "这份JSON已保存为此版本，后续编辑已保留。" : "已接收JSON并保存知识库新版本，可直接在面板查看；未生成简历。" };
+}
 function requestCareerChat() {
-  const prompt = "使用job-hunt-hq:job-hunt-workflow skill与panel-app:job-hunt-hq工具。在当前session通过对话整理我的经历、决策原因和长期问答库。先读summary与career_versions，复用已有材料；只读取我在本轮指定或授权的Slack/GitHub Link资料。结合当前聊天一次追问一个关键缺口：我负责什么、为什么这样选、有哪些取舍、结果如何。忠实保存我的原始事实回答到answer，AI表达另存draftAnswer，未知内容保持未知。整理完用save_candidate_context({library_version:{action:'preview'}})展示本轮新增/修改和未解决问题；按我的要求用action:'save'保存一个命名知识库版本。保存版本不强制逐条确认、不生成简历；用户明确核实单条事实时可携其原话confirmation写回。若本轮尚无材料，先在聊天问我要整理哪段经历或链接。不要让我先到面板填写表单，也不要另开chat或替我全量扫描账号。";
+  const prompt = "使用job-hunt-hq:job-hunt-workflow skill与panel-app:job-hunt-hq工具。在当前session通过对话整理我的经历、决策原因和长期问答库。先读summary与career_versions，复用已有材料；只读取我在本轮指定或授权的Slack/GitHub Link资料。结合当前聊天一次追问一个关键缺口：我负责什么、为什么这样选、有哪些取舍、结果如何。忠实保存我的原始事实回答到answer，AI表达另存draftAnswer，未知内容保持未知。整批交接时读取Skill的career-update JSON合同，把增量写到当前项目career-data/updates/<名称>.json，调用save_candidate_context({career_update:{action:'preview',path}})展示新增/修改和未解决问题；按我已给出的保存要求携preview_token调用action:'apply'，一次接收JSON并保存命名知识库版本。也可继续用单条工具积累，再用library_version preview/save保存。保存版本不强制逐条确认、不生成简历；用户明确核实单条事实时可携其原话confirmation写回。若本轮尚无材料，先在聊天问我要整理哪段经历或链接。不要让我先到面板填写表单，也不要另开chat或替我全量扫描账号。";
   return submitSessionTask(prompt, "已发送到当前聊天", { instruction: "通过聊天更新经历与问答库", target: { kind: "career-library", title: "经历与问答库", detail: "当前聊天整理", payload: {} } }).then(accepted => { if (!accepted) throw new Error("当前聊天尚未接收，请稍后重试"); });
 }
 function requestCareerAgent(action, kind, id) {

@@ -108,6 +108,7 @@ function careerVersionMetadata(version) {
       ]),
     ),
     ...(/^[a-f0-9]{64}$/.test(text(version?.sha256)) ? { sha256: version.sha256 } : {}),
+    ...(/^[a-f0-9]{64}$/.test(text(version?.updateSha256)) ? { updateSha256: version.updateSha256 } : {}),
   };
 }
 

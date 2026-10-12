@@ -96,10 +96,13 @@ export function normalizeCareerLibraryVersion(input = {}) {
   const hasHash = value.sha256 !== undefined && value.sha256 !== "";
   const sha256 = hasHash ? value.sha256 : "";
   if (hasHash && (typeof sha256 !== "string" || !/^[a-fA-F0-9]{64}$/.test(sha256))) throw new Error("经历问答库版本 SHA-256 无效");
+  const updateSha256 = value.updateSha256;
+  if (updateSha256 !== undefined && (typeof updateSha256 !== "string" || !/^[a-fA-F0-9]{64}$/.test(updateSha256))) throw new Error("知识库更新文件 SHA-256 无效");
   return {
     id, title: text(value.title, 240) || "经历与问答库版本", summary: text(value.summary, 3000),
     createdAt, sessionId: text(value.sessionId, 200), baseVersionId: versionId(value.baseVersionId, true),
     path, counts: normalizeCounts(value.counts), status: "saved", ...(sha256 ? { sha256: sha256.toLowerCase() } : {}),
+    ...(updateSha256 ? { updateSha256: updateSha256.toLowerCase() } : {}),
   };
 }
 

@@ -493,6 +493,31 @@ try {
   assert(await execute(view, `!document.querySelector('#resume-preview')?.textContent.includes('CHAT FACT')`), "chat library original answer leaked into the public resume");
   console.log('Current-session tools → knowledge preview → named immutable version → historical reopen: passed');
   await new Promise(resolvePromise => setTimeout(resolvePromise, 10_100));
+  const updatePath = 'career-data/updates/session-e2e.json';
+  const updateDocument = { format: 'codeshell.career-update', schemaVersion: 1,
+    version: { id: 'career-version-electron-json', title: 'E2E JSON 交接版', summary: '当前聊天生成的经历、决策与问答' },
+    sources: [{ id: 'career-source-electron-json', provider: 'user', title: 'E2E 本轮聊天', excerpt: 'JSON PRIVATE SOURCE: 用户解释了恢复与响应速度的取舍。' }],
+    episodes: [{ id: 'career-episode-electron-json', title: 'E2E JSON 保存策略', decision: '先验证恢复路径', reason: '不能为了速度丢失原始资料', sourceIds: ['career-source-electron-json'] }],
+    qa: [{ id: 'career-qa-electron-json', question: 'E2E JSON 为什么这么选？', answer: 'JSON PRIVATE FACT: 恢复原始资料是我的首要考虑。', draftAnswer: 'JSON EXPRESSION: 先保证恢复能力。', category: 'decision', episodeId: 'career-episode-electron-json', sourceIds: ['career-source-electron-json'] }] };
+  await mkdir(join(projectDir, 'career-data', 'updates'), { recursive: true });
+  await writeFile(join(projectDir, updatePath), `${JSON.stringify(updateDocument, null, 2)}\n`);
+  const jsonPreview = await invokeCareerTool('save_candidate_context', { career_update: { action: 'preview', path: updatePath } });
+  assert(jsonPreview.preview && !jsonPreview.saved && jsonPreview.counts.added === 3, 'real Host could not preview the generated JSON');
+  const jsonSaved = await invokeCareerTool('save_candidate_context', { career_update: { action: 'apply', path: updatePath, preview_token: jsonPreview.preview_token } });
+  assert(jsonSaved.saved && jsonSaved.libraryVersion.updateSha256, 'real Host could not consume JSON as a knowledge version');
+  const jsonSnapshot = await waitForSnapshot(current => current.careerLibraryVersions?.some(version => version.id === updateDocument.version.id), 'JSON knowledge version did not reach actual project files');
+  assert(jsonSnapshot.careerQa.find(item => item.id === 'career-qa-electron-json')?.answer === updateDocument.qa[0].answer, 'JSON factual answer or associations were lost');
+  assert(jsonSnapshot.careerEpisodes.find(item => item.id === 'career-episode-electron-json')?.reason === updateDocument.episodes[0].reason, 'JSON decision reason was lost');
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 10_100));
+  const jsonRetried = await invokeCareerTool('save_candidate_context', { career_update: { action: 'apply', path: updatePath, preview_token: jsonPreview.preview_token } });
+  assert(jsonRetried.saved && jsonRetried.idempotent, 'JSON retry created another version instead of returning its receipt');
+  await view.evaluate(candidate => candidate.reload());
+  await waitForGuest(view, `document.querySelector('#career-version-summary')?.textContent.includes('E2E JSON 交接版')`, 'JSON version was not available after real desktop reopen');
+  await execute(view, `(() => { const history = document.querySelector('#career-version-history'); history.value = 'career-version-electron-json'; history.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await waitForGuest(view, `document.querySelector('#career-version-detail h3')?.textContent === 'E2E JSON 交接版'`, 'JSON version could not open directly in the panel');
+  assert(await execute(view, `!document.querySelector('#resume-preview')?.textContent.includes('JSON PRIVATE')`), 'private JSON library facts leaked into the public resume');
+  console.log('Session JSON → strict Host preview/apply → named knowledge version → desktop reopen: passed');
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 10_100));
   assert(
     await execute(
       view,
