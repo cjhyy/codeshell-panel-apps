@@ -1,8 +1,8 @@
 import { assertTick, ticksToSeconds, type Tick } from "./time";
 import { MAX_EDITOR_TICK } from "./validation";
 
-/** Half-open original sequence interval. Audio is cropped from the complete mix so
- * stateful processing, such as ducking, retains its original envelope at the start. */
+/** Half-open original sequence interval. Stateful audio, such as ducking, is cropped
+ * from the complete mix so its original envelope is retained at the start. */
 export interface ExportRange {
   start: Tick;
   duration: Tick;
