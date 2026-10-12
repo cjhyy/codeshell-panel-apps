@@ -6,6 +6,11 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { repositoryRoot } from "./panel-projects.mjs";
 import { dataScenario } from "./panel-upgrade-scenarios.mjs";
+import { UpgradeBrowserCustody, installUpgradeWorkerShutdown } from "./panel-upgrade-process.mjs";
+
+const browsers = new UpgradeBrowserCustody();
+const worker = installUpgradeWorkerShutdown(browsers);
+await worker.run(async () => {
 
 // Immutable repository packages, never downloaded or installed into a real profile.
 // The 4.1.0 snapshot exercises the original A/B writer; 4.1.1 is also installed below.
@@ -64,7 +69,7 @@ function context(project, selected, sourceRoot) {
   const scope = { appId: selected.id, cwd: project, projectPath: project,
     permissions: selected.permissions, isAuthorized: valid };
   const call = (method, params) => runtime.call(scope, method, params);
-  return { project, selected, sourceRoot, call, restart,
+  return { project, selected, sourceRoot, call, restart, browsers,
     // The synchronous UI hook is unused here; call() enforces actual Host authority.
     scope: { call, check() {} },
     module: path => import(pathToFileURL(join(selected.installPath, path)).href),
@@ -169,3 +174,5 @@ await writeFile(reportPath, JSON.stringify({ hostCheckoutManifestVersion,
   runtime: { node: process.version, platform: process.platform, arch: process.arch },
   candidateCommit: String(git("rev-parse", "HEAD")).trim(), cases: reports,
   boundary: "Temporary local Node Host/Core integration and domain adapters; no desktop shell, physical phone, deployed Cloud, provider requests or native download/model execution" }, null, 2) + "\n");
+
+});

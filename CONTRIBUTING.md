@@ -199,6 +199,13 @@ digests, permissions and covered paths. The worker receives a temporary HOME,
 private Host data/projects, no provider credentials and a JavaScript network
 guard. Only the browser executable is read from the existing Playwright cache;
 its test profile is private and its page requests are intercepted locally.
+The parent captures the asynchronous worker process; timeout IPC/SIGTERM awaits
+tracked Chromium launches and closes before sending a nonce-bound shutdown
+receipt. Temporary HOME cleanup requires both that receipt and worker exit.
+Missing or failed browser closure retains the private directory and fails the
+gate; only the captured worker is signalled, with bounded escalation. Assertion,
+shutdown and directory-cleanup errors remain visible together.
+Run `npm test -- --suite upgrade-harness` for the offline owned-process fault gate.
 See [the upgrade audit](docs/todo/p1-panel-upgrade-rollback-2026-10-12.md) for
 fixture provenance, rollback semantics and the remaining device/deployment
 acceptance. This gate does not run native tools, authenticate providers or

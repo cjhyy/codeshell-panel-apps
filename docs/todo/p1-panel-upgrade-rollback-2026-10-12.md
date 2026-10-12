@@ -25,8 +25,9 @@ npm run test:host-upgrade -- /absolute/path/to/codeshell/packages/server /tmp/pa
 记录完整 64 位 packageDigest、历史提交、候选提交、版本、权限增减和逐项覆盖，
 并记录实际 Host runtime/Core installer 入口文件的 SHA-256。Host checkout 的
 HEAD/manifest 单独标注，不把它们冒称为现有 dist 的构建出处。
-临时 HOME、安装目录、项目、Host dataDir 和 Chromium profile 在结束时删除；只
-保留指定报告与调用者重定向的日志。子进程不继承 provider 凭据；JS fetch、
+临时 HOME、安装目录、项目、Host dataDir 和 Chromium profile 只有在 worker
+提供完整浏览器关闭回执且自身退出后删除；缺失回执或关闭失败时保留私有目录
+并让门禁失败。正常通过时只保留指定报告与调用者重定向的日志。子进程不继承 provider 凭据；JS fetch、
 HTTP/HTTPS/net/tls 入口被禁止。Chromium 页面请求全部本地截获，现有浏览器
 缓存只用于读取可执行文件。这不是操作系统级网络沙箱。
 
@@ -112,3 +113,28 @@ server/core、macOS arm64、Node 25.8.1、Chromium 148。提供产物的联合�
 升级回滚验收。真实账号/通知、弱网、服务商、外部目录授权、实际媒体/模型任务
 仍是外部验收项。本门禁通过后仅补强受控集成 C 的证据，不将四组合的 P/R 改为
 已完成，也不自行 bump、tag 或发版。
+
+## Worker 超时与 Chromium 关闭回执
+
+本轮补修父进程同步 spawn 超时后，worker 的异步 browser.close 无法执行、
+父进程仍删除 HOME 的缺口。父进程现在异步捕获实际 ChildProcess，并用私有
+IPC nonce/PID 验证单一关闭回执；worker 跟踪真实 Playwright Browser 与尚未
+完成的 launch。超时 IPC 或 SIGTERM 都等待同一有界关闭屏障。未完成的 launch、
+拒绝/超时的 close、close 返回后仍连接都会永久阻止 complete 回执。
+父进程仅在完整回执且实际 worker 退出后清理；无回执/关闭失败只终止捕获的
+worker 并保留 HOME，不扫描或终止其他浏览器。断言、关闭及 rm 错误保留在
+同一 AggregateError；关闭失败不被转换为成功。
+
+实际运行记录见[关闭回执](evidence/p1-panel-upgrade-rollback-shutdown-2026-10-12.json)：
+最新候选安装字节仍是 `f8b29e9` 对应的包，门禁脚本修订另外记录四个准确 SHA-256，
+**7/7 场景通过**。owned worker **64102** 正常退出，8 个真实 Chromium Browser
+均 await close 并断开，回执 **8/8、exitCode=0、workerExited=true、homeRemoved=true**。
+沿用冻结 Host dist，不重新构建或改写；实际入口摘要与上文相同。
+这证明 Playwright 关闭屏障和父进程收到的回执，不冒称 OS 全进程扫描证明。
+
+离线 `upgrade-harness` 故障门禁 **12/12 通过**：实际 owned Node 子进程正常退出、
+超时 IPC、SIGTERM、关闭拒绝/挂起、缺失回执、强制终止，以及无关子进程保持
+运行；另验证 in-flight launch、双故障、rm 故障和永久 incomplete 回执。
+这些改动只补验收脚本的进程/临时数据 custody，不修改六包安装字节、权限或版本。
+此前最新组合默认检查 1,968 / 1,964 / 0 / 4 仍为独立记录；本补丁复验受影响离线
+门禁和真实 Host 7/7，不把旧默认检查数字当作新增测试的运行记录。

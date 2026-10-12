@@ -381,9 +381,8 @@ async function video(old, root) {
 
 async function starter(old) {
   const verify = async ctx => {
-    const browser = await chromium.launch({ headless: true, executablePath: process.env.PANEL_TEST_CHROMIUM_EXECUTABLE,
-      args: ["--disable-background-networking"] });
-    try {
+    await ctx.browsers.withBrowser(() => chromium.launch({ headless: true, executablePath: process.env.PANEL_TEST_CHROMIUM_EXECUTABLE,
+      args: ["--disable-background-networking"] }), async browser => {
       const context = await browser.newContext({ serviceWorkers: "block" });
       await context.route("**/*", async route => {
         const url = new URL(route.request().url());
@@ -399,7 +398,7 @@ async function starter(old) {
       await page.waitForFunction(project => document.querySelector("#workspace").textContent === project, ctx.project);
       await page.locator("#increment").click();
       assert.equal(await page.locator("#count").textContent(), "1 次点击");
-    } finally { await browser.close(); }
+    });
   };
   await verify(old);
   return { checks: ["historical untagged template package", "installed old/current Chromium entry", "reviewed project context", "click interaction", "no persistent business data"],
