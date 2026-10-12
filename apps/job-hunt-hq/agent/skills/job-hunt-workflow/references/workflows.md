@@ -15,14 +15,19 @@ in the current chat, write only the incremental update through the File tool,
 then use `career_update` preview. Present changes and unresolved facts; if saving
 is already authorized, apply with the exact returned token. Do not pre-save the
 batch's records or separately create its library version: apply atomically merges
-both. Changed file or library state invalidates the token. The file alone does
-not import, confirm facts, publish evidence or generate a resume. This workflow
+the records and saves their named version. Report the returned saved version
+ID/title and finish the batch. If only
+a file or preview was requested, stop at that requested output. Changed file or
+library state invalidates the token. The file alone does not import, confirm
+facts, publish evidence or generate a resume. This workflow
 coexists with the direct single-record workflow below.
 
-## Chat → experiences, decisions and QA → named library version
+## Direct record writes → named library version
 
 Use this module when the user shares authorized Slack/GitHub data and wants to
-build a personal knowledge library in the current CodeShell session. The Panel
+build a personal knowledge library through direct single-record writes in the
+current CodeShell session. JSON batches use the preceding module instead;
+do not run both save routes for the same batch. The Panel
 shows results, differences and history; manual entry is supplemental. This does
 not require a JD, create an interview practice set, release software, or generate
 a resume.
@@ -117,9 +122,10 @@ asks the Panel to initialize, repair, scan, or complete the current project.
 7. Invoke `save_candidate_context` with every verified fact and empty arrays
    for categories with no evidence. This creates or updates the current
    project's `job-hunt-panel.json` through the Panel.
-8. Generate a first Base Resume only when one broad target category can be
-   inferred and at least three resume claims can be supported. Otherwise finish
-   initialization and report the smallest set of real facts still needed.
+8. Finish initialization with the available facts and report the smallest set
+   of real facts still needed. Generate a first Base Resume only when the user
+   separately requests one, a broad target category is known, and at least
+   three resume claims can be supported.
 
 Do not open another repository, create a second chat, or ask the user to build
 this directory structure manually.

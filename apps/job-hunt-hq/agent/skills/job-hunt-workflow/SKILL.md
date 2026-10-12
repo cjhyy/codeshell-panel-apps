@@ -28,7 +28,10 @@ a resume unless the user requests one.
   through the available File tool, then use `save_candidate_context`'s
   `career_update` preview/apply mode. Apply the returned token directly when
   saving is already authorized; this atomically merges the records and saves
-  their named version. A file or working-library change requires a new preview.
+  their named version. Report the returned saved version ID/title and finish
+  this batch; do not also call `library_version` preview/save for it. When only
+  a file or preview was requested, stop at that requested output. A file or
+  working-library change requires a new preview.
   If apply times out or loses its receipt, first query `career_versions` with
   that exact `version_id`; a timeout does not cancel the save. Use an attached
   result, wait for an ongoing save, or retry the same file and ID only after
@@ -63,9 +66,11 @@ a resume unless the user requests one.
   asking to read a link, polish wording, or save a version is not factual
   confirmation. The user can also review facts directly in the Panel; do not
   require them to repeat an explicit chat confirmation in a manual form.
-- Before finalizing this conversation's work, call
+- For records saved through the direct single-record modes above, call
   `save_candidate_context({library_version: {action: "preview"}})` to read the
-  changes since the last saved knowledge-library version without writing.
+  changes since the last saved knowledge-library version before finalizing
+  this conversation's work, without writing. JSON batches use `career_update`
+  instead; a successful apply has already saved their version.
   Explain the additions, revisions, unresolved facts, and pending proposals
   in chat. When the user asks to save this version, call the same tool with
   `library_version: {action: "save", title: "...", summary: "..."}`. An optional
@@ -234,8 +239,11 @@ structured write whose fields are not already clear from the Panel tool schema.
    target role or other essential constraint still cannot be inferred.
 5. Treat project files and the user-confirmed career library as candidate
    sources of truth. The project snapshot persists these facts and their
-   provenance; it is not disposable UI state. Invoke `save_candidate_context`
-   only when verified profile, repository, or work-history facts changed.
+   provenance; it is not disposable UI state. Use `save_candidate_context`'s
+   legacy complete `profile` + `repositories` + `work_history` replacement only
+   when those verified facts changed. The incremental career modes may save
+   draft/pending records and named library versions without changing those
+   legacy fields; saving does not confirm unresolved facts.
 6. When the Panel requests project initialization, follow the initialization
    module in `references/workflows.md`. Reuse existing files, preserve unrelated
    `CODESHELL.md` instructions, and create only missing candidate-data homes.

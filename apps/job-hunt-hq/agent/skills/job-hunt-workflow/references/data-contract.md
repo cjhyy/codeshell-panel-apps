@@ -245,7 +245,11 @@ content, or permit publication.
 {"library_version": {"action": "preview"}}
 ```
 
-Use `save_candidate_context` in this mode before finalizing the conversation.
+Use `save_candidate_context` in this mode after direct single-record writes,
+before finalizing the conversation. For a JSON batch, use `career_update`
+preview/apply instead. A successful apply already saves its named version;
+report the returned version ID/title without a second `library_version` save.
+If only a JSON file or preview was requested, stop at that requested output.
 Preview returns bounded differences against the previous saved version and
 unresolved/pending counts without writing. Describe those changes and gaps in
 chat. When the current chat user requests saving this version:
