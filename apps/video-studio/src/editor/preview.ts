@@ -66,6 +66,7 @@ export class EditorPreview {
   private audioContext?: AudioContext;
   private audioSource?: AudioBufferSourceNode;
   private audioStream?: StreamingPreviewAudio;
+  private auditionGain?: GainNode;
   private buffering = false;
   private request?: AbortController;
   private generation = 0;
@@ -232,14 +233,19 @@ export class EditorPreview {
       signal.removeEventListener("abort", abort);
     }
   }
-  async play(audio?: PreviewAudio): Promise<void> {
+  /** Signed additive stem gain; the full mix remains at unity. */
+  setAuditionGain(delta: number): void {
+    if (!Number.isFinite(delta) || delta < -4 || delta > 4) throw new Error("试听音量无效");
+    if (this.auditionGain && this.audioContext) this.auditionGain.gain.setValueAtTime(delta, this.audioContext.currentTime);
+  }
+  async play(audio?: PreviewAudio, correction?: { audio: PreviewAudio; gain: number }): Promise<void> {
     const { document, sequence } = this.snapshot();
     const duration = sequenceDuration(sequence);
     if (!duration) throw new Error("时间轴没有可播放的内容");
     this.pause();
     const needsAudio = hasPotentialAudio(document, sequence);
     if (
-      audio &&
+      [audio, correction?.audio].some((audio) => audio &&
       (audio.documentId !== document.id ||
         audio.revision !== document.revision ||
         audio.sequenceId !== sequence.id ||
@@ -248,9 +254,11 @@ export class EditorPreview {
         Math.abs(
           (audio.buffer?.duration ?? audio.stream!.sampleCount / 48000) - ticksToSeconds(duration),
         ) >
-          1 / 48000 + 0.000001)
+          1 / 48000 + 0.000001))
     )
       throw new Error("声音预览与当前工程版本不一致，请重新准备声音");
+    if (correction && (!audio || !Number.isFinite(correction.gain) || Math.abs(correction.gain) > 4))
+      throw new Error("调音试听声音无效");
     if (needsAudio && !audio) throw new Error("请先完成当前工程的声音预览准备");
     const request = new AbortController();
     const generation = this.generation;
@@ -267,17 +275,29 @@ export class EditorPreview {
       const clock = audio ? () => this.audioContext!.currentTime : () => performance.now() / 1000;
       // The audio and image clock share this origin; decoder currentTime is never a clock.
       const origin = clock();
-      if (audio?.buffer) {
+      if (audio?.buffer && !correction) {
         this.audioSource = this.audioContext!.createBufferSource();
         this.audioSource.buffer = audio.buffer;
         this.audioSource.connect(this.audioContext!.destination);
         this.audioSource.start(origin, ticksToSeconds(start));
       }
       const startSample = Math.floor(ticksToSeconds(start) * 48000);
-      if (audio?.stream) {
+      const asStream = (value: PreviewAudio): PreviewPcmStream => value.stream ?? {
+        sampleRate: 48000, numberOfChannels: 2, sampleCount: value.buffer.length,
+        read: async (offset, count, signal) => {
+          if (signal.aborted) throw new DOMException("声音播放已取消", "AbortError");
+          return [value.buffer.getChannelData(0).slice(offset, offset + count), value.buffer.getChannelData(1).slice(offset, offset + count)];
+        }, dispose() {},
+      };
+      if (correction) {
+        this.auditionGain = this.audioContext!.createGain();
+        this.auditionGain.connect(this.audioContext!.destination);
+        this.setAuditionGain(correction.gain);
+      }
+      if (audio && (audio.stream || correction)) {
         const stream = new StreamingPreviewAudio(
           this.audioContext!,
-          audio.stream,
+          asStream(audio),
           startSample,
           request.signal,
           (error) => {
@@ -285,6 +305,7 @@ export class EditorPreview {
             this.pause();
             this.options.onError?.(error);
           },
+          correction ? { pcm: asStream(correction.audio), destination: this.auditionGain! } : undefined,
         );
         this.audioStream = stream;
         await stream.start();
@@ -297,7 +318,7 @@ export class EditorPreview {
         if (request.signal.aborted || generation !== this.generation) return;
         const stream = this.audioStream;
         const elapsed = stream
-          ? stream.sample >= audio!.stream!.sampleCount
+          ? stream.sample >= (audio!.stream?.sampleCount ?? audio!.buffer!.length)
             ? duration
             : start + (stream.sample - startSample) * 5
           : start + secondsToTicks(Math.max(0, clock() - origin));
@@ -355,6 +376,8 @@ export class EditorPreview {
     }
     this.audioStream?.stop();
     this.audioStream = undefined;
+    this.auditionGain?.disconnect();
+    this.auditionGain = undefined;
     if (this.buffering) {
       this.buffering = false;
       this.options.onBuffering?.(false);

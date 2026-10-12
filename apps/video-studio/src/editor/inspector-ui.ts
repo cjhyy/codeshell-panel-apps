@@ -179,6 +179,8 @@ export class EditorInspector {
   private pages = new Map<string, number>();
   private renderedSignature = "";
   private renderedAnimation = false;
+  private proportionalScale = false;
+  private proportionalScaleOwner = "";
   private replacingControls = false;
   private readonly fieldCommitters = new WeakMap<HTMLInputElement | HTMLTextAreaElement, { initial: string; signature: string; commit: () => void }>();
   private fieldFinish?: { signal: AbortSignal; failed: boolean; result?: Promise<boolean> };
@@ -912,8 +914,12 @@ export class EditorInspector {
       spec.step ?? 0.1,
       (value) => {
         const time = this.context.time();
-        void this.edit(scope, `修改${spec.label}`, (clip) => {
+        const axis = spec.path[0] === "transform" &&
+          (spec.path[1] === "scaleX" || spec.path[1] === "scaleY") ? spec.path[1] : undefined;
+        const proportional = this.proportionalScale && axis;
+        void this.edit(scope, proportional ? "按比例调整缩放" : `修改${spec.label}`, (clip) => {
           const number = spec.integer ? Math.round(value / factor) : value / factor;
+          if (proportional) return this.proportionalScalePatch(clip, proportional, time, number);
           return this.fieldPatch(
             scope,
             clip,
@@ -1207,6 +1213,11 @@ export class EditorInspector {
       (this.copiedColor.documentId !== scope?.document.id ||
         this.copiedColor.generation !== scope?.identity?.generation))
       this.copiedColor = undefined;
+    const scaleOwner = JSON.stringify([scope?.document.id, scope?.identity?.documentId, scope?.identity?.generation]);
+    if (scaleOwner !== this.proportionalScaleOwner) {
+      this.proportionalScaleOwner = scaleOwner;
+      this.proportionalScale = false;
+    }
     this.followSelection(scope);
     const signature = JSON.stringify([
       scope?.identity,
@@ -1456,6 +1467,46 @@ export class EditorInspector {
       button.title = reason || `${button.textContent}到画布；多选逐个对齐`;
     }
   }
+  /** Match the rendered scale bounds; cubic easing can overshoot otherwise valid keys. */
+  private proportionalScalePatch(clip: EditorClip, axis: "scaleX" | "scaleY", time: Tick, next: number): EditorClipPatch {
+    const other = axis === "scaleX" ? "scaleY" : "scaleX", local = localTime(clip, time);
+    const current = Math.max(0, Math.min(100, evaluateAnimatedNumber(clip.transform[axis], local))),
+      paired = Math.max(0, Math.min(100, evaluateAnimatedNumber(clip.transform[other], local)));
+    if (current === 0 && next !== 0)
+      throw new Error("当前缩放为 0，无法推算比例；请先解除缩放比例锁定，再分别设置宽高");
+    const scaled = current === 0 ? paired : paired * (next / current);
+    if (!Number.isFinite(scaled) || scaled > 100)
+      throw new Error("按当前比例，另一方向缩放将超过 10000%；请减小数值或解除缩放比例锁定");
+    const transform = structuredClone(clip.transform);
+    transform[axis] = replaceKey(transform[axis], local, next);
+    transform[other] = replaceKey(transform[other], local, scaled);
+    return { transform };
+  }
+  private scaleRatioControl(parent: HTMLElement, scope: Scope): void {
+    const button = el("button", "ei-button ei-scale-ratio", "锁定缩放比例");
+    button.type = "button";
+    button.setAttribute("aria-pressed", String(this.proportionalScale));
+    button.title = "只联动下方水平、垂直缩放数值；不修改工程中的缩放，关键帧列表仍逐轴编辑";
+    button.addEventListener("pointerdown", (event) => {
+      if (event.button === 0 && event.isPrimary) event.preventDefault();
+    });
+    button.addEventListener("keydown", (event) => {
+      if (event.repeat && (event.key === "Enter" || event.key === " ")) event.preventDefault();
+    });
+    button.addEventListener("click", () => {
+      if (!this.root.contains(button) || this.disposed || this.pending || this.replacingControls) return;
+      const fresh = this.scope();
+      if (!this.root.contains(button) || this.disposed || this.pending || this.replacingControls ||
+        (this.fieldFinish && !this.fieldFinish.signal.aborted) || this.keyframeNavigation || this.keyframeAction ||
+        !fresh || this.locked(fresh) || this.tab !== "visual" ||
+        !equal([scope.document.id, scope.identity, scope.revision, scope.sequence.id, scope.selectionIds],
+          [fresh.document.id, fresh.identity, fresh.revision, fresh.sequence.id, fresh.selectionIds]) ||
+        (fresh.identity && (fresh.document.id !== fresh.identity.documentId || fresh.revision !== fresh.identity.revision))) return;
+      this.proportionalScale = !this.proportionalScale;
+      button.setAttribute("aria-pressed", String(this.proportionalScale));
+    });
+    parent.append(button, el("p", "ei-hint", "锁定后，每个片段按当前宽高比例联动下方缩放数值；已有动画只更新当前时刻。关键帧列表和菱形按钮仍逐轴编辑。"));
+  }
   private visual(parent: HTMLElement, scope: Scope): void {
     this.alignment(parent, scope);
     const transform = this.section(
@@ -1463,6 +1514,7 @@ export class EditorInspector {
       "构图",
       "位置以画布中心为 0%；宽高缩放以原始适配画面为 100%。",
     );
+    this.scaleRatioControl(transform, scope);
     for (const [name, label, min, max, factor] of [
       ["x", "水平位置（%）", -10, 10, 100],
       ["y", "垂直位置（%）", -10, 10, 100],

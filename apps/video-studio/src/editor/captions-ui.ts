@@ -1,6 +1,6 @@
 import type { CaptionController, CaptionControllerState } from "./caption-controller";
 import { CaptionFindUI } from "./caption-find-ui";
-import { exportEditorSrt, listCaptions } from "./captions";
+import { exportEditorSrt, exportEditorVtt, listCaptions } from "./captions";
 import { CAPTION_PRESETS, currentCaptionPreset, type CaptionPreset } from "./caption-presets";
 import { narrationDraftClipIds } from "./narration-edits";
 import { sameIdentity, type EditorSession } from "./session";
@@ -90,6 +90,8 @@ export class EditorCaptionsUI {
   private readonly newText = element("textarea");
   private readonly addButton = element("button", "在播放头添加字幕");
   private readonly exportButton = element("button", "导出所选 SRT");
+  private readonly vttSelectedButton = element("button", "导出所选 VTT");
+  private readonly vttAllButton = element("button", "导出全部 VTT");
   private readonly mergeButton = element("button", "预览合并所选两条字幕");
   private readonly find: CaptionFindUI;
   private readonly disposers: Array<() => void> = [];
@@ -175,13 +177,15 @@ export class EditorCaptionsUI {
       this.transcriptionNote,
     );
     this.file.type = "file";
-    this.file.accept = ".srt,application/x-subrip,text/plain";
+    this.file.accept = ".srt,.vtt,application/x-subrip,text/vtt,text/plain";
     this.file.hidden = true;
     this.file.dataset.captionSrtInput = "";
     const detachButton = element("button", "解除所选来源绑定");
-    const importButton = element("button", "导入 SRT"),
+    const importButton = element("button", "导入 SRT / VTT"),
       all = element("button", "全选字幕");
-    tools.append(importButton, this.exportButton, all, this.mergeButton, this.file);
+    tools.append(importButton, this.exportButton, this.vttSelectedButton, this.vttAllButton, all, this.mergeButton, this.file);
+    importButton.title = "VTT 导入可见文字和毫秒时间；位置、区域、CSS 与行内格式会简化，预览中说明";
+    this.vttSelectedButton.title = this.vttAllButton.title = "仅导出已保存的文字，时间取最近毫秒；不含工程样式或词级对齐";
     tools.append(detachButton);
     this.mergeButton.title = "同轨相邻的两条已保存字幕；文字以换行连接，检查预览后应用";
     this.mergeButton.addEventListener("click", () => {
@@ -401,10 +405,12 @@ export class EditorCaptionsUI {
       if (chosen)
         this.run(
           async () => {
-            if (chosen.size > 4 * 1024 * 1024) throw new Error("SRT 文件超过4 MiB");
+            if (chosen.size > 4 * 1024 * 1024) throw new Error("字幕文件超过4 MiB");
             const text = await chosen.text();
             if (!owns()) return;
-            context.controller.importSrt({
+            const importText = /\.vtt$/i.test(chosen.name) || /^\uFEFF?WEBVTT(?:[\t \r\n]|$)/.test(text)
+              ? context.controller.importVtt : context.controller.importSrt;
+            importText({
               sequenceId,
               text,
               ...(trackId ? { trackId } : {}),
@@ -413,26 +419,38 @@ export class EditorCaptionsUI {
           owns,
         );
     });
-    this.exportButton.addEventListener("pointerdown", (event) => {
-      if (event.button === 0) event.preventDefault();
-    });
-    this.exportButton.addEventListener("click", () =>
-      this.run(async () => {
-        const ids = [...this.selected];
-        if (!ids.length) throw new Error("请先选择字幕");
-        this.assertSavedRows(ids, "导出");
-        const doc = context.session().read(),
-          srt = exportEditorSrt(doc, this.sequenceId, ids);
-        const url = URL.createObjectURL(
-          new Blob([srt], { type: "application/x-subrip;charset=utf-8" }),
-        );
-        const link = element("a");
-        link.href = url;
-        link.download = `${doc.name.replace(/[\\/:*?"<>|\x00-\x1f]/g, "_") || "字幕"}.srt`;
-        link.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-      }),
-    );
+    for (const [button, format, allRows] of [
+      [this.exportButton, "srt", false], [this.vttSelectedButton, "vtt", false],
+      [this.vttAllButton, "vtt", true],
+    ] as const) {
+      button.addEventListener("pointerdown", (event) => {
+        if (event.button === 0) event.preventDefault();
+      });
+      button.addEventListener("click", () => {
+        const session = context.session(), identity = session.getState().identity,
+          sequenceId = this.sequenceId, selected = [...this.selected];
+        const owns = () => !this.disposed && context.session() === session &&
+          sameIdentity(session.getState().identity, identity) && this.sequenceId === sequenceId &&
+          (allRows || (selected.length === this.selected.size && selected.every((id) => this.selected.has(id))));
+        this.run(() => {
+          const doc = session.read();
+          if (!owns() || doc.id !== identity.documentId || doc.revision !== identity.revision) return;
+          const ids = allRows ? listCaptions(doc, sequenceId).map((clip) => clip.id) : selected;
+          if (!ids.length) throw new Error(allRows ? "当前序列还没有字幕" : "请先选择字幕");
+          this.assertSavedRows(ids, "导出");
+          const text = (format === "vtt" ? exportEditorVtt : exportEditorSrt)(doc, sequenceId, ids);
+          if (!owns()) return;
+          const url = URL.createObjectURL(new Blob([text], {
+            type: `${format === "vtt" ? "text/vtt" : "application/x-subrip"};charset=utf-8`,
+          }));
+          const link = element("a");
+          link.href = url;
+          link.download = `${doc.name.replace(/[\\/:*?"<>|\x00-\x1f]/g, "_") || "字幕"}.${format}`;
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }, owns);
+      });
+    }
     this.disposers.push(context.controller.subscribe((state) => this.renderState(state)));
   }
   private cancelFileRead(): void {
@@ -592,6 +610,7 @@ export class EditorCaptionsUI {
     for (const id of this.rowNodes.keys()) if (!alive.has(id)) this.rowNodes.delete(id);
     this.exportButton.disabled = !clips.length;
     this.exportButton.title = clips.length ? "" : "当前序列还没有字幕";
+    this.vttSelectedButton.disabled = this.vttAllButton.disabled = !clips.length;
     if (!clips.length || !seq) {
       this.rows.replaceChildren(
         element(

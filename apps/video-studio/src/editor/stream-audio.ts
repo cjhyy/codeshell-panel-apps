@@ -8,6 +8,7 @@ export interface PreviewPcmStream {
 }
 interface ScheduledChunk {
   source: AudioBufferSourceNode;
+  correction?: AudioBufferSourceNode;
   start: number;
   end: number;
   sample: number;
@@ -18,6 +19,11 @@ const RATE = 48000,
   AHEAD = 6,
   LEAD = 0.035;
 const cancelled = () => new DOMException("声音播放已取消", "AbortError");
+function releaseSource(source: AudioBufferSourceNode): void {
+  // Setup may fail before start(), when native stop() throws InvalidStateError.
+  try { source.stop(); } catch {}
+  try { source.disconnect(); } catch {}
+}
 
 /** Schedules bounded contiguous PCM blocks. The clock advances only through scheduled
  * audio: if a read stalls, video holds at the last heard sample instead of skipping sound. */
@@ -38,9 +44,12 @@ export class StreamingPreviewAudio {
     startSample: number,
     signal: AbortSignal,
     private readonly onError: (error: unknown) => void,
+    private readonly correction?: { pcm: PreviewPcmStream; destination: AudioNode },
   ) {
     if (!Number.isSafeInteger(startSample) || startSample < 0 || startSample >= pcm.sampleCount)
       throw new Error("声音播放起点无效");
+    if (correction && (correction.pcm.sampleCount !== pcm.sampleCount || correction.pcm.sampleRate !== RATE || correction.pcm.numberOfChannels !== 2))
+      throw new Error("调音试听声音长度不一致");
     this.nextSample = this.position = startSample;
     const stop = () => this.stop();
     this.detach = () => signal.removeEventListener("abort", stop);
@@ -64,6 +73,7 @@ export class StreamingPreviewAudio {
       const chunk = this.chunks.shift()!;
       this.position = Math.max(this.position, chunk.sample + chunk.count);
       chunk.source.disconnect();
+      chunk.correction?.disconnect();
     }
     return Math.min(this.pcm.sampleCount, this.position);
   }
@@ -81,29 +91,38 @@ export class StreamingPreviewAudio {
     const count = Math.min(CHUNK, this.pcm.sampleCount - this.nextSample),
       start = this.nextSample;
     if (count <= 0) return;
-    const [left, right] = await this.pcm.read(start, count, this.abort.signal);
+    // Both sources must be ready before scheduling either: slow reads cannot drift the stem.
+    const blocks = await Promise.all([
+      this.pcm.read(start, count, this.abort.signal),
+      ...(this.correction ? [this.correction.pcm.read(start, count, this.abort.signal)] : []),
+    ]);
     this.check();
-    if (
-      !(left instanceof Float32Array) ||
-      !(right instanceof Float32Array) ||
-      left.length !== count ||
-      right.length !== count
-    )
-      throw new Error("分段声音采样不完整");
-    for (let i = 0; i < count; i++)
-      if (!Number.isFinite(left[i]) || !Number.isFinite(right[i]))
-        throw new Error("分段声音包含无效采样");
-    const buffer = this.context.createBuffer(2, count, RATE);
-    buffer.getChannelData(0).set(left);
-    buffer.getChannelData(1).set(right);
-    const source = this.context.createBufferSource();
-    source.buffer = buffer;
-    source.connect(this.context.destination);
+    for (const block of blocks) {
+      if (block.length !== 2 || block.some((channel) => !(channel instanceof Float32Array) || channel.length !== count))
+        throw new Error("分段声音采样不完整");
+      for (const channel of block) for (const value of channel)
+        if (!Number.isFinite(value)) throw new Error("分段声音包含无效采样");
+    }
     // Slow reads start a new contiguous interval; the clock freezes through the gap.
-    const at = Math.max(this.nextTime, this.context.currentTime + LEAD),
-      end = at + count / RATE;
-    source.start(at);
-    this.chunks.push({ source, start: at, end, sample: start, count });
+    const at = Math.max(this.nextTime, this.context.currentTime + LEAD), end = at + count / RATE;
+    const sources: AudioBufferSourceNode[] = [];
+    try {
+      for (const [index, [left, right]] of blocks.entries()) {
+        const buffer = this.context.createBuffer(2, count, RATE);
+        buffer.getChannelData(0).set(left!);
+        buffer.getChannelData(1).set(right!);
+        const source = this.context.createBufferSource();
+        sources.push(source);
+        source.buffer = buffer;
+        source.connect(index ? this.correction!.destination : this.context.destination);
+        this.check();
+      }
+      for (const source of sources) { source.start(at); this.check(); }
+    } catch (error) {
+      for (const source of sources) releaseSource(source);
+      throw error;
+    }
+    this.chunks.push({ source: sources[0]!, correction: sources[1], start: at, end, sample: start, count });
     this.nextSample += count;
     this.nextTime = end;
   }
@@ -165,8 +184,8 @@ export class StreamingPreviewAudio {
     this.detach();
     clearTimeout(this.timer);
     for (const chunk of this.chunks.splice(0)) {
-      chunk.source.stop();
-      chunk.source.disconnect();
+      releaseSource(chunk.source);
+      if (chunk.correction) releaseSource(chunk.correction);
     }
   }
 }

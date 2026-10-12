@@ -480,6 +480,250 @@ test("quick alignment saves one atomic batch through real IndexedDB and one undo
   });
 });
 
+test("proportional scale keeps the current nonuniform ratio in either numeric axis with one undo", async () => {
+  const lock = page.getByRole("button", { name: "锁定缩放比例", exact: true });
+  assert.equal(await lock.count(), 1, "numeric scaling needs an explicit proportional control");
+  assert.equal(await lock.getAttribute("aria-pressed"), "false");
+  const before = await read();
+  await lock.click();
+  assert.equal(await lock.getAttribute("aria-pressed"), "true");
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  await page.getByLabel("水平缩放（%）", { exact: true }).fill("40");
+  await page.keyboard.press("Tab");
+  await page.waitForFunction(() => calls.length === 1 && !document.querySelector(".ei-panel").disabled);
+  let a = await read();
+  assert.equal(a.transform.scaleX, 0.4);
+  assert.equal(a.transform.scaleY, 0.5);
+  assert.equal(a.transform.x, before.transform.x);
+  assert.deepEqual(a.transform.crop, before.transform.crop);
+  assert.equal(await page.evaluate(() => calls.length), 1);
+  await page.evaluate(() => { editorHistory.undo(); inspector.render(); });
+  assert.deepEqual(await read(), before);
+  await change("垂直缩放（%）", 150);
+  a = await read();
+  assert.ok(Math.abs(a.transform.scaleX - 1.2) < 1e-12);
+  assert.equal(a.transform.scaleY, 1.5);
+  await page.evaluate(() => { editorHistory.undo(); inspector.render(); });
+  assert.deepEqual(await read(), before);
+  await lock.click();
+  await change("水平缩放（%）", 40);
+  assert.equal((await read()).transform.scaleY, 1);
+});
+
+test("proportional scale keeps each selected clip's ratio and rejects an overflowing or locked target atomically", async () => {
+  await page.evaluate(() => select(["a", "b"]));
+  const before = await page.evaluate(() => editorHistory.read());
+  await page.getByRole("button", { name: "锁定缩放比例", exact: true }).click();
+  await change("水平缩放（%）", 60);
+  const result = await page.evaluate(() => ({ a: clip("a"), b: clip("b"), calls, errors }));
+  assert.equal(result.a.transform.scaleX, 0.6);
+  assert.ok(Math.abs(result.a.transform.scaleY - 0.75) < 1e-12);
+  assert.equal(result.b.transform.scaleX, 0.6);
+  assert.equal(result.b.transform.scaleY, 0.5);
+  assert.equal(result.calls.length, 1);
+  assert.equal(result.calls[0].ops.length, 2);
+  assert.deepEqual(result.errors, []);
+  await page.evaluate(() => { editorHistory.undo(); inspector.render(); });
+  assert.deepEqual(await page.evaluate(() => editorHistory.read().sequences), before.sequences);
+  await page.evaluate(() => {
+    const transform = clip("b").transform;
+    transform.scaleX = 0.01; transform.scaleY = 100;
+    update("b", { transform }); inspector.render();
+    calls = []; globalThis.beforeScaleBounds = editorHistory.read();
+  });
+  await page.getByLabel("水平缩放（%）", { exact: true }).fill("50");
+  assert.equal(await page.evaluate(() => inspector.finishFocusedField(new AbortController().signal)), false);
+  assert.match(await page.getByRole("alert").innerText(), /另一方向缩放将超过 10000%/);
+  assert.equal(await page.getByLabel("水平缩放（%）", { exact: true }).inputValue(), "50");
+  assert.deepEqual(await page.evaluate(() => editorHistory.read()), await page.evaluate(() => beforeScaleBounds));
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  await page.evaluate(() => {
+    reset(["a", "b"]);
+    const button = inspector.root.querySelector(".ei-scale-ratio"); button.click();
+    editorHistory.apply([{ type: "track.update", sequenceId: "main", trackId: "v2", patch: { locked: true } }], editorHistory.revision);
+    globalThis.beforeScaleLock = editorHistory.read();
+  });
+  await change("水平缩放（%）", 60);
+  assert.match(await page.getByRole("alert").innerText(), /锁定轨道/);
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.deepEqual(await page.evaluate(() => editorHistory.read()), await page.evaluate(() => beforeScaleLock));
+});
+
+test("proportional scale updates both exact local keys while preserving other keys, easing and independent keyframe rows", async () => {
+  await page.evaluate(() => {
+    now = 240013;
+    const transform = clip("a").transform;
+    transform.scaleX = { keyframes: [
+      { time: 0, value: 0.8, easing: "ease-in" },
+      { time: 240013, value: 1.2, easing: { type: "cubic-bezier", x1: 0.3, y1: 0.2, x2: 0.7, y2: 0.9 } },
+      { time: 960000, value: 1.6, easing: "hold" },
+    ] };
+    transform.scaleY = { keyframes: [
+      { time: 0, value: 0.6, easing: "linear" },
+      { time: 960000, value: 1.4, easing: "ease-out" },
+    ] };
+    transform.flipX = true;
+    update("a", { transform }); inspector.render();
+    globalThis.beforeScaleKeys = clip("a");
+    globalThis.oldScaleY = api.evaluateAnimatedNumber(transform.scaleY, now);
+    calls = [];
+  });
+  await page.getByRole("button", { name: "锁定缩放比例", exact: true }).click();
+  await change("水平缩放（%）", 60);
+  const result = await page.evaluate(() => ({ a: clip("a"), before: beforeScaleKeys, y: oldScaleY, calls }));
+  assert.equal(result.calls.length, 1);
+  const xKeys = result.a.transform.scaleX.keyframes, yKeys = result.a.transform.scaleY.keyframes;
+  assert.deepEqual(xKeys.filter((key) => key.time !== 240013), result.before.transform.scaleX.keyframes.filter((key) => key.time !== 240013));
+  assert.deepEqual(xKeys[1], { ...result.before.transform.scaleX.keyframes[1], value: 0.6 });
+  assert.deepEqual(yKeys.filter((key) => key.time !== 240013), result.before.transform.scaleY.keyframes);
+  assert.ok(Math.abs(yKeys[1].value - result.y / 2) < 1e-12);
+  assert.equal(yKeys[1].time, 240013);
+  assert.equal(result.a.transform.flipX, true);
+  await page.evaluate(() => { editorHistory.undo(); inspector.render(); });
+  assert.deepEqual(await read(), result.before);
+  await details("水平缩放（%） · 关键帧");
+  await change("关键帧 1 水平缩放（%）", 90);
+  assert.equal((await read()).transform.scaleX.keyframes[0].value, 0.9);
+  assert.deepEqual((await read()).transform.scaleY, result.before.transform.scaleY);
+});
+
+test("proportional scale zero and negative values stay correctable, and zeroing a valid ratio is undoable", async () => {
+  await page.evaluate(() => {
+    const transform = clip("a").transform; transform.scaleX = 0;
+    update("a", { transform }); inspector.render(); calls = [];
+  });
+  await page.getByRole("button", { name: "锁定缩放比例", exact: true }).click();
+  await page.getByLabel("水平缩放（%）", { exact: true }).fill("50");
+  assert.equal(await page.evaluate(() => inspector.finishFocusedField(new AbortController().signal)), false);
+  assert.match(await page.getByRole("alert").innerText(), /当前缩放为 0.*先解除/);
+  assert.equal(await page.getByLabel("水平缩放（%）", { exact: true }).inputValue(), "50");
+  assert.equal(await page.getByLabel("水平缩放（%）", { exact: true }).evaluate((input) => input === document.activeElement), true);
+  assert.equal((await read()).transform.scaleY, 1);
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  await page.getByRole("button", { name: "锁定缩放比例", exact: true }).click();
+  assert.equal(await page.evaluate(() => inspector.finishFocusedField(new AbortController().signal)), true);
+  assert.equal((await read()).transform.scaleX, 0.5);
+  assert.equal((await read()).transform.scaleY, 1);
+  await page.getByRole("button", { name: "锁定缩放比例", exact: true }).click();
+  const before = await read();
+  await change("垂直缩放（%）", 0);
+  assert.equal((await read()).transform.scaleX, 0);
+  assert.equal((await read()).transform.scaleY, 0);
+  await page.evaluate(() => { editorHistory.undo(); inspector.render(); calls = []; });
+  assert.deepEqual(await read(), before);
+  await page.getByLabel("水平缩放（%）", { exact: true }).fill("-1");
+  assert.equal(await page.evaluate(() => inspector.finishFocusedField(new AbortController().signal)), false);
+  assert.match(await page.getByRole("alert").innerText(), /须在 0 至 10000/);
+  assert.equal(await page.getByLabel("水平缩放（%）", { exact: true }).inputValue(), "-1");
+  assert.equal(await page.evaluate(() => calls.length), 0);
+});
+
+test("proportional scale toggle preserves native drafts and IME composition without creating history", async () => {
+  const input = page.getByLabel("水平缩放（%）", { exact: true });
+  await input.fill("40");
+  const original = await input.elementHandle();
+  await page.getByRole("button", { name: "锁定缩放比例", exact: true }).click();
+  assert.equal(await original.evaluate((node) => node.isConnected && node === document.activeElement && node.value === "40"), true);
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.equal(await page.evaluate(() => inspector.finishFocusedField(new AbortController().signal)), true);
+  assert.equal((await read()).transform.scaleY, 0.5);
+  await page.evaluate(() => { reset(); globalThis.scaleComposition = [];
+    inspector.root.addEventListener("compositionstart", (event) => scaleComposition.push([event.type, event.isTrusted]));
+    inspector.root.addEventListener("compositionend", (event) => scaleComposition.push([event.type, event.isTrusted]));
+  });
+  const name = page.getByLabel("片段名称", { exact: true });
+  await name.focus();
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("Input.imeSetComposition", { text: "正在输入", selectionStart: 4, selectionEnd: 4 });
+    const composing = await name.elementHandle(), draft = await name.inputValue();
+    await page.getByRole("button", { name: "锁定缩放比例", exact: true }).click();
+    assert.equal(await composing.evaluate((node) => node.isConnected && node === document.activeElement), true);
+    assert.equal(await name.inputValue(), draft);
+    assert.deepEqual(await page.evaluate(() => scaleComposition), [["compositionstart", true]]);
+    assert.equal(await page.evaluate(() => calls.length), 0);
+    assert.equal(await page.evaluate(() => editorHistory.revision), 0);
+    await cdp.send("Input.insertText", { text: "正在输入" });
+  } finally { await cdp.detach(); }
+});
+
+test("proportional scale resets across restored generations and detached controls cannot alter the successor", async () => {
+  await page.evaluate(() => {
+    globalThis.scaleGeneration = 1;
+    inspector.context.identity = () => ({ documentId: "project", generation: scaleGeneration, revision: editorHistory.revision });
+    inspector.render();
+  });
+  await page.getByRole("button", { name: "锁定缩放比例", exact: true }).click();
+  const oldButton = await page.getByRole("button", { name: "锁定缩放比例", exact: true }).elementHandle();
+  const input = page.getByLabel("水平缩放（%）", { exact: true });
+  await input.fill("40");
+  const oldInput = await input.elementHandle();
+  await page.evaluate(() => {
+    const successor = editorHistory.read();
+    successor.sequences[0].clips[0].transform.scaleX = 2;
+    successor.sequences[0].clips[0].transform.scaleY = 3;
+    editorHistory = new api.EditorHistory(successor); scaleGeneration++; inspector.render();
+  });
+  await oldButton.evaluate((button) => button.click());
+  assert.equal(await page.getByRole("button", { name: "锁定缩放比例", exact: true }).getAttribute("aria-pressed"), "false");
+  assert.equal(await input.inputValue(), "200");
+  await oldInput.evaluate((node) => { node.value = "40"; node.dispatchEvent(new Event("change")); });
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.equal((await read()).transform.scaleX, 2);
+  await change("水平缩放（%）", 50);
+  assert.equal((await read()).transform.scaleY, 3);
+});
+
+test("proportional scale rejected apply restores the editable value without a partial scale change", async () => {
+  await page.getByRole("button", { name: "锁定缩放比例", exact: true }).click();
+  const before = await read();
+  await page.evaluate(() => { inspector.context.apply = async (ops, label) => { calls.push({ ops, label }); throw new Error("缩放保存失败"); }; });
+  await page.getByLabel("水平缩放（%）", { exact: true }).fill("40");
+  assert.equal(await page.evaluate(() => inspector.finishFocusedField(new AbortController().signal)), false);
+  assert.deepEqual(await read(), before);
+  assert.equal(await page.evaluate(() => calls.length), 1);
+  assert.equal(await page.getByLabel("水平缩放（%）", { exact: true }).inputValue(), "40");
+  assert.equal(await page.getByLabel("水平缩放（%）", { exact: true }).evaluate((input) => input === document.activeElement), true);
+  assert.match(await page.getByRole("alert").innerText(), /缩放保存失败/);
+});
+
+test("proportional scale native field commit stays one edit through actual session notifications and undo", async () => {
+  await page.evaluate(async () => {
+    inspector.dispose();
+    globalThis.scaleSession = await api.EditorSession.open({
+      read: async () => ({ data: null, revision: 0 }),
+      write: async (_document, revision) => ({ revision: revision + 1 }),
+      backupLegacy: async () => {},
+    }, { initialDocument: makeDocument(), autosaveDelayMs: 60000 });
+    globalThis.inspector = api.mountEditorInspector(document.querySelector("#mount"), {
+      read: () => scaleSession.read(), identity: () => scaleSession.getState().identity,
+      selection: () => ({ sequenceId: "main", clipIds: ["a"] }), time: () => now,
+      onError: (error) => errors.push(error.message),
+      apply: (ops, label) => { calls.push({ ops, label }); scaleSession.dispatch(ops, scaleSession.getState().identity, label); },
+    });
+    globalThis.unsubscribeScale = scaleSession.subscribe(() => inspector.render());
+  });
+  try {
+    await page.getByRole("button", { name: "锁定缩放比例", exact: true }).click();
+    await page.getByLabel("水平缩放（%）", { exact: true }).fill("40");
+    await page.keyboard.press("Tab");
+    await page.waitForFunction(() => calls.length === 1 && !document.querySelector(".ei-panel").disabled);
+    let result = await page.evaluate(() => ({ document: scaleSession.read(), calls, errors }));
+    assert.equal(result.document.revision, 1);
+    assert.equal(result.document.sequences[0].clips[0].transform.scaleX, 0.4);
+    assert.equal(result.document.sequences[0].clips[0].transform.scaleY, 0.5);
+    assert.equal(result.calls[0].ops.length, 1);
+    assert.equal(await page.getByRole("button", { name: "锁定缩放比例", exact: true }).getAttribute("aria-pressed"), "true");
+    assert.deepEqual(result.errors, []);
+    await page.evaluate(() => scaleSession.undo());
+    result = await page.evaluate(() => scaleSession.read());
+    assert.equal(result.sequences[0].clips[0].transform.scaleX, 0.8);
+    assert.equal(result.sequences[0].clips[0].transform.scaleY, 1);
+  } finally {
+    await page.evaluate(async () => { unsubscribeScale(); inspector.dispose(); await scaleSession.close({ save: false }); });
+  }
+});
+
 test("visual controls convert percentages, preserve unrelated properties, and expose keyboard-accessible tabs", async () => {
   await change("水平位置（%）", 25);
   await change("水平缩放（%）", 50);
