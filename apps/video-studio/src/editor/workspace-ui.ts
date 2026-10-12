@@ -179,9 +179,10 @@ export class EditorWorkspace {
   private audio?: PreviewAudio;
   private soloTracks = new Set<string>();
   private auditionSequence = "";
-  private gainAudition?: { clipId: string; volume: number; audio?: PreviewAudio };
+  private gainAudition?: { clipId: string; volume: number; delta?: number; audio?: PreviewAudio };
   private auditionEpoch = 0;
-  private gainOpening?: AbortController;
+  private gainOpening?: ExportOpeningOwner;
+  private gainSeeking?: ExportOpeningOwner;
   /** Includes the session generation, so restoring the same revision cannot reuse old media. */
   private preparedRevision = "";
   private dialog?: HTMLDialogElement;
@@ -316,10 +317,14 @@ export class EditorWorkspace {
       previewGain: (clipId, volume) => {
         const audition = this.gainAudition;
         if (!audition || audition.clipId !== clipId || !audition.audio || !this.preview.playing) return false;
-        this.preview.setAuditionGain(volume - audition.volume);
+        audition.delta = volume - audition.volume;
+        this.preview.setAuditionGain(audition.delta);
         return true;
       },
-      endGainPreview: () => this.preview.setAuditionGain(0),
+      endGainPreview: () => {
+        if (this.gainAudition) this.gainAudition.delta = 0;
+        this.preview.setAuditionGain(0);
+      },
       read,
       identity: () => options.session.getState().identity,
       prepareMediaSnapshot: (document, identity) => this.prepareTimelineMedia(document, identity),
@@ -699,7 +704,7 @@ export class EditorWorkspace {
     this.timeline.render();
     this.canvasEditor.render();
     this.updateTime();
-    if (this.visible && !this.sourcePreview) this.run(() => this.frameCapture?.finishing || this.exportOpening?.finishing
+    if (this.visible && !this.sourcePreview) this.run(() => this.frameCapture?.finishing || this.exportOpening?.finishing || this.gainOpening?.finishing
       ? this.preview.seek(this.playhead, { exact: this.exactPlayhead }) : this.seek(this.playhead));
   }
 
@@ -752,6 +757,7 @@ export class EditorWorkspace {
   private previewError(error: unknown): void {
     this.loopReplay = undefined;
     if (this.disposed) return;
+    this.clearGainAudition();
     this.preparedRevision = "";
     this.audio?.stream?.dispose();
     this.audio = undefined;
@@ -821,7 +827,9 @@ export class EditorWorkspace {
    * contains it, which would still be the previous clip. Re-seeking the same spot keeps it.
    */
   async seek(time: Tick, exact = this.exactPlayhead && time === this.playhead): Promise<void> {
-    this.clearGainAudition();
+    // Only the synchronous call that positions this audition may retain its opening owner.
+    if (!this.gainOpening || this.gainSeeking !== this.gainOpening || time !== this.gainOpening.time || !exact)
+      this.clearGainAudition();
     this.timeline.cancelTextNavigation();
     this.cancelExportOpening();
     if (this.disposed) return;
@@ -855,11 +863,11 @@ export class EditorWorkspace {
     this.get('[data-ew-action="clear-solo"]').hidden = !this.soloTracks.size;
     const names = this.sequence().tracks.filter((track) => this.soloTracks.has(track.id)).map((track) => track.name),
       output = this.get('[data-ew-audition-status]');
-    output.textContent = [names.length ? `独轨试听：${names.join("、")}（保留轨道静音）` : "", this.gainAudition ? "调音试听：拖动所选片段音量线即可听效果，松开保存，Esc 取消" : ""].filter(Boolean).join(" · ") + (names.length || this.gainAudition ? " · 试听不影响导出" : "");
+    output.textContent = [names.length ? `独轨试听：${names.join("、")}（保留轨道静音，不影响导出）` : "", this.gainAudition ? "调音试听：拖动所选片段音量线即可听效果，松开保存后用于导出，Esc 取消" : ""].filter(Boolean).join(" · ");
     output.hidden = !output.textContent;
   }
   private clearGainAudition(preserveOpening = false): void {
-    if (!preserveOpening) { this.auditionEpoch++; this.gainOpening?.abort(); this.gainOpening = undefined; }
+    if (!preserveOpening) { this.auditionEpoch++; this.gainOpening?.controller.abort(); this.gainOpening = undefined; }
     if (!this.gainAudition) return;
     this.cancelPreparation();
     this.gainAudition.audio?.stream?.dispose();
@@ -881,27 +889,62 @@ export class EditorWorkspace {
     this.run(() => this.seek(this.playhead));
   }
   private async toggleGainAudition(): Promise<void> {
+    if (this.disposed || !this.visible || this.sourcePreview) return;
     if (this.gainOpening) { this.clearGainAudition(); return; }
     if (this.gainAudition) { this.clearGainAudition(); return; }
-    const identity = { ...this.options.session.getState().identity }, sequenceId = this.sequenceId,
-      selection = JSON.stringify(this.selected), time = this.playhead, epoch = ++this.auditionEpoch,
-      controller = new AbortController();
-    this.gainOpening = controller;
-    let ready: boolean | Promise<boolean> | undefined;
+    if (this.exportComposition === document.activeElement) {
+      this.options.onError(new Error("请完成文字输入后再调音试听")); return;
+    }
+    const epoch = ++this.auditionEpoch, session = this.options.session,
+      sequenceId = this.sequenceId, selection = JSON.stringify(this.selected), time = this.playhead,
+      identity = { ...session.getState().identity };
+    if (epoch !== this.auditionEpoch || this.gainOpening || this.disposed || !this.visible || this.sourcePreview ||
+      session !== this.options.session || sequenceId !== this.sequenceId || selection !== JSON.stringify(this.selected) || time !== this.playhead) return;
+    const owner: ExportOpeningOwner = { session, identity, sequenceId, selection, time,
+      controller: new AbortController(), finishing: true };
+    this.gainOpening = owner;
     try {
-      ready = this.inspector.finishFocusedField(controller.signal);
-      if (ready !== undefined && !(typeof ready === "boolean" ? ready : await ready)) return;
-    } finally { if (this.gainOpening === controller) this.gainOpening = undefined; }
-    const latest = this.options.session.getState().identity;
-    if (controller.signal.aborted || this.disposed || !this.visible || this.sourcePreview || epoch !== this.auditionEpoch ||
-      !sameIdentity(identity, latest, false) || latest.revision < identity.revision || latest.revision > identity.revision + 1 ||
-      sequenceId !== this.sequenceId || selection !== JSON.stringify(this.selected) || time !== this.playhead) return;
-    if (this.selected.length !== 1) throw new Error("请选择一个固定音量的声音片段");
-    const candidate = clipGainAuditionDocument(this.auditionDocument(), sequenceId, this.selected[0]!);
-    this.cancelPreparation();
-    this.gainAudition = { clipId: this.selected[0]!, volume: candidate.volume };
-    this.updateAuditionControls();
-    await this.togglePlayback();
+      const ready = this.inspector.finishFocusedField(owner.controller.signal) ?? this.timeline.finishFocusedField(owner.controller.signal),
+        asynchronous = ready !== undefined && typeof ready !== "boolean";
+      if (!(ready === undefined || (typeof ready === "boolean" ? ready : await ready))) return;
+      const latest = this.gainOpeningIdentity(owner, asynchronous);
+      if (!latest) return;
+      owner.identity = latest; owner.finishing = false;
+      const doc = this.auditionDocument();
+      if (!this.gainOpeningIdentity(owner) || doc.id !== latest.documentId || doc.revision !== latest.revision) return;
+      if (this.selected.length !== 1) throw new Error("请选择一个固定音量的声音片段");
+      const clipId = this.selected[0]!, candidate = clipGainAuditionDocument(doc, sequenceId, clipId),
+        clip = doc.sequences.find((item) => item.id === sequenceId)!.clips.find((item) => item.id === clipId)!;
+      if (owner.time < clip.start || owner.time >= clip.start + clip.duration) {
+        owner.time = clip.start;
+        this.gainSeeking = owner;
+        let seek: Promise<void>;
+        try { seek = this.seek(owner.time, true); }
+        finally { if (this.gainSeeking === owner) this.gainSeeking = undefined; }
+        await seek;
+        if (!this.gainOpeningIdentity(owner)) return;
+      }
+      this.cancelPreparation();
+      if (!this.gainOpeningIdentity(owner)) return;
+      const audition = { clipId, volume: candidate.volume };
+      this.gainAudition = audition;
+      this.updateAuditionControls();
+      if (!this.gainOpeningIdentity(owner) || this.gainAudition !== audition) return;
+      await this.togglePlayback();
+    } catch (error) {
+      try { if (this.gainOpeningIdentity(owner)) this.options.onError(error); }
+      catch { /* Superseded scope/read failures must not report into a new project. */ }
+    } finally {
+      if (this.gainOpening === owner) { this.gainOpening = undefined; owner.controller.abort(); }
+    }
+  }
+  private gainOpeningIdentity(owner: ExportOpeningOwner, allowFieldRevision = false): SessionIdentity | undefined {
+    const state = owner.session.getState();
+    if (this.options.session !== owner.session || this.gainOpening !== owner || owner.controller.signal.aborted || this.disposed ||
+      !this.visible || this.sourcePreview || state.phase !== "ready" || this.sequenceId !== owner.sequenceId ||
+      this.playhead !== owner.time || JSON.stringify(this.selected) !== owner.selection || !sameIdentity(owner.identity, state.identity, false)) return;
+    if (state.identity.revision === owner.identity.revision || allowFieldRevision && owner.finishing && state.identity.revision === owner.identity.revision + 1)
+      return { ...state.identity };
   }
   async togglePlayback(): Promise<void> {
     if (this.disposed) return;
@@ -978,7 +1021,7 @@ export class EditorWorkspace {
         !this.visible
       )
         return;
-      await this.preview.play(this.audio, audition?.audio ? { audio: audition.audio, gain: 0 } : undefined);
+      await this.preview.play(this.audio, audition?.audio ? { audio: audition.audio, gain: audition.delta ?? 0 } : undefined);
       if (
         !controller.signal.aborted &&
         signature === this.playbackSignature() &&
@@ -1317,7 +1360,12 @@ export class EditorWorkspace {
     }
     this.run(() => this.action(target.dataset.ewAction!));
   };
-  private cancelGainOpening = (): void => { this.gainOpening?.abort(); this.gainOpening = undefined; };
+  private cancelGainOpening = (): void => {
+    if (!this.gainOpening) return;
+    const preparing = !this.gainOpening.finishing;
+    this.gainOpening.controller.abort(); this.gainOpening = undefined; this.auditionEpoch++;
+    if (preparing) this.clearGainAudition();
+  };
   private gainAuditionKeydown = (event: KeyboardEvent): void => {
     if (event.key === "Escape" && (this.gainOpening || this.preparing && this.gainAudition)) {
       this.clearGainAudition(); this.cancelPreparation();

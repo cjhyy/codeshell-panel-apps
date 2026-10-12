@@ -9042,3 +9042,197 @@ test("late live gain preparation is disposed after selection changes and cannot 
   assert.equal(await action(page, "gain-audition").getAttribute("aria-pressed"), "false");
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });
+
+for (const [label, value] of [["音量（%）", "35"], ["声音轨 音量百分比", "37.5"]]) {
+  test(`audition boundary first gain click commits ${label} before preparation`, async (t) => {
+    const page = await fixture(t, { audio: true });
+    await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["sound"]));
+    const before = await documentState(page);
+    await page.getByLabel(label, { exact: true }).fill(value);
+    await action(page, "gain-audition").click(); await settle(page);
+    const after = await documentState(page);
+    assert.equal(after.revision, before.revision + 1);
+    assert.equal(label === "音量（%）" ? after.sequences[0].clips.find((c) => c.id === "sound").audio.volume : after.sequences[0].tracks.find((track) => track.id === "audio").volume, Number(value) / 100);
+    assert.equal(await page.evaluate(() => fixture.audio().length), 1, "the same click must start the applied mix preparation");
+    assert.equal(await action(page, "gain-audition").getAttribute("aria-pressed"), "true");
+    await page.keyboard.press("Escape");
+    await action(page, "undo").click(); await settle(page);
+    assert.deepEqual((await documentState(page)).sequences, before.sequences);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+for (const [label, value] of [["声像（%）", "101"], ["声音轨 音量百分比", "1001"]]) {
+  test(`audition boundary invalid ${label} does not start preparation`, async (t) => {
+    const page = await fixture(t, { audio: true });
+    await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["sound"]));
+    const before = await documentState(page), field = page.getByLabel(label, { exact: true });
+    await field.fill(value); await action(page, "gain-audition").click(); await settle(page);
+    assert.equal(await page.evaluate(() => fixture.audio().length), 0);
+    assert.equal(await field.inputValue(), value);
+    assert.equal(await field.evaluate((node) => node === document.activeElement), true);
+    assert.deepEqual(await documentState(page), before);
+  });
+}
+for (const mode of ["inspector", "timeline"]) {
+  test(`audition boundary leaves native ${mode} composition connected and does not prepare`, async (t) => {
+    const page = await fixture(t, { audio: true });
+    await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["sound"]));
+    const field = page.getByLabel(mode === "inspector" ? "片段名称" : "轨道名称 声音轨", { exact: true });
+    await field.focus(); await field.evaluate((node) => { node.select(); globalThis.auditionImeEnds = []; node.addEventListener("compositionend", (event) => auditionImeEnds.push(event.isTrusted)); });
+    const before = await documentState(page), cdp = await page.context().newCDPSession(page);
+    try {
+      await cdp.send("Input.imeSetComposition", { text: "试听中文草稿", selectionStart: 6, selectionEnd: 6 });
+      const original = await field.elementHandle();
+      await action(page, "gain-audition").click();
+      assert.equal(await original.evaluate((node) => node.isConnected && node === document.activeElement), true);
+      assert.equal(await field.inputValue(), "试听中文草稿");
+      assert.deepEqual(await page.evaluate(() => auditionImeEnds), []);
+      assert.equal(await page.evaluate(() => fixture.audio().length), 0);
+      assert.deepEqual(await documentState(page), before);
+      assert.match((await page.evaluate(() => fixture.errors)).at(-1), /完成文字输入后再调音试听/);
+      await cdp.send("Input.insertText", { text: "试听中文草稿" });
+    } finally { await cdp.detach(); }
+  });
+}
+for (const change of ["Escape", "blur", "clock-ABA", "selection-ABA", "revision", "generation", "sequence", "hidden", "source", "dispose"]) {
+  test(`audition boundary cancels an awaited applied field on ${change}`, async (t) => {
+    const page = await fixture(t, { audio: true, sequenceCount: 2 });
+    await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["sound"]));
+    await holdCanvasField(page); await page.getByLabel("音量（%）", { exact: true }).fill("35");
+    await action(page, "gain-audition").click();
+    await page.waitForFunction(() => canvasFieldReleases.length === 1);
+    const applied = await documentState(page);
+    await page.evaluate(async (change) => {
+      const { workspace, session } = fixture.internals;
+      if (change === "Escape") window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      else if (change === "blur") window.dispatchEvent(new Event("blur"));
+      else if (change === "clock-ABA") { await workspace.seek(13, true); await workspace.seek(0, true); }
+      else if (change === "selection-ABA") { workspace.selectClips("main", ["a"]); workspace.selectClips("main", ["sound"]); }
+      else if (change === "revision") fixture.externalEdit();
+      else if (change === "generation") await fixture.replaceGeneration();
+      else if (change === "sequence") fixture.dispatch([{ type: "sequence.activate", sequenceId: "sequence-2" }], "换序列");
+      else if (change === "hidden") fixture.hide();
+      else if (change === "source") fixture.sourcePreview(true);
+      else await workspace.dispose();
+    }, change);
+    await releaseCanvasField(page);
+    assert.equal(await page.evaluate(() => fixture.audio().length), 0);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.gainOpening || !!fixture.internals.workspace.gainAudition || fixture.playing()), false);
+    assert.equal((await documentState(page)).sequences[0].clips.find((c) => c.id === "sound").audio.volume, applied.sequences[0].clips.find((c) => c.id === "sound").audio.volume);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+test("audition boundary old completion cannot clear a newer gain opening", async (t) => {
+  const page = await fixture(t, { audio: true });
+  await page.evaluate(() => {
+    const w = fixture.internals.workspace; w.selectClips("main", ["sound"]);
+    globalThis.auditionReleases = []; w.inspector.finishFocusedField = () => new Promise((resolve) => auditionReleases.push(resolve));
+  });
+  await action(page, "gain-audition").click(); await page.keyboard.press("Escape");
+  await action(page, "gain-audition").click();
+  await page.evaluate(() => { globalThis.newGainOwner = fixture.internals.workspace.gainOpening; auditionReleases[0](true); }); await settle(page);
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.gainOpening === newGainOwner), true);
+  assert.equal(await page.evaluate(() => fixture.audio().length), 0);
+  await page.evaluate(() => auditionReleases[1](true));
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.keyboard.press("Escape");
+  assert.equal((await page.evaluate(() => fixture.audio()))[0].aborted, true);
+});
+test("audition boundary begins at the selected clip's exact start when the playhead is outside", async (t) => {
+  const page = await fixture(t, { audio: true });
+  await page.evaluate(() => {
+    fixture.dispatch([{ type: "clip.update", sequenceId: "main", clipId: "sound", patch: { start: 240013 } }], "延后声音");
+    fixture.internals.workspace.selectClips("main", ["sound"]);
+  });
+  const before = await documentState(page);
+  await action(page, "gain-audition").click(); await page.waitForFunction(() => fixture.audio().length === 1);
+  assert.equal(await page.evaluate(() => fixture.playhead()), 240013);
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.exactPlayhead), true);
+  assert.deepEqual(await documentState(page), before);
+  await page.keyboard.press("Escape");
+});
+test("audition boundary later stem read failure releases both resources and leaves no active gain mode", async (t) => {
+  const page = await fixture(t, { audio: true, duration: 20 * 240000 });
+  await page.evaluate(() => {
+    const w = fixture.internals.workspace; w.selectClips("main", ["sound"]);
+    const prepare = w.options.prepareAudio; let request = 0;
+    w.options.prepareAudio = async (...args) => {
+      const stem = ++request === 2, audio = await prepare(...args);
+      if (stem && audio?.stream) {
+        const read = audio.stream.read; let reads = 0;
+        audio.stream.read = async (...args) => {
+          if (++reads === 2) return new Promise((_resolve, reject) => globalThis.rejectAuditionRead = () => reject(new Error("试听采样读取失败")));
+          return read(...args);
+        };
+      }
+      return audio;
+    };
+  });
+  await action(page, "gain-audition").click(); await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.evaluate(() => fixture.resolveAudio(0, true)); await page.waitForFunction(() => fixture.audio().length === 2);
+  await page.evaluate(() => fixture.resolveAudio(1, true)); await page.waitForFunction(() => fixture.playing() && !!globalThis.rejectAuditionRead);
+  await page.evaluate(() => rejectAuditionRead()); await settle(page);
+  assert.equal(await page.evaluate(() => fixture.playing()), false);
+  assert.equal(await action(page, "gain-audition").getAttribute("aria-pressed"), "false");
+  assert.deepEqual((await page.evaluate(() => fixture.audio())).map((a) => a.disposed), [1, 1]);
+  assert.match(await page.locator("[data-ew-preview-error]").textContent(), /试听采样读取失败/);
+});
+for (const [label, value, invalid] of [["音量（%）", "35", false], ["声音轨 音量百分比", "37.5", false], ["声像（%）", "101", true], ["声音轨 音量百分比", "1001", true]]) {
+  test(`audition boundary Solo finishes ${invalid ? "invalid" : "valid"} ${label} before view changes`, async (t) => {
+    const page = await fixture(t, { audio: true });
+    await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["sound"]));
+    const before = await documentState(page), field = page.getByLabel(label, { exact: true });
+    await field.fill(value); await page.locator('[data-et-track="audio"][data-et-toggle="solo"]').click(); await settle(page);
+    assert.equal(await page.locator('[data-et-track="audio"][data-et-toggle="solo"]').getAttribute("aria-pressed"), String(!invalid));
+    if (invalid) {
+      assert.equal(await field.inputValue(), value);
+      assert.equal(await field.evaluate((node) => node === document.activeElement), true);
+      assert.deepEqual(await documentState(page), before);
+    } else {
+      const after = await documentState(page); assert.equal(after.revision, before.revision + 1);
+      assert.equal(label === "音量（%）" ? after.sequences[0].clips.find((c) => c.id === "sound").audio.volume : after.sequences[0].tracks.find((track) => track.id === "audio").volume, Number(value) / 100);
+    }
+    assert.equal(await page.evaluate(() => fixture.audio().length), 0);
+  });
+}
+
+test("audition boundary loop restart retains a held gain draft until Escape restores it", async (t) => {
+  const page = await fixture(t, { audio: true, duration: 360000 });
+  await page.evaluate(() => {
+    const w = fixture.internals.workspace; w.selectClips("main", ["sound"]);
+    const changed = w.preview.options.onPlaybackChange; globalThis.auditionPlayStarts = 0;
+    w.preview.options.onPlaybackChange = (playing) => { if (playing) auditionPlayStarts++; changed?.(playing); };
+  });
+  await action(page, "loop-playback").click(); await action(page, "gain-audition").click();
+  await page.waitForFunction(() => fixture.audio().length === 1); await page.evaluate(() => fixture.resolveAudio(0));
+  await page.waitForFunction(() => fixture.audio().length === 2); await page.evaluate(() => fixture.resolveAudio(1, true));
+  await page.waitForFunction(() => fixture.playing()); const before = await documentState(page);
+  const b = await clip(page, "sound").locator("[data-et-gain]").boundingBox(), x = b.x + b.width / 2, y = b.y + b.height / 2;
+  await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.move(x, y - 30);
+  await page.waitForFunction(() => auditionPlayStarts >= 2 && fixture.playing());
+  assert.ok(Math.abs(await page.evaluate(() => fixture.internals.workspace.gainAudition.delta) - 0.3) < 1e-9);
+  assert.ok(Math.abs(await page.evaluate(() => fixture.internals.workspace.preview.auditionGain.gain.value) - 0.3) < 1e-6);
+  assert.deepEqual(await documentState(page), before);
+  await page.keyboard.press("Escape"); await page.mouse.up();
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.evaluate(() => fixture.playing()), false);
+});
+
+for (const width of [1240, 540]) {
+  test(`audition controls remain visible without overflow at ${width}px`, async (t) => {
+    const page = await fixture(t, { audio: true, width });
+    await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["sound"]));
+    await page.locator('[data-et-track="audio"][data-et-toggle="solo"]').click();
+    await action(page, "gain-audition").click(); await page.waitForFunction(() => fixture.audio().length === 1);
+    await page.evaluate(() => fixture.resolveAudio(0)); await page.waitForFunction(() => fixture.audio().length === 2);
+    await page.evaluate(() => fixture.resolveAudio(1)); await page.waitForFunction(() => fixture.playing());
+    await action(page, "play").click();
+    assert.equal(await action(page, "gain-audition").isVisible(), true);
+    assert.equal(await action(page, "clear-solo").isVisible(), true);
+    assert.match(await page.locator("[data-ew-audition-status]").textContent(), /独轨试听.*声音轨.*松开保存后用于导出/);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await mkdir("/tmp/video-studio-remaining-audition", { recursive: true });
+    await page.screenshot({ path: `/tmp/video-studio-remaining-audition/workspace-${width}.png` });
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
