@@ -5,6 +5,9 @@ import {
   mapCaptionSourceRange,
   planTranscriptCaptions,
   parseEditorSrt,
+  parseEditorVtt,
+  planVttImport,
+  exportEditorVtt,
   planSrtImport,
   exportEditorSrt,
   planCaptionTranslation,
@@ -1843,4 +1846,106 @@ test("the 字幕 page reports and skips generated or imported subtitles that wou
   assert.equal(candidate.added, 0);
   assert.ok(candidate.notices.some((notice) => /重叠/.test(notice)), candidate.notices.join("\n"));
   h.controller.cancel?.();
+});
+
+
+test("WebVTT consumes headers, identifiers, NOTE/style/region blocks and settings without turning metadata into text", () => {
+  const source = "\uFEFFWEBVTT 汉语\r\n\r\nNOTE 注释\r\n00:09.000 --> 00:10.000\r\n伪字幕\r\n\r\nSTYLE\r\n::cue { color: red; }\r\n\r\nREGION\r\nid:top\r\nwidth:50%\r\n\r\n中文 cue id\r\n00:00.033 --> 00:01.067 align:start line:90% position:10%,line-left size:80% region:top\r\n<v.first 小明><b>你好</b> &amp; &lt;b&gt; &#x1f642;\r\n第二行\r\n\r\n尾声\r\n23:59:59.999 --> 24:00:00.000\r\n结束\r\n";
+  assert.deepEqual(parseEditorVtt(source), [
+    { start: 7920, end: 256080, text: "你好 & <b> 🙂\n第二行" },
+    { start: 24 * 3600 * T - 240, end: 24 * 3600 * T, text: "结束" },
+  ]);
+  const doc = fixture(), before = structuredClone(doc), plan = planVttImport(doc, "main", source);
+  assert.equal(plan.added, 2);
+  assert.ok(plan.notices.some((notice) => /位置.*不保留/.test(notice)));
+  assert.ok(plan.notices.some((notice) => /标识不保留/.test(notice)));
+  assert.ok(plan.notices.some((notice) => /行内格式/.test(notice)));
+  const after = applyEditorOperations(doc, plan.operations, doc.revision);
+  assert.deepEqual(captions(after).map(({ words, sourceBinding, translation }) => [words, sourceBinding, translation]), [[[], undefined, undefined], [[], undefined, undefined]]);
+  assert.equal(planVttImport(after, "main", source).skipped, 2);
+  assert.deepEqual(doc, before);
+  assert.deepEqual(parseEditorVtt("WEBVTT\n \t\ncue\n00:00.001 --> 00:01.001\n文字\n"), [{ start: 240, end: 240240, text: "文字" }]);
+  assert.deepEqual(parseEditorVtt("WEBVTT"), []);
+  assert.deepEqual(parseEditorVtt("WEBVTT\n\nNOTE only comments\n"), []);
+});
+
+test("WebVTT rejects malformed timing, external clocks and unsupported timed/ruby text atomically", () => {
+  const cue = (body: string, timing = "00:00.001 --> 00:01.001") => `WEBVTT\n\n${timing}\n${body}\n`;
+  for (const bad of [
+    "WEBVTTx\n\n00:00.000 --> 00:01.000\n文字", "WEBVTT --> header", "WEBVTT\n00:00.000 --> 00:01.000\n文字",
+    "WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:900000\n\n00:00.000 --> 00:01.000\n文字",
+    cue("文字", "00:60.000 --> 01:01.000"), cue("文字", "00:00,000 --> 00:01,000"),
+    cue("文字", "00:00.001 --> 00:00.001"), cue("文字", "24:00:00.000 --> 24:00:00.001"),
+    cue("文字", "00:00.00 --> 00:01.000"), cue("文字", "00:00.000-->00:01.000"),
+    cue("文字\n00:02.000 --> 00:03.000\n丢了空行"), cue("<ruby>漢<rt>kan</rt></ruby>"),
+    cue("文字<00:00.500>更多"), cue("<script>不执行</script>"), cue("未闭合<b"),
+    cue("<".repeat(50000)), cue("&copy;"), cue("&amp 未闭合引用"), cue("&#128;"), cue("&#0;"), cue("&#xD800;"), cue("坏\u0000字"),
+  ]) assert.throws(() => parseEditorVtt(bad), /VTT|WEBVTT/);
+  assert.throws(() => parseEditorVtt("WEBVTT\n\n" + Array.from({ length: 2001 }, () => "00:00.001 --> 00:01.001\n字\n").join("\n")), /2000/);
+  const doc = fixture(), before = structuredClone(doc);
+  assert.throws(() => planVttImport(doc, "main", cue("文字") + "\n00:02.000 --> 00:03.000\n<ruby>坏</ruby>"), /标签/);
+  assert.deepEqual(doc, before);
+});
+
+test("WebVTT plain-text export escapes markup and arrows, quantizes ticks once and preserves caption metadata", () => {
+  const doc = generated(), selected = captions(doc)[0]!;
+  selected.text = '字面 <b>不是粗体</b> &amp; & -- > -->\n"引号"🙂';
+  selected.start = T + 13; selected.duration = 2 * T + 240;
+  const before = structuredClone(doc), output = exportEditorVtt(doc, "main", [selected.id]);
+  assert.match(output, /^WEBVTT\n\n1\n00:00:01\.000 --> 00:00:03\.001\n/);
+  assert.match(output, /&lt;b&gt;/);
+  assert.match(output, /--&gt;/);
+  assert.deepEqual(parseEditorVtt(output), [{ start: T, end: 3 * T + 240, text: selected.text }]);
+  assert.deepEqual(doc, before);
+  assert.throws(() => exportEditorVtt(doc, "main", [selected.id, selected.id]), /有效/);
+  assert.throws(() => exportEditorVtt(doc, "main", ["missing"]), /有效/);
+  assert.equal(exportEditorVtt(doc, "main", []), "WEBVTT\n\n");
+  selected.words = []; delete selected.sourceBinding;
+  selected.duration = 1;
+  assert.throws(() => exportEditorVtt(doc, "main"), /毫秒精度/);
+  selected.duration = T; selected.text = "第一行\n\n第二行";
+  assert.throws(() => exportEditorVtt(doc, "main"), /第1条.*空白分隔行/);
+});
+
+test("WebVTT planning uses full graph/lock validation and retains the existing overlap policy", () => {
+  const doc = fixture(), source = "WEBVTT\n\n00:01.001 --> 00:02.003\n字幕\n";
+  doc.sequences[0]!.tracks.push(createTrack("vtt-text", "text"));
+  doc.sequences[0]!.tracks.at(-1)!.locked = true;
+  assert.throws(() => planVttImport(doc, "main", source, { trackId: "vtt-text" }), /未锁定/);
+  doc.sequences[0]!.tracks.at(-1)!.locked = false;
+  const after = applyEditorOperations(doc, planVttImport(doc, "main", source, { trackId: "vtt-text" }).operations, doc.revision);
+  const overlap = planVttImport(after, "main", source.replace("字幕", "新文字"), { trackId: "vtt-text", avoidOverlaps: true });
+  assert.equal(overlap.added, 0); assert.equal(overlap.skipped, 1);
+  assert.match(overlap.notices.join("\n"), /重叠/);
+  const malformed = structuredClone(doc); malformed.sequences[0]!.clips[0]!.duration = -1;
+  assert.throws(() => planVttImport(malformed, "main", source));
+});
+
+test("WebVTT controller previews then durably applies once, retries save failure and rejects stale/cancelled candidates", async (t) => {
+  const h = await harness(t), source = "WEBVTT\n\ncue\n00:00.033 --> 00:01.067 align:left\n你好\n";
+  h.controller.importVtt({ sequenceId: "main", text: source });
+  assert.equal(h.controller.getState().candidate!.label, "导入 VTT 字幕");
+  assert.match(h.controller.getState().candidate!.notices.join("\n"), /位置/);
+  assert.equal(h.session.read().revision, 0);
+  h.store.fail = true; await assert.rejects(h.controller.apply(), /保存失败/);
+  h.store.fail = false; await h.controller.apply();
+  assert.equal(captions(h.session.read()).length, 1);
+  h.session.undo(); assert.equal(captions(h.session.read()).length, 0);
+  h.controller.importVtt({ sequenceId: "main", text: source });
+  h.controller.cancel(); await assert.rejects(h.controller.apply(), /预览|候选|待应用/);
+  h.controller.importVtt({ sequenceId: "main", text: source });
+  h.session.dispatch([{ type: "project.rename", name: "更新工程" }], h.session.getState().identity, "rename", "user");
+  assert.equal(h.controller.getState().phase, "stale");
+  await assert.rejects(h.controller.apply(), /预览|候选|待应用/);
+  assert.equal(captions(h.session.read()).length, 0);
+});
+
+test("WebVTT import cannot publish a candidate after a synchronous revision during planning", async (t) => {
+  let change: (() => void) | undefined, serial = 0;
+  const h = await harness(t, { idFactory: () => { change?.(); change = undefined; return `vtt-${++serial}`; } });
+  change = () => h.session.dispatch([{ type: "project.rename", name: "规划时更新" }], h.session.getState().identity);
+  assert.throws(() => h.controller.importVtt({ sequenceId: "main", text: "WEBVTT\n\n00:00.001 --> 00:01.001\n字幕\n" }), /取消|变化/);
+  assert.equal(h.controller.getState().candidate, undefined);
+  assert.equal(captions(h.session.read()).length, 0);
+  assert.equal(h.session.read().name, "规划时更新");
 });

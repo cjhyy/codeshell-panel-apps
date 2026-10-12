@@ -639,11 +639,105 @@ export function planSrtImport(
   text: string,
   options: CaptionPlanOptions = {},
 ): CaptionPlan {
+  return planImportedCaptions(value, sequenceId, parseEditorSrt(text), options);
+}
+
+type CaptionCue = { start: Tick; end: Tick; text: string };
+/** Plain timed text only: WebVTT presentation metadata never becomes executable CSS or project data. */
+function readVtt(text: string): { cues: CaptionCue[]; notices: string[] } {
+  if (typeof text !== "string" || text.length > 4 * 1024 * 1024)
+    throw new Error("VTT 文件过大或不是文字");
+  const input = text.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n"),
+    lines = input.split("\n"), header = lines.shift() ?? "";
+  if (!/^WEBVTT(?:[\t ].*)?$/.test(header) || header.includes("-->"))
+    throw new Error("VTT 文件须以 WEBVTT 头部开始");
+  if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(input)) throw new Error("VTT 含无效控制字符");
+  if (lines.length && lines[0]!.trim())
+    throw new Error("WEBVTT 头部后须有空行；不支持外部时钟映射，请先转换为序列时间");
+  if (/X-TIMESTAMP-MAP/i.test(header)) throw new Error("VTT 外部时钟映射不受支持，请先转换为序列时间");
+  while (lines.length && !lines[0]!.trim()) lines.shift();
+  const cues: CaptionCue[] = [], notices = new Set<string>();
+  const time = (raw: string): Tick => {
+    const match = /^(?:(\d{2,}):)?(\d{2}):(\d{2})\.(\d{3})$/.exec(raw);
+    if (!match || +match[2]! > 59 || +match[3]! > 59) throw new Error("VTT 时间格式无效");
+    const tick = ((+(match[1] ?? 0) * 3600 + +match[2]! * 60 + +match[3]!) * 1000 + +match[4]!) * 240;
+    if (!Number.isSafeInteger(tick) || tick > MAX_EDITOR_TICK) throw new Error("VTT 超过24小时");
+    return tick;
+  };
+  const entities: Record<string, string> = {
+    amp: "&", lt: "<", gt: ">", nbsp: "\u00a0", lrm: "\u200e", rlm: "\u200f",
+    quot: '"', apos: "'",
+  };
+  const visible = (raw: string, index: number): string => {
+    if (raw.includes("-->")) throw new Error(`VTT 第${index}条正文含时间分隔符，请转义大于号`);
+    // Decode after stripping tags, so &lt;b&gt; remains visible literal text.
+    const stripped = raw.replace(/<[^<>]*>/g, (tag) => {
+      if (/^<\d/.test(tag)) throw new Error(`VTT 第${index}条含逐词时间，请先转换为普通字幕`);
+      if (!/^<\/(?:b|i|u|c|v|lang)>$/.test(tag) &&
+          !/^<(?:b|i|u|c)(?:\.[^\s.<>]+)*>$/.test(tag) &&
+          !/^<(?:v|lang)(?:\.[^\s.<>]+)*[\t ][^<>]+>$/.test(tag))
+        throw new Error(`VTT 第${index}条含不支持的标签（如注音），请先转换为普通文字`);
+      notices.add("VTT 行内格式、说话人与语言标签已简化为可见文字；不会生成词级时间");
+      return "";
+    });
+    if (stripped.includes("<")) throw new Error(`VTT 第${index}条含未闭合标签，请转义小于号`);
+    return cleanText(stripped.replace(/&(#x[\da-f]+|#\d+|[a-z][\da-z]*);|&(?=[#a-z])/gi, (reference, name: string | undefined) => {
+      if (!name) throw new Error(`VTT 第${index}条含不完整字符引用，请将 & 写为 &amp;`);
+      if (entities[name] !== undefined) return entities[name]!;
+      if (name[0] === "#") {
+        const point = name[1]?.toLowerCase() === "x" ? parseInt(name.slice(2), 16) : +name.slice(1);
+        if (point >= 32 && point <= 0x10ffff && !(point >= 0x7f && point <= 0x9f) &&
+            !(point >= 0xd800 && point <= 0xdfff)) return String.fromCodePoint(point);
+      }
+      throw new Error(`VTT 第${index}条含不支持的字符引用 ${reference}，请先转换为 Unicode 文字`);
+    }), "VTT 字幕");
+  };
+  for (const block of lines.join("\n").split(/\n[\t ]*\n+/)) {
+    if (!block.trim()) continue;
+    const body = block.replace(/^\n+|\n+$/g, "").split("\n"), firstLine = body[0]!;
+    if (/^NOTE(?:[\t ]|$)/.test(firstLine)) continue;
+    // A timing line takes precedence: STYLE/REGION can also be cue identifiers.
+    if ((firstLine === "STYLE" || firstLine === "REGION") && !body[1]?.includes("-->")) {
+      notices.add("VTT 样式、区域与位置设置不保留，字幕按当前工程样式导入");
+      continue;
+    }
+    if (!firstLine.includes("-->")) {
+      body.shift();
+      notices.add("VTT cue 标识不保留，导出时重新编号");
+    }
+    const match = /^(\S+)[\t ]+-->[\t ]+(\S+)(?:[\t ]+(.*))?$/.exec(body.shift() ?? "");
+    if (!match || match[3]?.includes("-->")) throw new Error(`VTT 第${cues.length + 1}条时间格式无效`);
+    const start = time(match[1]!), end = time(match[2]!);
+    if (end <= start) throw new Error(`VTT 第${cues.length + 1}条没有正时长`);
+    if (match[3]?.trim()) notices.add("VTT 样式、区域与位置设置不保留，字幕按当前工程样式导入");
+    cues.push({ start, end, text: visible(body.join("\n"), cues.length + 1) });
+    if (cues.length > MAX_CAPTIONS) throw new Error("VTT 超过2000条容量");
+  }
+  return { cues, notices: [...notices] };
+}
+export function parseEditorVtt(text: string): CaptionCue[] {
+  return readVtt(text).cues;
+}
+export function planVttImport(
+  value: EditorDocument,
+  sequenceId: string,
+  text: string,
+  options: CaptionPlanOptions = {},
+): CaptionPlan {
+  const parsed = readVtt(text);
+  return planImportedCaptions(value, sequenceId, parsed.cues, options, parsed.notices);
+}
+function planImportedCaptions(
+  value: EditorDocument,
+  sequenceId: string,
+  cues: CaptionCue[],
+  options: CaptionPlanOptions,
+  notices: string[] = [],
+): CaptionPlan {
   const doc = validateEditorDocument(value),
     seq = sequence(doc, sequenceId),
     track = captionTrack(seq, options),
-    look = captionLook(doc, seq),
-    cues = parseEditorSrt(text);
+    look = captionLook(doc, seq);
   const operations: EditorOperation[] = [],
     keys = new Set(
       seq.clips
@@ -683,8 +777,31 @@ export function planSrtImport(
     operations,
     added: cues.length - skipped,
     skipped,
-    notices: overlapping ? [overlapNotice(overlapping)] : [],
+    notices: [...notices, ...(overlapping ? [overlapNotice(overlapping)] : [])],
   });
+}
+/** Portable visible text and millisecond times; project styling/word alignment stay in the project. */
+export function exportEditorVtt(
+  value: EditorDocument,
+  sequenceId: string,
+  clipIds?: readonly string[],
+): string {
+  const doc = validateEditorDocument(value),
+    clips = selectedCaptions(sequence(doc, sequenceId), clipIds)
+      .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
+  const time = (tick: Tick) => {
+    const ms = Math.round(tick / 240);
+    return `${String(Math.floor(ms / 3600000)).padStart(2, "0")}:${String(Math.floor(ms / 60000) % 60).padStart(2, "0")}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}.${String(ms % 1000).padStart(3, "0")}`;
+  };
+  return "WEBVTT\n\n" + clips.map((clip, index) => {
+    if (Math.round(clip.start / 240) >= Math.round((clip.start + clip.duration) / 240))
+      throw new Error("字幕短于VTT毫秒精度，请先调整时长");
+    const body = clip.text.replace(/\r\n?/g, "\n").trim();
+    if (/\n[^\S\n]*\n/.test(body))
+      throw new Error(`第${index + 1}条字幕含空白分隔行，请删除中间空白行后导出 VTT`);
+    const escaped = body.replace(/[&<>]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[character]!);
+    return `${index + 1}\n${time(clip.start)} --> ${time(clip.start + clip.duration)}\n${escaped}\n`;
+  }).join("\n");
 }
 export function exportEditorSrt(
   value: EditorDocument,

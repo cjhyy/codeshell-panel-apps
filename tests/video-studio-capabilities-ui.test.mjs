@@ -40,6 +40,9 @@ before(async () => {
       : resolve(output, "." + pathname.replace(/\/$/, "/index.html"));
     if (!path.startsWith(output + sep)) return response.writeHead(403).end();
     try {
+      // Resolve first: Chrome also requests optional files such as favicon.ico.
+      // A missing file must return 404 before success headers are sent.
+      const bytes = pathname === `/media/${sampleId}` ? sample.bytes : await readFile(path);
       response.writeHead(200, {
         "Content-Type":
           pathname === `/media/${sampleId}`
@@ -53,7 +56,7 @@ before(async () => {
         "Content-Security-Policy":
           "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
       });
-      response.end(pathname === `/media/${sampleId}` ? sample.bytes : await readFile(path));
+      response.end(bytes);
     } catch {
       response.writeHead(404).end();
     }

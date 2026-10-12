@@ -11,9 +11,11 @@ import {
 } from "../../src/editor/task-bridge.js";
 import type { EditorDocument } from "../../src/editor/types.js";
 import { sequenceDuration } from "../../src/editor/validation.js";
-import { validateExportRange } from "../../src/editor/export-range.js";
+import { sameExportRange, validateExportRange } from "../../src/editor/export-range.js";
+import { compileAudioPlan } from "../../src/editor/audio-plan.js";
 import { audioMixWarning, validateAudioMixReport } from "../../src/editor/audio-mix-report.js";
 import { renderEditorAudio } from "../media/editor-audio-renderer.js";
+import { editorRangeAudioPreparation, editorRangeVisualAssets } from "../media/editor-range-preparation.js";
 import { exportEditorSequence, measureEditorExportAudioRange } from "../media/editor-export.js";
 import { runMediaProcess } from "../process-runner.js";
 import { findExecutable } from "../media/media-executables.js";
@@ -830,7 +832,7 @@ export async function runEditorRequest(
         artifacts,
       };
     }
-    const recipeHash = digest({
+    const fullRecipeHash = digest({
       recipe: "editor-audio-v2-timestamps",
       builtinNarration: installedNarration?.binding,
       documentHash: manifest.documentHash,
@@ -838,14 +840,22 @@ export async function runEditorRequest(
       bindings: manifest.bindings,
       ffmpegVersion,
     });
-    const mixes = await directory(cache, ["mixes", recipeHash]);
-    let mix = (await optionalJson(mixes, ["receipt.json"])) as MixReceipt | undefined;
-    const expected = request.preparedAudio;
+    const expected = request.preparedAudio,
+      fullMixes = await directory(cache, ["mixes", fullRecipeHash]),
+      fullMix = (await optionalJson(fullMixes, ["receipt.json"])) as MixReceipt | undefined,
+      preparation = request.range && (expected?.range || (!expected && !fullMix))
+        ? editorRangeAudioPreparation(compileAudioPlan(selected.document, manifest.sequenceId), request.range)
+        : {},
+      audioRange = preparation.range,
+      recipeHash = audioRange ? digest({ recipe: "editor-audio-range-v1", fullRecipeHash, range: audioRange }) : fullRecipeHash,
+      mixes = audioRange ? await directory(cache, ["mixes", recipeHash]) : fullMixes;
+    let mix = (audioRange ? await optionalJson(mixes, ["receipt.json"]) : fullMix) as MixReceipt | undefined;
     if (
       expected &&
       (expected.recipeHash !== recipeHash ||
         expected.documentHash !== manifest.documentHash ||
-        expected.sequenceId !== manifest.sequenceId)
+        expected.sequenceId !== manifest.sequenceId ||
+        !sameExportRange(expected.range, audioRange))
     )
       throw new EditorTaskError("MIX_MISMATCH", "声音处理配方或源素材已变化，请重新准备声音");
     if (expected && !mix)
@@ -856,6 +866,7 @@ export async function runEditorRequest(
         mix.recipeHash !== recipeHash ||
         mix.documentHash !== manifest.documentHash ||
         mix.sequenceId !== manifest.sequenceId ||
+        !sameExportRange(mix.range, audioRange) ||
         (expected && expected.assetId !== mix.assetId)
       )
         throw new EditorTaskError("MIX_MISMATCH", "已准备声音回执不匹配");
@@ -869,6 +880,7 @@ export async function runEditorRequest(
       const rendered = await renderEditorAudio({
         document: selected.document,
         sequenceId: manifest.sequenceId,
+        ...(audioRange ? { range: audioRange } : {}),
         resolveAssetPath: async (id) => original(id).path,
         ffmpegPath,
         ffprobePath,
@@ -893,6 +905,7 @@ export async function runEditorRequest(
         recipeHash,
         assetId,
         sampleCount: rendered.sampleCount,
+        ...(rendered.range ? { range: rendered.range } : {}),
         peak: rendered.peak,
         samplesOverFullScale: rendered.samplesOverFullScale,
         reportHash: bytesHash(reportBytes),
@@ -904,6 +917,7 @@ export async function runEditorRequest(
       sequenceId: mix.sequenceId,
       recipeHash: mix.recipeHash,
       assetId: mix.assetId,
+      ...(mix.range ? { range: mix.range } : {}),
     };
     const audio = await add(
       await regular(mixes, ["audio.wav"]),
@@ -940,7 +954,7 @@ export async function runEditorRequest(
       ...(request.range
         ? await measureEditorExportAudioRange({
             audioFile: await regular(mixes, ["audio.wav"]),
-            range: request.range,
+            range: mix.range ? { start: 0, duration: mix.sampleCount * 5 } : request.range,
             ffmpegPath,
             signal: context.signal,
           })
@@ -950,8 +964,12 @@ export async function runEditorRequest(
     if (bytesHash(Buffer.from(context.runtimeSource)) !== context.runtimeSha)
       throw new EditorTaskError("RUNTIME_CHANGED", "安装的渲染运行代码校验失败");
     const mediaFiles = new Map<string, { path: string; mimeType: string }>();
-    for (let index = 0; index < selected.document.assets.length; index++) {
-      const asset = selected.document.assets[index]!;
+    const visualAssets = request.range
+      ? editorRangeVisualAssets(selected.document, manifest.sequenceId, request.range)
+      : undefined,
+      pictureAssets = selected.document.assets.filter((asset) => !visualAssets || visualAssets.has(asset.id));
+    for (let index = 0; index < pictureAssets.length; index++) {
+      const asset = pictureAssets[index]!;
       if (asset.kind === "video") {
         const proxy = await video(asset.id, true);
         mediaFiles.set(asset.id, { path: proxy.path, mimeType: proxy.mimeType });
@@ -977,7 +995,7 @@ export async function runEditorRequest(
         mediaFiles.set(asset.id, { path: input.path, mimeType });
       }
       await progress(
-        0.25 + ((index + 1) / Math.max(1, selected.document.assets.length)) * 0.15,
+        0.25 + ((index + 1) / Math.max(1, pictureAssets.length)) * 0.15,
         "prepare-video",
       );
     }
@@ -991,6 +1009,7 @@ export async function runEditorRequest(
       runtimeSource: context.runtimeSource,
       workDir: work,
       audioFile: await regular(mixes, ["audio.wav"]),
+      ...(mix.range ? { audioRange: mix.range } : {}),
       outputPath,
       ffmpegPath,
       ffprobePath,
@@ -1017,6 +1036,8 @@ export async function runEditorRequest(
       ...(request.range ? { range: request.range } : {}),
       preparedAudio,
       audioMix,
+      preparation: { pictureAssetCount: pictureAssets.filter((asset) => ["video", "image"].includes(asset.kind)).length,
+        audio: mix.range ? "range" : "full", ...(preparation.fallback ? { audioFallback: preparation.fallback } : {}) },
       runtimeSha: context.runtimeSha,
       profile: request.profile,
       frameCount: output.frameCount,

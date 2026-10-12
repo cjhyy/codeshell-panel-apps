@@ -93,7 +93,7 @@ test("font diagnostics include reachable offscreen text, remain non-blocking and
 before(async () => {
   const bundle = await build({
     stdin: {
-      contents: `import { EditorPreview } from './apps/video-studio/src/editor/preview'; import { EditorWorkspace } from './apps/video-studio/src/editor/workspace-ui'; import { EditorSession } from './apps/video-studio/src/editor/session'; import * as defaults from './apps/video-studio/src/editor/defaults'; import * as fonts from './apps/video-studio/src/editor/font-availability'; globalThis.api = { EditorPreview, EditorWorkspace, EditorSession, ...defaults, ...fonts };`,
+      contents: `import { EditorPreview } from './apps/video-studio/src/editor/preview'; import { StreamingPreviewAudio } from './apps/video-studio/src/editor/stream-audio'; import { EditorWorkspace } from './apps/video-studio/src/editor/workspace-ui'; import { EditorSession } from './apps/video-studio/src/editor/session'; import * as defaults from './apps/video-studio/src/editor/defaults'; import * as fonts from './apps/video-studio/src/editor/font-availability'; globalThis.api = { StreamingPreviewAudio, EditorPreview, EditorWorkspace, EditorSession, ...defaults, ...fonts };`,
       resolveDir: root,
     },
     bundle: true,
@@ -1267,4 +1267,31 @@ test("PNG capture rejects superseded, aborted and disposed requests without retu
     while(callbacks.length<3)await new Promise(requestAnimationFrame);
     await preview.dispose();callbacks[2]();return{superseded,aborted,disposed:await third};
   });assert.deepEqual(result,{superseded:"AbortError",aborted:"AbortError",disposed:"AbortError"});
+});
+
+
+test("real Web Audio live gain cancels only the selected stem with exact paired stereo timing", async (t) => {
+  const page = await pageFixture(t);
+  const result = await page.evaluate(async () => {
+    const context = new OfflineAudioContext(2, 48000, 48000), destination = context.createGain();
+    destination.connect(context.destination);
+    const unit = (channel, index) => (channel ? -0.14 : 0.2) + Math.sin(index / 17) * 0.03,
+      bed = (channel, index) => (channel ? 0.11 : 0.37) + Math.cos(index / 23) * 0.02,
+      pcm = (stem) => ({ sampleRate: 48000, numberOfChannels: 2, sampleCount: 12013, dispose() {},
+        read: async (start, count) => [0, 1].map((channel) => Float32Array.from({ length: count }, (_, i) =>
+          stem ? unit(channel, start + i) : bed(channel, start + i) + 0.8 * unit(channel, start + i))) });
+    destination.gain.setValueAtTime(-0.8, 0);
+    destination.gain.setValueAtTime(0.7, 0.085);
+    destination.gain.setValueAtTime(0, 0.135);
+    const player = new api.StreamingPreviewAudio(context, pcm(false), 13, new AbortController().signal,
+      (error) => { throw error; }, { pcm: pcm(true), destination });
+    await player.start();
+    const rendered = await context.startRendering(), checks = [];
+    for (const [outputSample, gain] of [[2000, 0], [5000, 1.5], [8000, 0.8]]) for (const channel of [0, 1]) {
+      const sourceSample = outputSample - 1680 + 13;
+      checks.push(Math.abs(rendered.getChannelData(channel)[outputSample] - (bed(channel, sourceSample) + gain * unit(channel, sourceSample))));
+    }
+    player.stop(); return checks;
+  });
+  assert.equal(result.length, 6); assert.ok(result.every((error) => error < 2e-7), JSON.stringify(result));
 });

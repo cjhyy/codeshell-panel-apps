@@ -5,7 +5,7 @@ import {
   type PreviewPcmStream,
 } from "../apps/video-studio/src/editor/stream-audio";
 const turn = () => new Promise((resolve) => setTimeout(resolve, 0));
-function fixture(read?: PreviewPcmStream["read"], sampleCount = 48000 * 3600) {
+function fixture(read?: PreviewPcmStream["read"], sampleCount = 48000 * 3600, correction?: { pcm: PreviewPcmStream; destination: AudioNode }) {
   const nodes: any[] = [],
     reads: Array<{ start: number; count: number; signal: AbortSignal }> = [],
     errors: unknown[] = [];
@@ -24,7 +24,8 @@ function fixture(read?: PreviewPcmStream["read"], sampleCount = 48000 * 3600) {
         startAt: 0,
         stopped: false,
         connected: false,
-        connect() {
+        connect(destination: unknown) {
+          (node as any).destination = destination;
           node.connected = true;
         },
         disconnect() {
@@ -63,6 +64,7 @@ function fixture(read?: PreviewPcmStream["read"], sampleCount = 48000 * 3600) {
       123,
       own.signal,
       (error) => errors.push(error),
+      correction,
     );
   return { player, context, nodes, reads, errors, own };
 }
@@ -158,5 +160,77 @@ test("invalid or incomplete chunks stop audio and final partial chunks end on th
     assert.equal(f.player.buffering, false);
   } finally {
     f.player.stop();
+  }
+});
+
+
+test("live gain schedules both PCM sources at one sample clock and cancels both on late reads", async () => {
+  let finish: ((value: [Float32Array, Float32Array]) => void) | undefined;
+  const destination = {} as AudioNode, reads: number[] = [];
+  const pcm: PreviewPcmStream = { sampleRate: 48000, numberOfChannels: 2, sampleCount: 48000 * 3600,
+    dispose() {}, read: async (start, count) => { reads.push(start); return new Promise((resolve) => { finish = resolve; }); } };
+  const f = fixture(undefined, pcm.sampleCount, { pcm, destination });
+  const pending = f.player.start();
+  while (!finish) await turn();
+  assert.equal(f.nodes.length, 0, "base must wait for the exact corresponding stem block");
+  finish([new Float32Array(96000).fill(0.2), new Float32Array(96000).fill(-0.3)]);
+  await pending; await turn();
+  assert.equal(f.nodes.length, 2); assert.equal(f.nodes[0].startAt, f.nodes[1].startAt);
+  assert.equal((f.nodes[1] as any).destination, destination);
+  assert.ok(Math.abs(f.nodes[1].buffer.arrays[1][1] + 0.3) < 1e-7);
+  assert.deepEqual(reads, [123, 96123]);
+  f.own.abort(); finish!([new Float32Array(96000), new Float32Array(96000)]); await turn();
+  assert.equal(f.nodes.length, 2); assert.ok(f.nodes.every((node) => node.stopped && !node.connected));
+  assert.deepEqual(f.errors, []);
+});
+
+test("paired stream setup releases partially constructed nodes when either source setup fails", async () => {
+  for (const stage of ["buffer", "source", "connect", "start"] as const) {
+    const signalReads: AbortSignal[] = [], pcm: PreviewPcmStream = { sampleRate: 48000, numberOfChannels: 2, sampleCount: 1000,
+      dispose() {}, async read(_start, count, signal) { signalReads.push(signal); return [new Float32Array(count), new Float32Array(count)]; } },
+      f = fixture(pcm.read, 1000, { pcm, destination: {} as AudioNode });
+    const createBuffer = f.context.createBuffer, createSource = f.context.createBufferSource;
+    let buffers = 0, sources = 0;
+    f.context.createBuffer = (...args) => {
+      if (++buffers === 2 && stage === "buffer") throw new Error("second buffer failed");
+      return createBuffer(...args);
+    };
+    f.context.createBufferSource = () => {
+      if (++sources === 2 && stage === "source") throw new Error("second source failed");
+      const node = createSource(), connect = node.connect, start = node.start, ordinal = sources;
+      let started = false;
+      node.connect = (destination) => { connect(destination); if (ordinal === 2 && stage === "connect") throw new Error("second connect failed"); };
+      node.start = (at) => { if (ordinal === 2 && stage === "start") throw new Error("second start failed"); start(at); started = true; };
+      node.stop = () => {
+        node.stopped = true;
+        if (!started) throw new DOMException("not started", "InvalidStateError");
+      };
+      return node;
+    };
+    await assert.rejects(f.player.start(), /second .* failed/);
+    assert.ok(f.nodes.every((node) => node.stopped && !node.connected), `${stage}: partial nodes must be stopped and disconnected`);
+    assert.ok(signalReads.every((signal) => signal.aborted));
+    assert.deepEqual(f.errors, []);
+  }
+});
+
+test("a failed paired PCM read aborts both sources and releases every scheduled node", async () => {
+  for (const failedSide of ["base", "stem"]) {
+    const signals: AbortSignal[] = [], pcm: PreviewPcmStream = { sampleRate: 48000, numberOfChannels: 2, sampleCount: 300000,
+      dispose() {}, async read(start, count, signal) {
+        signals.push(signal);
+        if (failedSide === "stem" && start > 123) throw new Error("stem read failed");
+        return [new Float32Array(count), new Float32Array(count)];
+      } }, f = fixture(async (start, count, signal) => {
+        signals.push(signal);
+        if (failedSide === "base" && start > 123) throw new Error("base read failed");
+        return [new Float32Array(count), new Float32Array(count)];
+      }, pcm.sampleCount, { pcm, destination: {} as AudioNode });
+    await f.player.start(); await turn();
+    assert.equal(f.errors.length, 1);
+    assert.match(String(f.errors[0]), new RegExp(failedSide));
+    assert.equal(f.nodes.length, 2);
+    assert.ok(f.nodes.every((node) => node.stopped && !node.connected));
+    assert.ok(signals.every((signal) => signal.aborted));
   }
 });
