@@ -9218,7 +9218,7 @@ test("audition boundary loop restart retains a held gain draft until Escape rest
   assert.equal(await page.evaluate(() => fixture.playing()), false);
 });
 
-for (const width of [1240, 540]) {
+for (const width of [1240, 540, 360, 280]) {
   test(`audition controls remain visible without overflow at ${width}px`, async (t) => {
     const page = await fixture(t, { audio: true, width });
     await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["sound"]));
@@ -9229,6 +9229,15 @@ for (const width of [1240, 540]) {
     await action(page, "play").click();
     assert.equal(await action(page, "gain-audition").isVisible(), true);
     assert.equal(await action(page, "clear-solo").isVisible(), true);
+    const head = page.locator('[data-track-head="audio"]'), buttons = await head.locator("button").all();
+    const boxes = await Promise.all(buttons.map((button) => button.boundingBox()));
+    const headBox = await head.boundingBox();
+    for (const [index, box] of boxes.entries()) {
+      assert.ok(box && box.x >= headBox.x && box.x + box.width <= headBox.x + headBox.width + 0.5);
+      for (const other of boxes.slice(index + 1))
+        assert.ok(box.x + box.width <= other.x + 0.5 || other.x + other.width <= box.x + 0.5 ||
+          box.y + box.height <= other.y + 0.5 || other.y + other.height <= box.y + 0.5, "Track buttons must not overlap");
+    }
     assert.match(await page.locator("[data-ew-audition-status]").textContent(), /独轨试听.*声音轨.*松开保存后用于导出/);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await mkdir("/tmp/video-studio-remaining-audition", { recursive: true });

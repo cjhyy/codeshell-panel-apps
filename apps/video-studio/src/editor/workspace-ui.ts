@@ -347,8 +347,8 @@ export class EditorWorkspace {
         this.cancelFrameCapture();
         if (JSON.stringify(this.selected) !== JSON.stringify(ids)) this.clearGainAudition();
         this.selected = ids;
-        this.updateAuditionControls();
         this.withReadSnapshot(() => {
+          this.updateAuditionControls();
           this.inspector.render();
           this.timing.render();
           this.sequences.render();
@@ -855,13 +855,14 @@ export class EditorWorkspace {
   }
   private updateAuditionControls(): void {
     if (this.disposed) return;
-    const clip = this.sequence().clips.find((item) => item.id === this.selected[0]),
+    const sequence = this.readViewDocument().sequences.find((item) => item.id === this.sequenceId)!,
+      clip = sequence.clips.find((item) => item.id === this.selected[0]),
       control = this.get<HTMLButtonElement>('[data-ew-action="gain-audition"]');
     control.disabled = !this.options.prepareAudio || this.selected.length !== 1 || !clip || !("audio" in clip) || typeof clip.audio.volume !== "number";
     control.setAttribute("aria-pressed", String(Boolean(this.gainAudition)));
     control.textContent = this.gainAudition ? "结束调音试听" : "调音试听";
     this.get('[data-ew-action="clear-solo"]').hidden = !this.soloTracks.size;
-    const names = this.sequence().tracks.filter((track) => this.soloTracks.has(track.id)).map((track) => track.name),
+    const names = sequence.tracks.filter((track) => this.soloTracks.has(track.id)).map((track) => track.name),
       output = this.get('[data-ew-audition-status]');
     output.textContent = [names.length ? `独轨试听：${names.join("、")}（保留轨道静音，不影响导出）` : "", this.gainAudition ? "调音试听：拖动所选片段音量线即可听效果，松开保存后用于导出，Esc 取消" : ""].filter(Boolean).join(" · ");
     output.hidden = !output.textContent;
