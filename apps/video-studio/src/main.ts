@@ -6170,7 +6170,8 @@ function mountEditorWorkspace(): void {
       if (!editorTasks || !panel)
         throw new Error("请在 CodeShell 桌面视频面板中准备声音和视频预览");
       // View-only audition snapshots share project revision, but must never reuse its mix.
-      const key = editorDocumentKey(doc, sequenceId) + (purpose === "audition" ? `:audition:${JSON.stringify(doc)}` : "");
+      const documentKey = editorDocumentKey(doc, sequenceId),
+        key = documentKey + (purpose === "audition" ? `:audition:${JSON.stringify(doc)}` : "");
       let snapshot = preparedNative?.key === key ? preparedNative.snapshot : undefined;
       const progress = (item: { phase: string; completed: number; total: number }) => {
         if (signal.aborted) return;
@@ -6213,7 +6214,7 @@ function mountEditorWorkspace(): void {
             });
         }
         if (dimensions.length) {
-          if (editorDocumentKey(editorSession!.read(), sequenceId) !== key) return undefined;
+          if (editorDocumentKey(editorSession!.read(), sequenceId) !== documentKey) return undefined;
           editorSession!.dispatch(
             dimensions,
             editorSession!.getState().identity,

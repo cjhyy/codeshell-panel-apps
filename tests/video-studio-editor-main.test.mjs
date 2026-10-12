@@ -4708,3 +4708,87 @@ test("main keeps full, solo and unit-gain audition snapshots isolated from expor
   assert.deepEqual(result.afterLate, result.cached, "Late preparation from the old generation cannot replace the cache");
   assert.deepEqual(result.after, result.original, "Same-id/revision reopen and audition do not change the saved mix");
 });
+
+test("main first solo playback corrects source dimensions without saving the audition mix", async (t) => {
+  const initial = structuredClone(realMediaSeed);
+  initial.id = "solo-source-dimensions";
+  initial.assets[0].kind = "video";
+  const page = await openPage(t, { seed: initial, nativeTasks: true });
+  await page.evaluate(() => {
+    const audit = __mainAuditionAudit;
+    globalThis.__soloDimensions = { before: __mainReadAudit.session().read(), cached: audit.prepared(), videos: [], audioCalls: 0 };
+    audit.setTasks({
+      dispose() {},
+      async prepareVideoForPreview(doc, sequenceId, options) {
+        __soloDimensions.videos.push({ document: structuredClone(doc), snapshot: options.snapshot });
+        return { snapshot: { documentHash: "d".repeat(64), sequenceId }, sources: [{
+          assetId: "camera", recipe: { width: 1280, height: 720 }, proxy: { id: `asset-${"d".repeat(64)}` },
+        }] };
+      },
+      async prepareAudioForPreview() {
+        __soloDimensions.audioCalls++;
+        throw new Error("The corrected source must be saved before preparing a mix");
+      },
+    });
+  });
+  await page.getByRole("button", { name: "独轨试听画面", exact: true }).click();
+  await page.evaluate(() => __mainAuditionAudit.workspace().togglePlayback());
+  const durable = await waitSaved(page), result = await page.evaluate(() => ({
+    ...__soloDimensions, after: __mainReadAudit.session().read(), prepared: __mainAuditionAudit.prepared(),
+    playing: __mainAuditionAudit.workspace().playing, toast: document.querySelector("#toast").textContent,
+  }));
+  assert.equal(result.videos.length, 1);
+  assert.equal(result.videos[0].document.sequences[0].tracks.find((track) => track.id === "v2").muted, true);
+  assert.equal(result.videos[0].snapshot, undefined);
+  assert.equal(result.after.assets[0].width, 1280);
+  assert.equal(result.after.assets[0].height, 720);
+  assert.equal(result.after.revision, result.before.revision + 1);
+  assert.deepEqual(result.after.sequences, result.before.sequences, "Solo's temporary mutes are never saved with the source correction");
+  assert.deepEqual(durable, result.after);
+  assert.equal(result.audioCalls, 0);
+  assert.deepEqual(result.prepared, result.cached, "A dimension-only audition response cannot publish a reusable snapshot or mix");
+  assert.equal(result.playing, false);
+  assert.match(result.toast, /已按源文件校正画面尺寸.*再次点击播放/);
+});
+
+test("main late solo source dimensions cannot correct a same-id reopened successor", async (t) => {
+  const initial = structuredClone(realMediaSeed);
+  initial.id = "solo-late-dimensions";
+  initial.assets[0].kind = "video";
+  const page = await openPage(t, { seed: initial, nativeTasks: true });
+  await page.evaluate(() => {
+    const audit = __mainAuditionAudit;
+    globalThis.__soloLateDimensions = { before: __mainReadAudit.session().read(), cached: audit.prepared(), audioCalls: 0 };
+    audit.setTasks({
+      dispose() {},
+      async prepareVideoForPreview(doc, sequenceId, options) {
+        __soloLateDimensions.signal = options.signal;
+        await new Promise((resolve) => { __soloLateDimensions.release = resolve; });
+        return { snapshot: { documentHash: "e".repeat(64), sequenceId }, sources: [{
+          assetId: "camera", recipe: { width: 1280, height: 720 }, proxy: { id: `asset-${"e".repeat(64)}` },
+        }] };
+      },
+      async prepareAudioForPreview() { __soloLateDimensions.audioCalls++; throw new Error("Cancelled preparation cannot mix audio"); },
+    });
+  });
+  await page.getByRole("button", { name: "独轨试听画面", exact: true }).click();
+  await page.evaluate(() => { __soloLateDimensions.playback = __mainAuditionAudit.workspace().togglePlayback(); });
+  await page.waitForFunction(() => Boolean(__soloLateDimensions.release));
+  const result = await page.evaluate(async () => {
+    const state = __soloLateDimensions, session = __mainReadAudit.session(), generation = session.getState().identity.generation;
+    await session.replace({ ...state.before, id: "solo-replacement-project" });
+    await session.replace(state.before);
+    const successor = session.read(), aborted = state.signal.aborted;
+    state.release(); await state.playback;
+    return { successor, after: session.read(), aborted, generationChanged: session.getState().identity.generation !== generation,
+      audioCalls: state.audioCalls, cached: state.cached, prepared: __mainAuditionAudit.prepared(),
+      playing: __mainAuditionAudit.workspace().playing };
+  });
+  assert.ok(result.aborted && result.generationChanged);
+  assert.equal(result.after.assets[0].width, 640);
+  assert.equal(result.after.assets[0].height, 360);
+  assert.deepEqual(result.after, result.successor, "The old video result cannot dispatch even when document id and revision match again");
+  assert.equal(result.audioCalls, 0);
+  assert.deepEqual(result.prepared, result.cached);
+  assert.equal(result.playing, false);
+});
