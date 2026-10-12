@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const panelSource = join(repositoryRoot, "apps", "job-hunt-hq");
+const panelVersion = JSON.parse(await readFile(join(panelSource, ".codeshell-panel", "panel.json"), "utf8")).version;
 const desktopDir = resolve(
   process.env.CODE_SHELL_DESKTOP_DIR || join(repositoryRoot, "packages", "desktop"),
 );
@@ -323,7 +324,7 @@ try {
       apps: [
         {
           id: "job-hunt-hq",
-          version: "4.1.1",
+          version: panelVersion,
           source: panelSource,
           installedAt: now,
           lastUpdated: now,
@@ -374,7 +375,7 @@ try {
   );
   const panel = panels.find((item) => item.appId === "job-hunt-hq");
   assert(panel, "Job Hunt HQ was not listed for the bound project");
-  assert(panel.version === "4.1.1", `expected Job Hunt HQ 4.1.1, got ${panel.version}`);
+  assert(panel.version === panelVersion, `expected Job Hunt HQ ${panelVersion}, got ${panel.version}`);
   const prepared = await win.evaluate(({ id, cwd }) => window.codeshell.preparePanelApp(id, cwd), {
     id: panel.id,
     cwd: projectDir,
@@ -422,6 +423,46 @@ try {
     const question = current.interviewSets?.[0]?.questions?.[0];
     return question && Object.keys(question).sort().join(",") === "bankQuestionId,id,why";
   }, "legacy materialized practice sets did not migrate to compact bank references");
+  await execute(view, `(() => {
+    document.querySelector('[data-view-target="career"]').click();
+    document.querySelector('#career-add').click();
+    for (const [field, value] of Object.entries({ title: 'E2E decision source', provider: 'manual', excerpt: 'PRIVATE CAREER EVIDENCE: 当时先发布最小能力，再根据真实失败场景补齐恢复流程。' })) {
+      const input = document.querySelector('[data-career-field="' + field + '"]');
+      input.value = value; input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    document.querySelector('[data-career-action="confirm"]').click();
+  })()`);
+  const sourceSaved = await waitForSnapshot(current => current.sourceMaterials?.some(source => source.title === 'E2E decision source' && source.status === 'confirmed'), 'career source did not reach the actual project');
+  const sourceId = sourceSaved.sourceMaterials.find(source => source.title === 'E2E decision source').id;
+  await waitForGuest(view, `document.querySelector('[data-career-action="episode"]')?.disabled === false`, 'career source did not finish saving');
+  await execute(view, `(() => {
+    document.querySelector('[data-career-action="episode"]').click();
+    for (const [field, value] of Object.entries({ title: 'E2E staged delivery', myRole: '本人负责保存协议与失败恢复', decision: '先验证核心路径，再扩展自动化', reason: '避免迁移失败时失去原始资料' })) {
+      const input = document.querySelector('[data-career-field="' + field + '"]');
+      input.value = value; input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    document.querySelector('[data-career-action="confirm"]').click();
+  })()`);
+  const episodeSaved = await waitForSnapshot(current => current.careerEpisodes?.some(episode => episode.title === 'E2E staged delivery' && episode.status === 'confirmed'), 'career decision did not reach the actual project');
+  const episode = episodeSaved.careerEpisodes.find(item => item.title === 'E2E staged delivery');
+  assert(episode.sourceIds.includes(sourceId) && episode.reason === '避免迁移失败时失去原始资料', 'saved decision lost its reason or source');
+  await waitForGuest(view, `document.querySelector('[data-career-action="question"]')?.disabled === false`, 'career episode did not finish saving');
+  await execute(view, `(() => {
+    document.querySelector('[data-career-action="question"]').click();
+    for (const [field, value] of Object.entries({ question: 'E2E 为什么分阶段交付？', answer: 'PRIVATE CAREER ANSWER: 本人先验证恢复路径，保留原始资料。', draftAnswer: '表达草稿：先验证关键风险，再逐步扩展。' })) {
+      const input = document.querySelector('[data-career-field="' + field + '"]');
+      input.value = value; input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    document.querySelector('[data-career-action="confirm"]').click();
+  })()`);
+  const qaSaved = await waitForSnapshot(current => current.careerQa?.some(qa => qa.question === 'E2E 为什么分阶段交付？' && qa.status === 'confirmed'), 'career QA did not reach the actual project');
+  const qa = qaSaved.careerQa.find(item => item.question === 'E2E 为什么分阶段交付？');
+  assert(qa.episodeId === episode.id && qa.sourceIds.includes(sourceId) && qa.answer !== qa.draftAnswer, 'career QA lost its associations or factual answer');
+  await waitForGuest(view, `document.querySelector('[data-career-action="polish"]')?.disabled === false`, 'career QA did not finish saving');
+  await view.evaluate(candidate => candidate.reload());
+  await waitForGuest(view, `document.querySelector('[data-career-field="answer"]')?.value.includes('PRIVATE CAREER ANSWER')`, 'career QA editing location did not survive reopening');
+  assert(await execute(view, `!document.querySelector('#resume-preview')?.textContent.includes('PRIVATE CAREER ANSWER')`), 'private career QA leaked into the public resume');
+  console.log('Career source → decision → factual QA → reopen: passed');
   assert(
     await execute(
       view,
