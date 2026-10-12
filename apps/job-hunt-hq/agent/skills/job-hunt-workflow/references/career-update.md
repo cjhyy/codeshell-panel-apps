@@ -61,6 +61,20 @@ career collections and version index. A file or library change requires a new
 preview; never force an old token through. The token is an opaque review result,
 not the file SHA-256. A successful apply returns the actual saved version ID.
 
+If apply times out or its receipt is lost, the save may still be running: a Host
+tool timeout does not cancel the Panel operation. First query the exact intended
+version with `get_job_search_context`:
+
+```json
+{"scope":"career_versions","version_id":"career-version-your-stable-id"}
+```
+
+If that version is attached, use the saved result. If a save is still in progress,
+wait for it to finish and query again. An absent version alone does not prove
+failure. Do not blindly repeat apply or change the version ID to create another
+version; only after the save is known to have failed, retry the same file and
+version ID (preview again if its token is no longer valid).
+
 A retry of the same version ID and exact file bytes is idempotent: return the
 already saved version while preserving any later working edits. Changed file
 content must use a new version ID; an existing immutable version cannot be

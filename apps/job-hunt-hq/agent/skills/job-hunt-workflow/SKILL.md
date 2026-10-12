@@ -29,6 +29,10 @@ a resume unless the user requests one.
   `career_update` preview/apply mode. Apply the returned token directly when
   saving is already authorized; this atomically merges the records and saves
   their named version. A file or working-library change requires a new preview.
+  If apply times out or loses its receipt, first query `career_versions` with
+  that exact `version_id`; a timeout does not cancel the save. Use an attached
+  result, wait for an ongoing save, or retry the same file and ID only after
+  failure is established. Do not blindly repeat apply or invent a replacement ID.
   Writing the file alone does not import it; never write Panel snapshots,
   start an HTTP port or scan the update directory in the background.
 - Read `career_sources`, `career_episodes`, or `career_qa` catalogs with

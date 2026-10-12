@@ -225,6 +225,13 @@ hash and is not permitted as an input JSON field. Independent snapshot/file
 preservation follows the named-version rules below. No HTTP endpoint or
 background file scanning is involved, and apply never generates a resume.
 
+An apply timeout or missing receipt does not cancel the Panel save. Query
+`get_job_search_context` with `scope: "career_versions"` and the intended exact
+`version_id` first. Use an attached version; wait while a save is still running.
+Absence alone is not proof of failure. Do not blindly repeat apply or change the
+ID; after established failure, retry the same file and version ID, obtaining a
+new preview if required.
+
 ## Named knowledge-library versions
 
 This is the conversational artifact, separate from software releases and resume
