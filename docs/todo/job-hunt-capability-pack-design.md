@@ -1,7 +1,7 @@
 # Job Hunt HQ 能力包：脱离面板运行（简历样板）
 
-> 状态：v4.2.0 实现版；P1 / P2 与 Host / CLI 共用写入锁验收完成，尚未发布。日期：2026-10-13。<br>
-> Panel 仓库：`codeshell-panel-apps`，分支 `codex/job-hunt-hq/headless-ops`；配套 CodeShell Host 0.9.36 提供共用文件写入锁。<br>
+> 状态：Job Hunt HQ v4.2.1 已正式发布，修复 CLI 别名入口；首次版本 v4.2.0 与 CodeShell v0.9.36 的发布记录保留在下文，P1 / P2 与共用写入锁验收完成。Desktop 已安装 0.9.36，启动等待系统钥匙串授权；实际 Desktop Bash / 模型对话及本机 Panel 升级尚未验收。日期：2026-10-13。<br>
+> 首次 Panel 实现已通过 PR #77 合入 `main`；本次补丁与发布证据维护分支为 `codex/job-hunt-hq/headless-release-evidence`。配套 CodeShell Host 0.9.36 提供共用文件写入锁。<br>
 > 本文从 `codeshell/docs/todo/` 迁入，基于 Job Hunt HQ v4.1.2 更新。下文应用路径相对于 `apps/job-hunt-hq/`。
 
 ## 0. 本版范围
@@ -149,12 +149,13 @@ node "<package-root>/app/tools/job-hunt.mjs" run <operation> \
 - `job-hunt-workflow` 首先分辨发起方：面板 Trace 走 Panel；直接 Chat / TUI 的四个支持
   操作走 CLI。其余操作明确提示需要打开面板，不能宣称已无界面保存。
 - resume-writing 写回遵循 workflow 选定路径；初始化参考同步说明 CLI `init`。
-- manifest 升为 `4.2.0`，新增第六个 Skill 和 `nativeEntries.job-hunt`，保留 16 个 Tool。
+- 首次 `4.2.0` 新增第六个 Skill 和 `nativeEntries.job-hunt`，保留 16 个 Tool；当前发布
+  manifest 为 `4.2.1`，仅随 CLI 入口补丁更新版本和入口哈希，Tool、Skill 与权限不变。
   原生入口的 SHA-256 随 CLI 最终字节同步，并由现有包校验验证。
 
 ## 4. 验证
 
-本版已通过的检查覆盖：
+首次 4.2.0 已通过的检查覆盖如下；4.2.1 补丁的增量检查单独记录在第 7.3 节：
 
 - 四个纯操作的输入校验、候选人合并、简历层级与证据、归档和 QA 状态。
 - Tool / CLI 共用操作的一致性：使用固定时间和 ID 的同一输入比较返回结果及写入数据。
@@ -166,11 +167,14 @@ node "<package-root>/app/tools/job-hunt.mjs" run <operation> \
 - 独立 Host / Node 进程在最终 CAS 与 rename 临界窗口的双向互斥，CLI 重新读取并重放后
   保留双方数据，以及实际 Bash 中不可被项目环境覆盖的写入协议标记。
 
-2026-10-13 最终代码检查，来源为两仓库任务分支；集成时另行记录最终 commit：
+2026-10-13 首次 4.2.0 的最终代码检查与发布 CI（历史发布证据）。Panel 合入提交为
+`3f80db2c6130c69e5ade873f0f0aebb9593b1631`；Host 合入提交为
+`323a997afb830a4a82d6ac1e3196965b8293cac9`，对应发布与校验见第 7 节：
 
 | 命令 / 检查 | 结果 |
 | --- | --- |
 | `npm run check -- --suite job-hunt-hq` | 源码类型检查、提交构建库存检查通过；144 个测试通过，0 失败 |
+| 全仓 `npm run check` | 1,999 个测试通过、4 个跳过、0 失败 |
 | `node scripts/validate.mjs` | 全部应用包与既有烟测通过；Job Hunt HQ 72 个安装包文件通过 |
 | `npm run typecheck` | 通过 |
 | `npm run build:check -- --app job-hunt-hq` | 通过；Job Hunt HQ 沿用无需生成构建的安装包布局 |
@@ -180,6 +184,7 @@ node "<package-root>/app/tools/job-hunt.mjs" run <operation> \
 | Host 类型检查 | 通过 |
 | Host lint | 退出码 0；105 个既有 warning |
 | Host package release smoke | 九个发布 tarball、47 个 typed entry 通过；退出码 0 |
+| Host export contract | 4 个测试、148 个断言通过 |
 | `project-runtime` Skill frontmatter / naming 校验 | 通过 |
 | 与基线深比较 manifest `agent.tools` | 16 个 Tool 名称和参数 schema 完全不变 |
 | 原生入口 SHA-256、安装包 preflight、`git diff --check` | 通过 |
@@ -203,16 +208,17 @@ Host summary、CLI `qa-scope` 和已有 `qa-decision` 全部保留。真实 Bash
 锁释放同时失败时保留原操作错误与释放错误；测试还实际终止持锁子进程，确认它没有
 提交主文件，且先等进程关闭再清理测试项目，避免把未完成 writer 当成已安全停止。
 
-这组 gate 使用任务分支中的候选 Host v0.9.36，并非正在运行的 Desktop 0.9.35。
-尚未运行真实已安装 Desktop 的升级后端到端场景、TUI 模型对话及招聘网站认证；
-这些安装和模型路由集成检查不能由离线测试或候选 Host 存储 gate 替代。
+这组 gate 使用本次已发布 v0.9.36 的 Host 实现。Desktop 已经官方 updater 安装为
+0.9.36，但新进程启动等待系统钥匙串授权，实际 Desktop Bash / 模型对话尚未验收。
+尚未完成真实已安装 Desktop 的升级后端到端场景、TUI 模型对话及招聘网站认证；
+全局 TUI 已升级并验证版本，但这些安装和模型路由集成检查不能由版本输出或存储 gate 替代。
 
 ## 5. 分期
 
 | 期 | 范围 | 本次状态 |
 | --- | --- | --- |
-| P1 | codec、四个 op、Node workspace 适配、CLI、四个 handler、操作和存储一致性测试 | 已完成；144 个应用测试、真实 Host 共用锁 gate 通过 |
-| P2 | project-runtime、workflow 路由、manifest 4.2.0、外部修改场景检查 | 已完成；真实 Bash 能力标记与四 worker gate 通过，live Desktop 升级与模型对话未运行 |
+| P1 | codec、四个 op、Node workspace 适配、CLI、四个 handler、操作和存储一致性测试 | 4.2.0 与 4.2.1 入口补丁均已发布；4.2.1 的 146 个应用测试、真实 Host 共用锁 gate 通过 |
+| P2 | project-runtime、workflow 路由、manifest 4.2.0 → 4.2.1、外部修改场景检查 | 首次 4.2.0 已发布，4.2.1 继承原功能；真实 Bash 能力标记与四 worker gate 通过，Desktop 0.9.36 启动等待系统钥匙串授权，本机 Panel 升级与实际对话验收未完成 |
 | P3 | 其余 12 个 Tool 迁移；discovery 收据改为直接 CLI 写入 | 后续，不属于本版 |
 | P4（可选） | 若需要结构化 Tool 无页面执行，向 Host 提 nativeEntry 通用能力 | 未启动；另起 Host 分支 |
 
@@ -233,32 +239,121 @@ Host summary、CLI `qa-scope` 和已有 `qa-decision` 全部保留。真实 Bash
 - **原生入口哈希：** Job Hunt HQ 无 `panel.build.json`，手工更新入口后必须同步 manifest hash；
   依赖模块和包整体仍通过既有安装包库存 / preflight 检查。
 
-## 7. 发布与安装准备（尚未发布）
+## 7. 正式发布与本机安装状态
 
-共享文件锁与 Bash 协议标记的代码验收已完成；正式 Release CI 仍等待最终提交集成后
-运行，本节不把任务分支验收等同于 tag 构建、公开发布或本机升级成功。
+### 7.1 首次 4.2.0 与 Host 0.9.36 发布（历史记录）
 
-2026-10-13 曾对干净代码提交 `a05c9ff3691457406ee8438ff80573691739e9e7` 的
-`apps/job-hunt-hq/` 子树生成 ZIP 并通过已发布 Core 0.9.11 的只读安装预检。
-当时 ZIP 与应用目录的 payload digest 完全一致；以下为该历史预检的记录，后续 Skill
-和共用文件锁补强已改变包内容，正式发布必须从任务分支最终提交重新预检并记录新 digest：
+Panel [PR #77](https://github.com/cjhyy/codeshell-panel-apps/pull/77) 已合入 `main`，
+merge commit 为 `3f80db2c6130c69e5ade873f0f0aebb9593b1631`。
+[最终 CI 38282894843](https://github.com/cjhyy/codeshell-panel-apps/actions/runs/38282894843)
+的 7 个 job 全部成功；检查 head `d4116ee` 与 merge commit 的 tree 一致。
+[Job Hunt HQ v4.2.0 Release](https://github.com/cjhyy/codeshell-panel-apps/releases/tag/job-hunt-hq-v4.2.0)
+及 tag `job-hunt-hq-v4.2.0` 已公开。
+
+正式 [job-hunt-hq-4.2.0.zip](https://github.com/cjhyy/codeshell-panel-apps/releases/download/job-hunt-hq-v4.2.0/job-hunt-hq-4.2.0.zip)
+从干净合入提交的 `apps/job-hunt-hq/` 子树生成，ZIP 根目录直接包含 `.codeshell-panel/`、
+`app/`、`agent/` 等包文件。已重新下载发布副本，确认以下校验值，目录与归档的 payload
+digest 一致；多 Panel 仓库的全局 Latest 仍为 `quant-lab-v0.45.2`：
 
 ```text
-historical packageDigest (a05c9ff): 939117f4fb8d3b95dea44aed0da8db483695c60969957513a62bd79015661c1c
-historical job-hunt CLI sha256 (a05c9ff): 41148353564d6921ac46fff7a677d4a9098cce128a05170a0db24c1961279b34
+release ZIP SHA-256: bbb92846077879bff258e4b4527754ad575932f3e57f17611ad761af66752a98
+packageDigest: bb7b49ad27e9f861735592f35c7816f8af631e7247e10c4134adc94fa22eb1b1
+job-hunt CLI SHA-256: 41148353564d6921ac46fff7a677d4a9098cce128a05170a0db24c1961279b34
 ```
 
-预检确认包为 `job-hunt-hq` 4.2.0、16 个 Tool、6 个 Skill，且相对 4.1.2 开发基线未增加
-Host 权限。本机旧安装实际为 4.1.1、5 个 Skill；与旧安装相比，升级请求的新增权限是
-`process`、`resources`、`credentials.connections`，这些来自已合入的 4.1.2 基线。
-正式安装须通过生产安装器预览并核对这三项权限，保留版本、digest 和项目绑定回执。
-不能通过复制文件或修改 `installed.json` 代替安装流程。
-正式启用无界面写入前还须升级并核验运行中的 Host ≥0.9.36；当前 Desktop 0.9.35
-不能据 Panel API 14 或安装成功视为满足共用文件锁兼容要求。
+配套 Host [PR #150](https://github.com/cjhyy/codeshell/pull/150) 已合入，merge commit 为
+`323a997afb830a4a82d6ac1e3196965b8293cac9`。
+[Host CI 38283365059](https://github.com/cjhyy/codeshell/actions/runs/38283365059) 的
+12 个 job 全部成功；[v0.9.36 发布 CI 38284400031](https://github.com/cjhyy/codeshell/actions/runs/38284400031)
+的 7 个 job 全部成功，覆盖三个操作系统的原生安装包、九个 tarball 烟测及九个 npm 包发布。
+[CodeShell v0.9.36 Release](https://github.com/cjhyy/codeshell/releases/tag/v0.9.36) 已公开，
+九个 npm 包的公共 exact-version 与 `latest` 均已确认是 `0.9.36`。
 
-仓库没有自动发布 workflow；既有 Job Hunt HQ 发布采用 `job-hunt-hq-v<version>` tag 和
-`job-hunt-hq-<version>.zip` asset。ZIP 根目录直接包含 `.codeshell-panel/`、`app/` 和
-`agent/` 等包文件。正式 4.2.0 应从已合入并通过检查的提交生成，使用 tag
-`job-hunt-hq-v4.2.0` 与 asset `job-hunt-hq-4.2.0.zip`，保留一次生成的原件并核对发布后
-下载的 SHA-256 与包 payload digest；多 Panel 仓库发布时保留现有全局 Latest 标记。
-本次临时预检包不代表已经完成 tag、Release、正式 asset 或本机安装。
+历史上 `a05c9ff` 曾通过 Core 0.9.11 的临时包预检；其后 Skill 与共用文件锁均有补强。
+该历史预检不代表正式包；首次 4.2.0 发布身份以上述 merge commit 和校验值为准。
+这些 4.2.0 校验值不用于标识当前 4.2.1 发布包。
+
+### 7.2 本机安装与当前阻塞
+
+| 项目 | 已核实状态 |
+| --- | --- |
+| 全局 TUI | 已升级到 `0.9.36`，`--version` 已验证 |
+| Desktop | 官方 updater 已安装 `0.9.36`，plist 已确认；新进程启动等待系统钥匙串授权，实际 Desktop Bash / 模型对话尚未验收 |
+| 本机 Job Hunt HQ | 仍为 `4.1.1`、5 个 Skill；升级目标为已发布的 `4.2.1`，尚未安装 |
+
+升级目标 4.2.1 继承 4.2.0 的 16 个 Tool、6 个 Skill，相对 4.1.2 开发基线
+未增加 Host 权限；4.2.1 补丁也没有新增权限。
+本机 4.1.1 升级需在生产安装器中最终确认 `process`、`resources`、
+`credentials.connections` 三项新增权限，这些来自已合入的 4.1.2 基线。
+确认与安装尚未完成，安装后还需核对所选包版本、digest 和项目绑定回执；不能通过
+复制文件或修改 `installed.json` 代替安装流程。
+
+Desktop 安装后已通过 `codesign --verify --deep --strict`，内置 Node `24.21.0` 的
+空 PATH 执行通过；`app.asar`、主可执行文件和 managed Node 的哈希与官方 ZIP 一致。
+完整目录比对的 729 个文件、14 个符号链接一致，仅 node-pty 辅助 Python 文件的权限
+由 `0775` 收紧为 `0755`。
+
+新进程采样确认主线程同步等待 `SecKeychainFindGenericPassword`，SecurityAgent 进程已出现；
+采样不能证明系统提示当前可见，仍需用户检查并完成钥匙串授权。CUA 明确禁止控制
+SecurityAgent，已请用户接手系统提示，目前尚未收到回复；没有修改钥匙串或凭据。
+完成系统授权后，仍需在实际 Desktop
+Bash 中验证协议标记为 `1` 并完成运行验收；安装完整性通过不能替代这些检查。
+
+首次发布后，正式 public Core `0.9.36` 与下载的正式 Panel ZIP `4.2.0` 的隔离合成
+数据验收已通过（历史 4.2.0 证据）：
+真实 Core Bash 依次完成 `ops`、`init` 和四个操作，实际协议标记 `1` 覆盖输入的 `0`，
+候选人、简历、私有决策问答、source / session 均正确；回答问答未改变公开简历，
+有界读取未改写快照。8 次禁网预加载均使用临时 HOME，没有网络调用；所有 owned worker
+关闭后才清理成功现场。回执为本机发布证据目录中的 `published-runtime-acceptance.json`。
+
+该验收使用物理路径启动 CLI，与 Skill 解析出的真实安装路径一致；首次临时 runner
+使用 macOS `/tmp` 符号链接别名时，CLI 入口检查未命中，未执行操作。改为 `realpath`
+后，包代码和严格断言均未改变即通过。该次发现的别名入口静默退出问题已在 4.2.1
+发布版修复，增量回归见第 7.3 节；历史 4.2.0 包仍有此问题。
+真实 Desktop / TUI 模型对话、实际所选 Panel 的安装和 Skill 路由仍待验收，不据公开发布
+或隔离合成检查宣称本机端到端使用已经完成。本机求职快照、项目绑定及包 pin 已核对
+与升级前一致。
+
+### 7.3 4.2.1 CLI 入口补丁（已发布）
+
+本补丁将 CLI 主入口判定改为比较 `process.argv[1]` 与当前模块的物理路径，修复
+macOS `/tmp` → `/private/tmp` 等符号链接别名导致脚本静默退出、没有执行命令的问题。
+默认 Node 启动和 `--preserve-symlinks-main` 均可通过目录别名运行；作为模块异步导入时，
+调用方 argv 为正常其他入口、缺失、不存在路径或含 NUL 的非法路径，均不得执行 CLI main。
+
+4.2.1 继承首次版本的四个无面板操作、数据格式、共用写入锁和 Skill 路由；其余 12 个
+操作继续依赖 Panel。16 个 Tool 的名称与参数、6 个 Skill、Host 权限均不变，Host 前置
+仍为 CodeShell ≥0.9.36，Node 前置仍为 ≥20.10。
+
+代码提交 `754315421cd4169dc67443c467026af728493687` 已通过干净 primary checkout
+快进合入 `main` 并推送；annotated tag `job-hunt-hq-v4.2.1` 解析到同一提交。
+[Job Hunt HQ v4.2.1 Release](https://github.com/cjhyy/codeshell-panel-apps/releases/tag/job-hunt-hq-v4.2.1)
+与正式 [job-hunt-hq-4.2.1.zip](https://github.com/cjhyy/codeshell-panel-apps/releases/download/job-hunt-hq-v4.2.1/job-hunt-hq-4.2.1.zip)
+已公开。正式 Core 0.9.36 只读 preflight 确认目录与 ZIP 的 payload digest 一致；
+重新下载的 asset SHA-256、GitHub digest 和 size 均一致。全局 Latest 继续保留
+`quant-lab-v0.45.2`。发布校验值如下，CLI 哈希已同步到 manifest：
+
+```text
+release ZIP SHA-256: 6029f005ea4ff9194879e81549e590cf3344c51ef218ff4bd9c4ff1f0179af1e
+packageDigest: f2e610ff4f91dae46d124384363fa99060d0d6e685371a08a018fb652815c69e
+job-hunt CLI SHA-256: 0e85a9a18dc93e966ffae05d0f69da499a8358a31c023664442454cb5c35cf4e
+```
+
+| 4.2.1 检查 / 发布证据 | 当前结果 |
+| --- | --- |
+| `node --test tests/apps/job-hunt-hq/headless-ops.test.mjs` | 14 个测试通过，含别名入口与异步导入回归 |
+| 正式 npm Host `0.9.36` 的四 worker 存储 / runtime gate | 全部通过；Server / Core / Web / Link / Coding 五包均核实为正式 `0.9.36`，临时 npm HOME、禁用 install scripts、独立依赖布局；日志 `/tmp/job-hunt-4.2.1-host-storage.log` |
+| 完整 `npm run check` | 共 2,005 个测试：2,001 通过、4 跳过、0 失败 |
+| Job Hunt HQ suite | 146 / 146 通过 |
+| [main CI 38289290440](https://github.com/cjhyy/codeshell-panel-apps/actions/runs/38289290440) | 检查的代码 SHA 与正式提交一致；适用的 Package Offline 与 PDF 检查已成功，发布时快照为 6 / 7 job 成功，仅无关 Video UI 仍在运行，不记为全量 CI 完成 |
+| 正式新 ZIP + 全局已安装 Core 0.9.36 组合及别名入口验收 | 通过；正式 ZIP SHA-256、payload digest 和 CLI 哈希与上列发布值一致，物理路径与符号链接目录别名的 `ops` 都返回严格单行 JSON，`ok` 为真且四操作列表深比较一致，`symlinkCLIEntryVerified: true` |
+
+正式组合验收通过真实 Core Bash 完成 `ops`、`init` 和四个操作，协议标记从输入 `0`
+变为 Host 注入的 `1`；候选人、简历、私有决策问答与 source / session 正确落盘，
+QA 不改公开简历，只读操作不写快照。10 次禁网预加载均使用临时 HOME，网络调用为 0；
+owned child 全部关闭后清理临时现场。create-only 回执为
+`/Users/admin/Downloads/codeshell-0.9.36-job-hunt-4.2.1/published-runtime-acceptance.json`。
+
+4.2.1 已完成正式发布与隔离合成数据组合验收，本机 Panel 尚未安装。组合验收未读取
+真实个人项目、settings 或 credentials，未执行安装或修改 binding；实际个人项目的
+Skill 路由、Panel 安装及 Desktop / TUI 模型对话仍未验收，边界按第 7.2 节记录。
