@@ -244,12 +244,15 @@
   font-size: 11px;
   white-space: nowrap;
 }
-.ew-player [data-ew-action="loop-playback"] {
+.ew-player [data-ew-action="loop-playback"],
+.ew-player [data-ew-action="gain-audition"],
+.ew-player [data-ew-action="clear-solo"] {
   min-height: 28px;
   font-size: 11px;
   white-space: nowrap;
 }
-.ew-player [data-ew-action="loop-playback"][aria-pressed="true"] {
+.ew-player [data-ew-action="loop-playback"][aria-pressed="true"],
+.ew-player [data-ew-action="gain-audition"][aria-pressed="true"] {
   border-color: var(--accent, #b8edc8);
   color: var(--accent, #b8edc8);
 }
@@ -718,7 +721,8 @@
 }
 
 [data-ew-font-warning],
-[data-ew-audio-warning] {
+[data-ew-audio-warning],
+[data-ew-audition-status] {
   flex: 0 0 auto;
   max-height: 72px;
   overflow: auto;
@@ -1307,4 +1311,9 @@
   .workspace.editor-mode {
     grid-template-columns: 46px minmax(0, 1fr);
   }
+}
+
+[data-ew-audition-status] {
+  color: #c9f0dc;
+  background: #20352b;
 }
