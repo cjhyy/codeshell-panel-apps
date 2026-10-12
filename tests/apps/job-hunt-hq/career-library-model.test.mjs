@@ -156,7 +156,7 @@ test("saving a different field retains an outstanding source proposal in full re
   assert.equal(record.title, "本人只修改了标题");
   assert.equal(record.pendingRevision, null);
   assert.deepEqual(record.history.find((item) => item.reason === "reviewed_proposal").content, proposed);
-  assert.ok(record.history.some((item) => item.content.excerpt === material.excerpt));
+  assert.equal(record.history.length, 1, "the identical accepted excerpt remains in current content without a redundant full copy");
   assert.equal(state.sourceMaterials[0].pendingRevision.content.excerpt, "待核验的新材料全文");
 });
 
@@ -386,4 +386,97 @@ test("large revision histories fail in the pure model before exceeding a single 
   }
   assert.match(failure?.message || "", /单记录安全容量/);
   assert.ok(state.sourceMaterials[0].history.length > 0);
+});
+
+function fullHistoryLibrary() {
+  let state = reviewedLibrary();
+  const sourceId = state.sourceMaterials[0].id;
+  const episodeId = state.careerEpisodes[0].id;
+  const qaId = state.careerQa[0].id;
+  for (let index = 0; index < 40; index++) {
+    state = upsertCareerSource(state, { id: sourceId, excerpt: `第 ${index} 次材料内容` }, user);
+    state = upsertCareerEpisode(state, { id: episodeId, results: `第 ${index} 次实际结果` }, user);
+    state = upsertCareerQa(state, { id: qaId, answer: `第 ${index} 次本人回答` }, user);
+  }
+  return state;
+}
+
+test("archive remains available with full histories and invalidates full-history dependents without copying their facts", () => {
+  const original = freeze(fullHistoryLibrary());
+  assert.ok(original.sourceMaterials[0].history.length === 40 && original.careerEpisodes[0].revisions.length === 40 && original.careerQa[0].revisions.length === 40);
+  for (const [field, save] of [["sourceMaterials", upsertCareerSource], ["careerEpisodes", upsertCareerEpisode], ["careerQa", upsertCareerQa]]) {
+    const archived = save(original, { id: original[field][0].id, status: "archived" }, { actor: "user", now: later });
+    assert.equal(archived[field][0].status, "archived");
+    assert.equal(archived.sourceMaterials[0].excerpt, original.sourceMaterials[0].excerpt);
+    assert.equal(archived.careerEpisodes[0].results, original.careerEpisodes[0].results);
+    assert.equal(archived.careerQa[0].answer, original.careerQa[0].answer);
+    for (const collection of ["sourceMaterials", "careerEpisodes", "careerQa"]) {
+      const historyField = collection === "sourceMaterials" ? "history" : "revisions";
+      assert.deepEqual(archived[collection][0][historyField], original[collection][0][historyField]);
+    }
+    if (field === "sourceMaterials") assert.equal(archived.careerEpisodes[0].status, "needs_review");
+    if (field !== "careerQa") assert.equal(archived.careerQa[0].status, "needs_review");
+  }
+  const draft = upsertCareerSource(original, { id: original.sourceMaterials[0].id }, { actor: "user", now: later });
+  assert.equal(draft.sourceMaterials[0].status, "draft");
+  assert.equal(draft.sourceMaterials[0].history.length, 40);
+});
+
+test("a record at the revision limit can be archived to release active collection capacity", () => {
+  const state = fullHistoryLibrary();
+  state.sourceMaterials.push(...Array.from({ length: 1999 }, (_, index) => ({ id: `capacity-${index}`, provider: "manual", externalId: `capacity-${index}`, excerpt: "容量用合成材料" })));
+  const input = { provider: "manual", externalId: "next-material", excerpt: "下一条实际材料" };
+  assert.throws(() => upsertCareerSource(state, input, agent), /活跃资料安全容量/);
+  const archived = upsertCareerSource(freeze(state), { id: state.sourceMaterials[0].id, status: "archived" }, { actor: "user", now: later });
+  const saved = upsertCareerSource(archived, input, agent);
+  assert.equal(saved.sourceMaterials.length, 2001);
+  assert.equal(saved.sourceMaterials.filter((item) => item.status !== "archived").length, 2000);
+  assert.deepEqual(saved.sourceMaterials[0].history, state.sourceMaterials[0].history);
+  assert.throws(() => upsertCareerSource(saved, { id: state.sourceMaterials[0].id }, { actor: "user", now: later }), /活跃资料安全容量/);
+});
+
+test("archive preserves pending material and near-limit histories within the shard safety budget", () => {
+  const original = fullHistoryLibrary();
+  const padded = structuredClone(original);
+  for (const [field, historyField, textField, maximum] of [["sourceMaterials", "history", "excerpt", 16000], ["careerEpisodes", "revisions", "background", 12000], ["careerQa", "revisions", "answer", 12000]]) {
+    const record = padded[field][0];
+    for (const entry of record[historyField]) {
+      const remaining = CAREER_RECORD_MAX_BYTES - 8 - Buffer.byteLength(JSON.stringify(record));
+      if (remaining <= 0) break;
+      const size = Math.min(maximum - entry.content[textField].length, remaining);
+      entry.content[textField] += "x".repeat(size);
+    }
+    assert.equal(Buffer.byteLength(JSON.stringify(record)), CAREER_RECORD_MAX_BYTES - 8);
+  }
+  freeze(padded);
+  const archived = upsertCareerSource(padded, { id: padded.sourceMaterials[0].id, status: "archived" }, { actor: "user", now: later });
+  assert.equal(archived.sourceMaterials[0].status, "archived");
+  assert.equal(archived.careerEpisodes[0].status, "needs_review");
+  assert.equal(archived.careerQa[0].status, "needs_review");
+  for (const field of ["sourceMaterials", "careerEpisodes", "careerQa"]) {
+    const historyField = field === "sourceMaterials" ? "history" : "revisions";
+    assert.deepEqual(archived[field][0][historyField], padded[field][0][historyField]);
+    assert.ok(Buffer.byteLength(JSON.stringify(archived[field][0])) < 300 * 1024);
+  }
+  const proposed = upsertCareerSource(original, { id: original.sourceMaterials[0].id, excerpt: "待审材料全文" }, agent);
+  const kept = upsertCareerSource(freeze(proposed), { id: proposed.sourceMaterials[0].id, status: "archived" }, { actor: "user", now: later });
+  assert.deepEqual(kept.sourceMaterials[0].pendingRevision, proposed.sourceMaterials[0].pendingRevision);
+  assert.deepEqual(kept.sourceMaterials[0].history, original.sourceMaterials[0].history);
+  assert.throws(() => upsertCareerSource(original, { id: original.sourceMaterials[0].id, excerpt: "未保存的新输入", status: "archived" }, user), /先单独保存正文/);
+});
+
+test("status-only review changes do not grow full-content history or erase the previous review boundary", () => {
+  let state = upsertCareerSource({}, material, user);
+  const id = state.sourceMaterials[0].id;
+  for (let index = 0; index < 60; index++) {
+    state = upsertCareerSource(state, { id }, { actor: "user", now: later });
+    state = upsertCareerSource(state, { id }, { ...user, now: later });
+  }
+  assert.equal(state.sourceMaterials[0].history.length, 0);
+  assert.equal(state.sourceMaterials[0].version, 1);
+  state = upsertCareerSource(state, { id }, { actor: "user", now: later });
+  const proposed = upsertCareerSource(state, { id, excerpt: "AI 重新采集的内容" }, agent);
+  assert.equal(proposed.sourceMaterials[0].excerpt, material.excerpt);
+  assert.equal(proposed.sourceMaterials[0].pendingRevision.content.excerpt, "AI 重新采集的内容");
+  assert.equal(upsertCareerSource({}, { ...material, lastConfirmedAt: first }, agent).sourceMaterials[0].lastConfirmedAt, "");
 });

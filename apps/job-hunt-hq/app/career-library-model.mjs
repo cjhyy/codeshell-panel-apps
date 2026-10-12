@@ -188,6 +188,7 @@ function normalizeRecord(kind, value) {
     updatedAt: text(input.updatedAt, 80),
     confirmedAt: text(input.confirmedAt, 80),
     confirmedBy: input.confirmedBy === "user" ? "user" : "",
+    lastConfirmedAt: text(input.lastConfirmedAt, 80) || (input.confirmedBy === "user" ? text(input.confirmedAt, 80) : ""),
     reviewReason: text(input.reviewReason, 500),
     [revisionField]: (Array.isArray(input[revisionField]) ? input[revisionField] : []).map((item) => normalizeRevision(kind, item)),
     pendingRevision: pending.content ? {
@@ -243,7 +244,7 @@ function assertReferences(state, kind, record) {
 
 function isReviewed(record) {
   const revisions = record.history || record.revisions || [];
-  return record.status === "confirmed" || record.confirmedBy === "user" || revisions.some((item) => item.status === "confirmed");
+  return record.status === "confirmed" || record.confirmedBy === "user" || Boolean(record.lastConfirmedAt) || revisions.some((item) => item.status === "confirmed");
 }
 
 function invalidateSourceDependents(state, sourceId, now) {
@@ -253,11 +254,11 @@ function invalidateSourceDependents(state, sourceId, now) {
     state[field] = state[field].map((record) => {
       if (record.status !== "confirmed" || !(record.sourceIds.includes(sourceId) || (kind === "qa" && episodeIds.has(record.episodeId)))) return record;
       const next = {
-        ...remember(kind, record, revision(kind, record, "agent", now, "source_changed")),
+        ...record,
         status: "needs_review", confirmedAt: "", confirmedBy: "", updatedAt: now,
+        lastConfirmedAt: record.lastConfirmedAt || record.confirmedAt || now,
         reviewReason: `来源 ${sourceId} 有新的内容版本，请重新核验`,
       };
-      assertRecordBudget(next);
       return next;
     });
   }
@@ -268,11 +269,11 @@ function invalidateEpisodeDependents(state, episodeId, now) {
   state.careerQa = state.careerQa.map((record) => {
     if (record.episodeId !== episodeId || record.status !== "confirmed") return record;
     const next = {
-      ...remember("qa", record, revision("qa", record, "agent", now, "episode_changed")),
+      ...record,
       status: "needs_review", confirmedAt: "", confirmedBy: "", updatedAt: now,
+      lastConfirmedAt: record.lastConfirmedAt || record.confirmedAt || now,
       reviewReason: "关联经历有新修订，请重新核验这条回答",
     };
-    assertRecordBudget(next);
     return next;
   });
   return state;
@@ -300,6 +301,19 @@ function upsert(kind, stateInput, value, options = {}) {
   const changed = !existing || semanticContent(kind, next) !== semanticContent(kind, existing);
   const wantsArchive = actor === "user" && input.status === "archived";
   const wantsConfirm = actor === "user" && (options.confirm === true || input.status === "confirmed");
+  if (existing && wantsArchive) {
+    if (JSON.stringify(content(kind, next)) !== JSON.stringify(content(kind, existing))) throw new Error("归档只修改状态；请先单独保存正文修改，当前内容未被覆盖");
+    // Archiving is always available, including at the revision/content limit.
+    // Keep the complete accepted text, history and pending proposal in place.
+    const archived = {
+      ...existing, status: "archived", confirmedAt: "", confirmedBy: "", updatedAt: now,
+      lastConfirmedAt: existing.lastConfirmedAt || existing.confirmedAt || (existing.status === "confirmed" ? now : ""),
+    };
+    state[field] = state[field].map((item) => item.id === existing.id ? archived : item);
+    if (existing.status !== "archived" && kind === "sources") invalidateSourceDependents(state, existing.id, now);
+    if (existing.status !== "archived" && kind === "episodes") invalidateEpisodeDependents(state, existing.id, now);
+    return state;
+  }
   if (wantsConfirm && kind === "qa" && !next.answer) throw new Error("确认经历问答前请填写本人的实际回答");
   if (wantsConfirm && kind !== "sources" && next.sourceIds.some((id) => {
     const source = state.sourceMaterials.find((item) => item.id === id);
@@ -335,7 +349,7 @@ function upsert(kind, stateInput, value, options = {}) {
   } else if (existing && !changed && actor === "agent") {
     next = { ...existing, ...(kind === "sources" ? { fetchedAt: next.fetchedAt || existing.fetchedAt } : {}) };
   } else {
-    if (!existing && !options.migration && state[field].filter((record) => record.status !== "archived").length >= CAREER_LIBRARY_LIMITS[kind]) throw new Error("经历资料库已达到活跃资料安全容量，请先归档旧资料；不会自动删除事实");
+    if ((!existing || existing.status === "archived") && !wantsArchive && !options.migration && state[field].filter((record) => record.status !== "archived").length >= CAREER_LIBRARY_LIMITS[kind]) throw new Error("经历资料库已达到活跃资料安全容量，请先归档旧资料；不会自动删除事实");
     next = {
       ...next,
       [revisionField]: existing ? existing[revisionField] : [],
@@ -345,13 +359,16 @@ function upsert(kind, stateInput, value, options = {}) {
       status: wantsArchive ? "archived" : wantsConfirm ? "confirmed" : actor === "user" && input.status === "needs_review" ? "needs_review" : "draft",
       confirmedAt: wantsConfirm && !wantsArchive ? now : "",
       confirmedBy: wantsConfirm && !wantsArchive ? "user" : "",
+      lastConfirmedAt: wantsConfirm ? now : existing?.lastConfirmedAt || existing?.confirmedAt || (existing?.status === "confirmed" ? now : ""),
       reviewReason: "",
       pendingRevision: null,
     };
-    if (existing && (changed || next.status !== existing.status || existing.pendingRevision)) next = remember(kind, next, revision(kind, existing, actor, now));
+    if (existing && changed) next = remember(kind, next, revision(kind, existing, actor, now));
     if (existing?.pendingRevision) next = remember(kind, next, { version: existing.pendingRevision.version, status: "draft", actor, recordedAt: now, reason: "reviewed_proposal", content: existing.pendingRevision.content });
   }
-  assertRecordBudget(next);
+  // Metadata-only confirmation/review changes add at most a small fixed amount
+  // beyond the content budget and remain safely below the project shard limit.
+  if (!existing || changed || existing.pendingRevision) assertRecordBudget(next);
   state[field] = existing ? state[field].map((item) => item.id === existing.id ? next : item) : [...state[field], next];
   const withdrawnConfirmation = existing?.status === "confirmed" && next.status !== "confirmed";
   if (existing && (changed || withdrawnConfirmation || (wantsArchive && existing.status !== "archived")) && kind === "sources") invalidateSourceDependents(state, existing.id, now);
