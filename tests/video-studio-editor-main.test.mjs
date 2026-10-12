@@ -40,7 +40,7 @@ before(async () => {
   // Expose the bundled class only in this isolated test output for real-session read budgets.
   const modulePath = resolve(output, "main.mjs");
   await writeFile(modulePath, (await readFile(modulePath, "utf8")) +
-    "\nglobalThis.__mainReadSession = EditorSession; globalThis.__mainReadAudit = { session: () => editorSession, project: () => structuredClone(project), remountWorkspace: async () => { const options = editorWorkspace.options; await editorWorkspace.dispose(); editorWorkspace = new EditorWorkspace(editorRoot, options); } };\n");
+    "\nglobalThis.__mainReadSession = EditorSession; globalThis.__mainReadAudit = { session: () => editorSession, project: () => structuredClone(project), remountWorkspace: async () => { const options = editorWorkspace.options; await editorWorkspace.dispose(); editorWorkspace = new EditorWorkspace(editorRoot, options); } }; globalThis.__mainAuditionAudit = { workspace: () => editorWorkspace, setTasks: (value) => { editorTasks = value; }, prepared: () => structuredClone(preparedNative), export: submitEditorExport };\n");
   server = createServer(async (request, response) => {
     const path = resolve(
       output,
@@ -4612,4 +4612,99 @@ test("main export entry does not force native Inspector composition to finish",a
   assert.deepEqual(await page.evaluate(()=>mainExportImeEnds),[]);assert.equal(await page.locator('dialog[open]').count(),0);
   assert.match(await page.locator("#toast").textContent(),/完成文字输入后再导出/);
   assert.deepEqual(await page.evaluate(()=>__mainReadAudit.session().read()),before);
+});
+
+test("main keeps full, solo and unit-gain audition snapshots isolated from exports and aborted generations", async (t) => {
+  const original = structuredClone(denseSeed);
+  original.id = "audition-cache-main";
+  original.assets = original.assets.filter((asset) => asset.kind === "audio").map((asset) => ({ ...asset, duration: T }));
+  original.sequences[0].clips = [
+    { ...picture("room-clip", "a1", 0, T), assetId: "room", audio: { ...picture("room-clip", "a1", 0, T).audio, volume: .4 } },
+    { ...picture("music-clip", "a2", 0, T), assetId: "music", audio: { ...picture("music-clip", "a2", 0, T).audio, volume: .7 } },
+  ];
+  const page = await openPage(t, { seed: original, nativeTasks: true });
+  const result = await page.evaluate(async () => {
+    const audit = __mainAuditionAudit, workspace = audit.workspace(), session = __mainReadAudit.session(),
+      full = session.read(), sequenceId = full.activeSequenceId, calls = [], exports = [], waves = new Map();
+    const context = codeshellPanel.getContext.bind(codeshellPanel), call = codeshellPanel.call.bind(codeshellPanel);
+    codeshellPanel.getContext = async () => {
+      const current = await context();
+      return { ...current, availableMethods: [...current.availableMethods, "resources.read"] };
+    };
+    codeshellPanel.call = (method, args) => {
+      if (method !== "resources.read") return call(method, args);
+      const wave = waves.get(args.assetId), part = wave.subarray(args.offset, args.offset + args.length);
+      return Promise.resolve({ assetId: args.assetId, offset: args.offset, totalBytes: wave.length,
+        dataBase64: btoa(String.fromCharCode(...part)), eof: args.offset + part.length === wave.length });
+    };
+    let hold = false, release, heldSignal;
+    const prepare = async (doc, seq, options) => {
+      const index = calls.length + 1, hash = index.toString(16).padStart(64, "0"), id = `asset-${hash}`;
+      calls.push({ document: structuredClone(doc), snapshot: options.snapshot?.documentHash });
+      const level = doc.sequences.find((item) => item.id === seq).clips.reduce((sum, clip) => {
+        const track = doc.sequences.find((item) => item.id === seq).tracks.find((item) => item.id === clip.trackId);
+        return sum + (track.muted ? 0 : clip.audio.volume * track.volume);
+      }, 0) / 10;
+      const wave = new Uint8Array(44 + 48000 * 8), view = new DataView(wave.buffer), text = (at, value) => {
+        for (let i = 0; i < value.length; i++) wave[at + i] = value.charCodeAt(i);
+      };
+      text(0, "RIFF"); view.setUint32(4, wave.length - 8, true); text(8, "WAVEfmt ");
+      view.setUint32(16, 16, true); view.setUint16(20, 3, true); view.setUint16(22, 2, true);
+      view.setUint32(24, 48000, true); view.setUint32(28, 384000, true); view.setUint16(32, 8, true); view.setUint16(34, 32, true);
+      text(36, "data"); view.setUint32(40, wave.length - 44, true);
+      for (let at = 44; at < wave.length; at += 4) view.setFloat32(at, level, true);
+      waves.set(id, wave);
+      const result = { snapshot: { documentHash: hash, sequenceId: seq },
+        preparedAudio: { documentHash: hash, sequenceId: seq, assetId: id, recipeHash: hash },
+        audioResource: { id, bytes: wave.length, mimeType: "audio/wav", sha256: hash },
+        sampleCount: 48000, peak: level, samplesOverFullScale: 0 };
+      if (hold) { heldSignal = options.signal; await new Promise((resolve) => { release = resolve; }); }
+      return result;
+    };
+    audit.setTasks({ dispose() {}, prepareAudioForPreview: prepare, startExport: async (doc, seq, profile, options) => {
+      exports.push({ document: structuredClone(doc), snapshot: options.snapshot?.documentHash,
+        audio: options.preparedAudio?.documentHash });
+      return { snapshot: { documentHash: "e".repeat(64), sequenceId: seq },
+        job: { id: `audition-export-${exports.length}`, status: "succeeded", attempt: 1,
+          createdAt: Date.now(), updatedAt: Date.now(), entry: { name: "editor-runtime" }, input: {} } };
+    } });
+    const run = (doc, purpose) => workspace.options.prepareAudio(doc, sequenceId, new AbortController().signal, undefined, purpose);
+    const solo = structuredClone(full), unit = structuredClone(full);
+    solo.sequences[0].tracks.find((track) => track.id === "a2").muted = true;
+    for (const clip of unit.sequences[0].clips) clip.audio.volume = clip.id === "room-clip" ? 1 : 0;
+    const values = [];
+    for (const [doc, purpose] of [[full], [full], [solo, "audition"], [solo, "audition"], [unit, "audition"]]) {
+      const prepared = await run(doc, purpose); values.push(prepared.buffer.getChannelData(0)[0]);
+    }
+    const profile = { id: "audit", name: "审核", width: 640, height: 360, frameRate: { numerator: 30, denominator: 1 },
+      container: "mp4", videoCodec: "h264", audioCodec: "aac", quality: { mode: "quality", value: 62 },
+      audioBitrate: 192000, sampleRate: 48000, includeCaptions: true };
+    await audit.export(full, sequenceId, profile);
+    await run(full);
+    await audit.export(full, sequenceId, profile);
+    const cached = audit.prepared(), identity = session.getState().identity;
+    hold = true;
+    const playback = workspace.togglePlayback();
+    while (!release) await new Promise((resolve) => setTimeout(resolve, 0));
+    await session.replace({ ...full, id: "audition-other-project" });
+    await session.replace(full);
+    const aborted = heldSignal.aborted;
+    release(); await playback;
+    return { values, snapshots: calls.slice(0, 6).map((item) => item.snapshot), exports,
+      variants: calls.slice(0, 5).map((item) => [item.document.id, item.document.revision]),
+      original: full, after: session.read(), cached, afterLate: audit.prepared(), aborted,
+      generationChanged: session.getState().identity.generation !== identity.generation, playing: workspace.playing };
+  });
+  assert.deepEqual(result.snapshots, [undefined, "1".padStart(64, "0"), undefined, "3".padStart(64, "0"), undefined, undefined]);
+  for (const [index, value] of [.11, .11, .04, .04, .1].entries()) assert.ok(Math.abs(result.values[index] - value) < 1e-6);
+  assert.ok(result.variants.every(([id, revision]) => id === result.original.id && revision === result.original.revision));
+  assert.equal(result.exports[0].snapshot, undefined, "An audition snapshot is never used for the original export");
+  assert.equal(result.exports[0].audio, undefined);
+  assert.equal(result.exports[1].snapshot, "6".padStart(64, "0"));
+  assert.equal(result.exports[1].audio, "6".padStart(64, "0"));
+  assert.ok(result.exports.every((item) => JSON.stringify(item.document) === JSON.stringify(result.original)));
+  assert.ok(result.aborted && result.generationChanged);
+  assert.equal(result.playing, false);
+  assert.deepEqual(result.afterLate, result.cached, "Late preparation from the old generation cannot replace the cache");
+  assert.deepEqual(result.after, result.original, "Same-id/revision reopen and audition do not change the saved mix");
 });
