@@ -66,7 +66,8 @@ async function fixture(t, options = {}) {
     const methods = ['storage.getSnapshot', 'storage.compareAndSet', 'workspace.info', 'workspace.list', 'workspace.readText', 'workspace.writeText', ...(options.extraMethods || [])];
     if (options.pdfTasks) methods.push('tasks.start', 'tasks.find', 'tasks.get', 'tasks.list', 'tasks.cancel', 'tasks.retry', 'resources.open');
     if (options.audioTasks) methods.push('resources.recordAudio', 'resources.list', 'resources.get', 'resources.open', 'tasks.start', 'tasks.find', 'tasks.get', 'tasks.list', 'tasks.cancel', 'credentials.connections.list');
-    const ctx = () => ({ cwd: '/workspace', sessionId: 'session-' + current, trusted: true, busy: false, availableMethods: methods, ...(options.hostContext || {}) });
+    const ctx = () => ({ cwd: '/workspace', sessionId: 'session-' + current, trusted: true, busy: false, availableMethods: methods,
+      ...(options.scoped ? { projectScope: { version: 1, environmentId: 'fixture', projectId: current, rootId: 'root-' + current } } : {}), ...(options.hostContext || {}) });
     const snapshot = async (data, key) => {
       if (!(key in data)) return { exists: false, value: null, revision: null };
       const value = structuredClone(data[key]);
@@ -76,7 +77,7 @@ async function fixture(t, options = {}) {
     window.__fixture = { projects, calls, tools, switch(id) { current = id; listeners.forEach(fn => fn(ctx())); },
       failRead: options.failRead, failSnapshotBackup: options.failSnapshotBackup, hold: null, release: null };
     window.codeshellPanel = {
-      getContext: async () => ctx(), on(event, callback) { if (event === 'context.changed') listeners.push(callback); },
+      getContext: async () => { const captured = ctx(); if (options.deferInitial) await new Promise(resolve => { window.__fixture.releaseInitial = resolve; }); return captured; }, on(event, callback) { if (event === 'context.changed') listeners.push(callback); },
       registerTool(name, handler) { tools[name] = handler; },
       async call(method, params = {}) {
         const id = current, project = projects[id]; calls.push({ id, method, params: structuredClone(params) });
@@ -250,6 +251,31 @@ test('same-path project switch reads its own draft and old unowned browser bytes
   assert.equal(result.detached[0].drafts.interviewDraft.answer, 'draft-a');
   const owners = await page.evaluate(() => Object.values(window.__fixture.projects).map(p => p.storage['job-hunt-draft-owner-v1'].id));
   assert.notEqual(...owners);
+});
+
+test('Host proof changes isolate same-path same-session Job Hunt drafts and late reads', async t => {
+  const page = await fixture(t, { scoped: true, hostContext: { sessionId: 'shared-chat' } }); await ready(page);
+  assert.equal((await backup(page)).current.drafts.interviewDraft.answer, 'draft-a');
+  await page.evaluate(() => { window.__fixture.hold = 'workspace.readText'; });
+  page.once('dialog', dialog => dialog.accept()); await page.locator('#reload-draft-storage').click();
+  await page.waitForFunction(() => Boolean(window.__fixture.release));
+  await page.evaluate(() => { window.__fixture.hold = null; window.__fixture.switch('b'); }); await ready(page);
+  await page.evaluate(() => window.__fixture.release());
+  let result = await backup(page);
+  assert.equal(result.current.drafts.interviewDraft.answer, 'draft-b');
+  assert.equal(result.current.sessionId, 'shared-chat');
+  assert.equal(result.detached[0].drafts.interviewDraft.answer, 'draft-a');
+  await page.evaluate(() => window.__fixture.switch('a')); await ready(page);
+  result = await backup(page);
+  assert.equal(result.current.drafts.interviewDraft.answer, 'draft-a');
+});
+
+test('an initial context event with an unchanged empty binding still initializes project storage', async t => {
+  const page = await fixture(t, { deferInitial: true, hostContext: { cwd: null, sessionId: '' } });
+  await page.waitForFunction(() => typeof window.__fixture.releaseInitial === 'function');
+  await page.evaluate(() => window.__fixture.switch('a')); await ready(page);
+  await page.evaluate(() => window.__fixture.releaseInitial());
+  assert.equal((await backup(page)).current.drafts.interviewDraft.answer, 'draft-a');
 });
 
 test('failed draft read blocks editing and writes; explicit reload recovers', async t => {

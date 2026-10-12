@@ -1,4 +1,5 @@
 import { createProjectSetting } from "./modules/project-setting.mjs";
+import { projectContextChanged, projectContextKey, projectIdentity } from "./project-context.mjs";
 import { createDataSourcesController } from "./modules/data-sources-ui.mjs";
 import { registerPortfolioTools } from "./portfolio-import.mjs";
 /* Quant Lab Panel App runtime. */
@@ -3774,7 +3775,7 @@ function configurationFields() {
 }
 
 function configurationBindingKey() {
-  return JSON.stringify([context.cwd ?? null, context.sessionId ?? null]);
+  return projectContextKey(context);
 }
 
 function restoreConfigurationFields(fields) {
@@ -3817,6 +3818,7 @@ function rememberConfigurationDraft(session = configurationSession) {
   configurationDrafts.set(session.bindingKey, {
     workspaceRoot: session.workspaceRoot,
     sessionId: session.sessionId,
+    projectIdentity: session.projectIdentity,
     configuration: structuredClone(configurationStorageValue),
     fields: configurationFields(),
   });
@@ -3825,6 +3827,7 @@ function rememberConfigurationDraft(session = configurationSession) {
 function backupConfigurationDraft() {
   const current = {
     workspaceRoot: context.cwd ?? null, sessionId: context.sessionId ?? null,
+    projectIdentity: projectIdentity(context.projectScope),
     configuration: configurationStorageValue, fields: configurationFields(),
   };
   const currentKey = configurationBindingKey();
@@ -3896,6 +3899,7 @@ async function loadConfiguration(workspaceRoot, storageRoot, epoch, { reload = f
   const session = {
     workspaceRoot, epoch, loading: true, ready: false, error: "", dirty: false, sequence: 0,
     sessionId: context.sessionId ?? null, bindingKey: configurationBindingKey(),
+    projectIdentity: projectIdentity(context.projectScope),
     store: createProjectSetting({ hostCall, key: scopedStorageKey("configuration", storageRoot),
       currentEpoch: () => workspaceEpoch, getContext: () => context, label: "回测参数" }),
   };
@@ -4455,16 +4459,13 @@ function updateContext(next) {
   const wasVisible = context.visible !== false;
   const wasTrusted = context.trusted === true;
   const hadInitializedContext = contextInitialized;
-  const previousWorkspaceRoot = typeof context.cwd === "string" ? context.cwd : null;
   // Host context events are complete permission-projected snapshots. Omitted
   // session/workspace fields must clear the old binding rather than inherit it.
   const nextContext = next && typeof next === "object" && !Array.isArray(next)
     ? { ...next, busy: next.busy === true, trusted: next.trusted === true }
     : { busy: false, trusted: false };
   const nextWorkspaceRoot = typeof nextContext.cwd === "string" ? nextContext.cwd : null;
-  const workspaceChanged = contextInitialized && (
-    previousWorkspaceRoot !== nextWorkspaceRoot || context.sessionId !== nextContext.sessionId
-  );
+  const workspaceChanged = contextInitialized && projectContextChanged(context, nextContext);
   if (workspaceChanged) {
     // The Host has already switched projects: do not submit an old-project write.
     if (configurationSession?.dirty) rememberConfigurationDraft();
@@ -5669,6 +5670,7 @@ document.getElementById("backtest-storage-file").addEventListener("change", asyn
     if (epoch !== workspaceEpoch) return;
     if (draft?.format !== "codeshell.quant-backtest-draft" || draft.version !== 1
       || draft.workspaceRoot !== (context.cwd ?? null)
+      || (draft.projectIdentity != null && draft.projectIdentity !== projectIdentity(context.projectScope))
       || !configurationFieldNames.every(name => typeof draft.fields?.[name] === "string")) {
       throw new Error("请选择当前项目的完整回测参数备份");
     }

@@ -32,7 +32,7 @@ export const suites = [
   {
     id: "panel-ui",
     label: "Shared Panel App controls",
-    commands: [["--test", "tests/panel-select-ui.test.mjs"]],
+    commands: [["--test", "tests/panel-select-ui.test.mjs", "tests/project-context.test.mjs"]],
   },
   {
     id: "packages",

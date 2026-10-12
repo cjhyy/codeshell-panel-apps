@@ -2,6 +2,7 @@ import { supportsHostMethod, resumeFileAction } from "./host-capabilities.mjs";
 import { migrateCareerLibrary, syncLegacyCareerQa, upsertCareerSource, upsertCareerEpisode, upsertCareerQa, applyCareerPendingRevision, careerRecordId } from "./career-library-model.mjs";
 import { mountCareerLibrary } from "./career-library-ui.mjs";
 import { normalizeCareerDraft } from "./career-draft-model.mjs";
+import { projectContextChanged } from "./project-context.mjs";
 let careerLibraryUI = null;
 let careerMutationPending = false;
 import { DISCOVERY_AUTOMATION_KEY, discoveryAutomationMethod, readDiscoveryAutomation, saveDiscoveryAutomationTask, controlDiscoveryAutomationTask } from "./discovery-automation.mjs";
@@ -2170,18 +2171,20 @@ function getContext() {
 
 function updateContext(next) {
   const wasBusy = Boolean(context.busy);
-  const previousCwd = context.cwd;
-  const previousSessionId = context.sessionId;
+  const nextContext = next && typeof next === "object" && !Array.isArray(next) ? next : {};
+  const bindingChanged = projectContextChanged(context, nextContext);
   let lifecycleProjectStateChanged = false;
   const bootstrapTrace = wasBusy
     ? state.sessionActivity.find((item) => item.id === activeSessionTraceId) || activeTrace()
     : null;
-  context = { ...context, ...(next ?? {}) };
-  if (context.cwd !== previousCwd || context.sessionId !== previousSessionId) {
+  // Host events are complete permission-projected snapshots. A lost identity
+  // or permission must clear the previous value instead of inheriting it.
+  context = { ...nextContext };
+  if (bindingChanged) {
     channelCookieAccounts.clear();
     channelCookieAccountLoads.clear();
   }
-  if (context.cwd !== previousCwd || context.sessionId !== previousSessionId) {
+  if (bindingChanged) {
     stopPanelAudioRecording({ discard: true });
     panelInterviewStage = null;
     panelInterviewReturnFocus = null;
@@ -17347,18 +17350,25 @@ async function activateProject(next, { restoreBrowserDrafts = true, keepSnapshot
 }
 
 async function initialize() {
+  let receivedContextEvent = false;
+  let hasInitialContext = false;
   if (window.codeshellPanel?.on) {
     window.codeshellPanel.on("context.changed", next => {
-      const merged = { ...context, ...next };
-      if (merged.cwd !== context.cwd || merged.sessionId !== context.sessionId)
-        void activateProject(merged);
+      receivedContextEvent = true;
+      const needsInitialization = !hasInitialContext;
+      hasInitialContext = true;
+      if (needsInitialization || projectContextChanged(context, next))
+        void activateProject(next);
       else updateContext(next);
     });
   }
   const epoch = projectEpoch;
   try {
     const next = await getContext();
-    if (epoch === projectEpoch) await activateProject(next);
+    if (!receivedContextEvent && epoch === projectEpoch) {
+      hasInitialContext = true;
+      await activateProject(next);
+    }
   } catch (error) {
     if (epoch === projectEpoch) draftStatus(`连接失败：${error.message}`);
   }
