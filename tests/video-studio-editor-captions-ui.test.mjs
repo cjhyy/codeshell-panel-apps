@@ -631,7 +631,8 @@ test("SRT export explains an internal blank line without downloading; corrected 
   );
 });
 
-test("selected SRT export preserves a focused multiline text draft until it is explicitly saved", async (t) => {
+for (const format of ["SRT", "VTT"]) {
+test(`selected ${format} export preserves a focused multiline text draft until it is explicitly saved`, async (t) => {
   const page = await fixture(t, { inline: true, disabled: true, width: 390 });
   let downloads = 0;
   page.on("download", () => downloads++);
@@ -647,7 +648,7 @@ test("selected SRT export preserves a focused multiline text draft until it is e
     node.setSelectionRange(1, 5);
   });
   const before = await page.evaluate(() => session.read());
-  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  await page.getByRole("button", { name: `导出所选 ${format}` }).click();
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(downloads, 0, "A real browser download must not silently contain the old saved text");
   assert.match(await page.locator(".ec-status").textContent(), /请先保存再导出.*草稿已保留/);
@@ -659,7 +660,7 @@ test("selected SRT export preserves a focused multiline text draft until it is e
   await row.getByRole("button", { name: "保存文字", exact: true }).click();
   await page.waitForFunction(() => captions()[0].text === "未保存中文🙂\n第二行");
   const saved = await page.evaluate(() => session.read()), downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  await page.getByRole("button", { name: `导出所选 ${format}` }).click();
   const result = await readFile(await (await downloadPromise).path(), "utf8");
   assert.match(result, /未保存中文🙂\n第二行/);
   assert.deepEqual(await page.evaluate(() => session.read()), saved, "Download creates no edit or undo entry");
@@ -667,7 +668,7 @@ test("selected SRT export preserves a focused multiline text draft until it is e
   assert.equal(await page.evaluate(() => captions()[0].text), "保存前");
 });
 
-test("selected SRT export protects invalid and corrected unsaved time fields before a real download", async (t) => {
+test(`selected ${format} export protects invalid and corrected unsaved time fields before a real download`, async (t) => {
   const page = await fixture(t, { inline: true, disabled: true });
   let downloads = 0;
   page.on("download", () => downloads++);
@@ -679,13 +680,13 @@ test("selected SRT export protects invalid and corrected unsaved time fields bef
   await end.fill("0");
   await end.evaluate((node) => { globalThis.exportTimeInput = node; });
   const before = await page.evaluate(() => session.read());
-  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  await page.getByRole("button", { name: `导出所选 ${format}` }).click();
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(downloads, 0);
   assert.deepEqual(await end.evaluate((node) => [node === exportTimeInput, node.isConnected, node === document.activeElement, node.value]), [true, true, true, "0"]);
   assert.match(await page.locator(".ec-status").textContent(), /请先保存再导出/);
   await end.fill("3.003");
-  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  await page.getByRole("button", { name: `导出所选 ${format}` }).click();
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(downloads, 0, "A valid time draft still requires an explicit save");
   assert.equal(await start.inputValue(), "1.001");
@@ -693,14 +694,14 @@ test("selected SRT export protects invalid and corrected unsaved time fields bef
   await row.getByRole("button", { name: "保存时间", exact: true }).click();
   await page.waitForFunction(() => captions()[0].start === 240240 && captions()[0].duration === 480480);
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  await page.getByRole("button", { name: `导出所选 ${format}` }).click();
   const result = await readFile(await (await downloadPromise).path(), "utf8");
-  assert.deepEqual(await page.evaluate((text) => editor.parseEditorSrt(text), result), [
+  assert.deepEqual(await page.evaluate(({ text, format }) => (format === "VTT" ? editor.parseEditorVtt : editor.parseEditorSrt)(text), { text: result, format }), [
     { start: 240240, end: 720720, text: "时间草稿" },
   ]);
 });
 
-test("selected SRT export ignores another row's draft and permits read-only locked-track download", async (t) => {
+test(`selected ${format} export ignores another row's draft and permits read-only locked-track download`, async (t) => {
   const page = await fixture(t, { inline: true, disabled: true });
   const [first, second] = await page.evaluate(async () => [
     await controller.add("main", { start: 0, text: "所选已保存" }),
@@ -715,9 +716,9 @@ test("selected SRT export ignores another row's draft and permits read-only lock
     { type: "track.update", sequenceId: "main", trackId: "text", patch: { locked: true } },
   ], session.getState().identity));
   const before = await page.evaluate(() => session.read()), downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  await page.getByRole("button", { name: `导出所选 ${format}` }).click();
   const result = await readFile(await (await downloadPromise).path(), "utf8");
-  assert.deepEqual(await page.evaluate((text) => editor.parseEditorSrt(text), result), [
+  assert.deepEqual(await page.evaluate(({ text, format }) => (format === "VTT" ? editor.parseEditorVtt : editor.parseEditorSrt)(text), { text: result, format }), [
     { start: 0, end: 3 * 240000, text: "所选已保存" },
   ]);
   assert.equal(await b.getByLabel("字幕文字", { exact: true }).inputValue(), "未选文字草稿");
@@ -726,7 +727,7 @@ test("selected SRT export ignores another row's draft and permits read-only lock
   assert.deepEqual(await page.evaluate(() => errors), []);
 });
 
-test("selected SRT export keeps real Chinese IME composition connected and focused on a narrow screen", async (t) => {
+test(`selected ${format} export keeps real Chinese IME composition connected and focused on a narrow screen`, async (t) => {
   const page = await fixture(t, { inline: true, disabled: true, width: 390 });
   let downloads = 0;
   page.on("download", () => downloads++);
@@ -744,7 +745,7 @@ test("selected SRT export keeps real Chinese IME composition connected and focus
   try {
     await cdp.send("Input.imeSetComposition", { text: "正在输入中文", selectionStart: 6, selectionEnd: 6 });
     const before = await page.evaluate(() => session.read());
-    await page.getByRole("button", { name: "导出所选 SRT" }).click();
+    await page.getByRole("button", { name: `导出所选 ${format}` }).click();
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     assert.equal(downloads, 0);
     assert.match(await page.locator(".ec-status").textContent(), /请先保存再导出/);
@@ -756,11 +757,13 @@ test("selected SRT export keeps real Chinese IME composition connected and focus
     await page.locator(`[data-caption-id="${id}"]`).getByRole("button", { name: "保存文字", exact: true }).click();
     await page.waitForFunction(() => captions()[0].text === "输入完成中文");
     const downloadPromise = page.waitForEvent("download");
-    await page.getByRole("button", { name: "导出所选 SRT" }).click();
+    await page.getByRole("button", { name: `导出所选 ${format}` }).click();
     const result = await readFile(await (await downloadPromise).path(), "utf8");
     assert.match(result, /输入完成中文/);
   } finally { await cdp.detach(); }
 });
+
+}
 
 test("failed save leaves preview and original document intact; retry saves once", async (t) => {
   const page = await fixture(t);
@@ -1833,3 +1836,155 @@ test("find navigation queued immediately before a busy caption job cannot seek b
   assert.equal(await page.evaluate(() => captions().length), 1);
   assert.deepEqual(await page.evaluate(() => errors), []);
 });
+
+
+test("WebVTT file import and native selected/all downloads preserve visible text and exact milliseconds", async (t) => {
+  const page = await fixture(t, { disabled: true, width: 390 });
+  const source = "\uFEFFWEBVTT 双语\r\n\r\nNOTE 不导入注释\r\n00:09.000 --> 00:10.000\r\n注释里的伪字幕\r\n\r\nSTYLE\r\n::cue { color: red; }\r\n\r\n第一条ID\r\n00:00.033 --> 00:01.067 align:start position:10%\r\n<v 小明><b>你好🙂</b> &amp; &lt;原文&gt;\r\n第二行\r\n\r\n第二条ID\r\n00:02.001 --> 00:03.003\r\n下一条\r\n";
+  await page.locator("[data-caption-srt-input]").setInputFiles({
+    name: "双语.vtt", mimeType: "text/vtt", buffer: Buffer.from(source),
+  });
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  assert.match(await page.locator(".ec-preview").innerText(), /位置.*样式|样式.*位置/);
+  assert.equal(await page.locator(".ec-candidate").count(), 2);
+  assert.equal(await page.evaluate(() => session.read().revision), 0, "Import remains a preview");
+  await page.getByRole("button", { name: "应用预览" }).click();
+  await page.waitForFunction(() => captions().length === 2);
+  assert.deepEqual(await page.evaluate(() => captions().map(({ start, duration, text, words, sourceBinding }) => ({ start, duration, text, words, sourceBinding }))), [
+    { start: 7920, duration: 248160, text: "你好🙂 & <原文>\n第二行", words: [], sourceBinding: undefined },
+    { start: 480240, duration: 240480, text: "下一条", words: [], sourceBinding: undefined },
+  ]);
+  const before = await page.evaluate(() => session.read());
+  await page.locator(".ec-row input[type=checkbox]").first().check();
+  await page.locator(".ec-row input[type=checkbox]").nth(1).uncheck();
+  for (const [button, count] of [["导出所选 VTT", 1], ["导出全部 VTT", 2]]) {
+    const pending = page.waitForEvent("download");
+    await page.getByRole("button", { name: button, exact: true }).click();
+    const download = await pending, text = await readFile(await download.path(), "utf8");
+    assert.match(download.suggestedFilename(), /\.vtt$/);
+    assert.match(text, /^WEBVTT\n\n/);
+    assert.match(text, /00:00:00\.033 --> 00:00:01\.067/);
+    assert.match(text, /&amp; &lt;原文&gt;/);
+    const native = await page.evaluate(async (text) => {
+      const video = document.createElement("video"), track = document.createElement("track");
+      const url = URL.createObjectURL(new Blob([text], { type: "text/vtt" }));
+      try {
+        const loaded = new Promise((resolve, reject) => { track.onload = resolve; track.onerror = reject; });
+        track.src = url; video.append(track); document.body.append(video); track.track.mode = "hidden";
+        await loaded;
+        return [...track.track.cues].map((cue) => ({ start: cue.startTime, end: cue.endTime, text: cue.getCueAsHTML().textContent }));
+      } finally { video.remove(); URL.revokeObjectURL(url); }
+    }, text);
+    assert.equal(native.length, count);
+    assert.deepEqual(native[0], { start: .033, end: 1.067, text: "你好🙂 & <原文>\n第二行" });
+  }
+  assert.deepEqual(await page.evaluate(() => session.read()), before, "Downloads are read-only");
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.evaluate(() => session.undo());
+  assert.equal(await page.evaluate(() => captions().length), 0, "One undo removes both imported cues");
+});
+
+test("WebVTT STYLE and REGION cue identifiers retain the same timed text as a native TextTrack", async (t) => {
+  const page = await fixture(t, { disabled: true });
+  const source = "WEBVTT\n\nSTYLE\n00:00.001 --> 00:01.001\n第一条样式编号\n\n00:02.000 --> 00:03.000\n普通字幕\n\nREGION\n00:04.000 --> 00:05.000\n区域编号字幕\n";
+  const native = await page.evaluate(async (text) => {
+    const video = document.createElement("video"), track = document.createElement("track");
+    const url = URL.createObjectURL(new Blob([text], { type: "text/vtt" }));
+    try {
+      const loaded = new Promise((resolve, reject) => { track.onload = resolve; track.onerror = reject; });
+      track.src = url; video.append(track); document.body.append(video); track.track.mode = "hidden";
+      await loaded;
+      return [...track.track.cues].map((cue) => ({ start: Math.round(cue.startTime * 240000), end: Math.round(cue.endTime * 240000), text: cue.getCueAsHTML().textContent }));
+    } finally { video.remove(); URL.revokeObjectURL(url); }
+  }, source);
+  assert.equal(native.length, 3, "Reserved words followed by timing are cue identifiers, even before the first cue");
+  assert.deepEqual(await page.evaluate((text) => editor.parseEditorVtt(text), source), native);
+  await page.locator("[data-caption-srt-input]").setInputFiles({ name: "编号.vtt", mimeType: "text/vtt", buffer: Buffer.from(source) });
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  assert.equal(await page.locator(".ec-candidate").count(), native.length);
+  await page.getByRole("button", { name: "应用预览" }).click();
+  await page.waitForFunction(() => captions().length === 3);
+  assert.deepEqual(await page.evaluate(() => captions().map(({ start, duration, text }) => ({ start, end: start + duration, text }))), native);
+});
+
+test("WebVTT all export protects unselected focused drafts, then downloads saved rows with no selection", async (t) => {
+  const page = await fixture(t, { inline: true, disabled: true, width: 280 });
+  let downloads = 0;
+  page.on("download", () => downloads++);
+  const ids = await page.evaluate(async () => [
+    await controller.add("main", { start: 7920, duration: 248160, text: "第一条" }),
+    await controller.add("main", { start: 480240, duration: 240480, text: "第二条" }),
+  ]);
+  const input = page.locator(`[data-caption-id="${ids[1]}"] textarea`);
+  await input.fill("全部导出也须保存🙂");
+  await input.evaluate((node) => { globalThis.allVttDraft = node; });
+  const before = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "导出全部 VTT", exact: true }).click();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  assert.equal(downloads, 0);
+  assert.match(await page.locator(".ec-status").innerText(), /请先保存再导出/);
+  assert.deepEqual(await input.evaluate((node) => [node === allVttDraft, node === document.activeElement, node.isConnected, node.value]), [true, true, true, "全部导出也须保存🙂"]);
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  await page.locator(`[data-caption-id="${ids[1]}"]`).getByRole("button", { name: "保存文字", exact: true }).click();
+  const pending = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出全部 VTT", exact: true }).click();
+  const text = await readFile(await (await pending).path(), "utf8");
+  assert.deepEqual(await page.evaluate((text) => editor.parseEditorVtt(text).map((cue) => cue.text), text), ["第一条", "全部导出也须保存🙂"]);
+  assert.equal(await page.locator('.ec-row input[type="checkbox"]:checked').count(), 0);
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+});
+
+test("WebVTT late file reads cannot replace a newer SRT candidate after generation changes", async (t) => {
+  const page = await fixture(t, { disabled: true });
+  await page.evaluate(() => {
+    const original = File.prototype.text;
+    globalThis.vttReadStarted = false;
+    File.prototype.text = async function () {
+      if (this.name !== "旧字幕.vtt") return original.call(this);
+      vttReadStarted = true;
+      await new Promise((resolve) => { globalThis.releaseVttRead = resolve; });
+      return original.call(this);
+    };
+  });
+  await page.locator("[data-caption-srt-input]").setInputFiles({ name: "旧字幕.vtt", mimeType: "text/vtt", buffer: Buffer.from("WEBVTT\n\n00:00.001 --> 00:01.001\n旧VTT\n") });
+  await page.waitForFunction(() => vttReadStarted);
+  await page.evaluate(async () => { await session.replace(session.read()); ui.open(); });
+  await selectSrt(page, "最新.srt", "最新SRT");
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  const before = await page.evaluate(() => controller.getState());
+  await page.evaluate(() => releaseVttRead());
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  assert.deepEqual(await page.evaluate(() => controller.getState()), before);
+  assert.match(await page.locator(".ec-preview").innerText(), /最新SRT/);
+  assert.equal(await page.evaluate(() => captions().length), 0);
+});
+
+test("WebVTT unsupported timed payload is explained without changing the saved document", async (t) => {
+  const page = await fixture(t, { disabled: true });
+  const before = await page.evaluate(() => session.read());
+  await page.locator("[data-caption-srt-input]").setInputFiles({ name: "逐词.vtt", mimeType: "text/vtt", buffer: Buffer.from("WEBVTT\n\n00:00.001 --> 00:01.001\n第一词<00:00.500>第二词\n") });
+  await page.locator(".ec-status").filter({ hasText: "含逐词时间，请先转换为普通字幕" }).waitFor();
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  assert.equal(await page.locator(".ec-preview").isVisible(), false);
+});
+
+for (const scope of ["所选", "全部"]) {
+  test(`WebVTT ${scope} export retires its queued click when the actual session revision changes`, async (t) => {
+    const page = await fixture(t, { disabled: true });
+    let downloads = 0;
+    page.on("download", () => downloads++);
+    await page.evaluate(() => controller.add("main", { start: 7920, duration: 248160, text: "已保存字幕" }));
+    await page.getByRole("button", { name: "全选字幕" }).click();
+    await page.evaluate((scope) => {
+      [...document.querySelectorAll("button")].find((node) => node.textContent === `导出${scope} VTT`).click();
+      session.dispatch([{ type: "project.rename", name: "新版本字幕工程" }], session.getState().identity);
+    }, scope);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+    assert.equal(downloads, 0, "Old queued intent must not download a new owner document");
+    const pending = page.waitForEvent("download");
+    await page.getByRole("button", { name: `导出${scope} VTT`, exact: true }).click();
+    const download = await pending;
+    assert.equal(download.suggestedFilename(), "新版本字幕工程.vtt");
+    assert.match(await readFile(await download.path(), "utf8"), /已保存字幕/);
+  });
+}

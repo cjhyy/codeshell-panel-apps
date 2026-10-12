@@ -14,6 +14,7 @@ import {
   planCaptionReplace,
   planCaptionTranslation,
   planSrtImport,
+  planVttImport,
   planTranscriptCaptions,
   validateCaptionTranscript,
   type CaptionPlan,
@@ -232,6 +233,29 @@ export function createCaptionController(context: CaptionControllerContext) {
       if (work === running.controller) work = undefined;
     }
   };
+  const importTimedText = (
+    options: { sequenceId: string; text: string; trackId?: string },
+    format: "SRT" | "VTT",
+  ) => {
+    const running = start();
+    try {
+      const plan = (format === "VTT" ? planVttImport : planSrtImport)(
+        running.snapshot.document, options.sequenceId, options.text, {
+          trackId: options.trackId,
+          idFactory: context.idFactory,
+          avoidOverlaps: true,
+          overlapExempt: workflowCaptions(running.snapshot.document, options.sequenceId),
+        },
+      );
+      check(running.snapshot, running.token, running.controller.signal);
+      preview(running.snapshot, plan, `导入 ${format} 字幕`);
+    } catch (error) {
+      failure(error, running.token);
+      throw error;
+    } finally {
+      if (work === running.controller) work = undefined;
+    }
+  };
   const api = {
     getState: () => structuredClone(state),
     setCapabilities(value: { canTranscribe: boolean; canTranslate: boolean }) {
@@ -380,24 +404,10 @@ export function createCaptionController(context: CaptionControllerContext) {
       });
     },
     importSrt(options: { sequenceId: string; text: string; trackId?: string }) {
-      const running = start();
-      try {
-        preview(
-          running.snapshot,
-          planSrtImport(running.snapshot.document, options.sequenceId, options.text, {
-            trackId: options.trackId,
-            idFactory: context.idFactory,
-            avoidOverlaps: true,
-            overlapExempt: workflowCaptions(running.snapshot.document, options.sequenceId),
-          }),
-          "导入 SRT 字幕",
-        );
-      } catch (error) {
-        failure(error, running.token);
-        throw error;
-      } finally {
-        work = undefined;
-      }
+      importTimedText(options, "SRT");
+    },
+    importVtt(options: { sequenceId: string; text: string; trackId?: string }) {
+      importTimedText(options, "VTT");
     },
     previewReplace(options: {
       sequenceId: string;
