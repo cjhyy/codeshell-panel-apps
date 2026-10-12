@@ -263,6 +263,63 @@ async function stage(d, paths = new Map()) {
 }
 const artifactPath = (result, role) =>
   join(result.jobDir, result.response.artifacts.find((a) => a.role === role).file);
+test("native short-range export bounds preparation and isolates range WAV receipts from full preview audio", { timeout: 120000 }, async () => {
+  const d = document(), seq = d.sequences[0], T = 240000,
+    toneId = `asset-${sha(await readFile(tone))}`, videoId = `asset-${sha(await readFile(prores))}`;
+  d.name = "Bounded range";
+  d.assets[0].duration = 12*T;
+  d.assets.push({ id: "tone", name: "Tone", kind: "audio", duration: 2*T, resourceId: toneId },
+    { id: "outside", name: "Outside video", kind: "video", duration: T, width: 64, height: 48, resourceId: videoId });
+  const sound = clip("tone", "audio", 2*T); sound.start = 10*T;
+  sound.audio.fadeIn = 12013; sound.audio.fadeOut = 40013;
+  sound.audio.pan = { keyframes: [{ time: 0, value: -0.4 }, { time: 2*T, value: 0.7 }] };
+  const outside = clip("outside", "video", T); outside.audio.volume = 0;
+  seq.clips = [clip("demo-intro", "video", 12*T), sound, outside];
+  // Use a separate video track to keep the demo and source clips valid without a transition.
+  seq.tracks.push(api.createTrack("outside-track", "video")); outside.trackId = "outside-track";
+  const snapshot = await stage(d, new Map([[toneId, tone], [videoId, prores]])),
+    range = { start: 10*T + 13, duration: 80080 }, rate = { numerator: 60000, denominator: 1001 },
+    p = { ...profile(), frameRate: rate },
+    first = await call({ action: "render", ...snapshot, range, profile: p }),
+    report = JSON.parse(await readFile(artifactPath(first, "editor-report"), "utf8")),
+    decode = (path) => ff(["-i", path, "-map", "0:a:0", "-f", "f32le", "-c:a", "pcm_f32le", "pipe:1"]),
+    pcm = decode(artifactPath(first, "editor-preview-audio"));
+  assert.equal(first.result.verified, true);
+  assert.equal(first.result.frameCount, 20);
+  assert.deepEqual(first.result.preparedAudio.range, range);
+  assert.equal(first.result.audioMix.sampleCount, 16016);
+  assert.equal(pcm.length, 16016*8);
+  assert.equal(report.preparation.audio, "range");
+  assert.equal(report.preparation.pictureAssetCount, 0);
+  assert.deepEqual(report.proxies, [], "the unrelated video does not acquire an export proxy");
+  const oneSample = await call({ action: "render", ...snapshot, range: { start: 10*T + 15, duration: 1 }, profile: p });
+  assert.equal(oneSample.result.frameCount, 1);
+  assert.equal(oneSample.result.audioMix.sampleCount, 1);
+  assert.deepEqual(oneSample.result.preparedAudio.range, { start: 10*T + 15, duration: 1 });
+  const otherRange = { start: 11*T + 1, duration: 80080 },
+    other = await call({ action: "render", ...snapshot, range: otherRange, profile: p });
+  assert.notEqual(other.result.preparedAudio.recipeHash, first.result.preparedAudio.recipeHash);
+  const repeated = await call({ action: "render", ...snapshot, range, profile: p, preparedAudio: first.result.preparedAudio });
+  assert.equal(repeated.result.reusedAudio, true);
+  assert.equal(repeated.result.audio.id, first.result.audio.id);
+  for (const window of [undefined, otherRange]) {
+    const mismatch = await call({ action: "render", ...snapshot, ...(window ? { range: window } : {}), profile: p, preparedAudio: first.result.preparedAudio }, [], { fail: true });
+    assert.equal(mismatch.error.code, "MIX_MISMATCH");
+  }
+  const full = await call({ action: "prepare-audio", ...snapshot }), fullPCM = decode(artifactPath(full, "editor-preview-audio"));
+  assert.equal(full.result.preparedAudio.range, undefined, "preview preparation never sees a range WAV");
+  assert.equal(full.result.sampleCount, 12*48000);
+  assert.deepEqual(pcm, fullPCM.subarray(Math.ceil(range.start / 5)*8, Math.ceil((range.start + range.duration) / 5)*8));
+  const shared = await call({ action: "render", ...snapshot, range, profile: p, preparedAudio: full.result.preparedAudio });
+  assert.equal(shared.result.reusedAudio, true);
+  assert.equal(shared.result.audio.id, full.result.audio.id);
+  assert.deepEqual(shared.result.audioMix, first.result.audioMix);
+  const rgb = (result) => ff(["-i", artifactPath(result, "editor-video"), "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]);
+  assert.deepEqual(rgb(shared), rgb(first));
+  const tiny = await call({ action: "render", ...snapshot, range: { start: 12*T-1, duration: 1 }, profile: p });
+  assert.equal(tiny.result.frameCount, 1);
+  assert.equal(tiny.result.audioMix.sampleCount, 0);
+});
 test(
   "installed CLI stages, mixes 48k audio, renders verified video and reuses the exact prepared mix",
   { timeout: 120000 },
@@ -389,9 +446,13 @@ test("native range export preserves settled ducking from the full mix and binds 
   bed.audio.ducking = { sidechainTrackIds: ["audio"], thresholdDb: -24, attenuationDb: 12, attack: 7200, release: 19200 };
   seq.clips.push(clip("demo-intro", "video", 2 * T), voice, bed);
   const snapshot = await stage(d, new Map([[resourceId, tone]])),
-    prepared = await call({ action: "prepare-audio", ...snapshot }),
     range = { start: T + 1, duration: 80080 },
+    unprepared = await call({ action: "render", ...snapshot, range, profile: profile() }),
+    prepared = await call({ action: "prepare-audio", ...snapshot }),
     rendered = await call({ action: "render", ...snapshot, range, profile: { ...profile(), container: "mov", videoCodec: "prores", audioCodec: "pcm", audioBitrate: 1536000, frameRate: { numerator: 30000, denominator: 1001 } }, preparedAudio: prepared.result.preparedAudio });
+  const fallback = JSON.parse(await readFile(artifactPath(unprepared, "editor-report"), "utf8"));
+  assert.equal(fallback.preparation.audio, "full");
+  assert.equal(fallback.preparation.audioFallback, "ducking");
   assert.equal(rendered.result.verified, true);
   assert.equal(rendered.result.reusedAudio, true);
   assert.equal(rendered.result.audio.id, prepared.result.audio.id);

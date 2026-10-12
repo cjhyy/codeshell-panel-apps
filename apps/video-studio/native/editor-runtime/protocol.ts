@@ -1,5 +1,5 @@
 import { validateExportProfile } from "../../src/editor/export-settings.js";
-import { validateExportRange, type ExportRange } from "../../src/editor/export-range.js";
+import { sameExportRange, validateExportRange, type ExportRange } from "../../src/editor/export-range.js";
 import { EDITOR_TASK_LIMITS, type PreparedEditorAudio } from "../../src/editor/task-bridge.js";
 
 export class EditorTaskError extends Error {
@@ -316,7 +316,7 @@ export function validateEditorRequest(value: unknown): EditorRequest {
     if (input.preparedAudio !== undefined) {
       const audio = record(
         input.preparedAudio,
-        ["documentHash", "sequenceId", "recipeHash", "assetId"],
+        ["documentHash", "sequenceId", "recipeHash", "assetId", "range"],
         "已准备声音",
       );
       result.preparedAudio = {
@@ -324,11 +324,13 @@ export function validateEditorRequest(value: unknown): EditorRequest {
         sequenceId: id(audio.sequenceId),
         recipeHash: hash(audio.recipeHash),
         assetId: resourceId(audio.assetId),
+        ...(audio.range === undefined ? {} : { range: validateExportRange(record(audio.range, ["start", "duration"], "已准备声音范围")) }),
       };
       if (
         !result.preparedAudio.assetId.startsWith("asset-") ||
         audio.documentHash !== result.documentHash ||
-        audio.sequenceId !== result.sequenceId
+        audio.sequenceId !== result.sequenceId ||
+        (audio.range !== undefined && !sameExportRange(audio.range, result.range))
       )
         throw new EditorTaskError("MIX_MISMATCH", "已准备声音与当前工程快照不一致");
     }

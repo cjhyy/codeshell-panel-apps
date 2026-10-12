@@ -52,6 +52,143 @@ function frequency(pcm, start, end, channel = 0) {
 const near = (actual, expected, tolerance) =>
   assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} ≈ ${expected} ± ${tolerance}`);
 
+test("live root-gain correction matches native PCM after nested, multicam and pitch-preserving retiming", { timeout: 60000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "editor-gain-audition-pcm-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const bundle = join(directory, "api.mjs");
+  await build({ stdin: { resolveDir: repository, contents: `
+    export {renderEditorAudio} from './apps/video-studio/native/media/editor-audio-renderer';
+    export {clipGainAuditionDocument} from './apps/video-studio/src/editor/audio-audition';
+    export {createTrack,defaultAudioMix,defaultTransform,defaultColorAdjustment} from './apps/video-studio/src/editor/defaults';
+  ` }, bundle: true, platform: "node", format: "esm", outfile: bundle, logLevel: "silent" });
+  const api = await import(pathToFileURL(bundle)), tone = join(directory, "tone.mkv"), bed = join(directory, "bed.mkv");
+  ffmpeg(["-f", "lavfi", "-i", "color=red:s=32x32:r=10:d=4", "-f", "lavfi", "-i", "aevalsrc=0.17*sin(2*PI*440*t)|0.13*sin(2*PI*733*t):s=48000:d=4", "-c:v", "ffv1", "-c:a", "pcm_f32le", "-y", tone]);
+  ffmpeg(["-f", "lavfi", "-i", "color=blue:s=32x32:r=10:d=4", "-f", "lavfi", "-i", "aevalsrc=0.09*sin(2*PI*997*t)|0.11*sin(2*PI*191*t):s=48000:d=4", "-c:v", "ffv1", "-c:a", "pcm_f32le", "-y", bed]);
+  const visual = () => ({ transform: api.defaultTransform(), color: api.defaultColorAdjustment(), blendMode: "normal" }),
+    sequence = (id) => ({ id, name: id, width: 32, height: 32, frameRate: { numerator: 30000, denominator: 1001 }, background: "#000000", timelineMode: "free",
+      tracks: [api.createTrack("v", "video"), api.createTrack("a", "audio")], clips: [], transitions: [], markers: [] }),
+    media = (id, assetId = "tone", trackId = "v") => ({ id, label: id, kind: "media", assetId, trackId, start: 13, duration: T,
+      timeMap: { points: [{ time: 0, source: 0 }, { time: T, source: T }] }, audio: api.defaultAudioMix(), ...visual() });
+  let serial = 0;
+  const render = async (document, range) => {
+    const result = await api.renderEditorAudio({ document, sequenceId: "main", range, resolveAssetPath: (id) => id === "tone" ? tone : bed,
+      ffmpegPath: "ffmpeg", ffprobePath: "ffprobe", workDir: join(directory, "work"), cacheDir: join(directory, "cache"),
+      outputPath: join(directory, `mix-${++serial}.wav`), signal: new AbortController().signal });
+    return { result, pcm: decode(result.path) };
+  };
+  for (const kind of ["media", "sequence", "multicam"]) {
+    const root = sequence("main"), child = sequence("child"), leaf = media("leaf"), selected = media("selected"), other = media("other", "bed", "a");
+    root.tracks[0].volume = 0.73; root.tracks[0].pan = -0.22;
+    child.tracks[0].volume = 0.61; child.tracks[0].pan = 0.19;
+    leaf.audio.volume = { keyframes: [{ time: 0, value: 0.3 }, { time: T, value: 1.2 }] };
+    leaf.audio.pan = { keyframes: [{ time: 0, value: -0.3 }, { time: T, value: 0.7 }] };
+    leaf.audio.fadeIn = 12013; leaf.audio.fadeOut = 20013;
+    leaf.audio.pitchSemitones = 2; leaf.timeMap.points[1].source = 2*T;
+    child.clips = [leaf];
+    selected.audio.volume = kind === "media" ? 0 : 0.8;
+    selected.audio.fadeIn = 20013; selected.audio.fadeOut = 12013; selected.audio.pan = 0.23;
+    selected.audio.pitchSemitones = -3; selected.audio.preservePitch = kind !== "multicam";
+    selected.timeMap = { points: [{ time: 0, source: T }, { time: T/2, source: 0 }, { time: T, source: T/2 }] };
+    if (kind === "sequence") { selected.kind = kind; delete selected.assetId; selected.sequenceId = "child"; }
+    if (kind === "multicam") {
+      selected.kind = kind; delete selected.assetId;
+      selected.angles = [{ id: "one", name: "one", assetId: "bed", offset: 13 }, { id: "two", name: "two", assetId: "tone", offset: 113 }];
+      selected.switches = [{ time: 0, angleId: "one" }, { time: 40013, angleId: "two" }]; selected.audioAngleId = "two";
+    }
+    root.clips = [selected, other];
+    const document = { schemaVersion: 2, timebase: T, id: `audition-${kind}`, name: "Audition", revision: 0, activeSequenceId: "main", exportProfiles: [],
+      assets: [{ id: "tone", name: "Tone", kind: "video", width: 32, height: 32, duration: 4*T }, { id: "bed", name: "Bed", kind: "video", width: 32, height: 32, duration: 4*T }], sequences: [root, child] },
+      before = structuredClone(document), unit = api.clipGainAuditionDocument(document, "main", selected.id),
+      adjusted = structuredClone(document), target = 1.7;
+    adjusted.sequences[0].clips[0].audio.volume = target;
+    const full = await render(document), stem = await render(unit.document), changed = await render(adjusted);
+    assert.equal(full.pcm.length, stem.pcm.length); assert.equal(full.pcm.length, changed.pcm.length);
+    assert.ok(stem.pcm.some((value) => Math.abs(value) > 0.01), `${kind}: nonzero actual processed stem`);
+    let maximum = 0;
+    for (let index = 0; index < changed.pcm.length; index++) maximum = Math.max(maximum,
+      Math.abs(full.pcm[index] + (target - unit.volume) * stem.pcm[index] - changed.pcm[index]));
+    assert.ok(maximum < 1e-6, `${kind}: max native PCM correction difference ${maximum}`);
+    t.diagnostic(`${kind}: maximum native PCM difference ${maximum}`);
+    assert.ok(stem.result.processing.processedSpans > 0, "comparison must exercise actual FFmpeg time stretching/pitch processing");
+    const range = { start: 40013, duration: 80080 }, partial = await render(unit.document, range);
+    assert.equal(partial.result.rangeFallback, "stretch", "range export must preserve original unit-stem retiming phase");
+    assert.deepEqual(partial.pcm, stem.pcm);
+    if (kind === "media") {
+      const safeUnit = structuredClone(unit.document), safeClip = safeUnit.sequences[0].clips[0];
+      safeClip.audio.pitchSemitones = 0;
+      safeClip.timeMap.points = [{ time: 0, source: 0 }, { time: T, source: T }];
+      const safeFull = await render(safeUnit), safeRange = await render(safeUnit, range);
+      assert.deepEqual(safeRange.result.range, range);
+      assert.equal(safeRange.result.rangeFallback, undefined);
+      assert.deepEqual(safeRange.pcm, safeFull.pcm.slice(Math.ceil(range.start / 5) * 2, Math.ceil((range.start + range.duration) / 5) * 2));
+      assert.ok(safeRange.pcm.some((value) => Math.abs(value) > 0.01));
+    }
+    assert.deepEqual(document, before);
+  }
+});
+
+test("bounded original-clock PCM skips unrelated sources and equals full mix samples through nested reverse, fades and animation", { timeout: 60000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "editor-range-pcm-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const bundle = join(directory, "api.mjs");
+  await build({ stdin: { resolveDir: repository, contents: `
+    export {renderEditorAudio} from './apps/video-studio/native/media/editor-audio-renderer';
+    export {createTrack,defaultAudioMix,defaultTransform,defaultColorAdjustment} from './apps/video-studio/src/editor/defaults';
+  ` }, bundle: true, platform: "node", format: "esm", outfile: bundle, logLevel: "silent" });
+  const api = await import(pathToFileURL(bundle)), tone = join(directory, "tone.wav"), unrelated = join(directory, "unrelated.wav");
+  ffmpeg(["-f", "lavfi", "-i", "aevalsrc=0.2*sin(2*PI*440*t)|0.13*sin(2*PI*660*t):s=48000:d=3", "-c:a", "pcm_f32le", "-y", tone]);
+  ffmpeg(["-f", "lavfi", "-i", "sine=frequency=997:sample_rate=48000:duration=1", "-c:a", "pcm_f32le", "-y", unrelated]);
+  const visual = { transform: api.defaultTransform(), color: api.defaultColorAdjustment(), blendMode: "normal" },
+    sequence = (id) => ({ id, name: id, width: 32, height: 32, frameRate: { numerator: 60000, denominator: 1001 }, background: "#000000", timelineMode: "free",
+      tracks: [api.createTrack("a", "audio"), api.createTrack("b", "audio")], clips: [], transitions: [], markers: [] }),
+    media = (id, start, duration, assetId = "tone") => ({ id, label: id, kind: "media", trackId: "a", assetId, start, duration,
+      timeMap: { points: [{ time: 0, source: 0 }, { time: duration, source: duration }] }, audio: api.defaultAudioMix(), ...structuredClone(visual) }),
+    root = sequence("main"), child = sequence("child"), leaf = media("leaf", T, T);
+  leaf.timeMap = { points: [{ time: 0, source: 2*T }, { time: T, source: T }] };
+  leaf.audio.volume = { keyframes: [{ time: 0, value: 0.2 }, { time: T, value: 0.9 }] };
+  leaf.audio.pan = { keyframes: [{ time: 0, value: -0.4 }, { time: T, value: 0.5 }] };
+  leaf.audio.fadeIn = 12013; leaf.audio.fadeOut = 40013;
+  child.tracks[0].volume = 0.7; child.tracks[0].pan = -0.17; child.clips = [leaf];
+  root.clips = [{ id: "nest", label: "nest", kind: "sequence", sequenceId: "child", trackId: "a", start: 8*T, duration: 2*T,
+    timeMap: { points: [{ time: 0, source: 0 }, { time: 2*T, source: 2*T }] }, audio: { ...api.defaultAudioMix(), volume: 0.8, fadeIn: T + 13 }, ...visual },
+    media("unrelated", 0, T, "unrelated")];
+  const document = { schemaVersion: 2, timebase: T, id: "range", name: "Range", revision: 0, activeSequenceId: "main", exportProfiles: [],
+    assets: [{ id: "tone", name: "tone", kind: "audio", duration: 3*T }, { id: "unrelated", name: "unrelated", kind: "audio", duration: T }], sequences: [root, child] },
+    before = structuredClone(document), range = { start: 9*T + 13, duration: 80080 }, calls = [];
+  let serial = 0;
+  const render = (window, extra = {}) => api.renderEditorAudio({ document, sequenceId: "main", range: window,
+    resolveAssetPath: (id) => { calls.push(id); if (window && Math.ceil((window.start + window.duration) / 5) > Math.ceil(window.start / 5) && id === "unrelated") throw new Error("Unrelated source must not decode"); return id === "tone" ? tone : unrelated; },
+    ffmpegPath: "ffmpeg", ffprobePath: "ffprobe", workDir: join(directory, "work"), cacheDir: join(directory, "cache"),
+    outputPath: join(directory, `mix-${++serial}.wav`), signal: new AbortController().signal, ...extra });
+  const full = await render(), fullPCM = decode(full.path); calls.length = 0;
+  const bounded = await render(range), pcm = decode(bounded.path), start = Math.ceil(range.start / 5), end = Math.ceil((range.start + range.duration) / 5);
+  assert.deepEqual(bounded.range, range);
+  assert.equal(bounded.sampleCount, end - start);
+  assert.deepEqual(pcm, fullPCM.slice(start * 2, end * 2));
+  assert.ok(pcm.some((sample) => Math.abs(sample) > 0.01), "actual nonzero reverse stereo PCM");
+  assert.deepEqual(calls, ["tone"]);
+  assert.ok(bounded.sampleCount < full.sampleCount / 20);
+  const reused = await render(range);
+  assert.equal(reused.assets[0].cacheHit, true);
+  assert.deepEqual(decode(reused.path), pcm);
+  const endpoint = { start: 10*T - 13, duration: 13 }, last = await render(endpoint);
+  assert.deepEqual(decode(last.path), fullPCM.slice(Math.ceil(endpoint.start / 5) * 2));
+  const subSample = await render({ start: 9*T + 1, duration: 1 });
+  assert.equal(subSample.rangeFallback, "sub-sample");
+  assert.equal(subSample.sampleCount, full.sampleCount);
+  const controller = new AbortController(), cancelledPath = join(directory, "cancelled.wav");
+  await assert.rejects(render(range, { outputPath: cancelledPath, signal: controller.signal,
+    onProgress: ({ stage }) => { if (stage === "mix-audio") controller.abort(); } }), { name: "AbortError" });
+  await assert.rejects(stat(cancelledPath), { code: "ENOENT" });
+  assert.deepEqual(await readdir(join(directory, "work")), []);
+  ffmpeg(["-f", "lavfi", "-i", "aevalsrc=0.11*sin(2*PI*997*t)|0.09*sin(2*PI*733*t):s=48000:d=3", "-c:a", "pcm_f32le", "-y", tone]);
+  const changed = await render(range);
+  assert.notEqual(changed.assets[0].sourceHash, bounded.assets[0].sourceHash);
+  assert.equal(changed.assets[0].cacheHit, false);
+  assert.notDeepEqual(decode(changed.path), pcm);
+  assert.deepEqual(document, before);
+});
+
 test("ordinary video audio detachment retains actual PCM through track mix, ducking and nested retiming", { timeout: 60000 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "editor-detach-pcm-"));
   t.after(() => rm(directory, { recursive: true, force: true }));

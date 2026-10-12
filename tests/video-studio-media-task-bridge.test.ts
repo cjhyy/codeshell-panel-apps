@@ -648,6 +648,19 @@ test("canonical rendering maps only verified actual output and preserves cancell
     "failed",
   );
 });
+test("canonical render receipts cannot present a partial audio mix as another range or a full mix", () => {
+  const job = canonicalTask(), range = { start: 13, duration: 80080 }, request = job.input.request,
+    preparedAudio = { documentHash: request.documentHash, sequenceId: request.sequenceId, range };
+  const ranged = { ...job, status: "succeeded", input: { ...job.input, request: { ...request, range } },
+    result: { result: { ...job.result.result, range, preparedAudio } } };
+  assert.equal(canonicalRenderMediaJob(ranged).status, "succeeded");
+  assert.throws(() => canonicalRenderMediaJob({ ...ranged,
+    result: { result: { ...ranged.result.result, preparedAudio: { ...preparedAudio, range: { start: 14, duration: range.duration } } } },
+  }), /核验/);
+  assert.throws(() => canonicalRenderMediaJob({ ...job, status: "succeeded",
+    result: { result: { ...job.result.result, preparedAudio } },
+  }), /核验/);
+});
 test("old production tracks, waits, cancels and retries the real canonical export and automatic completion sees the same artifact", async () => {
   const f = fixture(),
     project = createProject(),

@@ -1,0 +1,330 @@
+{
+  "schemaVersion": 1,
+  "panelCommit": "0aa6249570d034be32091966160b431be1237a40",
+  "runnerSha256": "6132332508752421fdbf571f255e7e535dac73b39d10c5085c40f3ef7e2a19da",
+  "hostSourceCommit": "b99bc14d7966fa26e5e7d614e18dbebcd272151e",
+  "hostSourceManifestVersion": "0.9.35",
+  "hostBuildProvenance": "Record the independently established build commit alongside these file hashes; source HEAD/version do not identify existing outputs.",
+  "buildHashes": {
+    "packages/desktop/out/main/index.mjs": "9a5dccc07ac70600832c86c751689b280b94b1f5e64aac053dac5b7fb33f921d",
+    "packages/desktop/out/preload/index.cjs": "11fdf6200293b5fce6ad930e252f000d1df5026c10df6e3370cd7d182fc9ce49",
+    "packages/desktop/out/preload/panel-app.cjs": "4d681ecca5a7471dd686efabf94f3d5e1838437f7f47e43b78e488acb416d9ea",
+    "packages/desktop/out/renderer/index.html": "b6ce785cb9819757903dc5d7acd7ceee7acf3bdae58a3d2edaaf9a4cfe5c1121",
+    "packages/core/dist/panel-apps/installer.js": "802b06ceed09725c3b4c2340da52be6a7de28cb122785bdb4b3365a1ad137c4e",
+    "packages/server/dist/panels/runtime-services.js": "2e10a8b144ae2e8fd2f8e2ce16165a9081db5c6c4e3d1213eb59def56872314e"
+  },
+  "runtime": {
+    "electron": "33.4.11",
+    "node": "20.18.3",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "actualNativePaths": {
+    "home": "/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home",
+    "downloads": "/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home/fixture-downloads",
+    "documents": "/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home/fixture-documents",
+    "desktop": "/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home/fixture-desktop",
+    "userData": "/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home/electron-user-data"
+  },
+  "guardReceipts": [
+    {
+      "kind": "cost-gui-deny-all",
+      "pid": 52837,
+      "ppid": 42217,
+      "origin": "http://127.0.0.1:9",
+      "homeId": "b34500900cd5dd88a71d9babe0639c888f49a3d76df7f34c231d00bc080b6bda",
+      "userProfileId": "b34500900cd5dd88a71d9babe0639c888f49a3d76df7f34c231d00bc080b6bda",
+      "codeShellHomeId": "0b133adb2f0597ad18d7644465eb1b05e66420801dd2734e7042cb6dc7482365",
+      "testHomeId": "0b133adb2f0597ad18d7644465eb1b05e66420801dd2734e7042cb6dc7482365",
+      "negativeProbes": 7
+    },
+    {
+      "kind": "cost-gui-deny-all",
+      "pid": 52860,
+      "ppid": 52837,
+      "origin": "http://127.0.0.1:9",
+      "homeId": "b34500900cd5dd88a71d9babe0639c888f49a3d76df7f34c231d00bc080b6bda",
+      "userProfileId": "b34500900cd5dd88a71d9babe0639c888f49a3d76df7f34c231d00bc080b6bda",
+      "codeShellHomeId": "0b133adb2f0597ad18d7644465eb1b05e66420801dd2734e7042cb6dc7482365",
+      "testHomeId": "0b133adb2f0597ad18d7644465eb1b05e66420801dd2734e7042cb6dc7482365",
+      "negativeProbes": 7
+    }
+  ],
+  "inspectorReceipts": [
+    {
+      "action": "observed",
+      "pid": 52837,
+      "electronPid": 52860,
+      "kind": "Debugger",
+      "port": 55781,
+      "pathHash": "99f095c3bde99793c00b47f1b7e9c7233d97b0628ed6bbedade08015ce28c52e"
+    },
+    {
+      "action": "used",
+      "pid": 52837,
+      "electronPid": 52860,
+      "port": 55781,
+      "pathHash": "99f095c3bde99793c00b47f1b7e9c7233d97b0628ed6bbedade08015ce28c52e"
+    },
+    {
+      "action": "observed",
+      "pid": 52837,
+      "electronPid": 52860,
+      "kind": "DevTools",
+      "port": 55783,
+      "pathHash": "66b51153ced140dc86f9a1997dd83d012e3b6610083fc5456f93b5ce3a049a93"
+    },
+    {
+      "action": "used",
+      "pid": 52837,
+      "electronPid": 52860,
+      "port": 55783,
+      "pathHash": "66b51153ced140dc86f9a1997dd83d012e3b6610083fc5456f93b5ce3a049a93"
+    },
+    {
+      "action": "revoked",
+      "pid": 52837,
+      "electronPid": 52860
+    }
+  ],
+  "keychainReceipt": {
+    "pid": 52837,
+    "ppid": 42217,
+    "homeHash": "b34500900cd5dd88a71d9babe0639c888f49a3d76df7f34c231d00bc080b6bda",
+    "defaultPathHash": "bf5b7026c780c552ffd8ea51bbbcd50625c87d3f32112c15d86ef5649abdc636",
+    "existingRegularFile": true,
+    "privateDefaultMatches": true,
+    "operatorDefaultUnchanged": true,
+    "preferenceBytes": 337,
+    "preferenceMode": 384,
+    "scope": "new private plist singleton only; no keychain data/search-list copy, symlink, unlock, create, or OS-default mutation"
+  },
+  "busyRejections": [
+    {
+      "id": "video-download",
+      "error": "面板还有正在提交、排队或运行的任务，请结束后再修改。",
+      "attempts": 2
+    }
+  ],
+  "results": [
+    {
+      "id": "design-studio",
+      "version": "0.18.1",
+      "permissions": [
+        "context.session",
+        "context.workspace",
+        "workspace.info",
+        "workspace.read",
+        "workspace.write",
+        "storage",
+        "agent.submitPrompt"
+      ],
+      "originalDigest": "e77124380e4b22260933b389d5285df2e7addca3993a24ec610f9c3137f07a75",
+      "privateCandidateDigest": "e07368504418eef6fdad4eb40259840ea474523a3f91e6dca933a124e3ba42b7",
+      "rejectedUpdateError": "Panel App source changed after review. Review it again before installing.",
+      "stagedPublicationError": "EACCES: permission denied, rename '/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home/.code-shell/panel-apps/.tmp-retained-design-studio-oaEVCz' -> '/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home/.code-shell/panel-apps/.versions/design-studio/e07368504418eef6fdad4eb40259840ea474523a3f91e6dca933a124e3ba42b7'",
+      "hostVisibleContext": true,
+      "loadedTitle": "Design Studio",
+      "actualEntryHtmlBytes": 54800,
+      "checks": [
+        "review-install-ipc",
+        "unbound-project-denied",
+        "real-sandboxed-entry-and-package-module",
+        "project-partition-isolation",
+        "real-storage-cas-and-project-authority",
+        "changed-review-update-rejected-old-guest-and-data-preserved",
+        "same-version-digest-update-project-only",
+        "staged-package-rename-eacces-preserves-old-guest-and-data",
+        "exact-retained-package-restore-ipc",
+        "chromium-http-denied"
+      ]
+    },
+    {
+      "id": "job-hunt-hq",
+      "version": "4.1.1",
+      "permissions": [
+        "context.session",
+        "context.workspace",
+        "workspace.info",
+        "workspace.read",
+        "workspace.write",
+        "storage",
+        "external.open",
+        "agent.submitPrompt",
+        "audio.transcribe",
+        "credentials.cookies",
+        "automations.manage",
+        "process",
+        "resources",
+        "credentials.connections"
+      ],
+      "originalDigest": "ccf664af7264735ef1bc45f5757f2903025834dd2c7fbcb09c42fd2d5c030bd9",
+      "privateCandidateDigest": "e53b61f197c124334f7b2c4c4d270a0e4f5ed6343d0a9ecd53b4f193e4d67ad5",
+      "rejectedUpdateError": "Panel App source changed after review. Review it again before installing.",
+      "stagedPublicationError": "EACCES: permission denied, rename '/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home/.code-shell/panel-apps/.tmp-retained-job-hunt-hq-ZEbGXi' -> '/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home/.code-shell/panel-apps/.versions/job-hunt-hq/e53b61f197c124334f7b2c4c4d270a0e4f5ed6343d0a9ecd53b4f193e4d67ad5'",
+      "hostVisibleContext": true,
+      "loadedTitle": "Job Hunt HQ · 求职作战室",
+      "actualEntryHtmlBytes": 132658,
+      "checks": [
+        "review-install-ipc",
+        "unbound-project-denied",
+        "real-sandboxed-entry-and-package-module",
+        "project-partition-isolation",
+        "real-storage-cas-and-project-authority",
+        "changed-review-update-rejected-old-guest-and-data-preserved",
+        "same-version-digest-update-project-only",
+        "staged-package-rename-eacces-preserves-old-guest-and-data",
+        "exact-retained-package-restore-ipc",
+        "chromium-http-denied"
+      ]
+    },
+    {
+      "id": "quant-lab",
+      "version": "0.46.1",
+      "permissions": [
+        "context.session",
+        "context.workspace",
+        "workspace.info",
+        "workspace.read",
+        "workspace.write",
+        "external.open",
+        "storage",
+        "agent.submitPrompt",
+        "agent.task",
+        "automations.manage",
+        "notifications.send",
+        "process"
+      ],
+      "originalDigest": "7cd84a6e8fa32bd05e6798aea0ce4324bf3d5e9aedd10e3dd7ae2687abe63b00",
+      "privateCandidateDigest": "3c25e2e6512f0305170651c35de827c0b0645a0cdcdceb00acaa34cee2fc9eef",
+      "rejectedUpdateError": "Panel App source changed after review. Review it again before installing.",
+      "stagedPublicationError": "EACCES: permission denied, rename '/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home/.code-shell/panel-apps/.tmp-retained-quant-lab-jjCw1A' -> '/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home/.code-shell/panel-apps/.versions/quant-lab/3c25e2e6512f0305170651c35de827c0b0645a0cdcdceb00acaa34cee2fc9eef'",
+      "hostVisibleContext": false,
+      "loadedTitle": "投资工作台",
+      "actualEntryHtmlBytes": 138829,
+      "checks": [
+        "review-install-ipc",
+        "unbound-project-denied",
+        "real-sandboxed-entry-and-package-module",
+        "project-partition-isolation",
+        "real-storage-cas-and-project-authority",
+        "changed-review-update-rejected-old-guest-and-data-preserved",
+        "same-version-digest-update-project-only",
+        "staged-package-rename-eacces-preserves-old-guest-and-data",
+        "exact-retained-package-restore-ipc",
+        "chromium-http-denied"
+      ]
+    },
+    {
+      "id": "video-download",
+      "version": "0.22.6",
+      "permissions": [
+        "process",
+        "resources",
+        "credentials.cookies",
+        "agent.task",
+        "storage",
+        "context.workspace",
+        "context.session",
+        "external.open"
+      ],
+      "originalDigest": "659d0121e07513bb085944f840170806576510d0f75b11593d91c075bbc590b6",
+      "privateCandidateDigest": "a1ba58e18a455ef94a416c1610a36c597fef3869e985cc5e8f3d18e87ec3fbb3",
+      "rejectedUpdateError": "Panel App source changed after review. Review it again before installing.",
+      "stagedPublicationError": "EACCES: permission denied, rename '/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home/.code-shell/panel-apps/.tmp-retained-video-download-Vbkddh' -> '/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home/.code-shell/panel-apps/.versions/video-download/a1ba58e18a455ef94a416c1610a36c597fef3869e985cc5e8f3d18e87ec3fbb3'",
+      "hostVisibleContext": true,
+      "loadedTitle": "Mimi Download",
+      "actualEntryHtmlBytes": 28699,
+      "checks": [
+        "review-install-ipc",
+        "unbound-project-denied",
+        "real-sandboxed-entry-and-package-module",
+        "project-partition-isolation",
+        "real-storage-cas-and-project-authority",
+        "changed-review-update-rejected-old-guest-and-data-preserved",
+        "same-version-digest-update-project-only",
+        "staged-package-rename-eacces-preserves-old-guest-and-data",
+        "exact-retained-package-restore-ipc",
+        "chromium-http-denied"
+      ]
+    },
+    {
+      "id": "video-studio",
+      "version": "0.7.2",
+      "permissions": [
+        "context.session",
+        "context.workspace",
+        "workspace.read",
+        "workspace.write",
+        "storage",
+        "agent.task",
+        "media",
+        "media.capture",
+        "process",
+        "resources",
+        "credentials.connections"
+      ],
+      "originalDigest": "212a16f3fd9388d5f9850ca2d232041ddcb8b833862440f8d74d617ed763fd58",
+      "privateCandidateDigest": "61a9327dff6e727fac989812fd2fff0f3e19e9e2db571282e82427f5bc66f19a",
+      "rejectedUpdateError": "Panel App source changed after review. Review it again before installing.",
+      "stagedPublicationError": "EACCES: permission denied, rename '/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home/.code-shell/panel-apps/.tmp-retained-video-studio-m55HGm' -> '/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home/.code-shell/panel-apps/.versions/video-studio/61a9327dff6e727fac989812fd2fff0f3e19e9e2db571282e82427f5bc66f19a'",
+      "hostVisibleContext": true,
+      "loadedTitle": "Mimi 视频工作台",
+      "actualEntryHtmlBytes": 59584,
+      "checks": [
+        "review-install-ipc",
+        "unbound-project-denied",
+        "real-sandboxed-entry-and-package-module",
+        "project-partition-isolation",
+        "real-storage-cas-and-project-authority",
+        "changed-review-update-rejected-old-guest-and-data-preserved",
+        "same-version-digest-update-project-only",
+        "staged-package-rename-eacces-preserves-old-guest-and-data",
+        "exact-retained-package-restore-ipc",
+        "chromium-http-denied"
+      ]
+    },
+    {
+      "id": "starter-panel",
+      "version": "0.1.0",
+      "permissions": [
+        "context.workspace"
+      ],
+      "originalDigest": "d4798ffd0ee1483eb02acc3ca60d7d0ef85d03dcbc920a42f0cbf26f39272753",
+      "privateCandidateDigest": "a421a7fe483577b5ebb363aa54584f631785e178eed31020ec23a33b477011d1",
+      "rejectedUpdateError": "Panel App source changed after review. Review it again before installing.",
+      "stagedPublicationError": "EACCES: permission denied, rename '/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home/.code-shell/panel-apps/.tmp-retained-starter-panel-qUaqF1' -> '/private/var/folders/1d/6__4f4y51g90nblfptt8s9v80000gn/T/panel-desktop-ipc-v31qVk/home/.code-shell/panel-apps/.versions/starter-panel/a421a7fe483577b5ebb363aa54584f631785e178eed31020ec23a33b477011d1'",
+      "hostVisibleContext": true,
+      "loadedTitle": "My Panel App",
+      "actualEntryHtmlBytes": 1424,
+      "checks": [
+        "review-install-ipc",
+        "unbound-project-denied",
+        "real-sandboxed-entry-and-package-module",
+        "project-partition-isolation",
+        "undeclared-storage-denied",
+        "changed-review-update-rejected-old-guest-and-data-preserved",
+        "same-version-digest-update-project-only",
+        "staged-package-rename-eacces-preserves-old-guest-and-data",
+        "exact-retained-package-restore-ipc",
+        "chromium-http-denied"
+      ]
+    }
+  ],
+  "limitations": [
+    "controlled synthetic Desktop acceptance only",
+    "no physical phone or deployed Cloud",
+    "no real provider/account/native media work",
+    "owned curl/wget/yt-dlp CLI fixtures deny live native network clients; Quant uses visible:false to suppress live collectors",
+    "JS HTTP guard and Chromium request denial are not an OS sandbox",
+    "package update candidate differs only by a private HTML comment; full historical domain migrations are a separate gate"
+  ],
+  "completedAt": "2026-10-12T07:55:02.626Z",
+  "cleanup": {
+    "pid": 52860,
+    "exitCode": 0,
+    "signalCode": null,
+    "exited": true,
+    "homeRemoved": true
+  }
+}

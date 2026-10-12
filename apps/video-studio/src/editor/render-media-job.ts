@@ -39,7 +39,8 @@ export function canonicalRenderMediaJob(value: unknown): MediaJob {
       raw.durationSeconds > 86401 ||
       (raw.preparedAudio &&
         (raw.preparedAudio.documentHash !== request.documentHash ||
-          raw.preparedAudio.sequenceId !== request.sequenceId))
+          raw.preparedAudio.sequenceId !== request.sequenceId ||
+          (raw.preparedAudio.range !== undefined && !sameExportRange(request.range, raw.preparedAudio.range))))
     )
       throw new Error("导出任务没有返回已核验的实际成片，请查看原任务结果");
     const asset = {

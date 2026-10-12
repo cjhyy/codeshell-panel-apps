@@ -9,6 +9,7 @@ import { trimClip } from "../apps/video-studio/src/editor/clip-edits";
 import { planClipAudioGain } from "../apps/video-studio/src/editor/audio-gain-edits";
 import { applyEditorOperations } from "../apps/video-studio/src/editor/operations";
 import { prepareEvaluator } from "../apps/video-studio/src/editor/evaluate";
+import { editorRangeAudioPreparation, editorRangeVisualAssets } from "../apps/video-studio/native/media/editor-range-preparation";
 import {
   createTrack,
   defaultAudioMix,
@@ -105,6 +106,44 @@ function assertParity(doc: EditorDocument): void {
     }
   }
 }
+
+test("range preparation conservatively covers rounded reverse, held and nonlinear nested picture clocks", () => {
+  const root = sequence(), child = sequence("child"), leaf = media("leaf", 400);
+  child.clips = [leaf, { ...media("later", 400, "video", "other"), start: 400 }];
+  const outer = nested("nested", "child", 1000);
+  outer.timeMap = { points: [{ time: 0, source: 799 }, { time: 333, source: 0 }, { time: 666, source: 400 }, { time: 1000, source: 400 }] };
+  root.clips = [outer];
+  const doc = document(root, child), before = structuredClone(doc), evaluator = prepareEvaluator(doc);
+  for (let start = 0; start < 1000; start += 37) {
+    const duration = Math.min(83, 1000 - start), ids = editorRangeVisualAssets(doc, "main", { start, duration });
+    const collect = (layers: ReturnType<typeof evaluator.evaluate>["layers"]) => {
+      for (const layer of layers) {
+        if (layer.kind === "media") assert.ok(ids.has(layer.assetId), `missing ${layer.assetId} at ${start}`);
+        if (layer.kind === "group") collect(layer.layers);
+      }
+    };
+    for (let time = start; time < start + duration; time++) collect(evaluator.evaluate("main", time).layers);
+  }
+  assert.deepEqual([...editorRangeVisualAssets(doc, "main", { start: 700, duration: 1 })], ["other"]);
+  assert.deepEqual(doc, before);
+  child.tracks[0]!.hidden = true;
+  assert.equal(editorRangeVisualAssets(doc, "main", { start: 700, duration: 1 }).size, 0);
+  assert.throws(() => editorRangeVisualAssets(doc, "main", { start: 1000, duration: 1 }), /范围/);
+});
+
+test("range audio preparation keeps original sample boundaries and rejects stateful or stretched windows", () => {
+  const root = sequence(), first = media("first", 500), later = { ...media("later", 500), start: 500 };
+  first.audio.pitchSemitones = 2;
+  root.clips = [first, later];
+  const doc = document(root), range = { start: 503, duration: 101 };
+  assert.deepEqual(editorRangeAudioPreparation(compileAudioPlan(doc, "main"), range), { range });
+  assert.deepEqual(editorRangeAudioPreparation(compileAudioPlan(doc, "main"), { start: 3, duration: 1 }), { fallback: "sub-sample" });
+  assert.deepEqual(editorRangeAudioPreparation(compileAudioPlan(doc, "main"), { start: 0, duration: 10 }), { fallback: "stretch" });
+  later.timeMap = constantTimeMap(1000, 500).timeMap;
+  assert.deepEqual(editorRangeAudioPreparation(compileAudioPlan(doc, "main"), range), { range }, "unity reverse reads the original mapped samples");
+  later.audio.ducking = { sidechainTrackIds: ["sound"], thresholdDb: -24, attenuationDb: 12, attack: 100, release: 200 };
+  assert.deepEqual(editorRangeAudioPreparation(compileAudioPlan(doc, "main"), range), { fallback: "ducking" });
+});
 
 test("audio plans use the 48k clock and ceil only the output boundary, independently of video fps", () => {
   const seq = sequence();
@@ -286,6 +325,8 @@ test("multicam audio is the continuous selected master, independent of picture s
   assert.equal(lane.angleId, "b");
   assert.equal(lane.spans.length, 1);
   assert.equal(sampleAudioLane(lane, 0)?.sourceTime, 683);
+  assert.deepEqual([...editorRangeVisualAssets(document(root), "main", { start: 410, duration: 1 })], ["source"]);
+  assert.deepEqual([...editorRangeVisualAssets(document(root), "main", { start: 411, duration: 1 })], ["other"]);
 });
 
 test("a prepared plan owns frozen data, rejects invalid graphs, and fails instead of dropping excess lanes", () => {
@@ -336,4 +377,44 @@ test("gain handles never flatten a volume curve automatically baked by a fade tr
   const trimmed = applyEditorOperations(doc, trimClip(doc, "main", "a", 100, 1000), doc.revision);
   assert.equal(typeof (trimmed.sequences[0]!.clips[0] as MediaClip).audio.volume, "object");
   assert.throws(() => planClipAudioGain(trimmed, "main", "a", .5), /自动化/);
+});
+
+
+test("audition snapshots keep saved tracks, nesting, silence and linear root gain independent", async () => {
+  const { trackAuditionDocument, clipGainAuditionDocument } = await import("../apps/video-studio/src/editor/audio-audition");
+  const parent = sequence(), child = sequence("child");
+  parent.clips.push(nested("nested", "child"), media("other", 500, "sound", "other"));
+  child.clips.push(media("inside", 500));
+  parent.clips[0]!.audio.volume = 0;
+  child.clips[0]!.audio.volume = { keyframes: [{ time: 0, value: 0.4, easing: "linear" }, { time: 500, value: 0.8, easing: "linear" }] };
+  parent.tracks[0]!.pan = 0.3; child.tracks[0]!.volume = 0.7;
+  const saved = document(parent, child), original = structuredClone(saved);
+  const solo = trackAuditionDocument(saved, "main", new Set(["video"]));
+  assert.equal(solo.sequences[0]!.tracks[1]!.muted, true);
+  assert.equal(solo.sequences[1]!.tracks[1]!.muted, false);
+  const unit = clipGainAuditionDocument(solo, "main", "nested");
+  assert.equal(unit.volume, 0);
+  const stemPlan = compileAudioPlan(unit.document, "main");
+  const adjusted = structuredClone(solo); adjusted.sequences[0]!.clips[0]!.audio.volume = 1.8;
+  const targetPlan = compileAudioPlan(adjusted, "main");
+  for (const sample of [0, 1, 13, 57, 99]) {
+    const stem = sampleAudioLane(stemPlan.lanes[0]!, sample), target = sampleAudioLane(targetPlan.lanes[0]!, sample);
+    assert.ok(Math.abs(stem.gain * 1.8 - target.gain) < 1e-12);
+    assert.equal(stem.pan, target.pan); assert.equal(stem.sourceSample, target.sourceSample);
+  }
+  assert.deepEqual(saved, original);
+  saved.sequences[0]!.tracks[0]!.muted = true;
+  assert.equal(trackAuditionDocument(saved, "main", new Set(["video"])).sequences[0]!.tracks[0]!.muted, true);
+  assert.throws(() => clipGainAuditionDocument(saved, "main", "nested"), /已静音/);
+});
+
+test("live gain refuses animated gains and nonlinear ducking rather than approximating their mix", async () => {
+  const { clipGainAuditionDocument } = await import("../apps/video-studio/src/editor/audio-audition");
+  const main = sequence(); main.clips.push(media("clip", 500), media("voice", 500, "sound", "other"));
+  const saved = document(main);
+  main.clips[0]!.audio.volume = { keyframes: [{ time: 0, value: 1, easing: "linear" }] };
+  assert.throws(() => clipGainAuditionDocument(saved, "main", "clip"), /固定音量/);
+  main.clips[0]!.audio.volume = 1;
+  main.clips[0]!.audio.ducking = { sidechainTrackIds: ["sound"], thresholdDb: -24, attenuationDb: 12, attack: 2400, release: 24000 };
+  assert.throws(() => clipGainAuditionDocument(saved, "main", "clip"), /自动闪避/);
 });

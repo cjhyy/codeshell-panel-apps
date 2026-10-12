@@ -55,6 +55,10 @@ export interface EditorTimelineContext {
   selection(): { sequenceId: string; clipIds: string[] };
   select(clipIds: string[]): void;
   /** Finish an owned focused field before changing selection or taking a drag snapshot. */
+  soloTracks?(): ReadonlySet<string>;
+  toggleSolo?(trackId: string): void;
+  previewGain?(clipId: string, volume: number): boolean;
+  endGainPreview?(): void;
   beforeGesture?(signal: AbortSignal): boolean | Promise<boolean>;
   selectedMarker?(): string | undefined;
   selectMarker?(markerId: string): void;
@@ -189,7 +193,7 @@ type ControlIntent =
       kind: "track";
       owner: TrackInputOwner;
       operation: "toggle" | "up" | "down" | "delete-track" | "delete-confirm" | "delete-cancel";
-      toggle?: "locked" | "hidden" | "muted";
+      toggle?: "locked" | "hidden" | "muted" | "solo";
     };
 type PendingControl = {
   field: NonNullable<PendingTrackGesture["field"]>;
@@ -689,7 +693,7 @@ export class EditorTimeline {
               : "";
           const mix = `<div class="et-track-mix">${track.kind !== "text" ? `<label>音量<input type="number" min="0" max="400" step="any" value="${track.volume * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="volume" aria-label="${esc(track.name)} 音量百分比" title="轨道音量（%）${track.locked ? "（轨道已锁定，先解锁）" : ""}"${track.locked ? " disabled" : ""}></label><label>声像<input type="number" min="-100" max="100" step="any" value="${track.pan * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="pan" aria-label="${esc(track.name)} 声像" title="左 -100 · 居中 0 · 右 100${track.locked ? "（轨道已锁定，先解锁）" : ""}"${track.locked ? " disabled" : ""}></label>` : ""}<span class="et-spacer"></span><button type="button" data-et-up="${esc(track.id)}" aria-label="上移${esc(track.name)}" title="上移轨道${index === 0 ? "（已在最上方）" : ""}"${index === 0 ? " disabled" : ""}>${timelineIcon("up", 14)}</button><button type="button" data-et-down="${esc(track.id)}" aria-label="下移${esc(track.name)}" title="下移轨道${index === sequence.tracks.length - 1 ? "（已在最下方）" : ""}"${index === sequence.tracks.length - 1 ? " disabled" : ""}>${timelineIcon("down", 14)}</button><button type="button" data-et-delete-track="${esc(track.id)}" aria-label="删除轨道${esc(track.name)}" title="${deleteBlocked || "删除轨道"}"${deleteBlocked ? " disabled" : ""}>${timelineIcon("trash", 14)}</button></div>`;
           return `<div class="et-track-head et-track-${track.kind}${track.locked ? " is-locked" : ""}${track.hidden ? " is-hidden" : ""}" data-track-head="${esc(track.id)}">
-            <div class="et-track-title"><span class="et-track-kind" title="${{ video: "画面轨道", audio: "声音轨道", text: "文字轨道" }[track.kind]}">${timelineIcon(kindIcon, 14)}</span><input value="${esc(track.name)}" data-et-track-name="${esc(track.id)}" aria-label="轨道名称 ${esc(track.name)}" title="重命名轨道"><span class="et-track-controls">${toggle("locked", track.locked ? "解锁" : "锁定", track.locked ? "locked" : "unlocked")}${toggle("hidden", track.hidden ? "显示" : "隐藏", track.hidden ? "hidden" : "visible")}${toggle("muted", track.muted ? "取消静音" : "静音", track.muted ? "muted" : "volume")}</span></div>
+            <div class="et-track-title"><span class="et-track-kind" title="${{ video: "画面轨道", audio: "声音轨道", text: "文字轨道" }[track.kind]}">${timelineIcon(kindIcon, 14)}</span><input value="${esc(track.name)}" data-et-track-name="${esc(track.id)}" aria-label="轨道名称 ${esc(track.name)}" title="重命名轨道"><span class="et-track-controls">${toggle("locked", track.locked ? "解锁" : "锁定", track.locked ? "locked" : "unlocked")}${toggle("hidden", track.hidden ? "显示" : "隐藏", track.hidden ? "hidden" : "visible")}${toggle("muted", track.muted ? "取消静音" : "静音", track.muted ? "muted" : "volume")}${track.kind !== "text" && this.context.toggleSolo ? `<button type="button" data-et-track="${esc(track.id)}" data-et-toggle="solo" aria-label="独轨试听${esc(track.name)}" title="独轨试听${esc(track.name)} · 可同时选择多轨 · 保留轨道静音 · 不影响导出" aria-pressed="${!!this.context.soloTracks?.().has(track.id)}">S</button>` : ""}</span></div>
             ${this.trackConfirmation(project, sequence, track) || mix}
           </div>`;
         })
@@ -1193,8 +1197,8 @@ export class EditorTimeline {
       return;
     }
     const { document, sequence } = this.current(), data = { ...button.dataset },
-      key = data.etToggle as "locked" | "hidden" | "muted" | undefined,
-      desired = key ? !sequence.tracks.find((track) => track.id === owner.trackId)![key] : undefined,
+      key = data.etToggle as "locked" | "hidden" | "muted" | "solo" | undefined,
+      desired = key && key !== "solo" ? !sequence.tracks.find((track) => track.id === owner.trackId)![key] : undefined,
       confirmed = !!data.etDeleteConfirm && this.trackConfirmationCurrent(document, sequence, owner.trackId),
       input = globalThis.document.activeElement instanceof HTMLInputElement &&
         globalThis.document.activeElement.matches(TRACK_INPUTS) ? globalThis.document.activeElement : undefined,
@@ -1218,9 +1222,10 @@ export class EditorTimeline {
       draftSaved = true;
       if (!this.trackOwnerCurrent(owner)) return;
       const current = this.current(), track = current.sequence.tracks.find((item) => item.id === owner.trackId)!;
-      if (track.locked && key !== "locked" && !Object.hasOwn(data, "etDeleteCancel"))
+      if (track.locked && key !== "locked" && key !== "solo" && !Object.hasOwn(data, "etDeleteCancel"))
         throw new Error("轨道已锁定，请先解锁再操作");
-      if (key) {
+      if (key === "solo") this.context.toggleSolo?.(owner.trackId);
+      else if (key) {
         if (track[key] !== desired)
           await this.apply([{ type: "track.update", sequenceId: owner.sequenceId, trackId: owner.trackId, patch: { [key]: desired } }], "调整轨道");
       } else if (Object.hasOwn(data, "etDeleteCancel")) this.confirmTrack = undefined;
@@ -2554,12 +2559,12 @@ export class EditorTimeline {
         .join("")}`;
       if (!(key in button.dataset)) continue;
       const toggle = button.dataset.etToggle;
-      if (operation === "toggle" && !["locked", "hidden", "muted"].includes(toggle!)) return;
+      if (operation === "toggle" && !["locked", "hidden", "muted", "solo"].includes(toggle!)) return;
       return {
         kind: "track",
         owner: { ...owner },
         operation,
-        ...(operation === "toggle" ? { toggle: toggle as "locked" | "hidden" | "muted" } : {}),
+        ...(operation === "toggle" ? { toggle: toggle as "locked" | "hidden" | "muted" | "solo" } : {}),
       };
     }
   }
@@ -2927,7 +2932,7 @@ export class EditorTimeline {
     if (visible < 68) return `<span class="et-gain-status" style="left:${Math.max(8, left - start + 8)}px" title="${gainText(clip.audio.volume)} · 放大时间轴可调整片段音量">音量 · 放大可调</span>`;
     const volume = this.drag?.kind === "gain" && this.drag.clip?.id === clip.id ? this.drag.gain ?? clip.audio.volume : clip.audio.volume,
       disabled = track.locked || this.fadePending,
-      hint = `${gainText(volume)}${track.locked ? " · 轨道已锁定" : " · 上下拖动；方向键 1%，Shift 10%，Home/End 0/400%"}${track.muted || track.volume === 0 ? " · 轨道静音，调整后仍无声" : ""} · 仅预览音量线，松开保存后试听`;
+      hint = `${gainText(volume)}${track.locked ? " · 轨道已锁定" : " · 上下拖动；方向键 1%，Shift 10%，Home/End 0/400%"}${track.muted || track.volume === 0 ? " · 轨道静音，调整后仍无声" : ""} · 开启调音试听后可实时听效果，松开保存`;
     return `<span class="et-gain-lines"><span data-et-gain-line style="bottom:calc(${volume * 25}% + ${2 - volume}px)"></span></span><span class="et-gain-handle" data-et-gain role="slider" tabindex="${disabled ? -1 : 0}" aria-label="片段音量 ${esc(clipLabel(clip))}" aria-valuemin="0" aria-valuemax="400" aria-valuenow="${gainPercent(volume)}" aria-valuetext="${esc(gainText(volume))}" aria-disabled="${disabled}" title="${esc(hint)}" style="left:${position}px">${gainPercent(volume)}%</span>`;
   }
   private gainFocus = (event: FocusEvent): void => {
@@ -3165,7 +3170,8 @@ export class EditorTimeline {
       }
       const node = this.container.querySelector<HTMLElement>(`[data-et-clip="${CSS.escape(clip.id)}"]`);
       if (node) this.paintGain(node, drag.gain);
-      if (!drag.plan?.reason) this.notice.textContent = `${gainText(drag.gain)} · 仅预览音量线，松开保存后试听`;
+      const audible = !drag.plan?.reason && this.context.previewGain?.(clip.id, drag.gain);
+      if (!drag.plan?.reason) this.notice.textContent = `${gainText(drag.gain)} · ${audible ? "正在实时试听，松开保存 · Esc 取消" : "仅预览音量线，开启调音试听后可实时听效果，松开保存"}`;
       return;
     }
     if (drag.kind === "fadeIn" || drag.kind === "fadeOut") {
@@ -3500,6 +3506,7 @@ export class EditorTimeline {
     if (this.autoScrollFrame !== undefined) cancelAnimationFrame(this.autoScrollFrame);
     this.autoScrollFrame = undefined;
     const drag = this.drag;
+    if (drag?.kind === "gain") this.context.endGainPreview?.();
     drag?.movePreview?.dispose();
     drag?.trimPreview?.dispose();
     drag?.fadePreview?.dispose();

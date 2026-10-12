@@ -9,7 +9,7 @@ import {
 import { isResourceId } from "../external-media";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
 import { sequenceDuration, validateEditorDocument } from "./validation";
-import { validateExportRange, type ExportRange } from "./export-range";
+import { sameExportRange, validateExportRange, type ExportRange } from "./export-range";
 import {
   validatePortableProjectManifest,
   remapPortableProjectResources,
@@ -63,6 +63,8 @@ export interface PreparedEditorAudio {
   sequenceId: string;
   recipeHash: string;
   assetId: string;
+  /** A range WAV is never interchangeable with the complete preview mix. */
+  range?: ExportRange;
 }
 export interface EditorStageOptions {
   /** Explicit continuation may retry a prior retryable failed/cancelled job with the same request key. */
@@ -1258,6 +1260,7 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
       if (
         result?.preparedAudio?.documentHash !== snapshot.documentHash ||
         result.preparedAudio.sequenceId !== sequenceId ||
+        result.preparedAudio.range !== undefined ||
         result.audio?.id !== result.preparedAudio.assetId ||
         !/^asset-[a-f0-9]{64}$/.test(result.audio.id) ||
         result.audio.sha256 !== result.audio.id.slice(6) ||
@@ -1365,6 +1368,7 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         prepared &&
         (prepared.documentHash !== snapshot.documentHash ||
           prepared.sequenceId !== snapshot.sequenceId ||
+          (prepared.range !== undefined && !sameExportRange(prepared.range, range)) ||
           !/^asset-[a-f0-9]{64}$/.test(prepared.assetId) ||
           !/^[a-f0-9]{64}$/.test(prepared.recipeHash))
       )
