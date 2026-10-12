@@ -183,6 +183,31 @@ restoration without reading personal projects. It is separate from the default
 gate because the Host is a different repository. It does not establish physical
 phone, provider, operating-system network isolation or deployed Cloud acceptance.
 
+## Installed Desktop package/IPC check
+
+With a separately built compatible Host checkout containing Desktop `out/`, its
+Electron/Playwright dependencies, and the maintained confinement helpers, run:
+
+```sh
+npm run test:desktop -- /absolute/path/to/built/codeshell /absolute/path/to/new-report.json
+```
+
+This separate macOS integration gate never rebuilds the Host. It installs all six
+real repository packages through production Main/preload IPC, loads sandboxed
+webviews and package modules, checks project storage/permission/digest isolation,
+rejects changed reviewed sources and real staged-package publication failures,
+and restores an exact retained package through reviewed IPC. Package, project and
+native known directories are temporary; the optional report is create-only.
+
+The existing Host harness performs its macOS metadata-only default Keychain
+preflight; the gate does not configure credentials. Node HTTP is denied and every
+Electron session cancels external HTTP(S). Owned curl/wget/yt-dlp CLI fixtures
+avoid live native network clients, and Quant uses the normal `visible:false`
+lifecycle to suppress automatic market collectors. These controls do not claim
+an OS sandbox, real providers, native media, physical phones or deployed Cloud.
+Record the actual output hashes and independently established build provenance;
+the current Host source checkout/version can differ from its built outputs.
+
 ## Pull requests
 
 Explain the user-visible behavior, list requested Host permissions, and include
