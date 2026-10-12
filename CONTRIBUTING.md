@@ -183,6 +183,36 @@ restoration without reading personal projects. It is separate from the default
 gate because the Host is a different repository. It does not establish physical
 phone, provider, operating-system network isolation or deployed Cloud acceptance.
 
+## Old-package upgrade and rollback check
+
+For actual old-package install, project data upgrade and rollback, run:
+
+```sh
+npm run test:host-upgrade -- /absolute/path/to/codeshell/packages/server /tmp/panel-upgrade-report.json
+```
+
+This separate integration gate also requires the sibling built `packages/core`,
+Chromium, Git, tar and the immutable historical Git objects listed in
+`scripts/panel-host-upgrade.mjs`. Fetch tags/history before an offline run if
+needed. It uses the real reviewed Core installer and project package selection,
+then the real server storage/workspace services with installed Panel modules.
+The optional report is create-only and records exact old/candidate package
+digests, permissions and covered paths. The worker receives a temporary HOME,
+private Host data/projects, no provider credentials and a JavaScript network
+guard. Only the browser executable is read from the existing Playwright cache;
+its test profile is private and its page requests are intercepted locally.
+The parent captures the asynchronous worker process; timeout IPC/SIGTERM awaits
+tracked Chromium launches and closes before sending a nonce-bound shutdown
+receipt. Temporary HOME cleanup requires both that receipt and worker exit.
+Missing or failed browser closure retains the private directory and fails the
+gate; only the captured worker is signalled, with bounded escalation. Assertion,
+shutdown and directory-cleanup errors remain visible together.
+Run `npm test -- --suite upgrade-harness` for the offline owned-process fault gate.
+See [the upgrade audit](docs/todo/p1-panel-upgrade-rollback-2026-10-12.md) for
+fixture provenance, rollback semantics and the remaining device/deployment
+acceptance. This gate does not run native tools, authenticate providers or
+replace installed Desktop/Cloud acceptance.
+
 ## Installed Desktop package/IPC check
 
 With a separately built compatible Host checkout containing Desktop `out/`, its

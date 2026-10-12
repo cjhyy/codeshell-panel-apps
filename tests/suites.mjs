@@ -2,6 +2,11 @@
 // while their application ownership is explicit here.
 export const suites = [
   {
+    id: "upgrade-harness",
+    label: "Upgrade worker browser custody and shutdown receipts",
+    commands: [["--test", "tests/panel-upgrade-process.test.mjs"]],
+  },
+  {
     id: "starter",
     label: "Starter context and narrow-screen interaction",
     commands: [["--test", "tests/starter-ui.test.mjs"]],
