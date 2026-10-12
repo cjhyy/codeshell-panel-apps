@@ -183,6 +183,8 @@ restoration without reading personal projects. It is separate from the default
 gate because the Host is a different repository. It does not establish physical
 phone, provider, operating-system network isolation or deployed Cloud acceptance.
 
+## Old-package upgrade and rollback check
+
 For actual old-package install, project data upgrade and rollback, run:
 
 ```sh
@@ -210,6 +212,36 @@ See [the upgrade audit](docs/todo/p1-panel-upgrade-rollback-2026-10-12.md) for
 fixture provenance, rollback semantics and the remaining device/deployment
 acceptance. This gate does not run native tools, authenticate providers or
 replace installed Desktop/Cloud acceptance.
+
+## Installed Desktop package/IPC check
+
+With a separately built compatible Host checkout containing Desktop `out/`, its
+Electron/Playwright dependencies, and the maintained confinement helpers, run:
+
+```sh
+npm run test:desktop -- /absolute/path/to/built/codeshell /absolute/path/to/new-report.json
+```
+
+This separate macOS integration gate never rebuilds the Host. It installs all six
+real repository packages through production Main/preload IPC, loads sandboxed
+webviews and package modules, checks project storage/permission/digest isolation,
+rejects changed reviewed sources and real staged-package publication failures,
+and restores an exact retained package through reviewed IPC. Package, project and
+native known directories are temporary; the optional report is create-only.
+
+The existing Host harness performs its macOS metadata-only default Keychain
+preflight; the gate does not configure credentials. Node HTTP is denied and every
+Electron session cancels external HTTP(S). Owned curl/wget/yt-dlp CLI fixtures
+avoid live native network clients, and Quant uses the normal `visible:false`
+lifecycle to suppress automatic market collectors. These controls do not claim
+an OS sandbox, real providers, native media, physical phones or deployed Cloud.
+Record the actual output hashes and independently established build provenance;
+the current Host source checkout/version can differ from its built outputs.
+Cleanup preserves assertion, close, and filesystem failures together. It checks
+the captured Electron ChildProcess has exited before deleting its temporary HOME;
+an unverified live process retains that directory and fails the gate. Fallback
+termination uses only that captured child handle. Final reports are written only
+after verified shutdown and successful directory cleanup.
 
 ## Pull requests
 

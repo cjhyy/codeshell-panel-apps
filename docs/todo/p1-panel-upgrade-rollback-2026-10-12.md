@@ -138,3 +138,18 @@ worker 并保留 HOME，不扫描或终止其他浏览器。断言、关闭及 r
 这些改动只补验收脚本的进程/临时数据 custody，不修改六包安装字节、权限或版本。
 此前最新组合默认检查 1,968 / 1,964 / 0 / 4 仍为独立记录；本补丁复验受影响离线
 门禁和真实 Host 7/7，不把旧默认检查数字当作新增测试的运行记录。
+
+## 合入 Desktop IPC 门禁后的组合验证
+
+正常合入已合并 PR #75 的 `a261ff6a`，同时保留旧包升级和 Desktop IPC 两个独立入口。
+`c5c3330f` 与该主线的最终组合工作树重新执行完整 `npm run check`：
+**1,988 tests / 1,984 pass / 0 fail / 4 optional skips**，包括十二项升级进程故障检查和
+八项 Desktop 关闭故障检查；源码类型和已提交安装包的确定性检查也通过。
+
+同一组合真实 Host 升级/回滚门禁再次 **7/7 通过**，见
+[最终组合回执](evidence/p1-panel-upgrade-desktop-combined-2026-10-12.json)。
+owned worker **83623** 退出，8/8 Chromium Browser 关闭，无 pending launch/active Browser，
+`exitCode=0` 后私密 HOME 成功删除。报告的 `candidateCommit` 是运行时尚未创建合并提交的
+`c5c3330f`；实际工作树已含 `a261ff6a`，四个门禁脚本的精确 SHA-256 单独记在回执中。
+两条分支都只增加验收脚本和记录，六个安装包字节不因这次合并改变。
+Host 保持前述冻结编译产物，真实服务商、完整业务、物理手机和目标部署验收仍未完成。

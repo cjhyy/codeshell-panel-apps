@@ -28,7 +28,8 @@
     "test:ui:video-download": "node --test tests/apps/video-download/*.test.mjs",
     "test:quant-lab": "node scripts/test-quant-lab.mjs",
     "test:host-storage": "node scripts/check-panel-host-storage.mjs",
-    "test:host-upgrade": "node scripts/check-panel-host-upgrade.mjs"
+    "test:host-upgrade": "node scripts/check-panel-host-upgrade.mjs",
+    "test:desktop": "node scripts/check-panel-desktop.mjs"
   },
   "devDependencies": {
     "@cjhyy/code-shell-core": "0.9.11",

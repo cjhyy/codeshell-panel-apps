@@ -37,6 +37,11 @@ export const suites = [
     commands: [["--test", "tests/panel-select-ui.test.mjs", "tests/project-context.test.mjs"]],
   },
   {
+    id: "desktop-harness",
+    label: "Desktop acceptance process custody and cleanup failures",
+    commands: [["--test", "tests/panel-desktop-cleanup.test.mjs"]],
+  },
+  {
     id: "packages",
     label: "Package rules and existing application regressions",
     commands: [["scripts/validate.mjs"]],
