@@ -125,6 +125,8 @@ career record. This keeps the package compatible with the Host's 16-tool limit.
   "source": {
     "id": "source-id",
     "provider": "slack",
+    "title": "缓存方案的讨论",
+    "connectionId": "exact-connected-account-id",
     "externalId": "stable-thread-id",
     "url": "https://workspace.slack.com/archives/channel/thread",
     "author": "visible author",
@@ -139,6 +141,11 @@ career record. This keeps the package compatible with the Host's 16-tool limit.
 
 `save_candidate_context({source: {...}})` requires `source.provider`. Preserve source identity
 during refresh; a material content change revokes dependent confirmations.
+Optional `title` and `connectionId` are each bounded to 240 characters. Use the
+exact opaque `connectionId` of the authorized Link connection actually used;
+preserve it when refreshing a source. It separates otherwise identical provider
+and external IDs belonging to different connected accounts. Do not infer or
+invent a connection ID from a workspace name, URL or account label.
 External content is fetched only through available, authorized connectors or
 project files, not as an automatic side effect of saving a source.
 `source.excerpt` is bounded to 16,000 characters. Preserve a long Slack thread

@@ -439,6 +439,16 @@
                   "minLength": 1,
                   "description": "Provenance such as slack, github, file, or user. This does not imply personal ownership."
                 },
+                "title": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "description": "Recognizable title for the source material actually read."
+                },
+                "connectionId": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "description": "Exact opaque ID of the authorized Link connection used to read this source. Preserve it on refresh so equal provider message/repository IDs from different accounts stay separate. Never invent an ID."
+                },
                 "externalId": {
                   "type": "string",
                   "maxLength": 240

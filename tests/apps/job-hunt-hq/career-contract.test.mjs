@@ -163,6 +163,27 @@ test("explicit chat confirmation is bounded and exclusive to one career record m
     assert.notEqual(validateToolArgsStrict(name, input, schema), null);
 });
 
+test("strict Host schemas accept source titles and exact connected-account identity", () => {
+  const name = "save_candidate_context";
+  const schema = tools.get(name).inputSchema;
+  const fields = schema.properties.source.properties;
+  assert.equal(fields.title.maxLength, 240);
+  assert.equal(fields.connectionId.maxLength, 240);
+  const source = {
+    provider: "slack",
+    title: "Cache decision discussion",
+    connectionId: "opaque-linked-workspace-one",
+    externalId: "channel-thread-message-id",
+    excerpt: "The source text actually read.",
+  };
+  assert.equal(validateToolArgsStrict(name, { source }, schema), null);
+  for (const field of ["title", "connectionId"])
+    assert.notEqual(
+      validateToolArgsStrict(name, { source: { ...source, [field]: "A".repeat(241) } }, schema),
+      null,
+    );
+});
+
 test("read schema advertises separate career scopes and exact opaque IDs", () => {
   const schema = tools.get("get_job_search_context").inputSchema.properties;
   for (const scope of ["career_sources", "career_episodes", "career_qa", "career_versions"])
