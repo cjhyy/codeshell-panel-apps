@@ -5,10 +5,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { cleanupPanelDesktopFixture, closeOwnedPanelElectron } from "./panel-desktop-cleanup.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const [hostArgument, reportArgument, ...extra] = process.argv.slice(2);
@@ -32,7 +33,7 @@ const panelCommit = gitHead(repository), hostSourceCommit = gitHead(hostRoot);
 const runnerSha256 = sha256(await readFile(fileURLToPath(import.meta.url)));
 const hostSourceManifestVersion = JSON.parse(await readFile(join(appDir, "package.json"), "utf8")).version;
 const directory = await mkdtemp(join(tmpdir(), "panel-desktop-ipc-"));
-let app, win, stage = "initialize";
+let app, ownedChildProcess, win, report, cleanupReceipt, failure, launchStarted = false, stage = "initialize";
 const results = [], rendererErrors = [];
 try {
   // Scrub arbitrary inherited provider credentials before loading any Host module.
@@ -92,8 +93,10 @@ app.on("session-created", session => {
     projects.map(path => ({ path, name: path.split("/").at(-1), lastOpenedAt: Date.now(), pinned: true }))));
   await writeFile(join(isolated.codeShellHome, "settings.json"), JSON.stringify({ autoUpdates: false }));
   stage = "launch production Electron";
+  launchStarted = true;
   app = await launchCodeShellElectron({ appDir, ...isolated, env: fixture.env,
     mainEntry: fixture.mainEntry, runtimeTimeoutMs: 300_000 });
+  ownedChildProcess = app.process();
   win = await findCodeShellWindow(app);
   const actualNativePaths = await app.evaluate(({ app }) => Object.fromEntries(
     ["home", "downloads", "documents", "desktop", "userData"].map(name => [name, app.getPath(name)])));
@@ -322,20 +325,21 @@ app.on("session-created", session => {
   assert.ok(guardReceipts.some(value => value.pid === app.process().pid && value.negativeProbes === 7));
   const keychainReceipt = JSON.parse(await readFile(join(isolated.home, "electron-keychain-context.json"), "utf8"));
   const runtime = await app.evaluate(() => ({ electron: process.versions.electron, node: process.versions.node, platform: process.platform, arch: process.arch }));
-  await app.close(); app = undefined;
+  await closeOwnedPanelElectron({ app, ownedChildProcess }); app = undefined;
   const inspectorReceipts = (await readFile(inspectorLog, "utf8")).trim().split("\n").map(JSON.parse);
   for (const path of files) assert.equal(sha256(await readFile(join(hostRoot, path))), buildHashes[path], `shared build changed: ${path}`);
-  const report = { schemaVersion: 1, completedAt: new Date().toISOString(), panelCommit, runnerSha256, hostSourceCommit, hostSourceManifestVersion,
+  report = { schemaVersion: 1, panelCommit, runnerSha256, hostSourceCommit, hostSourceManifestVersion,
     hostBuildProvenance: "Record the independently established build commit alongside these file hashes; source HEAD/version do not identify existing outputs.",
     buildHashes, runtime, actualNativePaths, guardReceipts, inspectorReceipts, keychainReceipt, busyRejections, results,
     limitations: ["controlled synthetic Desktop acceptance only", "no physical phone or deployed Cloud", "no real provider/account/native media work", "owned curl/wget/yt-dlp CLI fixtures deny live native network clients; Quant uses visible:false to suppress live collectors", "JS HTTP guard and Chromium request denial are not an OS sandbox", "package update candidate differs only by a private HTML comment; full historical domain migrations are a separate gate"] };
-  if (reportArgument) await writeFile(resolve(reportArgument), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-  console.log(`PASS: ${results.length}/6 real installed Panel Desktop IPC scenarios`);
 } catch (error) {
+  failure = { error };
   console.error(`Desktop acceptance failed at ${stage}:`, error);
   console.error(await win?.locator("body").innerText().catch(() => "renderer unavailable"));
-  throw error;
 } finally {
-  await app?.close().catch(() => {});
-  await rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  cleanupReceipt = await cleanupPanelDesktopFixture({ app, ownedChildProcess, launchStarted, directory, failure });
 }
+report.completedAt = new Date().toISOString();
+report.cleanup = cleanupReceipt;
+if (reportArgument) await writeFile(resolve(reportArgument), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+console.log(`PASS: ${results.length}/6 real installed Panel Desktop IPC scenarios; owned Electron exit and HOME cleanup verified`);

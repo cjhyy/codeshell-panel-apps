@@ -207,6 +207,11 @@ lifecycle to suppress automatic market collectors. These controls do not claim
 an OS sandbox, real providers, native media, physical phones or deployed Cloud.
 Record the actual output hashes and independently established build provenance;
 the current Host source checkout/version can differ from its built outputs.
+Cleanup preserves assertion, close, and filesystem failures together. It checks
+the captured Electron ChildProcess has exited before deleting its temporary HOME;
+an unverified live process retains that directory and fails the gate. Fallback
+termination uses only that captured child handle. Final reports are written only
+after verified shutdown and successful directory cleanup.
 
 ## Pull requests
 

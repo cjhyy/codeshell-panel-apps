@@ -13,7 +13,8 @@ webview。安装、绑定、预览更新、提交更新、历史、审阅恢复�
 `window.codeshell` IPC；Panel 读写走真实 `window.codeshellPanel.callResult`。
 没有注入模拟 Panel bridge，也没有手写安装注册表或项目 pin。
 
-安装包来自 `9a714ed42ea1c469859356e8a5f49e9d0a4b2a75`，Video Studio 使用
+最新复验安装包来自合入 Panel main `4879420` 后的
+`0aa6249570d034be32091966160b431be1237a40`，Video Studio 使用
 `panels/video-studio/`。先复制到独立临时稳定来源，再由 Host 审阅安装；不将一次性
 任务工作树登记为个人安装来源。两个项目、应用 HOME/userData、Electron 的 home、
 downloads、documents、desktop 都是独立目录，启动后回读原生路径逐项核对。
@@ -78,10 +79,29 @@ macOS harness 只读取默认 Keychain 文件的元数据并在临时 HOME 写�
 默认没有改变；不复制 Keychain、读取用户凭据、创建/解锁 Keychain 或改变 OS 默认。
 本轮不配置账号、不提交模型任务。JS HTTP 与 Chromium 请求控制不是 OS 网络沙箱。
 
+## 退出核验与清理故障
+
+清理只使用启动后捕获的 `app.process()` ChildProcess，先等待正常关闭和实际 exit。
+关闭拒绝、超时或返回后仍存活都会作为失败保留；后备终止只调用该 ChildProcess 的
+`kill(SIGTERM)` / `kill(SIGKILL)`，不按进程名、负 PID 或扫描出的 PID 发信号。
+仍存活或启动未返回可核验 handle 时保留私有 HOME；只有实际 Electron 已退出才删除。
+主断言、关闭、删目录错误通过 AggregateError 一并保留，最终 PASS/report 在清理成功
+之后产生。没有把“发过终止信号”当作退出证据。
+
+本次真实六包复验的 Electron PID `52860` 正常 exitCode `0`，回执含
+`exited:true`、`homeRemoved:true`；所有原 Host 哈希保持一致。执行的 runner SHA-256 为
+`6132332508752421fdbf571f255e7e535dac73b39d10c5085c40f3ef7e2a19da`。
+新增 cleanup helper 在执行前后未改动，其 SHA-256 为
+`739f7c99ac559627347be453c4e7748ca070b681825819e238ecca33ca79bfce`。
+八项独立故障测试覆盖主错误与 close/rm 双故障、挂起关闭、未退出的成功 close、拒绝
+终止时保留 HOME、部分启动和启动前失败；真实受控 Node child 的退出先于磁盘清理，
+另一无关受控 child 始终未被终止。这些测试已纳入默认 offline gate。
+
 ## 验证与未覆盖范围
 
-- `npm run check`：1954 项，1950 pass、0 fail、4 项既有可选 runtime/model skip。
+- 合入最新 main 后的 `npm run check`：1976 项，1972 pass、0 fail、4 项既有可选 runtime/model skip。
 - `npm run test:desktop`：6/6，包含每个包的真实暂存发布 `EACCES` 保全。
+- cleanup fault suite：8/8；本次六包回执增加实际退出与 HOME 清理核验。
 - `npm run validate`、脚本语法与 `git diff --check` 通过。
 
 当前四组合矩阵仍为部分验收：电脑本地增加上述真实 macOS 壳层/IPC 证据；电脑云端、
