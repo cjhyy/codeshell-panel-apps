@@ -183,6 +183,27 @@ restoration without reading personal projects. It is separate from the default
 gate because the Host is a different repository. It does not establish physical
 phone, provider, operating-system network isolation or deployed Cloud acceptance.
 
+For actual old-package install, project data upgrade and rollback, run:
+
+```sh
+npm run test:host-upgrade -- /absolute/path/to/codeshell/packages/server /tmp/panel-upgrade-report.json
+```
+
+This separate integration gate also requires the sibling built `packages/core`,
+Chromium, Git, tar and the immutable historical Git objects listed in
+`scripts/panel-host-upgrade.mjs`. Fetch tags/history before an offline run if
+needed. It uses the real reviewed Core installer and project package selection,
+then the real server storage/workspace services with installed Panel modules.
+The optional report is create-only and records exact old/candidate package
+digests, permissions and covered paths. The worker receives a temporary HOME,
+private Host data/projects, no provider credentials and a JavaScript network
+guard. Only the browser executable is read from the existing Playwright cache;
+its test profile is private and its page requests are intercepted locally.
+See [the upgrade audit](docs/todo/p1-panel-upgrade-rollback-2026-10-12.md) for
+fixture provenance, rollback semantics and the remaining device/deployment
+acceptance. This gate does not run native tools, authenticate providers or
+replace installed Desktop/Cloud acceptance.
+
 ## Pull requests
 
 Explain the user-visible behavior, list requested Host permissions, and include

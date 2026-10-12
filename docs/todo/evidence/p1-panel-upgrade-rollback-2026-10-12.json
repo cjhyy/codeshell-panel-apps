@@ -1,0 +1,348 @@
+{
+  "hostCheckoutManifestVersion": "0.9.35",
+  "hostCheckoutCommit": "dbd549dd67276c52fde67c812527431c9ec0f783",
+  "hostRuntimeEntrySHA256": "2e10a8b144ae2e8fd2f8e2ce16165a9081db5c6c4e3d1213eb59def56872314e",
+  "coreInstallerEntrySHA256": "802b06ceed09725c3b4c2340da52be6a7de28cb122785bdb4b3365a1ad137c4e",
+  "runtime": {
+    "node": "v25.8.1",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "candidateCommit": "a7324da8b8325bb0b94eb7b14433b9c64992dedf",
+  "cases": [
+    {
+      "id": "design-studio",
+      "old": {
+        "ref": "design-studio-v0.18.1",
+        "commit": "14c9a1819794d7db6ad3d6cbc2df53ec5cfd9f42",
+        "version": "0.18.1",
+        "packageDigest": "f8118f6b9ae771742e8462229fbfead2a78c129e699d555fd6b9d6f562d699c9",
+        "sourceKind": "git-tag-package"
+      },
+      "candidate": {
+        "version": "0.18.1",
+        "packageDigest": "e77124380e4b22260933b389d5285df2e7addca3993a24ec610f9c3137f07a75"
+      },
+      "permissionsAdded": [],
+      "permissionsRemoved": [],
+      "reviewedPermissions": [
+        "context.session",
+        "context.workspace",
+        "workspace.info",
+        "workspace.read",
+        "workspace.write",
+        "storage",
+        "agent.submitPrompt"
+      ],
+      "commonChecks": [
+        "review token rejects changed source",
+        "project pins remain old after global update",
+        "independent project stays empty",
+        "old scope revoked after project update",
+        "exact old digest rollback",
+        "candidate content retained",
+        "uninstall revokes execution authority"
+      ],
+      "checks": [
+        "v3 pages/nodes/resource parts",
+        "conditional edit",
+        "upgraded design archive",
+        "old-parser rollback",
+        "resource bytes unchanged"
+      ],
+      "rollback": "exact-old-package-and-pre-upgrade-data; upgraded-content-archived"
+    },
+    {
+      "id": "job-hunt-hq",
+      "old": {
+        "ref": "4929f80",
+        "commit": "4929f80e0e2ae14945fe0533df3bd948f29ccf6e",
+        "version": "4.1.0",
+        "packageDigest": "acfaa4461257a9bc4b10f827c50df9bc084d22107cd58fcacf4f8051236ce5fb",
+        "sourceKind": "historical-repository-package"
+      },
+      "candidate": {
+        "version": "4.1.1",
+        "packageDigest": "ccf664af7264735ef1bc45f5757f2903025834dd2c7fbcb09c42fd2d5c030bd9"
+      },
+      "permissionsAdded": [
+        "process",
+        "resources",
+        "credentials.connections"
+      ],
+      "permissionsRemoved": [],
+      "reviewedPermissions": [
+        "context.session",
+        "context.workspace",
+        "workspace.info",
+        "workspace.read",
+        "workspace.write",
+        "storage",
+        "external.open",
+        "agent.submitPrompt",
+        "audio.transcribe",
+        "credentials.cookies",
+        "automations.manage",
+        "process",
+        "resources",
+        "credentials.connections"
+      ],
+      "commonChecks": [
+        "review token rejects changed source",
+        "project pins remain old after global update",
+        "independent project stays empty",
+        "old scope revoked after project update",
+        "exact old digest rollback",
+        "candidate content retained",
+        "uninstall revokes execution authority"
+      ],
+      "checks": [
+        "actual 4.1.0 A/B writer",
+        "root/shard migration",
+        "interrupted migration preserves root",
+        "exact raw backup",
+        "old-shard rollback",
+        "upgraded bundle archive"
+      ],
+      "rollback": "exact-old-package-and-pre-upgrade-data; upgraded-content-archived"
+    },
+    {
+      "id": "job-hunt-hq",
+      "old": {
+        "ref": "job-hunt-hq-v4.1.1",
+        "commit": "14c9a1819794d7db6ad3d6cbc2df53ec5cfd9f42",
+        "version": "4.1.1",
+        "packageDigest": "0c9ae0f3850da9462ff18596b5da1c60fd35e4c17197e70490bb3ffa55785802",
+        "sourceKind": "git-tag-package"
+      },
+      "candidate": {
+        "version": "4.1.1",
+        "packageDigest": "ccf664af7264735ef1bc45f5757f2903025834dd2c7fbcb09c42fd2d5c030bd9"
+      },
+      "permissionsAdded": [
+        "process",
+        "resources",
+        "credentials.connections"
+      ],
+      "permissionsRemoved": [],
+      "reviewedPermissions": [
+        "context.session",
+        "context.workspace",
+        "workspace.info",
+        "workspace.read",
+        "workspace.write",
+        "storage",
+        "external.open",
+        "agent.submitPrompt",
+        "audio.transcribe",
+        "credentials.cookies",
+        "automations.manage",
+        "process",
+        "resources",
+        "credentials.connections"
+      ],
+      "commonChecks": [
+        "review token rejects changed source",
+        "project pins remain old after global update",
+        "independent project stays empty",
+        "old scope revoked after project update",
+        "exact old digest rollback",
+        "candidate content retained",
+        "uninstall revokes execution authority"
+      ],
+      "checks": [
+        "actual 4.1.1 A/B writer",
+        "root/shard migration",
+        "interrupted migration preserves root",
+        "exact raw backup",
+        "old-shard rollback",
+        "upgraded bundle archive"
+      ],
+      "rollback": "exact-old-package-and-pre-upgrade-data; upgraded-content-archived"
+    },
+    {
+      "id": "quant-lab",
+      "old": {
+        "ref": "quant-lab-v0.45.2",
+        "commit": "e99f57c0350c28b41d134dec2e06bd4f76f89c00",
+        "version": "0.45.2",
+        "packageDigest": "e2e97a63741a7f47bed81fde05cd9a1aa0c230b82a3852fed233f7287d97a94d",
+        "sourceKind": "git-tag-package"
+      },
+      "candidate": {
+        "version": "0.46.1",
+        "packageDigest": "7cd84a6e8fa32bd05e6798aea0ce4324bf3d5e9aedd10e3dd7ae2687abe63b00"
+      },
+      "permissionsAdded": [],
+      "permissionsRemoved": [],
+      "reviewedPermissions": [
+        "context.session",
+        "context.workspace",
+        "workspace.info",
+        "workspace.read",
+        "workspace.write",
+        "external.open",
+        "storage",
+        "agent.submitPrompt",
+        "agent.task",
+        "automations.manage",
+        "notifications.send",
+        "process"
+      ],
+      "commonChecks": [
+        "review token rejects changed source",
+        "project pins remain old after global update",
+        "independent project stays empty",
+        "old scope revoked after project update",
+        "exact old digest rollback",
+        "candidate content retained",
+        "uninstall revokes execution authority"
+      ],
+      "checks": [
+        "old backtest result reproducible",
+        "real scoped configuration/watch keys",
+        "watch extension retained",
+        "cash ledger append/CAS",
+        "ledger archive and old-parser restore"
+      ],
+      "rollback": "exact-old-package-and-pre-upgrade-data; upgraded-content-archived"
+    },
+    {
+      "id": "video-download",
+      "old": {
+        "ref": "video-download-v0.22.3",
+        "commit": "a4cab15f1542b606607fe81296db8a9d0b35759c",
+        "version": "0.22.3",
+        "packageDigest": "d3c7625a092fe6e5d4fbef80ec8a0cc4eb0eb1362c5930832eb599c3b6adcd0f",
+        "sourceKind": "git-tag-package"
+      },
+      "candidate": {
+        "version": "0.22.6",
+        "packageDigest": "659d0121e07513bb085944f840170806576510d0f75b11593d91c075bbc590b6"
+      },
+      "permissionsAdded": [
+        "resources",
+        "context.session"
+      ],
+      "permissionsRemoved": [],
+      "reviewedPermissions": [
+        "process",
+        "resources",
+        "credentials.cookies",
+        "agent.task",
+        "storage",
+        "context.workspace",
+        "context.session",
+        "external.open"
+      ],
+      "commonChecks": [
+        "review token rejects changed source",
+        "project pins remain old after global update",
+        "independent project stays empty",
+        "old scope revoked after project update",
+        "exact old digest rollback",
+        "candidate content retained",
+        "uninstall revokes execution authority"
+      ],
+      "checks": [
+        "tagged v2 queue/library",
+        "legacy set to current CAS",
+        "running tasks become interrupted",
+        "no stale directory handles",
+        "file references retained",
+        "library archive and rollback",
+        "existing file bytes unchanged"
+      ],
+      "rollback": "exact-old-package-and-pre-upgrade-data; upgraded-content-archived"
+    },
+    {
+      "id": "video-studio",
+      "old": {
+        "ref": "video-studio-v0.5.12",
+        "commit": "2149c34087c5e692abe10ba36fa4082d7a416a34",
+        "version": "0.5.12",
+        "packageDigest": "0bd1ec1fe14ec09e24ddf35def4841406d1b7726109827084e96433c695ba45d",
+        "sourceKind": "git-tag-package"
+      },
+      "candidate": {
+        "version": "0.7.2",
+        "packageDigest": "faa3a11666f80cfb9e71b6a0d72cfbb5c0f398d0790cd283e50f856152b7cf6c"
+      },
+      "permissionsAdded": [
+        "context.session",
+        "workspace.read",
+        "workspace.write"
+      ],
+      "permissionsRemoved": [],
+      "reviewedPermissions": [
+        "context.session",
+        "context.workspace",
+        "workspace.read",
+        "workspace.write",
+        "storage",
+        "agent.task",
+        "media",
+        "media.capture",
+        "process",
+        "resources",
+        "credentials.connections"
+      ],
+      "commonChecks": [
+        "review token rejects changed source",
+        "project pins remain old after global update",
+        "independent project stays empty",
+        "old scope revoked after project update",
+        "exact old digest rollback",
+        "candidate content retained",
+        "uninstall revokes execution authority"
+      ],
+      "checks": [
+        "old source matches installed bundle map",
+        "actual old model/store save",
+        "v1 to v2 workspace fallback",
+        "immutable exact v1 backup",
+        "v2 CAS/history",
+        "v2 archive retained across rollback",
+        "old store reopens original"
+      ],
+      "rollback": "exact-old-package-and-pre-upgrade-data; upgraded-content-archived"
+    },
+    {
+      "id": "starter-panel",
+      "old": {
+        "ref": "57703cbb",
+        "commit": "57703cbb75ed44dce004215ad7075480c289becb",
+        "version": "0.1.0",
+        "packageDigest": "c472ea1a5f1bd07be3951a91e7abc97718a3bfb7380c98f15db6c37efbe622b2",
+        "sourceKind": "historical-repository-package"
+      },
+      "candidate": {
+        "version": "0.1.0",
+        "packageDigest": "d4798ffd0ee1483eb02acc3ca60d7d0ef85d03dcbc920a42f0cbf26f39272753"
+      },
+      "permissionsAdded": [],
+      "permissionsRemoved": [],
+      "reviewedPermissions": [
+        "context.workspace"
+      ],
+      "commonChecks": [
+        "review token rejects changed source",
+        "project pins remain old after global update",
+        "independent project stays empty",
+        "old scope revoked after project update",
+        "exact old digest rollback",
+        "candidate content retained",
+        "uninstall revokes execution authority"
+      ],
+      "checks": [
+        "historical untagged template package",
+        "installed old/current Chromium entry",
+        "reviewed project context",
+        "click interaction",
+        "no persistent business data"
+      ],
+      "rollback": "exact-old-package-and-pre-upgrade-data; upgraded-content-archived"
+    }
+  ],
+  "boundary": "Temporary local Node Host/Core integration and domain adapters; no desktop shell, physical phone, deployed Cloud, provider requests or native download/model execution"
+}

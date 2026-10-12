@@ -93,6 +93,12 @@ npm run test:host-storage -- /absolute/path/to/built/codeshell/packages/server
 
 ## 数据兼容与回滚边界
 
+后续已补 [六 Panel 旧包安装、数据升级与回滚验收](p1-panel-upgrade-rollback-2026-10-12.md)：
+真实 Core reviewed install/update、项目精确 pin、真实 Host 临时磁盘以及旧/新领域
+模块的 7 个旧包场景全部通过。它补强电脑本地受控集成 C；Desktop 壳层、原生
+media.document、实体手机、实际配对和 Cloud 仍未取得完整证据，因此上方四组合
+矩阵不提升 P/R，也不把完整业务升级回滚标为结束。
+
 | Panel | 已有兼容和恢复证据 | 本轮回滚含义 |
 | --- | --- | --- |
 | Design Studio | 旧草稿 v1、save-as v2、分页/资源备份恢复为新文件，失败不覆盖目标 | 本轮只增加执行身份检查，不改项目格式；回退代码会失去新增隔离保护。旧面板对不支持的恢复格式保留原数据；不能用旧面板解释新格式 |

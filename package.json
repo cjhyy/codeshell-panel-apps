@@ -27,7 +27,8 @@
     "test:media:video-studio": "node --test --test-concurrency=1 tests/video-studio-media.test.mjs tests/video-studio-browser-export-media.test.mjs tests/video-studio-caption-render.test.mjs apps/video-studio/native/media/tests/media-runtime.test.mjs tests/video-studio-editor-compositor.test.mjs tests/video-studio-editor-media-pool.test.mjs tests/video-studio-editor-render.test.mjs tests/video-studio-editor-preview.test.mjs tests/video-studio-editor-audio-pcm.test.mjs tests/video-studio-editor-task-runtime.test.mjs tests/video-studio-editor-waveform.test.mjs tests/video-studio-portable-bundle.test.mjs tests/video-studio-portable-task-runtime.test.mjs tests/video-studio-editor-sequence-render.test.mjs tests/video-studio-editor-sync-runtime.test.mjs tests/video-studio-editor-multicam-native.test.mjs",
     "test:ui:video-download": "node --test tests/apps/video-download/*.test.mjs",
     "test:quant-lab": "node scripts/test-quant-lab.mjs",
-    "test:host-storage": "node scripts/check-panel-host-storage.mjs"
+    "test:host-storage": "node scripts/check-panel-host-storage.mjs",
+    "test:host-upgrade": "node scripts/check-panel-host-upgrade.mjs"
   },
   "devDependencies": {
     "@cjhyy/code-shell-core": "0.9.11",
