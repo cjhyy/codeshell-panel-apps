@@ -640,6 +640,18 @@
   color: #edc183;
 }
 
+.editor-composition-guides {
+  position: absolute;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+.editor-composition-guides line {
+  stroke: #ffffffb3;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 1px #000c);
+}
 .editor-canvas-controls {
   position: absolute;
   overflow: hidden;

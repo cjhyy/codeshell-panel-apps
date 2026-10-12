@@ -29,6 +29,7 @@ const paths: Record<string, string> = {
     '<path d="M4 9V4h5m6 0h5v5m0 6v5h-5m-6 0H4v-5M12 8v8m-4-4h8m-4-4-2 2m2-2 2 2m-2 6-2-2m2 2 2-2"/>',
   crop: '<path d="M5 3v13a3 3 0 0 0 3 3h13M3 5h13a3 3 0 0 1 3 3v13"/>',
   mask: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="5"/>',
+  thirds: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
   close: '<path d="m6 6 12 12M6 18 18 6"/>',
   search: '<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/>',

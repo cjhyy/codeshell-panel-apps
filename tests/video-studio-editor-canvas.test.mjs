@@ -423,10 +423,10 @@ test("canvas tools are compact icons and selecting an oversized picture keeps it
   const page = await fixture(t, { oversized: true });
   const toolbar = page.locator(".editor-canvas-toolbar");
   const buttons = toolbar.getByRole("button");
-  assert.equal(await buttons.count(), 3);
-  assert.deepEqual(await buttons.allTextContents(), ["", "", ""]);
+  assert.equal(await buttons.count(), 4);
+  assert.deepEqual(await buttons.allTextContents(), ["", "", "", ""]);
   const toolbarBox = await toolbar.boundingBox();
-  assert.ok(toolbarBox.width < 110);
+  assert.ok(toolbarBox.width < 140);
   await page.evaluate(() => f.clearSelection());
   const overlay = page.locator(".editor-canvas-controls");
   const box = await overlay.boundingBox();
@@ -643,4 +643,101 @@ test("a synchronous field hook scope change removes its old pointer owner", asyn
  const box=await handle(page,"move").boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();await page.mouse.up();
  const result=await page.evaluate(()=>({gesture:!!f.internals.controls.gesture,pending:!!f.internals.controls.pendingGesture,errors:f.errors}));
  assert.equal(result.gesture,false);assert.equal(result.pending,false,JSON.stringify(result));assert.deepEqual(result.errors,[]);
+});
+
+async function assertCompositionGuideBounds(page) {
+  const geometry = await page.evaluate(() => {
+    const canvas = document.querySelector("canvas").getBoundingClientRect(),
+      guides = document.querySelector(".editor-composition-guides"), box = guides.getBoundingClientRect();
+    return {
+      canvas: [canvas.x, canvas.y, canvas.width, canvas.height],
+      guides: [box.x, box.y, box.width, box.height],
+      lines: [...guides.querySelectorAll("line")].map((line) => {
+        const a = new DOMPoint(line.x1.baseVal.value, line.y1.baseVal.value).matrixTransform(line.getScreenCTM()),
+          b = new DOMPoint(line.x2.baseVal.value, line.y2.baseVal.value).matrixTransform(line.getScreenCTM());
+        return [(a.x - box.x) / box.width, (a.y - box.y) / box.height,
+          (b.x - box.x) / box.width, (b.y - box.y) / box.height];
+      }),
+      pointerEvents: getComputedStyle(guides).pointerEvents,
+    };
+  });
+  geometry.canvas.forEach((value, i) => assert.ok(Math.abs(value - geometry.guides[i]) < 0.02));
+  const expected = [[1/3, 0, 1/3, 1], [0, 1/3, 1, 1/3], [2/3, 0, 2/3, 1], [0, 2/3, 1, 2/3]];
+  assert.equal(geometry.lines.length, 4);
+  geometry.lines.forEach((line, i) => line.forEach((value, j) => assert.ok(Math.abs(value - expected[i][j]) < 1e-6)));
+  assert.equal(geometry.pointerEvents, "none");
+}
+
+for (const [width, height] of [[321, 181], [181, 321]]) {
+  test(`composition guides follow ${width}x${height} pixels at original/half/quarter quality and resize`, async (t) => {
+    const page = await fixture(t, { canvasWidth: width, canvasHeight: height }),
+      button = page.getByRole("button", { name: "三分构图辅助线", exact: true });
+    const before = await page.evaluate(() => f.read());
+    assert.equal(await button.getAttribute("aria-pressed"), "false");
+    assert.equal(await page.locator(".editor-composition-guides").isVisible(), false);
+    const pixels = await page.locator("canvas").evaluate((canvas) => canvas.toDataURL("image/png"));
+    await button.click();
+    assert.equal(await button.getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator("canvas").evaluate((canvas) => canvas.toDataURL("image/png")), pixels);
+    for (const quality of [1, 0.5, 0.25]) {
+      await page.evaluate((quality) => f.quality(quality), quality);
+      assert.deepEqual(await page.locator("canvas").evaluate((c) => [c.width, c.height]),
+        [Math.round(width * quality), Math.round(height * quality)]);
+      assert.equal(await button.getAttribute("aria-pressed"), "true");
+      await assertCompositionGuideBounds(page);
+    }
+    await page.locator(".wrap").evaluate((node) => { node.style.width = "327px"; node.style.height = "601px"; });
+    await settle(page); await assertCompositionGuideBounds(page);
+    await page.evaluate(() => f.clearSelection());
+    assert.equal(await page.locator(".editor-composition-guides").isVisible(), true);
+    assert.deepEqual(await page.evaluate(() => f.read()), before);
+    assert.deepEqual(await page.evaluate(() => f.writes), []);
+    await page.evaluate(() => f.dispose());
+    await page.locator(".wrap").evaluate((node) => { node.style.width = "420px"; });
+    await settle(page);
+    assert.equal(await page.locator(".editor-composition-guides, .editor-canvas-toolbar").count(), 0);
+  });
+}
+
+test("composition guides allow a real canvas drag through their intersection and one undo", async (t) => {
+  const page = await fixture(t), before = await page.evaluate(() => f.read());
+  await page.getByRole("button", { name: "三分构图辅助线", exact: true }).click();
+  const box = await page.locator(".editor-composition-guides").boundingBox();
+  await page.mouse.move(box.x + box.width / 3, box.y + box.height / 3); await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 3 + 80, box.y + box.height / 3, { steps: 4 }); await page.mouse.up();
+  await settle(page); await page.evaluate(() => f.flush());
+  const after = await page.evaluate(() => f.read());
+  assert.equal(after.revision, before.revision + 1);
+  assert.ok(Math.abs(after.sequences[0].clips[0].transform.x - 0.125) < 1e-6);
+  assert.equal(await page.getByRole("button", { name: "三分构图辅助线", exact: true }).getAttribute("aria-pressed"), "true");
+  await page.evaluate(() => f.undo()); await settle(page);
+  assert.deepEqual((await page.evaluate(() => f.read())).sequences, before.sequences);
+  assert.deepEqual(await page.evaluate(() => f.errors), []);
+});
+
+test("composition guides toggle once per held Enter/Space and native touch without reading or editing a document", async (t) => {
+  const page = await fixture(t, { touch: true }), button = page.getByRole("button", { name: "三分构图辅助线", exact: true });
+  const before = await page.evaluate(() => f.read());
+  await page.evaluate(() => {
+    globalThis.guideReads = 0;
+    const context = f.internals.controls.context, read = context.read;
+    context.read = () => { guideReads++; return read(); };
+  });
+  await button.focus();
+  for (const key of ["Enter", " "]) {
+    const before = await button.getAttribute("aria-pressed");
+    for (let i = 0; i < 4; i++) await page.keyboard.down(key);
+    await page.keyboard.up(key);
+    assert.equal(await button.getAttribute("aria-pressed"), String(before !== "true"));
+    await page.keyboard.press(key);
+    assert.equal(await button.getAttribute("aria-pressed"), before);
+  }
+  await button.tap();
+  assert.equal(await button.getAttribute("aria-pressed"), "true");
+  assert.equal(await page.evaluate(() => guideReads), 0);
+  assert.deepEqual(await page.evaluate(() => f.read()), before);
+  assert.deepEqual(await page.evaluate(() => f.writes), []);
+  await page.evaluate(() => { globalThis.oldGuideButton = document.querySelector("[data-canvas-guides]"); return f.dispose(); });
+  await page.evaluate(() => oldGuideButton.click());
+  assert.equal(await page.evaluate(() => oldGuideButton.getAttribute("aria-pressed")), "true");
 });

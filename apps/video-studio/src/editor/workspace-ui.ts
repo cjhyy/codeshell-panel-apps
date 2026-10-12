@@ -337,6 +337,10 @@ export class EditorWorkspace {
         this.markers.beginShortcut(kind);
         if (!this.disposed) section.scrollIntoView({ block: "nearest" });
       },
+      canNavigateMarkers: (time) => {
+        const state = this.options.session.getState();
+        return state.phase === "ready" && !this.disposed && this.visible && !this.sourcePreview && this.playhead === time;
+      },
       selectMarker: (id) => {
         const section = this.get("[data-ew-markers]");
         section.hidden = false;

@@ -738,6 +738,32 @@ export class EditorInspector {
     });
     this.inputRow(parent, label, input);
   }
+  private clipName(parent: HTMLElement, scope: Scope): void {
+    if (scope.clips.length !== 1) return;
+    const clip = scope.clips[0]!, input = el("input", "ei-input");
+    input.value = clip.label;
+    input.maxLength = 256;
+    input.placeholder = "未命名片段";
+    input.disabled = this.pending || this.locked(scope);
+    input.title = "仅修改这个片段的名称；素材名称和文字内容保持不变。Enter 提交，Escape 取消。";
+    this.manageField(input, () => {
+      if (this.disposed || this.replacingControls || !this.root.contains(input) ||
+        input.disabled || input.value === clip.label) return;
+      const value = input.value;
+      void this.edit(scope, "重命名片段", (current) => {
+        if (!this.root.contains(input) || current.label !== clip.label)
+          throw new Error("片段名称已变化，请重新编辑");
+        return { label: value };
+      });
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.isComposing || !["Enter", "Escape"].includes(event.key)) return;
+      event.preventDefault(); event.stopPropagation();
+      if (event.key === "Escape") input.value = clip.label;
+      input.blur();
+    });
+    this.inputRow(parent, "片段名称", input);
+  }
   /**
    * Add a native picker beside a typed #RRGGBB(AA) field. Picking keeps any typed transparency;
    * closing the picker without choosing restores the value it opened with.
@@ -1244,6 +1270,7 @@ export class EditorInspector {
       this.root.append(el("p", "ei-empty", "选择时间线中的片段，调整画面、文字与声音。"));
       return;
     }
+    this.clipName(header, scope);
     const nav = el("div", "ei-tabs");
     nav.setAttribute("role", "tablist");
     nav.setAttribute("aria-label", "属性分类");

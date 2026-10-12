@@ -295,15 +295,32 @@ function createEvaluator(document: EditorDocument): PreparedEvaluator {
     document.sequences.map((sequence) => [sequence.id, sequenceDuration(sequence)]),
   );
   const tracks = new Map(
-    document.sequences.map((sequence) => [
-      sequence.id,
-      sequence.tracks.map((track) => ({
-        track,
-        clips: sequence.clips
-          .filter((clip) => clip.trackId === track.id)
-          .sort((a, b) => a.start - b.start),
-      })),
-    ]),
+    document.sequences.map((sequence) => {
+      const transitions = new Map<string, Transition[]>(),
+        indexTransitions = sequence.transitions.length > 0 &&
+          sequence.tracks.filter((track) => track.kind === "video").length > 1;
+      // Validation guarantees both endpoints belong to the same video track.
+      if (indexTransitions) {
+        const clipTracks = new Map(sequence.clips.map((clip) => [clip.id, clip.trackId]));
+        for (const transition of sequence.transitions) {
+          const trackId = clipTracks.get(transition.fromClipId)!;
+          const entries = transitions.get(trackId) ?? [];
+          entries.push(transition);
+          transitions.set(trackId, entries);
+        }
+      }
+      return [
+        sequence.id,
+        sequence.tracks.map((track) => ({
+          track,
+          clips: sequence.clips
+            .filter((clip) => clip.trackId === track.id)
+            .sort((a, b) => a.start - b.start),
+          transitions: track.kind !== "video" ? [] :
+            indexTransitions ? transitions.get(track.id) ?? [] : sequence.transitions,
+        })),
+      ] as const;
+    }),
   );
 
   function evaluateSequence(
@@ -323,7 +340,7 @@ function createEvaluator(document: EditorDocument): PreparedEvaluator {
       audio: [],
     };
     if (tick >= durations.get(sequence.id)!) return frame;
-    for (const { track, clips } of tracks.get(sequence.id)!) {
+    for (const { track, clips, transitions } of tracks.get(sequence.id)!) {
       const visual = new Map<string, EvaluatedVisualLayer | null>();
       const active = clips.filter((clip) => inside(clip, tick));
       const picture = visible && !track.hidden && track.kind !== "audio";
@@ -474,7 +491,7 @@ function createEvaluator(document: EditorDocument): PreparedEvaluator {
       }
       if (!picture) continue;
       const transitionByClip = new Map<string, Transition>();
-      for (const transition of sequence.transitions) {
+      for (const transition of transitions) {
         if (
           tick < transition.start ||
           tick - transition.start >= transition.duration ||

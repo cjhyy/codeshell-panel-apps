@@ -1327,3 +1327,95 @@ test(
     }
   },
 );
+
+test("native library search retains its editor across a background render between focus and text input", async () => {
+  const page = await mixedPage();
+  try {
+    await page.evaluate(() => {
+      const search = document.querySelector('#asset-search');
+      window.__searchBefore = search;
+      window.__searchFocusEvents = [];
+      let once = false;
+      document.addEventListener('focusin', event => {
+        if (event.target.id !== 'asset-search' || once) return;
+        once = true;
+        queueMicrotask(() => {
+          __libraryPressAudit.render();
+          __searchFocusEvents.push({connected: search.isConnected, active: document.activeElement?.id});
+        });
+      });
+    });
+    await page.locator('#asset-search').fill('Library-');
+    const receipt = await page.evaluate(() => ({events: __searchFocusEvents, value: document.querySelector('#asset-search').value, retained: __searchBefore === document.querySelector('#asset-search')}));
+    await page.locator('[data-action="select-media"]').click();
+    assert.equal(await page.locator('[data-select-media]:checked').count(), 3);
+    assert.equal(receipt.value, "Library-");
+    assert.deepEqual(receipt.events, [{ connected: true, active: "asset-search" }]);
+    assert.equal(receipt.retained, true, 'Background presentation must keep the actual search input connected');
+  } finally { await page.close(); }
+});
+
+
+test("native library search composition remains connected through full and media refreshes", async () => {
+  const page = await mixedPage(), client = await page.context().newCDPSession(page);
+  try {
+    await page.locator('#asset-search').click();
+    await page.evaluate(() => {
+      __searchBefore = document.querySelector('#asset-search');
+      __searchComposition = [];
+      for (const name of ['compositionstart', 'compositionupdate', 'compositionend', 'input'])
+        __searchBefore.addEventListener(name, event => __searchComposition.push({type: event.type, trusted: event.isTrusted, composing: event.isComposing}));
+    });
+    await client.send('Input.imeSetComposition', {text: '素材', selectionStart: 2, selectionEnd: 2});
+    await page.evaluate(async () => { __libraryPressAudit.render(); await __libraryPressAudit.restore(); });
+    assert.equal(await page.evaluate(() => __searchBefore.isConnected && document.activeElement === __searchBefore), true);
+    await client.send('Input.imeSetComposition', {text: '素材片', selectionStart: 3, selectionEnd: 3});
+    await client.send('Input.insertText', {text: '素材片'});
+    assert.equal(await page.locator('#asset-search').inputValue(), '素材片');
+    assert.equal(await page.evaluate(() => __searchBefore === document.querySelector('#asset-search')), true);
+    const composition = await page.evaluate(() => __searchComposition);
+    assert.ok(composition.some(event => event.type === 'compositionend'));
+    assert.ok(composition.some(event => event.type === 'input' && event.trusted && event.composing), JSON.stringify(composition));
+    assert.equal((await visibleIds(page)).length, 0);
+    await page.locator('#asset-search').fill('Library-');
+    await page.locator('[data-action="select-media"]').click();
+    assert.equal(await page.locator('[data-select-media]:checked').count(), 3);
+  } finally { await client.detach(); await page.close(); }
+});
+
+test("library search applies explicit filter clears and retains the live editor through view changes", async () => {
+  const page = await mixedPage();
+  try {
+    await page.locator('#asset-search').fill('Library-');
+    await page.evaluate(() => { __searchBefore = document.querySelector('#asset-search'); });
+    await page.locator('[data-action="media-view"][data-id="list"]').click();
+    assert.equal(await page.locator('[data-action="media-view"][data-id="list"]').getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.evaluate(() => __searchBefore === document.querySelector('#asset-search')), true);
+    await page.locator('#asset-search').fill('no-matching-library-item');
+    await page.locator('#asset-search').focus();
+    // An explicit action can clear the query while the search input still has focus.
+    await page.evaluate(() => document.querySelector('[data-action="clear-media-filter"]').click());
+    assert.equal(await page.locator('#asset-search').inputValue(), '');
+    assert.equal((await visibleIds(page)).length, (await state(page)).project.assets.length);
+    assert.equal(await page.evaluate(() => __searchBefore === document.querySelector('#asset-search')), true);
+  } finally { await page.close(); }
+});
+
+test("a same-id project replacement retires the previous native library search editor", async () => {
+  const page = await mixedPage();
+  try {
+    await page.locator('#asset-search').fill('Library-');
+    const project = (await state(page)).project;
+    project.name = 'Search generation replacement';
+    await page.evaluate(() => { __searchBefore = document.querySelector('#asset-search'); });
+    await page.locator('#project-input').setInputFiles({name: 'search-project.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(project))});
+    await page.waitForFunction(() => __libraryTools.read_video_project().project.name === 'Search generation replacement');
+    await saved(page);
+    await page.waitForFunction(() => document.querySelector('#project-input').value === '');
+    assert.equal(await page.evaluate(() => __searchBefore.isConnected), false);
+    assert.equal(await page.evaluate(() => __searchBefore === document.querySelector('#asset-search')), false);
+    await page.locator('#asset-search').fill('Library-');
+    await page.locator('[data-action="select-media"]').click();
+    assert.equal(await page.locator('[data-select-media]:checked').count(), 3);
+  } finally { await page.close(); }
+});

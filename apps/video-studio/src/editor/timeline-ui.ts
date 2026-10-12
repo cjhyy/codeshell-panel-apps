@@ -57,6 +57,8 @@ export interface EditorTimelineContext {
   beforeGesture?(signal: AbortSignal): boolean | Promise<boolean>;
   selectedMarker?(): string | undefined;
   selectMarker?(markerId: string): void;
+  /** Navigation must still belong to the visible composition and captured clock. */
+  canNavigateMarkers?(time: Tick): boolean;
   /** Open a marker draft; the parent owns its form and explicit save. */
   beginMarker?(kind: "point" | "range"): void;
   /** Whether composition trimming is still available at the captured playhead. */
@@ -231,7 +233,7 @@ const timelineIcons: Record<string, string> = {
 };
 /** Text and caption clips read as their first line of wording; other clips keep their name. */
 function clipLabel(clip: EditorClip): string {
-  if (clip.kind !== "text") return clip.label;
+  if (clip.kind !== "text") return clip.label || "未命名片段";
   const line = clip.text
     .split("\n")
     .map((item) => item.trim())
@@ -263,6 +265,7 @@ export class EditorTimeline {
   private readonly dragReadout = globalThis.document.createElement("div");
   private clipboard?: { payload: ClipClipboard; documentId: string; generation?: number };
   private clipboardPending = false;
+  private markerNavigationPending?: { cancelled: boolean; target?: Tick };
   private trimShortcutPending?: { cancelled: boolean };
   private drag?: Drag;
   private gestureSerial = 0;
@@ -497,6 +500,7 @@ export class EditorTimeline {
     return true;
   }
   render(options: { preserveToolbar?: boolean; scrollLeft?: number } = {}): void {
+    this.cancelMarkerNavigation();
     // A synchronous view update revokes a shortcut even if a getter returns its older value.
     if (this.trimShortcutPending) this.trimShortcutPending.cancelled = true;
     if (this.destroyed || this.replacingControls) return;
@@ -907,7 +911,9 @@ export class EditorTimeline {
   }
   updatePlayhead(): void {
     if (this.trimShortcutPending) this.trimShortcutPending.cancelled = true;
-    const x = ticksToSeconds(this.context.time()) * this.scale;
+    const navigation = this.markerNavigationPending, time = this.context.time();
+    if (navigation && time !== navigation.target) this.cancelMarkerNavigation(navigation);
+    const x = ticksToSeconds(time) * this.scale;
     if (
       this.playbackActive && this.followPlayback && !this.followSuspended &&
       !this.drag && !this.menu && !this.confirmTrack && !this.pendingControl &&
@@ -992,8 +998,12 @@ export class EditorTimeline {
   /** Reveal the current clock without changing selection, zoom or document history. */
   revealPlayhead(): void {
     if (this.destroyed) return;
+    this.revealTime(this.context.time());
+  }
+  private revealTime(time: Tick): void {
+    if (this.destroyed) return;
     const viewport = this.viewport(),
-      x = ticksToSeconds(this.context.time()) * this.scale,
+      x = ticksToSeconds(time) * this.scale,
       margin = Math.min(40, viewport.clientWidth / 4);
     if (x < viewport.scrollLeft + margin || x > viewport.scrollLeft + viewport.clientWidth - margin) {
       viewport.scrollLeft = Math.max(
@@ -1512,7 +1522,7 @@ export class EditorTimeline {
     await this.apply(operations, kind === "keep-left" ? "保留播放头左侧" : "保留播放头右侧");
   }
   private async shortcutTrim(kind: "keep-left" | "keep-right"): Promise<void> {
-    if (this.trimShortcutPending) return;
+    if (this.trimShortcutPending || this.markerNavigationPending) return;
     const owner = { cancelled: false };
     this.trimShortcutPending = owner;
     let current = () => !this.destroyed && this.trimShortcutPending === owner && !owner.cancelled;
@@ -1537,6 +1547,54 @@ export class EditorTimeline {
       try { if (current()) this.context.onError(error); } catch { /* unavailable parent */ }
     } finally {
       if (this.trimShortcutPending === owner) this.trimShortcutPending = undefined;
+    }
+  }
+  private cancelMarkerNavigation(expected = this.markerNavigationPending): void {
+    if (!expected || this.markerNavigationPending !== expected) return;
+    expected.cancelled = true;
+    this.markerNavigationPending = undefined;
+  }
+  private async navigateMarker(next: boolean): Promise<void> {
+    if (this.markerNavigationPending || this.trimShortcutPending || this.destroyed) return;
+    const owner: { cancelled: boolean; target?: Tick } = { cancelled: false };
+    this.markerNavigationPending = owner;
+    let current = (_time: Tick) => !this.destroyed && this.markerNavigationPending === owner && !owner.cancelled;
+    let time = 0, target: Tick | undefined;
+    try {
+      const identity = this.context.identity?.(), selection = this.context.selection(),
+        sequenceId = selection.sequenceId, selected = JSON.stringify(selection.clipIds);
+      time = this.context.time();
+      current = (clock: Tick) => {
+        const selection = this.context.selection(), now = this.context.time(), latest = this.context.identity?.(),
+          available = this.context.canNavigateMarkers?.(clock) ?? true;
+        return available && now === clock && selection.sequenceId === sequenceId &&
+          JSON.stringify(selection.clipIds) === selected &&
+          ((!identity && !latest) || sameIdentity(identity, latest)) &&
+          !this.destroyed && this.markerNavigationPending === owner && !owner.cancelled &&
+          !this.drag && !this.pendingControl && !this.pendingTrackGesture && !this.trackControlPending &&
+          !this.canvasFieldFinish && !this.fadePending && !this.clipboardPending && !this.trimShortcutPending &&
+          !this.menu && !this.confirmTrack;
+      };
+      if (!current(time)) return;
+      const { document, sequence } = this.current();
+      if (!current(time) || sequence.id !== sequenceId ||
+        (identity && (document.id !== identity.documentId || document.revision !== identity.revision))) return;
+      const last = sequenceDuration(sequence) - 1,
+        boundaries = new Set(sequence.markers.flatMap((marker) => [marker.time, marker.time + marker.duration]));
+      for (const boundary of boundaries) {
+        if (boundary > last) continue;
+        if (next ? boundary > time && (target === undefined || boundary < target)
+          : boundary < time && (target === undefined || boundary > target)) target = boundary;
+      }
+      if (target === undefined || !current(time)) return;
+      owner.target = target;
+      await this.context.seek(target, true);
+      if (current(target)) this.revealTime(target);
+    } catch (error) {
+      try { if (current(time) || (target !== undefined && current(target))) this.context.onError(error); }
+      catch { /* A superseded parent owns its own errors. */ }
+    } finally {
+      if (this.markerNavigationPending === owner) this.markerNavigationPending = undefined;
     }
   }
   private keydown = (event: KeyboardEvent) => {
@@ -1616,6 +1674,12 @@ export class EditorTimeline {
       !modified && !event.altKey && !this.drag && !this.confirmTrack && !this.menu &&
       !(event.target instanceof HTMLElement && event.target.closest("button"))
     ) {
+      if (event.shiftKey && ["ArrowUp", "ArrowDown"].includes(event.key)) {
+        event.preventDefault(); event.stopPropagation();
+        if (!event.repeat && !globalThis.document.querySelector("dialog[open]"))
+          void this.navigateMarker(event.key === "ArrowDown");
+        return;
+      }
       if (!event.shiftKey && ["q", "w"].includes(event.key.toLowerCase())) {
         event.preventDefault(); event.stopPropagation();
         if (!event.repeat && !this.trackControlPending && !this.fadePending && !this.clipboardPending &&
@@ -1624,7 +1688,7 @@ export class EditorTimeline {
         return;
       }
       if (event.key.toLowerCase() === "m" && this.context.beginMarker &&
-        !this.trackControlPending && !this.fadePending && !this.clipboardPending && !this.trimShortcutPending &&
+        !this.trackControlPending && !this.fadePending && !this.clipboardPending && !this.trimShortcutPending && !this.markerNavigationPending &&
         !globalThis.document.querySelector("dialog[open]")) {
         event.preventDefault(); event.stopPropagation();
         if (!event.repeat) this.run(() => this.context.beginMarker!(event.shiftKey ? "range" : "point"));
@@ -3077,6 +3141,7 @@ export class EditorTimeline {
     });
   };
   private cancel = () => {
+    this.cancelMarkerNavigation();
     this.cancelControl();
     this.cancelTrackGesture();
     this.notice.textContent = "";
@@ -3129,6 +3194,7 @@ export class EditorTimeline {
   /** Leaving the window or hiding the document ends a gesture whose release may never arrive. */
   private interrupt = (event: Event) => {
     const hidden = globalThis.document.visibilityState === "hidden";
+    if (event.type !== "visibilitychange" || hidden) this.cancelMarkerNavigation();
     if (
       (!this.drag && !this.pendingTrackGesture && !this.pendingControl) ||
       (event.type === "visibilitychange" && !hidden)
@@ -3144,6 +3210,7 @@ export class EditorTimeline {
     this.closeMenu();
     this.cancel();
     this.destroyed = true;
+    this.markerNavigationPending = undefined;
     this.trimShortcutPending = undefined;
     if (this.mediaFrame !== undefined) cancelAnimationFrame(this.mediaFrame);
     this.resizeObserver?.disconnect();

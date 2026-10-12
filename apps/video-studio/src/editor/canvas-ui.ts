@@ -79,6 +79,13 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 /** Geometry lives over the actual letterboxed canvas, not its CSS element box. Pointer
  * candidates reuse preview decoders and reach Session only once, on successful pointerup. */
 export class EditorCanvas {
+  private readonly guides = svg("svg", {
+    class: "editor-composition-guides",
+    viewBox: "0 0 3 3",
+    preserveAspectRatio: "none",
+    "aria-hidden": "true",
+    focusable: "false",
+  });
   private readonly overlay = svg("svg", {
     class: "editor-canvas-controls",
     tabindex: 0,
@@ -132,7 +139,34 @@ export class EditorCanvas {
       });
       this.controls.append(button);
     }
-    canvas.parentElement!.append(this.overlay, this.controls);
+    for (const position of [1, 2])
+      this.guides.append(
+        svg("line", { x1: position, x2: position, y1: 0, y2: 3 }),
+        svg("line", { x1: 0, x2: 3, y1: position, y2: position }),
+      );
+    this.guides.style.display = "none";
+    const guidesButton = document.createElement("button");
+    guidesButton.type = "button";
+    guidesButton.innerHTML = icon("thirds", 16);
+    guidesButton.dataset.canvasGuides = "";
+    guidesButton.setAttribute("aria-label", "三分构图辅助线");
+    guidesButton.setAttribute("aria-pressed", "false");
+    guidesButton.title = "三分构图辅助线 · 仅预览可见";
+    // View changes keep a focused input (including its live IME draft) untouched.
+    guidesButton.addEventListener("pointerdown", (event) => {
+      if (event.isPrimary && event.button === 0) event.preventDefault();
+    });
+    guidesButton.addEventListener("keydown", (event) => {
+      if (event.repeat && (event.key === "Enter" || event.key === " ")) event.preventDefault();
+    });
+    guidesButton.addEventListener("click", () => {
+      if (this.disposed) return;
+      const visible = guidesButton.getAttribute("aria-pressed") !== "true";
+      guidesButton.setAttribute("aria-pressed", String(visible));
+      this.guides.style.display = visible ? "" : "none";
+    });
+    this.controls.append(guidesButton);
+    canvas.parentElement!.append(this.guides, this.overlay, this.controls);
     this.overlay.addEventListener("pointerdown", this.down);
     this.overlay.addEventListener("pointermove", this.move);
     this.overlay.addEventListener("pointerup", this.up);
@@ -162,6 +196,7 @@ export class EditorCanvas {
     );
   }
   private layout(): void {
+    if (this.disposed) return;
     const container = this.canvas.parentElement!,
       parent = container.getBoundingClientRect(),
       style = getComputedStyle(container);
@@ -194,12 +229,13 @@ export class EditorCanvas {
       height: `${displayHeight}px`,
       objectFit: "fill",
     });
-    Object.assign(this.overlay.style, {
-      left: `${left}px`,
-      top: `${top}px`,
-      width: `${this.box.width}px`,
-      height: `${this.box.height}px`,
-    });
+    for (const overlay of [this.overlay, this.guides])
+      Object.assign(overlay.style, {
+        left: `${left}px`,
+        top: `${top}px`,
+        width: `${this.box.width}px`,
+        height: `${this.box.height}px`,
+      });
     this.overlay.setAttribute("viewBox", `0 0 ${width} ${height}`);
     this.drawControls();
   }
@@ -329,7 +365,7 @@ export class EditorCanvas {
       selection.clipIds.length === 1
         ? this.targets.find((item) => item.clip.id === selection.clipIds[0])
         : undefined;
-    for (const button of this.controls.querySelectorAll<HTMLButtonElement>("button"))
+    for (const button of this.controls.querySelectorAll<HTMLButtonElement>("button[data-canvas-mode]"))
       button.setAttribute("aria-pressed", String(button.dataset.canvasMode === this.mode));
     const hint = this.target?.locked
       ? "轨道已锁定"
@@ -666,6 +702,7 @@ export class EditorCanvas {
     this.observer.disconnect();
     window.removeEventListener("blur", this.cancelEvent);
     this.overlay.remove();
+    this.guides.remove();
     this.controls.remove();
     Object.assign(this.canvas.style, this.canvasStyle);
   }

@@ -1940,13 +1940,26 @@
       document2.sequences.map((sequence2) => [sequence2.id, sequenceDuration(sequence2)])
     );
     const tracks = new Map(
-      document2.sequences.map((sequence2) => [
-        sequence2.id,
-        sequence2.tracks.map((track2) => ({
-          track: track2,
-          clips: sequence2.clips.filter((clip2) => clip2.trackId === track2.id).sort((a, b) => a.start - b.start)
-        }))
-      ])
+      document2.sequences.map((sequence2) => {
+        const transitions = /* @__PURE__ */ new Map(), indexTransitions = sequence2.transitions.length > 0 && sequence2.tracks.filter((track2) => track2.kind === "video").length > 1;
+        if (indexTransitions) {
+          const clipTracks = new Map(sequence2.clips.map((clip2) => [clip2.id, clip2.trackId]));
+          for (const transition of sequence2.transitions) {
+            const trackId = clipTracks.get(transition.fromClipId);
+            const entries = transitions.get(trackId) ?? [];
+            entries.push(transition);
+            transitions.set(trackId, entries);
+          }
+        }
+        return [
+          sequence2.id,
+          sequence2.tracks.map((track2) => ({
+            track: track2,
+            clips: sequence2.clips.filter((clip2) => clip2.trackId === track2.id).sort((a, b) => a.start - b.start),
+            transitions: track2.kind !== "video" ? [] : indexTransitions ? transitions.get(track2.id) ?? [] : sequence2.transitions
+          }))
+        ];
+      })
     );
     function evaluateSequence(sequence2, tick2, sequencePath, parent, visible) {
       const frame = {
@@ -1959,7 +1972,7 @@
         audio: []
       };
       if (tick2 >= durations.get(sequence2.id)) return frame;
-      for (const { track: track2, clips } of tracks.get(sequence2.id)) {
+      for (const { track: track2, clips, transitions } of tracks.get(sequence2.id)) {
         const visual2 = /* @__PURE__ */ new Map();
         const active = clips.filter((clip2) => inside(clip2, tick2));
         const picture = visible && !track2.hidden && track2.kind !== "audio";
@@ -2083,7 +2096,7 @@
         }
         if (!picture) continue;
         const transitionByClip = /* @__PURE__ */ new Map();
-        for (const transition of sequence2.transitions) {
+        for (const transition of transitions) {
           if (tick2 < transition.start || tick2 - transition.start >= transition.duration || !visual2.has(transition.fromClipId) || !visual2.has(transition.toClipId))
             continue;
           transitionByClip.set(transition.fromClipId, transition);

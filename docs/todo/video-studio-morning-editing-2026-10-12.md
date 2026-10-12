@@ -735,3 +735,73 @@ chunk的stream各连续三轮440/660Hz双声道正弦幅值正确；关闭循环
 该实际反例，仍待最终整合。旧版zoom的同browser task现查节点和原生slider保活、
 已有标记前后定位、三分构图线及多轨转场索引也须分别完成独立验证后再合入。
 继续优化至11:00，未发布、未安装或更改工程格式与Host权限。
+
+
+## 第十八批：标记边界、三分构图与连续原生操作
+
+- Shift+↑/↓ 在已保存点标记和范围起止之间严格前后定位，去重且排除序列末尾之外
+  的无效时刻；保留 NTSC 帧间 tick、现有标记表单及未保存草稿。音量手柄方向键
+  优先级不变，普通上下键仍导航片段边缘。pending 导航与 Q/W、M 互斥，clock、
+  selection、revision、generation 或 blur 使旧 owner 失效。候选 25e920f 基于根
+  3ba8069，只挑选唯一增量；15真实目标、8既有键位及类型通过。
+- 三分构图线默认关闭，采用独立 SVG 覆盖层，随实际画布边界和尺寸变化，不拦截
+  指针、不进入合成像素。奇数横竖画幅、三档预览质量、窄窗和原生拖动已覆盖；
+  PNG blob 字节完全一致，播放/草稿/原片/隐藏/dispose 生命周期目标8/8及类型
+  通过，独立源审无阻断。
+- 原生搜索真实反例：focus 后 microtask 中的 background render 断开输入框，
+  原生 fill 丢失，后续全选得到7个而非筛选后的3个。343f9fa 保留同工程/代次的
+  library-panel 和 library-find 祖先连接，仅替换兄弟节点；用 defaultValue 区分
+  未提交原生输入和显式清空。4目标、完整Library34/34、类型及独立caret/selection
+  与三个视图组合2/2通过。原 CI 的确切时序仍未知，不把相同症状当作因果已证。
+- 旧版小时长 zoom 测试原 locator.evaluate 在 Playwright 取得旧 handle 后可遇到
+  后台替换；88e1752 将设置/读取改为同一 browser task 中现查当前节点，保持全部
+  原断言和30秒等待。原测试前后均1/1绿，未宣称它每次能复现 CI 超时。另有真正
+  原生 End 与 held mouse 两个正式红例，产品连接保持修复独立验证后再整合。
+- 多轨转场 prepared evaluator 对每个序列独立按实际 from-clip 的视频轨索引；
+  无转场或单视频轨仍沿原路径，顺序、端点、nested 和 detached ownership 不变。
+  领域17/17、类型及两次独立源审通过。固定2000片段工程、11交错计时批次的
+  128轨1000转场每帧中位0.20254→0.00742ms，nested 0.20625→0.00840ms；4352帧
+  求值JSON和288最终合成帧逐像素相同。初始化有少量代价：单轨10→11.5ms，
+  128轨1000转场12.7→12.8ms，nested12→12.9ms，原始交错样本完整保存。
+  计时不含解码、音频、UI或实际播放，不能当作播放FPS。可复跑脚本
+  scripts/bench-video-studio-evaluator.mjs；方法、blob和完整样本见
+  docs/video-studio-evaluator-index-benchmark.json。
+
+上述候选已挑选到根集成树，生成包和根统一回归尚待完成；不能复用第十七批计数
+声称本批已交付。继续工作至11:00，不变更版本、Host权限、工程格式或安装副本。
+
+旧版zoom产品最终0d081e6仅挑选88后的子增量，保留精确view scope中range及整条
+祖先连接；触屏不一定聚焦，因此额外记录本地native pointer生命周期，up/cancel/
+lostcapture/blur/hidden后清理，不capture/defer/await。两个正式原生红例转绿；
+含触屏取消、未提交value与rev/gen/seq/blur旧节点失效的8目标及原hour用例全绿，
+完整legacy界面35/35（62800ms）和类型通过。根renderStudioShell手合同时保留
+search live island和legacy range路径，未二选一；待统一根回归与最终peer。
+
+第十八批首轮统一界面1379项中1378通过，唯一失败是素材搜索保活的full-shell
+调用误让字幕feature也在旧library-panel内innerHTML重写，原测试观察到2次原地
+child mutation而应为0。保留失败log为
+/tmp/video-studio-morning-eighteenth-initial-full-ui.log（781276ms），没有放宽断言。
+f31e216只收窄到showingMediaLibrary且旧面板有真实search岛时才复用helper；其他
+feature继续原整面板replace路径。原existing测试独立2红→0绿，search4/4、类型及
+两次独立源审通过；根合并同时保留legacy range分支。
+
+片段命名20873cf也纳入本批最终回归：只改单选clip.label，沿现managed field及
+严格scope/锁轨验证；Enter提交、Escape取消、空名fallback、中文IME与一步撤销。
+同素材S切两段没有名称入口的实际红例已关闭；新增9实际目标、10既有Inspector
+检查、类型及窄窗真实属性入口截图通过。素材名、文字正文、邻居、来源绑定字幕
+的words/text/sourceBinding均保留。只挑208唯一子增量，不重挑其3ba parent。
+
+3ba8069的PR38186152448和push38186149743均已完成全部7 jobs成功，包含完整
+Video Studio界面/媒体、其他Panel门禁；不能借此归因先前fa失败或替代本批门禁。
+根最终补fix+name后需要重新build/type/full UI/media，以下结果待最终补录。
+
+第十八批最终冻结源：Main e497381、Timeline500592b、Inspector a5ee81d、Workspace
+10e9906、Canvas b38feba、Evaluate a2e3334；types/build/build:check/validate39通过。
+offline1132通过3可选跳过、native voice5通过1可选跳过、workspace docs5/5。最终
+完整媒体230/230通过（158335ms）；最终完整UI1388/1388通过（787736ms）。
+没有新增skip或取消，首轮失败和最小修复仍保留在上述记录。
+独立最终组合5/5通过：guide/loop/PNG/quality、marker/QW/M、原生search选区与三个
+素材视图，以及此前失败的字幕feature原测试（parent mutations0、live text/focus
+保留）。源逐文件/局部等价与全部独立候选一致，没有合并漂移。日志
+/tmp/video-studio-root18-{independent-combinations,search-independent-peer,
+caption-feature-independent-peer}-final.log。

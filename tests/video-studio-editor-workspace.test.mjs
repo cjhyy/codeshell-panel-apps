@@ -7744,3 +7744,332 @@ for (const phase of ["frame", "range-read"])
       assert.equal(await page.evaluate(() => fixture.playing()), false);
       assert.deepEqual(await page.evaluate(() => fixture.errors), []);
     });
+
+for (const width of [280, 390]) {
+  test(`composition guides are reachable at ${width}px and stay out of saved PNG/source/hidden previews`, async (t) => {
+    const page = await fixture(t, { frameCapture: true, width, layout: "embedded" });
+    await page.evaluate(() => { document.querySelector(".workspace").dataset.narrowPanel = "viewer"; });
+    const button = page.getByRole("button", { name: "三分构图辅助线", exact: true }),
+      guides = page.locator(".editor-composition-guides"), before = await documentState(page);
+    const box = await button.boundingBox(); assert.ok(box && box.x >= 0 && box.x + box.width <= width && box.y >= 0);
+    await savedFrame(page);
+    await button.click(); assert.equal(await button.getAttribute("aria-pressed"), "true");
+    await savedFrame(page, 2);
+    const [plainPng, guidedPng] = await page.evaluate(async () => {
+      const blobs = fixture.frameDownloads.map((item) => item.blob);
+      return await Promise.all(blobs.map(async (blob) => [...new Uint8Array(await blob.arrayBuffer())]));
+    });
+    assert.deepEqual(guidedPng, plainPng);
+    await page.getByLabel("预览质量", { exact: true }).selectOption("0.5"); await settle(page);
+    assert.equal(await guides.isVisible(), true);
+    const canvasBox = await page.locator("[data-ew-canvas]").boundingBox(), guideBox = await guides.boundingBox();
+    ["x", "y", "width", "height"].forEach((key) => assert.ok(Math.abs(canvasBox[key] - guideBox[key]) < 0.02));
+    await page.screenshot({ path: `/tmp/video-studio-composition-guides-${width}.png`, fullPage: true });
+    await page.evaluate(() => fixture.hide()); assert.equal(await guides.isVisible(), false);
+    await page.evaluate(() => fixture.show()); await settle(page); assert.equal(await guides.isVisible(), true);
+    // Main's source-preview layout hides the complete composition viewer, including its tools.
+    await page.evaluate(() => { document.querySelector(".workspace").classList.add("editor-source-mode"); fixture.sourcePreview(true); });
+    assert.equal(await guides.isVisible(), false); assert.equal(await button.isVisible(), false);
+    await page.evaluate(() => { document.querySelector(".workspace").classList.remove("editor-source-mode"); fixture.sourcePreview(false); });
+    await settle(page); assert.equal(await guides.isVisible(), true);
+    await action(page, "play").click(); await page.waitForFunction(() => fixture.playing());
+    await button.click(); assert.equal(await page.evaluate(() => fixture.playing()), true);
+    await button.focus();
+    for (const key of ["Enter", " "]) {
+      const pressed = await button.getAttribute("aria-pressed");
+      for (let i = 0; i < 3; i++) await page.keyboard.down(key);
+      await page.keyboard.up(key);
+      assert.equal(await button.getAttribute("aria-pressed"), String(pressed !== "true"));
+      assert.equal(await page.evaluate(() => fixture.playing()), true);
+    }
+    await action(page, "play").click();
+    assert.deepEqual(await documentState(page), before); assert.deepEqual(await page.evaluate(() => fixture.writes), []);
+    await page.evaluate(() => fixture.dispose()); assert.equal(await guides.count(), 0);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+test("composition guides preserve invalid focused Inspector and native track-name IME drafts", async (t) => {
+  const page = await fixture(t), button = page.getByRole("button", { name: "三分构图辅助线", exact: true });
+  await page.locator('[data-et-clip="a"]').click();
+  const before = await documentState(page), field = page.getByLabel("水平位置（%）", { exact: true });
+  await field.fill("1001"); const owner = await field.elementHandle();
+  await button.click();
+  assert.equal(await owner.evaluate((node) => node.isConnected && node === document.activeElement && node.value === "1001"), true);
+  assert.deepEqual(await documentState(page), before);
+  await field.fill("0"); await field.press("Tab"); await settle(page);
+  const input = page.getByLabel("轨道名称 画面轨", { exact: true }), cdp = await page.context().newCDPSession(page);
+  await input.fill(""); await input.evaluate((node) => {
+    globalThis.guidesIme = { node, starts: [], ends: [] };
+    node.addEventListener("compositionstart", (event) => guidesIme.starts.push(event.isTrusted));
+    node.addEventListener("compositionend", (event) => guidesIme.ends.push(event.isTrusted));
+  });
+  await cdp.send("Input.imeSetComposition", { text: "构图中文草稿", selectionStart: 6, selectionEnd: 6 });
+  await button.click();
+  assert.equal(await page.evaluate(() => guidesIme.node.isConnected && guidesIme.node === document.activeElement && guidesIme.node.value === "构图中文草稿"), true);
+  assert.deepEqual(await page.evaluate(() => ({ starts: guidesIme.starts, ends: guidesIme.ends })), { starts: [true], ends: [] });
+  assert.deepEqual(await documentState(page), before); assert.deepEqual(await page.evaluate(() => fixture.selection()), ["a"]);
+  await cdp.send("Input.insertText", { text: "构图中文草稿完成" });
+  assert.equal(await input.inputValue(), "构图中文草稿完成");
+  await cdp.detach();
+});
+
+async function markerNavigationFixture(t, options = {}) {
+  const page = await fixture(t, { duration: 120 * 240000, frameRate: { numerator: 30000, denominator: 1001 }, ...options });
+  await page.evaluate(() => {
+    const duration=120*240000, far=70*240000+13;
+    fixture.dispatch([
+      ...[["zero",0,0],["point",240013,0],["duplicate",240013,0],["range",400007,80013],["far",far,0],["last",duration-1,0],["outside",duration,0],["outside-range",duration+5,13]].map(([id,time,length])=>({type:"marker.add",sequenceId:"main",marker:{id,time,duration:length,name:id,note:"",color:"#ffcc00"}})),
+      {type:"track.add",sequenceId:"main",track:editor.createTrack("marker-picture","video","标记精确画面")},
+      {type:"clip.add",sequenceId:"main",clip:{id:"exact-marker-picture",kind:"shape",label:"精确标记画面",trackId:"marker-picture",start:far,duration:13,
+        shape:"rectangle",fill:"#ff0000",stroke:"#00000000",strokeWidth:0,transform:editor.defaultTransform(),color:editor.defaultColorAdjustment(),blendMode:"normal"}}
+    ],"准备标记导航");
+    return fixture.internals.workspace.seek(0,true);
+  });
+  await settle(page);return page;
+}
+
+for (const width of [280,390]) test(`marker boundary shortcuts visit exact NTSC point and range ticks once and reveal the current clock at ${width}px`, async(t)=>{
+  const page=await markerNavigationFixture(t,{width}), before=await documentState(page),selection=await page.evaluate(()=>fixture.selection());
+  await page.locator('[data-ew-timeline]').focus();
+  for(const target of [240013,400007,480020,70*240000+13,120*240000-1]){
+    await page.keyboard.press('Shift+ArrowDown');await settle(page);
+    assert.equal(await page.evaluate(()=>fixture.playhead()),target);
+    const view=await page.evaluate(()=>{const w=fixture.internals.workspace,c=w.timeline,v=c.viewport();return {x:w.getPlayhead()/240000*c.scale,left:v.scrollLeft,width:v.clientWidth};});
+    assert.ok(view.x>=view.left&&view.x<=view.left+view.width);
+    if(target===70*240000+13){
+      assert.deepEqual(await page.evaluate(()=>[...document.querySelector('[data-ew-canvas]').getContext('2d').getImageData(160,90,1,1).data]),[255,0,0,255]);
+      await page.screenshot({path:`/tmp/video-studio-marker-navigation-${width}.png`,fullPage:true});
+    }
+  }
+  const tail=await page.evaluate(()=>({time:fixture.playhead(),left:fixture.internals.workspace.timeline.viewport().scrollLeft}));
+  await page.keyboard.press('Shift+ArrowDown');await settle(page);
+  assert.deepEqual(await page.evaluate(()=>({time:fixture.playhead(),left:fixture.internals.workspace.timeline.viewport().scrollLeft})),tail);
+  for(const target of [70*240000+13,480020,400007,240013,0]){await page.keyboard.press('Shift+ArrowUp');await settle(page);assert.equal(await page.evaluate(()=>fixture.playhead()),target);}
+  await page.keyboard.press('Shift+ArrowUp');await settle(page);assert.equal(await page.evaluate(()=>fixture.playhead()),0);
+  assert.deepEqual(await documentState(page),before);assert.deepEqual(await page.evaluate(()=>fixture.selection()),selection);assert.deepEqual(await page.evaluate(()=>fixture.errors),[]);
+});
+
+
+test("marker boundary shortcuts keep the connected dirty marker draft and its selected owner",async(t)=>{
+  const page=await markerDraftFixture(t);await page.getByLabel('标记名称',{exact:true}).fill('未保存的审阅名称');await page.getByLabel('标记备注',{exact:true}).fill('第一行\n第二行中文[*]');
+  const form=await page.locator('.emarker-form').elementHandle(),before=await documentState(page),selected=await page.evaluate(()=>fixture.internals.workspace.markers.selected);
+  await page.getByLabel('标记备注',{exact:true}).press('Shift+ArrowDown');assert.equal(await page.evaluate(()=>fixture.playhead()),80085);
+  await page.locator('[data-ew-timeline]').focus();await page.keyboard.press('Shift+ArrowDown');await settle(page);
+  assert.equal(await page.evaluate(()=>fixture.playhead()),320325);assert.equal(await form.evaluate(node=>node.isConnected&&node===document.querySelector('.emarker-form')),true);
+  assert.equal(await page.getByLabel('标记名称',{exact:true}).inputValue(),'未保存的审阅名称');assert.equal(await page.getByLabel('标记备注',{exact:true}).inputValue(),'第一行\n第二行中文[*]');
+  assert.equal(await page.evaluate(()=>fixture.internals.workspace.markers.selected),selected);assert.deepEqual(await documentState(page),before);assert.deepEqual(await page.evaluate(()=>fixture.errors),[]);
+});
+
+test("marker boundary shortcuts preserve native guards, held-key intent and existing clip/frame navigation",async(t)=>{
+  const page=await markerNavigationFixture(t),before=await documentState(page),timeline=page.locator('[data-ew-timeline]');
+  await page.evaluate(()=>fixture.sourcePreview(true));await timeline.focus();await page.keyboard.press('Shift+ArrowDown');assert.equal(await page.evaluate(()=>fixture.playhead()),0);
+  await page.evaluate(()=>{fixture.sourcePreview(false);fixture.hide();});await timeline.dispatchEvent('keydown',{key:'ArrowDown',shiftKey:true,bubbles:true});assert.equal(await page.evaluate(()=>fixture.playhead()),0);
+  await page.evaluate(()=>fixture.show());await settle(page);await timeline.focus();await timeline.dispatchEvent('keydown',{key:'ArrowDown',shiftKey:true,isComposing:true,bubbles:true});
+  await page.keyboard.press('Control+Shift+ArrowDown');assert.equal(await page.evaluate(()=>fixture.playhead()),0);
+  await page.evaluate(()=>{const dialog=document.createElement('dialog');document.body.append(dialog);dialog.show();});await timeline.dispatchEvent('keydown',{key:'ArrowDown',shiftKey:true,bubbles:true});await page.evaluate(()=>document.querySelector('dialog').remove());
+  await timeline.focus();await page.keyboard.press('Shift+ArrowRight');await settle(page);assert.equal(await page.evaluate(()=>fixture.playhead()),80080);
+  await page.keyboard.press('Shift+ArrowLeft');await settle(page);assert.equal(await page.evaluate(()=>fixture.playhead()),0);
+  await page.keyboard.press('ArrowDown');await settle(page);assert.equal(await page.evaluate(()=>fixture.playhead()),70*240000+13);
+  await page.keyboard.press('ArrowUp');await settle(page);assert.equal(await page.evaluate(()=>fixture.playhead()),0);
+  await page.keyboard.down('Shift');await page.keyboard.down('ArrowDown');await settle(page);await page.keyboard.down('ArrowDown');await page.keyboard.down('ArrowDown');await page.keyboard.up('ArrowDown');await page.keyboard.up('Shift');
+  assert.equal(await page.evaluate(()=>fixture.playhead()),240013);await page.keyboard.press('Shift+ArrowDown');await settle(page);assert.equal(await page.evaluate(()=>fixture.playhead()),400007);
+  assert.deepEqual(await documentState(page),before);assert.deepEqual(await page.evaluate(()=>fixture.errors),[]);
+});
+
+test("marker boundary shortcuts wait behind an actual managed inspector finisher",async(t)=>{
+  const page=await markerNavigationFixture(t);await clip(page).click();await holdCanvasField(page);await page.getByLabel('水平位置（%）',{exact:true}).fill('25');
+  await page.locator('[data-et-action="copy"]').click();assert.equal(await page.evaluate(()=>!!fixture.internals.workspace.timeline.pendingControl),true);
+  const before=await documentState(page);await page.locator('[data-ew-timeline]').focus();await page.keyboard.press('Shift+ArrowDown');await settle(page);assert.equal(await page.evaluate(()=>fixture.playhead()),0);
+  await releaseCanvasField(page);await page.keyboard.press('Shift+ArrowDown');await settle(page);assert.equal(await page.evaluate(()=>fixture.playhead()),240013);
+  assert.deepEqual(await documentState(page),before);assert.deepEqual(await page.evaluate(()=>fixture.errors),[]);
+});
+
+for(const change of ['clock','selection','revision','generation'])test(`marker boundary shortcuts fence a snapshot read that changes ${change}`,async(t)=>{
+  const page=await markerNavigationFixture(t);await page.evaluate(change=>{
+    const {workspace:w,session}=fixture.internals,c=w.timeline.context,navigate=w.timeline.navigateMarker.bind(w.timeline);
+    w.timeline.navigateMarker=(...args)=>{const read=c.read;c.read=()=>{const doc=read();c.read=read;window.markerNavigationReentered=true;if(change==='clock')w.seek(13,true);if(change==='selection')w.selectClips('main',['a']);if(change==='revision')fixture.externalEdit();if(change==='generation')session.replace({...doc,id:'replacement-navigation-project'});return doc;};return navigate(...args);};
+  },change);
+  await page.locator('[data-ew-timeline]').focus();await page.keyboard.press('Shift+ArrowDown');await settle(page);
+  assert.equal(await page.evaluate(()=>window.markerNavigationReentered),true);assert.notEqual(await page.evaluate(()=>fixture.playhead()),240013);assert.deepEqual(await page.evaluate(()=>fixture.errors),[]);
+});
+
+for(const change of ['clock','identity'])test(`marker boundary shortcuts fence final ${change} getter reentry`,async(t)=>{
+  const page=await markerNavigationFixture(t);await page.evaluate(change=>{
+    const {workspace:w}=fixture.internals,c=w.timeline.context,navigate=w.timeline.navigateMarker.bind(w.timeline);
+    w.timeline.navigateMarker=(...args)=>{const field=change==='clock'?'time':'identity',getter=c[field];let count=0;c[field]=()=>{const value=getter();if(++count===4){c[field]=getter;window.markerNavigationReentered=true;if(change==='clock')w.seek(13,true);else fixture.externalEdit();}return value;};return navigate(...args);};
+  },change);
+  await page.locator('[data-ew-timeline]').focus();await page.keyboard.press('Shift+ArrowDown');await settle(page);
+  assert.equal(await page.evaluate(()=>window.markerNavigationReentered),true);assert.notEqual(await page.evaluate(()=>fixture.playhead()),240013);assert.deepEqual(await page.evaluate(()=>fixture.errors),[]);
+});
+
+test("marker boundary shortcuts ignore a late old seek error without scrolling or clearing the new generation's navigation",async(t)=>{
+  const page=await markerNavigationFixture(t);await page.evaluate(()=>{
+    const w=fixture.internals.workspace,c=w.timeline.context,seek=c.seek;
+    c.seek=async(...args)=>{c.seek=seek;await seek(...args);await new Promise((_resolve,reject)=>window.rejectOldMarkerNavigation=reject);};
+  });
+  await page.locator('[data-ew-timeline]').focus();await page.keyboard.press('Shift+ArrowDown');await page.waitForFunction(()=>!!window.rejectOldMarkerNavigation);
+  await page.evaluate(async()=>{await fixture.replaceGeneration();await fixture.internals.workspace.seek(0,true);});await settle(page);
+  await page.keyboard.press('Shift+ArrowDown');await settle(page);assert.equal(await page.evaluate(()=>fixture.playhead()),240013);
+  const view=await page.locator('.et-scroll').evaluate(node=>node.scrollLeft);await page.evaluate(()=>rejectOldMarkerNavigation(new Error('旧定位失败')));await settle(page);
+  assert.equal(await page.locator('.et-scroll').evaluate(node=>node.scrollLeft),view);assert.equal(await page.evaluate(()=>fixture.playhead()),240013);assert.deepEqual(await page.evaluate(()=>fixture.errors),[]);
+});
+
+test("marker boundary shortcuts cancel a pending seek on window blur and allow the next physical navigation",async(t)=>{
+  const page=await markerNavigationFixture(t);await page.evaluate(()=>{
+    const w=fixture.internals.workspace,c=w.timeline.context,seek=c.seek;
+    c.seek=async(...args)=>{c.seek=seek;await seek(...args);await new Promise((_resolve,reject)=>window.rejectOldMarkerNavigation=reject);};
+  });
+  await page.locator('[data-ew-timeline]').focus();await page.keyboard.press('Shift+ArrowDown');await page.waitForFunction(()=>!!window.rejectOldMarkerNavigation);
+  await page.evaluate(()=>window.dispatchEvent(new Event('blur')));assert.equal(await page.evaluate(()=>!!fixture.internals.workspace.timeline.markerNavigationPending),false);
+  await page.keyboard.press('Shift+ArrowDown');await settle(page);assert.equal(await page.evaluate(()=>fixture.playhead()),400007);
+  await page.evaluate(()=>rejectOldMarkerNavigation(new Error('失焦后的旧定位失败')));await settle(page);assert.deepEqual(await page.evaluate(()=>fixture.errors),[]);
+});
+
+test("marker boundary shortcuts cancel a naturally queued loop replay and retain an M-created draft", async (t) => {
+  const page = await fixture(t, { duration: 48000, width: 390 });
+  await page.evaluate(() => fixture.dispatch([
+    { type: "marker.add", sequenceId: "main", marker: { id: "loop-review", time: 40013, duration: 0, name: "精确审阅点", note: "", color: "#ffcc00" } },
+    { type: "track.add", sequenceId: "main", track: editor.createTrack("loop-review-picture", "video", "精确审阅画面") },
+    { type: "clip.add", sequenceId: "main", clip: { id: "loop-review-red", kind: "shape", label: "13tick红画面", trackId: "loop-review-picture", start: 40013, duration: 13,
+      shape: "rectangle", fill: "#ff0000", stroke: "#00000000", strokeWidth: 0, transform: editor.defaultTransform(), color: editor.defaultColorAdjustment(), blendMode: "normal" } },
+  ], "准备循环审阅"));
+  await settle(page);
+  await page.locator('[data-ew-timeline]').focus(); await page.keyboard.press("m");
+  await page.getByLabel("标记名称", { exact: true }).fill("未保存的循环审阅");
+  await page.getByLabel("标记备注", { exact: true }).fill("第一行\n第二行");
+  const form = await page.locator(".emarker-form").elementHandle(), before = await documentState(page),
+    draftTime = await page.evaluate(() => fixture.internals.workspace.markers.draft.time), history = await page.evaluate(() => fixture.state().undoLabels);
+  await action(page, "loop-playback").click();
+  await page.evaluate(() => {
+    const w = fixture.internals.workspace, frame = w.preview.options.onFrame;
+    w.preview.options.onFrame = (time) => {
+      frame(time);
+      if (time !== 48000 || window.markerLoopInterrupted) return;
+      window.markerLoopInterrupted = true;
+      document.querySelector('[data-ew-timeline]').dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", shiftKey: true, bubbles: true }));
+    };
+  });
+  await action(page, "play").click(); await page.waitForFunction(() => window.markerLoopInterrupted);
+  await settle(page); await page.waitForTimeout(450);
+  assert.equal(await page.evaluate(() => fixture.playhead()), 40013);
+  assert.equal(await page.evaluate(() => fixture.playing()), false);
+  assert.equal(await action(page, "loop-playback").getAttribute("aria-pressed"), "true");
+  assert.deepEqual(await page.evaluate(() => [...document.querySelector('[data-ew-canvas]').getContext("2d").getImageData(160, 90, 1, 1).data]), [255, 0, 0, 255]);
+  assert.equal(await form.evaluate((node) => node.isConnected && node === document.querySelector(".emarker-form")), true);
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), "未保存的循环审阅");
+  assert.equal(await page.getByLabel("标记备注", { exact: true }).inputValue(), "第一行\n第二行");
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.markers.draft.time), draftTime);
+  assert.deepEqual(await documentState(page), before); assert.deepEqual(await page.evaluate(() => fixture.state().undoLabels), history);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("marker boundary shortcuts keep Q and M behind the pending exact seek", async (t) => {
+  const page = await markerNavigationFixture(t); await clip(page).click(); const before = await documentState(page);
+  await page.evaluate(() => {
+    const c = fixture.internals.workspace.timeline.context, seek = c.seek;
+    c.seek = async (...args) => { c.seek = seek; await seek(...args); await new Promise((resolve) => window.releaseMarkerNavigation = resolve); };
+  });
+  await page.locator('[data-ew-timeline]').focus(); await page.keyboard.press("Shift+ArrowDown");
+  await page.waitForFunction(() => !!window.releaseMarkerNavigation);
+  await page.keyboard.press("q"); await page.keyboard.press("m");
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.markers.draft), undefined);
+  await page.evaluate(() => releaseMarkerNavigation()); await settle(page);
+  await page.keyboard.press("m"); assert.equal(await page.evaluate(() => fixture.internals.workspace.markers.draft.time), 240013);
+  assert.deepEqual(await documentState(page), before); assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("single clip names distinguish cuts of the same source without changing their media and undo once", async (t) => {
+  const page = await fixture(t, { width: 390 });
+  await clip(page).click(); await page.evaluate(() => fixture.internals.workspace.seek(240013, true));
+  await page.locator('[data-ew-timeline]').focus(); await page.keyboard.press("s"); await settle(page);
+  const before = await documentState(page), rightId = await page.evaluate(() => fixture.selection()[0]);
+  assert.equal(before.sequences[0].clips.length, 2);
+  assert.deepEqual(before.sequences[0].clips.map((item) => item.label), ["a", "a"]);
+  const name = page.getByLabel("片段名称", { exact: true });
+  await name.fill("开场特写 <备用> & 中文"); await name.press("Enter"); await settle(page);
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 1);
+  assert.equal(after.sequences[0].clips.find((item) => item.id === rightId).label, "开场特写 <备用> & 中文");
+  assert.deepEqual(after.assets, before.assets);
+  assert.deepEqual(after.sequences[0].clips.map((item) => ({ ...item, label: "a" })), before.sequences[0].clips);
+  assert.equal(await page.locator(`[data-et-clip="${rightId}"] .et-clip-label`).innerText(), "开场特写 <备用> & 中文");
+  await action(page, "undo").click(); await settle(page);
+  assert.deepEqual((await documentState(page)).sequences, before.sequences);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const width of [280, 390]) test(`single clip names allow an empty name and cancel a long draft at ${width}px without history`, async (t) => {
+  const page = await fixture(t, { width, layout: "embedded" });
+  await page.evaluate(() => { document.querySelector(".workspace").dataset.narrowPanel = "inspector"; });
+  await clip(page).click();
+  const before = await documentState(page), name = page.getByLabel("片段名称", { exact: true });
+  await name.fill("中文审阅".repeat(64));
+  await page.screenshot({ path: `/tmp/video-studio-clip-name-${width}.png`, fullPage: true });
+  const size = await name.evaluate((input) => { const row = input.parentElement.getBoundingClientRect(), box = input.getBoundingClientRect(); return { maxLength: input.maxLength, contained: box.right <= row.right + 1 && box.left >= row.left && box.right <= innerWidth }; });
+  assert.deepEqual(size, { maxLength: 256, contained: true });
+  await name.press("Escape"); await settle(page); assert.deepEqual(await documentState(page), before);
+  await name.focus(); await name.press("Enter"); await settle(page); assert.deepEqual(await documentState(page), before);
+  await name.fill(""); await name.press("Enter"); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].clips[0].label, "");
+  assert.equal(await clip(page).locator(".et-clip-label").innerText(), "未命名片段");
+  assert.equal(await page.locator(".ei-header .ei-hint").innerText(), "未命名片段");
+  await action(page, "undo").click(); await settle(page); assert.deepEqual((await documentState(page)).sequences, before.sequences);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const target of ["a", "bound-caption"]) test(`single clip names change only ${target} and preserve linked clips, subtitle wording and timing`, async (t) => {
+  const page = await fixture(t, { audio: true });
+  await page.evaluate((target) => {
+    fixture.dispatch([
+      { type: "clip.update", sequenceId: "main", clipId: "a", patch: { groupId: "shared-group", linkGroupId: "shared-link" } },
+      { type: "clip.update", sequenceId: "main", clipId: "sound", patch: { groupId: "shared-group", linkGroupId: "shared-link" } },
+      { type: "clip.add", sequenceId: "main", clip: {
+        id: "bound-caption", kind: "text", role: "subtitle", label: "来源字幕", trackId: "text", start: 0, duration: 4 * 240000,
+        text: "你好世界", words: [{ text: "你好", start: 0, end: 2 * 240000 }, { text: "世界", start: 2 * 240000, end: 4 * 240000 }],
+        sourceBinding: { clipId: "a", sourceStart: 0, sourceEnd: 4 * 240000 }, style: editor.defaultTextStyle(),
+        transform: editor.defaultTransform(), color: editor.defaultColorAdjustment(), blendMode: "normal",
+      } },
+    ], "准备关联片段与字幕");
+    fixture.internals.workspace.selectClips("main", [target]);
+  }, target); await settle(page);
+  const before = await documentState(page), name = page.getByLabel("片段名称", { exact: true });
+  await name.fill("审阅片段"); await name.press("Enter"); await settle(page);
+  const after = await documentState(page), previous = before.sequences[0].clips.find((item) => item.id === target);
+  assert.deepEqual(after.sequences[0].clips, before.sequences[0].clips.map((item) => item.id === target ? { ...item, label: "审阅片段" } : item));
+  assert.deepEqual(after.assets, before.assets);
+  if (target === "bound-caption") assert.equal(await clip(page, target).locator(".et-clip-label").innerText(), previous.text);
+  await action(page, "undo").click(); await settle(page); assert.deepEqual((await documentState(page)).sequences, before.sequences);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const change of ["selection-ABA", "generation", "lock"]) test(`single clip names cannot submit an old field after ${change}`, async (t) => {
+  const page = await fixture(t, { audio: true }); await clip(page).click();
+  const name = page.getByLabel("片段名称", { exact: true }); await name.fill("旧的未提交名称"); const old = await name.elementHandle();
+  await page.evaluate(async (change) => {
+    const { workspace, session } = fixture.internals;
+    if (change === "selection-ABA") { workspace.selectClips("main", ["sound"]); workspace.selectClips("main", ["a"]); }
+    if (change === "generation") await session.replace({ ...fixture.read(), name: "新工程代际" });
+    if (change === "lock") fixture.dispatch([{ type: "track.update", sequenceId: "main", trackId: "video", patch: { locked: true } }], "锁定轨道");
+  }, change); await settle(page);
+  const current = await documentState(page); assert.equal(await old.evaluate((node) => node.isConnected), false);
+  await old.evaluate((node) => node.dispatchEvent(new Event("change", { bubbles: true }))); await settle(page);
+  assert.deepEqual(await documentState(page), current); assert.equal(current.sequences[0].clips[0].label, "a");
+  if (change === "lock") assert.equal(await page.getByLabel("片段名称", { exact: true }).isDisabled(), true);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("single clip names finish native Chinese IME before the first clipboard action and ignore multi-selection", async (t) => {
+  const page = await fixture(t, { audio: true }); await clip(page).click();
+  const before = await documentState(page), name = page.getByLabel("片段名称", { exact: true });
+  await name.focus(); await name.selectText(); const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.imeSetComposition", { text: "正式特写", selectionStart: 4, selectionEnd: 4 });
+  await page.locator('[data-et-action="copy"]').click(); await settle(page);
+  const after = await documentState(page); assert.equal(after.revision, before.revision + 1);
+  assert.equal(after.sequences[0].clips[0].label, "正式特写");
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.timeline.clipboard.payload.document.sequences[0].clips[0].label), "正式特写");
+  await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["a", "sound"])); await settle(page);
+  assert.equal(await page.getByLabel("片段名称", { exact: true }).count(), 0);
+  assert.deepEqual(await documentState(page), after); assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});

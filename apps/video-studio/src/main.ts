@@ -456,6 +456,8 @@ let generation = 0;
 let inspectorDraftKey = "";
 let renderedProjectId = "";
 let renderedGeneration = -1;
+let renderedLegacyZoomScope = "";
+let legacyZoomPress: { input: HTMLInputElement; pointerId: number; scope: string } | undefined;
 let mediaActionPress: { button: HTMLElement; pointerId: number; scope: string; timer?: number } | undefined;
 let deferredMediaRender: "full" | "library" | undefined;
 const cancelledMediaButtons = new WeakSet<HTMLElement>();
@@ -2086,14 +2088,56 @@ async function replace(next: unknown, expectedIdentity?: SessionIdentity): Promi
   if (production.enabled) await production.refresh();
 }
 
+/** The browser-only frame timeline may keep a live native range in this exact view. */
+function legacyZoomScope(): string {
+  return JSON.stringify([
+    editorSession?.getState().identity, generation, project.id, project.revision,
+    legacyView?.sequenceId, tab, sourcePreviewActive(),
+  ]);
+}
+
+/** Patch only the range's connected ancestor path; a detach/reattach loses native dragging. */
+function patchLegacyZoomBranch(previous: Element, next: Element, input: HTMLInputElement): void {
+  const uncommitted = previous === input && input.value !== input.defaultValue &&
+    input.defaultValue === (next as HTMLInputElement).value;
+  for (const attribute of [...previous.attributes])
+    if (!next.hasAttribute(attribute.name)) previous.removeAttribute(attribute.name);
+  for (const attribute of [...next.attributes])
+    if (!(uncommitted && attribute.name === "value"))
+      previous.setAttribute(attribute.name, attribute.value);
+  if (previous === input) {
+    if (!uncommitted) input.value = (next as HTMLInputElement).value;
+    return;
+  }
+  for (const child of [...next.children]) {
+    const existing = [...previous.children].find((element) =>
+      child.id ? element.id === child.id : child.getAttribute("data-action")
+        ? element.getAttribute("data-action") === child.getAttribute("data-action")
+        : element.className === child.className,
+    );
+    if (existing === input || existing?.contains(input))
+      patchLegacyZoomBranch(existing, child, input);
+    else if (existing) existing.replaceWith(child);
+    else previous.append(child);
+  }
+}
+
 /** Keep the editor mounted while production/library views refresh around it.
  * Detaching its canvas would lose pointer capture, focus and open editor dialogs. */
 function renderStudioShell(): void {
   const markup = views().shell();
   const workspace = studio.querySelector<HTMLElement>(".workspace");
-  if (!editorRoot || !workspace || !workspace.contains(editorRoot)) {
+  const zoomScope = legacyWorkspacePreview ? legacyZoomScope() : "";
+  if (legacyZoomPress && (legacyZoomPress.scope !== zoomScope || !legacyZoomPress.input.isConnected))
+    legacyZoomPress = undefined;
+  const active = legacyZoomPress?.input ?? document.activeElement;
+  const liveZoom = legacyWorkspacePreview && zoomScope === renderedLegacyZoomScope &&
+    active instanceof HTMLInputElement && active.id === "timeline-zoom" &&
+    workspace?.contains(active) ? active : undefined;
+  if (!workspace || (!workspace.contains(editorRoot ?? null) && !liveZoom)) {
     studio.innerHTML = markup;
     if (editorRoot) studio.querySelector(".workspace")!.append(editorRoot);
+    renderedLegacyZoomScope = zoomScope;
     return;
   }
   const next = document.createElement("div");
@@ -2105,8 +2149,13 @@ function renderStudioShell(): void {
     const previous = [...workspace.children].find(
       (element) => element !== editorRoot && element.classList.contains(child.classList[0]!),
     );
-    if (previous) previous.replaceWith(child);
-    else workspace.insertBefore(child, editorRoot);
+    if (previous && liveZoom && previous.contains(liveZoom))
+      patchLegacyZoomBranch(previous, child, liveZoom);
+    else if (showingMediaLibrary() && previous?.classList.contains("library-panel") &&
+        previous.querySelector(".library-find #asset-search"))
+      renderMediaLibrary(previous as HTMLElement, child.innerHTML);
+    else if (previous) previous.replaceWith(child);
+    else workspace.insertBefore(child, editorRoot ?? null);
   }
   for (const child of [...next.children]) {
     if (child === nextWorkspace) continue;
@@ -2116,6 +2165,7 @@ function renderStudioShell(): void {
     if (previous) previous.replaceWith(child);
     else studio.append(child);
   }
+  renderedLegacyZoomScope = zoomScope;
 }
 
 function render(): void {
@@ -2399,10 +2449,47 @@ function refreshMediaLibrary(): void {
   if (deferredMediaRender === "library") deferredMediaRender = undefined;
   const restoreAssetFocus = rememberMediaAssetFocus();
   const scroll = $(".library-panel").scrollTop;
-  $(".library-panel").innerHTML = views().renderLibrary();
+  renderMediaLibrary($(".library-panel"), views().renderLibrary());
   $(".library-panel").scrollTop = scroll;
   restoreAssetFocus?.();
   observeVisibleThumbnails();
+}
+
+/** Keep the native search editor connected while presentation and results refresh. */
+function renderMediaLibrary(container: HTMLElement, markup: string): void {
+  const find = container.querySelector<HTMLElement>(".library-find"),
+    input = find?.querySelector<HTMLInputElement>("#asset-search");
+  if (!find || !input || renderedProjectId !== project.id || renderedGeneration !== generation ||
+    !showingMediaLibrary()) {
+    container.innerHTML = markup;
+    return;
+  }
+  const next = document.createElement("div");
+  next.innerHTML = markup;
+  const nextFind = next.querySelector<HTMLElement>(".library-find"),
+    nextInput = nextFind?.querySelector<HTMLInputElement>("#asset-search");
+  if (!nextFind || !nextInput) {
+    container.innerHTML = markup;
+    return;
+  }
+  if (input.value !== nextInput.value &&
+    (document.activeElement !== input || input.defaultValue !== nextInput.value))
+    input.value = nextInput.value;
+  input.defaultValue = nextInput.value;
+  for (const button of find.querySelectorAll<HTMLButtonElement>("[data-action='media-view']")) {
+    const replacement = nextFind.querySelector<HTMLButtonElement>(
+      `[data-action='media-view'][data-id='${CSS.escape(button.dataset.id!)}']`,
+    );
+    if (replacement) button.setAttribute("aria-pressed", replacement.getAttribute("aria-pressed")!);
+  }
+  // Replace siblings around this live island; detaching/reinserting an input can lose native IME.
+  for (const child of [...container.childNodes]) if (child !== find) child.remove();
+  let beforeFind = true;
+  for (const child of [...next.childNodes]) {
+    if (child === nextFind) { beforeFind = false; continue; }
+    if (beforeFind) container.insertBefore(child, find);
+    else container.append(child);
+  }
 }
 
 /** Keep the native pressed button mounted through a presentation-only background refresh. */
@@ -4081,6 +4168,7 @@ async function action(name: string, id?: string): Promise<void> {
         ${editorVisible ? `<dl class="shortcut-list"><dt>播放 / 暂停</dt><dd>Space</dd>
         <dt>前 / 后一帧</dt><dd>← / →</dd><dt>前 / 后 10 帧</dt><dd>Shift + ← / →</dd>
         <dt>上一 / 下一片段边缘（跨轨）</dt><dd>↑ / ↓</dd><dt>开头 / 最后一帧</dt><dd>Home / End</dd>
+        <dt>上一 / 下一标记边界（含范围起止）</dt><dd>Shift + ↑ / ↓</dd>
         <dt>同步切分所选片段，继续选中右侧</dt><dd>S</dd><dt>删除选中片段</dt><dd>Delete / Backspace</dd>
         <dt>复制 / 剪切 / 粘贴 / 原位复制</dt><dd>⌘/Ctrl C · X · V · D</dd><dt>分组 / 解组</dt><dd>⌘/Ctrl G · ⌘/Ctrl Shift G</dd>
         <dt>移动选中片段</dt><dd>⌘/Ctrl ← / →</dd><dt>撤销 / 重做</dt><dd>⌘/Ctrl Z · ⌘/Ctrl Shift Z</dd>
@@ -4350,6 +4438,27 @@ studio.addEventListener(
   true,
 );
 
+// Touch ranges need not receive focus. Keep their browser-owned gesture connected too.
+studio.addEventListener("pointerdown", (event) => {
+  const input = event.target;
+  if (legacyWorkspacePreview && event.button === 0 && event.isPrimary &&
+      input instanceof HTMLInputElement && input.id === "timeline-zoom" &&
+      input === studio.querySelector("#timeline-zoom") && renderedLegacyZoomScope === legacyZoomScope())
+    legacyZoomPress = { input, pointerId: event.pointerId, scope: renderedLegacyZoomScope };
+}, true);
+for (const type of ["pointerup", "pointercancel", "lostpointercapture"] as const)
+  document.addEventListener(type, (event) => {
+    if (legacyZoomPress?.pointerId === event.pointerId) legacyZoomPress = undefined;
+  }, true);
+studio.addEventListener("focusout", (event) => {
+  if (legacyZoomPress?.input === event.target) legacyZoomPress = undefined;
+});
+window.addEventListener("blur", () => { legacyZoomPress = undefined; });
+window.addEventListener("pagehide", () => { legacyZoomPress = undefined; });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) legacyZoomPress = undefined;
+});
+
 studio.addEventListener("pointerdown", (event) => {
   if (event.button !== 0 || !event.isPrimary) return;
   if (mediaActionPress) finishMediaActionPress(mediaActionPress, true);
@@ -4540,7 +4649,7 @@ studio.addEventListener("input", (event) => {
     if (sourceScrub.checked) selectedMedia.add(sourceScrub.dataset.selectMedia!);
     else selectedMedia.delete(sourceScrub.dataset.selectMedia!);
     const scroll = $(".library-panel").scrollTop;
-    $(".library-panel").innerHTML = views().renderLibrary();
+    renderMediaLibrary($(".library-panel"), views().renderLibrary());
     $(".library-panel").scrollTop = scroll;
     studio
       .querySelector<HTMLInputElement>(
@@ -4571,10 +4680,10 @@ studio.addEventListener("input", (event) => {
   if (target.id === "asset-search") {
     search = target.value;
     const cursor = target.selectionStart;
-    $(".library-panel").innerHTML = views().renderLibrary();
+    renderMediaLibrary($(".library-panel"), views().renderLibrary());
     const input = $<HTMLInputElement>("#asset-search");
     input.focus();
-    input.setSelectionRange(cursor, cursor);
+    if (!(event instanceof InputEvent && event.isComposing)) input.setSelectionRange(cursor, cursor);
   }
 });
 studio.addEventListener("change", (event) => {
@@ -4610,6 +4719,8 @@ studio.addEventListener("change", (event) => {
       edit([{ type: "settings", width, height }]);
     }
     if (target.id === "timeline-zoom") {
+      if (target !== studio.querySelector("#timeline-zoom") ||
+          (legacyWorkspacePreview && renderedLegacyZoomScope !== legacyZoomScope())) return;
       stop();
       setTimelineZoom(Number(target.value));
     }

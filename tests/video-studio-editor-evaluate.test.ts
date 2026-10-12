@@ -463,6 +463,36 @@ test("prepared evaluator owns a validated copy and never leaks mutable source re
   assert.throws(() => prepareEvaluator({ ...doc, futureTimeline: [] }));
 });
 
+test("prepared nested transitions retain sequence ownership and isolate later input and output changes", () => {
+  const main = sequence(), child = sequence("child");
+  for (const seq of [main, child]) {
+    const from = media("from"), to = media("to");
+    to.start = 800;
+    seq.clips = [from, to];
+    seq.transitions = [{ id: "join", fromClipId: "from", toClipId: "to", start: 800,
+      duration: 200, kind: seq.id === "main" ? "dissolve" : "wipe-left" }];
+  }
+  main.tracks.unshift(createTrack("nested-track", "video"));
+  main.clips.push({ ...nested("nested", "child", "nested-track"), duration: 1800,
+    timeMap: constantTimeMap(0, 1800).timeMap });
+  const input = document(main, child), evaluator = prepareEvaluator(input),
+    expected = evaluator.evaluate("main", 900), snapshot = prepareTimelineSnapshot(input,
+      { documentId: input.id, revision: input.revision, generation: 1 });
+  assert.equal(expected.layers[0]?.kind, "group");
+  assert.equal(expected.layers[1]?.kind === "transition" && expected.layers[1].transitionKind, "dissolve");
+  const group = expected.layers[0];
+  assert.ok(group?.kind === "group" && group.layers[0]?.kind === "transition");
+  assert.equal(group.layers[0].transitionKind, "wipe-left");
+  main.transitions[0]!.kind = "push-right";
+  child.transitions.length = 0;
+  child.tracks[0]!.hidden = true;
+  const altered = evaluator.evaluate("main", 900);
+  altered.layers.length = 0;
+  assert.deepEqual(evaluator.evaluate("main", 900), expected);
+  assert.deepEqual(snapshot.evaluate("main", 900), expected);
+  snapshot.dispose();
+});
+
 test("timeline snapshot owns one isolated graph and returns detached display, frame and plan data", () => {
   const seq = sequence();
   seq.clips = [media("camera")];
