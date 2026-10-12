@@ -762,11 +762,11 @@
   position: relative;
   z-index: 1;
 }
-/* Slim track column for narrow panels: name on top, switches and order below; the track mix
-   fields give way so lanes keep most of the width. */
+/* Keep switches and ordering reachable on one row in narrow panels; mix fields give way
+   while the track column reserves space for all four switches. */
 @media (max-width: 640px) {
   .et-track-heads {
-    flex-basis: 120px;
+    flex-basis: 168px;
   }
   .et-track-top {
     padding-left: 6px;
