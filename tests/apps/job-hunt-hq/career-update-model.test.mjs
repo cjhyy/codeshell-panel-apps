@@ -302,3 +302,16 @@ test("corrupt existing duplicate IDs are rejected rather than silently deduplica
   assert.throws(() => prepareCareerUpdate(state, document()), /重复 ID/);
   assert.equal(JSON.stringify(state), before);
 });
+
+test("overlong legacy facts cannot be truncated by an unrelated edit or indirect invalidation", () => {
+  const state = reviewedLibrary();
+  state.careerQa[0].answer = `${"X".repeat(13000)}ORIGINAL_END`;
+  const before = JSON.stringify(state);
+  const expression = document({ sources: [], qa: [{ id: qa.id, question: qa.question, draftAnswer: "仅润色表达" }] });
+  assert.throws(() => prepareCareerUpdate(freeze(state), expression, { now: later }), /existing.answer.*超过/);
+  assert.throws(() => prepareCareerUpdate(state, document({ sources: [{ ...source, excerpt: "新的来源摘录" }] }), { now: later }), /existing.answer.*超过/);
+  assert.equal(JSON.stringify(state), before);
+  assert.ok(state.careerQa[0].answer.endsWith("ORIGINAL_END"));
+  const unrelated = prepareCareerUpdate(state, document({ sources: [], episodes: [{ id: "career-episode-new", title: "独立新经历" }] }), { now: later });
+  assert.equal(unrelated.state.careerQa[0].answer, state.careerQa[0].answer);
+});

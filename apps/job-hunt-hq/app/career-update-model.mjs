@@ -168,6 +168,21 @@ function rejectArchived(record, kind) {
   if (record?.status === "archived") fail(`${kind}.${record.id}`, "已归档资料不可通过 JSON 更新复活");
 }
 
+function protectExistingFactBounds(record, kind) {
+  const fields = kind === "sources" ? SOURCE_FIELDS : kind === "episodes" ? EPISODE_FIELDS : QA_FIELDS;
+  const path = `${kind}.${record.id}.existing`;
+  // Older projects can contain facts outside today's editor limits. Do not
+  // persist a normalized, truncated copy when changing another field or when
+  // invalidating a dependent record. Reject the entire batch explicitly.
+  for (const [key, maximum] of Object.entries(fields)) if (Object.hasOwn(record, key)) string(record[key], maximum, `${path}.${key}`);
+  if (Object.hasOwn(record, "legacyRefs")) list(record.legacyRefs, 40, 500, `${path}.legacyRefs`);
+  if (kind !== "sources" && Object.hasOwn(record, "sourceIds")) list(record.sourceIds, 40, 100, `${path}.sourceIds`);
+  if (kind === "episodes") {
+    for (const key of ["actions", "alternatives"]) if (Object.hasOwn(record, key)) list(record[key], 40, 1000, `${path}.${key}`);
+    if (Object.hasOwn(record, "tags")) list(record.tags, 20, 120, `${path}.tags`);
+  }
+}
+
 function restoreOriginalRecords(original, baseline, next) {
   const result = { ...original };
   for (const [kind, field] of Object.entries(KINDS)) {
@@ -179,6 +194,7 @@ function restoreOriginalRecords(original, baseline, next) {
       if (!before || !old) return item;
       // Preserve unrelated records verbatim, including future extension fields.
       if (JSON.stringify(before) === JSON.stringify(item)) return old;
+      protectExistingFactBounds(old, kind);
       const restored = { ...old, ...item };
       const history = kind === "sources" ? "history" : "revisions";
       restored[history] = item[history].map((entry, index) => {
