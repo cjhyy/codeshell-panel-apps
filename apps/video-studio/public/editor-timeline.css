@@ -17,6 +17,10 @@
   --et-track-height: 80px;
   --et-strip-height: 48px;
 }
+.editor-timeline.et-panning,
+.editor-timeline.et-panning * {
+  cursor: grabbing !important;
+}
 .editor-timeline svg {
   flex: 0 0 auto;
   pointer-events: none;

@@ -23,12 +23,12 @@
     "app/editor-multicam.css": "33026fe2ef22db4dda753c021d4867379ec7da3fbf9ce63dd3abd1523f4f9a9d",
     "app/editor-separation.css": "a161cd123542e8562fd926755a1003f20618565f97eb9fdb5746fd5ddba68a09",
     "app/editor-sequences.css": "356e15089554f276b96b1a6f43f01cfeca1f35d3d1bca0eb17cc5a032b6b31ad",
-    "app/editor-timeline.css": "9f4cef915152c34422053aaac7606f39afef69f401decc660a494ea0baec09ce",
+    "app/editor-timeline.css": "da79e637b46afee200a28703973603efd22fc5fd9ba00fbd87f19958836f673b",
     "app/editor-timing.css": "a2d08830d059916e41aaa2bc9dce94d0be3c89d22e1db1c33a2fd2e30f1cf3ea",
     "app/editor-workspace.css": "774183bec735b9108497b9453e01bf379875422628e6bbb9544763c465128a10",
     "app/index.html": "d8a6e7c3a8cca976c3040430f35f2d64c43b15d317cc449ffab040f6cd1af334",
     "app/main.css": "cbad0ccc7e4b88a16b50c6a195d6aef19d592be9793ae90d54f83db1ebd3743d",
-    "app/main.mjs": "44f18c64e34dd4f484210f8afffb850102ae61f65b732ad028b64fb7f1a39e41",
+    "app/main.mjs": "c570cd7b185e0f2ebf30e3735788c09422370ae02d81711e18c16cc0e43c250d",
     "app/panel-select.css": "33fdaafa5b361003b553c86e1b18b41a36e9ec3d9dd80e2e7fab6020bcf7bae2",
     "app/panel-select.js": "761d4ba289275ae7deeefee2804c0c995dbb01e2d1e302e1ad4ac2d34bdb29d6",
     "app/rough-cut.css": "b70a117467b919bf5c27cc93db53c569a8b58d6bd8f1646c19f67e846c29c6af",
@@ -40,6 +40,6 @@
     "app/tools/folder-scan.mjs": "524b085b5cbb4c5750ba7345b22711fb314ea5338a67822752a95cc150613d25",
     "app/tools/media-runtime.mjs": "3763726d176e1c72515c364f253a876b2945fcd1c8b11497bcd038dc584c5a49",
     "app/tools/voice-runtime.mjs": "b031343db0f19e6a1b85c7410f41ea762edf5cd9f47b3e5410fdee4eb694410d",
-    "README.md": "1740e21e679ac09786a7f21e7ad044812dc8b88aa13bee1bf3d508b926a858cd"
+    "README.md": "e418dd3353228afcda5f5d90e1839bfe8eae599977bc7d4b48b9fc7bd987b1dd"
   }
 }

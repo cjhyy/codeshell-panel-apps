@@ -315,6 +315,85 @@ async function fixture(t, options = {}) {
 async function state(page) {
   return page.evaluate(() => fixture.read());
 }
+
+test("native middle-button panning crosses virtual redraws without selecting or editing clips", async (t) => {
+  const page = await fixture(t, { clips: [{ id: "a", trackId: "v1", start: 0, duration: 3600 }] });
+  const before = await state(page), view = await page.locator(".et-scroll").boundingBox();
+  const x = view.x + 500, y = view.y + 80;
+  await page.mouse.move(x, y); await page.mouse.down({ button: "middle" });
+  await page.mouse.move(x - 180, y); await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 180);
+  await page.mouse.move(x - 300, y); await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 300);
+  await page.mouse.up({ button: "middle" });
+  await page.mouse.move(x - 350, y); await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 300);
+  assert.deepEqual(await state(page), before);
+});
+
+test("native middle-button panning clamps both axes and suspends playback following only after scrolling", async (t) => {
+  const page = await fixture(t, { tracks: Array.from({ length: 20 }, (_, index) => `v${index}`),
+    clips: [{ id: "a", trackId: "v0", start: 0, duration: 3600 }] });
+  const before = await state(page), view = await page.locator(".et-scroll").boundingBox();
+  await page.evaluate(() => fixture.internals.timeline.setPlaybackActive(true));
+  await page.mouse.move(view.x + 400, view.y + 120); await page.mouse.down({ button: "middle" });
+  await page.evaluate(() => fixture.seek(240000 * 1000));
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 0, "An unmoved held pan owns the current viewport before auto-follow can page it");
+  await page.mouse.up({ button: "middle" });
+  assert.equal(await page.evaluate(() => fixture.internals.timeline.followSuspended), false);
+  await page.mouse.down({ button: "middle" });
+  await page.mouse.move(view.x + 280, view.y + 50); await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 120);
+  assert.equal(await page.locator(".et-body").evaluate((node) => node.scrollTop), 70);
+  assert.equal(await page.evaluate(() => fixture.internals.timeline.followSuspended), true);
+  await page.mouse.move(view.x + 500, view.y + 180); await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 0);
+  assert.equal(await page.locator(".et-body").evaluate((node) => node.scrollTop), 0);
+  await page.mouse.up({ button: "middle" });
+  await page.evaluate(() => fixture.seek(240000 * 1000));
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 0);
+  await page.evaluate(() => { fixture.internals.timeline.setPlaybackActive(false); fixture.internals.timeline.setPlaybackActive(true); fixture.seek(240000 * 1001); });
+  assert.ok(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft) > 0);
+  assert.deepEqual((await state(page)).document, before.document);
+  assert.deepEqual((await state(page)).applied, []);
+});
+
+test("native middle-button panning cancels on interruption and scope changes without resuming on hover", async (t) => {
+  for (const ending of ["Escape", "pointercancel", "lostcapture", "blur", "hidden", "surface-hidden", "revision", "generation", "sequence", "resize", "dispose"]) {
+    const page = await fixture(t, { secondSequence: true, clips: [{ id: "a", trackId: "v1", start: 0, duration: 3600 }] });
+    await page.evaluate(() => fixture.select(["a"])); await page.locator("#timeline").focus();
+    const view = await page.locator(".et-scroll").boundingBox(), x = view.x + 400, y = view.y + 80;
+    await page.mouse.move(x, y); await page.mouse.down({ button: "middle" });
+    await page.mouse.move(x - 80, y); await settle(page);
+    if (ending === "Escape") await page.keyboard.press("Escape");
+    else if (ending === "pointercancel") await page.locator("#timeline").dispatchEvent("pointercancel", { pointerId: 1 });
+    else if (ending === "lostcapture") await page.evaluate(() => {
+      const c = fixture.internals.timeline; c.container.releasePointerCapture(c.viewPan.pointerId);
+    });
+    else if (ending === "blur") await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    else if (ending === "hidden") await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      document.dispatchEvent(new Event("visibilitychange")); delete document.visibilityState;
+    });
+    else if (ending === "surface-hidden") await page.locator("#timeline").evaluate((node) => node.hidden = true);
+    else if (ending === "revision") await page.evaluate(() => { fixture.externalChange(); fixture.render(); });
+    else if (ending === "generation") await page.evaluate(() => fixture.replaceGeneration());
+    else if (ending === "sequence") await page.evaluate(() => fixture.switchSequence());
+    else if (ending === "resize") await page.locator("#timeline").evaluate((node) => node.style.width = "1000px");
+    else await page.evaluate(() => fixture.dispose());
+    // Explicit release changes the pending capture override; the next native pointer
+    // event delivers lostpointercapture before its move can reach the old owner.
+    if (ending === "lostcapture") await page.mouse.move(x - 81, y);
+    await settle(page);
+    assert.equal(await page.evaluate(() => !!fixture.internals.timeline.viewPan), false, ending);
+    const position = ending === "dispose" ? undefined : await page.locator(".et-scroll").evaluate((node) => node.scrollLeft);
+    await page.mouse.move(x - 160, y); await page.mouse.up({ button: "middle" }); await settle(page);
+    if (position !== undefined) assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), position, ending);
+    assert.deepEqual((await state(page)).applied, [], ending);
+    if (ending !== "sequence") assert.deepEqual((await state(page)).selected, ["a"], ending);
+    assert.equal(await page.locator("#timeline").evaluate((node) => node.classList.contains("et-panning")), false, ending);
+  }
+});
 async function captureOwnedPreviews(page) {
   await page.evaluate(() => {
     globalThis.ownedPreviews = [];

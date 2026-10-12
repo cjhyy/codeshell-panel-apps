@@ -670,7 +670,7 @@ ${esc(aiPrompt)}</textarea
                       )}<span class="asset-duration">${seconds(asset.durationFrames)}s</span
                 >${asset.kind === "demo" ? '<span class="demo-label">示例</span>' : ""}
               </button>
-              <label class="asset-select"
+              <label class="asset-select" title="按住 Shift 可连续选择或取消当前可见范围"
                 ><input
                   type="checkbox"
                   data-select-media="${esc(asset.id)}"

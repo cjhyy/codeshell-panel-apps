@@ -337,6 +337,10 @@ let sourceFrame = 0;
 let mediaPreview = false;
 const selectedMedia = new Set<string>();
 const mediaPreferences = readMediaLibraryPreferences();
+let mediaSelectionAnchor: { id: string; scope: string } | undefined;
+let mediaCheckboxActivation: {
+  input: HTMLInputElement; scope: string; click: MouseEvent; timer: number;
+} | undefined;
 let mediaMenuGeneration = -1;
 let pendingMediaDeletion: { project: Project; generation: number; ids: string[] } | undefined;
 const mediaMenu = createMediaLibraryMenu({
@@ -2169,6 +2173,7 @@ function renderStudioShell(): void {
 }
 
 function render(): void {
+  reconcileMediaSelectionAnchor();
   if (deferMediaActionRender("full")) return;
   deferredMediaRender = undefined;
   if (timelineGestures.deferRender()) return;
@@ -2442,6 +2447,7 @@ function rememberTimelineClipFocus(): (() => void) | undefined {
 }
 
 function refreshMediaLibrary(): void {
+  reconcileMediaSelectionAnchor();
   // A feature page (e.g. 字幕) owns the panel; rewriting it in place would drop its mounted
   // content until the next full render, which background imports and job results defer.
   if (!showingMediaLibrary()) return;
@@ -2490,6 +2496,42 @@ function renderMediaLibrary(container: HTMLElement, markup: string): void {
     if (beforeFind) container.insertBefore(child, find);
     else container.append(child);
   }
+}
+
+function mediaSelectionScope(): { key: string; ids: string[] } {
+  const ids = visibleMedia(project.assets, search, mediaPreferences).map((asset) => asset.id);
+  return { ids, key: JSON.stringify([
+    project.id, project.revision, generation, editorSession?.getState().identity,
+    tab, libraryView, search, mediaPreferences.filter, mediaPreferences.sort, ids,
+  ]) };
+}
+function reconcileMediaSelectionAnchor(): void {
+  if (mediaSelectionAnchor && (!showingMediaLibrary() || mediaSelectionAnchor.scope !== mediaSelectionScope().key))
+    mediaSelectionAnchor = undefined;
+}
+function clearMediaCheckboxActivation(): void {
+  clearTimeout(mediaCheckboxActivation?.timer);
+  mediaCheckboxActivation = undefined;
+}
+function selectMediaCheckbox(input: HTMLInputElement): boolean {
+  const activation = mediaCheckboxActivation;
+  clearMediaCheckboxActivation();
+  const id = input.dataset.selectMedia!, scope = mediaSelectionScope();
+  if (!showingMediaLibrary() || !input.isConnected || !scope.ids.includes(id) ||
+      studio.querySelector(`.library-panel [data-select-media="${CSS.escape(id)}"]`) !== input ||
+      (activation?.input === input && activation.scope !== scope.key)) return false;
+  const anchorIndex = mediaSelectionAnchor?.scope === scope.key
+    ? scope.ids.indexOf(mediaSelectionAnchor.id) : -1;
+  const range = activation?.input === input && !activation.click.defaultPrevented &&
+    activation.click.shiftKey && anchorIndex >= 0;
+  const index = scope.ids.indexOf(id);
+  const ids = range ? scope.ids.slice(Math.min(anchorIndex, index), Math.max(anchorIndex, index) + 1) : [id];
+  for (const selectedId of ids) {
+    if (input.checked) selectedMedia.add(selectedId);
+    else selectedMedia.delete(selectedId);
+  }
+  if (!range) mediaSelectionAnchor = { id, scope: scope.key };
+  return true;
 }
 
 /** Keep the native pressed button mounted through a presentation-only background refresh. */
@@ -3826,6 +3868,7 @@ async function action(name: string, id?: string): Promise<void> {
       break;
     }
     case "select-media":
+      mediaSelectionAnchor = undefined;
       for (const asset of visibleMedia(project.assets, search, mediaPreferences))
         selectedMedia.add(asset.id);
       refreshMediaLibrary();
@@ -3837,6 +3880,7 @@ async function action(name: string, id?: string): Promise<void> {
       refreshMediaLibrary();
       break;
     case "clear-media-selection":
+      mediaSelectionAnchor = undefined;
       selectedMedia.clear();
       refreshMediaLibrary();
       break;
@@ -4174,6 +4218,7 @@ async function action(name: string, id?: string): Promise<void> {
         <dt>移动选中片段</dt><dd>⌘/Ctrl ← / →</dd><dt>撤销 / 重做</dt><dd>⌘/Ctrl Z · ⌘/Ctrl Shift Z</dd>
         <dt>一屏看全</dt><dd>Shift + Z</dd><dt>适合所选片段</dt><dd>Shift + F</dd><dt>放大 / 缩小时间轴</dt><dd>+ / −</dd>
         <dt>以鼠标位置缩放</dt><dd>⌘/Ctrl + 滚轮</dd><dt>横向滚动时间轴</dt><dd>Shift + 滚轮</dd>
+        <dt>拖动平移时间轴视图</dt><dd>按住鼠标中键拖动</dd>
         <dt>开关边缘吸附</dt><dd>N</dd><dt>拖动时临时关闭吸附</dt><dd>Alt</dd><dt>取消拖动 / 清空选择</dt><dd>Esc</dd>
         <dt>裁头保留右侧 / 裁尾保留左侧</dt><dd>Q / W</dd>
         <dt>打开点标记 / 所选片段范围草稿</dt><dd>M / Shift + M</dd>
@@ -4459,6 +4504,20 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden) legacyZoomPress = undefined;
 });
 
+// Keep click modifiers through native checkbox activation, including browsers that run
+// a microtask checkpoint before the default action emits its synchronous input event.
+studio.addEventListener("click", (event) => {
+  clearMediaCheckboxActivation();
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement) || !input.matches("[data-select-media]") ||
+      !showingMediaLibrary() || !studio.contains(input)) return;
+  const activation = { input, scope: mediaSelectionScope().key, click: event, timer: 0 };
+  mediaCheckboxActivation = activation;
+  activation.timer = window.setTimeout(() => {
+    if (mediaCheckboxActivation === activation) clearMediaCheckboxActivation();
+  }, 0);
+}, true);
+
 studio.addEventListener("pointerdown", (event) => {
   if (event.button !== 0 || !event.isPrimary) return;
   if (mediaActionPress) finishMediaActionPress(mediaActionPress, true);
@@ -4646,8 +4705,7 @@ studio.addEventListener("input", (event) => {
     return;
   }
   if (sourceScrub.matches("[data-select-media]")) {
-    if (sourceScrub.checked) selectedMedia.add(sourceScrub.dataset.selectMedia!);
-    else selectedMedia.delete(sourceScrub.dataset.selectMedia!);
+    if (!selectMediaCheckbox(sourceScrub)) return;
     const scroll = $(".library-panel").scrollTop;
     renderMediaLibrary($(".library-panel"), views().renderLibrary());
     $(".library-panel").scrollTop = scroll;
@@ -4679,6 +4737,7 @@ studio.addEventListener("input", (event) => {
   }
   if (target.id === "asset-search") {
     search = target.value;
+    reconcileMediaSelectionAnchor();
     const cursor = target.selectionStart;
     renderMediaLibrary($(".library-panel"), views().renderLibrary());
     const input = $<HTMLInputElement>("#asset-search");

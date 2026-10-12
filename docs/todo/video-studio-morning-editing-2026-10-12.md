@@ -805,3 +805,44 @@ offline1132通过3可选跳过、native voice5通过1可选跳过、workspace do
 保留）。源逐文件/局部等价与全部独立候选一致，没有合并漂移。日志
 /tmp/video-studio-root18-{independent-combinations,search-independent-peer,
 caption-feature-independent-peer}-final.log。
+
+
+## 第十九批：素材范围选择与中键时间轴平移
+
+- 192ada2基于3ba，只挑其唯一增量。素材checkbox实际native首尾+Shift只有两项
+  的红例已关闭：按当前visible ID顺序包含中间项，可取消范围且保留隐藏选择；
+  scope包含工程/revision/generation/session/tab/search/filter/sort/visible顺序，
+  大图/小图/列表只改呈现不清anchor。原生click捕获modifier后由同步input消费，
+  task尾清理，避免microtask checkpoint早于checkbox default activation。7新目标
+  加3既有native/多选目标10/10、类型及独立复核通过。根手合保留第十八批search
+  活节点与旧版zoom完整ancestor两路径，不回退innerHTML或IME保护。
+- ee4f2bf基于3ba，只挑其唯一增量。3600秒工程中native中键拖180px仍scrollLeft0
+  的红例已关闭；capture在稳定container上，虚拟窗口重建后继续写当前viewport
+  和body scroll。仅视图变化，不完成属性/轨道输入，不选择/seek/写工程历史。
+  持键时不自动翻页，实际横滚才暂停当前播放跟随，无移动松开不暂停；保留
+  valid/invalid属性和中文track-name IME焦点/连接。11取消路线、both axes clamp、
+  虚拟重建、primary/touch/wheel等10目标、类型、独立源审通过。根冲突同时保留
+  marker导航cancel与pan cancel，不丢第十八批精确边界。
+
+根集成后的生成包、类型与完整回归需要独立检查，以下尚未借用上一批计数。
+
+
+第十九批根冻结Main f9e5ee9、Timeline1442194、Views4edce86、timeline CSS17071e7；
+类型、build、build:check、validate39通过。7个native Shift目标、6个新native pan
+目标及独立2组合通过：三个view+search活节点/background render连续范围选择，
+真实capture→microtask→input事件顺序与过期anchor。390×600和280×340实际短屏
+菜单可滚动且Home/End/Delete/Undo可达，未发现遮挡。完整媒体230/230通过
+（158606ms）；offline1132通过3可选跳过、voice5通过1可选跳过、workspace docs5/5。
+最终完整UI1401/1401通过（797985ms），无skip/cancel。
+
+原声分离候选未纳入本批。独立复核找到共用右键入口P2：不透明度101未blur时
+native右键clip的mousedown默认先change/blur，使无效草稿还原为100，随后Copy、
+Remove、Detach均可继续；中文IME也会在contextmenu前结束并提交一次。候选先
+修共用pointerdown焦点保护和受管finisher，不以direct action invalid目标替代
+真实鼠标路径。actual混音child/parent最大sample差<1e-6（非字节精确），静音
+PCM数组相同，仍只属于候选证据；未用它宣称已合入本批。
+
+
+00:56 UTC核实第十八批4e3d7e5的PR38188624599与push38188620003都completed
+success，各7 jobs全成功，包含完整Video Studio UI/media及其余Panel门禁。
+这是该提交实际远端结果，不替代第十九批未结束的完整UI或后续新候选门禁。

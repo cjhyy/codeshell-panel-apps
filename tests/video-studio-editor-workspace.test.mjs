@@ -4899,6 +4899,43 @@ async function timelineControlDraftFixture(t, options = {}) {
   await settle(page);
   return page;
 }
+
+for (const value of ["25", "1001"])
+  test(`native middle pan preserves the focused inspector draft ${value} without committing it`, async (t) => {
+    const page = await fixture(t, { duration: 3600 * 240000 });
+    await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["a"]));
+    const field = page.getByLabel("水平位置（%）", { exact: true });
+    await field.fill(value);
+    const input = await field.elementHandle(), before = await documentState(page), selection = await page.evaluate(() => fixture.selection());
+    const view = await page.locator(".et-scroll").boundingBox(), x = view.x + 300, y = view.y + 80;
+    await page.mouse.move(x, y); await page.mouse.down({ button: "middle" });
+    await page.mouse.move(x - 120, y); await settle(page); await page.mouse.up({ button: "middle" });
+    assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 120);
+    assert.equal(await input.evaluate((node) => node.isConnected && node === document.activeElement), true);
+    assert.equal(await field.inputValue(), value);
+    assert.deepEqual(await documentState(page), before);
+    assert.deepEqual(await page.evaluate(() => fixture.selection()), selection);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+
+test("native middle pan preserves the connected composing track-name field through virtual redraws", async (t) => {
+  const page = await fixture(t, { duration: 3600 * 240000 }), cdp = await page.context().newCDPSession(page);
+  const field = page.getByLabel("轨道名称 画面轨", { exact: true }); await field.fill("");
+  const input = await field.elementHandle();
+  await input.evaluate((node) => { window.__panCompositionEnds = 0; node.addEventListener("compositionend", () => window.__panCompositionEnds++); });
+  await cdp.send("Input.imeSetComposition", { text: "正在输入画面轨", selectionStart: 7, selectionEnd: 7 });
+  const before = await documentState(page), view = await page.locator(".et-scroll").boundingBox(), x = view.x + 300, y = view.y + 80;
+  await page.mouse.move(x, y); await page.mouse.down({ button: "middle" });
+  await page.mouse.move(x - 120, y); await settle(page);
+  await page.mouse.move(x - 200, y); await settle(page); await page.mouse.up({ button: "middle" });
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 200);
+  assert.equal(await input.evaluate((node) => node.isConnected && node === document.activeElement), true);
+  assert.equal(await field.inputValue(), "正在输入画面轨");
+  assert.equal(await page.evaluate(() => window.__panCompositionEnds), 0);
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  await cdp.detach();
+});
 const timelineControl = (page, action) =>
   ["muted", "locked"].includes(action)
     ? page.locator(`[data-et-track="video"][data-et-toggle="${action}"]`)

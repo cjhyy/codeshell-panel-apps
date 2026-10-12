@@ -132,6 +132,7 @@ type TrackInputOwner = {
   kind: EditorTrack["kind"];
 };
 type GesturePointer = Pick<PointerEvent, "pointerId" | "clientX" | "clientY" | "altKey">;
+type ViewPan = { pointerId: number; x: number; y: number; left: number; top: number; scope: string };
 type GestureIntent = {
   pointer: GesturePointer;
   kind: Drag["kind"];
@@ -268,6 +269,7 @@ export class EditorTimeline {
   private markerNavigationPending?: { cancelled: boolean; target?: Tick };
   private trimShortcutPending?: { cancelled: boolean };
   private drag?: Drag;
+  private viewPan?: ViewPan;
   private gestureSerial = 0;
   private dragPlanFrame?: number;
   private destroyed = false;
@@ -341,12 +343,15 @@ export class EditorTimeline {
     container.addEventListener("lostpointercapture", this.cancelPointer);
     window.addEventListener("blur", this.interrupt);
     globalThis.document.addEventListener("visibilitychange", this.interrupt);
+    globalThis.document.addEventListener("keydown", this.panEscape, true);
     container.addEventListener("dragover", this.dragover);
     container.addEventListener("drop", this.drop);
     container.addEventListener("contextmenu", this.contextmenu);
     this.render();
     this.resizeObserver = new ResizeObserver(() => {
       const width = container.clientWidth;
+      const pan = this.viewPan;
+      if (pan && !this.panCurrent(pan)) this.cancelPan(pan);
       if (!this.destroyed && !this.drag && width > 0 && width !== this.renderedWidth)
         this.render({ preserveToolbar: true });
       else this.scheduleMedia();
@@ -504,6 +509,8 @@ export class EditorTimeline {
     // A synchronous view update revokes a shortcut even if a getter returns its older value.
     if (this.trimShortcutPending) this.trimShortcutPending.cancelled = true;
     if (this.destroyed || this.replacingControls) return;
+    const pan = this.viewPan;
+    if (pan && !this.panCurrent(pan)) this.cancelPan(pan);
     this.media.cancel();
     const focused = globalThis.document.activeElement;
     const focusedClip =
@@ -916,7 +923,7 @@ export class EditorTimeline {
     const x = ticksToSeconds(time) * this.scale;
     if (
       this.playbackActive && this.followPlayback && !this.followSuspended &&
-      !this.drag && !this.menu && !this.confirmTrack && !this.pendingControl &&
+      !this.drag && !this.viewPan && !this.menu && !this.confirmTrack && !this.pendingControl &&
       !this.pendingTrackGesture && !this.canvasFieldFinish && !this.trackControlPending &&
       !this.fadePending && !this.clipboardPending && !editableTarget(globalThis.document.activeElement)
     ) {
@@ -965,7 +972,7 @@ export class EditorTimeline {
         : "开启播放跟随；只影响时间轴视图";
   }
   private trackHeightBlocked(): boolean {
-    return !!(this.destroyed || this.drag || this.pendingControl || this.pendingTrackGesture ||
+    return !!(this.destroyed || this.drag || this.viewPan || this.pendingControl || this.pendingTrackGesture ||
       this.trackControlPending || this.canvasFieldFinish || this.fadePending || this.clipboardPending);
   }
   private updateTrackHeightControl(): void {
@@ -1251,6 +1258,7 @@ export class EditorTimeline {
   private wheel = (event: WheelEvent): void => {
     const target = event.target;
     if (!(target instanceof Element) || !target.closest(".et-scroll")) return;
+    if (this.viewPan) { event.preventDefault(); return; }
     const viewport = this.viewport();
     if (event.ctrlKey || event.metaKey) {
       event.preventDefault();
@@ -2117,6 +2125,30 @@ export class EditorTimeline {
     return delta;
   }
   private pointerdown = (event: PointerEvent) => {
+    if (event.button === 1 && event.pointerType === "mouse" && event.isPrimary &&
+        event.target instanceof Element && event.target.closest(".et-scroll") && !editableTarget(event.target)) {
+      // A view-only gesture keeps the original input focused, including invalid/IME drafts.
+      event.preventDefault();
+      if (this.destroyed || this.viewPan || this.drag || this.pendingControl || this.pendingTrackGesture ||
+          this.trackControlPending || this.canvasFieldFinish || this.fadePending || this.clipboardPending ||
+          this.menu || globalThis.document.querySelector("dialog[open]")) return;
+      this.run(() => {
+        const viewport = this.viewport(), pan: ViewPan = {
+          pointerId: event.pointerId, x: event.clientX, y: event.clientY,
+          left: viewport.scrollLeft, top: this.container.querySelector<HTMLElement>(".et-body")!.scrollTop,
+          scope: this.panScope(),
+        };
+        if (this.destroyed || !this.container.isConnected || this.viewPan) return;
+        this.viewPan = pan;
+        this.container.classList.add("et-panning");
+        this.updateTrackHeightControl();
+        // The container survives virtual-window redraws; its inner scroller does not.
+        try { this.container.setPointerCapture(event.pointerId); }
+        catch (error) { this.cancelPan(pan); throw error; }
+      });
+      return;
+    }
+    if (this.viewPan) { event.preventDefault(); return; }
     if (event.isPrimary) this.suppressedControlClick = undefined;
     if (this.pendingControl && event.isPrimary && event.button === 0)
       this.suppressedControlClick = event.pointerId;
@@ -2185,6 +2217,35 @@ export class EditorTimeline {
     const bounds = this.container.getBoundingClientRect();
     return JSON.stringify([bounds.left, bounds.top, bounds.width, bounds.height, this.scale]);
   }
+  private panScope(): string {
+    const identity = this.context.identity?.(), document = identity ? undefined : this.context.read();
+    return JSON.stringify([identity ?? { documentId: document!.id, revision: document!.revision },
+      this.context.selection().sequenceId, this.gestureViewport()]);
+  }
+  private panCurrent(pan: ViewPan): boolean {
+    const scope = this.panScope();
+    return !this.destroyed && this.viewPan === pan && pan.scope === scope;
+  }
+  private cancelPan(pan = this.viewPan): void {
+    if (!pan || this.viewPan !== pan) return;
+    this.viewPan = undefined;
+    this.container.classList.remove("et-panning");
+    this.updateTrackHeightControl();
+    if (this.container.hasPointerCapture(pan.pointerId)) this.container.releasePointerCapture(pan.pointerId);
+  }
+  private panTo(event: Pick<GesturePointer, "clientX" | "clientY">): void {
+    const pan = this.viewPan;
+    if (!pan) return;
+    if (!this.panCurrent(pan)) { this.cancelPan(pan); return; }
+    this.viewport().scrollLeft = pan.left + pan.x - event.clientX;
+    this.container.querySelector<HTMLElement>(".et-body")!.scrollTop = pan.top + pan.y - event.clientY;
+  }
+  private panEscape = (event: KeyboardEvent): void => {
+    if (!this.viewPan || event.key !== "Escape" || event.isComposing) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.cancelPan();
+  };
   private fieldGestureCurrent(pending: PendingTrackGesture, exactRevision = false): boolean {
     const field = pending.field;
     return !!field && this.fieldScopeCurrent(field, exactRevision);
@@ -2710,6 +2771,11 @@ export class EditorTimeline {
       this.container.releasePointerCapture(pending.intent.pointer.pointerId);
   }
   private pointermove = (event: PointerEvent) => {
+    if (this.viewPan?.pointerId === event.pointerId) {
+      if (!(event.buttons & 4)) this.cancelPan();
+      else this.run(() => this.panTo(event));
+      return;
+    }
     if (this.pendingControl?.pointerId === event.pointerId) {
       if (this.pendingControl.up === undefined && event.buttons === 0) this.cancelControl();
       return;
@@ -3077,6 +3143,12 @@ export class EditorTimeline {
     });
   };
   private pointerup = (event: GesturePointer) => {
+    const pan = this.viewPan;
+    if (pan?.pointerId === event.pointerId) {
+      this.run(() => this.panTo(event));
+      this.cancelPan(pan);
+      return;
+    }
     const control = this.pendingControl;
     if (control?.pointerId === event.pointerId) {
       if (control.up === undefined) {
@@ -3142,6 +3214,7 @@ export class EditorTimeline {
   };
   private cancel = () => {
     this.cancelMarkerNavigation();
+    this.cancelPan();
     this.cancelControl();
     this.cancelTrackGesture();
     this.notice.textContent = "";
@@ -3178,6 +3251,7 @@ export class EditorTimeline {
       lane.classList.remove("drop-target", "drop-target-invalid");
   };
   private cancelPointer = (event: PointerEvent) => {
+    if (this.viewPan?.pointerId === event.pointerId) this.cancelPan();
     const control = this.pendingControl;
     if (
       control?.pointerId === event.pointerId &&
@@ -3195,6 +3269,7 @@ export class EditorTimeline {
   private interrupt = (event: Event) => {
     const hidden = globalThis.document.visibilityState === "hidden";
     if (event.type !== "visibilitychange" || hidden) this.cancelMarkerNavigation();
+    if (event.type !== "visibilitychange" || hidden) this.cancelPan();
     if (
       (!this.drag && !this.pendingTrackGesture && !this.pendingControl) ||
       (event.type === "visibilitychange" && !hidden)
@@ -3230,6 +3305,7 @@ export class EditorTimeline {
     this.container.removeEventListener("lostpointercapture", this.cancelPointer);
     window.removeEventListener("blur", this.interrupt);
     globalThis.document.removeEventListener("visibilitychange", this.interrupt);
+    globalThis.document.removeEventListener("keydown", this.panEscape, true);
     this.container.removeEventListener("dragover", this.dragover);
     this.container.removeEventListener("drop", this.drop);
     this.container.removeEventListener("contextmenu", this.contextmenu);
