@@ -1,6 +1,6 @@
 # Job Hunt HQ 能力包：脱离面板运行（简历样板）
 
-> 状态：v4.2.0 实现版；P1 / P2 已完成离线验收。日期：2026-10-13。<br>
+> 状态：v4.2.0 实现版；P1 / P2 已完成离线和候选 Host 存储验收。日期：2026-10-13。<br>
 > 实现仓库：`codeshell-panel-apps`，分支 `codex/job-hunt-hq/headless-ops`。本方案不改 CodeShell Host。<br>
 > 本文从 `codeshell/docs/todo/` 迁入，基于 Job Hunt HQ v4.1.2 更新。下文应用路径相对于 `apps/job-hunt-hq/`。
 
@@ -79,6 +79,9 @@ Session / Trace 信息。`snapshot-codec.mjs` 提供页面和 CLI 共用的归�
 
 ### 3.2 CLI
 
+运行前置条件为 **PATH 中存在 Node.js 20.10 或更高版本**；使用当前项目选中的安装包，不依赖开发
+仓库的 `node_modules`。本版 CLI 只使用 Node 内置模块和包内业务模块。
+
 ```sh
 node "<package-root>/app/tools/job-hunt.mjs" ops
 node "<package-root>/app/tools/job-hunt.mjs" init --project "<project-dir>"
@@ -151,6 +154,7 @@ node "<package-root>/app/tools/job-hunt.mjs" run <operation> \
 | `npm run typecheck` | 通过 |
 | `npm run build:check -- --app job-hunt-hq` | 通过；Job Hunt HQ 沿用无需生成构建的安装包布局 |
 | 新增 `headless-ops.test.mjs` / `headless-parity.test.mjs` | 13 / 13 通过，已纳入上述 Job Hunt HQ suite |
+| `npm run test:host-storage -- /Users/admin/.codex/worktrees/job-hunt-headless-host/packages/server` | 候选 Host `139477f`（v0.9.36）四个 worker 全部通过 |
 | `project-runtime` Skill frontmatter / naming 校验 | 通过 |
 | 与基线深比较 manifest `agent.tools` | 16 个 Tool 名称和参数 schema 完全不变 |
 | 原生入口 SHA-256、安装包 preflight、`git diff --check` | 通过 |
@@ -159,15 +163,22 @@ node "<package-root>/app/tools/job-hunt.mjs" run <operation> \
 Panel Tool，对照独立 Node CLI 的直接快照和分片快照结果；并检查干净面板自动读取与
 有未保存修改时的冲突保留。使用临时项目和测试 Host workspace 适配，不接触个人数据。
 
-尚未运行真实已安装 Desktop 的端到端场景、TUI 模型对话及招聘网站认证。CLI 终端执行
-和浏览器页面的离线验收已覆盖本版代码，但不替代这些安装及模型路由集成检查。
+候选 Host 的真实 Core / Server gate 已覆盖：4.2.0 安装 review、保留项目所选包的 Skill
+路径插值、Bash 前台执行四个操作及 `init`、Server 直接 / 分片存储、Host 在 CLI 更新后
+拒绝旧 revision，以及 CLI 在 Host 更新后拒绝旧 revision。新增 catalog 不覆盖旧项目
+pin；损坏的新包会失败，不回退到其他版本。测试使用临时 HOME / 项目与 Node 子进程
+网络隔离，没有读取凭据、调用模型或创建 Panel 实例。
+
+这组 gate 使用候选 Host `139477f`（v0.9.36），并非正在运行的 Desktop 0.9.35。
+尚未运行真实已安装 Desktop 的升级后端到端场景、TUI 模型对话及招聘网站认证；
+这些安装和模型路由集成检查不能由离线测试或候选 Host 存储 gate 替代。
 
 ## 5. 分期
 
 | 期 | 范围 | 本次状态 |
 | --- | --- | --- |
-| P1 | codec、四个 op、Node workspace 适配、CLI、四个 handler、操作和存储一致性测试 | 已实现，离线验收完成 |
-| P2 | project-runtime、workflow 路由、manifest 4.2.0、外部修改场景检查 | 已实现，离线验收完成；真实安装与模型对话未运行 |
+| P1 | codec、四个 op、Node workspace 适配、CLI、四个 handler、操作和存储一致性测试 | 已实现，离线及候选 Host 存储 gate 通过 |
+| P2 | project-runtime、workflow 路由、manifest 4.2.0、外部修改场景检查 | 已实现，离线及候选 Host 存储 gate 通过；live Desktop 升级与模型对话未运行 |
 | P3 | 其余 12 个 Tool 迁移；discovery 收据改为直接 CLI 写入 | 后续，不属于本版 |
 | P4（可选） | 若需要结构化 Tool 无页面执行，向 Host 提 nativeEntry 通用能力 | 未启动；另起 Host 分支 |
 
@@ -186,3 +197,28 @@ Panel Tool，对照独立 Node CLI 的直接快照和分片快照结果；并检
   明确路由，不能生成不存在的 CLI 子命令。
 - **原生入口哈希：** Job Hunt HQ 无 `panel.build.json`，手工更新入口后必须同步 manifest hash；
   依赖模块和包整体仍通过既有安装包库存 / preflight 检查。
+
+## 7. 发布与安装准备（尚未发布）
+
+2026-10-13 曾对干净代码提交 `a05c9ff3691457406ee8438ff80573691739e9e7` 的
+`apps/job-hunt-hq/` 子树生成 ZIP 并通过已发布 Core 0.9.11 的只读安装预检。
+当时 ZIP 与应用目录的 payload digest 完全一致；以下为该历史预检的记录，后续 Skill
+补充 Node 前置条件已改变包内容，正式发布必须重新预检并记录新 digest：
+
+```text
+historical packageDigest (a05c9ff): 939117f4fb8d3b95dea44aed0da8db483695c60969957513a62bd79015661c1c
+job-hunt CLI sha256: 41148353564d6921ac46fff7a677d4a9098cce128a05170a0db24c1961279b34
+```
+
+预检确认包为 `job-hunt-hq` 4.2.0、16 个 Tool、6 个 Skill，且相对 4.1.2 开发基线未增加
+Host 权限。本机旧安装实际为 4.1.1、5 个 Skill；与旧安装相比，升级请求的新增权限是
+`process`、`resources`、`credentials.connections`，这些来自已合入的 4.1.2 基线。
+正式安装须通过生产安装器预览并核对这三项权限，保留版本、digest 和项目绑定回执。
+不能通过复制文件或修改 `installed.json` 代替安装流程。
+
+仓库没有自动发布 workflow；既有 Job Hunt HQ 发布采用 `job-hunt-hq-v<version>` tag 和
+`job-hunt-hq-<version>.zip` asset。ZIP 根目录直接包含 `.codeshell-panel/`、`app/` 和
+`agent/` 等包文件。正式 4.2.0 应从已合入并通过检查的提交生成，使用 tag
+`job-hunt-hq-v4.2.0` 与 asset `job-hunt-hq-4.2.0.zip`，保留一次生成的原件并核对发布后
+下载的 SHA-256 与包 payload digest；多 Panel 仓库发布时保留现有全局 Latest 标记。
+本次临时预检包不代表已经完成 tag、Release、正式 asset 或本机安装。

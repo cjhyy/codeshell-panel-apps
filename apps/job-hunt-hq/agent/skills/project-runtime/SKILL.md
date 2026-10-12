@@ -18,7 +18,8 @@ checkout, or the network for a replacement. If the Skill directory, matching
 manifest, or CLI is unavailable, report `bundled-job-hunt-cli-not-found` and stop
 that operation.
 
-Run the resolved CLI path as one properly quoted Node argument:
+Require Node.js >= 20.10 on `PATH`; if it is unavailable, report that prerequisite
+before running the CLI. Run the resolved CLI path as one properly quoted Node argument:
 
 ```sh
 node "<package-root>/app/tools/job-hunt.mjs" ops

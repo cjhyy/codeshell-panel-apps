@@ -176,7 +176,11 @@ npm run test:host-storage -- /absolute/path/to/codeshell/packages/server
 ```
 
 This runs the existing Design recovery, portable/legacy design backup and Job Hunt
-draft checks against the real `PanelRuntimeServices`, with temporary projects,
+draft checks against the real `PanelRuntimeServices`, plus Job Hunt's reviewed
+installation, project-selected Skill and installed CLI through the real Core
+`Skill` and `Bash` tools without opening a Panel. It checks all four headless
+operations, bidirectional Host persistence, stale-write rejection and retained
+package selection. All checks use temporary projects,
 temporary homes, a credential-free environment and a JavaScript network guard.
 It verifies disk persistence, concurrent writes, restarts, revoked access and
 restoration without reading personal projects. It is separate from the default

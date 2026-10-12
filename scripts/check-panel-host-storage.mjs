@@ -26,13 +26,13 @@ http.request = http.get = https.request = https.get = blocked;
 net.connect = net.createConnection = tls.connect = blocked;
 syncBuiltinESMExports();
 `);
-  for (const script of ["design-studio-host-storage.mjs", "design-studio-portable-host.mjs", "job-hunt-host-draft-storage.mjs"]) {
+  for (const script of ["design-studio-host-storage.mjs", "design-studio-portable-host.mjs", "job-hunt-host-draft-storage.mjs", "job-hunt-host-headless.mjs"]) {
     const isolatedHome = join(sandbox, script.replace(".mjs", ""));
     await mkdir(isolatedHome);
     const result = spawnSync(process.execPath, ["--import", pathToFileURL(guardPath).href, join(repositoryRoot, "scripts", script), serverRoot], {
       cwd: repositoryRoot,
       // Do not pass provider tokens or the user's normal runtime state to children.
-      env: { PATH: process.env.PATH, HOME: isolatedHome, TMPDIR: isolatedHome, LANG: "C.UTF-8" },
+      env: { PATH: process.env.PATH, HOME: isolatedHome, TMPDIR: isolatedHome, LANG: "C.UTF-8", PANEL_TEST_ISOLATED_HOME: isolatedHome, PANEL_TEST_NETWORK_GUARD: guardPath },
       encoding: "utf8",
       timeout: 60_000,
     });
@@ -41,7 +41,7 @@ syncBuiltinESMExports();
     if (result.error) throw result.error;
     assert.equal(result.status, 0, `${script} failed`);
   }
-  console.log("PASS: three real Host storage checks with temporary homes, temporary projects and denied network access");
+  console.log("PASS: four real Host storage/runtime checks with temporary homes, temporary projects and denied network access");
 } finally {
   await rm(sandbox, { recursive: true, force: true });
 }
