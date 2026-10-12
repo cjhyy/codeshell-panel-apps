@@ -16,6 +16,12 @@ export const suites = [
     label: "Job Hunt HQ project draft persistence",
     commands: [[
       "--test",
+      "tests/apps/job-hunt-hq/career-service.test.mjs",
+      "tests/apps/job-hunt-hq/resume-service.test.mjs",
+      "tests/apps/job-hunt-hq/native-project-commit.test.mjs",
+      "tests/apps/job-hunt-hq/node-project-store.test.mjs",
+      "tests/apps/job-hunt-hq/tool-input-validation.test.mjs",
+      "tests/apps/job-hunt-hq/headless-cli.test.mjs",
       "tests/apps/job-hunt-hq/career-library-model.test.mjs",
       "tests/apps/job-hunt-hq/career-library-version-model.test.mjs",
       "tests/apps/job-hunt-hq/career-library-version-store.test.mjs",

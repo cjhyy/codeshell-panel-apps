@@ -80,7 +80,12 @@ context and reconcile changes before retrying; never replace another writer's
 work. On a busy project, let the current save finish before retrying.
 
 The CLI and Panel share `job-hunt-panel.json`, its referenced shards, and
-`career-data/` history, using the same root revision check and commit lock.
+`career-data/` history. On desktop Hosts that advertise and grant the native
+process/directory methods, UI root saves use this CLI and its shared revision
+check and commit lock. Legacy Hosts/browser previews retain their old writer;
+do not mix those writers concurrently with the CLI. An interrupted commit may
+leave `career-data/panel-runtime/commit-lock`; do not delete or expire it
+without establishing that no writer is active.
 Successful writes appear when the Panel reads the project. This does not
 include unsaved form text or browser drafts. A successful same-file,
 same-version `career_update` apply retry returns the saved version without

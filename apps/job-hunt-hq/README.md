@@ -40,9 +40,13 @@ node "${CODESHELL_SKILL_DIR}/../../../app/tools/job-hunt-cli.mjs" get_job_search
 预览返回的 token。文件或知识库变化需要重新预览；revision 冲突时重新读取并协调修改，
 不能用旧数据覆盖其他写入。相同文件与版本的 apply 重试保留后续编辑。
 
-CLI 和面板共享同一份 `job-hunt-panel.json`、引用分片及 `career-data/` 历史，并使用相同的
-根文件版本检查和提交锁。已保存结果会在面板读取项目后显示；未保存的表单文字和浏览器草稿
-不属于 CLI 可读的项目内容。CLI 不会代替 Panel 完成执行 Trace。
+CLI 和面板共享同一份 `job-hunt-panel.json`、引用分片及 `career-data/` 历史。在支持并授权
+`process` / `filesystem.getKnownDirectory` 等原生方法的桌面 Host 上，面板保存同样经过 CLI，
+共用根文件版本检查和提交锁。旧 Host 与浏览器预览保留原保存方式，不能与 CLI 并发写入。
+已保存结果会在面板打开、回到前台或定期检查时读入；有未保存输入时保留草稿并提示同步冲突。
+未保存的表单文字和浏览器草稿不属于 CLI 可读的项目内容。CLI 不会代替 Panel 完成执行 Trace。
+进程意外中断留下的 `career-data/panel-runtime/commit-lock` 不会按时间自动删除；请先确认
+没有写入进程再处理此锁，保留原项目与暂存文件。
 
 ## 在聊天中积累一个版本
 

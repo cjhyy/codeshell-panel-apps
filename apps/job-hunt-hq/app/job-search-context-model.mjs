@@ -1,5 +1,13 @@
 import { searchCareerLibrary } from "./career-library-model.mjs";
 
+// One transport mapping for both UI tools and the standalone CLI.
+export function jobSearchContextQuery(args = {}) {
+  const text = (value, limit) => typeof value === "string" ? value.trim().slice(0, limit) : "";
+  const query = { scope: text(args.scope, 40) || "summary" };
+  for (const [input, output] of Object.entries({ job_id: "jobId", resume_id: "resumeId", interview_set_id: "interviewSetId", bank_question_id: "bankQuestionId", mock_session_id: "mockSessionId", practice_attempt_id: "practiceAttemptId", source_id: "sourceId", episode_id: "episodeId", qa_id: "qaId", version_id: "versionId" })) query[output] = text(args[input], 100);
+  return { ...query, status: text(args.status, 40), search: text(args.search, 200), cursor: Number.isInteger(args.cursor) ? args.cursor : 0, limit: Number.isInteger(args.limit) ? args.limit : 25 };
+}
+
 export const JOB_SEARCH_CONTEXT_MAX_BYTES = 224 * 1024;
 export const INTERVIEW_CONTEXT_MAX_BYTES = 64 * 1024;
 export const INTERVIEW_PRACTICE_CONTEXT_MAX_BYTES = 64 * 1024;

@@ -3247,14 +3247,16 @@ async function validatePackage(packagePath) {
     );
     assert.match(
       appScript,
-      /register\("save_resume_draft"[\s\S]*?previousDraftState[\s\S]*?await writeProjectSnapshot\(\)[\s\S]*?state\.resume = previousDraftState\.resume[\s\S]*?recordTraceArtifact/,
+      /register\("save_resume_draft"[\s\S]*?prepareResumeDraft\(state, args\)[\s\S]*?await commitResumeOperation\([\s\S]*?recordTraceArtifact/,
       `${packagePath}: Agent resume drafts must roll back before publishing their Trace artifact`,
     );
     assert.match(
       appScript,
-      /register\("save_resume_qa_answer"[\s\S]*?previousResume = clone\(state\.resume\)[\s\S]*?await writeProjectSnapshot\(\)[\s\S]*?state\.resume = previousResume[\s\S]*?recordTraceArtifact/,
+      /register\("save_resume_qa_answer"[\s\S]*?prepareResumeQaAnswer\(state, args\)[\s\S]*?await commitResumeOperation\([\s\S]*?recordTraceArtifact/,
       `${packagePath}: Agent resume QA writes must roll back before publishing their Trace artifact`,
     );
+    assert.match(appScript, /async function commitResumeOperation[\s\S]*?const previous =[\s\S]*?await writeProjectSnapshot\(\)[\s\S]*?catch \(error\)[\s\S]*?Object\.assign\(state, previous\)/,
+      `${packagePath}: shared resume commits must restore their prior business state after persistence failure`);
     for (const id of [
       "resume-qa-panel",
       "resume-qa-open-count",
