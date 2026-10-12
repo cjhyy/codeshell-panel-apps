@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "id": "job-hunt-hq",
-  "version": "4.1.1",
+  "version": "5.0.0",
   "title": {
     "default": "Job Hunt HQ",
     "en": "Job Hunt HQ",
     "zh-CN": "求职作战室"
   },
-  "description": "Run an evidence-backed resume pipeline and a durable interview system that separates the canonical question bank, practice sets, mock sessions, and real interview debriefs.",
+  "description": "Maintain a private career fact library with traceable sources, real project episodes, and user-confirmed QA; derive evidence-backed resumes and separate interview practice from career facts.",
   "entry": "app/index.html",
   "icon": "layout-dashboard",
   "placement": "right-dock",
@@ -42,7 +42,7 @@
     "tools": [
       {
         "name": "get_job_search_context",
-        "description": "Read a bounded slice of Job Hunt HQ state. Defaults to a lightweight summary; use scope plus opaque IDs for exact jobs, resumes, interview sets, questions, sessions, discovery, or paginated catalogs.",
+        "description": "Read a bounded slice of Job Hunt HQ state. Defaults to a lightweight summary; use scope plus opaque IDs for exact career sources, episodes, factual QA, jobs, resumes, interview sets, questions, sessions, discovery, or paginated catalogs. Career catalogs return summaries; pass an exact source_id, episode_id, or qa_id for one full record.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -51,6 +51,9 @@
               "enum": [
                 "summary",
                 "candidate",
+                "career_sources",
+                "career_episodes",
+                "career_qa",
                 "jobs",
                 "job",
                 "resumes",
@@ -63,6 +66,24 @@
                 "intake"
               ],
               "description": "Bounded context view. Omit for a lightweight index and counts."
+            },
+            "source_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "description": "Exact source material ID for scope=career_sources, or source relationship filter for career episodes and QA."
+            },
+            "episode_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "description": "Exact career episode ID for scope=career_episodes, or parent episode filter for scope=career_qa."
+            },
+            "qa_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "description": "Exact factual career QA ID for scope=career_qa. These are candidate facts, not interview practice attempts."
             },
             "job_id": {
               "type": "string",
@@ -97,13 +118,24 @@
             },
             "status": {
               "type": "string",
-              "enum": ["active", "all", "inbox", "ready", "mastered", "archived", "practiced"],
-              "description": "Question status filter for scope=questions."
+              "enum": [
+                "active",
+                "all",
+                "inbox",
+                "ready",
+                "mastered",
+                "archived",
+                "practiced",
+                "draft",
+                "confirmed",
+                "needs_review"
+              ],
+              "description": "Question status filter for scope=questions; career scopes support active, all, draft, confirmed, needs_review, or archived. Confirmed facts may still have pending revisions."
             },
             "search": {
               "type": "string",
               "maxLength": 200,
-              "description": "Question text, category, competency, or tag filter for scope=questions."
+              "description": "Text, project, category, tag, or source filter for career scopes; question text, category, competency, or tag filter for scope=questions."
             },
             "cursor": {
               "type": "integer",
@@ -213,9 +245,20 @@
               "items": {
                 "type": "object",
                 "properties": {
-                  "intake_id": { "type": "string", "maxLength": 100 },
-                  "source_path": { "type": "string", "minLength": 1, "maxLength": 1000 },
-                  "original_name": { "type": "string", "minLength": 1, "maxLength": 240 },
+                  "intake_id": {
+                    "type": "string",
+                    "maxLength": 100
+                  },
+                  "source_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  },
+                  "original_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
                   "source_kind": {
                     "type": "string",
                     "enum": [
@@ -233,13 +276,23 @@
                     "type": "string",
                     "enum": ["imported", "needs_review", "duplicate", "failed"]
                   },
-                  "summary": { "type": "string", "maxLength": 2000 },
+                  "summary": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
                   "job_ids": {
                     "type": "array",
                     "maxItems": 20,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    }
                   },
-                  "error": { "type": "string", "maxLength": 2000 }
+                  "error": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
                 },
                 "required": [
                   "source_path",
@@ -260,7 +313,7 @@
       },
       {
         "name": "save_candidate_context",
-        "description": "Save candidate profile, project evidence, and work history extracted from the active CodeShell project's verified files.",
+        "description": "Save candidate facts in exactly one mode: a complete profile/repositories/work_history replacement, or one incremental source, episode, or qa object for the private career library. Agent career writes always remain draft or pending revisions. Never impersonate user confirmation, publish private excerpts, or mix modes.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -364,10 +417,284 @@
                 "required": ["company", "role"],
                 "additionalProperties": false
               }
+            },
+            "source": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                "provider": {
+                  "type": "string",
+                  "maxLength": 80,
+                  "minLength": 1,
+                  "description": "Provenance such as slack, github, file, or user. This does not imply personal ownership."
+                },
+                "externalId": {
+                  "type": "string",
+                  "maxLength": 240
+                },
+                "url": {
+                  "type": "string",
+                  "maxLength": 2000
+                },
+                "author": {
+                  "type": "string",
+                  "maxLength": 240
+                },
+                "occurredAt": {
+                  "type": "string",
+                  "maxLength": 80
+                },
+                "fetchedAt": {
+                  "type": "string",
+                  "maxLength": 80
+                },
+                "excerpt": {
+                  "type": "string",
+                  "maxLength": 16000
+                },
+                "contentHash": {
+                  "type": "string",
+                  "maxLength": 240
+                },
+                "localRef": {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                "status": {
+                  "type": "string",
+                  "enum": ["draft"],
+                  "description": "Agent writes always remain draft. Only a direct user action in the Panel can confirm facts; do not send actor, confirm, or confirmation metadata."
+                }
+              },
+              "required": ["provider"],
+              "additionalProperties": false
+            },
+            "episode": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                "title": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "minLength": 1
+                },
+                "project": {
+                  "type": "string",
+                  "maxLength": 240
+                },
+                "background": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "problem": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "myRole": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "actions": {
+                  "type": "array",
+                  "maxItems": 40,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 1000
+                  }
+                },
+                "alternatives": {
+                  "type": "array",
+                  "maxItems": 40,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 1000
+                  }
+                },
+                "decision": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "reason": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "tradeoffs": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "results": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "retrospective": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "tags": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "minLength": 1
+                  }
+                },
+                "sourceIds": {
+                  "type": "array",
+                  "maxItems": 40,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "minLength": 1
+                  }
+                },
+                "status": {
+                  "type": "string",
+                  "enum": ["draft"],
+                  "description": "Agent writes always remain draft. Only a direct user action in the Panel can confirm facts; do not send actor, confirm, or confirmation metadata."
+                }
+              },
+              "required": ["title"],
+              "additionalProperties": false
+            },
+            "qa": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                "episodeId": {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                "category": {
+                  "type": "string",
+                  "maxLength": 80
+                },
+                "question": {
+                  "type": "string",
+                  "maxLength": 1200,
+                  "minLength": 1
+                },
+                "answer": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "draftAnswer": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "sourceIds": {
+                  "type": "array",
+                  "maxItems": 40,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "minLength": 1
+                  }
+                },
+                "status": {
+                  "type": "string",
+                  "enum": ["draft"],
+                  "description": "Agent writes always remain draft. Only a direct user action in the Panel can confirm facts; do not send actor, confirm, or confirmation metadata."
+                }
+              },
+              "required": ["question"],
+              "additionalProperties": false
             }
           },
-          "required": ["profile", "repositories", "work_history"],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "oneOf": [
+            {
+              "required": ["profile", "repositories", "work_history"],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": ["source"]
+                  },
+                  {
+                    "required": ["episode"]
+                  },
+                  {
+                    "required": ["qa"]
+                  }
+                ]
+              }
+            },
+            {
+              "required": ["source"],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": ["profile"]
+                  },
+                  {
+                    "required": ["repositories"]
+                  },
+                  {
+                    "required": ["work_history"]
+                  },
+                  {
+                    "required": ["episode"]
+                  },
+                  {
+                    "required": ["qa"]
+                  }
+                ]
+              }
+            },
+            {
+              "required": ["episode"],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": ["profile"]
+                  },
+                  {
+                    "required": ["repositories"]
+                  },
+                  {
+                    "required": ["work_history"]
+                  },
+                  {
+                    "required": ["source"]
+                  },
+                  {
+                    "required": ["qa"]
+                  }
+                ]
+              }
+            },
+            {
+              "required": ["qa"],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": ["profile"]
+                  },
+                  {
+                    "required": ["repositories"]
+                  },
+                  {
+                    "required": ["work_history"]
+                  },
+                  {
+                    "required": ["source"]
+                  },
+                  {
+                    "required": ["episode"]
+                  }
+                ]
+              }
+            }
+          ]
         },
         "readOnly": false
       },
@@ -839,7 +1166,11 @@
                   "tags": {
                     "type": "array",
                     "maxItems": 16,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 80 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    }
                   },
                   "question": {
                     "type": "string",
@@ -924,9 +1255,20 @@
               "items": {
                 "type": "object",
                 "properties": {
-                  "question": { "type": "string", "minLength": 8, "maxLength": 1200 },
-                  "category": { "type": "string", "minLength": 1, "maxLength": 80 },
-                  "competency": { "type": "string", "maxLength": 120 },
+                  "question": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 1200
+                  },
+                  "category": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "competency": {
+                    "type": "string",
+                    "maxLength": 120
+                  },
                   "type": {
                     "type": "string",
                     "enum": [
@@ -940,8 +1282,14 @@
                       "other"
                     ]
                   },
-                  "difficulty": { "type": "string", "enum": ["基础", "进阶", "挑战"] },
-                  "priority": { "type": "string", "enum": ["high", "medium", "low"] },
+                  "difficulty": {
+                    "type": "string",
+                    "enum": ["基础", "进阶", "挑战"]
+                  },
+                  "priority": {
+                    "type": "string",
+                    "enum": ["high", "medium", "low"]
+                  },
                   "status": {
                     "type": "string",
                     "enum": ["inbox", "ready", "mastered", "archived"]
@@ -953,31 +1301,57 @@
                   "tags": {
                     "type": "array",
                     "maxItems": 16,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 80 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    }
                   },
                   "source_refs": {
                     "type": "array",
                     "minItems": 1,
                     "maxItems": 16,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    }
                   },
                   "job_ids": {
                     "type": "array",
                     "maxItems": 12,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    }
                   },
                   "answer_points": {
                     "type": "array",
                     "maxItems": 12,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    }
                   },
-                  "recommended_answer": { "type": "string", "maxLength": 5000 },
+                  "recommended_answer": {
+                    "type": "string",
+                    "maxLength": 5000
+                  },
                   "follow_ups": {
                     "type": "array",
                     "maxItems": 10,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 800 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 800
+                    }
                   },
-                  "notes": { "type": "string", "maxLength": 3000 }
+                  "notes": {
+                    "type": "string",
+                    "maxLength": 3000
+                  }
                 },
                 "required": [
                   "question",
@@ -1043,10 +1417,26 @@
             "dimensions": {
               "type": "object",
               "properties": {
-                "evidence": { "type": "integer", "minimum": 0, "maximum": 100 },
-                "structure": { "type": "integer", "minimum": 0, "maximum": 100 },
-                "depth": { "type": "integer", "minimum": 0, "maximum": 100 },
-                "relevance": { "type": "integer", "minimum": 0, "maximum": 100 }
+                "evidence": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "structure": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "depth": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "relevance": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                }
               },
               "required": ["evidence", "structure", "depth", "relevance"],
               "additionalProperties": false
@@ -1054,13 +1444,21 @@
             "strengths": {
               "type": "array",
               "maxItems": 5,
-              "items": { "type": "string", "minLength": 1, "maxLength": 400 }
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 400
+              }
             },
             "improvements": {
               "type": "array",
               "minItems": 1,
               "maxItems": 3,
-              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
             },
             "optimized_answer": {
               "description": "Improved practice answer using only verified candidate facts and visibly marking unsupported details.",
@@ -1083,8 +1481,12 @@
             "follow_up"
           ],
           "anyOf": [
-            { "required": ["bank_question_id"] },
-            { "required": ["interview_set_id", "question_id"] }
+            {
+              "required": ["bank_question_id"]
+            },
+            {
+              "required": ["interview_set_id", "question_id"]
+            }
           ],
           "additionalProperties": false
         },
@@ -1096,24 +1498,50 @@
         "inputSchema": {
           "type": "object",
           "properties": {
-            "trace_id": { "type": "string", "maxLength": 100 },
-            "practice_session_id": { "type": "string", "minLength": 1, "maxLength": 100 },
-            "status": { "type": "string", "enum": ["completed", "abandoned"] },
-            "summary": { "type": "string", "minLength": 1, "maxLength": 3000 },
+            "trace_id": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "practice_session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "status": {
+              "type": "string",
+              "enum": ["completed", "abandoned"]
+            },
+            "summary": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 3000
+            },
             "strengths": {
               "type": "array",
               "maxItems": 8,
-              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
             },
             "improvements": {
               "type": "array",
               "maxItems": 8,
-              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
             },
             "next_steps": {
               "type": "array",
               "maxItems": 8,
-              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
             }
           },
           "required": [
@@ -1478,6 +1906,36 @@
               "items": {
                 "type": "object",
                 "properties": {
+                  "source_ids": {
+                    "type": "array",
+                    "maxItems": 40,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    },
+                    "description": "Stable career source IDs supporting this public-safe claim. Source changes invalidate dependent claim verification."
+                  },
+                  "episode_ids": {
+                    "type": "array",
+                    "maxItems": 40,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    },
+                    "description": "Exact user-confirmed career episode IDs used for this claim; drafts and pending revisions are not verified facts."
+                  },
+                  "qa_ids": {
+                    "type": "array",
+                    "maxItems": 40,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    },
+                    "description": "Exact user-confirmed factual career QA IDs used for this claim, separate from interview practice answers."
+                  },
                   "claim": {
                     "type": "string",
                     "minLength": 1,
@@ -1572,7 +2030,16 @@
               "items": {
                 "type": "object",
                 "properties": {
-                  "id": { "type": "string", "maxLength": 100 },
+                  "id": {
+                    "type": "string",
+                    "maxLength": 100
+                  },
+                  "career_qa_id": {
+                    "description": "Existing factual career QA ID when carrying this private question into a later resume revision. Preserved as careerQaId; never invent an ID or use practice-question IDs.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
                   "category": {
                     "type": "string",
                     "enum": [
@@ -1589,26 +2056,54 @@
                     "type": "string",
                     "enum": ["high", "medium", "low"]
                   },
-                  "question": { "type": "string", "minLength": 1, "maxLength": 600 },
-                  "why": { "type": "string", "minLength": 1, "maxLength": 500 },
-                  "related_claim": { "type": "string", "maxLength": 800 },
+                  "question": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 600
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "related_claim": {
+                    "type": "string",
+                    "maxLength": 800
+                  },
                   "source_hints": {
                     "type": "array",
                     "maxItems": 6,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 300 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 300
+                    }
                   },
                   "status": {
                     "type": "string",
                     "enum": ["open", "answered", "needs_source", "skipped"]
                   },
-                  "answer": { "type": "string", "maxLength": 3000 },
+                  "answer": {
+                    "type": "string",
+                    "maxLength": 3000
+                  },
                   "source_refs": {
                     "type": "array",
                     "maxItems": 8,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    }
                   },
-                  "suggested_change": { "type": "string", "maxLength": 1000 },
-                  "answered_at": { "type": "string", "maxLength": 80 }
+                  "suggested_change": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "answered_at": {
+                    "type": "string",
+                    "maxLength": 80
+                  }
                 },
                 "required": ["category", "priority", "question", "why"],
                 "additionalProperties": false
@@ -1647,8 +2142,16 @@
               "type": "string",
               "maxLength": 100
             },
-            "resume_id": { "type": "string", "minLength": 1, "maxLength": 100 },
-            "question_id": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "resume_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "question_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
             "status": {
               "type": "string",
               "enum": ["answered", "needs_source", "skipped"]
@@ -1662,7 +2165,11 @@
             "source_refs": {
               "type": "array",
               "maxItems": 8,
-              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
             },
             "suggested_change": {
               "description": "Optional resume wording or evidence improvement; it is not applied automatically.",

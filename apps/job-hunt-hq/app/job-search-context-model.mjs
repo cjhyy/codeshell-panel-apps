@@ -1,9 +1,14 @@
+import { searchCareerLibrary } from "./career-library-model.mjs";
+
 export const JOB_SEARCH_CONTEXT_MAX_BYTES = 224 * 1024;
 export const INTERVIEW_CONTEXT_MAX_BYTES = 64 * 1024;
 export const INTERVIEW_PRACTICE_CONTEXT_MAX_BYTES = 64 * 1024;
 export const JOB_SEARCH_CONTEXT_SCOPES = Object.freeze([
   "summary",
   "candidate",
+  "career_sources",
+  "career_episodes",
+  "career_qa",
   "jobs",
   "job",
   "resumes",
@@ -447,6 +452,90 @@ function assertInterviewContextSize(value) {
   return value;
 }
 
+function boundCareerContext(result, field) {
+  const omittedHistory = [];
+  result[field].items = result[field].items.map((record) => {
+    const item = { ...record };
+    for (const key of ["history", "revisions"]) {
+      if (!Array.isArray(item[key])) continue;
+      const entries = item[key];
+      item[key] = entries.slice(-5).map((entry) => ({
+        version: entry.version,
+        status: entry.status,
+        actor: entry.actor,
+        recordedAt: entry.recordedAt,
+        reason: entry.reason,
+      }));
+      if (entries.length)
+        omittedHistory.push({
+          id: item.id,
+          field: key,
+          total: entries.length,
+          returned: item[key].length,
+        });
+    }
+    return item;
+  });
+  const truncated = new Map();
+  const narrativeFields = new Set([
+    "excerpt",
+    "background",
+    "problem",
+    "myRole",
+    "actions",
+    "alternatives",
+    "decision",
+    "reason",
+    "tradeoffs",
+    "results",
+    "retrospective",
+    "answer",
+    "draftAnswer",
+  ]);
+  const candidates = (value, path = field, narrative = false) => {
+    const found = [];
+    for (const [key, item] of Object.entries(value || {})) {
+      const nextPath = `${path}.${key}`;
+      const content = narrative || narrativeFields.has(key);
+      if (typeof item === "string" && content && item.length > 200) {
+        found.push({ owner: value, key, path: nextPath, length: item.length });
+      } else if (item && typeof item === "object") {
+        found.push(...candidates(item, nextPath, content));
+      }
+    }
+    return found;
+  };
+  const updateNotice = () => {
+    result.contextDetail = {
+      history:
+        "Latest five revision metadata entries only; historical content remains in the project.",
+      omittedHistory,
+      truncatedFields: [...truncated.values()],
+    };
+  };
+  updateNotice();
+  for (
+    let attempt = 0;
+    jobSearchContextJsonBytes(result) > JOB_SEARCH_CONTEXT_MAX_BYTES && attempt < 400;
+    attempt++
+  ) {
+    const largest = candidates(result[field]).sort((left, right) => right.length - left.length)[0];
+    if (!largest) break;
+    const originalCharacters = truncated.get(largest.path)?.originalCharacters || largest.length;
+    largest.owner[largest.key] = largest.owner[largest.key].slice(
+      0,
+      Math.max(200, Math.floor(largest.length * 0.6)),
+    );
+    truncated.set(largest.path, {
+      path: largest.path,
+      originalCharacters,
+      returnedCharacters: largest.owner[largest.key].length,
+    });
+    updateNotice();
+  }
+  return assertJobSearchContextSize(result);
+}
+
 export function buildJobSearchContext(input, query = {}) {
   const scope = text(query.scope) || "summary";
   if (!JOB_SEARCH_CONTEXT_SCOPES.includes(scope)) {
@@ -463,6 +552,61 @@ export function buildJobSearchContext(input, query = {}) {
   let result;
 
   switch (scope) {
+    case "career_sources":
+    case "career_episodes":
+    case "career_qa": {
+      const sourceId = text(query.sourceId || query.source_id);
+      const episodeId = text(query.episodeId || query.episode_id);
+      const qaId = text(query.qaId || query.qa_id);
+      const kind = { career_sources: "sources", career_episodes: "episodes", career_qa: "qa" }[
+        scope
+      ];
+      const field = { sources: "sourceMaterials", episodes: "careerEpisodes", qa: "careerQa" }[
+        kind
+      ];
+      const id = { sources: sourceId, episodes: episodeId, qa: qaId }[kind];
+      const related = {
+        ...input,
+        careerEpisodes: list(input.careerEpisodes).filter(
+          (episode) => !sourceId || list(episode?.sourceIds).includes(sourceId),
+        ),
+        careerQa: list(input.careerQa).filter(
+          (qa) =>
+            (!episodeId || text(qa?.episodeId) === episodeId) &&
+            (!sourceId || list(qa?.sourceIds).includes(sourceId)),
+        ),
+      };
+      const records = searchCareerLibrary(related, {
+        kind,
+        id,
+        search: text(query.search),
+        status: text(query.status) === "active" ? "" : text(query.status),
+        cursor,
+        limit,
+      });
+      if (id && !records.items.length) throw new Error(`未找到职业资料：${id}`);
+      result = {
+        ...envelope,
+        [field]: records,
+        filters: {
+          sourceId,
+          episodeId,
+          qaId,
+          search: text(query.search),
+          status: text(query.status) || "active",
+        },
+        careerPolicy: {
+          confirmation:
+            "Only direct user actions confirm career facts; Agent writes remain draft or pending revisions.",
+          publication:
+            "Career facts and source excerpts are private. User confirmation does not authorize publication of internal content.",
+          practice:
+            "Career QA records facts; interview answers, scores, and AI drafts do not establish candidate facts.",
+        },
+        ...policies(input),
+      };
+      return boundCareerContext(result, field);
+    }
     case "candidate":
       result = {
         ...envelope,
@@ -616,9 +760,10 @@ export function buildJobSearchContext(input, query = {}) {
         research: list(input.jobResearch)
           .filter((item) => jobIds.includes(text(item?.jobId)))
           .map(interviewResearchSummary),
-        preparationPlans: list(input.preparationPlans).filter((item) =>
-          jobIds.includes(text(item?.jobId)),
-        ).slice(-3).map(preparationPlanSummary),
+        preparationPlans: list(input.preparationPlans)
+          .filter((item) => jobIds.includes(text(item?.jobId)))
+          .slice(-3)
+          .map(preparationPlanSummary),
         ...policies(input),
       };
       return assertInterviewContextSize(result);
@@ -712,6 +857,9 @@ export function buildJobSearchContext(input, query = {}) {
       result = {
         ...envelope,
         counts: {
+          sourceMaterials: list(input.sourceMaterials).length,
+          careerEpisodes: list(input.careerEpisodes).length,
+          careerQa: list(input.careerQa).length,
           jobs: jobs.length,
           jobLeads: list(input.jobLeads).length,
           jdIntakeItems: list(input.jdIntakeItems).length,

@@ -6,6 +6,63 @@ Reuse the same candidate evidence across jobs, but write each job-specific
 artifact with its own opaque `job_id`. Jobs in `inbox` are discovery results,
 not evidence of user interest.
 
+## Maintain a private career library
+
+Use this module to record real project stories, recover specific decisions and
+contributions, or organize authorized Slack/GitHub material for future resume
+and interview use. It does not require a JD or start an interview practice set.
+
+1. Read summary counts, then search the relevant `career_sources`,
+   `career_episodes`, or `career_qa` catalog. Read exact IDs before revising an
+   existing record; reuse them instead of producing parallel copies.
+2. Collect only the sources requested or needed for the current episode. For
+   Slack, read the complete relevant thread context through the available
+   connected tool, preserving permalink/thread ID, authors, dates, and a
+   minimal excerpt. For GitHub, inspect the substantive diff and confirm the
+   candidate's author identity; record the exact PR/commit and distinguish
+   personal work from team work. Do not equate repository ownership or merge
+   authorship with implementation. Do not send messages or broaden collection
+   to unrelated workspaces or repositories.
+   `source.excerpt` holds at most 16,000 characters. For longer threads, save
+   each message as its own source or keep the complete collected text in
+   `career-data/source-materials/` with a `localRef`. Record the actual pages,
+   messages, and missing/truncated ranges. If a GitHub patch is partial or
+   unavailable, keep that boundary explicit. Never describe a silently sliced
+   excerpt as a complete saved thread or complete diff review.
+3. Invoke `save_candidate_context({source: {...}})` with `source` containing provenance and content
+   actually read. Prefer stable provider/externalId identity and a content hash
+   when known. Never invent an author, hash, timestamp, or locator. A source
+   record is not proof by itself that every statement is the candidate's work.
+4. Build a draft `episode`: title/project, background/problem, `myRole`,
+   `actions` and `alternatives` arrays, decision/reason/tradeoffs,
+   results/retrospective, tags, and existing `sourceIds`. Keep unknown fields
+   empty. Cite the materials that support each personal contribution.
+5. Ask one high-value factual question at a time: what the candidate personally
+   owned, the chosen option and its alternatives, why, an actual outcome, or a
+   lesson. Invoke `save_candidate_context({qa: {...}})` with the exact `episodeId`, question,
+   candidate's actual `answer`, optional AI `draftAnswer`, and supporting
+   `sourceIds`. Do not manufacture an answer to complete the story.
+6. Agent writes remain draft. The user reviews the stored episode/QA and uses
+   the Panel's confirmation action. Never pass `actor`, `confirm`, or
+   `status: "confirmed"` through an Agent tool, even after verbal agreement.
+7. If later collection changes a source, dependent confirmed facts need review
+   again. An Agent edit to a confirmed episode/QA becomes a pending revision;
+   the user chooses whether to adopt it. Do not overwrite the confirmed text
+   or claim a draft was adopted.
+   A record exceeding 280 KiB or 40 retained revisions fails without deleting
+   prior content. Report the failed save and preserve the original record. Use
+   a separate continuation with an explicit reference to the prior record if
+   more collection is needed; do not trim history or fake a refresh to proceed.
+8. Use confirmed, current facts to inform a Base Resume or practice answer only
+   when that next task is requested. Keep internal source excerpts, factual QA,
+   proprietary details, and sensitive links out of public resumes and PDFs.
+   Confirmation is not publication permission.
+
+Career-library QA captures facts. Resume-specific private QA can help improve a
+particular revision; interview-bank questions and practice attempts train how to
+communicate. Keep those records separate and link genuine sources when reusing
+material. Do not automatically convert one layer into another.
+
 ## Initialize the current project
 
 Use this module when the Panel target kind is `project-bootstrap` or the user

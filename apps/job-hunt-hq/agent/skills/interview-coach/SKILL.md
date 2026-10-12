@@ -23,6 +23,15 @@ strengths and gaps. Never manufacture an interview, answer, or accomplishment.
   five full questions and their source-matched evidence.
 - Read [references/coaching-rubric.md](references/coaching-rubric.md) before
   saving a question set, preparation plan, or debrief analysis.
+- Read relevant user-confirmed `career_episodes` and factual `career_qa` by
+  exact IDs when grounding project questions or answer drafts. Keep career QA
+  separate from practice answers, scores, and generated model answers. Never
+  promote a strong practice answer or AI `draftAnswer` to a career fact.
+- If practice reveals a missing real-world decision, contribution, result,
+  tradeoff, or retrospective, save a draft through `save_candidate_context({qa: {...}})` only
+  within the user's requested scope. Ask for the actual fact and its Source;
+  only a direct Panel confirmation makes it reusable as verified evidence.
+  Keep internal source excerpts private throughout practice and export.
 
 ## Select one primary mode
 

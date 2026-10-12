@@ -47,6 +47,10 @@ outcome remains Panel-local telemetry; do not duplicate it into
   "discoveryRunReceipts": [],
   "discoveryReceiptCutoff": "ISO-8601 reset boundary or empty string",
   "profile": {},
+  "sourceMaterials": [],
+  "careerEpisodes": [],
+  "careerQa": [],
+  "careerLibraryMigrationVersion": 1,
   "jobs": [],
   "repos": [],
   "experiences": [],
@@ -62,7 +66,122 @@ outcome remains Panel-local telemetry; do not duplicate it into
 }
 ```
 
-When this complete object fits the Host's safe single-file budget,
+## Career sources, episodes, and factual QA
+
+`sourceMaterials`, `careerEpisodes`, and `careerQa` form a private career fact
+library, independent of `questionBank`, interview practice attempts, AI reviews,
+resume revisions, and resume-specific candidate questions. Their source IDs are
+opaque project-local references. Existing profile/work-history/Repo records
+remain compatible; migration is additive and must not mark inferred facts as
+confirmed.
+Resume-specific private questions may link to a factual record through
+`candidateQuestions[].careerQaId`. Preserve an existing link as
+`save_resume_draft.candidate_questions[].career_qa_id` across revisions. The
+compatibility bridge creates or updates long-term drafts and pending revisions;
+it never confirms an answer or turns a practice score into a fact.
+
+Read through `get_job_search_context`:
+
+- `scope: "career_sources"`, optionally exact `source_id`;
+- `scope: "career_episodes"`, optionally exact `episode_id` or related `source_id`;
+- `scope: "career_qa"`, optionally exact `qa_id`, parent `episode_id`, or related
+  `source_id`.
+
+All catalogs support `search`, `status`, `cursor`, and `limit`; follow the page's
+`nextCursor`. Catalogs return summaries; exact IDs return the chosen record's
+current content and pending revision. Context reads include at most five recent
+history/revision metadata entries, with omissions reported in `contextDetail`.
+If necessary to fit the 224 KiB response budget, narrative fields are shortened
+and their paths and original/returned character counts are explicitly reported
+in `contextDetail.truncatedFields`. The durable record is unchanged. Do not
+claim the context response contains a full source or all historic revisions
+when either boundary is reported.
+Supported career statuses are `draft`, `confirmed`, `needs_review`, and
+`archived`, with `active` excluding archived and `all` including them. Read
+pending revisions separately from confirmed content. The default summary exposes
+only counts, never private source excerpts or answers.
+
+Agent write schemas use nested camelCase objects, not the snake_case aliases
+used by older tools:
+
+`save_candidate_context` accepts exactly one mode per call: `source`, `episode`,
+`qa`, or the complete legacy `profile` + `repositories` + `work_history`
+replacement. The incremental modes preserve unrelated facts and legacy
+collections. Do not combine modes or send empty legacy arrays to accompany a
+career record. This keeps the package compatible with the Host's 16-tool limit.
+
+```json
+{
+  "source": {
+    "id": "source-id",
+    "provider": "slack",
+    "externalId": "stable-thread-id",
+    "url": "https://workspace.slack.com/archives/channel/thread",
+    "author": "visible author",
+    "occurredAt": "source timestamp when known",
+    "fetchedAt": "actual read timestamp when known",
+    "excerpt": "minimal relevant source text",
+    "contentHash": "verified content hash when known",
+    "localRef": "project-local source reference when present"
+  }
+}
+```
+
+`save_candidate_context({source: {...}})` requires `source.provider`. Preserve source identity
+during refresh; a material content change revokes dependent confirmations.
+External content is fetched only through available, authorized connectors or
+project files, not as an automatic side effect of saving a source.
+`source.excerpt` is bounded to 16,000 characters. Preserve a long Slack thread
+as separate per-message sources, or save the complete text actually collected
+under `career-data/source-materials/` and point `localRef` at that project file.
+Keep the actual message/page range and any missing content in the excerpt or
+referenced file. Do not silently truncate and label the thread fully saved.
+GitHub patch size limits, missing files, or truncated connector responses must
+likewise remain an explicit collection boundary, never a claim of a complete
+diff review.
+
+`save_candidate_context({episode: {...}})` requires `episode.title`. It supports `id`, `project`,
+`background`, `problem`, `myRole`, `actions`, `alternatives`, `decision`,
+`reason`, `tradeoffs`, `results`, `retrospective`, `tags`, and `sourceIds`.
+`actions`/`alternatives` are arrays of at most 40 strings of 1,000 characters;
+other narrative fields are strings of at most 12,000 characters. Tags are
+limited to 20 strings of 120 characters and source IDs to 40 strings of 100
+characters. Personal attribution and quantitative outcomes still need real
+evidence.
+
+`save_candidate_context({qa: {...}})` requires `qa.question` (at most 1,200 characters). It supports
+`id`, `episodeId`, `category`, actual `answer`, AI `draftAnswer`, and `sourceIds`.
+Answers and AI drafts are separately bounded to 12,000 characters. Do not put an
+invented first-person answer in `answer`; draft wording belongs in `draftAnswer`.
+
+Every Agent write remains draft. Tools reject extra `actor`, `confirm`, and
+confirmation metadata; their optional `status` accepts only `draft`. Only a
+direct Panel user action can confirm. Edits to a confirmed episode or QA become
+pending revisions, preserving confirmed content until the user adopts or rejects
+them. Source changes move dependent facts back to `needs_review`; rereading or
+AI regeneration does not reconfirm them. Keep revision/provenance records in the
+project and never bypass this behavior by editing snapshot JSON manually.
+One serialized record is limited to 280 KiB and 40 retained history/revision
+entries. An over-limit write fails while preserving the prior record; the
+model never silently removes history to make it fit. Explain the failure and,
+when further collection is wanted, create a separate continuation linked by
+the original stable ID in its excerpt/narrative and provenance. Keep the
+original identity and history readable instead of rewriting it as a new source.
+
+These facts and excerpts are private. User confirmation establishes accuracy;
+it does not authorize publishing internal Slack text, code, metrics, or links.
+Public resumes/PDFs may contain only the necessary non-sensitive, user-authorized
+paraphrases. Draft QA and source excerpts never enter those files automatically.
+
+When `save_resume_draft` derives a public-safe claim from confirmed library facts,
+its `claim_evidence` entry must include the relevant `source_ids`, `episode_ids`,
+and `qa_ids` arrays (at most 40 exact IDs each). They persist as `sourceIds`,
+`episodeIds`, and `qaIds` on the claim record. Keep human-readable Source
+explanations alongside these references. Later source or episode changes mark
+dependent claims for review; do not retain a stale verified badge or export them
+until the underlying fact and claim are rechecked.
+
+When the complete root snapshot fits the Host's safe single-file budget,
 `job-hunt-panel.json` contains it directly. For a larger project, the root
 remains schema-valid but may replace one or more large fields with empty
 placeholders and add `artifactStorage`: schema version 2 with a fresh
