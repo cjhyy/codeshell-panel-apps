@@ -1554,3 +1554,54 @@ test('a late JSON apply cannot import the previous project file into a new proje
   assert.equal(await page.evaluate(() => window.__fixture.projects.b.files['job-hunt-panel.json'].careerLibraryVersions?.length || 0), 0);
   assert.equal(await page.evaluate(() => window.__fixture.projects.b.files['job-hunt-panel.json'].careerQa?.length || 0), 0);
 });
+
+test('external snapshot reload preserves resume input typed while workspace metadata is pending', async t => {
+  const page = await fixture(t); await ready(page);
+  await page.locator('.side-nav [data-view-target="resumes"]').click();
+  await page.locator('[data-resume-mode="edit"]').click();
+  await page.evaluate(() => {
+    window.__fixture.projects.a.files['job-hunt-panel.json'].profile.name = 'external-name';
+    const original = window.codeshellPanel.call;
+    window.codeshellPanel.call = async (method, params) => {
+      if (method === 'workspace.info') await new Promise(resolve => { window.__reloadMetadataRelease = resolve; });
+      return original(method, params);
+    };
+    window.dispatchEvent(new Event('focus'));
+  });
+  await page.waitForFunction(() => Boolean(window.__reloadMetadataRelease));
+  await page.locator('#resume-editor').fill('# Current input made during external reload');
+  await page.evaluate(() => window.__reloadMetadataRelease());
+  await page.waitForFunction(() => document.querySelector('#project-snapshot-error').textContent ||
+    document.querySelector('#toast').textContent.includes('检测到项目数据更新'));
+  assert.equal(await page.locator('#resume-editor').inputValue(), '# Current input made during external reload');
+  const pending = await backup(page);
+  assert.equal(pending.current.drafts.resumeDraft.markdown, '# Current input made during external reload');
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].profile.name), 'external-name');
+});
+
+test('candidate profile rollback after a project switch cannot overwrite the new project', async t => {
+  const page = await fixture(t, { scoped: true }); await ready(page);
+  await page.locator('.side-nav [data-view-target="materials"]').click();
+  await page.locator('#edit-candidate-profile').click();
+  await page.locator('#profile-name').fill('Old project profile request');
+  await page.locator('#profile-role').fill('Engineer');
+  await page.evaluate(() => { window.__fixture.hold = 'workspace.writeText'; });
+  await page.locator('#save-candidate-profile').click();
+  await page.waitForFunction(() => Boolean(window.__fixture.release));
+  await page.evaluate(() => {
+    window.__oldProfileSaveRelease = window.__fixture.release;
+    window.__fixture.hold = null;
+    window.__fixture.switch('b');
+  });
+  await ready(page);
+  const before = await page.evaluate(() => window.__fixture.tools.get_job_search_context({ scope: 'candidate' }));
+  assert.equal(before.profile.name, 'b');
+  await page.evaluate(async () => {
+    window.__oldProfileSaveRelease();
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  const after = await page.evaluate(() => window.__fixture.tools.get_job_search_context({ scope: 'candidate' }));
+  assert.equal(after.profile.name, 'b');
+  assert.deepEqual(after.resumeIndex, before.resumeIndex);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.b.files['job-hunt-panel.json'].resume.markdown), '# Resume b');
+});
