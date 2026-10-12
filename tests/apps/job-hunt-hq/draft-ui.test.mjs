@@ -1130,6 +1130,35 @@ test('external root changes preserve the dirty career editor and block later roo
   assert.equal(await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'workspace.writeText' && call.params.path === 'job-hunt-panel.json').length), 0);
 });
 
+test('a lost native spawn response stops UI root retries until project state is reread', async t => {
+  const page = await fixture(t, { extraMethods: ['filesystem.getKnownDirectory', 'process.find', 'process.resolveEntry',
+    'process.spawn', 'process.write', 'process.end', 'process.get'] }); await ready(page);
+  const original = await page.evaluate(() => JSON.stringify(window.__fixture.projects.a.files['job-hunt-panel.json']));
+  await page.evaluate(() => {
+    const call = window.codeshellPanel.call.bind(window.codeshellPanel);
+    window.__lostSpawnCalls = 0;
+    window.codeshellPanel.call = async (method, params) => {
+      if (method === 'filesystem.getKnownDirectory') return { handle: 'project-handle' };
+      if (method === 'process.find') return { available: true, handle: 'node-handle' };
+      if (method === 'process.resolveEntry') return { handle: 'entry-handle' };
+      if (method === 'process.spawn') { window.__lostSpawnCalls++; throw Error('lost spawn response'); }
+      return call(method, params);
+    };
+  });
+  const save = () => page.evaluate(() => window.__fixture.tools.save_candidate_context({
+    source: { id: 'career-source-uncertain', provider: 'user', excerpt: '只允许启动一次的保存请求。' },
+  }));
+  await assert.rejects(save(), /无法确认|保存失败/);
+  assert.equal(await page.evaluate(() => window.__lostSpawnCalls), 1);
+  await page.waitForFunction(() => document.querySelector('#project-snapshot-state').textContent.includes('发现外部更新'));
+  await page.waitForTimeout(600);
+  await assert.rejects(save(), /无法确认|保存失败/);
+  assert.equal(await page.evaluate(() => window.__lostSpawnCalls), 1);
+  assert.equal(await page.evaluate(() => JSON.stringify(window.__fixture.projects.a.files['job-hunt-panel.json'])), original);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'workspace.writeText' && call.params.path.startsWith('career-data/panel-commits/')).length), 1);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'workspace.writeText' && call.params.path === 'job-hunt-panel.json').length), 0);
+});
+
 test('career materials, decisions and factual answers persist independently and can be found after reopening', async t => {
   const page = await fixture(t); await ready(page);
   await page.locator('#career-add').click();
