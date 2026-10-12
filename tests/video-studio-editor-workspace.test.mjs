@@ -8867,3 +8867,103 @@ test("cancelled middle pan still owns its release but a new editable press keeps
   assert.equal(await page.evaluate(() => panReleases.at(-1).prevented), false, "An editable field's own middle press is not a pan");
   assert.equal(await page.evaluate(() => fixture.internals.workspace.timeline.panRelease), undefined);
 });
+
+for (const [label, value, expected] of [["水平位置（%）", "25", 0.25], ["画面轨 音量百分比", "37.5", 0.375]]) {
+  test(`export entry first click saves ${label} once before opening and supports undo`, async (t) => {
+    const page = await fixture(t); await clip(page).click(); const before = await documentState(page);
+    await page.getByLabel(label, { exact: true }).fill(value); await action(page, "export").click();
+    await page.locator("dialog[open]").waitFor();
+    const after = await documentState(page); assert.equal(after.revision, before.revision + 1);
+    assert.equal(label.startsWith("水平") ? after.sequences[0].clips[0].transform.x : after.sequences[0].tracks[0].volume, expected);
+    await page.locator("[data-ew-close]").click(); await action(page, "undo").click(); await settle(page);
+    assert.deepEqual((await documentState(page)).sequences, before.sequences);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+for (const [label, value, reject] of [["不透明度（%）", "101", false], ["画面轨 音量百分比", "1001", false], ["水平位置（%）", "25", true]]) {
+  test(`export entry retains ${reject ? "rejected" : "invalid"} ${label} and never opens`, async (t) => {
+    const page = await fixture(t); await clip(page).click(); const before = await documentState(page);
+    if (reject) await page.evaluate(() => { fixture.internals.workspace.inspector.context.apply = async () => { throw new Error("导出前属性保存失败"); }; });
+    const field=page.getByLabel(label,{exact:true}); await field.fill(value); await action(page,"export").click(); await settle(page);
+    assert.equal(await field.inputValue(),value); assert.equal(await field.evaluate(node=>node===document.activeElement),true);
+    assert.equal(await page.locator('dialog[open]').count(),0); assert.deepEqual(await documentState(page),before);
+    assert.equal(await page.evaluate(() => fixture.errors.length),1);
+  });
+}
+for (const mode of ["inspector", "timeline"]) {
+  test(`export entry preserves an active native ${mode} composition without committing`, async (t) => {
+    const page=await fixture(t); await clip(page).click();
+    if(mode==="inspector") await action(page,"title").click();
+    const field=page.getByLabel(mode==="inspector"?"文字内容（保留换行）":"轨道名称 画面轨",{exact:true});
+    await field.focus(); await field.evaluate(node=>{node.select();globalThis.exportImeEnds=[];node.addEventListener("compositionend",e=>exportImeEnds.push(e.data));});
+    const before=await documentState(page), cdp=await page.context().newCDPSession(page);
+    await cdp.send("Input.imeSetComposition",{text:"导出中文草稿",selectionStart:6,selectionEnd:6});
+    await action(page,"export").click();
+    assert.equal(await field.inputValue(),"导出中文草稿"); assert.equal(await field.evaluate(node=>node===document.activeElement),true);
+    assert.deepEqual(await page.evaluate(()=>exportImeEnds),[]); assert.equal(await page.locator('dialog[open]').count(),0);
+    assert.deepEqual(await documentState(page),before);
+  });
+}
+for (const change of ["Escape", "blur", "clock", "selection", "revision", "generation", "sequence", "hidden", "source", "dispose"]) {
+  test(`export entry cancels an awaited field on ${change}`, async (t) => {
+    const page=await fixture(t,{sequenceCount:2}); await clip(page).click();
+    await holdCanvasField(page); await page.getByLabel("水平位置（%）",{exact:true}).fill("25"); await action(page,"export").click();
+    await page.waitForFunction(()=>canvasFieldReleases.length===1); const after=await documentState(page);
+    await page.evaluate(async(change)=>{const {workspace,session}=fixture.internals;
+      if(change==="Escape") window.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));
+      else if(change==="blur") window.dispatchEvent(new Event("blur"));
+      else if(change==="clock") workspace.seek(13,true);
+      else if(change==="selection") workspace.selectClips("main",[]);
+      else if(change==="revision") fixture.externalEdit();
+      else if(change==="generation") await session.replace({...session.read(),name:"新的同ID工程"});
+      else if(change==="sequence") fixture.dispatch([{type:"sequence.activate",sequenceId:"sequence-2"}],"切序列");
+      else if(change==="hidden") workspace.setVisible(false);
+      else if(change==="source") workspace.setSourcePreview(true);
+      else await workspace.dispose();
+    },change); await releaseCanvasField(page);
+    assert.equal(await page.locator('dialog[open]').count(),0); assert.equal(await page.evaluate(()=>!!fixture.internals.workspace.exportOpening),false);
+    assert.equal((await documentState(page)).sequences[0].clips[0].transform.x,after.sequences[0].clips[0].transform.x);
+    assert.deepEqual(await page.evaluate(()=>fixture.errors),[]);
+  });
+}
+test("export entry without a draft opens synchronously and does not consume history",async(t)=>{
+  const page=await fixture(t),before=await documentState(page);
+  const result=await page.evaluate(()=>{fixture.internals.workspace.openExport();return !!document.querySelector('dialog[open]');});
+  assert.equal(result,true);assert.deepEqual(await documentState(page),before);
+});
+test("export entry old completion cannot clear a newer pending request",async(t)=>{
+  const page=await fixture(t);await page.evaluate(()=>{const w=fixture.internals.workspace;globalThis.exportReleases=[];w.inspector.finishFocusedField=()=>new Promise(resolve=>exportReleases.push(resolve));w.openExport();});
+  await page.keyboard.press("Escape");
+  await page.evaluate(()=>{const w=fixture.internals.workspace;w.openExport();globalThis.newExportOwner=w.exportOpening;exportReleases[0](true);});await settle(page);
+  assert.equal(await page.evaluate(()=>fixture.internals.workspace.exportOpening===newExportOwner),true);assert.equal(await page.locator('dialog[open]').count(),0);
+  await page.evaluate(()=>exportReleases[1](true));await page.locator('dialog[open]').waitFor();
+});
+for(const change of ["revision","selection","dispose"]){
+  test(`export entry rejects synchronous snapshot read ${change} reentry`,async(t)=>{
+    const page=await fixture(t);await clip(page).click();await page.evaluate((change)=>{const {workspace:w,session}=fixture.internals,read=session.read.bind(session);
+      session.read=()=>{const old=read();session.read=read;if(change==="revision")fixture.externalEdit();else if(change==="selection")w.selectClips("main",[]);else w.dispose();return old;};w.openExport();
+    },change);await settle(page);assert.equal(await page.locator('dialog[open]').count(),0);assert.deepEqual(await page.evaluate(()=>fixture.errors),[]);
+  });
+}
+
+
+test("export entry initial identity read cannot overwrite a newer pending owner",async(t)=>{
+  const page=await fixture(t);await page.evaluate(()=>{const {workspace:w,session}=fixture.internals,get=session.getState.bind(session);
+    w.inspector.finishFocusedField=()=>new Promise(resolve=>globalThis.exportInnerRelease=resolve);
+    session.getState=()=>{const old=get();session.getState=get;w.openExport();globalThis.exportInnerOwner=w.exportOpening;return old;};w.openExport();
+  });assert.equal(await page.evaluate(()=>fixture.internals.workspace.exportOpening===exportInnerOwner),true);
+  await page.evaluate(()=>exportInnerRelease(true));await page.locator('dialog[open]').waitFor();
+});
+test("export entry releases itself after a transient snapshot failure",async(t)=>{
+  const page=await fixture(t);await page.evaluate(()=>{const {workspace:w,session}=fixture.internals,read=session.read.bind(session);
+    session.read=()=>{session.read=read;throw new Error("读取导出设置失败");};w.openExport();
+  });await settle(page);assert.equal(await page.evaluate(()=>!!fixture.internals.workspace.exportOpening),false);assert.equal(await page.locator('dialog[open]').count(),0);
+  assert.match((await page.evaluate(()=>fixture.errors))[0],/读取导出设置失败/);await action(page,"export").click();await page.locator('dialog[open]').waitFor();
+});
+
+
+test("export entry preserves the ordinary project-name native blur submission",async(t)=>{
+  const page=await fixture(t),before=await documentState(page);await page.getByLabel("工程名称",{exact:true}).fill("导出前工程名称");
+  await action(page,"export").click();await page.locator('dialog[open]').waitFor();
+  const after=await documentState(page);assert.equal(after.name,"导出前工程名称");assert.equal(after.revision,before.revision+1);
+});

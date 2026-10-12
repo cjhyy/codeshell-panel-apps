@@ -127,6 +127,15 @@ interface ViewReadScope {
   selected: string[];
   time: Tick;
 }
+interface ExportOpeningOwner {
+  session: EditorSession;
+  controller: AbortController;
+  identity: SessionIdentity;
+  sequenceId: string;
+  selection: string;
+  time: Tick;
+  finishing: boolean;
+}
 interface FrameCaptureOwner {
   controller: AbortController;
   identity: SessionIdentity;
@@ -171,6 +180,9 @@ export class EditorWorkspace {
   private dialog?: HTMLDialogElement;
   private dialogAbort?: AbortController;
   private pendingExport = false;
+  private exportOpening?: ExportOpeningOwner;
+  private exportOpeningEpoch = 0;
+  private exportComposition?: EventTarget;
   private frameCapture?: FrameCaptureOwner;
   private frameCaptureSize?: { width: number; height: number; duration: Tick };
   /** One detached document for a synchronous, read-only batch; never retained between batches. */
@@ -377,7 +389,7 @@ export class EditorWorkspace {
         const revision = this.revision,
           replay = this.loopPlayback && !this.preview.playing ? Symbol() : undefined;
         if (replay) this.loopReplay = replay;
-        if (time !== this.playhead) this.exactPlayhead = false;
+        if (time !== this.playhead) { this.cancelExportOpening(); this.exactPlayhead = false; }
         this.playhead = time;
         this.timeline.updatePlayhead();
         this.updateTime();
@@ -444,6 +456,11 @@ export class EditorWorkspace {
     container.addEventListener("change", this.change);
     container.addEventListener("input", this.input);
     container.addEventListener("keydown", this.keydown);
+    window.addEventListener("keydown", this.exportEntryKeydown, true);
+    window.addEventListener("blur", this.exportEntryBlur);
+    container.addEventListener("pointerdown", this.exportEntryDown, true);
+    container.addEventListener("compositionstart", this.exportCompositionStart, true);
+    container.addEventListener("compositionend", this.exportCompositionEnd, true);
     window.addEventListener("keydown", this.frameCaptureKeydown, true);
     window.addEventListener("blur", this.frameCaptureBlur);
     container.addEventListener("pointerdown", this.frameCaptureDown, true);
@@ -601,6 +618,10 @@ export class EditorWorkspace {
     if (state.error?.stage === "commit") save.textContent = "候选保存失败，请重试原操作";
     this.get('[data-ew-action="retry-save"]').hidden =
       state.saveState !== "failed" || state.error?.stage === "commit";
+    const opening = this.exportOpening;
+    if (opening && (state.phase !== "ready" || !sameIdentity(opening.identity, state.identity, false) ||
+        state.identity.revision !== opening.identity.revision &&
+          (!opening.finishing || state.identity.revision !== opening.identity.revision + 1))) this.cancelExportOpening(opening);
     const capture = this.frameCapture;
     if (capture && (!sameIdentity(capture.identity, state.identity, false) ||
         (!capture.finishing && capture.identity.revision !== state.identity.revision))) this.cancelFrameCapture();
@@ -616,6 +637,7 @@ export class EditorWorkspace {
     this.sequenceId = doc.activeSequenceId;
     const sequence = this.sequence();
     if (this.frameCapture && this.frameCapture.sequenceId !== sequence.id) this.cancelFrameCapture();
+    if (this.exportOpening && this.exportOpening.sequenceId !== sequence.id) this.cancelExportOpening();
     this.frameCaptureSize = { width: sequence.width, height: sequence.height, duration: sequenceDuration(sequence) };
     this.updateFrameCaptureControl();
     this.selected = this.selected.filter((id) => sequence.clips.some((clip) => clip.id === id));
@@ -649,7 +671,7 @@ export class EditorWorkspace {
     this.timeline.render();
     this.canvasEditor.render();
     this.updateTime();
-    if (this.visible && !this.sourcePreview) this.run(() => this.frameCapture?.finishing
+    if (this.visible && !this.sourcePreview) this.run(() => this.frameCapture?.finishing || this.exportOpening?.finishing
       ? this.preview.seek(this.playhead, { exact: this.exactPlayhead }) : this.seek(this.playhead));
   }
 
@@ -772,6 +794,7 @@ export class EditorWorkspace {
    */
   async seek(time: Tick, exact = this.exactPlayhead && time === this.playhead): Promise<void> {
     this.timeline.cancelTextNavigation();
+    this.cancelExportOpening();
     if (this.disposed) return;
     this.cancelFrameCapture();
     if (time === this.playhead) this.canvasEditor?.refreshDocument();
@@ -879,6 +902,7 @@ export class EditorWorkspace {
   }
   setVisible(visible: boolean): void {
     if (this.disposed || this.visible === visible) return;
+    if (!visible) this.cancelExportOpening();
     this.visible = visible;
     this.container.hidden = !visible;
     this.multicam?.setVisible(visible && !this.get("[data-ew-multicam]").hidden);
@@ -912,6 +936,7 @@ export class EditorWorkspace {
   setSourcePreview(active: boolean): void {
     if (this.sourcePreview === active || this.disposed) return;
     this.previewQualityInteracted = true;
+    this.cancelExportOpening();
     this.sourcePreview = active;
     this.cancelFrameCapture();
     this.updateFrameCaptureControl();
@@ -931,6 +956,7 @@ export class EditorWorkspace {
   }
   selectClips(sequenceId: string, clipIds: string[]): void {
     if (this.disposed || sequenceId !== this.sequenceId) return;
+    this.cancelExportOpening();
     this.cancelFrameCapture();
     this.canvasEditor.cancel();
     const existing = new Set(this.sequence().clips.map((clip) => clip.id));
@@ -1429,7 +1455,7 @@ export class EditorWorkspace {
     if (action === "new-sequence" || action === "sequence-settings")
       return this.sequenceDialog(action === "new-sequence");
     if (action === "jump-playhead") return this.playheadDialog();
-    if (action === "export") return this.exportDialog();
+    if (action === "export") return this.beginExport();
   }
   private playheadDialog(): void {
     this.cancelPreparation();
@@ -1477,7 +1503,9 @@ export class EditorWorkspace {
     submit: (form: HTMLFormElement, signal: AbortSignal) => void | Promise<void>,
     submitLabel = "保存",
     frozenRetry?: () => boolean,
+    beforeOpen?: () => boolean,
   ): HTMLFormElement {
+    if (beforeOpen && !beforeOpen()) throw new DOMException("导出入口已取消", "AbortError");
     this.dialogAbort?.abort();
     this.dialog?.remove();
     const controller = new AbortController();
@@ -1530,6 +1558,7 @@ export class EditorWorkspace {
       event.preventDefault();
       submitForm();
     });
+    if (beforeOpen && !beforeOpen()) { controller.abort(); throw new DOMException("导出入口已取消", "AbortError"); }
     this.container.append(dialog);
     this.dialog = dialog;
     dialog.showModal();
@@ -1603,14 +1632,14 @@ export class EditorWorkspace {
       })
       .join("");
   }
-  private exportDialog(): void {
+  private exportDialog(owner: ExportOpeningOwner): void {
     if (!this.options.exportSequence)
       throw new Error("请在已连接本地媒体任务的 CodeShell 视频面板中导出");
     if (this.pendingExport) throw new Error("导出任务正在提交，请稍候");
-    const sequence = this.sequence(),
-      session = this.options.session,
-      doc = session.read(),
-      openedIdentity = session.getState().identity;
+    const session = this.options.session, doc = session.read(),
+      openedIdentity = this.exportOpeningIdentity(owner),
+      sequence = doc.sequences.find((item) => item.id === owner.sequenceId);
+    if (!openedIdentity || !sequence || doc.id !== openedIdentity.documentId || doc.revision !== openedIdentity.revision) return;
     const assertOwner = () => {
       const current = this.options.session.getState().identity;
       if (
@@ -1690,6 +1719,7 @@ export class EditorWorkspace {
         : undefined;
       return { sequenceIds, selectedSequences, profiles, marker, range };
     };
+    if (!this.exportOpeningIdentity(owner)) return;
     const form = this.form(
       "导出视频",
       `
@@ -1761,7 +1791,14 @@ export class EditorWorkspace {
       },
       "开始导出",
       () => Boolean(batch),
+      () => !!this.exportOpeningIdentity(owner),
     );
+    if (!this.exportOpeningIdentity(owner)) {
+      const staleDialog = form.closest("dialog");
+      if (this.dialog === staleDialog) { this.dialogAbort?.abort(); this.dialog = undefined; }
+      staleDialog?.remove();
+      return;
+    }
     const input = <T extends HTMLInputElement | HTMLSelectElement = HTMLInputElement>(
       name: string,
     ) => form.elements.namedItem(name) as T;
@@ -1890,12 +1927,77 @@ export class EditorWorkspace {
       .addEventListener("click", () => modifyPresets(true));
     updateControls();
   }
+  private exportEntryDown = (event: PointerEvent): void => {
+    if (event.target instanceof Element && event.target.closest('[data-ew-action="export"]')) {
+      if (event.button === 0 && event.isPrimary && document.activeElement instanceof Element &&
+          document.activeElement.closest("[data-ew-inspector],[data-ew-timeline]")) event.preventDefault();
+    } else this.cancelExportOpening();
+  };
+  private exportCompositionStart = (event: CompositionEvent): void => { this.exportComposition = event.target ?? undefined; };
+  private exportCompositionEnd = (event: CompositionEvent): void => {
+    if (this.exportComposition === event.target) this.exportComposition = undefined;
+  };
+  private exportEntryKeydown = (event: KeyboardEvent): void => {
+    if (event.repeat && ["Enter", " "].includes(event.key) && event.target instanceof Element &&
+        event.target.closest('[data-ew-action="export"]')) event.preventDefault();
+    if (event.key === "Escape" && this.exportOpening) {
+      this.cancelExportOpening(); event.preventDefault(); event.stopPropagation();
+    }
+  };
+  private exportEntryBlur = (): void => { this.cancelExportOpening(); };
+  private cancelExportOpening(expected = this.exportOpening): void {
+    if (!expected) { this.exportOpeningEpoch++; return; }
+    if (this.exportOpening !== expected) return;
+    this.exportOpeningEpoch++;
+    this.exportOpening = undefined;
+    expected.controller.abort();
+  }
+  private exportOpeningIdentity(owner: ExportOpeningOwner, allowFieldRevision = false): SessionIdentity | undefined {
+    const state = owner.session.getState();
+    if (this.options.session !== owner.session || this.exportOpening !== owner || owner.controller.signal.aborted || this.disposed ||
+        !this.visible || this.sourcePreview || state.phase !== "ready" || this.sequenceId !== owner.sequenceId ||
+        this.playhead !== owner.time || JSON.stringify(this.selected) !== owner.selection ||
+        !sameIdentity(owner.identity, state.identity, false)) return;
+    if (state.identity.revision === owner.identity.revision ||
+        allowFieldRevision && state.identity.revision === owner.identity.revision + 1) return { ...state.identity };
+  }
+  private async beginExport(): Promise<void> {
+    if (this.exportOpening || this.disposed || !this.visible || this.sourcePreview) return;
+    if (this.exportComposition === document.activeElement) {
+      this.options.onError(new Error("请完成文字输入后再导出"));
+      return;
+    }
+    const epoch = ++this.exportOpeningEpoch, session = this.options.session,
+      sequenceId = this.sequenceId, selection = JSON.stringify(this.selected), time = this.playhead,
+      identity = { ...session.getState().identity };
+    if (this.exportOpeningEpoch !== epoch || this.options.session !== session || this.exportOpening ||
+        this.disposed || !this.visible || this.sourcePreview || this.sequenceId !== sequenceId ||
+        this.playhead !== time || JSON.stringify(this.selected) !== selection) return;
+    const owner: ExportOpeningOwner = { session, controller: new AbortController(), identity,
+      sequenceId, selection, time, finishing: true };
+    this.exportOpening = owner;
+    try {
+      const ready = this.inspector.finishFocusedField(owner.controller.signal) ??
+        this.timeline.finishFocusedField(owner.controller.signal);
+      const asynchronous = ready !== undefined && typeof ready !== "boolean";
+      if (!(ready === undefined || (typeof ready === "boolean" ? ready : await ready))) return;
+      const current = this.exportOpeningIdentity(owner, asynchronous);
+      if (!current) return;
+      owner.identity = current;
+      owner.finishing = false;
+      this.exportDialog(owner);
+    } catch (error) {
+      try { if (this.exportOpeningIdentity(owner)) this.options.onError(error); }
+      catch { /* A failed or superseded scope read must not report into another project. */ }
+    } finally { this.cancelExportOpening(owner); }
+  }
   openExport(): void {
-    this.run(() => this.exportDialog());
+    this.run(() => this.beginExport());
   }
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    this.cancelExportOpening();
     this.cancelFrameCapture();
     this.releaseTimelineMedia();
     this.unsubscribe();
@@ -1915,6 +2017,11 @@ export class EditorWorkspace {
     this.container.removeEventListener("change", this.change);
     this.container.removeEventListener("input", this.input);
     this.container.removeEventListener("keydown", this.keydown);
+    window.removeEventListener("keydown", this.exportEntryKeydown, true);
+    window.removeEventListener("blur", this.exportEntryBlur);
+    this.container.removeEventListener("pointerdown", this.exportEntryDown, true);
+    this.container.removeEventListener("compositionstart", this.exportCompositionStart, true);
+    this.container.removeEventListener("compositionend", this.exportCompositionEnd, true);
     window.removeEventListener("keydown", this.frameCaptureKeydown, true);
     window.removeEventListener("blur", this.frameCaptureBlur);
     this.container.removeEventListener("pointerdown", this.frameCaptureDown, true);

@@ -4485,6 +4485,22 @@ studio.addEventListener(
   true,
 );
 
+// Export is an editor boundary: keep native drafts focused for its owned finisher.
+const editorExportEntry = (target: EventTarget | null): boolean => {
+  if (!(target instanceof Element) || !editorWorkspace) return false;
+  const action = target.closest<HTMLElement>("[data-action]")?.dataset.action;
+  return action === "render-mp4" || action === "export" && !!editorTasks ||
+    action === "record" && !!editorTasks && !!legacyView && !legacyView.renderSafe;
+};
+studio.addEventListener("pointerdown", (event) => {
+  if (event.button === 0 && event.isPrimary && editorExportEntry(event.target) &&
+      document.activeElement instanceof Element &&
+      document.activeElement.closest("[data-ew-inspector],[data-ew-timeline]")) event.preventDefault();
+}, true);
+studio.addEventListener("keydown", (event) => {
+  if (event.repeat && ["Enter", " "].includes(event.key) && editorExportEntry(event.target)) event.preventDefault();
+}, true);
+
 // Touch ranges need not receive focus. Keep their browser-owned gesture connected too.
 studio.addEventListener("pointerdown", (event) => {
   const input = event.target;

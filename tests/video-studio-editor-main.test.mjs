@@ -4581,3 +4581,35 @@ for (const width of [280, 390]) test(`composition text double click reveals and 
   assert.deepEqual(await saved(page), before);
   await page.screenshot({ path: `/tmp/video-studio-text-double-click-${width}.png` });
 });
+
+test("main export entry preserves invalid inspector draft from the native Main topbar", async (t) => {
+  const page = await openPage(t, { nativeTasks: true });
+  await page.locator('[data-et-clip="picture"]').click();
+  const field=page.getByLabel("不透明度（%）",{exact:true}); await field.fill("101");
+  await oldAction(page,"export").click();
+  assert.equal(await field.inputValue(),"101");
+  assert.equal(await field.evaluate(node=>node===document.activeElement),true);
+  assert.equal(await page.locator('dialog[open]').count(),0);
+});
+
+
+test("main export entry saves the focused valid Inspector value once before opening", async (t) => {
+  const page=await openPage(t,{nativeTasks:true}); await page.locator('[data-et-clip="picture"]').click();
+  const before=await page.evaluate(()=>__mainReadAudit.session().read());
+  await page.getByLabel("不透明度（%）",{exact:true}).fill("60");await oldAction(page,"export").click();
+  await page.locator('dialog[open]').waitFor();const after=await page.evaluate(()=>__mainReadAudit.session().read());
+  assert.equal(after.revision,before.revision+1);assert.equal(after.sequences[0].clips.find(c=>c.id==="picture").transform.opacity,0.6);
+  await page.locator('[data-ew-close]').click();await page.locator('[data-ew-action="undo"]').click();await settle(page);
+  assert.deepEqual((await page.evaluate(()=>__mainReadAudit.session().read())).sequences,before.sequences);
+});
+test("main export entry does not force native Inspector composition to finish",async(t)=>{
+  const page=await openPage(t,{nativeTasks:true});await page.locator('[data-et-clip="picture"]').click();
+  await page.getByRole("button",{name:"添加文字",exact:true}).click();
+  const field=page.getByLabel("文字内容（保留换行）",{exact:true});await field.focus();await field.evaluate(node=>{node.select();globalThis.mainExportImeEnds=[];node.addEventListener("compositionend",e=>mainExportImeEnds.push(e.data));});
+  const before=await page.evaluate(()=>__mainReadAudit.session().read()),cdp=await page.context().newCDPSession(page);
+  await cdp.send("Input.imeSetComposition",{text:"导出中文草稿",selectionStart:6,selectionEnd:6});await oldAction(page,"export").click();
+  assert.equal(await field.inputValue(),"导出中文草稿");assert.equal(await field.evaluate(node=>node===document.activeElement),true);
+  assert.deepEqual(await page.evaluate(()=>mainExportImeEnds),[]);assert.equal(await page.locator('dialog[open]').count(),0);
+  assert.match(await page.locator("#toast").textContent(),/完成文字输入后再导出/);
+  assert.deepEqual(await page.evaluate(()=>__mainReadAudit.session().read()),before);
+});

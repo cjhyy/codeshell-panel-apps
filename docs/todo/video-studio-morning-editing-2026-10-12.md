@@ -964,3 +964,23 @@ CI三字符串已经本机精确重现；最终远端新head需确认。Linux命
 只读后续摩擦保留：精确等比缩放目前需分别提交横纵数值（画布已有等比手柄）；
 多轨临时单独试听需修改工程mute并还原。前者涉及动画/零比例/多选，后者涉及
 ducking/嵌套/cache与preview-only语义，均不扩入最后一轮。
+
+## 第二十二批：导出入口保留当前草稿（最终功能范围）
+
+只挑c749f1f（parent40dea7c）的4文件唯一源码/测试增量。Workspace与Main真实native
+旧源RED均为opacity101未blur→复位100且modal1；新入口先保原焦点，再复用
+Inspector ?? Timeline的现有finisher，合法保存一次后才开窗，invalid/reject保持
+草稿与焦点。中文组词尚未结束时提示完成文字输入，不blur或结束composition。
+Main仅保护实际路由到Editor导出的export/render-mp4/unsafe-record，legacy路径不变。
+
+专用ExportOpeningOwner捕session、id/generation、sequence、selection、clock和epoch；
+字段提交只允许现finisher的own+1，合法刷新沿preview.seek以免自取消。Escape/blur、
+其它editor点击、seek/source/visibility/dispose与scope变化取消；fresh read与form
+beforeOpen双检查阻止旧窗口出现，旧cleanup不能清较新owner。未扩公共finisher
+协议或工程模型，源码peer确认Workspace e7b5318/Main1ff4d56。
+
+冻结候选导出相关55/55、Main5/5、类型和diffcheck通过；独立原生3/3验证invalid与
+异步reject、public入口修正后一次undo、取消和selection ABA、Main外部按钮中文
+组词完成后保存一次。独立代理未改源码，所有浏览器/CPU已退出。最终根重新
+build、typecheck、完整UI/media/offline与远端exact-head两组CI，实际结果以PR70
+最终验证记录为准；不将前一批1474/231计作最后源码的完整回归结果。
