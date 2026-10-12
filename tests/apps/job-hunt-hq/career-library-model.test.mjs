@@ -206,6 +206,20 @@ test("the same wording remains distinct across episodes and repeat extraction is
   assert.equal(state.careerQa[0].revisions.length, 0);
 });
 
+test("unassigned QAs distinguish source groups and source order cannot create duplicate revisions", () => {
+  let state = {};
+  for (const id of ["s1", "s2", "s3"]) state = upsertCareerSource(state, { id, provider: "slack", externalId: id, excerpt: `材料 ${id}` }, agent);
+  const input = { question: "这次选择有什么取舍？", category: "decision", draftAnswer: "来自资料的待审回答" };
+  state = upsertCareerQa(state, { ...input, sourceIds: ["s2", "s1"] }, agent);
+  state = upsertCareerQa(state, { ...input, sourceIds: ["s3"] }, agent);
+  const before = freeze(state);
+  const repeated = upsertCareerQa(state, { ...input, sourceIds: ["s1", "s2", "s1"] }, agent);
+  assert.equal(repeated.careerQa.length, 2);
+  assert.notEqual(repeated.careerQa[0].id, repeated.careerQa[1].id);
+  assert.deepEqual(repeated.careerQa, before.careerQa);
+  assert.equal(careerRecordId("qa", { ...input, sourceIds: ["s1", "s2"] }, repeated), repeated.careerQa[0].id);
+});
+
 test("dangling links are rejected and archive retains content without AI resurrection", () => {
   const state = reviewedLibrary();
   assert.throws(() => upsertCareerEpisode(state, { title: "错误来源", sourceIds: ["missing"] }, agent), /sourceIds/);

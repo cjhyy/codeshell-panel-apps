@@ -101,7 +101,7 @@ function content(kind, value) {
     question: text(input.question, 1200),
     answer: text(input.answer),
     draftAnswer: text(input.draftAnswer),
-    sourceIds: list(input.sourceIds, 40, 100),
+    sourceIds: list(input.sourceIds, 40, 100).sort(),
     ...common,
   };
 }
@@ -117,7 +117,12 @@ function identity(kind, value) {
   if (kind === "episodes") {
     return JSON.stringify([text(input.repoId, 100), text(input.experienceId, 100), fingerprint(input.project), fingerprint(input.title), text(input.period, 240)]);
   }
-  return JSON.stringify([text(input.episodeId, 100), fingerprint(input.category || "context"), fingerprint(input.question)]);
+  const episodeId = text(input.episodeId, 100);
+  const parts = [episodeId, fingerprint(input.category || "context"), fingerprint(input.question)];
+  // Unassigned questions from different material are different personal
+  // records, even when their prompts use the same generic wording.
+  if (!episodeId) parts.push(list(input.sourceIds, 40, 100).sort());
+  return JSON.stringify(parts);
 }
 
 function stableId(kind, value) {
