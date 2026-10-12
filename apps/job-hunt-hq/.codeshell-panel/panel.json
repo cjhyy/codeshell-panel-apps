@@ -7,7 +7,7 @@
     "en": "Job Hunt HQ",
     "zh-CN": "求职作战室"
   },
-  "description": "Run an evidence-backed resume pipeline and a durable interview system that separates the canonical question bank, practice sets, mock sessions, and real interview debriefs.",
+  "description": "Run an evidence-backed resume pipeline and a durable interview system that separates the canonical question bank, practice sets, mock sessions, and real interview debriefs. Headless writes require CodeShell 0.9.36 or later.",
   "entry": "app/index.html",
   "icon": "layout-dashboard",
   "placement": "right-dock",

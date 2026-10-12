@@ -12,6 +12,7 @@ const serverRoot = resolve(process.argv[2]);
 assert.equal(JSON.parse(await readFile(join(serverRoot, "package.json"), "utf8")).name, "@cjhyy/code-shell-server");
 await readFile(join(serverRoot, "dist/panels/runtime-services.js"));
 const sandbox = await mkdtemp(join(tmpdir(), "panel-host-storage-gate-"));
+let passed = false;
 try {
   const guardPath = join(sandbox, "deny-network.mjs");
   await writeFile(guardPath, `
@@ -42,6 +43,8 @@ syncBuiltinESMExports();
     assert.equal(result.status, 0, `${script} failed`);
   }
   console.log("PASS: four real Host storage/runtime checks with temporary homes, temporary projects and denied network access");
+  passed = true;
 } finally {
-  await rm(sandbox, { recursive: true, force: true });
+  if (passed) await rm(sandbox, { recursive: true, force: true });
+  else console.error(`Host storage acceptance failed; isolated fixtures retained at ${sandbox}`);
 }

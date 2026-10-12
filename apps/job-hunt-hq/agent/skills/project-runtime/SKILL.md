@@ -19,7 +19,23 @@ manifest, or CLI is unavailable, report `bundled-job-hunt-cli-not-found` and sto
 that operation.
 
 Require Node.js >= 20.10 on `PATH`; if it is unavailable, report that prerequisite
-before running the CLI. Run the resolved CLI path as one properly quoted Node argument:
+before running the CLI. Before `init` or any write operation, use the actual
+CodeShell Bash tool to read its Host-injected protocol marker:
+
+```sh
+printf '%s\n' "${CODESHELL_WORKSPACE_WRITE_PROTOCOL-}"
+```
+
+Require the output to be exactly `1`. CodeShell 0.9.36 or later injects this
+generic workspace-write capability marker into foreground and background Bash
+processes; project environment settings cannot override it. If it is absent or
+different, report `headless-host-upgrade-required` and do not run headless writes
+or initialization. Never export, set, or fabricate this marker to pass the check.
+A global `code-shell --version`, Panel API version 14, or the installed package
+version cannot replace this probe of the actual Host. Read-only `ops` and
+`get_job_search_context` remain available. The manifest has no enforced minimum
+Host version field, so this check is required even when installation succeeded.
+Run the resolved CLI path as one properly quoted Node argument:
 
 ```sh
 node "<package-root>/app/tools/job-hunt.mjs" ops
@@ -71,8 +87,16 @@ edits; do not blindly rerun the same command or edit `job-hunt-panel.json` by ha
 CLI writers use the project-root `.job-hunt-write.lock` directory and wait at
 most five seconds for another CLI writer. A crash may leave that lock behind;
 verify that no CLI writer is still active before manually removing the stale
-lock. Do not remove it merely because a command timed out. The Host does not
-participate in this lock, so its writes still rely on the revision protocol.
+lock. Do not remove it merely because a command timed out. In addition,
+compatible Host and CLI writers share a per-file lock in the target file's
+parent directory, named
+`.codeshell-workspace-write-<sha256(NFC-lowercase-filename)>.lock`. It uses the
+same five-second wait and does not automatically remove stale locks; release
+checks the acquired directory's device and inode. CodeShell versions before
+0.9.36 do not participate, which is why Skill-driven writes require the actual
+Bash protocol probe. The CLI remains usable from an independent terminal without
+this environment marker; any Host concurrently using that project must still
+support the shared protocol (CodeShell 0.9.36 or later).
 Report other failures with their returned code and message. `--trace` is only
 for an already known correlation ID; direct requests do not need a Trace or a
 `complete_execution_trace` call. Resume saves and QA updates record

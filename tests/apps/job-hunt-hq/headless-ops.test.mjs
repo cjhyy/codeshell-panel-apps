@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, lstat, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createNodeWorkspaceScope } from "../../../apps/job-hunt-hq/app/tools/node-workspace-scope.mjs";
 import { hydrateProjectSnapshotDocuments, prepareProjectSnapshotDocuments, projectSnapshotShardDescriptors } from "../../../apps/job-hunt-hq/app/snapshot-sharding-model.mjs";
@@ -244,4 +245,48 @@ test("Node workspace create-only and root compare-and-set preserve a competing w
   await mkdir(join(project, "career-data", "panel-shards"), { recursive: true });
   await first.call("workspace.writeText", { path: "career-data/panel-shards/example.json", content: "{}", expectedModifiedAt: null });
   assert.equal((await first.call("workspace.list", { path: "career-data/panel-shards" })).entries[0].name, "example.json");
+});
+
+test("Node workspace waits for the common Host file lock before checking the revision", async t => {
+  const project = await tempProject(t), path = "Concurrent.JSON";
+  const scope = await createNodeWorkspaceScope(project);
+  await scope.call("workspace.writeText", { path, content: "before", expectedModifiedAt: null });
+  const previous = await scope.call("workspace.readText", { path });
+  const hash = createHash("sha256").update(path.normalize("NFC").toLowerCase()).digest("hex");
+  const lock = join(project, `.codeshell-workspace-write-${hash}.lock`);
+  await mkdir(lock);
+  let settled = false;
+  const writing = scope.call("workspace.writeText", { path, content: "stale writer", expectedRevision: previous.revision });
+  const receipt = writing.then(value => { settled = true; return value; }, error => { settled = true; return error; });
+  try {
+    await new Promise(done => setTimeout(done, 75));
+    assert.equal(settled, false, "a Host-held lock blocks the CLI commit without blocking the event loop");
+    assert.equal((await scope.call("workspace.readText", { path })).content, "before");
+    await writeFile(join(project, path), "Host winner");
+  } finally {
+    await rm(lock, { recursive: true });
+  }
+  assert.equal((await receipt).code, "REVISION_CONFLICT");
+  assert.equal((await scope.call("workspace.readText", { path })).content, "Host winner");
+  assert.deepEqual(Object.keys(await fileInventory(project)), [path], "a rejected writer releases only its own lock");
+});
+
+test("Node write locks preserve the operation failure and never remove a replacement owner", async t => {
+  const project = await tempProject(t), scope = await createNodeWorkspaceScope(project);
+  const originalError = new Error("original operation failure");
+  const lock = join(project, ".job-hunt-write.lock");
+  await assert.rejects(scope.withWriteLock(async () => { throw originalError; }), error => error === originalError);
+  await assert.rejects(access(lock), error => error.code === "ENOENT", "normal release preserves the original thrown value");
+  await assert.rejects(scope.withWriteLock(async () => {
+    await rename(lock, join(project, ".old-owner.lock"));
+    await mkdir(lock);
+    throw originalError;
+  }), error => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.cause, originalError);
+    assert.equal(error.errors[0], originalError);
+    assert.equal(error.errors[1].code, "UNSAFE_PATH");
+    return true;
+  });
+  assert.equal((await lstat(lock)).isDirectory(), true, "the replacement owner's lock remains untouched");
 });

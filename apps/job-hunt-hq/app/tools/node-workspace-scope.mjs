@@ -116,10 +116,52 @@ export async function createNodeWorkspaceScope(projectRoot) {
       throw failure("REVISION_CONFLICT", "文件版本已变化，请重新读取");
     }
   };
-  const write = (params) => {
-    if (typeof params.content !== "string" || Buffer.byteLength(params.content) > 384 * 1024) {
-      throw failure("INVALID_ARGUMENT", "写入必须是最多 384 KiB 的文本");
+  const withDirectoryLock = async (lock, verifyPath, fn, timeoutMessage) => {
+    const deadline = Date.now() + 5_000;
+    let identity;
+    for (;;) {
+      verifyPath();
+      try {
+        mkdirSync(lock, { mode: 0o700 });
+        identity = lstatSync(lock);
+        if (identity.isSymbolicLink() || !identity.isDirectory())
+          throw failure("UNSAFE_PATH", "新建写入锁已改变，不能开始写入");
+        break;
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+        if (Date.now() >= deadline) throw failure("REVISION_CONFLICT", timeoutMessage);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
     }
+    let result, operationError, releaseError;
+    let operationFailed = false, releaseFailed = false;
+    try {
+      verifyPath();
+      result = await fn();
+    } catch (error) {
+      operationFailed = true;
+      operationError = error;
+    }
+    try {
+      verifyPath();
+      const current = lstatSync(lock);
+      if (
+        current.isSymbolicLink() || !current.isDirectory() ||
+        current.dev !== identity.dev || current.ino !== identity.ino
+      ) throw failure("UNSAFE_PATH", "写入锁已改变，不能删除其他写入者的锁");
+      rmdirSync(lock);
+    } catch (error) {
+      releaseFailed = true;
+      releaseError = error;
+    }
+    if (operationFailed && releaseFailed)
+      throw new AggregateError([operationError, releaseError],
+        `${String(operationError)}; ${String(releaseError)}`, { cause: operationError });
+    if (releaseFailed) throw releaseError;
+    if (operationFailed) throw operationError;
+    return result;
+  };
+  const write = (params) => {
     const absolute = pathFor(params.path, { createParents: true });
     compare(params);
     const temporary = join(dirname(absolute), `.job-hunt-${randomUUID()}.tmp`);
@@ -161,7 +203,25 @@ export async function createNodeWorkspaceScope(projectRoot) {
     async call(method, params = {}) {
       check();
       if (method === "workspace.readText") return read(params.path);
-      if (method === "workspace.writeText") return write(params);
+      if (method === "workspace.writeText") {
+        if (typeof params.content !== "string" || Buffer.byteLength(params.content) > 384 * 1024) {
+          throw failure("INVALID_ARGUMENT", "写入必须是最多 384 KiB 的文本");
+        }
+        const absolute = pathFor(params.path, { createParents: true });
+        const parentPath = dirname(absolute), parentIdentity = lstatSync(parentPath);
+        const verifyPath = () => {
+          pathFor(params.path);
+          const parent = lstatSync(parentPath);
+          if (parent.dev !== parentIdentity.dev || parent.ino !== parentIdentity.ino)
+            throw failure("UNSAFE_PATH", "写入文件的父目录已改变");
+        };
+        // Shared with Desktop and Server workspace writers, including case aliases.
+        const lockName = createHash("sha256")
+          .update(basename(absolute).normalize("NFC").toLowerCase()).digest("hex");
+        const lock = join(dirname(absolute), `.codeshell-workspace-write-${lockName}.lock`);
+        return withDirectoryLock(lock, verifyPath, () => write(params),
+          "另一个 Host 或 CLI 正在写入此文件；请确认后重试");
+      }
       if (method === "workspace.info") return { name: basename(root), cwd: root };
       if (method === "workspace.list") {
         const absolute = pathFor(params.path || ".", { allowRoot: true });
@@ -178,27 +238,9 @@ export async function createNodeWorkspaceScope(projectRoot) {
       throw failure("UNSUPPORTED_METHOD", `不支持的方法：${method}`);
     },
     async withWriteLock(fn) {
-      // CLI peers cooperate; the Host still uses its own revision protocol.
+      // Serialize whole CLI operations in addition to each shared file commit.
       const lock = join(root, ".job-hunt-write.lock");
-      const deadline = Date.now() + 5_000;
-      for (;;) {
-        check();
-        try {
-          mkdirSync(lock, { mode: 0o700 });
-          break;
-        } catch (error) {
-          if (error.code !== "EEXIST") throw error;
-          if (Date.now() >= deadline)
-            throw failure("REVISION_CONFLICT", "另一个 CLI 写入仍在进行；请确认后重试");
-          await new Promise((resolve) => setTimeout(resolve, 25));
-        }
-      }
-      try {
-        return await fn();
-      } finally {
-        check();
-        rmdirSync(lock);
-      }
+      return withDirectoryLock(lock, check, fn, "另一个 CLI 写入仍在进行；请确认后重试");
     },
   };
 }
