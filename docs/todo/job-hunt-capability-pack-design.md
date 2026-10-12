@@ -329,15 +329,21 @@ macOS `/tmp` → `/private/tmp` 等符号链接别名导致脚本静默退出、
 快进合入 `main` 并推送；annotated tag `job-hunt-hq-v4.2.1` 解析到同一提交。
 [Job Hunt HQ v4.2.1 Release](https://github.com/cjhyy/codeshell-panel-apps/releases/tag/job-hunt-hq-v4.2.1)
 与正式 [job-hunt-hq-4.2.1.zip](https://github.com/cjhyy/codeshell-panel-apps/releases/download/job-hunt-hq-v4.2.1/job-hunt-hq-4.2.1.zip)
-已公开。正式 Core 0.9.36 只读 preflight 确认目录与 ZIP 的 payload digest 一致；
+已公开。正式 Core 0.9.36 只读 preflight 确认目录与 ZIP 的审阅标识 `reviewToken` 一致；
 重新下载的 asset SHA-256、GitHub digest 和 size 均一致。全局 Latest 继续保留
 `quant-lab-v0.45.2`。发布校验值如下，CLI 哈希已同步到 manifest：
 
 ```text
 release ZIP SHA-256: 6029f005ea4ff9194879e81549e590cf3344c51ef218ff4bd9c4ff1f0179af1e
-packageDigest: f2e610ff4f91dae46d124384363fa99060d0d6e685371a08a018fb652815c69e
+reviewToken: f2e610ff4f91dae46d124384363fa99060d0d6e685371a08a018fb652815c69e
+packageDigest: 78964236094b7cfb36e4c2f9e96411daa0aca812b57bb9d3cab0352d6407080b
 job-hunt CLI SHA-256: 0e85a9a18dc93e966ffae05d0f69da499a8358a31c023664442454cb5c35cf4e
 ```
+
+`reviewToken` 保留上述 preflight 的源内容审阅身份；项目版本绑定使用 `packageDigest`。
+后者按正式 ZIP 与固定 `75431542` 的相同文件内容独立重算，包含 Core 的
+`codeshell-panel-package-v1\0` 域、排序后的文件路径、字节长度和原文，不能用
+`reviewToken` 替代。这项纯内容核验不增加下述组合验收或本机使用验收的范围。
 
 | 4.2.1 检查 / 发布证据 | 当前结果 |
 | --- | --- |
@@ -346,7 +352,7 @@ job-hunt CLI SHA-256: 0e85a9a18dc93e966ffae05d0f69da499a8358a31c023664442454cb5c
 | 完整 `npm run check` | 共 2,005 个测试：2,001 通过、4 跳过、0 失败 |
 | Job Hunt HQ suite | 146 / 146 通过 |
 | [main CI 38289290440](https://github.com/cjhyy/codeshell-panel-apps/actions/runs/38289290440) | 检查的代码 SHA 与正式提交一致；适用的 Package Offline 与 PDF 检查已成功，发布时快照为 6 / 7 job 成功，仅无关 Video UI 仍在运行，不记为全量 CI 完成 |
-| 正式新 ZIP + 全局已安装 Core 0.9.36 组合及别名入口验收 | 通过；正式 ZIP SHA-256、payload digest 和 CLI 哈希与上列发布值一致，物理路径与符号链接目录别名的 `ops` 都返回严格单行 JSON，`ok` 为真且四操作列表深比较一致，`symlinkCLIEntryVerified: true` |
+| 正式新 ZIP + 全局已安装 Core 0.9.36 组合及别名入口验收 | 通过；正式 ZIP SHA-256、审阅标识 `reviewToken` 和 CLI 哈希与上列发布值一致，物理路径与符号链接目录别名的 `ops` 都返回严格单行 JSON，`ok` 为真且四操作列表深比较一致，`symlinkCLIEntryVerified: true` |
 
 正式组合验收通过真实 Core Bash 完成 `ops`、`init` 和四个操作，协议标记从输入 `0`
 变为 Host 注入的 `1`；候选人、简历、私有决策问答与 source / session 正确落盘，
