@@ -1604,4 +1604,8 @@ test('candidate profile rollback after a project switch cannot overwrite the new
   assert.equal(after.profile.name, 'b');
   assert.deepEqual(after.resumeIndex, before.resumeIndex);
   assert.equal(await page.evaluate(() => window.__fixture.projects.b.files['job-hunt-panel.json'].resume.markdown), '# Resume b');
+  await page.locator('.side-nav [data-view-target="materials"]').click();
+  assert.equal(await page.locator('#profile-name').inputValue(), 'b');
+  await page.locator('#edit-candidate-profile').click();
+  assert.equal(await page.locator('#profile-name').isEditable(), true);
 });
