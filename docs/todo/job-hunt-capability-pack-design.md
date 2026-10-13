@@ -1,7 +1,7 @@
 # Job Hunt HQ 能力包：脱离面板运行（简历样板）
 
-> 状态：Job Hunt HQ v4.2.1 已正式发布，修复 CLI 别名入口；首次版本 v4.2.0 与 CodeShell v0.9.36 的发布记录保留在下文，P1 / P2 与共用写入锁、隔离 TUI / Desktop 链路验收完成。Desktop 已安装 0.9.36 并可交互启动；生产 Panel 升级、当前项目所选 Skill 及桌面 Chat 不自动打开面板仍待验收。日期：2026-10-13。<br>
-> 首次 Panel 实现已通过 PR #77 合入 `main`；补丁与发布证据来自 `codex/job-hunt-hq/headless-release-evidence`，当前本机验收维护分支为 `codex/job-hunt-hq/local-runtime-acceptance`。配套 CodeShell Host 0.9.36 提供共用文件写入锁。<br>
+> 状态：Job Hunt HQ v4.2.1 已正式发布；生产安装、实际所选 Skill / CLI 与正式 Desktop 自然 Chat 四操作验收均已通过，面板未自动打开，真实求职快照未改变。Desktop 0.9.37 完成安装与能力可见性验收，本机随后更新为 0.9.40，最终 Chat 回执记录该当前版本。日期：2026-10-13。<br>
+> 首次 Panel 实现已通过 PR #77 合入 `main`；既有发布与隔离证据保留，当前生产安装验收维护分支为 `codex/job-hunt-hq/installed-runtime-acceptance`。配套 Host 从 0.9.36 起提供共用文件写入锁，后续正式 Desktop 的能力可见性与自然调用证据见第 7.6 节。<br>
 > 本文从 `codeshell/docs/todo/` 迁入，基于 Job Hunt HQ v4.1.2 更新。下文应用路径相对于 `apps/job-hunt-hq/`。
 
 ## 0. 本版范围
@@ -208,11 +208,12 @@ Host summary、CLI `qa-scope` 和已有 `qa-decision` 全部保留。真实 Bash
 锁释放同时失败时保留原操作错误与释放错误；测试还实际终止持锁子进程，确认它没有
 提交主文件，且先等进程关闭再清理测试项目，避免把未完成 writer 当成已安全停止。
 
-这组 gate 使用本次已发布 v0.9.36 的 Host 实现。Desktop 已经官方 updater 安装为
-0.9.36 并已可交互启动，先前的系统钥匙串等待阻塞已解除；实际 Desktop Bash / 模型
-对话尚未验收。
-本版实际待项为生产 Panel 升级、当前个人项目所选 Skill，以及桌面 Chat 调用时不自动
-打开面板。真实全局 TUI 的隔离脚本化对话与 Desktop 隔离存储链路已通过，见第 7.4 / 7.5 节；
+这组历史 gate 使用已发布 v0.9.36 的 Host 实现；隔离环境的原始结论与限制仍按下文保留。
+后续已在正式 Desktop 0.9.37 安装生产 Panel 4.2.1，并核对当前个人项目所选 Skill / CLI；
+自然 Chat 的 ToolSearch → Skill → Bash `ops`，以及同一 Chat 的合成项目初始化、
+三写一读均已通过，面板开关前 / 中 / 后均为 `0`。验收期间本机随后更新为 0.9.40，
+最终回执记录该当前版本，不把所有自然写入都固定归为 0.9.37；详见第 7.6 节。
+真实全局 TUI 的隔离脚本化对话与 Desktop 隔离存储链路已通过，见第 7.4 / 7.5 节；
 这些证据确认执行链路，不评估真实 provider 的回答质量。
 招聘网站认证及其余 12 个 Tool 的迁移不属于本期四个简历操作的验收范围，留在 P3。
 
@@ -221,7 +222,7 @@ Host summary、CLI `qa-scope` 和已有 `qa-decision` 全部保留。真实 Bash
 | 期 | 范围 | 本次状态 |
 | --- | --- | --- |
 | P1 | codec、四个 op、Node workspace 适配、CLI、四个 handler、操作和存储一致性测试 | 4.2.0 与 4.2.1 入口补丁均已发布；4.2.1 的 146 个应用测试、真实 Host 共用锁 gate 通过 |
-| P2 | project-runtime、workflow 路由、manifest 4.2.0 → 4.2.1、外部修改场景检查 | 首次 4.2.0 已发布，4.2.1 继承原功能；真实 Bash 能力标记与四 worker gate 通过，Desktop 0.9.36 已可交互启动，本机 Panel 升级与实际对话验收未完成 |
+| P2 | project-runtime、workflow 路由、manifest 4.2.0 → 4.2.1、外部修改场景检查 | 已发布并完成生产安装、实际所选 Skill / CLI、隔离 TUI / Desktop 与正式 Desktop 自然 Chat 四操作验收；版本与历史边界见第 7 节 |
 | P3 | 其余 12 个 Tool 迁移；discovery 收据改为直接 CLI 写入 | 后续，不属于本版 |
 | P4（可选） | 若需要结构化 Tool 无页面执行，向 Host 提 nativeEntry 通用能力 | 未启动；另起 Host 分支 |
 
@@ -285,27 +286,24 @@ Tag 或 ZIP；create-only 回执为
 该历史预检不代表正式包；首次 4.2.0 发布身份以上述 merge commit 和校验值为准。
 这些 4.2.0 校验值不用于标识当前 4.2.1 发布包。
 
-### 7.2 本机安装与当前阻塞
+### 7.2 本机当前状态（生产安装已完成）
 
 | 项目 | 已核实状态 |
 | --- | --- |
 | 全局 TUI | 已升级到 `0.9.36`，`--version` 已验证；真实 PTY / Ink 的隔离脚本化对话验收通过，见第 7.4 节 |
-| Desktop | 官方 updater 已安装 `0.9.36`，plist 已确认；已可交互启动，实际 Desktop Bash / 模型对话尚未验收 |
-| 本机 Job Hunt HQ | 仍为 `4.1.1`、5 个 Skill；升级目标为已发布的 `4.2.1`，尚未安装 |
+| Desktop | `0.9.37` 完成生产安装与能力可见性验收；本机随后更新为 `0.9.40`，正式客户端自然 Chat 的初始化与四操作验收通过，面板未自动打开 |
+| 本机 Job Hunt HQ | 已在真实 `codeshell` 项目完成 `4.1.1` → `4.2.1` 安装，16 个 Tool、6 个 Skill；项目 pin 为第 7.3 节的 `packageDigest: 789642…` |
 
-升级目标 4.2.1 继承 4.2.0 的 16 个 Tool、6 个 Skill，相对 4.1.2 开发基线
+已安装的 4.2.1 继承 4.2.0 的 16 个 Tool、6 个 Skill，相对 4.1.2 开发基线
 未增加 Host 权限；4.2.1 补丁也没有新增权限。
-本机 4.1.1 升级需在生产安装器中最终确认 `process`、`resources`、
-`credentials.connections` 三项新增权限，这些来自已合入的 4.1.2 基线。
-确认与安装尚未完成，安装后还需核对所选包版本、digest 和项目绑定回执；不能通过
-复制文件或修改 `installed.json` 代替安装流程。
-生产窗口已可交互，桌面控制工具检测到窗口被其他操作切换；本次新增权限的安装时
-确认与短暂使用窗口的确认仍在等待回复。
-真实 `codeshell` 项目已打开安装审阅，显示 4.1.1 → 4.2.1、16 个 Tool、6 个 Skill
-及 `project-runtime`；最终“确认并安装”按钮尚未点击，回执为
-`production-install-review-staged.json`。这只是生产安装审阅，不能算安装或绑定已完成。
+用户已明确确认本机旧 4.1.1 升级新增的 `process`、`resources`、
+`credentials.connections` 三项权限；这些来自已合入的 4.1.2 基线。
+随后通过正式 Desktop 0.9.37 的生产安装审阅完成更新：过期 preview 先被拒绝，重新
+审阅后安装成功，版本与项目 pin 已核对。没有复制 registry 或手工改写 pin。
+`production-install-review-staged.json` 保留此前未点击最终按钮的历史阶段，当前完成
+回执为 `production-installation-acceptance.json`，实际所选 Skill / CLI 的证据见第 7.6 节。
 
-Desktop 安装后已通过 `codesign --verify --deep --strict`，内置 Node `24.21.0` 的
+此前 Desktop 0.9.36 安装时已通过 `codesign --verify --deep --strict`，内置 Node `24.21.0` 的
 空 PATH 执行通过；`app.asar`、主可执行文件和 managed Node 的哈希与官方 ZIP 一致。
 完整目录比对的 729 个文件、14 个符号链接一致，仅 node-pty 辅助 Python 文件的权限
 由 `0775` 收紧为 `0755`。
@@ -313,8 +311,8 @@ Desktop 安装后已通过 `codesign --verify --deep --strict`，内置 Node `24
 启动阶段曾采样到主线程同步等待 `SecKeychainFindGenericPassword`，并观察到
 SecurityAgent 进程；采样不能证明当时系统提示可见。CUA 明确禁止控制 SecurityAgent，
 当时已请用户检查系统提示，没有修改钥匙串或凭据。当前 Desktop 已可交互启动，
-此前阻塞已解除；仍需在实际 Desktop Bash 中验证协议标记为 `1` 并完成运行验收，
-安装完整性和窗口可交互不能替代这些检查。
+此前阻塞已解除。这些是 0.9.36 安装阶段的历史记录，不能代替后续正式客户端的实际运行
+验收；本轮所选安装包和真实 Chat 证据见第 7.6 节。
 
 首次发布后，正式 public Core `0.9.36` 与下载的正式 Panel ZIP `4.2.0` 的隔离合成
 数据验收已通过（历史 4.2.0 证据）：
@@ -327,13 +325,16 @@ SecurityAgent 进程；采样不能证明当时系统提示可见。CUA 明确�
 使用 macOS `/tmp` 符号链接别名时，CLI 入口检查未命中，未执行操作。改为 `realpath`
 后，包代码和严格断言均未改变即通过。该次发现的别名入口静默退出问题已在 4.2.1
 发布版修复，增量回归见第 7.3 节；历史 4.2.0 包仍有此问题。
-生产 Panel 升级、当前个人项目所选 Skill 及桌面 Chat 不自动打开面板仍待验收，不据公开
-发布或隔离合成检查宣称生产项目端到端使用已经完成。本次安装前另存当前基线
-`before-install-current.json`：Job Hunt HQ 仍为 4.1.1，求职快照 SHA-256 与原始基线一致，
-项目 bindings 一致；用户或其他任务已将 Video Studio pin 从 0.7.2 更新为 0.7.3。
-后续升级应核对当前基线中的其余三个 Panel pin，不能把这项既有外部变化归因于本次升级。
-最新 `local-state-current.json` 再次确认生产 Job Hunt HQ 仍为 4.1.1，快照、bindings 和
-其余三个 Panel pin 均与上述当前基线一致。
+早期准备阶段的 `before-install-current.json` / `local-state-current.json` 记录当时
+Job Hunt HQ 为 4.1.1、求职快照与原始基线一致；用户或其他任务已将 Video Studio
+从 0.7.2 更新为 0.7.3，其后又将 Design Studio 从 0.18.1 更新为 0.18.2。
+这些外部变化不归因于本任务。
+
+本次 0.9.37 生产安装严格对照更新后的基线
+`/Users/admin/Downloads/codeshell-0.9.37-panel-capabilities/before-host-install.json`，
+其中 Video Studio 已为 0.7.3、Design Studio 已为 0.18.2。安装后的 bindings 与其余
+三个 Panel pin 均与该新基线一致；求职快照 SHA-256 仍为
+`406cf05b30ff077ae8e2a573d59385c53a6fb6e70bb2ca22b3df13bcab82abc9`。
 
 ### 7.3 4.2.1 CLI 入口补丁（已发布）
 
@@ -393,11 +394,10 @@ QA 不改公开简历，只读操作不写快照。10 次禁网预加载均使�
 owned child 全部关闭后清理临时现场。create-only 回执为
 `/Users/admin/Downloads/codeshell-0.9.36-job-hunt-4.2.1/published-runtime-acceptance.json`。
 
-4.2.1 已完成正式发布、隔离合成数据组合验收与临时 HOME 的独立 Core 安装验收，
-生产 Panel 尚未安装。原 runtime 组合验收未读取真实个人项目、settings 或 credentials，
-未执行安装或修改 binding；补充 Core 安装只发生于临时 HOME。生产 Panel 升级、当前
-个人项目所选 Skill 及桌面 Chat 不自动打开面板仍待验收；隔离 TUI / Desktop 验收另见
-第 7.4 / 7.5 节，生产边界按第 7.2 节记录。
+上述为 4.2.1 正式发布、隔离合成数据组合验收与临时 HOME 的独立 Core 安装验收。
+原 runtime 组合验收未读取真实个人项目、settings 或 credentials，未执行安装或修改
+binding；补充 Core 安装只发生于临时 HOME。后续生产安装和实际所选 Skill / CLI 已另行
+通过，见第 7.6 节；不扩大这些历史隔离验收本身的范围。
 
 ### 7.4 真实 TUI 的隔离脚本化对话验收（已通过）
 
@@ -459,5 +459,60 @@ Electron 退出码为 0，owned CLI 与 Main 子进程均已关闭。独立复�
 以及是否发生网络访问，均不能确证为零；最终通过不能消除这些历史未知状态，也不能
 把早期曾标为成功的回执视为完整隔离通过。
 
-生产 Panel 仍为 4.1.1，实际项目绑定与桌面 Chat 的无面板调用按第 7.2 节等待安装确认；
-本节隔离安装与手动 Tool / Trace 检查不代替生产升级或自然模型路由。
+本节进行时生产 Panel 仍为 4.1.1；后续生产升级、所选 Skill / CLI 及真实直接 Chat 证据
+见第 7.6 节。本节隔离安装与手动 Tool / Trace 检查的历史限制仍保留，不据后续直接
+Chat 证据宣称这里失败的 Panel-origin 自然路由已被验证。
+
+### 7.6 生产安装、实际所选 Skill / CLI 与正式 Desktop 自然 Chat（已通过）
+
+用户明确确认新增权限后，通过正式 Desktop 0.9.37 的安装 UI，将真实 `codeshell`
+项目 Job Hunt HQ 从 4.1.1 更新到 4.2.1，项目 pin 为
+`78964236094b7cfb36e4c2f9e96411daa0aca812b57bb9d3cab0352d6407080b`。
+求职快照、其余 Panel pin 和 bindings 未改变，生产安装回执为
+`/Users/admin/Downloads/codeshell-0.9.36-job-hunt-4.2.1/production-installation-acceptance.json`。
+
+随后用真实 HOME 对实际 `codeshell` 项目执行只读 `scanSkills` 和 Skill 展开，确认
+`job-hunt-hq:project-runtime` 来自项目所选的保留包，包版本为 4.2.1、digest 与上述 pin
+一致，CLI 哈希为 `0e85a9a18dc93e966ffae05d0f69da499a8358a31c023664442454cb5c35cf4e`，
+仍为 16 个 Tool、6 个 Skill，保留包 payload 由 Core 验证。
+真实全局 Core 0.9.36 的 Bash 在临时合成项目完成 `init` 与四个操作，协议标记为 `1`，
+覆盖输入的 `0`；候选人、简历、私有决策问答及 source / session 正确，QA 保留公开
+简历，只读操作不写快照。回执为
+`/Users/admin/Downloads/codeshell-0.9.37-panel-capabilities/installed-job-hunt-4.2.1-acceptance.json`。
+
+此 scan 确实读取真实用户与项目设置，不能宣称零敏感配置读取；只读约束针对实际项目，
+写入发生在临时合成项目。worker 环境经清理并使用 Node API 网络 guard，该 guard
+不是操作系统隔离。此项没有调用模型或 Panel API，也没有再次安装或修改绑定。
+
+最初在正式 Desktop 0.9.37 的新 Chat 中，自然执行 ToolSearch `select:Skill,Bash` →
+Skill `job-hunt-hq:project-runtime` → Bash 调用上述已安装 CLI 的 `ops`，模型显示四个
+支持操作。同一 Chat 的后续请求继续使用真实 Bash，观察到协议标记 `1`，依次完成
+`init`、`save_candidate_context`、`save_resume_draft`、`save_resume_qa_answer` 和
+`get_job_search_context`，全部业务写入针对合成验收项目，现场作为证据保留。
+
+独立检查合成快照确认候选人、简历和私有决策答案正确，简历 `source: "cli"`、
+`sessionId: "desktop-installed-acceptance"` 持久化，共三项 QA；回答后公开 Markdown
+与回答前完全一致。真实求职快照仍为第 7.2 节的 SHA-256。UI 最终为 idle，面板开关
+before / during / after 均为 `0`，未观察到自动打开面板。
+
+初次 `init` 多传 `--session` 被 CLI 拒绝，模型按命令契约去掉后成功；提取简历 ID 时
+误猜字段，随后在合成快照中改用 `resume.versionId` 并继续成功。这两次恢复未修改 CLI
+或业务代码。
+
+验收期间其他操作将本机正式 Desktop 从 0.9.37 更新为 0.9.40；最终回执记录
+`currentInstalledDesktopVersion: "0.9.40"`。0.9.37 是最初安装和能力可见性现场的版本，
+不能把所有后续自然写入都固定归为 0.9.37。最终回执为
+`/Users/admin/Downloads/codeshell-0.9.37-panel-capabilities/actual-desktop-chat-acceptance.json`。
+
+同一真实 Chat 的 transcript 元数据另存于 `actual-desktop-chat-transcript-receipt.json`：
+共 127 个事件、19 次 Tool 调用和 19 条 Tool 结果，两次 `run_result` 的 reason 均为
+`completed`。回执确认自然调用且没有手动 Tool 分派；原 transcript 未复制到仓库，
+本文不公开真实 session ID 或私有会话路径。
+独立审计确认 19 对调用 / 结果完整对应，四个操作均返回 `ok: true`，显式命令目标
+仅涉及所选安装包和合成验收目录。QA 前后仅根 `updatedAt` 与
+`resume.candidateQuestions` 变化，公开 Markdown 和 `claimEvidence` 均保持一致。
+
+本次真实模型使用既有生产配置、正常上下文和 provider，实际 Bash 标记为未隔离；
+不宣称 OS 沙箱、零网络或零敏感配置读取。写入范围由精确 CLI 目标和独立快照检查
+确认，验收未使用真实个人求职数据作为合成业务输入。该自然直接 Chat 验收补充了
+真实使用证据，不删除第 7.5 节历史隔离探测及 Panel-origin 路由未验证的限制。
