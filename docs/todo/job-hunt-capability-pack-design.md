@@ -446,10 +446,13 @@ Main 运行前设置私有 native HOME、userData 和 CodeShell 状态，预装 
 
 最终回执为
 `/Users/admin/Downloads/codeshell-0.9.36-job-hunt-4.2.1/isolated-desktop-storage-acceptance.json`。
-Electron 退出码为 0，owned CLI 与 Main 子进程均已关闭，测试现场保留供审阅。
+Electron 退出码为 0，owned CLI 与 Main 子进程均已关闭。独立复核后将 46 份精简证据
+保存在 `isolated-desktop-preserved-evidence/`，再清理九个自有临时目录；前后进程检查
+均无匹配。复核与清理回执分别为 `isolated-desktop-final-independent-audit.json` 和
+`isolated-desktop-cleanup-receipt.json`，未改动生产安装、绑定、个人数据或其他会话。
 
 早期探测的边界另由 `isolated-desktop-first-probe-correction.json` 和
-`isolated-desktop-historical-probes-correction.json` 更正，原回执与失败现场保留。
+`isolated-desktop-historical-probes-correction.json` 更正，原回执及精简现场证据保留。
 首探缺少 Main 前 guard 回执，实际 native HOME 仍为真实 HOME，在安装前的隔离断言
 失败后停止；后续早期探测的 native subprocess 约束也不完整，曾观察到登录 shell、
 远程 git 和 Codex app-server 子进程。早期是否读取真实凭据、个人数据或 shell 配置，
