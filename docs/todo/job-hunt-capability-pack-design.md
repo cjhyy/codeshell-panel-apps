@@ -500,6 +500,11 @@ before / during / after 均为 `0`，未观察到自动打开面板。
 不能把所有后续自然写入都固定归为 0.9.37。最终回执为
 `/Users/admin/Downloads/codeshell-0.9.37-panel-capabilities/actual-desktop-chat-acceptance.json`。
 
+同一真实 Chat 的 transcript 元数据另存于 `actual-desktop-chat-transcript-receipt.json`：
+共 127 个事件、19 次 Tool 调用和 19 条 Tool 结果，两次 `run_result` 的 reason 均为
+`completed`。回执确认自然调用且没有手动 Tool 分派；原 transcript 未复制到仓库，
+本文不公开真实 session ID 或私有会话路径。
+
 本次真实模型使用既有生产配置、正常上下文和 provider，实际 Bash 标记为未隔离；
 不宣称 OS 沙箱、零网络或零敏感配置读取。写入范围由精确 CLI 目标和独立快照检查
 确认，验收未使用真实个人求职数据作为合成业务输入。该自然直接 Chat 验收补充了
