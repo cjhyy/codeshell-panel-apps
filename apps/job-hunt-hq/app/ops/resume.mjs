@@ -19,6 +19,12 @@ function updateWorkflowProvenance(snapshot, ctx, now) {
   );
 }
 
+function candidateText(value, maximum) {
+  if (typeof value === "string" && value.trim().length > maximum)
+    throw new Error(`候选人输入超过 ${maximum} 个存储字符；原文未被截断或保存`);
+  return cleanText(value, maximum);
+}
+
 export function saveCandidateContext(snapshot, args = {}, ctx = {}) {
   assertPlainObject(args, "save_candidate_context");
   if (["source", "episode", "qa", "library_version", "career_update"].some(key => Object.hasOwn(args, key))) {
@@ -50,11 +56,11 @@ export function saveCandidateContext(snapshot, args = {}, ctx = {}) {
       summary: profile.summary,
     });
   next.profile = {
-    name: cleanText(args.profile.name, 100) || "姓名待确认",
-    role: cleanText(args.profile.role, 120) || "目标职位待确认",
-    contact: cleanText(args.profile.contact, 300),
-    target: cleanText(args.profile.target, 500),
-    summary: cleanText(args.profile.summary, 3000),
+    name: candidateText(args.profile.name, 100) || "姓名待确认",
+    role: candidateText(args.profile.role, 120) || "目标职位待确认",
+    contact: candidateText(args.profile.contact, 300),
+    target: candidateText(args.profile.target, 500),
+    summary: candidateText(args.profile.summary, 3000),
     photoDataUrl: previousProfile.photoDataUrl || "",
     photoName: previousProfile.photoName || "",
   };
@@ -66,27 +72,28 @@ export function saveCandidateContext(snapshot, args = {}, ctx = {}) {
   }
   next.repos = args.repositories.slice(0, 30).map((repo, index) => {
     assertPlainObject(repo, `repositories[${index}]`);
-    if (!cleanText(repo.name, 100) || !cleanText(repo.summary, 3000)) {
+    if (!candidateText(repo.name, 100) || !candidateText(repo.summary, 3000)) {
       throw new Error(`repositories[${index}] 缺少 name 或 summary`);
     }
     return {
-      id: cleanText(repo.id, 100) || uid("repo"),
-      name: cleanText(repo.name, 100),
-      path: cleanText(repo.path, 1000),
-      tech: cleanText(repo.tech, 500),
-      summary: cleanText(repo.summary, 3000),
+      id: candidateText(repo.id, 100) || uid("repo"),
+      name: candidateText(repo.name, 100),
+      path: candidateText(repo.path, 1000),
+      tech: candidateText(repo.tech, 500),
+      summary: candidateText(repo.summary, 3000),
     };
   });
   next.experiences = args.work_history.slice(0, 30).map((experience, index) => {
     assertPlainObject(experience, `work_history[${index}]`);
-    if (!cleanText(experience.company, 100) || !cleanText(experience.role, 120)) {
+    if (!candidateText(experience.company, 100) || !candidateText(experience.role, 120)) {
       throw new Error(`work_history[${index}] 缺少 company 或 role`);
     }
+    for (const achievement of experience.achievements || []) candidateText(achievement, 1000);
     return {
-      id: cleanText(experience.id, 100) || uid("exp"),
-      company: cleanText(experience.company, 100),
-      role: cleanText(experience.role, 120),
-      period: cleanText(experience.period, 100),
+      id: candidateText(experience.id, 100) || uid("exp"),
+      company: candidateText(experience.company, 100),
+      role: candidateText(experience.role, 120),
+      period: candidateText(experience.period, 100),
       achievements: cleanTextList(experience.achievements, 20, 1000),
     };
   });

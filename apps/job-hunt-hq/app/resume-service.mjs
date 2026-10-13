@@ -8,6 +8,47 @@ import { normalizeCareerLibrary, syncLegacyCareerQa } from "./career-library-mod
 export const RESUME_HISTORY_LIMIT = 30;
 const CAREER_COLLECTIONS = ["sourceMaterials", "careerEpisodes", "careerQa"];
 
+// These are the storage model's UTF-16 capacities, not another Tool schema.
+// Check only explicitly supplied write input before any normalizer can slice
+// it. Existing snapshots may contain longer facts and remain readable/preserved.
+const SOURCE_INPUT_BOUNDS = { label: 160, locator: 500, evidence: 800, detail: 800, summary: 800 };
+const FOLLOWUP_INPUT_BOUNDS = { question: 500, focus: 240, why: 240 };
+const QA_INPUT_BOUNDS = {
+  id: 100, careerQaId: 100, career_qa_id: 100, question: 600, why: 500,
+  relatedClaim: 800, related_claim: 800, answer: 3000,
+  suggestedChange: 1000, suggested_change: 1000, answeredAt: 80, answered_at: 80,
+  sourceHints: [6, 300], source_hints: [6, 300], sourceRefs: [8, 500], source_refs: [8, 500],
+};
+const CLAIM_INPUT_BOUNDS = {
+  claim: 800, whyItMatters: 400, why_it_matters: 400, improvement: 800, improvement_suggestion: 800,
+  sources: [8, SOURCE_INPUT_BOUNDS],
+  interviewQuestions: [4, FOLLOWUP_INPUT_BOUNDS], interview_questions: [4, FOLLOWUP_INPUT_BOUNDS],
+  sourceIds: [40, 100], source_ids: [40, 100], episodeIds: [40, 100], episode_ids: [40, 100],
+  qaIds: [40, 100], qa_ids: [40, 100],
+};
+const DRAFT_INPUT_BOUNDS = {
+  title: 120, markdown: 50000, category: 80, job_id: 80, base_resume_id: 100,
+  claim_evidence: [120, CLAIM_INPUT_BOUNDS], candidate_questions: [12, QA_INPUT_BOUNDS], notes: [12, 300],
+};
+const ANSWER_INPUT_BOUNDS = {
+  resume_id: 100, question_id: 100, answer: 3000, source_refs: [8, 500], suggested_change: 1000,
+};
+
+function assertInputBounds(value, bounds, path) {
+  const fail = () => { throw new Error(`${path} 超出现有字段容量；原资料与输入均未被覆盖`); };
+  if (typeof bounds === "number") {
+    if (typeof value === "string" && value.length > bounds) fail();
+  } else if (Array.isArray(bounds)) {
+    if (!Array.isArray(value)) return;
+    if (value.length > bounds[0]) fail();
+    value.forEach((item, index) => assertInputBounds(item, bounds[1], `${path}[${index}]`));
+  } else if (value && typeof value === "object" && !Array.isArray(value)) {
+    for (const [key, child] of Object.entries(bounds)) {
+      if (Object.hasOwn(value, key)) assertInputBounds(value[key], child, `${path}.${key}`);
+    }
+  }
+}
+
 function object(value, name) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} 参数格式不正确`);
 }
@@ -102,6 +143,7 @@ function syncCareer(previous, state, options) {
 // UI adapters also own local editor drafts, selection rendering and Trace.
 export function prepareResumeDraft(input = {}, args = {}, options = {}) {
   object(args, "save_resume_draft");
+  assertInputBounds(args, DRAFT_INPUT_BOUNDS, "save_resume_draft");
   let state = workingState(input);
   const requestedJobId = text(args.job_id, 80);
   const resumeKind = ["base", "variant"].includes(args.resume_kind) ? args.resume_kind : requestedJobId ? "variant" : "base";
@@ -177,6 +219,7 @@ export function prepareResumeDraft(input = {}, args = {}, options = {}) {
 
 export function prepareResumeQaAnswer(input = {}, args = {}, options = {}) {
   object(args, "save_resume_qa_answer");
+  assertInputBounds(args, ANSWER_INPUT_BOUNDS, "save_resume_qa_answer");
   let state = workingState(input);
   const resumeId = text(args.resume_id, 100);
   const questionId = text(args.question_id, 100);

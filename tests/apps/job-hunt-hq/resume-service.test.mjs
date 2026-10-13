@@ -273,3 +273,87 @@ test("QA capacity failure and legacy oversized facts fail before mutating any ca
   assert.throws(() => prepareResumeQaAnswer(freeze(oversized), incoming, { now: later }), /超出现有字段容量/);
   assert.ok(oversized.careerQa.find(item => item.id === careerQaId).answer.endsWith("ORIGINAL_END"));
 });
+
+test("draft writes reject astral text beyond storage capacity before normalizing any incoming fact", () => {
+  const oversized = maximum => "😀".repeat(Math.floor(maximum / 2) + 1);
+  const cases = [
+    ["title", 120], ["markdown", 50000], ["category", 80], ["job_id", 80], ["base_resume_id", 100],
+    ["claim_evidence.0.claim", 800], ["claim_evidence.0.why_it_matters", 400],
+    ["claim_evidence.0.improvement", 800], ["claim_evidence.0.sources.0.label", 160],
+    ["claim_evidence.0.sources.0.locator", 500], ["claim_evidence.0.sources.0.evidence", 800],
+    ["claim_evidence.0.interview_questions.0.question", 500], ["claim_evidence.0.interview_questions.0.focus", 240],
+    ["candidate_questions.0.id", 100], ["candidate_questions.0.question", 600], ["candidate_questions.0.why", 500],
+    ["candidate_questions.0.related_claim", 800], ["candidate_questions.0.answer", 3000],
+    ["candidate_questions.0.suggested_change", 1000], ["candidate_questions.0.answered_at", 80], ["notes.0", 300],
+  ];
+  const original = freeze(state()), before = JSON.stringify(original);
+  for (const [path, maximum] of cases) {
+    const incoming = args();
+    const parts = path.split(".");
+    const parent = parts.slice(0, -1).reduce((value, key) => value[key], incoming);
+    parent[parts.at(-1)] = oversized(maximum);
+    assert.ok([...parent[parts.at(-1)]].length <= maximum, "the transport's code-point limit permits this input");
+    const inputBefore = JSON.stringify(incoming);
+    assert.throws(() => prepareResumeDraft(original, freeze(incoming), options), /超出现有字段容量/, path);
+    assert.equal(JSON.stringify(incoming), inputBefore, path);
+    assert.equal(JSON.stringify(original), before, path);
+  }
+  for (const [record, field, maximum] of [
+    ["claim", "source_ids", 100], ["claim", "episode_ids", 100], ["claim", "qa_ids", 100],
+    ["question", "source_hints", 300], ["question", "source_refs", 500],
+  ]) {
+    const incoming = args();
+    (record === "claim" ? incoming.claim_evidence[0] : incoming.candidate_questions[0])[field] = [oversized(maximum)];
+    assert.throws(() => prepareResumeDraft(original, incoming, options), /超出现有字段容量/, field);
+  }
+  const aliases = args();
+  aliases.claim_evidence[0].whyItMatters = oversized(400);
+  assert.throws(() => prepareResumeDraft(original, aliases, options), /whyItMatters.*超出现有字段容量/);
+  delete aliases.claim_evidence[0].whyItMatters;
+  aliases.candidate_questions[0].sourceRefs = [oversized(500)];
+  assert.throws(() => prepareResumeDraft(original, aliases, options), /sourceRefs\[0\].*超出现有字段容量/);
+});
+
+test("QA writes reject oversized astral answers, references and suggested wording without changing the active version", () => {
+  const original = freeze(prepareResumeDraft({}, args(), options).state);
+  const before = JSON.stringify(original);
+  const valid = { resume_id: "resume-new", question_id: "question-1", status: "answered", answer: "本人原话", source_refs: ["user:fixture"] };
+  for (const [field, maximum] of [["resume_id", 100], ["question_id", 100], ["answer", 3000], ["suggested_change", 1000], ["source_refs", 500]]) {
+    const value = "😀".repeat(maximum / 2 + 1);
+    const incoming = freeze({ ...valid, [field]: field === "source_refs" ? [value] : value });
+    assert.throws(() => prepareResumeQaAnswer(original, incoming, { now: later }), /超出现有字段容量/, field);
+    assert.equal(JSON.stringify(original), before);
+  }
+});
+
+test("boundary-size astral content is kept verbatim and an unrelated legacy snapshot is not revalidated", () => {
+  const prefix = `${markdown}\n\n## 附注\n\n`;
+  const room = 50000 - prefix.length;
+  const incoming = args({ title: "😀".repeat(60), category: "😀".repeat(40),
+    markdown: prefix + "😀".repeat(Math.floor(room / 2)) + (room % 2 ? "x" : "") });
+  incoming.claim_evidence[0].sources[0].evidence = "😀".repeat(400);
+  incoming.claim_evidence[0].interview_questions[0].focus = "😀".repeat(120);
+  incoming.candidate_questions[0].why = "😀".repeat(250);
+  incoming.notes = ["😀".repeat(150)];
+  const legacy = state();
+  legacy.resume.markdown = "😀".repeat(30000) + "LEGACY_RESUME_END";
+  legacy.careerQa = [{ id: "legacy-unrelated", question: "Unrelated legacy fact", answer: "😀".repeat(6500) + "LEGACY_FACT_END", status: "draft", extension: { preserve: true } }];
+  const plan = prepareResumeDraft(freeze(legacy), freeze(incoming), options);
+  assert.equal(plan.state.resume.title, incoming.title);
+  assert.equal(plan.state.resume.category, incoming.category);
+  assert.equal(plan.state.resume.markdown, incoming.markdown);
+  assert.equal(plan.result.characterCount, 50000);
+  assert.equal(plan.state.resume.claimEvidence[0].sources[0].evidence, incoming.claim_evidence[0].sources[0].evidence);
+  assert.equal(plan.state.resume.candidateQuestions[0].why, incoming.candidate_questions[0].why);
+  assert.deepEqual(plan.state.resume.notes, incoming.notes);
+  assert.equal(plan.state.versions[0].markdown, legacy.resume.markdown);
+  assert.deepEqual(plan.state.careerQa.find(item => item.id === "legacy-unrelated"), legacy.careerQa[0]);
+  const answer = "😀".repeat(1500), source = "😀".repeat(250), suggested = "😀".repeat(500);
+  const answered = prepareResumeQaAnswer(plan.state, { resume_id: "resume-new", question_id: "question-1", status: "answered", answer,
+    source_refs: [source], suggested_change: suggested }, { now: later });
+  assert.equal(answered.state.resume.candidateQuestions[0].answer, answer);
+  assert.deepEqual(answered.state.resume.candidateQuestions[0].sourceRefs, [source]);
+  assert.equal(answered.state.resume.candidateQuestions[0].suggestedChange, suggested);
+  assert.equal(answered.state.versions[0].markdown, legacy.resume.markdown);
+  assert.deepEqual(answered.state.careerQa.find(item => item.id === "legacy-unrelated"), legacy.careerQa[0]);
+});
