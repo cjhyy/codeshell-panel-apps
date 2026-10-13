@@ -1,6 +1,13 @@
 # Free move/trim owned preview design and prototype
 
-The prototype changes application modules only in esbuild's memory. Run:
+Historical research at application baseline
+`9a22855f8defe3fb1ed6235cf87065e20f6b1223`, preserved by original experiment
+commit `a5f6352bba817062e00b5e1dee80fa000719dd53`. Current `main` has different
+source anchors. Follow the [restoration guide](../history/video-studio-research-2026-10-12.md)
+before running; the measurements below are historical observations.
+
+The prototype changes application modules only in esbuild's memory. In its
+original historical checkout, run:
 
 ```sh
 node scripts/video-studio-owned-preview-prototype.mjs

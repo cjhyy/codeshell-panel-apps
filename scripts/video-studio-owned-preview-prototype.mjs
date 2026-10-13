@@ -2,15 +2,25 @@
  * Experimental benchmark only. No application module or public API is modified.
  * The esbuild plugin extracts the existing private mutation/trim bodies in memory,
  * so the prototype exercises the same locks, captions and final graph validation.
- * Run: node scripts/video-studio-owned-preview-prototype.mjs
+ * Historical source baseline: 9a22855f8defe3fb1ed6235cf87065e20f6b1223.
+ * Run with --help for restoration instructions; current main has different anchors.
  */
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { build } from "esbuild";
-import { chromium } from "playwright";
+import {
+  assertHistoricalResearchBaseline,
+  historicalResearchUsage,
+} from "./research/historical-video-studio.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
+if (process.argv.includes("--help")) {
+  console.log(historicalResearchUsage("owned-preview"));
+  process.exit(0);
+}
+assertHistoricalResearchBaseline("owned-preview", root);
+const { build } = await import("esbuild");
+const { chromium } = await import("playwright");
 const useStructuredClone = process.argv.includes("--structured-clone");
 const freezeBase = !process.argv.includes("--unfrozen-base");
 function replaceOnce(source, before, after) {

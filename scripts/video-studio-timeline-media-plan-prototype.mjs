@@ -2,8 +2,12 @@ import { readFile, writeFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
+import {
+  assertHistoricalResearchBaseline,
+  historicalResearchUsage,
+} from "./research/historical-video-studio.mjs";
 
-// Run: node scripts/video-studio-timeline-media-plan-prototype.mjs
+// Historical baseline: b2ad2d20866dad9e51a88e8a279edc1cf41af001. Run with --help to restore it.
 // This script rewrites only esbuild's in-memory input. Production modules remain untouched.
 // Decision (Chromium, legal 5000 clips in [2000,2000,1000], 2026-10-12): do not ship either cache.
 // Baseline same/cross-root medians 13.3/13.1ms; naive 0.2/13.1ms but accepts three malformed
@@ -12,6 +16,11 @@ import { spawn } from "node:child_process";
 // Public compileAudioPlan is never changed. The naive mode deliberately demonstrates the unsafe
 // identity-only cache and must not be treated as a proposed production implementation.
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
+if (process.argv.includes("--help")) {
+  console.log(historicalResearchUsage("timeline-media-plan"));
+  process.exit(0);
+}
+assertHistoricalResearchBaseline("timeline-media-plan", root);
 const helpers = String.raw`
 import { validateEditorDocument as prototypeValidate } from "./validation";
 const prototypeMetrics = () => ((globalThis as any).__mediaPlanMetrics ??= { compileCalls: 0, compileMs: 0, hits: 0, misses: 0, guardCalls: 0, guardMs: 0, prepareMs: 0 });

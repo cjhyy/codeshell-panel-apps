@@ -2,9 +2,18 @@ import { readFile, writeFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
+import {
+  assertHistoricalResearchBaseline,
+  historicalResearchUsage,
+} from "./research/historical-video-studio.mjs";
 
-// Research only: no production files are edited. Run this file to compare real Chromium media.
+// Historical baseline: b2ad2d20866dad9e51a88e8a279edc1cf41af001. Run with --help to restore it.
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
+if (process.argv.includes("--help")) {
+  console.log(historicalResearchUsage("timeline-owned-plan"));
+  process.exit(0);
+}
+assertHistoricalResearchBaseline("timeline-owned-plan", root);
 const metrics = String.raw`
 function prototypeMetrics() { return ((globalThis as any).__ownedPlanMetrics ??= { compileCalls: 0, compileMs: 0, hits: 0, misses: 0, prepareMs: 0 }); }
 `;

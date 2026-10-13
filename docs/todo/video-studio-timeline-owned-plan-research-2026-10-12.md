@@ -1,8 +1,14 @@
 # Timeline visible audio plan research, 2026-10-12
 
-Status: independent prototype; no production source changes. The rejected descriptor guard experiment remains on its separate research branch (`61f7bea`) and is not a dependency.
+Status: preserved historical prototype; no production source changes in this
+research commit. Application baseline is `b2ad2d20866dad9e51a88e8a279edc1cf41af001`;
+original experiment commit is `ff32d42a4dccd195beb20bd365b3000607096d3c`.
+Current `main` has different source anchors. See the
+[restoration guide](../history/video-studio-research-2026-10-12.md) before running.
+The rejected descriptor guard experiment is preserved separately by `61f7beac`
+and is not a dependency. Measurements below describe the historical source only.
 
-Run from this research worktree with npm dependencies, Playwright Chromium, FFmpeg and ffprobe available:
+Run from the original historical checkout with npm dependencies, Playwright Chromium, FFmpeg and ffprobe available:
 
 ```sh
 node scripts/video-studio-timeline-owned-plan-prototype.mjs baseline owned
