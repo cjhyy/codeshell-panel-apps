@@ -325,12 +325,16 @@ SecurityAgent 进程；采样不能证明当时系统提示可见。CUA 明确�
 使用 macOS `/tmp` 符号链接别名时，CLI 入口检查未命中，未执行操作。改为 `realpath`
 后，包代码和严格断言均未改变即通过。该次发现的别名入口静默退出问题已在 4.2.1
 发布版修复，增量回归见第 7.3 节；历史 4.2.0 包仍有此问题。
-本次生产安装前另存当前基线 `before-install-current.json`：当时 Job Hunt HQ 为 4.1.1，
-求职快照 SHA-256 与原始基线一致，
-项目 bindings 一致；用户或其他任务已将 Video Studio pin 从 0.7.2 更新为 0.7.3。
-安装前的 `local-state-current.json` 也确认了该基线。生产安装后的快照 SHA-256 仍为
-`406cf05b30ff077ae8e2a573d59385c53a6fb6e70bb2ca22b3df13bcab82abc9`，bindings 与
-其余三个 Panel pin 均未改变；不能把既有 Video Studio 外部变化归因于本次升级。
+早期准备阶段的 `before-install-current.json` / `local-state-current.json` 记录当时
+Job Hunt HQ 为 4.1.1、求职快照与原始基线一致；用户或其他任务已将 Video Studio
+从 0.7.2 更新为 0.7.3，其后又将 Design Studio 从 0.18.1 更新为 0.18.2。
+这些外部变化不归因于本任务。
+
+本次 0.9.37 生产安装严格对照更新后的基线
+`/Users/admin/Downloads/codeshell-0.9.37-panel-capabilities/before-host-install.json`，
+其中 Video Studio 已为 0.7.3、Design Studio 已为 0.18.2。安装后的 bindings 与其余
+三个 Panel pin 均与该新基线一致；求职快照 SHA-256 仍为
+`406cf05b30ff077ae8e2a573d59385c53a6fb6e70bb2ca22b3df13bcab82abc9`。
 
 ### 7.3 4.2.1 CLI 入口补丁（已发布）
 
@@ -504,6 +508,9 @@ before / during / after 均为 `0`，未观察到自动打开面板。
 共 127 个事件、19 次 Tool 调用和 19 条 Tool 结果，两次 `run_result` 的 reason 均为
 `completed`。回执确认自然调用且没有手动 Tool 分派；原 transcript 未复制到仓库，
 本文不公开真实 session ID 或私有会话路径。
+独立审计确认 19 对调用 / 结果完整对应，四个操作均返回 `ok: true`，显式命令目标
+仅涉及所选安装包和合成验收目录。QA 前后仅根 `updatedAt` 与
+`resume.candidateQuestions` 变化，公开 Markdown 和 `claimEvidence` 均保持一致。
 
 本次真实模型使用既有生产配置、正常上下文和 provider，实际 Bash 标记为未隔离；
 不宣称 OS 沙箱、零网络或零敏感配置读取。写入范围由精确 CLI 目标和独立快照检查
