@@ -1,9 +1,23 @@
+import { searchCareerLibrary } from "./career-library-model.mjs";
+
+// One transport mapping for both UI tools and the standalone CLI.
+export function jobSearchContextQuery(args = {}) {
+  const text = (value, limit) => typeof value === "string" ? value.trim().slice(0, limit) : "";
+  const query = { scope: text(args.scope, 40) || "summary" };
+  for (const [input, output] of Object.entries({ job_id: "jobId", resume_id: "resumeId", interview_set_id: "interviewSetId", bank_question_id: "bankQuestionId", mock_session_id: "mockSessionId", practice_attempt_id: "practiceAttemptId", source_id: "sourceId", episode_id: "episodeId", qa_id: "qaId", version_id: "versionId" })) query[output] = text(args[input], 100);
+  return { ...query, status: text(args.status, 40), search: text(args.search, 200), cursor: Number.isInteger(args.cursor) ? args.cursor : 0, limit: Number.isInteger(args.limit) ? args.limit : 25 };
+}
+
 export const JOB_SEARCH_CONTEXT_MAX_BYTES = 224 * 1024;
 export const INTERVIEW_CONTEXT_MAX_BYTES = 64 * 1024;
 export const INTERVIEW_PRACTICE_CONTEXT_MAX_BYTES = 64 * 1024;
 export const JOB_SEARCH_CONTEXT_SCOPES = Object.freeze([
   "summary",
   "candidate",
+  "career_sources",
+  "career_episodes",
+  "career_qa",
+  "career_versions",
   "jobs",
   "job",
   "resumes",
@@ -78,6 +92,31 @@ function resumeSummary(resume) {
     claimCount: list(resume?.claimEvidence).length,
     candidateQuestionCount: list(resume?.candidateQuestions).length,
     updatedAt: text(resume?.updatedAt),
+  };
+}
+
+function careerVersionMetadata(version) {
+  const count = (field) =>
+    Number.isSafeInteger(version?.counts?.[field]) && version.counts[field] >= 0
+      ? version.counts[field]
+      : 0;
+  return {
+    id: text(version?.id).slice(0, 100),
+    title: text(version?.title).slice(0, 240),
+    summary: text(version?.summary).slice(0, 2000),
+    createdAt: text(version?.createdAt).slice(0, 80),
+    sessionId: text(version?.sessionId).slice(0, 100),
+    baseVersionId: text(version?.baseVersionId).slice(0, 100),
+    path: text(version?.path).slice(0, 240),
+    status: "saved",
+    counts: Object.fromEntries(
+      ["sources", "episodes", "qa", "total", "unresolved", "pending"].map((field) => [
+        field,
+        count(field),
+      ]),
+    ),
+    ...(/^[a-f0-9]{64}$/.test(text(version?.sha256)) ? { sha256: version.sha256 } : {}),
+    ...(/^[a-f0-9]{64}$/.test(text(version?.updateSha256)) ? { updateSha256: version.updateSha256 } : {}),
   };
 }
 
@@ -447,6 +486,90 @@ function assertInterviewContextSize(value) {
   return value;
 }
 
+function boundCareerContext(result, field) {
+  const omittedHistory = [];
+  result[field].items = result[field].items.map((record) => {
+    const item = { ...record };
+    for (const key of ["history", "revisions"]) {
+      if (!Array.isArray(item[key])) continue;
+      const entries = item[key];
+      item[key] = entries.slice(-5).map((entry) => ({
+        version: entry.version,
+        status: entry.status,
+        actor: entry.actor,
+        recordedAt: entry.recordedAt,
+        reason: entry.reason,
+      }));
+      if (entries.length)
+        omittedHistory.push({
+          id: item.id,
+          field: key,
+          total: entries.length,
+          returned: item[key].length,
+        });
+    }
+    return item;
+  });
+  const truncated = new Map();
+  const narrativeFields = new Set([
+    "excerpt",
+    "background",
+    "problem",
+    "myRole",
+    "actions",
+    "alternatives",
+    "decision",
+    "reason",
+    "tradeoffs",
+    "results",
+    "retrospective",
+    "answer",
+    "draftAnswer",
+  ]);
+  const candidates = (value, path = field, narrative = false) => {
+    const found = [];
+    for (const [key, item] of Object.entries(value || {})) {
+      const nextPath = `${path}.${key}`;
+      const content = narrative || narrativeFields.has(key);
+      if (typeof item === "string" && content && item.length > 200) {
+        found.push({ owner: value, key, path: nextPath, length: item.length });
+      } else if (item && typeof item === "object") {
+        found.push(...candidates(item, nextPath, content));
+      }
+    }
+    return found;
+  };
+  const updateNotice = () => {
+    result.contextDetail = {
+      history:
+        "Latest five revision metadata entries only; historical content remains in the project.",
+      omittedHistory,
+      truncatedFields: [...truncated.values()],
+    };
+  };
+  updateNotice();
+  for (
+    let attempt = 0;
+    jobSearchContextJsonBytes(result) > JOB_SEARCH_CONTEXT_MAX_BYTES && attempt < 400;
+    attempt++
+  ) {
+    const largest = candidates(result[field]).sort((left, right) => right.length - left.length)[0];
+    if (!largest) break;
+    const originalCharacters = truncated.get(largest.path)?.originalCharacters || largest.length;
+    largest.owner[largest.key] = largest.owner[largest.key].slice(
+      0,
+      Math.max(200, Math.floor(largest.length * 0.6)),
+    );
+    truncated.set(largest.path, {
+      path: largest.path,
+      originalCharacters,
+      returnedCharacters: largest.owner[largest.key].length,
+    });
+    updateNotice();
+  }
+  return assertJobSearchContextSize(result);
+}
+
 export function buildJobSearchContext(input, query = {}) {
   const scope = text(query.scope) || "summary";
   if (!JOB_SEARCH_CONTEXT_SCOPES.includes(scope)) {
@@ -460,9 +583,102 @@ export function buildJobSearchContext(input, query = {}) {
   const interviewSets = list(input.interviewSets);
   const mockSessions = list(input.mockSessions);
   const envelope = baseEnvelope(input, scope);
+  const versionId = text(query.versionId || query.version_id);
   let result;
 
   switch (scope) {
+    case "career_versions": {
+      const versions = list(input.careerLibraryVersions);
+      const search = text(query.search).slice(0, 200).toLocaleLowerCase();
+      const selected = versions
+        .filter((version) =>
+          versionId
+            ? text(version?.id) === versionId
+            : !search ||
+              [text(version?.title), text(version?.summary)]
+                .join(" ")
+                .toLocaleLowerCase()
+                .includes(search),
+        )
+        .sort((left, right) => text(right?.createdAt).localeCompare(text(left?.createdAt)));
+      if (versionId && !selected.length) throw new Error(`未找到经历库版本：${versionId}`);
+      result = {
+        ...envelope,
+        careerLibraryVersions: page(
+          selected,
+          versionId ? 0 : cursor,
+          versionId ? 1 : Math.min(limit, 25),
+          careerVersionMetadata,
+        ),
+        filters: { versionId, search },
+        libraryVersionPolicy:
+          "Named versions preserve an immutable private library, including drafts and pending revisions. Saving a version does not confirm every fact, generate a resume, or authorize publication. Metadata does not include snapshot contents; read career_sources, career_episodes or career_qa with the exact version_id to inspect historical facts. Historical reads are not current writable state.",
+      };
+      break;
+    }
+    case "career_sources":
+    case "career_episodes":
+    case "career_qa": {
+      if (versionId && text(input.libraryVersion?.id) !== versionId)
+        throw new Error(`经历库历史快照未加载：${versionId}；不能以当前资料代替历史版本`);
+      const sourceId = text(query.sourceId || query.source_id);
+      const episodeId = text(query.episodeId || query.episode_id);
+      const qaId = text(query.qaId || query.qa_id);
+      const kind = { career_sources: "sources", career_episodes: "episodes", career_qa: "qa" }[
+        scope
+      ];
+      const field = { sources: "sourceMaterials", episodes: "careerEpisodes", qa: "careerQa" }[
+        kind
+      ];
+      const id = { sources: sourceId, episodes: episodeId, qa: qaId }[kind];
+      const related = {
+        ...input,
+        careerEpisodes: list(input.careerEpisodes).filter(
+          (episode) => !sourceId || list(episode?.sourceIds).includes(sourceId),
+        ),
+        careerQa: list(input.careerQa).filter(
+          (qa) =>
+            (!episodeId || text(qa?.episodeId) === episodeId) &&
+            (!sourceId || list(qa?.sourceIds).includes(sourceId)),
+        ),
+      };
+      const records = searchCareerLibrary(related, {
+        kind,
+        id,
+        search: text(query.search),
+        status: text(query.status) === "active" ? "" : text(query.status),
+        cursor,
+        limit,
+      });
+      if (id && !records.items.length) throw new Error(`未找到职业资料：${id}`);
+      result = {
+        ...envelope,
+        ...(input.libraryVersion
+          ? { libraryVersion: careerVersionMetadata(input.libraryVersion), historical: true }
+          : {}),
+        [field]: records,
+        filters: {
+          sourceId,
+          episodeId,
+          qaId,
+          versionId,
+          search: text(query.search),
+          status: text(query.status) || "active",
+        },
+        careerPolicy: {
+          confirmation:
+            "Confirm facts only from an explicit current-chat user verification quoted in top-level confirmation, or a direct Panel review. Without it, Agent writes remain draft or pending revisions. Saving a library version is separate from fact confirmation.",
+          history:
+            "A historical libraryVersion is immutable reference material. Read the current working record before proposing changes; never silently write a historical snapshot back as current state.",
+          publication:
+            "Career facts and source excerpts are private. User confirmation does not authorize publication of internal content.",
+          practice:
+            "Career QA records facts; interview answers, scores, and AI drafts do not establish candidate facts.",
+        },
+        ...policies(input),
+      };
+      return boundCareerContext(result, field);
+    }
     case "candidate":
       result = {
         ...envelope,
@@ -616,9 +832,10 @@ export function buildJobSearchContext(input, query = {}) {
         research: list(input.jobResearch)
           .filter((item) => jobIds.includes(text(item?.jobId)))
           .map(interviewResearchSummary),
-        preparationPlans: list(input.preparationPlans).filter((item) =>
-          jobIds.includes(text(item?.jobId)),
-        ).slice(-3).map(preparationPlanSummary),
+        preparationPlans: list(input.preparationPlans)
+          .filter((item) => jobIds.includes(text(item?.jobId)))
+          .slice(-3)
+          .map(preparationPlanSummary),
         ...policies(input),
       };
       return assertInterviewContextSize(result);
@@ -712,6 +929,10 @@ export function buildJobSearchContext(input, query = {}) {
       result = {
         ...envelope,
         counts: {
+          sourceMaterials: list(input.sourceMaterials).length,
+          careerEpisodes: list(input.careerEpisodes).length,
+          careerQa: list(input.careerQa).length,
+          careerLibraryVersions: list(input.careerLibraryVersions).length,
           jobs: jobs.length,
           jobLeads: list(input.jobLeads).length,
           jdIntakeItems: list(input.jdIntakeItems).length,

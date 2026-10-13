@@ -19,7 +19,7 @@ export function selectSnapshotLocalState(root, cached = {}, browserDrafts = []) 
   if (!same(cached)) retired.push(cached);
   for (const source of browserDrafts.filter(Boolean)) {
     if (!same(source)) { retired.push(source); continue; }
-    for (const field of ["resumeDraft", "interviewDraft"]) {
+    for (const field of ["resumeDraft", "interviewDraft", "careerDraft"]) {
       if (source[field] && (!local[field] ||
           String(source[field].updatedAt || "") > String(local[field].updatedAt || ""))) {
         local[field] = structuredClone(source[field]);
@@ -28,5 +28,5 @@ export function selectSnapshotLocalState(root, cached = {}, browserDrafts = []) 
   }
   local.snapshotRestoreId = id;
   return { local, retired: retired.filter(source =>
-    source?.resumeDraft?.markdown || source?.interviewDraft?.answer) };
+    source?.resumeDraft?.markdown || source?.interviewDraft?.answer || source?.careerDraft?.dirty) };
 }

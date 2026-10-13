@@ -1,0 +1,64 @@
+{
+  "format": "codeshell.career-update",
+  "schemaVersion": 1,
+  "version": {
+    "id": "career-version-synthetic-example",
+    "title": "合成示例：保存方案的决策与问答",
+    "summary": "仅用于说明接口格式，全部内容均为合成示例；不代表使用者的真实经历。"
+  },
+  "sources": [
+    {
+      "id": "career-source-synthetic-discussion",
+      "provider": "manual",
+      "title": "合成示例：异步保存讨论",
+      "externalId": "synthetic-discussion",
+      "author": "合成示例参与者",
+      "excerpt": "合成材料：讨论先保存用户输入，再异步生成摘要，以便在窗口关闭后恢复。",
+      "status": "draft"
+    }
+  ],
+  "episodes": [
+    {
+      "id": "career-episode-synthetic-decision",
+      "title": "合成示例：为什么分开保存与生成",
+      "project": "合成示例项目",
+      "period": "合成示例时间段",
+      "background": "合成背景：整理笔记时，摘要生成需要等待。",
+      "problem": "合成问题：如何保留输入并让用户继续编辑。",
+      "myRole": "合成职责：实现输入保存与摘要生成流程。",
+      "actions": [
+        "合成行动：先把输入保存为可恢复记录。"
+      ],
+      "alternatives": [
+        "合成备选：等待生成结束后一起保存。"
+      ],
+      "decision": "合成选择：先保存输入，再异步生成。",
+      "reason": "合成原因：降低长任务对编辑流程的影响。",
+      "tradeoffs": "合成取舍：需要单独呈现生成状态与失败重试。",
+      "results": "合成结果：尚待验证，不填写未经确认的指标。",
+      "retrospective": "合成复盘：下一步验证中断后的恢复体验。",
+      "tags": [
+        "合成示例",
+        "决策"
+      ],
+      "sourceIds": [
+        "career-source-synthetic-discussion"
+      ],
+      "status": "draft"
+    }
+  ],
+  "qa": [
+    {
+      "id": "career-qa-synthetic-reason",
+      "episodeId": "career-episode-synthetic-decision",
+      "category": "decision",
+      "question": "合成问题：为什么没有等待生成结束再保存？",
+      "answer": "合成事实回答：我希望先保留输入，避免关闭窗口后丢失。",
+      "draftAnswer": "合成表达草稿：我将保存输入和生成摘要分开，让较慢的生成任务不影响输入恢复。",
+      "sourceIds": [
+        "career-source-synthetic-discussion"
+      ],
+      "status": "draft"
+    }
+  ]
+}

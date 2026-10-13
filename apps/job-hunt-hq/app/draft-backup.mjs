@@ -1,4 +1,5 @@
 export const MAX_DRAFT_BACKUP_BYTES = 8 * 1024 * 1024;
+import { normalizeCareerDraft } from "./career-draft-model.mjs";
 const plain = value => value && typeof value === "object" && !Array.isArray(value);
 const field = (value, max, name) => {
   if (value == null) return "";
@@ -10,6 +11,7 @@ function drafts(value) {
   const resume = value.resumeDraft ?? {}, interview = value.interviewDraft ?? {};
   if (!plain(resume) || !plain(interview)) throw new Error("草稿结构不受支持");
   return {
+    careerDraft: normalizeCareerDraft(value.careerDraft),
     resumeDraft: {
       markdown: field(resume.markdown, 50000, "简历正文"),
       resumeVersionId: field(resume.resumeVersionId, 100, "简历版本"),
@@ -39,7 +41,7 @@ export function parseDraftBackup(text) {
     if (++count > 128) throw new Error("草稿记录超过 128 项，请拆分后导入");
     try {
       const selected = drafts(value);
-      if (!selected.resumeDraft.markdown && !selected.interviewDraft.answer) return;
+      if (!selected.resumeDraft.markdown && !selected.interviewDraft.answer && !selected.careerDraft?.record) return;
       candidates.push({ id: String(count), label, cwd: field(cwd, 4096, "来源项目"),
         owner: /^[a-f0-9]{32}$/.test(owner) ? owner : "", drafts: selected });
     } catch (error) { issues.push(`${label}：${error.message}`); }
@@ -65,7 +67,7 @@ export function parseDraftBackup(text) {
       raw(entry?.raw, `浏览器副本 ${index + 1}`, value.current?.cwd);
     if (value.legacyRaw) raw(value.legacyRaw, "旧版未标明项目的草稿");
     else if (value.stored?.legacyRaw) raw(value.stored.legacyRaw, "旧版未标明项目的草稿");
-  } else if (value.format === undefined && (value.resumeDraft || value.interviewDraft)) {
+  } else if (value.format === undefined && (value.resumeDraft || value.interviewDraft || value.careerDraft)) {
     add(value, "旧版未标明项目的草稿");
   } else throw new Error("不是支持的求职草稿备份");
   if (!candidates.length) throw new Error(issues.join("；") || "备份中没有可恢复的正文或回答");

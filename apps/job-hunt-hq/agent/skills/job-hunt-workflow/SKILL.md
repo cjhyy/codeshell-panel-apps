@@ -1,6 +1,6 @@
 ---
 name: job-hunt-workflow
-description: Operate the project-bound Job Hunt HQ panel from the current CodeShell session. Use whenever the user asks to initialize or repair a project-local job-search workspace; import JD text, screenshots, PDFs, Word files, chat exports, or project files; find, select, or compare jobs; collect or verify JDs; research companies, reviews, or interview reports; build or revise a source-backed Base Resume; derive a job-specific resume from a saved base; trace resume claims to experience, repositories, files, or commits; curate or import a canonical interview question bank; generate practice sets and recommended answers from one JD or an aggregate of multiple JDs; analyze JD fit; create preparation plans; run mock interviews; save real interview debriefs; iterate materials from feedback; update application progress; or execute any user-selected combination of these tasks.
+description: Operate project-bound Job Hunt HQ from the current CodeShell chat. Use its Node CLI without opening the Panel to maintain private experiences, decisions, factual QA and named library versions, or save requested resumes. Use Panel tools for other job and interview tasks.
 ---
 
 # Job Hunt Workflow
@@ -9,6 +9,107 @@ Keep the conversation in the current CodeShell session. Do not create a second
 chat surface or ask the user to open another repository. The selected package
 provides project-scoped Panel tools and a CLI; choose the path below before
 reading or writing project data.
+
+## Build knowledge-library versions through the current chat
+
+The primary workflow is conversational: the user shares a Slack/GitHub link or
+selects already connected data, discusses an experience in this session, and
+asks to save a new version of their experiences, decisions and factual QA.
+Keep three separate layers: original `sourceMaterials`, attributable
+`careerEpisodes`, and factual `careerQa`. The Panel is for reviewing the
+library, differences, and historical versions; manual forms are optional.
+A knowledge-library version is distinct from a software release, a resume
+revision, interview questions, practice answers, and AI scores. Do not generate
+a resume unless the user requests one.
+
+- When chat should produce a JSON file for the Panel, read
+  [references/career-update.md](references/career-update.md), the linked
+  [JSON Schema](references/career-update.schema.json), and the complete
+  [synthetic example](references/career-update.example.json). Write the update
+  through the available File tool, then use `save_candidate_context`'s
+  `career_update` preview/apply mode. Apply the returned token directly when
+  saving is already authorized; this atomically merges the records and saves
+  their named version. Report the returned saved version ID/title and finish
+  this batch; do not also call `library_version` preview/save for it. When only
+  a file or preview was requested, stop at that requested output. A file or
+  working-library change requires a new preview.
+  If apply times out or loses its receipt, first query `career_versions` with
+  that exact `version_id`; a timeout does not cancel the save. Use an attached
+  result, wait for an ongoing save, or retry the same file and ID only after
+  failure is established. Do not blindly repeat apply or invent a replacement ID.
+  Writing the file alone does not import it; never write Panel snapshots,
+  start an HTTP port or scan the update directory in the background.
+- Read `career_sources`, `career_episodes`, or `career_qa` catalogs with
+  `search`, `status`, and pagination. Read a record with its exact `source_id`,
+  `episode_id`, or `qa_id` before proposing changes. Reuse existing IDs.
+- Collect only the links or connected data authorized for this conversation.
+  For Slack, preserve permalink, workspace/channel/thread identity, visible
+  authors, timestamps and relevant context. For GitHub, verify the exact
+  PR/commit, substantive diff and personal author identity; repository access,
+  ownership, titles or merge attribution alone do not establish personal work.
+  Do not search unrelated channels/repos or send messages.
+- Discuss one high-value missing fact at a time: background, the candidate's
+  own responsibility and action, considered alternatives, the decision, why,
+  tradeoffs, actual outcomes, or retrospective. Keep unknowns explicit.
+  Save the user's actual factual answer in `answer`; AI-polished expression
+  belongs in `draftAnswer` and must not replace the original meaning.
+- Save working records through `save_candidate_context` using exactly one
+  nested `source`, `episode`, or `qa` object. These incremental modes preserve
+  unrelated data. For file-backed batches use `career_update` instead; do not
+  pre-save its records individually. Do not combine these modes with each other,
+  `library_version`, `career_update`, or
+  the complete legacy `profile` + `repositories` + `work_history` replacement.
+- Unconfirmed writes remain drafts or pending revisions. If the current chat
+  user explicitly verifies these exact facts, pass their actual original words
+  in top-level `confirmation` with that one `source`, `episode`, or `qa`.
+  Never invent or infer confirmation, quote another source participant as the
+  user, send `actor`/`confirm`, or mark an AI expression as verified. Merely
+  asking to read a link, polish wording, or save a version is not factual
+  confirmation. The user can also review facts directly in the Panel; do not
+  require them to repeat an explicit chat confirmation in a manual form.
+- For records saved through the direct single-record modes above, call
+  `save_candidate_context({library_version: {action: "preview"}})` to read the
+  changes since the last saved knowledge-library version before finalizing
+  this conversation's work, without writing. JSON batches use `career_update`
+  instead; a successful apply has already saved their version.
+  Explain the additions, revisions, unresolved facts, and pending proposals
+  in chat. When the user asks to save this version, call the same tool with
+  `library_version: {action: "save", title: "...", summary: "..."}`. An optional
+  stable `id` makes a retry idempotent; reuse it only for that exact version.
+  Saving freezes the current sources, experiences, decisions and QA, including
+  draft/pending state. It does not confirm every fact or create a resume.
+- Read `scope: "career_versions"` for bounded version metadata and counts,
+  optionally exact `version_id`. To inspect historical material, pass that
+  `version_id` with `career_sources`, `career_episodes`, or `career_qa` and
+  exact record IDs or pagination. Metadata never expands into the whole
+  library. Historical snapshots are immutable reference material; read the
+  current working record before proposing updates, and never silently restore
+  a historical version over current data.
+- An unconfirmed AI edit to a reviewed episode or QA remains a pending
+  revision, preserving the reviewed text. Source changes return dependent
+  facts to review; rereading or AI regeneration does not reconfirm them.
+- Source excerpts are limited to 16,000 characters. For longer Slack threads,
+  save separate message sources or preserve the full text actually collected
+  under `career-data/source-materials/` with `localRef`. Record actual pages,
+  messages, missing ranges and truncated patches; never claim a complete read
+  after silently slicing the input. A save does not fetch source content.
+- Use only connected tools and project files actually available in this run.
+  Explain inaccessible sources honestly; never invent authors, dates, hashes,
+  metrics, personal ownership or results to fill gaps.
+- Keep internal messages, code, source excerpts and factual QA private.
+  Confirmation establishes factual accuracy, not permission to publish.
+  Generate public-safe resume paraphrases only when separately requested,
+  using current confirmed facts and exact `source_ids`, `episode_ids`, and
+  `qa_ids` on each derived claim. Never copy private excerpts automatically.
+- A working record retains at most 40 revisions and 280 KiB of serialized
+  content. On a failed write, preserve all prior data and explain the failure;
+  use an explicitly linked continuation when wanted. Never delete history to
+  force a save. Named knowledge-library versions remain immutable.
+
+Read [references/workflows.md](references/workflows.md) for conversational
+collection and versioning, and [references/data-contract.md](references/data-contract.md)
+for the exact tool shapes.
+
 
 ## Resolve jobs and tasks independently
 
@@ -130,6 +231,8 @@ structured write whose fields are not already clear from the Panel tool schema.
    smallest sufficient slice:
    - `candidate` for profile, repositories, work history, and a paginated
      resume index;
+   - `career_sources`, `career_episodes`, or `career_qa` for private durable
+     career facts; pass exact IDs for detail rather than dumping the library;
    - `jobs` or exact `job_id` with `scope=job`;
    - `resumes` or exact `resume_id` with `scope=resume`;
    - `questions` for the paginated question index, `scope=practice` with an
@@ -138,7 +241,7 @@ structured write whose fields are not already clear from the Panel tool schema.
    - `discovery` for providers and search preferences; `intake` for the JD
      inbox.
      Follow `nextCursor` for a catalog only when the requested task genuinely
-     needs the rest of that catalog. Do not bypass a bounded Panel read by loading
+     needs the rest of that catalog. Do not bypass a bounded context read by loading
      the entire project snapshot file. Preserve existing `claimEvidence` when
      its claims remain unchanged.
 3. Check once for the active project's root `CODESHELL.md`. If present, follow
@@ -147,9 +250,13 @@ structured write whose fields are not already clear from the Panel tool schema.
 4. If the target is still unknown, inspect only obvious resume, profile, work
    history, or repository-summary files. Ask one concise question only when a
    target role or other essential constraint still cannot be inferred.
-5. Treat project files as candidate source of truth and panel data as a
-   visualization snapshot. Invoke `save_candidate_context` only when verified
-   candidate facts changed.
+5. Treat project files and the user-confirmed career library as candidate
+   sources of truth. The project snapshot persists these facts and their
+   provenance; it is not disposable UI state. Use `save_candidate_context`'s
+   legacy complete `profile` + `repositories` + `work_history` replacement
+   through the Panel tool only when those verified facts changed. The incremental
+   career modes may save draft/pending records and named library versions without
+   changing those legacy fields; saving does not confirm unresolved facts.
 6. When the Panel requests project initialization, follow the initialization
    module in `references/workflows.md`. Reuse existing files, preserve unrelated
    `CODESHELL.md` instructions, and create only missing candidate-data homes.

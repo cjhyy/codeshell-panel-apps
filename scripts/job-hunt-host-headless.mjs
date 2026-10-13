@@ -47,7 +47,8 @@ try {
     return core.installReviewedLocalPanelApp(input, preview.reviewToken, new Date().toISOString(), { overwrite });
   };
   const installed = await install(source);
-  assert.equal(installed.version, "4.2.1");
+  const sourceManifest = JSON.parse(await readFile(join(source, ".codeshell-panel/panel.json"), "utf8"));
+  assert.equal(installed.version, sourceManifest.version);
   const pin = async (cwd, selected) => {
     await mkdir(join(cwd, ".code-shell"), { recursive: true });
     await writeFile(join(cwd, ".code-shell/settings.json"), JSON.stringify({
@@ -135,17 +136,74 @@ try {
   const beforeRead = await fileInventory(project);
   assert.equal((await run("get_job_search_context", { scope: "candidate" })).profile.name, candidateInput.profile.name);
   assert.deepEqual(await fileInventory(project), beforeRead);
-  const latest = await readHost();
-  const hostUpdated = { ...JSON.parse(latest.content), profile: { ...after.profile, summary: "Host write visible to the installed CLI." } };
-  await services.call(hostScope, "workspace.writeText", { path: "job-hunt-panel.json", content: JSON.stringify(hostUpdated), expectedRevision: latest.revision });
-  assert.equal((await run("get_job_search_context", { scope: "candidate" })).profile.summary, hostUpdated.profile.summary);
 
   const { readProjectSnapshot, projectSnapshotPayload } = await import(pathToFileURL(join(runtime.packageRoot, "app/snapshot-codec.mjs")).href);
-  const { prepareProjectSnapshotDocuments } = await import(pathToFileURL(join(runtime.packageRoot, "app/snapshot-sharding-model.mjs")).href);
+  const { prepareProjectSnapshotDocuments, projectSnapshotShardDescriptors } = await import(pathToFileURL(join(runtime.packageRoot, "app/snapshot-sharding-model.mjs")).href);
   const { writeProjectSnapshotDocuments } = await import(pathToFileURL(join(runtime.packageRoot, "app/snapshot-storage.mjs")).href);
   const { normalizeResumeRecord } = await import(pathToFileURL(join(runtime.packageRoot, "app/resume-model.mjs")).href);
   const { createNodeWorkspaceScope } = await import(pathToFileURL(join(runtime.packageRoot, "app/tools/node-workspace-scope.mjs")).href);
   const sharedScope = { check() {}, call: (method, params) => services.call(hostScope, method, params) };
+  const careerInputs = {
+    source: { id: "career-source-host-acceptance", provider: "user", excerpt: "Synthetic candidate described a recoverable local save and its limitations." },
+    episode: { id: "career-episode-host-acceptance", title: "Synthetic recovery decision", sourceIds: ["career-source-host-acceptance"],
+      decision: "Publish immutable data before replacing the root.", reason: "Concurrent readers retain their previous generation." },
+    qa: { id: "career-qa-host-acceptance", episodeId: "career-episode-host-acceptance", category: "decision", question: "Why preserve immutable generations?",
+      answer: "The synthetic candidate needed concurrent readers to finish safely.", draftAnswer: "An expression draft remains separate from the candidate's factual answer.", sourceIds: ["career-source-host-acceptance"] },
+  };
+  for (const [mode, input] of Object.entries(careerInputs)) {
+    const saved = await run("save_candidate_context", { [mode]: input });
+    assert.equal(saved.projectSaved, true);
+    assert.equal(saved[mode].id, input.id);
+    assert.equal(saved[mode].status, "draft", "installed CLI intake never implicitly confirms facts");
+  }
+  const beforePreview = await fileInventory(project);
+  const preview = await run("save_candidate_context", { library_version: { action: "preview" } });
+  assert.equal(preview.saved, false); assert.equal(preview.preview, true);
+  assert.deepEqual(await fileInventory(project), beforePreview, "real Bash version preview writes neither root nor immutable files");
+  const savedVersion = await run("save_candidate_context", { library_version: { action: "save", id: "career-version-host-acceptance", title: "Synthetic reviewed-install career version" } });
+  assert.equal(savedVersion.projectSaved, true);
+  const libraryVersion = savedVersion.libraryVersion;
+  assert.equal(libraryVersion.id, "career-version-host-acceptance");
+  const versionFile = await services.call(hostScope, "workspace.readText", { path: libraryVersion.path });
+  const immutablePaths = [libraryVersion.path, ...projectSnapshotShardDescriptors(JSON.parse(versionFile.content).root).map(item => item.path)];
+  const immutableFiles = new Map(await Promise.all(immutablePaths.map(async path => [path,
+    (await services.call(hostScope, "workspace.readText", { path })).content,
+  ])));
+  const historicalInput = { scope: "career_qa", qa_id: careerInputs.qa.id, version_id: libraryVersion.id };
+  const historical = await run("get_job_search_context", historicalInput);
+  assert.equal(historical.historical, true);
+  assert.equal(historical.careerQa.items[0].answer, careerInputs.qa.answer);
+  await run("save_candidate_context", { qa: { ...careerInputs.qa, answer: "A subsequent working answer must not change immutable history." } });
+  const currentCareer = (await readProjectSnapshot(sharedScope)).snapshot;
+  const retainedCareerRecords = Object.fromEntries(Object.entries({ source: "sourceMaterials", episode: "careerEpisodes", qa: "careerQa" })
+    .map(([mode, field]) => [field, currentCareer[field].find(item => item.id === careerInputs[mode].id)]));
+  const assertCareerPreserved = async () => {
+    const snapshot = (await readProjectSnapshot(sharedScope)).snapshot;
+    for (const [field, record] of Object.entries(retainedCareerRecords))
+      assert.deepEqual(snapshot[field].find(item => item.id === record.id), record, `original operations preserve ${field}`);
+    assert.deepEqual(snapshot.careerLibraryVersions.find(item => item.id === libraryVersion.id), libraryVersion);
+    for (const [path, content] of immutableFiles)
+      assert.equal((await services.call(hostScope, "workspace.readText", { path })).content, content, "ordinary Host/CLI saves never rewrite immutable career history");
+    const beforeRead = await fileInventory(project);
+    assert.equal((await run("get_job_search_context", historicalInput)).careerQa.items[0].answer, careerInputs.qa.answer);
+    assert.deepEqual(await fileInventory(project), beforeRead, "historical reads remain readonly through real Bash");
+  };
+  await assertCareerPreserved();
+
+  const latest = await readHost();
+  const hostUpdated = { ...JSON.parse(latest.content), profile: { ...after.profile, summary: "Host write visible to the installed CLI." } };
+  await services.call(hostScope, "workspace.writeText", { path: "job-hunt-panel.json", content: JSON.stringify(hostUpdated), expectedRevision: latest.revision });
+  assert.equal((await run("get_job_search_context", { scope: "candidate" })).profile.summary, hostUpdated.profile.summary);
+  await assertCareerPreserved();
+  await run("save_candidate_context", candidateInput);
+  await assertCareerPreserved();
+  await run("save_resume_draft", resumeInput);
+  await assertCareerPreserved();
+  const beforePrivateAnswer = (await readProjectSnapshot(sharedScope)).snapshot;
+  await run("save_resume_qa_answer", { resume_id: beforePrivateAnswer.resume.versionId, question_id: "qa-ownership", status: "answered",
+    answer: "This synthetic candidate implemented the local recovery path.", source_refs: ["user:resume-qa:qa-ownership"] });
+  assert.equal((await readProjectSnapshot(sharedScope)).snapshot.resume.markdown, beforePrivateAnswer.resume.markdown);
+  await assertCareerPreserved();
   const previousBundle = await readProjectSnapshot(sharedScope);
   const versions = Array.from({ length: 18 }, (_, index) => normalizeResumeRecord({
     versionId: `host-history-${index}`, kind: "base", category: `History ${index}`,
@@ -160,6 +218,7 @@ try {
   assert.deepEqual(updatedBundle.snapshot.versions.map(record => record.markdown), versions.map(record => record.markdown));
   assert.equal(updatedBundle.snapshot.resume.candidateQuestions.find(item => item.id === "qa-decision").answer, answer);
   assert.ok(JSON.parse((await readHost()).content).artifactStorage.shards.length > 1);
+  await assertCareerPreserved();
   const nodeScope = await createNodeWorkspaceScope(project);
   const nodePrevious = await nodeScope.call("workspace.readText", { path: "job-hunt-panel.json" });
   const hostPrevious = await readHost();
@@ -274,13 +333,16 @@ try {
   assert.equal(replayed.profile.summary, concurrentSummary);
   assert.equal(replayed.resume.candidateQuestions.find(item => item.id === "qa-scope").answer, concurrentAnswer);
   assert.equal(replayed.resume.candidateQuestions.find(item => item.id === "qa-decision").answer, answer);
+  await assertCareerPreserved();
 
   // A catalog update must not redirect an already pinned project's Skill/CLI.
   const newerSource = join(root, "newer-package");
   await cp(source, newerSource, { recursive: true });
   const manifestPath = join(newerSource, ".codeshell-panel/panel.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  await writeFile(manifestPath, JSON.stringify({ ...manifest, version: "4.2.1" }));
+  assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
+  const [major, minor, patch] = manifest.version.split(".").map(Number);
+  await writeFile(manifestPath, JSON.stringify({ ...manifest, version: `${major}.${minor}.${patch + 1}` }));
   const newer = await install(newerSource, true);
   core.invalidateSkillCache();
   assert.equal((await resolveRuntime(project, installed)).path, runtime.path);
@@ -307,7 +369,7 @@ try {
   assert.equal(shutdownProbe.child.signalCode, "SIGKILL");
   assert.equal((await readHost()).content, beforeShutdown.content, "killing an uncommitted fixture worker preserves the root");
 
-  console.log("PASS: real reviewed package installation, project-pinned Skill interpolation and Bash execution of four installed Job Hunt operations with no Panel; real Host direct/sharded data, bidirectional stale-write rejection, cross-process commit exclusion and CLI conflict replay, retained-package isolation");
+  console.log("PASS: real reviewed package installation, project-pinned Skill interpolation and Bash execution of original/career Job Hunt operations with no Panel; readonly preview/history, immutable career version and field preservation across Host/CLI saves; real Host direct/sharded data, bidirectional stale-write rejection, cross-process commit exclusion and CLI conflict replay, retained-package isolation");
 } catch (error) {
   runFailed = true;
   runError = error;

@@ -78,14 +78,29 @@ export function normalizeInvocation(snapshot) {
   for (const [index, resume] of [snapshot.resume, ...(snapshot.versions || [])].entries()) {
     if (resume?.versionId && /^resume[-_]/.test(resume.versionId)) ids.set(resume.versionId, `<resume-${index}>`);
   }
-  const runtimeTimes = new Set(["updatedAt", "answeredAt", "createdAt", "presentationUpdatedAt"]);
+  // Career projection IDs hash the invocation's resume ID. Preserve every
+  // business field while assigning those derived links the same stable name.
+  const replaceResumeIds = value => {
+    for (const [id, replacement] of ids) value = value.replaceAll(id, replacement);
+    return value;
+  };
+  for (const field of ["sourceMaterials", "careerQa"]) {
+    for (const record of snapshot[field] || []) {
+      const reference = (record.legacyRefs || []).find(ref => ref.startsWith("resume:") && replaceResumeIds(ref) !== ref);
+      if (reference) ids.set(record.id, `<${field}:${replaceResumeIds(reference)}>`);
+    }
+  }
+  const runtimeTimes = new Set(["updatedAt", "answeredAt", "createdAt", "presentationUpdatedAt", "recordedAt", "confirmedAt", "lastConfirmedAt"]);
   const visit = (value, key = "", path = "") => {
-    if (Array.isArray(value)) return value.map((item, index) => visit(item, "", `${path}[${index}]`));
+    if (Array.isArray(value)) {
+      const normalized = value.map((item, index) => visit(item, "", `${path}[${index}]`));
+      return ["sourceIds", "episodeIds", "qaIds"].includes(key) ? normalized.sort() : normalized;
+    }
     if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, visit(item, name, `${path}.${name}`)]));
     if (typeof value === "string" && ids.has(value)) return ids.get(value);
     if (runtimeTimes.has(key) && typeof value === "string" && Date.parse(value) > Date.parse("2026-01-02T00:00:00Z")) return "<invocation-time>";
     if (key === "source" && /^\.(resume|versions\[\d+\])\./.test(path) && ["panel", "cli"].includes(value)) return "<adapter-source>";
-    return value;
+    return typeof value === "string" ? replaceResumeIds(value) : value;
   };
   return visit(snapshot);
 }

@@ -1,3 +1,4 @@
+import { validatePanelToolInput } from "../tool-input-validation.mjs";
 import { readFile, realpath } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
@@ -16,57 +17,10 @@ import { createNodeWorkspaceScope, findJobHuntProject } from "./node-workspace-s
 
 const invalid = (message) => Object.assign(new Error(message), { code: "INVALID_ARGUMENT" });
 
-// Validate against the installed Tool contract, including nested evidence objects.
-// No second operation schema is maintained by the CLI.
+// The installed Tool and both CLI adapters share the manifest contract.
 export function validateToolInput(value, schema, path = "arguments") {
-  const type = schema.type;
-  const validType =
-    type === "object"
-      ? value !== null && typeof value === "object" && !Array.isArray(value)
-      : type === "array"
-        ? Array.isArray(value)
-        : type === "integer"
-          ? Number.isInteger(value)
-          : type === "number"
-            ? typeof value === "number" && Number.isFinite(value)
-            : type === "null"
-              ? value === null
-              : typeof value === type;
-  if (type && !validType) throw invalid(`${path} 必须是 ${type}`);
-  if (schema.enum && !schema.enum.includes(value)) throw invalid(`${path} 不在允许值中`);
-  if (Object.hasOwn(schema, "const") && value !== schema.const) throw invalid(`${path} 值不正确`);
-  if (typeof value === "string") {
-    if (
-      (schema.minLength !== undefined && [...value].length < schema.minLength) ||
-      (schema.maxLength !== undefined && [...value].length > schema.maxLength) ||
-      (schema.pattern && !new RegExp(schema.pattern, "u").test(value))
-    )
-      throw invalid(`${path} 文本长度或格式不正确`);
-  }
-  if (
-    typeof value === "number" &&
-    ((schema.minimum !== undefined && value < schema.minimum) ||
-      (schema.maximum !== undefined && value > schema.maximum))
-  )
-    throw invalid(`${path} 超出允许范围`);
-  if (Array.isArray(value)) {
-    if (
-      (schema.minItems !== undefined && value.length < schema.minItems) ||
-      (schema.maxItems !== undefined && value.length > schema.maxItems)
-    )
-      throw invalid(`${path} 数量不正确`);
-    if (schema.items)
-      value.forEach((item, index) => validateToolInput(item, schema.items, `${path}[${index}]`));
-  } else if (value && typeof value === "object") {
-    for (const key of schema.required || [])
-      if (!Object.hasOwn(value, key)) throw invalid(`${path}.${key} 为必填`);
-    for (const [key, item] of Object.entries(value)) {
-      if (Object.hasOwn(schema.properties || {}, key))
-        validateToolInput(item, schema.properties[key], `${path}.${key}`);
-      else if (schema.additionalProperties === false)
-        throw invalid(`${path}.${key} 不是允许的参数`);
-    }
-  }
+  try { return validatePanelToolInput(schema, value, path); }
+  catch (error) { throw invalid(error.message); }
 }
 
 function parse(argv) {
@@ -109,17 +63,8 @@ async function initialize(scope, now) {
   return scope.withWriteLock(async () => {
     let initialized = false;
     const createdFiles = [];
-    try {
-      await readProjectSnapshot(scope);
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-      // A missing shard is a damaged existing project, never permission to replace it.
-      try {
-        await scope.call("workspace.readText", { path: "job-hunt-panel.json" });
-        throw Object.assign(new Error("现有快照不完整，请先修复"), { code: "INVALID_SNAPSHOT" });
-      } catch (rootError) {
-        if (rootError.code !== "ENOENT") throw rootError;
-      }
+    const { previousSnapshot } = await readProjectSnapshot(scope, { allowMissingRoot: true });
+    if (!previousSnapshot) {
       const payload = projectSnapshotPayload(emptyProjectSnapshot(), { now });
       await writeProjectSnapshotDocuments(prepareProjectSnapshotDocuments(payload), { scope });
       initialized = true;
@@ -192,7 +137,10 @@ export async function main(argv, { cwd = process.cwd() } = {}) {
   const now = new Date().toISOString();
   if (command === "init") return { ok: true, result: await initialize(scope, now) };
   const ctx = {
-    now,
+    now, scope, projectKey: scope.root,
+    // Replaying a root conflict must reuse the same immutable artifact identity.
+    ...(args.library_version?.action === "save" && !args.library_version.id
+      ? { careerVersionId: `career-version-${randomUUID()}` } : {}),
     uid: (prefix) => `${prefix}-${randomUUID()}`,
     source: "cli",
     sessionId: options.session || null,
@@ -202,9 +150,9 @@ export async function main(argv, { cwd = process.cwd() } = {}) {
   };
   const checkedOp = {
     ...op,
-    run(snapshot, input, context) {
+    async run(snapshot, input, context) {
       try {
-        return op.run(snapshot, input, context);
+        return await op.run(snapshot, input, context);
       } catch (error) {
         if (!error.code) error.code = "INVALID_ARGUMENT";
         throw error;

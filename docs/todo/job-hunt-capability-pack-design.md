@@ -1,8 +1,46 @@
 # Job Hunt HQ 能力包：脱离面板运行（简历样板）
 
-> 状态：Job Hunt HQ v4.2.1 已正式发布；生产安装、实际所选 Skill / CLI 与正式 Desktop 自然 Chat 四操作验收均已通过，面板未自动打开，真实求职快照未改变。Desktop 0.9.37 完成安装与能力可见性验收，本机随后更新为 0.9.40，最终 Chat 回执记录该当前版本。日期：2026-10-13。<br>
+> 状态：当前候选 v5.0.0 正在兼容整合，尚未发布或安装；既有 Job Hunt HQ v4.2.1 已正式发布；生产安装、实际所选 Skill / CLI 与正式 Desktop 自然 Chat 四操作验收均已通过，面板未自动打开，真实求职快照未改变。Desktop 0.9.37 完成安装与能力可见性验收，本机随后更新为 0.9.40，最终 Chat 回执记录该当前版本。日期：2026-10-13。<br>
 > 首次 Panel 实现已通过 PR #77 合入 `main`；既有发布与隔离证据保留，当前生产安装验收维护分支为 `codex/job-hunt-hq/installed-runtime-acceptance`。配套 Host 从 0.9.36 起提供共用文件写入锁，后续正式 Desktop 的能力可见性与自然调用证据见第 7.6 节。<br>
 > 本文从 `codeshell/docs/todo/` 迁入，基于 Job Hunt HQ v4.1.2 更新。下文应用路径相对于 `apps/job-hunt-hq/`。
+
+## 5.0 兼容整合状态（候选，未发布）
+
+2026-10-14 按明确要求继续完成旧 PR #73 的经历库功能线，基于最新 `main` 在
+`codex/job-hunt-hq/career-library-headless-integration` 整合。下文第 0–7 节保留
+4.2.1 已发布、已安装与真实 Chat 验收的历史事实；它们不代表 5.0 已发布或安装。
+
+5.0 继续使用原 `job-hunt-panel.json`、分片与共享写锁，仍为 16 个 Tool、6 个 Skill。
+保留四个无界面操作、`job-hunt.mjs ops | init | run`、原完整候选人参数、简历来源与
+Session 记录，以及 4.2.1 的符号链接入口修复。`save_candidate_context` 新增互斥
+`source` / `episode` / `qa` / `library_version` / `career_update` 模式，不增加第 17 个工具。
+
+私有原始材料、经历及其决策原因和取舍、事实问答分别保存；本人事实回答与 AI 表达草稿
+分开。未确认内容保留 draft / pending 状态，聊天中的明确事实确认需记录本人原话。
+命名知识库版本保存独立不可变快照，预览只读；JSON 增量须先预览再携 token 应用，
+相同已成功批次重试不会覆盖之后的修改。保存知识库不自动生成简历，也不授权公开来源。
+公开简历按需从已确认事实派生；旧简历私有 `decision` QA 保留并关联长期问答库。
+
+Panel Tool 和两个 CLI 适配层调用同一组操作。直接 Chat / TUI 始终通过
+`project-runtime` 运行 `app/tools/job-hunt.mjs`；携 Trace 的面板任务仍走 Panel Tool。
+旧 `job-hunt-cli.mjs` 保留内部 `snapshot.commit` 传输合同与已有调用兼容，业务委托共用
+操作，文件提交委托现有 Node workspace scope，与 Host 0.9.36+ 共用每文件锁 / CAS；
+不再使用旧原型的 `career-data/panel-runtime/commit-lock`。写入仍需 Node.js ≥20.10
+及实际 Bash 协议标记 `1`，不能用版本号或手工导出环境变量代替。
+
+整合验收覆盖直接 / 分片 Tool–CLI 一致性、旧完整候选人操作保留经历库、私有问答不改
+公开简历、不可变版本与历史读取、预览不写、批次幂等、异步项目切换和外部更新冲突。
+增量事实超出既有 UTF-16 存储容量时会在规范化前拒绝，包括非 BMP 字符和列表项，
+不会以保存成功掩盖原文截断；已有未触及的超长原文和扩展字段保留。
+
+候选验证已通过：`npm run check -- --suite job-hunt-hq`（351/351，另两项 Unicode
+回归在最终全套重跑中）、六个 Skill 的 quick validation、read-only 安装包 preflight。
+真实 Host 四 worker gate 通过，覆盖 reviewed install、项目固定 Skill 展开、真实 Bash
+四个原操作与经历库操作、不可变版本、预览只读、双向陈旧写拒绝和进程间锁。
+真实升级 gate 通过 4.1.0 / 4.1.1 / 4.2.1 → 5.0.0 → 原版 → 5.0.0，验证原文、分片、
+精确备份、草稿迁移、新事实与命名历史保留；八个受控 Chromium 实例关闭后清理临时 HOME。
+这些使用隔离合成项目与已构建 Server / Core，不建立 5.0 的生产安装、自然模型对话、
+真实外部来源或 OS 网络隔离结论。此次不发布、安装或修改真实个人数据。
 
 ## 0. 本版范围
 

@@ -13,6 +13,7 @@
     />
     <title>Job Hunt HQ · 求职作战室</title>
     <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./career-library.css" />
     <link rel="stylesheet" href="./panel-select.css" />
     <script defer src="./panel-select.js"></script>
   </head>
@@ -36,6 +37,8 @@
       <textarea id="draft-import-resume-preview" readonly rows="7" aria-label="简历恢复预览"></textarea>
       <label><input id="draft-import-answer" type="checkbox" />恢复回答草稿（不会提交回答）</label>
       <textarea id="draft-import-answer-preview" readonly rows="5" aria-label="回答恢复预览"></textarea>
+      <label><input id="draft-import-career" type="checkbox" />恢复经历库编辑草稿（作为新记录，重新关联来源）</label>
+      <textarea id="draft-import-career-preview" readonly rows="5" aria-label="经历库草稿恢复预览"></textarea>
       <label>当前项目的题目 <select id="draft-import-question"></select></label>
       <p id="draft-import-error" role="alert"></p>
       <footer><button id="draft-import-cancel" type="button">关闭</button><button id="draft-import-apply" type="button">确认恢复到当前项目</button></footer>
@@ -54,11 +57,11 @@
     </dialog>
     <main class="app-shell">
       <header class="topbar">
-        <button class="brand" type="button" data-view-target="today" aria-label="回到今日工作台">
+        <button class="brand" type="button" data-view-target="career" aria-label="回到经历库">
           <span class="brand-mark" aria-hidden="true">J</span>
           <span class="brand-copy">
             <strong>JOB HUNT HQ</strong>
-            <small>求职作战室</small>
+            <small>经历 · 决策 · 表达</small>
           </span>
         </button>
 
@@ -87,7 +90,12 @@
       <aside class="sidebar">
         <nav class="side-nav" aria-label="求职工作区">
           <p class="nav-label">工作区</p>
-          <button class="nav-item active" type="button" data-view-target="today">
+          <button class="nav-item active" type="button" data-view-target="career">
+            <span class="nav-icon" aria-hidden="true">◈</span>
+            <span>经历库</span>
+            <span id="career-nav-count" class="nav-count">0</span>
+          </button>
+          <button class="nav-item" type="button" data-view-target="today">
             <span class="nav-icon" aria-hidden="true">⌂</span>
             <span>今日</span>
           </button>
@@ -141,6 +149,9 @@
       </aside>
 
       <section class="content">
+        <section class="view active" id="view-career" aria-label="个人经历与问答库">
+          <div id="career-library-root"></div>
+        </section>
         <section
           id="project-sync-conflict"
           class="project-sync-conflict"

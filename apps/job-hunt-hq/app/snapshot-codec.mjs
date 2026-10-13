@@ -1,3 +1,5 @@
+import { normalizeDiscoveryPreferences } from "./discovery-model.mjs";
+import { migrateCareerLibrary } from "./career-library-model.mjs";
 import {
   collectResumeRecords,
   normalizeResumeRecord,
@@ -24,6 +26,7 @@ const FIELDS = [
   "jobLeads",
   "discoveryRunReceipts",
   "discoveryReceiptCutoff",
+  "sourceMaterials", "careerEpisodes", "careerQa", "careerLibraryVersions", "careerLibraryMigrationVersion",
   "profile",
   "jobs",
   "repos",
@@ -57,7 +60,9 @@ function validateSnapshotShape(snapshot) {
   for (const field of FIELDS) {
     if (!Object.hasOwn(snapshot, field)) continue;
     const value = snapshot[field];
-    if (OBJECT_FIELDS.has(field)) {
+    if (field === "careerLibraryMigrationVersion") {
+      if (!Number.isInteger(value) || value < 0) invalid(field);
+    } else if (OBJECT_FIELDS.has(field)) {
       if (!plainObject(value)) invalid(field);
     } else if (TEXT_FIELDS.has(field)) {
       if (typeof value !== "string") invalid(field);
@@ -136,6 +141,7 @@ export function emptyProjectSnapshot() {
       photoDataUrl: "",
       photoName: "",
     },
+    sourceMaterials: [], careerEpisodes: [], careerQa: [], careerLibraryVersions: [], careerLibraryMigrationVersion: 0,
     jobs: [],
     repos: [],
     experiences: [],
@@ -168,14 +174,19 @@ export function emptyProjectSnapshot() {
   };
 }
 
-export function projectSnapshotPayload(source, { now = new Date().toISOString() } = {}) {
+export function projectSnapshotPayload(source, { now = new Date().toISOString(), preserveUnknown = false } = {}) {
   const defaults = emptyProjectSnapshot();
   const payload = {
+    ...(preserveUnknown ? structuredClone(source) : {}),
     ...(source.snapshotRestoreId ? { snapshotRestoreId: source.snapshotRestoreId } : {}),
     schemaVersion: 2,
     updatedAt: now,
   };
   for (const field of FIELDS) payload[field] = structuredClone(source[field] ?? defaults[field]);
+  // The Panel pre-fills an empty search keyword from the candidate profile.
+  // Persist the same default for both adapters without projecting other settings.
+  if (!payload.discoveryPreferences.keyword) payload.discoveryPreferences.keyword =
+    normalizeDiscoveryPreferences(payload.discoveryPreferences, { profile: payload.profile }).keyword;
   const resumeOptions = {
     profileTarget: payload.profile?.target,
     profileRole: payload.profile?.role,
@@ -205,12 +216,18 @@ export function hydrate(rootText, shards = new Map()) {
     hydrated.selectedBaseResumeId,
   );
   hydrated.selectedBaseResumeId = selectedBase ? resumeRecordId(selectedBase) : "";
-  return hydrated;
+  const hasCareerRecords = ["sourceMaterials", "careerEpisodes", "careerQa"].some(field => hydrated[field].length);
+  return Number(hydrated.careerLibraryMigrationVersion) >= 1 || hasCareerRecords ? hydrated : migrateCareerLibrary(hydrated);
 }
 
-export async function readProjectSnapshot(scope) {
+export async function readProjectSnapshot(scope, { allowMissingRoot = false } = {}) {
   scope.check();
-  const previousSnapshot = await scope.call("workspace.readText", { path: ROOT });
+  let previousSnapshot;
+  try { previousSnapshot = await scope.call("workspace.readText", { path: ROOT }); }
+  catch (error) {
+    if (!allowMissingRoot || error.code !== "ENOENT") throw error;
+    return { snapshot: emptyProjectSnapshot(), previousSnapshot: null };
+  }
   const root = JSON.parse(previousSnapshot.content);
   const shards = new Map();
   for (const descriptor of projectSnapshotShardDescriptors(root)) {
@@ -228,14 +245,17 @@ export async function applyOp(
   op,
   args,
   ctx,
-  { maxConflictRetries = 1, prepareOptions } = {},
+  { maxConflictRetries = 1, prepareOptions, allowMissingSnapshot = false } = {},
 ) {
   const apply = async () => {
     for (let attempt = 0; ; attempt += 1) {
-      const { snapshot: before, previousSnapshot } = await readProjectSnapshot(scope);
-      const { snapshot, result } = op.run(before, args, ctx);
-      if (!op.mutates) return { snapshot, result };
-      const payload = projectSnapshotPayload(snapshot, { now: ctx.now });
+      // Missing shards are always corruption, including when the root is
+      // concurrently removed after its successful read. Only the first root
+      // read may authorize create-only initialization.
+      const { snapshot: before, previousSnapshot } = await readProjectSnapshot(scope, { allowMissingRoot: allowMissingSnapshot });
+      const { snapshot, result, changed } = await op.run(before, args, { ...ctx, scope });
+      if (!op.mutates || changed === false) return { snapshot, result };
+      const payload = projectSnapshotPayload(snapshot, { now: ctx.now, preserveUnknown: true });
       const prepared = prepareProjectSnapshotDocuments(
         payload,
         emptyProjectSnapshot(),

@@ -2,7 +2,7 @@ import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { cp, readFile } from "node:fs/promises";
+import { cp, readFile, mkdir, writeFile } from "node:fs/promises";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
@@ -186,4 +186,148 @@ test("CLI updates reload a clean Panel and preserve a dirty Panel through confli
   await page.waitForFunction(() => document.querySelector("#project-snapshot-state").textContent.includes("发现外部更新"));
   assert.equal(await readFile(join(project, snapshotPath), "utf8"), committed);
   assert.equal((await readSnapshot(project)).profile.name, "CLI Winner");
+});
+
+
+for (const sharded of [false, true]) test(`career library Tools and CLI preserve the same ${sharded ? "sharded" : "direct"} facts, immutable versions and legacy resume state`, async t => {
+  const panelProject = await tempProject(t), cliProject = await tempProject(t);
+  await cli(["init", "--project", panelProject]);
+  await run(panelProject, "save_candidate_context", candidateInput);
+  await run(panelProject, "save_resume_draft", resumeInput);
+  if (sharded) {
+    const scope = await createNodeWorkspaceScope(panelProject);
+    const previousSnapshot = await scope.call("workspace.readText", { path: snapshotPath });
+    const root = await readSnapshot(panelProject);
+    root.jobResearch = Array.from({ length: 30 }, (_, index) => ({ id: `unrelated-research-${index}`, report: "Preserved unrelated research. ".repeat(1600) }));
+    const prepared = prepareProjectSnapshotDocuments(root);
+    assert.ok(prepared.shards.length > 1);
+    await writeProjectSnapshotDocuments(prepared, { scope, previousSnapshot });
+  }
+  await cp(panelProject, cliProject, { recursive: true });
+  const original = await readSnapshot(panelProject);
+  const { page } = await panel(t, panelProject);
+  const facts = [
+    { source: { id: "career-source-parity", provider: "slack", connectionId: "synthetic-connection", externalId: "synthetic-thread", title: "Synthetic source", excerpt: "Private synthetic source text." }, confirmation: "I confirm this synthetic source." },
+    { episode: { id: "career-episode-parity", title: "Synthetic decision", decision: "Use immutable files", reason: "Protect readers", tradeoffs: "Extra files", sourceIds: ["career-source-parity"] }, confirmation: "I confirm this synthetic experience." },
+    { qa: { id: "career-qa-parity", episodeId: "career-episode-parity", category: "decision", question: "Why immutable files?", answer: "My factual decision was to protect concurrent readers.", draftAnswer: "An independently editable expression.", sourceIds: ["career-source-parity"] }, confirmation: "I confirm this actual synthetic answer." },
+  ];
+  const equalState = async label => {
+    const left = normalizeInvocation(await readSnapshot(panelProject));
+    const right = normalizeInvocation(await readSnapshot(cliProject));
+    // Integrity hashes cover timestamps. Both histories are verified by the
+    // historical read below; equality here compares their complete domain data.
+    for (const state of [left, right]) for (const version of state.careerLibraryVersions) delete version.sha256;
+    assert.deepEqual(left, right, label);
+    assert.equal(left.resume.markdown, original.resume.markdown, "private career changes never rewrite the public resume");
+    assert.deepEqual(left.jobResearch, original.jobResearch, "unrelated shards survive every adapter write");
+    if (sharded) for (const project of [panelProject, cliProject]) assert.ok(JSON.parse(await readFile(join(project, snapshotPath), "utf8")).artifactStorage.shards.length > 1);
+  };
+  for (const input of facts) {
+    const tool = await invoke(page, "save_candidate_context", input);
+    const command = (await run(cliProject, "save_candidate_context", input)).json;
+    assert.equal(tool.projectSaved, true); assert.equal(command.ok, true);
+    await equalState(Object.keys(input)[0]);
+  }
+  const beforePreview = await Promise.all([fileInventory(panelProject), fileInventory(cliProject)]);
+  const previewInput = { library_version: { action: "preview" } };
+  const toolPreview = await invoke(page, "save_candidate_context", previewInput);
+  const cliPreview = (await run(cliProject, "save_candidate_context", previewInput)).json.result;
+  assert.equal(toolPreview.preview, true); assert.equal(cliPreview.preview, true);
+  assert.deepEqual(toolPreview.counts, cliPreview.counts);
+  assert.deepEqual(await Promise.all([fileInventory(panelProject), fileInventory(cliProject)]), beforePreview, "version previews are byte-for-byte read-only");
+  const versionInput = { library_version: { action: "save", id: "career-version-parity", title: "Synthetic conversational version" } };
+  await invoke(page, "save_candidate_context", versionInput);
+  await run(cliProject, "save_candidate_context", versionInput);
+  await equalState("immutable named version");
+  const historicalInput = { scope: "career_qa", qa_id: "career-qa-parity", version_id: "career-version-parity" };
+  const toolHistory = await invoke(page, "get_job_search_context", historicalInput);
+  const cliHistory = (await run(cliProject, "get_job_search_context", historicalInput)).json.result;
+  assert.equal(toolHistory.historical, true); assert.equal(cliHistory.historical, true);
+  assert.deepEqual(normalizeInvocation(toolHistory.careerQa), normalizeInvocation(cliHistory.careerQa));
+  assert.equal(toolHistory.careerQa.items[0].answer, facts[2].qa.answer);
+
+  const updatePath = "career-data/updates/parity.json";
+  const update = { format: "codeshell.career-update", schemaVersion: 1,
+    version: { id: "career-version-batch-parity", title: "Second synthetic discussion" }, sources: [], episodes: [],
+    qa: [{ id: "career-qa-batch", question: "What remains unknown?", answer: "We have no measured production result.", draftAnswer: "An AI expression is not factual confirmation." }],
+  };
+  for (const project of [panelProject, cliProject]) {
+    await mkdir(join(project, "career-data/updates"), { recursive: true });
+    await writeFile(join(project, updatePath), JSON.stringify(update));
+  }
+  const beforeBatchPreview = await Promise.all([fileInventory(panelProject), fileInventory(cliProject)]);
+  const batchInput = { career_update: { action: "preview", path: updatePath } };
+  const toolBatch = await invoke(page, "save_candidate_context", batchInput);
+  const cliBatch = (await run(cliProject, "save_candidate_context", batchInput)).json.result;
+  assert.deepEqual(await Promise.all([fileInventory(panelProject), fileInventory(cliProject)]), beforeBatchPreview);
+  await invoke(page, "save_candidate_context", { career_update: { action: "apply", path: updatePath, preview_token: toolBatch.preview_token } });
+  await run(cliProject, "save_candidate_context", { career_update: { action: "apply", path: updatePath, preview_token: cliBatch.preview_token } });
+  await equalState("JSON batch apply with version");
+  const afterApply = await Promise.all([fileInventory(panelProject), fileInventory(cliProject)]);
+  await invoke(page, "save_candidate_context", { career_update: { action: "apply", path: updatePath, preview_token: toolBatch.preview_token } });
+  await run(cliProject, "save_candidate_context", { career_update: { action: "apply", path: updatePath, preview_token: cliBatch.preview_token } });
+  assert.deepEqual(await Promise.all([fileInventory(panelProject), fileInventory(cliProject)]), afterApply, "successful apply replay never overwrites subsequent edits");
+
+  const legacy = { ...candidateInput, profile: { ...candidateInput.profile, name: "Compatible complete candidate update" } };
+  await invoke(page, "save_candidate_context", legacy);
+  await run(cliProject, "save_candidate_context", legacy);
+  await equalState("legacy complete candidate still preserves career library");
+  const saved = await readSnapshot(cliProject);
+  assert.equal(saved.careerQa.find(item => item.id === "career-qa-batch").status, "draft");
+  assert.equal(saved.careerLibraryVersions.length, 2);
+});
+
+test("external CLI career facts reload a clean Panel but never overwrite an unsaved career editor", async t => {
+  const project = await tempProject(t);
+  await cli(["init", "--project", project]);
+  const { page } = await panel(t, project);
+  const source = { id: "career-source-external", provider: "manual", title: "External synthetic source", excerpt: "First durable fact." };
+  await run(project, "save_candidate_context", { source });
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.locator('[data-career-record="career-source-external"]').waitFor();
+  const loaded = await invoke(page, "get_job_search_context", { scope: "career_sources", source_id: source.id });
+  assert.equal(loaded.sourceMaterials.items[0].excerpt, source.excerpt);
+  await page.locator('[data-career-record="career-source-external"]').click();
+  await page.locator('[data-career-field="excerpt"]').fill("Unsaved private editor text must remain recoverable.");
+  await run(project, "save_candidate_context", { source: { ...source, excerpt: "A competing CLI fact wins on disk." } });
+  const winner = await fileInventory(project);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.waitForFunction(() => document.querySelector("#project-snapshot-state").textContent.includes("发现外部更新"));
+  assert.equal(await page.locator('[data-career-field="excerpt"]').inputValue(), "Unsaved private editor text must remain recoverable.");
+  await page.locator('[data-career-action="save"]').click();
+  await page.locator("#career-message").filter({ hasText: "保存失败" }).waitFor();
+  assert.deepEqual(await fileInventory(project), winner, "the stale Panel cannot replace the CLI winner or its shards");
+});
+
+test("opening a migrated library and saving unrelated Tool or manual records preserves original oversized facts and extensions", async t => {
+  const project = await tempProject(t);
+  await cli(["init", "--project", project]);
+  const scope = await createNodeWorkspaceScope(project);
+  const previousSnapshot = await scope.call("workspace.readText", { path: snapshotPath });
+  const originalSource = { id: "career-source-older-extended", provider: "manual", title: "Older raw source",
+    excerpt: "Original long fact. ".repeat(1000), extension: { owner: "an-older-importer", verbatim: "Preserve this extension exactly." },
+  };
+  const prepared = prepareProjectSnapshotDocuments({ ...JSON.parse(previousSnapshot.content), careerLibraryMigrationVersion: 1, sourceMaterials: [originalSource] });
+  await writeProjectSnapshotDocuments(prepared, { scope, previousSnapshot });
+  const { page } = await panel(t, project);
+  await invoke(page, "save_candidate_context", candidateInput);
+  assert.deepEqual((await readSnapshot(project)).sourceMaterials, [originalSource]);
+  await page.locator("#career-add").click();
+  await page.locator('[data-career-field="title"]').fill("New manual synthetic source");
+  await page.locator('[data-career-field="excerpt"]').fill("A separate new fact must not truncate older data.");
+  await page.locator('[data-career-action="save"]').click();
+  await page.locator("#career-message").filter({ hasText: "已保存" }).waitFor();
+  assert.deepEqual((await readSnapshot(project)).sourceMaterials.find(item => item.id === originalSource.id), originalSource);
+});
+
+test("Tool and CLI reject schema-valid astral facts that exceed storage capacity without changing any project bytes", async t => {
+  const project = await tempProject(t);
+  await cli(["init", "--project", project]);
+  const { page } = await panel(t, project);
+  const input = { source: { provider: "manual", excerpt: "😀".repeat(8001) } };
+  const before = await fileInventory(project);
+  await assert.rejects(invoke(page, "save_candidate_context", input), /超过/);
+  const command = await run(project, "save_candidate_context", input, { expectedExit: 2 });
+  assert.match(command.json.error.message, /超过/);
+  assert.deepEqual(await fileInventory(project), before);
 });

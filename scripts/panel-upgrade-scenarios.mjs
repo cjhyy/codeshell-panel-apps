@@ -1,3 +1,4 @@
+import { candidateInput, resumeInput } from "../tests/apps/job-hunt-hq/fixtures/headless-runtime.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -80,7 +81,11 @@ async function design(old, root) {
 async function job(old) {
   const originalModel = await old.module("app/snapshot-sharding-model.mjs");
   const payload = { schemaVersion: 2, savedAt: "2026-10-10T00:00:00.000Z", jobs: [{ id: "job-upgrade", title: "Synthetic job" }],
-    resume: { headline: "Synthetic resume" }, versions: [{ id: "resume-v1", text: "A retained version" }],
+    profile: candidateInput.profile, repos: candidateInput.repositories, experiences: candidateInput.work_history,
+    resume: { versionId: "resume-upgrade", kind: "base", category: "Platform", title: resumeInput.title,
+      markdown: resumeInput.markdown, claimEvidence: resumeInput.claim_evidence,
+      candidateQuestions: resumeInput.candidate_questions.map(question => ({ ...question, status: "open" })) },
+    versions: [{ versionId: "resume-v1", kind: "base", title: "A retained version", markdown: "# Retained synthetic public resume", candidateQuestions: [], claimEvidence: [] }],
     questionBank: Array.from({ length: 80 }, (_, i) => ({ id: `question-${i}`, notes: "旧面试素材".repeat(1500) })),
     futureField: { keep: "unknown legacy extension" } };
   const original = originalModel.prepareProjectSnapshotDocuments(payload, {},
@@ -98,7 +103,8 @@ async function job(old) {
   let upgraded, archivePath;
   return {
     checks: [original.root.artifactStorage.schemaVersion === 1 ? `actual ${old.selected.version} A/B writer` : `actual ${old.selected.version} snapshot writer`,
-      "root/shard migration", "interrupted migration preserves root", "exact raw backup", "old-shard rollback", "upgraded bundle archive"],
+      "root/shard migration", "interrupted migration preserves root", "exact raw backup", "old-shard rollback", "upgraded bundle archive",
+      "legacy facts migrate as drafts", "career write preserves legacy public resume", "immutable named career history", "stale Host CAS rejects old root"],
     async verifyEmpty(ctx) {
       assert.equal((await ctx.call("workspace.list", { path: "." })).entries.some(item => item.path === "job-hunt-panel.json"), false);
       assert.deepEqual((await ctx.call("workspace.list", { path: "career-data" })).entries, []);
@@ -133,7 +139,8 @@ async function job(old) {
       upgraded = model.prepareProjectSnapshotDocuments(draft);
       await storage.writeProjectSnapshotDocuments(upgraded, { scope: ctx.scope, previousSnapshot, backupRequired: true });
       assert.equal(upgraded.root.artifactStorage.schemaVersion, 2);
-      await assert.rejects(hydrate(ctx, originalModel, upgraded.root), /分片/);
+      if (["4.1.0", "4.1.1"].includes(old.selected.version)) await assert.rejects(hydrate(ctx, originalModel, upgraded.root), /分片/);
+      else assert.deepEqual(await hydrate(ctx, originalModel, upgraded.root), draft, "4.2.1 continues to decode the pre-career shard layout");
       // Find an actual complete backup and decode it through the package's backup reader.
       const listing = await ctx.call("workspace.list", { path: "career-data/panel-backups" });
       assert.equal(listing.truncated, false);
@@ -146,6 +153,35 @@ async function job(old) {
         verified = true;
       }
       assert.equal(verified, true, "migration must publish a discoverable complete backup");
+      const codec = await ctx.module("app/snapshot-codec.mjs");
+      const { jobHuntOperations } = await ctx.module("app/ops/index.mjs");
+      const migrated = await codec.readProjectSnapshot(ctx.scope);
+      assert.equal(migrated.snapshot.profile.name, payload.profile.name);
+      assert.equal(migrated.snapshot.resume.markdown, payload.resume.markdown.trim());
+      assert.ok(migrated.snapshot.sourceMaterials.length >= 2);
+      assert.ok(migrated.snapshot.careerEpisodes.length >= 2);
+      assert.equal(migrated.snapshot.careerQa.length, payload.resume.candidateQuestions.length);
+      assert.ok(migrated.snapshot.careerQa.every(record => record.status === "draft"));
+      const stale = await read(ctx, "job-hunt-panel.json");
+      const operationContext = { now: "2026-10-14T00:00:00.000Z", uid: prefix => `${prefix}-host-upgrade`,
+        source: "cli", sessionId: "synthetic-upgrade", projectKey: ctx.project, scope: ctx.scope };
+      const newQa = { id: "career-qa-upgrade-new", category: "decision", question: "Why preserve old facts?",
+        answer: "A new library must not replace the person's original evidence.", draftAnswer: "Separate AI wording." };
+      await codec.applyOp(ctx.scope, jobHuntOperations.save_candidate_context, { qa: newQa }, operationContext);
+      await codec.applyOp(ctx.scope, jobHuntOperations.save_candidate_context,
+        { library_version: { action: "save", id: "career-version-upgrade", title: "Synthetic upgrade version" } }, operationContext);
+      const current = await codec.readProjectSnapshot(ctx.scope);
+      assert.deepEqual(current.snapshot.futureField, payload.futureField);
+      assert.equal(current.snapshot.resume.markdown, payload.resume.markdown.trim());
+      assert.equal(current.snapshot.careerQa.find(record => record.id === newQa.id).answer, newQa.answer);
+      const history = await jobHuntOperations.get_job_search_context.run(current.snapshot,
+        { scope: "career_qa", qa_id: newQa.id, version_id: "career-version-upgrade" }, operationContext);
+      assert.equal(history.result.historical, true);
+      assert.equal(history.result.careerQa.items[0].answer, newQa.answer);
+      await assert.rejects(ctx.call("workspace.writeText", { path: "job-hunt-panel.json", content: stale.content,
+        expectedRevision: stale.revision }), /changed since it was opened/);
+      const root = await read(ctx, "job-hunt-panel.json");
+      upgraded = { ...upgraded, rootContent: root.content, root: JSON.parse(root.content) };
     },
     async verifyCurrent(ctx) {
       const model = await ctx.module("app/snapshot-sharding-model.mjs");
