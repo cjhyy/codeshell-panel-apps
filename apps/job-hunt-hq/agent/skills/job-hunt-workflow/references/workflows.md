@@ -6,6 +6,90 @@ Reuse the same candidate evidence across jobs, but write each job-specific
 artifact with its own opaque `job_id`. Jobs in `inbox` are discovery results,
 not evidence of user interest.
 
+## Produce a JSON update for the Panel
+
+When the requested output is a JSON file the Panel can use, read
+[career-update.md](career-update.md), its [schema](career-update.schema.json),
+and [synthetic example](career-update.example.json). Collect and discuss facts
+in the current chat, write only the incremental update through the File tool,
+then use `career_update` preview. Present changes and unresolved facts; if saving
+is already authorized, apply with the exact returned token. Do not pre-save the
+batch's records or separately create its library version: apply atomically merges
+the records and saves their named version. Report the returned saved version
+ID/title and finish the batch. If only
+a file or preview was requested, stop at that requested output. Changed file or
+library state invalidates the token. The file alone does not import, confirm
+facts, publish evidence or generate a resume. This workflow
+coexists with the direct single-record workflow below.
+
+## Direct record writes → named library version
+
+Use this module when the user shares authorized Slack/GitHub data and wants to
+build a personal knowledge library through direct single-record writes in the
+current CodeShell session. JSON batches use the preceding module instead;
+do not run both save routes for the same batch. The Panel
+shows results, differences and history; manual entry is supplemental. This does
+not require a JD, create an interview practice set, release software, or generate
+a resume.
+
+1. Read summary counts and the latest `career_versions` metadata. Search current
+   `career_sources`, `career_episodes` or `career_qa` before adding records;
+   read exact IDs before revisions and reuse them to avoid duplicates.
+2. Read only selected links or connected data needed for this conversation.
+   For Slack, read the relevant thread through authorized connected tools and
+   preserve permalink/thread ID, authors, timestamps, and actual context.
+   For GitHub, inspect substantive PR/commit changes and verify personal
+   authorship; distinguish team work from the candidate's own contribution.
+   Never send messages or widen collection to unrelated private data.
+   Save the material actually read with `save_candidate_context({source: {...}})`.
+   Keep excerpts within 16,000 characters; store separate message sources or
+   the complete collected text under `career-data/source-materials/` and use
+   `localRef` when needed. Record missing pages or truncated patches honestly.
+3. Discuss one meaningful factual gap at a time. Record the background/problem,
+   `myRole`, personal `actions`, considered `alternatives`, the `decision`,
+   `reason`, `tradeoffs`, actual `results`, and `retrospective`. Save an
+   `episode` with the existing supporting `sourceIds`; unknowns remain unknown.
+4. Save actual chat answers through `save_candidate_context({qa: {...}})` with
+   exact `episodeId`, question, category, `answer`, and supporting `sourceIds`.
+   Keep optional AI wording in `draftAnswer`; it is not a substitute for the
+   user's actual answer or verified accomplishments.
+5. Working records remain draft or pending by default. When the current chat
+   user explicitly verifies the submitted facts, quote their original words in
+   top-level `confirmation` on that one `source`, `episode`, or `qa` call.
+   Do not invent approval, infer it from a request to save the library, or send
+   `actor`, `confirm`, or nested confirmation metadata. Direct Panel review is
+   also supported, but explicit chat confirmation need not be repeated there.
+6. Call `save_candidate_context({library_version: {action: "preview"}})`.
+   This does not write. Show a concise account of what was added or changed
+   since the last saved version, what remains uncertain, and any pending
+   proposals. Resolve only the gaps the user wants to address this time.
+7. When the user says to save this version, call
+   `save_candidate_context({library_version: {action: "save", title: "...", summary: "..."}})`.
+   Optional `id` is a stable `career-version-...` ID for idempotent retries of
+   this same save. The named version freezes the current library, including
+   drafts, pending revisions and their provenance. Saving is not blanket fact
+   confirmation, publication consent, or resume generation. Report the actual
+   saved version ID/title; on failure keep the working data and report failure.
+8. To revisit a version, read `career_versions` with its exact `version_id` for
+   metadata/counts, then use that `version_id` with the needed career scope and
+   exact source/episode/QA ID or pagination. Never request the entire immutable
+   snapshot as Agent context. Historical records are read-only; read the
+   current working record before proposing a later edit. Never silently
+   replace current data with a historical snapshot.
+9. Later source changes return dependent confirmed facts to `needs_review`.
+   Unconfirmed AI edits to reviewed episodes/QA become pending revisions;
+   previously reviewed text stays intact. Over-limit record writes preserve
+   original content and history (280 KiB, 40 retained revisions); explain the
+   failure and use an explicitly linked continuation if more material is wanted.
+10. Derive a resume or practice story only when that separate task is requested.
+    Use current confirmed facts for public claims; keep internal source text,
+    private QA and sensitive links out of public resumes/PDFs.
+
+Career-library QA captures facts. Resume-specific private QA can help improve a
+particular revision; interview-bank questions and practice attempts train how to
+communicate. Keep those records separate and link genuine sources when reusing
+material. Do not automatically convert one layer into another.
+
 ## Initialize the current project
 
 Use this module when the Panel target kind is `project-bootstrap` or the user
@@ -41,9 +125,10 @@ asks the Panel to initialize, repair, scan, or complete the current project.
 7. Invoke `save_candidate_context` with every verified fact and empty arrays
    for categories with no evidence. This creates or updates the current
    project's `job-hunt-panel.json` through the selected Panel or CLI path.
-8. Generate a first Base Resume only when one broad target category can be
-   inferred and at least three resume claims can be supported. Otherwise finish
-   initialization and report the smallest set of real facts still needed.
+8. Finish initialization with the available facts and report the smallest set
+   of real facts still needed. Generate a first Base Resume only when the user
+   separately requests one, a broad target category is known, and at least
+   three resume claims can be supported.
 
 Do not open another repository, create a second chat, or ask the user to build
 this directory structure manually.

@@ -1,6 +1,6 @@
 ---
 name: project-runtime
-description: Run the selected Job Hunt HQ package's project CLI for bounded context reads, candidate facts, private resume QA answers, and resume drafts from direct Chat or TUI requests without opening the panel.
+description: Run the selected Job Hunt HQ package's project CLI for bounded context reads, candidate facts, private experiences and factual QA, named library versions, and resume drafts from direct Chat or TUI requests without opening the panel.
 ---
 
 # Project Runtime
@@ -60,15 +60,33 @@ project instructions still follow the workflow's initialization module.
 | Operation | Purpose |
 | --- | --- |
 | `get_job_search_context` | Read the smallest required scope; keep pagination and opaque IDs. |
-| `save_candidate_context` | Save verified candidate facts and source indexes. |
+| `save_candidate_context` | Save complete candidate facts or one source / episode / qa / library_version / career_update mode. |
 | `save_resume_qa_answer` | Save an actual answer to an existing private resume question. |
 | `save_resume_draft` | Save a Base Resume or JD Variant with complete evidence and private questions. |
 
 Write one JSON object matching the selected schema to `--input-file`. Use the
 same operation names and argument fields as the Panel tools. Do not load the
 entire snapshot to bypass bounded reads. Keep existing evidence when a claim is
-unchanged. A decision can be an existing resume `candidate_questions` entry
-with `category: "decision"`; do not create a separate decisions entity or tool.
+unchanged. Decisions belong in private `careerEpisodes` decision/reason/tradeoffs and
+`careerQa`; existing resume `candidate_questions` with `category: "decision"`
+remain compatible and linked to the permanent QA library. Do not add another
+Tool or invent a separate decisions entity.
+
+For conversational collection, confirmation, immutable named versions and
+JSON preview/apply, follow `job-hunt-workflow` and its career-update reference.
+Use `career_sources`, `career_episodes`, `career_qa`, and `career_versions`
+scopes with exact opaque IDs or pagination. `version_id` reads immutable
+historical facts; they must never silently replace current working records.
+`save_candidate_context` accepts either the complete legacy profile/repositories/
+work_history shape or exactly one incremental mode. Unconfirmed facts remain
+drafts or pending revisions. Preserve the user's factual answer separately
+from `draftAnswer`; only their exact explicit confirmation can confirm a fact.
+Named versions do not confirm facts, authorize public disclosure, or generate
+a resume. For JSON apply, preview first and use the returned `preview_token`;
+file/library changes require another preview. A successful apply already saves
+the named version, so do not also create a separate version for that batch.
+If a receipt is lost, query the exact version before deciding to retry.
+`library_version` and `career_update` previews do not write a snapshot.
 
 This version supports these four operations only. Discovery, JD intake,
 application progress, interview writes, and `complete_execution_trace` still

@@ -101,6 +101,8 @@ test("invalid schema arguments fail before durable writes, including nested and 
     ["get_job_search_context", { limit: 0 }],
     ["get_job_search_context", { unexpected: true }],
     ["save_candidate_context", { ...candidateInput, profile: { name: 42 } }],
+    ["save_candidate_context", { ...candidateInput, profile: { ...candidateInput.profile, name: "😀".repeat(51) } }],
+    ["save_candidate_context", { ...candidateInput, work_history: [{ ...candidateInput.work_history[0], achievements: ["😀".repeat(501)] }] }],
     ["save_candidate_context", { ...candidateInput, repositories: [{ name: "missing summary" }] }],
     ["save_candidate_context", { ...candidateInput, profile: { ...candidateInput.profile, api_key: "must-not-write" } }],
     ["save_resume_draft", { ...resumeInput, resume_kind: "made-up" }],

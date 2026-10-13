@@ -679,6 +679,9 @@ export function normalizeClaimEvidence(items) {
           : "supporting",
         whyItMatters: boundedText(input.whyItMatters || input.why_it_matters, 400),
         sources: normalizeEvidenceSources(input.sources),
+        ...(Array.isArray(input.sourceIds || input.source_ids) && (input.sourceIds || input.source_ids).length ? { sourceIds: boundedList(input.sourceIds || input.source_ids, 40, 100) } : {}),
+        ...(Array.isArray(input.episodeIds || input.episode_ids) && (input.episodeIds || input.episode_ids).length ? { episodeIds: boundedList(input.episodeIds || input.episode_ids, 40, 100) } : {}),
+        ...(Array.isArray(input.qaIds || input.qa_ids) && (input.qaIds || input.qa_ids).length ? { qaIds: boundedList(input.qaIds || input.qa_ids, 40, 100) } : {}),
         interviewQuestions: Array.isArray(input.interviewQuestions || input.interview_questions)
           ? (input.interviewQuestions || input.interview_questions)
               .map(normalizeInterviewQuestion)
@@ -725,6 +728,9 @@ export function normalizeClaimEvidence(items) {
       current.interviewQuestions.push(question);
     }
     if (item.status === "verified") current.status = "verified";
+    for (const field of ["sourceIds", "episodeIds", "qaIds"]) {
+      if (current[field]?.length || item[field]?.length) current[field] = [...new Set([...(current[field] || []), ...(item[field] || [])])].slice(0, 40);
+    }
     if (item.importance === "core") current.importance = "core";
     current.whyItMatters ||= item.whyItMatters;
     current.improvement ||= item.improvement;
@@ -738,6 +744,7 @@ export function normalizeResumeQaQuestion(item, index = 0) {
   const question = boundedText(input.question, 600);
   return {
     id: boundedText(input.id, 100) || `resume-qa-${stableHash(question || `item-${index + 1}`)}`,
+    ...(input.careerQaId || input.career_qa_id ? { careerQaId: boundedText(input.careerQaId || input.career_qa_id, 100) } : {}),
     category: RESUME_QA_CATEGORY_IDS.includes(input.category) ? input.category : "context",
     priority: RESUME_QA_PRIORITY_IDS.includes(input.priority) ? input.priority : "medium",
     question,
@@ -808,9 +815,10 @@ export function mergeResumeQaQuestions(previousItems, incomingItems, maximum = 1
       previousById.get(item.id) || previousByQuestion.get(item.question.toLocaleLowerCase());
     if (!saved) return item;
     matchedPreviousIds.add(saved.id);
-    if (saved.status === "open") return item;
+    if (saved.status === "open") return saved.careerQaId ? { ...item, careerQaId: saved.careerQaId } : item;
     return {
       ...item,
+      ...(saved.careerQaId ? { careerQaId: saved.careerQaId } : {}),
       status: saved.status,
       answer: saved.answer,
       sourceRefs: saved.sourceRefs,

@@ -20,6 +20,23 @@ material, and keep every public claim defensible in an interview.
 - Build or repair a direction-level Base Resume before deriving a JD Variant.
   Do not make a base resume generic; give it one broad category and one clear
   candidate thesis.
+- When the project has a career library, search `career_episodes` and
+  `career_qa` for relevant, user-confirmed facts, then read the exact episode,
+  QA, and source IDs needed for the selected claims. Drafts, pending revisions,
+  archived items, and `needs_review` facts do not establish public claims.
+  Never copy an AI `draftAnswer` into the resume as if the candidate confirmed it.
+- For a claim derived from the library, populate `claim_evidence[].source_ids`,
+  `episode_ids`, and `qa_ids` with the exact supporting opaque IDs. Keep the
+  ordinary Source explanations too. These links let later source or episode
+  changes invalidate stale verification; a text locator alone cannot do that.
+- Preserve existing `candidate_questions[].career_qa_id` links when carrying
+  private questions into a new revision. A newly saved answer remains a career
+  draft or pending revision until the candidate explicitly verifies its facts in
+  the current chat (quoted in top-level `confirmation`) or reviews it in the Panel.
+- Preserve internal source excerpts and confidential project details in the
+  private library. A confirmed fact still requires an appropriate public
+  paraphrase; confirmation does not authorize publishing Slack messages,
+  private repository code, internal metrics, or sensitive links.
 - Read [references/focus-rubric.md](references/focus-rubric.md) before the final
   draft or review.
 

@@ -51,6 +51,9 @@
               "field": {
                 "type": "string",
                 "enum": [
+                  "sourceMaterials",
+                  "careerEpisodes",
+                  "careerQa",
                   "jdIntakeItems",
                   "jobLeads",
                   "jobs",
@@ -93,6 +96,10 @@
       ],
       "additionalProperties": false
     },
+    "careerLibraryMigrationVersion": { "type": "integer", "minimum": 0 },
+    "sourceMaterials": { "type": "array", "items": { "$ref": "#/$defs/careerRecord" } },
+    "careerEpisodes": { "type": "array", "items": { "$ref": "#/$defs/careerRecord" } },
+    "careerQa": { "type": "array", "items": { "$ref": "#/$defs/careerRecord" } },
     "selectedJobId": {
       "type": "string"
     },
@@ -787,6 +794,24 @@
     }
   },
   "$defs": {
+    "careerRecord": {
+      "type": "object",
+      "required": ["id", "status", "version"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "status": { "enum": ["draft", "confirmed", "needs_review", "archived"] },
+        "version": { "type": "integer", "minimum": 1 },
+        "title": { "type": "string" },
+        "question": { "type": "string" },
+        "answer": { "type": "string" },
+        "draftAnswer": { "type": "string" },
+        "sourceIds": { "type": "array", "items": { "type": "string", "maxLength": 100 } },
+        "episodeId": { "type": "string", "maxLength": 100 },
+        "history": { "type": "array", "items": { "type": "object" } },
+        "revisions": { "type": "array", "items": { "type": "object" } },
+        "pendingRevision": { "type": ["object", "null"] }
+      }
+    },
     "resumeRecord": {
       "type": "object",
       "required": [
@@ -933,6 +958,9 @@
         "status": { "type": "string", "enum": ["verified", "needs_review"] },
         "importance": { "type": "string", "enum": ["core", "supporting"] },
         "whyItMatters": { "type": "string", "maxLength": 400 },
+        "sourceIds": { "type": "array", "maxItems": 40, "items": { "type": "string", "maxLength": 100 } },
+        "episodeIds": { "type": "array", "maxItems": 40, "items": { "type": "string", "maxLength": 100 } },
+        "qaIds": { "type": "array", "maxItems": 40, "items": { "type": "string", "maxLength": 100 } },
         "sources": {
           "type": "array",
           "minItems": 1,

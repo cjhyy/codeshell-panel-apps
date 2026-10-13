@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "id": "job-hunt-hq",
-  "version": "4.2.1",
+  "version": "5.0.0",
   "title": {
     "default": "Job Hunt HQ",
     "en": "Job Hunt HQ",
     "zh-CN": "求职作战室"
   },
-  "description": "Run an evidence-backed resume pipeline and a durable interview system that separates the canonical question bank, practice sets, mock sessions, and real interview debriefs. Headless writes require CodeShell 0.9.36 or later.",
+  "description": "Use the current CodeShell chat to build a private, versioned library of experiences, decisions and factual QA from authorized Slack/GitHub sources; generate a resume only when requested. Headless 写入需 CodeShell 0.9.36+ 的共享写锁协议，Node.js 20.10+。",
   "entry": "app/index.html",
   "icon": "layout-dashboard",
   "placement": "right-dock",
@@ -35,18 +35,22 @@
     },
     "job-hunt": {
       "entry": "app/tools/job-hunt.mjs",
-      "sha256": "0e85a9a18dc93e966ffae05d0f69da499a8358a31c023664442454cb5c35cf4e"
+      "sha256": "ffecc8d243ebddb48b2d734cb9c54898a4916aec7ab7113ef8f05c41e6fefbb5"
     },
     "resume-pdf": {
       "entry": "app/tools/resume-pdf.mjs",
       "sha256": "fa5277ab082278f3db128fadc08d5c9b40d56bdb163aa3ccfcc3d47b40999f7e"
+    },
+    "job-hunt-cli": {
+      "entry": "app/tools/job-hunt-cli.mjs",
+      "sha256": "bca4a1cc311a16d1a6aac9fc9b2c10f40792c6a11035e3b9aeb136a225e6aa5e"
     }
   },
   "agent": {
     "tools": [
       {
         "name": "get_job_search_context",
-        "description": "Read a bounded slice of Job Hunt HQ state. Defaults to a lightweight summary; use scope plus opaque IDs for exact jobs, resumes, interview sets, questions, sessions, discovery, or paginated catalogs.",
+        "description": "Read bounded Job Hunt HQ context. Use career_versions for named knowledge-library version metadata and counts only; pass version_id with career_sources, career_episodes or career_qa to read an immutable historical snapshot. Career catalogs return summaries; exact source_id, episode_id or qa_id retrieves one record. Other scopes cover jobs, resumes and interview practice. Never treat a historical snapshot as current writable state.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -55,6 +59,10 @@
               "enum": [
                 "summary",
                 "candidate",
+                "career_sources",
+                "career_episodes",
+                "career_qa",
+                "career_versions",
                 "jobs",
                 "job",
                 "resumes",
@@ -67,6 +75,24 @@
                 "intake"
               ],
               "description": "Bounded context view. Omit for a lightweight index and counts."
+            },
+            "source_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "description": "Exact source material ID for scope=career_sources, or source relationship filter for career episodes and QA."
+            },
+            "episode_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "description": "Exact career episode ID for scope=career_episodes, or parent episode filter for scope=career_qa."
+            },
+            "qa_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "description": "Exact factual career QA ID for scope=career_qa. These are candidate facts, not interview practice attempts."
             },
             "job_id": {
               "type": "string",
@@ -101,13 +127,24 @@
             },
             "status": {
               "type": "string",
-              "enum": ["active", "all", "inbox", "ready", "mastered", "archived", "practiced"],
-              "description": "Question status filter for scope=questions."
+              "enum": [
+                "active",
+                "all",
+                "inbox",
+                "ready",
+                "mastered",
+                "archived",
+                "practiced",
+                "draft",
+                "confirmed",
+                "needs_review"
+              ],
+              "description": "Question status filter for scope=questions; career scopes support active, all, draft, confirmed, needs_review, or archived. Confirmed facts may still have pending revisions."
             },
             "search": {
               "type": "string",
               "maxLength": 200,
-              "description": "Question text, category, competency, or tag filter for scope=questions."
+              "description": "Text, project, category, tag, or source filter for career scopes; question text, category, competency, or tag filter for scope=questions."
             },
             "cursor": {
               "type": "integer",
@@ -119,6 +156,13 @@
               "minimum": 1,
               "maximum": 50,
               "description": "Catalog page size. scope=interview is additionally capped at 5 full questions per response and returns nextCursor."
+            },
+            "version_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "description": "Exact named knowledge-library version ID. With scope=career_versions returns metadata/counts only; with career_sources, career_episodes or career_qa reads that immutable historical snapshot. Omit for current working library. This is separate from resume_id.",
+              "pattern": "^career-version-[A-Za-z0-9_-]{1,80}$"
             }
           },
           "additionalProperties": false
@@ -139,7 +183,11 @@
             },
             "status": {
               "type": "string",
-              "enum": ["completed", "partial", "failed"]
+              "enum": [
+                "completed",
+                "partial",
+                "failed"
+              ]
             },
             "summary": {
               "type": "string",
@@ -162,7 +210,12 @@
               "maxLength": 2000
             }
           },
-          "required": ["trace_id", "status", "summary", "output_refs"],
+          "required": [
+            "trace_id",
+            "status",
+            "summary",
+            "output_refs"
+          ],
           "additionalProperties": false
         },
         "readOnly": false
@@ -186,7 +239,13 @@
             },
             "status": {
               "type": "string",
-              "enum": ["ready", "login_required", "captcha_required", "blocked", "unavailable"]
+              "enum": [
+                "ready",
+                "login_required",
+                "captcha_required",
+                "blocked",
+                "unavailable"
+              ]
             },
             "detail": {
               "type": "string",
@@ -194,7 +253,11 @@
               "maxLength": 1000
             }
           },
-          "required": ["provider_id", "status", "detail"],
+          "required": [
+            "provider_id",
+            "status",
+            "detail"
+          ],
           "additionalProperties": false
         },
         "readOnly": false
@@ -217,9 +280,20 @@
               "items": {
                 "type": "object",
                 "properties": {
-                  "intake_id": { "type": "string", "maxLength": 100 },
-                  "source_path": { "type": "string", "minLength": 1, "maxLength": 1000 },
-                  "original_name": { "type": "string", "minLength": 1, "maxLength": 240 },
+                  "intake_id": {
+                    "type": "string",
+                    "maxLength": 100
+                  },
+                  "source_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  },
+                  "original_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
                   "source_kind": {
                     "type": "string",
                     "enum": [
@@ -235,15 +309,30 @@
                   },
                   "status": {
                     "type": "string",
-                    "enum": ["imported", "needs_review", "duplicate", "failed"]
+                    "enum": [
+                      "imported",
+                      "needs_review",
+                      "duplicate",
+                      "failed"
+                    ]
                   },
-                  "summary": { "type": "string", "maxLength": 2000 },
+                  "summary": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
                   "job_ids": {
                     "type": "array",
                     "maxItems": 20,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    }
                   },
-                  "error": { "type": "string", "maxLength": 2000 }
+                  "error": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
                 },
                 "required": [
                   "source_path",
@@ -257,14 +346,16 @@
               }
             }
           },
-          "required": ["results"],
+          "required": [
+            "results"
+          ],
           "additionalProperties": false
         },
         "readOnly": false
       },
       {
         "name": "save_candidate_context",
-        "description": "Save candidate profile, project evidence, and work history extracted from the active CodeShell project's verified files.",
+        "description": "Save one mode: source/episode/qa, library_version preview/save, career_update preview/apply from a strict project JSON file, or complete legacy candidate data. Preview never changes the library. career_update apply requires its preview_token and atomically merges records plus a named version when saving is authorized. Top-level confirmation only quotes current-chat factual verification for one career record. Versions preserve draft/pending states and do not generate a resume.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -328,7 +419,10 @@
                     "maxLength": 3000
                   }
                 },
-                "required": ["name", "summary"],
+                "required": [
+                  "name",
+                  "summary"
+                ],
                 "additionalProperties": false
               }
             },
@@ -365,13 +459,632 @@
                     }
                   }
                 },
-                "required": ["company", "role"],
+                "required": [
+                  "company",
+                  "role"
+                ],
                 "additionalProperties": false
               }
+            },
+            "source": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                "provider": {
+                  "type": "string",
+                  "maxLength": 80,
+                  "minLength": 1,
+                  "description": "Provenance such as slack, github, file, or user. This does not imply personal ownership."
+                },
+                "title": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "description": "Recognizable title for the source material actually read."
+                },
+                "connectionId": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "description": "Exact opaque ID of the authorized Link connection used to read this source. Preserve it on refresh so equal provider message/repository IDs from different accounts stay separate. Never invent an ID."
+                },
+                "externalId": {
+                  "type": "string",
+                  "maxLength": 240
+                },
+                "url": {
+                  "type": "string",
+                  "maxLength": 2000
+                },
+                "author": {
+                  "type": "string",
+                  "maxLength": 240
+                },
+                "occurredAt": {
+                  "type": "string",
+                  "maxLength": 80
+                },
+                "fetchedAt": {
+                  "type": "string",
+                  "maxLength": 80
+                },
+                "excerpt": {
+                  "type": "string",
+                  "maxLength": 16000
+                },
+                "contentHash": {
+                  "type": "string",
+                  "maxLength": 240
+                },
+                "localRef": {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "draft"
+                  ],
+                  "description": "Optional draft status. Without a valid top-level confirmation quote from the current chat user, writes remain draft or pending revisions. Do not send status=confirmed or impersonate actor/confirm metadata."
+                }
+              },
+              "required": [
+                "provider"
+              ],
+              "additionalProperties": false
+            },
+            "episode": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                "title": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "minLength": 1
+                },
+                "project": {
+                  "type": "string",
+                  "maxLength": 240
+                },
+                "background": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "problem": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "myRole": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "actions": {
+                  "type": "array",
+                  "maxItems": 40,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 1000
+                  }
+                },
+                "alternatives": {
+                  "type": "array",
+                  "maxItems": 40,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 1000
+                  }
+                },
+                "decision": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "reason": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "tradeoffs": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "results": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "retrospective": {
+                  "type": "string",
+                  "maxLength": 12000
+                },
+                "tags": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "minLength": 1
+                  }
+                },
+                "sourceIds": {
+                  "type": "array",
+                  "maxItems": 40,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "minLength": 1
+                  }
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "draft"
+                  ],
+                  "description": "Optional draft status. Without a valid top-level confirmation quote from the current chat user, writes remain draft or pending revisions. Do not send status=confirmed or impersonate actor/confirm metadata."
+                }
+              },
+              "required": [
+                "title"
+              ],
+              "additionalProperties": false
+            },
+            "qa": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                "episodeId": {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                "category": {
+                  "type": "string",
+                  "maxLength": 80
+                },
+                "question": {
+                  "type": "string",
+                  "maxLength": 1200,
+                  "minLength": 1
+                },
+                "answer": {
+                  "type": "string",
+                  "maxLength": 12000,
+                  "description": "The candidate's actual factual answer supplied in the current chat or existing record. Preserve uncertainty and original meaning; AI-invented or polished expression belongs only in draftAnswer. Unconfirmed answers remain drafts."
+                },
+                "draftAnswer": {
+                  "type": "string",
+                  "maxLength": 12000,
+                  "description": "Optional AI expression or interview wording, separate from the candidate's actual answer. Improving wording does not verify facts."
+                },
+                "sourceIds": {
+                  "type": "array",
+                  "maxItems": 40,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "minLength": 1
+                  }
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "draft"
+                  ],
+                  "description": "Optional draft status. Without a valid top-level confirmation quote from the current chat user, writes remain draft or pending revisions. Do not send status=confirmed or impersonate actor/confirm metadata."
+                }
+              },
+              "required": [
+                "question"
+              ],
+              "additionalProperties": false
+            },
+            "confirmation": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000,
+              "description": "Optional only with one source, episode or qa. Exact current chat user wording explicitly verifying the submitted facts, including a real answer when confirming QA. Never invent, paraphrase as approval, copy a source participant, or infer confirmation from a request to collect, polish or save a library version. Omit when unconfirmed; the write remains draft/pending. Do not send actor/confirm/confirmation metadata inside the record."
+            },
+            "library_version": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "preview",
+                    "save"
+                  ],
+                  "description": "preview reads the current working library and differences since the previous saved version without writing; save freezes it as a named immutable knowledge-library version after the user explicitly requests it in this chat."
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100,
+                  "description": "Optional stable ID for an idempotent save retry. Reuse only for the same version/content; never overwrite an existing named version.",
+                  "pattern": "^career-version-[A-Za-z0-9_-]{1,80}$"
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240,
+                  "description": "Required for save: a recognizable knowledge-library version title, not a software release or resume title."
+                },
+                "summary": {
+                  "type": "string",
+                  "maxLength": 2000,
+                  "description": "Concise summary of this conversation and its material additions/changes; preserve uncertainty and missing facts."
+                }
+              },
+              "required": [
+                "action"
+              ],
+              "additionalProperties": false,
+              "oneOf": [
+                {
+                  "properties": {
+                    "action": {
+                      "enum": [
+                        "preview"
+                      ]
+                    }
+                  },
+                  "not": {
+                    "required": [
+                      "id"
+                    ]
+                  }
+                },
+                {
+                  "properties": {
+                    "action": {
+                      "enum": [
+                        "save"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "title"
+                  ]
+                }
+              ]
+            },
+            "career_update": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "preview",
+                    "apply"
+                  ],
+                  "description": "preview validates the JSON and shows proposed changes without importing it; apply atomically merges the previewed records and saves its named library version when the current user has authorized saving."
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 124,
+                  "pattern": "^career-data/updates/[A-Za-z0-9_-]{1,100}\\.json$",
+                  "description": "Current-project UTF-8 JSON file conforming to references/career-update.schema.json, at most 128 KiB. Write it through the available File tool; never write job-hunt-panel.json directly."
+                },
+                "preview_token": {
+                  "type": "string",
+                  "minLength": 64,
+                  "maxLength": 64,
+                  "pattern": "^[a-f0-9]{64}$",
+                  "description": "Exact opaque SHA-256 token returned by preview; required for apply, forbidden for preview. File, working library, version index or project changes invalidate it. Do not invent a token."
+                }
+              },
+              "required": [
+                "action",
+                "path"
+              ],
+              "additionalProperties": false,
+              "oneOf": [
+                {
+                  "properties": {
+                    "action": {
+                      "enum": [
+                        "preview"
+                      ]
+                    }
+                  },
+                  "not": {
+                    "required": [
+                      "preview_token"
+                    ]
+                  }
+                },
+                {
+                  "properties": {
+                    "action": {
+                      "enum": [
+                        "apply"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "preview_token"
+                  ]
+                }
+              ]
             }
           },
-          "required": ["profile", "repositories", "work_history"],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "oneOf": [
+            {
+              "required": [
+                "profile",
+                "repositories",
+                "work_history"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "source"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "episode"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "qa"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "library_version"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "confirmation"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "career_update"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "required": [
+                "source"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "profile"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "repositories"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "work_history"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "episode"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "qa"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "library_version"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "career_update"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "required": [
+                "episode"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "profile"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "repositories"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "work_history"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "source"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "qa"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "library_version"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "career_update"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "required": [
+                "qa"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "profile"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "repositories"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "work_history"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "source"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "episode"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "library_version"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "career_update"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "required": [
+                "library_version"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "profile"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "repositories"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "work_history"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "source"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "episode"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "qa"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "confirmation"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "career_update"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "required": [
+                "career_update"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "profile"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "repositories"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "work_history"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "source"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "episode"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "qa"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "library_version"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "confirmation"
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
         },
         "readOnly": false
       },
@@ -437,7 +1150,11 @@
                   },
                   "jd_completeness": {
                     "type": "string",
-                    "enum": ["full", "partial", "listing_only"]
+                    "enum": [
+                      "full",
+                      "partial",
+                      "listing_only"
+                    ]
                   },
                   "verification_notes": {
                     "type": "string",
@@ -453,12 +1170,17 @@
                     "maximum": 100
                   }
                 },
-                "required": ["company", "title"],
+                "required": [
+                  "company",
+                  "title"
+                ],
                 "additionalProperties": false
               }
             }
           },
-          "required": ["jobs"],
+          "required": [
+            "jobs"
+          ],
           "additionalProperties": false
         },
         "readOnly": false
@@ -511,7 +1233,10 @@
               "maxLength": 80
             }
           },
-          "required": ["job_id", "status"],
+          "required": [
+            "job_id",
+            "status"
+          ],
           "additionalProperties": false
         },
         "readOnly": false
@@ -598,7 +1323,10 @@
                   }
                 }
               },
-              "required": ["official_name", "summary"],
+              "required": [
+                "official_name",
+                "summary"
+              ],
               "additionalProperties": false
             },
             "reviews": {
@@ -626,7 +1354,12 @@
                   },
                   "sentiment": {
                     "type": "string",
-                    "enum": ["positive", "mixed", "negative", "unknown"]
+                    "enum": [
+                      "positive",
+                      "mixed",
+                      "negative",
+                      "unknown"
+                    ]
                   },
                   "summary": {
                     "type": "string",
@@ -651,10 +1384,19 @@
                   },
                   "confidence": {
                     "type": "string",
-                    "enum": ["high", "medium", "low"]
+                    "enum": [
+                      "high",
+                      "medium",
+                      "low"
+                    ]
                   }
                 },
-                "required": ["source", "sentiment", "summary", "confidence"],
+                "required": [
+                  "source",
+                  "sentiment",
+                  "summary",
+                  "confidence"
+                ],
                 "additionalProperties": false
               }
             },
@@ -698,14 +1440,20 @@
                       },
                       "origin": {
                         "type": "string",
-                        "enum": ["reported", "predicted"]
+                        "enum": [
+                          "reported",
+                          "predicted"
+                        ]
                       },
                       "source_url": {
                         "type": "string",
                         "maxLength": 1000
                       }
                     },
-                    "required": ["question", "origin"],
+                    "required": [
+                      "question",
+                      "origin"
+                    ],
                     "additionalProperties": false
                   }
                 }
@@ -728,7 +1476,14 @@
                 "properties": {
                   "kind": {
                     "type": "string",
-                    "enum": ["official", "job", "review", "interview", "news", "other"]
+                    "enum": [
+                      "official",
+                      "job",
+                      "review",
+                      "interview",
+                      "news",
+                      "other"
+                    ]
                   },
                   "title": {
                     "type": "string",
@@ -758,12 +1513,24 @@
                     "maxLength": 1000
                   }
                 },
-                "required": ["kind", "title", "url", "accessed_at"],
+                "required": [
+                  "kind",
+                  "title",
+                  "url",
+                  "accessed_at"
+                ],
                 "additionalProperties": false
               }
             }
           },
-          "required": ["job_id", "company", "reviews", "interview_intel", "risks", "sources"],
+          "required": [
+            "job_id",
+            "company",
+            "reviews",
+            "interview_intel",
+            "risks",
+            "sources"
+          ],
           "additionalProperties": false
         },
         "readOnly": false
@@ -795,7 +1562,11 @@
             },
             "source_mode": {
               "type": "string",
-              "enum": ["jd", "aggregate", "mixed"]
+              "enum": [
+                "jd",
+                "aggregate",
+                "mixed"
+              ]
             },
             "title": {
               "type": "string",
@@ -804,7 +1575,13 @@
             },
             "mode": {
               "type": "string",
-              "enum": ["balanced", "technical", "project", "behavioral", "system-design"]
+              "enum": [
+                "balanced",
+                "technical",
+                "project",
+                "behavioral",
+                "system-design"
+              ]
             },
             "questions": {
               "type": "array",
@@ -820,7 +1597,11 @@
                   },
                   "difficulty": {
                     "type": "string",
-                    "enum": ["基础", "进阶", "挑战"]
+                    "enum": [
+                      "基础",
+                      "进阶",
+                      "挑战"
+                    ]
                   },
                   "type": {
                     "type": "string",
@@ -843,7 +1624,11 @@
                   "tags": {
                     "type": "array",
                     "maxItems": 16,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 80 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    }
                   },
                   "question": {
                     "type": "string",
@@ -905,7 +1690,12 @@
               }
             }
           },
-          "required": ["source_mode", "title", "mode", "questions"],
+          "required": [
+            "source_mode",
+            "title",
+            "mode",
+            "questions"
+          ],
           "additionalProperties": false
         },
         "readOnly": false
@@ -928,9 +1718,20 @@
               "items": {
                 "type": "object",
                 "properties": {
-                  "question": { "type": "string", "minLength": 8, "maxLength": 1200 },
-                  "category": { "type": "string", "minLength": 1, "maxLength": 80 },
-                  "competency": { "type": "string", "maxLength": 120 },
+                  "question": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 1200
+                  },
+                  "category": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "competency": {
+                    "type": "string",
+                    "maxLength": 120
+                  },
                   "type": {
                     "type": "string",
                     "enum": [
@@ -944,44 +1745,94 @@
                       "other"
                     ]
                   },
-                  "difficulty": { "type": "string", "enum": ["基础", "进阶", "挑战"] },
-                  "priority": { "type": "string", "enum": ["high", "medium", "low"] },
+                  "difficulty": {
+                    "type": "string",
+                    "enum": [
+                      "基础",
+                      "进阶",
+                      "挑战"
+                    ]
+                  },
+                  "priority": {
+                    "type": "string",
+                    "enum": [
+                      "high",
+                      "medium",
+                      "low"
+                    ]
+                  },
                   "status": {
                     "type": "string",
-                    "enum": ["inbox", "ready", "mastered", "archived"]
+                    "enum": [
+                      "inbox",
+                      "ready",
+                      "mastered",
+                      "archived"
+                    ]
                   },
                   "origin": {
                     "type": "string",
-                    "enum": ["session", "real_interview", "imported", "generated"]
+                    "enum": [
+                      "session",
+                      "real_interview",
+                      "imported",
+                      "generated"
+                    ]
                   },
                   "tags": {
                     "type": "array",
                     "maxItems": 16,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 80 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    }
                   },
                   "source_refs": {
                     "type": "array",
                     "minItems": 1,
                     "maxItems": 16,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    }
                   },
                   "job_ids": {
                     "type": "array",
                     "maxItems": 12,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    }
                   },
                   "answer_points": {
                     "type": "array",
                     "maxItems": 12,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    }
                   },
-                  "recommended_answer": { "type": "string", "maxLength": 5000 },
+                  "recommended_answer": {
+                    "type": "string",
+                    "maxLength": 5000
+                  },
                   "follow_ups": {
                     "type": "array",
                     "maxItems": 10,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 800 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 800
+                    }
                   },
-                  "notes": { "type": "string", "maxLength": 3000 }
+                  "notes": {
+                    "type": "string",
+                    "maxLength": 3000
+                  }
                 },
                 "required": [
                   "question",
@@ -996,7 +1847,9 @@
               }
             }
           },
-          "required": ["questions"],
+          "required": [
+            "questions"
+          ],
           "additionalProperties": false
         },
         "readOnly": false
@@ -1047,24 +1900,53 @@
             "dimensions": {
               "type": "object",
               "properties": {
-                "evidence": { "type": "integer", "minimum": 0, "maximum": 100 },
-                "structure": { "type": "integer", "minimum": 0, "maximum": 100 },
-                "depth": { "type": "integer", "minimum": 0, "maximum": 100 },
-                "relevance": { "type": "integer", "minimum": 0, "maximum": 100 }
+                "evidence": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "structure": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "depth": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "relevance": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                }
               },
-              "required": ["evidence", "structure", "depth", "relevance"],
+              "required": [
+                "evidence",
+                "structure",
+                "depth",
+                "relevance"
+              ],
               "additionalProperties": false
             },
             "strengths": {
               "type": "array",
               "maxItems": 5,
-              "items": { "type": "string", "minLength": 1, "maxLength": 400 }
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 400
+              }
             },
             "improvements": {
               "type": "array",
               "minItems": 1,
               "maxItems": 3,
-              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
             },
             "optimized_answer": {
               "description": "Improved practice answer using only verified candidate facts and visibly marking unsupported details.",
@@ -1087,8 +1969,17 @@
             "follow_up"
           ],
           "anyOf": [
-            { "required": ["bank_question_id"] },
-            { "required": ["interview_set_id", "question_id"] }
+            {
+              "required": [
+                "bank_question_id"
+              ]
+            },
+            {
+              "required": [
+                "interview_set_id",
+                "question_id"
+              ]
+            }
           ],
           "additionalProperties": false
         },
@@ -1100,24 +1991,53 @@
         "inputSchema": {
           "type": "object",
           "properties": {
-            "trace_id": { "type": "string", "maxLength": 100 },
-            "practice_session_id": { "type": "string", "minLength": 1, "maxLength": 100 },
-            "status": { "type": "string", "enum": ["completed", "abandoned"] },
-            "summary": { "type": "string", "minLength": 1, "maxLength": 3000 },
+            "trace_id": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "practice_session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "completed",
+                "abandoned"
+              ]
+            },
+            "summary": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 3000
+            },
             "strengths": {
               "type": "array",
               "maxItems": 8,
-              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
             },
             "improvements": {
               "type": "array",
               "maxItems": 8,
-              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
             },
             "next_steps": {
               "type": "array",
               "maxItems": 8,
-              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
             }
           },
           "required": [
@@ -1178,7 +2098,11 @@
                   },
                   "kind": {
                     "type": "string",
-                    "enum": ["profile", "evidence", "skill"]
+                    "enum": [
+                      "profile",
+                      "evidence",
+                      "skill"
+                    ]
                   },
                   "evidence": {
                     "type": "string",
@@ -1190,7 +2114,11 @@
                   },
                   "priority": {
                     "type": "string",
-                    "enum": ["high", "medium", "low"]
+                    "enum": [
+                      "high",
+                      "medium",
+                      "low"
+                    ]
                   },
                   "actions": {
                     "type": "array",
@@ -1205,7 +2133,12 @@
                     "maxLength": 1000
                   }
                 },
-                "required": ["area", "kind", "priority", "actions"],
+                "required": [
+                  "area",
+                  "kind",
+                  "priority",
+                  "actions"
+                ],
                 "additionalProperties": false
               }
             },
@@ -1227,7 +2160,12 @@
                   },
                   "kind": {
                     "type": "string",
-                    "enum": ["foundation", "project", "practice", "validation"]
+                    "enum": [
+                      "foundation",
+                      "project",
+                      "practice",
+                      "validation"
+                    ]
                   },
                   "duration": {
                     "type": "string",
@@ -1261,7 +2199,11 @@
                   },
                   "status": {
                     "type": "string",
-                    "enum": ["planned", "in_progress", "done"]
+                    "enum": [
+                      "planned",
+                      "in_progress",
+                      "done"
+                    ]
                   }
                 },
                 "required": [
@@ -1298,7 +2240,13 @@
                   },
                   "kind": {
                     "type": "string",
-                    "enum": ["resume", "evidence", "study", "practice", "research"]
+                    "enum": [
+                      "resume",
+                      "evidence",
+                      "study",
+                      "practice",
+                      "research"
+                    ]
                   },
                   "detail": {
                     "type": "string",
@@ -1306,10 +2254,18 @@
                   },
                   "priority": {
                     "type": "string",
-                    "enum": ["high", "medium", "low"]
+                    "enum": [
+                      "high",
+                      "medium",
+                      "low"
+                    ]
                   }
                 },
-                "required": ["title", "kind", "priority"],
+                "required": [
+                  "title",
+                  "kind",
+                  "priority"
+                ],
                 "additionalProperties": false
               }
             }
@@ -1353,7 +2309,12 @@
             },
             "outcome": {
               "type": "string",
-              "enum": ["pending", "pass", "reject", "unknown"]
+              "enum": [
+                "pending",
+                "pass",
+                "reject",
+                "unknown"
+              ]
             },
             "summary": {
               "type": "string",
@@ -1377,7 +2338,12 @@
                   },
                   "signal": {
                     "type": "string",
-                    "enum": ["strong", "mixed", "weak", "unknown"]
+                    "enum": [
+                      "strong",
+                      "mixed",
+                      "weak",
+                      "unknown"
+                    ]
                   },
                   "reported_feedback": {
                     "type": "string",
@@ -1396,7 +2362,12 @@
                     }
                   }
                 },
-                "required": ["question", "signal", "reported_feedback", "analysis"],
+                "required": [
+                  "question",
+                  "signal",
+                  "reported_feedback",
+                  "analysis"
+                ],
                 "additionalProperties": false
               }
             },
@@ -1451,7 +2422,10 @@
             },
             "resume_kind": {
               "type": "string",
-              "enum": ["base", "variant"]
+              "enum": [
+                "base",
+                "variant"
+              ]
             },
             "category": {
               "type": "string",
@@ -1482,6 +2456,36 @@
               "items": {
                 "type": "object",
                 "properties": {
+                  "source_ids": {
+                    "type": "array",
+                    "maxItems": 40,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    },
+                    "description": "Stable career source IDs supporting this public-safe claim. Source changes invalidate dependent claim verification."
+                  },
+                  "episode_ids": {
+                    "type": "array",
+                    "maxItems": 40,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    },
+                    "description": "Exact user-confirmed career episode IDs used for this claim; drafts and pending revisions are not verified facts."
+                  },
+                  "qa_ids": {
+                    "type": "array",
+                    "maxItems": 40,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    },
+                    "description": "Exact user-confirmed factual career QA IDs used for this claim, separate from interview practice answers."
+                  },
                   "claim": {
                     "type": "string",
                     "minLength": 1,
@@ -1489,11 +2493,17 @@
                   },
                   "status": {
                     "type": "string",
-                    "enum": ["verified", "needs_review"]
+                    "enum": [
+                      "verified",
+                      "needs_review"
+                    ]
                   },
                   "importance": {
                     "type": "string",
-                    "enum": ["core", "supporting"]
+                    "enum": [
+                      "core",
+                      "supporting"
+                    ]
                   },
                   "why_it_matters": {
                     "type": "string",
@@ -1509,7 +2519,14 @@
                       "properties": {
                         "kind": {
                           "type": "string",
-                          "enum": ["experience", "repository", "commit", "file", "user", "other"]
+                          "enum": [
+                            "experience",
+                            "repository",
+                            "commit",
+                            "file",
+                            "user",
+                            "other"
+                          ]
                         },
                         "label": {
                           "type": "string",
@@ -1527,7 +2544,12 @@
                           "maxLength": 800
                         }
                       },
-                      "required": ["kind", "label", "locator", "evidence"],
+                      "required": [
+                        "kind",
+                        "label",
+                        "locator",
+                        "evidence"
+                      ],
                       "additionalProperties": false
                     }
                   },
@@ -1548,7 +2570,9 @@
                           "maxLength": 240
                         }
                       },
-                      "required": ["question"],
+                      "required": [
+                        "question"
+                      ],
                       "additionalProperties": false
                     }
                   },
@@ -1576,7 +2600,16 @@
               "items": {
                 "type": "object",
                 "properties": {
-                  "id": { "type": "string", "maxLength": 100 },
+                  "id": {
+                    "type": "string",
+                    "maxLength": 100
+                  },
+                  "career_qa_id": {
+                    "description": "Existing factual career QA ID when carrying this private question into a later resume revision. Preserved as careerQaId; never invent an ID or use practice-question IDs.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
                   "category": {
                     "type": "string",
                     "enum": [
@@ -1591,30 +2624,72 @@
                   },
                   "priority": {
                     "type": "string",
-                    "enum": ["high", "medium", "low"]
+                    "enum": [
+                      "high",
+                      "medium",
+                      "low"
+                    ]
                   },
-                  "question": { "type": "string", "minLength": 1, "maxLength": 600 },
-                  "why": { "type": "string", "minLength": 1, "maxLength": 500 },
-                  "related_claim": { "type": "string", "maxLength": 800 },
+                  "question": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 600
+                  },
+                  "why": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "related_claim": {
+                    "type": "string",
+                    "maxLength": 800
+                  },
                   "source_hints": {
                     "type": "array",
                     "maxItems": 6,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 300 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 300
+                    }
                   },
                   "status": {
                     "type": "string",
-                    "enum": ["open", "answered", "needs_source", "skipped"]
+                    "enum": [
+                      "open",
+                      "answered",
+                      "needs_source",
+                      "skipped"
+                    ]
                   },
-                  "answer": { "type": "string", "maxLength": 3000 },
+                  "answer": {
+                    "type": "string",
+                    "maxLength": 3000
+                  },
                   "source_refs": {
                     "type": "array",
                     "maxItems": 8,
-                    "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    }
                   },
-                  "suggested_change": { "type": "string", "maxLength": 1000 },
-                  "answered_at": { "type": "string", "maxLength": 80 }
+                  "suggested_change": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "answered_at": {
+                    "type": "string",
+                    "maxLength": 80
+                  }
                 },
-                "required": ["category", "priority", "question", "why"],
+                "required": [
+                  "category",
+                  "priority",
+                  "question",
+                  "why"
+                ],
                 "additionalProperties": false
               }
             },
@@ -1651,11 +2726,23 @@
               "type": "string",
               "maxLength": 100
             },
-            "resume_id": { "type": "string", "minLength": 1, "maxLength": 100 },
-            "question_id": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "resume_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "question_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
             "status": {
               "type": "string",
-              "enum": ["answered", "needs_source", "skipped"]
+              "enum": [
+                "answered",
+                "needs_source",
+                "skipped"
+              ]
             },
             "answer": {
               "description": "Faithful summary of what the candidate actually answered, including uncertainty or a skip reason.",
@@ -1666,7 +2753,11 @@
             "source_refs": {
               "type": "array",
               "maxItems": 8,
-              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
             },
             "suggested_change": {
               "description": "Optional resume wording or evidence improvement; it is not applied automatically.",
@@ -1674,7 +2765,13 @@
               "maxLength": 1000
             }
           },
-          "required": ["resume_id", "question_id", "status", "answer", "source_refs"],
+          "required": [
+            "resume_id",
+            "question_id",
+            "status",
+            "answer",
+            "source_refs"
+          ],
           "additionalProperties": false
         },
         "readOnly": false

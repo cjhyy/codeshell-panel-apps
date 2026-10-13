@@ -18,6 +18,7 @@ const cases = [
   ["design-studio", "design-studio-v0.18.1", "14c9a1819794d7db6ad3d6cbc2df53ec5cfd9f42", "apps/design-studio"],
   ["job-hunt-hq", "4929f80", "4929f80e0e2ae14945fe0533df3bd948f29ccf6e", "apps/job-hunt-hq"],
   ["job-hunt-hq", "job-hunt-hq-v4.1.1", "14c9a1819794d7db6ad3d6cbc2df53ec5cfd9f42", "apps/job-hunt-hq"],
+  ["job-hunt-hq", "job-hunt-hq-v4.2.1", "754315421cd4169dc67443c467026af728493687", "apps/job-hunt-hq"],
   ["quant-lab", "quant-lab-v0.45.2", "e99f57c0350c28b41d134dec2e06bd4f76f89c00", "apps/quant-lab"],
   ["video-download", "video-download-v0.22.3", "a4cab15f1542b606607fe81296db8a9d0b35759c", "apps/video-download"],
   ["video-studio", "video-studio-v0.5.12", "2149c34087c5e692abe10ba36fa4082d7a416a34", "panels/video-studio"],

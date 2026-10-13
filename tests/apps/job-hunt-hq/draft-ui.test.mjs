@@ -6,9 +6,11 @@ import { fileURLToPath } from 'node:url';
 import { resolve, extname, sep } from 'node:path';
 import { chromium } from 'playwright';
 import { createHash } from 'node:crypto';
+import { validateToolArgsStrict } from '@cjhyy/code-shell-core';
 import { createDiscoveryAutomationHost } from './fixtures/discovery-automation-host.mjs';
 import { prepareProjectSnapshotDocuments, hydrateProjectSnapshotDocuments } from '../../../apps/job-hunt-hq/app/snapshot-sharding-model.mjs';
 const root = fileURLToPath(new URL('../../../apps/job-hunt-hq/app/', import.meta.url));
+const toolManifest = JSON.parse(await readFile(new URL('../../../apps/job-hunt-hq/.codeshell-panel/panel.json', import.meta.url), 'utf8'));
 let browser, server, url;
 before(async () => {
   server = createServer(async (req, res) => {
@@ -29,6 +31,7 @@ async function fixture(t, options = {}) {
   const context = await browser.newContext({ acceptDownloads: true });
   t.after(() => context.close());
   const page = await context.newPage();
+  if (options.strictTools) await page.exposeFunction('__validateTool', (name, args) => validateToolArgsStrict(name, args, toolManifest.agent.tools.find(tool => tool.name === name).inputSchema));
   const { workspace, automationHost, ...browserOptions } = options;
   if (workspace) await page.exposeFunction("__workspace", workspace);
   if (automationHost) await page.exposeFunction("__automationHost", automationHost);
@@ -38,6 +41,7 @@ async function fixture(t, options = {}) {
     const projects = { a: { storage: {}, files: {}, writtenText: {} }, b: { storage: {}, files: {}, writtenText: {} } };
     for (const [id, project] of Object.entries(projects)) {
       project.files['job-hunt-panel.json'] = { schemaVersion: options.schemaVersion ?? 2, updatedAt: '2026-01-01T00:00:00Z',
+        careerLibraryMigrationVersion: 1,
         jobs: [], versions: [], profile: { name: id },
         resume: { versionId: 'resume-' + id, kind: 'base', title: 'Resume ' + id,
           markdown: '# Resume ' + id, updatedAt: '2026-01-01T00:00:00Z' },
@@ -45,6 +49,8 @@ async function fixture(t, options = {}) {
       project.storage['job-hunt-state-v1'] = { localStateVersion: 2,
         interviewDraft: { answer: 'draft-' + id, updatedAt: '2026-01-01T00:00:00Z' },
       };
+      if (options.projectSnapshots?.[id]) project.files['job-hunt-panel.json'] = options.projectSnapshots[id];
+      if (options.projectFiles?.[id]) Object.assign(project.files, options.projectFiles[id]);
       if (options.readyDiscovery) {
         project.files['CODESHELL.md'] = '# Example project';
         project.files['job-hunt-panel.json'].channelVerifications = [{ providerId: 'boss', state: 'ready', sessionId: 'session-' + id, verifiedAt: '2026-10-09T00:00:00Z' }];
@@ -59,6 +65,7 @@ async function fixture(t, options = {}) {
         project.files['job-hunt-panel.json'].resume.markdown = '# Example Candidate\n\nexample@example.com\n\n## 项目经验\n\n- 完成公开项目功能';
         project.files['job-hunt-panel.json'].resume.claimEvidence = [{ claim: '完成公开项目功能', status: 'verified', importance: 'core', whyItMatters: '实际功能', sources: [{ kind: 'user', label: '本人确认', locator: '用户输入', evidence: 'PRIVATE EVIDENCE' }], interviewQuestions: [{ question: 'PRIVATE INTERVIEW QUESTION' }] }];
       }
+      if (options.missingSnapshots?.includes(id)) delete project.files['job-hunt-panel.json'];
     }
     let current = 'a'; const listeners = [], calls = [], tools = {};
     const methods = ['storage.getSnapshot', 'storage.compareAndSet', 'workspace.info', 'workspace.list', 'workspace.readText', 'workspace.writeText', ...(options.extraMethods || [])];
@@ -76,7 +83,7 @@ async function fixture(t, options = {}) {
       failRead: options.failRead, failSnapshotBackup: options.failSnapshotBackup, hold: null, release: null };
     window.codeshellPanel = {
       getContext: async () => { const captured = ctx(); if (options.deferInitial) await new Promise(resolve => { window.__fixture.releaseInitial = resolve; }); return captured; }, on(event, callback) { if (event === 'context.changed') listeners.push(callback); },
-      registerTool(name, handler) { tools[name] = handler; },
+      registerTool(name, handler) { tools[name] = options.strictTools ? async args => { const error = await window.__validateTool(name, args); if (error) throw Error(error); return handler(args); } : handler; },
       async call(method, params = {}) {
         const id = current, project = projects[id]; calls.push({ id, method, params: structuredClone(params) });
         if (window.__fixture.hold === method) await new Promise(resolve => { window.__fixture.release = resolve; });
@@ -1055,4 +1062,579 @@ test('a Markdown read completing after project switch never downloads old privat
   await page.waitForTimeout(50);
   assert.equal(downloads.length, 0);
   assert.equal(await page.locator('[data-open-resume-file-path="job-hunt-resume-base-private.md"]').count(), 0);
+});
+
+test('partial project snapshots never inherit demo identity, evidence or interview questions', async t => {
+  const page = await fixture(t, { projectSnapshots: { a: { schemaVersion: 2, updatedAt: '2026-01-01T00:00:00Z', profile: { name: 'Actual Candidate' }, jobs: [], versions: [] } } });
+  await ready(page);
+  const result = await page.evaluate(() => window.__fixture.tools.get_job_search_context({ scope: 'candidate' }));
+  assert.equal(result.profile.name, 'Actual Candidate');
+  assert.equal(result.profile.contact, '');
+  assert.deepEqual(result.repositories, []);
+  assert.deepEqual(result.workHistory, []);
+  const saved = await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json']);
+  assert.equal(saved.profile.contact, undefined);
+  const summary = await page.evaluate(() => window.__fixture.tools.get_job_search_context({ scope: 'summary' }));
+  assert.equal(summary.counts.interviewQuestions, 0);
+  assert.equal(summary.counts.careerEpisodes, 0);
+});
+
+test('focus reads the first root created externally without reopening the panel', async t => {
+  const page = await fixture(t, { missingSnapshots: ['a'], scoped: true }); await ready(page);
+  assert.equal(await page.evaluate(() => 'job-hunt-panel.json' in window.__fixture.projects.a.files), false);
+  await page.evaluate(() => {
+    window.__fixture.projects.a.files['job-hunt-panel.json'] = {
+      schemaVersion: 2, careerLibraryMigrationVersion: 1, profile: { name: 'CLI Candidate' }, jobs: [], resume: {}, versions: [],
+      sourceMaterials: [{ id: 'career-source-external', provider: 'user', title: 'CLI新增来源', excerpt: '聊天整理的真实来源。', status: 'draft' }],
+      careerEpisodes: [{ id: 'career-episode-external', title: 'CLI新增选择', decision: '先保存再确认成功', sourceIds: ['career-source-external'], status: 'draft' }],
+      careerQa: [{ id: 'career-qa-external', question: '为什么这样选择？', answer: '失败时需要保留原始输入。', episodeId: 'career-episode-external', sourceIds: ['career-source-external'], status: 'draft' }],
+      careerLibraryVersions: [],
+    };
+    window.dispatchEvent(new Event('focus'));
+  });
+  await page.locator('.career-card').filter({ hasText: 'CLI新增来源' }).waitFor();
+  assert.equal(await page.locator('#profile-name').inputValue(), 'CLI Candidate');
+  const summary = await page.evaluate(() => window.__fixture.tools.get_job_search_context({ scope: 'summary' }));
+  assert.equal(summary.counts.sourceMaterials, 1); assert.equal(summary.counts.careerEpisodes, 1); assert.equal(summary.counts.careerQa, 1);
+  assert.match(await page.locator('#project-snapshot-state').textContent(), /已同步/);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'workspace.writeText' && call.params.path === 'job-hunt-panel.json').length), 0);
+  await page.locator('[data-career-kind="qa"]').click();
+  await page.locator('.career-card').filter({ hasText: '为什么这样选择' }).click();
+  assert.equal(await page.locator('[data-career-field="answer"]').inputValue(), '失败时需要保留原始输入。');
+});
+
+test('external root changes preserve the dirty career editor and block later root writes', async t => {
+  const page = await fixture(t, { scoped: true }); await ready(page);
+  await page.locator('#career-add').click();
+  await page.locator('[data-career-field="title"]').fill('本地尚未保存的选择');
+  await page.locator('[data-career-field="excerpt"]').fill('这段正在编辑的输入必须保留。');
+  await page.evaluate(() => {
+    const current = window.__fixture.projects.a.files['job-hunt-panel.json'];
+    window.__fixture.projects.a.files['job-hunt-panel.json'] = { ...current, profile: { name: 'External winner' },
+      sourceMaterials: [{ id: 'career-source-winner', provider: 'user', title: '外部已保存来源', excerpt: '由其他进程保存的事实。', status: 'draft' }] };
+    window.__externalRootText = JSON.stringify(window.__fixture.projects.a.files['job-hunt-panel.json']);
+    window.dispatchEvent(new Event('focus'));
+  });
+  await page.waitForFunction(() => document.querySelector('#project-snapshot-state').textContent.includes('发现外部更新'));
+  assert.equal(await page.locator('[data-career-field="title"]').inputValue(), '本地尚未保存的选择');
+  assert.equal(await page.locator('[data-career-field="excerpt"]').inputValue(), '这段正在编辑的输入必须保留。');
+  await page.locator('[data-career-action="save"]').click();
+  await page.locator('#career-message').filter({ hasText: '当前输入仍保留' }).waitFor();
+  // Let the ordinary snapshot/debounce deadlines elapse, then focus once more.
+  // A conflict is a durable stop condition, not just one failed save attempt.
+  await page.waitForTimeout(600);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  assert.equal(await page.locator('[data-career-field="title"]').inputValue(), '本地尚未保存的选择');
+  assert.equal(await page.locator('[data-career-field="excerpt"]').inputValue(), '这段正在编辑的输入必须保留。');
+  assert.equal(await page.evaluate(() => JSON.stringify(window.__fixture.projects.a.files['job-hunt-panel.json']) === window.__externalRootText), true);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'workspace.writeText' && call.params.path === 'job-hunt-panel.json').length), 0);
+});
+
+test('a lost native spawn response stops UI root retries until project state is reread', async t => {
+  const page = await fixture(t, { extraMethods: ['filesystem.getKnownDirectory', 'process.find', 'process.resolveEntry',
+    'process.spawn', 'process.write', 'process.end', 'process.get'] }); await ready(page);
+  const original = await page.evaluate(() => JSON.stringify(window.__fixture.projects.a.files['job-hunt-panel.json']));
+  await page.evaluate(() => {
+    const call = window.codeshellPanel.call.bind(window.codeshellPanel);
+    window.__lostSpawnCalls = 0;
+    window.codeshellPanel.call = async (method, params) => {
+      if (method === 'filesystem.getKnownDirectory') return { handle: 'project-handle' };
+      if (method === 'process.find') return { available: true, handle: 'node-handle' };
+      if (method === 'process.resolveEntry') return { handle: 'entry-handle' };
+      if (method === 'process.spawn') { window.__lostSpawnCalls++; throw Error('lost spawn response'); }
+      return call(method, params);
+    };
+  });
+  const save = () => page.evaluate(() => window.__fixture.tools.save_candidate_context({
+    source: { id: 'career-source-uncertain', provider: 'user', excerpt: '只允许启动一次的保存请求。' },
+  }));
+  await assert.rejects(save(), /无法确认|保存失败/);
+  assert.equal(await page.evaluate(() => window.__lostSpawnCalls), 1);
+  await page.waitForFunction(() => document.querySelector('#project-snapshot-state').textContent.includes('发现外部更新'));
+  await page.waitForTimeout(600);
+  await assert.rejects(save(), /无法确认|保存失败/);
+  assert.equal(await page.evaluate(() => window.__lostSpawnCalls), 1);
+  assert.equal(await page.evaluate(() => JSON.stringify(window.__fixture.projects.a.files['job-hunt-panel.json'])), original);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'workspace.writeText' && call.params.path.startsWith('career-data/panel-commits/')).length), 1);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'workspace.writeText' && call.params.path === 'job-hunt-panel.json').length), 0);
+});
+
+test('career materials, decisions and factual answers persist independently and can be found after reopening', async t => {
+  const page = await fixture(t); await ready(page);
+  await page.locator('#career-add').click();
+  await page.locator('[data-career-field="title"]').fill('异步任务方案讨论');
+  await page.locator('[data-career-field="provider"]').selectOption('slack');
+  await page.locator('[data-career-field="url"]').fill('https://example.slack.com/archives/C123/p1234567890123456');
+  await page.locator('[data-career-field="excerpt"]').fill('讨论了同步阻塞和异步恢复的取舍。');
+  await page.locator('[data-career-action="confirm"]').click();
+  await page.locator('#career-message').filter({ hasText: '事实已确认' }).waitFor();
+  await page.locator('[data-career-action="episode"]').click();
+  await page.locator('[data-career-field="myRole"]').fill('负责持久化与恢复方案设计。');
+  await page.locator('[data-career-field="alternatives"]').fill('同步执行\n异步持久任务');
+  await page.locator('[data-career-field="decision"]').fill('采用异步持久任务');
+  await page.locator('[data-career-field="reason"]').fill('避免关闭窗口后任务丢失，并支持失败重试。');
+  await page.locator('[data-career-action="confirm"]').click();
+  await page.waitForFunction(() => window.__fixture.projects.a.files['job-hunt-panel.json'].careerEpisodes?.length === 1);
+  await page.locator('[data-career-action="question"]').click();
+  await page.locator('[data-career-field="answer"]').fill('因为窗口不应承担任务生命周期，所以我选择持久化异步任务。');
+  await page.locator('[data-career-field="draftAnswer"]').fill('表达练习稿，不能代替事实回答。');
+  await page.locator('[data-career-action="confirm"]').click();
+  await page.waitForFunction(() => window.__fixture.projects.a.files['job-hunt-panel.json'].careerQa?.length === 1);
+  const saved = await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json']);
+  assert.equal(saved.sourceMaterials.length, 1);
+  assert.deepEqual(saved.careerEpisodes[0].sourceIds, [saved.sourceMaterials[0].id]);
+  assert.deepEqual(saved.careerEpisodes[0].alternatives, ['同步执行', '异步持久任务']);
+  assert.equal(saved.careerQa[0].episodeId, saved.careerEpisodes[0].id);
+  assert.equal(saved.careerQa[0].status, 'confirmed');
+  const reopened = await fixture(t, { projectSnapshots: { a: saved } }); await ready(reopened);
+  await reopened.locator('[data-career-kind="qa"]').click();
+  await reopened.locator('#career-search').fill('窗口不应');
+  await reopened.locator('.career-card').click();
+  assert.match(await reopened.locator('[data-career-field="answer"]').inputValue(), /窗口不应承担/);
+  assert.match(await reopened.locator('[data-career-field="draftAnswer"]').inputValue(), /不能代替事实/);
+  await reopened.evaluate(() => window.__fixture.switch('b')); await ready(reopened);
+  assert.equal(await reopened.locator('.career-card').count(), 0);
+  assert.equal(await reopened.locator('[data-career-field="answer"]').count(), 0);
+});
+
+test('failed career saves and project switches preserve the current editing buffer', async t => {
+  const page = await fixture(t); await ready(page);
+  await page.locator('#career-add').click();
+  await page.locator('[data-career-field="title"]').fill('还未保存的决定');
+  await page.locator('[data-career-field="excerpt"]').fill('这段输入在磁盘失败时也应保留。');
+  await page.evaluate(() => { window.__fixture.failWrites = true; });
+  await page.locator('[data-career-action="save"]').click();
+  await page.locator('#career-message').filter({ hasText: '当前输入仍保留' }).waitFor();
+  assert.equal(await page.locator('[data-career-field="title"]').inputValue(), '还未保存的决定');
+  await page.locator('[data-career-kind="qa"]').click();
+  assert.equal(await page.locator('[data-career-field="title"]').inputValue(), '还未保存的决定');
+  await page.waitForTimeout(150);
+  await page.evaluate(() => { window.__fixture.failWrites = false; window.__fixture.switch('b'); }); await ready(page);
+  assert.equal(await page.locator('[data-career-field="title"]').count(), 0);
+  await page.evaluate(() => window.__fixture.switch('a')); await ready(page);
+  assert.equal(await page.locator('[data-career-field="title"]').inputValue(), '还未保存的决定');
+  await page.locator('[data-career-action="save"]').click();
+  await page.waitForFunction(() => window.__fixture.projects.a.files['job-hunt-panel.json'].sourceMaterials?.length === 1);
+});
+
+test('agent collection stays a draft and cannot confirm personal contribution', async t => {
+  const page = await fixture(t); await ready(page);
+  await assert.rejects(page.evaluate(() => window.__fixture.tools.save_candidate_context({ source: { provider: 'github', excerpt: 'Repository readme', status: 'confirmed' } })), /status只允许draft/);
+  const saved = await page.evaluate(() => window.__fixture.tools.save_candidate_context({ source: { provider: 'github', externalId: 'repo:example/project', url: 'https://github.com/example/project', excerpt: 'Repository readme' } }));
+  assert.equal(saved.source.status, 'draft');
+  assert.equal(saved.source.confirmedBy, '');
+  const duplicate = await page.evaluate(() => window.__fixture.tools.save_candidate_context({ source: { provider: 'github', externalId: 'repo:example/project', url: 'https://github.com/example/project', excerpt: 'Repository readme' } }));
+  assert.equal(saved.source.id, duplicate.source.id);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].sourceMaterials.length), 1);
+  await page.locator('.career-card').click();
+  await page.locator('[data-career-action="read"]').click();
+  await page.waitForFunction(() => window.__fixture.calls.some(call => call.method === 'agent.submitPrompt'));
+  const prompt = await page.evaluate(() => window.__fixture.calls.find(call => call.method === 'agent.submitPrompt').params.prompt);
+  assert.match(prompt, /career_sources/);
+  assert.match(prompt, /save_candidate_context\(\{source/);
+  assert.match(prompt, /作者与实际diff/);
+});
+
+test('empty new records can be cancelled and imported career drafts do not carry foreign associations', async t => {
+  const page = await fixture(t); await ready(page);
+  await page.locator('#career-add').click();
+  await page.locator('[data-career-action="cancel"]').click();
+  await page.locator('[data-career-kind="qa"]').click();
+  assert.equal(await page.locator('[data-career-field="question"]').count(), 0);
+  await page.locator('#draft-import-file').setInputFiles({ name: 'career-draft.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ careerDraft: { kind: 'qa', id: 'foreign-record', dirty: true, updatedAt: '2026-10-01', record: { id: 'foreign-record', episodeId: 'foreign-episode', question: '为什么当时这样做？', answer: '这是我的原始记忆。', sourceIds: ['foreign-source'] } } })) });
+  await page.locator('#draft-import-dialog').waitFor({ state: 'visible' });
+  await page.locator('#draft-import-apply').click();
+  await page.locator('#draft-import-dialog').waitFor({ state: 'hidden' });
+  assert.equal(await page.locator('[data-career-field="question"]').inputValue(), '为什么当时这样做？');
+  assert.equal(await page.locator('[data-career-field="episodeId"]').inputValue(), '');
+  await page.locator('[data-career-action="save"]').click();
+  await page.waitForFunction(() => window.__fixture.projects.a.files['job-hunt-panel.json'].careerQa?.length === 1);
+  const qa = await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].careerQa[0]);
+  assert.notEqual(qa.id, 'foreign-record');
+  assert.deepEqual(qa.sourceIds, []);
+  assert.equal(qa.status, 'draft');
+});
+
+test('career editor fits the narrow panel and source updates withdraw reviewed dependent facts', async t => {
+  const page = await fixture(t); await ready(page);
+  await page.setViewportSize({ width: 420, height: 900 });
+  await page.locator('#career-add').click();
+  await page.locator('[data-career-field="title"]').fill('原始选择');
+  await page.locator('[data-career-field="excerpt"]').fill('最初的原文');
+  await page.locator('[data-career-action="confirm"]').click();
+  await page.locator('[data-career-action="episode"]').click();
+  await page.locator('[data-career-field="reason"]').fill('原始理由');
+  await page.locator('[data-career-action="confirm"]').click();
+  const sourceId = await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].sourceMaterials[0].id);
+  await page.evaluate(id => window.__fixture.tools.save_candidate_context({ source: { id, excerpt: '更新后与原始记忆有差异的原文' } }), sourceId);
+  await page.waitForFunction(() => window.__fixture.projects.a.files['job-hunt-panel.json'].careerEpisodes[0].status === 'needs_review');
+  await page.locator('[data-career-kind="sources"]').click();
+  await page.locator('.career-card').click();
+  await page.locator('[data-career-action="accept"]').waitFor();
+  assert.equal(await page.locator('[data-career-field="excerpt"]').inputValue(), '最初的原文');
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+  assert.equal(overflow, false);
+  await page.locator('[data-career-action="accept"]').click();
+  await page.waitForFunction(() => !window.__fixture.projects.a.files['job-hunt-panel.json'].sourceMaterials[0].pendingRevision);
+  assert.equal(await page.locator('[data-career-field="excerpt"]').inputValue(), '更新后与原始记忆有差异的原文');
+  if (process.env.CAREER_UI_SCREENSHOT) await page.screenshot({ path: process.env.CAREER_UI_SCREENSHOT, fullPage: true });
+});
+
+function careerQaSnapshot() {
+  const question = '当时为什么选择分阶段发布？';
+  const claim = '设计可恢复的保存流程，让每次修改都有清晰的来源，并在保存失败时保留输入；通过分阶段发布验证迁移、恢复和版本之间的关联，明确记录每次选择的理由、适用范围和后续复盘，帮助团队核对真实结果。';
+  const evidence = { claim, status: 'verified', importance: 'core', whyItMatters: '保留真实来源与决策原因', qaIds: ['fact-a'], sources: [{ kind: 'user', label: '本人确认', locator: 'user:fixture', evidence: '已核验的原始回答' }], interviewQuestions: [{ question }] };
+  return {
+    schemaVersion: 2, careerLibraryMigrationVersion: 1, profile: { name: 'a' }, jobs: [],
+    sourceMaterials: [], careerEpisodes: [],
+    careerQa: [{ id: 'fact-a', question, answer: '原先的事实回答', category: 'decision', status: 'confirmed', confirmedBy: 'user', confirmedAt: '2026-01-01T00:00:00Z', version: 1, sourceIds: [] }],
+    resume: { versionId: 'resume-a', kind: 'base', category: '工程', title: 'Resume a', markdown: '# Candidate\n\n## 项目经验\n\n- ' + claim, claimEvidence: [evidence], candidateQuestions: [{ id: 'question-a', careerQaId: 'fact-a', category: 'decision', question, answer: '原先的事实回答', status: 'answered', sourceRefs: ['user:fixture'] }] },
+    versions: [{ versionId: 'older-a', kind: 'base', title: 'Earlier', markdown: '# Earlier', claimEvidence: [structuredClone(evidence)] }],
+  };
+}
+
+for (const tool of ['save_resume_draft', 'save_resume_qa_answer']) {
+  test(`late ${tool} cannot roll career facts into another project`, async t => {
+    const initial = careerQaSnapshot();
+    const page = await fixture(t, { projectSnapshots: { a: initial } }); await ready(page);
+    const args = tool === 'save_resume_qa_answer'
+      ? { resume_id: 'resume-a', question_id: 'question-a', answer: '这是新的事实回答，等待用户核对。', status: 'needs_source' }
+      : { resume_kind: 'base', category: '工程', title: 'Updated', markdown: initial.resume.markdown, claim_evidence: initial.resume.claimEvidence,
+        candidate_questions: ['当时为什么选择分阶段发布？', '本人承担了哪些职责？', '后来如何验证结果？'].map(question => ({ question, category: 'context', priority: 'high', why: '补齐事实' })) };
+    await page.evaluate(({ tool, args }) => {
+      window.__fixture.hold = 'workspace.writeText';
+      window.__lateTool = null;
+      window.__fixture.tools[tool](args).then(result => { window.__lateTool = result; }, error => { window.__lateTool = { error: error.message }; });
+    }, { tool, args });
+    await page.waitForFunction(() => Boolean(window.__fixture.release));
+    await page.evaluate(() => { window.__oldWriteRelease = window.__fixture.release; window.__fixture.hold = null; window.__fixture.switch('b'); }); await ready(page);
+    await page.evaluate(() => window.__oldWriteRelease());
+    await page.waitForFunction(() => window.__lateTool !== null);
+    assert.ok(await page.evaluate(() => Boolean(window.__lateTool.error)));
+    const current = await page.evaluate(() => window.__fixture.tools.get_job_search_context({ scope: 'summary' }));
+    assert.equal(current.counts.careerQa, 0);
+    await page.evaluate(() => window.__fixture.tools.save_candidate_context({ source: { title: 'B only', provider: 'manual', excerpt: '属于当前项目的材料' } }));
+    const saved = await page.evaluate(() => window.__fixture.projects.b.files['job-hunt-panel.json']);
+    assert.equal(saved.resume.versionId, 'resume-b');
+    assert.equal(saved.careerQa.length, 0);
+    assert.equal(saved.sourceMaterials.length, 1);
+  });
+}
+
+for (const mode of ['agent', 'user']) {
+  test(`${mode} legacy answers invalidate linked current and historical resume claims`, async t => {
+    const page = await fixture(t, { projectSnapshots: { a: careerQaSnapshot() } }); await ready(page);
+    if (mode === 'agent') {
+      await page.evaluate(() => window.__fixture.tools.save_resume_qa_answer({ resume_id: 'resume-a', question_id: 'question-a', answer: 'AI 整理的补充表达，需要本人复核。', status: 'needs_source' }));
+    } else {
+      await page.locator('.side-nav [data-view-target="resumes"]').click();
+      await page.locator('#resume-qa-panel').evaluate(node => { node.open = true; });
+      await page.locator('[data-resume-qa-id="question-a"]').first().click();
+      await page.locator('#resume-qa-answer').fill('本人补充确认的实际回答，解释为什么分阶段发布。');
+      await page.locator('#resume-qa-status').selectOption('answered');
+      await page.locator('#resume-qa-form button[value="close"]').click();
+      await page.locator('#resume-qa-dialog').waitFor({ state: 'hidden' });
+    }
+    const saved = await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json']);
+    assert.equal(saved.resume.claimEvidence[0].status, 'needs_review');
+    assert.equal(saved.versions.find(item => item.versionId === 'older-a').claimEvidence[0].status, 'needs_review');
+    if (mode === 'agent') {
+      assert.equal(saved.careerQa[0].answer, '原先的事实回答');
+      assert.ok(saved.careerQa[0].pendingRevision);
+    } else assert.match(saved.careerQa[0].answer, /本人补充确认/);
+  });
+}
+
+test('current session chat saves a whole knowledge version and historical facts stay readable', async t => {
+  const page = await fixture(t, { strictTools: true, extraMethods: ['agent.submitPrompt'] }); await ready(page);
+  await page.locator('#career-chat-start').click();
+  await page.waitForFunction(() => window.__fixture.calls.some(call => call.method === 'agent.submitPrompt'));
+  const prompt = await page.evaluate(() => window.__fixture.calls.find(call => call.method === 'agent.submitPrompt').params.prompt);
+  assert.match(prompt, /当前session.*经历、决策原因和长期问答库/);
+  assert.match(prompt, /library_version/);
+  assert.match(prompt, /不强制逐条确认、不生成简历/);
+  const version = await page.evaluate(async () => {
+    const tools = window.__fixture.tools;
+    const source = await tools.save_candidate_context({ source: { provider: 'slack', title: '项目讨论', url: 'https://example.slack.com/archives/C1/p1234567890123456', excerpt: '讨论采用异步保存' } });
+    const episode = await tools.save_candidate_context({ episode: { title: '保存方案的选择', myRole: '我负责存储设计', decision: '异步保存', reason: '不阻塞窗口交互', sourceIds: [source.source.id] } });
+    const qa = await tools.save_candidate_context({ qa: { question: '为什么不直接同步保存？', episodeId: episode.episode.id, answer: '我的原话：不希望窗口卡住。', draftAnswer: '为了保持交互响应，我选择异步保存。', sourceIds: [source.source.id] } });
+    if (qa.qa.answer !== '我的原话：不希望窗口卡住。') throw Error('chat fact was lost');
+    const preview = await tools.save_candidate_context({ library_version: { action: 'preview' } });
+    if (preview.saved || preview.counts.added !== 3 || preview.unresolved.total !== 3) throw Error('wrong preview');
+    return tools.save_candidate_context({ library_version: { action: 'save', id: 'career-version-chat-one', title: '异步方案讨论', summary: '保留当时的选择与原因' } });
+  });
+  assert.equal(version.saved, true);
+  assert.equal(version.libraryVersion.sessionId, 'session-a');
+  assert.equal(version.libraryVersion.counts.unresolved, 3);
+  await page.evaluate(async () => {
+    const tools = window.__fixture.tools;
+    const qa = window.__fixture.projects.a.files['job-hunt-panel.json'].careerQa[0];
+    await tools.save_candidate_context({ qa: { id: qa.id, question: qa.question, answer: '后来补充的原因：先保证持久化再优化响应。' } });
+  });
+  const historical = await page.evaluate(() => window.__fixture.tools.get_job_search_context({ scope: 'career_qa', version_id: 'career-version-chat-one' }));
+  assert.equal(historical.historical, true);
+  const exact = await page.evaluate(id => window.__fixture.tools.get_job_search_context({ scope: 'career_qa', version_id: 'career-version-chat-one', qa_id: id }), historical.careerQa.items[0].id);
+  assert.equal(exact.careerQa.items[0].answer, '我的原话：不希望窗口卡住。');
+  const latest = await page.evaluate(() => window.__fixture.tools.get_job_search_context({ scope: 'career_qa', qa_id: window.__fixture.projects.a.files['job-hunt-panel.json'].careerQa[0].id }));
+  assert.match(latest.careerQa.items[0].answer, /后来补充/);
+  await page.locator('#career-version-history').selectOption('career-version-chat-one');
+  await page.locator('#career-version-detail').getByRole('heading', { name: '异步方案讨论', exact: true }).waitFor();
+  await page.locator('.career-version-diff summary').filter({ hasText: '为什么不直接同步保存？' }).click();
+  assert.match(await page.locator('#career-version-detail').innerText(), /我的原话：不希望窗口卡住/);
+  await page.locator('#career-version-preview').click();
+  await page.locator('#career-version-save').waitFor();
+  await page.locator('#career-version-title').fill('补充持久化原因');
+  await page.locator('#career-version-save').click();
+  await page.locator('#career-version-message').filter({ hasText: '已保存知识库版本' }).waitFor();
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].careerLibraryVersions.length), 2);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume.markdown), '# Resume a');
+  const files = await page.evaluate(() => window.__fixture.projects.a.files);
+  const reopened = await fixture(t, { strictTools: true, projectFiles: { a: files } }); await ready(reopened);
+  assert.match(await reopened.locator('#career-version-summary').innerText(), /已保存 2 版/);
+  await reopened.locator('#career-version-history').selectOption('career-version-chat-one');
+  await reopened.locator('#career-version-detail').getByRole('heading', { name: '异步方案讨论', exact: true }).waitFor();
+  if (process.env.CHAT_VERSION_UI_SCREENSHOT) {
+    await reopened.setViewportSize({ width: 1000, height: 900 });
+    await reopened.screenshot({ path: process.env.CHAT_VERSION_UI_SCREENSHOT, fullPage: true });
+    await reopened.setViewportSize({ width: 420, height: 900 });
+    assert.equal(await reopened.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+    await reopened.screenshot({ path: process.env.CHAT_VERSION_UI_SCREENSHOT.replace('.png', '-mobile.png'), fullPage: true });
+  }
+  await reopened.evaluate(() => window.__fixture.switch('b')); await ready(reopened);
+  assert.match(await reopened.locator('#career-version-summary').innerText(), /还没有保存版本/);
+  assert.equal(await reopened.locator('#career-version-detail').isVisible(), false);
+});
+
+test('knowledge version save failure preserves facts and retry attaches an immutable orphan without rewriting it', async t => {
+  const page = await fixture(t, { strictTools: true }); await ready(page);
+  await page.evaluate(() => window.__fixture.tools.save_candidate_context({ qa: { question: '为什么选这个方案？', answer: '这是我在聊天中给出的原因。' } }));
+  const result = await page.evaluate(async () => {
+    const original = window.codeshellPanel.call;
+    window.codeshellPanel.call = async (method, params) => {
+      if (method === 'workspace.writeText' && params.path === 'job-hunt-panel.json') throw Error('disk unavailable');
+      return original(method, params);
+    };
+    try { await window.__fixture.tools.save_candidate_context({ library_version: { action: 'save', id: 'career-version-retry', title: '可重试的版本' } }); return 'unexpected'; }
+    catch (error) { return error.message; }
+    finally { window.codeshellPanel.call = original; }
+  });
+  assert.match(result, /保存失败/);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].careerLibraryVersions?.length || 0), 0);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].careerQa[0].answer), '这是我在聊天中给出的原因。');
+  const saved = await page.evaluate(() => window.__fixture.tools.save_candidate_context({ library_version: { action: 'save', id: 'career-version-retry', title: '可重试的版本' } }));
+  assert.equal(saved.saved, true);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'workspace.writeText' && call.params.path === 'career-data/library-versions/career-version-retry.json').length), 1);
+  const duplicate = await page.evaluate(() => window.__fixture.tools.save_candidate_context({ library_version: { action: 'save', id: 'career-version-retry', title: '可重试的版本' } }));
+  assert.equal(duplicate.libraryVersion.id, saved.libraryVersion.id);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].careerLibraryVersions.length), 1);
+  const titleConflict = await page.evaluate(() => window.__fixture.tools.save_candidate_context({ library_version: { action: 'save', id: 'career-version-retry', title: '不同的标题' } }).then(() => '', error => error.message));
+  assert.match(titleConflict, /另一份内容/);
+  await page.evaluate(() => window.__fixture.tools.save_candidate_context({ qa: { id: window.__fixture.projects.a.files['job-hunt-panel.json'].careerQa[0].id, question: '为什么选这个方案？', answer: '后来的不同回答' } }));
+  const contentConflict = await page.evaluate(() => window.__fixture.tools.save_candidate_context({ library_version: { action: 'save', id: 'career-version-retry', title: '可重试的版本' } }).then(() => '', error => error.message));
+  assert.match(contentConflict, /另一份内容/);
+});
+
+test('explicit fact confirmation in chat works without a form and saving a version alone does not confirm facts', async t => {
+  const page = await fixture(t, { strictTools: true }); await ready(page);
+  const result = await page.evaluate(async () => {
+    const tools = window.__fixture.tools;
+    const draft = await tools.save_candidate_context({ qa: { question: '本人负责什么？', answer: '我独立完成持久化层。', draftAnswer: '我负责存储实现。' } });
+    const version = await tools.save_candidate_context({ library_version: { action: 'save', title: '职责待核对版' } });
+    const confirmed = await tools.save_candidate_context({ qa: { id: draft.qa.id, question: draft.qa.question, answer: draft.qa.answer }, confirmation: '这句话准确，我确认自己独立完成了持久化层。' });
+    return { draft, version, confirmed };
+  });
+  assert.equal(result.draft.qa.status, 'draft');
+  assert.equal(result.version.libraryVersion.counts.unresolved, 1);
+  assert.equal(result.confirmed.qa.status, 'confirmed');
+  assert.equal(result.confirmed.qa.answer, '我独立完成持久化层。');
+  assert.equal(result.confirmed.qa.draftAnswer, '我负责存储实现。');
+  assert.equal(await page.locator('[data-career-field="question"]').count(), 0);
+});
+
+test('a late chat version save cannot attach the old project history to the new project', async t => {
+  const page = await fixture(t, { strictTools: true }); await ready(page);
+  await page.evaluate(() => window.__fixture.tools.save_candidate_context({ qa: { question: 'A的原因？', answer: '属于A的事实' } }));
+  await page.evaluate(() => {
+    window.__fixture.hold = 'workspace.writeText'; window.__versionDone = null;
+    window.__fixture.tools.save_candidate_context({ library_version: { action: 'save', id: 'career-version-project-a', title: 'A的整理版' } }).then(result => { window.__versionDone = result; }, error => { window.__versionDone = { error: error.message }; });
+  });
+  await page.waitForFunction(() => Boolean(window.__fixture.release));
+  await page.evaluate(() => { window.__oldVersionRelease = window.__fixture.release; window.__fixture.hold = null; window.__fixture.switch('b'); }); await ready(page);
+  await page.evaluate(() => window.__oldVersionRelease());
+  await page.waitForFunction(() => window.__versionDone !== null);
+  assert.ok(await page.evaluate(() => Boolean(window.__versionDone.error)));
+  const context = await page.evaluate(() => window.__fixture.tools.get_job_search_context({ scope: 'career_versions' }));
+  assert.equal(context.careerLibraryVersions.total, 0);
+  await page.evaluate(async () => {
+    await window.__fixture.tools.save_candidate_context({ qa: { question: 'B的原因？', answer: '属于B的事实' } });
+    await window.__fixture.tools.save_candidate_context({ library_version: { action: 'save', id: 'career-version-project-b', title: 'B的整理版' } });
+  });
+  const saved = await page.evaluate(() => window.__fixture.projects.b.files['job-hunt-panel.json']);
+  assert.deepEqual(saved.careerLibraryVersions.map(version => version.id), ['career-version-project-b']);
+  assert.equal(saved.careerQa[0].answer, '属于B的事实');
+});
+
+test('saving an out-of-date version preview asks for a fresh preview without freezing unseen chat changes', async t => {
+  const page = await fixture(t, { strictTools: true }); await ready(page);
+  const initial = await page.evaluate(() => window.__fixture.tools.save_candidate_context({ qa: { question: '最初的原因？', answer: '原先回答' } }));
+  await page.locator('#career-version-preview').click();
+  await page.locator('#career-version-save').waitFor();
+  await page.evaluate(id => window.__fixture.tools.save_candidate_context({ qa: { id, question: '最初的原因？', answer: '预览后补充的新回答' } }), initial.qa.id);
+  await page.locator('#career-version-save').click();
+  await page.locator('#career-version-message').filter({ hasText: '请重新预览后保存' }).waitFor();
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].careerLibraryVersions.length), 0);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].careerQa[0].answer), '预览后补充的新回答');
+});
+
+const updatePath = 'career-data/updates/session-chat.json';
+function careerUpdateFixture() {
+  return { format: 'codeshell.career-update', schemaVersion: 1,
+    version: { id: 'career-version-json-chat', title: '聊天生成的知识库版本', summary: '经历、决策原因和问答一起交接' },
+    sources: [{ id: 'career-source-json', provider: 'user', title: '本轮聊天', excerpt: '本人说明了异步保存的选择与原因。' }],
+    episodes: [{ id: 'career-episode-json', title: '异步保存的决策', myRole: '设计恢复路径', decision: '采用异步任务', reason: '不让窗口等待耗时任务', sourceIds: ['career-source-json'] }],
+    qa: [{ id: 'career-qa-json', question: '为什么选择异步？', answer: '我的原话：窗口不应被保存过程卡住。', draftAnswer: '表达：让耗时任务独立运行。', episodeId: 'career-episode-json', category: 'decision', sourceIds: ['career-source-json'] }] };
+}
+const invokeUpdate = (page, input) => page.evaluate(career_update => window.__fixture.tools.save_candidate_context({ career_update }), input);
+
+test('JSON from a session is previewed without writes and consumed as one knowledge version', async t => {
+  const document = careerUpdateFixture();
+  const page = await fixture(t, { strictTools: true, projectFiles: { a: { [updatePath]: document } } }); await ready(page);
+  await page.evaluate(() => window.__fixture.tools.save_candidate_context({ qa: { question: '原有问答', answer: '保留这条资料' } }));
+  const before = await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json']);
+  assert.equal(before.careerQa.some(item => item.id === 'career-qa-json'), false, 'writing a JSON file alone must not import it');
+  const writesBefore = await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'workspace.writeText').length);
+  const preview = await invokeUpdate(page, { action: 'preview', path: updatePath });
+  assert.equal(preview.saved, false); assert.equal(preview.counts.added, 3);
+  assert.match(preview.preview_token, /^[0-9a-f]{64}$/);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'workspace.writeText').length), writesBefore);
+  const saved = await invokeUpdate(page, { action: 'apply', path: updatePath, preview_token: preview.preview_token });
+  assert.equal(saved.saved, true); assert.equal(saved.idempotent, false);
+  assert.match(saved.libraryVersion.updateSha256, /^[0-9a-f]{64}$/);
+  const receipt = await page.evaluate(() => window.__fixture.tools.get_job_search_context({ scope: 'career_versions', version_id: 'career-version-json-chat' }));
+  assert.equal(receipt.careerLibraryVersions.items[0].updateSha256, saved.libraryVersion.updateSha256);
+  const files = await page.evaluate(() => window.__fixture.projects.a.files);
+  const current = files['job-hunt-panel.json'];
+  assert.equal(current.careerQa.length, 2); assert.equal(current.careerLibraryVersions.length, 1);
+  assert.equal(current.careerQa.find(item => item.id === 'career-qa-json').answer, document.qa[0].answer);
+  assert.equal(current.careerEpisodes[0].reason, document.episodes[0].reason);
+  assert.equal(current.careerQa.find(item => item.id === 'career-qa-json').status, 'draft');
+  assert.equal(current.resume.markdown, before.resume.markdown);
+  const history = await page.evaluate(() => window.__fixture.tools.get_job_search_context({ scope: 'career_qa', qa_id: 'career-qa-json', version_id: 'career-version-json-chat' }));
+  assert.equal(history.careerQa.items[0].draftAnswer, document.qa[0].draftAnswer);
+  await page.locator('#career-version-history').selectOption(document.version.id);
+  await page.locator('#career-version-detail').getByRole('heading', { name: document.version.title, exact: true }).waitFor();
+  const reopened = await fixture(t, { strictTools: true, projectFiles: { a: files } }); await ready(reopened);
+  assert.match(await reopened.locator('#career-version-summary').innerText(), /聊天生成的知识库版本/);
+});
+
+test('JSON preview tokens reject changed files and new chat facts before any import writes', async t => {
+  const page = await fixture(t, { strictTools: true, projectFiles: { a: { [updatePath]: careerUpdateFixture() } } }); await ready(page);
+  const preview = await invokeUpdate(page, { action: 'preview', path: updatePath });
+  await page.evaluate(path => { window.__fixture.projects.a.files[path].qa[0].answer = '预览后的不同回答'; }, updatePath);
+  await assert.rejects(invokeUpdate(page, { action: 'apply', path: updatePath, preview_token: preview.preview_token }), /重新preview/);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].careerQa?.length || 0), 0);
+  const fresh = await invokeUpdate(page, { action: 'preview', path: updatePath });
+  await page.evaluate(() => window.__fixture.tools.save_candidate_context({ qa: { question: '预览后另存的事实', answer: '应该保留' } }));
+  await assert.rejects(invokeUpdate(page, { action: 'apply', path: updatePath, preview_token: fresh.preview_token }), /重新preview/);
+  const writesBefore = await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'workspace.writeText').length);
+  await page.evaluate(path => { window.__fixture.projects.a.files[path].qa[0].status = 'confirmed'; }, updatePath);
+  await assert.rejects(invokeUpdate(page, { action: 'preview', path: updatePath }), /draft|status|状态/);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'workspace.writeText').length), writesBefore);
+});
+
+test('JSON apply rolls back all records on project-save failure and retries without duplicate history', async t => {
+  const page = await fixture(t, { strictTools: true, projectFiles: { a: { [updatePath]: careerUpdateFixture() } } }); await ready(page);
+  const preview = await invokeUpdate(page, { action: 'preview', path: updatePath });
+  await page.evaluate(() => {
+    window.__originalUpdateCall = window.codeshellPanel.call;
+    window.codeshellPanel.call = (method, params) => {
+      if (method === 'workspace.writeText' && params.path === 'job-hunt-panel.json') throw Error('disk unavailable');
+      return window.__originalUpdateCall(method, params);
+    };
+  });
+  await assert.rejects(invokeUpdate(page, { action: 'apply', path: updatePath, preview_token: preview.preview_token }), /保存失败/);
+  await page.evaluate(() => { window.codeshellPanel.call = window.__originalUpdateCall; });
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].careerQa?.length || 0), 0);
+  const saved = await invokeUpdate(page, { action: 'apply', path: updatePath, preview_token: preview.preview_token });
+  assert.equal(saved.saved, true);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'workspace.writeText' && call.params.path === 'career-data/library-versions/career-version-json-chat.json').length), 1);
+  await page.evaluate(() => window.__fixture.tools.save_candidate_context({ qa: { id: 'career-qa-json', question: '为什么选择异步？', answer: '后续补充的原因，应保留' } }));
+  const retried = await invokeUpdate(page, { action: 'apply', path: updatePath, preview_token: preview.preview_token });
+  assert.equal(retried.idempotent, true);
+  const current = await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json']);
+  assert.equal(current.careerLibraryVersions.length, 1);
+  assert.equal(current.careerQa[0].answer, '后续补充的原因，应保留');
+  await page.evaluate(path => { window.__fixture.projects.a.files[path].version.title = '换个标题冒充原版本'; }, updatePath);
+  await assert.rejects(invokeUpdate(page, { action: 'apply', path: updatePath, preview_token: preview.preview_token }), /另一份内容/);
+});
+
+test('a late JSON apply cannot import the previous project file into a new project', async t => {
+  const page = await fixture(t, { strictTools: true, scoped: true, projectFiles: { a: { [updatePath]: careerUpdateFixture() } } }); await ready(page);
+  const preview = await invokeUpdate(page, { action: 'preview', path: updatePath });
+  await page.evaluate(input => {
+    window.__fixture.hold = 'workspace.readText'; window.__updateResult = null;
+    window.__fixture.tools.save_candidate_context({ career_update: input }).then(result => { window.__updateResult = result; }, error => { window.__updateResult = { error: error.message }; });
+  }, { action: 'apply', path: updatePath, preview_token: preview.preview_token });
+  await page.waitForFunction(() => Boolean(window.__fixture.release));
+  await page.evaluate(() => { window.__oldUpdateRelease = window.__fixture.release; window.__fixture.hold = null; window.__fixture.switch('b'); }); await ready(page);
+  await page.evaluate(() => window.__oldUpdateRelease());
+  await page.waitForFunction(() => window.__updateResult !== null);
+  assert.match(await page.evaluate(() => window.__updateResult.error), /项目已切换/);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.b.files['job-hunt-panel.json'].careerLibraryVersions?.length || 0), 0);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.b.files['job-hunt-panel.json'].careerQa?.length || 0), 0);
+});
+
+test('external snapshot reload preserves resume input typed while workspace metadata is pending', async t => {
+  const page = await fixture(t); await ready(page);
+  await page.locator('.side-nav [data-view-target="resumes"]').click();
+  await page.locator('[data-resume-mode="edit"]').click();
+  await page.evaluate(() => {
+    window.__fixture.projects.a.files['job-hunt-panel.json'].profile.name = 'external-name';
+    const original = window.codeshellPanel.call;
+    window.codeshellPanel.call = async (method, params) => {
+      if (method === 'workspace.info') await new Promise(resolve => { window.__reloadMetadataRelease = resolve; });
+      return original(method, params);
+    };
+    window.dispatchEvent(new Event('focus'));
+  });
+  await page.waitForFunction(() => Boolean(window.__reloadMetadataRelease));
+  await page.locator('#resume-editor').fill('# Current input made during external reload');
+  await page.evaluate(() => window.__reloadMetadataRelease());
+  await page.waitForFunction(() => document.querySelector('#project-snapshot-error').textContent ||
+    document.querySelector('#toast').textContent.includes('检测到项目数据更新'));
+  assert.equal(await page.locator('#resume-editor').inputValue(), '# Current input made during external reload');
+  const pending = await backup(page);
+  assert.equal(pending.current.drafts.resumeDraft.markdown, '# Current input made during external reload');
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].profile.name), 'external-name');
+});
+
+test('candidate profile rollback after a project switch cannot overwrite the new project', async t => {
+  const page = await fixture(t, { scoped: true }); await ready(page);
+  await page.locator('.side-nav [data-view-target="materials"]').click();
+  await page.locator('#edit-candidate-profile').click();
+  await page.locator('#profile-name').fill('Old project profile request');
+  await page.locator('#profile-role').fill('Engineer');
+  await page.evaluate(() => { window.__fixture.hold = 'workspace.writeText'; });
+  await page.locator('#save-candidate-profile').click();
+  await page.waitForFunction(() => Boolean(window.__fixture.release));
+  await page.evaluate(() => {
+    window.__oldProfileSaveRelease = window.__fixture.release;
+    window.__fixture.hold = null;
+    window.__fixture.switch('b');
+  });
+  await ready(page);
+  const before = await page.evaluate(() => window.__fixture.tools.get_job_search_context({ scope: 'candidate' }));
+  assert.equal(before.profile.name, 'b');
+  await page.evaluate(async () => {
+    window.__oldProfileSaveRelease();
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  const after = await page.evaluate(() => window.__fixture.tools.get_job_search_context({ scope: 'candidate' }));
+  assert.equal(after.profile.name, 'b');
+  assert.deepEqual(after.resumeIndex, before.resumeIndex);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.b.files['job-hunt-panel.json'].resume.markdown), '# Resume b');
+  await page.locator('.side-nav [data-view-target="materials"]').click();
+  assert.equal(await page.locator('#profile-name').inputValue(), 'b');
+  await page.locator('#edit-candidate-profile').click();
+  assert.equal(await page.locator('#profile-name').isEditable(), true);
 });

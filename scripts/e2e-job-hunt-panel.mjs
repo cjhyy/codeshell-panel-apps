@@ -5,12 +5,13 @@
  * typed interview answers and private resume QA never touch developer data.
  */
 /* global document, window */
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const panelSource = join(repositoryRoot, "apps", "job-hunt-hq");
+const panelVersion = JSON.parse(await readFile(join(panelSource, ".codeshell-panel", "panel.json"), "utf8")).version;
 const desktopDir = resolve(
   process.env.CODE_SHELL_DESKTOP_DIR || join(repositoryRoot, "packages", "desktop"),
 );
@@ -23,7 +24,7 @@ const {
 } = await import(pathToFileURL(join(desktopDir, "scripts", "electron-harness.mjs")).href);
 const isolated = await makeIsolatedElectronHome("codeshell-job-hunt-e2e-");
 const panelInstallDir = join(isolated.codeShellHome, "panel-apps", "job-hunt-hq");
-const projectDir = join(isolated.home, "job-hunt-project");
+const projectDir = join(await realpath(isolated.home), "job-hunt-project");
 const snapshotPath = join(projectDir, "job-hunt-panel.json");
 const now = new Date().toISOString();
 let app;
@@ -300,6 +301,7 @@ async function waitForGuest(view, predicate, message, timeout = 10_000) {
     if (await execute(view, predicate).catch(() => false)) return;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
   }
+  console.error(await execute(view, `(async () => { const context = await window.codeshellPanel.getContext(); return JSON.stringify({ cwd: context.cwd, methods: context.availableMethods, fileList: document.querySelector('#resume-file-list')?.textContent, projectError: document.querySelector('#project-snapshot-error')?.textContent, draftStatus: document.querySelector('#draft-storage-status')?.textContent }); })()`).catch(() => 'guest diagnostic unavailable'));
   throw new Error(message);
 }
 
@@ -323,7 +325,7 @@ try {
       apps: [
         {
           id: "job-hunt-hq",
-          version: "4.1.1",
+          version: panelVersion,
           source: panelSource,
           installedAt: now,
           lastUpdated: now,
@@ -368,13 +370,18 @@ try {
   });
   const win = await findCodeShellWindow(app);
   const rendererErrors = captureRendererErrors(win);
-  const panels = await win.evaluate(
-    (cwd) => window.codeshell.listPanelApps(cwd, "zh-CN"),
-    projectDir,
-  );
+  let panels = [];
+  // Startup also discovers project packages. A superseded discovery deliberately
+  // returns no descriptors, so wait for one stable read before binding the guest.
+  const discoveryDeadline = Date.now() + 10_000;
+  while (Date.now() < discoveryDeadline) {
+    panels = await win.evaluate((cwd) => window.codeshell.listPanelApps(cwd, "zh-CN"), projectDir);
+    if (panels.some(item => item.appId === "job-hunt-hq")) break;
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 100));
+  }
   const panel = panels.find((item) => item.appId === "job-hunt-hq");
   assert(panel, "Job Hunt HQ was not listed for the bound project");
-  assert(panel.version === "4.1.1", `expected Job Hunt HQ 4.1.1, got ${panel.version}`);
+  assert(panel.version === panelVersion, `expected Job Hunt HQ ${panelVersion}, got ${panel.version}`);
   const prepared = await win.evaluate(({ id, cwd }) => window.codeshell.preparePanelApp(id, cwd), {
     id: panel.id,
     cwd: projectDir,
@@ -422,6 +429,95 @@ try {
     const question = current.interviewSets?.[0]?.questions?.[0];
     return question && Object.keys(question).sort().join(",") === "bankQuestionId,id,why";
   }, "legacy materialized practice sets did not migrate to compact bank references");
+  await execute(view, `(() => {
+    document.querySelector('[data-view-target="career"]').click();
+    document.querySelector('#career-add').click();
+    for (const [field, value] of Object.entries({ title: 'E2E decision source', provider: 'manual', excerpt: 'PRIVATE CAREER EVIDENCE: 当时先发布最小能力，再根据真实失败场景补齐恢复流程。' })) {
+      const input = document.querySelector('[data-career-field="' + field + '"]');
+      input.value = value; input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    document.querySelector('[data-career-action="confirm"]').click();
+  })()`);
+  const sourceSaved = await waitForSnapshot(current => current.sourceMaterials?.some(source => source.title === 'E2E decision source' && source.status === 'confirmed'), 'career source did not reach the actual project');
+  const sourceId = sourceSaved.sourceMaterials.find(source => source.title === 'E2E decision source').id;
+  await waitForGuest(view, `document.querySelector('[data-career-action="episode"]')?.disabled === false`, 'career source did not finish saving');
+  await execute(view, `(() => {
+    document.querySelector('[data-career-action="episode"]').click();
+    for (const [field, value] of Object.entries({ title: 'E2E staged delivery', myRole: '本人负责保存协议与失败恢复', decision: '先验证核心路径，再扩展自动化', reason: '避免迁移失败时失去原始资料' })) {
+      const input = document.querySelector('[data-career-field="' + field + '"]');
+      input.value = value; input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    document.querySelector('[data-career-action="confirm"]').click();
+  })()`);
+  const episodeSaved = await waitForSnapshot(current => current.careerEpisodes?.some(episode => episode.title === 'E2E staged delivery' && episode.status === 'confirmed'), 'career decision did not reach the actual project');
+  const episode = episodeSaved.careerEpisodes.find(item => item.title === 'E2E staged delivery');
+  assert(episode.sourceIds.includes(sourceId) && episode.reason === '避免迁移失败时失去原始资料', 'saved decision lost its reason or source');
+  await waitForGuest(view, `document.querySelector('[data-career-action="question"]')?.disabled === false`, 'career episode did not finish saving');
+  await execute(view, `(() => {
+    document.querySelector('[data-career-action="question"]').click();
+    for (const [field, value] of Object.entries({ question: 'E2E 为什么分阶段交付？', answer: 'PRIVATE CAREER ANSWER: 本人先验证恢复路径，保留原始资料。', draftAnswer: '表达草稿：先验证关键风险，再逐步扩展。' })) {
+      const input = document.querySelector('[data-career-field="' + field + '"]');
+      input.value = value; input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    document.querySelector('[data-career-action="confirm"]').click();
+  })()`);
+  const qaSaved = await waitForSnapshot(current => current.careerQa?.some(qa => qa.question === 'E2E 为什么分阶段交付？' && qa.status === 'confirmed'), 'career QA did not reach the actual project');
+  const qa = qaSaved.careerQa.find(item => item.question === 'E2E 为什么分阶段交付？');
+  assert(qa.episodeId === episode.id && qa.sourceIds.includes(sourceId) && qa.answer !== qa.draftAnswer, 'career QA lost its associations or factual answer');
+  await waitForGuest(view, `document.querySelector('[data-career-action="polish"]')?.disabled === false`, 'career QA did not finish saving');
+  // These scripted edits are much faster than typing. Keep the real Host's
+  // production call budget intact when reopening and starting the next flow.
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 10_100));
+  await view.evaluate(candidate => candidate.reload());
+  await waitForGuest(view, `document.querySelector('[data-career-field="answer"]')?.value.includes('PRIVATE CAREER ANSWER')`, 'career QA editing location did not survive reopening');
+  assert(await execute(view, `!document.querySelector('#resume-preview')?.textContent.includes('PRIVATE CAREER ANSWER')`), 'private career QA leaked into the public resume');
+  console.log('Career source → decision → factual QA → reopen: passed');
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 10_100));
+  const invokeCareerTool = (toolName, args) => win.evaluate(
+    ({ appDescriptorId, toolName, args }) => window.codeshell.invokePanelAppAgentTool({ appDescriptorId, bucket: "job-hunt-e2e", toolName, arguments: args }),
+    { appDescriptorId: panel.id, toolName, args },
+  );
+  const chatQa = await invokeCareerTool("save_candidate_context", { qa: { question: "E2E 聊天里补充的取舍是什么？", answer: "CHAT FACT: 我先保证资料恢复，再考虑交互速度。", draftAnswer: "CHAT EXPRESSION: 先保护数据，再提升体验。" } });
+  assert(chatQa.qa.answer.startsWith("CHAT FACT") && chatQa.qa.status === "draft", "chat original answer was lost or automatically confirmed");
+  const knowledgePreview = await invokeCareerTool("save_candidate_context", { library_version: { action: "preview" } });
+  assert(knowledgePreview.preview && !knowledgePreview.saved && knowledgePreview.counts.added > 0, "chat knowledge version preview failed");
+  const knowledgeSaved = await invokeCareerTool("save_candidate_context", { library_version: { action: "save", id: "career-version-electron-chat", title: "E2E 当前聊天整理版", summary: "保存经历、决策原因、事实原话和未核实标记" } });
+  assert(knowledgeSaved.saved && knowledgeSaved.libraryVersion.counts.unresolved > 0, "chat could not save a named knowledge version with unconfirmed facts");
+  await waitForSnapshot(current => current.careerLibraryVersions?.some(version => version.id === "career-version-electron-chat"), "chat library version index did not reach real project files");
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 10_100));
+  await invokeCareerTool("save_candidate_context", { qa: { id: chatQa.qa.id, question: chatQa.qa.question, answer: "CHAT LATER: 补充后来的事实。" } });
+  const knowledgeHistory = await invokeCareerTool("get_job_search_context", { scope: "career_qa", version_id: "career-version-electron-chat", qa_id: chatQa.qa.id });
+  assert(knowledgeHistory.historical && knowledgeHistory.careerQa.items[0].answer.startsWith("CHAT FACT"), "historical knowledge version changed with live chat edits");
+  await execute(view, `(() => { const history = document.querySelector('#career-version-history'); history.value = 'career-version-electron-chat'; history.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await waitForGuest(view, `document.querySelector('#career-version-detail h3')?.textContent === 'E2E 当前聊天整理版'`, "saved chat version did not open in the history panel");
+  assert(await execute(view, `!document.querySelector('#resume-preview')?.textContent.includes('CHAT FACT')`), "chat library original answer leaked into the public resume");
+  console.log('Current-session tools → knowledge preview → named immutable version → historical reopen: passed');
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 10_100));
+  const updatePath = 'career-data/updates/session-e2e.json';
+  const updateDocument = { format: 'codeshell.career-update', schemaVersion: 1,
+    version: { id: 'career-version-electron-json', title: 'E2E JSON 交接版', summary: '当前聊天生成的经历、决策与问答' },
+    sources: [{ id: 'career-source-electron-json', provider: 'user', title: 'E2E 本轮聊天', excerpt: 'JSON PRIVATE SOURCE: 用户解释了恢复与响应速度的取舍。' }],
+    episodes: [{ id: 'career-episode-electron-json', title: 'E2E JSON 保存策略', decision: '先验证恢复路径', reason: '不能为了速度丢失原始资料', sourceIds: ['career-source-electron-json'] }],
+    qa: [{ id: 'career-qa-electron-json', question: 'E2E JSON 为什么这么选？', answer: 'JSON PRIVATE FACT: 恢复原始资料是我的首要考虑。', draftAnswer: 'JSON EXPRESSION: 先保证恢复能力。', category: 'decision', episodeId: 'career-episode-electron-json', sourceIds: ['career-source-electron-json'] }] };
+  await mkdir(join(projectDir, 'career-data', 'updates'), { recursive: true });
+  await writeFile(join(projectDir, updatePath), `${JSON.stringify(updateDocument, null, 2)}\n`);
+  const jsonPreview = await invokeCareerTool('save_candidate_context', { career_update: { action: 'preview', path: updatePath } });
+  assert(jsonPreview.preview && !jsonPreview.saved && jsonPreview.counts.added === 3, 'real Host could not preview the generated JSON');
+  const jsonSaved = await invokeCareerTool('save_candidate_context', { career_update: { action: 'apply', path: updatePath, preview_token: jsonPreview.preview_token } });
+  assert(jsonSaved.saved && jsonSaved.libraryVersion.updateSha256, 'real Host could not consume JSON as a knowledge version');
+  const jsonSnapshot = await waitForSnapshot(current => current.careerLibraryVersions?.some(version => version.id === updateDocument.version.id), 'JSON knowledge version did not reach actual project files');
+  assert(jsonSnapshot.careerQa.find(item => item.id === 'career-qa-electron-json')?.answer === updateDocument.qa[0].answer, 'JSON factual answer or associations were lost');
+  assert(jsonSnapshot.careerEpisodes.find(item => item.id === 'career-episode-electron-json')?.reason === updateDocument.episodes[0].reason, 'JSON decision reason was lost');
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 10_100));
+  const jsonRetried = await invokeCareerTool('save_candidate_context', { career_update: { action: 'apply', path: updatePath, preview_token: jsonPreview.preview_token } });
+  assert(jsonRetried.saved && jsonRetried.idempotent, 'JSON retry created another version instead of returning its receipt');
+  await view.evaluate(candidate => candidate.reload());
+  await waitForGuest(view, `document.querySelector('#career-version-summary')?.textContent.includes('E2E JSON 交接版')`, 'JSON version was not available after real desktop reopen');
+  await execute(view, `(() => { const history = document.querySelector('#career-version-history'); history.value = 'career-version-electron-json'; history.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await waitForGuest(view, `document.querySelector('#career-version-detail h3')?.textContent === 'E2E JSON 交接版'`, 'JSON version could not open directly in the panel');
+  assert(await execute(view, `!document.querySelector('#resume-preview')?.textContent.includes('JSON PRIVATE')`), 'private JSON library facts leaked into the public resume');
+  console.log('Session JSON → strict Host preview/apply → named knowledge version → desktop reopen: passed');
+  await new Promise(resolvePromise => setTimeout(resolvePromise, 10_100));
   assert(
     await execute(
       view,
@@ -1388,7 +1484,7 @@ try {
   await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   const criticalDraftBeforeReload = await execute(
     view,
-    `JSON.parse(localStorage.getItem("job-hunt-critical-drafts-v1") || "null")`,
+    `Object.keys(localStorage).filter(key => key.startsWith('job-hunt-critical-drafts-v2:')).map(key => JSON.parse(localStorage.getItem(key))).filter(item => !item.archived).sort((a, b) => b.savedAt - a.savedAt)[0]?.drafts`,
   );
   assert(
     criticalDraftBeforeReload?.resumeDraft?.markdown?.includes("E2E 未同步简历恢复验证"),
@@ -1412,7 +1508,7 @@ try {
     const recoveryState = await execute(
       view,
       `(async () => ({
-        critical: JSON.parse(localStorage.getItem("job-hunt-critical-drafts-v1") || "null"),
+        critical: Object.keys(localStorage).filter(key => key.startsWith('job-hunt-critical-drafts-v2:')).map(key => JSON.parse(localStorage.getItem(key))).filter(item => !item.archived).sort((a, b) => b.savedAt - a.savedAt)[0]?.drafts,
         cached: await window.codeshellPanel.call("storage.get", { key: "job-hunt-state-v1" }).catch((failure) => ({ error: String(failure) })),
         editor: document.querySelector("#resume-editor")?.value,
         view: document.querySelector("#view-resumes")?.hidden,

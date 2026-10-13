@@ -379,8 +379,8 @@ async function validatePackage(packagePath) {
     const queriedIds = [...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g)].map(
       (match) => match[1],
     );
-    assert.equal(manifest.version, "4.2.1", `${packagePath}: headless resume workflow version mismatch`);
-    for (const id of ["view-today", "view-dashboard", "view-resumes", "view-interviews", "view-materials"]) {
+    assert.equal(manifest.version, "5.0.0", `${packagePath}: guided workflow version mismatch`);
+    for (const id of ["view-career", "view-today", "view-dashboard", "view-resumes", "view-interviews", "view-materials"]) {
       assert.match(html, new RegExp(`id="${id}"`), `${packagePath}: missing v4 primary workspace ${id}`);
     }
     for (const mode of ["content", "versions", "files"]) {
@@ -2875,7 +2875,7 @@ async function validatePackage(packagePath) {
     );
     assert.match(
       sharedOperationHandler("save_candidate_context"),
-      /await applyJobHuntPanelOperation\("save_candidate_context"[\s\S]*?fields: \["profile", "repos", "experiences", "resume", "versions", "workflowRuns"\][\s\S]*?recordTraceArtifact/,
+      /await applyJobHuntPanelOperation\("save_candidate_context"[\s\S]*?fields: \[\.\.\.CAREER_FIELDS, "profile", "repos", "experiences", "resume", "versions", "workflowRuns"\][\s\S]*?recordTraceArtifact/,
       `${packagePath}: candidate handler must persist and roll back every field changed by the shared operation before publishing its Trace artifact`,
     );
     assert.match(appScript, /currentExportStatus\.fresh \? "" : " · 已过期"/);
@@ -3265,14 +3265,16 @@ async function validatePackage(packagePath) {
     );
     assert.match(
       sharedOperationHandler("save_resume_draft"),
-      /await applyJobHuntPanelOperation\("save_resume_draft"[\s\S]*?fields: \["resume", "versions", "jobs", "selectedJobId", "selectedBaseResumeId", "workflowRuns"\][\s\S]*?onRollback\(\)[\s\S]*?state\.activeView = previousUi\.activeView[\s\S]*?resumeMode = previousUi\.resumeMode[\s\S]*?recordTraceArtifact/,
+      /await applyJobHuntPanelOperation\("save_resume_draft"[\s\S]*?fields: \[\.\.\.CAREER_FIELDS, "resume", "versions", "jobs", "selectedJobId", "selectedBaseResumeId", "workflowRuns"\][\s\S]*?onRollback\(\)[\s\S]*?state\.activeView = previousUi\.activeView[\s\S]*?resumeMode = previousUi\.resumeMode[\s\S]*?recordTraceArtifact/,
       `${packagePath}: Agent resume drafts must restore both business and UI state before publishing their Trace artifact`,
     );
     assert.match(
       sharedOperationHandler("save_resume_qa_answer"),
-      /await applyJobHuntPanelOperation\("save_resume_qa_answer"[\s\S]*?fields: \["resume", "workflowRuns"\][\s\S]*?onRollback\(\)[\s\S]*?state\.activeView = previousActiveView[\s\S]*?recordTraceArtifact/,
+      /await applyJobHuntPanelOperation\("save_resume_qa_answer"[\s\S]*?fields: \[\.\.\.CAREER_FIELDS, "resume", "versions", "workflowRuns"\][\s\S]*?onRollback\(\)[\s\S]*?state\.activeView = previousActiveView[\s\S]*?recordTraceArtifact/,
       `${packagePath}: Agent resume QA writes must roll back through the shared adapter before publishing their Trace artifact`,
     );
+    assert.match(appScript, /async function applyJobHuntPanelOperation[\s\S]*?const scope = currentProject\(\)[\s\S]*?await runJobHuntOperation[\s\S]*?scope\.check\(\)[\s\S]*?await writeProjectSnapshot\(\)[\s\S]*?scope\.check\(\)/,
+      `${packagePath}: async shared resume/career operations must recheck their captured project before adoption or rollback`);
     for (const id of [
       "resume-qa-panel",
       "resume-qa-open-count",

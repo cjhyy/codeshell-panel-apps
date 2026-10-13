@@ -1,3 +1,4 @@
+import { readCareerLibraryVersion } from "../career-library-version-store.mjs";
 import { buildJobSearchContext } from "../job-search-context-model.mjs";
 import { normalizeInterviewLibrary } from "../interview-bank-model.mjs";
 import { resolveChannelVerificationForSession } from "../discovery-model.mjs";
@@ -26,6 +27,10 @@ export function jobSearchContextQuery(args = {}) {
   return {
     scope: cleanText(args.scope, 40) || "summary",
     jobId: cleanText(args.job_id, 100),
+    sourceId: cleanText(args.source_id, 100),
+    episodeId: cleanText(args.episode_id, 100),
+    qaId: cleanText(args.qa_id, 100),
+    versionId: cleanText(args.version_id, 100),
     resumeId: cleanText(args.resume_id, 100),
     interviewSetId: cleanText(args.interview_set_id, 100),
     bankQuestionId: cleanText(args.bank_question_id, 100),
@@ -39,6 +44,15 @@ export function jobSearchContextQuery(args = {}) {
 }
 
 export function getJobSearchContext(snapshot, args = {}, ctx = {}) {
+  if (args.version_id && ["career_sources", "career_episodes", "career_qa"].includes(args.scope) && !ctx.libraryVersion) {
+    const version = (snapshot.careerLibraryVersions || []).find(item => item.id === args.version_id);
+    if (!version) throw new Error("未找到知识库版本");
+    return readCareerLibraryVersion(version, { scope: ctx.scope, beforeOperation: ctx.beforeOperation })
+      .then(({ version, snapshot: historical }) => getJobSearchContext(
+        { ...snapshot, sourceMaterials: historical.sourceMaterials, careerEpisodes: historical.careerEpisodes, careerQa: historical.careerQa },
+        args, { ...ctx, libraryVersion: version },
+      ));
+  }
   const query = jobSearchContextQuery(args);
   const source = clone(snapshot) || {};
   const profile = source.profile || {};
@@ -63,6 +77,11 @@ export function getJobSearchContext(snapshot, args = {}, ctx = {}) {
       jdInboxPath: JD_INBOX_PATH,
       jdIntakeItems: source.jdIntakeItems || [],
       profile,
+      sourceMaterials: source.sourceMaterials || [],
+      careerEpisodes: source.careerEpisodes || [],
+      careerQa: source.careerQa || [],
+      careerLibraryVersions: source.careerLibraryVersions || [],
+      libraryVersion: ctx.libraryVersion || null,
       repositories: source.repos || [],
       workHistory: source.experiences || [],
       jobResearch: source.jobResearch || [],

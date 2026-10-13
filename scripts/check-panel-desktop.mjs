@@ -134,6 +134,13 @@ app.on("session-created", session => {
       await new Promise(done => setTimeout(done, 100));
     }
   }
+  const untilGuest = async (guest, source) => {
+    const deadline = Date.now() + 30_000;
+    while (await guest.execute(source) !== true) {
+      if (Date.now() >= deadline) throw new Error(`Guest condition timed out: ${source}; ${await guest.execute("document.body.innerText.slice(-1000)")}`);
+      await new Promise(done => setTimeout(done, 100));
+    }
+  };
   const installWhenIdle = input => whenIdle(input.id, () => ipc("installPanelAppUpdate", input));
   const binding = async (cwd, id) => (await ipc("getPanelAppBindings", cwd)).find(value => value.appId === id);
   async function descriptor(cwd, id) {
@@ -206,6 +213,27 @@ app.on("session-created", session => {
     await ipc("setPanelAppProjectBinding", projectB, id, true, unboundB.revision);
     const originalB = await binding(projectB, id);
     assert.equal(originalB.packageDigest, originalA.packageDigest);
+    let jobHuntCli;
+    if (id === "job-hunt-hq") {
+      // Execute retained, installed Panel bytes before creating any webview.
+      // The CLI package owns its own imports and needs no development modules.
+      jobHuntCli = (operation, input, revision) => {
+        const request = { operation, input, ...(revision === undefined ? {} : { expectedRevision: revision }) };
+        const cli = join(isolated.codeShellHome, "panel-apps/.versions", id, originalA.packageDigest, "app/tools/job-hunt-cli.mjs");
+        const child = spawnSync(process.execPath, [cli, "--project", projectA], { input: JSON.stringify(request), encoding: "utf8", timeout: 30_000, env: environment });
+        assert.equal(child.status, 0, child.stderr + child.stdout);
+        const receipt = JSON.parse(child.stdout);
+        assert.equal(receipt.ok, true, child.stdout);
+        return receipt;
+      };
+      const initial = jobHuntCli("get_job_search_context", { scope: "summary" });
+      assert.equal(initial.revision, null);
+      const sourceSaved = jobHuntCli("save_candidate_context", { source: { id: "career-source-desktop", provider: "user", title: "CLI saved before UI", excerpt: "Synthetic account of a recoverable save decision." } }, null);
+      jobHuntCli("save_candidate_context", { library_version: { action: "save", id: "career-version-desktop", title: "Headless library version" } }, sourceSaved.revision);
+      const raw = JSON.parse(await readFile(join(projectA, "job-hunt-panel.json"), "utf8"));
+      assert.equal(raw.careerLibraryVersions.length, 1);
+      assert.equal(raw.resume?.markdown || "", "");
+    }
     stage = `${id}: installed Main/preload/browser entry`;
     const first = await attach(projectA, id, "original-A");
     const second = await attach(projectB, id, "original-B");
@@ -223,6 +251,25 @@ app.on("session-created", session => {
       try { return await document.getElementById(elementId).executeJavaScript(interaction); }
       catch { return false; }
     }, { elementId: `acceptance-${id}-original-A`, interaction });
+    if (id === "job-hunt-hq") {
+      stage = "job-hunt-hq: retained CLI and real UI share native commits";
+      await first.execute("document.querySelector('[data-view-target=career]').click()");
+      await untilGuest(first, "document.querySelector('#career-list').textContent.includes('CLI saved before UI') && !document.querySelector('.app-shell').inert");
+      await first.execute(`(() => {
+        document.querySelector('[data-career-record="career-source-desktop"]').click();
+        const field = document.querySelector('[data-career-field="title"]');
+        field.value = 'UI saved through native CLI'; field.dispatchEvent(new Event('input', { bubbles: true }));
+        document.querySelector('[data-career-action="save"]').click();
+      })()`);
+      await untilGuest(first, "document.querySelector('#career-message').textContent.startsWith('已保存到项目')");
+      const fromUi = jobHuntCli("get_job_search_context", { scope: "career_sources", source_id: "career-source-desktop" });
+      assert.equal(fromUi.result.sourceMaterials.items[0].title, "UI saved through native CLI", JSON.stringify({ record: fromUi.result.sourceMaterials.items[0], guest: await first.execute("({message:document.querySelector('#career-message').textContent,title:document.querySelector('[data-career-field=title]').value,sync:document.querySelector('#project-snapshot-state').textContent})") }));
+      jobHuntCli("save_candidate_context", { qa: { id: "career-qa-desktop", question: "CLI update after UI", answer: "Synthetic actual answer remains separate from its draft expression." } }, fromUi.revision);
+      await first.execute("window.dispatchEvent(new Event('focus'))");
+      await untilGuest(first, "document.body.innerText.includes('检测到项目数据更新')");
+      await first.execute("document.querySelector('[data-career-kind=qa]').click()");
+      assert.equal(await first.execute("document.querySelector('#career-list').textContent.includes('CLI update after UI')"), true);
+    }
     const markerKey = "desktop-acceptance-marker";
     if (manifest.permissions.includes("storage")) {
       const saved = await first.call("storage.compareAndSet", { key: markerKey, expectedRevision: null, value: { project: "A", synthetic: true }, cwd: projectB, projectPath: projectB });
@@ -314,7 +361,8 @@ app.on("session-created", session => {
         manifest.permissions.includes("storage") ? "real-storage-cas-and-project-authority" : "undeclared-storage-denied",
         "changed-review-update-rejected-old-guest-and-data-preserved", "same-version-digest-update-project-only",
         "staged-package-rename-eacces-preserves-old-guest-and-data",
-        "exact-retained-package-restore-ipc", "chromium-http-denied"] });
+        "exact-retained-package-restore-ipc", "chromium-http-denied",
+        ...(id === "job-hunt-hq" ? ["headless-retained-package-cli-before-webview", "ui-native-cli-root-commit", "external-cli-update-focus-reload"] : [])] });
     for (const guest of [first, second, current, rolledBack]) await guest.remove().catch(() => {});
     console.log(`PASS ${id}: real Electron install/load/IPC, project isolation, rejected update, digest update and restore`);
     await fixture.assertWorker(app, { requireWorker: false });

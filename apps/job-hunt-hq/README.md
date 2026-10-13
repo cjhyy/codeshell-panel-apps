@@ -1,17 +1,92 @@
 # Job Hunt HQ · 求职作战室
 
+在 **CodeShell 当前 Session 的聊天**里，把已经 Link 的 Slack / GitHub 数据、自己的经历与
+想法整理成可持续更新的「经历、决策与问答库」。聊清楚背景、自己做了什么、为什么这样
+选择；每轮整理后可以预览本轮变化，再说“保存这个版本”。需要简历时，再从积累的内容生成。
+
+面板用于查看整理结果、版本差异和历史内容，手工表单作为补充。知识库的命名版本与软件版本、
+简历版本、面试练习和 AI 评分分别维护，保存知识库版本不会自动生成简历。
+
+## 不开面板也能读写
+
+内置 Skill 可通过本地 Node CLI 读写当前项目，无需先打开面板。当前支持四个操作：
+
+| 操作 | 范围 |
+| --- | --- |
+| `get_job_search_context` | 有边界的项目上下文、知识库记录和历史版本 |
+| `save_candidate_context` | 五种互斥增量模式：`source`、`episode`、`qa`、`library_version`、`career_update` |
+| `save_resume_draft` | 按需保存 Base Resume 或 JD 定制版 |
+| `save_resume_qa_answer` | 保存已有简历事实条目的回答 |
+
+完整的旧 `profile` + `repositories` + `work_history` 参数仍然兼容。岗位导入、调研、面试评分、Trace 等其余十二个操作仍走 Panel。保存经历和问答不会触发简历生成。
+
+直接 Chat / TUI 通过 `project-runtime` Skill 使用项目当前选中的包：确认 `${CODESHELL_SKILL_DIR}/../../..` 下 manifest 与 CLI，再读取 `ops` 中的实际参数。需要 PATH 中的 Node.js ≥20.10；写入前必须在实际 CodeShell Bash 中确认 Host 注入的 `CODESHELL_WORKSPACE_WRITE_PROTOCOL=1`，不得自行设置。该能力由 CodeShell 0.9.36+ 提供，版本号不能代替探针。
+
+```sh
+node "<selected-package>/app/tools/job-hunt.mjs" ops
+node "<selected-package>/app/tools/job-hunt.mjs" init --project "<current-project>"
+node "<selected-package>/app/tools/job-hunt.mjs" run get_job_search_context --project "<current-project>" --input-file "<request.json>"
+```
+
+请求文件只含同名 Tool 的参数。CLI 读取当前快照并条件写入，冲突时最多重新读取并计算一次，第二次冲突返回错误；不接受外部 `expectedRevision` 参数。知识库 JSON apply 另需预览返回的 token，它绑定更新文件、工作库和项目；任一内容变化后应重新预览。预览不写快照，同一文件与版本的成功 apply 重试保留后续编辑。
+
+面板发起且有 Trace 的任务继续使用 Panel Tool。面板与 CLI 共享 `job-hunt-panel.json`、分片、`career-data/` 历史以及 Host 0.9.36+ 的通用文件写锁。支持所需原生方法的面板通过内部 `job-hunt-cli` entry 提交暂存快照；它只是一层兼容提交适配器，复用同一份安全文件写入实现。直接 Chat 始终使用上述 `job-hunt.mjs`。旧 Host 不可与 CLI 并发写入同一项目。
+
+CLI 操作锁为项目根目录 `.job-hunt-write.lock`，通用文件锁位于目标文件父目录，名为 `.codeshell-workspace-write-<sha256(NFC-lowercase-filename)>.lock`；两者最多等待五秒，均不自动删除遗留锁。确认没有活跃写入者后再处理崩溃遗留锁。已保存结果会在面板打开、回到前台或定期检查时读入；有未保存编辑时保留草稿并提示冲突。
+
+## 在聊天中积累一个版本
+
+1. 在当前聊天贴 Slack 消息链接、GitHub 仓库 / PR / Commit 链接，或让 Agent 使用已连接并由你指定的数据。例如：“整理这段讨论，问我当时为什么选这个方案。”
+2. Agent 通过当前可用的 Link 读取所选材料，在聊天里逐题补齐背景、本人行动、考虑过的方案、选择原因、取舍和结果。没有依据的部分保持待确认；真实回答与 AI 表达草稿分开保存。
+3. 让 Agent “预览这轮更新”：查看相较上一个知识库版本新增了哪些经历和问答、修改了什么、还缺哪些事实。预览本身不保存一个新版本。
+4. 在聊天说“保存这个版本，叫缓存方案复盘”等明确指令。Agent 将当前经历、决策和问答冻成一个不可变的命名版本，保留当时的草稿、待审内容与来源；之后可在面板回看历史和差异。
+
+## 让聊天输出面板可用的 JSON
+
+面板自带 `job-hunt-workflow` Skill、[JSON Schema](agent/skills/job-hunt-workflow/references/career-update.schema.json)
+和[完整合成示例](agent/skills/job-hunt-workflow/references/career-update.example.json)。可直接在当前聊天说：
+“把这轮经历、决策和问答按面板格式写成 JSON，预览后保存一个版本。”
+
+Agent 用 File 工具写入 `career-data/updates/<名称>.json`，通过现有工具的 `career_update`
+接口预览；已有保存授权时，使用返回的 token 一次保存增量记录和命名知识库版本。也可以只要求
+生成文件或预览。每个文件最多 128 KiB，材料、经历和问答各最多 25 条；已有核实内容的修改
+保留为待审修订，事实回答与表达草稿分开。文件或工作库变动后需要重新预览；相同版本和相同
+文件的重试不会覆盖后续编辑。单条实时写入仍可使用。
+
+保存超时或回执丢失时，Agent 先按原 `version_id` 查询知识库版本；超时不会取消面板保存。
+已保存则直接使用，仍在保存则等待，确定失败后才按相同文件和版本 ID 重试，避免重复建版。
+
+只写 JSON 不会自动导入，也不需要 HTTP 端口或后台扫描；通过接口明确执行才会更新面板。
+合成示例仅展示格式，不能作为你的真实经历导入。保存此更新不会自动生成简历。
+
+当你在当前聊天明确核实某条事实，Agent 可以记录你的确认原话，无需再去面板逐条重填。
+仅要求保存版本不等于确认全部事实。后续未确认的 AI 修改保留为待审修订，来源变化会提示
+相关事实和简历证据复核。知识库版本保持当时内容，不会随之后的编辑或归档变化。
+
+Slack 材料保留上下文、作者和原链接；GitHub 贡献核验作者与实际 diff，团队成果不会自动写成
+个人主导。工具不会自动连接或扫描其他账号；来源不可读时会说明缺口。内部消息、代码、
+证据摘录与私有问答不会自动进入公开简历或 PDF，确认事实也不等于授权公开。
+
+当前工作库支持搜索、筛选和归档，编辑输入按项目保留。旧简历中的事实问答迁移并继续同步
+到长期问答库，原简历版本和练习记录保留。要生成简历时，在聊天明确提出这个单独任务即可。
+
+备份全部命名知识库版本时，请保留整个项目的 `career-data/` 目录和 `job-hunt-panel.json`，
+包括独立版本文件、所引用的分片和原始材料文件。单个 Panel 快照恢复档案只恢复当前库与
+版本索引，不包含独立历史版本或外部原始材料；缺少版本文件时会明确报错，不用当前库冒充历史。
+
 3.0 的持续重构方案见 [TECHNICAL-PLAN-v3.md](app/TECHNICAL-PLAN-v3.md)。它以当前项目为唯一
 业务数据源，并把面试训练收敛为“直接练习、立即反馈、针对性重练”，同时保留 Base Resume、
 JD Variant 与逐项证据审核。
 
 一个只绑定 **CodeShell 当前项目与当前 Session** 的求职可视化面板。通用协作仍在
-CodeShell Session 中进行；模拟面试则全程留在面板中逐题作答和语音转写，保存时直接写进当前项目，不发送 Session 消息，也不等待 Agent。需要时再单独让 Agent 读取某一道已保存回答进行复盘评分。面板包自带工作流编排、岗位情报、简历写作、简历设计和面试教练五个 Skill，以及结构化工具。你把工作经历、
+CodeShell Session 中进行；模拟面试则全程留在面板中逐题作答和语音转写，保存时直接写进当前项目，不发送 Session 消息，也不等待 Agent。需要时再单独让 Agent 读取某一道已保存回答进行复盘评分。面板包自带工作流编排、岗位情报、简历写作、简历设计、面试教练和项目运行六个 Skill，以及结构化工具。你把工作经历、
 项目说明、代码和规则放进当前项目，Agent 会在相关对话中自动识别适用 Skill，读取根目录的
-`CODESHELL.md`，先建立方向级 Base Resume，再生成并展示岗位、完整 JD、公司调研、JD 定制版简历、
+`CODESHELL.md`，按你选定的任务更新经历库，或生成方向级 Base Resume、岗位资料、公司调研、JD 定制版简历、
 补强计划、面试题和真实复盘。
 
 ## 当前能力
 
+- v5.0.0 以当前 Session 聊天积累经历、决策和事实问答：读取指定的 Slack / GitHub 资料、逐题补背景和选择原因、预览与上一知识库版本的差异，再由聊天指令保存不可变命名版本。保留草稿与待审状态，显式聊天事实确认无需回面板重填；面板查看版本、差异和历史，简历按需单独生成。现有 16 个工具通过 `save_candidate_context` 的互斥 `source` / `episode` / `qa` / `library_version` / `career_update` 模式扩展，不增加工具数量。
 - v4.2.1 修复通过符号链接路径启动 CLI 时静默退出的问题，包括 macOS `/tmp` 路径别名
 - v4.2.0 把简历样板四个操作抽成共享纯模块，直接 Chat / TUI 可调用包内 CLI；无界面写入需要 Node.js ≥20.10 在 PATH 中，Skill 先检查当前 Bash 的 Host 写入协议标记，保证 Host 与 CLI 共用文件写入锁
 - v4.1.0 为“历史版本”补齐 Base Resume 与岗位定制版的安全删除：非当前版本可在卡片上直接删除；当前正在编辑的版本禁止删除，仍被岗位版引用的 Base 会明确列出阻塞数量；删除中断或项目写入失败会完整回滚，删除中间 revision 时自动重连后续来源链，已保存的 Markdown/PDF 文件不会被连带移除
@@ -64,7 +139,7 @@ CodeShell Session 中进行；模拟面试则全程留在面板中逐题作答�
 - 内置渠道和用户添加的 HTTPS 招聘页都在独立“渠道管理”中逐个处理；添加只保存渠道，不会搜索岗位。用户可直接“登录并保存”，由 CodeShell Host 打开隔离登录窗口、保存 Cookie 凭证并恢复到当前任务浏览器；已有登录可“恢复并验证”。每次 Agent 仍只打开一个渠道并写回“已可用 / 需要登录 / 需要验证码 / 访问受限 / 暂不可用”。当前任务未通过的渠道不能进入搜索；面板和 Agent 不读取、导出或物化 Cookie
 - 根据当前项目资料、Base Resume、待筛选岗位、关注岗位和投递提醒，在首页给出一个可直接执行的“当前下一步”
 - 岗位区可在“待筛选 / 关注中 / 全部”间快速切换；任务编排器放在岗位与简历工作区之后，先看对象再组合任务
-- 在“当前项目上下文”中一键初始化：自动复用已有简历和经历、补齐缺失的 `CODESHELL.md` / `career-data` 模板、同步面板快照，并在证据足够时生成第一份 Base Resume
+- 在“当前项目上下文”中一键初始化：自动复用已有简历和经历、补齐缺失的 `CODESHELL.md` / `career-data` 模板、同步面板快照；第一份 Base Resume 在用户另行要求且证据足够时生成
 - 可在“当前项目”中清空岗位池与全部面板产物后重新开始；只重写 `job-hunt-panel.json`，不会删除原始简历、经历、Repo、`CODESHELL.md` 或其他项目文件
 - 在首页选择零个、一个或多个岗位，再自由组合本次需要的任务
 - 用“简历优化、面试准备、面试复盘、完整岗位包”预设快速勾选，但仍可继续增减任务
@@ -204,7 +279,7 @@ Skill 在实际 CodeShell Bash 中读取 `CODESHELL_WORKSPACE_WRITE_PROTOCOL`，
 
 第一版 CLI 仅支持 `get_job_search_context`、`save_candidate_context`、
 `save_resume_qa_answer`、`save_resume_draft` 四个操作。其余十二个 Tool、可视化预览和
-PDF 导出仍走面板。决策先保存在简历私有问答的 `decision` 分类中。
+PDF 导出仍走面板。决策保存在私有经历的 decision/reason/tradeoffs 字段和长期事实问答中；旧简历 `decision` QA 继续保留并链接到问答库。
 终端用法和后续分期见[能力包方案](../../docs/todo/job-hunt-capability-pack-design.md)。
 
 ## 安装
