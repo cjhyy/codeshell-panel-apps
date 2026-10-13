@@ -33,13 +33,18 @@ Panel Tool 和两个 CLI 适配层调用同一组操作。直接 Chat / TUI 始�
 增量事实超出既有 UTF-16 存储容量时会在规范化前拒绝，包括非 BMP 字符和列表项，
 不会以保存成功掩盖原文截断；已有未触及的超长原文和扩展字段保留。
 
-候选验证已通过：`npm run check -- --suite job-hunt-hq`（351/351，另两项 Unicode
-回归在最终全套重跑中）、六个 Skill 的 quick validation、read-only 安装包 preflight。
+候选验证已通过：最终 `npm run check -- --suite job-hunt-hq` 为 356/356，含源码类型和
+提交构建检查；整合后的全仓 `npm run check` 为 2212 项、2208 通过、4 跳过、0 失败，
+最后的输入容量保护另重跑上述受影响 suite 与真实 Host gates。`node scripts/validate.mjs`
+通过，六个 Skill 的 quick validation 通过。干净代码提交 `baa7c7035400d7ba2ccebd25453c45144c55fcdb`
+生成的候选 ZIP 经官方 Core 只读审阅，目录与 ZIP 的 reviewToken 一致，仍为 16 Tool / 6 Skill，
+Host 权限相对 4.2.1 无新增。该 token 是审阅标识，不是 installed packageDigest。
 真实 Host 四 worker gate 通过，覆盖 reviewed install、项目固定 Skill 展开、真实 Bash
 四个原操作与经历库操作、不可变版本、预览只读、双向陈旧写拒绝和进程间锁。
 真实升级 gate 通过 4.1.0 / 4.1.1 / 4.2.1 → 5.0.0 → 原版 → 5.0.0，验证原文、分片、
 精确备份、草稿迁移、新事实与命名历史保留；八个受控 Chromium 实例关闭后清理临时 HOME。
-这些使用隔离合成项目与已构建 Server / Core，不建立 5.0 的生产安装、自然模型对话、
+最终真实 Host gates 针对上述代码提交重跑通过，Host source 为 `fb34941c8d375377d361573dc85a61f24520872f`
+（清单版本 0.9.40）。这些使用隔离合成项目与已构建 Server / Core，不建立 5.0 的生产安装、自然模型对话、
 真实外部来源或 OS 网络隔离结论。此次不发布、安装或修改真实个人数据。
 
 ## 0. 本版范围
