@@ -1,7 +1,7 @@
 # Job Hunt HQ 能力包：脱离面板运行（简历样板）
 
-> 状态：Job Hunt HQ v4.2.1 已正式发布，修复 CLI 别名入口；首次版本 v4.2.0 与 CodeShell v0.9.36 的发布记录保留在下文，P1 / P2 与共用写入锁验收完成。Desktop 已安装 0.9.36，启动等待系统钥匙串授权；实际 Desktop Bash / 模型对话及本机 Panel 升级尚未验收。日期：2026-10-13。<br>
-> 首次 Panel 实现已通过 PR #77 合入 `main`；本次补丁与发布证据维护分支为 `codex/job-hunt-hq/headless-release-evidence`。配套 CodeShell Host 0.9.36 提供共用文件写入锁。<br>
+> 状态：Job Hunt HQ v4.2.1 已正式发布，修复 CLI 别名入口；首次版本 v4.2.0 与 CodeShell v0.9.36 的发布记录保留在下文，P1 / P2 与共用写入锁、隔离 TUI / Desktop 链路验收完成。Desktop 已安装 0.9.36 并可交互启动；生产 Panel 升级、当前项目所选 Skill 及桌面 Chat 不自动打开面板仍待验收。日期：2026-10-13。<br>
+> 首次 Panel 实现已通过 PR #77 合入 `main`；补丁与发布证据来自 `codex/job-hunt-hq/headless-release-evidence`，当前本机验收维护分支为 `codex/job-hunt-hq/local-runtime-acceptance`。配套 CodeShell Host 0.9.36 提供共用文件写入锁。<br>
 > 本文从 `codeshell/docs/todo/` 迁入，基于 Job Hunt HQ v4.1.2 更新。下文应用路径相对于 `apps/job-hunt-hq/`。
 
 ## 0. 本版范围
@@ -209,16 +209,19 @@ Host summary、CLI `qa-scope` 和已有 `qa-decision` 全部保留。真实 Bash
 提交主文件，且先等进程关闭再清理测试项目，避免把未完成 writer 当成已安全停止。
 
 这组 gate 使用本次已发布 v0.9.36 的 Host 实现。Desktop 已经官方 updater 安装为
-0.9.36，但新进程启动等待系统钥匙串授权，实际 Desktop Bash / 模型对话尚未验收。
-尚未完成真实已安装 Desktop 的升级后端到端场景、TUI 模型对话及招聘网站认证；
-全局 TUI 已升级并验证版本，但这些安装和模型路由集成检查不能由版本输出或存储 gate 替代。
+0.9.36 并已可交互启动，先前的系统钥匙串等待阻塞已解除；实际 Desktop Bash / 模型
+对话尚未验收。
+本版实际待项为生产 Panel 升级、当前个人项目所选 Skill，以及桌面 Chat 调用时不自动
+打开面板。真实全局 TUI 的隔离脚本化对话与 Desktop 隔离存储链路已通过，见第 7.4 / 7.5 节；
+这些证据确认执行链路，不评估真实 provider 的回答质量。
+招聘网站认证及其余 12 个 Tool 的迁移不属于本期四个简历操作的验收范围，留在 P3。
 
 ## 5. 分期
 
 | 期 | 范围 | 本次状态 |
 | --- | --- | --- |
 | P1 | codec、四个 op、Node workspace 适配、CLI、四个 handler、操作和存储一致性测试 | 4.2.0 与 4.2.1 入口补丁均已发布；4.2.1 的 146 个应用测试、真实 Host 共用锁 gate 通过 |
-| P2 | project-runtime、workflow 路由、manifest 4.2.0 → 4.2.1、外部修改场景检查 | 首次 4.2.0 已发布，4.2.1 继承原功能；真实 Bash 能力标记与四 worker gate 通过，Desktop 0.9.36 启动等待系统钥匙串授权，本机 Panel 升级与实际对话验收未完成 |
+| P2 | project-runtime、workflow 路由、manifest 4.2.0 → 4.2.1、外部修改场景检查 | 首次 4.2.0 已发布，4.2.1 继承原功能；真实 Bash 能力标记与四 worker gate 通过，Desktop 0.9.36 已可交互启动，本机 Panel 升级与实际对话验收未完成 |
 | P3 | 其余 12 个 Tool 迁移；discovery 收据改为直接 CLI 写入 | 后续，不属于本版 |
 | P4（可选） | 若需要结构化 Tool 无页面执行，向 Host 提 nativeEntry 通用能力 | 未启动；另起 Host 分支 |
 
@@ -252,14 +255,23 @@ merge commit 为 `3f80db2c6130c69e5ade873f0f0aebb9593b1631`。
 
 正式 [job-hunt-hq-4.2.0.zip](https://github.com/cjhyy/codeshell-panel-apps/releases/download/job-hunt-hq-v4.2.0/job-hunt-hq-4.2.0.zip)
 从干净合入提交的 `apps/job-hunt-hq/` 子树生成，ZIP 根目录直接包含 `.codeshell-panel/`、
-`app/`、`agent/` 等包文件。已重新下载发布副本，确认以下校验值，目录与归档的 payload
-digest 一致；多 Panel 仓库的全局 Latest 仍为 `quant-lab-v0.45.2`：
+`app/`、`agent/` 等包文件。已重新下载发布副本，确认以下校验值，目录与归档的
+`reviewToken` 一致；多 Panel 仓库的全局 Latest 仍为 `quant-lab-v0.45.2`：
 
 ```text
 release ZIP SHA-256: bbb92846077879bff258e4b4527754ad575932f3e57f17611ad761af66752a98
-packageDigest: bb7b49ad27e9f861735592f35c7816f8af631e7247e10c4134adc94fa22eb1b1
+reviewToken: bb7b49ad27e9f861735592f35c7816f8af631e7247e10c4134adc94fa22eb1b1
+packageDigest: 3575117cc3b4283d18ba8969e5ff81603beeb947f9ad205c177faa37dfe3a189
 job-hunt CLI SHA-256: 41148353564d6921ac46fff7a677d4a9098cce128a05170a0db24c1961279b34
 ```
+
+旧预检曾将 `reviewToken` 误标为 `packageDigest`，历史回执保留。正式 Core 0.9.36
+现已在临时 HOME 对旧正式 ZIP 独立执行 preview → reviewed install →
+`resolvePanelAppPackage`，确认上述两个独立标识、CLI 哈希及 16 个 Tool / 6 个 Skill。
+该过程禁用全部网络，owned worker 关闭后才清理临时目录，未改变生产安装、项目绑定、
+Tag 或 ZIP；create-only 回执为
+`/Users/admin/Downloads/codeshell-0.9.36-job-hunt-4.2.1/historical-4.2.0-package-identity.json`。
+4.2.0 Release 说明本来没有这些哈希字段，无需修改。
 
 配套 Host [PR #150](https://github.com/cjhyy/codeshell/pull/150) 已合入，merge commit 为
 `323a997afb830a4a82d6ac1e3196965b8293cac9`。
@@ -277,8 +289,8 @@ job-hunt CLI SHA-256: 41148353564d6921ac46fff7a677d4a9098cce128a05170a0db24c1961
 
 | 项目 | 已核实状态 |
 | --- | --- |
-| 全局 TUI | 已升级到 `0.9.36`，`--version` 已验证 |
-| Desktop | 官方 updater 已安装 `0.9.36`，plist 已确认；新进程启动等待系统钥匙串授权，实际 Desktop Bash / 模型对话尚未验收 |
+| 全局 TUI | 已升级到 `0.9.36`，`--version` 已验证；真实 PTY / Ink 的隔离脚本化对话验收通过，见第 7.4 节 |
+| Desktop | 官方 updater 已安装 `0.9.36`，plist 已确认；已可交互启动，实际 Desktop Bash / 模型对话尚未验收 |
 | 本机 Job Hunt HQ | 仍为 `4.1.1`、5 个 Skill；升级目标为已发布的 `4.2.1`，尚未安装 |
 
 升级目标 4.2.1 继承 4.2.0 的 16 个 Tool、6 个 Skill，相对 4.1.2 开发基线
@@ -287,17 +299,22 @@ job-hunt CLI SHA-256: 41148353564d6921ac46fff7a677d4a9098cce128a05170a0db24c1961
 `credentials.connections` 三项新增权限，这些来自已合入的 4.1.2 基线。
 确认与安装尚未完成，安装后还需核对所选包版本、digest 和项目绑定回执；不能通过
 复制文件或修改 `installed.json` 代替安装流程。
+生产窗口已可交互，桌面控制工具检测到窗口被其他操作切换；本次新增权限的安装时
+确认与短暂使用窗口的确认仍在等待回复。
+真实 `codeshell` 项目已打开安装审阅，显示 4.1.1 → 4.2.1、16 个 Tool、6 个 Skill
+及 `project-runtime`；最终“确认并安装”按钮尚未点击，回执为
+`production-install-review-staged.json`。这只是生产安装审阅，不能算安装或绑定已完成。
 
 Desktop 安装后已通过 `codesign --verify --deep --strict`，内置 Node `24.21.0` 的
 空 PATH 执行通过；`app.asar`、主可执行文件和 managed Node 的哈希与官方 ZIP 一致。
 完整目录比对的 729 个文件、14 个符号链接一致，仅 node-pty 辅助 Python 文件的权限
 由 `0775` 收紧为 `0755`。
 
-新进程采样确认主线程同步等待 `SecKeychainFindGenericPassword`，SecurityAgent 进程已出现；
-采样不能证明系统提示当前可见，仍需用户检查并完成钥匙串授权。CUA 明确禁止控制
-SecurityAgent，已请用户接手系统提示，目前尚未收到回复；没有修改钥匙串或凭据。
-完成系统授权后，仍需在实际 Desktop
-Bash 中验证协议标记为 `1` 并完成运行验收；安装完整性通过不能替代这些检查。
+启动阶段曾采样到主线程同步等待 `SecKeychainFindGenericPassword`，并观察到
+SecurityAgent 进程；采样不能证明当时系统提示可见。CUA 明确禁止控制 SecurityAgent，
+当时已请用户检查系统提示，没有修改钥匙串或凭据。当前 Desktop 已可交互启动，
+此前阻塞已解除；仍需在实际 Desktop Bash 中验证协议标记为 `1` 并完成运行验收，
+安装完整性和窗口可交互不能替代这些检查。
 
 首次发布后，正式 public Core `0.9.36` 与下载的正式 Panel ZIP `4.2.0` 的隔离合成
 数据验收已通过（历史 4.2.0 证据）：
@@ -310,9 +327,13 @@ Bash 中验证协议标记为 `1` 并完成运行验收；安装完整性通过�
 使用 macOS `/tmp` 符号链接别名时，CLI 入口检查未命中，未执行操作。改为 `realpath`
 后，包代码和严格断言均未改变即通过。该次发现的别名入口静默退出问题已在 4.2.1
 发布版修复，增量回归见第 7.3 节；历史 4.2.0 包仍有此问题。
-真实 Desktop / TUI 模型对话、实际所选 Panel 的安装和 Skill 路由仍待验收，不据公开发布
-或隔离合成检查宣称本机端到端使用已经完成。本机求职快照、项目绑定及包 pin 已核对
-与升级前一致。
+生产 Panel 升级、当前个人项目所选 Skill 及桌面 Chat 不自动打开面板仍待验收，不据公开
+发布或隔离合成检查宣称生产项目端到端使用已经完成。本次安装前另存当前基线
+`before-install-current.json`：Job Hunt HQ 仍为 4.1.1，求职快照 SHA-256 与原始基线一致，
+项目 bindings 一致；用户或其他任务已将 Video Studio pin 从 0.7.2 更新为 0.7.3。
+后续升级应核对当前基线中的其余三个 Panel pin，不能把这项既有外部变化归因于本次升级。
+最新 `local-state-current.json` 再次确认生产 Job Hunt HQ 仍为 4.1.1，快照、bindings 和
+其余三个 Panel pin 均与上述当前基线一致。
 
 ### 7.3 4.2.1 CLI 入口补丁（已发布）
 
@@ -343,7 +364,18 @@ job-hunt CLI SHA-256: 0e85a9a18dc93e966ffae05d0f69da499a8358a31c023664442454cb5c
 `reviewToken` 保留上述 preflight 的源内容审阅身份；项目版本绑定使用 `packageDigest`。
 后者按正式 ZIP 与固定 `75431542` 的相同文件内容独立重算，包含 Core 的
 `codeshell-panel-package-v1\0` 域、排序后的文件路径、字节长度和原文，不能用
-`reviewToken` 替代。这项纯内容核验不增加下述组合验收或本机使用验收的范围。
+`reviewToken` 替代。
+
+另已用正式 Core 0.9.36 在临时 HOME 对正式 ZIP 运行 preview →
+`installReviewedLocalPanelApp` → `resolvePanelAppPackage`，严格确认上述 `reviewToken`
+与 `packageDigest` 独立，实际保留包的 CLI 哈希、16 个 Tool、6 个 Skill 均一致。
+该补充安装验收的 create-only 回执为发布证据目录中的
+`corrective-published-package-identity.json`，不代表生产 Panel 已升级。
+
+GitHub Release 说明中原先误把审阅标识标成 package digest，现已分别列出并更正。
+更正后通过 `gh` 重新读取正文，与本地 `release-notes-corrected.md` 完全一致，回执为
+`release-notes-correction.json`；Tag 与 ZIP 均未改变。原错标历史回执保留，预检脚本
+`release-preflight.mjs` 已改为输出 `reviewToken` 字段，原脚本保存在 `.original` 副本中。
 
 | 4.2.1 检查 / 发布证据 | 当前结果 |
 | --- | --- |
@@ -351,8 +383,9 @@ job-hunt CLI SHA-256: 0e85a9a18dc93e966ffae05d0f69da499a8358a31c023664442454cb5c
 | 正式 npm Host `0.9.36` 的四 worker 存储 / runtime gate | 全部通过；Server / Core / Web / Link / Coding 五包均核实为正式 `0.9.36`，临时 npm HOME、禁用 install scripts、独立依赖布局；日志 `/tmp/job-hunt-4.2.1-host-storage.log` |
 | 完整 `npm run check` | 共 2,005 个测试：2,001 通过、4 跳过、0 失败 |
 | Job Hunt HQ suite | 146 / 146 通过 |
-| [main CI 38289290440](https://github.com/cjhyy/codeshell-panel-apps/actions/runs/38289290440) | 检查的代码 SHA 与正式提交一致；适用的 Package Offline 与 PDF 检查已成功，发布时快照为 6 / 7 job 成功，仅无关 Video UI 仍在运行，不记为全量 CI 完成 |
+| [main CI 38289290440](https://github.com/cjhyy/codeshell-panel-apps/actions/runs/38289290440) | 检查的代码 SHA 与正式提交一致，最终 7 / 7 job 全部成功，含 Package Offline、PDF 与 Video UI；最终快照回执 `panel-ci-final.json` |
 | 正式新 ZIP + 全局已安装 Core 0.9.36 组合及别名入口验收 | 通过；正式 ZIP SHA-256、审阅标识 `reviewToken` 和 CLI 哈希与上列发布值一致，物理路径与符号链接目录别名的 `ops` 都返回严格单行 JSON，`ok` 为真且四操作列表深比较一致，`symlinkCLIEntryVerified: true` |
+| 正式 Core 临时 HOME 的独立 reviewed 安装与保留包解析 | 通过；`reviewToken`、`packageDigest` 与上列值分别一致，CLI 哈希及 16 个 Tool / 6 个 Skill 一致 |
 
 正式组合验收通过真实 Core Bash 完成 `ops`、`init` 和四个操作，协议标记从输入 `0`
 变为 Host 注入的 `1`；候选人、简历、私有决策问答与 source / session 正确落盘，
@@ -360,6 +393,68 @@ QA 不改公开简历，只读操作不写快照。10 次禁网预加载均使�
 owned child 全部关闭后清理临时现场。create-only 回执为
 `/Users/admin/Downloads/codeshell-0.9.36-job-hunt-4.2.1/published-runtime-acceptance.json`。
 
-4.2.1 已完成正式发布与隔离合成数据组合验收，本机 Panel 尚未安装。组合验收未读取
-真实个人项目、settings 或 credentials，未执行安装或修改 binding；实际个人项目的
-Skill 路由、Panel 安装及 Desktop / TUI 模型对话仍未验收，边界按第 7.2 节记录。
+4.2.1 已完成正式发布、隔离合成数据组合验收与临时 HOME 的独立 Core 安装验收，
+生产 Panel 尚未安装。原 runtime 组合验收未读取真实个人项目、settings 或 credentials，
+未执行安装或修改 binding；补充 Core 安装只发生于临时 HOME。生产 Panel 升级、当前
+个人项目所选 Skill 及桌面 Chat 不自动打开面板仍待验收；隔离 TUI / Desktop 验收另见
+第 7.4 / 7.5 节，生产边界按第 7.2 节记录。
+
+### 7.4 真实 TUI 的隔离脚本化对话验收（已通过）
+
+使用真实全局 meta / Core / TUI 0.9.36 与官方 ZIP 4.2.1，在私有 HOME 中完成 reviewed
+安装并绑定 `packageDigest: 78964236094b7cfb36e4c2f9e96411daa0aca812b57bb9d3cab0352d6407080b`。
+真实 PTY / Ink 的 `/skills` 显示 Panel App 的 `project-runtime`，该步骤没有模型请求。
+随后全部 24 个请求都由精确 loopback 地址上的脚本化 fixture 响应，包含 11 个主步骤
+请求和 13 个辅助请求，没有使用真实外部 provider。
+
+实际执行链 ToolSearch → Skill 选定安装包路径 → Bash 已通过；Host 注入的协议值 `1`
+覆盖项目尝试设置的 `0`，`ops`、`init` 与四个操作均成功。候选人、简历和 source /
+session 正确持久化，私有决策问答未进入公开 Markdown。TUI 正常 `/exit`，退出码为 0；
+9 次 guard 预加载均在隔离环境中，全部 owned CLI 等待关闭后才删除 scratch。
+
+稳定验收脚本与回执分别为发布证据目录中的 `isolated-tui-acceptance.mjs` 与
+`isolated-tui-acceptance.json`。前两次 fixture 尝试因 PTY 发送时点和问答最少三项校验
+失败，已归档到 `isolated-tui-fixture-attempts.json`，均确认 owned process 关闭后清理。
+
+该验收覆盖真实 TUI 和 Core 的安装包选择、Skill 展开与 Bash 工具路由，使用合成项目
+及脚本化响应；不证明真实个人项目的包选择、真实 provider 的回答质量或生产 Panel
+升级完成。生产状态仍按第 7.2 节记录。
+
+### 7.5 官方 Desktop 字节的隔离存储链路验收（已通过）
+
+在临时 wrapper 容器中加载与官方安装一致的 executable / `app.asar` 原字节，在
+Main 运行前设置私有 native HOME、userData 和 CodeShell 状态，预装 native / JS guard
+及 mock Keychain。12 项负探通过；native allowlist 只允许指定的官方 managed Node
+版本探测或带 guard 的 agent worker，其余子进程和网络尝试被拒绝并记录。该方式
+使用官方二进制字节，但不等于正式签名容器直接启动、真实个人项目或真实 Keychain 验收。
+本轮 `mainNativeSpawns: []`，worker / cork / permit 仅预装机制，并未实际执行；
+不据此宣称 Desktop Bash 或 agent worker 的执行已通过验收。
+
+真实 Main IPC 对正式 ZIP 完成审阅、安装和项目绑定，所选包为 4.2.1，
+`packageDigest` 为 `78964236094b7cfb36e4c2f9e96411daa0aca812b57bb9d3cab0352d6407080b`。
+四项检查通过：
+
+1. 实际 sandbox guest 的 Node / `require` 不可用。
+2. Main 注册的 Tool 能读写合成数据；实际 UI 创建 Trace，随后手动 dispatch 并完成。
+   自然 Panel-origin prompt 提交因 synthetic session 不存在而返回 `ENOENT`，因此
+   `panelOriginPromptSubmissionAccepted: false`、`naturalModelRouteVerified: false`；
+   本项不证明模型自然路由。
+3. 外部 CLI 更新后，干净面板通过实际 focus 事件触发 Host `workspace.readText` 并重新读取。
+4. 将自有合成项目目录临时设为 `0500`，真实 UI 输入触发 autosave `EACCES`，本地草稿
+   保留；恢复 `0700` 后外部 CLI 提交获胜，focus 检查提示冲突并拒绝覆盖外部内容。
+   这是实际 I/O 故障下的 dirty draft 场景，未证明普通手动未保存 idle 状态。
+
+最终回执为
+`/Users/admin/Downloads/codeshell-0.9.36-job-hunt-4.2.1/isolated-desktop-storage-acceptance.json`。
+Electron 退出码为 0，owned CLI 与 Main 子进程均已关闭，测试现场保留供审阅。
+
+早期探测的边界另由 `isolated-desktop-first-probe-correction.json` 和
+`isolated-desktop-historical-probes-correction.json` 更正，原回执与失败现场保留。
+首探缺少 Main 前 guard 回执，实际 native HOME 仍为真实 HOME，在安装前的隔离断言
+失败后停止；后续早期探测的 native subprocess 约束也不完整，曾观察到登录 shell、
+远程 git 和 Codex app-server 子进程。早期是否读取真实凭据、个人数据或 shell 配置，
+以及是否发生网络访问，均不能确证为零；最终通过不能消除这些历史未知状态，也不能
+把早期曾标为成功的回执视为完整隔离通过。
+
+生产 Panel 仍为 4.1.1，实际项目绑定与桌面 Chat 的无面板调用按第 7.2 节等待安装确认；
+本节隔离安装与手动 Tool / Trace 检查不代替生产升级或自然模型路由。
