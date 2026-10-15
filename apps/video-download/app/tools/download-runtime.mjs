@@ -319,14 +319,23 @@ async function jsRuntimeArguments(executable, env, signal) {
 }
 
 async function doctor(project, options, env, signal, fetcher) {
-  const snapshot = await getEnvironment(project, { env, signal, fetcher,
-    binDirectory: options["bin-dir"], refresh: options.refresh === true,
-    includeLatest: options.latest === true });
+  const snapshot = await getEnvironment(project, {
+    env,
+    signal,
+    fetcher,
+    binDirectory: options["bin-dir"],
+    refresh: options.refresh === true,
+    includeLatest: options.latest === true,
+  });
   const { dependencies, cached, checkedAt, ready, latest } = snapshot.result;
   const runtimeArgs = await jsRuntimeArguments(dependencies["yt-dlp"].path, env, signal);
   return {
     node: { version: process.versions.node, executable: process.execPath },
-    dependencies, cached, checkedAt, ready, ...(latest ? { latest } : {}),
+    dependencies,
+    cached,
+    checkedAt,
+    ready,
+    ...(latest ? { latest } : {}),
     javascriptRuntime: {
       available: Number(process.versions.node.split(".")[0]) >= 22,
       enabled: runtimeArgs.length > 0,
@@ -1146,7 +1155,8 @@ export async function main(
       ),
     };
   }
-  if (command === "doctor") return { ok: true, result: await doctor(project, options, env, signal, fetcher) };
+  if (command === "doctor")
+    return { ok: true, result: await doctor(project, options, env, signal, fetcher) };
   if (command === "inspect")
     return {
       ok: true,

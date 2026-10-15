@@ -353,11 +353,17 @@ const downloadService = panel
             .join(" ");
         sharedServiceReady = true;
         sharedQueue = downloadService.queue;
-        const selected =
+        let selected =
           currentJob?.backend === "cli"
             ? allTasks().find((job) => job.queueId === currentJob.queueId) ||
               allHistory().find((job) => job.queueId === currentJob.queueId)
             : null;
+        if (currentJob?.backend === "cli" && !selected) {
+          currentJob = null;
+          updateTask({ state: "idle", title: "请选择下载任务", status: "记录已归档。" });
+          elements.taskLog.textContent = "";
+        }
+        if (!currentJob) selected = allTasks().find((job) => job.backend === "cli") || null;
         if (selected) {
           currentJob = selected;
           updateTask({

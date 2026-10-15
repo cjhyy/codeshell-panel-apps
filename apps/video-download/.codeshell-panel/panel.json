@@ -237,7 +237,7 @@
     },
     "download-environment": {
       "entry": "app/tools/environment.mjs",
-      "sha256": "4d89a18c1ba25469a693e686392c9ad73d095100a66d2c445f6a05f7524c7d85"
+      "sha256": "2c12c69def93f0fd5b2e03f5ba14cb7a422b06912961b10b3118b36194dda301"
     }
   }
 }

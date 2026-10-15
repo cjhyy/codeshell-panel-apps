@@ -21,7 +21,7 @@
           <img src="./assets/electron-video-dog.png" alt="" />
         </div>
         <div class="brand-copy">
-          <h1>Mimi Download <span class="app-version">0.23.0</span></h1>
+          <h1>Mimi Download <span class="app-version">0.24.0</span></h1>
           <p>找到想看的，保存到所选目录。</p>
         </div>
         <div class="topbar-actions">
@@ -499,7 +499,9 @@
           <div class="queue-toolbar-actions">
             <button id="shared-refresh" class="text-button" type="button">刷新任务</button>
           </div>
-          <p id="shared-service-status" class="task-guidance" role="status">正在连接当前项目的下载任务…</p>
+          <p id="shared-service-status" class="task-guidance" role="status">
+            正在连接当前项目的下载任务…
+          </p>
           <div id="task-overview-list" class="task-overview-list" aria-label="全部下载任务"></div>
           <p id="task-overview-empty" class="task-guidance">
             支持同时下载多个视频；点击任务查看详情。
@@ -677,45 +679,55 @@
         <p id="library-status" class="library-status" role="status" aria-live="polite"></p>
         <div id="shared-queue-controls" class="shared-queue-controls" hidden>
           <div class="section-heading compact"><h3>项目下载队列</h3></div>
-          <label class="queue-concurrency"><span>同时下载</span>
+          <label class="queue-concurrency"
+            ><span>同时下载</span>
             <select id="shared-concurrency" aria-label="项目下载并行数">
-              <option value="1">1 个</option><option value="2" selected>2 个</option>
-              <option value="3">3 个</option><option value="4">4 个</option>
+              <option value="1">1 个</option>
+              <option value="2" selected>2 个</option>
+              <option value="3">3 个</option>
+              <option value="4">4 个</option>
             </select>
           </label>
-          <div class="queue-toolbar"><p id="shared-queue-state" class="queue-summary" role="status"></p>
+          <div class="queue-toolbar">
+            <p id="shared-queue-state" class="queue-summary" role="status"></p>
             <div class="queue-toolbar-actions">
-              <button id="shared-start-pending" class="secondary-button" type="button" disabled>开始待下载任务</button>
-              <button id="shared-queue-toggle" class="secondary-button" type="button">暂停队列</button>
+              <button id="shared-start-pending" class="secondary-button" type="button" disabled>
+                开始待下载任务
+              </button>
+              <button id="shared-queue-toggle" class="secondary-button" type="button">
+                暂停队列
+              </button>
             </div>
           </div>
-          <p class="queue-resume-note">聊天、终端与面板共用并行数和队列状态。暂停队列会等待当前下载完成；需要立即停止时可取消单项任务。</p>
+          <p class="queue-resume-note">
+            聊天、终端与面板共用并行数和队列状态。暂停队列会等待当前下载完成；需要立即停止时可取消单项任务。
+          </p>
         </div>
         <div id="legacy-queue-controls">
-        <p class="queue-resume-note" id="legacy-queue-label">账号下载与旧版队列</p>
-        <label class="queue-concurrency">
-          <span>同时下载</span>
-          <select id="queue-concurrency" aria-label="同时下载数量">
-            <option value="1">1 个 · 顺序下载</option>
-            <option value="2">2 个</option>
-            <option value="3" selected>3 个</option>
-            <option value="4">4 个</option>
-          </select>
-        </label>
-        <div class="queue-toolbar">
-          <p id="queue-summary" class="queue-summary" aria-live="polite">
-            暂无任务 · 最多同时下载 3 项
-          </p>
-          <div class="queue-toolbar-actions">
-            <button id="queue-restore" class="secondary-button" type="button" disabled>
-              全部下载
-            </button>
-            <button id="queue-pause" class="secondary-button" type="button" disabled>
-              全部暂停
-            </button>
+          <p class="queue-resume-note" id="legacy-queue-label">账号下载与旧版队列</p>
+          <label class="queue-concurrency">
+            <span>同时下载</span>
+            <select id="queue-concurrency" aria-label="同时下载数量">
+              <option value="1">1 个 · 顺序下载</option>
+              <option value="2">2 个</option>
+              <option value="3" selected>3 个</option>
+              <option value="4">4 个</option>
+            </select>
+          </label>
+          <div class="queue-toolbar">
+            <p id="queue-summary" class="queue-summary" aria-live="polite">
+              暂无任务 · 最多同时下载 3 项
+            </p>
+            <div class="queue-toolbar-actions">
+              <button id="queue-restore" class="secondary-button" type="button" disabled>
+                全部下载
+              </button>
+              <button id="queue-pause" class="secondary-button" type="button" disabled>
+                全部暂停
+              </button>
+            </div>
           </div>
-        </div>
-        <p class="queue-resume-note">暂停会保留已下载的部分，继续时自动尝试续传。</p>
+          <p class="queue-resume-note">暂停会保留已下载的部分，继续时自动尝试续传。</p>
         </div>
         <div id="queue-list" class="queue-list"></div>
       </section>

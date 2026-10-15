@@ -380,8 +380,19 @@ async function validatePackage(packagePath) {
       (match) => match[1],
     );
     assert.equal(manifest.version, "5.0.0", `${packagePath}: guided workflow version mismatch`);
-    for (const id of ["view-career", "view-today", "view-dashboard", "view-resumes", "view-interviews", "view-materials"]) {
-      assert.match(html, new RegExp(`id="${id}"`), `${packagePath}: missing v4 primary workspace ${id}`);
+    for (const id of [
+      "view-career",
+      "view-today",
+      "view-dashboard",
+      "view-resumes",
+      "view-interviews",
+      "view-materials",
+    ]) {
+      assert.match(
+        html,
+        new RegExp(`id="${id}"`),
+        `${packagePath}: missing v4 primary workspace ${id}`,
+      );
     }
     for (const mode of ["content", "versions", "files"]) {
       assert.match(
@@ -405,7 +416,11 @@ async function validatePackage(packagePath) {
       );
     }
     assert.match(html, /id="view-job-inbox"/, `${packagePath}: JD inbox needs its own workspace`);
-    assert.match(html, /id="open-interview-generator"/, `${packagePath}: question bank needs one set generator entry`);
+    assert.match(
+      html,
+      /id="open-interview-generator"/,
+      `${packagePath}: question bank needs one set generator entry`,
+    );
     assert.equal(PROJECT_SNAPSHOT_WRITE_LIMIT_BYTES, 384 * 1024);
     assert(PROJECT_SNAPSHOT_SAFE_BYTES < PROJECT_SNAPSHOT_WRITE_LIMIT_BYTES);
     assert(
@@ -2563,7 +2578,11 @@ async function validatePackage(packagePath) {
       /保存的登录已失效[\s\S]*重新登录并保存/,
       `${packagePath}: corrupted channel logins need one actionable recovery path`,
     );
-    assert.match(appScript, /workspace\.openPath/, `${packagePath}: resume files need open actions`);
+    assert.match(
+      appScript,
+      /workspace\.openPath/,
+      `${packagePath}: resume files need open actions`,
+    );
     assert.match(
       appScript,
       /workspace\.revealPath/,
@@ -3086,7 +3105,7 @@ async function validatePackage(packagePath) {
       assert.match(html, new RegExp(`id="${id}"`), `${packagePath}: missing #${id}`);
     }
     assert.match(
-      appScript + await readFile(join(root, "app", "discovery-automation.mjs"), "utf8"),
+      appScript + (await readFile(join(root, "app", "discovery-automation.mjs"), "utf8")),
       /job-hunt-hq:scheduled-discovery:v1/,
       `${packagePath}: recurring discovery needs a stable task marker`,
     );
@@ -3273,8 +3292,11 @@ async function validatePackage(packagePath) {
       /await applyJobHuntPanelOperation\("save_resume_qa_answer"[\s\S]*?fields: \[\.\.\.CAREER_FIELDS, "resume", "versions", "workflowRuns"\][\s\S]*?onRollback\(\)[\s\S]*?state\.activeView = previousActiveView[\s\S]*?recordTraceArtifact/,
       `${packagePath}: Agent resume QA writes must roll back through the shared adapter before publishing their Trace artifact`,
     );
-    assert.match(appScript, /async function applyJobHuntPanelOperation[\s\S]*?const scope = currentProject\(\)[\s\S]*?await runJobHuntOperation[\s\S]*?scope\.check\(\)[\s\S]*?await writeProjectSnapshot\(\)[\s\S]*?scope\.check\(\)/,
-      `${packagePath}: async shared resume/career operations must recheck their captured project before adoption or rollback`);
+    assert.match(
+      appScript,
+      /async function applyJobHuntPanelOperation[\s\S]*?const scope = currentProject\(\)[\s\S]*?await runJobHuntOperation[\s\S]*?scope\.check\(\)[\s\S]*?await writeProjectSnapshot\(\)[\s\S]*?scope\.check\(\)/,
+      `${packagePath}: async shared resume/career operations must recheck their captured project before adoption or rollback`,
+    );
     for (const id of [
       "resume-qa-panel",
       "resume-qa-open-count",
@@ -3707,11 +3729,14 @@ async function validatePackage(packagePath) {
       immutableShardSchema.properties.generation.pattern,
     );
     assert.equal(snapshotSchema.properties.schemaVersion.const, 2);
-    assert.deepEqual(snapshotSchema.properties.artifactStorage.properties.schemaVersion.enum, [1, 2]);
-    assert.deepEqual(snapshotSchema.properties.artifactStorage.allOf[0].then.properties.generation.enum, [
-      "a",
-      "b",
-    ]);
+    assert.deepEqual(
+      snapshotSchema.properties.artifactStorage.properties.schemaVersion.enum,
+      [1, 2],
+    );
+    assert.deepEqual(
+      snapshotSchema.properties.artifactStorage.allOf[0].then.properties.generation.enum,
+      ["a", "b"],
+    );
     assert.equal(
       snapshotSchema.properties.artifactStorage.properties.shards.maxItems,
       PROJECT_SNAPSHOT_MAX_SHARDS,
@@ -4663,11 +4688,8 @@ async function validatePackage(packagePath) {
       updatedAt: "2026-01-03",
     });
     assert.equal(
-      resumeVersionRemovalPreview(
-        activeBaseRevision,
-        [baseHistory, baseRoot],
-        "base-current",
-      ).reason,
+      resumeVersionRemovalPreview(activeBaseRevision, [baseHistory, baseRoot], "base-current")
+        .reason,
       "current",
       "the active resume revision must never be deleted from the history library",
     );
@@ -5563,7 +5585,11 @@ async function validatePackage(packagePath) {
     const versionHelpers = await import(
       `${pathToFileURL(join(root, "app", "version.js")).href}?validate=${Date.now()}`
     );
-    assert.equal(manifest.version, "0.23.0", `${packagePath}: download engine version mismatch`);
+    assert.equal(
+      /class="app-version">([^<]+)</.exec(html)?.[1],
+      manifest.version,
+      `${packagePath}: displayed download version must match the package`,
+    );
     assert.equal(
       versionHelpers.parseYtDlpVersionOutput("2026.7.4\n"),
       "2026.07.04",
@@ -6921,7 +6947,8 @@ assert.equal(fullSized.metrics.finalEquity, run.metrics.finalEquity);
 assert(halfSized.metrics.finalEquity < fullSized.metrics.finalEquity);
 assert.equal(halfSized.trades.length, fullSized.trades.length);
 assert.throws(
-  () => quant.runBacktest(bars, { ...edgeConfiguration, sizer: { type: "fixed-fraction", pct: 0 } }),
+  () =>
+    quant.runBacktest(bars, { ...edgeConfiguration, sizer: { type: "fixed-fraction", pct: 0 } }),
   /sizer percentage/,
 );
 assert.throws(
@@ -7130,9 +7157,7 @@ const signalRun = quant.runBacktest(watchBars, {
   signalMode: "edge",
   strategy: { type: "sma-cross", fast: 10, slow: 30 },
 });
-const entryOnFinalBar = signalRun.trades.some(
-  (trade) => trade.entryDate === watchBars.at(-1).date,
-);
+const entryOnFinalBar = signalRun.trades.some((trade) => trade.entryDate === watchBars.at(-1).date);
 assert.equal(
   signalWatch.triggered || entryOnFinalBar,
   signalWatch.triggered,
@@ -7145,11 +7170,16 @@ assert.throws(
   /unknown alert rule/,
 );
 assert.throws(
-  () => quant.evaluateWatchItem(watchBars, { symbol: "T", rule: { type: "price-below", price: -1 } }),
+  () =>
+    quant.evaluateWatchItem(watchBars, { symbol: "T", rule: { type: "price-below", price: -1 } }),
   /alert price/,
 );
 assert.throws(
-  () => quant.evaluateWatchItem([watchBars[0]], { symbol: "T", rule: { type: "price-below", price: 1 } }),
+  () =>
+    quant.evaluateWatchItem([watchBars[0]], {
+      symbol: "T",
+      rule: { type: "price-below", price: 1 },
+    }),
   /at least two bars/,
 );
 // A signal alert with no strategy must fail loudly rather than silently never firing.
