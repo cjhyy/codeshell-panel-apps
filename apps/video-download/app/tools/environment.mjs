@@ -9,6 +9,7 @@ const FORMAT = "mimi-download.environment";
 const SCHEMA = 1;
 const CACHE_LIMIT = 16 * 1024;
 const LOCAL_TTL = 6 * 60 * 60 * 1000;
+const FAILED_LOCAL_TTL = 60 * 1000;
 const LATEST_TTL = 24 * 60 * 60 * 1000;
 const LATEST_URL = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
 const TOOLS = ["yt-dlp", "ffmpeg"];
@@ -257,7 +258,7 @@ function groupExists(child) {
   }
 }
 
-async function versionProbe(executable, args, { env, cwd, signal, timeout = 5000 } = {}) {
+async function versionProbe(executable, args, { env, cwd, signal, timeout = 30_000 } = {}) {
   cancelled(signal);
   const grouped = process.platform !== "win32";
   const child = spawn(executable, args, {
@@ -435,7 +436,7 @@ export async function getEnvironment(
     fetcher = globalThis.fetch,
     localTtlMs = LOCAL_TTL,
     latestTtlMs = LATEST_TTL,
-    probeTimeout = 5000,
+    probeTimeout = 30_000,
     latestTimeout = 5000,
   } = {},
 ) {
@@ -494,41 +495,57 @@ export async function getEnvironment(
     local.format === FORMAT &&
     local.schemaVersion === SCHEMA &&
     local.fingerprint === fingerprint &&
-    fresh(local.checkedAt, timestamp, localTtlMs) &&
+    fresh(
+      local.checkedAt,
+      timestamp,
+      TOOLS.every((name) => local.dependencies?.[name]?.available)
+        ? localTtlMs
+        : Math.min(localTtlMs, FAILED_LOCAL_TTL),
+    ) &&
     TOOLS.every((name) => validDependency(local.dependencies?.[name]));
   if (!cached) {
-    const dependencies = {};
-    for (const name of TOOLS) {
-      cancelled(signal);
-      if (!identities[name]) {
-        dependencies[name] = { available: false, version: null, error: "not-found" };
-        continue;
-      }
-      try {
-        const output = await probe(
-          paths[name],
-          name === "ffmpeg" ? ["-version"] : ["--ignore-config", "--version"],
-          { env: executionEnv, cwd: resolve(project), signal, timeout: probeTimeout },
-        );
+    // Standalone yt-dlp can take over ten seconds to start on macOS. Probe
+    // both tools concurrently so the full native entry stays within its 70s
+    // browser receipt bound, including owned-process shutdown and latest lookup.
+    // Settle both owned probes before surfacing a cancellation/uncertain exit.
+    const observations = await Promise.allSettled(
+      TOOLS.map(async (name) => {
         cancelled(signal);
-        const version = versionOf(name, output);
-        if (!version) throw fail("PROBE_FAILED", "工具版本输出无效。");
-        dependencies[name] = { available: true, version };
-      } catch (error) {
-        cancelled(signal);
-        if (["CANCELLED", "PROCESS_UNCONFIRMED"].includes(error.code)) throw error;
-        dependencies[name] = {
-          available: false,
-          version: null,
-          error:
-            error.code === "TIMEOUT"
-              ? "timeout"
-              : error.code === "OUTPUT_TOO_LARGE"
-                ? "output-too-large"
-                : "probe-failed",
-        };
-      }
-    }
+        if (!identities[name]) {
+          return [name, { available: false, version: null, error: "not-found" }];
+        }
+        try {
+          const output = await probe(
+            paths[name],
+            name === "ffmpeg" ? ["-version"] : ["--ignore-config", "--version"],
+            { env: executionEnv, cwd: resolve(project), signal, timeout: probeTimeout },
+          );
+          cancelled(signal);
+          const version = versionOf(name, output);
+          if (!version) throw fail("PROBE_FAILED", "工具版本输出无效。");
+          return [name, { available: true, version }];
+        } catch (error) {
+          cancelled(signal);
+          if (["CANCELLED", "PROCESS_UNCONFIRMED"].includes(error.code)) throw error;
+          return [
+            name,
+            {
+              available: false,
+              version: null,
+              error:
+                error.code === "TIMEOUT"
+                  ? "timeout"
+                  : error.code === "OUTPUT_TOO_LARGE"
+                    ? "output-too-large"
+                    : "probe-failed",
+            },
+          ];
+        }
+      }),
+    );
+    for (const observation of observations)
+      if (observation.status === "rejected") throw observation.reason;
+    const dependencies = Object.fromEntries(observations.map((value) => value.value));
     cancelled(signal);
     // A replaced executable cannot turn this probe into a cache for the new file.
     const after = Object.fromEntries(

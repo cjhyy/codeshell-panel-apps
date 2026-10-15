@@ -244,6 +244,26 @@ test("search reuses bounded public sources when local platform lookup is unavail
 });
 
 test(
+  "doctor accepts standalone yt-dlp startup slower than five seconds and keeps Node support",
+  { skip: !supported },
+  async (t) => {
+    const f = await fixture(t);
+    await writeFile(
+      join(f.bin, "yt-dlp"),
+      `#!${process.execPath}\nconst args=process.argv.slice(2);setTimeout(()=>console.log(args.includes('--version')?'2026.10.15':'--js-runtimes RUNTIME[:PATH]'),5200);\n`,
+      { mode: 0o700 },
+    );
+    const doctor = await f.invoke(["doctor", "--project", f.project]);
+    assert.equal(doctor.json.result.ready, true);
+    assert.equal(doctor.json.result.dependencies["yt-dlp"].version, "2026.10.15");
+    assert.equal(
+      doctor.json.result.javascriptRuntime.enabled,
+      Number(process.versions.node.split(".")[0]) >= 22,
+    );
+  },
+);
+
+test(
   "explicit bin directory reaches yt-dlp subprocesses and older engines omit unsupported JS flags",
   { skip: !supported },
   async (t) => {

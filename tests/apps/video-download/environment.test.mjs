@@ -135,6 +135,62 @@ test("explicit refresh and elapsed local TTL run probes again", async (t) => {
   assert.equal(f.calls.length, 6);
 });
 
+test("failed local observations expire after one minute without shortening successful caches", async (t) => {
+  const f = await fixture(t);
+  let healthy = false;
+  const probe = async (path, args, options) => {
+    const output = await f.options.probe(path, args, options);
+    if (!healthy && args.includes("--version"))
+      throw Object.assign(new Error("slow standalone startup"), { code: "TIMEOUT" });
+    return output;
+  };
+  const first = await getEnvironment(f.project, { ...f.options, probe });
+  assert.equal(first.result.ready, false);
+  assert.equal(first.result.dependencies["yt-dlp"].error, "timeout");
+  assert.equal(
+    (await getEnvironment(f.project, { ...f.options, probe, now: NOW + 59_000 })).result.cached,
+    true,
+  );
+  assert.equal(f.calls.length, 2);
+  healthy = true;
+  const recovered = await getEnvironment(f.project, { ...f.options, probe, now: NOW + 60_000 });
+  assert.equal(recovered.result.cached, false);
+  assert.equal(recovered.result.ready, true);
+  assert.equal(f.calls.length, 4);
+  assert.equal(
+    (await getEnvironment(f.project, { ...f.options, probe, now: NOW + 2 * HOUR })).result.cached,
+    true,
+  );
+  assert.equal(f.calls.length, 4);
+});
+
+test("parallel tool probes settle every owned process before surfacing an uncertain exit", async (t) => {
+  const f = await fixture(t);
+  const pending = [];
+  let settled = false;
+  const result = getEnvironment(f.project, {
+    ...f.options,
+    probe: (path, args, options) =>
+      new Promise((resolve, reject) => {
+        pending.push({ args, timeout: options.timeout, resolve, reject });
+      }),
+  }).finally(() => {
+    settled = true;
+  });
+  for (let i = 0; i < 100 && pending.length < 2; i++) await pause(10);
+  assert.equal(pending.length, 2, "tool probes should overlap within the native receipt budget");
+  assert.ok(pending.every((item) => item.timeout === 30_000));
+  const assertion = assert.rejects(result, { code: "PROCESS_UNCONFIRMED" });
+  pending.find((item) => item.args.includes("--version")).reject(
+    Object.assign(new Error("owned process exit unconfirmed"), { code: "PROCESS_UNCONFIRMED" }),
+  );
+  await pause(20);
+  assert.equal(settled, false, "the other owned probe must settle before returning");
+  pending.find((item) => item.args.includes("-version")).resolve("ffmpeg version 8.0 fixture");
+  await assertion;
+  assert.deepEqual(await f.records(), []);
+});
+
 test("file replacement, removal, appearance and mode changes invalidate cached identity", async (t) => {
   const f = await fixture(t);
   await getEnvironment(f.project, f.options);

@@ -308,7 +308,7 @@ async function jsRuntimeArguments(executable, env, signal) {
     const { stdout } = await capture(executable, ["--ignore-config", "--help"], {
       env,
       signal,
-      timeout: 5000,
+      timeout: 30_000,
       limit: 512 * 1024,
     });
     return /--js-runtimes\b/u.test(stdout) ? ["--js-runtimes", `node:${process.execPath}`] : [];
