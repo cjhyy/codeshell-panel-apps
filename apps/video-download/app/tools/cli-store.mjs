@@ -1,13 +1,13 @@
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, rm, rmdir } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 
 export const CLI_DIRECTORY = ".mimi-download-cli";
 export const HEARTBEAT_TIMEOUT_MS = 30_000;
 export const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
-const STATUSES = new Set(["queued", "running", ...TERMINAL_STATUSES]);
+const STATUSES = new Set(["pending", "queued", "running", ...TERMINAL_STATUSES]);
 const MAX_RECORD_BYTES = 128 * 1024;
 export const cliError = (code, message) => Object.assign(new Error(message), { code });
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
@@ -16,6 +16,26 @@ export function cliJobId(value) {
   if (typeof value !== "string" || !UUID.test(value))
     throw cliError("INVALID_JOB", "任务 ID 必须是本 CLI 返回的 UUID。");
   return value;
+}
+
+export function cliRequestKey(value) {
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    value.length > 160 ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  )
+    throw cliError("INVALID_ARGUMENT", "requestKey 必须是 1–160 字符且不含控制字符。");
+  return value;
+}
+
+function requestId(key) {
+  const hex = createHash("sha256")
+    .update("mimi-download:request:v1:" + key)
+    .digest("hex");
+  // Keep the existing UUID-v4-shaped task directory format. The full request
+  // key is checked on read so a hash collision never admits different work.
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
 // Resolve explicit directories without following any user-controlled symlink.
@@ -240,6 +260,115 @@ function visibleRecord(record, now = Date.now()) {
     : record;
 }
 
+const configurationFields = [
+  "format",
+  "playlist",
+  "playlistItems",
+  "playlistEnd",
+  "subtitles",
+  "subtitleMode",
+  "subtitleLanguages",
+  "embedSubtitles",
+];
+const fileFields = [
+  "path",
+  "name",
+  "bytes",
+  "sha256",
+  "mimeType",
+  "modifiedAt",
+  "status",
+  "checkedAt",
+];
+export function publicCliRecord(record, now = Date.now()) {
+  const current = visibleRecord(record, now),
+    result = {};
+  for (const key of [
+    "schemaVersion",
+    "id",
+    "status",
+    "attempt",
+    "url",
+    "title",
+    "outputDirectory",
+    "createdAt",
+    "updatedAt",
+    "heartbeatAt",
+    "startedAt",
+    "finishedAt",
+    "cancelRequestedAt",
+    "archivedAt",
+    "checkedAt",
+    "requestKey",
+  ])
+    if (current[key] !== undefined) result[key] = current[key];
+  result.source = ["cli", "chat", "panel"].includes(current.source) ? current.source : "cli";
+  result.configuration = {};
+  for (const key of configurationFields)
+    if (current.request?.configuration?.[key] !== undefined)
+      result.configuration[key] = current.request.configuration[key];
+  if (typeof current.request?.copySuffix === "string" && current.request.copySuffix)
+    result.copySuffix = current.request.copySuffix;
+  if (current.progress && typeof current.progress === "object") {
+    result.progress = {};
+    for (const key of ["stage", "fraction", "message"])
+      if (current.progress[key] !== undefined) result.progress[key] = current.progress[key];
+  }
+  if (current.error) result.error = { code: current.error.code, message: current.error.message };
+  else result.error = null;
+  result.files = (Array.isArray(current.files) ? current.files : []).slice(0, 200).map((file) => {
+    const item = {};
+    for (const key of fileFields) if (file[key] !== undefined) item[key] = file[key];
+    return item;
+  });
+  return result;
+}
+
+const defaultQueue = () => ({
+  schemaVersion: 1,
+  revision: 0,
+  paused: false,
+  maxConcurrent: 2,
+  slots: [],
+});
+function validateQueue(value) {
+  if (
+    !value ||
+    value.schemaVersion !== 1 ||
+    !Number.isSafeInteger(value.revision) ||
+    value.revision < 0 ||
+    typeof value.paused !== "boolean" ||
+    !Number.isSafeInteger(value.maxConcurrent) ||
+    value.maxConcurrent < 1 ||
+    value.maxConcurrent > 4 ||
+    !Array.isArray(value.slots) ||
+    value.slots.length > 128 ||
+    value.slots.some(
+      (slot) =>
+        !slot ||
+        !UUID.test(slot.id) ||
+        !UUID.test(slot.token) ||
+        !Number.isSafeInteger(slot.attempt) ||
+        slot.attempt < 1 ||
+        !Number.isSafeInteger(slot.pid) ||
+        slot.pid < 1,
+    )
+  )
+    throw cliError("INVALID_QUEUE", "项目下载队列记录无效，未覆盖原记录。");
+  if (new Set(value.slots.map((slot) => slot.id)).size !== value.slots.length)
+    throw cliError("INVALID_QUEUE", "项目下载队列包含重复执行槽位。");
+  return value;
+}
+
+function publicQueue(value) {
+  return {
+    revision: value.revision,
+    paused: value.paused,
+    maxConcurrent: value.maxConcurrent,
+    active: value.slots.length,
+  };
+}
+
 export async function createCliStore(project, { create = false } = {}) {
   const root = await checkedDirectory(project),
     identity = await lstat(root);
@@ -264,6 +393,63 @@ export async function createCliStore(project, { create = false } = {}) {
   }
   const read = async (id) =>
     validateRecord(await jsonFile(join(await taskDirectory(id), "task.json")), id);
+  const readQueue = async () => {
+    await verify();
+    try {
+      await privateDirectory(directory);
+      return validateQueue(await jsonFile(join(directory, "queue.json")));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      return defaultQueue();
+    }
+  };
+  const queueOperation = (operation) =>
+    directoryLock(directory, ".queue.lock", async () => {
+      const queue = await readQueue();
+      const result = await operation(queue);
+      await verify();
+      await privateDirectory(directory);
+      return result;
+    });
+  async function createRecord(
+    request,
+    outputDirectory,
+    {
+      id = randomUUID(),
+      source = "cli",
+      requestKey,
+      requestDigest,
+      pending = false,
+      title = "",
+    } = {},
+  ) {
+    await checkedDirectory(jobsDirectory, { create: true });
+    await privateDirectory(directory);
+    await privateDirectory(jobsDirectory);
+    await verify();
+    const task = join(jobsDirectory, id),
+      now = Date.now();
+    await mkdir(task, { mode: 0o700 });
+    const record = {
+      schemaVersion: 1,
+      id,
+      status: pending ? "pending" : "queued",
+      attempt: 1,
+      url: request.url,
+      title,
+      request,
+      outputDirectory,
+      source,
+      ...(requestKey === undefined ? {} : { requestKey, requestDigest }),
+      createdAt: now,
+      updatedAt: now,
+      heartbeatAt: now,
+      progress: { stage: "queued", fraction: 0, message: "等待下载 worker。" },
+      files: [],
+    };
+    await atomicJson(task, "task.json", record);
+    return record;
+  }
   return {
     project: root,
     directory,
@@ -271,32 +457,142 @@ export async function createCliStore(project, { create = false } = {}) {
     verify,
     taskDirectory,
     read,
-    async create(request, outputDirectory) {
-      await checkedDirectory(jobsDirectory, { create: true });
-      await privateDirectory(directory);
+    async getQueue() {
+      return publicQueue(await readQueue());
+    },
+    async configureQueue({ expectedRevision, paused, maxConcurrent }) {
+      if (
+        !Number.isSafeInteger(expectedRevision) ||
+        expectedRevision < 0 ||
+        typeof paused !== "boolean" ||
+        !Number.isSafeInteger(maxConcurrent) ||
+        maxConcurrent < 1 ||
+        maxConcurrent > 4
+      )
+        throw cliError(
+          "INVALID_ARGUMENT",
+          "队列需要有效 expectedRevision、paused 和 1–4 的 maxConcurrent。",
+        );
+      return queueOperation(async (queue) => {
+        if (queue.revision !== expectedRevision)
+          throw cliError("QUEUE_CONFLICT", "其他页面或 CLI 已修改队列，请刷新后再操作。");
+        const next = { ...queue, revision: queue.revision + 1, paused, maxConcurrent };
+        await atomicJson(directory, "queue.json", next);
+        return publicQueue(next);
+      });
+    },
+    async admitWorker(id, attempt, token) {
+      cliJobId(id);
+      return queueOperation(async (queue) => {
+        const slot = queue.slots.find((value) => value.id === id);
+        if (slot) {
+          if (slot.attempt !== attempt || slot.token !== token || slot.pid !== process.pid)
+            throw cliError("JOB_BUSY", "任务仍占有旧执行槽位，请核查原 worker。");
+          return true;
+        }
+        if (queue.paused || queue.slots.length >= queue.maxConcurrent) return false;
+        const own = await read(id);
+        if (
+          own.attempt !== attempt ||
+          own.workerToken !== token ||
+          own.status !== "queued" ||
+          own.archivedAt ||
+          own.cancelRequestedAt
+        )
+          throw cliError("WORKER_REJECTED", "等待中的任务已改变，不能开始执行。");
+        const entries = await readdir(jobsDirectory, { withFileTypes: true });
+        if (entries.length > 1000)
+          throw cliError("OUTPUT_LIMIT", "项目任务过多，请先归档或整理旧任务。");
+        const candidates = [];
+        for (const entry of entries) {
+          if (!UUID.test(entry.name)) continue;
+          const record = await read(entry.name);
+          if (
+            record.status === "queued" &&
+            record.workerToken &&
+            !queue.slots.some((slot) => slot.id === record.id) &&
+            !record.cancelRequestedAt &&
+            !record.archivedAt &&
+            Date.now() - (record.heartbeatAt || record.updatedAt) <= HEARTBEAT_TIMEOUT_MS
+          )
+            candidates.push(record);
+        }
+        candidates.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+        const available = queue.maxConcurrent - queue.slots.length;
+        if (!candidates.slice(0, available).some((value) => value.id === id)) return false;
+        const next = {
+          ...queue,
+          slots: [...queue.slots, { id, attempt, token, pid: process.pid }],
+        };
+        await atomicJson(directory, "queue.json", next);
+        return true;
+      });
+    },
+    // Only the worker owning this exact receipt calls this after confirming its
+    // process tree exited. Dead PIDs and expired heartbeats never free slots.
+    async releaseSlot(id, attempt, token) {
+      return queueOperation(async (queue) => {
+        const slot = queue.slots.find((value) => value.id === id);
+        if (!slot) return;
+        if (slot.attempt !== attempt || slot.token !== token || slot.pid !== process.pid)
+          throw cliError("JOB_BUSY", "执行槽位不属于当前 worker，未释放。");
+        await atomicJson(directory, "queue.json", {
+          ...queue,
+          slots: queue.slots.filter((value) => value !== slot),
+        });
+      });
+    },
+    create: createRecord,
+    async createOrGet(
+      request,
+      outputDirectory,
+      { requestKey, source = "cli", pending = false, title = "" },
+    ) {
+      cliRequestKey(requestKey);
+      if (!["cli", "chat", "panel"].includes(source))
+        throw cliError("INVALID_ARGUMENT", "source 必须是 cli/chat/panel。");
+      const id = requestId(requestKey),
+        requestDigest = createHash("sha256")
+          .update(JSON.stringify({ request, outputDirectory, source, pending, title }))
+          .digest("hex");
       await privateDirectory(jobsDirectory);
-      await verify();
-      const id = randomUUID(),
-        task = join(jobsDirectory, id),
-        now = Date.now();
-      await mkdir(task, { mode: 0o700 });
-      const record = {
-        schemaVersion: 1,
-        id,
-        status: "queued",
-        attempt: 1,
-        url: request.url,
-        title: "",
-        request,
-        outputDirectory,
-        createdAt: now,
-        updatedAt: now,
-        heartbeatAt: now,
-        progress: { stage: "queued", fraction: 0, message: "等待 CLI worker。" },
-        files: [],
-      };
-      await atomicJson(task, "task.json", record);
-      return record;
+      return directoryLock(jobsDirectory, `.submit-${id}.lock`, async () => {
+        await verify();
+        const exists = await lstat(join(jobsDirectory, id)).catch((error) => {
+          if (error.code !== "ENOENT") throw error;
+          return null;
+        });
+        if (exists) {
+          let record;
+          try {
+            record = await read(id);
+          } catch (cause) {
+            throw Object.assign(
+              cliError(
+                "SUBMISSION_UNCERTAIN",
+                "原提交目录存在但回执不可读，请核查此任务，不能重新下载。",
+              ),
+              { jobId: id, cause },
+            );
+          }
+          if (record.requestKey !== requestKey || record.requestDigest !== requestDigest)
+            throw Object.assign(cliError("REQUEST_CONFLICT", "requestKey 已用于不同的下载请求。"), {
+              jobId: id,
+            });
+          return { record, created: false };
+        }
+        return {
+          record: await createRecord(request, outputDirectory, {
+            id,
+            source,
+            requestKey,
+            requestDigest,
+            pending,
+            title,
+          }),
+          created: true,
+        };
+      });
     },
     async update(id, operation) {
       const task = await taskDirectory(id);
@@ -362,9 +658,11 @@ export async function createCliStore(project, { create = false } = {}) {
 
 // Pure read APIs used by the Panel's authorized-directory bridge. Never create,
 // migrate, save, or infer Host tasks/resources while listing CLI-owned records.
-export async function listCliJobs(project, { limit = 100 } = {}) {
+export async function listCliJobs(project, { limit = 100, includeArchived = false } = {}) {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
     throw cliError("INVALID_ARGUMENT", "limit 必须在 1–1000 之间。");
+  if (typeof includeArchived !== "boolean")
+    throw cliError("INVALID_ARGUMENT", "includeArchived 必须是布尔值。");
   const store = await createCliStore(project);
   let entries;
   try {
@@ -387,9 +685,8 @@ export async function listCliJobs(project, { limit = 100 } = {}) {
     try {
       if (!entry.isDirectory() || entry.isSymbolicLink())
         throw cliError("UNSAFE_RECORD", "任务目录包含链接。");
-      const record = visibleRecord(await store.read(entry.name));
-      const { workerToken: _token, request: _request, ...publicRecord } = record;
-      jobs.push(publicRecord);
+      const record = await store.read(entry.name);
+      if (includeArchived || !record.archivedAt) jobs.push(publicCliRecord(record));
     } catch (error) {
       warnings.push({ id: entry.name, code: error.code || "INVALID_RECORD" });
     }
@@ -407,9 +704,7 @@ export async function listCliJobs(project, { limit = 100 } = {}) {
 }
 
 export async function getCliJob(project, id) {
-  const record = visibleRecord(await (await createCliStore(project)).read(cliJobId(id)));
-  const { workerToken: _token, request: _request, ...publicRecord } = record;
-  return publicRecord;
+  return publicCliRecord(await (await createCliStore(project)).read(cliJobId(id)));
 }
 
 export async function requestCliCancellation(project, id) {
@@ -417,7 +712,14 @@ export async function requestCliCancellation(project, id) {
   await store.update(cliJobId(id), (record) =>
     TERMINAL_STATUSES.has(record.status)
       ? null
-      : { ...record, cancelRequestedAt: Date.now(), updatedAt: Date.now() },
+      : {
+          ...record,
+          ...(!record.workerToken && ["pending", "queued"].includes(record.status)
+            ? { status: "cancelled", finishedAt: Date.now() }
+            : {}),
+          cancelRequestedAt: Date.now(),
+          updatedAt: Date.now(),
+        },
   );
   return getCliJob(project, id);
 }
