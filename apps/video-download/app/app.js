@@ -6598,10 +6598,10 @@ async function initializeRuntime() {
     }
     if (context.availableMethods?.includes("process.resolveEntry")) {
       try {
-        await downloadService.refresh();
+        // The initial list already includes queue state. Observe once rather
+        // than starting three native helpers during the first bridge window.
+        await downloadService.startObserving();
         sharedServiceReady = true;
-        await refreshSharedQueue();
-        void downloadService.startObserving().catch(() => {});
       } catch (error) {
         document.querySelector("#shared-service-status").textContent =
           `共享任务暂不可用：${error.message}；账号与旧版任务保留。`;

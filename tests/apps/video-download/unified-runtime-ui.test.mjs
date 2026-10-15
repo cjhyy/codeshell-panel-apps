@@ -862,7 +862,9 @@ test("polling preserves a focused active-task action in the download sidebar", a
     "polling must leave the user's focused action in place",
   );
   await page.keyboard.press("Enter");
-  await page.waitForFunction(() => window.__serviceCalls.some((input) => input.action === "cancel"));
+  await page.waitForFunction(() =>
+    window.__serviceCalls.some((input) => input.action === "cancel"),
+  );
   assert.equal((await sharedCalls(page, "cancel")).length, 1);
 });
 
@@ -871,7 +873,10 @@ for (const width of [390, 760, 1280])
     const page = await openPanel(t, { width, height: 900 });
     assert.equal(await page.locator("#download-options").evaluate((node) => node.open), false);
     assert.equal(await page.locator("#queue-settings").evaluate((node) => node.open), false);
-    assert.match(await page.locator("#download-options-summary").innerText(), /播放列表.*字幕.*账号/);
+    assert.match(
+      await page.locator("#download-options-summary").innerText(),
+      /播放列表.*字幕.*账号/,
+    );
     await page.locator("#url-input").fill(videoUrl);
     const primary = page.locator("#download-button");
     assert.equal(await primary.isEnabled(), true);
@@ -900,7 +905,9 @@ test("enabled optional settings remain visible in their collapsed summary", asyn
   assert.match(await page.locator("#download-options-summary").innerText(), /字幕/);
   await page.locator("#url-input").fill(videoUrl);
   await page.locator("#download-button").click();
-  await page.waitForFunction(() => window.__serviceCalls.some((input) => input.action === "submit"));
+  await page.waitForFunction(() =>
+    window.__serviceCalls.some((input) => input.action === "submit"),
+  );
   const [submitted] = await sharedCalls(page, "submit");
   assert.equal(submitted.request.configuration.playlist, true);
   assert.equal(submitted.request.configuration.subtitles, true);
@@ -950,5 +957,15 @@ test("an empty Tasks page offers an actionable start without an idle detail pane
   assert.equal(
     await page.locator("#url-input").evaluate((node) => node === document.activeElement),
     true,
+  );
+});
+
+test("startup reuses queue state from the initial shared list", async (t) => {
+  const page = await openPanel(t);
+  assert.ok((await sharedCalls(page, "list")).length >= 1);
+  assert.equal(
+    (await sharedCalls(page, "queue")).length,
+    0,
+    "opening the panel must not spawn a redundant queue helper",
   );
 });

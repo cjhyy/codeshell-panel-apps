@@ -53,6 +53,12 @@ tools or changed settings invalidate the cache. Shell/session bookkeeping does
 not invalidate an otherwise identical environment. Each panel still obtains its
 own current Host executable grants; no opaque handles or credentials are cached.
 
+The initial task list includes queue state, avoiding redundant native startup
+queries. Short process lifecycle calls back off within a fixed budget only when
+the Host explicitly rejects them with `RATE_LIMITED`; unknown replies are never
+replayed. Failed commands await a bounded stop request, and the Host retains
+execution custody until the actual process has exited.
+
 The official yt-dlp latest-release query has its own 24-hour cache and runs
 separately from local readiness. Network failure does not mark working local
 tools unusable. Use **Refresh dependencies** or `doctor --refresh` after repair;
