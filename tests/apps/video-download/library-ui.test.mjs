@@ -7,7 +7,9 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
-const appDirectory = resolve(root, "apps/video-download/app");
+const appDirectory = resolve(
+  process.env.VIDEO_DOWNLOAD_UI_APP_DIRECTORY || resolve(root, "apps/video-download/app"),
+);
 const firstUrl = "https://www.youtube.com/watch?v=library-first";
 const secondUrl = "https://www.youtube.com/watch?v=library-second";
 const otherSiteUrl = "https://www.bilibili.com/video/BVfixture";
@@ -383,8 +385,10 @@ async function openPanel(t, { width = 1100, colorScheme = "light", concurrency =
   });
   await page.goto(baseUrl);
   await ready(page);
-  if (concurrency !== null)
+  if (concurrency !== null) {
+    await openDetails(page, "queue-settings");
     await page.locator("#queue-concurrency").selectOption(String(concurrency));
+  }
   return page;
 }
 
@@ -398,6 +402,12 @@ async function ready(page) {
 }
 const readState = (page) => page.evaluate(() => window.__panelTools.get_video_download_context());
 const downloads = (page) => page.evaluate(() => structuredClone(window.__downloads));
+async function openDetails(page, id) {
+  const details = page.locator(`#${id}`);
+  if (!(await details.evaluate((node) => node.open)))
+    await details.locator(":scope > summary").click();
+}
+
 async function downloadForm(page) {
   if (!(await page.locator("#url-input").isVisible()))
     await page.locator('[data-tab="download"]').click();
@@ -778,6 +788,7 @@ test("saving another copy preserves the save-only choice through duplicate revie
   await page.waitForFunction(() => document.querySelector('.queue-item[data-state="pending"]'));
   assert.equal((await downloads(page)).length, 1);
   const pending = (await readState(page)).queue.find((item) => item.status === "pending");
+  await downloadForm(page);
   await page.locator(`[data-queue-id="${pending.id}"][data-queue-action="resume"]`).click();
   await page.waitForFunction(() => window.__downloads.length === 2);
   assert.match((await downloads(page))[1].args.join(" "), /copy-/);
@@ -819,7 +830,10 @@ test("mixed-site batch inspection works when no Cookie account is selected", asy
 for (const playlist of [false, true]) {
   test(`batch links inspect each video and preserve distinct titles when queued (playlist=${playlist})`, async (t) => {
     const page = await openPanel(t);
-    if (playlist) await page.locator("#playlist-toggle").locator("..").click();
+    if (playlist) {
+      await openDetails(page, "download-options");
+      await page.locator("#playlist-toggle").locator("..").click();
+    }
     await page.evaluate(
       ({ firstUrl, secondUrl }) => {
         window.__inspectionPayloadByUrl[firstUrl] = {
@@ -902,6 +916,7 @@ test("playlist mode inspects a mixed batch and retries only the failed link", as
     },
     { playlistUrl, secondUrl },
   );
+  await openDetails(page, "download-options");
   await page.locator("#playlist-toggle").locator("..").click();
   await page.locator("#url-input").fill(`${playlistUrl}\n${secondUrl}`);
   await page.locator("#inspect-button").click();
@@ -935,6 +950,7 @@ test("playlist mode inspects a mixed batch and retries only the failed link", as
 
 test("large playlist batches explain the preview limit and retain every download link", async (t) => {
   const page = await openPanel(t);
+  await openDetails(page, "download-options");
   await page.locator("#playlist-toggle").locator("..").click();
   await page
     .locator("#url-input")
@@ -979,6 +995,7 @@ test("reloading restores pending work paused and only an explicit restore action
     "Reload cannot reuse revoked handles or silently restart downloads",
   );
   assert.equal((await readState(page)).queuePaused, true);
+  await openDetails(page, "queue-settings");
   assert.equal(await page.locator("#queue-restore").isVisible(), true);
   await page.locator("#queue-restore").click();
   await page.waitForFunction(() => window.__downloads.length === 1);
@@ -1266,6 +1283,7 @@ test("restoring a Cookie download asks for its original account again and honors
     localStorage.setItem("fixture.cookieAccounts", JSON.stringify(window.__cookieAccounts));
   });
   await page.locator("#url-input").fill(firstUrl);
+  await openDetails(page, "download-options");
   await page.locator("#cookie-refresh").click();
   await page.locator("#cookie-select").selectOption("original-account");
   await page.locator("#download-button").click();
@@ -1277,6 +1295,7 @@ test("restoring a Cookie download asks for its original account again and honors
   await page.evaluate(() => {
     window.__denyCookieAuthorization = true;
   });
+  await openDetails(page, "queue-settings");
   await page.locator("#queue-restore").click();
   await page.waitForFunction(
     () =>
@@ -1291,6 +1310,7 @@ test("restoring a Cookie download asks for its original account again and honors
   await page.evaluate(() => {
     window.__denyCookieAuthorization = false;
   });
+  await openDetails(page, "queue-settings");
   await page.locator("#queue-restore").click();
   await page.waitForFunction(() => window.__downloads.length === 1);
   assert.equal(await page.evaluate(() => window.__authorizations.length), 2);
@@ -1383,8 +1403,10 @@ test("playlist checkboxes produce the selected episode range and reject an empty
     };
   });
   await page.locator("#url-input").fill("https://youtube.com/playlist?list=fixture-series");
-  if (!(await page.locator("#playlist-toggle").isChecked()))
+  if (!(await page.locator("#playlist-toggle").isChecked())) {
+    await openDetails(page, "download-options");
     await page.locator("#playlist-toggle").locator("..").click();
+  }
   await page.locator("#inspect-button").click();
   await page.waitForFunction(
     () => document.querySelectorAll('#download-list-items input[type="checkbox"]').length === 3,
@@ -1532,7 +1554,7 @@ for (const [width, colorScheme] of [
     for (const tab of ["download", "task", "search", "history"]) {
       await page.locator(`[data-tab="${tab}"]`).click();
       await page.evaluate(() => window.scrollTo(0, 0));
-      assert.equal(await page.locator("#queue-list").isVisible(), true);
+      assert.equal(await page.locator("#queue-list").isVisible(), tab !== "task");
       assert.equal(await page.locator(".tab-page:not([hidden])").count(), 1);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
       assert.equal(overflow, false, `${tab} overflows`);
@@ -1543,12 +1565,8 @@ for (const [width, colorScheme] of [
       });
     }
     await page.locator("#queue-jump").click();
-    assert.equal(
-      await page.locator("#queue-section").evaluate((node) => document.activeElement === node),
-      true,
-    );
-    const queueBounds = await page.locator("#queue-section").boundingBox();
-    assert.ok(queueBounds.y >= 0 && queueBounds.y + Math.min(queueBounds.height, 100) <= 1000);
+    assert.equal(await page.locator("#page-task").isVisible(), true);
+    assert.equal(await page.locator("#queue-list").isVisible(), false);
     await page.locator('[data-tab="task"]').click();
     await page.locator("#task-add-download").click();
     assert.equal(
@@ -1770,6 +1788,7 @@ test("paused tasks survive reload, block duplicates and resume without a second 
       }),
     old.processId,
   );
+  await downloadForm(page);
   await page.locator('[data-queue-action="pause"]').click();
   await page.waitForFunction(() => document.querySelector('.queue-item[data-state="paused"]'));
   await page.reload();
@@ -1781,6 +1800,7 @@ test("paused tasks survive reload, block duplicates and resume without a second 
   await addDownload(page, firstUrl);
   assert.equal((await readState(page)).queue.length, 1);
   assert.equal((await downloads(page)).length, 0);
+  await downloadForm(page);
   await page.locator('[data-queue-action="resume"]').click();
   await page.waitForFunction(() => window.__downloads.length === 1);
   const [resumed] = await downloads(page);

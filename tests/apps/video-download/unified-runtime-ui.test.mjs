@@ -48,8 +48,8 @@ after(async () => {
   if (server) await new Promise((done) => server.close(done));
 });
 
-async function openPanel(t, { width = 1100 } = {}) {
-  const context = await browser.newContext({ viewport: { width, height: 1000 } });
+async function openPanel(t, { width = 1100, height = 1000 } = {}) {
+  const context = await browser.newContext({ viewport: { width, height } });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
   const errors = [];
@@ -551,6 +551,14 @@ test("cancel waits for worker truth and retry/check/archive target the shared re
   await row.locator('[data-task-action="cancel"]').click();
   await page.waitForFunction(() => window.__jobs[Object.keys(window.__jobs)[0]].cancelRequestedAt);
   assert.equal(await row.getAttribute("data-state"), "running");
+  assert.match(
+    await row.locator(".task-overview-status").textContent(),
+    /正在取消.*等待进程退出/,
+    "an acknowledged cancel request must be visible while worker exit is still unconfirmed",
+  );
+  assert.equal(await row.locator('[data-task-action="cancel"]').isDisabled(), true);
+  const queuedRow = page.locator(`[data-queue-id="cli:${chatId}"].queue-item`);
+  assert.equal(await queuedRow.locator('[data-queue-action="cancel"]').isDisabled(), true);
   assert.equal((await hostCalls(page, "tasks.cancel")).length, 0);
   await page.evaluate(() => window.__addChatJob({ status: "cancelled", finishedAt: 300 }));
   await page.locator('[data-tab="history"]').click();
@@ -763,6 +771,7 @@ test("Cookie downloads retain the authorized Host task channel alongside shared 
     window.__addChatJob();
   });
   await page.locator("#url-input").fill(videoUrl);
+  await page.locator("#download-options > summary").click();
   await page.locator("#cookie-refresh").click();
   await page.locator("#cookie-select").selectOption("youtube-account");
   await page.locator("#download-button").click();
@@ -825,4 +834,121 @@ test("a late service read after project invalidation never publishes another pro
   assert.equal(await page.locator(".task-overview-item").count(), 0);
   assert.equal((await sharedCalls(page, "submit")).length, 0);
   assert.equal((await hostCalls(page, "tasks.start")).length, 0);
+});
+
+test("polling preserves a focused active-task action in the download sidebar", async (t) => {
+  const page = await openPanel(t);
+  await page.evaluate(() => window.__addChatJob());
+  const row = page.locator(`.queue-item[data-queue-id="cli:${chatId}"]`);
+  const cancel = row.locator('[data-queue-action="cancel"]');
+  await cancel.waitFor();
+  await cancel.focus();
+  await cancel.evaluate((node) => {
+    window.__focusedSidebarAction = node;
+  });
+  const reads = (await sharedCalls(page, "list")).length;
+  await page.waitForFunction(
+    (reads) => window.__serviceCalls.filter((input) => input.action === "list").length >= reads + 2,
+    reads,
+  );
+  assert.equal(
+    await cancel.evaluate((node) => node === window.__focusedSidebarAction),
+    true,
+    "incoming progress must reuse the keyboard target instead of rebuilding the active queue row",
+  );
+  assert.equal(
+    await cancel.evaluate((node) => node === document.activeElement),
+    true,
+    "polling must leave the user's focused action in place",
+  );
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => window.__serviceCalls.some((input) => input.action === "cancel"));
+  assert.equal((await sharedCalls(page, "cancel")).length, 1);
+});
+
+for (const width of [390, 760, 1280])
+  test(`download defaults keep the primary action in the first viewport at ${width}px`, async (t) => {
+    const page = await openPanel(t, { width, height: 900 });
+    assert.equal(await page.locator("#download-options").evaluate((node) => node.open), false);
+    assert.equal(await page.locator("#queue-settings").evaluate((node) => node.open), false);
+    assert.match(await page.locator("#download-options-summary").innerText(), /播放列表.*字幕.*账号/);
+    await page.locator("#url-input").fill(videoUrl);
+    const primary = page.locator("#download-button");
+    assert.equal(await primary.isEnabled(), true);
+    const box = await primary.boundingBox();
+    assert.ok(
+      box && box.y >= 0 && box.y + box.height <= 900,
+      "a valid link's main action must fit the initial recording viewport",
+    );
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      true,
+    );
+    assert.equal(await page.locator("#destination-name").isVisible(), true);
+    assert.equal(await page.locator("#quality-select").isVisible(), true);
+  });
+
+test("enabled optional settings remain visible in their collapsed summary", async (t) => {
+  const page = await openPanel(t);
+  const options = page.locator("#download-options");
+  await options.locator(":scope > summary").click();
+  await page.locator("#playlist-toggle").locator("..").click();
+  await page.locator("#subtitle-toggle").locator("..").click();
+  await options.locator(":scope > summary").click();
+  assert.equal(await options.evaluate((node) => node.open), false);
+  assert.match(await page.locator("#download-options-summary").innerText(), /播放列表/);
+  assert.match(await page.locator("#download-options-summary").innerText(), /字幕/);
+  await page.locator("#url-input").fill(videoUrl);
+  await page.locator("#download-button").click();
+  await page.waitForFunction(() => window.__serviceCalls.some((input) => input.action === "submit"));
+  const [submitted] = await sharedCalls(page, "submit");
+  assert.equal(submitted.request.configuration.playlist, true);
+  assert.equal(submitted.request.configuration.subtitles, true);
+});
+
+for (const width of [390, 1280])
+  test(`task navigation shows each task once and keeps its Chat source visible at ${width}px`, async (t) => {
+    const page = await openPanel(t, { width, height: 900 });
+    await page.evaluate(() => window.__addChatJob());
+    await page.locator("#queue-jump").click();
+    await page.locator("#page-task").waitFor({ state: "visible" });
+    const row = page.locator(`.task-overview-item[data-task-id="cli:${chatId}"]`);
+    await row.waitFor();
+    assert.equal(await page.locator("#queue-list").isVisible(), false);
+    assert.equal(await page.locator("#shared-queue-controls").isVisible(), true);
+    const source = row.locator(".task-overview-source");
+    assert.equal(await source.isVisible(), true);
+    assert.match(await source.innerText(), /聊天/);
+    await page.evaluate(() =>
+      window.__addChatJob({
+        status: "completed",
+        finishedAt: 300,
+        files: [{ path: "/fixture/project/downloads/chat.mp4", bytes: 123, status: "present" }],
+      }),
+    );
+    await page.locator('[data-tab="history"]').click();
+    const historySource = page.locator(
+      `.history-item[data-history-id="cli:${chatId}"] .history-source-label`,
+    );
+    await historySource.waitFor();
+    assert.equal(await historySource.isVisible(), true);
+    assert.match(await historySource.innerText(), /聊天/);
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      true,
+    );
+  });
+
+test("an empty Tasks page offers an actionable start without an idle detail panel", async (t) => {
+  const page = await openPanel(t);
+  await page.locator("#queue-jump").click();
+  await page.locator("#page-task").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#task-card").isVisible(), false);
+  assert.equal(await page.locator("#task-overview-empty").isVisible(), true);
+  await page.locator("#task-empty-add").click();
+  assert.equal(await page.locator("#page-download").isVisible(), true);
+  assert.equal(
+    await page.locator("#url-input").evaluate((node) => node === document.activeElement),
+    true,
+  );
 });
