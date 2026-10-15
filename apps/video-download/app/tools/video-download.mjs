@@ -134,6 +134,61 @@ export async function findCliExecutable(name, { env = process.env, binDirectory 
   return null;
 }
 
+function spawnOwned(executable, args, options) {
+  const grouped = process.platform !== "win32";
+  const child = spawn(executable, args, { ...options, detached: grouped });
+  const owned = { child, grouped, closed: false, signalFailed: false };
+  const killLeader = child.kill.bind(child);
+  child.once("close", () => {
+    owned.closed = true;
+  });
+  child.kill = (signal = "SIGTERM") => {
+    if (!grouped || !child.pid) return killLeader(signal);
+    try {
+      process.kill(-child.pid, signal);
+      return true;
+    } catch (error) {
+      if (error.code !== "ESRCH") owned.signalFailed = true;
+      return false;
+    }
+  };
+  return owned;
+}
+
+function groupExists(owned) {
+  if (!owned.child.pid) return false;
+  try {
+    process.kill(-owned.child.pid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== "ESRCH";
+  }
+}
+
+async function confirmOwnedExit(children, { cancelled = false } = {}) {
+  for (const owned of children) {
+    if (!owned.child.pid) continue;
+    if (!owned.grouped) {
+      // Node cannot confirm Windows descendants after cancelling a leader.
+      if (cancelled || !owned.closed) return false;
+      continue;
+    }
+    if (!groupExists(owned)) continue;
+    owned.child.kill("SIGTERM");
+    const deadline = Date.now() + 4000;
+    let escalated = false;
+    while (groupExists(owned) && Date.now() < deadline) {
+      if (!escalated && Date.now() > deadline - 3000) {
+        owned.child.kill("SIGKILL");
+        escalated = true;
+      }
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+    if (groupExists(owned) || owned.signalFailed) return false;
+  }
+  return true;
+}
+
 async function capture(
   executable,
   args,
@@ -143,7 +198,12 @@ async function capture(
     throw cliError("DEPENDENCY_MISSING", "未找到 yt-dlp，请安装并放到 PATH 或指定 --bin-dir。");
   signal?.throwIfAborted();
   return new Promise((resolveCapture, reject) => {
-    const child = spawn(executable, args, { shell: false, stdio: ["ignore", "pipe", "pipe"], env });
+    const owned = spawnOwned(executable, args, {
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      env,
+    });
+    const child = owned.child;
     let stdout = "",
       stderr = "",
       bytes = 0,
@@ -176,10 +236,16 @@ async function capture(
     child.once("error", () => {
       failure ||= cliError("PROCESS_FAILED", "无法启动依赖程序。");
     });
-    child.once("close", (code) => {
+    child.once("close", async (code) => {
       clearTimeout(timer);
       clearTimeout(killTimer);
       signal?.removeEventListener("abort", aborted);
+      if (!(await confirmOwnedExit([owned], { cancelled: Boolean(failure) }))) {
+        reject(
+          cliError("PROCESS_TREE_UNCONFIRMED", "无法确认查询子进程树已结束；请核查进程后再操作。"),
+        );
+        return;
+      }
       if (failure) reject(failure);
       else if (code !== 0)
         reject(
@@ -201,7 +267,7 @@ async function jsRuntimeArguments(executable, env, signal) {
     });
     return /--js-runtimes\b/u.test(stdout) ? ["--js-runtimes", `node:${process.execPath}`] : [];
   } catch (error) {
-    if (signal?.aborted) throw error;
+    if (signal?.aborted || error.code === "PROCESS_TREE_UNCONFIRMED") throw error;
     return [];
   }
 }
@@ -499,6 +565,7 @@ async function worker(
       });
   };
   const polling = setInterval(poll, 250);
+  const children = [];
   let result, failure;
   try {
     poll();
@@ -523,11 +590,18 @@ async function worker(
       jobDir: workDirectory,
       outputDir: initial.outputDirectory,
       signal: controller.signal,
-      spawnProcess: (name, args, spawnOptions) =>
-        spawn(executables[name] || name, name === "yt-dlp" ? [...runtimeArgs, ...args] : args, {
-          ...spawnOptions,
-          env,
-        }),
+      spawnProcess: (name, args, spawnOptions) => {
+        const owned = spawnOwned(
+          executables[name] || name,
+          name === "yt-dlp" ? [...runtimeArgs, ...args] : args,
+          {
+            ...spawnOptions,
+            env,
+          },
+        );
+        children.push(owned);
+        return owned.child;
+      },
       progress: (value) => {
         progress = value;
         onProgress(value);
@@ -541,6 +615,14 @@ async function worker(
     await pollTail;
     signal?.removeEventListener("abort", stop);
   }
+  const treeConfirmed =
+    failure?.code !== "PROCESS_TREE_UNCONFIRMED" &&
+    (await confirmOwnedExit(children, { cancelled: controller.signal.aborted }));
+  if (!treeConfirmed)
+    failure = cliError(
+      "PROCESS_TREE_UNCONFIRMED",
+      "无法确认下载子进程树已全部结束。任务标记为中断并保留 worker 锁；请核查原进程树后人工恢复，避免重复下载。",
+    );
   try {
     await store.update(id, (record) => {
       if (record.attempt !== attempt || record.workerToken !== token)
@@ -550,7 +632,13 @@ async function worker(
       const { workerToken: _token, ...rest } = record;
       return {
         ...rest,
-        status: failure ? (cancelled ? "cancelled" : "failed") : "completed",
+        status: !treeConfirmed
+          ? "interrupted"
+          : failure
+            ? cancelled
+              ? "cancelled"
+              : "failed"
+            : "completed",
         updatedAt: now,
         heartbeatAt: now,
         finishedAt: now,
@@ -570,7 +658,7 @@ async function worker(
       };
     });
   } finally {
-    await release();
+    if (treeConfirmed) await release();
   }
   return getCliJob(project, id);
 }

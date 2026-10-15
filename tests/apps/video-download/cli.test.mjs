@@ -62,6 +62,7 @@ if (args.includes('--dump-single-json')) {
 }
 if (target.includes('failed')) { console.error('upstream private token=never-persist-this'); process.exit(1); }
 if(process.env.MIMI_TEST_NESTED_CHECK){const nested=require('node:child_process').spawnSync('ffmpeg',['-version'],{encoding:'utf8'});if(nested.status!==0||!nested.stdout.includes('fixture'))process.exit(9);}
+if(process.env.MIMI_TEST_GRANDCHILD_FILE){const nested=require('node:child_process').spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});require('node:fs').writeFileSync(process.env.MIMI_TEST_GRANDCHILD_FILE+'.ready','ready');setInterval(()=>{},1000)"],{stdio:'ignore'});fs.writeFileSync(process.env.MIMI_TEST_GRANDCHILD_FILE,String(nested.pid));}
 let timer;
 const partial=path.join(process.cwd(),'fixture.mp4.part'), resume=fs.existsSync(partial);
 fs.writeFileSync(partial,'retained partial bytes');
@@ -568,3 +569,93 @@ test(
     await store.update(record.id, (value) => ({ ...value, status: "cancelled" }));
   },
 );
+
+test(
+  "cancellation confirms a real stubborn downloader grandchild before releasing retry ownership",
+  { skip: !supported },
+  async (t) => {
+    const f = await fixture(t),
+      base = ["--project", f.project],
+      marker = join(f.root, "grandchild");
+    const submitted = await f.invoke(
+      [
+        "download",
+        ...base,
+        "--background",
+        "--input-file",
+        await f.request({ url: "https://example.invalid/slow" }),
+      ],
+      { extraEnv: { MIMI_TEST_GRANDCHILD_FILE: marker } },
+    );
+    const id = submitted.json.result.id;
+    await until(
+      () => readFile(marker + ".ready", "utf8").catch(() => ""),
+      (value) => value === "ready",
+    );
+    const grandchildPid = Number(await readFile(marker, "utf8"));
+    assert.doesNotThrow(() => process.kill(grandchildPid, 0));
+    t.after(() => {
+      try {
+        process.kill(grandchildPid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+      }
+    });
+    await f.invoke(["cancel", ...base, "--job", id]);
+    const final = await until(
+      () => getCliJob(f.project, id),
+      (value) => ["cancelled", "interrupted"].includes(value.status),
+    );
+    const lock = join(f.project, ".mimi-download-cli", "jobs", id, ".worker.lock");
+    if (final.status === "cancelled") {
+      assert.throws(
+        () => process.kill(grandchildPid, 0),
+        (error) => error.code === "ESRCH",
+      );
+      await until(
+        () => stat(lock).catch(() => null),
+        (value) => value === null,
+      );
+      const retried = await f.invoke(["retry", ...base, "--job", id]);
+      assert.equal(retried.json.result.status, "completed");
+      assert.equal(retried.json.result.attempt, 2);
+    } else {
+      assert.equal(final.error.code, "PROCESS_TREE_UNCONFIRMED");
+      assert.ok(await stat(lock));
+      const refused = await f.invoke(["retry", ...base, "--job", id], { expected: 1 });
+      assert.equal(refused.json.error.code, "JOB_BUSY");
+      assert.equal((await getCliJob(f.project, id)).attempt, 1);
+    }
+  },
+);
+
+test("an absent crashed worker group never proves detached child receipts were captured", async (t) => {
+  const f = await fixture(t),
+    store = await createCliStore(f.project, { create: true });
+  const record = await store.create(
+    { action: "download", url: "https://example.invalid/video", configuration: {} },
+    join(f.project, "downloads"),
+  );
+  const leader = spawn(process.execPath, ["-e", "process.exit(0)"], {
+    detached: supported,
+    stdio: "ignore",
+  });
+  await new Promise((resolveExit) => leader.once("close", resolveExit));
+  const lock = join(store.jobsDirectory, record.id, ".worker.lock");
+  await mkdir(lock, { mode: 0o700 });
+  await writeFile(
+    join(lock, "owner.json"),
+    JSON.stringify({
+      pid: leader.pid,
+      detachedGroup: true,
+      attempt: 1,
+      token: "crashed-before-child-receipt",
+    }),
+    { mode: 0o600 },
+  );
+  await store.update(record.id, (current) => ({ ...current, heartbeatAt: Date.now() - 60_000 }));
+  await assert.rejects(store.verifyNoWorker(record.id), (error) => error.code === "JOB_BUSY");
+  assert.ok(await stat(lock));
+  assert.equal((await store.read(record.id)).attempt, 1);
+  await store.update(record.id, (current) => ({ ...current, status: "interrupted" }));
+});

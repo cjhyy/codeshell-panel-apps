@@ -349,41 +349,13 @@ export async function createCliStore(project, { create = false } = {}) {
       } catch (error) {
         if (error.code !== "ESRCH") throw error;
       }
-      if (process.platform === "win32" || owner.detachedGroup !== true)
-        throw cliError(
-          "JOB_BUSY",
-          "原 worker 已退出，但无法确认它的下载子进程已结束。请核查原进程树，再人工恢复此任务的 worker 锁。",
-        );
-      try {
-        process.kill(-owner.pid, 0);
-        throw cliError("JOB_BUSY", "原后台任务的进程组仍有成员存活，请等待退出；未开始重复下载。");
-      } catch (error) {
-        if (error.code !== "ESRCH") throw error;
-      }
-      // Signal zero only checks existence. Cancellation never signals a recorded PID.
-      if (
-        !(await recoverLock(path, identity, async (current) => {
-          if (
-            current.pid !== owner.pid ||
-            current.token !== owner.token ||
-            current.detachedGroup !== true
-          )
-            return false;
-          try {
-            process.kill(current.pid, 0);
-            return false;
-          } catch (failure) {
-            if (failure.code !== "ESRCH") return false;
-          }
-          try {
-            process.kill(-current.pid, 0);
-            return false;
-          } catch (failure) {
-            return failure.code === "ESRCH";
-          }
-        }))
-      )
-        throw cliError("JOB_BUSY", "另一个进程正在恢复任务锁，请检查最新状态后重试。");
+      // A worker can crash before recording its own detached downloader group.
+      // Its dead PID or empty process group cannot prove every child exited.
+      // Only the live worker releases this lock after confirming its children.
+      throw cliError(
+        "JOB_BUSY",
+        "原 worker 已退出，但无法确认下载子进程或进程组全部结束。worker 锁已保留；请核查原进程树后人工恢复，再明确重试。",
+      );
     },
   };
 }
