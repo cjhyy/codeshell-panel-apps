@@ -113,7 +113,7 @@ app.on("session-created", session => {
   await fixture.assertWorker(app, { requireWorker: false });
 
   const ipc = (method, ...args) => win.evaluate(({ method, args }) => window.codeshell[method](...args), { method, args });
-  const busyRejections = [];
+  const busyRejections = [], readRateRejections = [];
   async function whenIdle(id, operation) {
     const deadline = Date.now() + 30_000;
     for (;;) {
@@ -185,7 +185,23 @@ app.on("session-created", session => {
     const globals = await execute("({node:typeof process,require:typeof require,html:document.documentElement.outerHTML.length, title:document.title})");
     assert.equal(globals.node, "undefined");
     assert.equal(globals.require, "undefined");
-    const call = (method, params) => execute(`window.codeshellPanel.callResult(${JSON.stringify(method)}, ${JSON.stringify(params ?? {})})`);
+    const call = async (method, params) => {
+      const deadline = Date.now() + 12_000;
+      for (let attempt = 0; ; attempt++) {
+        const result = await execute(`window.codeshellPanel.callResult(${JSON.stringify(method)}, ${JSON.stringify(params ?? {})})`);
+        const retryAfterMs = result?.error?.retryAfterMs;
+        // Read-only assertions share the guest's real startup budget. A structured
+        // rate rejection is undispatched; never retry revocation, unknown receipts,
+        // other methods or weaken any authority/data assertion below.
+        if (method !== "storage.getSnapshot" || result.ok || result.error?.code !== "RATE_LIMITED" ||
+            !Number.isFinite(retryAfterMs) || retryAfterMs < 0 || retryAfterMs > 10_000 || attempt >= 3)
+          return result;
+        const waitMs = Math.max(25, Math.ceil(retryAfterMs) + 25);
+        if (Date.now() + waitMs > deadline) return result;
+        readRateRejections.push({ appId: id, guest: elementId, method, attempt: attempt + 1, retryAfterMs });
+        await new Promise(done => setTimeout(done, waitMs));
+      }
+    };
     const remove = () => view.evaluate(view => view.remove());
     return { view, execute, call, remove, context, globals, panel, prepared };
   }
@@ -378,7 +394,7 @@ app.on("session-created", session => {
   for (const path of files) assert.equal(sha256(await readFile(join(hostRoot, path))), buildHashes[path], `shared build changed: ${path}`);
   report = { schemaVersion: 1, panelCommit, runnerSha256, hostSourceCommit, hostSourceManifestVersion,
     hostBuildProvenance: "Record the independently established build commit alongside these file hashes; source HEAD/version do not identify existing outputs.",
-    buildHashes, runtime, actualNativePaths, guardReceipts, inspectorReceipts, keychainReceipt, busyRejections, results,
+    buildHashes, runtime, actualNativePaths, guardReceipts, inspectorReceipts, keychainReceipt, busyRejections, readRateRejections, results,
     limitations: ["controlled synthetic Desktop acceptance only", "no physical phone or deployed Cloud", "no real provider/account/native media work", "owned curl/wget/yt-dlp CLI fixtures deny live native network clients; Quant uses visible:false to suppress live collectors", "JS HTTP guard and Chromium request denial are not an OS sandbox", "package update candidate differs only by a private HTML comment; full historical domain migrations are a separate gate"] };
 } catch (error) {
   failure = { error };
