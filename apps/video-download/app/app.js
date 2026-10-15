@@ -18,7 +18,12 @@ import { createProjectStorage } from "./project-storage.js";
 import { createProjectBinding } from "./project-binding.js";
 import { createLibraryProcess } from "./library-process.js";
 import { createDownloadService } from "./download-service.js";
-import { getTaskRecords, getHistoryRecords, normalizeCliRecord } from "./download-records.js";
+import {
+  getTaskRecords,
+  getHistoryRecords,
+  normalizeCliRecord,
+  downloadSourceLabel,
+} from "./download-records.js";
 import { createEnvironmentClient } from "./environment-client.js";
 import { mountVideoSearch, normalizeVideoSearchUrl } from "./video-search.js";
 import {
@@ -380,7 +385,7 @@ const downloadService = panel
         renderSharedQueue();
         setControlsBusy(false);
         document.querySelector("#shared-service-status").textContent =
-          "聊天、终端和面板共用当前项目的任务记录；关闭面板不影响后台下载。" + sharedListNotice;
+          "与聊天、终端自动同步 · 关闭面板仍继续下载。" + sharedListNotice;
       },
       onError(error) {
         document.querySelector("#shared-service-status").textContent =
@@ -428,6 +433,7 @@ async function refreshSharedQueue() {
 function renderSharedQueue() {
   const controls = document.querySelector("#shared-queue-controls");
   controls.hidden = !sharedServiceReady;
+  document.querySelector("#shared-queue-settings").hidden = !sharedServiceReady;
   document.querySelector("#legacy-queue-controls").hidden =
     sharedServiceReady && !downloadQueue.length && !elements.cookieSelect.value;
   if (!sharedServiceReady) return;
@@ -437,14 +443,24 @@ function renderSharedQueue() {
     document.querySelector("#shared-queue-toggle").textContent = queue.paused
       ? "继续队列"
       : "暂停队列";
-    document.querySelector("#shared-queue-state").textContent =
-      `${queue.paused ? "队列已暂停，正在运行的任务继续" : "队列运行中"} · 最多同时下载 ${queue.maxConcurrent} 项`;
+    document.querySelector("#shared-queue-state").textContent = queue.paused
+      ? "队列已暂停 · 当前下载继续，新任务等待"
+      : "聊天、终端和面板的任务自动同步";
+    document.querySelector("#queue-settings-summary").textContent =
+      `同时下载 ${queue.maxConcurrent} 项${queue.paused ? " · 已暂停" : ""}`;
+    document.querySelector("#shared-queue-actions").hidden =
+      !allTasks().some((job) => job.backend === "cli") && !queue.paused;
   }
-  document.querySelector("#shared-start-pending").disabled = !allTasks().some(
-    (job) => job.backend === "cli" && job.status === "pending",
-  );
+  const hasPending = allTasks().some((job) => job.backend === "cli" && job.status === "pending");
+  document.querySelector("#shared-start-pending").disabled = !hasPending;
+  document.querySelector("#shared-start-pending").hidden = !hasPending;
 }
+const sharedActionsPending = new Set();
 async function sharedTaskAction(item, action) {
+  if (sharedActionsPending.has(item.queueId) || item.cancelRequested) return;
+  sharedActionsPending.add(item.queueId);
+  renderQueue();
+  setControlsBusy(false);
   try {
     if (action === "start") await downloadService.start(item.cliJobId, item.attempt);
     else if (action === "retry") await downloadService.retry(item.cliJobId, item.attempt);
@@ -453,6 +469,10 @@ async function sharedTaskAction(item, action) {
     await refreshSharedQueue();
   } catch (error) {
     showError(error.message);
+  } finally {
+    sharedActionsPending.delete(item.queueId);
+    renderQueue();
+    setControlsBusy(false);
   }
 }
 
@@ -632,6 +652,7 @@ function taskModelStartFields() {
 
 function activateTab(name, options = {}) {
   const next = TAB_NAMES.includes(name) ? name : "download";
+  document.querySelector(".app-shell").dataset.activeTab = next;
   if (next !== "history") clearHistoryHighlight();
   for (const button of elements.tabs) {
     const selected = button.dataset.tab === next;
@@ -1916,7 +1937,19 @@ function renderQualityOptions(video = inspectedVideo) {
       : "获取视频信息后，会根据实际可用清晰度更新选项。";
 }
 
+function renderDownloadOptionsSummary() {
+  const enabled = [
+    elements.playlist.checked ? "播放列表" : "",
+    elements.subtitles.checked ? "含字幕" : "",
+    elements.cookieSelect.value ? "使用登录账号" : "",
+  ].filter(Boolean);
+  const summary = document.querySelector("#download-options-summary");
+  summary.textContent = enabled.length ? enabled.join(" · ") : "播放列表、字幕与账号";
+  summary.dataset.active = String(enabled.length > 0);
+}
+
 function updateConditionalOptions() {
+  renderDownloadOptionsSummary();
   elements.playlistOptions.hidden = !elements.playlist.checked;
   elements.subtitleOptions.hidden = !elements.subtitles.checked;
   elements.subtitleCustomRow.hidden = elements.subtitleLanguagePreset.value !== "custom";
@@ -2516,6 +2549,7 @@ function inspectionIsBusy() {
 }
 
 function updateActionAvailability() {
+  renderDownloadOptionsSummary();
   const publicNeedsService =
     context.availableMethods?.includes("process.resolveEntry") &&
     !elements.cookieSelect.value &&
@@ -2702,8 +2736,14 @@ function setControlsBusy(busy, operation = "download") {
     busy && operation === "inspect" ? "正在获取…" : "获取视频信息";
   elements.cancelButton.hidden = !currentJob?.running;
   elements.cancelButton.disabled = Boolean(
-    currentJob?.cancelRequested || currentJob?.pauseRequested,
+    currentJob?.cancelRequested ||
+    currentJob?.pauseRequested ||
+    sharedActionsPending.has(currentJob?.queueId),
   );
+  elements.cancelButton.textContent =
+    currentJob?.cancelRequested || sharedActionsPending.has(currentJob?.queueId)
+      ? "正在取消…"
+      : "取消任务";
   elements.pauseButton.hidden =
     currentJob?.backend === "cli" ||
     !currentJob ||
@@ -2762,6 +2802,7 @@ function updateTask({ state, title, percent, speed, eta, status }) {
   elements.taskPercent.textContent = Number.isFinite(percent) ? `${Math.round(percent)}%` : "—";
   elements.taskSpeed.textContent = speed || "—";
   elements.taskEta.textContent = eta || "—";
+  document.querySelector(".task-stats").dataset.hasMetrics = String(Boolean(speed || eta));
   elements.taskStatus.textContent = status;
   if (Number.isFinite(percent)) {
     elements.progressBar.dataset.indeterminate = "false";
@@ -3277,7 +3318,7 @@ function defaultTaskTitle(url) {
 
 function queueStatusText(item) {
   if (item.backend === "cli") {
-    if (item.status === "cancelling") return "正在取消，等待进程退出";
+    if (item.status === "cancelling" || item.cancelRequested) return "正在取消，等待进程退出";
     if (item.status === "queued") return "等待后台队列空位";
     if (item.status === "pending") return "待开始 · 手动下载";
     if (item.status === "running")
@@ -3407,6 +3448,7 @@ function updateTaskOverviewItem(job, row) {
   open.setAttribute("aria-label", `${finished ? "查看下载记录" : "查看任务详情"}：${job.title}`);
   row.querySelector(".task-overview-title").textContent = job.title;
   row.querySelector(".task-overview-title").title = job.title;
+  row.querySelector(".task-overview-source").textContent = downloadSourceLabel(job);
   row.querySelector(".task-overview-status").textContent = queueStatusText(job);
   row.querySelector(".task-overview-selection").textContent = selected
     ? "当前详情"
@@ -3418,9 +3460,12 @@ function updateTaskOverviewItem(job, row) {
   row.querySelector(".task-overview-track").dataset.indeterminate = String(
     job.running && !Number.isFinite(job.percent),
   );
-  row.querySelector(".task-overview-metrics").textContent = job.running
-    ? `${job.display?.speed || "—"} · 剩余 ${job.display?.eta || "—"}`
-    : `${job.configuration.format === "best" ? "最高画质" : job.configuration.format === "audio" ? "MP3" : job.configuration.format + "p"} · ${job.directory.name}`;
+  row.querySelector(".task-overview-metrics").textContent =
+    job.running && (job.display?.speed || job.display?.eta)
+      ? [job.display.speed, job.display.eta ? `剩余 ${job.display.eta}` : ""]
+          .filter(Boolean)
+          .join(" · ")
+      : `${job.configuration.format === "best" ? "最高画质" : job.configuration.format === "audio" ? "MP3" : job.configuration.format + "p"} · ${job.directory.name}`;
   const primary = row.querySelector(".task-overview-primary");
   const secondary = row.querySelector(".task-overview-secondary");
   const stopping = runningDownloads().some((item) => item.pauseRequested || item.cancelRequested);
@@ -3462,7 +3507,10 @@ function updateTaskOverviewItem(job, row) {
         );
   primary.setAttribute("aria-label", `${primary.textContent}：${job.title}`);
   if (job.backend === "cli") {
-    primary.disabled = job.status === "cancelling";
+    primary.disabled =
+      job.status === "cancelling" || job.cancelRequested || sharedActionsPending.has(job.queueId);
+    if (job.cancelRequested) primary.textContent = "正在取消…";
+    primary.setAttribute("aria-label", `${primary.textContent}：${job.title}`);
     secondary.hidden = true;
     return;
   }
@@ -3488,7 +3536,7 @@ function renderTaskOverview() {
       row.dataset.taskId = job.queueId;
       // This static skeleton contains no media or user-provided HTML.
       row.innerHTML = `<button type="button" class="task-overview-open" data-task-action="open">
-        <span class="task-overview-selection"></span><strong class="task-overview-title"></strong>
+        <span class="task-overview-meta"><span class="task-overview-source"></span><span class="task-overview-selection"></span></span><strong class="task-overview-title"></strong>
         <span class="task-overview-status"></span>
         <span class="task-overview-track" aria-hidden="true"><span></span></span>
         <span class="task-overview-metrics"></span>
@@ -3504,9 +3552,18 @@ function renderTaskOverview() {
   const count = (status) => tasks.filter((job) => status.includes(job.status)).length;
   document.querySelector("#task-overview-count").textContent = `${tasks.length} 项`;
   document.querySelector("#task-overview-summary").textContent = tasks.length
-    ? `${count(["running"])} 项下载中 · ${count(["pending", "queued", "restored", "interrupted"])} 项等待 · ${count(["paused"])} 项已暂停 · ${count(["completed", "failed", "cancelled"])} 项已结束`
-    : "添加视频后，每项任务的进度都会显示在这里。";
+    ? [
+        [count(["running", "cancelling"]), "项下载中"],
+        [count(["pending", "queued", "restored", "interrupted"]), "项等待"],
+        [count(["paused"]), "项已暂停"],
+        [count(["completed", "failed", "cancelled"]), "项已结束"],
+      ]
+        .filter(([amount]) => amount)
+        .map(([amount, label]) => `${amount} ${label}`)
+        .join(" · ")
+    : "任务会自动同步，无需保持面板打开。";
   document.querySelector("#task-overview-empty").hidden = tasks.length > 0;
+  document.querySelector("#task-card").hidden = !currentJob;
 }
 
 function updateQueueProgress(job = currentJob) {
@@ -3575,7 +3632,9 @@ function renderQueue() {
   ).length;
   const settled = tasks.filter(
     (item) =>
-      !["pending", "queued", "running", "paused", "restored", "interrupted"].includes(item.status),
+      !["pending", "queued", "running", "cancelling", "paused", "restored", "interrupted"].includes(
+        item.status,
+      ),
   ).length;
   const paused = tasks.filter((item) => item.status === "paused").length;
   const runningCount = tasks.filter((job) => job.running).length;
@@ -3587,21 +3646,40 @@ function renderQueue() {
     ? `${runningCount ? `${runningCount} 项下载中 · ` : ""}${waiting} 项等待 · ${paused ? `${paused} 项已暂停 · ` : ""}${settled} 项已结束${queuePaused ? " · 队列已暂停" : ""}`
     : `暂无任务 · 最多同时下载 ${maxConcurrent} 项`;
   const stopping = runningDownloads().some((item) => item.pauseRequested || item.cancelRequested);
+  document.querySelector("#queue-overview-summary").textContent = tasks.length
+    ? [
+        runningCount ? `${runningCount} 项下载中` : "",
+        waiting ? `${waiting} 项等待` : "",
+        paused ? `${paused} 项已暂停` : "",
+        settled ? `${settled} 项已结束` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "还没有下载任务";
   updateQueueControls();
-  elements.queueList.replaceChildren();
+  const existing = new Map(
+    [...elements.queueList.querySelectorAll(".queue-item")].map((row) => [
+      row.dataset.queueId,
+      row,
+    ]),
+  );
+  const taskIds = new Set(tasks.map((job) => job.queueId));
+  for (const [id, row] of existing) if (!taskIds.has(id)) row.remove();
   if (!tasks.length) {
+    if (elements.queueList.querySelector(".queue-empty")) return;
+    elements.queueList.replaceChildren();
     const empty = document.createElement("p");
     empty.className = "queue-empty";
     const title = document.createElement("strong");
-    title.textContent = "队列准备好了";
+    title.textContent = "让聊天帮你开始";
     const help = document.createElement("span");
-    help.textContent =
-      "粘贴链接或从 AI 搜索结果中添加视频。可同时下载多个视频，下载中也能继续添加。";
+    help.textContent = "在聊天中说「帮我下载这个视频」，任务和下载记录会自动出现在这里。";
     empty.append(title, help);
     elements.queueList.append(empty);
     return;
   }
-  for (const item of tasks) {
+  elements.queueList.querySelector(".queue-empty")?.remove();
+  for (const [index, item] of tasks.entries()) {
     const row = document.createElement("article");
     row.className = "queue-item";
     row.dataset.queueId = item.queueId;
@@ -3623,7 +3701,10 @@ function renderQueue() {
     const status = document.createElement("span");
     status.className = "queue-status";
     status.textContent = queueStatusText(item);
-    copy.append(title, meta, status);
+    const source = document.createElement("span");
+    source.className = "queue-source";
+    source.textContent = downloadSourceLabel(item);
+    copy.append(source, title, meta, status);
     if (item.nativeTaskId) {
       const version = document.createElement("small");
       version.className = "queue-package";
@@ -3703,11 +3784,62 @@ function renderQueue() {
       button.dataset.queueAction = name;
       button.dataset.queueId = item.queueId;
       button.textContent = { start: "开始下载", cancel: "取消", retry: "重试" }[name];
-      button.disabled = item.status === "cancelling";
+      button.disabled =
+        item.status === "cancelling" ||
+        item.cancelRequested ||
+        sharedActionsPending.has(item.queueId);
+      if (item.cancelRequested) button.textContent = "正在取消…";
+      button.setAttribute("aria-label", `${button.textContent}：${item.title}`);
       actions.append(button);
     }
     row.append(copy, actions);
-    elements.queueList.append(row);
+    const previous = existing.get(item.queueId);
+    if (previous) {
+      previous.dataset.state = row.dataset.state;
+      const previousCopy = previous.querySelector(".queue-open");
+      previousCopy.setAttribute("aria-label", copy.getAttribute("aria-label"));
+      for (const selector of [
+        ".queue-source",
+        ".queue-copy > strong",
+        ".queue-meta",
+        ".queue-status",
+        ".queue-package",
+        ".queue-progress",
+        ".queue-error",
+      ]) {
+        const oldNode = previous.querySelector(selector);
+        const newNode = row.querySelector(selector);
+        if (!newNode) oldNode?.remove();
+        else if (!oldNode) previousCopy.append(newNode);
+        else if (selector === ".queue-progress")
+          oldNode.firstElementChild.style.width = newNode.firstElementChild.style.width;
+        else {
+          oldNode.textContent = newNode.textContent;
+          if (newNode.title) oldNode.title = newNode.title;
+        }
+      }
+      const previousActions = previous.querySelector(".queue-actions");
+      const buttons = new Map(
+        [...previousActions.children].map((button) => [button.dataset.queueAction, button]),
+      );
+      const keep = new Set();
+      [...actions.children].forEach((button, actionIndex) => {
+        const oldButton = buttons.get(button.dataset.queueAction);
+        const target = oldButton || button;
+        if (oldButton) {
+          oldButton.textContent = button.textContent;
+          oldButton.disabled = button.disabled;
+          oldButton.setAttribute("aria-label", button.getAttribute("aria-label"));
+        }
+        keep.add(target);
+        if (previousActions.children[actionIndex] !== target)
+          previousActions.insertBefore(target, previousActions.children[actionIndex] || null);
+      });
+      for (const button of [...previousActions.children]) if (!keep.has(button)) button.remove();
+    }
+    const target = previous || row;
+    if (elements.queueList.children[index] !== target)
+      elements.queueList.insertBefore(target, elements.queueList.children[index] || null);
   }
   updateTabIndicators();
 }
@@ -4210,7 +4342,10 @@ function renderHistory() {
             ? `${format}p`
             : "原设置";
     const information = document.createElement("span");
-    information.textContent = `${quality} · ${files.length} 个文件${item.backend === "cli" ? " · " + ({ panel: "面板", chat: "聊天", cli: "终端", terminal: "终端" }[item.source] || "CLI") : ""}`;
+    information.textContent = `${quality} · ${files.length} 个文件`;
+    const source = document.createElement("span");
+    source.className = "history-source-label";
+    source.textContent = downloadSourceLabel(item);
     const time = document.createElement("time");
     time.className = "history-time";
     time.textContent = historyTimeLabel(item.finishedAt);
@@ -4218,7 +4353,7 @@ function renderHistory() {
       time.dateTime = new Date(item.finishedAt).toISOString();
       time.title = new Date(item.finishedAt).toLocaleString("zh-CN");
     }
-    meta.append(status, information, time);
+    meta.append(status, information, source, time);
     copy.append(title, meta);
     const chevron = historyIcon("chevron");
     chevron.classList.add("history-chevron");
@@ -6544,10 +6679,13 @@ document.querySelector("#task-add-download").addEventListener("click", () => {
   activateTab("download", { focus: true });
   elements.urlInput.focus();
 });
+document.querySelector("#task-empty-add").addEventListener("click", () => {
+  activateTab("download", { focus: true });
+  elements.urlInput.focus();
+});
 document.querySelector("#queue-jump").addEventListener("click", () => {
-  const queue = document.querySelector("#queue-section");
-  queue.scrollIntoView({ block: "start", behavior: "auto" });
-  queue.focus({ preventScroll: true });
+  activateTab("task", { focus: true });
+  document.querySelector("#page-task").scrollIntoView({ block: "start" });
 });
 elements.cookieRefresh.addEventListener("click", () => void refreshCookieAccounts());
 elements.cookieLogin.addEventListener("click", () => void loginAndSaveCookie());

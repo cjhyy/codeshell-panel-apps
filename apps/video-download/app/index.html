@@ -21,12 +21,12 @@
           <img src="./assets/electron-video-dog.png" alt="" />
         </div>
         <div class="brand-copy">
-          <h1>Mimi Download <span class="app-version">0.24.0</span></h1>
-          <p>找到想看的，保存到所选目录。</p>
+          <h1>Mimi Download <span class="app-version">0.24.1</span></h1>
+          <p>在聊天中发起下载，在这里查看进度与记录。</p>
         </div>
         <div class="topbar-actions">
-          <button id="queue-jump" class="queue-jump" type="button" title="查看下载队列">
-            队列 <b id="queue-jump-count">0</b>
+          <button id="queue-jump" class="queue-jump" type="button" title="查看下载任务">
+            任务 <b id="queue-jump-count">0</b>
           </button>
           <span id="runtime-badge" class="runtime-badge" data-state="loading">
             <i aria-hidden="true"></i>
@@ -118,7 +118,7 @@
             <div class="section-heading">
               <div>
                 <span class="step-label">添加视频</span>
-                <h2 id="download-heading">把想保存的视频放在这里</h2>
+                <h2 id="download-heading">粘贴链接，开始下载</h2>
               </div>
               <button id="clear-url" class="text-button" type="button">清空</button>
             </div>
@@ -163,7 +163,7 @@
                 </button>
               </div>
               <span id="inspect-status" role="status" aria-live="polite"
-                >先核对标题、时长，再选择下载。</span
+                >可先获取标题和时长，也可以直接下载。</span
               >
             </div>
 
@@ -246,7 +246,13 @@
                   <small id="quality-help">获取视频信息后，会根据实际可用清晰度更新选项。</small>
                 </label>
               </section>
-
+            </div>
+            <details id="download-options" class="download-options">
+              <summary>
+                <strong>更多选项</strong>
+                <span id="download-options-summary">播放列表、字幕与账号</span>
+                <span class="disclosure-arrow" aria-hidden="true">⌄</span>
+              </summary>
               <div class="option-list">
                 <label class="toggle-row">
                   <span>
@@ -329,28 +335,27 @@
                   <small id="subtitle-help">默认转换为 SRT；没有 ffmpeg 时会保留原字幕文件。</small>
                 </div>
               </div>
-            </div>
-            <div class="cookie-picker" aria-labelledby="cookie-picker-title">
-              <div class="cookie-picker-heading">
-                <span>
-                  <strong id="cookie-picker-title"
-                    >登录账号 <span class="optional-label">可选</span></strong
-                  >
-                  <small>需要登录的视频可使用已保存账号</small>
-                </span>
-                <button id="cookie-refresh" class="text-button" type="button">刷新账号</button>
+              <div class="cookie-picker" aria-labelledby="cookie-picker-title">
+                <div class="cookie-picker-heading">
+                  <span>
+                    <strong id="cookie-picker-title"
+                      >登录账号 <span class="optional-label">可选</span></strong
+                    >
+                    <small>需要登录的视频可使用已保存账号</small>
+                  </span>
+                  <button id="cookie-refresh" class="text-button" type="button">刷新账号</button>
+                </div>
+                <div class="cookie-picker-controls">
+                  <select id="cookie-select" aria-label="选择登录 Cookie" disabled>
+                    <option value="">不使用 Cookie</option>
+                  </select>
+                  <button id="cookie-login" class="secondary-button" type="button" disabled>
+                    登录并保存
+                  </button>
+                </div>
+                <small id="cookie-help">粘贴链接后会显示与该网站匹配的已保存账号。</small>
               </div>
-              <div class="cookie-picker-controls">
-                <select id="cookie-select" aria-label="选择登录 Cookie" disabled>
-                  <option value="">不使用 Cookie</option>
-                </select>
-                <button id="cookie-login" class="secondary-button" type="button" disabled>
-                  登录并保存
-                </button>
-              </div>
-              <small id="cookie-help">粘贴链接后会显示与该网站匹配的已保存账号。</small>
-            </div>
-
+            </details>
             <div class="destination-row">
               <div class="destination-copy">
                 <span class="step-label">保存位置</span>
@@ -491,21 +496,24 @@
               <span class="step-label">所有任务</span>
               <h2 id="task-overview-title">下载任务</h2>
             </div>
-            <span id="task-overview-count" class="queue-count">0 项</span>
+            <div class="task-overview-heading-actions">
+              <button id="shared-refresh" class="text-button" type="button">刷新任务</button>
+              <span id="task-overview-count" class="queue-count">0 项</span>
+            </div>
           </div>
           <p id="task-overview-summary" class="task-overview-summary" role="status">
             添加视频后，每项任务的进度都会显示在这里。
           </p>
-          <div class="queue-toolbar-actions">
-            <button id="shared-refresh" class="text-button" type="button">刷新任务</button>
-          </div>
           <p id="shared-service-status" class="task-guidance" role="status">
             正在连接当前项目的下载任务…
           </p>
           <div id="task-overview-list" class="task-overview-list" aria-label="全部下载任务"></div>
-          <p id="task-overview-empty" class="task-guidance">
-            支持同时下载多个视频；点击任务查看详情。
-          </p>
+          <div id="task-overview-empty" class="task-empty">
+            <span class="empty-state-icon" aria-hidden="true">↓</span>
+            <strong>从链接或聊天开始下载</strong>
+            <p>粘贴视频链接，或在聊天中说「帮我下载这个视频」。任务会自动显示在这里。</p>
+            <button id="task-empty-add" class="secondary-button" type="button">添加视频链接</button>
+          </div>
         </section>
         <section id="task-card" class="task-card" aria-labelledby="task-title">
           <div class="task-topline">
@@ -671,64 +679,70 @@
       <section id="queue-section" class="queue-section" tabindex="-1" aria-labelledby="queue-title">
         <div class="section-heading compact">
           <div>
-            <span class="step-label">支持同时下载</span>
-            <h2 id="queue-title">下载队列 <span id="queue-count" class="count-tag">0</span></h2>
+            <span class="step-label">关闭面板后继续下载</span>
+            <h2 id="queue-title">后台任务 <span id="queue-count" class="count-tag">0</span></h2>
           </div>
           <button id="queue-clear" class="text-button" type="button" disabled>清除已结束</button>
         </div>
+        <p id="queue-overview-summary" class="queue-summary" role="status">还没有下载任务</p>
         <p id="library-status" class="library-status" role="status" aria-live="polite"></p>
         <div id="shared-queue-controls" class="shared-queue-controls" hidden>
-          <div class="section-heading compact"><h3>项目下载队列</h3></div>
-          <label class="queue-concurrency"
-            ><span>同时下载</span>
-            <select id="shared-concurrency" aria-label="项目下载并行数">
-              <option value="1">1 个</option>
-              <option value="2" selected>2 个</option>
-              <option value="3">3 个</option>
-              <option value="4">4 个</option>
-            </select>
-          </label>
-          <div class="queue-toolbar">
-            <p id="shared-queue-state" class="queue-summary" role="status"></p>
-            <div class="queue-toolbar-actions">
-              <button id="shared-start-pending" class="secondary-button" type="button" disabled>
-                开始待下载任务
-              </button>
-              <button id="shared-queue-toggle" class="secondary-button" type="button">
-                暂停队列
-              </button>
-            </div>
+          <p id="shared-queue-state" class="queue-summary" role="status"></p>
+          <div id="shared-queue-actions" class="queue-toolbar-actions" hidden>
+            <button id="shared-start-pending" class="secondary-button" type="button" disabled>
+              开始待下载任务
+            </button>
+            <button id="shared-queue-toggle" class="secondary-button" type="button">
+              暂停队列
+            </button>
           </div>
-          <p class="queue-resume-note">
-            聊天、终端与面板共用并行数和队列状态。暂停队列会等待当前下载完成；需要立即停止时可取消单项任务。
-          </p>
         </div>
-        <div id="legacy-queue-controls">
-          <p class="queue-resume-note" id="legacy-queue-label">账号下载与旧版队列</p>
-          <label class="queue-concurrency">
-            <span>同时下载</span>
-            <select id="queue-concurrency" aria-label="同时下载数量">
-              <option value="1">1 个 · 顺序下载</option>
-              <option value="2">2 个</option>
-              <option value="3" selected>3 个</option>
-              <option value="4">4 个</option>
-            </select>
-          </label>
-          <div class="queue-toolbar">
-            <p id="queue-summary" class="queue-summary" aria-live="polite">
-              暂无任务 · 最多同时下载 3 项
+        <details id="queue-settings" class="queue-settings">
+          <summary>
+            <span>队列设置</span><span id="queue-settings-summary">同时下载 2 项</span
+            ><span class="disclosure-arrow" aria-hidden="true">⌄</span>
+          </summary>
+          <div id="shared-queue-settings" hidden>
+            <label class="queue-concurrency"
+              ><span>同时下载</span>
+              <select id="shared-concurrency" aria-label="项目下载并行数">
+                <option value="1">1 个</option>
+                <option value="2" selected>2 个</option>
+                <option value="3">3 个</option>
+                <option value="4">4 个</option>
+              </select>
+            </label>
+            <p class="queue-resume-note">
+              聊天、终端与面板共用此设置。暂停队列只停止新任务入场；正在下载的任务可单独取消。
             </p>
-            <div class="queue-toolbar-actions">
-              <button id="queue-restore" class="secondary-button" type="button" disabled>
-                全部下载
-              </button>
-              <button id="queue-pause" class="secondary-button" type="button" disabled>
-                全部暂停
-              </button>
-            </div>
           </div>
-          <p class="queue-resume-note">暂停会保留已下载的部分，继续时自动尝试续传。</p>
-        </div>
+          <div id="legacy-queue-controls">
+            <p class="queue-resume-note" id="legacy-queue-label">账号下载与旧版队列</p>
+            <label class="queue-concurrency"
+              ><span>同时下载</span>
+              <select id="queue-concurrency" aria-label="同时下载数量">
+                <option value="1">1 个 · 顺序下载</option>
+                <option value="2">2 个</option>
+                <option value="3" selected>3 个</option>
+                <option value="4">4 个</option>
+              </select>
+            </label>
+            <div class="queue-toolbar">
+              <p id="queue-summary" class="queue-summary" aria-live="polite">
+                暂无任务 · 最多同时下载 3 项
+              </p>
+              <div class="queue-toolbar-actions">
+                <button id="queue-restore" class="secondary-button" type="button" disabled>
+                  全部下载
+                </button>
+                <button id="queue-pause" class="secondary-button" type="button" disabled>
+                  全部暂停
+                </button>
+              </div>
+            </div>
+            <p class="queue-resume-note">暂停会保留已下载的部分，继续时自动尝试续传。</p>
+          </div>
+        </details>
         <div id="queue-list" class="queue-list"></div>
       </section>
 

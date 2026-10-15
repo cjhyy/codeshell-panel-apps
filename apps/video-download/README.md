@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.24.0 provides one project download runtime for Chat, the Node CLI
+Mimi Download 0.24.1 provides one project download runtime for Chat, the Node CLI
 and the panel. Public downloads saved inside the project share task IDs,
 configuration, queue settings, progress and files. Opening a panel observes those
 records; it does not own or keep the worker alive.
@@ -15,7 +15,8 @@ results; the CLI has no separate model connection or credentials.
 The panel retains batch links, metadata inspection, playlist selection, quality
 preferences, MP3, human/automatic subtitles, language presets, AI search and error
 analysis. Paste up to 100 links. **Download now** admits work to the project queue;
-**Add to queue** saves a pending task without starting a worker. Start it explicitly
+**Add to queue** saves a pending task without starting a worker. Optional playlist, subtitle and account controls live under **More options**;
+quality and destination remain visible. Start pending work explicitly
 from the task card or **Start pending downloads**. Existing matches and actual
 output files are checked before treating a video as already downloaded.
 
@@ -44,7 +45,9 @@ execution environment are still required. Interrupted work is never restarted
 without an explicit request.
 
 Environment snapshots are shared between the panel and CLI. Local executable
-versions are cached for up to six hours, bound to the actual PATH, relevant
+versions are cached for up to six hours; failed observations expire after one
+minute. Tool probes allow up to 30 seconds for slow standalone startup and settle
+concurrently before returning. Snapshots are bound to the actual PATH, relevant
 execution settings, Node and tool file identities. File replacement, missing
 tools or changed settings invalidate the cache. Shell/session bookkeeping does
 not invalidate an otherwise identical environment. Each panel still obtains its
@@ -96,7 +99,15 @@ node "<package>/app/tools/video-download.mjs" queue --project "/path/to/project"
 Input examples:
 
 ```json
-{"url":"https://example.com/video","configuration":{"format":"1080","subtitles":true,"subtitleMode":"both","subtitleLanguages":"zh.*,en.*"}}
+{
+  "url": "https://example.com/video",
+  "configuration": {
+    "format": "1080",
+    "subtitles": true,
+    "subtitleMode": "both",
+    "subtitleLanguages": "zh.*,en.*"
+  }
+}
 ```
 
 `inspect` takes `{url, playlist?}`; `search` takes
