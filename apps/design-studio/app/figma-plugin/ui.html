@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 20px;
+        font:
+          13px/1.55 Inter,
+          system-ui,
+          sans-serif;
+        color: var(--figma-color-text, #222);
+        background: var(--figma-color-bg, #fff);
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 19px;
+      }
+      h2 {
+        margin: 22px 0 8px;
+        font-size: 14px;
+      }
+      p {
+        margin: 8px 0;
+        color: var(--figma-color-text-secondary, #666);
+      }
+      button {
+        border: 1px solid var(--figma-color-border, #ddd);
+        border-radius: 6px;
+        color: inherit;
+        background: var(--figma-color-bg-secondary, #f6f6f6);
+        padding: 9px 12px;
+        margin: 8px 6px 0 0;
+        cursor: pointer;
+      }
+      button:disabled {
+        cursor: wait;
+        opacity: 0.5;
+      }
+      button.primary {
+        color: white;
+        background: #2563eb;
+        border-color: #2563eb;
+      }
+      input {
+        display: block;
+        max-width: 100%;
+        margin: 8px 0;
+      }
+      #status {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        max-height: 170px;
+        overflow: auto;
+        margin-top: 18px;
+        padding: 10px;
+        border-radius: 6px;
+        background: var(--figma-color-bg-secondary, #f6f6f6);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>CodeShell Design Bridge</h1>
+    <p>通过本地 JSON 连接 Figma 与设计面板。支持基础图层和 Auto Layout；不支持二进制 .fig 文件。</p>
+    <h2>Figma → 设计面板</h2>
+    <p>下载官方 JSON_REST_V1 数据，再在设计面板的「导入 Figma JSON」中打开。</p>
+    <button id="export-page">导出当前页面</button
+    ><button id="export-selection">导出选中图层</button>
+    <h2>设计面板 → Figma</h2>
+    <p>选择设计面板导出的 Figma 传输包。每次导入都会新增页面；缺失字体会回退并显示提示。</p>
+    <input id="file" type="file" accept=".json,application/json" />
+    <button id="import" class="primary" disabled>导入为新页面</button>
+    <div id="status" role="status" aria-live="polite">准备就绪。所有文件处理均在本地进行。</div>
+    <script>
+      const status = document.querySelector("#status");
+      const picker = document.querySelector("#file");
+      const importButton = document.querySelector("#import");
+      let content = null,
+        busy = false;
+      const setBusy = (value) => {
+        busy = value;
+        document.querySelectorAll("button").forEach((button) => {
+          button.disabled = value || (button === importButton && !content);
+        });
+      };
+      const send = (message) => {
+        setBusy(true);
+        status.textContent = "处理中…";
+        parent.postMessage({ pluginMessage: message }, "*");
+      };
+      picker.addEventListener("change", async () => {
+        content = null;
+        importButton.disabled = true;
+        const file = picker.files[0];
+        if (!file) return;
+        if (file.size > 16 * 1024 * 1024) {
+          status.textContent = "文件超过 16 MiB；请分页面导出。";
+          return;
+        }
+        try {
+          const text = await file.text();
+          const value = JSON.parse(text);
+          if (value.format !== "codeshell.figma.transfer" || value.version !== 1)
+            throw Error("请选择设计面板导出的 Figma 传输包。");
+          content = text;
+          status.textContent = "已选择：" + file.name + "\n点击「导入为新页面」开始。";
+          importButton.disabled = busy;
+        } catch (error) {
+          status.textContent = error.message;
+        }
+      });
+      importButton.addEventListener("click", () => {
+        if (content) send({ type: "import-transfer", content });
+      });
+      document
+        .querySelector("#export-page")
+        .addEventListener("click", () => send({ type: "export-json", scope: "page" }));
+      document
+        .querySelector("#export-selection")
+        .addEventListener("click", () => send({ type: "export-json", scope: "selection" }));
+      window.onmessage = (event) => {
+        const message = event.data?.pluginMessage;
+        if (!message || !["error", "imported", "exported"].includes(message.type)) return;
+        setBusy(false);
+        if (message.type === "error") {
+          status.textContent = message.message;
+          return;
+        }
+        if (message.type === "imported") {
+          status.textContent =
+            "已新增 " +
+            message.pages +
+            " 个页面、" +
+            message.nodes +
+            " 个可编辑图层。" +
+            (message.warnings.length ? "\n\n兼容性提示：\n" + message.warnings.join("\n") : "");
+          return;
+        }
+        const url = URL.createObjectURL(new Blob([message.content], { type: "application/json" }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = message.filename;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        status.textContent = "JSON 已导出，可在 CodeShell 设计面板中导入。";
+      };
+    </script>
+  </body>
+</html>

@@ -7,6 +7,7 @@
     <title>Design Studio</title>
     <link rel="stylesheet" href="./style.css" />
     <link rel="stylesheet" href="./panel-select.css" />
+    <link rel="stylesheet" href="./figma-workflow.css" />
     <script defer src="./panel-select.js"></script>
   </head>
   <body>
@@ -1105,8 +1106,9 @@
         <textarea id="element-comment-request" rows="4" maxlength="4000"
           placeholder="描述这个图层需要调整的内容…" aria-label="图层评论要求"></textarea>
         <footer class="ai-footer">
-          <span>保存后交给 Agent · ⌘/Ctrl + Enter 提交</span>
-          <button id="submit-element-comment" class="ai-button" type="button">提交评论</button>
+          <span>记录问题，或交给 Agent · ⌘/Ctrl + Enter 提交</span>
+          <button id="save-review-comment" class="button" type="button">保存为评论</button>
+          <button id="submit-element-comment" class="ai-button" type="button">交给 Agent</button>
         </footer>
       </form>
     </dialog>

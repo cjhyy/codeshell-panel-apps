@@ -1,0 +1,262 @@
+import { importFigmaJson, createFigmaTransfer, MAX_FIGMA_JSON_BYTES } from "./figma-bridge.mjs";
+
+// File conversion stays inside the Panel. Figma account access is not needed.
+export function mountFigmaWorkflow({ getScope, checkScope, capture, replace, prototype }) {
+  const button = document.createElement("button");
+  button.id = "open-figma-workflow";
+  button.className = "button";
+  button.type = "button";
+  button.textContent = "Figma";
+  button.title = "Figma JSON 导入、导回与 HTML 原型";
+  document.querySelector("#open-html-import").before(button);
+  const compact = document.createElement("button");
+  compact.type = "button";
+  compact.textContent = "Figma 导入与导回";
+  compact.dataset.toolbarAction = button.id;
+  document.querySelector(".compact-actions-list").append(compact);
+
+  const dialog = document.createElement("dialog");
+  dialog.id = "figma-workflow-dialog";
+  dialog.setAttribute("aria-labelledby", "figma-workflow-title");
+  dialog.innerHTML = `<section class="dialog-card figma-workflow-card">
+    <div class="dialog-header"><div><span class="dialog-kicker">FIGMA EXCHANGE</span>
+      <h2 id="figma-workflow-title">Figma 与设计工作台</h2></div>
+      <button id="figma-workflow-close" type="button" class="dialog-close" aria-label="关闭 Figma 转换">×</button></div>
+    <p class="dialog-description">导入 JSON 后可编辑图层，再生成 HTML 或通过插件导回 Figma。导回会创建新页面。</p>
+    <div class="figma-workflow-step"><h3>1 · 导入设计</h3>
+      <label for="figma-import-file">Figma REST API 或插件导出的 JSON</label>
+      <input id="figma-import-file" type="file" accept=".json,application/json" />
+      <p class="dialog-description">支持基础形状、文字与自动布局。暂不读取 .fig；图片、复杂矢量、变量、组件关系与交互需要另行适配。</p>
+      <p id="figma-import-preview"></p>
+      <ul id="figma-import-warnings" class="figma-warning-list" aria-label="转换差异"></ul>
+      <button id="figma-import-apply" type="button" class="primary-button" disabled>导入到画布（可撤销）</button>
+      <p class="dialog-description">替换当前画布，保留撤销记录；检查后再保存。</p>
+    </div>
+    <div class="figma-workflow-step"><h3>2 · 导回 Figma</h3>
+      <button id="figma-transfer-download" type="button" class="button">下载 Figma 转换 JSON</button>
+      <p class="dialog-description">转换 JSON 由下方插件读取。它不是 Figma 原生文件，也不会自动同步或覆盖原设计。</p>
+      <details><summary>首次使用：下载并安装 Figma 开发插件</summary>
+        <p class="dialog-description">先在 Figma 桌面端的 Plugins → Development → New plugin 创建带界面的插件，取得生成的 manifest.json 中的 id。填入下方后下载三个文件，放到同一文件夹，再用 Import plugin from manifest 选择下载的 manifest.json。</p>
+        <label for="figma-plugin-id">Figma 分配的插件 ID</label>
+        <input id="figma-plugin-id" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="从 Figma 生成的 manifest.json 复制 id" />
+        <div class="figma-plugin-files">
+          <button type="button" class="button" data-plugin-file="manifest.json">manifest.json</button>
+          <button type="button" class="button" data-plugin-file="code.js">code.js</button>
+          <button type="button" class="button" data-plugin-file="ui.html">ui.html</button>
+        </div>
+      </details>
+    </div>
+    <div class="figma-workflow-step"><h3>3 · HTML 原型</h3>
+      <button id="figma-html-download" type="button" class="button">下载当前页 HTML 原型</button>
+      <p class="dialog-description">可离线打开，保留图层 ID 与布局。交互逻辑可在“交付”中交给 Agent 继续实现。</p>
+    </div>
+    <p id="figma-workflow-status" class="html-import-status" role="status" aria-live="polite"></p>
+  </section>`;
+  document.body.append(dialog);
+  const el = (id) => dialog.querySelector(`#${id}`);
+  const fileInput = el("figma-import-file"),
+    apply = el("figma-import-apply");
+  const status = el("figma-workflow-status"),
+    preview = el("figma-import-preview");
+  const warnings = el("figma-import-warnings");
+  let generation = 0,
+    pending = null,
+    busy = false;
+  const showStatus = (text, error = false) => {
+    status.textContent = text;
+    status.dataset.kind = error ? "error" : "idle";
+  };
+  const setBusy = (value) => {
+    busy = value;
+    dialog.setAttribute("aria-busy", String(value));
+    for (const action of dialog.querySelectorAll("button:not(#figma-workflow-close), input")) {
+      action.disabled = value;
+    }
+    apply.disabled = value || !pending;
+  };
+  const reset = () => {
+    pending = null;
+    fileInput.value = "";
+    preview.textContent = "";
+    warnings.replaceChildren();
+    setBusy(false);
+  };
+  const start = (scope = getScope()) => {
+    const ticket = ++generation;
+    checkScope(scope);
+    return {
+      scope,
+      ticket,
+      check() {
+        if (generation !== ticket || !dialog.open) throw Error("Figma 转换已取消，请重新操作");
+        checkScope(scope);
+      },
+    };
+  };
+  const failed = (operation, error) => {
+    if (dialog.open && (!operation || operation.ticket === generation)) {
+      showStatus(error instanceof Error ? error.message : "转换失败", true);
+    }
+  };
+  function download(content, filename, type = "application/json") {
+    const url = URL.createObjectURL(new Blob([content], { type }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  function showWarnings(items) {
+    warnings.replaceChildren();
+    for (const warning of items.slice(0, 80)) {
+      const item = document.createElement("li");
+      item.textContent = `${warning.nodeId ? `${warning.nodeId} · ` : ""}${warning.message}`;
+      warnings.append(item);
+    }
+    if (items.length > 80) {
+      const item = document.createElement("li");
+      item.textContent = `其余 ${items.length - 80} 条差异请分批核对；转换 JSON 会附带导出差异。`;
+      warnings.append(item);
+    }
+  }
+  button.addEventListener("click", () => {
+    generation++;
+    reset();
+    showStatus("选择 JSON 可先查看转换结果；导入和下载均不会自动写入项目。");
+    dialog.showModal();
+  });
+  el("figma-workflow-close").addEventListener("click", () => dialog.close());
+  dialog.addEventListener("close", () => {
+    generation++;
+    reset();
+  });
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files?.[0];
+    if (!file || busy) return;
+    pending = null;
+    preview.textContent = "";
+    warnings.replaceChildren();
+    let operation;
+    setBusy(true);
+    try {
+      operation = start();
+      // Bounds apply to this conversion operation, not the design document format.
+      if (file.size > MAX_FIGMA_JSON_BYTES)
+        throw Error("单次 JSON 导入最多 16 MiB，请在 Figma 中分批导出选区");
+      const text = await file.text();
+      operation.check();
+      const result = importFigmaJson(text);
+      operation.check();
+      pending = { ...result, scope: operation.scope };
+      preview.textContent = `${result.document.name} · ${result.stats.pages} 页 · ${result.stats.importedNodes} 个可编辑图层 · ${result.stats.skippedNodes} 个跳过图层`;
+      showWarnings(result.warnings);
+      showStatus(
+        result.warnings.length
+          ? `转换包含 ${result.warnings.length} 条差异。核对后再导入。`
+          : "转换完成，可以导入。",
+      );
+    } catch (error) {
+      failed(operation, error);
+    } finally {
+      if (!operation || generation === operation.ticket) setBusy(false);
+    }
+  });
+  apply.addEventListener("click", async () => {
+    if (busy || !pending) return;
+    const review = pending;
+    let operation;
+    setBusy(true);
+    try {
+      operation = start(review.scope);
+      await replace(review.document, operation.check);
+      // Replacement changes the state revision by design. Only check the dialog ticket now.
+      if (generation !== operation.ticket || !dialog.open) return;
+      pending = null;
+      showStatus(`已导入 ${review.stats.importedNodes} 个图层。请在画布核对差异，再保存设计。`);
+      preview.textContent = "已导入；可关闭窗口查看画布，或继续下载转换 JSON / HTML。";
+    } catch (error) {
+      failed(operation, error);
+    } finally {
+      if (!operation || generation === operation.ticket) setBusy(false);
+    }
+  });
+  el("figma-transfer-download").addEventListener("click", async () => {
+    if (busy) return;
+    let operation;
+    setBusy(true);
+    try {
+      operation = start();
+      const snapshot = await capture(operation.scope);
+      operation.check();
+      const transfer = createFigmaTransfer(snapshot);
+      operation.check();
+      showWarnings(transfer.warnings);
+      download(`${JSON.stringify(transfer, null, 2)}\n`, "design.figma-transfer.json");
+      showStatus(
+        `已下载转换 JSON${transfer.warnings.length ? `，含 ${transfer.warnings.length} 条差异` : ""}。在 Figma 插件中载入它以创建新页面。`,
+      );
+    } catch (error) {
+      failed(operation, error);
+    } finally {
+      if (!operation || generation === operation.ticket) setBusy(false);
+    }
+  });
+  el("figma-html-download").addEventListener("click", async () => {
+    if (busy) return;
+    let operation;
+    setBusy(true);
+    try {
+      operation = start();
+      const html = await prototype(operation.scope);
+      operation.check();
+      download(html, "design-prototype.html", "text/html");
+      showStatus("当前页 HTML 原型已下载，可离线打开。更完整的前端交付请使用“交付”。");
+    } catch (error) {
+      failed(operation, error);
+    } finally {
+      if (!operation || generation === operation.ticket) setBusy(false);
+    }
+  });
+  for (const action of dialog.querySelectorAll("[data-plugin-file]")) {
+    action.addEventListener("click", async () => {
+      if (busy) return;
+      const ticket = ++generation;
+      setBusy(true);
+      try {
+        const file = action.dataset.pluginFile;
+        const pluginId = el("figma-plugin-id").value.trim();
+        if (file === "manifest.json" && !/^[0-9]{1,32}$/.test(pluginId)) {
+          throw Error("请先创建 Figma 开发插件，并填入其 manifest.json 中由 Figma 分配的数字 id");
+        }
+        const response = await fetch(new URL(`./figma-plugin/${file}`, import.meta.url));
+        if (!response.ok)
+          throw Error("插件文件无法读取，请从 Design Studio 安装目录获取 figma-plugin 文件夹");
+        let source = await response.text();
+        if (ticket !== generation || !dialog.open) return;
+        if (file === "manifest.json")
+          source = `${JSON.stringify({ ...JSON.parse(source), id: pluginId }, null, 2)}\n`;
+        download(
+          source,
+          file,
+          file.endsWith("html")
+            ? "text/html"
+            : file.endsWith("js")
+              ? "text/javascript"
+              : "application/json",
+        );
+        showStatus(`已下载 ${file}。请将三个文件放在同一文件夹。`);
+      } catch (error) {
+        if (ticket === generation && dialog.open) failed(null, error);
+      } finally {
+        if (ticket === generation) setBusy(false);
+      }
+    });
+  }
+  return {
+    contextChanged() {
+      generation++;
+      reset();
+      if (dialog.open) showStatus("设计或项目已切换，请重新选择 JSON 或发起下载。");
+    },
+  };
+}

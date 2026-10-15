@@ -72,6 +72,8 @@ import {
   isEmptyDesignOperationRecord,
 } from "./operation-log.mjs";
 import { mountPortableBackup } from "./portable-backup-ui.mjs";
+import { mountFigmaWorkflow } from "./figma-workflow.mjs";
+import { mountReviewComments } from "./review-comments-ui.mjs";
 import { createRecoverySession } from "./recovery-session.mjs";
 import { chooseRepoDesignFile, DEFAULT_DESIGN_PATH } from "./repository.mjs";
 import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
@@ -372,6 +374,8 @@ let contextInitialized = false;
 let initialContextPending = true;
 let workspaceLoading = true;
 let portableBackupUI = null;
+let figmaWorkflowUI = null;
+let reviewCommentsUI = null;
 let saveInFlight = null;
 let recoveryFailureWarned = false;
 let recoverySession = null;
@@ -2639,6 +2643,7 @@ function renderAll() {
   elements.toggleSnap.classList.toggle("active", snapEnabled);
   elements.toggleSnap.setAttribute("aria-pressed", String(snapEnabled));
   updateCursor();
+  reviewCommentsUI?.update();
 }
 
 function validHex(value) {
@@ -4716,12 +4721,13 @@ function setHtmlImportStatus(message, kind = "idle") {
 
 async function replaceDesignWithHtmlImport(
   imported,
-  { save = false, recordAgentTransaction = false, sourcePath } = {},
+  { save = false, recordAgentTransaction = false, sourcePath, assertSource = () => {} } = {},
 ) {
   const operationWorkspaceEpoch = workspaceEpoch;
   cancelInteraction();
   await ensureAllDesignPagesLoaded();
   assertWorkspaceEpoch(operationWorkspaceEpoch);
+  assertSource();
   const nextDesign = normalizeDocument(imported);
   const previous = clone(design);
   const previousSnapshot = serializeDesign();
@@ -5229,6 +5235,8 @@ function renderAgentAvailability() {
   const unavailable = agentSubmissionPending || context.busy || context.trusted !== true || !agentSubmissionAvailable();
   elements.submitAi.disabled = Boolean(unavailable);
   elements.submitElementComment.disabled = Boolean(unavailable);
+  document.getElementById("save-review-comment").disabled =
+    workspaceLoading || agentMutationActive || context.trusted !== true;
 }
 
 function openAgentDialog() {
@@ -6022,12 +6030,12 @@ document.querySelector("#close-layers").addEventListener("click", () => {
   setResponsivePanel("layers", false);
   elements.toggleLayers.focus();
 });
-for (const button of elements.compactActions.querySelectorAll("[data-toolbar-action]")) {
-  button.addEventListener("click", () => {
-    elements.compactActions.open = false;
-    document.getElementById(button.dataset.toolbarAction).click();
-  });
-}
+elements.compactActions.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-toolbar-action]");
+  if (!button || !elements.compactActions.contains(button)) return;
+  elements.compactActions.open = false;
+  document.getElementById(button.dataset.toolbarAction)?.click();
+});
 elements.compactActions.addEventListener("toggle", () => {
   for (const button of elements.compactActions.querySelectorAll("[data-toolbar-action]")) {
     button.disabled = document.getElementById(button.dataset.toolbarAction).disabled;
@@ -6052,6 +6060,19 @@ elements.submitAi.addEventListener("click", () => void submitToAgent());
 document.getElementById("comment-selection").addEventListener("click", () => openElementComment(selectedNode()));
 elements.submitElementComment.addEventListener("click", () => void submitElementComment());
 elements.elementComment.addEventListener("close", () => { if (!elements.elementComment.open) commentTarget = null; });
+document.getElementById("save-review-comment").addEventListener("click", () => {
+  if (workspaceLoading || agentMutationActive || context.trusted !== true) {
+    return notify("当前项目尚未准备好，评论内容仍保留在输入框中", "error");
+  }
+  const text = elements.elementCommentRequest.value;
+  const nodeId = commentTarget?.nodes[0]?.id;
+  const pageId = commentTarget?.pageId;
+  if (!nodeId) return notify("评论图层已变化，请重新选择", "error");
+  try { commentTarget.assert(); }
+  catch (error) { return notify(error.message, "error"); }
+  closeElementComment();
+  reviewCommentsUI?.open({ text, nodeId, pageId });
+});
 elements.elementCommentRequest.addEventListener("keydown", event => {
   if (!event.isComposing && (event.metaKey || event.ctrlKey) && event.key === "Enter") {
     event.preventDefault(); void submitElementComment();
@@ -6085,6 +6106,8 @@ for (const button of document.querySelectorAll("[data-layout-align], #layout-spa
   });
 }
 elements.path.addEventListener("change", () => {
+  figmaWorkflowUI?.contextChanged();
+  reviewCommentsUI?.update();
   const path = elements.path.value.trim();
   if (path !== currentSourcePath) warnedExternalVersion = null;
   currentModifiedAt = path === currentSourcePath ? currentSourceModifiedAt : null;
@@ -6314,6 +6337,8 @@ function updateContext(next) {
     savedSnapshot = "";
     workspaceEpoch += 1;
     portableBackupUI?.contextChanged();
+    figmaWorkflowUI?.contextChanged();
+    reviewCommentsUI?.contextChanged();
     recoverySession = null;
     recoveryIssue = "";
     recoveryStoredValue = null;
@@ -6322,6 +6347,7 @@ function updateContext(next) {
   }
   context = nextContext;
   contextInitialized = true;
+  reviewCommentsUI?.update();
   renderRecoveryStatus();
   applyContextTheme(context.theme);
   updateRepoLinkState();
@@ -8548,6 +8574,76 @@ portableBackupUI = mountPortableBackup({
     fileDiscoveryCache = null;
     void refreshRepoFilesPanel({ force: true });
   },
+});
+
+function captureExchangeScope() {
+  finishInlineTextEdit();
+  cancelInteraction();
+  return {
+    assertDocument: captureDeliveryScope(),
+    stateRevision: currentDesignStateRevision(),
+    pageId: design.activePageId,
+  };
+}
+
+function checkExchangeScope(scope) {
+  scope.assertDocument();
+  if (workspaceLoading || agentMutationActive || context.trusted !== true) {
+    throw new Error("当前设计尚未准备好，请稍后重试");
+  }
+  if (currentDesignStateRevision() !== scope.stateRevision) {
+    throw new Error("设计在转换期间发生变化；请重新选择 JSON 或发起下载");
+  }
+}
+
+figmaWorkflowUI = mountFigmaWorkflow({
+  getScope: captureExchangeScope,
+  checkScope: checkExchangeScope,
+  capture: async (scope) => {
+    checkExchangeScope(scope);
+    const snapshot = await repositoryDocumentSnapshot();
+    checkExchangeScope(scope);
+    return snapshot;
+  },
+  replace: async (documentValue, assertSource) => {
+    assertSource();
+    return replaceDesignWithHtmlImport(documentValue, { assertSource });
+  },
+  prototype: async (scope) => {
+    checkExchangeScope(scope);
+    await ensureAllDesignPagesLoaded();
+    checkExchangeScope(scope);
+    await loadReferencedDesignResources();
+    checkExchangeScope(scope);
+    const snapshot = await repositoryDocumentSnapshot();
+    checkExchangeScope(scope);
+    return exportDesignFrontend(snapshot, { pageId: scope.pageId, resourceDataUrls });
+  },
+});
+
+reviewCommentsUI = mountReviewComments({
+  getSnapshot: () => ({ context, workspaceEpoch, documentEpoch,
+    path: elements.path.value.trim(), pageId: design.activePageId,
+    pageName: activeDesignPage()?.name, documentName: design.name,
+    selectedNode: selectedNode() ? { id: selectedNode().id, name: selectedNode().name } : null,
+    nodes: design.nodes,
+    ready: !workspaceLoading && !agentMutationActive && context.trusted === true,
+  }),
+  call: hostCall,
+  focusTarget: async ({ pageId, nodeId }) => {
+    const assertScope = captureDeliveryScope();
+    if (!design.pages.some(page => page.id === pageId)) return false;
+    const changed = await activateDesignPage(pageId);
+    assertScope();
+    if (changed) { commitHistory(); markChanged(false); }
+    const node = nodeId ? nodeById(nodeId) : null;
+    if (nodeId && !node) { renderAll(); return false; }
+    selectOnly(node?.id ?? null);
+    renderAll();
+    if (node) fitSelection();
+    return true;
+  },
+  notify,
 });
 
 const initialization = initialize();

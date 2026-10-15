@@ -1,5 +1,9 @@
 # Video Studio 编辑器升级清单
 
+2026-10-16 Design Studio：已开始 Figma JSON 交换、离线 HTML 原型与项目评论改进。
+后续资源／保真、源节点差异回写、评论备份与 Agent 工具、原型交互优先级见
+[设计评审流程](docs/todo/design-studio-figma-review-workflow.md)。
+
 2026-10-09：按用户要求恢复五个业务 Panel 与 Starter 的跨端改造，当前范围、
 实现与剩余验收见[六 Panel 跨端改造记录](docs/todo/panel-cross-device-workflows-2026-10-09.md)。
 续改已补可信 Web 视频采集、定时发现并发恢复、投资参数隔离与手机保存入口，

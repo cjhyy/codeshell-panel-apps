@@ -1,0 +1,72 @@
+#figma-workflow-dialog {
+  width: min(680px, calc(100vw - 28px));
+  max-height: calc(100dvh - 40px);
+}
+.figma-workflow-card {
+  display: block;
+  width: auto;
+  max-height: calc(100dvh - 42px);
+  overflow-y: auto;
+  padding: 22px;
+}
+.figma-workflow-card .dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.figma-workflow-card .dialog-description {
+  padding: 10px 0;
+  border: 0;
+}
+.figma-workflow-step {
+  padding: 16px 0;
+  border-top: 1px solid var(--line);
+}
+.figma-workflow-step h3 {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+.figma-workflow-step label {
+  display: block;
+  margin-bottom: 8px;
+}
+.figma-workflow-step input[type="file"] {
+  max-width: 100%;
+  font: inherit;
+}
+.figma-workflow-step details {
+  margin-top: 14px;
+  font-size: 12px;
+}
+.figma-workflow-step summary {
+  cursor: pointer;
+}
+.figma-warning-list {
+  max-height: 180px;
+  overflow: auto;
+  padding-left: 20px;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.figma-warning-list:empty {
+  display: none;
+}
+.figma-plugin-files {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+#figma-import-preview {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 680px) {
+  #open-figma-workflow {
+    display: none;
+  }
+  .figma-workflow-card {
+    padding: 16px;
+  }
+}
