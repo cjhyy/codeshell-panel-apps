@@ -210,7 +210,9 @@ test(
           args.includes("--js-runtimes") === Number(process.versions.node.split(".")[0]) >= 22,
       ),
     );
-    assert.deepEqual(await readdir(f.project), []);
+    assert.deepEqual(await readdir(f.project), [".mimi-download-cli"]);
+    assert.deepEqual(await readdir(join(f.project, ".mimi-download-cli")), ["environment"]);
+    assert.equal((await f.invoke(["doctor", ...base])).json.result.cached, true);
     assert.deepEqual(await readdir(f.home), []);
   },
 );

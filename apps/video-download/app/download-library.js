@@ -122,7 +122,7 @@ export function duplicateCandidates(candidate, queue, history) {
   return {
     queued: queue.find(
       (item) =>
-        ["pending", "queued", "running", "paused", "restored", "interrupted"].includes(
+        ["pending", "queued", "running", "cancelling", "paused", "restored", "interrupted"].includes(
           item.status,
         ) &&
         matches(item) &&

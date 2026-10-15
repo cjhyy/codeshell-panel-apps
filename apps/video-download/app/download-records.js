@@ -2,14 +2,25 @@ import { cleanConfiguration, videoUrl } from "./download-library.js";
 
 const jobId = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const statuses = new Set([
-  "pending", "queued", "running", "cancelling", "paused", "restored", "interrupted",
-  "completed", "failed", "cancelled",
+  "pending",
+  "queued",
+  "running",
+  "cancelling",
+  "paused",
+  "restored",
+  "interrupted",
+  "completed",
+  "failed",
+  "cancelled",
 ]);
 export const FINISHED_DOWNLOAD_STATUSES = new Set([
-  "completed", "failed", "cancelled", "interrupted",
+  "completed",
+  "failed",
+  "cancelled",
+  "interrupted",
 ]);
-const text = (value, limit = 4096) => typeof value === "string" ? value.slice(0, limit) : "";
-const timestamp = (value) => Number.isFinite(value) && value >= 0 ? value : null;
+const text = (value, limit = 4096) => (typeof value === "string" ? value.slice(0, limit) : "");
+const timestamp = (value) => (Number.isFinite(value) && value >= 0 ? value : null);
 const sourceNames = { chat: "聊天", cli: "终端", terminal: "终端", panel: "面板" };
 
 export function downloadSourceLabel(record) {
@@ -20,22 +31,29 @@ export function downloadSourceLabel(record) {
 // CLI task cannot obtain a Host task, resource or Cookie grant by naming one.
 export function normalizeCliRecord(record) {
   if (
-    !record || typeof record !== "object" || Array.isArray(record) ||
-    !jobId.test(record.id) || !statuses.has(record.status) || !videoUrl(record.url)
-  ) return null;
+    !record ||
+    typeof record !== "object" ||
+    Array.isArray(record) ||
+    !jobId.test(record.id) ||
+    !statuses.has(record.status) ||
+    !videoUrl(record.url)
+  )
+    return null;
   const inputFiles = Array.isArray(record.files) ? record.files : [];
-  const files = inputFiles.slice(0, 200).filter((file) =>
-    file && typeof file === "object" && text(file.path),
-  ).map((file) => ({
-    path: text(file.path),
-    ...(text(file.name, 500) ? { name: text(file.name, 500) } : {}),
-    ...(Number.isSafeInteger(file.bytes) && file.bytes >= 0 ? { bytes: file.bytes } : {}),
-    ...(timestamp(file.modifiedAt) !== null ? { modifiedAt: Math.trunc(file.modifiedAt) } : {}),
-    ...(timestamp(file.checkedAt) !== null ? { checkedAt: file.checkedAt } : {}),
-    ...(/^[a-f0-9]{64}$/.test(file.sha256) ? { sha256: file.sha256 } : {}),
-    status: ["present", "missing", "empty", "changed", "unavailable"].includes(file.status)
-      ? file.status : "unavailable",
-  }));
+  const files = inputFiles
+    .slice(0, 200)
+    .filter((file) => file && typeof file === "object" && text(file.path))
+    .map((file) => ({
+      path: text(file.path),
+      ...(text(file.name, 500) ? { name: text(file.name, 500) } : {}),
+      ...(Number.isSafeInteger(file.bytes) && file.bytes >= 0 ? { bytes: file.bytes } : {}),
+      ...(timestamp(file.modifiedAt) !== null ? { modifiedAt: Math.trunc(file.modifiedAt) } : {}),
+      ...(timestamp(file.checkedAt) !== null ? { checkedAt: file.checkedAt } : {}),
+      ...(/^[a-f0-9]{64}$/.test(file.sha256) ? { sha256: file.sha256 } : {}),
+      status: ["present", "missing", "empty", "changed", "unavailable"].includes(file.status)
+        ? file.status
+        : "unavailable",
+    }));
   const fraction = record.progress?.fraction;
   const configuration = cleanConfiguration(record.configuration);
   const path = text(record.outputDirectory);
@@ -51,7 +69,15 @@ export function normalizeCliRecord(record) {
     canStart: record.status === "pending",
     percent: Number.isFinite(fraction) ? Math.min(100, Math.max(0, fraction * 100)) : null,
     configuration: { ...configuration, cookieAccount: null },
-    directory: { path, name: path.replace(/\\/g, "/").split("/").filter(Boolean).at(-1) || "下载目录", kind: "cli" },
+    progress: {
+      stage: text(record.progress?.stage, 80),
+      message: text(record.progress?.message, 500),
+    },
+    directory: {
+      path,
+      name: path.replace(/\\/g, "/").split("/").filter(Boolean).at(-1) || "下载目录",
+      kind: "cli",
+    },
     files,
     filesComplete: record.filesComplete !== false && files.length === inputFiles.length,
     addedAt: createdAt ?? 0,
@@ -87,9 +113,11 @@ function cliRecords(jobs) {
 function combine(hostRecords, jobs, predicate) {
   // Host objects keep their identity and process fields for the existing durable
   // coordinator. Their IDs and storage remain separate from CLI ownership.
-  const seen = new Set(), result = [];
+  const seen = new Set(),
+    result = [];
   for (const record of Array.isArray(hostRecords) ? hostRecords : []) {
-    if (!record || typeof record.queueId !== "string" || seen.has(`host:${record.queueId}`)) continue;
+    if (!record || typeof record.queueId !== "string" || seen.has(`host:${record.queueId}`))
+      continue;
     seen.add(`host:${record.queueId}`);
     result.push(record);
   }
@@ -98,13 +126,17 @@ function combine(hostRecords, jobs, predicate) {
 }
 
 export function getTaskRecords(hostQueue, jobs, { includeFinished = false } = {}) {
-  return combine(hostQueue, jobs, (record) =>
-    includeFinished || !FINISHED_DOWNLOAD_STATUSES.has(record.status),
+  return combine(
+    hostQueue,
+    jobs,
+    (record) => includeFinished || !FINISHED_DOWNLOAD_STATUSES.has(record.status),
   );
 }
 
 export function getHistoryRecords(hostHistory, jobs) {
-  return combine(hostHistory, jobs, (record) => FINISHED_DOWNLOAD_STATUSES.has(record.status))
-    .sort((a, b) => (b.finishedAt ?? b.updatedAt ?? b.addedAt ?? 0) -
-      (a.finishedAt ?? a.updatedAt ?? a.addedAt ?? 0) || a.queueId.localeCompare(b.queueId));
+  return combine(hostHistory, jobs, (record) => FINISHED_DOWNLOAD_STATUSES.has(record.status)).sort(
+    (a, b) =>
+      (b.finishedAt ?? b.updatedAt ?? b.addedAt ?? 0) -
+        (a.finishedAt ?? a.updatedAt ?? a.addedAt ?? 0) || a.queueId.localeCompare(b.queueId),
+  );
 }

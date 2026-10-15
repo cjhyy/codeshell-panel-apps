@@ -17,7 +17,9 @@ import {
 import { createProjectStorage } from "./project-storage.js";
 import { createProjectBinding } from "./project-binding.js";
 import { createLibraryProcess } from "./library-process.js";
-import { mountCliJobs } from "./cli-jobs.js";
+import { createDownloadService } from "./download-service.js";
+import { getTaskRecords, getHistoryRecords, normalizeCliRecord } from "./download-records.js";
+import { createEnvironmentClient } from "./environment-client.js";
 import { mountVideoSearch, normalizeVideoSearchUrl } from "./video-search.js";
 import {
   compareYtDlpVersions,
@@ -280,12 +282,173 @@ const auxiliary = createLibraryProcess(panel, {
     if (!auxiliaryBusy) void runNextDownload();
   },
 });
-const cliJobsView = mountCliJobs({
-  root: document.querySelector("#cli-jobs"),
-  panel,
-  processes: auxiliary,
-  assertCurrent: () => projectBinding?.assertCurrent(),
-});
+// Shared commands use their own receipts; observing a page never owns a worker.
+const serviceProcesses = createLibraryProcess(panel);
+let sharedServiceReady = false;
+let sharedQueue = null;
+let sharedListNotice = "";
+const pendingSubmissions = new Map();
+const cliDisplayCache = new Map();
+function cliFileSignature(file) {
+  return JSON.stringify([
+    file.path,
+    file.bytes ?? null,
+    file.modifiedAt ?? null,
+    file.sha256 ?? null,
+    file.status,
+  ]);
+}
+function withCliDisplay(records) {
+  for (const item of records) {
+    if (item.backend !== "cli") continue;
+    const cached = cliDisplayCache.get(`${item.cliJobId}:${item.attempt}`);
+    if (!cached) continue;
+    const sourceSignature = JSON.stringify(item.files.map(cliFileSignature));
+    item.checkError = cached.sourceSignature === sourceSignature ? cached.checkError || "" : "";
+    item.files = item.files.map((file) => {
+      const previous = cached.files?.find(
+        (candidate) => candidate.source === cliFileSignature(file),
+      );
+      return previous ? { ...file, ...previous.checked } : file;
+    });
+  }
+  return records;
+}
+function rememberCliDisplay(item) {
+  if (item.backend !== "cli") return;
+  const source = normalizeCliRecord(
+    downloadService.records.find((record) => record.id === item.cliJobId),
+  );
+  if (!source || source.attempt !== item.attempt) return;
+  // Canonical outputs from older CLI versions may lack mtime. Keep the source
+  // signature separate from metadata verified by this page; every open still
+  // checks the cached size and mtime before using its immutable resource ID.
+  cliDisplayCache.set(`${item.cliJobId}:${item.attempt}`, {
+    sourceSignature: JSON.stringify(source.files.map(cliFileSignature)),
+    checkError: item.checkError,
+    files: item.files.flatMap((checked) => {
+      const original = source.files.find((file) => file.path === checked.path);
+      return original ? [{ source: cliFileSignature(original), checked: { ...checked } }] : [];
+    }),
+  });
+  if (cliDisplayCache.size > MAX_HISTORY)
+    cliDisplayCache.delete(cliDisplayCache.keys().next().value);
+}
+const downloadService = panel
+  ? createDownloadService({
+      panel,
+      processes: serviceProcesses,
+      getContext: () => context,
+      assertCurrent: () => projectBinding?.assertCurrent(),
+      onChanged(_records, result) {
+        if (!libraryReady) return;
+        if (Array.isArray(result?.jobs))
+          sharedListNotice = [
+            result.truncated ? "任务较多，列表仅显示当前范围。" : "",
+            result.warnings?.length
+              ? `${result.warnings.length} 条记录无法读取，原文件已保留。`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
+        sharedServiceReady = true;
+        sharedQueue = downloadService.queue;
+        const selected =
+          currentJob?.backend === "cli"
+            ? allTasks().find((job) => job.queueId === currentJob.queueId) ||
+              allHistory().find((job) => job.queueId === currentJob.queueId)
+            : null;
+        if (selected) {
+          currentJob = selected;
+          updateTask({
+            state: selected.status,
+            title: selected.title,
+            percent: selected.percent,
+            status: queueStatusText(selected),
+          });
+          elements.taskLog.textContent =
+            selected.error || selected.progress?.message || "任务状态已同步。";
+        }
+        renderQueue();
+        renderHistory();
+        renderSharedQueue();
+        setControlsBusy(false);
+        document.querySelector("#shared-service-status").textContent =
+          "聊天、终端和面板共用当前项目的任务记录；关闭面板不影响后台下载。" + sharedListNotice;
+      },
+      onError(error) {
+        document.querySelector("#shared-service-status").textContent =
+          `下载任务同步失败：${error.message}。请刷新后核对，不要重复提交。`;
+      },
+    })
+  : null;
+const environmentClient = panel
+  ? createEnvironmentClient({
+      panel,
+      processes: serviceProcesses,
+      assertCurrent: () => projectBinding?.assertCurrent(),
+    })
+  : null;
+const allTasks = () =>
+  withCliDisplay(getTaskRecords(downloadQueue, downloadService?.records || []));
+const allTaskRecords = () =>
+  withCliDisplay(
+    getTaskRecords(downloadQueue, downloadService?.records || [], { includeFinished: true }),
+  );
+const allHistory = () => withCliDisplay(getHistoryRecords(history, downloadService?.records || []));
+function projectContains(path) {
+  const canonical = (value) => {
+    const normalized = String(value || "")
+      .replaceAll("\\", "/")
+      .replace(/\/+$/, "");
+    return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized;
+  };
+  const root = canonical(context.cwd),
+    target = canonical(path);
+  return Boolean(root && target && (target === root || target.startsWith(root + "/")));
+}
+function usesSharedRuntime(item) {
+  return (
+    context.availableMethods?.includes("process.resolveEntry") &&
+    !item.cookieCredentialId &&
+    projectContains(item.directory?.path)
+  );
+}
+async function refreshSharedQueue() {
+  if (!sharedServiceReady) return;
+  sharedQueue = await downloadService.getQueue();
+  renderSharedQueue();
+}
+function renderSharedQueue() {
+  const controls = document.querySelector("#shared-queue-controls");
+  controls.hidden = !sharedServiceReady;
+  document.querySelector("#legacy-queue-controls").hidden =
+    sharedServiceReady && !downloadQueue.length && !elements.cookieSelect.value;
+  if (!sharedServiceReady) return;
+  const queue = sharedQueue || downloadService.queue;
+  if (queue) {
+    document.querySelector("#shared-concurrency").value = String(queue.maxConcurrent);
+    document.querySelector("#shared-queue-toggle").textContent = queue.paused
+      ? "继续队列"
+      : "暂停队列";
+    document.querySelector("#shared-queue-state").textContent =
+      `${queue.paused ? "队列已暂停，正在运行的任务继续" : "队列运行中"} · 最多同时下载 ${queue.maxConcurrent} 项`;
+  }
+  document.querySelector("#shared-start-pending").disabled = !allTasks().some(
+    (job) => job.backend === "cli" && job.status === "pending",
+  );
+}
+async function sharedTaskAction(item, action) {
+  try {
+    if (action === "start") await downloadService.start(item.cliJobId, item.attempt);
+    else if (action === "retry") await downloadService.retry(item.cliJobId, item.attempt);
+    else if (action === "cancel") await downloadService.cancel(item.cliJobId);
+    else if (action === "archive") await downloadService.archive(item.cliJobId);
+    await refreshSharedQueue();
+  } catch (error) {
+    showError(error.message);
+  }
+}
 
 function storedTab() {
   try {
@@ -504,8 +667,8 @@ function updateTabIndicators() {
   );
 
   const taskState = elements.taskStateIcon.dataset.state;
-  if (hasRunningDownloads()) {
-    const active = runningDownloads();
+  const active = allTasks().filter((job) => job.running);
+  if (active.length) {
     const visible = currentJob?.running ? currentJob : active[0];
     const progress =
       active.length > 1
@@ -524,8 +687,8 @@ function updateTabIndicators() {
 
   setTabIndicator(
     elements.historyTabIndicator,
-    history.length ? String(history.length) : "",
-    history.length ? "success" : "",
+    allHistory().length ? String(allHistory().length) : "",
+    allHistory().length ? "success" : "",
   );
 }
 
@@ -739,6 +902,12 @@ async function loadLibrary() {
 }
 
 async function directoryFor(item, allowPick = false) {
+  if (item.backend === "cli" && projectContains(item.directory?.path)) {
+    // Authorize the actual project root, never a directory merely asserted by task JSON.
+    const project = await panel.call("filesystem.getKnownDirectory", { name: "project" });
+    projectBinding?.assertCurrent();
+    return project;
+  }
   const key = directoryIdentity(item.directory);
   if (directoryGrants.has(key)) return directoryGrants.get(key);
   if (item.directory?.bookmark && durableDownloads) {
@@ -909,7 +1078,13 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
     throw new Error("请等待当前操作完成后再添加任务。");
   if (!dependencyReady(runtime.ytDlp) || !runtime.directory?.handle)
     throw new Error("下载器或保存目录还没有准备好。");
-  if (candidates.length + downloadQueue.length > 100)
+  if (
+    candidates.length +
+      allTasks().filter(
+        (item) => !["completed", "failed", "cancelled", "interrupted"].includes(item.status),
+      ).length >
+    100
+  )
     throw new Error("队列最多保留 100 项，请先清除已结束任务。");
   queueSubmissionPending = true;
   setControlsBusy(true);
@@ -979,7 +1154,7 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
       // Validate the frozen settings before any authorization or queue mutation.
       buildArguments(item.url, item.configuration, item.copySuffix);
       if (!copy) {
-        const matches = duplicateCandidates(item, [...downloadQueue, ...accepted], history);
+        const matches = duplicateCandidates(item, [...allTaskRecords(), ...accepted], allHistory());
         if (matches.queued) {
           duplicates++;
           if (start && matches.queued.status === "pending" && !requested.includes(matches.queued))
@@ -1006,6 +1181,36 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
           continue;
         }
       }
+      if (usesSharedRuntime(item)) {
+        if (!sharedServiceReady) throw new Error("共享下载服务尚未就绪，请在任务页刷新后再提交。");
+        const { cookieAccount: _cookie, ...configuration } = item.configuration;
+        const request = {
+          url: item.url,
+          configuration,
+          outputDirectory: item.directory.path,
+          ...(item.copySuffix ? { copySuffix: item.copySuffix } : {}),
+        };
+        const intent = JSON.stringify([item.url, configuration, item.directory.path, start]);
+        // Freeze the whole unresolved operation, including copy suffix and title.
+        // A second click cannot turn an uncertain submission into a new download.
+        let submission = pendingSubmissions.get(intent);
+        if (!submission) {
+          submission = {
+            requestKey: `panel:${item.queueId}`,
+            request,
+            start,
+            source: "panel",
+            title: item.title,
+          };
+          pendingSubmissions.set(intent, submission);
+        }
+        const job = await downloadService.submit(submission);
+        pendingSubmissions.delete(intent);
+        const record = normalizeCliRecord(job);
+        if (!record) throw new Error("后台任务回执不完整，请刷新任务核对后再操作。");
+        accepted.push(record);
+        continue;
+      }
       // A snapshot must reacquire its original directory and Cookie grants.
       if (!isSnapshot && item.cookieCredentialId && !durableDownloads) {
         item.executable = { ...runtime.ytDlp };
@@ -1015,10 +1220,12 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
       } else await prepareItem(item, false);
       accepted.push(item);
     }
-    downloadQueue.push(...accepted);
+    downloadQueue.push(...accepted.filter((item) => item.backend !== "cli"));
     try {
-      await saveLibrary();
+      if (accepted.some((item) => item.backend !== "cli")) await saveLibrary();
     } catch (error) {
+      // Already accepted shared tasks remain real background work, even if a
+      // separate legacy-storage write fails. The observer keeps them visible.
       downloadQueue = downloadQueue.filter((item) => !accepted.includes(item));
       reportLibraryError(error);
       throw error;
@@ -1054,12 +1261,21 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
       revision === queueControlRevision &&
       (queuePaused || requested.length)
     )
-      await restoreQueue([...accepted.filter((item) => item.status === "queued"), ...requested]);
+      await restoreQueue([
+        ...accepted.filter((item) => item.backend !== "cli" && item.status === "queued"),
+        ...requested,
+      ]);
     else void runNextDownload();
   }
 }
 
 async function restoreQueue(items = null) {
+  if (items?.some((item) => item.backend === "cli")) {
+    for (const item of items.filter((item) => item.backend === "cli"))
+      await sharedTaskAction(item, item.status === "pending" ? "start" : "retry");
+    items = items.filter((item) => item.backend !== "cli");
+    if (!items.length) return;
+  }
   if (durableDownloads) {
     if (queueSubmissionPending) return;
     queueSubmissionPending = true;
@@ -2008,7 +2224,8 @@ function currentConfiguration() {
 }
 
 function invalidateProjectBinding(message) {
-  cliJobsView.destroy();
+  downloadService?.destroy();
+  environmentClient?.destroy();
   libraryReady = false;
   queuePaused = true;
   durableDownloads?.close();
@@ -2293,7 +2510,14 @@ function inspectionIsBusy() {
 }
 
 function updateActionAvailability() {
-  const ready = dependencyReady(runtime.ytDlp) && Boolean(runtime.directory?.handle);
+  const publicNeedsService =
+    context.availableMethods?.includes("process.resolveEntry") &&
+    !elements.cookieSelect.value &&
+    projectContains(runtime.directory?.path);
+  const ready =
+    dependencyReady(runtime.ytDlp) &&
+    Boolean(runtime.directory?.handle) &&
+    (!publicNeedsService || sharedServiceReady);
   const validUrl = Boolean(normalizedUrl());
   const linkCount = parseVideoLinks(elements.urlInput.value).urls.length;
   const multipleUrls = linkCount > 1;
@@ -2330,13 +2554,15 @@ function updateActionAvailability() {
           ? "正在检查下载环境，完成后即可操作。"
           : !dependencyReady(runtime.ytDlp)
             ? "请展开下方「下载环境」安装或复检下载器。"
-            : !runtime.directory?.handle
-              ? "请选择保存目录。"
-              : !validUrl
-                ? "先粘贴链接，或使用 AI 找视频。"
-                : hasRunningDownloads()
-                  ? `正在下载 ${runningDownloads().length} 项；立即下载会自动等待空位，加入队列后需手动开始。`
-                  : `${linkCount} 条链接 · 立即下载按并行数开始，加入队列仅保存任务。`;
+            : publicNeedsService && !sharedServiceReady
+              ? "共享下载服务尚未就绪，请在任务页刷新后重试。"
+              : !runtime.directory?.handle
+                ? "请选择保存目录。"
+                : !validUrl
+                  ? "先粘贴链接，或使用 AI 找视频。"
+                  : hasRunningDownloads()
+                    ? `正在下载 ${runningDownloads().length} 项；立即下载会自动等待空位，加入队列后需手动开始。`
+                    : `${linkCount} 条链接 · 立即下载按并行数开始，加入队列仅保存任务。`;
   elements.inspectButton.disabled = !ready || !validUrl || inspectionIsBusy();
   elements.inspectButton.textContent = inspectionJob?.running
     ? "正在获取…"
@@ -2473,6 +2699,7 @@ function setControlsBusy(busy, operation = "download") {
     currentJob?.cancelRequested || currentJob?.pauseRequested,
   );
   elements.pauseButton.hidden =
+    currentJob?.backend === "cli" ||
     !currentJob ||
     !["pending", "running", "queued", "paused", "restored", "interrupted"].includes(
       currentJob.status,
@@ -3043,6 +3270,26 @@ function defaultTaskTitle(url) {
 }
 
 function queueStatusText(item) {
+  if (item.backend === "cli") {
+    if (item.status === "cancelling") return "正在取消，等待进程退出";
+    if (item.status === "queued") return "等待后台队列空位";
+    if (item.status === "pending") return "待开始 · 手动下载";
+    if (item.status === "running")
+      return [
+        item.progress?.message || "正在下载",
+        Number.isFinite(item.percent) ? `${Math.round(item.percent)}%` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+    return (
+      {
+        completed: "已完成",
+        failed: "下载失败",
+        cancelled: "已取消",
+        interrupted: "已中断，需明确重试",
+      }[item.status] || item.status
+    );
+  }
   if (durableDownloads && item.status === "queued" && !item.nativeTaskId) return "等待提交到后台";
   if (item.status === "running") {
     if (item.pauseRequested) return "正在暂停";
@@ -3144,9 +3391,11 @@ function showDownloadHistory(job) {
 function updateTaskOverviewItem(job, row) {
   if (!row) return;
   row.dataset.state = job.status;
-  const selected = currentJob === job;
+  const selected = currentJob?.queueId === job.queueId;
   row.classList.toggle("is-selected", selected);
-  const finished = ["completed", "failed", "cancelled"].includes(job.status);
+  const finished =
+    ["completed", "failed", "cancelled"].includes(job.status) ||
+    (job.backend === "cli" && job.status === "interrupted");
   const open = row.querySelector(".task-overview-open");
   open.setAttribute("aria-pressed", String(selected));
   open.setAttribute("aria-label", `${finished ? "查看下载记录" : "查看任务详情"}：${job.title}`);
@@ -3170,15 +3419,25 @@ function updateTaskOverviewItem(job, row) {
   const secondary = row.querySelector(".task-overview-secondary");
   const stopping = runningDownloads().some((item) => item.pauseRequested || item.cancelRequested);
   const action =
-    job.running || job.status === "queued"
-      ? "pause"
-      : ["pending", "paused", "restored", "interrupted"].includes(job.status)
-        ? "resume"
-        : job.status === "completed"
-          ? "history"
-          : "retry";
+    job.backend === "cli"
+      ? ["queued", "running", "cancelling"].includes(job.status)
+        ? "cancel"
+        : job.status === "pending"
+          ? "start"
+          : job.status === "completed"
+            ? "history"
+            : "retry"
+      : job.running || job.status === "queued"
+        ? "pause"
+        : ["pending", "paused", "restored", "interrupted"].includes(job.status)
+          ? "resume"
+          : job.status === "completed"
+            ? "history"
+            : "retry";
   primary.dataset.taskAction = action;
   primary.textContent = {
+    cancel: "取消",
+    start: "开始下载",
     pause: "暂停",
     resume: job.status === "pending" ? "开始下载" : "继续",
     history: "查看记录",
@@ -3196,6 +3455,11 @@ function updateTaskOverviewItem(job, row) {
           job.retryPending,
         );
   primary.setAttribute("aria-label", `${primary.textContent}：${job.title}`);
+  if (job.backend === "cli") {
+    primary.disabled = job.status === "cancelling";
+    secondary.hidden = true;
+    return;
+  }
   secondary.hidden = finished && job.status !== "failed";
   secondary.dataset.taskAction =
     job.status === "failed" ? "details" : job.running ? "cancel" : "remove";
@@ -3206,10 +3470,11 @@ function updateTaskOverviewItem(job, row) {
 
 function renderTaskOverview() {
   const list = elements.taskOverviewList;
+  const tasks = allTasks();
   const existing = new Map([...list.children].map((row) => [row.dataset.taskId, row]));
-  const activeIds = new Set(downloadQueue.map((job) => job.queueId));
+  const activeIds = new Set(tasks.map((job) => job.queueId));
   for (const [id, row] of existing) if (!activeIds.has(id)) row.remove();
-  downloadQueue.forEach((job, index) => {
+  tasks.forEach((job, index) => {
     let row = existing.get(job.queueId);
     if (!row) {
       row = document.createElement("article");
@@ -3230,12 +3495,12 @@ function renderTaskOverview() {
     if (list.children[index] !== row) list.insertBefore(row, list.children[index] || null);
     updateTaskOverviewItem(job, row);
   });
-  const count = (status) => downloadQueue.filter((job) => status.includes(job.status)).length;
-  document.querySelector("#task-overview-count").textContent = `${downloadQueue.length} 项`;
-  document.querySelector("#task-overview-summary").textContent = downloadQueue.length
+  const count = (status) => tasks.filter((job) => status.includes(job.status)).length;
+  document.querySelector("#task-overview-count").textContent = `${tasks.length} 项`;
+  document.querySelector("#task-overview-summary").textContent = tasks.length
     ? `${count(["running"])} 项下载中 · ${count(["pending", "queued", "restored", "interrupted"])} 项等待 · ${count(["paused"])} 项已暂停 · ${count(["completed", "failed", "cancelled"])} 项已结束`
     : "添加视频后，每项任务的进度都会显示在这里。";
-  document.querySelector("#task-overview-empty").hidden = downloadQueue.length > 0;
+  document.querySelector("#task-overview-empty").hidden = tasks.length > 0;
 }
 
 function updateQueueProgress(job = currentJob) {
@@ -3255,6 +3520,7 @@ function updateQueueProgress(job = currentJob) {
 
 function updateQueueControls() {
   renderTaskOverview();
+  renderSharedQueue();
   const waiting = downloadQueue.filter((item) =>
     ["pending", "queued", "restored", "interrupted"].includes(item.status),
   ).length;
@@ -3297,26 +3563,27 @@ function updateQueueControls() {
 }
 
 function renderQueue() {
-  const waiting = downloadQueue.filter((item) =>
+  const tasks = allTasks();
+  const waiting = tasks.filter((item) =>
     ["pending", "queued", "restored", "interrupted"].includes(item.status),
   ).length;
-  const settled = downloadQueue.filter(
+  const settled = tasks.filter(
     (item) =>
       !["pending", "queued", "running", "paused", "restored", "interrupted"].includes(item.status),
   ).length;
-  const paused = downloadQueue.filter((item) => item.status === "paused").length;
-  const runningCount = runningDownloads().length;
+  const paused = tasks.filter((item) => item.status === "paused").length;
+  const runningCount = tasks.filter((job) => job.running).length;
   const activeCount = waiting + runningCount + paused;
   document.querySelector("#queue-jump-count").textContent = String(activeCount);
   document.querySelector("#queue-jump").dataset.active = String(activeCount > 0);
-  document.querySelector("#queue-count").textContent = String(downloadQueue.length);
-  elements.queueSummary.textContent = downloadQueue.length
+  document.querySelector("#queue-count").textContent = String(tasks.length);
+  elements.queueSummary.textContent = tasks.length
     ? `${runningCount ? `${runningCount} 项下载中 · ` : ""}${waiting} 项等待 · ${paused ? `${paused} 项已暂停 · ` : ""}${settled} 项已结束${queuePaused ? " · 队列已暂停" : ""}`
     : `暂无任务 · 最多同时下载 ${maxConcurrent} 项`;
   const stopping = runningDownloads().some((item) => item.pauseRequested || item.cancelRequested);
   updateQueueControls();
   elements.queueList.replaceChildren();
-  if (!downloadQueue.length) {
+  if (!tasks.length) {
     const empty = document.createElement("p");
     empty.className = "queue-empty";
     const title = document.createElement("strong");
@@ -3328,7 +3595,7 @@ function renderQueue() {
     elements.queueList.append(empty);
     return;
   }
-  for (const item of downloadQueue) {
+  for (const item of tasks) {
     const row = document.createElement("article");
     row.className = "queue-item";
     row.dataset.queueId = item.queueId;
@@ -3336,7 +3603,7 @@ function renderQueue() {
     const copy = document.createElement("button");
     copy.type = "button";
     copy.className = "queue-copy queue-open";
-    const finished = ["completed", "failed", "cancelled"].includes(item.status);
+    const finished = ["completed", "failed", "cancelled", "interrupted"].includes(item.status);
     copy.dataset.queueAction = "open";
     copy.dataset.queueId = item.queueId;
     copy.setAttribute("aria-label", `${finished ? "查看下载记录" : "查看任务进度"}：${item.title}`);
@@ -3357,8 +3624,7 @@ function renderQueue() {
       version.textContent = item.nativePackage
         ? `任务使用 Panel ${item.nativePackage.version}`
         : "旧任务未记录 Panel 版本";
-      if (item.nativeReadOnly)
-        version.textContent += " · 仅供查看，请检查链接和设置后重新添加下载";
+      if (item.nativeReadOnly) version.textContent += " · 仅供查看，请检查链接和设置后重新添加下载";
       copy.append(version);
     }
     if (item.status === "running") {
@@ -3417,6 +3683,23 @@ function renderQueue() {
       action("retry-account", "用所选账号重试").disabled = Boolean(
         item.nativeReadOnly || item.retryPending || queueSubmissionPending,
       );
+    if (item.backend === "cli") {
+      actions.replaceChildren();
+      const name =
+        item.status === "pending"
+          ? "start"
+          : ["queued", "running", "cancelling"].includes(item.status)
+            ? "cancel"
+            : "retry";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "text-button";
+      button.dataset.queueAction = name;
+      button.dataset.queueId = item.queueId;
+      button.textContent = { start: "开始下载", cancel: "取消", retry: "重试" }[name];
+      button.disabled = item.status === "cancelling";
+      actions.append(button);
+    }
     row.append(copy, actions);
     elements.queueList.append(row);
   }
@@ -3719,6 +4002,7 @@ async function finishJob(succeeded, error = "", exitCode = null, job = currentJo
 }
 
 async function cancelCurrentJob(job = currentJob) {
+  if (job?.backend === "cli") return sharedTaskAction(job, "cancel");
   return requestDownloadStop(job, "cancel");
 }
 
@@ -3825,6 +4109,24 @@ function historyIcon(name) {
 }
 
 function renderHistory() {
+  const active = document.activeElement;
+  const focusedRow = active?.closest?.(".history-item");
+  const focused = focusedRow
+    ? {
+        id: focusedRow.dataset.historyId,
+        action: active.dataset.historyAction,
+        shortcut: active.dataset.historyShortcut,
+        fileIndex: active.dataset.fileIndex,
+        menu: active.matches(".history-menu > summary"),
+        summary: active.matches(".history-row-heading"),
+        row: active === focusedRow,
+      }
+    : null;
+  const openMenus = new Set(
+    [...elements.historyList.querySelectorAll(".history-menu[open]")].map(
+      (node) => node.closest(".history-item").dataset.historyId,
+    ),
+  );
   const expanded = new Set(
     [...elements.historyList.querySelectorAll(".history-files[open]")].map(
       (node) => node.closest("[data-history-id]").dataset.historyId,
@@ -3834,7 +4136,8 @@ function renderHistory() {
   updateTabIndicators();
   const query = document.querySelector("#history-search").value.trim().toLowerCase();
   const filter = document.querySelector("#history-filter").value;
-  const entries = history.filter(
+  const records = allHistory();
+  const entries = records.filter(
     (item) =>
       (!query ||
         `${item.title} ${item.url} ${item.directory?.path || ""} ${(item.files || []).map((file) => file.path).join(" ")}`
@@ -3845,11 +4148,11 @@ function renderHistory() {
   );
   const fileCount = entries.reduce((total, item) => total + (item.files?.length || 0), 0);
   document.querySelector("#history-count").textContent =
-    `${entries.length}${entries.length !== history.length ? ` / ${history.length}` : ""} 条记录${fileCount ? ` · ${fileCount} 个文件` : ""}`;
+    `${entries.length}${entries.length !== records.length ? ` / ${records.length}` : ""} 条记录${fileCount ? ` · ${fileCount} 个文件` : ""}`;
   if (!entries.length) {
     const empty = document.createElement("p");
     empty.className = "empty-history";
-    empty.textContent = history.length
+    empty.textContent = records.length
       ? "没有找到相关记录，试试其他关键词或状态。"
       : "还没有下载记录，完成后会显示在这里。";
     elements.historyList.append(empty);
@@ -3901,7 +4204,7 @@ function renderHistory() {
             ? `${format}p`
             : "原设置";
     const information = document.createElement("span");
-    information.textContent = `${quality} · ${files.length} 个文件`;
+    information.textContent = `${quality} · ${files.length} 个文件${item.backend === "cli" ? " · " + ({ panel: "面板", chat: "聊天", cli: "终端", terminal: "终端" }[item.source] || "CLI") : ""}`;
     const time = document.createElement("time");
     time.className = "history-time";
     time.textContent = historyTimeLabel(item.finishedAt);
@@ -3999,7 +4302,7 @@ function renderHistory() {
     details.append(body);
     const actions = document.createElement("div");
     actions.className = "history-quick-actions";
-    if (["failed", "cancelled"].includes(item.status) || inventory === "missing") {
+    if (["failed", "cancelled", "interrupted"].includes(item.status) || inventory === "missing") {
       const retry = button("retry", "重新下载", undefined, true);
       retry.classList.add("history-primary-action");
       retry.prepend(historyIcon("retry"));
@@ -4015,7 +4318,10 @@ function renderHistory() {
     }
     if (files.length) {
       const reveal = button(
-        "reveal", browserResourcePreview() ? "打开下载目录" : "定位文件", primaryIndex, true,
+        "reveal",
+        browserResourcePreview() ? "打开下载目录" : "定位文件",
+        primaryIndex,
+        true,
       );
       reveal.classList.add("history-icon-button");
       reveal.replaceChildren(historyIcon("folder"));
@@ -4023,6 +4329,7 @@ function renderHistory() {
     }
     const menu = document.createElement("details");
     menu.className = "history-menu";
+    menu.open = openMenus.has(item.queueId);
     const menuTrigger = document.createElement("summary");
     menuTrigger.className = "history-icon-button";
     menuTrigger.setAttribute("aria-label", `更多操作：${item.title || "未命名视频"}`);
@@ -4045,6 +4352,25 @@ function renderHistory() {
     row.append(details, actions);
     elements.historyList.append(row);
   }
+  if (focused && !active.isConnected) {
+    const row = [...elements.historyList.children].find(
+      (node) => node.dataset.historyId === focused.id,
+    );
+    let target;
+    if (focused.menu) target = row?.querySelector(".history-menu > summary");
+    else if (focused.summary) target = row?.querySelector(".history-row-heading");
+    else if (focused.row) {
+      target = row;
+      if (target) target.tabIndex = -1;
+    } else
+      target = [...(row?.querySelectorAll("button") || [])].find(
+        (button) =>
+          button.dataset.historyAction === focused.action &&
+          button.dataset.historyShortcut === focused.shortcut &&
+          button.dataset.fileIndex === focused.fileIndex,
+      );
+    if (target?.getClientRects().length && !target.disabled) target.focus({ preventScroll: true });
+  }
 }
 
 function browserResourcePreview() {
@@ -4054,7 +4380,7 @@ function browserResourcePreview() {
 async function handleHistoryAction(event) {
   const button = event.target.closest("[data-history-action], [data-history-shortcut]");
   if (!button) return;
-  const item = history.find((entry) => entry.queueId === button.dataset.historyId);
+  const item = allHistory().find((entry) => entry.queueId === button.dataset.historyId);
   if (!item || historyActionsPending.has(item.queueId)) return;
   const action = button.dataset.historyAction || button.dataset.historyShortcut;
   const fileAction = ["play", "open", "reveal"].includes(action);
@@ -4073,6 +4399,15 @@ async function handleHistoryAction(event) {
   try {
     const menu = button.closest(".history-menu");
     if (menu) menu.open = false;
+    if (item.backend === "cli" && ["delete", "retry", "check"].includes(action)) {
+      if (action === "delete") await downloadService.archive(item.cliJobId);
+      else if (action === "retry") await downloadService.retry(item.cliJobId, item.attempt);
+      else if (projectContains(item.directory?.path)) await downloadService.check(item.cliJobId);
+      else await checkFiles(item, true);
+      if (action === "retry") activateTab("task");
+      renderHistory();
+      return;
+    }
     if (action === "delete") {
       const previousHistory = history;
       history = history.filter((entry) => entry !== item);
@@ -4105,8 +4440,14 @@ async function handleHistoryAction(event) {
             ? "文件存在，但未能打开文件夹，请稍后重试。"
             : "文件存在，但播放器未能打开。可以先定位文件，再选择其他播放器打开。",
         );
-      if (result.status !== "present")
+      if (result.status !== "present") {
+        if (item.backend === "cli") {
+          const { assetId: _staleAsset, ...expected } = file;
+          item.files[Number(button.dataset.fileIndex)] = { ...expected, status: result.status };
+          rememberCliDisplay(item);
+        }
         throw new Error("文件已删除、变化或暂时无法访问。可按原设置重新下载。");
+      }
       const checked = { ...result, ...resourceFileFields(file) };
       if (browserPreview) {
         if (action === "reveal") {
@@ -4126,13 +4467,15 @@ async function handleHistoryAction(event) {
       }
       item.files[Number(button.dataset.fileIndex)] = checked;
       item.checkError = "";
-      await saveLibrary();
+      rememberCliDisplay(item);
+      if (item.backend !== "cli") await saveLibrary();
       feedback.textContent = browserPreview
         ? `${action === "reveal" ? "已显示下载目录" : "已在当前浏览器打开文件预览"}：${item.title || "下载文件"}`
         : `${action === "reveal" ? "已在文件夹中定位" : `已交给${result.player || "系统默认应用"}打开`}：${item.title || "下载文件"}`;
     }
   } catch (error) {
     item.checkError = error.message;
+    rememberCliDisplay(item);
     feedback.textContent = error.message;
     renderHistory();
     const row = [...elements.historyList.children].find(
@@ -4431,7 +4774,8 @@ function videoContextForAgent() {
       url: inspectionJob?.url || inspectedVideo?.url || normalizedUrl(),
     },
     configuration: currentConfiguration(),
-    queue: downloadQueue.map((item) => ({
+    queue: allTasks().map((item) => ({
+      backend: item.backend || (item.nativeTaskId ? "host" : "legacy"),
       id: item.queueId,
       url: item.url,
       title: item.title,
@@ -4444,7 +4788,8 @@ function videoContextForAgent() {
     })),
     queuePaused,
     maxConcurrent,
-    runningCount: runningDownloads().length,
+    sharedQueue: sharedQueue || downloadService?.queue || null,
+    runningCount: allTasks().filter((item) => item.running).length,
     download: currentJob?.running
       ? {
           status: currentJob.pauseRequested
@@ -4594,12 +4939,25 @@ async function startDownloadForAgent() {
 }
 
 async function cancelDownloadForAgent({ queueId } = {}) {
+  const cancellable = allTasks().filter(
+    (item) =>
+      item.running ||
+      (item.backend === "cli" && ["pending", "queued", "cancelling"].includes(item.status)),
+  );
   const job = queueId
-    ? runningDownloads().find((item) => item.queueId === queueId)
-    : currentJob?.running
-      ? currentJob
-      : runningDownloads()[0];
+    ? cancellable.find((item) => item.queueId === queueId)
+    : cancellable.find((item) => item.queueId === currentJob?.queueId) || cancellable[0];
   if (!job) throw new Error("当前没有对应的运行中下载任务");
+  if (job.backend === "cli") {
+    const result = await downloadService.cancel(job.cliJobId);
+    return {
+      cancelRequested:
+        Boolean(result.cancelRequestedAt) || ["cancelling", "cancelled"].includes(result.status),
+      status: result.status,
+      queueId: job.queueId,
+      title: job.title,
+    };
+  }
   await cancelCurrentJob(job);
   return {
     cancelRequested: job.cancelRequested || job.status === "cancelled",
@@ -5699,7 +6057,57 @@ async function probeLocalDependencies() {
   return errors;
 }
 
-async function refreshVersionInfo() {
+function applyEnvironmentSnapshot(snapshot) {
+  for (const [name, key] of [
+    ["yt-dlp", "ytDlp"],
+    ["ffmpeg", "ffmpeg"],
+  ]) {
+    const dependency = snapshot.dependencies[name];
+    if (!runtime[key]) continue;
+    runtime[key].version = dependency?.version || null;
+    runtime[key].verified = dependency?.available === true && Boolean(dependency.version);
+    runtime[key].error = dependency?.error
+      ? `${name}：${
+          {
+            "not-found": "未找到工具，请安装后复检",
+            timeout: "运行检测超时，请复检",
+            "output-too-large": "检测输出超出限制",
+            "probe-failed": "无法正常运行，请修复后复检",
+          }[dependency.error] || "检测失败，请复检"
+        }`
+      : "";
+  }
+  const note = document.querySelector("#environment-cache-status");
+  note.textContent = snapshot.checkedAt
+    ? `${snapshot.cached ? "使用已验证的环境缓存" : "环境检测已更新"} · ${new Date(snapshot.checkedAt).toLocaleString("zh-CN")}`
+    : "环境状态已读取";
+  renderDependencyHealth();
+}
+
+async function refreshVersionInfo({ force = false } = {}) {
+  if (!previewMode && context.availableMethods?.includes("process.resolveEntry")) {
+    if (!runtime.ytDlp?.handle) return { installed: null, latest: null };
+    if (force) versionRefreshPending = true;
+    try {
+      const snapshot = await environmentClient.read({ refresh: force, includeLatest: true });
+      applyEnvironmentSnapshot(snapshot);
+      runtime.latestYtDlpVersion = snapshot.latest?.version || null;
+      versionRefreshError = snapshot.latest?.error ? "暂时无法查询最新版；本地下载不受影响。" : "";
+      renderVersionInfo();
+      return { installed: runtime.ytDlp?.version, latest: runtime.latestYtDlpVersion };
+    } catch (error) {
+      versionRefreshError = error.message;
+      renderVersionInfo();
+      return {
+        installed: runtime.ytDlp?.version,
+        latest: runtime.latestYtDlpVersion,
+        error: error.message,
+      };
+    } finally {
+      versionRefreshPending = false;
+      updateActionAvailability();
+    }
+  }
   if (previewMode) {
     runtime.ytDlp = { ...(runtime.ytDlp || {}), version: "2026.07.04" };
     runtime.latestYtDlpVersion = "2026.08.19";
@@ -5782,7 +6190,7 @@ async function refreshVersionInfo() {
   };
 }
 
-async function refreshRuntimeDependencies() {
+async function refreshRuntimeDependencies({ force = false } = {}) {
   if (previewMode) {
     dependenciesChecked = true;
     const versions = await refreshVersionInfo();
@@ -5840,7 +6248,14 @@ async function refreshRuntimeDependencies() {
       showError("");
       dependencyErrorActive = false;
     }
-    const versions = await refreshVersionInfo();
+    let versions;
+    if (context.availableMethods?.includes("process.resolveEntry")) {
+      const snapshot = await environmentClient.read({ refresh: force });
+      applyEnvironmentSnapshot(snapshot);
+      versions = { installed: runtime.ytDlp?.version || null, latest: runtime.latestYtDlpVersion };
+      // Remote update discovery has an independent cache and never blocks local readiness.
+      void refreshVersionInfo();
+    } else versions = await refreshVersionInfo();
     return {
       ready: runtime.ytDlp?.verified === true && runtime.ffmpeg?.verified === true,
       ytDlp: dependencyReady(runtime.ytDlp),
@@ -5887,7 +6302,7 @@ function registerAgentTools() {
     if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).length) {
       throw new Error("refresh_video_download_dependencies 不接受参数");
     }
-    return refreshRuntimeDependencies();
+    return refreshRuntimeDependencies({ force: true });
   });
   panel.registerTool("apply_video_download_config", async (args = {}) => applyConfiguration(args));
   panel.registerTool("start_video_download", async () => startDownloadForAgent());
@@ -5986,11 +6401,13 @@ async function initializeRuntime() {
             if (!record.nativeTaskId && !record.nativeRequestKey) continue;
             if (
               downloadQueue.some(
-                (item) => item.queueId === record.queueId ||
+                (item) =>
+                  item.queueId === record.queueId ||
                   (record.nativeTaskId && item.nativeTaskId === record.nativeTaskId) ||
                   (record.nativeRequestKey && item.nativeRequestKey === record.nativeRequestKey),
               )
-            ) continue;
+            )
+              continue;
             // Read-only adoption: do not advance the editor's CAS revision or save
             // an old draft over peer changes. The coordinator supplies live state.
             downloadQueue.push(record);
@@ -6037,6 +6454,17 @@ async function initializeRuntime() {
         () => void durableDownloads.refresh().catch((error) => showError(error.message)),
         10000,
       );
+    }
+    if (context.availableMethods?.includes("process.resolveEntry")) {
+      try {
+        await downloadService.refresh();
+        sharedServiceReady = true;
+        await refreshSharedQueue();
+        void downloadService.startObserving().catch(() => {});
+      } catch (error) {
+        document.querySelector("#shared-service-status").textContent =
+          `共享任务暂不可用：${error.message}；账号与旧版任务保留。`;
+      }
     }
     await refreshRuntimeDependencies();
     await refreshCookieAccounts();
@@ -6162,7 +6590,7 @@ elements.restoreDirectory.addEventListener("click", restorePreferredDirectory);
 elements.downloadButton.addEventListener("click", () => void startDownload());
 elements.enqueueButton.addEventListener("click", () => void startDownload({ start: false }));
 elements.refreshVersions.addEventListener("click", () => {
-  void refreshRuntimeDependencies();
+  void refreshRuntimeDependencies({ force: true });
 });
 elements.setupUpdateButton.addEventListener("click", requestDirectSetup);
 elements.setupAiButton.addEventListener("click", requestAiSetup);
@@ -6208,10 +6636,18 @@ function handleDownloadAction(event) {
   if (!button) return;
   const id = button.dataset.queueId || button.closest("[data-task-id]")?.dataset.taskId;
   const action = button.dataset.queueAction || button.dataset.taskAction;
-  const item = downloadQueue.find((entry) => entry.queueId === id);
+  const item = allTasks().find((entry) => entry.queueId === id);
   if (!item) return;
+  if (item.backend === "cli" && ["cancel", "start", "retry", "remove"].includes(action)) {
+    void sharedTaskAction(item, action === "remove" ? "archive" : action);
+    return;
+  }
   if (!action || action === "open") {
-    if (["completed", "failed", "cancelled"].includes(item.status)) showDownloadHistory(item);
+    if (
+      ["completed", "failed", "cancelled"].includes(item.status) ||
+      (item.backend === "cli" && item.status === "interrupted")
+    )
+      showDownloadHistory(item);
     else selectDownloadTask(item);
   }
   if (action === "retry-account") void retryWithSelectedAccount(item);
@@ -6243,6 +6679,40 @@ function handleDownloadAction(event) {
     void retryQueuedDownload(item);
   }
 }
+document.querySelector("#shared-refresh").addEventListener("click", () => {
+  void downloadService
+    ?.refresh()
+    .then(refreshSharedQueue)
+    .catch((error) => showError(error.message));
+});
+document.querySelector("#shared-start-pending").addEventListener("click", async (event) => {
+  event.currentTarget.disabled = true;
+  for (const item of allTasks().filter((job) => job.backend === "cli" && job.status === "pending"))
+    await sharedTaskAction(item, "start");
+  renderSharedQueue();
+});
+async function configureSharedQueue(change) {
+  if (!sharedServiceReady) return;
+  try {
+    const queue = downloadService.queue || (await downloadService.getQueue());
+    sharedQueue = await downloadService.configure({
+      expectedRevision: queue.revision,
+      paused: queue.paused,
+      maxConcurrent: queue.maxConcurrent,
+      ...change,
+    });
+  } catch (error) {
+    showError(error.message);
+    await refreshSharedQueue().catch(() => {});
+  }
+  renderSharedQueue();
+}
+document.querySelector("#shared-queue-toggle").addEventListener("click", () => {
+  void configureSharedQueue({ paused: !downloadService?.queue?.paused });
+});
+document.querySelector("#shared-concurrency").addEventListener("change", (event) => {
+  void configureSharedQueue({ maxConcurrent: Number(event.target.value) });
+});
 elements.queueList.addEventListener("click", handleDownloadAction);
 elements.taskOverviewList.addEventListener("click", handleDownloadAction);
 
@@ -6289,11 +6759,26 @@ elements.toggleLog.addEventListener("click", () => {
   elements.taskLog.hidden = !elements.taskLog.hidden;
   elements.toggleLog.textContent = elements.taskLog.hidden ? "查看日志" : "隐藏日志";
 });
-elements.clearHistory.addEventListener("click", () => {
-  history = [];
-  clearHistoryHighlight();
-  saveHistory();
-  renderHistory();
+elements.clearHistory.addEventListener("click", async () => {
+  elements.clearHistory.disabled = true;
+  try {
+    for (const item of allHistory().filter((item) => item.backend === "cli"))
+      await downloadService.archive(item.cliJobId);
+    const previous = history;
+    history = [];
+    try {
+      await saveLibrary();
+    } catch (error) {
+      history = previous;
+      throw error;
+    }
+    clearHistoryHighlight();
+  } catch (error) {
+    document.querySelector("#history-action-status").textContent = error.message;
+  } finally {
+    elements.clearHistory.disabled = false;
+    renderHistory();
+  }
 });
 elements.qualitySelect.addEventListener("change", () => {
   const audioOnly = selectedFormat() === "audio";
@@ -6349,7 +6834,12 @@ document.querySelector("#history-check").addEventListener("click", async (event)
   button.disabled = true;
   holdAuxiliaryGroup();
   try {
-    for (const item of history) if (item.files?.length) await checkFiles(item);
+    for (const item of allHistory())
+      if (item.files?.length) {
+        if (item.backend === "cli" && projectContains(item.directory?.path))
+          await downloadService.check(item.cliJobId);
+        else await checkFiles(item);
+      }
     await saveLibrary();
     renderHistory();
   } catch (error) {
@@ -6427,7 +6917,9 @@ if (panel) {
   });
   panel.on("process.output", (payload) => {
     if (
-      (auxiliary.ignores(payload) || dependencyProcesses.ignores(payload)) &&
+      (auxiliary.ignores(payload) ||
+        dependencyProcesses.ignores(payload) ||
+        serviceProcesses.ignores(payload)) &&
       ![
         ...runningDownloads().map((job) => job.id),
         inspectionJob?.id,
@@ -6489,7 +6981,9 @@ if (panel) {
   });
   panel.on("process.exit", (payload) => {
     if (
-      (auxiliary.ignores(payload) || dependencyProcesses.ignores(payload)) &&
+      (auxiliary.ignores(payload) ||
+        dependencyProcesses.ignores(payload) ||
+        serviceProcesses.ignores(payload)) &&
       ![
         ...runningDownloads().map((job) => job.id),
         inspectionJob?.id,
@@ -6575,7 +7069,8 @@ updateConditionalOptions();
 initializeRuntime().finally(resolveSearchExecutables);
 
 window.addEventListener("pagehide", () => {
-  cliJobsView.destroy();
+  downloadService?.destroy();
+  environmentClient?.destroy();
   clearInterval(durableTimer);
   durableDownloads?.close();
 });

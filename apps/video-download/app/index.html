@@ -496,24 +496,14 @@
           <p id="task-overview-summary" class="task-overview-summary" role="status">
             添加视频后，每项任务的进度都会显示在这里。
           </p>
+          <div class="queue-toolbar-actions">
+            <button id="shared-refresh" class="text-button" type="button">刷新任务</button>
+          </div>
+          <p id="shared-service-status" class="task-guidance" role="status">正在连接当前项目的下载任务…</p>
           <div id="task-overview-list" class="task-overview-list" aria-label="全部下载任务"></div>
           <p id="task-overview-empty" class="task-guidance">
             支持同时下载多个视频；点击任务查看详情。
           </p>
-        </section>
-        <section id="cli-jobs" class="task-card" aria-labelledby="cli-jobs-title">
-          <div class="section-heading">
-            <div>
-              <span class="step-label">独立运行</span>
-              <h2 id="cli-jobs-title">CLI 下载任务</h2>
-            </div>
-            <button data-cli-refresh class="text-button" type="button">刷新 CLI 任务</button>
-          </div>
-          <p class="task-guidance">
-            聊天或终端通过 CLI 创建的任务保存在当前项目。关闭面板后仍可运行；可通过 CLI 查询、取消或重试。
-          </p>
-          <p data-cli-status class="task-overview-summary" role="status">点击刷新，读取当前项目的 CLI 任务。</p>
-          <div data-cli-list class="task-overview-list" aria-label="当前项目 CLI 下载任务"></div>
         </section>
         <section id="task-card" class="task-card" aria-labelledby="task-title">
           <div class="task-topline">
@@ -655,6 +645,7 @@
                 <option value="completed">已完成</option>
                 <option value="failed">下载失败</option>
                 <option value="cancelled">已取消</option>
+                <option value="interrupted">已中断</option>
                 <option value="missing">文件已缺失</option>
               </select>
             </label>
@@ -684,6 +675,24 @@
           <button id="queue-clear" class="text-button" type="button" disabled>清除已结束</button>
         </div>
         <p id="library-status" class="library-status" role="status" aria-live="polite"></p>
+        <div id="shared-queue-controls" class="shared-queue-controls" hidden>
+          <div class="section-heading compact"><h3>项目下载队列</h3></div>
+          <label class="queue-concurrency"><span>同时下载</span>
+            <select id="shared-concurrency" aria-label="项目下载并行数">
+              <option value="1">1 个</option><option value="2" selected>2 个</option>
+              <option value="3">3 个</option><option value="4">4 个</option>
+            </select>
+          </label>
+          <div class="queue-toolbar"><p id="shared-queue-state" class="queue-summary" role="status"></p>
+            <div class="queue-toolbar-actions">
+              <button id="shared-start-pending" class="secondary-button" type="button" disabled>开始待下载任务</button>
+              <button id="shared-queue-toggle" class="secondary-button" type="button">暂停队列</button>
+            </div>
+          </div>
+          <p class="queue-resume-note">聊天、终端与面板共用并行数和队列状态。暂停队列会等待当前下载完成；需要立即停止时可取消单项任务。</p>
+        </div>
+        <div id="legacy-queue-controls">
+        <p class="queue-resume-note" id="legacy-queue-label">账号下载与旧版队列</p>
         <label class="queue-concurrency">
           <span>同时下载</span>
           <select id="queue-concurrency" aria-label="同时下载数量">
@@ -707,9 +716,11 @@
           </div>
         </div>
         <p class="queue-resume-note">暂停会保留已下载的部分，继续时自动尝试续传。</p>
+        </div>
         <div id="queue-list" class="queue-list"></div>
       </section>
 
+      <p id="environment-cache-status" class="library-status" role="status"></p>
       <footer class="runtime-footer">
         <div>
           <span id="ytdlp-dot" class="status-dot"></span>

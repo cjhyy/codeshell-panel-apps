@@ -1,72 +1,82 @@
 ---
 name: video-download-cli
-description: Inspect, search for, download and check videos through the selected Mimi Download package's Node CLI, including background task status, cancellation and retries, without opening or keeping the panel open.
+description: Search, inspect and download public videos from Chat or a terminal, and manage the project's shared download tasks without keeping the Mimi Download panel open.
 ---
 
-# Video Download CLI
+# Mimi Download from Chat
 
-Use this CLI for direct chat or terminal requests. The panel is optional. Keep
-Panel-originated operations using their existing Panel tools and Host queue.
+Use the selected package's CLI for public-video requests. The panel and CLI share
+project download records and queue settings; opening the panel is optional.
+Saved Host-account downloads use the authorized panel workflow instead.
 
-CodeShell supplies this Skill from the current project's selected package.
-Resolve `../../..` from `${CODESHELL_SKILL_DIR}` to locate that package. Confirm
-`.codeshell-panel/panel.json` has id `video-download`, and that
-`app/tools/video-download.mjs` exists. Use that exact CLI; do not search another
-installation/version or modify package files. If unavailable, report
-`bundled-video-download-cli-not-found`.
+Resolve `../../..` from `${CODESHELL_SKILL_DIR}`. Confirm that package's
+`.codeshell-panel/panel.json` has id `video-download` and use its
+`app/tools/video-download.mjs`. Do not choose another installed version or a
+repository checkout. Report `bundled-video-download-cli-not-found` if unavailable.
 
-Run Node >=20.10 from the actual Bash environment. Desktop Hosts with managed
-runtime PATH support supply bundled Node as a fallback; older Hosts, TUI and
-standalone terminals require Node on PATH. Do not infer availability from the
-application version. `doctor` checks yt-dlp and FFmpeg separately: Node does not
-replace either program. An explicit `--bin-dir` may select the user's dependency
-directory; never guess CodeShell's private data directories.
+Use Node >=20.10 from the actual command environment. Compatible CodeShell builds
+provide managed Node/bin on PATH; verify availability instead of inferring it
+from the app version. yt-dlp and FFmpeg are separate dependencies. `--bin-dir`
+may append an explicitly supplied absolute dependency directory; never guess
+Host private directories.
 
-```sh
-node "<package-root>/app/tools/video-download.mjs" ops
-node "<package-root>/app/tools/video-download.mjs" doctor --project "<current-project>"
-```
-
-Read `ops` for current commands and schemas. Write structured request JSON to a
-file and pass it as a quoted `--input-file` argument. Set `--project` to the
-current trusted project, not the installed package directory. For example:
+Read `ops` for current commands and schemas. Use the current trusted project as
+an explicit absolute `--project`, and pass structured media JSON through a quoted
+`--input-file`. `doctor` uses the shared local-version cache; use `--refresh` after
+repair and `--latest` only when a remote version query is useful. It also reports
+optional yt-dlp JavaScript-runtime support. Do not require a diagnostic or install
+operation before every otherwise valid download.
 
 ```sh
-node "<package-root>/app/tools/video-download.mjs" inspect --project "<current-project>" --input-file "<inspect.json>"
-node "<package-root>/app/tools/video-download.mjs" search --project "<current-project>" --input-file "<search.json>"
-node "<package-root>/app/tools/video-download.mjs" download \
-  --project "<current-project>" --input-file "<request.json>" --background
-node "<package-root>/app/tools/video-download.mjs" jobs --project "<current-project>"
-node "<package-root>/app/tools/video-download.mjs" status --project "<current-project>" --job "<task-id>"
-node "<package-root>/app/tools/video-download.mjs" cancel --project "<current-project>" --job "<task-id>"
-node "<package-root>/app/tools/video-download.mjs" retry --project "<current-project>" --job "<task-id>" --background
+node "<package>/app/tools/video-download.mjs" ops
+node "<package>/app/tools/video-download.mjs" search --project "<project>" --input-file "<search.json>"
+node "<package>/app/tools/video-download.mjs" inspect --project "<project>" --input-file "<inspect.json>"
+node "<package>/app/tools/video-download.mjs" download --project "<project>" --input-file "<download.json>" --background --request-key "<stable-operation-key>" --source chat
+node "<package>/app/tools/video-download.mjs" status --project "<project>" --job "<task-id>"
+node "<package>/app/tools/video-download.mjs" jobs --project "<project>"
 ```
 
-Search takes keywords and returns retrieved candidates with source evidence.
-Use the current chat to interpret the user's request and rank those candidates;
-the CLI has no model credentials or separate paid AI planning. Index results and
-historical links are not proof of current platform availability. Inspect the
-selected URL to check metadata. Do not claim to have watched its video contents.
+Use the conversation to interpret search intent and rank retrieved candidates;
+the CLI has no separate model credentials. Index evidence does not prove a video
+is currently accessible. Inspect the selected URL when metadata is needed, and
+do not claim to have watched its content.
 
-Download only when requested. Each download keeps a stable task ID and its
-original options. Use foreground download for a short operation, or
-`--background` to return the task ID while a standalone Node worker runs.
-Poll `status` or `jobs` for its real state and files; closing the panel has no
-effect. Do not claim completion from the start receipt. If a start reply is
-uncertain, inspect the project's jobs before starting another download.
-Cancellation is cooperative and is complete only when the worker reports its
-terminal state. Retry only after inspecting a failed/cancelled/interrupted task;
-never automatically replay an uncertain network operation.
+Download when requested. Generate one operation key and freeze its JSON request;
+retain both until submission is resolved. Use `--source chat` so its origin is
+visible in the panel. A background receipt provides a task ID, not completion.
+Query `status`/`jobs` for the actual outcome and output files. A missing or uncertain
+reply is a reason to inspect or reuse the same frozen operation and key, never to
+create a new key and repeat the download. Reusing a key with changed content is
+rejected. An incomplete original record is retained for investigation.
 
-CLI records live in `.mimi-download-cli/` under the project. The panel's CLI
-task section reads those records without owning their workers. The existing
-Host queue, saved Cookie accounts and resource library remain separate: do not
-edit Host app-storage files, fabricate resource IDs, or treat CLI task IDs as
-Host task IDs. This CLI handles public-media downloads; a saved Host-account
-download still uses the authorized Panel workflow. Never copy browser profiles,
-Cookie contents or model keys into a request or a task record.
+The queue defaults to two concurrent tasks. `queue` reads its revision; applying
+`queue --input-file` requires that `expectedRevision`, `paused` and `maxConcurrent`
+(1–4). Pausing stops admission while active downloads continue. Never change
+project-wide queue policy solely to speed up a single request unless asked.
 
-Use returned JSON and exit codes as receipts. Report missing dependencies,
-output limits, conflicts and interrupted workers accurately. Preserve partial
-files for an explicit retry; neither panel closure nor application restart is
-permission to silently start a new network request.
+`cancel --job` requests cancellation. Report it as pending until the worker
+confirms its process tree ended. Retry only after inspecting a failed, cancelled
+or interrupted task, using `retry --job ... --expected-attempt <observed-attempt>
+--background`. Retries preserve the ID, original request and partial files.
+`start` explicitly starts a pending panel-created task. Opening a panel, process
+restart or lost receipt is not permission to replay network work.
+
+`check --job` verifies output files and persists their inventory state.
+`archive --job` hides a terminal/pending record from normal listings and the panel;
+it never deletes media. Do not archive records unless the user asks to remove
+or clear them.
+
+Records, environment snapshots and queue state live under the project's
+`.mimi-download-cli/`. The panel automatically displays active downloads and
+finished history. Existing Host/account tasks remain a distinct execution
+backend within that interface: do not edit private Host storage, fabricate
+resource IDs, or treat CLI IDs as Host task IDs. CLI external output directories
+are supported when explicitly requested; the panel requires directory authority
+before reading or opening those files. Never put Cookie contents, browser
+profiles, model keys or opaque Host grants into a request or task record.
+
+If the worker crashes or a process tree cannot be confirmed stopped, retained
+worker locks and queue slots prevent overlapping downloads. Do not clear them or
+signal a stored PID blindly. Explain the interruption and preserve partial files
+for confirmed recovery and an explicit retry. Workers need a live machine and
+execution environment; there is no persistent login daemon or automatic restart.

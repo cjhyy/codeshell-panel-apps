@@ -429,29 +429,8 @@ async function completeDownload(page, processId, files = [`/fixture/project/${pr
 
 // Remaining integration cases below target the public controls introduced by the
 // library UI. Native security and process-receipt behavior have independent tests.
-for (const width of [390, 1280]) {
-  test(`the installed page reads CLI records separately from its own queue at ${width}px`, async (t) => {
-    const page = await openPanel(t, { width });
-    await page.evaluate(() => {
-      window.__cliJobs.jobs = [{
-        id: "12345678-1234-4567-8901-123456789abc", status: "completed",
-        title: "CLI fixture video", progress: { fraction: 1 },
-        outputDirectory: "/fixture/project/downloads", files: [{ name: "fixture.mp4" }],
-      }];
-    });
-    await page.locator('[data-tab="task"]').click();
-    await page.getByRole("button", { name: "刷新 CLI 任务" }).click();
-    await page.waitForFunction(() => document.querySelector("[data-cli-list]").textContent.includes("CLI fixture video"));
-    assert.match(await page.locator("[data-cli-list]").innerText(), /已完成.*100%/);
-    await page.getByText("查看文件与保存位置", { exact: true }).click();
-    assert.equal(await page.getByText("fixture.mp4", { exact: true }).isVisible(), true);
-    assert.equal((await downloads(page)).length, 0);
-    assert.equal((await readState(page)).queue.length, 0);
-    const native = await page.evaluate(() => window.__nativeRequests.find(({ action }) => action === "cli-list"));
-    assert.equal(native.files.length, 0);
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-  });
-}
+// Shared Chat/CLI records now use the main task/history views; integration
+// coverage lives in unified-runtime-ui.test.mjs instead of a separate CLI card.
 
 test("batch paste deduplicates video aliases and adds each unique link once", async (t) => {
   const page = await openPanel(t);

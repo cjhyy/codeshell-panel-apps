@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, lstat, mkdir, open, realpath } from "node:fs/promises";
+import { lstat, mkdir, open } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDownloadRequest, runDownload } from "./download.mjs";
 import { searchExternalSources } from "./search.mjs";
+import { getEnvironment, findRuntimeExecutable } from "./environment.mjs";
 import {
   cliError,
   cliJobId,
@@ -52,9 +53,10 @@ function argumentsFor(argv) {
   const options = {};
   for (let i = 0; i < rest.length; i++) {
     const flag = rest[i];
-    if (flag === "--background") {
-      if (options.background) throw cliError("INVALID_ARGUMENT", "参数重复。");
-      options.background = true;
+    if (["--background", "--refresh", "--latest"].includes(flag)) {
+      const name = flag.slice(2);
+      if (options[name]) throw cliError("INVALID_ARGUMENT", "参数重复。");
+      options[name] = true;
       continue;
     }
     const name = flag?.slice(2),
@@ -96,6 +98,10 @@ function argumentsFor(argv) {
   if (command === "download") {
     allowed.add("request-key");
     allowed.add("source");
+  }
+  if (command === "doctor") {
+    allowed.add("refresh");
+    allowed.add("latest");
   }
   if (command === "queue") allowed.add("input-file");
   if (command === "_worker") {
@@ -145,24 +151,7 @@ async function readInput(path, cwd) {
 
 // PATH remains authoritative. Hosts with custom data directories must append
 // their actual managed bin to PATH, or the caller explicitly supplies --bin-dir.
-export async function findCliExecutable(name, { env = process.env, binDirectory } = {}) {
-  const directories = (env.PATH || "").split(delimiter).filter((path) => path && isAbsolute(path));
-  if (binDirectory) directories.push(await checkedDirectory(binDirectory));
-  for (const directory of [...new Set(directories)]) {
-    for (const suffix of process.platform === "win32" ? [".exe", ""] : [""]) {
-      const candidate = join(directory, name + suffix);
-      try {
-        await access(candidate, process.platform === "win32" ? constants.F_OK : constants.X_OK);
-        const path = await realpath(candidate),
-          info = await lstat(path);
-        if (info.isFile()) return path;
-      } catch {
-        /* A missing PATH entry is not a dependency failure by itself. */
-      }
-    }
-  }
-  return null;
-}
+export const findCliExecutable = findRuntimeExecutable;
 
 function spawnOwned(executable, args, options) {
   const grouped = process.platform !== "win32";
@@ -302,36 +291,15 @@ async function jsRuntimeArguments(executable, env, signal) {
   }
 }
 
-async function doctor(options, env, signal) {
-  const dependencies = {};
-  for (const name of ["yt-dlp", "ffmpeg"]) {
-    const path = await findCliExecutable(name, { env, binDirectory: options["bin-dir"] });
-    try {
-      const result =
-        path &&
-        (await capture(path, name === "yt-dlp" ? ["--ignore-config", "--version"] : ["-version"], {
-          env,
-          signal,
-          timeout: 5000,
-          limit: 64 * 1024,
-        }));
-      dependencies[name] = {
-        available: Boolean(result),
-        path,
-        version: clean(result?.stdout.split(/\r?\n/)[0], 200),
-      };
-    } catch (error) {
-      dependencies[name] = {
-        available: false,
-        path,
-        error: { code: error.code, message: error.message },
-      };
-    }
-  }
+async function doctor(project, options, env, signal, fetcher) {
+  const snapshot = await getEnvironment(project, { env, signal, fetcher,
+    binDirectory: options["bin-dir"], refresh: options.refresh === true,
+    includeLatest: options.latest === true });
+  const { dependencies, cached, checkedAt, ready, latest } = snapshot.result;
   const runtimeArgs = await jsRuntimeArguments(dependencies["yt-dlp"].path, env, signal);
   return {
     node: { version: process.versions.node, executable: process.execPath },
-    dependencies,
+    dependencies, cached, checkedAt, ready, ...(latest ? { latest } : {}),
     javascriptRuntime: {
       available: Number(process.versions.node.split(".")[0]) >= 22,
       enabled: runtimeArgs.length > 0,
@@ -1068,7 +1036,7 @@ export async function main(
         schemaVersion: 1,
         commands: COMMANDS,
         usage:
-          "node video-download.mjs <command> --project /absolute/project [--input-file request.json] [--job UUID] [--background] [--bin-dir /absolute/bin] [--request-key stable-key] [--source cli|chat|panel] [--expected-attempt N]",
+          "node video-download.mjs <command> --project /absolute/project [--input-file request.json] [--job UUID] [--background] [--bin-dir /absolute/bin] [--request-key stable-key] [--source cli|chat|panel] [--expected-attempt N] [doctor: --refresh --latest]",
         inputs: {
           inspect: { url: "HTTP(S) URL", playlist: false },
           search: { query: "keywords", platform: "both", limit: 8 },
@@ -1096,7 +1064,7 @@ export async function main(
       ),
     };
   }
-  if (command === "doctor") return { ok: true, result: await doctor(options, env, signal) };
+  if (command === "doctor") return { ok: true, result: await doctor(project, options, env, signal, fetcher) };
   if (command === "inspect")
     return {
       ok: true,

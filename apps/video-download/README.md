@@ -1,556 +1,171 @@
 # Mimi Download
 
-Mimi Download 0.23.0 is a local-first CodeShell Panel App with an independent Node
-CLI for `yt-dlp`. Its primary
-**Install / Update** action is deterministic and does not invoke a model. It
-resolves the latest stable yt-dlp release from the official GitHub API, tries a
-safe update of an existing installation, and otherwise downloads the exact
-official standalone binary for the current platform. The binary is verified
-against the Release API's official `sha256:` asset digest, with
-`SHA2-256SUMS` as a compatibility fallback, before it is installed into
-CodeShell's Host-managed per-user executable directory. Windows and Linux use
-the verified `yt-dlp/FFmpeg-Builds` GitHub Release when ffmpeg is missing;
-macOS keeps the Homebrew route. Both dependencies are verified after install.
+Mimi Download 0.24.0 provides one project download runtime for Chat, the Node CLI
+and the panel. Public downloads saved inside the project share task IDs,
+configuration, queue settings, progress and files. Opening a panel observes those
+records; it does not own or keep the worker alive.
 
-On Windows, setup tries curl first and automatically falls back to PowerShell
-when curl's Schannel transport cannot complete a GitHub TLS handshake. Both
-yt-dlp and the GitHub ffmpeg fallback land in the Host-managed directory, so
-the panel can detect them immediately without restarting CodeShell.
+## Download from Chat, a terminal or the panel
 
-Unusual environments have a separate **AI Initialize / Repair** action. Before
-starting it, the user explicitly chooses a configured Provider and model. The
-resulting bounded Task uses the bundled `video-download-setup` Skill but does
-not inherit the current conversation, project instructions, memory, or
-unrelated Skills. Model credentials remain in CodeShell and are never exposed
-to the panel. Neither setup path inspects a video or starts a download.
+Ask Chat to search or download a video. The selected package's
+`video-download-cli` Runtime Skill supplies the exact installed command. Chat
+uses the current conversation to interpret the request and rank public search
+results; the CLI has no separate model connection or credentials.
 
-The Download tab keeps dependency and version details in a compact disclosure,
-with a prominent latest-version / update-needed tag. Expanding it shows the
-installed yt-dlp version beside the latest stable tag from the official GitHub
-Releases API. Both checks are deterministic
-local-process operations and never start an AI Task. The passive version badge
-uses an available `curl` executable with a fixed API URL; a timeout, missing
-`curl`, or an unavailable GitHub response leaves only the latest-version field
-unavailable and never blocks downloading. The setup action additionally uses
-wget or Windows PowerShell as HTTPS fallbacks.
+The panel retains batch links, metadata inspection, playlist selection, quality
+preferences, MP3, human/automatic subtitles, language presets, AI search and error
+analysis. Paste up to 100 links. **Download now** admits work to the project queue;
+**Add to queue** saves a pending task without starting a worker. Start it explicitly
+from the task card or **Start pending downloads**. Existing matches and actual
+output files are checked before treating a video as already downloaded.
 
-After initialization, paste a supported video URL, inspect its title, duration,
-source, and available quality, then choose an actual resolution and download
-without creating an Agent turn. Saved CodeShell Cookie accounts matching the
-target website appear in a selector. Where the Host advertises login capture,
-users can open its login window and save a new account; remote pages use accounts
-already saved on the executing Host. Downloads use
-resume support, fragment retries, exponential backoff, bounded filenames, and
-user-facing error classification. Playlist ranges remain optional. Subtitle
-controls provide human/automatic source choices, language presets, and an
-independent embed switch, so users can keep a separate SRT instead of embedding
-it. The default flow is still paste, inspect, and download. Inspection
-also renders the actual download list: a single link shows its metadata, while a
-playlist marks every visible entry as `will download` or `skipped` as its range
-changes.
+The shared queue defaults to two concurrent downloads and supports one to four.
+Queue settings persist per project and are visible to every entry point. Pausing
+the shared queue stops new admission; currently running downloads continue.
+Cancel a task to stop it, then explicitly retry to reuse its partial files.
+Lowering concurrency does not kill running tasks. Each worker confirms its owned
+process tree has exited before releasing its slot.
 
-The form has two explicit actions. **Download now** starts the selected links up to
-the configured concurrency, with excess tasks waiting automatically for a free slot.
-**Add to queue** saves them as **Waiting to start**, without starting any download.
-Saved tasks remain waiting when other downloads finish or the panel reopens. Start
-one from its card, or use **Download all**. Download now reuses a matching saved task
-instead of adding a duplicate. Starting new links after Pause all leaves older
-paused tasks untouched. The keyboard shortcut uses Download now. AI search's
-**Add to queue** controls also save tasks for a later manual start.
+Tasks and History automatically discover downloads created by Chat or terminals,
+including when the list was empty. Cards and history retain their real backend
+identity. The same controls can start pending tasks, cancel, retry, check files or
+archive records. Archiving and clearing history never delete downloaded media.
+File opening and playback recheck actual files and use an authorized directory;
+a path in task JSON is never a directory grant. External CLI outputs require the
+original directory to be selected before panel file actions.
 
-Downloads run through a visible queue with **three concurrent tasks by default**.
-The queue selector supports one to four tasks and remembers the setting per project.
-Increasing the limit fills available slots; lowering it leaves in-flight tasks alone. Adding a task captures its
-quality, playlist/subtitle options, output directory, and explicitly authorized
-account reference. The form stays editable during downloads, so another URL can be
-added without changing earlier tasks. Video information can also be inspected during
-active downloads, from the form or Chat, including batch inspection and retries.
-Cancelling inspection leaves ongoing downloads alone. Download progress and
-metadata results keep separate process ownership even when spawn receipts arrive late;
-completed downloads wait for inspection to finish before checking their saved files.
-Each running or scheduled task can be paused; saved tasks can be started or removed;
-paused tasks can be continued or removed. **Download all / Continue all** starts
-waiting and paused work up to the configured limit. **Pause all** stops active
-download processes and holds pending work; it no longer just stops scheduling.
-Completed and cancelled tasks are not restarted by the bulk control. Failed or
-cancelled tasks can be retried individually. One
-failure does not stop the other downloads. Each task owns its process identity, progress, logs and output inventory. The queue and up to 300 history records persist per project in Host storage.
-On legacy Hosts, closing the panel stops active processes; reopening restores
-pending and interrupted items without starting them. Hosts with the background
-queue capabilities described below keep admitted downloads running after closure. Paused tasks remain paused, keep their last progress,
-and still participate in duplicate detection. **Continue all** or a task’s
-**Continue** button reacquires directory and saved-account grants before continuing.
-Continuing one task leaves the other paused tasks untouched.
+## Runtime and environment state
 
-Pause waits for the process to exit before enabling Continue. It retains local
-partial files and uses the same output name with `yt-dlp --continue` on restart.
-Byte or fragment continuation depends on the source; if it cannot resume, yt-dlp
-may restart the transfer. Pausing creates no completed or failed history record.
-A failed pause is visibly reported while the task stays running, so it can be retried.
+Installed CLI commands are available without an open panel. Workers start only
+for submitted work and exit when done; there is no permanently idle daemon or
+operating-system login service. Closing the panel stops observation and short
+page-owned queries, not independent download workers. A running machine and
+execution environment are still required. Interrupted work is never restarted
+without an explicit request.
 
-No executable handle, temporary directory grant, Cookie file handle,
-Cookie value or process argument list is persisted. Background records retain
-opaque directory bookmarks, task IDs, and the selected account ID/site/version. If storage fails, new work does
-not start and the queue pauses.
+Environment snapshots are shared between the panel and CLI. Local executable
+versions are cached for up to six hours, bound to the actual PATH, relevant
+execution settings, Node and tool file identities. File replacement, missing
+tools or changed settings invalidate the cache. Shell/session bookkeeping does
+not invalidate an otherwise identical environment. Each panel still obtains its
+own current Host executable grants; no opaque handles or credentials are cached.
 
-Click a completed, failed or cancelled queue item to open and highlight its download
-record. History filters are reset so the target remains visible. Clicking a running
-or waiting item opens its own progress and log. Queue entries also support keyboard
-activation. Removing a history record leaves its files intact.
-The history locator uses a quiet blue highlight that clears after three seconds,
-when leaving History, or when changing its search/filter. It does not mark an error,
-and later history refreshes do not restore an expired highlight.
+The official yt-dlp latest-release query has its own 24-hour cache and runs
+separately from local readiness. Network failure does not mark working local
+tools unusable. Use **Refresh dependencies** or `doctor --refresh` after repair;
+`doctor --latest` explicitly includes the remote query. Diagnostic `doctor` also
+checks yt-dlp's optional JavaScript-runtime support; actual operations verify
+that capability when used.
 
-History uses a compact file list. Each row shows its title, status, format and a
-short date, with direct **Play** and **Reveal** actions; missing or failed downloads
-offer **Download again**. Expand a row to see its save location, individual filenames,
-sizes and file checks. Secondary check, retry and delete actions live in **More**,
-which supports keyboard activation, Escape and outside-click dismissal. File details
-stay expanded after a check. Search and status filters update the record/file count,
-and narrow panels retain the same actions as labeled icon buttons.
+Node >=20.10, yt-dlp and FFmpeg are separate requirements. Compatible CodeShell
+builds append their verified managed Node/bin to PATH; an existing PATH tool
+keeps precedence. Other Hosts and standalone terminals need Node on PATH.
+`--bin-dir /absolute/bin` explicitly appends a dependency directory. Never guess
+Host private data directories. Node >=22 is offered to supported yt-dlp versions
+as an explicit JavaScript runtime; website access still depends on current
+yt-dlp/EJS support and the network.
 
-Paste up to 100 links at once (including ordinary share text). Canonical video
-aliases are deduplicated within the batch and queue. The form lists every recognized
-link, and the information button checks each video (up to 10 at a time) so titles
-can be verified before adding the batch. Failed checks stay marked beside their
-links and can be retried without discarding successful results. A running query
-can be cancelled; the controls are released only after the process exits.
-Selected quality is resolved independently
-against each video's available formats when its queued task runs.
-After inspecting a playlist,
-checkboxes and select-all/none controls edit the exact episode range. Each queued
-item keeps its original settings, even when the next form is changed.
+**Install / Update** remains a deterministic, model-free workflow using official
+GitHub releases, verified asset digests and the Host-managed executable directory.
+Windows can fall back from curl to PowerShell; Windows/Linux use the official
+FFmpeg build and macOS uses Homebrew. **AI Initialize / Repair** is optional and
+uses a selected Host model in an isolated task. Neither setup path downloads a
+video. Dependency changes are observed by the next cached environment check.
 
-Historical duplicates are checked against actual nonempty output files in the same
-save directory with the same settings. A stored URL alone cannot block downloading.
-Missing files may be downloaded again; a whole playlist is never blocked solely by
-an earlier inventory because its online membership may change. inaccessible directories and incomplete old
-records are reported as unverified. Existing files offer **Skip existing** or
-**Save another copy**. Size/time changes remain distinct from the original download.
-The helper checks only approved media/subtitle files under the authorized output
-directory; it refuses escapes and symlinks. History supports search, status filters,
-file checks, individual play/reveal actions, deleting one record, and retry with original settings.
-A playlist records up to 200 reported output paths; larger/incomplete inventories
-are explicitly unverified. Storage pressure removes oldest history before it can
-remove any pending queue item. Clearing history never deletes disk files.
+## Standalone CLI
 
-The output directory defaults to the currently bound, trusted project directory.
-The Host supplies its authorized directory handle; users can still choose another
-folder. The chosen path is remembered per project. On a Host with directory
-bookmarks, reopening silently restores a fresh directory grant after checking
-the original folder's identity. Older Hosts require selecting that folder once
-more. Older Hosts that do not offer the `project` known directory show a prompt
-to choose a directory instead of silently using the system Downloads folder.
-
-Retry keeps the task's original options and account, and asks the Host to
-authorize a fresh Cookie file for that saved account. Background tasks retain
-the original authorization version: a changed or unavailable account cannot be
-silently substituted. **Retry with selected account** creates a new task using
-the explicitly selected account and keeps the old record. Ordinary Retry never
-uses the account selected for the next download.
-
-The layout uses the available panel width with left-aligned navigation, warm
-neutral surfaces, and matching light/dark themes. Wide panels keep the queue
-beside the form and separate links from download settings; narrow panels stack
-the queue below the active tab and provide a header shortcut to it. The primary
-link form comes before the collapsed environment and version controls.
-
-The interface is split into four compact tabs: **Download** contains setup and
-download options, **AI Find Videos** discovers real platform results, **Task**
-shows every queued task with its own live progress, speed, status and pause/continue controls.
-Selecting a task opens its detailed progress, logs and error analysis, while **History** contains download
-records. Download failures open the Task tab; information-query failures stay
-beside their links. Small badges keep dependency, progress, and history state
-visible without making the page long. Search offers example prompts, visible
-stages, a searchable archive, and a fresh-query action that retains saved results.
-
-There is no AI configuration step in the normal download flow. If inspection or
-a download fails, the panel reveals an **Analyze error with AI** action. It
-starts a short tool-free Task using only sanitized diagnostics, then displays
-the answer directly in the panel. It never changes settings, retries, starts a
-download, or writes into the current conversation.
-Error analysis stays available during other downloads, inspection and file checks.
-Starting an analysis immediately locks only its own button, preventing duplicate
-requests. Each result belongs to the error that started it, so a late result cannot
-overwrite a newer failure. Missing models and catalog errors explain how to recover;
-**Refresh models** picks up changed Provider settings without reopening the panel.
-
-Error cards identify the video title, sanitized source URL, failed operation and
-time, with a shortcut to the matching task. **Close notice** dismisses the card;
-failed tasks retain **View error** in both the task list and queue, including after
-reopening. Selecting a different task or retrying the failed task clears stale
-error details. AI replies stay attached to the originating failure. **Stop AI analysis**
-stops only that AI task, while **Stop and close** also dismisses the notice after
-the task ends. A stop during task creation waits for the task receipt before
-cancelling it; failed cancellation remains visible and retryable. Background task
-checks recover missed completion events without reopening dismissed notices.
-
-## Independent CLI
-
-The installed package includes `app/tools/video-download.mjs`. Direct chat and
-terminal requests can inspect videos, retrieve search results, download media
-and manage their CLI tasks without opening the Panel. The bundled
-`video-download-cli` Skill resolves this file from the current project's selected
-package, so an Agent does not need to discover another installation.
+Resolve `app/tools/video-download.mjs` from the project's selected installed
+package, not a development checkout. `ops` describes current commands and schemas.
+All commands except `ops`/`help` require an explicit absolute `--project`.
 
 ```sh
-node "<selected-package>/app/tools/video-download.mjs" ops
-node "<selected-package>/app/tools/video-download.mjs" doctor --project "/path/to/project"
-node "<selected-package>/app/tools/video-download.mjs" inspect --project "/path/to/project" --input-file inspect.json
-node "<selected-package>/app/tools/video-download.mjs" search --project "/path/to/project" --input-file search.json
-node "<selected-package>/app/tools/video-download.mjs" download --project "/path/to/project" --input-file download.json --background
-node "<selected-package>/app/tools/video-download.mjs" jobs --project "/path/to/project"
-node "<selected-package>/app/tools/video-download.mjs" status --project "/path/to/project" --job "<task-id>"
-node "<selected-package>/app/tools/video-download.mjs" cancel --project "/path/to/project" --job "<task-id>"
-node "<selected-package>/app/tools/video-download.mjs" retry --project "/path/to/project" --job "<task-id>" --background
+node "<package>/app/tools/video-download.mjs" ops
+node "<package>/app/tools/video-download.mjs" doctor --project "/path/to/project"
+node "<package>/app/tools/video-download.mjs" inspect --project "/path/to/project" --input-file inspect.json
+node "<package>/app/tools/video-download.mjs" search --project "/path/to/project" --input-file search.json
+node "<package>/app/tools/video-download.mjs" download --project "/path/to/project" --input-file download.json --background --request-key "stable-operation-id" --source chat
+node "<package>/app/tools/video-download.mjs" jobs --project "/path/to/project"
+node "<package>/app/tools/video-download.mjs" status --project "/path/to/project" --job "<task-id>"
+node "<package>/app/tools/video-download.mjs" cancel --project "/path/to/project" --job "<task-id>"
+node "<package>/app/tools/video-download.mjs" retry --project "/path/to/project" --job "<task-id>" --expected-attempt 1 --background
+node "<package>/app/tools/video-download.mjs" check --project "/path/to/project" --job "<task-id>"
+node "<package>/app/tools/video-download.mjs" archive --project "/path/to/project" --job "<task-id>"
+node "<package>/app/tools/video-download.mjs" queue --project "/path/to/project"
 ```
 
-`inspect.json` can contain `{"url":"https://example.com/video"}`;
-`search.json` can contain `{"query":"Blender tutorial","platform":"both","limit":8}`;
-`download.json` can contain `{"url":"https://example.com/video","configuration":{"format":"1080","subtitles":true,"subtitleMode":"both","subtitleLanguages":"zh.*,en.*"}}`.
-Downloads default to the project's `downloads/`; an explicit absolute
-`outputDirectory` in the download request selects another folder.
+Input examples:
 
-`ops` describes each command and request schema. Results are JSON; progress is
-separate from the final result. A background start returns a task ID; query its
-status to confirm completion, request cancellation, or explicitly retry a
-terminal task. Closing the Panel neither stops these workers nor prevents Chat
-from creating another task. Foreground commands remain ordinary owned processes;
-do not assume they survive terminating their owning session or application.
-Detached workers require their running machine and execution environment to
-remain available. Interrupted work is not restarted automatically.
-
-CLI task records and partial downloads are stored under the project's
-`.mimi-download-cli/` directory. In the Panel's Task tab, **Refresh CLI tasks**
-reads that project's records and displays status, progress and results; while
-visible it refreshes active records. CLI tasks have their own IDs and records,
-separate from the existing Host queue/history and immutable resource library.
-The CLI does not write Host app storage or claim its files are Host resources.
-
-If a worker crashes, an expired heartbeat is displayed as interrupted. Normal
-POSIX cancellation terminates the captured download process group and confirms
-its exit before completing cancellation. If child-process exit cannot be
-confirmed, the task stays interrupted with its lock retained. Crash recovery
-also retains the worker lock: retry requires manual confirmation that the old
-process tree has exited before restoring that lock. This conservative rule
-applies on every platform, including Windows. It never signals an arbitrary
-recorded PID.
-Short write locks can be recovered only from a confirmed dead writer; unknown
-owners or interrupted recovery locks remain visible errors. Each attempt is
-bounded to six hours; explicit retry keeps its existing partial files, with
-actual continuation depending on the source.
-
-Node >=20.10 is required. Desktop Hosts with the managed-runtime PATH fallback
-make their verified bundled Node and Host-managed executable directory available
-to commands. Existing PATH installations keep priority. Older Hosts, TUI,
-server environments and standalone terminals require dependencies on PATH or an
-explicit CLI `--bin-dir`; the CLI does not guess a Host's private directories.
-yt-dlp is still required; FFmpeg handles merged video/audio, MP3 and subtitle
-conversion. The existing Panel installer prepares those dependencies.
-
-CLI searches retrieve actual candidate links; the calling Agent can interpret
-and rank them without another model connection. No model credentials or saved
-Host Cookie accounts are read by the CLI. Account-authorized downloads continue
-through the Panel's existing Host permission flow.
-
-## Requirements
-
-- CodeShell Desktop 0.9.17 or newer is recommended for automatic output-folder restoration and Panel execution without repeat dialogs. The full feature set requires Panel API v14, Node, and `process`, `resources`, `credentials.cookies`, `agent.task`, `storage`, `context.workspace`, `context.session`, and `external.open` permissions. Older Hosts retain basic downloading; file verification and platform search explain the required update.
-- [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) available on the Desktop app's PATH, or initialize it from the panel.
-- `ffmpeg` is recommended for merging video/audio streams and MP3 conversion.
-- `curl` is optional and used only to read the official latest yt-dlp release tag.
-
-The deterministic inspection and download path uses only `process`. CodeShell
-resolves an executable to an opaque, app-scoped handle, runs it with
-`shell: false`, and streams bounded stdout/stderr events back to the Panel. The
-first execution of an executable requires Host confirmation. In current Desktop
-Hosts, **Allow and remember** keeps that approval across Panel App updates and
-Host restarts for the same app and executable. A changed executable still needs
-confirmation; older per-version approvals retain their original scope until the
-user confirms the new choice.
-
-Panel API v10 authorizes a selected Cookie account as an opaque file-argument
-handle bound to the resolved `yt-dlp` executable. CodeShell creates the
-owner-only temporary Netscape file only after confirmation and removes it when
-the Panel closes. Cookie values and the temporary path never cross the Panel
-bridge.
-
-Optional AI repair, error analysis, and AI video discovery use `agent.task`. They show
-Provider/model selectors populated from secret-free Host metadata. Task state
-and results return to the panel through `agent.task.changed`, so there is no
-Session picker or manual binding step. The panel renders a bounded live
-activity list for model, plan, tool, and error events; the private Task is
-ephemeral and intentionally does not appear as a normal chat Session. The
-deterministic setup uses `process.info` and CodeShell's `user-bin` directory,
-both introduced in Panel API v9. The Panel exposes six domain tools:
-
-- `inspect_video` sets an optional URL and retrieves video or playlist metadata with local `yt-dlp`.
-- `get_video_download_context` reads metadata, configuration, destination, and task status.
-- `refresh_video_download_dependencies` re-checks `yt-dlp` and `ffmpeg` after setup.
-- The **刷新环境** action performs the same dependency re-check from the panel, then refreshes
-  the installed and official `yt-dlp` versions without requiring an AI Task or an app restart.
-- `apply_video_download_config` changes format, playlist range, and subtitle settings.
-- `start_video_download` explicitly adds the configured download to the queue and starts it when the queue is ready.
-- `cancel_video_download` cancels one running download; optional `queueId` selects a specific task.
-
-This still lets an ordinary Session operate the Panel directly when the user
-asks in the conversation. Starting a download remains a separate mutating tool.
-Inspection and downloading themselves never need a Session or an LLM.
-
-## AI Find Videos
-
-Describe what you want and choose YouTube, Bilibili, or both. Choose a Provider
-and text model from CodeShell's configured connections, including external custom
-Providers. A bounded tool-free
-model task produces search terms. A bounded local search helper reads YouTube's
-public search page directly, with `yt-dlp` search as a backup. Bilibili uses
-`yt-dlp` search first; if its connection or metadata lookup fails, the helper
-looks for canonical video links in Bing's public search index. The index search
-tries a shorter query when the planned terms return no matches. Indexed links
-are labeled as such: their current platform availability is **not verified**.
-The second tool-free model task selects only returned candidate IDs and receives
-each candidate's evidence level. The panel never accepts model-generated URLs.
-If ranking fails, retrieved candidates remain selectable. Queries sent to the
-fallback index contain only the video's search terms, never Cookie values,
-private conversation or project files.
-
-Results open their source only when clicked, and enter the download queue only
-when explicitly selected. Result downloads use the current quality/subtitle options,
-single-video mode and no Cookie; **Preview** brings the link to Download where an
-account can be chosen. Cancelling stops the active model task or local search and
-ignores late results. Model/API and network availability remain prerequisites;
-there is no promise that a platform will expose every video or bypass access limits.
-Queries and up to eight verified results per query are retained per project in a
-bounded archive. You can view old results, remove individual results or whole
-queries, clear the archive, and repeat an earlier search to refresh platform data.
-Saved links are labeled historical when reopened. In Chat, `find_videos` starts
-the same asynchronous search, `get_video_search_results` reads its progress and
-results, and `list_video_search_history` and `delete_video_search_record` manage
-the archive. Chat search does not automatically queue or download results.
-
-## Cookie safety
-
-Mimi Download never reads a browser profile or asks the user to paste Cookie
-contents. A saved account is matched to the target website by the Host, and the
-user must explicitly select and authorize it before `yt-dlp` receives the
-temporary file. Choosing **Do not use Cookie** keeps the public-media path
-unchanged. Account lookup ignores stale responses, keeps explicit selections
-for the same site during this panel session, and maps YouTube/Bilibili short
-links to their login sites. Cookie access requires HTTPS. Empty, unavailable,
-and failed account lookups are explained separately in the interface; the panel
-does not automatically import a system browser profile.
-
-## Install from GitHub
-
-In CodeShell, choose **Extensions → Panel Apps → From GitHub** and enter:
-
-- Repository: `https://github.com/cjhyy/codeshell-panel-apps`
-- Branch or tag: `main`
-- App subdirectory: `apps/video-download`
-
-Only download media that you have permission to save, and follow the source
-website's terms and applicable law.
-
-### Playback and file actions
-
-The history Play button checks the actual file and, on macOS, uses an installed
-IINA or VLC first, then Chrome or Edge for MP4/M4V/WebM, falling back to the system
-player. This avoids QuickTime silently presenting VP9/Opus downloads as audio only.
-The expanded Open action still uses the system default application. No app is
-installed and no file association is changed. History actions remain available
-during background file checks, show launch feedback, and keep opener failures
-separate from missing downloads. Restored task folders use fresh directory grants.
-
-Batch inspection visits every input link in both single-video and playlist modes
-(up to ten previews per request). Mixed videos/playlists keep independent results
-and failed-link retries; playlist rows show their video counts. Larger batches
-explicitly show the preview limit and retain every link for downloading.
-
-## 0.22.4 reliability update
-
-Dependency refresh runs both `yt-dlp --ignore-config --version` and `ffmpeg -version`.
-A found executable that fails to run is shown as failed, and its download/audio
-controls remain unavailable until a successful recheck. Failure to contact the
-GitHub release API does not invalidate working local tools.
-
-AI search recovery uses project-scoped Host storage when advertised, including
-Web frames where localStorage is unavailable. Writes and clearing are ordered;
-storage failures remain visible. Reopening reconnects to the same planning task,
-including a task completed while the page was closed, without another planning
-request. Actual platform evidence is fetched again. Later interrupted stages keep
-the query and model for manual retry; they do not silently spend another AI call.
-
-In the 0.22.4 release, downloads used Guest-owned processes: closing the panel interrupted them,
-and saved queues can be resumed on reopening. Background-task migration requires
-supported handoffs for chosen directories and selected Cookie accounts; the
-release task envelope did not provide those handoffs. Server-side Cookie login
-and authorized download remain dependent on Host support.
-
-## 0.22.5 environment concurrency fix
-
-Background dependency checks now read their own process receipts on API 14, so
-opening/revealing downloaded files and AI platform searches can proceed during
-startup checks. AI planning starts normally; native searches wait only for initial
-executable discovery, not version probes or the GitHub release check. Older Hosts
-retain their event-based probe path.
-
-## 0.22.6 download and setup reliability fix
-
-Resolution choices use `--format-sort res:<height>` instead of a height filter, so
-vertical videos keep their chosen resolution and a missing exact height falls back
-to the nearest available format instead of failing. Fragment retries back off like
-HTTP retries, and yt-dlp's maintained default user agent replaces a fixed 2021
-browser string. Download arguments are built when a task starts, so a task saved
-before ffmpeg was installed still merges video and audio.
-
-**Check all** keeps a waiting download from starting between record checks, so no
-record is falsely reported as unreadable. Setup keeps a newer nightly yt-dlp instead
-of replacing it with the stable release, and a failed GitHub release lookup no
-longer blocks installing a missing ffmpeg while the local yt-dlp works.
-
-### Cross-device save conflicts
-
-Hosts advertising both `storage.getSnapshot` and `storage.compareAndSet` use
-conditional saves for the queue/history, search recovery, and search archive.
-An edit saved by another page or device causes a visible conflict; the stale
-page stops saving and pauses the queue instead of overwriting it. Copy any
-unsaved links before reopening to load the latest project state. Requests with
-lost replies query the stored value once; uncertain results are not replayed.
-Existing project JSON and legacy Host get/set behavior remain compatible.
-
-This requires a Host build exposing those two methods (not yet a published
-minimum version). Storage alone does not create durable tasks; the background integration below
-requires additional Host capabilities. Full mobile/cloud workflow acceptance
-remains separate work.
-
-### Project and session changes
-
-The updated package requests `context.session` to read the execution binding.
-Review this added context permission when updating an installed Panel. It does
-not make downloads or isolated AI tasks depend on a selected chat.
-
-Changing the execution binding stops the open page's new saves, downloads, AI
-requests and file actions. This also detects two cloud projects using the same
-`/workspace` path when their session changes. A persistent notice keeps unsaved
-links available to copy; reopen the Panel to load the current project's records.
-Returning to the original session does not reactivate the old page or its delayed
-requests. Accepted background tasks remain with the original project; check them
-there before deciding to retry.
-
-The public Host context exposes the directory, session and host kind, without a
-stable project or execution-environment ID. Session changes therefore invalidate
-this page's execution binding even within one project. They do not change storage
-keys or saved data: reopening the same project in another session reads the same
-queue and history. Hosts omitting session information can only be checked using
-the context fields they expose. This development change does not bump the package
-version.
-
-### Background queue and selected accounts (development build)
-
-The package declares `download-runtime` and the `resources` permission for
-Host-owned downloads. Its task input is:
-
-```js
-{
-  entry: "download-runtime",
-  recovery: "retry",
-  requestKey: "stable-queue-item-id",
-  input: {
-    request: { action: "download", url, configuration },
-    directoryArguments: [
-      { argumentName: "--job-dir", directory: "job" },
-      { argumentName: "--output-dir", directory: "bookmark", bookmark }
-    ]
-  }
-}
+```json
+{"url":"https://example.com/video","configuration":{"format":"1080","subtitles":true,"subtitleMode":"both","subtitleLanguages":"zh.*,en.*"}}
 ```
 
-The entry reads bounded JSON from stdin, invokes fixed yt-dlp/FFmpeg commands,
-reports progress, and returns hashed artifacts from the private job directory.
-Host task execution captures those artifacts into the project's resource store.
-A cancelled/interrupted job requires an explicit retry; it does not automatically
-restart network work. Browser-supplied executable paths, shell commands, raw
-options, output paths, and cookie paths are rejected.
+`inspect` takes `{url, playlist?}`; `search` takes
+`{query, platform:"both"|"youtube"|"bilibili", limit?}`. Downloads default to the
+project's `downloads/`. A terminal's explicit `outputDirectory` may select another
+absolute directory; the panel service only admits outputs within its authorized
+project. Optional `title` is display text; `copySuffix` retains a distinct output
+name for an explicitly requested copy.
 
-The queue uses this entry when the Host advertises `tasks.find`, directory
-bookmarks, and persistent queue controls. It saves a request key before admission,
-queries an uncertain submission instead of repeating it, and reattaches to stable
-task IDs after reopening. Desktop and paired Web can use the same Host queue.
-Legacy Hosts retain the page-owned process path. Unsubmitted records still need
-an explicit start; Host restart interruption requires an explicit retry.
+`queue --input-file queue.json` applies
+`{"expectedRevision":0,"paused":false,"maxConcurrent":2}`. Read the current revision
+first. `start --job <id> --expected-attempt <n> --background` starts a pending task.
+A retry retains its task ID and original request and increments its attempt.
+Provide the observed attempt when automating retries so a lost reply cannot
+restart a later completed attempt.
 
-When `tasks.cookieCredentials` and `credentials.cookies.listForTask` are also
-advertised, account downloads set `request.useSavedLogin: true` and add:
+The same request key atomically returns the original submission. Reusing a key
+with different content is rejected. Keep the frozen request and key while its
+receipt is uncertain; query before creating a different operation. A start
+receipt is not completion. Cancellation is a request until the worker confirms
+termination. JSON is written to stdout; foreground progress is separate on stderr.
 
-```js
-cookieArgument: {
-  argumentName: "--cookies-file",
-  credentialId,
-  url: loginSite,
-  revision: selectedAccountRevision
-}
-```
+## Records, ownership and compatibility
 
-The Host confirms the account at submission and retry, then passes a private file
-as a sealed command argument outside browser JSON. The native entry requires that
-file exactly when the request declares an account, validates it before launching
-yt-dlp, and never publishes it as an artifact. Cleanup belongs to the Host.
-Missing or changed accounts remain errors; they never become anonymous downloads.
-Normal retry preserves the original account version; changing accounts creates a
-new task after stopping the old one.
+`.mimi-download-cli/` stores private, bounded task records, stable work files,
+project queue settings and environment snapshots. Existing 0.23 records and their
+partial files remain readable. Writes are atomic and coordinated across processes.
+Malformed sibling records are reported without deleting them. Archive markers
+are shared with the panel, so hidden records do not reappear on reload.
 
-Saved-account metadata inspection uses `credentials.cookies.authorizeProcess`
-with the selected account revision when the Host advertises
-`process.cookieCredentials`. Desktop, paired Web, and Hub expose the same opaque
-file-grant contract. The Host rechecks the account after confirmation, before
-execution, while the program runs, and before accepting its exit. Revocation or
-account replacement rejects the grant and stops the program. The Panel caches
-authorization only for the same account revision, site, and executable; changing
-the selected account requires fresh consent. This short process does not wait for
-the background download queue to resume.
+A dead or uncertain worker does not prove its downloader children stopped.
+Unconfirmed worker locks and queue slots are retained; recovery requires checking
+both before an explicit retry. Never kill a process solely from a stored PID or
+blindly remove locks. A download attempt is bounded to six hours. Actual byte or
+fragment continuation depends on the media source.
 
-Hosts without the versioned temporary-process capability show an explicit
-limitation for account metadata; supported background downloads still use their
-saved account. Older Hosts retain their legacy process authorization path. Web
-login capture, real provider login, physical phones, and cloud saved-account end-to-end
-acceptance remain required work before declaring workflow parity.
+Saved-account downloads, external directories chosen through the panel, and
+previous Host queue/history retain their Host adapter. The unified UI presents
+them alongside shared public tasks without moving Cookie material or editing
+private Host storage. Their original pause/concurrency controls are labeled
+**Account downloads and legacy queue**. Existing resource IDs and immutable Host
+resources remain intact; ordinary CLI outputs do not fabricate resource IDs.
+Legacy drafts and interrupted Host tasks require an explicit start/retry.
 
-LAN HTTP browsers do not expose `crypto.randomUUID()`. Queue items, duplicate-copy
-suffixes, restored legacy records, and search operation IDs use a shared helper
-that falls back to UUID v4 from `crypto.getRandomValues`. This preserves secure
-randomness without requiring a secure context just to add a download; it does not
-change transport encryption or account authorization. No time-based or
-`Math.random` identifier fallback is used.
+Saved Cookie downloads require advertised `tasks.*`, directory bookmarks and
+Cookie-task capabilities. Account identity/site/revision are retained by the Host;
+changed or denied grants never fall back to anonymous downloads. The standalone
+CLI has no authenticated Host-account transport; use the authorized panel flow.
+Older Hosts lacking reviewed native entry support retain their explicit legacy
+mode. A failed shared-service request on a capable Host never silently switches
+that public download to another backend.
 
-On Hosts advertising `resources.open`, history playback and file opening use the
-current browser's preview with a **Save to this device** link. They first check
-the original download through its authorized directory. Background downloads
-retain their immutable resource IDs; legacy records capture the verified file
-into the project resource library once and persist that ID for later visits.
-Browser **Open download directory** displays the Host's authenticated directory
-listing. These actions never ask the remote machine to launch its OS player.
-Hosts without this method keep the existing Desktop player/file-manager flow.
-Browser codec support varies; unsupported files remain available to download.
+Changing the project's execution binding invalidates the current page, preserving
+unsaved links for copying and discarding late results. Reopen to load the current
+project. Accepted workers keep their original project. No background operation
+is restarted by opening, closing or migrating a panel.
 
+## Package architecture and validation
 
-Already open pages discover other devices' submitted project download records on
-task events and periodic refresh. They query the same native task IDs without
-resubmitting, replacing local drafts, or advancing the editor's conditional-save
-revision. Subsequent conflicting edits still require explicit recovery. This
-adopts records submitted through the project download library; it does not invent
-UI records for unrelated native jobs.
+- `app/tools/download-runtime.mjs`: shared media operations, worker lifecycle and service dispatch.
+- `app/tools/video-download.mjs`: thin CLI adapter with stable import compatibility.
+- `app/tools/service.mjs`: reviewed, bounded stdin entry; project authority comes from its actual cwd.
+- `app/tools/cli-store.mjs`: persistent records, idempotent admission, queue slots and atomic locks.
+- `app/tools/environment.mjs`: reviewed environment snapshots and version caches.
+- `app/download-service.js`, `download-records.js`: browser service client and display model.
+- `app/durable-downloads.js`: existing Host/account task adapter.
 
-The real Docker/browser smoke covers an anonymous H264 download across two
-independent logins: initiating logout, 390px observation, browser playback and
-byte-identical device download, followed by project stop/start and recovery of the
-same task/resource. Generated media and a loopback site are fixtures; this is not
-real-provider or physical-phone acceptance.
-
-On package-aware Hosts, download tasks show the Panel version recorded at
-submission. Project history caches the validated version/digest for display;
-only the Host's task record authorizes execution. Old-version or unversioned
-read-only records cannot be retried directly. Review the URL and settings on the
-download page before adding a new task; existing task results are retained.
-Read-only changes are reconciled even when the task sequence has not advanced.
-Package availability and content identity are checked by the Host on retry;
-the Panel never substitutes its current package for the original task's package.
+Run `npm test -- --suite video-download`, `node scripts/validate.mjs`, and
+`npm run check`. Tests use private temporary projects, fake tools and explicit
+network fixtures. Browser tests load the actual installed app assets through an
+authorized Host fixture. These tests do not establish every external website,
+real account, deployed Cloud or physical device combination.
