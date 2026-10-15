@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "id": "video-download",
-  "version": "0.22.7",
+  "version": "0.23.0",
   "title": {
     "default": "Mimi Download",
     "en": "Mimi Download",
     "zh-CN": "Mimi Download"
   },
-  "description": "Remembered download destinations, persistent queues and file-verified history, plus AI video discovery with configured providers and a searchable result archive.",
+  "description": "Independent Node CLI and background downloads, with project task records, a visual download queue, verified file history, and AI video discovery.",
   "entry": "app/index.html",
   "icon": "activity",
   "placement": "right-dock",
@@ -197,12 +197,12 @@
         "readOnly": false
       }
     ],
-    "skills": ["agent/skills/video-download-setup/SKILL.md"]
+    "skills": ["agent/skills/video-download-cli/SKILL.md", "agent/skills/video-download-setup/SKILL.md"]
   },
   "nativeEntries": {
     "download-library": {
       "entry": "app/tools/library.mjs",
-      "sha256": "3dd7bb938c3fe77a1bb0968220af855ac53d10ebb0eb8144f5fdac157b1ee9b0"
+      "sha256": "c030ef48a7ff09de1912a7c6fec7df7453e80a649cd7f2a49c4aff132ac455fd"
     },
     "video-search": {
       "entry": "app/tools/search.mjs",

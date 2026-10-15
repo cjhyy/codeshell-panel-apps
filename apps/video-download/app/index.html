@@ -21,7 +21,7 @@
           <img src="./assets/electron-video-dog.png" alt="" />
         </div>
         <div class="brand-copy">
-          <h1>Mimi Download <span class="app-version">0.22.6</span></h1>
+          <h1>Mimi Download <span class="app-version">0.23.0</span></h1>
           <p>找到想看的，保存到所选目录。</p>
         </div>
         <div class="topbar-actions">
@@ -500,6 +500,20 @@
           <p id="task-overview-empty" class="task-guidance">
             支持同时下载多个视频；点击任务查看详情。
           </p>
+        </section>
+        <section id="cli-jobs" class="task-card" aria-labelledby="cli-jobs-title">
+          <div class="section-heading">
+            <div>
+              <span class="step-label">独立运行</span>
+              <h2 id="cli-jobs-title">CLI 下载任务</h2>
+            </div>
+            <button data-cli-refresh class="text-button" type="button">刷新 CLI 任务</button>
+          </div>
+          <p class="task-guidance">
+            聊天或终端通过 CLI 创建的任务保存在当前项目。关闭面板后仍可运行；可通过 CLI 查询、取消或重试。
+          </p>
+          <p data-cli-status class="task-overview-summary" role="status">点击刷新，读取当前项目的 CLI 任务。</p>
+          <div data-cli-list class="task-overview-list" aria-label="当前项目 CLI 下载任务"></div>
         </section>
         <section id="task-card" class="task-card" aria-labelledby="task-title">
           <div class="task-topline">

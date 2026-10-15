@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import * as filesystem from "node:fs/promises";
 import { dirname, extname, isAbsolute, relative, resolve, sep, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
+import { listCliJobs } from "./cli-store.mjs";
 
 export const MAX_REQUEST_BYTES = 64 * 1024;
 export const MAX_CHECK_FILES = 200;
@@ -48,12 +49,12 @@ export function parseLibraryRequest(value) {
   if (!object(value) || Object.keys(value).some((key) => !["action", "files"].includes(key))) {
     throw new Error("invalid-request");
   }
-  if (!["check", "play", "open", "reveal"].includes(value.action) || !Array.isArray(value.files)) {
+  if (!["check", "play", "open", "reveal", "cli-list"].includes(value.action) || !Array.isArray(value.files)) {
     throw new Error("invalid-request");
   }
   if (
     value.files.length > MAX_CHECK_FILES ||
-    (value.action !== "check" && value.files.length !== 1)
+    (value.action === "cli-list" ? value.files.length !== 0 : value.action !== "check" && value.files.length !== 1)
   ) {
     throw new Error("invalid-file-count");
   }
@@ -291,6 +292,7 @@ export async function handleLibraryRequest(
   } = {},
 ) {
   const request = parseLibraryRequest(value);
+  if (request.action === "cli-list") return listCliJobs(cwd, { limit: 100 });
   let root;
   try {
     root = await fs.realpath(cwd);

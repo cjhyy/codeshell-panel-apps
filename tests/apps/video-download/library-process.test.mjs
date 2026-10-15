@@ -40,6 +40,20 @@ function fixture(handlers = {}) {
 }
 const args = { executableHandle: "node-handle", directoryHandle: "directory-handle" };
 
+test("CLI task listing uses the reviewed library entry and accepts only its bounded protocol", async () => {
+  const jobs = { format: "mimi-download.cli.jobs", schemaVersion: 1, jobs: [{ id: "job", status: "running" }] };
+  const app = fixture({ "process.get": () => receipt([event(1, "stdout", JSON.stringify(jobs))]) });
+  assert.deepEqual(await app.process.cliJobs({ handle: "project-directory" }), jobs);
+  assert(app.calls.some(({ method, params }) => method === "process.resolveEntry" && params.name === "download-library"));
+  const input = app.calls.filter(({ method }) => method === "process.write").map(({ params }) => params.text).join("");
+  assert.deepEqual(JSON.parse(input), { action: "cli-list", files: [] });
+  assert.equal(app.calls.find(({ method }) => method === "process.spawn").params.directoryHandle, "project-directory");
+  for (const invalid of [{ jobs: [] }, { ...jobs, schemaVersion: 2 }, { ...jobs, jobs: [{ id: "job" }] }]) {
+    const bad = fixture({ "process.get": () => receipt([event(1, "stdout", JSON.stringify(invalid))]) });
+    await assert.rejects(bad.process.cliJobs({ handle: "project-directory" }), /不完整/);
+  }
+});
+
 function deferred() {
   let resolve;
   const promise = new Promise((done) => {

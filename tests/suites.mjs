@@ -83,6 +83,8 @@ export const suites = [
       [
         "--test",
         ...[
+          "cli",
+          "cli-ui",
           "cookie-runtime",
           "download-library",
           "download-task",

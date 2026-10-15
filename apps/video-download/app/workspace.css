@@ -1775,3 +1775,20 @@ button {
     grid-column: 1 / -1;
   }
 }
+.cli-job {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.cli-job strong {
+  display: block;
+}
+.cli-job p {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.cli-job details {
+  margin-top: 8px;
+  font-size: 12px;
+}

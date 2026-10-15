@@ -15,6 +15,7 @@ import {
   parseLibraryRequest,
   readLibraryInput,
 } from "../../../apps/video-download/app/tools/library.mjs";
+import { createCliStore } from "../../../apps/video-download/app/tools/cli-store.mjs";
 
 const entry = fileURLToPath(
   new URL("../../../apps/video-download/app/tools/library.mjs", import.meta.url),
@@ -31,6 +32,23 @@ async function fixture(t) {
 async function check(cwd, files, options = {}) {
   return (await handleLibraryRequest({ action: "check", files }, { cwd, ...options })).files;
 }
+
+test("authorized CLI listing reads project records without creating state or exposing worker tokens", async (t) => {
+  const { cwd } = await fixture(t);
+  const project = await fs.realpath(cwd);
+  const empty = await handleLibraryRequest({ action: "cli-list", files: [] }, { cwd: project });
+  assert.equal(empty.format, "mimi-download.cli.jobs");
+  assert.deepEqual(empty.jobs, []);
+  assert.deepEqual(await fs.readdir(project), []);
+  const store = await createCliStore(project, { create: true });
+  const record = await store.create({ action: "download", url: "https://example.invalid/video" }, project);
+  await store.update(record.id, (job) => ({ ...job, workerToken: "private-worker-token" }));
+  const result = await handleLibraryRequest({ action: "cli-list", files: [] }, { cwd: project });
+  assert.equal(result.jobs[0].id, record.id);
+  assert.equal(Object.hasOwn(result.jobs[0], "workerToken"), false);
+  assert.equal(Object.hasOwn(result.jobs[0], "request"), false);
+  assert.throws(() => parseLibraryRequest({ action: "cli-list", files: [{ path: "video.mp4" }] }), /invalid-file-count/);
+});
 
 function mockSpawn(calls, failure = false) {
   return (command, args, options) => {

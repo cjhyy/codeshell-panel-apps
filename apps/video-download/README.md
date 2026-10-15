@@ -1,6 +1,7 @@
 # Mimi Download
 
-Mimi Download 0.22.6 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.23.0 is a local-first CodeShell Panel App with an independent Node
+CLI for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -184,9 +185,77 @@ the task ends. A stop during task creation waits for the task receipt before
 cancelling it; failed cancellation remains visible and retryable. Background task
 checks recover missed completion events without reopening dismissed notices.
 
+## Independent CLI
+
+The installed package includes `app/tools/video-download.mjs`. Direct chat and
+terminal requests can inspect videos, retrieve search results, download media
+and manage their CLI tasks without opening the Panel. The bundled
+`video-download-cli` Skill resolves this file from the current project's selected
+package, so an Agent does not need to discover another installation.
+
+```sh
+node "<selected-package>/app/tools/video-download.mjs" ops
+node "<selected-package>/app/tools/video-download.mjs" doctor --project "/path/to/project"
+node "<selected-package>/app/tools/video-download.mjs" inspect --project "/path/to/project" --input-file inspect.json
+node "<selected-package>/app/tools/video-download.mjs" search --project "/path/to/project" --input-file search.json
+node "<selected-package>/app/tools/video-download.mjs" download --project "/path/to/project" --input-file download.json --background
+node "<selected-package>/app/tools/video-download.mjs" jobs --project "/path/to/project"
+node "<selected-package>/app/tools/video-download.mjs" status --project "/path/to/project" --job "<task-id>"
+node "<selected-package>/app/tools/video-download.mjs" cancel --project "/path/to/project" --job "<task-id>"
+node "<selected-package>/app/tools/video-download.mjs" retry --project "/path/to/project" --job "<task-id>" --background
+```
+
+`inspect.json` can contain `{"url":"https://example.com/video"}`;
+`search.json` can contain `{"query":"Blender tutorial","platform":"both","limit":8}`;
+`download.json` can contain `{"url":"https://example.com/video","configuration":{"format":"1080","subtitles":true,"subtitleMode":"both","subtitleLanguages":"zh.*,en.*"}}`.
+Downloads default to the project's `downloads/`; an explicit absolute
+`outputDirectory` in the download request selects another folder.
+
+`ops` describes each command and request schema. Results are JSON; progress is
+separate from the final result. A background start returns a task ID; query its
+status to confirm completion, request cancellation, or explicitly retry a
+terminal task. Closing the Panel neither stops these workers nor prevents Chat
+from creating another task. Foreground commands remain ordinary owned processes;
+do not assume they survive terminating their owning session or application.
+Detached workers require their running machine and execution environment to
+remain available. Interrupted work is not restarted automatically.
+
+CLI task records and partial downloads are stored under the project's
+`.mimi-download-cli/` directory. In the Panel's Task tab, **Refresh CLI tasks**
+reads that project's records and displays status, progress and results; while
+visible it refreshes active records. CLI tasks have their own IDs and records,
+separate from the existing Host queue/history and immutable resource library.
+The CLI does not write Host app storage or claim its files are Host resources.
+
+If a worker crashes, an expired heartbeat is displayed as interrupted. Normal
+POSIX cancellation terminates the captured download process group and confirms
+its exit before completing cancellation. If child-process exit cannot be
+confirmed, the task stays interrupted with its lock retained. Crash recovery
+also retains the worker lock: retry requires manual confirmation that the old
+process tree has exited before restoring that lock. This conservative rule
+applies on every platform, including Windows. It never signals an arbitrary
+recorded PID.
+Short write locks can be recovered only from a confirmed dead writer; unknown
+owners or interrupted recovery locks remain visible errors. Each attempt is
+bounded to six hours; explicit retry keeps its existing partial files, with
+actual continuation depending on the source.
+
+Node >=20.10 is required. Desktop Hosts with the managed-runtime PATH fallback
+make their verified bundled Node and Host-managed executable directory available
+to commands. Existing PATH installations keep priority. Older Hosts, TUI,
+server environments and standalone terminals require dependencies on PATH or an
+explicit CLI `--bin-dir`; the CLI does not guess a Host's private directories.
+yt-dlp is still required; FFmpeg handles merged video/audio, MP3 and subtitle
+conversion. The existing Panel installer prepares those dependencies.
+
+CLI searches retrieve actual candidate links; the calling Agent can interpret
+and rank them without another model connection. No model credentials or saved
+Host Cookie accounts are read by the CLI. Account-authorized downloads continue
+through the Panel's existing Host permission flow.
+
 ## Requirements
 
-- CodeShell Desktop 0.9.17 or newer is recommended for automatic output-folder restoration and Panel execution without repeat dialogs. The full feature set requires Panel API v14, bundled Node, and `process`, `credentials.cookies`, `agent.task`, `storage`, `context.workspace`, and `external.open` permissions. Older Hosts retain basic downloading; file verification and platform search explain the required update.
+- CodeShell Desktop 0.9.17 or newer is recommended for automatic output-folder restoration and Panel execution without repeat dialogs. The full feature set requires Panel API v14, Node, and `process`, `resources`, `credentials.cookies`, `agent.task`, `storage`, `context.workspace`, `context.session`, and `external.open` permissions. Older Hosts retain basic downloading; file verification and platform search explain the required update.
 - [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) available on the Desktop app's PATH, or initialize it from the panel.
 - `ffmpeg` is recommended for merging video/audio streams and MP3 conversion.
 - `curl` is optional and used only to read the official latest yt-dlp release tag.

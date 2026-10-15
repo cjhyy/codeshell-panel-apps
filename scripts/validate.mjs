@@ -5563,7 +5563,7 @@ async function validatePackage(packagePath) {
     const versionHelpers = await import(
       `${pathToFileURL(join(root, "app", "version.js")).href}?validate=${Date.now()}`
     );
-    assert.equal(manifest.version, "0.22.7", `${packagePath}: download engine version mismatch`);
+    assert.equal(manifest.version, "0.23.0", `${packagePath}: download engine version mismatch`);
     assert.equal(
       versionHelpers.parseYtDlpVersionOutput("2026.7.4\n"),
       "2026.07.04",
@@ -5757,8 +5757,8 @@ async function validatePackage(packagePath) {
     );
     assert.deepEqual(
       manifest.agent.skills,
-      ["agent/skills/video-download-setup/SKILL.md"],
-      `${packagePath}: setup Skill must ship with the Panel App`,
+      ["agent/skills/video-download-cli/SKILL.md", "agent/skills/video-download-setup/SKILL.md"],
+      `${packagePath}: CLI and setup Skills must ship with the Panel App`,
     );
     assert.match(
       setupSkill,

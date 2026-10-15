@@ -164,6 +164,26 @@ export function createLibraryProcess(panel, { onBusy = () => {}, beforeStart = (
       }
       return response.files;
     },
+    async cliJobs(directory, signal) {
+      const handles = await entry("download-library");
+      const result = await run({
+        ...handles,
+        directoryHandle: directory.handle,
+        input: { action: "cli-list", files: [] },
+        signal,
+        timeout: 30_000,
+      });
+      let response;
+      try { response = JSON.parse(result.stdout); }
+      catch { throw new Error("CLI 任务未返回有效结果"); }
+      if (
+        result.code !== 0 || response?.error ||
+        response?.format !== "mimi-download.cli.jobs" || response.schemaVersion !== 1 ||
+        !Array.isArray(response.jobs) || response.jobs.length > 100 ||
+        response.jobs.some((job) => typeof job?.id !== "string" || typeof job.status !== "string")
+      ) throw new Error(response?.error || "CLI 任务结果不完整");
+      return response;
+    },
     async search(directory, platform, query, limit, signal) {
       const handles = await entry("video-search");
       const result = await run({

@@ -17,6 +17,7 @@ import {
 import { createProjectStorage } from "./project-storage.js";
 import { createProjectBinding } from "./project-binding.js";
 import { createLibraryProcess } from "./library-process.js";
+import { mountCliJobs } from "./cli-jobs.js";
 import { mountVideoSearch, normalizeVideoSearchUrl } from "./video-search.js";
 import {
   compareYtDlpVersions,
@@ -278,6 +279,12 @@ const auxiliary = createLibraryProcess(panel, {
     updateActionAvailability();
     if (!auxiliaryBusy) void runNextDownload();
   },
+});
+const cliJobsView = mountCliJobs({
+  root: document.querySelector("#cli-jobs"),
+  panel,
+  processes: auxiliary,
+  assertCurrent: () => projectBinding?.assertCurrent(),
 });
 
 function storedTab() {
@@ -2001,6 +2008,7 @@ function currentConfiguration() {
 }
 
 function invalidateProjectBinding(message) {
+  cliJobsView.destroy();
   libraryReady = false;
   queuePaused = true;
   durableDownloads?.close();
@@ -6567,6 +6575,7 @@ updateConditionalOptions();
 initializeRuntime().finally(resolveSearchExecutables);
 
 window.addEventListener("pagehide", () => {
+  cliJobsView.destroy();
   clearInterval(durableTimer);
   durableDownloads?.close();
 });

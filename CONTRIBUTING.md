@@ -144,6 +144,28 @@ path escapes, and public-file collisions fail the build. They use the installed
 package inventory and require no new Host capability. Run `npm run test:build`
 after changing the declaration or build behavior.
 
+## CLI companions
+
+Panels that perform basic data or media work should include a package-local Node
+CLI and a declared Runtime Skill so chat and terminal workflows can operate
+without an open webview. Reuse the Panel's domain modules and keep the CLI's
+stdout structured. Resolve the CLI from the current project's selected package;
+do not depend on a development checkout or search another installed version.
+
+Keep task ownership explicit. A CLI may run a foreground command or create an
+independent worker with persistent status and cancellation; a Panel only displays
+those records and must not terminate the worker on closure. Use project-owned
+files with bounded, atomic writes and concurrency control. If a Panel already
+uses Host storage/tasks/resources, document the separate CLI records or provide
+a supported shared protocol; never modify private Host files by guessed paths.
+Node does not supply external executables, account grants or model credentials.
+Check actual runtime capabilities and report missing prerequisites.
+
+Video Download's `app/tools/video-download.mjs` demonstrates independent media
+tasks; Job Hunt HQ's `app/tools/job-hunt.mjs` demonstrates shared project data
+with the Host's workspace write protocol. Existing Panels can adopt this pattern
+incrementally; this convention does not claim all Panels already have CLI parity.
+
 ## System boundary
 
 This repository is exclusively for Desktop Panel Apps. Packages must not
