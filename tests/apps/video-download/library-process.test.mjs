@@ -41,15 +41,36 @@ function fixture(handlers = {}) {
 const args = { executableHandle: "node-handle", directoryHandle: "directory-handle" };
 
 test("CLI task listing uses the reviewed library entry and accepts only its bounded protocol", async () => {
-  const jobs = { format: "mimi-download.cli.jobs", schemaVersion: 1, jobs: [{ id: "job", status: "running" }] };
+  const jobs = {
+    format: "mimi-download.cli.jobs",
+    schemaVersion: 1,
+    jobs: [{ id: "job", status: "running" }],
+  };
   const app = fixture({ "process.get": () => receipt([event(1, "stdout", JSON.stringify(jobs))]) });
   assert.deepEqual(await app.process.cliJobs({ handle: "project-directory" }), jobs);
-  assert(app.calls.some(({ method, params }) => method === "process.resolveEntry" && params.name === "download-library"));
-  const input = app.calls.filter(({ method }) => method === "process.write").map(({ params }) => params.text).join("");
+  assert(
+    app.calls.some(
+      ({ method, params }) =>
+        method === "process.resolveEntry" && params.name === "download-library",
+    ),
+  );
+  const input = app.calls
+    .filter(({ method }) => method === "process.write")
+    .map(({ params }) => params.text)
+    .join("");
   assert.deepEqual(JSON.parse(input), { action: "cli-list", files: [] });
-  assert.equal(app.calls.find(({ method }) => method === "process.spawn").params.directoryHandle, "project-directory");
-  for (const invalid of [{ jobs: [] }, { ...jobs, schemaVersion: 2 }, { ...jobs, jobs: [{ id: "job" }] }]) {
-    const bad = fixture({ "process.get": () => receipt([event(1, "stdout", JSON.stringify(invalid))]) });
+  assert.equal(
+    app.calls.find(({ method }) => method === "process.spawn").params.directoryHandle,
+    "project-directory",
+  );
+  for (const invalid of [
+    { jobs: [] },
+    { ...jobs, schemaVersion: 2 },
+    { ...jobs, jobs: [{ id: "job" }] },
+  ]) {
+    const bad = fixture({
+      "process.get": () => receipt([event(1, "stdout", JSON.stringify(invalid))]),
+    });
     await assert.rejects(bad.process.cliJobs({ handle: "project-directory" }), /不完整/);
   }
 });
@@ -61,6 +82,183 @@ function deferred() {
   });
   return { promise, resolve };
 }
+
+const rateLimited = (retryAfterMs) =>
+  Object.assign(new Error("Panel App rate limit exceeded"), {
+    code: "RATE_LIMITED",
+    retryAfterMs,
+  });
+function windowBudget() {
+  let timestamps = [];
+  const windowMs = 40;
+  return {
+    consume() {
+      const now = Date.now();
+      timestamps = timestamps.filter((time) => now - time < windowMs);
+      if (timestamps.length >= 30) throw rateLimited(timestamps[0] + windowMs - now);
+      timestamps.push(now);
+    },
+    fill() {
+      for (let i = timestamps.length; i < 30; i++) this.consume();
+    },
+  };
+}
+
+test("a full 30-call Host window delays stdin EOF without spawning or submitting twice", async () => {
+  const budget = windowBudget();
+  let ended = false;
+  const app = fixture({
+    "process.spawn": () => {
+      budget.consume();
+      budget.fill(); // Other startup calls consume the remaining normal budget.
+      return { processId: "helper-1" };
+    },
+    "process.end": () => {
+      budget.consume(); // The Host rejects before dispatching EOF when full.
+      assert.equal(ended, false);
+      ended = true;
+      return { ended: true };
+    },
+    "process.get": () => {
+      assert.equal(ended, true, "the helper must receive EOF before its result is read");
+      return receipt([]);
+    },
+  });
+  await app.process.run({ ...args, input: { action: "get" } });
+  assert.equal(app.calls.filter(({ method }) => method === "process.spawn").length, 1);
+  assert.equal(app.calls.filter(({ method }) => method === "process.write").length, 1);
+  assert.equal(app.calls.filter(({ method }) => method === "process.end").length, 2);
+  assert.equal(app.calls.filter(({ method }) => method === "process.cancel").length, 0);
+  assert.equal(app.process.busy, false);
+});
+
+test("a known pre-dispatch rate rejection may retry spawn once without duplicating a helper", async () => {
+  const budget = windowBudget();
+  budget.fill();
+  let helpers = 0;
+  const app = fixture({
+    "process.spawn": () => {
+      budget.consume();
+      helpers++;
+      return { processId: "helper-1" };
+    },
+  });
+  await app.process.run(args);
+  assert.equal(helpers, 1);
+  assert.equal(app.calls.filter(({ method }) => method === "process.spawn").length, 2);
+});
+
+test("cleanup waits through the full Host window and retains an unknown EOF error without replay", async () => {
+  const budget = windowBudget();
+  const cleanupStarted = deferred(),
+    cleanup = deferred();
+  const unknown = Object.assign(new Error("EOF reply was lost"), { code: "TIMEOUT" });
+  const app = fixture({
+    "process.spawn": () => {
+      budget.consume();
+      budget.fill();
+      return { processId: "helper-1" };
+    },
+    "process.end": () => {
+      throw unknown;
+    },
+    "process.cancel": () => {
+      budget.consume();
+      cleanupStarted.resolve();
+      return cleanup.promise;
+    },
+  });
+  const run = app.process.run({ ...args, input: { action: "get" } });
+  const assertion = assert.rejects(run, (error) => error === unknown);
+  await cleanupStarted.promise;
+  assert.equal(app.process.busy, true, "cleanup acknowledgement must be awaited");
+  cleanup.resolve({ cancelled: true });
+  await assertion;
+  assert.equal(app.calls.filter(({ method }) => method === "process.end").length, 1);
+  assert.equal(app.calls.filter(({ method }) => method === "process.cancel").length, 2);
+  assert.equal(app.process.busy, false);
+});
+
+test("unknown lifecycle replies are never replayed and cleanup uncertainty preserves both causes", async () => {
+  for (const method of ["process.spawn", "process.write", "process.end", "process.get"]) {
+    const unknown = Object.assign(new Error(`${method} reply lost`), {
+      code: "TIMEOUT",
+      retryAfterMs: 0,
+    });
+    const app = fixture({
+      [method]: () => {
+        throw unknown;
+      },
+    });
+    await assert.rejects(app.process.run({ ...args, input: {} }), (error) => error === unknown);
+    assert.equal(app.calls.filter((call) => call.method === method).length, 1);
+  }
+  const original = new Error("invalid native result"),
+    cleanup = new Error("cancel reply lost");
+  const app = fixture({
+    "process.get": () => {
+      throw original;
+    },
+    "process.cancel": () => {
+      throw cleanup;
+    },
+  });
+  await assert.rejects(app.process.run(args), (error) => {
+    assert.equal(error.code, "PROCESS_CLEANUP_UNCERTAIN");
+    assert.deepEqual(error.errors, [original, cleanup]);
+    assert.equal(error.cause, original);
+    assert.match(error.message, /invalid native result.*cancel reply lost/);
+    return true;
+  });
+  assert.equal(app.calls.filter(({ method }) => method === "process.cancel").length, 1);
+  assert.equal(app.process.busy, false);
+});
+
+test("untrusted retry delays and repeated rate rejections remain bounded", async () => {
+  for (const value of [undefined, NaN, Infinity, -1, 10_001]) {
+    const rejection = rateLimited(value);
+    const app = fixture({
+      "process.end": () => {
+        throw rejection;
+      },
+    });
+    await assert.rejects(app.process.run({ ...args, input: {} }), (error) => error === rejection);
+    assert.equal(app.calls.filter(({ method }) => method === "process.end").length, 1);
+  }
+  const rejection = rateLimited(0);
+  const app = fixture({
+    "process.end": () => {
+      throw rejection;
+    },
+  });
+  await assert.rejects(app.process.run({ ...args, input: {} }), (error) => error === rejection);
+  assert.equal(app.calls.filter(({ method }) => method === "process.end").length, 4);
+  assert.equal(app.calls.filter(({ method }) => method === "process.cancel").length, 1);
+});
+
+test("abort interrupts execution backoff while cleanup retains its independent retry budget", async () => {
+  const controller = new AbortController();
+  let cancels = 0;
+  const app = fixture({
+    "process.end": () => {
+      setTimeout(() => controller.abort(), 5);
+      throw rateLimited(5000);
+    },
+    "process.cancel": () => {
+      if (++cancels === 1) throw rateLimited(40);
+      return { cancelled: true };
+    },
+  });
+  const started = Date.now();
+  await assert.rejects(
+    app.process.run({ ...args, input: {}, signal: controller.signal }),
+    /已取消/,
+  );
+  assert.ok(Date.now() - started < 1000, "aborting must not wait for the execution retry delay");
+  assert.equal(app.calls.filter(({ method }) => method === "process.end").length, 1);
+  assert.equal(cancels, 2);
+  assert.equal(app.process.busy, false);
+});
 
 test("retained receipts recover output even when a process exits before spawn resolves", async () => {
   const starting = deferred();
@@ -210,15 +408,29 @@ test("file checks reuse only the reviewed entry handles and parse the native JSO
 });
 
 test("video search runs only the reviewed native entry with bounded query input", async () => {
-  const response = { candidates: [{ title: "Blender AI", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }], source: "platform-search" };
+  const response = {
+    candidates: [{ title: "Blender AI", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }],
+    source: "platform-search",
+  };
   const app = fixture({
     "process.get": () => receipt([event(1, "stdout", JSON.stringify(response))]),
   });
-  assert.deepEqual(await app.process.search({ handle: "dir" }, "youtube", "Blender AI", 8), response);
-  assert.equal(app.calls.find(({ method }) => method === "process.resolveEntry").params.name, "video-search");
-  assert.equal(app.calls.find(({ method }) => method === "process.spawn").params.entryHandle, "entry-handle");
-  assert.equal(app.calls.find(({ method }) => method === "process.write").params.text,
-    JSON.stringify({ platform: "youtube", query: "Blender AI", limit: 8 }));
+  assert.deepEqual(
+    await app.process.search({ handle: "dir" }, "youtube", "Blender AI", 8),
+    response,
+  );
+  assert.equal(
+    app.calls.find(({ method }) => method === "process.resolveEntry").params.name,
+    "video-search",
+  );
+  assert.equal(
+    app.calls.find(({ method }) => method === "process.spawn").params.entryHandle,
+    "entry-handle",
+  );
+  assert.equal(
+    app.calls.find(({ method }) => method === "process.write").params.text,
+    JSON.stringify({ platform: "youtube", query: "Blender AI", limit: 8 }),
+  );
 });
 
 test("a failed native entry lookup can be retried instead of caching its rejection", async () => {

@@ -6,6 +6,24 @@ export function createLibraryProcess(panel, { onBusy = () => {}, beforeStart = (
     pendingStarts = 0;
   const entryPromises = new Map();
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const rateRetryBudgetMs = 12_000;
+  async function rateWait(ms, signal) {
+    if (signal?.aborted) throw new Error("已取消");
+    await new Promise((resolve, reject) => {
+      const finish = () => {
+        signal?.removeEventListener("abort", aborted);
+        resolve();
+      };
+      const timer = setTimeout(finish, ms);
+      const aborted = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", aborted);
+        reject(new Error("已取消"));
+      };
+      signal?.addEventListener("abort", aborted, { once: true });
+      if (signal?.aborted) aborted();
+    });
+  }
   function changed(delta) {
     active += delta;
     onBusy(active > 0);
@@ -25,17 +43,52 @@ export function createLibraryProcess(panel, { onBusy = () => {}, beforeStart = (
       done = false,
       cursor = 0,
       stdout = "",
-      stderr = "";
+      stderr = "",
+      failure,
+      cancellation;
+    // Only a structured Host rate rejection proves that a lifecycle call was
+    // not dispatched. Never replay an unknown receipt or another error. Reserve
+    // cleanup its own budget even after an abort; total retry waiting per run is
+    // bounded to 24s and each operation can retry at most three times.
+    const rateBudgets = { execution: {}, cleanup: {} };
+    async function lifecycle(method, params, cleanup = false) {
+      const budget = rateBudgets[cleanup ? "cleanup" : "execution"];
+      for (let attempt = 0; ; attempt++) {
+        if (!cleanup && signal?.aborted) throw new Error("已取消");
+        try {
+          return await panel.call(method, params);
+        } catch (error) {
+          const retryAfter = error?.retryAfterMs;
+          if (
+            error?.code !== "RATE_LIMITED" ||
+            !Number.isFinite(retryAfter) ||
+            retryAfter < 0 ||
+            retryAfter > 10_000 ||
+            attempt >= 3
+          )
+            throw error;
+          budget.deadline ??= Date.now() + rateRetryBudgetMs;
+          const wait = Math.max(25, Math.ceil(retryAfter) + 25);
+          if (Date.now() + wait > budget.deadline) throw error;
+          await rateWait(wait, cleanup ? undefined : signal);
+        }
+      }
+    }
     const cancel = () => {
-      if (id) void panel.call("process.cancel", { processId: id }).catch(() => {});
+      if (!id) return Promise.resolve();
+      cancellation ??= lifecycle("process.cancel", { processId: id }, true);
+      return cancellation;
     };
-    signal?.addEventListener("abort", cancel, { once: true });
+    const aborted = () => {
+      void cancel().catch(() => {});
+    };
+    signal?.addEventListener("abort", aborted, { once: true });
     try {
       if (signal?.aborted) throw new Error("已取消");
       pendingStarts++;
       let started;
       try {
-        started = await panel.call("process.spawn", {
+        started = await lifecycle("process.spawn", {
           executableHandle,
           directoryHandle,
           ...(entryHandle ? { entryHandle } : {}),
@@ -59,7 +112,7 @@ export function createLibraryProcess(panel, { onBusy = () => {}, beforeStart = (
           await panel.call("process.write", { processId: id, text: json.slice(offset, end) });
           offset = end;
         }
-        await panel.call("process.end", { processId: id });
+        await lifecycle("process.end", { processId: id });
       }
       const deadline = Date.now() + timeout;
       for (;;) {
@@ -93,28 +146,46 @@ export function createLibraryProcess(panel, { onBusy = () => {}, beforeStart = (
         }
         if (!receipt.hasMore) await sleep(180);
       }
+    } catch (error) {
+      failure = error;
+      throw error;
     } finally {
-      if (!done) cancel();
-      signal?.removeEventListener("abort", cancel);
-      changed(-1);
+      try {
+        if (!done) await cancel();
+      } catch (cleanupError) {
+        throw Object.assign(
+          new AggregateError(
+            [failure, cleanupError].filter(Boolean),
+            `${failure?.message || "本地检查失败"}；无法确认停止请求：${cleanupError?.message || "请关闭面板后核查任务"}`,
+            { cause: failure || cleanupError },
+          ),
+          { code: "PROCESS_CLEANUP_UNCERTAIN" },
+        );
+      } finally {
+        signal?.removeEventListener("abort", aborted);
+        changed(-1);
+      }
     }
   }
   async function entry(name) {
     if (!entryPromises.has(name))
-      entryPromises.set(name, (async () => {
-        const executable = await panel.call("process.find", { name: "node" });
-        if (!executable?.available || !executable.handle)
-          throw new Error("无法使用文件检查工具，请更新 CodeShell 后重试");
-        const result = await panel.call("process.resolveEntry", {
-          name,
-          executableHandle: executable.handle,
-        });
-        if (!result?.handle) throw new Error("无法校验下载记录工具，请更新面板");
-        return { executableHandle: executable.handle, entryHandle: result.handle };
-      })().catch((error) => {
-        entryPromises.delete(name);
-        throw error;
-      }));
+      entryPromises.set(
+        name,
+        (async () => {
+          const executable = await panel.call("process.find", { name: "node" });
+          if (!executable?.available || !executable.handle)
+            throw new Error("无法使用文件检查工具，请更新 CodeShell 后重试");
+          const result = await panel.call("process.resolveEntry", {
+            name,
+            executableHandle: executable.handle,
+          });
+          if (!result?.handle) throw new Error("无法校验下载记录工具，请更新面板");
+          return { executableHandle: executable.handle, entryHandle: result.handle };
+        })().catch((error) => {
+          entryPromises.delete(name);
+          throw error;
+        }),
+      );
     return entryPromises.get(name);
   }
   return {
@@ -174,14 +245,21 @@ export function createLibraryProcess(panel, { onBusy = () => {}, beforeStart = (
         timeout: 30_000,
       });
       let response;
-      try { response = JSON.parse(result.stdout); }
-      catch { throw new Error("CLI 任务未返回有效结果"); }
+      try {
+        response = JSON.parse(result.stdout);
+      } catch {
+        throw new Error("CLI 任务未返回有效结果");
+      }
       if (
-        result.code !== 0 || response?.error ||
-        response?.format !== "mimi-download.cli.jobs" || response.schemaVersion !== 1 ||
-        !Array.isArray(response.jobs) || response.jobs.length > 100 ||
+        result.code !== 0 ||
+        response?.error ||
+        response?.format !== "mimi-download.cli.jobs" ||
+        response.schemaVersion !== 1 ||
+        !Array.isArray(response.jobs) ||
+        response.jobs.length > 100 ||
         response.jobs.some((job) => typeof job?.id !== "string" || typeof job.status !== "string")
-      ) throw new Error(response?.error || "CLI 任务结果不完整");
+      )
+        throw new Error(response?.error || "CLI 任务结果不完整");
       return response;
     },
     async search(directory, platform, query, limit, signal) {
@@ -199,9 +277,11 @@ export function createLibraryProcess(panel, { onBusy = () => {}, beforeStart = (
       } catch {
         throw new Error("备用检索未返回有效结果");
       }
-      if (result.code !== 0 || response?.error)
-        throw new Error(response?.error || "备用检索失败");
-      if (!Array.isArray(response?.candidates) || !["platform-search", "search-index"].includes(response.source))
+      if (result.code !== 0 || response?.error) throw new Error(response?.error || "备用检索失败");
+      if (
+        !Array.isArray(response?.candidates) ||
+        !["platform-search", "search-index"].includes(response.source)
+      )
         throw new Error("备用检索结果不完整");
       return response;
     },
