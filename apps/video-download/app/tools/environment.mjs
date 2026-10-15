@@ -12,6 +12,28 @@ const LOCAL_TTL = 6 * 60 * 60 * 1000;
 const LATEST_TTL = 24 * 60 * 60 * 1000;
 const LATEST_URL = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
 const TOOLS = ["yt-dlp", "ffmpeg"];
+// Version probes depend on tool/runtime settings, not the shell or chat which
+// happened to invoke them. Keep the complete env for execution, but bind cache
+// identity only to these settings. Host task IDs, PWD/SHLVL/_, terminal metadata
+// and credentials unrelated to these tools must not invalidate another entry.
+const EXECUTION_ENV_KEYS = new Set([
+  "PATH", "PATHEXT", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "USER", "LOGNAME", "SHELL",
+  "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "SYSTEMROOT", "WINDIR", "COMSPEC",
+  "TMPDIR", "TMP", "TEMP", "LANG", "LANGUAGE", "TZ",
+  "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME", "XDG_DATA_DIRS", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR",
+  "VIRTUAL_ENV", "CONDA_PREFIX", "CONDA_DEFAULT_ENV", "PYENV_ROOT", "PYENV_VERSION", "PYENV_DIR",
+  "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "FTP_PROXY",
+  "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "PIP_CERT",
+  "OPENSSL_CONF", "OPENSSL_MODULES", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH",
+  "FFREPORT", "AV_LOG_FORCE_COLOR", "AV_LOG_FORCE_NOCOLOR",
+]);
+const EXECUTION_ENV_PREFIX = /^(?:LC_|LD_|DYLD_|PYTHON|NODE_|YTDLP_|YT_DLP_|FFMPEG_)/u;
+function environmentIdentity(env) {
+  return Object.entries(env).filter(([name]) => {
+    const upper = name.toUpperCase();
+    return EXECUTION_ENV_KEYS.has(upper) || EXECUTION_ENV_PREFIX.test(upper);
+  }).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+}
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const same = (left, right) => left.dev === right.dev && left.ino === right.ino;
 const plain = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -55,7 +77,10 @@ async function cacheDirectory(project) {
 }
 
 function safeRecord(info) {
-  return info.isFile() && !info.isSymbolicLink() && info.nlink === 1 &&
+  // An atomic concurrent replacement can unlink the inode after pathname
+  // lookup but before its stat is copied. Zero links is a coherent retired
+  // snapshot; more than one link always means an unsafe hard-linked record.
+  return info.isFile() && !info.isSymbolicLink() && info.nlink <= 1 &&
     (process.platform === "win32" || (info.mode & 0o077) === 0);
 }
 
@@ -69,14 +94,21 @@ async function readCache(parent, name) {
   if (!info) return null;
   if (!safeRecord(info)) throw fail("UNSAFE_CACHE", "环境缓存必须是独立的私有普通文件。");
   if (info.size > CACHE_LIMIT) return null;
-  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)).catch((error) => {
+    if (error.code !== "ENOENT") throw error;
+    return null;
+  });
+  if (!handle) return null;
   try {
     const opened = await handle.stat();
     if (!safeRecord(opened) || !same(info, opened)) return null;
     const bytes = Buffer.alloc(CACHE_LIMIT + 1);
     const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
-    const named = await lstat(path);
-    if (!safeRecord(named)) throw fail("UNSAFE_CACHE", "环境缓存已替换为链接或非普通文件。");
+    const named = await lstat(path).catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+      return null;
+    });
+    if (named && !safeRecord(named)) throw fail("UNSAFE_CACHE", "环境缓存已替换为链接或非普通文件。");
     if (bytesRead > CACHE_LIMIT) return null;
     try {
       return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, bytesRead)));
@@ -160,10 +192,10 @@ function groupExists(child) {
   }
 }
 
-async function versionProbe(executable, args, { env, signal, timeout = 5000 } = {}) {
+async function versionProbe(executable, args, { env, cwd, signal, timeout = 5000 } = {}) {
   cancelled(signal);
   const grouped = process.platform !== "win32";
-  const child = spawn(executable, args, { env, shell: false, detached: grouped, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(executable, args, { env, cwd, shell: false, detached: grouped, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "", bytes = 0, failure, closed = false, killTimer, stopTimer, finish;
   const kill = (name) => {
     try {
@@ -292,17 +324,19 @@ export async function getEnvironment(project, {
       !Number.isFinite(latestTimeout) || latestTimeout < 1 || latestTimeout > 30_000)
     throw fail("INVALID_ARGUMENT", "环境检测时间参数无效。");
   const checkedAt = new Date(timestamp).toISOString(), parent = await cacheDirectory(project);
-  // Freeze the invocation environment; hashing binds the cache to all inherited
-  // execution settings without writing environment variables or credentials.
+  // Freeze the invocation environment. Hash relevant execution settings without
+  // writing environment values, proxy credentials or configuration paths.
   const executionEnv = Object.fromEntries(Object.entries(env).filter(([, value]) => typeof value === "string"));
+  const environment = environmentIdentity(executionEnv);
   const paths = Object.fromEntries(await Promise.all(TOOLS.map(async (name) =>
     [name, await findRuntimeExecutable(name, { env: executionEnv, binDirectory })])));
   const identities = Object.fromEntries(await Promise.all(TOOLS.map(async (name) => [name, await fileIdentity(paths[name])])));
   const nodeIdentity = await fileIdentity(process.execPath);
   const fingerprint = hash({ format: FORMAT, schemaVersion: SCHEMA, platform: process.platform, arch: process.arch,
     node: { version: process.versions.node, identity: nodeIdentity },
-    env: Object.entries(executionEnv).sort(([left], [right]) => left.localeCompare(right)), identities });
-  let local = await readCache(parent, "local.json");
+    environment, identities });
+  const localName = `local-${fingerprint}.json`;
+  let local = await readCache(parent, localName);
   const cached = !refresh && plain(local) && local.format === FORMAT && local.schemaVersion === SCHEMA &&
     local.fingerprint === fingerprint && fresh(local.checkedAt, timestamp, localTtlMs) &&
     TOOLS.every((name) => validDependency(local.dependencies?.[name]));
@@ -312,8 +346,8 @@ export async function getEnvironment(project, {
       cancelled(signal);
       if (!identities[name]) { dependencies[name] = { available: false, version: null, error: "not-found" }; continue; }
       try {
-        const output = await probe(paths[name], [name === "ffmpeg" ? "-version" : "--version"],
-          { env: executionEnv, signal, timeout: probeTimeout });
+        const output = await probe(paths[name], name === "ffmpeg" ? ["-version"] : ["--ignore-config", "--version"],
+          { env: executionEnv, cwd: resolve(project), signal, timeout: probeTimeout });
         cancelled(signal);
         const version = versionOf(name, output);
         if (!version) throw fail("PROBE_FAILED", "工具版本输出无效。");
@@ -330,7 +364,7 @@ export async function getEnvironment(project, {
     const after = Object.fromEntries(await Promise.all(TOOLS.map(async (name) => [name, await fileIdentity(paths[name])])));
     if (hash(after) !== hash(identities)) throw fail("ENVIRONMENT_CHANGED", "检测期间工具发生变化，请重试。");
     local = { format: FORMAT, schemaVersion: SCHEMA, fingerprint, checkedAt, dependencies };
-    await writeCache(parent, "local.json", local);
+    await writeCache(parent, localName, local);
   }
   const dependencies = Object.fromEntries(TOOLS.map((name) => [name, {
     available: local.dependencies[name].available, path: paths[name], version: local.dependencies[name].version,
@@ -341,8 +375,9 @@ export async function getEnvironment(project, {
     node: { version: process.versions.node, path: process.execPath }, dependencies, checkedAt: local.checkedAt, cached: Boolean(cached) };
   if (includeLatest) {
     const latestFingerprint = hash({ format: FORMAT, schemaVersion: SCHEMA, source: LATEST_URL,
-      environment: Object.entries(executionEnv).sort(([left], [right]) => left.localeCompare(right)) });
-    let latest = await readCache(parent, "latest.json");
+      environment });
+    const latestName = `latest-${latestFingerprint}.json`;
+    let latest = await readCache(parent, latestName);
     const valid = !refresh && plain(latest) && latest.format === FORMAT && latest.schemaVersion === SCHEMA &&
       latest.fingerprint === latestFingerprint && fresh(latest.checkedAt, timestamp, latestTtlMs) &&
       (typeof latest.version === "string" && /^\d{4}\.\d{2}\.\d{2}(?:\.\d+)?$/u.test(latest.version) ||
@@ -356,7 +391,7 @@ export async function getEnvironment(project, {
         latest.error = "latest-unavailable";
       }
       cancelled(signal);
-      await writeCache(parent, "latest.json", latest);
+      await writeCache(parent, latestName, latest);
     }
     result.latest = { version: latest.version, checkedAt: latest.checkedAt,
       ...(latest.error ? { error: latest.error } : {}), cached: Boolean(valid) };

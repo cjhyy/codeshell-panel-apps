@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawn } from "node:child_process";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,9 +28,19 @@ async function fixture(t) {
   };
   const options = { env, probe, fetcher: networkDenied, now: NOW };
   const cache = join(project, ".mimi-download-cli", "environment");
-  const read = async (name = "local.json") => JSON.parse(await readFile(join(cache, name), "utf8"));
+  const record = async (kind = "local") => {
+    const names = (await readdir(cache).catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+      return [];
+    })).filter((name) => new RegExp(`^${kind}-[a-f0-9]{64}\\.json$`, "u").test(name));
+    if (names.length !== 1) throw new Error(`Expected one ${kind} cache record, found ${names.length}`);
+    return join(cache, names[0]);
+  };
+  const read = async (kind = "local") => JSON.parse(await readFile(await record(kind), "utf8"));
+  const records = async (kind = "local") => (await readdir(cache).catch(() => []))
+    .filter((name) => name.startsWith(kind + "-") && name.endsWith(".json"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  return { root, project, home, bin, env, executable, calls, options, cache, read };
+  return { root, project, home, bin, env, executable, calls, options, cache, read, record, records };
 }
 
 async function withExecutable(f, name, source) {
@@ -64,7 +74,7 @@ test("environment cache reuses local versions without spawning or networking", a
   assert.equal(second.result.latest, undefined);
   if (supported) {
     assert.equal((await lstat(f.cache)).mode & 0o077, 0);
-    assert.equal((await lstat(join(f.cache, "local.json"))).mode & 0o077, 0);
+    assert.equal((await lstat(await f.record())).mode & 0o077, 0);
   }
 });
 
@@ -104,9 +114,87 @@ test("actual execution environment is bound to the cache without persisting secr
   const changed = await getEnvironment(f.project, { ...f.options, env: { ...env, LANG: "changed" } });
   assert.equal(changed.result.cached, false);
   assert.equal(f.calls.length, 4);
-  const persisted = await readFile(join(f.cache, "local.json"), "utf8");
-  assert.equal(persisted.includes(env.FIXTURE_SECRET), false);
-  assert.equal(persisted.includes("FIXTURE_SECRET"), false);
+  for (const name of await f.records()) {
+    const persisted = await readFile(join(f.cache, name), "utf8");
+    assert.equal(persisted.includes(env.FIXTURE_SECRET), false);
+    assert.equal(persisted.includes("FIXTURE_SECRET"), false);
+  }
+});
+
+test("Host and Bash share a cache despite volatile shell, task and terminal metadata", async (t) => {
+  const f = await fixture(t);
+  let requests = 0;
+  const fetcher = async () => {
+    requests++;
+    return new Response(JSON.stringify({ tag_name: "2026.10.15" }));
+  };
+  const hostEnv = { ...f.env, PWD: f.project, SHLVL: "0", _: "/managed/node",
+    CODESHELL_TASK_ID: "native-task", SESSION_ID: "native-session", XDG_SESSION_ID: "native-session",
+    TERM: "dumb", TERM_SESSION_ID: "native-terminal" };
+  const bashEnv = { ...f.env, PWD: f.root, OLDPWD: f.home, SHLVL: "2", _: "/bin/bash",
+    CODESHELL_WORKSPACE_WRITE_PROTOCOL: "1", CODESHELL_TASK_ID: "chat-task", SESSION_ID: "chat-session",
+    XDG_SESSION_ID: "chat-session", CODEX_THREAD_ID: "chat-thread", CODEX_TURN_ID: "chat-turn",
+    TERM: "xterm-256color", TERM_SESSION_ID: "chat-terminal", COLORTERM: "truecolor" };
+  await getEnvironment(f.project, { ...f.options, env: hostEnv, includeLatest: true, fetcher });
+  const bash = await getEnvironment(f.project, { ...f.options, env: bashEnv, includeLatest: true, fetcher });
+  assert.equal(bash.result.cached, true);
+  assert.equal(bash.result.latest.cached, true);
+  assert.equal(f.calls.length, 2);
+  assert.equal(requests, 1);
+  assert.equal((await f.records()).length, 1);
+  assert.equal((await f.records("latest")).length, 1);
+  assert.equal(f.calls[0].env.CODESHELL_TASK_ID, "native-task", "the probe still receives complete invocation env");
+  assert.equal(f.calls[0].env.TERM_SESSION_ID, "native-terminal");
+});
+
+test("PATH, proxy, runtime loader, locale and configuration changes retain separate valid snapshots", async (t) => {
+  const f = await fixture(t);
+  await getEnvironment(f.project, f.options);
+  const settings = {
+    PATH: `${f.bin}${delimiter}${join(f.root, "absent-path")}`,
+    HTTPS_PROXY: "https://proxy-user:private-password@fixture.invalid:8443",
+    HOME: f.root,
+    XDG_CONFIG_HOME: join(f.home, "config"),
+    LC_ALL: "C",
+    LD_LIBRARY_PATH: join(f.root, "native-libraries"),
+    DYLD_LIBRARY_PATH: join(f.root, "darwin-libraries"),
+    PYTHONPATH: join(f.root, "python-libraries"),
+    NODE_OPTIONS: "--no-warnings",
+    SSL_CERT_FILE: join(f.root, "fixture-certificate.pem"),
+  };
+  for (const [name, value] of Object.entries(settings)) {
+    const changed = { ...f.options, env: { ...f.env, [name]: value } };
+    assert.equal((await getEnvironment(f.project, changed)).result.cached, false, name);
+    const calls = f.calls.length;
+    assert.equal((await getEnvironment(f.project, f.options)).result.cached, true, `base survives ${name}`);
+    assert.equal((await getEnvironment(f.project, changed)).result.cached, true, `${name} survives base`);
+    assert.equal(f.calls.length, calls);
+  }
+  assert.equal((await f.records()).length, Object.keys(settings).length + 1);
+  for (const name of await f.records()) {
+    const persisted = await readFile(join(f.cache, name), "utf8");
+    assert.equal(persisted.includes("private-password"), false);
+    assert.equal(persisted.includes("HTTPS_PROXY"), false);
+  }
+});
+
+test("different proxy identities preserve independent latest caches when switching entrypoints", async (t) => {
+  const f = await fixture(t);
+  let requests = 0;
+  const fetcher = async () => { requests++; return new Response(JSON.stringify({ tag_name: "2026.10.15" })); };
+  const a = { ...f.options, includeLatest: true, fetcher };
+  const b = { ...a, env: { ...f.env, https_proxy: "http://fixture.invalid:3128" } };
+  await getEnvironment(f.project, a);
+  assert.equal((await getEnvironment(f.project, b)).result.latest.cached, false);
+  assert.equal(requests, 2);
+  for (const options of [a, b, a, b]) {
+    const result = await getEnvironment(f.project, options);
+    assert.equal(result.result.cached, true);
+    assert.equal(result.result.latest.cached, true);
+  }
+  assert.equal(requests, 2);
+  assert.equal(f.calls.length, 4);
+  assert.equal((await f.records("latest")).length, 2);
 });
 
 test("PATH takes precedence over explicit managed bin and relative entries are ignored", async (t) => {
@@ -137,7 +225,7 @@ test("switching PATH order or tool symlink target invalidates the runtime snapsh
 test("corrupt, oversized and obsolete schema metadata is safely rebuilt", async (t) => {
   const f = await fixture(t);
   await getEnvironment(f.project, f.options);
-  const path = join(f.cache, "local.json");
+  const path = await f.record();
   for (const content of ["not-json", "x".repeat(20 * 1024), JSON.stringify({ ...await f.read(), schemaVersion: 999 })]) {
     await writeFile(path, content);
     assert.equal((await getEnvironment(f.project, f.options)).result.cached, false);
@@ -152,7 +240,7 @@ test("cached executable paths and unsupported dependency fields are never truste
   const record = await f.read();
   record.dependencies["yt-dlp"].path = join(f.root, "malicious-program");
   record.node = { path: join(f.root, "malicious-node") };
-  await writeFile(join(f.cache, "local.json"), JSON.stringify(record));
+  await writeFile(await f.record(), JSON.stringify(record));
   const result = await getEnvironment(f.project, f.options);
   assert.equal(result.result.cached, false);
   assert.equal(result.result.node.path, process.execPath);
@@ -171,7 +259,7 @@ test("symlinked cache directories and linked cache files are rejected without to
   await getEnvironment(f.project, f.options);
   const externalFile = join(external, "external.json");
   await writeFile(externalFile, "preserve this file", { mode: 0o600 });
-  const local = join(f.cache, "local.json");
+  const local = await f.record();
   await rm(local);
   await symlink(externalFile, local);
   await assert.rejects(getEnvironment(f.project, f.options), { code: "UNSAFE_CACHE" });
@@ -188,7 +276,7 @@ test("public cache directories and public records fail closed", { skip: !support
   await chmod(f.cache, 0o755);
   await assert.rejects(getEnvironment(f.project, f.options), { code: "UNSAFE_PATH" });
   await chmod(f.cache, 0o700);
-  await chmod(join(f.cache, "local.json"), 0o644);
+  await chmod(await f.record(), 0o644);
   await assert.rejects(getEnvironment(f.project, f.options), { code: "UNSAFE_CACHE" });
 });
 
@@ -238,7 +326,7 @@ test("latest network failure is cached and never downgrades local readiness", as
   assert.equal(result.result.latest.error, "latest-unavailable");
   assert.equal((await getEnvironment(f.project, options)).result.latest.cached, true);
   assert.equal(requests, 1);
-  assert.equal((await readFile(join(f.cache, "latest.json"), "utf8")).includes("do-not-save"), false);
+  assert.equal((await readFile(await f.record("latest"), "utf8")).includes("do-not-save"), false);
   const localOnly = await getEnvironment(f.project, { ...f.options, fetcher: networkDenied });
   assert.equal(localOnly.result.latest, undefined);
 });
@@ -270,7 +358,7 @@ test("aborted and uncertain process probes never publish a local cache", async (
   for (const code of ["CANCELLED", "PROCESS_UNCONFIRMED"]) {
     await assert.rejects(getEnvironment(f.project, { ...f.options,
       probe: async () => { throw Object.assign(new Error("stopped"), { code }); } }), { code });
-    assert.equal(await lstat(join(f.cache, "local.json")).catch(() => null), null);
+    assert.deepEqual(await f.records(), []);
   }
   const controller = new AbortController();
   controller.abort();
@@ -281,7 +369,7 @@ test("default probe actually runs isolated executable fixtures and cache avoids 
   const f = await fixture(t);
   const log = join(f.root, "version-calls");
   for (const name of ["yt-dlp", "ffmpeg"]) await withExecutable(f, name,
-    `require('node:fs').appendFileSync(process.env.FIXTURE_LOG,${JSON.stringify(name + "\n")}); console.log(${JSON.stringify(name === "yt-dlp" ? "2026.10.15" : "ffmpeg version 8.0 fixture")});`);
+    `if(${JSON.stringify(name)}==='yt-dlp'&&!process.argv.includes('--ignore-config'))process.exit(9); require('node:fs').appendFileSync(process.env.FIXTURE_LOG,${JSON.stringify(name + "\n")}); console.log(${JSON.stringify(name === "yt-dlp" ? "2026.10.15" : "ffmpeg version 8.0 fixture")});`);
   const options = { ...f.options, env: { ...f.env, FIXTURE_LOG: log }, probe: undefined };
   assert.equal((await getEnvironment(f.project, options)).result.ready, true);
   assert.equal((await getEnvironment(f.project, options)).result.cached, true);
@@ -312,7 +400,7 @@ test("cancellation waits for the owned version process and leaves no successful 
   controller.abort();
   await rejection;
   assert.equal(await readFile(stopped, "utf8"), "stopped");
-  assert.equal(await lstat(join(f.cache, "local.json")).catch(() => null), null);
+  assert.deepEqual(await f.records(), []);
 });
 
 test("native stdin entry uses actual cwd project and emits the shared envelope", { skip: !supported }, async (t) => {
