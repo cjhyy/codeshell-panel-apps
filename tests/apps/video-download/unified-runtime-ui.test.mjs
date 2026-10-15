@@ -318,13 +318,21 @@ test("cancel waits for worker truth and retry/check/archive target the shared re
   assert.equal(await row.getAttribute("data-state"), "running");
   assert.equal((await hostCalls(page, "tasks.cancel")).length, 0);
   await page.evaluate(() => window.__addChatJob({ status: "cancelled", finishedAt: 300 }));
-  await row.locator('[data-task-action="retry"]').click();
+  await page.locator('[data-tab="history"]').click();
+  const history = page.locator(`.history-item[data-history-id="cli:${chatId}"]`);
+  await history.waitFor();
+  assert.equal(await row.count(), 0, "cancelled CLI work moves out of active tasks and into history");
+  await history.locator('[data-history-shortcut="retry"]').click();
   await page.waitForFunction(() => window.__jobs[Object.keys(window.__jobs)[0]].attempt === 2);
+  await page.locator("#page-task").waitFor({ state: "visible" });
+  await row.waitFor();
+  assert.equal(await row.getAttribute("data-state"), "queued");
   assert.deepEqual((await sharedCalls(page, "retry"))[0], { action: "retry", id: chatId, expectedAttempt: 1 });
   await page.evaluate(() => window.__addChatJob({ status: "completed", attempt: 2, finishedAt: 400,
     files: [{ path: "/fixture/project/downloads/chat.mp4", bytes: 123 }] }));
   await page.locator('[data-tab="history"]').click();
-  const history = page.locator(`.history-item[data-history-id="cli:${chatId}"]`);
+  await history.waitFor();
+  assert.equal(await row.count(), 0, "completed CLI work stays in history until explicitly archived");
   await history.locator(".history-menu summary").click();
   await history.locator('[data-history-action="check"]').click();
   await page.waitForFunction(() => window.__serviceCalls.some((input) => input.action === "check"));
