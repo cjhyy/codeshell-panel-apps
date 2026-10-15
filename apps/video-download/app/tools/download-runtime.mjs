@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdir, open } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDownloadRequest, runDownload } from "./download.mjs";
@@ -73,6 +73,8 @@ function argumentsFor(argv) {
         "request-key",
         "source",
         "expected-attempt",
+        "restricted-output",
+        "request-digest",
       ].includes(name) ||
       Object.hasOwn(options, name) ||
       !value ||
@@ -107,6 +109,8 @@ function argumentsFor(argv) {
   if (command === "_worker") {
     allowed.add("attempt");
     allowed.add("token");
+    allowed.add("restricted-output");
+    allowed.add("request-digest");
   }
   if (Object.keys(options).some((name) => !allowed.has(name)))
     throw cliError("INVALID_ARGUMENT", "此命令不支持提供的参数。");
@@ -124,6 +128,12 @@ function argumentsFor(argv) {
     throw cliError("INVALID_ARGUMENT", "expected-attempt 必须是正整数。");
   if (command === "_worker" && (!/^[1-9]\d{0,5}$/.test(options.attempt || "") || !options.token))
     throw cliError("INVALID_ARGUMENT", "内部 worker 参数无效。");
+  if (options["restricted-output"] !== undefined && options["restricted-output"] !== "project")
+    throw cliError("INVALID_ARGUMENT", "内部 worker 输出范围无效。");
+  if (options["request-digest"] !== undefined && !/^[a-f0-9]{64}$/u.test(options["request-digest"]))
+    throw cliError("INVALID_ARGUMENT", "内部 worker 请求摘要无效。");
+  if (options["restricted-output"] && !options["request-digest"])
+    throw cliError("INVALID_ARGUMENT", "受限 worker 缺少启动时冻结的请求摘要。");
   return { command, options };
 }
 
@@ -156,12 +166,13 @@ export const findCliExecutable = findRuntimeExecutable;
 function spawnOwned(executable, args, options) {
   const grouped = process.platform !== "win32";
   const child = spawn(executable, args, { ...options, detached: grouped });
-  const owned = { child, grouped, closed: false, signalFailed: false };
+  const owned = { child, grouped, closed: false, signalFailed: false, terminationRequested: false };
   const killLeader = child.kill.bind(child);
   child.once("close", () => {
     owned.closed = true;
   });
   child.kill = (signal = "SIGTERM") => {
+    owned.terminationRequested = true;
     if (!grouped || !child.pid) return killLeader(signal);
     try {
       process.kill(-child.pid, signal);
@@ -172,6 +183,22 @@ function spawnOwned(executable, args, options) {
     }
   };
   return owned;
+}
+
+// A leader's close receipt cannot establish what happened to its Windows
+// descendants after any termination request, including inner probe timeouts.
+// This pure policy is simulated in tests; POSIX uses actual group confirmation.
+export function ungroupedExitConfirmed(
+  owned,
+  { cancelled = false, platform = process.platform } = {},
+) {
+  return (
+    platform === "win32" &&
+    owned.closed === true &&
+    !cancelled &&
+    !owned.terminationRequested &&
+    !owned.signalFailed
+  );
 }
 
 function groupExists(owned) {
@@ -189,7 +216,7 @@ async function confirmOwnedExit(children, { cancelled = false } = {}) {
     if (!owned.child.pid) continue;
     if (!owned.grouped) {
       // Node cannot confirm Windows descendants after cancelling a leader.
-      if (cancelled || !owned.closed) return false;
+      if (!ungroupedExitConfirmed(owned, { cancelled })) return false;
       continue;
     }
     if (!groupExists(owned)) continue;
@@ -491,6 +518,12 @@ function canonicalCandidate(value, platform) {
   return null;
 }
 
+function executionDigest(record) {
+  return createHash("sha256")
+    .update(JSON.stringify({ request: record.request, outputDirectory: record.outputDirectory }))
+    .digest("hex");
+}
+
 async function worker(
   project,
   id,
@@ -503,9 +536,34 @@ async function worker(
     initial = await store.read(id);
   if (initial.attempt !== attempt || initial.workerToken !== token || initial.status !== "queued")
     throw cliError("WORKER_REJECTED", "Worker 与当前待开始任务不匹配。");
-  const request = parseDownloadRequest(initial.request);
-  if (request.useSavedLogin)
-    throw cliError("UNSUPPORTED", "CLI 不读取 Host Cookie；请使用面板授权账号下载。");
+  // These constraints come from the reviewed launch context/argv. Mutable
+  // project records (including source) never grant access to another directory.
+  const restrictedOutput =
+    options.restrictedOutput === true || options["restricted-output"] === "project";
+  const expectedDigest = options.executionDigest || options["request-digest"];
+  const verifyRecord = (record) => {
+    if (
+      (restrictedOutput && !expectedDigest) ||
+      (expectedDigest && executionDigest(record) !== expectedDigest)
+    )
+      throw cliError(
+        "INPUT_CHANGED",
+        "下载请求或保存目录在任务启动后发生变化，未继续执行。请核对后重新提交。",
+      );
+  };
+  const verifyExecution = async (record = undefined) => {
+    const current = record || (await store.read(id));
+    if (current.cancelRequestedAt) throw cliError("CANCELLED", "CLI 下载已取消。");
+    if (
+      current.attempt !== attempt ||
+      current.workerToken !== token ||
+      !["queued", "running"].includes(current.status)
+    )
+      throw cliError("WORKER_REJECTED", "任务已改变，未继续执行。");
+    verifyRecord(current);
+    await store.verify();
+    await validateOutputDirectory(store.project, initial.outputDirectory, restrictedOutput);
+  };
   let detachedGroup = false;
   if (detached && process.platform !== "win32") {
     try {
@@ -543,11 +601,13 @@ async function worker(
           !["queued", "running"].includes(record.status)
         )
           throw cliError("WORKER_REJECTED", "任务已改变，当前 worker 已停止。");
+        verifyRecord(record);
         if (record.cancelRequestedAt) stop();
         if (Date.now() - lastWrite >= 1500) {
           await store.update(id, (current) => {
             if (current.attempt !== attempt || current.workerToken !== token)
               throw cliError("WORKER_REJECTED", "任务已改变。");
+            verifyRecord(current);
             lastWrite = Date.now();
             return {
               ...current,
@@ -567,6 +627,10 @@ async function worker(
   const children = [];
   let result, failure;
   try {
+    await verifyExecution(initial);
+    const request = parseDownloadRequest(initial.request);
+    if (request.useSavedLogin)
+      throw cliError("UNSUPPORTED", "CLI 不读取 Host Cookie；请使用面板授权账号下载。");
     poll();
     await pollTail;
     controller.signal.throwIfAborted();
@@ -603,6 +667,8 @@ async function worker(
       if (error.code !== "EEXIST") throw error;
     });
     await checkedDirectory(workDirectory);
+    await verifyExecution();
+    controller.signal.throwIfAborted();
     result = await runDownload(request, {
       jobDir: workDirectory,
       outputDir: initial.outputDirectory,
@@ -686,6 +752,7 @@ async function worker(
 
 async function launch(store, record, options, context) {
   const token = randomUUID();
+  options = { ...options, executionDigest: executionDigest(record) };
   await store.update(record.id, (current) => {
     if (
       current.attempt !== record.attempt ||
@@ -713,6 +780,9 @@ async function launch(store, record, options, context) {
         String(record.attempt),
         "--token",
         token,
+        "--request-digest",
+        options.executionDigest,
+        ...(options.restrictedOutput ? ["--restricted-output", "project"] : []),
         ...(options["bin-dir"] ? ["--bin-dir", options["bin-dir"]] : []),
       ],
       { detached: true, stdio: "ignore", shell: false, env: context.env || process.env },
@@ -887,7 +957,12 @@ export async function runTaskOperation(
       title: operation.title,
     });
     if (!created || operation.start === false) return getCliJob(root, record.id);
-    return launch(store, record, { ...options, background }, { env, signal, onProgress });
+    return launch(
+      store,
+      record,
+      { ...options, background, restrictedOutput },
+      { env, signal, onProgress },
+    );
   }
   const store = await createCliStore(root);
   if (operation.action === "archive") {
@@ -954,6 +1029,7 @@ export async function runTaskOperation(
       launchRecord = {
         ...record,
         status: "queued",
+        queuedAt: Date.now(),
         heartbeatAt: Date.now(),
         updatedAt: Date.now(),
       };
@@ -982,6 +1058,7 @@ export async function runTaskOperation(
         ...rest,
         attempt: record.attempt + 1,
         status: "queued",
+        queuedAt: Date.now(),
         updatedAt: Date.now(),
         heartbeatAt: Date.now(),
         error: null,
@@ -992,7 +1069,12 @@ export async function runTaskOperation(
     return launchRecord;
   });
   return launchRecord
-    ? launch(store, launchRecord, { ...options, background }, { env, signal, onProgress })
+    ? launch(
+        store,
+        launchRecord,
+        { ...options, background, restrictedOutput },
+        { env, signal, onProgress },
+      )
     : getCliJob(root, operation.id);
 }
 

@@ -23,6 +23,7 @@ import {
   readServiceInput,
 } from "../../../apps/video-download/app/tools/service.mjs";
 import { main } from "../../../apps/video-download/app/tools/video-download.mjs";
+import { ungroupedExitConfirmed } from "../../../apps/video-download/app/tools/download-runtime.mjs";
 import {
   createCliStore,
   getCliJob,
@@ -658,9 +659,279 @@ test(
     );
     assert.equal(response.ok, true);
     assert.equal((await f.finish(response.result.id)).status, "completed");
-    assert.equal(
-      await readFile(marker, "utf8"),
-    pathToFileURL(adapter).href,
+    assert.equal(await readFile(marker, "utf8"), pathToFileURL(adapter).href);
+  },
+);
+
+test(
+  "project-only scope is sealed before a detached worker first reads its mutable record",
+  { skip: !supported },
+  async (t) => {
+    const f = await fixture(t),
+      installed = join(f.root, "delayed-tools"),
+      barrier = join(f.root, "worker-barrier");
+    await cp(
+      fileURLToPath(new URL("../../../apps/video-download/app/tools/", import.meta.url)),
+      installed,
+      { recursive: true },
+    );
+    await writeFile(barrier, "wait");
+    const adapter = join(installed, "video-download.mjs");
+    await writeFile(
+      adapter,
+      `import { access as barrierAccess } from 'node:fs/promises';\nif(process.argv.includes('_worker'))while(await barrierAccess(${JSON.stringify(barrier)}).then(()=>true,()=>false))await new Promise(resolve=>setTimeout(resolve,20));\n` +
+        (await readFile(adapter, "utf8")),
+    );
+    const response = await f.invoke(
+      f.request("sealed-initial"),
+      [],
+      undefined,
+      join(installed, "service.mjs"),
+    );
+    assert.equal(response.ok, true);
+    const store = await createCliStore(f.project);
+    await store.update(response.result.id, (record) => ({
+      ...record,
+      outputDirectory: f.home,
+      source: "cli",
+    }));
+    await rm(barrier);
+    const stopped = await f.finish(response.result.id);
+    assert.equal(stopped.status, "failed");
+    assert.equal(stopped.error.code, "INPUT_CHANGED");
+    assert.deepEqual(await f.log(), []);
+    assert.deepEqual(await readdir(f.home), []);
+    assert.equal((await f.call({ action: "queue" })).result.active, 0);
+  },
+);
+
+test(
+  "a paused project worker revalidates scope and request before queue admission",
+  { skip: !supported },
+  async (t) => {
+    const f = await fixture(t);
+    await f.call({ action: "configure", expectedRevision: 0, paused: true, maxConcurrent: 1 });
+    const submitted = (await f.call(f.request("sealed-waiting"))).result;
+    const store = await createCliStore(f.project);
+    await until(
+      () => stat(join(store.jobsDirectory, submitted.id, ".worker.lock")).catch(() => null),
+      (value) => Boolean(value),
+    );
+    await pause(350);
+    await store.update(submitted.id, (record) => ({
+      ...record,
+      outputDirectory: f.home,
+      source: "cli",
+      request: { ...record.request, url: "https://example.invalid/replaced-request" },
+    }));
+    await f.call({ action: "configure", expectedRevision: 1, paused: false, maxConcurrent: 1 });
+    const stopped = await f.finish(submitted.id);
+    assert.equal(stopped.status, "failed");
+    assert.equal(stopped.error.code, "INPUT_CHANGED");
+    assert.deepEqual(await f.log(), []);
+    assert.deepEqual(await readdir(f.home), []);
+    await until(
+      () => f.call({ action: "queue" }),
+      (value) => value.result.active === 0,
+    );
+    await assert.rejects(
+      main(["jobs", "--project", f.project, "--restricted-output", "project"]),
+      (error) => error.code === "INVALID_ARGUMENT",
     );
   },
 );
+
+test(
+  "standalone CLI keeps explicit external outputs while service restrictions ignore source labels",
+  { skip: !supported },
+  async (t) => {
+    const f = await fixture(t),
+      input = join(f.root, "external-cli.json");
+    await writeFile(
+      input,
+      JSON.stringify({ url: "https://example.invalid/external-cli", outputDirectory: f.home }),
+    );
+    const result = (
+      await main(
+        [
+          "download",
+          "--project",
+          f.project,
+          "--input-file",
+          input,
+          "--source",
+          "panel",
+          "--background",
+        ],
+        { env: f.env },
+      )
+    ).result;
+    const completed = await f.finish(result.id);
+    assert.equal(completed.status, "completed");
+    assert.equal(await readFile(completed.files[0].path, "utf8"), "fixture media external_cli");
+    assert.equal(
+      (
+        await f.call(
+          f.request("restricted-label", {
+            source: "cli",
+            request: { url: "https://example.invalid/restricted-label", outputDirectory: f.home },
+          }),
+        )
+      ).error.code,
+      "OUTSIDE_PROJECT",
+    );
+  },
+);
+
+test(
+  "FIFO orders freshly started pending tasks and retries by queued time",
+  { skip: !supported },
+  async (t) => {
+    const f = await fixture(t, { delay: 600 }),
+      input = join(f.root, "old.json");
+    await writeFile(input, JSON.stringify({ url: "https://example.invalid/old-retry" }));
+    const oldRetry = (
+      await main(["download", "--project", f.project, "--input-file", input], { env: f.env })
+    ).result;
+    const oldPending = (await f.call(f.request("old-pending", { start: false }))).result;
+    await f.call({ action: "configure", expectedRevision: 0, paused: true, maxConcurrent: 1 });
+    const recent = (await f.call(f.request("recent-queued"))).result;
+    await pause(30);
+    const started = (await f.call({ action: "start", id: oldPending.id, expectedAttempt: 1 }))
+      .result;
+    await pause(30);
+    const retried = (await f.call({ action: "retry", id: oldRetry.id, expectedAttempt: 1 })).result;
+    assert.ok(started.queuedAt > recent.queuedAt);
+    assert.ok(retried.queuedAt > started.queuedAt);
+    await f.call({ action: "configure", expectedRevision: 1, paused: false, maxConcurrent: 1 });
+    for (const job of [recent, started, retried])
+      assert.equal((await f.finish(job.id)).status, "completed");
+    assert.deepEqual(
+      (await f.log()).filter((event) => event.kind === "start").map((event) => event.name),
+      ["old_retry", "recent_queued", "old_pending", "old_retry"],
+    );
+  },
+);
+
+test(
+  "incomplete sibling records do not poison admission or release an unconfirmed slot",
+  { skip: !supported },
+  async (t) => {
+    const f = await fixture(t),
+      store = await createCliStore(f.project, { create: true });
+    const empty = randomUUID(),
+      damaged = randomUUID();
+    for (const id of [empty, damaged]) await mkdir(join(store.jobsDirectory, id), { mode: 0o700 });
+    await writeFile(join(store.jobsDirectory, damaged, "task.json"), "{invalid", { mode: 0o600 });
+    const normal = (await f.call(f.request("beside-damaged"))).result;
+    assert.equal((await f.finish(normal.id)).status, "completed");
+    const listed = (await f.call({ action: "list" })).result;
+    assert.deepEqual(
+      new Set(listed.warnings.map((warning) => warning.id)),
+      new Set([empty, damaged]),
+    );
+    await until(
+      () => f.call({ action: "queue" }),
+      (value) => value.result.active === 0,
+    );
+    await writeFile(
+      join(store.directory, "queue.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        revision: 1,
+        paused: false,
+        maxConcurrent: 1,
+        slots: [{ id: damaged, attempt: 1, token: randomUUID(), pid: 2147483647 }],
+      }),
+      { mode: 0o600 },
+    );
+    const blocked = (await f.call(f.request("blocked-by-damaged-slot"))).result;
+    await pause(600);
+    assert.equal((await f.log()).filter((event) => event.kind === "start").length, 1);
+    assert.equal((await f.call({ action: "queue" })).result.active, 1);
+    await f.call({ action: "cancel", id: blocked.id });
+    assert.equal((await f.finish(blocked.id)).status, "cancelled");
+    assert.equal((await f.call({ action: "queue" })).result.active, 1);
+  },
+);
+
+test("simulated Windows leader confirmation rejects implicit probe and output-limit termination", () => {
+  const closed = { closed: true, signalFailed: false, terminationRequested: false };
+  assert.equal(ungroupedExitConfirmed(closed, { platform: "win32" }), true);
+  for (const signal of ["SIGTERM", "SIGKILL"]) {
+    // A probe/output limit can kill the leader without aborting the worker's
+    // controller. Its close receipt still cannot prove descendants exited.
+    assert.equal(
+      ungroupedExitConfirmed(
+        { ...closed, terminationRequested: true, lastSignal: signal },
+        { platform: "win32", cancelled: false },
+      ),
+      false,
+    );
+  }
+  assert.equal(ungroupedExitConfirmed(closed, { platform: "win32", cancelled: true }), false);
+  assert.equal(ungroupedExitConfirmed({ ...closed, closed: false }, { platform: "win32" }), false);
+  assert.equal(
+    ungroupedExitConfirmed({ ...closed, signalFailed: true }, { platform: "win32" }),
+    false,
+  );
+  assert.equal(ungroupedExitConfirmed(closed, { platform: "linux" }), false);
+});
+
+test("atomic record replacement remains readable during concurrent snapshots", async (t) => {
+  const f = await fixture(t),
+    store = await createCliStore(f.project, { create: true });
+  const record = await store.create(
+    { action: "download", url: "https://example.invalid/snapshots", configuration: {} },
+    join(f.project, "downloads"),
+    { pending: true },
+  );
+  const writer = (async () => {
+    for (let index = 0; index < 120; index++)
+      await store.update(record.id, (current) => ({
+        ...current,
+        title: String(index),
+        updatedAt: Date.now(),
+      }));
+  })();
+  const readers = Promise.all(
+    Array.from({ length: 6 }, async () => {
+      for (let index = 0; index < 150; index++) {
+        const snapshot = await getCliJob(f.project, record.id);
+        assert.equal(snapshot.id, record.id);
+        assert.ok(snapshot.title === "" || /^\d+$/u.test(snapshot.title));
+      }
+    }),
+  );
+  await Promise.all([writer, readers]);
+});
+
+test("bounded listings retain older active work before recent terminal history", async (t) => {
+  const f = await fixture(t),
+    store = await createCliStore(f.project, { create: true });
+  const pending = await store.create(
+    { action: "download", url: "https://example.invalid/old-pending", configuration: {} },
+    join(f.project, "downloads"),
+    { pending: true },
+  );
+  const queued = await store.create(
+    { action: "download", url: "https://example.invalid/old-queued", configuration: {} },
+    join(f.project, "downloads"),
+  );
+  await store.update(pending.id, (record) => ({ ...record, createdAt: 1 }));
+  await store.update(queued.id, (record) => ({ ...record, createdAt: 2 }));
+  for (let index = 0; index < 6; index++) {
+    const terminal = await store.create(
+      { action: "download", url: `https://example.invalid/history-${index}`, configuration: {} },
+      join(f.project, "downloads"),
+    );
+    await store.update(terminal.id, (record) => ({
+      ...record,
+      status: "completed",
+      createdAt: 100 + index,
+    }));
+  }
+  const listed = await listCliJobs(f.project, { limit: 2 });
+  assert.deepEqual(new Set(listed.jobs.map((job) => job.id)), new Set([pending.id, queued.id]));
+  assert.equal(listed.truncated, true);
+});

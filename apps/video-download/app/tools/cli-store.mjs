@@ -67,6 +67,10 @@ export async function checkedDirectory(value, { create = false } = {}) {
 
 async function jsonFile(path, limit = MAX_RECORD_BYTES, retry = 0) {
   const info = await lstat(path);
+  // An atomic replacement can retire the inode between pathname lookup and
+  // stat completion. Retry only that zero-link race; actual hardlinks still fail.
+  if (info.isFile() && !info.isSymbolicLink() && info.nlink === 0 && retry < 3)
+    return jsonFile(path, limit, retry + 1);
   if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > limit)
     throw cliError("UNSAFE_RECORD", "任务文件无效、过大或包含链接。");
   const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -81,6 +85,8 @@ async function jsonFile(path, limit = MAX_RECORD_BYTES, retry = 0) {
     // Writers atomically replace task.json. An already-open independent regular
     // file remains a coherent snapshot; reject links, but allow a newer inode.
     const named = await lstat(path);
+    if (named.isFile() && !named.isSymbolicLink() && named.nlink === 0 && retry < 3)
+      return jsonFile(path, limit, retry + 1);
     if (!named.isFile() || named.isSymbolicLink() || named.nlink !== 1)
       throw cliError("UNSAFE_RECORD", "任务文件已替换为链接或非普通文件。");
     try {
@@ -292,6 +298,7 @@ export function publicCliRecord(record, now = Date.now()) {
     "title",
     "outputDirectory",
     "createdAt",
+    "queuedAt",
     "updatedAt",
     "heartbeatAt",
     "startedAt",
@@ -442,6 +449,7 @@ export async function createCliStore(project, { create = false } = {}) {
       source,
       ...(requestKey === undefined ? {} : { requestKey, requestDigest }),
       createdAt: now,
+      ...(pending ? {} : { queuedAt: now }),
       updatedAt: now,
       heartbeatAt: now,
       progress: { stage: "queued", fraction: 0, message: "等待下载 worker。" },
@@ -506,7 +514,16 @@ export async function createCliStore(project, { create = false } = {}) {
         const candidates = [];
         for (const entry of entries) {
           if (!UUID.test(entry.name)) continue;
-          const record = await read(entry.name);
+          let record;
+          try {
+            record = await read(entry.name);
+          } catch {
+            // A concurrent create can expose its directory before task.json is
+            // committed; corrupt history must not poison unrelated admission.
+            // listCliJobs reports these records as warnings. Existing slots
+            // remain counted independently and are never reclaimed here.
+            continue;
+          }
           if (
             record.status === "queued" &&
             record.workerToken &&
@@ -517,7 +534,10 @@ export async function createCliStore(project, { create = false } = {}) {
           )
             candidates.push(record);
         }
-        candidates.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+        candidates.sort(
+          (a, b) =>
+            (a.queuedAt ?? a.createdAt) - (b.queuedAt ?? b.createdAt) || a.id.localeCompare(b.id),
+        );
         const available = queue.maxConcurrent - queue.slots.length;
         if (!candidates.slice(0, available).some((value) => value.id === id)) return false;
         const next = {
@@ -691,7 +711,13 @@ export async function listCliJobs(project, { limit = 100, includeArchived = fals
       warnings.push({ id: entry.name, code: error.code || "INVALID_RECORD" });
     }
   }
-  jobs.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+  const active = new Set(["pending", "queued", "running", "cancelling"]);
+  jobs.sort(
+    (a, b) =>
+      Number(active.has(b.status)) - Number(active.has(a.status)) ||
+      b.createdAt - a.createdAt ||
+      a.id.localeCompare(b.id),
+  );
   await store.verify();
   return {
     format: "mimi-download.cli.jobs",
