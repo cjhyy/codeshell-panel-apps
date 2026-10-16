@@ -1,3 +1,5 @@
+import { incrementCount } from "./counter.mjs";
+
 const workspace = document.querySelector("#workspace");
 const status = document.querySelector("#status");
 const count = document.querySelector("#count");
@@ -13,7 +15,7 @@ function renderContext(context) {
 }
 
 increment.addEventListener("click", () => {
-  clicks += 1;
+  clicks = incrementCount(clicks);
   count.textContent = `${clicks} 次点击`;
 });
 
