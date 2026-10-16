@@ -119,9 +119,9 @@
         !finite(value.canvas.width) ||
         !finite(value.canvas.height) ||
         value.canvas.width < 100 ||
-        value.canvas.width > 10000 ||
+        value.canvas.width > 20000 ||
         value.canvas.height < 100 ||
-        value.canvas.height > 10000)
+        value.canvas.height > 20000)
     )
       throw new Error("画布尺寸或背景无效。");
     const ids = new Set(),

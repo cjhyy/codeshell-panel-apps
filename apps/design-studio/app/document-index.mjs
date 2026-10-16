@@ -1,5 +1,6 @@
 import {
   MAX_DESIGN_NODES_PER_PAGE,
+  MAX_DESIGN_CANVAS_SIZE,
   MAX_DESIGN_PAGES,
   serializeDesignDocument,
 } from "./document.mjs";
@@ -181,11 +182,11 @@ export function normalizeDesignIndexManifest(value) {
     typeof value.canvas.width !== "number" ||
     !Number.isFinite(value.canvas.width) ||
     value.canvas.width < 100 ||
-    value.canvas.width > 10_000 ||
+    value.canvas.width > MAX_DESIGN_CANVAS_SIZE ||
     typeof value.canvas.height !== "number" ||
     !Number.isFinite(value.canvas.height) ||
     value.canvas.height < 100 ||
-    value.canvas.height > 10_000 ||
+    value.canvas.height > MAX_DESIGN_CANVAS_SIZE ||
     typeof value.canvas.background !== "string" ||
     !/^#[0-9a-f]{6}$/iu.test(value.canvas.background)
   ) {

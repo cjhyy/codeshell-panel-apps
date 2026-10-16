@@ -12,6 +12,9 @@ import {
 const SVG_NS = "http://www.w3.org/2000/svg";
 export const MAX_DESIGN_PAGES = 1_000;
 export const MAX_DESIGN_NODES_PER_PAGE = 10_000;
+// Canvas geometry shares the existing finite node dimension/coordinate budget.
+// Raster previews impose their own lower pixel and edge limits.
+export const MAX_DESIGN_CANVAS_SIZE = 20_000;
 export const MAX_SVG_EXPORT_BYTES = 384 * 1024;
 export const MAX_COMPONENT_INSTANCE_DEPTH = 16;
 export const MAX_RENDERED_NODES_PER_PAGE = 10_000;
@@ -832,8 +835,8 @@ export function normalizeDesignDocument(input) {
     throw new Error("设计名称必须是 1–120 个安全字符");
   }
   assertObject(input.canvas, "canvas", ["width", "height", "background"]);
-  assertFiniteRange(input.canvas.width, 100, 10000, "canvas.width");
-  assertFiniteRange(input.canvas.height, 100, 10000, "canvas.height");
+  assertFiniteRange(input.canvas.width, 100, MAX_DESIGN_CANVAS_SIZE, "canvas.width");
+  assertFiniteRange(input.canvas.height, 100, MAX_DESIGN_CANVAS_SIZE, "canvas.height");
   if (!validHex(input.canvas.background))
     throw new Error("canvas.background 必须是六位十六进制色值");
   const colors = normalizeColors(input.tokens);

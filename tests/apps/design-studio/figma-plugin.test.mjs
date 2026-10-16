@@ -13,6 +13,7 @@ import {
   createFigmaBinding,
   createFigmaPatch,
 } from "../../../apps/design-studio/app/figma-binding.mjs";
+import { longFigmaSource } from "./fixtures/long-canvas.mjs";
 
 const code = await readFile(
   new URL("../../../apps/design-studio/app/figma-plugin/code.js", import.meta.url),
@@ -332,6 +333,36 @@ function patchTransfer(source, change, changed = ["name"]) {
   };
   return transfer;
 }
+
+test("native Figma creation accepts a bounded long canvas without losing any of its 1208 editable layers", async () => {
+  const imported = importFigmaJson(longFigmaSource());
+  const transfer = createFigmaTransfer(imported.document);
+  const runtime = harness();
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  const frame = runtime.figma.root.children[1].children[0];
+  assert.equal(frame.height, 11322);
+  assert.equal(frame.width, 4458);
+  assert.equal(frame.children.length, 1207);
+  const last = imported.document.nodes.at(-1);
+  assert.equal(frame.children.at(-1).relativeTransform[1][2], last.y);
+  assert.equal(frame.children.at(-1).name, last.name);
+});
+
+test("native Figma validation accepts the 20000px canvas edge and rejects a larger canvas before creating pages", async () => {
+  const transfer = createFigmaTransfer(importFigmaJson(page([rect()])).document);
+  transfer.canvas.width = 20000;
+  transfer.canvas.height = 20000;
+  const valid = harness();
+  await valid.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(valid.messages.at(-1).type, "imported");
+  transfer.canvas.height = 20001;
+  const invalid = harness();
+  await invalid.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(invalid.messages.at(-1).type, "error");
+  assert.match(invalid.messages.at(-1).message, /画布尺寸/u);
+  assert.equal(invalid.figma.root.children.length, 1);
+});
 
 test("plugin export captures official raw nodes, local image fill bytes and SVG/PNG fallback previews", async () => {
   const source = page([

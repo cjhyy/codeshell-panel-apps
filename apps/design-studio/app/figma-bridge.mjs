@@ -1,6 +1,7 @@
 /* Deliberately bounded Figma JSON bridge. Figma binary files are not supported. */
 import {
   MAX_DESIGN_NODES_PER_PAGE,
+  MAX_DESIGN_CANVAS_SIZE,
   MAX_DESIGN_PAGES,
   isDesignNodeVisible,
   normalizeDesignDocument,
@@ -745,8 +746,8 @@ export function importFigmaJson(
       .filter(Boolean);
     const minX = bounds.length ? Math.min(...bounds.map((box) => box.x)) : 0,
       minY = bounds.length ? Math.min(...bounds.map((box) => box.y)) : 0;
-    const offsetX = minX < 0 || minX >= 10000 ? -minX : 0;
-    const offsetY = minY < 0 || minY >= 10000 ? -minY : 0;
+    const offsetX = minX < 0 || minX >= MAX_DESIGN_CANVAS_SIZE ? -minX : 0;
+    const offsetY = minY < 0 || minY >= MAX_DESIGN_CANVAS_SIZE ? -minY : 0;
     if (offsetX || offsetY) {
       const translate = (nodes) => {
         for (const node of nodes) {
@@ -777,13 +778,13 @@ export function importFigmaJson(
     extentX = Math.max(extentX, ...bounds.map((box) => box.x + box.width + offsetX));
     extentY = Math.max(extentY, ...bounds.map((box) => box.y + box.height + offsetY));
   }
-  const width = clamp(Math.ceil(extentX), 100, 10000);
-  const height = clamp(Math.ceil(extentY), 100, 10000);
-  if (extentX > 10000 || extentY > 10000)
+  const width = clamp(Math.ceil(extentX), 100, MAX_DESIGN_CANVAS_SIZE);
+  const height = clamp(Math.ceil(extentY), 100, MAX_DESIGN_CANVAS_SIZE);
+  if (extentX > MAX_DESIGN_CANVAS_SIZE || extentY > MAX_DESIGN_CANVAS_SIZE)
     report.warn(
       "canvas-extent",
       null,
-      "内容超过 10,000 px 画布上限；请拆分页面以避免 HTML 原型裁切。",
+      "内容超过 20,000 px 画布上限；请拆分页面以避免 HTML 原型裁切。",
     );
   const document = normalizeDesignDocument({
     format: "codeshell.design",

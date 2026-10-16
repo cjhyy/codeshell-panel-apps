@@ -88,6 +88,7 @@ export const suites = [
         "tests/apps/design-studio/connection-ui.test.mjs",
         "tests/apps/design-studio/polish-ui.test.mjs",
         "tests/apps/design-studio/figma-bridge.test.mjs",
+        "tests/apps/design-studio/long-canvas.test.mjs",
         "tests/apps/design-studio/audit-review.test.mjs",
         "tests/apps/design-studio/html-plugin.test.mjs",
         "tests/apps/design-studio/html-plugin-ui.test.mjs",

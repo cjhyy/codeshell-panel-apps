@@ -301,10 +301,10 @@ test("hidden, transparent and organizational bounds do not enlarge the visible F
 test("far-away visible content is normalized even when another root is hidden at the origin", () => {
   const result = importFigmaJson(file([
     rect("1:1", { visible: false, absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 100 } }),
-    rect("1:2", { absoluteBoundingBox: { x: 15000, y: 12000, width: 120, height: 80 } }),
+    rect("1:2", { absoluteBoundingBox: { x: 20000, y: 20000, width: 120, height: 80 } }),
   ]));
-  assert.deepEqual(result.document.nodes.map((node) => [node.x, node.y]), [[-15000, -12000], [0, 0]]);
-  assert.deepEqual(result.mapping.map((entry) => [entry.offsetX, entry.offsetY]), [[-15000, -12000], [-15000, -12000]]);
+  assert.deepEqual(result.document.nodes.map((node) => [node.x, node.y]), [[-20000, -20000], [0, 0]]);
+  assert.deepEqual(result.mapping.map((entry) => [entry.offsetX, entry.offsetY]), [[-20000, -20000], [-20000, -20000]]);
   assert.ok(!result.warnings.some((warning) => warning.code === "canvas-extent"));
 });
 
