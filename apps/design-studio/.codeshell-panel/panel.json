@@ -382,7 +382,7 @@
                 "textMeasurement": {
                   "type": "string",
                   "enum": ["browser"],
-                  "description": "Marks exact browser-measured text bounds so validation does not substitute estimated glyph metrics."
+                  "description": "Legacy HTML text measurement marker. Figma imports persist signature-bound textMetrics receipts; this marker cannot create those receipts."
                 },
                 "textSource": {
                   "type": ["string", "null"],

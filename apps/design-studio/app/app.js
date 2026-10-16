@@ -91,6 +91,7 @@ import { chooseRepoDesignFile, DEFAULT_DESIGN_PATH } from "./repository.mjs";
 import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
 import { designPaintSvg } from "./paint.mjs";
 import { repairDesignQuality } from "./quality-repair.mjs";
+import { resourceDataUrlsFromPlans } from "./builtin-fonts.mjs";
 import { groupAuditIssues, pageAuditIssues } from "./audit-review.mjs";
 import {
   captureWorkspaceHtml,
@@ -9949,12 +9950,7 @@ figmaWorkflowUI = mountFigmaWorkflow({
   },
   prepareImport: async (input) => {
     const prepared = reviewPreparedFigma(await prepareFigmaImport(input, { sha256Bytes }));
-    const resourceDataUrls = new Map(
-      (prepared.resourcePlans ?? []).map((plan) => [
-        plan.descriptor.id,
-        `data:${plan.descriptor.mime};base64,${plan.parts.map((part) => part.content).join("")}`,
-      ]),
-    );
+    const resourceDataUrls = resourceDataUrlsFromPlans(prepared.resourcePlans ?? []);
     const previewSvg = exportDesignSvg(normalizeDesignState(prepared.document), {
       resourceDataUrls,
       maxBytes: 4 * 1024 * 1024,
