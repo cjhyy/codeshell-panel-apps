@@ -9,6 +9,7 @@ import {
   repositoryDesignPage,
 } from "./document.mjs";
 import { clipNodeBoundsToClippingAncestors } from "./geometry.mjs";
+import { measureFigmaTextDocument } from "./text-metrics.mjs";
 import {
   normalizeFigmaSource,
   prepareFigmaAssets,
@@ -365,7 +366,7 @@ function text(source, node, report) {
   node.cornerRadius = 0;
   if (node.text.trim()) {
     node.textSource = node.text;
-    node.textFlow = "wrap";
+    if (style.textAutoResize !== "WIDTH_AND_HEIGHT") node.textFlow = "wrap";
     node.textFlowWidth = node.width;
   }
   if (
@@ -807,7 +808,7 @@ export function importFigmaJson(
 }
 
 /** Import local images and preserve the complete official source alongside the editable document. */
-export async function prepareFigmaImport(input, { sha256Bytes } = {}) {
+export async function prepareFigmaImport(input, { sha256Bytes, textMeasurer, browserDocument } = {}) {
   const source = normalizeFigmaSource(input);
   const assets = await prepareFigmaAssets(source, { sha256Bytes });
   const result = importFigmaJson(source, {
@@ -815,10 +816,27 @@ export async function prepareFigmaImport(input, { sha256Bytes } = {}) {
     imageRefs: assets.byAssetId,
     previews: source.previews,
   });
+  const sourceNodes = new Map();
+  const collect = (node) => {
+    if (typeof node.id === "string") sourceNodes.set(node.id, node);
+    for (const child of node.children ?? []) collect(child);
+  };
+  for (const page of sourcePages(source)) collect(page);
+  const textMeasurement = await measureFigmaTextDocument(result.document, {
+    sourceNodes,
+    sourceIds: new Map(result.mapping.map((entry) => [entry.designId, entry.sourceId])),
+    ...(textMeasurer ? { measurer: textMeasurer } : {}),
+    ...(browserDocument ? { browserDocument } : {}),
+  });
+  for (const family of textMeasurement.unavailableFonts) {
+    result.warnings.push({ code: "font-fallback", message: `字体 ${family} 不可用，已实测浏览器实际回退字体；安装原字体后请重新导入。` });
+    result.stats.warningCount += 1;
+  }
+  result.document = normalizeDesignState(result.document);
   for (const message of source.warnings ?? [])
     result.warnings.push({ code: "plugin-export-warning", message });
   result.stats.warningCount += source.warnings?.length ?? 0;
-  return { ...result, resourcePlans: assets.resourcePlans, source };
+  return { ...result, resourcePlans: assets.resourcePlans, source, textMeasurement };
 }
 
 /** Create a portable, editable subset consumed by the bundled Figma development plugin. */

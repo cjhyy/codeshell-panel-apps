@@ -12,6 +12,7 @@ import {
   isDesignNodeVisible,
   renderedDesignInstanceEffectOutsets,
 } from "./document.mjs";
+import { currentTextMetrics, measuredTextInkBounds } from "./text-metrics.mjs";
 
 function validHex(value) {
   return /^#[0-9a-f]{6}$/i.test(value);
@@ -74,6 +75,10 @@ function contains(container, node) {
 }
 
 function isTextBaselineOverflow(node, parent) {
+  const ink = measuredTextInkBounds(node);
+  if (node.type === "text" && parent.clipContent !== true && ink) {
+    return contains(parent, { x: node.x + ink.x, y: node.y + ink.y, width: ink.width, height: ink.height });
+  }
   if (
     node.type !== "text" ||
     (node.textMeasurement !== "browser" && !Number.isFinite(node.layoutBaselineOffset)) ||
@@ -157,9 +162,10 @@ function nodeOutlinePointsInTree(nodes, node, nodeIndex) {
     }
   } else if (node.type === "text") {
     const lines = String(node.text).split("\n");
+    const metrics = currentTextMetrics(node);
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
       const width =
-        node.textMeasurement === "browser"
+        metrics ? metrics.lineWidths[lineIndex] : node.textMeasurement === "browser"
           ? node.width
           : Math.min(node.width, Math.max(1, estimateTextLineWidth(node, lines[lineIndex])));
       const left =
@@ -168,13 +174,15 @@ function nodeOutlinePointsInTree(nodes, node, nodeIndex) {
           : node.textAlign === "right"
             ? node.x + node.width - width
             : node.x;
-      const top = node.y + lineIndex * node.fontSize * node.lineHeight;
-      const bottom = Math.min(node.y + node.height, top + node.fontSize);
+      const ink = metrics?.lineInkBounds[lineIndex];
+      const inkLeft = left + (ink?.x ?? 0);
+      const top = node.y + lineIndex * node.fontSize * node.lineHeight + (ink?.y ?? 0);
+      const bottom = ink ? top + ink.height : Math.min(node.y + node.height, top + node.fontSize);
       points.push(
-        { x: left, y: top },
-        { x: left + width, y: top },
-        { x: left + width, y: bottom },
-        { x: left, y: bottom },
+        { x: inkLeft, y: top },
+        { x: inkLeft + (ink?.width ?? width), y: top },
+        { x: inkLeft + (ink?.width ?? width), y: bottom },
+        { x: inkLeft, y: bottom },
       );
     }
   } else {
@@ -331,8 +339,9 @@ function fillIsVisibleAtPoint(document, node, point, byId) {
 }
 
 function textSamplePoints(document, node, lines, nodeIndex) {
+  const metrics = currentTextMetrics(node);
   return lines.flatMap((line, lineIndex) => {
-    const measuredWidth = Math.min(node.width, Math.max(1, estimateTextLineWidth(node, line)));
+    const measuredWidth = metrics?.lineWidths[lineIndex] ?? Math.min(node.width, Math.max(1, estimateTextLineWidth(node, line)));
     const startX =
       node.textAlign === "center"
         ? node.x + (node.width - measuredWidth) / 2
@@ -945,8 +954,9 @@ export function auditDesign(document) {
     }
     const lines = String(node.text).split("\n");
     const lineCount = lines.length;
-    const minimumTextHeight =
-      node.fontSize + Math.max(0, lineCount - 1) * node.fontSize * node.lineHeight;
+    const textMetrics = currentTextMetrics(node);
+    const minimumTextHeight = textMetrics?.height ??
+      (node.fontSize + Math.max(0, lineCount - 1) * node.fontSize * node.lineHeight);
     if (node.height + 0.5 < minimumTextHeight) {
       issues.push({
         code: "layout.text-overflow",
@@ -956,8 +966,10 @@ export function auditDesign(document) {
         message: `文本高度不足：当前 ${node.height}px，至少需要约 ${Math.ceil(minimumTextHeight)}px`,
       });
     }
-    const widestLine = Math.max(0, ...lines.map((line) => estimateTextLineWidth(node, line)));
-    if (node.textMeasurement !== "browser" && node.width + 0.5 < widestLine) {
+    const widestLine = textMetrics
+      ? Math.max(0, ...textMetrics.lineWidths, ...textMetrics.lineInkBounds.map((bounds) => bounds.width))
+      : Math.max(0, ...lines.map((line) => estimateTextLineWidth(node, line)));
+    if ((textMetrics || node.textMeasurement !== "browser") && node.width + 0.5 < widestLine) {
       issues.push({
         code: "layout.text-width-overflow",
         severity: "error",

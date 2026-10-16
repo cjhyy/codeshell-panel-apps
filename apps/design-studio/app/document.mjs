@@ -8,6 +8,7 @@ import {
 import {
   normalizeDesignResources,
 } from "./resource-store.mjs";
+import { validTextMetrics } from "./text-metrics.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 export const MAX_DESIGN_PAGES = 1_000;
@@ -155,6 +156,7 @@ function normalizedNode(candidate, parentId) {
     if (candidate.letterSpacing !== undefined) node.letterSpacing = candidate.letterSpacing;
     if (candidate.textDecoration !== undefined) node.textDecoration = candidate.textDecoration;
     if (candidate.textMeasurement !== undefined) node.textMeasurement = candidate.textMeasurement;
+    if (candidate.textMetrics !== undefined) node.textMetrics = structuredClone(candidate.textMetrics);
     if (candidate.textSource !== undefined) node.textSource = candidate.textSource;
     if (candidate.textFlow !== undefined) node.textFlow = candidate.textFlow;
     if (candidate.textOverflow !== undefined) node.textOverflow = candidate.textOverflow;
@@ -279,6 +281,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "letterSpacing",
     "textDecoration",
     "textMeasurement",
+    "textMetrics",
     "textSource",
     "textFlow",
     "textOverflow",
@@ -424,6 +427,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       "letterSpacing",
       "textDecoration",
       "textMeasurement",
+      "textMetrics",
       "textSource",
       "textFlow",
       "textOverflow",
@@ -462,6 +466,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       (candidate.textDecoration !== undefined &&
         !["none", "underline", "line-through"].includes(candidate.textDecoration)) ||
       (candidate.textMeasurement !== undefined && candidate.textMeasurement !== "browser") ||
+      (candidate.textMetrics !== undefined && !validTextMetrics(candidate.textMetrics)) ||
       (candidate.textSource !== undefined &&
         (typeof candidate.textSource !== "string" || candidate.textSource.length > 4000)) ||
       (candidate.textFlow !== undefined && candidate.textFlow !== "wrap") ||

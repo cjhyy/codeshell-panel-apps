@@ -199,6 +199,27 @@
         "letterSpacing": { "type": "number", "minimum": -20, "maximum": 100 },
         "textDecoration": { "enum": ["none", "underline", "line-through"] },
         "textMeasurement": { "enum": ["browser"] },
+        "textMetrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "signature", "lineWidths", "lineInkBounds", "height", "fontAvailable"],
+          "properties": {
+            "version": { "const": 1 },
+            "signature": { "type": "string", "maxLength": 8500 },
+            "lineWidths": { "type": "array", "minItems": 1, "maxItems": 4001,
+              "items": { "type": "number", "minimum": 0, "maximum": 1000000 } },
+            "lineInkBounds": { "type": "array", "minItems": 1, "maxItems": 4001,
+              "items": { "type": "object", "additionalProperties": false, "required": ["x", "y", "width", "height"],
+                "properties": {
+                  "x": { "type": "number", "minimum": -1000000, "maximum": 1000000 },
+                  "y": { "type": "number", "minimum": -1000000, "maximum": 1000000 },
+                  "width": { "type": "number", "minimum": 0, "maximum": 1000000 },
+                  "height": { "type": "number", "minimum": 0, "maximum": 1000000 }
+                } } },
+            "height": { "type": "number", "minimum": 0, "maximum": 1000000 },
+            "fontAvailable": { "type": "boolean" }
+          }
+        },
         "textSource": { "type": "string", "maxLength": 4000 },
         "textFlow": { "enum": ["wrap"] },
         "textOverflow": { "enum": ["ellipsis"] },
@@ -303,6 +324,7 @@
                 { "required": ["letterSpacing"] },
                 { "required": ["textDecoration"] },
                 { "required": ["textMeasurement"] },
+                { "required": ["textMetrics"] },
                 { "required": ["textSource"] },
                 { "required": ["textFlow"] },
                 { "required": ["textOverflow"] },
