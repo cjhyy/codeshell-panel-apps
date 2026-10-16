@@ -36,10 +36,16 @@ export function mountFigmaWorkflow({
       <label for="figma-import-file">Figma REST API 或插件导出的 JSON</label>
       <input id="figma-import-file" type="file" accept=".json,application/json" />
       <p class="dialog-description">支持文字、形状、自动布局与包内图片。复杂图层可使用插件导出的预览，原始 Figma 属性保留用于回写。</p>
+      <label for="figma-import-mode">导入方式</label>
+      <select id="figma-import-mode"><option value="create">新建设计文件</option><option value="replace">替换当前画布（可撤销）</option></select>
+      <label for="figma-import-target">新稿保存路径</label>
+      <input id="figma-import-target" value="designs/figma-import.codesign.json" spellcheck="false" />
       <p id="figma-import-preview"></p>
+      <p id="figma-import-audit" role="status"></p>
+      <img id="figma-import-image" alt="转换后的设计预览" hidden />
       <ul id="figma-import-warnings" class="figma-warning-list" aria-label="转换差异"></ul>
       <button id="figma-import-apply" type="button" class="primary-button" disabled>导入到画布（可撤销）</button>
-      <p class="dialog-description">替换当前画布，保留撤销记录；检查后再保存。</p>
+      <p class="dialog-description">新稿使用独立路径；替换模式保留撤销记录。导入后核对画布，再保存。</p>
     </div>
     <div class="figma-workflow-step"><h3>2 · 导回 Figma</h3>
       <button id="figma-transfer-download" type="button" class="button">下载 Figma 转换 JSON</button>
@@ -61,6 +67,19 @@ export function mountFigmaWorkflow({
       <button id="figma-html-download" type="button" class="button">下载当前页 HTML 原型</button>
       <p class="dialog-description">可离线打开，保留图层 ID 与布局。交互逻辑可在“交付”中交给 Agent 继续实现。</p>
     </div>
+    <div class="figma-workflow-step"><h3>4 · HTML to Figma 独立插件</h3>
+      <p class="dialog-description">直接在 Figma 中粘贴 HTML 或选择本地 HTML 文件夹，预览后创建可编辑图层。无需 CodeShell 或服务地址。</p>
+      <label for="html-plugin-id">此插件由 Figma 分配的 ID</label>
+      <input id="html-plugin-id" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="先在 Figma 创建带 UI 的开发插件，再复制其 id" />
+      <div class="figma-plugin-files">
+        <button type="button" class="button" data-html-plugin-file="manifest.json">HTML 插件 manifest</button>
+        <button type="button" class="button" data-html-plugin-file="code.js">HTML 插件 code.js</button>
+        <button type="button" class="button" data-html-plugin-file="ui.html">HTML 插件 ui.html</button>
+        <button type="button" class="button" data-html-plugin-file="NOTICE.md">来源许可</button>
+        <button type="button" class="button" data-html-plugin-file="README.md">安装说明</button>
+      </div>
+      <p class="dialog-description">这五个文件放在独立文件夹。Figma → Plugins → Development → Import plugin from manifest。设计备份与增量导回继续使用上面的 Design Bridge。</p>
+    </div>
     <p id="figma-workflow-status" class="html-import-status" role="status" aria-live="polite"></p>
   </section>`;
   document.body.append(dialog);
@@ -70,6 +89,16 @@ export function mountFigmaWorkflow({
   const status = el("figma-workflow-status"),
     preview = el("figma-import-preview");
   const warnings = el("figma-import-warnings");
+  const mode = el("figma-import-mode"),
+    target = el("figma-import-target");
+  const audit = el("figma-import-audit"),
+    image = el("figma-import-image");
+  const updateTarget = () => {
+    target.disabled = busy || mode.value !== "create";
+    apply.textContent =
+      mode.value === "create" ? "导入到新稿（检查后保存）" : "替换当前画布（可撤销）";
+  };
+  mode.addEventListener("change", updateTarget);
   let generation = 0,
     pending = null,
     busy = false;
@@ -80,15 +109,22 @@ export function mountFigmaWorkflow({
   const setBusy = (value) => {
     busy = value;
     dialog.setAttribute("aria-busy", String(value));
-    for (const action of dialog.querySelectorAll("button:not(#figma-workflow-close), input")) {
+    for (const action of dialog.querySelectorAll(
+      "button:not(#figma-workflow-close), input, select",
+    )) {
       action.disabled = value;
     }
     apply.disabled = value || !pending;
+    updateTarget();
   };
   const reset = () => {
     pending = null;
     fileInput.value = "";
     preview.textContent = "";
+    audit.textContent = "";
+    image.hidden = true;
+    image.removeAttribute("src");
+    mode.value = "create";
     warnings.replaceChildren();
     setBusy(false);
   };
@@ -159,6 +195,20 @@ export function mountFigmaWorkflow({
       const result = await prepareImport(text, operation.scope);
       operation.check();
       pending = { ...result, scope: operation.scope };
+      const stem =
+        file.name
+          .replace(/[.]json$/iu, "")
+          .replace(/[^a-zA-Z0-9_-]/gu, "-")
+          .slice(0, 80) || "figma-import";
+      target.value = `designs/${stem}.codesign.json`;
+      audit.textContent = result.audit
+        ? `预检：${result.audit.blockingIssueCount} 个阻塞 · ${result.audit.warningCount} 个警告${result.audit.renderSafe ? "" : "；可保留草稿，需修正后交付"}`
+        : "";
+      audit.dataset.kind = result.audit?.renderSafe === false ? "error" : "idle";
+      if (result.previewSvg) {
+        image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(result.previewSvg)}`;
+        image.hidden = false;
+      }
       preview.textContent = `${result.document.name} · ${result.stats.pages} 页 · ${result.stats.importedNodes} 个可编辑图层 · ${result.stats.skippedNodes} 个跳过图层`;
       showWarnings(result.warnings);
       showStatus(
@@ -179,7 +229,10 @@ export function mountFigmaWorkflow({
     setBusy(true);
     try {
       operation = start(review.scope);
-      await replace(review.document, operation.check, review);
+      await replace(review.document, operation.check, review, {
+        mode: mode.value,
+        targetPath: target.value.trim(),
+      });
       // Replacement changes the state revision by design. Only check the dialog ticket now.
       if (generation !== operation.ticket || !dialog.open) return;
       pending = null;
@@ -248,18 +301,20 @@ export function mountFigmaWorkflow({
       if (!operation || generation === operation.ticket) setBusy(false);
     }
   });
-  for (const action of dialog.querySelectorAll("[data-plugin-file]")) {
+  for (const action of dialog.querySelectorAll("[data-plugin-file], [data-html-plugin-file]")) {
     action.addEventListener("click", async () => {
       if (busy) return;
       const ticket = ++generation;
       setBusy(true);
       try {
-        const file = action.dataset.pluginFile;
-        const pluginId = el("figma-plugin-id").value.trim();
+        const htmlPlugin = Boolean(action.dataset.htmlPluginFile);
+        const file = action.dataset.htmlPluginFile ?? action.dataset.pluginFile;
+        const directory = htmlPlugin ? "html-to-figma-plugin" : "figma-plugin";
+        const pluginId = el(htmlPlugin ? "html-plugin-id" : "figma-plugin-id").value.trim();
         if (file === "manifest.json" && !/^[0-9]{1,32}$/.test(pluginId)) {
           throw Error("请先创建 Figma 开发插件，并填入其 manifest.json 中由 Figma 分配的数字 id");
         }
-        const response = await fetch(new URL(`./figma-plugin/${file}`, import.meta.url));
+        const response = await fetch(new URL(`./${directory}/${file}`, import.meta.url));
         if (!response.ok)
           throw Error("插件文件无法读取，请从 Design Studio 安装目录获取 figma-plugin 文件夹");
         let source = await response.text();
@@ -275,7 +330,7 @@ export function mountFigmaWorkflow({
               ? "text/javascript"
               : "application/json",
         );
-        showStatus(`已下载 ${file}。请将三个文件放在同一文件夹。`);
+        showStatus(`已下载 ${file}。请将同一插件的文件放在独立文件夹。`);
       } catch (error) {
         if (ticket === generation && dialog.open) failed(null, error);
       } finally {

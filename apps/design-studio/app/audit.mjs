@@ -1,5 +1,7 @@
 /* Accessibility and layout audit engine for the Design Studio Panel App. */
 import {
+  clipBoundsToClippingAncestors,
+  clipNodeBoundsToClippingAncestors,
   pointFromNodeSpace,
   pointToNodeSpace,
   transformedNodeBounds,
@@ -796,23 +798,6 @@ export function auditDesign(document) {
     }
     return true;
   };
-  const hasIntentionalClippingAncestor = (node) => {
-    const seen = new Set();
-    let ancestorId = node.parentId;
-    while (ancestorId && !seen.has(ancestorId)) {
-      seen.add(ancestorId);
-      const ancestor = byId.get(ancestorId);
-      if (!ancestor) break;
-      if (
-        ancestor.clipContent === true &&
-        ancestor.contentClipping === "intentional"
-      ) {
-        return true;
-      }
-      ancestorId = ancestor.parentId;
-    }
-    return false;
-  };
   document.nodes.forEach((node, index) => {
     let parent = null;
     if (node.parentId) {
@@ -829,9 +814,10 @@ export function auditDesign(document) {
     }
     if (!effectivelyVisible(node)) return;
     const visualBounds = transformedNodeBoundsInTree(document.nodes, node, byId);
+    const visibleBounds = clipNodeBoundsToClippingAncestors(document.nodes, node, byId);
     if (
-      !visualBounds ||
-      (!contains(canvas, visualBounds) && !hasIntentionalClippingAncestor(node))
+      node.type !== "group" &&
+      (!visualBounds || (visibleBounds && !contains(canvas, visibleBounds)))
     ) {
       issues.push({
         code: "layout.canvas-overflow",
@@ -843,12 +829,18 @@ export function auditDesign(document) {
     }
     const effectCorners = nodeEffectCornersInTree(document, node, byId);
     const effectBounds = boundsForPoints(effectCorners);
+    const visibleEffectBounds = clipBoundsToClippingAncestors(
+      document.nodes,
+      node,
+      effectBounds,
+      byId,
+    );
     if (
-      effectBounds &&
-      visualBounds &&
-      contains(canvas, visualBounds) &&
+      visibleEffectBounds &&
+      visibleBounds &&
+      contains(canvas, visibleBounds) &&
       node.effectClipping !== "intentional" &&
-      !contains(canvas, effectBounds)
+      !contains(canvas, visibleEffectBounds)
     ) {
       issues.push({
         code: "layout.effect-canvas-overflow",

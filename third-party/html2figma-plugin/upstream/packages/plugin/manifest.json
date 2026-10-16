@@ -1,0 +1,23 @@
+{
+  "name": "Html2Figma",
+  "api": "1.0.0",
+  "id": "1565624588361517917",
+  "main": "code.js",
+  "ui": "ui.html",
+  "documentAccess": "dynamic-page",
+  "editorType": [
+    "figma"
+  ],
+  "permissions": [
+    "currentuser"
+  ],
+  "networkAccess": {
+    "allowedDomains": [
+      "https://api.html2figma.com"
+    ],
+    "devAllowedDomains": [
+      "http://localhost:3000",
+      "http://localhost:3001"
+    ]
+  }
+}

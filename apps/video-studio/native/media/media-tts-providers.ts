@@ -1,3 +1,4 @@
+import { observeModelCall } from "../../../../shared/model-observability.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import {
@@ -316,7 +317,7 @@ export function createManagedTtsProviders(options: ManagedTtsOptions) {
     }
   }
 
-  async function execute(
+  async function executeRuntime(
     id: ManagedTtsProviderId,
     data: Record<string, unknown>,
     context: MediaJobContext,
@@ -379,6 +380,47 @@ export function createManagedTtsProviders(options: ManagedTtsOptions) {
       await progress.catch(() => {});
       await rm(requestPath, { force: true });
     }
+  }
+
+  async function execute(
+    id: ManagedTtsProviderId,
+    data: Record<string, unknown>,
+    context: MediaJobContext,
+    signal: AbortSignal,
+  ) {
+    const run = () => executeRuntime(id, data, context, signal);
+    if (data.action !== "generate") return run();
+    return observeModelCall(
+      {
+        provider: id === "kokoro" ? "local-onnx" : "edge-tts",
+        model: id === "kokoro" ? "kokoro-v1.0" : String(data.voiceId),
+        purpose: "tts",
+        input: {
+          messages: [{ role: "user", content: data.text }],
+          parameters: {
+            action: "generate",
+            text: data.text,
+            voice: data.voiceId,
+            rate: data.rate,
+            capture: { recording: "logical-input", omitted: "binary-data-and-private-paths" },
+          },
+        },
+      },
+      run,
+      {
+        signal,
+        output: (value) => ({
+          data: {
+            mimeType: id === "kokoro" ? "audio/wav" : "audio/mpeg",
+            ...(typeof value.bytes === "number" ? { bytes: value.bytes } : {}),
+            ...(typeof value.durationSeconds === "number"
+              ? { durationSeconds: value.durationSeconds }
+              : {}),
+            binaryContent: "omitted",
+          },
+        }),
+      },
+    );
   }
 
   async function checkTools(signal: AbortSignal) {

@@ -1,0 +1,311 @@
+{
+  "format": "codeshell.vendor.sources",
+  "version": 1,
+  "project": "html2figma",
+  "upstreamRepository": "https://github.com/cjhyy/html2figma",
+  "upstreamCommit": "ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c",
+  "license": "MIT",
+  "sourceTreeSha256": "4efab58f6d3a9b5b6c7584ff4a87105095b129b7a3bc7f9892db23070c181a79",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 5887,
+      "sha256": "e114a7169f08876445e3cbcdc7968c952a1a27da87843998a14962622aed6bc5"
+    },
+    {
+      "path": "package.json",
+      "bytes": 2078,
+      "sha256": "2c627ca163dfb14a84efe6263efe11135cbd261cc241c068c6466127c31b8702"
+    },
+    {
+      "path": "packages/adapter/figma/FigmaAdapter.ts",
+      "bytes": 613,
+      "sha256": "d22433376ce90a38b16708b2b09a4a17675aad5226a448eb055cc676b5ab475a"
+    },
+    {
+      "path": "packages/adapter/figma/index.ts",
+      "bytes": 458,
+      "sha256": "a88db43dd2f1fbbf18b204dc1538654ae8543ffc724eade3fb9891d610777778"
+    },
+    {
+      "path": "packages/adapter/figma/layoutMapper.ts",
+      "bytes": 7212,
+      "sha256": "49386ee5c0d3664fa8e90fecc599bf18e45f3a9e4d74ef98a5a5f0a491a10a56"
+    },
+    {
+      "path": "packages/adapter/figma/nodeMapper.ts",
+      "bytes": 45854,
+      "sha256": "7f984e04ee0fb10f4debb0a0ccbc386f8dd6f64a9eef9968a98689991f35872e"
+    },
+    {
+      "path": "packages/adapter/figma/styleMapper.ts",
+      "bytes": 14664,
+      "sha256": "d6452d34c2d5c455532692eca1061d083cfbd837f47fa7abfef80b0ae778eded"
+    },
+    {
+      "path": "packages/adapter/figma/textMapper.ts",
+      "bytes": 9026,
+      "sha256": "561a1d7799d37f2db4a7a207fc65e24b90ae0951432817193e4a12dbad64aa1d"
+    },
+    {
+      "path": "packages/adapter/package.json",
+      "bytes": 275,
+      "sha256": "1afb359969aef2b2c8986695ab34b047341bdf620557cb2cdc324f634633788a"
+    },
+    {
+      "path": "packages/adapter/tsconfig.json",
+      "bytes": 263,
+      "sha256": "ab52176c27becfccf04f3829fdde746fd107e957f6270fbfa3fa4117a8495d06"
+    },
+    {
+      "path": "packages/figma/FigmaService.ts",
+      "bytes": 13031,
+      "sha256": "901689674051d831bb37f7f4e4da382d7da1c8aaafa9c62cf37594eeef6fbb91"
+    },
+    {
+      "path": "packages/figma/base/BaseNodeCreator.ts",
+      "bytes": 11428,
+      "sha256": "33132db5a164f7af55a42a8a1513e8a5f6bcba8d835f28f550ab915995cb19b3"
+    },
+    {
+      "path": "packages/figma/creators/FrameCreator.ts",
+      "bytes": 23587,
+      "sha256": "b25f47e53b5c0c48e3772060dedb96268f2c1d8887d8c6f1a61ea68ad503cd88"
+    },
+    {
+      "path": "packages/figma/creators/GroupCreator.ts",
+      "bytes": 6850,
+      "sha256": "7720c1dc3029d8475c2ccd4a3454a27cf317c307902d3988dc54042d6b149c53"
+    },
+    {
+      "path": "packages/figma/creators/ImageCreator.ts",
+      "bytes": 44134,
+      "sha256": "418dabf546f8a45e8dc1bd6898f561fbaa51dcaca15315285ea60edbed5fada5"
+    },
+    {
+      "path": "packages/figma/creators/RectangleCreator.ts",
+      "bytes": 7704,
+      "sha256": "9e7f6fee3d430b5834aa88f4b2a66a86df311e388a787ad0a36a504bf78ce584"
+    },
+    {
+      "path": "packages/figma/creators/SVGCreator.ts",
+      "bytes": 3818,
+      "sha256": "2f498e20df2f9a5f4a0c55406813941c462350c9cb634c67132d91c8c5346a0d"
+    },
+    {
+      "path": "packages/figma/creators/TextCreator.ts",
+      "bytes": 18197,
+      "sha256": "99ebce822eccc2e6b8ab51bed592ed12e413b8461cc1e5529882abd42954c9f2"
+    },
+    {
+      "path": "packages/figma/factory/NodeCreatorFactory.ts",
+      "bytes": 15787,
+      "sha256": "9616d76901173728cd842d6e301f3d1358f914e73c668948df7950974cd36b23"
+    },
+    {
+      "path": "packages/figma/font-utils.ts",
+      "bytes": 2863,
+      "sha256": "92becaf0a8c80df63c3827eaef3e1048ee8a4d92feee5b445126ae24958a1cb9"
+    },
+    {
+      "path": "packages/figma/index.ts",
+      "bytes": 1501,
+      "sha256": "1f2c545790cd62878637220e50510e8a10bfcbe07ced7b41ec6d0cb09d4d4502"
+    },
+    {
+      "path": "packages/figma/package.json",
+      "bytes": 697,
+      "sha256": "1f21d629b7f53c1bc7576fb6b568c92ed2af58fa583c3f4458757772345f6130"
+    },
+    {
+      "path": "packages/figma/tsconfig.json",
+      "bytes": 433,
+      "sha256": "467b4a515bc5a24902e9996bdaaafd8849d8094827d1516d2d046c5f0fcf95f5"
+    },
+    {
+      "path": "packages/figma/types.ts",
+      "bytes": 681,
+      "sha256": "1722a8d6e4d34f9dea38bffc19c140dff75d2e63d8eb720bbc2fb80f276c9c3b"
+    },
+    {
+      "path": "packages/figma/utils/ImageProcessor.ts",
+      "bytes": 13850,
+      "sha256": "d56f1cbfcb275dabd98794e7ae9ffcddef67304f634d9208e673b32c57fc3cc1"
+    },
+    {
+      "path": "packages/figma/utils/LayoutProcessor.ts",
+      "bytes": 33971,
+      "sha256": "e2c86e18f5ba5fa63cca7da4a334202950c77dd32dbaaddd637c99b17b08fd69"
+    },
+    {
+      "path": "packages/figma/utils/StyleProcessor.ts",
+      "bytes": 25746,
+      "sha256": "83ef6f0af7d30b5b08eeaad4f25ff528e091583348b000660df7fe7ad4d1e923"
+    },
+    {
+      "path": "packages/figma/utils/TextProcessor.ts",
+      "bytes": 10101,
+      "sha256": "7987070aaf65bcff8cb051f7c5f8c85f2e110bb95f6187f2d41b0c8e74c9379d"
+    },
+    {
+      "path": "packages/figma/vite.config.ts",
+      "bytes": 1332,
+      "sha256": "ca5484cf247a8781d245ecf39faf7282aa992551e3a25f5aacafc5611e701277"
+    },
+    {
+      "path": "packages/plugin/code.ts",
+      "bytes": 9345,
+      "sha256": "23f596c6ee601fdefca28d81736715b6426d815b7e8d73c0521ef02d0a17e7c9"
+    },
+    {
+      "path": "packages/plugin/manifest.json",
+      "bytes": 415,
+      "sha256": "8074a39f452c4133da688795682e12eb8bcb5bb62d13b45a5ee4f0f57a0da5e0"
+    },
+    {
+      "path": "packages/plugin/package.json",
+      "bytes": 1609,
+      "sha256": "dffdad1e50ea60f338a6d739e36d6094cf86a17f11db0fe13ad77687fa8dcdb4"
+    },
+    {
+      "path": "packages/plugin/scripts/build-plugin.js",
+      "bytes": 3648,
+      "sha256": "8b7a196929fe0e44ee620f11f66b2f2771080a72eb6456c61f395ef8a39a94da"
+    },
+    {
+      "path": "packages/plugin/tsconfig.json",
+      "bytes": 401,
+      "sha256": "ddf15500bd0ba57181c7dae234667eab08f1e5e07a0b924435f737243603b1df"
+    },
+    {
+      "path": "packages/plugin/ui/index.html",
+      "bytes": 280,
+      "sha256": "c4271b3ec71e8063dbd2bcec0fd98208d0ba7ef33b9085e6b0a808c57156ed8e"
+    },
+    {
+      "path": "packages/plugin/ui/src/App.tsx",
+      "bytes": 3325,
+      "sha256": "1f221344d5fb7f63d54c45d0bec768b7aba0726f544110652f01025948dda377"
+    },
+    {
+      "path": "packages/plugin/ui/src/components/DevMode.tsx",
+      "bytes": 7462,
+      "sha256": "3dddb04350c7ab7c4a608fd270f1b195f889826ddf8f38ed73edf66e0c45ea73"
+    },
+    {
+      "path": "packages/plugin/ui/src/components/HtmlImport.tsx",
+      "bytes": 3890,
+      "sha256": "969ec01cc9849b99976e722d2bbde17f5239524f73df7010264bf782391a13e8"
+    },
+    {
+      "path": "packages/plugin/ui/src/components/JsonImport.tsx",
+      "bytes": 5114,
+      "sha256": "b36559a0c1a7452dcf267716f65cfeae55af1c1f094658f312a90e60035efea5"
+    },
+    {
+      "path": "packages/plugin/ui/src/components/SettingsPanel.tsx",
+      "bytes": 2158,
+      "sha256": "256dce5edf3d8b8e18ddf634a0d4656dc7efdd9e615f7b99282a7a96f57a9477"
+    },
+    {
+      "path": "packages/plugin/ui/src/components/UrlImport.tsx",
+      "bytes": 4331,
+      "sha256": "fe62eae19d527a34bbe9176a7b8789f2540b8714502d5af266d2d2ee7d75f50f"
+    },
+    {
+      "path": "packages/plugin/ui/src/components/ui/badge.tsx",
+      "bytes": 1083,
+      "sha256": "63717629626e4a4aecdb069d6e95689b38081f15ee24c6e5961fba30c8e710b7"
+    },
+    {
+      "path": "packages/plugin/ui/src/components/ui/button.tsx",
+      "bytes": 1809,
+      "sha256": "b24f5a383d858eb739699d469a6bfc8ae8f6cc33169b20714d4fbeb643d3b60b"
+    },
+    {
+      "path": "packages/plugin/ui/src/components/ui/input.tsx",
+      "bytes": 753,
+      "sha256": "8943922dbffdecacb194f1f54882a30406095027420a1e504dbe816758d0d64b"
+    },
+    {
+      "path": "packages/plugin/ui/src/components/ui/label.tsx",
+      "bytes": 560,
+      "sha256": "d827ac4a21cac0c2d8603b6cdf90df05c6a1226b3c6baab79766b2d6ca5fcc8a"
+    },
+    {
+      "path": "packages/plugin/ui/src/components/ui/tabs.tsx",
+      "bytes": 1592,
+      "sha256": "95307aa0e4eef000167c6803876d8d2f206ae28f01f0064df95cf2b15a1d740a"
+    },
+    {
+      "path": "packages/plugin/ui/src/components/ui/textarea.tsx",
+      "bytes": 658,
+      "sha256": "5d13ffbcd391218e7fdecfaa4eb958fd4d0f8709b33b70ca5651a8e9f280480e"
+    },
+    {
+      "path": "packages/plugin/ui/src/globals.css",
+      "bytes": 1137,
+      "sha256": "4dc298e2297bc26dff0a56d3a1a578f15b79baf8bef09bfda036c490e08a4cfa"
+    },
+    {
+      "path": "packages/plugin/ui/src/hooks/usePluginMessage.ts",
+      "bytes": 454,
+      "sha256": "c93b0bac96e524269eb0d43504c0aca75dcc7c8302f89e6d98f3a2e4a852aee7"
+    },
+    {
+      "path": "packages/plugin/ui/src/hooks/useSettings.ts",
+      "bytes": 1320,
+      "sha256": "e4f1a907b6881fe0454c3792a31a2069ea3df2236b698562b115685e1ce9ca34"
+    },
+    {
+      "path": "packages/plugin/ui/src/lib/api.ts",
+      "bytes": 2150,
+      "sha256": "3e10e833998c857ea9bfa965099485d7f5099e9d547aa8da96173fd0a29fe5ad"
+    },
+    {
+      "path": "packages/plugin/ui/src/lib/dsl-codec.ts",
+      "bytes": 3010,
+      "sha256": "0713a2a480ba00b342bd06863076e38dc665e1670436771fdf36b9c423bb1740"
+    },
+    {
+      "path": "packages/plugin/ui/src/lib/image-processor.ts",
+      "bytes": 5158,
+      "sha256": "ab4f40a5a6922b207001033e3da0fa3b7639ca846d07475169fad8f99178f458"
+    },
+    {
+      "path": "packages/plugin/ui/src/lib/message.ts",
+      "bytes": 615,
+      "sha256": "fb2784e19ace2f46392679d0e014a844bb1db56b9ed65d71265a8a4508b835f3"
+    },
+    {
+      "path": "packages/plugin/ui/src/lib/server-config.ts",
+      "bytes": 721,
+      "sha256": "64360bf98128d019bfaed942444cf51de2952e2184c83ae21368cb48ef9f5833"
+    },
+    {
+      "path": "packages/plugin/ui/src/lib/utils.ts",
+      "bytes": 169,
+      "sha256": "74e8fe9d0d680c442ed6adb13e7d119d6c210c19ae6c114313b2a72552be0883"
+    },
+    {
+      "path": "packages/plugin/ui/src/main.tsx",
+      "bytes": 163,
+      "sha256": "6e9b803446eedef8279e6c89c5ec98f1fc66770eb2590edb0ca167b1773c31f5"
+    },
+    {
+      "path": "packages/plugin/ui/tsconfig.json",
+      "bytes": 501,
+      "sha256": "bf3bf303d7664467cd508daf9c4dec742e004fa2ae92bd8f0b97d0dbcc9faec0"
+    },
+    {
+      "path": "packages/plugin/ui/vite.config.ts",
+      "bytes": 698,
+      "sha256": "8b0d737cce45ef8cab6476fbe02b712a68e95fcdbd9f554246f3dcf0bd16a6aa"
+    },
+    {
+      "path": "packages/plugin/vite.config.ts",
+      "bytes": 894,
+      "sha256": "35b727169a9c9a53c7450640ba1c133e616825bdb5469559dab083368149a643"
+    }
+  ]
+}

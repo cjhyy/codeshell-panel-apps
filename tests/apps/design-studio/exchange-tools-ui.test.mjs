@@ -152,7 +152,8 @@ async function fixture(t, { image = false } = {}) {
     calls = [],
     errors = [],
     pauses = new Map(),
-    writeFailures = new Map();
+    writeFailures = new Map(),
+    ackLosses = new Map();
   for (const scope of ["A", "B"]) {
     files.set(`${scope}:${designPath}`, initialDocument(scope));
     files.set(`${scope}:${inputPath}`, JSON.stringify(figmaSource({ image })));
@@ -194,6 +195,8 @@ async function fixture(t, { image = false } = {}) {
       result = { root: "/workspace", name: scope, trusted: true, gitBranch: "test" };
     else if (method === "workspace.list") result = { entries: [], truncated: false };
     else if (method === "workspace.readText") {
+      if (ackLosses.get(fileKey)?.published && ackLosses.get(fileKey)?.unreadable)
+        throw Error("Injected unavailable observation after publication");
       if (!files.has(fileKey))
         throw Error(`ENOENT: no such file or directory, open '${params.path}'`);
       const content = files.get(fileKey);
@@ -214,6 +217,11 @@ async function fixture(t, { image = false } = {}) {
       )
         throw Error("workspace file changed since it was opened");
       files.set(fileKey, params.content);
+      const lost = ackLosses.get(fileKey);
+      if (lost && !lost.published) {
+        lost.published = true;
+        throw Error("Lost primary write acknowledgement");
+      }
       result = { path: params.path, modifiedAt: 1, revision: revision(params.content) };
     } else if (method === "storage.get")
       result = params.key.startsWith("lastPath.")
@@ -329,6 +337,9 @@ async function fixture(t, { image = false } = {}) {
       pauses.set(`${scope}:${method}`, { enter, gate });
       t.after(release);
       return { entered, release };
+    },
+    loseWriteAcknowledgement(path, { unreadable = false } = {}) {
+      ackLosses.set(`A:${path}`, { unreadable, published: false });
     },
     failWrite(path, scope = "A") {
       let enter, release;
@@ -453,90 +464,111 @@ test("HTML @font-face normal and bold weights retain font resources instead of s
 // Agent entry points keep the real body inert (tested above). Exercise the actual
 // replacement function separately so future callers/reentrant events cannot let
 // a failed save roll back a newer edit or a different document in the same project.
-for (const action of ["edit", "new-document"]) {
-  test(`HTML replacement save failure preserves newer ${action} state under reentrancy`, async () => {
-    const app = await readFile(resolve(root, "app.js"), "utf8");
-    const start = app.indexOf("async function replaceDesignWithHtmlImport(");
-    const end = app.indexOf("async function importHtmlFromWorkspace(", start);
-    assert.ok(start >= 0 && end > start);
-    const state = {
-      design: { name: "Before", nodes: [{ id: "old" }], pages: [] },
-      workspaceEpoch: 1,
-      documentEpoch: 1,
-      designStateSequence: 0,
-      history: [],
-      historyIndex: 0,
-      historyState: {},
-      selectedId: null,
-      selectedIds: new Set(),
-      collapsedLayerIds: new Set(),
-      lastAgentTransaction: null,
-      currentPageCache: null,
-      currentResourceCache: null,
-      resourceDataUrls: new Map(),
-      loadedFontResourceIds: new Set(),
-      clone: structuredClone,
-      normalizeDocument: (value) => value,
-      normalizeDesignState: (value) => value,
-      cancelInteraction() {},
-      async ensureAllDesignPagesLoaded() {},
-      assertWorkspaceEpoch() {},
-      serializeDocument: JSON.stringify,
-      measureDesignDocumentBytes: () => 1,
-      DesignResourceCache: class {},
-      sha256Bytes() {},
-      bundleHostCall() {},
-      clearSelection() {},
-      commitHistory() {},
-      markChanged() {},
-      requestAnimationFrame() {},
-      elements: { path: { value: designPath } },
-    };
-    state.serializeDesign = () => JSON.stringify(state.design);
-    state.allDesignNodes = (value = state.design) => value.nodes;
-    state.currentDesignStateRevision = () =>
-      `${state.documentEpoch}:${state.designStateSequence}:${state.elements.path.value}:${JSON.stringify(state.design)}`;
-    let newer;
-    state.saveDocument = async () => {
-      if (action === "edit") state.design.nodes[0].text = "Newer user edit";
-      else {
-        state.design = { name: "New document", nodes: [{ id: "new-document-node" }], pages: [] };
-        state.documentEpoch += 1;
-        state.elements.path.value = "designs/new.codesign.json";
-      }
-      state.designStateSequence += 1;
-      state.history = [{ label: action }];
-      state.historyIndex = 1;
-      state.selectedId = state.design.nodes[0].id;
-      state.selectedIds = new Set([state.selectedId]);
-      state.resourceDataUrls.set("newer-resource", "data:image/png;base64,AA==");
-      newer = structuredClone({
-        design: state.design,
-        documentEpoch: state.documentEpoch,
-        history: state.history,
-        selectedId: state.selectedId,
-        sequence: state.designStateSequence,
-      });
-      throw Error("Failed save after newer state");
-    };
-    const context = createContext(state);
-    runInContext(app.slice(start, end), context);
-    await assert.rejects(
-      () =>
-        runInContext(
-          'replaceDesignWithHtmlImport({name:"Imported",nodes:[{id:"imported-node"}],pages:[]},{save:true})',
-          context,
-        ),
-      /Failed save after newer state/u,
-    );
-    assert.deepEqual(structuredClone(state.design), newer.design);
-    assert.equal(state.documentEpoch, newer.documentEpoch);
-    assert.equal(state.designStateSequence, newer.sequence);
-    assert.deepEqual(state.history, newer.history);
-    assert.equal(state.selectedId, newer.selectedId);
-    assert.equal(state.resourceDataUrls.has("newer-resource"), true);
-  });
-}
+for (const action of ["edit", "new-document"])
+  for (const noOp of [false, true]) {
+    test(`HTML ${noOp ? "no-op " : ""}replacement save failure preserves newer ${action} state under reentrancy`, async () => {
+      const app = await readFile(resolve(root, "app.js"), "utf8");
+      const start = app.indexOf("function captureImportRollback()");
+      const end = app.indexOf("async function importHtmlFromWorkspace(", start);
+      assert.ok(start >= 0 && end > start);
+      const state = {
+        design: { name: "Before", nodes: [{ id: "old" }], pages: [] },
+        workspaceEpoch: 1,
+        documentEpoch: 1,
+        designStateSequence: 0,
+        history: [],
+        historyIndex: 0,
+        historyState: {},
+        selectedId: null,
+        selectedIds: new Set(),
+        collapsedLayerIds: new Set(),
+        lastAgentTransaction: null,
+        currentPageCache: null,
+        currentResourceCache: null,
+        resourceDataUrls: new Map(),
+        loadedFontResourceIds: new Set(),
+        currentModifiedAt: 1,
+        currentRevision: "old",
+        currentSourcePath: designPath,
+        currentSourceModifiedAt: 1,
+        currentSourceRevision: "old",
+        currentDesignIndexManifest: null,
+        currentPersistenceMode: "single",
+        savedSnapshot: "old",
+        savedOperationState: {},
+        recoveryBaseDocument: null,
+        stagedFigmaBinding: null,
+        loadedFigmaBinding: null,
+        warnedExternalVersion: null,
+        designPublicationSequence: 0,
+        pristineBlankSnapshot: null,
+        clone: structuredClone,
+        normalizeDocument: (value) => value,
+        normalizeDesignState: (value) => value,
+        cancelInteraction() {},
+        async ensureAllDesignPagesLoaded() {},
+        assertWorkspaceEpoch() {},
+        serializeDocument: JSON.stringify,
+        measureDesignDocumentBytes: () => 1,
+        DesignResourceCache: class {},
+        sha256Bytes() {},
+        bundleHostCall() {},
+        clearSelection() {},
+        commitHistory() {},
+        markChanged() {},
+        updateDirtyState() {},
+        renderAll() {},
+        queueRecovery() {},
+        requestAnimationFrame() {},
+        elements: { path: { value: designPath } },
+      };
+      state.serializeDesign = () => JSON.stringify(state.design);
+      state.allDesignNodes = (value = state.design) => value.nodes;
+      state.currentDesignStateRevision = () =>
+        `${state.documentEpoch}:${state.designStateSequence}:${state.elements.path.value}:${JSON.stringify(state.design)}`;
+      let newer;
+      state.saveDocument = async () => {
+        if (action === "edit") state.design.nodes[0].text = "Newer user edit";
+        else {
+          state.design = { name: "New document", nodes: [{ id: "new-document-node" }], pages: [] };
+          state.documentEpoch += 1;
+          state.elements.path.value = "designs/new.codesign.json";
+        }
+        state.designStateSequence += 1;
+        state.history = [{ label: action }];
+        state.historyIndex = 1;
+        state.selectedId = state.design.nodes[0].id;
+        state.selectedIds = new Set([state.selectedId]);
+        state.resourceDataUrls.set("newer-resource", "data:image/png;base64,AA==");
+        newer = structuredClone({
+          design: state.design,
+          documentEpoch: state.documentEpoch,
+          history: state.history,
+          selectedId: state.selectedId,
+          sequence: state.designStateSequence,
+        });
+        throw Error("Failed save after newer state");
+      };
+      const context = createContext(state);
+      runInContext(app.slice(start, end), context);
+      await assert.rejects(
+        () =>
+          runInContext(
+            noOp
+              ? "replaceDesignWithHtmlImport(design,{save:true})"
+              : 'replaceDesignWithHtmlImport({name:"Imported",nodes:[{id:"imported-node"}],pages:[]},{save:true})',
+            context,
+          ),
+        /Failed save after newer state/u,
+      );
+      assert.deepEqual(structuredClone(state.design), newer.design);
+      assert.equal(state.documentEpoch, newer.documentEpoch);
+      assert.equal(state.designStateSequence, newer.sequence);
+      assert.deepEqual(state.history, newer.history);
+      assert.equal(state.selectedId, newer.selectedId);
+      assert.equal(state.resourceDataUrls.has("newer-resource"), true);
+    });
+  }
 
 test("local HTML folder becomes editable v3, survives save/reopen and restores into Figma from one complete file", async (t) => {
   const f = await fixture(t);
@@ -1194,4 +1226,362 @@ test("Agent imports multipart Figma sources and exports verified multipart trans
   );
   assert.equal(f.files.get(`A:${designPath}`), saved);
   assert.deepEqual(f.errors, []);
+});
+
+test("Figma preparation does not write and commits an independently reopenable design", async (t) => {
+  const f = await fixture(t, { image: true });
+  const before = await f.metadata(),
+    original = f.files.get(`A:${designPath}`);
+  const target = "designs/independent.codesign.json";
+  const prepared = await f.tool("exchange_figma", {
+    action: "prepare",
+    source_path: inputPath,
+    target_path: target,
+    expected_state_revision: before.stateRevision,
+  });
+  assert.equal(prepared.mode, "create");
+  assert.equal(prepared.targetPath, target);
+  assert.equal((await f.metadata()).stateRevision, before.stateRevision);
+  assert.equal(f.files.get(`A:${designPath}`), original);
+  assert.equal(f.files.has(`A:${target}`), false);
+  const imported = await f.tool("exchange_figma", {
+    action: "import",
+    source_path: inputPath,
+    preparation_id: prepared.preparationId,
+    allow_blocking: true,
+    expected_state_revision: before.stateRevision,
+  });
+  assert.equal(imported.path, target);
+  assert.equal(imported.saved, true);
+  assert.equal(f.files.get(`A:${designPath}`), original);
+  await f.reload();
+  let current = await f.metadata();
+  await f.tool("save_design", {
+    action: "open",
+    path: target,
+    expected_state_revision: current.stateRevision,
+  });
+  current = await f.metadata();
+  assert.equal(current.name, "Imported product");
+  assert(current.layers.some((node) => node.name === "Imported image"));
+  const exported = await f.tool("exchange_figma", {
+    action: "export",
+    path: "designs/independent.figma-transfer.json",
+    expected_state_revision: current.stateRevision,
+  });
+  assert.equal(exported.patch.updates, 0);
+  assert.deepEqual(f.errors, []);
+});
+
+test("Figma preparation rejects changed input and existing targets before mutation", async (t) => {
+  const f = await fixture(t),
+    before = await f.metadata();
+  const target = "designs/guarded.codesign.json";
+  const prepared = await f.tool("exchange_figma", {
+    action: "prepare",
+    source_path: inputPath,
+    target_path: target,
+    expected_state_revision: before.stateRevision,
+  });
+  const source = JSON.parse(f.files.get(`A:${inputPath}`));
+  source.name = "Changed upstream";
+  f.files.set(`A:${inputPath}`, JSON.stringify(source));
+  await assert.rejects(
+    f.tool("exchange_figma", {
+      action: "import",
+      source_path: inputPath,
+      preparation_id: prepared.preparationId,
+      expected_state_revision: before.stateRevision,
+    }),
+    /输入已在预检后变化/,
+  );
+  assert.equal((await f.metadata()).stateRevision, before.stateRevision);
+  f.files.set(`A:${target}`, "unrelated existing file");
+  await assert.rejects(
+    f.tool("exchange_figma", {
+      action: "import",
+      source_path: inputPath,
+      target_path: target,
+      expected_state_revision: before.stateRevision,
+    }),
+    /目标设计已存在/,
+  );
+  assert.equal(f.files.get(`A:${target}`), "unrelated existing file");
+});
+
+test("Figma primary save failure restores canvas, target and source binding", async (t) => {
+  const f = await fixture(t, { image: true });
+  const before = await f.metadata(),
+    original = f.files.get(`A:${designPath}`);
+  const target = "designs/failed-import.codesign.json",
+    failure = f.failWrite(target);
+  const result = f
+    .tool("exchange_figma", {
+      action: "import",
+      source_path: inputPath,
+      target_path: target,
+      allow_blocking: true,
+      expected_state_revision: before.stateRevision,
+    })
+    .then(
+      () => null,
+      (error) => error,
+    );
+  await Promise.race([
+    failure.entered,
+    result.then((error) => {
+      throw error ?? Error("Import completed without reaching injected failure");
+    }),
+  ]);
+  failure.release();
+  assert.match((await result).message, /Injected HTML primary save failure/);
+  const restored = await f.metadata();
+  assert.equal(restored.stateRevision, before.stateRevision);
+  assert.equal(restored.path, designPath);
+  assert.equal(f.files.get(`A:${designPath}`), original);
+  assert.equal(f.files.has(`A:${target}`), false);
+  await f.tool("exchange_figma", {
+    action: "export",
+    path: "designs/failed-import.figma-transfer.json",
+    expected_state_revision: restored.stateRevision,
+  });
+  assert.equal(
+    JSON.parse(f.files.get("A:designs/failed-import.figma-transfer.json")).patch,
+    undefined,
+  );
+  assert.deepEqual(f.errors, []);
+});
+
+test("file management preserves original files and copied review attachments", async (t) => {
+  const f = await fixture(t);
+  let current = await f.metadata();
+  await f.tool("update_design_comments", {
+    action: "create",
+    text: "Keep review",
+    expected_state_revision: current.stateRevision,
+  });
+  current = await f.metadata();
+  const original = f.files.get(`A:${designPath}`),
+    copy = "designs/copy.codesign.json";
+  await f.tool("save_design", {
+    action: "save_as",
+    path: copy,
+    expected_state_revision: current.stateRevision,
+  });
+  assert.equal(f.files.get(`A:${designPath}`), original);
+  assert.match(f.files.get("A:designs/copy.comments.json"), /Keep review/);
+  assert.equal(JSON.parse(f.files.get("A:designs/copy.comments.json")).designPath, copy);
+  assert.equal((await f.tool("get_design_comments")).threads[0].text, "Keep review");
+  await f.reload();
+  current = await f.metadata();
+  await f.tool("save_design", {
+    action: "open",
+    path: copy,
+    expected_state_revision: current.stateRevision,
+  });
+  assert.equal((await f.tool("get_design_comments")).threads[0].text, "Keep review");
+  current = await f.metadata();
+  await assert.rejects(
+    f.tool("save_design", {
+      action: "create",
+      path: copy,
+      expected_state_revision: current.stateRevision,
+    }),
+    /目标设计已存在/,
+  );
+  await f.tool("save_design", {
+    action: "create",
+    path: "designs/blank.codesign.json",
+    name: "New clean design",
+    expected_state_revision: current.stateRevision,
+  });
+  current = await f.metadata();
+  assert.equal(current.name, "New clean design");
+  assert.equal(
+    current.pages.reduce((total, page) => total + page.nodeCount, 0),
+    0,
+  );
+  await f.tool("save_design", {
+    action: "open",
+    path: copy,
+    expected_state_revision: current.stateRevision,
+  });
+  assert.equal((await f.metadata()).name, "A original");
+});
+
+test("audit UI and tools expose all grouped issues with filtered pagination", async (t) => {
+  const f = await fixture(t);
+  const source = figmaSource();
+  source.document.children[0].children[0].clipsContent = false;
+  source.document.children[0].children[0].children = Array.from({ length: 125 }, (_, index) => ({
+    id: `10:${index}`,
+    type: "TEXT",
+    name: `Narrow text ${index}`,
+    characters: "A deliberately long label",
+    absoluteBoundingBox: { x: 30, y: 11000, width: 400, height: 30 },
+    fills: [{ type: "SOLID", color: { r: 0.05, g: 0.05, b: 0.05 } }],
+    style: { fontFamily: "Inter", fontSize: 24, fontWeight: 400 },
+  }));
+  f.files.set(`A:${inputPath}`, JSON.stringify(source));
+  await f.import();
+  const audit = await f.tool("validate_design", { code: "layout.canvas-overflow", limit: 50 });
+  assert.equal(audit.page.total, 125);
+  assert.equal(audit.issues.length, 50);
+  assert.equal(audit.page.nextOffset, 50);
+  assert.equal(
+    audit.issueGroups.find((group) => group.code === "layout.canvas-overflow").count,
+    125,
+  );
+  await f.page.locator("#run-audit").click();
+  await f.page.getByLabel("问题类型", { exact: true }).selectOption("layout.canvas-overflow");
+  assert.equal(await f.page.locator("#audit-results .audit-issue").count(), 50);
+  await f.page.getByRole("button", { name: "下一页问题" }).click();
+  assert.match(await f.page.locator("#audit-controls [role=status]").textContent(), /51–100/);
+  await f.page.getByRole("button", { name: "下一页问题" }).click();
+  assert.equal(await f.page.locator("#audit-results .audit-issue").count(), 25);
+  assert.equal(await f.page.getByRole("button", { name: "下一页问题" }).isDisabled(), true);
+  await f.page.locator("#audit-results .audit-issue").first().click();
+  assert.equal(await f.page.locator("#audit-dialog").evaluate((element) => element.open), false);
+  assert.deepEqual(f.errors, []);
+});
+
+test("Save As UI creates a new file through the same guarded file workflow", async (t) => {
+  const f = await fixture(t),
+    original = f.files.get(`A:${designPath}`);
+  await f.page.locator("#save-as").click();
+  await f.page.locator("#save-as-path").fill("designs/from-ui.codesign.json");
+  await f.page.locator("#save-as-confirm").click();
+  await f.page.waitForFunction(() => !document.querySelector("#save-as-dialog").open);
+  assert.equal(f.files.get(`A:${designPath}`), original);
+  assert(f.files.has("A:designs/from-ui.codesign.json"));
+  assert.equal((await f.metadata()).path, "designs/from-ui.codesign.json");
+});
+
+test("Figma preparation rejects an input colliding with the new binding path", async (t) => {
+  const f = await fixture(t),
+    before = await f.metadata();
+  const source = "designs/same.figma-source.json";
+  f.files.set(`A:${source}`, JSON.stringify(figmaSource()));
+  await assert.rejects(
+    f.tool("exchange_figma", {
+      action: "prepare",
+      source_path: source,
+      target_path: "designs/same.codesign.json",
+      expected_state_revision: before.stateRevision,
+    }),
+    /来源绑定文件重名/,
+  );
+  assert.equal((await f.metadata()).stateRevision, before.stateRevision);
+});
+
+test("a lost successful save acknowledgement is reconciled without another primary write", async (t) => {
+  const f = await fixture(t),
+    before = await f.metadata(),
+    target = "designs/lost-ack.codesign.json";
+  f.loseWriteAcknowledgement(target);
+  const imported = await f.tool("exchange_figma", {
+    action: "import",
+    source_path: inputPath,
+    target_path: target,
+    allow_blocking: true,
+    expected_state_revision: before.stateRevision,
+  });
+  assert.equal(imported.saved, true);
+  assert.equal((await f.metadata()).path, target);
+  assert.equal((await f.metadata()).name, "Imported product");
+  assert.equal(
+    f.calls.filter((call) => call.method === "workspace.writeText" && call.path === target).length,
+    1,
+  );
+  assert(f.files.has(`A:${target}`));
+});
+
+test("an unobservable save acknowledgement preserves the import and reports uncertainty", async (t) => {
+  const f = await fixture(t),
+    before = await f.metadata(),
+    target = "designs/unknown-ack.codesign.json";
+  f.loseWriteAcknowledgement(target, { unreadable: true });
+  await assert.rejects(
+    f.tool("exchange_figma", {
+      action: "import",
+      source_path: inputPath,
+      target_path: target,
+      allow_blocking: true,
+      expected_state_revision: before.stateRevision,
+    }),
+    /保存结果无法确认/,
+  );
+  const current = await f.metadata();
+  assert.equal(current.path, target);
+  assert.equal(current.name, "Imported product");
+  assert.equal(current.dirty, true);
+  assert.equal(
+    f.calls.filter((call) => call.method === "workspace.writeText" && call.path === target).length,
+    1,
+  );
+});
+
+test("Save As retries reuse identical attachments after a rejected primary write", async (t) => {
+  const f = await fixture(t);
+  let current = await f.metadata();
+  await f.tool("update_design_comments", {
+    action: "create",
+    text: "Retry review",
+    expected_state_revision: current.stateRevision,
+  });
+  current = await f.metadata();
+  const target = "designs/retry-copy.codesign.json",
+    failure = f.failWrite(target);
+  const result = f
+    .tool("save_design", {
+      action: "save_as",
+      path: target,
+      expected_state_revision: current.stateRevision,
+    })
+    .then(
+      () => null,
+      (error) => error,
+    );
+  await Promise.race([
+    failure.entered,
+    result.then((error) => {
+      throw error ?? Error("No injected write");
+    }),
+  ]);
+  failure.release();
+  assert.match((await result).message, /Injected/);
+  assert.equal(f.files.has(`A:${target}`), false);
+  assert(f.files.has("A:designs/retry-copy.comments.json"));
+  current = await f.metadata();
+  await f.tool("save_design", {
+    action: "save_as",
+    path: target,
+    expected_state_revision: current.stateRevision,
+  });
+  assert.equal((await f.tool("get_design_comments")).threads[0].text, "Retry review");
+});
+
+test("new Figma files do not discard a meaningful unsaved empty draft", async (t) => {
+  const f = await fixture(t);
+  let current = await f.metadata();
+  await f.tool("save_design", {
+    action: "create",
+    path: "designs/empty-draft.codesign.json",
+    name: "Meaningful empty draft",
+    save: false,
+    expected_state_revision: current.stateRevision,
+  });
+  current = await f.metadata();
+  await assert.rejects(
+    f.tool("exchange_figma", {
+      action: "import",
+      source_path: inputPath,
+      target_path: "designs/another.codesign.json",
+      allow_blocking: true,
+      expected_state_revision: current.stateRevision,
+    }),
+    /当前设计有未保存修改/,
+  );
+  assert.equal((await f.metadata()).name, "Meaningful empty draft");
+  assert.equal(f.files.has("A:designs/another.codesign.json"), false);
 });

@@ -56,7 +56,7 @@ export const suites = [
   {
     id: "panel-ui",
     label: "Shared Panel App controls",
-    commands: [["--test", "tests/panel-select-ui.test.mjs", "tests/project-context.test.mjs"]],
+    commands: [["--test", "tests/panel-select-ui.test.mjs", "tests/project-context.test.mjs", "tests/model-observability.test.mjs"]],
   },
   {
     id: "desktop-harness",
@@ -88,10 +88,14 @@ export const suites = [
         "tests/apps/design-studio/connection-ui.test.mjs",
         "tests/apps/design-studio/polish-ui.test.mjs",
         "tests/apps/design-studio/figma-bridge.test.mjs",
+        "tests/apps/design-studio/audit-review.test.mjs",
+        "tests/apps/design-studio/html-plugin.test.mjs",
+        "tests/apps/design-studio/html-plugin-ui.test.mjs",
         "tests/apps/design-studio/figma-workflow-ui.test.mjs",
         "tests/apps/design-studio/review-comments.test.mjs",
         "tests/apps/design-studio/review-comments-ui.test.mjs",
         "tests/apps/design-studio/design-sidecar.test.mjs",
+        "tests/apps/design-studio/prepare-figma-cli.test.mjs",
         "tests/apps/design-studio/figma-assets.test.mjs",
         "tests/apps/design-studio/figma-binding.test.mjs",
         "tests/apps/design-studio/figma-plugin.test.mjs",

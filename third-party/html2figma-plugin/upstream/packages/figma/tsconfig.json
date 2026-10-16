@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "types": ["vite/client", "@figma/plugin-typings"],
+    "baseUrl": ".",
+    "paths": {
+      "@html2figma/shared": ["../shared"],
+      "@html2figma/adapter": ["../adapter"],
+      "@html2figma/adapter/*": ["../adapter/*"]
+    }
+  },
+  "include": [
+    "**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}

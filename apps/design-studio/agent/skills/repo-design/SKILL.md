@@ -14,12 +14,30 @@ visual screenshots, HTML/Figma import, resources, comments and prototypes.
 
 ## Figma exchange, prototypes and review
 
-Use `exchange_figma` with `action: "import"`, a safe workspace `designs/*.json` path and the
-latest metadata `expected_state_revision` to import Figma REST JSON or a local source package.
-The source package exported by the bundled Figma development plugin includes original nodes,
-image bytes and complex-layer previews. Imports save by default; `save: false` keeps a reversible
-live transaction. Read returned warnings and inspect the canvas before treating the result as
-faithful. A preview image remains a preview: do not claim its vector paths are editable.
+Start with `get_design_metadata`. For file operations use `save_design` with `action: "create"`,
+`"open"` or `"save_as"`, a safe `.codesign.json` path and the latest `expected_state_revision`.
+Default `save_design` remains save. New paths are create-only. Save or back up unsaved work before
+opening or creating another design; `discard_changes` must reflect the user's intent.
+
+For Figma, first call `exchange_figma(action: "prepare", source_path, target_path,
+expected_state_revision)`. Use an independent target name: its `.figma-source.json` binding path
+must differ from the input source. Review `audit`, `issueGroups`, complete warning counts and the
+target. Commit using `action: "import"`, the same `source_path`, returned `preparation_id` and
+unchanged state revision. Source hashes are rechecked. Modern imports default to create;
+`mode: "replace"` explicitly targets the current canvas. Legacy path-only imports still replace
+it. Imports save by default; `save: false` keeps a reversible live draft. `allow_blocking: true`
+permits a draft with blocking issues, never a claim of finished fidelity. Validate and inspect
+screenshots before treating a result as faithful. An image fallback is not an editable vector.
+
+Large raw inputs should be prepared with this selected package's `app/tools/prepare-figma.mjs`:
+`node <selected-package>/app/tools/prepare-figma.mjs --project <project> --input <source.json>
+--output designs/<new-input>.figma-source.json`. Resolve the current package through Panel context;
+never guess another version or require a development checkout. The CLI preserves full JSON,
+verifies bounded chunks, and does not change the live canvas. Use its outputPath as source_path.
+
+The source package exported by CodeShell Design Bridge includes original nodes, image bytes and
+complex-layer previews. The separate HTML to Figma plugin uses html2figma's native adapter/service
+for HTML and native DSL; it does not accept CodeShell backups. Keep their input formats explicit.
 
 Use `exchange_figma` with `action: "export"` and a separate
 `designs/*.figma-transfer.json` output path to generate editable nodes and an incremental patch.
@@ -45,7 +63,9 @@ Read `get_design_comments` before addressing review work. Lists return bounded s
 `thread_id` and `reply_offset` to read full text and reply batches. Use `update_design_comments`
 with `action: "create"`, `"reply"` or `"status"` and the latest design `expected_state_revision`.
 Create requires a real page/node target; replies and status changes use a stable `thread_id`.
-After changing the design, validate and inspect screenshots, then reply with the resolution and
+Use `validate_design` filters and offset/limit to inspect grouped causes and every issue page; a
+truncated detail list never proves that remaining issues are absent. After changing the design,
+validate and inspect screenshots, then reply with the resolution and
 set `resolved: true`. Never mark an issue resolved merely because a save succeeded.
 
 Complete portable backups include comments, source bindings, prototype data and resource bytes.

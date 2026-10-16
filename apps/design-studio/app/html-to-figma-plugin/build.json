@@ -1,0 +1,73 @@
+{
+  "format": "codeshell.html2figma.plugin-build",
+  "version": 1,
+  "upstreamCommit": "ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c",
+  "esbuildVersion": "0.28.2",
+  "runtimeInputs": [
+    "apps/design-studio/app/design-node-adapter.mjs",
+    "apps/design-studio/app/document-bundle.mjs",
+    "apps/design-studio/app/document.mjs",
+    "apps/design-studio/app/figma-assets.mjs",
+    "apps/design-studio/app/geometry.mjs",
+    "apps/design-studio/app/html-capture.mjs",
+    "apps/design-studio/app/html-import-assets.mjs",
+    "apps/design-studio/app/html-import.mjs",
+    "apps/design-studio/app/resource-store.mjs",
+    "apps/design-studio/app/vendor/html2figma-browser.mjs",
+    "third-party/html2figma-plugin/integration/capture.ts",
+    "third-party/html2figma-plugin/integration/code.ts",
+    "third-party/html2figma-plugin/integration/input.ts",
+    "third-party/html2figma-plugin/integration/sandbox-globals.ts",
+    "third-party/html2figma-plugin/integration/shared.ts",
+    "third-party/html2figma-plugin/integration/ui.ts",
+    "third-party/html2figma-plugin/upstream/packages/adapter/figma/FigmaAdapter.ts",
+    "third-party/html2figma-plugin/upstream/packages/adapter/figma/layoutMapper.ts",
+    "third-party/html2figma-plugin/upstream/packages/adapter/figma/nodeMapper.ts",
+    "third-party/html2figma-plugin/upstream/packages/adapter/figma/styleMapper.ts",
+    "third-party/html2figma-plugin/upstream/packages/adapter/figma/textMapper.ts",
+    "third-party/html2figma-plugin/upstream/packages/figma/FigmaService.ts",
+    "third-party/html2figma-plugin/upstream/packages/figma/base/BaseNodeCreator.ts",
+    "third-party/html2figma-plugin/upstream/packages/figma/creators/FrameCreator.ts",
+    "third-party/html2figma-plugin/upstream/packages/figma/creators/GroupCreator.ts",
+    "third-party/html2figma-plugin/upstream/packages/figma/creators/ImageCreator.ts",
+    "third-party/html2figma-plugin/upstream/packages/figma/creators/RectangleCreator.ts",
+    "third-party/html2figma-plugin/upstream/packages/figma/creators/SVGCreator.ts",
+    "third-party/html2figma-plugin/upstream/packages/figma/creators/TextCreator.ts",
+    "third-party/html2figma-plugin/upstream/packages/figma/factory/NodeCreatorFactory.ts",
+    "third-party/html2figma-plugin/upstream/packages/figma/font-utils.ts",
+    "third-party/html2figma-plugin/upstream/packages/figma/utils/ImageProcessor.ts",
+    "third-party/html2figma-plugin/upstream/packages/figma/utils/StyleProcessor.ts",
+    "third-party/html2figma/upstream/packages/shared/css-utils.ts",
+    "third-party/html2figma/upstream/packages/shared/design-node.ts",
+    "third-party/html2figma/upstream/packages/shared/figma-types.ts",
+    "third-party/html2figma/upstream/packages/shared/logger-modules.ts",
+    "third-party/html2figma/upstream/packages/shared/utils.ts"
+  ],
+  "outputs": [
+    {
+      "path": "manifest.json",
+      "bytes": 238,
+      "sha256": "b1bad7f6725d479826b500c91b127809648267c0ba5465d426167dc94edb8190"
+    },
+    {
+      "path": "code.js",
+      "bytes": 199643,
+      "sha256": "947b480296208addb2c4abeb396997af73830cad0ffb9db821bf489a57276f69"
+    },
+    {
+      "path": "ui.html",
+      "bytes": 299879,
+      "sha256": "e7a3f1947cabaf26bb7fa5afe0f207c32dfe0f4bde1c176fe35286aed398fd95"
+    },
+    {
+      "path": "README.md",
+      "bytes": 5344,
+      "sha256": "5154e96977884ef38ddcc7c7f2916812105f74f27ac73313786074945fd9ca98"
+    },
+    {
+      "path": "NOTICE.md",
+      "bytes": 2450,
+      "sha256": "c1466385c9d0686844b8587dd47b36ef7016351935fe795ade662dc93d9860d3"
+    }
+  ]
+}

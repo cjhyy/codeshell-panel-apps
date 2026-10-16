@@ -1,0 +1,54 @@
+{
+  "name": "html2figma-monorepo",
+  "version": "1.0.0",
+  "description": "HTML to Figma converter monorepo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r --filter='./packages/**' build",
+    "build:browser": "pnpm --filter @html2figma/browser build",
+    "build:figma": "pnpm --filter @html2figma/figma build",
+    "build:plugin": "pnpm --filter @html2figma/plugin build",
+    "build:plugin:dev": "pnpm --filter @html2figma/plugin build:dev",
+    "build:shared": "pnpm --filter @html2figma/shared build",
+    "build:standalone": "pnpm --filter @html2figma/browser build:standalone",
+    "clean": "pnpm -r --filter='./packages/**' clean && rm -rf node_modules packages/*/node_modules",
+    "clean:dist": "pnpm -r --filter='./packages/**' exec rm -rf dist",
+    "dev": "pnpm --filter @html2figma/test dev",
+    "dev:plugin": "pnpm --filter @html2figma/test dev:plugin",
+    "build:test-plugin": "pnpm --filter @html2figma/test build:plugin",
+    "dev:server": "pnpm --filter @html2figma/server dev",
+    "dev:server:node": "pnpm --filter @html2figma/server dev:node",
+    "start:server": "pnpm --filter @html2figma/server start",
+    "start:server:node": "pnpm --filter @html2figma/server start:node",
+    "dev:extension": "pnpm --filter @html2figma/extension dev",
+    "build:extension": "pnpm --filter @html2figma/extension build",
+    "dev:web": "pnpm --filter @html2figma/web dev",
+    "build:web": "pnpm --filter @html2figma/web build",
+    "sync:standalone": "cp packages/browser/dist/standalone.iife.js packages/test/web/asset/standalone.iife.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "type-check": "pnpm -r --filter='./packages/**' type-check"
+  },
+  "keywords": [
+    "figma",
+    "html",
+    "dom",
+    "converter",
+    "monorepo"
+  ],
+  "author": "html2figma",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.6.3",
+    "typescript": "^5.2.2",
+    "vitest": "^4.0.18"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "engines": {
+    "node": ">=20.9.0",
+    "pnpm": ">=8.0.0"
+  }
+}

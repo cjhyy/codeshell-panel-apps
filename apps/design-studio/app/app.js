@@ -75,7 +75,7 @@ import {
   resolveFigmaBindingRef,
   parseFigmaBinding,
 } from "./figma-binding.mjs";
-import { createReviewCommentsStore } from "./review-comments.mjs";
+import { createReviewCommentsStore, parseReviewComments } from "./review-comments.mjs";
 import {
   readDesignSidecar,
   writeDesignSidecar,
@@ -88,6 +88,7 @@ import { exportDesignPrototype, normalizePrototype } from "./prototype.mjs";
 import { createRecoverySession } from "./recovery-session.mjs";
 import { chooseRepoDesignFile, DEFAULT_DESIGN_PATH } from "./repository.mjs";
 import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
+import { groupAuditIssues, pageAuditIssues } from "./audit-review.mjs";
 import {
   captureWorkspaceHtml,
   captureWorkspaceHtmlResult,
@@ -386,6 +387,10 @@ let initialContextPending = true;
 let workspaceLoading = true;
 let portableBackupUI = null;
 let figmaWorkflowUI = null;
+let pendingFigmaImport = null;
+let figmaPreparationSequence = 0;
+let designPublicationSequence = 0;
+let pristineBlankSnapshot = null;
 let reviewCommentsUI = null;
 let prototypeUI = null;
 let stagedFigmaBinding = null;
@@ -3918,17 +3923,41 @@ async function performSaveDocument(request) {
         value: sourceBinding ?? null,
       };
     const replacesCurrentSource = path === currentSourcePath;
-    const result = await bundleHostCall(
-      "workspace.writeText",
-      {
-        path,
-        content: persistence.primarySource,
-        expectedModifiedAt: replacesCurrentSource ? currentModifiedAt : null,
-        ...(replacesCurrentSource && currentRevision ? { expectedRevision: currentRevision } : {}),
-      },
-      operationWorkspaceEpoch,
-    );
+    let result;
+    try {
+      result = await bundleHostCall(
+        "workspace.writeText",
+        {
+          path,
+          content: persistence.primarySource,
+          expectedModifiedAt: replacesCurrentSource ? currentModifiedAt : null,
+          ...(replacesCurrentSource && currentRevision
+            ? { expectedRevision: currentRevision }
+            : {}),
+        },
+        operationWorkspaceEpoch,
+      );
+    } catch (writeError) {
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
+      let observed;
+      try {
+        observed = await bundleHostCall("workspace.readText", { path }, operationWorkspaceEpoch);
+        assertWorkspaceEpoch(operationWorkspaceEpoch);
+      } catch (readError) {
+        assertWorkspaceEpoch(operationWorkspaceEpoch);
+        if (!isMissingDesignSidecar(readError)) {
+          // An unobservable failed receipt cannot prove that publication did not happen.
+          designPublicationSequence += 1;
+          writeError.designPublicationUnknown = true;
+          writeError.message = `保存结果无法确认；已保留当前画布，请核对 ${path} 后再重试。${writeError.message}`;
+        }
+        throw writeError;
+      }
+      if (observed.content !== persistence.primarySource) throw writeError;
+      result = { ...observed, writeReceiptRecovered: true };
+    }
     assertWorkspaceEpoch(operationWorkspaceEpoch);
+    designPublicationSequence += 1;
     fileDiscoveryCache = null;
     recoveryFailureWarned = false;
     const stillTargetsSavedPath =
@@ -4027,7 +4056,7 @@ async function performSaveDocument(request) {
     if (workspaceEpoch !== operationWorkspaceEpoch) throw error;
     const message = error instanceof Error ? error.message : "保存失败";
     queueRecovery();
-    setSaveState("保存失败", "error");
+    setSaveState(error?.designPublicationUnknown ? "保存状态待核对" : "保存失败", "error");
     notify(
       message.includes("changed since")
         ? "文件已在面板外变化。请重新打开，或改一个文件名保存副本。"
@@ -4083,7 +4112,7 @@ async function settlePendingSaves() {
   }
 }
 
-async function openDocument(path, { discardChanges = false } = {}) {
+async function openDocument(path, { discardChanges = false, onOpened = () => {} } = {}) {
   finishInlineTextEdit();
   const operationWorkspaceEpoch = workspaceEpoch;
   const operationRecoverySession = recoverySession;
@@ -4133,6 +4162,7 @@ async function openDocument(path, { discardChanges = false } = {}) {
     savedSnapshot = serializeEditorState();
     resetHistory();
     updateDirtyState();
+    onOpened();
     await loadReferencedDesignResources();
     setRepoLinkState("Repo · 已打开", "linked");
     renderAll();
@@ -4871,6 +4901,80 @@ function setHtmlImportStatus(message, kind = "idle") {
   elements.htmlImportStatus.dataset.kind = kind;
 }
 
+// Capture file ownership as well as canvas history before an import changes either.
+function captureImportRollback() {
+  return {
+    design: clone(design),
+    history: [...history],
+    historyIndex,
+    historyState: clone(historyState),
+    selectedId,
+    selectedIds: new Set(selectedIds),
+    collapsedLayerIds: new Set(collapsedLayerIds),
+    documentEpoch,
+    designStateSequence,
+    lastAgentTransaction,
+    currentModifiedAt,
+    currentRevision,
+    currentSourcePath,
+    currentSourceModifiedAt,
+    currentSourceRevision,
+    currentDesignIndexManifest,
+    currentPageCache,
+    currentResourceCache,
+    currentPersistenceMode,
+    savedSnapshot,
+    savedOperationState,
+    recoveryBaseDocument,
+    pristineBlankSnapshot,
+    stagedFigmaBinding,
+    loadedFigmaBinding,
+    warnedExternalVersion,
+    publicationSequence: designPublicationSequence,
+    path: elements.path.value,
+    resourceDataUrls: new Map(resourceDataUrls),
+    loadedFontResourceIds: new Set(loadedFontResourceIds),
+  };
+}
+
+function restoreImportRollback(before) {
+  design = normalizeDesignState(before.design);
+  history = before.history;
+  historyIndex = before.historyIndex;
+  historyState = before.historyState;
+  selectedId = before.selectedId;
+  selectedIds = before.selectedIds;
+  collapsedLayerIds.clear();
+  for (const id of before.collapsedLayerIds) collapsedLayerIds.add(id);
+  documentEpoch = before.documentEpoch;
+  designStateSequence = before.designStateSequence;
+  lastAgentTransaction = before.lastAgentTransaction;
+  currentModifiedAt = before.currentModifiedAt;
+  currentRevision = before.currentRevision;
+  currentSourcePath = before.currentSourcePath;
+  currentSourceModifiedAt = before.currentSourceModifiedAt;
+  currentSourceRevision = before.currentSourceRevision;
+  currentDesignIndexManifest = before.currentDesignIndexManifest;
+  currentPageCache = before.currentPageCache;
+  currentResourceCache = before.currentResourceCache;
+  currentPersistenceMode = before.currentPersistenceMode;
+  savedSnapshot = before.savedSnapshot;
+  savedOperationState = before.savedOperationState;
+  recoveryBaseDocument = before.recoveryBaseDocument;
+  pristineBlankSnapshot = before.pristineBlankSnapshot;
+  stagedFigmaBinding = before.stagedFigmaBinding;
+  loadedFigmaBinding = before.loadedFigmaBinding;
+  warnedExternalVersion = before.warnedExternalVersion;
+  elements.path.value = before.path;
+  resourceDataUrls.clear();
+  for (const [id, value] of before.resourceDataUrls) resourceDataUrls.set(id, value);
+  loadedFontResourceIds.clear();
+  for (const id of before.loadedFontResourceIds) loadedFontResourceIds.add(id);
+  updateDirtyState();
+  renderAll();
+  if (dirty) queueRecovery();
+}
+
 async function replaceDesignWithHtmlImport(
   imported,
   {
@@ -4879,6 +4983,8 @@ async function replaceDesignWithHtmlImport(
     sourcePath,
     assertSource = () => {},
     onReplaced = () => {},
+    afterReplaced = async () => {},
+    targetPath,
   } = {},
 ) {
   const operationWorkspaceEpoch = workspaceEpoch;
@@ -4887,14 +4993,31 @@ async function replaceDesignWithHtmlImport(
   assertWorkspaceEpoch(operationWorkspaceEpoch);
   assertSource();
   const nextDesign = normalizeDocument(imported);
+  const before = captureImportRollback();
   const previous = clone(design);
   const previousSnapshot = serializeDesign();
   const nextSnapshot = serializeDocument(nextDesign);
   const documentBytes = measureDesignDocumentBytes(nextDesign);
-  if (nextSnapshot === previousSnapshot) {
-    onReplaced({ noOp: true });
+  if (
+    nextSnapshot === previousSnapshot &&
+    (!targetPath || targetPath === elements.path.value.trim())
+  ) {
     let savedResult = null;
-    if (save) savedResult = await saveDocument({ quiet: true });
+    const unchangedState = currentDesignStateRevision();
+    try {
+      onReplaced({ noOp: true });
+      await afterReplaced();
+      if (save) savedResult = await saveDocument({ quiet: true });
+    } catch (error) {
+      if (
+        workspaceEpoch === operationWorkspaceEpoch &&
+        documentEpoch === before.documentEpoch &&
+        currentDesignStateRevision() === unchangedState &&
+        designPublicationSequence === before.publicationSequence
+      )
+        restoreImportRollback(before);
+      throw error;
+    }
     assertWorkspaceEpoch(operationWorkspaceEpoch);
     return {
       path: elements.path.value.trim(),
@@ -4914,19 +5037,9 @@ async function replaceDesignWithHtmlImport(
     };
   }
 
-  const previousHistory = [...history];
   const previousHistoryIndex = historyIndex;
-  const previousHistoryState = clone(historyState);
   const previousSelectedId = selectedId;
   const previousSelectedIds = new Set(selectedIds);
-  const previousCollapsedLayerIds = new Set(collapsedLayerIds);
-  const previousDocumentEpoch = documentEpoch;
-  const previousDesignStateSequence = designStateSequence;
-  const previousAgentTransaction = lastAgentTransaction;
-  const previousPageCache = currentPageCache;
-  const previousResourceCache = currentResourceCache;
-  const previousResourceDataUrls = new Map(resourceDataUrls);
-  const previousLoadedFontResourceIds = new Set(loadedFontResourceIds);
   const changedNodeIds = new Set([
     ...allDesignNodes(previous).map((node) => node.id),
     ...allDesignNodes(nextDesign).map((node) => node.id),
@@ -4945,47 +5058,34 @@ async function replaceDesignWithHtmlImport(
   clearSelection();
   collapsedLayerIds.clear();
   commitHistory();
+  if (targetPath) elements.path.value = targetPath;
   onReplaced();
   markChanged();
   const importedDocumentEpoch = documentEpoch;
   const importedStateRevision = currentDesignStateRevision();
   let savedResult = null;
-  if (save) {
-    try {
-      savedResult = await saveDocument({ quiet: true });
-      assertWorkspaceEpoch(operationWorkspaceEpoch);
-      if (
-        documentEpoch !== importedDocumentEpoch ||
-        currentDesignStateRevision() !== importedStateRevision
-      )
-        throw new Error("HTML 导入保存期间画布已变化；已保留较新的设计，请重新读取状态");
-    } catch (error) {
-      assertWorkspaceEpoch(operationWorkspaceEpoch);
-      if (
-        documentEpoch !== importedDocumentEpoch ||
-        currentDesignStateRevision() !== importedStateRevision
-      )
-        throw error;
-      design = normalizeDesignState(previous);
-      history = previousHistory;
-      historyIndex = previousHistoryIndex;
-      historyState = previousHistoryState;
-      selectedId = previousSelectedId;
-      selectedIds = previousSelectedIds;
-      collapsedLayerIds.clear();
-      for (const id of previousCollapsedLayerIds) collapsedLayerIds.add(id);
-      documentEpoch = previousDocumentEpoch;
-      designStateSequence = previousDesignStateSequence;
-      lastAgentTransaction = previousAgentTransaction;
-      currentPageCache = previousPageCache;
-      currentResourceCache = previousResourceCache;
-      resourceDataUrls.clear();
-      for (const [id, dataUrl] of previousResourceDataUrls) resourceDataUrls.set(id, dataUrl);
-      loadedFontResourceIds.clear();
-      for (const id of previousLoadedFontResourceIds) loadedFontResourceIds.add(id);
-      markChanged();
-      throw error;
+  try {
+    await afterReplaced();
+    assertWorkspaceEpoch(operationWorkspaceEpoch);
+    if (currentDesignStateRevision() !== importedStateRevision)
+      throw new Error("导入期间画布已变化；已保留较新的设计，请重新读取状态");
+    if (save) savedResult = await saveDocument({ quiet: true });
+    assertWorkspaceEpoch(operationWorkspaceEpoch);
+    if (
+      documentEpoch !== importedDocumentEpoch ||
+      currentDesignStateRevision() !== importedStateRevision
+    )
+      throw new Error("导入保存期间画布已变化；已保留较新的设计，请重新读取状态");
+  } catch (error) {
+    if (
+      workspaceEpoch === operationWorkspaceEpoch &&
+      documentEpoch === importedDocumentEpoch &&
+      currentDesignStateRevision() === importedStateRevision &&
+      designPublicationSequence === before.publicationSequence
+    ) {
+      restoreImportRollback(before);
     }
+    throw error;
   }
 
   let transactionId = null;
@@ -5191,14 +5291,53 @@ async function showAudit() {
     issues.length === 0
       ? `未发现问题 · ${design.pages.length} 页 · ${totalNodeCount} 个图层`
       : `${summary.issueCount} 个问题 · ${summary.blockingIssueCount} 个阻塞 · ${summary.errorCount} 个错误 · ${summary.warningCount} 个警告`;
-  elements.auditResults.replaceChildren();
-  if (issues.length === 0) {
-    const clean = document.createElement("div");
-    clean.className = "audit-clean";
-    clean.textContent = "✓ 结构与基础可访问性检查通过";
-    elements.auditResults.append(clean);
-  } else {
-    for (const issue of issues.slice(0, MAX_AGENT_AUDIT_ISSUES)) {
+  const controls = document.querySelector("#audit-controls");
+  controls.className = "audit-controls";
+  controls.innerHTML =
+    '<select aria-label="问题类型"></select><select aria-label="问题严重度"><option value="all">全部严重度</option><option value="blocking">阻塞问题</option><option value="warning">警告</option></select><button type="button" aria-label="上一页问题">上一页</button><span role="status"></span><button type="button" aria-label="下一页问题">下一页</button>';
+  const [typeFilter, severityFilter] = controls.querySelectorAll("select");
+  const [previous, next] = controls.querySelectorAll("button");
+  const count = controls.querySelector("span");
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = `全部类型 · ${issues.length}`;
+  typeFilter.append(all);
+  const names = {
+    "canvas-overflow": "超出画布",
+    "text-width-overflow": "文字宽度",
+    "parent-overflow": "超出父容器",
+    contrast: "文字对比度",
+    "invisible-text": "不可见文字",
+    "ancestor-clip-overflow": "祖先裁切",
+    "effect-canvas-overflow": "效果超出画布",
+  };
+  for (const group of groupAuditIssues(issues)) {
+    const option = document.createElement("option");
+    option.value = group.code;
+    option.textContent = `${names[group.code.split(".").at(-1)] ?? group.code} · ${group.count}`;
+    typeFilter.append(option);
+  }
+  let offset = 0;
+  const renderPage = () => {
+    const page = pageAuditIssues(issues, {
+      code: typeFilter.value,
+      severity: severityFilter.value,
+      offset,
+      limit: 50,
+    });
+    elements.auditResults.replaceChildren();
+    previous.disabled = offset === 0;
+    next.disabled = page.nextOffset === null;
+    count.textContent = page.total
+      ? `${offset + 1}–${offset + page.issues.length} / ${page.total}`
+      : "0 个问题";
+    if (!page.total) {
+      const clean = document.createElement("div");
+      clean.className = "audit-clean";
+      clean.textContent = issues.length ? "此筛选下没有问题" : "✓ 结构与基础可访问性检查通过";
+      elements.auditResults.append(clean);
+    }
+    for (const issue of page.issues) {
       const item = document.createElement("button");
       item.type = "button";
       item.className = "audit-issue";
@@ -5234,23 +5373,32 @@ async function showAudit() {
           if (pageChanged) {
             commitHistory();
             markChanged();
-            requestAnimationFrame(fitSelection);
-          } else {
-            renderAll();
-          }
+          } else renderAll();
+          requestAnimationFrame(fitSelection);
         })().catch((error) =>
           notify(error instanceof Error ? error.message : "无法定位问题图层", "error"),
         );
       });
       elements.auditResults.append(item);
     }
-    if (issues.length > MAX_AGENT_AUDIT_ISSUES) {
-      const truncated = document.createElement("div");
-      truncated.className = "audit-truncated";
-      truncated.textContent = `还有 ${issues.length - MAX_AGENT_AUDIT_ISSUES} 个问题未在本次列表中展开；修复后再次检查。`;
-      elements.auditResults.append(truncated);
-    }
-  }
+  };
+  typeFilter.addEventListener("change", () => {
+    offset = 0;
+    renderPage();
+  });
+  severityFilter.addEventListener("change", () => {
+    offset = 0;
+    renderPage();
+  });
+  previous.addEventListener("click", () => {
+    offset = Math.max(0, offset - 50);
+    renderPage();
+  });
+  next.addEventListener("click", () => {
+    offset += 50;
+    renderPage();
+  });
+  renderPage();
   await compactIndexedPageRuntime();
   elements.auditDialog.showModal();
 }
@@ -5299,11 +5447,17 @@ async function saveAuditReport() {
   }
 }
 
-function newDocument() {
+function newDocument({
+  discardChanges = false,
+  path = "designs/untitled.codesign.json",
+  name = "Untitled",
+} = {}) {
   finishInlineTextEdit();
-  if (dirty && !window.confirm("当前设计有未保存修改。确定要新建设计吗？")) return;
+  if (dirty && !discardChanges && !window.confirm("当前设计有未保存修改。确定要新建设计吗？"))
+    return;
   cancelInteraction();
-  design = createBlankDocument("Untitled");
+  design = createBlankDocument(name);
+  pristineBlankSnapshot = null;
   recoveryBaseDocument = clone(design);
   documentEpoch += 1;
   clearSelection();
@@ -5320,7 +5474,7 @@ function newDocument() {
   resourceDataUrls.clear();
   loadedFontResourceIds.clear();
   currentPersistenceMode = "single";
-  elements.path.value = "designs/untitled.codesign.json";
+  elements.path.value = path;
   savedSnapshot = "";
   resetHistory();
   markChanged();
@@ -7002,6 +7156,7 @@ function resetToRepoBlankDocument() {
   savedSnapshot = "";
   resetHistory();
   updateDirtyState();
+  pristineBlankSnapshot = { documentEpoch, path: elements.path.value, source: serializeDesign() };
   renderAll();
   requestAnimationFrame(fitCanvas);
 }
@@ -8158,6 +8313,138 @@ async function rollbackAgentDesign(args) {
   };
 }
 
+async function manageDesignFile(args) {
+  requireCurrentAgentState(args.expected_state_revision);
+  if (!["create", "open", "save_as"].includes(args.action) || !safeDesignPath(args.path))
+    throw Error("save_design 文件操作需要 create/open/save_as 和安全的 .codesign.json 路径");
+  if (
+    args.name !== undefined &&
+    (typeof args.name !== "string" ||
+      !args.name.trim() ||
+      args.name.length > 120 ||
+      /[\u0000-\u001f\u007f]/u.test(args.name))
+  )
+    throw Error("name 必须是 1–120 个安全字符");
+  for (const key of ["save", "discard_changes"])
+    if (args[key] !== undefined && typeof args[key] !== "boolean")
+      throw Error(`${key} 必须是布尔值`);
+  if (args.action !== "create" && (args.name !== undefined || args.save !== undefined))
+    throw Error("name/save 仅用于 create");
+  if (args.action !== "save_as" && dirty && !args.discard_changes)
+    throw Error("当前稿件有未保存修改；请先保存，或明确 discard_changes:true");
+  await ensureAllDesignPagesLoaded();
+  requireCurrentAgentState(args.expected_state_revision);
+  const epoch = workspaceEpoch,
+    check = captureDeliveryScope();
+  const before = captureImportRollback();
+  let appliedState = null;
+  try {
+    if (args.action === "open") {
+      await openDocument(args.path, {
+        discardChanges: true,
+        onOpened: () => {
+          appliedState = currentDesignStateRevision();
+        },
+      });
+    } else {
+      await assertNewDesignTarget(args.path, check);
+      requireCurrentAgentState(args.expected_state_revision);
+      if (args.action === "create") {
+        newDocument({
+          discardChanges: true,
+          path: args.path,
+          name: args.name?.trim() ?? "Untitled",
+        });
+        stagedFigmaBinding = {
+          workspaceEpoch,
+          documentEpoch,
+          historyIndex: 0,
+          committed: true,
+          value: null,
+        };
+        loadedFigmaBinding = null;
+      } else {
+        const attachments = [];
+        if (currentSourcePath)
+          for (const suffix of [".comments.json", ".prototype.json"]) {
+            try {
+              const source = await readDesignSidecar({
+                path: designSidecarPath(currentSourcePath, suffix),
+                call: bundleHostCall,
+                check,
+                sha256: sha256Text,
+              });
+              const content =
+                suffix === ".comments.json"
+                  ? JSON.stringify({
+                      ...parseReviewComments(source.content, currentSourcePath),
+                      designPath: args.path,
+                    })
+                  : JSON.stringify(normalizePrototype(JSON.parse(source.content)));
+              attachments.push({ suffix, content });
+            } catch (error) {
+              check();
+              if (!isMissingDesignSidecar(error)) throw error;
+            }
+          }
+        requireCurrentAgentState(args.expected_state_revision);
+        for (const attachment of attachments) {
+          attachment.path = designSidecarPath(args.path, attachment.suffix);
+          try {
+            const existing = await readDesignSidecar({
+              path: attachment.path,
+              call: bundleHostCall,
+              check,
+              sha256: sha256Text,
+            });
+            check();
+            if (existing.content !== attachment.content)
+              throw Error(`目标附属文件冲突：${attachment.path}`);
+            attachment.reuse = true;
+          } catch (error) {
+            check();
+            if (!isMissingDesignSidecar(error)) throw error;
+          }
+        }
+        for (const attachment of attachments)
+          if (!attachment.reuse)
+            await writeDesignSidecar({
+              path: attachment.path,
+              content: attachment.content,
+              call: bundleHostCall,
+              check,
+              sha256: sha256Text,
+              expectedModifiedAt: null,
+            });
+        check();
+        elements.path.value = args.path;
+      }
+      appliedState = currentDesignStateRevision();
+      if (args.action === "save_as" || args.save !== false) await saveDocument({ quiet: true });
+    }
+    assertWorkspaceEpoch(epoch);
+    return {
+      action: args.action,
+      path: elements.path.value.trim(),
+      name: design.name,
+      saved: !dirty,
+      revision: currentRevision,
+      stateRevision: currentDesignStateRevision(),
+      pageCount: design.pages.length,
+      nodeCount: allDesignNodes().length,
+    };
+  } catch (error) {
+    if (
+      workspaceEpoch === epoch &&
+      appliedState &&
+      currentDesignStateRevision() === appliedState &&
+      designPublicationSequence === before.publicationSequence
+    )
+      restoreImportRollback(before);
+    throw error;
+  }
+}
+
 function registerAgentTools(ready) {
   const register = window.codeshellPanel?.registerTool;
   if (!register) return;
@@ -8275,33 +8562,121 @@ function registerAgentTools(ready) {
     await ready;
     assertAgentToolArguments(
       args,
-      new Set(["action", "path", "save", "expected_state_revision"]),
+      new Set([
+        "action",
+        "path",
+        "source_path",
+        "target_path",
+        "mode",
+        "preparation_id",
+        "allow_blocking",
+        "save",
+        "expected_state_revision",
+      ]),
       "exchange_figma",
     );
+    const sourcePath = args.source_path ?? args.path;
     if (
-      !["import", "export"].includes(args.action) ||
-      typeof args.path !== "string" ||
-      !isSafeExchangeJsonPath(args.path)
+      !["prepare", "import", "export"].includes(args.action) ||
+      !isSafeExchangeJsonPath(sourcePath)
     )
-      throw Error("Figma 交换需要 import/export 和安全的 designs/ JSON 路径");
-    if (args.save !== undefined && typeof args.save !== "boolean") throw Error("save 必须是布尔值");
+      throw Error("Figma 交换需要 prepare/import/export 和安全的 designs/ JSON 路径");
+    if (args.path && args.source_path && args.path !== args.source_path)
+      throw Error("path 与 source_path 不一致");
+    for (const key of ["save", "allow_blocking"])
+      if (args[key] !== undefined && typeof args[key] !== "boolean")
+        throw Error(`${key} 必须是布尔值`);
+    if (
+      args.action === "export" &&
+      ["source_path", "target_path", "mode", "preparation_id", "allow_blocking"].some(
+        (key) => args[key] !== undefined,
+      )
+    )
+      throw Error("export 仅接受 path 输出路径");
     return enqueueAgentMutation(async () => {
       requireCurrentAgentState(args.expected_state_revision);
       const scope = { ...captureExchangeScope(), agent: true };
-      if (args.action === "import") {
+      if (args.action !== "export") {
+        const cached = args.preparation_id ? pendingFigmaImport : null;
+        if (
+          args.preparation_id &&
+          (!cached ||
+            cached.id !== args.preparation_id ||
+            cached.sourcePath !== sourcePath ||
+            cached.stateRevision !== scope.stateRevision)
+        )
+          throw Error("导入预检已失效；请重新 prepare");
+        const target = cached?.target ?? figmaTarget(args, sourcePath);
+        if (
+          cached &&
+          ((args.target_path && args.target_path !== target.path) ||
+            (args.mode && args.mode !== target.mode))
+        )
+          throw Error("导入目标与预检不一致；请重新 prepare");
+        if (target.mode === "create")
+          await assertNewDesignTarget(target.path, () => checkExchangeScope(scope));
         const source = await readDesignSidecar({
-          path: args.path,
+          path: sourcePath,
           call: bundleHostCall,
           check: () => checkExchangeScope(scope),
           sha256: sha256Text,
         });
         checkExchangeScope(scope);
-        const prepared = await prepareFigmaImport(source.content, { sha256Bytes });
+        const sourceHash = await sha256Text(source.content);
         checkExchangeScope(scope);
-        return importPreparedFigma(prepared, () => checkExchangeScope(scope), {
+        if (cached && sourceHash !== cached.sourceHash)
+          throw Error("Figma 输入已在预检后变化；请重新 prepare");
+        const prepared =
+          cached?.prepared ??
+          reviewPreparedFigma(await prepareFigmaImport(source.content, { sha256Bytes }));
+        checkExchangeScope(scope);
+        if (args.action === "prepare") {
+          const id = `figma-prepare-${++figmaPreparationSequence}-${sourceHash.slice(0, 12)}`;
+          pendingFigmaImport = {
+            id,
+            sourcePath,
+            sourceHash,
+            target,
+            prepared,
+            stateRevision: scope.stateRevision,
+          };
+          return {
+            preparationId: id,
+            sourcePath,
+            sourceSha256: sourceHash,
+            targetPath: target.path,
+            mode: target.mode,
+            stateRevision: scope.stateRevision,
+            audit: prepared.audit,
+            issueGroups: prepared.issueGroups,
+            stats: prepared.stats,
+            warnings: prepared.warnings.slice(0, 20),
+            warningCount: prepared.stats.warningCount,
+            truncatedWarningCount: Math.max(0, prepared.stats.warningCount - 20),
+            requiresAllowBlocking: !prepared.audit.renderSafe,
+          };
+        }
+        const modern = Boolean(
+          args.source_path || args.target_path || args.mode || args.preparation_id,
+        );
+        if (modern && !prepared.audit.renderSafe && !args.allow_blocking)
+          throw Error(
+            `导入预检有 ${prepared.audit.blockingIssueCount} 个阻塞问题；修正来源，或明确 allow_blocking:true 保存草稿`,
+          );
+        const imported = await importPreparedFigma(prepared, () => checkExchangeScope(scope), {
           save: args.save !== false,
           recordAgentTransaction: true,
+          ...(target.mode === "create" ? { targetPath: target.path } : {}),
         });
+        pendingFigmaImport = null;
+        return {
+          ...imported,
+          sourcePath,
+          targetPath: target.path,
+          mode: target.mode,
+          draft: !imported.audit.renderSafe,
+          deliveryReady: imported.audit.valid,
+        };
       }
       const snapshot = await repositoryDocumentSnapshot();
       checkExchangeScope(scope);
@@ -8920,13 +9295,21 @@ function registerAgentTools(ready) {
   register("validate_design", async (args = {}) => {
     await ready;
     await settleAgentReadState();
-    assertAgentToolArguments(args, new Set(), "validate_design");
+    assertAgentToolArguments(
+      args,
+      new Set(["code", "severity", "offset", "limit"]),
+      "validate_design",
+    );
     await ensureAllDesignPagesLoaded();
     try {
       await loadReferencedDesignResources();
       const inspectedDesign = normalizeCurrentDesignState(design);
       const issues = auditDocument(inspectedDesign);
-      const visibleIssues = issues.slice(0, MAX_AGENT_AUDIT_ISSUES);
+      const page = pageAuditIssues(issues, {
+        ...args,
+        limit: args.limit ?? MAX_AGENT_AUDIT_ISSUES,
+      });
+      const visibleIssues = page.issues;
       return {
         ...summarizeAudit(issues),
         path: elements.path.value.trim(),
@@ -8935,6 +9318,13 @@ function registerAgentTools(ready) {
         pageCount: inspectedDesign.pages.length,
         stateRevision: currentDesignStateRevision(),
         issues: visibleIssues,
+        issueGroups: groupAuditIssues(issues),
+        page: {
+          total: page.total,
+          offset: page.offset,
+          limit: page.limit,
+          nextOffset: page.nextOffset,
+        },
         truncatedIssueCount: issues.length - visibleIssues.length,
       };
     } finally {
@@ -9074,7 +9464,15 @@ function registerAgentTools(ready) {
   });
   register("save_design", async (args = {}) => {
     await ready;
-    assertAgentToolArguments(args, new Set(["expected_state_revision"]), "save_design");
+    assertAgentToolArguments(
+      args,
+      new Set(["action", "path", "name", "save", "discard_changes", "expected_state_revision"]),
+      "save_design",
+    );
+    if (args.action !== undefined && args.action !== "save")
+      return enqueueAgentMutation(() => manageDesignFile(args));
+    if (["path", "name", "save", "discard_changes"].some((key) => args[key] !== undefined))
+      throw Error("默认 save 不接受文件管理参数；请指定 create/open/save_as");
     if (typeof args.expected_state_revision !== "string" || !args.expected_state_revision) {
       throw new Error(
         "save_design.expected_state_revision 必须是 get_design_metadata 返回的非空字符串",
@@ -9318,12 +9716,56 @@ async function getCurrentFigmaBinding() {
   return value;
 }
 
+function reviewPreparedFigma(result) {
+  const documentValue = normalizeDesignState(result.document);
+  const issues = auditDesignPages(documentValue);
+  return { ...result, audit: summarizeAudit(issues), issueGroups: groupAuditIssues(issues) };
+}
+
+async function assertNewDesignTarget(path, check = () => {}) {
+  if (!safeDesignPath(path)) throw Error("目标需位于 designs/ 并以 .codesign.json 结尾");
+  try {
+    await bundleHostCall("workspace.readText", { path });
+  } catch (error) {
+    check();
+    if (isMissingDesignSidecar(error)) return;
+    throw error;
+  }
+  check();
+  throw Error(`目标设计已存在：${path}；请使用新文件名，或明确选择 replace`);
+}
+
+function figmaTarget(args, sourcePath) {
+  const mode =
+    args.mode ??
+    (args.action === "prepare" || args.source_path || args.target_path ? "create" : "replace");
+  if (!["create", "replace"].includes(mode)) throw Error("mode 必须是 create 或 replace");
+  const path =
+    args.target_path ??
+    (mode === "create"
+      ? sourcePath.replace(/[.]json$/u, ".import.codesign.json")
+      : elements.path.value.trim());
+  if (!safeDesignPath(path) || path === sourcePath)
+    throw Error("Figma 导入目标路径无效或与输入相同");
+  if (sourcePath === designSidecarPath(path, ".figma-source.json"))
+    throw Error("输入路径与目标的来源绑定文件重名；请使用不同名称的输入包或新稿");
+  if (mode === "replace" && path !== elements.path.value.trim())
+    throw Error("replace 只能替换当前设计；请先使用 save_design(action:open) 打开目标");
+  return { mode, path };
+}
+
 async function importPreparedFigma(
   result,
   check,
-  { save = false, recordAgentTransaction = false } = {},
+  { save = false, recordAgentTransaction = false, targetPath } = {},
 ) {
   check();
+  const pristine =
+    pristineBlankSnapshot?.documentEpoch === documentEpoch &&
+    pristineBlankSnapshot.path === elements.path.value &&
+    pristineBlankSnapshot.source === serializeDesign();
+  if (targetPath && dirty && !pristine)
+    throw Error("当前设计有未保存修改；请先保存或备份，再导入新稿");
   const previousBinding = await getCurrentFigmaBinding();
   check();
   const previousStage =
@@ -9355,6 +9797,9 @@ async function importPreparedFigma(
   const replaced = await replaceDesignWithHtmlImport(result.document, {
     assertSource: check,
     recordAgentTransaction,
+    targetPath,
+    save,
+    afterReplaced: () => loadReferencedDesignResources(),
     onReplaced: ({ noOp = false } = {}) => {
       stagedFigmaBinding = {
         workspaceEpoch,
@@ -9373,17 +9818,10 @@ async function importPreparedFigma(
   assertWorkspaceEpoch(expectedWorkspaceEpoch);
   if (replaced.stateRevision !== currentDesignStateRevision())
     throw new Error("Figma 导入后设计已变化，请核对当前画布");
-  await loadReferencedDesignResources();
-  const saved = save ? await saveDocument({ quiet: true }) : null;
-  assertWorkspaceEpoch(expectedWorkspaceEpoch);
-  if (recordAgentTransaction && lastAgentTransaction?.id === replaced.transactionId) {
-    lastAgentTransaction.revision = saved?.revision ?? currentRevision;
-    lastAgentTransaction.stateRevision = currentDesignStateRevision();
-  }
   return {
     ...replaced,
     saved: save,
-    revision: saved?.revision ?? currentRevision,
+    revision: replaced.revision,
     stateRevision: currentDesignStateRevision(),
     warnings: result.warnings,
     stats: result.stats,
@@ -9411,6 +9849,50 @@ async function createCurrentFigmaTransfer(snapshot, scope) {
   return transfer;
 }
 
+pristineBlankSnapshot = { documentEpoch, path: elements.path.value, source: serializeDesign() };
+const saveAsButton = document.createElement("button");
+saveAsButton.id = "save-as";
+saveAsButton.type = "button";
+saveAsButton.className = "button";
+saveAsButton.textContent = "另存为";
+elements.save.after(saveAsButton);
+const saveAsDialog = document.createElement("dialog");
+saveAsDialog.id = "save-as-dialog";
+saveAsDialog.setAttribute("aria-label", "另存设计文件");
+saveAsDialog.innerHTML =
+  '<section class="dialog-card"><h2>另存设计文件</h2><label for="save-as-path">新稿路径</label><input id="save-as-path" spellcheck="false"><p role="status" id="save-as-status"></p><button type="button" id="save-as-cancel">取消</button><button type="button" id="save-as-confirm" class="primary-button">保存副本</button></section>';
+document.body.append(saveAsDialog);
+const saveAsPath = saveAsDialog.querySelector("#save-as-path");
+const saveAsStatus = saveAsDialog.querySelector("#save-as-status");
+saveAsButton.addEventListener("click", () => {
+  saveAsPath.value = elements.path.value
+    .trim()
+    .replace(/[.]codesign[.]json$/u, "-copy.codesign.json");
+  saveAsStatus.textContent = "副本会保留资源、已保存的评论和原型；已有文件不会被覆盖。";
+  saveAsDialog.showModal();
+});
+saveAsDialog.querySelector("#save-as-cancel").addEventListener("click", () => saveAsDialog.close());
+saveAsDialog.querySelector("#save-as-confirm").addEventListener("click", async () => {
+  try {
+    await enqueueAgentMutation(() =>
+      manageDesignFile({
+        action: "save_as",
+        path: saveAsPath.value.trim(),
+        expected_state_revision: currentDesignStateRevision(),
+      }),
+    );
+    saveAsDialog.close();
+    notify("已保存独立设计副本");
+  } catch (error) {
+    saveAsStatus.textContent = error instanceof Error ? error.message : "另存失败";
+  }
+});
+const compactSaveAs = document.createElement("button");
+compactSaveAs.type = "button";
+compactSaveAs.dataset.toolbarAction = "save-as";
+compactSaveAs.textContent = "另存设计文件";
+document.querySelector(".compact-actions-list").append(compactSaveAs);
+
 figmaWorkflowUI = mountFigmaWorkflow({
   getScope: captureExchangeScope,
   checkScope: checkExchangeScope,
@@ -9420,8 +9902,27 @@ figmaWorkflowUI = mountFigmaWorkflow({
     checkExchangeScope(scope);
     return snapshot;
   },
-  prepareImport: (input) => prepareFigmaImport(input, { sha256Bytes }),
-  replace: (_documentValue, assertSource, review) => importPreparedFigma(review, assertSource),
+  prepareImport: async (input) => {
+    const prepared = reviewPreparedFigma(await prepareFigmaImport(input, { sha256Bytes }));
+    const resourceDataUrls = new Map(
+      (prepared.resourcePlans ?? []).map((plan) => [
+        plan.descriptor.id,
+        `data:${plan.descriptor.mime};base64,${plan.parts.map((part) => part.content).join("")}`,
+      ]),
+    );
+    const previewSvg = exportDesignSvg(normalizeDesignState(prepared.document), {
+      resourceDataUrls,
+    });
+    return { ...prepared, ...(previewSvg.length <= 4 * 1024 * 1024 ? { previewSvg } : {}) };
+  },
+  replace: async (_documentValue, assertSource, review, options = {}) => {
+    const targetPath = options.targetPath;
+    if (options.mode === "create") await assertNewDesignTarget(targetPath, assertSource);
+    return importPreparedFigma(review, assertSource, {
+      save: options.save === true,
+      ...(options.mode === "create" ? { targetPath } : {}),
+    });
+  },
   transfer: createCurrentFigmaTransfer,
   source: async (scope) => {
     const binding = await getCurrentFigmaBinding();
