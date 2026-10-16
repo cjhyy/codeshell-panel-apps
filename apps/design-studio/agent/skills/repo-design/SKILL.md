@@ -5,6 +5,13 @@ description: Turn PRDs or rendered HTML into responsive repository designs, refi
 
 # Repository design workflow
 
+For direct Chat or terminal work on saved files without an open panel, use
+`design-studio:project-runtime`. It resolves this project's selected package and
+provides bounded reads/audits, complete-document create/edit with revision CAS,
+SVG/static HTML export, PRD parsing and saved-design comparison. Keep this live
+workflow for Panel-submitted requests, unsaved canvas work, incremental layout,
+visual screenshots, HTML/Figma import, resources, comments and prototypes.
+
 ## Figma exchange, prototypes and review
 
 Use `exchange_figma` with `action: "import"`, a safe workspace `designs/*.json` path and the

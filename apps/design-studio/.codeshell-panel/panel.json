@@ -1276,6 +1276,7 @@
         }
       }
     ],
-    "skills": ["agent/skills/repo-design/SKILL.md"]
+    "skills": ["agent/skills/repo-design/SKILL.md",
+      "agent/skills/project-runtime/SKILL.md"]
   }
 }

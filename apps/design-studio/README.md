@@ -336,6 +336,49 @@ that repository's `.codesign.json` files visible with the current document
 highlighted. The top-bar file picker remains available for keyboard-driven
 switching.
 
+### Headless project CLI
+
+The package-local Node 20.10+ companion at `app/tools/design-studio.mjs` works
+without an open webview. The declared `project-runtime` Skill resolves this
+project's selected installed package; it does not depend on this development
+checkout. `ops` lists the current JSON request schemas:
+
+```sh
+node "<selected-package>/app/tools/design-studio.mjs" ops
+node "<selected-package>/app/tools/design-studio.mjs" run inspect \
+  --project "/absolute/project" --input-file "/absolute/request.json"
+```
+
+An inspect request is `{ "path": "designs/design.codesign.json" }`. Operations
+include `inspect`, bounded `read`, all-page `validate`, `svg`, static HTML
+`frontend`, PRD `brief`, saved-design `compare`, `create`, and `edit`. Create
+accepts a complete v3 `document`; edit also requires the exact saved-file
+`expected_revision` returned by a read. Both use the shared document codec and
+resource verification. They persist actual project source and the same page
+index format the Panel can reopen. Existing files cannot be overwritten by
+create or export. Edit uses SHA-256 CAS under the Host workspace-write lock
+protocol; the primary source commits atomically after its immutable page parts.
+The CLI does not touch private Host storage.
+
+Every command prints one JSON envelope with `ok` and `result` or `error`.
+Exit codes are 0 success, 2 invalid arguments/design, 3 revision conflict, and
+1 other errors. Audit success means the audit ran: require `valid: true` and
+zero issue counts when checking design completion. Requests/reconstructed
+designs are limited to 16 MiB, project reads to 64 MiB, PRDs to 512 KiB, and
+stdout to 1 MiB. Narrow large reads to a page/node, or export to a new artifact.
+Symlinks, traversal and hidden project paths are rejected. CLI operations and
+Host file commits use owned directory locks with a five-second wait; a crash
+may leave a lock requiring verification that no writer is active before removal.
+
+Complete-document edits preserve companion files but do not reconcile comments,
+prototype targets or Figma mappings after ID changes. They accept materialized
+geometry and do not execute the live editor's Auto Layout operations or undo.
+Open the Panel for those workflows, live screenshots, HTML capture/import,
+Figma exchange and resource insertion. The CLI reads saved files; unsaved live
+canvas state remains in the Panel. See the [Runtime Skill](agent/skills/project-runtime/SKILL.md)
+for the operation contract and the required actual Bash workspace protocol probe
+before Skill-driven writes on CodeShell 0.9.36 or later.
+
 The optional repository checker is bundled at `app/tools/check-design.mjs`. Run it from the
 repository root to make canonical JSON and a zero-warning audit a CI-style gate:
 
