@@ -1,0 +1,13 @@
+{
+  "name": "@html2figma/adapter",
+  "version": "1.0.0",
+  "description": "DesignNode DSL to Figma JSON adapter",
+  "type": "module",
+  "main": "figma/index.ts",
+  "scripts": {
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@html2figma/shared": "workspace:*"
+  }
+}
