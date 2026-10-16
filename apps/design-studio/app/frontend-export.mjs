@@ -1,6 +1,6 @@
 import { designPaintCssImage } from "./paint.mjs";
 /* Deterministic CodeShell Design v3 to editable HTML/CSS export. */
-import { designFontFaceCss } from "./font-css.mjs";
+import { designFontFaceCss, designFontFamilyCss } from "./font-css.mjs";
 
 const CONTAINER_TYPES = new Set(["frame", "group", "component"]);
 const PAINTLESS_TYPES = new Set(["group", "instance"]);
@@ -303,7 +303,7 @@ function nodeStyle(node, parent, canvas) {
       ["background", node.fillPaints ? designPaintCssImage(node) : "transparent"],
       ["background-clip", node.fillPaints ? "text" : undefined],
       ["-webkit-background-clip", node.fillPaints ? "text" : undefined],
-      ["font-family", node.fontFamily || "Inter, ui-sans-serif, system-ui, sans-serif"],
+      ["font-family", designFontFamilyCss(node.fontFamily)],
       ["font-size", cssNumber(node.fontSize, 16)],
       ["font-weight", String(node.fontWeight ?? 400)],
       ["font-style", node.fontStyle ?? "normal"],

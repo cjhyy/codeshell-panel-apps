@@ -5,6 +5,33 @@ const escapeCss = (value) =>
     .replace(/</gu, "\\3c ")
     .replace(/[\r\n\f]/gu, " ");
 
+const genericFamilies = new Set([
+  "serif",
+  "sans-serif",
+  "monospace",
+  "cursive",
+  "fantasy",
+  "system-ui",
+  "ui-serif",
+  "ui-sans-serif",
+  "ui-monospace",
+  "ui-rounded",
+  "emoji",
+  "math",
+  "fangsong",
+]);
+
+/** Family names containing digits need CSS string quotes, including Font Awesome 5/6. */
+export function designFontFamilyCss(family = "Inter, ui-sans-serif, system-ui, sans-serif") {
+  return String(family)
+    .split(",")
+    .map((value) => {
+      const name = value.trim().replace(/^(["'])(.*)\1$/u, "$2");
+      return genericFamilies.has(name.toLowerCase()) ? name.toLowerCase() : `"${escapeCss(name)}"`;
+    })
+    .join(", ");
+}
+
 /** Variable built-in weights share one full font URL, keeping portable exports bounded. */
 export function designFontFaceCss(resources = [], resourceDataUrls = new Map()) {
   const urls =

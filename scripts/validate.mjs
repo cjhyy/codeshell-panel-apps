@@ -6280,7 +6280,7 @@ const fontSvg = designCodec.exportDesignSvg(fontDesign, {
 });
 assert(fontSvg.includes("@font-face"));
 assert(fontSvg.includes("data:font/ttf;base64,AA=="));
-assert(fontSvg.includes("Test &quot;Font&quot;"));
+assert(fontSvg.includes(String.raw`font-family="&quot;Test \&quot;Font\&quot;&quot;"`));
 const largeRecoverySnapshot = {
   format: "codeshell.design.recovery",
   version: 1,

@@ -6,6 +6,7 @@ import { resolve, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { BUILTIN_DESIGN_FONTS } from "../../../apps/design-studio/app/builtin-font-catalog.mjs";
+import { designFontFamilyCss } from "../../../apps/design-studio/app/font-css.mjs";
 import {
   prepareBuiltinDesignFontResources,
   ensureBuiltinDesignFonts,
@@ -65,6 +66,18 @@ function source() {
   };
 }
 const prepared = () => prepareFigmaImport(source(), { readFontBytes: readBytes, sha256Bytes });
+
+test("CSS font-family quotes numeric names while preserving generic fallback lists", () => {
+  assert.equal(designFontFamilyCss("Font Awesome 5 Free"), '"Font Awesome 5 Free"');
+  assert.equal(
+    designFontFamilyCss('"Font Awesome 6 Brands", sans-serif'),
+    '"Font Awesome 6 Brands", sans-serif',
+  );
+  assert.equal(
+    designFontFamilyCss("Inter, ui-sans-serif, system-ui, sans-serif"),
+    '"Inter", ui-sans-serif, system-ui, sans-serif',
+  );
+});
 
 test("bundled fonts are complete official files with pinned byte digests and retained license notices", async () => {
   for (const font of BUILTIN_DESIGN_FONTS) {
@@ -284,4 +297,53 @@ test("offline Chromium loads FA5/6 aliases and renders U+E586 as the real shared
   assert.equal(result.five, result.six);
   assert.notEqual(result.five, result.missing);
   assert.equal(external, 0);
+});
+
+test("standalone SVG image embeds the actual numeric-family icon face instead of drawing tofu", async (t) => {
+  const input = source();
+  const icon = input.document.children[0].children[5];
+  icon.absoluteBoundingBox = { x: 8, y: 8, width: 96, height: 96 };
+  icon.style.fontSize = 80;
+  input.document.children[0].children = [icon];
+  const result = await prepareFigmaImport(input, { readFontBytes: readBytes, sha256Bytes });
+  result.document.canvas = { width: 128, height: 128, background: "#ffffff" };
+  const svg = exportDesignSvg(result.document, {
+    resourceDataUrls: resourceDataUrlsFromPlans(result.resourcePlans),
+  });
+  const missing = exportDesignSvg(result.document);
+  const reference = svg.replaceAll("Font Awesome 5 Free", "ReferenceIcon");
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route("**/*", (route) => route.abort());
+  const resultPixels = await page.evaluate(
+    async ({ svg, missing, reference }) => {
+      async function paint(source) {
+        const url = URL.createObjectURL(new Blob([source], { type: "image/svg+xml" }));
+        const image = new Image();
+        image.src = url;
+        await image.decode();
+        const canvas = document.createElement("canvas");
+        canvas.width = 128;
+        canvas.height = 128;
+        const context = canvas.getContext("2d");
+        context.drawImage(image, 0, 0);
+        let digest = 2166136261;
+        for (const value of context.getImageData(0, 0, 128, 128).data)
+          digest = Math.imul(digest ^ value, 16777619);
+        URL.revokeObjectURL(url);
+        return digest >>> 0;
+      }
+      return {
+        actual: await paint(svg),
+        missing: await paint(missing),
+        reference: await paint(reference),
+        globalFonts: document.fonts.size,
+      };
+    },
+    { svg, missing, reference },
+  );
+  assert.equal(resultPixels.globalFonts, 0);
+  assert.equal(resultPixels.actual, resultPixels.reference);
+  assert.notEqual(resultPixels.actual, resultPixels.missing);
 });
