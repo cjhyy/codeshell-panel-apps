@@ -888,7 +888,7 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
       report.warn(
         "font-resource-export",
         node,
-        "字体文件未包含在传输包；Figma 将尝试已安装字体或回退到 Inter。 ",
+        "字体文件未包含在传输包；Figma 将尝试已安装字体。缺失的图标或私用区字体会阻止导入，普通文字回退会明确报告。 ",
       );
     if (node.notes)
       report.warn(

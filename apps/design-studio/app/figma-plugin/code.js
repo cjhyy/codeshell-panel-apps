@@ -307,23 +307,9 @@
       if (warnings.length < 200) warnings.push(message);
     };
     async function loadFont(source) {
-      const base = {
-        100: "Thin",
-        200: "Extra Light",
-        300: "Light",
-        400: "Regular",
-        500: "Medium",
-        600: "Semi Bold",
-        700: "Bold",
-        800: "Extra Bold",
-        900: "Black",
-      }[source.fontWeight];
-      const wanted = {
-        family: source.fontFamily || "Inter",
-        style:
-          source.fontStyle === "italic" ? (base === "Regular" ? "Italic" : `${base} Italic`) : base,
-      };
-      const key = `${wanted.family}\u0000${wanted.style}`;
+      const wanted = patchFont(source);
+      const exact = iconOrPrivateUseText(source);
+      const key = `${wanted.family}\u0000${wanted.style}\u0000${exact}`;
       if (!fonts.has(key))
         fonts.set(
           key,
@@ -332,6 +318,10 @@
               await figma.loadFontAsync(wanted);
               return wanted;
             } catch {
+              if (exact)
+                throw new Error(
+                  `${wanted.family} ${wanted.style} 不可用；图标或私用区文字不能回退到 Inter。请在 Figma 中安装或启用原字体后重试。`,
+                );
               warn(`${wanted.family} ${wanted.style} 不可用，已回退到 Inter Regular。`);
               const fallback = { family: "Inter", style: "Regular" };
               await figma.loadFontAsync(fallback);
@@ -410,6 +400,7 @@
         if (source[key] !== undefined) node[key] = source[key];
     }
     async function createNode(source, parent, parentSource) {
+      const font = source.type === "text" ? await loadFont(source) : null;
       const node = containers.has(source.type)
         ? figma.createFrame()
         : source.type === "text"
@@ -420,7 +411,7 @@
       parent.appendChild(node);
       node.name = source.name;
       if (node.type === "TEXT") {
-        node.fontName = await loadFont(source);
+        node.fontName = font;
         node.fontSize = source.fontSize;
         node.characters = source.text;
         node.lineHeight = { unit: "PERCENT", value: source.lineHeight * 100 };
@@ -496,6 +487,13 @@
       return node;
     }
     if (hooks.factoryOnly) return { createNode, applySizing, applyLayout, loadFont, warnings };
+    const preflightFonts = async (nodes) => {
+      for (const node of nodes) {
+        if (node.type === "text") await loadFont(node);
+        if (node.children) await preflightFonts(node.children);
+      }
+    };
+    for (const page of value.pages) await preflightFonts(page.children);
     try {
       for (const source of value.pages) {
         const page = figma.createPage();
@@ -1079,6 +1077,12 @@
     };
   }
   function patchFont(source) {
+    const family = source.fontFamily || "Inter";
+    if (/^Font Awesome [56] (Free|Brands)$/u.test(family))
+      return {
+        family,
+        style: family.endsWith(" Brands") || source.fontWeight < 600 ? "Regular" : "Solid",
+      };
     const base = {
       100: "Thin",
       200: "Extra Light",
@@ -1091,10 +1095,17 @@
       900: "Black",
     }[source.fontWeight];
     return {
-      family: source.fontFamily || "Inter",
+      family,
       style:
         source.fontStyle === "italic" ? (base === "Regular" ? "Italic" : `${base} Italic`) : base,
     };
+  }
+  function iconOrPrivateUseText(source) {
+    return (
+      /font\s*awesome|material\s*(?:icons|symbols)|ionicons|icomoon|glyphicons|iconfont/iu.test(
+        source.fontFamily || "",
+      ) || /[\uE000-\uF8FF\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/u.test(source.text || "")
+    );
   }
   async function applyPatch(plan, allowDeletes) {
     if (plan.conflicts.length) throw new Error("原设计已变化，请重新导出后核对。");
@@ -1106,6 +1117,9 @@
       created = new Map(),
       warnings = [];
     const factory = await importTransfer(value, { factoryOnly: true });
+    for (const operation of value.patch.operations)
+      if (operation.op === "create" && operation.after.type === "text")
+        await factory.loadFont(operation.after);
     const imageBytes = validateAssets(value.assets),
       imageHashes = new Map();
     const resolvedDesign = new Map();

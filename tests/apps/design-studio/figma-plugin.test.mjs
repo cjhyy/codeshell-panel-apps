@@ -334,6 +334,161 @@ function patchTransfer(source, change, changed = ["name"]) {
   return transfer;
 }
 
+function fontTransfer(fonts) {
+  return createFigmaTransfer(
+    importFigmaJson(
+      page(
+        fonts.map(([fontFamily, fontWeight, characters], index) =>
+          rect(`2:${index}`, {
+            type: "TEXT",
+            characters,
+            style: { fontFamily, fontWeight, fontSize: 24 },
+          }),
+        ),
+      ),
+    ).document,
+  );
+}
+
+test("native Figma icon fonts use Solid/Regular styles rather than generic Black weights", async () => {
+  const transfer = fontTransfer([
+    ["Font Awesome 5 Free", 900, "\uf007"],
+    ["Font Awesome 6 Free", 400, "\uf007"],
+    ["Font Awesome 5 Brands", 400, "\uf099"],
+    ["Font Awesome 6 Brands", 900, "\uf099"],
+  ]);
+  const runtime = harness();
+  const load = runtime.figma.loadFontAsync.bind(runtime.figma);
+  runtime.figma.loadFontAsync = async (font) => {
+    if (!["Solid", "Regular"].includes(font.style)) throw Error("Font style does not exist");
+    return load(font);
+  };
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  assert.deepEqual(
+    runtime.calls.filter(([kind]) => kind === "font"),
+    [
+      ["font", "Font Awesome 5 Free", "Solid"],
+      ["font", "Font Awesome 6 Free", "Regular"],
+      ["font", "Font Awesome 5 Brands", "Regular"],
+      ["font", "Font Awesome 6 Brands", "Regular"],
+    ],
+  );
+  assert.ok(
+    runtime.figma.root.children[1].children.every((node) =>
+      node.fontName.family.startsWith("Font Awesome"),
+    ),
+  );
+});
+
+test("missing native icon fonts fail preflight before creating pages or substituting Inter", async () => {
+  const runtime = harness(),
+    before = runtime.figma.root.children.map(runtime.snapshot);
+  const load = runtime.figma.loadFontAsync.bind(runtime.figma);
+  runtime.figma.loadFontAsync = async (font) => {
+    if (font.family.startsWith("Font Awesome")) throw Error("Not installed");
+    return load(font);
+  };
+  await runtime.send({
+    type: "import-transfer",
+    content: JSON.stringify(
+      fontTransfer([
+        ["Roboto", 400, "A normal text node before the icon"],
+        ["Font Awesome 6 Free", 900, "\ue586"],
+      ]),
+    ),
+  });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.match(runtime.messages.at(-1).message, /不能回退到 Inter/u);
+  assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
+  assert.equal(runtime.all.size, 2);
+  assert.equal(
+    runtime.calls.some(([kind, family]) => kind === "font" && family === "Inter"),
+    false,
+  );
+});
+
+test("BMP and supplementary private-use text never reuses a cached ordinary-text fallback", async () => {
+  for (const text of ["\ue123", "\u{f0123}", "\u{100123}"]) {
+    const runtime = harness(),
+      before = runtime.figma.root.children.map(runtime.snapshot);
+    const load = runtime.figma.loadFontAsync.bind(runtime.figma);
+    runtime.figma.loadFontAsync = async (font) => {
+      if (font.family === "Private Glyphs") throw Error("Not installed");
+      return load(font);
+    };
+    await runtime.send({
+      type: "import-transfer",
+      content: JSON.stringify(
+        fontTransfer([
+          ["Private Glyphs", 400, "Ordinary text may report a fallback"],
+          ["Private Glyphs", 400, text],
+        ]),
+      ),
+    });
+    assert.equal(runtime.messages.at(-1).type, "error");
+    assert.match(runtime.messages.at(-1).message, /私用区文字不能回退/u);
+    assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
+    assert.equal(runtime.all.size, 2);
+  }
+});
+
+test("an available custom private-use font preserves its exact family and characters", async () => {
+  const runtime = harness();
+  await runtime.send({
+    type: "import-transfer",
+    content: JSON.stringify(fontTransfer([["Private Glyphs", 400, "\ue123\u{f0123}\u{100123}"]])),
+  });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  const node = runtime.figma.root.children[1].children[0];
+  assert.equal(node.fontName.family, "Private Glyphs");
+  assert.equal(node.characters, "\ue123\u{f0123}\u{100123}");
+});
+
+test("native construction failure after font preflight removes only newly created pages", async () => {
+  const runtime = harness(),
+    before = runtime.figma.root.children.map(runtime.snapshot);
+  const transfer = fontTransfer([["Font Awesome 6 Free", 900, "\ue586"]]);
+  transfer.pages[0].children[0].name = "Rejected icon";
+  runtime.failName("Rejected icon");
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.match(runtime.messages.at(-1).message, /setter rejected/u);
+  assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
+});
+
+test("reviewed original-design Font Awesome weight changes load and apply the real Solid style", async () => {
+  const source = page([
+    rect("1:2", {
+      type: "TEXT",
+      characters: "\uf007",
+      style: { fontFamily: "Font Awesome 5 Free", fontWeight: 400, fontSize: 24 },
+    }),
+  ]);
+  const transfer = patchTransfer(
+    source,
+    (node) => {
+      node.fontWeight = 900;
+    },
+    ["fontWeight"],
+  );
+  const runtime = harness(source),
+    target = runtime.all.get("1:2");
+  target.characters = "\uf007";
+  target.fontName = { family: "Font Awesome 5 Free", style: "Regular" };
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  const preview = runtime.messages.at(-1);
+  assert.equal(preview.type, "patch-preview");
+  assert.deepEqual(preview.conflicts, []);
+  await runtime.send({ type: "apply-patch", token: preview.token });
+  assert.equal(runtime.messages.at(-1).type, "patched");
+  assert.deepEqual(clone(target.fontName), { family: "Font Awesome 5 Free", style: "Solid" });
+  assert.equal(
+    runtime.calls.some(([kind, , style]) => kind === "font" && style === "Black"),
+    false,
+  );
+});
+
 test("native Figma creation accepts a bounded long canvas without losing any of its 1208 editable layers", async () => {
   const imported = importFigmaJson(longFigmaSource());
   const transfer = createFigmaTransfer(imported.document);

@@ -181,7 +181,7 @@ export async function preparePluginFile(
   const fontCount = document.resources.filter((entry) => entry.kind === "font").length;
   if (fontCount)
     warnings.push(
-      `已验证 ${fontCount} 个内嵌字体文件。Figma 插件不能安装字体，文字使用 Figma 可用的同名字体；缺失时回退到 Inter。`,
+      `已验证 ${fontCount} 个内嵌字体文件。Figma 插件不能安装字体，文字使用 Figma 可用的同名字体；缺失的图标或私用区字体会阻止导入，普通文字回退会明确报告。`,
     );
   if (attachments.length)
     warnings.push(
