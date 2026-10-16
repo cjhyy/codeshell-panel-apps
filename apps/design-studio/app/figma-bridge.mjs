@@ -47,17 +47,37 @@ const cleanName = (value, fallback) =>
     : "") || fallback;
 
 const LOSS_WARNINGS = new Set([
-  "unsupported-paint", "unsupported-node", "unsupported-export-node", "rich-text",
-  "missing-text", "text-truncated", "font-fallback", "font-resource-export",
-  "missing-geometry", "unsupported-mask", "visual-fallback", "plugin-export-warning",
+  "unsupported-paint",
+  "unsupported-node",
+  "unsupported-export-node",
+  "rich-text",
+  "missing-text",
+  "text-truncated",
+  "font-fallback",
+  "font-resource-export",
+  "missing-geometry",
+  "unsupported-mask",
+  "visual-fallback",
+  "plugin-export-warning",
   "canvas-extent",
 ]);
 const EFFECT_WARNINGS = new Set(["unsupported-effects", "stroke-alignment", "corner-shape"]);
 const ADVISORY_WARNINGS = new Set([
-  "vertical-text", "grid-layout", "invalid-sizing", "page-origin-normalized",
-  "rotation-inferred", "font-weight-rounded", "section-as-frame", "detached-component",
-  "variables-as-literals", "prototype-interaction", "grid-export", "reverse-layout-export",
-  "child-layout-export", "container-as-frame", "notes-plugin-data",
+  "vertical-text",
+  "grid-layout",
+  "invalid-sizing",
+  "page-origin-normalized",
+  "rotation-inferred",
+  "font-weight-rounded",
+  "section-as-frame",
+  "detached-component",
+  "variables-as-literals",
+  "prototype-interaction",
+  "grid-export",
+  "reverse-layout-export",
+  "child-layout-export",
+  "container-as-frame",
+  "notes-plugin-data",
 ]);
 function warningPriority({ code, message }) {
   // Missing image resources must remain visible even after hundreds of layout advisories.
@@ -69,7 +89,9 @@ function warningPriority({ code, message }) {
 }
 
 function reporter() {
-  const warnings = [], sample = [], groups = new Map();
+  const warnings = [],
+    sample = [],
+    groups = new Map();
   let total = 0;
   return {
     warnings,
@@ -911,8 +933,7 @@ export async function prepareFigmaImport(
     );
   }
   result.document = normalizeDesignState(result.document);
-  for (const message of source.warnings ?? [])
-    report.warn("plugin-export-warning", null, message);
+  for (const message of source.warnings ?? []) report.warn("plugin-export-warning", null, message);
   result.stats.warningCount = report.finish();
   result.warningGroups = report.warningGroups;
   return {
