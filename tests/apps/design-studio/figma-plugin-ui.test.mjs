@@ -16,7 +16,7 @@ const transfer = (patch) => ({
   ...(patch ? { patch: { format: "codeshell.figma.patch", version: 1, operations: [] } } : {}),
 });
 
-async function fixture(t) {
+async function fixture(t, { nativeBridge = false } = {}) {
   const browser = await chromium.launch();
   t.after(() => browser.close());
   const context = await browser.newContext({
@@ -29,13 +29,24 @@ async function fixture(t) {
   page.on("pageerror", (error) => errors.push(error.message));
   await context.route("**/*", async (route) => {
     const url = new URL(route.request().url());
+    if (
+      nativeBridge &&
+      ["https://www.figma.com", "https://untrusted.test"].includes(url.origin) &&
+      url.pathname === "/plugin-bridge.html"
+    )
+      return route.fulfill({
+        contentType: "text/html",
+        body: `<!doctype html><script>addEventListener('message',event=>parent.frames[0].postMessage(event.data,'*'));</script>`,
+      });
     if (url.origin !== "https://plugin.test") return route.abort();
     if (url.pathname === "/ui.html") return route.fulfill({ contentType: "text/html", body: ui });
     return route.fulfill({
       contentType: "text/html",
-      body: `<!doctype html><html><body style="margin:0"><iframe id="plugin" title="Figma plugin" src="/ui.html" sandbox="allow-scripts allow-downloads" style="width:420px;height:520px;border:0"></iframe><script>
+      body: `<!doctype html><html><body style="margin:0"><iframe id="plugin" title="Figma plugin" src="/ui.html" sandbox="allow-scripts allow-downloads" style="width:420px;height:520px;border:0"></iframe>
+      ${nativeBridge ? '<iframe id="native-bridge" title="Native Figma bridge" src="https://www.figma.com/plugin-bridge.html" sandbox="allow-scripts allow-same-origin" hidden></iframe><iframe id="untrusted-bridge" title="Untrusted bridge" src="https://untrusted.test/plugin-bridge.html" sandbox="allow-scripts allow-same-origin" hidden></iframe>' : ""}<script>
       window.requests=[];addEventListener('message',event=>{const message=event.data?.pluginMessage;if(message&&['import-transfer','export-json','preview-patch','apply-patch'].includes(message.type))requests.push(message)});
       window.reply=message=>document.querySelector('#plugin').contentWindow.postMessage({pluginMessage:message},'*');
+      window.relayReply=(data,bridge)=>document.getElementById(bridge).contentWindow.postMessage(data,'*');
     </script></body></html>`,
     });
   });
@@ -52,12 +63,89 @@ async function fixture(t) {
     await frame.locator("body[aria-busy=false]").waitFor();
   };
   const reply = async (value) => page.evaluate((value) => window.reply(value), value);
+  const relayReply = async (data, bridge = "native-bridge") =>
+    page.evaluate(({ data, bridge }) => window.relayReply(data, bridge), { data, bridge });
   const request = async (count) => {
     await page.waitForFunction((count) => window.requests.length >= count, count);
     return (await page.evaluate(() => window.requests)).at(-1);
   };
-  return { page, frame, errors, paste, reply, request };
+  return { page, frame, errors, paste, reply, relayReply, request };
 }
+
+test("native Figma bridge replies work from a non-parent window while unrelated transports and envelopes are ignored", async (t) => {
+  const f = await fixture(t, { nativeBridge: true });
+  await f.frame.locator("body").evaluate(() => {
+    window.receivedReplies = [];
+    addEventListener("message", (event) => {
+      window.receivedReplies.push({
+        origin: event.origin,
+        sourceIsParent: event.source === parent,
+        sourceIsSelf: event.source === window,
+        trusted: event.isTrusted,
+      });
+      document.body.dataset.bridgeReceived = String(window.receivedReplies.length);
+    });
+  });
+  const content = JSON.stringify({
+    format: "codeshell.figma.source",
+    version: 1,
+    nodes: { "0:1": { document: { id: "0:1", name: "Empty", type: "CANVAS", children: [] } } },
+  });
+  const exported = { type: "exported", content, filename: "native-page.json" };
+  await f.frame.locator("#export-page").click();
+  await f.request(1);
+
+  const ignored = [
+    { bridge: "untrusted-bridge", data: { pluginMessage: exported } },
+    { data: exported },
+    { data: { pluginMessage: null } },
+    { data: { pluginMessage: [exported] } },
+    { data: { pluginMessage: { type: ["exported"], content } } },
+    { data: { pluginMessage: { type: "imported", pages: 1, nodes: 0, warnings: [] } } },
+  ];
+  for (const [index, item] of ignored.entries()) {
+    await f.relayReply(item.data, item.bridge);
+    await f.frame.locator(`body[data-bridge-received="${index + 1}"]`).waitFor();
+    assert.equal(await f.frame.locator("body").getAttribute("aria-busy"), "true");
+    assert.equal(await f.frame.locator("#export-json").inputValue(), "");
+  }
+
+  const downloadEvent = f.page.waitForEvent("download");
+  await f.relayReply({ pluginMessage: exported });
+  const download = await downloadEvent;
+  assert.equal(download.suggestedFilename(), "native-page.json");
+  assert.equal(await readFile(await download.path(), "utf8"), content);
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.equal(await f.frame.locator("#export-json").inputValue(), content);
+  assert.deepEqual(
+    await f.frame.locator("body").evaluate(() => window.receivedReplies.at(-1)),
+    { origin: "https://www.figma.com", sourceIsParent: false, sourceIsSelf: false, trusted: true },
+    "the callback must be a genuine cross-window browser message, not a synthetic dispatch",
+  );
+
+  await f.paste(transfer(true));
+  await f.frame.locator("#preview-patch").click();
+  await f.request(2);
+  await f.relayReply({
+    pluginMessage: {
+      type: "patch-preview",
+      token: "native-review-token",
+      operations: [],
+      conflicts: [],
+      deletions: 0,
+      identity: { message: "Verified native preview" },
+    },
+  });
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.equal(await f.frame.locator("#apply-patch").isDisabled(), false);
+  await f.frame.locator("#apply-patch").click();
+  assert.equal((await f.request(3)).token, "native-review-token");
+  await f.relayReply({ pluginMessage: { type: "error", message: "Native preflight rejected" } });
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(), /Native preflight rejected/);
+  assert.equal(await f.frame.locator("#apply-patch").isDisabled(), true);
+  assert.deepEqual(f.errors, []);
+});
 
 test("plugin accepts pasted transfer JSON through the same validation path and blocks duplicate work while busy", async (t) => {
   const f = await fixture(t);
@@ -169,22 +257,18 @@ test("pasted SVG assets become bounded PNG bytes and file input still validates 
   assert.match(result.assets.photo.base64, /^iVBOR/);
   await f.reply({ type: "imported", pages: 1, nodes: 0, warnings: [] });
   await f.frame.locator("body[aria-busy=false]").waitFor();
-  await f.frame
-    .locator("#file")
-    .setInputFiles({
-      name: "correct.json",
-      mimeType: "application/octet-stream",
-      buffer: Buffer.from(JSON.stringify(transfer())),
-    });
+  await f.frame.locator("#file").setInputFiles({
+    name: "correct.json",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from(JSON.stringify(transfer())),
+  });
   await f.frame.locator("body[aria-busy=false]").waitFor();
   assert.equal(await f.frame.locator("#import").isDisabled(), false);
-  await f.frame
-    .locator("#file")
-    .setInputFiles({
-      name: "wrong.json",
-      mimeType: "application/json",
-      buffer: Buffer.from("not JSON"),
-    });
+  await f.frame.locator("#file").setInputFiles({
+    name: "wrong.json",
+    mimeType: "application/json",
+    buffer: Buffer.from("not JSON"),
+  });
   await f.frame.locator("body[aria-busy=false]").waitFor();
   assert.equal(await f.frame.locator("#import").isDisabled(), true);
   assert.match(await f.frame.locator("#status").textContent(), /无法解析/);

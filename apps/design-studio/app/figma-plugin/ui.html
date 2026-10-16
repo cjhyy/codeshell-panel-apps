@@ -365,10 +365,28 @@
         }
       });
       window.onmessage = (event) => {
-        if (event.source !== parent) return;
-        const message = event.data?.pluginMessage,
+        // Figma's native bridge does not guarantee event.source === window.parent.
+        // Keep parent messaging for browser embeds and accept the official host bridge.
+        if (
+          event.source !== parent &&
+          event.origin !== "https://www.figma.com" &&
+          event.origin !== "https://figma.com"
+        )
+          return;
+        if (
+          !object(event.data) ||
+          !Object.prototype.hasOwnProperty.call(event.data, "pluginMessage")
+        )
+          return;
+        const message = event.data.pluginMessage,
           request = waiting;
-        if (!object(message) || !request || request.generation !== fileGeneration) return;
+        if (
+          !object(message) ||
+          typeof message.type !== "string" ||
+          !request ||
+          request.generation !== fileGeneration
+        )
+          return;
         const expected = {
           "import-transfer": "imported",
           "preview-patch": "patch-preview",

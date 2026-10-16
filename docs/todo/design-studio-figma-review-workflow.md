@@ -2,7 +2,8 @@
 
 更新：2026-10-16。实现属于独立 Design Studio Panel，沿用既有工作区文件、存储和
 Agent 提交权限。当前交付覆盖 JSON 交换、来源保留、原型、评论及完整迁移；真实
-Figma 账号内的开发插件端到端验收仍在进行中，不能由浏览器或 API 替身测试替代。
+Figma 桌面插件已通过文字与位置的基本往返核对，正式 UI 的 native bridge 回执
+兼容已修正并通过 Chromium 回归。真实 Figma 验收不能由浏览器或 API 替身测试替代。
 最终发布证据统一记录在[交付验收记录](design-studio-completion-audit.md)。
 
 ## 已实现的产品流程
@@ -93,6 +94,11 @@ Rust 渲染引擎。后续引擎选择应依据大文档交互和绘制测量，
 
 ## 当前验证与仍在进行的工作
 
+稳定 `main` 的 `da04251b995bde388eb6b8af0791b924d1aba353`（`da04251`）已将
+Design Studio 版本更新为 `0.19.0`。完整功能提交 `0283970` 的 `npm run check` 全部 suites 合计
+2432 项通过、4 项跳过、0 项失败，其中 Design Studio 187 项通过；源类型、确定性
+构建、包验证与原生包检查通过。完整日志为 `/tmp/design-studio-019-full-check.log`。
+
 离线门禁包含转换模型、严格来源／映射验证、Figma Plugin API 替身，以及真实
 Chromium 中的完整面板交互：导入和重开、图层编辑、增量包、评论工具、先保存再
 交给 Agent、原型运行、项目切换竞态、嵌套导入撤销／重做、历史淘汰和恢复来源。
@@ -106,10 +112,33 @@ node scripts/design-studio-exchange-host.mjs /path/to/built/code-shell-server
 真实 Node Host 检查使用独立 HOME、临时项目和禁止 JavaScript 网络的 worker。
 覆盖真实文本预算、CAS 冲突、有效 PNG 分片、来源重开及恢复引用、并发评论、草稿
 并发、原型配置、完整备份重命名恢复；删除原临时项目后再重开目标并验证图片摘要。
-它不等同于 Figma 桌面插件或真实账号验收，也不构成操作系统级网络隔离证明。
+五组真实 Host 验收均已通过。
 
-仍在进行：真实 Figma 开发插件安装、来源导出、修改预览、原节点应用、冲突拒绝、
-字体和复杂图层保留的完整链路验证。后续需扩展真实设计视觉基准、复杂矢量／富
+最终真实 Electron/Desktop 验收覆盖六面板的安装、sandbox webview、Main/preload
+IPC、项目隔离、摘要更新与回滚，六组均通过。报告
+`/tmp/design-studio-desktop-019-release-final.json` 记录相同的 `da04251` 提交与
+Design Studio `0.19.0`；运行日志为 `/tmp/design-studio-019-desktop-release.log`。
+自有 Electron 进程正常退出及临时 HOME 清理均已核实。这些证据来自隔离测试环境，
+不等同于个人安装、Figma 桌面插件或真实账号验收，也不构成操作系统级网络隔离证明。
+
+真实 Figma 基本往返已通过：官方来源导出 → 生产面板导入／来源绑定／模型修改 →
+零冲突、零删除的补丁预览 → 应用 1 项更新 → 再次官方导出核对。仅在独立验收
+文件中新建自有页面与 3 个节点，文字节点 `12:4` 的内容和 x 坐标按预期改变，
+来源 ID 保持一致，未修改 marker `12:5` 的完整 JSON 不变。稳定报告为主仓库的
+`artifacts/design-studio-figma-plugin/acceptance-runs/real-figma-1792122353371-e26a6ef5/report.json`。
+生产插件主程序未修改；本轮由临时 UI 附加自动化通过正常插件消息完成，使用带
+nonce 的 loopback 通道，不能当作正式 UI 按钮操作全链通过。此环境中 `fileKey`
+不可用，`identity.verified` 为 `false`；插件明确要求用户确认原文件，并按图层 ID
+和属性快照核对，未自动确认文件身份。
+
+真实回执显示 native bridge 的 `event.source` 不是 `parent`。正式 UI 现在接受父窗口
+或精确官方 Figma origin，并继续核对消息封装、当前请求类型与 generation。新增
+真实 Chromium sibling iframe 回归验证官方回执和不可信消息拒绝；修复后的 Design
+Studio 测试 188/188 通过，其中插件 UI 6/6。临时服务已退出，附加 UI 与网络权限已移除。
+原生 AX 无法可靠触发 Figma iframe 按钮，因此不声称正式 UI 的原生点击全链已验收。
+
+仍在进行：从稳定来源更新个人 CodeShell 安装并核对已安装的 `0.19.0`。
+后续应扩展真实冲突拒绝、字体和复杂图层保留样本、设计视觉基准、复杂矢量／富
 文本可编辑语义、组件与变量适配；账号授权及云端评论同步另行设计冲突策略。
 
 ### 历史初版验收记录（2026-10-16）
