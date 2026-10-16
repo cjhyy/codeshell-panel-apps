@@ -88,7 +88,12 @@ import { exportDesignPrototype, normalizePrototype } from "./prototype.mjs";
 import { createRecoverySession } from "./recovery-session.mjs";
 import { chooseRepoDesignFile, DEFAULT_DESIGN_PATH } from "./repository.mjs";
 import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
-import { captureWorkspaceHtml, isSafeHtmlImportPath } from "./html-import.mjs";
+import {
+  captureWorkspaceHtml,
+  captureWorkspaceHtmlResult,
+  isSafeHtmlImportPath,
+} from "./html-import.mjs";
+import { selectedHtmlFiles, readSelectedHtmlAsset } from "./html-import-assets.mjs";
 import { compareDesignDocuments, comparisonMarkdown } from "./design-compare.mjs";
 import { exportDesignFrontend, isSafeFrontendPath } from "./frontend-export.mjs";
 import {
@@ -168,6 +173,8 @@ const elements = {
   repoNewDocument: document.querySelector("#repo-new-document"),
   htmlImportDialog: document.querySelector("#html-import-dialog"),
   htmlImportPath: document.querySelector("#html-import-path"),
+  htmlImportFiles: document.querySelector("#html-import-files"),
+  htmlImportWorkspace: document.querySelector("#html-import-workspace"),
   htmlImportRoot: document.querySelector("#html-import-root"),
   htmlImportWidth: document.querySelector("#html-import-width"),
   htmlImportHeight: document.querySelector("#html-import-height"),
@@ -393,6 +400,9 @@ let externalSyncTimer = null;
 let workspaceInfo = null;
 const collapsedLayerIds = new Set();
 const resourceDataUrls = new Map();
+let localHtmlFiles = new Map();
+let lastHtmlImportReport = null;
+let htmlImportGeneration = 0;
 const loadedFontResourceIds = new Set();
 
 function scopedStorageKey(base, workspaceRoot = context.cwd ?? "preview") {
@@ -4788,6 +4798,7 @@ async function compareFrontendFile({
     viewportWidth,
     viewportHeight,
     name: `Implementation · ${implementationPath}`,
+    engine: "measured",
   });
   assertWorkspaceEpoch(operationWorkspaceEpoch);
   assertScope();
@@ -4936,13 +4947,25 @@ async function replaceDesignWithHtmlImport(
   commitHistory();
   onReplaced();
   markChanged();
+  const importedDocumentEpoch = documentEpoch;
+  const importedStateRevision = currentDesignStateRevision();
   let savedResult = null;
   if (save) {
     try {
       savedResult = await saveDocument({ quiet: true });
       assertWorkspaceEpoch(operationWorkspaceEpoch);
+      if (
+        documentEpoch !== importedDocumentEpoch ||
+        currentDesignStateRevision() !== importedStateRevision
+      )
+        throw new Error("HTML 导入保存期间画布已变化；已保留较新的设计，请重新读取状态");
     } catch (error) {
       assertWorkspaceEpoch(operationWorkspaceEpoch);
+      if (
+        documentEpoch !== importedDocumentEpoch ||
+        currentDesignStateRevision() !== importedStateRevision
+      )
+        throw error;
       design = normalizeDesignState(previous);
       history = previousHistory;
       historyIndex = previousHistoryIndex;
@@ -5009,6 +5032,8 @@ async function importHtmlFromWorkspace({
   expectedRevision,
   expectedStateRevision,
   recordAgentTransaction = false,
+  localFiles,
+  checkRequest = () => {},
 }) {
   if (!isSafeHtmlImportPath(sourcePath)) {
     throw new Error("HTML 路径必须是工作区内安全的相对 .html 文件");
@@ -5024,33 +5049,82 @@ async function importHtmlFromWorkspace({
   }
   const operationWorkspaceEpoch = workspaceEpoch;
   const operationStateRevision = currentDesignStateRevision();
-  const source = await hostCall("workspace.readText", { path: sourcePath });
+  const check = () => {
+    checkRequest();
+    assertWorkspaceEpoch(operationWorkspaceEpoch);
+    if (currentDesignStateRevision() !== operationStateRevision)
+      throw new Error("画布在 HTML 转换期间发生了变化；已保留较新的本地状态");
+  };
+  const readText = async (path) => {
+    check();
+    if (localFiles) {
+      const file = localFiles.get(path);
+      if (!file || file.size > 512 * 1024)
+        throw new Error(`本地 HTML/CSS 缺失或超过 512 KiB：${path}`);
+      const content = await file.text();
+      check();
+      return { content };
+    }
+    const result = await hostCall("workspace.readText", { path });
+    check();
+    return result;
+  };
+  const source = await readText(sourcePath);
   assertWorkspaceEpoch(operationWorkspaceEpoch);
-  const captured = await captureWorkspaceHtml({
+  const captured = await captureWorkspaceHtmlResult({
     sourcePath,
     html: source.content,
-    readText: async (path) => {
-      assertWorkspaceEpoch(operationWorkspaceEpoch);
-      const result = await hostCall("workspace.readText", { path });
-      assertWorkspaceEpoch(operationWorkspaceEpoch);
-      return result;
-    },
+    readText,
+    readAsset: localFiles
+      ? async (path) => {
+          check();
+          const asset = await readSelectedHtmlAsset(localFiles.get(path));
+          check();
+          return asset;
+        }
+      : undefined,
     rootSelector,
     viewportWidth,
     viewportHeight,
+    sha256Bytes,
   });
-  assertWorkspaceEpoch(operationWorkspaceEpoch);
-  if (currentDesignStateRevision() !== operationStateRevision) {
-    throw new Error("画布在 HTML 转换期间发生了变化；已保留较新的本地状态");
+  check();
+  for (const plan of captured.resourcePlans ?? []) {
+    for (const part of plan.parts) {
+      check();
+      try {
+        await bundleHostCall("workspace.writeText", {
+          path: part.path,
+          content: part.content,
+          expectedModifiedAt: null,
+        });
+      } catch (error) {
+        check();
+        const previous = await bundleHostCall("workspace.readText", { path: part.path });
+        check();
+        if (previous.content !== part.content) throw error;
+      }
+      check();
+    }
   }
-  return replaceDesignWithHtmlImport(captured, {
+  const result = await replaceDesignWithHtmlImport(captured.document, {
     save,
     recordAgentTransaction,
     sourcePath,
+    assertSource: check,
   });
+  assertWorkspaceEpoch(operationWorkspaceEpoch);
+  const importedRevision = result.stateRevision;
+  await loadReferencedDesignResources();
+  assertWorkspaceEpoch(operationWorkspaceEpoch);
+  if (currentDesignStateRevision() !== importedRevision)
+    throw new Error("HTML 导入后画布已变化，请核对当前设计");
+  renderAll();
+  return { ...result, conversion: captured.report };
 }
 
 async function runHtmlImportFromDialog() {
+  const generation = ++htmlImportGeneration;
   const sourcePath = elements.htmlImportPath.value.trim();
   const rootSelector = elements.htmlImportRoot.value.trim();
   const viewportWidth = Number(elements.htmlImportWidth.value);
@@ -5059,6 +5133,15 @@ async function runHtmlImportFromDialog() {
     return;
   }
   elements.runHtmlImport.disabled = true;
+  const fields = [
+    elements.htmlImportPath,
+    elements.htmlImportFiles,
+    elements.htmlImportWorkspace,
+    elements.htmlImportRoot,
+    elements.htmlImportWidth,
+    elements.htmlImportHeight,
+  ];
+  for (const field of fields) field.disabled = true;
   elements.htmlImportDialog.setAttribute("aria-busy", "true");
   setHtmlImportStatus("正在读取 HTML、等待字体与布局稳定…");
   try {
@@ -5069,17 +5152,31 @@ async function runHtmlImportFromDialog() {
       viewportHeight,
       save: false,
       expectedStateRevision: currentDesignStateRevision(),
+      localFiles: localHtmlFiles.size ? new Map(localHtmlFiles) : undefined,
+      checkRequest: () => {
+        if (generation !== htmlImportGeneration) throw new Error("HTML 导入已取消");
+      },
     });
     elements.htmlImportDialog.close();
     const issueLabel =
       result.audit.issueCount > 0 ? `；检查发现 ${result.audit.issueCount} 个问题` : "";
     notify(
-      `已从 ${sourcePath} 转换 ${result.nodeCount} 个图层 · ${formatBytes(result.documentBytes)}${issueLabel}；请检查后保存`,
+      `已从 ${sourcePath} 转换 ${result.nodeCount} 个图层 · ${formatBytes(result.documentBytes)}${issueLabel}；${result.conversion?.warnings?.length ? `有 ${result.conversion.warnings.length} 项兼容提示，请查看导入窗口；` : ""}请检查后保存`,
       result.audit.renderSafe ? "idle" : "error",
     );
+    lastHtmlImportReport = result.conversion;
+    if (result.conversion?.warnings?.length)
+      setHtmlImportStatus(
+        "上次 HTML 导入兼容提示：\n" +
+          result.conversion.warnings
+            .slice(0, 20)
+            .map((item) => item.message)
+            .join("\n"),
+      );
   } catch (error) {
     setHtmlImportStatus(error instanceof Error ? error.message : "HTML 转换失败", "error");
   } finally {
+    for (const field of fields) field.disabled = false;
     elements.runHtmlImport.disabled = context.trusted !== true;
     elements.htmlImportDialog.removeAttribute("aria-busy");
   }
@@ -6215,11 +6312,46 @@ elements.refreshRepoFiles.addEventListener(
 );
 elements.repoNewDocument.addEventListener("click", newDocument);
 elements.openHtmlImport.addEventListener("click", () => {
-  setHtmlImportStatus("支持本地 CSS、文字、填充、边框、圆角、裁切和单个外投影。");
+  setHtmlImportStatus(
+    lastHtmlImportReport?.warnings?.length
+      ? "上次 HTML 导入兼容提示：\n" +
+          lastHtmlImportReport.warnings
+            .slice(0, 20)
+            .map((item) => item.message)
+            .join("\n")
+      : "通过 html2figma 导入文字、布局、图片和字体；本地二进制资源请选择 HTML 文件夹一起导入。",
+  );
   elements.htmlImportDialog.showModal();
   elements.htmlImportPath.focus();
 });
+elements.htmlImportFiles.addEventListener("change", () => {
+  try {
+    localHtmlFiles = selectedHtmlFiles(elements.htmlImportFiles.files);
+    const candidates = [...localHtmlFiles.keys()].filter(isSafeHtmlImportPath).sort();
+    if (!candidates.length) throw new Error("所选文件夹中没有可导入的 HTML 文件");
+    elements.htmlImportPath.value = candidates.includes("index.html")
+      ? "index.html"
+      : candidates[0];
+    lastHtmlImportReport = null;
+    setHtmlImportStatus(
+      `已选择 ${localHtmlFiles.size} 个本地文件。路径相对此文件夹；图片与字体将随设计保存。`,
+    );
+  } catch (error) {
+    localHtmlFiles = new Map();
+    elements.htmlImportFiles.value = "";
+    setHtmlImportStatus(error.message, "error");
+  }
+});
+elements.htmlImportWorkspace.addEventListener("click", () => {
+  localHtmlFiles = new Map();
+  elements.htmlImportFiles.value = "";
+  lastHtmlImportReport = null;
+  setHtmlImportStatus("使用工作区 HTML 和 CSS；本地二进制资源请通过文件夹选择导入。");
+});
 elements.runHtmlImport.addEventListener("click", () => void runHtmlImportFromDialog());
+elements.htmlImportDialog.addEventListener("close", () => {
+  htmlImportGeneration += 1;
+});
 elements.openShortcuts.addEventListener("click", () => elements.shortcutsDialog.showModal());
 elements.newDocument.addEventListener("click", newDocument);
 elements.openAi.addEventListener("click", openAgentDialog);

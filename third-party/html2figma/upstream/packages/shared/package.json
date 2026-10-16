@@ -1,0 +1,27 @@
+{
+  "name": "@html2figma/shared",
+  "version": "1.0.0",
+  "description": "Shared utilities for html2figma packages",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "html2figma",
+    "shared",
+    "utilities"
+  ],
+  "author": "html2figma",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.6.3",
+    "typescript": "^5.2.2"
+  },
+  "files": [
+    "dist"
+  ]
+}
+

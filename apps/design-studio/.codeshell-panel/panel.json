@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
@@ -909,7 +909,7 @@
       },
       {
         "name": "import_html",
-        "description": "Render the visible first viewport of a workspace-local HTML file and local CSS, prune fully offscreen descendants, map supported Flex/Grid/Wrap and absolute-child semantics to editable v3 Auto Layout, keep measured geometry for fidelity/fallback, validate the result, and optionally save it. Scripts and network resources are removed before rendering.",
+        "description": "Convert workspace-local HTML and CSS through the pinned html2figma browser runtime into DesignNode, then adapt it to editable CodeShell Design v3 with stable IDs, a clipped viewport, local inline image/font resources and explicit compatibility warnings. Persist verified resource parts before replacing the canvas and optionally save the design. Scripts and network requests are blocked. Use the panel's local-folder importer for binary image/font files; a complete portable design can be restored directly by the Figma plugin.",
         "inputSchema": {
           "type": "object",
           "properties": {

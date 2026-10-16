@@ -1,0 +1,35 @@
+{
+  "name": "@html2figma/browser",
+  "version": "1.0.0",
+  "description": "Browser-side HTML to DesignNode DSL conversion",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "pnpm run build:lib && pnpm run build:standalone",
+    "build:lib": "BUILD_TARGET=browser vite build",
+    "build:standalone": "BUILD_TARGET=browser-standalone vite build",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@html2figma/shared": "workspace:*",
+    "@html2figma/adapter": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.6.3",
+    "terser": "^5.44.0",
+    "typescript": "^5.2.2",
+    "vite": "^7.1.6",
+    "vite-plugin-dts": "^4.5.4"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./standalone": "./dist/standalone.iife.js"
+  },
+  "files": [
+    "dist"
+  ]
+}

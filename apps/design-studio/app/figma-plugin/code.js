@@ -55,7 +55,8 @@
       typeof value !== "string" ||
       !value.length ||
       value.length > Math.ceil(MAX_ASSET / 3) * 4 ||
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value)
+      value.length % 4 !== 0 ||
+      !/^[A-Za-z0-9+/]*={0,2}$/u.test(value)
     )
       throw new Error("图片 Base64 无效或超过 8 MiB。");
     const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",

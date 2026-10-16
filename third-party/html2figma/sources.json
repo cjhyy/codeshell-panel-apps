@@ -1,0 +1,185 @@
+{
+  "format": "codeshell.vendor.sources",
+  "version": 1,
+  "project": "html2figma",
+  "upstreamCommit": "ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c",
+  "license": "MIT",
+  "sourceTreeSha256": "d633595f846eb0b645988568914f269a0d19743d09348ad02a0275f0eb6d48f2",
+  "files": [
+    {
+      "path": "package.json",
+      "bytes": 2078,
+      "sha256": "2c627ca163dfb14a84efe6263efe11135cbd261cc241c068c6466127c31b8702"
+    },
+    {
+      "path": "packages/browser/converter/convert.ts",
+      "bytes": 18232,
+      "sha256": "11b1a806a226c104f3cd3cdc12c59c0e0c998fc9f31321b2871d9c93de40807d"
+    },
+    {
+      "path": "packages/browser/converter/effectResolver.ts",
+      "bytes": 5130,
+      "sha256": "da20cda48fd580234ab02550cbc4aceef3dbb07d222c6e5b7d205b0e306e65a3"
+    },
+    {
+      "path": "packages/browser/converter/nodeBuilder.ts",
+      "bytes": 27722,
+      "sha256": "c5ee9ce3352a6f3ebe05e25f3c1fefe20f6a54fa908d8e4367d621de064546f1"
+    },
+    {
+      "path": "packages/browser/converter/postprocess/absolutePosition.ts",
+      "bytes": 5970,
+      "sha256": "c70609d5dcecfc6ef3500e4bbb46378ff7f4a011e4851093b2f93e6c4faf2492"
+    },
+    {
+      "path": "packages/browser/converter/postprocess/expandCollapsed.ts",
+      "bytes": 3388,
+      "sha256": "1fe8320e6d224045f86ec0bd7429edbbd8cdd4602319c11cc95ada03e2ffaea0"
+    },
+    {
+      "path": "packages/browser/converter/postprocess/floatLayout.ts",
+      "bytes": 4526,
+      "sha256": "1a66c6b802f44f39e1a0c43f108a536bbbccb278315e828f9a914792098fec83"
+    },
+    {
+      "path": "packages/browser/converter/postprocess/gridLayout.ts",
+      "bytes": 14692,
+      "sha256": "6487fd337285c5ed3743eba3f94d6239af2c131b4cd8cde94fb6c0ead1a243fd"
+    },
+    {
+      "path": "packages/browser/converter/postprocess/index.ts",
+      "bytes": 772,
+      "sha256": "a1282facb9100809221c5993b2d57bb81640df608140074d81ed2c60dcde8886"
+    },
+    {
+      "path": "packages/browser/converter/postprocess/inlineGroup.ts",
+      "bytes": 10326,
+      "sha256": "011655efc3f14e6938bf207a848d80212f9033a327b6e7b749a3249fe329a9c5"
+    },
+    {
+      "path": "packages/browser/converter/postprocess/marginCollapse.ts",
+      "bytes": 16684,
+      "sha256": "c929ec7a9144871c7d9508bca4b6fd5e3e435114e9c58a2f220e145a8359cb7e"
+    },
+    {
+      "path": "packages/browser/converter/postprocess/richText.ts",
+      "bytes": 30972,
+      "sha256": "768c31f57b77a69b3aa573043567ece865ba7d2b02feb091ec19cdaacdcce31f"
+    },
+    {
+      "path": "packages/browser/converter/postprocess/stackingOrder.ts",
+      "bytes": 14151,
+      "sha256": "cdf1ab00c20a9b739cc1fb6fc4be790f99ebb49972664339b7cdae324ebadb76"
+    },
+    {
+      "path": "packages/browser/converter/postprocess/tableLayout.ts",
+      "bytes": 13081,
+      "sha256": "cb92cb763b0705bf6b4cc13efb4549874bd4715f73f9199e79dea3bc9ce26f2e"
+    },
+    {
+      "path": "packages/browser/converter/resolvers/image.ts",
+      "bytes": 2752,
+      "sha256": "6b718f5d17ff6964df58a9770224a723af19756f6bd9b5aae4be6aa766fe33b7"
+    },
+    {
+      "path": "packages/browser/converter/resolvers/layout.ts",
+      "bytes": 13400,
+      "sha256": "4b208712c68c56005e79e625acfa550701b1bdfb7056a29f5c37cbea3d88f8e3"
+    },
+    {
+      "path": "packages/browser/converter/resolvers/style.ts",
+      "bytes": 18564,
+      "sha256": "29d6fda9d742b97469c5614ccb3d6bf4d67802c791bde8f6a1a5c77943939c2b"
+    },
+    {
+      "path": "packages/browser/converter/resolvers/text.ts",
+      "bytes": 7158,
+      "sha256": "b0be14aa13d8d5d01432215adf43eeda8775e2489460d91231945ca32a289d80"
+    },
+    {
+      "path": "packages/browser/converter/utils.ts",
+      "bytes": 8354,
+      "sha256": "3f52d410325336f3290681c4378d62f0c3194ce83455f839240cbdc509d51806"
+    },
+    {
+      "path": "packages/browser/package.json",
+      "bytes": 892,
+      "sha256": "5ba44072b29b8a9e4ea9dc8c94bf4cb5dfdc2aacf2bb435caf5e5fd34153de21"
+    },
+    {
+      "path": "packages/browser/traverser/core.ts",
+      "bytes": 6809,
+      "sha256": "61c095b307f25a9cffb729f63a25a67b390b61ece2a104ac6a3ac1c5c6c7b63e"
+    },
+    {
+      "path": "packages/browser/traverser/form.ts",
+      "bytes": 15590,
+      "sha256": "9430643e0415bdffe1965ec0f1390033d4446987eee0559caf41c5b9fcf1c797"
+    },
+    {
+      "path": "packages/browser/traverser/list.ts",
+      "bytes": 4060,
+      "sha256": "3bb41d06ae6ef9a723669502fea2df1bf933d1d7e66f2eb0a4f720b686e02c40"
+    },
+    {
+      "path": "packages/browser/traverser/pseudo.ts",
+      "bytes": 9937,
+      "sha256": "100d597d5693c6bdb845dadbec62c21a1ffa3b121d9603b78054f0a4ec71c5d2"
+    },
+    {
+      "path": "packages/browser/traverser/semanticId.ts",
+      "bytes": 8132,
+      "sha256": "276cc50f35770c40b8045809a07effc8ec1f8a2c5d7002775dcc7d9f8701f6d8"
+    },
+    {
+      "path": "packages/browser/traverser/text.ts",
+      "bytes": 37763,
+      "sha256": "bde2b5fca45dc9b99cfc30d5fbf40e2064a48bb7f85ba9c36537b494294292fd"
+    },
+    {
+      "path": "packages/browser/traverser/types.ts",
+      "bytes": 2844,
+      "sha256": "6e53e4cec0d255b22e9913d9f938894f44bc0d5b0574c63dd3a5b4ae177818dd"
+    },
+    {
+      "path": "packages/browser/traverser/visibility.ts",
+      "bytes": 1230,
+      "sha256": "08f7ab4328830ed745f5af507b2f8a01fd914f2fe23b98b38b0a915422c0f76a"
+    },
+    {
+      "path": "packages/shared/css-utils.ts",
+      "bytes": 5223,
+      "sha256": "b783e2b02576cda3ffb05a9e6847441ce6a9362f70daca6aa00c193be6a4d283"
+    },
+    {
+      "path": "packages/shared/design-node.ts",
+      "bytes": 12408,
+      "sha256": "de45967aaf32d37159bfdfde760d9e1de3fad427c316f33d9f374ae50146de86"
+    },
+    {
+      "path": "packages/shared/figma-types.ts",
+      "bytes": 9300,
+      "sha256": "a4194fbdb63f9a5dfce8ff4dc7d32e24976beebfd3139d7cfcb2258672d406d1"
+    },
+    {
+      "path": "packages/shared/logger-modules.ts",
+      "bytes": 3004,
+      "sha256": "c97ce4908f88e08120df68f2bd352c2574e26730c534834ca48e9c169cc14e76"
+    },
+    {
+      "path": "packages/shared/package.json",
+      "bytes": 492,
+      "sha256": "ebb361582c355e22062c83c8b7b413aaf0f936d4e57221087f1b9a282ae2683c"
+    },
+    {
+      "path": "packages/shared/utils.ts",
+      "bytes": 3615,
+      "sha256": "f0457c72c0f716e01bea9a8a9b1b81010fbad825ef2298794beaf71c7ea69cf1"
+    },
+    {
+      "path": "README.md",
+      "bytes": 5887,
+      "sha256": "e114a7169f08876445e3cbcdc7968c952a1a27da87843998a14962622aed6bc5"
+    }
+  ]
+}

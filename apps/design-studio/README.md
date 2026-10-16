@@ -1,8 +1,27 @@
 # Design Studio Panel App
 
-Design Studio **0.19.0** 提供 Figma JSON 导入、可编辑设计、带来源校验的增量导回、
+Design Studio **0.20.0** 提供 HTML → DesignNode → v3 导入、Figma JSON 导入、可编辑设计、带来源校验的增量导回、
 多页 HTML 原型和项目评审。原生设计仍使用 v3 `.codesign.json`；16 个声明式 Agent
 工具与可视编辑器共用同一份设计、来源和评审数据。本版沿用现有 Host 权限。
+
+## 0.20 交付：HTML 导入与完整文件直接还原 Figma
+
+顶栏 **HTML** 使用固定版本的 html2figma 浏览器转换器：DOM → DesignNode → v3。
+可读取工作区 HTML/CSS 与内嵌资源，或选择一个本地 HTML 文件夹连同图片、字体一起
+导入。脚本和网络请求被隔离；找不到本地资源时停止，不能把缺图片的设计当作完整成功。
+基础文字、布局、位置和图片成为可编辑图层，稳定 ID 不采用上游随机节点 ID。
+导入兼容提示可重新打开 HTML 窗口查看，Agent 工具返回结构化转换报告。
+
+编辑后保存 `.codesign.json`；迁移时使用 **备份 → 下载完整备份**，取得包含图片、字体、
+评论、原型及来源数据的一个 JSON 文件。Figma 插件现在直接接受这个完整设计文件，
+先校验页面、资源摘要及附件，再还原为新页面和可编辑基础图层。无资源的普通 v3 文件
+也可直接读取；有外部资源引用的普通文件会要求完整备份。原有 transfer 和原节点补丁
+流程继续可用。完整文件是 v3 设计的完整归档，不是原始 HTML/CSS 的无损归档。
+
+渐变、混合富文本、复杂滤镜等超出 v3 的样式会明确给出转换提示；SVG 在面板中保留
+自包含资源并可调整位置尺寸。Figma 不能通过插件安装字体文件，会使用已安装字体或
+明确提示回退。评论和原型附件会校验，但不自动创建 Figma 云端评论或原型交互。
+底层接口、重建方式和验收范围见[转换方案](../../docs/todo/design-studio-html2figma-v3.md)。
 
 ## 0.19 交付：完整 Figma 交换、交互原型与项目评审
 
@@ -48,8 +67,9 @@ v2 完整设计备份包含评论、回复、来源映射、原型与资源；�
 浏览器本地模式的评论保存在该浏览器，连接 Host 后则保存在当前项目。
 
 实现和后续优化见 [Figma 与评论流程](../../docs/todo/design-studio-figma-review-workflow.md)。
-真实 Figma 插件的账号内端到端验收仍在进行中；已有浏览器、插件 API 替身和真实
-Node Host 证据的范围见[交付验收记录](../../docs/todo/design-studio-completion-audit.md)。
+真实 Figma 已通过基础往返及 HTML 完整文件还原样本；复杂设计的保真范围、浏览器和
+真实 Node Host 证据见[交付验收记录](../../docs/todo/design-studio-completion-audit.md)与
+[0.20 转换方案](../../docs/todo/design-studio-html2figma-v3.md)。
 
 以下功能一并纳入 0.19。各小节的验收计数是功能最初落地时的历史记录，
 不代表当前测试套件的总数。
@@ -231,8 +251,8 @@ surface: sixteen declared design/delivery tools plus a repository-design Skill.
   fallback data.
 - A guarded **HTML** import dialog and `import_html` Agent tool for workspace-local files: scripts
   and network resources are removed, linked local CSS is inlined, the target viewport is isolated,
-  fully offscreen descendants are omitted from the first-screen capture, and the converted document
-  remains undoable and revision-guarded. Import results report canonical document bytes for
+  a clipped viewport retains editable descendants, and the converted document remains undoable
+  and revision-guarded. Import results report canonical document bytes for
   performance tracking without treating a Host request budget as a document limit.
 - Document color tokens whose UI or Agent edits propagate simultaneously through matching canvas,
   fill, stroke, and shadow colors without corrupting color swaps.
@@ -336,8 +356,10 @@ is available.
 ## HTML fidelity fixture
 
 Use the top-bar **HTML** action to convert a workspace-relative `.html` file, or call the
-revision-guarded `import_html` Agent tool. The reusable browser capture helper lives at
-`app/html-capture.mjs`. The fixture at
+revision-guarded `import_html` Agent tool. Version 0.20 uses `app/html-import.mjs`, the pinned
+html2figma runtime and `design-node-adapter.mjs`. The independent measured reference helper
+`app/html-capture.mjs` remains available for comparison and the historical fidelity fixture;
+its metrics below do not establish fidelity for every html2figma conversion. The fixture at
 `tests/fixtures/design-studio-html-capture/` renders a representative product UI in `mode=source`
 and the captured Design SVG in `mode=converted`. Capture both at the same 960×640 viewport and
 compare their pixels; the source, converted, and amplified difference images make baseline,

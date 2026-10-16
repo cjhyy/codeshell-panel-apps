@@ -11,7 +11,9 @@ for (let index = 0; index < process.argv.slice(2).length; index += 1) {
   else throw new Error(`Unknown option: ${argument}`);
 }
 if (selectedSuite !== undefined && !suites.some((suite) => suite.id === selectedSuite)) {
-  throw new Error(`Unknown suite: ${selectedSuite}. Available: ${suites.map((suite) => suite.id).join(", ")}`);
+  throw new Error(
+    `Unknown suite: ${selectedSuite}. Available: ${suites.map((suite) => suite.id).join(", ")}`,
+  );
 }
 if (process.argv.includes("--suite") && !selectedSuite) throw new Error("--suite requires a name");
 
@@ -25,6 +27,8 @@ if (!testsOnly) {
   console.log("Checking source types and committed build output");
   run(["scripts/sync-panel-select.mjs", "--check"]);
   run(["scripts/sync-project-context.mjs", "--check"]);
+  run(["scripts/build-html2figma-browser.mjs", "--check"]);
+  run(["scripts/build-design-studio-figma-plugin.mjs", "--check"]);
   run(["node_modules/typescript/bin/tsc", "--project", "tsconfig.json"]);
   run(["scripts/build-panels.mjs", "--check"]);
 }

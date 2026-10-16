@@ -24,7 +24,8 @@ async function fixture(t, { nativeBridge = false } = {}) {
     viewport: { width: 460, height: 780 },
   });
   const page = await context.newPage(),
-    errors = [];
+    errors = [],
+    networkAttempts = [];
   page.setDefaultTimeout(4000);
   page.on("pageerror", (error) => errors.push(error.message));
   await context.route("**/*", async (route) => {
@@ -38,7 +39,10 @@ async function fixture(t, { nativeBridge = false } = {}) {
         contentType: "text/html",
         body: `<!doctype html><script>addEventListener('message',event=>parent.frames[0].postMessage(event.data,'*'));</script>`,
       });
-    if (url.origin !== "https://plugin.test") return route.abort();
+    if (url.origin !== "https://plugin.test") {
+      networkAttempts.push(route.request().url());
+      return route.abort();
+    }
     if (url.pathname === "/ui.html") return route.fulfill({ contentType: "text/html", body: ui });
     return route.fulfill({
       contentType: "text/html",
@@ -69,7 +73,7 @@ async function fixture(t, { nativeBridge = false } = {}) {
     await page.waitForFunction((count) => window.requests.length >= count, count);
     return (await page.evaluate(() => window.requests)).at(-1);
   };
-  return { page, frame, errors, paste, reply, relayReply, request };
+  return { page, frame, errors, networkAttempts, paste, reply, relayReply, request };
 }
 
 test("native Figma bridge replies work from a non-parent window while unrelated transports and envelopes are ignored", async (t) => {
@@ -365,5 +369,127 @@ test("export JSON can be viewed, copied and downloaded without executing JSON st
     await f.frame.locator("body").evaluate(() => document.documentElement.scrollWidth),
     420,
   );
+  assert.deepEqual(f.errors, []);
+});
+
+test("plugin file picker accepts ordinary v3 and sends all editable pages through the existing import protocol", async (t) => {
+  const { plainFixture } = await import("./fixtures/figma-plugin-v3.mjs");
+  const f = await fixture(t),
+    document = plainFixture();
+  await f.frame
+    .locator("#file")
+    .setInputFiles({
+      name: "edited.codesign.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(document)),
+    });
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.equal(await f.frame.locator("#import").isEnabled(), true);
+  assert.equal(await f.frame.locator("#preview-patch").isEnabled(), false);
+  assert.match(await f.frame.locator("#status").textContent(), /已验证 2 页、3 个图层/u);
+  await f.frame.locator("#import").click();
+  const request = await f.request(1),
+    transfer = JSON.parse(request.content);
+  assert.equal(request.type, "import-transfer");
+  assert.equal(transfer.format, "codeshell.figma.transfer");
+  assert.equal(transfer.pages[0].children[0].children[0].text, "Direct v3");
+  assert.equal(transfer.pages.length, 2);
+  await f.reply({ type: "imported", pages: 2, nodes: 3, warnings: [] });
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(), /2 个页面、3 个可编辑图层/u);
+  assert.deepEqual(f.errors, []);
+});
+
+test("complete-file paste verifies attached metadata and inline image/font bytes before import, with explicit restoration limits", async (t) => {
+  const { portableFixture, pixel } = await import("./fixtures/figma-plugin-v3.mjs");
+  const f = await fixture(t),
+    portable = await portableFixture();
+  await f.paste(portable);
+  assert.equal(await f.frame.locator("#import").isEnabled(), true);
+  assert.match(await f.frame.locator("#status").textContent(), /不能安装字体/u);
+  assert.match(await f.frame.locator("#status").textContent(), /不导入 Figma 云评论/u);
+  await f.frame.locator("#import").click();
+  const request = await f.request(1),
+    transfer = JSON.parse(request.content);
+  assert.equal(transfer.assets.photo.base64, pixel);
+  assert.equal(transfer.patch, undefined);
+  await f.reply({ type: "imported", pages: 2, nodes: 4, warnings: [] });
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(), /不能安装字体/u);
+  assert.match(await f.frame.locator("#status").textContent(), /不导入 Figma 云评论/u);
+  assert.deepEqual(f.networkAttempts, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("corrupt complete-file attachments and referenced-only v3 cannot enable import or emit creation commands", async (t) => {
+  const { portableFixture } = await import("./fixtures/figma-plugin-v3.mjs");
+  const f = await fixture(t),
+    portable = await portableFixture();
+  portable.attachments[0].sha256 = "0".repeat(64);
+  await f.paste(portable);
+  assert.equal(await f.frame.locator("#import").isDisabled(), true);
+  assert.match(await f.frame.locator("#status").textContent(), /校验失败/u);
+  await f.paste(portable.document);
+  assert.equal(await f.frame.locator("#import").isDisabled(), true);
+  assert.match(await f.frame.locator("#status").textContent(), /普通 v3.*完整设计文件/u);
+  assert.deepEqual(await f.page.evaluate(() => window.requests), []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("late full-file hashing after a programmatic file switch cannot replace the new v3 selection", async (t) => {
+  const { portableFixture, plainFixture } = await import("./fixtures/figma-plugin-v3.mjs");
+  const f = await fixture(t),
+    portable = await portableFixture();
+  const frame = f.page.frames().find((frame) => frame.url().endsWith("/ui.html"));
+  await frame.evaluate(() => {
+    const original = crypto.subtle.digest.bind(crypto.subtle);
+    window.releaseDigest = null;
+    crypto.subtle.digest = async (...args) => {
+      await new Promise((resolve) => {
+        window.releaseDigest = resolve;
+      });
+      return original(...args);
+    };
+  });
+  await f.frame.locator("#paste-transfer-details summary").click();
+  await f.frame.locator("#paste-json").fill(JSON.stringify(portable));
+  await f.frame.locator("#load-pasted-json").click();
+  await frame.waitForFunction(() => typeof window.releaseDigest === "function");
+  // The browser picker is disabled while validation is busy. A host replacement
+  // can still invalidate the generation; no stale async result may become active.
+  await frame.evaluate(() => {
+    document.querySelector("#file").dispatchEvent(new Event("change"));
+  });
+  await frame.evaluate(() => window.releaseDigest());
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.equal(await f.frame.locator("#import").isDisabled(), true);
+  const next = plainFixture();
+  next.name = "New selection";
+  await f.paste(next);
+  await f.frame.locator("#import").click();
+  assert.equal(JSON.parse((await f.request(1)).content).name, "New selection");
+  assert.deepEqual(f.errors, []);
+});
+
+test("complete-file inline SVG images are rasterized locally without project-path or external network reads", async (t) => {
+  const { portableFixture } = await import("./fixtures/figma-plugin-v3.mjs");
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="12"><rect width="20" height="12" fill="#2563eb"/></svg>';
+  const f = await fixture(t),
+    portable = await portableFixture({
+      imageMime: "image/svg+xml",
+      imageBase64: Buffer.from(svg).toString("base64"),
+    });
+  await f.paste(portable);
+  await f.frame.locator("#import").click();
+  const request = await f.request(1),
+    transfer = JSON.parse(request.content);
+  assert.equal(transfer.assets.photo.mime, "image/png");
+  assert(
+    Buffer.from(transfer.assets.photo.base64, "base64")
+      .subarray(0, 8)
+      .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])),
+  );
+  assert.deepEqual(f.networkAttempts, []);
   assert.deepEqual(f.errors, []);
 });

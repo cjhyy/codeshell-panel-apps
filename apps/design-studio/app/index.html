@@ -81,7 +81,14 @@
           >
             交付
           </button>
-          <button id="portable-backup-open" class="button" type="button" title="下载或恢复完整设计备份">备份</button>
+          <button
+            id="portable-backup-open"
+            class="button"
+            type="button"
+            title="下载或恢复完整设计备份"
+          >
+            备份
+          </button>
           <button id="export-svg" class="button" type="button" title="导出 SVG">SVG</button>
           <button
             id="toggle-inspector"
@@ -121,9 +128,17 @@
       <aside id="host-connection-state" class="host-connection-state" role="status" hidden></aside>
       <section class="workspace">
         <nav class="toolrail" aria-label="设计工具">
-          <button id="toggle-layers" class="tool layers-toggle" type="button"
-            aria-label="打开页面与图层" aria-expanded="false" aria-controls="layers-sidebar"
-            title="打开页面与图层">☷</button>
+          <button
+            id="toggle-layers"
+            class="tool layers-toggle"
+            type="button"
+            aria-label="打开页面与图层"
+            aria-expanded="false"
+            aria-controls="layers-sidebar"
+            title="打开页面与图层"
+          >
+            ☷
+          </button>
           <button
             class="tool active"
             data-tool="select"
@@ -182,8 +197,14 @@
           >
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14M12 5v14M8 19h8" /></svg>
           </button>
-          <button class="tool" data-tool="comment" type="button" title="评论图层 (C)"
-            aria-label="评论工具" aria-pressed="false">
+          <button
+            class="tool"
+            data-tool="comment"
+            type="button"
+            title="评论图层 (C)"
+            aria-label="评论工具"
+            aria-pressed="false"
+          >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-6 4V6a2 2 0 0 1 2-2Z" />
               <path d="M7 9h10M7 13h7" />
@@ -210,7 +231,14 @@
           <section class="sidebar-pages">
             <div class="layers-heading">
               <span>页面</span>
-              <button id="close-layers" class="drawer-close" type="button" aria-label="关闭页面与图层">关闭</button>
+              <button
+                id="close-layers"
+                class="drawer-close"
+                type="button"
+                aria-label="关闭页面与图层"
+              >
+                关闭
+              </button>
               <button id="sidebar-add-page" type="button" title="新建设计页面">＋</button>
             </div>
             <div id="sidebar-pages-list" class="sidebar-pages-list" role="listbox"></div>
@@ -275,12 +303,25 @@
             </button>
           </div>
           <div id="selection-size" class="selection-size" hidden></div>
-          <textarea id="inline-text-editor" class="inline-text-editor" hidden maxlength="4000"
-            aria-label="画布文字编辑" spellcheck="false"></textarea>
+          <textarea
+            id="inline-text-editor"
+            class="inline-text-editor"
+            hidden
+            maxlength="4000"
+            aria-label="画布文字编辑"
+            spellcheck="false"
+          ></textarea>
         </section>
 
         <aside id="inspector" class="inspector" aria-label="属性与交付">
-          <button id="close-inspector" class="drawer-close inspector-close" type="button" aria-label="关闭属性面板">关闭属性面板</button>
+          <button
+            id="close-inspector"
+            class="drawer-close inspector-close"
+            type="button"
+            aria-label="关闭属性面板"
+          >
+            关闭属性面板
+          </button>
           <div class="inspector-tabs" role="tablist" aria-label="检查器视图">
             <button
               id="design-tab-button"
@@ -546,25 +587,103 @@
                 <p id="layout-context-help" class="layout-context-help"></p>
                 <div id="container-layout-controls" class="layout-controls">
                   <div class="layout-direction-buttons" role="group" aria-label="自动布局方向">
-                    <button type="button" data-layout-direction="none" aria-pressed="false">自由</button>
-                    <button type="button" data-layout-direction="horizontal" aria-pressed="false">水平</button>
-                    <button type="button" data-layout-direction="vertical" aria-pressed="false">垂直</button>
-                    <button type="button" data-layout-direction="grid" aria-pressed="false">网格</button>
+                    <button type="button" data-layout-direction="none" aria-pressed="false">
+                      自由
+                    </button>
+                    <button type="button" data-layout-direction="horizontal" aria-pressed="false">
+                      水平
+                    </button>
+                    <button type="button" data-layout-direction="vertical" aria-pressed="false">
+                      垂直
+                    </button>
+                    <button type="button" data-layout-direction="grid" aria-pressed="false">
+                      网格
+                    </button>
                   </div>
                   <div id="layout-alignment-group" class="layout-alignment-group" hidden>
                     <span class="section-label">内容对齐</span>
                     <div class="layout-alignment-grid" role="group" aria-label="容器内容对齐">
-                      <button type="button" data-layout-align="start:start" aria-label="内容左上对齐" aria-pressed="false">↖</button>
-                      <button type="button" data-layout-align="center:start" aria-label="内容顶部居中" aria-pressed="false">↑</button>
-                      <button type="button" data-layout-align="end:start" aria-label="内容右上对齐" aria-pressed="false">↗</button>
-                      <button type="button" data-layout-align="start:center" aria-label="内容左侧居中" aria-pressed="false">←</button>
-                      <button type="button" data-layout-align="center:center" aria-label="内容居中" aria-pressed="false">·</button>
-                      <button type="button" data-layout-align="end:center" aria-label="内容右侧居中" aria-pressed="false">→</button>
-                      <button type="button" data-layout-align="start:end" aria-label="内容左下对齐" aria-pressed="false">↙</button>
-                      <button type="button" data-layout-align="center:end" aria-label="内容底部居中" aria-pressed="false">↓</button>
-                      <button type="button" data-layout-align="end:end" aria-label="内容右下对齐" aria-pressed="false">↘</button>
+                      <button
+                        type="button"
+                        data-layout-align="start:start"
+                        aria-label="内容左上对齐"
+                        aria-pressed="false"
+                      >
+                        ↖
+                      </button>
+                      <button
+                        type="button"
+                        data-layout-align="center:start"
+                        aria-label="内容顶部居中"
+                        aria-pressed="false"
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        data-layout-align="end:start"
+                        aria-label="内容右上对齐"
+                        aria-pressed="false"
+                      >
+                        ↗
+                      </button>
+                      <button
+                        type="button"
+                        data-layout-align="start:center"
+                        aria-label="内容左侧居中"
+                        aria-pressed="false"
+                      >
+                        ←
+                      </button>
+                      <button
+                        type="button"
+                        data-layout-align="center:center"
+                        aria-label="内容居中"
+                        aria-pressed="false"
+                      >
+                        ·
+                      </button>
+                      <button
+                        type="button"
+                        data-layout-align="end:center"
+                        aria-label="内容右侧居中"
+                        aria-pressed="false"
+                      >
+                        →
+                      </button>
+                      <button
+                        type="button"
+                        data-layout-align="start:end"
+                        aria-label="内容左下对齐"
+                        aria-pressed="false"
+                      >
+                        ↙
+                      </button>
+                      <button
+                        type="button"
+                        data-layout-align="center:end"
+                        aria-label="内容底部居中"
+                        aria-pressed="false"
+                      >
+                        ↓
+                      </button>
+                      <button
+                        type="button"
+                        data-layout-align="end:end"
+                        aria-label="内容右下对齐"
+                        aria-pressed="false"
+                      >
+                        ↘
+                      </button>
                     </div>
-                    <button id="layout-space-between" class="wide-action" type="button" aria-pressed="false">主轴两端分布</button>
+                    <button
+                      id="layout-space-between"
+                      class="wide-action"
+                      type="button"
+                      aria-pressed="false"
+                    >
+                      主轴两端分布
+                    </button>
                   </div>
                   <div class="property-grid">
                     <label
@@ -603,13 +722,8 @@
                         >
                         <label
                           ><span>网格列数</span
-                          ><input
-                            id="prop-grid-columns"
-                            type="number"
-                            min="1"
-                            max="24"
-                          /></label
-                        >
+                          ><input id="prop-grid-columns" type="number" min="1" max="24"
+                        /></label>
                       </div>
                       <div class="property-grid">
                         <label
@@ -620,8 +734,7 @@
                             min="0"
                             max="2000"
                             placeholder="统一"
-                          /></label
-                        >
+                        /></label>
                         <label
                           ><span>列间距</span
                           ><input
@@ -630,8 +743,7 @@
                             min="0"
                             max="2000"
                             placeholder="统一"
-                          /></label
-                        >
+                        /></label>
                       </div>
                       <div class="property-grid" aria-label="独立内边距">
                         <label
@@ -963,7 +1075,11 @@
               </div>
               <label class="stacked-field">
                 <span>输出 HTML</span>
-                <input id="frontend-output-path" value="design-output/index.html" spellcheck="false" />
+                <input
+                  id="frontend-output-path"
+                  value="design-output/index.html"
+                  spellcheck="false"
+                />
               </label>
               <button id="generate-frontend" class="wide-action delivery-action" type="button">
                 <span>生成可编辑前端</span><span aria-hidden="true">→</span>
@@ -986,7 +1102,11 @@
                   spellcheck="false"
                 />
               </label>
-              <button id="compare-implementation" class="primary-button delivery-primary" type="button">
+              <button
+                id="compare-implementation"
+                class="primary-button delivery-primary"
+                type="button"
+              >
                 对比设计与实现
               </button>
               <div id="comparison-summary" class="comparison-summary" hidden></div>
@@ -1077,7 +1197,8 @@
           当前设计会先保存，再把文件路径和你的要求交给当前 CodeShell 会话。
         </p>
         <div id="ai-target-context" class="ai-target-context" hidden>
-          <span></span><button id="clear-ai-target" class="button" type="button">改为整个设计</button>
+          <span></span
+          ><button id="clear-ai-target" class="button" type="button">改为整个设计</button>
         </div>
         <textarea
           id="ai-request"
@@ -1098,13 +1219,21 @@
     <dialog id="element-comment" aria-labelledby="element-comment-title">
       <form method="dialog" class="dialog-card element-comment-card">
         <header>
-          <div><span class="dialog-kicker">LAYER COMMENT</span><h2 id="element-comment-title">评论图层</h2></div>
+          <div>
+            <span class="dialog-kicker">LAYER COMMENT</span>
+            <h2 id="element-comment-title">评论图层</h2>
+          </div>
           <button class="dialog-close" value="cancel" aria-label="关闭图层评论">×</button>
         </header>
         <p id="element-comment-target" class="element-comment-target"></p>
         <p class="comment-context dialog-description"></p>
-        <textarea id="element-comment-request" rows="4" maxlength="4000"
-          placeholder="描述这个图层需要调整的内容…" aria-label="图层评论要求"></textarea>
+        <textarea
+          id="element-comment-request"
+          rows="4"
+          maxlength="4000"
+          placeholder="描述这个图层需要调整的内容…"
+          aria-label="图层评论要求"
+        ></textarea>
         <footer class="ai-footer">
           <span>记录问题，或交给 Agent · ⌘/Ctrl + Enter 提交</span>
           <button id="save-review-comment" class="button" type="button">保存为评论</button>
@@ -1117,19 +1246,26 @@
       <form method="dialog" class="dialog-card html-import-dialog-card">
         <header>
           <div>
-            <span class="dialog-kicker">BROWSER CAPTURE</span>
-            <h2 id="html-import-dialog-title">从 Repo HTML 转换</h2>
+            <span class="dialog-kicker">HTML IMPORT</span>
+            <h2 id="html-import-dialog-title">从 HTML 导入可编辑设计</h2>
           </div>
           <button class="dialog-close" value="cancel" aria-label="关闭">×</button>
         </header>
         <p class="dialog-description">
-          在隔离浏览器视口中排版工作区 HTML，再转换成可编辑图层。脚本和网络资源不会执行。
+          读取工作区 HTML，或选择包含
+          HTML、CSS、图片和字体的本地文件夹。导入后可编辑、下载完整设计文件，并通过 Figma
+          插件还原。脚本和网络请求不会执行。
         </p>
         <div class="html-import-fields">
           <label class="stacked-field">
-            <span>HTML 文件路径</span>
+            <span>HTML 路径（相对工作区或所选文件夹）</span>
             <input id="html-import-path" value="index.html" spellcheck="false" autocomplete="off" />
           </label>
+          <label class="stacked-field">
+            <span>选择 HTML 文件夹（包含本地图片和字体）</span>
+            <input id="html-import-files" type="file" webkitdirectory multiple />
+          </label>
+          <button id="html-import-workspace" class="button" type="button">使用工作区文件</button>
           <label class="stacked-field">
             <span>首屏根节点选择器</span>
             <input
@@ -1151,7 +1287,7 @@
             /></label>
           </div>
           <p id="html-import-status" class="html-import-status" role="status" aria-live="polite">
-            只转换当前视口内的首屏内容；支持本地 CSS、文字、填充、边框、圆角和投影。
+            使用 html2figma 转换文字、布局和本地资源；不支持的样式会给出兼容提示。
           </p>
         </div>
         <footer>
@@ -1219,8 +1355,8 @@
         </div>
         <footer>
           <p>
-            双击文字可直接编辑；⌘/Ctrl + Enter 完成，Esc 取消。Shift 点击或框选可多选。图层列表中用方向键移动，按 V
-            切换显示。
+            双击文字可直接编辑；⌘/Ctrl + Enter 完成，Esc 取消。Shift
+            点击或框选可多选。图层列表中用方向键移动，按 V 切换显示。
           </p>
           <button class="button" value="cancel" type="submit">完成</button>
         </footer>
@@ -1284,17 +1420,30 @@
 
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
     <script type="module" src="./app.js"></script>
-  <dialog id="portable-backup-dialog" aria-labelledby="portable-backup-title">
+    <dialog id="portable-backup-dialog" aria-labelledby="portable-backup-title">
       <section class="dialog-card">
-        <header><h2 id="portable-backup-title">完整设计备份</h2><button id="portable-backup-close" class="button" type="button">关闭</button></header>
-        <p class="dialog-description">包含全部页面、项目图片和字体。恢复会创建独立文件，保留当前画布和已有文件。</p>
+        <header>
+          <h2 id="portable-backup-title">完整设计备份</h2>
+          <button id="portable-backup-close" class="button" type="button">关闭</button>
+        </header>
+        <p class="dialog-description">
+          包含全部页面、项目图片和字体。恢复会创建独立文件，保留当前画布和已有文件。
+        </p>
         <button id="portable-backup-export" class="button" type="button">下载完整备份</button>
-        <label class="portable-backup-field">选择设计备份<input id="portable-backup-file" type="file" accept="application/json,.json" /></label>
+        <label class="portable-backup-field"
+          >选择设计备份<input id="portable-backup-file" type="file" accept="application/json,.json"
+        /></label>
         <select id="portable-backup-candidate" aria-label="选择要恢复的草稿" hidden></select>
         <p id="portable-backup-preview" class="portable-backup-preview"></p>
-        <label class="portable-backup-field">恢复文件路径<input id="portable-backup-path" type="text" spellcheck="false" /></label>
+        <label class="portable-backup-field"
+          >恢复文件路径<input id="portable-backup-path" type="text" spellcheck="false"
+        /></label>
         <p id="portable-backup-status" role="status"></p>
-        <footer><button id="portable-backup-restore" class="primary-button" type="button" disabled>确认恢复到新文件</button></footer>
+        <footer>
+          <button id="portable-backup-restore" class="primary-button" type="button" disabled>
+            确认恢复到新文件
+          </button>
+        </footer>
       </section>
     </dialog>
   </body>

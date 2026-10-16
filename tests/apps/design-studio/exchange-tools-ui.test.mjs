@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createContext, runInContext } from "node:vm";
 import { chromium } from "playwright";
 import {
   normalizeDesignDocument,
@@ -11,6 +13,8 @@ import {
 } from "../../../apps/design-studio/app/document.mjs";
 import { parseFigmaBinding } from "../../../apps/design-studio/app/figma-binding.mjs";
 import { planPortableDesign } from "../../../apps/design-studio/app/portable-backup.mjs";
+import { preparePluginFile } from "../../../apps/design-studio/app/figma-plugin/v3-input.mjs";
+import { htmlFontResources } from "../../../apps/design-studio/app/html-import-assets.mjs";
 import {
   createDesignSidecarPlan,
   readDesignSidecar,
@@ -147,7 +151,8 @@ async function fixture(t, { image = false } = {}) {
     records = new Map(),
     calls = [],
     errors = [],
-    pauses = new Map();
+    pauses = new Map(),
+    writeFailures = new Map();
   for (const scope of ["A", "B"]) {
     files.set(`${scope}:${designPath}`, initialDocument(scope));
     files.set(`${scope}:${inputPath}`, JSON.stringify(figmaSource({ image })));
@@ -194,6 +199,13 @@ async function fixture(t, { image = false } = {}) {
       const content = files.get(fileKey);
       result = { path: params.path, content, modifiedAt: 1, revision: revision(content) };
     } else if (method === "workspace.writeText") {
+      const failure = writeFailures.get(fileKey);
+      if (failure) {
+        writeFailures.delete(fileKey);
+        failure.enter();
+        await failure.gate;
+        throw Error("Injected HTML primary save failure");
+      }
       const previous = files.get(fileKey);
       if (params.expectedModifiedAt === null && previous !== undefined) throw Error("file exists");
       if (
@@ -318,8 +330,266 @@ async function fixture(t, { image = false } = {}) {
       t.after(release);
       return { entered, release };
     },
+    failWrite(path, scope = "A") {
+      let enter, release;
+      const entered = new Promise((resolve) => {
+        enter = resolve;
+      });
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      writeFailures.set(`${scope}:${path}`, { enter, gate });
+      t.after(release);
+      return { entered, release };
+    },
   };
 }
+
+async function startPausedHtmlImport(f) {
+  const sourcePath = "pages/pending-import.html";
+  f.files.set(
+    `A:${sourcePath}`,
+    "<!doctype html><title>Pending HTML</title><style>body{margin:0;font-family:Arial}h1{margin:0;font-size:24px;line-height:30px}</style><main><h1>Import pending text</h1></main>",
+  );
+  const metadata = await f.metadata(),
+    pause = f.failWrite(designPath);
+  await f.page.evaluate(
+    ({ sourcePath, state }) => {
+      window.pendingHtmlImport = window.tools
+        .import_html({
+          path: sourcePath,
+          save: true,
+          viewport_width: 600,
+          viewport_height: 400,
+          expected_state_revision: state,
+        })
+        .then(
+          (result) => ({ result }),
+          (error) => ({ error: error.message }),
+        );
+    },
+    { sourcePath, state: metadata.stateRevision },
+  );
+  await pause.entered;
+  return pause;
+}
+
+test("HTML save waits make the actual UI inert and a failed untouched import restores the prior canvas", async (t) => {
+  const f = await fixture(t),
+    pause = await startPausedHtmlImport(f);
+  assert.equal(
+    await f.page.evaluate(() => document.body.inert),
+    true,
+    "Agent mutations block inspector/new-document UI until they settle",
+  );
+  pause.release();
+  assert.match(
+    (await f.page.evaluate(() => window.pendingHtmlImport)).error,
+    /Injected HTML primary save failure/u,
+  );
+  const metadata = await f.metadata();
+  assert.equal(metadata.name, "A original");
+  assert.equal(
+    await f.page.locator('[data-text-node-id="heading"]').textContent(),
+    "A original heading",
+  );
+  assert.equal(await f.page.evaluate(() => document.body.inert), false);
+  assert.equal(f.files.get(`A:${designPath}`), initialDocument("A"));
+  assert.deepEqual(f.errors, []);
+});
+
+test("broken HTML fonts and CSS backgrounds fail before replacing the canvas or writing resource/design data", async (t) => {
+  const f = await fixture(t);
+  const cases = [
+    [
+      "font",
+      '<!doctype html><style>@font-face{font-family:Broken;src:url("data:font/woff2;base64,AA==");font-weight:400}body{font-family:Broken}</style><main><p>Bad font must not replace the design</p></main>',
+    ],
+    [
+      "background",
+      '<!doctype html><style>.photo{width:40px;height:40px;background-image:url("data:image/png;base64,iVBORw0KGgo=")}</style><main><div class="photo"></div></main>',
+    ],
+  ];
+  for (const [label, html] of cases) {
+    const path = `pages/bad-${label}.html`;
+    f.files.set(`A:${path}`, html);
+    const before = await f.metadata(),
+      start = f.calls.length;
+    await assert.rejects(
+      () =>
+        f.tool("import_html", { path, save: true, expected_state_revision: before.stateRevision }),
+      /字体|font|图片|image|资源|解码/iu,
+    );
+    const after = await f.metadata();
+    assert.equal(
+      after.stateRevision,
+      before.stateRevision,
+      `${label}: failed preflight must not change the canvas or history`,
+    );
+    assert.equal(after.name, "A original");
+    assert.equal(
+      f.calls.slice(start).filter((call) => call.method === "workspace.writeText").length,
+      0,
+      `${label}: no resource or design file may be written before decode succeeds`,
+    );
+    assert.equal(f.files.get(`A:${designPath}`), initialDocument("A"));
+  }
+  assert.deepEqual(f.errors, []);
+});
+
+test("HTML @font-face normal and bold weights retain font resources instead of silently omitting them", () => {
+  for (const [source, expected] of [
+    ["normal", 400],
+    ["bold", 700],
+  ]) {
+    const fonts = htmlFontResources(
+      `@font-face{font-family:Fixture;src:url("data:font/woff2;base64,AA==");font-weight:${source};font-style:normal}`,
+    );
+    assert.equal(fonts.length, 1, source);
+    assert.equal(fonts[0].weight, expected);
+  }
+});
+
+// Agent entry points keep the real body inert (tested above). Exercise the actual
+// replacement function separately so future callers/reentrant events cannot let
+// a failed save roll back a newer edit or a different document in the same project.
+for (const action of ["edit", "new-document"]) {
+  test(`HTML replacement save failure preserves newer ${action} state under reentrancy`, async () => {
+    const app = await readFile(resolve(root, "app.js"), "utf8");
+    const start = app.indexOf("async function replaceDesignWithHtmlImport(");
+    const end = app.indexOf("async function importHtmlFromWorkspace(", start);
+    assert.ok(start >= 0 && end > start);
+    const state = {
+      design: { name: "Before", nodes: [{ id: "old" }], pages: [] },
+      workspaceEpoch: 1,
+      documentEpoch: 1,
+      designStateSequence: 0,
+      history: [],
+      historyIndex: 0,
+      historyState: {},
+      selectedId: null,
+      selectedIds: new Set(),
+      collapsedLayerIds: new Set(),
+      lastAgentTransaction: null,
+      currentPageCache: null,
+      currentResourceCache: null,
+      resourceDataUrls: new Map(),
+      loadedFontResourceIds: new Set(),
+      clone: structuredClone,
+      normalizeDocument: (value) => value,
+      normalizeDesignState: (value) => value,
+      cancelInteraction() {},
+      async ensureAllDesignPagesLoaded() {},
+      assertWorkspaceEpoch() {},
+      serializeDocument: JSON.stringify,
+      measureDesignDocumentBytes: () => 1,
+      DesignResourceCache: class {},
+      sha256Bytes() {},
+      bundleHostCall() {},
+      clearSelection() {},
+      commitHistory() {},
+      markChanged() {},
+      requestAnimationFrame() {},
+      elements: { path: { value: designPath } },
+    };
+    state.serializeDesign = () => JSON.stringify(state.design);
+    state.allDesignNodes = (value = state.design) => value.nodes;
+    state.currentDesignStateRevision = () =>
+      `${state.documentEpoch}:${state.designStateSequence}:${state.elements.path.value}:${JSON.stringify(state.design)}`;
+    let newer;
+    state.saveDocument = async () => {
+      if (action === "edit") state.design.nodes[0].text = "Newer user edit";
+      else {
+        state.design = { name: "New document", nodes: [{ id: "new-document-node" }], pages: [] };
+        state.documentEpoch += 1;
+        state.elements.path.value = "designs/new.codesign.json";
+      }
+      state.designStateSequence += 1;
+      state.history = [{ label: action }];
+      state.historyIndex = 1;
+      state.selectedId = state.design.nodes[0].id;
+      state.selectedIds = new Set([state.selectedId]);
+      state.resourceDataUrls.set("newer-resource", "data:image/png;base64,AA==");
+      newer = structuredClone({
+        design: state.design,
+        documentEpoch: state.documentEpoch,
+        history: state.history,
+        selectedId: state.selectedId,
+        sequence: state.designStateSequence,
+      });
+      throw Error("Failed save after newer state");
+    };
+    const context = createContext(state);
+    runInContext(app.slice(start, end), context);
+    await assert.rejects(
+      () =>
+        runInContext(
+          'replaceDesignWithHtmlImport({name:"Imported",nodes:[{id:"imported-node"}],pages:[]},{save:true})',
+          context,
+        ),
+      /Failed save after newer state/u,
+    );
+    assert.deepEqual(structuredClone(state.design), newer.design);
+    assert.equal(state.documentEpoch, newer.documentEpoch);
+    assert.equal(state.designStateSequence, newer.sequence);
+    assert.deepEqual(state.history, newer.history);
+    assert.equal(state.selectedId, newer.selectedId);
+    assert.equal(state.resourceDataUrls.has("newer-resource"), true);
+  });
+}
+
+test("local HTML folder becomes editable v3, survives save/reopen and restores into Figma from one complete file", async (t) => {
+  const f = await fixture(t);
+  const directory = await mkdtemp(resolve(tmpdir(), "codeshell-html-folder-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(
+    resolve(directory, "index.html"),
+    '<!doctype html><html><head><title>Local product</title><link rel="stylesheet" href="style.css"></head><body><main id="card"><h1>HTML original title</h1><img src="pixel.png" alt="Local pixel"></main><script>window.htmlPwned=true</script></body></html>',
+  );
+  await writeFile(
+    resolve(directory, "style.css"),
+    "body{margin:0}#card{width:500px;height:300px;padding:20px;background:#ffffff;display:flex;flex-direction:column;gap:16px}h1{font:24px/1.2 Arial;margin:0;color:#123456}img{width:80px;height:60px}",
+  );
+  await writeFile(resolve(directory, "pixel.png"), Buffer.from(pixel, "base64"));
+  await f.page.locator("#open-html-import").click();
+  await f.page.locator("#html-import-files").setInputFiles(directory);
+  await f.page.locator("#html-import-width").fill("600");
+  await f.page.locator("#html-import-height").fill("400");
+  await f.page.locator("#run-html-import").click();
+  await f.page.waitForFunction(() => !document.querySelector("#html-import-dialog").open);
+  let metadata = await f.metadata();
+  assert.equal(metadata.resources.length, 1);
+  const heading = metadata.layers.find((node) => node.type === "text");
+  assert.ok(heading);
+  assert.equal(await f.page.locator('#scene image[href^="data:image/png;base64,"]').count(), 1);
+  await f.tool("use_design", {
+    expected_state_revision: metadata.stateRevision,
+    save: true,
+    operations: [
+      { op: "update_node", node_id: heading.id, changes: { text: "Edited HTML product" } },
+    ],
+  });
+  await f.reload();
+  metadata = await f.metadata();
+  assert.ok(metadata.layers.some((node) => node.id === heading.id));
+  assert.match(f.files.get(`A:${designPath}`), /Edited HTML product/);
+  assert.equal(await f.page.locator('#scene image[href^="data:image/png;base64,"]').count(), 1);
+  await f.page.locator("#portable-backup-open").click();
+  const pending = f.page.waitForEvent("download");
+  await f.page.locator("#portable-backup-export").click();
+  const text = await readFile(await (await pending).path(), "utf8"),
+    backup = JSON.parse(text);
+  assert.equal(backup.resources[0].base64, pixel);
+  const restored = await preparePluginFile(text);
+  const walk = (nodes) => nodes.flatMap((node) => [node, ...walk(node.children ?? [])]);
+  const flattened = restored.transfer.pages.flatMap((page) => walk(page.children));
+  assert.ok(
+    flattened.some((node) => node.id === heading.id && node.text === "Edited HTML product"),
+  );
+  assert.equal(Object.values(restored.transfer.assets)[0].base64, pixel);
+  assert.equal(await f.page.evaluate(() => window.htmlPwned), undefined);
+  assert.deepEqual(f.errors, []);
+});
 
 test("declared exchange tools import, save, reopen, edit and export a source-bound Figma patch", async (t) => {
   const f = await fixture(t);

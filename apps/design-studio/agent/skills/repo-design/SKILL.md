@@ -117,29 +117,29 @@ and follow its requirement IDs → responsive design → frontend → measured c
 
 ## HTML fidelity workflow
 
-When HTML is the visual source, do not reconstruct it from markup or hand-copy relative offsets.
-Read metadata, then call `import_html` with the workspace-relative `.html` path, exact viewport,
-optional root selector, current `expected_state_revision`, and current `expected_revision` when
-non-null. The default root is `html`. The importer converts only the root's visible intersection
-with the first viewport: fully offscreen descendants are omitted, while partially visible content
-keeps its measured geometry behind an intentional root clip. Use a tighter selector when the
-desired design is one visible region. The tool reads up to 20 relative local CSS files, removes
-scripts and network resources,
-waits for fonts and two animation frames, then replaces the canvas with computed geometry,
-typography, paint, borders, clipping, and one non-inset shadow. Supported CSS Flex and Grid
-containers become v3 Auto Layout with independent row/column gaps, Wrap, column/span
-metadata, four-side padding, alignment, and dual-axis Fill/Fixed semantics. Absolute/fixed direct
-children become `layoutPositioning: "absolute"`, leave the flow, and carry start/end/stretch
-Constraints with four measured insets. Browser-measured `x/y` remain in the saved file as exact
-initial geometry and fallback data; Auto Layout owns only flow-child positions after a reflow.
-Form values, browser text baselines, Min/Max dimensions, reverse flow, and wrappable text source
-are preserved. Unequal Flex grow factors, floats, unequal Grid tracks, and decoration-heavy
-controls fall back to measured manual geometry instead of silently changing the screenshot. It
-saves by default, returns canonical `documentBytes`, the `indexed-pages` capacity model, an
-immediate audit and rollback `transactionId`, and fails if the live design changes while HTML is
-rendering.
-Add stable `data-codeshell-id` and `data-codeshell-name` attributes to important source elements
-when later Agent edits need durable layer identities.
+When HTML is the visual source, read metadata and call `import_html` with the workspace-relative
+`.html` path, exact viewport, optional root selector, current `expected_state_revision`, and
+current `expected_revision` when non-null. The default root is `html`. The pinned html2figma
+runtime measures browser DOM into DesignNode; a pure adapter maps it into v3 with unique IDs
+based on structure and semantic identifiers. The viewport is an intentional clipping frame;
+offscreen children remain in the editable tree. Re-read metadata after conversion rather than
+assuming a source DOM ID becomes the exact v3 ID.
+
+The tool reads up to 20 relative local CSS files, blocks scripts and network requests, verifies
+local inline image/font bytes with the browser, then adapts text, containers, supported Flex/Grid,
+geometry and basic paints. Images and fonts enter the project resource store before the new
+canvas is committed. Workspace text reads cannot load binary files: use inline data resources,
+or use the panel's local HTML-folder chooser to include binary images and fonts. Missing local
+resources and undecodable fonts/background images fail before changing the design.
+
+The result includes `conversion` with engine, upstream commit, statistics and compatibility
+warnings, plus document bytes, audit and an optional rollback transaction. Read these warnings;
+gradients, mixed rich text, filters and several CSS edge cases are approximated or unsupported.
+Do not describe this as lossless HTML/CSS import. Editing and saving use the same v3 tools as any
+other design. Use the complete portable backup for one-file transfer; the Figma plugin directly
+validates and opens that file as new editable pages. It cannot install font bytes or import
+project comments as Figma cloud comments. The independent measured capture helper remains the
+reference used for frontend comparisons, not a silent fallback for this importer.
 
 Read [`references/html-fidelity.md`](references/html-fidelity.md) before changing the importer or
 layout engine, running pixel comparisons, or reporting unsupported CSS. Use its maintained
@@ -288,9 +288,9 @@ For an auto-layout region:
 4. For an overlay, set `layoutPositioning: "absolute"` and provide absolute-canvas `x/y`.
 5. Read the subtree again after the transaction because the resolved geometry is explicit.
 
-`use_design` and `import_html` are atomic. If an operation, conversion, or save is invalid, the
-canvas rolls back. Prefer one
-transaction when several operations must stay consistent, such as creating a frame and its first
+`use_design` and `import_html` validate before replacing the canvas. A failed save rolls back
+only while the same transaction still owns the document; newer edits or a switched document
+are preserved. Prefer one transaction when several operations must stay consistent, such as creating a frame and its first
 children; use separate transactions when visual inspection should decide the next edit.
 If all operations produce no net document change, the result reports `noOp: true`,
 `transactionId: null`, and empty change ids. It does not replace the previous real transaction's
@@ -428,9 +428,9 @@ invent, shorten, or reuse a `stateRevision` from an earlier transaction.
 
 ## Failure recovery
 
-- If `use_design` or `import_html` cannot save, it restores the pre-transaction canvas and returns no
-  `transactionId`. Fix the reported trust, path, or revision problem before creating a fresh
-  transaction.
+- If `use_design` or `import_html` cannot save, it restores the pre-transaction canvas only when
+  that transaction still owns the current state, and returns no `transactionId`. Newer state is
+  preserved. Re-read metadata and fix the reported error before creating a fresh transaction.
 - If `expected_revision` fails, discard assumptions based on the stale read, fetch metadata and
   the affected subtree again, then construct a new transaction against the new revision.
 - If `expected_state_revision` fails, the live in-memory canvas changed even if the repository

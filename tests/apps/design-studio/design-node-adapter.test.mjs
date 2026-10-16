@@ -1,0 +1,477 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { chromium } from "playwright";
+import {
+  designNodeToV3,
+  inertDesignSvg,
+} from "../../../apps/design-studio/app/design-node-adapter.mjs";
+import {
+  normalizeDesignDocument,
+  serializeDesignDocument,
+} from "../../../apps/design-studio/app/document.mjs";
+import { transformedNodeBoundsInTree } from "../../../apps/design-studio/app/geometry.mjs";
+import { resolveDesignResource } from "../../../apps/design-studio/app/resource-store.mjs";
+import { createFigmaTransfer } from "../../../apps/design-studio/app/figma-bridge.mjs";
+import {
+  createPortableDesign,
+  planPortableDesign,
+} from "../../../apps/design-studio/app/portable-backup.mjs";
+
+const hash = async (value) => createHash("sha256").update(value).digest("hex");
+const PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7S8AAAAASUVORK5CYII=";
+const rgb = (r, g, b, a = 1) => ({ r, g, b, a });
+const bounds = (x = 0, y = 0, width = 200, height = 100) => ({ x, y, width, height });
+const base = (nodeType, properties = {}) => ({
+  id: "random-upstream-id",
+  name: nodeType,
+  tag: nodeType === "text" ? "span" : "div",
+  nodeType,
+  bounds: bounds(),
+  opacity: 1,
+  visible: true,
+  positioning: { mode: "static" },
+  ...properties,
+});
+const container = (children = [], properties = {}) =>
+  base("container", {
+    layout: { display: "block", padding: { top: 0, right: 0, bottom: 0, left: 0 } },
+    background: { layers: [] },
+    overflow: "visible",
+    children,
+    ...properties,
+  });
+const text = (content = "Editable title", properties = {}) =>
+  base("text", {
+    content,
+    bounds: bounds(5, 7, 140, 24),
+    textStyle: {
+      fontFamily: "Inter",
+      fontSize: 20,
+      fontWeight: 400,
+      fontStyle: "normal",
+      color: rgb(10, 20, 30),
+      textAlign: "left",
+      textDecoration: "none",
+      lineHeight: { unit: "px", value: 24 },
+      letterSpacing: { unit: "px", value: 0 },
+    },
+    ...properties,
+  });
+const allNodes = (result) => normalizeDesignDocument(result.document).nodes;
+const codes = (result) => result.report.warnings.map((warning) => warning.code);
+const options = { sha256Bytes: hash };
+
+test("final upstream parent-relative bounds become page coordinates; random and duplicate upstream IDs never become design IDs", async () => {
+  const tree = container(
+    [
+      container([text()], { bounds: bounds(20, 30) }),
+      text("Fixed", { bounds: bounds(80, 90), positioning: { mode: "fixed" } }),
+    ],
+    { bounds: bounds(100, 200, 800, 600) },
+  );
+  const addSemantic = (node) => {
+    node.semantic = { semanticId: "duplicate-semantic-id", cssSelector: ".card" };
+    for (const child of node.children ?? []) addSemantic(child);
+  };
+  addSemantic(tree);
+  const before = JSON.stringify(tree),
+    result = await designNodeToV3(tree, options),
+    nodes = allNodes(result);
+  assert.deepEqual(
+    nodes.map((node) => [node.x, node.y]),
+    [
+      [0, 0],
+      [20, 30],
+      [25, 37],
+      [80, 90],
+    ],
+  );
+  assert.equal(new Set(nodes.map((node) => node.id)).size, 4);
+  assert.ok(nodes.every((node) => node.id.startsWith("html-")));
+  assert.equal(JSON.stringify(tree), before);
+  const changedIds = structuredClone(tree);
+  const randomize = (node) => {
+    node.id = String(Math.random());
+    for (const child of node.children ?? []) randomize(child);
+  };
+  randomize(changedIds);
+  const repeated = await designNodeToV3(changedIds, options);
+  assert.deepEqual(result.document, repeated.document);
+  assert.equal(JSON.parse(nodes[2].notes).semanticId, "duplicate-semantic-id");
+});
+
+test("CSS rotation uses the upstream transform anchor and v3 center rotation without applying scale twice", async () => {
+  const tree = container(
+    [
+      text("Rotated", {
+        bounds: bounds(100, 0, 40, 20),
+        transform: { rotation: 90, scale: { x: 2, y: 2 }, matrix: [0, 2, -2, 0, 0, 0] },
+      }),
+    ],
+    { bounds: bounds(0, 0, 400, 300) },
+  );
+  const nodes = allNodes(await designNodeToV3(tree, options)),
+    node = nodes[1];
+  assert.deepEqual([node.x, node.y, node.width, node.height, node.rotation], [70, 10, 40, 20, 90]);
+  assert.deepEqual(transformedNodeBoundsInTree(nodes, node), {
+    x: 80,
+    y: 0,
+    width: 20,
+    height: 40,
+  });
+  const nested = container(
+    [
+      container([container([], { bounds: bounds(-30, 20, 20, 40) })], {
+        bounds: bounds(120, 40, 100, 80),
+        transform: { rotation: 90, matrix: [0, 1, -1, 0, 0, 0] },
+      }),
+    ],
+    { bounds: bounds(0, 0, 400, 300) },
+  );
+  const result = await designNodeToV3(nested, options),
+    nestedNodes = allNodes(result),
+    child = nestedNodes[2];
+  assert.deepEqual([child.x, child.y, child.width, child.height], [50, 60, 40, 20]);
+  assert.deepEqual(transformedNodeBoundsInTree(nestedNodes, child), {
+    x: 90,
+    y: 60,
+    width: 20,
+    height: 40,
+  });
+  assert.equal(codes(result).filter((code) => code === "nested-transform-approximation").length, 1);
+});
+
+test("flex direction, wrap, padding, gaps and editable child sizing are represented directly", async () => {
+  const tree = container([text("Flexible", { flexItem: { grow: 1, alignSelf: "flex-end" } })], {
+    layout: {
+      display: "flex",
+      padding: { top: 8, right: 12, bottom: 16, left: 20 },
+      flex: {
+        direction: "row-reverse",
+        wrap: "wrap",
+        gap: { row: 9, column: 14 },
+        justifyContent: "space-between",
+        alignItems: "center",
+        alignContent: "stretch",
+      },
+    },
+  });
+  const [frame, child] = allNodes(await designNodeToV3(tree, options));
+  assert.deepEqual(
+    [
+      frame.layout,
+      frame.layoutReverse,
+      frame.layoutWrap,
+      frame.gap,
+      frame.rowGap,
+      frame.paddingLeft,
+    ],
+    ["horizontal", true, "wrap", 14, 9, 20],
+  );
+  assert.equal(frame.justifyContent, "space-between");
+  assert.equal(child.layoutSizingHorizontal, "fill");
+  assert.equal(child.layoutAlignSelf, "end");
+});
+
+test("uniform pixel Grid remains editable; irregular grids and CSS child margins keep measured geometry with diagnostics", async () => {
+  const grid = {
+    display: "grid",
+    grid: {
+      templateColumns: "100px 100px",
+      templateRows: "40px 40px",
+      gap: { row: 5, column: 10 },
+    },
+  };
+  const result = await designNodeToV3(container([text()], { layout: grid }), options);
+  assert.equal(allNodes(result)[0].layout, "grid");
+  assert.equal(allNodes(result)[0].gridColumns, 2);
+  const irregular = await designNodeToV3(
+    container([text()], {
+      layout: { ...grid, grid: { ...grid.grid, templateColumns: "100px 200px" } },
+    }),
+    options,
+  );
+  assert.equal(allNodes(irregular)[0].layout, "none");
+  assert.ok(codes(irregular).includes("grid-fixed-geometry"));
+  const margins = await designNodeToV3(
+    container([text("Margin", { margin: { left: 10 } })], {
+      layout: { display: "flex", flex: { direction: "row" } },
+    }),
+    options,
+  );
+  assert.equal(allNodes(margins)[0].layout, "none");
+  assert.ok(codes(margins).includes("layout-margin-fixed"));
+});
+
+test("viewport frame crops the first screen while preserving full editable content below it", async () => {
+  const tree = container([text("Below fold", { bounds: bounds(10, 1500, 100, 30) })], {
+    bounds: bounds(0, 0, 1440, 4000),
+  });
+  const result = await designNodeToV3(tree, {
+    ...options,
+    viewportWidth: 1440,
+    viewportHeight: 900,
+  });
+  assert.deepEqual(result.document.canvas, { width: 1440, height: 900, background: "#ffffff" });
+  const nodes = allNodes(result);
+  assert.equal(nodes[0].id, "html-viewport");
+  assert.equal(nodes[0].clipContent, true);
+  assert.equal(nodes[1].height, 4000);
+  assert.equal(nodes[2].y, 1500);
+  const cropped = await designNodeToV3(tree, {
+    ...options,
+    captureBounds: { left: 10, top: 20, right: 210, bottom: 120 },
+  });
+  assert.deepEqual([allNodes(cropped)[1].x, allNodes(cropped)[1].y], [-10, -20]);
+  await assert.rejects(
+    () => designNodeToV3(tree, { viewportWidth: 20, viewportHeight: 900 }),
+    /100–10000/u,
+  );
+});
+
+test("local images deduplicate into verified resource plans and a complete single file, then export exact bytes to Figma", async () => {
+  const image = () =>
+    base("image", {
+      imageData: { src: "photo.png", base64: `data:image/png;base64,${PNG}`, objectFit: "cover" },
+    });
+  const result = await designNodeToV3(container([image(), image()]), options);
+  assert.equal(result.resourcePlans.length, 1);
+  assert.equal(allNodes(result)[1].type, "image");
+  assert.equal(allNodes(result)[1].imageRef, allNodes(result)[2].imageRef);
+  assert.ok(!serializeDesignDocument(result.document).includes(PNG));
+  const files = new Map(
+    result.resourcePlans.flatMap((plan) => plan.parts.map((part) => [part.path, part.content])),
+  );
+  const readText = async (path) => files.get(path);
+  const resource = await resolveDesignResource({
+    descriptor: result.document.resources[0],
+    readText,
+    sha256Bytes: hash,
+  });
+  assert.equal(resource.base64, PNG);
+  const portable = await createPortableDesign({
+    document: normalizeDesignDocument(result.document),
+    source: { workspaceRoot: null, sessionId: null, path: "designs/html.codesign.json" },
+    readText,
+    sha256Bytes: hash,
+  });
+  const restored = await planPortableDesign(portable, { sha256: hash, sha256Bytes: hash });
+  assert.equal(restored.resourceCount, 1);
+  assert.ok(portable.includes(PNG));
+  const transfer = createFigmaTransfer(result.document, { resources: result.resourcePayloads });
+  assert.equal(transfer.pages[0].children[0].children[0].type, "image");
+  assert.equal(transfer.assets[result.document.resources[0].id].base64, PNG);
+});
+
+test("original sanitized data URL bytes take priority over the runtime's canvas-reencoded image", async () => {
+  const reencoded =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+  const result = await designNodeToV3(
+    container([
+      base("image", {
+        imageData: {
+          src: `data:image/png;base64,${PNG}`,
+          base64: `data:image/png;base64,${reencoded}`,
+          objectFit: "contain",
+        },
+      }),
+    ]),
+    options,
+  );
+  assert.equal(result.resourcePayloads.values().next().value.base64, PNG);
+  assert.equal(result.document.resources[0].sha256, await hash(Buffer.from(PNG, "base64")));
+  const local = await designNodeToV3(
+    container([base("image", { imageData: { src: "local/photo.png", base64: PNG } })]),
+    options,
+  );
+  assert.equal(local.document.resources[0].mime, "image/png");
+});
+
+test("font bytes produce matched fontRef descriptors and survive the complete portable file", async () => {
+  const bytes = Buffer.from("WOFF2 inert test bytes").toString("base64");
+  const result = await designNodeToV3(container([text()]), {
+    ...options,
+    fonts: [{ family: "Inter", weight: 400, style: "normal", mime: "font/woff2", base64: bytes }],
+  });
+  const descriptor = result.document.resources[0],
+    node = allNodes(result)[1];
+  assert.equal(descriptor.kind, "font");
+  assert.equal(node.fontRef, descriptor.id);
+  assert.equal(result.resourcePayloads.get(descriptor.id).base64, bytes);
+  const files = new Map(
+    result.resourcePlans.flatMap((plan) => plan.parts.map((part) => [part.path, part.content])),
+  );
+  const portable = await createPortableDesign({
+    document: normalizeDesignDocument(result.document),
+    source: { workspaceRoot: null, sessionId: null, path: "designs/html.codesign.json" },
+    readText: async (path) => files.get(path),
+    sha256Bytes: hash,
+  });
+  assert.ok(portable.includes(bytes));
+});
+
+test("safe SVG source remains a visible self-contained resource and active/external SVG never enters a plan", async () => {
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 20"><defs><linearGradient id="g"><stop stop-color="red"/></linearGradient></defs><rect width="40" height="20" fill="url(#g)"/></svg>';
+  const result = await designNodeToV3(container([base("svg", { svgContent: svg })]), options);
+  assert.equal(allNodes(result)[1].type, "image");
+  assert.equal(new TextDecoder().decode(result.resourcePayloads.values().next().value.bytes), svg);
+  assert.ok(codes(result).includes("svg-image-resource"));
+  for (const source of [
+    "<svg><script>alert(1)</script></svg>",
+    '<svg onload="alert(1)"/>',
+    '<svg><use href="https://example.com/icon"/></svg>',
+    "<!DOCTYPE svg><svg/>",
+    '<svg><rect fill="url(https://example.com/pixel)"/></svg>',
+    '<svg><use href="&#104;ttps://example.com"/></svg>',
+  ]) {
+    assert.throws(() => inertDesignSvg(source));
+    const rejected = await designNodeToV3(
+      container([base("svg", { svgContent: source })]),
+      options,
+    );
+    assert.equal(rejected.resourcePlans.length, 0);
+    assert.equal(allNodes(rejected)[1].type, "rectangle");
+    assert.ok(codes(rejected).includes("invalid-svg"));
+  }
+});
+
+test("missing and invalid local image bytes are visible placeholders with explicit diagnostics, without any network fetch", async () => {
+  const previous = globalThis.fetch;
+  globalThis.fetch = () => {
+    throw new Error("Adapter must never fetch");
+  };
+  try {
+    const result = await designNodeToV3(
+      container([
+        base("image", { imageData: { src: "https://example.com/photo.png" } }),
+        base("image", { imageData: { base64: "data:image/png;base64,YmFk" } }),
+      ]),
+      options,
+    );
+    assert.deepEqual(
+      allNodes(result)
+        .slice(1)
+        .map((node) => node.type),
+      ["rectangle", "rectangle"],
+    );
+    assert.ok(codes(result).includes("missing-image-bytes"));
+    assert.ok(codes(result).includes("invalid-image"));
+    assert.equal(result.resourcePlans.length, 0);
+  } finally {
+    globalThis.fetch = previous;
+  }
+});
+
+test("unsupported paints, mixed text, effects and geometry corrections are reported, never silently claimed as faithful", async () => {
+  const styled = text("Mixed", {
+    styledSegments: [{ start: 0, end: 5, text: "Mixed", style: { fontWeight: 700 } }],
+  });
+  const result = await designNodeToV3(
+    container([styled], {
+      background: {
+        layers: [
+          { type: "linear-gradient", angle: 45, stops: [{ position: 0, color: rgb(200, 10, 20) }] },
+        ],
+      },
+      effects: {
+        boxShadows: [{ inset: true, spreadRadius: 2 }],
+        filters: [{ type: "blur", value: 4 }],
+      },
+      bounds: bounds(0, 0, 500, 200),
+    }),
+    options,
+  );
+  assert.equal(allNodes(result)[0].fill, "#c80a14");
+  for (const code of [
+    "gradient-solid-fallback",
+    "rich-text-uniform",
+    "shadow-approximation",
+    "unsupported-effects",
+  ])
+    assert.ok(codes(result).includes(code), code);
+  assert.equal(JSON.parse(allNodes(result)[1].notes).styledSegments[0].style.fontWeight, 700);
+});
+
+test("cycles, unsupported nodes, excessive nesting and text limits fail clearly before any caller can persist data", async () => {
+  const cyclic = container();
+  cyclic.children.push(cyclic);
+  await assert.rejects(() => designNodeToV3(cyclic, options), /循环/u);
+  await assert.rejects(() => designNodeToV3({ nodeType: "canvas" }, options), /不支持/u);
+  let deep = text();
+  for (let index = 0; index < 33; index += 1) deep = container([deep]);
+  await assert.rejects(() => designNodeToV3(deep, options), /32 层/u);
+  await assert.rejects(() => designNodeToV3(container([text("x".repeat(4001))]), options), /4000/u);
+});
+
+test("real Chromium HTML → pinned original DesignNode → v3 retains nested positions, text, local PNG and SVG", async (t) => {
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const runtime = await readFile(
+    new URL("../../../apps/design-studio/app/vendor/html2figma-browser.mjs", import.meta.url),
+    "utf8",
+  );
+  await page.route("**/*", (route) => {
+    if (route.request().url() === "https://adapter.test/runtime.mjs")
+      return route.fulfill({ body: runtime, contentType: "text/javascript" });
+    if (route.request().url() === "https://adapter.test/")
+      return route.fulfill({
+        contentType: "text/html",
+        body: `<!doctype html><style>body{margin:0}#root{position:relative;width:400px;height:300px;font-family:Arial}h1{position:absolute;left:20px;top:10px;margin:0;font-size:30px;line-height:36px}#outer{position:absolute;left:40px;top:60px;width:200px;height:100px;background:rgb(230,240,250)}#inner{position:absolute;left:20px;top:30px;width:80px;height:20px;background:rgb(10,20,30)}img{position:absolute;left:20px;top:190px;width:24px;height:24px}svg{position:absolute;left:80px;top:190px}</style><main id="root"><h1>Heading <em>mixed</em></h1><div id="outer"><div id="inner"></div></div><img src="data:image/png;base64,${PNG}"><svg width="20" height="20" viewBox="0 0 20 20"><path d="M0 0L20 20" stroke="blue"/></svg></main>`,
+      });
+    return route.abort();
+  });
+  await page.goto("https://adapter.test/");
+  const tree = await page.evaluate(async () => {
+    await document.querySelector("img").decode();
+    const { convertToDesignDSL } = await import("/runtime.mjs");
+    return convertToDesignDSL(document.querySelector("#root"));
+  });
+  const result = await designNodeToV3(tree, {
+    ...options,
+    viewportWidth: 400,
+    viewportHeight: 300,
+  });
+  const nodes = allNodes(result);
+  const byHtmlId = (id) =>
+    nodes.find((node) => node.notes && JSON.parse(node.notes).attributes?.id === id);
+  assert.deepEqual([byHtmlId("outer").x, byHtmlId("outer").y], [40, 60]);
+  assert.deepEqual([byHtmlId("inner").x, byHtmlId("inner").y], [60, 90]);
+  assert.equal(byHtmlId("inner").fill, "#0a141e");
+  assert.ok(
+    nodes.some(
+      (node) => node.type === "text" && node.text.includes("Heading") && node.fontSize === 30,
+    ),
+  );
+  assert.equal(nodes.filter((node) => node.type === "image").length, 2);
+  assert.ok(result.document.resources.some((resource) => resource.mime === "image/png"));
+  assert.ok(result.document.resources.some((resource) => resource.mime === "image/svg+xml"));
+  assert.ok(codes(result).includes("rich-text-uniform"));
+  assert.ok(codes(result).includes("svg-image-resource"));
+  const rotated = await page.evaluate(async () => {
+    const outer = document.querySelector("#outer");
+    outer.style.transformOrigin = "top left";
+    outer.style.transform = "rotate(90deg)";
+    const rect = document.querySelector("#inner").getBoundingClientRect();
+    const { convertToDesignDSL } = await import("/runtime.mjs");
+    return {
+      tree: convertToDesignDSL(document.querySelector("#root")),
+      measured: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    };
+  });
+  const rotatedResult = await designNodeToV3(rotated.tree, options),
+    rotatedNodes = allNodes(rotatedResult);
+  const inner = rotatedNodes.find(
+    (node) => node.notes && JSON.parse(node.notes).attributes?.id === "inner",
+  );
+  const visual = transformedNodeBoundsInTree(rotatedNodes, inner);
+  for (const key of ["x", "y", "width", "height"])
+    assert.ok(
+      Math.abs(visual[key] - rotated.measured[key]) < 0.05,
+      `${key}: ${visual[key]} vs browser ${rotated.measured[key]}`,
+    );
+});

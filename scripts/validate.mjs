@@ -245,7 +245,11 @@ async function validatePackage(packagePath) {
     const queriedIds = [...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g)].map(
       (match) => match[1],
     );
-    assert.equal(manifest.version, "0.19.0", `${packagePath}: Figma review workflow version mismatch`);
+    assert.equal(
+      manifest.version,
+      "0.20.0",
+      `${packagePath}: HTML DesignNode workflow version mismatch`,
+    );
     assert.deepEqual(
       [...registeredToolNames].sort(),
       [...toolNames].sort(),

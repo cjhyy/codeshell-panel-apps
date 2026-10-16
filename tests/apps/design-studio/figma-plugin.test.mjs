@@ -829,3 +829,43 @@ test("reorder resolves new sibling anchors across permutations while preserving 
     assert.ok(actual.includes(runtime.all.get("1:98")));
   }
 });
+
+test("a directly selected complete v3 file creates all pages, editable text/layout and original image bytes", async () => {
+  const { portableFixture, pixel } = await import("./fixtures/figma-plugin-v3.mjs");
+  const { preparePluginFile } =
+    await import("../../../apps/design-studio/app/figma-plugin/v3-input.mjs");
+  const prepared = await preparePluginFile(JSON.stringify(await portableFixture()));
+  const h = harness(page([]));
+  await h.send({ type: "import-transfer", content: JSON.stringify(prepared.transfer) });
+  assert.equal(h.messages.at(-1).type, "imported");
+  assert.equal(h.messages.at(-1).pages, 2);
+  assert.equal(h.messages.at(-1).nodes, 4);
+  assert.equal(h.figma.root.children.length, 3);
+  const title = [...h.all.values()].find((node) => node.characters === "Direct v3");
+  assert.equal(title.type, "TEXT");
+  assert.equal(title.parent.layoutMode, "HORIZONTAL");
+  assert.equal(title.parent.itemSpacing, 12);
+  assert(
+    Object.values(title.pluginData).some((value) => value.includes("codeshell.html.semantic")),
+  );
+  assert.equal(h.images.size, 1);
+  assert.deepEqual(Buffer.from([...h.images.values()][0]), Buffer.from(pixel, "base64"));
+  assert.equal(h.figma.root.children[0].name, "Home");
+  assert.equal(h.figma.root.children[0].children.length, 0);
+});
+
+test("main sandbox decodes multi-megabyte local image payloads without recursive Base64 validation", async () => {
+  const { portableFixture, pixel } = await import("./fixtures/figma-plugin-v3.mjs");
+  const { preparePluginFile } =
+    await import("../../../apps/design-studio/app/figma-plugin/v3-input.mjs");
+  const prepared = await preparePluginFile(JSON.stringify(await portableFixture()));
+  // A valid PNG with inert trailing bytes exercises the transport size without
+  // asking the mock Figma runtime to manufacture or render a large bitmap.
+  const bytes = Buffer.concat([Buffer.from(pixel, "base64"), Buffer.alloc(3 * 1024 * 1024)]);
+  prepared.transfer.assets.photo.base64 = bytes.toString("base64");
+  const h = harness(page([]));
+  await h.send({ type: "import-transfer", content: JSON.stringify(prepared.transfer) });
+  assert.equal(h.messages.at(-1).type, "imported");
+  assert.equal(h.images.size, 1);
+  assert.deepEqual(Buffer.from([...h.images.values()][0]), bytes);
+});

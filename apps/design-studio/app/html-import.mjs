@@ -1,4 +1,11 @@
 import { captureHtmlToDesign } from "./html-capture.mjs";
+import { convertToDesignDSL, HTML2FIGMA_PROVENANCE } from "./vendor/html2figma-browser.mjs";
+import { designNodeToV3 } from "./design-node-adapter.mjs";
+import {
+  createHtmlAssetResolver,
+  htmlFontResources,
+  safeHtmlDataUrl,
+} from "./html-import-assets.mjs";
 
 const MAX_HTML_SOURCE_BYTES = 512 * 1024;
 const MAX_LINKED_STYLESHEETS = 20;
@@ -95,6 +102,13 @@ function sanitizeElementAttributes(element) {
   for (const attribute of [...element.attributes]) {
     const name = attribute.name.toLowerCase();
     if (
+      (name === "src" || name === "href" || name === "xlink:href") &&
+      safeHtmlDataUrl(attribute.value)
+    )
+      continue;
+    if ((name === "href" || name === "xlink:href") && /^#[a-z][\w:.-]*$/iu.test(attribute.value))
+      continue;
+    if (
       name.startsWith("on") ||
       RESOURCE_ATTRIBUTES.has(name) ||
       ["autofocus", "form", "http-equiv", "integrity", "nonce"].includes(name)
@@ -102,18 +116,17 @@ function sanitizeElementAttributes(element) {
       element.removeAttribute(attribute.name);
       continue;
     }
-    if (name === "style") {
-      element.setAttribute("style", sanitizeHtmlCaptureCss(attribute.value));
-    }
   }
 }
 
-async function sanitizedHtmlSource(sourcePath, html, readText) {
+async function sanitizedHtmlSource(sourcePath, html, readText, readAsset) {
   if (typeof html !== "string" || sourceByteLength(html) > MAX_HTML_SOURCE_BYTES) {
     throw new Error("HTML 文件超过 512 KiB 导入上限");
   }
   const parser = new DOMParser();
   const parsed = parser.parseFromString(html, "text/html");
+  const assets = createHtmlAssetResolver({ readAsset });
+  const fonts = [];
   const title = parsed.querySelector("title")?.textContent?.trim() || sourcePath.split("/").at(-1);
   const styleSources = [...parsed.querySelectorAll('style, link[rel~="stylesheet" i]')];
   if (styleSources.filter((element) => element.tagName.toLowerCase() === "link").length > 20) {
@@ -122,7 +135,8 @@ async function sanitizedHtmlSource(sourcePath, html, readText) {
   let totalBytes = sourceByteLength(html);
   for (const source of styleSources) {
     if (source.tagName.toLowerCase() === "style") {
-      source.textContent = sanitizeHtmlCaptureCss(source.textContent ?? "");
+      source.textContent = await assets.css(source.textContent ?? "", sourcePath);
+      fonts.push(...htmlFontResources(source.textContent, assets.warnings));
       continue;
     }
     const path = resolveHtmlStylesheetPath(sourcePath, source.getAttribute("href") ?? "");
@@ -139,13 +153,35 @@ async function sanitizedHtmlSource(sourcePath, html, readText) {
     }
     const style = parsed.createElement("style");
     style.dataset.captureSource = path;
-    style.textContent = sanitizeHtmlCaptureCss(css);
+    style.textContent = await assets.css(css, path);
+    fonts.push(...htmlFontResources(style.textContent, assets.warnings));
     source.replaceWith(style);
   }
 
   parsed.querySelectorAll(BLOCKED_ELEMENTS).forEach((element) => element.remove());
   parsed.querySelectorAll("meta[http-equiv]").forEach((element) => element.remove());
+  for (const element of parsed.querySelectorAll("img, image")) {
+    const attribute = element.hasAttribute("src")
+      ? "src"
+      : element.hasAttribute("href")
+        ? "href"
+        : "xlink:href";
+    const value = element.getAttribute(attribute);
+    if (value) {
+      const resolved = await assets.resolve(value, sourcePath);
+      if (resolved) element.setAttribute(attribute, resolved);
+      else element.removeAttribute(attribute);
+    }
+  }
+  for (const element of parsed.querySelectorAll("[style]")) {
+    element.setAttribute("style", await assets.css(element.getAttribute("style"), sourcePath));
+  }
   parsed.querySelectorAll("*").forEach(sanitizeElementAttributes);
+  const policy = parsed.createElement("meta");
+  policy.httpEquiv = "Content-Security-Policy";
+  policy.content =
+    "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'";
+  parsed.head.prepend(policy);
   const freeze = parsed.createElement("style");
   freeze.dataset.codeshellCapture = "true";
   freeze.textContent =
@@ -153,6 +189,9 @@ async function sanitizedHtmlSource(sourcePath, html, readText) {
   parsed.head.append(freeze);
   return {
     title,
+    fonts,
+    dataUrls: assets.dataUrls(),
+    warnings: assets.warnings,
     source: `<!doctype html>\n${parsed.documentElement.outerHTML}`,
   };
 }
@@ -197,14 +236,61 @@ function waitForFrameLoad(frame) {
   });
 }
 
-export async function captureWorkspaceHtml({
+async function verifyHtmlResources(frameWindow, prepared) {
+  const checks = [];
+  for (const dataUrl of prepared.dataUrls) {
+    if (dataUrl.startsWith("data:font/")) {
+      const face = new frameWindow.FontFace("CodeShellImportVerification", `url(${dataUrl})`);
+      checks.push(
+        face.load().catch((error) => {
+          throw new Error("HTML 字体资源无法解码", { cause: error });
+        }),
+      );
+      continue;
+    }
+    if (!dataUrl.startsWith("data:image/")) continue;
+    const image = new frameWindow.Image();
+    image.src = dataUrl;
+    checks.push(
+      image
+        .decode()
+        .then(() => {
+          if (
+            image.naturalWidth > 8192 ||
+            image.naturalHeight > 8192 ||
+            image.naturalWidth * image.naturalHeight > 16_777_216
+          )
+            throw new Error("HTML 图片像素过大；单张最多 8192 像素边长及 1600 万像素");
+        })
+        .catch((error) => {
+          throw new Error("HTML 图片无法解码或超出像素上限", { cause: error });
+        }),
+    );
+  }
+  let timer;
+  try {
+    await Promise.race([
+      Promise.all(checks),
+      new Promise((_, reject) => {
+        timer = window.setTimeout(() => reject(new Error("HTML 资源验证超时")), 5000);
+      }),
+    ]);
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+export async function captureWorkspaceHtmlResult({
   sourcePath,
   html,
   readText,
+  readAsset,
   rootSelector = "html",
   viewportWidth = 1440,
   viewportHeight = 900,
   name,
+  sha256Bytes,
+  engine = "html2figma",
 }) {
   if (!isSafeHtmlImportPath(sourcePath)) {
     throw new Error("HTML 路径必须是工作区内安全的相对 .html 文件");
@@ -227,7 +313,8 @@ export async function captureWorkspaceHtml({
     }
   }
 
-  const prepared = await sanitizedHtmlSource(sourcePath, html, readText);
+  if (!["html2figma", "measured"].includes(engine)) throw new Error("未知 HTML 转换引擎");
+  const prepared = await sanitizedHtmlSource(sourcePath, html, readText, readAsset);
   const frame = captureFrame(viewportWidth, viewportHeight);
   const loaded = waitForFrameLoad(frame);
   frame.srcdoc = prepared.source;
@@ -238,7 +325,25 @@ export async function captureWorkspaceHtml({
     if (!frameDocument) throw new Error("浏览器没有提供可读取的 HTML 预览");
     const frameWindow = frame.contentWindow;
     if (!frameWindow) throw new Error("浏览器没有提供可读取的 HTML 预览窗口");
+    await verifyHtmlResources(frameWindow, prepared);
     await frameDocument.fonts?.ready;
+    await Promise.all(
+      [...frameDocument.images]
+        .filter((image) => image.hasAttribute("src"))
+        .map((image) =>
+          image.decode().catch(() => {
+            throw new Error("HTML 图片无法解码，请检查资源内容");
+          }),
+        ),
+    );
+    for (const image of frameDocument.images) {
+      if (
+        image.naturalWidth > 8192 ||
+        image.naturalHeight > 8192 ||
+        image.naturalWidth * image.naturalHeight > 16_777_216
+      )
+        throw new Error("HTML 图片像素过大；单张最多 8192 像素边长及 1600 万像素");
+    }
     await new Promise((resolve) =>
       frameWindow.requestAnimationFrame(() => frameWindow.requestAnimationFrame(resolve)),
     );
@@ -249,16 +354,41 @@ export async function captureWorkspaceHtml({
       throw new Error(`HTML 根选择器无效：${rootSelector}`);
     }
     if (!root) throw new Error(`HTML 中找不到根节点：${rootSelector}`);
-    return await captureHtmlToDesign(root, {
+    const options = {
       name: String(name || prepared.title || "HTML import").slice(0, 120),
+      viewportWidth,
+      viewportHeight,
+      sha256Bytes,
+      fonts: prepared.fonts,
       captureBounds: {
         left: 0,
         top: 0,
         right: viewportWidth,
         bottom: viewportHeight,
       },
-    });
+    };
+    if (engine === "measured")
+      return {
+        document: await captureHtmlToDesign(root, options),
+        resourcePlans: [],
+        report: { engine, warnings: prepared.warnings },
+      };
+    const tree = convertToDesignDSL(root);
+    if (!tree) throw new Error("html2figma 没有生成可见 DesignNode");
+    const result = await designNodeToV3(tree, options);
+    result.report = {
+      ...result.report,
+      engine,
+      upstreamCommit: HTML2FIGMA_PROVENANCE.upstreamCommit,
+      warnings: [...prepared.warnings, ...(result.report?.warnings ?? [])],
+    };
+    return result;
   } finally {
     frame.remove();
   }
+}
+
+/** Compatibility API used by document comparison; imports use the full result including assets. */
+export async function captureWorkspaceHtml(options) {
+  return (await captureWorkspaceHtmlResult(options)).document;
 }

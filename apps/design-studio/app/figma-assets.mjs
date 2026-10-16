@@ -4,7 +4,7 @@ import { createDesignResourcePersistencePlan, MAX_DESIGN_RESOURCES } from "./res
 export const MAX_FIGMA_ASSET_BYTES = 8 * 1024 * 1024;
 export const MAX_FIGMA_ASSET_TOTAL_BYTES = 12 * 1024 * 1024;
 export const MAX_FIGMA_SOURCE_BYTES = 16 * 1024 * 1024;
-const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/u;
 const MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"]);
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -12,6 +12,7 @@ export function decodeFigmaAsset(base64) {
   if (
     typeof base64 !== "string" ||
     !base64.length ||
+    base64.length % 4 !== 0 ||
     base64.length > Math.ceil(MAX_FIGMA_ASSET_BYTES / 3) * 4 ||
     !BASE64.test(base64)
   )

@@ -1,7 +1,4 @@
-import {
-  MAX_DESIGN_BUNDLE_PART_BYTES,
-  splitDesignSource,
-} from "./document-bundle.mjs";
+import { MAX_DESIGN_BUNDLE_PART_BYTES, splitDesignSource } from "./document-bundle.mjs";
 
 export const DESIGN_RESOURCE_KINDS = Object.freeze(["image", "font"]);
 export const MAX_DESIGN_RESOURCES = 2_048;
@@ -10,7 +7,7 @@ export const MAX_DESIGN_RESOURCE_PARTS = 4_096;
 
 const SAFE_ID = /^[a-z][a-z0-9-]{0,63}$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
-const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/u;
 const IMAGE_MIMES = new Set([
   "image/png",
   "image/jpeg",
@@ -42,7 +39,12 @@ function assertExactKeys(value, allowed, label) {
 }
 
 function decodeBase64(base64) {
-  if (typeof base64 !== "string" || !BASE64.test(base64)) {
+  if (
+    typeof base64 !== "string" ||
+    base64.length % 4 !== 0 ||
+    base64.length > Math.ceil(MAX_DESIGN_RESOURCE_BYTES / 3) * 4 ||
+    !BASE64.test(base64)
+  ) {
     throw new Error("资源内容不是规范 Base64");
   }
   let binary;
