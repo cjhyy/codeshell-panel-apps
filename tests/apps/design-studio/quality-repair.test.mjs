@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { normalizeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
 import { repairDesignQuality } from "../../../apps/design-studio/app/quality-repair.mjs";
+import { currentTextMetrics, textMetricsSignature } from "../../../apps/design-studio/app/text-metrics.mjs";
 
 const node = (id, type, extra = {}) => ({ id, type, name: id, x: 50, y: 50,
   width: 100, height: 40, fill: "#ffffff", stroke: "transparent", strokeWidth: 0,
@@ -46,4 +47,73 @@ test("repair keeps a gradient's stops and alpha rather than replacing artwork wi
   const result = repairDesignQuality(source({ width: 200 }, { fillPaints: paints }));
   assert.deepEqual(result.document.nodes[1].fillPaints, paints);
   assert.ok(result.unresolved.some(issue => issue.code === "a11y.text-contrast"));
+});
+
+test("all visible siblings contribute to a fit, while hidden siblings leave the result stable", () => {
+  const input = source({}, { fill: "#000000" });
+  input.nodes.push(node("second", "rectangle", { parentId: "card", x: 300, y: 70, width: 80, height: 30 }));
+  input.nodes.push(node("hidden", "rectangle", { parentId: "card", x: 550, width: 40, visible: false }));
+  input.pages[0].nodes = input.nodes;
+  const result = repairDesignQuality(input);
+  assert.equal(result.document.nodes[0].x + result.document.nodes[0].width, 380);
+  assert.equal(result.after.issueCount, 0);
+  assert.deepEqual(repairDesignQuality(result.document).changes, []);
+});
+
+test("a locked ancestor protects descendant typography and nested containers", () => {
+  const input = source({ locked: true }, { locked: false });
+  const result = repairDesignQuality(input);
+  assert.deepEqual(result.changes, []);
+  assert.deepEqual(result.document.nodes, input.nodes);
+  assert.ok(result.unresolved.some((issue) => issue.code === "a11y.text-contrast"));
+});
+
+test("fitting below a rotated ancestor does not recenter the inherited transform", () => {
+  const input = source({ rotation: 30 }, { fill: "#000000" });
+  input.nodes.push(node("nested", "frame", { parentId: "card", x: 60, y: 60,
+    layout: "none", gap: 0, padding: 0, alignItems: "start", justifyContent: "start", clipContent: false }));
+  input.nodes[1].parentId = "nested";
+  input.nodes[1].x = 200;
+  input.pages[0].nodes = input.nodes;
+  const result = repairDesignQuality(input);
+  assert.ok(!result.changes.some((change) => change.kind === "fit-container"));
+  for (const node of result.document.nodes) {
+    const original = input.nodes.find((candidate) => candidate.id === node.id);
+    for (const property of ["x", "y", "width", "height", "rotation"]) assert.equal(node[property], original[property]);
+  }
+});
+
+test("a fit reserves visible stroke and shadow extents and remains idempotent", () => {
+  const input = source({}, { fill: "#000000", stroke: "#000000", strokeWidth: 2,
+    shadow: { color: "#000000", opacity: 0.5, x: 20, y: 0, blur: 10 } });
+  const result = repairDesignQuality(input), [card, copy] = result.document.nodes;
+  assert.ok(card.x + card.width >= copy.x + copy.width + 36);
+  assert.ok(card.y <= copy.y - 16);
+  assert.ok(card.y + card.height >= copy.y + copy.height + 16);
+  assert.deepEqual(copy.shadow, input.nodes[1].shadow);
+  assert.deepEqual(repairDesignQuality(result.document).changes, []);
+});
+
+test("valid ink receipts avoid padding a tall text box; parent resizing keeps receipts valid and stale text cannot reuse them", () => {
+  const input = source({ width: 70 }, { fill: "#000000", height: 100 });
+  const copy = input.nodes[1];
+  copy.textMetrics = { version: 1, signature: textMetricsSignature(copy), lineWidths: [55],
+    lineInkBounds: [{ x: 0, y: 2, width: 55, height: 14 }], height: 16, fontAvailable: true };
+  const result = repairDesignQuality(input);
+  assert.equal(result.document.nodes[0].x + result.document.nodes[0].width, 155);
+  assert.equal(result.document.nodes[0].height, 40);
+  assert.ok(currentTextMetrics(result.document.nodes[1]));
+  assert.equal(result.after.issueCount, 0);
+  assert.deepEqual(repairDesignQuality(result.document).changes, []);
+  result.document.nodes[1].text = "A much longer changed text value";
+  assert.equal(currentTextMetrics(result.document.nodes[1]), null);
+  assert.ok(repairDesignQuality(result.document).unresolved.some((issue) => issue.code === "layout.text-width-overflow"));
+});
+
+test("container fitting never introduces a new painted frame outside the canvas", () => {
+  const input = source({}, { fill: "#000000", x: 590 });
+  const result = repairDesignQuality(input);
+  assert.ok(result.unresolved.some((issue) => issue.code === "layout.canvas-overflow" && issue.nodeId === "copy"));
+  assert.ok(!result.unresolved.some((issue) => issue.code === "layout.canvas-overflow" && issue.nodeId === "card"));
+  assert.deepEqual(result.changes, []);
 });
