@@ -96,4 +96,15 @@ Figma Plugin API 不提供安装字体字节的能力，仍依赖本机字体或
   本轮使用临时 UI 附加代码发送正常插件消息；不等同于原生文件选择器鼠标全链验收。
   临时服务已退出，测试 UI 和网络权限已移除，清理记录为同目录 `08-cleanup-receipt.json`。
 
-最终全仓门禁、干净提交 Desktop 安装验收和个人安装版本将在完成后补充。
+最终全仓 `npm run check` 在 `16da9a3` 通过：2475 项通过、4 项跳过、0 项失败，
+完整日志已复制为上述证据目录中的 `10-full-check.log`。随后仅将 manifest 的
+`import_html` 工具描述缩短到 Host 的 500 字符上限以内；最终稳定提交 `ebd93e6`
+通过 `npm run validate` 与真实 Desktop 六面板 6/6 安装、IPC、更新和回滚验收。
+报告与日志为 `11-desktop-report.json`、`12-desktop.log`、`15-manifest-validation.log`；
+临时 Electron 进程 `94171` 已正常退出，临时 HOME 已移除。五组真实 Host 和
+230 项 Design Studio 独立门禁的日志也已保存为 `13-host.log`、`14-design-suite.log`。
+
+个人生产 Desktop 中的 `codeshell` 项目已从 GitHub `main` 来源更新至 `0.20.0`，
+安装摘要为 `50e793053f00f4b075d16eada6fa89091abe1e5dd9ac22e87924ae712009fd32`。
+7 项权限保持不变，声明 16 个工具；项目 pin 的版本与摘要一致，55 个运行时文件
+逐字节等于稳定主仓安装源。核对回执为同目录 `09-installed-panel-receipt.json`。
