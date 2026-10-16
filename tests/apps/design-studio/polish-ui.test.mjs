@@ -13,7 +13,7 @@ const manifest = JSON.parse(await readFile(new URL("../../../apps/design-studio/
 const path = "designs/polish.codesign.json";
 const hash = value => `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 
-function source(scope, imported = false) {
+function source(scope, imported = false, largeLayers = false) {
   const node = (id, type, name, x, y, width, height, extra = {}) => ({
     id, type, name, x, y, width, height, fill: "#333333", stroke: "transparent",
     strokeWidth: 0, opacity: 1, rotation: 0, cornerRadius: 0, visible: true, locked: false, ...extra,
@@ -32,21 +32,27 @@ function source(scope, imported = false) {
           node("body", "text", "Body", 140, 220, 180, 40, { text: "Body copy", fontSize: 16,
             fontWeight: 400, lineHeight: 1.2, textAlign: "left" }),
         ],
-      })] }, { id: "page-2", name: "Details", children: [] },
+      }), ...(largeLayers ? [node("bulk-root", "frame", "Bulk root", 100, 100, 500, 300, {
+        fill: "#ffffff", layout: "none", gap: 0, padding: 0, alignItems: "start",
+        justifyContent: "start", gridColumns: 1, clipContent: false,
+        children: Array.from({ length: 996 }, (_, index) =>
+          node(`bulk-${index}`, "rectangle", `Bulk ${index}`, 110, 110, 10, 10,
+            index === 0 ? { notes: "Search-only note" } : {})),
+      })] : [])] }, { id: "page-2", name: "Details", children: [] },
     ],
   }));
 }
 
-async function fixture(t, { mobile = false, agent = true, imported = false, indexed = false } = {}) {
+async function fixture(t, { mobile = false, agent = true, imported = false, indexed = false, largeLayers = false } = {}) {
   const browser = await chromium.launch();
   t.after(() => browser.close());
   const context = await browser.newContext({ viewport: { width: mobile ? 390 : 1280, height: 844 },
     hasTouch: mobile, isMobile: mobile });
   const page = await context.newPage(), calls = [], records = new Map(), errors = [], pauses = new Map();
   page.setDefaultTimeout(4000);
-  const files = new Map(["A", "B"].map(scope => [`${scope}:${path}`, source(scope, imported)]));
+  const files = new Map(["A", "B"].map(scope => [`${scope}:${path}`, source(scope, imported, largeLayers)]));
   if (indexed) for (const scope of ["A", "B"]) {
-    const raw = JSON.parse(source(scope, imported));
+    const raw = JSON.parse(source(scope, imported, largeLayers));
     raw.pages.push(...Array.from({ length: 10 }, (_, i) => ({ id: `page-${i + 3}`, name: `Page ${i + 3}`, children: [] })));
     const plan = await createDesignIndexPersistencePlan({ document: normalizeDesignDocument(raw),
       sha256: async value => createHash("sha256").update(value).digest("hex") });
@@ -135,6 +141,55 @@ async function fixture(t, { mobile = false, agent = true, imported = false, inde
     return { entered, release };
   } };
 }
+
+test("1000-layer list preserves stack order, folded search, keyboard selection and ancestor visibility", async t => {
+  const f = await fixture(t, { largeLayers: true });
+  const rows = () => f.page.locator("#layers-list .layer-row");
+  const row = id => f.page.locator(`#layers-list .layer-row[data-id="${id}"]`);
+  const ids = () => rows().evaluateAll(elements => elements.map(element => element.dataset.id));
+  assert.equal(await rows().count(), 1000);
+  const order = await ids();
+  assert.deepEqual(order.slice(0, 3), ["bulk-root", "bulk-995", "bulk-994"]);
+  assert.deepEqual(order.slice(-3), ["card", "body", "heading"]);
+  assert.equal(await row("bulk-root").locator(".layer-disclosure").isEnabled(), true);
+  assert.equal(await row("bulk-995").locator(".layer-disclosure").isDisabled(), true);
+  assert.equal(await row("bulk-0").evaluate(element => element.style.getPropertyValue("--layer-depth")), "1");
+  await row("bulk-root").locator(".layer-disclosure").click();
+  assert.deepEqual(await ids(), ["bulk-root", "card", "body", "heading"]);
+  await f.page.locator("#layer-filter").fill("search-only NOTE");
+  assert.deepEqual(await ids(), ["bulk-0"]);
+  await f.page.locator("#layer-filter").fill("BULK-995");
+  assert.deepEqual(await ids(), ["bulk-995"]);
+  await f.page.locator("#layer-filter").fill("");
+  assert.deepEqual(await ids(), ["bulk-root", "card", "body", "heading"]);
+  assert.equal(await row("bulk-root").locator(".layer-disclosure").getAttribute("aria-expanded"), "false");
+  await row("bulk-root").click();
+  await row("bulk-root").press("ArrowDown");
+  assert.equal(await row("card").getAttribute("aria-selected"), "true");
+  await row("card").press("ArrowLeft");
+  assert.deepEqual(await ids(), ["bulk-root", "card"]);
+  await row("card").press("ArrowRight");
+  assert.deepEqual(await ids(), ["bulk-root", "card", "body", "heading"]);
+  await row("card").press("End");
+  assert.equal(await row("heading").getAttribute("aria-selected"), "true");
+  await row("heading").press("ArrowUp");
+  assert.equal(await row("body").getAttribute("aria-selected"), "true");
+  await row("heading").click({ modifiers: ["Shift"] });
+  assert.equal(await f.page.locator('#layers-list .layer-row[aria-selected="true"]').count(), 2);
+  await row("card").locator(".layer-visibility").click();
+  for (const id of ["card", "body", "heading"])
+    assert.equal(await row(id).getAttribute("data-hidden"), "true");
+  await row("card").locator(".layer-visibility").click();
+  for (const id of ["card", "body", "heading"])
+    assert.equal(await row(id).getAttribute("data-hidden"), "false");
+  await row("body").press("v");
+  assert.equal(await row("body").getAttribute("data-hidden"), "true");
+  assert.equal(await row("heading").getAttribute("data-hidden"), "false");
+  await row("body").press("Home");
+  assert.equal(await row("bulk-root").getAttribute("aria-selected"), "true");
+  assert.equal(await row("bulk-root").getAttribute("tabindex"), "0");
+  assert.deepEqual(f.errors, []);
+});
 
 test("inline canvas text commits once, cancels without changing the document, and clears stale measured text", async t => {
   const f = await fixture(t), editor = f.page.locator("#inline-text-editor");

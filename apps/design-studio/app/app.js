@@ -907,18 +907,25 @@ function containingFrame(point) {
 }
 
 function layerEntries() {
+  const byId = new Map(), childrenByParent = new Map();
+  // Reverse once while indexing so roots and siblings retain their canvas stack order.
+  for (let index = design.nodes.length - 1; index >= 0; index -= 1) {
+    const node = design.nodes[index];
+    byId.set(node.id, node);
+    const parentId = node.parentId || null;
+    const children = childrenByParent.get(parentId) ?? [];
+    children.push(node);
+    childrenByParent.set(parentId, children);
+  }
   const entries = [];
+  const expandCollapsed = Boolean(layerFilter.trim());
   const visit = (node, depth) => {
     entries.push({ node, depth });
-    if (collapsedLayerIds.has(node.id) && !layerFilter.trim()) return;
-    for (const child of [...design.nodes].reverse()) {
-      if (child.parentId === node.id) visit(child, depth + 1);
-    }
+    if (collapsedLayerIds.has(node.id) && !expandCollapsed) return;
+    for (const child of childrenByParent.get(node.id) ?? []) visit(child, depth + 1);
   };
-  for (const node of [...design.nodes].reverse()) {
-    if (!node.parentId) visit(node, 0);
-  }
-  return entries;
+  for (const node of childrenByParent.get(null) ?? []) visit(node, 0);
+  return { entries, byId, childrenByParent };
 }
 
 function clearSelection() {
@@ -2302,7 +2309,8 @@ function toggleNodeVisibility(node) {
 function renderLayers() {
   elements.layersList.replaceChildren();
   const normalizedFilter = layerFilter.trim().toLowerCase();
-  const entries = layerEntries().filter(({ node }) => {
+  const indexed = layerEntries();
+  const entries = indexed.entries.filter(({ node }) => {
     if (!normalizedFilter) return true;
     return [node.name, node.id, node.type, node.notes]
       .filter(Boolean)
@@ -2315,14 +2323,14 @@ function renderLayers() {
     const row = document.createElement("div");
     row.className = `layer-row${selectedIds.has(node.id) ? " active" : ""}`;
     row.dataset.id = node.id;
-    row.dataset.hidden = String(!isEffectivelyVisible(node));
+    row.dataset.hidden = String(!isDesignNodeVisible(design, node, indexed.byId));
     row.role = "option";
     row.ariaSelected = String(selectedIds.has(node.id));
     row.ariaLabel = `${node.name}，${node.type}，${node.visible ? "可见" : "隐藏"}；按 V 切换显示`;
     row.style.setProperty("--layer-depth", String(depth));
     row.tabIndex = node.id === rovingId ? 0 : -1;
 
-    const hasChildren = design.nodes.some((candidate) => candidate.parentId === node.id);
+    const hasChildren = indexed.childrenByParent.has(node.id);
     const disclosure = document.createElement("button");
     disclosure.className = "layer-disclosure";
     disclosure.type = "button";
