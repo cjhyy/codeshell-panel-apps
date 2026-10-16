@@ -10,17 +10,29 @@ const root = fileURLToPath(new URL("../../../apps/quant-lab/app/", import.meta.u
 const manifest = JSON.parse(await readFile(new URL("../../../apps/quant-lab/.codeshell-panel/panel.json", import.meta.url)));
 
 async function fixture(t, { offline = false, deferInitial = false, width = 390, holdModuleRestore, scoped = false } = {}) {
+  let browser;
   const server = createServer(async (request, response) => {
     const path = resolve(root, `.${new URL(request.url, "http://test").pathname}`);
     if (!path.startsWith(root)) return response.writeHead(403).end();
+    let content;
     try {
-      response.writeHead(200, { "content-type": { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css" }[extname(path)] ?? "application/octet-stream" }).end(await readFile(path));
-    } catch { response.writeHead(404).end(); }
+      content = await readFile(path);
+    } catch { return response.writeHead(404).end(); }
+    response.writeHead(200, { "content-type": { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css" }[extname(path)] ?? "application/octet-stream" }).end(content);
+  });
+  t.after(async () => {
+    const failures = [];
+    try { await browser?.close(); } catch (error) { failures.push(error); }
+    server.closeAllConnections();
+    try {
+      await new Promise((done, reject) => server.close(error =>
+        error && error.code !== "ERR_SERVER_NOT_RUNNING" ? reject(error) : done()));
+    } catch (error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(failures, "Quant UI fixture cleanup failed");
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const browser = await chromium.launch();
-  t.after(async () => { await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  browser = await chromium.launch();
   const context = await browser.newContext({ viewport: { width, height: 844 }, hasTouch: true, isMobile: true });
   await context.route("**/*", route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
   const page = await context.newPage(), errors = [], calls = [], projects = new Map();
@@ -102,6 +114,28 @@ async function fixture(t, { offline = false, deferInitial = false, width = 390, 
 
 const configWrites = f => f.calls.filter(call => call.method === "storage.compareAndSet" && call.params.key.startsWith("configuration."));
 const parameter = (page, value) => page.waitForFunction(value => document.querySelector("#fast-period").value === value && !document.querySelector("#fast-period").disabled, String(value));
+
+test("missing fixture assets return 404 and leave subsequent browser requests usable", { timeout: 20000 }, async t => {
+  const f = await fixture(t);
+  const responses = await f.page.evaluate(async () => {
+    const missing = await fetch("/__fixture_missing_asset__.mjs");
+    const missingBody = await missing.text();
+    const existing = await fetch("/engine.mjs");
+    return {
+      missingStatus: missing.status,
+      missingBody,
+      existingStatus: existing.status,
+      existingType: existing.headers.get("content-type"),
+      existingBody: await existing.text(),
+    };
+  });
+  assert.equal(responses.missingStatus, 404);
+  assert.equal(responses.missingBody, "");
+  assert.equal(responses.existingStatus, 200);
+  assert.equal(responses.existingType, "text/javascript");
+  assert.match(responses.existingBody, /export const BACKTEST_ENGINE_RELEASE/);
+  assert.deepEqual(f.errors, []);
+});
 
 test("Host project identity isolates same-path same-session parameters and their retained backups", { timeout: 20000 }, async t => {
   const f = await fixture(t, { scoped: true });
