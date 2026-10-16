@@ -514,9 +514,12 @@ export function importFigmaJson(
       recordMapping(source, node);
       return node;
     }
-    const fillPaints = !imagePaint && !["group", "image"].includes(type)
-      ? figmaFillPaints(source.fills, message => report.warn("paint-conversion", source, message))
-      : null;
+    const fillPaints =
+      !imagePaint && !["group", "image"].includes(type)
+        ? figmaFillPaints(source.fills, (message) =>
+            report.warn("paint-conversion", source, message),
+          )
+        : null;
     const node = {
       id: allocateId(source, `node-${visited}`),
       type,
@@ -535,7 +538,11 @@ export function importFigmaJson(
         ancestors,
         report,
       ),
-      fill: imagePaint ? "transparent" : fillPaints ? representativeDesignFill(fillPaints) : paint(source.fills, source, "填充", report),
+      fill: imagePaint
+        ? "transparent"
+        : fillPaints
+          ? representativeDesignFill(fillPaints)
+          : paint(source.fills, source, "填充", report),
       stroke: paint(source.strokes, source, "描边", report),
       strokeWidth: number(source.strokeWeight, 0, 0, 100, source, "strokeWeight", report),
       opacity: number(source.opacity, 1, 0, 1, source, "opacity", report),
@@ -551,7 +558,12 @@ export function importFigmaJson(
       visible: source.visible !== false,
       locked: source.locked === true,
     };
-    if (fillPaints && (fillPaints.length > 1 || fillPaints.some(paint => paint.type !== "SOLID" || paint.opacity !== 1))) node.fillPaints = fillPaints;
+    if (
+      fillPaints &&
+      (fillPaints.length > 1 ||
+        fillPaints.some((paint) => paint.type !== "SOLID" || paint.opacity !== 1))
+    )
+      node.fillPaints = fillPaints;
     if (node.stroke === "transparent") node.strokeWidth = 0;
     if (node.strokeWidth && source.strokeAlign !== "CENTER")
       report.warn("stroke-alignment", source, "内侧或外侧描边暂按居中描边导入。");
@@ -732,10 +744,17 @@ export function importFigmaJson(
     // REST explicitly reports no rendered pixels for these clipped branches.
     // Preserve every layer and its source mapping, while representing its actual
     // source visibility. A missing render-bounds field is not evidence of this.
-    const suppressedIds = new Set(flat.filter((node) =>
-      nonRenderingSourceNodes.has(node.id) && node.visible !== false && node.parentId &&
-      clipNodeBoundsToClippingAncestors(flat, node, nodeIndex) === null,
-    ).map((node) => node.id));
+    const suppressedIds = new Set(
+      flat
+        .filter(
+          (node) =>
+            nonRenderingSourceNodes.has(node.id) &&
+            node.visible !== false &&
+            node.parentId &&
+            clipNodeBoundsToClippingAncestors(flat, node, nodeIndex) === null,
+        )
+        .map((node) => node.id),
+    );
     const preserveSourceVisibility = (nodes) => {
       for (const node of nodes) {
         if (suppressedIds.has(node.id)) {
@@ -748,7 +767,9 @@ export function importFigmaJson(
     };
     preserveSourceVisibility(page.children);
     const bounds = flat
-      .filter((node) => node.type !== "group" && isDesignNodeVisible({ nodes: flat }, node, nodeIndex))
+      .filter(
+        (node) => node.type !== "group" && isDesignNodeVisible({ nodes: flat }, node, nodeIndex),
+      )
       .map((node) => clipNodeBoundsToClippingAncestors(flat, node, nodeIndex))
       .filter(Boolean);
     const minX = bounds.length ? Math.min(...bounds.map((box) => box.x)) : 0,
@@ -814,7 +835,10 @@ export function importFigmaJson(
 }
 
 /** Import local images and preserve the complete official source alongside the editable document. */
-export async function prepareFigmaImport(input, { sha256Bytes, textMeasurer, browserDocument, readFontBytes } = {}) {
+export async function prepareFigmaImport(
+  input,
+  { sha256Bytes, textMeasurer, browserDocument, readFontBytes } = {},
+) {
   const source = normalizeFigmaSource(input);
   const assets = await prepareFigmaAssets(source, { sha256Bytes });
   const result = importFigmaJson(source, {
@@ -825,7 +849,8 @@ export async function prepareFigmaImport(input, { sha256Bytes, textMeasurer, bro
   let fonts = { resourcePlans: [], faces: [] };
   if (readFontBytes || (globalThis.document?.fonts && typeof globalThis.FontFace === "function")) {
     fonts = await prepareBuiltinDesignFontResources(result.document, {
-      ...(readFontBytes ? { readBytes: readFontBytes } : {}), sha256Bytes,
+      ...(readFontBytes ? { readBytes: readFontBytes } : {}),
+      sha256Bytes,
     });
     await ensureBuiltinDesignFonts(result.document, { faces: fonts.faces });
   }
@@ -842,14 +867,22 @@ export async function prepareFigmaImport(input, { sha256Bytes, textMeasurer, bro
     ...(browserDocument ? { browserDocument } : {}),
   });
   for (const family of textMeasurement.unavailableFonts) {
-    result.warnings.push({ code: "font-fallback", message: `字体 ${family} 不可用，已实测浏览器实际回退字体；安装原字体后请重新导入。` });
+    result.warnings.push({
+      code: "font-fallback",
+      message: `字体 ${family} 不可用，已实测浏览器实际回退字体；安装原字体后请重新导入。`,
+    });
     result.stats.warningCount += 1;
   }
   result.document = normalizeDesignState(result.document);
   for (const message of source.warnings ?? [])
     result.warnings.push({ code: "plugin-export-warning", message });
   result.stats.warningCount += source.warnings?.length ?? 0;
-  return { ...result, resourcePlans: [...assets.resourcePlans, ...fonts.resourcePlans], source, textMeasurement };
+  return {
+    ...result,
+    resourcePlans: [...assets.resourcePlans, ...fonts.resourcePlans],
+    source,
+    textMeasurement,
+  };
 }
 
 /** Create a portable, editable subset consumed by the bundled Figma development plugin. */

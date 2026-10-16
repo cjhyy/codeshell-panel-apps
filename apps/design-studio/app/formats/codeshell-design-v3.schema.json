@@ -250,7 +250,16 @@
       "properties": {
         "id": { "$ref": "#/$defs/nodeId" },
         "type": {
-          "enum": ["frame", "group", "component", "instance", "rectangle", "ellipse", "text", "image"]
+          "enum": [
+            "frame",
+            "group",
+            "component",
+            "instance",
+            "rectangle",
+            "ellipse",
+            "text",
+            "image"
+          ]
         },
         "name": {
           "type": "string",
@@ -306,20 +315,39 @@
         "textMetrics": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["version", "signature", "lineWidths", "lineInkBounds", "height", "fontAvailable"],
+          "required": [
+            "version",
+            "signature",
+            "lineWidths",
+            "lineInkBounds",
+            "height",
+            "fontAvailable"
+          ],
           "properties": {
             "version": { "const": 1 },
             "signature": { "type": "string", "maxLength": 8500 },
-            "lineWidths": { "type": "array", "minItems": 1, "maxItems": 4001,
-              "items": { "type": "number", "minimum": 0, "maximum": 1000000 } },
-            "lineInkBounds": { "type": "array", "minItems": 1, "maxItems": 4001,
-              "items": { "type": "object", "additionalProperties": false, "required": ["x", "y", "width", "height"],
+            "lineWidths": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 4001,
+              "items": { "type": "number", "minimum": 0, "maximum": 1000000 }
+            },
+            "lineInkBounds": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 4001,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["x", "y", "width", "height"],
                 "properties": {
                   "x": { "type": "number", "minimum": -1000000, "maximum": 1000000 },
                   "y": { "type": "number", "minimum": -1000000, "maximum": 1000000 },
                   "width": { "type": "number", "minimum": 0, "maximum": 1000000 },
                   "height": { "type": "number", "minimum": 0, "maximum": 1000000 }
-                } } },
+                }
+              }
+            },
             "height": { "type": "number", "minimum": 0, "maximum": 1000000 },
             "fontAvailable": { "type": "boolean" }
           }

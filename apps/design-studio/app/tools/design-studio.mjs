@@ -425,7 +425,10 @@ export async function runOperation(project, name, input) {
   const document = { ...saved.document, activePageId: page.id, nodes: page.nodes };
   const content =
     name === "svg"
-      ? exportDesignSvg(document, { resourceDataUrls: saved.resourceDataUrls, maxBytes: 4 * 1024 * 1024 })
+      ? exportDesignSvg(document, {
+          resourceDataUrls: saved.resourceDataUrls,
+          maxBytes: 4 * 1024 * 1024,
+        })
       : exportDesignFrontend(document, {
           pageId: page.id,
           resourceDataUrls: saved.resourceDataUrls,

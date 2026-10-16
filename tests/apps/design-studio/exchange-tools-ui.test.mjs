@@ -1591,12 +1591,33 @@ test("the quality repair button preserves locked descendants and one undo restor
   const documentValue = JSON.parse(initialDocument("A"));
   const heading = documentValue.pages[0].children[0];
   heading.fill = "#cccccc";
-  documentValue.pages[0].children = [{
-    id: "locked-owner", type: "frame", name: "Locked owner", x: 0, y: 0, width: 400, height: 100,
-    fill: "#ffffff", stroke: "transparent", strokeWidth: 0, opacity: 1, rotation: 0,
-    cornerRadius: 0, visible: true, locked: true, layout: "none", gap: 0, padding: 0,
-    alignItems: "start", justifyContent: "start", clipContent: false, children: [heading],
-  }, { ...heading, id: "free-heading", name: "Editable heading", y: 180 }];
+  documentValue.pages[0].children = [
+    {
+      id: "locked-owner",
+      type: "frame",
+      name: "Locked owner",
+      x: 0,
+      y: 0,
+      width: 400,
+      height: 100,
+      fill: "#ffffff",
+      stroke: "transparent",
+      strokeWidth: 0,
+      opacity: 1,
+      rotation: 0,
+      cornerRadius: 0,
+      visible: true,
+      locked: true,
+      layout: "none",
+      gap: 0,
+      padding: 0,
+      alignItems: "start",
+      justifyContent: "start",
+      clipContent: false,
+      children: [heading],
+    },
+    { ...heading, id: "free-heading", name: "Editable heading", y: 180 },
+  ];
   const original = serializeDesignDocument(normalizeDesignDocument(documentValue));
   f.files.set(`A:${designPath}`, original);
   await f.reload();

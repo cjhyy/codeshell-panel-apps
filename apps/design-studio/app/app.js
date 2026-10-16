@@ -1687,7 +1687,8 @@ function renderNode(node, clipIds, shadowIds, options = {}) {
       "font-size": node.fontSize,
       "font-weight": node.fontWeight,
       "font-family": designFontFamilyCss(
-        fontResource?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif"),
+        fontResource?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
+      ),
       "font-style": node.fontStyle ?? "normal",
       "letter-spacing": node.letterSpacing ?? 0,
       "text-decoration": node.textDecoration ?? "none",
@@ -1972,7 +1973,9 @@ function updateInlineTextEditorPosition() {
   Object.assign(elements.inlineTextEditor.style, {
     width: `${Math.max(28, node.width)}px`,
     height: `${Math.max(24, node.height)}px`,
-    fontFamily: designFontFamilyCss(font?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif"),
+    fontFamily: designFontFamilyCss(
+      font?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
+    ),
     fontSize: `${node.fontSize}px`,
     fontWeight: String(node.fontWeight),
     fontStyle: node.fontStyle ?? "normal",
@@ -4864,7 +4867,10 @@ async function compareFrontendFile({
     activePageId: design.activePageId,
   });
   const actualRenderDocument = normalizeDesignDocument(capturedDocument);
-  const expectedSvg = exportDesignSvg(expectedRenderDocument, { resourceDataUrls, maxBytes: 4 * 1024 * 1024 });
+  const expectedSvg = exportDesignSvg(expectedRenderDocument, {
+    resourceDataUrls,
+    maxBytes: 4 * 1024 * 1024,
+  });
   const actualSvg = exportDesignSvg(actualRenderDocument);
   const pixelMetrics = await compareSvgPixels(
     expectedSvg,
@@ -6496,8 +6502,10 @@ elements.repairQuality.addEventListener("click", () => {
       markChanged();
     }
     await showAudit();
-    notify(`已修复 ${result.changes.length} 处 · 剩余 ${result.after.issueCount} 个问题；可撤销`,
-      result.after.blockingIssueCount ? "error" : "success");
+    notify(
+      `已修复 ${result.changes.length} 处 · 剩余 ${result.after.issueCount} 个问题；可撤销`,
+      result.after.blockingIssueCount ? "error" : "success",
+    );
   }).catch((error) => notify(error.message, "error"));
 });
 elements.exportSvg.addEventListener("click", () => void exportSvg());
@@ -7701,7 +7709,8 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
       node[key] = value;
     }
   }
-  if (Object.hasOwn(changes, "fill") && !Object.hasOwn(changes, "fillPaints")) delete node.fillPaints;
+  if (Object.hasOwn(changes, "fill") && !Object.hasOwn(changes, "fillPaints"))
+    delete node.fillPaints;
   if (node.clipContent !== true) delete node.contentClipping;
 }
 

@@ -78,7 +78,12 @@ function contains(container, node) {
 function isTextBaselineOverflow(node, parent) {
   const ink = measuredTextInkBounds(node);
   if (node.type === "text" && parent.clipContent !== true && ink) {
-    return contains(parent, { x: node.x + ink.x, y: node.y + ink.y, width: ink.width, height: ink.height });
+    return contains(parent, {
+      x: node.x + ink.x,
+      y: node.y + ink.y,
+      width: ink.width,
+      height: ink.height,
+    });
   }
   if (
     node.type !== "text" ||
@@ -89,8 +94,7 @@ function isTextBaselineOverflow(node, parent) {
   }
   const epsilon = 0.5;
   const horizontallyContained =
-    node.x >= parent.x - epsilon &&
-    node.x + node.width <= parent.x + parent.width + epsilon;
+    node.x >= parent.x - epsilon && node.x + node.width <= parent.x + parent.width + epsilon;
   const verticalOverflow = Math.max(
     0,
     parent.y - node.y,
@@ -165,8 +169,9 @@ function nodeOutlinePointsInTree(nodes, node, nodeIndex) {
     const lines = String(node.text).split("\n");
     const metrics = currentTextMetrics(node);
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-      const width =
-        metrics ? metrics.lineWidths[lineIndex] : node.textMeasurement === "browser"
+      const width = metrics
+        ? metrics.lineWidths[lineIndex]
+        : node.textMeasurement === "browser"
           ? node.width
           : Math.min(node.width, Math.max(1, estimateTextLineWidth(node, lines[lineIndex])));
       const left =
@@ -342,7 +347,9 @@ function fillIsVisibleAtPoint(document, node, point, byId) {
 function textSamplePoints(document, node, lines, nodeIndex) {
   const metrics = currentTextMetrics(node);
   return lines.flatMap((line, lineIndex) => {
-    const measuredWidth = metrics?.lineWidths[lineIndex] ?? Math.min(node.width, Math.max(1, estimateTextLineWidth(node, line)));
+    const measuredWidth =
+      metrics?.lineWidths[lineIndex] ??
+      Math.min(node.width, Math.max(1, estimateTextLineWidth(node, line)));
     const startX =
       node.textAlign === "center"
         ? node.x + (node.width - measuredWidth) / 2
@@ -375,7 +382,10 @@ function textSamplePoints(document, node, lines, nodeIndex) {
 function nodeFillPixel(document, node, point, nodeIndex) {
   const local = pointToNodeSpace(document.nodes, node, point, nodeIndex);
   if (!local) return { red: 0, green: 0, blue: 0, alpha: 0 };
-  const pixel = sampleDesignFill(node, { x: (local.x - node.x) / node.width, y: (local.y - node.y) / node.height });
+  const pixel = sampleDesignFill(node, {
+    x: (local.x - node.x) / node.width,
+    y: (local.y - node.y) / node.height,
+  });
   return { ...pixel, alpha: pixel.alpha * effectiveDesignNodeOpacity(document, node, nodeIndex) };
 }
 
@@ -696,10 +706,7 @@ function pageBackgroundAtPoint(document, index, nodeIndex, point, availableNodes
       continue;
     }
     if (!fillIsVisibleAtPoint(document, candidate, point, nodeIndex)) continue;
-    background = compositeRgba(
-      nodeFillPixel(document, candidate, point, nodeIndex),
-      background,
-    );
+    background = compositeRgba(nodeFillPixel(document, candidate, point, nodeIndex), background);
   }
   return background;
 }
@@ -707,15 +714,25 @@ function pageBackgroundAtPoint(document, index, nodeIndex, point, availableNodes
 /** One text node's actual sampled paint/background contrast, without a full-page audit. */
 export function readableTextContrast(document, node, options = {}) {
   const required = node.fontSize >= 24 || (node.fontSize >= 18 && node.fontWeight >= 700) ? 3 : 4.5;
-  const byId = options.nodeIndex ?? new Map(document.nodes.map(candidate => [candidate.id, candidate]));
-  const index = document.nodes.findIndex(candidate => candidate.id === node.id);
-  if (node.type !== "text" || index < 0 || !String(node.text).trim() || !hasVisibleDesignFill(node) || !isDesignNodeVisible(document, node, byId)) return { ratio: null, required };
+  const byId =
+    options.nodeIndex ?? new Map(document.nodes.map((candidate) => [candidate.id, candidate]));
+  const index = document.nodes.findIndex((candidate) => candidate.id === node.id);
+  if (
+    node.type !== "text" ||
+    index < 0 ||
+    !String(node.text).trim() ||
+    !hasVisibleDesignFill(node) ||
+    !isDesignNodeVisible(document, node, byId)
+  )
+    return { ratio: null, required };
   const availableNodes = options.availableNodes ?? allReadableDesignNodes(document);
-  const ratios = textSamplePoints(document, node, String(node.text).split("\n"), byId).map(point => {
-    const background = pageBackgroundAtPoint(document, index, byId, point, availableNodes);
-    const foreground = compositeRgba(nodeFillPixel(document, node, point, byId), background);
-    return contrastRatio(opaqueHexFromRgba(foreground), opaqueHexFromRgba(background));
-  }).filter(ratio => ratio !== null);
+  const ratios = textSamplePoints(document, node, String(node.text).split("\n"), byId)
+    .map((point) => {
+      const background = pageBackgroundAtPoint(document, index, byId, point, availableNodes);
+      const foreground = compositeRgba(nodeFillPixel(document, node, point, byId), background);
+      return contrastRatio(opaqueHexFromRgba(foreground), opaqueHexFromRgba(background));
+    })
+    .filter((ratio) => ratio !== null);
   return { ratio: ratios.length ? Math.min(...ratios) : null, required };
 }
 
@@ -885,22 +902,19 @@ export function auditDesign(document) {
     }
     if (node.parentId && parent && ["frame", "group", "component"].includes(parent.type)) {
       const localVisualBounds = transformedNodeBounds(node);
-      const measuredOutline = node.type === "text" && currentTextMetrics(node)
-        ? nodeOutlinePointsInTree(document.nodes, node, byId) : null;
+      const measuredOutline =
+        node.type === "text" && currentTextMetrics(node)
+          ? nodeOutlinePointsInTree(document.nodes, node, byId)
+          : null;
       const exceedsParent =
-        (measuredOutline ? pointsExceedNode(document.nodes, measuredOutline, parent, byId)
+        (measuredOutline
+          ? pointsExceedNode(document.nodes, measuredOutline, parent, byId)
           : !localVisualBounds || !contains(parent, localVisualBounds)) ||
         (parent.clipContent === true &&
           exceedsClippingAncestor(document.nodes, node, parent, byId));
       const intentionallyClippedByParent =
-        exceedsParent &&
-        parent.clipContent === true &&
-        parent.contentClipping === "intentional";
-      if (
-        exceedsParent &&
-        !intentionallyClippedByParent &&
-        !isTextBaselineOverflow(node, parent)
-      ) {
+        exceedsParent && parent.clipContent === true && parent.contentClipping === "intentional";
+      if (exceedsParent && !intentionallyClippedByParent && !isTextBaselineOverflow(node, parent)) {
         issues.push({
           code: "layout.parent-overflow",
           severity: parent.clipContent === true ? "error" : "warning",
@@ -981,8 +995,9 @@ export function auditDesign(document) {
     const lines = String(node.text).split("\n");
     const lineCount = lines.length;
     const textMetrics = currentTextMetrics(node);
-    const minimumTextHeight = textMetrics?.height ??
-      (node.fontSize + Math.max(0, lineCount - 1) * node.fontSize * node.lineHeight);
+    const minimumTextHeight =
+      textMetrics?.height ??
+      node.fontSize + Math.max(0, lineCount - 1) * node.fontSize * node.lineHeight;
     if (node.height + 0.5 < minimumTextHeight) {
       issues.push({
         code: "layout.text-overflow",
@@ -993,7 +1008,11 @@ export function auditDesign(document) {
       });
     }
     const widestLine = textMetrics
-      ? Math.max(0, ...textMetrics.lineWidths, ...textMetrics.lineInkBounds.map((bounds) => bounds.width))
+      ? Math.max(
+          0,
+          ...textMetrics.lineWidths,
+          ...textMetrics.lineInkBounds.map((bounds) => bounds.width),
+        )
       : Math.max(0, ...lines.map((line) => estimateTextLineWidth(node, line)));
     if ((textMetrics || node.textMeasurement !== "browser") && node.width + 0.5 < widestLine) {
       issues.push({
@@ -1014,7 +1033,10 @@ export function auditDesign(document) {
       });
       return;
     }
-    const { ratio, required } = readableTextContrast(document, node, { nodeIndex: byId, availableNodes });
+    const { ratio, required } = readableTextContrast(document, node, {
+      nodeIndex: byId,
+      availableNodes,
+    });
     if (ratio === null) return;
     if (ratio < required) {
       issues.push({
@@ -1027,9 +1049,7 @@ export function auditDesign(document) {
     }
   });
   const containers = document.nodes.filter(
-    (node) =>
-      effectivelyVisible(node) &&
-      ["frame", "group", "component"].includes(node.type),
+    (node) => effectivelyVisible(node) && ["frame", "group", "component"].includes(node.type),
   );
   if (
     containers.length >= 12 &&

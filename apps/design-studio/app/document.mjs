@@ -6,9 +6,7 @@ import {
   inheritedNodeRotation,
   transformedNodeBoundsInTree,
 } from "./geometry.mjs";
-import {
-  normalizeDesignResources,
-} from "./resource-store.mjs";
+import { normalizeDesignResources } from "./resource-store.mjs";
 import { validTextMetrics } from "./text-metrics.mjs";
 import { designFontFaceCss, designFontFamilyCss } from "./font-css.mjs";
 
@@ -123,7 +121,9 @@ function normalizedNode(candidate, parentId) {
     width: candidate.width,
     height: candidate.height,
     fill: candidate.fill.toLowerCase(),
-    ...(candidate.fillPaints !== undefined ? { fillPaints: normalizeDesignPaints(candidate.fillPaints) } : {}),
+    ...(candidate.fillPaints !== undefined
+      ? { fillPaints: normalizeDesignPaints(candidate.fillPaints) }
+      : {}),
     stroke: candidate.stroke.toLowerCase(),
     strokeWidth: candidate.strokeWidth,
     opacity: candidate.opacity,
@@ -160,7 +160,8 @@ function normalizedNode(candidate, parentId) {
     if (candidate.letterSpacing !== undefined) node.letterSpacing = candidate.letterSpacing;
     if (candidate.textDecoration !== undefined) node.textDecoration = candidate.textDecoration;
     if (candidate.textMeasurement !== undefined) node.textMeasurement = candidate.textMeasurement;
-    if (candidate.textMetrics !== undefined) node.textMetrics = structuredClone(candidate.textMetrics);
+    if (candidate.textMetrics !== undefined)
+      node.textMetrics = structuredClone(candidate.textMetrics);
     if (candidate.textSource !== undefined) node.textSource = candidate.textSource;
     if (candidate.textFlow !== undefined) node.textFlow = candidate.textFlow;
     if (candidate.textOverflow !== undefined) node.textOverflow = candidate.textOverflow;
@@ -370,7 +371,8 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
   }
   if (candidate.fillPaints !== undefined) {
     normalizeDesignPaints(candidate.fillPaints);
-    if (["group", "instance", "image"].includes(candidate.type)) throw new Error("该类型不支持独立填充绘制");
+    if (["group", "instance", "image"].includes(candidate.type))
+      throw new Error("该类型不支持独立填充绘制");
   }
   if (typeof candidate.visible !== "boolean" || typeof candidate.locked !== "boolean") {
     throw new Error(`图层 ${candidate.id} 的 visible 或 locked 无效`);
@@ -549,10 +551,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     ) {
       throw new Error(`容器 ${candidate.id} 的 layoutWrap 无效`);
     }
-    if (
-      candidate.layoutReverse !== undefined &&
-      typeof candidate.layoutReverse !== "boolean"
-    ) {
+    if (candidate.layoutReverse !== undefined && typeof candidate.layoutReverse !== "boolean") {
       throw new Error(`容器 ${candidate.id} 的 layoutReverse 无效`);
     }
     for (const property of [
@@ -614,16 +613,11 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
   }
   if (
     candidate.layoutAlignSelf !== undefined &&
-    !["auto", "start", "center", "end", "stretch", "baseline"].includes(
-      candidate.layoutAlignSelf,
-    )
+    !["auto", "start", "center", "end", "stretch", "baseline"].includes(candidate.layoutAlignSelf)
   ) {
     throw new Error(`图层 ${candidate.id} 的 layoutAlignSelf 无效`);
   }
-  if (
-    candidate.layoutMarginBefore !== undefined &&
-    candidate.layoutMarginBefore !== "auto"
-  ) {
+  if (candidate.layoutMarginBefore !== undefined && candidate.layoutMarginBefore !== "auto") {
     throw new Error(`图层 ${candidate.id} 的 layoutMarginBefore 无效`);
   }
   for (const property of ["layoutSizingHorizontal", "layoutSizingVertical"]) {
@@ -889,10 +883,7 @@ export function normalizeDesignDocument(input) {
   }
   const nodesById = new Map(allNodes.map((node) => [node.id, node]));
   for (const node of allNodes) {
-    if (
-      node.type === "instance" &&
-      nodesById.get(node.componentId)?.type !== "component"
-    ) {
+    if (node.type === "instance" && nodesById.get(node.componentId)?.type !== "component") {
       throw new Error(`实例 ${node.id} 引用了不存在的组件：${node.componentId}`);
     }
   }
@@ -1384,7 +1375,8 @@ function exportNodeSvg(
   const effectiveOpacity = round(effectiveDesignNodeOpacity(document, node), 4);
   const opacity = effectiveOpacity === 1 ? "" : ` opacity="${effectiveOpacity}"`;
   const metadata = ` data-node-id="${escapeXml(node.id)}"`;
-  const fillAttributes = options.paintFills?.get(node.id)?.attributes ?? `fill="${escapeXml(node.fill)}"`;
+  const fillAttributes =
+    options.paintFills?.get(node.id)?.attributes ?? `fill="${escapeXml(node.fill)}"`;
   const clipped = (markup) => wrapWithAncestorClips(document, node, clipIds, markup);
   if (node.type === "ellipse") {
     return clipped(
@@ -1481,7 +1473,10 @@ export function replaceDesignColors(document, replacements) {
       const colors = paint.type === "SOLID" ? [paint] : paint.stops;
       for (const entry of colors) {
         const next = replacementFor(entry.color);
-        if (next) { entry.color = next; replacementCount += 1; }
+        if (next) {
+          entry.color = next;
+          replacementCount += 1;
+        }
       }
     }
     if (node.fillPaints) node.fill = representativeDesignFill(node.fillPaints);
@@ -1558,19 +1553,16 @@ export function exportDesignSvg(document, options = {}) {
     });
     componentClipIds.set(component.id, sourceClipIds);
   });
-  const paintFills = new Map(renderNodes.map((node, index) => [node.id, designPaintSvg(node, `node-fill-${index}`)]));
-  const paintDefinitions = [...paintFills.values()].flatMap(paint => paint.definitions);
+  const paintFills = new Map(
+    renderNodes.map((node, index) => [node.id, designPaintSvg(node, `node-fill-${index}`)]),
+  );
+  const paintDefinitions = [...paintFills.values()].flatMap((paint) => paint.definitions);
   const body = document.nodes
     .map((node) =>
-      exportNodeSvg(
-        renderDocument,
-        node,
-        clipIds,
-        shadowIds,
-        componentClipIds,
-        new Set(),
-        { ...options, paintFills },
-      ),
+      exportNodeSvg(renderDocument, node, clipIds, shadowIds, componentClipIds, new Set(), {
+        ...options,
+        paintFills,
+      }),
     )
     .filter(Boolean)
     .join("\n");

@@ -258,7 +258,9 @@ function layoutDeclarations(node) {
 
 function paintDeclarations(node) {
   if (PAINTLESS_TYPES.has(node.type)) return [];
-  const declarations = [["background", node.fillPaints ? designPaintCssImage(node) : cssColor(node.fill)]];
+  const declarations = [
+    ["background", node.fillPaints ? designPaintCssImage(node) : cssColor(node.fill)],
+  ];
   if (Number(node.strokeWidth) > 0 && cssColor(node.stroke) !== "transparent") {
     declarations.push(["border", `${cssNumber(node.strokeWidth)} solid ${cssColor(node.stroke)}`]);
   }
