@@ -35,6 +35,24 @@ that token name—simultaneously propagates its old value through matching canva
 shadow colors. If two retained tokens share one old literal, they must resolve to the same new
 literal because a painted node cannot distinguish which name supplied that value.
 
+## One file for transfer or archival
+
+The editable source format is `codeshell.design` version 3. A small `.codesign.json` contains
+its complete page/layer tree, but images/fonts and companion review/source/prototype data may
+refer to project-owned files. A large saved source may itself be a checked page index. Copying
+only that source is therefore not a complete portable design.
+
+Use **完整备份 → 下载完整备份** to create one `design-complete-backup.json`. Its envelope is
+`codeshell.design.portable-backup` version 2, containing the materialized v3 `document`, verified
+image/font `resources` as Base64, and validated `attachments` for comments, Figma source binding
+and prototype interactions. It can be restored into an independent design path without the old
+project. The current portable-file limit is 128 MiB. This container is JSON, not a `.fig` file.
+
+The `html2figma` repository uses a separate `DesignNode` intermediate tree and custom Figma-node
+JSON. Its `.dsl` download is an encrypted transport container for that custom Figma JSON, not this
+v3 document and not the official Figma REST schema. Interoperability needs an explicit adapter;
+renaming extensions does not convert coordinates, node types, layout or resource references.
+
 ## Repository binding and live sync
 
 Each project gets its own active file and recovery snapshot. The panel restores recovery, reopens
