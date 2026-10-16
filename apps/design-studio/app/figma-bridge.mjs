@@ -16,6 +16,7 @@ import {
   prepareFigmaAssets,
   createFigmaTransferAssets,
 } from "./figma-assets.mjs";
+import { prepareBuiltinDesignFontResources, ensureBuiltinDesignFonts } from "./builtin-fonts.mjs";
 
 export const MAX_FIGMA_JSON_BYTES = 16 * 1024 * 1024;
 export const MAX_FIGMA_TOTAL_NODES = 50_000;
@@ -813,7 +814,7 @@ export function importFigmaJson(
 }
 
 /** Import local images and preserve the complete official source alongside the editable document. */
-export async function prepareFigmaImport(input, { sha256Bytes, textMeasurer, browserDocument } = {}) {
+export async function prepareFigmaImport(input, { sha256Bytes, textMeasurer, browserDocument, readFontBytes } = {}) {
   const source = normalizeFigmaSource(input);
   const assets = await prepareFigmaAssets(source, { sha256Bytes });
   const result = importFigmaJson(source, {
@@ -821,6 +822,13 @@ export async function prepareFigmaImport(input, { sha256Bytes, textMeasurer, bro
     imageRefs: assets.byAssetId,
     previews: source.previews,
   });
+  let fonts = { resourcePlans: [], faces: [] };
+  if (readFontBytes || (globalThis.document?.fonts && typeof globalThis.FontFace === "function")) {
+    fonts = await prepareBuiltinDesignFontResources(result.document, {
+      ...(readFontBytes ? { readBytes: readFontBytes } : {}), sha256Bytes,
+    });
+    await ensureBuiltinDesignFonts(result.document, { faces: fonts.faces });
+  }
   const sourceNodes = new Map();
   const collect = (node) => {
     if (typeof node.id === "string") sourceNodes.set(node.id, node);
@@ -841,7 +849,7 @@ export async function prepareFigmaImport(input, { sha256Bytes, textMeasurer, bro
   for (const message of source.warnings ?? [])
     result.warnings.push({ code: "plugin-export-warning", message });
   result.stats.warningCount += source.warnings?.length ?? 0;
-  return { ...result, resourcePlans: assets.resourcePlans, source, textMeasurement };
+  return { ...result, resourcePlans: [...assets.resourcePlans, ...fonts.resourcePlans], source, textMeasurement };
 }
 
 /** Create a portable, editable subset consumed by the bundled Figma development plugin. */

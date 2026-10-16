@@ -92,6 +92,7 @@ export const suites = [
         "tests/apps/design-studio/text-metrics.test.mjs",
         "tests/apps/design-studio/quality-repair.test.mjs",
         "tests/apps/design-studio/paint-fidelity.test.mjs",
+        "tests/apps/design-studio/builtin-fonts.test.mjs",
         "tests/apps/design-studio/audit-review.test.mjs",
         "tests/apps/design-studio/html-plugin.test.mjs",
         "tests/apps/design-studio/html-plugin-ui.test.mjs",

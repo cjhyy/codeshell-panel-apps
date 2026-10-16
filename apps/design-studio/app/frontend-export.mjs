@@ -1,5 +1,6 @@
 import { designPaintCssImage } from "./paint.mjs";
 /* Deterministic CodeShell Design v3 to editable HTML/CSS export. */
+import { designFontFaceCss } from "./font-css.mjs";
 
 const CONTAINER_TYPES = new Set(["frame", "group", "component"]);
 const PAINTLESS_TYPES = new Set(["group", "instance"]);
@@ -456,6 +457,7 @@ export function exportDesignFrontend(
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${escapeHtml(documentTitle)}</title>
     <style>
+      ${designFontFaceCss(design.resources, resourceDataUrls)}
       :root { color-scheme: light; }
       * { box-sizing: border-box; }
       html, body { min-height: 100%; margin: 0; }

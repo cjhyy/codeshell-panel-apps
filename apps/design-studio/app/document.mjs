@@ -10,6 +10,7 @@ import {
   normalizeDesignResources,
 } from "./resource-store.mjs";
 import { validTextMetrics } from "./text-metrics.mjs";
+import { designFontFaceCss } from "./font-css.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 export const MAX_DESIGN_PAGES = 1_000;
@@ -18,6 +19,7 @@ export const MAX_DESIGN_NODES_PER_PAGE = 10_000;
 // Raster previews impose their own lower pixel and edge limits.
 export const MAX_DESIGN_CANVAS_SIZE = 20_000;
 export const MAX_SVG_EXPORT_BYTES = 384 * 1024;
+export const MAX_LOCAL_SVG_EXPORT_BYTES = 4 * 1024 * 1024;
 export const MAX_COMPONENT_INSTANCE_DEPTH = 16;
 export const MAX_RENDERED_NODES_PER_PAGE = 10_000;
 const V3_NODE_TYPES = [
@@ -1004,10 +1006,6 @@ function escapeXml(value) {
     .replaceAll("'", "&apos;");
 }
 
-function escapeCssString(value) {
-  return String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"');
-}
-
 export function effectiveDesignNodeOpacity(document, node, nodeIndex = null) {
   const byId =
     nodeIndex instanceof Map
@@ -1505,6 +1503,9 @@ export function measureDesignDocumentBytes(value) {
 }
 
 export function exportDesignSvg(document, options = {}) {
+  const maxBytes = options.maxBytes ?? MAX_SVG_EXPORT_BYTES;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_LOCAL_SVG_EXPORT_BYTES)
+    throw Error("SVG byte budget must be between 1 B and 4 MiB");
   const renderNodes = allDocumentNodes(document);
   const renderDocument = { ...document, nodes: renderNodes };
   const activePage = document.pages?.find((page) => page.id === document.activePageId);
@@ -1514,14 +1515,8 @@ export function exportDesignSvg(document, options = {}) {
   const componentClipIds = new Map();
   const shadowIds = new Map();
   const shadowFilters = [];
-  const fontFaceRules = (document.resources ?? [])
-    .filter((resource) => resource.kind === "font")
-    .map((resource) => {
-      const dataUrl = options.resourceDataUrls?.get?.(resource.id);
-      if (!dataUrl) return null;
-      return `@font-face { font-family: "${escapeCssString(resource.family)}"; src: url("${escapeCssString(dataUrl)}"); font-weight: ${resource.weight}; font-style: ${resource.style}; }`;
-    })
-    .filter(Boolean);
+  const fontCss = designFontFaceCss(document.resources, options.resourceDataUrls);
+  const fontFaceRules = fontCss ? [fontCss] : [];
   renderNodes.forEach((node, index) => {
     if (["frame", "component"].includes(node.type) && node.clipContent === true) {
       const id = `frame-clip-${index}`;
@@ -1601,9 +1596,9 @@ export function exportDesignSvg(document, options = {}) {
     "",
   ].join("\n");
   const bytes = new TextEncoder().encode(svg).length;
-  if (bytes > MAX_SVG_EXPORT_BYTES) {
+  if (bytes > maxBytes) {
     throw new Error(
-      `SVG 为 ${(bytes / 1024).toFixed(1)} KiB，超过 ${MAX_SVG_EXPORT_BYTES / 1024} KiB 导出上限；请减少长文本或图层数量`,
+      `SVG 为 ${(bytes / 1024).toFixed(1)} KiB，超过 ${maxBytes / 1024} KiB 导出上限；请使用完整备份或有界本地导出`,
     );
   }
   return svg;
