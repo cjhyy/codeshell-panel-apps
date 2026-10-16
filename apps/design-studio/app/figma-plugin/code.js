@@ -307,7 +307,7 @@
       if (warnings.length < 200) warnings.push(message);
     };
     async function loadFont(source) {
-      const wanted = patchFont(source);
+      const wanted = patchFont(source, true);
       const exact = iconOrPrivateUseText(source);
       const key = `${wanted.family}\u0000${wanted.style}\u0000${exact}`;
       if (!fonts.has(key))
@@ -316,6 +316,10 @@
           (async () => {
             try {
               await figma.loadFontAsync(wanted);
+              if (wanted.family !== (source.fontFamily || "Inter"))
+                warn(
+                  `${source.fontFamily} 的内嵌字库为 Font Awesome 6.7.2；已使用 ${wanted.family} ${wanted.style}。`,
+                );
               return wanted;
             } catch {
               if (exact)
@@ -1076,8 +1080,16 @@
       },
     };
   }
-  function patchFont(source) {
-    const family = source.fontFamily || "Inter";
+  function patchFont(source, bundledAlias = false) {
+    let family = source.fontFamily || "Inter";
+    if (
+      bundledAlias &&
+      ((family === "Font Awesome 5 Free" &&
+        /^builtin-fa-(?:solid|regular)-5-\d+-normal$/u.test(source.fontRef || "")) ||
+        (family === "Font Awesome 5 Brands" &&
+          /^builtin-fa-brands-5-\d+-normal$/u.test(source.fontRef || "")))
+    )
+      family = family.replace(" 5 ", " 6 ");
     if (/^Font Awesome [56] (Free|Brands)$/u.test(family))
       return {
         family,

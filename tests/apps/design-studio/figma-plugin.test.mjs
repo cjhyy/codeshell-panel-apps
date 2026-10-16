@@ -408,6 +408,57 @@ test("missing native icon fonts fail preflight before creating pages or substitu
   );
 });
 
+test("bundled FA5 aliases require the actual FA6 family even when older FA5 is installed", async () => {
+  const transfer = fontTransfer([["Font Awesome 5 Free", 900, "\ue586"]]);
+  transfer.pages[0].children[0].fontRef = "builtin-fa-solid-5-900-normal";
+  const runtime = harness(),
+    before = runtime.figma.root.children.map(runtime.snapshot);
+  const attempted = [];
+  runtime.figma.loadFontAsync = async (font) => {
+    attempted.push([font.family, font.style]);
+    if (font.family !== "Font Awesome 5 Free") throw Error("FA6 not installed");
+  };
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.match(runtime.messages.at(-1).message, /Font Awesome 6 Free Solid 不可用/u);
+  assert.deepEqual(attempted, [["Font Awesome 6 Free", "Solid"]]);
+  assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
+});
+
+test("bundled FA6 aliases create editable text with every original character while external FA5 keeps its family", async () => {
+  const transfer = fontTransfer([
+    ["Font Awesome 5 Free", 900, "\uf007\ue586"],
+    ["Font Awesome 5 Free", 400, "\uf007"],
+    ["Font Awesome 5 Brands", 400, "\uf099"],
+    ["Font Awesome 5 Free", 900, "\uf007"],
+  ]);
+  const texts = transfer.pages[0].children;
+  texts[0].fontRef = "builtin-fa-solid-5-900-normal";
+  texts[1].fontRef = "builtin-fa-regular-5-400-normal";
+  texts[2].fontRef = "builtin-fa-brands-5-400-normal";
+  texts[3].fontRef = "custom-fa5-font";
+  const before = JSON.stringify(transfer),
+    runtime = harness();
+  await runtime.send({ type: "import-transfer", content: before });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  assert.equal(JSON.stringify(transfer), before);
+  assert.deepEqual(
+    runtime.figma.root.children[1].children.map((node) => [
+      node.type,
+      node.fontName.family,
+      node.fontName.style,
+      node.characters,
+    ]),
+    [
+      ["TEXT", "Font Awesome 6 Free", "Solid", "\uf007\ue586"],
+      ["TEXT", "Font Awesome 6 Free", "Regular", "\uf007"],
+      ["TEXT", "Font Awesome 6 Brands", "Regular", "\uf099"],
+      ["TEXT", "Font Awesome 5 Free", "Solid", "\uf007"],
+    ],
+  );
+  assert.ok(runtime.messages.at(-1).warnings.some((warning) => warning.includes("6.7.2")));
+});
+
 test("BMP and supplementary private-use text never reuses a cached ordinary-text fallback", async () => {
   for (const text of ["\ue123", "\u{f0123}", "\u{100123}"]) {
     const runtime = harness(),
