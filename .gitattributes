@@ -1,0 +1,2 @@
+# Preserve the pinned third-party source byte-for-byte, including upstream whitespace.
+third-party/html2figma/upstream/** -whitespace
