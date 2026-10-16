@@ -2431,7 +2431,10 @@ function renderTokens() {
     apply.addEventListener("click", () => {
       const nodes = selectedNodes().filter((node) => !isEffectivelyLocked(node));
       if (nodes.length === 0) return notify("先选择一个未锁定图层");
-      for (const node of nodes) node.fill = token.value;
+      for (const node of nodes) {
+        node.fill = token.value;
+        delete node.fillPaints;
+      }
       commitHistory();
       markChanged();
     });
@@ -5989,7 +5992,10 @@ bindColorTextInput(
   () => selectedNode()?.fill ?? "#ffffff",
   (value) => {
     const node = selectedNode();
-    if (node && !isEffectivelyLocked(node)) node.fill = value;
+    if (node && !isEffectivelyLocked(node)) {
+      node.fill = value;
+      delete node.fillPaints;
+    }
   },
   true,
 );
@@ -6267,6 +6273,7 @@ bindPropertyInput(
   propertyInputs.fillColor,
   (node, value) => {
     node.fill = value;
+    delete node.fillPaints;
   },
   "input",
 );
@@ -7547,6 +7554,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "width",
   "height",
   "fill",
+  "fillPaints",
   "stroke",
   "strokeWidth",
   "opacity",
@@ -7645,6 +7653,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
       [
         "notes",
         "shadow",
+        "fillPaints",
         "contentClipping",
         "textSource",
         "textFlow",
@@ -7687,6 +7696,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
       node[key] = value;
     }
   }
+  if (Object.hasOwn(changes, "fill") && !Object.hasOwn(changes, "fillPaints")) delete node.fillPaints;
   if (node.clipContent !== true) delete node.contentClipping;
 }
 
