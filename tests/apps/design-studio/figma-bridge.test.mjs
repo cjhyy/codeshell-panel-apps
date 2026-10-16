@@ -10,6 +10,7 @@ import {
 import { serializeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
 import { transformedNodeBoundsInTree } from "../../../apps/design-studio/app/geometry.mjs";
 import { exportDesignFrontend } from "../../../apps/design-studio/app/frontend-export.mjs";
+import { auditDesignPages } from "../../../apps/design-studio/app/audit.mjs";
 
 const solid = (r, g, b) => [{ type: "SOLID", color: { r, g, b } }];
 const rect = (id = "1:2", props = {}) => ({
@@ -241,6 +242,113 @@ test("negative Figma page origins move the entire subtree into a visible HTML ca
   assert.ok(frontend.includes("figma-1-2"));
   assert.match(frontend, /left:\s*30px/u);
   assert.doesNotMatch(frontend, /left:\s*-270px/u);
+});
+
+test("clipped offscreen descendants keep their geometry and mapping without moving the imported page", () => {
+  const source = file([
+    rect("1:1", {
+      type: "FRAME",
+      absoluteBoundingBox: { x: 0, y: 0, width: 1260, height: 1171 },
+      clipsContent: true,
+      children: [
+        rect("1:2", {
+          type: "FRAME",
+          absoluteBoundingBox: { x: -9999, y: 50, width: 84, height: 22 },
+          absoluteRenderBounds: null,
+          children: [rect("1:3", { absoluteBoundingBox: { x: -9999, y: 50, width: 84, height: 22 } })],
+        }),
+        rect("1:4", { absoluteBoundingBox: { x: 18000, y: 100, width: 80, height: 80 } }),
+        rect("1:5", { absoluteBoundingBox: { x: -50, y: 200, width: 100, height: 80 } }),
+      ],
+    }),
+  ]);
+  const original = JSON.stringify(source);
+  const result = importFigmaJson(source);
+  assert.equal(JSON.stringify(source), original);
+  assert.deepEqual(result.document.canvas, { width: 1440, height: 1171, background: "#f5f5f2" });
+  assert.equal(result.stats.importedNodes, 5);
+  assert.equal(result.stats.skippedNodes, 0);
+  assert.deepEqual(result.document.nodes.map((node) => node.x), [0, -9999, -9999, 18000, -50]);
+  assert.equal(result.mapping.length, 5);
+  assert.ok(result.mapping.every((entry) => entry.offsetX === 0 && entry.offsetY === 0));
+  assert.ok(!result.warnings.some((warning) => ["page-origin-normalized", "canvas-extent"].includes(warning.code)));
+  const issues = auditDesignPages(result.document);
+  assert.ok(!issues.some((issue) => issue.code === "layout.canvas-overflow"));
+  assert.ok(issues.some((issue) => issue.code === "layout.parent-overflow"));
+});
+
+test("hidden, transparent and organizational bounds do not enlarge the visible Figma canvas", () => {
+  const result = importFigmaJson(file([
+    rect("1:1", { visible: false, absoluteBoundingBox: { x: -15000, y: -15000, width: 100, height: 100 } }),
+    rect("1:2", {
+      type: "FRAME",
+      opacity: 0,
+      absoluteBoundingBox: { x: 18000, y: 18000, width: 100, height: 100 },
+      children: [rect("1:3", { absoluteBoundingBox: { x: -12000, y: -12000, width: 100, height: 100 } })],
+    }),
+    rect("1:4", {
+      type: "GROUP",
+      absoluteBoundingBox: { x: -9999, y: -9999, width: 12000, height: 12000 },
+      children: [rect("1:5")],
+    }),
+  ]));
+  assert.equal(result.document.nodes.length, 5);
+  assert.deepEqual(result.document.canvas, { width: 1440, height: 960, background: "#f5f5f2" });
+  assert.ok(!result.warnings.some((warning) => warning.code === "page-origin-normalized"));
+  assert.ok(!auditDesignPages(result.document).some((issue) => issue.code === "layout.canvas-overflow"));
+});
+
+test("far-away visible content is normalized even when another root is hidden at the origin", () => {
+  const result = importFigmaJson(file([
+    rect("1:1", { visible: false, absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 100 } }),
+    rect("1:2", { absoluteBoundingBox: { x: 15000, y: 12000, width: 120, height: 80 } }),
+  ]));
+  assert.deepEqual(result.document.nodes.map((node) => [node.x, node.y]), [[-15000, -12000], [0, 0]]);
+  assert.deepEqual(result.mapping.map((entry) => [entry.offsetX, entry.offsetY]), [[-15000, -12000], [-15000, -12000]]);
+  assert.ok(!result.warnings.some((warning) => warning.code === "canvas-extent"));
+});
+
+test("rotated clipping ancestors keep offscreen descendants out of page-origin calculations", () => {
+  const result = importFigmaJson(file([
+    rect("1:1", {
+      type: "FRAME",
+      absoluteBoundingBox: { x: 50, y: 50, width: 282.8427, height: 282.8427 },
+      size: { x: 200, y: 200 },
+      rotation: Math.PI / 4,
+      clipsContent: true,
+      children: [rect("1:2", { absoluteBoundingBox: { x: -9999, y: 50, width: 84, height: 22 } })],
+    }),
+  ]));
+  assert.equal(result.document.nodes.length, 2);
+  assert.deepEqual(result.document.canvas, { width: 1440, height: 960, background: "#f5f5f2" });
+  assert.ok(result.mapping.every((entry) => entry.offsetX === 0 && entry.offsetY === 0));
+  assert.ok(!auditDesignPages(result.document).some((issue) => issue.code === "layout.canvas-overflow"));
+});
+
+test("canvas audits use visible clipped geometry while retaining real overflow and clipping diagnostics", () => {
+  const result = importFigmaJson(file([
+    rect("1:1", {
+      type: "FRAME",
+      absoluteBoundingBox: { x: 0, y: 0, width: 200, height: 200 },
+      clipsContent: true,
+      children: [rect("1:2", {
+        absoluteBoundingBox: { x: 180, y: 20, width: 80, height: 80 },
+        effects: [{ type: "DROP_SHADOW", color: { r: 0, g: 0, b: 0, a: 1 }, offset: { x: 100, y: 0 }, radius: 10 }],
+      })],
+    }),
+  ]));
+  result.document.canvas.width = 200;
+  result.document.canvas.height = 200;
+  let issues = auditDesignPages(result.document);
+  assert.ok(!issues.some((issue) => ["layout.canvas-overflow", "layout.effect-canvas-overflow"].includes(issue.code)));
+  assert.ok(issues.some((issue) => issue.code === "layout.parent-overflow" && issue.blocking));
+  result.document.nodes[0].clipContent = false;
+  issues = auditDesignPages(result.document);
+  assert.ok(issues.some((issue) => issue.code === "layout.canvas-overflow" && issue.nodeId === "figma-1-2"));
+  result.document.nodes[1].x = 100;
+  result.document.nodes[1].width = 80;
+  issues = auditDesignPages(result.document);
+  assert.ok(issues.some((issue) => issue.code === "layout.effect-canvas-overflow" && issue.nodeId === "figma-1-2"));
 });
 
 test("oversized transfer JSON is rejected before it can be downloaded for the Figma plugin", () => {

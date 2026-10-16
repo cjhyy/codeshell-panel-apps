@@ -2,11 +2,12 @@
 import {
   MAX_DESIGN_NODES_PER_PAGE,
   MAX_DESIGN_PAGES,
+  isDesignNodeVisible,
   normalizeDesignDocument,
   normalizeDesignState,
   repositoryDesignPage,
 } from "./document.mjs";
-import { transformedNodeBoundsInTree } from "./geometry.mjs";
+import { clipNodeBoundsToClippingAncestors } from "./geometry.mjs";
 import {
   normalizeFigmaSource,
   prepareFigmaAssets,
@@ -704,7 +705,8 @@ export function importFigmaJson(
       children: page.children.map((source) => convert(source, [], 0, counter)).filter(Boolean),
     };
   });
-  // Figma pages have an unbounded origin. Move negative/far-away content into the finite canvas.
+  // Size the finite canvas from visible content. Clipped or hidden offscreen
+  // descendants still retain their geometry and source mapping for round trips.
   let extentX = 1440,
     extentY = 960;
   for (const [index, page] of convertedPages.entries()) {
@@ -718,14 +720,13 @@ export function importFigmaJson(
     flatten(page.children);
     const nodeIndex = new Map(flat.map((node) => [node.id, node]));
     const bounds = flat
-      .map((node) => transformedNodeBoundsInTree(flat, node, nodeIndex))
+      .filter((node) => node.type !== "group" && isDesignNodeVisible({ nodes: flat }, node, nodeIndex))
+      .map((node) => clipNodeBoundsToClippingAncestors(flat, node, nodeIndex))
       .filter(Boolean);
-    const minX = Math.min(0, ...bounds.map((box) => box.x)),
-      minY = Math.min(0, ...bounds.map((box) => box.y));
-    const rootMinX = page.children.length ? Math.min(...page.children.map((node) => node.x)) : 0,
-      rootMinY = page.children.length ? Math.min(...page.children.map((node) => node.y)) : 0;
-    const offsetX = minX < 0 ? -minX : rootMinX >= 10000 ? -rootMinX : 0;
-    const offsetY = minY < 0 ? -minY : rootMinY >= 10000 ? -rootMinY : 0;
+    const minX = bounds.length ? Math.min(...bounds.map((box) => box.x)) : 0,
+      minY = bounds.length ? Math.min(...bounds.map((box) => box.y)) : 0;
+    const offsetX = minX < 0 || minX >= 10000 ? -minX : 0;
+    const offsetY = minY < 0 || minY >= 10000 ? -minY : 0;
     if (offsetX || offsetY) {
       const translate = (nodes) => {
         for (const node of nodes) {
