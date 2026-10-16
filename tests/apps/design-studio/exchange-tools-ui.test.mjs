@@ -797,7 +797,8 @@ test("image source bindings survive reopen and complete backup keeps original so
   await f.import();
   await f.reload();
   const metadata = await f.metadata();
-  assert.equal(metadata.resources.length, 1);
+  assert.equal(metadata.resources.filter((resource) => resource.kind === "image").length, 1);
+  assert.equal(metadata.resources.filter((resource) => resource.kind === "font").length, 1);
   assert.equal(await f.page.locator('#scene image[href^="data:image/png;base64,"]').count(), 1);
   const heading = metadata.layers.find((node) => node.type === "text");
   await f.tool("update_design_comments", {
@@ -824,7 +825,7 @@ test("image source bindings survive reopen and complete backup keeps original so
     sha256: async (text) => hash(text),
     sha256Bytes: async (bytes) => hash(bytes),
   });
-  assert.equal(plan.resourceCount, 1);
+  assert.equal(plan.resourceCount, metadata.resources.length);
   assert.equal(plan.attachmentCounts.threads, 1);
   assert.deepEqual(f.errors, []);
 });
@@ -1418,7 +1419,7 @@ test("audit UI and tools expose all grouped issues with filtered pagination", as
     type: "TEXT",
     name: `Narrow text ${index}`,
     characters: "A deliberately long label",
-    absoluteBoundingBox: { x: 30, y: 11000, width: 400, height: 30 },
+    absoluteBoundingBox: { x: 30, y: 19990, width: 400, height: 30 },
     fills: [{ type: "SOLID", color: { r: 0.05, g: 0.05, b: 0.05 } }],
     style: { fontFamily: "Inter", fontSize: 24, fontWeight: 400 },
   }));

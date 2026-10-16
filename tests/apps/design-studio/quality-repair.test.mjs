@@ -243,3 +243,11 @@ test("repair does not resize healthy containers merely because an unclipped shad
   assert.deepEqual(result.changes, []);
   assert.deepEqual(result.document.nodes, input.nodes);
 });
+
+test("a rounded control with a misplaced label stays explicit rather than growing into a large ellipse", () => {
+  const input = source({ cornerRadius: 20 }, { y: 300, fill: "#000000" });
+  const result = repairDesignQuality(input);
+  assert.equal(result.document.nodes[0].height, 40);
+  assert.ok(result.unresolved.some((issue) => issue.code === "layout.parent-overflow"));
+  assert.ok(!result.changes.some((change) => change.kind === "fit-container"));
+});

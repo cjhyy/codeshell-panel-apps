@@ -137,6 +137,18 @@ export function repairDesignQuality(input) {
       const right = Math.max(parent.x + parent.width, ...bounds.map((box) => box.x + box.width));
       const bottom = Math.max(parent.y + parent.height, ...bounds.map((box) => box.y + box.height));
       const next = { x: round(x), y: round(y), width: round(right - x), height: round(bottom - y) };
+      // Far-away content in a rounded control needs repositioning; expanding
+      // its background into a huge ellipse would damage the visible design.
+      const roundedControl =
+        parent.fill !== "transparent" &&
+        parent.cornerRadius >= Math.min(parent.width, parent.height) / 2 &&
+        Math.min(parent.width, parent.height) <= 128;
+      if (
+        roundedControl &&
+        (next.width - parent.width > Math.max(64, parent.width * 0.5) ||
+          next.height - parent.height > Math.max(64, parent.height * 0.5))
+      )
+        continue;
       if (next.width > 20000 || next.height > 20000 || Math.abs(x) > 20000 || Math.abs(y) > 20000)
         continue;
       // A container-only repair cannot fix content outside the canvas. Leave that
