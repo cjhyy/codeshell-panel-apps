@@ -18,6 +18,33 @@ permission; their application logic belongs to the Panel package.
 | Video Studio 0.7.3 | `panels/video-studio` | Media organization, local video editing, source rough cuts, captions, AI workflows, and panel-owned media and voice tools          |
 | Starter            | `templates/starter`   | Minimal template for creating another Panel App                                                                                    |
 
+## Use from chat or a terminal
+
+Every maintained app and the Starter template includes a package-local Node CLI
+and a declared Runtime Skill. These commands work without an open webview. Resolve
+the package selected by the current project, then discover its supported operations:
+
+```sh
+node "<selected-package>/app/tools/<entry>" ops
+```
+
+| Package | CLI entry | Headless workflow |
+| --- | --- | --- |
+| Design Studio | `design-studio.mjs` | Read, validate, create and save design documents; export SVG/frontend; compare designs |
+| Job Hunt HQ | `job-hunt.mjs` | Read job-search context and save candidate facts, resume drafts and factual QA |
+| Quant Lab | `quant-lab.mjs` | Analyze local datasets, backtest, sweep parameters, walk forward, evaluate watch rules and inspect holdings/notes |
+| Video Download | `video-download.mjs` | Search, inspect, download and manage independent media tasks |
+| Video Studio | `video-studio.mjs` | Create, inspect, validate and edit a local editor document; exchange JSON and plan exports |
+| Starter | `starter.mjs` | Read local project context and evaluate the shared counter example |
+
+The Runtime Skill locates the exact installed entry and explains its inputs,
+project files and prerequisites. CLI stdout contains structured JSON; a nonzero
+exit code indicates failure. Keep package files read-only. Video Studio's CLI
+document is separate from Host-managed editor sessions; export planning does not
+render a movie. Media processing, live connections and other operations still
+require the prerequisites documented by each package. See each app's README for
+its supported commands and data-sharing boundary.
+
 ## Install from GitHub
 
 In CodeShell, open **Extensions → Panel Apps → From GitHub**, then enter:

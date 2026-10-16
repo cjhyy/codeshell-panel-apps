@@ -2,6 +2,11 @@
 // while their application ownership is explicit here.
 export const suites = [
   {
+    id: "panel-cli",
+    label: "Installed Panel CLI and Runtime Skill contracts",
+    commands: [["--test", "tests/panel-cli-contract.test.mjs"]],
+  },
+  {
     id: "upgrade-harness",
     label: "Upgrade worker browser custody and shutdown receipts",
     commands: [["--test", "tests/panel-upgrade-process.test.mjs"]],
@@ -9,7 +14,7 @@ export const suites = [
   {
     id: "starter",
     label: "Starter context and narrow-screen interaction",
-    commands: [["--test", "tests/starter-ui.test.mjs"]],
+    commands: [["--test", "tests/starter-ui.test.mjs", "tests/starter-cli.test.mjs"]],
   },
   {
     id: "job-hunt-hq",
@@ -74,6 +79,7 @@ export const suites = [
     commands: [
       [
         "--test",
+        "tests/apps/design-studio/headless-cli.test.mjs",
         "tests/apps/design-studio/legacy-backup.test.mjs",
         "tests/apps/design-studio/portable-backup.test.mjs",
         "tests/apps/design-studio/recovery-session.test.mjs",
@@ -222,6 +228,7 @@ export const suites = [
       ],
       ["--test", "apps/video-studio/native/tests/voice-runtime.test.mjs"],
       ["--test", "tests/video-studio-workspace-storage.test.mjs"],
+      ["--test", "tests/video-studio-project-cli.test.mjs"],
     ],
   },
 ];

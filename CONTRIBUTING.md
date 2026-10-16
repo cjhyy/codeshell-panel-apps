@@ -146,7 +146,7 @@ after changing the declaration or build behavior.
 
 ## CLI companions
 
-Panels that perform basic data or media work should include a package-local Node
+Panels that perform basic data or media work must include a package-local Node
 CLI and a declared Runtime Skill so chat and terminal workflows can operate
 without an open webview. Reuse the Panel's domain modules and keep the CLI's
 stdout structured. Resolve the CLI from the current project's selected package;
@@ -163,8 +163,19 @@ Check actual runtime capabilities and report missing prerequisites.
 
 Video Download's `app/tools/video-download.mjs` demonstrates independent media
 tasks; Job Hunt HQ's `app/tools/job-hunt.mjs` demonstrates shared project data
-with the Host's workspace write protocol. Existing Panels can adopt this pattern
-incrementally; this convention does not claim all Panels already have CLI parity.
+with the Host's workspace write protocol. Design Studio, Quant Lab and Video
+Studio also expose local domain operations through their package CLI. The Starter
+template includes a shared browser/Node domain module and Runtime Skill by default.
+Document each command's supported scope; having a CLI does not establish parity
+with every webview action or access to Host-managed media resources.
+
+Every public CLI must implement an offline, read-only `ops` command with one JSON
+receipt on stdout. Run `npm test -- --suite panel-cli` after changing an entry,
+its Skill or packaging. This gate copies each installable package away from the
+repository and executes discovery with an empty project, no development modules
+and no provider credentials. It also checks the declared Runtime Skill points
+to the bundled CLI. Add domain-specific subprocess tests to the owning app suite
+for actual reads/writes, malformed inputs, revision conflicts and prerequisites.
 
 ## System boundary
 
