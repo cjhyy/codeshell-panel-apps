@@ -9,10 +9,13 @@ const invalid = (message) => Object.assign(new Error(message), { code: "INVALID_
 const operations = [
   { name: "context", readOnly: true, description: "Read the selected local project directory." },
   {
-    name: "counter", readOnly: true,
+    name: "counter",
+    readOnly: true,
     description: "Evaluate the same counter operation used by the panel. No state is saved.",
     inputSchema: {
-      type: "object", additionalProperties: false, required: ["value"],
+      type: "object",
+      additionalProperties: false,
+      required: ["value"],
       properties: {
         value: { type: "integer", minimum: 0 },
         amount: { type: "integer", minimum: 0, default: 1 },
@@ -46,11 +49,15 @@ async function readInput(path) {
 export async function main(argv, { cwd = process.cwd() } = {}) {
   const [command, ...args] = argv;
   if (!["ops", "context", "counter"].includes(command))
-    throw invalid("Usage: starter.mjs ops | context [--project dir] | counter --input-file request.json");
-  const allowed = command === "context" ? ["--project"] : command === "counter" ? ["--input-file"] : [];
+    throw invalid(
+      "Usage: starter.mjs ops | context [--project dir] | counter --input-file request.json",
+    );
+  const allowed =
+    command === "context" ? ["--project"] : command === "counter" ? ["--input-file"] : [];
   const options = {};
   while (args.length) {
-    const name = args.shift(), value = args.shift();
+    const name = args.shift(),
+      value = args.shift();
     if (!allowed.includes(name) || Object.hasOwn(options, name) || !value || value.startsWith("--"))
       throw invalid(`Invalid option: ${name ?? ""}`);
     options[name] = value;
@@ -63,20 +70,30 @@ export async function main(argv, { cwd = process.cwd() } = {}) {
   }
   if (!options["--input-file"]) throw invalid("counter requires --input-file");
   const input = await readInput(resolve(cwd, options["--input-file"]));
-  if (!input || typeof input !== "object" || Array.isArray(input) ||
-      Object.keys(input).some((key) => !["value", "amount"].includes(key)))
+  if (
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
+    Object.keys(input).some((key) => !["value", "amount"].includes(key))
+  )
     throw invalid("counter input must be an object containing value and optional amount");
   return { ok: true, result: { value: incrementCount(input.value, input.amount) } };
 }
 
-const direct = process.argv[1] && await realpath(process.argv[1]).catch(() => null);
+const direct = process.argv[1] && (await realpath(process.argv[1]).catch(() => null));
 if (direct && pathToFileURL(direct).href === import.meta.url) {
   try {
     process.stdout.write(`${JSON.stringify(await main(process.argv.slice(2)))}\n`);
   } catch (error) {
-    process.stdout.write(`${JSON.stringify({ ok: false, error: {
-      code: error.code || "OPERATION_FAILED", message: error.message,
-    } })}\n`);
+    process.stdout.write(
+      `${JSON.stringify({
+        ok: false,
+        error: {
+          code: error.code || "OPERATION_FAILED",
+          message: error.message,
+        },
+      })}\n`,
+    );
     process.exitCode = error.code === "INVALID_ARGUMENT" ? 2 : 1;
   }
 }

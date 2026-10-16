@@ -16,11 +16,15 @@ async function fixture(t) {
   const project = join(root, "项目 with spaces");
   await mkdir(project);
   return {
-    root, project, packageRoot,
+    root,
+    project,
+    packageRoot,
     async run(args, entry = join(packageRoot, "app/tools/starter.mjs")) {
       try {
         const { stdout, stderr } = await execute(process.execPath, [entry, ...args], {
-          cwd: project, env: { HOME: root, PATH: "" }, timeout: 5000,
+          cwd: project,
+          env: { HOME: root, PATH: "" },
+          timeout: 5000,
         });
         assert.equal(stderr, "");
         assert.equal(stdout.trim().split("\n").length, 1);
@@ -39,12 +43,17 @@ test("copied Starter package discovers operations and reads local context withou
   const { run, project, packageRoot } = await fixture(t);
   const ops = await run(["ops"]);
   assert.equal(ops.ok, true);
-  assert.deepEqual(ops.result.operations.map((op) => op.name), ["context", "counter"]);
+  assert.deepEqual(
+    ops.result.operations.map((op) => op.name),
+    ["context", "counter"],
+  );
   const context = await run(["context", "--project", "."]);
   assert.equal(context.ok, true);
   assert.equal(context.result.root, await realpath(project));
   assert.equal(context.result.persistence, "none");
-  const manifest = JSON.parse(await readFile(join(packageRoot, ".codeshell-panel/panel.json"), "utf8"));
+  const manifest = JSON.parse(
+    await readFile(join(packageRoot, ".codeshell-panel/panel.json"), "utf8"),
+  );
   assert.equal(manifest.schemaVersion, 2);
   assert.deepEqual(manifest.agent.skills, ["agent/skills/project-runtime/SKILL.md"]);
 });
@@ -61,17 +70,25 @@ test("counter CLI reuses panel behavior, handles spaces and symbolic executable 
 
 test("invalid commands, duplicate options, malformed or oversized input fail as structured JSON", async (t) => {
   const { run, project } = await fixture(t);
-  for (const args of [["missing"], ["ops", "--project", "."], ["counter"],
-    ["context", "--project", ".", "--project", "."]]) {
+  for (const args of [
+    ["missing"],
+    ["ops", "--project", "."],
+    ["counter"],
+    ["context", "--project", ".", "--project", "."],
+  ]) {
     const response = await run(args);
     assert.equal(response.ok, false);
     assert.equal(response.status, 2);
     assert.equal(response.error.code, "INVALID_ARGUMENT");
   }
-  for (const content of ["{", " ".repeat(16 * 1024 + 1),
+  for (const content of [
+    "{",
+    " ".repeat(16 * 1024 + 1),
     JSON.stringify({ value: Number.MAX_SAFE_INTEGER, amount: 1 }),
-    JSON.stringify({ value: 1, extra: true }), JSON.stringify({ value: -1 }),
-    JSON.stringify({ amount: 1 })]) {
+    JSON.stringify({ value: 1, extra: true }),
+    JSON.stringify({ value: -1 }),
+    JSON.stringify({ amount: 1 }),
+  ]) {
     await writeFile(join(project, "bad.json"), content);
     const response = await run(["counter", "--input-file", "bad.json"]);
     assert.equal(response.ok, false);
