@@ -1422,7 +1422,7 @@ function createUiIcon(name, className = "") {
 
 function shouldRenderCanvasLabel(node, options = {}) {
   return (
-    options.suppressLabel !== true && zoom >= 0.65 && (!node.parentId || selectedIds.has(node.id))
+    options.suppressLabel !== true && (!node.parentId || selectedIds.has(node.id))
   );
 }
 
@@ -1446,7 +1446,60 @@ function appendAncestorClipChain(root, node, clipIds, nodes = design.nodes, node
   return content;
 }
 
+let sceneOverlay = null;
+let viewportRenderFrame = 0;
+let viewportZoomDirty = false;
+let interactionRenderFrame = 0;
+
+function scheduleViewportRender(zoomChanged = false) {
+  viewportZoomDirty ||= zoomChanged;
+  if (viewportRenderFrame) return;
+  viewportRenderFrame = requestAnimationFrame(() => renderViewport());
+}
+
+function renderViewport(zoomChanged = false) {
+  if (viewportRenderFrame) cancelAnimationFrame(viewportRenderFrame);
+  viewportRenderFrame = 0;
+  const updateZoom = zoomChanged || viewportZoomDirty;
+  viewportZoomDirty = false;
+  elements.scene.setAttribute("transform", `translate(${pan.x} ${pan.y}) scale(${zoom})`);
+  if (updateZoom) {
+    const byId = new Map(design.nodes.map((node) => [node.id, node]));
+    for (const label of elements.scene.querySelectorAll("[data-canvas-label]")) {
+      const node = byId.get(label.dataset.canvasLabel);
+      if (!node) continue;
+      label.setAttribute("y", node.y - 18 / zoom);
+      label.setAttribute("font-size", 11 / zoom);
+      label.style.display = zoom >= 0.65 ? "" : "none";
+    }
+    for (const placeholder of elements.scene.querySelectorAll("[data-zoom-outline]")) {
+      placeholder.setAttribute("stroke-width", 1.5 / zoom);
+      placeholder.setAttribute("stroke-dasharray", `${6 / zoom} ${4 / zoom}`);
+    }
+    renderSceneOverlays(byId);
+  } else {
+    const byId = new Map(design.nodes.map((node) => [node.id, node]));
+    renderSelectionSize(selectedNodes().filter((node) => isDesignNodeVisible(design, node, byId)));
+  }
+  elements.zoomValue.textContent = `${Math.round(zoom * 100)}%`;
+  updateInlineTextEditorPosition();
+}
+
+function scheduleInteractionRender() {
+  if (interactionRenderFrame) return;
+  interactionRenderFrame = requestAnimationFrame(() => {
+    interactionRenderFrame = 0;
+    renderScene();
+    renderProperties();
+  });
+}
+
 function renderScene() {
+  if (interactionRenderFrame) cancelAnimationFrame(interactionRenderFrame);
+  interactionRenderFrame = 0;
+  if (viewportRenderFrame) cancelAnimationFrame(viewportRenderFrame);
+  viewportRenderFrame = 0;
+  viewportZoomDirty = false;
   elements.scene.replaceChildren();
   elements.scene.setAttribute("transform", `translate(${pan.x} ${pan.y}) scale(${zoom})`);
 
@@ -1560,16 +1613,25 @@ function renderScene() {
       }),
     );
   }
-  const nodes = selectedNodes().filter((node) => isDesignNodeVisible(design, node, renderNodeIndex));
+  sceneOverlay = svgElement("g", { "data-scene-overlay": "true" });
+  elements.scene.append(sceneOverlay);
+  renderSceneOverlays(renderNodeIndex);
+}
+
+function renderSceneOverlays(nodeIndex = null) {
+  if (!sceneOverlay || sceneOverlay.parentNode !== elements.scene) return;
+  sceneOverlay.replaceChildren();
+  const byId = nodeIndex ?? new Map(design.nodes.map((node) => [node.id, node]));
+  const nodes = selectedNodes().filter((node) => isDesignNodeVisible(design, node, byId));
   if (nodes.length === 1) {
-    elements.scene.append(renderSelection(nodes[0], true));
+    sceneOverlay.append(renderSelection(nodes[0], true, byId));
   } else if (nodes.length > 1) {
-    for (const node of nodes) elements.scene.append(renderSelection(node, false));
-    elements.scene.append(renderMultiSelection(nodes));
+    for (const node of nodes) sceneOverlay.append(renderSelection(node, false, byId));
+    sceneOverlay.append(renderMultiSelection(nodes));
   }
-  if (interaction?.kind === "marquee") elements.scene.append(renderMarquee(interaction));
+  if (interaction?.kind === "marquee") sceneOverlay.append(renderMarquee(interaction));
   if (interaction?.kind === "move" && interaction.guides?.length) {
-    elements.scene.append(renderSmartGuides(interaction.guides));
+    sceneOverlay.append(renderSmartGuides(interaction.guides));
   }
   renderSelectionSize(nodes);
 }
@@ -1608,6 +1670,7 @@ function renderInstanceNode(node, clipIds, shadowIds, options = {}) {
       "stroke-dasharray": `${6 / zoom} ${4 / zoom}`,
     });
     missing.dataset.nodeId = node.id;
+    missing.dataset.zoomOutline = "true";
     content.append(missing);
     return group;
   }
@@ -1658,6 +1721,8 @@ function renderInstanceNode(node, clipIds, shadowIds, options = {}) {
     });
     label.textContent = `◆ ${node.name}`;
     label.dataset.nodeId = node.id;
+    label.dataset.canvasLabel = node.id;
+    label.style.display = zoom >= 0.65 ? "" : "none";
     content.append(label);
   }
   return group;
@@ -1787,6 +1852,8 @@ function renderNode(node, clipIds, shadowIds, options = {}) {
       visual.setAttribute(attribute.name, attribute.value);
   }
   visual.dataset.nodeId = node.id;
+  if (node.type === "image" && !resourceDataUrls.has(node.imageRef))
+    visual.dataset.zoomOutline = "true";
   const shadowId = shadowIds.get(node.id);
   if (shadowId) visual.setAttribute("filter", `url(#${shadowId})`);
   visual.style.pointerEvents = isNodeEffectivelyLocked(node, renderNodes, nodeIndex)
@@ -1805,15 +1872,18 @@ function renderNode(node, clipIds, shadowIds, options = {}) {
     });
     label.textContent = `${node.type === "component" ? "◇ " : node.type === "group" ? "▣ " : ""}${node.name}`;
     label.dataset.nodeId = node.id;
+    label.dataset.canvasLabel = node.id;
+    label.style.display = zoom >= 0.65 ? "" : "none";
     content.append(label);
   }
   return group;
 }
 
-function renderSelection(node, showHandles) {
-  const locked = isEffectivelyLocked(node);
+function renderSelection(node, showHandles, nodeIndex = null) {
+  const locked = isNodeEffectivelyLocked(node, design.nodes, nodeIndex);
+  const transform = nodeTransform(node, design.nodes, nodeIndex);
   const overlay = svgElement("g", {
-    transform: nodeTransform(node),
+    transform,
   });
   const border = svgElement("rect", {
     x: node.x,
@@ -1827,7 +1897,7 @@ function renderSelection(node, showHandles) {
     "pointer-events": "none",
   });
   overlay.append(border);
-  if (!showHandles || locked || nodeTransform(node) || activeTool !== "select") return overlay;
+  if (!showHandles || locked || transform || activeTool !== "select") return overlay;
 
   const size = 8 / zoom;
   const handles = [
@@ -2933,9 +3003,10 @@ function pointerMove(event) {
   if (interaction.kind === "pan") {
     pan.x = interaction.startPan.x + event.clientX - interaction.startClient.x;
     pan.y = interaction.startPan.y + event.clientY - interaction.startClient.y;
-    renderScene();
+    scheduleViewportRender();
     return;
   }
+  const nodeIndex = new Map(design.nodes.map((node) => [node.id, node]));
   if (interaction.kind === "marquee") {
     interaction.current = point;
     const left = Math.min(interaction.start.x, point.x);
@@ -2944,8 +3015,8 @@ function pointerMove(event) {
     const bottom = Math.max(interaction.start.y, point.y);
     const enclosed = design.nodes
       .filter((node) => {
-        if (!isEffectivelyVisible(node)) return false;
-        const bounds = transformedNodeBoundsInTree(design.nodes, node);
+        if (!isDesignNodeVisible(design, node, nodeIndex)) return false;
+        const bounds = transformedNodeBoundsInTree(design.nodes, node, nodeIndex);
         return (
           bounds &&
           bounds.x >= left &&
@@ -2971,10 +3042,10 @@ function pointerMove(event) {
     }
     if (snapEnabled && !event.altKey && interaction.bounds && !interaction.inheritsRotation) {
       const stationaryNodes = design.nodes.filter(
-        (node) => !interaction.origins.has(node.id) && isEffectivelyVisible(node),
+        (node) => !interaction.origins.has(node.id) && isDesignNodeVisible(design, node, nodeIndex),
       );
       const stationaryBounds = stationaryNodes.map((node) => ({
-        ...transformedNodeBoundsInTree(design.nodes, node),
+        ...transformedNodeBoundsInTree(design.nodes, node, nodeIndex),
         id: node.id,
       }));
       const snapped = snapBoundsToNodes(
@@ -3026,8 +3097,7 @@ function pointerMove(event) {
     resizeNode(node, snapPoint(point, event.altKey), interaction, event.shiftKey);
   }
   updateDirtyState();
-  renderScene();
-  renderProperties();
+  scheduleInteractionRender();
 }
 
 function resizeNode(node, point, state, preserveAspect) {
@@ -3089,6 +3159,10 @@ function finishInteraction(pointerId = null) {
   const current = interactionIsCurrent(interaction);
   const finished = releaseInteraction();
   if (!current) return;
+  if (finished.kind === "pan") {
+    renderViewport();
+    return;
+  }
   const node = finished.nodeId ? nodeById(finished.nodeId) : selectedNode();
   if (finished.kind === "create" && node && (node.width < 4 || node.height < 4)) {
     node.width = finished.tool === "frame" ? 390 : 160;
@@ -3135,9 +3209,21 @@ function cancelInteraction(pointerId = null) {
   } else if (cancelled.kind === "pan") {
     Object.assign(pan, cancelled.startPan);
   }
+  const selectionChanged =
+    selectedId !== cancelled.before.selectedId ||
+    selectedIds.size !== cancelled.before.selectedIds.size ||
+    [...selectedIds].some((id) => !cancelled.before.selectedIds.has(id));
   selectedId = cancelled.before.selectedId;
   selectedIds = cancelled.before.selectedIds;
   setActiveTool(cancelled.before.tool);
+  if (cancelled.kind === "pan") {
+    if (selectionChanged) renderAll();
+    else {
+      renderViewport();
+      renderSceneOverlays();
+    }
+    return;
+  }
   syncActivePageNodes();
   updateDirtyState();
   renderAll();
@@ -3495,7 +3581,7 @@ function setZoom(next, focalClient) {
   pan.x = focal.x - rect.left - documentX * nextZoom;
   pan.y = focal.y - rect.top - documentY * nextZoom;
   zoom = nextZoom;
-  renderAll();
+  scheduleViewportRender(true);
 }
 
 function fitCanvas() {
@@ -3505,7 +3591,7 @@ function fitCanvas() {
   zoom = clamp(Math.min(width / design.canvas.width, height / design.canvas.height), 0.1, 2);
   pan.x = (elements.stage.clientWidth - design.canvas.width * zoom) / 2;
   pan.y = (elements.stage.clientHeight - design.canvas.height * zoom) / 2;
-  renderAll();
+  renderViewport(true);
 }
 
 function fitSelection() {
@@ -3524,7 +3610,7 @@ function fitSelection() {
   );
   pan.x = elements.stage.clientWidth / 2 - (bounds.x + bounds.width / 2) * zoom;
   pan.y = elements.stage.clientHeight / 2 - (bounds.y + bounds.height / 2) * zoom;
-  renderAll();
+  renderViewport(true);
 }
 
 function normalizeDocument(input) {
@@ -6474,7 +6560,7 @@ elements.stage.addEventListener(
     } else {
       pan.x -= event.deltaX;
       pan.y -= event.deltaY;
-      renderAll();
+      scheduleViewportRender();
     }
   },
   { passive: false },
@@ -6888,7 +6974,7 @@ window.addEventListener("blur", () => {
   cancelInteraction();
   updateCursor();
 });
-window.addEventListener("resize", () => renderAll());
+window.addEventListener("resize", () => scheduleViewportRender(true));
 window.addEventListener("focus", () => void checkExternalChange());
 window.addEventListener("beforeunload", (event) => {
   finishInlineTextEdit();

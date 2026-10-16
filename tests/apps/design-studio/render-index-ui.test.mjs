@@ -252,8 +252,9 @@ test("a 1208-layer real browser render builds one shared full index rather than 
   const document = importFigmaJson(longFigmaSource()).document;
   const { page, errors } = await fixture(t, document, { instrument: true });
   const before = await page.evaluate(() => window.tools.get_design_metadata({}));
-  await page.locator("#zoom-out").click();
-  await page.locator("#zoom-in").click();
+  // Grid toggles deliberately rebuild a scene; viewport zoom now retains it.
+  await page.locator("#toggle-grid").click();
+  await page.locator("#toggle-grid").click();
   const samples = await page.evaluate(() => window.__renderSamples);
   assert.ok(samples.length >= 3);
   assert.ok(
