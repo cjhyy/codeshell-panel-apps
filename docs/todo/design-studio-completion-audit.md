@@ -19,9 +19,23 @@
 - [x] 从干净已合并提交完成 0.19.0 版本、完整检查及最终真实 Host/Desktop 验收。
 - [x] 在真实 Figma 桌面端运行未修改的生产插件主程序，完成官方导出、面板模型修改、补丁预览／应用及重新导出核对（文字与位置样本）。
 - [x] 修正真实 Figma native bridge 回执兼容，正式 UI 的导出、预览、错误与 busy 恢复由真实 Chromium 回归验证。
-- [ ] 从稳定来源更新个人 CodeShell 安装，并在个人环境核对 0.19.0 的已安装版本。
+- [x] 从稳定 GitHub 来源更新个人 CodeShell 安装及当前 codeshell 项目的版本，核对 0.19.0 和运行文件。
 
 ## 已取得的证据
+
+- 最终功能提交 `eb157f2eb31d0cde58f0e6adf4443512099c7308`（`eb157f2`）已合并并推送
+  `origin/main`。该干净提交重新运行 `npm run check`：2433 项通过、4 项跳过、0 项失败
+  （共 2437 项）；日志 `/tmp/design-studio-019-eb157f2-full-check.log`。
+  六组真实 Desktop 场景再次全部通过；报告 `/tmp/design-studio-desktop-019-eb157f2.json`，
+  日志 `/tmp/design-studio-019-eb157f2-desktop.log`。报告记录相同提交，Electron exitCode 0、
+  `cleanup.exited` 和 `cleanup.homeRemoved` 均为 `true`。
+- 个人安装通过生产 Desktop 的「从源码更新」审阅和应用，当前 codeshell 项目已选择
+  `0.19.0`，包摘要为 `5ec741f8e894b13d9fa890453e62aadd3c6698dcb8433dfef26eb3b1b8e4487c`。
+  GitHub/main/apps/design-studio 来源及既有 7 项权限不变，16 个 Agent 工具；只读公共
+  Core SDK 和文件逐字节核对确认所选保留包的 50 个运行文件与稳定源码一致。
+  安装回执位于下述 Figma 验收目录的 `11-installed-panel-receipt.json`。
+
+以下保留早期检查证据；最终提交的门禁和个人安装结果以上述记录为准。
 
 - 稳定 `main` 提交 `da04251b995bde388eb6b8af0791b924d1aba353`（`da04251`）的
   Design Studio manifest 为 `0.19.0`；该轮 Desktop 报告对应此提交。
@@ -42,7 +56,7 @@
   `/tmp/design-studio-desktop-019-release-final.json`。本轮替代此前的工作树预检证据。
   自有 Electron 进程以 0 退出、临时 HOME 删除已核实，报告的 `cleanup.exited` 与
   `cleanup.homeRemoved` 均为 `true`。这是隔离测试环境中的真实 Desktop 验收，
-  个人安装仍未完成。
+  该轮不包含个人安装；个人安装后来由上述生产更新流程完成。
 - native bridge 回执修复后，`npm test -- --suite design-studio` 为 188/188 通过；
   `figma-plugin-ui.test.mjs` 为 6/6，通过真实 sibling iframe 的官方 origin 消息验证
   `event.source !== parent` 的导出、预览、错误及 busy 恢复，同时拒绝不可信来源和无效封装。
