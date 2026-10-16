@@ -89,6 +89,8 @@ import { exportDesignPrototype, normalizePrototype } from "./prototype.mjs";
 import { createRecoverySession } from "./recovery-session.mjs";
 import { chooseRepoDesignFile, DEFAULT_DESIGN_PATH } from "./repository.mjs";
 import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
+import { designPaintSvg } from "./paint.mjs";
+import { repairDesignQuality } from "./quality-repair.mjs";
 import { groupAuditIssues, pageAuditIssues } from "./audit-review.mjs";
 import {
   captureWorkspaceHtml,
@@ -205,6 +207,7 @@ const elements = {
   auditSummary: document.querySelector("#audit-summary"),
   auditResults: document.querySelector("#audit-results"),
   saveAuditReport: document.querySelector("#save-audit-report"),
+  repairQuality: document.querySelector("#repair-quality"),
   aiRequest: document.querySelector("#ai-request"),
   aiContextState: document.querySelector("#ai-context-state"),
   submitAi: document.querySelector("#submit-ai"),
@@ -1640,6 +1643,7 @@ function renderInstanceNode(node, clipIds, shadowIds, options = {}) {
   return group;
 }
 
+let scenePaintSequence = 0;
 function renderNode(node, clipIds, shadowIds, options = {}) {
   if (node.type === "instance") return renderInstanceNode(node, clipIds, shadowIds, options);
   const renderDocument = options.renderDocument ?? design;
@@ -1747,6 +1751,17 @@ function renderNode(node, clipIds, shadowIds, options = {}) {
       stroke: node.stroke,
       "stroke-width": node.strokeWidth,
     });
+  }
+  if (node.fillPaints && node.type !== "image" && node.type !== "group") {
+    const paint = designPaintSvg(node, `scene-paint-${++scenePaintSequence}`);
+    const parsed = new window.DOMParser().parseFromString(
+      `<svg xmlns="http://www.w3.org/2000/svg"><defs>${paint.definitions.join("")}</defs><rect ${paint.attributes}/></svg>`,
+      "image/svg+xml",
+    );
+    const defs = parsed.querySelector("defs");
+    if (defs?.children.length) content.append(document.importNode(defs, true));
+    for (const attribute of parsed.documentElement.lastElementChild.attributes)
+      visual.setAttribute(attribute.name, attribute.value);
   }
   visual.dataset.nodeId = node.id;
   const shadowId = shadowIds.get(node.id);
@@ -6459,6 +6474,20 @@ elements.deliveryRunAudit.addEventListener("click", () => {
   );
 });
 elements.saveAuditReport.addEventListener("click", () => void saveAuditReport());
+elements.repairQuality.addEventListener("click", () => {
+  void (async () => {
+    await ensureAllDesignPagesLoaded();
+    const result = repairDesignQuality(design);
+    if (result.changes.length) {
+      design = result.document;
+      commitHistory();
+      markChanged();
+    }
+    await showAudit();
+    notify(`已修复 ${result.changes.length} 处 · 剩余 ${result.after.issueCount} 个问题；可撤销`,
+      result.after.blockingIssueCount ? "error" : "success");
+  })().catch((error) => notify(error.message, "error"));
+});
 elements.exportSvg.addEventListener("click", () => void exportSvg());
 elements.openFiles.addEventListener("click", () => void showFiles());
 elements.refreshRepoFiles.addEventListener(

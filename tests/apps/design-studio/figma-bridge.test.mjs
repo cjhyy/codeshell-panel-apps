@@ -34,6 +34,34 @@ const file = (children) => ({
 });
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
+test("explicit null source render bounds preserve fully clipped branches without hiding accidental clipping", () => {
+  const hiddenBranch = { ...rect("1:2"), type: "FRAME", absoluteRenderBounds: null,
+    absoluteBoundingBox: { x: -9000, y: 30, width: 84, height: 22 }, children: [{
+      ...rect("1:3"), type: "TEXT", absoluteRenderBounds: null, characters: "Skip to content",
+      absoluteBoundingBox: { x: -9000, y: 30, width: 84, height: 23 },
+      style: { fontFamily: "Arial", fontSize: 14 },
+    }] };
+  const parent = { ...rect("1:1"), type: "FRAME", clipsContent: true,
+    absoluteBoundingBox: { x: 0, y: 0, width: 500, height: 100 }, children: [hiddenBranch] };
+  const raw = file([parent]), previous = JSON.stringify(raw);
+  const result = importFigmaJson(raw);
+  assert.equal(JSON.stringify(raw), previous);
+  assert.equal(result.stats.importedNodes, 3);
+  assert.equal(result.mapping.length, 3);
+  assert.deepEqual(result.document.nodes.slice(1).map(n => n.visible), [false, false]);
+  assert.equal(auditDesignPages(result.document).filter(i => i.blocking).length, 0);
+  for (const renderBounds of [undefined, { x: 0, y: 0, width: 1, height: 1 }]) {
+    const accidental = clone(raw);
+    for (const node of [accidental.document.children[0].children[0].children[0],
+      accidental.document.children[0].children[0].children[0].children[0]])
+      if (renderBounds === undefined) delete node.absoluteRenderBounds;
+      else node.absoluteRenderBounds = renderBounds;
+    const imported = importFigmaJson(accidental);
+    assert.equal(imported.document.nodes[1].visible, true);
+    assert.ok(auditDesignPages(imported.document).some(i => i.blocking));
+  }
+});
+
 test("Figma REST import preserves editable hierarchy, source IDs, absolute geometry, typography and auto layout", () => {
   const source = file([
     {
