@@ -817,9 +817,9 @@ function isEffectivelyVisible(node) {
   return isDesignNodeVisible(design, node);
 }
 
-function isNodeEffectivelyLocked(node, nodes) {
+function isNodeEffectivelyLocked(node, nodes, nodeIndex = null) {
   if (node.locked) return true;
-  const byId = new Map(nodes.map((candidate) => [candidate.id, candidate]));
+  const byId = nodeIndex ?? new Map(nodes.map((candidate) => [candidate.id, candidate]));
   const seen = new Set();
   let parentId = node.parentId;
   while (parentId && !seen.has(parentId)) {
@@ -836,9 +836,9 @@ function isEffectivelyLocked(node) {
   return isNodeEffectivelyLocked(node, design.nodes);
 }
 
-function nodeTransform(node, nodes = design.nodes) {
+function nodeTransform(node, nodes = design.nodes, nodeIndex = null) {
   const transforms = [];
-  const byId = new Map(nodes.map((candidate) => [candidate.id, candidate]));
+  const byId = nodeIndex ?? new Map(nodes.map((candidate) => [candidate.id, candidate]));
   const ancestors = [];
   const seen = new Set();
   let parentId = node.parentId;
@@ -1426,9 +1426,9 @@ function shouldRenderCanvasLabel(node, options = {}) {
   );
 }
 
-function appendAncestorClipChain(root, node, clipIds, nodes = design.nodes) {
+function appendAncestorClipChain(root, node, clipIds, nodes = design.nodes, nodeIndex = null) {
   let content = root;
-  const byId = new Map(nodes.map((candidate) => [candidate.id, candidate]));
+  const byId = nodeIndex ?? new Map(nodes.map((candidate) => [candidate.id, candidate]));
   const seen = new Set();
   let parentId = node.parentId;
   while (parentId && !seen.has(parentId)) {
@@ -1468,6 +1468,7 @@ function renderScene() {
   const sceneDefs = svgElement("defs");
   const renderNodes = allDesignNodes();
   const renderDocument = { ...design, nodes: renderNodes };
+  const renderNodeIndex = new Map(renderNodes.map((node) => [node.id, node]));
   renderNodes.forEach((node, index) => {
     if (["frame", "component"].includes(node.type) && node.clipContent === true) {
       const id = `frame-clip-${index}`;
@@ -1483,7 +1484,7 @@ function renderScene() {
         height: node.height,
         rx: Math.min(node.cornerRadius, node.width / 2, node.height / 2),
       });
-      const transform = nodeTransform(node, renderNodes);
+      const transform = nodeTransform(node, renderNodes, renderNodeIndex);
       if (transform) clipRect.setAttribute("transform", transform);
       clipPath.append(clipRect);
       sceneDefs.append(clipPath);
@@ -1516,6 +1517,7 @@ function renderScene() {
     .filter((node) => node.type === "component")
     .forEach((component, componentIndex) => {
       const sourceDocument = detachedComponentRenderDocument(renderDocument, component.id);
+      const sourceNodeIndex = new Map(sourceDocument.nodes.map((node) => [node.id, node]));
       const sourceIds = descendantIds(sourceDocument.nodes, new Set([component.id]));
       sourceIds.add(component.id);
       const sourceClipIds = new Map();
@@ -1540,7 +1542,7 @@ function renderScene() {
           height: node.height,
           rx: Math.min(node.cornerRadius, node.width / 2, node.height / 2),
         });
-        const transform = nodeTransform(node, sourceDocument.nodes);
+        const transform = nodeTransform(node, sourceDocument.nodes, sourceNodeIndex);
         if (transform) clipRect.setAttribute("transform", transform);
         clipPath.append(clipRect);
         sceneDefs.append(clipPath);
@@ -1549,12 +1551,16 @@ function renderScene() {
     });
   if (clipIds.size + shadowIds.size > 0) elements.scene.append(sceneDefs);
   for (const node of design.nodes) {
-    if (!isEffectivelyVisible(node)) continue;
+    if (!isDesignNodeVisible(design, node, renderNodeIndex)) continue;
     elements.scene.append(
-      renderNode(node, clipIds, shadowIds, { renderDocument, componentClipIds }),
+      renderNode(node, clipIds, shadowIds, {
+        renderDocument,
+        componentClipIds,
+        nodeIndex: renderNodeIndex,
+      }),
     );
   }
-  const nodes = selectedNodes().filter((node) => isEffectivelyVisible(node));
+  const nodes = selectedNodes().filter((node) => isDesignNodeVisible(design, node, renderNodeIndex));
   if (nodes.length === 1) {
     elements.scene.append(renderSelection(nodes[0], true));
   } else if (nodes.length > 1) {
@@ -1571,18 +1577,19 @@ function renderScene() {
 function renderInstanceNode(node, clipIds, shadowIds, options = {}) {
   const renderDocument = options.renderDocument ?? design;
   const renderNodes = renderDocument.nodes;
-  const component = renderNodes.find(
-    (candidate) => candidate.id === node.componentId && candidate.type === "component",
-  );
+  const nodeIndex =
+    options.nodeIndex ?? new Map(renderNodes.map((candidate) => [candidate.id, candidate]));
+  const candidate = nodeIndex.get(node.componentId);
+  const component = candidate?.type === "component" ? candidate : null;
   const group = svgElement("g");
   group.dataset.nodeId = node.id;
   group.dataset.componentId = node.componentId;
-  const content = appendAncestorClipChain(group, node, clipIds, renderNodes);
+  const content = appendAncestorClipChain(group, node, clipIds, renderNodes, nodeIndex);
   const shadowId = shadowIds.get(node.id);
   if (shadowId) content.setAttribute("filter", `url(#${shadowId})`);
-  const transform = nodeTransform(node, renderNodes);
+  const transform = nodeTransform(node, renderNodes, nodeIndex);
   if (transform) content.setAttribute("transform", transform);
-  content.setAttribute("opacity", effectiveDesignNodeOpacity(renderDocument, node));
+  content.setAttribute("opacity", effectiveDesignNodeOpacity(renderDocument, node, nodeIndex));
   const instanceStack = options.instanceStack ?? new Set();
   if (
     !component ||
@@ -1607,7 +1614,9 @@ function renderInstanceNode(node, clipIds, shadowIds, options = {}) {
   const nextInstanceStack = new Set(instanceStack);
   nextInstanceStack.add(component.id);
   const sourceDocument = detachedComponentRenderDocument(renderDocument, component.id);
-  const sourceComponent = sourceDocument.nodes.find((candidate) => candidate.id === component.id);
+  // Detachment changes the ancestry graph; this index must match the source document.
+  const sourceNodeIndex = new Map(sourceDocument.nodes.map((candidate) => [candidate.id, candidate]));
+  const sourceComponent = sourceNodeIndex.get(component.id);
   const componentClipIds = options.componentClipIds ?? new Map();
   const sourceClipIds = componentClipIds.get(component.id) ?? clipIds;
 
@@ -1622,11 +1631,12 @@ function renderInstanceNode(node, clipIds, shadowIds, options = {}) {
     ...sourceDocument.nodes.filter((candidate) => componentDescendantIds.has(candidate.id)),
   ].filter(Boolean);
   for (const sourceNode of sourceNodes) {
-    if (!isDesignNodeVisible(sourceDocument, sourceNode)) continue;
+    if (!isDesignNodeVisible(sourceDocument, sourceNode, sourceNodeIndex)) continue;
     const source = renderNode(sourceNode, sourceClipIds, shadowIds, {
       suppressLabel: true,
       instanceStack: nextInstanceStack,
       renderDocument: sourceDocument,
+      nodeIndex: sourceNodeIndex,
       componentClipIds,
     });
     source.dataset.nodeId = node.id;
@@ -1658,12 +1668,14 @@ function renderNode(node, clipIds, shadowIds, options = {}) {
   if (node.type === "instance") return renderInstanceNode(node, clipIds, shadowIds, options);
   const renderDocument = options.renderDocument ?? design;
   const renderNodes = renderDocument.nodes;
+  const nodeIndex =
+    options.nodeIndex ?? new Map(renderNodes.map((candidate) => [candidate.id, candidate]));
   const group = svgElement("g");
   group.dataset.nodeId = node.id;
-  const content = appendAncestorClipChain(group, node, clipIds, renderNodes);
-  const transform = nodeTransform(node, renderNodes);
+  const content = appendAncestorClipChain(group, node, clipIds, renderNodes, nodeIndex);
+  const transform = nodeTransform(node, renderNodes, nodeIndex);
   if (transform) content.setAttribute("transform", transform);
-  content.setAttribute("opacity", effectiveDesignNodeOpacity(renderDocument, node));
+  content.setAttribute("opacity", effectiveDesignNodeOpacity(renderDocument, node, nodeIndex));
 
   let visual;
   if (node.type === "ellipse") {
@@ -1777,7 +1789,7 @@ function renderNode(node, clipIds, shadowIds, options = {}) {
   visual.dataset.nodeId = node.id;
   const shadowId = shadowIds.get(node.id);
   if (shadowId) visual.setAttribute("filter", `url(#${shadowId})`);
-  visual.style.pointerEvents = isNodeEffectivelyLocked(node, renderNodes)
+  visual.style.pointerEvents = isNodeEffectivelyLocked(node, renderNodes, nodeIndex)
     ? "visiblePainted"
     : "all";
   content.append(visual);
