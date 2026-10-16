@@ -6732,10 +6732,15 @@
       "agent/skills/tts-setup/SKILL.md",
       "agent/skills/video-init/SKILL.md",
       "agent/skills/video-workflow/SKILL.md",
-      "agent/skills/narration-workflow/SKILL.md"
+      "agent/skills/narration-workflow/SKILL.md",
+      "agent/skills/project-runtime/SKILL.md"
     ]
   },
   "nativeEntries": {
+    "video-studio": {
+      "entry": "app/tools/video-studio.mjs",
+      "sha256": "29997ecc46a397d8a66c6a6b4e7df219c4a7c7287a206d8dd87178397a7b3bb1"
+    },
     "folder-scan": {
       "entry": "app/tools/folder-scan.mjs",
       "sha256": "524b085b5cbb4c5750ba7345b22711fb314ea5338a67822752a95cc150613d25"
