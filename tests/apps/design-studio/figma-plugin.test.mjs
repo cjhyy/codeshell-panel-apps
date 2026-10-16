@@ -900,3 +900,50 @@ test("main sandbox decodes multi-megabyte local image payloads without recursive
   assert.equal(h.images.size, 1);
   assert.deepEqual(Buffer.from([...h.images.values()][0]), bytes);
 });
+
+test("Bridge creates native editable linear-gradient text and layered fills without raster fallback", async () => {
+  const gradient = {
+    type: "GRADIENT_LINEAR",
+    gradientHandlePositions: [
+      { x: 0, y: 0.5 },
+      { x: 1, y: 0.5 },
+      { x: 0, y: 1 },
+    ],
+    gradientStops: [
+      { position: 0, color: { r: 0, g: 0, b: 1, a: 1 } },
+      { position: 1, color: { r: 1, g: 0, b: 0, a: 0.5 } },
+    ],
+  };
+  const source = page([
+    rect("1:2", {
+      fills: [
+        { type: "SOLID", color: { r: 1, g: 1, b: 1 } },
+        { type: "SOLID", color: { r: 0.04, g: 0.05, b: 0.15 } },
+      ],
+    }),
+    rect("1:3", {
+      type: "TEXT",
+      characters: "Gradient",
+      fills: [gradient],
+      style: { fontFamily: "Inter", fontSize: 20, fontWeight: 400, lineHeightPx: 24 },
+    }),
+  ]);
+  const imported = importFigmaJson(source);
+  const transfer = createFigmaTransfer(imported.document);
+  const runtime = harness();
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  const created = runtime.figma.root.children[1].children;
+  assert.equal(created[0].fills.length, 2);
+  assert.equal(created[0].fills[1].color.b, 38 / 255);
+  assert.equal(created[1].type, "TEXT");
+  assert.equal(created[1].characters, "Gradient");
+  assert.equal(created[1].fills[0].type, "GRADIENT_LINEAR");
+  assert.equal(created[1].fills[0].gradientStops[1].color.a, 0.5);
+  const exportRuntime = harness(source);
+  exportRuntime.all.get("1:3").characters = "Gradient";
+  exportRuntime.all.get("1:3").fontName = { family: "Inter", style: "Regular" };
+  await exportRuntime.send({ type: "export-json", scope: "page" });
+  const exported = JSON.parse(exportRuntime.messages.at(-1).content);
+  assert.equal(Object.keys(exported.previews).length, 0);
+});

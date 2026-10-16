@@ -1,3 +1,4 @@
+import { figmaFillPaints, representativeDesignFill } from "./paint.mjs";
 /* Deliberately bounded Figma JSON bridge. Figma binary files are not supported. */
 import {
   MAX_DESIGN_NODES_PER_PAGE,
@@ -512,6 +513,9 @@ export function importFigmaJson(
       recordMapping(source, node);
       return node;
     }
+    const fillPaints = !imagePaint && !["group", "image"].includes(type)
+      ? figmaFillPaints(source.fills, message => report.warn("paint-conversion", source, message))
+      : null;
     const node = {
       id: allocateId(source, `node-${visited}`),
       type,
@@ -530,7 +534,7 @@ export function importFigmaJson(
         ancestors,
         report,
       ),
-      fill: imagePaint ? "transparent" : paint(source.fills, source, "填充", report),
+      fill: imagePaint ? "transparent" : fillPaints ? representativeDesignFill(fillPaints) : paint(source.fills, source, "填充", report),
       stroke: paint(source.strokes, source, "描边", report),
       strokeWidth: number(source.strokeWeight, 0, 0, 100, source, "strokeWeight", report),
       opacity: number(source.opacity, 1, 0, 1, source, "opacity", report),
@@ -546,6 +550,7 @@ export function importFigmaJson(
       visible: source.visible !== false,
       locked: source.locked === true,
     };
+    if (fillPaints && (fillPaints.length > 1 || fillPaints.some(paint => paint.type !== "SOLID" || paint.opacity !== 1))) node.fillPaints = fillPaints;
     if (node.stroke === "transparent") node.strokeWidth = 0;
     if (node.strokeWidth && source.strokeAlign !== "CENTER")
       report.warn("stroke-alignment", source, "内侧或外侧描边暂按居中描边导入。");

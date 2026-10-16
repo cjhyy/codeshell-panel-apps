@@ -42,3 +42,38 @@ else await writeFile(uiPath, output);
 console.log(
   `Figma plugin self-contained v3 adapter ${process.argv.includes("--check") ? "verified" : "built"} (${Buffer.byteLength(bundled)} bytes)`,
 );
+
+const paintResult = await build({
+  absWorkingDir: root,
+  entryPoints: ["apps/design-studio/app/figma-plugin/paint-runtime.mjs"],
+  bundle: true,
+  platform: "browser",
+  format: "iife",
+  globalName: "CodeShellFigmaPaint",
+  target: "es2020",
+  minify: true,
+  legalComments: "inline",
+  charset: "utf8",
+  sourcemap: false,
+  write: false,
+  logLevel: "silent",
+});
+const codePath = new URL("../apps/design-studio/app/figma-plugin/code.js", import.meta.url);
+const codeSource = await readFile(codePath, "utf8");
+const paintBegin = "/* BEGIN GENERATED PAINT RUNTIME */",
+  paintEnd = "/* END GENERATED PAINT RUNTIME */";
+assert.equal(codeSource.split(paintBegin).length, 2);
+assert.equal(codeSource.split(paintEnd).length, 2);
+const paintOutput =
+  codeSource.slice(0, codeSource.indexOf(paintBegin)) +
+  paintBegin +
+  "\n" +
+  paintResult.outputFiles[0].text +
+  paintEnd +
+  codeSource.slice(codeSource.indexOf(paintEnd) + paintEnd.length);
+if (process.argv.includes("--check"))
+  assert.equal(codeSource, paintOutput, "Figma plugin paint runtime is stale");
+else await writeFile(codePath, paintOutput);
+console.log(
+  `Figma plugin paint runtime ${process.argv.includes("--check") ? "verified" : "built"}`,
+);

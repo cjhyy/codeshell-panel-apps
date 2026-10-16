@@ -1,3 +1,4 @@
+import { designPaintCssImage } from "./paint.mjs";
 /* Deterministic CodeShell Design v3 to editable HTML/CSS export. */
 
 const CONTAINER_TYPES = new Set(["frame", "group", "component"]);
@@ -256,7 +257,7 @@ function layoutDeclarations(node) {
 
 function paintDeclarations(node) {
   if (PAINTLESS_TYPES.has(node.type)) return [];
-  const declarations = [["background", cssColor(node.fill)]];
+  const declarations = [["background", node.fillPaints ? designPaintCssImage(node) : cssColor(node.fill)]];
   if (Number(node.strokeWidth) > 0 && cssColor(node.stroke) !== "transparent") {
     declarations.push(["border", `${cssNumber(node.strokeWidth)} solid ${cssColor(node.stroke)}`]);
   }
@@ -297,8 +298,10 @@ function nodeStyle(node, parent, canvas) {
   ];
   if (node.type === "text") {
     declarations.push(
-      ["color", cssColor(node.fill, "#000000")],
-      ["background", "transparent"],
+      ["color", node.fillPaints ? "transparent" : cssColor(node.fill, "#000000")],
+      ["background", node.fillPaints ? designPaintCssImage(node) : "transparent"],
+      ["background-clip", node.fillPaints ? "text" : undefined],
+      ["-webkit-background-clip", node.fillPaints ? "text" : undefined],
       ["font-family", node.fontFamily || "Inter, ui-sans-serif, system-ui, sans-serif"],
       ["font-size", cssNumber(node.fontSize, 16)],
       ["font-weight", String(node.fontWeight ?? 400)],

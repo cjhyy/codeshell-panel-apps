@@ -1,3 +1,4 @@
+import { hasVisibleDesignFill, sampleDesignFill } from "./paint.mjs";
 /* Accessibility and layout audit engine for the Design Studio Panel App. */
 import {
   clipBoundsToClippingAncestors,
@@ -320,7 +321,7 @@ function pointInNodeFill(document, node, point, nodeIndex) {
 function fillIsVisibleAtPoint(document, node, point, byId) {
   if (
     node.type === "group" ||
-    !validHex(node.fill) ||
+    !hasVisibleDesignFill(node) ||
     !pointInNodeFill(document, node, point, byId)
   ) {
     return false;
@@ -369,6 +370,13 @@ function textSamplePoints(document, node, lines, nodeIndex) {
       )
       .filter(Boolean);
   });
+}
+
+function nodeFillPixel(document, node, point, nodeIndex) {
+  const local = pointToNodeSpace(document.nodes, node, point, nodeIndex);
+  if (!local) return { red: 0, green: 0, blue: 0, alpha: 0 };
+  const pixel = sampleDesignFill(node, { x: (local.x - node.x) / node.width, y: (local.y - node.y) / node.height });
+  return { ...pixel, alpha: pixel.alpha * effectiveDesignNodeOpacity(document, node, nodeIndex) };
 }
 
 function rgbaFromHex(value, opacity = 1) {
@@ -547,15 +555,16 @@ function renderComponentPixelAtPoint(document, availableNodes, component, point,
     if (
       candidate.type === "group" ||
       (candidate.type === "text" && options.includeText === false) ||
-      !validHex(candidate.fill) ||
+      !hasVisibleDesignFill(candidate) ||
       !fillIsVisibleAtPoint(sourceDocument, candidate, point, sourceIndex)
     ) {
       continue;
     }
-    const opacity = effectiveDesignNodeOpacity(sourceDocument, candidate, sourceIndex);
+    const paintPixel = nodeFillPixel(sourceDocument, candidate, point, sourceIndex);
+    const opacity = paintPixel.alpha;
     targetContribution *= 1 - opacity;
     if (candidateKey === options.omitKey || options.omitKeys?.has(candidateKey)) continue;
-    pixel = compositeRgba(rgbaFromHex(candidate.fill, opacity), pixel);
+    pixel = compositeRgba(paintPixel, pixel);
     if (candidateKey === options.trackKey || options.trackKeys?.has(candidateKey)) {
       targetContribution += opacity;
     }
@@ -582,7 +591,7 @@ function componentTextOccurrences(document, availableNodes, component, options =
     if (
       candidate.type === "text" &&
       String(candidate.text).trim() &&
-      validHex(candidate.fill) &&
+      hasVisibleDesignFill(candidate) &&
       isDesignNodeVisible(sourceDocument, candidate, sourceIndex)
     ) {
       occurrences.push({
@@ -688,11 +697,26 @@ function pageBackgroundAtPoint(document, index, nodeIndex, point, availableNodes
     }
     if (!fillIsVisibleAtPoint(document, candidate, point, nodeIndex)) continue;
     background = compositeRgba(
-      rgbaFromHex(candidate.fill, effectiveDesignNodeOpacity(document, candidate, nodeIndex)),
+      nodeFillPixel(document, candidate, point, nodeIndex),
       background,
     );
   }
   return background;
+}
+
+/** One text node's actual sampled paint/background contrast, without a full-page audit. */
+export function readableTextContrast(document, node, options = {}) {
+  const required = node.fontSize >= 24 || (node.fontSize >= 18 && node.fontWeight >= 700) ? 3 : 4.5;
+  const byId = options.nodeIndex ?? new Map(document.nodes.map(candidate => [candidate.id, candidate]));
+  const index = document.nodes.findIndex(candidate => candidate.id === node.id);
+  if (node.type !== "text" || index < 0 || !String(node.text).trim() || !hasVisibleDesignFill(node) || !isDesignNodeVisible(document, node, byId)) return { ratio: null, required };
+  const availableNodes = options.availableNodes ?? allReadableDesignNodes(document);
+  const ratios = textSamplePoints(document, node, String(node.text).split("\n"), byId).map(point => {
+    const background = pageBackgroundAtPoint(document, index, byId, point, availableNodes);
+    const foreground = compositeRgba(nodeFillPixel(document, node, point, byId), background);
+    return contrastRatio(opaqueHexFromRgba(foreground), opaqueHexFromRgba(background));
+  }).filter(ratio => ratio !== null);
+  return { ratio: ratios.length ? Math.min(...ratios) : null, required };
 }
 
 function auditInstanceTextContrast(document, nodeIndex) {
@@ -978,7 +1002,7 @@ export function auditDesign(document) {
         message: `文本宽度不足：当前 ${node.width}px，最长一行约需 ${Math.ceil(widestLine)}px；请增宽、换行或缩短文案`,
       });
     }
-    if (node.fill === "transparent") {
+    if (!hasVisibleDesignFill(node)) {
       issues.push({
         code: "content.invisible-text",
         severity: "warning",
@@ -988,23 +1012,8 @@ export function auditDesign(document) {
       });
       return;
     }
-    const sampledRatios = textSamplePoints(document, node, lines, byId)
-      .map((point) => {
-        const background = opaqueHexFromRgba(
-          pageBackgroundAtPoint(document, index, byId, point, availableNodes),
-        );
-        const renderedFill = blendHex(
-          node.fill,
-          background,
-          effectiveDesignNodeOpacity(document, node, byId),
-        );
-        return contrastRatio(renderedFill, background);
-      })
-      .filter((ratio) => ratio != null);
-    if (sampledRatios.length === 0) return;
-    const ratio = Math.min(...sampledRatios);
-    const largeText = node.fontSize >= 24 || (node.fontSize >= 18 && node.fontWeight >= 700);
-    const required = largeText ? 3 : 4.5;
+    const { ratio, required } = readableTextContrast(document, node, { nodeIndex: byId, availableNodes });
+    if (ratio === null) return;
     if (ratio < required) {
       issues.push({
         code: "a11y.text-contrast",

@@ -1,3 +1,6 @@
+/* BEGIN GENERATED PAINT RUNTIME */
+"use strict";var CodeShellFigmaPaint=(()=>{var y=Object.defineProperty;var E=Object.getOwnPropertyDescriptor;var A=Object.getOwnPropertyNames;var D=Object.prototype.hasOwnProperty;var L=(t,r)=>{for(var e in r)y(t,e,{get:r[e],enumerable:!0})},S=(t,r,e,i)=>{if(r&&typeof r=="object"||typeof r=="function")for(let o of A(r))!D.call(t,o)&&o!==e&&y(t,o,{get:()=>r[o],enumerable:!(i=E(r,o))||i.enumerable});return t};var O=t=>S(y({},"__esModule",{value:!0}),t);var j={};L(j,{designPaintsToFigma:()=>I,figmaFillPaints:()=>b,normalizeDesignPaints:()=>d});var P=t=>t!==null&&typeof t=="object"&&!Array.isArray(t),u=t=>typeof t=="string"&&/^#[a-f\d]{6}$/iu.test(t),p=t=>typeof t=="number"&&Number.isFinite(t),h=t=>Math.max(0,Math.min(1,t));var w=t=>`#${[t.r,t.g,t.b].map(r=>Math.round(h(r)*255).toString(16).padStart(2,"0")).join("")}`,$=t=>[1,3,5].map(r=>parseInt(t.slice(r,r+2),16)/255);function g(t,r){if(!P(t)||Object.keys(t).some(e=>!r.includes(e)))throw new Error("绘制包含未知字段")}function f(t){if(!p(t)||t<0||t>1)throw new Error("绘制透明度必须在 0–1 之间");return t}function R(t){let[r,e,i]=t;return[[e.x-r.x,2*(i.x-r.x),2*r.x-i.x],[e.y-r.y,2*(i.y-r.y),2*r.y-i.y]]}function m(t){let[[r,e,i],[o,n,s]]=R(t),a=r*n-e*o;if(Math.abs(a)<1e-8)throw new Error("线性渐变坐标不可逆");return[[n/a,-e/a,(e*s-n*i)/a],[-o/a,r/a,(o*i-r*s)/a]]}function d(t){if(!Array.isArray(t)||!t.length||t.length>8)throw new Error("填充绘制必须为 1–8 层");return t.map(r=>{g(r,r?.type==="SOLID"?["type","color","opacity"]:["type","opacity","handles","stops"]);let e=f(r.opacity);if(r.type==="SOLID"){if(!u(r.color))throw new Error("纯色绘制必须是六位十六进制颜色");return{type:"SOLID",color:r.color.toLowerCase(),opacity:e}}if(r.type!=="GRADIENT_LINEAR"||!Array.isArray(r.handles)||r.handles.length!==3||!Array.isArray(r.stops)||r.stops.length<2||r.stops.length>16)throw new Error("仅支持有界纯色/线性渐变；渐变必须有三个控制点与 2–16 个色标");let i=r.handles.map(n=>{if(g(n,["x","y"]),![n.x,n.y].every(s=>p(s)&&Math.abs(s)<=100))throw new Error("渐变控制点超出范围");return{x:n.x,y:n.y}});m(i);let o=r.stops.map(n=>{if(g(n,["position","color","opacity"]),!u(n.color))throw new Error("渐变色标颜色无效");return{position:f(n.position),color:n.color.toLowerCase(),opacity:f(n.opacity)}});if(o.some((n,s)=>s&&n.position<o[s-1].position))throw new Error("渐变色标必须按位置排序");return{type:"GRADIENT_LINEAR",opacity:e,handles:i,stops:o}})}function M(t){if(!Array.isArray(t)||t.length!==2||!t.every(c=>Array.isArray(c)&&c.length===3&&c.every(p)))throw new Error("渐变矩阵无效");let[[r,e,i],[o,n,s]]=t,a=r*n-e*o;if(Math.abs(a)<1e-8)throw new Error("渐变矩阵不可逆");let l=(c,x)=>({x:(n*(c-i)-e*(x-s))/a,y:(-o*(c-i)+r*(x-s))/a});return[l(0,.5),l(1,.5),l(0,1)]}function b(t,r=()=>{}){if(!Array.isArray(t))return null;let e=t.filter(i=>i?.visible!==!1);if(!e.length||e.length>8||e.some(i=>!["SOLID","GRADIENT_LINEAR"].includes(i?.type)))return null;try{let i=e.map(o=>{if(o.blendMode&&o.blendMode!=="NORMAL")throw new Error("非 NORMAL 混合绘制需本地预览资源");let n=p(o.opacity)?h(o.opacity):1;if(o.type==="SOLID")return{type:"SOLID",color:w(o.color),opacity:n*(p(o.color?.a)?h(o.color.a):1)};let s=o.gradientStops?.map(l=>({position:l.position,color:w(l.color),opacity:p(l.color?.a)?h(l.color.a):1})),a=o.gradientHandlePositions??M(o.gradientTransform);try{m(a)}catch{if(!s?.length)throw new Error("缺少渐变色标");r("退化线性渐变没有可逆控制点；按零长度渐变的末色标保留，不猜测方向。");let l=s.at(-1);return{type:"SOLID",color:l.color,opacity:n*l.opacity}}return{type:"GRADIENT_LINEAR",opacity:n,handles:a,stops:s}});return d(i)}catch(i){return r(`绘制无法无损转换：${i.message}`),null}}function N(t){return t.fillPaints??(u(t.fill)?[{type:"SOLID",color:t.fill,opacity:1}]:[])}function I(t){return N(t).map(r=>r.type==="SOLID"?{type:"SOLID",color:Object.fromEntries(["r","g","b"].map((e,i)=>[e,$(r.color)[i]])),opacity:r.opacity}:{type:"GRADIENT_LINEAR",opacity:r.opacity,gradientTransform:m(r.handles),gradientStops:r.stops.map(e=>({position:e.position,color:{...Object.fromEntries(["r","g","b"].map((i,o)=>[i,$(e.color)[o]])),a:e.opacity}}))})}return O(j);})();
+/* END GENERATED PAINT RUNTIME */
 /* Local Figma bridge. Original-node writes require a reviewed, conflict-checked patch. */
 (() => {
   const MAX_BYTES = 16 * 1024 * 1024;
@@ -167,6 +170,10 @@
         typeof node.locked !== "boolean"
       )
         throw new Error("图层外观无效。");
+      if (node.fillPaints !== undefined) {
+        CodeShellFigmaPaint.normalizeDesignPaints(node.fillPaints);
+        if (["group", "image"].includes(node.type)) throw new Error("该图层不支持独立填充绘制。");
+      }
       if (node.notes !== undefined && (typeof node.notes !== "string" || node.notes.length > 2000))
         throw new Error("图层备注无效。");
       if (node.sourceId !== undefined && !string(node.sourceId, 160))
@@ -276,7 +283,7 @@
     g: parseInt(hex.slice(3, 5), 16) / 255,
     b: parseInt(hex.slice(5, 7), 16) / 255,
   });
-  const paints = (hex) => (hex === "transparent" ? [] : [{ type: "SOLID", color: rgb(hex) }]);
+  const paints = (hex, stack) => stack ? CodeShellFigmaPaint.designPaintsToFigma({ fill: hex, fillPaints: stack }) : (hex === "transparent" ? [] : [{ type: "SOLID", color: rgb(hex) }]);
   function transform(source, parent) {
     const radians = (source.rotation * Math.PI) / 180,
       c = Math.cos(radians),
@@ -435,7 +442,7 @@
             scaleMode: source.objectFit === "contain" ? "FIT" : "FILL",
           },
         ];
-      } else node.fills = paints(source.fill);
+      } else node.fills = paints(source.fill, source.fillPaints);
       node.strokes = paints(source.stroke);
       node.strokeWeight = source.strokeWidth;
       node.strokeAlign = "CENTER";
@@ -520,6 +527,7 @@
     "height",
     "rotation",
     "fill",
+    "fillPaints",
     "stroke",
     "strokeWidth",
     "opacity",
@@ -643,6 +651,7 @@
             ]
           : ({
               fill: ["fills"],
+              fillPaints: ["fills"],
               imageRef: ["fills"],
               objectFit: ["fills"],
               stroke: ["strokes"],
@@ -1301,9 +1310,9 @@
           } else if (key === "notes") {
             mutated = true;
             node.setPluginData("codeshellNotes", after.notes ?? "");
-          } else if (key === "fill") {
+          } else if (key === "fill" || key === "fillPaints") {
             mutated = true;
-            node.fills = paints(after.fill);
+            node.fills = paints(after.fill, after.fillPaints);
           } else if (key === "stroke") {
             mutated = true;
             node.strokes = paints(after.stroke);
@@ -1594,8 +1603,10 @@
       ].includes(node.type);
       const complex =
         !plain ||
-        fills.length > 1 ||
-        fills.some((paint) => !["SOLID", "IMAGE"].includes(paint.type)) ||
+        (fills.some(paint => paint.type === "IMAGE")
+          ? fills.length > 1
+          : (fills.length > 0 && !CodeShellFigmaPaint.figmaFillPaints(fills))) ||
+        fills.some((paint) => !["SOLID", "IMAGE", "GRADIENT_LINEAR"].includes(paint.type)) ||
         children.some((child) => child.isMask) ||
         node.isMask ||
         (node.type === "TEXT" &&

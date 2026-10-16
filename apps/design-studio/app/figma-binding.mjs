@@ -52,6 +52,7 @@ const properties = [
   "rotation",
   "opacity",
   "fill",
+  "fillPaints",
   "stroke",
   "strokeWidth",
   "cornerRadius",
