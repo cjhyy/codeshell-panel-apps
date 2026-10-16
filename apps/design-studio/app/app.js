@@ -92,6 +92,7 @@ import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
 import { designPaintSvg } from "./paint.mjs";
 import { repairDesignQuality } from "./quality-repair.mjs";
 import { resourceDataUrlsFromPlans } from "./builtin-fonts.mjs";
+import { designFontFamilyCss } from "./font-css.mjs";
 import { groupAuditIssues, pageAuditIssues } from "./audit-review.mjs";
 import {
   captureWorkspaceHtml,
@@ -1685,8 +1686,8 @@ function renderNode(node, clipIds, shadowIds, options = {}) {
       "stroke-width": node.strokeWidth,
       "font-size": node.fontSize,
       "font-weight": node.fontWeight,
-      "font-family":
-        fontResource?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
+      "font-family": designFontFamilyCss(
+        fontResource?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif"),
       "font-style": node.fontStyle ?? "normal",
       "letter-spacing": node.letterSpacing ?? 0,
       "text-decoration": node.textDecoration ?? "none",
@@ -1971,7 +1972,7 @@ function updateInlineTextEditorPosition() {
   Object.assign(elements.inlineTextEditor.style, {
     width: `${Math.max(28, node.width)}px`,
     height: `${Math.max(24, node.height)}px`,
-    fontFamily: font?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
+    fontFamily: designFontFamilyCss(font?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif"),
     fontSize: `${node.fontSize}px`,
     fontWeight: String(node.fontWeight),
     fontStyle: node.fontStyle ?? "normal",
