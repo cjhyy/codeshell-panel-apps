@@ -31,6 +31,7 @@ import {
   isSafeDesignPath,
   isDesignNodeVisible,
   MAX_DESIGN_NODES_PER_PAGE,
+  MAX_DESIGN_CANVAS_SIZE,
   MAX_DESIGN_PAGES,
   measureDesignDocumentBytes,
   normalizeDesignDocument,
@@ -6267,10 +6268,10 @@ bindCanvasInput(canvasInputs.name, (value) => {
   design.name = value.slice(0, 120);
 });
 bindCanvasInput(canvasInputs.width, (value) => {
-  design.canvas.width = clamp(finiteOr(value, 1280), 100, 10000);
+  design.canvas.width = clamp(finiteOr(value, 1280), 100, MAX_DESIGN_CANVAS_SIZE);
 });
 bindCanvasInput(canvasInputs.height, (value) => {
-  design.canvas.height = clamp(finiteOr(value, 820), 100, 10000);
+  design.canvas.height = clamp(finiteOr(value, 820), 100, MAX_DESIGN_CANVAS_SIZE);
 });
 bindColorTextInput(
   canvasInputs.background,
@@ -9354,6 +9355,7 @@ function registerAgentTools(ready) {
     ) {
       throw new Error("get_design_screenshot.max_width 必须是 320 到 1600 的有限数字");
     }
+    let materializedAllPages = false;
     if (typeof args.page_id === "string" && args.page_id) {
       await ensureDesignPageLoaded(args.page_id);
     }
@@ -9364,6 +9366,7 @@ function registerAgentTools(ready) {
     ) {
       await ensureAllDesignPagesLoaded();
     }
+    materializedAllPages = Boolean(args.node_id && !args.page_id && currentPageCache);
     const screenshotStateRevision = currentDesignStateRevision();
     const screenshotRevision = currentRevision;
     const source = designScreenshotSource(args?.node_id, args?.page_id);

@@ -393,8 +393,10 @@ export function importFigmaJson(
     skippedNodes = 0;
   const mapping = [],
     pageMappings = [];
+  const nonRenderingSourceNodes = new Set();
   let currentPage = null;
   const recordMapping = (source, node) => {
+    if (source.absoluteRenderBounds === null) nonRenderingSourceNodes.add(node.id);
     const context = value.selection?.roots?.[source.id];
     if (typeof source.id === "string")
       mapping.push({
@@ -719,6 +721,24 @@ export function importFigmaJson(
     };
     flatten(page.children);
     const nodeIndex = new Map(flat.map((node) => [node.id, node]));
+    // REST explicitly reports no rendered pixels for these clipped branches.
+    // Preserve every layer and its source mapping, while representing its actual
+    // source visibility. A missing render-bounds field is not evidence of this.
+    const suppressedIds = new Set(flat.filter((node) =>
+      nonRenderingSourceNodes.has(node.id) && node.visible !== false && node.parentId &&
+      clipNodeBoundsToClippingAncestors(flat, node, nodeIndex) === null,
+    ).map((node) => node.id));
+    const preserveSourceVisibility = (nodes) => {
+      for (const node of nodes) {
+        if (suppressedIds.has(node.id)) {
+          node.visible = false;
+          const flattened = nodeIndex.get(node.id);
+          if (flattened) flattened.visible = false;
+        }
+        preserveSourceVisibility(node.children ?? []);
+      }
+    };
+    preserveSourceVisibility(page.children);
     const bounds = flat
       .filter((node) => node.type !== "group" && isDesignNodeVisible({ nodes: flat }, node, nodeIndex))
       .map((node) => clipNodeBoundsToClippingAncestors(flat, node, nodeIndex))
