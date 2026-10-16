@@ -1585,3 +1585,36 @@ test("new Figma files do not discard a meaningful unsaved empty draft", async (t
   assert.equal((await f.metadata()).name, "Meaningful empty draft");
   assert.equal(f.files.has("A:designs/another.codesign.json"), false);
 });
+
+test("the quality repair button preserves locked descendants and one undo restores its unsaved changes", async (t) => {
+  const f = await fixture(t);
+  const documentValue = JSON.parse(initialDocument("A"));
+  const heading = documentValue.pages[0].children[0];
+  heading.fill = "#cccccc";
+  documentValue.pages[0].children = [{
+    id: "locked-owner", type: "frame", name: "Locked owner", x: 0, y: 0, width: 400, height: 100,
+    fill: "#ffffff", stroke: "transparent", strokeWidth: 0, opacity: 1, rotation: 0,
+    cornerRadius: 0, visible: true, locked: true, layout: "none", gap: 0, padding: 0,
+    alignItems: "start", justifyContent: "start", clipContent: false, children: [heading],
+  }, { ...heading, id: "free-heading", name: "Editable heading", y: 180 }];
+  const original = serializeDesignDocument(normalizeDesignDocument(documentValue));
+  f.files.set(`A:${designPath}`, original);
+  await f.reload();
+  const before = await f.metadata();
+  assert.equal((await f.tool("validate_design")).issueCount, 2);
+  await f.page.locator("#run-audit").click();
+  await f.page.locator("#repair-quality").click();
+  await f.page.waitForFunction(() => !document.body.inert);
+  const free = await f.tool("get_design_context", { node_id: "free-heading" });
+  const locked = await f.tool("get_design_context", { node_id: "heading" });
+  assert.notEqual(free.node.fill, "#cccccc");
+  assert.equal(locked.node.fill, "#cccccc");
+  assert.equal(f.files.get(`A:${designPath}`), original, "repair is an unsaved reversible edit");
+  await f.page.locator("#audit-dialog .dialog-close").click();
+  await f.page.keyboard.press("Control+z");
+  const undone = await f.tool("get_design_context", { node_id: "free-heading" });
+  assert.equal(undone.node.fill, "#cccccc");
+  assert.equal((await f.metadata()).revision, before.revision);
+  assert.equal(f.files.get(`A:${designPath}`), original);
+  assert.deepEqual(f.errors, []);
+});
