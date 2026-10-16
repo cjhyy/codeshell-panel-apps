@@ -303,6 +303,106 @@
                 "fill": {
                   "$ref": "#/$defs/color"
                 },
+                "fillPaints": {
+                  "description": "Bounded editable paint stack. Use null to remove it; a fill-only update explicitly replaces the stack with a solid fill.",
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "array",
+                      "description": "Editable Figma paints in bottom-to-top order. Runtime additionally validates increasing gradient stop positions and invertible handle geometry.",
+                      "minItems": 1,
+                      "maxItems": 8,
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["type", "color", "opacity"],
+                            "properties": {
+                              "type": {
+                                "const": "SOLID"
+                              },
+                              "color": {
+                                "type": "string",
+                                "pattern": "^#[0-9a-fA-F]{6}$"
+                              },
+                              "opacity": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["type", "opacity", "handles", "stops"],
+                            "properties": {
+                              "type": {
+                                "const": "GRADIENT_LINEAR"
+                              },
+                              "opacity": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
+                              "handles": {
+                                "type": "array",
+                                "minItems": 3,
+                                "maxItems": 3,
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "required": ["x", "y"],
+                                  "properties": {
+                                    "x": {
+                                      "type": "number",
+                                      "minimum": -100,
+                                      "maximum": 100
+                                    },
+                                    "y": {
+                                      "type": "number",
+                                      "minimum": -100,
+                                      "maximum": 100
+                                    }
+                                  }
+                                }
+                              },
+                              "stops": {
+                                "type": "array",
+                                "minItems": 2,
+                                "maxItems": 16,
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "required": ["position", "color", "opacity"],
+                                  "properties": {
+                                    "position": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    },
+                                    "color": {
+                                      "type": "string",
+                                      "pattern": "^#[0-9a-fA-F]{6}$"
+                                    },
+                                    "opacity": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
                 "stroke": {
                   "$ref": "#/$defs/color"
                 },

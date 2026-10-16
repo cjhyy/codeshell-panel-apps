@@ -390,3 +390,42 @@ test("failure JSON remains bounded when a caller supplies an oversized unknown f
   assert(Buffer.byteLength(result.output) <= 1024 * 1024);
   assert.deepEqual(await readdir(f.project), []);
 });
+
+test("installed CLI persists layered/gradient paints, CAS edits stops and exports actual paint definitions", async (t) => {
+  const f = await fixture(t);
+  const paints = [
+    { type: "SOLID", color: "#ffffff", opacity: 1 },
+    {
+      type: "GRADIENT_LINEAR",
+      opacity: 0.8,
+      handles: [
+        { x: 0, y: 0.5 },
+        { x: 1, y: 0.5 },
+        { x: 0, y: 1 },
+      ],
+      stops: [
+        { position: 0, color: "#0000ff", opacity: 1 },
+        { position: 1, color: "#ff0000", opacity: 0.5 },
+      ],
+    },
+  ];
+  const source = document("Paint CLI", [rectangle("paint", { fillPaints: paints })]);
+  const created = await f.run("create", { path, document: source });
+  assert.equal(created.code, 0);
+  const read = await f.run("read", { path, node_id: "paint" });
+  assert.deepEqual(read.value.result.node.fillPaints, paints);
+  source.pages[0].children[0].fillPaints[1].stops[0].color = "#00ff00";
+  const edited = await f.run("edit", {
+    path,
+    expected_revision: read.value.result.revision,
+    document: source,
+  });
+  assert.equal(edited.code, 0);
+  const svg = await f.run("svg", { path });
+  assert.match(svg.value.result.content, /<linearGradient/u);
+  assert.match(svg.value.result.content, /stop-color="#00ff00"/u);
+  const html = await f.run("frontend", { path });
+  assert.match(html.value.result.content, /data:image\/svg\+xml/u);
+  const reopened = JSON.parse(await readFile(join(f.project, path), "utf8"));
+  assert.equal(reopened.pages[0].children[0].fillPaints[1].stops[0].color, "#00ff00");
+});

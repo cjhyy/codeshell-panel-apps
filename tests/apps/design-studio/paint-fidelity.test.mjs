@@ -267,3 +267,78 @@ test("real Chromium alpha interpolation matches the contrast sampler rather than
   );
   close(pixelAt(png, x, y), expected);
 });
+
+test("published v3 and Host tool schemas accept bounded paint stacks and reject unsafe or oversized values", async () => {
+  const { default: Ajv2020 } = await import("ajv/dist/2020.js");
+  const { readFile } = await import("node:fs/promises");
+  const schema = JSON.parse(
+    await readFile(
+      new URL(
+        "../../../apps/design-studio/app/formats/codeshell-design-v3.schema.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const validate = new Ajv2020({ strict: false }).compile(schema);
+  const source = JSON.parse(serializeDesignDocument(fixture().document));
+  assert(validate(source), JSON.stringify(validate.errors));
+  const invalid = structuredClone(source);
+  invalid.pages[0].children[2].fillPaints[0].url = "https://unsafe.invalid";
+  assert.equal(validate(invalid), false);
+  delete invalid.pages[0].children[2].fillPaints[0].url;
+  invalid.pages[0].children[2].fillPaints[0].handles[0].x = 101;
+  assert.equal(validate(invalid), false);
+  const manifest = JSON.parse(
+    await readFile(
+      new URL("../../../apps/design-studio/.codeshell-panel/panel.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const tool = manifest.agent.tools.find((t) => t.name === "use_design");
+  const { validateToolArgsStrict } = await import("@cjhyy/code-shell-core");
+  const request = {
+    expected_state_revision: "paint-schema-test",
+    operations: [
+      {
+        op: "update_node",
+        node_id: "paint",
+        changes: { fillPaints: source.pages[0].children[2].fillPaints },
+      },
+    ],
+  };
+  assert.equal(validateToolArgsStrict("use_design", request, tool.inputSchema), null);
+  request.operations[0].changes.fillPaints = null;
+  assert.equal(validateToolArgsStrict("use_design", request, tool.inputSchema), null);
+  request.operations[0].changes.fillPaints = Array(9).fill({
+    type: "SOLID",
+    color: "#ffffff",
+    opacity: 1,
+  });
+  assert.notEqual(validateToolArgsStrict("use_design", request, tool.inputSchema), null);
+});
+
+test("saved-design comparison catches gradient changes even when their representative fill stays equal", async () => {
+  const { compareDesignDocuments } =
+    await import("../../../apps/design-studio/app/design-compare.mjs");
+  const source = JSON.parse(serializeDesignDocument(fixture().document));
+  const reordered = structuredClone(source);
+  const paint = reordered.pages[0].children[2].fillPaints[0];
+  reordered.pages[0].children[2].fillPaints[0] = {
+    stops: paint.stops,
+    handles: paint.handles,
+    opacity: paint.opacity,
+    type: paint.type,
+  };
+  assert.equal(compareDesignDocuments(source, reordered).passed, true);
+  const changed = structuredClone(source);
+  const stops = changed.pages[0].children[2].fillPaints[0].stops;
+  [stops[0].color, stops[1].color] = [stops[1].color, stops[0].color];
+  const comparison = compareDesignDocuments(source, changed);
+  assert.equal(comparison.passed, false);
+  assert(
+    comparison.differences.some((node) =>
+      node.styles.some((style) => style.property === "fillPaints"),
+    ),
+  );
+});
