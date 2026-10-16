@@ -88,6 +88,23 @@ async function preloadFonts(roots: any[], api: any, warnings: string[]) {
   }
   roots.forEach(normalize);
 }
+/** The upstream creator can silently fall back to NBSP or lose text in a setter catch.
+ * Compare the whole canonical string, not overlapping rich-text style ranges.
+ */
+function assertTextContent(source: any, created: any): void {
+  if (source.type === "TEXT" && typeof source.characters === "string" && source.characters.trim()) {
+    if (created?.type !== "TEXT" || created.characters !== source.characters) {
+      throw new Error(
+        `文字内容未完整创建：${source.name}。源文字被替换、截断或遗漏，本次导入已取消。`,
+      );
+    }
+  }
+  const actualChildren = created?.children ?? [];
+  for (let index = 0; index < (source.children?.length ?? 0); index++) {
+    assertTextContent(source.children[index], actualChildren[index]);
+  }
+}
+
 figma.ui.onmessage = async (message: any) => {
   if (message?.type !== "import-design" || typeof message.requestId !== "string" || busy) return;
   busy = true;
@@ -123,6 +140,7 @@ figma.ui.onmessage = async (message: any) => {
     for (const root of roots) {
       const frame = await service.addLayersToFrame(root, null);
       if (creatorErrors.length) throw new Error(`图层创建失败：${creatorErrors[0]}`);
+      assertTextContent(root, frame);
       frame.x = x;
       frame.y = figma.viewport.center.y;
       x += frame.width + 80;
@@ -137,7 +155,12 @@ figma.ui.onmessage = async (message: any) => {
       requestId: message.requestId,
       count,
       nodeIds: completed.map((n) => n.id),
-      warnings: [...new Set(warnings)],
+      warnings: [
+        ...new Set([
+          ...warnings,
+          "文字内容已核对；字体、富文本样式和复杂效果仍可能与预览不同，请检查视觉结果。",
+        ]),
+      ],
     });
     figma.notify(`已创建 ${count} 个可编辑图层`);
   } catch (error) {

@@ -51,8 +51,8 @@
     },
     {
       "path": "code.js",
-      "bytes": 198583,
-      "sha256": "d6285d9f54f29a51ef41fe3fd9337683fbe24f4ecf8d499a29ded0d78bc05cb2"
+      "bytes": 199643,
+      "sha256": "947b480296208addb2c4abeb396997af73830cad0ffb9db821bf489a57276f69"
     },
     {
       "path": "ui.html",
@@ -61,8 +61,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 4978,
-      "sha256": "9586c190df96fae176021991db2762b1a0c7acd08d791cd5fc8e945916eed3a7"
+      "bytes": 5344,
+      "sha256": "5154e96977884ef38ddcc7c7f2916812105f74f27ac73313786074945fd9ca98"
     },
     {
       "path": "NOTICE.md",

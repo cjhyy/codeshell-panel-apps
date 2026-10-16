@@ -69,6 +69,41 @@ test("partial upstream child failure rolls back only newly created layers and re
   assert.equal(f.page.selection[0], f.existing);
 });
 
+test("upstream silent NBSP fallback, dropped text and truncation are detected and rolled back", async () => {
+  for (const textSetter of ["throw", "drop", "truncate"]) {
+    const f = htmlPluginHarness({ textSetter });
+    const result = await f.importDesign(frameFixture([textFixture()]));
+    assert.equal(result.type, "import-error", textSetter);
+    assert.match(result.message, /文字内容未完整创建/u);
+    assert.equal(result.rollback, "complete");
+    assert.deepEqual(f.page.children, [f.existing]);
+    assert.equal(f.page.selection.length, 1);
+    assert.equal(f.page.selection[0], f.existing);
+    assert(!f.calls.some((call) => call[0] === "undo"));
+  }
+});
+
+test("rich text verifies the complete characters once, preserving unstyled gaps and Unicode", async () => {
+  const f = htmlPluginHarness();
+  const text = {
+    ...textFixture(),
+    characters: "Bold plain 中文",
+    styledTextSegments: [
+      { start: 0, end: 4, fontName: { family: "Inter", style: "Bold" }, fontSize: 24 },
+      { start: 11, end: 13, fontName: { family: "Inter", style: "Regular" }, fontSize: 18 },
+    ],
+  };
+  const result = await f.importDesign(frameFixture([text]));
+  assert.equal(result.type, "import-success");
+  assert.equal(f.page.selection[0].children[0].characters, "Bold plain 中文");
+  assert(
+    f.page.selection[0].children[0].ranges.some(
+      (range) => range.name === "FontName" && range.start === 11,
+    ),
+  );
+  assert(result.warnings.some((warning) => warning.includes("复杂效果")));
+});
+
 test("inline images are materialized without browser globals or external fetch, and GROUP stays editable", async () => {
   const f = htmlPluginHarness();
   const rect = {

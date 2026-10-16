@@ -7,7 +7,11 @@ const code = await readFile(
 );
 export const PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7S8AAAAASUVORK5CYII=";
-export function htmlPluginHarness({ failText = false, failFont = "Missing" } = {}) {
+export function htmlPluginHarness({
+  failText = false,
+  failFont = "Missing",
+  textSetter = "normal",
+} = {}) {
   const messages = [],
     nodes = [],
     fonts = new Set(),
@@ -71,7 +75,10 @@ export function htmlPluginHarness({ failText = false, failFont = "Missing" } = {
         get: () => characters,
         set(value) {
           assert(font, "Font must precede text");
-          characters = value;
+          if (textSetter === "throw" && value !== "\u00A0")
+            throw new Error("Injected characters setter rejection");
+          if (textSetter === "drop") return;
+          characters = textSetter === "truncate" ? value.slice(0, 3) : value;
         },
       });
       for (const name of [

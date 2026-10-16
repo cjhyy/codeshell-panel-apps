@@ -5318,6 +5318,19 @@
     }
     roots.forEach(normalize);
   }
+  function assertTextContent(source, created) {
+    if (source.type === "TEXT" && typeof source.characters === "string" && source.characters.trim()) {
+      if (created?.type !== "TEXT" || created.characters !== source.characters) {
+        throw new Error(
+          `\u6587\u5B57\u5185\u5BB9\u672A\u5B8C\u6574\u521B\u5EFA\uFF1A${source.name}\u3002\u6E90\u6587\u5B57\u88AB\u66FF\u6362\u3001\u622A\u65AD\u6216\u9057\u6F0F\uFF0C\u672C\u6B21\u5BFC\u5165\u5DF2\u53D6\u6D88\u3002`
+        );
+      }
+    }
+    const actualChildren = created?.children ?? [];
+    for (let index = 0; index < (source.children?.length ?? 0); index++) {
+      assertTextContent(source.children[index], actualChildren[index]);
+    }
+  }
   figma.ui.onmessage = async (message) => {
     if (message?.type !== "import-design" || typeof message.requestId !== "string" || busy) return;
     busy = true;
@@ -5351,6 +5364,7 @@
       for (const root of roots) {
         const frame = await service.addLayersToFrame(root, null);
         if (creatorErrors.length) throw new Error(`\u56FE\u5C42\u521B\u5EFA\u5931\u8D25\uFF1A${creatorErrors[0]}`);
+        assertTextContent(root, frame);
         frame.x = x;
         frame.y = figma.viewport.center.y;
         x += frame.width + 80;
@@ -5365,7 +5379,12 @@
         requestId: message.requestId,
         count,
         nodeIds: completed.map((n) => n.id),
-        warnings: [...new Set(warnings)]
+        warnings: [
+          .../* @__PURE__ */ new Set([
+            ...warnings,
+            "\u6587\u5B57\u5185\u5BB9\u5DF2\u6838\u5BF9\uFF1B\u5B57\u4F53\u3001\u5BCC\u6587\u672C\u6837\u5F0F\u548C\u590D\u6742\u6548\u679C\u4ECD\u53EF\u80FD\u4E0E\u9884\u89C8\u4E0D\u540C\uFF0C\u8BF7\u68C0\u67E5\u89C6\u89C9\u7ED3\u679C\u3002"
+          ])
+        ]
       });
       figma.notify(`\u5DF2\u521B\u5EFA ${count} \u4E2A\u53EF\u7F16\u8F91\u56FE\u5C42`);
     } catch (error) {
