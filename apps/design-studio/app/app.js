@@ -33,6 +33,7 @@ import {
   MAX_DESIGN_NODES_PER_PAGE,
   MAX_DESIGN_CANVAS_SIZE,
   MAX_DESIGN_PAGES,
+  MAX_LOCAL_SVG_EXPORT_BYTES,
   measureDesignDocumentBytes,
   normalizeDesignDocument,
   normalizeDesignState,
@@ -5590,9 +5591,23 @@ async function exportSvg() {
     const saved = await saveDocument({ quiet: true });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
     assertScope();
+    const svg = exportDesignSvg(saved.design, {
+      resourceDataUrls: resources,
+      maxBytes: MAX_LOCAL_SVG_EXPORT_BYTES,
+    });
+    if (new TextEncoder().encode(svg).byteLength > MAX_WORKSPACE_DESIGN_TEXT_BYTES) {
+      const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = path.split("/").at(-1);
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      notify(`SVG 已下载为 ${link.download}；超出仓库文本预算，未写入 Repo`);
+      return;
+    }
     await writeRepoText(
       path,
-      exportDesignSvg(saved.design, { resourceDataUrls: resources }),
+      svg,
       operationWorkspaceEpoch,
       assertScope,
     );

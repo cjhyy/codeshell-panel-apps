@@ -10,7 +10,9 @@ import { chromium } from "playwright";
 import {
   normalizeDesignDocument,
   serializeDesignDocument,
+  MAX_LOCAL_SVG_EXPORT_BYTES,
 } from "../../../apps/design-studio/app/document.mjs";
+import { MAX_WORKSPACE_DESIGN_TEXT_BYTES } from "../../../apps/design-studio/app/document-bundle.mjs";
 import { parseFigmaBinding } from "../../../apps/design-studio/app/figma-binding.mjs";
 import { planPortableDesign } from "../../../apps/design-studio/app/portable-backup.mjs";
 import { preparePluginFile } from "../../../apps/design-studio/app/figma-plugin/v3-input.mjs";
@@ -1226,6 +1228,75 @@ test("Agent imports multipart Figma sources and exports verified multipart trans
     /分片|校验/,
   );
   assert.equal(f.files.get(`A:${designPath}`), saved);
+  assert.deepEqual(f.errors, []);
+});
+
+test("large SVG export downloads complete fonts and images without exceeding Host write budgets", async (t) => {
+  const f = await fixture(t, { image: true });
+  await f.import();
+  const downloadEvent = f.page.waitForEvent("download");
+  await f.page.locator("#export-svg").click();
+  const download = await downloadEvent;
+  assert.equal(download.suggestedFilename(), "exchange.svg");
+  const svg = await readFile(await download.path(), "utf8");
+  assert.ok(Buffer.byteLength(svg) > MAX_WORKSPACE_DESIGN_TEXT_BYTES);
+  assert.ok(Buffer.byteLength(svg) <= MAX_LOCAL_SVG_EXPORT_BYTES);
+  assert.match(svg, /@font-face/u);
+  assert.match(svg, /data:font\/woff2;base64,/u);
+  assert.match(svg, /data:image\/png;base64,/u);
+  assert.match(svg, /Original Figma heading/u);
+  const rendered = await f.page.evaluate(async (svg) => {
+    const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
+    const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+    try {
+      const image = new Image();
+      image.src = url;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d");
+      context.drawImage(image, 0, 0);
+      const pixels = context.getImageData(30, 30, 350, 50).data;
+      let darkPixels = 0;
+      for (let index = 0; index < pixels.length; index += 4)
+        if (pixels[index + 3] > 0 && pixels[index] < 128) darkPixels += 1;
+      return { parseErrors: parsed.querySelectorAll("parsererror").length,
+        width: image.naturalWidth, height: image.naturalHeight, darkPixels };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }, svg);
+  assert.equal(rendered.parseErrors, 0);
+  assert.ok(rendered.width >= 600 && rendered.height >= 400);
+  assert.ok(rendered.darkPixels > 100, "downloaded standalone SVG renders its original heading");
+  await f.page.waitForFunction(() => !document.querySelector("#export-svg").disabled);
+  assert.match(await f.page.locator("#toast").textContent(), /已下载.*未写入 Repo/u);
+  assert.equal(f.files.has("A:designs/exchange.svg"), false);
+  assert.equal(f.calls.some((call) => call.method === "workspace.writeText" &&
+    call.path === "designs/exchange.svg"), false);
+  assert.ok(f.calls.filter((call) => call.method === "workspace.writeText")
+    .every((call) => Buffer.byteLength(call.content) <= MAX_WORKSPACE_DESIGN_TEXT_BYTES));
+  assert.equal((await f.metadata()).dirty, false);
+  assert.deepEqual(f.errors, []);
+});
+
+test("small SVG export keeps the existing repository compare-and-set behavior", async (t) => {
+  const f = await fixture(t);
+  const path = "designs/exchange.svg", previous = "previous SVG output";
+  f.files.set(`A:${path}`, previous);
+  let downloads = 0;
+  f.page.on("download", () => downloads += 1);
+  await f.page.locator("#export-svg").click();
+  await f.page.waitForFunction(() => !document.querySelector("#export-svg").disabled);
+  const write = f.calls.find((call) => call.method === "workspace.writeText" && call.path === path);
+  assert.ok(write);
+  assert.equal(write.expectedRevision, revision(previous));
+  assert.equal(write.expectedModifiedAt, 1);
+  assert.match(f.files.get(`A:${path}`), /<svg/u);
+  assert.ok(Buffer.byteLength(write.content) <= MAX_WORKSPACE_DESIGN_TEXT_BYTES);
+  assert.equal(downloads, 0);
+  assert.match(await f.page.locator("#toast").textContent(), /SVG 已导出到/u);
   assert.deepEqual(f.errors, []);
 });
 
