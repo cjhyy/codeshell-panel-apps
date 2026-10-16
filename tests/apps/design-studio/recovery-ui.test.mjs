@@ -8,7 +8,10 @@ import { resolve, sep, extname } from "node:path";
 import { chromium } from "playwright";
 import { createDesignIndexPersistencePlan } from "../../../apps/design-studio/app/document-index.mjs";
 import { createDesignResourcePersistencePlan } from "../../../apps/design-studio/app/resource-store.mjs";
-import { normalizeDesignDocument, serializeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
+import {
+  normalizeDesignDocument,
+  serializeDesignDocument,
+} from "../../../apps/design-studio/app/document.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
 const hash = (value) =>
@@ -18,11 +21,17 @@ async function fixture(t) {
   const records = new Map(),
     calls = [],
     contexts = [];
-  let failedRead = false, seededRecovery;
+  let failedRead = false,
+    seededRecovery;
   const pauses = new Map();
   const deliver = async (scope, method, value) => {
-    const key = `${scope}:${method}`, pause = pauses.get(key);
-    if (pause) { pauses.delete(key); pause.enter(); await pause.gate; }
+    const key = `${scope}:${method}`,
+      pause = pauses.get(key);
+    if (pause) {
+      pauses.delete(key);
+      pause.enter();
+      await pause.gate;
+    }
     return value;
   };
   const server = createServer(async (request, response) => {
@@ -55,7 +64,15 @@ async function fixture(t) {
     await new Promise((resolve) => server.close(resolve));
   });
   const origin = `http://127.0.0.1:${server.address().port}`;
-  async function page({ cwd = "/project/A", scope = cwd, sessionId = scope, projectScope, deferContext = false, initialPath = null, sharedInitialPath = false } = {}) {
+  async function page({
+    cwd = "/project/A",
+    scope = cwd,
+    sessionId = scope,
+    projectScope,
+    deferContext = false,
+    initialPath = null,
+    sharedInitialPath = false,
+  } = {}) {
     const initialScope = scope;
     const context = await browser.newContext({ acceptDownloads: true });
     contexts.push(context);
@@ -73,7 +90,8 @@ async function fixture(t) {
           : { exists: false, value: null, revision: null };
       if (method === "storage.getSnapshot") {
         if (failedRead) throw Error("无法读取恢复记录");
-        if (seededRecovery !== undefined && !records.has(key)) records.set(key, structuredClone(seededRecovery));
+        if (seededRecovery !== undefined && !records.has(key))
+          records.set(key, structuredClone(seededRecovery));
         return deliver(scope, method, snapshot());
       }
       if (method === "storage.compareAndSet") {
@@ -84,7 +102,12 @@ async function fixture(t) {
         return deliver(scope, method, { updated: true, snapshot: snapshot() });
       }
       if (method === "storage.get") {
-        if (initialPath && (sharedInitialPath || scope === initialScope) && params.key.startsWith("lastPath.")) return { workspaceRoot: cwd, path: initialPath };
+        if (
+          initialPath &&
+          (sharedInitialPath || scope === initialScope) &&
+          params.key.startsWith("lastPath.")
+        )
+          return { workspaceRoot: cwd, path: initialPath };
         return records.get(key) ?? null;
       }
       if (method === "storage.set") {
@@ -107,46 +130,68 @@ async function fixture(t) {
       if (method === "agent.submitPrompt") return { accepted: true };
       throw Error(`Unsupported ${method}`);
     });
-    await page.addInitScript(({ cwd, scope, sessionId, projectScope, deferContext }) => {
-      let hostScope = scope;
-      const context = {
-        cwd,
-        sessionId,
-        ...(projectScope ? { projectScope } : {}),
-        trusted: true,
-        visible: true,
-        busy: false,
-        availableMethods: ["storage.getSnapshot", "storage.compareAndSet", "storage.get", "storage.set", "storage.delete",
-          "workspace.info", "workspace.list", "workspace.readText", "workspace.writeText", "agent.submitPrompt"],
-      };
-      let listener;
-      window.tools = {};
-      window.codeshellPanel = {
-        getContext: async () => {
-          const captured = { ...context };
-          if (deferContext) await new Promise(resolve => { window.releaseInitialContext = resolve; });
-          return captured;
-        },
-        call: (method, params) => window.hostBridge(hostScope, method, params),
-        on: (name, callback) => {
-          if (name === "context.changed") listener = callback;
-        },
-        registerTool: (name, callback) => {
-          window.tools[name] = callback;
-        },
-      };
-      window.switchProject = (cwd, scope = cwd, sessionId = scope, projectScope = context.projectScope) => {
-        hostScope = scope;
-        context.cwd = cwd;
-        context.sessionId = sessionId;
-        context.projectScope = projectScope;
-        listener?.({ ...context });
-      };
-    }, { cwd, scope, sessionId, projectScope, deferContext });
-    await page.goto(`${origin}/index.html`);
-    if (!deferContext) await page.waitForFunction(() =>
-      /新设计|已打开|已恢复/.test(document.querySelector("#repo-link-state")?.textContent ?? ""),
+    await page.addInitScript(
+      ({ cwd, scope, sessionId, projectScope, deferContext }) => {
+        let hostScope = scope;
+        const context = {
+          cwd,
+          sessionId,
+          ...(projectScope ? { projectScope } : {}),
+          trusted: true,
+          visible: true,
+          busy: false,
+          availableMethods: [
+            "storage.getSnapshot",
+            "storage.compareAndSet",
+            "storage.get",
+            "storage.set",
+            "storage.delete",
+            "workspace.info",
+            "workspace.list",
+            "workspace.readText",
+            "workspace.writeText",
+            "agent.submitPrompt",
+          ],
+        };
+        let listener;
+        window.tools = {};
+        window.codeshellPanel = {
+          getContext: async () => {
+            const captured = { ...context };
+            if (deferContext)
+              await new Promise((resolve) => {
+                window.releaseInitialContext = resolve;
+              });
+            return captured;
+          },
+          call: (method, params) => window.hostBridge(hostScope, method, params),
+          on: (name, callback) => {
+            if (name === "context.changed") listener = callback;
+          },
+          registerTool: (name, callback) => {
+            window.tools[name] = callback;
+          },
+        };
+        window.switchProject = (
+          cwd,
+          scope = cwd,
+          sessionId = scope,
+          projectScope = context.projectScope,
+        ) => {
+          hostScope = scope;
+          context.cwd = cwd;
+          context.sessionId = sessionId;
+          context.projectScope = projectScope;
+          listener?.({ ...context });
+        };
+      },
+      { cwd, scope, sessionId, projectScope, deferContext },
     );
+    await page.goto(`${origin}/index.html`);
+    if (!deferContext)
+      await page.waitForFunction(() =>
+        /新设计|已打开|已恢复/.test(document.querySelector("#repo-link-state")?.textContent ?? ""),
+      );
     return page;
   }
   return {
@@ -156,13 +201,19 @@ async function fixture(t) {
     calls,
     pauseResponse(scope, method) {
       let enter, release;
-      const entered = new Promise(resolve => { enter = resolve; });
-      const gate = new Promise(resolve => { release = resolve; });
+      const entered = new Promise((resolve) => {
+        enter = resolve;
+      });
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
       pauses.set(`${scope}:${method}`, { enter, gate });
       t.after(() => release());
       return { entered, release };
     },
-    seedRecovery: value => { seededRecovery = value; },
+    seedRecovery: (value) => {
+      seededRecovery = value;
+    },
     failRead: () => {
       failedRead = true;
     },
@@ -177,9 +228,9 @@ test("actual design windows preserve conflicting drafts, download backups and ex
   await a.locator("#add-page").click();
   await a.waitForFunction(() => document.querySelectorAll("#active-page option").length === 3);
   const deadline = Date.now() + 5000;
-  while (![...f.records.keys()].some(k => k.includes("recovery"))) {
+  while (![...f.records.keys()].some((k) => k.includes("recovery"))) {
     assert.ok(Date.now() < deadline, "autosave did not reach Host storage");
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
   const recoveryKey = [...f.records.keys()].find((k) => k.includes("recovery"));
   assert.ok(recoveryKey);
@@ -199,20 +250,46 @@ test("actual design windows preserve conflicting drafts, download backups and ex
   assert.deepEqual(f.records.get(recoveryKey), saved);
 });
 
-test("Host proof changes isolate same-path same-session designs and late recovery receipts", { timeout: 20000 }, async t => {
-  const proof = projectId => ({ version: 1, environmentId: "fixture", projectId, rootId: "root-" + projectId });
-  const f = await fixture(t), page = await f.page({ cwd: "/workspace", scope: "A", sessionId: "shared-chat", projectScope: proof("A") });
-  const pending = f.pauseResponse("A", "storage.compareAndSet");
-  await page.locator("#add-page").click();
-  await pending.entered;
-  await page.evaluate(projectScope => window.switchProject("/workspace", "B", "shared-chat", projectScope), proof("B"));
-  await page.waitForFunction(() => document.querySelectorAll("#active-page option").length === 1);
-  pending.release();
-  await page.waitForFunction(() => /新设计|已打开|已恢复/.test(document.querySelector("#repo-link-state").textContent));
-  assert.equal(f.calls.some(call => call.scope === "B" && call.method === "storage.compareAndSet"), false);
-  await page.evaluate(projectScope => window.switchProject("/workspace", "A", "shared-chat", projectScope), proof("A"));
-  await page.waitForFunction(() => document.querySelectorAll("#active-page option").length === 2);
-});
+test(
+  "Host proof changes isolate same-path same-session designs and late recovery receipts",
+  { timeout: 20000 },
+  async (t) => {
+    const proof = (projectId) => ({
+      version: 1,
+      environmentId: "fixture",
+      projectId,
+      rootId: "root-" + projectId,
+    });
+    const f = await fixture(t),
+      page = await f.page({
+        cwd: "/workspace",
+        scope: "A",
+        sessionId: "shared-chat",
+        projectScope: proof("A"),
+      });
+    const pending = f.pauseResponse("A", "storage.compareAndSet");
+    await page.locator("#add-page").click();
+    await pending.entered;
+    await page.evaluate(
+      (projectScope) => window.switchProject("/workspace", "B", "shared-chat", projectScope),
+      proof("B"),
+    );
+    await page.waitForFunction(() => document.querySelectorAll("#active-page option").length === 1);
+    pending.release();
+    await page.waitForFunction(() =>
+      /新设计|已打开|已恢复/.test(document.querySelector("#repo-link-state").textContent),
+    );
+    assert.equal(
+      f.calls.some((call) => call.scope === "B" && call.method === "storage.compareAndSet"),
+      false,
+    );
+    await page.evaluate(
+      (projectScope) => window.switchProject("/workspace", "A", "shared-chat", projectScope),
+      proof("A"),
+    );
+    await page.waitForFunction(() => document.querySelectorAll("#active-page option").length === 2);
+  },
+);
 
 test("switching project before autosave never submits the previous draft to the new Host scope", async (t) => {
   const f = await fixture(t),
@@ -245,8 +322,7 @@ test("failed recovery reads remain visible and cannot be overwritten by subseque
   await page.locator("#recovery-backup").waitFor();
 });
 
-
-test("malformed recovery remains stored and is included in an explicit backup", async t => {
+test("malformed recovery remains stored and is included in an explicit backup", async (t) => {
   const f = await fixture(t);
   const damaged = { format: "invalid-recovery", retainedUserData: "keep" };
   f.seedRecovery(damaged);
@@ -257,19 +333,24 @@ test("malformed recovery remains stored and is included in an explicit backup", 
   await page.locator("#recovery-backup").click();
   const backup = JSON.parse(await readFile(await (await pending).path(), "utf8"));
   assert.deepEqual(backup.storedRecovery.value, damaged);
-  assert.equal(f.calls.some(c => c.method === "storage.compareAndSet" || c.method === "storage.delete"), false);
+  assert.equal(
+    f.calls.some((c) => c.method === "storage.compareAndSet" || c.method === "storage.delete"),
+    false,
+  );
   assert.deepEqual([...f.records.values()], [damaged]);
 });
 
-
-test("same-path cloud projects cancel pending drafts and retain both project backups", async t => {
+test("same-path cloud projects cancel pending drafts and retain both project backups", async (t) => {
   const f = await fixture(t);
   const page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
   await page.locator("#add-page").click();
   await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
   await page.waitForFunction(() => document.querySelectorAll("#active-page option").length === 1);
-  await new Promise(resolve => setTimeout(resolve, 650));
-  assert.equal(f.calls.some(c => c.scope === "cloud-B" && c.method === "storage.compareAndSet"), false);
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  assert.equal(
+    f.calls.some((c) => c.scope === "cloud-B" && c.method === "storage.compareAndSet"),
+    false,
+  );
   await page.locator("#add-page").click();
   await page.evaluate(() => window.switchProject("/workspace", "cloud-C"));
   await page.waitForFunction(() => document.querySelectorAll("#active-page option").length === 1);
@@ -277,11 +358,14 @@ test("same-path cloud projects cancel pending drafts and retain both project bac
   await page.locator("#recovery-backup").click();
   const backup = JSON.parse(await readFile(await (await pending).path(), "utf8"));
   assert.equal(backup.drafts.length, 3, "same cwd must not collapse separate cloud drafts");
-  assert.deepEqual(backup.drafts.map(d => d.sourceContext.sessionId).sort(), ["cloud-A", "cloud-B", "cloud-C"]);
+  assert.deepEqual(backup.drafts.map((d) => d.sourceContext.sessionId).sort(), [
+    "cloud-A",
+    "cloud-B",
+    "cloud-C",
+  ]);
 });
 
-
-test("a context event during initial read wins over the stale initial project", async t => {
+test("a context event during initial read wins over the stale initial project", async (t) => {
   const f = await fixture(t);
   const page = await f.page({ cwd: "/workspace", scope: "cloud-A", deferContext: true });
   await page.waitForFunction(() => typeof window.releaseInitialContext === "function");
@@ -289,17 +373,22 @@ test("a context event during initial read wins over the stale initial project", 
     window.switchProject("/workspace", "cloud-B");
     window.releaseInitialContext();
   });
-  await page.waitForFunction(() => document.querySelector("#repo-link-state")?.textContent.includes("新设计"));
+  await page.waitForFunction(() =>
+    document.querySelector("#repo-link-state")?.textContent.includes("新设计"),
+  );
   await page.locator("#add-page").click();
   await page.evaluate(() => window.switchProject("/workspace", "cloud-C"));
   await page.locator("#recovery-message").filter({ hasText: "切换前项目" }).waitFor();
   const pending = page.waitForEvent("download");
   await page.locator("#recovery-backup").click();
   const backup = JSON.parse(await readFile(await (await pending).path(), "utf8"));
-  assert.deepEqual(backup.drafts.map(d => d.sourceContext.sessionId).sort(), ["cloud-B", "cloud-C"]);
+  assert.deepEqual(backup.drafts.map((d) => d.sourceContext.sessionId).sort(), [
+    "cloud-B",
+    "cloud-C",
+  ]);
 });
 
-test("late recovery reads from a same-path old project cannot restore its canvas or request its baseline from the new project", async t => {
+test("late recovery reads from a same-path old project cannot restore its canvas or request its baseline from the new project", async (t) => {
   const f = await fixture(t);
   f.seedRecovery({ format: "damaged" });
   const page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
@@ -307,23 +396,28 @@ test("late recovery reads from a same-path old project cannot restore its canvas
   const pending = page.waitForEvent("download");
   await page.locator("#recovery-backup").click();
   const backup = JSON.parse(await readFile(await (await pending).path(), "utf8"));
-  const key = [...f.records.keys()].find(k => k.startsWith("cloud-A:"));
+  const key = [...f.records.keys()].find((k) => k.startsWith("cloud-A:"));
   f.records.set(key, backup.drafts[0]);
   f.seedRecovery(undefined);
   const hold = f.pauseResponse("cloud-A", "storage.getSnapshot");
-  page.once("dialog", dialog => dialog.accept());
+  page.once("dialog", (dialog) => dialog.accept());
   await page.locator("#recovery-reload").click();
   await hold.entered;
   await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
-  await page.waitForFunction(() => document.querySelector("#repo-link-state")?.textContent.includes("新设计"));
+  await page.waitForFunction(() =>
+    document.querySelector("#repo-link-state")?.textContent.includes("新设计"),
+  );
   const count = f.calls.length;
   hold.release();
-  await new Promise(resolve => setTimeout(resolve, 100));
-  assert.equal(f.calls.slice(count).some(c => c.method === "workspace.readText"), false);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(
+    f.calls.slice(count).some((c) => c.method === "workspace.readText"),
+    false,
+  );
   assert.equal(await page.locator("#active-page option").count(), 1);
 });
 
-test("a saved old-project response cannot clear or overwrite the same-path new project", async t => {
+test("a saved old-project response cannot clear or overwrite the same-path new project", async (t) => {
   const f = await fixture(t);
   const page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
   const hold = f.pauseResponse("cloud-A", "storage.compareAndSet");
@@ -332,37 +426,48 @@ test("a saved old-project response cannot clear or overwrite the same-path new p
   await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
   await page.waitForFunction(() => document.querySelectorAll("#active-page option").length === 1);
   hold.release();
-  await new Promise(resolve => setTimeout(resolve, 100));
-  assert.equal(f.calls.some(c => c.scope === "cloud-B" && ["storage.compareAndSet", "storage.delete"].includes(c.method)), false);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(
+    f.calls.some(
+      (c) =>
+        c.scope === "cloud-B" && ["storage.compareAndSet", "storage.delete"].includes(c.method),
+    ),
+    false,
+  );
   await page.locator("#add-page").click();
   const deadline = Date.now() + 5000;
-  while (![...f.records.keys()].some(k => k.startsWith("cloud-B:"))) {
-    assert.ok(Date.now() < deadline); await new Promise(resolve => setTimeout(resolve, 20));
+  while (![...f.records.keys()].some((k) => k.startsWith("cloud-B:"))) {
+    assert.ok(Date.now() < deadline);
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  assert.equal([...f.records.keys()].filter(k => k.includes("recovery")).length, 2);
+  assert.equal([...f.records.keys()].filter((k) => k.includes("recovery")).length, 2);
 });
 
-
-test("editing stays unavailable while the new same-path project is loading and backup never labels the old canvas as new", async t => {
+test("editing stays unavailable while the new same-path project is loading and backup never labels the old canvas as new", async (t) => {
   const f = await fixture(t);
   const page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
   await page.locator("#add-page").click();
   const hold = f.pauseResponse("cloud-B", "storage.getSnapshot");
   await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
   await hold.entered;
-  assert.equal(await page.locator(".topbar").evaluate(element => element.inert), true);
-  assert.equal(await page.locator(".workspace").evaluate(element => element.inert), true);
+  assert.equal(await page.locator(".topbar").evaluate((element) => element.inert), true);
+  assert.equal(await page.locator(".workspace").evaluate((element) => element.inert), true);
   const pending = page.waitForEvent("download");
   await page.locator("#recovery-backup").click();
   const backup = JSON.parse(await readFile(await (await pending).path(), "utf8"));
-  assert.deepEqual(backup.drafts.map(d => d.sourceContext.sessionId), ["cloud-A"]);
-  await new Promise(resolve => setTimeout(resolve, 650));
-  assert.equal(f.calls.some(c => c.scope === "cloud-B" && c.method === "storage.compareAndSet"), false);
+  assert.deepEqual(
+    backup.drafts.map((d) => d.sourceContext.sessionId),
+    ["cloud-A"],
+  );
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  assert.equal(
+    f.calls.some((c) => c.scope === "cloud-B" && c.method === "storage.compareAndSet"),
+    false,
+  );
   hold.release();
   await page.waitForFunction(() => !document.querySelector(".topbar").inert);
   assert.equal(await page.locator("#active-page option").count(), 1);
 });
-
 
 async function downloadComplete(page) {
   await page.locator("#portable-backup-open").click();
@@ -374,40 +479,54 @@ async function downloadComplete(page) {
 }
 async function selectComplete(page, buffer) {
   await page.locator("#portable-backup-open").click();
-  await page.locator("#portable-backup-file").setInputFiles({ name: "complete.json", mimeType: "application/json", buffer });
+  await page
+    .locator("#portable-backup-file")
+    .setInputFiles({ name: "complete.json", mimeType: "application/json", buffer });
   await page.waitForFunction(() => !document.querySelector("#portable-backup-restore").disabled);
 }
 
-test("complete backup moves all canvas pages to a new project file without replacing its current canvas", async t => {
-  const f = await fixture(t), page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
+test("complete backup moves all canvas pages to a new project file without replacing its current canvas", async (t) => {
+  const f = await fixture(t),
+    page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
   await page.locator("#add-page").click();
   const buffer = await downloadComplete(page);
   assert.equal(JSON.parse(buffer).document.pages.length, 2);
   await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
   await page.waitForFunction(() => !document.querySelector(".topbar").inert);
   await selectComplete(page, buffer);
-  assert.match(await page.locator("#portable-backup-preview").textContent(), /cloud-A[\s\S]*cloud-B/);
+  assert.match(
+    await page.locator("#portable-backup-preview").textContent(),
+    /cloud-A[\s\S]*cloud-B/,
+  );
   await page.locator("#portable-backup-path").fill("designs/imported.codesign.json");
   await page.locator("#portable-backup-restore").click();
   await page.locator("#portable-backup-status").filter({ hasText: "已恢复到" }).waitFor();
   assert.equal(await page.locator("#active-page option").count(), 1);
   assert.equal(JSON.parse(f.files.get("cloud-B:designs/imported.codesign.json")).pages.length, 2);
-  assert.equal(f.calls.some(c => c.scope === "cloud-B" && c.method === "storage.compareAndSet"), false);
+  assert.equal(
+    f.calls.some((c) => c.scope === "cloud-B" && c.method === "storage.compareAndSet"),
+    false,
+  );
 });
 
-test("complete backup preview is invalidated by project changes and cancel writes nothing", async t => {
-  const f = await fixture(t), page = await f.page();
+test("complete backup preview is invalidated by project changes and cancel writes nothing", async (t) => {
+  const f = await fixture(t),
+    page = await f.page();
   const buffer = await downloadComplete(page);
   await selectComplete(page, buffer);
   await page.evaluate(() => window.switchProject("/project/B"));
   await page.locator("#portable-backup-status").filter({ hasText: "项目已切换" }).waitFor();
   assert.equal(await page.locator("#portable-backup-restore").isDisabled(), true);
   await page.locator("#portable-backup-close").click();
-  assert.equal(f.calls.some(c => c.method === "workspace.writeText"), false);
+  assert.equal(
+    f.calls.some((c) => c.method === "workspace.writeText"),
+    false,
+  );
 });
 
-test("complete backup restoration preserves an existing destination and permits retry to a new path", async t => {
-  const f = await fixture(t), page = await f.page();
+test("complete backup restoration preserves an existing destination and permits retry to a new path", async (t) => {
+  const f = await fixture(t),
+    page = await f.page();
   const buffer = await downloadComplete(page);
   f.files.set("/project/A:designs/existing.codesign.json", "original bytes");
   await selectComplete(page, buffer);
@@ -421,26 +540,45 @@ test("complete backup restoration preserves an existing destination and permits 
   assert.equal(f.files.has("/project/A:designs/new.codesign.json"), true);
 });
 
-
-test("complete backup materializes twelve indexed pages including pages not yet viewed", async t => {
+test("complete backup materializes twelve indexed pages including pages not yet viewed", async (t) => {
   const f = await fixture(t);
-  const document = normalizeDesignDocument({ format: "codeshell.design", version: 3, name: "Indexed fixture", canvas: { width: 800, height: 600, background: "#ffffff" }, tokens: { colors: [] }, resources: [], activePageId: "page-1", pages: Array.from({ length: 12 }, (_, i) => ({ id: `page-${i + 1}`, name: `Page ${i + 1}`, children: [] })) });
-  const plan = await createDesignIndexPersistencePlan({ document, sha256: async value => createHash("sha256").update(value).digest("hex") });
+  const document = normalizeDesignDocument({
+    format: "codeshell.design",
+    version: 3,
+    name: "Indexed fixture",
+    canvas: { width: 800, height: 600, background: "#ffffff" },
+    tokens: { colors: [] },
+    resources: [],
+    activePageId: "page-1",
+    pages: Array.from({ length: 12 }, (_, i) => ({
+      id: `page-${i + 1}`,
+      name: `Page ${i + 1}`,
+      children: [],
+    })),
+  });
+  const plan = await createDesignIndexPersistencePlan({
+    document,
+    sha256: async (value) => createHash("sha256").update(value).digest("hex"),
+  });
   const initialPath = "designs/indexed.codesign.json";
   f.files.set(`/project/A:${initialPath}`, plan.primarySource);
   for (const part of plan.parts) f.files.set(`/project/A:${part.path}`, part.content);
   const page = await f.page({ initialPath });
-  const initialReads = f.calls.filter(c => c.method === "workspace.readText").length;
-  const buffer = await downloadComplete(page), backup = JSON.parse(buffer);
+  const initialReads = f.calls.filter((c) => c.method === "workspace.readText").length;
+  const buffer = await downloadComplete(page),
+    backup = JSON.parse(buffer);
   assert.equal(backup.document.pages.length, 12);
-  assert.deepEqual(backup.document.pages.map(p => p.name), document.pages.map(p => p.name));
-  assert.ok(f.calls.filter(c => c.method === "workspace.readText").length > initialReads);
+  assert.deepEqual(
+    backup.document.pages.map((p) => p.name),
+    document.pages.map((p) => p.name),
+  );
+  assert.ok(f.calls.filter((c) => c.method === "workspace.readText").length > initialReads);
   assert.equal(await page.locator("#active-page option").count(), 12);
 });
 
-
-test("a legacy backup lets the user choose a valid draft after a damaged entry and restores only a new file", async t => {
-  const f = await fixture(t), page = await f.page();
+test("a legacy backup lets the user choose a valid draft after a damaged entry and restores only a new file", async (t) => {
+  const f = await fixture(t),
+    page = await f.page();
   await page.locator("#add-page").click();
   await page.evaluate(() => window.switchProject("/project/B"));
   await page.locator("#recovery-message").filter({ hasText: "切换前项目" }).waitFor();
@@ -449,7 +587,13 @@ test("a legacy backup lets the user choose a valid draft after a damaged entry a
   const backup = JSON.parse(await readFile(await (await pending).path()));
   backup.drafts.unshift({ format: "damaged", retained: "keep original" });
   await page.locator("#portable-backup-open").click();
-  await page.locator("#portable-backup-file").setInputFiles({ name: "old-drafts.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(backup)) });
+  await page
+    .locator("#portable-backup-file")
+    .setInputFiles({
+      name: "old-drafts.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(backup)),
+    });
   await page.locator("#portable-backup-status").filter({ hasText: "草稿格式" }).waitFor();
   assert.equal(await page.locator("#portable-backup-restore").isDisabled(), true);
   await page.locator("#portable-backup-candidate").selectOption("1");
@@ -457,15 +601,33 @@ test("a legacy backup lets the user choose a valid draft after a damaged entry a
   await page.locator("#portable-backup-path").fill("designs/legacy-copy.codesign.json");
   await page.locator("#portable-backup-restore").click();
   await page.locator("#portable-backup-status").filter({ hasText: "已恢复到" }).waitFor();
-  assert.equal(JSON.parse(f.files.get("/project/B:designs/legacy-copy.codesign.json")).pages.length, 2);
+  assert.equal(
+    JSON.parse(f.files.get("/project/B:designs/legacy-copy.codesign.json")).pages.length,
+    2,
+  );
   assert.equal(await page.locator("#active-page option").count(), 1);
-  assert.equal(f.calls.some(c => c.scope === "/project/B" && c.method === "storage.compareAndSet"), false);
+  assert.equal(
+    f.calls.some((c) => c.scope === "/project/B" && c.method === "storage.compareAndSet"),
+    false,
+  );
 });
 
-
-test("a save-as draft reopens with its original file baseline and writes only the new destination", async t => {
-  const f = await fixture(t), initialPath = "designs/original.codesign.json";
-  const base = normalizeDesignDocument({ format: "codeshell.design", version: 3, name: "Original saved design", canvas: { width: 800, height: 600, background: "#ffffff" }, tokens: { colors: [] }, resources: [], activePageId: "page-1", pages: [{ id: "page-1", name: "One", children: [] }, { id: "page-2", name: "Two", children: [] }] });
+test("a save-as draft reopens with its original file baseline and writes only the new destination", async (t) => {
+  const f = await fixture(t),
+    initialPath = "designs/original.codesign.json";
+  const base = normalizeDesignDocument({
+    format: "codeshell.design",
+    version: 3,
+    name: "Original saved design",
+    canvas: { width: 800, height: 600, background: "#ffffff" },
+    tokens: { colors: [] },
+    resources: [],
+    activePageId: "page-1",
+    pages: [
+      { id: "page-1", name: "One", children: [] },
+      { id: "page-2", name: "Two", children: [] },
+    ],
+  });
   const originalBytes = serializeDesignDocument(base);
   f.files.set(`/project/A:${initialPath}`, originalBytes);
   const page = await f.page({ initialPath });
@@ -473,8 +635,13 @@ test("a save-as draft reopens with its original file baseline and writes only th
   await page.locator("#document-path").fill("designs/copy.codesign.json");
   await page.locator("#document-path").press("Tab");
   const deadline = Date.now() + 5000;
-  while (![...f.records.values()].some(value => value?.path === "designs/copy.codesign.json" && value?.record)) {
-    assert.ok(Date.now() < deadline); await new Promise(resolve => setTimeout(resolve, 20));
+  while (
+    ![...f.records.values()].some(
+      (value) => value?.path === "designs/copy.codesign.json" && value?.record,
+    )
+  ) {
+    assert.ok(Date.now() < deadline);
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
   const reopened = await f.page({ initialPath });
   assert.equal(await reopened.locator("#active-page option").count(), 3);
@@ -485,10 +652,19 @@ test("a save-as draft reopens with its original file baseline and writes only th
   assert.equal(f.files.get(`/project/A:${initialPath}`), originalBytes);
 });
 
-
-test("save-as recovery refuses a changed original baseline and retains both the journal and existing destination", async t => {
-  const f = await fixture(t), initialPath = "designs/source.codesign.json";
-  const base = { format: "codeshell.design", version: 3, name: "Original", canvas: { width: 800, height: 600, background: "#ffffff" }, tokens: { colors: [] }, resources: [], activePageId: "page-1", pages: [{ id: "page-1", name: "One", children: [] }] };
+test("save-as recovery refuses a changed original baseline and retains both the journal and existing destination", async (t) => {
+  const f = await fixture(t),
+    initialPath = "designs/source.codesign.json";
+  const base = {
+    format: "codeshell.design",
+    version: 3,
+    name: "Original",
+    canvas: { width: 800, height: 600, background: "#ffffff" },
+    tokens: { colors: [] },
+    resources: [],
+    activePageId: "page-1",
+    pages: [{ id: "page-1", name: "One", children: [] }],
+  };
   f.files.set(`/project/A:${initialPath}`, JSON.stringify(base));
   f.files.set("/project/A:designs/existing.codesign.json", "keep destination bytes");
   const page = await f.page({ initialPath });
@@ -496,12 +672,16 @@ test("save-as recovery refuses a changed original baseline and retains both the 
   await page.locator("#document-path").fill("designs/existing.codesign.json");
   await page.locator("#document-path").press("Tab");
   const deadline = Date.now() + 5000;
-  while (![...f.records.values()].some(v => v?.version === 2 && v?.record)) {
-    assert.ok(Date.now() < deadline); await new Promise(resolve => setTimeout(resolve, 20));
+  while (![...f.records.values()].some((v) => v?.version === 2 && v?.record)) {
+    assert.ok(Date.now() < deadline);
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
   const [key, saved] = [...f.records].find(([, value]) => value?.record);
   const snapshot = structuredClone(saved);
-  f.files.set(`/project/A:${initialPath}`, JSON.stringify({ ...base, name: "New external version" }));
+  f.files.set(
+    `/project/A:${initialPath}`,
+    JSON.stringify({ ...base, name: "New external version" }),
+  );
   const reopened = await f.page({ initialPath });
   await reopened.locator("#recovery-message").filter({ hasText: "基础设计已变化" }).waitFor();
   assert.deepEqual(f.records.get(key), snapshot);
@@ -509,13 +689,19 @@ test("save-as recovery refuses a changed original baseline and retains both the 
   assert.equal(await reopened.locator("#active-page option").count(), 1);
 });
 
-test("an unsaved draft keeps its embedded baseline through repeated recovery and editing", async t => {
-  const f = await fixture(t), a = await f.page();
+test("an unsaved draft keeps its embedded baseline through repeated recovery and editing", async (t) => {
+  const f = await fixture(t),
+    a = await f.page();
   await a.locator("#add-page").click();
-  const waitForPages = async count => {
+  const waitForPages = async (count) => {
     const deadline = Date.now() + 5000;
-    while (![...f.records.values()].some(v => v?.record?.operations.filter(op => op.type === "add-page").length === count)) {
-      assert.ok(Date.now() < deadline); await new Promise(resolve => setTimeout(resolve, 20));
+    while (
+      ![...f.records.values()].some(
+        (v) => v?.record?.operations.filter((op) => op.type === "add-page").length === count,
+      )
+    ) {
+      assert.ok(Date.now() < deadline);
+      await new Promise((resolve) => setTimeout(resolve, 20));
     }
   };
   await waitForPages(1);
@@ -525,23 +711,28 @@ test("an unsaved draft keeps its embedded baseline through repeated recovery and
   await waitForPages(2);
   const c = await f.page();
   assert.equal(await c.locator("#active-page option").count(), 3);
-  const saved = [...f.records.values()].find(v => v?.record);
+  const saved = [...f.records.values()].find((v) => v?.record);
   assert.ok(saved.baseDocument);
   assert.equal(saved.baseRevision, null);
 });
 
-
-test("late agent save failure cannot roll the new project back to the old canvas", async t => {
-  const f = await fixture(t), page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
+test("late agent save failure cannot roll the new project back to the old canvas", async (t) => {
+  const f = await fixture(t),
+    page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
   await page.locator("#add-page").click();
   const hold = f.pauseResponse("cloud-A", "workspace.writeText");
   await page.evaluate(async () => {
     const metadata = await window.tools.get_design_metadata();
-    window.pendingAgent = window.tools.use_design({
-      expected_state_revision: metadata.stateRevision,
-      operations: [{ op: "create_page", id: "agent-page", name: "Agent page" }],
-      save: true,
-    }).then(value => ({ value }), error => ({ error: error.message }));
+    window.pendingAgent = window.tools
+      .use_design({
+        expected_state_revision: metadata.stateRevision,
+        operations: [{ op: "create_page", id: "agent-page", name: "Agent page" }],
+        save: true,
+      })
+      .then(
+        (value) => ({ value }),
+        (error) => ({ error: error.message }),
+      );
   });
   await hold.entered;
   await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
@@ -552,55 +743,106 @@ test("late agent save failure cannot roll the new project back to the old canvas
   assert.match(outcome.error, /工作区.*切换/);
   const metadata = await page.evaluate(() => window.tools.get_design_metadata());
   assert.equal(metadata.pages.length, 1, "old transaction must not replace new project's canvas");
-  assert.equal(f.calls.some(call => call.scope === "cloud-B" && call.method === "workspace.writeText"), false);
-  await new Promise(resolve => setTimeout(resolve, 500));
-  assert.equal(f.calls.some(call => call.scope === "cloud-B" && call.method === "storage.compareAndSet"), false);
+  assert.equal(
+    f.calls.some((call) => call.scope === "cloud-B" && call.method === "workspace.writeText"),
+    false,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal(
+    f.calls.some((call) => call.scope === "cloud-B" && call.method === "storage.compareAndSet"),
+    false,
+  );
 });
 
-
 for (const action of ["resource", "html", "rollback"]) {
-  test(`late ${action} transaction cannot change the next project or probe its files`, async t => {
-    const f = await fixture(t), page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
+  test(`late ${action} transaction cannot change the next project or probe its files`, async (t) => {
+    const f = await fixture(t),
+      page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
     await page.locator("#add-page").click();
-    f.files.set("cloud-A:designs/import.html", '<html><body><div style="width:100px;height:100px;background:red">Imported</div></body></html>');
-    if (action === "rollback") await page.evaluate(async () => {
-      const metadata = await window.tools.get_design_metadata();
-      window.transaction = await window.tools.use_design({ expected_state_revision: metadata.stateRevision,
-        operations: [{ op: "create_page", id: "agent-page", name: "Agent page" }], save: false });
-    });
+    f.files.set(
+      "cloud-A:designs/import.html",
+      '<html><body><div style="width:100px;height:100px;background:red">Imported</div></body></html>',
+    );
+    if (action === "rollback")
+      await page.evaluate(async () => {
+        const metadata = await window.tools.get_design_metadata();
+        window.transaction = await window.tools.use_design({
+          expected_state_revision: metadata.stateRevision,
+          operations: [{ op: "create_page", id: "agent-page", name: "Agent page" }],
+          save: false,
+        });
+      });
     const hold = f.pauseResponse("cloud-A", "workspace.writeText");
-    await page.evaluate(async action => {
+    await page.evaluate(async (action) => {
       const metadata = await window.tools.get_design_metadata();
-      const operation = action === "resource"
-        ? window.tools.put_design_resource({ expected_state_revision: metadata.stateRevision,
-            id: "pixel", kind: "image", mime: "image/png", save: true,
-            base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" })
-        : action === "html"
-          ? window.tools.import_html({ expected_state_revision: metadata.stateRevision, path: "designs/import.html", save: true })
-          : window.tools.rollback_design({ transaction_id: window.transaction.transactionId, save: true });
-      window.pendingAgent = operation.then(value => ({ value }), error => ({ error: error.message }));
+      const operation =
+        action === "resource"
+          ? window.tools.put_design_resource({
+              expected_state_revision: metadata.stateRevision,
+              id: "pixel",
+              kind: "image",
+              mime: "image/png",
+              save: true,
+              base64:
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+            })
+          : action === "html"
+            ? window.tools.import_html({
+                expected_state_revision: metadata.stateRevision,
+                path: "designs/import.html",
+                save: true,
+              })
+            : window.tools.rollback_design({
+                transaction_id: window.transaction.transactionId,
+                save: true,
+              });
+      window.pendingAgent = operation.then(
+        (value) => ({ value }),
+        (error) => ({ error: error.message }),
+      );
     }, action);
     await hold.entered;
     await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
     await page.waitForFunction(() => !document.querySelector(".topbar").inert);
-    const readsBeforeRelease = f.calls.filter(call => call.scope === "cloud-B" && call.method === "workspace.readText").length;
+    const readsBeforeRelease = f.calls.filter(
+      (call) => call.scope === "cloud-B" && call.method === "workspace.readText",
+    ).length;
     hold.release();
     assert.match((await page.evaluate(() => window.pendingAgent)).error, /工作区.*切换/);
     const metadata = await page.evaluate(() => window.tools.get_design_metadata());
     assert.equal(metadata.pages.length, 1);
     assert.deepEqual(metadata.resources, []);
-    assert.equal(f.calls.filter(call => call.scope === "cloud-B" && call.method === "workspace.readText").length, readsBeforeRelease);
-    assert.equal(f.calls.some(call => call.scope === "cloud-B" && call.method === "workspace.writeText"), false);
+    assert.equal(
+      f.calls.filter((call) => call.scope === "cloud-B" && call.method === "workspace.readText")
+        .length,
+      readsBeforeRelease,
+    );
+    assert.equal(
+      f.calls.some((call) => call.scope === "cloud-B" && call.method === "workspace.writeText"),
+      false,
+    );
   });
 }
 
-
 for (const indexed of [false, true]) {
-  test(`editing during a ${indexed ? "page-indexed" : "single-file"} save retains dirty state and recovers newer pages`, async t => {
-    const f = await fixture(t), initialPath = "designs/concurrent.codesign.json";
-    const document = normalizeDesignDocument({ format: "codeshell.design", version: 3, name: "Concurrent save", canvas: { width: 800, height: 600, background: "#ffffff" }, tokens: { colors: [] }, resources: [], activePageId: "page-1", pages: [{ id: "page-1", name: "One", children: [] }] });
+  test(`editing during a ${indexed ? "page-indexed" : "single-file"} save retains dirty state and recovers newer pages`, async (t) => {
+    const f = await fixture(t),
+      initialPath = "designs/concurrent.codesign.json";
+    const document = normalizeDesignDocument({
+      format: "codeshell.design",
+      version: 3,
+      name: "Concurrent save",
+      canvas: { width: 800, height: 600, background: "#ffffff" },
+      tokens: { colors: [] },
+      resources: [],
+      activePageId: "page-1",
+      pages: [{ id: "page-1", name: "One", children: [] }],
+    });
     if (indexed) {
-      const plan = await createDesignIndexPersistencePlan({ document, sha256: async value => createHash("sha256").update(value).digest("hex") });
+      const plan = await createDesignIndexPersistencePlan({
+        document,
+        sha256: async (value) => createHash("sha256").update(value).digest("hex"),
+      });
       f.files.set(`/project/A:${initialPath}`, plan.primarySource);
       for (const part of plan.parts) f.files.set(`/project/A:${part.path}`, part.content);
     } else f.files.set(`/project/A:${initialPath}`, serializeDesignDocument(document));
@@ -615,9 +857,15 @@ for (const indexed of [false, true]) {
     assert.equal(await page.locator("#active-page option").count(), 3);
     assert.match(await page.locator("#save-state").textContent(), /有修改/);
     const deadline = Date.now() + 5000;
-    while (![...f.records.values()].some(value => value?.baseRevision === hash(f.files.get(`/project/A:${initialPath}`)) && value?.record?.operations?.some(op => op.type === "add-page"))) {
+    while (
+      ![...f.records.values()].some(
+        (value) =>
+          value?.baseRevision === hash(f.files.get(`/project/A:${initialPath}`)) &&
+          value?.record?.operations?.some((op) => op.type === "add-page"),
+      )
+    ) {
       assert.ok(Date.now() < deadline, "newer edits need a recovery journal");
-      await new Promise(resolve => setTimeout(resolve, 20));
+      await new Promise((resolve) => setTimeout(resolve, 20));
     }
     const reopened = await f.page({ initialPath });
     assert.equal(await reopened.locator("#active-page option").count(), 3);
@@ -628,11 +876,27 @@ for (const indexed of [false, true]) {
   });
 }
 
-
-test("a page loaded and renamed during an indexed save survives recovery and the next save", async t => {
-  const f = await fixture(t), initialPath = "designs/lazy.codesign.json";
-  const document = normalizeDesignDocument({ format: "codeshell.design", version: 3, name: "Lazy save", canvas: { width: 800, height: 600, background: "#ffffff" }, tokens: { colors: [] }, resources: [], activePageId: "page-1", pages: Array.from({ length: 12 }, (_, i) => ({ id: `page-${i+1}`, name: `Page ${i+1}`, children: [] })) });
-  const plan = await createDesignIndexPersistencePlan({ document, sha256: async value => createHash("sha256").update(value).digest("hex") });
+test("a page loaded and renamed during an indexed save survives recovery and the next save", async (t) => {
+  const f = await fixture(t),
+    initialPath = "designs/lazy.codesign.json";
+  const document = normalizeDesignDocument({
+    format: "codeshell.design",
+    version: 3,
+    name: "Lazy save",
+    canvas: { width: 800, height: 600, background: "#ffffff" },
+    tokens: { colors: [] },
+    resources: [],
+    activePageId: "page-1",
+    pages: Array.from({ length: 12 }, (_, i) => ({
+      id: `page-${i + 1}`,
+      name: `Page ${i + 1}`,
+      children: [],
+    })),
+  });
+  const plan = await createDesignIndexPersistencePlan({
+    document,
+    sha256: async (value) => createHash("sha256").update(value).digest("hex"),
+  });
   f.files.set(`/project/A:${initialPath}`, plan.primarySource);
   for (const part of plan.parts) f.files.set(`/project/A:${part.path}`, part.content);
   const page = await f.page({ initialPath });
@@ -648,61 +912,124 @@ test("a page loaded and renamed during an indexed save survives recovery and the
   hold.release();
   await page.waitForFunction(() => !document.querySelector("#save").disabled);
   assert.match(await page.locator("#save-state").textContent(), /有修改/);
-  const deadline = Date.now()+5000;
-  while (![...f.records.values()].some(v => v?.baseRevision === hash(f.files.get(`/project/A:${initialPath}`)) && v?.record?.operations?.some(op => op.type === "rename-page"))) {
-    assert.ok(Date.now()<deadline); await new Promise(resolve => setTimeout(resolve,20));
+  const deadline = Date.now() + 5000;
+  while (
+    ![...f.records.values()].some(
+      (v) =>
+        v?.baseRevision === hash(f.files.get(`/project/A:${initialPath}`)) &&
+        v?.record?.operations?.some((op) => op.type === "rename-page"),
+    )
+  ) {
+    assert.ok(Date.now() < deadline);
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
   const reopened = await f.page({ initialPath });
-  assert.equal(await reopened.locator('#active-page option[value="page-12"]').textContent(), "Changed while saving");
+  assert.equal(
+    await reopened.locator('#active-page option[value="page-12"]').textContent(),
+    "Changed while saving",
+  );
   await reopened.locator("#save").click();
   await reopened.locator("#save-state").filter({ hasText: "已保存" }).waitFor();
   const final = await f.page({ initialPath });
-  assert.equal(await final.locator('#active-page option[value="page-12"]').textContent(), "Changed while saving");
+  assert.equal(
+    await final.locator('#active-page option[value="page-12"]').textContent(),
+    "Changed while saving",
+  );
 });
 
-
-
 for (const stage of ["page", "image", "font", "same-project-document"]) {
-  test(`late ${stage} loading cannot change the replacement canvas`, async t => {
-    const f = await fixture(t), initialPath = "designs/pages.codesign.json";
+  test(`late ${stage} loading cannot change the replacement canvas`, async (t) => {
+    const f = await fixture(t),
+      initialPath = "designs/pages.codesign.json";
     const font = stage === "font";
     const resource = await createDesignResourcePersistencePlan({
-      id: "asset", kind: font ? "font" : "image", mime: font ? "font/woff2" : "image/png",
+      id: "asset",
+      kind: font ? "font" : "image",
+      mime: font ? "font/woff2" : "image/png",
       ...(font ? { family: "Deferred font" } : {}),
-      base64: font ? Buffer.from("controlled decoder fixture").toString("base64") : "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-      sha256Bytes: async value => createHash("sha256").update(value).digest("hex"),
+      base64: font
+        ? Buffer.from("controlled decoder fixture").toString("base64")
+        : "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      sha256Bytes: async (value) => createHash("sha256").update(value).digest("hex"),
     });
-    const node = { id: "asset-node", type: font ? "text" : "image", name: "Asset", x: 0, y: 0, width: 20, height: 20,
-      strokeWidth: 0, opacity: 1, rotation: 0, cornerRadius: 0, fill: "#000000", stroke: "transparent", visible: true, locked: false,
-      ...(font ? { text: "Hello", fontSize: 16, fontWeight: 400, lineHeight: 1, textAlign: "left", fontRef: "asset" }
+    const node = {
+      id: "asset-node",
+      type: font ? "text" : "image",
+      name: "Asset",
+      x: 0,
+      y: 0,
+      width: 20,
+      height: 20,
+      strokeWidth: 0,
+      opacity: 1,
+      rotation: 0,
+      cornerRadius: 0,
+      fill: "#000000",
+      stroke: "transparent",
+      visible: true,
+      locked: false,
+      ...(font
+        ? {
+            text: "Hello",
+            fontSize: 16,
+            fontWeight: 400,
+            lineHeight: 1,
+            textAlign: "left",
+            fontRef: "asset",
+          }
         : { imageRef: "asset", objectFit: "contain" }),
     };
     for (const part of resource.parts) f.files.set(`cloud-A:${part.path}`, part.content);
     for (const scope of ["cloud-A", "cloud-B"]) {
-      const doc = normalizeDesignDocument({ format: "codeshell.design", version: 3, name: scope,
-        canvas: { width: 800, height: 600, background: "#ffffff" }, tokens: { colors: [] },
-        resources: scope === "cloud-A" ? [resource.descriptor] : [], activePageId: "page-1",
-        pages: Array.from({ length: 12 }, (_, i) => ({ id: `page-${i+1}`, name: `${scope} ${i+1}`,
-          children: scope === "cloud-A" && i === 11 ? [node] : [] })),
+      const doc = normalizeDesignDocument({
+        format: "codeshell.design",
+        version: 3,
+        name: scope,
+        canvas: { width: 800, height: 600, background: "#ffffff" },
+        tokens: { colors: [] },
+        resources: scope === "cloud-A" ? [resource.descriptor] : [],
+        activePageId: "page-1",
+        pages: Array.from({ length: 12 }, (_, i) => ({
+          id: `page-${i + 1}`,
+          name: `${scope} ${i + 1}`,
+          children: scope === "cloud-A" && i === 11 ? [node] : [],
+        })),
       });
-      const plan = await createDesignIndexPersistencePlan({ document: doc, sha256: async value => createHash("sha256").update(value).digest("hex") });
+      const plan = await createDesignIndexPersistencePlan({
+        document: doc,
+        sha256: async (value) => createHash("sha256").update(value).digest("hex"),
+      });
       f.files.set(`${scope}:${initialPath}`, plan.primarySource);
       for (const part of plan.parts) f.files.set(`${scope}:${part.path}`, part.content);
     }
-    const page = await f.page({ cwd: "/workspace", scope: "cloud-A", initialPath, sharedInitialPath: true });
-    await page.evaluate(stage => {
+    const page = await f.page({
+      cwd: "/workspace",
+      scope: "cloud-A",
+      initialPath,
+      sharedInitialPath: true,
+    });
+    await page.evaluate((stage) => {
       const hold = async () => {
         window.loadEntered = true;
-        await new Promise(resolve => { window.releaseLoad = resolve; });
+        await new Promise((resolve) => {
+          window.releaseLoad = resolve;
+        });
       };
       window.installedDeferredFonts = [];
       if (stage === "font") {
         // Exercise the asynchronous decoder boundary; this is not a font fidelity test.
         window.FontFace = class {
-          constructor(family) { this.family = family; }
-          async load() { await hold(); return this; }
+          constructor(family) {
+            this.family = family;
+          }
+          async load() {
+            await hold();
+            return this;
+          }
         };
-        document.fonts.add = face => { window.installedDeferredFonts.push(face.family); };
+        document.fonts.add = (face) => {
+          window.installedDeferredFonts.push(face.family);
+        };
       } else {
         const digest = crypto.subtle.digest.bind(crypto.subtle);
         let calls = 0;
@@ -718,12 +1045,13 @@ for (const stage of ["page", "image", "font", "same-project-document"]) {
     if (stage === "same-project-document") {
       await page.locator("#open-files").click();
       await page.locator("#new-document").click();
-    }
-    else await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
+    } else await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
     await page.waitForFunction(() => !document.querySelector(".topbar").inert);
     const scope = stage === "same-project-document" ? "cloud-A" : "cloud-B";
     const before = await page.evaluate(() => window.tools.get_design_metadata());
-    const writesBefore = f.calls.filter(call => call.scope === scope && call.method === "storage.compareAndSet").length;
+    const writesBefore = f.calls.filter(
+      (call) => call.scope === scope && call.method === "storage.compareAndSet",
+    ).length;
     await page.evaluate(() => window.releaseLoad());
     await page.waitForTimeout(650);
     const result = await page.evaluate(() => window.tools.get_design_metadata());
@@ -733,107 +1061,228 @@ for (const stage of ["page", "image", "font", "same-project-document"]) {
     assert.equal(result.runtime.loadedResourceCount, 0);
     assert.deepEqual(await page.evaluate(() => window.installedDeferredFonts), []);
     if (stage !== "same-project-document")
-      assert.equal(f.calls.filter(call => call.scope === scope && call.method === "storage.compareAndSet").length, writesBefore);
+      assert.equal(
+        f.calls.filter((call) => call.scope === scope && call.method === "storage.compareAndSet")
+          .length,
+        writesBefore,
+      );
   });
 }
 
-
-test("a PRD read cannot save or submit a replacement design in the same project", async t => {
-  const f = await fixture(t), page = await f.page();
-  f.files.set("/project/A:docs/PRD.md", "# Previous design\nBuild a dashboard for the original project design.");
+test("a PRD read cannot save or submit a replacement design in the same project", async (t) => {
+  const f = await fixture(t),
+    page = await f.page();
+  f.files.set(
+    "/project/A:docs/PRD.md",
+    "# Previous design\nBuild a dashboard for the original project design.",
+  );
   await page.locator("#open-delivery").click();
   const hold = f.pauseResponse("/project/A", "workspace.readText");
   await page.locator("#design-from-prd").click();
   await hold.entered;
   await page.locator("#open-files").click();
-  page.once("dialog", dialog => dialog.accept());
+  page.once("dialog", (dialog) => dialog.accept());
   await page.locator("#new-document").click();
   hold.release();
   await page.waitForFunction(() => !document.querySelector("#design-from-prd").disabled);
-  assert.equal(f.calls.some(call => call.method === "workspace.writeText"), false);
-  assert.equal(f.calls.some(call => call.method === "agent.submitPrompt"), false);
+  assert.equal(
+    f.calls.some((call) => call.method === "workspace.writeText"),
+    false,
+  );
+  assert.equal(
+    f.calls.some((call) => call.method === "agent.submitPrompt"),
+    false,
+  );
   const metadata = await page.evaluate(() => window.tools.get_design_metadata());
   assert.equal(metadata.name, "Untitled");
   assert.equal(metadata.dirty, true);
 });
 
-
 for (const action of ["svg", "agent", "frontend", "comparison", "audit"]) {
-  test(`late ${action} delivery cannot continue against a replacement design`, { timeout: 10000 }, async t => {
-    const f = await fixture(t), page = await f.page();
-    f.files.set("/project/A:designs/result.html", "previous output bytes");
-    f.files.set("/project/A:designs/implementation.html", '<html><head><link rel="stylesheet" href="style.css"></head><body><p>Old implementation</p></body></html>');
-    f.files.set("/project/A:designs/style.css", "p { color: red; }");
-    const method = ["svg", "agent", "audit"].includes(action) ? "workspace.writeText" : "workspace.readText";
-    const hold = f.pauseResponse("/project/A", method);
-    if (action === "svg") await page.locator("#export-svg").click();
-    else if (action === "audit") {
-      await page.locator("#run-audit").click();
-      await page.locator("#save-audit-report").click();
-    }
-    else if (action === "agent") {
-      await page.locator("#open-ai").click();
-      await page.locator("#ai-request").fill("Update the original design");
-      await page.locator("#submit-ai").click();
-    } else await page.evaluate(async action => {
-      const metadata = await window.tools.get_design_metadata();
-      window.pendingDelivery = (action === "frontend"
-        ? window.tools.generate_frontend({ path: "designs/result.html", expected_state_revision: metadata.stateRevision })
-        : window.tools.compare_frontend({ path: "designs/implementation.html", expected_state_revision: metadata.stateRevision })
-      ).then(value => ({ value }), error => ({ error: error.message }));
-    }, action);
-    await hold.entered;
-    if (["agent", "audit"].includes(action)) await page.keyboard.press("Escape");
-    await page.locator("#open-files").click();
-    page.once("dialog", dialog => dialog.accept());
-    await page.locator("#new-document").click();
-    const writesBefore = f.calls.filter(call => call.method === "workspace.writeText").length;
-    hold.release();
-    if (["frontend", "comparison"].includes(action))
-      assert.match((await page.evaluate(() => window.pendingDelivery)).error, /设计文件.*切换/);
-    else await page.waitForFunction(action => !document.querySelector(action === "svg" ? "#export-svg" : action === "audit" ? "#save-audit-report" : "#submit-ai").disabled, action);
-    assert.equal(f.calls.filter(call => call.method === "workspace.writeText").length, writesBefore);
-    assert.equal(f.calls.some(call => call.method === "agent.submitPrompt"), false);
-    assert.equal(f.calls.some(call => call.method === "workspace.readText" && call.path === "designs/style.css"), false);
-    assert.equal(f.files.get("/project/A:designs/result.html"), "previous output bytes");
-    const metadata = await page.evaluate(() => window.tools.get_design_metadata());
-    assert.equal(metadata.name, "Untitled");
-    assert.equal(metadata.dirty, true);
-  });
+  test(
+    `late ${action} delivery cannot continue against a replacement design`,
+    { timeout: 10000 },
+    async (t) => {
+      const f = await fixture(t),
+        page = await f.page();
+      f.files.set("/project/A:designs/result.html", "previous output bytes");
+      f.files.set(
+        "/project/A:designs/implementation.html",
+        '<html><head><link rel="stylesheet" href="style.css"></head><body><p>Old implementation</p></body></html>',
+      );
+      f.files.set("/project/A:designs/style.css", "p { color: red; }");
+      const method = ["svg", "agent", "audit"].includes(action)
+        ? "workspace.writeText"
+        : "workspace.readText";
+      const hold = f.pauseResponse("/project/A", method);
+      if (action === "svg") await page.locator("#export-svg").click();
+      else if (action === "audit") {
+        await page.locator("#run-audit").click();
+        await page.locator("#save-audit-report").click();
+      } else if (action === "agent") {
+        await page.locator("#open-ai").click();
+        await page.locator("#ai-request").fill("Update the original design");
+        await page.locator("#submit-ai").click();
+      } else
+        await page.evaluate(async (action) => {
+          const metadata = await window.tools.get_design_metadata();
+          window.pendingDelivery = (
+            action === "frontend"
+              ? window.tools.generate_frontend({
+                  path: "designs/result.html",
+                  expected_state_revision: metadata.stateRevision,
+                })
+              : window.tools.compare_frontend({
+                  path: "designs/implementation.html",
+                  expected_state_revision: metadata.stateRevision,
+                })
+          ).then(
+            (value) => ({ value }),
+            (error) => ({ error: error.message }),
+          );
+        }, action);
+      await hold.entered;
+      if (["agent", "audit"].includes(action)) await page.keyboard.press("Escape");
+      await page.locator("#open-files").click();
+      page.once("dialog", (dialog) => dialog.accept());
+      await page.locator("#new-document").click();
+      const writesBefore = f.calls.filter((call) => call.method === "workspace.writeText").length;
+      hold.release();
+      if (["frontend", "comparison"].includes(action))
+        assert.match((await page.evaluate(() => window.pendingDelivery)).error, /设计文件.*切换/);
+      else
+        await page.waitForFunction(
+          (action) =>
+            !document.querySelector(
+              action === "svg"
+                ? "#export-svg"
+                : action === "audit"
+                  ? "#save-audit-report"
+                  : "#submit-ai",
+            ).disabled,
+          action,
+        );
+      assert.equal(
+        f.calls.filter((call) => call.method === "workspace.writeText").length,
+        writesBefore,
+      );
+      assert.equal(
+        f.calls.some((call) => call.method === "agent.submitPrompt"),
+        false,
+      );
+      assert.equal(
+        f.calls.some(
+          (call) => call.method === "workspace.readText" && call.path === "designs/style.css",
+        ),
+        false,
+      );
+      assert.equal(f.files.get("/project/A:designs/result.html"), "previous output bytes");
+      const metadata = await page.evaluate(() => window.tools.get_design_metadata());
+      assert.equal(metadata.name, "Untitled");
+      assert.equal(metadata.dirty, true);
+    },
+  );
 }
 
+test(
+  "unchanged designs still save, submit their PRD and export SVG",
+  { timeout: 10000 },
+  async (t) => {
+    const f = await fixture(t),
+      page = await f.page();
+    f.files.set("/project/A:docs/PRD.md", "# Original requirements\nBuild a project dashboard.");
+    await page.locator("#open-delivery").click();
+    await page.locator("#design-from-prd").click();
+    await page.locator("#product-brief-status").filter({ hasText: "已交给 Agent" }).waitFor();
+    const submission = f.calls.find((call) => call.method === "agent.submitPrompt");
+    assert.equal(submission.scope, "/project/A");
+    assert.match(submission.prompt, /designs\/design.codesign.json/);
+    await page.locator("#export-svg").click();
+    await page.waitForFunction(() => !document.querySelector("#export-svg").disabled);
+    assert.match(f.files.get("/project/A:designs/design.svg"), /<svg/);
+    assert.equal((await page.evaluate(() => window.tools.get_design_metadata())).dirty, false);
+  },
+);
 
-test("unchanged designs still save, submit their PRD and export SVG", { timeout: 10000 }, async t => {
-  const f = await fixture(t), page = await f.page();
-  f.files.set("/project/A:docs/PRD.md", "# Original requirements\nBuild a project dashboard.");
-  await page.locator("#open-delivery").click();
-  await page.locator("#design-from-prd").click();
-  await page.locator("#product-brief-status").filter({ hasText: "已交给 Agent" }).waitFor();
-  const submission = f.calls.find(call => call.method === "agent.submitPrompt");
-  assert.equal(submission.scope, "/project/A");
-  assert.match(submission.prompt, /designs\/design.codesign.json/);
-  await page.locator("#export-svg").click();
-  await page.waitForFunction(() => !document.querySelector("#export-svg").disabled);
-  assert.match(f.files.get("/project/A:designs/design.svg"), /<svg/);
-  assert.equal((await page.evaluate(() => window.tools.get_design_metadata())).dirty, false);
-});
+for (const prototype of [false, true]) {
+  test(
+    `${prototype ? "prototype" : "static frontend"} output rejects canvas edits while awaiting its output read`,
+    { timeout: 10000 },
+    async (t) => {
+      const f = await fixture(t),
+        page = await f.page();
+      const outputPath = "designs/guarded-output.html",
+        previous = "existing output must be retained";
+      f.files.set(`/project/A:${outputPath}`, previous);
+      const initial = await page.evaluate(() => window.tools.get_design_metadata());
+      const hold = f.pauseResponse("/project/A", "workspace.readText");
+      await page.evaluate(
+        async ({ outputPath, prototype }) => {
+          const metadata = await window.tools.get_design_metadata();
+          window.pendingExport = window.tools
+            .generate_frontend({
+              path: outputPath,
+              prototype,
+              expected_state_revision: metadata.stateRevision,
+            })
+            .then(
+              (value) => ({ value }),
+              (error) => ({ error: error.message }),
+            );
+        },
+        { outputPath, prototype },
+      );
+      await hold.entered;
+      assert.equal(
+        f.calls.at(-1).path,
+        outputPath,
+        "pause must occur at the output CAS read, after source capture",
+      );
+      await page.locator("#add-page").click();
+      assert.notEqual(
+        (await page.evaluate(() => window.tools.get_design_metadata())).stateRevision,
+        initial.stateRevision,
+      );
+      hold.release();
+      const result = await page.evaluate(() => window.pendingExport);
+      assert.match(result.error, /设计.*变化|旧版本输出/);
+      assert.equal(
+        f.calls.some((call) => call.method === "workspace.writeText" && call.path === outputPath),
+        false,
+        "a stale snapshot must be rejected before dispatching its write",
+      );
+      assert.equal(f.files.get(`/project/A:${outputPath}`), previous);
+    },
+  );
+}
 
-
-test("frontend receipts identify the exported snapshot when editing continues during the write", { timeout: 10000 }, async t => {
-  const f = await fixture(t), page = await f.page();
-  const initial = await page.evaluate(() => window.tools.get_design_metadata());
-  const hold = f.pauseResponse("/project/A", "workspace.writeText");
-  await page.evaluate(async () => {
-    const metadata = await window.tools.get_design_metadata();
-    window.pendingExport = window.tools.generate_frontend({ path: "designs/snapshot.html", expected_state_revision: metadata.stateRevision });
-  });
-  await hold.entered;
-  await page.locator("#add-page").click();
-  hold.release();
-  const result = await page.evaluate(() => window.pendingExport);
-  const current = await page.evaluate(() => window.tools.get_design_metadata());
-  assert.notEqual(current.stateRevision, initial.stateRevision);
-  assert.equal(result.stateRevision, initial.stateRevision, "receipt must describe the exported source, not the newer canvas");
-  assert.equal(result.pageId, initial.activePageId);
-  assert.match(f.files.get("/project/A:designs/snapshot.html"), /<!doctype html>/i);
-});
+test(
+  "frontend receipts identify the exported snapshot when editing continues during the write",
+  { timeout: 10000 },
+  async (t) => {
+    const f = await fixture(t),
+      page = await f.page();
+    const initial = await page.evaluate(() => window.tools.get_design_metadata());
+    const hold = f.pauseResponse("/project/A", "workspace.writeText");
+    await page.evaluate(async () => {
+      const metadata = await window.tools.get_design_metadata();
+      window.pendingExport = window.tools.generate_frontend({
+        path: "designs/snapshot.html",
+        expected_state_revision: metadata.stateRevision,
+      });
+    });
+    await hold.entered;
+    await page.locator("#add-page").click();
+    hold.release();
+    const result = await page.evaluate(() => window.pendingExport);
+    const current = await page.evaluate(() => window.tools.get_design_metadata());
+    assert.notEqual(current.stateRevision, initial.stateRevision);
+    assert.equal(
+      result.stateRevision,
+      initial.stateRevision,
+      "receipt must describe the exported source, not the newer canvas",
+    );
+    assert.equal(result.pageId, initial.activePageId);
+    assert.match(f.files.get("/project/A:designs/snapshot.html"), /<!doctype html>/i);
+  },
+);

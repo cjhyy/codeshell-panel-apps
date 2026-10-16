@@ -4,6 +4,10 @@ import {
   reviewCommentsPath,
   reviewDraftKey,
   reviewScopeKey,
+  createReviewDraftSession,
+  reviewDraftStorageKey,
+  validateReviewDraft,
+  REVIEW_DRAFT_FORMAT,
 } from "./review-comments.mjs";
 
 function element(tag, className, text) {
@@ -18,7 +22,15 @@ function button(text, className = "button") {
   return value;
 }
 
-export function mountReviewComments({ getSnapshot, call, focusTarget, notify = () => {} }) {
+export function mountReviewComments({
+  getSnapshot,
+  call,
+  focusTarget,
+  notify = () => {},
+  submitThread,
+  canSubmitThread = () => true,
+  sha256,
+}) {
   if (!document.querySelector("link[data-review-comments-style]")) {
     const style = document.createElement("link");
     style.rel = "stylesheet";
@@ -98,7 +110,9 @@ export function mountReviewComments({ getSnapshot, call, focusTarget, notify = (
   submit.type = "submit";
   submit.id = "review-comments-submit";
   const footer = element("div", "review-comments-composer-footer");
-  footer.append(element("span", "", "仅保存到当前项目，未同步到 Figma"), submit);
+  const draftState = element("span", "", "评论保存到当前项目，未同步到 Figma");
+  draftState.id = "review-comments-draft-state";
+  footer.append(draftState, submit);
   composer.append(target, targetActions, inputLabel, footer);
   card.append(header, description, storage, status, controls, list, composer);
   dialog.append(card);
@@ -112,14 +126,121 @@ export function mountReviewComments({ getSnapshot, call, focusTarget, notify = (
     busy = false,
     wasReady = false,
     destroyed = false;
+  let persistence = null,
+    draftTimer = null;
   const store = createReviewCommentsStore({
     getSnapshot,
     call,
     getOperationEpoch: () => generation,
+    ...(sha256 ? { sha256 } : {}),
   });
   function currentDraft() {
-    if (!drafts.has(draftKey)) drafts.set(draftKey, { text: "", target: null, replies: new Map() });
+    if (!drafts.has(draftKey))
+      drafts.set(draftKey, { text: "", target: null, replies: new Map(), revision: 0 });
     return drafts.get(draftKey);
+  }
+  function draftRecord(draft = currentDraft(), snapshot = getSnapshot()) {
+    return {
+      format: REVIEW_DRAFT_FORMAT,
+      version: 1,
+      scopeKey: reviewDraftKey(snapshot),
+      text: draft.text,
+      target: draft.target,
+      replies: [...draft.replies]
+        .filter(([, text]) => text)
+        .map(([threadId, text]) => ({ threadId, text })),
+    };
+  }
+  function previewDraftSession(key, snapshot) {
+    const prefix = `codeshell-design-studio:${key}:`;
+    const priorWriter = sessionStorage.getItem(`${prefix}writer`),
+      writer = crypto.randomUUID();
+    sessionStorage.setItem(`${prefix}writer`, writer);
+    const ownKey = `${prefix}${writer}`;
+    return {
+      async load() {
+        let selected = null;
+        for (let index = 0; index < localStorage.length; index++) {
+          const storageKey = localStorage.key(index);
+          if (!storageKey?.startsWith(prefix)) continue;
+          const record = JSON.parse(localStorage.getItem(storageKey));
+          validateReviewDraft(record.value, snapshot);
+          if (storageKey === ownKey || storageKey === `${prefix}${priorWriter}`)
+            return record.value;
+          if (!selected || record.savedAt > selected.savedAt) selected = record;
+        }
+        return selected?.value ?? null;
+      },
+      async save(value) {
+        validateReviewDraft(value, snapshot);
+        localStorage.setItem(ownKey, JSON.stringify({ value, savedAt: Date.now() }));
+      },
+    };
+  }
+  async function loadDraftPersistence(snapshot) {
+    const expected = generation,
+      key = draftKey,
+      draft = currentDraft(),
+      revision = draft.revision;
+    const entry = { generation: expected, key, snapshot, session: null, blocked: false };
+    persistence = entry;
+    try {
+      entry.session = window.codeshellPanel?.call
+        ? await createReviewDraftSession({
+            snapshot,
+            getSnapshot,
+            call,
+            getOperationEpoch: () => generation,
+          })
+        : previewDraftSession(await reviewDraftStorageKey(snapshot), snapshot);
+      if (!entry.session) return;
+      const saved = await entry.session.load();
+      if (destroyed || generation !== expected || draftKey !== key) return;
+      const local = draftRecord(draft, snapshot);
+      if (saved && JSON.stringify(saved) !== JSON.stringify(local)) {
+        if (revision === draft.revision && !draft.text && !draft.replies.size) {
+          draft.text = saved.text;
+          draft.target = saved.target;
+          draft.replies = new Map(saved.replies.map((reply) => [reply.threadId, reply.text]));
+          input.value = draft.text;
+          renderTarget();
+          renderList();
+        } else {
+          entry.blocked = true;
+          draftState.textContent = "已保留另一个持久草稿；本次输入暂留当前面板。";
+          return;
+        }
+      }
+      draftState.textContent = "评论草稿可在重新打开面板后恢复。";
+      if (!saved && (draft.text || draft.replies.size)) void flushDraft();
+    } catch (error) {
+      entry.blocked = true;
+      if (generation === expected) draftState.textContent = `草稿自动保存已停止：${error.message}`;
+    }
+  }
+  async function flushDraft() {
+    clearTimeout(draftTimer);
+    draftTimer = null;
+    const entry = persistence;
+    if (!entry?.session || entry.blocked || entry.generation !== generation || !usable()) return;
+    try {
+      await entry.session.save(draftRecord(currentDraft(), entry.snapshot));
+      if (entry.generation === generation)
+        draftState.textContent = "评论草稿已暂存，可重新打开继续。";
+    } catch (error) {
+      entry.blocked = true;
+      if (entry.generation === generation)
+        draftState.textContent = `草稿自动保存已停止：${error.message}`;
+    }
+  }
+  function draftChanged() {
+    currentDraft().revision++;
+    if (!window.codeshellPanel?.call) {
+      void flushDraft();
+      return;
+    }
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(() => void flushDraft(), 180);
   }
   function selectedTarget(snapshot, pageOnly = false) {
     return {
@@ -157,7 +278,10 @@ export function mountReviewComments({ getSnapshot, call, focusTarget, notify = (
     selectionButton.disabled = busy || !available;
     pageButton.disabled = busy || !available;
     for (const control of list.querySelectorAll("button, textarea"))
-      control.disabled = busy || !available;
+      control.disabled =
+        busy ||
+        !available ||
+        (control.dataset.agentThread !== undefined && !canSubmitThread(getSnapshot()));
     input.disabled = busy || !available;
     dialog.setAttribute("aria-busy", String(busy));
   }
@@ -218,15 +342,22 @@ export function mountReviewComments({ getSnapshot, call, focusTarget, notify = (
       replyInput.setAttribute("aria-label", "回复讨论");
       replyInput.dataset.replyThread = thread.id;
       replyInput.value = currentDraft().replies.get(thread.id) ?? "";
-      replyInput.addEventListener("input", () =>
-        currentDraft().replies.set(thread.id, replyInput.value),
-      );
+      replyInput.addEventListener("input", () => {
+        currentDraft().replies.set(thread.id, replyInput.value);
+        draftChanged();
+      });
       const replyActions = element("div", "review-comment-actions");
       const resolve = button(thread.status === "resolved" ? "重新打开" : "标记解决");
       resolve.dataset.resolveThread = thread.id;
       const send = button("回复");
       send.type = "submit";
       replyActions.append(resolve, send);
+      if (submitThread && thread.status === "open") {
+        const agent = button("交给 Agent");
+        agent.dataset.agentThread = thread.id;
+        replyActions.prepend(agent);
+        agent.addEventListener("click", () => void handoff(thread));
+      }
       replyForm.append(replyInput, replyActions);
       item.append(replyForm);
       list.append(item);
@@ -263,6 +394,45 @@ export function mountReviewComments({ getSnapshot, call, focusTarget, notify = (
     renderAvailability();
   }
 
+  async function handoff(thread) {
+    if (
+      busy ||
+      !usable() ||
+      !submitThread ||
+      !canSubmitThread(getSnapshot()) ||
+      reviewScopeKey(getSnapshot()) !== scopeKey
+    )
+      return;
+    const ticket = generation,
+      expected = scopeKey,
+      snapshot = structuredClone(getSnapshot());
+    const check = () => {
+      if (generation !== ticket || reviewScopeKey(getSnapshot()) !== expected || !usable())
+        throw Error("项目或设计已切换，评论任务已取消");
+    };
+    busy = true;
+    stateText("正在准备评论与设计上下文…");
+    renderAvailability();
+    try {
+      // Reload before dispatch so the Agent gets every latest reply and status.
+      const latest = await store.refresh();
+      check();
+      const current = latest.document.threads.find((value) => value.id === thread.id);
+      if (!current || current.status !== "open") throw Error("讨论已被移除或解决，请刷新列表");
+      await submitThread(structuredClone(current), { snapshot, check });
+      check();
+      stateText("已将讨论交给 Agent。解决状态可在完成核对后更新。", "saved");
+    } catch (error) {
+      if (generation === ticket && reviewScopeKey(getSnapshot()) === expected)
+        stateText(error.message, "error");
+    } finally {
+      if (generation === ticket) {
+        busy = false;
+        renderAvailability();
+      }
+    }
+  }
+
   async function run(action, committed) {
     if (reviewScopeKey(getSnapshot()) !== scopeKey) {
       update();
@@ -285,6 +455,7 @@ export function mountReviewComments({ getSnapshot, call, focusTarget, notify = (
       )
         return;
       committed?.();
+      draftChanged();
       loaded = result.document;
       input.value = currentDraft().text;
       stateText("评论已保存到项目文件。", "saved");
@@ -335,6 +506,8 @@ export function mountReviewComments({ getSnapshot, call, focusTarget, notify = (
       ready = usable();
     const changed = scopeKey !== nextScope;
     if (changed) {
+      clearTimeout(draftTimer);
+      persistence = null;
       generation++;
       scopeKey = nextScope;
       draftKey = reviewDraftKey(snapshot);
@@ -354,6 +527,7 @@ export function mountReviewComments({ getSnapshot, call, focusTarget, notify = (
     }
     const becameReady = ready && !wasReady;
     wasReady = ready;
+    if (ready && dialog.open && !persistence) void loadDraftPersistence(snapshot);
     renderAvailability();
     if (autoRefresh && dialog.open && ready && (changed || becameReady)) void refresh();
   }
@@ -386,30 +560,38 @@ export function mountReviewComments({ getSnapshot, call, focusTarget, notify = (
     if (options.text !== undefined) {
       const text = String(options.text);
       draft.text = draft.text && draft.text !== text ? `${draft.text}\n\n${text}` : text;
+      draftChanged();
     }
     input.value = draft.text;
     renderTarget();
     renderAvailability();
     if (!dialog.open) dialog.showModal();
+    if (!persistence) void loadDraftPersistence(snapshot);
     document.querySelector("#compact-actions")?.removeAttribute("open");
     void refresh();
     input.focus();
   }
 
   openButton.addEventListener("click", () => open());
-  close.addEventListener("click", () => dialog.close());
+  close.addEventListener("click", () => {
+    void flushDraft();
+    dialog.close();
+  });
   refreshButton.addEventListener("click", () => void refresh());
   filter.addEventListener("change", renderList);
   input.addEventListener("input", () => {
     currentDraft().text = input.value;
+    draftChanged();
     renderAvailability();
   });
   selectionButton.addEventListener("click", () => {
     currentDraft().target = selectedTarget(getSnapshot());
+    draftChanged();
     renderTarget();
   });
   pageButton.addEventListener("click", () => {
     currentDraft().target = selectedTarget(getSnapshot(), true);
+    draftChanged();
     renderTarget();
   });
   composer.addEventListener("submit", (event) => {
@@ -429,8 +611,11 @@ export function mountReviewComments({ getSnapshot, call, focusTarget, notify = (
     update,
     refresh,
     open,
+    flushDraft,
     contextChanged() {
       generation++;
+      clearTimeout(draftTimer);
+      persistence = null;
       scopeKey = null;
       loaded = null;
       busy = false;
@@ -441,6 +626,7 @@ export function mountReviewComments({ getSnapshot, call, focusTarget, notify = (
     },
     destroy() {
       destroyed = true;
+      clearTimeout(draftTimer);
       generation++;
       dialog.remove();
       openButton.remove();

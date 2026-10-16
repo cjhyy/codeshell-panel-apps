@@ -38,7 +38,7 @@
         cursor: pointer;
       }
       button:disabled {
-        cursor: wait;
+        cursor: default;
         opacity: 0.5;
       }
       button.primary {
@@ -51,6 +51,31 @@
         max-width: 100%;
         margin: 8px 0;
       }
+      details {
+        margin: 12px 0;
+        padding-top: 8px;
+        border-top: 1px solid var(--figma-color-border, #ddd);
+      }
+      summary {
+        cursor: pointer;
+      }
+      textarea {
+        display: block;
+        width: 100%;
+        max-width: 100%;
+        min-height: 110px;
+        max-height: 240px;
+        margin-top: 8px;
+        padding: 8px;
+        resize: vertical;
+        border: 1px solid var(--figma-color-border, #ddd);
+        border-radius: 6px;
+        color: inherit;
+        background: var(--figma-color-bg, #fff);
+        font:
+          11px/1.45 ui-monospace,
+          monospace;
+      }
       #status {
         white-space: pre-wrap;
         overflow-wrap: anywhere;
@@ -61,6 +86,9 @@
         border-radius: 6px;
         background: var(--figma-color-bg-secondary, #f6f6f6);
       }
+      [hidden] {
+        display: none !important;
+      }
     </style>
   </head>
   <body>
@@ -68,53 +96,229 @@
     <p>通过本地 JSON 连接 Figma 与设计面板。支持基础图层和 Auto Layout；不支持二进制 .fig 文件。</p>
     <h2>Figma → 设计面板</h2>
     <p>下载官方 JSON_REST_V1 数据，再在设计面板的「导入 Figma JSON」中打开。</p>
-    <button id="export-page">导出当前页面</button
-    ><button id="export-selection">导出选中图层</button>
+    <button id="export-page" type="button">导出当前页面</button
+    ><button id="export-selection" type="button">导出选中图层</button>
+    <details id="export-json-details">
+      <summary>查看或复制导出的 JSON</summary>
+      <p>完成导出后，可直接复制内容，也可重新下载文件。</p>
+      <label for="export-json">最近一次导出的 JSON</label>
+      <textarea
+        id="export-json"
+        rows="6"
+        readonly
+        spellcheck="false"
+        aria-label="导出的 JSON"
+      ></textarea>
+      <button id="copy-export-json" type="button" disabled>复制 JSON</button
+      ><button id="download-export-json" type="button" disabled>重新下载</button>
+    </details>
     <h2>设计面板 → Figma</h2>
-    <p>选择设计面板导出的 Figma 传输包。每次导入都会新增页面；缺失字体会回退并显示提示。</p>
-    <input id="file" type="file" accept=".json,application/json" />
-    <button id="import" class="primary" disabled>导入为新页面</button>
+    <p>选择设计面板导出的 Figma 传输包。可创建新页面；有来源记录时也可核对后增量更新原设计。</p>
+    <input id="file" type="file" accept=".json" aria-label="Figma 传输包 JSON 文件" />
+    <details id="paste-transfer-details">
+      <summary>文件无法选择？粘贴转换 JSON</summary>
+      <p>粘贴设计面板导出的 Figma 传输包内容，校验后使用下方导入或更新按钮。单次上限 16 MiB。</p>
+      <label for="paste-json">Figma 传输包 JSON</label>
+      <textarea
+        id="paste-json"
+        rows="6"
+        spellcheck="false"
+        placeholder="粘贴 codeshell.figma.transfer JSON"
+      ></textarea>
+      <button id="load-pasted-json" type="button" disabled>校验并载入 JSON</button
+      ><button id="clear-pasted-json" type="button" disabled>清空粘贴内容</button>
+    </details>
+    <button id="import" type="button" class="primary" disabled>导入为新页面</button>
+    <button id="preview-patch" type="button" disabled>预览更新原设计</button>
+    <label id="delete-label" hidden
+      ><input id="allow-deletes" type="checkbox" />已核对列表，允许删除列出的原图层或页面</label
+    >
+    <button id="apply-patch" type="button" class="primary" disabled>应用已核对修改</button>
     <div id="status" role="status" aria-live="polite">准备就绪。所有文件处理均在本地进行。</div>
     <script>
-      const status = document.querySelector("#status");
-      const picker = document.querySelector("#file");
-      const importButton = document.querySelector("#import");
+      const MAX_BYTES = 16 * 1024 * 1024;
+      const status = document.querySelector("#status"),
+        picker = document.querySelector("#file");
+      const importButton = document.querySelector("#import"),
+        previewButton = document.querySelector("#preview-patch"),
+        applyButton = document.querySelector("#apply-patch");
+      const deleteBox = document.querySelector("#allow-deletes"),
+        deleteLabel = document.querySelector("#delete-label");
+      const pasted = document.querySelector("#paste-json"),
+        loadPasted = document.querySelector("#load-pasted-json"),
+        clearPasted = document.querySelector("#clear-pasted-json");
+      const exported = document.querySelector("#export-json"),
+        copyExport = document.querySelector("#copy-export-json"),
+        downloadExport = document.querySelector("#download-export-json");
       let content = null,
-        busy = false;
+        busy = false,
+        patchAvailable = false,
+        previewToken = null,
+        needsDelete = false,
+        fileGeneration = 0,
+        waiting = null;
+      let exportedContent = null,
+        exportedFilename = "figma-design.json";
+      const object = (value) =>
+        value !== null && typeof value === "object" && !Array.isArray(value);
+      const size = (text) => new Blob([text]).size;
       const setBusy = (value) => {
         busy = value;
-        document.querySelectorAll("button").forEach((button) => {
-          button.disabled = value || (button === importButton && !content);
-        });
+        document.body.setAttribute("aria-busy", String(value));
+        for (const button of document.querySelectorAll("button")) button.disabled = value;
+        importButton.disabled = value || !content;
+        previewButton.disabled = value || !content || !patchAvailable;
+        applyButton.disabled = value || !previewToken || (needsDelete && !deleteBox.checked);
+        loadPasted.disabled = value || !pasted.value.trim();
+        clearPasted.disabled = value || !pasted.value;
+        copyExport.disabled = value || !exportedContent;
+        downloadExport.disabled = value || !exportedContent;
+        picker.disabled = value;
+        pasted.disabled = value;
+        deleteBox.disabled = value;
       };
+      function clearTransfer() {
+        content = null;
+        previewToken = null;
+        patchAvailable = false;
+        needsDelete = false;
+        deleteBox.checked = false;
+        deleteLabel.hidden = true;
+      }
+      function clearPreview() {
+        previewToken = null;
+        needsDelete = false;
+        deleteBox.checked = false;
+        deleteLabel.hidden = true;
+      }
       const send = (message) => {
+        if (busy) return;
+        if (["import-transfer", "preview-patch", "apply-patch"].includes(message.type))
+          clearPreview();
+        waiting = { type: message.type, generation: fileGeneration };
         setBusy(true);
         status.textContent = "处理中…";
         parent.postMessage({ pluginMessage: message }, "*");
       };
-      picker.addEventListener("change", async () => {
-        content = null;
-        importButton.disabled = true;
+      async function prepareText(text, label, generation) {
+        if (typeof text !== "string" || !text.trim()) throw Error("请先粘贴 JSON 内容。");
+        if (size(text) > MAX_BYTES) throw Error("JSON 超过 16 MiB；请分页面导出。");
+        let value;
+        try {
+          value = JSON.parse(text);
+        } catch {
+          throw Error("JSON 无法解析，请粘贴完整的 Figma 传输包。");
+        }
+        if (!object(value) || value.format !== "codeshell.figma.transfer" || value.version !== 1)
+          throw Error("请使用设计面板导出的 Figma 传输包（codeshell.figma.transfer）。");
+        if (value.assets !== undefined && !object(value.assets)) throw Error("图片资源表无效。");
+        const assets = Object.values(value.assets ?? {});
+        if (assets.length > 2048) throw Error("图片资源数量超过上限。");
+        for (const asset of assets) {
+          if (generation !== fileGeneration) return;
+          if (!object(asset)) throw Error("图片资源无效。");
+          if (asset.mime !== "image/svg+xml" && asset.mime !== "image/webp") continue;
+          if (
+            typeof asset.base64 !== "string" ||
+            asset.base64.length > 12 * 1024 * 1024 ||
+            !/^[a-z0-9+/]*={0,2}$/iu.test(asset.base64)
+          )
+            throw Error("图片 Base64 无效或超出上限。");
+          const image = new Image();
+          await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(Error("图片转换超时。")), 10000);
+            image.onload = () => {
+              clearTimeout(timer);
+              resolve();
+            };
+            image.onerror = () => {
+              clearTimeout(timer);
+              reject(Error("图片不能转换为 PNG。"));
+            };
+            image.src = `data:${asset.mime};base64,${asset.base64}`;
+          });
+          if (generation !== fileGeneration) return;
+          if (!image.naturalWidth || !image.naturalHeight) throw Error("图片尺寸无效。");
+          const scale = Math.min(1, 4096 / Math.max(image.naturalWidth, image.naturalHeight)),
+            canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+          canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+          canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+          asset.mime = "image/png";
+          asset.base64 = canvas.toDataURL("image/png").split(",")[1];
+        }
+        const prepared = JSON.stringify(value);
+        if (size(prepared) > MAX_BYTES) throw Error("图片转换后超过 16 MiB；请分页面导出。");
+        if (generation !== fileGeneration) return;
+        content = prepared;
+        patchAvailable = value.patch?.format === "codeshell.figma.patch";
+        status.textContent =
+          "已载入：" + label + "\n可导入新页面" + (patchAvailable ? "，或预览更新原设计。" : "。");
+      }
+      async function loadText(read, label) {
+        if (busy) return;
+        const generation = ++fileGeneration;
+        clearTransfer();
+        setBusy(true);
+        status.textContent = "正在校验 JSON…";
+        try {
+          const text = await read();
+          if (generation !== fileGeneration) return;
+          await prepareText(text, label, generation);
+        } catch (error) {
+          if (generation === fileGeneration) {
+            clearTransfer();
+            status.textContent = error.message;
+          }
+        } finally {
+          if (generation === fileGeneration) setBusy(false);
+        }
+      }
+      picker.addEventListener("change", () => {
+        if (busy) return;
         const file = picker.files[0];
-        if (!file) return;
-        if (file.size > 16 * 1024 * 1024) {
-          status.textContent = "文件超过 16 MiB；请分页面导出。";
+        if (!file) {
+          ++fileGeneration;
+          clearTransfer();
+          setBusy(false);
           return;
         }
-        try {
-          const text = await file.text();
-          const value = JSON.parse(text);
-          if (value.format !== "codeshell.figma.transfer" || value.version !== 1)
-            throw Error("请选择设计面板导出的 Figma 传输包。");
-          content = text;
-          status.textContent = "已选择：" + file.name + "\n点击「导入为新页面」开始。";
-          importButton.disabled = busy;
-        } catch (error) {
-          status.textContent = error.message;
-        }
+        void loadText(async () => {
+          if (file.size > MAX_BYTES) throw Error("文件超过 16 MiB；请分页面导出。");
+          return file.text();
+        }, file.name);
+      });
+      pasted.addEventListener("input", () => {
+        if (busy) return;
+        ++fileGeneration;
+        clearTransfer();
+        setBusy(false);
+        status.textContent = pasted.value.trim()
+          ? "粘贴内容已修改，请先校验并载入 JSON。"
+          : "粘贴内容已清空。";
+      });
+      loadPasted.addEventListener(
+        "click",
+        () => void loadText(() => Promise.resolve(pasted.value), "粘贴的 JSON"),
+      );
+      clearPasted.addEventListener("click", () => {
+        if (busy) return;
+        pasted.value = "";
+        ++fileGeneration;
+        clearTransfer();
+        setBusy(false);
+        status.textContent = "粘贴内容已清空。";
       });
       importButton.addEventListener("click", () => {
         if (content) send({ type: "import-transfer", content });
+      });
+      previewButton.addEventListener("click", () => {
+        if (content && patchAvailable) send({ type: "preview-patch", content });
+      });
+      deleteBox.addEventListener("change", () => setBusy(busy));
+      applyButton.addEventListener("click", () => {
+        if (previewToken)
+          send({ type: "apply-patch", token: previewToken, allowDeletes: deleteBox.checked });
       });
       document
         .querySelector("#export-page")
@@ -122,32 +326,135 @@
       document
         .querySelector("#export-selection")
         .addEventListener("click", () => send({ type: "export-json", scope: "selection" }));
-      window.onmessage = (event) => {
-        const message = event.data?.pluginMessage;
-        if (!message || !["error", "imported", "exported"].includes(message.type)) return;
-        setBusy(false);
-        if (message.type === "error") {
-          status.textContent = message.message;
-          return;
-        }
-        if (message.type === "imported") {
-          status.textContent =
-            "已新增 " +
-            message.pages +
-            " 个页面、" +
-            message.nodes +
-            " 个可编辑图层。" +
-            (message.warnings.length ? "\n\n兼容性提示：\n" + message.warnings.join("\n") : "");
-          return;
-        }
-        const url = URL.createObjectURL(new Blob([message.content], { type: "application/json" }));
-        const link = document.createElement("a");
+      function downloadJson(text, filename) {
+        const url = URL.createObjectURL(new Blob([text], { type: "application/json" })),
+          link = document.createElement("a");
         link.href = url;
-        link.download = message.filename;
+        link.download = filename;
         link.click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
-        status.textContent = "JSON 已导出，可在 CodeShell 设计面板中导入。";
+      }
+      downloadExport.addEventListener("click", () => {
+        if (!busy && exportedContent) downloadJson(exportedContent, exportedFilename);
+      });
+      copyExport.addEventListener("click", async () => {
+        if (busy || !exportedContent) return;
+        const text = exportedContent,
+          generation = fileGeneration;
+        setBusy(true);
+        try {
+          if (!navigator.clipboard?.writeText) throw Error("Clipboard unavailable");
+          await navigator.clipboard.writeText(text);
+          if (generation === fileGeneration)
+            status.textContent = "导出 JSON 已复制，可直接粘贴到设计面板。";
+        } catch {
+          if (generation !== fileGeneration) return;
+          exported.focus();
+          exported.select();
+          let copied = false;
+          try {
+            copied = document.execCommand("copy");
+          } catch {
+            /* Manual selection remains available. */
+          }
+          status.textContent = copied
+            ? "导出 JSON 已复制，可直接粘贴到设计面板。"
+            : "已选中导出 JSON，请按 ⌘/Ctrl + C 复制。";
+        } finally {
+          if (generation === fileGeneration) setBusy(false);
+        }
+      });
+      window.onmessage = (event) => {
+        if (event.source !== parent) return;
+        const message = event.data?.pluginMessage,
+          request = waiting;
+        if (!object(message) || !request || request.generation !== fileGeneration) return;
+        const expected = {
+          "import-transfer": "imported",
+          "preview-patch": "patch-preview",
+          "apply-patch": "patched",
+          "export-json": "exported",
+        }[request.type];
+        if (message.type !== "error" && message.type !== expected) return;
+        waiting = null;
+        try {
+          if (message.type === "error") {
+            clearPreview();
+            status.textContent = String(message.message ?? "操作失败。");
+            return;
+          }
+          if (message.type === "patch-preview") {
+            if (!Array.isArray(message.conflicts) || !Array.isArray(message.operations))
+              throw Error("插件预览结果无效。");
+            previewToken =
+              message.conflicts.length || typeof message.token !== "string" ? null : message.token;
+            needsDelete = message.deletions > 0;
+            deleteBox.checked = false;
+            deleteLabel.hidden = !needsDelete;
+            status.textContent =
+              String(message.identity?.message ?? "") +
+              "\n\n" +
+              (message.conflicts.length
+                ? "存在冲突，未修改原设计：\n" + message.conflicts.join("\n")
+                : "核对以下 " +
+                  message.operations.length +
+                  " 项修改：\n" +
+                  message.operations
+                    .map(
+                      (operation) =>
+                        operation.op +
+                        " · " +
+                        operation.name +
+                        " · " +
+                        (operation.sourceId ?? operation.designId) +
+                        (operation.changed?.length ? " · " + operation.changed.join(", ") : ""),
+                    )
+                    .join("\n"));
+            return;
+          }
+          if (message.type === "patched") {
+            clearPreview();
+            status.textContent =
+              "已应用 " +
+              message.operations +
+              " 项修改。可使用 Figma 撤销。" +
+              (message.warnings?.length ? "\n" + message.warnings.join("\n") : "");
+            return;
+          }
+          if (message.type === "imported") {
+            clearPreview();
+            status.textContent =
+              "已新增 " +
+              message.pages +
+              " 个页面、" +
+              message.nodes +
+              " 个可编辑图层。" +
+              (message.warnings?.length ? "\n\n兼容性提示：\n" + message.warnings.join("\n") : "");
+            return;
+          }
+          if (typeof message.content !== "string" || size(message.content) > MAX_BYTES)
+            throw Error("导出 JSON 无效或超过 16 MiB。");
+          try {
+            if (!object(JSON.parse(message.content))) throw Error();
+          } catch {
+            throw Error("导出 JSON 无法解析。");
+          }
+          exportedContent = message.content;
+          exportedFilename =
+            typeof message.filename === "string" && message.filename
+              ? message.filename
+              : "figma-design.json";
+          exported.value = exportedContent;
+          downloadJson(exportedContent, exportedFilename);
+          status.textContent = "JSON 已导出；可下载文件，或展开「查看或复制导出的 JSON」。";
+        } catch (error) {
+          clearPreview();
+          status.textContent = error.message;
+        } finally {
+          setBusy(false);
+        }
       };
+      setBusy(false);
     </script>
   </body>
 </html>

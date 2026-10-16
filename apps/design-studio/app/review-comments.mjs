@@ -1,5 +1,7 @@
 import { isSafeDesignPath } from "./document.mjs";
 import { projectContextKey } from "./project-context.mjs";
+import { readDesignSidecar, writeDesignSidecar } from "./design-sidecar.mjs";
+import { createRecoverySession } from "./recovery-session.mjs";
 
 export const REVIEW_COMMENTS_FORMAT = "codeshell.design.comments";
 export const MAX_REVIEW_COMMENT_TEXT = 10_000;
@@ -103,6 +105,7 @@ export function isMissingReviewFile(error) {
   const code = error?.code ?? error?.error?.code;
   return (
     ["ENOENT", "NOT_FOUND", "WORKSPACE_PATH_NOT_FOUND", "FILE_NOT_FOUND"].includes(code) ||
+    /^ENOENT: no such file or directory(?:,|$)/u.test(error?.message ?? "") ||
     /^(?:file (?:not found|missing)|文件不存在)(?:$|[:：\s])/iu.test(error?.message ?? "")
   );
 }
@@ -126,6 +129,89 @@ export class StaleReviewScopeError extends Error {
 function uniqueId() {
   return `comment-${globalThis.crypto.randomUUID()}`;
 }
+async function sha256Text(content) {
+  const value = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(content));
+  return [...new Uint8Array(value)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export const REVIEW_DRAFT_FORMAT = "codeshell.design.comment-draft";
+export async function reviewDraftStorageKey(snapshot) {
+  return `review-draft.${await sha256Text(reviewDraftKey(snapshot))}`;
+}
+export function validateReviewDraft(value, snapshot) {
+  if (
+    !value ||
+    value.format !== REVIEW_DRAFT_FORMAT ||
+    value.version !== 1 ||
+    value.scopeKey !== reviewDraftKey(snapshot) ||
+    typeof value.text !== "string" ||
+    value.text.length > MAX_REVIEW_COMMENT_TEXT ||
+    !Array.isArray(value.replies) ||
+    value.replies.length > 100 ||
+    new TextEncoder().encode(JSON.stringify(value)).length > 128 * 1024
+  )
+    throw Error("评论草稿格式或项目来源无效；已有草稿已保留");
+  if (
+    value.target !== null &&
+    (!identifier(value.target?.pageId) ||
+      (value.target.nodeId !== null && !identifier(value.target.nodeId)) ||
+      typeof value.target.targetName !== "string" ||
+      value.target.targetName.length > 500)
+  )
+    throw Error("评论草稿目标无效");
+  const ids = new Set();
+  for (const reply of value.replies) {
+    if (
+      !identifier(reply?.threadId) ||
+      ids.has(reply.threadId) ||
+      typeof reply.text !== "string" ||
+      reply.text.length > MAX_REVIEW_COMMENT_TEXT
+    )
+      throw Error("评论回复草稿无效");
+    ids.add(reply.threadId);
+  }
+  return structuredClone(value);
+}
+
+// A draft observes one CAS revision. A conflicting window blocks autosave;
+// neither an unversioned storage.set nor a blind retry may replace its draft.
+export async function createReviewDraftSession({
+  snapshot,
+  getSnapshot,
+  call,
+  getOperationEpoch = () => null,
+}) {
+  snapshot = structuredClone(snapshot);
+  if (
+    !["storage.getSnapshot", "storage.compareAndSet"].every((method) =>
+      contextOf(snapshot).availableMethods?.includes(method),
+    )
+  )
+    return null;
+  const epoch = getOperationEpoch(),
+    scope = reviewDraftKey(snapshot),
+    key = await reviewDraftStorageKey(snapshot);
+  const session = createRecoverySession({
+    call,
+    key,
+    epoch,
+    currentEpoch: () =>
+      reviewDraftKey(getSnapshot()) === scope ? getOperationEpoch() : Symbol("detached-draft"),
+    getContext: () => contextOf(getSnapshot()),
+  });
+  return {
+    async load() {
+      const value = await session.load();
+      return value === null ? null : validateReviewDraft(value, snapshot);
+    },
+    save(value) {
+      return session.save(validateReviewDraft(value, snapshot));
+    },
+    get blocked() {
+      return session.blocked;
+    },
+  };
+}
 
 export function createReviewCommentsStore({
   getSnapshot,
@@ -133,6 +219,7 @@ export function createReviewCommentsStore({
   now = () => new Date().toISOString(),
   id = uniqueId,
   getOperationEpoch = () => null,
+  sha256 = sha256Text,
 }) {
   function capture() {
     const snapshot = getSnapshot();
@@ -171,6 +258,14 @@ export function createReviewCommentsStore({
     operation.check();
     if (result?.path !== undefined && result.path !== operation.path)
       throw Error("Host 返回了其他路径的评论记录");
+    const rootResult = result;
+    result = await readDesignSidecar({
+      path: operation.path,
+      sha256,
+      check: operation.check,
+      call: (method, params) =>
+        params.path === operation.path ? Promise.resolve(rootResult) : call(method, params),
+    });
     const document = parseReviewComments(result?.content, operation.snapshot.path);
     const expectedRevision =
       typeof result.revision === "string" && result.revision.length > 0
@@ -196,7 +291,7 @@ export function createReviewCommentsStore({
       parseReviewComments(content, operation.snapshot.path);
       operation.check();
       try {
-        await call("workspace.writeText", {
+        await writeDesignSidecar({
           path: operation.path,
           content,
           ...(baseline.expectedModifiedAt !== undefined
@@ -205,10 +300,20 @@ export function createReviewCommentsStore({
           ...(baseline.expectedRevision !== undefined
             ? { expectedRevision: baseline.expectedRevision }
             : {}),
+          call,
+          check: operation.check,
+          sha256,
         });
       } catch (error) {
         operation.check();
         if (attempt < 2 && isConflict(error)) continue;
+        try {
+          const observed = await read(operation);
+          if (apply(observed.document) === false)
+            return { document: observed.document, scopeKey: operation.key, path: operation.path };
+        } catch {
+          operation.check();
+        }
         throw error;
       }
       operation.check();
@@ -227,6 +332,33 @@ export function createReviewCommentsStore({
       const operation = capture(),
         result = await read(operation);
       return { document: result.document, scopeKey: operation.key, path: operation.path };
+    },
+    async list({ pageId, nodeId, status, limit = 100, offset = 0 } = {}) {
+      if (
+        (pageId !== undefined && !identifier(pageId)) ||
+        (nodeId !== undefined && nodeId !== null && !identifier(nodeId)) ||
+        (status !== undefined && !["open", "resolved"].includes(status)) ||
+        !Number.isInteger(limit) ||
+        limit < 1 ||
+        limit > 200 ||
+        !Number.isInteger(offset) ||
+        offset < 0
+      )
+        throw Error("评论筛选或分页参数无效");
+      const operation = capture(),
+        { document } = await read(operation);
+      const threads = document.threads.filter(
+        (thread) =>
+          (pageId === undefined || thread.pageId === pageId) &&
+          (nodeId === undefined || thread.nodeId === nodeId) &&
+          (status === undefined || thread.status === status),
+      );
+      return {
+        path: operation.path,
+        total: threads.length,
+        threads: threads.slice(offset, offset + limit),
+        nextOffset: offset + limit < threads.length ? offset + limit : null,
+      };
     },
     async addThread({ pageId, nodeId = null, targetName, text, author }) {
       const operation = capture();

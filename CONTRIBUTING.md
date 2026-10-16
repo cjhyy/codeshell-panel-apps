@@ -197,9 +197,10 @@ With a separately built compatible CodeShell server package, run:
 npm run test:host-storage -- /absolute/path/to/codeshell/packages/server
 ```
 
-This runs the existing Design recovery, portable/legacy design backup and Job Hunt
-draft checks against the real `PanelRuntimeServices`, plus Job Hunt's reviewed
-installation, project-selected Skill and installed CLI through the real Core
+This runs five checks against the real `PanelRuntimeServices`: Design recovery,
+portable/legacy design backup, Figma source/image and review exchange, Job Hunt
+draft storage, and Job Hunt's reviewed installation, project-selected Skill and
+installed CLI through the real Core
 `Skill` and `Bash` tools without opening a Panel. It checks all four headless
 operations, bidirectional Host persistence, stale-write rejection and retained
 package selection. All checks use temporary projects,
@@ -208,6 +209,20 @@ It verifies disk persistence, concurrent writes, restarts, revoked access and
 restoration without reading personal projects. It is separate from the default
 gate because the Host is a different repository. It does not establish physical
 phone, provider, operating-system network isolation or deployed Cloud acceptance.
+
+The Design exchange check can also run independently:
+
+```sh
+node scripts/design-studio-exchange-host.mjs /absolute/path/to/codeshell/packages/server
+```
+
+It creates its own isolated home and denies JavaScript network access. It verifies
+the real Host text budgets and stale-write rejection, multipart image bytes,
+source-binding reopen and recovery references, concurrent comments, draft CAS,
+prototype configuration, and portable restoration under a new basename. It then
+removes the original fixture project and reopens the restored data. This Node
+gate does not execute the Figma plugin in an actual Figma account or replace its
+separate end-to-end acceptance.
 
 ## Old-package upgrade and rollback check
 

@@ -1,64 +1,121 @@
-# Design Studio：Figma 交换与设计评审
+# Design Studio 0.19：Figma 交换、交互原型与设计评审
 
-日期：2026-10-16。实现属于独立 Design Studio Panel；使用既有工作区文件与浏览器
-能力，不向 CodeShell Host 增加 Figma 领域规则。
+更新：2026-10-16。实现属于独立 Design Studio Panel，沿用既有工作区文件、存储和
+Agent 提交权限。当前交付覆盖 JSON 交换、来源保留、原型、评论及完整迁移；真实
+Figma 账号内的开发插件端到端验收仍在进行中，不能由浏览器或 API 替身测试替代。
+最终发布证据统一记录在[交付验收记录](design-studio-completion-audit.md)。
 
-## 产品流程
+## 已实现的产品流程
 
-1. 从 Figma REST API，或随包开发插件的选区／当前页导出取得 JSON。
-2. 面板预览转换结果和差异，经“导入到画布”载入可编辑图层。
-3. 使用既有画布、属性、自动布局、撤销和 Agent 工具修改设计。
-4. 下载转换 JSON，经 Figma 插件创建新的页面；或下载当前页 HTML 原型。
-5. 在“讨论”中对页面／稳定图层记录问题、回复、解决，评论独立存入项目文件。
+1. 在 Figma 使用[随包开发插件](../../apps/design-studio/app/figma-plugin/README.md)
+   导出选区或当前页，取得含原节点、图片字节和复杂图层预览的来源 JSON；也可导入
+   官方 REST 文件／节点结构。
+2. 在面板 **Figma** 入口检查页面、图层和兼容性提示，再导入为可编辑设计。
+3. 使用画布文字、属性、自动布局、撤销／重做或 Agent 事务修改设计。保存、重开、
+   长操作历史和未保存草稿恢复均保留对应来源；撤销回普通设计时明确记录没有来源。
+4. 下载完整的 `design.figma-transfer.json`，在插件中选择创建新页面，或预览来源
+   节点的修改、冲突和删除后更新原设计。完成回写后重新导出 Figma 来源包，再开始
+   下一轮修改。
+5. 在 **原型** 中配置页面跳转、返回、安全 URL、起始页面和响应式页面断点，预览
+   并下载多页离线 HTML；可明确选择包含评审评论。
+6. 在 **讨论** 中把问题关联到页面／稳定图层 ID，回复、解决、重新打开或交给 Agent。
+   需要迁移时，下载 v2 完整备份并恢复到新设计路径，附属数据一起验证和重命名。
 
-Figma 插件导入创建新页面，避免把旧来源 ID 误当作修改现有节点的授权。转换后基础
-节点仍可编辑，但不称为无损同步。面板原生文档继续使用 `.codesign.json`，评论使用
-独立 `.comments.json`，不修改 v3 文档结构，也不破坏旧版本读取设计的能力。
+这是一条带来源校验的 JSON 往返流程。转换文件不是二进制 `.fig`；面板也不会把自身
+transfer 包当作官方 REST 来源再次导入。导回已有设计通过用户运行的 Figma 插件
+完成，项目评论不会自动发布为 Figma 云端评论。
 
-## 官方能力与限制
+## 来源、原型与评论如何保存
 
-- [Figma 文件 REST API](https://developers.figma.com/docs/rest-api/file-endpoints/)
-  可读取设计树；矢量路径与图片字节需要额外请求。REST API 没有通用节点写入接口。
-- [Plugin ExportSettings](https://developers.figma.com/docs/plugins/api/ExportSettings/)
-  支持 `JSON_REST_V1`，插件可在用户运行时导出选区，无须面板保存访问令牌。
-- [Plugin API](https://developers.figma.com/docs/plugins/) 支持创建和修改图层，文字编辑
-  需要先[加载字体](https://developers.figma.com/docs/plugins/working-with-text/)。
-- [评论 REST API](https://developers.figma.com/docs/rest-api/comments-endpoints/)
-  可读写与删除评论，但当前项目评论尚未接入 Figma 账号，不会自动发布出去。
+以 `designs/product.codesign.json` 为例：
 
-基础转换优先覆盖 Frame、Group、Rectangle、Ellipse、Text、纯色、位置尺寸、文字
-样式与水平／垂直自动布局。未知节点或属性明确报告。复杂向量、遮罩、渐变、图片、
-混合文字样式、变量绑定、组件实例覆盖、远程组件库和原型交互需要独立适配；不能
-从渲染相似推断这些语义已经保留。
+| 文件                        | 内容与用途                                                                              |
+| --------------------------- | --------------------------------------------------------------------------------------- |
+| `product.codesign.json`     | 原生 v3 设计；大文档使用已校验的分页索引。                                              |
+| `product.figma-source.json` | 设计版本对应的来源索引，或完整备份恢复出的来源绑定；保留原始属性、稳定 ID、基线和映射。 |
+| `product.prototype.json`    | 起始页、显式点击动作、目标页面／URL 和响应式页面断点。                                  |
+| `product.comments.json`     | 页面／图层讨论、回复、署名、时间和解决状态。                                            |
+| `designs/codesign-data/`    | 经摘要校验的不可变页面、图片、字体、来源、附属文件和恢复分片。                          |
 
-## 对标方向
+小附属文件直接存为 JSON；较大的内容由同名主文件记录分片路径和摘要。更新主文件
+使用 Host 版本校验；分片先写入，最后提交主文件。来源与恢复引用不能成为任意项目
+写入路径。手动搬动设计时应同时保留相关附属文件及内容目录；跨项目移动优先使用
+完整备份。
 
-- [FigCraft](https://github.com/storytold/figcraft)：纯 Rust，覆盖 Figma 类布局、
-  组件、原型、REST JSON 与 CLI/MCP；官方仍标记 alpha，`.fig` 仅 best effort。
-- [Graphite](https://graphite.art/)：Rust 程序化矢量与非破坏编辑，适合参考渲染和
-  操作图模型，与 UI 设计协作工具的关注点不同。
-- [OpenPencil](https://github.com/open-pencil/open-pencil)：值得参考 `.fig` 兼容、
-  AI/MCP 和设计操作能力；主体采用 Vue、CanvasKit、Yoga，桌面使用 Tauri。
+v2 完整备份包含全部页面、图片／字体字节、已保存评论及回复、Figma 来源和原型。
+附件逐项检查支持的格式、UTF-8 字节数、SHA-256 和数量；恢复前验证全部附件，并
+检查目标冲突。恢复生成新路径，重写评论的 `designPath`，主设计最后提交。已有不同
+内容的文件会阻止恢复。资源、来源或评论分片缺失、损坏、不可读时停止，而不是下载
+一个声称完整却缺数据的包；确实没有评论文件时写入明确的覆盖记录。v1 完整备份和
+可验证基线的旧恢复日志仍可读取，旧日志的来源引用也会校验后随恢复保留。
 
-当前面板已有布局、资源、持久化、Agent 事务和 HTML 交付。先完善交换与评审能直接
-复用这些能力；更换引擎应以大文档交互和绘制性能测量为依据。
+评论文件每次修改先读取最新版本，并以版本条件提交，能够合并另一窗口已经保存的
+讨论。评论草稿仅在 Host 声明安全的存储快照／CAS 方法时持久保存；发生并发草稿
+冲突会停止自动覆盖并保留当前输入。浏览器本地模式采用独立窗口记录。评论文本和
+导出原型里的评审内容使用文本节点显示。
 
-## 后续优先级
+## Agent 与大包交换
 
-- 高：真实 Figma 环境中的插件验收；基础转换视觉基准与差异报告；图片与字体资源
-  交换；评论随完整备份迁移；评论 Agent 读取／处理工具。
-- 中：源文件／节点对应账本、导回前差异预览、逐项确认更新已有节点；混合文字
-  样式、矢量与效果；组件／变量／设计 Token 适配。
-- 中：显式原型链接和交互模型，响应式断点，HTML 实现中的节点定位与评论锚点。
-- 后续：通过官方授权接入 Figma 文件和评论同步；先建立冲突和撤回策略。
+0.19 声明 16 个工具。新增 `exchange_figma`、`get_design_comments` 和
+`update_design_comments`，既有 `generate_frontend` 增加多页原型和可选评论导出。
+修改与交换要求最新 `get_design_metadata.stateRevision`；评论读取返回有界摘要，
+完整内容和回复通过稳定讨论 ID 分页读取。把讨论交给 Agent 时先保存当前设计，再
+提交页面、图层和讨论上下文；等待期间切换项目或文档会停止后续提交。
 
-## 验证范围
+`exchange_figma` 的项目输出会返回 `storage: "json"` 或 `"multipart"`。后者的项目
+文件是带摘要的分片清单，不能直接作为 Figma transfer 文件选择。面板下载入口会
+生成完整传输 JSON；Agent 也可按清单读取相对分片、验证字节数及 SHA-256 后组装。
+Agent 导入能够读取同样的分片来源包。导入与导出的逻辑 JSON 上限仍为 16 MiB。
 
-离线检查覆盖转换模型、Figma 插件 API 替身、真实 Chromium 面板交互、导入撤销、
-HTML／转换文件下载、评论持久化与并发／切换保护。实际 Figma 桌面／浏览器账户、
-开发插件权限、真实字体与复杂设计保真尚需独立验收。本次未连接个人 Figma 账号。
+`generate_frontend` 默认生成单页静态 HTML；使用 `prototype: true` 导出完整交互
+原型，确实要携带评论时同时传 `include_comments: true`。HTML 中保留稳定图层映射。
+面板下载能生成包含内嵌资源的离线 HTML；直接写入项目的 HTML 受 Host 单次文本
+预算约束，较大文件应通过下载入口取得。附属文件和 JSON 交换的分片并不使 HTML
+清单变成可直接打开的网页。
 
-本轮验收：`npm test -- --suite design-studio` 113 项全部通过；`npm run validate`、
-`npm run typecheck`、`npm run build:check -- --app design-studio` 与 `git diff --check`
-通过。人工查看 Chromium 截图，并核对 390–1500 px 的页面宽度；原触控回归另覆盖
-320 px。Design Studio 为原生 `app/` 包，本轮不生成额外构建目录。
+## 兼容性边界
+
+原生可编辑部分覆盖基础形状、文字、Frame／Group、纯色、基础效果、自动布局、
+约束及本地图片资源。未知或近似转换会给出提示。复杂矢量、遮罩、渐变和混合文字
+可使用插件导出的图像预览；在面板里能调整预览的位置和尺寸，不等于能编辑其路径
+或全部富文本语义。组件、变量、远程库和原始 Figma 特有属性保留在来源中，未改动
+的部分可在增量回写中保持；这不表示面板已具有全部 Figma 编辑能力。
+
+插件更新原节点前展示差异，并在应用前再次核对来源属性；删除需单独确认。已有
+节点的字体或其他前提不满足时停止相应更新。新页面副本是另一条明确选择的路径，
+复杂预览在副本中仍为图片。实际 Figma 字体加载、组件／变量保留和复杂设计视觉
+保真，需要真实插件运行和设计样本验证。
+
+面板没有接入 Figma 账号的文件／评论同步，不保存 Figma 访问令牌。本轮没有更换
+Rust 渲染引擎。后续引擎选择应依据大文档交互和绘制测量，调研入口保留为
+[FigCraft](https://github.com/storytold/figcraft)、[Graphite](https://graphite.art/) 和
+[OpenPencil](https://github.com/open-pencil/open-pencil)。
+
+## 当前验证与仍在进行的工作
+
+离线门禁包含转换模型、严格来源／映射验证、Figma Plugin API 替身，以及真实
+Chromium 中的完整面板交互：导入和重开、图层编辑、增量包、评论工具、先保存再
+交给 Agent、原型运行、项目切换竞态、嵌套导入撤销／重做、历史淘汰和恢复来源。
+
+```sh
+npm test -- --suite design-studio
+node --test tests/apps/design-studio/exchange-tools-ui.test.mjs
+node scripts/design-studio-exchange-host.mjs /path/to/built/code-shell-server
+```
+
+真实 Node Host 检查使用独立 HOME、临时项目和禁止 JavaScript 网络的 worker。
+覆盖真实文本预算、CAS 冲突、有效 PNG 分片、来源重开及恢复引用、并发评论、草稿
+并发、原型配置、完整备份重命名恢复；删除原临时项目后再重开目标并验证图片摘要。
+它不等同于 Figma 桌面插件或真实账号验收，也不构成操作系统级网络隔离证明。
+
+仍在进行：真实 Figma 开发插件安装、来源导出、修改预览、原节点应用、冲突拒绝、
+字体和复杂图层保留的完整链路验证。后续需扩展真实设计视觉基准、复杂矢量／富
+文本可编辑语义、组件与变量适配；账号授权及云端评论同步另行设计冲突策略。
+
+### 历史初版验收记录（2026-10-16）
+
+以下记录保留初版证据，不代表 0.19 最终测试总数或真实 Figma 端到端结果：初版
+`npm test -- --suite design-studio` 113 项通过，`npm run validate`、`npm run typecheck`、
+`npm run build:check -- --app design-studio` 与 `git diff --check` 通过；查看 Chromium
+截图并核对 390–1500 px 宽度，原触控回归覆盖 320 px。后续新增的来源、原型、恢复
+和真实 Host 证据以交付验收记录为准。Design Studio 仍是直接安装的原生 `app/` 包。

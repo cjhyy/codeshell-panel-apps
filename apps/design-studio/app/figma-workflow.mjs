@@ -1,7 +1,16 @@
 import { importFigmaJson, createFigmaTransfer, MAX_FIGMA_JSON_BYTES } from "./figma-bridge.mjs";
 
 // File conversion stays inside the Panel. Figma account access is not needed.
-export function mountFigmaWorkflow({ getScope, checkScope, capture, replace, prototype }) {
+export function mountFigmaWorkflow({
+  getScope,
+  checkScope,
+  capture,
+  replace,
+  prototype,
+  prepareImport = (input) => importFigmaJson(input),
+  transfer = (document) => createFigmaTransfer(document),
+  source,
+}) {
   const button = document.createElement("button");
   button.id = "open-figma-workflow";
   button.className = "button";
@@ -22,11 +31,11 @@ export function mountFigmaWorkflow({ getScope, checkScope, capture, replace, pro
     <div class="dialog-header"><div><span class="dialog-kicker">FIGMA EXCHANGE</span>
       <h2 id="figma-workflow-title">Figma 与设计工作台</h2></div>
       <button id="figma-workflow-close" type="button" class="dialog-close" aria-label="关闭 Figma 转换">×</button></div>
-    <p class="dialog-description">导入 JSON 后可编辑图层，再生成 HTML 或通过插件导回 Figma。导回会创建新页面。</p>
+    <p class="dialog-description">导入 JSON 后编辑设计、生成 HTML，并通过插件预览后更新原设计或创建新页面。</p>
     <div class="figma-workflow-step"><h3>1 · 导入设计</h3>
       <label for="figma-import-file">Figma REST API 或插件导出的 JSON</label>
       <input id="figma-import-file" type="file" accept=".json,application/json" />
-      <p class="dialog-description">支持基础形状、文字与自动布局。暂不读取 .fig；图片、复杂矢量、变量、组件关系与交互需要另行适配。</p>
+      <p class="dialog-description">支持文字、形状、自动布局与包内图片。复杂图层可使用插件导出的预览，原始 Figma 属性保留用于回写。</p>
       <p id="figma-import-preview"></p>
       <ul id="figma-import-warnings" class="figma-warning-list" aria-label="转换差异"></ul>
       <button id="figma-import-apply" type="button" class="primary-button" disabled>导入到画布（可撤销）</button>
@@ -34,7 +43,9 @@ export function mountFigmaWorkflow({ getScope, checkScope, capture, replace, pro
     </div>
     <div class="figma-workflow-step"><h3>2 · 导回 Figma</h3>
       <button id="figma-transfer-download" type="button" class="button">下载 Figma 转换 JSON</button>
-      <p class="dialog-description">转换 JSON 由下方插件读取。它不是 Figma 原生文件，也不会自动同步或覆盖原设计。</p>
+      <button id="figma-source-download" type="button" class="button">下载保留的 Figma 原始 JSON</button>
+      <p id="figma-patch-preview" class="dialog-description"></p>
+      <p class="dialog-description">插件可预览原节点的增删改与冲突，确认后只应用列出的改动；也可创建新的页面。</p>
       <details><summary>首次使用：下载并安装 Figma 开发插件</summary>
         <p class="dialog-description">先在 Figma 桌面端的 Plugins → Development → New plugin 创建带界面的插件，取得生成的 manifest.json 中的 id。填入下方后下载三个文件，放到同一文件夹，再用 Import plugin from manifest 选择下载的 manifest.json。</p>
         <label for="figma-plugin-id">Figma 分配的插件 ID</label>
@@ -145,7 +156,7 @@ export function mountFigmaWorkflow({ getScope, checkScope, capture, replace, pro
         throw Error("单次 JSON 导入最多 16 MiB，请在 Figma 中分批导出选区");
       const text = await file.text();
       operation.check();
-      const result = importFigmaJson(text);
+      const result = await prepareImport(text, operation.scope);
       operation.check();
       pending = { ...result, scope: operation.scope };
       preview.textContent = `${result.document.name} · ${result.stats.pages} 页 · ${result.stats.importedNodes} 个可编辑图层 · ${result.stats.skippedNodes} 个跳过图层`;
@@ -168,7 +179,7 @@ export function mountFigmaWorkflow({ getScope, checkScope, capture, replace, pro
     setBusy(true);
     try {
       operation = start(review.scope);
-      await replace(review.document, operation.check);
+      await replace(review.document, operation.check, review);
       // Replacement changes the state revision by design. Only check the dialog ticket now.
       if (generation !== operation.ticket || !dialog.open) return;
       pending = null;
@@ -188,13 +199,33 @@ export function mountFigmaWorkflow({ getScope, checkScope, capture, replace, pro
       operation = start();
       const snapshot = await capture(operation.scope);
       operation.check();
-      const transfer = createFigmaTransfer(snapshot);
+      const output = await transfer(snapshot, operation.scope);
       operation.check();
-      showWarnings(transfer.warnings);
-      download(`${JSON.stringify(transfer, null, 2)}\n`, "design.figma-transfer.json");
+      showWarnings(output.warnings);
+      el("figma-patch-preview").textContent = output.patch
+        ? `原设计修改：${output.patch.summary.creates} 项新增 · ${output.patch.summary.updates} 项更新 · ${output.patch.summary.deletes} 项删除。请在插件中预览冲突后应用。`
+        : "当前设计没有 Figma 来源映射，插件将创建新页面。";
+      download(`${JSON.stringify(output, null, 2)}\n`, "design.figma-transfer.json");
       showStatus(
-        `已下载转换 JSON${transfer.warnings.length ? `，含 ${transfer.warnings.length} 条差异` : ""}。在 Figma 插件中载入它以创建新页面。`,
+        `已下载转换 JSON${output.warnings.length ? `，含 ${output.warnings.length} 条差异` : ""}。在 Figma 插件中载入后核对。`,
       );
+    } catch (error) {
+      failed(operation, error);
+    } finally {
+      if (!operation || generation === operation.ticket) setBusy(false);
+    }
+  });
+  el("figma-source-download").addEventListener("click", async () => {
+    if (busy) return;
+    let operation;
+    setBusy(true);
+    try {
+      operation = start();
+      const original = await source?.(operation.scope);
+      operation.check();
+      if (!original) throw Error("当前设计没有保留的 Figma 来源，请先导入 Figma JSON");
+      download(`${JSON.stringify(original, null, 2)}\n`, "design.figma-source.json");
+      showStatus("已下载保留的原始 Figma JSON，包含未转换的来源属性。");
     } catch (error) {
       failed(operation, error);
     } finally {

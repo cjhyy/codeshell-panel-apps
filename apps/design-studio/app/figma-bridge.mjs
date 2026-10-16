@@ -7,6 +7,11 @@ import {
   repositoryDesignPage,
 } from "./document.mjs";
 import { transformedNodeBoundsInTree } from "./geometry.mjs";
+import {
+  normalizeFigmaSource,
+  prepareFigmaAssets,
+  createFigmaTransferAssets,
+} from "./figma-assets.mjs";
 
 export const MAX_FIGMA_JSON_BYTES = 16 * 1024 * 1024;
 export const MAX_FIGMA_TOTAL_NODES = 50_000;
@@ -94,7 +99,15 @@ function sourcePages(input, depth = 0) {
     const pages = roots.filter((root) => root.type === "CANVAS" || root.type === "DOCUMENT");
     if (pages.length === roots.length) return pages.flatMap((page) => sourcePages(page, depth + 1));
     if (pages.length) throw new Error("请分别导出页面与选中的图层，避免重复导入。");
-    return [{ id: "selection", type: "CANVAS", name: "Figma Selection", children: roots }];
+    return [
+      {
+        id: input.selection?.pageId ?? "selection",
+        type: "CANVAS",
+        name: input.selection?.pageName ?? "Figma Selection",
+        partial: true,
+        children: roots,
+      },
+    ];
   }
   if (
     TYPES[input.type] ||
@@ -319,6 +332,12 @@ function text(source, node, report) {
   node.fontSize = number(style.fontSize, 16, 6, 240, source, "fontSize", report);
   node.fontWeight =
     Math.round(number(style.fontWeight, 400, 100, 900, source, "fontWeight", report) / 100) * 100;
+  if (finite(style.fontWeight) && node.fontWeight !== style.fontWeight)
+    report.warn(
+      "font-weight-rounded",
+      source,
+      "字体数值字重已映射到最接近的百位字重；原始字体设置保存在来源记录中。",
+    );
   node.lineHeight = number(
     finite(style.lineHeightPx)
       ? style.lineHeightPx / node.fontSize
@@ -357,7 +376,10 @@ function text(source, node, report) {
 }
 
 /** Import a REST GET file response, DOCUMENT/CANVAS, selected node, or JSON_REST_V1 nodes response. */
-export function importFigmaJson(input) {
+export function importFigmaJson(
+  input,
+  { resources = [], imageRefs = new Map(), previews = {} } = {},
+) {
   const value = readJson(input),
     pages = sourcePages(value),
     report = reporter();
@@ -368,6 +390,28 @@ export function importFigmaJson(input) {
   let visited = 0,
     importedNodes = 0,
     skippedNodes = 0;
+  const mapping = [],
+    pageMappings = [];
+  let currentPage = null;
+  const recordMapping = (source, node) => {
+    const context = value.selection?.roots?.[source.id];
+    if (typeof source.id === "string")
+      mapping.push({
+        designId: node.id,
+        sourceId: source.id,
+        pageId: currentPage.id,
+        sourcePageId: currentPage.sourceId,
+        offsetX: 0,
+        offsetY: 0,
+        ...(context && Array.isArray(context.parentTransform)
+          ? {
+              selectionRoot: true,
+              sourceParentId: context.parentId,
+              sourceParentTransform: context.parentTransform,
+            }
+          : {}),
+      });
+  };
   const allocateId = (source, fallback, page = false) => {
     const sourceId = typeof source.id === "string" ? source.id : fallback;
     const prefix = /^\d+:\d+$/u.test(sourceId) ? "figma-" : page ? "figma-page-" : "figma-node-";
@@ -390,7 +434,21 @@ export function importFigmaJson(input) {
     seen.add(source);
     if (++visited > MAX_FIGMA_TOTAL_NODES || ++counter.count > MAX_DESIGN_NODES_PER_PAGE)
       throw new Error("Figma 图层超出导入上限；请拆分页面或文件。");
-    const type = TYPES[source.type];
+    const preview = previews[source.id];
+    const previewRef = preview && imageRefs.get(preview.assetId);
+    const imagePaint = Array.isArray(source.fills)
+      ? source.fills.find(
+          (entry) =>
+            entry?.visible !== false &&
+            entry.type === "IMAGE" &&
+            imageRefs.has(entry.imageRef ?? entry.imageHash),
+        )
+      : null;
+    const type = previewRef
+      ? "image"
+      : imagePaint && !source.children?.length
+        ? "image"
+        : TYPES[source.type];
     if (!type) {
       skippedNodes += 1;
       report.warn(
@@ -415,12 +473,59 @@ export function importFigmaJson(input) {
       for (const child of source.children ?? []) inspect(child, depth + 1);
       return null;
     }
+    if (previewRef) {
+      const box = preview.bounds ?? source.absoluteRenderBounds ?? source.absoluteBoundingBox;
+      const previewSource = {
+        ...source,
+        absoluteBoundingBox: box,
+        size: { x: box?.width, y: box?.height },
+        relativeTransform: undefined,
+        rotation:
+          (-ancestors.reduce((sum, ancestor) => sum + ancestor.rotation, 0) * Math.PI) / 180,
+      };
+      const node = {
+        id: allocateId(source, `node-${visited}`),
+        type: "image",
+        name: cleanName(source.name, source.type),
+        ...geometry(previewSource, ancestors, report),
+        imageRef: previewRef,
+        objectFit: "fill",
+        fill: "transparent",
+        stroke: "transparent",
+        strokeWidth: 0,
+        opacity: 1,
+        cornerRadius: 0,
+        visible: source.visible !== false,
+        locked: source.locked === true,
+      };
+      report.warn(
+        "visual-fallback",
+        source,
+        "复杂图层以本地图片预览保留外观；原始矢量、样式和关系保存在来源记录中，增量导回保留未修改属性。",
+      );
+      importedNodes += 1;
+      recordMapping(source, node);
+      return node;
+    }
     const node = {
       id: allocateId(source, `node-${visited}`),
       type,
       name: cleanName(source.name, source.type),
-      ...geometry(source, ancestors, report),
-      fill: paint(source.fills, source, "填充", report),
+      ...geometry(
+        !ancestors.length && value.selection?.roots?.[source.id]
+          ? {
+              ...source,
+              relativeTransform: value.selection.roots[source.id].absoluteTransform,
+              size: {
+                x: value.selection.roots[source.id].width,
+                y: value.selection.roots[source.id].height,
+              },
+            }
+          : source,
+        ancestors,
+        report,
+      ),
+      fill: imagePaint ? "transparent" : paint(source.fills, source, "填充", report),
       stroke: paint(source.strokes, source, "描边", report),
       strokeWidth: number(source.strokeWeight, 0, 0, 100, source, "strokeWeight", report),
       opacity: number(source.opacity, 1, 0, 1, source, "opacity", report),
@@ -445,6 +550,31 @@ export function importFigmaJson(input) {
       node.strokeWidth = 0;
       node.cornerRadius = 0;
     }
+    if (type === "image") {
+      node.imageRef = imageRefs.get(imagePaint.imageRef ?? imagePaint.imageHash);
+      node.objectFit =
+        { FIT: "contain", FILL: "cover", TILE: "fill", STRETCH: "fill" }[imagePaint.scaleMode] ??
+        "cover";
+      if (
+        imagePaint.scaleMode === "TILE" ||
+        imagePaint.imageTransform ||
+        imagePaint.rotation ||
+        imagePaint.filters
+      )
+        report.warn(
+          "image-transform",
+          source,
+          "图片裁剪、平铺或滤镜保存在来源记录中；编辑器使用基础图片适配。",
+        );
+      if (imagePaint.opacity !== undefined && imagePaint.opacity !== 1)
+        node.opacity = round(node.opacity * clamp(imagePaint.opacity, 0, 1));
+    }
+    if (imagePaint && source.fills.filter((entry) => entry?.visible !== false).length > 1)
+      report.warn(
+        "multiple-paints",
+        source,
+        "多个填充暂使用一个图片填充；所有原始绘制保存在来源记录中。",
+      );
     if (["COMPONENT", "COMPONENT_SET", "INSTANCE"].includes(source.type))
       report.warn(
         "detached-component",
@@ -495,17 +625,29 @@ export function importFigmaJson(input) {
     }
     if (source.layoutPositioning === "ABSOLUTE") node.layoutPositioning = "absolute";
     if (source.layoutAlign === "STRETCH") node.layoutAlignSelf = "stretch";
+    const parent = ancestors.at(-1);
     if (
       source.constraints &&
-      [source.constraints.horizontal, source.constraints.vertical].some(
-        (value) => value && value !== "MIN",
-      )
-    )
-      report.warn(
-        "constraints-as-geometry",
-        source,
-        "缩放约束暂保留为当前位置和尺寸，响应式约束关系未导入。",
-      );
+      parent &&
+      (parent.layout === "none" || source.layoutPositioning === "ABSOLUTE")
+    ) {
+      const constraint = {
+        MIN: "start",
+        CENTER: "center",
+        MAX: "end",
+        STRETCH: "stretch",
+        SCALE: "scale",
+      };
+      node.layoutPositioning = "absolute";
+      node.constraintHorizontal = constraint[source.constraints.horizontal] ?? "start";
+      node.constraintVertical = constraint[source.constraints.vertical] ?? "start";
+      node.constraintBaseWidth = parent.width;
+      node.constraintBaseHeight = parent.height;
+      node.constraintLeft = round(node.x - parent.x);
+      node.constraintTop = round(node.y - parent.y);
+      node.constraintRight = round(parent.x + parent.width - node.x - node.width);
+      node.constraintBottom = round(parent.y + parent.height - node.y - node.height);
+    }
     if (source.children !== undefined && !Array.isArray(source.children))
       throw new Error("Figma children 必须是数组。");
     if (CONTAINERS.has(type)) {
@@ -513,16 +655,51 @@ export function importFigmaJson(input) {
       node.children = (source.children ?? [])
         .map((child) => convert(child, [...ancestors, node], depth + 1, counter))
         .filter(Boolean);
+      if (imagePaint) {
+        const background = {
+          id: allocateId({ id: `${source.id ?? node.id}-background` }, `background-${visited}`),
+          type: "image",
+          name: `${node.name.slice(0, 100)} Background`,
+          x: node.x,
+          y: node.y,
+          width: node.width,
+          height: node.height,
+          imageRef: imageRefs.get(imagePaint.imageRef ?? imagePaint.imageHash),
+          objectFit: imagePaint.scaleMode === "FIT" ? "contain" : "cover",
+          fill: "transparent",
+          stroke: "transparent",
+          strokeWidth: 0,
+          opacity: imagePaint.opacity ?? 1,
+          rotation: 0,
+          cornerRadius: node.cornerRadius,
+          visible: true,
+          locked: false,
+          layoutPositioning: "absolute",
+        };
+        node.children.unshift(background);
+        importedNodes += 1;
+      }
     } else if (source.children?.length) throw new Error("基础 Figma 图层不能包含 children。");
     if (type === "text") text(source, node, report);
     importedNodes += 1;
+    recordMapping(source, node);
     return node;
   };
   const convertedPages = pages.map((page, index) => {
     if (!Array.isArray(page.children)) throw new Error("Figma CANVAS 必须包含 children 数组。");
     const counter = { count: 0 };
+    const id = allocateId(page, `page-${index + 1}`, true);
+    currentPage = { id, sourceId: typeof page.id === "string" ? page.id : null };
+    if (currentPage.sourceId)
+      pageMappings.push({
+        designId: id,
+        sourceId: currentPage.sourceId,
+        offsetX: 0,
+        offsetY: 0,
+        ...(page.partial ? { partial: true } : {}),
+      });
     return {
-      id: allocateId(page, `page-${index + 1}`, true),
+      id,
       name: cleanName(page.name, `Page ${index + 1}`),
       children: page.children.map((source) => convert(source, [], 0, counter)).filter(Boolean),
     };
@@ -545,8 +722,8 @@ export function importFigmaJson(input) {
       .filter(Boolean);
     const minX = Math.min(0, ...bounds.map((box) => box.x)),
       minY = Math.min(0, ...bounds.map((box) => box.y));
-    const rootMinX = Math.min(...page.children.map((node) => node.x)),
-      rootMinY = Math.min(...page.children.map((node) => node.y));
+    const rootMinX = page.children.length ? Math.min(...page.children.map((node) => node.x)) : 0,
+      rootMinY = page.children.length ? Math.min(...page.children.map((node) => node.y)) : 0;
     const offsetX = minX < 0 ? -minX : rootMinX >= 10000 ? -rootMinX : 0;
     const offsetY = minY < 0 ? -minY : rootMinY >= 10000 ? -rootMinY : 0;
     if (offsetX || offsetY) {
@@ -565,6 +742,16 @@ export function importFigmaJson(input) {
         pages[index],
         `页面原点已平移 (${round(offsetX)}, ${round(offsetY)})，让设计进入可见画布。`,
       );
+      for (const entry of mapping)
+        if (entry.pageId === page.id) {
+          entry.offsetX = offsetX;
+          entry.offsetY = offsetY;
+        }
+      const pageMapping = pageMappings.find((entry) => entry.designId === page.id);
+      if (pageMapping) {
+        pageMapping.offsetX = offsetX;
+        pageMapping.offsetY = offsetY;
+      }
     }
     extentX = Math.max(extentX, ...bounds.map((box) => box.x + box.width + offsetX));
     extentY = Math.max(extentY, ...bounds.map((box) => box.y + box.height + offsetY));
@@ -583,7 +770,7 @@ export function importFigmaJson(input) {
     name: cleanName(value.name ?? value.document?.name, "Figma Import"),
     canvas: { width, height, background: color(pages[0].backgroundColor, "#f5f5f2") },
     tokens: { colors: [] },
-    resources: [],
+    resources,
     activePageId: convertedPages[0].id,
     pages: convertedPages,
   });
@@ -592,11 +779,28 @@ export function importFigmaJson(input) {
     document,
     warnings: report.warnings,
     stats: { pages: pages.length, importedNodes, skippedNodes, warningCount },
+    mapping,
+    pageMappings,
   };
 }
 
+/** Import local images and preserve the complete official source alongside the editable document. */
+export async function prepareFigmaImport(input, { sha256Bytes } = {}) {
+  const source = normalizeFigmaSource(input);
+  const assets = await prepareFigmaAssets(source, { sha256Bytes });
+  const result = importFigmaJson(source, {
+    resources: assets.resources,
+    imageRefs: assets.byAssetId,
+    previews: source.previews,
+  });
+  for (const message of source.warnings ?? [])
+    result.warnings.push({ code: "plugin-export-warning", message });
+  result.stats.warningCount += source.warnings?.length ?? 0;
+  return { ...result, resourcePlans: assets.resourcePlans, source };
+}
+
 /** Create a portable, editable subset consumed by the bundled Figma development plugin. */
-export function createFigmaTransfer(input) {
+export function createFigmaTransfer(input, { resources = new Map() } = {}) {
   const document = Array.isArray(input?.nodes)
     ? normalizeDesignState(input)
     : normalizeDesignDocument(input);
@@ -604,12 +808,12 @@ export function createFigmaTransfer(input) {
   let exportedNodes = 0,
     skippedNodes = 0;
   const convert = (node) => {
-    if (["image", "instance"].includes(node.type)) {
+    if (node.type === "instance") {
       skippedNodes += 1;
       report.warn(
         "unsupported-export-node",
         node,
-        `${node.type} 暂未写入 Figma 传输包；图片资源和组件实例需要独立转换。`,
+        "组件实例暂未写入新页面传输包；来源绑定的增量导回会保留原始组件关系。",
       );
       return null;
     }
@@ -644,16 +848,6 @@ export function createFigmaTransfer(input) {
       (node.layoutAlignSelf && !["auto", "stretch"].includes(node.layoutAlignSelf))
     )
       report.warn("child-layout-export", node, "单项对齐和自动外边距暂使用 Figma 默认布局行为。");
-    if (
-      [node.constraintHorizontal, node.constraintVertical].some(
-        (value) => value && value !== "start",
-      )
-    )
-      report.warn(
-        "constraints-export",
-        node,
-        "响应式缩放约束暂按固定几何写入 Figma，约束关系未导出。",
-      );
     if (++exportedNodes > MAX_FIGMA_TOTAL_NODES)
       throw new Error("Figma 传输包最多 50,000 个图层；请分页面导出。");
     if (children) copy.children = children.map(convert).filter(Boolean);
@@ -669,7 +863,9 @@ export function createFigmaTransfer(input) {
     format: "codeshell.figma.transfer",
     version: 1,
     name: document.name,
+    canvas: { ...document.canvas },
     pages,
+    assets: createFigmaTransferAssets(document, resources),
     warnings: report.warnings,
     stats: { pages: pages.length, exportedNodes, skippedNodes, warningCount },
   };

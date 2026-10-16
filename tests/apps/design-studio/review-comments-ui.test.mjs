@@ -34,7 +34,10 @@ function seed(text, id = "seed") {
   });
 }
 
-async function fixture(t, { mobile = false, preview = false } = {}) {
+async function fixture(
+  t,
+  { mobile = false, preview = false, persistentHost = false, agent = false } = {},
+) {
   const browser = await chromium.launch();
   t.after(() => browser.close());
   const context = await browser.newContext({
@@ -46,7 +49,8 @@ async function fixture(t, { mobile = false, preview = false } = {}) {
     calls = [],
     errors = [],
     pauses = new Map(),
-    readErrors = new Map();
+    readErrors = new Map(),
+    records = new Map();
   page.on("pageerror", (error) => errors.push(error.message));
   await context.route("**/*", async (route) => {
     const url = new URL(route.request().url());
@@ -63,7 +67,13 @@ async function fixture(t, { mobile = false, preview = false } = {}) {
         window.reviewUI = mountReviewComments({ getSnapshot: () => window.reviewSnapshot,
           call: window.reviewCall, focusTarget: async target => {
             window.reviewFocused.push(target); return !window.reviewMissingTarget;
-          }, notify: text => window.reviewNotices.push(text) });
+          }, notify: text => window.reviewNotices.push(text),
+          canSubmitThread: () => window.reviewAgentAvailable,
+          submitThread: async (thread, {snapshot, check}) => {
+            check(); window.reviewHandoffEntered = true;
+            if (window.reviewDelayHandoff) await new Promise(resolve => { window.reviewReleaseHandoff = resolve; });
+            check(); window.reviewAgentSubmissions.push({thread, snapshot});
+          } });
         document.querySelector('.compact-actions-list').addEventListener('click', event => {
           const id = event.target.closest('[data-toolbar-action]')?.dataset.toolbarAction;
           if (id) document.getElementById(id)?.click();
@@ -103,7 +113,26 @@ async function fixture(t, { mobile = false, preview = false } = {}) {
     if (readErrors.has(scope) && method === "workspace.readText")
       throw Error(readErrors.get(scope));
     let result;
-    if (method === "workspace.readText") {
+    if (method.startsWith("storage.")) {
+      const recordKey = `${scope}:${params.key}`;
+      const snapshot = () =>
+        records.has(recordKey)
+          ? {
+              exists: true,
+              value: structuredClone(records.get(recordKey)),
+              revision: `sha256:${hash(JSON.stringify(records.get(recordKey)))}`,
+            }
+          : { exists: false, value: null, revision: null };
+      if (method === "storage.getSnapshot") result = snapshot();
+      else if (method === "storage.compareAndSet") {
+        if (params.expectedRevision !== snapshot().revision)
+          result = { updated: false, snapshot: snapshot() };
+        else {
+          records.set(recordKey, structuredClone(params.value));
+          result = { updated: true, snapshot: snapshot() };
+        }
+      } else throw Error(`Unsupported ${method}`);
+    } else if (method === "workspace.readText") {
       const content = files.get(key);
       if (content === undefined) throw Error("file missing");
       result = { path: params.path, content, modifiedAt: 1, revision: hash(content) };
@@ -125,13 +154,16 @@ async function fixture(t, { mobile = false, preview = false } = {}) {
     return result;
   });
   await page.addInitScript(
-    ({ path, preview }) => {
+    ({ path, preview, persistentHost, agent }) => {
       window.reviewSnapshot = {
         context: {
           cwd: "/workspace",
           sessionId: "same-session",
           trusted: true,
           projectScope: { version: 1, environmentId: "cloud", projectId: "A", rootId: "root" },
+          ...(persistentHost
+            ? { availableMethods: ["storage.getSnapshot", "storage.compareAndSet"] }
+            : {}),
         },
         workspaceEpoch: 1,
         documentEpoch: 1,
@@ -143,6 +175,8 @@ async function fixture(t, { mobile = false, preview = false } = {}) {
       };
       window.reviewFocused = [];
       window.reviewNotices = [];
+      window.reviewAgentAvailable = agent;
+      window.reviewAgentSubmissions = [];
       window.reviewCall = (method, params) => {
         if (!preview)
           return window.reviewHostBridge(
@@ -169,8 +203,9 @@ async function fixture(t, { mobile = false, preview = false } = {}) {
         localStorage.setItem(mtimeKey, String(next));
         return Promise.resolve({ modifiedAt: next, revision: `preview:${next}` });
       };
+      if (persistentHost) window.codeshellPanel = { call: window.reviewCall };
     },
-    { path, preview },
+    { path, preview, persistentHost, agent },
   );
   await page.goto("https://panel.test/review-harness.html");
   await page.waitForFunction(() => Boolean(window.reviewUI));
@@ -180,6 +215,7 @@ async function fixture(t, { mobile = false, preview = false } = {}) {
     calls,
     errors,
     readErrors,
+    records,
     async open() {
       if (mobile) {
         await page.locator("#compact-actions summary").click();
@@ -408,5 +444,94 @@ test("browser preview uses the same local workspace keys and survives reopening"
     await page.locator(".review-comment-text").textContent(),
     "Browser preview discussion",
   );
+  assert.deepEqual(f.errors, []);
+});
+
+test("Host CAS drafts survive reload and a concurrent draft blocks autosave without replacement", async (t) => {
+  const f = await fixture(t, { persistentHost: true }),
+    { page } = f;
+  await f.open();
+  await page.waitForFunction(() =>
+    document.querySelector("#review-comments-draft-state").textContent.includes("恢复"),
+  );
+  await page.locator("#review-comments-text").fill("Persistent unfinished comment");
+  await page.evaluate(() => window.reviewUI.flushDraft());
+  assert.equal([...f.records.values()][0].text, "Persistent unfinished comment");
+  await page.reload();
+  await page.waitForFunction(() => Boolean(window.reviewUI));
+  await f.open();
+  await page.waitForFunction(
+    () => document.querySelector("#review-comments-text").value === "Persistent unfinished comment",
+  );
+  const [key, record] = [...f.records.entries()][0];
+  f.records.set(key, { ...record, text: "Other window's draft" });
+  await page.locator("#review-comments-text").fill("My concurrent change");
+  await page.evaluate(() => window.reviewUI.flushDraft());
+  await page.waitForFunction(() =>
+    document.querySelector("#review-comments-draft-state").textContent.includes("自动保存已停止"),
+  );
+  assert.equal(f.records.get(key).text, "Other window's draft");
+  assert.equal(await page.locator("#review-comments-text").inputValue(), "My concurrent change");
+  assert.deepEqual(f.errors, []);
+});
+test("late Host draft loading cannot replace the new project input or persist into its scope", async (t) => {
+  const f = await fixture(t, { persistentHost: true }),
+    { page } = f;
+  await f.open();
+  await page.locator("#review-comments-text").fill("A draft");
+  await page.evaluate(() => window.reviewUI.flushDraft());
+  const pause = f.pause("storage.getSnapshot");
+  await page.reload();
+  await page.waitForFunction(() => Boolean(window.reviewUI));
+  await f.open();
+  await pause.entered;
+  await page.evaluate(() => window.switchReviewProject("B"));
+  await page.waitForFunction(
+    () => document.querySelector("#review-comments-dialog").getAttribute("aria-busy") === "false",
+  );
+  await page.locator("#review-comments-text").fill("B draft");
+  pause.release();
+  await page.evaluate(() => window.reviewUI.flushDraft());
+  assert.equal(await page.locator("#review-comments-text").inputValue(), "B draft");
+  assert(
+    [...f.records.entries()]
+      .filter(([key]) => key.startsWith("B:"))
+      .every(([, value]) => value.text !== "A draft"),
+  );
+  assert.deepEqual(f.errors, []);
+});
+test("Agent handoff uses the latest replies and cancels dispatch when the project changes during preparation", async (t) => {
+  const f = await fixture(t, { agent: true }),
+    { page } = f;
+  f.files.set(`A:${commentsPath}`, seed("Handle this question"));
+  f.files.set(`B:${commentsPath}`, seed("B question"));
+  await f.open();
+  const updated = JSON.parse(f.files.get(`A:${commentsPath}`));
+  updated.threads[0].replies.push({
+    id: "recent",
+    text: "Latest clarification",
+    author: "Reviewer",
+    createdAt: date,
+  });
+  f.files.set(`A:${commentsPath}`, JSON.stringify(updated));
+  await page.locator("[data-agent-thread]").click();
+  await page.waitForFunction(() => window.reviewAgentSubmissions.length === 1);
+  assert.equal(
+    await page.evaluate(() => window.reviewAgentSubmissions[0].thread.replies[0].text),
+    "Latest clarification",
+  );
+  await page.evaluate(() => {
+    window.reviewDelayHandoff = true;
+    window.reviewHandoffEntered = false;
+  });
+  await page.locator("[data-agent-thread]").click();
+  await page.waitForFunction(() => window.reviewHandoffEntered);
+  await page.evaluate(() => window.switchReviewProject("B"));
+  await page.waitForFunction(
+    () => document.querySelector(".review-comment-text")?.textContent === "B question",
+  );
+  await page.evaluate(() => window.reviewReleaseHandoff());
+  assert.equal(await page.evaluate(() => window.reviewAgentSubmissions.length), 1);
+  assert.equal(await page.locator(".review-comment-text").textContent(), "B question");
   assert.deepEqual(f.errors, []);
 });

@@ -1,0 +1,132 @@
+#prototype-editor-dialog {
+  width: min(860px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+}
+.prototype-editor-card {
+  display: block;
+  width: 100%;
+  max-height: calc(100dvh - 26px);
+  overflow: auto;
+  padding: 20px;
+}
+.prototype-editor-card .dialog-header,
+.prototype-row,
+.prototype-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.prototype-editor-card .dialog-header {
+  justify-content: space-between;
+}
+.prototype-path {
+  font:
+    12px ui-monospace,
+    monospace;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+.prototype-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 140px;
+  font-size: 12px;
+}
+.prototype-row input,
+.prototype-row select {
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  font: inherit;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--field-bg, var(--surface));
+  color: var(--text);
+}
+.prototype-section {
+  padding: 16px 0;
+  border-top: 1px solid var(--line);
+  margin-top: 16px;
+}
+.prototype-section h3 {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+.prototype-section summary {
+  cursor: pointer;
+  font-size: 14px;
+}
+.prototype-section > .button {
+  margin-top: 12px;
+}
+.prototype-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  max-height: 220px;
+  overflow: auto;
+  font-size: 12px;
+}
+.prototype-list-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.prototype-list-row span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.prototype-list-row .button {
+  flex-shrink: 0;
+}
+.prototype-footer {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.prototype-footer label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+#prototype-preview-frame {
+  width: 100%;
+  height: 500px;
+  max-height: 65dvh;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+#prototype-selected-layer {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.prototype-editor-card [hidden] {
+  display: none !important;
+}
+@media (max-width: 680px) {
+  #open-prototype-editor {
+    display: none;
+  }
+  .prototype-editor-card {
+    width: 100%;
+    padding: 16px;
+  }
+  .prototype-row {
+    gap: 8px;
+  }
+  .prototype-footer > .button,
+  .prototype-footer > .primary-button {
+    flex: 1;
+    min-width: 120px;
+  }
+}

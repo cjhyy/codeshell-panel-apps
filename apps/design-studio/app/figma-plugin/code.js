@@ -1,11 +1,20 @@
-/* Figma development plugin. No network, no existing-node writes, no binary .fig support. */
+/* Local Figma bridge. Original-node writes require a reviewed, conflict-checked patch. */
 (() => {
   const MAX_BYTES = 16 * 1024 * 1024;
   const MAX_TOTAL = 50_000;
   const containers = new Set(["frame", "group", "component"]);
-  const supported = new Set(["frame", "group", "component", "rectangle", "ellipse", "text"]);
+  const supported = new Set([
+    "frame",
+    "group",
+    "component",
+    "rectangle",
+    "ellipse",
+    "text",
+    "image",
+  ]);
   const finite = (value) => typeof value === "number" && Number.isFinite(value);
   const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
   const color = (value) =>
     value === "transparent" || (typeof value === "string" && /^#[a-f0-9]{6}$/iu.test(value));
   const string = (value, max, empty = false) =>
@@ -24,8 +33,72 @@
   let busy = false;
   figma.showUI(__html__, { width: 420, height: 520, themeColors: true });
   const post = (message) => figma.ui.postMessage(message);
+  const MAX_ASSET = 8 * 1024 * 1024,
+    MAX_ASSETS_TOTAL = 12 * 1024 * 1024;
+  const encode64 = (bytes) => {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let value = "";
+    for (let index = 0; index < bytes.length; index += 3) {
+      const a = bytes[index],
+        b = bytes[index + 1],
+        c = bytes[index + 2];
+      value +=
+        alphabet[a >> 2] +
+        alphabet[((a & 3) << 4) | ((b ?? 0) >> 4)] +
+        (b === undefined ? "=" : alphabet[((b & 15) << 2) | ((c ?? 0) >> 6)]) +
+        (c === undefined ? "=" : alphabet[c & 63]);
+    }
+    return value;
+  };
+  const decode64 = (value) => {
+    if (
+      typeof value !== "string" ||
+      !value.length ||
+      value.length > Math.ceil(MAX_ASSET / 3) * 4 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value)
+    )
+      throw new Error("图片 Base64 无效或超过 8 MiB。");
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
+      length = (value.length * 3) / 4 - (value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0),
+      bytes = new Uint8Array(length);
+    let offset = 0;
+    for (let index = 0; index < value.length; index += 4) {
+      const bits =
+        (alphabet.indexOf(value[index]) << 18) |
+        (alphabet.indexOf(value[index + 1]) << 12) |
+        (Math.max(0, alphabet.indexOf(value[index + 2])) << 6) |
+        Math.max(0, alphabet.indexOf(value[index + 3]));
+      if (offset < length) bytes[offset++] = (bits >> 16) & 255;
+      if (offset < length) bytes[offset++] = (bits >> 8) & 255;
+      if (offset < length) bytes[offset++] = bits & 255;
+    }
+    if (bytes.length > MAX_ASSET) throw new Error("图片超过 8 MiB。");
+    return bytes;
+  };
+  const imageMime = (bytes) =>
+    bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71
+      ? "image/png"
+      : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
+        ? "image/jpeg"
+        : bytes[0] === 71 && bytes[1] === 73 && bytes[2] === 70
+          ? "image/gif"
+          : null;
+  function validateAssets(assets = {}) {
+    if (!object(assets) || Object.keys(assets).length > 2048) throw new Error("图片资源表无效。");
+    let total = 0;
+    const bytes = new Map();
+    for (const [id, asset] of Object.entries(assets)) {
+      if (!string(id, 160) || !object(asset)) throw new Error("图片资源无效。");
+      const data = decode64(asset.base64);
+      if (!imageMime(data) || imageMime(data) !== asset.mime)
+        throw new Error("图片须为本地 PNG、JPEG 或 GIF。SVG/WebP 请通过插件界面转换。");
+      if ((total += data.length) > MAX_ASSETS_TOTAL) throw new Error("图片总量超过 12 MiB。");
+      bytes.set(id, data);
+    }
+    return bytes;
+  }
 
-  function validateTransfer(value) {
+  function validateTransfer(value, validatedAssets) {
     if (
       !object(value) ||
       value.format !== "codeshell.figma.transfer" ||
@@ -36,6 +109,20 @@
       value.pages.length > 1000
     )
       throw new Error("不是有效的 CodeShell Figma 传输包。");
+    const assets = validatedAssets ?? validateAssets(value.assets);
+    if (
+      value.canvas !== undefined &&
+      (!object(value.canvas) ||
+        !color(value.canvas.background) ||
+        value.canvas.background === "transparent" ||
+        !finite(value.canvas.width) ||
+        !finite(value.canvas.height) ||
+        value.canvas.width < 100 ||
+        value.canvas.width > 10000 ||
+        value.canvas.height < 100 ||
+        value.canvas.height > 10000)
+    )
+      throw new Error("画布尺寸或背景无效。");
     const ids = new Set(),
       seen = new Set();
     let total = 0;
@@ -83,6 +170,13 @@
         throw new Error("图层备注无效。");
       if (node.sourceId !== undefined && !string(node.sourceId, 160))
         throw new Error("来源 ID 无效。");
+      if (
+        node.type === "image" &&
+        (!string(node.imageRef, 64) ||
+          !assets.has(node.imageRef) ||
+          !["fill", "contain", "cover"].includes(node.objectFit))
+      )
+        throw new Error("图片图层缺少本地图片或适配模式无效。");
       if (node.shadow !== undefined) {
         if (
           !object(node.shadow) ||
@@ -194,11 +288,13 @@
     ];
   }
 
-  async function importTransfer(value) {
+  async function importTransfer(value, hooks = {}) {
     const count = validateTransfer(value); // Complete validation before the first document mutation.
     const warnings = [],
       created = [],
       fonts = new Map();
+    const imageBytes = validateAssets(value.assets),
+      imageHashes = new Map();
     const warn = (message) => {
       if (warnings.length < 200) warnings.push(message);
     };
@@ -328,7 +424,17 @@
         node.textAutoResize = "NONE";
       }
       node.resize(source.width, source.height);
-      node.fills = paints(source.fill);
+      if (source.type === "image") {
+        if (!imageHashes.has(source.imageRef))
+          imageHashes.set(source.imageRef, figma.createImage(imageBytes.get(source.imageRef)).hash);
+        node.fills = [
+          {
+            type: "IMAGE",
+            imageHash: imageHashes.get(source.imageRef),
+            scaleMode: source.objectFit === "contain" ? "FIT" : "FILL",
+          },
+        ];
+      } else node.fills = paints(source.fill);
       node.strokes = paints(source.stroke);
       node.strokeWeight = source.strokeWidth;
       node.strokeAlign = "CENTER";
@@ -368,13 +474,26 @@
         }
       }
       node.locked = source.locked;
+      if (source.constraintHorizontal || source.constraintVertical)
+        node.constraints = {
+          horizontal:
+            { start: "MIN", center: "CENTER", end: "MAX", stretch: "STRETCH", scale: "SCALE" }[
+              source.constraintHorizontal
+            ] ?? "MIN",
+          vertical:
+            { start: "MIN", center: "CENTER", end: "MAX", stretch: "STRETCH", scale: "SCALE" }[
+              source.constraintVertical
+            ] ?? "MIN",
+        };
       return node;
     }
+    if (hooks.factoryOnly) return { createNode, applySizing, applyLayout, loadFont, warnings };
     try {
       for (const source of value.pages) {
         const page = figma.createPage();
         created.push(page);
         page.name = `${source.name} · CodeShell`;
+        if (value.canvas) page.backgrounds = paints(value.canvas.background);
         page.setPluginData("codeshellPageId", source.id);
         for (const child of source.children) {
           const node = await createNode(child, page, null);
@@ -388,6 +507,1010 @@
       // These pages are owned by this import. Never remove or modify pre-existing pages.
       for (const page of created.reverse()) page.remove();
       throw error;
+    }
+  }
+
+  const PATCH_KEYS = new Set([
+    "name",
+    "notes",
+    "x",
+    "y",
+    "width",
+    "height",
+    "rotation",
+    "fill",
+    "stroke",
+    "strokeWidth",
+    "opacity",
+    "cornerRadius",
+    "visible",
+    "locked",
+    "shadow",
+    "clipContent",
+    "text",
+    "fontSize",
+    "fontWeight",
+    "fontFamily",
+    "fontStyle",
+    "lineHeight",
+    "textAlign",
+    "letterSpacing",
+    "textDecoration",
+    "imageRef",
+    "objectFit",
+    "layout",
+    "layoutWrap",
+    "layoutReverse",
+    "gap",
+    "rowGap",
+    "columnGap",
+    "padding",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "alignItems",
+    "justifyContent",
+    "alignContent",
+    "layoutSizingHorizontal",
+    "layoutSizingVertical",
+    "layoutPositioning",
+    "layoutAlignSelf",
+    "minWidth",
+    "maxWidth",
+    "minHeight",
+    "maxHeight",
+    "constraintHorizontal",
+    "constraintVertical",
+    "constraintLeft",
+    "constraintRight",
+    "constraintTop",
+    "constraintBottom",
+    "constraintBaseWidth",
+    "constraintBaseHeight",
+    "parentId",
+    "textSource",
+    "textFlow",
+    "textFlowWidth",
+    "textMeasurement",
+    "textOverflow",
+    "layoutBaselineOffset",
+    "fontRef",
+    "effectClipping",
+    "contentClipping",
+  ]);
+  PATCH_KEYS.add("pageId");
+  PATCH_KEYS.add("siblingIndex");
+  const GEOMETRY_KEYS = new Set(["x", "y", "width", "height", "rotation", "parentId", "pageId"]);
+  const LAYOUT_KEYS = new Set([
+    "layout",
+    "layoutWrap",
+    "layoutReverse",
+    "gap",
+    "rowGap",
+    "columnGap",
+    "padding",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "alignItems",
+    "justifyContent",
+    "alignContent",
+  ]);
+  const FONT_KEYS = new Set([
+    "text",
+    "fontSize",
+    "fontWeight",
+    "fontFamily",
+    "fontStyle",
+    "lineHeight",
+    "textAlign",
+    "letterSpacing",
+    "textDecoration",
+  ]);
+  const canonical = (value) =>
+    JSON.stringify(value === undefined ? null : value, (_key, entry) =>
+      object(entry)
+        ? Object.fromEntries(
+            Object.keys(entry)
+              .sort()
+              .map((key) => [key, entry[key]]),
+          )
+        : entry,
+    );
+  const restKeys = (key) =>
+    GEOMETRY_KEYS.has(key)
+      ? ["absoluteBoundingBox", "size", "relativeTransform", "rotation"]
+      : FONT_KEYS.has(key)
+        ? key === "text"
+          ? ["characters", "characterStyleOverrides", "styleOverrideTable"]
+          : ["style", "characterStyleOverrides", "styleOverrideTable"]
+        : LAYOUT_KEYS.has(key)
+          ? [
+              "layoutMode",
+              "layoutWrap",
+              "itemSpacing",
+              "counterAxisSpacing",
+              "paddingTop",
+              "paddingRight",
+              "paddingBottom",
+              "paddingLeft",
+              "counterAxisAlignItems",
+              "primaryAxisAlignItems",
+              "counterAxisAlignContent",
+            ]
+          : ({
+              fill: ["fills"],
+              imageRef: ["fills"],
+              objectFit: ["fills"],
+              stroke: ["strokes"],
+              strokeWidth: ["strokeWeight"],
+              cornerRadius: ["cornerRadius", "rectangleCornerRadii", "cornerSmoothing"],
+              shadow: ["effects"],
+              clipContent: ["clipsContent"],
+              constraintHorizontal: ["constraints"],
+              constraintVertical: ["constraints"],
+              layoutAlignSelf: ["layoutAlign"],
+              layoutPositioning: ["layoutPositioning"],
+              notes: [],
+              siblingIndex: [],
+            }[key] ?? [key]);
+  async function nodeRest(node) {
+    if (node.type === "PAGE") await node.loadAsync();
+    const response = await node.exportAsync({ format: "JSON_REST_V1" });
+    const document = response?.document ?? response?.nodes?.[node.id]?.document;
+    if (!object(document)) throw new Error(`无法读取原图层 ${node.id}。`);
+    return document;
+  }
+  function patchIndexes(value) {
+    const current = new Map(),
+      baseline = new Map(),
+      pages = new Map(),
+      sourceIds = new Map(),
+      mapping = new Map(),
+      pageMappings = new Map(),
+      siblings = new Map(),
+      baselineOrder = new Map();
+    const walk = (nodes, target, parentId, pageId) => {
+      for (const node of nodes ?? []) {
+        target.set(node.id, { ...node, ...(parentId ? { parentId } : {}), pageId });
+        walk(node.children, target, node.id, pageId);
+      }
+    };
+    for (const page of value.pages) {
+      pages.set(page.id, page);
+      walk(page.children, current, null, page.id);
+    }
+    for (const page of value.patch?.baseline?.pages ?? [])
+      walk(page.children ?? page.nodes, baseline, null, page.id);
+    for (const op of value.patch?.operations ?? [])
+      if (op.baseline) baseline.set(op.designId, op.baseline);
+    for (const entry of value.patch?.mapping ?? []) {
+      sourceIds.set(entry.designId, entry.sourceId);
+      mapping.set(entry.designId, entry);
+    }
+    if (!Array.isArray(value.patch?.mapping))
+      for (const node of current.values())
+        if (node.sourceId && !sourceIds.has(node.id)) sourceIds.set(node.id, node.sourceId);
+    for (const op of value.patch?.operations ?? [])
+      if (op.sourceId && op.designId) sourceIds.set(op.designId, op.sourceId);
+    for (const entry of value.patch?.pageMappings ?? []) {
+      sourceIds.set(entry.designId, entry.sourceId);
+      pageMappings.set(entry.designId, entry);
+    }
+    for (const node of current.values()) {
+      const key = JSON.stringify([node.pageId, node.parentId ?? null]);
+      if (!siblings.has(key)) siblings.set(key, []);
+      siblings.get(key).push(node);
+    }
+    for (const node of baseline.values()) {
+      const entry = mapping.get(node.id),
+        parent =
+          entry?.sourceParentId ??
+          sourceIds.get(node.parentId) ??
+          pageMappings.get(node.pageId)?.sourceId;
+      if (entry && parent) {
+        if (!baselineOrder.has(parent)) baselineOrder.set(parent, []);
+        baselineOrder.get(parent).push(entry.sourceId);
+      }
+    }
+    return { current, baseline, pages, sourceIds, mapping, pageMappings, siblings, baselineOrder };
+  }
+  const IDENTITY = [
+    [1, 0, 0],
+    [0, 1, 0],
+  ];
+  const multiply = (a, b) => [
+    [
+      a[0][0] * b[0][0] + a[0][1] * b[1][0],
+      a[0][0] * b[0][1] + a[0][1] * b[1][1],
+      a[0][0] * b[0][2] + a[0][1] * b[1][2] + a[0][2],
+    ],
+    [
+      a[1][0] * b[0][0] + a[1][1] * b[1][0],
+      a[1][0] * b[0][1] + a[1][1] * b[1][1],
+      a[1][0] * b[0][2] + a[1][1] * b[1][2] + a[1][2],
+    ],
+  ];
+  const inverse = (matrix) => {
+    const determinant = matrix[0][0] * matrix[1][1] - matrix[0][1] * matrix[1][0];
+    if (Math.abs(determinant) < 0.000001) throw new Error("选区父级变换不可逆。");
+    const a = matrix[1][1] / determinant,
+      b = -matrix[0][1] / determinant,
+      c = -matrix[1][0] / determinant,
+      d = matrix[0][0] / determinant;
+    return [
+      [a, b, -a * matrix[0][2] - b * matrix[1][2]],
+      [c, d, -c * matrix[0][2] - d * matrix[1][2]],
+    ];
+  };
+  const absolute = (node, depth = 0) => {
+    if (!node || depth > 34 || node.type === "PAGE" || !node.relativeTransform) return IDENTITY;
+    return (
+      node.absoluteTransform ?? multiply(absolute(node.parent, depth + 1), node.relativeTransform)
+    );
+  };
+  function designWorld(node, index, pageMap) {
+    let x = node.x + node.width / 2,
+      y = node.y + node.height / 2,
+      rotation = node.rotation;
+    for (
+      let parent = index.get(node.parentId), depth = 0;
+      parent && depth++ <= 32;
+      parent = index.get(parent.parentId)
+    ) {
+      const cx = parent.x + parent.width / 2,
+        cy = parent.y + parent.height / 2,
+        radians = (parent.rotation * Math.PI) / 180,
+        dx = x - cx,
+        dy = y - cy;
+      x = cx + dx * Math.cos(radians) - dy * Math.sin(radians);
+      y = cy + dx * Math.sin(radians) + dy * Math.cos(radians);
+      rotation += parent.rotation;
+    }
+    return { x: x - (pageMap?.offsetX ?? 0), y: y - (pageMap?.offsetY ?? 0), rotation };
+  }
+  let preview = null,
+    previewSerial = 0;
+  async function preflightPatch(value) {
+    const assets = validateAssets(value.assets);
+    validateTransfer(value, assets);
+    const patch = value.patch;
+    if (
+      !object(patch) ||
+      patch.format !== "codeshell.figma.patch" ||
+      patch.version !== 1 ||
+      !Array.isArray(patch.operations) ||
+      patch.operations.length > MAX_TOTAL
+    )
+      throw new Error("没有有效的增量修改记录。");
+    if (patch.fileKey && figma.fileKey && patch.fileKey !== figma.fileKey)
+      throw new Error("当前 Figma 文件与来源文件不一致。");
+    const validMatrix = (value) =>
+      Array.isArray(value) &&
+      value.length === 2 &&
+      value.every((row) => Array.isArray(row) && row.length === 3 && row.every(finite));
+    for (const entry of patch.mapping ?? [])
+      if (
+        entry.selectionRoot &&
+        (!string(entry.sourceParentId, 160) || !validMatrix(entry.sourceParentTransform))
+      )
+        throw new Error("选区来源父级上下文无效。");
+    const indexes = patchIndexes(value),
+      targets = new Map(),
+      currentRaw = new Map(),
+      geometryBefore = new Map(),
+      conflicts = [],
+      report = [],
+      createdIds = new Set();
+    let deletions = 0;
+    const requireTarget = async (id) => {
+      if (!string(id, 160)) throw new Error("增量操作缺少来源图层 ID。");
+      if (!targets.has(id)) {
+        const node = await figma.getNodeByIdAsync(id);
+        if (!node || node.removed) throw new Error(`来源图层 ${id} 不存在。`);
+        targets.set(id, node);
+        currentRaw.set(id, await nodeRest(node));
+        if (node.relativeTransform)
+          geometryBefore.set(id, {
+            width: node.width,
+            height: node.height,
+            matrix: node.relativeTransform.map((row) => [...row]),
+          });
+      }
+      return targets.get(id);
+    };
+    const validateNode = (node, id) => {
+      if (!object(node) || node.id !== id) throw new Error("增量操作的设计图层 ID 不匹配。");
+      const copy = { ...node, ...(containers.has(node.type) ? { children: [] } : {}) };
+      validateTransfer(
+        {
+          format: "codeshell.figma.transfer",
+          version: 1,
+          name: "Patch validation",
+          pages: [{ id: "validate", name: "Patch", children: [copy] }],
+        },
+        assets,
+      );
+    };
+    for (const operation of patch.operations) {
+      if (
+        !object(operation) ||
+        !["update", "create", "delete", "create-page", "rename-page", "delete-page"].includes(
+          operation.op,
+        )
+      )
+        throw new Error("未知的增量操作。");
+      if (operation.op === "create" || operation.op === "update")
+        validateNode(operation.after, operation.designId);
+      if (operation.op === "create" || operation.op === "create-page") {
+        if (
+          !string(operation.designId, 160) ||
+          createdIds.has(operation.designId) ||
+          indexes.sourceIds.has(operation.designId)
+        )
+          throw new Error("新增设计 ID 重复或已绑定来源。");
+        createdIds.add(operation.designId);
+        if (operation.op === "create-page" && !string(operation.after?.name ?? operation.name, 120))
+          throw new Error("新增页面名称无效。");
+      } else {
+        const target = await requireTarget(operation.sourceId),
+          raw = currentRaw.get(operation.sourceId);
+        if (
+          !object(operation.before) ||
+          (operation.op !== "rename-page" && operation.before.id !== operation.sourceId)
+        )
+          throw new Error("缺少可核对的来源快照。");
+        if (operation.op === "update") {
+          if (
+            !object(operation.baseline) ||
+            !Array.isArray(operation.changed) ||
+            !operation.changed.length ||
+            operation.changed.some((key) => !PATCH_KEYS.has(key)) ||
+            new Set(operation.changed).size !== operation.changed.length
+          )
+            throw new Error("增量修改字段无效或暂不支持。");
+          if (
+            operation.changed.includes("siblingIndex") &&
+            (!Number.isInteger(operation.after.siblingIndex) ||
+              operation.after.siblingIndex < 0 ||
+              operation.after.siblingIndex >= 10000)
+          )
+            throw new Error("图层顺序无效。");
+          for (const key of operation.changed)
+            for (const property of restKeys(key))
+              if (canonical(operation.before[property]) !== canonical(raw[property]))
+                conflicts.push(`${operation.sourceId} · ${property} 已在 Figma 中变化。`);
+          if (operation.changed.includes("parentId") || operation.changed.includes("pageId")) {
+            const entry = indexes.mapping.get(operation.designId);
+            const parentId =
+              indexes.sourceIds.get(operation.baseline.parentId) ??
+              entry?.sourceParentId ??
+              entry?.sourcePageId;
+            if (parentId && target.parent?.id !== parentId)
+              conflicts.push(`${operation.sourceId} · 所属容器已变化。`);
+          }
+          if (
+            operation.changed.some((key) => LAYOUT_KEYS.has(key)) &&
+            !["FRAME", "COMPONENT", "INSTANCE", "COMPONENT_SET"].includes(target.type)
+          )
+            throw new Error("此来源图层不支持 Auto Layout 修改。");
+          if (
+            operation.changed.some((key) => LAYOUT_KEYS.has(key)) &&
+            (operation.after.layout === "grid" ||
+              operation.after.layoutReverse ||
+              operation.after.layoutWrap === "wrap-reverse" ||
+              (operation.after.layout === "vertical" && operation.after.layoutWrap === "wrap"))
+          )
+            throw new Error("此增量布局不能直接对应 Figma，请使用新页面转换或在 Figma 中修改。");
+          if (
+            operation.changed.includes("layoutAlignSelf") &&
+            operation.after.layoutAlignSelf !== undefined &&
+            !["auto", "stretch"].includes(operation.after.layoutAlignSelf)
+          )
+            throw new Error("Figma 单项对齐仅支持继承或拉伸，请使用新页面副本核对其他单项对齐。");
+          if (operation.changed.some((key) => FONT_KEYS.has(key)) && target.type !== "TEXT")
+            throw new Error("此来源图层不是可编辑文字；请先在 Figma 中编辑复杂文字。");
+          if (
+            operation.changed.includes("cornerRadius") &&
+            !["RECTANGLE", "FRAME", "COMPONENT", "INSTANCE", "COMPONENT_SET"].includes(target.type)
+          )
+            throw new Error("此来源图层不支持统一圆角修改。");
+          if (
+            target.type === "TEXT" &&
+            operation.changed.some(
+              (key) =>
+                FONT_KEYS.has(key) ||
+                ["width", "height", "fill", "stroke", "strokeWidth"].includes(key),
+            )
+          ) {
+            const fonts =
+              typeof target.getRangeAllFontNames === "function"
+                ? target.getRangeAllFontNames(0, target.characters.length)
+                : object(target.fontName)
+                  ? [target.fontName]
+                  : [];
+            for (const font of fonts) await figma.loadFontAsync(font);
+            if (
+              operation.changed.some((key) =>
+                ["fontFamily", "fontWeight", "fontStyle"].includes(key),
+              )
+            )
+              await figma.loadFontAsync(patchFont(operation.after));
+          }
+          if (
+            operation.changed.some(
+              (key) => key === "constraintHorizontal" || key === "constraintVertical",
+            ) &&
+            ["GROUP", "BOOLEAN_OPERATION", "SECTION"].includes(target.type)
+          )
+            throw new Error("此来源图层不支持直接设置约束，请修改内部可编辑图层。");
+        } else if (operation.op === "rename-page") {
+          if (indexes.pageMappings.get(operation.designId)?.partial)
+            throw new Error("选区来源没有完整页面，不能重命名原页面。");
+          if (target.type !== "PAGE" || !string(operation.after?.name ?? operation.name, 120))
+            throw new Error("页面重命名操作无效。");
+          if (operation.before.name !== raw.name)
+            conflicts.push(`${operation.sourceId} · 页面名称已变化。`);
+        } else {
+          if (
+            operation.op === "delete-page" &&
+            indexes.pageMappings.get(operation.designId)?.partial
+          )
+            throw new Error("选区来源没有完整页面，不能删除原页面。");
+          if (canonical(operation.before) !== canonical(raw))
+            conflicts.push(`${operation.sourceId} · 删除目标或其子树已变化。`);
+          if (
+            (operation.op === "delete-page" && target.type !== "PAGE") ||
+            (operation.op === "delete" && target.type === "PAGE")
+          )
+            throw new Error("删除目标类型不匹配。");
+          deletions += 1;
+        }
+      }
+      if (
+        operation.op === "create" ||
+        operation.changed?.some((key) => key === "parentId" || key === "pageId")
+      )
+        for (const sourceId of [operation.parentSourceId, operation.pageSourceId])
+          if (sourceId) await requireTarget(sourceId);
+      if (operation.op === "create" || operation.changed?.includes("siblingIndex")) {
+        const parent =
+          operation.op === "create"
+            ? targets.get(operation.parentSourceId ?? operation.pageSourceId)
+            : targets.get(operation.sourceId)?.parent;
+        if (parent) {
+          if (parent.type === "PAGE") await parent.loadAsync();
+          if (typeof parent.insertChild !== "function")
+            throw new Error("此来源容器不支持图层排序。");
+          for (let ancestor = parent; ancestor; ancestor = ancestor.parent)
+            if (ancestor.type === "INSTANCE")
+              throw new Error("Figma 实例内部图层不允许新增或重新排序，请使用新页面副本。");
+          if (operation.op === "create" && parent.type === "COMPONENT_SET")
+            throw new Error("组件集合只接受原生组件；请使用新页面副本。");
+          const actual = parent.children.map((child) => child.id);
+          for (const id of [operation.previousSiblingSourceId, operation.nextSiblingSourceId])
+            if (id) {
+              const sibling = await figma.getNodeByIdAsync(id);
+              if (
+                sibling &&
+                sibling.parent !== parent &&
+                indexes.mapping.get(operation.designId)?.selectionRoot
+              )
+                throw new Error("选区图层来自不同容器；跨容器排序请完整导出页面后修改。");
+            }
+          if (operation.beforeSiblingSourceIds !== undefined) {
+            if (
+              !Array.isArray(operation.beforeSiblingSourceIds) ||
+              operation.beforeSiblingSourceIds.some((id) => !string(id, 160))
+            )
+              throw new Error("原始图层顺序快照无效。");
+            if (canonical(actual) !== canonical(operation.beforeSiblingSourceIds))
+              conflicts.push(`${parent.id} · 原始图层顺序已变化。`);
+          } else if (operation.baseline) {
+            const expected = indexes.baselineOrder.get(parent.id) ?? [];
+            const expectedIds = new Set(expected);
+            if (canonical(actual.filter((id) => expectedIds.has(id))) !== canonical(expected))
+              conflicts.push(`${parent.id} · 已导入图层顺序已变化。`);
+          }
+        }
+      }
+      report.push({
+        op: operation.op,
+        sourceId: operation.sourceId ?? null,
+        designId: operation.designId ?? null,
+        name: operation.after?.name ?? operation.before?.name ?? operation.name ?? "",
+        changed: operation.changed ?? [],
+      });
+    }
+    for (const operation of patch.operations)
+      if (
+        operation.op === "create" ||
+        operation.changed?.includes("parentId") ||
+        operation.changed?.includes("pageId")
+      ) {
+        const parentDesignId =
+          operation.parentDesignId ?? operation.after.parentId ?? operation.pageDesignId;
+        if (
+          !operation.parentSourceId &&
+          !operation.pageSourceId &&
+          !createdIds.has(parentDesignId) &&
+          !indexes.sourceIds.has(parentDesignId)
+        )
+          throw new Error("新增或移动图层没有可核对的目标容器。");
+        const sourceId = indexes.sourceIds.get(parentDesignId);
+        if (sourceId) await requireTarget(sourceId);
+      }
+    const removedPages = patch.operations.filter((op) => op.op === "delete-page").length;
+    if (
+      figma.root.children.length +
+        patch.operations.filter((op) => op.op === "create-page").length -
+        removedPages <
+      1
+    )
+      throw new Error("不能删除 Figma 的最后一个页面。");
+    return {
+      value,
+      indexes,
+      targets,
+      currentRaw,
+      geometryBefore,
+      conflicts: [...new Set(conflicts)],
+      report,
+      deletions,
+      identity: {
+        verified: Boolean(patch.fileKey && figma.fileKey),
+        message:
+          patch.fileKey && figma.fileKey
+            ? "来源文件已匹配。"
+            : "来源文件无法自动确认，请确认当前打开原 Figma 文件；本次按图层 ID 和属性快照核对。",
+      },
+    };
+  }
+  function patchFont(source) {
+    const base = {
+      100: "Thin",
+      200: "Extra Light",
+      300: "Light",
+      400: "Regular",
+      500: "Medium",
+      600: "Semi Bold",
+      700: "Bold",
+      800: "Extra Bold",
+      900: "Black",
+    }[source.fontWeight];
+    return {
+      family: source.fontFamily || "Inter",
+      style:
+        source.fontStyle === "italic" ? (base === "Regular" ? "Italic" : `${base} Italic`) : base,
+    };
+  }
+  async function applyPatch(plan, allowDeletes) {
+    if (plan.conflicts.length) throw new Error("原设计已变化，请重新导出后核对。");
+    if (plan.deletions && !allowDeletes)
+      throw new Error("此更新包含删除，请在核对列表后明确勾选允许删除。");
+    if (typeof figma.commitUndo !== "function" || typeof figma.triggerUndo !== "function")
+      throw new Error("当前 Figma 版本缺少安全撤销能力。");
+    const { value, indexes, targets } = plan,
+      created = new Map(),
+      warnings = [];
+    const factory = await importTransfer(value, { factoryOnly: true });
+    const imageBytes = validateAssets(value.assets),
+      imageHashes = new Map();
+    const resolvedDesign = new Map();
+    const resolveDesign = async (id) => {
+      if (created.has(id)) return created.get(id);
+      if (!resolvedDesign.has(id)) {
+        const sourceId = indexes.sourceIds.get(id);
+        resolvedDesign.set(
+          id,
+          sourceId ? (targets.get(sourceId) ?? (await figma.getNodeByIdAsync(sourceId))) : null,
+        );
+      }
+      return resolvedDesign.get(id);
+    };
+    const parentFor = async (operation) => {
+      const parent = operation.parentSourceId
+        ? targets.get(operation.parentSourceId)
+        : (operation.parentDesignId ?? operation.after?.parentId)
+          ? await resolveDesign(operation.parentDesignId ?? operation.after.parentId)
+          : operation.pageSourceId
+            ? targets.get(operation.pageSourceId)
+            : await resolveDesign(operation.pageDesignId);
+      if (!parent || typeof parent.appendChild !== "function")
+        throw new Error("找不到可写入的目标页面或容器。");
+      return parent;
+    };
+    let mutated = false;
+    figma.commitUndo();
+    try {
+      for (const operation of value.patch.operations) {
+        const after = operation.after;
+        if (operation.op === "create-page") {
+          mutated = true;
+          const page = figma.createPage();
+          page.name = after?.name ?? operation.name;
+          if (value.canvas) page.backgrounds = paints(value.canvas.background);
+          created.set(operation.designId, page);
+          continue;
+        }
+        if (operation.op === "create") {
+          const parent = await parentFor(operation),
+            parentSource = indexes.current.get(operation.parentDesignId ?? after.parentId);
+          const pageMap = indexes.pageMappings.get(operation.pageDesignId);
+          const source = { ...after, ...(containers.has(after.type) ? { children: [] } : {}) };
+          if (parent.type === "PAGE" && pageMap) {
+            source.x -= pageMap.offsetX;
+            source.y -= pageMap.offsetY;
+          }
+          mutated = true;
+          const node = await factory.createNode(source, parent, parentSource);
+          factory.applySizing(node, source, parent, parentSource);
+          created.set(operation.designId, node);
+          continue;
+        }
+        const node = targets.get(operation.sourceId);
+        if (operation.op === "rename-page") {
+          mutated = true;
+          node.name = after?.name ?? operation.name;
+          continue;
+        }
+        if (operation.op === "delete" || operation.op === "delete-page") {
+          mutated = true;
+          node.remove();
+          continue;
+        }
+        const changed = new Set(operation.changed),
+          baseline = operation.baseline;
+        const parentAfter = indexes.current.get(after.parentId),
+          parentBefore = indexes.baseline.get(baseline.parentId);
+        const oldGeometry = plan.geometryBefore.get(operation.sourceId),
+          oldMatrix = oldGeometry?.matrix;
+        if (changed.has("parentId") || changed.has("pageId")) {
+          const parent = await parentFor({
+            ...operation,
+            parentDesignId: after.parentId,
+            pageDesignId: operation.pageDesignId ?? indexes.mapping.get(operation.designId)?.pageId,
+          });
+          mutated = true;
+          parent.appendChild(node);
+        }
+        if (operation.changed.some((key) => GEOMETRY_KEYS.has(key))) {
+          if (!oldMatrix) throw new Error("此图层缺少可编辑变换矩阵。");
+          const width = changed.has("width")
+              ? (oldGeometry.width * after.width) / baseline.width
+              : node.width,
+            height = changed.has("height")
+              ? (oldGeometry.height * after.height) / baseline.height
+              : node.height;
+          mutated = true;
+          if (changed.has("width") || changed.has("height")) node.resize(width, height);
+          const angle = ((after.rotation - baseline.rotation) * Math.PI) / 180,
+            c = Math.cos(angle),
+            s = Math.sin(angle);
+          const a = c * oldMatrix[0][0] - s * oldMatrix[1][0],
+            b = c * oldMatrix[0][1] - s * oldMatrix[1][1],
+            d = s * oldMatrix[0][0] + c * oldMatrix[1][0],
+            e = s * oldMatrix[0][1] + c * oldMatrix[1][1];
+          const oldPage = indexes.pageMappings.get(baseline.pageId),
+            nextPage = indexes.pageMappings.get(after.pageId);
+          const offsetX =
+              (parentBefore ? 0 : (oldPage?.offsetX ?? 0)) -
+              (parentAfter ? 0 : (nextPage?.offsetX ?? 0)),
+            offsetY =
+              (parentBefore ? 0 : (oldPage?.offsetY ?? 0)) -
+              (parentAfter ? 0 : (nextPage?.offsetY ?? 0));
+          const centerX =
+            oldMatrix[0][2] +
+            (oldMatrix[0][0] * oldGeometry.width) / 2 +
+            (oldMatrix[0][1] * oldGeometry.height) / 2 +
+            after.x +
+            after.width / 2 -
+            (parentAfter?.x ?? 0) -
+            baseline.x -
+            baseline.width / 2 +
+            (parentBefore?.x ?? 0) +
+            offsetX;
+          const centerY =
+            oldMatrix[1][2] +
+            (oldMatrix[1][0] * oldGeometry.width) / 2 +
+            (oldMatrix[1][1] * oldGeometry.height) / 2 +
+            after.y +
+            after.height / 2 -
+            (parentAfter?.y ?? 0) -
+            baseline.y -
+            baseline.height / 2 +
+            (parentBefore?.y ?? 0) +
+            offsetY;
+          const selection = indexes.mapping.get(operation.designId);
+          if (selection?.selectionRoot) {
+            const desired = designWorld(
+              after,
+              indexes.current,
+              nextPage ?? indexes.pageMappings.get(operation.pageDesignId),
+            );
+            const original = designWorld(baseline, indexes.baseline, oldPage),
+              angle = ((desired.rotation - original.rotation) * Math.PI) / 180;
+            const rotation = [
+                [Math.cos(angle), -Math.sin(angle), 0],
+                [Math.sin(angle), Math.cos(angle), 0],
+              ],
+              parentInverse = inverse(absolute(node.parent));
+            const oldGlobal = multiply(selection.sourceParentTransform, oldMatrix),
+              nextLocal = multiply(
+                parentInverse,
+                multiply(rotation, [
+                  [oldGlobal[0][0], oldGlobal[0][1], 0],
+                  [oldGlobal[1][0], oldGlobal[1][1], 0],
+                ]),
+              );
+            const x =
+                parentInverse[0][0] * desired.x +
+                parentInverse[0][1] * desired.y +
+                parentInverse[0][2],
+              y =
+                parentInverse[1][0] * desired.x +
+                parentInverse[1][1] * desired.y +
+                parentInverse[1][2];
+            node.relativeTransform = [
+              [
+                nextLocal[0][0],
+                nextLocal[0][1],
+                x - (nextLocal[0][0] * width) / 2 - (nextLocal[0][1] * height) / 2,
+              ],
+              [
+                nextLocal[1][0],
+                nextLocal[1][1],
+                y - (nextLocal[1][0] * width) / 2 - (nextLocal[1][1] * height) / 2,
+              ],
+            ];
+          } else
+            node.relativeTransform = [
+              [a, b, centerX - (a * width) / 2 - (b * height) / 2],
+              [d, e, centerY - (d * width) / 2 - (e * height) / 2],
+            ];
+        }
+        for (const key of operation.changed) {
+          if (GEOMETRY_KEYS.has(key)) continue;
+          if (key === "opacity") {
+            mutated = true;
+            node.opacity =
+              baseline.opacity > 0
+                ? Math.min(1, Math.max(0, (node.opacity * after.opacity) / baseline.opacity))
+                : after.opacity;
+          } else if (
+            [
+              "name",
+              "visible",
+              "locked",
+              "cornerRadius",
+              "minWidth",
+              "maxWidth",
+              "minHeight",
+              "maxHeight",
+            ].includes(key)
+          ) {
+            mutated = true;
+            node[key] =
+              after[key] ??
+              (["minWidth", "maxWidth", "minHeight", "maxHeight"].includes(key)
+                ? null
+                : after[key]);
+          } else if (key === "notes") {
+            mutated = true;
+            node.setPluginData("codeshellNotes", after.notes ?? "");
+          } else if (key === "fill") {
+            mutated = true;
+            node.fills = paints(after.fill);
+          } else if (key === "stroke") {
+            mutated = true;
+            node.strokes = paints(after.stroke);
+          } else if (key === "strokeWidth") {
+            mutated = true;
+            node.strokeWeight = after.strokeWidth;
+          } else if (key === "clipContent") {
+            mutated = true;
+            node.clipsContent = after.clipContent === true;
+          } else if (key === "shadow") {
+            mutated = true;
+            node.effects = after.shadow
+              ? [
+                  {
+                    type: "DROP_SHADOW",
+                    color: { ...rgb(after.shadow.color), a: after.shadow.opacity },
+                    offset: { x: after.shadow.x, y: after.shadow.y },
+                    radius: after.shadow.blur,
+                    spread: 0,
+                    visible: true,
+                    blendMode: "NORMAL",
+                  },
+                ]
+              : [];
+          } else if (key === "imageRef" || key === "objectFit") {
+            if (!imageHashes.has(after.imageRef))
+              imageHashes.set(
+                after.imageRef,
+                figma.createImage(imageBytes.get(after.imageRef)).hash,
+              );
+            mutated = true;
+            node.fills = [
+              {
+                type: "IMAGE",
+                imageHash: imageHashes.get(after.imageRef),
+                scaleMode: after.objectFit === "contain" ? "FIT" : "FILL",
+              },
+            ];
+          } else if (key === "text") {
+            mutated = true;
+            node.characters = after.text;
+          } else if (["fontFamily", "fontWeight", "fontStyle"].includes(key)) {
+            mutated = true;
+            node.fontName = patchFont(after);
+          } else if (key === "fontSize") {
+            mutated = true;
+            node.fontSize = after.fontSize;
+          } else if (key === "lineHeight") {
+            mutated = true;
+            node.lineHeight = { unit: "PERCENT", value: after.lineHeight * 100 };
+          } else if (key === "textAlign") {
+            mutated = true;
+            node.textAlignHorizontal = after.textAlign.toUpperCase();
+          } else if (key === "letterSpacing") {
+            mutated = true;
+            node.letterSpacing = { unit: "PIXELS", value: after.letterSpacing ?? 0 };
+          } else if (key === "textDecoration") {
+            mutated = true;
+            node.textDecoration =
+              { underline: "UNDERLINE", "line-through": "STRIKETHROUGH" }[after.textDecoration] ??
+              "NONE";
+          }
+        }
+        for (const key of operation.changed)
+          if (LAYOUT_KEYS.has(key)) {
+            mutated = true;
+            if (key === "layout")
+              node.layoutMode =
+                { horizontal: "HORIZONTAL", vertical: "VERTICAL" }[after.layout] ?? "NONE";
+            else if (key === "layoutWrap") {
+              if (node.layoutMode !== "HORIZONTAL")
+                throw new Error("Figma 仅水平自动布局支持换行。");
+              node.layoutWrap = after.layoutWrap === "wrap" ? "WRAP" : "NO_WRAP";
+            } else if (key === "gap") node.itemSpacing = after.gap;
+            else if (key === "rowGap") {
+              if (node.layoutMode === "HORIZONTAL" && node.layoutWrap === "WRAP")
+                node.counterAxisSpacing = after.rowGap ?? after.gap;
+              else if (node.layoutMode === "VERTICAL") node.itemSpacing = after.rowGap ?? after.gap;
+            } else if (key === "columnGap" && node.layoutMode === "HORIZONTAL")
+              node.itemSpacing = after.columnGap ?? after.gap;
+            else if (key === "padding")
+              for (const side of ["Top", "Right", "Bottom", "Left"])
+                node[`padding${side}`] = after[`padding${side}`] ?? after.padding;
+            else if (key.startsWith("padding")) node[key] = after[key] ?? after.padding;
+            else if (key === "alignItems")
+              node.counterAxisAlignItems = {
+                start: "MIN",
+                center: "CENTER",
+                end: "MAX",
+                baseline: "BASELINE",
+                stretch: "MIN",
+              }[after.alignItems];
+            else if (key === "justifyContent")
+              node.primaryAxisAlignItems = {
+                start: "MIN",
+                center: "CENTER",
+                end: "MAX",
+                "space-between": "SPACE_BETWEEN",
+              }[after.justifyContent];
+            else if (key === "alignContent" && node.layoutWrap === "WRAP")
+              node.counterAxisAlignContent =
+                after.alignContent === "space-between" ? "SPACE_BETWEEN" : "AUTO";
+          }
+        for (const key of operation.changed) {
+          if (key === "layoutSizingHorizontal" || key === "layoutSizingVertical") {
+            mutated = true;
+            node[key] = (after[key] ?? "fixed").toUpperCase();
+          } else if (key === "layoutPositioning") {
+            mutated = true;
+            node.layoutPositioning = after.layoutPositioning === "absolute" ? "ABSOLUTE" : "AUTO";
+          } else if (key === "layoutAlignSelf") {
+            mutated = true;
+            node.layoutAlign = after.layoutAlignSelf === "stretch" ? "STRETCH" : "INHERIT";
+          }
+        }
+        if (changed.has("constraintHorizontal") || changed.has("constraintVertical")) {
+          mutated = true;
+          node.constraints = {
+            horizontal:
+              { start: "MIN", center: "CENTER", end: "MAX", stretch: "STRETCH", scale: "SCALE" }[
+                after.constraintHorizontal
+              ] ?? "MIN",
+            vertical:
+              { start: "MIN", center: "CENTER", end: "MAX", stretch: "STRETCH", scale: "SCALE" }[
+                after.constraintVertical
+              ] ?? "MIN",
+          };
+        }
+        const metadata = operation.changed.filter((key) =>
+          [
+            "textSource",
+            "textFlow",
+            "textFlowWidth",
+            "textMeasurement",
+            "textOverflow",
+            "layoutBaselineOffset",
+            "fontRef",
+            "effectClipping",
+            "contentClipping",
+            "constraintLeft",
+            "constraintRight",
+            "constraintTop",
+            "constraintBottom",
+            "constraintBaseWidth",
+            "constraintBaseHeight",
+          ].includes(key),
+        );
+        if (metadata.length) {
+          mutated = true;
+          node.setPluginData(
+            "codeshellDesignMetadata",
+            JSON.stringify(Object.fromEntries(metadata.map((key) => [key, after[key] ?? null]))),
+          );
+          warnings.push(
+            `${after.name}: ${metadata.join(", ")} 为设计面板的排版元数据，已作为插件数据保留。`,
+          );
+        }
+      }
+      // Reconcile each touched sibling group after creates exist. Unknown layers retain their slots.
+      const orderGroups = new Map();
+      for (const operation of value.patch.operations)
+        if (
+          operation.op === "create" ||
+          operation.changed?.some((key) => ["siblingIndex", "parentId", "pageId"].includes(key))
+        ) {
+          const node =
+              operation.op === "create"
+                ? created.get(operation.designId)
+                : targets.get(operation.sourceId),
+            parent = node?.parent;
+          if (!node || !parent || typeof parent.insertChild !== "function")
+            throw new Error("图层排序目标不可用。");
+          const key = JSON.stringify([
+            operation.after.pageId ?? operation.pageDesignId,
+            operation.after.parentId ?? null,
+          ]);
+          orderGroups.set(parent.id, { parent, desired: indexes.siblings.get(key) ?? [] });
+        }
+      for (const { parent, desired } of orderGroups.values()) {
+        const known = [];
+        for (const candidate of desired) {
+          const node = await resolveDesign(candidate.id);
+          if (node?.parent === parent) known.push(node);
+        }
+        const knownSet = new Set(known),
+          actual = [...parent.children];
+        let cursor = 0;
+        const target = actual.map((node) => (knownSet.has(node) ? known[cursor++] : node));
+        for (let index = target.length - 1; index >= 0; index -= 1) {
+          const node = target[index];
+          if (!knownSet.has(node) || actual[index] === node) continue;
+          const previous = actual.indexOf(node);
+          mutated = true;
+          parent.appendChild(node);
+          if (index < actual.length - 1) parent.insertChild(index, node);
+          actual.splice(previous, 1);
+          actual.splice(index, 0, node);
+        }
+      }
+      figma.commitUndo();
+      warnings.push(...factory.warnings);
+      return { operations: value.patch.operations.length, warnings };
+    } catch (error) {
+      if (mutated) {
+        figma.commitUndo();
+        figma.triggerUndo();
+      }
+      throw new Error(`增量更新失败${mutated ? "，已请求撤销本次操作" : ""}：${error.message}`);
     }
   }
 
@@ -419,7 +1542,126 @@
         nodes[id] = entry;
       }
     }
-    const value = { name: `${page.name}${scope === "selection" ? " Selection" : ""}`, nodes };
+    const assets = {},
+      previews = {},
+      warnings = [];
+    let assetBytes = 0,
+      visited = 0,
+      previewCount = 0;
+    const addAsset = (id, bytes) => {
+      if (hasOwn(assets, id)) return;
+      const mime = imageMime(bytes);
+      if (!mime) {
+        warnings.push(`${id}: 图片格式不受支持。`);
+        return;
+      }
+      if (
+        bytes.length > MAX_ASSET ||
+        assetBytes + bytes.length > MAX_ASSETS_TOTAL ||
+        Object.keys(assets).length >= 2048
+      )
+        throw new Error("本地图片超过资源上限；请分页面或选区导出。");
+      assets[id] = { mime, base64: encode64(bytes) };
+      assetBytes += bytes.length;
+    };
+    const collect = async (node, depth = 0, ancestorPreview = false) => {
+      if (++visited > MAX_TOTAL || depth > 34) throw new Error("导出图层超过数量或深度上限。");
+      const fills = Array.isArray(node.fills)
+        ? node.fills.filter((paint) => paint.visible !== false)
+        : [];
+      const strokes = Array.isArray(node.strokes)
+        ? node.strokes.filter((paint) => paint.visible !== false)
+        : [];
+      for (const paint of [...fills, ...strokes])
+        if (paint.type === "IMAGE" && paint.imageHash && !hasOwn(assets, paint.imageHash)) {
+          const image = figma.getImageByHash(paint.imageHash);
+          if (image) addAsset(paint.imageHash, await image.getBytesAsync());
+          else warnings.push(`${node.name}: 无法读取图片 ${paint.imageHash}。`);
+        }
+      const children = Array.isArray(node.children) ? node.children : [];
+      const plain = [
+        "PAGE",
+        "FRAME",
+        "GROUP",
+        "COMPONENT",
+        "COMPONENT_SET",
+        "INSTANCE",
+        "SECTION",
+        "RECTANGLE",
+        "ELLIPSE",
+        "TEXT",
+      ].includes(node.type);
+      const complex =
+        !plain ||
+        fills.length > 1 ||
+        fills.some((paint) => !["SOLID", "IMAGE"].includes(paint.type)) ||
+        children.some((child) => child.isMask) ||
+        node.isMask ||
+        (node.type === "TEXT" &&
+          (node.fontName === figma.mixed ||
+            node.fontSize === figma.mixed ||
+            node.fills === figma.mixed)) ||
+        (node.type === "ELLIPSE" &&
+          node.arcData &&
+          (node.arcData.innerRadius ||
+            Math.abs(node.arcData.endingAngle - node.arcData.startingAngle - Math.PI * 2) >
+              0.0001));
+      if (complex && node.type !== "PAGE" && !ancestorPreview) {
+        if (++previewCount > 256) throw new Error("复杂图层超过 256 个；请缩小导出选区。");
+        const id = `preview-${node.id}`;
+        const box = node.absoluteRenderBounds ?? node.absoluteBoundingBox;
+        if (box && box.width > 0 && box.height > 0) {
+          const scale = Math.min(1, 4096 / Math.max(box.width, box.height));
+          addAsset(
+            id,
+            await node.exportAsync({
+              format: "PNG",
+              constraint: { type: "SCALE", value: scale },
+              useAbsoluteBounds: true,
+            }),
+          );
+          const svg = await node.exportAsync({ format: "SVG_STRING", svgOutlineText: true });
+          previews[node.id] = {
+            assetId: id,
+            bounds: { x: box.x, y: box.y, width: box.width, height: box.height },
+            ...(typeof svg === "string" && utf8Length(svg) <= 1024 * 1024 ? { svg } : {}),
+          };
+        } else warnings.push(`${node.name}: 缺少预览边界。`);
+      }
+      for (const child of children)
+        await collect(child, depth + 1, ancestorPreview || (complex && node.type !== "PAGE"));
+    };
+    for (const node of roots) await collect(node);
+    const context =
+      scope === "selection"
+        ? {
+            pageId: page.id,
+            pageName: page.name,
+            roots: Object.fromEntries(
+              roots.map((node) => [
+                node.id,
+                {
+                  parentId: node.parent.id,
+                  parentTransform: absolute(node.parent),
+                  absoluteTransform: absolute(node),
+                  width: node.width,
+                  height: node.height,
+                },
+              ]),
+            ),
+          }
+        : null;
+    const value = {
+      format: "codeshell.figma.source",
+      version: 1,
+      name: `${page.name}${scope === "selection" ? " Selection" : ""}`,
+      ...(figma.fileKey ? { fileKey: figma.fileKey } : {}),
+      nodes,
+      assets,
+      previews,
+      ...(context ? { selection: context } : {}),
+      warnings: warnings.slice(0, 200),
+    };
     const content = JSON.stringify(value, null, 2);
     if (utf8Length(content) > MAX_BYTES)
       throw new Error("导出超过 16 MiB；请改为选择少量图层后导出。");
@@ -431,10 +1673,15 @@
       post({ type: "error", message: "请等待当前操作完成。" });
       return;
     }
-    if (!object(message) || !["import-transfer", "export-json"].includes(message.type)) return;
+    if (
+      !object(message) ||
+      !["import-transfer", "export-json", "preview-patch", "apply-patch"].includes(message.type)
+    )
+      return;
     busy = true;
     try {
-      if (message.type === "import-transfer") {
+      if (message.type === "import-transfer" || message.type === "preview-patch") {
+        preview = null;
         if (typeof message.content !== "string" || utf8Length(message.content) > MAX_BYTES)
           throw new Error("传输包过大；上限 16 MiB。");
         let value;
@@ -443,7 +1690,26 @@
         } catch {
           throw new Error("传输包 JSON 无法解析。");
         }
-        post({ type: "imported", ...(await importTransfer(value)) });
+        if (message.type === "preview-patch") {
+          const plan = await preflightPatch(value),
+            token = `preview-${++previewSerial}`;
+          if (!plan.conflicts.length) preview = { token, value };
+          post({
+            type: "patch-preview",
+            token,
+            operations: plan.report,
+            conflicts: plan.conflicts,
+            deletions: plan.deletions,
+            identity: plan.identity,
+          });
+        } else post({ type: "imported", ...(await importTransfer(value)) });
+      } else if (message.type === "apply-patch") {
+        if (!preview || message.token !== preview.token)
+          throw new Error("请先预览并核对原设计修改。");
+        const value = preview.value;
+        preview = null;
+        const plan = await preflightPatch(value);
+        post({ type: "patched", ...(await applyPatch(plan, message.allowDeletes === true)) });
       } else {
         if (!["page", "selection"].includes(message.scope)) throw new Error("未知的导出范围。");
         post({ type: "exported", ...(await exportJson(message.scope)) });

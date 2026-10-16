@@ -11,7 +11,7 @@ permission; their application logic belongs to the Panel package.
 
 | App                | Subdirectory          | Purpose                                                                                                                            |
 | ------------------ | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Design Studio      | `apps/design-studio`  | Figma-like repo design with PRD handoff, responsive HTML generation, and implementation comparison                                 |
+| Design Studio 0.19 | `apps/design-studio`  | Figma JSON exchange, editable repo design, interactive HTML prototypes, project review comments and measured frontend comparison   |
 | Job Hunt HQ        | `apps/job-hunt-hq`    | Project/session-bound job discovery, company research, resume, and interview visualization                                         |
 | Quant Lab          | `apps/quant-lab`      | Local-first investment desk with portfolio rules, linked plain-text notes, Today, reminders, opt-in news/SEC filings, and research |
 | Video Download     | `apps/video-download` | Local yt-dlp downloads plus isolated setup and error-analysis Tasks                                                                |
@@ -146,7 +146,18 @@ dependencies; voice initialization downloads the selected models. See the
 recordings, real previews, and export. GitHub installation itself does not
 compile the source or install models.
 
-Design Studio 0.18 keeps the complete PRD → responsive design → editable frontend → measured
+Design Studio 0.19 adds Figma JSON import → editable design → reviewed original-node updates
+or new-page copies through its bundled development plugin. Source mappings and local image
+bytes survive saves, reopen, undo/redo and recovery; complex layers retain their original data
+with visible preview fallbacks. Explicit page links, back/URL actions and responsive page routes
+produce a multipage offline HTML prototype. Page/layer review threads support replies,
+resolve/reopen and guarded Agent handoff. Complete v2 backups carry comments, source bindings,
+prototype data and resources together. Sixteen declared Agent tools share this workflow with
+the visual editor. Actual Figma plugin end-to-end acceptance remains in progress; this is a
+source-aware JSON workflow rather than a binary `.fig` codec. See the
+[Design Studio guide](apps/design-studio/README.md).
+
+It keeps the complete PRD → responsive design → editable frontend → measured
 comparison loop in one v3 layout model: Wrap/Wrap Reverse, Grid, independent axis gaps,
 dual-axis Hug/Fill/Fixed sizing, Min/Max, reverse flow, Baseline, per-item alignment/auto margin,
 and absolute children with Constraints inside Auto Layout. Guarded HTML import maps supported

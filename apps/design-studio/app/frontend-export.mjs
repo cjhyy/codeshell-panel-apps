@@ -135,8 +135,7 @@ function sizingDeclarations(node, parent) {
   const absolute = node.layoutPositioning === "absolute" || parentLayout === "none" || !parent;
   const hasIntrinsicHorizontalContent =
     node.type === "text" ||
-    (CONTAINER_TYPES.has(node.type) &&
-      ["horizontal", "vertical", "grid"].includes(node.layout));
+    (CONTAINER_TYPES.has(node.type) && ["horizontal", "vertical", "grid"].includes(node.layout));
   const hasIntrinsicVerticalContent = hasIntrinsicHorizontalContent;
   const flowChildren = Array.isArray(node.children)
     ? node.children.filter(
@@ -146,11 +145,8 @@ function sizingDeclarations(node, parent) {
   const circularHorizontalHug = flowChildren.some(
     (child) => child.layoutSizingHorizontal === "fill",
   );
-  const circularVerticalHug = flowChildren.some(
-    (child) => child.layoutSizingVertical === "fill",
-  );
-  const followsParentAlignment =
-    !node.layoutAlignSelf || node.layoutAlignSelf === "auto";
+  const circularVerticalHug = flowChildren.some((child) => child.layoutSizingVertical === "fill");
+  const followsParentAlignment = !node.layoutAlignSelf || node.layoutAlignSelf === "auto";
   const parentStretchesHorizontal =
     followsParentAlignment &&
     ["vertical", "grid"].includes(parentLayout) &&
@@ -160,19 +156,11 @@ function sizingDeclarations(node, parent) {
     ["horizontal", "grid"].includes(parentLayout) &&
     parent.alignItems === "stretch";
 
-  if (
-    absolute &&
-    (node.constraintHorizontal === "stretch" ||
-      (!parent && horizontal === "fill"))
-  ) {
+  if (absolute && (node.constraintHorizontal === "stretch" || (!parent && horizontal === "fill"))) {
     // Left/right constraints own width.
   } else if (parentStretchesHorizontal) {
     declarations.push(["width", "auto"], ["align-self", "stretch"]);
-  } else if (
-    horizontal === "hug" &&
-    hasIntrinsicHorizontalContent &&
-    !circularHorizontalHug
-  ) {
+  } else if (horizontal === "hug" && hasIntrinsicHorizontalContent && !circularHorizontalHug) {
     declarations.push(["width", "fit-content"]);
   } else if (horizontal === "fill" && ["horizontal", "vertical"].includes(parentLayout)) {
     if (parentLayout === "horizontal") declarations.push(["flex", "1 1 0"], ["min-width", "0"]);
@@ -183,19 +171,11 @@ function sizingDeclarations(node, parent) {
     declarations.push(["width", cssNumber(node.width, 1)]);
   }
 
-  if (
-    absolute &&
-    (node.constraintVertical === "stretch" ||
-      (!parent && vertical === "fill"))
-  ) {
+  if (absolute && (node.constraintVertical === "stretch" || (!parent && vertical === "fill"))) {
     // Top/bottom constraints own height.
   } else if (parentStretchesVertical) {
     declarations.push(["height", "auto"], ["align-self", "stretch"]);
-  } else if (
-    vertical === "hug" &&
-    hasIntrinsicVerticalContent &&
-    !circularVerticalHug
-  ) {
+  } else if (vertical === "hug" && hasIntrinsicVerticalContent && !circularVerticalHug) {
     declarations.push(["height", "fit-content"]);
   } else if (vertical === "fill" && parentLayout === "vertical") {
     declarations.push(["flex", "1 1 0"], ["min-height", "0"]);
@@ -239,7 +219,10 @@ function layoutDeclarations(node) {
   if (node.layout === "grid") {
     return [
       ["display", "grid"],
-      ["grid-template-columns", `repeat(${Math.max(1, Number(node.gridColumns) || 1)}, minmax(0, 1fr))`],
+      [
+        "grid-template-columns",
+        `repeat(${Math.max(1, Number(node.gridColumns) || 1)}, minmax(0, 1fr))`,
+      ],
       ["row-gap", cssNumber(node.rowGap ?? node.gap)],
       ["column-gap", cssNumber(node.columnGap ?? node.gap)],
       ["align-items", alignment(node.alignItems)],
@@ -370,8 +353,12 @@ function renderNode(node, parent, context) {
     `style="${escapeHtml(nodeStyle(node, parent, context.canvas))}"`,
   ];
   if (node.notes) attributes.push(`title="${escapeHtml(node.notes)}"`);
+  const link = context.idPrefix === "" ? context.prototypeLinks?.get(node.id) : null;
+  const hotspot = link
+    ? `<a class="cs-prototype-hotspot" data-prototype-link="${escapeHtml(link.id)}" href="${escapeHtml(link.href)}" aria-label="${escapeHtml(link.label || node.name)}"${link.external ? ' target="_blank" rel="noopener noreferrer"' : ""}></a>`
+    : "";
   if (node.type === "text") {
-    return `<div ${attributes.join(" ")}>${escapeHtml(node.text)}</div>`;
+    return `<div ${attributes.join(" ")}>${hotspot}${escapeHtml(node.text)}</div>`;
   }
   if (node.type === "image") {
     const source = context.resourceDataUrls.get(node.imageRef);
@@ -380,6 +367,9 @@ function renderNode(node, parent, context) {
       imageAttributes.push(
         `style="${escapeHtml(`${nodeStyle(node, parent, context.canvas)};object-fit:${node.objectFit ?? "cover"}`)}"`,
       );
+      if (context.prototypeMode) {
+        return `<div ${attributes.join(" ")}>${hotspot}<img class="cs-prototype-image" src="${escapeHtml(source)}" alt="${escapeHtml(node.name)}" style="width:100%;height:100%;object-fit:${escapeHtml(node.objectFit ?? "cover")}"></div>`;
+      }
       return `<img ${imageAttributes.join(" ")} src="${escapeHtml(source)}" alt="${escapeHtml(node.name)}">`;
     }
   }
@@ -389,7 +379,7 @@ function renderNode(node, parent, context) {
   } else if (Array.isArray(node.children)) {
     content = node.children.map((child) => renderNode(child, node, context)).join("");
   }
-  return `<div ${attributes.join(" ")}>${content}</div>`;
+  return `<div ${attributes.join(" ")}>${hotspot}${content}</div>`;
 }
 
 export function isSafeFrontendPath(value) {
@@ -408,9 +398,14 @@ export function isSafeFrontendPath(value) {
   );
 }
 
-export function exportDesignFrontend(
+export function renderDesignFrontendPage(
   design,
-  { pageId = design?.activePageId, resourceDataUrls = new Map(), title } = {},
+  {
+    pageId = design?.activePageId,
+    resourceDataUrls = new Map(),
+    prototypeLinks,
+    prototypeMode = false,
+  } = {},
 ) {
   if (!design || design.format !== "codeshell.design" || design.version !== 3) {
     throw new Error("前端导出需要 codeshell.design v3 文档");
@@ -429,11 +424,27 @@ export function exportDesignFrontend(
     canvas,
     components,
     resourceDataUrls:
-      resourceDataUrls instanceof Map ? resourceDataUrls : new Map(Object.entries(resourceDataUrls)),
+      resourceDataUrls instanceof Map
+        ? resourceDataUrls
+        : new Map(Object.entries(resourceDataUrls)),
     instanceDepth: 0,
     idPrefix: "",
+    prototypeLinks,
+    prototypeMode,
   };
   const body = roots.map((node) => renderNode(node, null, context)).join("\n");
+  return `<main class="cs-page" data-codeshell-page-id="${escapeHtml(page.id)}" data-codeshell-name="${escapeHtml(page.name)}">
+${body}
+    </main>`;
+}
+
+export function exportDesignFrontend(
+  design,
+  { pageId = design?.activePageId, resourceDataUrls = new Map(), title } = {},
+) {
+  const pageMarkup = renderDesignFrontendPage(design, { pageId, resourceDataUrls });
+  const page = design.pages.find((candidate) => candidate.id === pageId);
+  const canvas = design.canvas ?? { width: 1440, height: 900, background: "#ffffff" };
   const documentTitle = title || `${design.name} · ${page.name}`;
   return `<!doctype html>
 <html lang="zh-CN">
@@ -462,9 +473,7 @@ export function exportDesignFrontend(
     </style>
   </head>
   <body>
-    <main class="cs-page" data-codeshell-page-id="${escapeHtml(page.id)}" data-codeshell-name="${escapeHtml(page.name)}">
-${body}
-    </main>
+    ${pageMarkup}
   </body>
 </html>
 `;

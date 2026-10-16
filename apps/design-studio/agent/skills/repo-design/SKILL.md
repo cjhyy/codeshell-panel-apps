@@ -5,6 +5,47 @@ description: Turn PRDs or rendered HTML into responsive repository designs, refi
 
 # Repository design workflow
 
+## Figma exchange, prototypes and review
+
+Use `exchange_figma` with `action: "import"`, a safe workspace `designs/*.json` path and the
+latest metadata `expected_state_revision` to import Figma REST JSON or a local source package.
+The source package exported by the bundled Figma development plugin includes original nodes,
+image bytes and complex-layer previews. Imports save by default; `save: false` keeps a reversible
+live transaction. Read returned warnings and inspect the canvas before treating the result as
+faithful. A preview image remains a preview: do not claim its vector paths are editable.
+
+Use `exchange_figma` with `action: "export"` and a separate
+`designs/*.figma-transfer.json` output path to generate editable nodes and an incremental patch.
+The source binding beside the design retains unknown Figma fields, variables, components and
+original geometry. Never edit its content-addressed objects manually. The Figma plugin previews
+the source-node changes and conflicts before applying; deletion needs explicit review. Preserve
+the distinction between creating new pages and updating existing source nodes. After applying
+changes in Figma, export a fresh source package before another round trip.
+
+Large exchange files use verified, bounded project parts. An export receipt with
+`storage: "multipart"` names a `codeshell.design.sidecar` manifest, not a directly importable
+Figma JSON file. Download the complete transfer through the panel, or verify every referenced
+part's path, byte length and SHA-256 before assembling a standalone JSON file. Multipart source
+imports are resolved and checked automatically. Never pass the manifest itself to Figma.
+
+The **原型** editor stores explicit click actions, start page and responsive page routes in
+`<design>.prototype.json`. `generate_frontend` with `prototype: true` generates all pages as an
+offline interactive HTML artifact. Set `include_comments: true` only when review content belongs
+in that artifact. Default frontend generation remains a single static page. Do not infer a
+button's behavior from its label; add an explicit prototype action or implement it in the app.
+
+Read `get_design_comments` before addressing review work. Lists return bounded summaries; use
+`thread_id` and `reply_offset` to read full text and reply batches. Use `update_design_comments`
+with `action: "create"`, `"reply"` or `"status"` and the latest design `expected_state_revision`.
+Create requires a real page/node target; replies and status changes use a stable `thread_id`.
+After changing the design, validate and inspect screenshots, then reply with the resolution and
+set `resolved: true`. Never mark an issue resolved merely because a save succeeded.
+
+Complete portable backups include comments, source bindings, prototype data and resource bytes.
+Restore to a new design path; the companion files are validated and renamed together. Keep these
+files with the design during manual repository moves. Unknown or unreadable companion data must
+not be silently omitted from a claimed complete backup.
+
 Use the installed Design Studio Panel App as the authoritative structured editor for
 `designs/*.codesign.json`.
 

@@ -1,0 +1,595 @@
+import {
+  normalizeDesignDocument,
+  normalizeDesignState,
+  serializeDesignDocument,
+} from "./document.mjs";
+import {
+  designSidecarPath,
+  isMissingDesignSidecar,
+  readDesignSidecar,
+  writeDesignSidecar,
+} from "./design-sidecar.mjs";
+import { normalizeFigmaSource } from "./figma-assets.mjs";
+
+export const FIGMA_BINDING_FORMAT = "codeshell.figma.binding";
+const INDEX_FORMAT = "codeshell.figma.binding-index";
+const HASH = /^[0-9a-f]{64}$/u;
+const id = (value) =>
+  typeof value === "string" &&
+  value.length > 0 &&
+  value.length <= 160 &&
+  !/[\u0000-\u001f\u007f]/u.test(value);
+const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const offset = (value) => Number.isFinite(value) && Math.abs(value) <= 50000;
+const matrix = (value) =>
+  Array.isArray(value) &&
+  value.length === 2 &&
+  value.every((row) => Array.isArray(row) && row.length === 3 && row.every(Number.isFinite)) &&
+  Number.isFinite(value[0][0] * value[1][1] - value[0][1] * value[1][0]) &&
+  Math.abs(value[0][0] * value[1][1] - value[0][1] * value[1][0]) >= 0.000001;
+const canonical = (value) =>
+  JSON.parse(
+    serializeDesignDocument(
+      Array.isArray(value?.nodes) ? normalizeDesignState(value) : normalizeDesignDocument(value),
+    ),
+  );
+const flat = (document) =>
+  normalizeDesignDocument(canonical(document)).pages.flatMap((page) => {
+    const indices = new Map();
+    return page.nodes.map((node) => {
+      const parent = node.parentId ?? page.id,
+        siblingIndex = indices.get(parent) ?? 0;
+      indices.set(parent, siblingIndex + 1);
+      return { ...node, pageId: page.id, siblingIndex };
+    });
+  });
+const properties = [
+  "name",
+  "x",
+  "y",
+  "width",
+  "height",
+  "rotation",
+  "opacity",
+  "fill",
+  "stroke",
+  "strokeWidth",
+  "cornerRadius",
+  "visible",
+  "locked",
+  "notes",
+  "shadow",
+  "clipContent",
+  "text",
+  "textSource",
+  "fontFamily",
+  "fontSize",
+  "fontWeight",
+  "fontStyle",
+  "lineHeight",
+  "letterSpacing",
+  "textAlign",
+  "textDecoration",
+  "layout",
+  "layoutWrap",
+  "gap",
+  "rowGap",
+  "columnGap",
+  "padding",
+  "paddingTop",
+  "paddingRight",
+  "paddingBottom",
+  "paddingLeft",
+  "alignItems",
+  "justifyContent",
+  "layoutSizingHorizontal",
+  "layoutSizingVertical",
+  "layoutPositioning",
+  "layoutAlignSelf",
+  "minWidth",
+  "minHeight",
+  "maxWidth",
+  "maxHeight",
+  "parentId",
+  "pageId",
+  "imageRef",
+  "objectFit",
+];
+properties.push(
+  "layoutReverse",
+  "alignContent",
+  "constraintHorizontal",
+  "constraintVertical",
+  "constraintLeft",
+  "constraintRight",
+  "constraintTop",
+  "constraintBottom",
+  "constraintBaseWidth",
+  "constraintBaseHeight",
+  "textFlow",
+  "textOverflow",
+  "textFlowWidth",
+  "textMeasurement",
+  "layoutBaselineOffset",
+  "fontRef",
+  "effectClipping",
+  "contentClipping",
+);
+const unsupportedProperties = [
+  "gridColumns",
+  "gridColumnSpan",
+  "gridRowSpan",
+  "layoutMarginBefore",
+  "componentId",
+];
+
+export function figmaBindingPath(path) {
+  return designSidecarPath(path, ".figma-source.json");
+}
+export function figmaSourceNodes(source) {
+  const result = new Map();
+  let total = 0;
+  function visit(node, depth = 0) {
+    if (!node || typeof node !== "object" || !id(node.id) || depth > 40 || ++total > 60000)
+      throw Error("Figma 来源节点无效或超出上限");
+    // Selection exports can include an ancestor and its child as separate roots.
+    if (!result.has(node.id)) result.set(node.id, node);
+    if (node.children !== undefined && !Array.isArray(node.children))
+      throw Error("Figma 来源层级无效");
+    for (const child of node.children ?? []) visit(child, depth + 1);
+  }
+  if (
+    source?.format !== "codeshell.figma.source" ||
+    source.version !== 1 ||
+    !source.nodes ||
+    typeof source.nodes !== "object" ||
+    Array.isArray(source.nodes)
+  )
+    throw Error("Figma 来源格式无效");
+  for (const entry of Object.values(source.nodes)) visit(entry?.document);
+  return result;
+}
+
+export function createFigmaBinding({ source, document, mapping, pageMappings = [] }) {
+  return parseFigmaBinding({
+    format: FIGMA_BINDING_FORMAT,
+    version: 1,
+    source: structuredClone(source),
+    baseline: canonical(document),
+    mapping: structuredClone(mapping),
+    pageMappings: structuredClone(pageMappings),
+  });
+}
+export function parseFigmaBinding(input) {
+  let value = input;
+  if (typeof input === "string") {
+    try {
+      value = JSON.parse(input);
+    } catch {
+      throw Error("Figma 来源映射不是有效 JSON");
+    }
+  }
+  if (
+    value?.format !== FIGMA_BINDING_FORMAT ||
+    value.version !== 1 ||
+    !Array.isArray(value.mapping) ||
+    value.mapping.length > 50000 ||
+    !Array.isArray(value.pageMappings) ||
+    value.pageMappings.length > 1000
+  )
+    throw Error("Figma 来源映射格式无效");
+  const baseline = canonical(value.baseline),
+    baselineNodes = new Map(flat(baseline).map((node) => [node.id, node]));
+  // Validate source bounds and selection context without rewriting any preserved raw fields.
+  normalizeFigmaSource(value.source);
+  const sourceNodes = figmaSourceNodes(value.source),
+    designIds = new Set(),
+    sourceIds = new Set(),
+    mappingByDesign = new Map(value.mapping.filter(object).map((entry) => [entry.designId, entry]));
+  const pageIds = new Set(),
+    mappedSources = new Set(),
+    pageMappings = new Map();
+  for (const entry of value.pageMappings) {
+    if (
+      !object(entry) ||
+      !id(entry.designId) ||
+      !id(entry.sourceId) ||
+      !baseline.pages.some((page) => page.id === entry.designId) ||
+      pageIds.has(entry.designId) ||
+      mappedSources.has(entry.sourceId) ||
+      !offset(entry.offsetX) ||
+      !offset(entry.offsetY) ||
+      (entry.partial !== undefined && typeof entry.partial !== "boolean")
+    )
+      throw Error("Figma 页面来源映射无效");
+    if (
+      entry.partial
+        ? entry.sourceId !== "selection" && entry.sourceId !== value.source.selection?.pageId
+        : sourceNodes.get(entry.sourceId)?.type !== "CANVAS"
+    )
+      throw Error("Figma 页面来源映射不匹配完整页面或选区上下文");
+    pageIds.add(entry.designId);
+    mappedSources.add(entry.sourceId);
+    pageMappings.set(entry.designId, entry);
+  }
+  const sourcePage = new Map(),
+    sourceParent = new Map();
+  const visit = (node, pageId, parentId) => {
+    const page = node.type === "CANVAS" ? node.id : pageId;
+    if (page) sourcePage.set(node.id, page);
+    if (parentId) sourceParent.set(node.id, parentId);
+    for (const child of node.children ?? []) visit(child, page, node.id);
+  };
+  for (const entry of Object.values(value.source.nodes)) visit(entry.document, null, null);
+  for (const entry of value.mapping) {
+    if (
+      !object(entry) ||
+      !id(entry.designId) ||
+      !id(entry.sourceId) ||
+      !baselineNodes.has(entry.designId) ||
+      !sourceNodes.has(entry.sourceId) ||
+      designIds.has(entry.designId) ||
+      sourceIds.has(entry.sourceId)
+    )
+      throw Error("Figma 图层来源映射无效或重复");
+    const node = baselineNodes.get(entry.designId),
+      page = pageMappings.get(entry.pageId);
+    if (
+      !id(entry.pageId) ||
+      !id(entry.sourcePageId) ||
+      node.pageId !== entry.pageId ||
+      !page ||
+      entry.sourcePageId !== page.sourceId ||
+      !offset(entry.offsetX) ||
+      !offset(entry.offsetY) ||
+      entry.offsetX !== page.offsetX ||
+      entry.offsetY !== page.offsetY ||
+      (sourcePage.has(entry.sourceId) && sourcePage.get(entry.sourceId) !== entry.sourcePageId)
+    )
+      throw Error("Figma 图层页面或原点映射不匹配");
+    if (entry.selectionRoot !== undefined && typeof entry.selectionRoot !== "boolean")
+      throw Error("Figma 选区图层标记无效");
+    if (entry.selectionRoot) {
+      const context = value.source.selection?.roots?.[entry.sourceId];
+      if (
+        !page.partial ||
+        node.parentId ||
+        !id(entry.sourceParentId) ||
+        !matrix(entry.sourceParentTransform) ||
+        !context ||
+        entry.sourceParentId !== context.parentId ||
+        JSON.stringify(entry.sourceParentTransform) !== JSON.stringify(context.parentTransform)
+      )
+        throw Error("Figma 选区父级变换映射不匹配");
+    } else if (entry.sourceParentId !== undefined || entry.sourceParentTransform !== undefined)
+      throw Error("非选区图层包含选区父级上下文");
+    if (
+      node.parentId &&
+      mappingByDesign.has(node.parentId) &&
+      sourceParent.get(entry.sourceId) !== mappingByDesign.get(node.parentId).sourceId
+    )
+      throw Error("Figma 图层父级映射不匹配");
+    designIds.add(entry.designId);
+    sourceIds.add(entry.sourceId);
+  }
+  return {
+    format: FIGMA_BINDING_FORMAT,
+    version: 1,
+    source: structuredClone(value.source),
+    baseline,
+    mapping: structuredClone(value.mapping),
+    pageMappings: structuredClone(value.pageMappings),
+  };
+}
+
+export function createFigmaPatch(bindingValue, currentDocument) {
+  const binding = parseFigmaBinding(bindingValue),
+    current = canonical(currentDocument);
+  const beforeNodes = new Map(flat(binding.baseline).map((node) => [node.id, node]));
+  const afterNodes = new Map(flat(current).map((node) => [node.id, node]));
+  const mapping = new Map(binding.mapping.map((entry) => [entry.designId, entry]));
+  const sourceNodes = figmaSourceNodes(binding.source);
+  const pages = new Map(binding.pageMappings.map((entry) => [entry.designId, entry]));
+  const operations = [],
+    diagnostics = [];
+  if (JSON.stringify(binding.baseline.canvas) !== JSON.stringify(current.canvas))
+    diagnostics.push({
+      designId: null,
+      message:
+        "设计画布的尺寸或背景已改变；Figma 页面背景不在本次增量修改中，新页面副本会使用当前背景。",
+    });
+  if (JSON.stringify(binding.baseline.tokens) !== JSON.stringify(current.tokens))
+    diagnostics.push({
+      designId: null,
+      message: "设计颜色变量表不直接替换 Figma 变量；已映射图层的实际颜色修改仍会逐项导回。",
+    });
+  const siblingGroups = new Map();
+  const siblingKey = (node) => JSON.stringify([node.pageId, node.parentId ?? null]);
+  for (const node of afterNodes.values()) {
+    const key = siblingKey(node);
+    if (!siblingGroups.has(key)) siblingGroups.set(key, []);
+    siblingGroups.get(key).push(node);
+  }
+  function neighbors(after) {
+    const siblings = siblingGroups.get(siblingKey(after));
+    const previous = siblings?.[after.siblingIndex - 1];
+    const next = siblings?.[after.siblingIndex + 1];
+    return {
+      previousSiblingDesignId: previous?.id ?? null,
+      previousSiblingSourceId: mapping.get(previous?.id)?.sourceId ?? null,
+      nextSiblingDesignId: next?.id ?? null,
+      nextSiblingSourceId: mapping.get(next?.id)?.sourceId ?? null,
+    };
+  }
+  function sourceSiblingOrder(after) {
+    const baseline = beforeNodes.get(after.id);
+    const original = baseline ?? after;
+    const parentSourceId =
+      mapping.get(after.id)?.sourceParentId ??
+      mapping.get(original.parentId)?.sourceId ??
+      pages.get(original.pageId)?.sourceId;
+    const parent = sourceNodes.get(parentSourceId);
+    return parent?.children
+      ? { beforeSiblingSourceIds: parent.children.map((node) => node.id) }
+      : {};
+  }
+  for (const page of current.pages) {
+    const previous = binding.baseline.pages.find((candidate) => candidate.id === page.id);
+    const entry = pages.get(page.id);
+    if (!previous)
+      operations.push({ op: "create-page", designId: page.id, after: { name: page.name } });
+    else if (
+      previous.name !== page.name &&
+      entry &&
+      !entry.partial &&
+      sourceNodes.get(entry.sourceId)?.type === "CANVAS"
+    )
+      operations.push({
+        op: "rename-page",
+        designId: page.id,
+        sourceId: entry.sourceId,
+        before: { name: previous.name },
+        after: { name: page.name },
+      });
+  }
+  // Preorder creates make new parents available before children.
+  for (const [designId, after] of afterNodes) {
+    const baseline = beforeNodes.get(designId),
+      entry = mapping.get(designId);
+    if (!baseline) {
+      const { pageId, ...node } = after;
+      operations.push({
+        op: "create",
+        designId,
+        pageDesignId: pageId,
+        parentDesignId: node.parentId ?? null,
+        parentSourceId: mapping.get(node.parentId)?.sourceId ?? null,
+        pageSourceId: pages.get(pageId)?.sourceId ?? null,
+        after: node,
+        ...neighbors(after),
+        ...sourceSiblingOrder(after),
+      });
+      continue;
+    }
+    if (!entry) {
+      if (
+        [...properties, ...unsupportedProperties].some(
+          (key) => JSON.stringify(baseline[key]) !== JSON.stringify(after[key]),
+        )
+      )
+        diagnostics.push({
+          designId,
+          message:
+            "此图层是来源合成的编辑器内容，没有独立 Figma 图层映射；请使用新页面副本核对修改。",
+        });
+      continue;
+    }
+    if (baseline.type !== after.type) {
+      diagnostics.push({ designId, message: "来源图层类型已改变，请使用新页面导入以核对替换" });
+      continue;
+    }
+    const changed = [...properties, "siblingIndex"].filter(
+      (key) => JSON.stringify(baseline[key]) !== JSON.stringify(after[key]),
+    );
+    const unsupported = unsupportedProperties.filter(
+      (key) => JSON.stringify(baseline[key]) !== JSON.stringify(after[key]),
+    );
+    if (unsupported.length)
+      diagnostics.push({
+        designId,
+        message: `${unsupported.join(", ")} 尚无直接 Figma 修改对应；请使用新页面副本核对。`,
+      });
+    if (changed.length)
+      operations.push({
+        op: "update",
+        designId,
+        sourceId: entry.sourceId,
+        before: structuredClone(sourceNodes.get(entry.sourceId)),
+        baseline,
+        after,
+        changed,
+        parentSourceId: mapping.get(after.parentId)?.sourceId ?? null,
+        parentDesignId: after.parentId ?? null,
+        pageSourceId: pages.get(after.pageId)?.sourceId ?? null,
+        pageDesignId: after.pageId,
+        ...neighbors(after),
+        ...sourceSiblingOrder(after),
+      });
+  }
+  const deleted = new Set([...beforeNodes.keys()].filter((key) => !afterNodes.has(key)));
+  for (const designId of deleted) {
+    const entry = mapping.get(designId),
+      baseline = beforeNodes.get(designId);
+    if (!entry || (baseline.parentId && deleted.has(baseline.parentId))) continue;
+    if (
+      !current.pages.some((page) => page.id === baseline.pageId) &&
+      pages.has(baseline.pageId) &&
+      !pages.get(baseline.pageId).partial &&
+      sourceNodes.get(pages.get(baseline.pageId).sourceId)?.type === "CANVAS"
+    )
+      continue;
+    operations.push({
+      op: "delete",
+      designId,
+      sourceId: entry.sourceId,
+      before: structuredClone(sourceNodes.get(entry.sourceId)),
+    });
+  }
+  for (const page of binding.baseline.pages) {
+    const entry = pages.get(page.id);
+    if (!current.pages.some((candidate) => candidate.id === page.id) && entry) {
+      const before = sourceNodes.get(entry.sourceId);
+      if (!before || before.type !== "CANVAS" || entry.partial)
+        diagnostics.push({ designId: page.id, message: "来源页面未完整导出，无法安全删除原页面" });
+      else
+        operations.push({
+          op: "delete-page",
+          designId: page.id,
+          sourceId: entry.sourceId,
+          before: structuredClone(before),
+        });
+    }
+  }
+  if (operations.length > 50000) throw Error("Figma 修改数量超过上限，请分批处理");
+  return {
+    format: "codeshell.figma.patch",
+    version: 1,
+    mapping: binding.mapping,
+    pageMappings: binding.pageMappings,
+    baseline: binding.baseline,
+    ...(typeof binding.source.fileKey === "string" ? { fileKey: binding.source.fileKey } : {}),
+    ...(typeof binding.source.documentId === "string"
+      ? { documentId: binding.source.documentId }
+      : {}),
+    operations,
+    diagnostics,
+    summary: {
+      updates: operations.filter((op) => op.op === "update" || op.op === "rename-page").length,
+      creates: operations.filter((op) => op.op === "create" || op.op === "create-page").length,
+      deletes: operations.filter((op) => op.op === "delete" || op.op === "delete-page").length,
+    },
+  };
+}
+
+function parseIndex(content) {
+  let index;
+  try {
+    index = JSON.parse(content);
+  } catch {
+    throw Error("Figma 来源索引无法读取");
+  }
+  if (
+    index?.format !== INDEX_FORMAT ||
+    index.version !== 1 ||
+    !Array.isArray(index.entries) ||
+    index.entries.length > 32
+  )
+    throw Error("Figma 来源索引无效");
+  for (const entry of index.entries)
+    if (
+      !HASH.test(entry.sourceSha256) ||
+      (entry.bindingSha256 === null
+        ? entry.path !== null
+        : !HASH.test(entry.bindingSha256) ||
+          entry.path !== `designs/codesign-data/figma/${entry.bindingSha256}.json`)
+    )
+      throw Error("Figma 来源索引路径或摘要无效");
+  return index;
+}
+
+// Immutable references also keep unsaved recovery journals small and verifiable.
+export async function persistFigmaBinding({ binding, call, check, sha256 }) {
+  const value = parseFigmaBinding(binding),
+    content = JSON.stringify(value),
+    digest = await sha256(content);
+  check();
+  const path = `designs/codesign-data/figma/${digest}.json`;
+  try {
+    await writeDesignSidecar({ path, content, expectedModifiedAt: null, call, check, sha256 });
+  } catch (error) {
+    check();
+    const existing = await readDesignSidecar({ path, call, check, sha256 });
+    if (existing.content !== content) throw error;
+  }
+  return { sha256: digest, path };
+}
+export async function resolveFigmaBindingRef({ ref, call, check, sha256 }) {
+  if (
+    !ref ||
+    !HASH.test(ref.sha256) ||
+    ref.path !== `designs/codesign-data/figma/${ref.sha256}.json`
+  )
+    throw Error("Figma 来源引用无效");
+  const saved = await readDesignSidecar({ path: ref.path, call, check, sha256 });
+  if ((await sha256(saved.content)) !== ref.sha256) throw Error("Figma 来源内容摘要不匹配");
+  check();
+  return parseFigmaBinding(saved.content);
+}
+
+// Register before the principal design commit. Explicit null entries preserve
+// Undo back to a non-Figma document without misidentifying a failed save.
+export async function registerFigmaBinding({ path, sourceContent, binding, call, check, sha256 }) {
+  const sourceSha256 = await sha256(sourceContent),
+    indexPath = figmaBindingPath(path);
+  check();
+  let existing = null,
+    index = { format: INDEX_FORMAT, version: 1, entries: [] };
+  try {
+    existing = await readDesignSidecar({ path: indexPath, call, check, sha256 });
+    const parsed = JSON.parse(existing.content);
+    if (parsed.format === FIGMA_BINDING_FORMAT) {
+      const prior = await persistFigmaBinding({ binding: parsed, call, check, sha256 });
+      const original = await call("workspace.readText", { path });
+      check();
+      index.entries.push({
+        sourceSha256: await sha256(original.content),
+        bindingSha256: prior.sha256,
+        path: prior.path,
+      });
+      check();
+    } else index = parseIndex(existing.content);
+  } catch (error) {
+    check();
+    if (!isMissingDesignSidecar(error)) throw error;
+  }
+  if (binding === null && !existing) return;
+  const ref = binding === null ? null : await persistFigmaBinding({ binding, call, check, sha256 });
+  check();
+  const entries = index.entries.filter((entry) => entry.sourceSha256 !== sourceSha256);
+  entries.push({ sourceSha256, bindingSha256: ref?.sha256 ?? null, path: ref?.path ?? null });
+  await writeDesignSidecar({
+    path: indexPath,
+    content: JSON.stringify({ ...index, entries: entries.slice(-32) }),
+    call,
+    check,
+    sha256,
+    ...(existing?.revision
+      ? { expectedRevision: existing.revision }
+      : { expectedModifiedAt: existing?.modifiedAt ?? null }),
+  });
+}
+
+export async function readFigmaBinding({ path, sourceContent, call, check, sha256 }) {
+  let result;
+  try {
+    result = await readDesignSidecar({ path: figmaBindingPath(path), call, check, sha256 });
+  } catch (error) {
+    check();
+    if (isMissingDesignSidecar(error)) return null;
+    throw error;
+  }
+  const parsed = JSON.parse(result.content);
+  if (parsed.format === FIGMA_BINDING_FORMAT) return parseFigmaBinding(parsed);
+  const index = parseIndex(result.content),
+    hash = await sha256(sourceContent);
+  check();
+  const entry = index.entries.find((candidate) => candidate.sourceSha256 === hash);
+  if (!entry) throw Error("设计版本没有对应的 Figma 来源记录，请重新导入或恢复完整备份");
+  if (entry.bindingSha256 === null) return null;
+  return resolveFigmaBindingRef({
+    ref: { sha256: entry.bindingSha256, path: entry.path },
+    call,
+    check,
+    sha256,
+  });
+}

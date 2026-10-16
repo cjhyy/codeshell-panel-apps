@@ -1,34 +1,60 @@
 # Design Studio Panel App
 
-## 待发布：Figma JSON、HTML 原型与项目评论
+Design Studio **0.19.0** 提供 Figma JSON 导入、可编辑设计、带来源校验的增量导回、
+多页 HTML 原型和项目评审。原生设计仍使用 v3 `.codesign.json`；16 个声明式 Agent
+工具与可视编辑器共用同一份设计、来源和评审数据。本版沿用现有 Host 权限。
+
+## 0.19 交付：完整 Figma 交换、交互原型与项目评审
 
 顶栏 **Figma**（窄屏在“更多设计操作”）支持选择 Figma REST 文件／节点 JSON，
 或插件 `JSON_REST_V1` 导出。先显示页数、可编辑图层与转换差异，再导入当前画布；
 导入保留撤销记录，不自动覆盖设计文件。单次输入上限 16 MiB，较大的来源应分批
-导出选区。支持基础形状、文字、分组、Frame 和基础 Auto Layout。复杂路径、图片、
-混合文字样式、变量、组件关系与原型交互尚不能无损往返，请逐项核对差异。
+导出选区。支持基础形状、文字、分组、Frame、Auto Layout、约束和包内图片资源。
+插件还会导出复杂图层的 PNG 预览与原始 JSON；预览可调整位置尺寸，矢量路径本身
+不变成面板原生节点。原始节点属性通过设计旁的 `.figma-source.json` 来源索引保留，
+对应内容经摘要校验存放于项目内，保存和重开后继续保留。
+来源关系随导入撤销／重做、历史记录淘汰和未保存草稿恢复保留；撤销回普通设计后，
+保存与重开不会把旧来源误用于新设计。
 
 编辑后下载 `design.figma-transfer.json`，使用随包的
-[Figma 开发插件](app/figma-plugin/README.md) 导入为新的可编辑页面。面板可分别下载
+[Figma 开发插件](app/figma-plugin/README.md) 创建新页面，或预览后更新原节点。面板可分别下载
 插件的三个文件；先在 Figma 创建开发插件取得 ID，填入面板后下载完整 manifest，
 再将三个文件放入同一目录，在 Figma 开发插件菜单中导入 `manifest.json`。
 插件也可将选区／当前页导出为 REST 结构 JSON。转换文件不是 `.fig`，不能直接在
-Figma 文件菜单打开。本版不自动更新已有 Figma 节点，也不连接账号或同步评论。
+Figma 文件菜单打开。原节点回写只修改画布中明确改变的属性，保留未改动的变量、
+组件和复杂内容。插件在预览与应用时分别核对来源冲突；删除需明确勾选核对。
+回写完成后从 Figma 导出新的来源包再开始下一轮。项目评论不自动发布到 Figma。
+Agent 的 `exchange_figma` 可读写分片交换包，并返回 `storage: "json"` 或
+`"multipart"`；后者的项目文件是清单，不能直接在 Figma 插件中选择。面板下载会
+生成完整的传输 JSON；Agent 也可读取清单分片并核对字节数与 SHA-256 后组装。
 
-同一入口可下载当前页的离线 HTML/CSS 原型，继续使用既有布局导出器和
-`data-codeshell-id` 图层映射。交付页仍提供工作区 HTML 生成、Agent 实现与视觉对比。
-生成的静态原型没有自动推断按钮行为或页面跳转。
+顶栏 **原型** 可把选中图层链接到其他页面、返回或安全 URL，设置起始页和响应式
+页面断点，预览并下载全部页面组成的离线 HTML。交互记录保存在 `.prototype.json`，
+导出继续保留 `data-codeshell-id`。可选择附带评审评论；未选择时不导出评论内容。
+交付页仍提供单页 HTML 生成、Agent 实现与视觉对比，Agent 可通过
+`generate_frontend(prototype: true)` 生成完整交互原型。
+需要评论时同时传 `include_comments: true`。原型下载可包含全部页面和内嵌图片；
+写入项目的 HTML 仍受 Host 单次文本预算约束，较大的离线原型可从面板下载。
 
 顶栏 **讨论** 支持图层／页面评论、回复、解决和重新打开，保存到设计旁的
 `<名称>.comments.json`。原评论工具（C）可“保存为评论”，也保留“交给 Agent”。
 评论内容作为文本显示，并使用文件版本检查防止覆盖另一窗口的修改；冲突时保留
-输入，刷新后重试。评论文件需与设计文件一起迁移，现有完整设计备份不包含评论。
+输入，刷新后重试。评论可交给 Agent；结构化工具支持读取、回复和解决问题。
+评论草稿在具备版本存储接口的 Host 上支持重新打开后恢复；另一窗口修改草稿时停止
+自动覆盖。浏览器本地模式使用各窗口独立的草稿记录。缺少安全存储能力时明确提示
+草稿仅留在当前面板。
+v2 完整设计备份包含评论、回复、来源映射、原型与资源；恢复到新路径时统一重命名，
+兼容 v1 备份。手动搬动文件时仍需同时移动相应附属数据。
 浏览器本地模式的评论保存在该浏览器，连接 Host 后则保存在当前项目。
 
 实现和后续优化见 [Figma 与评论流程](../../docs/todo/design-studio-figma-review-workflow.md)。
-本轮不新增 Host 权限，不升级 Rust 渲染引擎，不发布版本。
+真实 Figma 插件的账号内端到端验收仍在进行中；已有浏览器、插件 API 替身和真实
+Node Host 证据的范围见[交付验收记录](../../docs/todo/design-studio-completion-audit.md)。
 
-## 待发布：画布文字、图层评论与布局控件
+以下功能一并纳入 0.19。各小节的验收计数是功能最初落地时的历史记录，
+不代表当前测试套件的总数。
+
+## 0.19 交付：画布文字、图层评论与布局控件
 
 创建文字后直接输入；双击文字或选中后按 Enter 可再次编辑，也可使用属性面板的
 “在画布编辑文字”。⌘/Ctrl + Enter 或移开焦点提交一次可撤销的修改，Escape 取消。
@@ -45,25 +71,25 @@ Figma 文件菜单打开。本版不自动更新已有 Figma 节点，也不连�
 间距／内边距和精细对齐在“高级布局”中，继续使用现有模型与共享下拉控件。锁定
 容器禁用布局修改。图层与对齐动作使用带无障碍名称的 SVG 图标。
 
-验收：`npm test -- --suite design-studio` 包含 14 项新增真实 Chromium 交互回归，以及
-原有恢复／备份／触控用例；可单独运行
+历史验收：该功能落地时新增 14 项真实 Chromium 交互回归，并与原有恢复／备份／
+触控用例一起纳入 `npm test -- --suite design-studio`；可单独运行
 `node --test tests/apps/design-studio/polish-ui.test.mjs`。历史分支十文件的逐项整合依据
 见 [Design polish 整合记录](../../docs/todo/design-studio-polish-integration.md)。
 这些隔离 Host 测试没有调用真实个人项目、账号或付费 Agent。
 
-## 待发布：真实连接状态与本地设计流程
+## 0.19 交付：真实连接状态与本地设计流程
 
 浏览器本地模式明确说明设计与文件只存于此浏览器，保留画布编辑、保存、SVG 导出
 与完整备份下载。Agent 提交要求实际 Host 能力与可提交的当前会话；缺少能力时显示
 原因并禁用提交，不再模拟成功。支持能力发现的 Host 更新授权后可重新启用提交；
 旧 Host 沿用原调用行为。
 
-验收：`node --test tests/apps/design-studio/connection-ui.test.mjs` 在手机尺寸以真实
+历史验收：`node --test tests/apps/design-studio/connection-ui.test.mjs` 在手机尺寸以真实
 Chromium 触摸创建设计，完成保存、SVG 写入、完整备份下载与重开，另覆盖受限 Host
-恢复 Agent 能力后的单次真实桥接调用。含本次用例的恢复／备份／触控组合共 68 项。
+恢复 Agent 能力后的单次真实桥接调用。当时的恢复／备份／触控组合共 68 项。
 浏览器本地保存与隔离 Host 测试不代表真实 Host 安装或 Agent 服务已经验收。
 
-## 待发布：窄屏编辑与触控取消
+## 0.19 交付：窄屏编辑与触控取消
 
 680px 及以下使用完整宽度的画布；工具栏可打开页面／图层与属性抽屉，二者互斥，
 支持关闭按钮与 Escape。“更多设计操作”保留打开文件、HTML 导入、交付、SVG 导出、
@@ -77,11 +103,11 @@ Chromium 触摸创建设计，完成保存、SVG 写入、完整备份下载与�
 切换页面、设计文件或项目时先取消原设计中的未完成手势；迟到的指针事件不会将旧
 坐标或尺寸应用到新设计中的同名图层，原项目保留的草稿也不包含半次拖动。
 
-验收：`node --test tests/apps/design-studio/touch-ui.test.mjs` 使用真实 Chromium 触摸
+历史验收：`node --test tests/apps/design-studio/touch-ui.test.mjs` 使用真实 Chromium 触摸
 输入覆盖 320／390／620／680px 窄屏操作、SVG 写入、双指归属、系统取消与桌面回归。
 浏览器测试使用隔离的内存 Host；不将其视为真实 Host 安装或设备触摸验收。
 
-## 待发布：交付操作的设计归属
+## 0.19 交付：交付操作的设计归属
 
 PRD／设计提交给 Agent、SVG／前端导出、实现对比和检查报告绑定发起时的项目、设计
 实例与保存路径。等待读取或保存期间换文档、切项目或改路径，会取消尚未发出的后续
@@ -89,21 +115,22 @@ PRD／设计提交给 Agent、SVG／前端导出、实现对比和检查报告�
 写入／提交仍可能完成，请在原项目核对结果后决定是否重试。前端导出回执的状态版本
 对应实际生成的源快照；写入期间继续编辑不会把新画布版本冒充为导出内容。
 
-## 待发布：迟到的页面和资源加载
+## 0.19 交付：迟到的页面和资源加载
 
 分页校验、图片内容校验、字体加载及页面切换绑定原项目和原文档实例；等待期间切换
 项目或新建设计后，旧结果不能更新当前画布、资源缓存或安装旧字体。已经发出的只读
 操作可能完成，但其结果不会被应用到新文档。这不代表所有预览／导出控制器已验收。
 
-## 待发布：保存期间继续编辑
+## 0.19 交付：保存期间继续编辑
 
 保存回执只确认点击保存时捕获的设计。保存期间新增页面、修改已加载页面或加载后
 修改其他页面，仍保持未保存状态并生成基于已落盘版本的恢复草稿。分页索引更新会
 保留后续编辑的页面记录及顺序；再次保存或重开恢复不会把后续修改当作已保存而清除。
 
-## 待发布：完整设计备份与恢复
+## 0.19 交付：完整设计备份与恢复
 
-顶栏“备份”可下载包含全部页面、图片和字体字节的完整设计备份（最多 128 MiB）。
+顶栏“备份”可下载包含全部页面、图片、字体、已保存评论、来源映射和原型配置的
+v2 完整设计备份（最多 128 MiB），并兼容读取较早的 v1 包。
 尚未查看的索引页面也会加载；缺失或校验失败的资源会使下载失败，不生成缺少资源的包。
 导入先显示来源、目标项目、页数和资源数，校验全部内容后由用户确认恢复路径。
 恢复按只创建方式写入独立文件，保留当前画布、草稿和已有文件；可从打开文件入口选择
@@ -119,23 +146,26 @@ PRD／设计提交给 Agent、SVG／前端导出、实现对比和检查报告�
 “另存为”草稿使用恢复格式 v2 分别记录原基础文件和新保存目标，避免将新文件名
 误当成基础设计。原文件版本变化时保留草稿并停止重放；较旧面板会保留不支持的 v2
 记录而不解释它。尚未保存过的设计在反复恢复和编辑后仍保留内置基础设计。
-完整备份只包含设计文档及其项目图片／字体，不包含其他项目文件。
-导入验证不会执行备份中的代码或安装程序。本变更没有新增 Host 权限或发布版本。
+完整备份包含设计文档、已保存的附属数据及项目图片／字体，不包含任意其他项目文件。
+评论、来源或原型损坏、不可读、引用分片缺失时停止生成备份；确认不存在的评论会在
+备份覆盖记录中明确标记。所有附件在写入前检查格式、摘要、大小和数量；已有不同
+内容的目标文件会阻止恢复。导入验证不会执行备份中的代码或安装程序。
 
 真实 Node Host 验收（仅临时目录）：
 
 ```sh
 node scripts/design-studio-portable-host.mjs /path/to/built/code-shell-server
+node scripts/design-studio-exchange-host.mjs /path/to/built/code-shell-server
 ```
 
-## 待发布：Agent 事务切换项目保护
+## 0.19 交付：Agent 事务切换项目保护
 
 Agent 编辑、HTML 导入、资源写入及回滚绑定发起时的项目。等待保存或文件分片期间
 切换项目会停止旧事务；失败处理不能把旧画布、历史或资源恢复到新项目。排队但未开始
 的旧事务也会取消。文件分片写入后的冲突查询仍限定原项目，不能向新项目探测同名文件。
 已经发出的原项目写入可能完成；取消后应重新读取原项目，不能把取消当作未落盘的证明。
 
-## 待发布：项目恢复草稿的并发保护
+## 0.19 交付：项目恢复草稿的并发保护
 
 支持版本校验的主程序上，自动恢复草稿按读取到的版本保存和删除。另一窗口修改后，
 当前画布保留、自动覆盖停止，可下载带项目身份的草稿备份，再明确读取最新恢复记录。
@@ -147,20 +177,30 @@ Agent 编辑、HTML 导入、资源写入及回滚绑定发起时的项目。等
 不会把尚未切换完成的画布标成新项目。
 这些页面内草稿不是持久备份，请在关闭前下载；备份保留操作记录及原项目／文件版本，
 引用资源仍属于原项目，不是可独立迁移的完整设计包。旧主程序显示并发保护限制。
-设计文件本身仍使用原来的文件版本校验和保存／另存流程。未发布新版本。
+设计文件本身继续使用文件版本校验和保存／另存流程。Figma 导入的未保存草稿会
+保留可校验的来源引用，恢复后仍能导回对应的原节点。
 
 开发验收：`node scripts/design-studio-host-storage.mjs /absolute/path/to/built/server-package`
 可将当前恢复模块连接到已构建的兼容 `@cjhyy/code-shell-server`，验证真实磁盘上的
 并发、重启、项目隔离、撤销和条件删除；只创建并清理自己的临时项目，不启动服务。
 该检查需要支持版本存储接口的 Host，不以旧公开包或内存模拟代替实际验收。
 
-
-Design Studio 0.18 is an Agent-native CodeShell Desktop Panel App. One reviewed
+Design Studio 0.19 is an Agent-native CodeShell Desktop Panel App. One reviewed
 installation contributes both its sandboxed visual editor and a narrow Agent
-surface: thirteen declared design/delivery tools plus a repository-design Skill.
+surface: sixteen declared design/delivery tools plus a repository-design Skill.
 
 ## What it does
 
+- Source-bound Figma JSON exchange: import official REST/plugin structures and local image
+  assets, edit the supported design model, and export reviewed incremental patches or new-page
+  copies through the bundled development plugin. Raw source properties and node identities
+  survive saves, reopen, undo/redo and recovery; complex visuals use explicit preview fallbacks.
+- Multipage offline HTML prototypes with explicit navigation/back/URL actions, a start page,
+  responsive page routes and optional anchored review comments. Prototype configuration persists
+  beside the design; ordinary frontend generation remains a single static page.
+- Persistent page/layer review threads with replies, resolve/reopen, guarded Agent handoff and
+  safe draft recovery. Portable v2 backups validate and carry comments, Figma provenance,
+  prototype configuration and resources together, renaming companions on restore.
 - Vector canvas with selection, collapsible layer hierarchy, frames, alignment,
   distribution, snapping, rotation, zoom, pan, undo, and redo.
 - A Figma-like three-column workspace: persistent pages and layers on the left, canvas in the

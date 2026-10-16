@@ -33,8 +33,15 @@
               "type": "string",
               "pattern": "^[a-z][a-z0-9-]{0,63}$"
             },
-            "kind": { "type": "string", "enum": ["image", "font"] },
-            "mime": { "type": "string", "minLength": 1, "maxLength": 80 },
+            "kind": {
+              "type": "string",
+              "enum": ["image", "font"]
+            },
+            "mime": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
             "base64": {
               "type": "string",
               "minLength": 1,
@@ -54,9 +61,20 @@
               },
               "description": "Ordered workspace-relative .txt files containing consecutive Base64 chunks for a larger resource."
             },
-            "family": { "type": "string", "minLength": 1, "maxLength": 120 },
-            "weight": { "type": "integer", "minimum": 1, "maximum": 1000 },
-            "style": { "type": "string", "enum": ["normal", "italic", "oblique"] },
+            "family": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "weight": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            },
+            "style": {
+              "type": "string",
+              "enum": ["normal", "italic", "oblique"]
+            },
             "save": {
               "type": "boolean",
               "description": "Save the updated design descriptor after storing the content. Defaults to true."
@@ -69,8 +87,18 @@
           },
           "required": ["id", "kind", "mime", "expected_state_revision"],
           "oneOf": [
-            { "required": ["base64"], "not": { "required": ["source_paths"] } },
-            { "required": ["source_paths"], "not": { "required": ["base64"] } }
+            {
+              "required": ["base64"],
+              "not": {
+                "required": ["source_paths"]
+              }
+            },
+            {
+              "required": ["source_paths"],
+              "not": {
+                "required": ["base64"]
+              }
+            }
           ],
           "additionalProperties": false
         },
@@ -177,8 +205,13 @@
           "$defs": {
             "color": {
               "anyOf": [
-                { "const": "transparent" },
-                { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" }
+                {
+                  "const": "transparent"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^#[0-9a-fA-F]{6}$"
+                }
               ]
             },
             "shadow": {
@@ -188,10 +221,26 @@
                   "type": "string",
                   "pattern": "^#[0-9a-fA-F]{6}$"
                 },
-                "opacity": { "type": "number", "minimum": 0, "maximum": 1 },
-                "x": { "type": "number", "minimum": -500, "maximum": 500 },
-                "y": { "type": "number", "minimum": -500, "maximum": 500 },
-                "blur": { "type": "number", "minimum": 0, "maximum": 200 }
+                "opacity": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "x": {
+                  "type": "number",
+                  "minimum": -500,
+                  "maximum": 500
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": -500,
+                  "maximum": 500
+                },
+                "blur": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 200
+                }
               },
               "required": ["color", "opacity", "x", "y", "blur"],
               "additionalProperties": false
@@ -205,7 +254,10 @@
                   "maxLength": 120,
                   "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
                 },
-                "notes": { "type": ["string", "null"], "maxLength": 2000 },
+                "notes": {
+                  "type": ["string", "null"],
+                  "maxLength": 2000
+                },
                 "effectClipping": {
                   "type": "string",
                   "enum": ["intentional"],
@@ -217,7 +269,14 @@
                   "description": "Marks child overflow clipping as deliberate, typically when measured from imported HTML."
                 },
                 "shadow": {
-                  "oneOf": [{ "$ref": "#/$defs/shadow" }, { "type": "null" }]
+                  "oneOf": [
+                    {
+                      "$ref": "#/$defs/shadow"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "x": {
                   "type": "number",
@@ -231,19 +290,60 @@
                   "maximum": 20000,
                   "description": "Absolute canvas Y for a root/manual/absolute-positioned node. Never make it parent-relative; omit it only for a flow child."
                 },
-                "width": { "type": "number", "minimum": 1, "maximum": 20000 },
-                "height": { "type": "number", "minimum": 1, "maximum": 20000 },
-                "fill": { "$ref": "#/$defs/color" },
-                "stroke": { "$ref": "#/$defs/color" },
-                "strokeWidth": { "type": "number", "minimum": 0, "maximum": 100 },
-                "opacity": { "type": "number", "minimum": 0, "maximum": 1 },
-                "rotation": { "type": "number", "minimum": -360, "maximum": 360 },
-                "cornerRadius": { "type": "number", "minimum": 0, "maximum": 9999 },
-                "visible": { "type": "boolean" },
-                "locked": { "type": "boolean" },
-                "clipContent": { "type": ["boolean", "null"] },
-                "text": { "type": "string", "maxLength": 4000 },
-                "fontSize": { "type": "number", "minimum": 6, "maximum": 240 },
+                "width": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 20000
+                },
+                "height": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 20000
+                },
+                "fill": {
+                  "$ref": "#/$defs/color"
+                },
+                "stroke": {
+                  "$ref": "#/$defs/color"
+                },
+                "strokeWidth": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "opacity": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "rotation": {
+                  "type": "number",
+                  "minimum": -360,
+                  "maximum": 360
+                },
+                "cornerRadius": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 9999
+                },
+                "visible": {
+                  "type": "boolean"
+                },
+                "locked": {
+                  "type": "boolean"
+                },
+                "clipContent": {
+                  "type": ["boolean", "null"]
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 4000
+                },
+                "fontSize": {
+                  "type": "number",
+                  "minimum": 6,
+                  "maximum": 240
+                },
                 "fontWeight": {
                   "type": "number",
                   "enum": [100, 200, 300, 400, 500, 600, 700, 800, 900]
@@ -252,11 +352,29 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 120,
-                  "allOf": [{ "pattern": "^[^\\u0000-\\u001F\\u007F]+$" }, { "pattern": "\\S" }]
+                  "allOf": [
+                    {
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+                    },
+                    {
+                      "pattern": "\\S"
+                    }
+                  ]
                 },
-                "fontStyle": { "type": "string", "enum": ["normal", "italic"] },
-                "lineHeight": { "type": "number", "minimum": 0.7, "maximum": 3 },
-                "letterSpacing": { "type": "number", "minimum": -20, "maximum": 100 },
+                "fontStyle": {
+                  "type": "string",
+                  "enum": ["normal", "italic"]
+                },
+                "lineHeight": {
+                  "type": "number",
+                  "minimum": 0.7,
+                  "maximum": 3
+                },
+                "letterSpacing": {
+                  "type": "number",
+                  "minimum": -20,
+                  "maximum": 100
+                },
                 "textDecoration": {
                   "type": "string",
                   "enum": ["none", "underline", "line-through"]
@@ -266,9 +384,18 @@
                   "enum": ["browser"],
                   "description": "Marks exact browser-measured text bounds so validation does not substitute estimated glyph metrics."
                 },
-                "textSource": { "type": ["string", "null"], "maxLength": 4000 },
-                "textFlow": { "type": ["string", "null"], "enum": ["wrap", null] },
-                "textOverflow": { "type": ["string", "null"], "enum": ["ellipsis", null] },
+                "textSource": {
+                  "type": ["string", "null"],
+                  "maxLength": 4000
+                },
+                "textFlow": {
+                  "type": ["string", "null"],
+                  "enum": ["wrap", null]
+                },
+                "textOverflow": {
+                  "type": ["string", "null"],
+                  "enum": ["ellipsis", null]
+                },
                 "textFlowWidth": {
                   "type": ["number", "null"],
                   "minimum": 1,
@@ -283,7 +410,10 @@
                   "type": ["string", "null"],
                   "pattern": "^[a-z][a-z0-9-]{0,63}$"
                 },
-                "textAlign": { "type": "string", "enum": ["left", "center", "right"] },
+                "textAlign": {
+                  "type": "string",
+                  "enum": ["left", "center", "right"]
+                },
                 "imageRef": {
                   "type": ["string", "null"],
                   "pattern": "^[a-z][a-z0-9-]{0,63}$"
@@ -305,7 +435,11 @@
                   "type": ["boolean", "null"],
                   "description": "Reverses the main-axis order while preserving source sibling order."
                 },
-                "gap": { "type": "number", "minimum": 0, "maximum": 2000 },
+                "gap": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 2000
+                },
                 "rowGap": {
                   "type": ["number", "null"],
                   "minimum": 0,
@@ -316,11 +450,31 @@
                   "minimum": 0,
                   "maximum": 2000
                 },
-                "padding": { "type": "number", "minimum": 0, "maximum": 2000 },
-                "paddingTop": { "type": "number", "minimum": 0, "maximum": 2000 },
-                "paddingRight": { "type": "number", "minimum": 0, "maximum": 2000 },
-                "paddingBottom": { "type": "number", "minimum": 0, "maximum": 2000 },
-                "paddingLeft": { "type": "number", "minimum": 0, "maximum": 2000 },
+                "padding": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 2000
+                },
+                "paddingTop": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 2000
+                },
+                "paddingRight": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 2000
+                },
+                "paddingBottom": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 2000
+                },
+                "paddingLeft": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 2000
+                },
                 "alignItems": {
                   "type": "string",
                   "enum": ["start", "center", "end", "stretch", "baseline"]
@@ -443,13 +597,28 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 120,
-                  "allOf": [{ "pattern": "^[^\\u0000-\\u001F\\u007F]+$" }, { "pattern": "\\S" }]
+                  "allOf": [
+                    {
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+                    },
+                    {
+                      "pattern": "\\S"
+                    }
+                  ]
                 },
                 "canvas": {
                   "type": "object",
                   "properties": {
-                    "width": { "type": "number", "minimum": 100, "maximum": 10000 },
-                    "height": { "type": "number", "minimum": 100, "maximum": 10000 },
+                    "width": {
+                      "type": "number",
+                      "minimum": 100,
+                      "maximum": 10000
+                    },
+                    "height": {
+                      "type": "number",
+                      "minimum": 100,
+                      "maximum": 10000
+                    },
                     "background": {
                       "type": "string",
                       "pattern": "^#[0-9a-fA-F]{6}$"
@@ -472,8 +641,12 @@
                             "minLength": 1,
                             "maxLength": 80,
                             "allOf": [
-                              { "pattern": "^[^\\u0000-\\u001F\\u007F]+$" },
-                              { "pattern": "\\S" }
+                              {
+                                "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+                              },
+                              {
+                                "pattern": "\\S"
+                              }
                             ]
                           },
                           "value": {
@@ -641,8 +814,12 @@
                         "minLength": 1,
                         "maxLength": 120,
                         "allOf": [
-                          { "pattern": "^[^\\u0000-\\u001F\\u007F]+$" },
-                          { "pattern": "\\S" }
+                          {
+                            "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+                          },
+                          {
+                            "pattern": "\\S"
+                          }
                         ]
                       },
                       "switch": {
@@ -668,8 +845,12 @@
                         "minLength": 1,
                         "maxLength": 120,
                         "allOf": [
-                          { "pattern": "^[^\\u0000-\\u001F\\u007F]+$" },
-                          { "pattern": "\\S" }
+                          {
+                            "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+                          },
+                          {
+                            "pattern": "\\S"
+                          }
                         ]
                       }
                     },
@@ -750,7 +931,14 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 200,
-              "allOf": [{ "pattern": "^[^\\u0000-\\u001F\\u007F]+$" }, { "pattern": "\\S" }],
+              "allOf": [
+                {
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+                },
+                {
+                  "pattern": "\\S"
+                }
+              ],
               "description": "CSS selector for the first-viewport region to convert. Defaults to html; fully offscreen descendants are omitted."
             },
             "viewport_width": {
@@ -786,7 +974,7 @@
       },
       {
         "name": "generate_frontend",
-        "description": "Generate a standalone editable HTML implementation for one Design v3 page. Auto Layout maps to Flex/Grid/Wrap, Hug/Fill/Fixed stays responsive, absolute layout children retain constraints, and every output layer carries a stable data-codeshell-id for comparison.",
+        "description": "Generate editable HTML/CSS for one design page, or an offline multi-page interactive prototype with saved links and responsive routes. Optionally include local review comments.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -813,6 +1001,14 @@
               "type": "string",
               "minLength": 1,
               "description": "Required exact stateRevision returned by get_design_metadata."
+            },
+            "prototype": {
+              "type": "boolean",
+              "description": "When true, export all pages and the saved prototype interactions. Defaults to false."
+            },
+            "include_comments": {
+              "type": "boolean",
+              "description": "Include project review comments in the interactive prototype. Defaults to false."
             }
           },
           "required": ["path", "expected_state_revision"],
@@ -851,7 +1047,14 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 200,
-              "allOf": [{ "pattern": "^[^\\u0000-\\u001F\\u007F]+$" }, { "pattern": "\\S" }],
+              "allOf": [
+                {
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+                },
+                {
+                  "pattern": "\\S"
+                }
+              ],
               "description": "Optional CSS selector for the implementation region. Defaults to body."
             },
             "viewport_width": {
@@ -952,6 +1155,125 @@
           "additionalProperties": false
         },
         "readOnly": false
+      },
+      {
+        "name": "get_design_comments",
+        "description": "Read project design-review threads by page, node or status. Lists provide bounded text summaries; use thread_id and reply_offset to read full text and five replies at a time.",
+        "readOnly": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "thread_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "page_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "node_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "status": {
+              "type": "string",
+              "enum": ["open", "resolved", "all"]
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "reply_offset": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "update_design_comments",
+        "description": "Create an anchored review comment, reply to a thread, or mark a thread resolved/reopened. Persists independently with concurrency checks; requires the current design state revision.",
+        "readOnly": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["create", "reply", "status"]
+            },
+            "thread_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "page_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "node_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 10000
+            },
+            "resolved": {
+              "type": "boolean"
+            },
+            "expected_state_revision": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Required exact stateRevision returned by get_design_metadata."
+            }
+          },
+          "required": ["action", "expected_state_revision"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "exchange_figma",
+        "description": "Import workspace Figma REST/source JSON with local assets as an editable design, or export a source-aware transfer with reviewed incremental changes for the Figma development plugin.",
+        "readOnly": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["import", "export"]
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^designs/[^\\\\:\\u0000-\\u001F\\u007F]+[.]json$"
+            },
+            "save": {
+              "type": "boolean"
+            },
+            "expected_state_revision": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "Required exact stateRevision returned by get_design_metadata."
+            }
+          },
+          "required": ["action", "path", "expected_state_revision"],
+          "additionalProperties": false
+        }
       }
     ],
     "skills": ["agent/skills/repo-design/SKILL.md"]

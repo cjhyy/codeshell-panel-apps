@@ -8,6 +8,15 @@ import {
   reviewDraftKey,
   REVIEW_COMMENTS_FORMAT,
 } from "../../../apps/design-studio/app/review-comments.mjs";
+import {
+  createReviewDraftSession,
+  REVIEW_DRAFT_FORMAT,
+} from "../../../apps/design-studio/app/review-comments.mjs";
+import {
+  createDesignSidecarPlan,
+  readDesignSidecar,
+  DESIGN_SIDECAR_PART_BYTES,
+} from "../../../apps/design-studio/app/design-sidecar.mjs";
 
 const path = "designs/product.codesign.json",
   commentsPath = "designs/product.comments.json";
@@ -274,4 +283,138 @@ test("explicit UI invalidation stops a pending write even before the Host snapsh
   pause.release();
   await assert.rejects(pending, (error) => error.code === "STALE_REVIEW_SCOPE");
   assert.equal(f.calls.filter((item) => item.method === "workspace.writeText").length, 0);
+});
+
+test("a lost comment write receipt is observed without duplicating the discussion", async () => {
+  const f = fixture();
+  let uncertain = true;
+  const store = createReviewCommentsStore({
+    ...f.options,
+    call: async (method, params) => {
+      const result = await f.call(method, params);
+      if (method === "workspace.writeText" && uncertain) {
+        uncertain = false;
+        throw Error("lost receipt");
+      }
+      return result;
+    },
+  });
+  const result = await store.addThread({ pageId: "page-1", text: "Exactly once" });
+  assert.equal(result.document.threads.length, 1);
+  assert.equal(f.calls.filter((call) => call.method === "workspace.writeText").length, 1);
+});
+test("large comments retain root CAS versions while reading and writing bounded sidecar parts", async () => {
+  const f = fixture(),
+    content = JSON.stringify(
+      document(
+        Array.from({ length: 80 }, (_, index) => thread(`review-${index}`, "x".repeat(5000))),
+      ),
+    );
+  const sha256 = async (value) => hash(value),
+    plan = await createDesignSidecarPlan(content, { sha256 });
+  for (const part of plan.parts) f.files.set(`A:${part.path}`, part.content);
+  f.files.set(`A:${commentsPath}`, plan.primarySource);
+  const store = createReviewCommentsStore({ ...f.options, sha256 });
+  await store.reply("review-0", "Checked");
+  assert(
+    f.calls
+      .filter((call) => call.method === "workspace.writeText")
+      .every((call) => Buffer.byteLength(call.content) <= DESIGN_SIDECAR_PART_BYTES),
+  );
+  const read = await readDesignSidecar({ path: commentsPath, call: f.call, sha256 });
+  assert.equal(JSON.parse(read.content).threads[0].replies[0].text, "Checked");
+  assert.equal(
+    f.calls.findLast((call) => call.method === "workspace.writeText" && call.path === commentsPath)
+      .expectedRevision,
+    hash(plan.primarySource),
+  );
+});
+function draft(snapshot, text) {
+  return {
+    format: REVIEW_DRAFT_FORMAT,
+    version: 1,
+    scopeKey: reviewDraftKey(snapshot),
+    text,
+    target: { pageId: "page-1", nodeId: "card", targetName: "Card" },
+    replies: [],
+  };
+}
+function draftHost() {
+  const records = new Map(),
+    calls = [];
+  const snapshot = (key) =>
+    records.has(key)
+      ? {
+          exists: true,
+          value: structuredClone(records.get(key)),
+          revision: `sha256:${hash(JSON.stringify(records.get(key)))}`,
+        }
+      : { exists: false, value: null, revision: null };
+  return {
+    records,
+    calls,
+    async call(method, params) {
+      calls.push({ method, ...params });
+      if (method === "storage.getSnapshot") return snapshot(params.key);
+      assert.equal(method, "storage.compareAndSet");
+      if (params.expectedRevision !== snapshot(params.key).revision)
+        return { updated: false, snapshot: snapshot(params.key) };
+      records.set(params.key, structuredClone(params.value));
+      return { updated: true, snapshot: snapshot(params.key) };
+    },
+  };
+}
+test("draft persistence requires advertised CAS methods and never overwrites a concurrent window", async () => {
+  const f = fixture(),
+    h = draftHost();
+  assert.equal(
+    await createReviewDraftSession({
+      snapshot: f.snapshot(),
+      getSnapshot: f.options.getSnapshot,
+      call: h.call,
+    }),
+    null,
+  );
+  f.update({ availableMethods: ["storage.getSnapshot", "storage.compareAndSet"] });
+  const options = { snapshot: f.snapshot(), getSnapshot: f.options.getSnapshot, call: h.call };
+  const first = await createReviewDraftSession(options),
+    second = await createReviewDraftSession(options);
+  await first.load();
+  await second.load();
+  await first.save(draft(f.snapshot(), "First window draft"));
+  await assert.rejects(second.save(draft(f.snapshot(), "Concurrent draft")), /其他窗口/);
+  assert(second.blocked);
+  await assert.rejects(second.save(draft(f.snapshot(), "Blind retry")), /其他窗口/);
+  assert.equal([...h.records.values()][0].text, "First window draft");
+  const reopened = await createReviewDraftSession(options);
+  assert.equal((await reopened.load()).text, "First window draft");
+  assert(
+    h.calls.every((call) => ["storage.getSnapshot", "storage.compareAndSet"].includes(call.method)),
+  );
+});
+test("late draft reads and invalid imported draft scopes cannot authorize a new-project write", async () => {
+  const f = fixture(),
+    h = draftHost(),
+    pause = gate();
+  f.update({ availableMethods: ["storage.getSnapshot", "storage.compareAndSet"] });
+  const session = await createReviewDraftSession({
+    snapshot: f.snapshot(),
+    getSnapshot: f.options.getSnapshot,
+    call: async (method, params) => {
+      const result = await h.call(method, params);
+      pause.enter();
+      await pause.wait;
+      return result;
+    },
+  });
+  const loading = session.load();
+  await pause.entered;
+  f.update({ projectScope: { ...f.snapshot().projectScope, projectId: "B" } });
+  pause.release();
+  await assert.rejects(loading, /项目已切换/);
+  await assert.rejects(
+    async () => session.save(draft(f.snapshot(), "Other project")),
+    /项目来源无效/,
+  );
+  assert.equal(h.calls.filter((call) => call.method === "storage.compareAndSet").length, 0);
 });
