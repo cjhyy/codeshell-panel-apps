@@ -4862,7 +4862,7 @@ async function compareFrontendFile({
     activePageId: design.activePageId,
   });
   const actualRenderDocument = normalizeDesignDocument(capturedDocument);
-  const expectedSvg = exportDesignSvg(expectedRenderDocument, { resourceDataUrls });
+  const expectedSvg = exportDesignSvg(expectedRenderDocument, { resourceDataUrls, maxBytes: 4 * 1024 * 1024 });
   const actualSvg = exportDesignSvg(actualRenderDocument);
   const pixelMetrics = await compareSvgPixels(
     expectedSvg,
@@ -6482,8 +6482,11 @@ elements.deliveryRunAudit.addEventListener("click", () => {
 });
 elements.saveAuditReport.addEventListener("click", () => void saveAuditReport());
 elements.repairQuality.addEventListener("click", () => {
-  void (async () => {
+  void enqueueAgentMutation(async () => {
+    if (context.trusted !== true) throw new Error("请先信任当前工作区再修改设计");
+    const check = captureDeliveryScope();
     await ensureAllDesignPagesLoaded();
+    check();
     const result = repairDesignQuality(design);
     if (result.changes.length) {
       design = result.document;
@@ -6493,7 +6496,7 @@ elements.repairQuality.addEventListener("click", () => {
     await showAudit();
     notify(`已修复 ${result.changes.length} 处 · 剩余 ${result.after.issueCount} 个问题；可撤销`,
       result.after.blockingIssueCount ? "error" : "success");
-  })().catch((error) => notify(error.message, "error"));
+  }).catch((error) => notify(error.message, "error"));
 });
 elements.exportSvg.addEventListener("click", () => void exportSvg());
 elements.openFiles.addEventListener("click", () => void showFiles());
@@ -9404,8 +9407,8 @@ function registerAgentTools(ready) {
       !allDesignNodes().some((node) => node.id === args.node_id)
     ) {
       await ensureAllDesignPagesLoaded();
+      materializedAllPages = true;
     }
-    materializedAllPages = Boolean(args.node_id && !args.page_id && currentPageCache);
     const screenshotStateRevision = currentDesignStateRevision();
     const screenshotRevision = currentRevision;
     const source = designScreenshotSource(args?.node_id, args?.page_id);
@@ -9421,7 +9424,7 @@ function registerAgentTools(ready) {
     let width = Math.max(1, Math.round(source.width * scale));
     let height = Math.max(1, Math.round(source.height * scale));
     await loadReferencedDesignResources();
-    const svg = exportDesignSvg(source.document, { resourceDataUrls });
+    const svg = exportDesignSvg(source.document, { resourceDataUrls, maxBytes: 4 * 1024 * 1024 });
     const image = new window.Image();
     await new Promise((resolve, reject) => {
       const timer = window.setTimeout(
@@ -9954,6 +9957,7 @@ figmaWorkflowUI = mountFigmaWorkflow({
     );
     const previewSvg = exportDesignSvg(normalizeDesignState(prepared.document), {
       resourceDataUrls,
+      maxBytes: 4 * 1024 * 1024,
     });
     return { ...prepared, ...(previewSvg.length <= 4 * 1024 * 1024 ? { previewSvg } : {}) };
   },
