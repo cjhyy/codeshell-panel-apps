@@ -1,5 +1,27 @@
 # 投资工作台 Panel App
 
+## 无界面 CLI
+
+安装包内的 `app/tools/quant-lab.mjs` 提供本地 CSV 检查、回测、参数扫描、滚动
+样本外验证、关注规则检查、账本持仓推导与复盘笔记读取。Node 20+ 可直接运行，
+无需打开面板或安装开发依赖；聊天通过当前项目选定安装包的 `project-runtime`
+Skill 找到同一入口。先运行 `node <包目录>/app/tools/quant-lab.mjs ops` 查看完整
+输入 JSON schema，再用 `--project <项目目录> --input-file <项目内请求.json>`
+或 stdin 提交一个请求。
+
+命令为 `dataset`、`backtest`、`parameter-sweep`、`walk-forward`、`watch`、
+`portfolio`、`notes`；`analyze` / `dataset/analyze` 与 `holdings` /
+`portfolio/holdings` 分别为别名。`dataset` 接受 `{"csv":"data/prices.csv"}`；
+`portfolio` 和 `notes` 接受 `{}`，分别读取 `portfolio/transactions.json` 与
+`portfolio/journal.json`。详细研究配置见包内
+[Runtime Skill](agent/skills/project-runtime/SKILL.md)。
+
+stdout 始终为单个 JSON 结果，成功退出码 0，参数／数据拒绝退出码 2，包或运行
+失败退出码 1。请求最多 64 KiB，CSV／账本最多 16 MiB，CSV 最多 100,000 行；
+参数工作量与输出也有上限。数据路径只接受项目内相对路径，拒绝越界、隐藏路径
+和符号链接。CLI 只读、不联网、不启动后台任务；持仓没有附加最新行情时保持估值
+不可用，也不写入面板私有存储。行情、新闻与选股采集继续使用现有独立工具入口。
+
 ## 待发布：手机研究与执行绑定保护
 
 320px 起的研究页保留“保存策略”“保存报告”“导出回测明细”和运行入口，
