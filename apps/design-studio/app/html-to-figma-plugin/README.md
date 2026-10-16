@@ -4,9 +4,16 @@
 
 ## 安装
 
+本包的 `manifest.json` 是开发插件模板，尚未包含 `id`。Figma 要求使用它为你的插件分配的 ID；先完成下列注册步骤，再导入本包。
+
 1. 解压整个 `html-to-figma-plugin` 目录，保留 `manifest.json`、`code.js`、`ui.html`、README 和 NOTICE。
-2. Figma Desktop → Plugins → Development → Import plugin from manifest，选择本目录 `manifest.json`。
-3. 在目标设计文件运行 **CodeShell HTML to Figma**。
+2. 在 **Figma Desktop → Plugins → Development → New Plugin / Create new plugin** 创建一个**带 UI 的插件**，名称可填 **CodeShell HTML to Figma**，选择保存位置。
+3. 打开 Figma 刚生成的 `manifest.json`，复制其中 **Figma 分配的 `id` 值**。
+4. 编辑本包 `html-to-figma-plugin/manifest.json`，添加 `"id"` 字段并粘贴刚复制的值；保留本包的 `main: "code.js"`、`ui: "ui.html"`、`documentAccess` 和离线 `networkAccess` 设置。不要使用上游插件的 ID，也不要自行编造 ID。
+5. 回到 **Plugins → Development → Import plugin from manifest**，选择**已填入该 ID 的本包 `manifest.json`**。若 Figma 已登记了创建时的模板路径，将开发插件导入路径改为本包；运行的文件应是本包 `code.js` 和 `ui.html`。
+6. 在目标设计文件运行 **CodeShell HTML to Figma**。
+
+注册和填写 ID 仅需首次安装时完成；更新本包后仍使用同一个 Figma 分配的 ID。源码构建会生成不含 ID 的通用模板，请在用于运行的副本中保留或重新填入你的 ID。
 
 ## HTML → 预览 → 图层
 

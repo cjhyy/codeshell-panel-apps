@@ -16,6 +16,16 @@ test("installable plugin is deterministic, standalone, offline and based on upst
   const root = new URL("../../../apps/design-studio/app/html-to-figma-plugin/", import.meta.url);
   const manifest = JSON.parse(await readFile(new URL("manifest.json", root), "utf8"));
   assert.deepEqual(manifest.networkAccess.allowedDomains, ["none"]);
+  assert.equal(
+    Object.hasOwn(manifest, "id"),
+    false,
+    "distributed template must not forge a Figma-assigned plugin ID",
+  );
+  const readme = await readFile(new URL("README.md", root), "utf8");
+  assert.match(readme, /创建一个\*\*带 UI 的插件\*\*/u);
+  assert.match(readme, /Figma 分配的 `id` 值/u);
+  assert.match(readme, /已填入该 ID 的本包 `manifest\.json`/u);
+  assert.match(readme, /不要使用上游插件的 ID，也不要自行编造 ID/u);
   const code = await readFile(new URL("code.js", root), "utf8");
   assert.match(code, /class|FigmaService/);
   assert.match(code, /NodeCreatorFactory/);
