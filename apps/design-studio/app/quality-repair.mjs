@@ -64,6 +64,8 @@ export function repairDesignQuality(input) {
   for (const page of document.pages) {
     const view = { ...document, activePageId: page.id, nodes: page.nodes };
     const byId = new Map(page.nodes.map((node) => [node.id, node]));
+    const fitParents = new Set(auditDesignPages(view).filter((issue) =>
+      issue.code === "layout.parent-overflow").map((issue) => byId.get(issue.nodeId)?.parentId));
     const childrenById = new Map();
     for (const node of page.nodes) {
       const siblings = childrenById.get(node.parentId) ?? [];
@@ -73,7 +75,7 @@ export function repairDesignQuality(input) {
     // Work from leaves to roots so a parent is expanded only once. Child geometry
     // uses page coordinates: extending an unclipped frame does not move content.
     for (const parent of [...page.nodes].reverse()) {
-      if (!["frame", "group", "component"].includes(parent.type) || parent.clipContent === true ||
+      if (!fitParents.has(parent.id) || !["frame", "group", "component"].includes(parent.type) || parent.clipContent === true ||
           treeMatches(parent, byId, (node) => node.locked || node.rotation)) continue;
       const children = descendantsOf(parent, childrenById).filter((node) => isDesignNodeVisible(view, node, byId));
       if (!children.length) continue;
@@ -91,6 +93,7 @@ export function repairDesignQuality(input) {
       if (Object.entries(next).every(([key, value]) => Math.abs(parent[key] - value) <= 0.5)) continue;
       const previous = Object.fromEntries(Object.keys(next).map((key) => [key, parent[key]]));
       Object.assign(parent, next);
+      if (parent.parentId) fitParents.add(parent.parentId);
       changes.push({ pageId: page.id, nodeId: parent.id, kind: "fit-container", before: previous, after: next });
     }
     for (const node of page.nodes) {

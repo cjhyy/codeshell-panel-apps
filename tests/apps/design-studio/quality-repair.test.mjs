@@ -117,3 +117,12 @@ test("container fitting never introduces a new painted frame outside the canvas"
   assert.ok(!result.unresolved.some((issue) => issue.code === "layout.canvas-overflow" && issue.nodeId === "card"));
   assert.deepEqual(result.changes, []);
 });
+
+test("repair does not resize healthy containers merely because an unclipped shadow extends beyond them", () => {
+  const input = source({}, { x: 60, width: 80, fill: "#000000",
+    shadow: { color: "#000000", opacity: 0.5, x: 20, y: 0, blur: 10 } });
+  const result = repairDesignQuality(input);
+  assert.equal(result.before.issueCount, 0);
+  assert.deepEqual(result.changes, []);
+  assert.deepEqual(result.document.nodes, input.nodes);
+});
