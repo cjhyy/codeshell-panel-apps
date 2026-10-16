@@ -13,7 +13,7 @@ import {
   isDesignNodeVisible,
   renderedDesignInstanceEffectOutsets,
 } from "./document.mjs";
-import { currentTextMetrics, measuredTextInkBounds } from "./text-metrics.mjs";
+import { currentTextMetrics } from "./text-metrics.mjs";
 
 function validHex(value) {
   return /^#[0-9a-f]{6}$/i.test(value);
@@ -76,17 +76,10 @@ function contains(container, node) {
 }
 
 function isTextBaselineOverflow(node, parent) {
-  const ink = measuredTextInkBounds(node);
-  if (node.type === "text" && parent.clipContent !== true && ink) {
-    return contains(parent, {
-      x: node.x + ink.x,
-      y: node.y + ink.y,
-      width: ink.width,
-      height: ink.height,
-    });
-  }
   if (
     node.type !== "text" ||
+    node.rotation !== 0 ||
+    parent.rotation !== 0 ||
     (node.textMeasurement !== "browser" && !Number.isFinite(node.layoutBaselineOffset)) ||
     parent.clipContent === true
   ) {
@@ -914,7 +907,11 @@ export function auditDesign(document) {
           exceedsClippingAncestor(document.nodes, node, parent, byId));
       const intentionallyClippedByParent =
         exceedsParent && parent.clipContent === true && parent.contentClipping === "intentional";
-      if (exceedsParent && !intentionallyClippedByParent && !isTextBaselineOverflow(node, parent)) {
+      if (
+        exceedsParent &&
+        !intentionallyClippedByParent &&
+        (measuredOutline || !isTextBaselineOverflow(node, parent))
+      ) {
         issues.push({
           code: "layout.parent-overflow",
           severity: parent.clipContent === true ? "error" : "warning",

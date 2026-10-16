@@ -198,6 +198,41 @@ test("parent checks distinguish a tall text box from actual hanging-baseline ink
   );
 });
 
+test("a valid glyph receipt never exempts rotated ink that escapes its parent", async (t) => {
+  const page = await browserFixture(t);
+  const input = source("W", { width: 100, height: 20 });
+  input.children[0].absoluteBoundingBox.x = 0;
+  input.children[0].absoluteBoundingBox.y = 0;
+  input.children = [
+    {
+      type: "FRAME",
+      id: "1:2",
+      name: "Owner",
+      clipsContent: false,
+      absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 30 },
+      children: input.children,
+    },
+  ];
+  const result = await page.evaluate(async (input) => {
+    const { prepareFigmaImport } = await import("/figma-bridge.mjs");
+    return prepareFigmaImport(input);
+  }, input);
+  const node = result.document.nodes.find((node) => node.type === "text");
+  assert.ok(currentTextMetrics(node));
+  assert.ok(
+    !auditDesignPages(result.document).some((issue) => issue.code === "layout.parent-overflow"),
+  );
+  node.rotation = 90;
+  for (const parentRotation of [0, 30]) {
+    result.document.nodes[0].rotation = parentRotation;
+    assert.ok(
+      auditDesignPages(result.document).some(
+        (issue) => issue.nodeId === node.id && issue.code === "layout.parent-overflow",
+      ),
+    );
+  }
+});
+
 test("missing fonts are reported and an oversized single glyph stays a real error", async (t) => {
   const page = await browserFixture(t);
   const result = await page.evaluate(
