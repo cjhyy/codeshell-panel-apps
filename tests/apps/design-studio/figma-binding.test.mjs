@@ -4,12 +4,165 @@ import { createHash } from "node:crypto";
 import {
   createFigmaBinding,
   createFigmaPatch,
+  figmaSourceNodes,
   parseFigmaBinding,
   readFigmaBinding,
   registerFigmaBinding,
 } from "../../../apps/design-studio/app/figma-binding.mjs";
 import { prepareFigmaImport } from "../../../apps/design-studio/app/figma-bridge.mjs";
+import { longFigmaSource } from "./fixtures/long-canvas.mjs";
 const sha256 = async (value) => createHash("sha256").update(value).digest("hex");
+
+async function translationFixture(sourcePatch = () => {}) {
+  const box = (x, y, width, height) => ({ x, y, width, height });
+  const source = {
+    fileKey: "file-a",
+    document: {
+      id: "0:1",
+      type: "CANVAS",
+      children: [
+        {
+          id: "1:1",
+          type: "FRAME",
+          name: "Parent",
+          absoluteBoundingBox: box(-100, -80, 500, 400),
+          children: [
+            {
+              id: "1:2",
+              type: "FRAME",
+              name: "Nested",
+              absoluteBoundingBox: box(-80, -60, 300, 200),
+              children: [
+                {
+                  id: "1:3",
+                  type: "RECTANGLE",
+                  name: "Child",
+                  absoluteBoundingBox: box(-50, -30, 100, 80),
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  };
+  sourcePatch(source.document.children[0]);
+  const imported = await prepareFigmaImport(source);
+  return {
+    imported,
+    binding: createFigmaBinding(imported),
+    current: structuredClone(imported.document),
+  };
+}
+
+test("a three-level parent drag emits one mapped update without copying inherited descendant subtrees", async () => {
+  const { binding, current } = await translationFixture();
+  const preserved = JSON.stringify(binding);
+  for (const node of current.nodes) {
+    node.x += 150;
+    node.y += 25;
+  }
+  const patch = createFigmaPatch(binding, current);
+  assert.deepEqual(
+    patch.operations.map(({ sourceId, changed }) => ({ sourceId, changed })),
+    [{ sourceId: "1:1", changed: ["x", "y"] }],
+  );
+  assert.equal(JSON.stringify(binding), preserved);
+  assert.deepEqual(patch.mapping, binding.mapping);
+  assert.deepEqual(patch.pageMappings, binding.pageMappings);
+});
+
+test("inherited axes are omitted while real local movement, tiny edits and style changes remain", async () => {
+  const { binding, current } = await translationFixture();
+  for (const node of current.nodes) {
+    node.x += 150;
+    node.y += 25;
+  }
+  current.nodes[2].x += 0.00001;
+  current.nodes[2].fill = "#123456";
+  const patch = createFigmaPatch(binding, current);
+  assert.deepEqual(
+    patch.operations.map(({ sourceId, changed }) => ({ sourceId, changed })),
+    [
+      { sourceId: "1:1", changed: ["x", "y"] },
+      { sourceId: "1:3", changed: ["x", "fill"] },
+    ],
+  );
+});
+
+test("a child held at its old absolute position retains the explicit counter-move relative to its parent", async () => {
+  const { binding, current } = await translationFixture();
+  current.nodes[0].x += 150;
+  const patch = createFigmaPatch(binding, current);
+  assert.deepEqual(
+    patch.operations.map(({ sourceId, changed }) => ({ sourceId, changed })),
+    [
+      { sourceId: "1:1", changed: ["x"] },
+      { sourceId: "1:2", changed: ["x"] },
+    ],
+  );
+});
+
+test("resize, rotation, raw affine transforms and unmapped ancestors keep conservative explicit geometry", async () => {
+  for (const kind of [
+    "resize",
+    "rotate",
+    "raw-scale",
+    "raw-rotation",
+    "missing-map",
+    "layout-sizing",
+  ]) {
+    const { binding, current } = await translationFixture((parent) => {
+      if (kind === "raw-scale")
+        parent.relativeTransform = [
+          [2, 0, 0],
+          [0, 1, 0],
+        ];
+      if (kind === "raw-rotation")
+        parent.relativeTransform = [
+          [0, -1, 0],
+          [1, 0, 0],
+        ];
+    });
+    for (const node of current.nodes) node.x += 150;
+    if (kind === "resize") current.nodes[0].width += 50;
+    if (kind === "rotate") current.nodes[0].rotation = 15;
+    if (kind === "layout-sizing") current.nodes[0].layoutSizingHorizontal = "hug";
+    if (kind === "missing-map")
+      binding.mapping = binding.mapping.filter((entry) => entry.sourceId !== "1:2");
+    const patch = createFigmaPatch(binding, current);
+    assert.ok(patch.operations.find((op) => op.sourceId === "1:3")?.changed.includes("x"), kind);
+  }
+});
+
+test("a 1208-layer board drag fits one source update while preserving all layers and the source mapping", async () => {
+  const imported = await prepareFigmaImport(longFigmaSource()),
+    binding = createFigmaBinding(imported);
+  const current = structuredClone(imported.document);
+  for (const node of current.nodes) node.x += 1000;
+  const patch = createFigmaPatch(binding, current);
+  assert.equal(patch.operations.length, 1);
+  assert.equal(patch.operations[0].before.children, undefined);
+  assert.equal(patch.operations[0].before.id, "1:0");
+  assert.equal(patch.operations[0].before.type, "FRAME");
+  assert.equal(figmaSourceNodes(binding.source).get("1:0").children.length, 1207);
+  assert.equal(patch.baseline.pages[0].children[0].children.length, 1207);
+  assert.equal(patch.mapping.length, 1208);
+  assert.equal(current.nodes.length, 1208);
+  assert.ok(Buffer.byteLength(JSON.stringify(patch)) < 2 * 1024 * 1024);
+});
+
+test("only update snapshots omit descendants; deletes retain the complete original subtree", async () => {
+  const { binding, current } = await translationFixture();
+  current.nodes[0].fill = "#123456";
+  const update = createFigmaPatch(binding, current).operations[0];
+  assert.equal(update.before.children, undefined);
+  assert.equal(update.before.id, "1:1");
+  assert.equal(update.before.type, "FRAME");
+  current.nodes.splice(0);
+  const deletion = createFigmaPatch(binding, current).operations.find((op) => op.op === "delete");
+  assert.equal(deletion.before.children[0].children[0].id, "1:3");
+});
 const rectangle = (id, x = 0) => ({
   id,
   type: "rectangle",

@@ -738,6 +738,136 @@ test("failed patch requests undo of its own partial mutations", async () => {
   assert.ok(runtime.calls.some((call) => call[0] === "undo"));
 });
 
+async function generatedTranslation(mode = "drag") {
+  const source = page([
+    rect("1:1", {
+      type: "FRAME",
+      absoluteBoundingBox: { x: -100, y: -100, width: 300, height: 200 },
+      children: [
+        rect("1:2", {
+          type: "FRAME",
+          absoluteBoundingBox: { x: -70, y: -60, width: 150, height: 120 },
+          children: [
+            rect("1:3", {
+              absoluteBoundingBox: { x: -50, y: -40, width: 50, height: 40 },
+            }),
+          ],
+        }),
+      ],
+    }),
+  ]);
+  const imported = await prepareFigmaImport(source),
+    binding = createFigmaBinding(imported);
+  const current = structuredClone(imported.document);
+  for (const node of mode === "hold" ? current.nodes.slice(0, 1) : current.nodes) {
+    node.x += 20;
+    node.y += 10;
+  }
+  if (mode === "local") {
+    current.nodes[2].x += 7;
+    current.nodes[2].y -= 3;
+    current.nodes[2].fill = "#123456";
+  }
+  if (mode === "resize") current.nodes[0].width += 40;
+  const transfer = createFigmaTransfer(current);
+  transfer.patch = createFigmaPatch(binding, current);
+  return { source, binding, current, transfer };
+}
+
+test("minimal generated parent translations apply the exact final geometry through the native Figma API", async () => {
+  for (const mode of ["drag", "local", "hold", "resize"]) {
+    const { source, binding, current, transfer } = await generatedTranslation(mode);
+    const preserved = JSON.stringify(binding),
+      runtime = harness(source);
+    const expectedOperations = mode === "drag" ? 1 : mode === "resize" ? 3 : 2;
+    assert.equal(transfer.patch.operations.length, expectedOperations, mode);
+    await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+    const preview = runtime.messages.at(-1);
+    assert.equal(preview.type, "patch-preview", mode);
+    assert.deepEqual(preview.conflicts, [], mode);
+    await runtime.send({ type: "apply-patch", token: preview.token });
+    assert.equal(runtime.messages.at(-1).type, "patched", mode);
+    for (const entry of binding.mapping) {
+      const expected = current.nodes.find((node) => node.id === entry.designId);
+      const actual = runtime.snapshot(runtime.all.get(entry.sourceId)).absoluteBoundingBox;
+      assert.deepEqual(
+        actual,
+        {
+          x: expected.x - entry.offsetX,
+          y: expected.y - entry.offsetY,
+          width: expected.width,
+          height: expected.height,
+        },
+        `${mode}: ${entry.sourceId}`,
+      );
+    }
+    assert.equal(JSON.stringify(binding), preserved);
+    if (mode === "drag")
+      assert.deepEqual(clone(runtime.all.get("1:3").relativeTransform), [
+        [1, 0, 20],
+        [0, 1, 20],
+      ]);
+  }
+});
+
+test("minimal parent updates preserve an external descendant move but still detect external parent geometry changes", async () => {
+  const { source, transfer } = await generatedTranslation();
+  const runtime = harness(source);
+  runtime.all.get("1:3").relativeTransform[0][2] += 11;
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  const preview = runtime.messages.at(-1);
+  assert.deepEqual(preview.conflicts, []);
+  await runtime.send({ type: "apply-patch", token: preview.token });
+  assert.equal(runtime.messages.at(-1).type, "patched");
+  assert.equal(runtime.snapshot(runtime.all.get("1:3")).absoluteBoundingBox.x, -19);
+  assert.equal(runtime.all.get("1:3").relativeTransform[0][2], 31);
+  const changedParent = harness(source);
+  changedParent.all.get("1:1").relativeTransform[0][2] += 2;
+  await changedParent.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  assert.ok(changedParent.messages.at(-1).conflicts.length > 0);
+  const token = changedParent.messages.at(-1).token;
+  await changedParent.send({ type: "apply-patch", token });
+  assert.equal(changedParent.messages.at(-1).type, "error");
+  assert.equal(changedParent.all.get("1:1").relativeTransform[0][2], -98);
+});
+
+test("shallow generated update snapshots retain style concurrency guards without comparing descendants", async () => {
+  const { source, binding } = await generatedTranslation();
+  const current = importFigmaJson(source).document;
+  current.nodes[0].fill = "#123456";
+  const transfer = createFigmaTransfer(current);
+  transfer.patch = createFigmaPatch(binding, current);
+  assert.equal(transfer.patch.operations[0].before.children, undefined);
+  const runtime = harness(source),
+    target = runtime.all.get("1:1");
+  target.fills = [{ type: "SOLID", color: { r: 0, g: 1, b: 0 } }];
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  assert.ok(runtime.messages.at(-1).conflicts.some((value) => value.includes("fills")));
+  const token = runtime.messages.at(-1).token;
+  await runtime.send({ type: "apply-patch", token });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.deepEqual(clone(target.fills), [{ type: "SOLID", color: { r: 0, g: 1, b: 0 } }]);
+});
+
+test("generated subtree deletes still reject an externally changed descendant before removing anything", async () => {
+  const { source, binding } = await generatedTranslation();
+  const current = importFigmaJson(source).document;
+  current.nodes.splice(0);
+  const transfer = createFigmaTransfer(current);
+  transfer.patch = createFigmaPatch(binding, current);
+  assert.equal(transfer.patch.operations[0].op, "delete");
+  assert.equal(transfer.patch.operations[0].before.children[0].children[0].id, "1:3");
+  const runtime = harness(source);
+  runtime.all.get("1:3").name = "External descendant edit";
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  assert.ok(runtime.messages.at(-1).conflicts.length > 0);
+  const token = runtime.messages.at(-1).token;
+  await runtime.send({ type: "apply-patch", token, allowDeletes: true });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.equal(runtime.all.get("1:1").removed, undefined);
+  assert.equal(runtime.all.get("1:3").name, "External descendant edit");
+});
+
 test("moving a parent and its child updates local geometry once, preserving normalized page offsets", async () => {
   const source = page([
     rect("1:1", {

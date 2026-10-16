@@ -124,6 +124,31 @@ const unsupportedProperties = [
   "componentId",
 ];
 
+const translationStableProperties = [
+  "type",
+  "parentId",
+  "pageId",
+  "siblingIndex",
+  "width",
+  "height",
+  "rotation",
+  ...properties.filter((key) =>
+    /^(?:layout|constraint|padding|gap|rowGap|columnGap|align|justify|minWidth|minHeight|maxWidth|maxHeight)/u.test(
+      key,
+    ),
+  ),
+  ...unsupportedProperties,
+];
+const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+const positionEqual = (left, right) => Math.abs(left - right) <= 1e-9;
+const untransformed = (value) =>
+  value === undefined ||
+  (matrix(value) &&
+    positionEqual(value[0][0], 1) &&
+    positionEqual(value[0][1], 0) &&
+    positionEqual(value[1][0], 0) &&
+    positionEqual(value[1][1], 1));
+
 export function figmaBindingPath(path) {
   return designSidecarPath(path, ".figma-source.json");
 }
@@ -293,6 +318,52 @@ export function createFigmaPatch(bindingValue, currentDocument) {
   const pages = new Map(binding.pageMappings.map((entry) => [entry.designId, entry]));
   const operations = [],
     diagnostics = [];
+  const childOrder = (nodes) => {
+    const result = new Map();
+    for (const node of nodes.values()) {
+      const key = JSON.stringify([node.pageId, node.parentId ?? null]);
+      if (!result.has(key)) result.set(key, []);
+      result.get(key).push(node.id);
+    }
+    return result;
+  };
+  const beforeOrder = childOrder(beforeNodes),
+    afterOrder = childOrder(afterNodes);
+  const translationChains = new Map();
+  function translationChain(designId) {
+    if (translationChains.has(designId)) return translationChains.get(designId);
+    const before = beforeNodes.get(designId),
+      after = afterNodes.get(designId),
+      entry = mapping.get(designId);
+    const raw = sourceNodes.get(entry?.sourceId),
+      box = raw?.absoluteBoundingBox;
+    const reliable =
+      before &&
+      after &&
+      entry &&
+      pages.has(before.pageId) &&
+      !entry.selectionRoot &&
+      translationStableProperties.every((key) => same(before[key], after[key])) &&
+      before.rotation === 0 &&
+      (raw.rotation === undefined || positionEqual(raw.rotation, 0)) &&
+      untransformed(raw.relativeTransform) &&
+      untransformed(raw.absoluteTransform) &&
+      box &&
+      [box.x, box.y, box.width, box.height].every(Number.isFinite) &&
+      Math.abs(before.x - box.x - entry.offsetX) <= 0.0001 &&
+      Math.abs(before.y - box.y - entry.offsetY) <= 0.0001 &&
+      Math.abs(before.width - box.width) <= 0.0001 &&
+      Math.abs(before.height - box.height) <= 0.0001 &&
+      (!before.layout ||
+        before.layout === "none" ||
+        same(
+          beforeOrder.get(JSON.stringify([before.pageId, before.id])),
+          afterOrder.get(JSON.stringify([after.pageId, after.id])),
+        ));
+    const result = !!reliable && (!before.parentId || translationChain(before.parentId));
+    translationChains.set(designId, result);
+    return result;
+  }
   if (JSON.stringify(binding.baseline.canvas) !== JSON.stringify(current.canvas))
     diagnostics.push({
       designId: null,
@@ -389,9 +460,21 @@ export function createFigmaPatch(bindingValue, currentDocument) {
       diagnostics.push({ designId, message: "来源图层类型已改变，请使用新页面导入以核对替换" });
       continue;
     }
-    const changed = [...properties, "siblingIndex"].filter(
+    let changed = [...properties, "siblingIndex"].filter(
       (key) => JSON.stringify(baseline[key]) !== JSON.stringify(after[key]),
     );
+    // A native parent translation already carries its descendants. Compare local
+    // offsets only for a fully mapped, unchanged, untransformed geometry chain.
+    // Also retain a counter-move when the child's absolute position stayed fixed.
+    if (baseline.parentId && translationChain(designId)) {
+      const parentBefore = beforeNodes.get(baseline.parentId),
+        parentAfter = afterNodes.get(after.parentId);
+      const localChanged = (key) =>
+        !positionEqual(after[key] - parentAfter[key], baseline[key] - parentBefore[key]);
+      changed = [...properties, "siblingIndex"].filter((key) =>
+        key === "x" || key === "y" ? localChanged(key) : changed.includes(key),
+      );
+    }
     const unsupported = unsupportedProperties.filter(
       (key) => JSON.stringify(baseline[key]) !== JSON.stringify(after[key]),
     );
@@ -400,12 +483,16 @@ export function createFigmaPatch(bindingValue, currentDocument) {
         designId,
         message: `${unsupported.join(", ")} 尚无直接 Figma 修改对应；请使用新页面副本核对。`,
       });
-    if (changed.length)
+    if (changed.length) {
+      // Update preflight compares only the changed REST properties. Descendant
+      // snapshots are required for subtree deletes, not for a parent update.
+      const before = { ...sourceNodes.get(entry.sourceId) };
+      delete before.children;
       operations.push({
         op: "update",
         designId,
         sourceId: entry.sourceId,
-        before: structuredClone(sourceNodes.get(entry.sourceId)),
+        before: structuredClone(before),
         baseline,
         after,
         changed,
@@ -416,6 +503,7 @@ export function createFigmaPatch(bindingValue, currentDocument) {
         ...neighbors(after),
         ...sourceSiblingOrder(after),
       });
+    }
   }
   const deleted = new Set([...beforeNodes.keys()].filter((key) => !afterNodes.has(key)));
   for (const designId of deleted) {
