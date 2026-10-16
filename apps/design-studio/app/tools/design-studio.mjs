@@ -495,11 +495,17 @@ if (await isMain()) {
   try {
     process.stdout.write(`${JSON.stringify(await main(process.argv.slice(2)))}\n`);
   } catch (error) {
-    const code =
-      error.code ?? (error instanceof SyntaxError ? "INVALID_DESIGN" : "OPERATION_FAILED");
-    process.stdout.write(
-      `${JSON.stringify({ ok: false, error: { code, message: error.message || String(error) } })}\n`,
-    );
+    const code = (
+      typeof error?.code === "string"
+        ? error.code
+        : error instanceof SyntaxError
+          ? "INVALID_DESIGN"
+          : "OPERATION_FAILED"
+    ).slice(0, 100);
+    // Validation errors can include a caller-controlled field name. Keep the
+    // failure envelope bounded too, even when that name fills the input budget.
+    const message = String(error?.message || error).slice(0, 4096);
+    process.stdout.write(`${JSON.stringify({ ok: false, error: { code, message } })}\n`);
     process.exitCode =
       code === "INVALID_ARGUMENT" || code === "INVALID_DESIGN"
         ? 2

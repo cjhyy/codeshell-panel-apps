@@ -378,3 +378,15 @@ test(
     assert.equal(result.value.error.code, "INVALID_FILE");
   },
 );
+
+test("failure JSON remains bounded when a caller supplies an oversized unknown field name", async (t) => {
+  const f = await fixture(t);
+  const result = await f.run("inspect", { path, ["x".repeat(1_100_000)]: true });
+  assert.equal(result.code, 2);
+  assert.equal(result.value.ok, false);
+  assert.equal(result.value.error.code, "INVALID_ARGUMENT");
+  assert(result.value.error.code.length <= 100);
+  assert(result.value.error.message.length <= 4096);
+  assert(Buffer.byteLength(result.output) <= 1024 * 1024);
+  assert.deepEqual(await readdir(f.project), []);
+});
