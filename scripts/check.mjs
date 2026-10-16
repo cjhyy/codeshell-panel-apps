@@ -27,6 +27,7 @@ if (!testsOnly) {
   console.log("Checking source types and committed build output");
   run(["scripts/sync-panel-select.mjs", "--check"]);
   run(["scripts/sync-project-context.mjs", "--check"]);
+  run(["scripts/sync-model-observability.mjs", "--check"]);
   run(["scripts/build-html2figma-browser.mjs", "--check"]);
   run(["scripts/build-design-studio-figma-plugin.mjs", "--check"]);
   run(["scripts/build-design-studio-html-plugin.mjs", "--check"]);

@@ -3,7 +3,7 @@
   "builder": "esbuild@0.28.2",
   "entry": "src/main.ts",
   "files": {
-    ".codeshell-panel/panel.json": "6dacc6762cc71dc6405535bfa905d963addb9d4a1864c5137d2e1a306e81eb28",
+    ".codeshell-panel/panel.json": "be2b1405b87f0317e30c1b3e604e92a0a8dccf65f185a6659d687f079eccd2e9",
     "agent/skills/editor-v2/SKILL.md": "21812b375d4994d18162ba4087ec0c8a00b1c01f191285ca09aeabf056fac7fa",
     "agent/skills/narration-workflow/SKILL.md": "23c63ea09d8055246608601cb068d4489e03e91a74924ab541288760b66c4b78",
     "agent/skills/tts-setup/SKILL.md": "8ab87da83a5b38641e6f2f5422f2dff7bfd5ac0d1a4f6f7b2c3a06f8484a1038",
@@ -34,12 +34,12 @@
     "app/rough-cut.css": "b70a117467b919bf5c27cc93db53c569a8b58d6bd8f1646c19f67e846c29c6af",
     "app/runtimes/editor-renderer.mjs": "86be9ad761be48857604a0bc05237ae3a40fb1901c23713e41649a051dfbbfd4",
     "app/style.css": "dd323d78ca9439f87c962727a08ae31ed8ab9e8a0251ba45a610467ff75d90dd",
-    "app/tools/audio-separation.mjs": "51fb44215a63a716d3d630874c7e19e2966f32b7d4067457d257f8f3141f0c6f",
+    "app/tools/audio-separation.mjs": "02cb4ee6f88e585c0ea338498785f6b262c2d60e8c16c544134e3d0cffb40470",
     "app/tools/editor-runtime.mjs": "d44199872e0f09f464ff034e670fee447be5ee30f8753777dc02315f5df3a916",
     "app/tools/editor-sync.mjs": "26d6dc166a69b87865d919716154853d57af3a5d1d5017c7f872ea3b5869e2e1",
     "app/tools/folder-scan.mjs": "524b085b5cbb4c5750ba7345b22711fb314ea5338a67822752a95cc150613d25",
-    "app/tools/media-runtime.mjs": "3763726d176e1c72515c364f253a876b2945fcd1c8b11497bcd038dc584c5a49",
-    "app/tools/voice-runtime.mjs": "b031343db0f19e6a1b85c7410f41ea762edf5cd9f47b3e5410fdee4eb694410d",
-    "README.md": "115dfb68ad07c5358b90a647fbabed315f8a7117eceb216ff1d52ade4e7d808f"
+    "app/tools/media-runtime.mjs": "39f2986284855f78cf7c89ab4b7f67e8d2ad92f003ced8e69e36a2a890d45f90",
+    "app/tools/voice-runtime.mjs": "43229bc9c285484b3fed83866110f3bd121964ec27c9d954eae3e9392f4546d6",
+    "README.md": "6b5fd1088d4ad31e670b32a1de8c79f8b31286293261585f0286d4a3b72803d2"
   }
 }

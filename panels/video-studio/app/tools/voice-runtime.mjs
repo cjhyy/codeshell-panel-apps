@@ -4,6 +4,153 @@ import { createRequire as __panelCreateRequire } from "node:module"; const requi
 import { lstat as lstat2, mkdir as mkdir5, realpath as realpath2, rename as rename5, rm as rm5, stat as stat3 } from "node:fs/promises";
 import { dirname as dirname2, join as join5 } from "node:path";
 
+// ../../shared/model-observability.mjs
+import { randomUUID } from "node:crypto";
+import { writeSync } from "node:fs";
+var MAX_FRAME_BYTES = 256 * 1024;
+var SECRET_KEY = /^(?:authorization|proxyAuthorization|apiKey|accessToken|refreshToken|password|secret|clientSecret|cookie|setCookie|credentials)$/i;
+var OMITTED = "[binary content omitted]";
+function safeBody(value) {
+  let truncated = false, nodes = 0, remaining = 96 * 1024;
+  const seen = /* @__PURE__ */ new WeakSet();
+  const visit = (item, depth = 0) => {
+    if (++nodes > 2048 || depth > 12) {
+      truncated = true;
+      return "[truncated]";
+    }
+    if (item === null || typeof item === "boolean") return item;
+    if (typeof item === "number") return Number.isFinite(item) ? item : null;
+    if (typeof item === "string") {
+      if (/^data:[^,]*;base64,/i.test(item)) return OMITTED;
+      let text2 = item.replace(/\bBearer\s+[^\s"']+/gi, "Bearer [redacted]").replace(/\b(?:sk|sk-proj|sk-ant)-[A-Za-z0-9_-]{8,}/g, "[redacted]");
+      const maximum = Math.max(0, Math.min(16 * 1024, remaining));
+      if (Buffer.byteLength(JSON.stringify(text2)) > maximum) {
+        let low = 0, high = text2.length;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2);
+          if (Buffer.byteLength(JSON.stringify(text2.slice(0, middle))) <= Math.max(0, maximum - 16))
+            low = middle;
+          else high = middle - 1;
+        }
+        text2 = text2.slice(0, low) + " [truncated]";
+        truncated = true;
+      }
+      remaining = Math.max(0, remaining - Buffer.byteLength(JSON.stringify(text2)));
+      return text2;
+    }
+    if (typeof item !== "object") return void 0;
+    if (ArrayBuffer.isView(item) || item instanceof ArrayBuffer) return OMITTED;
+    if (seen.has(item)) {
+      truncated = true;
+      return "[circular value omitted]";
+    }
+    seen.add(item);
+    if (Array.isArray(item)) {
+      if (item.length > 256) truncated = true;
+      return item.slice(0, 256).map((entry) => visit(entry, depth + 1));
+    }
+    const entries = Object.entries(item);
+    if (entries.length > 64) truncated = true;
+    const result = /* @__PURE__ */ Object.create(null);
+    for (const [key, entry] of entries.slice(0, 64)) {
+      const keyBytes = Buffer.byteLength(JSON.stringify(key));
+      if (key.length > 128 || keyBytes > remaining) {
+        truncated = true;
+        continue;
+      }
+      remaining -= keyBytes;
+      result[key] = SECRET_KEY.test(key.replace(/[-_]/g, "")) ? "[redacted]" : /^(?:base64|audioBytes|imageBytes|fileBytes|binary)$/i.test(key) ? OMITTED : visit(entry, depth + 1);
+    }
+    return result;
+  };
+  return { value: visit(value), truncated };
+}
+function emit(frame) {
+  try {
+    const message = Buffer.from(JSON.stringify(frame));
+    if (message.length > MAX_FRAME_BYTES) return false;
+    const atomic = (line) => writeSync(3, line) === line.length;
+    if (message.length + 1 <= 512) return atomic(Buffer.concat([message, Buffer.from("\n")]));
+    const messageId = randomUUID();
+    for (let offset = 0, part = 0; offset < message.length; offset += 192, part++) {
+      const line = Buffer.from(
+        JSON.stringify({
+          version: 1,
+          type: "model_trace_chunk",
+          messageId,
+          part,
+          data: message.subarray(offset, offset + 192).toString("base64"),
+          final: offset + 192 >= message.length
+        }) + "\n"
+      );
+      if (line.length > 512 || !atomic(line)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function observeModelCall(request2, operation, options = {}) {
+  if (process.env.CODESHELL_MODEL_TRACE_FD !== "3") return operation();
+  const callId = randomUUID();
+  let admitted = false;
+  try {
+    const input = safeBody({
+      systemPrompt: request2.input.systemPrompt ?? "",
+      messages: request2.input.messages ?? [],
+      tools: request2.input.tools ?? [],
+      parameters: request2.input.parameters ?? {}
+    });
+    admitted = emit({
+      version: 1,
+      type: "model_trace",
+      phase: "start",
+      callId,
+      provider: request2.provider.slice(0, 200),
+      model: request2.model.slice(0, 200),
+      purpose: request2.purpose.slice(0, 200),
+      stream: request2.stream === true,
+      input: input.value,
+      ...input.truncated ? { inputState: "truncated" } : {}
+    });
+  } catch {
+  }
+  try {
+    const result = await operation();
+    if (admitted) {
+      try {
+        const output = safeBody(options.output?.(result) ?? {});
+        emit({
+          version: 1,
+          type: "model_trace",
+          phase: "finish",
+          callId,
+          status: "completed",
+          output: output.value,
+          ...output.truncated ? { outputState: "truncated" } : {},
+          ...options.usage ? { usage: safeBody(options.usage(result)).value } : {}
+        });
+      } catch {
+        emit({ version: 1, type: "model_trace", phase: "finish", callId, status: "completed" });
+      }
+    }
+    return result;
+  } catch (error) {
+    if (admitted) {
+      const cancelled = options.signal?.aborted || error instanceof Error && error.name === "AbortError";
+      emit({
+        version: 1,
+        type: "model_trace",
+        phase: "finish",
+        callId,
+        status: cancelled ? "cancelled" : "failed",
+        error: cancelled ? "Model call cancelled" : "Model call failed"
+      });
+    }
+    throw error;
+  }
+}
+
 // native/signals.ts
 function combineAbortSignals(signals) {
   if (typeof AbortSignal.any === "function") return AbortSignal.any(signals);
@@ -23,7 +170,7 @@ function combineAbortSignals(signals) {
 }
 
 // native/providers/audio8.ts
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID as randomUUID2 } from "node:crypto";
 import { createReadStream } from "node:fs";
 import {
   link,
@@ -705,7 +852,7 @@ async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
 }
 async function saveJson(path, value) {
-  const partial = `${path}-${randomUUID()}.partial`;
+  const partial = `${path}-${randomUUID2()}.partial`;
   try {
     await writeFile(partial, JSON.stringify(value), { mode: 384 });
     await rename(partial, path);
@@ -719,7 +866,7 @@ async function digest(path, signal) {
   return hash.digest("hex");
 }
 async function acquireSetupLock(path) {
-  const candidate = `${path}-${randomUUID()}.candidate`;
+  const candidate = `${path}-${randomUUID2()}.candidate`;
   let published = false;
   try {
     await writeFile(candidate, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), {
@@ -854,9 +1001,9 @@ function createAudio8TtsProvider(options) {
       };
     }
   }
-  async function execute(data, context, signal) {
+  async function executeRuntime(data, context, signal) {
     await mkdir(context.workDir, { recursive: true });
-    const request2 = join(context.workDir, `audio8-request-${randomUUID()}.json`);
+    const request2 = join(context.workDir, `audio8-request-${randomUUID2()}.json`);
     await writeFile(
       request2,
       JSON.stringify({ ...data, modelPath, codePath, threads: Math.min(5, cpus().length) }),
@@ -917,6 +1064,42 @@ function createAudio8TtsProvider(options) {
       await rm(request2, { force: true });
     }
   }
+  async function execute(data, context, signal) {
+    const run = () => executeRuntime(data, context, signal);
+    if (data.action !== "generate") return run();
+    return observeModelCall(
+      {
+        provider: "local-onnx",
+        model: "audio8-tts",
+        purpose: "tts-clone",
+        input: {
+          messages: Array.isArray(data.pieces) ? data.pieces.map((content) => ({ role: "user", content })) : [{ role: "user", content: data.text }],
+          parameters: {
+            action: "generate",
+            pieces: data.pieces,
+            referenceText: data.referenceText,
+            threads: Math.min(5, cpus().length),
+            modelRevision: AUDIO8_REVISION,
+            codeRevision: AUDIO8_COMMIT,
+            referenceAudio: { content: "[binary content omitted]" },
+            capture: { recording: "logical-input", omitted: "binary-data-and-private-paths" }
+          }
+        }
+      },
+      run,
+      {
+        signal,
+        output: (value) => ({
+          data: {
+            mimeType: "audio/wav",
+            sampleRate: value.sampleRate,
+            samples: value.samples,
+            ...typeof value.cachedVoice === "boolean" ? { cachedVoice: value.cachedVoice } : {}
+          }
+        })
+      }
+    );
+  }
   async function downloadResource(resource, signal, report) {
     const path = join(dir, resource.kind, resource.path);
     const valid = await stat(path).then(
@@ -928,7 +1111,7 @@ function createAudio8TtsProvider(options) {
       return;
     }
     await mkdir(resolve(path, ".."), { recursive: true, mode: 448 });
-    const partial = `${path}-${randomUUID()}.partial`;
+    const partial = `${path}-${randomUUID2()}.partial`;
     const handle = await open(partial, "wx", 384);
     try {
       const response = await fetch(resource.url, { signal });
@@ -1009,7 +1192,7 @@ function createAudio8TtsProvider(options) {
   async function render(input, context, signal) {
     await mkdir(context.workDir, { recursive: true });
     await mkdir(context.outputDir, { recursive: true });
-    const nonce = randomUUID();
+    const nonce = randomUUID2();
     const reference = join(context.workDir, `audio8-reference-${nonce}.wav`);
     const raw = join(context.workDir, `audio8-raw-${nonce}.wav`);
     const partial = join(context.outputDir, `speech-${nonce}.partial.wav`);
@@ -1262,14 +1445,29 @@ function createAudio8TtsProvider(options) {
         message: "正在用系统测试音验证真实离线推理"
       });
       await mkdir(context.workDir, { recursive: true });
-      const reference = join(context.workDir, `audio8-setup-${randomUUID()}.aiff`);
-      const transcript = join(context.workDir, `audio8-setup-${randomUUID()}.txt`);
+      const reference = join(context.workDir, `audio8-setup-${randomUUID2()}.aiff`);
+      const transcript = join(context.workDir, `audio8-setup-${randomUUID2()}.txt`);
       cleanup.push(reference, transcript);
       const referenceText = "This is a local voice test. Clear speech helps prepare the audio model.";
       await writeFile(transcript, referenceText, { mode: 384 });
-      await runMediaProcess("/usr/bin/say", ["-r", "165", "-f", transcript, "-o", reference], {
-        signal
-      });
+      await observeModelCall(
+        {
+          provider: "macos-speech",
+          model: "system-default-voice",
+          purpose: "tts-setup-reference",
+          input: {
+            messages: [{ role: "user", content: referenceText }],
+            parameters: { wordsPerMinute: 165, capture: { recording: "logical-input" } }
+          }
+        },
+        () => runMediaProcess("/usr/bin/say", ["-r", "165", "-f", transcript, "-o", reference], {
+          signal
+        }),
+        {
+          signal,
+          output: () => ({ data: { mimeType: "audio/aiff", binaryContent: "omitted" } })
+        }
+      );
       const sample = await render(
         { text: "你好，这是本地声音克隆测试。", referencePath: reference, referenceText, rate: 1 },
         { ...context, scope: { appId: "__audio8-setup", projectPath: dir } },
@@ -1379,7 +1577,7 @@ function createAudio8TtsProvider(options) {
 }
 
 // native/providers/qwen.ts
-import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash2, randomUUID as randomUUID3 } from "node:crypto";
 import { createReadStream as createReadStream2 } from "node:fs";
 import { mkdir as mkdir2, open as open2, readFile as readFile2, rename as rename2, rm as rm2, stat as stat2, statfs as statfs2, writeFile as writeFile2 } from "node:fs/promises";
 import { totalmem as totalmem2 } from "node:os";
@@ -1605,7 +1803,7 @@ async function readJson2(path) {
   return JSON.parse(await readFile2(path, "utf8"));
 }
 async function saveJson2(path, value) {
-  const partial = `${path}-${randomUUID2()}.partial`;
+  const partial = `${path}-${randomUUID3()}.partial`;
   try {
     await writeFile2(partial, JSON.stringify(value), { mode: 384 });
     await rename2(partial, path);
@@ -1700,9 +1898,9 @@ function createQwenTtsProvider(options) {
       };
     }
   }
-  async function execute(data, context, signal) {
+  async function executeRuntime(data, context, signal) {
     await mkdir2(context.workDir, { recursive: true });
-    const request2 = join2(context.workDir, `qwen-request-${randomUUID2()}.json`);
+    const request2 = join2(context.workDir, `qwen-request-${randomUUID3()}.json`);
     await writeFile2(request2, JSON.stringify({ ...data, modelPath }), { mode: 384 });
     let pending = "";
     const decoder = new StringDecoder2("utf8");
@@ -1749,6 +1947,44 @@ function createQwenTtsProvider(options) {
       await rm2(request2, { force: true });
     }
   }
+  async function execute(data, context, signal) {
+    const run = () => executeRuntime(data, context, signal);
+    if (data.action !== "generate") return run();
+    return observeModelCall(
+      {
+        provider: "local-mlx",
+        model: MODEL,
+        purpose: "tts-clone",
+        input: {
+          messages: [{ role: "user", content: data.text ?? data.pieces }],
+          parameters: {
+            action: "generate",
+            text: data.text,
+            referenceText: data.referenceText,
+            language: "auto",
+            temperature: 0.7,
+            maxTokens: 2048,
+            seed: 0,
+            modelRevision: REVISION,
+            referenceAudio: { content: "[binary content omitted]" },
+            capture: { recording: "logical-input", omitted: "binary-data-and-private-paths" }
+          }
+        }
+      },
+      run,
+      {
+        signal,
+        output: (value) => ({
+          data: {
+            mimeType: "audio/wav",
+            sampleRate: value.sampleRate,
+            samples: value.samples,
+            ...typeof value.cachedVoice === "boolean" ? { cachedVoice: value.cachedVoice } : {}
+          }
+        })
+      }
+    );
+  }
   async function verifyResources(signal, hashes) {
     for (const resource of RESOURCES) {
       const path = join2(modelPath, resource.path);
@@ -1786,7 +2022,7 @@ function createQwenTtsProvider(options) {
   async function render(input, context, signal) {
     await mkdir2(context.workDir, { recursive: true });
     await mkdir2(context.outputDir, { recursive: true });
-    const nonce = randomUUID2();
+    const nonce = randomUUID3();
     const reference = join2(context.workDir, `qwen-reference-${nonce}.wav`);
     const raw = join2(context.workDir, `qwen-raw-${nonce}.wav`);
     const partial = join2(context.outputDir, `speech-${nonce}.partial.wav`);
@@ -2031,14 +2267,29 @@ function createQwenTtsProvider(options) {
         message: "正在用系统测试音验证真实离线推理"
       });
       await mkdir2(context.workDir, { recursive: true });
-      const reference = join2(context.workDir, `qwen-setup-${randomUUID2()}.aiff`);
-      const transcript = join2(context.workDir, `qwen-setup-${randomUUID2()}.txt`);
+      const reference = join2(context.workDir, `qwen-setup-${randomUUID3()}.aiff`);
+      const transcript = join2(context.workDir, `qwen-setup-${randomUUID3()}.txt`);
       cleanup.push(reference, transcript);
       const referenceText = "This is a local voice test. Clear speech helps prepare the audio model.";
       await writeFile2(transcript, referenceText, { mode: 384 });
-      await runMediaProcess("/usr/bin/say", ["-r", "165", "-f", transcript, "-o", reference], {
-        signal
-      });
+      await observeModelCall(
+        {
+          provider: "macos-speech",
+          model: "system-default-voice",
+          purpose: "tts-setup-reference",
+          input: {
+            messages: [{ role: "user", content: referenceText }],
+            parameters: { wordsPerMinute: 165, capture: { recording: "logical-input" } }
+          }
+        },
+        () => runMediaProcess("/usr/bin/say", ["-r", "165", "-f", transcript, "-o", reference], {
+          signal
+        }),
+        {
+          signal,
+          output: () => ({ data: { mimeType: "audio/wav", binaryContent: "omitted" } })
+        }
+      );
       const sample = await render(
         { text: "你好，这是本地声音克隆测试。", referencePath: reference, referenceText, rate: 1 },
         context,
@@ -2141,7 +2392,7 @@ function createQwenTtsProvider(options) {
 }
 
 // native/queue.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID4 } from "node:crypto";
 import { mkdir as mkdir3, readFile as readFile3, readdir as readdir2, rename as rename3, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
 import { join as join3 } from "node:path";
 function alive(pid) {
@@ -2170,7 +2421,7 @@ function pause(signal) {
 async function acquireVoiceQueue(root, signal, waiting) {
   if (signal.aborted) throw mediaAbortError();
   await mkdir3(root, { recursive: true, mode: 448 });
-  const identity = `${process.pid}-${randomUUID3()}`;
+  const identity = `${process.pid}-${randomUUID4()}`;
   const choosing = join3(root, `${identity}.choosing`);
   const ticketPath = join3(root, `${identity}.ticket`);
   const partial = join3(root, `${identity}.partial`);
@@ -2238,7 +2489,7 @@ async function acquireVoiceQueue(root, signal, waiting) {
 
 // native/voice-library.ts
 import { constants } from "node:fs";
-import { createHash as createHash3, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash3, randomUUID as randomUUID5 } from "node:crypto";
 import { lstat, mkdir as mkdir4, open as open3, readdir as readdir3, realpath, rename as rename4, rm as rm4 } from "node:fs/promises";
 import { dirname, join as join4 } from "node:path";
 var MAX_AUDIO = 16 * 1024 * 1024;
@@ -2316,7 +2567,7 @@ async function json(path) {
   return JSON.parse((await bytes(path, 32 * 1024)).toString("utf8"));
 }
 async function writeJson(path, value) {
-  const temporary = `${path}.${randomUUID4()}.partial`;
+  const temporary = `${path}.${randomUUID5()}.partial`;
   const file = await open3(temporary, "wx", 384);
   try {
     try {
@@ -2598,7 +2849,7 @@ async function runCli(raw) {
   const abort = () => controller.abort();
   process.once("SIGTERM", abort);
   process.once("SIGINT", abort);
-  const emit = (value) => {
+  const emit2 = (value) => {
     process.stdout.write(`${JSON.stringify(value)}
 `);
   };
@@ -2606,7 +2857,7 @@ async function runCli(raw) {
   let published = "";
   try {
     if (raw?.action === "library") {
-      emit({ type: "result", result: await runVoiceLibrary(raw, controller.signal) });
+      emit2({ type: "result", result: await runVoiceLibrary(raw, controller.signal) });
       return;
     }
     const request2 = validateVoiceRequest(raw);
@@ -2616,7 +2867,7 @@ async function runCli(raw) {
     const provider = request2.engine === "audio8-tts" ? createAudio8TtsProvider({ runtimeDir: runtime }) : createQwenTtsProvider({ runtimeDir: runtime });
     if (request2.action === "status") {
       const result2 = await provider.status(controller.signal);
-      emit({ type: "result", result: publicStatus(result2) });
+      emit2({ type: "result", result: publicStatus(result2) });
       return;
     }
     const job = await directory2(root, ["jobs", request2.scopeKey, request2.jobId], true);
@@ -2635,7 +2886,7 @@ async function runCli(raw) {
       outputDir,
       cacheDir: join5(runtime, "cache", request2.scopeKey),
       reportProgress: async (progress) => {
-        emit({ type: "progress", progress });
+        emit2({ type: "progress", progress });
       }
     };
     const queue = await directory2(root, ["runtime", ".queues", request2.engine], true);
@@ -2645,7 +2896,7 @@ async function runCli(raw) {
       () => context.reportProgress({ stage: "waiting", message: "等待上一段本地配音完成" })
     );
     if (request2.action === "setup") {
-      emit({ type: "result", result: publicStatus(await provider.setup(context)) });
+      emit2({ type: "result", result: publicStatus(await provider.setup(context)) });
       return;
     }
     const referencePath = join5(job, request2.referenceFile);
@@ -2668,7 +2919,7 @@ async function runCli(raw) {
     published = join5(job, "output.wav");
     await rename5(result.path, published);
     if (signal.aborted) throw mediaAbortError();
-    emit({
+    emit2({
       type: "result",
       result: {
         engine: result.engine,
@@ -2687,7 +2938,7 @@ async function runCli(raw) {
   } catch (error) {
     if (published) await rm5(published, { force: true }).catch(() => {
     });
-    emit({ type: "error", message: safeError(error, controller.signal.aborted) });
+    emit2({ type: "error", message: safeError(error, controller.signal.aborted) });
     process.exitCode = 1;
   } finally {
     await release?.().catch(() => {

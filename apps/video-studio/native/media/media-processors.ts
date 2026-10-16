@@ -1,5 +1,15 @@
+import { observeModelCall } from "../../../../shared/model-observability.mjs";
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, link, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  link,
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { MediaJobContext, MediaJobProcessor, MediaScope } from "./media-types.js";
@@ -903,35 +913,64 @@ export function createMediaJobProcessors(
       stage: "transcribing",
       message: `Local Whisper ${basename(modelPath)}`,
     });
-    await runMediaProcess(
-      options.whisperPath ?? "whisper",
-      [
-        audioPath,
-        "--model",
-        modelPath,
-        "--device",
-        "cpu",
-        "--fp16",
-        "False",
-        "--word_timestamps",
-        "True",
-        "--output_format",
-        "json",
-        "--output_dir",
-        context.outputDir,
-        "--threads",
-        "4",
-        "--verbose",
-        "False",
-        ...(language ? ["--language", language] : []),
-      ],
-      { signal: context.signal, cwd: context.workDir },
+    const raw = await observeModelCall(
+      {
+        provider: "local-whisper",
+        model: basename(modelPath),
+        purpose: "transcribe",
+        input: {
+          parameters: {
+            assetId: id(input.assetId),
+            language: language ?? "auto",
+            device: "cpu",
+            fp16: false,
+            wordTimestamps: true,
+            threads: 4,
+            audio: { durationSeconds: info.durationSeconds, sampleRate: 16000, channels: 1 },
+            capture: { recording: "logical-input", omitted: "binary-audio-and-private-paths" },
+          },
+        },
+      },
+      async () => {
+        await runMediaProcess(
+          options.whisperPath ?? "whisper",
+          [
+            audioPath,
+            "--model",
+            modelPath,
+            "--device",
+            "cpu",
+            "--fp16",
+            "False",
+            "--word_timestamps",
+            "True",
+            "--output_format",
+            "json",
+            "--output_dir",
+            context.outputDir,
+            "--threads",
+            "4",
+            "--verbose",
+            "False",
+            ...(language ? ["--language", language] : []),
+          ],
+          { signal: context.signal, cwd: context.workDir },
+        );
+        const raw = JSON.parse(
+          await readFile(join(context.outputDir, "transcribe-source.json"), "utf8"),
+        );
+        if (!Array.isArray(raw.segments))
+          throw new Error("Whisper did not produce a timestamped transcript");
+        return raw;
+      },
+      {
+        signal: context.signal,
+        output: (value) => ({
+          text: String(value.text ?? ""),
+          data: { language: value.language, segments: value.segments },
+        }),
+      },
     );
-    const raw = JSON.parse(
-      await readFile(join(context.outputDir, "transcribe-source.json"), "utf8"),
-    );
-    if (!Array.isArray(raw.segments))
-      throw new Error("Whisper did not produce a timestamped transcript");
     const segments = raw.segments.map((segment: any) => ({
       start: bounded(segment.start, 0, info.durationSeconds! + 1, "transcript start"),
       end: bounded(segment.end, segment.start, info.durationSeconds! + 1, "transcript end"),
