@@ -46,25 +46,56 @@ const cleanName = (value, fallback) =>
         .slice(0, 120)
     : "") || fallback;
 
+const LOSS_WARNINGS = new Set([
+  "unsupported-paint", "unsupported-node", "unsupported-export-node", "rich-text",
+  "missing-text", "text-truncated", "font-fallback", "font-resource-export",
+  "missing-geometry", "unsupported-mask", "visual-fallback", "plugin-export-warning",
+  "canvas-extent",
+]);
+const EFFECT_WARNINGS = new Set(["unsupported-effects", "stroke-alignment", "corner-shape"]);
+const ADVISORY_WARNINGS = new Set([
+  "vertical-text", "grid-layout", "invalid-sizing", "page-origin-normalized",
+  "rotation-inferred", "font-weight-rounded", "section-as-frame", "detached-component",
+  "variables-as-literals", "prototype-interaction", "grid-export", "reverse-layout-export",
+  "child-layout-export", "container-as-frame", "notes-plugin-data",
+]);
+function warningPriority({ code, message }) {
+  // Missing image resources must remain visible even after hundreds of layout advisories.
+  if (code === "unsupported-paint" && /\bIMAGE\b/u.test(message)) return 0;
+  if (LOSS_WARNINGS.has(code)) return 1;
+  if (EFFECT_WARNINGS.has(code)) return 3;
+  if (ADVISORY_WARNINGS.has(code)) return 4;
+  return 2;
+}
+
 function reporter() {
-  const warnings = [];
+  const warnings = [], sample = [], groups = new Map();
   let total = 0;
   return {
     warnings,
+    get warningGroups() {
+      return [...groups].map(([code, count]) => ({ code, count }));
+    },
     warn(code, source, message) {
       total += 1;
-      if (warnings.length < MAX_WARNINGS)
-        warnings.push({
-          code,
-          ...(source?.id ? { nodeId: String(source.id).slice(0, 160) } : {}),
-          message,
-        });
+      groups.set(code, (groups.get(code) ?? 0) + 1);
+      const warning = {
+        code,
+        ...(source?.id ? { nodeId: String(source.id).slice(0, 160) } : {}),
+        message,
+      };
+      const priority = warningPriority(warning);
+      const index = sample.findIndex((entry) => entry.priority > priority);
+      if (index !== -1) sample.splice(index, 0, { warning, priority });
+      else if (sample.length < MAX_WARNINGS) sample.push({ warning, priority });
+      if (sample.length > MAX_WARNINGS) sample.pop();
     },
     finish() {
-      if (total > MAX_WARNINGS)
+      warnings.splice(0, warnings.length, ...sample.map((entry) => entry.warning));
+      if (total > sample.length)
         warnings.push({
           code: "warnings-truncated",
-          message: `另有 ${total - MAX_WARNINGS} 条兼容性提示未展开。`,
+          message: `另有 ${total - sample.length} 条兼容性提示未展开。`,
         });
       return total;
     },
@@ -381,13 +412,17 @@ function text(source, node, report) {
 }
 
 /** Import a REST GET file response, DOCUMENT/CANVAS, selected node, or JSON_REST_V1 nodes response. */
-export function importFigmaJson(
+export function importFigmaJson(input, options = {}) {
+  return importFigmaJsonWithReport(input, options, reporter());
+}
+
+function importFigmaJsonWithReport(
   input,
-  { resources = [], imageRefs = new Map(), previews = {} } = {},
+  { resources = [], imageRefs = new Map(), previews = {} },
+  report,
 ) {
   const value = readJson(input),
-    pages = sourcePages(value),
-    report = reporter();
+    pages = sourcePages(value);
   if (!pages.length || pages.length > MAX_DESIGN_PAGES)
     throw new Error(`Figma 页面数量必须为 1–${MAX_DESIGN_PAGES}。`);
   const ids = new Set(),
@@ -828,6 +863,7 @@ export function importFigmaJson(
   return {
     document,
     warnings: report.warnings,
+    warningGroups: report.warningGroups,
     stats: { pages: pages.length, importedNodes, skippedNodes, warningCount },
     mapping,
     pageMappings,
@@ -841,11 +877,12 @@ export async function prepareFigmaImport(
 ) {
   const source = normalizeFigmaSource(input);
   const assets = await prepareFigmaAssets(source, { sha256Bytes });
-  const result = importFigmaJson(source, {
-    resources: assets.resources,
-    imageRefs: assets.byAssetId,
-    previews: source.previews,
-  });
+  const report = reporter();
+  const result = importFigmaJsonWithReport(
+    source,
+    { resources: assets.resources, imageRefs: assets.byAssetId, previews: source.previews },
+    report,
+  );
   let fonts = { resourcePlans: [], faces: [] };
   if (readFontBytes || (globalThis.document?.fonts && typeof globalThis.FontFace === "function")) {
     fonts = await prepareBuiltinDesignFontResources(result.document, {
@@ -867,16 +904,17 @@ export async function prepareFigmaImport(
     ...(browserDocument ? { browserDocument } : {}),
   });
   for (const family of textMeasurement.unavailableFonts) {
-    result.warnings.push({
-      code: "font-fallback",
-      message: `字体 ${family} 不可用，已实测浏览器实际回退字体；安装原字体后请重新导入。`,
-    });
-    result.stats.warningCount += 1;
+    report.warn(
+      "font-fallback",
+      null,
+      `字体 ${family} 不可用，已实测浏览器实际回退字体；安装原字体后请重新导入。`,
+    );
   }
   result.document = normalizeDesignState(result.document);
   for (const message of source.warnings ?? [])
-    result.warnings.push({ code: "plugin-export-warning", message });
-  result.stats.warningCount += source.warnings?.length ?? 0;
+    report.warn("plugin-export-warning", null, message);
+  result.stats.warningCount = report.finish();
+  result.warningGroups = report.warningGroups;
   return {
     ...result,
     resourcePlans: [...assets.resourcePlans, ...fonts.resourcePlans],
@@ -953,6 +991,7 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
     pages,
     assets: createFigmaTransferAssets(document, resources),
     warnings: report.warnings,
+    warningGroups: report.warningGroups,
     stats: { pages: pages.length, exportedNodes, skippedNodes, warningCount },
   };
   if (new TextEncoder().encode(JSON.stringify(transfer, null, 2)).byteLength > MAX_FIGMA_JSON_BYTES)

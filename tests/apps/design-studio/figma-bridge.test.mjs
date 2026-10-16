@@ -4,6 +4,7 @@ import vm from "node:vm";
 import { test } from "node:test";
 import {
   importFigmaJson,
+  prepareFigmaImport,
   createFigmaTransfer,
   MAX_FIGMA_JSON_BYTES,
 } from "../../../apps/design-studio/app/figma-bridge.mjs";
@@ -248,6 +249,86 @@ test("unsupported content and paint fidelity is reported explicitly without reta
     );
   assert.equal(result.document.nodes[0].fill, "transparent");
   assert.ok(!JSON.stringify(createFigmaTransfer(result.document)).includes("credentials"));
+});
+
+const advisoryTexts = (count) => Array.from({ length: count }, (_, index) => ({
+  ...rect(`10:${index + 1}`),
+  type: "TEXT",
+  characters: "Label",
+  style: { fontSize: 14, fontFamily: "Fixture Sans", textAlignVertical: "CENTER" },
+}));
+
+test("bounded import warnings keep late missing images and lost content before layout advisories", () => {
+  const source = file([
+    ...advisoryTexts(250),
+    ...["20:1", "20:2"].map((id) => rect(id, {
+      fills: [{ type: "IMAGE", imageRef: `unavailable-${id}` }],
+    })),
+    ...Array.from({ length: 8 }, (_, index) => ({
+      ...rect(`30:${index + 1}`), type: "TEXT", characters: "Rich copy",
+      style: { fontSize: 14 }, characterStyleOverrides: [0, 1],
+    })),
+    { ...rect("40:1"), type: "VECTOR" },
+    rect("50:1", { effects: [{ type: "INNER_SHADOW", visible: true }] }),
+  ]);
+  const before = JSON.stringify(source);
+  const result = importFigmaJson(source);
+  assert.equal(JSON.stringify(source), before);
+  assert.equal(result.stats.warningCount, 262);
+  assert.deepEqual(Object.fromEntries(result.warningGroups.map(({ code, count }) => [code, count])), {
+    "vertical-text": 250,
+    "unsupported-paint": 2,
+    "rich-text": 8,
+    "unsupported-node": 1,
+    "unsupported-effects": 1,
+  });
+  // The existing UI renders only the first 20 details.
+  const preview = result.warnings.slice(0, 20);
+  assert.deepEqual(preview.slice(0, 2).map(({ code, nodeId }) => [code, nodeId]), [
+    ["unsupported-paint", "20:1"], ["unsupported-paint", "20:2"],
+  ]);
+  assert.ok(preview.slice(0, 2).every(({ message }) => message.includes("IMAGE")));
+  assert.equal(preview.filter(({ code }) => code === "rich-text").length, 8);
+  assert.ok(preview.some(({ code, nodeId }) => code === "unsupported-node" && nodeId === "40:1"));
+  assert.ok(preview.findIndex(({ code }) => code === "unsupported-effects") <
+    preview.findIndex(({ code }) => code === "vertical-text"));
+  assert.equal(result.mapping.length, 261);
+  assert.ok(result.mapping.some(({ sourceId }) => sourceId === "20:2"));
+  assert.equal(result.warnings.length, 201); // 200 sampled details plus one summary.
+  assert.deepEqual(result.warnings.at(-1), {
+    code: "warnings-truncated", message: "另有 62 条兼容性提示未展开。",
+  });
+  assert.equal(result.warningGroups.reduce((sum, group) => sum + group.count, 0), 262);
+  assert.deepEqual(importFigmaJson(source).warnings, result.warnings);
+});
+
+test("prepare adds font and plugin warnings to the same bounded sample and complete totals", async () => {
+  const source = file(advisoryTexts(250));
+  source.warnings = ["Plugin could not export an original image."];
+  const before = JSON.stringify(source);
+  const result = await prepareFigmaImport(source, {
+    textMeasurer: {
+      configure() {},
+      measure() { return { width: 35, bottom: 12, ink: { x: 0, y: 0, width: 35, height: 12 } }; },
+      fontAvailable() { return false; },
+    },
+  });
+  assert.equal(JSON.stringify(source), before);
+  assert.equal(result.stats.warningCount, 252);
+  assert.deepEqual(result.warningGroups, [
+    { code: "vertical-text", count: 250 },
+    { code: "font-fallback", count: 1 },
+    { code: "plugin-export-warning", count: 1 },
+  ]);
+  assert.deepEqual(result.warnings.slice(0, 2).map(({ code }) => code), [
+    "font-fallback", "plugin-export-warning",
+  ]);
+  assert.equal(result.warnings[1].message, source.warnings[0]);
+  assert.equal(result.warnings.length, 201);
+  assert.equal(result.warnings.filter(({ code }) => code === "warnings-truncated").length, 1);
+  assert.match(result.warnings.at(-1).message, /52/u);
+  assert.equal(result.mapping.length, 250);
+  assert.deepEqual(result.source.warnings, source.warnings);
 });
 
 test("negative Figma page origins move the entire subtree into a visible HTML canvas", () => {
