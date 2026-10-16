@@ -31,7 +31,7 @@
   "nativeEntries": {
     "interview-transcribe": {
       "entry": "app/tools/interview-transcribe.mjs",
-      "sha256": "1b7ddc280937609978961bb90a8076b70f2da645df80dc00bd4165dcd6ffaff7"
+      "sha256": "8194b3da15d6312839a43ac3bead4e9aae7d89e1d889254246cbad981d180d62"
     },
     "job-hunt": {
       "entry": "app/tools/job-hunt.mjs",

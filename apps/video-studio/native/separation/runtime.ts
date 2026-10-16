@@ -1,3 +1,4 @@
+import { observeModelCall } from "../../../../shared/model-observability.mjs";
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -295,75 +296,98 @@ export async function runSeparationRequest(raw: unknown, ctx: SeparationContext)
       { signal: ctx.signal, maxStdoutBytes: 4096 },
     );
     await ctx.reportProgress({ stage: "separate", fraction: 0, message: "正在分离人声与伴奏" });
-    let pending = "",
-      latest = 0,
-      progressWork = Promise.resolve();
-    await runMediaProcess(python(root), ["-I", "-c", SEPARATION_PYTHON, input, root, work], {
-      signal: ctx.signal,
-      maxStdoutBytes: 128 * 1024,
-      onStdout(chunk) {
-        pending += chunk.toString();
-        const lines = pending.split(/\r?\n/);
-        pending = lines.pop()!;
-        if (pending.length > 8192) throw new Error("分离任务输出过长");
-        for (const line of lines) {
-          let value;
-          try {
-            value = JSON.parse(line);
-          } catch {
-            continue;
-          }
-          if (Number.isFinite(value.fraction) && value.fraction >= latest && value.fraction <= 1) {
-            latest = value.fraction;
-            const fraction = latest;
-            progressWork = progressWork.then(async () => {
-              await ctx.reportProgress({
-                stage: "separate",
-                fraction,
-                message: "正在分离人声与伴奏",
-              });
-            });
-            void progressWork.catch(() => {});
-          }
+    return await observeModelCall(
+      {
+        provider: "local-onnx",
+        model: SEPARATION_MODEL_ID,
+        purpose: "voice-separation",
+        input: {
+          parameters: {
+            resourceId: request.resourceId,
+            sourceSha256: sourceHash,
+            modelSha256: SEPARATION_MODEL.sha256,
+            audio: { durationSeconds: duration, sampleRate: 44100, channels: 2, sampleCount },
+            capture: { recording: "logical-input", omitted: "binary-audio-and-private-paths" },
+          },
+        },
+      },
+      async () => {
+        let pending = "",
+          latest = 0,
+          progressWork = Promise.resolve();
+        await runMediaProcess(python(root), ["-I", "-c", SEPARATION_PYTHON, input, root, work], {
+          signal: ctx.signal,
+          maxStdoutBytes: 128 * 1024,
+          onStdout(chunk) {
+            pending += chunk.toString();
+            const lines = pending.split(/\r?\n/);
+            pending = lines.pop()!;
+            if (pending.length > 8192) throw new Error("分离任务输出过长");
+            for (const line of lines) {
+              let value;
+              try {
+                value = JSON.parse(line);
+              } catch {
+                continue;
+              }
+              if (
+                Number.isFinite(value.fraction) &&
+                value.fraction >= latest &&
+                value.fraction <= 1
+              ) {
+                latest = value.fraction;
+                const fraction = latest;
+                progressWork = progressWork.then(async () => {
+                  await ctx.reportProgress({
+                    stage: "separate",
+                    fraction,
+                    message: "正在分离人声与伴奏",
+                  });
+                });
+                void progressWork.catch(() => {});
+              }
+            }
+          },
+        });
+        await progressWork;
+        const artifacts = [];
+        for (const role of ["vocals", "instrumental"] as const) {
+          const path = await regular(work, [`${role}.wav`]),
+            check = await inspect(path, ctx);
+          if (
+            check.rate !== 44100 ||
+            check.channels !== 2 ||
+            Math.abs(check.duration - sampleCount / 44100) > 1 / 44100
+          )
+            throw new Error("分离产物采样与原素材不一致，未应用任何修改");
+          artifacts.push(await publish(job, path, "wav", "audio/wav", role, ctx.signal));
         }
+        ctx.signal.throwIfAborted();
+        const stem = (index: number) => {
+          const a = artifacts[index]!;
+          return {
+            assetId: a.assetId,
+            sha256: a.sha256,
+            bytes: a.bytes,
+            mimeType: "audio/wav" as const,
+          };
+        };
+        return {
+          result: {
+            sourceResourceId: request.resourceId,
+            sourceSha256: sourceHash,
+            modelId: SEPARATION_MODEL_ID,
+            modelSha256: SEPARATION_MODEL.sha256,
+            sampleRate: 44100,
+            sampleCount,
+            durationSeconds: sampleCount / 44100,
+            stems: { vocals: stem(0), instrumental: stem(1) },
+          },
+          artifacts,
+        };
       },
-    });
-    await progressWork;
-    const artifacts = [];
-    for (const role of ["vocals", "instrumental"] as const) {
-      const path = await regular(work, [`${role}.wav`]),
-        check = await inspect(path, ctx);
-      if (
-        check.rate !== 44100 ||
-        check.channels !== 2 ||
-        Math.abs(check.duration - sampleCount / 44100) > 1 / 44100
-      )
-        throw new Error("分离产物采样与原素材不一致，未应用任何修改");
-      artifacts.push(await publish(job, path, "wav", "audio/wav", role, ctx.signal));
-    }
-    ctx.signal.throwIfAborted();
-    const stem = (index: number) => {
-      const a = artifacts[index]!;
-      return {
-        assetId: a.assetId,
-        sha256: a.sha256,
-        bytes: a.bytes,
-        mimeType: "audio/wav" as const,
-      };
-    };
-    return {
-      result: {
-        sourceResourceId: request.resourceId,
-        sourceSha256: sourceHash,
-        modelId: SEPARATION_MODEL_ID,
-        modelSha256: SEPARATION_MODEL.sha256,
-        sampleRate: 44100,
-        sampleCount,
-        durationSeconds: sampleCount / 44100,
-        stems: { vocals: stem(0), instrumental: stem(1) },
-      },
-      artifacts,
-    };
+      { signal: ctx.signal, output: (value) => ({ data: value.result }) },
+    );
   } finally {
     await rm(work, { recursive: true, force: true });
   }

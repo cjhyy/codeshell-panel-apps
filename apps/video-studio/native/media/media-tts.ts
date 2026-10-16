@@ -1,3 +1,4 @@
+import { observeModelCall } from "../../../../shared/model-observability.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -264,10 +265,27 @@ export async function generateLocalTts(
       stage: "synthesize",
       message: `正在用 ${voice.name} 生成配音`,
     });
-    await runMediaProcess(
-      options.sayPath ?? "/usr/bin/say",
-      ["-v", voice.id, "-r", String(Math.round(175 * input.rate)), "-f", textPath, "-o", aiff],
-      { signal },
+    await observeModelCall(
+      {
+        provider: "macos-speech",
+        model: voice.id,
+        purpose: "tts",
+        input: {
+          messages: [{ role: "user", content: input.text }],
+          parameters: {
+            voice: voice.id,
+            wordsPerMinute: Math.round(175 * input.rate),
+            capture: { recording: "logical-input", omitted: "binary-data-and-private-paths" },
+          },
+        },
+      },
+      () =>
+        runMediaProcess(
+          options.sayPath ?? "/usr/bin/say",
+          ["-v", voice.id, "-r", String(Math.round(175 * input.rate)), "-f", textPath, "-o", aiff],
+          { signal },
+        ),
+      { signal, output: () => ({ data: { mimeType: "audio/aiff", binaryContent: "omitted" } }) },
     );
     await context.reportProgress({ fraction: 0.7, stage: "encode", message: "正在整理语音音轨" });
     await runMediaProcess(
