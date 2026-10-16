@@ -1,8 +1,37 @@
 # Design Studio Panel App
 
-Design Studio **0.20.0** 提供 HTML → DesignNode → v3 导入、Figma JSON 导入、可编辑设计、带来源校验的增量导回、
+Design Studio **0.21.0** 提供 HTML → DesignNode → v3 导入、Figma JSON 导入、可编辑设计、带来源校验的增量导回、
 多页 HTML 原型和项目评审。原生设计仍使用 v3 `.codesign.json`；16 个声明式 Agent
 工具与可视编辑器共用同一份设计、来源和评审数据。本版沿用现有 Host 权限。
+
+## 0.21：独立导入、预检与 HTML to Figma 插件
+
+Figma 导入默认新建独立稿，显示保存路径、转换后的预览及真实 audit；也可明确选择
+替换当前画布。已有未保存稿件须先保存或备份。导入中资源或主文件保存失败会恢复
+原画布、文件归属和来源绑定；写入回执丢失时只读核对目标，不重复发布主文件。
+无法核对时保留当前画布并提示保存状态待确认。已保存但存在阻塞的稿件仍是草稿。
+
+“另存为”保留项目资源、已保存评论、原型和 Figma 来源。新目标不会覆盖已有文件。
+检查窗口按原因和严重度筛选，每页 50 条，点击图层会聚焦；Agent 可用
+`validate_design(code, severity, offset, limit)` 分页读取全部问题。
+
+16 个 Agent 工具入口保持兼容。`save_design` 的默认行为仍是保存，新增
+`action: create|open|save_as`。Figma 新流程先调用
+`exchange_figma(action: prepare, source_path, target_path, expected_state_revision)`，
+核对返回的 `preparationId`、目标、audit 和差异后，以同一来源及状态调用 import。
+准备结果绑定来源内容摘要；来源、目标或画布变化后须重新预检。带阻塞的现代导入
+需要明确 `allow_blocking: true` 才能保留草稿。旧的 path-only import 保留替换当前稿件语义。
+
+大 JSON 使用随包的 [prepare-figma CLI](app/tools/prepare-figma.README.md) 自动生成
+350 KiB 分片。输入包与目标的 `.figma-source.json` 来源索引必须使用不同名称。
+离屏且被祖先裁切的节点不再污染页面原点，真实未裁切越界仍会报告。
+
+新增独立 [CodeShell HTML to Figma](app/html-to-figma-plugin/README.md) 开发插件，
+实际复用 html2figma 原生 adapter、FigmaService 与 creators。支持粘贴 HTML、本地 HTML
+文件夹及原生 DesignNode/FigmaJSON，先静态预览再创建可编辑图层；无服务地址、API Key
+或 CDN 依赖。原有 CodeShell Design Bridge 继续处理 v3、完整备份与来源增量更新。
+Figma 插件 ID 由 Figma 分配，安装步骤见插件 README。当前验收包括真实 Chromium
+隔离 UI 与 fake Figma API，不代表真实账号内字体与渲染已经验收。
 
 ## 0.20 交付：HTML 导入与完整文件直接还原 Figma
 

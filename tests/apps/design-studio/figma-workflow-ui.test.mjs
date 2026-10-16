@@ -88,13 +88,11 @@ async function fixture(t, { mobile = false } = {}) {
     );
   };
   const choose = async (value = fileValue) => {
-    await page
-      .locator("#figma-import-file")
-      .setInputFiles({
-        name: "figma.json",
-        mimeType: "application/json",
-        buffer: Buffer.from(JSON.stringify(value)),
-      });
+    await page.locator("#figma-import-file").setInputFiles({
+      name: "figma.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(value)),
+    });
     await page.waitForFunction(
       () => document.querySelector("#figma-workflow-dialog").getAttribute("aria-busy") === "false",
     );
@@ -194,6 +192,7 @@ test("the canvas comment tool records a persistent anchored discussion without r
   const f = await fixture(t);
   await f.open();
   await f.choose();
+  await f.page.locator("#figma-import-mode").selectOption("replace");
   await f.page.locator("#figma-import-apply").click();
   await f.page.waitForFunction(() =>
     document.querySelector("#figma-workflow-status").textContent.includes("已导入"),
@@ -222,4 +221,47 @@ test("the canvas comment tool records a persistent anchored discussion without r
   await f.page.locator("#review-comments-filter").selectOption("resolved");
   assert.match(await f.page.locator(".review-comment-text").textContent(), /手机/);
   assert.deepEqual(f.errors, []);
+});
+
+test("new imports expose a separate target, real audit and a rendered preview", async (t) => {
+  const f = await fixture(t);
+  await f.open();
+  await f.choose();
+  assert.equal(await f.page.locator("#figma-import-mode").inputValue(), "create");
+  assert.equal(
+    await f.page.locator("#figma-import-target").inputValue(),
+    "designs/figma.codesign.json",
+  );
+  assert.match(await f.page.locator("#figma-import-audit").textContent(), /预检：/);
+  await f.page.waitForFunction(
+    () => document.querySelector("#figma-import-image").naturalWidth > 0,
+  );
+  if (process.env.DESIGN_STUDIO_QA_DIR) {
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(process.env.DESIGN_STUDIO_QA_DIR, { recursive: true });
+    await f.page.screenshot({
+      path: resolve(process.env.DESIGN_STUDIO_QA_DIR, "figma-import-preview.png"),
+    });
+  }
+  await f.page.locator("#figma-import-apply").click();
+  await f.page.waitForFunction(() =>
+    document.querySelector("#figma-workflow-status").textContent.includes("已导入"),
+  );
+  assert.equal(await f.page.locator("#document-path").inputValue(), "designs/figma.codesign.json");
+  assert.deepEqual(f.errors, []);
+});
+
+test("the standalone HTML plugin downloads with its own Figma-assigned id and attribution", async (t) => {
+  const f = await fixture(t);
+  await f.open();
+  await f.page.locator("#html-plugin-id").fill("999888777666");
+  const result = await f.download('[data-html-plugin-file="manifest.json"]');
+  const manifest = JSON.parse(result.text);
+  assert.equal(manifest.name, "CodeShell HTML to Figma");
+  assert.equal(manifest.id, "999888777666");
+  assert.deepEqual(manifest.networkAccess.allowedDomains, ["none"]);
+  assert.match((await f.download('[data-html-plugin-file="NOTICE.md"]')).text, /MIT/);
+  assert.match((await f.download('[data-html-plugin-file="README.md"]')).text, /Figma/);
+  assert.match((await f.download('[data-html-plugin-file="code.js"]')).text, /html2figma/);
+  assert.match((await f.download('[data-html-plugin-file="ui.html"]')).text, /HTML/);
 });

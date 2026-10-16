@@ -29,6 +29,7 @@ if (!testsOnly) {
   run(["scripts/sync-project-context.mjs", "--check"]);
   run(["scripts/build-html2figma-browser.mjs", "--check"]);
   run(["scripts/build-design-studio-figma-plugin.mjs", "--check"]);
+  run(["scripts/build-design-studio-html-plugin.mjs", "--check"]);
   run(["node_modules/typescript/bin/tsc", "--project", "tsconfig.json"]);
   run(["scripts/build-panels.mjs", "--check"]);
 }
