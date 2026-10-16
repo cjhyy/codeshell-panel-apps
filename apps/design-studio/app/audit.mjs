@@ -885,9 +885,11 @@ export function auditDesign(document) {
     }
     if (node.parentId && parent && ["frame", "group", "component"].includes(parent.type)) {
       const localVisualBounds = transformedNodeBounds(node);
+      const measuredOutline = node.type === "text" && currentTextMetrics(node)
+        ? nodeOutlinePointsInTree(document.nodes, node, byId) : null;
       const exceedsParent =
-        !localVisualBounds ||
-        !contains(parent, localVisualBounds) ||
+        (measuredOutline ? pointsExceedNode(document.nodes, measuredOutline, parent, byId)
+          : !localVisualBounds || !contains(parent, localVisualBounds)) ||
         (parent.clipContent === true &&
           exceedsClippingAncestor(document.nodes, node, parent, byId));
       const intentionallyClippedByParent =

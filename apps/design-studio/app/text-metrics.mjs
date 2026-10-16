@@ -1,4 +1,5 @@
 /* Browser measurements are receipts for specific text and typography, not audit exemptions. */
+import { designFontFamilyCss } from "./font-css.mjs";
 export function textMetricsSignature(node) {
   return JSON.stringify([
     node.text, node.fontFamily ?? "", node.fontRef ?? "", node.fontSize, node.fontWeight,
@@ -52,22 +53,34 @@ function createBrowserMeasurer(documentValue) {
   documentValue.body.append(svg);
   const context = documentValue.createElement("canvas").getContext("2d");
   if (!context) { svg.remove(); throw Error("浏览器无法测量文字"); }
+  let actualInkAvailable = true;
   return {
     configure(node) {
       for (const [name, value] of Object.entries({
-        "font-family": node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
+        "font-family": designFontFamilyCss(node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif"),
         "font-size": node.fontSize, "font-weight": node.fontWeight,
         "font-style": node.fontStyle ?? "normal", "letter-spacing": node.letterSpacing ?? 0,
       })) text.setAttribute(name, String(value));
       text.setAttribute("xml:space", "preserve");
       text.style.whiteSpace = "pre";
+      context.font = `${node.fontStyle ?? "normal"} ${node.fontWeight} ${node.fontSize}px ${designFontFamilyCss(node.fontFamily ?? "Inter")}`;
+      context.textBaseline = "hanging";
+      actualInkAvailable = !node.letterSpacing || "letterSpacing" in context;
+      if ("letterSpacing" in context) context.letterSpacing = `${node.letterSpacing ?? 0}px`;
     },
     measure(value) {
       text.textContent = value || " ";
       const bounds = text.getBBox();
+      const actual = context.measureText(value);
+      const measuredInk = actualInkAvailable && [actual.actualBoundingBoxLeft, actual.actualBoundingBoxRight,
+        actual.actualBoundingBoxAscent, actual.actualBoundingBoxDescent].every(Number.isFinite)
+        ? { x: -actual.actualBoundingBoxLeft, y: -actual.actualBoundingBoxAscent,
+          width: actual.actualBoundingBoxLeft + actual.actualBoundingBoxRight,
+          height: actual.actualBoundingBoxAscent + actual.actualBoundingBoxDescent }
+        : bounds;
       return { width: value ? round(text.getComputedTextLength()) : 0,
-        bottom: value ? round(Math.max(0, bounds.y + bounds.height)) : 0,
-        ink: value ? { x: round(bounds.x), y: round(bounds.y), width: round(bounds.width), height: round(bounds.height) }
+        bottom: value ? round(Math.max(0, measuredInk.y + measuredInk.height)) : 0,
+        ink: value ? { x: round(measuredInk.x), y: round(measuredInk.y), width: round(Math.max(0, measuredInk.width)), height: round(Math.max(0, measuredInk.height)) }
           : { x: 0, y: 0, width: 0, height: 0 } };
     },
     fontAvailable(node) {
@@ -75,7 +88,7 @@ function createBrowserMeasurer(documentValue) {
       return ["monospace", "serif", "sans-serif"].some((fallback) => {
         context.font = `${node.fontStyle ?? "normal"} ${node.fontWeight} 24px ${fallback}`;
         const baseline = context.measureText(probe).width;
-        context.font = `${node.fontStyle ?? "normal"} ${node.fontWeight} 24px ${JSON.stringify(node.fontFamily)}, ${fallback}`;
+        context.font = `${node.fontStyle ?? "normal"} ${node.fontWeight} 24px ${designFontFamilyCss(node.fontFamily)}, ${fallback}`;
         return Math.abs(context.measureText(probe).width - baseline) > 0.01;
       });
     },
@@ -124,7 +137,7 @@ export async function measureFigmaTextDocument(documentValue, {
       if (text.length > 4000) throw Error(`文字 ${node.id} 换行后超过 4000 字符；请拆分文字图层`);
       node.text = text;
       const metrics = lines.map((line) => measurement.measure(line));
-      const width = Math.max(0, ...metrics.map((metric) => Math.max(metric.width, metric.ink.x + metric.ink.width)));
+      const width = Math.max(0, ...metrics.map((metric) => Math.max(metric.width, metric.ink.width, metric.ink.x + metric.ink.width)));
       const height = Math.max(0, ...metrics.map((metric, index) => metric.bottom + index * node.fontSize * node.lineHeight));
       if (autoResize === "WIDTH_AND_HEIGHT" && width > node.width) {
         node.width = Math.ceil(width * 100) / 100; changed.push(node.id);
