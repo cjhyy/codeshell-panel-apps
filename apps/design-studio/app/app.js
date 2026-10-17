@@ -6,6 +6,7 @@ import {
   canvasNodeMatrix,
   drawCanvasInteraction,
   hitTestCanvasNode,
+  hitTestCanvasLabel,
   hitTestCanvasHandle,
 } from "./canvas-interaction.mjs";
 
@@ -2459,7 +2460,10 @@ function pointerDown(event) {
     zoom,
     window.matchMedia("(pointer: coarse)").matches,
   );
-  const targetId = hitTestCanvasNode(design, point)?.id;
+  const targetId = (
+    hitTestCanvasLabel(design, point, zoom, selectedIds, elements.stage.getContext("2d")) ??
+    hitTestCanvasNode(design, point)
+  )?.id;
   const shouldPan = activeTool === "hand" || spacePressed || event.button === 1;
 
   // Recognize completed stationary taps across pointer-capture transitions.
@@ -6138,7 +6142,11 @@ elements.stage.addEventListener("lostpointercapture", (event) =>
 );
 elements.stage.addEventListener("dblclick", (event) => {
   if (activeTool !== "select") return;
-  let id = hitTestCanvasNode(design, documentPoint(event))?.id;
+  const point = documentPoint(event);
+  let id = (
+    hitTestCanvasLabel(design, point, zoom, selectedIds, elements.stage.getContext("2d")) ??
+    hitTestCanvasNode(design, point)
+  )?.id;
   if (
     !id &&
     lastTextPointer &&

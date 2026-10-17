@@ -5,6 +5,7 @@ import {
   canvasResizeHandles,
   hitTestCanvasHandle,
   hitTestCanvasNode,
+  hitTestCanvasLabel,
 } from "../../../apps/design-studio/app/canvas-interaction.mjs";
 
 const node = (id, extra = {}) => ({
@@ -60,4 +61,18 @@ test("canvas resize handles preserve screen hit size and disable rotated/locked 
   assert.equal(canvasResizeHandles(n, { ...options, locked: true }).length, 0);
   n.rotation = 15;
   assert.equal(canvasResizeHandles(n, options).length, 0);
+});
+
+test("Canvas labels remain clickable at their drawn scale and respect clipping", () => {
+  const parent = node("parent", { type: "frame", name: "Parent", x: 20, y: 60, clipContent: true });
+  const child = node("child", { type: "frame", parentId: "parent", name: "Child", x: 40, y: 65 });
+  const design = { nodes: [parent, child] },
+    context = { font: "before", measureText: () => ({ width: 60 }) };
+  assert.equal(hitTestCanvasLabel(design, { x: 40, y: 35 }, 1, new Set(), context)?.id, "parent");
+  assert.equal(
+    hitTestCanvasLabel(design, { x: 45, y: 40 }, 1, new Set(["child"]), context)?.id,
+    "parent",
+  );
+  assert.equal(hitTestCanvasLabel(design, { x: 40, y: 35 }, 0.5, new Set(), context), null);
+  assert.equal(context.font, "before");
 });

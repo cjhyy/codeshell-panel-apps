@@ -54,6 +54,45 @@ export function hitTestCanvasNode(
   return null;
 }
 
+export function hitTestCanvasLabel(design, point, zoom, selectedIds, context) {
+  if (zoom < 0.65 || !context) return null;
+  const index = new Map(design.nodes.map((node) => [node.id, node]));
+  const previousFont = context.font;
+  context.font = `600 ${11 / zoom}px Inter, system-ui, sans-serif`;
+  try {
+    for (const node of [...design.nodes].reverse()) {
+      if (
+        !["frame", "component", "group"].includes(node.type) ||
+        (node.parentId && !selectedIds.has(node.id)) ||
+        !isDesignNodeVisible(design, node, index)
+      )
+        continue;
+      const text = `${node.type === "component" ? "◇ " : node.type === "group" ? "▣ " : ""}${node.name}`;
+      const local = pointToNodeSpace(design.nodes, node, point, index);
+      const label = {
+        x: node.x,
+        y: node.y - 30 / zoom,
+        width: context.measureText(text).width,
+        height: 15 / zoom,
+      };
+      if (!inside(label, local)) continue;
+      if (
+        ancestors(node, index).some(
+          (parent) =>
+            ["frame", "component"].includes(parent.type) &&
+            parent.clipContent &&
+            !inside(parent, pointToNodeSpace(design.nodes, parent, point, index)),
+        )
+      )
+        continue;
+      return node;
+    }
+  } finally {
+    context.font = previousFont;
+  }
+  return null;
+}
+
 export function canvasResizeHandles(
   node,
   { zoom, locked = false, tool = "select", nodes, index } = {},
