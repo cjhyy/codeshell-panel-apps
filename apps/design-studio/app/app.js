@@ -421,6 +421,7 @@ let lastHtmlImportReport = null;
 let htmlImportGeneration = 0;
 const loadedFontResourceIds = new Set();
 let canvasRendererMode = "auto";
+let gpuContextLost = false;
 const gpuRenderer = createRendererController({
   canvas: elements.gpuCanvas,
   assetsBaseUrl: new URL("./canvas/vendor/", import.meta.url).href,
@@ -431,6 +432,7 @@ const gpuRenderer = createRendererController({
     };
   },
   onState(state) {
+    if (state.reason === "context-lost") gpuContextLost = true;
     elements.gpuCanvas.hidden = !state.active;
     elements.stageWrap.dataset.gpuActive = String(state.active);
     elements.rendererState.textContent = state.active ? "GPU" : state.loading ? "加载中" : "SVG";
@@ -456,7 +458,7 @@ function syncGpuRenderer() {
   const bounds = elements.stage.getBoundingClientRect();
   const mode =
     canvasRendererMode === "auto"
-      ? design.nodes.length >= 300 && zoom >= 0.25 && zoom <= 1
+      ? !gpuContextLost && design.nodes.length >= 300 && zoom >= 0.25 && zoom <= 1
         ? "gpu"
         : "svg"
       : canvasRendererMode;
@@ -6649,7 +6651,10 @@ elements.canvasRenderer.addEventListener("change", () => {
   canvasRendererMode = elements.canvasRenderer.value;
   saveUiPreferences();
   // An explicit choice retries a renderer after a lost GPU context.
-  if (canvasRendererMode === "gpu") void gpuRenderer.setMode("gpu");
+  if (canvasRendererMode === "gpu") {
+    gpuContextLost = false;
+    void gpuRenderer.setMode("gpu");
+  }
   syncGpuRenderer();
 });
 elements.zoomIn.addEventListener("click", () => setZoom(zoom * 1.2));
