@@ -1331,6 +1331,7 @@ function queueRecovery() {
 }
 
 function markChanged(render = true) {
+  liveRenderRevision += 1;
   updateDirtyState();
   queueRecovery();
   if (render) renderAll();
@@ -1388,6 +1389,7 @@ function commitHistory() {
   historyIndex = history.length;
   historyState = nextState;
   designStateSequence += 1;
+  syncGpuRenderer();
 }
 
 function restoreHistory(nextIndex) {
