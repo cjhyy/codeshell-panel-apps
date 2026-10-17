@@ -1,6 +1,7 @@
 /* Design Studio Panel App runtime. */
 /* global document, localStorage, requestAnimationFrame, window */
 import { projectContextChanged } from "./project-context.mjs";
+import { createRendererController } from "./renderer-controller.mjs";
 
 import {
   alignNodeTrees,
@@ -145,6 +146,9 @@ const elements = {
   scene: document.querySelector("#scene"),
   grid: document.querySelector("#grid"),
   stageWrap: document.querySelector("#stage-wrap"),
+  gpuCanvas: document.querySelector("#gpu-canvas"),
+  canvasRenderer: document.querySelector("#canvas-renderer"),
+  rendererState: document.querySelector("#renderer-state"),
   workspace: document.querySelector(".workspace"),
   activePage: document.querySelector("#active-page"),
   addPage: document.querySelector("#add-page"),
@@ -416,6 +420,68 @@ let localHtmlFiles = new Map();
 let lastHtmlImportReport = null;
 let htmlImportGeneration = 0;
 const loadedFontResourceIds = new Set();
+let canvasRendererMode = "auto";
+const gpuRenderer = createRendererController({
+  canvas: elements.gpuCanvas,
+  assetsBaseUrl: new URL("./canvas/vendor/", import.meta.url).href,
+  loadRenderer: async () => {
+    const { createRenderer } = await import("./canvas/canvaskit-renderer.mjs");
+    return {
+      createRenderer: (options) => createRenderer({ ...options, background: "transparent" }),
+    };
+  },
+  onState(state) {
+    elements.gpuCanvas.hidden = !state.active;
+    elements.stageWrap.dataset.gpuActive = String(state.active);
+    elements.rendererState.textContent = state.active ? "GPU" : state.loading ? "加载中" : "SVG";
+    elements.rendererState.title = state.active
+      ? "CanvasKit · WebGL2 · 视口裁剪"
+      : state.reason || "SVG 渲染";
+  },
+});
+
+function rendererResources() {
+  const resources = new Map();
+  for (const descriptor of design.resources ?? []) {
+    const url = resourceDataUrls.get(descriptor.id);
+    if (!url) continue;
+    const encoded = url.slice(url.indexOf(",") + 1);
+    const bytes = Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
+    resources.set(descriptor.id, { descriptor, bytes, mimeType: descriptor.mime });
+  }
+  return resources;
+}
+
+function syncGpuRenderer() {
+  const bounds = elements.stage.getBoundingClientRect();
+  const mode =
+    canvasRendererMode === "auto"
+      ? design.nodes.length >= 300 && zoom >= 0.25 && zoom <= 1
+        ? "gpu"
+        : "svg"
+      : canvasRendererMode;
+  // Mode only changes at a user choice / auto threshold, never retries a failed context each frame.
+  if (gpuRenderer.state().mode !== mode) void gpuRenderer.setMode(mode);
+  elements.stageWrap.dataset.grid = String(showGrid);
+  void gpuRenderer.update({
+    key: `${workspaceEpoch}/${documentEpoch}/${design.activePageId}`,
+    revision: `${designStateSequence}/${resourceDataUrls.size}`,
+    design,
+    getResources: rendererResources,
+    capable: context.capabilities?.packageAssets?.wasm === true,
+    suspended:
+      workspaceLoading ||
+      Boolean(inlineTextEdit) ||
+      Boolean(interaction && interaction.kind !== "pan"),
+    viewport: {
+      width: bounds.width,
+      height: bounds.height,
+      dpr: window.devicePixelRatio || 1,
+      pan,
+      zoom,
+    },
+  });
+}
 
 function scopedStorageKey(base, workspaceRoot = context.cwd ?? "preview") {
   let primary = 2_166_136_261;
@@ -907,7 +973,8 @@ function containingFrame(point) {
 }
 
 function layerEntries() {
-  const byId = new Map(), childrenByParent = new Map();
+  const byId = new Map(),
+    childrenByParent = new Map();
   // Reverse once while indexing so roots and siblings retain their canvas stack order.
   for (let index = design.nodes.length - 1; index >= 0; index -= 1) {
     const node = design.nodes[index];
@@ -1231,7 +1298,7 @@ function markChanged(render = true) {
 function saveUiPreferences() {
   void hostCall("storage.set", {
     key: "uiPreferences",
-    value: { showGrid, snapEnabled },
+    value: { showGrid, snapEnabled, canvasRendererMode },
   }).catch(() => undefined);
 }
 
@@ -1421,9 +1488,7 @@ function createUiIcon(name, className = "") {
 }
 
 function shouldRenderCanvasLabel(node, options = {}) {
-  return (
-    options.suppressLabel !== true && (!node.parentId || selectedIds.has(node.id))
-  );
+  return options.suppressLabel !== true && (!node.parentId || selectedIds.has(node.id));
 }
 
 function appendAncestorClipChain(root, node, clipIds, nodes = design.nodes, nodeIndex = null) {
@@ -1483,6 +1548,7 @@ function renderViewport(zoomChanged = false) {
   }
   elements.zoomValue.textContent = `${Math.round(zoom * 100)}%`;
   updateInlineTextEditorPosition();
+  syncGpuRenderer();
 }
 
 function scheduleInteractionRender() {
@@ -1613,9 +1679,25 @@ function renderScene() {
       }),
     );
   }
+  // Keep labels and editing overlays as SVG above the retained GPU scene.
+  const gpuLabels = svgElement("g", { "data-gpu-labels": "true" });
+  for (const label of elements.scene.querySelectorAll("[data-canvas-label]")) {
+    let copy = label.cloneNode(true);
+    let ancestor = label.parentNode;
+    while (ancestor !== elements.scene) {
+      const wrapper = ancestor.cloneNode(false);
+      wrapper.removeAttribute("data-node-id");
+      wrapper.append(copy);
+      copy = wrapper;
+      ancestor = ancestor.parentNode;
+    }
+    gpuLabels.append(copy);
+  }
+  elements.scene.append(gpuLabels);
   sceneOverlay = svgElement("g", { "data-scene-overlay": "true" });
   elements.scene.append(sceneOverlay);
   renderSceneOverlays(renderNodeIndex);
+  syncGpuRenderer();
 }
 
 function renderSceneOverlays(nodeIndex = null) {
@@ -1678,7 +1760,9 @@ function renderInstanceNode(node, clipIds, shadowIds, options = {}) {
   nextInstanceStack.add(component.id);
   const sourceDocument = detachedComponentRenderDocument(renderDocument, component.id);
   // Detachment changes the ancestry graph; this index must match the source document.
-  const sourceNodeIndex = new Map(sourceDocument.nodes.map((candidate) => [candidate.id, candidate]));
+  const sourceNodeIndex = new Map(
+    sourceDocument.nodes.map((candidate) => [candidate.id, candidate]),
+  );
   const sourceComponent = sourceNodeIndex.get(component.id);
   const componentClipIds = options.componentClipIds ?? new Map();
   const sourceClipIds = componentClipIds.get(component.id) ?? clipIds;
@@ -5711,12 +5795,7 @@ async function exportSvg() {
       notify(`SVG 已下载为 ${link.download}；超出仓库文本预算，未写入 Repo`);
       return;
     }
-    await writeRepoText(
-      path,
-      svg,
-      operationWorkspaceEpoch,
-      assertScope,
-    );
+    await writeRepoText(path, svg, operationWorkspaceEpoch, assertScope);
     notify(`SVG 已导出到 ${path}`);
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) return;
@@ -6566,6 +6645,13 @@ elements.stage.addEventListener(
   { passive: false },
 );
 elements.zoomOut.addEventListener("click", () => setZoom(zoom / 1.2));
+elements.canvasRenderer.addEventListener("change", () => {
+  canvasRendererMode = elements.canvasRenderer.value;
+  saveUiPreferences();
+  // An explicit choice retries a renderer after a lost GPU context.
+  if (canvasRendererMode === "gpu") void gpuRenderer.setMode("gpu");
+  syncGpuRenderer();
+});
 elements.zoomIn.addEventListener("click", () => setZoom(zoom * 1.2));
 elements.zoomValue.addEventListener("click", fitCanvas);
 elements.toggleGrid.addEventListener("click", () => {
@@ -6975,6 +7061,8 @@ window.addEventListener("blur", () => {
   updateCursor();
 });
 window.addEventListener("resize", () => scheduleViewportRender(true));
+new ResizeObserver(() => scheduleViewportRender(true)).observe(elements.stageWrap);
+window.addEventListener("pagehide", () => gpuRenderer.dispose());
 window.addEventListener("focus", () => void checkExternalChange());
 window.addEventListener("beforeunload", (event) => {
   finishInlineTextEdit();
@@ -7032,6 +7120,7 @@ function updateContext(next) {
     elements.path.disabled = false;
   }
   context = nextContext;
+  syncGpuRenderer();
   contextInitialized = true;
   reviewCommentsUI?.update();
   prototypeUI?.update();
@@ -7335,6 +7424,7 @@ function resetToRepoBlankDocument() {
 function setWorkspaceLoading(loading) {
   if (loading) cancelInteraction();
   workspaceLoading = loading;
+  syncGpuRenderer();
   document.querySelector(".topbar").inert = loading;
   elements.workspace.inert = loading;
 }
@@ -9733,6 +9823,9 @@ async function initialize() {
   if (uiPreferences && typeof uiPreferences === "object") {
     if (typeof uiPreferences.showGrid === "boolean") showGrid = uiPreferences.showGrid;
     if (typeof uiPreferences.snapEnabled === "boolean") snapEnabled = uiPreferences.snapEnabled;
+    if (["auto", "svg", "gpu"].includes(uiPreferences.canvasRendererMode))
+      canvasRendererMode = uiPreferences.canvasRendererMode;
+    elements.canvasRenderer.value = canvasRendererMode;
     renderAll();
   }
   try {

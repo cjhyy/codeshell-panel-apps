@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { dirname, resolve, sep, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { PNG } from "pngjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const argv = process.argv.slice(2);
 const option = (name, fallback) => {
@@ -57,6 +58,32 @@ const report = {
 const browser = await chromium.launch({
   args: process.platform === "darwin" ? ["--use-angle=metal"] : [],
 });
+function assertPainted(bytes, label) {
+  const png = PNG.sync.read(bytes);
+  const colors = new Set();
+  let changed = 0;
+  const background = [...png.data.subarray(0, 3)];
+  for (let offset = 0; offset < png.data.length; offset += 16) {
+    const [r, g, b] = png.data.subarray(offset, offset + 3);
+    colors.add((r << 16) | (g << 8) | b);
+    if (
+      Math.max(
+        Math.abs(r - background[0]),
+        Math.abs(g - background[1]),
+        Math.abs(b - background[2]),
+      ) > 12
+    )
+      changed++;
+  }
+  assert(
+    colors.size >= 32 && changed / ((png.width * png.height) / 4) > 0.01,
+    `${label}: blank or incomplete rendered frame; timings are invalid`,
+  );
+  return {
+    sampledColors: colors.size,
+    nonBackgroundFraction: changed / ((png.width * png.height) / 4),
+  };
+}
 report.chromiumVersion = browser.version();
 try {
   const context = await browser.newContext({ viewport: report.viewport, deviceScaleFactor: 2 });
@@ -141,7 +168,17 @@ try {
             { flag: "wx" },
           );
           const { samples, ...metrics } = result;
-          report.results.push({ repeat, scenario: scenario.name, driver, status, ...metrics });
+          const pixels = await page.screenshot();
+          const coverage = assertPainted(pixels, `${engine}/${scenario.name}`);
+          await writeFile(join(outputRoot, `${engine}-${repeat}-${scenario.name}.png`), pixels);
+          report.results.push({
+            repeat,
+            scenario: scenario.name,
+            driver,
+            status,
+            coverage,
+            ...metrics,
+          });
           console.log(
             JSON.stringify({
               engine,
@@ -150,7 +187,14 @@ try {
               p95: metrics.intervalP95,
               submitP95: metrics.renderSubmitP95,
               over25: metrics.frameIntervalsOver25,
-              stats: metrics.stats,
+              stats: {
+                inputNodes: metrics.stats?.inputNodes,
+                visibleNodes: metrics.stats?.visibleNodes,
+                drawnNodes: metrics.stats?.drawnNodes,
+                nativeTextNodes: metrics.stats?.nativeTextNodes,
+                rasterTextNodes: metrics.stats?.rasterTextNodes,
+                unsupportedCount: metrics.stats?.unsupported?.length,
+              },
             }),
           );
         }
@@ -180,7 +224,9 @@ try {
                   requestAnimationFrame(() => requestAnimationFrame(resolve)),
                 ),
             );
-            await page.screenshot({ path: join(outputRoot, `${engine}-${view.name}.png`) });
+            const pixels = await page.screenshot();
+            assertPainted(pixels, `${engine}/${view.name}`);
+            await writeFile(join(outputRoot, `${engine}-${view.name}.png`), pixels);
           }
         report.errors.push(
           ...errors.map((message) => ({ engine, repeat, type: "pageerror", message })),

@@ -589,11 +589,57 @@ textarea:focus-visible {
 }
 
 #stage {
+  position: relative;
   display: block;
   width: 100%;
   height: 100%;
   touch-action: none;
   user-select: none;
+}
+
+#gpu-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+.stage-wrap[data-gpu-active="true"] #scene > [data-node-id],
+.stage-wrap[data-gpu-active="true"] #scene > [data-canvas],
+.stage-wrap[data-gpu-active="true"] #grid {
+  opacity: 0;
+}
+
+.stage-wrap[data-gpu-active="true"][data-grid="true"] {
+  background-image: radial-gradient(circle at 1px 1px, #323232 0.7px, transparent 0.8px);
+  background-size: 16px 16px;
+}
+
+[data-gpu-labels] {
+  display: none;
+}
+.stage-wrap[data-gpu-active="true"] [data-gpu-labels] {
+  display: inline;
+}
+
+#canvas-renderer {
+  max-width: 118px;
+  border: 0;
+  padding: 0 4px;
+  color: var(--text);
+  background: var(--surface-2);
+  font: inherit;
+  font-size: 11px;
+}
+
+#renderer-state {
+  max-width: 84px;
+  padding: 0 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 #stage[data-cursor="select"] {

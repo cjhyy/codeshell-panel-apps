@@ -53,6 +53,7 @@ const allowedExtensions = new Set([
   ".woff",
   ".woff2",
   ".ttf",
+  ".wasm",
 ]);
 const allowedAgentExtensions = new Set([".md", ".json", ".png", ".jpg", ".jpeg", ".webp"]);
 const maxHostSchemaPatternLength = 512;
@@ -247,7 +248,7 @@ async function validatePackage(packagePath) {
     );
     assert.equal(
       manifest.version,
-      "0.21.2",
+      "0.22.0",
       `${packagePath}: Design Studio import workflow version mismatch`,
     );
     assert.deepEqual(

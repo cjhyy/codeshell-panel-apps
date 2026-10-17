@@ -274,6 +274,7 @@
         </aside>
 
         <section id="stage-wrap" class="stage-wrap" aria-label="设计画布">
+          <canvas id="gpu-canvas" aria-hidden="true" hidden></canvas>
           <svg id="stage" role="img" aria-label="Design canvas" tabindex="0">
             <defs>
               <pattern id="dot-grid" width="16" height="16" patternUnits="userSpaceOnUse">
@@ -287,6 +288,17 @@
             <g id="scene"></g>
           </svg>
           <div class="canvas-meta">
+            <label class="sr-only" for="canvas-renderer">画布渲染</label>
+            <select
+              id="canvas-renderer"
+              title="自动根据画布范围选择渲染器；编辑和高倍率文字使用 SVG"
+            >
+              <option value="auto">自动</option>
+              <option value="svg">SVG</option>
+              <option value="gpu">CanvasKit GPU</option>
+            </select>
+            <span id="renderer-state" role="status" aria-live="polite">SVG</span>
+            <span class="meta-divider"></span>
             <button id="zoom-out" type="button" aria-label="缩小">−</button>
             <button id="zoom-value" type="button" title="适应画布">100%</button>
             <button id="zoom-in" type="button" aria-label="放大">＋</button>
@@ -1378,7 +1390,12 @@
         <footer>
           <p>检查画布与容器越界、圆角裁切、文本排版和实例文字对比度。</p>
           <div class="dialog-footer-actions">
-            <button id="repair-quality" class="button" type="button" title="扩展未裁切容器以包住内容，微调纯色文字对比度；可撤销">
+            <button
+              id="repair-quality"
+              class="button"
+              type="button"
+              title="扩展未裁切容器以包住内容，微调纯色文字对比度；可撤销"
+            >
               修复可处理项
             </button>
             <button id="save-audit-report" class="button" value="cancel" type="button">
