@@ -104,7 +104,7 @@ export async function createRenderer({ canvas, assetsBaseUrl }) {
   let scene = factory.createWebGLCanvasSurface(canvas, {
     use_embedded_fonts: false, config: { skip_layout: true },
   });
-  let alive = true, generation = 0, hasScene = false, dpr = 1;
+  let alive = true, generation = 0, hasScene = false, dpr = 1, snapshot = null, bootstrapFrame = 0;
   let camera = { pan: { x: 0, y: 0 }, zoom: 1 };
   let receipt = { backend: "Grida/Wasm/WebGL2", package: GRIDA_PACKAGE,
     encoderSourceCommit: GRIDA_ENCODER_SOURCE_COMMIT, encoderSchemaVersion: encoder.schemaVersion,
@@ -120,9 +120,21 @@ export async function createRenderer({ canvas, assetsBaseUrl }) {
       [0, 1 / scale, (canvas.height / 2 - camera.pan.y * dpr) / scale]]);
     scene.redraw(); scene.tick(performance.now());
   };
+  const bootstrapPresentation = () => {
+    if (bootstrapFrame) cancelAnimationFrame(bootstrapFrame);
+    // A newly created native surface needs a subsequent clock tick to present
+    // after its first pipeline setup. This bounded callback is only for scene
+    // loading/resizing; ordinary camera updates remain caller-driven.
+    bootstrapFrame = requestAnimationFrame(() => {
+      bootstrapFrame = 0;
+      if (alive) paint();
+    });
+  };
   return {
     async setScene(design, { resources = new Map() } = {}) {
       assertAlive();
+      if (bootstrapFrame) cancelAnimationFrame(bootstrapFrame);
+      bootstrapFrame = 0;
       const ticket = ++generation, start = performance.now();
       const check = () => { assertAlive(); if (ticket !== generation) throw Error("Grida scene preparation was superseded"); };
       if (hasScene) {
@@ -130,9 +142,10 @@ export async function createRenderer({ canvas, assetsBaseUrl }) {
         scene = factory.createWebGLCanvasSurface(canvas, { use_embedded_fonts: false,
           config: { skip_layout: true } });
       }
+      snapshot = null;
       hasScene = true;
       const registered = new Set(), fontFiles = new Set(), fontFallbackReasons = new Map();
-      const fontFailures = [], imageFailures = [];
+      const fontFailures = [], imageFailures = [], loadedFonts = [], loadedImages = [];
       let fontBytes = 0, imageBytes = 0;
       for (const [id, resource] of resources) {
         const descriptor = resource.descriptor ?? design.resources?.find((value) => value.id === id);
@@ -145,6 +158,7 @@ export async function createRenderer({ canvas, assetsBaseUrl }) {
         if (fontFiles.has(key)) continue;
         try {
           scene.addFont(descriptor.family, resource.bytes);
+          loadedFonts.push({ family: descriptor.family, bytes: resource.bytes });
           fontBytes += resource.bytes.length; fontFiles.add(key);
         } catch (error) { fontFailures.push({ id, message: error.message }); }
       }
@@ -155,7 +169,8 @@ export async function createRenderer({ canvas, assetsBaseUrl }) {
       for (const family of registered)
         if (family.startsWith("Font Awesome 5 ")) fontFallbackReasons.set(family,
           `Pinned Grida does not reliably render ${family} aliases; browser glyphs are cached per text layer.`);
-      scene.setFallbackFonts([...registered].filter((family) => !family.includes("Font Awesome")));
+      const fallbackFonts = [...registered].filter((family) => !family.includes("Font Awesome"));
+      scene.setFallbackFonts(fallbackFonts);
       await document.fonts?.ready;
       check();
       let cacheHits = 0, decorationApproximations = 0;
@@ -182,14 +197,19 @@ export async function createRenderer({ canvas, assetsBaseUrl }) {
         if (descriptor?.kind !== "image") continue;
         const result = scene.addImageWithId(resource.bytes, gridaImageResourceId(id));
         if (result === false) imageFailures.push({ id, message: "Grida could not decode the supplied image" });
-        else imageBytes += resource.bytes.length;
+        else { imageBytes += resource.bytes.length;
+          loadedImages.push({ id: gridaImageResourceId(id), bytes: resource.bytes }); }
       }
       for (const image of projected.images) {
         if (scene.addImageWithId(image.bytes, image.id) === false)
           throw Error(`Grida could not decode rasterized text ${image.id}`);
         imageBytes += image.bytes.length;
+        loadedImages.push(image);
       }
+      snapshot = { encoded, sceneId: projected.document.entry_scene_id,
+        fonts: loadedFonts, images: loadedImages, fallbackFonts };
       paint();
+      bootstrapPresentation();
       receipt = { ...receipt, ...projected.stats, sceneReady: true, sceneBinaryBytes: encoded.length,
         engineNodes: Object.keys(projected.document.nodes).length, fontBytes, imageBytes,
         registeredFontFamilies: [...registered], fontFailures, imageFailures,
@@ -206,9 +226,29 @@ export async function createRenderer({ canvas, assetsBaseUrl }) {
       if (![width, height, devicePixelRatio].every((value) => Number.isFinite(value) && value > 0))
         throw Error("Invalid Grida surface size");
       dpr = devicePixelRatio;
-      canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
+      const physicalWidth = Math.round(width * dpr), physicalHeight = Math.round(height * dpr);
+      const changed = canvas.width !== physicalWidth || canvas.height !== physicalHeight;
       canvas.style.width = `${width}px`; canvas.style.height = `${height}px`;
-      scene.resize(canvas.width, canvas.height);
+      if (!changed) return;
+      canvas.width = physicalWidth; canvas.height = physicalHeight;
+      if (snapshot) {
+        // The pinned Grida surface stops presenting after a loaded WebGL
+        // backing store is resized. Recreate it at the final physical size;
+        // retain the prepared scene and resource bytes, without rerasterizing.
+        const start = performance.now();
+        scene.dispose();
+        scene = factory.createWebGLCanvasSurface(canvas, { use_embedded_fonts: false,
+          config: { skip_layout: true } });
+        for (const font of snapshot.fonts) scene.addFont(font.family, font.bytes);
+        scene.setFallbackFonts(snapshot.fallbackFonts);
+        scene.loadSceneGrida(snapshot.encoded);
+        scene.switchScene(snapshot.sceneId);
+        for (const image of snapshot.images) scene.addImageWithId(image.bytes, image.id);
+        receipt = { ...receipt, surfaceRebuilds: (receipt.surfaceRebuilds ?? 0) + 1,
+          resizeRebuildMs: performance.now() - start };
+        paint();
+        bootstrapPresentation();
+      } else scene.resize(canvas.width, canvas.height);
     },
     render(next = camera) {
       assertAlive();
@@ -220,6 +260,9 @@ export async function createRenderer({ canvas, assetsBaseUrl }) {
     dispose() {
       if (!alive) return;
       alive = false; generation += 1; scene.dispose(); textCache.clear();
+      if (bootstrapFrame) cancelAnimationFrame(bootstrapFrame);
+      bootstrapFrame = 0;
+      snapshot = null;
       receipt = { ...receipt, disposed: true };
     },
     stats() { return structuredClone(receipt); },

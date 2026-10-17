@@ -140,6 +140,11 @@ export async function toGridaDocument(design, {
         projected.fill_paints = [imagePaint(gridaImageResourceId(node.imageRef),
           { cover: "cover", contain: "contain", fill: "fill" }[node.objectFit] ?? "cover")];
         stats.nativeImageNodes += 1;
+        if (node.objectFit === "fill") {
+          stats.unsupportedNodes += 1;
+          mark("image-stretch-compatibility", node,
+            "Pinned Grida image fill fitting is not reliable for all source/target sizes; verify stretched images visually.");
+        }
       } else missingSourceImages.add(node.id);
     } else {
       projected = container({ ...base, fill_paints: [solid("#fff0f3")],

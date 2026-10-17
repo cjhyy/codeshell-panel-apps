@@ -270,3 +270,17 @@ test("Grida keeps an available but visually incompatible font on an explicit per
   assert.ok(Object.hasOwn(result.document.nodes, "text:文字"));
   assert.equal(result.document.links["text:文字"].length, 1);
 });
+
+test("Grida reports unverified native image stretching while preserving the requested source layer", async () => {
+  const design = fixture();
+  design.nodes = [design.nodes.find((node) => node.type === "image")];
+  design.nodes[0].objectFit = "fill";
+  const result = await toGridaDocument(design, { resources: new Map([
+    [originalImageId, { bytes: new Uint8Array([1]) }],
+  ]) });
+  assert.equal(result.stats.nativeImageNodes, 1);
+  assert.equal(result.stats.unsupportedNodes, 1);
+  assert.equal(result.stats.unsupported[0].code, "image-stretch-compatibility");
+  assert.equal(result.stats.unsupported[0].nodeId, "image:1");
+  assert.equal(result.document.nodes["image:1"].fill_paints[0].fit, "fill");
+});

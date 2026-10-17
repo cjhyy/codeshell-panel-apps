@@ -52,6 +52,15 @@ Text decoration in a raster fallback is approximate. Native text baseline,
 wrapping and glyph coverage must still be compared visually; family registration
 alone does not establish fidelity.
 
+The pinned WebGL surface stops presenting when its loaded backing store changes
+size. The adapter rebuilds the native surface synchronously on physical resize,
+restoring the already prepared scene, fonts and images. It does not rerasterize
+text. A single follow-up animation-frame tick presents newly initialized native
+pipelines; normal camera updates remain driven only by the caller. Resize rebuild
+time and count are reported separately. Native image `fill` fitting failed one
+source/target-size pixel fixture although `cover` succeeded; requested stretched
+images retain their projection and get an explicit compatibility issue.
+
 A real saved-page smoke retained all 1,208 original nodes, gradients and clips.
 Known missing source images remain the saved transparent frames. Private input,
 prepared vendor assets and screenshots belong in ignored `artifacts/`, never Git.
