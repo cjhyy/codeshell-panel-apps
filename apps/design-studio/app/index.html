@@ -275,29 +275,13 @@
 
         <section id="stage-wrap" class="stage-wrap" aria-label="设计画布">
           <canvas id="gpu-canvas" aria-hidden="true" hidden></canvas>
-          <svg id="stage" role="img" aria-label="Design canvas" tabindex="0">
-            <defs>
-              <pattern id="dot-grid" width="16" height="16" patternUnits="userSpaceOnUse">
-                <circle cx="1" cy="1" r="0.7" class="grid-dot" />
-              </pattern>
-              <filter id="artboard-shadow" x="-20%" y="-20%" width="140%" height="140%">
-                <feDropShadow dx="0" dy="8" stdDeviation="16" flood-opacity="0.15" />
-              </filter>
-            </defs>
-            <rect id="grid" width="100%" height="100%" fill="url(#dot-grid)" />
-            <g id="scene"></g>
-          </svg>
+          <canvas id="stage" role="img" aria-label="Design canvas" tabindex="0"></canvas>
+          <div id="renderer-message" class="renderer-message" role="status">
+            <p id="renderer-message-text">正在准备 GPU 画布…</p>
+            <button id="retry-renderer" type="button" hidden>重试 GPU 画布</button>
+          </div>
           <div class="canvas-meta">
-            <label class="sr-only" for="canvas-renderer">画布渲染</label>
-            <select
-              id="canvas-renderer"
-              title="自动根据画布范围选择渲染器；编辑和高倍率文字使用 SVG"
-            >
-              <option value="auto">自动</option>
-              <option value="svg">SVG</option>
-              <option value="gpu">CanvasKit GPU</option>
-            </select>
-            <span id="renderer-state" role="status" aria-live="polite">SVG</span>
+            <span id="renderer-state" role="status" aria-live="polite">GPU 加载中</span>
             <span class="meta-divider"></span>
             <button id="zoom-out" type="button" aria-label="缩小">−</button>
             <button id="zoom-value" type="button" title="适应画布">100%</button>

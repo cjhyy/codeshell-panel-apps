@@ -2,6 +2,12 @@
 /* global document, localStorage, requestAnimationFrame, window */
 import { projectContextChanged } from "./project-context.mjs";
 import { createRendererController } from "./renderer-controller.mjs";
+import {
+  canvasNodeMatrix,
+  drawCanvasInteraction,
+  hitTestCanvasNode,
+  hitTestCanvasHandle,
+} from "./canvas-interaction.mjs";
 
 import {
   alignNodeTrees,
@@ -143,12 +149,12 @@ const DEFAULT_COLOR_TOKENS = Object.freeze([
 const elements = {
   appShell: document.querySelector(".app-shell"),
   stage: document.querySelector("#stage"),
-  scene: document.querySelector("#scene"),
-  grid: document.querySelector("#grid"),
   stageWrap: document.querySelector("#stage-wrap"),
   gpuCanvas: document.querySelector("#gpu-canvas"),
-  canvasRenderer: document.querySelector("#canvas-renderer"),
   rendererState: document.querySelector("#renderer-state"),
+  rendererMessage: document.querySelector("#renderer-message"),
+  rendererMessageText: document.querySelector("#renderer-message-text"),
+  retryRenderer: document.querySelector("#retry-renderer"),
   workspace: document.querySelector(".workspace"),
   activePage: document.querySelector("#active-page"),
   addPage: document.querySelector("#add-page"),
@@ -420,8 +426,9 @@ let localHtmlFiles = new Map();
 let lastHtmlImportReport = null;
 let htmlImportGeneration = 0;
 const loadedFontResourceIds = new Set();
-let canvasRendererMode = "auto";
-let gpuContextLost = false;
+let liveRenderRevision = 0;
+let canvasHandles = [];
+const decodedRendererResources = new Map();
 const gpuRenderer = createRendererController({
   canvas: elements.gpuCanvas,
   assetsBaseUrl: new URL("./canvas/vendor/", import.meta.url).href,
@@ -432,13 +439,22 @@ const gpuRenderer = createRendererController({
     };
   },
   onState(state) {
-    if (state.reason === "context-lost") gpuContextLost = true;
     elements.gpuCanvas.hidden = !state.active;
     elements.stageWrap.dataset.gpuActive = String(state.active);
-    elements.rendererState.textContent = state.active ? "GPU" : state.loading ? "加载中" : "SVG";
-    elements.rendererState.title = state.active
-      ? "CanvasKit · WebGL2 · 视口裁剪"
-      : state.reason || "SVG 渲染";
+    elements.stageWrap.dataset.rendererStatus = state.status;
+    elements.rendererState.textContent = state.active
+      ? "CanvasKit GPU"
+      : state.loading
+        ? "GPU 加载中"
+        : "GPU 不可用";
+    elements.rendererState.title = state.reason || "CanvasKit · WebGL2";
+    elements.rendererMessage.hidden = state.active;
+    elements.retryRenderer.hidden = state.loading;
+    elements.rendererMessageText.textContent = state.loading
+      ? "正在准备 GPU 画布…"
+      : state.status === "unavailable"
+        ? "当前宿主不支持 GPU 画布，请更新 CodeShell 后重试。"
+        : "GPU 画布暂时不可用，设计数据已保留。请点击重试。";
   },
 });
 
@@ -452,8 +468,13 @@ function rendererResources() {
   for (const descriptor of design.resources ?? []) {
     const url = resourceDataUrls.get(descriptor.id);
     if (!url) continue;
-    const encoded = url.slice(url.indexOf(",") + 1);
-    const bytes = Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
+    let cached = decodedRendererResources.get(descriptor.id);
+    if (cached?.url !== url) {
+      const encoded = url.slice(url.indexOf(",") + 1);
+      cached = { url, bytes: Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0)) };
+      decodedRendererResources.set(descriptor.id, cached);
+    }
+    const bytes = cached.bytes;
     resources.set(descriptor.id, { descriptor, bytes, mimeType: descriptor.mime });
   }
   return resources;
@@ -461,33 +482,42 @@ function rendererResources() {
 
 function syncGpuRenderer() {
   const bounds = elements.stage.getBoundingClientRect();
-  const mode =
-    canvasRendererMode === "auto"
-      ? !gpuContextLost && design.nodes.length >= 300 && zoom >= 0.25 && zoom <= 1
-        ? "gpu"
-        : "svg"
-      : canvasRendererMode;
-  // Mode only changes at a user choice / auto threshold, never retries a failed context each frame.
-  if (gpuRenderer.state().mode !== mode) void gpuRenderer.setMode(mode);
   elements.stageWrap.dataset.grid = String(showGrid);
+  const renderDesign = inlineTextEdit
+    ? {
+        ...design,
+        nodes: design.nodes.map((node) =>
+          node.id === inlineTextEdit.nodeId ? { ...node, visible: false } : node,
+        ),
+      }
+    : design;
   void gpuRenderer.update({
     key: `${workspaceEpoch}/${documentEpoch}/${design.activePageId}`,
-    revision: `${designStateSequence}/${resourceDataUrls.size}`,
-    design,
+    revision: `${designStateSequence}/${liveRenderRevision}/${resourceDataUrls.size}/${inlineTextEdit?.nodeId ?? ""}`,
+    design: renderDesign,
     getResources: rendererResources,
-    capable: context.capabilities?.packageAssets?.wasm === true,
-    suspended:
-      workspaceLoading ||
-      Boolean(inlineTextEdit) ||
-      Boolean(interaction && interaction.kind !== "pan"),
+    capable: !window.codeshellPanel?.call
+      ? typeof WebAssembly === "object"
+      : context.capabilities?.packageAssets?.wasm === true,
+    suspended: workspaceLoading,
     viewport: {
       width: bounds.width,
       height: bounds.height,
-      dpr: window.devicePixelRatio || 1,
+      dpr: canvasPixelRatio(bounds),
       pan,
       zoom,
     },
   });
+}
+
+function canvasPixelRatio({ width, height }) {
+  if (width <= 0 || height <= 0) return 1;
+  return Math.min(
+    window.devicePixelRatio || 1,
+    8192 / width,
+    8192 / height,
+    Math.sqrt((16 * 1024 * 1024) / (width * height)),
+  );
 }
 
 function scopedStorageKey(base, workspaceRoot = context.cwd ?? "preview") {
@@ -1305,7 +1335,7 @@ function markChanged(render = true) {
 function saveUiPreferences() {
   void hostCall("storage.set", {
     key: "uiPreferences",
-    value: { showGrid, snapEnabled, canvasRendererMode },
+    value: { showGrid, snapEnabled },
   }).catch(() => undefined);
 }
 
@@ -1498,61 +1528,18 @@ function shouldRenderCanvasLabel(node, options = {}) {
   return options.suppressLabel !== true && (!node.parentId || selectedIds.has(node.id));
 }
 
-function appendAncestorClipChain(root, node, clipIds, nodes = design.nodes, nodeIndex = null) {
-  let content = root;
-  const byId = nodeIndex ?? new Map(nodes.map((candidate) => [candidate.id, candidate]));
-  const seen = new Set();
-  let parentId = node.parentId;
-  while (parentId && !seen.has(parentId)) {
-    seen.add(parentId);
-    const parent = byId.get(parentId);
-    if (!parent) break;
-    const clipId = clipIds.get(parent.id);
-    if (clipId) {
-      const clipped = svgElement("g", { "clip-path": `url(#${clipId})` });
-      content.append(clipped);
-      content = clipped;
-    }
-    parentId = parent.parentId;
-  }
-  return content;
-}
-
-let sceneOverlay = null;
 let viewportRenderFrame = 0;
-let viewportZoomDirty = false;
 let interactionRenderFrame = 0;
 
-function scheduleViewportRender(zoomChanged = false) {
-  viewportZoomDirty ||= zoomChanged;
+function scheduleViewportRender() {
   if (viewportRenderFrame) return;
   viewportRenderFrame = requestAnimationFrame(() => renderViewport());
 }
 
-function renderViewport(zoomChanged = false) {
+function renderViewport() {
   if (viewportRenderFrame) cancelAnimationFrame(viewportRenderFrame);
   viewportRenderFrame = 0;
-  const updateZoom = zoomChanged || viewportZoomDirty;
-  viewportZoomDirty = false;
-  elements.scene.setAttribute("transform", `translate(${pan.x} ${pan.y}) scale(${zoom})`);
-  if (updateZoom) {
-    const byId = new Map(design.nodes.map((node) => [node.id, node]));
-    for (const label of elements.scene.querySelectorAll("[data-canvas-label]")) {
-      const node = byId.get(label.dataset.canvasLabel);
-      if (!node) continue;
-      label.setAttribute("y", node.y - 18 / zoom);
-      label.setAttribute("font-size", 11 / zoom);
-      label.style.display = zoom >= 0.65 ? "" : "none";
-    }
-    for (const placeholder of elements.scene.querySelectorAll("[data-zoom-outline]")) {
-      placeholder.setAttribute("stroke-width", 1.5 / zoom);
-      placeholder.setAttribute("stroke-dasharray", `${6 / zoom} ${4 / zoom}`);
-    }
-    renderSceneOverlays(byId);
-  } else {
-    const byId = new Map(design.nodes.map((node) => [node.id, node]));
-    renderSelectionSize(selectedNodes().filter((node) => isDesignNodeVisible(design, node, byId)));
-  }
+  renderSceneOverlays();
   elements.zoomValue.textContent = `${Math.round(zoom * 100)}%`;
   updateInlineTextEditorPosition();
   syncGpuRenderer();
@@ -1562,6 +1549,7 @@ function scheduleInteractionRender() {
   if (interactionRenderFrame) return;
   interactionRenderFrame = requestAnimationFrame(() => {
     interactionRenderFrame = 0;
+    if (["move", "resize", "create"].includes(interaction?.kind)) liveRenderRevision += 1;
     renderScene();
     renderProperties();
   });
@@ -1572,510 +1560,26 @@ function renderScene() {
   interactionRenderFrame = 0;
   if (viewportRenderFrame) cancelAnimationFrame(viewportRenderFrame);
   viewportRenderFrame = 0;
-  viewportZoomDirty = false;
-  elements.scene.replaceChildren();
-  elements.scene.setAttribute("transform", `translate(${pan.x} ${pan.y}) scale(${zoom})`);
-
-  const artboard = svgElement("rect", {
-    x: 0,
-    y: 0,
-    width: design.canvas.width,
-    height: design.canvas.height,
-    rx: 2,
-    fill: design.canvas.background,
-    filter: "url(#artboard-shadow)",
-  });
-  artboard.dataset.canvas = "true";
-  elements.scene.append(artboard);
-
-  const clipIds = new Map();
-  const componentClipIds = new Map();
-  const shadowIds = new Map();
-  const sceneDefs = svgElement("defs");
-  const renderNodes = allDesignNodes();
-  const renderDocument = { ...design, nodes: renderNodes };
-  const renderNodeIndex = new Map(renderNodes.map((node) => [node.id, node]));
-  renderNodes.forEach((node, index) => {
-    if (["frame", "component"].includes(node.type) && node.clipContent === true) {
-      const id = `frame-clip-${index}`;
-      clipIds.set(node.id, id);
-      const clipPath = svgElement("clipPath", {
-        id,
-        clipPathUnits: "userSpaceOnUse",
-      });
-      const clipRect = svgElement("rect", {
-        x: node.x,
-        y: node.y,
-        width: node.width,
-        height: node.height,
-        rx: Math.min(node.cornerRadius, node.width / 2, node.height / 2),
-      });
-      const transform = nodeTransform(node, renderNodes, renderNodeIndex);
-      if (transform) clipRect.setAttribute("transform", transform);
-      clipPath.append(clipRect);
-      sceneDefs.append(clipPath);
-    }
-    if (node.shadow && node.shadow.opacity > 0 && node.type !== "group") {
-      const id = `node-shadow-${index}`;
-      const bounds = renderedDesignNodeShadowFilterBounds(renderDocument, node, renderNodes);
-      shadowIds.set(node.id, id);
-      const filter = svgElement("filter", {
-        id,
-        filterUnits: "userSpaceOnUse",
-        x: bounds.x,
-        y: bounds.y,
-        width: bounds.width,
-        height: bounds.height,
-      });
-      filter.append(
-        svgElement("feDropShadow", {
-          dx: node.shadow.x,
-          dy: node.shadow.y,
-          stdDeviation: node.shadow.blur / 2,
-          "flood-color": node.shadow.color,
-          "flood-opacity": node.shadow.opacity,
-        }),
-      );
-      sceneDefs.append(filter);
-    }
-  });
-  renderNodes
-    .filter((node) => node.type === "component")
-    .forEach((component, componentIndex) => {
-      const sourceDocument = detachedComponentRenderDocument(renderDocument, component.id);
-      const sourceNodeIndex = new Map(sourceDocument.nodes.map((node) => [node.id, node]));
-      const sourceIds = descendantIds(sourceDocument.nodes, new Set([component.id]));
-      sourceIds.add(component.id);
-      const sourceClipIds = new Map();
-      sourceDocument.nodes.forEach((node, nodeIndex) => {
-        if (
-          !sourceIds.has(node.id) ||
-          !["frame", "component"].includes(node.type) ||
-          node.clipContent !== true
-        ) {
-          return;
-        }
-        const id = `component-${componentIndex}-clip-${nodeIndex}`;
-        sourceClipIds.set(node.id, id);
-        const clipPath = svgElement("clipPath", {
-          id,
-          clipPathUnits: "userSpaceOnUse",
-        });
-        const clipRect = svgElement("rect", {
-          x: node.x,
-          y: node.y,
-          width: node.width,
-          height: node.height,
-          rx: Math.min(node.cornerRadius, node.width / 2, node.height / 2),
-        });
-        const transform = nodeTransform(node, sourceDocument.nodes, sourceNodeIndex);
-        if (transform) clipRect.setAttribute("transform", transform);
-        clipPath.append(clipRect);
-        sceneDefs.append(clipPath);
-      });
-      componentClipIds.set(component.id, sourceClipIds);
-    });
-  if (clipIds.size + shadowIds.size > 0) elements.scene.append(sceneDefs);
-  for (const node of design.nodes) {
-    if (!isDesignNodeVisible(design, node, renderNodeIndex)) continue;
-    elements.scene.append(
-      renderNode(node, clipIds, shadowIds, {
-        renderDocument,
-        componentClipIds,
-        nodeIndex: renderNodeIndex,
-      }),
-    );
-  }
-  // Keep labels and editing overlays as SVG above the retained GPU scene.
-  const gpuLabels = svgElement("g", { "data-gpu-labels": "true" });
-  for (const label of elements.scene.querySelectorAll("[data-canvas-label]")) {
-    let copy = label.cloneNode(true);
-    let ancestor = label.parentNode;
-    while (ancestor !== elements.scene) {
-      const wrapper = ancestor.cloneNode(false);
-      wrapper.removeAttribute("data-node-id");
-      wrapper.append(copy);
-      copy = wrapper;
-      ancestor = ancestor.parentNode;
-    }
-    gpuLabels.append(copy);
-  }
-  elements.scene.append(gpuLabels);
-  sceneOverlay = svgElement("g", { "data-scene-overlay": "true" });
-  elements.scene.append(sceneOverlay);
-  renderSceneOverlays(renderNodeIndex);
+  renderSceneOverlays();
   syncGpuRenderer();
 }
 
-function renderSceneOverlays(nodeIndex = null) {
-  if (!sceneOverlay || sceneOverlay.parentNode !== elements.scene) return;
-  sceneOverlay.replaceChildren();
-  const byId = nodeIndex ?? new Map(design.nodes.map((node) => [node.id, node]));
-  const nodes = selectedNodes().filter((node) => isDesignNodeVisible(design, node, byId));
-  if (nodes.length === 1) {
-    sceneOverlay.append(renderSelection(nodes[0], true, byId));
-  } else if (nodes.length > 1) {
-    for (const node of nodes) sceneOverlay.append(renderSelection(node, false, byId));
-    sceneOverlay.append(renderMultiSelection(nodes));
-  }
-  if (interaction?.kind === "marquee") sceneOverlay.append(renderMarquee(interaction));
-  if (interaction?.kind === "move" && interaction.guides?.length) {
-    sceneOverlay.append(renderSmartGuides(interaction.guides));
-  }
-  renderSelectionSize(nodes);
-}
-
-function renderInstanceNode(node, clipIds, shadowIds, options = {}) {
-  const renderDocument = options.renderDocument ?? design;
-  const renderNodes = renderDocument.nodes;
-  const nodeIndex =
-    options.nodeIndex ?? new Map(renderNodes.map((candidate) => [candidate.id, candidate]));
-  const candidate = nodeIndex.get(node.componentId);
-  const component = candidate?.type === "component" ? candidate : null;
-  const group = svgElement("g");
-  group.dataset.nodeId = node.id;
-  group.dataset.componentId = node.componentId;
-  const content = appendAncestorClipChain(group, node, clipIds, renderNodes, nodeIndex);
-  const shadowId = shadowIds.get(node.id);
-  if (shadowId) content.setAttribute("filter", `url(#${shadowId})`);
-  const transform = nodeTransform(node, renderNodes, nodeIndex);
-  if (transform) content.setAttribute("transform", transform);
-  content.setAttribute("opacity", effectiveDesignNodeOpacity(renderDocument, node, nodeIndex));
-  const instanceStack = options.instanceStack ?? new Set();
-  if (
-    !component ||
-    component.width <= 0 ||
-    component.height <= 0 ||
-    instanceStack.has(component.id)
-  ) {
-    const missing = svgElement("rect", {
-      x: node.x,
-      y: node.y,
-      width: Math.max(1, node.width),
-      height: Math.max(1, node.height),
-      fill: "none",
-      stroke: "#ff5c78",
-      "stroke-width": 1.5 / zoom,
-      "stroke-dasharray": `${6 / zoom} ${4 / zoom}`,
-    });
-    missing.dataset.nodeId = node.id;
-    missing.dataset.zoomOutline = "true";
-    content.append(missing);
-    return group;
-  }
-  const nextInstanceStack = new Set(instanceStack);
-  nextInstanceStack.add(component.id);
-  const sourceDocument = detachedComponentRenderDocument(renderDocument, component.id);
-  // Detachment changes the ancestry graph; this index must match the source document.
-  const sourceNodeIndex = new Map(
-    sourceDocument.nodes.map((candidate) => [candidate.id, candidate]),
-  );
-  const sourceComponent = sourceNodeIndex.get(component.id);
-  const componentClipIds = options.componentClipIds ?? new Map();
-  const sourceClipIds = componentClipIds.get(component.id) ?? clipIds;
-
-  const mapped = svgElement("g", {
-    transform: `translate(${node.x} ${node.y}) scale(${node.width / component.width} ${
-      node.height / component.height
-    }) translate(${-component.x} ${-component.y})`,
-  });
-  const componentDescendantIds = descendantIds(sourceDocument.nodes, new Set([component.id]));
-  const sourceNodes = [
-    sourceComponent,
-    ...sourceDocument.nodes.filter((candidate) => componentDescendantIds.has(candidate.id)),
-  ].filter(Boolean);
-  for (const sourceNode of sourceNodes) {
-    if (!isDesignNodeVisible(sourceDocument, sourceNode, sourceNodeIndex)) continue;
-    const source = renderNode(sourceNode, sourceClipIds, shadowIds, {
-      suppressLabel: true,
-      instanceStack: nextInstanceStack,
-      renderDocument: sourceDocument,
-      nodeIndex: sourceNodeIndex,
-      componentClipIds,
-    });
-    source.dataset.nodeId = node.id;
-    for (const target of source.querySelectorAll("[data-node-id]")) {
-      target.dataset.componentNodeId = target.dataset.nodeId;
-      target.dataset.nodeId = node.id;
-    }
-    mapped.append(source);
-  }
-  content.append(mapped);
-  if (shouldRenderCanvasLabel(node)) {
-    const label = svgElement("text", {
-      x: node.x,
-      y: node.y - 18 / zoom,
-      fill: "#a78bfa",
-      "font-size": 11 / zoom,
-      "font-weight": 650,
-      "font-family": "Inter, ui-sans-serif, system-ui, sans-serif",
-    });
-    label.textContent = `◆ ${node.name}`;
-    label.dataset.nodeId = node.id;
-    label.dataset.canvasLabel = node.id;
-    label.style.display = zoom >= 0.65 ? "" : "none";
-    content.append(label);
-  }
-  return group;
-}
-
-let scenePaintSequence = 0;
-function renderNode(node, clipIds, shadowIds, options = {}) {
-  if (node.type === "instance") return renderInstanceNode(node, clipIds, shadowIds, options);
-  const renderDocument = options.renderDocument ?? design;
-  const renderNodes = renderDocument.nodes;
-  const nodeIndex =
-    options.nodeIndex ?? new Map(renderNodes.map((candidate) => [candidate.id, candidate]));
-  const group = svgElement("g");
-  group.dataset.nodeId = node.id;
-  const content = appendAncestorClipChain(group, node, clipIds, renderNodes, nodeIndex);
-  const transform = nodeTransform(node, renderNodes, nodeIndex);
-  if (transform) content.setAttribute("transform", transform);
-  content.setAttribute("opacity", effectiveDesignNodeOpacity(renderDocument, node, nodeIndex));
-
-  let visual;
-  if (node.type === "ellipse") {
-    visual = svgElement("ellipse", {
-      cx: node.x + node.width / 2,
-      cy: node.y + node.height / 2,
-      rx: Math.max(0.5, node.width / 2),
-      ry: Math.max(0.5, node.height / 2),
-      fill: node.fill,
-      stroke: node.stroke,
-      "stroke-width": node.strokeWidth,
-    });
-  } else if (node.type === "text") {
-    const fontResource = node.fontRef
-      ? design.resources?.find((resource) => resource.id === node.fontRef)
-      : null;
-    const textX =
-      node.textAlign === "center"
-        ? node.x + node.width / 2
-        : node.textAlign === "right"
-          ? node.x + node.width
-          : node.x;
-    visual = svgElement("text", {
-      x: textX,
-      y: node.y,
-      fill: node.fill,
-      stroke: node.stroke,
-      "stroke-width": node.strokeWidth,
-      "font-size": node.fontSize,
-      "font-weight": node.fontWeight,
-      "font-family": designFontFamilyCss(
-        fontResource?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
-      ),
-      "font-style": node.fontStyle ?? "normal",
-      "letter-spacing": node.letterSpacing ?? 0,
-      "text-decoration": node.textDecoration ?? "none",
-      "dominant-baseline": "hanging",
-      "text-anchor":
-        node.textAlign === "center" ? "middle" : node.textAlign === "right" ? "end" : "start",
-    });
-    const lines = String(node.text).split("\n");
-    lines.forEach((line, index) => {
-      const span = svgElement("tspan", {
-        x: textX,
-        y: node.y + index * node.fontSize * node.lineHeight,
-      });
-      span.textContent = line || " ";
-      visual.append(span);
-    });
-    visual.dataset.textNodeId = node.id;
-    if (inlineTextEdit?.nodeId === node.id) visual.style.visibility = "hidden";
-  } else if (node.type === "image") {
-    const source = resourceDataUrls.get(node.imageRef);
-    visual = source
-      ? svgElement("image", {
-          x: node.x,
-          y: node.y,
-          width: Math.max(1, node.width),
-          height: Math.max(1, node.height),
-          href: source,
-          preserveAspectRatio:
-            node.objectFit === "fill"
-              ? "none"
-              : node.objectFit === "contain"
-                ? "xMidYMid meet"
-                : "xMidYMid slice",
-        })
-      : svgElement("rect", {
-          x: node.x,
-          y: node.y,
-          width: Math.max(1, node.width),
-          height: Math.max(1, node.height),
-          fill: "#fff0f3",
-          stroke: "#ff5c78",
-          "stroke-width": 1.5 / zoom,
-          "stroke-dasharray": `${6 / zoom} ${4 / zoom}`,
-        });
-  } else if (node.type === "group") {
-    visual = svgElement("rect", {
-      x: node.x,
-      y: node.y,
-      width: Math.max(1, node.width),
-      height: Math.max(1, node.height),
-      fill: "transparent",
-      stroke: "transparent",
-      "pointer-events": "all",
-    });
-  } else {
-    visual = svgElement("rect", {
-      x: node.x,
-      y: node.y,
-      width: Math.max(1, node.width),
-      height: Math.max(1, node.height),
-      rx: Math.min(node.cornerRadius, node.width / 2, node.height / 2),
-      fill: node.fill,
-      stroke: node.stroke,
-      "stroke-width": node.strokeWidth,
-    });
-  }
-  if (node.fillPaints && node.type !== "image" && node.type !== "group") {
-    const paint = designPaintSvg(node, `scene-paint-${++scenePaintSequence}`);
-    const parsed = new window.DOMParser().parseFromString(
-      `<svg xmlns="http://www.w3.org/2000/svg"><defs>${paint.definitions.join("")}</defs><rect ${paint.attributes}/></svg>`,
-      "image/svg+xml",
-    );
-    const defs = parsed.querySelector("defs");
-    if (defs?.children.length) content.append(document.importNode(defs, true));
-    for (const attribute of parsed.documentElement.lastElementChild.attributes)
-      visual.setAttribute(attribute.name, attribute.value);
-  }
-  visual.dataset.nodeId = node.id;
-  if (node.type === "image" && !resourceDataUrls.has(node.imageRef))
-    visual.dataset.zoomOutline = "true";
-  const shadowId = shadowIds.get(node.id);
-  if (shadowId) visual.setAttribute("filter", `url(#${shadowId})`);
-  visual.style.pointerEvents = isNodeEffectivelyLocked(node, renderNodes, nodeIndex)
-    ? "visiblePainted"
-    : "all";
-  content.append(visual);
-
-  if (isContainerNode(node) && shouldRenderCanvasLabel(node, options)) {
-    const label = svgElement("text", {
-      x: node.x,
-      y: node.y - 18 / zoom,
-      fill: "#8a8a85",
-      "font-size": 11 / zoom,
-      "font-weight": 600,
-      "font-family": "Inter, ui-sans-serif, system-ui, sans-serif",
-    });
-    label.textContent = `${node.type === "component" ? "◇ " : node.type === "group" ? "▣ " : ""}${node.name}`;
-    label.dataset.nodeId = node.id;
-    label.dataset.canvasLabel = node.id;
-    label.style.display = zoom >= 0.65 ? "" : "none";
-    content.append(label);
-  }
-  return group;
-}
-
-function renderSelection(node, showHandles, nodeIndex = null) {
-  const locked = isNodeEffectivelyLocked(node, design.nodes, nodeIndex);
-  const transform = nodeTransform(node, design.nodes, nodeIndex);
-  const overlay = svgElement("g", {
-    transform,
-  });
-  const border = svgElement("rect", {
-    x: node.x,
-    y: node.y,
-    width: node.width,
-    height: node.height,
-    fill: "none",
-    stroke: locked ? "#ffae52" : "#4f7cff",
-    "stroke-width": 1.5 / zoom,
-    "stroke-dasharray": locked ? `${5 / zoom} ${3 / zoom}` : "",
-    "pointer-events": "none",
-  });
-  overlay.append(border);
-  if (!showHandles || locked || transform || activeTool !== "select") return overlay;
-
-  const size = 8 / zoom;
-  const handles = [
-    ["nw", node.x, node.y, "nwse-resize"],
-    ["ne", node.x + node.width, node.y, "nesw-resize"],
-    ["se", node.x + node.width, node.y + node.height, "nwse-resize"],
-    ["sw", node.x, node.y + node.height, "nesw-resize"],
-  ];
-  for (const [handle, x, y, cursor] of handles) {
-    if (window.matchMedia("(pointer: coarse)").matches) {
-      const hitSize = 28 / zoom;
-      const hitArea = svgElement("rect", {
-        x: x - hitSize / 2,
-        y: y - hitSize / 2,
-        width: hitSize,
-        height: hitSize,
-        fill: "transparent",
-      });
-      hitArea.dataset.handle = handle;
-      hitArea.style.cursor = cursor;
-      overlay.append(hitArea);
-    }
-    const point = svgElement("rect", {
-      x: x - size / 2,
-      y: y - size / 2,
-      width: size,
-      height: size,
-      rx: 1.5 / zoom,
-      fill: "#ffffff",
-      stroke: "#315fda",
-      "stroke-width": 1.5 / zoom,
-    });
-    point.dataset.handle = handle;
-    point.style.cursor = cursor;
-    overlay.append(point);
-  }
-  return overlay;
-}
-
-function renderMultiSelection(nodes) {
-  const bounds = visualSelectionBounds(nodes, design.nodes);
-  return svgElement("rect", {
-    x: bounds.x,
-    y: bounds.y,
+function renderSceneOverlays() {
+  const bounds = elements.stage.getBoundingClientRect();
+  canvasHandles = drawCanvasInteraction(elements.stage, {
+    design,
+    selectedIds,
+    pan,
+    zoom,
+    dpr: canvasPixelRatio(bounds),
     width: bounds.width,
     height: bounds.height,
-    fill: "none",
-    stroke: "#4f7cff",
-    "stroke-width": 1.5 / zoom,
-    "stroke-dasharray": `${4 / zoom} ${3 / zoom}`,
-    "pointer-events": "none",
+    activeTool,
+    interaction,
+    isLocked: isEffectivelyLocked,
   });
-}
-
-function renderMarquee(state) {
-  const x = Math.min(state.start.x, state.current.x);
-  const y = Math.min(state.start.y, state.current.y);
-  return svgElement("rect", {
-    x,
-    y,
-    width: Math.abs(state.current.x - state.start.x),
-    height: Math.abs(state.current.y - state.start.y),
-    fill: "#4f7cff",
-    "fill-opacity": 0.08,
-    stroke: "#6d9cff",
-    "stroke-width": 1 / zoom,
-    "stroke-dasharray": `${3 / zoom} ${2 / zoom}`,
-    "pointer-events": "none",
-  });
-}
-
-function renderSmartGuides(guides) {
-  const group = svgElement("g", { "pointer-events": "none" });
-  for (const guide of guides) {
-    group.append(
-      svgElement("line", {
-        x1: guide.axis === "x" ? guide.value : 0,
-        x2: guide.axis === "x" ? guide.value : design.canvas.width,
-        y1: guide.axis === "y" ? guide.value : 0,
-        y2: guide.axis === "y" ? guide.value : design.canvas.height,
-        stroke: "#ff4fa3",
-        "stroke-width": 1 / zoom,
-        "stroke-dasharray": `${4 / zoom} ${3 / zoom}`,
-      }),
-    );
-  }
-  return group;
+  const index = new Map(design.nodes.map((node) => [node.id, node]));
+  renderSelectionSize(selectedNodes().filter((node) => isDesignNodeVisible(design, node, index)));
 }
 
 function renderSelectionSize(nodes) {
@@ -2144,12 +1648,7 @@ function updateInlineTextEditorPosition() {
     return;
   }
   const node = edit.node;
-  const visual = [...elements.stage.querySelectorAll("[data-text-node-id]")].find(
-    (element) => element.dataset.textNodeId === node.id,
-  );
-  const matrix = visual?.getScreenCTM()?.translate(node.x, node.y);
-  if (!matrix) return;
-  const rect = elements.stageWrap.getBoundingClientRect();
+  const matrix = canvasNodeMatrix(node, design.nodes, pan, zoom);
   const font = design.resources?.find((resource) => resource.id === node.fontRef);
   Object.assign(elements.inlineTextEditor.style, {
     width: `${Math.max(28, node.width)}px`,
@@ -2163,7 +1662,7 @@ function updateInlineTextEditorPosition() {
     lineHeight: String(node.lineHeight ?? 1.2),
     letterSpacing: `${node.letterSpacing ?? 0}px`,
     textAlign: node.textAlign ?? "left",
-    transform: `matrix(${matrix.a}, ${matrix.b}, ${matrix.c}, ${matrix.d}, ${matrix.e - rect.left}, ${matrix.f - rect.top})`,
+    transform: `matrix(${matrix.join(",")})`,
   });
 }
 
@@ -2895,7 +2394,7 @@ function renderAll() {
   updateLayoutControlState();
   updateInlineTextEditorPosition();
   elements.zoomValue.textContent = `${Math.round(zoom * 100)}%`;
-  elements.grid.style.display = showGrid ? "" : "none";
+  elements.stageWrap.dataset.grid = String(showGrid);
   elements.toggleGrid.classList.toggle("active", showGrid);
   elements.toggleGrid.setAttribute("aria-pressed", String(showGrid));
   elements.toggleSnap.classList.toggle("active", snapEnabled);
@@ -2940,19 +2439,24 @@ function documentPoint(event) {
 }
 
 function pointerDown(event) {
-  if (interaction || (event.button !== 0 && event.button !== 1)) return;
+  if (interaction || !gpuRenderer.state().active || (event.button !== 0 && event.button !== 1))
+    return;
   const before = {
     selectedId,
     selectedIds: new Set(selectedIds),
     tool: activeTool,
   };
   const point = documentPoint(event);
-  const handle = event.target.closest?.("[data-handle]")?.dataset.handle;
-  const targetId = event.target.closest?.("[data-node-id]")?.dataset.nodeId;
+  const handle = hitTestCanvasHandle(
+    point,
+    canvasHandles,
+    zoom,
+    window.matchMedia("(pointer: coarse)").matches,
+  );
+  const targetId = hitTestCanvasNode(design, point)?.id;
   const shouldPan = activeTool === "hand" || spacePressed || event.button === 1;
 
-  // Replacing SVG nodes during selection suppresses native click/dblclick.
-  // Recognize two completed, stationary pointer taps on the same text instead.
+  // Recognize completed stationary taps across pointer-capture transitions.
   const textTarget =
     activeTool === "select" && !shouldPan && !event.shiftKey && nodeById(targetId)?.type === "text";
   if (
@@ -3085,6 +2589,19 @@ function pointerDown(event) {
 }
 
 function pointerMove(event) {
+  if (!interaction) {
+    const handle = hitTestCanvasHandle(
+      documentPoint(event),
+      canvasHandles,
+      zoom,
+      window.matchMedia("(pointer: coarse)").matches,
+    );
+    elements.stage.style.cursor = handle
+      ? ["nw", "se"].includes(handle)
+        ? "nwse-resize"
+        : "nesw-resize"
+      : "";
+  }
   if (!interaction || event.pointerId !== interaction.pointerId) return;
   if (!interactionIsCurrent(interaction)) {
     releaseInteraction();
@@ -6615,7 +6132,7 @@ elements.stage.addEventListener("lostpointercapture", (event) =>
 );
 elements.stage.addEventListener("dblclick", (event) => {
   if (activeTool !== "select") return;
-  let id = event.target.closest?.("[data-node-id]")?.dataset.nodeId;
+  let id = hitTestCanvasNode(design, documentPoint(event))?.id;
   if (
     !id &&
     lastTextPointer &&
@@ -6652,14 +6169,8 @@ elements.stage.addEventListener(
   { passive: false },
 );
 elements.zoomOut.addEventListener("click", () => setZoom(zoom / 1.2));
-elements.canvasRenderer.addEventListener("change", () => {
-  canvasRendererMode = elements.canvasRenderer.value;
-  saveUiPreferences();
-  // An explicit choice retries a renderer after a lost GPU context.
-  if (canvasRendererMode === "gpu") {
-    gpuContextLost = false;
-    void gpuRenderer.setMode("gpu");
-  }
+elements.retryRenderer.addEventListener("click", () => {
+  void gpuRenderer.setMode("gpu");
   syncGpuRenderer();
 });
 elements.zoomIn.addEventListener("click", () => setZoom(zoom * 1.2));
@@ -9833,9 +9344,6 @@ async function initialize() {
   if (uiPreferences && typeof uiPreferences === "object") {
     if (typeof uiPreferences.showGrid === "boolean") showGrid = uiPreferences.showGrid;
     if (typeof uiPreferences.snapEnabled === "boolean") snapEnabled = uiPreferences.snapEnabled;
-    if (["auto", "svg", "gpu"].includes(uiPreferences.canvasRendererMode))
-      canvasRendererMode = uiPreferences.canvasRendererMode;
-    elements.canvasRenderer.value = canvasRendererMode;
     renderAll();
   }
   try {
