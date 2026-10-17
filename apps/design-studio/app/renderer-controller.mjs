@@ -1,18 +1,19 @@
-/* Owns one optional GPU surface. The saved design and the SVG editor stay external. */
+/* Owns the GPU surface; the saved design and interaction overlays stay external. */
 export function createRendererController({
   canvas,
   assetsBaseUrl = "",
   loadRenderer,
   capability,
   onState = () => {},
-  maxGpuZoom = 1,
 } = {}) {
-  let mode = "svg", document = null, generation = 0, disposed = false;
-  let capable, suspended = false, suspensionReason = "editing";
+  const mode = "gpu";
+  let document = null, generation = 0, disposed = false;
+  let capable, suspended = false, suspensionReason = "suspended";
   let lost = false, failure = null, slot = null, loaderPromise = null;
   let wanted = false, pump = null, viewportVersion = 0;
   let viewport = { width: 0, height: 0, dpr: 1, pan: { x: 0, y: 0 }, zoom: 1 };
-  let lastState = { mode, active: false, loading: false, fallback: false, reason: "svg", key: null };
+  let lastState = { mode, status: "loading", active: false, loading: true,
+    fallback: false, reason: "initializing", key: null };
   const retired = new WeakSet();
   const isCurrent = (token, target) => !disposed && generation === token && document === target;
   const capabilityAllowed = (value) => value === true ||
@@ -23,23 +24,24 @@ export function createRendererController({
 
   function blockedReason() {
     if (disposed) return "disposed";
-    if (mode !== "gpu") return "svg";
     if (lost) return "context-lost";
     if (failure) return failure;
     if (suspended) return suspensionReason;
     if (!document) return "no-document";
     if (capable !== undefined && !capabilityAllowed(capable)) return "wasm-unavailable";
     if (!validViewport()) return "invalid-viewport";
-    if (viewport.zoom > maxGpuZoom) return "zoom-limit";
     return null;
   }
 
   function publish({ active = false, loading = false, reason = blockedReason(), stats } = {}) {
     // Visibility is granted only by the successful current scene's final draw.
     active = active && !blockedReason();
-    loading = Boolean(loading && !blockedReason());
-    const next = { mode, active: Boolean(active), loading,
-      fallback: mode === "gpu" && !active && !loading,
+    const status = active ? "active" : disposed ? "disposed" :
+      reason === "wasm-unavailable" || reason === "invalid-viewport" ? "unavailable" :
+      lost || failure ? "error" : "loading";
+    loading = status === "loading";
+    const next = { mode, status, active: Boolean(active), loading,
+      fallback: false,
       reason: active ? null : reason, key: document?.key ?? null,
       revision: document?.revision ?? null,
       ...(stats !== undefined ? { stats } : {}) };
@@ -54,7 +56,7 @@ export function createRendererController({
   async function retire(instance) {
     if (!instance || !["object", "function"].includes(typeof instance) || retired.has(instance)) return;
     retired.add(instance);
-    try { await instance.dispose?.(); } catch { /* A broken surface still falls back to SVG. */ }
+    try { await instance.dispose?.(); } catch { /* A broken surface remains unavailable. */ }
   }
   async function clearSlot() {
     const previous = slot;
@@ -67,7 +69,11 @@ export function createRendererController({
     publish({ reason: failure });
   }
   function retainWhileHidden(reason) {
-    return reason === suspensionReason || reason === "zoom-limit" || reason === "invalid-viewport";
+    return reason === suspensionReason || reason === "invalid-viewport";
+  }
+  function reusableSlot(target = document) {
+    return slot && !slot.invalid && !lost && !disposed && target &&
+      Object.is(slot.document?.key, target.key);
   }
 
   async function draw(target, token) {
@@ -105,14 +111,14 @@ export function createRendererController({
     const reason = blockedReason();
     if (reason) {
       publish({ reason });
-      if (slot && (!retainWhileHidden(reason) || slot.document !== target)) await clearSlot();
+      if (slot && (!retainWhileHidden(reason) || !reusableSlot(target))) await clearSlot();
       return;
     }
     if (slot?.ready && !slot.invalid && slot.document === target) {
       await draw(target, token);
       return;
     }
-    if (slot) await clearSlot();
+    if (slot && !reusableSlot(target)) await clearSlot();
     if (!isCurrent(token, target)) return;
     publish({ loading: true, reason: "loading" });
     let instance, stage = "capability";
@@ -131,30 +137,46 @@ export function createRendererController({
       const resources = await target.resourcePromise;
       if (!isCurrent(token, target) || blockedReason()) return;
       if (!(resources instanceof Map)) throw new Error("getResources must return a Map");
-      stage = "load";
-      if (!loaderPromise) loaderPromise = Promise.resolve().then(() => {
-        if (typeof loadRenderer !== "function") throw new Error("GPU renderer loader is unavailable");
-        return loadRenderer();
-      }).catch((error) => { loaderPromise = null; throw error; });
-      const loaded = await loaderPromise;
-      if (!isCurrent(token, target) || blockedReason()) return;
-      stage = "create";
-      const create = loaded?.createRenderer ?? (typeof loaded === "function" ? loaded : null);
-      if (typeof create !== "function") throw new Error("GPU module has no createRenderer function");
-      instance = await create({ canvas, assetsBaseUrl });
-      if (!isCurrent(token, target) || blockedReason()) { await retire(instance); return; }
-      for (const method of ["setScene", "resize", "render", "dispose"])
-        if (typeof instance?.[method] !== "function") throw new Error(`GPU renderer has no ${method} method`);
-      slot = { instance, document: target, ready: false, drawnVersion: -1 };
+      instance = slot?.instance;
+      if (!instance) {
+        stage = "load";
+        if (!loaderPromise) loaderPromise = Promise.resolve().then(() => {
+          if (typeof loadRenderer !== "function") throw new Error("GPU renderer loader is unavailable");
+          return loadRenderer();
+        }).catch((error) => { loaderPromise = null; throw error; });
+        const loaded = await loaderPromise;
+        if (!isCurrent(token, target) || blockedReason()) return;
+        stage = "create";
+        const create = loaded?.createRenderer ?? (typeof loaded === "function" ? loaded : null);
+        if (typeof create !== "function") throw new Error("GPU module has no createRenderer function");
+        instance = await create({ canvas, assetsBaseUrl });
+        for (const method of ["setScene", "resize", "render", "dispose"])
+          if (typeof instance?.[method] !== "function") throw new Error(`GPU renderer has no ${method} method`);
+        slot = { instance, document: target, ready: false, drawnVersion: -1 };
+        if (!isCurrent(token, target) || blockedReason()) {
+          if (!reusableSlot() || (blockedReason() && !retainWhileHidden(blockedReason()))) await clearSlot();
+          return;
+        }
+      }
+      slot.document = target;
+      slot.ready = false;
+      slot.drawnVersion = -1;
+      slot.stats = undefined;
       stage = "setScene";
       await instance.setScene(target.design, { resources });
-      if (!isCurrent(token, target)) { await clearSlot(); return; }
+      if (!isCurrent(token, target)) {
+        // Content revisions share a healthy surface, but a different document,
+        // page, workspace or lost context can never inherit the old surface.
+        if (!reusableSlot()) await clearSlot();
+        return;
+      }
       slot.ready = true;
       try { slot.stats = instance.stats?.(); } catch { /* Diagnostics are optional. */ }
       await draw(target, token);
     } catch (error) {
+      const currentFailure = isCurrent(token, target);
       fail(error, token, target, stage);
-      if (slot?.instance === instance) await clearSlot();
+      if (currentFailure || slot?.instance === instance) await clearSlot();
       else await retire(instance);
     }
   }
@@ -189,17 +211,15 @@ export function createRendererController({
   canvas?.addEventListener?.("webglcontextlost", contextLost);
 
   return {
-    /** Selecting GPU explicitly retries previous failures, including context loss. */
-    setMode(next) {
-      if (!["svg", "gpu"].includes(next)) throw new Error("Renderer mode must be svg or gpu");
+    /** Explicitly retry GPU initialization or a failed/lost surface. */
+    setMode(next = "gpu") {
+      if (next !== "gpu") throw new Error("Only GPU rendering is supported");
       if (disposed) return Promise.resolve({ ...lastState });
-      if (mode !== next || (next === "gpu" && (lost || failure))) {
-        const failedResources = next === "gpu" && failure?.startsWith("resources:");
-        mode = next; generation += 1;
-        if (next === "gpu") {
-          lost = false; failure = null;
-          if (document && failedResources) document.resourcePromise = null;
-        }
+      if (lost || failure) {
+        const failedResources = failure?.startsWith("resources:");
+        generation += 1;
+        lost = false; failure = null;
+        if (document && failedResources) document.resourcePromise = null;
         publish({ reason: blockedReason() ?? "loading", loading: !blockedReason() });
       }
       return request();
@@ -236,7 +256,7 @@ export function createRendererController({
       if (blockedReason()) publish({ reason: blockedReason() });
       return request();
     },
-    suspend(reason = "editing") {
+    suspend(reason = "suspended") {
       if (disposed) return Promise.resolve({ ...lastState });
       suspended = true; suspensionReason = reason;
       publish({ reason });
