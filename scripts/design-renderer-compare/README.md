@@ -9,6 +9,43 @@ resources, with a 8,567 × 11,322 canvas. Hidden nodes remain in the document;
 CanvasKit draws the 1,193 visible nodes. The two images already missing from the
 source remain the saved transparent frames and existing import warnings.
 
+## Final GPU-only comparison
+
+Apple M4 Pro, ANGLE Metal, Chromium 148.0.7778.96, 1,280 × 900 CSS pixels,
+DPR 2. Three repetitions of 180 frames after 40 warm-up frames, with engine order
+reversed on alternating repetitions. Each cell is the P95 of 537 pooled finite
+animation-frame intervals; smaller is better.
+
+| Scenario                          | Grida\* | CanvasKit |
+| --------------------------------- | ------: | --------: |
+| Overview pan, 7%                  |  9.2 ms |    9.1 ms |
+| Detail pan, 80%                   |  8.9 ms |    9.1 ms |
+| Detail zoom, approximately 55–80% |  9.3 ms |    9.1 ms |
+
+The engines have similar measured frame intervals here. CanvasKit's overview
+P95 fell from 23.6 ms in the uncached GPU baseline to 9.1 ms, about 61% lower.
+Its three scenarios have no intervals above 33.33 ms; detail zoom has three above
+16.67 ms out of 537. These are frame scheduling measurements, not display latency.
+
+\*Grida has not passed visual-equivalence acceptance: resetting to the fixed
+overview camera leaves the upper portion of the design clipped away. The timed
+scenario cameras match between engines and both produce nonblank pixels, but the
+Grida timings must not be treated as evidence of equivalent rendering correctness.
+This defect is also present in the earlier baseline's fixed overview screenshot.
+
+The selected CanvasKit implementation uses 512-pixel GPU tiles with a 64 MiB LRU
+budget at low zoom, retained local node pictures and resource reuse during
+editing. System-font text caches upgrade only for visible text according to
+physical zoom, including scaled cross-page instances. Content changes invalidate
+tiles; pan and zoom do not rebuild the document or reload its fonts.
+
+The authoritative GPU-only run is
+`artifacts/design-renderer-compare/gpu-only-final-m4pro/`, engine source commit
+`c789fec`. Its report, raw samples, screenshots and aggregate preserve the
+measurements. The source portable backup SHA-256 is
+`d025a88b97e91f8c0b8881f115b936fed317e6c1300f94776544b2a258450881`;
+the runner confirms that testing leaves its bytes unchanged.
+
 ## Retained vector baseline before the GPU tile-cache improvement
 
 Apple M4 Pro, ANGLE Metal, private Chromium, 1,280 × 900 CSS pixels, DPR 2.
@@ -39,7 +76,8 @@ CanvasKit uses an SkPicture with `beginRecording(bounds, true)`, enabling Skia's
 R-tree to skip offscreen drawing commands. Leaving that flag off was materially
 slower. Its native paragraph gradient coordinates were verified against SVG at
 nonzero positions. Font Awesome icons remain native glyphs; 114 visible text
-layers use individual 2× browser text caches for unavailable font bytes or glyphs.
+layers initially use individual 2× browser text caches for unavailable font bytes
+or glyphs, then gain resolution for visible high-zoom views.
 Grida also retains its original text nodes but needs more per-text font caches.
 
 The production policy is GPU-only. A separate Canvas interaction layer provides
@@ -66,7 +104,7 @@ Run with an explicit portable backup and a new output directory:
 node scripts/design-renderer-compare/run.mjs \
   --input /absolute/design.portable.json \
   --output artifacts/design-renderer-compare/new-run \
-  --frames 180 --repeats 3
+  --engines grida,canvaskit --frames 180 --repeats 3
 ```
 
 The runner permits only intercepted local files at one exact origin, with the
@@ -80,7 +118,7 @@ also part of the normal Design Studio suite.
 The first Grida run rendered blank after `setScene` followed by `resize`; those
 timings were invalidated. The adapter now restores the native surface and cached
 resources after a backing-store resize, with a pixel regression test. A second
-run preceded the CanvasKit gradient correction. The authoritative local run is
+run preceded the CanvasKit gradient correction. The historical vector baseline is
 `artifacts/design-renderer-compare/final-m4pro/`, engine source commit `28eaa13`.
 Its `report.json`, raw samples and `aggregate.json` preserve the evidence. The
 private input and screenshots are intentionally not committed to Git.
