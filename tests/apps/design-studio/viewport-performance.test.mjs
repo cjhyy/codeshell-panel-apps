@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
-import { chromium } from "playwright";
+import {
+  launchCanvasBrowser,
+  canvasMime,
+  gpuActive,
+  observeLocalTools,
+  viewport,
+  handlePixels,
+} from "./fixtures/canvas-test-observations.mjs";
 import {
   normalizeDesignDocument,
   serializeDesignDocument,
@@ -69,7 +76,7 @@ const content = serializeDesignDocument(
 );
 
 async function fixture(t) {
-  const browser = await chromium.launch();
+  const browser = await launchCanvasBrowser();
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1500, height: 1000 } }),
     errors = [];
@@ -80,15 +87,21 @@ async function fixture(t) {
     if (url.origin !== "https://viewport.test" || !file.startsWith(root + sep))
       return route.abort();
     try {
+      let body = await readFile(file);
+      if (url.pathname === "/canvas/canvaskit-renderer.mjs")
+        body = `${body.toString()}
+const createRendererForViewportTest = createRenderer;
+createRenderer = async (...args) => {
+  window.viewportRendererCreates = (window.viewportRendererCreates ?? 0) + 1;
+  const renderer = await createRendererForViewportTest(...args);
+  return { ...renderer, setScene(...sceneArgs) {
+    window.viewportSceneBuilds = (window.viewportSceneBuilds ?? 0) + 1;
+    return renderer.setScene(...sceneArgs);
+  }};
+};`;
       await route.fulfill({
-        body: await readFile(file),
-        contentType: {
-          ".html": "text/html",
-          ".js": "text/javascript",
-          ".mjs": "text/javascript",
-          ".css": "text/css",
-          ".json": "application/json",
-        }[extname(file)],
+        body,
+        contentType: canvasMime[extname(file)],
       });
     } catch {
       await route.fulfill({ status: 404, body: "missing" });
@@ -101,12 +114,14 @@ async function fixture(t) {
     },
     { path, content },
   );
+  await observeLocalTools(page);
   await page.goto("https://viewport.test/index.html");
   await page.waitForFunction(
     () =>
       !document.querySelector(".workspace").inert &&
-      document.querySelector('[data-node-id="tile-999"]'),
+      document.querySelector('.layer-row[data-id="tile-999"]'),
   );
+  await gpuActive(page);
   await settle(page);
   return { page, errors };
 }
@@ -118,13 +133,21 @@ async function settle(page) {
 async function observe(page) {
   await page.evaluate(() => {
     window.viewportReferences = {
-      visual: document.querySelector('#scene > g[data-node-id="tile-0"]'),
+      visual: document.querySelector("#gpu-canvas"),
       row: document.querySelector('.layer-row[data-id="tile-0"]'),
-      scene: document.querySelector("#scene"),
+      scene: document.querySelector("#stage"),
     };
     window.viewportMutations = { scene: 0, layers: 0 };
+    window.viewportCloneCount = 0;
+    window.viewportInitialBuilds = window.viewportSceneBuilds;
+    window.viewportInitialCreates = window.viewportRendererCreates;
+    const clone = window.structuredClone;
+    window.structuredClone = (...args) => {
+      window.viewportCloneCount++;
+      return clone(...args);
+    };
     for (const [key, selector] of [
-      ["scene", "#scene"],
+      ["scene", "#stage-wrap"],
       ["layers", "#layers-list"],
     ]) {
       const target = document.querySelector(selector);
@@ -138,17 +161,23 @@ async function observe(page) {
 }
 async function assertRetained(page) {
   const state = await page.evaluate(() => ({
-    sameVisual:
-      window.viewportReferences.visual ===
-      document.querySelector('#scene > g[data-node-id="tile-0"]'),
+    sameVisual: window.viewportReferences.visual === document.querySelector("#gpu-canvas"),
     sameRow:
       window.viewportReferences.row === document.querySelector('.layer-row[data-id="tile-0"]'),
-    count: document.querySelectorAll("#scene > g[data-node-id]").length,
+    sameOverlay: window.viewportReferences.scene === document.querySelector("#stage"),
+    count: document.querySelectorAll(".layer-row[data-id]").length,
+    clones: window.viewportCloneCount,
+    builds: window.viewportSceneBuilds - window.viewportInitialBuilds,
+    creates: window.viewportRendererCreates - window.viewportInitialCreates,
     mutations: window.viewportMutations,
     saved: localStorage.getItem("codeshell-design-studio:file:designs/viewport.codesign.json"),
   }));
   assert.equal(state.sameVisual, true);
   assert.equal(state.sameRow, true);
+  assert.equal(state.sameOverlay, true);
+  assert.equal(state.clones, 0, "viewport changes must not serialize or clone the design");
+  assert.equal(state.builds, 0, "viewport changes must reuse the existing scene");
+  assert.equal(state.creates, 0, "viewport changes must reuse the WebGL renderer");
   assert.equal(state.count, 1001);
   assert.equal(state.mutations.scene, 0);
   assert.equal(state.mutations.layers, 0);
@@ -159,15 +188,15 @@ test("large-document wheel pan and zoom retain design visuals and layer rows, in
   const { page, errors } = await fixture(t);
   await page.locator('.layer-row[data-id="tile-0"]').click();
   await settle(page);
-  const handleBefore = await page.locator('#scene [data-handle="nw"]').boundingBox();
+  const handleBefore = await handlePixels(page, { x: 30, y: 40 });
   assert.ok(handleBefore);
   await observe(page);
-  const original = await page.locator("#scene").getAttribute("transform");
+  const original = JSON.stringify(await viewport(page));
   await page
     .locator("#stage")
     .dispatchEvent("wheel", { deltaX: 15, deltaY: 40, clientX: 650, clientY: 350 });
   await settle(page);
-  assert.notEqual(await page.locator("#scene").getAttribute("transform"), original);
+  assert.notEqual(JSON.stringify(await viewport(page)), original);
   await assertRetained(page);
   for (let i = 0; i < 5; i++) {
     await page.locator("#zoom-out").click();
@@ -179,9 +208,9 @@ test("large-document wheel pan and zoom retain design visuals and layer rows, in
     await settle(page);
   }
   await assertRetained(page);
-  const handleAfter = await page.locator('#scene [data-handle="nw"]').boundingBox();
+  const handleAfter = await handlePixels(page, { x: 30, y: 40 });
   assert.ok(
-    Math.abs(handleAfter.width - handleBefore.width) < 0.2,
+    handleAfter && Math.abs(handleAfter.width - handleBefore.width) <= 1,
     "resize handles retain their screen size",
   );
   assert.deepEqual(errors, []);
@@ -191,24 +220,24 @@ test("middle-button pan and cancelled hand gestures retain visuals and restore t
   const { page, errors } = await fixture(t);
   await observe(page);
   const box = await page.locator("#stage").boundingBox(),
-    start = await page.locator("#scene").getAttribute("transform");
+    start = JSON.stringify(await viewport(page));
   await page.mouse.move(box.x + 200, box.y + 200);
   await page.mouse.down({ button: "middle" });
   await page.mouse.move(box.x + 250, box.y + 230, { steps: 6 });
   await page.mouse.up({ button: "middle" });
   await settle(page);
-  assert.notEqual(await page.locator("#scene").getAttribute("transform"), start);
+  assert.notEqual(JSON.stringify(await viewport(page)), start);
   await assertRetained(page);
   await page.locator('[data-tool="hand"]').click();
   await settle(page);
-  const before = await page.locator("#scene").getAttribute("transform");
+  const before = JSON.stringify(await viewport(page));
   await page.mouse.move(box.x + 200, box.y + 200);
   await page.mouse.down();
   await page.mouse.move(box.x + 300, box.y + 270);
   await page.keyboard.press("Escape");
   await page.mouse.up();
   await settle(page);
-  assert.equal(await page.locator("#scene").getAttribute("transform"), before);
+  assert.equal(JSON.stringify(await viewport(page)), before);
   await assertRetained(page);
   assert.deepEqual(errors, []);
 });
@@ -245,6 +274,9 @@ test("cancelling pan restores a selection changed by a keyboard command during t
     await page.locator('.layer-row[data-id="tile-0"]').getAttribute("aria-selected"),
     "true",
   );
-  assert.equal(await page.locator('#scene [data-handle="nw"]').count(), 1);
+  assert.ok(
+    await handlePixels(page, { x: 30, y: 40 }),
+    "the restored selection has a visible Canvas resize handle",
+  );
   assert.deepEqual(errors, []);
 });

@@ -3,7 +3,19 @@ import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
+import {
+  launchCanvasBrowser,
+  canvasMime,
+  gpuActive,
+  metadata,
+  viewport,
+  readNode,
+  canvasPoint,
+  clickWorld,
+  worldPixel,
+  nearColor,
+  rotatePoint,
+} from "./fixtures/canvas-test-observations.mjs";
 import {
   normalizeDesignDocument,
   serializeDesignDocument,
@@ -93,7 +105,7 @@ function documentFixture() {
 }
 
 async function fixture(t, document, { instrument = false } = {}) {
-  const browser = await chromium.launch();
+  const browser = await launchCanvasBrowser();
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1500, height: 960 } });
   const errors = [];
@@ -118,12 +130,7 @@ renderScene = function (...args) {
 };`;
       await route.fulfill({
         body,
-        contentType: {
-          ".js": "text/javascript",
-          ".mjs": "text/javascript",
-          ".html": "text/html",
-          ".css": "text/css",
-        }[extname(file)],
+        contentType: canvasMime[extname(file)],
       });
     } catch {
       await route.fulfill({ status: 404, body: "missing" });
@@ -146,6 +153,7 @@ renderScene = function (...args) {
       window.codeshellPanel = {
         getContext: async () => ({
           trusted: true,
+          capabilities: { packageAssets: { wasm: true } },
           busy: false,
           cwd: "/fixture",
           sessionId: "render-fixture",
@@ -197,54 +205,77 @@ renderScene = function (...args) {
   await page.waitForFunction(
     () => !document.querySelector(".workspace").inert && Boolean(window.tools.get_design_metadata),
   );
-  await page.waitForFunction(() => document.querySelector("#scene [data-node-id]"));
+  await gpuActive(page);
   return { page, errors };
 }
 
 test("a render-local index preserves ancestor rotation, clipping, opacity and locks", async (t) => {
   const { page, errors } = await fixture(t, documentFixture());
-  const actual = await page
-    .locator('#scene g[data-node-id="active-child"] > g > rect')
-    .evaluate((element) => ({
-      opacity: element.parentElement.getAttribute("opacity"),
-      transform: element.parentElement.getAttribute("transform"),
-      clip: element.parentElement.getAttribute("clip-path"),
-      pointer: element.style.pointerEvents,
-    }));
-  assert.equal(actual.opacity, "0.3");
-  assert.equal(actual.transform, "rotate(20 170 170) rotate(5 80 80)");
-  assert.match(actual.clip, /^url\(#frame-clip-\d+\)$/u);
-  assert.equal(actual.pointer, "visiblepainted");
-  assert.equal(await page.locator('#scene [data-node-id="hidden-child"]').count(), 0);
+  const parent = await readNode(page, "active-parent"),
+    child = await readNode(page, "active-child");
+  assert.equal(parent.clipContent, true);
+  assert.equal(parent.rotation, 20);
+  assert.equal(child.rotation, 5);
+  assert.equal(parent.opacity * child.opacity, 0.3);
+  const center = rotatePoint({ x: 80, y: 80 }, { x: 170, y: 170 }, 20);
+  nearColor(await worldPixel(page, center), [145, 145, 145]);
+  const hiddenCenter = rotatePoint({ x: 95, y: 105 }, { x: 170, y: 170 }, 20);
+  assert.equal((await readNode(page, "hidden-child")).visible, false);
+  nearColor(await worldPixel(page, hiddenCenter), [170, 170, 170]);
+  await clickWorld(page, center);
+  assert.deepEqual((await metadata(page)).selection, ["active-child"]);
+  const lockedPoint = await canvasPoint(page, center);
+  await page.mouse.move(lockedPoint.x, lockedPoint.y);
+  await page.mouse.down();
+  await page.mouse.move(lockedPoint.x + 30, lockedPoint.y + 20, { steps: 3 });
+  await page.mouse.up();
+  assert.equal((await readNode(page, "active-child")).x, child.x);
+  assert.equal((await readNode(page, "active-child")).y, child.y);
   await page.locator('.layer-row[data-id="active-parent"]').click();
   await page.locator("#toggle-lock").click();
   await page.locator("#prop-opacity").fill("25");
   await page.locator("#prop-rotation").fill("40");
-  const changed = await page
-    .locator('#scene g[data-node-id="active-child"] > g > rect')
-    .evaluate((element) => ({
-      opacity: element.parentElement.getAttribute("opacity"),
-      transform: element.parentElement.getAttribute("transform"),
-      pointer: element.style.pointerEvents,
-    }));
-  assert.equal(changed.opacity, "0.15");
-  assert.equal(changed.transform, "rotate(40 170 170) rotate(5 80 80)");
-  assert.equal(changed.pointer, "all");
+  await page.locator("#prop-rotation").press("Tab");
+  await gpuActive(page);
+  const changed = await readNode(page, "active-parent");
+  assert.equal(changed.rotation, 40);
+  assert.equal(changed.opacity * child.opacity, 0.15);
+  const moved = rotatePoint({ x: 80, y: 80 }, { x: 170, y: 170 }, 40);
+  nearColor(await worldPixel(page, moved), [193, 193, 193]);
+  await clickWorld(page, moved);
+  assert.deepEqual((await metadata(page)).selection, ["active-child"]);
+  const unlockedPoint = await canvasPoint(page, moved);
+  await page.mouse.move(unlockedPoint.x, unlockedPoint.y);
+  await page.mouse.down();
+  await page.mouse.move(unlockedPoint.x + 30, unlockedPoint.y + 20, { steps: 3 });
+  await page.mouse.up();
+  assert.notEqual((await readNode(page, "active-child")).x, child.x);
+  await page.locator("#stage").press("Control+z");
+  assert.equal((await readNode(page, "active-child")).x, child.x);
+  // Shrinking the clip must hide the protruding child, including hit testing.
+  await page.locator('.layer-row[data-id="active-parent"]').click();
+  await page.locator("#prop-width").fill("30");
+  await gpuActive(page);
+  assert.equal((await readNode(page, "active-parent")).width, 30);
+  const clipped = rotatePoint({ x: 80, y: 80 }, { x: 35, y: 170 }, 40);
+  nearColor(await worldPixel(page, clipped), [255, 255, 255]);
+  await page.locator("#prop-width").press("Tab");
+  await clickWorld(page, clipped);
+  assert.ok(!(await metadata(page)).selection.includes("active-child"));
   assert.deepEqual(errors, []);
 });
 
 test("a detached cross-page component uses its own index and excludes the source's outside ancestors", async (t) => {
   const { page, errors } = await fixture(t, documentFixture());
-  const actual = await page
-    .locator('#scene [data-component-node-id="component-child"]')
-    .evaluate((element) => ({
-      opacity: element.closest("g[opacity]").getAttribute("opacity"),
-      transform: element.closest("g[transform]").getAttribute("transform"),
-      pointer: element.style.pointerEvents,
-    }));
-  assert.equal(actual.opacity, "0.4");
-  assert.equal(actual.transform, "rotate(15 130 90) rotate(7 85 85)");
-  assert.equal(actual.pointer, "all");
+  const ancestor = await readNode(page, "source-ancestor");
+  assert.equal(ancestor.visible, false);
+  assert.equal(ancestor.locked, true);
+  const childCenter = rotatePoint({ x: 85, y: 85 }, { x: 130, y: 90 }, 15);
+  const renderedCenter = { x: childCenter.x + 470, y: childCenter.y + 60 };
+  nearColor(await worldPixel(page, renderedCenter), [136, 136, 136]);
+  await clickWorld(page, renderedCenter);
+  assert.deepEqual((await metadata(page)).selection, ["instance"]);
+  assert.equal(await page.locator("#prop-x").isDisabled(), false);
   assert.deepEqual(errors, []);
 });
 
@@ -252,7 +283,7 @@ test("a 1208-layer real browser render builds one shared full index rather than 
   const document = importFigmaJson(longFigmaSource()).document;
   const { page, errors } = await fixture(t, document, { instrument: true });
   const before = await page.evaluate(() => window.tools.get_design_metadata({}));
-  // Grid toggles deliberately rebuild a scene; viewport zoom now retains it.
+  // Grid toggles repaint interaction chrome while preserving the document revision.
   await page.locator("#toggle-grid").click();
   await page.locator("#toggle-grid").click();
   const samples = await page.evaluate(() => window.__renderSamples);
@@ -261,7 +292,15 @@ test("a 1208-layer real browser render builds one shared full index rather than 
     samples.every((sample) => sample.fullMaps <= 8),
     JSON.stringify(samples),
   );
-  assert.equal(await page.locator("#scene > g[data-node-id]").count(), 1208);
+  assert.equal((await metadata(page)).layers.length, 1208);
+  await gpuActive(page);
+  const view = await viewport(page),
+    box = await page.locator("#stage").boundingBox();
+  const middleRow = Math.max(
+    0,
+    Math.min(75, Math.round(((box.height / 2 - view.pan.y) / view.zoom - 44) / 144)),
+  );
+  nearColor(await worldPixel(page, { x: 71, y: 44 + middleRow * 144 }), [26, 77, 179], 12);
   const after = await page.evaluate(() => window.tools.get_design_metadata({}));
   assert.equal(after.stateRevision, before.stateRevision);
   assert.deepEqual(errors, []);

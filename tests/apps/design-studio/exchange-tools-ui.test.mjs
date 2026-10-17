@@ -6,7 +6,14 @@ import { tmpdir } from "node:os";
 import { extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
-import { chromium } from "playwright";
+import {
+  launchCanvasBrowser,
+  canvasMime,
+  gpuActive,
+  readNode,
+  worldPixel,
+  nearColor,
+} from "./fixtures/canvas-test-observations.mjs";
 import {
   normalizeDesignDocument,
   serializeDesignDocument,
@@ -141,7 +148,7 @@ function figmaSource({ image = false } = {}) {
 }
 
 async function fixture(t, { image = false } = {}) {
-  const browser = await chromium.launch();
+  const browser = await launchCanvasBrowser();
   t.after(() => browser.close());
   const context = await browser.newContext({
     viewport: { width: 1500, height: 960 },
@@ -168,13 +175,7 @@ async function fixture(t, { image = false } = {}) {
     try {
       await route.fulfill({
         body: await readFile(file),
-        contentType: {
-          ".html": "text/html",
-          ".mjs": "text/javascript",
-          ".js": "text/javascript",
-          ".css": "text/css",
-          ".json": "application/json",
-        }[extname(file)],
+        contentType: canvasMime[extname(file)],
       });
     } catch {
       await route.fulfill({ status: 404, body: "missing" });
@@ -260,6 +261,7 @@ async function fixture(t, { image = false } = {}) {
         listener;
       const context = {
         trusted: true,
+        capabilities: { packageAssets: { wasm: true } },
         visible: true,
         busy: false,
         ...(permissions.includes("context.workspace") ? { cwd: "/workspace" } : {}),
@@ -387,6 +389,21 @@ async function startPausedHtmlImport(f) {
   return pause;
 }
 
+async function assertRenderedImage(f) {
+  const state = await f.metadata(),
+    image = state.layers.find((node) => node.type === "image");
+  assert.ok(image, "imported image remains in the public model");
+  const node = await readNode(f.page, image.id);
+  assert.ok(
+    state.resources.some((resource) => resource.id === node.imageRef && resource.kind === "image"),
+  );
+  await gpuActive(f.page);
+  nearColor(
+    await worldPixel(f.page, { x: node.x + node.width / 2, y: node.y + node.height / 2 }),
+    [0, 0, 0],
+  );
+}
+
 test("HTML save waits make the actual UI inert and a failed untouched import restores the prior canvas", async (t) => {
   const f = await fixture(t),
     pause = await startPausedHtmlImport(f);
@@ -402,10 +419,7 @@ test("HTML save waits make the actual UI inert and a failed untouched import res
   );
   const metadata = await f.metadata();
   assert.equal(metadata.name, "A original");
-  assert.equal(
-    await f.page.locator('[data-text-node-id="heading"]').textContent(),
-    "A original heading",
-  );
+  assert.equal((await readNode(f.page, "heading")).text, "A original heading");
   assert.equal(await f.page.evaluate(() => document.body.inert), false);
   assert.equal(f.files.get(`A:${designPath}`), initialDocument("A"));
   assert.deepEqual(f.errors, []);
@@ -522,6 +536,7 @@ for (const action of ["edit", "new-document"])
         renderAll() {},
         queueRecovery() {},
         requestAnimationFrame() {},
+        gpuRenderer: { update: async () => ({ active: false }) },
         elements: { path: { value: designPath } },
       };
       state.serializeDesign = () => JSON.stringify(state.design);
@@ -552,6 +567,10 @@ for (const action of ["edit", "new-document"])
         throw Error("Failed save after newer state");
       };
       const context = createContext(state);
+      const epochStart = app.indexOf("function advanceDocumentEpoch()");
+      const epochEnd = app.indexOf("function rendererResources()", epochStart);
+      assert.ok(epochStart >= 0 && epochEnd > epochStart);
+      runInContext(app.slice(epochStart, epochEnd), context);
       runInContext(app.slice(start, end), context);
       await assert.rejects(
         () =>
@@ -595,7 +614,7 @@ test("local HTML folder becomes editable v3, survives save/reopen and restores i
   assert.equal(metadata.resources.length, 1);
   const heading = metadata.layers.find((node) => node.type === "text");
   assert.ok(heading);
-  assert.equal(await f.page.locator('#scene image[href^="data:image/png;base64,"]').count(), 1);
+  await assertRenderedImage(f);
   await f.tool("use_design", {
     expected_state_revision: metadata.stateRevision,
     save: true,
@@ -607,7 +626,7 @@ test("local HTML folder becomes editable v3, survives save/reopen and restores i
   metadata = await f.metadata();
   assert.ok(metadata.layers.some((node) => node.id === heading.id));
   assert.match(f.files.get(`A:${designPath}`), /Edited HTML product/);
-  assert.equal(await f.page.locator('#scene image[href^="data:image/png;base64,"]').count(), 1);
+  await assertRenderedImage(f);
   await f.page.locator("#portable-backup-open").click();
   const pending = f.page.waitForEvent("download");
   await f.page.locator("#portable-backup-export").click();
@@ -782,9 +801,10 @@ test("persistent thread handoff saves current edits before submitting the stable
   await f.page.evaluate(() => window.switchExchangeProject("B"));
   pause.release();
   await f.page.waitForFunction(
-    () =>
+    async () =>
       !document.querySelector(".workspace").inert &&
-      document.querySelector('[data-text-node-id="heading"]')?.textContent === "B original heading",
+      (await window.tools.get_design_context({ node_id: "heading" })).node.text ===
+        "B original heading",
   );
   await f.page.evaluate(
     () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
@@ -801,7 +821,7 @@ test("image source bindings survive reopen and complete backup keeps original so
   const metadata = await f.metadata();
   assert.equal(metadata.resources.filter((resource) => resource.kind === "image").length, 1);
   assert.equal(metadata.resources.filter((resource) => resource.kind === "font").length, 1);
-  assert.equal(await f.page.locator('#scene image[href^="data:image/png;base64,"]').count(), 1);
+  await assertRenderedImage(f);
   const heading = metadata.layers.find((node) => node.type === "text");
   await f.tool("update_design_comments", {
     action: "create",
@@ -912,9 +932,10 @@ test("a delayed exchange import cannot mutate or save the next same-path project
   const result = await f.page.evaluate(() => window.pendingExchange);
   assert.match(result.error, /工作区|切换/);
   await f.page.waitForFunction(
-    () =>
+    async () =>
       !document.querySelector(".workspace").inert &&
-      document.querySelector('[data-text-node-id="heading"]')?.textContent === "B original heading",
+      (await window.tools.get_design_context({ node_id: "heading" })).node.text ===
+        "B original heading",
   );
   assert.equal((await f.metadata()).name, "B original");
   assert.equal(
@@ -1261,8 +1282,12 @@ test("large SVG export downloads complete fonts and images without exceeding Hos
       let darkPixels = 0;
       for (let index = 0; index < pixels.length; index += 4)
         if (pixels[index + 3] > 0 && pixels[index] < 128) darkPixels += 1;
-      return { parseErrors: parsed.querySelectorAll("parsererror").length,
-        width: image.naturalWidth, height: image.naturalHeight, darkPixels };
+      return {
+        parseErrors: parsed.querySelectorAll("parsererror").length,
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+        darkPixels,
+      };
     } finally {
       URL.revokeObjectURL(url);
     }
@@ -1273,20 +1298,28 @@ test("large SVG export downloads complete fonts and images without exceeding Hos
   await f.page.waitForFunction(() => !document.querySelector("#export-svg").disabled);
   assert.match(await f.page.locator("#toast").textContent(), /已下载.*未写入 Repo/u);
   assert.equal(f.files.has("A:designs/exchange.svg"), false);
-  assert.equal(f.calls.some((call) => call.method === "workspace.writeText" &&
-    call.path === "designs/exchange.svg"), false);
-  assert.ok(f.calls.filter((call) => call.method === "workspace.writeText")
-    .every((call) => Buffer.byteLength(call.content) <= MAX_WORKSPACE_DESIGN_TEXT_BYTES));
+  assert.equal(
+    f.calls.some(
+      (call) => call.method === "workspace.writeText" && call.path === "designs/exchange.svg",
+    ),
+    false,
+  );
+  assert.ok(
+    f.calls
+      .filter((call) => call.method === "workspace.writeText")
+      .every((call) => Buffer.byteLength(call.content) <= MAX_WORKSPACE_DESIGN_TEXT_BYTES),
+  );
   assert.equal((await f.metadata()).dirty, false);
   assert.deepEqual(f.errors, []);
 });
 
 test("small SVG export keeps the existing repository compare-and-set behavior", async (t) => {
   const f = await fixture(t);
-  const path = "designs/exchange.svg", previous = "previous SVG output";
+  const path = "designs/exchange.svg",
+    previous = "previous SVG output";
   f.files.set(`A:${path}`, previous);
   let downloads = 0;
-  f.page.on("download", () => downloads += 1);
+  f.page.on("download", () => (downloads += 1));
   await f.page.locator("#export-svg").click();
   await f.page.waitForFunction(() => !document.querySelector("#export-svg").disabled);
   const write = f.calls.find((call) => call.method === "workspace.writeText" && call.path === path);

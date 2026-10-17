@@ -3,7 +3,15 @@ import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
+import {
+  launchCanvasBrowser,
+  canvasMime,
+  gpuActive,
+  metadata,
+  readNode,
+  observeLocalTools,
+  clickWorld,
+} from "./fixtures/canvas-test-observations.mjs";
 
 const root = fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url));
 const fileValue = {
@@ -46,7 +54,7 @@ const fileValue = {
   },
 };
 async function fixture(t, { mobile = false } = {}) {
-  const browser = await chromium.launch();
+  const browser = await launchCanvasBrowser();
   t.after(() => browser.close());
   const context = await browser.newContext({
     viewport: mobile ? { width: 390, height: 844 } : { width: 1500, height: 1000 },
@@ -61,18 +69,13 @@ async function fixture(t, { mobile = false } = {}) {
     try {
       await route.fulfill({
         body: await readFile(path),
-        contentType: {
-          ".html": "text/html",
-          ".js": "text/javascript",
-          ".mjs": "text/javascript",
-          ".css": "text/css",
-          ".json": "application/json",
-        }[extname(path)],
+        contentType: canvasMime[extname(path)],
       });
     } catch {
       await route.fulfill({ status: 404, body: "missing" });
     }
   });
+  await observeLocalTools(page);
   await page.goto("https://panel.test/index.html");
   await page.waitForFunction(() => !document.querySelector(".workspace").inert);
   const open = async () => {
@@ -133,20 +136,15 @@ test("Figma JSON becomes editable layers, exports transfer and offline HTML, and
   assert.match(html.text, /data-codeshell-id="figma-1-2"/);
   assert.match(html.text, /Editable Figma title/);
   await f.page.locator("#figma-workflow-close").click();
-  await f.page.locator('[data-text-node-id="figma-1-2"]').dblclick();
+  await gpuActive(f.page);
+  await clickWorld(f.page, { x: 90, y: 50 }, { clickCount: 2 });
   await f.page.locator("#inline-text-editor").fill("Edited inside panel");
   await f.page.locator("#inline-text-editor").press("Control+Enter");
-  assert.equal(
-    await f.page.locator('[data-text-node-id="figma-1-2"]').textContent(),
-    "Edited inside panel",
-  );
+  assert.equal((await readNode(f.page, "figma-1-2")).text, "Edited inside panel");
   await f.page.locator("#stage").press("Control+z");
-  assert.equal(
-    await f.page.locator('[data-text-node-id="figma-1-2"]').textContent(),
-    "Editable Figma title",
-  );
+  assert.equal((await readNode(f.page, "figma-1-2")).text, "Editable Figma title");
   await f.page.locator("#stage").press("Control+z");
-  assert.equal(await f.page.locator("#stage [data-text-node-id]").count(), 0);
+  assert.equal((await metadata(f.page)).layers.filter((n) => n.type === "text").length, 0);
   assert.deepEqual(f.errors, []);
 });
 
@@ -163,10 +161,10 @@ test("a changed design path or malformed input cannot apply a previously reviewe
     () => document.querySelector("#figma-workflow-status").dataset.kind === "error",
   );
   assert.match(await f.page.locator("#figma-workflow-status").textContent(), /路径/);
-  assert.equal(await f.page.locator("#stage [data-text-node-id]").count(), 0);
+  assert.equal((await metadata(f.page)).layers.filter((n) => n.type === "text").length, 0);
   await f.choose({ unexpected: "invalid document" });
   assert.equal(await f.page.locator("#figma-import-apply").isDisabled(), true);
-  assert.equal(await f.page.locator("#stage [data-text-node-id]").count(), 0);
+  assert.equal((await metadata(f.page)).layers.filter((n) => n.type === "text").length, 0);
   assert.deepEqual(f.errors, []);
 });
 
@@ -199,7 +197,8 @@ test("the canvas comment tool records a persistent anchored discussion without r
   );
   await f.page.locator("#figma-workflow-close").click();
   await f.page.locator('[data-tool="comment"]').click();
-  await f.page.locator('[data-text-node-id="figma-1-2"]').click();
+  await gpuActive(f.page);
+  await clickWorld(f.page, { x: 90, y: 50 });
   await f.page.locator("#element-comment-request").fill("标题在手机上需要更明显");
   assert.equal(await f.page.locator("#submit-element-comment").isDisabled(), true);
   await f.page.locator("#save-review-comment").click();
