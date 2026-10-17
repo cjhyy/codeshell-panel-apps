@@ -1,8 +1,27 @@
 # Design Studio Panel App
 
-Design Studio **0.21.2** 提供 HTML → DesignNode → v3 导入、Figma JSON 导入、可编辑设计、带来源校验的增量导回、
+Design Studio **0.22.0** 提供 HTML → DesignNode → v3 导入、Figma JSON 导入、可编辑设计、带来源校验的增量导回、
 多页 HTML 原型和项目评审。原生设计仍使用 v3 `.codesign.json`；16 个声明式 Agent
 工具与可视编辑器共用同一份设计、来源和评审数据。本版沿用现有 Host 权限。
+
+## 0.22：CanvasKit GPU 画布
+
+画布统一使用 CanvasKit 0.42.0（Skia C++ → WebAssembly → WebGL2）。全图概览、
+局部缩放和设计编辑都保持 GPU 渲染，主场景及命中检测不创建 SVG 图层。
+
+GPU 场景保留绘制命令，并用 Skia 空间索引裁掉视口外内容。平移和缩放复用该场景；
+只有文件、页面、资源或设计内容改变才更新场景。选框、手柄、参考线和画板名称由
+独立 Canvas 交互层绘制，命中检测使用设计几何、旋转和祖先裁切。文字输入框使用
+相同的坐标变换，编辑期间由 GPU 场景隐藏对应文字，避免重影。
+
+运行时完全随包提供，有固定版本、SHA-256 和许可证；不请求额外 Host 权限。
+仅在 Host 通过 `capabilities.packageAssets.wasm` 声明包内 Wasm 支持时加载；浏览器
+本地模式按实际 WebAssembly/WebGL 能力运行。旧 Host、初始化失败或 GPU 丢失时
+明确显示不可用和重试入口，保留设计数据，不会切换到 SVG。需要支持包内 Wasm 的 Host。
+设计、保存、撤销、Figma 来源及缺资源提示沿用原有数据，不会由渲染器修改。
+
+Grida 对比原型保留在 [比较工具](../../scripts/design-renderer-compare/README.md)；未装入
+正式 Panel。重新核验 CanvasKit 运行时使用 `node scripts/prepare-design-studio-canvaskit.mjs --check`。
 
 ## 0.21.2：大型设计交互性能
 

@@ -465,6 +465,10 @@ function advanceDocumentEpoch() {
 
 function rendererResources() {
   const resources = new Map();
+  const retained = new Set((design.resources ?? []).map((resource) => resource.id));
+  for (const [id, cached] of decodedRendererResources)
+    if (!retained.has(id) || resourceDataUrls.get(id) !== cached.url)
+      decodedRendererResources.delete(id);
   for (const descriptor of design.resources ?? []) {
     const url = resourceDataUrls.get(descriptor.id);
     if (!url) continue;
