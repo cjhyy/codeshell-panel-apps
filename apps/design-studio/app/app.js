@@ -442,6 +442,11 @@ const gpuRenderer = createRendererController({
   },
 });
 
+function advanceDocumentEpoch() {
+  documentEpoch += 1;
+  void gpuRenderer.update({ design: null, suspended: true });
+}
+
 function rendererResources() {
   const resources = new Map();
   for (const descriptor of design.resources ?? []) {
@@ -4360,7 +4365,7 @@ async function openDocument(path, { discardChanges = false, onOpened = () => {} 
     design = resolved.pageCache
       ? resolved.document
       : normalizeDocument(resolved.document ?? JSON.parse(resolved.source));
-    documentEpoch += 1;
+    advanceDocumentEpoch();
     clearSelection();
     currentModifiedAt = result.modifiedAt;
     currentRevision = result.revision;
@@ -4463,7 +4468,7 @@ async function checkExternalChange({ force = false } = {}) {
         }
         cancelInteraction();
         design = nextDesign;
-        documentEpoch += 1;
+        advanceDocumentEpoch();
         clearSelection();
         currentModifiedAt = disk.modifiedAt;
         currentRevision = disk.revision;
@@ -5274,7 +5279,7 @@ async function replaceDesignWithHtmlImport(
   });
   resourceDataUrls.clear();
   loadedFontResourceIds.clear();
-  documentEpoch += 1;
+  advanceDocumentEpoch();
   clearSelection();
   collapsedLayerIds.clear();
   commitHistory();
@@ -5679,7 +5684,7 @@ function newDocument({
   design = createBlankDocument(name);
   pristineBlankSnapshot = null;
   recoveryBaseDocument = clone(design);
-  documentEpoch += 1;
+  advanceDocumentEpoch();
   clearSelection();
   collapsedLayerIds.clear();
   currentModifiedAt = null;
@@ -7306,7 +7311,7 @@ async function restoreRecovery(
     });
   resourceDataUrls.clear();
   loadedFontResourceIds.clear();
-  documentEpoch += 1;
+  advanceDocumentEpoch();
   clearSelection();
   const targetsBaseline = recovery.path === baselinePath;
   currentModifiedAt = targetsBaseline ? recovery.baseModifiedAt : null;
@@ -7402,7 +7407,7 @@ function resetToRepoBlankDocument() {
   const repoName = workspaceInfo?.name ?? context.cwd?.split("/").filter(Boolean).at(-1) ?? "Repo";
   design = createBlankDocument(`${repoName} design`);
   recoveryBaseDocument = clone(design);
-  documentEpoch += 1;
+  advanceDocumentEpoch();
   clearSelection();
   collapsedLayerIds.clear();
   currentModifiedAt = null;

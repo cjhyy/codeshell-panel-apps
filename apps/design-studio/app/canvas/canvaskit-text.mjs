@@ -319,7 +319,9 @@ export async function createCanvasKitText({
         shape.delete();
         if (metrics)
           maxWidthDelta = Math.max(maxWidthDelta, Math.abs(width - metrics.lineWidths[i]));
-        const paint = makePaint(node, fill, { x, y });
+        // SkParagraph positions glyphs in the destination canvas coordinates;
+        // its foreground shader must use the same world coordinates as shapes.
+        const paint = makePaint(node, fill);
         if (fill.stroke) {
           paint.setStyle(CK.PaintStyle.Stroke);
           paint.setStrokeWidth(node.strokeWidth);
