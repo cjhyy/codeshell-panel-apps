@@ -10,6 +10,8 @@ import {
   normalizeDesignDocument,
   serializeDesignDocument,
 } from "../../../apps/design-studio/app/document.mjs";
+import { createDesignIndexPersistencePlan } from "../../../apps/design-studio/app/document-index.mjs";
+import { createDesignResourcePersistencePlan } from "../../../apps/design-studio/app/resource-store.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
 const origin = "https://gpu-renderer.test";
@@ -61,13 +63,16 @@ function designFixture({ large = false } = {}) {
   });
 }
 
-async function fixture(t, { capable = true, large = false } = {}) {
+async function fixture(t, { capable = true, large = false, design = designFixture({ large }),
+  primarySource = serializeDesignDocument(design), parts = [], allowMemoryRecovery = false } = {}) {
   // This is a correctness test. SwiftShader is allowed as the WebGL driver; no physical-GPU speed is claimed.
   const browser = await chromium.launch({ headless: true, args: ["--enable-webgl", "--enable-unsafe-swiftshader"] });
   const context = await browser.newContext({ viewport: { width: 1500, height: 960 }, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
-  const source = serializeDesignDocument(designFixture({ large }));
+  const source = primarySource;
+  const files = new Map([[path, source], ...parts.map((part) => [part.path, part.content])]);
+  const savedFiles = new Map(files);
   const records = new Map(), calls = [], errors = [], vendorRequests = [], blockedRequests = [];
   page.on("pageerror", (error) => errors.push(error.message));
   t.after(async () => {
@@ -75,7 +80,9 @@ async function fixture(t, { capable = true, large = false } = {}) {
       assert.deepEqual(errors, [], "uncaught browser errors");
       assert.deepEqual(blockedRequests, [], "all fixture requests stay in the exact package origin");
       assert.deepEqual(await page.evaluate(() => window.cspViolations), [], "Wasm-specific CSP must suffice without unsafe-eval");
-      assert.equal(calls.filter((call) => call.method === "workspace.writeText").length, 0);
+      assert.equal(calls.filter((call) => call.method === "workspace.writeText" &&
+        (!allowMemoryRecovery || !call.path.startsWith("designs/codesign-data/recovery/"))).length, 0);
+      for (const [savedPath, savedSource] of savedFiles) assert.equal(files.get(savedPath), savedSource);
     } finally { await browser.close(); }
   });
   await context.route("**/*", async (route) => {
@@ -102,11 +109,17 @@ async function fixture(t, { capable = true, large = false } = {}) {
     if (method === "workspace.info") return { root: "/gpu-fixture", cwd: "/gpu-fixture", name: "Fixture" };
     if (method === "workspace.list") return { entries: [], truncated: false };
     if (method === "workspace.readText") {
-      if (params.path !== path) throw Error("ENOENT");
-      return { content: source, modifiedAt: 1, revision: hash(source) };
+      if (!files.has(params.path)) throw Error("ENOENT");
+      const content = files.get(params.path);
+      return { content, modifiedAt: 1, revision: hash(content) };
     }
     // The source design is immutable. All recovery/preferences live in this in-memory fake Host.
-    if (method === "workspace.writeText") throw Error("Test must not write the saved source design");
+    if (method === "workspace.writeText") {
+      if (!allowMemoryRecovery || !params.path.startsWith("designs/codesign-data/recovery/") || savedFiles.has(params.path))
+        throw Error("Test must not write the saved source design");
+      files.set(params.path, params.content);
+      return { modifiedAt: 1, revision: hash(params.content) };
+    }
     if (method === "storage.get") return params.key.startsWith("lastPath.")
       ? { workspaceRoot: "/gpu-fixture", path } : records.get(params.key) ?? null;
     if (method === "storage.set") { records.set(params.key, structuredClone(params.value)); return null; }
@@ -136,30 +149,25 @@ async function fixture(t, { capable = true, large = false } = {}) {
     };
   }, { capable });
   await page.goto(`${origin}/index.html`);
-  await page.waitForFunction(() => !document.querySelector(".workspace").inert &&
-    Boolean(window.tools.get_design_metadata) && document.querySelector('#scene [data-node-id="red"]'));
+  await page.waitForFunction(async (name) => !document.querySelector(".workspace").inert &&
+    Boolean(window.tools.get_design_metadata) && (await window.tools.get_design_metadata({})).name === name, design.name);
+  assert.equal(await page.locator("#stage-wrap svg").count(), 0, "the editor uses only Canvas surfaces");
   const f = { page, source, records, calls, errors, vendorRequests, blockedRequests };
   return f;
 }
 
+async function frames(page) {
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
 async function active(page, expected = true, reason) {
   await page.waitForFunction(({ expected, reason }) =>
     document.querySelector("#stage-wrap").dataset.gpuActive === String(expected) &&
     (!reason || document.querySelector("#renderer-state").title.includes(reason)), { expected, reason });
-  assert.equal(await page.locator("#gpu-canvas").isVisible(), expected);
-}
-async function enableGpu(page) {
-  await page.locator("#canvas-renderer").selectOption("gpu");
-  await active(page);
+  if (expected) assert.equal(await page.locator("#gpu-canvas").isVisible(), true);
+  assert.equal(await page.locator("#stage-wrap svg").count(), 0, "there is no SVG scene or interaction fallback");
+  await frames(page);
 }
 async function shot(page) { return PNG.sync.read(await page.locator("#gpu-canvas").screenshot()); }
-async function screenPoint(page, x, y) {
-  return page.evaluate(({ x, y }) => {
-    const p = new DOMPoint(x, y).matrixTransform(document.querySelector("#scene").getScreenCTM());
-    const bounds = document.querySelector("#gpu-canvas").getBoundingClientRect();
-    return { x: p.x, y: p.y, px: Math.round(p.x - bounds.x), py: Math.round(p.y - bounds.y) };
-  }, { x, y });
-}
 const pixel = (png, x, y) => {
   assert(x >= 0 && x < png.width && y >= 0 && y < png.height, `pixel ${x},${y} is within ${png.width}x${png.height}`);
   return [...png.data.subarray((y * png.width + x) * 4, (y * png.width + x) * 4 + 3)];
@@ -167,12 +175,33 @@ const pixel = (png, x, y) => {
 function near(actual, expected, tolerance = 6) {
   assert(actual.every((value, i) => Math.abs(value - expected[i]) <= tolerance), `${actual} != ${expected}`);
 }
-async function at(page, png, x, y) {
-  const point = await screenPoint(page, x, y);
-  return pixel(png, point.px, point.py);
+function colorBounds(png, rgb) {
+  let left = png.width, top = png.height, right = -1, bottom = -1, count = 0;
+  for (let y = 0; y < png.height; y++) for (let x = 0; x < png.width; x++) {
+    const offset = (y * png.width + x) * 4;
+    if (!rgb.every((value, channel) => Math.abs(png.data[offset + channel] - value) <= 3)) continue;
+    left = Math.min(left, x); right = Math.max(right, x);
+    top = Math.min(top, y); bottom = Math.max(bottom, y); count++;
+  }
+  assert(count > 10, `${rgb} has visible Canvas pixels`);
+  return { left, top, right, bottom, count };
 }
-async function textInk(page, png) {
-  const a = await screenPoint(page, 120, 300), b = await screenPoint(page, 400, 360);
+async function calibration(page, { color = [255, 0, 0], x = 100, y = 100 } = {}) {
+  const png = await shot(page), b = colorBounds(png, color);
+  // Derive the viewport from real pixels rather than private renderer state or hit DOM.
+  const zoom = ((b.right - b.left + 1) / 100 + (b.bottom - b.top + 1) / 80) / 2;
+  const pan = { x: (b.left + b.right) / 2 - (x + 50) * zoom,
+    y: (b.top + b.bottom) / 2 - (y + 40) * zoom };
+  const canvas = await page.locator("#gpu-canvas").boundingBox();
+  return { zoom, pan, canvas };
+}
+function point(view, x, y) {
+  const px = Math.round(view.pan.x + x * view.zoom), py = Math.round(view.pan.y + y * view.zoom);
+  return { px, py, x: view.canvas.x + px, y: view.canvas.y + py };
+}
+function at(view, png, x, y) { const p = point(view, x, y); return pixel(png, p.px, p.py); }
+function textInk(view, png) {
+  const a = point(view, 120, 300), b = point(view, 400, 360);
   let count = 0;
   for (let y = a.py; y < b.py; y++) for (let x = a.px; x < b.px; x++)
     if (pixel(png, x, y).every((value) => value < 100)) count++;
@@ -181,132 +210,228 @@ async function textInk(page, png) {
 async function readNode(page, id) {
   return page.evaluate(async (id) => (await window.tools.get_design_context({ node_id: id })).node, id);
 }
+async function metadata(page) { return page.evaluate(() => window.tools.get_design_metadata({})); }
+async function interactionPixels(page) {
+  return page.locator("#stage").evaluate((canvas) => {
+    if (!(canvas instanceof HTMLCanvasElement)) throw Error("The interaction surface must be a Canvas");
+    const ctx = canvas.getContext("2d"), pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    let checksum = 0, painted = 0;
+    for (let i = 0; i < pixels.length; i += 4) {
+      if (pixels[i + 3]) painted++;
+      checksum = (checksum + pixels[i] * 3 + pixels[i + 1] * 5 + pixels[i + 2] * 7 + pixels[i + 3] * 11) % 2147483647;
+    }
+    return { checksum, painted };
+  });
+}
+async function selectLayer(page, id) { await page.locator(`.layer-row[data-id="${id}"]`).click(); }
+async function editText(page, value) {
+  await selectLayer(page, "heading");
+  await page.locator("#stage").press("Enter");
+  const editor = page.locator("#inline-text-editor");
+  await editor.fill(value);
+  await editor.press("Control+Enter");
+}
 
-test("the real GPU scene preserves shapes, clipped alpha, rotation, gradient and text under strict CSP", async (t) => {
+test("the Canvas-only GPU scene preserves shapes, clipped alpha, rotation, gradient and glyphs under strict CSP", async (t) => {
   const f = await fixture(t);
-  await enableGpu(f.page);
+  await active(f.page);
   assert(f.vendorRequests.includes("/canvas/vendor/canvaskit.js"));
   assert(f.vendorRequests.includes("/canvas/vendor/canvaskit.wasm"));
   assert.equal(await f.page.locator("#gpu-canvas").evaluate((canvas) => Boolean(canvas.getContext("webgl2"))), true);
-  const png = await shot(f.page);
-  near(await at(f.page, png, 150, 140), [255, 0, 0]);
-  near(await at(f.page, png, 380, 140), [0, 0, 255]);
-  near(await at(f.page, png, 335, 105), [255, 255, 255]);
-  near(await at(f.page, png, 600, 150), [255, 223, 191]);
-  near(await at(f.page, png, 540, 150), [255, 255, 255]);
-  near(await at(f.page, png, 410, 480), [128, 128, 128], 10);
-  near(await at(f.page, png, 810, 540), [0, 204, 0]);
-  assert(await textInk(f.page, png) > 300, "the complete heading has real glyph pixels");
-  assert.equal(await f.page.locator('#scene [data-text-node-id="heading"]').textContent(), "WWWWWW");
+  assert.equal(await f.page.locator("#canvas-renderer option[value=svg]").count(), 0);
+  const view = await calibration(f.page), png = await shot(f.page);
+  near(at(view, png, 150, 140), [255, 0, 0]);
+  near(at(view, png, 380, 140), [0, 0, 255]);
+  near(at(view, png, 335, 105), [255, 255, 255]);
+  near(at(view, png, 600, 150), [255, 223, 191]);
+  near(at(view, png, 540, 150), [255, 255, 255]);
+  near(at(view, png, 410, 480), [128, 128, 128], 10);
+  near(at(view, png, 810, 540), [0, 204, 0]);
+  assert(textInk(view, png) > 300, "the complete heading has real glyph pixels");
+  for (const [x, y, expected] of [[540, 150, null], [600, 150, "orange"], [380, 140, "rotated"]]) {
+    const p = point(view, x, y);
+    await f.page.mouse.click(p.x, p.y);
+    assert.deepEqual((await metadata(f.page)).selection, expected ? [expected] : [], "Canvas hit testing follows clipping and rotation");
+  }
 });
 
-test("SVG selection, dragging, inline text and undo update the real GPU picture", async (t) => {
+test("2D Canvas selection, pointer dragging, inline editing and undo update the GPU picture", async (t) => {
   const { page } = await fixture(t);
-  await enableGpu(page);
+  await active(page);
+  const view = await calibration(page), unselected = await interactionPixels(page);
   await page.locator("#toggle-snap").click();
-  await page.locator('.layer-row[data-id="red"]').click();
-  assert.equal(await page.locator("#scene [data-scene-overlay] [data-handle]").count(), 4);
-  const start = await screenPoint(page, 150, 140);
+  await selectLayer(page, "red");
+  assert.deepEqual((await metadata(page)).selection, ["red"]);
+  assert.notEqual((await interactionPixels(page)).checksum, unselected.checksum, "selection is painted in the 2D interaction Canvas");
+  const start = point(view, 150, 140);
   await page.mouse.move(start.x, start.y);
   await page.mouse.down();
   await page.mouse.move(start.x + 150, start.y, { steps: 5 });
-  await active(page, false, "editing");
   await page.mouse.up();
   await active(page);
   const moved = await readNode(page, "red");
   assert(moved.x > 200, `drag changed the model x: ${moved.x}`);
   const dragged = await shot(page);
-  near(await at(page, dragged, 150, 140), [255, 255, 255]);
-  near(await at(page, dragged, moved.x + 50, moved.y + 40), [255, 0, 0]);
+  near(at(view, dragged, 150, 140), [255, 255, 255]);
+  near(at(view, dragged, moved.x + 50, moved.y + 40), [255, 0, 0]);
   await page.locator("#stage").press("Control+z");
   await active(page);
   assert.equal((await readNode(page, "red")).x, 100);
-  near(await at(page, await shot(page), 150, 140), [255, 0, 0]);
-
-  const originalInk = await textInk(page, await shot(page));
-  await page.locator('[data-text-node-id="heading"]').dblclick();
-  await active(page, false, "editing");
-  const editor = page.locator("#inline-text-editor");
-  await editor.fill("I");
-  await editor.press("Control+Enter");
+  near(at(view, await shot(page), 150, 140), [255, 0, 0]);
+  const originalInk = textInk(view, await shot(page));
+  await editText(page, "I");
   await active(page);
   assert.equal((await readNode(page, "heading")).text, "I");
-  const changedInk = await textInk(page, await shot(page));
+  const changedInk = textInk(view, await shot(page));
   assert(changedInk > 5 && changedInk < originalInk / 3, `${originalInk} heading pixels became ${changedInk}`);
   await page.locator("#stage").press("Control+z");
   await active(page);
   assert.equal((await readNode(page, "heading")).text, "WWWWWW");
-  assert(await textInk(page, await shot(page)) > originalInk * 0.9, "undo restores GPU glyphs");
+  assert(textInk(view, await shot(page)) > originalInk * 0.9, "undo restores GPU glyphs");
 });
 
-test("page changes replace the GPU scene and zoom/SVG choices preserve the SVG editor", async (t) => {
-  const { page, records } = await fixture(t);
-  await enableGpu(page);
+test("page changes replace the GPU scene and every supported zoom retains the GPU renderer", async (t) => {
+  const { page } = await fixture(t, { large: true });
+  await active(page);
   await page.locator("#active-page").selectOption("page-2");
-  await page.waitForFunction(() => document.querySelector('#scene [data-node-id="cyan"]'));
+  await page.waitForFunction(async () => (await window.tools.get_design_metadata({})).activePageId === "page-2");
   await active(page);
-  assert.equal((await page.evaluate(() => window.tools.get_design_metadata({}))).activePageId, "page-2");
-  const other = await shot(page);
-  near(await at(page, other, 150, 140), [0, 170, 255]);
-  near(await at(page, other, 810, 540), [255, 0, 255]);
-  assert.equal(await page.locator('#scene [data-node-id="red"]').count(), 0);
+  const otherView = await calibration(page, { color: [0, 170, 255] }), other = await shot(page);
+  near(at(otherView, other, 150, 140), [0, 170, 255]);
+  near(at(otherView, other, 810, 540), [255, 0, 255]);
   await page.locator("#active-page").selectOption("page-1");
-  await page.waitForFunction(() => document.querySelector('#scene [data-node-id="red"]'));
+  await page.waitForFunction(async () => (await window.tools.get_design_metadata({})).activePageId === "page-1");
   await active(page);
-  near(await at(page, await shot(page), 150, 140), [255, 0, 0]);
-  while (parseFloat(await page.locator("#zoom-value").textContent()) <= 100)
-    await page.locator("#zoom-in").click();
-  await active(page, false, "zoom-limit");
-  assert.equal(await page.locator('#scene > [data-node-id="red"]').evaluate((el) => getComputedStyle(el).opacity), "1");
-  await page.locator("#zoom-out").click();
+  near(at(await calibration(page), await shot(page), 150, 140), [255, 0, 0]);
+  await selectLayer(page, "red");
+  await page.locator("#stage").press("Shift+Digit2");
   await active(page);
-  await page.locator("#canvas-renderer").selectOption("svg");
-  await active(page, false, "svg");
-  await page.locator('.layer-row[data-id="heading"]').click();
-  await page.locator("#stage").press("Enter");
-  await page.locator("#inline-text-editor").fill("SVG remains editable");
-  await page.locator("#inline-text-editor").press("Control+Enter");
-  assert.equal((await readNode(page, "heading")).text, "SVG remains editable");
-  assert([...records.values()].some((value) => value?.canvasRendererMode === "svg"), "renderer preference is persisted in fake Host storage");
+  assert(parseFloat(await page.locator("#zoom-value").textContent()) > 100);
+  await page.locator("#stage").press("Escape");
+  await active(page);
+  const high = colorBounds(await shot(page), [255, 0, 0]);
+  while (parseFloat(await page.locator("#zoom-value").textContent()) > 10) {
+    await page.locator("#zoom-out").click();
+    await active(page);
+  }
+  const low = colorBounds(await shot(page), [255, 0, 0]);
+  assert(high.count > low.count * 100, "real painted geometry scales from high zoom to 10%");
 });
-
-test("an unavailable Wasm capability never fetches CanvasKit, including automatic large-scene mode", async (t) => {
+test("an unavailable Wasm capability fetches no renderer and presents an explicit unavailable state", async (t) => {
   const f = await fixture(t, { capable: false, large: true });
   await active(f.page, false, "wasm-unavailable");
-  await f.page.locator("#canvas-renderer").selectOption("gpu");
-  await active(f.page, false, "wasm-unavailable");
   assert.deepEqual(f.vendorRequests, [], "neither CanvasKit JS nor Wasm is fetched without Host capability");
-  await f.page.locator('.layer-row[data-id="red"]').click();
-  assert.equal(await f.page.locator("#scene [data-scene-overlay] [data-handle]").count(), 4);
-  assert.equal(await f.page.locator('#scene > [data-node-id="red"]').evaluate((el) => getComputedStyle(el).opacity), "1");
+  assert.match(await f.page.locator("#renderer-state").textContent(), /不可用|不支持|unavailable/iu);
+  assert.equal(await f.page.locator("#stage-wrap svg").count(), 0);
 });
 
-test("a real WebGL context loss restores SVG and auto zoom never silently retries the failed renderer", async (t) => {
+test("real WebGL context loss is explicit, never installs an SVG scene, and manual retry draws current edits", async (t) => {
   const { page, vendorRequests } = await fixture(t, { large: true });
-  assert.equal(await page.locator("#canvas-renderer").inputValue(), "auto");
+  await active(page);
+  await editText(page, "I");
   await active(page);
   assert.equal(await page.locator("#gpu-canvas").evaluate((canvas) => {
     const extension = canvas.getContext("webgl2").getExtension("WEBGL_lose_context");
     if (!extension) return false;
+    window.lostContextExtension = extension;
+    window.contextRestored = false;
+    canvas.addEventListener("webglcontextrestored", () => { window.contextRestored = true; }, { once: true });
     extension.loseContext();
     return true;
   }), true, "the WebGL driver must support a real context-loss event");
   await active(page, false, "context-lost");
-  assert.equal(await page.locator('#scene > [data-node-id="red"]').evaluate((el) => getComputedStyle(el).opacity), "1");
+  assert.match(await page.locator("#renderer-state").textContent(), /丢失|不可用|失败|lost|unavailable/iu);
   const requestsBeforeZoom = vendorRequests.length;
-  while (parseFloat(await page.locator("#zoom-value").textContent()) <= 100)
-    await page.locator("#zoom-in").click();
-  await active(page, false, "svg");
+  await page.locator("#zoom-in").click();
   await page.locator("#zoom-out").click();
-  await active(page, false, "svg");
-  assert.equal(vendorRequests.length, requestsBeforeZoom, "automatic zoom mode changes must not retry a failed GPU context");
-  await page.locator('.layer-row[data-id="heading"]').click();
-  await page.locator("#stage").press("Enter");
-  await page.locator("#inline-text-editor").fill("After loss");
-  await page.locator("#inline-text-editor").press("Control+Enter");
-  assert.equal((await readNode(page, "heading")).text, "After loss");
+  await active(page, false, "context-lost");
+  assert.equal(vendorRequests.length, requestsBeforeZoom, "viewport changes do not silently retry a lost context");
+  assert.equal((await readNode(page, "heading")).text, "I");
+  await page.evaluate(() => window.lostContextExtension.restoreContext());
+  await page.waitForFunction(() => window.contextRestored);
+  await page.locator("#retry-renderer").click();
+  await active(page);
+  assert.equal((await readNode(page, "heading")).text, "I");
+  const view = await calibration(page), currentInk = textInk(view, await shot(page));
+  assert(currentInk > 5 && currentInk < 600, "retry draws the edited glyph instead of an old picture");
   await page.locator("#stage").press("Control+z");
+  await active(page);
   assert.equal((await readNode(page, "heading")).text, "WWWWWW");
-  await page.locator("#canvas-renderer").selectOption("svg");
-  await active(page, false, "svg");
+  assert(textInk(view, await shot(page)) > currentInk * 3);
+});
+
+// Opt in to private/local data; never commit its bytes, screenshots, or paths as a fixture.
+if (process.env.GPU_PORTABLE_FIXTURE) test("an optional real portable design loads every layer/font and supports GPU drag/zoom", async (t) => {
+  const original = await readFile(process.env.GPU_PORTABLE_FIXTURE);
+  const portable = JSON.parse(original), design = normalizeDesignDocument(portable.document);
+  const sha256 = async (value) => createHash("sha256").update(value).digest("hex");
+  const plan = await createDesignIndexPersistencePlan({ document: design, sha256 });
+  const descriptors = new Map(design.resources.map((resource) => [resource.id, resource])), parts = [...plan.parts];
+  for (const resource of portable.resources) {
+    const descriptor = descriptors.get(resource.id);
+    assert(descriptor, `portable descriptor ${resource.id} exists`);
+    const resourcePlan = await createDesignResourcePersistencePlan({ ...descriptor, base64: resource.base64, sha256Bytes: sha256 });
+    assert.deepEqual(resourcePlan.descriptor, descriptor, "portable bytes match their original SHA and metadata");
+    parts.push(...resourcePlan.parts);
+  }
+  const { page } = await fixture(t, { design, primarySource: plan.primarySource, parts, allowMemoryRecovery: true });
+  await active(page);
+  const meta = await metadata(page);
+  assert.equal(meta.layers.length, design.nodes.length);
+  assert.equal(meta.runtime.loadedResourceCount, design.resources.length);
+  const complete = await shot(page);
+  let painted = 0;
+  for (let i = 0; i < complete.data.length; i += 4)
+    if (complete.data[i] < 240 || complete.data[i + 1] < 240 || complete.data[i + 2] < 240) painted++;
+  assert(painted > 500, "the real design has a nonblank GPU image");
+  const index = new Map(design.nodes.map((n) => [n.id, n]));
+  const target = design.nodes.find((n) => {
+    if (!["frame", "rectangle", "ellipse", "image"].includes(n.type) || n.width < 80 || n.height < 30 || n.height > 400) return false;
+    const seen = new Set();
+    for (let current = n; current && !seen.has(current.id); current = index.get(current.parentId)) {
+      if (!current.visible || current.locked) return false;
+      seen.add(current.id);
+    }
+    return true;
+  });
+  assert(target, "the real design contains an unlocked visible shape");
+  await page.locator("#layer-filter").fill(target.id);
+  await selectLayer(page, target.id);
+  await page.locator("#layer-filter").fill("");
+  await page.locator("#stage").press("Shift+Digit2");
+  await active(page);
+  await page.locator("#stage").press("Escape");
+  const canvas = await page.locator("#stage").boundingBox(), x = canvas.x + canvas.width / 2, y = canvas.y + canvas.height / 2;
+  const before = await shot(page);
+  await page.evaluate(() => {
+    window.uiFrameSample = { frames: 0, started: performance.now(), running: true };
+    const tick = () => { if (window.uiFrameSample.running) { window.uiFrameSample.frames++; requestAnimationFrame(tick); } };
+    requestAnimationFrame(tick);
+  });
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  const selected = (await metadata(page)).selection[0];
+  assert(selected, "Canvas geometry hit testing selects a real layer");
+  const beforeNode = await readNode(page, selected);
+  await page.mouse.move(x + 48, y + 24, { steps: 8 });
+  await page.mouse.up();
+  await active(page);
+  await page.locator("#stage").press("Escape");
+  const afterNode = await readNode(page, selected), after = await shot(page);
+  assert(beforeNode.x !== afterNode.x || beforeNode.y !== afterNode.y, "real pointer drag changes model geometry");
+  let changed = 0;
+  for (let i = 0; i < before.data.length; i += 4)
+    if ([0, 1, 2].some((channel) => Math.abs(before.data[i + channel] - after.data[i + channel]) > 20)) changed++;
+  assert(changed > 100, "a real edit changes the GPU image");
+  await page.locator("#zoom-out").click();
+  await active(page);
+  const sample = await page.evaluate(() => {
+    window.uiFrameSample.running = false;
+    return { rafCallbacks: window.uiFrameSample.frames, elapsedMs: performance.now() - window.uiFrameSample.started };
+  });
+  assert(sample.rafCallbacks > 0);
+  t.diagnostic(JSON.stringify({ nodes: design.nodes.length, loadedResources: meta.runtime.loadedResourceCount,
+    paintedPixels: painted, changedPixels: changed, ...sample,
+    measurement: "correctness smoke only; rAF count is not FPS or an engine benchmark" }));
+  assert.deepEqual(await readFile(process.env.GPU_PORTABLE_FIXTURE), original, "the saved portable source remains byte-identical");
 });
