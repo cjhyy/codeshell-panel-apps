@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { resolve, extname, sep } from "node:path";
+import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
+import { launchCanvasBrowser, canvasCsp, canvasContentType, observeCanvasPage, assertCanvasClean,
+  waitForCanvas, canvasNode, canvasNodes, waitCanvasText, clickCanvasNode, canvasSceneDigest } from "./canvas-ui-fixture.mjs";
 import { normalizeDesignDocument, serializeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
 import { createDesignIndexPersistencePlan } from "../../../apps/design-studio/app/document-index.mjs";
 
@@ -44,8 +45,7 @@ function source(scope, imported = false, largeLayers = false) {
 }
 
 async function fixture(t, { mobile = false, agent = true, imported = false, indexed = false, largeLayers = false } = {}) {
-  const browser = await chromium.launch();
-  t.after(() => browser.close());
+  const browser = await launchCanvasBrowser();
   const context = await browser.newContext({ viewport: { width: mobile ? 390 : 1280, height: 844 },
     hasTouch: mobile, isMobile: mobile });
   const page = await context.newPage(), calls = [], records = new Map(), errors = [], pauses = new Map();
@@ -60,12 +60,12 @@ async function fixture(t, { mobile = false, agent = true, imported = false, inde
     for (const part of plan.parts) files.set(`${scope}:${part.path}`, part.content);
   }
   page.on("pageerror", error => errors.push(error.message));
+  await observeCanvasPage(page);
+  t.after(async () => { try { await assertCanvasClean(page); } finally { await browser.close(); } });
   await context.route("**/*", async route => {
     const url = new URL(route.request().url()), file = resolve(root, `.${url.pathname}`);
     if (url.origin !== "https://panel.test" || !file.startsWith(root + sep)) return route.abort();
-    try { await route.fulfill({ body: await readFile(file), contentType: {
-      ".html": "text/html", ".mjs": "text/javascript", ".js": "text/javascript", ".css": "text/css",
-    }[extname(file)] }); } catch { await route.fulfill({ status: 404, body: "missing" }); }
+    try { await route.fulfill({ body: await readFile(file), contentType: canvasContentType(file), headers: { "Content-Security-Policy": canvasCsp } }); } catch { await route.fulfill({ status: 404, body: "missing" }); }
   });
   await page.exposeFunction("hostBridge", async (scope, method, params = {}) => {
     calls.push({ scope, method, ...structuredClone(params) });
@@ -104,7 +104,7 @@ async function fixture(t, { mobile = false, agent = true, imported = false, inde
   });
   await page.addInitScript(({ permissions, agent }) => {
     let listener, scope = "A";
-    const context = { trusted: true, busy: false,
+    const context = { trusted: true, busy: false, capabilities: { packageAssets: { wasm: true, fetch: "package" } },
       ...(permissions.includes("context.workspace") ? { cwd: "/workspace" } : {}),
       ...(permissions.includes("context.session") ? { sessionId: "A" } : {}),
       availableMethods: ["workspace.info", "workspace.list", "workspace.readText", "workspace.writeText",
@@ -122,8 +122,8 @@ async function fixture(t, { mobile = false, agent = true, imported = false, inde
   }, { permissions: manifest.permissions, agent });
   await page.goto("https://panel.test/index.html");
   try {
-    await page.waitForFunction(() => !document.querySelector(".workspace").inert &&
-      document.querySelector('[data-text-node-id="heading"]')?.textContent === "A heading", null, { timeout: 3000 });
+    await waitCanvasText(page, "heading", "A heading");
+    await waitForCanvas(page);
   } catch (error) {
     error.message += `\nErrors: ${JSON.stringify(errors)}; status: ${await page.locator("#toast").textContent()}; calls: ${JSON.stringify(calls.slice(-5))}`;
     throw error;
@@ -193,17 +193,20 @@ test("1000-layer list preserves stack order, folded search, keyboard selection a
 
 test("inline canvas text commits once, cancels without changing the document, and clears stale measured text", async t => {
   const f = await fixture(t), editor = f.page.locator("#inline-text-editor");
-  await f.page.locator('[data-text-node-id="heading"]').dblclick();
+  const beforePixels = await canvasSceneDigest(f.page);
+  await clickCanvasNode(f.page, "heading", { double: true });
   await editor.fill("Updated\nheading");
   await editor.press("Control+Enter");
   assert.equal(await editor.isVisible(), false);
-  assert.equal(await f.page.locator('[data-text-node-id="heading"]').textContent(), "Updatedheading");
+  assert.equal((await canvasNode(f.page, "heading")).text, "Updated\nheading");
+  await f.page.locator("#stage").press("Escape");
+  assert.notEqual(await canvasSceneDigest(f.page), beforePixels, "committed text changes actual GPU pixels");
   await f.page.locator("#stage").press("Control+z");
-  assert.equal(await f.page.locator('[data-text-node-id="heading"]').textContent(), "A heading");
+  assert.equal((await canvasNode(f.page, "heading")).text, "A heading");
   await f.page.locator("#stage").press("Control+Shift+z");
-  await f.page.locator('[data-text-node-id="heading"]').dblclick();
+  await clickCanvasNode(f.page, "heading", { double: true });
   await editor.fill("Discard this"); await editor.press("Escape");
-  assert.equal(await f.page.locator('[data-text-node-id="heading"]').textContent(), "Updatedheading");
+  assert.equal((await canvasNode(f.page, "heading")).text, "Updated\nheading");
   await f.page.locator("#save").click();
   await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "已保存");
   const saved = normalizeDesignDocument(JSON.parse(f.files.get(`A:${path}`))).nodes.find(node => node.id === "heading");
@@ -214,14 +217,15 @@ test("inline canvas text commits once, cancels without changing the document, an
 
 test("saving during an inline edit flushes the buffer and a later project switch preserves only the old scoped draft", async t => {
   const f = await fixture(t), editor = f.page.locator("#inline-text-editor");
-  await f.page.locator('[data-text-node-id="heading"]').dblclick(); await editor.fill("Saved from editor");
+  await clickCanvasNode(f.page, "heading", { double: true }); await editor.fill("Saved from editor");
   await editor.press("Control+s");
   await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "已保存");
   assert.match(f.files.get(`A:${path}`), /Saved from editor/);
-  await f.page.locator('[data-text-node-id="heading"]').dblclick(); await editor.fill("A unsaved buffer");
+  await clickCanvasNode(f.page, "heading", { double: true }); await editor.fill("A unsaved buffer");
   const before = f.calls.length;
   await f.page.evaluate(() => window.switchProject("B"));
-  await f.page.waitForFunction(() => !document.querySelector(".workspace").inert && document.querySelector('[data-text-node-id="heading"]')?.textContent === "B heading");
+  await waitCanvasText(f.page, "heading", "B heading");
+  await waitForCanvas(f.page);
   assert.equal(await editor.isVisible(), false);
   const downloading = f.page.waitForEvent("download");
   await f.page.locator("#recovery-backup").click();
@@ -238,7 +242,7 @@ test("editing imported ellipsis uses the complete source and clearing it remains
   const editor = f.page.locator("#inline-text-editor"); await f.page.locator("#edit-text-selection").click();
   assert.equal(await editor.inputValue(), "A complete imported heading");
   await editor.fill("A complete imported heading!"); await editor.press("Control+Enter");
-  assert.equal(await f.page.locator('[data-text-node-id="heading"]').textContent(), "A complete imported heading!");
+  assert.equal((await canvasNode(f.page, "heading")).text, "A complete imported heading!");
   await f.page.locator("#edit-text-selection").click(); await editor.fill(""); await editor.press("Control+Enter");
   await f.page.locator("#save").click(); await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "已保存");
   const saved = normalizeDesignDocument(JSON.parse(f.files.get(`A:${path}`))).nodes.find(node => node.id === "heading");
@@ -249,7 +253,7 @@ test("editing imported ellipsis uses the complete source and clearing it remains
 test("layer comments save before submitting stable target context and the exact display text", async t => {
   const f = await fixture(t);
   await f.page.keyboard.press("c");
-  await f.page.locator('[data-text-node-id="heading"]').click();
+  await clickCanvasNode(f.page, "heading");
   assert.match(await f.page.locator("#element-comment-target").textContent(), /Card \/ Heading.*heading/);
   await f.page.locator("#element-comment-request").fill("让标题更突出");
   await f.page.locator("#element-comment-request").press("Control+Enter");
@@ -269,7 +273,8 @@ test("a comment awaiting save never submits to a replacement project with the sa
   await f.page.locator("#comment-selection").click(); await f.page.locator("#element-comment-request").fill("Only project A");
   const pause = f.pause("workspace.writeText"); await f.page.locator("#submit-element-comment").click(); await pause.entered;
   await f.page.evaluate(() => window.switchProject("B"));
-  await f.page.waitForFunction(() => !document.querySelector(".workspace").inert && document.querySelector('[data-text-node-id="heading"]')?.textContent === "B heading");
+  await waitCanvasText(f.page, "heading", "B heading");
+  await waitForCanvas(f.page);
   pause.release(); await f.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(f.calls.filter(call => call.method === "agent.submitPrompt").length, 0);
   assert.equal(await f.page.locator("#element-comment").isVisible(), false);
@@ -309,7 +314,7 @@ test("editing while a comment save is pending keeps the newer design dirty and c
   saving.release(); await f.page.waitForFunction(() => !document.querySelector("#submit-element-comment").disabled);
   assert.equal(f.calls.filter(call => call.method === "agent.submitPrompt").length, 0);
   assert.equal((await f.page.evaluate(() => window.tools.get_design_metadata())).dirty, true);
-  assert.equal(await f.page.locator('[data-text-node-id="heading"]').textContent(), "Newer heading during save");
+  assert.equal((await canvasNode(f.page, "heading")).text, "Newer heading during save");
   assert.doesNotMatch(f.files.get(`A:${path}`), /Newer heading/);
   assert.deepEqual(f.errors, []);
 });
@@ -358,10 +363,10 @@ test("text creation opens inline input and Enter edits a selected text without c
   const canvas = await f.page.locator("#stage").boundingBox();
   await f.page.mouse.click(canvas.x + canvas.width - 40, canvas.y + canvas.height - 80);
   const editor = f.page.locator("#inline-text-editor"); await editor.fill("Created text"); await editor.press("Control+Enter");
-  assert.equal(await f.page.locator('[data-text-node-id]').filter({ hasText: "Created text" }).count(), 1);
+  assert.equal((await canvasNodes(f.page)).filter(node => node.type === "text" && node.text === "Created text").length, 1);
   await f.select("heading"); await f.page.locator("#stage").focus(); await f.page.keyboard.press("Enter");
   assert.equal(await editor.inputValue(), "A heading"); await editor.press("Escape");
-  assert.equal(await f.page.locator('[data-text-node-id="heading"]').textContent(), "A heading");
+  assert.equal((await canvasNode(f.page, "heading")).text, "A heading");
   assert.deepEqual(f.errors, []);
 });
 
@@ -387,7 +392,7 @@ test("mobile text editing and comments remain reachable without overflow or a se
   const f = await fixture(t, { mobile: true, agent: false }); await f.select("heading");
   await f.page.locator("#edit-text-selection").tap();
   const editor = f.page.locator("#inline-text-editor"); await editor.fill("Touch edit"); await editor.press("Control+Enter");
-  assert.equal(await f.page.locator('[data-text-node-id="heading"]').textContent(), "Touch edit");
+  assert.equal((await canvasNode(f.page, "heading")).text, "Touch edit");
   await f.page.locator("#toggle-inspector").tap();
   await f.page.locator("#comment-selection").tap();
   assert.equal(await f.page.locator("#element-comment").isVisible(), true);
