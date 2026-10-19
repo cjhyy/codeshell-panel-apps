@@ -291,9 +291,20 @@ test("hug text reserves the entire measured glyph width including a leading emoj
 
 test("clipped controls inspect real glyph ink rather than font boxes and still detect a displaced glyph", async (t) => {
   const page = await browserFixture(t);
-  const input = source("Sample text", { width: 74, height: 16, autoResize: "WIDTH_AND_HEIGHT" });
+  // A fixed-height pixel fixture needs the same face on macOS and Linux. System
+  // Arial aliases have different ink; use the reviewed bundled font in both the
+  // browser measurement and the independently rasterized exported SVG.
+  const input = source("Sample text", {
+    width: 74,
+    height: 16,
+    autoResize: "WIDTH_AND_HEIGHT",
+    family: "Roboto",
+  });
   input.children[0].style.fontSize = 14;
   input.children[0].style.lineHeightPx = 16.0986;
+  // Roboto's measured hanging ink starts 0.1px above its text origin. Give the
+  // contained control a real 1px inset; the -3px edit below must still overflow.
+  input.children[0].absoluteBoundingBox.y = 11;
   input.children = [
     {
       type: "FRAME",
@@ -307,14 +318,23 @@ test("clipped controls inspect real glyph ink rather than font boxes and still d
   const result = await page.evaluate(async (input) => {
     const { prepareFigmaImport } = await import("/figma-bridge.mjs");
     const { exportDesignSvg } = await import("/document.mjs");
+    const { resourceDataUrlsFromPlans } = await import("/builtin-fonts.mjs");
     const result = await prepareFigmaImport(input);
+    const resourceDataUrls = resourceDataUrlsFromPlans(result.resourcePlans);
     result.document.canvas = { width: 300, height: 100, background: "#ffffff" };
     const node = result.document.nodes.find((node) => node.type === "text");
     result.document.nodes[0].clipContent = false;
+    let outsidePixels = [];
     async function opaqueInkOutside() {
       const image = new Image();
       image.src =
-        "data:image/svg+xml;charset=utf-8," + encodeURIComponent(exportDesignSvg(result.document));
+        "data:image/svg+xml;charset=utf-8," +
+        encodeURIComponent(
+          exportDesignSvg(result.document, {
+            resourceDataUrls,
+            maxBytes: 4 * 1024 * 1024,
+          }),
+        );
       await image.decode();
       const canvas = document.createElement("canvas");
       canvas.width = 300;
@@ -322,26 +342,37 @@ test("clipped controls inspect real glyph ink rather than font boxes and still d
       const context = canvas.getContext("2d");
       context.drawImage(image, 0, 0);
       const pixels = context.getImageData(0, 0, 300, 100).data;
+      outsidePixels = [];
       let count = 0;
       for (let y = 0; y < 100; y++)
         for (let x = 0; x < 300; x++) {
           if (x >= 10 && x < 246 && y >= 10 && y < 26) continue;
           const index = (y * 300 + x) * 4;
-          if (Math.min(pixels[index], pixels[index + 1], pixels[index + 2]) < 128) count++;
+          if (Math.min(pixels[index], pixels[index + 1], pixels[index + 2]) < 128) {
+            count++;
+            if (outsidePixels.length < 20)
+              outsidePixels.push({ x, y, rgb: [...pixels.subarray(index, index + 3)] });
+          }
         }
       return count;
     }
     const outsideBefore = await opaqueInkOutside();
+    const outsideBeforePixels = outsidePixels;
     node.y -= 3;
     const outsideAfter = await opaqueInkOutside();
     node.y += 3;
     result.document.nodes[0].clipContent = true;
-    return { result, outsideBefore, outsideAfter };
+    return { result, outsideBefore, outsideAfter, outsideBeforePixels };
   }, input);
+  assert.deepEqual(result.result.textMeasurement.unavailableFonts, []);
+  assert.equal(
+    result.result.document.nodes.find((node) => node.type === "text").fontRef,
+    "builtin-roboto-400-normal",
+  );
   assert.equal(
     result.outsideBefore,
     0,
-    "unclipped raster has no opaque glyph ink beyond the control",
+    `unclipped raster has no opaque glyph ink beyond the control: ${JSON.stringify({ pixels: result.outsideBeforePixels, text: result.result.document.nodes.find((node) => node.type === "text") })}`,
   );
   assert.ok(result.outsideAfter > 0, "moving text produces a real raster crop");
   const documentValue = result.result.document;
