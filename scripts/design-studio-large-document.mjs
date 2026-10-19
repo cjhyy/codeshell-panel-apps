@@ -3,7 +3,17 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
+import { PNG } from "pngjs";
+import {
+  launchCanvasBrowser,
+  canvasCsp,
+  canvasContentType,
+  observeCanvasPage,
+  assertCanvasClean,
+  waitForCanvas,
+  canvasNode,
+  canvasPoint,
+} from "../tests/apps/design-studio/canvas-ui-fixture.mjs";
 import {
   normalizeDesignDocument,
   serializeDesignDocument,
@@ -41,9 +51,10 @@ async function startStaticServer() {
       const content = await readFile(filePath);
       response.setHeader(
         "content-type",
-        MIME_TYPES.get(extname(filePath)) ?? "application/octet-stream",
+        MIME_TYPES.get(extname(filePath)) ?? canvasContentType(filePath),
       );
       response.setHeader("cache-control", "no-store");
+      response.setHeader("content-security-policy", canvasCsp);
       response.end(content);
     } catch (error) {
       response.writeHead(error?.code === "ENOENT" ? 404 : 500).end("Not found");
@@ -93,10 +104,7 @@ const pixelResourcePlan = await createDesignResourcePersistencePlan({
   sha256Bytes: async (bytes) => createHash("sha256").update(bytes).digest("hex"),
 });
 const fontBytes = await readFile(
-  resolve(
-    REPOSITORY_ROOT,
-    "node_modules/playwright-core/lib/vite/traceViewer/codicon.DCmgc-ay.ttf",
-  ),
+  resolve(REPOSITORY_ROOT, "apps/design-studio/app/fonts/Roboto-Variable.ttf"),
 );
 const fontResourcePlan = await createDesignResourcePersistencePlan({
   id: "large-font",
@@ -128,6 +136,8 @@ const documentSource = serializeDesignDocument(
                 id: "large-image",
                 type: "image",
                 name: "Content-addressed image",
+                x: 20,
+                y: 1_100,
                 imageRef: "large-pixel",
                 objectFit: "cover",
                 fill: "transparent",
@@ -137,6 +147,8 @@ const documentSource = serializeDesignDocument(
                 id: "large-font-text",
                 type: "text",
                 name: "Content-addressed font",
+                x: 140,
+                y: 1_100,
                 text: "A",
                 fontSize: 16,
                 fontWeight: 400,
@@ -166,11 +178,22 @@ if (sourceBytes > 480 * 1024) {
 }
 
 const server = await startStaticServer();
-const browser = await chromium.launch({ headless: true });
+const browser = await launchCanvasBrowser();
 const page = await browser.newPage({ viewport: { width: 1_280, height: 800 } });
+const errors = [];
+const pendingRequests = new Set();
+page.on("pageerror", (error) => errors.push(error.message));
+page.on("request", (request) => pendingRequests.add(request.url()));
+page.on("requestfinished", (request) => pendingRequests.delete(request.url()));
+page.on("requestfailed", (request) => pendingRequests.delete(request.url()));
 try {
+  await observeCanvasPage(page, { offlineTools: true });
+  await page.route("**/*", (route) =>
+    new URL(route.request().url()).origin === server.origin ? route.continue() : route.abort(),
+  );
   await page.addInitScript(
     ({ path, source, resourceParts }) => {
+      if (window.top !== window) return;
       const prefix = "codeshell-design-studio:";
       if (localStorage.getItem(`${prefix}file:${path}`) == null) {
         localStorage.setItem(`${prefix}file:${path}`, source);
@@ -188,7 +211,7 @@ try {
     },
   );
   await page.goto(`${server.origin}/apps/design-studio/app/index.html`, {
-    waitUntil: "networkidle",
+    waitUntil: "domcontentloaded",
   });
   await page.waitForFunction(
     (path) =>
@@ -196,6 +219,7 @@ try {
       document.querySelector("#save-state")?.dataset.kind === "saved",
     DESIGN_PATH,
   );
+  await waitForCanvas(page);
   await page.locator("#save").click();
   await page.waitForFunction(
     (path) => {
@@ -278,13 +302,14 @@ try {
   if (!unchangedPartsReused) {
     throw new Error("Unchanged indexed pages were rewritten");
   }
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(
     (path) =>
       document.querySelector("#document-path")?.value === path &&
       document.querySelector("#save-state")?.dataset.kind === "saved",
     DESIGN_PATH,
   );
+  await waitForCanvas(page);
   const lazyOpen = await page.evaluate((path) => {
     const prefix = "codeshell-design-studio:";
     const manifest = JSON.parse(localStorage.getItem(`${prefix}file:${path}`));
@@ -318,22 +343,72 @@ try {
   if (layerCount !== 352) {
     throw new Error(`Reloaded index exposed ${layerCount} active-page layers instead of 352`);
   }
-  const renderedResourceImage = await page
-    .locator('image[data-node-id="large-image"]')
-    .getAttribute("href");
-  if (!renderedResourceImage?.startsWith("data:image/png;base64,")) {
-    throw new Error("Content-addressed image did not render from its resource reference");
+  // Resources occupy their own uncovered part of the fixture. Inspect the real
+  // GPU surface after a public fit-selection action, rather than old SVG nodes.
+  async function resourcePixels(id, inset = 1) {
+    const node = await canvasNode(page, id);
+    await page.locator(`.layer-row[data-id="${id}"]`).click();
+    await page.locator("#stage").focus();
+    await page.keyboard.press("Shift+Digit2");
+    await waitForCanvas(page);
+    await page.keyboard.press("Escape");
+    await waitForCanvas(page);
+    const topLeft = await canvasPoint(page, node.x, node.y);
+    const bottomRight = await canvasPoint(page, node.x + node.width, node.y + node.height);
+    const bounds = await page.locator("#gpu-canvas").boundingBox();
+    const png = PNG.sync.read(await page.locator("#gpu-canvas").screenshot());
+    const x = Math.round(((topLeft.x - bounds.x) * png.width) / bounds.width);
+    const y = Math.round(((topLeft.y - bounds.y) * png.height) / bounds.height);
+    const width = Math.round(((bottomRight.x - topLeft.x) * png.width) / bounds.width);
+    const height = Math.round(((bottomRight.y - topLeft.y) * png.height) / bounds.height);
+    if (
+      width <= 0 ||
+      height <= 0 ||
+      x < 0 ||
+      y < 0 ||
+      x + width > png.width ||
+      y + height > png.height
+    )
+      throw new Error(`Resource ${id} is not fully visible on the GPU surface`);
+    const colors = [];
+    // Selection is cleared above. The image's rounded corners are deliberately
+    // outside its central sample; font ink uses the complete node interior.
+    const padding = inset < 1 ? Math.ceil(Math.min(width, height) * inset) : inset;
+    for (let row = y + padding; row < y + height - padding; row++)
+      for (let column = x + padding; column < x + width - padding; column++)
+        colors.push([
+          ...png.data.subarray((row * png.width + column) * 4, (row * png.width + column) * 4 + 4),
+        ]);
+    if (!colors.length) throw new Error(`Resource ${id} has no sampled GPU pixels`);
+    return { node, colors };
   }
+  const imagePixels = await resourcePixels("large-image", 0.25);
+  const expectedPixel = [...PNG.sync.read(Buffer.from(pixelBase64, "base64")).data];
+  if (
+    imagePixels.node.imageRef !== pixelResourcePlan.descriptor.id ||
+    !imagePixels.colors.every((pixel) =>
+      pixel.every((value, index) => Math.abs(value - expectedPixel[index]) <= 1),
+    )
+  ) {
+    throw new Error(
+      `Content-addressed image bytes did not paint the GPU surface: ${JSON.stringify({ reference: imagePixels.node.imageRef, colors: [...new Set(imagePixels.colors.map((pixel) => pixel.join(",")))].slice(0, 20), expectedPixel })}`,
+    );
+  }
+  const fontPixels = await resourcePixels("large-font-text");
   const renderedResourceFont = await page.evaluate(() => {
-    const text = document.querySelector('text[data-node-id="large-font-text"]');
     return {
-      family: text?.getAttribute("font-family"),
+      loadedFaces: [...document.fonts].filter(
+        (face) =>
+          face.family.replaceAll('"', "") === "CodeShell Resource Test" && face.status === "loaded",
+      ).length,
       loaded: document.fonts.check('400 16px "CodeShell Resource Test"'),
     };
   });
   if (
-    renderedResourceFont.family !== "CodeShell Resource Test" ||
-    renderedResourceFont.loaded !== true
+    fontPixels.node.fontRef !== fontResourcePlan.descriptor.id ||
+    renderedResourceFont.loadedFaces < 1 ||
+    renderedResourceFont.loaded !== true ||
+    !fontPixels.colors.some((pixel) => pixel.slice(0, 3).every((value) => value < 80))
   ) {
     throw new Error("Content-addressed font did not load and render from fontRef");
   }
@@ -344,19 +419,16 @@ try {
       document.querySelector("#active-page")?.value === "page-2",
     lazyOpen.inactivePartPath,
   );
+  await waitForCanvas(page);
   const switchedLayerCount = await page.locator("#layers-list .layer-row").count();
   if (switchedLayerCount !== 350) {
-    throw new Error(
-      `Lazy page switch exposed ${switchedLayerCount} layers instead of 350`,
-    );
+    throw new Error(`Lazy page switch exposed ${switchedLayerCount} layers instead of 350`);
   }
   await page.locator('.layer-row[data-id="large-layer-351"]').click();
   await page.locator("#design-tab-button").click();
   await page.locator("#prop-name").fill("Recovered layer 351");
   await page.locator("#prop-name").blur();
-  await page.waitForFunction(
-    () => document.querySelector("#save-state")?.dataset.kind === "dirty",
-  );
+  await page.waitForFunction(() => document.querySelector("#save-state")?.dataset.kind === "dirty");
   await page.waitForFunction(() => {
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
@@ -390,7 +462,7 @@ try {
     throw new Error("Recovery persisted a whole-document snapshot instead of operations");
   }
   page.on("dialog", (dialog) => void dialog.accept());
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(
     (path) =>
       document.querySelector("#document-path")?.value === path &&
@@ -398,6 +470,7 @@ try {
       document.querySelector("#active-page")?.value === "page-2",
     DESIGN_PATH,
   );
+  await waitForCanvas(page);
   await page.locator('.layer-row[data-id="large-layer-351"]').click();
   await page.locator("#design-tab-button").click();
   if ((await page.locator("#prop-name").inputValue()) !== "Recovered layer 351") {
@@ -405,18 +478,16 @@ try {
   }
   await page.locator("#stage").click({ position: { x: 5, y: 5 } });
   await page.keyboard.press("Control+z");
-  await page.waitForFunction(
-    () => document.querySelector("#active-page")?.value === "page-1",
-  );
+  await page.waitForFunction(() => document.querySelector("#active-page")?.value === "page-1");
   await page.keyboard.press("Control+Shift+z");
-  await page.waitForFunction(
-    () => document.querySelector("#active-page")?.value === "page-2",
-  );
+  await page.waitForFunction(() => document.querySelector("#active-page")?.value === "page-2");
   await page.locator('.layer-row[data-id="large-layer-351"]').click();
   await page.locator("#design-tab-button").click();
   if ((await page.locator("#prop-name").inputValue()) !== "Recovered layer 351") {
     throw new Error("Redo did not replay the recovered operation record");
   }
+  await assertCanvasClean(page);
+  if (errors.length) throw new Error(`Browser errors: ${errors.join("; ")}`);
   process.stdout.write(
     `${JSON.stringify(
       {
@@ -428,6 +499,7 @@ try {
         inactivePageDeferredUntilSwitch: true,
         contentAddressedImageRendered: true,
         contentAddressedFontRendered: true,
+        gpuRenderer: "CanvasKit WebGL2",
         operationLogRecovery: true,
         recoveryOperationCount: recoveryLog.operationCount,
         recoveryBytes: recoveryLog.bytes,
@@ -438,6 +510,12 @@ try {
       2,
     )}\n`,
   );
+} catch (error) {
+  console.error("Large-document browser diagnostics", {
+    errors,
+    pendingRequests: [...pendingRequests],
+  });
+  throw error;
 } finally {
   await page.close();
   await browser.close();
