@@ -817,3 +817,28 @@ CSS原始padding8/20、inside描边4/8，主框padding8/gap12，独立期望宽2
 同时传全部effectivepadding会重复计入兄弟Fill的内容基数，后续要同时正确处理原生标志和rawpadding。
 `evidence/real-figma/content-fill-before/` 保存冻结参考、原始官方JSON、生产消息、PNG、
 比较与清理回执；插件已关闭、relay正常退出，注册三文件精确恢复。
+
+### 根滚动视口恢复合并与整页复核（约 03:44）
+
+`881688e` 合入独立代理 `bbbcf1d`。只有标准模式的实际 documentElement 滚动根，
+gutter:auto/contain:none、零偏移、无水平溢出、clientWidth/Height精确等于inner viewport，
+才能把根传播的 auto/scroll 视为已捕获视口边界。祖先宽度、背景、变换等旧守卫保留；
+classic占位滚动条、stable/both-edge gutter、body/private滚动/裁切、hidden/clip、
+水平溢出、已有滚动偏移和quirks继续拒绝。真实16px classic gutter也在640/400下验证，
+不是模拟clientWidth。设计与标准原文链接见 `design-studio-viewport-root-scroll-2026-10-21.md`。
+root合并后 viewport/Fill/float 共 **17项目标检查通过**，当前合并没有再次重复完整主/UI门禁；
+上一完整门禁对应2790a44。
+
+root再跑完整冻结 GOV：188节点、55条诊断，import/relayout/narrow严格差异为
+**23329 / 23329 / 54075**；相比0118d17的23329/23329/59515，初始/同宽未变、
+缩窄减少5440，整页仍strict=false。三个reference PNG字节及解码RGBA全部相同，
+无外部请求或浏览器错误。`round13-root-scroll/paired-baseline-receipt.json` 记录组合SHA、
+原始计数与参考SHA；代理另保留9bc同base只改root scroller的配对证据，避免混淆归因。
+恢复了viewport VERTICAL与body横向Fill，原始189→188只来自浮动列移除已证无绘制clearfix。
+不据此宣称全部后代或媒体查询响应正确。
+
+只读审计还确认generic semanticIssues仅检查显式absolute，AUTO但parent.layout=none
+的普通源节点仍可能冻结。`round12-provisional-flow-audit.json` 保存初步逐节点关系；
+已有cssSelector可能匹配多个DOM，因此其中计数不是最终门禁结论。下一独立调查针对
+纯文字普通块容器，表格/复杂行内内容仍保持明确限制。描边来源与原生负间距/bleed修复
+继续在独立工作树进行，目标active，截止仍为10月22日00:31 Asia/Singapore。
