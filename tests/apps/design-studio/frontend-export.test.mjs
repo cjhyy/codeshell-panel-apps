@@ -100,3 +100,56 @@ test("actual CLI frontend file keeps editable nested flow through resize and sav
     }
   }
 });
+
+test("existing canonical Text shadows paint glyphs through direct DOM resize, copy edits and reopen", async t => {
+  const browser = await chromium.launch({ args: ["--disable-gpu"] }); t.after(() => browser.close());
+  const page = await browser.newPage({ deviceScaleFactor: 1 }), referencePage = await browser.newPage({ deviceScaleFactor: 1 });
+  const appRoot = fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url));
+  await page.route("**/*", async route => {
+    const url = new URL(route.request().url());
+    if (url.href === "https://text-shadow.test/") return route.fulfill({ contentType: "text/html", body: "<!doctype html>" });
+    if (url.origin === "https://text-shadow.test" && url.pathname.startsWith("/app/") && url.pathname.endsWith(".mjs")) {
+      const path = join(appRoot, url.pathname.slice(5));
+      if (path.startsWith(appRoot)) return route.fulfill({ contentType: "text/javascript", body: await readFile(path) });
+    }
+    return route.abort();
+  });
+  await page.goto("https://text-shadow.test/");
+  const original = "Shadowed editable text with a line that wraps when its owner gets narrower.", grown = "  First  authored line\nSecond line\nThird line\nFourth line";
+  const shadows = [
+    { color: "#000000", opacity: .5, x: 0, y: .8, blur: 1.6 },
+    { color: "#dc2626", opacity: 1, x: 2, y: 3, blur: 0 },
+    { color: "#2563eb", opacity: .5, x: -2, y: 4, blur: 8 },
+  ];
+  for (const shadow of shadows) {
+    const rgb = [1, 3, 5].map(index => Number.parseInt(shadow.color.slice(index, index + 2), 16));
+    const cssShadow = `${shadow.x}px ${shadow.y}px ${shadow.blur}px rgba(${rgb.join(",")},${shadow.opacity})`;
+    const html = `<!doctype html><style>*{box-sizing:border-box}html,body{margin:0;background:white}#fixture{display:flex;flex-direction:column;width:100%;height:240px;padding:16px;background:#212529}p{margin:0;align-self:stretch;color:white;font:20px/30px Arial;letter-spacing:0px;white-space:normal;overflow-wrap:anywhere;text-shadow:${cssShadow}}</style><main id="fixture"><p id="copy">${original}</p></main>`;
+    await page.setViewportSize({ width: 640, height: 240 });
+    const captured = await page.evaluate(async html => {
+      const { captureWorkspaceHtmlResult } = await import("/app/html-import.mjs");
+      return (await captureWorkspaceHtmlResult({ html, sourcePath: "shadow.html", readText: async () => "", rootSelector: "body", viewportWidth: 640, viewportHeight: 240 })).document;
+    }, html);
+    const state = normalizeDesignDocument(captured), text = state.nodes.find(node => node.type === "text");
+    const geometry = state.nodes.map(node => [node.id, node.x, node.y, node.width, node.height]);
+    text.shadow = shadow;
+    const reopened = normalizeDesignDocument(JSON.parse(serializeDesignDocument(state)));
+    assert.deepEqual(reopened.nodes.find(node => node.id === text.id).shadow, shadow);
+    assert.deepEqual(reopened.nodes.map(node => [node.id, node.x, node.y, node.width, node.height]), geometry);
+    const output = exportDesignFrontend(reopened), selector = `[data-codeshell-id="${text.id}"]`;
+    await page.setContent(output); await referencePage.setContent(html);
+    await referencePage.locator("#copy").evaluate(node => { node.style.whiteSpace = "pre-wrap"; });
+    for (const [width, copy] of [[640, original], [400, original], [400, grown], [640, grown], [640, original]]) {
+      await page.setViewportSize({ width, height: 240 }); await referencePage.setViewportSize({ width, height: 240 });
+      await page.locator('[data-codeshell-id="html-viewport"]').evaluate((node, width) => { node.style.width = `${width}px`; }, width);
+      await page.locator(selector).evaluate((node, copy) => { node.textContent = copy; }, copy);
+      await referencePage.locator("#copy").evaluate((node, copy) => { node.textContent = copy; }, copy);
+      await Promise.all([page, referencePage].map(p => p.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); })));
+      const style = await page.locator(selector).evaluate(node => ({ position: getComputedStyle(node).position, box: getComputedStyle(node).boxShadow, text: getComputedStyle(node).textShadow, copy: node.textContent }));
+      assert.equal(style.position, "relative"); assert.equal(style.box, "none"); assert.notEqual(style.text, "none"); assert.equal(style.copy, copy);
+      const compared = comparePixels(await referencePage.screenshot(), await page.screenshot());
+      assert.equal(compared.metrics.changedPixels, 0, `${cssShadow}/${width}/${copy}`);
+      assert.equal(compared.metrics.maximumChannelDelta, 0);
+    }
+  }
+});
