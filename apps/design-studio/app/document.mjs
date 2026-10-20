@@ -1435,7 +1435,7 @@ function exportNodeSvg(
       .split("\n")
       .map(
         (line, index) =>
-          `    <text x="${round(textX)}" y="${round(node.y + index * node.fontSize * node.lineHeight)}" ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="${textDecoration}" text-anchor="${anchor}" dominant-baseline="hanging">${escapeXml(line || " ")}</text>`,
+          `    <text x="${round(textX)}" y="${round(node.y + index * node.fontSize * node.lineHeight)}" ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="${textDecoration}" text-anchor="${anchor}" dominant-baseline="hanging" xml:space="preserve">${escapeXml(line || " ")}</text>`,
       )
       .join("\n");
     return clipped(`  <g${metadata}${opacity}${filter}${transform}>\n${lines}\n  </g>`);

@@ -1795,3 +1795,43 @@ test("the quality repair button preserves locked descendants and one undo restor
   assert.equal(f.files.get(`A:${designPath}`), original);
   assert.deepEqual(f.errors, []);
 });
+
+test("public HTML ellipsis import saves full editable source and reflows after edit and reopen", async (t) => {
+  const f = await fixture(t);
+  const full = "Full authored content remains editable when the frame becomes narrower and the visible line ends in an ellipsis.";
+  const raw = `  ${full}  `, path = "pages/ellipsis.html";
+  f.files.set(`A:${path}`, `<!doctype html><style>*{box-sizing:border-box}html,body{margin:0}#fixture{display:flex;flex-direction:column;width:100%;height:240px;padding:20px}.row{display:flex;min-width:0;width:100%;padding:12px}.copy{min-width:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font:20px/24px Arial}</style><main id="fixture"><section class="row"><div class="copy">${raw}</div></section></main>`);
+  await f.tool("import_html", { path, root_selector: "#fixture", viewport_width: 640, viewport_height: 240, save: true, expected_state_revision: (await f.metadata()).stateRevision });
+  let metadata = await f.metadata();
+  const textId = metadata.layers.find((node) => node.type === "text").id;
+  const rootId = metadata.layers.find((node) => node.name === "main#fixture").id;
+  const before = await readNode(f.page, textId);
+  assert.equal(before.textSource, full);
+  assert.equal(before.textOverflow, "ellipsis");
+  assert.equal(before.layoutSizingHorizontal, "fill");
+  assert.equal(before.width, 576);
+  assert.ok(before.text.endsWith("…"));
+  assert.equal(nativeTextContent(before), full);
+  assert.equal(JSON.parse(before.notes).htmlText.rawSource, raw);
+  const edited = full + " Newly edited words remain complete in the native transfer.";
+  await f.tool("use_design", { expected_state_revision: metadata.stateRevision, save: true, operations: [
+    { op: "update_node", node_id: rootId, changes: { width: 400 } },
+    { op: "update_node", node_id: textId, changes: { text: edited } },
+  ] });
+  await f.reload();
+  const after = await readNode(f.page, textId);
+  assert.equal(after.width, 336);
+  assert.equal(after.textSource, edited);
+  assert.equal(after.textOverflow, "ellipsis");
+  assert.ok(after.text.endsWith("…"));
+  assert.ok(after.text.length < before.text.length);
+  assert.equal(nativeTextContent(after), edited);
+  const saved = normalizeDesignDocument(JSON.parse(f.files.get(`A:${designPath}`)));
+  assert.equal(saved.nodes.find((node) => node.id === textId).textSource, edited);
+  const prepared = await preparePluginFile(serializeDesignDocument(saved));
+  const walk = (nodes) => nodes.flatMap((node) => [node, ...walk(node.children ?? [])]);
+  const transferText = prepared.transfer.pages.flatMap((page) => walk(page.children)).find((node) => node.id === textId);
+  assert.equal(nativeTextContent(transferText), edited);
+  assert.equal(JSON.parse(transferText.notes).htmlText.rawSource, raw);
+  assert.deepEqual(f.errors, []);
+});

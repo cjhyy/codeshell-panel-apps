@@ -19,6 +19,7 @@
     "apps/design-studio/app/html-grid.mjs",
     "apps/design-studio/app/html-import-assets.mjs",
     "apps/design-studio/app/html-import.mjs",
+    "apps/design-studio/app/html-text-overflow.mjs",
     "apps/design-studio/app/html-viewport-flow.mjs",
     "apps/design-studio/app/linear-gradient-geometry.mjs",
     "apps/design-studio/app/paint.mjs",
@@ -67,8 +68,8 @@
     },
     {
       "path": "ui.html",
-      "bytes": 339293,
-      "sha256": "eebb15ca49ec7baa9a8cee3c2609193d7143a1133c1016dc1c6e7324e6cf6daa"
+      "bytes": 340662,
+      "sha256": "a75f4a8806775dd60d087f26d1908e434cf96d0a50ac03c59d4deb78efbf4980"
     },
     {
       "path": "README.md",

@@ -5,6 +5,7 @@ import {
   effectiveGridRowTracks,
 } from "./grid.mjs";
 import { designPaintCssImage } from "./paint.mjs";
+import { nativeTextContent } from "./text-content.mjs";
 /* Deterministic CodeShell Design v3 to editable HTML/CSS export. */
 import { designFontFaceCss, designFontFamilyCss } from "./font-css.mjs";
 
@@ -183,7 +184,7 @@ function sizingDeclarations(node, parent) {
     declarations.push(["width", "fit-content"]);
   } else if (horizontal === "fill" && ["horizontal", "vertical"].includes(parentLayout)) {
     if (parentLayout === "horizontal") declarations.push(["flex", "1 1 0"], ["min-width", "0"]);
-    else declarations.push(["align-self", "stretch"], ["width", "auto"]);
+    else declarations.push(["align-self", "stretch"], ["width", "100%"]);
   } else if (horizontal === "fill" && parentLayout === "grid") {
     declarations.push(["width", "auto"], ["justify-self", "stretch"]);
   } else {
@@ -345,7 +346,7 @@ function nodeStyle(node, parent, canvas) {
     ...transformDeclarations(node),
     ["box-sizing", "border-box"],
     ["opacity", String(Number.isFinite(Number(node.opacity)) ? Number(node.opacity) : 1)],
-    ["overflow", node.clipContent ? "hidden" : "visible"],
+    ["overflow", node.clipContent || node.textOverflow === "ellipsis" ? "hidden" : "visible"],
     ["display", node.visible === false ? "none" : undefined],
   ];
   if (node.type === "text") {
@@ -362,7 +363,8 @@ function nodeStyle(node, parent, canvas) {
       ["letter-spacing", cssNumber(node.letterSpacing, 0)],
       ["text-align", node.textAlign ?? "left"],
       ["text-decoration", node.textDecoration ?? "none"],
-      ["white-space", node.textFlow === "wrap" ? "pre-wrap" : "pre"],
+      ["white-space", node.textOverflow === "ellipsis" ? "nowrap" : node.textFlow === "wrap" ? "pre-wrap" : "pre"],
+      ["text-overflow", node.textOverflow === "ellipsis" ? "ellipsis" : undefined],
       ["overflow-wrap", node.textFlow === "wrap" ? "anywhere" : "normal"],
     );
   }
@@ -413,7 +415,7 @@ function renderNode(node, parent, context) {
     ? `<a class="cs-prototype-hotspot" data-prototype-link="${escapeHtml(link.id)}" href="${escapeHtml(link.href)}" aria-label="${escapeHtml(link.label || node.name)}"${link.external ? ' target="_blank" rel="noopener noreferrer"' : ""}></a>`
     : "";
   if (node.type === "text") {
-    return `<div ${attributes.join(" ")}>${hotspot}${escapeHtml(node.text)}</div>`;
+    return `<div ${attributes.join(" ")}>${hotspot}${escapeHtml(node.textOverflow === "ellipsis" ? nativeTextContent(node) : node.text)}</div>`;
   }
   if (node.type === "image") {
     const source = context.resourceDataUrls.get(node.imageRef);

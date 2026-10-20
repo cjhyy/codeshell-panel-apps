@@ -5516,6 +5516,7 @@ var html2figmaCore = (() => {
     const backgrounds = /* @__PURE__ */ new Map();
     const gridSources = /* @__PURE__ */ new Set();
     const corners = /* @__PURE__ */ new Map();
+    const textIntents = /* @__PURE__ */ new Map();
     const captureSvg = (node) => {
       if (node.metadata?.semantic && ["grid", "inline-grid"].includes(node.computedStyle?.display ?? ""))
         gridSources.add(node.metadata.semantic);
@@ -5523,6 +5524,24 @@ var html2figmaCore = (() => {
         svgResources.set(node.metadata.semantic, captureStandaloneSvg(node.domNode));
       if (node.nodeType === "element" && node.metadata?.semantic && node.computedStyle)
         corners.set(node.metadata.semantic, ["border-top-left-radius", "border-top-right-radius", "border-bottom-right-radius", "border-bottom-left-radius"].map((property) => node.computedStyle.getPropertyValue(property)));
+      if (node.nodeType === "element" && node.metadata?.semantic && node.computedStyle && node.domNode instanceof realm.Element && (node.domNode.childElementCount === 0 && ["nowrap", "pre"].includes(node.computedStyle.whiteSpace) || node.computedStyle.textOverflow !== "clip")) {
+        const style = node.computedStyle;
+        textIntents.set(node.metadata.semantic, {
+          rawSource: node.domNode.textContent ?? "",
+          whiteSpace: style.whiteSpace,
+          childElements: String(node.domNode.childElementCount),
+          generatedContent: String(Boolean(node.metadata.listMarker || node.children.some((child) => child.metadata?.isPseudoElement || child.metadata?.isFormContent))),
+          textOverflow: style.textOverflow,
+          overflowX: style.overflowX,
+          overflowY: style.overflowY,
+          writingMode: style.writingMode,
+          direction: style.direction,
+          lineHeight: style.lineHeight,
+          textIndent: style.textIndent,
+          wordSpacing: style.wordSpacing,
+          textTransform: style.textTransform
+        });
+      }
       if (node.nodeType === "element" && node.metadata?.semantic && node.computedStyle?.getPropertyValue("background-image").includes("gradient(")) {
         const background = {};
         for (const property of [
@@ -5551,6 +5570,8 @@ var html2figmaCore = (() => {
       if (cssLayout && Object.keys(cssLayout).length > 0) node.cssLayout = cssLayout;
       if (!options.preserveGrid && node.nodeType === "container" && node.semantic && gridSources.has(node.semantic))
         node.cssLayout = { ...node.cssLayout, "--codeshell-grid-legacy": "synthetic" };
+      if (node.nodeType === "container" && node.semantic && textIntents.has(node.semantic))
+        node.cssText = textIntents.get(node.semantic);
       if (node.nodeType !== "text" && node.semantic && corners.has(node.semantic))
         node.cssBorderRadii = corners.get(node.semantic);
       if (node.nodeType !== "text" && node.semantic && backgrounds.has(node.semantic))

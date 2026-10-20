@@ -294,7 +294,7 @@ function alignHtmlTextBaselines(documentValue, browserDocument) {
         browserDocument,
       );
       const y = Math.min(20000, Math.max(-20000, node.y + offset));
-      node.layoutBaselineOffset = Math.round((y - node.y) * 10000) / 10000;
+      node.layoutBaselineOffset = Math.round(((node.layoutBaselineOffset ?? 0) + y - node.y) * 10000) / 10000;
       node.y = Math.round(y * 100) / 100;
     }
     for (const child of node.children ?? []) visit(child);
@@ -307,6 +307,17 @@ async function enableHtmlTextReflow(documentValue, browserDocument) {
   const sourceNodes = new Map(),
     sourceIds = new Map();
   const visit = (node, parent) => {
+    if (node.type === "text") {
+      let intent;
+      try { intent = JSON.parse(node.notes ?? "{}").htmlText; } catch {}
+      if (intent) {
+        promoted.push(node);
+        if (node.textOverflow !== "ellipsis") {
+          sourceNodes.set(node.id, { style: { textAutoResize: "WIDTH_AND_HEIGHT" } });
+          sourceIds.set(node.id, node.id);
+        }
+      }
+    }
     if (
       node.type === "frame" &&
       node.layout === "none" &&
@@ -404,11 +415,18 @@ async function enableHtmlTextReflow(documentValue, browserDocument) {
     for (const child of node.children ?? []) visit(child, node);
   };
   for (const page of documentValue.pages) page.children.forEach((node) => visit(node, null));
-  if (promoted.length)
+  if (promoted.length) {
     await measureFigmaTextDocument(
       { nodes: promoted },
       { browserDocument, sourceNodes, sourceIds },
     );
+    for (const text of promoted) {
+      let intent;
+      try { intent = JSON.parse(text.notes ?? "{}").htmlText; } catch {}
+      if (intent && text.textOverflow !== "ellipsis" && text.textMetrics)
+        text.width = Math.ceil(Math.max(1, ...text.textMetrics.lineWidths) * 100) / 100;
+    }
+  }
 }
 
 export async function captureWorkspaceHtmlResult({

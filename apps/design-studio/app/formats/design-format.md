@@ -253,3 +253,13 @@ a baseline-only change does not become a native translation. Own-rotated text
 and offsets exceeding the existing coordinate/baseline-field budgets are diagnosed
 without guessing an origin. Explicit newlines in native single-line ellipsis retain
 the full source, preview only the first line, and produce a truncation diagnostic.
+
+Plain HTML `nowrap`/`pre` text boxes keep their structural frame and native
+Fill/Hug sizing. Active one-line `ellipsis` uses full editable `textSource`
+with a measured display prefix; frontend HTML recomputes CSS ellipsis from the
+full content. CSS-collapsed ASCII whitespace is normalized in that canonical
+source; differing exact HTML bytes live in bounded `notes.htmlText.rawSource`.
+`pre` spaces and explicit blank lines remain literal, including in SVG export.
+Tabs, multiline `pre` ellipsis, generated/rich text, non-left alignment,
+unsupported writing/overflow styles,
+and recovery metadata exceeding the 2000-character note budget are diagnosed.

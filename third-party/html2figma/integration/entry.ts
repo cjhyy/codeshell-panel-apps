@@ -8,6 +8,7 @@ import { captureStandaloneSvg } from "./svg";
 type CapturedNode = DesignNode & {
   cssLayout?: Record<string, string>;
   cssBackground?: Record<string, string>;
+  cssText?: Record<string, string>;
 };
 type TypedStyleElement = Element & {
   computedStyleMap?(): { get(property: string): { toString(): string } | undefined };
@@ -104,6 +105,7 @@ export function convert(
   const backgrounds = new Map<object, Record<string, string>>();
   const gridSources = new Set<object>();
   const corners = new Map<object, string[]>();
+  const textIntents = new Map<object, Record<string, string>>();
   const captureSvg = (node: RenderNode) => {
     if (
       node.metadata?.semantic &&
@@ -114,6 +116,20 @@ export function convert(
       svgResources.set(node.metadata.semantic, captureStandaloneSvg(node.domNode));
     if (node.nodeType === "element" && node.metadata?.semantic && node.computedStyle)
       corners.set(node.metadata.semantic, ["border-top-left-radius", "border-top-right-radius", "border-bottom-right-radius", "border-bottom-left-radius"].map((property) => node.computedStyle!.getPropertyValue(property)));
+    if (node.nodeType === "element" && node.metadata?.semantic && node.computedStyle &&
+        node.domNode instanceof Element &&
+        (node.domNode.childElementCount === 0 && ["nowrap", "pre"].includes(node.computedStyle.whiteSpace) || node.computedStyle.textOverflow !== "clip")) {
+      const style = node.computedStyle;
+      textIntents.set(node.metadata.semantic, {
+        rawSource: node.domNode.textContent ?? "", whiteSpace: style.whiteSpace,
+        childElements: String(node.domNode.childElementCount),
+        generatedContent: String(Boolean(node.metadata.listMarker || node.children.some((child) =>
+          child.metadata?.isPseudoElement || child.metadata?.isFormContent))),
+        textOverflow: style.textOverflow, overflowX: style.overflowX, overflowY: style.overflowY,
+        writingMode: style.writingMode, direction: style.direction, lineHeight: style.lineHeight,
+        textIndent: style.textIndent, wordSpacing: style.wordSpacing, textTransform: style.textTransform,
+      });
+    }
     // The immutable upstream gradient parser discards px stop units and cannot
     // distinguish repeated gradients. Retain computed CSS before that parse.
     if (node.nodeType === "element" && node.metadata?.semantic &&
@@ -144,6 +160,8 @@ export function convert(
       gridSources.has(node.semantic)
     )
       node.cssLayout = { ...node.cssLayout, "--codeshell-grid-legacy": "synthetic" };
+    if (node.nodeType === "container" && node.semantic && textIntents.has(node.semantic))
+      node.cssText = textIntents.get(node.semantic)!;
     if (node.nodeType !== "text" && node.semantic && corners.has(node.semantic))
       node.cssBorderRadii = corners.get(node.semantic)!;
     if (node.nodeType !== "text" && node.semantic && backgrounds.has(node.semantic))

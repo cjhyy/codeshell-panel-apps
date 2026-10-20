@@ -1,3 +1,4 @@
+import { recoverHtmlTextOverflow } from "./html-text-overflow.mjs";
 import { cssCornerRadii } from "./corner-radii.mjs";
 /* Pure html2figma DesignNode → CodeShell v3 adapter. No DOM, network, or writes. */
 import { normalizeDesignDocument, MAX_DESIGN_NODES_PER_PAGE } from "./document.mjs";
@@ -1143,6 +1144,7 @@ export async function designNodeToV3(tree, options = {}) {
           : wrapCrossAutoMargins(child, converted, node));
       }
     }
+    if (source.nodeType === "container") recoverHtmlTextOverflow(source, node, warn);
     return node;
   };
   const converted = await convert(tree, [0], { x: 0, y: 0 }, []);
