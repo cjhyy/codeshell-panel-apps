@@ -1329,8 +1329,11 @@ preview/apply仅修改3个V父框width630→390→630，共3+3操作；两阶段
 fc6相同 `10d1c9ec677f2c47609d59cd0114fad2d97be66f233c6f3f394bd5dfb8abf7c7`。
 这是实际Panel生产宽度更新闭环；仍不是CSS整页或GOV折叠表格通用通过。插件关闭、
 relay exit0、固定三份原始注册文件恢复、锁释放，未删除新页。完整raw在同名primary
-acceptance-runs，独立文件审计及其到 `real-figma/native-padded-row-grid-roundtrip/` 的归档
-正在进行，尚不把该独立审计记为完成。
+acceptance-runs，独立文件审计和完整归档现已完成于
+`real-figma/native-padded-row-grid-roundtrip/`。独立核对初始268个及两个宽度阶段各268个
+几何数值均精确0；同时明确保留94项无可见stroke节点的闲置属性差异：37个INSIDE和
+27个OUTSIDE变为CENTER、30个included true变为省略。这些未影响当前paint/布局，
+但以后激活描边时的语义尚未保留，不能将这次结果称为全部属性无损；原值/差异列表保留。
 
 1e576817独立审计补充：三个字号阶段另有684几何数值精确0；实际20px/24字号派生
 百分比为83.33333587646484，与数学值差2.5431315009427635e-6，逐位等于Math.fround；
@@ -1342,3 +1345,7 @@ acceptance-runs，独立文件审计及其到 `real-figma/native-padded-row-grid
 控制中，.png被错误当PNG拒绝，三模式各1089差异像素；.jpg三模式均0。原网页资产和
 参考未改名/重编码，修复在独立分支进行。CENTER半边能力实现和HTML行高意图研究也
 在独立分支/证据目录进行，尚未合入该稳定组合。24小时目标继续active。
+
+又清理3个已合入main、包含ignored/untracked检查也为空、且各负责人确认无运行依赖的
+旧border、px行高和padded Grid工作树/分支；外部证据父目录全部保留。收据
+`worktree-cleanup-receipt-20261021-0619.json`，活跃工作树及未合入的旧分支继续保留。
