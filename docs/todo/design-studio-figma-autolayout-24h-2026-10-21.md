@@ -1306,3 +1306,39 @@ key30%+right20与valueAUTO/right0，窄屏key理想232.4但CSS量化232.390625�
 已刷新origin且无新main，干净本地main快进到已验证8df；未push、发布或安装Host。
 后续为已审查的真实padded行Grid生产能力、CENTER半边模型和HTML行高意图研究。
 24小时目标继续active，截止10月22日00:31不变。
+
+### 带内边距的行 Grid 生产宽度闭环（约 06:17）
+
+`fe437e0` 经正常merge形成组合 `3ed99992316091f2eea8b2bb466842df625c4cfe`：仅在
+直接V父框固定宽、无循环/旋转/特殊约束的上下文，保留单HUG行内FILL真实cell与单个
+普通Text的内在高度关系；cell padding只计一次，inside included底边1只计一次。
+父上下文贯穿Panel布局、前端、导入/传输和生产插件预检/创建/收尾，不增持久化标志。
+新负例继续拒绝不明宽度、inside excluded和不支持的文字/描边。80项定向CPU检查后，
+完整组合主测试 **578总/577通过/1跳过/0失败**（173542ms），UI **104总/103通过/
+1跳过/0失败**（108051ms）；typecheck、validate、三份生成物check、scoped build check
+均通过。两组完整app快照、起止HEAD均相同；`round27-full-gates-receipt.json` 绑定日志
+及各自精确runner源文件SHA。UI运行时原生插件已关闭，主测试仅CPU。
+
+真实生产验收 `9834f4b1`：新页65:1437/board65:1438，生产main
+`847ba1a37dee5ba9bcabd7da9bbbbcf1b552826327f64ff40af579a55fa98310` 未修改。
+冻结fc6原始官方/live来源经完整portable和生产UI导入，67节点/9个独立行Grid/27真实
+cell/27真实Text、初始几何精确0，来源binding noop0。每阶段重新读取来源，再通过普通
+preview/apply仅修改3个V父框width630→390→630，共3+3操作；两阶段完整几何精确0，
+原Text字符、padding、sizing、Grid/inside included语义保持，不提交后代尺寸或位置修补。
+初始和恢复的两张760×1100原生PNG各 **836000像素changed0/max0**，编码SHA均与原
+fc6相同 `10d1c9ec677f2c47609d59cd0114fad2d97be66f233c6f3f394bd5dfb8abf7c7`。
+这是实际Panel生产宽度更新闭环；仍不是CSS整页或GOV折叠表格通用通过。插件关闭、
+relay exit0、固定三份原始注册文件恢复、锁释放，未删除新页。完整raw在同名primary
+acceptance-runs，独立文件审计及其到 `real-figma/native-padded-row-grid-roundtrip/` 的归档
+正在进行，尚不把该独立审计记为完成。
+
+1e576817独立审计补充：三个字号阶段另有684几何数值精确0；实际20px/24字号派生
+百分比为83.33333587646484，与数学值差2.5431315009427635e-6，逐位等于Math.fround；
+72项观察中70精确、2项确证Float32、0项未解释。该派生getter从未作为物理行高或像素
+精度门槛，原始值保留；24字号栅格仍不声称与独立CSS参考一致。
+
+新真实Headers失败进一步定位：97.62%的初始差异落在5个inset-shadow分隔带，原诊断
+保留。另有头像路径mdo.png实际JPEG；相同JPEG字节/仅文件扩展名不同的独立CPU生产
+控制中，.png被错误当PNG拒绝，三模式各1089差异像素；.jpg三模式均0。原网页资产和
+参考未改名/重编码，修复在独立分支进行。CENTER半边能力实现和HTML行高意图研究也
+在独立分支/证据目录进行，尚未合入该稳定组合。24小时目标继续active。
