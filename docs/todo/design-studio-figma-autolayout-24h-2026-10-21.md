@@ -212,3 +212,72 @@ Bootstrap 初始基线与 SVG 修复后的严格像素比例：
 
 当前任务源码仍在隔离分支，未发布、未更新生产安装。24 小时目标保持 active，
 下一次不要重新开始或重复复制旧工作树；读最新日志和 Git 后继续尚未完成的队列。
+
+## 第四轮：原生渐变、自动外边距和扩大网页样本
+
+`a079292`（代理原提交 `5a4550d`）保留可编辑 CSS linear-gradient：维护的捕获边界
+保留原始计算 CSS，转换 px/%/隐含色标、物理角度、非正方形方向、透明端点与图层顺序。
+同时补上独立 HTML-to-Figma 插件入口；未修改固定版本上游源码。独立审查修复了
+缺失/重复源 ID 使渐变串到其他节点的问题。
+
+- 精确样例 480×360：初始/同宽重排 172,800 像素全部相同；该样例没有验证缩窄。
+- Bootstrap Pricing 255 个可编辑节点，初始/同宽/768 px 差异由
+  12.80% / 19.70% / 28.75% 降为 **4.87% / 11.77% / 21.39%**。
+- 平滑透明渐变仍有 20,268 像素不同，最大通道差 1；严格门禁 `passed:false`，
+  没有降低阈值或把透明色标预合成为不可再编辑的纯色。
+- 61 项定向测试、typecheck、validate、三个确定性构建和 Design Studio build:check 通过。
+  代理工作树的全仓 build:check 报无关 Video Studio 生成哈希差异，未改动那些文件；
+  最终集成后应在主任务独立依赖环境重新检查。
+- 证据：`evidence/html-linear-gradients/receipt.json`、`exact/`、`smooth-alpha/`，
+  以及 `evidence/bootstrap-after-gradients/`。
+
+`cbc33e0`（原提交 `9d7058d`）修复可表达的 CSS 自动外边距。固定版本上游会先把
+已解析为像素的 auto margin 包进静态 padding，单纯在适配器改 alignSelf 仍会冻结位置。
+现在有界恢复原始子项，主轴单项自动外边距保留父布局对齐，交叉轴使用透明的垂直/水平
+Auto Layout 包装框，保留内容最小尺寸，避免溢出时向 cross-start 错移。
+不支持的多项、混合非零或特殊换行组合继续明确诊断。
+
+独立审查找到并修复了 root-relative 坐标重复相加、包装框克隆绕过源图重复引用检查、
+以及交叉轴直接 center/end 导致溢出错误；原始图先执行有界引用/深度/数量校验。
+14 个真实浏览器最小布局的导入/同宽/400 px，42 张转换图严格零像素差；另有坐标/图校验
+回归。合计适配器/HTML/新用例 30/30 通过，validate 与 diff 检查通过。
+包装框最小尺寸来自导入时内容；动态 Hug 内容修改仍需核对/同步这个派生最小值，
+已有针对性诊断，不能据此声称所有 CSS margin 或任意编辑都已完全等价。
+
+真实 Figma 本轮页面 `CodeShell HTML Acceptance d3faaaca · CodeShell`：4 个形状/容器节点、
+2 个原生 Auto Layout，包含 300 px 子项在 240 px 父级中溢出。官方 JSON 几何最大差 0。
+原生 1× PNG 640×240 严格比较 153,600 像素全同；官方 JSON 导回工作台后，初始和重排
+仍全部相同。证据 `evidence/real-figma/auto-margin-acceptance-report.json`，包含原生图、
+差异图、往返文件和清理回执。只覆盖形状，没有文字或图片；Figma 仍提示离线未同步。
+relay `real-figma-html-v3-1792516785957-d3faaaca` 已停止，临时权限移除，scratch 插件三个
+文件恢复原始备份，插件 UI 已关闭。
+
+新增官方 Bootstrap 结算、相册、登录三种静态自包含网页。CSS、媒体查询、图片原字节
+保留，移除脚本/主题菜单、未提交任何表单；每份保存 URL、哈希、原 HTML 和准备回执。
+证据入口 `evidence/prepare-web-corpus.mjs`、`evidence/web-corpus/<id>/receipt.json`。
+原始基线均使用正式导入而非旧转换器：
+
+| 样本 | 1280×1000 初始不同像素 | 同宽重排 | 768×1000 重排 |
+| --- | ---: | ---: | ---: |
+| checkout | 36,031 | 306,642 | 275,986 |
+| album | 117,331 | 338,387 | 354,297 |
+| sign-in | 4,631 | 7,161 | 90,616 |
+
+自动外边距修复后 sign-in 窄屏降至 **14,914**；初始与同宽暂不变，普通块流仍有
+`Flow children became absolute`，边框/圆角/表单样式也未完全保留。不要把新样本的
+收集模式退出码当成达标。
+
+当前并行工作：
+
+1. `native_figma_grid_round2`：原生 GRID、可选规范轨道/锚点/尺寸/流向、官方 JSON 往返。
+   独立审查已找出并修复/跟进：不可信巨大 span 的放置循环、跨 HUG+FLEX 的固有尺寸、
+   重叠 HUG span 的批量分配、小于 1 的 fr 总和。代理完成后必须实际 Figma 验收；
+   `/tmp/codeshell-native-grid-{manual,flow}.codesign.json` 是阶段 fixture，最终版本由代理更新。
+2. `linear_gradients_round2` 已转 GPU 采样独立任务，拥有干净工作树
+   `design-studio-gpu-text-sampling-20261021/codeshell-panel-apps`（基于 5546e07）。
+   查设备采样相位，保留高缩放质量/缓存预算/旋转与实例语义，禁止随意降 AA 门禁。
+3. 下一项真实网页优先补普通块流和不均匀 margin、各角圆角/各边描边，继续真实 Figma
+   渐变/文字核对。源文档和可编辑关系必须与像素证据一起检查。
+
+第四轮工作仍在隔离分支，未发布/未安装，目标保持 active。截止时间仍为
+2026-10-22 00:31 Asia/Singapore，不能提前标记完成。
