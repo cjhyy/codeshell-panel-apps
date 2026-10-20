@@ -35,3 +35,13 @@ transparent-cell collapsed-edge paint and opaque-cell negative control remain
 separate. The existing frontend exporter explicitly refuses non-INSIDE
 independent side strokes; this change does not broaden HTML table capture or
 CSS paint support.
+
+`fill-context.mjs` is a separately labelled CPU control, not a new native
+receipt. It clones this saved content into a vertical body with padding30 and
+a fixed-width vertical outer frame, changes the table owner to horizontal
+FILL, and translates its source geometry by(-10,-10) for the new inset. The
+immutable actual JSON is unchanged. Tests resize only the outer frame
+1280→768→1280 and edit the nested paragraph; real parent references prove
+resolution through the Fill chain. Hug, missing, cyclic, constrained,
+transformed, reversed, wrapped and stroked intermediate owners refuse. A new
+lookup is built for every operation, including valid reparent/save/reopen.

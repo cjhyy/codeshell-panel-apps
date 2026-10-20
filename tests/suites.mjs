@@ -132,6 +132,7 @@ export const suites = [
         "tests/apps/design-studio/native-padded-row-grid.test.mjs",
         "tests/apps/design-studio/native-centered-row-grid.test.mjs",
         "tests/apps/design-studio/native-grid-intrinsic-vflow.test.mjs",
+        "tests/apps/design-studio/grid-fill-width-context.test.mjs",
         "tests/apps/design-studio/text-line-height.test.mjs",
         "tests/apps/design-studio/html2figma-browser.test.mjs",
         "tests/apps/design-studio/html-table-borders.test.mjs",

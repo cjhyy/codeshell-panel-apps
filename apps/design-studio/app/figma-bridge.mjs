@@ -725,6 +725,8 @@ function importFigmaJsonWithReport(
   // Capture-local proof: raw multi-style/paragraph text must not become an
   // accepted intrinsic leaf merely because conversion flattened its styles.
   const unsupportedGridText = new WeakSet();
+  const gridParents = new WeakMap();
+  const gridParentOf = (node) => gridParents.get(node);
   const mapping = [],
     pageMappings = [];
   const nonRenderingSourceNodes = new Set();
@@ -999,6 +1001,7 @@ function importFigmaJsonWithReport(
     if (effects.length > (node.shadow ? 1 : 0) || shadow?.spread)
       report.warn("unsupported-effects", source, "仅保留一个无扩散外投影；其他效果未导入。");
     const parent = ancestors.at(-1);
+    gridParents.set(node, parent ?? null);
     layoutSizing(source, node, parent);
     for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"])
       if (finite(source[key])) node[key] = number(source[key], 1, 1, 20000, source, key, report);
@@ -1065,7 +1068,7 @@ function importFigmaJsonWithReport(
       if (node.layout === "grid") {
         try {
           const intrinsicCells = node.children.filter((cell) =>
-            gridFillHugContentHeight(node, cell, cell.children, parent) !== null);
+            gridFillHugContentHeight(node, cell, cell.children, parent, gridParentOf) !== null);
           if (intrinsicCells.some((cell) => {
             const pending = [cell];
             // The intrinsic helper has already proved this subtree's bounded
@@ -1082,7 +1085,7 @@ function importFigmaJsonWithReport(
               node.strokeSides?.some((side) => side.width > 0) && source.strokesIncludedInLayout !== true &&
               node.strokeAlign !== "center")
             throw new Error("HUG 行内的 FILL 文字单元仅支持 included 的 inside 或 excluded 的有界 center 底边描边");
-          nativeGridPlan(node, parent);
+          nativeGridPlan(node, parent, gridParentOf);
         } catch (error) {
           report.warn(
             "unsupported-grid",
@@ -1367,7 +1370,10 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
   const report = reporter();
   let exportedNodes = 0,
     skippedNodes = 0;
+  const gridParents = new WeakMap();
+  const gridParentOf = (node) => gridParents.get(node);
   const convert = (node, parent) => {
+    gridParents.set(node, parent ?? null);
     if (node.type === "instance") {
       skippedNodes += 1;
       report.warn(
@@ -1414,7 +1420,7 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
       report.warn("corner-overlap-export", node, "相邻圆角需要 CSS 共同缩放；Figma 原生的缩放结果可能不同，请核对角部外观。原始半径保持可编辑。");
     if (node.layout === "grid") {
       try {
-        nativeGridPlan(node, parent);
+        nativeGridPlan(node, parent, gridParentOf);
       } catch (error) {
         report.warn(
           "grid-export",

@@ -150,7 +150,7 @@ function positionDeclarations(node, parent, parentUsesLayout, canvas) {
   return declarations;
 }
 
-function sizingDeclarations(node, parent) {
+function sizingDeclarations(node, parent, parentOf) {
   const parentLayout = node.layoutPositioning === "absolute" ? "none" : parent?.layout ?? "none";
   const horizontal = node.layoutSizingHorizontal ?? "fixed";
   const vertical = node.layoutSizingVertical ?? "fixed";
@@ -179,7 +179,7 @@ function sizingDeclarations(node, parent) {
       : [];
   const circularFill = (child, axis) => {
     if (child[`layoutSizing${axis}`] !== "fill") return false;
-    if (axis === "Vertical" && gridFillHugContentHeight(node, child, child.children, parent) !== null) return false;
+    if (axis === "Vertical" && gridFillHugContentHeight(node, child, child.children, parent, parentOf) !== null) return false;
     const tracks = node[axis === "Horizontal" ? "gridColumnSizes" : "gridRowSizes"];
     const item = gridItems.find((entry) => entry.child === child);
     if (!tracks || !item) return true;
@@ -379,12 +379,12 @@ function transformDeclarations(node) {
   return transforms.length > 0 ? [["transform", transforms.join(" ")]] : [];
 }
 
-function nodeStyle(node, parent, canvas) {
+function nodeStyle(node, parent, canvas, parentOf) {
   const parentUsesLayout =
     CONTAINER_TYPES.has(parent?.type) && ["horizontal", "vertical", "grid"].includes(parent.layout);
   const declarations = [
     ...positionDeclarations(node, parent, parentUsesLayout, canvas),
-    ...sizingDeclarations(node, parent),
+    ...sizingDeclarations(node, parent, parentOf),
     ...layoutDeclarations(node),
     ...paintDeclarations(node),
     ...transformDeclarations(node),
@@ -444,6 +444,7 @@ function renderInstance(node, context) {
 }
 
 function renderNode(node, parent, context) {
+  context.gridParents.set(node, parent ?? null);
   const exportedId = `${context.idPrefix}${node.id}`;
   const attributes = [
     `class="cs-node cs-${escapeHtml(node.type)}"`,
@@ -451,7 +452,7 @@ function renderNode(node, parent, context) {
     `data-codeshell-source-id="${escapeHtml(node.id)}"`,
     `data-codeshell-node-type="${escapeHtml(node.type)}"`,
     `data-codeshell-name="${escapeHtml(node.name)}"`,
-    `style="${escapeHtml(nodeStyle(node, parent, context.canvas))}"`,
+    `style="${escapeHtml(nodeStyle(node, parent, context.canvas, context.gridParentOf))}"`,
   ];
   if (node.notes) attributes.push(`title="${escapeHtml(node.notes)}"`);
   const link = context.idPrefix === "" ? context.prototypeLinks?.get(node.id) : null;
@@ -466,7 +467,7 @@ function renderNode(node, parent, context) {
     if (source) {
       const imageAttributes = attributes.filter((attribute) => !attribute.startsWith("style="));
       imageAttributes.push(
-        `style="${escapeHtml(`${nodeStyle(node, parent, context.canvas)};object-fit:${node.objectFit ?? "cover"}`)}"`,
+        `style="${escapeHtml(`${nodeStyle(node, parent, context.canvas, context.gridParentOf)};object-fit:${node.objectFit ?? "cover"}`)}"`,
       );
       if (context.prototypeMode) {
         return `<div ${attributes.join(" ")}>${hotspot}<img class="cs-prototype-image" src="${escapeHtml(source)}" alt="${escapeHtml(node.name)}" style="width:100%;height:100%;object-fit:${escapeHtml(node.objectFit ?? "cover")}"></div>`;
@@ -521,7 +522,10 @@ export function renderDesignFrontendPage(
       .filter((node) => node.type === "component")
       .map((node) => [node.id, node]),
   );
+  const gridParents = new WeakMap();
   const context = {
+    gridParents,
+    gridParentOf: (node) => gridParents.get(node),
     canvas,
     components,
     resourceDataUrls:
