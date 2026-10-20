@@ -658,3 +658,39 @@ exportAsync 导出，前后节点/页面/选择元数据完全相同，hasMissin
 的研究探针，不能冒充未修改生产转换验收。运行时/relay 均退出，原 scratch 哈希恢复。
 下一步比较实际轮廓与本地 Arial 字形，尚不把字体名称相同当作字节/轮廓一致的证明。
 负主间距及边框分支继续独立实现/检查，目标 active，截止不变。
+
+### 有界负主间距与负水平外边距合并、字形研究（约 03:08）
+
+`ebc9909` 合入代理 `c3cc1d7` + `4781b72`。负间距只在 nowrap 水平/垂直、
+非反向且主轴 Fixed/Fill 的验证子集中开放；Grid、交叉轴、Hug 等未验证组合明确拒绝。
+普通 auto 宽度负水平外边距使用透明水平 Auto Layout、两端固定 spacer 与真实 Fill
+子项表示，保留原行 ID/样式/子树，不把它变成绝对定位。扩展宽度、最小/最大尺寸、
+占位位置和 -2000 间距预算在构建包装前检查，超限保留测量几何并诊断。
+前端使用主轴末端负 margin，完整子项绘制顺序、隐藏/绝对排除、auto margin 保留。
+
+代理 12 组支持样例 × 首次/重排/仅外框缩窄严格 0；公开 inspector/tool UI 一项通过。
+小数边缘样例在三种模式均 **100 个像素/max95**，保留失败和精确 296.5→176.5 的
+子项宽度，不取整、不放宽阈值。五个冻结公开网页的 15 个原始计数与同基线均未变化，
+整页仍失败，未把局部通过写作整页通过。完整代理回执
+`evidence/negative-main-gap/receipt.json` 位于独立代理 worktree 的 evidence 目录。
+root 合并后 64 项针对性检查通过（`evidence/round11-negative-merged-targets.log`）。
+另用固定种子 20261021 生成 120 组 H/V、负 gap、多个 Fill、min/max、auto margin
+组合，独立测量前端 DOM 坐标，未发现大于 0.02px 的几何差异；这是派生压力检查，
+不替代原生 Figma 或严格 PNG 验收。脚本/结果在 `evidence/negative-main-gap-geometry/`。
+
+只读字形研究已完成：15 个字符、21 轮廓的原生坐标可由本机 Arial 的推进距离向上
+量化为偶数字体单位、隐式二次曲线中点取整的模型解释，最大控制点余差 0.0005px，
+处于原生 SVG 小数序列化精度内。末尾漂移为 0.107421875px；空格和最后字符的推进
+仍仅为模型预测，不能独立从可见轮廓观察。此模型不是 Figma 内部算法或字体字节一致
+的结论。`native-outline-analysis-summary.json`、`advance-table.md` 保留逐字值与 SHA。
+
+即便直接将实际原生轮廓 SVG 交给 Chromium，白底派生比较仍为 1x **752/max50**、
+2x **1534/max60**；普通可编辑文字分别为 840/max121、1957/max190。原始透明 PNG
+和所有派生/合成比较分开存放；浏览器 CSS 控制对原网页标题裁片严格 0。原生可编辑
+SVG baseline18.9336 与轮廓模型19 的连续数值不同，但两者本次 Chromium 栅格相同，
+不据此增加位置补偿。原生四文件 SHA 全程未变，未修改产品字体渲染或比较阈值。
+
+Figma 当前官方说明新旧 Auto Layout 版本在内侧描边、Fill 与 padding 上存在差别：
+[Use auto layout with CSS Flexbox in mind](https://help.figma.com/hc/en-us/articles/42031586813719-Use-auto-layout-with-CSS-Flexbox-in-mind)。
+边框分支先约束到已验证的 INSIDE 投影；另准备仅新建自有研究页的实机语义探针，
+验证本地版本的实际行为，不猜测未文档化的 layoutVersion API。目标仍 active，截止不变。
