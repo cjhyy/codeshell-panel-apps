@@ -666,3 +666,36 @@ test("native GPU per-corner shapes, ancestor clips and image clips retain asymme
   const stats = await cached.evaluate(() => renderer.stats());
   assert.equal(stats.nodePictureBuilds, before.nodePictureBuilds + 1);
 });
+
+
+test("native GPU inside side borders preserve zero edges, alpha corners and edited cached pictures", async (t) => {
+  const cached = await harness(t, { width: 600, height: 240 }),
+    direct = await harness(t, { tileCacheEnabled: false, width: 600, height: 240 });
+  const side = (width, opacity = 1) => ({ width, color: "#1d70b8", opacity });
+  const design = { canvas: { width: 600, height: 240, background: "#ffffff" }, resources: [], nodes: [
+    base("bottom", "rectangle", 40, 40, 100, 100, { fill: "#ffffff", strokeAlign: "inside", strokeSides: [side(0), side(0), side(1), side(0)] }),
+    base("alpha", "frame", 200, 40, 100, 100, { fill: "#ffffff", strokeAlign: "inside", strokeSides: Array.from({ length: 4 }, () => side(4, 0.5)) }),
+    base("unequal", "rectangle", 360, 40, 100, 100, { fill: "#ffffff", strokeAlign: "inside", strokeSides: [side(2), side(4), side(6), side(8)] }),
+  ] };
+  for (const page of [cached, direct]) await upload(page, design);
+  const viewport = { pan: { x: 0, y: 0 }, zoom: 1 };
+  const actual = await draw(cached, viewport), expected = await draw(direct, viewport);
+  assert.equal(actual.data.equals(expected.data), true, "tile and direct border pixels agree");
+  for (const png of [actual, expected]) {
+    assert.deepEqual(pixel(png, 40, 40), [255, 255, 255], "zero top and left edges stay unpainted");
+    assert.deepEqual(pixel(png, 80, 139), [29, 112, 184]);
+    near(pixel(png, 200, 40), [142, 184, 220], 1);
+    assert.deepEqual(pixel(png, 200, 40), pixel(png, 240, 40), "border corner alpha applies once");
+    assert.deepEqual(pixel(png, 360, 80), [29, 112, 184]);
+    assert.deepEqual(pixel(png, 370, 80), [255, 255, 255]);
+  }
+  const before = await cached.evaluate(() => renderer.stats());
+  design.nodes[0].width = 160;
+  design.nodes[0].strokeSides[2] = { width: 3, color: "#ff0000", opacity: 1 };
+  for (const page of [cached, direct]) await upload(page, design);
+  const edited = await draw(cached, viewport), control = await draw(direct, viewport);
+  assert.equal(edited.data.equals(control.data), true);
+  assert.deepEqual(pixel(edited, 198, 138), [255, 0, 0]);
+  assert.deepEqual(pixel(edited, 198, 135), [255, 255, 255]);
+  assert.equal((await cached.evaluate(() => renderer.stats())).nodePictureBuilds, before.nodePictureBuilds + 1);
+});

@@ -103,6 +103,7 @@ export const suites = [
         "tests/apps/design-studio/production-fidelity.test.mjs",
         "tests/apps/design-studio/paint-fidelity.test.mjs",
         "tests/apps/design-studio/responsive-css-gradients.test.mjs",
+        "tests/apps/design-studio/css-borders.test.mjs",
         "tests/apps/design-studio/builtin-fonts.test.mjs",
         "tests/apps/design-studio/audit-review.test.mjs",
         "tests/apps/design-studio/html-plugin.test.mjs",

@@ -1,5 +1,6 @@
 import { effectiveCornerRadii, insideRoundedRect, roundedRectOutline } from "./corner-radii.mjs";
 import { hasVisibleDesignFill, sampleDesignFill } from "./paint.mjs";
+import { designStrokeOutset } from "./stroke.mjs";
 /* Accessibility and layout audit engine for the Design Studio Panel App. */
 import {
   clipBoundsToClippingAncestors,
@@ -195,8 +196,8 @@ function nodeEffectCornersInTree(document, node, nodeIndex) {
   const shadow = node.shadow?.opacity > 0 ? node.shadow : null;
   const shadowOutset = shadow?.blur * 1.5 || 0;
   const strokeOutset =
-    !["group", "instance"].includes(node.type) && validHex(node.stroke) && node.strokeWidth > 0
-      ? node.strokeWidth / 2
+    !["group", "instance"].includes(node.type)
+      ? designStrokeOutset(node)
       : 0;
   const instanceOutsets =
     node.type === "instance"

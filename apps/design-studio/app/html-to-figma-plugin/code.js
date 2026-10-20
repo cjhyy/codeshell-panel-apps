@@ -5158,6 +5158,9 @@
     }
   };
 
+  // apps/design-studio/app/stroke.mjs
+  var STROKE_SIDES = Object.freeze(["top", "right", "bottom", "left"]);
+
   // apps/design-studio/app/grid.mjs
   var GRID_CONTAINER_FIELDS = Object.freeze([
     "gridRows",
@@ -5575,6 +5578,8 @@
     const warnings = [];
     const reservedIds = /* @__PURE__ */ new Set();
     const legacyGridWarning = "Grid \u4F7F\u7528\u6D4B\u91CF\u50CF\u7D20\u7684 Flex \u884C/\u56FA\u5B9A\u51E0\u4F55\u517C\u5BB9\u8F6C\u6362\uFF0C\u672A\u4FDD\u7559\u539F\u751F\u8F68\u9053\u6216\u54CD\u5E94\u5F0F\u5C3A\u5BF8\uFF1B\u9700\u8981\u539F\u751F Grid \u65F6\u8BF7\u901A\u8FC7 Design Studio \u5BFC\u5165\u5E76\u4F7F\u7528 Design Bridge\u3002";
+    const legacyBorderWarning = "CSS \u8FB9\u6846\u4F7F\u7528\u72EC\u7ACB\u63D2\u4EF6\u7684\u7EDF\u4E00\u5C45\u4E2D\u63CF\u8FB9\u517C\u5BB9\u8F6C\u6362\uFF0C\u672A\u4FDD\u7559\u5404\u4FA7\u5BBD\u5EA6\u3001\u989C\u8272\u6216\u5185\u90E8\u5BF9\u9F50\uFF1B\u9700\u8981\u53EF\u7F16\u8F91\u4FA7\u8FB9\u65F6\u8BF7\u901A\u8FC7 Design Studio \u5BFC\u5165\u5E76\u4F7F\u7528 Design Bridge\u3002";
+    const hasCssBorder = (node) => Boolean(node.nodeType && ["top", "right", "bottom", "left"].some((side) => node.border?.[side]?.width > 0 && node.border[side].style !== "none"));
     function inspect(node, depth = 0) {
       if (!object2(node) || depth > 60 || ++count > MAX_NODES)
         throw new Error("\u8282\u70B9\u6811\u6700\u591A 3000 \u4E2A\u8282\u70B9\u300160 \u5C42");
@@ -5592,6 +5597,7 @@
         throw new Error("children \u5FC5\u987B\u662F\u6570\u7EC4");
       if (node.codeshellGridFallback === true || node.cssLayout?.["--codeshell-grid-legacy"] === "synthetic")
         warnings.push(legacyGridWarning);
+      if (node.codeshellBorderFallback === true || hasCssBorder(node)) warnings.push(legacyBorderWarning);
       if (typeof node.id === "string" && node.id) reservedIds.add(node.id);
       for (const child of node.children ?? []) inspect(child, depth + 1);
     }
@@ -5634,9 +5640,11 @@
     }
     roots.forEach(retainGradients);
     const hasLegacyGrid = (node) => node.codeshellGridFallback === true || node.cssLayout?.["--codeshell-grid-legacy"] === "synthetic" || (node.children ?? []).some(hasLegacyGrid);
+    const hasLegacyBorder = (node) => node.codeshellBorderFallback === true || hasCssBorder(node) || (node.children ?? []).some(hasLegacyBorder);
     const converted = roots.map((root) => {
       const converted2 = root.nodeType ? FigmaAdapter.toFigmaJSON(root) : root;
       if (hasLegacyGrid(root)) converted2.codeshellGridFallback = true;
+      if (hasLegacyBorder(root)) converted2.codeshellBorderFallback = true;
       return converted2;
     });
     count = 0;

@@ -183,7 +183,8 @@ test("bordered flex and block frames retain content insets and content-box size 
   for (const result of observed.results.flat()) assert.deepEqual(result.actual, result.expected, result.id);
   assert.deepEqual(observed.bounded, { minHeight: 32, maxWidth: 172 });
   assert.deepEqual(observed.layouts, ["vertical", "vertical"]);
-  assert(captured.report.warnings.some((warning) => warning.code === "border-stroke-alignment"));
+  assert(!captured.report.warnings.some((warning) => warning.code === "border-stroke-alignment"));
+  assert(normalizeDesignDocument(captured.document).nodes.filter(node=>node.strokeSides).every(node=>node.strokeAlign==="inside"));
   assert.deepEqual(f.external, []);
   assert.deepEqual(f.errors, []);
 });

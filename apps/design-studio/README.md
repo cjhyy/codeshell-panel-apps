@@ -571,3 +571,13 @@ under `agent/`: the manifest declares every callable tool, handlers execute
 inside the panel sandbox, and the bundled Skill is read-only Markdown. The
 installer still rejects traditional plugin backends, hooks, commands, and MCP
 configuration, so one install does not collapse the runtime isolation.
+
+
+Solid CSS borders can retain four bounded editable side paints and inside alignment
+without adding decorative child layers. Effective border insets count once in Auto
+Layout padding and HTML export. Legacy centered strokes keep their existing semantics.
+Native Figma supports independent weights with one shared RGB/alpha paint; multicolor
+native transfer, unequal rounded side joins and adjacent sides with different alpha
+are explicitly rejected or diagnosed. Collapsed table borders retain a diagnosed
+measured approximation. Strict border evidence and remaining antialiasing limits are
+recorded in `docs/todo/design-studio-css-border-sides-2026-10-21.md`.

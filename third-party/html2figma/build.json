@@ -7,8 +7,8 @@
   "legacyGridOption": "preserveGrid:false",
   "esbuildVersion": "0.28.2",
   "output": "apps/design-studio/app/vendor/html2figma-browser.mjs",
-  "bytes": 209005,
-  "sha256": "b8f6504864f8c0c26fbc0278b16e96247d814ea11c67365a0355fb81b476d82f",
+  "bytes": 209075,
+  "sha256": "c8321b6e43afaee17015457faec0ec1a402ccc10108e82884d1662b533611e51",
   "notice": {
     "output": "apps/design-studio/app/vendor/html2figma-NOTICE.md",
     "bytes": 6268,

@@ -25,6 +25,7 @@
     "apps/design-studio/app/linear-gradient-geometry.mjs",
     "apps/design-studio/app/paint.mjs",
     "apps/design-studio/app/resource-store.mjs",
+    "apps/design-studio/app/stroke.mjs",
     "apps/design-studio/app/text-metrics.mjs",
     "apps/design-studio/app/vendor/html2figma-browser.mjs",
     "third-party/html2figma-plugin/integration/capture.ts",
@@ -64,23 +65,23 @@
     },
     {
       "path": "code.js",
-      "bytes": 223278,
-      "sha256": "29214105697183764810db0f98571883d2470edd2f6ec8e1d98c815c9942d996"
+      "bytes": 224288,
+      "sha256": "6112c9ef346cc69f13d44e23393cfddf08041855cf4b380c496111c0766414c2"
     },
     {
       "path": "ui.html",
-      "bytes": 340662,
-      "sha256": "a75f4a8806775dd60d087f26d1908e434cf96d0a50ac03c59d4deb78efbf4980"
+      "bytes": 341750,
+      "sha256": "1d606ab1909a56048dc7fdd1175eee14a50e30959dca64d3bf0b536d8af7b356"
     },
     {
       "path": "README.md",
-      "bytes": 6073,
-      "sha256": "d4cb1bea4b3e346feda326d5e3d51cd3284514bdc80f1b8d9ff448ac0bb4f638"
+      "bytes": 6419,
+      "sha256": "16c71e25bee56ca6c5caac2279e8679ba4b621cca035a477f3eb31c0a371068a"
     },
     {
       "path": "NOTICE.md",
-      "bytes": 3118,
-      "sha256": "9bb261a53cb8c6276eaf0f46c22706fca6b4e892a7ecddee39fd7c7fa294d737"
+      "bytes": 3419,
+      "sha256": "9571b5533b923093b5c0ba5b16b7777b27f244828b0af3c31d683b7aeba98f5a"
     }
   ]
 }

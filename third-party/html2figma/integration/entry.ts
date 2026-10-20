@@ -26,6 +26,8 @@ function captureLayoutValues(tree: RenderNode) {
         if (style) {
           const properties = [
             "width",
+            "border-collapse",
+            "border-image-source",
             "height",
             "min-width",
             "max-width",

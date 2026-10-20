@@ -7,6 +7,7 @@ import {
 } from "./grid.mjs";
 import { designPaintCssImage } from "./paint.mjs";
 import { nativeTextContent } from "./text-content.mjs";
+import { hasDesignStroke, designStrokeSides } from "./stroke.mjs";
 /* Deterministic CodeShell Design v3 to editable HTML/CSS export. */
 import { designFontFaceCss, designFontFamilyCss } from "./font-css.mjs";
 
@@ -59,11 +60,14 @@ function styleText(declarations) {
 
 function paddingDeclarations(node) {
   const uniform = Number(node.padding) || 0;
+  const widths=hasDesignStroke(node) && node.strokeAlign === "inside" ? designStrokeSides(node).map(s=>s.width) : [0,0,0,0];
+  if(widths.some((width,i)=>width>(node[`padding${["Top","Right","Bottom","Left"][i]}`]??uniform)))
+    throw new Error(`${node.name}: 内侧边框宽度大于有效 padding，CSS 流式边框不能保留该原生重叠；请增加 padding 后导出`);
   return [
-    ["padding-top", cssNumber(node.paddingTop ?? uniform)],
-    ["padding-right", cssNumber(node.paddingRight ?? uniform)],
-    ["padding-bottom", cssNumber(node.paddingBottom ?? uniform)],
-    ["padding-left", cssNumber(node.paddingLeft ?? uniform)],
+    ["padding-top", cssNumber(Math.max(0,(node.paddingTop ?? uniform)-widths[0]))],
+    ["padding-right", cssNumber(Math.max(0,(node.paddingRight ?? uniform)-widths[1]))],
+    ["padding-bottom", cssNumber(Math.max(0,(node.paddingBottom ?? uniform)-widths[2]))],
+    ["padding-left", cssNumber(Math.max(0,(node.paddingLeft ?? uniform)-widths[3]))],
   ];
 }
 
@@ -79,8 +83,11 @@ function positionDeclarations(node, parent, parentUsesLayout, canvas) {
 
   const parentX = Number(parent?.x) || 0;
   const parentY = Number(parent?.y) || 0;
-  const localLeft = (Number(node.x) || 0) - parentX;
-  const localTop = (Number(node.y) || 0) - parentY;
+  const border=parent && hasDesignStroke(parent) && parent.strokeAlign === "inside" ? designStrokeSides(parent).map(s=>s.width) : [0,0,0,0];
+  const localLeft = (Number(node.x) || 0) - parentX-border[3];
+  const localTop = (Number(node.y) || 0) - parentY-border[0];
+  const parentWidth=Number(parent?.width??canvas?.width)-border[1]-border[3];
+  const parentHeight=Number(parent?.height??canvas?.height)-border[0]-border[2];
   const declarations = [["position", "absolute"]];
   const horizontal = node.constraintHorizontal;
   const vertical = node.constraintVertical;
@@ -95,50 +102,50 @@ function positionDeclarations(node, parent, parentUsesLayout, canvas) {
 
   if (horizontal === "stretch" || rootFillHorizontal) {
     declarations.push(
-      ["left", cssNumber(node.constraintLeft ?? localLeft)],
+      ["left", cssNumber(node.constraintLeft !== undefined ? node.constraintLeft-border[3] : localLeft)],
       [
         "right",
         cssNumber(
-          node.constraintRight ??
-            Math.max(0, Number(parent?.width ?? canvas?.width) - localLeft - Number(node.width)),
+          node.constraintRight !== undefined ? node.constraintRight-border[1] :
+            Math.max(0,parentWidth-localLeft-Number(node.width)+border[1])-border[1],
         ),
       ],
     );
   } else if (horizontal === "end") {
-    declarations.push(["right", cssNumber(node.constraintRight ?? 0)]);
+    declarations.push(["right", cssNumber((node.constraintRight ?? 0)-border[1])]);
   } else if (horizontal === "center") {
-    const initialParentWidth = Number(parent?.width ?? canvas?.width) || 0;
+    const initialParentWidth = parentWidth || 0;
     const offset = localLeft + Number(node.width) / 2 - initialParentWidth / 2;
     declarations.push(["left", `calc(50% + ${cssNumber(offset)})`]);
   } else {
-    declarations.push(["left", cssNumber(node.constraintLeft ?? localLeft)]);
+    declarations.push(["left", cssNumber(node.constraintLeft !== undefined ? node.constraintLeft-border[3] : localLeft)]);
   }
 
   if (vertical === "stretch" || rootFillVertical) {
     declarations.push(
-      ["top", cssNumber(node.constraintTop ?? localTop)],
+      ["top", cssNumber(node.constraintTop !== undefined ? node.constraintTop-border[0] : localTop)],
       [
         "bottom",
         cssNumber(
-          node.constraintBottom ??
-            Math.max(0, Number(parent?.height ?? canvas?.height) - localTop - Number(node.height)),
+          node.constraintBottom !== undefined ? node.constraintBottom-border[2] :
+            Math.max(0,parentHeight-localTop-Number(node.height)+border[2])-border[2],
         ),
       ],
     );
   } else if (vertical === "end") {
-    declarations.push(["bottom", cssNumber(node.constraintBottom ?? 0)]);
+    declarations.push(["bottom", cssNumber((node.constraintBottom ?? 0)-border[2])]);
   } else if (vertical === "center") {
-    const initialParentHeight = Number(parent?.height ?? canvas?.height) || 0;
+    const initialParentHeight = parentHeight || 0;
     const offset = localTop + Number(node.height) / 2 - initialParentHeight / 2;
     declarations.push(["top", `calc(50% + ${cssNumber(offset)})`]);
   } else {
-    declarations.push(["top", cssNumber(node.constraintTop ?? localTop)]);
+    declarations.push(["top", cssNumber(node.constraintTop !== undefined ? node.constraintTop-border[0] : localTop)]);
   }
   return declarations;
 }
 
 function sizingDeclarations(node, parent) {
-  const parentLayout = parent?.layout ?? "none";
+  const parentLayout = node.layoutPositioning === "absolute" ? "none" : parent?.layout ?? "none";
   const horizontal = node.layoutSizingHorizontal ?? "fixed";
   const vertical = node.layoutSizingVertical ?? "fixed";
   const declarations = [];
@@ -317,7 +324,21 @@ function paintDeclarations(node) {
   const declarations = [
     ["background", node.fillPaints ? designPaintCssImage(node) : cssColor(node.fill)],
   ];
-  if (Number(node.strokeWidth) > 0 && cssColor(node.stroke) !== "transparent") {
+  const shadows=[];
+  if (hasDesignStroke(node) && node.strokeAlign === "inside") {
+    designStrokeSides(node).forEach((side,i)=>{
+      const rgb=[1,3,5].map(offset=>parseInt(side.color.slice(offset,offset+2),16));
+      declarations.push([`border-${["top","right","bottom","left"][i]}`,`${cssNumber(side.width)} solid rgba(${rgb.join(",")},${side.opacity})`]);
+    });
+  } else if (hasDesignStroke(node)) {
+    const sides=designStrokeSides(node),side=sides[0];
+    if(sides.some(s=>s.width!==side.width || s.color!==side.color || s.opacity!==side.opacity))
+      throw new Error(`${node.name}: 非内侧的独立侧边暂不能导出为等价 CSS；请保留 SVG/v3 或使用内侧边框`);
+    const rgba=`rgba(${[1,3,5].map(offset=>parseInt(side.color.slice(offset,offset+2),16)).join(",")},${side.opacity})`;
+    const outside=node.strokeAlign === "outside"?side.width:side.width/2;
+    declarations.push(["outline",`${cssNumber(outside)} solid ${rgba}`]);
+    if(node.strokeAlign!=="outside")shadows.push(`inset 0 0 0 ${cssNumber(side.width/2)} ${rgba}`);
+  } else if (Number(node.strokeWidth) > 0 && cssColor(node.stroke) !== "transparent") {
     declarations.push(["border", `${cssNumber(node.strokeWidth)} solid ${cssColor(node.stroke)}`]);
   }
   if (node.cornerRadii) {
@@ -327,11 +348,9 @@ function paintDeclarations(node) {
   }
   if (node.type === "ellipse") declarations.push(["border-radius", "50%"]);
   if (node.shadow) {
-    declarations.push([
-      "box-shadow",
-      `${cssNumber(node.shadow.x)} ${cssNumber(node.shadow.y)} ${cssNumber(node.shadow.blur)} rgba(${Number.parseInt(node.shadow.color.slice(1, 3), 16)},${Number.parseInt(node.shadow.color.slice(3, 5), 16)},${Number.parseInt(node.shadow.color.slice(5, 7), 16)},${node.shadow.opacity})`,
-    ]);
+    shadows.push(`${cssNumber(node.shadow.x)} ${cssNumber(node.shadow.y)} ${cssNumber(node.shadow.blur)} rgba(${Number.parseInt(node.shadow.color.slice(1, 3), 16)},${Number.parseInt(node.shadow.color.slice(3, 5), 16)},${Number.parseInt(node.shadow.color.slice(5, 7), 16)},${node.shadow.opacity})`);
   }
+  if(shadows.length)declarations.push(["box-shadow",shadows.join(",")]);
   return declarations;
 }
 

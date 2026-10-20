@@ -8,6 +8,7 @@ import { planHtmlBlockFlow, htmlBlockHorizontalBleed } from "./html-block-flow.m
 import { planHtmlViewportFlow } from "./html-viewport-flow.mjs";
 import { cssLinearBackgroundPaints } from "./css-linear-gradient.mjs";
 import { representativeDesignFill } from "./paint.mjs";
+import { normalizeStrokeSides, validateDesignStroke } from "./stroke.mjs";
 import { planHtmlGrid, sizeHtmlGridChild, validateHtmlGrid, removeHtmlGrid } from "./html-grid.mjs";
 
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -366,12 +367,6 @@ export async function designNodeToV3(tree, options = {}) {
     if (visibleSides.length) {
       node.stroke = color(visibleSides[0].color, node.id, "描边");
       node.strokeWidth = number(visibleSides[0].width, 0, 0, 100, node.id, "strokeWidth");
-      warn("border-stroke-alignment", node.id,
-        "CSS 边框的内容缩进已保留；当前居中描边与 CSS 内侧边框的绘制边缘可能不同。");
-      if (sides.some((side) => JSON.stringify(side) !== JSON.stringify(sides[0])))
-        warn("border-sides", node.id, "不同方向边框已近似为统一描边。");
-      if (visibleSides.some((side) => side.style !== "solid"))
-        warn("border-style", node.id, "虚线、点线或双线边框已近似为实线。");
     }
     try {
       // Validate raw units before using the converter's transform-scaled px values.
@@ -388,6 +383,28 @@ export async function designNodeToV3(tree, options = {}) {
       node.cornerRadius = 0;
       delete node.cornerRadii;
       warn("unsupported-corner-radii", node.id, `${error.message}；未近似圆角。`);
+    }
+    const borderImage=source.cssLayout?.["border-image-source"];
+    if ((borderImage && borderImage!=="none") || sides.some(side=>side?.width>0 && side.style!=="none")) {
+      try {
+        if(borderImage && borderImage!=="none")throw new Error("border-image 暂不能保留为可编辑实线侧边");
+        if (sides.some(side=>side?.width>0 && !["none","solid"].includes(side.style))) throw new Error("虚线、点线或双线暂不能保留");
+        node.strokeSides=normalizeStrokeSides(sides.map(side=>({
+          width:side?.style === "none" ? 0 : side?.width??0,
+          color:color({r:0,g:0,b:0,...side?.color,a:1},node.id,"边框"),
+          opacity:side?.color?.a??1,
+        })));
+        node.strokeAlign="inside";
+        validateDesignStroke(node);
+        if(visibleSides.length)node.strokeWidth=Math.max(...node.strokeSides.map(s=>s.width));
+        if (source.cssLayout?.["border-collapse"] === "collapse" && /^table/u.test(source.cssLayout?.display??"")) {
+          node.strokeAlign="center";
+          warn("collapsed-border",node.id,"折叠表格边框的共享边缘/半像素归属暂不能保留；侧边按测量边界居中绘制，未声明为完整表格边框语义。");
+        }
+      } catch (error) {
+        delete node.strokeSides;delete node.strokeAlign;
+        warn("unsupported-css-border",node.id,`${error.message}；保留测量几何并按统一居中描边近似，原始侧边未声明为无损。`);
+      }
     }
     const shadows = source.effects?.boxShadows ?? [];
     const shadow = shadows.find((entry) => !entry.inset);

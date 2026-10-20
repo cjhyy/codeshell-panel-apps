@@ -379,6 +379,8 @@
         "fillPaints": { "$ref": "#/$defs/fillPaints" },
         "stroke": { "$ref": "#/$defs/color" },
         "strokeWidth": { "type": "number", "minimum": 0, "maximum": 100 },
+        "strokeAlign": {"enum":["inside","center","outside"]},
+        "strokeSides": {"type":"array","minItems":4,"maxItems":4,"items":{"type":"object","additionalProperties":false,"required":["width","color","opacity"],"properties":{"width":{"type":"number","minimum":0,"maximum":100},"color":{"type":"string","pattern":"^#[a-fA-F0-9]{6}$"},"opacity":{"type":"number","minimum":0,"maximum":1}}}},
         "opacity": { "type": "number", "minimum": 0, "maximum": 1 },
         "rotation": { "type": "number", "minimum": -360, "maximum": 360 },
         "cornerRadius": { "type": "number", "minimum": 0, "maximum": 9999 },
@@ -504,6 +506,7 @@
       },
       "allOf": [
         { "if": { "required": ["cornerRadii"] }, "then": { "properties": { "type": { "enum": ["frame", "rectangle", "component", "image"] } } } },
+        { "if": { "anyOf": [{"required":["strokeSides"]},{"required":["strokeAlign"]}] }, "then": { "properties": { "type": { "enum": ["frame", "rectangle", "component"] } } } },
         {
           "if": {
             "properties": {

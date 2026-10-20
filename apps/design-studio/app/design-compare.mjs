@@ -7,6 +7,7 @@ import {
 } from "./grid.mjs";
 /* Stable-id design/implementation comparison for the delivery workflow. */
 import { normalizeDesignPaints } from "./paint.mjs";
+import { designStrokeSides } from "./stroke.mjs";
 
 function childrenOf(page) {
   return page?.children ?? page?.nodes ?? [];
@@ -120,6 +121,8 @@ function styleDifferences(expected, actual) {
     "fillPaints",
     "stroke",
     "strokeWidth",
+    "strokeAlign",
+    "strokeSides",
     "cornerRadius",
     "cornerRadii",
     "opacity",
@@ -132,9 +135,14 @@ function styleDifferences(expected, actual) {
   ];
   const differences = properties
     .filter((property) => property !== "fill" || !expected.fillPaints || !actual.fillPaints)
+    .filter((property) => !["stroke","strokeWidth"].includes(property) || !expected.strokeSides || !actual.strokeSides)
     .filter((property) =>
       property === "fillPaints"
         ? paintSignature(expected.fillPaints) !== paintSignature(actual.fillPaints)
+        : property === "strokeSides"
+          ? JSON.stringify(designStrokeSides(expected)) !== JSON.stringify(designStrokeSides(actual))
+          : property === "strokeAlign"
+            ? (expected.strokeAlign??"center") !== (actual.strokeAlign??"center")
         : expected[property] !== undefined &&
           actual[property] !== undefined &&
           String(expected[property]) !== String(actual[property]),
