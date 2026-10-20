@@ -1,4 +1,5 @@
 import { mainAxisGap } from "./layout-spacing.mjs";
+import { repositoryDesignPage } from "./document.mjs";
 import {
   cssGridTrack,
   gridPlacements,
@@ -36,12 +37,15 @@ function cssColor(value, fallback = "transparent") {
     : fallback;
 }
 
-function pageChildren(page) {
-  return Array.isArray(page?.children)
-    ? page.children
-    : Array.isArray(page?.nodes)
-      ? page.nodes
-      : [];
+function pageChildren(page, design) {
+  if (Array.isArray(page?.children)) return page.children;
+  if (Array.isArray(page?.nodes) ||
+      page?.id === design?.activePageId && Array.isArray(design?.nodes)) {
+    // Panel/CLI state is flat: parentId owns the hierarchy, and the active
+    // page's current nodes can differ from its saved page.nodes snapshot.
+    return repositoryDesignPage({ ...design, nodes: design.nodes ?? page.nodes }, page.id).children;
+  }
+  return [];
 }
 
 function allNodes(nodes, result = []) {
@@ -507,10 +511,10 @@ export function renderDesignFrontendPage(
   const page = design.pages?.find((candidate) => candidate.id === pageId);
   if (!page) throw new Error(`设计页面不存在：${pageId}`);
   const canvas = design.canvas ?? { width: 1440, height: 900, background: "#ffffff" };
-  const roots = pageChildren(page);
+  const roots = pageChildren(page, design);
   const components = new Map(
     design.pages
-      .flatMap((candidate) => allNodes(pageChildren(candidate)))
+      .flatMap((candidate) => allNodes(pageChildren(candidate, design)))
       .filter((node) => node.type === "component")
       .map((node) => [node.id, node]),
   );
