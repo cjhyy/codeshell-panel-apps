@@ -297,5 +297,6 @@
       "layoutPositioning"
     ]
   },
-  "ruleBoundary": "Probe row color #b1b4b6 differs from frozen GOV #cecece; included INSIDE1 is capability only. Native font bytes unknown; no CSS/native glyph parity."
+  "ruleBoundary": "Probe row color #b1b4b6 differs from frozen GOV #cecece; included INSIDE1 is capability only. Native font bytes unknown; no CSS/native glyph parity.",
+  "initialGeometryReceiptSha256": "51af516faba6e08bee58ffbea60643452c614b717172d123716822d4ab9055ac"
 }

@@ -893,6 +893,19 @@ function pluginHarness({
         });
       }
       if (type === "FRAME") {
+        // Current native Grid Frames expose the same active-only inclusion
+        // setter and side weights as H/V Frames. This tests setter order, not
+        // native text measurement or stroke-dependent row geometry.
+        let included = true;
+        Object.defineProperty(value, "strokesIncludedInLayout", {
+          get: () => included,
+          set: (next) => {
+            assert.notEqual(value.layoutMode, "NONE");
+            included = next;
+          },
+        });
+        for (const side of ["Top", "Right", "Bottom", "Left"])
+          value[`stroke${side}Weight`] = 0;
         value.gridAutoTracks = "NONE";
         value.gridItemsPositioning = "MANUAL";
         for (const axis of ["Row", "Column"]) {
@@ -2126,4 +2139,36 @@ test("actual plain Text Grid survives production preflight with full source and 
     assert.equal(rejected.messages.at(-1).type, "error");
     assert.equal(rejected.pages.length, 1, "unproven Text dependency fails before creating pages");
   }
+});
+
+test("native padded intrinsic row Grid creation carries parent context and included bottom rule through preflight and finalization", async () => {
+  const raw = JSON.parse(await readFile(new URL("../../fixtures/design-studio-native-padded-row-grid/native-source.json",import.meta.url)));
+  const imported = importFigmaJson(raw), transfer = createFigmaTransfer(imported.document);
+  assert.deepEqual(transfer.warnings, []);
+  const runtime = pluginHarness({nativeGrid:true});
+  await runtime.send({type:"import-transfer",content:JSON.stringify(transfer)});
+  assert.equal(runtime.messages.at(-1).type,"imported",JSON.stringify(runtime.messages.at(-1)));
+  const flattened = (node) => [node,...node.children.flatMap(flattened)];
+  const created = flattened(runtime.pages[1]).filter((n)=>n.type!=="PAGE");
+  assert.equal(created.length,67); assert.equal(created.filter((n)=>n.layoutMode==="GRID").length,9);
+  for(const row of created.filter((n)=>n.layoutMode==="GRID")){
+    assert.equal(row.parent.layoutMode,"VERTICAL");
+    assert.deepEqual([row.layoutSizingHorizontal,row.layoutSizingVertical],["FILL","HUG"]);
+    assert.equal(row.gridRowSizes[0].type,"HUG");
+    assert.equal(row.children.length,3); assert.equal(row.strokesIncludedInLayout,row.name.includes("rowbottom1"));
+    if(row.name.includes("rowbottom1")){
+      assert.deepEqual([row.strokeTopWeight,row.strokeRightWeight,row.strokeBottomWeight,row.strokeLeftWeight],[0,0,1,0]);
+      assert.equal(row.strokeAlign,"INSIDE"); assert.equal(row.paddingBottom,0,"physical bottom inset is included once, not duplicated in raw padding");
+    }
+    for(const cell of row.children){
+      assert.deepEqual([cell.layoutSizingHorizontal,cell.layoutSizingVertical],["FILL","FILL"]);
+      assert.equal(cell.children.length,1);
+      const text=cell.children[0];
+      assert.deepEqual([text.layoutSizingHorizontal,text.layoutSizingVertical,text.textAutoResize],["FILL","HUG","HEIGHT"]);
+      assert.equal(text.lineHeight.unit,"PIXELS"); assert.equal(text.lineHeight.value,20);
+    }
+  }
+  const invalid=structuredClone(transfer);invalid.pages[0].children[0].children[0].layoutSizingHorizontal="hug";
+  const blocked=pluginHarness({nativeGrid:true});await blocked.send({type:"import-transfer",content:JSON.stringify(invalid)});
+  assert.equal(blocked.messages.at(-1).type,"error");assert.equal(blocked.pages.length,1,"context cycle rejected before new native pages");
 });

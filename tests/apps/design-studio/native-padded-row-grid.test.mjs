@@ -7,7 +7,7 @@ import { createFigmaBinding, createFigmaPatch } from "../../../apps/design-studi
 import { gridFillHugContentHeight, nativeGridPlan } from "../../../apps/design-studio/app/grid.mjs";
 import { applyAutoLayouts } from "../../../apps/design-studio/app/layout.mjs";
 const fixture = JSON.parse(await readFile(new URL("../../fixtures/design-studio-native-padded-row-grid/native-source.json", import.meta.url)));
-const stages = JSON.parse(await readFile(new URL("../../fixtures/design-studio-native-padded-row-grid/native-stages.json", import.meta.url)));
+const stages = JSON.parse(await readFile(new URL("../../fixtures/design-studio-native-padded-row-grid/native-initial.json", import.meta.url)));
 const clone = structuredClone;
 const flat = (n) => [n, ...(n.children ?? []).flatMap(flat)];
 const find = (source, name) => flat(source.document).find((node) => node.name === name);
@@ -73,7 +73,7 @@ test("scoped Text copy edits settle padded real cells and all sibling row positi
 test("unproven width owners, cell padding/content and row stroke models do not qualify", () => {
   const value = importFigmaJson(fixture).document, hierarchy = nested(value), row = hierarchy.find((n) => n.name === rowName), owner = hierarchy.find((n) => n.children?.some((child) => child.id === row.id));
   assert(row && owner);
-  for (const edit of [(p) => {p.layout = "horizontal";}, (p) => {p.layoutSizingHorizontal = "hug";}, (p) => {p.layoutSizingHorizontal = "fill";}, (p) => {p.rotation = 10;}, (p) => {p.layoutWrap = "wrap";}]) {
+  for (const edit of [(p) => {p.layout = "horizontal";}, (p) => {p.layoutSizingHorizontal = "hug";}, (p) => {p.layoutSizingHorizontal = "fill";}, (p) => {p.rotation = 10;}, (p) => {p.maxWidth = 630;}, (p) => {p.layoutWrap = "wrap";}]) {
     const changed = clone(owner); edit(changed); assert.throws(() => nativeGridPlan(row, changed), /内在尺寸循环/u);
   }
   for (const edit of [(r) => {r.paddingBottom = 0;}, (r) => {r.strokeAlign = "center";}, (r) => {r.strokeAlign = "outside";}, (r) => {r.strokeSides[2].width = 2;}, (r) => {r.strokeSides[0].width = 1;}, (r) => {r.gridRows = 2; r.gridRowSizes.push({type:"hug"});}, (r) => {r.children[0].paddingTop = -1;}, (r) => {r.children[0].paddingBottom = Infinity;}, (r) => {r.children[0].children.push(clone(r.children[0].children[0]));}]) {

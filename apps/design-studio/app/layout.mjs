@@ -284,6 +284,8 @@ function gridContentSize(nodes, container, children) {
   const horizontalPadding = axisPadding(container, "horizontal");
   const verticalPadding = axisPadding(container, "vertical");
   const { placements, rowCount } = gridPlacements(children, columns, container);
+  const widthOwner = container.layoutSizingHorizontal === "fill"
+    ? nodes.find((node) => node.id === container.parentId) : undefined;
   const intrinsicColumn = placements.reduce(
     (largest, placement) =>
       Math.max(
@@ -306,7 +308,7 @@ function gridContentSize(nodes, container, children) {
         "vertical",
         rowGap,
         undefined,
-        (child) => gridFillHugContentHeight(container, child, () => childNodes(nodes, child.id), nodes.find((node) => node.id === container.parentId)),
+        (child) => gridFillHugContentHeight(container, child, () => childNodes(nodes, child.id), widthOwner),
       )
     : intrinsicGridRows(placements, explicitRows, rowGap);
   const columnWidths = container.gridColumnSizes
@@ -550,6 +552,8 @@ function applyGridLayout(nodes, container, children) {
   );
   const columnWidth = Math.max(1, (innerWidth - columnGap * Math.max(0, columns - 1)) / columns);
   const { placements, rowCount } = gridPlacements(children, columns, container);
+  const widthOwner = container.layoutSizingHorizontal === "fill"
+    ? nodes.find((node) => node.id === container.parentId) : undefined;
   const columnWidths = container.gridColumnSizes
     ? gridTrackSizes(
         container.gridColumnSizes,
@@ -572,7 +576,7 @@ function applyGridLayout(nodes, container, children) {
         "vertical",
         rowGap,
         innerHeight,
-        (child) => gridFillHugContentHeight(container, child, () => childNodes(nodes, child.id), nodes.find((node) => node.id === container.parentId)),
+        (child) => gridFillHugContentHeight(container, child, () => childNodes(nodes, child.id), widthOwner),
       )
     : intrinsicGridRows(placements, explicitRows, rowGap);
   const rowTrack = distributedTrack(

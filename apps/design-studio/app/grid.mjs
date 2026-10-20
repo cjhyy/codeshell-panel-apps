@@ -170,7 +170,7 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
     container?.strokeAlign === "inside" &&
     !container.strokeLayoutExcluded &&
     Array.isArray(container.strokeSides) && container.strokeSides.length === 4 &&
-    container.strokeSides.every((side, index) => side && side.width === (index === 2 ? 1 : 0)) &&
+    Array.from(container.strokeSides).every((side, index) => side && side.width === (index === 2 ? 1 : 0)) &&
     ["Top", "Right", "Left"].every((side) => (container[`padding${side}`] ?? container.padding ?? 0) === 0) &&
     (container.paddingBottom ?? container.padding ?? 0) === 1;
   if (
