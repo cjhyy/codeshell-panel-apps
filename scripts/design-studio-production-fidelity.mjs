@@ -13,6 +13,11 @@ import {
 } from "../apps/design-studio/app/document.mjs";
 import { preparePluginFile } from "../apps/design-studio/app/figma-plugin/v3-input.mjs";
 import { createPortableDesign } from "../apps/design-studio/app/portable-backup.mjs";
+import { loadFidelityLocalFixture } from "./design-studio-fidelity-local-assets.mjs";
+
+// Frozen folder: --fixture-dir <selected-folder> [--html relative/source.html]
+// [--selector '#fixture']. Reports archive that exact local snapshot; external
+// URLs remain blocked. --html alone keeps the original self-contained workflow.
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const appRoot = join(root, "apps/design-studio/app");
@@ -83,14 +88,6 @@ function argument(name, fallback) {
   return value;
 }
 
-function htmlId(node) {
-  try {
-    return JSON.parse(node.notes).attributes?.id;
-  } catch {
-    return undefined;
-  }
-}
-
 async function settleFontsAndPaint(page) {
   await page.evaluate(async () => {
     await document.fonts.ready;
@@ -98,27 +95,21 @@ async function settleFontsAndPaint(page) {
   });
 }
 
-async function resizeDocument(page, document, width) {
+async function resizeDocument(page, document, width, rootId) {
   const source = await page.evaluate(
-    async ({ source, width }) => {
+    async ({ source, width, rootId }) => {
       const { normalizeDesignDocument, serializeDesignDocument } =
         await import("/app/document.mjs");
       const { applyAllAutoLayouts } = await import("/app/layout.mjs");
       const resized = normalizeDesignDocument(JSON.parse(source));
       resized.canvas.width = width;
       for (const node of resized.nodes) {
-        let id;
-        try {
-          id = JSON.parse(node.notes).attributes?.id;
-        } catch {
-          /* Synthetic wrapper. */
-        }
-        if (node.id === "html-viewport" || id === "fixture") node.width = width;
+        if (node.id === "html-viewport" || node.id === rootId) node.width = width;
       }
       applyAllAutoLayouts(resized.nodes);
       return serializeDesignDocument(resized);
     },
-    { source: serializeDesignDocument(document), width },
+    { source: serializeDesignDocument(document), width, rootId },
   );
   return normalizeDesignDocument(JSON.parse(source));
 }
@@ -142,11 +133,34 @@ export async function runProductionFidelity({
   });
   const blocked = [],
     errors = [];
+  const localFixtures = new Map();
   try {
     await context.route("**/*", async (route) => {
       const url = new URL(route.request().url());
       if (url.href === "https://fidelity.test/")
         return route.fulfill({ contentType: "text/html", body: "<!doctype html>" });
+      const fixtureUrl =
+        url.origin === "https://fidelity.test" &&
+        /^\/fixtures\/([a-z0-9-]+)\/(.+)$/u.exec(url.pathname);
+      if (fixtureUrl && localFixtures.has(fixtureUrl[1])) {
+        try {
+          const resource = localFixtures
+            .get(fixtureUrl[1])
+            .resource(decodeURIComponent(fixtureUrl[2]));
+          return route.fulfill({
+            body: resource.bytes,
+            contentType: resource.mime,
+            headers: {
+              "Content-Security-Policy":
+                "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; script-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'",
+              "X-Content-Type-Options": "nosniff",
+            },
+          });
+        } catch {
+          blocked.push(url.href);
+          return route.abort();
+        }
+      }
       if (url.origin === "https://fidelity.test" && url.pathname.startsWith("/app/")) {
         const path = resolve(appRoot, url.pathname.slice(5));
         if (
@@ -169,6 +183,17 @@ export async function runProductionFidelity({
     });
     const page = await context.newPage();
     page.on("pageerror", (error) => errors.push(error.message));
+    const localReferencePage = await context.newPage();
+    localReferencePage.on("pageerror", (error) => errors.push(error.message));
+    let activeFixture;
+    await page.exposeFunction("__fidelityReadText", async (path) => {
+      if (!activeFixture) throw new Error("Fixture requires self-contained HTML/CSS");
+      return activeFixture.readText(path);
+    });
+    await page.exposeFunction("__fidelityReadAsset", async (path) => {
+      if (!activeFixture) throw new Error("Fixture requires self-contained HTML/CSS");
+      return activeFixture.readAsset(path);
+    });
     const report = {
       version: 1,
       engine: "captureWorkspaceHtmlResult:html2figma",
@@ -180,35 +205,69 @@ export async function runProductionFidelity({
       cases: [],
     };
     for (const fixture of cases) {
+      assert(
+        /^[a-z0-9][a-z0-9-]{0,63}$/u.test(fixture.id),
+        "Fixture id must be a safe lowercase slug",
+      );
+      assert(!report.cases.some((entry) => entry.id === fixture.id), "Fixture ids must be unique");
+      activeFixture = fixture.directory
+        ? await loadFidelityLocalFixture(fixture.directory, fixture.sourcePath)
+        : null;
+      localFixtures.clear();
+      if (activeFixture) localFixtures.set(fixture.id, activeFixture);
       const directory = join(output, fixture.id);
       await mkdir(directory, { recursive: true });
       const html =
+        activeFixture?.html ??
         fixture.source ??
         `<!doctype html><meta charset="utf-8"><style>*{box-sizing:border-box}html,body{margin:0;background:white;font-family:Arial;color:#0f172a}${fixture.css}</style>${fixture.html}`;
       await writeFile(join(directory, "source.html"), html);
+      if (activeFixture)
+        for (const file of activeFixture.manifest) {
+          const archived = join(directory, "local-fixture", file.path);
+          await mkdir(dirname(archived), { recursive: true });
+          await writeFile(archived, activeFixture.resource(file.path).bytes);
+        }
       await page.setViewportSize({ width, height });
       await page.goto("https://fidelity.test/");
-      await page.setContent(html);
-      await settleFontsAndPaint(page);
-      const original = await page.screenshot({ animations: "disabled" });
-      const sourceLayout = await page.evaluate(
-        () => getComputedStyle(document.querySelector("#fixture")).display,
+      const referencePage = activeFixture ? localReferencePage : page;
+      const sourceUrl = activeFixture
+        ? `https://fidelity.test/fixtures/${fixture.id}/${activeFixture.sourcePath.split("/").map(encodeURIComponent).join("/")}`
+        : null;
+      const showSource = async (frameWidth) => {
+        await referencePage.setViewportSize({ width: frameWidth, height });
+        if (sourceUrl) await referencePage.goto(sourceUrl);
+        else await referencePage.setContent(html);
+        await settleFontsAndPaint(referencePage);
+      };
+      await showSource(width);
+      const original = await referencePage.screenshot({ animations: "disabled" });
+      const rootSelector = fixture.rootSelector ?? "#fixture";
+      const sourceLayout = await referencePage.evaluate(
+        (selector) => getComputedStyle(document.querySelector(selector)).display,
+        rootSelector,
       );
       const captured = await page.evaluate(
-        async ({ html, width, height }) => {
+        async ({ html, width, height, sourcePath, rootSelector, local }) => {
           const { captureWorkspaceHtmlResult } = await import("/app/html-import.mjs");
           return captureWorkspaceHtmlResult({
             html,
-            sourcePath: "source.html",
-            readText: async () => {
-              throw Error("Fixture requires self-contained HTML/CSS");
-            },
-            rootSelector: "#fixture",
+            sourcePath,
+            readText: async (path) => window.__fidelityReadText(path),
+            ...(local ? { readAsset: async (path) => window.__fidelityReadAsset(path) } : {}),
+            rootSelector,
             viewportWidth: width,
             viewportHeight: height,
           });
         },
-        { html, width, height },
+        {
+          html,
+          width,
+          height,
+          sourcePath: activeFixture?.sourcePath ?? "source.html",
+          rootSelector,
+          local: Boolean(activeFixture),
+        },
       );
       assert.equal(captured.report.engine, "html2figma");
       const document = normalizeDesignDocument(captured.document);
@@ -245,7 +304,7 @@ export async function runProductionFidelity({
         join(directory, "figma-transfer.json"),
         JSON.stringify(prepared.transfer, null, 2),
       );
-      const main = document.nodes.find((node) => htmlId(node) === "fixture");
+      const main = document.nodes.find((node) => node.parentId === "html-viewport");
       const sourceNodes = document.nodes
         .flatMap((node) => {
           try {
@@ -255,7 +314,7 @@ export async function runProductionFidelity({
           }
         })
         .filter((node) => node.selector);
-      const sourcePositions = await page.evaluate(
+      const sourcePositions = await referencePage.evaluate(
         (nodes) =>
           Object.fromEntries(
             nodes.map((node) => {
@@ -292,6 +351,15 @@ export async function runProductionFidelity({
         sourcePositioning: sourcePositions,
         semanticIssues,
         warnings: captured.report.warnings,
+        ...(activeFixture
+          ? {
+              localFixture: {
+                sourcePath: activeFixture.sourcePath,
+                archiveDirectory: "local-fixture",
+                files: activeFixture.manifest,
+              },
+            }
+          : {}),
         comparisons: [],
       };
       for (const [mode, frameWidth] of [
@@ -300,13 +368,14 @@ export async function runProductionFidelity({
         ["narrow", narrowWidth],
       ]) {
         const candidate =
-          mode === "imported" ? document : await resizeDocument(page, document, frameWidth);
+          mode === "imported"
+            ? document
+            : await resizeDocument(page, document, frameWidth, main?.id);
         await page.setViewportSize({ width: frameWidth, height });
         let source = original;
         if (mode === "narrow") {
-          await page.setContent(html);
-          await settleFontsAndPaint(page);
-          source = await page.screenshot({ animations: "disabled" });
+          await showSource(frameWidth);
+          source = await referencePage.screenshot({ animations: "disabled" });
         }
         const svg = exportDesignSvg(candidate, { resourceDataUrls, maxBytes: 4 * 1024 * 1024 });
         await page.setContent(
@@ -349,17 +418,31 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     Number.isFinite(maximumChangedRatio) && maximumChangedRatio >= 0 && maximumChangedRatio <= 1,
   );
   const input = argument("--html", null);
+  const fixtureDirectory = argument("--fixture-dir", null);
   const width = Number(argument("--width", "640")),
     height = Number(argument("--height", "240")),
     narrowWidth = Number(argument("--narrow-width", "400"));
   for (const value of [width, height, narrowWidth])
     assert(Number.isInteger(value) && value >= 100 && value <= 10000);
   const selected = argument("--case", null);
-  const cases = input
-    ? [{ id: "custom", source: await readFile(resolve(input), "utf8") }]
-    : selected
-      ? fixtures.filter((fixture) => fixture.id === selected)
-      : fixtures;
+  const cases = fixtureDirectory
+    ? [
+        {
+          id: "custom",
+          directory: resolve(fixtureDirectory),
+          sourcePath: input
+            ? input.startsWith("/")
+              ? relative(resolve(fixtureDirectory), resolve(input)).split(sep).join("/")
+              : input
+            : "source.html",
+          rootSelector: argument("--selector", "#fixture"),
+        },
+      ]
+    : input
+      ? [{ id: "custom", source: await readFile(resolve(input), "utf8") }]
+      : selected
+        ? fixtures.filter((fixture) => fixture.id === selected)
+        : fixtures;
   assert(cases.length > 0, `Unknown case: ${selected}`);
   const result = await runProductionFidelity({
     output: argument("--output", null),
