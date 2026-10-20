@@ -1604,3 +1604,69 @@ semanticIssues仍[]。这些是独立待修能力/检测缺口，不把没有显
 manifest固定，再重新核对真实当前页并执行，不从WIP或overlay推断生产版本/原备份。
 
 24小时仍active，截止10月22日00:31不变。未push、发布或安装Host。
+
+
+### 第32轮：多段落原生生产往返和新网页负例（约 07:55）
+
+稳定primary先从173436f7干净FF到bcbc927，117个app文件与已完整测试5cbc1f2逐字节
+一致，752pass/2skip/0fail证据不变；仅journal不同，不重复应用回归。origin/main刷新仍
+c7eeee322。round31-primary-integration-receipt.json记录整次集成，无push/发布/Host安装。
+随后按owner确认移除5个干净已合入checkout/branch（Fill上下文、链接、CSS阴影、闲置
+描边、whole-DL），external父目录和全部证据保留；没有force删除或清理其他未完成分支。
+
+原58a36d45…未装harness先归档，再仅固定稳定bcbc927生产commit、main1473a789…、
+UIdc968a66…和manifest7438d5b5…，18/18纯Node和完整prepare-only通过。四个page guard
+仍默认不可执行，安装时显式给定经最新CUA核对的真实页和官方receipt SHA；固定ORIG3
+从未重新采信overlay。第一实际run8a51c7dc在全新68:1607/board68:1608导入成功：26节点、
+4Grid、8cell、2真实P、1原margin-wrapper、9Text，初始几何差异0；DPR1原生PNG816000
+pixels changed0/max0，encoded SHA ad97d9ee8c703836c15b412c0c1007afa6cae6ba4b2c9508786b9daa94a8807b。
+copy4实际已应用，但harness过严地期待warnings[]，被精确textSource元数据保留提示中止。
+该run永久保留FAIL及36个原文件，未重试同一slot或改写状态。另通过真实插件普通导出按钮
+保留失败现场官方JSON，独立原0172四行oracle验证26节点几何0、phone自然100px，不能
+据此把中断流程改判PASS。
+
+只修改外部v2 harness的预期诊断：仅两个文字stage允许指定phone的精确一条textSource
+元数据保留提示，两个width stage仍必须[]，任何额外/错节点/错key诊断或operations!=1
+都失败。生产代码1720–1723先写真实characters，1886–1912另存plugin metadata并产生
+此提示；独立peer核对after.text/textSource都是4条真实LF、preview无conflict。19/19纯
+Node含额外/错误warning负例、v2完整prepare-only通过；其他独立native oracle、PNG、
+生命周期/ORIG3/双锁/slot一次性认领全部未改。原v1失败现场、v2精确diff和新旧脚本SHA
+保留在native-multi-p-production-preparation，review receipt SHA29d336a5…。
+
+v2新建68:1634/board68:1635，run e2cd2288完成真正生产native→v3保存重开→portable→
+普通UIconverter→native与四次普通patch。每次仅一条phone[text,textSource]或DL owner
+[width]更新，无创建/删除/child position/height/sizing修补。五阶段26节点的真实几何、
+层级、4Grid/8cell/2P/9Text及模式均与冻结0172官方+SDK oracle精确一致，最大几何差异0。
+文本一行→四行→一行自然25→100→25；DL1220→708→1220保留原生Float32，窄列真实
+475.6000061035156等不取整或向CSS拟合。此次五阶段harness已覆盖的闲置stroke三属性
+差异均[]；更完整raw字段/侧宽独立审查继续进行，不据此宣称所有Figma属性完全无损。
+
+初始、copy-returned1220、returned1220三张1360×600原生PNG各816000pixels严格changed0/
+max0，三者encoded SHA也均与原0172 ad97d9ee…完全一致。copy4/708仅几何验收，未做
+那两态PNG；CSS↔native字体与分数轨道像素仍UNVERIFIED。插件已关闭，已知relay95596
+正常exit0，ORIG3三文件精确恢复、双锁不存在，未删原生页。最终report SHA
+ e09eaad72fe08bc1b9213f3f2a4f6f39564fd2666bfdeee02b379f1e178ba74b。
+完整58文件与第一FAIL36文件逐字节归档到real-figma/native-multi-p-grid-roundtrip，
+root-archive-receipt SHAfbccdf8194573fcad9c34d43a4dd8c95ac1e8e9612d05515f8477d0f0d4fe5af。
+
+新增真实官方网页负例：[普通通知栏](https://design-system.service.gov.uk/components/notification-banner/default/)
+和[成功通知栏](https://design-system.service.gov.uk/components/notification-banner/success/)。
+原HTML/CSS/字体先原字节冻结，再只本地化资源URL、移除脚本；不重写可见内容/CSS。
+raw SHA分别f3fd865a…/ac3580aa…，各8响应无fetch错误。稳定bcbc927全部117app文件前后
+相同，生产捕获、v3/portable及SVG比较均CPU离线，0未知请求/浏览器错误。1280首次/
+重排、768分别5698/5698/5698和9036/9036/9036；新增400宽实际换行控制分别13272/
+17133，max均244，全部strictfalse。基线在round32-notification-banners和-400，原RGBA/
+source/converted/diff PNG完整。初版外部摘要误读flattened comparison.metrics而漏值，
+原摘要保留，baseline-analysis.json从原report精确补全，无像素重跑/结果改写。一次只读
+脚本错误把v3 pages树当flat nodes，未启动任何browser；后续按真实children读取。
+
+这两页旧semanticIssues仍[]/nativeTransfer prepared，却真实存在普通P layout:none/
+fixed及手动Text（rich-text-uniform/html-plain-text-fixed警告），再次证明需要按真实元素
+身份逐层追踪的不可变义务审查；检测修复和peer反例检查仍独立进行。Tasklist普通布局的
+AUTO表格内在分列及tag负margin仍不伪装成Fill/Hug/native成功。字体平滑软件对照18例
+中既有fallback+显式attached研究注入13/18严格0，其余5各1px/max1；默认supplied字体
+真实SkParagraph为0/18，未改产品渲染或偷偷去掉字体资源。所有原字符/LF/NBSP和2x
+master负例保留；真实WebGL/缩放/缓存还需独立证明。另窄范围尾部合成NBSP与空伪元素
+修复正在独立分支以真实Range和完整无绘制证明验证，尚未合入。
+
+24小时目标仍active，截止10月22日00:31不变。未push、发布或安装Host。
