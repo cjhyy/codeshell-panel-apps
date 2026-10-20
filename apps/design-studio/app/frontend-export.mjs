@@ -1,3 +1,4 @@
+import { shadowStackCss } from "./shadow-stack.mjs";
 import { textLineHeightCss } from "./text-line-height.mjs";
 import { mainAxisGap } from "./layout-spacing.mjs";
 import { repositoryDesignPage } from "./document.mjs";
@@ -338,6 +339,8 @@ function paintDeclarations(node) {
   if (PAINTLESS_TYPES.has(node.type)) return [];
   const declarations = [
     ["background", node.fillPaints ? designPaintCssImage(node) : cssColor(node.fill)],
+    // Canonical paints cover the border box, including beneath translucent sides.
+    ["background-origin", node.fillPaints ? "border-box" : undefined],
   ];
   const shadows=[];
   if (hasDesignStroke(node) && node.strokeAlign === "inside") {
@@ -362,6 +365,7 @@ function paintDeclarations(node) {
     declarations.push(["border-radius", cssNumber(node.cornerRadius)]);
   }
   if (node.type === "ellipse") declarations.push(["border-radius", "50%"]);
+  if (node.shadowStack) shadows.push(shadowStackCss(node));
   if (node.shadow) {
     const shadow = `${cssNumber(node.shadow.x)} ${cssNumber(node.shadow.y)} ${cssNumber(node.shadow.blur)} rgba(${Number.parseInt(node.shadow.color.slice(1, 3), 16)},${Number.parseInt(node.shadow.color.slice(3, 5), 16)},${Number.parseInt(node.shadow.color.slice(5, 7), 16)},${node.shadow.opacity})`;
     if (node.type === "text") declarations.push(["text-shadow", shadow]);

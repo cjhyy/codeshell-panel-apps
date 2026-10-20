@@ -67,6 +67,7 @@ const properties = [
   "locked",
   "notes",
   "shadow",
+  "shadowStack",
   "clipContent",
   "text",
   "textSource",

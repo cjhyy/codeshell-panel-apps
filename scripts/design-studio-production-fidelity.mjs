@@ -126,11 +126,12 @@ export async function runProductionFidelity({
   height = 240,
   narrowWidth = 400,
   resizeMode = "viewport-and-root",
+  cpuOnly = false,
 } = {}) {
   assert(["viewport-only", "viewport-and-root"].includes(resizeMode), "Unknown resize mode");
   output ??= await mkdtemp(join(tmpdir(), "design-production-fidelity-"));
   await mkdir(output, { recursive: true });
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(cpuOnly ? {args:["--disable-gpu"]} : {});
   const context = await browser.newContext({
     viewport: { width, height },
     deviceScaleFactor: 1,
@@ -202,6 +203,7 @@ export async function runProductionFidelity({
       version: 1,
       engine: "captureWorkspaceHtmlResult:html2figma",
       realFigmaExecuted: false,
+      browserGpuDisabled: cpuOnly,
       startedAt: new Date().toISOString(),
       thresholds: { channelTolerance, maximumChangedRatio },
       viewport: { width, height, narrowWidth },
@@ -299,7 +301,7 @@ export async function runProductionFidelity({
       let prepared, nativeTransferError = null;
       try { prepared = await preparePluginFile(portable); }
       catch (error) {
-        if (error.code !== "NATIVE_NEGATIVE_SPACING") throw error;
+        if (!["NATIVE_NEGATIVE_SPACING","NATIVE_CSS_SHADOW_MASK"].includes(error.code)) throw error;
         nativeTransferError = { code: error.code, message: String(error.message).slice(0, 2000),
           stage: "production-v3-transfer", status: "unsupported" };
         await rm(join(directory, "figma-transfer.json"), { force: true });

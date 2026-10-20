@@ -1,3 +1,4 @@
+import { validateShadowStack, shadowStackOutsets } from "./shadow-stack.mjs";
 import { textLineHeightCss, textLineHeightPixels, validTextLineHeight } from "./text-line-height.mjs";
 import { validateLayoutSpacing } from "./layout-spacing.mjs";
 import { GRID_CONTAINER_FIELDS, GRID_CHILD_FIELDS, gridPlacements } from "./grid.mjs";
@@ -1945,15 +1946,27 @@ function renderProperties() {
   propertyInputs.notes.value = single.notes ?? "";
   const shadowSupported = single.type !== "group";
   elements.shadowSection.hidden = !shadowSupported;
-  propertyInputs.shadowEnabled.checked = Boolean(single.shadow);
-  elements.shadowControls.hidden = !single.shadow;
-  if (single.shadow) {
-    propertyInputs.shadowColor.value = single.shadow.color;
-    propertyInputs.shadowColorPicker.value = single.shadow.color;
-    propertyInputs.shadowX.value = String(round(single.shadow.x));
-    propertyInputs.shadowY.value = String(round(single.shadow.y));
-    propertyInputs.shadowBlur.value = String(round(single.shadow.blur));
-    propertyInputs.shadowOpacity.value = String(Math.round(single.shadow.opacity * 100));
+  if(shadowLayerNodeId!==single.id){shadowLayerIndex=0;shadowLayerNodeId=single.id;}
+  shadowLayerIndex=Math.min(shadowLayerIndex,(single.shadowStack?.layers.length??1)-1);
+  const selectedShadow=single.shadowStack?.layers[shadowLayerIndex]??single.shadow;
+  const stackTools=document.getElementById("shadow-stack-tools"),stackSelect=document.getElementById("prop-shadow-layer");
+  stackTools.hidden=!["frame","rectangle","component"].includes(single.type);
+  stackSelect.replaceChildren();
+  for(const [index,layer] of (single.shadowStack?.layers??[]).entries()){const option=document.createElement("option");option.value=index;option.textContent=`${index+1}. ${layer.kind==="inner"?"内阴影":"外阴影"}${layer.visible?"":"（隐藏）"}`;stackSelect.append(option);}
+  stackSelect.value=String(shadowLayerIndex);stackSelect.hidden=!single.shadowStack;
+  document.getElementById("shadow-layer-add").disabled=isEffectivelyLocked(single) || (single.shadowStack?.layers.length??0)>=8;
+  document.getElementById("prop-shadow-inner").checked=selectedShadow?.kind==="inner";
+  document.getElementById("prop-shadow-visible").checked=selectedShadow?.visible!==false;
+  for(const id of ["prop-shadow-inner","prop-shadow-visible","shadow-layer-remove","shadow-layer-up","shadow-layer-down"])document.getElementById(id).disabled=!single.shadowStack || isEffectivelyLocked(single);
+  propertyInputs.shadowEnabled.checked = Boolean(selectedShadow);
+  elements.shadowControls.hidden = !selectedShadow;
+  if (selectedShadow) {
+    propertyInputs.shadowColor.value = selectedShadow.color;
+    propertyInputs.shadowColorPicker.value = selectedShadow.color;
+    propertyInputs.shadowX.value = String(round(selectedShadow.x));
+    propertyInputs.shadowY.value = String(round(selectedShadow.y));
+    propertyInputs.shadowBlur.value = String(round(selectedShadow.blur));
+    propertyInputs.shadowOpacity.value = String(Math.round(selectedShadow.opacity * 100));
   }
 
   const isText = single.type === "text";
@@ -5643,7 +5656,13 @@ function bindColorTextInput(input, currentValue, update, allowTransparent = fals
   });
 }
 
+function editShadowSafeStroke(node,edit) {
+  const next=structuredClone(node);edit(next);validateShadowStack(next);
+  for(const key of ["stroke","strokeWidth","strokeSides","strokeAlign","strokeLayoutExcluded"]){if(next[key]===undefined)delete node[key];else node[key]=next[key];}
+}
+let shadowLayerIndex = 0, shadowLayerNodeId = null;
 function ensureNodeShadow(node) {
+  if(node?.shadowStack)return node.shadowStack.layers[shadowLayerIndex];
   if (!node || node.type === "group") return null;
   if (!node.shadow) {
     node.shadow = {
@@ -5784,20 +5803,20 @@ bindColorTextInput(
   (value) => {
     const node = selectedNode();
     if (node && !isEffectivelyLocked(node)) {
-      try{editDesignStrokeColor(node,value);}catch(error){notify(error.message,"error");}
+      try{editShadowSafeStroke(node,next=>editDesignStrokeColor(next,value));}catch(error){notify(error.message,"error");}
     }
   },
   true,
 );
 bindPropertyInput(propertyInputs.cornerRadius, (node, value) => {
   const radius=clamp(Number(value) || 0, 0, 9999);
-  try {validateDesignStroke({...node,cornerRadius:radius,cornerRadii:undefined});}
+  try {const next={...node,cornerRadius:radius,cornerRadii:undefined};validateDesignStroke(next);validateShadowStack(next);}
   catch(error){propertyInputs.cornerRadius.value=String(node.cornerRadius);notify(error.message,"error");return;}
   node.cornerRadius = radius;
   delete node.cornerRadii;
 });
 bindPropertyInput(propertyInputs.strokeWidth, (node, value) => {
-  try{editDesignStrokeWidth(node,clamp(finiteOr(value, 0), 0, 100));}
+  try{editShadowSafeStroke(node,next=>editDesignStrokeWidth(next,clamp(finiteOr(value, 0), 0, 100)));}
   catch(error){propertyInputs.strokeWidth.value=String(node.strokeWidth);notify(error.message,"error");}
 }, "input", "size");
 bindPropertyInput(propertyInputs.opacity, (node, value) => {
@@ -5806,17 +5825,28 @@ bindPropertyInput(propertyInputs.opacity, (node, value) => {
 bindPropertyInput(propertyInputs.rotation, (node, value) => {
   node.rotation = clamp(finiteOr(value, 0), -360, 360);
 });
+function editShadowLayers(edit) {
+  const node=selectedNode();if(!node || isEffectivelyLocked(node))return;
+  try{const candidate=structuredClone(node);edit(candidate);validateShadowStack(candidate);Object.assign(node,candidate);if(!candidate.shadow)delete node.shadow;if(!candidate.shadowStack)delete node.shadowStack;commitHistory();markChanged();renderProperties();}
+  catch(error){notify(error.message,"error");}
+}
+document.getElementById("prop-shadow-layer").addEventListener("change",event=>{shadowLayerIndex=Number(event.target.value);renderProperties();});
+document.getElementById("shadow-layer-add").addEventListener("click",()=>editShadowLayers(node=>{delete node.shadow;node.shadowStack??={basis:"css-box",layers:[]};if(node.shadowStack.layers.length>=8)throw Error("最多 8 个 CSS 阴影层");node.shadowStack.layers.push({kind:"inner",color:"#000000",opacity:.2,x:0,y:2,blur:8,spread:0,visible:true});shadowLayerIndex=node.shadowStack.layers.length-1;}));
+document.getElementById("shadow-layer-remove").addEventListener("click",()=>editShadowLayers(node=>{node.shadowStack.layers.splice(shadowLayerIndex,1);if(!node.shadowStack.layers.length)delete node.shadowStack;shadowLayerIndex=Math.max(0,shadowLayerIndex-1);}));
+for(const [id,step] of [["shadow-layer-up",-1],["shadow-layer-down",1]])document.getElementById(id).addEventListener("click",()=>editShadowLayers(node=>{const next=shadowLayerIndex+step;if(next<0||next>=node.shadowStack.layers.length)return;[node.shadowStack.layers[next],node.shadowStack.layers[shadowLayerIndex]]=[node.shadowStack.layers[shadowLayerIndex],node.shadowStack.layers[next]];shadowLayerIndex=next;}));
+document.getElementById("prop-shadow-inner").addEventListener("change",event=>editShadowLayers(node=>{node.shadowStack.layers[shadowLayerIndex].kind=event.target.checked?"inner":"outer";}));
+document.getElementById("prop-shadow-visible").addEventListener("change",event=>editShadowLayers(node=>{node.shadowStack.layers[shadowLayerIndex].visible=event.target.checked;}));
 propertyInputs.shadowEnabled.addEventListener("change", () => {
   const node = selectedNode();
   if (!node || node.type === "group" || isEffectivelyLocked(node)) return;
   if (propertyInputs.shadowEnabled.checked) ensureNodeShadow(node);
-  else delete node.shadow;
+  else {delete node.shadow;delete node.shadowStack;}
   commitHistory();
   markChanged();
 });
 bindColorTextInput(
   propertyInputs.shadowColor,
-  () => selectedNode()?.shadow?.color ?? "#000000",
+  () => selectedNode()?.shadowStack?.layers[shadowLayerIndex]?.color ?? selectedNode()?.shadow?.color ?? "#000000",
   (value) => {
     const node = selectedNode();
     if (!node || isEffectivelyLocked(node)) return;
@@ -6118,8 +6148,7 @@ bindPropertyInput(
   propertyInputs.strokeColor,
   (node, value) => {
     try {
-      editDesignStrokeColor(node,value);
-      if (node.strokeWidth === 0) editDesignStrokeWidth(node,1);
+      editShadowSafeStroke(node,next=>{editDesignStrokeColor(next,value);if(next.strokeWidth===0)editDesignStrokeWidth(next,1);});
     }catch(error){notify(error.message,"error");}
   },
   "input",
@@ -7257,13 +7286,15 @@ function renderedNodeEffectBounds(
     node.type === "instance"
       ? renderedDesignInstanceEffectOutsets(documentValue, node, instanceStack, availableNodes)
       : zeroEffectOutsets();
+  const stackOutsets=shadowStackOutsets(node,(node.rotation??0)+inheritedNodeRotation(nodes,node));
+  const hasStackEffect=Object.values(stackOutsets).some(value=>value>0);
   const hasInstanceEffect = Object.values(instanceEffectOutsets).some((value) => value > 0);
   const strokeOutset =
     !["group", "instance"].includes(node.type)
       ? designStrokeOutset(node)
       : 0;
   const visibleShadow = node.shadow?.opacity > 0 ? node.shadow : null;
-  if (!visibleShadow && !hasInstanceEffect && strokeOutset <= 0) {
+  if (!visibleShadow && !hasInstanceEffect && !hasStackEffect && strokeOutset <= 0) {
     return clipNodeBoundsToClippingAncestors(nodes, node);
   }
   const shadowOutset = visibleShadow?.blur * 1.5 || 0;
@@ -7274,6 +7305,7 @@ function renderedNodeEffectBounds(
   const rotatedInstanceOutset =
     totalRotation % 360 === 0 ? 0 : Math.max(...Object.values(instanceEffectOutsets));
   const leftOutset = Math.max(
+    stackOutsets.left,
     rotatedInstanceOutset || instanceEffectOutsets.left,
     strokeOutset,
     visibleShadow
@@ -7281,6 +7313,7 @@ function renderedNodeEffectBounds(
       : 0,
   );
   const topOutset = Math.max(
+    stackOutsets.top,
     rotatedInstanceOutset || instanceEffectOutsets.top,
     strokeOutset,
     visibleShadow
@@ -7288,11 +7321,13 @@ function renderedNodeEffectBounds(
       : 0,
   );
   const rightOutset = Math.max(
+    stackOutsets.right,
     rotatedInstanceOutset || instanceEffectOutsets.right,
     strokeOutset,
     visibleShadow ? strokeOutset + shadowOutset + (rotatedShadowOffset || Math.max(0, shadowX)) : 0,
   );
   const bottomOutset = Math.max(
+    stackOutsets.bottom,
     rotatedInstanceOutset || instanceEffectOutsets.bottom,
     strokeOutset,
     visibleShadow ? strokeOutset + shadowOutset + (rotatedShadowOffset || Math.max(0, shadowY)) : 0,
@@ -7401,6 +7436,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "name",
   "notes",
   "shadow",
+  "shadowStack",
   "effectClipping",
   "contentClipping",
   "x",
@@ -7519,6 +7555,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
       [
         "notes",
         "shadow",
+        "shadowStack",
         "fillPaints",
         "strokeSides",
         "strokeAlign",

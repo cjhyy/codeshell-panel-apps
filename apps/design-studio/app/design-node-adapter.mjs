@@ -1,3 +1,4 @@
+import { normalizeShadowStack, validateShadowStack } from "./shadow-stack.mjs";
 import {
   planHtmlFloatColumns,
   sizeHtmlFloatColumn,
@@ -437,21 +438,11 @@ export async function designNodeToV3(tree, options = {}) {
       }
     }
     const shadows = source.effects?.boxShadows ?? [];
-    const shadow = shadows.find((entry) => !entry.inset);
-    if (shadow)
-      node.shadow = {
-        color: color({ ...shadow.color, a: 1 }, node.id),
-        opacity: number(shadow.color?.a ?? 1, 1, 0, 1, node.id, "shadow.opacity"),
-        x: number(shadow.offsetX, 0, -500, 500, node.id, "shadow.x"),
-        y: number(shadow.offsetY, 0, -500, 500, node.id, "shadow.y"),
-        blur: number(shadow.blurRadius, 0, 0, 200, node.id, "shadow.blur"),
-      };
-    if (shadows.length > 1 || shadows.some((entry) => entry.inset || entry.spreadRadius))
-      warn(
-        "shadow-approximation",
-        node.id,
-        "只保留第一项外投影；内阴影、扩散与多重阴影不受 v3 支持。",
-      );
+    if(shadows.length)try{
+      const stack=normalizeShadowStack({basis:"css-box",layers:shadows.map(entry=>({kind:entry.inset?"inner":"outer",color:color({...entry.color,a:1},node.id),opacity:entry.color?.a??1,x:entry.offsetX,y:entry.offsetY,blur:entry.blurRadius,spread:entry.spreadRadius??0,visible:true}))});
+      validateShadowStack({...node,shadowStack:stack});node.shadowStack=stack;
+      if(stack.layers.some(layer=>layer.blur>0))warn("shadow-raster-kernel",node.id,"保留完整有序 CSS 阴影与几何蒙版；SVG/CanvasKit/Figma 模糊内核仍可能与浏览器存在像素差异，未声明严格像素一致。");
+    }catch(error){warn("unsupported-shadow-stack",node.id,`${error.message}；未截取首层或静默近似，原始效果保留在来源。`);}
     if (
       source.effects?.filters?.length ||
       source.effects?.backdropFilters?.length ||

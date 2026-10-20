@@ -564,11 +564,13 @@ test("unsupported paints, mixed text, effects and geometry corrections are repor
   for (const code of [
     "unsupported-css-gradient",
     "rich-text-uniform",
-    "shadow-approximation",
+    "unsupported-shadow-stack",
     "unsupported-effects",
   ])
     assert.ok(codes(result).includes(code), code);
   assert.equal(JSON.parse(allNodes(result)[1].notes).styledSegments[0].style.fontWeight, 700);
+  assert.equal(allNodes(result)[0].shadow, undefined);
+  assert.equal(allNodes(result)[0].shadowStack, undefined, "unsupported complete stacks never become a first-layer approximation");
 });
 
 test("retained CSS gradient units, angles and stop fixup map to editable paints rather than upstream unit guesses", () => {

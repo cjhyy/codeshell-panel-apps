@@ -119,6 +119,7 @@ function styleDifferences(expected, actual) {
   const properties = [
     "fill",
     "fillPaints",
+    "shadowStack",
     "stroke",
     "strokeWidth",
     "strokeAlign",
@@ -139,7 +140,9 @@ function styleDifferences(expected, actual) {
     .filter((property) => property !== "fill" || !expected.fillPaints || !actual.fillPaints)
     .filter((property) => !["stroke","strokeWidth"].includes(property) || !expected.strokeSides || !actual.strokeSides)
     .filter((property) =>
-      property === "fillPaints"
+      property === "shadowStack"
+        ? JSON.stringify(expected.shadowStack??null)!==JSON.stringify(actual.shadowStack??null)
+        : property === "fillPaints"
         ? paintSignature(expected.fillPaints) !== paintSignature(actual.fillPaints)
         : property === "strokeSides"
           ? JSON.stringify(designStrokeSides(expected)) !== JSON.stringify(designStrokeSides(actual))

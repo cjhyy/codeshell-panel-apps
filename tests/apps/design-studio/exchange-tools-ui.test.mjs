@@ -1937,3 +1937,24 @@ test("public negative spacing edits retain native-safe block insets through oute
   assert.equal(exported.find((node) => node.id === row.id).layoutSizingHorizontal, "fill");
   assert.deepEqual(f.errors, []);
 });
+
+test("CSS shadow layers remain public editable through inspector order, visibility, save and reopen",async t=>{
+ const f=await fixture(t),path="pages/shadows.html";
+ f.files.set(`A:${path}`,`<!doctype html><style>*{box-sizing:border-box}body{margin:0}main{display:flex;width:100%;height:240px;padding:20px}section{flex:1;height:100px;background:white;box-shadow:inset 8px 0 0 #dc2626,inset 0 8px 0 #2563eb}</style><main><section></section></main>`);
+ await f.tool("import_html",{path,root_selector:"body",viewport_width:640,viewport_height:240,save:true,expected_state_revision:(await f.metadata()).stateRevision});
+ const metadata=await f.metadata(),target=metadata.layers.find(n=>n.name==="section"),before=await readNode(f.page,target.id),geometry=[before.x,before.y,before.width,before.height];assert.equal(before.shadowStack.layers.length,2);
+ await f.tool("use_design",{expected_state_revision:metadata.stateRevision,save:true,operations:[{op:"update_node",node_id:target.id,changes:{shadowStack:{basis:"css-box",layers:[before.shadowStack.layers[0]]}}}]});
+ await f.page.locator(`.layer-row[data-id="${target.id}"] .layer-title`).click();await f.page.locator("#shadow-layer-add").click();assert.equal((await readNode(f.page,target.id)).shadowStack.layers.length,2);
+ await f.page.locator("#prop-shadow-layer").selectOption("0");await f.page.locator("#shadow-layer-down").click();let node=await readNode(f.page,target.id);assert.equal(node.shadowStack.layers[1].color,"#dc2626");
+ await f.page.locator("#prop-shadow-visible").uncheck();node=await readNode(f.page,target.id);assert.equal(node.shadowStack.layers[1].visible,false);
+ await f.page.locator("#prop-shadow-opacity").fill("35");node=await readNode(f.page,target.id);assert.equal(node.shadowStack.layers[1].opacity,.35);
+ await f.page.locator("#shadow-layer-remove").click();assert.equal((await readNode(f.page,target.id)).shadowStack.layers.length,1);
+ await f.tool("use_design",{expected_state_revision:(await f.metadata()).stateRevision,save:true,operations:[{op:"update_node",node_id:target.id,changes:{notes:"Edited shadow layers"}}]});
+ const saved=(await readNode(f.page,target.id)).shadowStack;await f.reload();node=await readNode(f.page,target.id);assert.deepEqual(node.shadowStack,saved);assert.deepEqual([node.x,node.y,node.width,node.height],geometry);assert.equal(node.shadow,undefined);
+ const revision=(await f.metadata()).stateRevision;await assert.rejects(f.tool("use_design",{expected_state_revision:revision,operations:[{op:"update_node",node_id:target.id,changes:{shadowStack:{basis:"css-box",layers:[{...saved.layers[0],spread:1}]}}}]}),/spread/);assert.deepEqual((await readNode(f.page,target.id)).shadowStack,saved);
+ await f.tool("use_design",{expected_state_revision:(await f.metadata()).stateRevision,operations:[{op:"update_node",node_id:target.id,changes:{stroke:"#16a34a",strokeWidth:4,strokeAlign:"inside"}}]});
+ await f.page.locator(`.layer-row[data-id="${target.id}"] .layer-title`).click();
+ await f.page.locator("#prop-radius").fill("8");
+ node=await readNode(f.page,target.id);assert.equal(node.cornerRadius,0,"inspector refuses an unproven rounded border mask atomically");assert.equal(node.strokeWidth,4);assert.deepEqual(node.shadowStack,saved);
+ assert.deepEqual(f.errors,[]);
+});

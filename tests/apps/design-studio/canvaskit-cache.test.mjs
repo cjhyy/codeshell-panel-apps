@@ -699,3 +699,18 @@ test("native GPU inside side borders preserve zero edges, alpha corners and edit
   assert.deepEqual(pixel(edited, 198, 135), [255, 255, 255]);
   assert.equal((await cached.evaluate(() => renderer.stats())).nodePictureBuilds, before.nodePictureBuilds + 1);
 });
+
+test("CSS geometric shadow stacks keep transparent fill, colored order, border phase and cached repaint editable",async t=>{
+  const page=await harness(t,{width:640,height:240});
+  const layers=[{kind:"inner",color:"#dc2626",opacity:1,x:12,y:0,blur:0,spread:0,visible:true},{kind:"inner",color:"#2563eb",opacity:1,x:0,y:12,blur:0,spread:0,visible:true}];
+  const design={canvas:{width:640,height:240,background:"#ffffff"},resources:[],nodes:[base("masked","rectangle",30,30,160,100,{fill:"transparent",stroke:"#16a34a",strokeWidth:4,strokeAlign:"inside",strokeSides:Array.from({length:4},()=>({width:4,color:"#16a34a",opacity:1})),shadowStack:{basis:"css-box",layers}})]};
+  const viewport={zoom:1,pan:{x:0,y:0}};await upload(page,design);let image=await draw(page,viewport);
+  for(const [x,y,color] of [[31,50,[22,163,74]],[38,38,[220,38,38]],[60,38,[37,99,235]],[60,70,[255,255,255]],[28,38,[255,255,255]]])assert.deepEqual(pixel(image,x,y),color);
+  const first=await page.evaluate(()=>renderer.stats());
+  design.nodes[0].shadowStack.layers.reverse();await upload(page,design);image=await draw(page,viewport);assert.deepEqual(pixel(image,38,38),[37,99,235]);
+  const second=await page.evaluate(()=>renderer.stats());assert.equal(second.nodePictureBuilds,first.nodePictureBuilds+1);
+  await draw(page,{zoom:1,pan:{x:32,y:0}});const pan=await page.evaluate(()=>renderer.stats());assert.equal(pan.nodePictureBuilds,second.nodePictureBuilds);
+  design.nodes[0].shadowStack.layers[0].visible=false;await upload(page,design);image=await draw(page,viewport);assert.deepEqual(pixel(image,38,38),[220,38,38]);assert.deepEqual(pixel(image,60,38),[255,255,255]);
+  design.nodes[0].shadowStack.layers[0]={...layers[0],kind:"outer",color:"#2563eb",visible:true,x:-10,y:0,blur:8};await upload(page,design);image=await draw(page,viewport);assert.notDeepEqual(pixel(image,18,70),[255,255,255],"blurred outer mask survives raw-picture culling");assert.deepEqual(pixel(image,60,70),[255,255,255],"outer knockout never colors the transparent box interior");
+  const blur=await page.evaluate(()=>renderer.stats());assert(blur.unsupported.some(issue=>issue.code==="css-shadow-raster-kernel"),"kernel parity remains explicitly unverified");
+});
