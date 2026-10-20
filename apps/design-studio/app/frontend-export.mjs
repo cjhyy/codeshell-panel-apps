@@ -456,7 +456,7 @@ function renderNode(node, parent, context) {
     ? `<a class="cs-prototype-hotspot" data-prototype-link="${escapeHtml(link.id)}" href="${escapeHtml(link.href)}" aria-label="${escapeHtml(link.label || node.name)}"${link.external ? ' target="_blank" rel="noopener noreferrer"' : ""}></a>`
     : "";
   if (node.type === "text") {
-    return `<div ${attributes.join(" ")}>${hotspot}${escapeHtml(node.textOverflow === "ellipsis" ? nativeTextContent(node) : node.text)}</div>`;
+    return `<div ${attributes.join(" ")}>${hotspot}${escapeHtml(node.textOverflow === "ellipsis" || node.textFlow === "wrap" ? nativeTextContent(node) : node.text)}</div>`;
   }
   if (node.type === "image") {
     const source = context.resourceDataUrls.get(node.imageRef);
