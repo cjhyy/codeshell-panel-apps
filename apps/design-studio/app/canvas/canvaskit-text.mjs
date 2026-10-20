@@ -1,3 +1,4 @@
+import { textLineHeightPixels } from "../text-line-height.mjs";
 import { designFillPaints, gradientMatrix } from "../paint.mjs";
 import { designFontFamilyCss } from "../font-css.mjs";
 import { currentTextMetrics } from "../text-metrics.mjs";
@@ -185,7 +186,7 @@ export async function createCanvasKitText({
     return String(node.text)
       .split("\n")
       .reduce((sum, line, i) => {
-        const { w, h } = lineGeometry(node, line, node.y + i * node.fontSize * node.lineHeight, scale, alias, origin);
+        const { w, h } = lineGeometry(node, line, node.y + i * textLineHeightPixels(node), scale, alias, origin);
         return sum + w * h;
       }, 0);
   }
@@ -212,6 +213,7 @@ export async function createCanvasKitText({
       node.fontWeight,
       node.fontStyle,
       node.lineHeight,
+      node.lineHeightUnit,
       node.letterSpacing,
       node.textAlign,
       node.textDecoration,
@@ -398,7 +400,7 @@ export async function createCanvasKitText({
       .forEach((line, i) => {
         const metric = measure.measureText(line || " "),
           x = alignedX(node, metric.width);
-        const y = node.y + i * node.fontSize * node.lineHeight;
+        const y = node.y + i * textLineHeightPixels(node);
         left = Math.min(left, x - metric.actualBoundingBoxLeft);
         right = Math.max(right, x + metric.width, x + metric.actualBoundingBoxRight);
         top = Math.min(top, y - metric.actualBoundingBoxAscent);
@@ -530,7 +532,7 @@ export async function createCanvasKitText({
         return;
       }
       lines.forEach((line, i) =>
-        rasterLine(canvas, node, line, node.y + i * node.fontSize * node.lineHeight),
+        rasterLine(canvas, node, line, node.y + i * textLineHeightPixels(node)),
       );
       return;
     }
@@ -550,7 +552,7 @@ export async function createCanvasKitText({
         `${missing} glyphs absent from supplied font; browser same-family raster cache`,
       );
       lines.forEach((line, i) =>
-        rasterLine(canvas, node, line, node.y + i * node.fontSize * node.lineHeight, entry.alias),
+        rasterLine(canvas, node, line, node.y + i * textLineHeightPixels(node), entry.alias),
       );
       return;
     }
@@ -598,7 +600,7 @@ export async function createCanvasKitText({
         shape.layout(1048576);
         const width = shape.getLongestLine();
         x = alignedX(node, width);
-        y = node.y + i * node.fontSize * node.lineHeight + baseline - shape.getAlphabeticBaseline();
+        y = node.y + i * textLineHeightPixels(node) + baseline - shape.getAlphabeticBaseline();
         shape.delete();
         if (metrics)
           maxWidthDelta = Math.max(maxWidthDelta, Math.abs(width - metrics.lineWidths[i]));

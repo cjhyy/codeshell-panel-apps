@@ -399,7 +399,8 @@
           "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F]+$"
         },
         "fontStyle": { "enum": ["normal", "italic"] },
-        "lineHeight": { "type": "number", "minimum": 0.7, "maximum": 3 },
+        "lineHeight": { "type": "number", "minimum": 0.7, "maximum": 720 },
+        "lineHeightUnit": { "const": "pixels" },
         "letterSpacing": { "type": "number", "minimum": -20, "maximum": 100 },
         "textDecoration": { "enum": ["none", "underline", "line-through"] },
         "textMeasurement": { "enum": ["browser"] },
@@ -656,7 +657,12 @@
           },
           "then": {
             "required": ["text", "fontSize", "fontWeight", "lineHeight", "textAlign"],
-            "properties": { "cornerRadius": { "const": 0 } }
+            "properties": { "cornerRadius": { "const": 0 } },
+            "allOf": [{
+              "if": { "required": ["lineHeightUnit"] },
+              "then": { "properties": { "lineHeight": { "minimum": 4.2, "maximum": 720 } } },
+              "else": { "properties": { "lineHeight": { "minimum": 0.7, "maximum": 3 } } }
+            }]
           },
           "else": {
             "not": {
@@ -667,6 +673,7 @@
                 { "required": ["fontFamily"] },
                 { "required": ["fontStyle"] },
                 { "required": ["lineHeight"] },
+                { "required": ["lineHeightUnit"] },
                 { "required": ["letterSpacing"] },
                 { "required": ["textDecoration"] },
                 { "required": ["textMeasurement"] },

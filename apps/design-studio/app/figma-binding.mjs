@@ -75,6 +75,7 @@ const properties = [
   "fontWeight",
   "fontStyle",
   "lineHeight",
+  "lineHeightUnit",
   "letterSpacing",
   "textAlign",
   "textDecoration",
