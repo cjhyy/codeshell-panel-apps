@@ -1366,6 +1366,9 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
       return null;
     }
     const { children, ...copy } = node;
+    // Browser baseline provenance drives only local typography refresh. Native
+    // creation consumes the physical offset, never an HTML measurement promise.
+    if (copy.layoutBaselineSource === "html") delete copy.layoutBaselineSource;
     if (["horizontal", "vertical"].includes(node.layout)) validateNativeLayoutSpacing(node);
     if (mainAxisGap(node) < 0 && (node.children ?? []).some((child) => child.visible !== false &&
         child.layoutPositioning !== "absolute" && child[node.layout === "vertical" ? "layoutSizingVertical" : "layoutSizingHorizontal"] === "fill" &&

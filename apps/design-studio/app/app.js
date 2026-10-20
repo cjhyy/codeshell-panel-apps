@@ -7508,6 +7508,10 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
     if (!AGENT_NODE_PATCH_FIELDS.has(key)) {
       throw new Error(`Agent 不可直接修改图层字段：${key}`);
     }
+    // An explicit manual offset retires only the new HTML refresh contract.
+    // Native provenance keeps its existing editing behavior.
+    if (key === "layoutBaselineOffset" && node.layoutBaselineSource === "html")
+      delete node.layoutBaselineSource;
     if (moveTree && ["x", "y"].includes(key) && Number.isFinite(value)) {
       setNodeTreePosition(design.nodes, node.id, key, value);
     } else if (

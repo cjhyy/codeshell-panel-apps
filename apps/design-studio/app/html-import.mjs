@@ -3,7 +3,7 @@ import { captureHtmlViewportRelation } from "./html-viewport-flow.mjs";
 import { convertToDesignDSL, HTML2FIGMA_PROVENANCE } from "./vendor/html2figma-browser.mjs";
 import { designNodeToV3 } from "./design-node-adapter.mjs";
 import { htmlTextLineHeightRatio } from "./html-line-height.mjs";
-import { measureFigmaTextDocument } from "./text-metrics.mjs";
+import { createBrowserTextMeasurer, measureFigmaTextDocument } from "./text-metrics.mjs";
 import {
   createHtmlAssetResolver,
   htmlFontResources,
@@ -306,6 +306,7 @@ function alignHtmlTextBaselines(documentValue, browserDocument) {
 
 async function enableHtmlTextReflow(documentValue, browserDocument, elements, warn) {
   const promoted = [];
+  const baselineCandidates = new Set();
   const sourceNodes = new Map(),
     sourceIds = new Map();
   const visit = (node, parent) => {
@@ -314,6 +315,19 @@ async function enableHtmlTextReflow(documentValue, browserDocument, elements, wa
       try { intent = JSON.parse(node.notes ?? "{}").htmlText; } catch {}
       if (intent) {
         promoted.push(node);
+        // pre/nowrap recovery already proved a single ordinary Text box. Only
+        // the current capture's exact real Element can certify its baseline.
+        let semantic;
+        try { semantic = JSON.parse(parent?.notes ?? "{}"); } catch {}
+        const element = elements.get(semantic?.semanticId);
+        if (element?.ownerDocument === browserDocument && element.childElementCount === 0 &&
+            parent?.layout === "vertical" && parent.children?.length === 1 &&
+            node.layoutSizingVertical === "hug" && !node.rotation) {
+          const style = browserDocument.defaultView.getComputedStyle(element);
+          if (["pre", "nowrap"].includes(style.whiteSpace) && style.visibility === "visible" &&
+              Number.parseFloat(style.fontSize) === node.fontSize &&
+              Number.isFinite(node.layoutBaselineOffset)) baselineCandidates.add(node);
+        }
         if (node.textOverflow !== "ellipsis") {
           sourceNodes.set(node.id, { style: { textAutoResize: "WIDTH_AND_HEIGHT" } });
           sourceIds.set(node.id, node.id);
@@ -448,6 +462,7 @@ async function enableHtmlTextReflow(documentValue, browserDocument, elements, wa
             sourceIds.set(text.id, text.id);
           }
           promoted.push(text);
+          baselineCandidates.add(text);
         }
       }
     }
@@ -464,6 +479,23 @@ async function enableHtmlTextReflow(documentValue, browserDocument, elements, wa
       try { intent = JSON.parse(text.notes ?? "{}").htmlText; } catch {}
       if (intent && text.textOverflow !== "ellipsis" && text.textMetrics)
         text.width = Math.ceil(Math.max(1, ...text.textMetrics.lineWidths) * 100) / 100;
+    }
+    const measurement = createBrowserTextMeasurer(browserDocument);
+    try {
+      for (const text of baselineCandidates) {
+        try {
+          measurement.configure(text);
+          const logicalY = text.y - text.layoutBaselineOffset;
+          const expectedY = Math.round((logicalY + measurement.lineBoxOffset(text)) * 100) / 100;
+          // Initial capture geometry is authoritative. Refresh is enabled only
+          // when the same browser/font line-box model reproduces that exact y.
+          if (expectedY === text.y) { text.layoutBaselineSource = "html"; continue; }
+        } catch { /* Unsupported fonts/origins keep their captured baseline. */ }
+        warn("html-text-baseline-fixed", text.id,
+          "捕获的文字原点与浏览器行框映射不完全一致；保留初始测量几何，后续字体编辑需核对基线。");
+      }
+    } finally {
+      measurement.close();
     }
   }
 }

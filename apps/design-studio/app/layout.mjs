@@ -771,7 +771,7 @@ function applyAbsoluteConstraints(nodes, container) {
 }
 
 const responsiveTextStates = new WeakMap();
-const nativeTextBaselineStates = new WeakMap();
+const textBaselineStates = new WeakMap();
 
 function textLayoutMeasurer(nodes, supplied) {
   if (supplied !== undefined) return supplied;
@@ -782,7 +782,7 @@ function textLayoutMeasurer(nodes, supplied) {
         (node.textFlow === "wrap" ||
           node.textOverflow === "ellipsis" ||
           axisSizing(node, "horizontal") === "hug" ||
-          node.layoutBaselineSource === "native"),
+          ["native", "html"].includes(node.layoutBaselineSource)),
     )
   )
     return null;
@@ -795,14 +795,14 @@ function textLayoutMeasurer(nodes, supplied) {
 
 // Canonical y is a hanging origin; manual/native line-box geometry stays fixed.
 // Provenance lives outside glyph receipts so Node-only reflow cannot erase it.
-function refreshNativeTextBaselines(nodes, measurement) {
+function refreshTextBaselines(nodes, measurement) {
   if (!measurement?.lineBoxOffset) return false;
   let changed = false;
   for (const node of nodes) {
-    if (node.type !== "text" || node.layoutBaselineSource !== "native" || node.rotation) continue;
+    if (node.type !== "text" || !["native", "html"].includes(node.layoutBaselineSource) || node.rotation) continue;
     const key = JSON.stringify([node.fontFamily, node.fontRef, node.fontSize, node.fontWeight,
       node.fontStyle, node.letterSpacing, node.lineHeight, node.lineHeightUnit]);
-    const cached = nativeTextBaselineStates.get(node);
+    const cached = textBaselineStates.get(node);
     if (cached?.key === key && cached.offset === node.layoutBaselineOffset) continue;
     measurement.configure(node);
     const logicalY = node.y - finite(node.layoutBaselineOffset);
@@ -814,7 +814,7 @@ function refreshNativeTextBaselines(nodes, measurement) {
       node.layoutBaselineOffset = offset;
       changed = true;
     }
-    nativeTextBaselineStates.set(node, { key, offset });
+    textBaselineStates.set(node, { key, offset });
   }
   return changed;
 }
@@ -947,7 +947,7 @@ export function applyAutoLayout(nodes, containerId, { textMeasurer } = {}) {
   changed = applyAbsoluteConstraints(nodes, container) || changed;
   const measurement = textLayoutMeasurer(nodes, textMeasurer);
   try {
-    changed = refreshNativeTextBaselines(nodes, measurement) || changed;
+    changed = refreshTextBaselines(nodes, measurement) || changed;
     changed = applyResponsiveText(nodes, new Set([container.id]), measurement) || changed;
   } finally {
     if (textMeasurer === undefined) measurement?.close?.();
@@ -1008,7 +1008,7 @@ export function applyAutoLayouts(nodes, containerIds, { textMeasurer } = {}) {
   let changed = false;
   const measurement = textLayoutMeasurer(nodes, textMeasurer);
   try {
-    changed = refreshNativeTextBaselines(nodes, measurement) || changed;
+    changed = refreshTextBaselines(nodes, measurement) || changed;
     for (let iteration = 0; containers.length && iteration < 8; iteration += 1) {
       let iterationChanged = false;
       for (const node of [...containers].reverse()) {
