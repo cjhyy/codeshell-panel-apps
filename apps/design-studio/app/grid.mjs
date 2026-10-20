@@ -137,7 +137,7 @@ export function gridPlacements(children, columnCount, container = {}) {
 // paragraph flow) prove this dependency.
 // Text height is its logical line box after the bounded responsive-text pass. Never use an old
 // stretched cell height as intrinsic content, or shrink edits retain the old row.
-export function gridFillHugContentHeight(container, child, children = child?.children, parent) {
+export function gridFillHugContentHeight(container, child, children = child?.children, parent, parentOf) {
   const unconstrained = (node) =>
     ["minWidth", "maxWidth", "minHeight", "maxHeight"].every((key) => node[key] === undefined);
   const noStroke = (node) =>
@@ -158,7 +158,7 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
     Number.isFinite(flowGap(node)) && flowGap(node) >= 0 && flowGap(node) <= 2000;
   // A FILL row has a resolved width only in this proven, non-circular parent
   // context. Persisted geometry alone is not evidence that a HUG owner resolves it.
-  const resolvedFillWidth =
+  const directResolvedFillWidth =
     container?.layoutSizingHorizontal === "fill" &&
     parent?.layout === "vertical" &&
     parent.layoutSizingHorizontal === "fixed" &&
@@ -168,6 +168,35 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
     (!parent.layoutWrap || parent.layoutWrap === "none") &&
     container.layoutPositioning !== "absolute" &&
     !container.layoutMarginBefore && unconstrained(container);
+  // A capture-local parent lookup can prove a longer real Fill chain. Never
+  // certify a Fill owner's width from its persisted measured extent alone.
+  const resolvedFillWidth = (() => {
+    if (directResolvedFillWidth && (!parentOf || parentOf(container) === parent)) return true;
+    if (container?.layoutSizingHorizontal !== "fill" || typeof parentOf !== "function")
+      return false;
+    const seen = new Set([container]);
+    let item = container, owner = parent;
+    for (let depth = 0; depth < 32; depth += 1) {
+      if (!owner || typeof owner !== "object" || seen.has(owner) ||
+          parentOf(item) !== owner || owner.type !== "frame" || owner.layout !== "vertical" ||
+          [item, owner].some((node) => node.visible === false || node.rotation ||
+            node.layoutPositioning === "absolute" || node.layoutReverse || node.layoutMarginBefore ||
+            (node.layoutWrap && node.layoutWrap !== "none") || !unconstrained(node)) ||
+          !Number.isFinite(owner.width) || owner.width < 1 || owner.width > 20000 ||
+          !boundedPadding(owner) || !boundedGap(owner) || !noStroke(owner) ||
+          ![undefined, "start", "stretch"].includes(owner.alignItems) ||
+          ![undefined, "auto", "start", "stretch"].includes(item.layoutAlignSelf))
+        return false;
+      seen.add(owner);
+      const ancestor = parentOf(owner);
+      if (owner.layoutSizingHorizontal === "fixed" ||
+          (owner.layoutSizingHorizontal === undefined && ancestor === null)) return true;
+      if (owner.layoutSizingHorizontal !== "fill") return false;
+      item = owner;
+      owner = ancestor;
+    }
+    return false;
+  })();
   // Native fc6bb994 / 7937bd33 reserve exactly this INSIDE bottom rule when
   // included. Canonical padding already contains that physical inset once.
   const includedBottomRule =
@@ -358,7 +387,7 @@ export function effectiveGridRowTracks(source, rowCount) {
     ? Array.from({ length: rowCount }, (_, index) => source.gridRowSizes[index] ?? { type: "hug" })
     : undefined;
 }
-export function nativeGridPlan(source, parent) {
+export function nativeGridPlan(source, parent, parentOf) {
   validateGridFields(source, true);
   const columns = source.gridColumns ?? 1;
   const placed = gridPlacements(source.children ?? [], columns, source);
@@ -391,7 +420,7 @@ export function nativeGridPlan(source, parent) {
       if (
         (child[`layoutSizing${axis}`] === "fill" || stretch) &&
         tracks.slice(start, start + span).some((track) => track.type === "hug") &&
-        !(axis === "Vertical" && gridFillHugContentHeight(source, child, child.children, parent) !== null)
+        !(axis === "Vertical" && gridFillHugContentHeight(source, child, child.children, parent, parentOf) !== null)
       )
         throw new Error(
           `Grid ${axis}: FILL 子项与 HUG track 的内在尺寸循环尚不能保留；请改为固定 track 或 HUG/固定子项`,
@@ -411,8 +440,8 @@ export function nativeGridPlan(source, parent) {
     throw new Error("Grid 反向/换行/track 分布不能对应 Figma；请使用 start 分布");
   return { columns, rows, columnSizes, rowSizes, ...placed };
 }
-export function configureNativeGrid(node, source, parent) {
-  const plan = nativeGridPlan(source, parent);
+export function configureNativeGrid(node, source, parent, parentOf) {
+  const plan = nativeGridPlan(source, parent, parentOf);
   for (const key of [
     "gridColumnCount",
     "gridRowCount",
@@ -486,10 +515,10 @@ export function positionNativeGridChild(node, source, parentSource, plan) {
       { start: "MIN", center: "CENTER", end: "MAX", stretch: "MIN", auto: "AUTO" }[self] ?? "MIN";
   }
 }
-export function finishNativeGrid(node, source, parent) {
+export function finishNativeGrid(node, source, parent, parentOf) {
   // Appending an eventual absolute overlay can temporarily add a grid row.
   // Once every child has its final positioning, remove those empty temporary rows.
-  node.gridRowCount = nativeGridPlan(source, parent).rows;
+  node.gridRowCount = nativeGridPlan(source, parent, parentOf).rows;
   node.gridItemsPositioning =
     source.gridItemsPositioning === "row-auto-flow" ? "ROW_AUTO_FLOW" : "MANUAL";
   node.gridAutoTracks = source.gridAutoTracks === "rows" ? "ROWS" : "NONE";

@@ -277,7 +277,7 @@ function intrinsicGridRows(placements, rowCount, rowGap) {
   return rows;
 }
 
-function gridContentSize(nodes, container, children) {
+function gridContentSize(nodes, container, children, parentOf) {
   const columns = Math.max(1, Math.round(finite(container.gridColumns, 1)));
   const columnGap = axisGap(container, "horizontal");
   const rowGap = axisGap(container, "vertical");
@@ -285,7 +285,7 @@ function gridContentSize(nodes, container, children) {
   const verticalPadding = axisPadding(container, "vertical");
   const { placements, rowCount } = gridPlacements(children, columns, container);
   const widthOwner = container.layoutSizingHorizontal === "fill"
-    ? nodes.find((node) => node.id === container.parentId) : undefined;
+    ? parentOf?.(container) : undefined;
   const intrinsicColumn = placements.reduce(
     (largest, placement) =>
       Math.max(
@@ -308,7 +308,7 @@ function gridContentSize(nodes, container, children) {
         "vertical",
         rowGap,
         undefined,
-        (child) => gridFillHugContentHeight(container, child, (node) => childNodes(nodes, node.id), widthOwner),
+        (child) => gridFillHugContentHeight(container, child, (node) => childNodes(nodes, node.id), widthOwner, parentOf),
       )
     : intrinsicGridRows(placements, explicitRows, rowGap);
   const columnWidths = container.gridColumnSizes
@@ -328,11 +328,11 @@ function gridContentSize(nodes, container, children) {
   };
 }
 
-function applyHugSize(nodes, container) {
+function applyHugSize(nodes, container, parentOf) {
   const children = layoutChildren(nodes, container);
   const content =
     container.layout === "grid"
-      ? gridContentSize(nodes, container, children)
+      ? gridContentSize(nodes, container, children, parentOf)
       : (() => {
           const measured = flexContentSize(container, children);
           return container.layout === "horizontal"
@@ -536,7 +536,7 @@ function applyFlexLayout(nodes, container, children) {
   return changed;
 }
 
-function applyGridLayout(nodes, container, children) {
+function applyGridLayout(nodes, container, children, parentOf) {
   const columns = Math.max(1, Math.round(finite(container.gridColumns, 1)));
   const columnGap = axisGap(container, "horizontal");
   const rowGap = axisGap(container, "vertical");
@@ -553,7 +553,7 @@ function applyGridLayout(nodes, container, children) {
   const columnWidth = Math.max(1, (innerWidth - columnGap * Math.max(0, columns - 1)) / columns);
   const { placements, rowCount } = gridPlacements(children, columns, container);
   const widthOwner = container.layoutSizingHorizontal === "fill"
-    ? nodes.find((node) => node.id === container.parentId) : undefined;
+    ? parentOf?.(container) : undefined;
   const columnWidths = container.gridColumnSizes
     ? gridTrackSizes(
         container.gridColumnSizes,
@@ -576,7 +576,7 @@ function applyGridLayout(nodes, container, children) {
         "vertical",
         rowGap,
         innerHeight,
-        (child) => gridFillHugContentHeight(container, child, (node) => childNodes(nodes, node.id), widthOwner),
+        (child) => gridFillHugContentHeight(container, child, (node) => childNodes(nodes, node.id), widthOwner, parentOf),
       )
     : intrinsicGridRows(placements, explicitRows, rowGap);
   const rowTrack = distributedTrack(
@@ -933,15 +933,17 @@ function applyContainerSizeLimits(nodes, container) {
 
 export function applyAutoLayout(nodes, containerId, { textMeasurer } = {}) {
   if (!Array.isArray(nodes) || typeof containerId !== "string") return false;
-  const container = nodes.find((node) => node.id === containerId);
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const parentOf = (node) => node.parentId ? byId.get(node.parentId) : null;
+  const container = byId.get(containerId);
   if (!isAutoLayoutContainer(container)) return false;
   const children = layoutChildren(nodes, container);
   let changed = applyContainerSizeLimits(nodes, container);
-  changed = applyHugSize(nodes, container) || changed;
+  changed = applyHugSize(nodes, container, parentOf) || changed;
   if (children.length > 0) {
     changed =
       (container.layout === "grid"
-        ? applyGridLayout(nodes, container, children)
+        ? applyGridLayout(nodes, container, children, parentOf)
         : applyFlexLayout(nodes, container, children)) || changed;
   }
   changed = applyAbsoluteConstraints(nodes, container) || changed;
@@ -979,6 +981,7 @@ export function applyAutoLayouts(nodes, containerIds, { textMeasurer } = {}) {
   if (!Array.isArray(nodes) || !containerIds) return false;
   const requested = new Set(containerIds);
   const byId = new Map(nodes.map((node) => [node.id, node]));
+  const parentOf = (node) => node.parentId ? byId.get(node.parentId) : null;
   for (const id of [...requested]) {
     let node = byId.get(id);
     const seen = new Set();
@@ -987,7 +990,7 @@ export function applyAutoLayouts(nodes, containerIds, { textMeasurer } = {}) {
       const parent = byId.get(node.parentId);
       if (!isAutoLayoutFlowChild(node, parent)) break;
       const intrinsicGridDependency = parent.layout === "grid" && gridFillHugContentHeight(
-        parent, node, (descendant) => childNodes(nodes, descendant.id), byId.get(parent.parentId),
+        parent, node, (descendant) => childNodes(nodes, descendant.id), byId.get(parent.parentId), parentOf,
       ) !== null;
       if (axisSizing(node, "horizontal") !== "hug" &&
           axisSizing(node, "vertical") !== "hug" && !intrinsicGridDependency) break;
@@ -1013,14 +1016,14 @@ export function applyAutoLayouts(nodes, containerIds, { textMeasurer } = {}) {
       let iterationChanged = false;
       for (const node of [...containers].reverse()) {
         iterationChanged = applyContainerSizeLimits(nodes, node) || iterationChanged;
-        iterationChanged = applyHugSize(nodes, node) || iterationChanged;
+        iterationChanged = applyHugSize(nodes, node, parentOf) || iterationChanged;
       }
       for (const node of containers) {
         const children = layoutChildren(nodes, node);
         if (children.length > 0) {
           iterationChanged =
             (node.layout === "grid"
-              ? applyGridLayout(nodes, node, children)
+              ? applyGridLayout(nodes, node, children, parentOf)
               : applyFlexLayout(nodes, node, children)) || iterationChanged;
         }
         iterationChanged = applyAbsoluteConstraints(nodes, node) || iterationChanged;

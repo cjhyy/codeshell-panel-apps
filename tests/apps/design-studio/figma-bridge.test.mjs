@@ -1,5 +1,6 @@
 import { normalizeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
 import { nativeGridSource } from "../../fixtures/design-studio-native-grid/source.mjs";
+import { fillContextSource } from "../../fixtures/design-studio-native-grid-intrinsic-vflow/fill-context.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
@@ -2231,5 +2232,32 @@ test("actual multi-paragraph Grid preflight preserves real nested Auto Layout an
     await rejected.send({ type: "import-transfer", content: JSON.stringify(invalid) });
     assert.equal(rejected.messages.at(-1).type, "error");
     assert.equal(rejected.pages.length, 1, "all nested dependency validation completes before creating a native page");
+  }
+});
+
+test("native Grid creation resolves the complete current Fill-width chain before creating any page", async () => {
+  const imported = importFigmaJson(fillContextSource()), transfer = createFigmaTransfer(imported.document);
+  assert.deepEqual(imported.warnings, []);
+  assert.deepEqual(transfer.warnings, []);
+  const runtime = pluginHarness({ nativeGrid: true });
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported", JSON.stringify(runtime.messages.at(-1)));
+  const root = runtime.pages[1].children[0], body = root.children[0], owner = body.children[0];
+  assert.deepEqual([root.layoutMode, root.layoutSizingHorizontal], ["VERTICAL", "FIXED"]);
+  for (const node of [body, owner]) assert.deepEqual([node.layoutMode, node.layoutSizingHorizontal, node.layoutSizingVertical], ["VERTICAL", "FILL", "HUG"]);
+  assert.equal(owner.children.length, 4);
+  assert(owner.children.every((node) => node.layoutMode === "GRID" && node.layoutSizingHorizontal === "FILL" && node.layoutSizingVertical === "HUG"));
+  for (const change of [
+    (root) => { root.layoutSizingHorizontal = "fill"; },
+    (root) => { root.children[0].layoutSizingHorizontal = "hug"; },
+    (root) => { root.children[0].layout = "none"; },
+    (root) => { root.children[0].minWidth = 1; },
+  ]) {
+    const invalid = clone(transfer);
+    change(invalid.pages[0].children[0]);
+    const rejected = pluginHarness({ nativeGrid: true });
+    await rejected.send({ type: "import-transfer", content: JSON.stringify(invalid) });
+    assert.equal(rejected.messages.at(-1).type, "error");
+    assert.equal(rejected.pages.length, 1, "unresolved ancestry fails atomically during production preflight");
   }
 });
