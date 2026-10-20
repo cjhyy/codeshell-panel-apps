@@ -281,3 +281,48 @@ relay `real-figma-html-v3-1792516785957-d3faaaca` 已停止，临时权限移除
 
 第四轮工作仍在隔离分支，未发布/未安装，目标保持 active。截止时间仍为
 2026-10-22 00:31 Asia/Singapore，不能提前标记完成。
+
+### 原生 Grid 集成及真实 API 新发现（约 01:35）
+
+`17850af`（原提交 `ea176eb`）已集成：可选有界 Grid 轨道/行数/流向/锚点/轴对齐，
+共享布局与 CSS 导出、原生 Figma GRID 创建、官方 JSON 补充真实 API 字段、公共编辑工具。
+独立审查实测并修复跨度未校验导致的循环、HUG/FLEX 跨列、重叠 HUG 跨列的顺序依赖、
+小于 1 的 fr 总和、自动行增删。139 项相关测试、7 项生产 UI、6 项 CLI 和构建/类型/校验通过。
+明确诊断 FILL 与 HUG 轨道固有尺寸循环、带空隙的手动自动行、来源绑定 Grid 属性补丁等限制。
+`f0ddad6` 补齐集成后独立 HTML 插件的生成依赖；13 项插件测试通过。主任务环境全仓
+typecheck、validate、build:check 均通过，之前代理的无关 Video Studio 哈希差异未复现。
+
+真实 API fixture 从 `tests/fixtures/design-studio-native-grid/source.mjs` 派生，先执行规范重排，
+再通过生产插件导入；这两例不是网页捕获，不能与 HTML 生产像素用例混淆。
+
+- 手动：run `real-figma-html-v3-1792517353573-53908e65`，页面 `62:50`。
+- 自动行流：run `real-figma-html-v3-1792517389124-3571b180`，页面 `62:56`。
+- 两例均有原生 Grid、3 列 FIXED100/FLEX1/FLEX2、固定与 Hug 行、跨两列、独立轴对齐，
+  官方字段匹配；4 个容器/形状几何最大误差 0；第 5 个是原生 Hug 文字，内容/结构保留，
+  未把其字体测量差纳入几何通过结论。官方 JSON 导回仍为 grid，无警告。
+- 隐藏 flow：run `real-figma-html-v3-1792517416323-ec153941`，真实 Figma 跳过首个隐藏
+  span2 项，实际只需 1 行。旧计划仍计 2 行，原始验收失败；导回还因隐藏项官方锚点
+  `-1/-1` 被误判而丢失 Grid。真实 JSON 已发给代理修复。隐藏层保留原始 inactive sizing
+  的现代/旧字段差异，不能推断“再显示时 FILL 恢复”等未经实机观察的行为。
+- 隐藏样例原生 1× PNG 440×128 与规范 SVG 图像 **56,320 像素全部相同**，仍同时记结构
+  往返失败；这再次证明像素通过不等于布局语义通过。
+
+证据都在 `evidence/real-figma/native-grid/`，有三个输入、原始官方 JSON/报告、清理回执。
+`roundtrip-pre-hidden-fix.json` 保留回导失败。三个 relay 均已停止，scratch 三文件再次
+恢复原始备份，插件 UI 已关闭；后续不要误以为还有活跃 relay。
+
+真实渐变也已创建任务新页 `CodeShell HTML Acceptance 44d34d69 · CodeShell`，
+run `real-figma-html-v3-1792517049937-44d34d69`。3 个原生 GRADIENT_LINEAR 层与几何保留，
+但原生 PNG 有 **89,119 / 153,600** 像素不同，最大通道差 2，平均 RGBA 误差 0.2718。
+这是严格失败；不能把此前 Chromium SVG 的零差异推广为真实 Figma 渐变也全零。
+证据 `evidence/real-figma/gradient-native/native-report.json`、原始 JSON/HTML、PNG/差异图。
+relay 已停、临时权限移除，未修改原有用户页面。
+
+真实 HTML 等宽 Grid 新门禁：`evidence/html-grid-native/source.html`，640 px / 400 px，
+初始/同宽 0，缩窄 **37,760** 像素错误；没有警告。固定版本上游已把原 Grid 改写为
+vertical + `grid-row` horizontal 框，行框和 auto 子项的宽度被固定。下一项需在维护边界
+保留 CSS 轨道与 Fill 意图，再做网页 → 原生 Grid → 官方 JSON → 工作台的完整验收。
+
+仍在进行：原生隐藏 Grid 修复；普通块流（代理正在补 text-metrics 末尾空格换行修复）；
+GPU 的有界物理 1× 设备采样变体。GPU 试验把字形差异降到 180 个/max1，其余 96 个为
+已知背景边缘；所有不适用变换仍需使用保留的 2×/高缩放主缓存，尚待代理提交。
