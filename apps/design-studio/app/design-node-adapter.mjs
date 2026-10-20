@@ -11,6 +11,7 @@ import { normalizeDesignDocument, MAX_DESIGN_NODES_PER_PAGE } from "./document.m
 import { createDesignResourcePersistencePlan, MAX_DESIGN_RESOURCES } from "./resource-store.mjs";
 import { normalizeFigmaAsset } from "./figma-assets.mjs";
 import { planHtmlBlockFlow, htmlBlockHorizontalBleed } from "./html-block-flow.mjs";
+import { applyHtmlBlockInsets } from "./html-block-insets.mjs";
 import { planHtmlViewportFlow } from "./html-viewport-flow.mjs";
 import { cssLinearBackgroundPaints } from "./css-linear-gradient.mjs";
 import { representativeDesignFill } from "./paint.mjs";
@@ -122,6 +123,7 @@ export async function designNodeToV3(tree, options = {}) {
   const blockFlowPlans = new WeakMap();
   const floatPlans = new WeakMap();
   const provenFloatSources = new WeakSet();
+  const blockInsetCandidates = [];
   const blockUnwrappedPaths = new WeakMap();
   const localResources =
     options.resources instanceof Map
@@ -326,23 +328,24 @@ export async function designNodeToV3(tree, options = {}) {
     }
     return serialized;
   };
+  const nodeSurface = (id, type, name, geometry) => ({
+    id,
+    type,
+    name: clean(name),
+    ...geometry,
+    fill: "transparent",
+    stroke: "transparent",
+    strokeWidth: 0,
+    cornerRadius: 0,
+    rotation: 0,
+    opacity: 1,
+    visible: true,
+    locked: false,
+  });
   const base = (id, type, name, geometry) => {
     if (++importedNodes > MAX_DESIGN_NODES_PER_PAGE)
       throw new Error("HTML 转换后的图层超过 10,000 个");
-    return {
-      id,
-      type,
-      name: clean(name),
-      ...geometry,
-      fill: "transparent",
-      stroke: "transparent",
-      strokeWidth: 0,
-      cornerRadius: 0,
-      rotation: 0,
-      opacity: 1,
-      visible: true,
-      locked: false,
-    };
+    return nodeSurface(id, type, name, geometry);
   };
   const styleSurface = (source, node) => {
     const layers = source.background?.layers ?? [];
@@ -1207,10 +1210,13 @@ export async function designNodeToV3(tree, options = {}) {
         }
         sizing(child, converted, node);
         const itemIndex = block?.items.findIndex((item) => item.source === child) ?? -1;
+        if (itemIndex >= 0) block.items[itemIndex].original = converted;
         node.children.push(itemIndex >= 0
           ? wrapBlockFlow(block.items[itemIndex], block.items[itemIndex + 1], converted, node)
           : wrapCrossAutoMargins(child, converted, node));
       }
+      if (block?.items.some((item) => item.bleed)) blockInsetCandidates.push({ source, node, block,
+        ancestorTransformed: ancestors.some((ancestor) => ancestor.rotation) });
     }
     if (source.nodeType === "container") recoverHtmlTextOverflow(source, node, warn);
     return node;
@@ -1303,6 +1309,8 @@ export async function designNodeToV3(tree, options = {}) {
     }
     roots = [wrapper];
   }
+  const rebasedNodeCount = applyHtmlBlockInsets(roots, blockInsetCandidates, nodeSurface, warn, MAX_DESIGN_NODES_PER_PAGE);
+  if (rebasedNodeCount !== null) importedNodes = rebasedNodeCount;
   const rootColor = tree.background?.layers?.find((layer) => layer.type === "color")?.color;
   const background =
     options.background ??

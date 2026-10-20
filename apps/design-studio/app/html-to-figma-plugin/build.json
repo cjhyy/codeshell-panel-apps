@@ -15,6 +15,7 @@
     "apps/design-studio/app/geometry.mjs",
     "apps/design-studio/app/grid.mjs",
     "apps/design-studio/app/html-block-flow.mjs",
+    "apps/design-studio/app/html-block-insets.mjs",
     "apps/design-studio/app/html-capture.mjs",
     "apps/design-studio/app/html-float-columns.mjs",
     "apps/design-studio/app/html-grid.mjs",

@@ -13,6 +13,9 @@ export const negativeMarginFixtures = [
     { id: "wrapped-row", html: html.replace('<div></div><div></div>', '<div></div><div></div><div></div>'), css: css + '#row{flex-wrap:wrap}#row>div{flex:none;width:180px;height:40px}' },
     { id: "clipped", html, css: css.replace('padding:20px', 'padding:5px') + '#fixture{overflow:hidden}' },
     { id: "transparent-border", html, css: css + '#fixture{border:2px solid transparent}' },
+    { id: "inside-border", html, css: css + '#fixture{border:4px solid #111827}' },
+    { id: "different-child-bleeds", html: '<main id="fixture"><section id="row"><div></div><div></div></section><section id="other"><div></div><div></div></section><div id="after"></div></main>',
+      css: css + '#fixture{border:4px solid #111827}#row{margin-left:-12px;margin-right:-4px}#other{display:flex;gap:10px;margin:12px -12px 8px -4px}#other>div{flex:1;height:30px;background:#16a34a}#after{margin-top:4px}' },
     { id: "editable-copy", html: '<main id="fixture"><section id="row"><p id="copy">Editable ordinary text wraps across the negative horizontal margins when the outer viewport becomes narrower.</p></section><div id="after"></div></main>', css: css + '#row{display:block;padding:10px}p{margin:0;font:20px/24px Arial}' },
   ];
 
