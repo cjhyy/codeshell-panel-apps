@@ -5248,6 +5248,48 @@ var html2figmaCore = (() => {
     }
   }
 
+  // third-party/html2figma/integration/grid.ts
+  function renderPreservingGrid(tree, options) {
+    const grids = /* @__PURE__ */ new Map();
+    const prune = (node) => {
+      if (node.nodeType === "element" && ["grid", "inline-grid"].includes(node.computedStyle?.display ?? "") && node.metadata?.semantic) {
+        grids.set(node.metadata.semantic, node);
+        return { ...node, children: [] };
+      }
+      return { ...node, children: node.children.map(prune) };
+    };
+    const result = renderToDesignDSL(prune(tree), options);
+    const restore = (node) => {
+      if (node.nodeType !== "container") return;
+      const original = node.semantic && grids.get(node.semantic);
+      if (original) {
+        const rect = original.boundingRect;
+        const local = buildContainerNode(original, rect?.left ?? 0, rect?.top ?? 0, false);
+        node.children = original.children.flatMap((child) => {
+          const converted = child.nodeType === "text" ? buildTextNode(
+            child,
+            original,
+            child.boundingRect?.left ?? 0,
+            child.boundingRect?.top ?? 0,
+            options.includeRawStyles
+          ) : renderPreservingGrid(child, options);
+          if (!converted) return [];
+          if (converted.nodeType === "text" && !converted.content) return [];
+          converted.bounds.x += (child.boundingRect?.left ?? 0) - (rect?.left ?? 0) - local.bounds.x;
+          converted.bounds.y += (child.boundingRect?.top ?? 0) - (rect?.top ?? 0) - local.bounds.y;
+          return [converted];
+        });
+        const flow = node.children.filter((child) => !["absolute", "fixed"].includes(child.positioning.mode)).sort((left, right) => (left.flexItem?.order ?? 0) - (right.flexItem?.order ?? 0));
+        let index = 0;
+        node.children = node.children.map(
+          (child) => ["absolute", "fixed"].includes(child.positioning.mode) ? child : flow[index++]
+        );
+      } else for (const child of node.children) restore(child);
+    };
+    if (result) restore(result);
+    return result;
+  }
+
   // third-party/html2figma/integration/svg.ts
   var SVG_NS = "http://www.w3.org/2000/svg";
   var XLINK_NS = "http://www.w3.org/1999/xlink";
@@ -5410,7 +5452,33 @@ var html2figmaCore = (() => {
               "margin-top",
               "margin-right",
               "margin-bottom",
-              "margin-left"
+              "margin-left",
+              "grid-template-columns",
+              "grid-template-rows",
+              "grid-template-areas",
+              "grid-auto-columns",
+              "grid-auto-rows",
+              "grid-auto-flow",
+              "grid-column-start",
+              "grid-column-end",
+              "grid-row-start",
+              "grid-row-end",
+              "justify-items",
+              "align-items",
+              "justify-self",
+              "align-self",
+              "justify-content",
+              "align-content",
+              "min-width",
+              "min-height",
+              "writing-mode",
+              "direction",
+              "order",
+              "z-index",
+              "aspect-ratio",
+              "row-gap",
+              "column-gap",
+              "box-sizing"
             ];
             const record = {};
             for (const property of properties) {
@@ -5421,6 +5489,8 @@ var html2figmaCore = (() => {
           }
         } catch {
         }
+        if (["grid", "inline-grid"].includes(node.computedStyle?.display ?? "") && !values.get(node.metadata.semantic)?.["grid-template-columns"])
+          values.set(node.metadata.semantic, { "--codeshell-grid-intent": "unavailable" });
       }
       for (const child of node.children) visit(child);
     };
@@ -5433,7 +5503,10 @@ var html2figmaCore = (() => {
     const values = captureLayoutValues(tree);
     const svgResources = /* @__PURE__ */ new Map();
     const backgrounds = /* @__PURE__ */ new Map();
+    const gridSources = /* @__PURE__ */ new Set();
     const captureSvg = (node) => {
+      if (node.metadata?.semantic && ["grid", "inline-grid"].includes(node.computedStyle?.display ?? ""))
+        gridSources.add(node.metadata.semantic);
       if (node.tag === "svg" && node.metadata?.semantic && node.domNode instanceof realm.Element)
         svgResources.set(node.metadata.semantic, captureStandaloneSvg(node.domNode));
       if (node.nodeType === "element" && node.metadata?.semantic && node.computedStyle?.getPropertyValue("background-image").includes("gradient(")) {
@@ -5458,10 +5531,12 @@ var html2figmaCore = (() => {
       for (const child of node.children) captureSvg(child);
     };
     captureSvg(tree);
-    const result = renderToDesignDSL(tree, options);
+    const result = options.preserveGrid ? renderPreservingGrid(tree, options) : renderToDesignDSL(tree, options);
     const attach = (node) => {
       const cssLayout = node.nodeType !== "text" && node.semantic && values.get(node.semantic);
       if (cssLayout && Object.keys(cssLayout).length > 0) node.cssLayout = cssLayout;
+      if (!options.preserveGrid && node.nodeType === "container" && node.semantic && gridSources.has(node.semantic))
+        node.cssLayout = { ...node.cssLayout, "--codeshell-grid-legacy": "synthetic" };
       if (node.nodeType !== "text" && node.semantic && backgrounds.has(node.semantic))
         node.cssBackground = backgrounds.get(node.semantic);
       if (node.nodeType === "svg" && node.semantic && svgResources.has(node.semantic))
@@ -5477,7 +5552,7 @@ var html2figmaCore = (() => {
 return html2figmaCore;
 }
 
-export const HTML2FIGMA_PROVENANCE = Object.freeze({"engine":"html2figma","upstreamCommit":"ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c","sourceTreeSha256":"d633595f846eb0b645988568914f269a0d19743d09348ad02a0275f0eb6d48f2","integrationVersion":1});
+export const HTML2FIGMA_PROVENANCE = Object.freeze({"engine":"html2figma","upstreamCommit":"ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c","sourceTreeSha256":"d633595f846eb0b645988568914f269a0d19743d09348ad02a0275f0eb6d48f2","integrationVersion":2,"gridCaptureDefault":"original-items","legacyGridOption":"preserveGrid:false"});
 
 export function convertToDesignDSL(root, options = {}) {
   const realm = root?.ownerDocument?.defaultView;
@@ -5488,6 +5563,8 @@ export function convertToDesignDSL(root, options = {}) {
   const maxDepth = options.maxDepth ?? 100;
   if (!Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 100)
     throw new RangeError("html2figma maxDepth must be an integer from 0 to 100");
+  if (options.preserveGrid !== undefined && typeof options.preserveGrid !== "boolean")
+    throw new TypeError("html2figma preserveGrid must be a boolean");
   const runtime = createRuntime(realm);
-  return runtime.convert(root, { includeRawStyles: options.includeRawStyles !== false, maxDepth });
+  return runtime.convert(root, { includeRawStyles: options.includeRawStyles !== false, maxDepth, preserveGrid: options.preserveGrid !== false });
 }

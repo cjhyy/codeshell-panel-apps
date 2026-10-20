@@ -1,10 +1,14 @@
 import { traverseDOM } from "../upstream/packages/browser/traverser/core";
+import { renderPreservingGrid } from "./grid";
 import { renderToDesignDSL } from "../upstream/packages/browser/converter/convert";
 import type { DesignNode } from "../upstream/packages/shared/design-node";
 import type { RenderNode } from "../upstream/packages/browser/traverser/types";
 import { captureStandaloneSvg } from "./svg";
 
-type CapturedNode = DesignNode & { cssLayout?: Record<string, string>; cssBackground?: Record<string, string> };
+type CapturedNode = DesignNode & {
+  cssLayout?: Record<string, string>;
+  cssBackground?: Record<string, string>;
+};
 type TypedStyleElement = Element & {
   computedStyleMap?(): { get(property: string): { toString(): string } | undefined };
 };
@@ -27,6 +31,32 @@ function captureLayoutValues(tree: RenderNode) {
             "margin-right",
             "margin-bottom",
             "margin-left",
+            "grid-template-columns",
+            "grid-template-rows",
+            "grid-template-areas",
+            "grid-auto-columns",
+            "grid-auto-rows",
+            "grid-auto-flow",
+            "grid-column-start",
+            "grid-column-end",
+            "grid-row-start",
+            "grid-row-end",
+            "justify-items",
+            "align-items",
+            "justify-self",
+            "align-self",
+            "justify-content",
+            "align-content",
+            "min-width",
+            "min-height",
+            "writing-mode",
+            "direction",
+            "order",
+            "z-index",
+            "aspect-ratio",
+            "row-gap",
+            "column-gap",
+            "box-sizing",
           ];
           const record: Record<string, string> = {};
           for (const property of properties) {
@@ -38,6 +68,11 @@ function captureLayoutValues(tree: RenderNode) {
       } catch {
         // Older browser engines still retain the converter's measured sizes.
       }
+      if (
+        ["grid", "inline-grid"].includes(node.computedStyle?.display ?? "") &&
+        !values.get(node.metadata.semantic)?.["grid-template-columns"]
+      )
+        values.set(node.metadata.semantic, { "--codeshell-grid-intent": "unavailable" });
     }
     for (const child of node.children) visit(child);
   };
@@ -45,13 +80,22 @@ function captureLayoutValues(tree: RenderNode) {
   return values;
 }
 
-export function convert(root: Element, options: { includeRawStyles: boolean; maxDepth: number }) {
+export function convert(
+  root: Element,
+  options: { includeRawStyles: boolean; maxDepth: number; preserveGrid: boolean },
+) {
   const tree = traverseDOM(root, { maxDepth: options.maxDepth });
   if (!tree) return null;
   const values = captureLayoutValues(tree);
   const svgResources = new Map<object, string>();
   const backgrounds = new Map<object, Record<string, string>>();
+  const gridSources = new Set<object>();
   const captureSvg = (node: RenderNode) => {
+    if (
+      node.metadata?.semantic &&
+      ["grid", "inline-grid"].includes(node.computedStyle?.display ?? "")
+    )
+      gridSources.add(node.metadata.semantic);
     if (node.tag === "svg" && node.metadata?.semantic && node.domNode instanceof Element)
       svgResources.set(node.metadata.semantic, captureStandaloneSvg(node.domNode));
     // The immutable upstream gradient parser discards px stop units and cannot
@@ -69,12 +113,21 @@ export function convert(root: Element, options: { includeRawStyles: boolean; max
     for (const child of node.children) captureSvg(child);
   };
   captureSvg(tree);
-  const result = renderToDesignDSL(tree, options);
+  const result = options.preserveGrid
+    ? renderPreservingGrid(tree, options)
+    : renderToDesignDSL(tree, options);
   const attach = (node: CapturedNode) => {
     // Anonymous text inherits its parent's semantic metadata and CSS styles;
     // applying the parent's box dimensions to that text would be incorrect.
     const cssLayout = node.nodeType !== "text" && node.semantic && values.get(node.semantic);
     if (cssLayout && Object.keys(cssLayout).length > 0) node.cssLayout = cssLayout;
+    if (
+      !options.preserveGrid &&
+      node.nodeType === "container" &&
+      node.semantic &&
+      gridSources.has(node.semantic)
+    )
+      node.cssLayout = { ...node.cssLayout, "--codeshell-grid-legacy": "synthetic" };
     if (node.nodeType !== "text" && node.semantic && backgrounds.has(node.semantic))
       node.cssBackground = backgrounds.get(node.semantic)!;
     if (node.nodeType === "svg" && node.semantic && svgResources.has(node.semantic))

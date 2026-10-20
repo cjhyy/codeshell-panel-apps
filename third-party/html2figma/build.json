@@ -2,18 +2,21 @@
   "engine": "html2figma",
   "upstreamCommit": "ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c",
   "sourceTreeSha256": "d633595f846eb0b645988568914f269a0d19743d09348ad02a0275f0eb6d48f2",
-  "integrationVersion": 1,
+  "integrationVersion": 2,
+  "gridCaptureDefault": "original-items",
+  "legacyGridOption": "preserveGrid:false",
   "esbuildVersion": "0.28.2",
   "output": "apps/design-studio/app/vendor/html2figma-browser.mjs",
-  "bytes": 203112,
-  "sha256": "9e1c8847409354f35b6dbb9c2b53aeb572b94c172bf2436b388cdd9a4efb1857",
+  "bytes": 206948,
+  "sha256": "298dcfb24e5626a600f623ca16a76cd292f2bc90a37c46f67d1d2fcc91f05b92",
   "notice": {
     "output": "apps/design-studio/app/vendor/html2figma-NOTICE.md",
-    "bytes": 4184,
-    "sha256": "1a703972b4a424312df10556b187935f057c6c19987d2b6d0126717058811b48"
+    "bytes": 6268,
+    "sha256": "1a3093e138ee94902f51d19f974a66ff198390d8c78fb684d77f1e633037f058"
   },
   "runtimeInputs": [
     "third-party/html2figma/integration/entry.ts",
+    "third-party/html2figma/integration/grid.ts",
     "third-party/html2figma/integration/shared.ts",
     "third-party/html2figma/integration/svg.ts",
     "third-party/html2figma/upstream/packages/browser/converter/convert.ts",

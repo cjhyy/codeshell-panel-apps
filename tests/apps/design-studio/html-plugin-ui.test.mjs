@@ -115,6 +115,31 @@ test("standalone HTML plugin uses retained CSS for native 100px gradients and la
   assert.equal(f.harness.page.selection[0].fills[0].type, "SOLID");
 });
 
+test("standalone Grid capture keeps its compatible native Flex-row hierarchy and reports lost Grid semantics", async (t) => {
+  const f = await fixture(t);
+  await f.frame.locator("#selector").fill("#fixture");
+  await f.frame.locator("#source").fill(`<!doctype html><style>*{box-sizing:border-box}body{margin:0}#fixture{display:grid;width:640px;height:240px;padding:20px;gap:12px;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:80px 80px}.tile{height:80px;background:blue}</style><main id="fixture">${'<div class="tile"></div>'.repeat(6)}</main>`);
+  await f.frame.locator("#preview").click();
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(), /Grid.*未保留/u);
+  await f.frame.locator("#create").click();
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(), /已在 Figma 创建/u);
+  assert.match(await f.frame.locator("#status").textContent(), /Grid.*未保留/u);
+  const imported = f.harness.page.selection[0];
+  assert.equal(imported.layoutMode, "VERTICAL");
+  assert.equal(imported.children.length, 2);
+  for (const row of imported.children) {
+    assert.equal(row.layoutMode, "HORIZONTAL");
+    assert.equal(row.children.length, 3);
+    assert.deepEqual(row.children.map((child) => child.width), [192, 192, 192]);
+  }
+  const requests = await f.page.evaluate(() => window.requests);
+  assert.equal(requests[0].designData[0].codeshellGridFallback, true);
+  assert.deepEqual(f.network, []);
+  assert.deepEqual(f.errors, []);
+});
+
 test("HTML scripts, network resources, navigation and event handlers stay inert; editing invalidates preview", async (t) => {
   const f = await fixture(t);
   await f.frame

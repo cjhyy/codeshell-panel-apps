@@ -333,7 +333,7 @@
 
   // apps/design-studio/app/vendor/html2figma-browser.mjs
   /*! html2figma browser runtime; MIT declared upstream. See html2figma-NOTICE.md. */
-  var HTML2FIGMA_PROVENANCE = Object.freeze({ "engine": "html2figma", "upstreamCommit": "ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c", "sourceTreeSha256": "d633595f846eb0b645988568914f269a0d19743d09348ad02a0275f0eb6d48f2", "integrationVersion": 1 });
+  var HTML2FIGMA_PROVENANCE = Object.freeze({ "engine": "html2figma", "upstreamCommit": "ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c", "sourceTreeSha256": "d633595f846eb0b645988568914f269a0d19743d09348ad02a0275f0eb6d48f2", "integrationVersion": 2, "gridCaptureDefault": "original-items", "legacyGridOption": "preserveGrid:false" });
 
   // apps/design-studio/app/grid.mjs
   var GRID_CONTAINER_FIELDS = Object.freeze([
@@ -1987,6 +1987,7 @@
     let count = 0;
     const warnings = [];
     const reservedIds = /* @__PURE__ */ new Set();
+    const legacyGridWarning = "Grid \u4F7F\u7528\u6D4B\u91CF\u50CF\u7D20\u7684 Flex \u884C/\u56FA\u5B9A\u51E0\u4F55\u517C\u5BB9\u8F6C\u6362\uFF0C\u672A\u4FDD\u7559\u539F\u751F\u8F68\u9053\u6216\u54CD\u5E94\u5F0F\u5C3A\u5BF8\uFF1B\u9700\u8981\u539F\u751F Grid \u65F6\u8BF7\u901A\u8FC7 Design Studio \u5BFC\u5165\u5E76\u4F7F\u7528 Design Bridge\u3002";
     function inspect(node, depth = 0) {
       if (!object(node) || depth > 60 || ++count > MAX_NODES)
         throw new Error("\u8282\u70B9\u6811\u6700\u591A 3000 \u4E2A\u8282\u70B9\u300160 \u5C42");
@@ -2002,6 +2003,8 @@
       if (node.nodeType === "svg" || node.type === "SVG") inertDesignSvg(node.svgContent);
       if (node.children !== void 0 && !Array.isArray(node.children))
         throw new Error("children \u5FC5\u987B\u662F\u6570\u7EC4");
+      if (node.codeshellGridFallback === true || node.cssLayout?.["--codeshell-grid-legacy"] === "synthetic")
+        warnings.push(legacyGridWarning);
       if (typeof node.id === "string" && node.id) reservedIds.add(node.id);
       for (const child of node.children ?? []) inspect(child, depth + 1);
     }
@@ -2032,9 +2035,12 @@
       for (const child of node.children ?? []) retainGradients(child);
     }
     roots.forEach(retainGradients);
-    const converted = roots.map(
-      (root) => root.nodeType ? FigmaAdapter.toFigmaJSON(root) : root
-    );
+    const hasLegacyGrid = (node) => node.codeshellGridFallback === true || node.cssLayout?.["--codeshell-grid-legacy"] === "synthetic" || (node.children ?? []).some(hasLegacyGrid);
+    const converted = roots.map((root) => {
+      const converted2 = root.nodeType ? FigmaAdapter.toFigmaJSON(root) : root;
+      if (hasLegacyGrid(root)) converted2.codeshellGridFallback = true;
+      return converted2;
+    });
     count = 0;
     function normalizeOnce(node) {
       if (gradientPaints.has(node.id)) node.fills = gradientPaints.get(node.id);
@@ -7465,6 +7471,46 @@
           }
         }
       }
+      function renderPreservingGrid(tree, options) {
+        const grids = /* @__PURE__ */ new Map();
+        const prune = (node) => {
+          if (node.nodeType === "element" && ["grid", "inline-grid"].includes(node.computedStyle?.display ?? "") && node.metadata?.semantic) {
+            grids.set(node.metadata.semantic, node);
+            return { ...node, children: [] };
+          }
+          return { ...node, children: node.children.map(prune) };
+        };
+        const result = renderToDesignDSL(prune(tree), options);
+        const restore = (node) => {
+          if (node.nodeType !== "container") return;
+          const original = node.semantic && grids.get(node.semantic);
+          if (original) {
+            const rect = original.boundingRect;
+            const local = buildContainerNode(original, rect?.left ?? 0, rect?.top ?? 0, false);
+            node.children = original.children.flatMap((child) => {
+              const converted = child.nodeType === "text" ? buildTextNode(
+                child,
+                original,
+                child.boundingRect?.left ?? 0,
+                child.boundingRect?.top ?? 0,
+                options.includeRawStyles
+              ) : renderPreservingGrid(child, options);
+              if (!converted) return [];
+              if (converted.nodeType === "text" && !converted.content) return [];
+              converted.bounds.x += (child.boundingRect?.left ?? 0) - (rect?.left ?? 0) - local.bounds.x;
+              converted.bounds.y += (child.boundingRect?.top ?? 0) - (rect?.top ?? 0) - local.bounds.y;
+              return [converted];
+            });
+            const flow = node.children.filter((child) => !["absolute", "fixed"].includes(child.positioning.mode)).sort((left, right) => (left.flexItem?.order ?? 0) - (right.flexItem?.order ?? 0));
+            let index = 0;
+            node.children = node.children.map(
+              (child) => ["absolute", "fixed"].includes(child.positioning.mode) ? child : flow[index++]
+            );
+          } else for (const child of node.children) restore(child);
+        };
+        if (result) restore(result);
+        return result;
+      }
       var SVG_NS = "http://www.w3.org/2000/svg";
       var XLINK_NS = "http://www.w3.org/1999/xlink";
       var XMLNS_NS = "http://www.w3.org/2000/xmlns/";
@@ -7624,7 +7670,33 @@
                   "margin-top",
                   "margin-right",
                   "margin-bottom",
-                  "margin-left"
+                  "margin-left",
+                  "grid-template-columns",
+                  "grid-template-rows",
+                  "grid-template-areas",
+                  "grid-auto-columns",
+                  "grid-auto-rows",
+                  "grid-auto-flow",
+                  "grid-column-start",
+                  "grid-column-end",
+                  "grid-row-start",
+                  "grid-row-end",
+                  "justify-items",
+                  "align-items",
+                  "justify-self",
+                  "align-self",
+                  "justify-content",
+                  "align-content",
+                  "min-width",
+                  "min-height",
+                  "writing-mode",
+                  "direction",
+                  "order",
+                  "z-index",
+                  "aspect-ratio",
+                  "row-gap",
+                  "column-gap",
+                  "box-sizing"
                 ];
                 const record = {};
                 for (const property of properties) {
@@ -7635,6 +7707,8 @@
               }
             } catch {
             }
+            if (["grid", "inline-grid"].includes(node.computedStyle?.display ?? "") && !values.get(node.metadata.semantic)?.["grid-template-columns"])
+              values.set(node.metadata.semantic, { "--codeshell-grid-intent": "unavailable" });
           }
           for (const child of node.children) visit(child);
         };
@@ -7647,7 +7721,10 @@
         const values = captureLayoutValues(tree);
         const svgResources = /* @__PURE__ */ new Map();
         const backgrounds = /* @__PURE__ */ new Map();
+        const gridSources = /* @__PURE__ */ new Set();
         const captureSvg = (node) => {
+          if (node.metadata?.semantic && ["grid", "inline-grid"].includes(node.computedStyle?.display ?? ""))
+            gridSources.add(node.metadata.semantic);
           if (node.tag === "svg" && node.metadata?.semantic && node.domNode instanceof realm.Element)
             svgResources.set(node.metadata.semantic, captureStandaloneSvg(node.domNode));
           if (node.nodeType === "element" && node.metadata?.semantic && node.computedStyle?.getPropertyValue("background-image").includes("gradient(")) {
@@ -7672,10 +7749,12 @@
           for (const child of node.children) captureSvg(child);
         };
         captureSvg(tree);
-        const result = renderToDesignDSL(tree, options);
+        const result = options.preserveGrid ? renderPreservingGrid(tree, options) : renderToDesignDSL(tree, options);
         const attach = (node) => {
           const cssLayout = node.nodeType !== "text" && node.semantic && values.get(node.semantic);
           if (cssLayout && Object.keys(cssLayout).length > 0) node.cssLayout = cssLayout;
+          if (!options.preserveGrid && node.nodeType === "container" && node.semantic && gridSources.has(node.semantic))
+            node.cssLayout = { ...node.cssLayout, "--codeshell-grid-legacy": "synthetic" };
           if (node.nodeType !== "text" && node.semantic && backgrounds.has(node.semantic))
             node.cssBackground = backgrounds.get(node.semantic);
           if (node.nodeType === "svg" && node.semantic && svgResources.has(node.semantic))
@@ -7689,7 +7768,7 @@
     })();
     return html2figmaCore;
   }
-  var HTML2FIGMA_PROVENANCE = Object.freeze({ "engine": "html2figma", "upstreamCommit": "ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c", "sourceTreeSha256": "d633595f846eb0b645988568914f269a0d19743d09348ad02a0275f0eb6d48f2", "integrationVersion": 1 });
+  var HTML2FIGMA_PROVENANCE = Object.freeze({ "engine": "html2figma", "upstreamCommit": "ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c", "sourceTreeSha256": "d633595f846eb0b645988568914f269a0d19743d09348ad02a0275f0eb6d48f2", "integrationVersion": 2, "gridCaptureDefault": "original-items", "legacyGridOption": "preserveGrid:false" });
   function convertToDesignDSL(root, options = {}) {
     const realm = root?.ownerDocument?.defaultView;
     if (!realm || !(root instanceof realm.Element) || root.ownerDocument !== realm.document)
@@ -7699,8 +7778,10 @@
     const maxDepth = options.maxDepth ?? 100;
     if (!Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 100)
       throw new RangeError("html2figma maxDepth must be an integer from 0 to 100");
+    if (options.preserveGrid !== void 0 && typeof options.preserveGrid !== "boolean")
+      throw new TypeError("html2figma preserveGrid must be a boolean");
     const runtime = createRuntime(realm);
-    return runtime.convert(root, { includeRawStyles: options.includeRawStyles !== false, maxDepth });
+    return runtime.convert(root, { includeRawStyles: options.includeRawStyles !== false, maxDepth, preserveGrid: options.preserveGrid !== false });
   }
 
   // third-party/html2figma-plugin/integration/capture.ts
@@ -7718,7 +7799,7 @@
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const root = document.querySelector(__captureOptions.selector);
       if (!root) throw new Error("\\u627E\\u4E0D\\u5230\\u6839\\u9009\\u62E9\\u5668");
-      const tree = convertToDesignDSL(root, { maxDepth: 60 });
+      const tree = convertToDesignDSL(root, { maxDepth: 60, preserveGrid: false });
       if (!tree) throw new Error("HTML \\u6CA1\\u6709\\u53EF\\u89C1\\u56FE\\u5C42");
       parent.postMessage(
         { type: "html2figma-captured", requestId: __captureOptions.requestId, tree },

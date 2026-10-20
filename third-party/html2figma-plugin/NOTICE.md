@@ -19,6 +19,12 @@ Browser DOM conversion and shared helper/types are reused from the separately
 inventoried html2figma source snapshot at the same commit. No runtime dependency
 on either original checkout or server is required.
 
+This standalone adapter explicitly selects the browser converter's legacy
+synthetic Grid rows/cells, with a retained compatibility warning. Its native
+adapter does not yet implement native Figma Grid. The separate Design Studio
+workbench uses original Grid capture and the v3 Design Bridge for that path;
+both build receipts record their Grid capture mode.
+
 Upstream package.json and README declare MIT. There is no standalone LICENSE,
 COPYING or NOTICE in the pinned upstream tree; the original declarations are
 preserved and this notice does not invent an upstream copyright statement.

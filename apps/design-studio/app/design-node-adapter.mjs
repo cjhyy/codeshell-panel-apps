@@ -4,6 +4,7 @@ import { createDesignResourcePersistencePlan, MAX_DESIGN_RESOURCES } from "./res
 import { normalizeFigmaAsset } from "./figma-assets.mjs";
 import { cssLinearBackgroundPaints } from "./css-linear-gradient.mjs";
 import { representativeDesignFill } from "./paint.mjs";
+import { planHtmlGrid, sizeHtmlGridChild, validateHtmlGrid, removeHtmlGrid } from "./html-grid.mjs";
 
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const finite = (value, fallback = 0) => (Number.isFinite(value) ? value : fallback);
@@ -106,6 +107,7 @@ export async function designNodeToV3(tree, options = {}) {
     assets = new Map(),
     fonts = [];
   const autoMarginOverrides = new WeakMap();
+  const gridPlans = new WeakMap();
   const localResources =
     options.resources instanceof Map
       ? options.resources
@@ -453,30 +455,24 @@ export async function designNodeToV3(tree, options = {}) {
         node.id,
       );
     } else if (["grid", "inline-grid"].includes(sourceLayout.display) && sourceLayout.grid) {
-      const grid = sourceLayout.grid;
-      const columns = String(grid.templateColumns ?? "")
-        .trim()
-        .split(/\s+/u);
-      const tracks = columns.map((track) =>
-        /^\d+(?:\.\d+)?px$/u.test(track) ? Number.parseFloat(track) : NaN,
-      );
-      const simple =
-        tracks.length <= 24 &&
-        tracks.every(Number.isFinite) &&
-        tracks.every((track) => Math.abs(track - tracks[0]) < 0.5) &&
-        !/dense|column/u.test(grid.autoFlow ?? "");
-      if (simple) {
-        node.layout = "grid";
-        node.gridColumns = tracks.length;
-        node.columnGap = number(grid.gap?.column ?? 0, 0, 0, 2000, node.id, "columnGap");
-        node.rowGap = number(grid.gap?.row ?? 0, 0, 0, 2000, node.id, "rowGap");
-        node.gap = node.columnGap;
-      } else
-        warn(
-          "grid-fixed-geometry",
+      try {
+        const plan = planHtmlGrid(source);
+        Object.assign(node, plan.fields);
+        gridPlans.set(node, plan);
+        for (const message of plan.warnings) warn("grid-implicit-row-count", node.id, message);
+        node.columnGap = number(
+          sourceLayout.grid.gap?.column ?? 0,
+          0,
+          0,
+          2000,
           node.id,
-          "不规则 Grid 已保留测量位置；网格轨道、命名区域及自动放置关系未保留。",
+          "columnGap",
         );
+        node.rowGap = number(sourceLayout.grid.gap?.row ?? 0, 0, 0, 2000, node.id, "rowGap");
+        node.gap = node.columnGap;
+      } catch (error) {
+        warn("grid-fixed-geometry", node.id, `${error.message}；已保留原始 Grid 测量几何。`);
+      }
     }
     const flowChildren = (source.children ?? []).filter(
       (child) =>
@@ -611,6 +607,19 @@ export async function designNodeToV3(tree, options = {}) {
       warn("scroll-static", node.id, "滚动容器保留静态裁剪；没有交互滚动行为。");
   };
   const sizing = (source, node, parent) => {
+    if (
+      node.layoutPositioning !== "absolute" &&
+      parent?.layout === "grid" &&
+      gridPlans.has(parent)
+    ) {
+      try {
+        sizeHtmlGridChild(source, node, parent, gridPlans.get(parent));
+      } catch (error) {
+        removeHtmlGrid(parent);
+        warn("grid-fixed-geometry", parent.id, `${error.message}；已保留原始 Grid 测量几何。`);
+      }
+      return;
+    }
     const parentAuto =
       node.layoutPositioning !== "absolute" &&
       parent &&
@@ -635,7 +644,12 @@ export async function designNodeToV3(tree, options = {}) {
       else if (ownAuto && intrinsic) {
         // Block-level auto width fills its containing block; a root's measured
         // width stays fixed until that containing layout is actually represented.
-        if (parentAuto || axis === "Vertical" || source.layout?.display === "inline-flex")
+        if (
+          (node.layout === "grid" && value === "max-content") ||
+          parentAuto ||
+          axis === "Vertical" ||
+          ["inline-flex", "inline-grid"].includes(source.layout?.display)
+        )
           mode = "hug";
       }
       if (parentAuto && axis === crossAxis && value === "auto" && effectiveAlignment === "stretch")
@@ -1024,6 +1038,18 @@ export async function designNodeToV3(tree, options = {}) {
   };
   const converted = await convert(tree, [0], { x: 0, y: 0 }, []);
   sizing(tree, converted, null);
+  const validateGrids = (node) => {
+    for (const child of node.children ?? []) validateGrids(child);
+    if (!gridPlans.has(node)) return;
+    try {
+      if (node.layout === "grid") validateHtmlGrid(node);
+      else removeHtmlGrid(node);
+    } catch (error) {
+      removeHtmlGrid(node);
+      warn("grid-fixed-geometry", node.id, `${error.message}；已保留原始 Grid 测量几何。`);
+    }
+  };
+  validateGrids(converted);
   const bounds = options.captureBounds;
   const viewportWidth = bounds ? bounds.right - bounds.left : options.viewportWidth;
   const viewportHeight = bounds ? bounds.bottom - bounds.top : options.viewportHeight;

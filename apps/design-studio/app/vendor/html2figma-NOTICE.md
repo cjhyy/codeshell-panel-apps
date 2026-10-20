@@ -43,6 +43,36 @@ and main-axis auto margins. Uniform nonnegative flex margins become container
 insets and item/line gaps; unsupported nonuniform or negative margins retain a
 conversion diagnostic rather than claiming preserved Auto Layout behavior.
 
+Grid capture keeps original direct items outside the upstream synthetic Flex
+row/cell postprocessor. Each item still uses the pinned converter, with measured
+parent-relative bounds; anonymous text retains its actual parent's text style.
+Typed OM separately retains track definitions, row flow, numeric lines/spans,
+item alignment, gaps, box sizing, and original `auto` dimensions. The v3 adapter
+supports up to 24 tracks per axis: fixed px, `minmax(0, Nfr)`, bounded integer
+`repeat`, and `max-content` Hug tracks. Bare `fr` requires a zero automatic
+minimum. Automatic row flow and spans, or uniformly explicit positive row/column
+lines, preserve native Grid placement; auto-sized stretched children become Fill.
+Pure implicit Hug rows can grow with native automatic rows. Other implicit row
+patterns retain measured counts with an explicit editing diagnostic.
+
+Unsupported Grid intent retains the original measured items and a diagnostic:
+percentage tracks/gaps, nonzero `minmax` minima, named/negative lines or areas,
+auto-fit/auto-fill, dense/column flow, mixed/partial explicit placement, track
+distribution, intrinsic stretch cycles, relative offsets/transformed flow items,
+anonymous text line boxes, shrink-to-fit constraints, and automatic image aspect
+ratios during Fill resizing. Missing Typed OM is diagnosed rather than treating
+resolved pixel tracks as authored fixed tracks. Track strings, repeat expansion,
+and placement loops are bounded before native layout construction. Semantics
+follow the [CSS Grid specification](https://www.w3.org/TR/css-grid/); native
+interchange also respects Figma's Grid/Hug/Fill limitations.
+
+The standalone HTML-to-Figma plugin explicitly selects `preserveGrid:false`:
+its pinned native adapter still expects the legacy synthetic Flex rows/cells.
+That path carries a visible Grid fallback warning through preview, downloaded
+JSON, and import. The workbench uses the default original-Grid capture and its
+separate v3 Design Bridge creates supported native Figma Grid layouts. Both
+build receipts record their selected Grid capture mode.
+
 Inline SVG resources are serialized from detached clones with explicit SVG and
 XLink namespaces. Same-document `#id` references, including chained `use`, paint,
 and clipping definitions, are copied into the resource; the measured document

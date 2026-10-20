@@ -179,7 +179,7 @@ test("flex direction, wrap, padding, gaps and editable child sizing are represen
   assert.equal(child.layoutAlignSelf, "end");
 });
 
-test("uniform pixel Grid remains editable; irregular grids and nonuniform CSS child margins keep measured geometry with diagnostics", async () => {
+test("uniform and unequal pixel Grid remain editable; unsupported tracks and nonuniform CSS child margins keep measured geometry with diagnostics", async () => {
   const grid = {
     display: "grid",
     grid: {
@@ -188,12 +188,23 @@ test("uniform pixel Grid remains editable; irregular grids and nonuniform CSS ch
       gap: { row: 5, column: 10 },
     },
   };
-  const result = await designNodeToV3(container([text()], { layout: grid }), options);
+  const result = await designNodeToV3(container([container()], { layout: grid }), options);
   assert.equal(allNodes(result)[0].layout, "grid");
   assert.equal(allNodes(result)[0].gridColumns, 2);
+  const unequal = await designNodeToV3(
+    container([container()], {
+      layout: { ...grid, grid: { ...grid.grid, templateColumns: "100px 200px" } },
+    }),
+    options,
+  );
+  assert.equal(allNodes(unequal)[0].layout, "grid");
+  assert.deepEqual(allNodes(unequal)[0].gridColumnSizes, [
+    { type: "fixed", value: 100 },
+    { type: "fixed", value: 200 },
+  ]);
   const irregular = await designNodeToV3(
     container([text()], {
-      layout: { ...grid, grid: { ...grid.grid, templateColumns: "100px 200px" } },
+      layout: { ...grid, grid: { ...grid.grid, templateColumns: "minmax(20px,1fr) 100px" } },
     }),
     options,
   );

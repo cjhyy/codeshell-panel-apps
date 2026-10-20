@@ -21,6 +21,8 @@ export function prepareDesignInput(input: any) {
   let count = 0;
   const warnings: string[] = [];
   const reservedIds = new Set<string>();
+  const legacyGridWarning =
+    "Grid 使用测量像素的 Flex 行/固定几何兼容转换，未保留原生轨道或响应式尺寸；需要原生 Grid 时请通过 Design Studio 导入并使用 Design Bridge。";
   function inspect(node: any, depth = 0) {
     if (!object(node) || depth > 60 || ++count > MAX_NODES)
       throw new Error("节点树最多 3000 个节点、60 层");
@@ -39,6 +41,11 @@ export function prepareDesignInput(input: any) {
     if (node.nodeType === "svg" || node.type === "SVG") inertDesignSvg(node.svgContent);
     if (node.children !== undefined && !Array.isArray(node.children))
       throw new Error("children 必须是数组");
+    if (
+      node.codeshellGridFallback === true ||
+      node.cssLayout?.["--codeshell-grid-legacy"] === "synthetic"
+    )
+      warnings.push(legacyGridWarning);
     if (typeof node.id === "string" && node.id) reservedIds.add(node.id);
     for (const child of node.children ?? []) inspect(child, depth + 1);
   }
@@ -72,9 +79,15 @@ export function prepareDesignInput(input: any) {
     for (const child of node.children ?? []) retainGradients(child);
   }
   roots.forEach(retainGradients);
-  const converted = roots.map((root: any) =>
-    root.nodeType ? FigmaAdapter.toFigmaJSON(root) : root,
-  );
+  const hasLegacyGrid = (node: any): boolean =>
+    node.codeshellGridFallback === true ||
+    node.cssLayout?.["--codeshell-grid-legacy"] === "synthetic" ||
+    (node.children ?? []).some(hasLegacyGrid);
+  const converted = roots.map((root: any) => {
+    const converted = root.nodeType ? FigmaAdapter.toFigmaJSON(root) : root;
+    if (hasLegacyGrid(root)) converted.codeshellGridFallback = true;
+    return converted;
+  });
   count = 0;
   // The adapter can add synthetic frames; recheck the final tree once, without double recursion.
   function normalizeOnce(node: any) {
