@@ -1639,7 +1639,12 @@ v2新建68:1634/board68:1635，run e2cd2288完成真正生产native→v3保存�
 层级、4Grid/8cell/2P/9Text及模式均与冻结0172官方+SDK oracle精确一致，最大几何差异0。
 文本一行→四行→一行自然25→100→25；DL1220→708→1220保留原生Float32，窄列真实
 475.6000061035156等不取整或向CSS拟合。此次五阶段harness已覆盖的闲置stroke三属性
-差异均[]；更完整raw字段/侧宽独立审查继续进行，不据此宣称所有Figma属性完全无损。
+差异均[]；独立presence-aware审查进一步确认22个闲置节点全部stroke相关字段/缺省在
+五态均相同，四个active行的CENTER和[0,0,1,0]侧宽也精确一致。完整raw仍不相同：
+HUG轨道value:1省略、SDK mixed行的REST scalar0省略、显式默认/SDK tracks补入，以及
+手动PNG导出后board新增exportSettings。返回端没有另一个独立全SDK getter dump，
+REST缺省false不升级为显式getter恒等。独立review.json SHAe2d07d8f…，receipt8139705a…；
+原始draft遇到HUG/exportSettings而中止的日志也保留，不宣称所有属性完全无损。
 
 初始、copy-returned1220、returned1220三张1360×600原生PNG各816000pixels严格changed0/
 max0，三者encoded SHA也均与原0172 ad97d9ee…完全一致。copy4/708仅几何验收，未做
