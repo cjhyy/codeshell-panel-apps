@@ -64,6 +64,7 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
       fills: clone(raw.fills ?? []),
       strokes: clone(raw.strokes ?? []),
       layoutMode: raw.layoutMode ?? "NONE",
+      ...(raw.itemSpacing !== undefined ? { itemSpacing: raw.itemSpacing } : {}),
       opacity: raw.opacity ?? 1,
       visible: raw.visible !== false,
       locked: raw.locked === true,
@@ -1746,7 +1747,7 @@ test("native signed main spacing creates editable nowrap stacks and guards incre
   const original = page([{ ...rect("1:2"), type: "FRAME", layoutMode: "HORIZONTAL", layoutWrap: "NO_WRAP", itemSpacing: -16,
     itemReverseZIndex: false, primaryAxisSizingMode: "FIXED", counterAxisSizingMode: "AUTO", children: [
       rect("1:3", { absoluteBoundingBox: { x: 30, y: 40, width: 1, height: 1 } }),
-      rect("1:4", { absoluteBoundingBox: { x: 15, y: 40, width: 130, height: 80 }, layoutSizingHorizontal: "FILL" }),
+      rect("1:4", { absoluteBoundingBox: { x: 30, y: 40, width: 100, height: 80 }, layoutSizingHorizontal: "FILL" }),
       rect("1:5", { absoluteBoundingBox: { x: 129, y: 40, width: 1, height: 1 } }),
     ] }]);
   const imported = importFigmaJson(original), transfer = createFigmaTransfer(imported.document), runtime = harness();
@@ -1754,25 +1755,25 @@ test("native signed main spacing creates editable nowrap stacks and guards incre
   assert.equal(runtime.messages.at(-1).type, "imported");
   const native = runtime.figma.root.children[1].children[0];
   assert.equal(native.layoutMode, "HORIZONTAL"); assert.equal(native.layoutWrap, "NO_WRAP");
-  assert.equal(native.itemSpacing, -16); assert.equal(native.itemReverseZIndex, false);
+  assert.equal(native.itemSpacing, -1); assert.equal(native.itemReverseZIndex, false);
   assert.ok(native.children.every((child) => child.layoutPositioning === "AUTO"));
   assert.equal(native.children[1].layoutSizingHorizontal, "FILL");
   await runtime.send({ type: "export-json", scope: "page" });
   const exported = runtime.messages.at(-1);
   assert.equal(exported.type, "exported");
   const raw = JSON.parse(exported.content).nodes[runtime.figma.currentPage.id].document.children[0];
-  assert.equal(raw.itemSpacing, -16); assert.equal(raw.itemReverseZIndex, false);
+  assert.equal(raw.itemSpacing, -1); assert.equal(raw.itemReverseZIndex, false);
   assert.equal(raw.children[1].layoutSizingHorizontal, "FILL");
-  const update = patchTransfer(original, (node) => { node.gap = -24; }, ["gap"]), live = harness(original);
+  const update = patchTransfer(original, (node) => { node.gap = -0.5; }, ["gap"]), live = harness(original);
   await live.send({ type: "preview-patch", content: JSON.stringify(update) });
   const preview = live.messages.at(-1); assert.equal(preview.type, "patch-preview"); assert.deepEqual(preview.conflicts, []);
   await live.send({ type: "apply-patch", token: preview.token });
-  assert.equal(live.messages.at(-1).type, "patched"); assert.equal(live.all.get("1:2").itemSpacing, -24);
+  assert.equal(live.messages.at(-1).type, "patched"); assert.equal(live.all.get("1:2").itemSpacing, -0.5);
   const conflict = harness(original); conflict.all.get("1:2").itemReverseZIndex = true;
   await conflict.send({ type: "preview-patch", content: JSON.stringify(update) });
   assert.equal(conflict.messages.at(-1).type, "error");
-  assert.equal(conflict.all.get("1:2").itemSpacing, undefined);
-  for (const changes of [{ layoutWrap: "wrap" }, { rowGap: -1 }, { layoutSizingHorizontal: "hug" }, { layoutReverse: true }]) {
+  assert.equal(conflict.all.get("1:2").itemSpacing, -16);
+  for (const changes of [{ gap: -16 }, { layoutWrap: "wrap" }, { rowGap: -1 }, { layoutSizingHorizontal: "hug" }, { layoutReverse: true }]) {
     const invalid = clone(transfer); Object.assign(invalid.pages[0].children[0], changes);
     const rejected = harness(); await rejected.send({ type: "import-transfer", content: JSON.stringify(invalid) });
     assert.equal(rejected.messages.at(-1).type, "error", JSON.stringify(changes));
@@ -1914,4 +1915,44 @@ test("source activation of freeform Auto Layout uses canonical effective padding
     assert.equal(runtime.all.get("1:2").strokesIncludedInLayout, false);
     assert.equal(runtime.all.get("1:2").paddingTop, 8);
   }
+});
+
+test('native source-bound effective gaps preserve raw requests and reject clamp-threshold changes before mutation',async()=>{
+  const original=page([{...rect('1:2'),type:'FRAME',layoutMode:'HORIZONTAL',layoutWrap:'NO_WRAP',itemSpacing:-16,itemReverseZIndex:false,
+    primaryAxisSizingMode:'FIXED',counterAxisSizingMode:'FIXED',children:[
+      rect('1:3',{absoluteBoundingBox:{x:30,y:40,width:1,height:1}}),
+      rect('1:4',{absoluteBoundingBox:{x:30,y:40,width:100,height:80},layoutSizingHorizontal:'FILL'}),
+      rect('1:5',{absoluteBoundingBox:{x:129,y:40,width:1,height:1}})]}]);
+  const imported=await prepareFigmaImport(original),binding=createFigmaBinding(imported),style=clone(imported.document);
+  style.nodes.find(node=>node.id==='figma-1-4').fill='#123456';
+  const transfer=createFigmaTransfer(style);transfer.patch=createFigmaPatch(binding,style);
+  const live=harness(original);await live.send({type:'preview-patch',content:JSON.stringify(transfer)});
+  let preview=live.messages.at(-1);assert.equal(preview.type,'patch-preview',JSON.stringify(preview));
+  await live.send({type:'apply-patch',token:preview.token});assert.equal(live.messages.at(-1).type,'patched');
+  assert.equal(live.all.get('1:2').itemSpacing,-16,'style edit must not overwrite preserved native request');
+  const changed=clone(imported.document);changed.nodes.find(node=>node.id==='figma-1-3').width=2;changed.nodes.find(node=>node.id==='figma-1-5').width=2;
+  const compatible=clone(binding);Object.values(compatible.source.nodes)[0].document.children[0].itemSpacing=-1;
+  const unsafe=createFigmaTransfer(changed);unsafe.patch=createFigmaPatch(compatible,changed);
+  const blocked=harness(original),before=JSON.stringify(blocked.snapshot(blocked.figma.currentPage));
+  await blocked.send({type:'preview-patch',content:JSON.stringify(unsafe)});
+  assert.equal(blocked.messages.at(-1).type,'error');assert.match(blocked.messages.at(-1).message,/不能静默覆盖原始请求/u);
+  assert.equal(JSON.stringify(blocked.snapshot(blocked.figma.currentPage)),before);
+  changed.nodes.find(node=>node.id==='figma-1-2').gap=0;
+  const explicit=createFigmaTransfer(changed);explicit.patch=createFigmaPatch(binding,changed);
+  const concurrent=harness(original);concurrent.all.get('1:2').itemSpacing=-8;
+  await concurrent.send({type:'preview-patch',content:JSON.stringify(explicit)});
+  preview=concurrent.messages.at(-1);assert.equal(preview.type,'patch-preview');assert(preview.conflicts.some(value=>value.includes('itemSpacing')));
+  assert.equal(concurrent.all.get('1:2').itemSpacing,-8);
+  const independent=clone(original);independent.children[0].absoluteBoundingBox.width=400;
+  independent.children[0].children.forEach((node,index)=>{node.absoluteBoundingBox={x:[30,74,370][index],y:40,width:[60,312,60][index],height:40};});
+  const ordinary=await prepareFigmaImport(independent),ordinaryStyle=clone(ordinary.document);
+  ordinaryStyle.nodes.find(node=>node.id==='figma-1-4').fill='#123456';
+  const paintOnly=createFigmaTransfer(ordinaryStyle);paintOnly.patch=createFigmaPatch(createFigmaBinding(ordinary),ordinaryStyle);
+  const external=harness(independent);external.all.get('1:2').itemSpacing=-32;
+  external.all.get('1:4').width=344;external.all.get('1:4').relativeTransform[0][2]=28;
+  await external.send({type:'preview-patch',content:JSON.stringify(paintOnly)});
+  preview=external.messages.at(-1);assert.equal(preview.type,'patch-preview',JSON.stringify(preview));assert.deepEqual(preview.conflicts,[]);
+  await external.send({type:'apply-patch',token:preview.token});assert.equal(external.messages.at(-1).type,'patched');
+  assert.equal(external.all.get('1:2').itemSpacing,-32,'unrelated source gap edit remains untouched');
+  assert.equal(external.all.get('1:4').width,344,'paint patch preserves independent native flow geometry');
 });

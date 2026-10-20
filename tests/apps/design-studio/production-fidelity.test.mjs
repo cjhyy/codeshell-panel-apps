@@ -68,6 +68,8 @@ test("production gate preserves authored overlays without mistaking them for deg
   });
   assert.equal(result.passed, true);
   assert.deepEqual(result.cases[0].semanticIssues, []);
+  assert.deepEqual(result.cases[0].nativeTransfer, { supported: true, status: "prepared", stage: "production-v3-transfer" });
+  assert.equal(JSON.parse(await readFile(join(output, "authored-overlay/figma-transfer.json"), "utf8")).format, "codeshell.figma.transfer");
   assert.ok(Object.values(result.cases[0].sourcePositioning).includes("absolute"));
   assert.ok(result.cases[0].comparisons.every((comparison) => comparison.changedPixels === 0));
 });
@@ -211,4 +213,26 @@ test("external URLs stay blocked during a selected-folder comparison", async (t)
     ["source.html"],
   );
   assert.ok(report.blockedRequests.every((url) => new URL(url).hostname === "external.invalid"));
+});
+
+test('native-spacing rejection records strict failure and SVG evidence without a stale successful transfer',async(t)=>{
+  const output=await mkdtemp(join(tmpdir(),'fidelity-native-spacing-'));t.after(()=>rm(output,{recursive:true,force:true}));
+  await mkdir(join(output,'insufficient-inset'));
+  await writeFile(join(output,'insufficient-inset/figma-transfer.json'),'{"stale":true}');
+  const result=await runProductionFidelity({output,recordOnly:true,resizeMode:'viewport-only',cases:[{id:'insufficient-inset',
+    source:'<!doctype html><style>*{box-sizing:border-box}body{margin:0;background:white}#fixture{padding:5px;height:240px;background:#eee}#row{display:flex;gap:10px;margin:0 -15px}#row>div{flex:1;height:50px;background:#2563eb}</style><main id="fixture"><section id="row"><div></div><div></div></section></main>'}]});
+  const observed=result.cases[0];assert.equal(result.passed,false);assert.equal(observed.nativeTransfer.supported,false);
+  assert.equal(observed.nativeTransfer.stage,'production-v3-transfer');assert.equal(observed.nativeTransfer.status,'unsupported');
+  assert.equal(observed.nativeTransfer.error.code,'NATIVE_NEGATIVE_SPACING');
+  assert(observed.semanticIssues.some(issue=>issue.startsWith('Native transfer rejected:')));
+  assert.equal(observed.comparisons.length,3);assert(observed.comparisons.every(item=>item.changedPixels===0));
+  assert.equal(JSON.parse(await readFile(join(output,'insufficient-inset/native-transfer-error.json'),'utf8')).status,'unsupported');
+  await assert.rejects(()=>readFile(join(output,'insufficient-inset/figma-transfer.json')),error=>error.code==='ENOENT');
+});
+
+test('record-only native-spacing handling still throws unrelated native paint failures',async(t)=>{
+  const output=await mkdtemp(join(tmpdir(),'fidelity-unrelated-transfer-'));t.after(()=>rm(output,{recursive:true,force:true}));
+  await assert.rejects(()=>runProductionFidelity({output,recordOnly:true,cases:[{id:'mixed-border',
+    source:'<!doctype html><style>*{box-sizing:border-box}body{margin:0;background:white}#fixture{display:flex;width:100%;height:240px;padding:20px}#tile{flex:1;height:100px;background:white;border-top:2px solid red;border-bottom:2px solid blue}</style><main id="fixture"><div id="tile"></div></main>'}]}),/多色边框/u);
+  await assert.rejects(()=>readFile(join(output,'mixed-border/native-transfer-error.json')),error=>error.code==='ENOENT');
 });

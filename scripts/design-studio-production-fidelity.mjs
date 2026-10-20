@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { readFile, mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve, relative, sep, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -296,7 +296,16 @@ export async function runProductionFidelity({
         sha256Bytes: async (bytes) => createHash("sha256").update(bytes).digest("hex"),
       });
       await writeFile(join(directory, "complete.portable.json"), portable);
-      const prepared = await preparePluginFile(portable);
+      let prepared, nativeTransferError = null;
+      try { prepared = await preparePluginFile(portable); }
+      catch (error) {
+        if (error.code !== "NATIVE_NEGATIVE_SPACING") throw error;
+        nativeTransferError = { code: error.code, message: String(error.message).slice(0, 2000),
+          stage: "production-v3-transfer", status: "unsupported" };
+        await rm(join(directory, "figma-transfer.json"), { force: true });
+        await writeFile(join(directory, "native-transfer-error.json"), JSON.stringify(nativeTransferError, null, 2) + "\n");
+      }
+      if (prepared) await rm(join(directory, "native-transfer-error.json"), { force: true });
       const backup = JSON.parse(portable);
       const descriptors = new Map(document.resources.map((resource) => [resource.id, resource]));
       const resourceDataUrls = new Map(
@@ -305,7 +314,7 @@ export async function runProductionFidelity({
           `data:${descriptors.get(resource.id).mime};base64,${resource.base64}`,
         ]),
       );
-      await writeFile(
+      if (prepared) await writeFile(
         join(directory, "figma-transfer.json"),
         JSON.stringify(prepared.transfer, null, 2),
       );
@@ -342,6 +351,7 @@ export async function runProductionFidelity({
           !["absolute", "fixed"].includes(sourcePositions[node.id]),
       );
       const semanticIssues = [];
+      if (nativeTransferError) semanticIssues.push(`Native transfer rejected: ${nativeTransferError.message}`);
       if (
         !main ||
         (["flex", "inline-flex", "grid", "inline-grid"].includes(sourceLayout) &&
@@ -355,6 +365,8 @@ export async function runProductionFidelity({
         nodes: document.nodes.length,
         sourcePositioning: sourcePositions,
         semanticIssues,
+        nativeTransfer: nativeTransferError ? { supported: false, status: "unsupported", stage: "production-v3-transfer", error: nativeTransferError }
+          : { supported: true, status: "prepared", stage: "production-v3-transfer" },
         warnings: captured.report.warnings,
         ...(activeFixture
           ? {
