@@ -312,6 +312,15 @@
     const snapshot = CodeShellFigmaPaint.cssLinearSourceSnapshot(source);
     node.setPluginData("codeshellCssLinearSource", snapshot ? JSON.stringify(snapshot) : "");
   }
+  const hasActiveCssGradient = (node) => node.fillPaints?.some(
+    (paint) => paint.cssLinear && !paint.cssLinear.sourceOnly,
+  );
+  const refreshCssGradient = (operation) => hasActiveCssGradient(operation.after) &&
+    operation.changed.some((key) =>
+      ["width", "height", "fill", "fillPaints", "layoutSizingHorizontal", "layoutSizingVertical"].includes(key) ||
+      LAYOUT_KEYS.has(key) ||
+      operation.after.type === "text" && ["text", "textSource", "textOverflow", "fontFamily", "fontWeight", "fontStyle", "fontSize", "lineHeight", "letterSpacing"].includes(key),
+    );
   const lineBoxY = (node) => node.y - (node.type === "text" ? node.layoutBaselineOffset ?? 0 : 0);
   function transform(source, parent) {
     const radians = (source.rotation * Math.PI) / 180,
@@ -1055,8 +1064,7 @@
           }
           // Resizing an authored CSS gradient also changes its native paint
           // snapshot. Guard concurrent palette/geometry/source edits first.
-          if (operation.changed.some((key) => key === "width" || key === "height") &&
-              operation.after.fillPaints?.some((paint) => paint.cssLinear && !paint.cssLinear.sourceOnly)) {
+          if (refreshCssGradient(operation)) {
             for (const property of ["fills", "codeshellCssLinearSource"])
               if (canonical(operation.before[property]) !== canonical(raw[property]))
                 conflicts.push(`${operation.sourceId} · ${property} 已在 Figma 中变化，不能重算 CSS 渐变。`);
@@ -1295,6 +1303,7 @@
       throw new Error("当前 Figma 版本缺少安全撤销能力。");
     const { value, indexes, targets } = plan,
       created = new Map(),
+      cssGradients = new Map(),
       warnings = [];
     const factory = await importTransfer(value, { factoryOnly: true });
     for (const operation of value.patch.operations)
@@ -1486,14 +1495,7 @@
           mutated = true;
           node.characters = CodeShellFigmaText.nativeTextContent(after, baseline);
         }
-        // This explicit Design Studio edit authorizes resolving its active CSS
-        // source at the new size. Native-only resizing never enters this path.
-        if ((changed.has("width") || changed.has("height")) &&
-            after.fillPaints?.some((paint) => paint.cssLinear && !paint.cssLinear.sourceOnly)) {
-          mutated = true;
-          node.fills = paints(after.fill, after.fillPaints, node.width, node.height);
-          retainCssLinearSource(node, { ...after, width: node.width, height: node.height });
-        }
+        if (refreshCssGradient(operation)) cssGradients.set(node, after);
         for (const key of operation.changed) {
           if (GEOMETRY_KEYS.has(key) || ["cornerRadius", "cornerRadii", "text", "textSource"].includes(key)) continue;
           if (key === "opacity") {
@@ -1524,9 +1526,11 @@
             mutated = true;
             node.setPluginData("codeshellNotes", after.notes ?? "");
           } else if (key === "fill" || key === "fillPaints") {
-            mutated = true;
-            node.fills = paints(after.fill, after.fillPaints, after.width, after.height);
-            retainCssLinearSource(node, after);
+            if (!hasActiveCssGradient(after)) {
+              mutated = true;
+              node.fills = paints(after.fill, after.fillPaints, after.width, after.height);
+              retainCssLinearSource(node, after);
+            }
           } else if (key === "stroke") {
             mutated = true;
             node.strokes = paints(after.stroke);
@@ -1728,6 +1732,13 @@
           actual.splice(previous, 1);
           actual.splice(index, 0, node);
         }
+      }
+      // Typography setters and descendant edits can resize HUG nodes after the
+      // geometry pass. Resolve reviewed CSS paints once their native size settles.
+      for (const [node, after] of cssGradients) {
+        mutated = true;
+        node.fills = paints(after.fill, after.fillPaints, node.width, node.height);
+        retainCssLinearSource(node, { ...after, width: node.width, height: node.height });
       }
       figma.commitUndo();
       warnings.push(...factory.warnings);

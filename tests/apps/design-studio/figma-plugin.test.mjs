@@ -1562,6 +1562,40 @@ test("reviewed CSS gradient resize recomputes current native geometry and guards
   assert(concurrent.messages.at(-1).conflicts.some((message) => message.includes("fills")));
 });
 
+test("reviewed HUG text gradients resolve after native typography setters and guard concurrent paints", async () => {
+  const { cssLinearBackgroundPaints } = await import("../../../apps/design-studio/app/css-linear-gradient.mjs");
+  const { cssLinearSourceSnapshot, designPaintsToFigma } = await import("../../../apps/design-studio/app/paint.mjs");
+  const fillPaints = cssLinearBackgroundPaints({ "background-image": "linear-gradient(45deg,rgb(255,0,0),rgb(0,0,255))" }, 200, 24);
+  const original = { fillPaints, width: 200, height: 24 }, sourceData = cssLinearSourceSnapshot(original);
+  const source = page([rect("1:2", { type: "TEXT", characters: "Gradient", absoluteBoundingBox: { x: 0, y: 0, width: 200, height: 24 },
+    style: { fontFamily: "Arial", fontSize: 20, fontWeight: 400, lineHeightPx: 24, textAutoResize: "HEIGHT" },
+    fills: designPaintsToFigma(original), codeshellCssLinearSource: sourceData })]);
+  for (const change of [{ fontSize: 32, height: 38.4 }, { lineHeight: 2, height: 40 }]) {
+    const imported = await prepareFigmaImport(source), binding = createFigmaBinding(imported);
+    Object.assign(imported.document.nodes[0], change);
+    const transfer = createFigmaTransfer(imported.document); transfer.patch = createFigmaPatch(binding, imported.document);
+    const runtime = harness(source), target = runtime.all.get("1:2");
+    target.setPluginData("codeshellCssLinearSource", JSON.stringify(sourceData));
+    let size = 20, lineHeight = { unit: "PERCENT", value: 120 };
+    Object.defineProperty(target, "fontSize", { get: () => size, set(value) { size = value; this.height = size * lineHeight.value / 100; } });
+    Object.defineProperty(target, "lineHeight", { get: () => lineHeight, set(value) { lineHeight = value; this.height = size * value.value / 100; } });
+    target.resize = function(width) { this.width = width; this.height = size * lineHeight.value / 100; };
+    await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+    const preview = runtime.messages.at(-1); assert.equal(preview.type, "patch-preview"); assert.deepEqual(preview.conflicts, []);
+    await runtime.send({ type: "apply-patch", token: preview.token }); assert.equal(runtime.messages.at(-1).type, "patched");
+    assert.equal(target.height, change.height);
+    assert.deepEqual(clone(target.fills), designPaintsToFigma({ ...original, height: change.height }));
+    assert.equal(JSON.parse(target.getPluginData("codeshellCssLinearSource")).height, change.height);
+  }
+  const imported = await prepareFigmaImport(source), binding = createFigmaBinding(imported);
+  imported.document.nodes[0].fontSize = 32;
+  const transfer = createFigmaTransfer(imported.document); transfer.patch = createFigmaPatch(binding, imported.document);
+  const concurrent = harness(source); concurrent.all.get("1:2").setPluginData("codeshellCssLinearSource", JSON.stringify(sourceData));
+  concurrent.all.get("1:2").fills[0].gradientStops[0].color.r = 0.2;
+  await concurrent.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  assert(concurrent.messages.at(-1).conflicts.some(message => message.includes("fills")));
+});
+
 test("independent circular corners use native editable properties and export live values", async () => {
   const source = page([rect("1:2", { rectangleCornerRadii: [8, 24, 0, 16] })]);
   const imported = importFigmaJson(source), transfer = createFigmaTransfer(imported.document);
