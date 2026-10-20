@@ -1421,3 +1421,64 @@ app文件与462的完整UI门禁快照逐SHA一致。收据 `round28-primary-int
 MIME两个工作树及分支，不用force，外部证据父目录保留；收据
 `worktree-cleanup-receipt-20261021-0643.json`。聚合目标、新内在V-flow、baseline、Text
 shadow工作树继续保留；number旧工作树仍被baseline配对证据使用，暂不清理。
+
+
+### 第29轮：HTML 字体编辑、多段落内在高度和 CENTER 生产像素（约 07:05）
+
+`8be24ee` 增加严格Text专属HTML baseline来源。只有真实绑定的普通/pre/nowrap来源且
+浏览器当前line-box模型精确复现初始y才标记；初始几何不变。字号/字体/行高编辑复测
+hanging offset、保持逻辑顶边，Node-only保留来源，手工offset编辑退役HTML来源。
+原生transfer移除HTML标记但保留物理offset，binding仍比较逻辑y。相同73基底字号
+19→24→19的SVG从 **0/865/0 变为0/0/0**，前端原本三个阶段均0；原失败PNG/SVG保留。
+3225项冻结GOV几何/baseline字段前后精确一致，实际只标记8/58和2/9Text；整页GOV
+失败仍28133/28133/63753和7536/7536/14116，没有扩充到未证明的混合/表格文字。
+
+`970988e` 修复已有canonical Text.shadow前端误用box-shadow，改为字形text-shadow，
+形状box-shadow累加保持原行为。15个明确authored overflow-wrap:anywhere的直接DOM
+宽度/文案/保存重开比较逐像素0。独立default-normal控制仍有1个case的1像素/max2
+差异，原图和 `shadow-fidelity-analysis/frontend-text-shadow/default-wrap-report.json`
+保留；没有据此声称HTML text-shadow捕获或SVG/CanvasKit文字阴影已经完整修复。
+
+`4fe3326` 依据实际0172在固定宽度owner内，递归求真实DD→wrapper→P(Text),P(Text)
+的V/Hug内在高度，不读旧拉伸cell高度。最多4层/32节点/每层16子项，正有限padding/
+gap、无隐藏/绝对/旋转/wrap/reverse/minmax/不支持文字；原direct rectangle guard不扩张。
+子树每个Text保留原始native typography拒绝检查。6个新CPU测试和生产VM验证完整26个
+canonical节点、文案1→4→1、宽度1220→708→1220、真实字体wrap/保存重开；原32个
+小数横向差异与45个font getter额外字段仍在fixture中。1220整数宽SVG和独立无stroke
+前端控制为0；新多段落生产插件实际往返尚未执行。HTML Fill-owner祖先证明和whole-DL
+提升在下一独立分支，不把DL硬改fixed、不永久排除contact、不以测量宽度证明Fill。
+
+组合 `96113b0c64c56970c8b2a30469c611269b575949` 完整主门禁 **607总/606通过/1跳过/
+0失败**（184702ms），完整UI **104总/103通过/1跳过/0失败**（110495ms），合计709通过、
+2跳过。typecheck、validate、三份生成物check、Design Studio scoped build check通过；
+起止HEAD、113个app文件快照一致。`round29-full-gates-receipt.json` 绑定日志和runner。
+
+使用稳定af07594生产main（SHA1798ec43…）完成真实CENTER往返 **1f0582dd**：新页
+66:1539/board66:1540，未改生产main。原F456官方/live来源经完整portable及生产UI导入，
+67节点/9Grid/27真实cell/27真实Text、初始及width390/return630全几何精确0；普通生产
+preview/apply仅提交3+3个父框width操作，没有后代height/sizing修补。初始和恢复PNG各
+760×1100 **836000像素changed0/max0**，编码SHA都与原F456完全相同
+`7095cc6c5ef36a8ae77af76ebcb241d038bcfcea3ca210583dc1941eadf55c61`。窄屏PNG未执行，
+不声称CSS/GDS/原生字体栅格通用一致。146项无paint闲置align/weight/inclusion差异在
+三个阶段明确保留；这不是全部原生属性无损。插件已关闭、relay98138 CtrlC实际exit0、
+固定ORIG3恢复、锁释放；新页保留。40文件独立逐字节归档与RGBA/geometry审计在
+`real-figma/native-centered-row-grid-roundtrip/`，分析SHA3261d3ed…。
+
+CENTER harness准备阶段的VM不同prototype比较失败和缺失omitted-zero padding负例
+均在真实运行前暴露、保留首次源码/日志后修复；不放宽数值比较。最终source37c7b0af…
+及19/19纯Node测试由另一代理独立复核，通过后才实际执行；原始失败记录不改写。
+
+新冻结官方GOV任务列表 https://design-system.service.gov.uk/components/task-list/default/，
+原HTML SHA `a59615240ec8e503dca4bcf75b7fed9f4e8a4838df424a7d4855d08d39d37003`，
+本地副本SHA `a0e849d42cc47f5c929e193c8c650f73fead1c7f668f30d2de667b16ab55e8e6`；
+1280/768/400三个宽度原归档对副本均像素0、几何一致、未知请求/错误0。生产af5afac
+54节点/17警告，首次/重排/窄屏 **15576/15576/24470 max244**，原生仅prepared且语义
+检查明确报普通流子项变为absolute，不能当作合格Auto Layout。新增真实失败保留。
+另四个最小控制确认链接变黑发生在sanitizer移除href后使CSS :link失效；直接原始
+html2figma捕获为正确蓝色，非链接状态CSS也正确。不是已证实的字体加粗错误，不改
+上游文字颜色推断来掩盖。下一独立分支处理保留安全链接状态与无导航捕获，原图/CSS
+不改写；任务列表的表格关系仍作为后续普通流工作。
+
+本轮继续保留所有严格失败。24小时目标active，10月22日00:31截止不变；未push、
+发布或安装Host。下一批为Fill祖先宽度证明、whole-DL提升、闲置描边完整激活语义、
+有序CSS阴影遮罩以及链接选择器捕获。
