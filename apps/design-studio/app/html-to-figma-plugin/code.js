@@ -2686,8 +2686,8 @@
     /**
      * Convert hex color to RGB
      */
-    static hexToRgb(hex) {
-      const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    static hexToRgb(hex2) {
+      const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex2);
       return result ? {
         r: parseInt(result[1], 16) / 255,
         g: parseInt(result[2], 16) / 255,
@@ -2697,21 +2697,21 @@
     /**
      * Convert RGB to hex
      */
-    static rgbToHex(rgb) {
+    static rgbToHex(rgb2) {
       const toHex = (c) => {
-        const hex = Math.round(c * 255).toString(16);
-        return hex.length === 1 ? "0" + hex : hex;
+        const hex2 = Math.round(c * 255).toString(16);
+        return hex2.length === 1 ? "0" + hex2 : hex2;
       };
-      return `#${toHex(rgb.r)}${toHex(rgb.g)}${toHex(rgb.b)}`;
+      return `#${toHex(rgb2.r)}${toHex(rgb2.g)}${toHex(rgb2.b)}`;
     }
     /**
      * Convert CSS color string to RGB
      */
-    static cssColorToRgb(cssColor) {
-      if (cssColor.startsWith("#")) {
-        return this.hexToRgb(cssColor);
+    static cssColorToRgb(cssColor2) {
+      if (cssColor2.startsWith("#")) {
+        return this.hexToRgb(cssColor2);
       }
-      const rgbMatch = cssColor.match(/rgba?\(([^)]+)\)/);
+      const rgbMatch = cssColor2.match(/rgba?\(([^)]+)\)/);
       if (rgbMatch) {
         const values = rgbMatch[1].split(",").map((v) => parseFloat(v.trim()));
         if (values.length >= 3) {
@@ -2722,7 +2722,7 @@
           };
         }
       }
-      if (cssColor.toLowerCase() === "transparent") {
+      if (cssColor2.toLowerCase() === "transparent") {
         return { r: 0, g: 0, b: 0 };
       }
       const namedColors = {
@@ -2737,7 +2737,7 @@
         "gray": { r: 0.5, g: 0.5, b: 0.5 },
         "grey": { r: 0.5, g: 0.5, b: 0.5 }
       };
-      return namedColors[cssColor.toLowerCase()] || null;
+      return namedColors[cssColor2.toLowerCase()] || null;
     }
     /**
      * Create gradient from any CSS gradient string (auto-detect type)
@@ -2794,15 +2794,15 @@
     /**
      * Convert CSS color string to RGBA with opacity support
      */
-    static cssColorToRgba(cssColor) {
-      if (cssColor.toLowerCase() === "transparent") {
+    static cssColorToRgba(cssColor2) {
+      if (cssColor2.toLowerCase() === "transparent") {
         return { r: 0, g: 0, b: 0, a: 0 };
       }
-      if (cssColor.startsWith("#")) {
-        const rgb2 = this.hexToRgb(cssColor);
-        return rgb2 ? { ...rgb2, a: 1 } : null;
+      if (cssColor2.startsWith("#")) {
+        const rgb3 = this.hexToRgb(cssColor2);
+        return rgb3 ? { ...rgb3, a: 1 } : null;
       }
-      const rgbaMatch = cssColor.match(/rgba\(([^)]+)\)/);
+      const rgbaMatch = cssColor2.match(/rgba\(([^)]+)\)/);
       if (rgbaMatch) {
         const values = rgbaMatch[1].split(",").map((v) => parseFloat(v.trim()));
         if (values.length >= 4) {
@@ -2814,7 +2814,7 @@
           };
         }
       }
-      const rgbMatch = cssColor.match(/rgb\(([^)]+)\)/);
+      const rgbMatch = cssColor2.match(/rgb\(([^)]+)\)/);
       if (rgbMatch) {
         const values = rgbMatch[1].split(",").map((v) => parseFloat(v.trim()));
         if (values.length >= 3) {
@@ -2826,8 +2826,8 @@
           };
         }
       }
-      const rgb = this.cssColorToRgb(cssColor);
-      return rgb ? { ...rgb, a: 1 } : null;
+      const rgb2 = this.cssColorToRgb(cssColor2);
+      return rgb2 ? { ...rgb2, a: 1 } : null;
     }
     /**
      * Create gradient from CSS linear-gradient with enhanced transparency support
@@ -2891,30 +2891,30 @@
     /**
      * Parse direction keywords (to top, to right, etc.)
      */
-    static parseDirection(direction) {
-      direction = direction.trim().toLowerCase();
-      if (direction.includes("to top") && direction.includes("right")) {
+    static parseDirection(direction2) {
+      direction2 = direction2.trim().toLowerCase();
+      if (direction2.includes("to top") && direction2.includes("right")) {
         return 45;
       }
-      if (direction.includes("to top") && direction.includes("left")) {
+      if (direction2.includes("to top") && direction2.includes("left")) {
         return 315;
       }
-      if (direction.includes("to bottom") && direction.includes("right")) {
+      if (direction2.includes("to bottom") && direction2.includes("right")) {
         return 135;
       }
-      if (direction.includes("to bottom") && direction.includes("left")) {
+      if (direction2.includes("to bottom") && direction2.includes("left")) {
         return 225;
       }
-      if (direction.includes("to top")) {
+      if (direction2.includes("to top")) {
         return 0;
       }
-      if (direction.includes("to right")) {
+      if (direction2.includes("to right")) {
         return 90;
       }
-      if (direction.includes("to bottom")) {
+      if (direction2.includes("to bottom")) {
         return 180;
       }
-      if (direction.includes("to left")) {
+      if (direction2.includes("to left")) {
         return 270;
       }
       return 180;
@@ -3126,9 +3126,9 @@
           const spreadRadius = parseFloat(parts[3]) || 0;
           let color = { r: 0, g: 0, b: 0, a: 0.25 };
           if (parts[4]) {
-            const rgb = this.cssColorToRgb(parts[4]);
-            if (rgb) {
-              color = { ...rgb, a: 1 };
+            const rgb2 = this.cssColorToRgb(parts[4]);
+            if (rgb2) {
+              color = { ...rgb2, a: 1 };
             }
           }
           const isInset = shadow.includes("inset");
@@ -3894,8 +3894,8 @@
     }
     return { horizontal, vertical };
   }
-  function mapFlexDirection(direction) {
-    if (direction === "column" || direction === "column-reverse") return "VERTICAL";
+  function mapFlexDirection(direction2) {
+    if (direction2 === "column" || direction2 === "column-reverse") return "VERTICAL";
     return "HORIZONTAL";
   }
   function mapJustifyContent(value) {
@@ -5134,6 +5134,52 @@
     }
   };
 
+  // apps/design-studio/app/paint.mjs
+  var hex = (value) => typeof value === "string" && /^#[a-f\d]{6}$/iu.test(value);
+  var rgb = (value) => [1, 3, 5].map((offset) => parseInt(value.slice(offset, offset + 2), 16) / 255);
+  function gradientMatrix(handles) {
+    const [a, b, c] = handles;
+    return [
+      [b.x - a.x, 2 * (c.x - a.x), 2 * a.x - c.x],
+      [b.y - a.y, 2 * (c.y - a.y), 2 * a.y - c.y]
+    ];
+  }
+  function inverseGradientMatrix(handles) {
+    const [[a, b, c], [d, e, f]] = gradientMatrix(handles), determinant = a * e - b * d;
+    if (Math.abs(determinant) < 1e-8) throw new Error("\u7EBF\u6027\u6E10\u53D8\u5750\u6807\u4E0D\u53EF\u9006");
+    return [
+      [e / determinant, -b / determinant, (b * f - e * c) / determinant],
+      [-d / determinant, a / determinant, (d * c - a * f) / determinant]
+    ];
+  }
+  function designFillPaints(node) {
+    return node.fillPaints ?? (hex(node.fill) ? [{ type: "SOLID", color: node.fill, opacity: 1 }] : []);
+  }
+  function designPaintsToFigma(node) {
+    return designFillPaints(node).map(
+      (paint) => paint.type === "SOLID" ? {
+        type: "SOLID",
+        color: Object.fromEntries(
+          ["r", "g", "b"].map((key, index) => [key, rgb(paint.color)[index]])
+        ),
+        opacity: paint.opacity
+      } : {
+        type: "GRADIENT_LINEAR",
+        opacity: paint.opacity,
+        gradientTransform: inverseGradientMatrix(paint.handles),
+        gradientStops: paint.stops.map((stop) => ({
+          position: stop.position,
+          color: {
+            ...Object.fromEntries(
+              ["r", "g", "b"].map((key, index) => [key, rgb(stop.color)[index]])
+            ),
+            a: stop.opacity
+          }
+        }))
+      }
+    );
+  }
+
   // apps/design-studio/app/document-bundle.mjs
   var MAX_WORKSPACE_DESIGN_TEXT_BYTES = 384 * 1024;
   var MAX_DESIGN_BUNDLE_PART_BYTES = 360 * 1024;
@@ -5151,6 +5197,160 @@
   var MAX_FIGMA_ASSET_BYTES = 8 * 1024 * 1024;
   var MAX_FIGMA_ASSET_TOTAL_BYTES = 12 * 1024 * 1024;
   var MAX_FIGMA_SOURCE_BYTES = 16 * 1024 * 1024;
+
+  // apps/design-studio/app/css-linear-gradient.mjs
+  var fail = (message) => {
+    throw new Error(message);
+  };
+  var split = (value) => {
+    const parts = [];
+    let depth = 0, start = 0;
+    for (let i = 0; i < value.length; i++) {
+      if (value[i] === "(") depth++;
+      if (value[i] === ")" && --depth < 0) fail("\u80CC\u666F\u62EC\u53F7\u65E0\u6548");
+      if (value[i] === "," && depth === 0) {
+        parts.push(value.slice(start, i).trim());
+        start = i + 1;
+      }
+    }
+    if (depth) fail("\u80CC\u666F\u62EC\u53F7\u65E0\u6548");
+    parts.push(value.slice(start).trim());
+    return parts;
+  };
+  var numeric = /^[-+]?(?:\d+(?:\.\d*)?|\.\d+)$/u;
+  function cssColor(value) {
+    if (value === "transparent") return { color: "#000000", opacity: 0 };
+    const match = /^rgba?\(([^()]*)\)$/u.exec(value);
+    if (!match) fail("\u4EC5\u652F\u6301\u8BA1\u7B97\u540E\u7684 sRGB rgb/rgba \u989C\u8272");
+    const parts = match[1].trim().split(/[\s,/]+/u);
+    if (parts.length < 3 || parts.length > 4 || parts.some((part) => !numeric.test(part)))
+      fail("\u989C\u8272\u901A\u9053\u683C\u5F0F\u4E0D\u53D7\u652F\u6301");
+    const channels = parts.slice(0, 3).map(Number), opacity = Number(parts[3] ?? 1);
+    if (channels.some((v) => !Number.isInteger(v) || v < 0 || v > 255) || opacity < 0 || opacity > 1)
+      fail("\u989C\u8272\u8D85\u51FA\u516B\u4F4D sRGB/\u900F\u660E\u5EA6\u8303\u56F4");
+    return { color: `#${channels.map((v) => v.toString(16).padStart(2, "0")).join("")}`, opacity };
+  }
+  function direction(value, width, height) {
+    if (value.startsWith("to ")) {
+      const words = value.slice(3).split(/\s+/u);
+      if (words.length > 2 || new Set(words).size !== words.length || words.some((word) => !["top", "right", "bottom", "left"].includes(word)))
+        fail("\u6E10\u53D8\u65B9\u5411\u4E0D\u53D7\u652F\u6301");
+      const x = words.includes("right") ? 1 : words.includes("left") ? -1 : 0;
+      const y = words.includes("bottom") ? 1 : words.includes("top") ? -1 : 0;
+      if (words.length === 2 && (!x || !y)) fail("\u6E10\u53D8\u65B9\u5411\u51B2\u7A81");
+      if (x && y) {
+        const diagonal = Math.hypot(width, height);
+        return { x: x * height / diagonal, y: y * width / diagonal };
+      }
+      return { x, y };
+    }
+    const match = /^([-+]?(?:\d+(?:\.\d*)?|\.\d+))(deg|grad|rad|turn)$/u.exec(value);
+    if (!match) fail("\u6E10\u53D8\u89D2\u5EA6\u4E0D\u53D7\u652F\u6301");
+    const units = { deg: Math.PI / 180, grad: Math.PI / 200, rad: 1, turn: 2 * Math.PI };
+    const angle = Number(match[1]) * units[match[2]];
+    if (!Number.isFinite(angle)) fail("\u6E10\u53D8\u89D2\u5EA6\u65E0\u6548");
+    const snap = (v) => Math.abs(v) < 1e-12 ? 0 : Math.abs(Math.abs(v) - 1) < 1e-12 ? Math.sign(v) : v;
+    return { x: snap(Math.sin(angle)), y: snap(-Math.cos(angle)) };
+  }
+  function linear(value, width, height) {
+    var _a, _b;
+    const match = /^linear-gradient\((.*)\)$/u.exec(value);
+    if (!match) fail("\u4EC5\u652F\u6301\u975E\u91CD\u590D linear-gradient\uFF1B\u5F84\u5411\u3001\u9525\u5F62\u6216\u91CD\u590D\u6E10\u53D8\u672A\u8F6C\u6362");
+    const parts = split(match[1]);
+    const hasDirection = /^(?:to\s|[-+]?(?:\d|\.))/u.test(parts[0]);
+    const vector = direction(hasDirection ? parts.shift() : "180deg", width, height);
+    const length = Math.abs(width * vector.x) + Math.abs(height * vector.y);
+    if (!Number.isFinite(length) || length < 1e-4) fail("\u6E10\u53D8\u7ED8\u5236\u533A\u57DF\u9000\u5316");
+    const stops = [];
+    for (const part of parts) {
+      const stop = /^(rgba?\([^()]*\)|transparent)(.*)$/u.exec(part);
+      if (!stop) fail("\u989C\u8272\u63D0\u793A\u3001\u63D2\u503C\u8272\u5F69\u7A7A\u95F4\u6216\u590D\u6742\u8272\u6807\u672A\u8F6C\u6362");
+      const color = cssColor(stop[1]);
+      const positions = stop[2].trim() ? stop[2].trim().split(/\s+/u) : [null];
+      if (positions.length > 2) fail("\u6E10\u53D8\u8272\u6807\u4F4D\u7F6E\u8FC7\u591A");
+      for (const position of positions) {
+        const parsed = position === null ? null : /^([-+]?(?:\d+(?:\.\d*)?|\.\d+))(%|px)?$/u.exec(position);
+        if (position !== null && (!parsed || !parsed[2] && Number(parsed[1]) !== 0))
+          fail("\u8272\u6807\u4EC5\u652F\u6301\u50CF\u7D20\u3001\u767E\u5206\u6BD4\u6216\u96F6\uFF1Bcalc/\u5176\u4ED6\u5355\u4F4D\u672A\u8F6C\u6362");
+        const resolved = parsed ? Number(parsed[1]) / (parsed[2] === "%" ? 100 : length) : null;
+        if (resolved !== null && !Number.isFinite(resolved)) fail("\u8272\u6807\u4F4D\u7F6E\u8D85\u51FA\u6570\u503C\u8303\u56F4");
+        stops.push({ ...color, position: resolved });
+      }
+    }
+    if (stops.length < 2 || stops.length > 16) fail("\u6E10\u53D8\u5FC5\u987B\u6709 2\u201316 \u4E2A\u8272\u6807");
+    (_a = stops[0]).position ?? (_a.position = 0);
+    (_b = stops.at(-1)).position ?? (_b.position = 1);
+    let previous = -Infinity;
+    for (const stop of stops) if (stop.position !== null) {
+      stop.position = Math.max(previous, stop.position);
+      previous = stop.position;
+    }
+    for (let i = 0; i < stops.length - 1; i++) {
+      let next = i + 1;
+      while (stops[next].position === null) next++;
+      for (let j = i + 1; j < next; j++)
+        stops[j].position = stops[i].position + (stops[next].position - stops[i].position) * (j - i) / (next - i);
+      i = next - 1;
+    }
+    for (let i = 0; i < stops.length - 1; i++) {
+      const a = stops[i], b = stops[i + 1];
+      if (a.position === b.position || a.opacity === b.opacity || a.color === b.color) continue;
+      if (a.opacity === 0 && b.opacity > 0) a.color = b.color;
+      else if (b.opacity === 0 && a.opacity > 0) b.color = a.color;
+      else fail("\u4E0D\u540C\u989C\u8272\u4E14\u900F\u660E\u5EA6\u53D8\u5316\u7684 CSS \u9884\u4E58\u63D2\u503C\u65E0\u6CD5\u7531\u5F53\u524D\u539F\u751F\u6E10\u53D8\u65E0\u635F\u8868\u793A");
+    }
+    for (let i = 1; i < stops.length - 1; i++) {
+      if (stops[i].opacity !== 0 || stops[i - 1].opacity === 0 || stops[i + 1].opacity === 0 || stops[i - 1].color === stops[i + 1].color) continue;
+      const stop = stops[i];
+      stop.color = stops[i - 1].color;
+      stops.splice(i + 1, 0, { ...stop, color: stops[i + 1].color });
+      i++;
+    }
+    if (stops.length > 16) fail("\u900F\u660E\u8272\u6807\u5C55\u5F00\u540E\u8D85\u8FC7 16 \u9879");
+    const start = Math.min(0, stops[0].position), end = Math.max(1, stops.at(-1).position);
+    const point = (t, perpendicular = 0) => ({
+      x: 0.5 + ((t - 0.5) * length * vector.x - perpendicular * length * vector.y) / width,
+      y: 0.5 + ((t - 0.5) * length * vector.y + perpendicular * length * vector.x) / height
+    });
+    const handles = [point(start), point(end), point(start, (end - start) / 2)];
+    if (handles.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y) || Math.abs(p.x) > 100 || Math.abs(p.y) > 100)) fail("\u6E10\u53D8\u63A7\u5236\u70B9\u8D85\u51FA\u539F\u751F\u8303\u56F4");
+    return {
+      type: "GRADIENT_LINEAR",
+      opacity: 1,
+      handles,
+      stops: stops.map((stop) => ({ ...stop, position: (stop.position - start) / (end - start) }))
+    };
+  }
+  function cssLinearBackgroundPaints(style, width, height) {
+    if (!(width > 0 && height > 0)) fail("\u6E10\u53D8\u7ED8\u5236\u533A\u57DF\u5FC5\u987B\u5927\u4E8E\u96F6");
+    if (typeof style?.["background-image"] !== "string" || style["background-image"].length > 16e3)
+      fail("\u7F3A\u5C11\u6709\u754C\u539F\u59CB CSS \u6E10\u53D8\uFF0C\u4E0D\u80FD\u4ECE\u4E0A\u6E38\u5DF2\u4E22\u5931\u5355\u4F4D\u7684\u8272\u6807\u731C\u6D4B");
+    const images = split(style["background-image"]);
+    if (images.length > 8) fail("\u80CC\u666F\u6700\u591A\u516B\u5C42");
+    const perLayer = (property, index, fallback) => {
+      const values = split(String(style[property] ?? fallback));
+      return values[index % values.length];
+    };
+    const paints = [];
+    const base = cssColor(style["background-color"] ?? "transparent");
+    if (base.opacity > 0) paints.push({ type: "SOLID", ...base });
+    for (let i = images.length - 1; i >= 0; i--) {
+      if (images[i] === "none") continue;
+      if (perLayer("background-size", i, "auto") !== "auto" && perLayer("background-size", i, "auto") !== "auto auto")
+        fail("\u81EA\u5B9A\u4E49\u80CC\u666F\u5C3A\u5BF8\u7684\u6E10\u53D8\u672A\u8F6C\u6362");
+      if (!/^(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)%|0(?:px)?)(?:\s+(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)%|0(?:px)?))?$/u.test(perLayer("background-position", i, "0% 0%")))
+        fail("\u5E26\u50CF\u7D20\u504F\u79FB\u7684\u6E10\u53D8\u80CC\u666F\u4F4D\u7F6E\u672A\u8F6C\u6362");
+      if (perLayer("background-blend-mode", i, "normal") !== "normal") fail("\u80CC\u666F\u6DF7\u5408\u6A21\u5F0F\u672A\u8F6C\u6362");
+      if (perLayer("background-attachment", i, "scroll") !== "scroll") fail("\u56FA\u5B9A\u6216\u5C40\u90E8\u80CC\u666F\u672A\u8F6C\u6362");
+      const origin = perLayer("background-origin", i, "padding-box");
+      if (origin !== "border-box" && (origin !== "padding-box" || ["top", "right", "bottom", "left"].some((side) => parseFloat(style[`border-${side}-width`] ?? "0") !== 0)))
+        fail("\u975E\u5B8C\u6574\u5BB9\u5668\u7684\u6E10\u53D8\u539F\u70B9\u672A\u8F6C\u6362");
+      if (perLayer("background-clip", i, "border-box") !== "border-box") fail("\u6E10\u53D8\u80CC\u666F\u88C1\u526A\u672A\u8F6C\u6362");
+      paints.push(linear(images[i], width, height));
+    }
+    if (!paints.length || paints.length > 8) fail("\u80CC\u666F\u7ED8\u5236\u5C42\u6570\u8D85\u51FA 1\u20138 \u5C42\u8303\u56F4");
+    return paints;
+  }
 
   // apps/design-studio/app/design-node-adapter.mjs
   var textBytes = (value) => new TextEncoder().encode(value);
@@ -5199,6 +5399,7 @@
     if (!roots.length || roots.length > 20) throw new Error("\u6BCF\u6B21\u5BFC\u5165 1\u201320 \u4E2A\u6839\u8282\u70B9");
     let count = 0;
     const warnings = [];
+    const reservedIds = /* @__PURE__ */ new Set();
     function inspect(node, depth = 0) {
       if (!object(node) || depth > 60 || ++count > MAX_NODES)
         throw new Error("\u8282\u70B9\u6811\u6700\u591A 3000 \u4E2A\u8282\u70B9\u300160 \u5C42");
@@ -5214,14 +5415,42 @@
       if (node.nodeType === "svg" || node.type === "SVG") inertDesignSvg(node.svgContent);
       if (node.children !== void 0 && !Array.isArray(node.children))
         throw new Error("children \u5FC5\u987B\u662F\u6570\u7EC4");
+      if (typeof node.id === "string" && node.id) reservedIds.add(node.id);
       for (const child of node.children ?? []) inspect(child, depth + 1);
     }
     roots.forEach((root) => inspect(root));
+    const gradientPaints = /* @__PURE__ */ new Map();
+    const assignedIds = /* @__PURE__ */ new Set();
+    let sourceSerial = 0;
+    function retainGradients(node) {
+      if (typeof node.id !== "string" || !node.id || assignedIds.has(node.id)) {
+        let id;
+        do {
+          id = `codeshell-source-${sourceSerial++}`;
+        } while (reservedIds.has(id));
+        node.id = id;
+        reservedIds.add(id);
+      }
+      assignedIds.add(node.id);
+      if (node.nodeType && (node.cssBackground?.["background-image"]?.includes("gradient(") || node.background?.layers?.some((layer) => layer.type?.endsWith("gradient")))) {
+        node.background ?? (node.background = { layers: [] });
+        node.background.layers = (node.background.layers ?? []).filter((layer) => !layer.type?.endsWith("gradient"));
+        try {
+          const fillPaints = cssLinearBackgroundPaints(node.cssBackground, node.bounds.width, node.bounds.height);
+          gradientPaints.set(node.id, designPaintsToFigma({ fillPaints }));
+        } catch (error) {
+          warnings.push(`\u6E10\u53D8\u672A\u5BFC\u5165\uFF0C\u4FDD\u7559\u72EC\u7ACB\u80CC\u666F\u8272\uFF1A${error.message}\u3002`);
+        }
+      }
+      for (const child of node.children ?? []) retainGradients(child);
+    }
+    roots.forEach(retainGradients);
     const converted = roots.map(
       (root) => root.nodeType ? FigmaAdapter.toFigmaJSON(root) : root
     );
     count = 0;
     function normalizeOnce(node) {
+      if (gradientPaints.has(node.id)) node.fills = gradientPaints.get(node.id);
       node.name = String(node.name || node.type || "HTML layer").slice(0, 120);
       node.id || (node.id = `html-${serial++}`);
       node.width = Math.max(1, node.width);

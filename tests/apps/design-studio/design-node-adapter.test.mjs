@@ -15,6 +15,8 @@ import { transformedNodeBoundsInTree } from "../../../apps/design-studio/app/geo
 import { resolveDesignResource } from "../../../apps/design-studio/app/resource-store.mjs";
 import { createFigmaTransfer } from "../../../apps/design-studio/app/figma-bridge.mjs";
 import { applyAllAutoLayouts } from "../../../apps/design-studio/app/layout.mjs";
+import { cssLinearBackgroundPaints } from "../../../apps/design-studio/app/css-linear-gradient.mjs";
+import { inverseGradientMatrix, sampleDesignFill } from "../../../apps/design-studio/app/paint.mjs";
 import {
   createPortableDesign,
   planPortableDesign,
@@ -547,15 +549,66 @@ test("unsupported paints, mixed text, effects and geometry corrections are repor
     }),
     options,
   );
-  assert.equal(allNodes(result)[0].fill, "#c80a14");
+  assert.equal(allNodes(result)[0].fill, "transparent");
   for (const code of [
-    "gradient-solid-fallback",
+    "unsupported-css-gradient",
     "rich-text-uniform",
     "shadow-approximation",
     "unsupported-effects",
   ])
     assert.ok(codes(result).includes(code), code);
   assert.equal(JSON.parse(allNodes(result)[1].notes).styledSegments[0].style.fontWeight, 700);
+});
+
+test("retained CSS gradient units, angles and stop fixup map to editable paints rather than upstream unit guesses", () => {
+  const gradient = (image, extra = {}, width = 200, height = 100) =>
+    cssLinearBackgroundPaints({ "background-image": image, ...extra }, width, height).at(-1);
+  const px = gradient("linear-gradient(rgb(0,0,0), rgb(255,255,255) 100px)", {}, 200, 400);
+  assert.equal(px.stops[1].position, 0.25);
+  assert.deepEqual(px.handles.slice(0, 2), [{ x: 0.5, y: 0 }, { x: 0.5, y: 1 }]);
+  const sample = (paint, x, y) => sampleDesignFill({ fillPaints: [paint] }, { x, y });
+  assert.equal(sample(px, 0.5, 0.125).red, 0.5);
+  assert.equal(sample(px, 0.5, 0.5).red, 1);
+  const angle = gradient("linear-gradient(45deg, rgb(0,0,0), rgb(255,255,255))");
+  const [row] = inverseGradientMatrix(angle.handles);
+  assert(Math.abs(row[0] / 200 + row[1] / 100) < 1e-12, "45° must project equally in physical pixels");
+  assert(Math.abs(sample(angle, 0.5, 0.5).red - 0.5) < 1e-12);
+  const corner = gradient("linear-gradient(to top right, rgb(0,0,0), rgb(255,255,255))");
+  assert(Math.abs(sample(corner, 0, 0).red - 0.5) < 1e-12);
+  assert(Math.abs(sample(corner, 1, 1).red - 0.5) < 1e-12);
+  const fixed = gradient("linear-gradient(0.25turn, rgb(0,0,0) 60%, rgb(20,20,20), rgb(40,40,40) 20%, rgb(255,255,255))");
+  assert.deepEqual(fixed.stops.map((stop) => stop.position), [0.6, 0.6, 0.6, 1]);
+  const outside = gradient("linear-gradient(90deg, rgb(0,0,0) -100%, rgb(255,255,255) 200%)");
+  assert.deepEqual(outside.stops.map((stop) => stop.position), [0, 1]);
+  assert(Math.abs(sample(outside, 0.5, 0.5).red - 0.5) < 1e-12);
+});
+
+test("CSS background stacks keep alpha and layer order and refuse unsupported interpolation or background geometry", () => {
+  const style = (image, extra = {}) => ({ "background-image": image, ...extra });
+  const paints = cssLinearBackgroundPaints(style(
+    "linear-gradient(90deg, rgba(255,0,0,.5), transparent), linear-gradient(rgb(0,0,255), rgb(0,0,255))",
+    { "background-color": "rgb(0,255,0)" },
+  ), 200, 100);
+  assert.equal(paints.length, 3);
+  assert.deepEqual(paints[0], { type: "SOLID", color: "#00ff00", opacity: 1 });
+  assert.equal(paints[1].stops[0].color, "#0000ff");
+  assert.deepEqual(paints[2].stops.map(({ color, opacity }) => [color, opacity]), [["#ff0000", 0.5], ["#ff0000", 0]]);
+  const internal = cssLinearBackgroundPaints(style("linear-gradient(rgb(255,0,0), transparent, rgb(0,0,255))"), 200, 100)[0];
+  assert.deepEqual(internal.stops.map(({ position, color, opacity }) => [position, color, opacity]),
+    [[0, "#ff0000", 1], [0.5, "#ff0000", 0], [0.5, "#0000ff", 0], [1, "#0000ff", 1]]);
+  for (const image of [
+    "radial-gradient(rgb(0,0,0), rgb(255,255,255))",
+    "conic-gradient(rgb(0,0,0), rgb(255,255,255))",
+    "repeating-linear-gradient(rgb(0,0,0), rgb(255,255,255))",
+    "linear-gradient(in oklab, rgb(0,0,0), rgb(255,255,255))",
+    "linear-gradient(rgb(0,0,0), 30%, rgb(255,255,255))",
+    "linear-gradient(rgba(255,0,0,.5), rgba(0,0,255,.75))",
+  ]) assert.throws(() => cssLinearBackgroundPaints(style(image), 200, 100), /未转换|无法/u, image);
+  for (const extra of [{ "background-size": "100px 100px" }, { "background-blend-mode": "multiply" },
+    { "background-position": "10px 0px" },
+    { "background-clip": "padding-box" }, { "background-origin": "content-box" },
+    { "border-top-width": "2px" }, { "background-attachment": "fixed" }])
+    assert.throws(() => cssLinearBackgroundPaints(style("linear-gradient(rgb(0,0,0), rgb(255,255,255))", extra), 200, 100));
 });
 
 test("cycles, unsupported nodes, excessive nesting and text limits fail clearly before any caller can persist data", async () => {

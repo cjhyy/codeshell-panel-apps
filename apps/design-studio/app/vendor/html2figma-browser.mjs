@@ -5432,9 +5432,29 @@ var html2figmaCore = (() => {
     if (!tree) return null;
     const values = captureLayoutValues(tree);
     const svgResources = /* @__PURE__ */ new Map();
+    const backgrounds = /* @__PURE__ */ new Map();
     const captureSvg = (node) => {
       if (node.tag === "svg" && node.metadata?.semantic && node.domNode instanceof realm.Element)
         svgResources.set(node.metadata.semantic, captureStandaloneSvg(node.domNode));
+      if (node.nodeType === "element" && node.metadata?.semantic && node.computedStyle?.getPropertyValue("background-image").includes("gradient(")) {
+        const background = {};
+        for (const property of [
+          "background-image",
+          "background-color",
+          "background-size",
+          "background-position",
+          "background-repeat",
+          "background-origin",
+          "background-clip",
+          "background-blend-mode",
+          "background-attachment",
+          "border-top-width",
+          "border-right-width",
+          "border-bottom-width",
+          "border-left-width"
+        ]) background[property] = node.computedStyle.getPropertyValue(property);
+        backgrounds.set(node.metadata.semantic, background);
+      }
       for (const child of node.children) captureSvg(child);
     };
     captureSvg(tree);
@@ -5442,6 +5462,8 @@ var html2figmaCore = (() => {
     const attach = (node) => {
       const cssLayout = node.nodeType !== "text" && node.semantic && values.get(node.semantic);
       if (cssLayout && Object.keys(cssLayout).length > 0) node.cssLayout = cssLayout;
+      if (node.nodeType !== "text" && node.semantic && backgrounds.has(node.semantic))
+        node.cssBackground = backgrounds.get(node.semantic);
       if (node.nodeType === "svg" && node.semantic && svgResources.has(node.semantic))
         node.svgContent = svgResources.get(node.semantic);
       if (node.nodeType === "container") for (const child of node.children) attach(child);

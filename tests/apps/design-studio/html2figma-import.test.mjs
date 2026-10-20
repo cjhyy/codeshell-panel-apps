@@ -529,6 +529,87 @@ test("translucent CSS card headers keep light backgrounds and readable editable 
   assert.deepEqual(f.errors, []);
 });
 
+test("production CSS linear gradients preserve 100px stops, angles, transparent overlays and layer order through portable files and the real plugin UI", async (t) => {
+  const f = await fixture(t);
+  await f.page.setViewportSize({ width: 480, height: 360 });
+  const html = `<!doctype html><style>
+    *{box-sizing:border-box}html,body{margin:0;background:#fff}
+    main{display:flex;flex-direction:column;width:480px;height:360px;background:linear-gradient(#ddd,white 100px)}
+    .row{display:flex;flex:none;width:480px;height:100px}.tile{flex:none;width:240px;height:100px}
+    #angle{background:linear-gradient(45deg,#123456,#abcdef)}
+    #corner{background:linear-gradient(to bottom right,#eee,#555)}
+    #fade{background:linear-gradient(90deg,rgba(255,0,0,.4) 0% 50%,transparent 50% 100%) #0000ff}
+    #layers{background:linear-gradient(90deg,rgba(0,255,0,.4) 0% 50%,transparent 50% 100%),linear-gradient(#f00 0% 50%,#00f 50% 100%) #fff}
+    .spacer{height:120px;flex:none}
+    </style><main id="gradients"><div class="spacer"></div><div class="row"><div id="angle" class="tile"></div><div id="corner" class="tile"></div></div><div class="row"><div id="fade" class="tile"></div><div id="layers" class="tile"></div></div></main>`;
+  await f.page.setContent(html);
+  const source = PngImage.sync.read(await f.page.screenshot());
+  const captured = await f.capture(html, { rootSelector: "#gradients" });
+  const design = normalizeDesignDocument(captured.document);
+  const root = byHtmlId(design, "gradients");
+  assert.equal(root.layout, "vertical");
+  assert.equal(root.fillPaints[0].stops[1].position, 100 / 360);
+  assert.equal(captured.resourcePlans.length, 0, "editable paints must not create image assets");
+  assert.equal(design.nodes.some((node) => node.type === "image" || node.layoutPositioning === "absolute"), false);
+  assert.equal(captured.report.warnings.some((warning) => /gradient|multiple-backgrounds/u.test(warning.code)), false);
+  const before = design.nodes.map(({ x, y, width, height }) => [x, y, width, height]);
+  applyAllAutoLayouts(design.nodes);
+  assert.deepEqual(design.nodes.map(({ x, y, width, height }) => [x, y, width, height]), before);
+  const portable = await createPortableDesign({ document: design, source: {
+    workspaceRoot: "/gradient-fixture", sessionId: "gradients", path: "designs/gradients.codesign.json",
+  }, readText: async () => undefined, sha256Bytes: hash });
+  await planPortableDesign(portable, { sha256Bytes: hash });
+  const reopened = normalizeDesignDocument(JSON.parse(portable).document);
+  assert.deepEqual(reopened.nodes.map((node) => node.fillPaints), design.nodes.map((node) => node.fillPaints));
+  const svg = await f.page.evaluate(async (value) => {
+    const { exportDesignSvg, normalizeDesignDocument } = await import("/app/document.mjs");
+    return exportDesignSvg(normalizeDesignDocument(value));
+  }, JSON.parse(portable).document);
+  await f.page.setContent(`<!doctype html><style>html,body{margin:0;background:#fff}svg{display:block}</style>${svg}`);
+  const rendered = PngImage.sync.read(await f.page.screenshot());
+  let changed = 0;
+  for (let offset = 0; offset < source.data.length; offset += 4)
+    if ([0, 1, 2, 3].some((channel) => source.data[offset + channel] !== rendered.data[offset + channel])) changed++;
+  assert.equal(changed, 0, "every source RGBA pixel must survive CSS → v3 → portable → SVG");
+
+  await f.page.evaluate(() => {
+    window.gradientPluginRequests = [];
+    addEventListener("message", (event) => {
+      if (event.data?.pluginMessage?.type === "import-transfer") window.gradientPluginRequests.push(event.data.pluginMessage);
+    });
+    document.body.innerHTML = '<iframe id="bridge" src="/bridge-ui.html" sandbox="allow-scripts allow-downloads" style="width:420px;height:600px"></iframe>';
+  });
+  const ui = f.page.frameLocator("#bridge");
+  await ui.locator("#paste-transfer-details summary").click();
+  await ui.locator("#paste-json").fill(portable);
+  await ui.locator("#load-pasted-json").click();
+  await ui.locator("body[aria-busy=false]").waitFor();
+  await ui.locator("#import").click();
+  await f.page.waitForFunction(() => window.gradientPluginRequests.length === 1);
+  const transfer = JSON.parse(await f.page.evaluate(() => window.gradientPluginRequests[0].content));
+  assert.deepEqual(transfer.assets, {});
+  const prepared = await preparePluginFile(portable, { sha256Bytes: hash });
+  assert.deepEqual(transfer, prepared.transfer);
+  for (const node of allTransferNodes(transfer)) {
+    const original = reopened.nodes.find((entry) => entry.id === node.id);
+    assert.deepEqual(node.fillPaints, original.fillPaints);
+  }
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("unsupported computed CSS gradients produce actionable diagnostics and retain only their independent solid base", async (t) => {
+  const f = await fixture(t);
+  for (const image of ["radial-gradient(red,blue)", "conic-gradient(red,blue)",
+    "repeating-linear-gradient(red,blue 20px)", "linear-gradient(rgba(255,0,0,.5),rgba(0,0,255,.75))"]) {
+    const result = await f.capture(`<style>body{margin:0}main{width:480px;height:360px;background-color:#123456;background-image:${image}}</style><main id="unsupported"></main>`, { rootSelector: "main" });
+    const node = byHtmlId(normalizeDesignDocument(result.document), "unsupported");
+    assert.equal(node.fill, "#123456");
+    assert.equal(node.fillPaints, undefined);
+    assert(result.report.warnings.some((warning) => warning.code === "unsupported-css-gradient"), image);
+  }
+});
+
 test("same-document SVG symbols and use chains remain standalone through pixels, portable files and the production plugin UI", async (t) => {
   const f = await fixture(t);
   await f.page.setViewportSize({ width: 480, height: 360 });

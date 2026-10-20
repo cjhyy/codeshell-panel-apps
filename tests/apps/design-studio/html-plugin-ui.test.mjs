@@ -79,6 +79,42 @@ test("real opaque Figma UI iframe previews static HTML with the upstream convert
   assert.deepEqual(f.errors, []);
 });
 
+test("standalone HTML plugin uses retained CSS for native 100px gradients and layered alpha instead of the unit-losing upstream paint parse", async (t) => {
+  const f = await fixture(t);
+  await f.frame.locator("#selector").fill("main");
+  await f.frame.locator("#source").fill(`<style>body{margin:0}main{display:flex;width:400px;height:240px;background:linear-gradient(#ddd,white 100px)}div{width:200px;height:100px;flex:none}.first{background:linear-gradient(90deg,rgba(255,0,0,.5),transparent) blue}.second{background:linear-gradient(to bottom right,#eee,#555)}</style><main><div class="first"></div><div class="second"></div></main>`);
+  await f.frame.locator("#preview").click();
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(), /预览完成/u);
+  await f.frame.locator("#create").click();
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(), /已在 Figma 创建/u);
+  const imported = f.harness.page.selection[0];
+  assert.equal(imported.layoutMode, "HORIZONTAL");
+  assert.equal(imported.fills[0].type, "GRADIENT_LINEAR");
+  assert.equal(imported.fills[0].gradientStops[1].position, 100 / 240);
+  const layered = imported.children[0];
+  assert.equal(layered.fills.length, 2);
+  assert.equal(layered.fills[0].type, "SOLID");
+  assert.equal(layered.fills[0].color.b, 1);
+  assert.equal(layered.fills[1].gradientStops[0].color.a, 0.5);
+  assert.equal(layered.fills[1].gradientStops[1].color.r, 1);
+  assert.equal(layered.fills[1].gradientStops[1].color.a, 0);
+  assert.equal(f.harness.images.length, 0);
+  assert.equal(imported.children.some((node) => node.layoutPositioning === "ABSOLUTE"), false);
+  assert.deepEqual(f.errors, []);
+  assert.deepEqual(f.network, []);
+
+  await f.frame.locator("#source").fill('<main style="width:400px;height:240px;background:radial-gradient(red,blue) #123456"></main>');
+  await f.frame.locator("#preview").click();
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(), /渐变未导入/u);
+  await f.frame.locator("#create").click();
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.equal(f.harness.page.selection[0].fills.length, 1);
+  assert.equal(f.harness.page.selection[0].fills[0].type, "SOLID");
+});
+
 test("HTML scripts, network resources, navigation and event handlers stay inert; editing invalidates preview", async (t) => {
   const f = await fixture(t);
   await f.frame

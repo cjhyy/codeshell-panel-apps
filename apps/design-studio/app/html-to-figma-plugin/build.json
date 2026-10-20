@@ -4,6 +4,7 @@
   "upstreamCommit": "ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c",
   "esbuildVersion": "0.28.2",
   "runtimeInputs": [
+    "apps/design-studio/app/css-linear-gradient.mjs",
     "apps/design-studio/app/design-node-adapter.mjs",
     "apps/design-studio/app/document-bundle.mjs",
     "apps/design-studio/app/document.mjs",
@@ -54,13 +55,13 @@
     },
     {
       "path": "code.js",
-      "bytes": 199695,
-      "sha256": "664377ce8c04152561627fb156eb2aad795dc6c02ca86d1f8e677575f2cd17fd"
+      "bytes": 212583,
+      "sha256": "ff1ef1786e34982f8fdfa90e4b8716fdd534c98341924ef60c0f0aded4cf198b"
     },
     {
       "path": "ui.html",
-      "bytes": 309657,
-      "sha256": "8ec5e2313adb19d6a45cdd27011fecf15ffd2d889e7ed99d01632a27aefccd91"
+      "bytes": 323560,
+      "sha256": "c500b437c64657433988030fff3ed2b161ae891d7e2ad1102f72a1363f800b97"
     },
     {
       "path": "README.md",

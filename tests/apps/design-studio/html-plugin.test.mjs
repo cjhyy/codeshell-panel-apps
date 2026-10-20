@@ -59,6 +59,32 @@ test("real upstream FigmaService creates editable styled text/frame, preserves e
   assert(f.calls.some((c) => c[0] === "undo"));
 });
 
+test("missing and duplicate DesignNode IDs cannot leak retained gradient paints onto unrelated nodes", async () => {
+  for (const id of [undefined, "duplicate"]) {
+    const f = htmlPluginHarness();
+    const text = (name) => ({
+      ...(id ? { id } : {}), nodeType: "text", tag: "span", name, content: name,
+      bounds: { x: 0, y: 0, width: 180, height: 30 }, opacity: 1,
+      visible: true, positioning: { mode: "static" },
+      textStyle: { fontFamily: "Arial", fontSize: 20, fontWeight: 400, fontStyle: "normal",
+        color: { r: 0, g: 0, b: 255, a: 1 }, textAlign: "left", textDecoration: "none", textTransform: "none",
+        lineHeight: { value: 28, unit: "px" }, letterSpacing: { value: 0, unit: "px" } },
+    });
+    const gradient = text("Gradient"), plain = text("Plain");
+    gradient.cssBackground = { "background-image": "linear-gradient(rgb(255,0,0),rgb(0,255,0))" };
+    gradient.background = { layers: [] };
+    const native = { ...frameFixture(), ...(id ? { id } : { id: undefined }) };
+    const result = await f.importDesign([gradient, plain, native]);
+    assert.equal(result.type, "import-success", result.message);
+    const created = f.page.selection;
+    assert.equal(created[0].fills[0].type, "GRADIENT_LINEAR");
+    assert.equal(created[1].fills[0].type, "SOLID");
+    assert.equal(created[1].characters, "Plain");
+    assert.equal(created[2].fills[0].type, "SOLID");
+    assert.equal(gradient.id, id, "the caller's source must remain untouched");
+  }
+});
+
 test("partial upstream child failure rolls back only newly created layers and restores selection", async () => {
   const f = htmlPluginHarness({ failText: true });
   const result = await f.importDesign(frameFixture([textFixture()]));

@@ -1,5 +1,7 @@
 import { FigmaAdapter } from "../upstream/packages/adapter/figma/FigmaAdapter";
 import { inertDesignSvg } from "../../../apps/design-studio/app/design-node-adapter.mjs";
+import { cssLinearBackgroundPaints } from "../../../apps/design-studio/app/css-linear-gradient.mjs";
+import { designPaintsToFigma } from "../../../apps/design-studio/app/paint.mjs";
 export { inertDesignSvg };
 export const MAX_INPUT_BYTES = 12 * 1024 * 1024;
 export const MAX_NODES = 3000;
@@ -18,6 +20,7 @@ export function prepareDesignInput(input: any) {
   if (!roots.length || roots.length > 20) throw new Error("每次导入 1–20 个根节点");
   let count = 0;
   const warnings: string[] = [];
+  const reservedIds = new Set<string>();
   function inspect(node: any, depth = 0) {
     if (!object(node) || depth > 60 || ++count > MAX_NODES)
       throw new Error("节点树最多 3000 个节点、60 层");
@@ -36,15 +39,46 @@ export function prepareDesignInput(input: any) {
     if (node.nodeType === "svg" || node.type === "SVG") inertDesignSvg(node.svgContent);
     if (node.children !== undefined && !Array.isArray(node.children))
       throw new Error("children 必须是数组");
+    if (typeof node.id === "string" && node.id) reservedIds.add(node.id);
     for (const child of node.children ?? []) inspect(child, depth + 1);
   }
   roots.forEach((root: any) => inspect(root));
+  const gradientPaints = new Map<string, any[]>();
+  const assignedIds = new Set<string>();
+  let sourceSerial = 0;
+  function retainGradients(node: any) {
+    // Inputs may mix DesignNode and native JSON roots. Make identities unique
+    // across both before using them to reattach paints after upstream mapping.
+    if (typeof node.id !== "string" || !node.id || assignedIds.has(node.id)) {
+      let id;
+      do { id = `codeshell-source-${sourceSerial++}`; } while (reservedIds.has(id));
+      node.id = id;
+      reservedIds.add(id);
+    }
+    assignedIds.add(node.id);
+    if (node.nodeType && (node.cssBackground?.["background-image"]?.includes("gradient(") ||
+        node.background?.layers?.some((layer: any) => layer.type?.endsWith("gradient")))) {
+      // Never pass the unit-losing upstream gradient parse into its Figma mapper.
+      // This is our cloned JSON, not the caller's DesignNode or pinned upstream.
+      node.background ??= { layers: [] };
+      node.background.layers = (node.background.layers ?? []).filter((layer: any) => !layer.type?.endsWith("gradient"));
+      try {
+        const fillPaints = cssLinearBackgroundPaints(node.cssBackground, node.bounds.width, node.bounds.height);
+        gradientPaints.set(node.id, designPaintsToFigma({ fillPaints }));
+      } catch (error: any) {
+        warnings.push(`渐变未导入，保留独立背景色：${error.message}。`);
+      }
+    }
+    for (const child of node.children ?? []) retainGradients(child);
+  }
+  roots.forEach(retainGradients);
   const converted = roots.map((root: any) =>
     root.nodeType ? FigmaAdapter.toFigmaJSON(root) : root,
   );
   count = 0;
   // The adapter can add synthetic frames; recheck the final tree once, without double recursion.
   function normalizeOnce(node: any) {
+    if (gradientPaints.has(node.id)) node.fills = gradientPaints.get(node.id);
     node.name = String(node.name || node.type || "HTML layer").slice(0, 120);
     node.id ||= `html-${serial++}`;
     node.width = Math.max(1, node.width);

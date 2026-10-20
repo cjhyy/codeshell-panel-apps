@@ -2,6 +2,8 @@
 import { normalizeDesignDocument, MAX_DESIGN_NODES_PER_PAGE } from "./document.mjs";
 import { createDesignResourcePersistencePlan, MAX_DESIGN_RESOURCES } from "./resource-store.mjs";
 import { normalizeFigmaAsset } from "./figma-assets.mjs";
+import { cssLinearBackgroundPaints } from "./css-linear-gradient.mjs";
+import { representativeDesignFill } from "./paint.mjs";
 
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const finite = (value, fallback = 0) => (Number.isFinite(value) ? value : fallback);
@@ -317,15 +319,16 @@ export async function designNodeToV3(tree, options = {}) {
     const solid = layers.find((layer) => layer.type === "color" && finite(layer.color?.a, 1) > 0);
     if (solid) solidFill(solid.color, node);
     const gradients = layers.filter((layer) => layer.type.endsWith("gradient"));
-    if (gradients.length) {
-      if (!solid) solidFill(gradients.at(-1).stops?.[0]?.color, node);
-      warn(
-        "gradient-solid-fallback",
-        node.id,
-        "v3 不支持渐变；已使用纯色近似，渐变方向与色标不能编辑或完整回导。",
-      );
+    const hasGradient = gradients.length || source.cssBackground?.["background-image"]?.includes("gradient(");
+    if (hasGradient) {
+      try {
+        node.fillPaints = cssLinearBackgroundPaints(source.cssBackground, node.width, node.height);
+        node.fill = representativeDesignFill(node.fillPaints);
+      } catch (error) {
+        warn("unsupported-css-gradient", node.id, `渐变未导入，保留独立背景色：${error.message}。`);
+      }
     }
-    if (layers.length > 1)
+    if (layers.length > 1 && !hasGradient)
       warn(
         "multiple-backgrounds",
         node.id,

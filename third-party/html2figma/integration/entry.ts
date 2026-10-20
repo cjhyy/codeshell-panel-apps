@@ -4,7 +4,7 @@ import type { DesignNode } from "../upstream/packages/shared/design-node";
 import type { RenderNode } from "../upstream/packages/browser/traverser/types";
 import { captureStandaloneSvg } from "./svg";
 
-type CapturedNode = DesignNode & { cssLayout?: Record<string, string> };
+type CapturedNode = DesignNode & { cssLayout?: Record<string, string>; cssBackground?: Record<string, string> };
 type TypedStyleElement = Element & {
   computedStyleMap?(): { get(property: string): { toString(): string } | undefined };
 };
@@ -50,9 +50,22 @@ export function convert(root: Element, options: { includeRawStyles: boolean; max
   if (!tree) return null;
   const values = captureLayoutValues(tree);
   const svgResources = new Map<object, string>();
+  const backgrounds = new Map<object, Record<string, string>>();
   const captureSvg = (node: RenderNode) => {
     if (node.tag === "svg" && node.metadata?.semantic && node.domNode instanceof Element)
       svgResources.set(node.metadata.semantic, captureStandaloneSvg(node.domNode));
+    // The immutable upstream gradient parser discards px stop units and cannot
+    // distinguish repeated gradients. Retain computed CSS before that parse.
+    if (node.nodeType === "element" && node.metadata?.semantic &&
+        node.computedStyle?.getPropertyValue("background-image").includes("gradient(")) {
+      const background: Record<string, string> = {};
+      for (const property of [
+        "background-image", "background-color", "background-size", "background-position",
+        "background-repeat", "background-origin", "background-clip", "background-blend-mode",
+        "background-attachment", "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+      ]) background[property] = node.computedStyle.getPropertyValue(property);
+      backgrounds.set(node.metadata.semantic, background);
+    }
     for (const child of node.children) captureSvg(child);
   };
   captureSvg(tree);
@@ -62,6 +75,8 @@ export function convert(root: Element, options: { includeRawStyles: boolean; max
     // applying the parent's box dimensions to that text would be incorrect.
     const cssLayout = node.nodeType !== "text" && node.semantic && values.get(node.semantic);
     if (cssLayout && Object.keys(cssLayout).length > 0) node.cssLayout = cssLayout;
+    if (node.nodeType !== "text" && node.semantic && backgrounds.has(node.semantic))
+      node.cssBackground = backgrounds.get(node.semantic)!;
     if (node.nodeType === "svg" && node.semantic && svgResources.has(node.semantic))
       node.svgContent = svgResources.get(node.semantic)!;
     if (node.nodeType === "container") for (const child of node.children) attach(child);
