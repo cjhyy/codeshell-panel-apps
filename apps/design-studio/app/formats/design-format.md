@@ -171,6 +171,12 @@ Hug parent on the same axis uses its current intrinsic size so the circular requ
 deterministic. Optional `layoutAlignSelf` overrides the parent's cross-axis alignment for one flow
 child. Optional `minWidth`, `maxWidth`, `minHeight`, and `maxHeight` bound Fixed, Hug, Fill,
 stretch, scale, and responsive text sizing without discarding the selected sizing mode.
+Main-axis Fill siblings share their available content space equally, then add their own
+effective padding to obtain outer dimensions. Their outer min/max limits redistribute the
+remaining content space. An Auto Layout box cannot shrink below its physical padding total;
+this derived floor takes precedence over a smaller authored maximum without rewriting that
+maximum in the document. Inside borders on leaf rectangles contribute their physical border
+width to the content basis.
 Optional `layoutMarginBefore: "auto"` consumes surplus main-axis space before that child, matching
 `margin-left: auto` in a horizontal container or `margin-top: auto` in a vertical container.
 
