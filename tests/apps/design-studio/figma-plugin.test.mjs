@@ -1797,18 +1797,19 @@ test("rebased negative block margins create only native positive-inset Auto Layo
   const main = runtime.figma.root.children[1].children[0];
   assert.deepEqual([main.paddingLeft, main.paddingRight], [5, 5]);
   assert.equal(main.layoutMode, "VERTICAL"); assert.equal(main.children.length, 2);
-  const [bleed, compensation] = main.children;
-  for (const wrapper of [bleed, compensation]) {
+  const [realRow, compensation] = main.children;
+  for (const wrapper of [compensation]) {
     assert.equal(wrapper.layoutMode, "VERTICAL"); assert.equal(wrapper.itemSpacing, 0);
     assert.equal(wrapper.layoutSizingHorizontal, "FILL"); assert.equal(wrapper.layoutSizingVertical, "HUG");
     assert.equal(wrapper.children.length, 1); assert.equal(wrapper.layoutPositioning, "AUTO");
     assert.equal(wrapper.children[0].layoutPositioning, "AUTO");
     assert.equal(wrapper.children[0].layoutSizingHorizontal, "FILL");
   }
-  assert.deepEqual([bleed.paddingLeft, bleed.paddingRight, compensation.paddingLeft, compensation.paddingRight], [0, 0, 15, 15]);
-  assert.equal(bleed.children[0].getPluginData("codeshellNodeId"), "html-0-1");
+  assert.deepEqual([compensation.paddingLeft, compensation.paddingRight], [15, 15]);
+  assert.equal(realRow.getPluginData("codeshellNodeId"), "html-0-1");
+  assert.equal(realRow.layoutPositioning, "AUTO"); assert.equal(realRow.layoutSizingHorizontal, "FILL");
   assert.equal(compensation.children[0].getPluginData("codeshellNodeId"), "html-0-2");
-  assert.equal(bleed.children[0].width, 630); assert.equal(compensation.children[0].width, 600);
+  assert.equal(realRow.width, 630); assert.equal(compensation.children[0].width, 600);
   assert.deepEqual(JSON.parse(main.getPluginData("codeshellNotes")).blockInsetRebase.original, [20, 20]);
 });
 

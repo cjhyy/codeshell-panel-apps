@@ -70,14 +70,17 @@ test("synthetic wrappers preflight complete node and depth budgets transactional
     if (kind === "depth") for (let i = 0; i < 30; i++) root = { ...node(`ancestor-${i}`, "frame", "Ancestor", { x: 0, y: 0, width: 200, height: 100 }), children: [root] };
     const before = JSON.stringify(root), warnings = [];
     assert.equal(applyHtmlBlockInsets([root], [{ source, node: parent, block }], node,
-      (...args) => warnings.push(args), kind === "count" ? 4 : 10000), null);
+      (...args) => warnings.push(args), kind === "count" ? 3 : 10000), null);
     assert.equal(JSON.stringify(root), before);
     assert.deepEqual(warnings.map((item) => item[0]), ["block-bleed-native-unsupported"]);
   }
   const { source, parent, block } = setup(), originalRow = block.items[0].original;
-  assert.equal(applyHtmlBlockInsets([parent], [{ source, node: parent, block }], node, () => {}), 5);
-  assert.equal(parent.children[0].children[0], originalRow);
+  assert.equal(applyHtmlBlockInsets([parent], [{ source, node: parent, block }], node, () => {}), 4);
+  assert.equal(parent.children[0], originalRow);
   assert.deepEqual([parent.paddingLeft, parent.paddingRight], [5, 5]);
+  const withTop = setup(); withTop.block.items[0].gap = 1;
+  applyHtmlBlockInsets([withTop.parent], [{ source: withTop.source, node: withTop.parent, block: withTop.block }], node, () => {});
+  assert.equal(withTop.parent.children[0].children[0], withTop.block.items[0].original, "positive top compensation keeps its wrapper");
 });
 
 test("adapter rebase keeps source identities and coordinates through resize/reopen in both coordinate contracts", async () => {

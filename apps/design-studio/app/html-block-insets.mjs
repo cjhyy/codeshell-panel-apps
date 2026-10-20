@@ -60,7 +60,7 @@ export function applyHtmlBlockInsets(roots, candidates, makeNode, warn, maximumN
     const plan = planHtmlBlockInsets(source, node, block, { ancestorTransformed });
     if (!plan) continue;
     if (plan.unsupported) { warn("block-bleed-native-unsupported", node.id, plan.unsupported); continue; }
-    const children = plan.items.map((item) => Object.assign(
+    const children = plan.items.map((item) => !item.left && !item.right && !item.top ? item.node : Object.assign(
       makeNode(`${item.node.id}-block-insets`, "frame", `${item.node.name} block insets`,
         { x: item.x, y: item.y, width: item.width, height: item.height }),
       { layout: "vertical", layoutWrap: "none", gap: 0, padding: 0,

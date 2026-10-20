@@ -70,15 +70,18 @@ test("production HTML negative margins rebase positive insets into native-safe e
     const row = bySelector(original, "#row"), resized = bySelector(narrow, "#row");
     assert.equal(resized.id, row.id); assert.equal(row.layoutSizingHorizontal, "fill");
     assert.ok(original.nodes.every((node) => node.layoutPositioning !== "absolute"));
-    const wrapper = original.nodes.find((node) => node.id === row.parentId);
-    assert.equal(wrapper.layout, "vertical"); assert.equal(wrapper.gap, 0); assert.equal(wrapper.clipContent, false);
-    assert.equal(wrapper.layoutSizingHorizontal, "fill"); assert.equal(wrapper.layoutSizingVertical, "hug");
+    const parent = bySelector(original, "#fixture"), wrapper = original.nodes.find((node) => node.id === row.parentId);
+    assert.equal(wrapper.layout, "vertical"); assert.equal(wrapper.gap, 0);
+    if (wrapper !== parent) {
+      assert.equal(wrapper.clipContent, false);
+      assert.equal(wrapper.layoutSizingHorizontal, "fill"); assert.equal(wrapper.layoutSizingVertical, "hug");
+    }
     const reopened = normalizeDesignDocument(JSON.parse(serializeDesignDocument(narrow))); applyAllAutoLayouts(reopened.nodes);
     assert.deepEqual(reopened.nodes.map(({ id, x, y, width, height }) => [id, x, y, width, height]), narrow.nodes.map(({ id, x, y, width, height }) => [id, x, y, width, height]));
     const transfer = createFigmaTransfer(narrow);
     assert.ok(transfer.pages[0].children.every((node) => flatten(node).every((child) => child.gap === undefined || child.gap >= 0)));
     assert.equal(original.nodes.filter((node) => node.id.includes("-bleed-")).length, 0);
-    const parent = bySelector(original, "#fixture"), receipt = JSON.parse(parent.notes).blockInsetRebase;
+    const receipt = JSON.parse(parent.notes).blockInsetRebase;
     assert.deepEqual([parent.paddingLeft, parent.paddingRight], receipt.rebased);
     assert.deepEqual(receipt.original.map((value, index) => value - receipt.rebased[index]), receipt.bleed);
     if (observed.id === "symmetric") assert.deepEqual([row.width, resized.width, row.x, resized.x], [630, 390, 5, 5]);
