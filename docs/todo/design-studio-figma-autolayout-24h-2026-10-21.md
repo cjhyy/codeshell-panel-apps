@@ -1413,3 +1413,11 @@ OUTSIDE→CENTER、58 weight1→0、30 included true→省略）。3个有paint�
 
 24小时目标仍active，截止10月22日00:31；未push、发布或安装Host。下一批独立分支
 继续HTML baseline、真实多段落内在高度和Text shadow；已有所有严格失败继续保留。
+
+
+第28轮整合后已刷新origin，origin/main仍c7eeee3；干净本地main快进到eaebde2，113个
+app文件与462的完整UI门禁快照逐SHA一致。收据 `round28-primary-integration-receipt.json`。
+又移除负责人明确确认无依赖、tracked/untracked/ignored均为空且已合入main的CENTER和
+MIME两个工作树及分支，不用force，外部证据父目录保留；收据
+`worktree-cleanup-receipt-20261021-0643.json`。聚合目标、新内在V-flow、baseline、Text
+shadow工作树继续保留；number旧工作树仍被baseline配对证据使用，暂不清理。
