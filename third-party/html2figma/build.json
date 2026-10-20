@@ -7,12 +7,12 @@
   "legacyGridOption": "preserveGrid:false",
   "esbuildVersion": "0.28.2",
   "output": "apps/design-studio/app/vendor/html2figma-browser.mjs",
-  "bytes": 215733,
-  "sha256": "19067603d049c2d783f6201dc1e9adc138f127f5f4deac2569b75974d5473f8a",
+  "bytes": 217502,
+  "sha256": "b760343a7b1edfe7645d3bea510a79fca40a1f9c0727979bf6c1f59269bd1c9f",
   "notice": {
     "output": "apps/design-studio/app/vendor/html2figma-NOTICE.md",
-    "bytes": 8179,
-    "sha256": "feb82c91bcd43b07bad8fb9988c0e304923d4ca9bd965b7188d6f93e5073b6ab"
+    "bytes": 8663,
+    "sha256": "6e3550c63c798c56ae2c6319b67f6690bac2e018ac4345ef346eec4ea9ee4691"
   },
   "runtimeInputs": [
     "third-party/html2figma/integration/entry.ts",

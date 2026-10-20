@@ -11,9 +11,10 @@ type CapturedNode = DesignNode & {
   cssBackground?: Record<string, string>;
   cssText?: Record<string, string>;
   cssEmptyBlock?: true;
+  cssLineHeight?: { kind: string; value?: number; fontSize: number };
 };
 type TypedStyleElement = Element & {
-  computedStyleMap?(): { get(property: string): { toString(): string } | undefined };
+  computedStyleMap?(): { get(property: string): { toString(): string; unit?: string; value?: unknown } | undefined };
 };
 
 // getComputedStyle resolves auto/percent sizes and auto margins to pixels. Keep
@@ -120,8 +121,34 @@ export function convert(
   const gridSources = new Set<object>();
   const corners = new Map<object, string[]>();
   const textIntents = new Map<object, Record<string, string>>();
+  const lineHeights = new Map<object, { kind: string; value?: number; fontSize: number }>();
   const emptyBlocks = new Set<object>();
   const captureSvg = (node: RenderNode) => {
+    if (node.nodeType === "element" && node.metadata?.semantic &&
+        node.domNode instanceof Element && node.computedStyle &&
+        !node.metadata.isPseudoElement && !node.metadata.isFormContent && !node.metadata.listMarker) {
+      const fontSize = Number.parseFloat(node.computedStyle.fontSize);
+      let evidence: { kind: string; value?: number; fontSize: number } = { kind: "unavailable", fontSize };
+      try {
+        const value = (node.domNode as TypedStyleElement).computedStyleMap?.().get("line-height");
+        if (value?.unit === "number" && typeof value.value === "number") {
+          const view = node.domNode.ownerDocument.defaultView;
+          const style = node.computedStyle;
+          const ordinary = view && ["::before", "::after"].every((pseudo) =>
+            ["none", "normal"].includes(view.getComputedStyle(node.domNode as Element, pseudo).content)) &&
+            ["::first-line", "::first-letter"].every((pseudo) => {
+              const variant = view.getComputedStyle(node.domNode as Element, pseudo);
+              return ["fontFamily", "fontSize", "fontWeight", "fontStyle", "lineHeight", "letterSpacing"]
+                .every((key) => variant[key as keyof CSSStyleDeclaration] === style[key as keyof CSSStyleDeclaration]);
+            });
+          evidence = ordinary ? { kind: "number", value: value.value, fontSize } : { kind: "unsupported", fontSize };
+        }
+        else if (value?.unit === "px") evidence = { kind: "resolved-length", fontSize };
+        else if (value?.toString() === "normal") evidence = { kind: "normal", fontSize };
+        else if (value) evidence = { kind: "unsupported", fontSize };
+      } catch { /* Missing Typed OM is explicit evidence of the fallback boundary. */ }
+      lineHeights.set(node.metadata.semantic, evidence);
+    }
     if (node.nodeType === "element" && node.metadata?.semantic &&
         node.domNode instanceof Element && !node.metadata.isPseudoElement && !node.metadata.isFormContent)
       options.onElement?.(node.metadata.semantic.semanticId ?? "", node.domNode);
@@ -183,6 +210,8 @@ export function convert(
     : renderToDesignDSL(tree, options);
   const attach = (node: CapturedNode) => {
     attachTableBorder(node);
+    if (node.nodeType === "text" && node.semantic && lineHeights.has(node.semantic))
+      node.cssLineHeight = lineHeights.get(node.semantic)!;
     // Anonymous text inherits its parent's semantic metadata and CSS styles;
     // applying the parent's box dimensions to that text would be incorrect.
     const cssLayout = node.nodeType !== "text" && node.semantic && values.get(node.semantic);

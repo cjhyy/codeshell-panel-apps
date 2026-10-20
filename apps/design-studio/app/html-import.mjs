@@ -2,6 +2,7 @@ import { captureHtmlToDesign, hangingBaselineOffset, parseCssColor } from "./htm
 import { captureHtmlViewportRelation } from "./html-viewport-flow.mjs";
 import { convertToDesignDSL, HTML2FIGMA_PROVENANCE } from "./vendor/html2figma-browser.mjs";
 import { designNodeToV3 } from "./design-node-adapter.mjs";
+import { htmlTextLineHeightRatio } from "./html-line-height.mjs";
 import { measureFigmaTextDocument } from "./text-metrics.mjs";
 import {
   createHtmlAssetResolver,
@@ -431,7 +432,7 @@ async function enableHtmlTextReflow(documentValue, browserDocument, elements, wa
             node.layoutSizingHorizontal === "hug"
               ? text.width
               : Math.max(1, node.width - left - right);
-          text.lineHeight = lineHeight / text.fontSize;
+          text.lineHeight = htmlTextLineHeightRatio(text, lineHeight / text.fontSize);
           text.height = lineHeight * text.text.split("\n").length;
           text.textSource = source;
           if (originalNotes !== undefined) text.notes = originalNotes;

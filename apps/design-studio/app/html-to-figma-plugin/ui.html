@@ -8010,8 +8010,29 @@
         const gridSources = /* @__PURE__ */ new Set();
         const corners = /* @__PURE__ */ new Map();
         const textIntents = /* @__PURE__ */ new Map();
+        const lineHeights = /* @__PURE__ */ new Map();
         const emptyBlocks = /* @__PURE__ */ new Set();
         const captureSvg = (node) => {
+          if (node.nodeType === "element" && node.metadata?.semantic && node.domNode instanceof realm.Element && node.computedStyle && !node.metadata.isPseudoElement && !node.metadata.isFormContent && !node.metadata.listMarker) {
+            const fontSize = Number.parseFloat(node.computedStyle.fontSize);
+            let evidence = { kind: "unavailable", fontSize };
+            try {
+              const value = node.domNode.computedStyleMap?.().get("line-height");
+              if (value?.unit === "number" && typeof value.value === "number") {
+                const view = node.domNode.ownerDocument.defaultView;
+                const style = node.computedStyle;
+                const ordinary = view && ["::before", "::after"].every((pseudo) => ["none", "normal"].includes(view.getComputedStyle(node.domNode, pseudo).content)) && ["::first-line", "::first-letter"].every((pseudo) => {
+                  const variant = view.getComputedStyle(node.domNode, pseudo);
+                  return ["fontFamily", "fontSize", "fontWeight", "fontStyle", "lineHeight", "letterSpacing"].every((key) => variant[key] === style[key]);
+                });
+                evidence = ordinary ? { kind: "number", value: value.value, fontSize } : { kind: "unsupported", fontSize };
+              } else if (value?.unit === "px") evidence = { kind: "resolved-length", fontSize };
+              else if (value?.toString() === "normal") evidence = { kind: "normal", fontSize };
+              else if (value) evidence = { kind: "unsupported", fontSize };
+            } catch {
+            }
+            lineHeights.set(node.metadata.semantic, evidence);
+          }
           if (node.nodeType === "element" && node.metadata?.semantic && node.domNode instanceof realm.Element && !node.metadata.isPseudoElement && !node.metadata.isFormContent)
             options.onElement?.(node.metadata.semantic.semanticId ?? "", node.domNode);
           if (node.nodeType === "element" && node.metadata?.semantic && node.domNode instanceof realm.Element && node.computedStyle && !node.metadata.isPseudoElement && !node.metadata.isFormContent && !node.metadata.listMarker && ["block", "flow-root"].includes(node.computedStyle.display) && node.domNode.childElementCount === 0 && !/[^\\t\\n\\f\\r ]/u.test(node.domNode.textContent ?? "") && ["normal", "nowrap"].includes(node.computedStyle.whiteSpace)) {
@@ -8069,6 +8090,8 @@
         const result = options.preserveGrid ? renderPreservingGrid(tree, options) : renderToDesignDSL(tree, options);
         const attach = (node) => {
           attachTableBorder(node);
+          if (node.nodeType === "text" && node.semantic && lineHeights.has(node.semantic))
+            node.cssLineHeight = lineHeights.get(node.semantic);
           const cssLayout = node.nodeType !== "text" && node.semantic && values.get(node.semantic);
           if (cssLayout && Object.keys(cssLayout).length > 0) node.cssLayout = cssLayout;
           if (!options.preserveGrid && node.nodeType === "container" && node.semantic && gridSources.has(node.semantic))

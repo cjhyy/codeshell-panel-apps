@@ -5,6 +5,7 @@ import {
   removeHtmlFloatColumns,
 } from "./html-float-columns.mjs";
 import { recoverHtmlTextOverflow } from "./html-text-overflow.mjs";
+import { applyHtmlNumberLineHeight } from "./html-line-height.mjs";
 import { cssCornerRadii } from "./corner-radii.mjs";
 /* Pure html2figma DesignNode → CodeShell v3 adapter. No DOM, network, or writes. */
 import { normalizeDesignDocument, MAX_DESIGN_NODES_PER_PAGE } from "./document.mjs";
@@ -1131,6 +1132,7 @@ export async function designNodeToV3(tree, options = {}) {
       );
       if (lineHeight?.unit === "normal")
         warn("line-height-normal", id, "normal 行高暂使用 1.2 倍字号，需要视觉核对。");
+      applyHtmlNumberLineHeight(source, node, warn);
       node.letterSpacing = number(
         finite(style.letterSpacing?.value) *
           (style.letterSpacing?.unit === "em" ? node.fontSize : 1),

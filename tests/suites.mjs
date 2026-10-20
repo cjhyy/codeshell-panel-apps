@@ -148,6 +148,7 @@ export const suites = [
         "tests/apps/design-studio/html-viewport-flow.test.mjs",
         "tests/apps/design-studio/html-viewport-root-scroll.test.mjs",
         "tests/apps/design-studio/html-text-overflow.test.mjs",
+        "tests/apps/design-studio/html-line-height.test.mjs",
         "tests/apps/design-studio/figma-plugin-v3.test.mjs",
       ],
       // GPU processes need an exclusive run: concurrent browser suites can
