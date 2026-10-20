@@ -14,6 +14,31 @@ const pixels = (value) => /^(?:-?(?:\d+(?:\.\d+)?|\.\d+)px|-?0(?:\.0+)?)$/u.test
 // DOM children are empty. The capture hint alone must not turn them into Hug.
 const intrinsicEmptyTags = new Set("input textarea select button option optgroup fieldset legend canvas img svg iframe object embed video audio meter progress details summary dialog table caption colgroup col thead tbody tfoot tr th td".split(" "));
 
+// A live-DOM empty status node can coexist with a recovered relative sibling.
+// Keep the real node absolute; only its proven lack of paint exempts it from
+// the stacking-order blocker. Missing paint evidence remains unsupported.
+function unpaintedEmptyAbsolute(source) {
+  if (source.nodeType !== "container" || source.cssEmptyBlock !== true || !source.semantic ||
+      !Array.isArray(source.children) || source.children.length !== 0 || intrinsicEmptyTags.has(String(source.tag ?? "").toLowerCase()) ||
+      source.positioning?.mode !== "absolute" || css(source, "position") !== "absolute" ||
+      source.visible === false || source.transform ||
+      !Array.isArray(source.background?.layers) || source.background.layers.length ||
+      source.image || source.svgContent ||
+      (source.borderGradientLayers !== undefined && (!Array.isArray(source.borderGradientLayers) || source.borderGradientLayers.length)) ||
+      ["top", "right", "bottom", "left"].some((side) => source.border?.[side]?.width !== 0 || source.border[side].style !== "none")) return false;
+  const effects = source.effects;
+  if (!Array.isArray(effects?.boxShadows) || effects.boxShadows.length ||
+      [effects.filters, effects.backdropFilters].some((value) => value !== undefined && (!Array.isArray(value) || value.length)) ||
+      ![undefined, "normal"].includes(effects.blendMode) ||
+      (source.cssBackground?.["background-image"] && source.cssBackground["background-image"] !== "none")) return false;
+  const raw = (key) => String(source.rawStyles?.[key] ?? "").trim().toLowerCase();
+  return /^rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0(?:\.0+)?\s*\)$/u.test(raw("background-color")) &&
+    ["background-image", "border-image-source", "box-shadow", "text-shadow", "outline-style", "filter", "backdrop-filter"]
+      .every((key) => raw(key) === "none") && raw("mix-blend-mode") === "normal" &&
+    raw("appearance") === "none" && raw("resize") === "none" &&
+    ["overflow-x", "overflow-y"].every((key) => ["visible", "hidden", "clip"].includes(raw(key)));
+}
+
 function emptyBlockFlow(source, ignoreOuterFloat) {
   if (source.cssEmptyBlock !== true || !source.semantic || !source.cssLayout ||
       intrinsicEmptyTags.has(String(source.tag ?? "").toLowerCase()) || source.visible === false ||
@@ -119,7 +144,7 @@ export function planHtmlBlockFlow(source, coordinateSpace = "parent-relative", t
   if (source.children.some((child) => absolute(child) &&
       ["static", "relative"].includes(css(child, "position")) && !promoted.has(child)))
     return reason("原始流图层缺少可恢复的可靠占位，保留测量布局。");
-  if (promoted.size && source.children.some((child) => absolute(child) && !promoted.has(child)))
+  if (promoted.size && source.children.some((child) => absolute(child) && !promoted.has(child) && !unpaintedEmptyAbsolute(child)))
     return reason("相对 z-index 与绝对覆盖层的绘制顺序需要保留测量布局。");
   const entries = source.children.flatMap((child, index) => {
     if (promoted.has(child) || isHtmlEmptyClear(child)) return [];

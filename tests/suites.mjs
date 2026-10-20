@@ -129,6 +129,7 @@ export const suites = [
         "tests/apps/design-studio/html-auto-margins.test.mjs",
         "tests/apps/design-studio/html-block-flow.test.mjs",
         "tests/apps/design-studio/html-empty-block-flow.test.mjs",
+        "tests/apps/design-studio/html-empty-overlay-flow.test.mjs",
         "tests/apps/design-studio/html-float-columns.test.mjs",
         "tests/apps/design-studio/negative-main-gap.test.mjs",
         "tests/apps/design-studio/native-negative-spacing.test.mjs",
