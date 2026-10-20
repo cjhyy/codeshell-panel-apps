@@ -55,12 +55,13 @@ test("negative horizontal block margins preserve original identities and ownersh
   assert.deepEqual(outputs[0], outputs[1]);
 });
 
-test("production HTML negative margins stay native Fill/AUTO and exact after viewport-only resize and reopen", async (t) => {
+test("production HTML negative margins stay editable and exact while incompatible native bleed is rejected", async (t) => {
   const output = await mkdtemp(join(tmpdir(), "html-negative-margins-"));
   t.after(() => rm(output, { recursive: true, force: true }));
-  const result = await runProductionFidelity({ output, cases: negativeMarginFixtures, resizeMode: "viewport-only", height: 300 });
+  const result = await runProductionFidelity({ output, cases: negativeMarginFixtures, resizeMode: "viewport-only", height: 300, recordOnly: true });
   for (const observed of result.cases) {
-    assert.deepEqual(observed.semanticIssues, [], observed.id);
+    assert.equal(observed.nativeTransfer.supported, false, observed.id);
+    assert.ok(observed.semanticIssues.some((issue) => issue.startsWith("Native transfer rejected:")), observed.id);
     assert.ok(!observed.warnings.some((warning) => ["block-flow-fixed", "layout-margin-fixed", "viewport-flow-fixed"].includes(warning.code)), JSON.stringify(observed));
     assert.ok(observed.comparisons.every((comparison) => comparison.changedPixels === 0), JSON.stringify(observed));
     const original = normalizeDesignDocument(JSON.parse(await readFile(join(output, observed.id, "imported.codesign.json"), "utf8")));
@@ -73,17 +74,14 @@ test("production HTML negative margins stay native Fill/AUTO and exact after vie
     assert.equal(wrapper.layoutSizingHorizontal, "fill"); assert.equal(wrapper.layoutSizingVertical, "hug");
     const reopened = normalizeDesignDocument(JSON.parse(serializeDesignDocument(narrow))); applyAllAutoLayouts(reopened.nodes);
     assert.deepEqual(reopened.nodes.map(({ id, x, y, width, height }) => [id, x, y, width, height]), narrow.nodes.map(({ id, x, y, width, height }) => [id, x, y, width, height]));
-    const transfer = createFigmaTransfer(narrow), native = transfer.pages.flatMap((page) => page.children.flatMap(flatten));
-    const nativeWrapper = native.find((node) => node.id === wrapper.id);
-    assert.equal(nativeWrapper.gap, wrapper.gap); assert.equal(nativeWrapper.children[1].id, row.id);
-    assert.equal(nativeWrapper.children[1].layoutSizingHorizontal, "fill");
-    assert.ok(!transfer.warnings.some((warning) => warning.code === "reverse-layout-export"));
+    assert.throws(() => createFigmaTransfer(narrow), /最小可见 AUTO 子项/u,
+      "the mathematical three-child bleed cannot be exported as false native fidelity");
     if (observed.id === "symmetric") assert.deepEqual([row.width, resized.width, row.x, resized.x], [630, 390, 5, 5]);
     if (observed.id === "maximum") assert.deepEqual([row.width, resized.width], [480, 390]);
     if (observed.id === "minimum-overflow") assert.deepEqual([row.width, resized.width], [630, 480]);
     if (observed.id === "wrapped-row") assert.deepEqual([row.height, resized.height], [40, 90]);
   }
-  assert.equal(result.passed, true);
+  assert.equal(result.passed, false);
   // Edit authored text, resize only the outer frame, then save/reopen in the
   // actual browser measurer. Source HTML supplies an independent reference.
   // The editable CSS path independently consumes signed spacing as margins.

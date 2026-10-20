@@ -58,3 +58,7 @@ The standalone compatibility adapter retains its existing centered uniform CSS
 border conversion and now carries a visible side/alignment loss warning through
 preview, downloaded JSON and native creation. Design Studio/Design Bridge uses
 the separately maintained bounded inside-side representation.
+
+The standalone float adapter remains measured/manual and retains a visible
+percentage-flow loss warning in preview, downloaded JSON and native creation.
+Bounded native float-column Grid recovery belongs to Design Studio/Design Bridge.

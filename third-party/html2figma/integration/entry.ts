@@ -70,6 +70,7 @@ function captureLayoutValues(tree: RenderNode) {
             "bottom",
             "left",
             "float",
+            "shape-outside",
             "clear",
             "column-count",
 

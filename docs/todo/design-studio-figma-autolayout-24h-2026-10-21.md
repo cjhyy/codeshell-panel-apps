@@ -257,11 +257,11 @@ relay `real-figma-html-v3-1792516785957-d3faaaca` 已停止，临时权限移除
 证据入口 `evidence/prepare-web-corpus.mjs`、`evidence/web-corpus/<id>/receipt.json`。
 原始基线均使用正式导入而非旧转换器：
 
-| 样本 | 1280×1000 初始不同像素 | 同宽重排 | 768×1000 重排 |
-| --- | ---: | ---: | ---: |
-| checkout | 36,031 | 306,642 | 275,986 |
-| album | 117,331 | 338,387 | 354,297 |
-| sign-in | 4,631 | 7,161 | 90,616 |
+| 样本     | 1280×1000 初始不同像素 | 同宽重排 | 768×1000 重排 |
+| -------- | ---------------------: | -------: | ------------: |
+| checkout |                 36,031 |  306,642 |       275,986 |
+| album    |                117,331 |  338,387 |       354,297 |
+| sign-in  |                  4,631 |    7,161 |        90,616 |
 
 自动外边距修复后 sign-in 窄屏降至 **14,914**；初始与同宽暂不变，普通块流仍有
 `Flow children became absolute`，边框/圆角/表单样式也未完全保留。不要把新样本的
@@ -417,11 +417,11 @@ AUTO/FILL，宽度从 192→112；3 FLEX 列和 2 FIXED80 行不变。
 10 个节点/6 个原生 Auto Layout 容器/2 个可编辑文字层，初始容器/形状几何最大差 0。
 文字几何单独记录，不纳入容器通过结论，hanging origin 与原生 line-box top 相差 4.59px。
 
-| 操作 | 卡片宽/高 | 段落宽/高 | 后续蓝块 y |
-| --- | --- | --- | --- |
-| 初始 640 | 600 / 144 | 576 / 48 | 132 |
-| 内框缩至 400 | 360 / 168 | 336 / 72 | 156 |
-| 原生改为更长的连续文字 | 360 / 240 | 336 / 144 | 228 |
+| 操作                   | 卡片宽/高 | 段落宽/高 | 后续蓝块 y |
+| ---------------------- | --------- | --------- | ---------- |
+| 初始 640               | 600 / 144 | 576 / 48  | 132        |
+| 内框缩至 400           | 360 / 168 | 336 / 72  | 156        |
+| 原生改为更长的连续文字 | 360 / 240 | 336 / 144 | 228        |
 
 这些证明真实 Hug/Fill 与改字重排，但没有达到文字像素一致：原生 PNG 差异像素为
 4,975 / 5,803 / 11,864；生产浏览器 `prepareFigmaImport`（确实测量 2 个文字）再导 SVG，
@@ -441,11 +441,11 @@ AUTO/FILL，宽度从 192→112；3 FLEX 列和 2 FIXED80 行不变。
 复杂网页的块流最终对比（初始 / 同宽重排 / 768 窄屏），与准确 base59 相比，两页重排
 回归已因单位修复消除；仍不是严格通过：
 
-| 页面 | 最终像素差异 | 相对 base59 的重排 / 窄屏变化 |
-| --- | --- | --- |
-| sign-in | 4,634 / 4,638 / 13,771 | −2,523 / −1,143（初始 +3） |
-| checkout | 36,031 / 280,778 / 266,419 | −25,864 / −9,567 |
-| album | 117,331 / 228,847 / 307,495 | −109,540 / −46,802 |
+| 页面     | 最终像素差异                | 相对 base59 的重排 / 窄屏变化 |
+| -------- | --------------------------- | ----------------------------- |
+| sign-in  | 4,634 / 4,638 / 13,771      | −2,523 / −1,143（初始 +3）    |
+| checkout | 36,031 / 280,778 / 266,419  | −25,864 / −9,567              |
+| album    | 117,331 / 228,847 / 307,495 | −109,540 / −46,802            |
 
 剩余例子不是泛称“媒体查询”：Checkout `.row.g-5` 的负外边距仍是测量布局，
 768 下源宽 792、规范宽 984；购物车列源为 41.6667%，仍保留捕获时固定 328px，
@@ -694,3 +694,151 @@ Figma 当前官方说明新旧 Auto Layout 版本在内侧描边、Fill 与 padd
 [Use auto layout with CSS Flexbox in mind](https://help.figma.com/hc/en-us/articles/42031586813719-Use-auto-layout-with-CSS-Flexbox-in-mind)。
 边框分支先约束到已验证的 INSIDE 投影；另准备仅新建自有研究页的实机语义探针，
 验证本地版本的实际行为，不猜测未文档化的 layoutVersion API。目标仍 active，截止不变。
+
+### 边框实机通过、原生设置顺序与负间距反例（约 03:28）
+
+`a5456c4` 合入各边边框代理 `01b9a7d`。可选、严格有界的 strokeSides / strokeAlign
+覆盖 codec、公开 schema/工具、比较、调色、SVG、CanvasKit、前端和原生真实侧边权重。
+不加入装饰性流子项；不同颜色的原生边框在预检中拒绝，保留可编辑 v3 源。非统一圆角
+接合、虚线/低 miter/折叠表格等限制明确保留。独立分支全主门禁 453 通过/1 既有跳过，
+root 合并首次主门禁 473 通过/1 跳过，但随后实机暴露了模拟器没有遵守的 API 限制。
+
+实机 run `6ff5dac4` 在全新 Frame 仍为 NONE 时设置 strokesIncludedInLayout=false，
+Figma 直接拒绝导入。失败回执保留于 `real-figma/negative-margin-creation-failed/`。
+`0118d17` 先补严格原生 setter 模拟使回归失败，再把关闭包含的设置移到启用 H/V/Grid
+之后、子项最终 sizing 之前。另补回归发现非活动 flag 引起错误描边冲突、空/零宽描边
+阻塞普通 padding 修改，以及 NONE→H/V 激活；依次修复 inactive 的语义比较、有效权重
+和激活时的设置，保持已有 active INSIDE included=true 的来源更新。
+非活动 NONE 不再把原生描边加进 padding；非零 INSIDE4/padding8 的回归先失败后通过。
+80 项针对性检查通过，所有失败日志保留。
+
+修复后的完整组合门禁：**主套件 477 通过/1 既有跳过/0 失败**，
+**UI/GPU 101 通过/1 既有跳过/0 失败**；全仓 typecheck、validate、build:check、vendor
+和两插件确定性检查通过。日志 `round11-main-final.log` / `round11-ui-final.log` 与
+`round11-static-acceptance-receipt.json` 记录当前代码 0118d17，不把早期门禁冒充最终结果。
+
+两个真正使用未改生产 main + 生产 UI 完整备份转换器的实机验收：
+
+- 底边 run `f36f0ac2` / 页 62:268：真实 INSIDE 权重 [0,0,1,0]，4 节点；
+  main/两子项 Fill/AUTO，无新增装饰子项。640→仅外框400，子项292→172，几何差0。
+- 统一内侧 run `2dfe2711` / 页 62:273：真实 INSIDE 权重 [4,4,4,4]，同样4节点、
+  同样 outer-only 缩窄、几何差0。以上两个样例的两宽原生 PNG 均 **0 像素差异**，
+  官方导回每宽首次/重排也均0，无警告。各自 acceptance-report.json 和 production-run
+  位于 `real-figma/css-border-bottom/`、`real-figma/css-border-uniform/`。
+  这不覆盖不同 padding/描边的 Fill 兄弟，也不覆盖整个公开网页。
+
+同一冻结 GOV 网页在最终组合代码重跑：189节点、58警告，严格计数
+**23329 / 23329 / 59515**，max255，仍失败；与02f9基线27203/27203/62622相比减少
+3874/3874/3107。三个参考 PNG 解码 RGBA 完全相同，所有 HTML/CSS/字体保留，无外部
+请求或浏览器错误。`round11-merged-border/paired-baseline-receipt.json` 保存配对证据。
+通用 semanticIssues 此次为空不能证明所有原始流恢复；独立浮动列/视口调查仍有局限。
+
+### 原生间距及 Fill 分配的下一轮依据
+
+未改生产 main 的负外边距 run `f830b7d4` 已导入，但真实 Figma 行 x20/width600，
+而 CSS/面板要求 x5/width630；两端 spacer 为1，属性 gap 虽为-16，实际间隔却为-1。
+原生640 PNG **1500/max189**，官方导回首次1500，面板重排后0，暴露两种布局语义
+不一致；这不是成功的原生外边距互换。失败原始输入/官方 JSON/PNG/回执完整保留在
+`real-figma/negative-margin-failed/`，没有用重排后的0掩盖首次与实机失败。
+
+仅新建自有研究页的50组探针 `00c34ea1` 比较多个gap、尺寸、形状/透明度、Fill/Fixed、
+对齐、setter顺序，以及仅控制外框缩窄再恢复。它明确标为 customMainModifiedForResearch。
+1:2不对称 spacer 给出全局-1/-1和Fill599，排除逐邻居-1/-2的假设；Fixed630也仍-1/-1，
+排除仅Fill尺寸上限的解释。CENTER 固定630可在600内x-15，但到360仍固定630/x-135，
+不能作为响应式替代。四个负 padding setter 均被 Figma 拒绝（必须>=0），其他设置无错。
+原页/选择/子项快照不变，原始JSON与白色研究板PNG保留；插件关闭、relay退出且原三
+文件哈希完全恢复。分析目录 `evidence/native-negative-spacing-analysis/`。
+
+另一40组真实描边探针 `ca4d104f` 显示，仅 INSIDE+includedtrue 影响自身内容缩进；
+CENTER/OUTSIDE不计入本次新建 Frame 的布局。不同 padding/inside描边的 Fill 子项
+分配却为290/322而非306/306，includedfalse/true相同；不能仅关闭 inclusion就假定
+所有 Fill 兄弟等宽。93个官方 bbox 与实际 getter 一致，40组几何规则残差0；没有从
+缺失的 layoutVersion API 推断所有历史文档版本。原始与分析分别保留在
+`native-stroke-layout-analysis/`。独立 CSS 最小例也证实当前面板重排的 content-basis
+错误，而前端 flex 导出仍严格0；后续代理正先修复独立的有效 padding 分配。
+
+下一步负外边距采用待验证的有界方案：当父框正 inset 足够时，降低父框左右 padding，
+再用透明 Fill/Hug 包装补偿未外扩的兄弟，真实行可直接 Fill，无负 gap/ABSOLUTE。
+超出该子集的原生导出要在预检明确拒绝；不能静默改 canonical CSS 的数学负间距。
+独立浮动列工作使用现有有理比例 Grid 字段，保留媒体查询/视口/原生 bleed 的限制，
+尚未合入当前组合。24小时目标继续 active，截止仍为10月22日00:31 Asia/Singapore。
+
+### 浮动百分比列的真实 Grid 互换通过（约 03:36）
+
+`9bc90dc` 合入浮动列代理 `e93176a`。在已测量、同方向、单行、有理百分比的验证子集内，
+普通浮动列恢复为原生等权 Grid 轨道、手动跨度与锚点，各列内部保留纵向 Auto Layout。
+只移除已证明空白、无绘制、零高的生成 clearfix，原行/列/内容节点与源 ID 均保留。
+比例分母最小公倍数有界为24；外边距、shape、clear、变换、min/max、行内环绕等
+未验证条件仍拒绝恢复。`float-flow-captured-state` 持续说明媒体查询与浮动换行限制。
+root 合并后28项目标检查、2项 standalone UI 检查通过。
+
+随后使用未改生产 main 与生产 UI 完整备份转换器，实际运行冻结 `split-row` HTML：
+run `ac66594c` / 页 **62:589**，共7节点，无图片、文字或装饰性子项。
+初始640：main padding20，Grid 行宽600、3个 FLEX1轨道、1个 HUG行；两列宽200/400，
+跨度1/2、锚点0/1，各列左右 padding15，实际内容宽170/370。
+只把最外层视口改为400：行宽360、两列120/240、内容90/210，全部普通子项仍为AUTO，
+Grid及列的 Fill/Hug 设置保留，独立 HTML 算术与官方 bbox 最大差异均0。
+
+两宽的 **真实 Figma PNG、官方导回首次、导回后重排，共6次比较全部0像素差异/max0**，
+导回无警告。完整报告、原始官方 JSON、冻结 HTML 参考 PNG、生产转换协议与清理回执
+位于 `evidence/real-figma/html-float-grid/`。这只证明该冻结浮动列样例，不覆盖文字换行、
+媒体断点或整个 GOV 网页。运行插件已关闭、relay进程正常退出，注册三文件字节恢复原样。
+
+### Fill 内容分配合并与 Rectangle 原生对照
+
+`2790a44` 合入独立代理 `04de9bb`：Fill 先均分可用内容空间，再加回各自有效 padding；
+min/max 按总限制方向逐步冻结，避免同时冻结相反限制留下未分配空间。
+Auto Layout 自身物理 padding 构成实际尺寸下限，但不改写作者的 max 字段，仍保留20000上限。
+五组生产 HTML（不等 padding、描边、min、max、max小于inset）×首次/重排/缩窄15次严格0；
+独立分支82项目标检查通过。root组合2790a44完整主门禁 **489通过/1既有跳过/0失败**，
+UI/GPU门禁 **101通过/1既有跳过/0失败**；typecheck、validate、Design Studio build:check、
+vendor和两插件确定性校验通过。`round12-combined-acceptance-receipt.json` 绑定代码SHA及日志。
+
+另实际完成6组 Rectangle Fill研究 `6e301711` / 新页62:569，20个新建自有节点、0接口错误。
+H/V两轴 INSIDE4/8 的两个子项宽/高分别302/310；CENTER与OUTSIDE均306/306。
+可用空间612，INSIDE内容基数8/16，剩余内容各294；全部18个 scene bbox 与官方 JSON 相同，
+六组规则最大几何差异0。该结果独立确认上个提交的 leaf Rectangle basis，不冒充像素验收。
+原始与独立分析保留在 `evidence/native-stroke-layout-analysis/`，raw SHA
+`478dccebfcee29486641e64766bd37a9d74b07d3aadd4683a12b13b98423625b` 未变。
+探针明确为 customMainModifiedForResearch；原页面/选择/子项快照不变，运行已关闭并恢复注册文件。
+
+官方 [REST Node types](https://developers.figma.com/docs/rest-api/file-node-types/)
+规定 strokesIncludedInLayout 缺省为false；这与实际 JSON_REST_V1 省略false相符。
+它不同于本机新建 Frame 启用 Auto Layout 后 getter 为true的运行时初值，导回时不能混用。
+下一独立修改将显式保留已验证 H/V Frame 的 excluded 描边来源；仍在进行的负间距预检、
+父 padding 重分配、根滚动视口边界恢复各自保留独立证据。目标继续 active，截止不变。
+
+root另准备并实际执行冻结 CSS“不等padding＋不等inside边框”的未改生产转换。
+run `486735d4` / 页62:597，只有 viewport/main/两个横向Auto Layout tile共4节点；
+CSS原始padding8/20、inside描边4/8，主框padding8/gap12，独立期望宽290/322。
+生产插件却给出286/326，首项宽度断言正确失败；真实640 PNG与官方导回首次均
+**1504像素/max217**，当前面板重排后才为0，不把它记作互换成功。
+失败后guard拒绝继续仅外框400，因此没有400原生结果。该反例再次确认关闭 inclusion
+同时传全部effectivepadding会重复计入兄弟Fill的内容基数，后续要同时正确处理原生标志和rawpadding。
+`evidence/real-figma/content-fill-before/` 保存冻结参考、原始官方JSON、生产消息、PNG、
+比较与清理回执；插件已关闭、relay正常退出，注册三文件精确恢复。
+
+### 根滚动视口恢复合并与整页复核（约 03:44）
+
+`881688e` 合入独立代理 `bbbcf1d`。只有标准模式的实际 documentElement 滚动根，
+gutter:auto/contain:none、零偏移、无水平溢出、clientWidth/Height精确等于inner viewport，
+才能把根传播的 auto/scroll 视为已捕获视口边界。祖先宽度、背景、变换等旧守卫保留；
+classic占位滚动条、stable/both-edge gutter、body/private滚动/裁切、hidden/clip、
+水平溢出、已有滚动偏移和quirks继续拒绝。真实16px classic gutter也在640/400下验证，
+不是模拟clientWidth。设计与标准原文链接见 `design-studio-viewport-root-scroll-2026-10-21.md`。
+root合并后 viewport/Fill/float 共 **17项目标检查通过**，当前合并没有再次重复完整主/UI门禁；
+上一完整门禁对应2790a44。
+
+root再跑完整冻结 GOV：188节点、55条诊断，import/relayout/narrow严格差异为
+**23329 / 23329 / 54075**；相比0118d17的23329/23329/59515，初始/同宽未变、
+缩窄减少5440，整页仍strict=false。三个reference PNG字节及解码RGBA全部相同，
+无外部请求或浏览器错误。`round13-root-scroll/paired-baseline-receipt.json` 记录组合SHA、
+原始计数与参考SHA；代理另保留9bc同base只改root scroller的配对证据，避免混淆归因。
+恢复了viewport VERTICAL与body横向Fill，原始189→188只来自浮动列移除已证无绘制clearfix。
+不据此宣称全部后代或媒体查询响应正确。
+
+只读审计还确认generic semanticIssues仅检查显式absolute，AUTO但parent.layout=none
+的普通源节点仍可能冻结。`round12-provisional-flow-audit.json` 保存初步逐节点关系；
+已有cssSelector可能匹配多个DOM，因此其中计数不是最终门禁结论。下一独立调查针对
+纯文字普通块容器，表格/复杂行内内容仍保持明确限制。描边来源与原生负间距/bleed修复
+继续在独立工作树进行，目标active，截止仍为10月22日00:31 Asia/Singapore。

@@ -101,3 +101,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+The maintained capture also retains shape-outside to bound isolated percentage
+float-column recovery. Design Studio can project a proven single row onto existing
+native Grid tracks/spans; no media-query or general float wrapping engine is added.

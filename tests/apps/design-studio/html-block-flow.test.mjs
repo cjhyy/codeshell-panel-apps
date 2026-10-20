@@ -43,7 +43,7 @@ test("block recovery preserves source ownership and both coordinate contracts, a
   floated.children[0].cssLayout.float = "left";
   const result = await designNodeToV3(floated);
   assert.equal(normalizeDesignDocument(result.document).nodes[0].layout, "none");
-  assert(result.report.warnings.some((warning) => warning.code === "block-flow-fixed"));
+  assert(result.report.warnings.some((warning) => ["block-flow-fixed","float-flow-fixed"].includes(warning.code)));
 });
 
 test("ordinary block stacks retain collapsed margins, nested Hug/Fill and exact pixels after resize", async (t) => {

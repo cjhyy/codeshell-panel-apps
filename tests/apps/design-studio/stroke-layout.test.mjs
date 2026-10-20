@@ -7,6 +7,7 @@ import { normalizeDesignDocument, serializeDesignDocument, exportDesignSvg } fro
 import { importFigmaJson, prepareFigmaImport, createFigmaTransfer } from "../../../apps/design-studio/app/figma-bridge.mjs";
 import { createFigmaBinding, createFigmaPatch } from "../../../apps/design-studio/app/figma-binding.mjs";
 import { compareDesignDocuments } from "../../../apps/design-studio/app/design-compare.mjs";
+import { nativeMainGap } from "../../../apps/design-studio/app/layout-spacing.mjs";
 import { applyAllAutoLayouts } from "../../../apps/design-studio/app/layout.mjs";
 import { exportDesignFrontend } from "../../../apps/design-studio/app/frontend-export.mjs";
 import { clearInvalidStrokeLayoutExclusion } from "../../../apps/design-studio/app/stroke.mjs";
@@ -97,6 +98,27 @@ test("unsupported excluded Grid and mismatched native Fill models diagnose witho
   assert.equal(fallback.document.nodes[1].layout, "none");
   assert.equal(fallback.document.nodes[1].strokeLayoutExcluded, undefined);
   assert.ok(fallback.warnings.some(warning => warning.code === "unsupported-negative-spacing"));
+  const rotated = structuredClone(fixture.cases[0]);
+  rotated.source.children[0].itemSpacing = -1;
+  rotated.source.children[0].children[0].rotation = .1;
+  rotated.source.children[0].children[0].size = { x: 274, y: 20 };
+  const rotatedFallback = imported(rotated);
+  assert.equal(rotatedFallback.document.nodes[1].layout, "none");
+  assert.equal(rotatedFallback.document.nodes[1].strokeLayoutExcluded, undefined);
+  assert.ok(rotatedFallback.warnings.some(warning => warning.code === "unsupported-negative-spacing"));
+});
+
+test("native negative-gap clamp uses final outer Fill sizes rather than stroke-adjusted content sizes", () => {
+  const value = imported(fixture.cases[0]).document, parent = value.nodes[0];
+  parent.gap = -10;
+  const child = value.nodes[1];
+  delete child.strokeLayoutExcluded;
+  child.strokeSides.forEach(side => { side.width = 8; });
+  for (const side of ["Top", "Right", "Bottom", "Left"]) child[`padding${side}`] = 12;
+  applyAllAutoLayouts(value.nodes);
+  const children = value.nodes.filter(node => node.parentId === parent.id);
+  assert.deepEqual(children.map(node => node.width), [301, 333]);
+  assert.deepEqual(nativeMainGap(parent, children), { requested: -10, effective: -10, minimum: 301 });
 });
 
 test("excluded inside stroke basis stays editable with exact independent CSS/SVG/frontend pixels", async () => {

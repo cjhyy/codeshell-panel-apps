@@ -191,6 +191,10 @@ flag explicitly after activating the layout. See the [official REST node types](
 The verified native Fill cases have positive remaining content space. Leaf rectangle
 inside-border floors and native behavior below the total stroke/content basis remain
 unverified; their min/max or zero-content behavior is not inferred from Frame padding.
+For source-bound negative gaps, changes to padding, physical stroke widths/alignment or
+this provenance recheck the raw request against final outer Fill sizes before any write.
+A simultaneous explicit gap edit and inclusion/padding edit must pass both final plans;
+stroke color alone does not force a gap rewrite or conflict with independent native spacing.
 Optional `layoutMarginBefore: "auto"` consumes surplus main-axis space before that child, matching
 `margin-left: auto` in a horizontal container or `margin-top: auto` in a vertical container.
 
@@ -323,3 +327,13 @@ source; differing exact HTML bytes live in bounded `notes.htmlText.rawSource`.
 Tabs, multiline `pre` ellipsis, generated/rich text, non-left alignment,
 unsupported writing/overflow styles,
 and recovery metadata exceeding the 2000-character note budget are diagnosed.
+
+
+Captured isolated same-direction percentage float columns may map to the existing
+manual Grid tracks/spans (at most24), with FILL column widths and ordinary inner
+Auto Layout. Only a proven empty unpainted zero-height clearfix is omitted.
+Mixed text/float wrapping, shapes, clear on columns, min/max constraints, mixed
+directions and unsupported percentages retain measured geometry with diagnostics.
+Each recovered row explicitly retains only its captured CSS state: native resize
+does not execute source media queries. Separate mobile captures can retain their
+ordinary block flow. This projection adds no document fields or painted children.

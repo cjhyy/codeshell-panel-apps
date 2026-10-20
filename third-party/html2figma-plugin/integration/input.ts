@@ -28,6 +28,11 @@ export function prepareDesignInput(input: any) {
     "CSS 边框使用独立插件的统一居中描边兼容转换，未保留各侧宽度、颜色或内部对齐；需要可编辑侧边时请通过 Design Studio 导入并使用 Design Bridge。";
   const hasCssBorder = (node: any): boolean => Boolean(node.nodeType &&
     ["top", "right", "bottom", "left"].some((side) => node.border?.[side]?.width > 0 && node.border[side].style !== "none"));
+  const legacyFloatWarning =
+    "浮动列在本独立插件中使用固定测量布局，未保留百分比列流；需要有界可编辑列布局时请通过 Design Studio 导入并使用 Design Bridge。";
+  const isFloatFallback = (node: any) =>
+    node.codeshellFloatFallback === true ||
+    (node.nodeType === "container" && node.layout?.hasFloatChildren === true);
   function inspect(node: any, depth = 0) {
     if (!object(node) || depth > 60 || ++count > MAX_NODES)
       throw new Error("节点树最多 3000 个节点、60 层");
@@ -52,6 +57,7 @@ export function prepareDesignInput(input: any) {
     )
       warnings.push(legacyGridWarning);
     if (node.codeshellBorderFallback === true || hasCssBorder(node)) warnings.push(legacyBorderWarning);
+    if (isFloatFallback(node)) warnings.push(legacyFloatWarning);
     if (typeof node.id === "string" && node.id) reservedIds.add(node.id);
     for (const child of node.children ?? []) inspect(child, depth + 1);
   }
@@ -101,10 +107,13 @@ export function prepareDesignInput(input: any) {
     (node.children ?? []).some(hasLegacyGrid);
   const hasLegacyBorder = (node: any): boolean =>
     node.codeshellBorderFallback === true || hasCssBorder(node) || (node.children ?? []).some(hasLegacyBorder);
+  const hasLegacyFloat = (node: any): boolean =>
+    isFloatFallback(node) || (node.children ?? []).some(hasLegacyFloat);
   const converted = roots.map((root: any) => {
     const converted = root.nodeType ? FigmaAdapter.toFigmaJSON(root) : root;
     if (hasLegacyGrid(root)) converted.codeshellGridFallback = true;
     if (hasLegacyBorder(root)) converted.codeshellBorderFallback = true;
+    if (hasLegacyFloat(root)) converted.codeshellFloatFallback = true;
     return converted;
   });
   count = 0;

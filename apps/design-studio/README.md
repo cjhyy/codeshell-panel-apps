@@ -554,15 +554,27 @@ The product importer captures the visible first viewport rather than the root's 
 height. Partially visible layers retain their measured geometry behind an intentional root clip;
 fully offscreen descendants are not serialized. Choose a tighter root selector when the desired
 design is one visible region instead of the complete viewport.
+Document-root auto/scroll overflow can retain ordinary viewport Auto Layout when
+standards-mode measurements prove zero scroll offset, no horizontal overflow and
+no consumed scrollbar gutter. Independent ancestor clips, classic gutters and
+stable gutters retain measured geometry with diagnostics.
 Flex rows/columns map reverse direction, Wrap/Wrap Reverse, axis gaps, four-side padding, Baseline,
 Min/Max, alignment, distribution, and Fill/Fixed sizing into v3. Grid maps equal computed columns
 and row/column spans; direct absolute/fixed children are excluded from flow and retain measured
 Constraints. Opaque uniform borders remain editable decorations without forcing a manual-layout
-fallback. Unequal Flex grow, floats, unequal Grid tracks, and decoration-heavy controls keep
+fallback. Unequal Flex grow, unsupported floats, unequal Grid tracks, and decoration-heavy controls keep
 measured manual geometry.
 It is not an HTML parser and does not promise fidelity for unsupported visual primitives such as
 raster images, SVG paths, gradients, pseudo-elements, multiple shadows, or four independently
 editable corner radii.
+
+Isolated same-direction percentage float columns can recover a bounded single
+native Grid row (at most 24 tracks), with Fill widths and ordinary inner Auto
+Layout. Mixed text/shape wrapping and unsupported constraints retain measured
+geometry with diagnostics. Every recovered row reports that media queries and
+float wrapping are not retained; recapture after a source CSS breakpoint changes.
+See `docs/todo/design-studio-floated-columns-2026-10-21.md` for strict source
+fixtures and the separate native negative-bleed/viewport limitations.
 
 ## Package boundary
 

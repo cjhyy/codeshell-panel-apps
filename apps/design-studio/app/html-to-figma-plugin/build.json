@@ -16,6 +16,7 @@
     "apps/design-studio/app/grid.mjs",
     "apps/design-studio/app/html-block-flow.mjs",
     "apps/design-studio/app/html-capture.mjs",
+    "apps/design-studio/app/html-float-columns.mjs",
     "apps/design-studio/app/html-grid.mjs",
     "apps/design-studio/app/html-import-assets.mjs",
     "apps/design-studio/app/html-import.mjs",
@@ -65,23 +66,23 @@
     },
     {
       "path": "code.js",
-      "bytes": 224288,
-      "sha256": "6112c9ef346cc69f13d44e23393cfddf08041855cf4b380c496111c0766414c2"
+      "bytes": 225039,
+      "sha256": "b09875be432b87194cd1167e63a1fbbefe831352baaf410d303acc0d76a33826"
     },
     {
       "path": "ui.html",
-      "bytes": 341750,
-      "sha256": "1d606ab1909a56048dc7fdd1175eee14a50e30959dca64d3bf0b536d8af7b356"
+      "bytes": 342536,
+      "sha256": "b317554d109d3fc4505b4d6fdbfebef31b5285a428e00fa00f39126471f59ae2"
     },
     {
       "path": "README.md",
-      "bytes": 6419,
-      "sha256": "16c71e25bee56ca6c5caac2279e8679ba4b621cca035a477f3eb31c0a371068a"
+      "bytes": 6738,
+      "sha256": "e7b92fcdac6e3838049e919766d07712b65cce0f7008b3b396fc93c93ac4ad9d"
     },
     {
       "path": "NOTICE.md",
-      "bytes": 3419,
-      "sha256": "9571b5533b923093b5c0ba5b16b7777b27f244828b0af3c31d683b7aeba98f5a"
+      "bytes": 3655,
+      "sha256": "351dce0b235ea02cd0f21fa3a7ff36e446e44a4993175838c114ba45e93f4d25"
     }
   ]
 }

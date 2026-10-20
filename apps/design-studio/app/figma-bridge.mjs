@@ -1,4 +1,4 @@
-import { validateLayoutSpacing, mainAxisGap } from "./layout-spacing.mjs";
+import { validateLayoutSpacing, validateNativeLayoutSpacing, nativeMainGap, mainAxisGap } from "./layout-spacing.mjs";
 import { distributeFillSizes } from "./layout.mjs";
 import { normalizeCornerRadii, effectiveCornerRadii } from "./corner-radii.mjs";
 import { figmaDesignStroke, nativeDesignStroke, hasDesignStroke, designStrokeSides, clearInvalidStrokeLayoutExclusion } from "./stroke.mjs";
@@ -76,6 +76,7 @@ const LOSS_WARNINGS = new Set([
   "unsupported-stroke-layout",
   "native-stroke-fill-model",
   "css-gradient-native-source",
+  "native-negative-gap-effective",
 ]);
 const EFFECT_WARNINGS = new Set(["unsupported-effects", "stroke-alignment", "corner-shape"]);
 const ADVISORY_WARNINGS = new Set([
@@ -998,6 +999,31 @@ function importFigmaJsonWithReport(
       node.children = (source.children ?? [])
         .map((child) => convert(child, [...ancestors, node], depth + 1, counter))
         .filter(Boolean);
+      if (["horizontal", "vertical"].includes(node.layout) && mainAxisGap(node) < 0) {
+        const rotated = [...ancestors, node, ...node.children.filter((child) => child.visible !== false && child.layoutPositioning !== "absolute")].some((entry) => entry.rotation);
+        const axis = node.layout === "vertical" ? "height" : "width";
+        const rawFlow = (source.children ?? []).filter((child) => child.visible !== false && child.layoutPositioning !== "ABSOLUTE");
+        const rawExtents = rawFlow
+          .map((child) => child.size?.[axis === "width" ? "x" : "y"] ?? child.absoluteBoundingBox?.[axis]);
+        const unbounded = rawExtents.some((size) => !finite(size) || size < 1 || size > 20000) ||
+          rawFlow.length !== node.children.filter((child) => child.visible !== false && child.layoutPositioning !== "absolute").length;
+        if (rotated || unbounded) {
+          report.warn("unsupported-negative-spacing", source, "旋转、缺失或超出 v3 范围的流项无法可靠求原生有效主轴间距；保留有界测量几何。");
+          node.layout = "none";
+          clearInvalidStrokeLayoutExclusion(node);
+          node.gap = 0;
+          delete node.rowGap;
+          delete node.columnGap;
+        }
+        const plan = node.layout === "none" ? null : nativeMainGap(node);
+        if (plan && plan.effective - plan.requested > 0.0001) {
+          node.gap = plan.effective;
+          const key = node.layout === "horizontal" ? "columnGap" : "rowGap";
+          if (node[key] !== undefined) node[key] = plan.effective;
+          report.warn("native-negative-gap-effective", source,
+            `原生请求间距 ${plan.requested}px 实际受最小可见 AUTO 子项限制为 ${plan.effective}px；可编辑布局使用实际间距，原始请求保留在来源绑定快照。`);
+        }
+      }
       if (imagePaint) {
         const background = {
           id: allocateId({ id: `${source.id ?? node.id}-background` }, `background-${visited}`),
@@ -1072,6 +1098,8 @@ function importFigmaJsonWithReport(
             nonRenderingSourceNodes.has(node.id) &&
             node.visible !== false &&
             node.parentId &&
+            !(node.layoutPositioning !== "absolute" &&
+              ["horizontal", "vertical", "grid"].includes(nodeIndex.get(node.parentId)?.layout)) &&
             clipNodeBoundsToClippingAncestors(flat, node, nodeIndex) === null,
         )
         .map((node) => node.id),
@@ -1233,6 +1261,11 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
       return null;
     }
     const { children, ...copy } = node;
+    if (["horizontal", "vertical"].includes(node.layout)) validateNativeLayoutSpacing(node);
+    if (mainAxisGap(node) < 0 && (node.children ?? []).some((child) => child.visible !== false &&
+        child.layoutPositioning !== "absolute" && child[node.layout === "vertical" ? "layoutSizingVertical" : "layoutSizingHorizontal"] === "fill" &&
+        (child[node.layout === "vertical" ? "minHeight" : "minWidth"] ?? 1) < -mainAxisGap(node)))
+      report.warn("native-negative-gap-resize", node, "原生缩小时若最小可见 AUTO 子项小于负间距幅度，Figma 会限制实际间距；当前几何已验证，后续更小尺寸需重新核对。");
     if (hasDesignStroke(node)) {
       try { nativeDesignStroke(node); }
       catch (error) { throw new Error(`${node.name}: ${error.message}`); }

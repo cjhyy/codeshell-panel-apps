@@ -330,14 +330,15 @@ function applyHugSize(nodes, container) {
   return changed;
 }
 
-function distributedTrack(values, available, baseGap, alignment) {
+function distributedTrack(values, available, baseGap, alignment, signedAlignment = false) {
   let gap = baseGap;
   let offset = 0;
   const occupied = values.reduce((total, value) => total + value, 0);
   const baseGapTotal = baseGap * Math.max(0, values.length - 1);
-  const free = Math.max(0, available - occupied - baseGapTotal);
-  if (alignment === "center") offset = free / 2;
-  else if (alignment === "end") offset = free;
+  const signedFree = available - occupied - baseGapTotal;
+  const free = Math.max(0, signedFree);
+  if (alignment === "center") offset = (signedAlignment ? signedFree : free) / 2;
+  else if (alignment === "end") offset = signedAlignment ? signedFree : free;
   else if (alignment === "space-between" && values.length > 1) gap += free / (values.length - 1);
   return { gap, offset, free };
 }
@@ -475,6 +476,7 @@ function applyFlexLayout(nodes, container, children) {
             container.layoutReverse
               ? reverseAlignment(container.justifyContent ?? "start")
               : (container.justifyContent ?? "start"),
+            !wrap && !container.layoutReverse,
           );
     let mainCursor = finite(container[mainPosition]) + mainPadding.start + mainTrack.offset;
     for (const child of line) {

@@ -1,3 +1,9 @@
+import {
+  planHtmlFloatColumns,
+  sizeHtmlFloatColumn,
+  validateHtmlFloatColumns,
+  removeHtmlFloatColumns,
+} from "./html-float-columns.mjs";
 import { recoverHtmlTextOverflow } from "./html-text-overflow.mjs";
 import { cssCornerRadii } from "./corner-radii.mjs";
 /* Pure html2figma DesignNode → CodeShell v3 adapter. No DOM, network, or writes. */
@@ -114,6 +120,8 @@ export async function designNodeToV3(tree, options = {}) {
   const autoMarginOverrides = new WeakMap();
   const gridPlans = new WeakMap();
   const blockFlowPlans = new WeakMap();
+  const floatPlans = new WeakMap();
+  const provenFloatSources = new WeakSet();
   const blockUnwrappedPaths = new WeakMap();
   const localResources =
     options.resources instanceof Map
@@ -505,7 +513,22 @@ export async function designNodeToV3(tree, options = {}) {
         warn("grid-fixed-geometry", node.id, `${error.message}；已保留原始 Grid 测量几何。`);
       }
     }
-    const block = planHtmlBlockFlow(source, coordinateSpace, { x: node.x, y: node.y });
+    const floats = planHtmlFloatColumns(source, coordinateSpace);
+    if (floats?.unsupported)
+      warn("float-flow-fixed", node.id, `${floats.unsupported}；保留测量布局。`);
+    else if (floats) {
+      Object.assign(node, floats.fields);
+      floatPlans.set(node, floats);
+      for (const item of floats.items) provenFloatSources.add(item.source);
+    }
+    const block = floats
+      ? null
+      : planHtmlBlockFlow(
+          source,
+          coordinateSpace,
+          { x: node.x, y: node.y },
+          { ignoreOuterFloat: provenFloatSources.has(source) },
+        );
     if (block?.unsupported)
       warn("block-flow-fixed", node.id, block.unsupported);
     else if (block) {
@@ -697,6 +720,17 @@ export async function designNodeToV3(tree, options = {}) {
       }
       return;
     }
+    if (parent?.layout === "grid" && floatPlans.has(parent)) {
+      const plan = floatPlans.get(parent);
+      try {
+        sizeHtmlFloatColumn(source, node, plan);
+      } catch (error) {
+        removeHtmlFloatColumns(parent, plan);
+        floatPlans.delete(parent);
+        warn("float-flow-fixed", parent.id, `${error.message}；保留测量布局。`);
+      }
+      return;
+    }
     const parentAuto =
       node.layoutPositioning !== "absolute" &&
       parent &&
@@ -878,6 +912,7 @@ export async function designNodeToV3(tree, options = {}) {
     if (!object(source) || seen.has(source) || path.length > 32)
       throw new Error("DesignNode 包含无效、循环、重复引用或超过 32 层的结构");
     seen.add(source);
+    const provenFloat = provenFloatSources.has(source);
     if (!["container", "text", "image", "svg"].includes(source.nodeType))
       throw new Error(`不支持的 DesignNode 类型：${source.nodeType}`);
     if (source.children !== undefined && !Array.isArray(source.children))
@@ -924,6 +959,7 @@ export async function designNodeToV3(tree, options = {}) {
         }),
       };
     }
+    if (provenFloat) provenFloatSources.add(source);
     const id = `html-${path.map((value) => value.toString(36)).join("-")}${semanticSuffix(source.semantic?.semanticId)}`;
     let width = number(source.bounds?.width, 1, 1, 20000, id, "width"),
       height = number(source.bounds?.height, 1, 1, 20000, id, "height");
@@ -1156,7 +1192,7 @@ export async function designNodeToV3(tree, options = {}) {
           );
       }
       const block = blockFlowPlans.get(source);
-      const entries = block?.entries ?? (source.children ?? []).map((child, index) => ({ source: child, index }));
+      const entries = floatPlans.get(node)?.entries ?? block?.entries ?? (source.children ?? []).map((child, index) => ({ source: child, index }));
       for (const { source: child, index } of entries) {
         const converted = await convert(child, [...path, index, ...(blockUnwrappedPaths.get(child) ?? [])], anchor, [...ancestors, node]);
         if (block?.promoted.has(child)) delete converted.layoutPositioning;
@@ -1183,6 +1219,20 @@ export async function designNodeToV3(tree, options = {}) {
   sizing(tree, converted, null);
   const validateGrids = (node) => {
     for (const child of node.children ?? []) validateGrids(child);
+    if (floatPlans.has(node)) {
+      const plan = floatPlans.get(node);
+      try {
+        validateHtmlFloatColumns(node);
+        warn(
+          "float-flow-captured-state",
+          node.id,
+          "浮动列按捕获时的百分比恢复为原生 Grid；不保留媒体查询断点、浮动换行或文字环绕，跨 CSS 状态请重新捕获。",
+        );
+      } catch (error) {
+        removeHtmlFloatColumns(node, plan);
+        warn("float-flow-fixed", node.id, `${error.message}；保留测量布局。`);
+      }
+    }
     if (!gridPlans.has(node)) return;
     try {
       if (node.layout === "grid") validateHtmlGrid(node);

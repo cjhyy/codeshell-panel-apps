@@ -1,5 +1,6 @@
 import { GRID_CONTAINER_FIELDS, GRID_CHILD_FIELDS } from "./grid.mjs";
 import { nativeTextContent } from "./text-content.mjs";
+import { mainAxisGap, nativeMainGap, validateNativeLayoutSpacing } from "./layout-spacing.mjs";
 import {
   normalizeDesignDocument,
   normalizeDesignState,
@@ -338,6 +339,17 @@ export function createFigmaPatch(bindingValue, currentDocument) {
   };
   const beforeOrder = childOrder(beforeNodes),
     afterOrder = childOrder(afterNodes);
+  for (const parent of afterNodes.values()) {
+    if (!["horizontal", "vertical"].includes(parent.layout) || mainAxisGap(parent) >= 0) continue;
+    const children = (afterOrder.get(JSON.stringify([parent.pageId, parent.id])) ?? []).map((id) => afterNodes.get(id));
+    validateNativeLayoutSpacing(parent, children);
+    const requested = sourceNodes.get(mapping.get(parent.id)?.sourceId)?.itemSpacing;
+    if (!(requested < 0) || mainAxisGap(beforeNodes.get(parent.id)) !== mainAxisGap(parent)) continue;
+    const key = parent.layout === "vertical" ? "rowGap" : "columnGap";
+    const plan = nativeMainGap({ ...parent, gap: requested, [key]: requested }, children);
+    if (plan.minimum !== null && Math.abs(plan.effective - mainAxisGap(parent)) > 0.0001)
+      throw Error("来源请求负间距的有效值会随子项尺寸/可见性变化；请明确调整主轴间距后重试，不能静默覆盖原始请求。");
+  }
   const translationChains = new Map();
   function translationChain(designId) {
     if (translationChains.has(designId)) return translationChains.get(designId);
