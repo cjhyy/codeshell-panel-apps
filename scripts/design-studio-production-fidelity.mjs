@@ -91,6 +91,13 @@ function htmlId(node) {
   }
 }
 
+async function settleFontsAndPaint(page) {
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+}
+
 async function resizeDocument(page, document, width) {
   const source = await page.evaluate(
     async ({ source, width }) => {
@@ -182,7 +189,7 @@ export async function runProductionFidelity({
       await page.setViewportSize({ width, height });
       await page.goto("https://fidelity.test/");
       await page.setContent(html);
-      await page.evaluate(() => document.fonts.ready);
+      await settleFontsAndPaint(page);
       const original = await page.screenshot({ animations: "disabled" });
       const sourceLayout = await page.evaluate(
         () => getComputedStyle(document.querySelector("#fixture")).display,
@@ -269,14 +276,14 @@ export async function runProductionFidelity({
         let source = original;
         if (mode === "narrow") {
           await page.setContent(html);
-          await page.evaluate(() => document.fonts.ready);
+          await settleFontsAndPaint(page);
           source = await page.screenshot({ animations: "disabled" });
         }
         const svg = exportDesignSvg(candidate, { resourceDataUrls, maxBytes: 4 * 1024 * 1024 });
         await page.setContent(
           `<!doctype html><style>html,body{margin:0;background:white}svg{display:block}</style>${svg}`,
         );
-        await page.evaluate(() => document.fonts.ready);
+        await settleFontsAndPaint(page);
         const converted = await page.screenshot({ animations: "disabled" });
         const comparison = comparePixels(source, converted, channelTolerance);
         await writeFile(join(directory, `${mode}-source.png`), source);
