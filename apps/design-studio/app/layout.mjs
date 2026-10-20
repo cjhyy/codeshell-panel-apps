@@ -1,3 +1,4 @@
+import { textLineHeightPixels } from "./text-line-height.mjs";
 import { mainAxisGap } from "./layout-spacing.mjs";
 import {
   gridPlacements, gridTrackSizes, effectiveGridRows, gridFillHugContentHeight,
@@ -796,7 +797,7 @@ function refreshNativeTextBaselines(nodes, measurement) {
   for (const node of nodes) {
     if (node.type !== "text" || node.layoutBaselineSource !== "native" || node.rotation) continue;
     const key = JSON.stringify([node.fontFamily, node.fontRef, node.fontSize, node.fontWeight,
-      node.fontStyle, node.letterSpacing, node.lineHeight]);
+      node.fontStyle, node.letterSpacing, node.lineHeight, node.lineHeightUnit]);
     const cached = nativeTextBaselineStates.get(node);
     if (cached?.key === key && cached.offset === node.layoutBaselineOffset) continue;
     measurement.configure(node);
@@ -876,7 +877,7 @@ function applyResponsiveText(nodes, containerIds, measurement) {
       assignAxisSize(
         node,
         "vertical",
-        Math.max(1, lines.length * finite(node.fontSize, 16) * finite(node.lineHeight, 1.2)),
+        Math.max(1, lines.length * textLineHeightPixels(node)),
       ) || changed;
     changed = assignNumber(node, "textFlowWidth", available) || changed;
     if (measurement) {
@@ -890,7 +891,7 @@ function applyResponsiveText(nodes, containerIds, measurement) {
         height: Math.max(
           0,
           ...metrics.map(
-            (metric, index) => metric.bottom + index * node.fontSize * node.lineHeight,
+            (metric, index) => metric.bottom + index * textLineHeightPixels(node),
           ),
         ),
         fontAvailable: measurement.fontAvailable(node),

@@ -3,7 +3,7 @@ import { validTextMetrics } from "./text-metrics.mjs";
 const recordedText = (signature) => {
   try {
     const value = JSON.parse(signature);
-    return Array.isArray(value) && value.length === 8 && typeof value[0] === "string"
+    return Array.isArray(value) && (value.length === 8 || (value.length === 9 && value[8] === "pixels")) && typeof value[0] === "string"
       ? value[0]
       : undefined;
   } catch {

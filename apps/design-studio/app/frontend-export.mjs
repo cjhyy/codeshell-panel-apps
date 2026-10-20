@@ -1,3 +1,4 @@
+import { textLineHeightCss } from "./text-line-height.mjs";
 import { mainAxisGap } from "./layout-spacing.mjs";
 import { repositoryDesignPage } from "./document.mjs";
 import {
@@ -400,7 +401,7 @@ function nodeStyle(node, parent, canvas) {
       ["font-size", cssNumber(node.fontSize, 16)],
       ["font-weight", String(node.fontWeight ?? 400)],
       ["font-style", node.fontStyle ?? "normal"],
-      ["line-height", String(node.lineHeight ?? 1.2)],
+      ["line-height", textLineHeightCss(node)],
       ["letter-spacing", cssNumber(node.letterSpacing, 0)],
       ["text-align", node.textAlign ?? "left"],
       ["text-decoration", node.textDecoration ?? "none"],

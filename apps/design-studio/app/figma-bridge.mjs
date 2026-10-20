@@ -1,3 +1,4 @@
+import { validTextLineHeight } from "./text-line-height.mjs";
 import { validateLayoutSpacing, validateNativeLayoutSpacing, nativeMainGap, mainAxisGap } from "./layout-spacing.mjs";
 import { distributeFillSizes } from "./layout.mjs";
 import { normalizeCornerRadii, effectiveCornerRadii } from "./corner-radii.mjs";
@@ -66,6 +67,7 @@ const LOSS_WARNINGS = new Set([
   "text-truncated",
   "font-fallback",
   "font-resource-export",
+  "line-height-unit-fixed",
   "missing-geometry",
   "unsupported-mask",
   "visual-fallback",
@@ -559,19 +561,25 @@ function text(source, node, report) {
       source,
       "字体数值字重已映射到最接近的百位字重；原始字体设置保存在来源记录中。",
     );
-  node.lineHeight = number(
-    finite(style.lineHeightPx)
-      ? style.lineHeightPx / node.fontSize
-      : finite(style.lineHeightPercentFontSize)
-        ? style.lineHeightPercentFontSize / 100
-        : undefined,
-    1.2,
-    0.7,
-    3,
-    source,
-    "lineHeight",
-    report,
-  );
+  const pixelLineHeight = { lineHeight: style.lineHeightPx, lineHeightUnit: "pixels" };
+  if (style.lineHeightUnit === "PIXELS" && validTextLineHeight(pixelLineHeight)) {
+    node.lineHeight = pixelLineHeight.lineHeight;
+    node.lineHeightUnit = "pixels";
+  } else {
+    node.lineHeight = number(
+      finite(style.lineHeightPx)
+        ? style.lineHeightPx / node.fontSize
+        : finite(style.lineHeightPercentFontSize)
+          ? style.lineHeightPercentFontSize / 100
+          : undefined,
+      1.2, 0.7, 3, source, "lineHeight", report,
+    );
+    if (style.lineHeightUnit === "PIXELS") report.warn("line-height-unit-fixed", source,
+      "像素行高超出受支持范围；已保留受限的测量行高，未标记为可保留的像素单位。 ");
+    else if (style.lineHeightUnit !== undefined && !["FONT_SIZE_%", "PERCENT"].includes(style.lineHeightUnit))
+      report.warn("line-height-unit-fixed", source,
+        "此行高单位尚不能保留为可编辑单位；已使用测量行高。 ");
+  }
   node.textAlign =
     { LEFT: "left", CENTER: "center", RIGHT: "right" }[style.textAlignHorizontal] ?? "left";
   if (style.textAlignHorizontal === "JUSTIFIED")
@@ -1138,6 +1146,8 @@ function importFigmaJsonWithReport(
           (source.lineIndentations !== undefined && (!Array.isArray(source.lineIndentations) ||
             source.lineIndentations.some(value => value !== 0))) ||
           (style.listSpacing ?? 0) !== 0 ||
+          (style.lineHeightUnit === "PIXELS" && node.lineHeightUnit !== "pixels") ||
+          (style.lineHeightUnit !== undefined && !["PIXELS", "FONT_SIZE_%", "PERCENT"].includes(style.lineHeightUnit)) ||
           (style.paragraphSpacing ?? 0) !== 0 || (style.paragraphIndent ?? 0) !== 0 ||
           ![undefined, "LEFT"].includes(style.textAlignHorizontal) ||
           ![undefined, "TOP"].includes(style.textAlignVertical) ||

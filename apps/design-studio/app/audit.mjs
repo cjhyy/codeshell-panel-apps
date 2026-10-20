@@ -1,3 +1,4 @@
+import { textLineHeightPixels } from "./text-line-height.mjs";
 import { effectiveCornerRadii, insideRoundedRect, roundedRectOutline } from "./corner-radii.mjs";
 import { hasVisibleDesignFill, sampleDesignFill } from "./paint.mjs";
 import { designStrokeOutset } from "./stroke.mjs";
@@ -177,7 +178,7 @@ function nodeOutlinePointsInTree(nodes, node, nodeIndex) {
             : node.x;
       const ink = metrics?.lineInkBounds[lineIndex];
       const inkLeft = left + (ink?.x ?? 0);
-      const top = node.y + lineIndex * node.fontSize * node.lineHeight + (ink?.y ?? 0);
+      const top = node.y + lineIndex * textLineHeightPixels(node) + (ink?.y ?? 0);
       const bottom = ink ? top + ink.height : Math.min(node.y + node.height, top + node.fontSize);
       points.push(
         { x: inkLeft, y: top },
@@ -313,7 +314,7 @@ function textSamplePoints(document, node, lines, nodeIndex) {
       node.y + node.height - 0.5,
       Math.max(
         node.y + 0.5,
-        node.y + lineIndex * node.fontSize * node.lineHeight + node.fontSize / 2,
+        node.y + lineIndex * textLineHeightPixels(node) + node.fontSize / 2,
       ),
     );
     return [0.15, 0.5, 0.85]
@@ -954,7 +955,7 @@ export function auditDesign(document) {
     const textMetrics = currentTextMetrics(node);
     const minimumTextHeight =
       textMetrics?.height ??
-      node.fontSize + Math.max(0, lineCount - 1) * node.fontSize * node.lineHeight;
+      node.fontSize + Math.max(0, lineCount - 1) * textLineHeightPixels(node);
     if (node.height + 0.5 < minimumTextHeight) {
       issues.push({
         code: "layout.text-overflow",

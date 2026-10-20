@@ -1,3 +1,4 @@
+import { textLineHeightPixels } from "./text-line-height.mjs";
 /* Browser measurements are receipts for specific text and typography, not audit exemptions. */
 import { designFontFamilyCss } from "./font-css.mjs";
 export function textMetricsSignature(node) {
@@ -10,6 +11,7 @@ export function textMetricsSignature(node) {
     node.fontStyle ?? "normal",
     node.letterSpacing ?? 0,
     node.lineHeight,
+    ...(node.lineHeightUnit === undefined ? [] : [node.lineHeightUnit]),
   ]);
 }
 
@@ -78,7 +80,7 @@ export function measuredTextInkBounds(node) {
             : 0;
       return {
         x: box.x + offset,
-        y: box.y + index * node.fontSize * node.lineHeight,
+        y: box.y + index * textLineHeightPixels(node),
         width: box.width,
         height: box.height,
       };
@@ -155,7 +157,7 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
     },
     lineBoxOffset(node) {
       const key = JSON.stringify([node.fontFamily, node.fontRef, node.fontSize,
-        node.fontWeight, node.fontStyle, node.letterSpacing, node.lineHeight]);
+        node.fontWeight, node.fontStyle, node.letterSpacing, node.lineHeight, node.lineHeightUnit]);
       if (baselineOffsets.has(key)) return baselineOffsets.get(key);
       Object.assign(lineBox.style, {
         fontFamily: designFontFamilyCss(node.fontFamily),
@@ -163,7 +165,7 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
         fontWeight: String(node.fontWeight),
         fontStyle: node.fontStyle ?? "normal",
         letterSpacing: `${node.letterSpacing ?? 0}px`,
-        lineHeight: `${node.fontSize * node.lineHeight}px`,
+        lineHeight: `${textLineHeightPixels(node)}px`,
       });
       // Native TEXT bounds start at the line box. Browser Range bounds start
       // at its font box, whereas SVG/Canvas hanging text starts lower within
@@ -339,7 +341,7 @@ export async function measureFigmaTextDocument(
         const height = Math.max(
           0,
           ...metrics.map(
-            (metric, index) => metric.bottom + index * node.fontSize * node.lineHeight,
+            (metric, index) => metric.bottom + index * textLineHeightPixels(node),
           ),
         );
         if (autoResize === "WIDTH_AND_HEIGHT" && width > node.width) {
