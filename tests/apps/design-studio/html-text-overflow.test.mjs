@@ -55,6 +55,36 @@ test("plain CSS nowrap ellipsis retains full editable words, structural Fill and
   assert.equal(result.passed, true);
 });
 
+test("pre ellipsis preserves significant prefix spaces in SVG and exported responsive CSS", async (t) => {
+  const output = await mkdtemp(join(tmpdir(), "html-pre-ellipsis-"));
+  t.after(() => rm(output, { recursive: true, force: true }));
+  const sources = ["  Literal  spaces and long content that stays on the same line without wrapping.  ", " ".repeat(200) + full];
+  const cases = sources.map((text, index) => ({ id: `pre-ellipsis-${index}`,
+    html: `<main id="fixture"><section class="row"><div class="copy">${text}</div></section></main>`,
+    css: layout.replace("white-space:nowrap", "white-space:pre") }));
+  const result = await runProductionFidelity({ output, cases, resizeMode: "viewport-only" });
+  const browser = await chromium.launch();
+  try {
+    for (const [index, observed] of result.cases.entries()) {
+      assert(observed.comparisons.every(item => item.changedPixels === 0), JSON.stringify(observed));
+      const original = normalizeDesignDocument(JSON.parse(await readFile(join(output, observed.id, "imported.codesign.json"), "utf8")));
+      assert.equal(original.nodes.find(node => node.type === "text").textSource, sources[index]);
+      for (const width of [640, 400]) {
+        const resized = normalizeDesignDocument(JSON.parse(serializeDesignDocument(original)));
+        resized.canvas.width = width;
+        resized.nodes.find(node => node.id === "html-viewport").width = width;
+        applyAllAutoLayouts(resized.nodes);
+        const page = await browser.newPage({ viewport: { width, height: 240 } });
+        await page.setContent(exportDesignFrontend(JSON.parse(serializeDesignDocument(resized))));
+        const expected = PNG.sync.read(await readFile(join(output, observed.id, width === 640 ? "imported-source.png" : "narrow-source.png")));
+        const actual = PNG.sync.read(await page.screenshot());
+        assert.equal(actual.data.compare(expected.data), 0, `${observed.id} at ${width}px`);
+        await page.close();
+      }
+    }
+  } finally { await browser.close(); }
+});
+
 test("nowrap clip and pre preserve clipping and literal whitespace without introducing ellipsis", async (t) => {
   const output = await mkdtemp(join(tmpdir(), "html-text-clip-"));
   t.after(() => rm(output, { recursive: true, force: true }));

@@ -270,7 +270,7 @@ export function measuredEllipsis(source, width, measure) {
     if (measure(`${characters.slice(0, middle).join("")}…`).width <= width) low = middle;
     else high = middle - 1;
   }
-  return `${characters.slice(0, low).join("").trimEnd()}…`;
+  return `${characters.slice(0, low).join("")}…`;
 }
 
 /** Mutates only text layout fields; Node callers remain unmeasured unless a real measurer is supplied. */

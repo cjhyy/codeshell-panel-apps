@@ -363,7 +363,7 @@ function nodeStyle(node, parent, canvas) {
       ["letter-spacing", cssNumber(node.letterSpacing, 0)],
       ["text-align", node.textAlign ?? "left"],
       ["text-decoration", node.textDecoration ?? "none"],
-      ["white-space", node.textOverflow === "ellipsis" ? "nowrap" : node.textFlow === "wrap" ? "pre-wrap" : "pre"],
+      ["white-space", node.textOverflow === "ellipsis" ? "pre" : node.textFlow === "wrap" ? "pre-wrap" : "pre"],
       ["text-overflow", node.textOverflow === "ellipsis" ? "ellipsis" : undefined],
       ["overflow-wrap", node.textFlow === "wrap" ? "anywhere" : "normal"],
     );

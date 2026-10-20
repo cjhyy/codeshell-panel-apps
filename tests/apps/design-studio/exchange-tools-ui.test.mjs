@@ -1805,6 +1805,7 @@ test("public HTML ellipsis import saves full editable source and reflows after e
   let metadata = await f.metadata();
   const textId = metadata.layers.find((node) => node.type === "text").id;
   const rootId = metadata.layers.find((node) => node.name === "main#fixture").id;
+  const viewportId = metadata.layers.find((node) => node.id === "html-viewport").id;
   const before = await readNode(f.page, textId);
   assert.equal(before.textSource, full);
   assert.equal(before.textOverflow, "ellipsis");
@@ -1815,11 +1816,14 @@ test("public HTML ellipsis import saves full editable source and reflows after e
   assert.equal(JSON.parse(before.notes).htmlText.rawSource, raw);
   const edited = full + " Newly edited words remain complete in the native transfer.";
   await f.tool("use_design", { expected_state_revision: metadata.stateRevision, save: true, operations: [
-    { op: "update_node", node_id: rootId, changes: { width: 400 } },
+    { op: "update_node", node_id: viewportId, changes: { width: 400 } },
     { op: "update_node", node_id: textId, changes: { text: edited } },
   ] });
   await f.reload();
   const after = await readNode(f.page, textId);
+  const rootAfter = await readNode(f.page, rootId);
+  assert.equal(rootAfter.width, 400);
+  assert.equal(rootAfter.layoutSizingHorizontal, "fill");
   assert.equal(after.width, 336);
   assert.equal(after.textSource, edited);
   assert.equal(after.textOverflow, "ellipsis");
