@@ -813,6 +813,18 @@ function pluginHarness({
       },
     };
     if (nativeGrid) {
+      // Actual a4e5dd91 TEXT getters expose both legacy STRETCH and modern
+      // cross-axis FILL. This capability mock must reflect that alias; it does
+      // not implement text measurement or establish native glyph geometry.
+      let gridChildAlignment = "INHERIT";
+      Object.defineProperty(value, "layoutAlign", {
+        get: () => gridChildAlignment,
+        set: next => {
+          gridChildAlignment = next;
+          if (next === "STRETCH" && ["HORIZONTAL", "VERTICAL"].includes(value.parent?.layoutMode))
+            value[value.parent.layoutMode === "VERTICAL" ? "layoutSizingHorizontal" : "layoutSizingVertical"] = "FILL";
+        },
+      });
       let gridMode = "NONE";
       Object.defineProperty(value, "layoutMode", {
         get: () => gridMode,
@@ -2080,4 +2092,38 @@ test("actual nested fixed-content Grid survives production plugin preflight with
     1,
     "unsupported intrinsic cycles fail before any page is created",
   );
+});
+
+
+test("actual plain Text Grid survives production preflight with full source and real Fill/Hug modes", async () => {
+  const raw = JSON.parse(await readFile(new URL("../../fixtures/design-studio-grid-text-intrinsic-height/native-source.json", import.meta.url), "utf8"));
+  const transfer = createFigmaTransfer(importFigmaJson(raw).document);
+  assert(!transfer.warnings.some(warning => warning.code === "grid-export"));
+  const runtime = pluginHarness({ nativeGrid: true });
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported", JSON.stringify(runtime.messages.at(-1)));
+  for (const name of ["affine-HUG-cellFILL-container-first", "affine-HUG-cellFILL-container-last"]) {
+    const row = runtime.pages[1].children[0].children.find(node => node.name === name);
+    assert.equal(row.layoutMode, "GRID");
+    assert.equal(row.layoutSizingVertical, "HUG");
+    assert.equal(row.gridRowSizes[0].type, "HUG");
+    assert.deepEqual(row.children.map(cell => [cell.layoutMode, cell.layoutSizingHorizontal, cell.layoutSizingVertical]), Array(3).fill(["VERTICAL", "FILL", "FILL"]));
+    for (const cell of row.children) {
+      assert.equal(cell.children.length, 1);
+      const text = cell.children[0];
+      assert.equal(text.type, "TEXT");
+      assert.equal(text.layoutSizingHorizontal, "FILL");
+      assert.equal(text.layoutSizingVertical, "HUG");
+      assert.equal(text.textAutoResize, "HEIGHT");
+      assert.equal(text.characters, cell === row.children[0] ? "Alpha\nBeta" : "Peer");
+    }
+  }
+  for (const bad of [text => { text.layoutSizingVertical = "fill"; }, text => { delete text.textSource; }]) {
+    const invalid = clone(transfer);
+    bad(invalid.pages[0].children[0].children.find(node => node.name === "affine-HUG-cellFILL-container-last").children[0].children[0]);
+    const rejected = pluginHarness({ nativeGrid: true });
+    await rejected.send({ type: "import-transfer", content: JSON.stringify(invalid) });
+    assert.equal(rejected.messages.at(-1).type, "error");
+    assert.equal(rejected.pages.length, 1, "unproven Text dependency fails before creating pages");
+  }
 });

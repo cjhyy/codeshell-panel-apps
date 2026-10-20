@@ -131,7 +131,8 @@ export function gridPlacements(children, columnCount, container = {}) {
     rowCount: Math.max(0, ...placements.map((item) => item.row + item.rowSpan)),
   };
 }
-// Native run 289e088a proves this vertical dependency. Never use an old
+// Native runs 289e088a (rectangle) and a4e5dd91 (plain Text) prove this vertical dependency.
+// Text height is its logical line box after the bounded responsive-text pass. Never use an old
 // stretched cell height as intrinsic content, or shrink edits retain the old row.
 export function gridFillHugContentHeight(container, child, children = child?.children) {
   const unconstrained = (node) =>
@@ -188,16 +189,36 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
   const resolvedChildren = typeof children === "function" ? children() : children;
   if (!Array.isArray(resolvedChildren) || resolvedChildren.length !== 1) return null;
   const content = resolvedChildren[0];
+  const fixedRectangle =
+    content?.type === "rectangle" &&
+    content.layoutSizingVertical === "fixed" &&
+    ["fixed", "fill"].includes(content.layoutSizingHorizontal);
+  const plainText =
+    content?.type === "text" &&
+    content.layoutSizingVertical === "hug" &&
+    content.layoutSizingHorizontal === "fill" &&
+    content.textFlow === "wrap" &&
+    content.textOverflow === undefined &&
+    typeof content.textSource === "string" &&
+    content.textSource.length <= 4000 &&
+    /[^\t\n\f\r ]/u.test(content.textSource) &&
+    Number.isFinite(content.fontSize) &&
+    content.fontSize >= 6 &&
+    content.fontSize <= 240 &&
+    Number.isFinite(content.lineHeight) &&
+    content.lineHeight >= 0.7 &&
+    content.lineHeight <= 3 &&
+    (content.letterSpacing ?? 0) === 0 &&
+    (content.textAlign ?? "left") === "left" &&
+    (content.textDecoration ?? "none") === "none";
   if (
     !content ||
-    content.type !== "rectangle" ||
+    (!fixedRectangle && !plainText) ||
     content.children !== undefined ||
     content.visible === false ||
     content.layoutPositioning === "absolute" ||
     content.rotation ||
     content.layoutMarginBefore ||
-    content.layoutSizingVertical !== "fixed" ||
-    !["fixed", "fill"].includes(content.layoutSizingHorizontal) ||
     !Number.isFinite(content.height) ||
     content.height < 1 ||
     content.height > 20000 ||
