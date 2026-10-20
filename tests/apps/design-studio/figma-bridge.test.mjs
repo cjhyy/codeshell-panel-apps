@@ -733,7 +733,12 @@ const pluginCode = await readFile(
   "utf8",
 );
 
-function pluginHarness({ missingFont = false, failFallback = false, failNode = false } = {}) {
+function pluginHarness({
+  missingFont = false,
+  failFallback = false,
+  failNode = false,
+  nativeAutoLayout = false,
+} = {}) {
   const messages = [],
     pages = [],
     loaded = new Set(),
@@ -758,6 +763,10 @@ function pluginHarness({ missingFont = false, failFallback = false, failNode = f
         child.parent = this;
       },
       resize(width, height) {
+        this.width = width;
+        this.height = height;
+      },
+      resizeWithoutConstraints(width, height) {
         this.width = width;
         this.height = height;
       },
@@ -788,6 +797,24 @@ function pluginHarness({ missingFont = false, failFallback = false, failNode = f
         fontName = font;
       },
     });
+    if (nativeAutoLayout) {
+      let mode = "NONE";
+      Object.defineProperty(value, "layoutMode", {
+        get: () => mode,
+        set: (next) => {
+          const activates = mode === "NONE" && ["HORIZONTAL", "VERTICAL"].includes(next);
+          mode = next;
+          if (!activates) return;
+          // Native Figma enables primary-axis AUTO immediately, before the
+          // plugin can assign FIXED, spacing or padding. This mutates geometry.
+          value.primaryAxisSizingMode = "AUTO";
+          const size = next === "HORIZONTAL" ? "width" : "height";
+          const before = value[size];
+          value[size] = value.children.reduce((total, child) => total + child[size], 0);
+          calls.push(["native-auto-size", value.id, before, value[size]]);
+        },
+      });
+    }
     for (const axis of ["Horizontal", "Vertical"]) {
       let sizing = "FIXED";
       Object.defineProperty(value, `layoutSizing${axis}`, {
@@ -796,6 +823,31 @@ function pluginHarness({ missingFont = false, failFallback = false, failNode = f
           if (next === "FILL") {
             assert.notEqual(value.parent?.layoutMode, "NONE", "FILL requires auto layout");
             assert.notEqual(value.layoutPositioning, "ABSOLUTE", "absolute child cannot FILL");
+          }
+          if (nativeAutoLayout && next === "FILL") {
+            const parent = value.parent;
+            const dimension = axis === "Horizontal" ? "width" : "height";
+            const main = (parent.layoutMode === "HORIZONTAL") === (axis === "Horizontal");
+            const padding = axis === "Horizontal" ? ["Left", "Right"] : ["Top", "Bottom"];
+            const inner =
+              parent[dimension] -
+              padding.reduce((total, side) => total + (parent[`padding${side}`] ?? 0), 0);
+            const siblings = parent.children.filter((child) => child !== value);
+            value[dimension] = main
+              ? inner -
+                siblings.reduce((total, child) => total + child[dimension], 0) -
+                (parent.itemSpacing ?? 0) * siblings.length
+              : inner;
+          } else if (nativeAutoLayout && next === "HUG" && value.children.length) {
+            const dimension = axis === "Horizontal" ? "width" : "height";
+            const main = (value.layoutMode === "HORIZONTAL") === (axis === "Horizontal");
+            const padding = axis === "Horizontal" ? ["Left", "Right"] : ["Top", "Bottom"];
+            value[dimension] =
+              padding.reduce((total, side) => total + (value[`padding${side}`] ?? 0), 0) +
+              (main
+                ? value.children.reduce((total, child) => total + child[dimension], 0) +
+                  (value.itemSpacing ?? 0) * (value.children.length - 1)
+                : Math.max(...value.children.map((child) => child[dimension])));
           }
           sizing = next;
         },
@@ -951,6 +1003,60 @@ test("plugin keeps absolute overlays fixed while preserving flow fill and root h
   assert.equal(overlay.layoutSizingVertical, "FIXED");
   assert.equal(runtime.messages[0].warnings.length, 2);
   assert(runtime.messages[0].warnings.every((warning) => warning.includes("fill")));
+});
+
+test("native auto layout activation preserves the source size before resolving fill and hug", async () => {
+  for (const layoutMode of ["HORIZONTAL", "VERTICAL"]) {
+    for (const crossSizing of ["FIXED", "HUG"]) {
+      const horizontal = layoutMode === "HORIZONTAL";
+      const mainSize = horizontal ? "width" : "height";
+      const crossSize = horizontal ? "height" : "width";
+      const mainAxis = horizontal ? "Horizontal" : "Vertical";
+      const crossAxis = horizontal ? "Vertical" : "Horizontal";
+      const bounds = (main, cross) => ({ x: 0, y: 0, [mainSize]: main, [crossSize]: cross });
+      const source = file([
+        {
+          ...rect("1:1"),
+          type: "FRAME",
+          layoutMode,
+          absoluteBoundingBox: bounds(640, 240),
+          [`layoutSizing${mainAxis}`]: "FIXED",
+          [`layoutSizing${crossAxis}`]: crossSizing,
+          itemSpacing: 16,
+          paddingLeft: 20,
+          paddingRight: 20,
+          paddingTop: 20,
+          paddingBottom: 20,
+          children: [
+            rect("1:2", { absoluteBoundingBox: bounds(100, 120) }),
+            rect("1:3", {
+              absoluteBoundingBox: bounds(484, 120),
+              [`layoutSizing${mainAxis}`]: "FILL",
+            }),
+          ],
+        },
+      ]);
+      const runtime = pluginHarness({ nativeAutoLayout: true });
+      await runtime.send({
+        type: "import-transfer",
+        content: JSON.stringify(createFigmaTransfer(importFigmaJson(source).document)),
+      });
+      assert.equal(runtime.messages[0].type, "imported");
+      const frame = runtime.pages[1].children[0];
+      assert(
+        runtime.calls.some(
+          (call) => call[0] === "native-auto-size" && call[2] === 640 && call[3] === 584,
+        ),
+      );
+      assert.equal(frame[mainSize], 640);
+      assert.equal(frame[crossSize], crossSizing === "HUG" ? 160 : 240);
+      assert.equal(frame.children[0][mainSize], 100);
+      assert.equal(frame.children[1][mainSize], 484);
+      assert.equal(frame.children[1][`layoutSizing${mainAxis}`], "FILL");
+      assert.equal(frame[`layoutSizing${crossAxis}`], crossSizing);
+      assert.equal(frame.children[1].layoutPositioning, "AUTO");
+    }
+  }
 });
 
 test("plugin inherited stretch respects explicit child alignment and cross sizing", async () => {

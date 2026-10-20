@@ -83,6 +83,10 @@ function harness(source = page([rect()])) {
         this.width = width;
         this.height = height;
       },
+      resizeWithoutConstraints(width, height) {
+        this.width = width;
+        this.height = height;
+      },
       setPluginData(key, value) {
         this.pluginData[key] = value;
       },

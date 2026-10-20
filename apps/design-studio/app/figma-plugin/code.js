@@ -475,6 +475,11 @@
       if (containers.has(source.type)) {
         for (const child of source.children) await createNode(child, node, source);
         applyLayout(node, source);
+        // Enabling native Auto Layout can immediately hug the existing children.
+        // Restore the authored frame before FILL children consume its inner size;
+        // this frame's own HUG/FILL is applied afterwards by its parent.
+        if (node.layoutMode !== "NONE")
+          node.resizeWithoutConstraints(source.width, source.height);
         for (let index = 0; index < source.children.length; index += 1) {
           const child = node.children[index],
             childSource = source.children[index];
