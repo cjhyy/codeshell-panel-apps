@@ -133,7 +133,8 @@ export function gridPlacements(children, columnCount, container = {}) {
   };
 }
 // Native runs 289e088a (rectangle), a4e5dd91 (plain Text), fc6bb994 (padded
-// cells), and f4568ae6 (excluded centered bottom rule) prove this dependency.
+// cells), f4568ae6 (excluded centered bottom rule), and 0172eaef (real nested
+// paragraph flow) prove this dependency.
 // Text height is its logical line box after the bounded responsive-text pass. Never use an old
 // stretched cell height as intrinsic content, or shrink edits retain the old row.
 export function gridFillHugContentHeight(container, child, children = child?.children, parent) {
@@ -143,7 +144,7 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
     !(node.strokeWidth > 0) &&
     (node.strokeSides === undefined ||
       (Array.isArray(node.strokeSides) &&
-        node.strokeSides.every((side) => side && side.width === 0))) &&
+        Array.from(node.strokeSides).every((side) => side && side.width === 0))) &&
     !node.strokeLayoutExcluded;
   const verticalPadding = (node) =>
     (node.paddingTop ?? node.padding ?? 0) + (node.paddingBottom ?? node.padding ?? 0);
@@ -152,6 +153,9 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
       const value = node[`padding${side}`] ?? node.padding ?? 0;
       return Number.isFinite(value) && value >= 0 && value <= 2000;
     });
+  const flowGap = (node) => node.rowGap ?? node.gap ?? 0;
+  const boundedGap = (node) =>
+    Number.isFinite(flowGap(node)) && flowGap(node) >= 0 && flowGap(node) <= 2000;
   // A FILL row has a resolved width only in this proven, non-circular parent
   // context. Persisted geometry alone is not evidence that a HUG owner resolves it.
   const resolvedFillWidth =
@@ -215,8 +219,7 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
     child.layoutMarginBefore ||
     (child.justifyContent && child.justifyContent !== "start") ||
     (child.alignItems && child.alignItems !== "start") ||
-    (child.gap ?? 0) !== 0 ||
-    (child.rowGap ?? 0) !== 0 ||
+    !boundedGap(child) ||
     !boundedPadding(child) ||
     !unconstrained(child) ||
     !noStroke(child)
@@ -224,50 +227,69 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
     return null;
   // Flat layouts resolve descendants only after the bounded parent/cell check.
   // Ordinary rectangles and unrelated layouts do not add a full document scan.
-  const resolvedChildren = typeof children === "function" ? children() : children;
-  if (!Array.isArray(resolvedChildren) || resolvedChildren.length !== 1) return null;
+  const childrenOf = (node) => typeof children === "function"
+    ? children(node) : node === child ? children : node.children;
+  const plainText = (node) =>
+    node.type === "text" && node.layoutSizingVertical === "hug" &&
+    node.layoutSizingHorizontal === "fill" && node.textFlow === "wrap" &&
+    node.textOverflow === undefined && typeof node.textSource === "string" &&
+    node.textSource.length <= 4000 && /[^\t\n\f\r ]/u.test(node.textSource) &&
+    Number.isFinite(node.fontSize) && node.fontSize >= 6 && node.fontSize <= 240 &&
+    validTextLineHeight(node) && textLineHeightRatio(node) >= 0.7 &&
+    textLineHeightRatio(node) <= 3 && (node.letterSpacing ?? 0) === 0 &&
+    (node.textAlign ?? "left") === "left" && (node.textDecoration ?? "none") === "none";
+  const validLeaf = (node) =>
+    node.children === undefined && node.visible !== false &&
+    node.layoutPositioning !== "absolute" && !node.rotation && !node.layoutMarginBefore &&
+    Number.isFinite(node.height) && node.height >= 1 && node.height <= 20000 &&
+    unconstrained(node) && noStroke(node);
+  const resolvedChildren = childrenOf(child);
+  if (!Array.isArray(resolvedChildren) || !resolvedChildren.length) return null;
   const content = resolvedChildren[0];
-  const fixedRectangle =
-    content?.type === "rectangle" &&
-    content.layoutSizingVertical === "fixed" &&
-    ["fixed", "fill"].includes(content.layoutSizingHorizontal);
-  const plainText =
-    content?.type === "text" &&
-    content.layoutSizingVertical === "hug" &&
-    content.layoutSizingHorizontal === "fill" &&
-    content.textFlow === "wrap" &&
-    content.textOverflow === undefined &&
-    typeof content.textSource === "string" &&
-    content.textSource.length <= 4000 &&
-    /[^\t\n\f\r ]/u.test(content.textSource) &&
-    Number.isFinite(content.fontSize) &&
-    content.fontSize >= 6 &&
-    content.fontSize <= 240 &&
-    validTextLineHeight(content) &&
-    textLineHeightRatio(content) >= 0.7 &&
-    textLineHeightRatio(content) <= 3 &&
-    (content.letterSpacing ?? 0) === 0 &&
-    (content.textAlign ?? "left") === "left" &&
-    (content.textDecoration ?? "none") === "none";
-  if (
-    !content ||
-    (!fixedRectangle && !plainText) ||
-    (centeredBottomRule && !plainText) ||
-    (fixedRectangle && verticalPadding(child) !== 0) ||
-    content.children !== undefined ||
-    content.visible === false ||
-    content.layoutPositioning === "absolute" ||
-    content.rotation ||
-    content.layoutMarginBefore ||
-    !Number.isFinite(content.height) ||
-    content.height < 1 ||
-    content.height > 20000 ||
-    !unconstrained(content) ||
-    !noStroke(content)
-  )
-    return null;
-  const height = content.height + verticalPadding(child);
-  return height <= 20000 ? height : null;
+  // Keep the independently proven direct-rectangle dependency separate. The
+  // recursive native paragraph receipt does not admit rectangles under wrappers.
+  if (resolvedChildren.length === 1 && content?.type === "rectangle")
+    return !centeredBottomRule && content.layoutSizingVertical === "fixed" &&
+      ["fixed", "fill"].includes(content.layoutSizingHorizontal) &&
+      verticalPadding(child) === 0 && (child.gap ?? 0) === 0 &&
+      (child.rowGap ?? 0) === 0 && validLeaf(content) ? content.height : null;
+  const seen = new Set([child]);
+  let count = 1;
+  const intrinsic = (node, depth) => {
+    if (!node || typeof node !== "object" || seen.has(node) || depth > 4 || ++count > 32)
+      return null;
+    seen.add(node);
+    if (plainText(node)) return validLeaf(node) ? node.height : null;
+    if (node.type !== "frame" || node.layout !== "vertical" ||
+        node.layoutSizingVertical !== "hug" ||
+        !["fixed", "fill"].includes(node.layoutSizingHorizontal) ||
+        !Number.isFinite(node.width) || node.width < 1 || node.width > 20000 ||
+        node.visible === false || node.layoutPositioning === "absolute" ||
+        node.rotation || node.layoutReverse || node.layoutMarginBefore ||
+        (node.layoutWrap && node.layoutWrap !== "none") ||
+        (node.justifyContent && node.justifyContent !== "start") ||
+        (node.alignItems && node.alignItems !== "start") ||
+        (![undefined, "auto", "start"].includes(node.layoutAlignSelf) &&
+          !(node.layoutAlignSelf === "stretch" && node.layoutSizingHorizontal === "fill")) ||
+        !boundedPadding(node) || !boundedGap(node) || !unconstrained(node) || !noStroke(node))
+      return null;
+    return flowHeight(node, depth);
+  };
+  const flowHeight = (node, depth) => {
+    const items = node === child ? resolvedChildren : childrenOf(node);
+    if (!Array.isArray(items) || !items.length || items.length > 16 ||
+        !Array.from(items).every((item) => item &&
+          (item.type === "frame" || items.length === 1 && item.type === "text")))
+      return null;
+    let height = verticalPadding(node) + flowGap(node) * (items.length - 1);
+    for (const item of items) {
+      const value = intrinsic(item, depth + 1);
+      if (value === null) return null;
+      height += value;
+    }
+    return height >= 1 && height <= 20000 ? height : null;
+  };
+  return flowHeight(child, 0);
 }
 export function gridTrackSizes(tracks, count, placements, axis, gap, available, intrinsicSize) {
   const definitions = Array.from(

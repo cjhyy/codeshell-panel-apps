@@ -1,0 +1,225 @@
+{
+  "nativeRun": "native-table-multi-p-2026-10-20T22-36-32.091Z-0172eaef",
+  "sourceProductionBase": "462e735716f23eb2f2663c741d7a8192573beb4a",
+  "rawSha256": "9830f5a684b8678aece825a0615a2f07cb013a24a5af233050bf396cc26824ac",
+  "officialSha256": "e384dae6cfa1c18ddaf042fc82cbd7dca08a3d8f0831378cfe83e29ad8575fec",
+  "sourceSha256": "8d05644e611e29fb30d0a0bbe68d4adadb6b7c8f36c25e4165857bfd303dbbfb",
+  "stagesSha256": "d55b7bfc708c36743863a13b91f3eccf0ffecdb49cc2f39b7f31f4a7020b51ff",
+  "residualsSha256": "9787e7f3e7fc46ddd0beda83958139b8e405bb2d0ad1ccca1ce5dbfdd17664d2",
+  "originalAnalysisSha256": "465f5fc67157a284ea5b1e29e121f72b4d504956e36942f3df749a7ed2ccc2f8",
+  "independentAnalysisSha256": "14049cdc4e21de279a0b0820b00f8b8979dbe92918ea2ce7ecd1482aba6fc0a8",
+  "productionSupplementFunctionSha256": "d8096bec95f90eb5b9395c4bbeeb233bc1edf857f62f6ddc8a70044a9a26cfef",
+  "productionSupplementExecutableSha256": "59380698eb62a0f11234d0003316853353c1191ab5a4306d56147204f10c1a4d",
+  "transformation": "Exact production preserveNativeGrid + same-run actual SDK getters. IDs, original boxes, transforms, characters, typography and hierarchy unchanged. Requested/Float32 getters not normalized; original77strictfailures preserved. Complete raw/official/PNG receipts remain in immutable external evidence.",
+  "supplementedFields": [
+    {
+      "id": "66:1505",
+      "addedOrChanged": [
+        "strokeWeight"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1507",
+      "addedOrChanged": [
+        "itemSpacing"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1508",
+      "addedOrChanged": [
+        "layoutPositioning",
+        "gridRowSizes",
+        "gridColumnSizes"
+      ],
+      "removed": [
+        "strokeWeight"
+      ]
+    },
+    {
+      "id": "66:1509",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1510",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1511",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1512",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1513",
+      "addedOrChanged": [
+        "layoutPositioning",
+        "gridRowSizes",
+        "gridColumnSizes"
+      ],
+      "removed": [
+        "strokeWeight"
+      ]
+    },
+    {
+      "id": "66:1514",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1515",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1516",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1517",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1518",
+      "addedOrChanged": [
+        "layoutPositioning",
+        "gridRowSizes",
+        "gridColumnSizes"
+      ],
+      "removed": [
+        "strokeWeight"
+      ]
+    },
+    {
+      "id": "66:1519",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1520",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1521",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1522",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1523",
+      "addedOrChanged": [
+        "layoutPositioning",
+        "gridRowSizes",
+        "gridColumnSizes"
+      ],
+      "removed": [
+        "strokeWeight"
+      ]
+    },
+    {
+      "id": "66:1524",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1525",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1526",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1527",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1528",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1529",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1530",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "66:1531",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    }
+  ]
+}
