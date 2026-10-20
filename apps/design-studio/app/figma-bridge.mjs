@@ -329,6 +329,41 @@ function geometry(source, ancestors, report) {
   };
 }
 
+function layoutSizing(source, node, parent) {
+  const inferred = {};
+  const primary = { HORIZONTAL: "Horizontal", VERTICAL: "Vertical" }[source.layoutMode];
+  if (primary) {
+    const counter = primary === "Horizontal" ? "Vertical" : "Horizontal";
+    for (const [axis, key] of [
+      [primary, "primaryAxisSizingMode"],
+      [counter, "counterAxisSizingMode"],
+    ])
+      if (["FIXED", "AUTO"].includes(source[key]))
+        inferred[axis] = source[key] === "AUTO" ? "hug" : "fixed";
+  } else if (source.type === "TEXT") {
+    const textAutoResize = source.style?.textAutoResize ?? source.textAutoResize;
+    if (["NONE", "HEIGHT", "WIDTH_AND_HEIGHT", "TRUNCATE"].includes(textAutoResize)) {
+      inferred.Horizontal = textAutoResize === "WIDTH_AND_HEIGHT" ? "hug" : "fixed";
+      inferred.Vertical = ["HEIGHT", "WIDTH_AND_HEIGHT"].includes(textAutoResize)
+        ? "hug"
+        : "fixed";
+    }
+  }
+  const parentPrimary = { horizontal: "Horizontal", vertical: "Vertical" }[parent?.layout];
+  if (parentPrimary && source.layoutPositioning !== "ABSOLUTE") {
+    // Filling the parent takes precedence over an inner frame's intrinsic sizing.
+    if (source.layoutGrow === 1) inferred[parentPrimary] = "fill";
+    if (source.layoutAlign === "STRETCH")
+      inferred[parentPrimary === "Horizontal" ? "Vertical" : "Horizontal"] = "fill";
+  }
+  for (const axis of ["Horizontal", "Vertical"]) {
+    const explicit = source[`layoutSizing${axis}`];
+    if (["FIXED", "HUG", "FILL"].includes(explicit))
+      node[`layoutSizing${axis}`] = explicit.toLowerCase();
+    else if (inferred[axis]) node[`layoutSizing${axis}`] = inferred[axis];
+  }
+}
+
 function layout(source, node, report) {
   node.layout = { HORIZONTAL: "horizontal", VERTICAL: "vertical" }[source.layoutMode] ?? "none";
   if (source.layoutMode === "GRID")
@@ -690,9 +725,8 @@ function importFigmaJsonWithReport(
       };
     if (effects.length > (node.shadow ? 1 : 0) || shadow?.spread)
       report.warn("unsupported-effects", source, "仅保留一个无扩散外投影；其他效果未导入。");
-    for (const axis of ["Horizontal", "Vertical"])
-      if (["FIXED", "HUG", "FILL"].includes(source[`layoutSizing${axis}`]))
-        node[`layoutSizing${axis}`] = source[`layoutSizing${axis}`].toLowerCase();
+    const parent = ancestors.at(-1);
+    layoutSizing(source, node, parent);
     for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"])
       if (finite(source[key])) node[key] = number(source[key], 1, 1, 20000, source, key, report);
     if (node.minWidth > node.maxWidth) {
@@ -704,8 +738,14 @@ function importFigmaJsonWithReport(
       report.warn("invalid-sizing", source, "maxHeight 小于 minHeight，已忽略。 ");
     }
     if (source.layoutPositioning === "ABSOLUTE") node.layoutPositioning = "absolute";
-    if (source.layoutAlign === "STRETCH") node.layoutAlignSelf = "stretch";
-    const parent = ancestors.at(-1);
+    const parentCrossAxis = { horizontal: "Vertical", vertical: "Horizontal" }[parent?.layout];
+    if (
+      source.layoutAlign === "STRETCH" &&
+      node.layoutPositioning !== "absolute" &&
+      parentCrossAxis &&
+      node[`layoutSizing${parentCrossAxis}`] === "fill"
+    )
+      node.layoutAlignSelf = "stretch";
     if (
       source.constraints &&
       parent &&

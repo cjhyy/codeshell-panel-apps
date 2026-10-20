@@ -12,6 +12,7 @@ import { serializeDesignDocument } from "../../../apps/design-studio/app/documen
 import { transformedNodeBoundsInTree } from "../../../apps/design-studio/app/geometry.mjs";
 import { exportDesignFrontend } from "../../../apps/design-studio/app/frontend-export.mjs";
 import { auditDesignPages } from "../../../apps/design-studio/app/audit.mjs";
+import { applyAllAutoLayouts } from "../../../apps/design-studio/app/layout.mjs";
 
 const solid = (r, g, b) => [{ type: "SOLID", color: { r, g, b } }];
 const rect = (id = "1:2", props = {}) => ({
@@ -167,6 +168,110 @@ test("Figma REST import preserves editable hierarchy, source IDs, absolute geome
     serializeDesignDocument(importFigmaJson(source).document),
     serializeDesignDocument(result.document),
   );
+});
+
+test("legacy Figma auto layout sizing survives import and resizes children in flow", () => {
+  for (const layoutMode of ["HORIZONTAL", "VERTICAL"]) {
+    const horizontal = layoutMode === "HORIZONTAL";
+    const source = file([
+      {
+        ...rect("1:1"),
+        type: "FRAME",
+        layoutMode,
+        primaryAxisSizingMode: "FIXED",
+        counterAxisSizingMode: "AUTO",
+        absoluteBoundingBox: { x: 0, y: 0, width: 300, height: 300 },
+        itemSpacing: 10,
+        children: [
+          rect("1:2", { layoutGrow: 1 }),
+          rect("1:3", { layoutAlign: "STRETCH" }),
+          {
+            ...rect("1:4"),
+            type: "FRAME",
+            layoutMode: horizontal ? "VERTICAL" : "HORIZONTAL",
+            primaryAxisSizingMode: "AUTO",
+            counterAxisSizingMode: "AUTO",
+            layoutGrow: 1,
+            children: [],
+          },
+        ],
+      },
+    ]);
+    const before = JSON.stringify(source);
+    const { document } = importFigmaJson(source);
+    assert.equal(JSON.stringify(source), before);
+    const [frame, growing, stretched, nested] = document.nodes;
+    const main = horizontal ? "Horizontal" : "Vertical";
+    const cross = horizontal ? "Vertical" : "Horizontal";
+    assert.equal(frame[`layoutSizing${main}`], "fixed");
+    assert.equal(frame[`layoutSizing${cross}`], "hug");
+    assert.equal(growing[`layoutSizing${main}`], "fill");
+    assert.equal(stretched[`layoutSizing${cross}`], "fill");
+    assert.equal(nested[`layoutSizing${main}`], "fill");
+    assert.equal(nested[`layoutSizing${cross}`], "hug");
+    assert(document.nodes.slice(1).every((node) => node.layoutPositioning !== "absolute"));
+    applyAllAutoLayouts(document.nodes);
+    const size = horizontal ? "width" : "height";
+    const beforeSize = growing[size];
+    frame[size] += 100;
+    applyAllAutoLayouts(document.nodes);
+    assert(growing[size] > beforeSize, "fill children must respond to parent resize");
+    const transfer = createFigmaTransfer(document);
+    assert.equal(transfer.pages[0].children[0].children[0][`layoutSizing${main}`], "fill");
+  }
+});
+
+test("modern sizing wins over legacy hints and absolute children do not inherit fill", () => {
+  const { document } = importFigmaJson(
+    file([
+      {
+        ...rect("1:1"),
+        type: "FRAME",
+        layoutMode: "HORIZONTAL",
+        primaryAxisSizingMode: "AUTO",
+        counterAxisSizingMode: "AUTO",
+        layoutSizingHorizontal: "FIXED",
+        children: [
+          rect("1:2", {
+            layoutGrow: 1,
+            layoutAlign: "STRETCH",
+            layoutSizingHorizontal: "FIXED",
+            layoutSizingVertical: "FIXED",
+          }),
+          rect("1:3", {
+            layoutGrow: 1,
+            layoutAlign: "STRETCH",
+            layoutPositioning: "ABSOLUTE",
+          }),
+          {
+            ...rect("1:4"),
+            type: "TEXT",
+            characters: "Content grows",
+            style: { fontSize: 16, textAutoResize: "WIDTH_AND_HEIGHT" },
+          },
+          {
+            ...rect("1:5"),
+            type: "TEXT",
+            characters: "Fixed width, automatic height",
+            style: { fontSize: 16, textAutoResize: "HEIGHT" },
+          },
+        ],
+      },
+    ]),
+  );
+  const [frame, modern, absolute, text, paragraph] = document.nodes;
+  assert.equal(frame.layoutSizingHorizontal, "fixed");
+  assert.equal(frame.layoutSizingVertical, "hug");
+  assert.equal(modern.layoutSizingHorizontal, "fixed");
+  assert.equal(modern.layoutSizingVertical, "fixed");
+  assert.notEqual(modern.layoutAlignSelf, "stretch");
+  assert.notEqual(absolute.layoutSizingHorizontal, "fill");
+  assert.notEqual(absolute.layoutSizingVertical, "fill");
+  assert.notEqual(absolute.layoutAlignSelf, "stretch");
+  assert.equal(text.layoutSizingHorizontal, "hug");
+  assert.equal(text.layoutSizingVertical, "hug");
+  assert.equal(paragraph.layoutSizingHorizontal, "fixed");
+  assert.equal(paragraph.layoutSizingVertical, "hug");
 });
 
 test("all supported official JSON wrappers import consistently and ids remain globally unique", () => {
@@ -683,6 +788,19 @@ function pluginHarness({ missingFont = false, failFallback = false, failNode = f
         fontName = font;
       },
     });
+    for (const axis of ["Horizontal", "Vertical"]) {
+      let sizing = "FIXED";
+      Object.defineProperty(value, `layoutSizing${axis}`, {
+        get: () => sizing,
+        set: (next) => {
+          if (next === "FILL") {
+            assert.notEqual(value.parent?.layoutMode, "NONE", "FILL requires auto layout");
+            assert.notEqual(value.layoutPositioning, "ABSOLUTE", "absolute child cannot FILL");
+          }
+          sizing = next;
+        },
+      });
+    }
     return value;
   }
   const existing = node("PAGE", "existing");
@@ -796,6 +914,88 @@ test("plugin creates new editable pages, loads fonts before editing text and rep
   assert.equal(text.pluginData.codeshellNodeId, "figma-1-2");
   assert.equal(text.pluginData.figmaSourceId, "1:2");
   assert.ok(harness.messages[0].warnings.some((warning) => warning.includes("Inter Regular")));
+});
+
+test("plugin keeps absolute overlays fixed while preserving flow fill and root hug sizing", async () => {
+  const document = importFigmaJson(
+    file([
+      {
+        ...rect("1:1"),
+        type: "FRAME",
+        layoutMode: "HORIZONTAL",
+        layoutSizingHorizontal: "FIXED",
+        layoutSizingVertical: "HUG",
+        children: [
+          rect("1:2", { layoutSizingHorizontal: "FILL" }),
+          rect("1:3", {
+            layoutPositioning: "ABSOLUTE",
+            layoutSizingHorizontal: "FILL",
+            layoutSizingVertical: "FILL",
+          }),
+        ],
+      },
+    ]),
+  ).document;
+  const runtime = pluginHarness();
+  await runtime.send({
+    type: "import-transfer",
+    content: JSON.stringify(createFigmaTransfer(document)),
+  });
+  assert.equal(runtime.messages[0].type, "imported");
+  const frame = runtime.pages[1].children[0];
+  assert.equal(frame.layoutSizingVertical, "HUG");
+  assert.equal(frame.children[0].layoutSizingHorizontal, "FILL");
+  const overlay = frame.children[1];
+  assert.equal(overlay.layoutPositioning, "ABSOLUTE");
+  assert.equal(overlay.layoutSizingHorizontal, "FIXED");
+  assert.equal(overlay.layoutSizingVertical, "FIXED");
+  assert.equal(runtime.messages[0].warnings.length, 2);
+  assert(runtime.messages[0].warnings.every((warning) => warning.includes("fill")));
+});
+
+test("plugin inherited stretch respects explicit child alignment and cross sizing", async () => {
+  for (const layoutMode of ["HORIZONTAL", "VERTICAL"]) {
+    const document = importFigmaJson(
+      file([
+        {
+          ...rect("1:1"),
+          type: "FRAME",
+          layoutMode,
+          children: Array.from({ length: 6 }, (_, index) => rect(`1:${index + 2}`)),
+        },
+      ]),
+    ).document;
+    const [frame, inherited, fixed, start, center, stretch, absolute] = document.nodes;
+    const crossAxis = layoutMode === "HORIZONTAL" ? "Vertical" : "Horizontal";
+    frame.alignItems = "stretch";
+    fixed[`layoutSizing${crossAxis}`] = "fixed";
+    start.layoutAlignSelf = "start";
+    center.layoutAlignSelf = "center";
+    stretch.layoutAlignSelf = "stretch";
+    absolute.layoutPositioning = "absolute";
+    const runtime = pluginHarness();
+    const transfer = createFigmaTransfer(document);
+    await runtime.send({
+      type: "import-transfer",
+      content: JSON.stringify(transfer),
+    });
+    assert.equal(runtime.messages[0].type, "imported");
+    const created = runtime.pages[1].children[0];
+    assert.equal(created.counterAxisAlignItems, "MIN");
+    for (const [source, alignment] of [
+      [inherited, "STRETCH"],
+      [fixed, "INHERIT"],
+      [start, "INHERIT"],
+      [center, "INHERIT"],
+      [stretch, "STRETCH"],
+      [absolute, "INHERIT"],
+    ]) {
+      const child = created.children.find((node) => node.pluginData.codeshellNodeId === source.id);
+      assert.equal(child.layoutAlign, alignment);
+    }
+    assert.equal(created.children[1][`layoutSizing${crossAxis}`], "FIXED");
+    assert(transfer.warnings.some((warning) => warning.code === "child-layout-export"));
+  }
 });
 
 test("plugin validates every page before writes and rolls back only pages owned by a failed import", async () => {

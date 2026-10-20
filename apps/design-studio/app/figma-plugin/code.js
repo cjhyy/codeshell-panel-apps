@@ -382,15 +382,22 @@
       const parentAuto = parent?.layoutMode && parent.layoutMode !== "NONE";
       if (parentAuto) {
         node.layoutPositioning = source.layoutPositioning === "absolute" ? "ABSOLUTE" : "AUTO";
-        node.layoutAlign = source.layoutAlignSelf === "stretch" ? "STRETCH" : "INHERIT";
-        if (parentSource?.alignItems === "stretch" && source.layoutPositioning !== "absolute")
-          node.layoutAlign = "STRETCH";
+        const crossAxis = parent.layoutMode === "HORIZONTAL" ? "Vertical" : "Horizontal";
+        const crossSizing = source[`layoutSizing${crossAxis}`];
+        const followsParent = !source.layoutAlignSelf || source.layoutAlignSelf === "auto";
+        const stretches =
+          source.layoutAlignSelf === "stretch" ||
+          (followsParent &&
+            parentSource?.alignItems === "stretch" &&
+            (!crossSizing || crossSizing === "fill"));
+        node.layoutAlign =
+          stretches && source.layoutPositioning !== "absolute" ? "STRETCH" : "INHERIT";
       }
       for (const axis of ["Horizontal", "Vertical"]) {
         const sizing = source[`layoutSizing${axis}`];
         if (!sizing || sizing === "fixed") continue;
         if (
-          (sizing === "fill" && !parentAuto) ||
+          (sizing === "fill" && (!parentAuto || source.layoutPositioning === "absolute")) ||
           (sizing === "hug" &&
             node.type !== "TEXT" &&
             (!node.layoutMode || node.layoutMode === "NONE"))
