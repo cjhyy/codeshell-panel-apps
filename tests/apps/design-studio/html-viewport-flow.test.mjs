@@ -38,6 +38,7 @@ test("viewport flow requires captured relationships and preserves source identit
   assert.equal(JSON.parse(root.notes).cssSelector, "#fixture");
   const legacy = normalizeDesignDocument((await designNodeToV3(tree, { viewportWidth: 640, viewportHeight: 240 })).document);
   assert.equal(legacy.nodes[0].layout, "none");
+  assert.equal(legacy.nodes[0].fill, "transparent");
   assert.deepEqual([legacy.nodes[1].x, legacy.nodes[1].y], [0, 0]);
   const unwrapped = normalizeDesignDocument((await designNodeToV3(tree, { ...options, includeViewport: false })).document);
   assert.equal(unwrapped.nodes.some((node) => node.id === "html-viewport"), false);
@@ -110,6 +111,8 @@ test("only the outer viewport resizes ordinary roots with exact production pixel
       assert(root(narrow).width < root(original).width, observed.id);
     }
     const transfer = createFigmaTransfer(narrow), walk = (nodes) => nodes.flatMap((node) => [node, ...walk(node.children ?? [])]);
+    assert.equal(transfer.pages[0].children[0].fill, narrow.canvas.background,
+      "The captured viewport must carry its background when exported as a native frame");
     const native = walk(transfer.pages[0].children).find((node) => node.id === root(narrow).id);
     assert.equal(native.layoutSizingHorizontal, root(narrow).layoutSizingHorizontal);
     assert.equal(native.width, root(narrow).width);

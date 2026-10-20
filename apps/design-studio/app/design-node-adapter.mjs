@@ -1223,6 +1223,10 @@ export async function designNodeToV3(tree, options = {}) {
   const background =
     options.background ??
     (rootColor && finite(rootColor.a, 1) >= 1 ? color(rootColor, converted.id) : "#ffffff");
+  // A captured webpage carries its viewport color when exported on its own.
+  // Native frame exports do not include the Figma page's canvas background.
+  if (viewport && options.viewportRelation && options.background !== undefined)
+    roots[0].fill = background;
   const document = {
     format: "codeshell.design",
     version: 3,
