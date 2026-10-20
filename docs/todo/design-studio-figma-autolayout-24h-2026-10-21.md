@@ -1532,3 +1532,75 @@ copy1→4→1及单DL width1220→708→1220，禁止后代height/sizing修补�
 66:1539/board66:1540；ORIG3已恢复，无native/GPU会话占用。
 
 24小时目标active，截止10月22日00:31不变。未push、发布或安装Host。
+
+
+### 第31轮：完整普通表格、可编辑阴影和闲置描边（约 07:41）
+
+聚合源5cbc1f294eb9078af8e1b55bf5baa00c487d9078已完成最终组合回归：主套647项，
+646pass/1skip/0fail，210100.563458ms；UI107项，106pass/1skip/0fail，119208.425042ms。
+合计 **752pass/2skip/0fail**，全部117个app文件在两套前后完全一致，tracked clean、HEAD
+不变。typecheck/validate、三个generated check和Design Studio scoped build check均通过。
+外部round31-full-gates-receipt.json SHA
+`68cd54eb36e3510e0464a7cd07c72f5244e1d7bd9669a58de8d1c85f9017778d`。
+功能测试通过不等于所有像素通过：旧红色零模糊Textshadow原fixture未替换，历史0/1px
+max2明确作为strictPixelParity:false负例保留；若出现其他坐标/RGBA差异仍失败。此次五个
+样本刚好0，不据此抹去此前失败。round30完整失败receipt仍在。
+
+合入d3cc665有序CSS阴影：Text-independent的css-box 1–8层inner/outer可编辑，canonical/
+codec/SVG/CanvasKit/frontend/cache/inspector完整贯通；只接受已证明的零spread、颜色/
+透明度和几何蒙版组合。实际DOM/frontend受控案例精确0；SVG模糊仍有Header max4、
+Cover max1差异，原生Header透明/边框蒙版预检明确拒绝，Cover仅保留可编辑参数并警告
+native/CSS kernel不一致，非严格原生像素成功。原生未知INNER仍只留rawsource和诊断，
+不伪造native-paint模型或隐形背板。source审查修复document-coordinate gradient paint
+server与local shadow-mask混用问题，新增实际渐变控制。
+
+合入f95da42闲置描边：原生strokes:[]的宽度/对齐/完整侧宽和inclusion另存bounded
+nativeStrokeInactive，canonical不画出描边；raw缺省与explicitfalse分开，已证明的AUTO
+REST缺省使用default:false，NONE不猜默认。未知样式sourceOnly不能仅删标记绕过复制。
+自然颜色/宽度/对齐/移除操作在完整draft上验证后提交，inside+included只加/减一次有效
+padding；Text OUTSIDE激活先要求自然选择Center。NONE显式inclusion的激活/复制继续
+拒绝，允许先变为真正Auto Layout；未省略未知原始样式，未伪造不适用setter。
+64实际来源样式有CPU保存/transfer/noop覆盖，40独立CSS↔SVG/frontend像素控制精确0；
+此轮真实Figma全属性/激活验收尚未执行，不能说原152/146字段损失已实机归零。
+
+组合审查保留context options{gridParents,copying}，copying只来自可信调用上下文。
+去除会只提交5字段的旧阴影stroke wrapper，防止丢metadata/padding；canonical stroke
+finaldraft验证CSS mask，nativeEffects仍只在真实native transfer/patch前检验。另验证
+当前raw/baseline/after的CSS stack完整性，未声明shadowStack修改不能省略或伪造意图，
+两个nativeVM负例证明拒绝后零写入。首次2项组合UI为1pass/1fail，实际诊断发现移除后
+applyAllAutoLayouts缺少导入导致撤销历史未提交；补齐导入、保留正常输入/撤销控制后
+2/2通过，无额外等待或焦点补丁。原始失败和完整toast/input/trace在外部日志保留。
+
+合入a05755e whole-DL恢复：从真实CSS fixed/collapse、30%+右20/auto、T/B10和透明
+表面等1–64行有界语法恢复整表，保留所有行/DT/DD/真实P和已有margin-wrapper。
+捕获期onNode只建立原source对象→canonical的WeakMap，P原有普通文字恢复后再规划，
+整张owned draft验证/测量/nativeGridPlan通过才一次提交，失败不残留局部layout或文字。
+TypedOM height:auto/minmax/aspect/column guards与直接匿名内容反例齐备。5组受控家庭
+15次严格像素全0，41 CSS/content负例、显式height floor和晚期atomic失败均覆盖。
+冻结GOV No-Actions源26节点保持，加viewport共27；三个状态ABS0、semanticIssues[]，
+保留真实P和原始x/y，primitiveText只改为真实Fill/logical linebox。12条精确已恢复
+warning ID/code仅成功后退役，原16warning历史保留，4collapsed paint及捕获媒体状态
+限制继续可见。整页原7536/7536/14116→候选7536/7536/7541 max95，仍严格失败。
+第一条affected命令遗漏CPUpreload被中止，原日志保留，全部owned进程确认关闭；正确
+CPU继承rerun通过，无native/GPU或注册插件变更。
+
+最终组合5cbc1f2对冻结Bootstrap成对复测，六张参考PNG逐字节一致、源hash不变：
+Headers首次309241→80921，重排589188→360868，768窄屏370744→315545；Cover首次
+418868→106413，重排419472→107017，窄屏329391→95557。全页均严格false，0未知
+请求/浏览器错误，Headers原生蒙版仍明确unsupported。完整报告和source/converted/diff
+PNG在round31-web-shadow-pair，不能把视觉改善当成0像素或原生成功。
+
+新增两个只读结论避免虚假成功：Tasklist两cell真实width:auto，tag有T−2/B−3负margin，
+绘制30px但逻辑占位25px；Fill+Hug/Grid1fr+maxcontent虽初始截图0，却已有cellBBox差异，
+长tag/Completed文案编辑出现2921/4078像素失败，不能套用固定表格公式。另当前fidelity
+检查遗漏nested parent.layout:none：只改嵌套V→NONE而子项仍AUTO，SVG字节相同、旧
+semanticIssues仍[]。这些是独立待修能力/检测缺口，不把没有显式ABS当成Auto Layout
+证明。外部task-list-flow-analysis及nested-manual-flow-audit保存反例。
+
+0172 multi-P实际生产harness已准备，精确26/4Grid/8cell/2P/9Text五阶段oracle、每阶段
+仅一条phone characters或DL owner width更新；18/18纯Node在primary173与组合5cbc
+均通过，独立peer clean。source58a36d45…，全部production/page guard仍ROOT_MUST_PIN；
+无实际安装/relay/native动作。下一阶段以本轮验证后的稳定primary最终HEAD/main/UI/
+manifest固定，再重新核对真实当前页并执行，不从WIP或overlay推断生产版本/原备份。
+
+24小时仍active，截止10月22日00:31不变。未push、发布或安装Host。
