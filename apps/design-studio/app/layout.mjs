@@ -195,8 +195,11 @@ function axisPadding(container, axis) {
       };
 }
 
-function packFlexLines(children, mainSize, maximum, gap, wrap) {
-  if (!wrap || !Number.isFinite(maximum)) return children.length > 0 ? [children] : [];
+function packFlexLines(children, mainSize, maximum, gap, wrap, reverse = false) {
+  // CSS collects each line in source order before reversing its main direction.
+  // Reversing all items first changes line membership when items wrap.
+  const ordered = line => reverse ? [...line].reverse() : line;
+  if (!wrap || !Number.isFinite(maximum)) return children.length > 0 ? [ordered(children)] : [];
   const lines = [];
   let line = [];
   let occupied = 0;
@@ -205,7 +208,7 @@ function packFlexLines(children, mainSize, maximum, gap, wrap) {
     const size = limitedAxisSize(child, axis, child[mainSize]);
     const next = line.length === 0 ? size : occupied + gap + size;
     if (line.length > 0 && next > maximum + 0.01) {
-      lines.push(line);
+      lines.push(ordered(line));
       line = [child];
       occupied = size;
     } else {
@@ -213,7 +216,7 @@ function packFlexLines(children, mainSize, maximum, gap, wrap) {
       occupied = next;
     }
   }
-  if (line.length > 0) lines.push(line);
+  if (line.length > 0) lines.push(ordered(line));
   return lines;
 }
 
@@ -232,7 +235,7 @@ function flexContentSize(container, children) {
     ? Number.POSITIVE_INFINITY
     : Math.max(0, finite(container[mainSize]) - mainPadding.start - mainPadding.end);
   const wrap = ["wrap", "wrap-reverse"].includes(container.layoutWrap);
-  const lines = packFlexLines(children, mainSize, innerMain, mainGap, wrap);
+  const lines = packFlexLines(children, mainSize, innerMain, mainGap, wrap, container.layoutReverse);
   const lineMainSizes = lines.map(
     (line) =>
       line.reduce((total, child) => total + limitedAxisSize(child, mainAxis, child[mainSize]), 0) +
@@ -423,8 +426,7 @@ function applyFlexLayout(nodes, container, children) {
     finite(container[crossSize]) - crossPadding.start - crossPadding.end,
   );
   const wrap = ["wrap", "wrap-reverse"].includes(container.layoutWrap);
-  const orderedChildren = container.layoutReverse ? [...children].reverse() : children;
-  const lines = packFlexLines(orderedChildren, mainSize, innerMain, mainGap, wrap);
+  const lines = packFlexLines(children, mainSize, innerMain, mainGap, wrap, container.layoutReverse);
   if (container.layoutWrap === "wrap-reverse") lines.reverse();
   let changed = false;
 
@@ -497,7 +499,9 @@ function applyFlexLayout(nodes, container, children) {
         mainCursor += mainTrack.free / autoMargins.length;
       }
       const sizing = axisSizing(child, crossAxis);
-      const alignment = childAlignment(child, container);
+      const logicalAlignment = childAlignment(child, container);
+      const alignment = container.layoutWrap === "wrap-reverse"
+        ? reverseAlignment(logicalAlignment) : logicalAlignment;
       if (sizing === "fill" || alignment === "stretch") {
         changed = assignAxisSize(child, crossAxis, lineCrossSize) || changed;
       }
