@@ -1088,3 +1088,58 @@ Checkout已定位Flex交叉轴margin丢失：原转换在align-items normal/cent
 此HTML导出入口问题影响。所有before/after/source/frontend失败产物在flex-cross-margins。
 已通过完整门禁的203b79d已快进到本地main，主检出干净；未push/发布，尚未更新Host
 安装。后续修复继续任务分支，24小时目标仍active。
+
+
+### FrameNONE、文字 Grid、前端树及反向换行组合（约 05:14）
+
+`a823a30` 合入 `633a1b5`：inactive Frame/Component Fill与Rectangle一样预留真实inside
+描边，忽略其失效的历史padding。只有两个空Fill子项、正剩余内容、起始/不换行、无未
+验证min/cap/变换且预测尺寸位置与测量一致，才启用新增来源重排；否则保留测量parent
+NONE并清理直接Fill关系，嵌套子层自己的布局不受破坏。实际4221 fixture注明live历史
+padding与官方REST省略差异，8新测试及10次独立CPU SVG/前端比较0/max0。
+
+`246050e` 合入 `0a1e44a`：单HUG行Grid的真实Fill cell内，可用唯一普通Text HFill/
+VHug、原始textSource/wrap和真实测量行盒贡献行高；现有8pass次序解决宽→文字→行
+依赖，不改通用Text创建/补丁，不新增格式字段。拒绝混合样式、列表/段落缩进/间距、
+截断/大小写转换、描边/约束/跨行等；交叉审查实际抓到lineTypes/lineIndentations遗漏
+并补守卫。原始字符和模式完整，153相关CPU检查通过；此时root三项合并124/124通过。
+三份生成物check与typecheck通过，合并冲突只在生成UI，由组合源码重建解决。
+
+实际生产 native Grid闭环 `99f44349` / 页62:967、board62:968，main SHA
+`ccd322c405d1913bc71f8ce23615c1701de40055e5da73ecded0bfa2f4a71d11` 未修改。
+原289e官方JSON＋同次live值通过精确生产supplement保留57真实图层/8Grid/24不透明cell/
+24真实Rectangle，没有普通ABS。初始全部行630，只将真实equal-HUG-cellFILL行62:990
+改390，再回630；其它7行保持630，所有官方/独立几何delta0。两个状态的原生PNG、
+回导SVG、回导重排共 **6次0像素/max0、0警告**；原始研究nativePNG→生产回导nativePNG
+另外严格0。参考390仅改独立CSS的这一行width，未改参考颜色/节点/其它尺寸。
+证据 `real-figma/native-grid-roundtrip/acceptance-report.json`。插件关闭、relayexit0，
+三注册文件精确恢复、锁释放，页面保留。此证明不覆盖之前708/483.328125分数失败。
+
+`2c43b65` 合入 `f8d7a38`：flat Panel/CLI页通过现有repositoryDesignPage重建parentId
+层级，当前active.nodes优先，inactive页和已有children契约保留。真实CLI写出的HTML、
+API、resize/edit/reopen验证为流式DOM，640差1200/max17→0、400差23200/max233→0；
+普通position relative，真实来源ABS保留。作者49CPU检查通过，root组合34/34通过。
+此前flat空block/overlay前端测试的像素相同不再被当作层级正确的唯一证据。
+
+扩展Flex控制发现column-reverse全局倒序后再分行，把两列实际ID组交换；重复配色原本
+掩盖图像变化，唯一4色的独立控制复现12000像素/max225。`359939b` 合入 `46819b6`：
+先按源顺序分行，再逐行倒序副本；测量与应用共用同一分组，wrap-reverse同时翻转行内
+cross start/end，不改源数组顺序。72组H/V/方向/对齐/宽度返回的独立CSS↔SVG/前端0，
+6个Hug阶段0，4个唯一色生产HTML×3模式0；41相关CPU检查通过。
+root重跑实际存在的flex-reverse-wrap与margin两文件 **5/5通过**；第一次误命名只执行2项
+的日志保留。margin正向控制扩为9组（含固定height对齐、双reverse、auto cross），SVG
+27次和真实层级前端18次0，重开无需重排，祖先transform与丢失包装边界控制保留。
+
+冻结Bootstrap生产复测（246050e）：Pricing仍266节点，62468/70633/196106，原生负gap
+仍不支持；Checkout255节点，41042/101882/259945，相比287339重排差异减少185457、
+窄屏减少6443，全部strict=false。未重写HTML/CSS/资源或掩盖其它ABS/媒体断点问题。
+证据 `web-corpus/bootstrap-pages-after-246050e-result.json`。
+
+实际负padding研究 `e578e56d`：18组38新节点，24次负数side setter全部明确拒绝且
+getter未改变；12拒绝case未继续缩放，不能冒充负padding reflow。6个零控制960→400→960
+通过，1306数值＋1095精确live/官方检查delta0；独立整数白板3PNG严格0/max0。
+此API不能用负padding表达NHS外扩，无新schema/projection改动。插件关闭、relayexit0，
+原页面/选择快照完全不变、注册三份精确恢复；证据 `native-negative-padding-analysis/`。
+负Grid gap只作低成本边界复核，官方文档明确拒绝负值，不把它作为已支持方案。
+当前正执行该6case研究，完成后转向实际文字闭环和多行表格的正向能力证明。
+本地main仍203b79d稳定检查点，后续组合尚未推送/发布或更新Host安装。24小时目标active。

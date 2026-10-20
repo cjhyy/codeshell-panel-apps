@@ -22,26 +22,34 @@ test("ordinary Flex cross margins survive the upstream normal/center drop withou
   const result = await runProductionFidelity({ output, resizeMode: "viewport-only", cases: [
     { id: "normal", html: rowHtml, css: rowCss },
     { id: "center", html: rowHtml, css: rowCss + '#fixture{align-items:center}' },
+    { id: "fixed-center", html: rowHtml, css: rowCss + '#fixture{height:240px;align-items:center;align-content:center}' },
+    { id: "fixed-end", html: rowHtml, css: rowCss + '#fixture{height:240px;align-items:flex-end;align-content:flex-end}' },
+    { id: "reverse", html: rowHtml, css: rowCss + '#fixture{flex-direction:row-reverse}.item:nth-child(2n){background:#dc2626}' },
+    { id: "wrap-reverse", html: rowHtml, css: rowCss + '#fixture{flex-wrap:wrap-reverse}.item:nth-child(2n){background:#dc2626}' },
+    { id: "auto-cross", html: rowHtml, css: rowCss + '.item{height:auto;padding:8px}' },
     { id: "column", html: '<main id="fixture">' + '<div class="item"></div>'.repeat(4) + '</main>',
       css: '#fixture{display:flex;flex-direction:column;flex-wrap:wrap;width:100%;height:240px;background:#eeeeee}.item{width:30px;height:100px;margin-left:16px;flex-shrink:0;background:#2563eb}' },
+    { id: "column-reverse", html: '<main id="fixture">' + '<div class="item"></div>'.repeat(4) + '</main>',
+      css: '#fixture{display:flex;flex-direction:column-reverse;flex-wrap:wrap;width:100%;height:240px;background:#eeeeee}.item{width:30px;height:100px;margin-left:16px;flex-shrink:0;background:#2563eb}.item:nth-child(2n){background:#dc2626}' },
   ] });
   assert.equal(result.passed, true, JSON.stringify(result.cases.map(c => ({ id: c.id, comparisons: c.comparisons }))));
   const browser = await chromium.launch({ args: ['--disable-gpu'] });
   t.after(() => browser.close());
   const page = await browser.newPage({ deviceScaleFactor: 1 });
   for (const item of result.cases) {
+    const column = item.id.startsWith('column');
     assert(item.comparisons.every(c => c.changedPixels === 0 && c.maximumChannelDelta === 0));
     for (const mode of ["imported", "narrow"]) {
       const document = normalizeDesignDocument(JSON.parse(await readFile(join(output, item.id, mode + '.codesign.json'), 'utf8')));
       const main = document.nodes.find(n => n.name === 'main#fixture');
-      assert.equal(main.layout, item.id === 'column' ? 'vertical' : 'horizontal');
-      assert.equal(main.layoutWrap, 'wrap');
-      assert.equal(main[item.id === 'column' ? 'paddingLeft' : 'paddingTop'], 16);
-      assert.equal(main[item.id === 'column' ? 'columnGap' : 'rowGap'], 16);
-      assert.equal(document.nodes.length, item.id === 'column' ? 6 : 8);
+      assert.equal(main.layout, column ? 'vertical' : 'horizontal');
+      assert.equal(main.layoutWrap, item.id === 'wrap-reverse' ? 'wrap-reverse' : 'wrap');
+      assert.equal(main[column ? 'paddingLeft' : 'paddingTop'], 16);
+      assert.equal(main[column ? 'columnGap' : 'rowGap'], 16);
+      assert.equal(document.nodes.length, column ? 6 : 8);
       assert(document.nodes.every(n => n.layoutPositioning !== 'absolute'));
       const reopened = normalizeDesignDocument(JSON.parse(serializeDesignDocument(document)));
-      assert.equal(applyAllAutoLayouts(reopened.nodes), false);
+      assert.equal(applyAllAutoLayouts(reopened.nodes), false, item.id + '/' + mode + '/reopen');
       await page.setViewportSize({ width: mode === 'imported' ? 640 : 400, height: 240 });
       await page.setContent(exportDesignFrontend(JSON.parse(serializeDesignDocument(reopened))));
       const reference = await readFile(join(output, item.id, mode + '-source.png'));
