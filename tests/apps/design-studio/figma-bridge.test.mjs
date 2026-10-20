@@ -814,6 +814,21 @@ function pluginHarness({
           calls.push(["native-auto-size", value.id, before, value[size]]);
         },
       });
+      let alignment = "INHERIT";
+      Object.defineProperty(value, "layoutAlign", {
+        get: () => alignment,
+        set: (next) => {
+          alignment = next;
+          if (next !== "STRETCH") return;
+          const parent = value.parent;
+          const horizontal = parent.layoutMode === "HORIZONTAL";
+          const dimension = horizontal ? "height" : "width";
+          const padding = horizontal ? ["Top", "Bottom"] : ["Left", "Right"];
+          value[dimension] =
+            parent[dimension] -
+            padding.reduce((total, side) => total + (parent[`padding${side}`] ?? 0), 0);
+        },
+      });
     }
     for (const axis of ["Horizontal", "Vertical"]) {
       let sizing = "FIXED";
@@ -839,6 +854,8 @@ function pluginHarness({
                 (parent.itemSpacing ?? 0) * siblings.length
               : inner;
           } else if (nativeAutoLayout && next === "HUG" && value.children.length) {
+            if (value.parent?.layoutMode === (axis === "Horizontal" ? "VERTICAL" : "HORIZONTAL"))
+              value.layoutAlign = "INHERIT";
             const dimension = axis === "Horizontal" ? "width" : "height";
             const main = (value.layoutMode === "HORIZONTAL") === (axis === "Horizontal");
             const padding = axis === "Horizontal" ? ["Left", "Right"] : ["Top", "Bottom"];
@@ -1059,7 +1076,96 @@ test("native auto layout activation preserves the source size before resolving f
   }
 });
 
-test("plugin inherited stretch respects explicit child alignment and cross sizing", async () => {
+test("plugin stretch follows canonical layout sizing and keeps explicit CSS opt-outs", async () => {
+  for (const layout of ["horizontal", "vertical"]) {
+    for (const [sizing, self, positioning] of [
+      ["fixed", "auto", "auto"],
+      ["hug", "auto", "auto"],
+      ["fixed", "start", "auto"],
+      ["hug", "start", "auto"],
+      ["fixed", "stretch", "auto"],
+      ["hug", "stretch", "auto"],
+      ["fixed", "auto", "absolute"],
+      ["hug", "auto", "absolute"],
+    ]) {
+      const horizontal = layout === "horizontal";
+      const mainSize = horizontal ? "width" : "height";
+      const crossSize = horizontal ? "height" : "width";
+      const crossAxis = horizontal ? "Vertical" : "Horizontal";
+      const common = {
+        x: 20,
+        y: 20,
+        fill: "#2563eb",
+        stroke: "transparent",
+        strokeWidth: 0,
+        opacity: 1,
+        rotation: 0,
+        cornerRadius: 0,
+        visible: true,
+        locked: false,
+      };
+      const document = importFigmaJson(
+        file([
+          {
+            ...rect("1:1"),
+            type: "FRAME",
+            layoutMode: horizontal ? "HORIZONTAL" : "VERTICAL",
+            absoluteBoundingBox: { x: 0, y: 0, [mainSize]: 600, [crossSize]: 200 },
+            paddingTop: 20,
+            paddingRight: 20,
+            paddingBottom: 20,
+            paddingLeft: 20,
+            children: [],
+          },
+        ]),
+      ).document;
+      document.nodes[0].alignItems = "stretch";
+      document.nodes.push(
+        {
+          ...common,
+          id: "child",
+          type: "frame",
+          name: "Child",
+          parentId: document.nodes[0].id,
+          [mainSize]: 100,
+          [crossSize]: 40,
+          layout: horizontal ? "horizontal" : "vertical",
+          gap: 0,
+          padding: 0,
+          alignItems: "start",
+          justifyContent: "start",
+          [`layoutSizing${crossAxis}`]: sizing,
+          layoutAlignSelf: self,
+          layoutPositioning: positioning,
+        },
+        {
+          ...common,
+          id: "content",
+          type: "rectangle",
+          name: "Content",
+          parentId: "child",
+          [mainSize]: 10,
+          [crossSize]: 20,
+        },
+      );
+      const transfer = createFigmaTransfer(document);
+      applyAllAutoLayouts(document.nodes);
+      const expected = document.nodes.find((node) => node.id === "child");
+      const runtime = pluginHarness({ nativeAutoLayout: true });
+      await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+      assert.equal(runtime.messages[0].type, "imported");
+      const child = runtime.pages[1].children[0].children[0];
+      assert.equal(
+        child[crossSize],
+        expected[crossSize],
+        `${layout} ${sizing} self:${self} positioning:${positioning}`,
+      );
+      assert.equal(child.layoutPositioning, positioning === "absolute" ? "ABSOLUTE" : "AUTO");
+    }
+  }
+});
+
+test("plugin inherited stretch respects explicit child alignment", async () => {
   for (const layoutMode of ["HORIZONTAL", "VERTICAL"]) {
     const document = importFigmaJson(
       file([
@@ -1090,7 +1196,7 @@ test("plugin inherited stretch respects explicit child alignment and cross sizin
     assert.equal(created.counterAxisAlignItems, "MIN");
     for (const [source, alignment] of [
       [inherited, "STRETCH"],
-      [fixed, "INHERIT"],
+      [fixed, "STRETCH"],
       [start, "INHERIT"],
       [center, "INHERIT"],
       [stretch, "STRETCH"],

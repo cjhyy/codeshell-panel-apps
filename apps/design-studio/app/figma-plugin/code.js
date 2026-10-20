@@ -380,20 +380,21 @@
     }
     function applySizing(node, source, parent, parentSource) {
       const parentAuto = parent?.layoutMode && parent.layoutMode !== "NONE";
+      let stretchAxis = null;
       if (parentAuto) {
         node.layoutPositioning = source.layoutPositioning === "absolute" ? "ABSOLUTE" : "AUTO";
-        const crossAxis = parent.layoutMode === "HORIZONTAL" ? "Vertical" : "Horizontal";
-        const crossSizing = source[`layoutSizing${crossAxis}`];
         const followsParent = !source.layoutAlignSelf || source.layoutAlignSelf === "auto";
         const stretches =
           source.layoutAlignSelf === "stretch" ||
-          (followsParent &&
-            parentSource?.alignItems === "stretch" &&
-            (!crossSizing || crossSizing === "fill"));
-        node.layoutAlign =
-          stretches && source.layoutPositioning !== "absolute" ? "STRETCH" : "INHERIT";
+          (followsParent && parentSource?.alignItems === "stretch");
+        if (stretches && source.layoutPositioning !== "absolute")
+          stretchAxis = parent.layoutMode === "HORIZONTAL" ? "Vertical" : "Horizontal";
+        node.layoutAlign = stretchAxis ? "STRETCH" : "INHERIT";
       }
       for (const axis of ["Horizontal", "Vertical"]) {
+        // Effective stretch owns this axis in the editor too. Assigning HUG
+        // afterwards would undo native STRETCH; explicit self alignment opts out.
+        if (axis === stretchAxis) continue;
         const sizing = source[`layoutSizing${axis}`];
         if (!sizing || sizing === "fixed") continue;
         if (
