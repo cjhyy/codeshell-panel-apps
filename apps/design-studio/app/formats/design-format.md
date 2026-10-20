@@ -177,6 +177,24 @@ remaining content space. An Auto Layout box cannot shrink below its physical pad
 this derived floor takes precedence over a smaller authored maximum without rewriting that
 maximum in the document. Inside borders on leaf rectangles contribute their physical border
 width to the content basis.
+Optional `strokeLayoutExcluded: true` preserves native H/V Frame/Component sources whose
+inside strokes are excluded from their own content inset. Only `true` is accepted, only
+with `strokeAlign: "inside"` and `layout: "horizontal"` or `"vertical"`. Their physical
+stroke widths contribute an additional Fill basis while canonical padding still describes
+the actual child inset. Omission uses CSS effective padding, already including the inside
+border. This provenance survives save/transfer and can be removed with `null` in a public
+tool edit. Layout/alignment edits clear it when it no longer applies. Zero stroke widths
+may retain the flag for later edits; Grid, leaf shapes and freeform containers cannot use it.
+Figma REST documents omit the documented `strokesIncludedInLayout: false` default, whereas
+fresh SDK Auto Layout activation currently defaults to `true`; export configures the live
+flag explicitly after activating the layout. See the [official REST node types](https://developers.figma.com/docs/rest-api/file-node-types/).
+The verified native Fill cases have positive remaining content space. Leaf rectangle
+inside-border floors and native behavior below the total stroke/content basis remain
+unverified; their min/max or zero-content behavior is not inferred from Frame padding.
+For source-bound negative gaps, changes to padding, physical stroke widths/alignment or
+this provenance recheck the raw request against final outer Fill sizes before any write.
+A simultaneous explicit gap edit and inclusion/padding edit must pass both final plans;
+stroke color alone does not force a gap rewrite or conflict with independent native spacing.
 Optional `layoutMarginBefore: "auto"` consumes surplus main-axis space before that child, matching
 `margin-left: auto` in a horizontal container or `margin-top: auto` in a vertical container.
 

@@ -13,6 +13,7 @@ import {
   createFigmaBinding,
   createFigmaPatch,
 } from "../../../apps/design-studio/app/figma-binding.mjs";
+import { applyAllAutoLayouts } from "../../../apps/design-studio/app/layout.mjs";
 import { longFigmaSource } from "./fixtures/long-canvas.mjs";
 import { measuredWrap, textMetricsSignature, textSourceMetricsSignature } from "../../../apps/design-studio/app/text-metrics.mjs";
 
@@ -1944,8 +1945,86 @@ test("source activation of freeform Auto Layout uses canonical effective padding
     await runtime.send({ type: "apply-patch", token: preview.token });
     assert.equal(runtime.messages.at(-1).type, "patched", JSON.stringify(runtime.messages.at(-1)));
     assert.equal(runtime.all.get("1:2").layoutMode, "HORIZONTAL");
-    assert.equal(runtime.all.get("1:2").strokesIncludedInLayout, false);
-    assert.equal(runtime.all.get("1:2").paddingTop, 8);
+    assert.equal(runtime.all.get("1:2").strokesIncludedInLayout, weight > 0);
+    assert.equal(runtime.all.get("1:2").paddingTop, 8 - weight);
+  }
+});
+
+test("new CSS inside copies include physical strokes while excluded native sources retain their flag", async () => {
+  const source = page([rect("1:2", { type: "FRAME", layoutMode: "HORIZONTAL", strokeAlign: "INSIDE", strokeWeight: 4,
+    strokes: [{ type: "SOLID", color: { r: .2, g: .4, b: .6 } }], paddingTop: 12, paddingRight: 12, paddingBottom: 12, paddingLeft: 12, children: [] })]);
+  for (const excluded of [false, true]) {
+    const value = importFigmaJson(source).document;
+    if (!excluded) delete value.nodes[0].strokeLayoutExcluded;
+    const runtime = harness(page([]), { nativeStrokes: true });
+    await runtime.send({ type: "import-transfer", content: JSON.stringify(createFigmaTransfer(value)) });
+    assert.equal(runtime.messages.at(-1).type, "imported", JSON.stringify(runtime.messages.at(-1)));
+    const node = runtime.figma.root.children[1].children[0];
+    assert.equal(node.strokesIncludedInLayout, !excluded);
+    assert.equal(node.paddingTop, excluded ? 12 : 8);
+    assert.equal(node.paddingTop + (excluded ? 0 : node.strokeTopWeight), 12);
+  }
+});
+
+test("inclusion, stroke, and raw padding changes preflight together before any native writes", async () => {
+  for (const originallyIncluded of [false, true]) {
+    const source = page([rect("1:2", { type: "FRAME", layoutMode: "HORIZONTAL", strokeAlign: "INSIDE", strokeWeight: 4, strokesIncludedInLayout: originallyIncluded,
+      strokes: [{ type: "SOLID", color: { r: .2, g: .4, b: .6 } }], paddingTop: 8, paddingRight: 8, paddingBottom: 8, paddingLeft: 8, children: [] })]);
+    const imported = await prepareFigmaImport(source), binding = createFigmaBinding(imported), node = imported.document.nodes[0];
+    node.strokeSides.forEach(side => { side.width = 8; });
+    if (originallyIncluded) node.strokeLayoutExcluded = true;
+    else delete node.strokeLayoutExcluded;
+    for (const side of ["Top", "Right", "Bottom", "Left"]) node[`padding${side}`] = originallyIncluded ? 1 : 12;
+    const transfer = createFigmaTransfer(imported.document); transfer.patch = createFigmaPatch(binding, imported.document);
+    const runtime = harness(source, { nativeStrokes: true });
+    await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+    const preview = runtime.messages.at(-1); assert.equal(preview.type, "patch-preview", JSON.stringify(preview)); assert.deepEqual(preview.conflicts, []);
+    assert.equal(runtime.all.get("1:2").strokeWeight, 4, "preview performs no native writes");
+    await runtime.send({ type: "apply-patch", token: preview.token });
+    assert.equal(runtime.messages.at(-1).type, "patched", JSON.stringify(runtime.messages.at(-1)));
+    const target = runtime.all.get("1:2");
+    assert.equal(target.strokesIncludedInLayout, !originallyIncluded);
+    assert.equal(target.strokeWeight, 8); assert.equal(target.paddingTop, originallyIncluded ? 1 : 4);
+    for (const [field, value] of [["strokesIncludedInLayout", !originallyIncluded], ["paddingLeft", 30], ["strokeTopWeight", 6], ["layoutMode", "NONE"]]) {
+      const concurrent = harness(source, { nativeStrokes: true }); concurrent.all.get("1:2")[field] = value;
+      await concurrent.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+      assert.ok(concurrent.messages.at(-1).conflicts?.length, `${field}: ${JSON.stringify(concurrent.messages.at(-1))}`);
+    }
+  }
+});
+
+test("invalid final included padding and marker grammar reject before creating pages or applying source changes", async () => {
+  const source = page([rect("1:2", { type: "FRAME", layoutMode: "HORIZONTAL", strokeAlign: "INSIDE", strokeWeight: 4,
+    strokes: [{ type: "SOLID", color: { r: .2, g: .4, b: .6 } }], paddingTop: 8, paddingRight: 8, paddingBottom: 8, paddingLeft: 8, children: [] })]);
+  const transfer = patchTransfer(source, (node) => { delete node.strokeLayoutExcluded; node.paddingTop = 1; }, ["strokeLayoutExcluded", "paddingTop"]);
+  const runtime = harness(source, { nativeStrokes: true });
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "error"); assert.match(runtime.messages.at(-1).message, /缩进/u);
+  assert.equal(runtime.all.get("1:2").paddingTop, 8); assert.equal(runtime.all.get("1:2").strokesIncludedInLayout, false);
+  for (const marker of [false, null, 1, {}]) {
+    const invalid = createFigmaTransfer(importFigmaJson(source).document); invalid.pages[0].children[0].strokeLayoutExcluded = marker;
+    const rejected = harness(page([]), { nativeStrokes: true });
+    await rejected.send({ type: "import-transfer", content: JSON.stringify(invalid) });
+    assert.equal(rejected.messages.at(-1).type, "error"); assert.equal(rejected.figma.root.children.length, 1);
+  }
+});
+
+test("leaving inside layout clears exclusion without using an inactive inclusion setter or stale padding projection", async () => {
+  const source = page([rect("1:2", { type: "FRAME", layoutMode: "HORIZONTAL", strokeAlign: "INSIDE", strokeWeight: 4, strokesIncludedInLayout: true,
+    strokes: [{ type: "SOLID", color: { r: .2, g: .4, b: .6 } }], paddingTop: 8, paddingRight: 8, paddingBottom: 8, paddingLeft: 8, children: [] })]);
+  for (const mode of ["layout", "strokeAlign"]) {
+    const transfer = patchTransfer(source, (node) => {
+      node[mode] = mode === "layout" ? "none" : "center";
+      node.paddingTop = 1;
+    }, ["paddingTop", mode]);
+    const runtime = harness(source, { nativeStrokes: true });
+    await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+    const preview = runtime.messages.at(-1); assert.equal(preview.type, "patch-preview", JSON.stringify(preview)); assert.deepEqual(preview.conflicts, []);
+    await runtime.send({ type: "apply-patch", token: preview.token });
+    assert.equal(runtime.messages.at(-1).type, "patched", JSON.stringify(runtime.messages.at(-1)));
+    const target = runtime.all.get("1:2"); assert.equal(target.paddingTop, 1);
+    if (mode === "layout") assert.equal(target.layoutMode, "NONE");
+    else { assert.equal(target.strokeAlign, "CENTER"); assert.equal(target.strokesIncludedInLayout, false); }
   }
 });
 
@@ -1987,4 +2066,80 @@ test('native source-bound effective gaps preserve raw requests and reject clamp-
   await external.send({type:'apply-patch',token:preview.token});assert.equal(external.messages.at(-1).type,'patched');
   assert.equal(external.all.get('1:2').itemSpacing,-32,'unrelated source gap edit remains untouched');
   assert.equal(external.all.get('1:4').width,344,'paint patch preserves independent native flow geometry');
+});
+
+
+test("padding and stroke provenance changes guard native negative-gap thresholds even when native Auto Layout owns geometry", async () => {
+  const original = page([rect("1:2", { type: "FRAME", layoutMode: "HORIZONTAL", layoutWrap: "NO_WRAP", itemSpacing: -16,
+    primaryAxisSizingMode: "FIXED", counterAxisSizingMode: "FIXED", absoluteBoundingBox: { x: 30, y: 40, width: 25, height: 80 }, children: [
+      rect("1:3", { type: "FRAME", layoutMode: "HORIZONTAL", layoutSizingHorizontal: "FILL", children: [], absoluteBoundingBox: { x: 30, y: 40, width: 1, height: 20 } }),
+      rect("1:4", { type: "FRAME", layoutMode: "HORIZONTAL", layoutSizingHorizontal: "FILL", children: [], absoluteBoundingBox: { x: 30, y: 40, width: 25, height: 20 },
+        strokeAlign: "INSIDE", strokeWeight: 4, strokesIncludedInLayout: false, strokes: [{ type: "SOLID", color: { r: .2, g: .4, b: .6 } }],
+        paddingTop: 8, paddingRight: 8, paddingBottom: 8, paddingLeft: 8 })] })]);
+  const imported = await prepareFigmaImport(original), binding = createFigmaBinding(imported);
+  assert.equal(imported.document.nodes[0].gap, -1);
+  assert.equal(applyAllAutoLayouts(imported.document.nodes), false);
+  for (const kind of ["marker", "strokeWidth", "strokeSides", "padding", "alignment"]) {
+    const changed = clone(imported.document), node = changed.nodes.find(node => node.id === "figma-1-4");
+    if (kind === "marker") delete node.strokeLayoutExcluded;
+    if (kind === "strokeWidth") { node.strokeWidth = 0; node.strokeSides.forEach(side => { side.width = 0; }); }
+    if (kind === "strokeSides") node.strokeSides.forEach(side => { side.width = 0; });
+    if (kind === "padding") { node.paddingLeft = 4; node.paddingRight = 4; }
+    if (kind === "alignment") { node.strokeAlign = "outside"; delete node.strokeLayoutExcluded; }
+    applyAllAutoLayouts(changed.nodes);
+    assert.deepEqual(changed.nodes.filter(node => node.parentId === changed.nodes[0].id).map(node => node.width), [5, 21], kind);
+    const compatible = clone(binding); Object.values(compatible.source.nodes)[0].document.children[0].itemSpacing = -1;
+    const transfer = createFigmaTransfer(changed); transfer.patch = createFigmaPatch(compatible, changed);
+    // Native flow owns derived geometry: retaining semantic edits alone must still
+    // preflight the final canonical outer boxes against the live raw gap request.
+    transfer.patch.operations = transfer.patch.operations.map(operation => operation.op !== "update" ? operation :
+      { ...operation, changed: operation.changed.filter(key => !["x", "y", "width", "height"].includes(key)) })
+      .filter(operation => operation.op !== "update" || operation.changed.length);
+    const runtime = harness(original, { nativeStrokes: true }), before = JSON.stringify(runtime.snapshot(runtime.figma.currentPage));
+    await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+    assert.equal(runtime.messages.at(-1).type, "error", `${kind}: ${JSON.stringify(runtime.messages.at(-1))}`);
+    assert.match(runtime.messages.at(-1).message, /不能静默覆盖原始请求/u, kind);
+    assert.equal(JSON.stringify(runtime.snapshot(runtime.figma.currentPage)), before, kind);
+  }
+});
+
+test("explicit negative gap and inclusion-weight-padding edits validate the complete final plan before writes", async () => {
+  const fixture = JSON.parse(await readFile(new URL("../../fixtures/design-studio-native-content-fill.json", import.meta.url), "utf8"));
+  const source = page([clone(fixture.cases[0].source)]), imported = await prepareFigmaImport(source), binding = createFigmaBinding(imported);
+  const parent = imported.document.nodes[0], child = imported.document.nodes[1];
+  parent.gap = -10; delete child.strokeLayoutExcluded;
+  child.strokeSides.forEach(side => { side.width = 8; });
+  for (const side of ["Top", "Right", "Bottom", "Left"]) child[`padding${side}`] = 12;
+  applyAllAutoLayouts(imported.document.nodes);
+  assert.equal(child.width, 301);
+  const transfer = createFigmaTransfer(imported.document); transfer.patch = createFigmaPatch(binding, imported.document);
+  const runtime = harness(source, { nativeStrokes: true });
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  const preview = runtime.messages.at(-1); assert.equal(preview.type, "patch-preview", JSON.stringify(preview)); assert.deepEqual(preview.conflicts, []);
+  assert.equal(runtime.all.get(fixture.cases[0].source.id).itemSpacing, 12, "preview does not write gap");
+  await runtime.send({ type: "apply-patch", token: preview.token });
+  assert.equal(runtime.messages.at(-1).type, "patched", JSON.stringify(runtime.messages.at(-1)));
+  assert.equal(runtime.all.get(fixture.cases[0].source.id).itemSpacing, -10);
+  const nativeChild = runtime.all.get(fixture.cases[0].source.children[0].id);
+  assert.equal(nativeChild.strokesIncludedInLayout, true); assert.equal(nativeChild.paddingLeft, 4); assert.equal(nativeChild.strokeLeftWeight, 8);
+  child.paddingLeft = 1;
+  const invalid = createFigmaTransfer(imported.document); invalid.patch = createFigmaPatch(binding, imported.document);
+  const blocked = harness(source, { nativeStrokes: true }), before = JSON.stringify(blocked.snapshot(blocked.figma.currentPage));
+  await blocked.send({ type: "preview-patch", content: JSON.stringify(invalid) });
+  assert.equal(blocked.messages.at(-1).type, "error"); assert.match(blocked.messages.at(-1).message, /缩进/u);
+  assert.equal(JSON.stringify(blocked.snapshot(blocked.figma.currentPage)), before);
+});
+
+
+test("stroke-side color alone preserves independent source negative-gap edits", async () => {
+  const fixture = JSON.parse(await readFile(new URL("../../fixtures/design-studio-native-content-fill.json", import.meta.url), "utf8"));
+  const source = page([clone(fixture.cases[0].source)]); source.children[0].itemSpacing = -10;
+  const imported = await prepareFigmaImport(source), binding = createFigmaBinding(imported);
+  imported.document.nodes[1].strokeSides.forEach(side => { side.color = "#123456"; });
+  const transfer = createFigmaTransfer(imported.document); transfer.patch = createFigmaPatch(binding, imported.document);
+  const runtime = harness(source, { nativeStrokes: true }); runtime.all.get(source.children[0].id).itemSpacing = -16;
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  const preview = runtime.messages.at(-1); assert.equal(preview.type, "patch-preview", JSON.stringify(preview)); assert.deepEqual(preview.conflicts, []);
+  await runtime.send({ type: "apply-patch", token: preview.token });
+  assert.equal(runtime.messages.at(-1).type, "patched"); assert.equal(runtime.all.get(source.children[0].id).itemSpacing, -16);
 });

@@ -7,7 +7,7 @@ import {
 } from "./grid.mjs";
 import { designPaintCssImage } from "./paint.mjs";
 import { nativeTextContent } from "./text-content.mjs";
-import { hasDesignStroke, designStrokeSides } from "./stroke.mjs";
+import { hasDesignStroke, designStrokeSides, strokeLayoutBasisExtra } from "./stroke.mjs";
 /* Deterministic CodeShell Design v3 to editable HTML/CSS export. */
 import { designFontFaceCss, designFontFamilyCss } from "./font-css.mjs";
 
@@ -149,6 +149,14 @@ function sizingDeclarations(node, parent) {
   const horizontal = node.layoutSizingHorizontal ?? "fixed";
   const vertical = node.layoutSizingVertical ?? "fixed";
   const declarations = [];
+  const fillBasis = (axis) => {
+    const extra = strokeLayoutBasisExtra(node, axis);
+    if (!extra) return "0";
+    const sides = axis === "horizontal" ? ["Left", "Right"] : ["Top", "Bottom"];
+    // flex-basis obeys this element's border-box sizing. Add the already
+    // physical canonical inset so the requested extra remains content space.
+    return cssNumber(extra + sides.reduce((sum, side) => sum + (node[`padding${side}`] ?? node.padding ?? 0), 0));
+  };
   const absolute = node.layoutPositioning === "absolute" || parentLayout === "none" || !parent;
   const hasIntrinsicHorizontalContent =
     node.type === "text" ||
@@ -191,7 +199,7 @@ function sizingDeclarations(node, parent) {
   } else if (horizontal === "hug" && hasIntrinsicHorizontalContent && !circularHorizontalHug) {
     declarations.push(["width", "fit-content"]);
   } else if (horizontal === "fill" && ["horizontal", "vertical"].includes(parentLayout)) {
-    if (parentLayout === "horizontal") declarations.push(["flex", "1 1 0"], ["min-width", "0"]);
+    if (parentLayout === "horizontal") declarations.push(["flex", `1 1 ${fillBasis("horizontal")}`], ["min-width", "0"]);
     else declarations.push(["align-self", "stretch"], ["width", "100%"]);
   } else if (horizontal === "fill" && parentLayout === "grid") {
     declarations.push(["width", "auto"], ["justify-self", "stretch"]);
@@ -206,7 +214,7 @@ function sizingDeclarations(node, parent) {
   } else if (vertical === "hug" && hasIntrinsicVerticalContent && !circularVerticalHug) {
     declarations.push(["height", "fit-content"]);
   } else if (vertical === "fill" && parentLayout === "vertical") {
-    declarations.push(["flex", "1 1 0"], ["min-height", "0"]);
+    declarations.push(["flex", `1 1 ${fillBasis("vertical")}`], ["min-height", "0"]);
   } else if (vertical === "fill" && parentLayout === "horizontal") {
     declarations.push(["align-self", "stretch"], ["height", "auto"]);
   } else if (vertical === "fill" && parentLayout === "grid") {

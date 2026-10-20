@@ -1,6 +1,6 @@
 import { mainAxisGap } from "./layout-spacing.mjs";
 import { gridPlacements, gridTrackSizes, effectiveGridRows } from "./grid.mjs";
-import { hasDesignStroke, designStrokeSides } from "./stroke.mjs";
+import { hasDesignStroke, designStrokeSides, strokeLayoutBasisExtra } from "./stroke.mjs";
 /* Auto-layout and reusable-component helpers for Design Studio v3 documents. */
 import { descendantIds, setNodeTreePosition } from "./geometry.mjs";
 import {
@@ -109,7 +109,8 @@ function axisSizeLimits(node, axis) {
   const prefix = axis === "horizontal" ? "Width" : "Height";
   // A CSS border box cannot be smaller than its physical padding. Preserve the
   // authored max field while resolving the same minimum when max < padding.
-  const paddingFloor = isAutoLayoutContainer(node) ? fillContentInset(node, axis) : 0;
+  const padding = isAutoLayoutContainer(node) ? axisPadding(node, axis) : null;
+  const paddingFloor = padding ? padding.start + padding.end : 0;
   const minimum = Math.min(20000, Math.max(1, paddingFloor, finite(node?.[`min${prefix}`], 1)));
   const maximum = Math.max(minimum, Math.min(20000, finite(node?.[`max${prefix}`], 20000)));
   return { minimum, maximum };
@@ -127,7 +128,7 @@ function assignAxisSize(node, axis, value) {
 function fillContentInset(node, axis) {
   if (isAutoLayoutContainer(node)) {
     const padding = axisPadding(node, axis);
-    return padding.start + padding.end;
+    return padding.start + padding.end + strokeLayoutBasisExtra(node, axis);
   }
   if (node?.type === "rectangle" && hasDesignStroke(node) && node.strokeAlign === "inside") {
     const sides = designStrokeSides(node);
@@ -136,7 +137,7 @@ function fillContentInset(node, axis) {
   return 0;
 }
 
-function distributeFillSizes(children, axis, available) {
+export function distributeFillSizes(children, axis, available) {
   const sizes = new Map();
   let remaining = [...children];
   let remainingSpace = Math.max(0, finite(available));

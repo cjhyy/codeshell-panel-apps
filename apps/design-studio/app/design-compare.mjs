@@ -123,6 +123,7 @@ function styleDifferences(expected, actual) {
     "strokeWidth",
     "strokeAlign",
     "strokeSides",
+    "strokeLayoutExcluded",
     "cornerRadius",
     "cornerRadii",
     "opacity",
@@ -143,6 +144,8 @@ function styleDifferences(expected, actual) {
           ? JSON.stringify(designStrokeSides(expected)) !== JSON.stringify(designStrokeSides(actual))
           : property === "strokeAlign"
             ? (expected.strokeAlign??"center") !== (actual.strokeAlign??"center")
+          : property === "strokeLayoutExcluded"
+            ? (expected.strokeLayoutExcluded === true) !== (actual.strokeLayoutExcluded === true)
         : expected[property] !== undefined &&
           actual[property] !== undefined &&
           String(expected[property]) !== String(actual[property]),
