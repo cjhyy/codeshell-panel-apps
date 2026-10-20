@@ -2,7 +2,7 @@ import { validateLayoutSpacing, validateNativeLayoutSpacing, nativeMainGap, main
 import { distributeFillSizes } from "./layout.mjs";
 import { normalizeCornerRadii, effectiveCornerRadii } from "./corner-radii.mjs";
 import { figmaDesignStroke, nativeDesignStroke, hasDesignStroke, designStrokeSides, clearInvalidStrokeLayoutExclusion } from "./stroke.mjs";
-import { normalizeGridTracks, nativeGridPlan, GRID_CHILD_FIELDS, GRID_CONTAINER_FIELDS } from "./grid.mjs";
+import { normalizeGridTracks, nativeGridPlan, gridFillHugContentHeight, GRID_CHILD_FIELDS, GRID_CONTAINER_FIELDS } from "./grid.mjs";
 import {
   figmaFillPaints,
   representativeDesignFill,
@@ -655,6 +655,9 @@ function importFigmaJsonWithReport(
   let visited = 0,
     importedNodes = 0,
     skippedNodes = 0;
+  // Capture-local proof: raw multi-style/paragraph text must not become an
+  // accepted intrinsic leaf merely because conversion flattened its styles.
+  const unsupportedGridText = new WeakSet();
   const mapping = [],
     pageMappings = [];
   const nonRenderingSourceNodes = new Set();
@@ -985,6 +988,9 @@ function importFigmaJsonWithReport(
         .filter(Boolean);
       if (node.layout === "grid") {
         try {
+          if (node.children.some((cell) => gridFillHugContentHeight(node, cell) !== null &&
+              cell.children?.some((content) => unsupportedGridText.has(content))))
+            throw new Error("HUG 行内的 FILL 文字单元暂不支持列表、段落间距/缩进、截断、大小写转换或混合/非顶部左对齐样式");
           nativeGridPlan(node);
         } catch (error) {
           report.warn(
@@ -1051,7 +1057,24 @@ function importFigmaJsonWithReport(
         importedNodes += 1;
       }
     } else if (source.children?.length) throw new Error("基础 Figma 图层不能包含 children。");
-    if (type === "text") text(source, node, report);
+    if (type === "text") {
+      text(source, node, report);
+      const style = source.style ?? {};
+      if (source.characterStyleOverrides?.some((value) => value !== 0) ||
+          Object.keys(source.styleOverrideTable ?? {}).length ||
+          (source.lineTypes !== undefined && (!Array.isArray(source.lineTypes) ||
+            source.lineTypes.some(value => value !== "NONE"))) ||
+          (source.lineIndentations !== undefined && (!Array.isArray(source.lineIndentations) ||
+            source.lineIndentations.some(value => value !== 0))) ||
+          (style.listSpacing ?? 0) !== 0 ||
+          (style.paragraphSpacing ?? 0) !== 0 || (style.paragraphIndent ?? 0) !== 0 ||
+          ![undefined, "LEFT"].includes(style.textAlignHorizontal) ||
+          ![undefined, "TOP"].includes(style.textAlignVertical) ||
+          ![undefined, "ORIGINAL"].includes(style.textCase) ||
+          ![undefined, "DISABLED"].includes(style.textTruncation ?? source.textTruncation) ||
+          (style.maxLines ?? source.maxLines) != null)
+        unsupportedGridText.add(node);
+    }
     importedNodes += 1;
     recordMapping(source, node);
     return node;

@@ -111,7 +111,7 @@ test("scoped nested edits grow and shrink opaque Fill cells independently of sta
   }
 });
 
-test("only the proven real fixed-content frame subset can bypass the vertical Fill/HUG guard", () => {
+test("unproven content and existing cycles cannot bypass the vertical Fill/HUG guard", () => {
   const document = importFigmaJson(actual).document,
     baseline = nestedRow(document, "affine-HUG-cellFILL-container-last");
   for (const [label, edit] of [
