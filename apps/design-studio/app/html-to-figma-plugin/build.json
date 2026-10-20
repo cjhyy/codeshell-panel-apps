@@ -11,6 +11,7 @@
     "apps/design-studio/app/figma-assets.mjs",
     "apps/design-studio/app/font-css.mjs",
     "apps/design-studio/app/geometry.mjs",
+    "apps/design-studio/app/grid.mjs",
     "apps/design-studio/app/html-capture.mjs",
     "apps/design-studio/app/html-import-assets.mjs",
     "apps/design-studio/app/html-import.mjs",
@@ -55,13 +56,13 @@
     },
     {
       "path": "code.js",
-      "bytes": 212583,
-      "sha256": "ff1ef1786e34982f8fdfa90e4b8716fdd534c98341924ef60c0f0aded4cf198b"
+      "bytes": 212945,
+      "sha256": "1bcfc5ae436d1a5f3bd7550a77fec78a3a66d5b3b0144832d0e6989d28fc3bd3"
     },
     {
       "path": "ui.html",
-      "bytes": 323560,
-      "sha256": "c500b437c64657433988030fff3ed2b161ae891d7e2ad1102f72a1363f800b97"
+      "bytes": 323922,
+      "sha256": "b2f81b742824a6fa46e67ac32c2a22f1e228a04a5e881377856c9d1e3bc9d5ef"
     },
     {
       "path": "README.md",

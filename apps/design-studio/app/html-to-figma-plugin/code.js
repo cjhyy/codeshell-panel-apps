@@ -5134,6 +5134,21 @@
     }
   };
 
+  // apps/design-studio/app/grid.mjs
+  var GRID_CONTAINER_FIELDS = Object.freeze([
+    "gridRows",
+    "gridColumnSizes",
+    "gridRowSizes",
+    "gridItemsPositioning",
+    "gridAutoTracks"
+  ]);
+  var GRID_CHILD_FIELDS = Object.freeze([
+    "gridRowAnchorIndex",
+    "gridColumnAnchorIndex",
+    "gridChildHorizontalAlign",
+    "gridChildVerticalAlign"
+  ]);
+
   // apps/design-studio/app/paint.mjs
   var hex = (value) => typeof value === "string" && /^#[a-f\d]{6}$/iu.test(value);
   var rgb = (value) => [1, 3, 5].map((offset) => parseInt(value.slice(offset, offset + 2), 16) / 255);
