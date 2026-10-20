@@ -1781,6 +1781,37 @@ test("native signed main spacing creates editable nowrap stacks and guards incre
   }
 });
 
+test("rebased negative block margins create only native positive-inset Auto Layout frames", async () => {
+  const { designNodeToV3 } = await import("../../../apps/design-studio/app/design-node-adapter.mjs");
+  const row = { nodeType: "container", name: "Real row", semantic: { cssSelector: "#row" },
+    bounds: { x: 5, y: 20, width: 630, height: 50 }, positioning: { mode: "absolute" }, layout: { display: "flex" }, children: [],
+    cssLayout: { width: "auto", height: "50px", position: "static", "margin-left": "-15px", "margin-right": "-15px", "margin-top": "0px", "margin-bottom": "0px", "min-width": "auto", "max-width": "none" } };
+  const source = { nodeType: "container", name: "Main", bounds: { x: 0, y: 0, width: 640, height: 240 },
+    layout: { display: "block", padding: { top: 20, right: 20, bottom: 20, left: 20 } }, cssLayout: { width: "640px", height: "240px" }, children: [
+      { nodeType: "container", name: "neg-margin-placeholder", opacity: 0, bounds: { x: 5, y: 20, width: 600, height: 50 }, layout: { display: "block" }, children: [] }, row,
+      { nodeType: "container", name: "Real after", bounds: { x: 20, y: 70, width: 600, height: 20 }, layout: { display: "block" }, cssLayout: { width: "auto", height: "20px" }, children: [] },
+    ] };
+  const result = await designNodeToV3(source), transfer = createFigmaTransfer(result.document), runtime = harness(page([]));
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  const main = runtime.figma.root.children[1].children[0];
+  assert.deepEqual([main.paddingLeft, main.paddingRight], [5, 5]);
+  assert.equal(main.layoutMode, "VERTICAL"); assert.equal(main.children.length, 2);
+  const [bleed, compensation] = main.children;
+  for (const wrapper of [bleed, compensation]) {
+    assert.equal(wrapper.layoutMode, "VERTICAL"); assert.equal(wrapper.itemSpacing, 0);
+    assert.equal(wrapper.layoutSizingHorizontal, "FILL"); assert.equal(wrapper.layoutSizingVertical, "HUG");
+    assert.equal(wrapper.children.length, 1); assert.equal(wrapper.layoutPositioning, "AUTO");
+    assert.equal(wrapper.children[0].layoutPositioning, "AUTO");
+    assert.equal(wrapper.children[0].layoutSizingHorizontal, "FILL");
+  }
+  assert.deepEqual([bleed.paddingLeft, bleed.paddingRight, compensation.paddingLeft, compensation.paddingRight], [0, 0, 15, 15]);
+  assert.equal(bleed.children[0].getPluginData("codeshellNodeId"), "html-0-1");
+  assert.equal(compensation.children[0].getPluginData("codeshellNodeId"), "html-0-2");
+  assert.equal(bleed.children[0].width, 630); assert.equal(compensation.children[0].width, 600);
+  assert.deepEqual(JSON.parse(main.getPluginData("codeshellNotes")).blockInsetRebase.original, [20, 20]);
+});
+
 test("inside per-side borders create real native stroke weights, preserve Auto Layout children and export actual values",async()=>{
   const source=page([rect("1:2",{type:"FRAME",layoutMode:"VERTICAL",strokeAlign:"INSIDE",individualStrokeWeights:{top:0,right:0,bottom:1,left:0},strokes:[{type:"SOLID",color:{r:29/255,g:112/255,b:184/255},opacity:.5}],children:[rect("1:3")]} )]);
   const imported=importFigmaJson(source),transfer=createFigmaTransfer(imported.document),runtime=harness(page([]),{nativeStrokes:true});

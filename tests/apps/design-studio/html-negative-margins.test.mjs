@@ -55,13 +55,14 @@ test("negative horizontal block margins preserve original identities and ownersh
   assert.deepEqual(outputs[0], outputs[1]);
 });
 
-test("production HTML negative margins stay editable and exact while incompatible native bleed is rejected", async (t) => {
+test("production HTML negative margins rebase positive insets into native-safe editable flow", async (t) => {
   const output = await mkdtemp(join(tmpdir(), "html-negative-margins-"));
   t.after(() => rm(output, { recursive: true, force: true }));
-  const result = await runProductionFidelity({ output, cases: negativeMarginFixtures, resizeMode: "viewport-only", height: 300, recordOnly: true });
+  const result = await runProductionFidelity({ output, cases: negativeMarginFixtures.filter((item) => item.id !== "clipped"), resizeMode: "viewport-only", height: 300 });
   for (const observed of result.cases) {
-    assert.equal(observed.nativeTransfer.supported, false, observed.id);
-    assert.ok(observed.semanticIssues.some((issue) => issue.startsWith("Native transfer rejected:")), observed.id);
+    assert.equal(observed.nativeTransfer.supported, true, observed.id);
+    assert.equal(observed.semanticIssues.length, 0, JSON.stringify(observed));
+    assert.ok(observed.warnings.some((warning) => warning.code === "block-inset-rebased"), observed.id);
     assert.ok(!observed.warnings.some((warning) => ["block-flow-fixed", "layout-margin-fixed", "viewport-flow-fixed"].includes(warning.code)), JSON.stringify(observed));
     assert.ok(observed.comparisons.every((comparison) => comparison.changedPixels === 0), JSON.stringify(observed));
     const original = normalizeDesignDocument(JSON.parse(await readFile(join(output, observed.id, "imported.codesign.json"), "utf8")));
@@ -70,18 +71,27 @@ test("production HTML negative margins stay editable and exact while incompatibl
     assert.equal(resized.id, row.id); assert.equal(row.layoutSizingHorizontal, "fill");
     assert.ok(original.nodes.every((node) => node.layoutPositioning !== "absolute"));
     const wrapper = original.nodes.find((node) => node.id === row.parentId);
-    assert.equal(wrapper.layout, "horizontal"); assert.ok(wrapper.gap < 0); assert.equal(wrapper.clipContent, false);
+    assert.equal(wrapper.layout, "vertical"); assert.equal(wrapper.gap, 0); assert.equal(wrapper.clipContent, false);
     assert.equal(wrapper.layoutSizingHorizontal, "fill"); assert.equal(wrapper.layoutSizingVertical, "hug");
     const reopened = normalizeDesignDocument(JSON.parse(serializeDesignDocument(narrow))); applyAllAutoLayouts(reopened.nodes);
     assert.deepEqual(reopened.nodes.map(({ id, x, y, width, height }) => [id, x, y, width, height]), narrow.nodes.map(({ id, x, y, width, height }) => [id, x, y, width, height]));
-    assert.throws(() => createFigmaTransfer(narrow), /最小可见 AUTO 子项/u,
-      "the mathematical three-child bleed cannot be exported as false native fidelity");
+    const transfer = createFigmaTransfer(narrow);
+    assert.ok(transfer.pages[0].children.every((node) => flatten(node).every((child) => child.gap === undefined || child.gap >= 0)));
+    assert.equal(original.nodes.filter((node) => node.id.includes("-bleed-")).length, 0);
+    const parent = bySelector(original, "#fixture"), receipt = JSON.parse(parent.notes).blockInsetRebase;
+    assert.deepEqual([parent.paddingLeft, parent.paddingRight], receipt.rebased);
+    assert.deepEqual(receipt.original.map((value, index) => value - receipt.rebased[index]), receipt.bleed);
     if (observed.id === "symmetric") assert.deepEqual([row.width, resized.width, row.x, resized.x], [630, 390, 5, 5]);
     if (observed.id === "maximum") assert.deepEqual([row.width, resized.width], [480, 390]);
     if (observed.id === "minimum-overflow") assert.deepEqual([row.width, resized.width], [630, 480]);
     if (observed.id === "wrapped-row") assert.deepEqual([row.height, resized.height], [40, 90]);
   }
-  assert.equal(result.passed, false);
+  assert.equal(result.passed, true);
+  const unsupported = await runProductionFidelity({ output, cases: negativeMarginFixtures.filter((item) => item.id === "clipped"), resizeMode: "viewport-only", height: 300, recordOnly: true });
+  assert.equal(unsupported.passed, false);
+  assert.equal(unsupported.cases[0].nativeTransfer.supported, false);
+  assert.ok(unsupported.cases[0].warnings.some((warning) => warning.code === "block-bleed-native-unsupported"));
+  assert.ok(unsupported.cases[0].comparisons.every((comparison) => comparison.changedPixels === 0));
   // Edit authored text, resize only the outer frame, then save/reopen in the
   // actual browser measurer. Source HTML supplies an independent reference.
   // The editable CSS path independently consumes signed spacing as margins.
