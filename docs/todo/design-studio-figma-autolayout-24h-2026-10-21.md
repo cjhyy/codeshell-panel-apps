@@ -694,3 +694,71 @@ Figma 当前官方说明新旧 Auto Layout 版本在内侧描边、Fill 与 padd
 [Use auto layout with CSS Flexbox in mind](https://help.figma.com/hc/en-us/articles/42031586813719-Use-auto-layout-with-CSS-Flexbox-in-mind)。
 边框分支先约束到已验证的 INSIDE 投影；另准备仅新建自有研究页的实机语义探针，
 验证本地版本的实际行为，不猜测未文档化的 layoutVersion API。目标仍 active，截止不变。
+
+### 边框实机通过、原生设置顺序与负间距反例（约 03:28）
+
+`a5456c4` 合入各边边框代理 `01b9a7d`。可选、严格有界的 strokeSides / strokeAlign
+覆盖 codec、公开 schema/工具、比较、调色、SVG、CanvasKit、前端和原生真实侧边权重。
+不加入装饰性流子项；不同颜色的原生边框在预检中拒绝，保留可编辑 v3 源。非统一圆角
+接合、虚线/低 miter/折叠表格等限制明确保留。独立分支全主门禁 453 通过/1 既有跳过，
+root 合并首次主门禁 473 通过/1 跳过，但随后实机暴露了模拟器没有遵守的 API 限制。
+
+实机 run `6ff5dac4` 在全新 Frame 仍为 NONE 时设置 strokesIncludedInLayout=false，
+Figma 直接拒绝导入。失败回执保留于 `real-figma/negative-margin-creation-failed/`。
+`0118d17` 先补严格原生 setter 模拟使回归失败，再把关闭包含的设置移到启用 H/V/Grid
+之后、子项最终 sizing 之前。另补回归发现非活动 flag 引起错误描边冲突、空/零宽描边
+阻塞普通 padding 修改，以及 NONE→H/V 激活；依次修复 inactive 的语义比较、有效权重
+和激活时的设置，保持已有 active INSIDE included=true 的来源更新。
+非活动 NONE 不再把原生描边加进 padding；非零 INSIDE4/padding8 的回归先失败后通过。
+80 项针对性检查通过，所有失败日志保留。
+
+修复后的完整组合门禁：**主套件 477 通过/1 既有跳过/0 失败**，
+**UI/GPU 101 通过/1 既有跳过/0 失败**；全仓 typecheck、validate、build:check、vendor
+和两插件确定性检查通过。日志 `round11-main-final.log` / `round11-ui-final.log` 与
+`round11-static-acceptance-receipt.json` 记录当前代码 0118d17，不把早期门禁冒充最终结果。
+
+两个真正使用未改生产 main + 生产 UI 完整备份转换器的实机验收：
+
+- 底边 run `f36f0ac2` / 页 62:268：真实 INSIDE 权重 [0,0,1,0]，4 节点；
+  main/两子项 Fill/AUTO，无新增装饰子项。640→仅外框400，子项292→172，几何差0。
+- 统一内侧 run `2dfe2711` / 页 62:273：真实 INSIDE 权重 [4,4,4,4]，同样4节点、
+  同样 outer-only 缩窄、几何差0。以上两个样例的两宽原生 PNG 均 **0 像素差异**，
+  官方导回每宽首次/重排也均0，无警告。各自 acceptance-report.json 和 production-run
+  位于 `real-figma/css-border-bottom/`、`real-figma/css-border-uniform/`。
+  这不覆盖不同 padding/描边的 Fill 兄弟，也不覆盖整个公开网页。
+
+同一冻结 GOV 网页在最终组合代码重跑：189节点、58警告，严格计数
+**23329 / 23329 / 59515**，max255，仍失败；与02f9基线27203/27203/62622相比减少
+3874/3874/3107。三个参考 PNG 解码 RGBA 完全相同，所有 HTML/CSS/字体保留，无外部
+请求或浏览器错误。`round11-merged-border/paired-baseline-receipt.json` 保存配对证据。
+通用 semanticIssues 此次为空不能证明所有原始流恢复；独立浮动列/视口调查仍有局限。
+
+### 原生间距及 Fill 分配的下一轮依据
+
+未改生产 main 的负外边距 run `f830b7d4` 已导入，但真实 Figma 行 x20/width600，
+而 CSS/面板要求 x5/width630；两端 spacer 为1，属性 gap 虽为-16，实际间隔却为-1。
+原生640 PNG **1500/max189**，官方导回首次1500，面板重排后0，暴露两种布局语义
+不一致；这不是成功的原生外边距互换。失败原始输入/官方 JSON/PNG/回执完整保留在
+`real-figma/negative-margin-failed/`，没有用重排后的0掩盖首次与实机失败。
+
+仅新建自有研究页的50组探针 `00c34ea1` 比较多个gap、尺寸、形状/透明度、Fill/Fixed、
+对齐、setter顺序，以及仅控制外框缩窄再恢复。它明确标为 customMainModifiedForResearch。
+1:2不对称 spacer 给出全局-1/-1和Fill599，排除逐邻居-1/-2的假设；Fixed630也仍-1/-1，
+排除仅Fill尺寸上限的解释。CENTER 固定630可在600内x-15，但到360仍固定630/x-135，
+不能作为响应式替代。四个负 padding setter 均被 Figma 拒绝（必须>=0），其他设置无错。
+原页/选择/子项快照不变，原始JSON与白色研究板PNG保留；插件关闭、relay退出且原三
+文件哈希完全恢复。分析目录 `evidence/native-negative-spacing-analysis/`。
+
+另一40组真实描边探针 `ca4d104f` 显示，仅 INSIDE+includedtrue 影响自身内容缩进；
+CENTER/OUTSIDE不计入本次新建 Frame 的布局。不同 padding/inside描边的 Fill 子项
+分配却为290/322而非306/306，includedfalse/true相同；不能仅关闭 inclusion就假定
+所有 Fill 兄弟等宽。93个官方 bbox 与实际 getter 一致，40组几何规则残差0；没有从
+缺失的 layoutVersion API 推断所有历史文档版本。原始与分析分别保留在
+`native-stroke-layout-analysis/`。独立 CSS 最小例也证实当前面板重排的 content-basis
+错误，而前端 flex 导出仍严格0；后续代理正先修复独立的有效 padding 分配。
+
+下一步负外边距采用待验证的有界方案：当父框正 inset 足够时，降低父框左右 padding，
+再用透明 Fill/Hug 包装补偿未外扩的兄弟，真实行可直接 Fill，无负 gap/ABSOLUTE。
+超出该子集的原生导出要在预检明确拒绝；不能静默改 canonical CSS 的数学负间距。
+独立浮动列工作使用现有有理比例 Grid 字段，保留媒体查询/视口/原生 bleed 的限制，
+尚未合入当前组合。24小时目标继续 active，截止仍为10月22日00:31 Asia/Singapore。
