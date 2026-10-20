@@ -326,3 +326,47 @@ vertical + `grid-row` horizontal 框，行框和 auto 子项的宽度被固定�
 仍在进行：原生隐藏 Grid 修复；普通块流（代理正在补 text-metrics 末尾空格换行修复）；
 GPU 的有界物理 1× 设备采样变体。GPU 试验把字形差异降到 180 个/max1，其余 96 个为
 已知背景边缘；所有不适用变换仍需使用保留的 2×/高缩放主缓存，尚待代理提交。
+
+### 隐藏 Grid 已完成真实往返修复（约 01:40）
+
+`381213f`（代理原提交 `f58d619`）已集成隐藏 Grid 修复，103 项针对性检查通过。
+原始官方隐藏锚点 `-1/-1` 仅留在来源绑定，不进入规范字段；所有隐藏输入仍先校验有界
+span/锚点，再排除其占用。原生创建用临时有界放置保留隐藏跨度与位置，最终只计算可见行。
+新增仓库 fixture 只保留本任务合成 Grid 子树，删除了账号、文件和其他页面上下文。
+
+重测 run `real-figma-html-v3-1792517820440-82fe2bdd`，新页 `62:68` / `82fe2bdd`：
+
+- 官方仍是原生 ROW_AUTO_FLOW + ROWS，3 列、1 个 FIXED40 行，5 层含 1 个隐藏层；
+  可见容器/形状几何最大差 0。
+- 原生导出 440×128 PNG，**56,320 像素全同**。
+- 官方 JSON 导回仍是 Grid，无警告；首次显示与再次规范重排也各为 **0 差异像素**。
+- 清晰范围回执：`evidence/real-figma/native-grid/hidden-flow-fixed-acceptance-report.json`。
+  fixture 为规范/native API 生成，未声称网页捕获；文字不在本例中。自动行预期独立指定
+  为 1，不能拿原始声明 `gridRows:2` 当动态实际行数。隐藏项 inactive sizing 未做显隐切换
+  验收，不推断显示时 FILL 的恢复行为。
+- 所有 relay 已停止，原 scratch 插件三文件恢复，插件 UI 关闭。新 PNG 和官方 JSON
+  都已存入主任务 evidence，后续可直接读取，无需重做旧用例。
+
+当前主任务 HEAD 在 `381213f` 之后只有本日志改动；最新编译基线通过 typecheck、validate、
+全仓 build:check，三个插件/vendor 确定性输出已检查（隐藏修复后的独立 HTML 插件也未过期）。
+完整 Design Studio 串行门禁等下列合并后再跑，避免读到并行编辑中的源码。
+
+活跃代理/所有权：
+
+1. `native_figma_grid_round2` 现在拥有新的 HTML Grid 工作树
+   `design-studio-html-grid-boundary-20261021/codeshell-panel-apps`，基于 `381213f`，
+   分支 `codex/design-studio/html-grid-boundary-20261021`。在维护的转换边界恢复原始 Grid
+   子项/轨道（上游不可改），处理适配器 Grid 分支/sizing()；与块流代理约定不交叉。
+2. `auto_margin_review` 已转实现普通块流，工作树
+   `design-studio-html-block-flow-20261021/codeshell-panel-apps`，基于 `59c3179`。
+   不碰 Grid 分支/sizing()，已有初步 sign-in 全流布局结果；修真实测量器在行尾空格上
+   错误提前换行的问题，允许修改 `text-metrics.mjs`，保留源字符和显式换行语义。
+3. `linear_gradients_round2` 正实现 GPU 的独立物理 1× 变体，工作树
+   `design-studio-gpu-text-sampling-20261021/codeshell-panel-apps`，基于 `5546e07`。
+   保留 2×/高缩放主缓存，非整数平移/缩放、旋转/实例用主缓存；设备变体共用原预算，
+   有容量压力时先放弃变体。已测主缓存缩放到 4× 输出不变、移动相位不累积缓存、DPR2。
+   最后还在修离开视口导致 active 集合变化、全场景/瓦片反复重建的性能问题，补多文字
+   平移/返回计数回归。精确 RGBA 结果需按 GPU 后端记录；强制 ANGLE 与默认 Vulkan 的
+   舍入也不同，不能把某个后端单标题零差异推广为全部字体/驱动都零。
+
+主分支和生产安装仍未改动，24 小时目标继续 active，截止时间不变。
