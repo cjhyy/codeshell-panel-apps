@@ -214,6 +214,7 @@
                 }
               ]
             },
+            "shadowStack": {"type": "object", "additionalProperties": false, "required": ["basis", "layers"], "properties": {"basis": {"const": "css-box"}, "layers": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "object", "additionalProperties": false, "required": ["kind", "color", "opacity", "x", "y", "blur", "spread", "visible"], "properties": {"kind": {"enum": ["inner", "outer"]}, "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"}, "opacity": {"type": "number", "minimum": 0, "maximum": 1}, "x": {"type": "number", "minimum": -500, "maximum": 500}, "y": {"type": "number", "minimum": -500, "maximum": 500}, "blur": {"type": "number", "minimum": 0, "maximum": 200}, "spread": {"const": 0}, "visible": {"type": "boolean"}}}}}},
             "shadow": {
               "type": "object",
               "properties": {
@@ -274,6 +275,7 @@
                   "enum": ["intentional", null],
                   "description": "Marks child overflow clipping as deliberate, typically when measured from imported HTML."
                 },
+                "shadowStack": {"oneOf":[{"$ref":"#/$defs/shadowStack"},{"type":"null"}]},
                 "shadow": {
                   "oneOf": [
                     {

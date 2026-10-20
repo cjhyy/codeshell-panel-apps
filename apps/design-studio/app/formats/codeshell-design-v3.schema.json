@@ -356,6 +356,7 @@
         "notes": { "type": "string", "maxLength": 2000 },
         "effectClipping": { "enum": ["intentional"] },
         "contentClipping": { "enum": ["intentional"] },
+        "shadowStack": { "$ref": "#/$defs/shadowStack" },
         "shadow": {
           "type": "object",
           "additionalProperties": false,
@@ -507,6 +508,7 @@
         }
       },
       "allOf": [
+        {"if": {"required": ["shadowStack"]}, "then": {"properties": {"type": {"enum": ["frame", "rectangle", "component"]}}, "not": {"required": ["shadow"]}}},
         { "if": { "required": ["cornerRadii"] }, "then": { "properties": { "type": { "enum": ["frame", "rectangle", "component", "image"] } } } },
         { "if": { "required": ["strokeLayoutExcluded"] }, "then": { "required": ["layout", "strokeAlign"], "properties": { "type": { "enum": ["frame", "component"] }, "layout": { "enum": ["horizontal", "vertical"] }, "strokeAlign": { "const": "inside" } } } },
         { "if": { "anyOf": [{"required":["strokeSides"]},{"required":["strokeAlign"]}] }, "then": { "properties": { "type": { "enum": ["frame", "rectangle", "component"] } } } },
@@ -768,6 +770,76 @@
         "children": {
           "type": "array",
           "items": { "$ref": "#/$defs/node" }
+        }
+      }
+    },
+    "shadowStack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "basis",
+        "layers"
+      ],
+      "properties": {
+        "basis": {
+          "const": "css-box"
+        },
+        "layers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "color",
+              "opacity",
+              "x",
+              "y",
+              "blur",
+              "spread",
+              "visible"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "inner",
+                  "outer"
+                ]
+              },
+              "color": {
+                "type": "string",
+                "pattern": "^#[0-9a-fA-F]{6}$"
+              },
+              "opacity": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "x": {
+                "type": "number",
+                "minimum": -500,
+                "maximum": 500
+              },
+              "y": {
+                "type": "number",
+                "minimum": -500,
+                "maximum": 500
+              },
+              "blur": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 200
+              },
+              "spread": {
+                "const": 0
+              },
+              "visible": {
+                "type": "boolean"
+              }
+            }
+          }
         }
       }
     }

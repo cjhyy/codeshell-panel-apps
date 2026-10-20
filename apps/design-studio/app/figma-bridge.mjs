@@ -1,3 +1,4 @@
+import { normalizeShadowStack, nativeShadowStackEffects } from "./shadow-stack.mjs";
 import { validTextLineHeight } from "./text-line-height.mjs";
 import { validateLayoutSpacing, validateNativeLayoutSpacing, nativeMainGap, mainAxisGap } from "./layout-spacing.mjs";
 import { distributeFillSizes } from "./layout.mjs";
@@ -987,8 +988,15 @@ function importFigmaJsonWithReport(
     const effects = (Array.isArray(source.effects) ? source.effects : []).filter(
       (effect) => effect?.visible !== false,
     );
+    if(source.codeshellCssShadowStack)try{
+      const stack=normalizeShadowStack(source.codeshellCssShadowStack),candidate={...node,shadowStack:stack};
+      const expected=nativeShadowStackEffects(candidate),actual=source.effects??[];
+      const comparable=effect=>({type:effect.type,color:Object.fromEntries(["r","g","b","a"].map(key=>[key,Math.fround(effect.color?.[key]??(key==="a"?1:0))])),x:Math.fround(effect.offset?.x??0),y:Math.fround(effect.offset?.y??0),radius:Math.fround(effect.radius??0),spread:effect.spread??0,visible:effect.visible!==false,blendMode:effect.blendMode??"NORMAL"});
+      if(JSON.stringify(expected.map(comparable))!==JSON.stringify(actual.map(comparable)))throw Error("原生效果已与 CSS 来源快照不同");
+      node.shadowStack=stack;
+    }catch(error){report.warn("css-shadow-source-invalid",source,error.message);}
     const shadow = effects.find((effect) => effect.type === "DROP_SHADOW");
-    if (shadow && type !== "group")
+    if (shadow && type !== "group" && !node.shadowStack)
       node.shadow = {
         color: color(shadow.color, "#000000"),
         opacity: number(shadow.color?.a, 1, 0, 1, source, "shadow.opacity", report),
@@ -996,7 +1004,7 @@ function importFigmaJsonWithReport(
         y: number(shadow.offset?.y, 0, -500, 500, source, "shadow.y", report),
         blur: number(shadow.radius, 0, 0, 200, source, "shadow.blur", report),
       };
-    if (effects.length > (node.shadow ? 1 : 0) || shadow?.spread)
+    if (!node.shadowStack && (effects.length > (node.shadow ? 1 : 0) || shadow?.spread))
       report.warn("unsupported-effects", source, "仅保留一个无扩散外投影；其他效果未导入。");
     const parent = ancestors.at(-1);
     layoutSizing(source, node, parent);
@@ -1367,6 +1375,7 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
       return null;
     }
     const { children, ...copy } = node;
+    if(node.shadowStack){nativeShadowStackEffects(node);report.warn("css-shadow-native-raster",node,"保留可编辑 INNER_SHADOW 参数；原生与 CSS 的模糊内核仍有实测像素差异，未声明严格像素一致。");}
     if (["horizontal", "vertical"].includes(node.layout)) validateNativeLayoutSpacing(node);
     if (mainAxisGap(node) < 0 && (node.children ?? []).some((child) => child.visible !== false &&
         child.layoutPositioning !== "absolute" && child[node.layout === "vertical" ? "layoutSizingVertical" : "layoutSizingHorizontal"] === "fill" &&

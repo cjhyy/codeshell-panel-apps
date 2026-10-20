@@ -1,3 +1,4 @@
+import { normalizeShadowStack, validateShadowStack, shadowStackSvg, shadowStackOutsets } from "./shadow-stack.mjs";
 import { validTextLineHeight, textLineHeightPixels } from "./text-line-height.mjs";
 import { validateLayoutSpacing } from "./layout-spacing.mjs";
 import { normalizeCornerRadii, roundedRectSvgGeometry } from "./corner-radii.mjs";
@@ -151,6 +152,7 @@ function normalizedNode(candidate, parentId) {
     ...(candidate.contentClipping !== undefined
       ? { contentClipping: candidate.contentClipping }
       : {}),
+    ...(candidate.shadowStack !== undefined ? {shadowStack: normalizeShadowStack(candidate.shadowStack)} : {}),
     ...(candidate.shadow !== undefined
       ? {
           shadow: {
@@ -283,6 +285,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "effectClipping",
     "contentClipping",
     "shadow",
+    "shadowStack",
     "x",
     "y",
     "width",
@@ -417,6 +420,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
   ) {
     throw new Error(`图层 ${candidate.id} 的 notes 无效`);
   }
+  validateShadowStack(candidate);
   if (candidate.shadow !== undefined) {
     if (candidate.type === "group") {
       throw new Error(`编组 ${candidate.id} 不支持投影；请把投影应用到有可见填充的子图层`);
@@ -1164,8 +1168,10 @@ function renderedSourceNodeEffectBounds(document, nodes, node, instanceStack, av
       : emptyEffectOutsets();
   const visibleShadow = node.shadow?.opacity > 0 ? node.shadow : null;
   const strokeOutset = !["group", "instance"].includes(node.type) ? designStrokeOutset(node) : 0;
+  const stackOutsets = shadowStackOutsets(node, (node.rotation??0)+inheritedNodeRotation(nodes,node));
+  const hasStackEffect = Object.values(stackOutsets).some(value=>value>0);
   const hasInstanceEffect = Object.values(instanceOutsets).some((value) => value > 0);
-  if (!visibleShadow && !hasInstanceEffect && strokeOutset <= 0) {
+  if (!visibleShadow && !hasInstanceEffect && !hasStackEffect && strokeOutset <= 0) {
     return clipNodeBoundsToClippingAncestors(nodes, node);
   }
   const shadowOutset = visibleShadow?.blur * 1.5 || 0;
@@ -1176,6 +1182,7 @@ function renderedSourceNodeEffectBounds(document, nodes, node, instanceStack, av
   const rotatedInstanceOutset =
     totalRotation % 360 === 0 ? 0 : Math.max(...Object.values(instanceOutsets));
   const leftOutset = Math.max(
+    stackOutsets.left,
     rotatedInstanceOutset || instanceOutsets.left,
     strokeOutset,
     visibleShadow
@@ -1183,6 +1190,7 @@ function renderedSourceNodeEffectBounds(document, nodes, node, instanceStack, av
       : 0,
   );
   const topOutset = Math.max(
+    stackOutsets.top,
     rotatedInstanceOutset || instanceOutsets.top,
     strokeOutset,
     visibleShadow
@@ -1190,11 +1198,13 @@ function renderedSourceNodeEffectBounds(document, nodes, node, instanceStack, av
       : 0,
   );
   const rightOutset = Math.max(
+    stackOutsets.right,
     rotatedInstanceOutset || instanceOutsets.right,
     strokeOutset,
     visibleShadow ? strokeOutset + shadowOutset + (rotatedShadowOffset || Math.max(0, shadowX)) : 0,
   );
   const bottomOutset = Math.max(
+    stackOutsets.bottom,
     rotatedInstanceOutset || instanceOutsets.bottom,
     strokeOutset,
     visibleShadow ? strokeOutset + shadowOutset + (rotatedShadowOffset || Math.max(0, shadowY)) : 0,
@@ -1459,6 +1469,13 @@ function exportNodeSvg(
     );
   }
   if (node.type === "group") return "";
+  if (node.shadowStack) {
+    const shape = roundedRectSvgGeometry(node), stack = options.shadowStacks.get(node.id);
+    const stroke = hasDesignStroke(node) ? designStrokeSvg(node) : "";
+    // Paint servers use document coordinates; only the geometric masks are local.
+    const local = (markup) => `<g transform="translate(${node.x} ${node.y})">${markup}</g>`;
+    return clipped(`  <g${metadata}${opacity}${transform}>${local(stack.outer)}<${shape.tag} ${shape.attributes} ${fillAttributes}/>${local(stack.inner)}${stroke}</g>`);
+  }
   const shape = roundedRectSvgGeometry(node);
   if (hasDesignStroke(node)) return clipped(
     `  <g${metadata}${opacity}${filter}${transform}><${shape.tag} ${shape.attributes} ${fillAttributes}/>${designStrokeSvg(node)}</g>`,
@@ -1515,6 +1532,7 @@ export function replaceDesignColors(document, replacements) {
       if (next) { side.color = next; replacementCount += 1; }
     }
     if (node.fillPaints) node.fill = representativeDesignFill(node.fillPaints);
+    if(node.shadowStack)for(const layer of node.shadowStack.layers){const replacement=replacementFor(layer.color);if(replacement){layer.color=replacement;replacementCount+=1;}}
     const shadowReplacement = replacementFor(node.shadow?.color);
     if (shadowReplacement) {
       node.shadow.color = shadowReplacement;
@@ -1545,6 +1563,7 @@ export function exportDesignSvg(document, options = {}) {
   const componentClipIds = new Map();
   const shadowIds = new Map();
   const shadowFilters = [];
+  const shadowStacks = new Map(renderNodes.map((node,index)=>[node.id,shadowStackSvg(node,`css-shadow-${index}`)]));
   const fontCss = designFontFaceCss(document.resources, options.resourceDataUrls);
   const fontFaceRules = fontCss ? [fontCss] : [];
   renderNodes.forEach((node, index) => {
@@ -1596,6 +1615,7 @@ export function exportDesignSvg(document, options = {}) {
       exportNodeSvg(renderDocument, node, clipIds, shadowIds, componentClipIds, new Set(), {
         ...options,
         paintFills,
+        shadowStacks,
       }),
     )
     .filter(Boolean)
@@ -1604,7 +1624,7 @@ export function exportDesignSvg(document, options = {}) {
     '<?xml version="1.0" encoding="UTF-8"?>',
     `<svg xmlns="${SVG_NS}" width="${document.canvas.width}" height="${document.canvas.height}" viewBox="0 0 ${document.canvas.width} ${document.canvas.height}" data-page-id="${escapeXml(document.activePageId ?? "page-1")}">`,
     `  <title>${escapeXml(`${document.name} — ${pageName}`)}</title>`,
-    ...(clipPaths.length + shadowFilters.length + fontFaceRules.length + paintDefinitions.length > 0
+    ...(clipPaths.length + shadowFilters.length + fontFaceRules.length + paintDefinitions.length + [...shadowStacks.values()].reduce((sum,stack)=>sum+stack.definitions.length,0) > 0
       ? [
           "  <defs>",
           ...(fontFaceRules.length > 0
@@ -1612,6 +1632,7 @@ export function exportDesignSvg(document, options = {}) {
             : []),
           ...clipPaths,
           ...shadowFilters,
+          ...[...shadowStacks.values()].flatMap(stack=>stack.definitions),
           ...paintDefinitions,
           "  </defs>",
         ]

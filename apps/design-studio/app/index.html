@@ -965,13 +965,22 @@
                 <div class="section-label">效果</div>
                 <label class="checkbox-field">
                   <input id="prop-shadow-enabled" type="checkbox" />
-                  <span>投影</span>
+                  <span>阴影</span>
                 </label>
+                <div id="shadow-stack-tools" hidden>
+                  <select id="prop-shadow-layer" aria-label="CSS 阴影层"></select>
+                  <button id="shadow-layer-add" type="button">添加 CSS 阴影</button>
+                  <button id="shadow-layer-remove" type="button">移除当前层</button>
+                  <button id="shadow-layer-up" type="button" aria-label="阴影层前移">↑</button>
+                  <button id="shadow-layer-down" type="button" aria-label="阴影层后移">↓</button>
+                  <label><input id="prop-shadow-inner" type="checkbox"/>内阴影</label>
+                  <label><input id="prop-shadow-visible" type="checkbox"/>显示当前层</label>
+                </div>
                 <div id="shadow-controls" class="layout-controls" hidden>
                   <div class="color-field">
                     <span>颜色</span>
-                    <input id="prop-shadow-color-picker" type="color" aria-label="选择投影颜色" />
-                    <input id="prop-shadow-color" spellcheck="false" aria-label="投影颜色值" />
+                    <input id="prop-shadow-color-picker" type="color" aria-label="选择阴影颜色" />
+                    <input id="prop-shadow-color" spellcheck="false" aria-label="阴影颜色值" />
                   </div>
                   <div class="property-grid">
                     <label
@@ -982,7 +991,7 @@
                         min="-500"
                         max="500"
                         step="1"
-                        aria-label="投影 X 偏移"
+                        aria-label="阴影 X 偏移"
                     /></label>
                     <label
                       ><span>Y</span
@@ -992,7 +1001,7 @@
                         min="-500"
                         max="500"
                         step="1"
-                        aria-label="投影 Y 偏移"
+                        aria-label="阴影 Y 偏移"
                     /></label>
                     <label
                       ><span>模糊</span

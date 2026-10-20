@@ -384,6 +384,9 @@
   /*! html2figma browser runtime; MIT declared upstream. See html2figma-NOTICE.md. */
   var HTML2FIGMA_PROVENANCE = Object.freeze({ "engine": "html2figma", "upstreamCommit": "ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c", "sourceTreeSha256": "d633595f846eb0b645988568914f269a0d19743d09348ad02a0275f0eb6d48f2", "integrationVersion": 2, "gridCaptureDefault": "original-items", "legacyGridOption": "preserveGrid:false" });
 
+  // apps/design-studio/app/stroke.mjs
+  var STROKE_SIDES = Object.freeze(["top", "right", "bottom", "left"]);
+
   // apps/design-studio/app/grid.mjs
   var GRID_CONTAINER_FIELDS = Object.freeze([
     "gridRows",
@@ -398,9 +401,6 @@
     "gridChildHorizontalAlign",
     "gridChildVerticalAlign"
   ]);
-
-  // apps/design-studio/app/stroke.mjs
-  var STROKE_SIDES = Object.freeze(["top", "right", "bottom", "left"]);
 
   // apps/design-studio/app/linear-gradient-geometry.mjs
   var object = (v) => v && typeof v === "object" && !Array.isArray(v);

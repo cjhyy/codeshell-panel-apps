@@ -2228,3 +2228,35 @@ test("generated native runtime recognizes pixel9 provenance without erasing an a
     assert.deepEqual(clone(created.lineHeight), { unit: "PIXELS", value: 20 });
   }
 });
+
+test("CSS shadow native creation refuses unsupported masks before writes; opaque editable stacks restore only current metadata",async()=>{
+  const imported=importFigmaJson(page([rect()])),shape=imported.document.nodes[0];
+  shape.fill="#212529";shape.shadowStack={basis:"css-box",layers:[{kind:"inner",color:"#000000",opacity:.5,x:0,y:0,blur:80,spread:0,visible:true}]};
+  const transfer=createFigmaTransfer(imported.document),creation=harness(page([]),{nativeStrokes:true});
+  const invalid=clone(transfer);invalid.pages[0].children[0].fill="transparent";
+  const before=JSON.stringify(creation.snapshot(creation.figma.currentPage));
+  await creation.send({type:"import-transfer",content:JSON.stringify(invalid)});assert.equal(creation.messages.at(-1).type,"error");assert.match(creation.messages.at(-1).message,/蒙版/);assert.equal(JSON.stringify(creation.snapshot(creation.figma.currentPage)),before);assert.equal(creation.figma.root.children.length,1);
+  await creation.send({type:"import-transfer",content:JSON.stringify(transfer)});assert.equal(creation.messages.at(-1).type,"imported");
+  const target=creation.figma.currentPage.children[0];assert.equal(target.effects[0].type,"INNER_SHADOW");assert.equal(target.effects[0].radius,80);
+  await creation.send({type:"export-json",scope:"page"});let source=JSON.parse(creation.messages.at(-1).content);
+  let prepared=await prepareFigmaImport(source),binding=createFigmaBinding(prepared),node=prepared.document.nodes[0];
+  assert.deepEqual(node.shadowStack,shape.shadowStack);assert.deepEqual(createFigmaPatch(binding,prepared.document).operations,[]);
+  node.shadowStack.layers[0].blur=40;
+  let update=createFigmaTransfer(prepared.document);update.patch=createFigmaPatch(binding,prepared.document);
+  assert.deepEqual(update.patch.operations[0].changed,["shadowStack"]);
+  await creation.send({type:"preview-patch",content:JSON.stringify(update)});let preview=creation.messages.at(-1);assert.equal(preview.type,"patch-preview",JSON.stringify(preview));assert.deepEqual(preview.conflicts,[]);
+  await creation.send({type:"apply-patch",token:preview.token});assert.equal(creation.messages.at(-1).type,"patched");assert.equal(target.effects[0].radius,40);
+  await creation.send({type:"export-json",scope:"page"});source=JSON.parse(creation.messages.at(-1).content);prepared=await prepareFigmaImport(source);binding=createFigmaBinding(prepared);node=prepared.document.nodes[0];assert.equal(node.shadowStack.layers[0].blur,40);
+  node.width+=10;update=createFigmaTransfer(prepared.document);update.patch=createFigmaPatch(binding,prepared.document);
+  target.strokes=[{type:"SOLID",color:{r:1,g:0,b:0}}];target.strokeWeight=1;
+  await creation.send({type:"preview-patch",content:JSON.stringify(update)});preview=creation.messages.at(-1);assert.equal(preview.type,"patch-preview");assert(preview.conflicts.some(s=>/蒙版/.test(s)));assert.equal(target.width,node.width-10,"preview cannot write geometry");
+  await creation.send({type:"export-json",scope:"page"});const diverged=await prepareFigmaImport(JSON.parse(creation.messages.at(-1).content));assert.equal(diverged.document.nodes[0].shadowStack,undefined,"stale native paint metadata never restores CSS intent");assert(diverged.warnings.length);
+});
+
+test("CSS stack removal plus legacy shadow replacement applies the final effect plan regardless of changed-key ordering",async()=>{
+  const initial=importFigmaJson(page([rect()])),shape=initial.document.nodes[0];shape.shadowStack={basis:"css-box",layers:[{kind:"inner",color:"#000000",opacity:.5,x:0,y:0,blur:8,spread:0,visible:true}]};
+  const runtime=harness(page([]),{nativeStrokes:true});await runtime.send({type:"import-transfer",content:JSON.stringify(createFigmaTransfer(initial.document))});assert.equal(runtime.messages.at(-1).type,"imported");
+  const target=runtime.figma.currentPage.children[0];await runtime.send({type:"export-json",scope:"page"});const prepared=await prepareFigmaImport(JSON.parse(runtime.messages.at(-1).content)),binding=createFigmaBinding(prepared),node=prepared.document.nodes[0];delete node.shadowStack;node.shadow={color:"#000000",opacity:.4,x:2,y:3,blur:4};
+  const update=createFigmaTransfer(prepared.document);update.patch=createFigmaPatch(binding,prepared.document);assert(update.patch.operations[0].changed.includes("shadow"));assert(update.patch.operations[0].changed.includes("shadowStack"));
+  await runtime.send({type:"preview-patch",content:JSON.stringify(update)});const preview=runtime.messages.at(-1);assert.equal(preview.type,"patch-preview");assert.deepEqual(preview.conflicts,[]);await runtime.send({type:"apply-patch",token:preview.token});assert.equal(runtime.messages.at(-1).type,"patched");assert.equal(target.effects.length,1);assert.equal(target.effects[0].type,"DROP_SHADOW");assert.equal(target.effects[0].radius,4);
+});

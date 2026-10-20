@@ -1,3 +1,4 @@
+import { validateShadowStack, shadowMaskGeometry, roundedShadowPath, visibleShadowLayers, shadowStackOutsets } from "../shadow-stack.mjs";
 import { effectiveCornerRadii } from "../corner-radii.mjs";
 /* Retained CanvasKit renderer. The document and editing state remain owned by Design Studio. */
 import { effectiveDesignNodeOpacity, isDesignNodeVisible } from "../document.mjs";
@@ -470,6 +471,26 @@ export async function createRenderer({
             "missingImages",
             "gradientPaints",
           ];
+          function drawCssShadows(destination,node,kind) {
+            const layers=visibleShadowLayers(node,kind);if(!layers.length)return;
+            const geometry=shadowMaskGeometry(node),box=kind==="inner"?geometry.inner:geometry.outer,radii=kind==="inner"?geometry.innerRadii:geometry.outerRadii;
+            if(box.width<=0 || box.height<=0)return;
+            const clip=CK.Path.MakeFromSVGString(kind==="inner"?geometry.innerPath:geometry.outerPath);
+            destination.save();
+            try {
+              destination.clipPath(clip,kind==="inner"?CK.ClipOp.Intersect:CK.ClipOp.Difference,true);
+              for(const layer of [...layers].reverse()){
+                const extent=layer.blur*3+Math.abs(layer.x)+Math.abs(layer.y)+2;
+                const cover=`M${-extent} ${-extent}H${node.width+extent}V${node.height+extent}H${-extent}Z`;
+                const d=(kind==="inner"?cover+" ":"")+roundedShadowPath(box,radii,layer.x,layer.y);
+                const path=CK.Path.MakeFromSVGString(d),paint=new CK.Paint();let blur;
+                try{path.setFillType(CK.FillType.EvenOdd);paint.setAntiAlias(true);paint.setColor(canvasKitColor(CK,layer.color,layer.opacity));
+                  if(layer.blur>0){blur=CK.MaskFilter.MakeBlur(CK.BlurStyle.Normal,layer.blur/2,true);paint.setMaskFilter(blur);}
+                  destination.drawPath(path,paint);
+                }finally{blur?.delete();paint.delete();path.delete();}
+              }
+            }finally{destination.restore();clip.delete();}
+          }
           function drawRawContent(destination, node) {
             if (node.type === "image") {
               const image = images.get(node.imageRef);
@@ -491,12 +512,15 @@ export async function createRenderer({
               drawMissing(CK, destination, node);
               return;
             }
+            if(node.shadowStack)validateShadowStack(node);
+            drawCssShadows(destination,node,"outer");
             for (const fill of designFillPaints(node)) {
               if (fill.type === "GRADIENT_LINEAR") counters.gradientPaints++;
               const paint = makePaint(CK, node, fill);
               drawShape(CK, destination, node, paint);
               paint.delete();
             }
+            drawCssShadows(destination,node,"inner");
             if (hasDesignStroke(node)) {
               const parts=designStrokePaths(node),common=parts.every(s=>s.opacity===parts[0]?.opacity);
               const layered=parts.length && common && parts[0].opacity<1,layer=layered?new CK.Paint():null;
@@ -537,7 +561,7 @@ export async function createRenderer({
               const content = new CK.PictureRecorder();
               // Bound raw commands conservatively before ancestors/effects are
               // applied by the outer display list. Text may extend beyond its box.
-              const pad = Math.max(node.strokeWidth || 0,designStrokeOutset(node)) + 2;
+              const pad = Math.max(node.strokeWidth || 0,designStrokeOutset(node),...Object.values(shadowStackOutsets(node))) + 2;
               const bounds = node.type === "text" ? text.contentBounds(local) : local;
               const before = Object.fromEntries(rawCounterKeys.map((key) => [key, counters[key]]));
               const issueStart = unsupported.length;
@@ -598,6 +622,7 @@ export async function createRenderer({
                 counters.clippedNodes++;
               rotateChain(target, [...chain, node]);
               if ([...chain, node].some((item) => item.rotation)) counters.rotatedNodes++;
+              if(visibleShadowLayers(node).length){counters.shadowNodes++;if(visibleShadowLayers(node).some(layer=>layer.blur>0))unsupportedNode(node,"css-shadow-raster-kernel","CSS 几何阴影层保持可编辑；模糊内核的严格像素一致性尚未验证");}
               const opacity = effectiveDesignNodeOpacity({ nodes: pageNodes }, node, nodeIndex);
               const layerPaint = new CK.Paint();
               layerPaint.setAlphaf(opacity);
