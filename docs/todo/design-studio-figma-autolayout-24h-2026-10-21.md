@@ -930,3 +930,51 @@ CSS normal只折叠ASCII HTML空白，真实NBSP与原始内容保留；普通�
 6个原先因重复class被跳过的h2/p恢复流式，188个ID和父关系不变，剩余表格问题未掩盖。
 新组合完整门禁正在执行，证据以 `round17-main-combined.log` / `round17-ui-combined.log`
 与后续完成回执为准；此处不先记录完成。24小时目标继续active。
+
+### 完整组合门禁、Grid 内在尺寸及新网页（约 04:22）
+
+本轮完整主门禁 **521总数/520通过/1既有跳过/0失败**，131103ms。
+首轮UI为101通过/1失败/1跳过，失败断言仍寻找已移除的horizontal margins包装。
+`dc030ab` 更新该交互回归：验证真实行直接隶属正inset父框、无旧spacer，清除独立
+columnGap后通过inspector把主gap改为-20，实际两Fill子项325/325；wrap/reverse/Hug
+非法编辑回滚，工具改-16并只缩外框后，保存重开/原生传输保持x5/宽390、7节点。
+首次修订把层级传输误当扁平parentId的断言也保留失败日志，改查真实children层级后
+目标1/1通过。随后 **完整UI重跑103总数/102通过/1既有跳过/0失败**，106957ms。
+`round17-combined-acceptance-receipt.json` 绑定main/UI实际commit、日志SHA、完整App
+文件SHA和静态检查；main之后只有日志文字、注释与该UI测试修订，无产品行为变更。
+GPU文字改进控制仍有858像素/max1，不能把回归测试通过当作全网页strict0。
+
+真实独立Grid研究 `289e088a`：8组、7阶段、58个新自有节点、0接口错误，392组
+live↔官方bbox逐值相同。HUG行＋全部实际不透明V-FILL单元格，在两种设置顺序下都
+保持模式，随真实内容40→80→40增长并缩回，所有单元格背景高度完整；固定500px子项
+溢出，未使FLEX轨道按min-content膨胀。正轨道[.3fr,32px,.5fr,.2fr,8px]＋跨度[2,1,2]
+在630宽实际209/295/126、390宽137/175/78，原页面/选择/子项ID快照不变。
+CPU独立CSS白板参考与7张原生PNG比较为 **0/0/0/240/660/0/0**，max0/0/0/77/76/0/0；
+708和483.328125宽严格失败，保留原始浮点与Chrome1/64舍入差异，未四舍五入掩盖。
+这是定制main的研究，不是生产表格互换成功；当前Fill/HUG guard尚未放开，代理正拟定
+只针对真实嵌套内容的受限模型。全部原始/分析/PNG差图位于
+`native-grid-intrinsic-height-analysis/`，插件已关闭、进程正常退出、三注册文件精确恢复。
+
+真实32组Inactive Frame Fill研究 `4221e005`：98个新自有节点、0接口错误，原页面与
+选择/子项快照保持不变；raw SHA
+`2ece3bfe65c19b266cf76d14aa6dc0861c3b113234a7cc08b0aa9e814ef46a7a`。
+水平例640：保留padding8/20的NONE Frame仍306/306，inside描边4/8后302/310；
+活动H/V Frame分别294/318、290/322。可用主尺寸极低时，活动excluded inside例下限
+24/56；maxB=1却得到556/1、bothmax1为1/1，不能套用浏览器padding下限或假设所有
+空间总能重分配。官方/双轴完整独立分析仍在进行，未据此修改全局算法。
+研究插件关闭、进程正常退出，注册三文件精确恢复，当前仍62:665/viewport62:666宽640。
+
+另冻结两个官方真实整页，归档原始→资源本地版在1280/768参考均严格0、DOM几何同值，
+无未知请求或页面错误：[W3C Blog](https://www.w3.org/blog/) 与
+[NHS Check Answers](https://service-manual.nhs.uk/design-example/patterns/check-answers/example)。
+生产初次/重排/仅外框缩窄：W3C **445663/445941/141626**（465节点），NHS
+**31496/57594/117781**（125节点），均strict=false。NHS原生预检明确拒绝-17被1px
+最小AUTO项钳制为-1；W3C仅prepared，均未冒充真实原生执行。
+原始URL/HTML/CSS/资源SHA、转换及参考在 `web-corpus/additional-public-pages-summary.json`。
+
+W3C已定位具体解析错误：link stylesheet替换为style时丢失media=print，打印样式误用于
+屏幕，隐藏导航/导语/表单/筛选并改黑色。保持同一冻结字节、仅实验保留media后，首次
+445663→53958、重排445941→75772，body高度/卡片位置恢复；缩窄141626→234531如实
+变差，说明正确屏幕样式还暴露已有响应式问题。独立新工作树正在同时修Panel与维护的
+standalone HTML插件，只保留media并加screen/print/视口条件回归，尚未合并本组合。
+目标继续active，24小时截止10月22日00:31 Asia/Singapore不变。
