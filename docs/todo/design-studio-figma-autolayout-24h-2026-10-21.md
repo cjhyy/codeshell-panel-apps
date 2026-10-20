@@ -532,3 +532,48 @@ viewport 包装框响应式宽度关系、百分比 Flex 列、负外边距、�
 有界 `layoutBaselineSource:'native'` 持久来源，在全体导入文字（含 root/absolute/manual）
 进入布局前按实际字体刷新原点；显式换行的单行省略也补真实测试。当前尚未提交，下一轮
 按最终经审查代码确认 Schema/来源绑定，不再假定会增加 textMetrics receipt 字段。
+
+### 基线与响应式渐变合并、原文补丁实机核对（约 02:36）
+
+`b754e8b` 已合入代理 `a2fadaa`：原生 TEXT 行框按实际字体映射为 hanging 原点，
+持久 `layoutBaselineSource:'native'` 跨保存、未测量 Node 重排和再次浏览器打开；
+root/manual/absolute 文字也刷新字体偏移。六个实际字体控件现在触发排版。
+绑定按逻辑 y 比较，抵消测量偏移的变化与浮点尾差；自旋转文字和带显式换行的
+单行省略保留有界诊断。合并保留 f48 的原文身份与圆角路径，重建全部插件输出。
+root 的文字/原生/绑定针对性 **79 项通过**。
+
+新实机 run `325c00e9` / 页 `62:127`，生产 main 来自 b754：相同 HTML 10 节点、
+6 Auto Layout，容器/形状几何差 0。标准 `preview-patch` → `apply-patch` 只更新
+一个原文图层的 text/textSource，无冲突、无删除；显式换行仍是原生 characters。
+640→400 时段落 576×96→336×144，卡片高 192→240，后续色块 y180→228。
+官方 JSON 在原始 640、补丁后 640、补丁后 400 三个状态，经生产浏览器导入的首次
+显示及重排六次比较全部 **0 像素差异**，无警告/外部请求/浏览器错误。
+原生 PNG 与 HTML 400 仍有 **9,389/max178**，未将其冒充零差异。
+证据 `evidence/real-figma/text-source-patched/acceptance-report.json`；原 scratch 三文件
+精确恢复、relay 关闭、插件关闭，离线云同步未确认。
+
+该补丁脚本最初错误要求 REST 显式包含 inactive AUTO 字段，实际默认 AUTO 被省略，
+断言在成功应用后失败；原始预览/应用消息与后续两宽官方导出保留。后续独立核对确认
+FILL、原文、有效父布局和流动几何，未来脚本接受省略的默认值并明确拒绝 ABSOLUTE。
+未修改生产代码去迎合脚本断言。
+
+`d65e0f2` 已合入代理 `0fd6a68` 的有界 `cssLinear` 结构化意图：当前尺寸求物理角度、
+像素/百分比色标，SVG、CanvasKit、采样、前端 CSS 与原生当前尺寸快照共用解析。
+45deg Fill 缩窄主例与命名角控制均为 0/0/0；颜色层顺序、透明度、旧 handles 保留。
+原生几何修改/层顺序歧义转为 sourceOnly，显式诊断，不复活过期来源；极端新几何
+超出现有原生 ±100 handles 子集在转换/预检中拒绝。其他严格量化残差仍完整记录于
+`design-studio-responsive-css-gradients-2026-10-21.md`，没有放宽阈值。
+
+组合主门禁在 d65 完成 **440 通过/1 既有跳过/0 失败**，全仓 typecheck、validate、
+build:check 及两插件确定性校验通过。root 另发现 HUG 文字字体 setter 会在渐变快照
+之后改变原生高度；先以回归证明原实现失败，再在 `d89cb04` 把经预检的渐变求值推迟
+到所有排版/尺寸/顺序修改结束，并对字体/文字引起的尺寸变化核对并发 paints/source。
+68 项原生/绑定/渐变检查通过；完整组合 UI/GPU 门禁随后完成 **98 通过/1 既有跳过/0 失败**。
+
+新增网页失败用例 `evidence/native-text-ellipsis/source.html`：nowrap+ellipsis 当前仅
+裁剪全文，不显示省略号，640 初始/同宽各 328 像素/max240，400 为 377/max240。
+独立代理正在补 plain-text 容器、Fill/Hug、原文与前端导出；原始失败证据保留。
+另一代理正在补实际 DOM viewport→根节点 Fill 关系，已有 12 组 outer-only 缩窄
+严格 0 的浏览器样本，尚未合入，后续仍需真实 Figma 外框缩窄验收。
+第三代理转向 GOV.UK 重复出现的 CSS 各边/内侧边框误差，先提出有界可编辑模型。
+目标继续 active；24 小时截止仍为 2026-10-22 00:31 Asia/Singapore。
