@@ -1068,8 +1068,9 @@ function importFigmaJsonWithReport(
               cell.children?.some((content) => unsupportedGridText.has(content))))
             throw new Error("HUG 行内的 FILL 文字单元暂不支持列表、段落间距/缩进、截断、大小写转换或混合/非顶部左对齐样式");
           if (node.children.some((cell) => gridFillHugContentHeight(node, cell, cell.children, parent) !== null) &&
-              node.strokeSides?.some((side) => side.width > 0) && source.strokesIncludedInLayout !== true)
-            throw new Error("HUG 行内的 FILL 文字单元仅支持明确 included 的 inside 描边");
+              node.strokeSides?.some((side) => side.width > 0) && source.strokesIncludedInLayout !== true &&
+              node.strokeAlign !== "center")
+            throw new Error("HUG 行内的 FILL 文字单元仅支持 included 的 inside 或 excluded 的有界 center 底边描边");
           nativeGridPlan(node, parent);
         } catch (error) {
           report.warn(

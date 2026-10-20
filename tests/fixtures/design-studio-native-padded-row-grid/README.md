@@ -11,7 +11,7 @@ The supported dependency is bounded: one HUG row, fixed/flex columns, a single
 plain wrapped H-FILL/V-HUG Text inside each V cell, and bounded cell padding.
 A row may have H-FILL only under a direct V parent with fixed, unconstrained
 width. An optional included INSIDE bottom1px rule is counted once in canonical
-effective padding. Positive excluded Grid rules, other alignments, multiple HUG
+effective padding. Other positive excluded Grid rules, outside alignment, multiple HUG
 rows, unsupported typography and width cycles retain diagnostics/fallback.
 No new document field or native inclusion provenance is introduced.
 
@@ -28,3 +28,7 @@ match the native Figma font. The probe rule #b1b4b6 differs from the frozen GOV
 source #cecece, and native included INSIDE1 is not a CSS collapsed half-edge
 allocation model. This change does not promote HTML TABLE/DL or claim whole GOV
 page parity.
+
+The separate [centered-row fixture](../design-studio-native-centered-row-grid/README.md)
+covers native excluded CENTER bottom1 with zero row padding and captured
+fractional cell/owner padding; it does not change this included INSIDE model.

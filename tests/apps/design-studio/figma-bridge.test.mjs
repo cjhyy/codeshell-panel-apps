@@ -2172,3 +2172,22 @@ test("native padded intrinsic row Grid creation carries parent context and inclu
   const blocked=pluginHarness({nativeGrid:true});await blocked.send({type:"import-transfer",content:JSON.stringify(invalid)});
   assert.equal(blocked.messages.at(-1).type,"error");assert.equal(blocked.pages.length,1,"context cycle rejected before new native pages");
 });
+
+test("actual centered excluded row Grid configures explicit exclusion after activation with fractional real-cell insets", async () => {
+  const raw=JSON.parse(await readFile(new URL("../../fixtures/design-studio-native-centered-row-grid/native-source.json",import.meta.url)));
+  const imported=importFigmaJson(raw),transfer=createFigmaTransfer(imported.document);
+  assert.deepEqual(imported.warnings,[]);assert.deepEqual(transfer.warnings,[]);
+  const runtime=pluginHarness({nativeGrid:true});
+  await runtime.send({type:"import-transfer",content:JSON.stringify(transfer)});
+  assert.equal(runtime.messages.at(-1).type,"imported",JSON.stringify(runtime.messages.at(-1)));
+  const flattened=n=>[n,...n.children.flatMap(flattened)],all=flattened(runtime.pages[1]);
+  assert.equal(all.length,68);const rows=all.filter(n=>n.layoutMode==="GRID");assert.equal(rows.length,9);
+  for(const row of rows){
+    assert.equal(row.strokesIncludedInLayout,false,"fresh active Grid default true must be explicitly excluded");
+    assert.equal(row.strokeAlign,"CENTER");assert.equal(row.paddingTop,0);assert.equal(row.paddingBottom,0);
+    assert.deepEqual([row.layoutSizingHorizontal,row.layoutSizingVertical],["FILL","HUG"]);
+    const rowIndex=Number(row.name.at(-1)),lastAbsent=row.name.includes("last-rule-absent")&&rowIndex===2;
+    if(!lastAbsent)assert.deepEqual([row.strokeTopWeight,row.strokeRightWeight,row.strokeBottomWeight,row.strokeLeftWeight],[0,0,1,0]);
+    for(const cell of row.children){assert.deepEqual([cell.layoutSizingHorizontal,cell.layoutSizingVertical],["FILL","FILL"]);assert.equal(cell.paddingTop,rowIndex===0?10:10.5);assert.equal(cell.paddingBottom,lastAbsent?10:10.5);assert.equal(cell.children.length,1);assert.deepEqual(clone(cell.children[0].lineHeight),{unit:"PIXELS",value:25});assert.equal(cell.children[0].layoutSizingVertical,"HUG");}
+  }
+});

@@ -132,8 +132,8 @@ export function gridPlacements(children, columnCount, container = {}) {
     rowCount: Math.max(0, ...placements.map((item) => item.row + item.rowSpan)),
   };
 }
-// Native runs 289e088a (rectangle), a4e5dd91 (plain Text), and fc6bb994 (padded
-// cells in externally sized rows) prove this vertical dependency.
+// Native runs 289e088a (rectangle), a4e5dd91 (plain Text), fc6bb994 (padded
+// cells), and f4568ae6 (excluded centered bottom rule) prove this dependency.
 // Text height is its logical line box after the bounded responsive-text pass. Never use an old
 // stretched cell height as intrinsic content, or shrink edits retain the old row.
 export function gridFillHugContentHeight(container, child, children = child?.children, parent) {
@@ -173,6 +173,16 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
     Array.from(container.strokeSides).every((side, index) => side && side.width === (index === 2 ? 1 : 0)) &&
     ["Top", "Right", "Left"].every((side) => (container[`padding${side}`] ?? container.padding ?? 0) === 0) &&
     (container.paddingBottom ?? container.padding ?? 0) === 1;
+  // Native f4568ae6 keeps a centered excluded rule outside row sizing. Any
+  // fractional edge shares are already real cell/owner padding, never inferred
+  // here. Opaque cells have the same native geometry; this does not promise
+  // CSS collapsed-border painting over their backgrounds.
+  const centeredBottomRule =
+    container?.strokeAlign === "center" &&
+    !container.strokeLayoutExcluded &&
+    Array.isArray(container.strokeSides) && container.strokeSides.length === 4 &&
+    Array.from(container.strokeSides).every((side, index) => side && side.width === (index === 2 ? 1 : 0)) &&
+    ["Top", "Right", "Bottom", "Left"].every((side) => (container[`padding${side}`] ?? container.padding ?? 0) === 0);
   if (
     !container ||
     !child ||
@@ -191,7 +201,7 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
     (container.alignItems && container.alignItems !== "start") ||
     (verticalPadding(container) !== 0 && !includedBottomRule) ||
     !unconstrained(container) ||
-    (!noStroke(container) && !includedBottomRule) ||
+    (!noStroke(container) && !includedBottomRule && !centeredBottomRule) ||
     child.type !== "frame" ||
     child.layout !== "vertical" ||
     child.layoutSizingHorizontal !== "fill" ||
@@ -242,6 +252,7 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
   if (
     !content ||
     (!fixedRectangle && !plainText) ||
+    (centeredBottomRule && !plainText) ||
     (fixedRectangle && verticalPadding(child) !== 0) ||
     content.children !== undefined ||
     content.visible === false ||
