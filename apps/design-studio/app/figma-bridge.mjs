@@ -1064,10 +1064,21 @@ function importFigmaJsonWithReport(
         .filter(Boolean);
       if (node.layout === "grid") {
         try {
-          if (node.children.some((cell) => gridFillHugContentHeight(node, cell, cell.children, parent) !== null &&
-              cell.children?.some((content) => unsupportedGridText.has(content))))
+          const intrinsicCells = node.children.filter((cell) =>
+            gridFillHugContentHeight(node, cell, cell.children, parent) !== null);
+          if (intrinsicCells.some((cell) => {
+            const pending = [cell];
+            // The intrinsic helper has already proved this subtree's bounded
+            // shape. Retain raw unsupported-typography checks at every leaf.
+            for (let visited = 0; pending.length && visited < 32; visited += 1) {
+              const content = pending.pop();
+              if (unsupportedGridText.has(content)) return true;
+              pending.push(...(content.children ?? []));
+            }
+            return pending.length > 0;
+          }))
             throw new Error("HUG 行内的 FILL 文字单元暂不支持列表、段落间距/缩进、截断、大小写转换或混合/非顶部左对齐样式");
-          if (node.children.some((cell) => gridFillHugContentHeight(node, cell, cell.children, parent) !== null) &&
+          if (intrinsicCells.length &&
               node.strokeSides?.some((side) => side.width > 0) && source.strokesIncludedInLayout !== true &&
               node.strokeAlign !== "center")
             throw new Error("HUG 行内的 FILL 文字单元仅支持 included 的 inside 或 excluded 的有界 center 底边描边");

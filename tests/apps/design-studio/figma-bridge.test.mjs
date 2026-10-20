@@ -2191,3 +2191,45 @@ test("actual centered excluded row Grid configures explicit exclusion after acti
     for(const cell of row.children){assert.deepEqual([cell.layoutSizingHorizontal,cell.layoutSizingVertical],["FILL","FILL"]);assert.equal(cell.paddingTop,rowIndex===0?10:10.5);assert.equal(cell.paddingBottom,lastAbsent?10:10.5);assert.equal(cell.children.length,1);assert.deepEqual(clone(cell.children[0].lineHeight),{unit:"PIXELS",value:25});assert.equal(cell.children[0].layoutSizingVertical,"HUG");}
   }
 });
+
+test("actual multi-paragraph Grid preflight preserves real nested Auto Layout and rejects unproven descendants atomically", async () => {
+  const raw = JSON.parse(await readFile(new URL("../../fixtures/design-studio-native-grid-intrinsic-vflow/native-source.json", import.meta.url)));
+  const imported = importFigmaJson(raw), transfer = createFigmaTransfer(imported.document);
+  assert.deepEqual(imported.warnings, []);
+  assert.deepEqual(transfer.warnings, []);
+  const runtime = pluginHarness({ nativeGrid: true });
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported", JSON.stringify(runtime.messages.at(-1)));
+  const flatten = (node) => [node, ...(node.children ?? []).flatMap(flatten)];
+  const all = flatten(runtime.pages[1]);
+  assert.equal(all.length, 27);
+  assert.equal(all.filter((node) => node.layoutMode === "GRID").length, 4);
+  assert.equal(all.filter((node) => node.type === "TEXT").length, 9);
+  const contact = all.find((node) => node.name.endsWith("real-DD3"));
+  assert.deepEqual([contact.layoutMode, contact.layoutSizingHorizontal, contact.layoutSizingVertical], ["VERTICAL", "FILL", "FILL"]);
+  assert.deepEqual([contact.paddingTop, contact.paddingBottom], [9.5, 10.5]);
+  const [wrapper, secondP] = contact.children, firstP = wrapper.children[0], phone = firstP.children[0];
+  assert(wrapper.name.endsWith("margin-wrapper"));
+  assert(firstP.name.endsWith("real-P0"));
+  assert(secondP.name.endsWith("real-P1"));
+  assert.deepEqual([wrapper.paddingTop, wrapper.paddingBottom], [1, 10]);
+  for (const node of [wrapper, firstP, secondP])
+    assert.deepEqual([node.layoutMode, node.layoutSizingHorizontal, node.layoutSizingVertical, node.layoutPositioning], ["VERTICAL", "FILL", "HUG", "AUTO"]);
+  assert.equal(phone.characters, "07700 900457");
+  assert.equal(secondP.children[0].characters, "sarah.phillips@example.com");
+  assert.deepEqual(clone(phone.lineHeight), { unit: "PIXELS", value: 25 });
+  assert.deepEqual([phone.textAutoResize, phone.layoutSizingHorizontal, phone.layoutSizingVertical], ["HEIGHT", "FILL", "HUG"]);
+  for (const edit of [
+    (node) => { node.layoutSizingVertical = "fill"; },
+    (node) => { node.layoutReverse = true; },
+    (node) => { node.paddingTop = -1; },
+    (node) => { delete node.children[0].children[0].textSource; },
+  ]) {
+    const invalid = clone(transfer), frames = invalid.pages[0].children.flatMap(flatten);
+    edit(frames.find((node) => node.name.endsWith("margin-wrapper")));
+    const rejected = pluginHarness({ nativeGrid: true });
+    await rejected.send({ type: "import-transfer", content: JSON.stringify(invalid) });
+    assert.equal(rejected.messages.at(-1).type, "error");
+    assert.equal(rejected.pages.length, 1, "all nested dependency validation completes before creating a native page");
+  }
+});
