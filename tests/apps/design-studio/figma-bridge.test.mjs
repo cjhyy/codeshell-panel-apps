@@ -2032,3 +2032,52 @@ test("hidden spanning Grid children preserve authored rows but do not create eff
     assert.equal(rejected.pages.length, 1, "invalid hidden fields fail before creating pages");
   }
 });
+
+test("actual nested fixed-content Grid survives production plugin preflight with its Fill modes", async () => {
+  const raw = JSON.parse(
+    await readFile(
+      new URL(
+        "../../fixtures/design-studio-grid-intrinsic-height/native-source.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const imported = importFigmaJson(raw),
+    transfer = createFigmaTransfer(imported.document);
+  assert(!transfer.warnings.some((warning) => warning.code === "grid-export"));
+  const runtime = pluginHarness({ nativeGrid: true });
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported", JSON.stringify(runtime.messages.at(-1)));
+  const row = runtime.pages[1].children[0].children.find(
+    (node) => node.name === "affine-HUG-cellFILL-container-last",
+  );
+  assert.equal(row.layoutMode, "GRID");
+  assert.equal(row.layoutSizingVertical, "HUG");
+  assert.equal(row.gridRowSizes[0].type, "HUG");
+  assert.deepEqual(
+    row.children.map((node) => [
+      node.layoutMode,
+      node.layoutSizingHorizontal,
+      node.layoutSizingVertical,
+    ]),
+    Array(3).fill(["VERTICAL", "FILL", "FILL"]),
+  );
+  assert(
+    row.children.every(
+      (node) => node.children.length === 1 && node.children[0].layoutSizingVertical === "FIXED",
+    ),
+  );
+  const cyclic = clone(transfer);
+  cyclic.pages[0].children[0].children.find(
+    (node) => node.name === "affine-HUG-cellFILL-container-last",
+  ).children[0].children[0].layoutSizingVertical = "fill";
+  const rejected = pluginHarness({ nativeGrid: true });
+  await rejected.send({ type: "import-transfer", content: JSON.stringify(cyclic) });
+  assert.equal(rejected.messages.at(-1).type, "error");
+  assert.equal(
+    rejected.pages.length,
+    1,
+    "unsupported intrinsic cycles fail before any page is created",
+  );
+});

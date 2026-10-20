@@ -1,5 +1,7 @@
 import { mainAxisGap } from "./layout-spacing.mjs";
-import { gridPlacements, gridTrackSizes, effectiveGridRows } from "./grid.mjs";
+import {
+  gridPlacements, gridTrackSizes, effectiveGridRows, gridFillHugContentHeight,
+} from "./grid.mjs";
 import { hasDesignStroke, designStrokeSides, strokeLayoutBasisExtra } from "./stroke.mjs";
 /* Auto-layout and reusable-component helpers for Design Studio v3 documents. */
 import { descendantIds, setNodeTreePosition } from "./geometry.mjs";
@@ -268,7 +270,7 @@ function intrinsicGridRows(placements, rowCount, rowGap) {
   return rows;
 }
 
-function gridContentSize(container, children) {
+function gridContentSize(nodes, container, children) {
   const columns = Math.max(1, Math.round(finite(container.gridColumns, 1)));
   const columnGap = axisGap(container, "horizontal");
   const rowGap = axisGap(container, "vertical");
@@ -290,7 +292,15 @@ function gridContentSize(container, children) {
       ? effectiveGridRows(container, rowCount)
       : Math.max(rowCount, container.gridRows ?? 0);
   const rows = container.gridRowSizes
-    ? gridTrackSizes(container.gridRowSizes, explicitRows, placements, "vertical", rowGap)
+    ? gridTrackSizes(
+        container.gridRowSizes,
+        explicitRows,
+        placements,
+        "vertical",
+        rowGap,
+        undefined,
+        (child) => gridFillHugContentHeight(container, child, () => childNodes(nodes, child.id)),
+      )
     : intrinsicGridRows(placements, explicitRows, rowGap);
   const columnWidths = container.gridColumnSizes
     ? gridTrackSizes(container.gridColumnSizes, columns, placements, "horizontal", columnGap)
@@ -313,7 +323,7 @@ function applyHugSize(nodes, container) {
   const children = layoutChildren(nodes, container);
   const content =
     container.layout === "grid"
-      ? gridContentSize(container, children)
+      ? gridContentSize(nodes, container, children)
       : (() => {
           const measured = flexContentSize(container, children);
           return container.layout === "horizontal"
@@ -554,6 +564,7 @@ function applyGridLayout(nodes, container, children) {
         "vertical",
         rowGap,
         innerHeight,
+        (child) => gridFillHugContentHeight(container, child, () => childNodes(nodes, child.id)),
       )
     : intrinsicGridRows(placements, explicitRows, rowGap);
   const rowTrack = distributedTrack(
@@ -959,14 +970,15 @@ export function applyAutoLayouts(nodes, containerIds, { textMeasurer } = {}) {
   for (const id of [...requested]) {
     let node = byId.get(id);
     const seen = new Set();
-    while (
-      node &&
-      !seen.has(node.id) &&
-      (axisSizing(node, "horizontal") === "hug" || axisSizing(node, "vertical") === "hug")
-    ) {
+    while (node && !seen.has(node.id)) {
       seen.add(node.id);
       const parent = byId.get(node.parentId);
       if (!isAutoLayoutFlowChild(node, parent)) break;
+      const intrinsicGridDependency = parent.layout === "grid" && gridFillHugContentHeight(
+        parent, node, () => childNodes(nodes, node.id),
+      ) !== null;
+      if (axisSizing(node, "horizontal") !== "hug" &&
+          axisSizing(node, "vertical") !== "hug" && !intrinsicGridDependency) break;
       requested.add(parent.id);
       node = parent;
     }
