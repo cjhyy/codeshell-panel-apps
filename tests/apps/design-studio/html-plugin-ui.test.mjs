@@ -10,6 +10,7 @@ import {
   textFixture,
   PNG,
 } from "./fixtures/html-plugin-harness.mjs";
+import { linkCases, linkCaptureHtml, inspectCapturedLinks } from "./fixtures/html-link-capture.mjs";
 const ui = await readFile(
   new URL("../../../apps/design-studio/app/html-to-figma-plugin/ui.html", import.meta.url),
   "utf8",
@@ -165,6 +166,40 @@ test("HTML scripts, network resources, navigation and event handlers stay inert;
   assert.equal(await nested.locator("[onerror]").count(), 0);
   await f.frame.locator("#source").fill("<p>Changed</p>");
   assert.equal(await f.frame.locator("#create").isDisabled(), true);
+  assert.deepEqual(f.errors, []);
+});
+
+test("standalone opaque capture preserves link CSS and blocks activation before creating editable native text", async (t) => {
+  const f = await fixture(t);
+  await f.frame.locator("#selector").fill("main");
+  await f.frame.locator("#source").fill(linkCaptureHtml);
+  await f.frame.locator("#preview").click();
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(), /预览完成/u);
+  const captureFrame = f.frame.locator("#preview-stage iframe");
+  assert.deepEqual(await captureFrame.evaluate((frame) => ({
+    sandbox: frame.getAttribute("sandbox"), inert: frame.inert, tabIndex: frame.tabIndex,
+  })), { sandbox: "allow-scripts", inert: true, tabIndex: -1 });
+  const observed = await f.frame.frameLocator("#preview-stage iframe").locator("main").evaluate(inspectCapturedLinks);
+  assert.deepEqual(observed.links, linkCases.map(([id, href, color]) => ({
+    id, href: color === "#777777" ? null : href,
+    color: `rgb(${[0, 2, 4].map((offset) => parseInt(color.slice(offset + 1, offset + 3), 16)).join(", ")})`,
+  })));
+  for (const type of ["click", "auxclick", "submit"])
+    assert.deepEqual(observed[type], { dispatched: false, prevented: true });
+  assert.equal(observed.action, null);
+  assert.equal(observed.scripts, 1, "only the fixed reviewed runtime executes");
+  await f.frame.locator("#create").click();
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(), /已在 Figma 创建/u);
+  for (const [id, , color] of linkCases) {
+    const text = f.harness.nodes.find((node) => node.type === "TEXT" && node.characters === `${id} link`);
+    assert(text, id);
+    for (const [index, key] of ["r", "g", "b"].entries())
+      assert.equal(text.fills[0].color[key], parseInt(color.slice(1 + index * 2, 3 + index * 2), 16) / 255, `${id}.${key}`);
+  }
+  assert.equal(f.page.url(), "https://plugin.test/");
+  assert.deepEqual(f.network, []);
   assert.deepEqual(f.errors, []);
 });
 

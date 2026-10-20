@@ -2,6 +2,10 @@
 declare const __CAPTURE_RUNTIME__: string;
 import { createHtmlAssetResolver } from "../../../apps/design-studio/app/html-import-assets.mjs";
 import { resolveHtmlStylesheetPath } from "../../../apps/design-studio/app/html-import.mjs";
+import {
+  isHtmlAnchorHref,
+  safeHtmlAnchorHref,
+} from "../../../apps/design-studio/app/html-capture-links.mjs";
 import { prepareDesignInput, inertDesignSvg } from "./input";
 const $ = (id: string): any => document.getElementById(id);
 let generation = 0,
@@ -163,7 +167,9 @@ async function staticHtml(
       );
     for (const attr of [...element.attributes]) {
       const key = attr.name.toLowerCase();
-      if (
+      if (isHtmlAnchorHref(element, key)) {
+        if (!safeHtmlAnchorHref(attr.value)) element.removeAttribute(attr.name);
+      } else if (
         ["src", "href", "xlink:href"].includes(key) &&
         ["IMG", "image"].includes(element.tagName)
       ) {
@@ -280,6 +286,8 @@ $("preview").onclick = async () => {
       const frame = document.createElement("iframe");
       frame.title = "静态 HTML 预览";
       frame.setAttribute("sandbox", "allow-scripts");
+      frame.inert = true;
+      frame.tabIndex = -1;
       frame.style.cssText = "border:0;pointer-events:none;background:white;";
       input = await new Promise((resolve, reject) => {
         const receive = (event: MessageEvent) => {

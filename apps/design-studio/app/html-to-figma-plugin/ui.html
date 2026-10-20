@@ -787,6 +787,22 @@
     return source;
   }
 
+  // apps/design-studio/app/html-capture-links.mjs
+  function isHtmlAnchorHref(element, name) {
+    return element.namespaceURI === "http://www.w3.org/1999/xhtml" && element.localName === "a" && name === "href";
+  }
+  function safeHtmlAnchorHref(value) {
+    if (typeof value !== "string" || value.length > 2048 || /[\u0000-\u001f\u007f]/u.test(value) || /%(?:0[\da-f]|1[\da-f]|7f)/iu.test(value))
+      return false;
+    try {
+      return ["http:", "https:", "mailto:", "tel:"].includes(
+        new URL(value, "https://capture.invalid/").protocol
+      );
+    } catch {
+      return false;
+    }
+  }
+
   // apps/design-studio/app/html-import.mjs
   var MAX_HTML_SOURCE_BYTES = 512 * 1024;
   function portablePathSegment(segment) {
@@ -2429,7 +2445,9 @@
         );
       for (const attr of [...element.attributes]) {
         const key = attr.name.toLowerCase();
-        if (["src", "href", "xlink:href"].includes(key) && ["IMG", "image"].includes(element.tagName)) {
+        if (isHtmlAnchorHref(element, key)) {
+          if (!safeHtmlAnchorHref(attr.value)) element.removeAttribute(attr.name);
+        } else if (["src", "href", "xlink:href"].includes(key) && ["IMG", "image"].includes(element.tagName)) {
           const data = await resolver.resolve(attr.value, sourcePath);
           if (data) element.setAttribute(attr.name, data);
           else element.removeAttribute(attr.name);
@@ -8158,7 +8176,14 @@
     return runtime.convert(root, { includeRawStyles: options.includeRawStyles !== false, maxDepth, preserveGrid: options.preserveGrid !== false, onElement: options.onElement });
   }
 
+  // apps/design-studio/app/html-capture-links.mjs
+  function installHtmlCaptureNavigationGuard(captureDocument) {
+    for (const type of ["click", "auxclick", "submit"])
+      captureDocument.addEventListener(type, (event) => event.preventDefault(), true);
+  }
+
   // third-party/html2figma-plugin/integration/capture.ts
+  installHtmlCaptureNavigationGuard(document);
   (async () => {
     try {
       await document.fonts.ready;
@@ -8258,6 +8283,8 @@
         const frame = document.createElement("iframe");
         frame.title = "\u9759\u6001 HTML \u9884\u89C8";
         frame.setAttribute("sandbox", "allow-scripts");
+        frame.inert = true;
+        frame.tabIndex = -1;
         frame.style.cssText = "border:0;pointer-events:none;background:white;";
         input = await new Promise((resolve, reject) => {
           const receive = (event) => {

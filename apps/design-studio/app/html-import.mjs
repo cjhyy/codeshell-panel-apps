@@ -3,6 +3,11 @@ import { captureHtmlViewportRelation } from "./html-viewport-flow.mjs";
 import { convertToDesignDSL, HTML2FIGMA_PROVENANCE } from "./vendor/html2figma-browser.mjs";
 import { designNodeToV3 } from "./design-node-adapter.mjs";
 import { htmlTextLineHeightRatio } from "./html-line-height.mjs";
+import {
+  isHtmlAnchorHref,
+  safeHtmlAnchorHref,
+  installHtmlCaptureNavigationGuard,
+} from "./html-capture-links.mjs";
 import { createBrowserTextMeasurer, measureFigmaTextDocument } from "./text-metrics.mjs";
 import {
   createHtmlAssetResolver,
@@ -104,6 +109,10 @@ function sourceByteLength(value) {
 function sanitizeElementAttributes(element) {
   for (const attribute of [...element.attributes]) {
     const name = attribute.name.toLowerCase();
+    if (isHtmlAnchorHref(element, name)) {
+      if (!safeHtmlAnchorHref(attribute.value)) element.removeAttribute(attribute.name);
+      continue;
+    }
     if (
       (name === "src" || name === "href" || name === "xlink:href") &&
       safeHtmlDataUrl(attribute.value)
@@ -204,7 +213,11 @@ function captureFrame(viewportWidth, viewportHeight) {
   const frame = document.createElement("iframe");
   frame.setAttribute("sandbox", "allow-same-origin");
   frame.setAttribute("aria-hidden", "true");
+  frame.inert = true;
   frame.tabIndex = -1;
+  frame.addEventListener("load", () => {
+    if (frame.contentDocument) installHtmlCaptureNavigationGuard(frame.contentDocument);
+  });
   frame.style.cssText = [
     "position:fixed",
     "left:-20000px",
