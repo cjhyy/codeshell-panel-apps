@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve, relative, sep, join } from "node:path";
@@ -10,8 +11,8 @@ import {
   exportDesignSvg,
   serializeDesignDocument,
 } from "../apps/design-studio/app/document.mjs";
-import { applyAllAutoLayouts } from "../apps/design-studio/app/layout.mjs";
 import { preparePluginFile } from "../apps/design-studio/app/figma-plugin/v3-input.mjs";
+import { createPortableDesign } from "../apps/design-studio/app/portable-backup.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const appRoot = join(root, "apps/design-studio/app");
@@ -90,14 +91,29 @@ function htmlId(node) {
   }
 }
 
-function resizeDocument(document, width) {
-  const resized = normalizeDesignDocument(JSON.parse(serializeDesignDocument(document)));
-  resized.canvas.width = width;
-  for (const node of resized.nodes) {
-    if (node.id === "html-viewport" || htmlId(node) === "fixture") node.width = width;
-  }
-  applyAllAutoLayouts(resized.nodes);
-  return resized;
+async function resizeDocument(page, document, width) {
+  const source = await page.evaluate(
+    async ({ source, width }) => {
+      const { normalizeDesignDocument, serializeDesignDocument } =
+        await import("/app/document.mjs");
+      const { applyAllAutoLayouts } = await import("/app/layout.mjs");
+      const resized = normalizeDesignDocument(JSON.parse(source));
+      resized.canvas.width = width;
+      for (const node of resized.nodes) {
+        let id;
+        try {
+          id = JSON.parse(node.notes).attributes?.id;
+        } catch {
+          /* Synthetic wrapper. */
+        }
+        if (node.id === "html-viewport" || id === "fixture") node.width = width;
+      }
+      applyAllAutoLayouts(resized.nodes);
+      return serializeDesignDocument(resized);
+    },
+    { source: serializeDesignDocument(document), width },
+  );
+  return normalizeDesignDocument(JSON.parse(source));
 }
 
 export async function runProductionFidelity({
@@ -106,12 +122,15 @@ export async function runProductionFidelity({
   recordOnly = false,
   channelTolerance = 0,
   maximumChangedRatio = 0,
+  width = 640,
+  height = 240,
+  narrowWidth = 400,
 } = {}) {
   output ??= await mkdtemp(join(tmpdir(), "design-production-fidelity-"));
   await mkdir(output, { recursive: true });
   const browser = await chromium.launch();
   const context = await browser.newContext({
-    viewport: { width: 640, height: 240 },
+    viewport: { width, height },
     deviceScaleFactor: 1,
   });
   const blocked = [],
@@ -149,6 +168,8 @@ export async function runProductionFidelity({
       realFigmaExecuted: false,
       startedAt: new Date().toISOString(),
       thresholds: { channelTolerance, maximumChangedRatio },
+      viewport: { width, height, narrowWidth },
+      rendering: "exportDesignSvg in Chromium; layout uses browser text metrics when available",
       cases: [],
     };
     for (const fixture of cases) {
@@ -158,28 +179,61 @@ export async function runProductionFidelity({
         fixture.source ??
         `<!doctype html><meta charset="utf-8"><style>*{box-sizing:border-box}html,body{margin:0;background:white;font-family:Arial;color:#0f172a}${fixture.css}</style>${fixture.html}`;
       await writeFile(join(directory, "source.html"), html);
-      await page.setViewportSize({ width: 640, height: 240 });
+      await page.setViewportSize({ width, height });
       await page.goto("https://fidelity.test/");
       await page.setContent(html);
       await page.evaluate(() => document.fonts.ready);
       const original = await page.screenshot({ animations: "disabled" });
-      const captured = await page.evaluate(async (html) => {
-        const { captureWorkspaceHtmlResult } = await import("/app/html-import.mjs");
-        return captureWorkspaceHtmlResult({
-          html,
-          sourcePath: "source.html",
-          readText: async () => {
-            throw Error("Fixture requires self-contained HTML/CSS");
-          },
-          rootSelector: "#fixture",
-          viewportWidth: 640,
-          viewportHeight: 240,
-        });
-      }, html);
+      const sourceLayout = await page.evaluate(
+        () => getComputedStyle(document.querySelector("#fixture")).display,
+      );
+      const captured = await page.evaluate(
+        async ({ html, width, height }) => {
+          const { captureWorkspaceHtmlResult } = await import("/app/html-import.mjs");
+          return captureWorkspaceHtmlResult({
+            html,
+            sourcePath: "source.html",
+            readText: async () => {
+              throw Error("Fixture requires self-contained HTML/CSS");
+            },
+            rootSelector: "#fixture",
+            viewportWidth: width,
+            viewportHeight: height,
+          });
+        },
+        { html, width, height },
+      );
       assert.equal(captured.report.engine, "html2figma");
       const document = normalizeDesignDocument(captured.document);
       await writeFile(join(directory, "imported.codesign.json"), serializeDesignDocument(document));
-      const prepared = await preparePluginFile(serializeDesignDocument(document));
+      const files = new Map(
+        (captured.resourcePlans ?? []).flatMap((plan) =>
+          plan.parts.map((part) => [part.path, part.content]),
+        ),
+      );
+      const portable = await createPortableDesign({
+        document,
+        source: {
+          workspaceRoot: "/fidelity-fixture",
+          sessionId: "production-fidelity",
+          path: "fixture.codesign.json",
+        },
+        readText: async (path) => {
+          assert(files.has(path), `Missing fixture resource: ${path}`);
+          return files.get(path);
+        },
+        sha256Bytes: async (bytes) => createHash("sha256").update(bytes).digest("hex"),
+      });
+      await writeFile(join(directory, "complete.portable.json"), portable);
+      const prepared = await preparePluginFile(portable);
+      const backup = JSON.parse(portable);
+      const descriptors = new Map(document.resources.map((resource) => [resource.id, resource]));
+      const resourceDataUrls = new Map(
+        backup.resources.map((resource) => [
+          resource.id,
+          `data:${descriptors.get(resource.id).mime};base64,${resource.base64}`,
+        ]),
+      );
       await writeFile(
         join(directory, "figma-transfer.json"),
         JSON.stringify(prepared.transfer, null, 2),
@@ -189,7 +243,12 @@ export async function runProductionFidelity({
         (node) => node.parentId && node.parentId !== "html-viewport",
       );
       const semanticIssues = [];
-      if (!main || main.layout === "none") semanticIssues.push("Source flex root lost Auto Layout");
+      if (
+        !main ||
+        (["flex", "inline-flex", "grid", "inline-grid"].includes(sourceLayout) &&
+          main.layout === "none")
+      )
+        semanticIssues.push("Source flex/grid root lost Auto Layout");
       if (flow.some((node) => node.layoutPositioning === "absolute"))
         semanticIssues.push("Flow children became absolute");
       const result = {
@@ -199,19 +258,21 @@ export async function runProductionFidelity({
         warnings: captured.report.warnings,
         comparisons: [],
       };
-      for (const [mode, width, candidate] of [
-        ["imported", 640, document],
-        ["relayout", 640, resizeDocument(document, 640)],
-        ["narrow", 400, resizeDocument(document, 400)],
+      for (const [mode, frameWidth] of [
+        ["imported", width],
+        ["relayout", width],
+        ["narrow", narrowWidth],
       ]) {
-        await page.setViewportSize({ width, height: 240 });
+        const candidate =
+          mode === "imported" ? document : await resizeDocument(page, document, frameWidth);
+        await page.setViewportSize({ width: frameWidth, height });
         let source = original;
-        if (width !== 640) {
+        if (mode === "narrow") {
           await page.setContent(html);
           await page.evaluate(() => document.fonts.ready);
           source = await page.screenshot({ animations: "disabled" });
         }
-        const svg = exportDesignSvg(candidate);
+        const svg = exportDesignSvg(candidate, { resourceDataUrls, maxBytes: 4 * 1024 * 1024 });
         await page.setContent(
           `<!doctype html><style>html,body{margin:0;background:white}svg{display:block}</style>${svg}`,
         );
@@ -252,6 +313,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     Number.isFinite(maximumChangedRatio) && maximumChangedRatio >= 0 && maximumChangedRatio <= 1,
   );
   const input = argument("--html", null);
+  const width = Number(argument("--width", "640")),
+    height = Number(argument("--height", "240")),
+    narrowWidth = Number(argument("--narrow-width", "400"));
+  for (const value of [width, height, narrowWidth])
+    assert(Number.isInteger(value) && value >= 100 && value <= 10000);
   const selected = argument("--case", null);
   const cases = input
     ? [{ id: "custom", source: await readFile(resolve(input), "utf8") }]
@@ -265,6 +331,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     recordOnly: process.argv.includes("--record-only"),
     channelTolerance,
     maximumChangedRatio,
+    width,
+    height,
+    narrowWidth,
   });
   console.log(JSON.stringify(result, null, 2));
   if (!result.passed && !result.recordOnly) process.exitCode = 1;
