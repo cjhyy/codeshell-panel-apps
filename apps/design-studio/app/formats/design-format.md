@@ -318,6 +318,16 @@ and offsets exceeding the existing coordinate/baseline-field budgets are diagnos
 without guessing an origin. Explicit newlines in native single-line ellipsis retain
 the full source, preview only the first line, and produce a truncation diagnostic.
 
+Verified ordinary HTML Text uses the separate `layoutBaselineSource: "html"` value.
+Only existing plain/pre/nowrap recovery with a matching real capture and an exact
+initial browser line-box mapping can enable this refresh. Font and line-height
+edits remeasure the hanging offset while keeping `y - layoutBaselineOffset` as
+the logical top. Node-only reflow retains provenance until browser measurement
+is available; save/reopen preserves it. Mixed, fixed measured and unsupported
+sources keep their original baseline behavior. A public manual baseline-offset
+edit retires HTML refresh. Provenance is internal metadata, omitted from native
+transfer; the physical offset and logical native position still apply.
+
 Plain HTML `nowrap`/`pre` text boxes keep their structural frame and native
 Fill/Hug sizing. Active one-line `ellipsis` uses full editable `textSource`
 with a measured display prefix; frontend HTML recomputes CSS ellipsis from the

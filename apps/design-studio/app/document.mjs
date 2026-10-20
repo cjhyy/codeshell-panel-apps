@@ -524,7 +524,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
           !Number.isFinite(candidate.textFlowWidth) ||
           candidate.textFlowWidth < 1 ||
           candidate.textFlowWidth > 20000)) ||
-      (candidate.layoutBaselineSource !== undefined && candidate.layoutBaselineSource !== "native") ||
+      (candidate.layoutBaselineSource !== undefined && !["native", "html"].includes(candidate.layoutBaselineSource)) ||
       (candidate.layoutBaselineOffset !== undefined &&
         (typeof candidate.layoutBaselineOffset !== "number" ||
           !Number.isFinite(candidate.layoutBaselineOffset) ||
