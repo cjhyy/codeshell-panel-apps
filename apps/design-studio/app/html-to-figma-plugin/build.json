@@ -28,6 +28,7 @@
     "apps/design-studio/app/image-mime.mjs",
     "apps/design-studio/app/layout-spacing.mjs",
     "apps/design-studio/app/linear-gradient-geometry.mjs",
+    "apps/design-studio/app/native-stroke-inactive.mjs",
     "apps/design-studio/app/paint.mjs",
     "apps/design-studio/app/resource-store.mjs",
     "apps/design-studio/app/shadow-stack.mjs",
@@ -73,12 +74,12 @@
     {
       "path": "code.js",
       "bytes": 225338,
-      "sha256": "215f3bcd2eee80af5c7bc42abaf4fb4f5848bc1ba408064596a18615f396b40d"
+      "sha256": "0fc2e0a88520d97f719042dc6038f15916e82aa46914abe2a64d629224b849a3"
     },
     {
       "path": "ui.html",
       "bytes": 354656,
-      "sha256": "2b69cc78e0ee80152ed84a2acf5a12b52dc03c69a2b4cbe1a7c8162259cb1ad7"
+      "sha256": "3d8d78e0b5ed5a04c32ee45d1b829b8d08f4da47eba698ab06ee890105c809f4"
     },
     {
       "path": "README.md",

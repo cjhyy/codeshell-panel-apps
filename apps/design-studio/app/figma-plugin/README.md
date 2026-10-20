@@ -54,3 +54,19 @@ Official API references:
 - [Grid span bounds and occupancy](https://developers.figma.com/docs/plugins/api/properties/nodes-gridrowspan/)
 
 Axis-FILL children touching a HUG track currently require a fixed track or a HUG/fixed child to avoid an unmodeled intrinsic-size cycle. This is diagnosed explicitly before claiming native Grid fidelity. Automatic rows derive the current occupied row count (within 24), extending new canonical rows as HUG and trimming trailing empty rows. Interior empty manual rows with automatic-row mode are diagnosed because Figma removes empty rows.
+
+
+Empty native stroke arrays preserve their inactive alignment, scalar/side weights and applicable
+layout inclusion in optional `nativeStrokeInactive`; visible canonical stroke remains transparent
+with width zero. Copies assign no stroke paints and restore only known style fields. Auto Layout
+inclusion is applied after its mode becomes active; freeform frames never receive that setter.
+REST omitted false inclusion is recorded separately from raw field presence. Unsupported extra
+style/mixed tuples or explicit inclusion on a freeform frame block a new copy; source-bound
+unrelated edits can retain the original styles. Width/alignment/raw-presence changes participate in
+patch concurrency checks even when no stroke currently paints.
+
+Panel activation/removal and source patches preserve included INSIDE raw padding through symmetric
+physical inset projection. Text INSIDE/OUTSIDE activation requires the user to choose Center; it is
+not silently converted to centered text. Strict CPU model, mock API and browser comparisons verify
+these bounded paths; original-versus-returned native activation remains a separate real Figma
+acceptance requirement. Existing raw inactive-field loss receipts are retained as baseline evidence.

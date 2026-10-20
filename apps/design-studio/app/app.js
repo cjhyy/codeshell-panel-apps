@@ -2,7 +2,7 @@ import { validateShadowStack, shadowStackOutsets } from "./shadow-stack.mjs";
 import { textLineHeightCss, textLineHeightPixels, validTextLineHeight } from "./text-line-height.mjs";
 import { validateLayoutSpacing } from "./layout-spacing.mjs";
 import { GRID_CONTAINER_FIELDS, GRID_CHILD_FIELDS, gridPlacements } from "./grid.mjs";
-import { designStrokeOutset, editDesignStrokeColor, editDesignStrokeWidth, validateDesignStroke, clearInvalidStrokeLayoutExclusion } from "./stroke.mjs";
+import { designStrokeOutset, editDesignStrokeColor, editDesignStrokeWidth, editDesignStrokeAlignment, applyDesignStrokeEdits, inactiveStrokeWidth, strokeAlignment, validateDesignStroke, clearInvalidStrokeLayoutExclusion } from "./stroke.mjs";
 /* Design Studio Panel App runtime. */
 /* global document, localStorage, requestAnimationFrame, window */
 import { projectContextChanged } from "./project-context.mjs";
@@ -302,6 +302,9 @@ const propertyInputs = {
   stroke: document.querySelector("#prop-stroke"),
   strokeColor: document.querySelector("#prop-stroke-color"),
   strokeWidth: document.querySelector("#prop-stroke-width"),
+  strokeAlign: document.querySelector("#prop-stroke-align"),
+  strokeLayout: document.querySelector("#prop-stroke-layout"),
+  strokeRemove: document.querySelector("#prop-stroke-remove"),
   cornerRadius: document.querySelector("#prop-radius"),
   opacity: document.querySelector("#prop-opacity"),
   rotation: document.querySelector("#prop-rotation"),
@@ -1809,7 +1812,15 @@ function renderProperties() {
   propertyInputs.height.value = String(round(single.height));
   propertyInputs.fill.value = single.fill;
   propertyInputs.stroke.value = single.stroke;
-  propertyInputs.strokeWidth.value = String(round(single.strokeWidth));
+  const strokeWidth = inactiveStrokeWidth(single);
+  propertyInputs.strokeWidth.value = Number.isFinite(strokeWidth) ? String(round(strokeWidth)) : "";
+  propertyInputs.strokeAlign.value = single.nativeStrokeInactive && !single.nativeStrokeInactive.strokeAlign ? "" : strokeAlignment(single);
+  document.getElementById("stroke-inactive-controls").hidden = !single.nativeStrokeInactive;
+  document.getElementById("stroke-align-field").hidden = !single.nativeStrokeInactive;
+  const inactiveIncluded = single.nativeStrokeInactive?.strokesIncludedInLayout ?? single.nativeStrokeInactive?.strokesIncludedInLayoutDefault;
+  propertyInputs.strokeLayout.value = inactiveIncluded === undefined ? "" : inactiveIncluded ? "included" : "excluded";
+  document.getElementById("stroke-layout-field").hidden = !single.nativeStrokeInactive || !["frame", "component"].includes(single.type) || !["horizontal", "vertical", "grid"].includes(single.layout);
+  propertyInputs.strokeRemove.disabled = single.stroke === "transparent" && !single.strokeSides;
   propertyInputs.cornerRadius.value = String(round(single.cornerRadius));
   propertyInputs.opacity.value = String(Math.round(single.opacity * 100));
   propertyInputs.rotation.value = String(round(single.rotation));
@@ -5656,10 +5667,6 @@ function bindColorTextInput(input, currentValue, update, allowTransparent = fals
   });
 }
 
-function editShadowSafeStroke(node,edit) {
-  const next=structuredClone(node);edit(next);validateShadowStack(next);
-  for(const key of ["stroke","strokeWidth","strokeSides","strokeAlign","strokeLayoutExcluded"]){if(next[key]===undefined)delete node[key];else node[key]=next[key];}
-}
 let shadowLayerIndex = 0, shadowLayerNodeId = null;
 function ensureNodeShadow(node) {
   if(node?.shadowStack)return node.shadowStack.layers[shadowLayerIndex];
@@ -5803,7 +5810,7 @@ bindColorTextInput(
   (value) => {
     const node = selectedNode();
     if (node && !isEffectivelyLocked(node)) {
-      try{editShadowSafeStroke(node,next=>editDesignStrokeColor(next,value));}catch(error){notify(error.message,"error");}
+      try{editDesignStrokeColor(node,value,{nodes:design.nodes,parent:nodeById(node.parentId)});applyAllAutoLayouts(design.nodes);}catch(error){notify(error.message,"error");}
     }
   },
   true,
@@ -5816,9 +5823,25 @@ bindPropertyInput(propertyInputs.cornerRadius, (node, value) => {
   delete node.cornerRadii;
 });
 bindPropertyInput(propertyInputs.strokeWidth, (node, value) => {
-  try{editShadowSafeStroke(node,next=>editDesignStrokeWidth(next,clamp(finiteOr(value, 0), 0, 100)));}
-  catch(error){propertyInputs.strokeWidth.value=String(node.strokeWidth);notify(error.message,"error");}
+  try{editDesignStrokeWidth(node,clamp(finiteOr(value, 0), 0, 100),{nodes:design.nodes,parent:nodeById(node.parentId)});}
+  catch(error){propertyInputs.strokeWidth.value=String(inactiveStrokeWidth(node) ?? "");notify(error.message,"error");}
 }, "input", "size");
+bindPropertyInput(propertyInputs.strokeAlign, (node, value) => {
+  try { editDesignStrokeAlignment(node, value, {nodes:design.nodes,parent:nodeById(node.parentId)}); }
+  catch(error) { notify(error.message,"error"); renderProperties(); }
+}, "change", "size");
+bindPropertyInput(propertyInputs.strokeLayout, (node, value) => {
+  if (!value) return;
+  try { applyDesignStrokeEdits(node, { strokeLayoutExcluded: value === "excluded" ? true : null }, { nodes: design.nodes, parent: nodeById(node.parentId) }); }
+  catch(error) { notify(error.message,"error"); renderProperties(); }
+}, "change", "size");
+propertyInputs.strokeRemove.addEventListener("click", () => {
+  const node=selectedNode(); if(!node || isEffectivelyLocked(node))return;
+  try {
+    editDesignStrokeColor(node,"transparent",{nodes:design.nodes,parent:nodeById(node.parentId)});
+    applyAllAutoLayouts(design.nodes); commitHistory(); markChanged(); renderProperties();
+  } catch(error) { notify(error.message,"error"); }
+});
 bindPropertyInput(propertyInputs.opacity, (node, value) => {
   node.opacity = clamp((Number(value) || 0) / 100, 0, 1);
 });
@@ -6148,7 +6171,15 @@ bindPropertyInput(
   propertyInputs.strokeColor,
   (node, value) => {
     try {
-      editShadowSafeStroke(node,next=>{editDesignStrokeColor(next,value);if(next.strokeWidth===0)editDesignStrokeWidth(next,1);});
+      // The legacy color picker also offers a first 1px stroke. Validate that
+      // whole choice before touching live state, retaining inactive intent/padding.
+      const next={...node},hadInactive=!!node.nativeStrokeInactive;
+      const options={nodes:design.nodes,parent:nodeById(node.parentId)};
+      editDesignStrokeColor(next,value,options);
+      if (!hadInactive && next.strokeWidth === 0) editDesignStrokeWidth(next,1,options);
+      for(const key of Object.keys(node))if(!Object.hasOwn(next,key))delete node[key];
+      Object.assign(node,next);
+      applyAllAutoLayouts(design.nodes);
     }catch(error){notify(error.message,"error");}
   },
   "input",
@@ -7447,6 +7478,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "fillPaints",
   "stroke",
   "strokeWidth",
+  "nativeStrokeInactive",
   "strokeSides",
   "strokeAlign",
   "strokeLayoutExcluded",
@@ -7540,6 +7572,12 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
   if (!changes || typeof changes !== "object" || Array.isArray(changes)) {
     throw new Error("changes 必须是对象");
   }
+  for (const key of Object.keys(changes))
+    if (!AGENT_NODE_PATCH_FIELDS.has(key))
+      throw new Error(`Agent 不可直接修改图层字段：${key}`);
+  const strokeKeys = ["stroke", "strokeWidth", "strokeAlign", "strokeSides", "strokeLayoutExcluded", "nativeStrokeInactive"];
+  const strokeHandled = strokeKeys.some(key => Object.hasOwn(changes, key)) &&
+    applyDesignStrokeEdits(node, changes, { nodes: design.nodes, parent: nodeById(node.parentId) });
   for (const [key, value] of Object.entries(changes)) {
     if (!AGENT_NODE_PATCH_FIELDS.has(key)) {
       throw new Error(`Agent 不可直接修改图层字段：${key}`);
@@ -7548,6 +7586,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
     // Native provenance keeps its existing editing behavior.
     if (key === "layoutBaselineOffset" && node.layoutBaselineSource === "html")
       delete node.layoutBaselineSource;
+    if (strokeHandled && (strokeKeys.includes(key) || /^padding(?:Top|Right|Bottom|Left)$/u.test(key))) continue;
     if (moveTree && ["x", "y"].includes(key) && Number.isFinite(value)) {
       setNodeTreePosition(design.nodes, node.id, key, value);
     } else if (
@@ -7558,6 +7597,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
         "shadowStack",
         "fillPaints",
         "strokeSides",
+        "nativeStrokeInactive",
         "strokeAlign",
         "strokeLayoutExcluded",
         "contentClipping",
@@ -7624,7 +7664,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
   if (!Object.hasOwn(changes, "strokeLayoutExcluded") &&
       (Object.hasOwn(changes, "layout") || Object.hasOwn(changes, "strokeAlign")))
     clearInvalidStrokeLayoutExclusion(node);
-  if(!Object.hasOwn(changes,"strokeSides")) {
+  if(!strokeHandled && !Object.hasOwn(changes,"strokeSides")) {
     if(typeof changes.stroke === "string")editDesignStrokeColor(node,node.stroke);
     if(typeof changes.strokeWidth === "number")editDesignStrokeWidth(node,node.strokeWidth);
   }

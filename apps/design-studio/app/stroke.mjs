@@ -1,5 +1,15 @@
 /* Solid side paints only. No imported paths or CSS execution. */
 import { effectiveCornerRadii } from "./corner-radii.mjs";
+import { validateShadowStack } from "./shadow-stack.mjs";
+import { nativeGridPlan } from "./grid.mjs";
+import { normalizeNativeStrokeInactive, planNativeStrokeEdit } from "./native-stroke-inactive.mjs";
+export {
+  normalizeNativeStrokeInactive,
+  nativeInactiveStrokePlan,
+  captureNativeStrokeInactive,
+  inactiveStrokeWidth,
+  strokeAlignment,
+} from "./native-stroke-inactive.mjs";
 
 export const STROKE_SIDES = Object.freeze(["top", "right", "bottom", "left"]);
 const finite = (v) => typeof v === "number" && Number.isFinite(v);
@@ -7,7 +17,8 @@ const hex = (v) => typeof v === "string" && /^#[a-f\d]{6}$/iu.test(v);
 const rectTypes = ["frame", "rectangle", "component"];
 export const strokeLayoutExclusionApplies = (node) =>
   ["frame", "component"].includes(node?.type) &&
-  ["horizontal", "vertical"].includes(node.layout) && node.strokeAlign === "inside";
+  ["horizontal", "vertical"].includes(node.layout) &&
+  node.strokeAlign === "inside";
 export function clearInvalidStrokeLayoutExclusion(node) {
   if (node.strokeLayoutExcluded === true && !strokeLayoutExclusionApplies(node))
     delete node.strokeLayoutExcluded;
@@ -55,9 +66,15 @@ const uniform = (sides) =>
       (!s.width || (s.opacity === sides[0].opacity && (!s.opacity || s.color === sides[0].color))),
   );
 export function validateDesignStroke(node) {
-  if (node.strokeLayoutExcluded !== undefined &&
-      (node.strokeLayoutExcluded !== true || !strokeLayoutExclusionApplies(node)))
-    throw new Error("strokeLayoutExcluded 只能为 true，且只适用于水平/垂直 Auto Layout Frame/Component 的 inside 描边");
+  if (node.nativeStrokeInactive !== undefined)
+    normalizeNativeStrokeInactive(node.nativeStrokeInactive, node);
+  if (
+    node.strokeLayoutExcluded !== undefined &&
+    (node.strokeLayoutExcluded !== true || !strokeLayoutExclusionApplies(node))
+  )
+    throw new Error(
+      "strokeLayoutExcluded 只能为 true，且只适用于水平/垂直 Auto Layout Frame/Component 的 inside 描边",
+    );
   if (node.strokeAlign !== undefined && !["inside", "center", "outside"].includes(node.strokeAlign))
     throw new Error("strokeAlign 只支持 inside/center/outside");
   const sides = node.strokeSides === undefined ? null : normalizeStrokeSides(node.strokeSides);
@@ -89,8 +106,102 @@ export function designStrokeOutset(node) {
       .map((s) => s.width * factor),
   );
 }
-export function editDesignStrokeColor(node, color) {
+function validateStrokeShadow(node) {
+  // Public edits use null to retire optional effects in the same transaction.
+  const next = { ...node };
+  if (next.shadowStack === null) delete next.shadowStack;
+  if (next.shadow === null) delete next.shadow;
+  validateShadowStack(next);
+}
+export function applyDesignStrokeEdits(node, changes, { nodes, parent } = {}) {
+  if (changes.strokeSides !== undefined && changes.strokeSides !== null)
+    normalizeStrokeSides(changes.strokeSides);
+  const next = planNativeStrokeEdit(node, changes);
+  if (!next) return false;
+  validateDesignStroke(next);
+  validateStrokeShadow(next);
+  if (
+    !(next.stroke === "transparent" || hex(next.stroke)) ||
+    !finite(next.strokeWidth) ||
+    next.strokeWidth < 0 ||
+    next.strokeWidth > 100
+  )
+    throw Error("描边颜色或宽度无效");
+  for (const key of ["padding", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft"])
+    if (next[key] !== undefined && (!finite(next[key]) || next[key] < 0 || next[key] > 2000))
+      throw Error("描边切换后的内容缩进超出 0–2000");
+  if (hasDesignStroke(next)) nativeDesignStroke(next);
+  // A cell/content or width-owner edit can invalidate an ancestor/descendant HUG Grid.
+  // Use the proposed node in a current capture-local index; measured widths alone are not ancestry proof.
+  const byId = new Map((nodes ?? []).map((value) => [value.id, value]));
+  if (!nodes && parent?.id) byId.set(parent.id, parent);
+  if (next.id) byId.set(next.id, next);
+  const parentOf = (value) => (value.parentId ? byId.get(value.parentId) : null);
+  const childrenByParent = new Map();
+  for (const child of nodes ?? []) {
+    if (!childrenByParent.has(child.parentId)) childrenByParent.set(child.parentId, []);
+    childrenByParent.get(child.parentId).push(child);
+  }
+  const childrenOf = (value) =>
+    nodes
+      ? (childrenByParent.get(value.id) ?? []).map((child) => byId.get(child.id) ?? child)
+      : (value.children ?? []);
+  const affected = new Set();
+  const tree = (value, depth = 0) => {
+    if (depth > 32) throw Error("Grid 描边切换的子树过深");
+    const current = value.id === next.id ? next : value;
+    if (current.layout === "grid") affected.add(current);
+    const children = childrenOf(current);
+    return {
+      ...current,
+      ...(children.length ? { children: children.map((child) => tree(child, depth + 1)) } : {}),
+    };
+  };
+  tree(next);
+  let owner = parentOf(next) ?? (!nodes ? parent : null);
+  const seen = new Set([next]);
+  for (let depth = 0; owner; depth += 1) {
+    if (depth > 32 || seen.has(owner)) throw Error("Grid 描边切换的父层级无效");
+    seen.add(owner);
+    if (owner.layout === "grid") affected.add(owner);
+    owner = parentOf(owner);
+  }
+  for (const grid of affected)
+    nativeGridPlan(
+      tree(grid),
+      !nodes && grid === next ? parent : parentOf(grid),
+      nodes ? parentOf : undefined,
+    );
+  for (const key of [
+    "stroke",
+    "strokeWidth",
+    "strokeAlign",
+    "strokeSides",
+    "strokeLayoutExcluded",
+    "nativeStrokeInactive",
+    "padding",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+  ])
+    if (Object.hasOwn(next, key)) node[key] = next[key];
+    else delete node[key];
+  return true;
+}
+export function editDesignStrokeAlignment(node, alignment, options) {
+  if (applyDesignStrokeEdits(node, { strokeAlign: alignment }, options)) return;
+  const next = { ...node, strokeAlign: alignment };
+  if (node.type === "text" && alignment === "center") delete next.strokeAlign;
+  validateDesignStroke(next);
+  validateStrokeShadow(next);
+  if (next.strokeAlign === undefined) delete node.strokeAlign;
+  else node.strokeAlign = next.strokeAlign;
+}
+export function editDesignStrokeColor(node, color, options) {
+  if (applyDesignStrokeEdits(node, { stroke: color }, options)) return;
   if (!node.strokeSides) {
+    validateStrokeShadow({ ...node, stroke: color });
     node.stroke = color;
     return;
   }
@@ -99,14 +210,18 @@ export function editDesignStrokeColor(node, color) {
     ...s,
     ...(color === "transparent" ? { opacity: 0 } : { color, opacity: invisible ? 1 : s.opacity }),
   }));
-  validateDesignStroke({ ...node, stroke: color, strokeSides: sides });
+  const next = { ...node, stroke: color, strokeSides: sides };
+  validateDesignStroke(next);
+  validateStrokeShadow(next);
   node.stroke = color;
   node.strokeSides = sides;
   if (color !== "transparent" && !node.strokeWidth)
     node.strokeWidth = Math.max(...sides.map((s) => s.width));
 }
-export function editDesignStrokeWidth(node, width) {
+export function editDesignStrokeWidth(node, width, options) {
+  if (applyDesignStrokeEdits(node, { strokeWidth: width }, options)) return;
   if (!node.strokeSides) {
+    validateStrokeShadow({ ...node, strokeWidth: width });
     node.strokeWidth = width;
     return;
   }
@@ -115,7 +230,9 @@ export function editDesignStrokeWidth(node, width) {
     ...s,
     width: maximum ? (s.width / maximum) * width : width,
   }));
-  validateDesignStroke({ ...node, strokeWidth: width, strokeSides: sides });
+  const next = { ...node, strokeWidth: width, strokeSides: sides };
+  validateDesignStroke(next);
+  validateStrokeShadow(next);
   node.strokeWidth = width;
   node.strokeSides = sides;
 }

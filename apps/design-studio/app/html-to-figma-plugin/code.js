@@ -5158,9 +5158,6 @@
     }
   };
 
-  // apps/design-studio/app/stroke.mjs
-  var STROKE_SIDES = Object.freeze(["top", "right", "bottom", "left"]);
-
   // apps/design-studio/app/grid.mjs
   var GRID_CONTAINER_FIELDS = Object.freeze([
     "gridRows",
@@ -5175,6 +5172,9 @@
     "gridChildHorizontalAlign",
     "gridChildVerticalAlign"
   ]);
+
+  // apps/design-studio/app/stroke.mjs
+  var STROKE_SIDES = Object.freeze(["top", "right", "bottom", "left"]);
 
   // apps/design-studio/app/linear-gradient-geometry.mjs
   var object = (v) => v && typeof v === "object" && !Array.isArray(v);

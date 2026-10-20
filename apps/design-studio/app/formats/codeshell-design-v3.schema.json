@@ -380,6 +380,100 @@
         "fillPaints": { "$ref": "#/$defs/fillPaints" },
         "stroke": { "$ref": "#/$defs/color" },
         "strokeWidth": { "type": "number", "minimum": 0, "maximum": 100 },
+        "nativeStrokeInactive": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "anyOf": [
+            {
+              "required": [
+                "strokeAlign"
+              ]
+            },
+            {
+              "required": [
+                "strokeWeight"
+              ]
+            },
+            {
+              "required": [
+                "individualStrokeWeights"
+              ]
+            },
+            {
+              "required": [
+                "strokesIncludedInLayout"
+              ]
+            },
+            {
+              "required": [
+                "strokesIncludedInLayoutDefault"
+              ]
+            }
+          ],
+          "not": {
+            "type": "object",
+            "required": [
+              "strokesIncludedInLayout",
+              "strokesIncludedInLayoutDefault"
+            ]
+          },
+          "properties": {
+            "strokeAlign": {
+              "enum": [
+                "INSIDE",
+                "CENTER",
+                "OUTSIDE"
+              ]
+            },
+            "strokeWeight": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "individualStrokeWeights": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "top",
+                "right",
+                "bottom",
+                "left"
+              ],
+              "properties": {
+                "top": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "right": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "bottom": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "left": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                }
+              }
+            },
+            "strokesIncludedInLayout": {
+              "type": "boolean"
+            },
+            "strokesIncludedInLayoutDefault": {
+              "const": false
+            },
+            "sourceOnly": {
+              "const": true
+            }
+          }
+        },
         "strokeAlign": {"enum":["inside","center","outside"]},
         "strokeLayoutExcluded": { "const": true },
         "strokeSides": {"type":"array","minItems":4,"maxItems":4,"items":{"type":"object","additionalProperties":false,"required":["width","color","opacity"],"properties":{"width":{"type":"number","minimum":0,"maximum":100},"color":{"type":"string","pattern":"^#[a-fA-F0-9]{6}$"},"opacity":{"type":"number","minimum":0,"maximum":1}}}},
@@ -509,6 +603,104 @@
       },
       "allOf": [
         {"if": {"required": ["shadowStack"]}, "then": {"properties": {"type": {"enum": ["frame", "rectangle", "component"]}}, "not": {"required": ["shadow"]}}},
+        {
+          "if": {
+            "required": [
+              "nativeStrokeInactive"
+            ]
+          },
+          "then": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "frame",
+                  "component",
+                  "rectangle",
+                  "text"
+                ]
+              },
+              "stroke": {
+                "const": "transparent"
+              },
+              "strokeWidth": {
+                "const": 0
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "strokeAlign"
+                  ]
+                },
+                {
+                  "required": [
+                    "strokeSides"
+                  ]
+                },
+                {
+                  "required": [
+                    "strokeLayoutExcluded"
+                  ]
+                }
+              ]
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "const": "text"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "nativeStrokeInactive": {
+                      "not": {
+                        "required": [
+                          "individualStrokeWeights"
+                        ]
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "rectangle",
+                        "text"
+                      ]
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "nativeStrokeInactive": {
+                      "not": {
+                        "anyOf": [
+                          {
+                            "required": [
+                              "strokesIncludedInLayout"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "strokesIncludedInLayoutDefault"
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
         { "if": { "required": ["cornerRadii"] }, "then": { "properties": { "type": { "enum": ["frame", "rectangle", "component", "image"] } } } },
         { "if": { "required": ["strokeLayoutExcluded"] }, "then": { "required": ["layout", "strokeAlign"], "properties": { "type": { "enum": ["frame", "component"] }, "layout": { "enum": ["horizontal", "vertical"] }, "strokeAlign": { "const": "inside" } } } },
         { "if": { "anyOf": [{"required":["strokeSides"]},{"required":["strokeAlign"]}] }, "then": { "properties": { "type": { "enum": ["frame", "rectangle", "component"] } } } },

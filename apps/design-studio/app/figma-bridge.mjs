@@ -3,7 +3,7 @@ import { validTextLineHeight } from "./text-line-height.mjs";
 import { validateLayoutSpacing, validateNativeLayoutSpacing, nativeMainGap, mainAxisGap } from "./layout-spacing.mjs";
 import { distributeFillSizes } from "./layout.mjs";
 import { normalizeCornerRadii, effectiveCornerRadii } from "./corner-radii.mjs";
-import { figmaDesignStroke, nativeDesignStroke, hasDesignStroke, designStrokeSides, clearInvalidStrokeLayoutExclusion } from "./stroke.mjs";
+import { figmaDesignStroke, nativeDesignStroke, hasDesignStroke, designStrokeSides, clearInvalidStrokeLayoutExclusion, captureNativeStrokeInactive, nativeInactiveStrokePlan } from "./stroke.mjs";
 import { normalizeGridTracks, nativeGridPlan, gridFillHugContentHeight, GRID_CHILD_FIELDS, GRID_CONTAINER_FIELDS } from "./grid.mjs";
 import {
   figmaFillPaints,
@@ -936,6 +936,15 @@ function importFigmaJsonWithReport(
     )
       node.fillPaints = fillPaints;
     if (node.stroke === "transparent") node.strokeWidth = 0;
+    try {
+      const inactive = captureNativeStrokeInactive(source, node);
+      if (inactive) {
+        node.nativeStrokeInactive = inactive;
+        if (inactive.sourceOnly || inactive.strokesIncludedInLayout !== undefined && !["HORIZONTAL", "VERTICAL", "GRID"].includes(source.layoutMode))
+          report.warn("native-inactive-stroke", source, "空描边样式已保留；部分原生样式或自由布局中的布局选择尚不能安全创建新副本，请保留来源绑定。");
+      } else if (Array.isArray(source.strokes) && source.strokes.length && node.stroke === "transparent" && !hasDesignStroke(node))
+        report.warn("native-inactive-stroke", source, "不可见或全透明描边仍包含原始绘制项，不等于空描边数组；未猜测其未来激活样式，来源记录保留原值。");
+    } catch (error) { report.warn("native-inactive-stroke", source, `空描边样式不能无损表示：${error.message}；来源记录保留原值。`); }
     if (node.strokeWidth && !hasDesignStroke(node) && source.strokeAlign !== "CENTER")
       report.warn("stroke-alignment", source, "内侧或外侧描边暂按居中描边导入。");
     if (type === "group") {
@@ -1396,6 +1405,10 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
     // creation consumes the physical offset, never an HTML measurement promise.
     if (copy.layoutBaselineSource === "html") delete copy.layoutBaselineSource;
     if(node.shadowStack){nativeShadowStackEffects(node);report.warn("css-shadow-native-raster",node,"保留可编辑 INNER_SHADOW 参数；原生与 CSS 的模糊内核仍有实测像素差异，未声明严格像素一致。");}
+    if (node.nativeStrokeInactive) {
+      try { nativeInactiveStrokePlan(node); }
+      catch (error) { report.warn("native-inactive-stroke-export", node, `${error.message}；传输文件保留样式，插件会阻止创建有损副本。来源绑定中的无关编辑仍可导回。`); }
+    }
     if (["horizontal", "vertical"].includes(node.layout)) validateNativeLayoutSpacing(node);
     if (mainAxisGap(node) < 0 && (node.children ?? []).some((child) => child.visible !== false &&
         child.layoutPositioning !== "absolute" && child[node.layout === "vertical" ? "layoutSizingVertical" : "layoutSizingHorizontal"] === "fill" &&
