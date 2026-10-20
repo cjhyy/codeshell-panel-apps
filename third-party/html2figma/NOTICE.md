@@ -105,3 +105,9 @@ THE SOFTWARE.
 The maintained capture also retains shape-outside to bound isolated percentage
 float-column recovery. Design Studio can project a proven single row onto existing
 native Grid tracks/spans; no media-query or general float wrapping engine is added.
+
+The maintained wrapper optionally reports real source elements to its caller for
+capture-local semantic identity. Design Studio uses those in-memory bindings for
+bounded plain block text recovery when class selectors repeat; DOM objects are
+never serialized. Duplicate identities retain the unique-selector fallback and
+an explicit diagnostic. Original ASCII whitespace and NBSP remain distinct.

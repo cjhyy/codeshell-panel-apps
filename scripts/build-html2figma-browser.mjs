@@ -105,8 +105,10 @@ export function convertToDesignDSL(root, options = {}) {
     throw new RangeError("html2figma maxDepth must be an integer from 0 to 100");
   if (options.preserveGrid !== undefined && typeof options.preserveGrid !== "boolean")
     throw new TypeError("html2figma preserveGrid must be a boolean");
+  if (options.onElement !== undefined && typeof options.onElement !== "function")
+    throw new TypeError("html2figma onElement must be a function");
   const runtime = createRuntime(realm);
-  return runtime.convert(root, { includeRawStyles: options.includeRawStyles !== false, maxDepth, preserveGrid: options.preserveGrid !== false });
+  return runtime.convert(root, { includeRawStyles: options.includeRawStyles !== false, maxDepth, preserveGrid: options.preserveGrid !== false, onElement: options.onElement });
 }
 `;
 const notice = await readFile(resolve(vendorRoot, "NOTICE.md"), "utf8");
