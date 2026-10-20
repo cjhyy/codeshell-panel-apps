@@ -104,6 +104,7 @@ export const suites = [
         "tests/apps/design-studio/quality-repair.test.mjs",
         "tests/apps/design-studio/design-compare.test.mjs",
         "tests/apps/design-studio/production-fidelity.test.mjs",
+        "tests/apps/design-studio/html-flow-audit.test.mjs",
         "tests/apps/design-studio/paint-fidelity.test.mjs",
         "tests/apps/design-studio/responsive-css-gradients.test.mjs",
         "tests/apps/design-studio/css-borders.test.mjs",

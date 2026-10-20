@@ -482,6 +482,20 @@ is available.
 
 ## HTML fidelity fixture
 
+The production fidelity harness (`npm run test:fidelity:production`) requests report-only
+capture-local flow obligations. It binds actual source Element identities to canonical nodes
+while the capture iframe is alive, then audits each imported/relayout/narrow candidate against
+that immutable evidence. Ordinary in-flow relationships must retain an Auto Layout ancestry
+path, including only wrapper IDs proven by that capture; NONE hops fail even when SVG pixels
+are unchanged. Actual absolute/fixed source children are excluded from their outer flow
+relationship, and image/SVG/empty leaves need no child layout. Ambiguous identities and
+unsupported inline/table/transform/other source flows remain separately reported as PARTIAL,
+so an empty issue list cannot certify complete flow coverage. The evidence is archived as
+`flow-obligations.json` and per-mode `flowAudits`, never saved as document admission metadata.
+No pixel thresholds are changed. Callers may request this diagnostic with
+`captureWorkspaceHtmlResult({ ...options, includeFlowAudit: true })`; ordinary import behavior
+is unchanged when the option is absent.
+
 Use the top-bar **HTML** action to convert a workspace-relative `.html` file, or call the
 revision-guarded `import_html` Agent tool. Version 0.20 uses `app/html-import.mjs`, the pinned
 html2figma runtime and `design-node-adapter.mjs`. The independent measured reference helper

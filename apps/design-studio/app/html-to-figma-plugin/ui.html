@@ -356,6 +356,13 @@
     return { resolve, css, warnings, dataUrls: () => [...counted] };
   }
 
+  // apps/design-studio/app/html-flow-audit.mjs
+  var REPLACED = new Set(
+    "img svg canvas input textarea select option button iframe object embed video audio meter progress".split(
+      " "
+    )
+  );
+
   // apps/design-studio/app/corner-radii.mjs
   var CORNER_RADIUS_PROPERTIES = Object.freeze([
     "border-top-left-radius",
