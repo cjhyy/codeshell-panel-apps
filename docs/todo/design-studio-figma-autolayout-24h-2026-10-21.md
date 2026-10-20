@@ -1066,3 +1066,25 @@ Checkout已定位Flex交叉轴margin丢失：原转换在align-items normal/cent
 语义子项的可靠固定px意图，合成margin-wrapper不重复套用；混合主/交叉margin已被
 独立审查识别需诊断或另证，百分比子项尺寸仍保持保守。尚未提交此后续产品修改。
 24小时目标继续active，截止10月22日00:31 Asia/Singapore不变。
+
+
+### 固定 px Flex 交叉外边距恢复（约 05:02）
+
+从 Typed OM 意图恢复被原转换清空的直接语义 Flex 子项 margin；仅实际 authored Flex
+父框、真实直接子项、固定px、非变换坐标。原来已消费margin的合成包装继续拥有原inset，
+不重复加；混合包装丢失的cross margin、非均匀/负/百分比margin、百分比尺寸和自身或
+树内祖先transform保留测量fallback并诊断，未扩大为所有CSSmargin支持。
+最小before首次0/重排19840/窄屏25200；normal、center、column三组修后SVG三模式
+共9次0/max0，正确层级前端2宽共6次0且普通DOM节点均非absolute，保存重开稳定。
+38项相关检查通过；补树内transform祖先控制后新文件2/2通过，独立源码审查无阻断。
+最初相对margin负控制误要求已有分数光栅差异1240归零，已改查首次↔重排差异严格不变，
+该被拒绝控制仍非strict通过，原失败日志保留。
+
+前端normalized flat输入另发现实际缺陷：page.nodes被当作全部roots，CLI前端导出也走
+此路径；Hug主框因此无子项、丢失背景1200像素，普通子层变absolute。正确层级输入的
+上述6次比较通过；该API/CLI问题已交独立工作树修复，未改调用约定来宣称已解决。
+此前空block/空overlay测试用flat输入时背景固定，像素相同不足以证明导出DOM是流式，
+后续增加实际DOM父子关系/position断言与真实CLI入口回归。完整原生互转PNG证据不受
+此HTML导出入口问题影响。所有before/after/source/frontend失败产物在flex-cross-margins。
+已通过完整门禁的203b79d已快进到本地main，主检出干净；未push/发布，尚未更新Host
+安装。后续修复继续任务分支，24小时目标仍active。

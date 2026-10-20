@@ -122,6 +122,7 @@ export async function designNodeToV3(tree, options = {}) {
   const gridPlans = new WeakMap();
   const blockFlowPlans = new WeakMap();
   const floatPlans = new WeakMap();
+  const transformedSources = new Set();
   const provenFloatSources = new WeakSet();
   const blockInsetCandidates = [];
   const blockUnwrappedPaths = new WeakMap();
@@ -449,7 +450,7 @@ export async function designNodeToV3(tree, options = {}) {
       warn("layout-alignment", id, `${value} 对齐不受 v3 支持，已使用 ${fallback}。`);
     return values.includes(mapped) ? mapped : fallback;
   };
-  const layout = (source, node) => {
+  const layout = (source, node, ancestors = []) => {
     Object.assign(node, {
       layout: "none",
       gap: 0,
@@ -459,6 +460,25 @@ export async function designNodeToV3(tree, options = {}) {
       children: [],
     });
     const sourceLayout = source.layout ?? {};
+    const authoredFlex = source.semantic && sourceLayout.flex &&
+      ["flex", "inline-flex"].includes(sourceLayout.display);
+    const transformedSpace = source.transform || ancestors.some(ancestor => transformedSources.has(ancestor.id));
+    const declaredMargin = (child, side) => {
+      if (!authoredFlex || child.nodeType === "text" || !child.semantic) return undefined;
+      const value = child.cssLayout?.[`margin-${side}`];
+      return typeof value === "string" ? value.trim().toLowerCase() : undefined;
+    };
+    const marginPixels = (value) => /^(?:-?(?:\d+(?:\.\d+)?|\.\d+)px|-?0(?:\.0+)?)$/u.test(value)
+      ? Number.parseFloat(value) : NaN;
+    const sourceMargin = (child, side) => {
+      const value = declaredMargin(child, side);
+      if (value === undefined || value === "auto") return finite((child.margin ?? child.layout?.margin)?.[side]);
+      const amount = marginPixels(value);
+      // The pinned converter clears these margins after dropping the cross
+      // sides for normal/center alignment. Recover only fixed CSS intent on
+      // actual direct children; synthetic wrappers already own their insets.
+      return amount !== 0 && (transformedSpace || child.transform) ? NaN : amount;
+    };
     for (const side of ["Top", "Right", "Bottom", "Left"])
       node[`padding${side}`] = number(
         finite(sourceLayout.padding?.[side.toLowerCase()]) +
@@ -564,7 +584,7 @@ export async function designNodeToV3(tree, options = {}) {
         const handled = new Set();
         const isAuto = (side) => cssLayoutValue(child, `margin-${side}`) === "auto";
         const zeroOrAuto = (side) =>
-          isAuto(side) || finite((child.margin ?? child.layout?.margin)?.[side]) === 0;
+          isAuto(side) || sourceMargin(child, side) === 0;
         const [before, after] = mainSides.map(isAuto);
         const reversedOverflow =
           node.layoutReverse &&
@@ -610,23 +630,33 @@ export async function designNodeToV3(tree, options = {}) {
           side === (node.layout === "horizontal" ? "left" : "top")
         )
           return false;
-        return value === "auto" || finite((child.margin ?? child.layout?.margin)?.[side]) !== 0;
+        return value === "auto" || sourceMargin(child, side) !== 0;
       }),
     );
+    const crossSides = node.layout === "horizontal" ? ["top", "bottom"] : ["left", "right"];
+    const lostWrappedCrossMargin = authoredFlex && flowChildren.some(wrapper =>
+      !wrapper.semantic && wrapper.nodeType === "container" && wrapper.name === "margin-wrapper" &&
+      wrapper.children?.length === 1 && crossSides.some(side => {
+        const value = declaredMargin(wrapper.children[0], side);
+        if (value === undefined) return false;
+        const amount = marginPixels(value);
+        return !Number.isFinite(amount) || amount < 0 ||
+          amount > finite(wrapper.layout?.padding?.[side]) + .02;
+      }));
     // The pinned inline-group has already consumed inline margins into its
     // measured bounds and margin wrappers; it is not an authored CSS flex box.
-    if (node.layout !== "none" && margins && !block &&
+    if (node.layout !== "none" && (margins || lostWrappedCrossMargin) && !block &&
         !(!source.semantic && source.name === "inline-group")) {
       const sides = ["top", "right", "bottom", "left"];
       const spacing = flowChildren.map((child) =>
         sides.map((side) =>
           autoMarginOverrides.get(child)?.handled.has(side)
             ? 0
-            : finite((child.margin ?? child.layout?.margin)?.[side]),
+            : sourceMargin(child, side),
         ),
       );
       const uniform =
-        ["horizontal", "vertical"].includes(node.layout) &&
+        !lostWrappedCrossMargin && ["horizontal", "vertical"].includes(node.layout) &&
         spacing.length > 0 &&
         spacing.every((values, index) =>
           values.every(
@@ -964,6 +994,7 @@ export async function designNodeToV3(tree, options = {}) {
     }
     if (provenFloat) provenFloatSources.add(source);
     const id = `html-${path.map((value) => value.toString(36)).join("-")}${semanticSuffix(source.semantic?.semanticId)}`;
+    if (source.transform) transformedSources.add(id);
     let width = number(source.bounds?.width, 1, 1, 20000, id, "width"),
       height = number(source.bounds?.height, 1, 1, 20000, id, "height");
     const anchor = {
@@ -1167,7 +1198,7 @@ export async function designNodeToV3(tree, options = {}) {
         node.strokeWidth = 1;
       }
     } else {
-      layout(source, node);
+      layout(source, node, ancestors);
       for (const [index, layer] of (source.background?.layers ?? []).entries()) {
         if (layer.type !== "image") continue;
         const imageRef = await localImage({ src: layer.url, base64: layer.base64 }, id);
