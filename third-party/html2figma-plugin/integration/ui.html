@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; frame-src 'self' about: blob: data:; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 22px;
+        font:
+          13px/1.55 Inter,
+          system-ui,
+          sans-serif;
+        color: var(--figma-color-text, #18243a);
+        background: var(--figma-color-bg, #f8fafc);
+      }
+      h1 {
+        margin: 0;
+        font-size: 22px;
+        letter-spacing: -0.5px;
+      }
+      p {
+        margin: 6px 0 18px;
+        color: var(--figma-color-text-secondary, #64748b);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 18px;
+      }
+      .grid > section {
+        min-width: 0;
+      }
+      label {
+        display: block;
+        margin: 10px 0 4px;
+        font-size: 12px;
+      }
+      textarea,
+      input,
+      select,
+      button {
+        font: inherit;
+      }
+      textarea,
+      input,
+      select {
+        color: inherit;
+        background: var(--figma-color-bg, #fff);
+        border: 1px solid var(--figma-color-border, #d8e0eb);
+        border-radius: 8px;
+        padding: 8px;
+        max-width: 100%;
+      }
+      textarea {
+        width: 100%;
+        height: 270px;
+        resize: vertical;
+        font:
+          11px/1.5 ui-monospace,
+          monospace;
+      }
+      input[type="file"] {
+        font-size: 11px;
+        width: 100%;
+      }
+      .dimensions {
+        display: flex;
+        gap: 8px;
+      }
+      .dimensions input {
+        width: 90px;
+      }
+      button {
+        border: 1px solid var(--figma-color-border, #d8e0eb);
+        background: var(--figma-color-bg-secondary, #fff);
+        border-radius: 8px;
+        padding: 9px 13px;
+        cursor: pointer;
+        color: inherit;
+      }
+      button.primary {
+        background: #2563eb;
+        color: #fff;
+        border-color: #2563eb;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 16px;
+      }
+      #preview-stage {
+        width: 100%;
+        min-height: 100px;
+        overflow: hidden;
+        border: 1px solid #d8e0eb;
+        border-radius: 8px;
+        background: #e2e8f0;
+      }
+      #status {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        padding: 12px;
+        background: var(--figma-color-bg-secondary, #eff6ff);
+        border-radius: 8px;
+        margin-top: 16px;
+        max-height: 130px;
+        overflow: auto;
+      }
+      #status[data-error="true"] {
+        color: #b91c1c;
+      }
+      .small {
+        font-size: 11px;
+        color: var(--figma-color-text-secondary, #64748b);
+      }
+      details {
+        margin-top: 12px;
+      }
+      summary {
+        cursor: pointer;
+      }
+      #mode {
+        width: 100%;
+      }
+      @media (max-width: 620px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body aria-busy="false">
+    <h1>HTML → Figma</h1>
+    <p>粘贴或选择 HTML，先预览，再创建可编辑图层。</p>
+    <div class="grid">
+      <section>
+        <label for="mode">输入格式</label
+        ><select id="mode">
+          <option value="html">HTML + CSS</option>
+          <option value="json">html2figma DesignNode / Figma JSON</option></select
+        ><label for="source-file">选择 HTML / JSON 文件</label
+        ><input id="source-file" type="file" accept=".html,.htm,.json" /><label for="source"
+          >或直接粘贴内容</label
+        ><textarea
+          id="source"
+          spellcheck="false"
+          placeholder="&lt;section style='padding:32px'&gt;&lt;h1&gt;Hello Figma&lt;/h1&gt;&lt;/section&gt;"
+        ></textarea
+        ><button id="sample">载入示例</button>
+        <details>
+          <summary>本地 CSS、图片和字体</summary>
+          <p class="small">有相对路径资源时选择 HTML 所在文件夹。资源随输入内嵌，不上传。</p>
+          <input id="folder" type="file" webkitdirectory multiple /><select
+            id="html-files"
+            hidden
+            aria-label="文件夹内的 HTML"
+          ></select>
+        </details>
+      </section>
+      <section>
+        <label>预览画布尺寸</label>
+        <div class="dimensions">
+          <input
+            id="width"
+            type="number"
+            value="1440"
+            min="100"
+            max="10000"
+            aria-label="画布宽度"
+          /><span>×</span
+          ><input
+            id="height"
+            type="number"
+            value="900"
+            min="100"
+            max="10000"
+            aria-label="画布高度"
+          />
+        </div>
+        <label for="selector">HTML 根选择器</label
+        ><input id="selector" value="body" placeholder="body / #app" /><label>静态预览</label>
+        <div id="preview-stage"></div>
+        <p class="small">
+          HTML 不执行脚本或加载远程资源。JSON 预览显示第一个根节点的布局；最终字体由 Figma
+          可用字体决定。
+        </p>
+        <p class="small">转换基于 html2figma 的 DOM 引擎、Figma adapter 和 FigmaService。</p>
+      </section>
+    </div>
+    <div class="actions">
+      <button id="preview" class="primary">预览并转换</button
+      ><button id="create" disabled class="primary">创建可编辑图层</button
+      ><button id="download" disabled>下载 JSON</button>
+    </div>
+    <div id="status" role="status" aria-live="polite">准备就绪。预览不会修改 Figma 文件。</div>
+    <script>
+      /*__BUNDLE__*/
+    </script>
+  </body>
+</html>

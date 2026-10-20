@@ -19,7 +19,7 @@ async function fixture(t, mode = "pending", width = 390) {
     const file = url.pathname.slice(1) || "index.html";
     if (
       url.origin !== "https://starter.test" ||
-      !["index.html", "style.css", "app.js"].includes(file)
+      !["index.html", "style.css", "app.js", "counter.mjs"].includes(file)
     )
       return route.abort();
     await route.fulfill({
@@ -28,6 +28,7 @@ async function fixture(t, mode = "pending", width = 390) {
         "index.html": "text/html",
         "style.css": "text/css",
         "app.js": "text/javascript",
+        "counter.mjs": "text/javascript",
       }[file],
     });
   });

@@ -6732,21 +6732,26 @@
       "agent/skills/tts-setup/SKILL.md",
       "agent/skills/video-init/SKILL.md",
       "agent/skills/video-workflow/SKILL.md",
-      "agent/skills/narration-workflow/SKILL.md"
+      "agent/skills/narration-workflow/SKILL.md",
+      "agent/skills/project-runtime/SKILL.md"
     ]
   },
   "nativeEntries": {
+    "video-studio": {
+      "entry": "app/tools/video-studio.mjs",
+      "sha256": "29997ecc46a397d8a66c6a6b4e7df219c4a7c7287a206d8dd87178397a7b3bb1"
+    },
     "folder-scan": {
       "entry": "app/tools/folder-scan.mjs",
       "sha256": "524b085b5cbb4c5750ba7345b22711fb314ea5338a67822752a95cc150613d25"
     },
     "voice-runtime": {
       "entry": "app/tools/voice-runtime.mjs",
-      "sha256": "b031343db0f19e6a1b85c7410f41ea762edf5cd9f47b3e5410fdee4eb694410d"
+      "sha256": "43229bc9c285484b3fed83866110f3bd121964ec27c9d954eae3e9392f4546d6"
     },
     "media-runtime": {
       "entry": "app/tools/media-runtime.mjs",
-      "sha256": "3763726d176e1c72515c364f253a876b2945fcd1c8b11497bcd038dc584c5a49"
+      "sha256": "39f2986284855f78cf7c89ab4b7f67e8d2ad92f003ced8e69e36a2a890d45f90"
     },
     "editor-runtime": {
       "entry": "app/tools/editor-runtime.mjs",
@@ -6758,7 +6763,7 @@
     },
     "audio-separation": {
       "entry": "app/tools/audio-separation.mjs",
-      "sha256": "51fb44215a63a716d3d630874c7e19e2966f32b7d4067457d257f8f3141f0c6f"
+      "sha256": "02cb4ee6f88e585c0ea338498785f6b262c2d60e8c16c544134e3d0cffb40470"
     }
   }
 }

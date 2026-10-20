@@ -2,6 +2,11 @@
 // while their application ownership is explicit here.
 export const suites = [
   {
+    id: "panel-cli",
+    label: "Installed Panel CLI and Runtime Skill contracts",
+    commands: [["--test", "tests/panel-cli-contract.test.mjs"]],
+  },
+  {
     id: "upgrade-harness",
     label: "Upgrade worker browser custody and shutdown receipts",
     commands: [["--test", "tests/panel-upgrade-process.test.mjs"]],
@@ -9,7 +14,7 @@ export const suites = [
   {
     id: "starter",
     label: "Starter context and narrow-screen interaction",
-    commands: [["--test", "tests/starter-ui.test.mjs"]],
+    commands: [["--test", "tests/starter-ui.test.mjs", "tests/starter-cli.test.mjs"]],
   },
   {
     id: "job-hunt-hq",
@@ -51,7 +56,14 @@ export const suites = [
   {
     id: "panel-ui",
     label: "Shared Panel App controls",
-    commands: [["--test", "tests/panel-select-ui.test.mjs", "tests/project-context.test.mjs"]],
+    commands: [
+      [
+        "--test",
+        "tests/panel-select-ui.test.mjs",
+        "tests/project-context.test.mjs",
+        "tests/model-observability.test.mjs",
+      ],
+    ],
   },
   {
     id: "desktop-harness",
@@ -74,29 +86,53 @@ export const suites = [
     commands: [
       [
         "--test",
+        "tests/apps/design-studio/headless-cli.test.mjs",
         "tests/apps/design-studio/legacy-backup.test.mjs",
         "tests/apps/design-studio/portable-backup.test.mjs",
         "tests/apps/design-studio/recovery-session.test.mjs",
         "tests/apps/design-studio/recovery-ui.test.mjs",
-        "tests/apps/design-studio/touch-ui.test.mjs",
-        "tests/apps/design-studio/connection-ui.test.mjs",
-        "tests/apps/design-studio/polish-ui.test.mjs",
+        "tests/apps/design-studio/renderer-controller.test.mjs",
+        "tests/apps/design-studio/canvas-interaction.test.mjs",
+        "tests/apps/design-studio/grida-scene.test.mjs",
         "tests/apps/design-studio/figma-bridge.test.mjs",
-        "tests/apps/design-studio/figma-workflow-ui.test.mjs",
+        "tests/apps/design-studio/long-canvas.test.mjs",
+        "tests/apps/design-studio/text-metrics.test.mjs",
+        "tests/apps/design-studio/quality-repair.test.mjs",
+        "tests/apps/design-studio/paint-fidelity.test.mjs",
+        "tests/apps/design-studio/builtin-fonts.test.mjs",
+        "tests/apps/design-studio/audit-review.test.mjs",
+        "tests/apps/design-studio/html-plugin.test.mjs",
+        "tests/apps/design-studio/html-plugin-ui.test.mjs",
         "tests/apps/design-studio/review-comments.test.mjs",
         "tests/apps/design-studio/review-comments-ui.test.mjs",
         "tests/apps/design-studio/design-sidecar.test.mjs",
+        "tests/apps/design-studio/prepare-figma-cli.test.mjs",
         "tests/apps/design-studio/figma-assets.test.mjs",
         "tests/apps/design-studio/figma-binding.test.mjs",
         "tests/apps/design-studio/figma-plugin.test.mjs",
         "tests/apps/design-studio/figma-plugin-ui.test.mjs",
         "tests/apps/design-studio/prototype.test.mjs",
         "tests/apps/design-studio/prototype-ui.test.mjs",
-        "tests/apps/design-studio/exchange-tools-ui.test.mjs",
         "tests/apps/design-studio/design-node-adapter.test.mjs",
         "tests/apps/design-studio/html2figma-browser.test.mjs",
         "tests/apps/design-studio/html2figma-import.test.mjs",
         "tests/apps/design-studio/figma-plugin-v3.test.mjs",
+      ],
+      // GPU processes need an exclusive run: concurrent browser suites can
+      // exhaust the shared graphics service and deliberately lose contexts.
+      [
+        "--test",
+        "--test-concurrency=1",
+        "tests/apps/design-studio/touch-ui.test.mjs",
+        "tests/apps/design-studio/connection-ui.test.mjs",
+        "tests/apps/design-studio/polish-ui.test.mjs",
+        "tests/apps/design-studio/render-index-ui.test.mjs",
+        "tests/apps/design-studio/viewport-performance.test.mjs",
+        "tests/apps/design-studio/figma-workflow-ui.test.mjs",
+        "tests/apps/design-studio/exchange-tools-ui.test.mjs",
+        "tests/apps/design-studio/gpu-renderer-ui.test.mjs",
+        "tests/apps/design-studio/canvaskit-cache.test.mjs",
+        "scripts/design-renderer-compare/canvaskit-smoke.test.mjs",
       ],
     ],
   },
@@ -222,6 +258,7 @@ export const suites = [
       ],
       ["--test", "apps/video-studio/native/tests/voice-runtime.test.mjs"],
       ["--test", "tests/video-studio-workspace-storage.test.mjs"],
+      ["--test", "tests/video-studio-project-cli.test.mjs"],
     ],
   },
 ];

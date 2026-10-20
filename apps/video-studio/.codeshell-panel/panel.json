@@ -6732,7 +6732,8 @@
       "agent/skills/tts-setup/SKILL.md",
       "agent/skills/video-init/SKILL.md",
       "agent/skills/video-workflow/SKILL.md",
-      "agent/skills/narration-workflow/SKILL.md"
+      "agent/skills/narration-workflow/SKILL.md",
+      "agent/skills/project-runtime/SKILL.md"
     ]
   }
 }

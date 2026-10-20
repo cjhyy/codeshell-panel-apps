@@ -144,9 +144,34 @@ path escapes, and public-file collisions fail the build. They use the installed
 package inventory and require no new Host capability. Run `npm run test:build`
 after changing the declaration or build behavior.
 
+### Native model observations
+
+Use `shared/model-observability.mjs` around actual native inference. The reviewed
+Host launcher grants a separate FD 3 pipe with `CODESHELL_MODEL_TRACE_FD=3`;
+standalone CLI use without that grant emits no observations and keeps stdout
+unchanged. Never accept the descriptor, storage path, workspace or trace identity
+from task input. The Host supplies attribution and applies its recording policy.
+Long observations use bounded fragments, each written once within the portable
+512-byte atomic limit. Independent CLIs can therefore share a shell descriptor
+without interleaving their prompts; the Host reassembles each opaque message.
+
+Record the actual submitted text and model parameters, then returned text or
+non-binary result metadata. Keep credentials, media bytes and private native
+paths out of observations. Multipart and local inference are logical inputs;
+they do not claim access to a provider's private wire. Place the observer after
+cache checks so reuse produces no fictitious inference. Setup flows that run a
+real synthesis sample use the same provider boundary and are observed too.
+Failure and cancellation close the observation without retrying inference.
+
+Video Studio bundles the shared helper into its native entries. Job Hunt keeps
+an installable copy: after changing the helper, run
+`node scripts/sync-model-observability.mjs` and commit both files. The normal check
+gate verifies that copy; `tests/model-observability.test.mjs` uses only fake
+providers and private temporary files to verify FD 3 and request identity.
+
 ## CLI companions
 
-Panels that perform basic data or media work should include a package-local Node
+Panels that perform basic data or media work must include a package-local Node
 CLI and a declared Runtime Skill so chat and terminal workflows can operate
 without an open webview. Reuse the Panel's domain modules and keep the CLI's
 stdout structured. Resolve the CLI from the current project's selected package;
@@ -163,8 +188,19 @@ Check actual runtime capabilities and report missing prerequisites.
 
 Video Download's `app/tools/video-download.mjs` demonstrates independent media
 tasks; Job Hunt HQ's `app/tools/job-hunt.mjs` demonstrates shared project data
-with the Host's workspace write protocol. Existing Panels can adopt this pattern
-incrementally; this convention does not claim all Panels already have CLI parity.
+with the Host's workspace write protocol. Design Studio, Quant Lab and Video
+Studio also expose local domain operations through their package CLI. The Starter
+template includes a shared browser/Node domain module and Runtime Skill by default.
+Document each command's supported scope; having a CLI does not establish parity
+with every webview action or access to Host-managed media resources.
+
+Every public CLI must implement an offline, read-only `ops` command with one JSON
+receipt on stdout. Run `npm test -- --suite panel-cli` after changing an entry,
+its Skill or packaging. This gate copies each installable package away from the
+repository and executes discovery with an empty project, no development modules
+and no provider credentials. It also checks the declared Runtime Skill points
+to the bundled CLI. Add domain-specific subprocess tests to the owning app suite
+for actual reads/writes, malformed inputs, revision conflicts and prerequisites.
 
 ## System boundary
 

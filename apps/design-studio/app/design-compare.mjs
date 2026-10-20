@@ -1,4 +1,5 @@
 /* Stable-id design/implementation comparison for the delivery workflow. */
+import { normalizeDesignPaints } from "./paint.mjs";
 
 function childrenOf(page) {
   return page?.children ?? page?.nodes ?? [];
@@ -20,7 +21,10 @@ function round(value, precision = 4) {
 function geometryDelta(expected, actual) {
   const properties = ["x", "y", "width", "height"];
   const values = Object.fromEntries(
-    properties.map((property) => [property, round(Number(actual[property]) - Number(expected[property]), 2)]),
+    properties.map((property) => [
+      property,
+      round(Number(actual[property]) - Number(expected[property]), 2),
+    ]),
   );
   return {
     ...values,
@@ -28,9 +32,14 @@ function geometryDelta(expected, actual) {
   };
 }
 
+function paintSignature(paints) {
+  return JSON.stringify(paints == null ? null : normalizeDesignPaints(paints));
+}
+
 function styleDifferences(expected, actual) {
   const properties = [
     "fill",
+    "fillPaints",
     "stroke",
     "strokeWidth",
     "cornerRadius",
@@ -43,11 +52,12 @@ function styleDifferences(expected, actual) {
     "textAlign",
   ];
   const differences = properties
-    .filter(
-      (property) =>
-        expected[property] !== undefined &&
-        actual[property] !== undefined &&
-        String(expected[property]) !== String(actual[property]),
+    .filter((property) =>
+      property === "fillPaints"
+        ? paintSignature(expected.fillPaints) !== paintSignature(actual.fillPaints)
+        : expected[property] !== undefined &&
+          actual[property] !== undefined &&
+          String(expected[property]) !== String(actual[property]),
     )
     .map((property) => ({
       property,
@@ -119,10 +129,7 @@ export function compareDesignDocuments(
     meanGeometryDelta: round(meanGeometryDelta, 2),
     coverage: round(expectedNodes.size === 0 ? 1 : matched.length / expectedNodes.size),
     closeRate: round(matched.length === 0 ? 0 : closeNodeCount / matched.length),
-    passed:
-      missing.length === 0 &&
-      maximumGeometryDelta <= 2 &&
-      styleDifferenceCount === 0,
+    passed: missing.length === 0 && maximumGeometryDelta <= 2 && styleDifferenceCount === 0,
     missing,
     unexpected,
     differences: matched
@@ -136,7 +143,10 @@ export function compareDesignDocuments(
   };
 }
 
-export function comparisonMarkdown(comparison, { designPath, implementationPath, pixelMetrics } = {}) {
+export function comparisonMarkdown(
+  comparison,
+  { designPath, implementationPath, pixelMetrics } = {},
+) {
   const pixelLines = pixelMetrics
     ? [
         `- 像素相似度：${(pixelMetrics.similarity * 100).toFixed(2)}%`,

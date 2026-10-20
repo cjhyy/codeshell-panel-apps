@@ -1,0 +1,15 @@
+{
+  "package": "canvaskit-wasm",
+  "version": "0.42.0",
+  "license": "BSD-3-Clause",
+  "files": {
+    "canvaskit.js": {
+      "sha256": "443777592179808354031cf411d8d43cac9f6b98d1227123c5c22d401b0fbf7f",
+      "bytes": 120877
+    },
+    "canvaskit.wasm": {
+      "sha256": "25ebed8e60158c5854f8dc807b936daca21354f8bfb6a2231266b0a93812f301",
+      "bytes": 7317345
+    }
+  }
+}

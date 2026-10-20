@@ -1,8 +1,92 @@
 # Design Studio Panel App
 
-Design Studio **0.20.0** 提供 HTML → DesignNode → v3 导入、Figma JSON 导入、可编辑设计、带来源校验的增量导回、
+Design Studio **0.22.0** 提供 HTML → DesignNode → v3 导入、Figma JSON 导入、可编辑设计、带来源校验的增量导回、
 多页 HTML 原型和项目评审。原生设计仍使用 v3 `.codesign.json`；16 个声明式 Agent
 工具与可视编辑器共用同一份设计、来源和评审数据。本版沿用现有 Host 权限。
+
+## 0.22：CanvasKit GPU 画布
+
+画布统一使用 CanvasKit 0.42.0（Skia C++ → WebAssembly → WebGL2）。全图概览、
+局部缩放和设计编辑都保持 GPU 渲染，主场景及命中检测不创建 SVG 图层。
+
+GPU 场景保留绘制命令，并用 Skia 空间索引裁掉视口外内容。低倍率使用有 64 MiB
+预算的 GPU 分块缓存；编辑复用未改变的节点绘制记录、字体和图片。系统文字缓存按
+可见范围及实际缩放升级清晰度。平移和缩放复用场景，内容改变使旧分块失效。
+选框、手柄、参考线和画板名称由
+独立 Canvas 交互层绘制，命中检测使用设计几何、旋转和祖先裁切。文字输入框使用
+相同的坐标变换，编辑期间由 GPU 场景隐藏对应文字，避免重影。
+
+运行时完全随包提供，有固定版本、SHA-256 和许可证；不请求额外 Host 权限。
+仅在 Host 通过 `capabilities.packageAssets.wasm` 声明包内 Wasm 支持时加载；浏览器
+本地模式按实际 WebAssembly/WebGL 能力运行。旧 Host、初始化失败或 GPU 丢失时
+明确显示不可用和重试入口，保留设计数据，不会切换到 SVG。需要支持包内 Wasm 的 Host。
+设计、保存、撤销、Figma 来源及缺资源提示沿用原有数据，不会由渲染器修改。
+
+Grida 对比原型保留在 [比较工具](../../scripts/design-renderer-compare/README.md)；未装入
+正式 Panel。重新核验 CanvasKit 运行时使用 `node scripts/prepare-design-studio-canvaskit.mjs --check`。
+
+## 0.21.2：大型设计交互性能
+
+平移与缩放只在动画帧中更新视口，保留现有图层画面和列表，不再触发整页重绘、设计
+检查及原型状态序列化。选框、手柄、画板标签和缺资源提示仍按缩放比例更新，取消手势
+恢复原视口。设计编辑继续完整重绘，并在同一帧合并连续拖动的显示更新。
+
+场景绘制及图层列表每次建立共享索引，复用祖先旋转、锁定、裁切和透明度计算；拖动
+吸附和框选也共享几何索引。索引不跨编辑缓存，保留全部图层、图层顺序和导出内容。
+公开回归使用生成的 1,000/1,208 图层测试稿，检查节点复用、编辑后刷新、跨页组件、
+键盘选层以及手势取消。未引入 Rust 或新的 Host 权限。
+
+## 0.21.1：长稿、文字与绘制保真
+
+Figma 长稿按实际可见内容扩展画布，上限 20,000 px；图层位置、尺寸及来源映射保留。
+多层纯色、独立透明度和线性渐变现在同时用于面板、SVG、HTML 与 Figma 交换，渐变文字
+不再变成透明文字。原稿明确标记为无渲染范围且完全被祖先裁切的离屏分支保留图层和
+原始来源，以实际不可见状态导入；没有这项来源证据的裁切仍会报错。
+
+浏览器用最终字体、SVG 字宽和 Canvas 墨迹测量文字，物化软换行并保留完整原文；测量结果与文字、
+字体和排版签名一起保存。重开或 Node 校验继续检查这些实测尺寸，修改排版后签名失效，
+不会把“已测量”当作跳过校验的理由。离线包提供 Roboto、Inter 和兼容 Font Awesome
+5/6 的 Free/Brands 字体资源；其他缺失字体会明确提示回退。字体资源随完整备份保留，
+Figma 内仍需相应已安装字体。
+
+检查窗口的 **修复可处理项** 是一次可撤销编辑：扩展未裁切的容器以容纳内容，微调纯色
+文字以达到当前背景所需的对比度。它保留文字、图层、裁切和渐变；剩余问题仍会列出，
+不会通过降低检查标准清零。修复后需要保存。截图继续限制为 2M 像素、最长 4,096 px；
+本地预览允许最多 4 MiB SVG，写入 Host 的 SVG 仍限制 384 KiB。含完整字库的大 SVG
+直接下载为文件；也可下载完整备份，或使用包内 CLI 的 `svg` 操作及 `output` 路径生成本地文件。
+
+导入预览优先展示缺图、混合文字等实际转换损失，完整提示数量继续保留；不会因大量
+排版提示挤掉关键差异。增量导回省略可证实由父节点平移继承的位置更新，更新预检不
+重复携带子树，删除仍保留完整子树冲突校验，以减少大型稿件的传输体积。
+
+## 0.21：独立导入、预检与 HTML to Figma 插件
+
+Figma 导入默认新建独立稿，显示保存路径、转换后的预览及真实 audit；也可明确选择
+替换当前画布。已有未保存稿件须先保存或备份。导入中资源或主文件保存失败会恢复
+原画布、文件归属和来源绑定；写入回执丢失时只读核对目标，不重复发布主文件。
+无法核对时保留当前画布并提示保存状态待确认。已保存但存在阻塞的稿件仍是草稿。
+
+“另存为”保留项目资源、已保存评论、原型和 Figma 来源。新目标不会覆盖已有文件。
+检查窗口按原因和严重度筛选，每页 50 条，点击图层会聚焦；Agent 可用
+`validate_design(code, severity, offset, limit)` 分页读取全部问题。
+
+16 个 Agent 工具入口保持兼容。`save_design` 的默认行为仍是保存，新增
+`action: create|open|save_as`。Figma 新流程先调用
+`exchange_figma(action: prepare, source_path, target_path, expected_state_revision)`，
+核对返回的 `preparationId`、目标、audit 和差异后，以同一来源及状态调用 import。
+准备结果绑定来源内容摘要；来源、目标或画布变化后须重新预检。带阻塞的现代导入
+需要明确 `allow_blocking: true` 才能保留草稿。旧的 path-only import 保留替换当前稿件语义。
+
+大 JSON 使用随包的 [prepare-figma CLI](app/tools/prepare-figma.README.md) 自动生成
+350 KiB 分片。输入包与目标的 `.figma-source.json` 来源索引必须使用不同名称。
+离屏且被祖先裁切的节点不再污染页面原点，真实未裁切越界仍会报告。
+
+新增独立 [CodeShell HTML to Figma](app/html-to-figma-plugin/README.md) 开发插件，
+实际复用 html2figma 原生 adapter、FigmaService 与 creators。支持粘贴 HTML、本地 HTML
+文件夹及原生 DesignNode/FigmaJSON，先静态预览再创建可编辑图层；无服务地址、API Key
+或 CDN 依赖。原有 CodeShell Design Bridge 继续处理 v3、完整备份与来源增量更新。
+Figma 插件 ID 由 Figma 分配，安装步骤见插件 README。当前验收包括真实 Chromium
+隔离 UI 与 fake Figma API，不代表真实账号内字体与渲染已经验收。
 
 ## 0.20 交付：HTML 导入与完整文件直接还原 Figma
 
@@ -18,7 +102,7 @@ Design Studio **0.20.0** 提供 HTML → DesignNode → v3 导入、Figma JSON �
 也可直接读取；有外部资源引用的普通文件会要求完整备份。原有 transfer 和原节点补丁
 流程继续可用。完整文件是 v3 设计的完整归档，不是原始 HTML/CSS 的无损归档。
 
-渐变、混合富文本、复杂滤镜等超出 v3 的样式会明确给出转换提示；SVG 在面板中保留
+径向渐变、混合富文本、复杂滤镜等超出 v3 的样式会明确给出转换提示；SVG 在面板中保留
 自包含资源并可调整位置尺寸。Figma 不能通过插件安装字体文件，会使用已安装字体或
 明确提示回退。评论和原型附件会校验，但不自动创建 Figma 云端评论或原型交互。
 底层接口、重建方式和验收范围见[转换方案](../../docs/todo/design-studio-html2figma-v3.md)。
@@ -335,6 +419,49 @@ header shows the connected repository, and the inspector's **文件** tab keeps
 that repository's `.codesign.json` files visible with the current document
 highlighted. The top-bar file picker remains available for keyboard-driven
 switching.
+
+### Headless project CLI
+
+The package-local Node 20.10+ companion at `app/tools/design-studio.mjs` works
+without an open webview. The declared `project-runtime` Skill resolves this
+project's selected installed package; it does not depend on this development
+checkout. `ops` lists the current JSON request schemas:
+
+```sh
+node "<selected-package>/app/tools/design-studio.mjs" ops
+node "<selected-package>/app/tools/design-studio.mjs" run inspect \
+  --project "/absolute/project" --input-file "/absolute/request.json"
+```
+
+An inspect request is `{ "path": "designs/design.codesign.json" }`. Operations
+include `inspect`, bounded `read`, all-page `validate`, `svg`, static HTML
+`frontend`, PRD `brief`, saved-design `compare`, `create`, and `edit`. Create
+accepts a complete v3 `document`; edit also requires the exact saved-file
+`expected_revision` returned by a read. Both use the shared document codec and
+resource verification. They persist actual project source and the same page
+index format the Panel can reopen. Existing files cannot be overwritten by
+create or export. Edit uses SHA-256 CAS under the Host workspace-write lock
+protocol; the primary source commits atomically after its immutable page parts.
+The CLI does not touch private Host storage.
+
+Every command prints one JSON envelope with `ok` and `result` or `error`.
+Exit codes are 0 success, 2 invalid arguments/design, 3 revision conflict, and
+1 other errors. Audit success means the audit ran: require `valid: true` and
+zero issue counts when checking design completion. Requests/reconstructed
+designs are limited to 16 MiB, project reads to 64 MiB, PRDs to 512 KiB, and
+stdout to 1 MiB. Narrow large reads to a page/node, or export to a new artifact.
+Symlinks, traversal and hidden project paths are rejected. CLI operations and
+Host file commits use owned directory locks with a five-second wait; a crash
+may leave a lock requiring verification that no writer is active before removal.
+
+Complete-document edits preserve companion files but do not reconcile comments,
+prototype targets or Figma mappings after ID changes. They accept materialized
+geometry and do not execute the live editor's Auto Layout operations or undo.
+Open the Panel for those workflows, live screenshots, HTML capture/import,
+Figma exchange and resource insertion. The CLI reads saved files; unsaved live
+canvas state remains in the Panel. See the [Runtime Skill](agent/skills/project-runtime/SKILL.md)
+for the operation contract and the required actual Bash workspace protocol probe
+before Skill-driven writes on CodeShell 0.9.36 or later.
 
 The optional repository checker is bundled at `app/tools/check-design.mjs`. Run it from the
 repository root to make canonical JSON and a zero-warning audit a CI-style gate:

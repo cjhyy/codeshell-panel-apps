@@ -1,3 +1,4 @@
+import { observeModelCall } from "../../../../shared/model-observability.mjs";
 import { combineAbortSignals } from "../signals.js";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -350,7 +351,7 @@ export function createAudio8TtsProvider(options: Audio8TtsOptions) {
     }
   }
 
-  async function execute(
+  async function executeRuntime(
     data: Record<string, unknown>,
     context: MediaJobContext,
     signal: AbortSignal,
@@ -419,6 +420,49 @@ export function createAudio8TtsProvider(options: Audio8TtsOptions) {
       await progress.catch(() => {});
       await rm(request, { force: true });
     }
+  }
+
+  async function execute(
+    data: Record<string, unknown>,
+    context: MediaJobContext,
+    signal: AbortSignal,
+  ) {
+    const run = () => executeRuntime(data, context, signal);
+    if (data.action !== "generate") return run();
+    return observeModelCall(
+      {
+        provider: "local-onnx",
+        model: "audio8-tts",
+        purpose: "tts-clone",
+        input: {
+          messages: Array.isArray(data.pieces)
+            ? data.pieces.map((content) => ({ role: "user", content }))
+            : [{ role: "user", content: data.text }],
+          parameters: {
+            action: "generate",
+            pieces: data.pieces,
+            referenceText: data.referenceText,
+            threads: Math.min(5, cpus().length),
+            modelRevision: REVISION,
+            codeRevision: COMMIT,
+            referenceAudio: { content: "[binary content omitted]" },
+            capture: { recording: "logical-input", omitted: "binary-data-and-private-paths" },
+          },
+        },
+      },
+      run,
+      {
+        signal,
+        output: (value) => ({
+          data: {
+            mimeType: "audio/wav",
+            sampleRate: value.sampleRate,
+            samples: value.samples,
+            ...(typeof value.cachedVoice === "boolean" ? { cachedVoice: value.cachedVoice } : {}),
+          },
+        }),
+      },
+    );
   }
 
   async function downloadResource(
@@ -792,9 +836,25 @@ export function createAudio8TtsProvider(options: Audio8TtsOptions) {
       const referenceText =
         "This is a local voice test. Clear speech helps prepare the audio model.";
       await writeFile(transcript, referenceText, { mode: 0o600 });
-      await runMediaProcess("/usr/bin/say", ["-r", "165", "-f", transcript, "-o", reference], {
-        signal,
-      });
+      await observeModelCall(
+        {
+          provider: "macos-speech",
+          model: "system-default-voice",
+          purpose: "tts-setup-reference",
+          input: {
+            messages: [{ role: "user", content: referenceText }],
+            parameters: { wordsPerMinute: 165, capture: { recording: "logical-input" } },
+          },
+        },
+        () =>
+          runMediaProcess("/usr/bin/say", ["-r", "165", "-f", transcript, "-o", reference], {
+            signal,
+          }),
+        {
+          signal,
+          output: () => ({ data: { mimeType: "audio/aiff", binaryContent: "omitted" } }),
+        },
+      );
       const sample = await render(
         { text: "你好，这是本地声音克隆测试。", referencePath: reference, referenceText, rate: 1 },
         { ...context, scope: { appId: "__audio8-setup", projectPath: dir } },

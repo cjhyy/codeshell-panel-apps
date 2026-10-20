@@ -17,10 +17,26 @@
 开发过程中继续修改原始文件夹。需要加载新版本时，回到 Panel Apps 管理页，
 在应用卡片上点击 **从源码更新**，审查变更后应用；不需要再次选择目录。
 
-Panel App 包不能包含 Skills、Agents、Commands、Hooks、MCP 或普通 Plugin
-manifest。完整格式和 Host API 见
+Schema v2 可以在 `agent.skills` 声明只读的 `agent/skills/<id>/SKILL.md`；
+模板已经声明 Runtime Skill。Panel App 包不能包含 Agents、Commands、Hooks、
+MCP 或普通 Plugin manifest。完整格式和 Host API 见
 [CodeShell Panel App 文档](https://github.com/cjhyy/codeshell/blob/main/docs/panel-apps.md)。
 
 模板先订阅项目上下文，再读取初始状态，避免切换项目时被旧响应覆盖。
 工作区路径可悬停查看全文，窄屏不横向溢出；未授权和连接失败分别显示真实状态。
 点击计数只演示当前页面交互，关闭后重置，不申请持久存储权限。
+
+## CLI 示例
+
+不打开面板也可以运行安装包里的 Node CLI：
+
+```sh
+node /path/to/package/app/tools/starter.mjs ops
+node /path/to/package/app/tools/starter.mjs context --project /path/to/project
+node /path/to/package/app/tools/starter.mjs counter --input-file request.json
+```
+
+`request.json` 示例：`{"value":0,"amount":2}`。CLI 与按钮复用 `app/counter.mjs`，
+输出单行 JSON，失败时返回非零退出码。计数不持久化，也不会同步到已打开的面板。
+复制模板后，同时更新 manifest ID 和 Runtime Skill 中的 ID、入口及领域操作。
+后续添加数据写入时，应定义项目文件协议、原子写与并发冲突处理；不要猜测 Host 私有路径。

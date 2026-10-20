@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "starter-panel",
   "version": "0.1.1",
   "title": {
@@ -12,5 +12,9 @@
   "icon": "panel",
   "placement": "right-dock",
   "singleton": true,
-  "permissions": ["context.workspace"]
+  "permissions": ["context.workspace"],
+  "agent": {
+    "tools": [],
+    "skills": ["agent/skills/project-runtime/SKILL.md"]
+  }
 }

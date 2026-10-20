@@ -1,6 +1,14 @@
 /* Design Studio Panel App runtime. */
 /* global document, localStorage, requestAnimationFrame, window */
 import { projectContextChanged } from "./project-context.mjs";
+import { createRendererController } from "./renderer-controller.mjs";
+import {
+  canvasNodeMatrix,
+  drawCanvasInteraction,
+  hitTestCanvasNode,
+  hitTestCanvasLabel,
+  hitTestCanvasHandle,
+} from "./canvas-interaction.mjs";
 
 import {
   alignNodeTrees,
@@ -31,7 +39,9 @@ import {
   isSafeDesignPath,
   isDesignNodeVisible,
   MAX_DESIGN_NODES_PER_PAGE,
+  MAX_DESIGN_CANVAS_SIZE,
   MAX_DESIGN_PAGES,
+  MAX_LOCAL_SVG_EXPORT_BYTES,
   measureDesignDocumentBytes,
   normalizeDesignDocument,
   normalizeDesignState,
@@ -75,7 +85,7 @@ import {
   resolveFigmaBindingRef,
   parseFigmaBinding,
 } from "./figma-binding.mjs";
-import { createReviewCommentsStore } from "./review-comments.mjs";
+import { createReviewCommentsStore, parseReviewComments } from "./review-comments.mjs";
 import {
   readDesignSidecar,
   writeDesignSidecar,
@@ -88,6 +98,11 @@ import { exportDesignPrototype, normalizePrototype } from "./prototype.mjs";
 import { createRecoverySession } from "./recovery-session.mjs";
 import { chooseRepoDesignFile, DEFAULT_DESIGN_PATH } from "./repository.mjs";
 import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
+import { designPaintSvg } from "./paint.mjs";
+import { repairDesignQuality } from "./quality-repair.mjs";
+import { resourceDataUrlsFromPlans } from "./builtin-fonts.mjs";
+import { designFontFamilyCss } from "./font-css.mjs";
+import { groupAuditIssues, pageAuditIssues } from "./audit-review.mjs";
 import {
   captureWorkspaceHtml,
   captureWorkspaceHtmlResult,
@@ -135,9 +150,12 @@ const DEFAULT_COLOR_TOKENS = Object.freeze([
 const elements = {
   appShell: document.querySelector(".app-shell"),
   stage: document.querySelector("#stage"),
-  scene: document.querySelector("#scene"),
-  grid: document.querySelector("#grid"),
   stageWrap: document.querySelector("#stage-wrap"),
+  gpuCanvas: document.querySelector("#gpu-canvas"),
+  rendererState: document.querySelector("#renderer-state"),
+  rendererMessage: document.querySelector("#renderer-message"),
+  rendererMessageText: document.querySelector("#renderer-message-text"),
+  retryRenderer: document.querySelector("#retry-renderer"),
   workspace: document.querySelector(".workspace"),
   activePage: document.querySelector("#active-page"),
   addPage: document.querySelector("#add-page"),
@@ -203,6 +221,7 @@ const elements = {
   auditSummary: document.querySelector("#audit-summary"),
   auditResults: document.querySelector("#audit-results"),
   saveAuditReport: document.querySelector("#save-audit-report"),
+  repairQuality: document.querySelector("#repair-quality"),
   aiRequest: document.querySelector("#ai-request"),
   aiContextState: document.querySelector("#ai-context-state"),
   submitAi: document.querySelector("#submit-ai"),
@@ -386,6 +405,10 @@ let initialContextPending = true;
 let workspaceLoading = true;
 let portableBackupUI = null;
 let figmaWorkflowUI = null;
+let pendingFigmaImport = null;
+let figmaPreparationSequence = 0;
+let designPublicationSequence = 0;
+let pristineBlankSnapshot = null;
 let reviewCommentsUI = null;
 let prototypeUI = null;
 let stagedFigmaBinding = null;
@@ -404,6 +427,103 @@ let localHtmlFiles = new Map();
 let lastHtmlImportReport = null;
 let htmlImportGeneration = 0;
 const loadedFontResourceIds = new Set();
+let liveRenderRevision = 0;
+let canvasHandles = [];
+const decodedRendererResources = new Map();
+const gpuRenderer = createRendererController({
+  canvas: elements.gpuCanvas,
+  assetsBaseUrl: new URL("./canvas/vendor/", import.meta.url).href,
+  loadRenderer: async () => {
+    const { createRenderer } = await import("./canvas/canvaskit-renderer.mjs");
+    return {
+      createRenderer: (options) => createRenderer({ ...options, background: "transparent" }),
+    };
+  },
+  onState(state) {
+    elements.gpuCanvas.hidden = !state.active;
+    elements.stageWrap.dataset.gpuActive = String(state.active);
+    elements.stageWrap.dataset.rendererStatus = state.status;
+    elements.rendererState.textContent = state.active
+      ? "CanvasKit GPU"
+      : state.loading
+        ? "GPU 加载中"
+        : "GPU 不可用";
+    elements.rendererState.title = state.reason || "CanvasKit · WebGL2";
+    elements.rendererMessage.hidden = state.active;
+    elements.retryRenderer.hidden = state.loading;
+    elements.rendererMessageText.textContent = state.loading
+      ? "正在准备 GPU 画布…"
+      : state.status === "unavailable"
+        ? "当前宿主不支持 GPU 画布，请更新 CodeShell 后重试。"
+        : "GPU 画布暂时不可用，设计数据已保留。请点击重试。";
+  },
+});
+
+function advanceDocumentEpoch() {
+  documentEpoch += 1;
+  void gpuRenderer.update({ design: null, suspended: true });
+}
+
+function rendererResources() {
+  const resources = new Map();
+  const retained = new Set((design.resources ?? []).map((resource) => resource.id));
+  for (const [id, cached] of decodedRendererResources)
+    if (!retained.has(id) || resourceDataUrls.get(id) !== cached.url)
+      decodedRendererResources.delete(id);
+  for (const descriptor of design.resources ?? []) {
+    const url = resourceDataUrls.get(descriptor.id);
+    if (!url) continue;
+    let cached = decodedRendererResources.get(descriptor.id);
+    if (cached?.url !== url) {
+      const encoded = url.slice(url.indexOf(",") + 1);
+      cached = { url, bytes: Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0)) };
+      decodedRendererResources.set(descriptor.id, cached);
+    }
+    const bytes = cached.bytes;
+    resources.set(descriptor.id, { descriptor, bytes, mimeType: descriptor.mime });
+  }
+  return resources;
+}
+
+function syncGpuRenderer() {
+  const bounds = elements.stage.getBoundingClientRect();
+  elements.stageWrap.dataset.grid = String(showGrid);
+  const renderDesign = inlineTextEdit
+    ? {
+        ...design,
+        nodes: design.nodes.map((node) =>
+          node.id === inlineTextEdit.nodeId ? { ...node, visible: false } : node,
+        ),
+      }
+    : design;
+  void gpuRenderer.update({
+    key: `${workspaceEpoch}/${documentEpoch}/${design.activePageId}`,
+    revision: `${designStateSequence}/${liveRenderRevision}/${resourceDataUrls.size}/${inlineTextEdit?.nodeId ?? ""}`,
+    design: renderDesign,
+    getResources: rendererResources,
+    capable: !window.codeshellPanel?.call
+      ? typeof WebAssembly === "object"
+      : context.capabilities?.packageAssets?.wasm === true,
+    suspended: workspaceLoading,
+    viewport: {
+      width: bounds.width,
+      height: bounds.height,
+      dpr: canvasPixelRatio(bounds),
+      pan,
+      zoom,
+    },
+  });
+}
+
+function canvasPixelRatio({ width, height }) {
+  if (width <= 0 || height <= 0) return 1;
+  return Math.min(
+    window.devicePixelRatio || 1,
+    8192 / width,
+    8192 / height,
+    Math.sqrt((16 * 1024 * 1024) / (width * height)),
+  );
+}
 
 function scopedStorageKey(base, workspaceRoot = context.cwd ?? "preview") {
   let primary = 2_166_136_261;
@@ -805,9 +925,9 @@ function isEffectivelyVisible(node) {
   return isDesignNodeVisible(design, node);
 }
 
-function isNodeEffectivelyLocked(node, nodes) {
+function isNodeEffectivelyLocked(node, nodes, nodeIndex = null) {
   if (node.locked) return true;
-  const byId = new Map(nodes.map((candidate) => [candidate.id, candidate]));
+  const byId = nodeIndex ?? new Map(nodes.map((candidate) => [candidate.id, candidate]));
   const seen = new Set();
   let parentId = node.parentId;
   while (parentId && !seen.has(parentId)) {
@@ -824,9 +944,9 @@ function isEffectivelyLocked(node) {
   return isNodeEffectivelyLocked(node, design.nodes);
 }
 
-function nodeTransform(node, nodes = design.nodes) {
+function nodeTransform(node, nodes = design.nodes, nodeIndex = null) {
   const transforms = [];
-  const byId = new Map(nodes.map((candidate) => [candidate.id, candidate]));
+  const byId = nodeIndex ?? new Map(nodes.map((candidate) => [candidate.id, candidate]));
   const ancestors = [];
   const seen = new Set();
   let parentId = node.parentId;
@@ -895,18 +1015,26 @@ function containingFrame(point) {
 }
 
 function layerEntries() {
+  const byId = new Map(),
+    childrenByParent = new Map();
+  // Reverse once while indexing so roots and siblings retain their canvas stack order.
+  for (let index = design.nodes.length - 1; index >= 0; index -= 1) {
+    const node = design.nodes[index];
+    byId.set(node.id, node);
+    const parentId = node.parentId || null;
+    const children = childrenByParent.get(parentId) ?? [];
+    children.push(node);
+    childrenByParent.set(parentId, children);
+  }
   const entries = [];
+  const expandCollapsed = Boolean(layerFilter.trim());
   const visit = (node, depth) => {
     entries.push({ node, depth });
-    if (collapsedLayerIds.has(node.id) && !layerFilter.trim()) return;
-    for (const child of [...design.nodes].reverse()) {
-      if (child.parentId === node.id) visit(child, depth + 1);
-    }
+    if (collapsedLayerIds.has(node.id) && !expandCollapsed) return;
+    for (const child of childrenByParent.get(node.id) ?? []) visit(child, depth + 1);
   };
-  for (const node of [...design.nodes].reverse()) {
-    if (!node.parentId) visit(node, 0);
-  }
-  return entries;
+  for (const node of childrenByParent.get(null) ?? []) visit(node, 0);
+  return { entries, byId, childrenByParent };
 }
 
 function clearSelection() {
@@ -1204,6 +1332,7 @@ function queueRecovery() {
 }
 
 function markChanged(render = true) {
+  liveRenderRevision += 1;
   updateDirtyState();
   queueRecovery();
   if (render) renderAll();
@@ -1261,6 +1390,7 @@ function commitHistory() {
   historyIndex = history.length;
   historyState = nextState;
   designStateSequence += 1;
+  syncGpuRenderer();
 }
 
 function restoreHistory(nextIndex) {
@@ -1402,475 +1532,61 @@ function createUiIcon(name, className = "") {
 }
 
 function shouldRenderCanvasLabel(node, options = {}) {
-  return (
-    options.suppressLabel !== true && zoom >= 0.65 && (!node.parentId || selectedIds.has(node.id))
-  );
+  return options.suppressLabel !== true && (!node.parentId || selectedIds.has(node.id));
 }
 
-function appendAncestorClipChain(root, node, clipIds, nodes = design.nodes) {
-  let content = root;
-  const byId = new Map(nodes.map((candidate) => [candidate.id, candidate]));
-  const seen = new Set();
-  let parentId = node.parentId;
-  while (parentId && !seen.has(parentId)) {
-    seen.add(parentId);
-    const parent = byId.get(parentId);
-    if (!parent) break;
-    const clipId = clipIds.get(parent.id);
-    if (clipId) {
-      const clipped = svgElement("g", { "clip-path": `url(#${clipId})` });
-      content.append(clipped);
-      content = clipped;
-    }
-    parentId = parent.parentId;
-  }
-  return content;
+let viewportRenderFrame = 0;
+let interactionRenderFrame = 0;
+
+function scheduleViewportRender() {
+  if (viewportRenderFrame) return;
+  viewportRenderFrame = requestAnimationFrame(() => renderViewport());
+}
+
+function renderViewport() {
+  if (viewportRenderFrame) cancelAnimationFrame(viewportRenderFrame);
+  viewportRenderFrame = 0;
+  renderSceneOverlays();
+  elements.zoomValue.textContent = `${Math.round(zoom * 100)}%`;
+  updateInlineTextEditorPosition();
+  syncGpuRenderer();
+}
+
+function scheduleInteractionRender() {
+  if (interactionRenderFrame) return;
+  interactionRenderFrame = requestAnimationFrame(() => {
+    interactionRenderFrame = 0;
+    if (["move", "resize", "create"].includes(interaction?.kind)) liveRenderRevision += 1;
+    renderScene();
+    renderProperties();
+  });
 }
 
 function renderScene() {
-  elements.scene.replaceChildren();
-  elements.scene.setAttribute("transform", `translate(${pan.x} ${pan.y}) scale(${zoom})`);
-
-  const artboard = svgElement("rect", {
-    x: 0,
-    y: 0,
-    width: design.canvas.width,
-    height: design.canvas.height,
-    rx: 2,
-    fill: design.canvas.background,
-    filter: "url(#artboard-shadow)",
-  });
-  artboard.dataset.canvas = "true";
-  elements.scene.append(artboard);
-
-  const clipIds = new Map();
-  const componentClipIds = new Map();
-  const shadowIds = new Map();
-  const sceneDefs = svgElement("defs");
-  const renderNodes = allDesignNodes();
-  const renderDocument = { ...design, nodes: renderNodes };
-  renderNodes.forEach((node, index) => {
-    if (["frame", "component"].includes(node.type) && node.clipContent === true) {
-      const id = `frame-clip-${index}`;
-      clipIds.set(node.id, id);
-      const clipPath = svgElement("clipPath", {
-        id,
-        clipPathUnits: "userSpaceOnUse",
-      });
-      const clipRect = svgElement("rect", {
-        x: node.x,
-        y: node.y,
-        width: node.width,
-        height: node.height,
-        rx: Math.min(node.cornerRadius, node.width / 2, node.height / 2),
-      });
-      const transform = nodeTransform(node, renderNodes);
-      if (transform) clipRect.setAttribute("transform", transform);
-      clipPath.append(clipRect);
-      sceneDefs.append(clipPath);
-    }
-    if (node.shadow && node.shadow.opacity > 0 && node.type !== "group") {
-      const id = `node-shadow-${index}`;
-      const bounds = renderedDesignNodeShadowFilterBounds(renderDocument, node, renderNodes);
-      shadowIds.set(node.id, id);
-      const filter = svgElement("filter", {
-        id,
-        filterUnits: "userSpaceOnUse",
-        x: bounds.x,
-        y: bounds.y,
-        width: bounds.width,
-        height: bounds.height,
-      });
-      filter.append(
-        svgElement("feDropShadow", {
-          dx: node.shadow.x,
-          dy: node.shadow.y,
-          stdDeviation: node.shadow.blur / 2,
-          "flood-color": node.shadow.color,
-          "flood-opacity": node.shadow.opacity,
-        }),
-      );
-      sceneDefs.append(filter);
-    }
-  });
-  renderNodes
-    .filter((node) => node.type === "component")
-    .forEach((component, componentIndex) => {
-      const sourceDocument = detachedComponentRenderDocument(renderDocument, component.id);
-      const sourceIds = descendantIds(sourceDocument.nodes, new Set([component.id]));
-      sourceIds.add(component.id);
-      const sourceClipIds = new Map();
-      sourceDocument.nodes.forEach((node, nodeIndex) => {
-        if (
-          !sourceIds.has(node.id) ||
-          !["frame", "component"].includes(node.type) ||
-          node.clipContent !== true
-        ) {
-          return;
-        }
-        const id = `component-${componentIndex}-clip-${nodeIndex}`;
-        sourceClipIds.set(node.id, id);
-        const clipPath = svgElement("clipPath", {
-          id,
-          clipPathUnits: "userSpaceOnUse",
-        });
-        const clipRect = svgElement("rect", {
-          x: node.x,
-          y: node.y,
-          width: node.width,
-          height: node.height,
-          rx: Math.min(node.cornerRadius, node.width / 2, node.height / 2),
-        });
-        const transform = nodeTransform(node, sourceDocument.nodes);
-        if (transform) clipRect.setAttribute("transform", transform);
-        clipPath.append(clipRect);
-        sceneDefs.append(clipPath);
-      });
-      componentClipIds.set(component.id, sourceClipIds);
-    });
-  if (clipIds.size + shadowIds.size > 0) elements.scene.append(sceneDefs);
-  for (const node of design.nodes) {
-    if (!isEffectivelyVisible(node)) continue;
-    elements.scene.append(
-      renderNode(node, clipIds, shadowIds, { renderDocument, componentClipIds }),
-    );
-  }
-  const nodes = selectedNodes().filter((node) => isEffectivelyVisible(node));
-  if (nodes.length === 1) {
-    elements.scene.append(renderSelection(nodes[0], true));
-  } else if (nodes.length > 1) {
-    for (const node of nodes) elements.scene.append(renderSelection(node, false));
-    elements.scene.append(renderMultiSelection(nodes));
-  }
-  if (interaction?.kind === "marquee") elements.scene.append(renderMarquee(interaction));
-  if (interaction?.kind === "move" && interaction.guides?.length) {
-    elements.scene.append(renderSmartGuides(interaction.guides));
-  }
-  renderSelectionSize(nodes);
+  if (interactionRenderFrame) cancelAnimationFrame(interactionRenderFrame);
+  interactionRenderFrame = 0;
+  if (viewportRenderFrame) cancelAnimationFrame(viewportRenderFrame);
+  viewportRenderFrame = 0;
+  renderSceneOverlays();
+  syncGpuRenderer();
 }
 
-function renderInstanceNode(node, clipIds, shadowIds, options = {}) {
-  const renderDocument = options.renderDocument ?? design;
-  const renderNodes = renderDocument.nodes;
-  const component = renderNodes.find(
-    (candidate) => candidate.id === node.componentId && candidate.type === "component",
-  );
-  const group = svgElement("g");
-  group.dataset.nodeId = node.id;
-  group.dataset.componentId = node.componentId;
-  const content = appendAncestorClipChain(group, node, clipIds, renderNodes);
-  const shadowId = shadowIds.get(node.id);
-  if (shadowId) content.setAttribute("filter", `url(#${shadowId})`);
-  const transform = nodeTransform(node, renderNodes);
-  if (transform) content.setAttribute("transform", transform);
-  content.setAttribute("opacity", effectiveDesignNodeOpacity(renderDocument, node));
-  const instanceStack = options.instanceStack ?? new Set();
-  if (
-    !component ||
-    component.width <= 0 ||
-    component.height <= 0 ||
-    instanceStack.has(component.id)
-  ) {
-    const missing = svgElement("rect", {
-      x: node.x,
-      y: node.y,
-      width: Math.max(1, node.width),
-      height: Math.max(1, node.height),
-      fill: "none",
-      stroke: "#ff5c78",
-      "stroke-width": 1.5 / zoom,
-      "stroke-dasharray": `${6 / zoom} ${4 / zoom}`,
-    });
-    missing.dataset.nodeId = node.id;
-    content.append(missing);
-    return group;
-  }
-  const nextInstanceStack = new Set(instanceStack);
-  nextInstanceStack.add(component.id);
-  const sourceDocument = detachedComponentRenderDocument(renderDocument, component.id);
-  const sourceComponent = sourceDocument.nodes.find((candidate) => candidate.id === component.id);
-  const componentClipIds = options.componentClipIds ?? new Map();
-  const sourceClipIds = componentClipIds.get(component.id) ?? clipIds;
-
-  const mapped = svgElement("g", {
-    transform: `translate(${node.x} ${node.y}) scale(${node.width / component.width} ${
-      node.height / component.height
-    }) translate(${-component.x} ${-component.y})`,
-  });
-  const componentDescendantIds = descendantIds(sourceDocument.nodes, new Set([component.id]));
-  const sourceNodes = [
-    sourceComponent,
-    ...sourceDocument.nodes.filter((candidate) => componentDescendantIds.has(candidate.id)),
-  ].filter(Boolean);
-  for (const sourceNode of sourceNodes) {
-    if (!isDesignNodeVisible(sourceDocument, sourceNode)) continue;
-    const source = renderNode(sourceNode, sourceClipIds, shadowIds, {
-      suppressLabel: true,
-      instanceStack: nextInstanceStack,
-      renderDocument: sourceDocument,
-      componentClipIds,
-    });
-    source.dataset.nodeId = node.id;
-    for (const target of source.querySelectorAll("[data-node-id]")) {
-      target.dataset.componentNodeId = target.dataset.nodeId;
-      target.dataset.nodeId = node.id;
-    }
-    mapped.append(source);
-  }
-  content.append(mapped);
-  if (shouldRenderCanvasLabel(node)) {
-    const label = svgElement("text", {
-      x: node.x,
-      y: node.y - 18 / zoom,
-      fill: "#a78bfa",
-      "font-size": 11 / zoom,
-      "font-weight": 650,
-      "font-family": "Inter, ui-sans-serif, system-ui, sans-serif",
-    });
-    label.textContent = `◆ ${node.name}`;
-    label.dataset.nodeId = node.id;
-    content.append(label);
-  }
-  return group;
-}
-
-function renderNode(node, clipIds, shadowIds, options = {}) {
-  if (node.type === "instance") return renderInstanceNode(node, clipIds, shadowIds, options);
-  const renderDocument = options.renderDocument ?? design;
-  const renderNodes = renderDocument.nodes;
-  const group = svgElement("g");
-  group.dataset.nodeId = node.id;
-  const content = appendAncestorClipChain(group, node, clipIds, renderNodes);
-  const transform = nodeTransform(node, renderNodes);
-  if (transform) content.setAttribute("transform", transform);
-  content.setAttribute("opacity", effectiveDesignNodeOpacity(renderDocument, node));
-
-  let visual;
-  if (node.type === "ellipse") {
-    visual = svgElement("ellipse", {
-      cx: node.x + node.width / 2,
-      cy: node.y + node.height / 2,
-      rx: Math.max(0.5, node.width / 2),
-      ry: Math.max(0.5, node.height / 2),
-      fill: node.fill,
-      stroke: node.stroke,
-      "stroke-width": node.strokeWidth,
-    });
-  } else if (node.type === "text") {
-    const fontResource = node.fontRef
-      ? design.resources?.find((resource) => resource.id === node.fontRef)
-      : null;
-    const textX =
-      node.textAlign === "center"
-        ? node.x + node.width / 2
-        : node.textAlign === "right"
-          ? node.x + node.width
-          : node.x;
-    visual = svgElement("text", {
-      x: textX,
-      y: node.y,
-      fill: node.fill,
-      stroke: node.stroke,
-      "stroke-width": node.strokeWidth,
-      "font-size": node.fontSize,
-      "font-weight": node.fontWeight,
-      "font-family":
-        fontResource?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
-      "font-style": node.fontStyle ?? "normal",
-      "letter-spacing": node.letterSpacing ?? 0,
-      "text-decoration": node.textDecoration ?? "none",
-      "dominant-baseline": "hanging",
-      "text-anchor":
-        node.textAlign === "center" ? "middle" : node.textAlign === "right" ? "end" : "start",
-    });
-    const lines = String(node.text).split("\n");
-    lines.forEach((line, index) => {
-      const span = svgElement("tspan", {
-        x: textX,
-        y: node.y + index * node.fontSize * node.lineHeight,
-      });
-      span.textContent = line || " ";
-      visual.append(span);
-    });
-    visual.dataset.textNodeId = node.id;
-    if (inlineTextEdit?.nodeId === node.id) visual.style.visibility = "hidden";
-  } else if (node.type === "image") {
-    const source = resourceDataUrls.get(node.imageRef);
-    visual = source
-      ? svgElement("image", {
-          x: node.x,
-          y: node.y,
-          width: Math.max(1, node.width),
-          height: Math.max(1, node.height),
-          href: source,
-          preserveAspectRatio:
-            node.objectFit === "fill"
-              ? "none"
-              : node.objectFit === "contain"
-                ? "xMidYMid meet"
-                : "xMidYMid slice",
-        })
-      : svgElement("rect", {
-          x: node.x,
-          y: node.y,
-          width: Math.max(1, node.width),
-          height: Math.max(1, node.height),
-          fill: "#fff0f3",
-          stroke: "#ff5c78",
-          "stroke-width": 1.5 / zoom,
-          "stroke-dasharray": `${6 / zoom} ${4 / zoom}`,
-        });
-  } else if (node.type === "group") {
-    visual = svgElement("rect", {
-      x: node.x,
-      y: node.y,
-      width: Math.max(1, node.width),
-      height: Math.max(1, node.height),
-      fill: "transparent",
-      stroke: "transparent",
-      "pointer-events": "all",
-    });
-  } else {
-    visual = svgElement("rect", {
-      x: node.x,
-      y: node.y,
-      width: Math.max(1, node.width),
-      height: Math.max(1, node.height),
-      rx: Math.min(node.cornerRadius, node.width / 2, node.height / 2),
-      fill: node.fill,
-      stroke: node.stroke,
-      "stroke-width": node.strokeWidth,
-    });
-  }
-  visual.dataset.nodeId = node.id;
-  const shadowId = shadowIds.get(node.id);
-  if (shadowId) visual.setAttribute("filter", `url(#${shadowId})`);
-  visual.style.pointerEvents = isNodeEffectivelyLocked(node, renderNodes)
-    ? "visiblePainted"
-    : "all";
-  content.append(visual);
-
-  if (isContainerNode(node) && shouldRenderCanvasLabel(node, options)) {
-    const label = svgElement("text", {
-      x: node.x,
-      y: node.y - 18 / zoom,
-      fill: "#8a8a85",
-      "font-size": 11 / zoom,
-      "font-weight": 600,
-      "font-family": "Inter, ui-sans-serif, system-ui, sans-serif",
-    });
-    label.textContent = `${node.type === "component" ? "◇ " : node.type === "group" ? "▣ " : ""}${node.name}`;
-    label.dataset.nodeId = node.id;
-    content.append(label);
-  }
-  return group;
-}
-
-function renderSelection(node, showHandles) {
-  const locked = isEffectivelyLocked(node);
-  const overlay = svgElement("g", {
-    transform: nodeTransform(node),
-  });
-  const border = svgElement("rect", {
-    x: node.x,
-    y: node.y,
-    width: node.width,
-    height: node.height,
-    fill: "none",
-    stroke: locked ? "#ffae52" : "#4f7cff",
-    "stroke-width": 1.5 / zoom,
-    "stroke-dasharray": locked ? `${5 / zoom} ${3 / zoom}` : "",
-    "pointer-events": "none",
-  });
-  overlay.append(border);
-  if (!showHandles || locked || nodeTransform(node) || activeTool !== "select") return overlay;
-
-  const size = 8 / zoom;
-  const handles = [
-    ["nw", node.x, node.y, "nwse-resize"],
-    ["ne", node.x + node.width, node.y, "nesw-resize"],
-    ["se", node.x + node.width, node.y + node.height, "nwse-resize"],
-    ["sw", node.x, node.y + node.height, "nesw-resize"],
-  ];
-  for (const [handle, x, y, cursor] of handles) {
-    if (window.matchMedia("(pointer: coarse)").matches) {
-      const hitSize = 28 / zoom;
-      const hitArea = svgElement("rect", {
-        x: x - hitSize / 2,
-        y: y - hitSize / 2,
-        width: hitSize,
-        height: hitSize,
-        fill: "transparent",
-      });
-      hitArea.dataset.handle = handle;
-      hitArea.style.cursor = cursor;
-      overlay.append(hitArea);
-    }
-    const point = svgElement("rect", {
-      x: x - size / 2,
-      y: y - size / 2,
-      width: size,
-      height: size,
-      rx: 1.5 / zoom,
-      fill: "#ffffff",
-      stroke: "#315fda",
-      "stroke-width": 1.5 / zoom,
-    });
-    point.dataset.handle = handle;
-    point.style.cursor = cursor;
-    overlay.append(point);
-  }
-  return overlay;
-}
-
-function renderMultiSelection(nodes) {
-  const bounds = visualSelectionBounds(nodes, design.nodes);
-  return svgElement("rect", {
-    x: bounds.x,
-    y: bounds.y,
+function renderSceneOverlays() {
+  const bounds = elements.stage.getBoundingClientRect();
+  canvasHandles = drawCanvasInteraction(elements.stage, {
+    design,
+    selectedIds,
+    pan,
+    zoom,
+    dpr: canvasPixelRatio(bounds),
     width: bounds.width,
     height: bounds.height,
-    fill: "none",
-    stroke: "#4f7cff",
-    "stroke-width": 1.5 / zoom,
-    "stroke-dasharray": `${4 / zoom} ${3 / zoom}`,
-    "pointer-events": "none",
+    activeTool,
+    interaction,
+    isLocked: isEffectivelyLocked,
   });
-}
-
-function renderMarquee(state) {
-  const x = Math.min(state.start.x, state.current.x);
-  const y = Math.min(state.start.y, state.current.y);
-  return svgElement("rect", {
-    x,
-    y,
-    width: Math.abs(state.current.x - state.start.x),
-    height: Math.abs(state.current.y - state.start.y),
-    fill: "#4f7cff",
-    "fill-opacity": 0.08,
-    stroke: "#6d9cff",
-    "stroke-width": 1 / zoom,
-    "stroke-dasharray": `${3 / zoom} ${2 / zoom}`,
-    "pointer-events": "none",
-  });
-}
-
-function renderSmartGuides(guides) {
-  const group = svgElement("g", { "pointer-events": "none" });
-  for (const guide of guides) {
-    group.append(
-      svgElement("line", {
-        x1: guide.axis === "x" ? guide.value : 0,
-        x2: guide.axis === "x" ? guide.value : design.canvas.width,
-        y1: guide.axis === "y" ? guide.value : 0,
-        y2: guide.axis === "y" ? guide.value : design.canvas.height,
-        stroke: "#ff4fa3",
-        "stroke-width": 1 / zoom,
-        "stroke-dasharray": `${4 / zoom} ${3 / zoom}`,
-      }),
-    );
-  }
-  return group;
+  const index = new Map(design.nodes.map((node) => [node.id, node]));
+  renderSelectionSize(selectedNodes().filter((node) => isDesignNodeVisible(design, node, index)));
 }
 
 function renderSelectionSize(nodes) {
@@ -1939,24 +1655,21 @@ function updateInlineTextEditorPosition() {
     return;
   }
   const node = edit.node;
-  const visual = [...elements.stage.querySelectorAll("[data-text-node-id]")].find(
-    (element) => element.dataset.textNodeId === node.id,
-  );
-  const matrix = visual?.getScreenCTM()?.translate(node.x, node.y);
-  if (!matrix) return;
-  const rect = elements.stageWrap.getBoundingClientRect();
+  const matrix = canvasNodeMatrix(node, design.nodes, pan, zoom);
   const font = design.resources?.find((resource) => resource.id === node.fontRef);
   Object.assign(elements.inlineTextEditor.style, {
     width: `${Math.max(28, node.width)}px`,
     height: `${Math.max(24, node.height)}px`,
-    fontFamily: font?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
+    fontFamily: designFontFamilyCss(
+      font?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
+    ),
     fontSize: `${node.fontSize}px`,
     fontWeight: String(node.fontWeight),
     fontStyle: node.fontStyle ?? "normal",
     lineHeight: String(node.lineHeight ?? 1.2),
     letterSpacing: `${node.letterSpacing ?? 0}px`,
     textAlign: node.textAlign ?? "left",
-    transform: `matrix(${matrix.a}, ${matrix.b}, ${matrix.c}, ${matrix.d}, ${matrix.e - rect.left}, ${matrix.f - rect.top})`,
+    transform: `matrix(${matrix.join(",")})`,
   });
 }
 
@@ -2275,7 +1988,8 @@ function toggleNodeVisibility(node) {
 function renderLayers() {
   elements.layersList.replaceChildren();
   const normalizedFilter = layerFilter.trim().toLowerCase();
-  const entries = layerEntries().filter(({ node }) => {
+  const indexed = layerEntries();
+  const entries = indexed.entries.filter(({ node }) => {
     if (!normalizedFilter) return true;
     return [node.name, node.id, node.type, node.notes]
       .filter(Boolean)
@@ -2288,14 +2002,14 @@ function renderLayers() {
     const row = document.createElement("div");
     row.className = `layer-row${selectedIds.has(node.id) ? " active" : ""}`;
     row.dataset.id = node.id;
-    row.dataset.hidden = String(!isEffectivelyVisible(node));
+    row.dataset.hidden = String(!isDesignNodeVisible(design, node, indexed.byId));
     row.role = "option";
     row.ariaSelected = String(selectedIds.has(node.id));
     row.ariaLabel = `${node.name}，${node.type}，${node.visible ? "可见" : "隐藏"}；按 V 切换显示`;
     row.style.setProperty("--layer-depth", String(depth));
     row.tabIndex = node.id === rovingId ? 0 : -1;
 
-    const hasChildren = design.nodes.some((candidate) => candidate.parentId === node.id);
+    const hasChildren = indexed.childrenByParent.has(node.id);
     const disclosure = document.createElement("button");
     disclosure.className = "layer-disclosure";
     disclosure.type = "button";
@@ -2410,7 +2124,10 @@ function renderTokens() {
     apply.addEventListener("click", () => {
       const nodes = selectedNodes().filter((node) => !isEffectivelyLocked(node));
       if (nodes.length === 0) return notify("先选择一个未锁定图层");
-      for (const node of nodes) node.fill = token.value;
+      for (const node of nodes) {
+        node.fill = token.value;
+        delete node.fillPaints;
+      }
       commitHistory();
       markChanged();
     });
@@ -2684,7 +2401,7 @@ function renderAll() {
   updateLayoutControlState();
   updateInlineTextEditorPosition();
   elements.zoomValue.textContent = `${Math.round(zoom * 100)}%`;
-  elements.grid.style.display = showGrid ? "" : "none";
+  elements.stageWrap.dataset.grid = String(showGrid);
   elements.toggleGrid.classList.toggle("active", showGrid);
   elements.toggleGrid.setAttribute("aria-pressed", String(showGrid));
   elements.toggleSnap.classList.toggle("active", snapEnabled);
@@ -2729,19 +2446,27 @@ function documentPoint(event) {
 }
 
 function pointerDown(event) {
-  if (interaction || (event.button !== 0 && event.button !== 1)) return;
+  if (interaction || !gpuRenderer.state().active || (event.button !== 0 && event.button !== 1))
+    return;
   const before = {
     selectedId,
     selectedIds: new Set(selectedIds),
     tool: activeTool,
   };
   const point = documentPoint(event);
-  const handle = event.target.closest?.("[data-handle]")?.dataset.handle;
-  const targetId = event.target.closest?.("[data-node-id]")?.dataset.nodeId;
+  const handle = hitTestCanvasHandle(
+    point,
+    canvasHandles,
+    zoom,
+    window.matchMedia("(pointer: coarse)").matches,
+  );
+  const targetId = (
+    hitTestCanvasLabel(design, point, zoom, selectedIds, elements.stage.getContext("2d")) ??
+    hitTestCanvasNode(design, point)
+  )?.id;
   const shouldPan = activeTool === "hand" || spacePressed || event.button === 1;
 
-  // Replacing SVG nodes during selection suppresses native click/dblclick.
-  // Recognize two completed, stationary pointer taps on the same text instead.
+  // Recognize completed stationary taps across pointer-capture transitions.
   const textTarget =
     activeTool === "select" && !shouldPan && !event.shiftKey && nodeById(targetId)?.type === "text";
   if (
@@ -2874,6 +2599,19 @@ function pointerDown(event) {
 }
 
 function pointerMove(event) {
+  if (!interaction) {
+    const handle = hitTestCanvasHandle(
+      documentPoint(event),
+      canvasHandles,
+      zoom,
+      window.matchMedia("(pointer: coarse)").matches,
+    );
+    elements.stage.style.cursor = handle
+      ? ["nw", "se"].includes(handle)
+        ? "nwse-resize"
+        : "nesw-resize"
+      : "";
+  }
   if (!interaction || event.pointerId !== interaction.pointerId) return;
   if (!interactionIsCurrent(interaction)) {
     releaseInteraction();
@@ -2883,9 +2621,10 @@ function pointerMove(event) {
   if (interaction.kind === "pan") {
     pan.x = interaction.startPan.x + event.clientX - interaction.startClient.x;
     pan.y = interaction.startPan.y + event.clientY - interaction.startClient.y;
-    renderScene();
+    scheduleViewportRender();
     return;
   }
+  const nodeIndex = new Map(design.nodes.map((node) => [node.id, node]));
   if (interaction.kind === "marquee") {
     interaction.current = point;
     const left = Math.min(interaction.start.x, point.x);
@@ -2894,8 +2633,8 @@ function pointerMove(event) {
     const bottom = Math.max(interaction.start.y, point.y);
     const enclosed = design.nodes
       .filter((node) => {
-        if (!isEffectivelyVisible(node)) return false;
-        const bounds = transformedNodeBoundsInTree(design.nodes, node);
+        if (!isDesignNodeVisible(design, node, nodeIndex)) return false;
+        const bounds = transformedNodeBoundsInTree(design.nodes, node, nodeIndex);
         return (
           bounds &&
           bounds.x >= left &&
@@ -2921,10 +2660,10 @@ function pointerMove(event) {
     }
     if (snapEnabled && !event.altKey && interaction.bounds && !interaction.inheritsRotation) {
       const stationaryNodes = design.nodes.filter(
-        (node) => !interaction.origins.has(node.id) && isEffectivelyVisible(node),
+        (node) => !interaction.origins.has(node.id) && isDesignNodeVisible(design, node, nodeIndex),
       );
       const stationaryBounds = stationaryNodes.map((node) => ({
-        ...transformedNodeBoundsInTree(design.nodes, node),
+        ...transformedNodeBoundsInTree(design.nodes, node, nodeIndex),
         id: node.id,
       }));
       const snapped = snapBoundsToNodes(
@@ -2976,8 +2715,7 @@ function pointerMove(event) {
     resizeNode(node, snapPoint(point, event.altKey), interaction, event.shiftKey);
   }
   updateDirtyState();
-  renderScene();
-  renderProperties();
+  scheduleInteractionRender();
 }
 
 function resizeNode(node, point, state, preserveAspect) {
@@ -3039,6 +2777,10 @@ function finishInteraction(pointerId = null) {
   const current = interactionIsCurrent(interaction);
   const finished = releaseInteraction();
   if (!current) return;
+  if (finished.kind === "pan") {
+    renderViewport();
+    return;
+  }
   const node = finished.nodeId ? nodeById(finished.nodeId) : selectedNode();
   if (finished.kind === "create" && node && (node.width < 4 || node.height < 4)) {
     node.width = finished.tool === "frame" ? 390 : 160;
@@ -3085,9 +2827,21 @@ function cancelInteraction(pointerId = null) {
   } else if (cancelled.kind === "pan") {
     Object.assign(pan, cancelled.startPan);
   }
+  const selectionChanged =
+    selectedId !== cancelled.before.selectedId ||
+    selectedIds.size !== cancelled.before.selectedIds.size ||
+    [...selectedIds].some((id) => !cancelled.before.selectedIds.has(id));
   selectedId = cancelled.before.selectedId;
   selectedIds = cancelled.before.selectedIds;
   setActiveTool(cancelled.before.tool);
+  if (cancelled.kind === "pan") {
+    if (selectionChanged) renderAll();
+    else {
+      renderViewport();
+      renderSceneOverlays();
+    }
+    return;
+  }
   syncActivePageNodes();
   updateDirtyState();
   renderAll();
@@ -3445,7 +3199,7 @@ function setZoom(next, focalClient) {
   pan.x = focal.x - rect.left - documentX * nextZoom;
   pan.y = focal.y - rect.top - documentY * nextZoom;
   zoom = nextZoom;
-  renderAll();
+  scheduleViewportRender(true);
 }
 
 function fitCanvas() {
@@ -3455,7 +3209,7 @@ function fitCanvas() {
   zoom = clamp(Math.min(width / design.canvas.width, height / design.canvas.height), 0.1, 2);
   pan.x = (elements.stage.clientWidth - design.canvas.width * zoom) / 2;
   pan.y = (elements.stage.clientHeight - design.canvas.height * zoom) / 2;
-  renderAll();
+  renderViewport(true);
 }
 
 function fitSelection() {
@@ -3474,7 +3228,7 @@ function fitSelection() {
   );
   pan.x = elements.stage.clientWidth / 2 - (bounds.x + bounds.width / 2) * zoom;
   pan.y = elements.stage.clientHeight / 2 - (bounds.y + bounds.height / 2) * zoom;
-  renderAll();
+  renderViewport(true);
 }
 
 function normalizeDocument(input) {
@@ -3918,17 +3672,41 @@ async function performSaveDocument(request) {
         value: sourceBinding ?? null,
       };
     const replacesCurrentSource = path === currentSourcePath;
-    const result = await bundleHostCall(
-      "workspace.writeText",
-      {
-        path,
-        content: persistence.primarySource,
-        expectedModifiedAt: replacesCurrentSource ? currentModifiedAt : null,
-        ...(replacesCurrentSource && currentRevision ? { expectedRevision: currentRevision } : {}),
-      },
-      operationWorkspaceEpoch,
-    );
+    let result;
+    try {
+      result = await bundleHostCall(
+        "workspace.writeText",
+        {
+          path,
+          content: persistence.primarySource,
+          expectedModifiedAt: replacesCurrentSource ? currentModifiedAt : null,
+          ...(replacesCurrentSource && currentRevision
+            ? { expectedRevision: currentRevision }
+            : {}),
+        },
+        operationWorkspaceEpoch,
+      );
+    } catch (writeError) {
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
+      let observed;
+      try {
+        observed = await bundleHostCall("workspace.readText", { path }, operationWorkspaceEpoch);
+        assertWorkspaceEpoch(operationWorkspaceEpoch);
+      } catch (readError) {
+        assertWorkspaceEpoch(operationWorkspaceEpoch);
+        if (!isMissingDesignSidecar(readError)) {
+          // An unobservable failed receipt cannot prove that publication did not happen.
+          designPublicationSequence += 1;
+          writeError.designPublicationUnknown = true;
+          writeError.message = `保存结果无法确认；已保留当前画布，请核对 ${path} 后再重试。${writeError.message}`;
+        }
+        throw writeError;
+      }
+      if (observed.content !== persistence.primarySource) throw writeError;
+      result = { ...observed, writeReceiptRecovered: true };
+    }
     assertWorkspaceEpoch(operationWorkspaceEpoch);
+    designPublicationSequence += 1;
     fileDiscoveryCache = null;
     recoveryFailureWarned = false;
     const stillTargetsSavedPath =
@@ -4027,7 +3805,7 @@ async function performSaveDocument(request) {
     if (workspaceEpoch !== operationWorkspaceEpoch) throw error;
     const message = error instanceof Error ? error.message : "保存失败";
     queueRecovery();
-    setSaveState("保存失败", "error");
+    setSaveState(error?.designPublicationUnknown ? "保存状态待核对" : "保存失败", "error");
     notify(
       message.includes("changed since")
         ? "文件已在面板外变化。请重新打开，或改一个文件名保存副本。"
@@ -4083,7 +3861,7 @@ async function settlePendingSaves() {
   }
 }
 
-async function openDocument(path, { discardChanges = false } = {}) {
+async function openDocument(path, { discardChanges = false, onOpened = () => {} } = {}) {
   finishInlineTextEdit();
   const operationWorkspaceEpoch = workspaceEpoch;
   const operationRecoverySession = recoverySession;
@@ -4114,7 +3892,7 @@ async function openDocument(path, { discardChanges = false } = {}) {
     design = resolved.pageCache
       ? resolved.document
       : normalizeDocument(resolved.document ?? JSON.parse(resolved.source));
-    documentEpoch += 1;
+    advanceDocumentEpoch();
     clearSelection();
     currentModifiedAt = result.modifiedAt;
     currentRevision = result.revision;
@@ -4133,6 +3911,7 @@ async function openDocument(path, { discardChanges = false } = {}) {
     savedSnapshot = serializeEditorState();
     resetHistory();
     updateDirtyState();
+    onOpened();
     await loadReferencedDesignResources();
     setRepoLinkState("Repo · 已打开", "linked");
     renderAll();
@@ -4216,7 +3995,7 @@ async function checkExternalChange({ force = false } = {}) {
         }
         cancelInteraction();
         design = nextDesign;
-        documentEpoch += 1;
+        advanceDocumentEpoch();
         clearSelection();
         currentModifiedAt = disk.modifiedAt;
         currentRevision = disk.revision;
@@ -4813,7 +4592,10 @@ async function compareFrontendFile({
     activePageId: design.activePageId,
   });
   const actualRenderDocument = normalizeDesignDocument(capturedDocument);
-  const expectedSvg = exportDesignSvg(expectedRenderDocument, { resourceDataUrls });
+  const expectedSvg = exportDesignSvg(expectedRenderDocument, {
+    resourceDataUrls,
+    maxBytes: 4 * 1024 * 1024,
+  });
   const actualSvg = exportDesignSvg(actualRenderDocument);
   const pixelMetrics = await compareSvgPixels(
     expectedSvg,
@@ -4871,6 +4653,80 @@ function setHtmlImportStatus(message, kind = "idle") {
   elements.htmlImportStatus.dataset.kind = kind;
 }
 
+// Capture file ownership as well as canvas history before an import changes either.
+function captureImportRollback() {
+  return {
+    design: clone(design),
+    history: [...history],
+    historyIndex,
+    historyState: clone(historyState),
+    selectedId,
+    selectedIds: new Set(selectedIds),
+    collapsedLayerIds: new Set(collapsedLayerIds),
+    documentEpoch,
+    designStateSequence,
+    lastAgentTransaction,
+    currentModifiedAt,
+    currentRevision,
+    currentSourcePath,
+    currentSourceModifiedAt,
+    currentSourceRevision,
+    currentDesignIndexManifest,
+    currentPageCache,
+    currentResourceCache,
+    currentPersistenceMode,
+    savedSnapshot,
+    savedOperationState,
+    recoveryBaseDocument,
+    pristineBlankSnapshot,
+    stagedFigmaBinding,
+    loadedFigmaBinding,
+    warnedExternalVersion,
+    publicationSequence: designPublicationSequence,
+    path: elements.path.value,
+    resourceDataUrls: new Map(resourceDataUrls),
+    loadedFontResourceIds: new Set(loadedFontResourceIds),
+  };
+}
+
+function restoreImportRollback(before) {
+  design = normalizeDesignState(before.design);
+  history = before.history;
+  historyIndex = before.historyIndex;
+  historyState = before.historyState;
+  selectedId = before.selectedId;
+  selectedIds = before.selectedIds;
+  collapsedLayerIds.clear();
+  for (const id of before.collapsedLayerIds) collapsedLayerIds.add(id);
+  documentEpoch = before.documentEpoch;
+  designStateSequence = before.designStateSequence;
+  lastAgentTransaction = before.lastAgentTransaction;
+  currentModifiedAt = before.currentModifiedAt;
+  currentRevision = before.currentRevision;
+  currentSourcePath = before.currentSourcePath;
+  currentSourceModifiedAt = before.currentSourceModifiedAt;
+  currentSourceRevision = before.currentSourceRevision;
+  currentDesignIndexManifest = before.currentDesignIndexManifest;
+  currentPageCache = before.currentPageCache;
+  currentResourceCache = before.currentResourceCache;
+  currentPersistenceMode = before.currentPersistenceMode;
+  savedSnapshot = before.savedSnapshot;
+  savedOperationState = before.savedOperationState;
+  recoveryBaseDocument = before.recoveryBaseDocument;
+  pristineBlankSnapshot = before.pristineBlankSnapshot;
+  stagedFigmaBinding = before.stagedFigmaBinding;
+  loadedFigmaBinding = before.loadedFigmaBinding;
+  warnedExternalVersion = before.warnedExternalVersion;
+  elements.path.value = before.path;
+  resourceDataUrls.clear();
+  for (const [id, value] of before.resourceDataUrls) resourceDataUrls.set(id, value);
+  loadedFontResourceIds.clear();
+  for (const id of before.loadedFontResourceIds) loadedFontResourceIds.add(id);
+  updateDirtyState();
+  renderAll();
+  if (dirty) queueRecovery();
+}
+
 async function replaceDesignWithHtmlImport(
   imported,
   {
@@ -4879,6 +4735,8 @@ async function replaceDesignWithHtmlImport(
     sourcePath,
     assertSource = () => {},
     onReplaced = () => {},
+    afterReplaced = async () => {},
+    targetPath,
   } = {},
 ) {
   const operationWorkspaceEpoch = workspaceEpoch;
@@ -4887,14 +4745,31 @@ async function replaceDesignWithHtmlImport(
   assertWorkspaceEpoch(operationWorkspaceEpoch);
   assertSource();
   const nextDesign = normalizeDocument(imported);
+  const before = captureImportRollback();
   const previous = clone(design);
   const previousSnapshot = serializeDesign();
   const nextSnapshot = serializeDocument(nextDesign);
   const documentBytes = measureDesignDocumentBytes(nextDesign);
-  if (nextSnapshot === previousSnapshot) {
-    onReplaced({ noOp: true });
+  if (
+    nextSnapshot === previousSnapshot &&
+    (!targetPath || targetPath === elements.path.value.trim())
+  ) {
     let savedResult = null;
-    if (save) savedResult = await saveDocument({ quiet: true });
+    const unchangedState = currentDesignStateRevision();
+    try {
+      onReplaced({ noOp: true });
+      await afterReplaced();
+      if (save) savedResult = await saveDocument({ quiet: true });
+    } catch (error) {
+      if (
+        workspaceEpoch === operationWorkspaceEpoch &&
+        documentEpoch === before.documentEpoch &&
+        currentDesignStateRevision() === unchangedState &&
+        designPublicationSequence === before.publicationSequence
+      )
+        restoreImportRollback(before);
+      throw error;
+    }
     assertWorkspaceEpoch(operationWorkspaceEpoch);
     return {
       path: elements.path.value.trim(),
@@ -4914,19 +4789,9 @@ async function replaceDesignWithHtmlImport(
     };
   }
 
-  const previousHistory = [...history];
   const previousHistoryIndex = historyIndex;
-  const previousHistoryState = clone(historyState);
   const previousSelectedId = selectedId;
   const previousSelectedIds = new Set(selectedIds);
-  const previousCollapsedLayerIds = new Set(collapsedLayerIds);
-  const previousDocumentEpoch = documentEpoch;
-  const previousDesignStateSequence = designStateSequence;
-  const previousAgentTransaction = lastAgentTransaction;
-  const previousPageCache = currentPageCache;
-  const previousResourceCache = currentResourceCache;
-  const previousResourceDataUrls = new Map(resourceDataUrls);
-  const previousLoadedFontResourceIds = new Set(loadedFontResourceIds);
   const changedNodeIds = new Set([
     ...allDesignNodes(previous).map((node) => node.id),
     ...allDesignNodes(nextDesign).map((node) => node.id),
@@ -4941,51 +4806,38 @@ async function replaceDesignWithHtmlImport(
   });
   resourceDataUrls.clear();
   loadedFontResourceIds.clear();
-  documentEpoch += 1;
+  advanceDocumentEpoch();
   clearSelection();
   collapsedLayerIds.clear();
   commitHistory();
+  if (targetPath) elements.path.value = targetPath;
   onReplaced();
   markChanged();
   const importedDocumentEpoch = documentEpoch;
   const importedStateRevision = currentDesignStateRevision();
   let savedResult = null;
-  if (save) {
-    try {
-      savedResult = await saveDocument({ quiet: true });
-      assertWorkspaceEpoch(operationWorkspaceEpoch);
-      if (
-        documentEpoch !== importedDocumentEpoch ||
-        currentDesignStateRevision() !== importedStateRevision
-      )
-        throw new Error("HTML 导入保存期间画布已变化；已保留较新的设计，请重新读取状态");
-    } catch (error) {
-      assertWorkspaceEpoch(operationWorkspaceEpoch);
-      if (
-        documentEpoch !== importedDocumentEpoch ||
-        currentDesignStateRevision() !== importedStateRevision
-      )
-        throw error;
-      design = normalizeDesignState(previous);
-      history = previousHistory;
-      historyIndex = previousHistoryIndex;
-      historyState = previousHistoryState;
-      selectedId = previousSelectedId;
-      selectedIds = previousSelectedIds;
-      collapsedLayerIds.clear();
-      for (const id of previousCollapsedLayerIds) collapsedLayerIds.add(id);
-      documentEpoch = previousDocumentEpoch;
-      designStateSequence = previousDesignStateSequence;
-      lastAgentTransaction = previousAgentTransaction;
-      currentPageCache = previousPageCache;
-      currentResourceCache = previousResourceCache;
-      resourceDataUrls.clear();
-      for (const [id, dataUrl] of previousResourceDataUrls) resourceDataUrls.set(id, dataUrl);
-      loadedFontResourceIds.clear();
-      for (const id of previousLoadedFontResourceIds) loadedFontResourceIds.add(id);
-      markChanged();
-      throw error;
+  try {
+    await afterReplaced();
+    assertWorkspaceEpoch(operationWorkspaceEpoch);
+    if (currentDesignStateRevision() !== importedStateRevision)
+      throw new Error("导入期间画布已变化；已保留较新的设计，请重新读取状态");
+    if (save) savedResult = await saveDocument({ quiet: true });
+    assertWorkspaceEpoch(operationWorkspaceEpoch);
+    if (
+      documentEpoch !== importedDocumentEpoch ||
+      currentDesignStateRevision() !== importedStateRevision
+    )
+      throw new Error("导入保存期间画布已变化；已保留较新的设计，请重新读取状态");
+  } catch (error) {
+    if (
+      workspaceEpoch === operationWorkspaceEpoch &&
+      documentEpoch === importedDocumentEpoch &&
+      currentDesignStateRevision() === importedStateRevision &&
+      designPublicationSequence === before.publicationSequence
+    ) {
+      restoreImportRollback(before);
     }
+    throw error;
   }
 
   let transactionId = null;
@@ -5191,14 +5043,53 @@ async function showAudit() {
     issues.length === 0
       ? `未发现问题 · ${design.pages.length} 页 · ${totalNodeCount} 个图层`
       : `${summary.issueCount} 个问题 · ${summary.blockingIssueCount} 个阻塞 · ${summary.errorCount} 个错误 · ${summary.warningCount} 个警告`;
-  elements.auditResults.replaceChildren();
-  if (issues.length === 0) {
-    const clean = document.createElement("div");
-    clean.className = "audit-clean";
-    clean.textContent = "✓ 结构与基础可访问性检查通过";
-    elements.auditResults.append(clean);
-  } else {
-    for (const issue of issues.slice(0, MAX_AGENT_AUDIT_ISSUES)) {
+  const controls = document.querySelector("#audit-controls");
+  controls.className = "audit-controls";
+  controls.innerHTML =
+    '<select aria-label="问题类型"></select><select aria-label="问题严重度"><option value="all">全部严重度</option><option value="blocking">阻塞问题</option><option value="warning">警告</option></select><button type="button" aria-label="上一页问题">上一页</button><span role="status"></span><button type="button" aria-label="下一页问题">下一页</button>';
+  const [typeFilter, severityFilter] = controls.querySelectorAll("select");
+  const [previous, next] = controls.querySelectorAll("button");
+  const count = controls.querySelector("span");
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = `全部类型 · ${issues.length}`;
+  typeFilter.append(all);
+  const names = {
+    "canvas-overflow": "超出画布",
+    "text-width-overflow": "文字宽度",
+    "parent-overflow": "超出父容器",
+    contrast: "文字对比度",
+    "invisible-text": "不可见文字",
+    "ancestor-clip-overflow": "祖先裁切",
+    "effect-canvas-overflow": "效果超出画布",
+  };
+  for (const group of groupAuditIssues(issues)) {
+    const option = document.createElement("option");
+    option.value = group.code;
+    option.textContent = `${names[group.code.split(".").at(-1)] ?? group.code} · ${group.count}`;
+    typeFilter.append(option);
+  }
+  let offset = 0;
+  const renderPage = () => {
+    const page = pageAuditIssues(issues, {
+      code: typeFilter.value,
+      severity: severityFilter.value,
+      offset,
+      limit: 50,
+    });
+    elements.auditResults.replaceChildren();
+    previous.disabled = offset === 0;
+    next.disabled = page.nextOffset === null;
+    count.textContent = page.total
+      ? `${offset + 1}–${offset + page.issues.length} / ${page.total}`
+      : "0 个问题";
+    if (!page.total) {
+      const clean = document.createElement("div");
+      clean.className = "audit-clean";
+      clean.textContent = issues.length ? "此筛选下没有问题" : "✓ 结构与基础可访问性检查通过";
+      elements.auditResults.append(clean);
+    }
+    for (const issue of page.issues) {
       const item = document.createElement("button");
       item.type = "button";
       item.className = "audit-issue";
@@ -5234,23 +5125,32 @@ async function showAudit() {
           if (pageChanged) {
             commitHistory();
             markChanged();
-            requestAnimationFrame(fitSelection);
-          } else {
-            renderAll();
-          }
+          } else renderAll();
+          requestAnimationFrame(fitSelection);
         })().catch((error) =>
           notify(error instanceof Error ? error.message : "无法定位问题图层", "error"),
         );
       });
       elements.auditResults.append(item);
     }
-    if (issues.length > MAX_AGENT_AUDIT_ISSUES) {
-      const truncated = document.createElement("div");
-      truncated.className = "audit-truncated";
-      truncated.textContent = `还有 ${issues.length - MAX_AGENT_AUDIT_ISSUES} 个问题未在本次列表中展开；修复后再次检查。`;
-      elements.auditResults.append(truncated);
-    }
-  }
+  };
+  typeFilter.addEventListener("change", () => {
+    offset = 0;
+    renderPage();
+  });
+  severityFilter.addEventListener("change", () => {
+    offset = 0;
+    renderPage();
+  });
+  previous.addEventListener("click", () => {
+    offset = Math.max(0, offset - 50);
+    renderPage();
+  });
+  next.addEventListener("click", () => {
+    offset += 50;
+    renderPage();
+  });
+  renderPage();
   await compactIndexedPageRuntime();
   elements.auditDialog.showModal();
 }
@@ -5299,13 +5199,19 @@ async function saveAuditReport() {
   }
 }
 
-function newDocument() {
+function newDocument({
+  discardChanges = false,
+  path = "designs/untitled.codesign.json",
+  name = "Untitled",
+} = {}) {
   finishInlineTextEdit();
-  if (dirty && !window.confirm("当前设计有未保存修改。确定要新建设计吗？")) return;
+  if (dirty && !discardChanges && !window.confirm("当前设计有未保存修改。确定要新建设计吗？"))
+    return;
   cancelInteraction();
-  design = createBlankDocument("Untitled");
+  design = createBlankDocument(name);
+  pristineBlankSnapshot = null;
   recoveryBaseDocument = clone(design);
-  documentEpoch += 1;
+  advanceDocumentEpoch();
   clearSelection();
   collapsedLayerIds.clear();
   currentModifiedAt = null;
@@ -5320,7 +5226,7 @@ function newDocument() {
   resourceDataUrls.clear();
   loadedFontResourceIds.clear();
   currentPersistenceMode = "single";
-  elements.path.value = "designs/untitled.codesign.json";
+  elements.path.value = path;
   savedSnapshot = "";
   resetHistory();
   markChanged();
@@ -5409,12 +5315,21 @@ async function exportSvg() {
     const saved = await saveDocument({ quiet: true });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
     assertScope();
-    await writeRepoText(
-      path,
-      exportDesignSvg(saved.design, { resourceDataUrls: resources }),
-      operationWorkspaceEpoch,
-      assertScope,
-    );
+    const svg = exportDesignSvg(saved.design, {
+      resourceDataUrls: resources,
+      maxBytes: MAX_LOCAL_SVG_EXPORT_BYTES,
+    });
+    if (new TextEncoder().encode(svg).byteLength > MAX_WORKSPACE_DESIGN_TEXT_BYTES) {
+      const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = path.split("/").at(-1);
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      notify(`SVG 已下载为 ${link.download}；超出仓库文本预算，未写入 Repo`);
+      return;
+    }
+    await writeRepoText(path, svg, operationWorkspaceEpoch, assertScope);
     notify(`SVG 已导出到 ${path}`);
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) return;
@@ -5819,7 +5734,10 @@ bindColorTextInput(
   () => selectedNode()?.fill ?? "#ffffff",
   (value) => {
     const node = selectedNode();
-    if (node && !isEffectivelyLocked(node)) node.fill = value;
+    if (node && !isEffectivelyLocked(node)) {
+      node.fill = value;
+      delete node.fillPaints;
+    }
   },
   true,
 );
@@ -6097,6 +6015,7 @@ bindPropertyInput(
   propertyInputs.fillColor,
   (node, value) => {
     node.fill = value;
+    delete node.fillPaints;
   },
   "input",
 );
@@ -6113,10 +6032,10 @@ bindCanvasInput(canvasInputs.name, (value) => {
   design.name = value.slice(0, 120);
 });
 bindCanvasInput(canvasInputs.width, (value) => {
-  design.canvas.width = clamp(finiteOr(value, 1280), 100, 10000);
+  design.canvas.width = clamp(finiteOr(value, 1280), 100, MAX_DESIGN_CANVAS_SIZE);
 });
 bindCanvasInput(canvasInputs.height, (value) => {
-  design.canvas.height = clamp(finiteOr(value, 820), 100, 10000);
+  design.canvas.height = clamp(finiteOr(value, 820), 100, MAX_DESIGN_CANVAS_SIZE);
 });
 bindColorTextInput(
   canvasInputs.background,
@@ -6223,7 +6142,11 @@ elements.stage.addEventListener("lostpointercapture", (event) =>
 );
 elements.stage.addEventListener("dblclick", (event) => {
   if (activeTool !== "select") return;
-  let id = event.target.closest?.("[data-node-id]")?.dataset.nodeId;
+  const point = documentPoint(event);
+  let id = (
+    hitTestCanvasLabel(design, point, zoom, selectedIds, elements.stage.getContext("2d")) ??
+    hitTestCanvasNode(design, point)
+  )?.id;
   if (
     !id &&
     lastTextPointer &&
@@ -6254,12 +6177,16 @@ elements.stage.addEventListener(
     } else {
       pan.x -= event.deltaX;
       pan.y -= event.deltaY;
-      renderAll();
+      scheduleViewportRender();
     }
   },
   { passive: false },
 );
 elements.zoomOut.addEventListener("click", () => setZoom(zoom / 1.2));
+elements.retryRenderer.addEventListener("click", () => {
+  void gpuRenderer.setMode("gpu");
+  syncGpuRenderer();
+});
 elements.zoomIn.addEventListener("click", () => setZoom(zoom * 1.2));
 elements.zoomValue.addEventListener("click", fitCanvas);
 elements.toggleGrid.addEventListener("click", () => {
@@ -6304,6 +6231,25 @@ elements.deliveryRunAudit.addEventListener("click", () => {
   );
 });
 elements.saveAuditReport.addEventListener("click", () => void saveAuditReport());
+elements.repairQuality.addEventListener("click", () => {
+  void enqueueAgentMutation(async () => {
+    if (context.trusted !== true) throw new Error("请先信任当前工作区再修改设计");
+    const check = captureDeliveryScope();
+    await ensureAllDesignPagesLoaded();
+    check();
+    const result = repairDesignQuality(design);
+    if (result.changes.length) {
+      design = result.document;
+      commitHistory();
+      markChanged();
+    }
+    await showAudit();
+    notify(
+      `已修复 ${result.changes.length} 处 · 剩余 ${result.after.issueCount} 个问题；可撤销`,
+      result.after.blockingIssueCount ? "error" : "success",
+    );
+  }).catch((error) => notify(error.message, "error"));
+});
 elements.exportSvg.addEventListener("click", () => void exportSvg());
 elements.openFiles.addEventListener("click", () => void showFiles());
 elements.refreshRepoFiles.addEventListener(
@@ -6649,7 +6595,9 @@ window.addEventListener("blur", () => {
   cancelInteraction();
   updateCursor();
 });
-window.addEventListener("resize", () => renderAll());
+window.addEventListener("resize", () => scheduleViewportRender(true));
+new ResizeObserver(() => scheduleViewportRender(true)).observe(elements.stageWrap);
+window.addEventListener("pagehide", () => gpuRenderer.dispose());
 window.addEventListener("focus", () => void checkExternalChange());
 window.addEventListener("beforeunload", (event) => {
   finishInlineTextEdit();
@@ -6707,6 +6655,7 @@ function updateContext(next) {
     elements.path.disabled = false;
   }
   context = nextContext;
+  syncGpuRenderer();
   contextInitialized = true;
   reviewCommentsUI?.update();
   prototypeUI?.update();
@@ -6887,7 +6836,7 @@ async function restoreRecovery(
     });
   resourceDataUrls.clear();
   loadedFontResourceIds.clear();
-  documentEpoch += 1;
+  advanceDocumentEpoch();
   clearSelection();
   const targetsBaseline = recovery.path === baselinePath;
   currentModifiedAt = targetsBaseline ? recovery.baseModifiedAt : null;
@@ -6983,7 +6932,7 @@ function resetToRepoBlankDocument() {
   const repoName = workspaceInfo?.name ?? context.cwd?.split("/").filter(Boolean).at(-1) ?? "Repo";
   design = createBlankDocument(`${repoName} design`);
   recoveryBaseDocument = clone(design);
-  documentEpoch += 1;
+  advanceDocumentEpoch();
   clearSelection();
   collapsedLayerIds.clear();
   currentModifiedAt = null;
@@ -7002,6 +6951,7 @@ function resetToRepoBlankDocument() {
   savedSnapshot = "";
   resetHistory();
   updateDirtyState();
+  pristineBlankSnapshot = { documentEpoch, path: elements.path.value, source: serializeDesign() };
   renderAll();
   requestAnimationFrame(fitCanvas);
 }
@@ -7009,6 +6959,7 @@ function resetToRepoBlankDocument() {
 function setWorkspaceLoading(loading) {
   if (loading) cancelInteraction();
   workspaceLoading = loading;
+  syncGpuRenderer();
   document.querySelector(".topbar").inert = loading;
   elements.workspace.inert = loading;
 }
@@ -7362,6 +7313,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "width",
   "height",
   "fill",
+  "fillPaints",
   "stroke",
   "strokeWidth",
   "opacity",
@@ -7460,6 +7412,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
       [
         "notes",
         "shadow",
+        "fillPaints",
         "contentClipping",
         "textSource",
         "textFlow",
@@ -7502,6 +7455,8 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
       node[key] = value;
     }
   }
+  if (Object.hasOwn(changes, "fill") && !Object.hasOwn(changes, "fillPaints"))
+    delete node.fillPaints;
   if (node.clipContent !== true) delete node.contentClipping;
 }
 
@@ -8158,6 +8113,138 @@ async function rollbackAgentDesign(args) {
   };
 }
 
+async function manageDesignFile(args) {
+  requireCurrentAgentState(args.expected_state_revision);
+  if (!["create", "open", "save_as"].includes(args.action) || !safeDesignPath(args.path))
+    throw Error("save_design 文件操作需要 create/open/save_as 和安全的 .codesign.json 路径");
+  if (
+    args.name !== undefined &&
+    (typeof args.name !== "string" ||
+      !args.name.trim() ||
+      args.name.length > 120 ||
+      /[\u0000-\u001f\u007f]/u.test(args.name))
+  )
+    throw Error("name 必须是 1–120 个安全字符");
+  for (const key of ["save", "discard_changes"])
+    if (args[key] !== undefined && typeof args[key] !== "boolean")
+      throw Error(`${key} 必须是布尔值`);
+  if (args.action !== "create" && (args.name !== undefined || args.save !== undefined))
+    throw Error("name/save 仅用于 create");
+  if (args.action !== "save_as" && dirty && !args.discard_changes)
+    throw Error("当前稿件有未保存修改；请先保存，或明确 discard_changes:true");
+  await ensureAllDesignPagesLoaded();
+  requireCurrentAgentState(args.expected_state_revision);
+  const epoch = workspaceEpoch,
+    check = captureDeliveryScope();
+  const before = captureImportRollback();
+  let appliedState = null;
+  try {
+    if (args.action === "open") {
+      await openDocument(args.path, {
+        discardChanges: true,
+        onOpened: () => {
+          appliedState = currentDesignStateRevision();
+        },
+      });
+    } else {
+      await assertNewDesignTarget(args.path, check);
+      requireCurrentAgentState(args.expected_state_revision);
+      if (args.action === "create") {
+        newDocument({
+          discardChanges: true,
+          path: args.path,
+          name: args.name?.trim() ?? "Untitled",
+        });
+        stagedFigmaBinding = {
+          workspaceEpoch,
+          documentEpoch,
+          historyIndex: 0,
+          committed: true,
+          value: null,
+        };
+        loadedFigmaBinding = null;
+      } else {
+        const attachments = [];
+        if (currentSourcePath)
+          for (const suffix of [".comments.json", ".prototype.json"]) {
+            try {
+              const source = await readDesignSidecar({
+                path: designSidecarPath(currentSourcePath, suffix),
+                call: bundleHostCall,
+                check,
+                sha256: sha256Text,
+              });
+              const content =
+                suffix === ".comments.json"
+                  ? JSON.stringify({
+                      ...parseReviewComments(source.content, currentSourcePath),
+                      designPath: args.path,
+                    })
+                  : JSON.stringify(normalizePrototype(JSON.parse(source.content)));
+              attachments.push({ suffix, content });
+            } catch (error) {
+              check();
+              if (!isMissingDesignSidecar(error)) throw error;
+            }
+          }
+        requireCurrentAgentState(args.expected_state_revision);
+        for (const attachment of attachments) {
+          attachment.path = designSidecarPath(args.path, attachment.suffix);
+          try {
+            const existing = await readDesignSidecar({
+              path: attachment.path,
+              call: bundleHostCall,
+              check,
+              sha256: sha256Text,
+            });
+            check();
+            if (existing.content !== attachment.content)
+              throw Error(`目标附属文件冲突：${attachment.path}`);
+            attachment.reuse = true;
+          } catch (error) {
+            check();
+            if (!isMissingDesignSidecar(error)) throw error;
+          }
+        }
+        for (const attachment of attachments)
+          if (!attachment.reuse)
+            await writeDesignSidecar({
+              path: attachment.path,
+              content: attachment.content,
+              call: bundleHostCall,
+              check,
+              sha256: sha256Text,
+              expectedModifiedAt: null,
+            });
+        check();
+        elements.path.value = args.path;
+      }
+      appliedState = currentDesignStateRevision();
+      if (args.action === "save_as" || args.save !== false) await saveDocument({ quiet: true });
+    }
+    assertWorkspaceEpoch(epoch);
+    return {
+      action: args.action,
+      path: elements.path.value.trim(),
+      name: design.name,
+      saved: !dirty,
+      revision: currentRevision,
+      stateRevision: currentDesignStateRevision(),
+      pageCount: design.pages.length,
+      nodeCount: allDesignNodes().length,
+    };
+  } catch (error) {
+    if (
+      workspaceEpoch === epoch &&
+      appliedState &&
+      currentDesignStateRevision() === appliedState &&
+      designPublicationSequence === before.publicationSequence
+    )
+      restoreImportRollback(before);
+    throw error;
+  }
+}
+
 function registerAgentTools(ready) {
   const register = window.codeshellPanel?.registerTool;
   if (!register) return;
@@ -8275,33 +8362,121 @@ function registerAgentTools(ready) {
     await ready;
     assertAgentToolArguments(
       args,
-      new Set(["action", "path", "save", "expected_state_revision"]),
+      new Set([
+        "action",
+        "path",
+        "source_path",
+        "target_path",
+        "mode",
+        "preparation_id",
+        "allow_blocking",
+        "save",
+        "expected_state_revision",
+      ]),
       "exchange_figma",
     );
+    const sourcePath = args.source_path ?? args.path;
     if (
-      !["import", "export"].includes(args.action) ||
-      typeof args.path !== "string" ||
-      !isSafeExchangeJsonPath(args.path)
+      !["prepare", "import", "export"].includes(args.action) ||
+      !isSafeExchangeJsonPath(sourcePath)
     )
-      throw Error("Figma 交换需要 import/export 和安全的 designs/ JSON 路径");
-    if (args.save !== undefined && typeof args.save !== "boolean") throw Error("save 必须是布尔值");
+      throw Error("Figma 交换需要 prepare/import/export 和安全的 designs/ JSON 路径");
+    if (args.path && args.source_path && args.path !== args.source_path)
+      throw Error("path 与 source_path 不一致");
+    for (const key of ["save", "allow_blocking"])
+      if (args[key] !== undefined && typeof args[key] !== "boolean")
+        throw Error(`${key} 必须是布尔值`);
+    if (
+      args.action === "export" &&
+      ["source_path", "target_path", "mode", "preparation_id", "allow_blocking"].some(
+        (key) => args[key] !== undefined,
+      )
+    )
+      throw Error("export 仅接受 path 输出路径");
     return enqueueAgentMutation(async () => {
       requireCurrentAgentState(args.expected_state_revision);
       const scope = { ...captureExchangeScope(), agent: true };
-      if (args.action === "import") {
+      if (args.action !== "export") {
+        const cached = args.preparation_id ? pendingFigmaImport : null;
+        if (
+          args.preparation_id &&
+          (!cached ||
+            cached.id !== args.preparation_id ||
+            cached.sourcePath !== sourcePath ||
+            cached.stateRevision !== scope.stateRevision)
+        )
+          throw Error("导入预检已失效；请重新 prepare");
+        const target = cached?.target ?? figmaTarget(args, sourcePath);
+        if (
+          cached &&
+          ((args.target_path && args.target_path !== target.path) ||
+            (args.mode && args.mode !== target.mode))
+        )
+          throw Error("导入目标与预检不一致；请重新 prepare");
+        if (target.mode === "create")
+          await assertNewDesignTarget(target.path, () => checkExchangeScope(scope));
         const source = await readDesignSidecar({
-          path: args.path,
+          path: sourcePath,
           call: bundleHostCall,
           check: () => checkExchangeScope(scope),
           sha256: sha256Text,
         });
         checkExchangeScope(scope);
-        const prepared = await prepareFigmaImport(source.content, { sha256Bytes });
+        const sourceHash = await sha256Text(source.content);
         checkExchangeScope(scope);
-        return importPreparedFigma(prepared, () => checkExchangeScope(scope), {
+        if (cached && sourceHash !== cached.sourceHash)
+          throw Error("Figma 输入已在预检后变化；请重新 prepare");
+        const prepared =
+          cached?.prepared ??
+          reviewPreparedFigma(await prepareFigmaImport(source.content, { sha256Bytes }));
+        checkExchangeScope(scope);
+        if (args.action === "prepare") {
+          const id = `figma-prepare-${++figmaPreparationSequence}-${sourceHash.slice(0, 12)}`;
+          pendingFigmaImport = {
+            id,
+            sourcePath,
+            sourceHash,
+            target,
+            prepared,
+            stateRevision: scope.stateRevision,
+          };
+          return {
+            preparationId: id,
+            sourcePath,
+            sourceSha256: sourceHash,
+            targetPath: target.path,
+            mode: target.mode,
+            stateRevision: scope.stateRevision,
+            audit: prepared.audit,
+            issueGroups: prepared.issueGroups,
+            stats: prepared.stats,
+            warnings: prepared.warnings.slice(0, 20),
+            warningCount: prepared.stats.warningCount,
+            truncatedWarningCount: Math.max(0, prepared.stats.warningCount - 20),
+            requiresAllowBlocking: !prepared.audit.renderSafe,
+          };
+        }
+        const modern = Boolean(
+          args.source_path || args.target_path || args.mode || args.preparation_id,
+        );
+        if (modern && !prepared.audit.renderSafe && !args.allow_blocking)
+          throw Error(
+            `导入预检有 ${prepared.audit.blockingIssueCount} 个阻塞问题；修正来源，或明确 allow_blocking:true 保存草稿`,
+          );
+        const imported = await importPreparedFigma(prepared, () => checkExchangeScope(scope), {
           save: args.save !== false,
           recordAgentTransaction: true,
+          ...(target.mode === "create" ? { targetPath: target.path } : {}),
         });
+        pendingFigmaImport = null;
+        return {
+          ...imported,
+          sourcePath,
+          targetPath: target.path,
+          mode: target.mode,
+          draft: !imported.audit.renderSafe,
+          deliveryReady: imported.audit.valid,
+        };
       }
       const snapshot = await repositoryDocumentSnapshot();
       checkExchangeScope(scope);
@@ -8920,13 +9095,21 @@ function registerAgentTools(ready) {
   register("validate_design", async (args = {}) => {
     await ready;
     await settleAgentReadState();
-    assertAgentToolArguments(args, new Set(), "validate_design");
+    assertAgentToolArguments(
+      args,
+      new Set(["code", "severity", "offset", "limit"]),
+      "validate_design",
+    );
     await ensureAllDesignPagesLoaded();
     try {
       await loadReferencedDesignResources();
       const inspectedDesign = normalizeCurrentDesignState(design);
       const issues = auditDocument(inspectedDesign);
-      const visibleIssues = issues.slice(0, MAX_AGENT_AUDIT_ISSUES);
+      const page = pageAuditIssues(issues, {
+        ...args,
+        limit: args.limit ?? MAX_AGENT_AUDIT_ISSUES,
+      });
+      const visibleIssues = page.issues;
       return {
         ...summarizeAudit(issues),
         path: elements.path.value.trim(),
@@ -8935,6 +9118,13 @@ function registerAgentTools(ready) {
         pageCount: inspectedDesign.pages.length,
         stateRevision: currentDesignStateRevision(),
         issues: visibleIssues,
+        issueGroups: groupAuditIssues(issues),
+        page: {
+          total: page.total,
+          offset: page.offset,
+          limit: page.limit,
+          nextOffset: page.nextOffset,
+        },
         truncatedIssueCount: issues.length - visibleIssues.length,
       };
     } finally {
@@ -8964,6 +9154,7 @@ function registerAgentTools(ready) {
     ) {
       throw new Error("get_design_screenshot.max_width 必须是 320 到 1600 的有限数字");
     }
+    let materializedAllPages = false;
     if (typeof args.page_id === "string" && args.page_id) {
       await ensureDesignPageLoaded(args.page_id);
     }
@@ -8973,6 +9164,7 @@ function registerAgentTools(ready) {
       !allDesignNodes().some((node) => node.id === args.node_id)
     ) {
       await ensureAllDesignPagesLoaded();
+      materializedAllPages = true;
     }
     const screenshotStateRevision = currentDesignStateRevision();
     const screenshotRevision = currentRevision;
@@ -8989,7 +9181,7 @@ function registerAgentTools(ready) {
     let width = Math.max(1, Math.round(source.width * scale));
     let height = Math.max(1, Math.round(source.height * scale));
     await loadReferencedDesignResources();
-    const svg = exportDesignSvg(source.document, { resourceDataUrls });
+    const svg = exportDesignSvg(source.document, { resourceDataUrls, maxBytes: 4 * 1024 * 1024 });
     const image = new window.Image();
     await new Promise((resolve, reject) => {
       const timer = window.setTimeout(
@@ -9074,7 +9266,15 @@ function registerAgentTools(ready) {
   });
   register("save_design", async (args = {}) => {
     await ready;
-    assertAgentToolArguments(args, new Set(["expected_state_revision"]), "save_design");
+    assertAgentToolArguments(
+      args,
+      new Set(["action", "path", "name", "save", "discard_changes", "expected_state_revision"]),
+      "save_design",
+    );
+    if (args.action !== undefined && args.action !== "save")
+      return enqueueAgentMutation(() => manageDesignFile(args));
+    if (["path", "name", "save", "discard_changes"].some((key) => args[key] !== undefined))
+      throw Error("默认 save 不接受文件管理参数；请指定 create/open/save_as");
     if (typeof args.expected_state_revision !== "string" || !args.expected_state_revision) {
       throw new Error(
         "save_design.expected_state_revision 必须是 get_design_metadata 返回的非空字符串",
@@ -9318,12 +9518,56 @@ async function getCurrentFigmaBinding() {
   return value;
 }
 
+function reviewPreparedFigma(result) {
+  const documentValue = normalizeDesignState(result.document);
+  const issues = auditDesignPages(documentValue);
+  return { ...result, audit: summarizeAudit(issues), issueGroups: groupAuditIssues(issues) };
+}
+
+async function assertNewDesignTarget(path, check = () => {}) {
+  if (!safeDesignPath(path)) throw Error("目标需位于 designs/ 并以 .codesign.json 结尾");
+  try {
+    await bundleHostCall("workspace.readText", { path });
+  } catch (error) {
+    check();
+    if (isMissingDesignSidecar(error)) return;
+    throw error;
+  }
+  check();
+  throw Error(`目标设计已存在：${path}；请使用新文件名，或明确选择 replace`);
+}
+
+function figmaTarget(args, sourcePath) {
+  const mode =
+    args.mode ??
+    (args.action === "prepare" || args.source_path || args.target_path ? "create" : "replace");
+  if (!["create", "replace"].includes(mode)) throw Error("mode 必须是 create 或 replace");
+  const path =
+    args.target_path ??
+    (mode === "create"
+      ? sourcePath.replace(/[.]json$/u, ".import.codesign.json")
+      : elements.path.value.trim());
+  if (!safeDesignPath(path) || path === sourcePath)
+    throw Error("Figma 导入目标路径无效或与输入相同");
+  if (sourcePath === designSidecarPath(path, ".figma-source.json"))
+    throw Error("输入路径与目标的来源绑定文件重名；请使用不同名称的输入包或新稿");
+  if (mode === "replace" && path !== elements.path.value.trim())
+    throw Error("replace 只能替换当前设计；请先使用 save_design(action:open) 打开目标");
+  return { mode, path };
+}
+
 async function importPreparedFigma(
   result,
   check,
-  { save = false, recordAgentTransaction = false } = {},
+  { save = false, recordAgentTransaction = false, targetPath } = {},
 ) {
   check();
+  const pristine =
+    pristineBlankSnapshot?.documentEpoch === documentEpoch &&
+    pristineBlankSnapshot.path === elements.path.value &&
+    pristineBlankSnapshot.source === serializeDesign();
+  if (targetPath && dirty && !pristine)
+    throw Error("当前设计有未保存修改；请先保存或备份，再导入新稿");
   const previousBinding = await getCurrentFigmaBinding();
   check();
   const previousStage =
@@ -9355,6 +9599,9 @@ async function importPreparedFigma(
   const replaced = await replaceDesignWithHtmlImport(result.document, {
     assertSource: check,
     recordAgentTransaction,
+    targetPath,
+    save,
+    afterReplaced: () => loadReferencedDesignResources(),
     onReplaced: ({ noOp = false } = {}) => {
       stagedFigmaBinding = {
         workspaceEpoch,
@@ -9373,17 +9620,10 @@ async function importPreparedFigma(
   assertWorkspaceEpoch(expectedWorkspaceEpoch);
   if (replaced.stateRevision !== currentDesignStateRevision())
     throw new Error("Figma 导入后设计已变化，请核对当前画布");
-  await loadReferencedDesignResources();
-  const saved = save ? await saveDocument({ quiet: true }) : null;
-  assertWorkspaceEpoch(expectedWorkspaceEpoch);
-  if (recordAgentTransaction && lastAgentTransaction?.id === replaced.transactionId) {
-    lastAgentTransaction.revision = saved?.revision ?? currentRevision;
-    lastAgentTransaction.stateRevision = currentDesignStateRevision();
-  }
   return {
     ...replaced,
     saved: save,
-    revision: saved?.revision ?? currentRevision,
+    revision: replaced.revision,
     stateRevision: currentDesignStateRevision(),
     warnings: result.warnings,
     stats: result.stats,
@@ -9411,6 +9651,50 @@ async function createCurrentFigmaTransfer(snapshot, scope) {
   return transfer;
 }
 
+pristineBlankSnapshot = { documentEpoch, path: elements.path.value, source: serializeDesign() };
+const saveAsButton = document.createElement("button");
+saveAsButton.id = "save-as";
+saveAsButton.type = "button";
+saveAsButton.className = "button";
+saveAsButton.textContent = "另存为";
+elements.save.after(saveAsButton);
+const saveAsDialog = document.createElement("dialog");
+saveAsDialog.id = "save-as-dialog";
+saveAsDialog.setAttribute("aria-label", "另存设计文件");
+saveAsDialog.innerHTML =
+  '<section class="dialog-card"><h2>另存设计文件</h2><label for="save-as-path">新稿路径</label><input id="save-as-path" spellcheck="false"><p role="status" id="save-as-status"></p><button type="button" id="save-as-cancel">取消</button><button type="button" id="save-as-confirm" class="primary-button">保存副本</button></section>';
+document.body.append(saveAsDialog);
+const saveAsPath = saveAsDialog.querySelector("#save-as-path");
+const saveAsStatus = saveAsDialog.querySelector("#save-as-status");
+saveAsButton.addEventListener("click", () => {
+  saveAsPath.value = elements.path.value
+    .trim()
+    .replace(/[.]codesign[.]json$/u, "-copy.codesign.json");
+  saveAsStatus.textContent = "副本会保留资源、已保存的评论和原型；已有文件不会被覆盖。";
+  saveAsDialog.showModal();
+});
+saveAsDialog.querySelector("#save-as-cancel").addEventListener("click", () => saveAsDialog.close());
+saveAsDialog.querySelector("#save-as-confirm").addEventListener("click", async () => {
+  try {
+    await enqueueAgentMutation(() =>
+      manageDesignFile({
+        action: "save_as",
+        path: saveAsPath.value.trim(),
+        expected_state_revision: currentDesignStateRevision(),
+      }),
+    );
+    saveAsDialog.close();
+    notify("已保存独立设计副本");
+  } catch (error) {
+    saveAsStatus.textContent = error instanceof Error ? error.message : "另存失败";
+  }
+});
+const compactSaveAs = document.createElement("button");
+compactSaveAs.type = "button";
+compactSaveAs.dataset.toolbarAction = "save-as";
+compactSaveAs.textContent = "另存设计文件";
+document.querySelector(".compact-actions-list").append(compactSaveAs);
+
 figmaWorkflowUI = mountFigmaWorkflow({
   getScope: captureExchangeScope,
   checkScope: checkExchangeScope,
@@ -9420,8 +9704,23 @@ figmaWorkflowUI = mountFigmaWorkflow({
     checkExchangeScope(scope);
     return snapshot;
   },
-  prepareImport: (input) => prepareFigmaImport(input, { sha256Bytes }),
-  replace: (_documentValue, assertSource, review) => importPreparedFigma(review, assertSource),
+  prepareImport: async (input) => {
+    const prepared = reviewPreparedFigma(await prepareFigmaImport(input, { sha256Bytes }));
+    const resourceDataUrls = resourceDataUrlsFromPlans(prepared.resourcePlans ?? []);
+    const previewSvg = exportDesignSvg(normalizeDesignState(prepared.document), {
+      resourceDataUrls,
+      maxBytes: 4 * 1024 * 1024,
+    });
+    return { ...prepared, ...(previewSvg.length <= 4 * 1024 * 1024 ? { previewSvg } : {}) };
+  },
+  replace: async (_documentValue, assertSource, review, options = {}) => {
+    const targetPath = options.targetPath;
+    if (options.mode === "create") await assertNewDesignTarget(targetPath, assertSource);
+    return importPreparedFigma(review, assertSource, {
+      save: options.save === true,
+      ...(options.mode === "create" ? { targetPath } : {}),
+    });
+  },
   transfer: createCurrentFigmaTransfer,
   source: async (scope) => {
     const binding = await getCurrentFigmaBinding();

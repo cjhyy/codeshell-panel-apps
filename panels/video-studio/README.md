@@ -266,6 +266,8 @@ AI 候选、已完成批次和任务进度按工程持久保存。收起工具�
 
 ## 换更好的声音，或使用本人声音
 
+兼容 Host 会在「活动记录 → 执行观测」统一展示独立 AI 任务，以及真实配音、声音克隆、转写和人声分离调用的输入与结果。原生调用仅记录逻辑输入、文字和音频元数据，音频字节、连接凭据和本机私有路径不会进入记录。配音缓存复用不算新的模型调用；安装时的真实试听会记录。无 Host 观测通道的独立终端运行保持原有输出。
+
 在“配音”页先选模型，点击 **试听所选声音 · 前 120 字**，到“制作任务”听真实生成结果。满意后再生成全文并加入音轨。**浏览器读稿 · 非模型效果**只让浏览器读文字，不代表所选模型的声音。
 
 - **Edge TTS**：选择微软在线声音，点击安装并验证引擎；生成时会把文案发送给在线服务。
@@ -469,3 +471,41 @@ Host 提供 `resources.recordAudio`、`resources.list/get/open` 时，录制页�
 
 素材检查、预处理、转写和声音模型仍由 Panel 的审核任务执行；录音接入本身不
 表示转写模型、声音克隆或真实第三方账号已完成部署验收。
+
+### 不开面板的项目 CLI
+
+安装包自带 `app/tools/video-studio.mjs`，Node.js 20.10+ 可直接执行。
+`project-runtime` Runtime Skill 从当前项目所选的安装包解析入口，支持
+`ops`、`init`、`inspect`、`validate`、`edit`（别名 `apply`）、`plan`、`import`、`export`。
+命令输出一行 JSON；`ops` 提供当前输入契约。源码维护于 `native/project-cli.ts`
+和 `native/project-store.ts`，构建时随其他原生入口打包，不依赖开发仓库。
+
+```sh
+node "<package>/app/tools/video-studio.mjs" ops
+node "<package>/app/tools/video-studio.mjs" init --project "<project>"
+node "<package>/app/tools/video-studio.mjs" inspect --project "<project>"
+node "<package>/app/tools/video-studio.mjs" edit --project "<project>" --input-file "<request.json>"
+```
+
+CLI 使用项目内独立的 `video-studio-cli.json`，不会自动读取、替换面板当前工程或
+Host 私有任务。文件是正式 schema-2 编辑文档，时间为每秒 240000 ticks 与有理帧率。
+初始化仅创建缺失工程；分页读取、字幕、磁吸/自由时间线、分组、多机位与剪辑批次
+复用编辑器领域模块。编辑需要最近 `inspect` 返回的 `expectedRevision` 和
+`{label,steps}`，一次成功批次仅增加一个文档修订。已审批旁白依赖改变时撤销旧审批。
+
+`validate` 可验证当前槽位或显式 `documentFile`。`import` 接受
+`{expectedRevision,documentFile}`，将明确指定的 schema-2 JSON 导入 CLI 槽位。
+`export` 接受 `{output:"exports/project-v2.json",expectedRevision?}`，在项目内以
+仅新建方式导出 JSON。可用面板“工程备份”与“打开”操作显式交换这些文件；JSON 不含
+原媒体，不授予资源 ID 的访问权限，也不等于含媒体的 `.mimiproject` 工程包。
+
+`plan` 校验导出配置、原序列范围、帧数与音轨计划；输出明确区分请求范围样本数和
+完整序列音轨统计。它不检查已安装编码器或媒体可访问性、不生成成片；实际媒体
+导入、转写、TTS、录制、渲染、同步和工程包仍走已授权面板流程。
+
+请求最多 256 KiB，工程最多 32 MiB，回执最多 64 KiB。CLI 写入使用 SHA-256 CAS、
+私有临时文件和原子发布；并发命令通过项目根的 `.video-studio-cli-write.lock`
+串行化，最多等待五秒。冲突需重读并重新规划，不自动重试。崩溃可能保留锁；确认
+没有活跃写入者后才手工处理，不能盲清锁或并发手改工程文件。退出码为 0 成功、
+2 参数/输入限制、3 修订冲突、4 项目忙、1 其他失败。验证命令：
+`node --test tests/video-studio-project-cli.test.mjs`。

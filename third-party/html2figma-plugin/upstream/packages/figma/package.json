@@ -1,0 +1,32 @@
+{
+  "name": "@html2figma/figma",
+  "version": "1.0.0",
+  "description": "Figma node creation service",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "BUILD_TARGET=figma vite build",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@html2figma/shared": "workspace:*",
+    "@html2figma/adapter": "workspace:*"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.88.0",
+    "@types/node": "^20.6.3",
+    "typescript": "^5.2.2",
+    "vite": "^7.1.6",
+    "vite-plugin-dts": "^4.5.4"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ]
+}

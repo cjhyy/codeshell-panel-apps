@@ -3,8 +3,155 @@ import { createRequire as __panelCreateRequire } from "node:module"; const requi
 // native/audio-separation.ts
 import { isAbsolute } from "node:path";
 
+// ../../shared/model-observability.mjs
+import { randomUUID } from "node:crypto";
+import { writeSync } from "node:fs";
+var MAX_FRAME_BYTES = 256 * 1024;
+var SECRET_KEY = /^(?:authorization|proxyAuthorization|apiKey|accessToken|refreshToken|password|secret|clientSecret|cookie|setCookie|credentials)$/i;
+var OMITTED = "[binary content omitted]";
+function safeBody(value) {
+  let truncated = false, nodes = 0, remaining = 96 * 1024;
+  const seen = /* @__PURE__ */ new WeakSet();
+  const visit = (item, depth = 0) => {
+    if (++nodes > 2048 || depth > 12) {
+      truncated = true;
+      return "[truncated]";
+    }
+    if (item === null || typeof item === "boolean") return item;
+    if (typeof item === "number") return Number.isFinite(item) ? item : null;
+    if (typeof item === "string") {
+      if (/^data:[^,]*;base64,/i.test(item)) return OMITTED;
+      let text = item.replace(/\bBearer\s+[^\s"']+/gi, "Bearer [redacted]").replace(/\b(?:sk|sk-proj|sk-ant)-[A-Za-z0-9_-]{8,}/g, "[redacted]");
+      const maximum = Math.max(0, Math.min(16 * 1024, remaining));
+      if (Buffer.byteLength(JSON.stringify(text)) > maximum) {
+        let low = 0, high = text.length;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2);
+          if (Buffer.byteLength(JSON.stringify(text.slice(0, middle))) <= Math.max(0, maximum - 16))
+            low = middle;
+          else high = middle - 1;
+        }
+        text = text.slice(0, low) + " [truncated]";
+        truncated = true;
+      }
+      remaining = Math.max(0, remaining - Buffer.byteLength(JSON.stringify(text)));
+      return text;
+    }
+    if (typeof item !== "object") return void 0;
+    if (ArrayBuffer.isView(item) || item instanceof ArrayBuffer) return OMITTED;
+    if (seen.has(item)) {
+      truncated = true;
+      return "[circular value omitted]";
+    }
+    seen.add(item);
+    if (Array.isArray(item)) {
+      if (item.length > 256) truncated = true;
+      return item.slice(0, 256).map((entry) => visit(entry, depth + 1));
+    }
+    const entries = Object.entries(item);
+    if (entries.length > 64) truncated = true;
+    const result = /* @__PURE__ */ Object.create(null);
+    for (const [key, entry] of entries.slice(0, 64)) {
+      const keyBytes = Buffer.byteLength(JSON.stringify(key));
+      if (key.length > 128 || keyBytes > remaining) {
+        truncated = true;
+        continue;
+      }
+      remaining -= keyBytes;
+      result[key] = SECRET_KEY.test(key.replace(/[-_]/g, "")) ? "[redacted]" : /^(?:base64|audioBytes|imageBytes|fileBytes|binary)$/i.test(key) ? OMITTED : visit(entry, depth + 1);
+    }
+    return result;
+  };
+  return { value: visit(value), truncated };
+}
+function emit(frame) {
+  try {
+    const message = Buffer.from(JSON.stringify(frame));
+    if (message.length > MAX_FRAME_BYTES) return false;
+    const atomic = (line) => writeSync(3, line) === line.length;
+    if (message.length + 1 <= 512) return atomic(Buffer.concat([message, Buffer.from("\n")]));
+    const messageId = randomUUID();
+    for (let offset = 0, part = 0; offset < message.length; offset += 192, part++) {
+      const line = Buffer.from(
+        JSON.stringify({
+          version: 1,
+          type: "model_trace_chunk",
+          messageId,
+          part,
+          data: message.subarray(offset, offset + 192).toString("base64"),
+          final: offset + 192 >= message.length
+        }) + "\n"
+      );
+      if (line.length > 512 || !atomic(line)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function observeModelCall(request, operation, options = {}) {
+  if (process.env.CODESHELL_MODEL_TRACE_FD !== "3") return operation();
+  const callId = randomUUID();
+  let admitted = false;
+  try {
+    const input = safeBody({
+      systemPrompt: request.input.systemPrompt ?? "",
+      messages: request.input.messages ?? [],
+      tools: request.input.tools ?? [],
+      parameters: request.input.parameters ?? {}
+    });
+    admitted = emit({
+      version: 1,
+      type: "model_trace",
+      phase: "start",
+      callId,
+      provider: request.provider.slice(0, 200),
+      model: request.model.slice(0, 200),
+      purpose: request.purpose.slice(0, 200),
+      stream: request.stream === true,
+      input: input.value,
+      ...input.truncated ? { inputState: "truncated" } : {}
+    });
+  } catch {
+  }
+  try {
+    const result = await operation();
+    if (admitted) {
+      try {
+        const output = safeBody(options.output?.(result) ?? {});
+        emit({
+          version: 1,
+          type: "model_trace",
+          phase: "finish",
+          callId,
+          status: "completed",
+          output: output.value,
+          ...output.truncated ? { outputState: "truncated" } : {},
+          ...options.usage ? { usage: safeBody(options.usage(result)).value } : {}
+        });
+      } catch {
+        emit({ version: 1, type: "model_trace", phase: "finish", callId, status: "completed" });
+      }
+    }
+    return result;
+  } catch (error) {
+    if (admitted) {
+      const cancelled = options.signal?.aborted || error instanceof Error && error.name === "AbortError";
+      emit({
+        version: 1,
+        type: "model_trace",
+        phase: "finish",
+        callId,
+        status: cancelled ? "cancelled" : "failed",
+        error: cancelled ? "Model call cancelled" : "Model call failed"
+      });
+    }
+    throw error;
+  }
+}
+
 // native/separation/runtime.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { randomUUID as randomUUID3 } from "node:crypto";
 import { open as open2, readFile, rename as rename2, rm as rm2, stat as stat2 } from "node:fs/promises";
 import { join as join2 } from "node:path";
 
@@ -208,7 +355,7 @@ async function runMediaProcess(executable, args, options) {
 // native/editor-runtime/files.ts
 import { constants } from "node:fs";
 import { copyFile, lstat, mkdir, open, realpath, rename, rm, stat } from "node:fs/promises";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID as randomUUID2 } from "node:crypto";
 import { join, relative, sep } from "node:path";
 
 // src/editor/time.ts
@@ -573,7 +720,7 @@ async function setup(runtime, root, ctx) {
     lock = await open2(lockPath, "wx", 384);
   }
   await lock.writeFile(String(process.pid));
-  const staging = await directory(runtime, [`setup-${randomUUID2()}`]);
+  const staging = await directory(runtime, [`setup-${randomUUID3()}`]);
   try {
     if (await probe(root, ctx)) return await status(root, ctx);
     const capabilities = await status(root, ctx);
@@ -657,7 +804,7 @@ async function runSeparationRequest(raw, ctx) {
     throw new Error("原素材时长已变化，请重新导入后再处理");
   if (original.channels < 1 || original.channels > 8)
     throw new Error("人声分离支持 1 到 8 声道的素材");
-  const work = await directory(job, [`separate-${randomUUID2()}`]), input = join2(work, "input.wav"), sampleCount = Math.ceil(duration * 44100);
+  const work = await directory(job, [`separate-${randomUUID3()}`]), input = join2(work, "input.wav"), sampleCount = Math.ceil(duration * 44100);
   try {
     await ctx.reportProgress({ stage: "decode", fraction: 0, message: "正在准备原始音频" });
     await runMediaProcess(
@@ -689,69 +836,88 @@ async function runSeparationRequest(raw, ctx) {
       { signal: ctx.signal, maxStdoutBytes: 4096 }
     );
     await ctx.reportProgress({ stage: "separate", fraction: 0, message: "正在分离人声与伴奏" });
-    let pending = "", latest = 0, progressWork = Promise.resolve();
-    await runMediaProcess(python(root), ["-I", "-c", SEPARATION_PYTHON, input, root, work], {
-      signal: ctx.signal,
-      maxStdoutBytes: 128 * 1024,
-      onStdout(chunk) {
-        pending += chunk.toString();
-        const lines = pending.split(/\r?\n/);
-        pending = lines.pop();
-        if (pending.length > 8192) throw new Error("分离任务输出过长");
-        for (const line of lines) {
-          let value;
-          try {
-            value = JSON.parse(line);
-          } catch {
-            continue;
-          }
-          if (Number.isFinite(value.fraction) && value.fraction >= latest && value.fraction <= 1) {
-            latest = value.fraction;
-            const fraction = latest;
-            progressWork = progressWork.then(async () => {
-              await ctx.reportProgress({
-                stage: "separate",
-                fraction,
-                message: "正在分离人声与伴奏"
-              });
-            });
-            void progressWork.catch(() => {
-            });
+    return await observeModelCall(
+      {
+        provider: "local-onnx",
+        model: SEPARATION_MODEL_ID,
+        purpose: "voice-separation",
+        input: {
+          parameters: {
+            resourceId: request.resourceId,
+            sourceSha256: sourceHash,
+            modelSha256: SEPARATION_MODEL.sha256,
+            audio: { durationSeconds: duration, sampleRate: 44100, channels: 2, sampleCount },
+            capture: { recording: "logical-input", omitted: "binary-audio-and-private-paths" }
           }
         }
-      }
-    });
-    await progressWork;
-    const artifacts = [];
-    for (const role of ["vocals", "instrumental"]) {
-      const path = await regular(work, [`${role}.wav`]), check = await inspect(path, ctx);
-      if (check.rate !== 44100 || check.channels !== 2 || Math.abs(check.duration - sampleCount / 44100) > 1 / 44100)
-        throw new Error("分离产物采样与原素材不一致，未应用任何修改");
-      artifacts.push(await publish(job, path, "wav", "audio/wav", role, ctx.signal));
-    }
-    ctx.signal.throwIfAborted();
-    const stem = (index) => {
-      const a = artifacts[index];
-      return {
-        assetId: a.assetId,
-        sha256: a.sha256,
-        bytes: a.bytes,
-        mimeType: "audio/wav"
-      };
-    };
-    return {
-      result: {
-        sourceResourceId: request.resourceId,
-        sourceSha256: sourceHash,
-        modelId: SEPARATION_MODEL_ID,
-        modelSha256: SEPARATION_MODEL.sha256,
-        sampleRate: 44100,
-        sampleCount,
-        durationSeconds: sampleCount / 44100,
-        stems: { vocals: stem(0), instrumental: stem(1) }
       },
-      artifacts
-    };
+      async () => {
+        let pending = "", latest = 0, progressWork = Promise.resolve();
+        await runMediaProcess(python(root), ["-I", "-c", SEPARATION_PYTHON, input, root, work], {
+          signal: ctx.signal,
+          maxStdoutBytes: 128 * 1024,
+          onStdout(chunk) {
+            pending += chunk.toString();
+            const lines = pending.split(/\r?\n/);
+            pending = lines.pop();
+            if (pending.length > 8192) throw new Error("分离任务输出过长");
+            for (const line of lines) {
+              let value;
+              try {
+                value = JSON.parse(line);
+              } catch {
+                continue;
+              }
+              if (Number.isFinite(value.fraction) && value.fraction >= latest && value.fraction <= 1) {
+                latest = value.fraction;
+                const fraction = latest;
+                progressWork = progressWork.then(async () => {
+                  await ctx.reportProgress({
+                    stage: "separate",
+                    fraction,
+                    message: "正在分离人声与伴奏"
+                  });
+                });
+                void progressWork.catch(() => {
+                });
+              }
+            }
+          }
+        });
+        await progressWork;
+        const artifacts = [];
+        for (const role of ["vocals", "instrumental"]) {
+          const path = await regular(work, [`${role}.wav`]), check = await inspect(path, ctx);
+          if (check.rate !== 44100 || check.channels !== 2 || Math.abs(check.duration - sampleCount / 44100) > 1 / 44100)
+            throw new Error("分离产物采样与原素材不一致，未应用任何修改");
+          artifacts.push(await publish(job, path, "wav", "audio/wav", role, ctx.signal));
+        }
+        ctx.signal.throwIfAborted();
+        const stem = (index) => {
+          const a = artifacts[index];
+          return {
+            assetId: a.assetId,
+            sha256: a.sha256,
+            bytes: a.bytes,
+            mimeType: "audio/wav"
+          };
+        };
+        return {
+          result: {
+            sourceResourceId: request.resourceId,
+            sourceSha256: sourceHash,
+            modelId: SEPARATION_MODEL_ID,
+            modelSha256: SEPARATION_MODEL.sha256,
+            sampleRate: 44100,
+            sampleCount,
+            durationSeconds: sampleCount / 44100,
+            stems: { vocals: stem(0), instrumental: stem(1) }
+          },
+          artifacts
+        };
+      },
+      { signal: ctx.signal, output: (value) => ({ data: value.result }) }
+    );
   } finally {
     await rm2(work, { recursive: true, force: true });
   }
@@ -783,7 +949,7 @@ process.once("SIGINT", cancel);
 var last = 0;
 var lastStage = "";
 var bytes = 0;
-var emit = (value) => {
+var emit2 = (value) => {
   const line = JSON.stringify(value) + "\n";
   bytes += Buffer.byteLength(line);
   if (bytes > 3.5 * 1024 * 1024) throw new Error("任务回执超过限制");
@@ -824,15 +990,15 @@ try {
         return;
       last = now;
       lastStage = progress.stage;
-      emit({ type: "progress", progress });
+      emit2({ type: "progress", progress });
     }
   });
   signal.throwIfAborted();
-  emit({ type: "result", result });
+  emit2({ type: "result", result });
 } catch (error) {
   const cancelled = controller.signal.aborted || error instanceof Error && error.name === "AbortError", raw = error instanceof Error ? error.message : "";
   const message = cancelled ? "分离任务已取消" : raw && raw.length < 350 && !/(?:\/Users\/|\/home\/|\/tmp\/|https?:|ENOENT|EACCES|exited with code)/.test(raw) ? raw : "本地分离未完成，请检查处理器与素材后重试";
-  emit({
+  emit2({
     type: "error",
     code: cancelled ? "CANCELLED" : "SEPARATION_FAILED",
     message,

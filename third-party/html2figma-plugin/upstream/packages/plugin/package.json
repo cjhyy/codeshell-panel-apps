@@ -1,0 +1,45 @@
+{
+  "name": "@html2figma/plugin",
+  "version": "1.0.0",
+  "description": "Figma plugin for HTML to Figma conversion",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm run build:ui && pnpm run build:code && node scripts/build-plugin.js",
+    "build:dev": "vite build --config ui/vite.config.ts --mode development && BUILD_TARGET=plugin vite build --mode development && node scripts/build-plugin.js",
+    "build:code": "BUILD_TARGET=plugin vite build",
+    "build:ui": "vite build --config ui/vite.config.ts",
+    "dev:ui": "vite --config ui/vite.config.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@html2figma/shared": "workspace:*",
+    "@html2figma/figma": "workspace:*",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.3.0",
+    "class-variance-authority": "^0.7.1",
+    "@radix-ui/react-tabs": "^1.1.12",
+    "@radix-ui/react-label": "^2.1.4",
+    "@radix-ui/react-slot": "^1.2.3",
+    "@radix-ui/react-switch": "^1.1.7",
+    "@radix-ui/react-dialog": "^1.1.14",
+    "lucide-react": "^0.511.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.28.4",
+    "@babel/plugin-transform-async-to-generator": "^7.27.1",
+    "@babel/plugin-transform-runtime": "^7.28.3",
+    "@babel/preset-env": "^7.28.3",
+    "@figma/plugin-typings": "^1.88.0",
+    "@tailwindcss/vite": "^4.1.7",
+    "@types/node": "^20.6.3",
+    "@types/react": "^19.1.4",
+    "@types/react-dom": "^19.1.5",
+    "tailwindcss": "^4.1.7",
+    "typescript": "^5.2.2",
+    "vite": "^7.1.6",
+    "vite-plugin-singlefile": "^2.0.6",
+    "@vitejs/plugin-react": "^4.5.2"
+  }
+}

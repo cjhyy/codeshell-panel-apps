@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.20.0",
+  "version": "0.22.0",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
@@ -303,6 +303,106 @@
                 "fill": {
                   "$ref": "#/$defs/color"
                 },
+                "fillPaints": {
+                  "description": "Bounded editable paint stack. Use null to remove it; a fill-only update explicitly replaces the stack with a solid fill.",
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "array",
+                      "description": "Editable Figma paints in bottom-to-top order. Runtime additionally validates increasing gradient stop positions and invertible handle geometry.",
+                      "minItems": 1,
+                      "maxItems": 8,
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["type", "color", "opacity"],
+                            "properties": {
+                              "type": {
+                                "const": "SOLID"
+                              },
+                              "color": {
+                                "type": "string",
+                                "pattern": "^#[0-9a-fA-F]{6}$"
+                              },
+                              "opacity": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["type", "opacity", "handles", "stops"],
+                            "properties": {
+                              "type": {
+                                "const": "GRADIENT_LINEAR"
+                              },
+                              "opacity": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1
+                              },
+                              "handles": {
+                                "type": "array",
+                                "minItems": 3,
+                                "maxItems": 3,
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "required": ["x", "y"],
+                                  "properties": {
+                                    "x": {
+                                      "type": "number",
+                                      "minimum": -100,
+                                      "maximum": 100
+                                    },
+                                    "y": {
+                                      "type": "number",
+                                      "minimum": -100,
+                                      "maximum": 100
+                                    }
+                                  }
+                                }
+                              },
+                              "stops": {
+                                "type": "array",
+                                "minItems": 2,
+                                "maxItems": 16,
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "required": ["position", "color", "opacity"],
+                                  "properties": {
+                                    "position": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    },
+                                    "color": {
+                                      "type": "string",
+                                      "pattern": "^#[0-9a-fA-F]{6}$"
+                                    },
+                                    "opacity": {
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
                 "stroke": {
                   "$ref": "#/$defs/color"
                 },
@@ -382,7 +482,7 @@
                 "textMeasurement": {
                   "type": "string",
                   "enum": ["browser"],
-                  "description": "Marks exact browser-measured text bounds so validation does not substitute estimated glyph metrics."
+                  "description": "Legacy HTML text measurement marker. Figma imports persist signature-bound textMetrics receipts; this marker cannot create those receipts."
                 },
                 "textSource": {
                   "type": ["string", "null"],
@@ -1102,10 +1202,28 @@
       },
       {
         "name": "validate_design",
-        "description": "Validate every page in the v3 model. Any issue makes valid=false; renderSafe identifies blocking failures. Counts cover all issues and truncatedIssueCount reports details omitted beyond the first 400.",
+        "description": "Validate every page. Counts and grouped causes cover all issues; filter by code/severity and page through details with offset/limit. valid=false for any issue; renderSafe identifies blocking failures.",
         "inputSchema": {
           "type": "object",
-          "properties": {},
+          "properties": {
+            "code": {
+              "type": "string",
+              "maxLength": 160
+            },
+            "severity": {
+              "type": "string",
+              "enum": ["all", "blocking", "warning", "error"]
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 400
+            }
+          },
           "additionalProperties": false
         },
         "readOnly": true
@@ -1141,14 +1259,37 @@
       },
       {
         "name": "save_design",
-        "description": "Save the current live canvas to its active .codesign.json repository source, guarded by the latest metadata stateRevision.",
+        "description": "Save the current design, or manage files with action:create/open/save_as. New paths are create-only; save_as retains resources and saved review/prototype attachments. Default action is save. Requires the latest stateRevision.",
         "inputSchema": {
           "type": "object",
           "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["save", "create", "open", "save_as"]
+            },
+            "path": {
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^designs/[^\\\\:\\u0000-\\u001F\\u007F]+[.]codesign[.]json$",
+              "description": "New .codesign.json path. Existing files are rejected in create mode."
+            },
+            "name": {
+              "type": "string",
+              "maxLength": 120
+            },
+            "save": {
+              "type": "boolean",
+              "description": "Create only; defaults true."
+            },
+            "discard_changes": {
+              "type": "boolean",
+              "description": "Explicitly discard unsaved changes for create/open; otherwise save first."
+            },
             "expected_state_revision": {
               "type": "string",
               "minLength": 1,
-              "description": "Required exact in-memory stateRevision returned by get_design_metadata."
+              "maxLength": 256,
+              "description": "Required exact stateRevision returned by get_design_metadata."
             }
           },
           "required": ["expected_state_revision"],
@@ -1246,20 +1387,21 @@
       },
       {
         "name": "exchange_figma",
-        "description": "Import workspace Figma REST/source JSON with local assets as an editable design, or export a source-aware transfer with reviewed incremental changes for the Figma development plugin.",
+        "description": "Prepare and audit Figma JSON before import; create an independent design or explicitly replace the current canvas. Commit a preparationId after review. Export source-aware Figma transfers. Legacy path-only imports replace the current canvas.",
         "readOnly": false,
         "inputSchema": {
           "type": "object",
           "properties": {
             "action": {
               "type": "string",
-              "enum": ["import", "export"]
+              "enum": ["prepare", "import", "export"]
             },
             "path": {
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "pattern": "^designs/[^\\\\:\\u0000-\\u001F\\u007F]+[.]json$"
+              "pattern": "^designs/[^\\\\:\\u0000-\\u001F\\u007F]+[.]json$",
+              "description": "Legacy input path for import, or output path for export. Prefer source_path for new imports."
             },
             "save": {
               "type": "boolean"
@@ -1269,13 +1411,48 @@
               "minLength": 1,
               "maxLength": 256,
               "description": "Required exact stateRevision returned by get_design_metadata."
+            },
+            "source_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^designs/[^\\\\:\\u0000-\\u001F\\u007F]+[.]json$",
+              "description": "Figma source JSON or prepared multipart manifest. Defaults to creating a new design."
+            },
+            "target_path": {
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^designs/[^\\\\:\\u0000-\\u001F\\u007F]+[.]codesign[.]json$",
+              "description": "New .codesign.json path. Existing files are rejected in create mode."
+            },
+            "mode": {
+              "type": "string",
+              "enum": ["create", "replace"],
+              "description": "New imports default to create. replace targets the current file. Legacy path-only imports retain replace behavior."
+            },
+            "preparation_id": {
+              "type": "string",
+              "maxLength": 128,
+              "description": "Exact preparationId from prepare, bound to source hash, target and current state."
+            },
+            "allow_blocking": {
+              "type": "boolean",
+              "description": "Explicitly allow a draft with blocking audit issues; never marks it deliverable."
             }
           },
-          "required": ["action", "path", "expected_state_revision"],
-          "additionalProperties": false
+          "required": ["action", "expected_state_revision"],
+          "additionalProperties": false,
+          "anyOf": [
+            {
+              "required": ["path"]
+            },
+            {
+              "required": ["source_path"]
+            }
+          ]
         }
       }
     ],
-    "skills": ["agent/skills/repo-design/SKILL.md"]
+    "skills": ["agent/skills/repo-design/SKILL.md", "agent/skills/project-runtime/SKILL.md"]
   }
 }

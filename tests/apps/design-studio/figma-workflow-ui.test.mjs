@@ -3,7 +3,15 @@ import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
+import {
+  launchCanvasBrowser,
+  canvasMime,
+  gpuActive,
+  metadata,
+  readNode,
+  observeLocalTools,
+  clickWorld,
+} from "./fixtures/canvas-test-observations.mjs";
 
 const root = fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url));
 const fileValue = {
@@ -46,7 +54,7 @@ const fileValue = {
   },
 };
 async function fixture(t, { mobile = false } = {}) {
-  const browser = await chromium.launch();
+  const browser = await launchCanvasBrowser();
   t.after(() => browser.close());
   const context = await browser.newContext({
     viewport: mobile ? { width: 390, height: 844 } : { width: 1500, height: 1000 },
@@ -61,18 +69,13 @@ async function fixture(t, { mobile = false } = {}) {
     try {
       await route.fulfill({
         body: await readFile(path),
-        contentType: {
-          ".html": "text/html",
-          ".js": "text/javascript",
-          ".mjs": "text/javascript",
-          ".css": "text/css",
-          ".json": "application/json",
-        }[extname(path)],
+        contentType: canvasMime[extname(path)],
       });
     } catch {
       await route.fulfill({ status: 404, body: "missing" });
     }
   });
+  await observeLocalTools(page);
   await page.goto("https://panel.test/index.html");
   await page.waitForFunction(() => !document.querySelector(".workspace").inert);
   const open = async () => {
@@ -88,13 +91,11 @@ async function fixture(t, { mobile = false } = {}) {
     );
   };
   const choose = async (value = fileValue) => {
-    await page
-      .locator("#figma-import-file")
-      .setInputFiles({
-        name: "figma.json",
-        mimeType: "application/json",
-        buffer: Buffer.from(JSON.stringify(value)),
-      });
+    await page.locator("#figma-import-file").setInputFiles({
+      name: "figma.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(value)),
+    });
     await page.waitForFunction(
       () => document.querySelector("#figma-workflow-dialog").getAttribute("aria-busy") === "false",
     );
@@ -135,20 +136,15 @@ test("Figma JSON becomes editable layers, exports transfer and offline HTML, and
   assert.match(html.text, /data-codeshell-id="figma-1-2"/);
   assert.match(html.text, /Editable Figma title/);
   await f.page.locator("#figma-workflow-close").click();
-  await f.page.locator('[data-text-node-id="figma-1-2"]').dblclick();
+  await gpuActive(f.page);
+  await clickWorld(f.page, { x: 90, y: 50 }, { clickCount: 2 });
   await f.page.locator("#inline-text-editor").fill("Edited inside panel");
   await f.page.locator("#inline-text-editor").press("Control+Enter");
-  assert.equal(
-    await f.page.locator('[data-text-node-id="figma-1-2"]').textContent(),
-    "Edited inside panel",
-  );
+  assert.equal((await readNode(f.page, "figma-1-2")).text, "Edited inside panel");
   await f.page.locator("#stage").press("Control+z");
-  assert.equal(
-    await f.page.locator('[data-text-node-id="figma-1-2"]').textContent(),
-    "Editable Figma title",
-  );
+  assert.equal((await readNode(f.page, "figma-1-2")).text, "Editable Figma title");
   await f.page.locator("#stage").press("Control+z");
-  assert.equal(await f.page.locator("#stage [data-text-node-id]").count(), 0);
+  assert.equal((await metadata(f.page)).layers.filter((n) => n.type === "text").length, 0);
   assert.deepEqual(f.errors, []);
 });
 
@@ -165,10 +161,10 @@ test("a changed design path or malformed input cannot apply a previously reviewe
     () => document.querySelector("#figma-workflow-status").dataset.kind === "error",
   );
   assert.match(await f.page.locator("#figma-workflow-status").textContent(), /路径/);
-  assert.equal(await f.page.locator("#stage [data-text-node-id]").count(), 0);
+  assert.equal((await metadata(f.page)).layers.filter((n) => n.type === "text").length, 0);
   await f.choose({ unexpected: "invalid document" });
   assert.equal(await f.page.locator("#figma-import-apply").isDisabled(), true);
-  assert.equal(await f.page.locator("#stage [data-text-node-id]").count(), 0);
+  assert.equal((await metadata(f.page)).layers.filter((n) => n.type === "text").length, 0);
   assert.deepEqual(f.errors, []);
 });
 
@@ -194,13 +190,15 @@ test("the canvas comment tool records a persistent anchored discussion without r
   const f = await fixture(t);
   await f.open();
   await f.choose();
+  await f.page.locator("#figma-import-mode").selectOption("replace");
   await f.page.locator("#figma-import-apply").click();
   await f.page.waitForFunction(() =>
     document.querySelector("#figma-workflow-status").textContent.includes("已导入"),
   );
   await f.page.locator("#figma-workflow-close").click();
   await f.page.locator('[data-tool="comment"]').click();
-  await f.page.locator('[data-text-node-id="figma-1-2"]').click();
+  await gpuActive(f.page);
+  await clickWorld(f.page, { x: 90, y: 50 });
   await f.page.locator("#element-comment-request").fill("标题在手机上需要更明显");
   assert.equal(await f.page.locator("#submit-element-comment").isDisabled(), true);
   await f.page.locator("#save-review-comment").click();
@@ -222,4 +220,47 @@ test("the canvas comment tool records a persistent anchored discussion without r
   await f.page.locator("#review-comments-filter").selectOption("resolved");
   assert.match(await f.page.locator(".review-comment-text").textContent(), /手机/);
   assert.deepEqual(f.errors, []);
+});
+
+test("new imports expose a separate target, real audit and a rendered preview", async (t) => {
+  const f = await fixture(t);
+  await f.open();
+  await f.choose();
+  assert.equal(await f.page.locator("#figma-import-mode").inputValue(), "create");
+  assert.equal(
+    await f.page.locator("#figma-import-target").inputValue(),
+    "designs/figma.codesign.json",
+  );
+  assert.match(await f.page.locator("#figma-import-audit").textContent(), /预检：/);
+  await f.page.waitForFunction(
+    () => document.querySelector("#figma-import-image").naturalWidth > 0,
+  );
+  if (process.env.DESIGN_STUDIO_QA_DIR) {
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(process.env.DESIGN_STUDIO_QA_DIR, { recursive: true });
+    await f.page.screenshot({
+      path: resolve(process.env.DESIGN_STUDIO_QA_DIR, "figma-import-preview.png"),
+    });
+  }
+  await f.page.locator("#figma-import-apply").click();
+  await f.page.waitForFunction(() =>
+    document.querySelector("#figma-workflow-status").textContent.includes("已导入"),
+  );
+  assert.equal(await f.page.locator("#document-path").inputValue(), "designs/figma.codesign.json");
+  assert.deepEqual(f.errors, []);
+});
+
+test("the standalone HTML plugin downloads with its own Figma-assigned id and attribution", async (t) => {
+  const f = await fixture(t);
+  await f.open();
+  await f.page.locator("#html-plugin-id").fill("999888777666");
+  const result = await f.download('[data-html-plugin-file="manifest.json"]');
+  const manifest = JSON.parse(result.text);
+  assert.equal(manifest.name, "CodeShell HTML to Figma");
+  assert.equal(manifest.id, "999888777666");
+  assert.deepEqual(manifest.networkAccess.allowedDomains, ["none"]);
+  assert.match((await f.download('[data-html-plugin-file="NOTICE.md"]')).text, /MIT/);
+  assert.match((await f.download('[data-html-plugin-file="README.md"]')).text, /Figma/);
+  assert.match((await f.download('[data-html-plugin-file="code.js"]')).text, /html2figma/);
+  assert.match((await f.download('[data-html-plugin-file="ui.html"]')).text, /HTML/);
 });

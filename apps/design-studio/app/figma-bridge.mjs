@@ -1,17 +1,22 @@
+import { figmaFillPaints, representativeDesignFill } from "./paint.mjs";
 /* Deliberately bounded Figma JSON bridge. Figma binary files are not supported. */
 import {
   MAX_DESIGN_NODES_PER_PAGE,
+  MAX_DESIGN_CANVAS_SIZE,
   MAX_DESIGN_PAGES,
+  isDesignNodeVisible,
   normalizeDesignDocument,
   normalizeDesignState,
   repositoryDesignPage,
 } from "./document.mjs";
-import { transformedNodeBoundsInTree } from "./geometry.mjs";
+import { clipNodeBoundsToClippingAncestors } from "./geometry.mjs";
+import { measureFigmaTextDocument } from "./text-metrics.mjs";
 import {
   normalizeFigmaSource,
   prepareFigmaAssets,
   createFigmaTransferAssets,
 } from "./figma-assets.mjs";
+import { prepareBuiltinDesignFontResources, ensureBuiltinDesignFonts } from "./builtin-fonts.mjs";
 
 export const MAX_FIGMA_JSON_BYTES = 16 * 1024 * 1024;
 export const MAX_FIGMA_TOTAL_NODES = 50_000;
@@ -41,25 +46,78 @@ const cleanName = (value, fallback) =>
         .slice(0, 120)
     : "") || fallback;
 
+const LOSS_WARNINGS = new Set([
+  "unsupported-paint",
+  "unsupported-node",
+  "unsupported-export-node",
+  "rich-text",
+  "missing-text",
+  "text-truncated",
+  "font-fallback",
+  "font-resource-export",
+  "missing-geometry",
+  "unsupported-mask",
+  "visual-fallback",
+  "plugin-export-warning",
+  "canvas-extent",
+]);
+const EFFECT_WARNINGS = new Set(["unsupported-effects", "stroke-alignment", "corner-shape"]);
+const ADVISORY_WARNINGS = new Set([
+  "vertical-text",
+  "grid-layout",
+  "invalid-sizing",
+  "page-origin-normalized",
+  "rotation-inferred",
+  "font-weight-rounded",
+  "section-as-frame",
+  "detached-component",
+  "variables-as-literals",
+  "prototype-interaction",
+  "grid-export",
+  "reverse-layout-export",
+  "child-layout-export",
+  "container-as-frame",
+  "notes-plugin-data",
+]);
+function warningPriority({ code, message }) {
+  // Missing image resources must remain visible even after hundreds of layout advisories.
+  if (code === "unsupported-paint" && /\bIMAGE\b/u.test(message)) return 0;
+  if (LOSS_WARNINGS.has(code)) return 1;
+  if (EFFECT_WARNINGS.has(code)) return 3;
+  if (ADVISORY_WARNINGS.has(code)) return 4;
+  return 2;
+}
+
 function reporter() {
-  const warnings = [];
+  const warnings = [],
+    sample = [],
+    groups = new Map();
   let total = 0;
   return {
     warnings,
+    get warningGroups() {
+      return [...groups].map(([code, count]) => ({ code, count }));
+    },
     warn(code, source, message) {
       total += 1;
-      if (warnings.length < MAX_WARNINGS)
-        warnings.push({
-          code,
-          ...(source?.id ? { nodeId: String(source.id).slice(0, 160) } : {}),
-          message,
-        });
+      groups.set(code, (groups.get(code) ?? 0) + 1);
+      const warning = {
+        code,
+        ...(source?.id ? { nodeId: String(source.id).slice(0, 160) } : {}),
+        message,
+      };
+      const priority = warningPriority(warning);
+      const index = sample.findIndex((entry) => entry.priority > priority);
+      if (index !== -1) sample.splice(index, 0, { warning, priority });
+      else if (sample.length < MAX_WARNINGS) sample.push({ warning, priority });
+      if (sample.length > MAX_WARNINGS) sample.pop();
     },
     finish() {
-      if (total > MAX_WARNINGS)
+      warnings.splice(0, warnings.length, ...sample.map((entry) => entry.warning));
+      if (total > sample.length)
         warnings.push({
           code: "warnings-truncated",
-          message: `另有 ${total - MAX_WARNINGS} 条兼容性提示未展开。`,
+          message: `另有 ${total - sample.length} 条兼容性提示未展开。`,
         });
       return total;
     },
@@ -363,7 +421,7 @@ function text(source, node, report) {
   node.cornerRadius = 0;
   if (node.text.trim()) {
     node.textSource = node.text;
-    node.textFlow = "wrap";
+    if (style.textAutoResize !== "WIDTH_AND_HEIGHT") node.textFlow = "wrap";
     node.textFlowWidth = node.width;
   }
   if (
@@ -376,13 +434,17 @@ function text(source, node, report) {
 }
 
 /** Import a REST GET file response, DOCUMENT/CANVAS, selected node, or JSON_REST_V1 nodes response. */
-export function importFigmaJson(
+export function importFigmaJson(input, options = {}) {
+  return importFigmaJsonWithReport(input, options, reporter());
+}
+
+function importFigmaJsonWithReport(
   input,
-  { resources = [], imageRefs = new Map(), previews = {} } = {},
+  { resources = [], imageRefs = new Map(), previews = {} },
+  report,
 ) {
   const value = readJson(input),
-    pages = sourcePages(value),
-    report = reporter();
+    pages = sourcePages(value);
   if (!pages.length || pages.length > MAX_DESIGN_PAGES)
     throw new Error(`Figma 页面数量必须为 1–${MAX_DESIGN_PAGES}。`);
   const ids = new Set(),
@@ -392,8 +454,10 @@ export function importFigmaJson(
     skippedNodes = 0;
   const mapping = [],
     pageMappings = [];
+  const nonRenderingSourceNodes = new Set();
   let currentPage = null;
   const recordMapping = (source, node) => {
+    if (source.absoluteRenderBounds === null) nonRenderingSourceNodes.add(node.id);
     const context = value.selection?.roots?.[source.id];
     if (typeof source.id === "string")
       mapping.push({
@@ -507,6 +571,12 @@ export function importFigmaJson(
       recordMapping(source, node);
       return node;
     }
+    const fillPaints =
+      !imagePaint && !["group", "image"].includes(type)
+        ? figmaFillPaints(source.fills, (message) =>
+            report.warn("paint-conversion", source, message),
+          )
+        : null;
     const node = {
       id: allocateId(source, `node-${visited}`),
       type,
@@ -525,7 +595,11 @@ export function importFigmaJson(
         ancestors,
         report,
       ),
-      fill: imagePaint ? "transparent" : paint(source.fills, source, "填充", report),
+      fill: imagePaint
+        ? "transparent"
+        : fillPaints
+          ? representativeDesignFill(fillPaints)
+          : paint(source.fills, source, "填充", report),
       stroke: paint(source.strokes, source, "描边", report),
       strokeWidth: number(source.strokeWeight, 0, 0, 100, source, "strokeWeight", report),
       opacity: number(source.opacity, 1, 0, 1, source, "opacity", report),
@@ -541,6 +615,12 @@ export function importFigmaJson(
       visible: source.visible !== false,
       locked: source.locked === true,
     };
+    if (
+      fillPaints &&
+      (fillPaints.length > 1 ||
+        fillPaints.some((paint) => paint.type !== "SOLID" || paint.opacity !== 1))
+    )
+      node.fillPaints = fillPaints;
     if (node.stroke === "transparent") node.strokeWidth = 0;
     if (node.strokeWidth && source.strokeAlign !== "CENTER")
       report.warn("stroke-alignment", source, "内侧或外侧描边暂按居中描边导入。");
@@ -704,7 +784,8 @@ export function importFigmaJson(
       children: page.children.map((source) => convert(source, [], 0, counter)).filter(Boolean),
     };
   });
-  // Figma pages have an unbounded origin. Move negative/far-away content into the finite canvas.
+  // Size the finite canvas from visible content. Clipped or hidden offscreen
+  // descendants still retain their geometry and source mapping for round trips.
   let extentX = 1440,
     extentY = 960;
   for (const [index, page] of convertedPages.entries()) {
@@ -717,15 +798,41 @@ export function importFigmaJson(
     };
     flatten(page.children);
     const nodeIndex = new Map(flat.map((node) => [node.id, node]));
+    // REST explicitly reports no rendered pixels for these clipped branches.
+    // Preserve every layer and its source mapping, while representing its actual
+    // source visibility. A missing render-bounds field is not evidence of this.
+    const suppressedIds = new Set(
+      flat
+        .filter(
+          (node) =>
+            nonRenderingSourceNodes.has(node.id) &&
+            node.visible !== false &&
+            node.parentId &&
+            clipNodeBoundsToClippingAncestors(flat, node, nodeIndex) === null,
+        )
+        .map((node) => node.id),
+    );
+    const preserveSourceVisibility = (nodes) => {
+      for (const node of nodes) {
+        if (suppressedIds.has(node.id)) {
+          node.visible = false;
+          const flattened = nodeIndex.get(node.id);
+          if (flattened) flattened.visible = false;
+        }
+        preserveSourceVisibility(node.children ?? []);
+      }
+    };
+    preserveSourceVisibility(page.children);
     const bounds = flat
-      .map((node) => transformedNodeBoundsInTree(flat, node, nodeIndex))
+      .filter(
+        (node) => node.type !== "group" && isDesignNodeVisible({ nodes: flat }, node, nodeIndex),
+      )
+      .map((node) => clipNodeBoundsToClippingAncestors(flat, node, nodeIndex))
       .filter(Boolean);
-    const minX = Math.min(0, ...bounds.map((box) => box.x)),
-      minY = Math.min(0, ...bounds.map((box) => box.y));
-    const rootMinX = page.children.length ? Math.min(...page.children.map((node) => node.x)) : 0,
-      rootMinY = page.children.length ? Math.min(...page.children.map((node) => node.y)) : 0;
-    const offsetX = minX < 0 ? -minX : rootMinX >= 10000 ? -rootMinX : 0;
-    const offsetY = minY < 0 ? -minY : rootMinY >= 10000 ? -rootMinY : 0;
+    const minX = bounds.length ? Math.min(...bounds.map((box) => box.x)) : 0,
+      minY = bounds.length ? Math.min(...bounds.map((box) => box.y)) : 0;
+    const offsetX = minX < 0 || minX >= MAX_DESIGN_CANVAS_SIZE ? -minX : 0;
+    const offsetY = minY < 0 || minY >= MAX_DESIGN_CANVAS_SIZE ? -minY : 0;
     if (offsetX || offsetY) {
       const translate = (nodes) => {
         for (const node of nodes) {
@@ -756,13 +863,13 @@ export function importFigmaJson(
     extentX = Math.max(extentX, ...bounds.map((box) => box.x + box.width + offsetX));
     extentY = Math.max(extentY, ...bounds.map((box) => box.y + box.height + offsetY));
   }
-  const width = clamp(Math.ceil(extentX), 100, 10000);
-  const height = clamp(Math.ceil(extentY), 100, 10000);
-  if (extentX > 10000 || extentY > 10000)
+  const width = clamp(Math.ceil(extentX), 100, MAX_DESIGN_CANVAS_SIZE);
+  const height = clamp(Math.ceil(extentY), 100, MAX_DESIGN_CANVAS_SIZE);
+  if (extentX > MAX_DESIGN_CANVAS_SIZE || extentY > MAX_DESIGN_CANVAS_SIZE)
     report.warn(
       "canvas-extent",
       null,
-      "内容超过 10,000 px 画布上限；请拆分页面以避免 HTML 原型裁切。",
+      "内容超过 20,000 px 画布上限；请拆分页面以避免 HTML 原型裁切。",
     );
   const document = normalizeDesignDocument({
     format: "codeshell.design",
@@ -778,6 +885,7 @@ export function importFigmaJson(
   return {
     document,
     warnings: report.warnings,
+    warningGroups: report.warningGroups,
     stats: { pages: pages.length, importedNodes, skippedNodes, warningCount },
     mapping,
     pageMappings,
@@ -785,18 +893,55 @@ export function importFigmaJson(
 }
 
 /** Import local images and preserve the complete official source alongside the editable document. */
-export async function prepareFigmaImport(input, { sha256Bytes } = {}) {
+export async function prepareFigmaImport(
+  input,
+  { sha256Bytes, textMeasurer, browserDocument, readFontBytes } = {},
+) {
   const source = normalizeFigmaSource(input);
   const assets = await prepareFigmaAssets(source, { sha256Bytes });
-  const result = importFigmaJson(source, {
-    resources: assets.resources,
-    imageRefs: assets.byAssetId,
-    previews: source.previews,
+  const report = reporter();
+  const result = importFigmaJsonWithReport(
+    source,
+    { resources: assets.resources, imageRefs: assets.byAssetId, previews: source.previews },
+    report,
+  );
+  let fonts = { resourcePlans: [], faces: [] };
+  if (readFontBytes || (globalThis.document?.fonts && typeof globalThis.FontFace === "function")) {
+    fonts = await prepareBuiltinDesignFontResources(result.document, {
+      ...(readFontBytes ? { readBytes: readFontBytes } : {}),
+      sha256Bytes,
+    });
+    await ensureBuiltinDesignFonts(result.document, { faces: fonts.faces });
+  }
+  const sourceNodes = new Map();
+  const collect = (node) => {
+    if (typeof node.id === "string") sourceNodes.set(node.id, node);
+    for (const child of node.children ?? []) collect(child);
+  };
+  for (const page of sourcePages(source)) collect(page);
+  const textMeasurement = await measureFigmaTextDocument(result.document, {
+    sourceNodes,
+    sourceIds: new Map(result.mapping.map((entry) => [entry.designId, entry.sourceId])),
+    ...(textMeasurer ? { measurer: textMeasurer } : {}),
+    ...(browserDocument ? { browserDocument } : {}),
   });
-  for (const message of source.warnings ?? [])
-    result.warnings.push({ code: "plugin-export-warning", message });
-  result.stats.warningCount += source.warnings?.length ?? 0;
-  return { ...result, resourcePlans: assets.resourcePlans, source };
+  for (const family of textMeasurement.unavailableFonts) {
+    report.warn(
+      "font-fallback",
+      null,
+      `字体 ${family} 不可用，已实测浏览器实际回退字体；安装原字体后请重新导入。`,
+    );
+  }
+  result.document = normalizeDesignState(result.document);
+  for (const message of source.warnings ?? []) report.warn("plugin-export-warning", null, message);
+  result.stats.warningCount = report.finish();
+  result.warningGroups = report.warningGroups;
+  return {
+    ...result,
+    resourcePlans: [...assets.resourcePlans, ...fonts.resourcePlans],
+    source,
+    textMeasurement,
+  };
 }
 
 /** Create a portable, editable subset consumed by the bundled Figma development plugin. */
@@ -835,7 +980,7 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
       report.warn(
         "font-resource-export",
         node,
-        "字体文件未包含在传输包；Figma 将尝试已安装字体或回退到 Inter。 ",
+        "字体文件未包含在传输包；Figma 将尝试已安装字体。缺失的图标或私用区字体会阻止导入，普通文字回退会明确报告。 ",
       );
     if (node.notes)
       report.warn(
@@ -867,6 +1012,7 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
     pages,
     assets: createFigmaTransferAssets(document, resources),
     warnings: report.warnings,
+    warningGroups: report.warningGroups,
     stats: { pages: pages.length, exportedNodes, skippedNodes, warningCount },
   };
   if (new TextEncoder().encode(JSON.stringify(transfer, null, 2)).byteLength > MAX_FIGMA_JSON_BYTES)

@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { extname, resolve, sep } from "node:path";
+import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
+import { launchCanvasBrowser, canvasCsp, canvasContentType, observeCanvasPage, assertCanvasClean,
+  waitForCanvas, canvasNodes, canvasNodeBounds, canvasPoint, canvasTransform, assertCanvasNodePainted,
+  canvasOverlayChecksum } from "./canvas-ui-fixture.mjs";
 
 const root = fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url));
 const diagnostics = new WeakMap();
@@ -48,23 +50,29 @@ async function fixture(t, width = 390, touch = true) {
     try {
       const bytes = await readFile(path.endsWith(sep) ? resolve(path, "index.html") : path);
       response.writeHead(200, {
-        "content-type": { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css" }[extname(path)] ?? "application/octet-stream",
+        "content-type": canvasContentType(path),
+        "Content-Security-Policy": canvasCsp,
       }).end(bytes);
     } catch {
       response.writeHead(404).end();
     }
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchCanvasBrowser();
   t.after(async () => {
-    await browser.close();
-    server.closeAllConnections();
-    await new Promise(resolve => server.close(resolve));
+    try { await assertCanvasClean(page); }
+    finally {
+      try { await browser.close(); }
+      finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+    }
   });
   const context = await browser.newContext({
     viewport: { width, height: 844 }, hasTouch: touch, isMobile: touch,
   });
   const page = await context.newPage();
+  await observeCanvasPage(page);
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  await context.route("**/*", route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
   const rawInputs = [];
   diagnostics.set(page, {
     node: process.version, platform: process.platform, arch: process.arch,
@@ -119,7 +127,7 @@ async function fixture(t, width = 390, touch = true) {
       rail: rect(".toolrail"), stage: rect("#stage"),
       railScroll: document.querySelector(".toolrail")?.scrollTop,
       windowScroll: { x: scrollX, y: scrollY },
-      sceneTransform: document.querySelector("#scene")?.getAttribute("transform"),
+      canvasTransform: (() => { const m = document.querySelector("#stage")?.getContext("2d")?.getTransform(); return m ? [m.a,m.b,m.c,m.d,m.e,m.f] : null; })(),
       activeElement: describe(document.activeElement),
       viewport: visualViewport ? {
         width: visualViewport.width, height: visualViewport.height,
@@ -169,7 +177,7 @@ async function fixture(t, width = 390, touch = true) {
     window.addEventListener("resize", () => append({
       type: "resize", time: performance.now(), layout: window.touchLayout(),
     }));
-    let context = { cwd: "/test-project", trusted: true, busy: false, sessionId: "test", availableMethods: ["storage.getSnapshot", "storage.compareAndSet"] };
+    let context = { cwd: "/test-project", trusted: true, busy: false, sessionId: "test", capabilities: { packageAssets: { wasm: true, fetch: "package" } }, availableMethods: ["storage.getSnapshot", "storage.compareAndSet"] };
     let contextListener;
     window.codeshellPanel = {
       getContext: async () => ({ ...context }),
@@ -183,7 +191,7 @@ async function fixture(t, width = 390, touch = true) {
     };
   });
   await page.goto(`http://127.0.0.1:${server.address().port}/index.html`);
-  await page.waitForFunction(() => !document.querySelector(".workspace").inert);
+  await waitForCanvas(page);
   const cdp = await context.newCDPSession(page);
   const sendTouch = async (type, points = []) => {
     const input = { type, points, nodeStarted: performance.now() };
@@ -222,11 +230,14 @@ async function drawRectangle(f) {
   // filtered on Linux. Use the native touch driver with a non-flinging release
   // for completed draws; cancellation and multi-pointer cases retain raw input.
   await f.dragTouch(start, { x: 110, y: 90 });
-  return f.page.locator("#stage [data-node-id]").first();
+  const node = (await canvasNodes(f.page))[0];
+  assert(node);
+  await assertCanvasNodePainted(f.page, node);
+  return node;
 }
 
-async function nodeCenter(node) {
-  const box = await node.boundingBox();
+async function nodeCenter(f, node) {
+  const box = await canvasNodeBounds(f.page, node);
   return { x: box.x + box.width / 2, y: box.y + box.height / 2, id: 1 };
 }
 
@@ -238,7 +249,7 @@ test("320–680px touch workspaces retain a usable canvas, drawers and every des
       assert.ok(stage.width >= width - 50, `canvas was only ${stage.width}px wide`);
       assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth), width);
       const node = await drawRectangle(f);
-      const bounds = await node.boundingBox();
+      const bounds = await canvasNodeBounds(f.page, node);
       assert.ok(bounds.width >= 100 && bounds.width <= 140, `draw width was ${bounds.width}`);
       assert.ok(bounds.height >= 80 && bounds.height <= 120, `draw height was ${bounds.height}`);
       assert.equal(await f.page.evaluate(() => window.touchTrace.some(event =>
@@ -279,7 +290,7 @@ test("a second touch cannot move or finish the pointer that owns a drag", async 
   const f = await fixture(t);
   const node = await drawRectangle(f);
   const originalX = Number(await f.page.locator("#prop-x").inputValue());
-  const first = await nodeCenter(node), second = { x: first.x + 60, y: first.y + 100, id: 2 };
+  const first = await nodeCenter(f, node), second = { x: first.x + 60, y: first.y + 100, id: 2 };
   await f.sendTouch("touchStart", [first]);
   await f.sendTouch("touchStart", [first, second]);
   await f.sendTouch("touchMove", [first, { ...second, x: second.x + 60 }]);
@@ -298,43 +309,47 @@ test("native touch cancellation rolls back create, move, resize and pan without 
   const f = await fixture(t);
   const node = await drawRectangle(f);
   const before = await f.design();
-  const center = await nodeCenter(node);
+  const overlayBefore = await canvasOverlayChecksum(f.page);
+  const center = await nodeCenter(f, node);
   const originalX = await f.page.locator("#prop-x").inputValue();
   await f.sendTouch("touchStart", [center]);
   await f.sendTouch("touchMove", [{ ...center, x: center.x + 50, y: center.y + 30 }]);
   assert.notEqual(await f.page.locator("#prop-x").inputValue(), originalX);
+  assert.notEqual(await canvasOverlayChecksum(f.page), overlayBefore, "the live move updates 2D selection pixels");
   await f.sendTouch("touchCancel");
   assert.deepEqual(await f.design(), before);
+  assert.equal(await canvasOverlayChecksum(f.page), overlayBefore, "cancellation restores the original selection pixels");
 
-  const handle = await f.page.locator('[data-handle="se"]').last().boundingBox();
-  const corner = { x: handle.x + handle.width / 2, y: handle.y + handle.height / 2, id: 1 };
+  const resizing = (await canvasNodes(f.page))[0];
+  const corner = await canvasPoint(f.page, resizing.x + resizing.width, resizing.y + resizing.height);
   const originalWidth = await f.page.locator("#prop-width").inputValue();
   await f.sendTouch("touchStart", [corner]);
   await f.sendTouch("touchMove", [{ ...corner, x: corner.x + 30, y: corner.y + 40 }]);
   assert.notEqual(await f.page.locator("#prop-width").inputValue(), originalWidth);
   await f.sendTouch("touchCancel");
   assert.deepEqual(await f.design(), before);
+  assert.equal(await canvasOverlayChecksum(f.page), overlayBefore, "a cancelled resize restores the original handles");
 
   await tapForAttribute(f.page, '[data-tool="rectangle"]', "aria-pressed", "true");
   const creation = { x: center.x, y: center.y + 200, id: 1 };
   await f.sendTouch("touchStart", [creation]);
   await f.sendTouch("touchMove", [{ ...creation, x: creation.x + 50, y: creation.y + 30 }]);
-  assert.equal(await f.page.locator("#stage rect[data-node-id]").count(), 2);
+  assert.equal((await canvasNodes(f.page)).length, 2);
   await f.sendTouch("touchCancel");
   assert.deepEqual(await f.design(), before);
 
-  const transform = await f.page.locator("#scene").getAttribute("transform");
+  const transform = await canvasTransform(f.page);
   await tapForAttribute(f.page, '[data-tool="hand"]', "aria-pressed", "true");
   await f.sendTouch("touchStart", [center]);
   await f.sendTouch("touchMove", [{ ...center, x: center.x + 50, y: center.y + 30 }]);
-  assert.notEqual(await f.page.locator("#scene").getAttribute("transform"), transform);
+  assert.notDeepEqual(await canvasTransform(f.page), transform);
   await f.sendTouch("touchCancel");
-  assert.equal(await f.page.locator("#scene").getAttribute("transform"), transform);
+  assert.deepEqual(await canvasTransform(f.page), transform);
   await f.page.locator("#stage").focus();
   await f.page.keyboard.press("Control+z");
-  assert.equal(await f.page.locator("#stage [data-node-id]").count(), 0);
+  assert.equal((await canvasNodes(f.page)).length, 0);
   await drawRectangle(f);
-  assert.equal(await f.page.locator("#stage rect[data-node-id]").count(), 1);
+  assert.equal((await canvasNodes(f.page)).length, 1);
   assert.deepEqual(f.errors, []);
 });
 
@@ -347,7 +362,7 @@ test("switching same-path projects cancels the old drag before retaining its dra
   replacement.pages[0].children[0].x = 600;
   replacement.pages[0].children[0].y = 300;
   f.filesForSession("next-project").set("designs/design.codesign.json", JSON.stringify(replacement));
-  const center = await nodeCenter(node);
+  const center = await nodeCenter(f, node);
   const originalX = await f.page.locator("#prop-x").inputValue();
   await f.sendTouch("touchStart", [center]);
   await f.sendTouch("touchMove", [{ ...center, x: center.x + 50 }]);
@@ -379,8 +394,8 @@ test("opening a replacement file with the same node ID cannot inherit an old res
   f.files.set("designs/replacement.codesign.json", JSON.stringify(replacement));
   await f.page.locator("#refresh-repo-files").evaluate(button => button.click());
   await f.page.locator("#repo-files-list .file-row").filter({ hasText: "replacement" }).waitFor({ state: "attached" });
-  const handle = await f.page.locator('[data-handle="se"]').last().boundingBox();
-  const corner = { x: handle.x + handle.width / 2, y: handle.y + handle.height / 2, id: 1 };
+  const resizing = (await canvasNodes(f.page))[0];
+  const corner = await canvasPoint(f.page, resizing.x + resizing.width, resizing.y + resizing.height);
   const originalWidth = await f.page.locator("#prop-width").inputValue();
   await f.sendTouch("touchStart", [corner]);
   await f.sendTouch("touchMove", [{ ...corner, x: corner.x + 40, y: corner.y + 30 }]);
@@ -401,7 +416,7 @@ test("changing pages restores a pending move on its original page before switchi
   const f = await fixture(t);
   const node = await drawRectangle(f);
   const before = await f.design();
-  const center = await nodeCenter(node);
+  const center = await nodeCenter(f, node);
   const originalX = await f.page.locator("#prop-x").inputValue();
   await f.sendTouch("touchStart", [center]);
   await f.sendTouch("touchMove", [{ ...center, x: center.x + 50 }]);
@@ -434,6 +449,6 @@ test("desktop keeps its visible tools and mouse gestures also roll back on lost 
   });
   await f.page.mouse.move(stage.x + 190, stage.y + 190);
   await f.page.mouse.up();
-  assert.equal(await f.page.locator("#stage [data-node-id]").count(), 0);
+  assert.equal((await canvasNodes(f.page)).length, 0);
   assert.deepEqual(f.errors, []);
 });

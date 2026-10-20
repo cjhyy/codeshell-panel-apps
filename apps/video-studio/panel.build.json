@@ -4,6 +4,7 @@
     "editor-renderer": "src/editor/render-entry.ts"
   },
   "nativeEntries": {
+    "video-studio": "native/project-cli.ts",
     "folder-scan": "native/folder-scan.ts",
     "voice-runtime": "native/voice-cli.ts",
     "media-runtime": "native/media/cli.ts",

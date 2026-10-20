@@ -412,7 +412,10 @@ export function pointInNodeTree(nodes, node, point) {
 
 export function visualSelectionBounds(nodes, allNodes = nodes) {
   if (!Array.isArray(nodes) || nodes.length === 0) return null;
-  const bounds = nodes.map((node) => transformedNodeBoundsInTree(allNodes, node)).filter(Boolean);
+  const byId = new Map(allNodes.map((node) => [node.id, node]));
+  const bounds = nodes
+    .map((node) => transformedNodeBoundsInTree(allNodes, node, byId))
+    .filter(Boolean);
   return selectionBounds(bounds);
 }
 

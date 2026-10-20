@@ -1,3 +1,4 @@
+import { normalizeDesignPaints, designPaintSvg, representativeDesignFill } from "./paint.mjs";
 /* Repository document codec used by the Design Studio Panel App. */
 import {
   clipBoundsToClippingAncestors,
@@ -5,14 +6,18 @@ import {
   inheritedNodeRotation,
   transformedNodeBoundsInTree,
 } from "./geometry.mjs";
-import {
-  normalizeDesignResources,
-} from "./resource-store.mjs";
+import { normalizeDesignResources } from "./resource-store.mjs";
+import { validTextMetrics } from "./text-metrics.mjs";
+import { designFontFaceCss, designFontFamilyCss } from "./font-css.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 export const MAX_DESIGN_PAGES = 1_000;
 export const MAX_DESIGN_NODES_PER_PAGE = 10_000;
+// Canvas geometry shares the existing finite node dimension/coordinate budget.
+// Raster previews impose their own lower pixel and edge limits.
+export const MAX_DESIGN_CANVAS_SIZE = 20_000;
 export const MAX_SVG_EXPORT_BYTES = 384 * 1024;
+export const MAX_LOCAL_SVG_EXPORT_BYTES = 4 * 1024 * 1024;
 export const MAX_COMPONENT_INSTANCE_DEPTH = 16;
 export const MAX_RENDERED_NODES_PER_PAGE = 10_000;
 const V3_NODE_TYPES = [
@@ -116,6 +121,9 @@ function normalizedNode(candidate, parentId) {
     width: candidate.width,
     height: candidate.height,
     fill: candidate.fill.toLowerCase(),
+    ...(candidate.fillPaints !== undefined
+      ? { fillPaints: normalizeDesignPaints(candidate.fillPaints) }
+      : {}),
     stroke: candidate.stroke.toLowerCase(),
     strokeWidth: candidate.strokeWidth,
     opacity: candidate.opacity,
@@ -152,6 +160,8 @@ function normalizedNode(candidate, parentId) {
     if (candidate.letterSpacing !== undefined) node.letterSpacing = candidate.letterSpacing;
     if (candidate.textDecoration !== undefined) node.textDecoration = candidate.textDecoration;
     if (candidate.textMeasurement !== undefined) node.textMeasurement = candidate.textMeasurement;
+    if (candidate.textMetrics !== undefined)
+      node.textMetrics = structuredClone(candidate.textMetrics);
     if (candidate.textSource !== undefined) node.textSource = candidate.textSource;
     if (candidate.textFlow !== undefined) node.textFlow = candidate.textFlow;
     if (candidate.textOverflow !== undefined) node.textOverflow = candidate.textOverflow;
@@ -258,6 +268,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "width",
     "height",
     "fill",
+    "fillPaints",
     "stroke",
     "strokeWidth",
     "opacity",
@@ -276,6 +287,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "letterSpacing",
     "textDecoration",
     "textMeasurement",
+    "textMetrics",
     "textSource",
     "textFlow",
     "textOverflow",
@@ -357,6 +369,11 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
   ) {
     throw new Error(`图层 ${candidate.id} 的填充或描边色值无效`);
   }
+  if (candidate.fillPaints !== undefined) {
+    normalizeDesignPaints(candidate.fillPaints);
+    if (["group", "instance", "image"].includes(candidate.type))
+      throw new Error("该类型不支持独立填充绘制");
+  }
   if (typeof candidate.visible !== "boolean" || typeof candidate.locked !== "boolean") {
     throw new Error(`图层 ${candidate.id} 的 visible 或 locked 无效`);
   }
@@ -421,6 +438,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       "letterSpacing",
       "textDecoration",
       "textMeasurement",
+      "textMetrics",
       "textSource",
       "textFlow",
       "textOverflow",
@@ -459,6 +477,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       (candidate.textDecoration !== undefined &&
         !["none", "underline", "line-through"].includes(candidate.textDecoration)) ||
       (candidate.textMeasurement !== undefined && candidate.textMeasurement !== "browser") ||
+      (candidate.textMetrics !== undefined && !validTextMetrics(candidate.textMetrics)) ||
       (candidate.textSource !== undefined &&
         (typeof candidate.textSource !== "string" || candidate.textSource.length > 4000)) ||
       (candidate.textFlow !== undefined && candidate.textFlow !== "wrap") ||
@@ -532,10 +551,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     ) {
       throw new Error(`容器 ${candidate.id} 的 layoutWrap 无效`);
     }
-    if (
-      candidate.layoutReverse !== undefined &&
-      typeof candidate.layoutReverse !== "boolean"
-    ) {
+    if (candidate.layoutReverse !== undefined && typeof candidate.layoutReverse !== "boolean") {
       throw new Error(`容器 ${candidate.id} 的 layoutReverse 无效`);
     }
     for (const property of [
@@ -597,16 +613,11 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
   }
   if (
     candidate.layoutAlignSelf !== undefined &&
-    !["auto", "start", "center", "end", "stretch", "baseline"].includes(
-      candidate.layoutAlignSelf,
-    )
+    !["auto", "start", "center", "end", "stretch", "baseline"].includes(candidate.layoutAlignSelf)
   ) {
     throw new Error(`图层 ${candidate.id} 的 layoutAlignSelf 无效`);
   }
-  if (
-    candidate.layoutMarginBefore !== undefined &&
-    candidate.layoutMarginBefore !== "auto"
-  ) {
+  if (candidate.layoutMarginBefore !== undefined && candidate.layoutMarginBefore !== "auto") {
     throw new Error(`图层 ${candidate.id} 的 layoutMarginBefore 无效`);
   }
   for (const property of ["layoutSizingHorizontal", "layoutSizingVertical"]) {
@@ -832,8 +843,8 @@ export function normalizeDesignDocument(input) {
     throw new Error("设计名称必须是 1–120 个安全字符");
   }
   assertObject(input.canvas, "canvas", ["width", "height", "background"]);
-  assertFiniteRange(input.canvas.width, 100, 10000, "canvas.width");
-  assertFiniteRange(input.canvas.height, 100, 10000, "canvas.height");
+  assertFiniteRange(input.canvas.width, 100, MAX_DESIGN_CANVAS_SIZE, "canvas.width");
+  assertFiniteRange(input.canvas.height, 100, MAX_DESIGN_CANVAS_SIZE, "canvas.height");
   if (!validHex(input.canvas.background))
     throw new Error("canvas.background 必须是六位十六进制色值");
   const colors = normalizeColors(input.tokens);
@@ -872,10 +883,7 @@ export function normalizeDesignDocument(input) {
   }
   const nodesById = new Map(allNodes.map((node) => [node.id, node]));
   for (const node of allNodes) {
-    if (
-      node.type === "instance" &&
-      nodesById.get(node.componentId)?.type !== "component"
-    ) {
+    if (node.type === "instance" && nodesById.get(node.componentId)?.type !== "component") {
       throw new Error(`实例 ${node.id} 引用了不存在的组件：${node.componentId}`);
     }
   }
@@ -987,10 +995,6 @@ function escapeXml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&apos;");
-}
-
-function escapeCssString(value) {
-  return String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"');
 }
 
 export function effectiveDesignNodeOpacity(document, node, nodeIndex = null) {
@@ -1371,10 +1375,12 @@ function exportNodeSvg(
   const effectiveOpacity = round(effectiveDesignNodeOpacity(document, node), 4);
   const opacity = effectiveOpacity === 1 ? "" : ` opacity="${effectiveOpacity}"`;
   const metadata = ` data-node-id="${escapeXml(node.id)}"`;
+  const fillAttributes =
+    options.paintFills?.get(node.id)?.attributes ?? `fill="${escapeXml(node.fill)}"`;
   const clipped = (markup) => wrapWithAncestorClips(document, node, clipIds, markup);
   if (node.type === "ellipse") {
     return clipped(
-      `  <ellipse${metadata} cx="${round(node.x + node.width / 2)}" cy="${round(node.y + node.height / 2)}" rx="${round(node.width / 2)}" ry="${round(node.height / 2)}" fill="${escapeXml(node.fill)}" stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}"${opacity}${filter}${transform} />`,
+      `  <ellipse${metadata} cx="${round(node.x + node.width / 2)}" cy="${round(node.y + node.height / 2)}" rx="${round(node.width / 2)}" ry="${round(node.height / 2)}" ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}"${opacity}${filter}${transform} />`,
     );
   }
   if (node.type === "text") {
@@ -1390,9 +1396,9 @@ function exportNodeSvg(
       ? document.resources?.find((resource) => resource.id === node.fontRef)
       : null;
     const fontFamily = escapeXml(
-      fontResource?.family ??
-        node.fontFamily ??
-        "Inter, ui-sans-serif, system-ui, sans-serif",
+      designFontFamilyCss(
+        fontResource?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
+      ),
     );
     const fontStyle = node.fontStyle ?? "normal";
     const letterSpacing = node.letterSpacing ?? 0;
@@ -1403,7 +1409,7 @@ function exportNodeSvg(
       .split("\n")
       .map(
         (line, index) =>
-          `    <text x="${round(textX)}" y="${round(node.y + index * node.fontSize * node.lineHeight)}" fill="${escapeXml(node.fill)}" stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="${textDecoration}" text-anchor="${anchor}" dominant-baseline="hanging">${escapeXml(line || " ")}</text>`,
+          `    <text x="${round(textX)}" y="${round(node.y + index * node.fontSize * node.lineHeight)}" ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="${textDecoration}" text-anchor="${anchor}" dominant-baseline="hanging">${escapeXml(line || " ")}</text>`,
       )
       .join("\n");
     return clipped(`  <g${metadata}${opacity}${filter}${transform}>\n${lines}\n  </g>`);
@@ -1427,7 +1433,7 @@ function exportNodeSvg(
   }
   if (node.type === "group") return "";
   return clipped(
-    `  <rect${metadata} x="${round(node.x)}" y="${round(node.y)}" width="${round(node.width)}" height="${round(node.height)}" rx="${round(Math.min(node.cornerRadius, node.width / 2, node.height / 2))}" fill="${escapeXml(node.fill)}" stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}"${opacity}${filter}${transform} />`,
+    `  <rect${metadata} x="${round(node.x)}" y="${round(node.y)}" width="${round(node.width)}" height="${round(node.height)}" rx="${round(Math.min(node.cornerRadius, node.width / 2, node.height / 2))}" ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}"${opacity}${filter}${transform} />`,
   );
 }
 
@@ -1457,11 +1463,23 @@ export function replaceDesignColors(document, replacements) {
   }
   for (const node of allDocumentNodes(document)) {
     for (const property of ["fill", "stroke"]) {
+      if (property === "fill" && node.fillPaints) continue;
       const nextValue = replacementFor(node[property]);
       if (!nextValue) continue;
       node[property] = nextValue;
       replacementCount += 1;
     }
+    for (const paint of node.fillPaints ?? []) {
+      const colors = paint.type === "SOLID" ? [paint] : paint.stops;
+      for (const entry of colors) {
+        const next = replacementFor(entry.color);
+        if (next) {
+          entry.color = next;
+          replacementCount += 1;
+        }
+      }
+    }
+    if (node.fillPaints) node.fill = representativeDesignFill(node.fillPaints);
     const shadowReplacement = replacementFor(node.shadow?.color);
     if (shadowReplacement) {
       node.shadow.color = shadowReplacement;
@@ -1480,6 +1498,9 @@ export function measureDesignDocumentBytes(value) {
 }
 
 export function exportDesignSvg(document, options = {}) {
+  const maxBytes = options.maxBytes ?? MAX_SVG_EXPORT_BYTES;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_LOCAL_SVG_EXPORT_BYTES)
+    throw Error("SVG byte budget must be between 1 B and 4 MiB");
   const renderNodes = allDocumentNodes(document);
   const renderDocument = { ...document, nodes: renderNodes };
   const activePage = document.pages?.find((page) => page.id === document.activePageId);
@@ -1489,14 +1510,8 @@ export function exportDesignSvg(document, options = {}) {
   const componentClipIds = new Map();
   const shadowIds = new Map();
   const shadowFilters = [];
-  const fontFaceRules = (document.resources ?? [])
-    .filter((resource) => resource.kind === "font")
-    .map((resource) => {
-      const dataUrl = options.resourceDataUrls?.get?.(resource.id);
-      if (!dataUrl) return null;
-      return `@font-face { font-family: "${escapeCssString(resource.family)}"; src: url("${escapeCssString(dataUrl)}"); font-weight: ${resource.weight}; font-style: ${resource.style}; }`;
-    })
-    .filter(Boolean);
+  const fontCss = designFontFaceCss(document.resources, options.resourceDataUrls);
+  const fontFaceRules = fontCss ? [fontCss] : [];
   renderNodes.forEach((node, index) => {
     if (["frame", "component"].includes(node.type) && node.clipContent === true) {
       const id = `frame-clip-${index}`;
@@ -1538,17 +1553,16 @@ export function exportDesignSvg(document, options = {}) {
     });
     componentClipIds.set(component.id, sourceClipIds);
   });
+  const paintFills = new Map(
+    renderNodes.map((node, index) => [node.id, designPaintSvg(node, `node-fill-${index}`)]),
+  );
+  const paintDefinitions = [...paintFills.values()].flatMap((paint) => paint.definitions);
   const body = document.nodes
     .map((node) =>
-      exportNodeSvg(
-        renderDocument,
-        node,
-        clipIds,
-        shadowIds,
-        componentClipIds,
-        new Set(),
-        options,
-      ),
+      exportNodeSvg(renderDocument, node, clipIds, shadowIds, componentClipIds, new Set(), {
+        ...options,
+        paintFills,
+      }),
     )
     .filter(Boolean)
     .join("\n");
@@ -1556,7 +1570,7 @@ export function exportDesignSvg(document, options = {}) {
     '<?xml version="1.0" encoding="UTF-8"?>',
     `<svg xmlns="${SVG_NS}" width="${document.canvas.width}" height="${document.canvas.height}" viewBox="0 0 ${document.canvas.width} ${document.canvas.height}" data-page-id="${escapeXml(document.activePageId ?? "page-1")}">`,
     `  <title>${escapeXml(`${document.name} — ${pageName}`)}</title>`,
-    ...(clipPaths.length + shadowFilters.length + fontFaceRules.length > 0
+    ...(clipPaths.length + shadowFilters.length + fontFaceRules.length + paintDefinitions.length > 0
       ? [
           "  <defs>",
           ...(fontFaceRules.length > 0
@@ -1564,6 +1578,7 @@ export function exportDesignSvg(document, options = {}) {
             : []),
           ...clipPaths,
           ...shadowFilters,
+          ...paintDefinitions,
           "  </defs>",
         ]
       : []),
@@ -1573,9 +1588,9 @@ export function exportDesignSvg(document, options = {}) {
     "",
   ].join("\n");
   const bytes = new TextEncoder().encode(svg).length;
-  if (bytes > MAX_SVG_EXPORT_BYTES) {
+  if (bytes > maxBytes) {
     throw new Error(
-      `SVG 为 ${(bytes / 1024).toFixed(1)} KiB，超过 ${MAX_SVG_EXPORT_BYTES / 1024} KiB 导出上限；请减少长文本或图层数量`,
+      `SVG 为 ${(bytes / 1024).toFixed(1)} KiB，超过 ${maxBytes / 1024} KiB 导出上限；请使用完整备份或有界本地导出`,
     );
   }
   return svg;

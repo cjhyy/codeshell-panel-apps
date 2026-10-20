@@ -33,6 +33,8 @@
   },
   "devDependencies": {
     "@cjhyy/code-shell-core": "0.9.11",
+    "@grida/canvas-wasm": "0.91.0-canary.22",
+    "canvaskit-wasm": "0.42.0",
     "es-module-lexer": "2.0.0",
     "esbuild": "0.28.2",
     "playwright": "1.60.0",

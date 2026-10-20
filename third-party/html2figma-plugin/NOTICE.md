@@ -1,0 +1,44 @@
+# html2figma plugin adaptation
+
+Upstream: https://github.com/cjhyy/html2figma
+Pinned commit: `ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c`.
+Attribution: html2figma contributors.
+
+Original files from `packages/plugin`, `packages/figma`, and `packages/adapter`
+are retained byte-for-byte in `upstream/`; `sources.json` records their SHA-256.
+The plugin source provides the import-design message/service integration pattern;
+the shipped offline adaptation under `integration/` replaces server API conversion,
+React UI, network image downloads and settings with embedded browser conversion,
+static HTML preview, local selected resources, and bounded validated JSON.
+A fixed bundled capture script runs in an opaque iframe under a random nonce CSP;
+user HTML scripts are removed and receive no execution permission.
+It directly bundles upstream FigmaAdapter, FigmaService, NodeCreatorFactory and
+creators. The existing CodeShell Design Bridge remains a separate plugin.
+
+Browser DOM conversion and shared helper/types are reused from the separately
+inventoried html2figma source snapshot at the same commit. No runtime dependency
+on either original checkout or server is required.
+
+Upstream package.json and README declare MIT. There is no standalone LICENSE,
+COPYING or NOTICE in the pinned upstream tree; the original declarations are
+preserved and this notice does not invent an upstream copyright statement.
+
+## MIT license terms
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.

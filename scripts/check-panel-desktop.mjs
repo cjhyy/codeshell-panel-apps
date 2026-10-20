@@ -9,6 +9,7 @@ import { chmod, cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { PNG } from "pngjs";
 import { cleanupPanelDesktopFixture, closeOwnedPanelElectron } from "./panel-desktop-cleanup.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -254,6 +255,39 @@ app.on("session-created", session => {
     const first = await attach(projectA, id, "original-A");
     const second = await attach(projectB, id, "original-B");
     assert.notEqual(first.prepared.partition, second.prepared.partition, "projects reused guest partition");
+    let gpuCanvas;
+    if (id === "design-studio") {
+      stage = "design-studio: installed CanvasKit under production cspanel CSP";
+      assert.equal(first.context.capabilities?.packageAssets?.wasm, true);
+      for (const guest of [first, second])
+        await untilGuest(guest, 'document.querySelector("#stage-wrap").dataset.rendererStatus === "active"');
+      gpuCanvas = await first.execute(`(async () => {
+        const response = await fetch(new URL('./canvas/vendor/canvaskit.wasm', location.href));
+        const bytes = await response.arrayBuffer();
+        let jsEvalRejected = false;
+        try { new Function('return 1')(); } catch { jsEvalRejected = true; }
+        return { wasmBytes: bytes.byteLength, mime: response.headers.get('content-type'),
+          wasmValid: WebAssembly.validate(bytes), jsEvalRejected,
+          sceneSvgCount: document.querySelectorAll('#stage-wrap svg').length,
+          renderer: document.querySelector('#renderer-state').textContent };
+      })()`);
+      assert.equal(gpuCanvas.wasmBytes, 7317345);
+      assert.equal(gpuCanvas.mime, "application/wasm");
+      assert.equal(gpuCanvas.wasmValid, true);
+      assert.equal(gpuCanvas.jsEvalRejected, true);
+      assert.equal(gpuCanvas.sceneSvgCount, 0);
+      assert.equal(gpuCanvas.renderer, "CanvasKit GPU");
+      const guestId = await first.view.evaluate(view => view.getWebContentsId());
+      const captured = await app.evaluate(async ({ webContents }, guestId) =>
+        (await webContents.fromId(guestId).capturePage()).toPNG().toString("base64"), guestId);
+      const pixels = PNG.sync.read(Buffer.from(captured, "base64"));
+      const colors = new Set();
+      for (let i = 0; i < pixels.data.length; i += 4)
+        colors.add(pixels.data.readUInt32BE(i));
+      assert.ok(colors.size > 32, "installed GPU panel must present nonblank pixels");
+      gpuCanvas.capture = { sha256: sha256(Buffer.from(captured, "base64")),
+        width: pixels.width, height: pixels.height, distinctColors: colors.size };
+    }
     const interaction = {
       "design-studio": `(() => { const label = document.getElementById("zoom-value"); const before = label.textContent; document.getElementById("zoom-in").click(); return label.textContent !== before; })()`,
       "job-hunt-hq": `(() => { const tab = document.querySelector('[data-view-target="resumes"]'); tab.click(); return tab.classList.contains("active"); })()`,
@@ -368,6 +402,7 @@ app.on("session-created", session => {
     if (manifest.permissions.includes("storage"))
       assert.equal((await rolledBack.call("storage.getSnapshot", { key: markerKey })).value.value.project, "A");
     results.push({ id, version: manifest.version, permissions: manifest.permissions,
+      ...(gpuCanvas ? { gpuCanvas } : {}),
       originalDigest: originalA.packageDigest, privateCandidateDigest: currentA.packageDigest,
       rejectedUpdateError: rejected.error,
       stagedPublicationError: diskFailure.error,

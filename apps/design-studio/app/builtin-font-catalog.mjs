@@ -1,0 +1,86 @@
+// Frozen official full fonts; see fonts/README.md and the adjacent licenses.
+export const BUILTIN_DESIGN_FONTS = Object.freeze([
+  {
+    id: "roboto",
+    file: "fonts/Roboto-Variable.ttf",
+    mime: "font/ttf",
+    families: ["Roboto"],
+    style: "normal",
+    variable: true,
+    bytes: 488584,
+    sha256: "d7598e12c5dbef095ff8272cfc55da0250bd07fbdecbac8a530b9b277872a134",
+    source:
+      "https://raw.githubusercontent.com/google/fonts/bf7c667ae010c0ffb39944ae85097021478cb91d/ofl/roboto/Roboto%5Bwdth,wght%5D.ttf",
+  },
+  {
+    id: "roboto-italic",
+    file: "fonts/Roboto-Italic-Variable.ttf",
+    mime: "font/ttf",
+    families: ["Roboto"],
+    style: "italic",
+    variable: true,
+    bytes: 530944,
+    sha256: "9725a847af6b460ffca162ae66d20dad48b01876137947180b42d7dcd7887182",
+    source:
+      "https://raw.githubusercontent.com/google/fonts/bf7c667ae010c0ffb39944ae85097021478cb91d/ofl/roboto/Roboto-Italic%5Bwdth,wght%5D.ttf",
+  },
+  {
+    id: "inter",
+    file: "fonts/InterVariable.woff2",
+    mime: "font/woff2",
+    families: ["Inter"],
+    style: "normal",
+    variable: true,
+    bytes: 352240,
+    sha256: "693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3",
+    source: "https://raw.githubusercontent.com/rsms/inter/v4.1/docs/font-files/InterVariable.woff2",
+  },
+  {
+    id: "inter-italic",
+    file: "fonts/InterVariable-Italic.woff2",
+    mime: "font/woff2",
+    families: ["Inter"],
+    style: "italic",
+    variable: true,
+    bytes: 387976,
+    sha256: "e564f652916db6c139570fefb9524a77c4d48f30c92928de9db19b6b5c7a262a",
+    source:
+      "https://raw.githubusercontent.com/rsms/inter/v4.1/docs/font-files/InterVariable-Italic.woff2",
+  },
+  {
+    id: "fa-solid",
+    file: "fonts/fa-solid-900.woff2",
+    mime: "font/woff2",
+    families: ["Font Awesome 5 Free", "Font Awesome 6 Free"],
+    style: "normal",
+    variable: false,
+    bytes: 158220,
+    sha256: "6a3b4536c389c82a2a2e160e7ab15f6c8acef77f42e04d4c697f1cbfa9e90026",
+    source:
+      "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/6.7.2/webfonts/fa-solid-900.woff2",
+  },
+  {
+    id: "fa-regular",
+    file: "fonts/fa-regular-400.woff2",
+    mime: "font/woff2",
+    families: ["Font Awesome 5 Free", "Font Awesome 6 Free"],
+    style: "normal",
+    variable: false,
+    bytes: 25472,
+    sha256: "dc9e5038a1401446549f7eb3c23911cfac844b3b4a3a3b76c33c34962ee652cb",
+    source:
+      "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/6.7.2/webfonts/fa-regular-400.woff2",
+  },
+  {
+    id: "fa-brands",
+    file: "fonts/fa-brands-400.woff2",
+    mime: "font/woff2",
+    families: ["Font Awesome 5 Brands", "Font Awesome 6 Brands"],
+    style: "normal",
+    variable: false,
+    bytes: 118680,
+    sha256: "b10a049b201da5518120d35dc74ad7f5ef328ca1e8b7f9d3f6ad11bc76115eeb",
+    source:
+      "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/6.7.2/webfonts/fa-brands-400.woff2",
+  },
+]);

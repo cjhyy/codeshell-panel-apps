@@ -13,6 +13,7 @@ import {
   createFigmaBinding,
   createFigmaPatch,
 } from "../../../apps/design-studio/app/figma-binding.mjs";
+import { longFigmaSource } from "./fixtures/long-canvas.mjs";
 
 const code = await readFile(
   new URL("../../../apps/design-studio/app/figma-plugin/code.js", import.meta.url),
@@ -333,6 +334,242 @@ function patchTransfer(source, change, changed = ["name"]) {
   return transfer;
 }
 
+function fontTransfer(fonts) {
+  return createFigmaTransfer(
+    importFigmaJson(
+      page(
+        fonts.map(([fontFamily, fontWeight, characters], index) =>
+          rect(`2:${index}`, {
+            type: "TEXT",
+            characters,
+            style: { fontFamily, fontWeight, fontSize: 24 },
+          }),
+        ),
+      ),
+    ).document,
+  );
+}
+
+test("native Figma icon fonts use Solid/Regular styles rather than generic Black weights", async () => {
+  const transfer = fontTransfer([
+    ["Font Awesome 5 Free", 900, "\uf007"],
+    ["Font Awesome 6 Free", 400, "\uf007"],
+    ["Font Awesome 5 Brands", 400, "\uf099"],
+    ["Font Awesome 6 Brands", 900, "\uf099"],
+  ]);
+  const runtime = harness();
+  const load = runtime.figma.loadFontAsync.bind(runtime.figma);
+  runtime.figma.loadFontAsync = async (font) => {
+    if (!["Solid", "Regular"].includes(font.style)) throw Error("Font style does not exist");
+    return load(font);
+  };
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  assert.deepEqual(
+    runtime.calls.filter(([kind]) => kind === "font"),
+    [
+      ["font", "Font Awesome 5 Free", "Solid"],
+      ["font", "Font Awesome 6 Free", "Regular"],
+      ["font", "Font Awesome 5 Brands", "Regular"],
+      ["font", "Font Awesome 6 Brands", "Regular"],
+    ],
+  );
+  assert.ok(
+    runtime.figma.root.children[1].children.every((node) =>
+      node.fontName.family.startsWith("Font Awesome"),
+    ),
+  );
+});
+
+test("missing native icon fonts fail preflight before creating pages or substituting Inter", async () => {
+  const runtime = harness(),
+    before = runtime.figma.root.children.map(runtime.snapshot);
+  const load = runtime.figma.loadFontAsync.bind(runtime.figma);
+  runtime.figma.loadFontAsync = async (font) => {
+    if (font.family.startsWith("Font Awesome")) throw Error("Not installed");
+    return load(font);
+  };
+  await runtime.send({
+    type: "import-transfer",
+    content: JSON.stringify(
+      fontTransfer([
+        ["Roboto", 400, "A normal text node before the icon"],
+        ["Font Awesome 6 Free", 900, "\ue586"],
+      ]),
+    ),
+  });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.match(runtime.messages.at(-1).message, /不能回退到 Inter/u);
+  assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
+  assert.equal(runtime.all.size, 2);
+  assert.equal(
+    runtime.calls.some(([kind, family]) => kind === "font" && family === "Inter"),
+    false,
+  );
+});
+
+test("bundled FA5 aliases require the actual FA6 family even when older FA5 is installed", async () => {
+  const transfer = fontTransfer([["Font Awesome 5 Free", 900, "\ue586"]]);
+  transfer.pages[0].children[0].fontRef = "builtin-fa-solid-5-900-normal";
+  const runtime = harness(),
+    before = runtime.figma.root.children.map(runtime.snapshot);
+  const attempted = [];
+  runtime.figma.loadFontAsync = async (font) => {
+    attempted.push([font.family, font.style]);
+    if (font.family !== "Font Awesome 5 Free") throw Error("FA6 not installed");
+  };
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.match(runtime.messages.at(-1).message, /Font Awesome 6 Free Solid 不可用/u);
+  assert.deepEqual(attempted, [["Font Awesome 6 Free", "Solid"]]);
+  assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
+});
+
+test("bundled FA6 aliases create editable text with every original character while external FA5 keeps its family", async () => {
+  const transfer = fontTransfer([
+    ["Font Awesome 5 Free", 900, "\uf007\ue586"],
+    ["Font Awesome 5 Free", 400, "\uf007"],
+    ["Font Awesome 5 Brands", 400, "\uf099"],
+    ["Font Awesome 5 Free", 900, "\uf007"],
+  ]);
+  const texts = transfer.pages[0].children;
+  texts[0].fontRef = "builtin-fa-solid-5-900-normal";
+  texts[1].fontRef = "builtin-fa-regular-5-400-normal";
+  texts[2].fontRef = "builtin-fa-brands-5-400-normal";
+  texts[3].fontRef = "custom-fa5-font";
+  const before = JSON.stringify(transfer),
+    runtime = harness();
+  await runtime.send({ type: "import-transfer", content: before });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  assert.equal(JSON.stringify(transfer), before);
+  assert.deepEqual(
+    runtime.figma.root.children[1].children.map((node) => [
+      node.type,
+      node.fontName.family,
+      node.fontName.style,
+      node.characters,
+    ]),
+    [
+      ["TEXT", "Font Awesome 6 Free", "Solid", "\uf007\ue586"],
+      ["TEXT", "Font Awesome 6 Free", "Regular", "\uf007"],
+      ["TEXT", "Font Awesome 6 Brands", "Regular", "\uf099"],
+      ["TEXT", "Font Awesome 5 Free", "Solid", "\uf007"],
+    ],
+  );
+  assert.ok(runtime.messages.at(-1).warnings.some((warning) => warning.includes("6.7.2")));
+});
+
+test("BMP and supplementary private-use text never reuses a cached ordinary-text fallback", async () => {
+  for (const text of ["\ue123", "\u{f0123}", "\u{100123}"]) {
+    const runtime = harness(),
+      before = runtime.figma.root.children.map(runtime.snapshot);
+    const load = runtime.figma.loadFontAsync.bind(runtime.figma);
+    runtime.figma.loadFontAsync = async (font) => {
+      if (font.family === "Private Glyphs") throw Error("Not installed");
+      return load(font);
+    };
+    await runtime.send({
+      type: "import-transfer",
+      content: JSON.stringify(
+        fontTransfer([
+          ["Private Glyphs", 400, "Ordinary text may report a fallback"],
+          ["Private Glyphs", 400, text],
+        ]),
+      ),
+    });
+    assert.equal(runtime.messages.at(-1).type, "error");
+    assert.match(runtime.messages.at(-1).message, /私用区文字不能回退/u);
+    assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
+    assert.equal(runtime.all.size, 2);
+  }
+});
+
+test("an available custom private-use font preserves its exact family and characters", async () => {
+  const runtime = harness();
+  await runtime.send({
+    type: "import-transfer",
+    content: JSON.stringify(fontTransfer([["Private Glyphs", 400, "\ue123\u{f0123}\u{100123}"]])),
+  });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  const node = runtime.figma.root.children[1].children[0];
+  assert.equal(node.fontName.family, "Private Glyphs");
+  assert.equal(node.characters, "\ue123\u{f0123}\u{100123}");
+});
+
+test("native construction failure after font preflight removes only newly created pages", async () => {
+  const runtime = harness(),
+    before = runtime.figma.root.children.map(runtime.snapshot);
+  const transfer = fontTransfer([["Font Awesome 6 Free", 900, "\ue586"]]);
+  transfer.pages[0].children[0].name = "Rejected icon";
+  runtime.failName("Rejected icon");
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.match(runtime.messages.at(-1).message, /setter rejected/u);
+  assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
+});
+
+test("reviewed original-design Font Awesome weight changes load and apply the real Solid style", async () => {
+  const source = page([
+    rect("1:2", {
+      type: "TEXT",
+      characters: "\uf007",
+      style: { fontFamily: "Font Awesome 5 Free", fontWeight: 400, fontSize: 24 },
+    }),
+  ]);
+  const transfer = patchTransfer(
+    source,
+    (node) => {
+      node.fontWeight = 900;
+    },
+    ["fontWeight"],
+  );
+  const runtime = harness(source),
+    target = runtime.all.get("1:2");
+  target.characters = "\uf007";
+  target.fontName = { family: "Font Awesome 5 Free", style: "Regular" };
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  const preview = runtime.messages.at(-1);
+  assert.equal(preview.type, "patch-preview");
+  assert.deepEqual(preview.conflicts, []);
+  await runtime.send({ type: "apply-patch", token: preview.token });
+  assert.equal(runtime.messages.at(-1).type, "patched");
+  assert.deepEqual(clone(target.fontName), { family: "Font Awesome 5 Free", style: "Solid" });
+  assert.equal(
+    runtime.calls.some(([kind, , style]) => kind === "font" && style === "Black"),
+    false,
+  );
+});
+
+test("native Figma creation accepts a bounded long canvas without losing any of its 1208 editable layers", async () => {
+  const imported = importFigmaJson(longFigmaSource());
+  const transfer = createFigmaTransfer(imported.document);
+  const runtime = harness();
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  const frame = runtime.figma.root.children[1].children[0];
+  assert.equal(frame.height, 11322);
+  assert.equal(frame.width, 4458);
+  assert.equal(frame.children.length, 1207);
+  const last = imported.document.nodes.at(-1);
+  assert.equal(frame.children.at(-1).relativeTransform[1][2], last.y);
+  assert.equal(frame.children.at(-1).name, last.name);
+});
+
+test("native Figma validation accepts the 20000px canvas edge and rejects a larger canvas before creating pages", async () => {
+  const transfer = createFigmaTransfer(importFigmaJson(page([rect()])).document);
+  transfer.canvas.width = 20000;
+  transfer.canvas.height = 20000;
+  const valid = harness();
+  await valid.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(valid.messages.at(-1).type, "imported");
+  transfer.canvas.height = 20001;
+  const invalid = harness();
+  await invalid.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(invalid.messages.at(-1).type, "error");
+  assert.match(invalid.messages.at(-1).message, /画布尺寸/u);
+  assert.equal(invalid.figma.root.children.length, 1);
+});
+
 test("plugin export captures official raw nodes, local image fill bytes and SVG/PNG fallback previews", async () => {
   const source = page([
     rect("1:2", { fills: [{ type: "IMAGE", imageRef: "photo", scaleMode: "FILL" }] }),
@@ -499,6 +736,136 @@ test("failed patch requests undo of its own partial mutations", async () => {
   assert.match(runtime.messages.at(-1).message, /撤销/);
   assert.equal(runtime.all.get("1:2").name, "Original");
   assert.ok(runtime.calls.some((call) => call[0] === "undo"));
+});
+
+async function generatedTranslation(mode = "drag") {
+  const source = page([
+    rect("1:1", {
+      type: "FRAME",
+      absoluteBoundingBox: { x: -100, y: -100, width: 300, height: 200 },
+      children: [
+        rect("1:2", {
+          type: "FRAME",
+          absoluteBoundingBox: { x: -70, y: -60, width: 150, height: 120 },
+          children: [
+            rect("1:3", {
+              absoluteBoundingBox: { x: -50, y: -40, width: 50, height: 40 },
+            }),
+          ],
+        }),
+      ],
+    }),
+  ]);
+  const imported = await prepareFigmaImport(source),
+    binding = createFigmaBinding(imported);
+  const current = structuredClone(imported.document);
+  for (const node of mode === "hold" ? current.nodes.slice(0, 1) : current.nodes) {
+    node.x += 20;
+    node.y += 10;
+  }
+  if (mode === "local") {
+    current.nodes[2].x += 7;
+    current.nodes[2].y -= 3;
+    current.nodes[2].fill = "#123456";
+  }
+  if (mode === "resize") current.nodes[0].width += 40;
+  const transfer = createFigmaTransfer(current);
+  transfer.patch = createFigmaPatch(binding, current);
+  return { source, binding, current, transfer };
+}
+
+test("minimal generated parent translations apply the exact final geometry through the native Figma API", async () => {
+  for (const mode of ["drag", "local", "hold", "resize"]) {
+    const { source, binding, current, transfer } = await generatedTranslation(mode);
+    const preserved = JSON.stringify(binding),
+      runtime = harness(source);
+    const expectedOperations = mode === "drag" ? 1 : mode === "resize" ? 3 : 2;
+    assert.equal(transfer.patch.operations.length, expectedOperations, mode);
+    await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+    const preview = runtime.messages.at(-1);
+    assert.equal(preview.type, "patch-preview", mode);
+    assert.deepEqual(preview.conflicts, [], mode);
+    await runtime.send({ type: "apply-patch", token: preview.token });
+    assert.equal(runtime.messages.at(-1).type, "patched", mode);
+    for (const entry of binding.mapping) {
+      const expected = current.nodes.find((node) => node.id === entry.designId);
+      const actual = runtime.snapshot(runtime.all.get(entry.sourceId)).absoluteBoundingBox;
+      assert.deepEqual(
+        actual,
+        {
+          x: expected.x - entry.offsetX,
+          y: expected.y - entry.offsetY,
+          width: expected.width,
+          height: expected.height,
+        },
+        `${mode}: ${entry.sourceId}`,
+      );
+    }
+    assert.equal(JSON.stringify(binding), preserved);
+    if (mode === "drag")
+      assert.deepEqual(clone(runtime.all.get("1:3").relativeTransform), [
+        [1, 0, 20],
+        [0, 1, 20],
+      ]);
+  }
+});
+
+test("minimal parent updates preserve an external descendant move but still detect external parent geometry changes", async () => {
+  const { source, transfer } = await generatedTranslation();
+  const runtime = harness(source);
+  runtime.all.get("1:3").relativeTransform[0][2] += 11;
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  const preview = runtime.messages.at(-1);
+  assert.deepEqual(preview.conflicts, []);
+  await runtime.send({ type: "apply-patch", token: preview.token });
+  assert.equal(runtime.messages.at(-1).type, "patched");
+  assert.equal(runtime.snapshot(runtime.all.get("1:3")).absoluteBoundingBox.x, -19);
+  assert.equal(runtime.all.get("1:3").relativeTransform[0][2], 31);
+  const changedParent = harness(source);
+  changedParent.all.get("1:1").relativeTransform[0][2] += 2;
+  await changedParent.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  assert.ok(changedParent.messages.at(-1).conflicts.length > 0);
+  const token = changedParent.messages.at(-1).token;
+  await changedParent.send({ type: "apply-patch", token });
+  assert.equal(changedParent.messages.at(-1).type, "error");
+  assert.equal(changedParent.all.get("1:1").relativeTransform[0][2], -98);
+});
+
+test("shallow generated update snapshots retain style concurrency guards without comparing descendants", async () => {
+  const { source, binding } = await generatedTranslation();
+  const current = importFigmaJson(source).document;
+  current.nodes[0].fill = "#123456";
+  const transfer = createFigmaTransfer(current);
+  transfer.patch = createFigmaPatch(binding, current);
+  assert.equal(transfer.patch.operations[0].before.children, undefined);
+  const runtime = harness(source),
+    target = runtime.all.get("1:1");
+  target.fills = [{ type: "SOLID", color: { r: 0, g: 1, b: 0 } }];
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  assert.ok(runtime.messages.at(-1).conflicts.some((value) => value.includes("fills")));
+  const token = runtime.messages.at(-1).token;
+  await runtime.send({ type: "apply-patch", token });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.deepEqual(clone(target.fills), [{ type: "SOLID", color: { r: 0, g: 1, b: 0 } }]);
+});
+
+test("generated subtree deletes still reject an externally changed descendant before removing anything", async () => {
+  const { source, binding } = await generatedTranslation();
+  const current = importFigmaJson(source).document;
+  current.nodes.splice(0);
+  const transfer = createFigmaTransfer(current);
+  transfer.patch = createFigmaPatch(binding, current);
+  assert.equal(transfer.patch.operations[0].op, "delete");
+  assert.equal(transfer.patch.operations[0].before.children[0].children[0].id, "1:3");
+  const runtime = harness(source);
+  runtime.all.get("1:3").name = "External descendant edit";
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  assert.ok(runtime.messages.at(-1).conflicts.length > 0);
+  const token = runtime.messages.at(-1).token;
+  await runtime.send({ type: "apply-patch", token, allowDeletes: true });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.equal(runtime.all.get("1:1").removed, undefined);
+  assert.equal(runtime.all.get("1:3").name, "External descendant edit");
 });
 
 test("moving a parent and its child updates local geometry once, preserving normalized page offsets", async () => {
@@ -868,4 +1235,51 @@ test("main sandbox decodes multi-megabyte local image payloads without recursive
   assert.equal(h.messages.at(-1).type, "imported");
   assert.equal(h.images.size, 1);
   assert.deepEqual(Buffer.from([...h.images.values()][0]), bytes);
+});
+
+test("Bridge creates native editable linear-gradient text and layered fills without raster fallback", async () => {
+  const gradient = {
+    type: "GRADIENT_LINEAR",
+    gradientHandlePositions: [
+      { x: 0, y: 0.5 },
+      { x: 1, y: 0.5 },
+      { x: 0, y: 1 },
+    ],
+    gradientStops: [
+      { position: 0, color: { r: 0, g: 0, b: 1, a: 1 } },
+      { position: 1, color: { r: 1, g: 0, b: 0, a: 0.5 } },
+    ],
+  };
+  const source = page([
+    rect("1:2", {
+      fills: [
+        { type: "SOLID", color: { r: 1, g: 1, b: 1 } },
+        { type: "SOLID", color: { r: 0.04, g: 0.05, b: 0.15 } },
+      ],
+    }),
+    rect("1:3", {
+      type: "TEXT",
+      characters: "Gradient",
+      fills: [gradient],
+      style: { fontFamily: "Inter", fontSize: 20, fontWeight: 400, lineHeightPx: 24 },
+    }),
+  ]);
+  const imported = importFigmaJson(source);
+  const transfer = createFigmaTransfer(imported.document);
+  const runtime = harness();
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  const created = runtime.figma.root.children[1].children;
+  assert.equal(created[0].fills.length, 2);
+  assert.equal(created[0].fills[1].color.b, 38 / 255);
+  assert.equal(created[1].type, "TEXT");
+  assert.equal(created[1].characters, "Gradient");
+  assert.equal(created[1].fills[0].type, "GRADIENT_LINEAR");
+  assert.equal(created[1].fills[0].gradientStops[1].color.a, 0.5);
+  const exportRuntime = harness(source);
+  exportRuntime.all.get("1:3").characters = "Gradient";
+  exportRuntime.all.get("1:3").fontName = { family: "Inter", style: "Regular" };
+  await exportRuntime.send({ type: "export-json", scope: "page" });
+  const exported = JSON.parse(exportRuntime.messages.at(-1).content);
+  assert.equal(Object.keys(exported.previews).length, 0);
 });

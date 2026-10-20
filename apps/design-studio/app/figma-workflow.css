@@ -70,3 +70,67 @@
     padding: 16px;
   }
 }
+
+#figma-import-target,
+#figma-import-mode {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  margin-bottom: 12px;
+  font: inherit;
+}
+#figma-import-image {
+  display: block;
+  width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  background: var(--surface, #f4f4f4);
+  border: 1px solid var(--line);
+}
+#figma-import-image[hidden] {
+  display: none;
+}
+#figma-import-audit {
+  font-size: 12px;
+  line-height: 1.6;
+}
+#figma-import-audit[data-kind="error"] {
+  color: var(--danger, #b42318);
+}
+
+.audit-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+}
+.audit-controls select,
+.audit-controls button {
+  font: inherit;
+  padding: 6px;
+  max-width: 100%;
+}
+#save-as-dialog {
+  width: min(540px, calc(100vw - 28px));
+}
+#save-as-dialog .dialog-card {
+  display: block;
+  width: auto;
+  padding: 24px;
+}
+#save-as-path {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px;
+  margin: 12px 0;
+}
+#save-as-status {
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+@media (max-width: 680px) {
+  .top-actions #save-as {
+    display: none;
+  }
+}

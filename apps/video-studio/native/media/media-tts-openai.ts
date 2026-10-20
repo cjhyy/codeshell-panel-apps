@@ -1,3 +1,4 @@
+import { observeModelCall } from "../../../../shared/model-observability.mjs";
 import { randomUUID } from "node:crypto";
 import { mkdir, open, rename, rm, stat, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
@@ -237,28 +238,53 @@ export async function generateOpenAiTts(
       stage: "synthesize",
       message: "正在请求所选模型生成配音",
     });
-    const response = await (options.fetchImpl ?? fetch)(url, {
-      method: "POST",
-      redirect: "error",
-      signal,
-      headers: {
-        Authorization: `Bearer ${options.apiKey}`,
-        "Content-Type": "application/json",
-        Accept: "audio/wav",
-      },
-      body: JSON.stringify({
+    const requestBody = {
+      model: input.model,
+      input: input.text,
+      voice: input.voiceId,
+      speed: input.rate,
+      response_format: "wav",
+      ...(input.instructions?.trim() ? { instructions: input.instructions.trim() } : {}),
+    };
+    await observeModelCall(
+      {
+        provider: "openai-compatible",
         model: input.model,
-        input: input.text,
-        voice: input.voiceId,
-        speed: input.rate,
-        response_format: "wav",
-        ...(input.instructions?.trim() ? { instructions: input.instructions.trim() } : {}),
-      }),
-    });
-    failureMessage = "接收配音失败，服务未返回完整可用的音频";
-    await saveResponse(response, source, signal, context);
-    failureMessage = "配音音频处理失败，请检查音频格式与本机 FFmpeg";
-    await inspectWav(source, signal, options);
+        purpose: "tts",
+        input: {
+          systemPrompt: requestBody.instructions ?? "",
+          messages: [{ role: "user", content: requestBody.input }],
+          parameters: {
+            request: requestBody,
+            capture: { recording: "logical-input", transport: "json", omitted: "binary-response" },
+          },
+        },
+      },
+      async () => {
+        const response = await (options.fetchImpl ?? fetch)(url, {
+          method: "POST",
+          redirect: "error",
+          signal,
+          headers: {
+            Authorization: `Bearer ${options.apiKey}`,
+            "Content-Type": "application/json",
+            Accept: "audio/wav",
+          },
+          body: JSON.stringify(requestBody),
+        });
+        failureMessage = "接收配音失败，服务未返回完整可用的音频";
+        await saveResponse(response, source, signal, context);
+        failureMessage = "配音音频处理失败，请检查音频格式与本机 FFmpeg";
+        const metadata = await inspectWav(source, signal, options);
+        return { ...metadata, bytes: (await stat(source)).size };
+      },
+      {
+        signal,
+        output: (metadata) => ({
+          data: { mimeType: "audio/wav", ...metadata, binaryContent: "omitted" },
+        }),
+      },
+    );
     await context.reportProgress({
       fraction: 0.75,
       stage: "speech-encode",

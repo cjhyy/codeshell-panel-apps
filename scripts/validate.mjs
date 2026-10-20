@@ -53,6 +53,7 @@ const allowedExtensions = new Set([
   ".woff",
   ".woff2",
   ".ttf",
+  ".wasm",
 ]);
 const allowedAgentExtensions = new Set([".md", ".json", ".png", ".jpg", ".jpeg", ".webp"]);
 const maxHostSchemaPatternLength = 512;
@@ -247,8 +248,8 @@ async function validatePackage(packagePath) {
     );
     assert.equal(
       manifest.version,
-      "0.20.0",
-      `${packagePath}: HTML DesignNode workflow version mismatch`,
+      "0.22.0",
+      `${packagePath}: Design Studio import workflow version mismatch`,
     );
     assert.deepEqual(
       [...registeredToolNames].sort(),
@@ -6280,7 +6281,7 @@ const fontSvg = designCodec.exportDesignSvg(fontDesign, {
 });
 assert(fontSvg.includes("@font-face"));
 assert(fontSvg.includes("data:font/ttf;base64,AA=="));
-assert(fontSvg.includes("Test &quot;Font&quot;"));
+assert(fontSvg.includes(String.raw`font-family="&quot;Test \&quot;Font\&quot;&quot;"`));
 const largeRecoverySnapshot = {
   format: "codeshell.design.recovery",
   version: 1,

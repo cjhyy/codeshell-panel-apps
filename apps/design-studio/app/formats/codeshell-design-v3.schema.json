@@ -45,13 +45,116 @@
       "type": "string",
       "pattern": "^(transparent|#[0-9a-fA-F]{6})$"
     },
+    "paintColor": {
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}$"
+    },
+    "paintOpacity": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "paintPoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": {
+          "type": "number",
+          "minimum": -100,
+          "maximum": 100
+        },
+        "y": {
+          "type": "number",
+          "minimum": -100,
+          "maximum": 100
+        }
+      }
+    },
+    "paintStop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["position", "color", "opacity"],
+      "properties": {
+        "position": {
+          "$ref": "#/$defs/paintOpacity"
+        },
+        "color": {
+          "$ref": "#/$defs/paintColor"
+        },
+        "opacity": {
+          "$ref": "#/$defs/paintOpacity"
+        }
+      }
+    },
+    "solidPaint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "color", "opacity"],
+      "properties": {
+        "type": {
+          "const": "SOLID"
+        },
+        "color": {
+          "$ref": "#/$defs/paintColor"
+        },
+        "opacity": {
+          "$ref": "#/$defs/paintOpacity"
+        }
+      }
+    },
+    "linearGradientPaint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "opacity", "handles", "stops"],
+      "properties": {
+        "type": {
+          "const": "GRADIENT_LINEAR"
+        },
+        "opacity": {
+          "$ref": "#/$defs/paintOpacity"
+        },
+        "handles": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/paintPoint"
+          }
+        },
+        "stops": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/paintStop"
+          }
+        }
+      }
+    },
+    "fillPaints": {
+      "type": "array",
+      "description": "Editable Figma paints in bottom-to-top order. Runtime additionally validates increasing gradient stop positions and invertible handle geometry.",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/solidPaint"
+          },
+          {
+            "$ref": "#/$defs/linearGradientPaint"
+          }
+        ]
+      }
+    },
     "canvas": {
       "type": "object",
       "additionalProperties": false,
       "required": ["width", "height", "background"],
       "properties": {
-        "width": { "type": "number", "minimum": 100, "maximum": 10000 },
-        "height": { "type": "number", "minimum": 100, "maximum": 10000 },
+        "width": { "type": "number", "minimum": 100, "maximum": 20000 },
+        "height": { "type": "number", "minimum": 100, "maximum": 20000 },
         "background": {
           "type": "string",
           "pattern": "^#[0-9a-fA-F]{6}$"
@@ -147,7 +250,16 @@
       "properties": {
         "id": { "$ref": "#/$defs/nodeId" },
         "type": {
-          "enum": ["frame", "group", "component", "instance", "rectangle", "ellipse", "text", "image"]
+          "enum": [
+            "frame",
+            "group",
+            "component",
+            "instance",
+            "rectangle",
+            "ellipse",
+            "text",
+            "image"
+          ]
         },
         "name": {
           "type": "string",
@@ -177,6 +289,7 @@
         "width": { "type": "number", "minimum": 1, "maximum": 20000 },
         "height": { "type": "number", "minimum": 1, "maximum": 20000 },
         "fill": { "$ref": "#/$defs/color" },
+        "fillPaints": { "$ref": "#/$defs/fillPaints" },
         "stroke": { "$ref": "#/$defs/color" },
         "strokeWidth": { "type": "number", "minimum": 0, "maximum": 100 },
         "opacity": { "type": "number", "minimum": 0, "maximum": 1 },
@@ -199,6 +312,46 @@
         "letterSpacing": { "type": "number", "minimum": -20, "maximum": 100 },
         "textDecoration": { "enum": ["none", "underline", "line-through"] },
         "textMeasurement": { "enum": ["browser"] },
+        "textMetrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "signature",
+            "lineWidths",
+            "lineInkBounds",
+            "height",
+            "fontAvailable"
+          ],
+          "properties": {
+            "version": { "const": 1 },
+            "signature": { "type": "string", "maxLength": 8500 },
+            "lineWidths": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 4001,
+              "items": { "type": "number", "minimum": 0, "maximum": 1000000 }
+            },
+            "lineInkBounds": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 4001,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["x", "y", "width", "height"],
+                "properties": {
+                  "x": { "type": "number", "minimum": -1000000, "maximum": 1000000 },
+                  "y": { "type": "number", "minimum": -1000000, "maximum": 1000000 },
+                  "width": { "type": "number", "minimum": 0, "maximum": 1000000 },
+                  "height": { "type": "number", "minimum": 0, "maximum": 1000000 }
+                }
+              }
+            },
+            "height": { "type": "number", "minimum": 0, "maximum": 1000000 },
+            "fontAvailable": { "type": "boolean" }
+          }
+        },
         "textSource": { "type": "string", "maxLength": 4000 },
         "textFlow": { "enum": ["wrap"] },
         "textOverflow": { "enum": ["ellipsis"] },
@@ -253,6 +406,21 @@
       "allOf": [
         {
           "if": {
+            "properties": {
+              "type": {
+                "enum": ["group", "instance", "image"]
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "not": {
+              "required": ["fillPaints"]
+            }
+          }
+        },
+        {
+          "if": {
             "properties": { "type": { "enum": ["frame", "group", "component"] } },
             "required": ["type"]
           },
@@ -303,6 +471,7 @@
                 { "required": ["letterSpacing"] },
                 { "required": ["textDecoration"] },
                 { "required": ["textMeasurement"] },
+                { "required": ["textMetrics"] },
                 { "required": ["textSource"] },
                 { "required": ["textFlow"] },
                 { "required": ["textOverflow"] },

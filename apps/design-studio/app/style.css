@@ -589,11 +589,63 @@ textarea:focus-visible {
 }
 
 #stage {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: block;
   width: 100%;
   height: 100%;
   touch-action: none;
   user-select: none;
+}
+
+#gpu-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+.stage-wrap[data-grid="true"] {
+  background-image: radial-gradient(circle at 1px 1px, #323232 0.7px, transparent 0.8px);
+  background-size: 16px 16px;
+}
+
+.renderer-message {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  left: 50%;
+  width: min(360px, calc(100% - 32px));
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  text-align: center;
+  color: var(--text);
+  background: var(--surface-2);
+  transform: translate(-50%, -50%);
+}
+
+.renderer-message[hidden] {
+  display: none;
+}
+.renderer-message p {
+  margin: 0 0 12px;
+}
+.renderer-message button {
+  padding: 6px 12px;
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+#renderer-state {
+  max-width: 84px;
+  padding: 0 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 #stage[data-cursor="select"] {

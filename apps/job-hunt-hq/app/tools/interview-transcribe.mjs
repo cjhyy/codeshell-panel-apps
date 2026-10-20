@@ -1,3 +1,4 @@
+import { observeModelCall } from "../model-observability.mjs";
 // Panel-owned speech workflow. The Host supplies only the selected sealed connection
 // and the authorized immutable resource; credentials never enter task input or output.
 import { createHash } from "node:crypto";
@@ -204,43 +205,74 @@ export async function transcribeInterview(
   form.append("model", model);
   form.append("response_format", "json");
   form.append("language", request.language);
-  let response;
-  try {
-    response = await fetchImpl(url, {
-      method: "POST",
-      headers: key ? { Authorization: `Bearer ${key}` } : {},
-      body: form,
-      redirect: "error",
-      signal: deadline,
-    });
-  } catch {
-    throw failure(
-      deadline.aborted
-        ? "转写已取消或超时，未自动重试；录音仍保留。"
-        : "转写连接失败，未自动重试；请检查已有结果，录音仍保留。",
-    );
-  }
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => {});
-    throw failure(
-      `语音转写服务返回 ${response.status}，未自动重试；请检查连接和额度，录音仍保留。`,
-    );
-  }
-  let payload;
-  try {
-    payload = await responseJson(response);
-  } catch (error) {
-    if (deadline.aborted) throw failure("转写已取消或超时，未自动重试；录音仍保留。");
-    throw failure(
-      error.message.startsWith("转写")
-        ? error.message
-        : "转写结果读取失败，未自动重试；录音仍保留。",
-    );
-  }
-  if (deadline.aborted) throw failure("转写已取消或超时，未自动重试；录音仍保留。");
-  const text = typeof payload?.text === "string" ? payload.text.trim() : "";
-  if (!text || text.length > 6000)
-    throw failure("转写没有清晰文字或超过 6000 字，请保留录音后检查。");
+  const text = await observeModelCall(
+    {
+      provider: "openai-compatible",
+      model,
+      purpose: "interview-transcribe",
+      input: {
+        parameters: {
+          request: {
+            model,
+            response_format: "json",
+            language: request.language,
+            file: {
+              assetId: request.assetId,
+              mimeType: request.mimeType,
+              bytes: bytes.length,
+              filename: `recording.${request.mimeType.split("/")[1]}`,
+            },
+          },
+          capture: {
+            recording: "logical-input",
+            transport: "multipart",
+            omitted: "binary-file-and-credentials",
+          },
+        },
+      },
+    },
+    async () => {
+      let response;
+      try {
+        response = await fetchImpl(url, {
+          method: "POST",
+          headers: key ? { Authorization: `Bearer ${key}` } : {},
+          body: form,
+          redirect: "error",
+          signal: deadline,
+        });
+      } catch {
+        throw failure(
+          deadline.aborted
+            ? "转写已取消或超时，未自动重试；录音仍保留。"
+            : "转写连接失败，未自动重试；请检查已有结果，录音仍保留。",
+        );
+      }
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => {});
+        throw failure(
+          `语音转写服务返回 ${response.status}，未自动重试；请检查连接和额度，录音仍保留。`,
+        );
+      }
+      let payload;
+      try {
+        payload = await responseJson(response);
+      } catch (error) {
+        if (deadline.aborted) throw failure("转写已取消或超时，未自动重试；录音仍保留。");
+        throw failure(
+          error.message.startsWith("转写")
+            ? error.message
+            : "转写结果读取失败，未自动重试；录音仍保留。",
+        );
+      }
+      if (deadline.aborted) throw failure("转写已取消或超时，未自动重试；录音仍保留。");
+      const text = typeof payload?.text === "string" ? payload.text.trim() : "";
+      if (!text || text.length > 6000)
+        throw failure("转写没有清晰文字或超过 6000 字，请保留录音后检查。");
+      return text;
+    },
+    { signal: deadline, output: (value) => ({ text: value }) },
+  );
   const value = { format: "codeshell.interview-transcript.v1", requestHash, text };
   try {
     await immutable(resultPath, JSON.stringify(value));
