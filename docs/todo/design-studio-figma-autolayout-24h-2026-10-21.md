@@ -1229,3 +1229,80 @@ cell和1个多P cell不在17个普通文字候选范围，尚不能宣称整表�
 工作树保留。详见 `worktree-cleanup-receipt-20261021-0528.json`。
 完整门禁后的docs检查点c7c80b9已快进到干净本地main；未push/发布/安装Host。
 24小时目标继续active，下一轮为边框捕获与px行高单位的已审查实现、真实编辑及逐像素复核。
+
+### 行高单位、真实字号编辑及半像素边界（约 06:10）
+
+组合 `8df3d224` 已完成 typecheck、validate、三份生成物check、Design Studio scoped build
+check与完整门禁：主测试 **573总/572通过/1跳过/0失败**（172710ms，CPU且子进程继承
+禁GPU preload）；UI **104总/103通过/1跳过/0失败**（111169ms，独占图形）。两组完整
+app快照、各自起止HEAD均相同。证据 `round26-{main,ui}-receipt.json`、完整日志及
+`round26-full-gates-receipt.json`。外部门禁工具最初将UI目录中的并发参数误当文件名，
+在启动任何UI测试前退出；修正仅证据工具后完整重跑成功，原错误及两版工具SHA均保留。
+
+已合入的底边框捕获 `5db607d` 保留pinned converter原始border字节，只增加有界表格
+paint hint，避免修改布局padding/minHeight。早期直接恢复source.border的原型曾将8px
+padding错误增为9px，已保留并标记非最终结果。最终Pricing 28条底边保留，节点顺序、
+盒子、padding和sizing不变；首次/重排/窄屏像素 **62468/69812/196106**，重排比此前
+70633减少821，仍非整页通过。最小不透明表格仍有后续cell遮住居中边框一半的失败，
+collapsed-border诊断保留，未宣称CSS折叠边框已经通用支持。
+
+`e277b31` 增加Text专属可选 `lineHeightUnit:"pixels"`，无该字段的旧比例语义保持兼容；
+覆盖codec、测量/缓存、SVG/CanvasKit、前端、编辑器、Host编辑契约和Figma来源/增量更新。
+`9cc5ae3` 同时修复前端wrap导出把缓存软换行固化为源换行的问题，保留真实原始文本。
+有界184项CPU验证及上述完整门禁通过，包括px行高字号编辑、撤销、复制、重开UI检查。
+HTML作者行高单位的辨别尚未扩展，不能将所有computed px一律当固定px意图。
+
+真实生产往返 `546bb12c`：新页65:1321/board65:1322，未改生产main
+`87a802e163f36d43bbcc9f7fb385969730cfd3ea06ceb8f8c00b984b3d22d093`。
+57节点/8Grid/24不透明真实cell/24真实Text，228几何数值和498布局/Grid字段精确一致；
+全部24个Text保留原生PIXELS20/30，未再变为FONT_SIZE_%。完整portable文件经生产UI
+转换后导入，来源binding noop0；760×1780 **1,352,800像素changed0/max0**，编码PNG与
+原始a4e5dd91的SHA仍为 `9e4ba502517793449a40c3831820922f38a6fc562ecb178a43f971821ce88f1e`。
+证据 `real-figma/native-text-lineheight-roundtrip/` 包括完整run和独立逐字段/解码RGBA审计。
+
+继续完成真实生产字号编辑 `1e576817`，新页65:1379/board65:1380：先仅用普通生产
+preview/apply将一个affine行的3个Text改为旧相对行高控制，另一个等宽行保持PIXELS；
+然后仅对这6个原始Text执行fontSize16→24→16，共3个单位操作和6+6个字号操作。
+3阶段几何均精确0；像素行高保持20/30，相对控制变为30/45再恢复20/30，原字符、
+所有57个ID/层级/布局模式保留，不提交height/sizing修补。初始及恢复的两份原生PNG各
+1,352,800像素严格0且同原始SHA。24字号阶段无独立原生参考PNG，不声称该阶段字体
+栅格与CSS一致。派生百分比getter作为原值/数学值/差值观察，不虚构PIXELS的百分比
+精度保证；物理px、相对控制的请求百分比、几何和像素门槛仍精确。原插件已关闭、relay
+exit0、三份注册文件全部恢复固定原始SHA；完整raw在同名primary acceptance-runs，
+独立归档分析继续进行。
+
+原生 `7937bd33` 六种stroke alignment/inclusion研究确认：只有INSIDE+included给行高
+增加1；CENTER+included不增加0.5布局内边距。5阶段480官方/live坐标尺寸、1575可用
+字段精确一致，恢复JSON/PNG字节相同。不能据通用API属性名推断CSS半边框分摊。
+CSS独立43状态/47表格状态的实际模型为内容逻辑高度+作者padding+winning top/bottom
+边缘各一半，父表再保留外侧半边；真实GOV首行45.5、后续46和外底0.5均未取整。
+
+实际 `f4568ae6` 用CENTER/excluded1、row自身padding0、真实cell有效半边padding、
+V父框外底0.5保留完整row/cell/Text层级，3case/68新节点、5个copy/width阶段完成。
+330官方/live盒子精确0，5725可用SDK/REST值独立核查；初始、字符恢复和宽度恢复的
+完整JSON/live/PNG字节一致。透明cell正例的14550个规则像素为精确#cecece、changed0；
+不透明负例8730个预期灰色像素全部不同，证明子背景遮挡仍不能作为CSS通用映射。
+第一分析稿180项差异原样保留，均可逐项证明为exact Float32请求值的轨道/颜色getter；
+未对几何或像素加容差。40项SDK MIXED/REST默认0的总strokeWeight差异另记，逐侧
+weight仍精确。证据 `native-css-collapsed-half-edge-analysis/actual-f4568ae6/`。
+这是新页研究handler的能力证明，生产HTML表格提升尚未实施。
+
+新增官方GOV无actions整页，原HTML SHA
+`cc6f3cfcc6b632450f1859d14df98b30e84e1e1ad4b43ad0aeb908a9417d7e79`；原归档与本地
+副本1280/768均像素0、几何一致、未知请求/页面错误0。8df转换27节点、16警告，
+首次/重排/窄屏 **7536/7536/14116**，native仅prepared。只读12状态核查确认两列为
+key30%+right20与valueAUTO/right0，窄屏key理想232.4但CSS量化232.390625；当前转换
+仍保留1220px宽表和旧值列x416，未恢复真实列关系。根代理目测误判电话/邮箱合行，
+已由实际PNG ink233–246与269–285、SVG位置和两个真实P框证伪并纠正，不据此做假修复。
+
+另外冻结官方Bootstrap Headers和Jumbotron，原HTML SHA分别
+`f38d7cf025c9192b4f6e07840a5b1854baa7c14a561facd322595798462681f9`、
+`3bdb116c4f2bb32d6ff59641592ee95caad382024f60ef894f5947fc223878a3`；1280/768原URL
+归档与本地副本严格0。8df首次/重排/窄屏：Headers281节点、100警告，
+**309431/589400/370744**；Jumbotron61节点、20警告，**4155/4155/303610**。
+后者原生transfer因-13px间距与1px AUTO子项受限明确unsupported；两者均strict=false，
+未真实原生执行。完整输入/截图/diff/报告在 `web-corpus/` 对应目录，不隐藏新失败。
+
+已刷新origin且无新main，干净本地main快进到已验证8df；未push、发布或安装Host。
+后续为已审查的真实padded行Grid生产能力、CENTER半边模型和HTML行高意图研究。
+24小时目标继续active，截止10月22日00:31不变。
