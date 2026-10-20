@@ -111,3 +111,20 @@ Browser/Bridge/standalone generation checks, scoped native-app build check and
 `69a74cb1d75f1c30a8e333cfa2bd9b45702aecc3d5db367fcaa1d242b21dbc21`;
 the generated standalone UI embeds those reviewed bytes. Immutable upstream
 sources remain untouched.
+
+## Review follow-up: pseudo line height and calculated indentation
+
+A read-only independent browser review found two unsupported styles slipping past
+the eligibility predicate: `::first-line { line-height:48px }` with a normal
+24px line height, and `text-indent:calc(5% + 2px)`. The first style was omitted
+from the pseudo comparison; the second parsed as NaN and was converted to zero by
+`parseFloat(...) || 0`. Both now retain measured geometry and emit
+`html-plain-text-fixed`. No richer typography support is claimed.
+
+The duplicate-selector regression covers both styles at 640/400, verifies original
+DOM frame boxes, unchanged reflow/reopen boxes, and two explicit diagnostics.
+The independent CPU recheck preserved the old fallback raster failures exactly:
+first-line 10,393 changed pixels/max 240, calculated-indent 5,856/max240. These are
+existing unsupported-style failures, not accepted fidelity results. Original
+receipts remain in `evidence/plain-text-flow/review-f1d20a3`; fixed receipts are
+separate in `review-f1d20a3-fixed`.

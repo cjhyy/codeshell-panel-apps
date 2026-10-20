@@ -357,11 +357,12 @@ async function enableHtmlTextReflow(documentValue, browserDocument, elements, wa
         !element.matches("button,input,select,textarea,option") &&
         style.direction === "ltr" && style.visibility === "visible" && style.transform === "none" &&
         style.textTransform === "none" && ["normal", "0px"].includes(style.wordSpacing) &&
+        style.textIndent === "0px" &&
         ["::before", "::after"].every((pseudo) => ["none", "normal"].includes(
           browserDocument.defaultView.getComputedStyle(element, pseudo).content)) &&
         ["::first-line", "::first-letter"].every((pseudo) => {
           const variant = browserDocument.defaultView.getComputedStyle(element, pseudo);
-          return ["fontFamily", "fontSize", "fontWeight", "fontStyle", "letterSpacing", "wordSpacing", "textTransform", "color", "textShadow"]
+          return ["fontFamily", "fontSize", "fontWeight", "fontStyle", "lineHeight", "letterSpacing", "wordSpacing", "textTransform", "color", "textShadow"]
             .every((key) => variant[key] === style[key]);
         }) && node.visible !== false && text.visible !== false &&
         !(/[\r\n]/u.test(rawSource) && /[^\x00-\x7f]/u.test(rawSource));
@@ -378,7 +379,6 @@ async function enableHtmlTextReflow(documentValue, browserDocument, elements, wa
         element.childElementCount === 0 &&
         style.whiteSpace === "normal" &&
         style.writingMode === "horizontal-tb" &&
-        (Number.parseFloat(style.textIndent) || 0) === 0 &&
         ["Top", "Right", "Bottom", "Left"].every(
           (side) => (Number.parseFloat(style[`border${side}Width`]) || 0) === 0,
         ) &&

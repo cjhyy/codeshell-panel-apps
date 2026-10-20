@@ -466,6 +466,71 @@ test("plain-text binding collisions and unsupported table, inline, pseudo and st
   assert.deepEqual(f.errors, []);
 });
 
+test("duplicate plain-text sources with first-line height or calculated indent keep measured fallback", async (t) => {
+  const f = await fixture(t);
+  const copy =
+    "Ordinary paragraph source wraps across multiple lines while its first line retains the authored line box and indentation.";
+  const cases = [
+    { name: "first-line-height", rule: "p::first-line{line-height:48px}" },
+    { name: "calculated-indent", rule: "p{text-indent:calc(5% + 2px)}" },
+  ];
+  for (const specimen of cases)
+    for (const width of [640, 400]) {
+      const html = `<!doctype html><style>*{box-sizing:border-box}html,body{margin:0;background:white;font:16px/24px Arial}#root{width:100%;height:400px;padding:20px}p{margin:0}${specimen.rule}</style><main id="root"><p class="copy">${copy}</p><p class="copy">${copy}</p></main>`;
+      await f.page.setViewportSize({ width, height: 400 });
+      await f.page.setContent(html);
+      await f.page.evaluate(() => document.fonts.ready);
+      const sourceBoxes = await f.page.locator("p.copy").evaluateAll((elements) =>
+        elements.map((element) => {
+          const { x, y, width, height } = element.getBoundingClientRect();
+          return { x, y, width, height };
+        }),
+      );
+      const captured = await f.capture(html, { rootSelector: "#root", width, height: 400 });
+      const document = normalizeDesignDocument(captured.document);
+      const frames = document.nodes.filter(
+        (node) => node.type === "frame" && node.name === "p.copy",
+      );
+      assert.equal(frames.length, 2);
+      assert(
+        frames.every((node) => node.layout === "none"),
+        `${specimen.name} width${width}`,
+      );
+      assert.equal(
+        captured.report.warnings.filter(
+          (warning) =>
+            warning.code === "html-plain-text-fixed" &&
+            frames.some((frame) => frame.id === warning.nodeId),
+        ).length,
+        2,
+      );
+      assert(
+        !captured.report.warnings.some((warning) => warning.code === "html-text-source-binding"),
+      );
+      const boxes = () => frames.map(({ x, y, width, height }) => ({ x, y, width, height }));
+      assert.deepEqual(boxes(), sourceBoxes, `${specimen.name} measured source geometry`);
+      const initial = boxes();
+      applyAllAutoLayouts(document.nodes);
+      assert.deepEqual(
+        boxes(),
+        initial,
+        `${specimen.name} must retain captured line boxes after reflow`,
+      );
+      const reopened = normalizeDesignDocument(JSON.parse(serializeDesignDocument(document)));
+      applyAllAutoLayouts(reopened.nodes);
+      assert.deepEqual(
+        reopened.nodes
+          .filter((node) => frames.some((frame) => frame.id === node.id))
+          .map(({ x, y, width, height, layout }) => ({ x, y, width, height, layout })),
+        initial.map((box) => ({ ...box, layout: "none" })),
+      );
+      // Unsupported typography already has a raster mismatch in the measured
+      // fallback. This regression promises preservation/diagnostics, not fidelity.
+    }
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});
+
 test("block text uses browser line breaks and moves following blocks after resize and source edits", async (t) => {
   const f = await fixture(t);
   const original = "Text wraps across ordinary block flow when the parent frame becomes narrower.";
