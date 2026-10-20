@@ -89,6 +89,17 @@ before import. Each resource is bounded to 2,000 elements, 256 referenced IDs,
 32 nesting/reference levels, and 1 MiB; the normal inert SVG and portable-resource
 validators still run afterward. This does not add remote resource loading.
 
+For real collapsed HTML tables with unopposed opaque solid bottom rules, the
+maintained boundary retains each cell's original bottom side before the pinned
+postprocessor removes interior edges. A separate paint hint retains that side
+by semantic identity; Design Studio validates it only while painting the surface.
+The pinned border/layout inputs, geometry and row/group structure stay unchanged.
+Competing table/group/row/cell borders, spans, nested tables, hidden/generated
+content, transforms and CSS zoom retain the existing fallback. Collapse ignores
+the computed border-spacing, including the browser's default2px. This bounded
+paint-input correction does not implement responsive table tracks or the full
+collapsed-border conflict algorithm; Design Studio retains its border diagnostic.
+
 ## MIT license terms
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

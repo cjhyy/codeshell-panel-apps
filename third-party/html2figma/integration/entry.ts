@@ -4,6 +4,7 @@ import { renderToDesignDSL } from "../upstream/packages/browser/converter/conver
 import type { DesignNode } from "../upstream/packages/shared/design-node";
 import type { RenderNode } from "../upstream/packages/browser/traverser/types";
 import { captureStandaloneSvg } from "./svg";
+import { captureTableBottomBorders } from "./table-borders";
 
 type CapturedNode = DesignNode & {
   cssLayout?: Record<string, string>;
@@ -113,6 +114,7 @@ export function convert(
   const tree = traverseDOM(root, { maxDepth: options.maxDepth });
   if (!tree) return null;
   const values = captureLayoutValues(tree);
+  const attachTableBorder = captureTableBottomBorders(tree);
   const svgResources = new Map<object, string>();
   const backgrounds = new Map<object, Record<string, string>>();
   const gridSources = new Set<object>();
@@ -180,6 +182,7 @@ export function convert(
     ? renderPreservingGrid(tree, options)
     : renderToDesignDSL(tree, options);
   const attach = (node: CapturedNode) => {
+    attachTableBorder(node);
     // Anonymous text inherits its parent's semantic metadata and CSS styles;
     // applying the parent's box dimensions to that text would be incorrect.
     const cssLayout = node.nodeType !== "text" && node.semantic && values.get(node.semantic);

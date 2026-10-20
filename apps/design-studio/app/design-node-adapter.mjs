@@ -372,7 +372,24 @@ export async function designNodeToV3(tree, options = {}) {
       warn("background-clip", node.id, "背景裁剪区域已近似为容器边界。");
     if (source.borderGradientLayers?.length)
       warn("gradient-border", node.id, "渐变边框未转换为原生描边。");
-    const sides = ["top", "right", "bottom", "left"].map((key) => source.border?.[key]);
+    let bottom = source.border?.bottom;
+    if (source.cssTableBottomBorder !== undefined) {
+      const hint = source.cssTableBottomBorder;
+      if (source.nodeType === "container" && typeof source.semantic?.semanticId === "string" && source.semantic.semanticId &&
+          ["td", "th"].includes(source.tag) && cssLayoutValue(source, "display") === "table-cell" &&
+          cssLayoutValue(source, "border-collapse") === "collapse" &&
+          object(hint) && Object.keys(hint).every((key) => ["width", "style", "color"].includes(key)) &&
+          Number.isFinite(hint.width) && hint.width > 0 && hint.width <= 100 && hint.style === "solid" &&
+          object(hint.color) && Object.keys(hint.color).every((key) => ["r", "g", "b", "a", "raw"].includes(key)) &&
+          ["r", "g", "b"].every((key) => Number.isFinite(hint.color[key]) && hint.color[key] >= 0 && hint.color[key] <= 255) &&
+          hint.color.a === 1 && (hint.color.raw === undefined || typeof hint.color.raw === "string" && hint.color.raw.length <= 1000) &&
+          ["top", "right", "left"].every((key) => source.border?.[key]?.width === 0 && source.border[key].style === "none"))
+        bottom = hint;
+      else warn("unsupported-css-table-border", node.id, "折叠表格边框来源提示无效；保留原有边框与测量布局。");
+    }
+    // The captured edge is paint only; source.border remains the pinned layout
+    // input so no padding, min-size or content sizing acquires an extra inset.
+    const sides = [source.border?.top, source.border?.right, bottom, source.border?.left];
     const visibleSides = sides.filter(
       (side) => side && side.style !== "none" && side.width > 0 && finite(side.color?.a, 1) > 0,
     );
