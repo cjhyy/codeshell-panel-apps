@@ -606,23 +606,82 @@ function text(source, node, report) {
 }
 
 /** Import a REST GET file response, DOCUMENT/CANVAS, selected node, or JSON_REST_V1 nodes response. */
-function diagnoseNativeStrokeFillModels(document, mapping, report) {
+function diagnoseNativeStrokeFillModels(document, mapping, report, unsupportedBorders) {
   // Preserve measured geometry if an older/native layout disagrees with the
   // verified content allocator; no unavailable layout-version field is inferred.
   const sourceIds = new Map(mapping.map(entry => [entry.designId, entry.sourceId]));
   for (const page of document.pages) {
+    const nodeById = new Map(page.nodes.map(node => [node.id, node]));
     const byParent = new Map();
     for (const child of page.nodes) if (child.parentId) {
       if (!byParent.has(child.parentId)) byParent.set(child.parentId, []);
       byParent.get(child.parentId).push(child);
     }
     for (const parent of page.nodes) {
-      if (!["horizontal", "vertical"].includes(parent.layout) ||
-          parent.layoutWrap && parent.layoutWrap !== "none") continue;
+      const children = (byParent.get(parent.id) ?? []).filter(node => node.visible !== false && node.layoutPositioning !== "absolute");
       const horizontal = parent.layout === "horizontal", axis = horizontal ? "horizontal" : "vertical";
       const size = horizontal ? "width" : "height", sizing = horizontal ? "layoutSizingHorizontal" : "layoutSizingVertical";
+      const inactiveFrame = node => ["frame", "component"].includes(node.type) && node.layout === "none";
+      const physicalStroke = node => hasDesignStroke(node) && node.strokeAlign === "inside"
+        ? designStrokeSides(node).filter((_, index) => horizontal ? index % 2 === 1 : index % 2 === 0).reduce((sum, side) => sum + side.width, 0)
+        : 0;
+      const inactiveFills = children.filter(node => node[sizing] === "fill" && inactiveFrame(node) &&
+        (physicalStroke(node) > 0 || unsupportedBorders.has(node.id)));
+      if (["horizontal", "vertical"].includes(parent.layout) && inactiveFills.length) {
+        // This new native basis is verified for two unrotated leaf Fill items,
+        // with positive remaining content and no content min / below-basis cap.
+        // Do not extend that evidence to active siblings or native cap rules.
+        const fills = children.filter(node => node[sizing] === "fill");
+        const padding = (horizontal ? ["Left", "Right"] : ["Top", "Bottom"]).map(side => parent[`padding${side}`] ?? parent.padding ?? 0);
+        const available = parent[size] - padding[0] - padding[1] - mainAxisGap(parent) * (children.length - 1);
+        const basis = fills.map(physicalStroke);
+        const prefix = horizontal ? "Width" : "Height";
+        const position = horizontal ? "x" : "y";
+        const ancestors = [];
+        for (let ancestor = parent; ancestor; ancestor = nodeById.get(ancestor.parentId)) ancestors.push(ancestor);
+        let reason = "";
+        if (parent.layoutWrap && parent.layoutWrap !== "none" || parent[sizing] === "hug" ||
+            parent.justifyContent !== "start" || mainAxisGap(parent) < 0 ||
+            ancestors.some(node => node.rotation) || children.some(node => node.rotation))
+          reason = "换行、Hug 主轴、非起始对齐、负间距或旋转尚未验证";
+        else if (children.length !== 2 || fills.length !== 2 || children.some(node =>
+          node.type !== "rectangle" && !inactiveFrame(node) || (byParent.get(node.id) ?? []).length))
+          reason = "只验证了两个空的 inactive Frame/矩形 Fill 子项，混合活动容器或更多子项尚未验证";
+        else if (children.some(node => unsupportedBorders.has(node.id)))
+          reason = "侧边描边无法完整转换";
+        else if (available <= basis.reduce((sum, value) => sum + value, 0) || fills.some((node, index) =>
+          node[`min${prefix}`] > basis[index] || node[`max${prefix}`] < basis[index]))
+          reason = "零/负剩余内容、正内容最小值或小于描边基准的最大值尚未验证";
+        else {
+          const predicted = distributeFillSizes(fills, axis, available);
+          let next = parent[position] + padding[0];
+          for (const child of children) {
+            if (round(predicted.get(child.id)) !== child[size] || round(next) !== child[position]) {
+              reason = "测量尺寸或主轴位置与已验证的分配规则不同";
+              break;
+            }
+            next += child[size] + mainAxisGap(parent);
+          }
+        }
+        if (reason) {
+          report.warn("native-stroke-fill-model", { id: sourceIds.get(parent.id), name: parent.name },
+            `inactive Frame 描边 Fill：${reason}；保留测量几何，不启用未验证的流式重排。未猜测原生布局版本。`);
+          parent.layout = "none";
+          parent.padding = 0;
+          parent.gap = 0;
+          clearInvalidStrokeLayoutExclusion(parent);
+          for (const key of ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "rowGap", "columnGap"]) delete parent[key];
+          for (const child of byParent.get(parent.id) ?? []) {
+            if (child.layoutSizingHorizontal === "fill") child.layoutSizingHorizontal = "fixed";
+            if (child.layoutSizingVertical === "fill") child.layoutSizingVertical = "fixed";
+            delete child.layoutAlignSelf;
+          }
+          continue;
+        }
+      }
+      if (!["horizontal", "vertical"].includes(parent.layout) ||
+          parent.layoutWrap && parent.layoutWrap !== "none") continue;
       if (parent[sizing] === "hug") continue;
-      const children = (byParent.get(parent.id) ?? []).filter(node => node.visible !== false && node.layoutPositioning !== "absolute");
       if (!children.some(node => node.strokeLayoutExcluded === true && designStrokeSides(node).some(side => side.width > 0))) continue;
       const fills = children.filter(node => node[sizing] === "fill");
       if (fills.length < 2) continue;
@@ -658,6 +717,7 @@ function importFigmaJsonWithReport(
   const mapping = [],
     pageMappings = [];
   const nonRenderingSourceNodes = new Set();
+  const unsupportedBorders = new Set();
   let currentPage = null;
   const recordMapping = (source, node) => {
     if (source.absoluteRenderBounds === null) nonRenderingSourceNodes.add(node.id);
@@ -842,8 +902,16 @@ function importFigmaJsonWithReport(
         Object.assign(node,border);
         node.stroke=border.strokeSides[0].opacity>0 ? border.strokeSides[0].color : "transparent";
         node.strokeWidth=border.strokeSides[0].opacity>0 ? Math.max(...border.strokeSides.map(s=>s.width)) : 0;
-      } else node.stroke=paint(source.strokes,source,"描边",report);
+      } else {
+        if (["frame", "component", "rectangle"].includes(type) && source.strokeAlign === "INSIDE" &&
+            Array.isArray(source.strokes) && source.strokes.some(stroke => stroke.visible !== false) &&
+            ["Top", "Right", "Bottom", "Left"].some(side =>
+              (source[`stroke${side}Weight`] ?? source.individualStrokeWeights?.[side.toLowerCase()] ?? source.strokeWeight ?? 0) > 0))
+          unsupportedBorders.add(node.id);
+        node.stroke=paint(source.strokes,source,"描边",report);
+      }
     } catch (error) {
+      unsupportedBorders.add(node.id);
       report.warn("unsupported-native-border",source,error.message);
       node.stroke=paint(source.strokes,source,"描边",report);
     }
@@ -1174,7 +1242,7 @@ function importFigmaJsonWithReport(
     activePageId: convertedPages[0].id,
     pages: convertedPages,
   });
-  diagnoseNativeStrokeFillModels(document, mapping, report);
+  diagnoseNativeStrokeFillModels(document, mapping, report, unsupportedBorders);
   const warningCount = report.finish();
   return {
     document,

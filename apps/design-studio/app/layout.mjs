@@ -132,7 +132,10 @@ function fillContentInset(node, axis) {
     const padding = axisPadding(node, axis);
     return padding.start + padding.end + strokeLayoutBasisExtra(node, axis);
   }
-  if (node?.type === "rectangle" && hasDesignStroke(node) && node.strokeAlign === "inside") {
+  const inactiveFrame = ["frame", "component"].includes(node?.type) && node.layout === "none";
+  if ((node?.type === "rectangle" || inactiveFrame) && hasDesignStroke(node) && node.strokeAlign === "inside") {
+    // Native inactive Frames reserve physical inside strokes like rectangles.
+    // Their retained padding is inactive and must not become a content basis.
     const sides = designStrokeSides(node);
     return axis === "horizontal" ? sides[1].width + sides[3].width : sides[0].width + sides[2].width;
   }
