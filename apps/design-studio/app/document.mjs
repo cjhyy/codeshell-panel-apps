@@ -1,3 +1,4 @@
+import { validateLayoutSpacing } from "./layout-spacing.mjs";
 import { normalizeCornerRadii, roundedRectSvgGeometry } from "./corner-radii.mjs";
 import {
   GRID_CONTAINER_FIELDS,
@@ -589,8 +590,9 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       "paddingLeft",
     ]) {
       if (candidate[property] === undefined) continue;
-      assertFiniteRange(candidate[property], 0, 2000, `容器 ${candidate.id}.${property}`);
+      assertFiniteRange(candidate[property], ["gap", "rowGap", "columnGap"].includes(property) ? -2000 : 0, 2000, `容器 ${candidate.id}.${property}`);
     }
+    validateLayoutSpacing(candidate);
     if (!["start", "center", "end", "stretch", "baseline"].includes(candidate.alignItems)) {
       throw new Error(`容器 ${candidate.id} 的 alignItems 无效`);
     }

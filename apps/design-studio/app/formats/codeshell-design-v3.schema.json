@@ -454,9 +454,9 @@
         "layout": { "enum": ["none", "horizontal", "vertical", "grid"] },
         "layoutWrap": { "enum": ["none", "wrap", "wrap-reverse"] },
         "layoutReverse": { "type": "boolean" },
-        "gap": { "type": "number", "minimum": 0, "maximum": 2000 },
-        "rowGap": { "type": "number", "minimum": 0, "maximum": 2000 },
-        "columnGap": { "type": "number", "minimum": 0, "maximum": 2000 },
+        "gap": { "type": "number", "minimum": -2000, "maximum": 2000 },
+        "rowGap": { "type": "number", "minimum": -2000, "maximum": 2000 },
+        "columnGap": { "type": "number", "minimum": -2000, "maximum": 2000 },
         "padding": { "type": "number", "minimum": 0, "maximum": 2000 },
         "paddingTop": { "type": "number", "minimum": 0, "maximum": 2000 },
         "paddingRight": { "type": "number", "minimum": 0, "maximum": 2000 },
@@ -517,6 +517,95 @@
             "not": {
               "required": ["fillPaints"]
             }
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "required": [
+                  "gap"
+                ],
+                "properties": {
+                  "gap": {
+                    "exclusiveMaximum": 0
+                  }
+                }
+              },
+              {
+                "required": [
+                  "rowGap"
+                ],
+                "properties": {
+                  "rowGap": {
+                    "exclusiveMaximum": 0
+                  }
+                }
+              },
+              {
+                "required": [
+                  "columnGap"
+                ],
+                "properties": {
+                  "columnGap": {
+                    "exclusiveMaximum": 0
+                  }
+                }
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "layout": {
+                "enum": [
+                  "horizontal",
+                  "vertical"
+                ]
+              },
+              "layoutWrap": {
+                "const": "none"
+              },
+              "layoutReverse": {
+                "const": false
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "layout": {
+                      "const": "horizontal"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "rowGap": {
+                      "minimum": 0
+                    },
+                    "layoutSizingHorizontal": {
+                      "enum": [
+                        "fixed",
+                        "fill"
+                      ]
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "columnGap": {
+                      "minimum": 0
+                    },
+                    "layoutSizingVertical": {
+                      "enum": [
+                        "fixed",
+                        "fill"
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
           }
         },
         {

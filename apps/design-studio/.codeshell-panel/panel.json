@@ -625,17 +625,17 @@
                 },
                 "gap": {
                   "type": "number",
-                  "minimum": 0,
+                  "minimum": -2000,
                   "maximum": 2000
                 },
                 "rowGap": {
                   "type": ["number", "null"],
-                  "minimum": 0,
+                  "minimum": -2000,
                   "maximum": 2000
                 },
                 "columnGap": {
                   "type": ["number", "null"],
-                  "minimum": 0,
+                  "minimum": -2000,
                   "maximum": 2000
                 },
                 "padding": {

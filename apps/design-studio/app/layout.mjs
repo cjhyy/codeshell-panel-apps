@@ -1,3 +1,4 @@
+import { mainAxisGap } from "./layout-spacing.mjs";
 import { gridPlacements, gridTrackSizes, effectiveGridRows } from "./grid.mjs";
 /* Auto-layout and reusable-component helpers for Design Studio v3 documents. */
 import { descendantIds, setNodeTreePosition } from "./geometry.mjs";
@@ -144,6 +145,8 @@ function distributeFillSizes(children, axis, available) {
 
 function axisGap(container, axis) {
   const property = axis === "horizontal" ? "columnGap" : "rowGap";
+  if ((container.layout === "horizontal" && axis === "horizontal") ||
+      (container.layout === "vertical" && axis === "vertical")) return finite(mainAxisGap(container));
   return Math.max(0, finite(container[property], Math.max(0, finite(container.gap))));
 }
 

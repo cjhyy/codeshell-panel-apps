@@ -140,6 +140,12 @@ rendered component content.
 
 ## Auto layout and components
 
+Signed gaps down to −2000 are supported only on the main axis of horizontal/vertical nowrap
+stacks with fixed or Fill main sizing. Cross-axis and Grid gaps remain nonnegative. Negative
+spacing with wrapping, reverse order, or main-axis Hug is rejected; unsupported native imports
+retain measured geometry with a diagnostic. Editable CSS export uses main-end child margins
+for signed spacing and excludes hidden/absolute children from inter-item spacing.
+
 Containers store `layout`, uniform `gap`/`padding`, `alignItems`, and `justifyContent`. Layout is
 `none`, `horizontal`, `vertical`, or `grid`. Optional `rowGap` and `columnGap` override the
 axis-specific gap; four side padding values similarly override uniform padding.

@@ -137,3 +137,19 @@ if (process.argv.includes("--check"))
   assert.equal(textSource, textOutput, "Figma plugin text runtime is stale");
 else await writeFile(codePath, textOutput);
 console.log(`Figma plugin text runtime ${process.argv.includes("--check") ? "verified" : "built"}`);
+
+const spacingResult = await build({
+  absWorkingDir: root,
+  entryPoints: ["apps/design-studio/app/figma-plugin/spacing-runtime.mjs"],
+  bundle: true, platform: "browser", format: "iife", globalName: "CodeShellFigmaSpacing",
+  target: "es2020", minify: true, charset: "utf8", write: false, logLevel: "silent",
+});
+const spacingSource = await readFile(codePath, "utf8");
+const spacingBegin = "/* BEGIN GENERATED SPACING RUNTIME */", spacingEnd = "/* END GENERATED SPACING RUNTIME */";
+assert.equal(spacingSource.split(spacingBegin).length, 2);
+assert.equal(spacingSource.split(spacingEnd).length, 2);
+const spacingOutput = spacingSource.slice(0, spacingSource.indexOf(spacingBegin)) + spacingBegin + "\n" +
+  spacingResult.outputFiles[0].text + spacingEnd + spacingSource.slice(spacingSource.indexOf(spacingEnd) + spacingEnd.length);
+if (process.argv.includes("--check")) assert.equal(spacingSource, spacingOutput, "Figma plugin spacing runtime is stale");
+else await writeFile(codePath, spacingOutput);
+console.log(`Figma plugin spacing runtime ${process.argv.includes("--check") ? "verified" : "built"}`);
