@@ -98,6 +98,10 @@ test("browser soft wrapping retains every source character and agrees with the e
     ),
   );
   assert.ok(currentTextMetrics(node));
+  node.textSource = `${original} Edited original source.`;
+  assert.equal(currentTextMetrics(node), null);
+  node.textSource = original;
+  assert.ok(currentTextMetrics(node));
   const reopened = normalizeDesignState(result.result.document);
   assert.ok(currentTextMetrics(reopened.nodes[0]));
   assert.ok(serializeDesignDocument(reopened).includes('"textMetrics"'));

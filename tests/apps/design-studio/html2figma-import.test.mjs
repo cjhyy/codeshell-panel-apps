@@ -149,6 +149,104 @@ test("production HTML import keeps fixed-height flex children and CSS margins st
   assert.deepEqual(f.errors, []);
 });
 
+test("plain HTML paragraphs retain measured wrapping and hug layout across resize, reopen and source edits", async (t) => {
+  const f = await fixture(t);
+  const captured = await f.capture(
+    `<style>*{box-sizing:border-box}body{margin:0;font-family:Arial}#root{display:flex;width:100%;height:240px;padding:20px}#card{display:flex;flex:1;flex-direction:column;gap:12px;padding:16px}h1,p{margin:0}h1{font-size:24px;line-height:30px}p{font-size:16px;line-height:24px}#actions{display:flex;height:32px}#actions span{padding:6px 12px;font:14px/20px Arial}</style><main id="root"><section id="card"><h1>Editable Auto Layout</h1><p id="copy">Content should reflow when the frame gets narrower.</p><div id="actions"><span id="action-label">Save</span></div></section></main>`,
+    { rootSelector: "#root", width: 640, height: 240 },
+  );
+  const result = await f.page.evaluate(async (input) => {
+    const { normalizeDesignDocument, serializeDesignDocument } = await import("/app/document.mjs");
+    const { applyAllAutoLayouts, applyAutoLayouts } = await import("/app/layout.mjs");
+    const { currentTextMetrics } = await import("/app/text-metrics.mjs");
+    const documentValue = normalizeDesignDocument(input);
+    const byId = (value, id, type = "frame") =>
+      value.nodes.find((node) => {
+        try {
+          return node.type === type && JSON.parse(node.notes ?? "{}").attributes?.id === id;
+        } catch {
+          return false;
+        }
+      });
+    documentValue.nodes.find((node) => node.id === "html-viewport").width = 400;
+    byId(documentValue, "root").width = 400;
+    applyAllAutoLayouts(documentValue.nodes);
+    const copy = byId(documentValue, "copy"),
+      text = byId(documentValue, "copy", "text");
+    const initial = {
+      wrapper: { layout: copy.layout, height: copy.height, sizing: copy.layoutSizingVertical },
+      text: structuredClone(text),
+      actionsY: byId(documentValue, "actions").y,
+      measured: Boolean(currentTextMetrics(text)),
+    };
+    const reopened = normalizeDesignDocument(JSON.parse(serializeDesignDocument(documentValue)));
+    const reopenedBefore = serializeDesignDocument(reopened);
+    applyAllAutoLayouts(reopened.nodes);
+    const unchangedOnReopen = serializeDesignDocument(reopened) === reopenedBefore;
+    text.textSource =
+      "Edited content must reflow without resizing the frame, and its following action row must move down as the paragraph grows.";
+    applyAutoLayouts(documentValue.nodes, new Set([copy.id]));
+    const changed = {
+      text: structuredClone(text),
+      height: copy.height,
+      y: copy.y,
+      actionsY: byId(documentValue, "actions").y,
+      gap: byId(documentValue, "card").gap,
+      measured: Boolean(currentTextMetrics(text)),
+    };
+    text.fontWeight = 700;
+    applyAutoLayouts(documentValue.nodes, new Set([copy.id]));
+    const label = byId(documentValue, "action-label", "text"),
+      labelBox = byId(documentValue, "action-label");
+    const labelWidth = labelBox.width;
+    label.textSource = "Save changes";
+    applyAutoLayouts(documentValue.nodes, new Set([labelBox.id]));
+    const hugLabel = {
+      text: label.text,
+      width: labelBox.width,
+      previousWidth: labelWidth,
+      flow: label.textFlow,
+      measured: Boolean(currentTextMetrics(label)),
+    };
+    return {
+      initial,
+      unchangedOnReopen,
+      changed,
+      hugLabel,
+      boldMeasured: Boolean(currentTextMetrics(text)),
+      boldText: text.text,
+      boldHeight: copy.height,
+      nodes: documentValue.nodes.map((node) => ({
+        type: node.type,
+        positioning: node.layoutPositioning,
+      })),
+    };
+  }, captured.document);
+  assert.deepEqual(result.initial.wrapper, { layout: "vertical", height: 48, sizing: "hug" });
+  assert.equal(result.initial.text.text.replaceAll("\n", ""), result.initial.text.textSource);
+  assert.equal(result.initial.text.text.split("\n").length, 2);
+  assert.equal(result.initial.text.layoutSizingHorizontal, "fill");
+  assert.equal(result.initial.actionsY, 138);
+  assert.equal(result.initial.measured, true);
+  assert.equal(result.unchangedOnReopen, true);
+  assert.equal(result.changed.text.text.replaceAll("\n", ""), result.changed.text.textSource);
+  assert.ok(result.changed.height > result.initial.wrapper.height);
+  assert.equal(
+    result.changed.actionsY,
+    result.changed.y + result.changed.height + result.changed.gap,
+  );
+  assert.equal(result.changed.measured, true);
+  assert.equal(result.hugLabel.text, "Save changes");
+  assert.equal(result.hugLabel.flow, undefined);
+  assert.ok(result.hugLabel.width > result.hugLabel.previousWidth);
+  assert.equal(result.hugLabel.measured, true);
+  assert.equal(result.boldMeasured, true);
+  assert.ok(result.boldHeight >= result.changed.height);
+  assert.ok(result.nodes.every((node) => node.positioning !== "absolute"));
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});
+
 test("actual HTML capture imports editable v3, survives editing and a complete file, then the Figma plugin restores exact local assets", async (t) => {
   const f = await fixture(t);
   const html = `<!doctype html><title>End-to-end HTML</title><style>body{margin:0;font-family:Arial}.card{position:relative;width:400px;height:280px;background:#eef4ff}h1{margin:0;position:absolute;left:20px;top:20px;font-size:28px}img{position:absolute;left:20px;top:90px;width:24px;height:24px}svg{position:absolute;left:70px;top:90px}</style><main class="card" data-component="Card"><h1 id="heading">Original HTML title</h1><img src="data:image/png;base64,${PNG}" alt="Offline PNG"><svg width="20" height="20" viewBox="0 0 20 20"><rect width="20" height="20" fill="blue"/></svg></main>`;

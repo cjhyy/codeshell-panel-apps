@@ -1,5 +1,12 @@
 /* Auto-layout and reusable-component helpers for Design Studio v3 documents. */
 import { descendantIds, setNodeTreePosition } from "./geometry.mjs";
+import {
+  createBrowserTextMeasurer,
+  currentTextMetrics,
+  measuredWrap,
+  textMetricsSignature,
+  textSourceMetricsSignature,
+} from "./text-metrics.mjs";
 
 export const CONTAINER_NODE_TYPES = Object.freeze(["frame", "group", "component"]);
 
@@ -39,49 +46,19 @@ function estimatedTextWidth(node, value) {
   );
 }
 
-function wrapTextValue(node, source, maximumWidth) {
-  const tokens = String(source)
-    .trim()
-    .split(/\s+/u)
-    .filter(Boolean);
-  if (tokens.length === 0) return [""];
-  const lines = [];
-  let line = "";
-  const pushLongToken = (token) => {
-    let segment = "";
-    for (const character of Array.from(token)) {
-      const candidate = `${segment}${character}`;
-      if (segment && estimatedTextWidth(node, candidate) > maximumWidth) {
-        lines.push(segment);
-        segment = character;
-      } else {
-        segment = candidate;
-      }
-    }
-    return segment;
-  };
-  for (const token of tokens) {
-    const candidate = line ? `${line} ${token}` : token;
-    if (!line || estimatedTextWidth(node, candidate) <= maximumWidth) {
-      line = candidate;
-      continue;
-    }
-    lines.push(line);
-    line =
-      estimatedTextWidth(node, token) > maximumWidth ? pushLongToken(token) : token;
-  }
-  if (line) lines.push(line);
-  return lines.length > 0 ? lines : [""];
-}
-
-function ellipsizeTextValue(node, source, maximumWidth) {
-  if (estimatedTextWidth(node, source) <= maximumWidth) return source;
+function ellipsizeTextValue(
+  node,
+  source,
+  maximumWidth,
+  widthOf = (value) => estimatedTextWidth(node, value),
+) {
+  if (widthOf(source) <= maximumWidth) return source;
   const characters = [...source];
   let low = 0;
   let high = characters.length;
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (estimatedTextWidth(node, `${characters.slice(0, middle).join("")}…`) <= maximumWidth) {
+    if (widthOf(`${characters.slice(0, middle).join("")}…`) <= maximumWidth) {
       low = middle;
     } else {
       high = middle - 1;
@@ -736,8 +713,7 @@ function applyAbsoluteConstraints(nodes, container) {
         container.y + container.height - child.y - child.height,
       );
       if (vertical === "stretch") {
-        changed =
-          assignAxisSize(child, "vertical", container.height - top - bottom) || changed;
+        changed = assignAxisSize(child, "vertical", container.height - top - bottom) || changed;
         changed = setNodeTreePosition(nodes, child.id, "y", round(container.y + top)) || changed;
       } else if (vertical === "end") {
         changed =
@@ -779,48 +755,84 @@ function applyAbsoluteConstraints(nodes, container) {
   return changed;
 }
 
-function applyResponsiveText(nodes, containerIds) {
+const responsiveTextStates = new WeakMap();
+
+function textLayoutMeasurer(nodes, supplied) {
+  if (supplied !== undefined) return supplied;
+  if (
+    !nodes.some(
+      (node) =>
+        node.type === "text" &&
+        (node.textFlow === "wrap" ||
+          node.textOverflow === "ellipsis" ||
+          axisSizing(node, "horizontal") === "hug"),
+    )
+  )
+    return null;
+  try {
+    return createBrowserTextMeasurer();
+  } catch {
+    return null;
+  }
+}
+
+function applyResponsiveText(nodes, containerIds, measurement) {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const eligibleContainers = containerIds instanceof Set ? containerIds : new Set(containerIds);
   let changed = false;
   for (const node of nodes) {
     if (
       node.type !== "text" ||
-      (node.textFlow !== "wrap" && node.textOverflow !== "ellipsis") ||
+      (node.textFlow !== "wrap" &&
+        node.textOverflow !== "ellipsis" &&
+        axisSizing(node, "horizontal") !== "hug") ||
       !node.textSource
     ) {
       continue;
     }
     const parent = byId.get(node.parentId);
-    if (
-      !parent ||
-      !eligibleContainers.has(parent.id) ||
-      !isAutoLayoutContainer(parent)
-    ) {
+    if (!parent || !eligibleContainers.has(parent.id) || !isAutoLayoutContainer(parent)) {
       continue;
     }
     const contentLeft = parent.x + containerPadding(parent, "Left");
     const contentRight = parent.x + parent.width - containerPadding(parent, "Right");
     const leftOffset = Math.max(0, node.x - contentLeft);
     const available = Math.max(1, contentRight - contentLeft - leftOffset);
+    const signature = textSourceMetricsSignature(node);
+    const cached = responsiveTextStates.get(node);
+    const receipt = currentTextMetrics(node);
     if (
       Number.isFinite(node.textFlowWidth) &&
-      Math.abs(available - node.textFlowWidth) < 0.5
+      Math.abs(available - node.textFlowWidth) < 0.5 &&
+      ((cached?.signature === signature && cached.text === node.text) ||
+        receipt ||
+        (!node.textMetrics && node.textSource === node.text))
     ) {
       continue;
     }
+    measurement?.configure(node);
+    const widthOf = measurement
+      ? (value) => measurement.measure(value).width
+      : (value) => estimatedTextWidth(node, value);
+    const intrinsic = node.textFlow !== "wrap" && node.textOverflow !== "ellipsis";
     const lines =
       node.textOverflow === "ellipsis"
-        ? [ellipsizeTextValue(node, node.textSource, available)]
-        : wrapTextValue(node, node.textSource, available);
+        ? [ellipsizeTextValue(node, node.textSource, available, widthOf)]
+        : intrinsic
+          ? node.textSource.split("\n")
+          : measuredWrap(node.textSource, available, (value) => ({ width: widthOf(value) }));
     const nextText = lines.join("\n");
+    if (nextText.length > 4000) throw Error(`文字 ${node.id} 换行后超过 4000 字符；请拆分文字图层`);
     if (node.text !== nextText) {
       node.text = nextText;
       changed = true;
     }
-    const widest = Math.max(1, ...lines.map((line) => estimatedTextWidth(node, line)));
-    const nextWidth =
-      axisSizing(node, "horizontal") === "fill" ? available : Math.min(available, widest);
+    const widest = Math.max(1, ...lines.map(widthOf));
+    const nextWidth = intrinsic
+      ? widest
+      : axisSizing(node, "horizontal") === "fill"
+        ? available
+        : Math.min(available, widest);
     changed = assignAxisSize(node, "horizontal", nextWidth) || changed;
     changed =
       assignAxisSize(
@@ -829,15 +841,41 @@ function applyResponsiveText(nodes, containerIds) {
         Math.max(1, lines.length * finite(node.fontSize, 16) * finite(node.lineHeight, 1.2)),
       ) || changed;
     changed = assignNumber(node, "textFlowWidth", available) || changed;
-    if (node.textMeasurement !== undefined) {
+    if (measurement) {
+      const metrics = lines.map((line) => measurement.measure(line));
+      const nextMetrics = {
+        version: 1,
+        signature: textMetricsSignature(node),
+        sourceSignature: signature,
+        lineWidths: metrics.map((metric) => metric.width),
+        lineInkBounds: metrics.map((metric) => metric.ink),
+        height: Math.max(
+          0,
+          ...metrics.map(
+            (metric, index) => metric.bottom + index * node.fontSize * node.lineHeight,
+          ),
+        ),
+        fontAvailable: measurement.fontAvailable(node),
+      };
+      if (JSON.stringify(node.textMetrics) !== JSON.stringify(nextMetrics)) {
+        node.textMetrics = nextMetrics;
+        changed = true;
+      }
+      if (node.textMeasurement !== "browser") {
+        node.textMeasurement = "browser";
+        changed = true;
+      }
+    } else if (node.textMeasurement !== undefined || node.textMetrics !== undefined) {
       delete node.textMeasurement;
+      delete node.textMetrics;
       changed = true;
     }
+    responsiveTextStates.set(node, { signature, text: node.text });
   }
   return changed;
 }
 
-export function applyAutoLayout(nodes, containerId) {
+export function applyAutoLayout(nodes, containerId, { textMeasurer } = {}) {
   if (!Array.isArray(nodes) || typeof containerId !== "string") return false;
   const container = nodes.find((node) => node.id === containerId);
   if (!isAutoLayoutContainer(container)) return false;
@@ -859,7 +897,12 @@ export function applyAutoLayout(nodes, containerId) {
         : applyFlexLayout(nodes, container, children)) || changed;
   }
   changed = applyAbsoluteConstraints(nodes, container) || changed;
-  changed = applyResponsiveText(nodes, new Set([container.id])) || changed;
+  const measurement = textLayoutMeasurer(nodes, textMeasurer);
+  try {
+    changed = applyResponsiveText(nodes, new Set([container.id]), measurement) || changed;
+  } finally {
+    if (textMeasurer === undefined) measurement?.close?.();
+  }
   return changed;
 }
 
@@ -883,9 +926,25 @@ function nodeDepth(nodes, node) {
  * children. Auto layout is therefore an explicit geometry owner, not a document-wide normalization
  * pass: manual-layout containers keep the x/y values supplied by people and Agents.
  */
-export function applyAutoLayouts(nodes, containerIds) {
+export function applyAutoLayouts(nodes, containerIds, { textMeasurer } = {}) {
   if (!Array.isArray(nodes) || !containerIds) return false;
   const requested = new Set(containerIds);
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  for (const id of [...requested]) {
+    let node = byId.get(id);
+    const seen = new Set();
+    while (
+      node &&
+      !seen.has(node.id) &&
+      (axisSizing(node, "horizontal") === "hug" || axisSizing(node, "vertical") === "hug")
+    ) {
+      seen.add(node.id);
+      const parent = byId.get(node.parentId);
+      if (!isAutoLayoutFlowChild(node, parent)) break;
+      requested.add(parent.id);
+      node = parent;
+    }
+  }
   for (const containerId of [...requested]) {
     for (const descendantId of descendantIds(nodes, new Set([containerId]))) {
       const descendant = nodes.find((node) => node.id === descendantId);
@@ -895,35 +954,43 @@ export function applyAutoLayouts(nodes, containerIds) {
   const containers = nodes
     .filter((candidate) => requested.has(candidate.id) && isAutoLayoutContainer(candidate))
     .sort((left, right) => nodeDepth(nodes, left) - nodeDepth(nodes, right));
+  if (containers.length === 0) return false;
   const containerIdSet = new Set(containers.map((container) => container.id));
   let changed = false;
-  for (let iteration = 0; iteration < 8; iteration += 1) {
-    let iterationChanged = false;
-    for (const node of [...containers].reverse()) {
-      iterationChanged = applyHugSize(nodes, node) || iterationChanged;
-    }
-    for (const node of containers) {
-      const children = layoutChildren(nodes, node);
-      if (children.length > 0) {
-        iterationChanged =
-          (node.layout === "grid"
-            ? applyGridLayout(nodes, node, children)
-            : applyFlexLayout(nodes, node, children)) || iterationChanged;
+  const measurement = textLayoutMeasurer(nodes, textMeasurer);
+  try {
+    for (let iteration = 0; iteration < 8; iteration += 1) {
+      let iterationChanged = false;
+      for (const node of [...containers].reverse()) {
+        iterationChanged = applyHugSize(nodes, node) || iterationChanged;
       }
-      iterationChanged = applyAbsoluteConstraints(nodes, node) || iterationChanged;
+      for (const node of containers) {
+        const children = layoutChildren(nodes, node);
+        if (children.length > 0) {
+          iterationChanged =
+            (node.layout === "grid"
+              ? applyGridLayout(nodes, node, children)
+              : applyFlexLayout(nodes, node, children)) || iterationChanged;
+        }
+        iterationChanged = applyAbsoluteConstraints(nodes, node) || iterationChanged;
+      }
+      iterationChanged =
+        applyResponsiveText(nodes, containerIdSet, measurement) || iterationChanged;
+      changed = iterationChanged || changed;
+      if (!iterationChanged) break;
     }
-    iterationChanged = applyResponsiveText(nodes, containerIdSet) || iterationChanged;
-    changed = iterationChanged || changed;
-    if (!iterationChanged) break;
+  } finally {
+    if (textMeasurer === undefined) measurement?.close?.();
   }
   return changed;
 }
 
-export function applyAllAutoLayouts(nodes) {
+export function applyAllAutoLayouts(nodes, options) {
   if (!Array.isArray(nodes)) return false;
   return applyAutoLayouts(
     nodes,
     nodes.filter((node) => isAutoLayoutContainer(node)).map((node) => node.id),
+    options,
   );
 }
 

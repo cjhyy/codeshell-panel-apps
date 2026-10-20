@@ -1,6 +1,7 @@
 import { captureHtmlToDesign, hangingBaselineOffset } from "./html-capture.mjs";
 import { convertToDesignDSL, HTML2FIGMA_PROVENANCE } from "./vendor/html2figma-browser.mjs";
 import { designNodeToV3 } from "./design-node-adapter.mjs";
+import { measureFigmaTextDocument } from "./text-metrics.mjs";
 import {
   createHtmlAssetResolver,
   htmlFontResources,
@@ -300,6 +301,115 @@ function alignHtmlTextBaselines(documentValue, browserDocument) {
   for (const page of documentValue.pages) page.children.forEach(visit);
 }
 
+async function enableHtmlTextReflow(documentValue, browserDocument) {
+  const promoted = [];
+  const sourceNodes = new Map(),
+    sourceIds = new Map();
+  const visit = (node, parent) => {
+    if (
+      node.type === "frame" &&
+      node.layout === "none" &&
+      node.children?.length === 1 &&
+      node.children[0].type === "text" &&
+      !node.rotation
+    ) {
+      let element;
+      try {
+        const selector = JSON.parse(node.notes ?? "{}").cssSelector;
+        if (selector) {
+          const matches = browserDocument.querySelectorAll(selector);
+          if (matches.length === 1) element = matches[0];
+        }
+      } catch {
+        // Missing or ambiguous source semantics retain their measured geometry.
+      }
+      const text = node.children[0];
+      const style = element && browserDocument.defaultView.getComputedStyle(element);
+      const source = element?.textContent?.replace(/\s+/gu, " ").trim();
+      if (
+        style &&
+        element.childElementCount === 0 &&
+        style.whiteSpace === "normal" &&
+        style.writingMode === "horizontal-tb" &&
+        (Number.parseFloat(style.textIndent) || 0) === 0 &&
+        ["Top", "Right", "Bottom", "Left"].every(
+          (side) => (Number.parseFloat(style[`border${side}Width`]) || 0) === 0,
+        ) &&
+        source &&
+        source.length <= 4000 &&
+        source === (text.textSource ?? text.text).replace(/\s+/gu, " ").trim() &&
+        !text.rotation
+      ) {
+        const top = node.paddingTop ?? node.padding ?? 0;
+        const left = node.paddingLeft ?? node.padding ?? 0;
+        const right = node.paddingRight ?? node.padding ?? 0;
+        const baseline = text.y - node.y - top;
+        const lineHeight = Number.parseFloat(style.lineHeight);
+        if (
+          Math.abs(baseline) <= 100 &&
+          Number.isFinite(lineHeight) &&
+          lineHeight > 0 &&
+          lineHeight / text.fontSize >= 0.7 &&
+          lineHeight / text.fontSize <= 3
+        ) {
+          let cssWidth = "",
+            cssHeight = "";
+          try {
+            cssWidth = element.computedStyleMap?.().get("width")?.toString() ?? "";
+            cssHeight = element.computedStyleMap?.().get("height")?.toString() ?? "";
+          } catch {
+            // Engines without Typed OM keep the captured box sizing.
+          }
+          if (node.layoutSizingVertical !== "fill" && cssHeight === "auto")
+            node.layoutSizingVertical = "hug";
+          if (
+            node.layoutSizingHorizontal !== "fill" &&
+            ["auto", "min-content", "max-content", "fit-content"].includes(cssWidth) &&
+            (parent?.layout === "horizontal" || ["inline", "inline-block"].includes(style.display))
+          )
+            node.layoutSizingHorizontal = "hug";
+          Object.assign(node, {
+            layout: "vertical",
+            layoutWrap: "none",
+            gap: 0,
+            rowGap: 0,
+            columnGap: 0,
+            alignItems: "start",
+            justifyContent: "start",
+          });
+          text.x = node.x + left;
+          text.width =
+            node.layoutSizingHorizontal === "hug"
+              ? text.width
+              : Math.max(1, node.width - left - right);
+          text.lineHeight = lineHeight / text.fontSize;
+          text.height = lineHeight * text.text.split("\n").length;
+          text.textSource = source;
+          text.textFlow = "wrap";
+          text.textFlowWidth = text.width;
+          text.layoutBaselineOffset = Math.round(baseline * 10000) / 10000;
+          text.layoutSizingHorizontal = node.layoutSizingHorizontal === "hug" ? "hug" : "fill";
+          text.layoutSizingVertical = "hug";
+          text.layoutAlignSelf = "start";
+          if (node.layoutSizingHorizontal === "hug") {
+            delete text.textFlow;
+            sourceNodes.set(text.id, { style: { textAutoResize: "WIDTH_AND_HEIGHT" } });
+            sourceIds.set(text.id, text.id);
+          }
+          promoted.push(text);
+        }
+      }
+    }
+    for (const child of node.children ?? []) visit(child, node);
+  };
+  for (const page of documentValue.pages) page.children.forEach((node) => visit(node, null));
+  if (promoted.length)
+    await measureFigmaTextDocument(
+      { nodes: promoted },
+      { browserDocument, sourceNodes, sourceIds },
+    );
+}
+
 export async function captureWorkspaceHtmlResult({
   sourcePath,
   html,
@@ -397,6 +507,7 @@ export async function captureWorkspaceHtmlResult({
     if (!tree) throw new Error("html2figma 没有生成可见 DesignNode");
     const result = await designNodeToV3(tree, options);
     alignHtmlTextBaselines(result.document, frameDocument);
+    await enableHtmlTextReflow(result.document, frameDocument);
     result.report = {
       ...result.report,
       engine,

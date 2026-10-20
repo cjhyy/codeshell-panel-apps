@@ -13,19 +13,31 @@ export function textMetricsSignature(node) {
   ]);
 }
 
+export function textSourceMetricsSignature(node) {
+  return textMetricsSignature({ ...node, text: node.textSource ?? node.text });
+}
+
 export function validTextMetrics(metrics) {
   return Boolean(
     metrics &&
     typeof metrics === "object" &&
     !Array.isArray(metrics) &&
     Object.keys(metrics).every((key) =>
-      ["version", "signature", "lineWidths", "lineInkBounds", "height", "fontAvailable"].includes(
-        key,
-      ),
+      [
+        "version",
+        "signature",
+        "sourceSignature",
+        "lineWidths",
+        "lineInkBounds",
+        "height",
+        "fontAvailable",
+      ].includes(key),
     ) &&
     metrics.version === 1 &&
     typeof metrics.signature === "string" &&
     metrics.signature.length <= 8500 &&
+    (metrics.sourceSignature === undefined ||
+      (typeof metrics.sourceSignature === "string" && metrics.sourceSignature.length <= 8500)) &&
     Array.isArray(metrics.lineWidths) &&
     metrics.lineWidths.length >= 1 &&
     metrics.lineWidths.length <= 4001 &&
@@ -86,6 +98,8 @@ export function measuredTextInkBounds(node) {
 export function currentTextMetrics(node) {
   return validTextMetrics(node.textMetrics) &&
     node.textMetrics.signature === textMetricsSignature(node) &&
+    (node.textMetrics.sourceSignature === undefined ||
+      node.textMetrics.sourceSignature === textSourceMetricsSignature(node)) &&
     node.textMetrics.lineWidths.length === String(node.text).split("\n").length
     ? node.textMetrics
     : null;
@@ -93,7 +107,8 @@ export function currentTextMetrics(node) {
 
 const round = (value) => Math.round(value * 10000) / 10000;
 
-function createBrowserMeasurer(documentValue) {
+export function createBrowserTextMeasurer(documentValue = globalThis.document) {
+  if (!documentValue?.body || !documentValue.createElementNS) return null;
   const svg = documentValue.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute(
     "style",
@@ -174,7 +189,7 @@ function createBrowserMeasurer(documentValue) {
 }
 
 // Preserve every original character; line breaks are layout, and textSource retains the source.
-function measuredWrap(source, width, measure) {
+export function measuredWrap(source, width, measure) {
   return source.split("\n").flatMap((paragraph) => {
     if (!paragraph || measure(paragraph).width <= width + 0.01) return [paragraph];
     const lines = [];
@@ -210,7 +225,7 @@ export async function measureFigmaTextDocument(
   if (!measurer && (!browserDocument?.body || !browserDocument.createElementNS))
     return { measured: 0, unavailableFonts: [], geometryChangedIds: [] };
   await browserDocument?.fonts?.ready;
-  const measurement = measurer ?? createBrowserMeasurer(browserDocument);
+  const measurement = measurer ?? createBrowserTextMeasurer(browserDocument);
   const warnings = new Set(),
     changed = [],
     pages = documentValue.pages ?? [documentValue];
@@ -262,6 +277,7 @@ export async function measureFigmaTextDocument(
         node.textMetrics = {
           version: 1,
           signature: textMetricsSignature(node),
+          sourceSignature: textSourceMetricsSignature(node),
           lineWidths: metrics.map((metric) => metric.width),
           lineInkBounds: metrics.map((metric) => metric.ink),
           height: round(height),

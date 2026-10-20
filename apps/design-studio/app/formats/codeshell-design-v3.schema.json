@@ -326,6 +326,7 @@
           "properties": {
             "version": { "const": 1 },
             "signature": { "type": "string", "maxLength": 8500 },
+            "sourceSignature": { "type": "string", "maxLength": 8500 },
             "lineWidths": {
               "type": "array",
               "minItems": 1,
