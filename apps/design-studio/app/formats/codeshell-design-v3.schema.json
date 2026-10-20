@@ -295,6 +295,7 @@
         "opacity": { "type": "number", "minimum": 0, "maximum": 1 },
         "rotation": { "type": "number", "minimum": -360, "maximum": 360 },
         "cornerRadius": { "type": "number", "minimum": 0, "maximum": 9999 },
+        "cornerRadii": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "type": "number", "minimum": 0, "maximum": 9999 } },
         "visible": { "type": "boolean" },
         "locked": { "type": "boolean" },
         "clipContent": { "type": "boolean" },
@@ -414,6 +415,7 @@
         }
       },
       "allOf": [
+        { "if": { "required": ["cornerRadii"] }, "then": { "properties": { "type": { "enum": ["frame", "rectangle", "component", "image"] } } } },
         {
           "if": {
             "properties": {

@@ -545,3 +545,68 @@ test("integer pans retain offscreen device pictures and return trips do not rebu
   assert.equal(returned.rasterTextCacheMisses, entered.rasterTextCacheMisses);
   assert.equal(returned.tileBuilds, entered.tileBuilds);
 });
+
+test("native GPU per-corner shapes, ancestor clips and image clips retain asymmetric geometry and invalidate cached pictures", async (t) => {
+  const cached = await harness(t, { width: 600, height: 240 }),
+    direct = await harness(t, { tileCacheEnabled: false, width: 600, height: 240 });
+  const design = {
+    canvas: { width: 600, height: 240, background: "#ffffff" }, resources: [], nodes: [
+      base("shape", "rectangle", 40, 40, 100, 100, { fill: "#2563eb", cornerRadius: 40, cornerRadii: [40, 0, 24, 8] }),
+      base("clip", "frame", 200, 40, 100, 100, { fill: "transparent", clipContent: true, cornerRadius: 40, cornerRadii: [40, 0, 24, 8] }),
+      base("child", "rectangle", 180, 20, 140, 140, { parentId: "clip", fill: "#f97316" }),
+      base("image", "image", 360, 40, 100, 100, { fill: "transparent", imageRef: "pixel", objectFit: "fill", cornerRadius: 40, cornerRadii: [40, 0, 24, 8] }),
+    ],
+  };
+  const png = new PNG({ width: 1, height: 1 }); png.data.set([255, 0, 255, 255]);
+  const bytes = [...PNG.sync.write(png)];
+  for (const page of [cached, direct]) await page.evaluate(async ({ design, bytes }) => {
+    window.design = design;
+    window.resources = new Map([["pixel", { bytes: new Uint8Array(bytes), mimeType: "image/png", descriptor: { id: "pixel", kind: "image", mime: "image/png" } }]]);
+    await renderer.setScene(design, { resources });
+  }, { design, bytes });
+  for (const zoom of [1, 2]) {
+    const viewport = { pan: { x: 0, y: 0 }, zoom };
+    const actual = await draw(cached, viewport), expected = await draw(direct, viewport);
+    t.diagnostic(`cached/direct asymmetric exact pixels at ${zoom}x: ${actual.data.equals(expected.data)}`);
+    if (zoom === 1) {
+      const reference = await cached.context().newPage();
+      const dataUrl = `data:image/png;base64,${Buffer.from(bytes).toString("base64")}`;
+      await reference.setContent(`<style>body{margin:0;background:white}.box{position:absolute;top:40px;width:100px;height:100px;border-radius:40px 0 24px 8px}#shape{left:40px;background:#2563eb}#clip{left:200px;overflow:hidden}#child{position:absolute;left:-20px;top:-20px;width:140px;height:140px;background:#f97316}img{left:360px}</style><div id="shape" class="box"></div><div id="clip" class="box"><div id="child"></div></div><img class="box" src="${dataUrl}">`);
+      const css = PNG.sync.read(await reference.screenshot());
+      let changed = 0, max = 0, total = 0;
+      for (let i = 0; i < actual.data.length; i += 4) {
+        let differs = false;
+        for (let channel = 0; channel < 4; channel++) {
+          const delta = Math.abs(actual.data[i + channel] - css.data[i + channel]);
+          differs ||= delta > 0; max = Math.max(max, delta); total += delta;
+        }
+        if (differs) changed++;
+      }
+      t.diagnostic(`Native WebGL2 vs Chromium CSS exact pixels: ${changed}/${actual.width * actual.height}, max channel ${max}, mean RGBA ${total / actual.data.length}`);
+      await reference.close();
+    }
+
+    if (zoom === 1) for (const [x, color] of [[40, [37, 99, 235]], [200, [249, 115, 22]], [360, [255, 0, 255]]]) {
+      assert.deepEqual(pixel(expected, x + 1, 41), [255, 255, 255]);
+      assert.deepEqual(pixel(expected, x + 98, 41), color);
+      assert.deepEqual(pixel(actual, x + 1, 41), [255, 255, 255], "rounded top-left excludes ink");
+      assert.deepEqual(pixel(actual, x + 98, 41), color, "square top-right retains ink");
+      assert.deepEqual(pixel(actual, x + 50, 90), color, "interior retains ink");
+      assert.deepEqual(pixel(actual, x + 98, 138), [255, 255, 255], "bottom-right independent radius excludes ink");
+    }
+  }
+  const before = await cached.evaluate(() => renderer.stats());
+  for (const page of [cached, direct]) await page.evaluate(async () => {
+    const next = structuredClone(design); next.nodes[0].cornerRadii = [0, 40, 0, 24];
+    await renderer.setScene(next, { resources });
+  });
+  const viewport = { pan: { x: 0, y: 0 }, zoom: 1 };
+  const after = await draw(cached, viewport), control = await draw(direct, viewport);
+  t.diagnostic(`edited cached/direct asymmetric exact pixels: ${after.data.equals(control.data)}`);
+  assert.deepEqual(pixel(control, 41, 41), [37, 99, 235]);
+  assert.deepEqual(pixel(control, 138, 41), [255, 255, 255]);
+  assert.deepEqual(pixel(after, 41, 41), [37, 99, 235]);
+  assert.deepEqual(pixel(after, 138, 41), [255, 255, 255]);
+  const stats = await cached.evaluate(() => renderer.stats());
+  assert.equal(stats.nodePictureBuilds, before.nodePictureBuilds + 1);
+});

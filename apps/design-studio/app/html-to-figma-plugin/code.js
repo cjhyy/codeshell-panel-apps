@@ -3798,6 +3798,30 @@
     return fonts;
   }
 
+  // apps/design-studio/app/corner-radii.mjs
+  var CORNER_RADIUS_PROPERTIES = Object.freeze([
+    "border-top-left-radius",
+    "border-top-right-radius",
+    "border-bottom-right-radius",
+    "border-bottom-left-radius"
+  ]);
+  function normalizeCornerRadii(value) {
+    if (!Array.isArray(value) || value.length !== 4 || Array.from(value).some((radius) => !Number.isFinite(radius) || radius < 0 || radius > 9999))
+      throw new Error("cornerRadii \u5FC5\u987B\u662F\u56DB\u4E2A 0\u20139999 \u7684\u6709\u9650\u5706\u5F62\u50CF\u7D20\u534A\u5F84\uFF08\u5DE6\u4E0A\u3001\u53F3\u4E0A\u3001\u53F3\u4E0B\u3001\u5DE6\u4E0B\uFF09");
+    return [...value];
+  }
+  function cssCornerRadii(values) {
+    return normalizeCornerRadii(values.map((value) => {
+      const parts = String(value).trim().split(/\s+/u);
+      if (parts.length < 1 || parts.length > 2 || parts.some((part) => !/^(?:(?:\d+(?:\.\d+)?|\.\d+)px|0(?:\.0+)?)$/u.test(part)))
+        throw new Error("CSS \u5706\u89D2\u53EA\u652F\u6301\u5706\u5F62 px \u534A\u5F84\uFF1B\u767E\u5206\u6BD4\u3001\u692D\u5706\u548C\u590D\u6742\u8868\u8FBE\u5F0F\u6682\u4E0D\u80FD\u4FDD\u7559");
+      const radii = parts.map(Number.parseFloat);
+      if (radii.length === 2 && radii[0] !== radii[1])
+        throw new Error("CSS \u692D\u5706\u5706\u89D2\u6682\u4E0D\u80FD\u4FDD\u7559\uFF1B\u8BF7\u4F7F\u7528\u76F8\u7B49\u7684\u6C34\u5E73\u548C\u5782\u76F4 px \u534A\u5F84");
+      return radii[0];
+    }));
+  }
+
   // third-party/html2figma-plugin/upstream/packages/adapter/figma/layoutMapper.ts
   function mapLayout(layout) {
     if (layout.hasFloatChildren) {
@@ -5450,6 +5474,15 @@
         reservedIds.add(id);
       }
       assignedIds.add(node.id);
+      if (node.nodeType && node.cssBorderRadii) {
+        try {
+          cssCornerRadii(node.cssBorderRadii);
+        } catch (error) {
+          node.border ?? (node.border = {});
+          node.border.radius = { topLeft: 0, topRight: 0, bottomRight: 0, bottomLeft: 0 };
+          warnings.push(`\u5706\u89D2\u672A\u5BFC\u5165\uFF1A${error.message}\u3002`);
+        }
+      }
       if (node.nodeType && (node.cssBackground?.["background-image"]?.includes("gradient(") || node.background?.layers?.some((layer) => layer.type?.endsWith("gradient")))) {
         node.background ?? (node.background = { layers: [] });
         node.background.layers = (node.background.layers ?? []).filter((layer) => !layer.type?.endsWith("gradient"));

@@ -1,3 +1,4 @@
+import { effectiveCornerRadii } from "../corner-radii.mjs";
 /* Retained CanvasKit renderer. The document and editing state remain owned by Design Studio. */
 import { effectiveDesignNodeOpacity, isDesignNodeVisible } from "../document.mjs";
 import { designFillPaints, gradientMatrix } from "../paint.mjs";
@@ -158,14 +159,17 @@ function rotateChain(canvas, chain, inverse = false) {
   }
 }
 
+function roundedRect(CK, node) {
+  return [...rect(CK, node), ...effectiveCornerRadii(node).flatMap((radius) => [radius, radius])];
+}
+
 function clipAncestors(CK, canvas, chain) {
   const prefix = [];
   for (const node of chain) {
     prefix.push(node);
     if (!["frame", "component"].includes(node.type) || !node.clipContent) continue;
     rotateChain(canvas, prefix);
-    const radius = Math.min(node.cornerRadius || 0, node.width / 2, node.height / 2);
-    canvas.clipRRect(CK.RRectXY(rect(CK, node), radius, radius), CK.ClipOp.Intersect, true);
+    canvas.clipRRect(roundedRect(CK, node), CK.ClipOp.Intersect, true);
     rotateChain(canvas, prefix, true);
   }
 }
@@ -173,8 +177,7 @@ function clipAncestors(CK, canvas, chain) {
 function drawShape(CK, canvas, node, paint) {
   if (node.type === "ellipse") canvas.drawOval(rect(CK, node), paint);
   else {
-    const radius = Math.min(node.cornerRadius || 0, node.width / 2, node.height / 2);
-    canvas.drawRRect(CK.RRectXY(rect(CK, node), radius, radius), paint);
+    canvas.drawRRect(roundedRect(CK, node), paint);
   }
 }
 
@@ -194,6 +197,8 @@ function drawMissing(CK, canvas, node) {
 }
 
 function drawImage(CK, canvas, node, image) {
+  canvas.save();
+  canvas.clipRRect(roundedRect(CK, node), CK.ClipOp.Intersect, true);
   const width = image.width(),
     height = image.height();
   let source = CK.XYWHRect(0, 0, width, height),
@@ -223,6 +228,7 @@ function drawImage(CK, canvas, node, image) {
     paint,
   );
   paint.delete();
+  canvas.restore();
 }
 
 /** resources are decoded bytes, never screenshots of the scene. Extra fonts are optional real font URLs. */

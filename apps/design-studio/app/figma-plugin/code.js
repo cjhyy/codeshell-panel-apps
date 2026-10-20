@@ -173,6 +173,11 @@
         typeof node.locked !== "boolean"
       )
         throw new Error("图层外观无效。");
+      if (node.cornerRadii !== undefined &&
+          (!Array.isArray(node.cornerRadii) || node.cornerRadii.length !== 4 ||
+           !["frame", "rectangle", "component", "image"].includes(node.type) ||
+           Array.from(node.cornerRadii).some((radius) => !finite(radius) || radius < 0 || radius > 9999)))
+        throw new Error("独立圆角必须是四个 0–9999 的有限半径。");
       if (node.fillPaints !== undefined) {
         CodeShellFigmaPaint.normalizeDesignPaints(node.fillPaints);
         if (["group", "image"].includes(node.type)) throw new Error("该图层不支持独立填充绘制。");
@@ -466,7 +471,7 @@
       node.strokeWeight = source.strokeWidth;
       node.strokeAlign = "CENTER";
       if (node.type === "FRAME" || node.type === "RECTANGLE")
-        node.cornerRadius = source.cornerRadius;
+        setCorners(node, source);
       node.opacity = source.opacity;
       node.visible = source.visible;
       if (node.type === "FRAME") {
@@ -562,6 +567,13 @@
     }
   }
 
+  function setCorners(node, source) {
+    node.cornerRadius = source.cornerRadius;
+    if (source.cornerRadii) {
+      [node.topLeftRadius, node.topRightRadius, node.bottomRightRadius, node.bottomLeftRadius] = source.cornerRadii;
+    }
+  }
+
   const PATCH_KEYS = new Set([
     "name",
     "notes",
@@ -576,6 +588,7 @@
     "strokeWidth",
     "opacity",
     "cornerRadius",
+    "cornerRadii",
     "visible",
     "locked",
     "shadow",
@@ -672,6 +685,21 @@
           )
         : entry,
     );
+  const restCorners = (node) => ({
+    radii: node.rectangleCornerRadii ?? Array(4).fill(node.cornerRadius ?? 0),
+    smoothing: node.cornerSmoothing ?? 0,
+  });
+  function comparableRest(node) {
+    if (!object(node)) return node;
+    const copy = { ...node };
+    if (["RECTANGLE", "FRAME", "COMPONENT", "INSTANCE", "COMPONENT_SET", "SECTION"].includes(node.type)) {
+      copy.rectangleCornerRadii = restCorners(node).radii;
+      copy.cornerSmoothing = node.cornerSmoothing ?? 0;
+      delete copy.cornerRadius;
+    }
+    if (Array.isArray(node.children)) copy.children = node.children.map(comparableRest);
+    return copy;
+  }
   const restKeys = (key) =>
     GEOMETRY_KEYS.has(key)
       ? ["absoluteBoundingBox", "size", "relativeTransform", "rotation"]
@@ -701,6 +729,7 @@
               stroke: ["strokes"],
               strokeWidth: ["strokeWeight"],
               cornerRadius: ["cornerRadius", "rectangleCornerRadii", "cornerSmoothing"],
+              cornerRadii: ["cornerRadius", "rectangleCornerRadii", "cornerSmoothing"],
               shadow: ["effects"],
               clipContent: ["clipsContent"],
               constraintHorizontal: ["constraints"],
@@ -713,6 +742,13 @@
   // JSON_REST_V1 can lag the native Grid API. Read actual live values so the
   // source record and later conflict checks retain the same native semantics.
   function preserveNativeGrid(raw, node) {
+    const radii = [node.topLeftRadius, node.topRightRadius, node.bottomRightRadius, node.bottomLeftRadius];
+    if (radii.every((value) => finite(value))) {
+      raw.rectangleCornerRadii = radii;
+      if (radii.every((value) => value === radii[0])) raw.cornerRadius = radii[0];
+      else delete raw.cornerRadius;
+    }
+
     const keys = node.layoutMode === "GRID"
       ? [
           "layoutMode", "layoutSizingHorizontal", "layoutSizingVertical",
@@ -963,10 +999,14 @@
               operation.after.siblingIndex >= 10000)
           )
             throw new Error("图层顺序无效。");
-          for (const key of operation.changed)
-            for (const property of restKeys(key))
+          for (const key of operation.changed) {
+            if (key === "cornerRadius" || key === "cornerRadii") {
+              if (canonical(restCorners(operation.before)) !== canonical(restCorners(raw)))
+                conflicts.push(`${operation.sourceId} · 圆角已在 Figma 中变化。`);
+            } else for (const property of restKeys(key))
               if (canonical(operation.before[property]) !== canonical(raw[property]))
                 conflicts.push(`${operation.sourceId} · ${property} 已在 Figma 中变化。`);
+          }
           if (operation.changed.includes("parentId") || operation.changed.includes("pageId")) {
             const entry = indexes.mapping.get(operation.designId);
             const parentId =
@@ -998,10 +1038,10 @@
           if (operation.changed.some((key) => FONT_KEYS.has(key)) && target.type !== "TEXT")
             throw new Error("此来源图层不是可编辑文字；请先在 Figma 中编辑复杂文字。");
           if (
-            operation.changed.includes("cornerRadius") &&
+            operation.changed.some((key) => ["cornerRadius", "cornerRadii"].includes(key)) &&
             !["RECTANGLE", "FRAME", "COMPONENT", "INSTANCE", "COMPONENT_SET"].includes(target.type)
           )
-            throw new Error("此来源图层不支持统一圆角修改。");
+            throw new Error("此来源图层不支持圆角修改。");
           if (
             target.type === "TEXT" &&
             operation.changed.some(
@@ -1044,7 +1084,7 @@
             indexes.pageMappings.get(operation.designId)?.partial
           )
             throw new Error("选区来源没有完整页面，不能删除原页面。");
-          if (canonical(operation.before) !== canonical(raw))
+          if (canonical(comparableRest(operation.before)) !== canonical(comparableRest(raw)))
             conflicts.push(`${operation.sourceId} · 删除目标或其子树已变化。`);
           if (
             (operation.op === "delete-page" && target.type !== "PAGE") ||
@@ -1380,8 +1420,12 @@
               [d, e, centerY - (d * width) / 2 - (e * height) / 2],
             ];
         }
+        if (changed.has("cornerRadius") || changed.has("cornerRadii")) {
+          mutated = true;
+          setCorners(node, after);
+        }
         for (const key of operation.changed) {
-          if (GEOMETRY_KEYS.has(key)) continue;
+          if (GEOMETRY_KEYS.has(key) || key === "cornerRadius" || key === "cornerRadii") continue;
           if (key === "opacity") {
             mutated = true;
             node.opacity =

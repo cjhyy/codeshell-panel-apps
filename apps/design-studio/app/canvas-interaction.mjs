@@ -1,3 +1,4 @@
+import { effectiveCornerRadii, insideRoundedRect } from "./corner-radii.mjs";
 import { isDesignNodeVisible } from "./document.mjs";
 import { pointToNodeSpace, visualSelectionBounds } from "./geometry.mjs";
 
@@ -22,11 +23,7 @@ function inside(node, point, ellipse = false) {
     h = Math.max(1, node.height);
   if (x < 0 || y < 0 || x > w || y > h) return false;
   if (ellipse) return ((x - w / 2) / (w / 2)) ** 2 + ((y - h / 2) / (h / 2)) ** 2 <= 1;
-  const radius = Math.min(node.cornerRadius || 0, w / 2, h / 2);
-  if (!radius) return true;
-  const dx = Math.max(radius - x, x - (w - radius), 0);
-  const dy = Math.max(radius - y, y - (h - radius), 0);
-  return dx * dx + dy * dy <= radius * radius;
+  return insideRoundedRect(node, point);
 }
 
 /** Hit the actual document geometry, in front-to-back order, with ancestor clips. */
@@ -210,7 +207,7 @@ export function drawCanvasInteraction(
             parent.y,
             parent.width,
             parent.height,
-            Math.max(0, Math.min(parent.cornerRadius || 0, parent.width / 2, parent.height / 2)),
+            effectiveCornerRadii(parent),
           );
           ctx.clip();
         }

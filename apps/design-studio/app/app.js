@@ -5754,6 +5754,7 @@ bindColorTextInput(
 );
 bindPropertyInput(propertyInputs.cornerRadius, (node, value) => {
   node.cornerRadius = clamp(Number(value) || 0, 0, 9999);
+  delete node.cornerRadii;
 });
 bindPropertyInput(propertyInputs.strokeWidth, (node, value) => {
   node.strokeWidth = clamp(finiteOr(value, 0), 0, 100);
@@ -7360,6 +7361,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "opacity",
   "rotation",
   "cornerRadius",
+  "cornerRadii",
   "visible",
   "locked",
   "clipContent",

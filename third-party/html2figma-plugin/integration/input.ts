@@ -1,3 +1,4 @@
+import { cssCornerRadii } from "../../../apps/design-studio/app/corner-radii.mjs";
 import { FigmaAdapter } from "../upstream/packages/adapter/figma/FigmaAdapter";
 import { inertDesignSvg } from "../../../apps/design-studio/app/design-node-adapter.mjs";
 import { cssLinearBackgroundPaints } from "../../../apps/design-studio/app/css-linear-gradient.mjs";
@@ -63,6 +64,14 @@ export function prepareDesignInput(input: any) {
       reservedIds.add(id);
     }
     assignedIds.add(node.id);
+    if (node.nodeType && node.cssBorderRadii) {
+      try { cssCornerRadii(node.cssBorderRadii); }
+      catch (error: any) {
+        node.border ??= {};
+        node.border.radius = { topLeft: 0, topRight: 0, bottomRight: 0, bottomLeft: 0 };
+        warnings.push(`圆角未导入：${error.message}。`);
+      }
+    }
     if (node.nodeType && (node.cssBackground?.["background-image"]?.includes("gradient(") ||
         node.background?.layers?.some((layer: any) => layer.type?.endsWith("gradient")))) {
       // Never pass the unit-losing upstream gradient parse into its Figma mapper.

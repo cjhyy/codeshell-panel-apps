@@ -1,3 +1,4 @@
+import { normalizeCornerRadii, effectiveCornerRadii } from "./corner-radii.mjs";
 import { normalizeGridTracks, nativeGridPlan, GRID_CHILD_FIELDS } from "./grid.mjs";
 import { figmaFillPaints, representativeDesignFill } from "./paint.mjs";
 /* Deliberately bounded Figma JSON bridge. Figma binary files are not supported. */
@@ -552,6 +553,7 @@ function text(source, node, report) {
   node.textDecoration =
     { UNDERLINE: "underline", STRIKETHROUGH: "line-through" }[style.textDecoration] ?? "none";
   node.cornerRadius = 0;
+  delete node.cornerRadii;
   if (node.text.trim()) {
     node.textSource = node.text;
     if (style.textAutoResize !== "WIDTH_AND_HEIGHT") node.textFlow = "wrap";
@@ -748,6 +750,15 @@ function importFigmaJsonWithReport(
       visible: source.visible !== false,
       locked: source.locked === true,
     };
+    if (source.rectangleCornerRadii !== undefined && ["frame", "rectangle", "component", "image"].includes(type)) {
+      try {
+        const radii = normalizeCornerRadii(source.rectangleCornerRadii);
+        node.cornerRadius = radii[0];
+        if (radii.some((value) => value !== radii[0])) node.cornerRadii = radii;
+      } catch (error) {
+        report.warn("corner-shape", source, error.message);
+      }
+    }
     if (
       fillPaints &&
       (fillPaints.length > 1 ||
@@ -796,11 +807,8 @@ function importFigmaJsonWithReport(
       );
     if (source.type === "SECTION")
       report.warn("section-as-frame", source, "Section 已转换为普通 Frame。");
-    if (
-      source.rectangleCornerRadii?.some((value) => value !== source.rectangleCornerRadii[0]) ||
-      source.cornerSmoothing
-    )
-      report.warn("corner-shape", source, "独立圆角和圆角平滑暂按统一圆角导入。");
+    if (source.cornerSmoothing)
+      report.warn("corner-shape", source, "圆角平滑暂不能保留；已保留圆形圆角半径。");
     if (source.isMask)
       report.warn("unsupported-mask", source, "遮罩关系未保留。请检查相邻图层显示。 ");
     if (source.blendMode && !["NORMAL", "PASS_THROUGH"].includes(source.blendMode))
@@ -892,6 +900,7 @@ function importFigmaJsonWithReport(
           opacity: imagePaint.opacity ?? 1,
           rotation: 0,
           cornerRadius: node.cornerRadius,
+          ...(node.cornerRadii ? { cornerRadii: [...node.cornerRadii] } : {}),
           visible: true,
           locked: false,
           layoutPositioning: "absolute",
@@ -1112,6 +1121,8 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
         node,
         "此容器将在 Figma 中创建为透明编组 Frame 或普通 Frame。 ",
       );
+    if (node.cornerRadii && effectiveCornerRadii(node).some((radius) => radius > Math.min(node.width, node.height) / 2))
+      report.warn("corner-overlap-export", node, "CSS 大圆角使用共同缩放；Figma 的边缘半径钳制可能不同，请核对原生外观。原始半径保持可编辑。");
     if (node.layout === "grid") {
       try {
         nativeGridPlan(node);

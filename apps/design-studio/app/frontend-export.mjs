@@ -311,7 +311,9 @@ function paintDeclarations(node) {
   if (Number(node.strokeWidth) > 0 && cssColor(node.stroke) !== "transparent") {
     declarations.push(["border", `${cssNumber(node.strokeWidth)} solid ${cssColor(node.stroke)}`]);
   }
-  if (Number(node.cornerRadius) > 0) {
+  if (node.cornerRadii) {
+    declarations.push(["border-radius", node.cornerRadii.map(cssNumber).join(" ")]);
+  } else if (Number(node.cornerRadius) > 0) {
     declarations.push(["border-radius", cssNumber(node.cornerRadius)]);
   }
   if (node.type === "ellipse") declarations.push(["border-radius", "50%"]);

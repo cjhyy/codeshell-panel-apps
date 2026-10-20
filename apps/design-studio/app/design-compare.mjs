@@ -113,6 +113,7 @@ function styleDifferences(expected, actual) {
     "stroke",
     "strokeWidth",
     "cornerRadius",
+    "cornerRadii",
     "opacity",
     "fontFamily",
     "fontSize",

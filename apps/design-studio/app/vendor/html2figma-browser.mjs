@@ -5515,11 +5515,14 @@ var html2figmaCore = (() => {
     const svgResources = /* @__PURE__ */ new Map();
     const backgrounds = /* @__PURE__ */ new Map();
     const gridSources = /* @__PURE__ */ new Set();
+    const corners = /* @__PURE__ */ new Map();
     const captureSvg = (node) => {
       if (node.metadata?.semantic && ["grid", "inline-grid"].includes(node.computedStyle?.display ?? ""))
         gridSources.add(node.metadata.semantic);
       if (node.tag === "svg" && node.metadata?.semantic && node.domNode instanceof realm.Element)
         svgResources.set(node.metadata.semantic, captureStandaloneSvg(node.domNode));
+      if (node.nodeType === "element" && node.metadata?.semantic && node.computedStyle)
+        corners.set(node.metadata.semantic, ["border-top-left-radius", "border-top-right-radius", "border-bottom-right-radius", "border-bottom-left-radius"].map((property) => node.computedStyle.getPropertyValue(property)));
       if (node.nodeType === "element" && node.metadata?.semantic && node.computedStyle?.getPropertyValue("background-image").includes("gradient(")) {
         const background = {};
         for (const property of [
@@ -5548,6 +5551,8 @@ var html2figmaCore = (() => {
       if (cssLayout && Object.keys(cssLayout).length > 0) node.cssLayout = cssLayout;
       if (!options.preserveGrid && node.nodeType === "container" && node.semantic && gridSources.has(node.semantic))
         node.cssLayout = { ...node.cssLayout, "--codeshell-grid-legacy": "synthetic" };
+      if (node.nodeType !== "text" && node.semantic && corners.has(node.semantic))
+        node.cssBorderRadii = corners.get(node.semantic);
       if (node.nodeType !== "text" && node.semantic && backgrounds.has(node.semantic))
         node.cssBackground = backgrounds.get(node.semantic);
       if (node.nodeType === "svg" && node.semantic && svgResources.has(node.semantic))

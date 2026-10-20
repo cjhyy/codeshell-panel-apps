@@ -1,3 +1,4 @@
+import { effectiveCornerRadii, insideRoundedRect, roundedRectOutline } from "./corner-radii.mjs";
 import { hasVisibleDesignFill, sampleDesignFill } from "./paint.mjs";
 /* Accessibility and layout audit engine for the Design Studio Panel App. */
 import {
@@ -100,7 +101,7 @@ function isIntentionalClippedEdgeSurface(node, ancestor) {
   const radius =
     ancestor.type === "ellipse"
       ? Math.min(ancestor.width, ancestor.height) / 2
-      : Math.min(ancestor.cornerRadius ?? 0, ancestor.width / 2, ancestor.height / 2);
+      : Math.max(...effectiveCornerRadii(ancestor));
   const touchesEdge =
     Math.abs(node.x - ancestor.x) <= 0.5 ||
     Math.abs(node.y - ancestor.y) <= 0.5 ||
@@ -185,35 +186,7 @@ function nodeOutlinePointsInTree(nodes, node, nodeIndex) {
       );
     }
   } else {
-    const radius = Math.min(node.cornerRadius ?? 0, node.width / 2, node.height / 2);
-    if (radius <= 0 || ["group", "instance"].includes(node.type)) {
-      points.push(
-        { x: node.x, y: node.y },
-        { x: node.x + node.width, y: node.y },
-        { x: node.x + node.width, y: node.y + node.height },
-        { x: node.x, y: node.y + node.height },
-      );
-    } else {
-      const corners = [
-        { x: node.x + radius, y: node.y + radius, start: Math.PI },
-        { x: node.x + node.width - radius, y: node.y + radius, start: -Math.PI / 2 },
-        {
-          x: node.x + node.width - radius,
-          y: node.y + node.height - radius,
-          start: 0,
-        },
-        { x: node.x + radius, y: node.y + node.height - radius, start: Math.PI / 2 },
-      ];
-      for (const corner of corners) {
-        for (let index = 0; index <= 8; index += 1) {
-          const angle = corner.start + (index / 8) * (Math.PI / 2);
-          points.push({
-            x: corner.x + Math.cos(angle) * radius,
-            y: corner.y + Math.sin(angle) * radius,
-          });
-        }
-      }
-    }
+    points.push(...roundedRectOutline(node));
   }
   return points.map((point) => pointFromNodeSpace(nodes, node, point, nodeIndex)).filter(Boolean);
 }
@@ -285,21 +258,7 @@ function pointInNodeShape(nodes, node, point, nodeIndex, epsilon = 0) {
     return false;
   }
   if (node.type !== "ellipse") {
-    const radius = Math.min(node.cornerRadius ?? 0, node.width / 2, node.height / 2);
-    if (radius <= 0) return true;
-    const insetLeft = node.x + radius;
-    const insetRight = node.x + node.width - radius;
-    const insetTop = node.y + radius;
-    const insetBottom = node.y + node.height - radius;
-    if (
-      (local.x >= insetLeft && local.x <= insetRight) ||
-      (local.y >= insetTop && local.y <= insetBottom)
-    ) {
-      return true;
-    }
-    const cornerX = local.x < insetLeft ? insetLeft : insetRight;
-    const cornerY = local.y < insetTop ? insetTop : insetBottom;
-    return (local.x - cornerX) ** 2 + (local.y - cornerY) ** 2 <= (radius + epsilon) ** 2;
+    return insideRoundedRect(node, local, epsilon);
   }
   const radiusX = node.width / 2;
   const radiusY = node.height / 2;

@@ -57,6 +57,7 @@ const properties = [
   "stroke",
   "strokeWidth",
   "cornerRadius",
+  "cornerRadii",
   "visible",
   "locked",
   "notes",

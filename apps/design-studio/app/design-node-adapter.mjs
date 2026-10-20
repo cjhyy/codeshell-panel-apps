@@ -1,3 +1,4 @@
+import { cssCornerRadii } from "./corner-radii.mjs";
 /* Pure html2figma DesignNode → CodeShell v3 adapter. No DOM, network, or writes. */
 import { normalizeDesignDocument, MAX_DESIGN_NODES_PER_PAGE } from "./document.mjs";
 import { createDesignResourcePersistencePlan, MAX_DESIGN_RESOURCES } from "./resource-store.mjs";
@@ -370,17 +371,22 @@ export async function designNodeToV3(tree, options = {}) {
       if (visibleSides.some((side) => side.style !== "solid"))
         warn("border-style", node.id, "虚线、点线或双线边框已近似为实线。");
     }
-    const radii = Object.values(source.border?.radius ?? {});
-    node.cornerRadius = number(
-      radii.length ? Math.max(...radii) : 0,
-      0,
-      0,
-      9999,
-      node.id,
-      "cornerRadius",
-    );
-    if (new Set(radii).size > 1)
-      warn("corner-radii", node.id, "各角半径不同，已近似为统一最大圆角。");
+    try {
+      // Validate raw units before using the converter's transform-scaled px values.
+      if (source.cssBorderRadii) cssCornerRadii(source.cssBorderRadii);
+      const radii = ["topLeft", "topRight", "bottomRight", "bottomLeft"].map((key) =>
+        number(source.border?.radius?.[key] ?? 0, 0, 0, 9999, node.id, `cornerRadii.${key}`),
+      );
+      if (radii.some((radius) => radius > 0) && source.transform?.scale &&
+          Math.abs(Math.abs(source.transform.scale.x) - Math.abs(source.transform.scale.y)) > 1e-6)
+        throw new Error("非等比 CSS 缩放产生椭圆圆角，暂不能保留");
+      node.cornerRadius = radii[0];
+      if (radii.some((value) => value !== radii[0])) node.cornerRadii = radii;
+    } catch (error) {
+      node.cornerRadius = 0;
+      delete node.cornerRadii;
+      warn("unsupported-corner-radii", node.id, `${error.message}；未近似圆角。`);
+    }
     const shadows = source.effects?.boxShadows ?? [];
     const shadow = shadows.find((entry) => !entry.inset);
     if (shadow)
@@ -1021,6 +1027,7 @@ export async function designNodeToV3(tree, options = {}) {
         : "none";
       solidFill(style.color, node, "文字填充");
       node.cornerRadius = 0;
+      delete node.cornerRadii;
       node.textMeasurement = "browser";
       if (source.background?.layers?.length)
         warn("text-background", id, "文字节点背景无法与文字填充独立保留；应使用外层容器背景。");

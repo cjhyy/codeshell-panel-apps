@@ -5,6 +5,7 @@
   "gridCapture": "legacy-synthetic-with-diagnostics",
   "esbuildVersion": "0.28.2",
   "runtimeInputs": [
+    "apps/design-studio/app/corner-radii.mjs",
     "apps/design-studio/app/css-linear-gradient.mjs",
     "apps/design-studio/app/design-node-adapter.mjs",
     "apps/design-studio/app/document-bundle.mjs",
@@ -59,13 +60,13 @@
     },
     {
       "path": "code.js",
-      "bytes": 213748,
-      "sha256": "7058566bbe6547fc5a0eb25fa8fe7182577509093c276f487a3741a962a61029"
+      "bytes": 215578,
+      "sha256": "ad262adb75e28e3a08304726c146ff907a1c7f08daf7ab1e95504a2ba6b5b4a7"
     },
     {
       "path": "ui.html",
-      "bytes": 329228,
-      "sha256": "f74997fcf42b5ede91c77b3d45bd47e71ed8a12a82f3524c5f82fb2523062337"
+      "bytes": 331578,
+      "sha256": "ef9698b7e847c429ca01ded879a2c4b703d762cd37e08f6d2c964521078d5581"
     },
     {
       "path": "README.md",

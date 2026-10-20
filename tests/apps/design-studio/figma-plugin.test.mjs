@@ -106,6 +106,12 @@ function harness(source = page([rect()])) {
         return { document: snapshot(this), components: {}, styles: {} };
       },
     };
+    if (["RECTANGLE", "FRAME", "COMPONENT", "INSTANCE", "COMPONENT_SET", "SECTION"].includes(node.type)) {
+      let radii = [...(raw.rectangleCornerRadii ?? Array(4).fill(raw.cornerRadius ?? 0))];
+      for (const [index, key] of ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"].entries())
+        Object.defineProperty(node, key, { enumerable: false, get: () => radii[index], set: (value) => { radii[index] = value; } });
+      Object.defineProperty(node, "cornerRadius", { enumerable: false, get: () => radii.every((value) => value === radii[0]) ? radii[0] : undefined, set: (value) => { radii = Array(4).fill(value); } });
+    }
     let name = raw.name;
     if (raw.absoluteBoundingBox) node.absoluteBoundingBox = clone(raw.absoluteBoundingBox);
     Object.defineProperty(node, "name", {
@@ -190,7 +196,12 @@ function harness(source = page([rect()])) {
           node.raw[key] !== undefined ||
           (!["opacity", "visible", "locked", "layoutMode"].includes(key) && node[key] !== undefined)
         )
-          raw[key] = clone(node[key]);
+          if (node[key] !== undefined) raw[key] = clone(node[key]);
+    }
+    if (node.topLeftRadius !== undefined) {
+      raw.rectangleCornerRadii = [node.topLeftRadius, node.topRightRadius, node.bottomRightRadius, node.bottomLeftRadius];
+      if (raw.rectangleCornerRadii.every((value) => value === raw.rectangleCornerRadii[0])) raw.cornerRadius = raw.rectangleCornerRadii[0];
+      else delete raw.cornerRadius;
     }
     if (node.raw.children || node.children.length)
       raw.children = node.children.filter((child) => !child.removed).map(snapshot);
@@ -1286,4 +1297,70 @@ test("Bridge creates native editable linear-gradient text and layered fills with
   await exportRuntime.send({ type: "export-json", scope: "page" });
   const exported = JSON.parse(exportRuntime.messages.at(-1).content);
   assert.equal(Object.keys(exported.previews).length, 0);
+});
+
+
+test("independent circular corners use native editable properties and export live values", async () => {
+  const source = page([rect("1:2", { rectangleCornerRadii: [8, 24, 0, 16] })]);
+  const imported = importFigmaJson(source), transfer = createFigmaTransfer(imported.document);
+  const runtime = harness();
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  const created = runtime.figma.root.children[1].children[0];
+  assert.deepEqual([created.topLeftRadius, created.topRightRadius, created.bottomRightRadius, created.bottomLeftRadius], [8, 24, 0, 16]);
+  created.topRightRadius = 30;
+  runtime.figma.currentPage = runtime.figma.root.children[1];
+  runtime.figma.currentPage.selection = [created];
+  await runtime.send({ type: "export-json", scope: "selection" });
+  assert.equal(runtime.messages.at(-1).type, "exported");
+  const exported = JSON.parse(runtime.messages.at(-1).content);
+  assert.deepEqual(exported.nodes[created.id].document.rectangleCornerRadii, [8, 30, 0, 16]);
+  assert.deepEqual(importFigmaJson(exported).document.nodes[0].cornerRadii, [8, 30, 0, 16]);
+  for (const invalid of [[1, 2, 3], [1, 2, 3, -1], [1, 2, 3, 10000]]) {
+    const invalidTransfer = clone(transfer); invalidTransfer.pages[0].children[0].cornerRadii = invalid;
+    const isolated = harness();
+    await isolated.send({ type: "import-transfer", content: JSON.stringify(invalidTransfer) });
+    assert.equal(isolated.messages.at(-1).type, "error");
+    assert.equal(isolated.figma.root.children.length, 1);
+  }
+});
+
+test("reviewed corner edits retain conflict guards and update native radii atomically", async () => {
+  const source = page([rect("1:2", { rectangleCornerRadii: [8, 24, 0, 16] })]);
+  const result = await prepareFigmaImport(source), binding = createFigmaBinding(result);
+  result.document.nodes[0].cornerRadii = [4, 12, 20, 28];
+  const transfer = createFigmaTransfer(result.document);
+  transfer.patch = createFigmaPatch(binding, result.document);
+  assert.ok(transfer.patch.operations[0].changed.includes("cornerRadii"));
+  const runtime = harness(source);
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  let preview = runtime.messages.at(-1); assert.equal(preview.type, "patch-preview"); assert.deepEqual(preview.conflicts, []);
+  await runtime.send({ type: "apply-patch", token: preview.token });
+  assert.equal(runtime.messages.at(-1).type, "patched");
+  const node = runtime.all.get("1:2");
+  assert.deepEqual([node.topLeftRadius, node.topRightRadius, node.bottomRightRadius, node.bottomLeftRadius], [4, 12, 20, 28]);
+  const concurrent = harness(source), external = concurrent.all.get("1:2");
+  [external.topLeftRadius, external.topRightRadius, external.bottomRightRadius, external.bottomLeftRadius] = [9, 24, 0, 16];
+  await concurrent.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  preview = concurrent.messages.at(-1);
+  assert.equal(preview.type, "patch-preview"); assert.ok(preview.conflicts.length > 0);
+});
+
+
+test("uniform REST corner baselines do not falsely conflict and clearing a tuple resets all SDK corners", async () => {
+  for (const original of [{ cornerRadius: 8 }, { rectangleCornerRadii: [8, 24, 0, 16] }]) {
+    const source = page([rect("1:2", original)]);
+    const result = await prepareFigmaImport(source), binding = createFigmaBinding(result);
+    result.document.nodes[0].cornerRadius = 12;
+    delete result.document.nodes[0].cornerRadii;
+    const transfer = createFigmaTransfer(result.document); transfer.patch = createFigmaPatch(binding, result.document);
+    const runtime = harness(source);
+    await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+    const preview = runtime.messages.at(-1);
+    assert.equal(preview.type, "patch-preview"); assert.deepEqual(preview.conflicts, []);
+    await runtime.send({ type: "apply-patch", token: preview.token });
+    assert.equal(runtime.messages.at(-1).type, "patched");
+    const node = runtime.all.get("1:2");
+    assert.deepEqual([node.topLeftRadius, node.topRightRadius, node.bottomRightRadius, node.bottomLeftRadius], [12, 12, 12, 12]);
+  }
 });

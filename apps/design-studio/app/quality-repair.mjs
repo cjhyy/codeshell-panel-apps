@@ -1,3 +1,4 @@
+import { effectiveCornerRadii } from "./corner-radii.mjs";
 import { auditDesignPages, readableTextContrast, summarizeAudit } from "./audit.mjs";
 import {
   isDesignNodeVisible,
@@ -141,7 +142,7 @@ export function repairDesignQuality(input) {
       // its background into a huge ellipse would damage the visible design.
       const roundedControl =
         parent.fill !== "transparent" &&
-        parent.cornerRadius >= Math.min(parent.width, parent.height) / 2 &&
+        effectiveCornerRadii(parent).every((radius) => radius >= Math.min(parent.width, parent.height) / 2) &&
         Math.min(parent.width, parent.height) <= 128;
       if (
         roundedControl &&

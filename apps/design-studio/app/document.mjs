@@ -1,3 +1,4 @@
+import { normalizeCornerRadii, roundedRectSvgGeometry } from "./corner-radii.mjs";
 import {
   GRID_CONTAINER_FIELDS,
   GRID_CHILD_FIELDS,
@@ -135,6 +136,7 @@ function normalizedNode(candidate, parentId) {
     opacity: candidate.opacity,
     rotation: candidate.rotation,
     cornerRadius: candidate.cornerRadius,
+    ...(candidate.cornerRadii !== undefined ? { cornerRadii: normalizeCornerRadii(candidate.cornerRadii) } : {}),
     visible: candidate.visible,
     locked: candidate.locked,
     ...(parentId ? { parentId } : {}),
@@ -284,6 +286,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "opacity",
     "rotation",
     "cornerRadius",
+    "cornerRadii",
     "visible",
     "locked",
     "clipContent",
@@ -380,6 +383,11 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     !(candidate.stroke === "transparent" || validHex(candidate.stroke))
   ) {
     throw new Error(`图层 ${candidate.id} 的填充或描边色值无效`);
+  }
+  if (candidate.cornerRadii !== undefined) {
+    normalizeCornerRadii(candidate.cornerRadii);
+    if (!["frame", "rectangle", "component", "image"].includes(candidate.type))
+      throw new Error(`图层 ${candidate.id} 的类型不支持 cornerRadii`);
   }
   if (candidate.fillPaints !== undefined) {
     normalizeDesignPaints(candidate.fillPaints);
@@ -1442,12 +1450,13 @@ function exportNodeSvg(
           ? "xMidYMid meet"
           : "xMidYMid slice";
     return clipped(
-      `  <image${metadata} x="${round(node.x)}" y="${round(node.y)}" width="${round(node.width)}" height="${round(node.height)}" href="${escapeXml(href)}" preserveAspectRatio="${preserveAspectRatio}"${opacity}${filter}${transform} />`,
+      `  <g${opacity}${filter}><g clip-path="url(#${clipIds.get(node.id)})"><image${metadata} x="${round(node.x)}" y="${round(node.y)}" width="${round(node.width)}" height="${round(node.height)}" href="${escapeXml(href)}" preserveAspectRatio="${preserveAspectRatio}"${transform} /></g></g>`,
     );
   }
   if (node.type === "group") return "";
+  const shape = roundedRectSvgGeometry(node);
   return clipped(
-    `  <rect${metadata} x="${round(node.x)}" y="${round(node.y)}" width="${round(node.width)}" height="${round(node.height)}" rx="${round(Math.min(node.cornerRadius, node.width / 2, node.height / 2))}" ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}"${opacity}${filter}${transform} />`,
+    `  <${shape.tag}${metadata} ${shape.attributes} ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}"${opacity}${filter}${transform} />`,
   );
 }
 
@@ -1527,12 +1536,12 @@ export function exportDesignSvg(document, options = {}) {
   const fontCss = designFontFaceCss(document.resources, options.resourceDataUrls);
   const fontFaceRules = fontCss ? [fontCss] : [];
   renderNodes.forEach((node, index) => {
-    if (["frame", "component"].includes(node.type) && node.clipContent === true) {
+    if ((["frame", "component"].includes(node.type) && node.clipContent === true) || node.type === "image") {
       const id = `frame-clip-${index}`;
       clipIds.set(node.id, id);
       const transform = svgTransform(renderDocument, node);
       clipPaths.push(
-        `    <clipPath id="${id}" clipPathUnits="userSpaceOnUse"><rect x="${round(node.x)}" y="${round(node.y)}" width="${round(node.width)}" height="${round(node.height)}" rx="${round(Math.min(node.cornerRadius, node.width / 2, node.height / 2))}"${transform} /></clipPath>`,
+        `    <clipPath id="${id}" clipPathUnits="userSpaceOnUse"><${roundedRectSvgGeometry(node).tag} ${roundedRectSvgGeometry(node).attributes}${transform} /></clipPath>`,
       );
     }
     if (node.shadow && node.shadow.opacity > 0 && node.type !== "group") {
@@ -1553,8 +1562,7 @@ export function exportDesignSvg(document, options = {}) {
     sourceDocument.nodes.forEach((node, nodeIndex) => {
       if (
         !sourceIds.has(node.id) ||
-        !["frame", "component"].includes(node.type) ||
-        node.clipContent !== true
+        !((["frame", "component"].includes(node.type) && node.clipContent === true) || node.type === "image")
       ) {
         return;
       }
@@ -1562,7 +1570,7 @@ export function exportDesignSvg(document, options = {}) {
       sourceClipIds.set(node.id, id);
       const transform = svgTransform(sourceDocument, node);
       clipPaths.push(
-        `    <clipPath id="${id}" clipPathUnits="userSpaceOnUse"><rect x="${round(node.x)}" y="${round(node.y)}" width="${round(node.width)}" height="${round(node.height)}" rx="${round(Math.min(node.cornerRadius, node.width / 2, node.height / 2))}"${transform} /></clipPath>`,
+        `    <clipPath id="${id}" clipPathUnits="userSpaceOnUse"><${roundedRectSvgGeometry(node).tag} ${roundedRectSvgGeometry(node).attributes}${transform} /></clipPath>`,
       );
     });
     componentClipIds.set(component.id, sourceClipIds);

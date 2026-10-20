@@ -230,3 +230,15 @@ are never silently rasterized. Changes to these advanced fields in a source-boun
 patch are diagnosed as unsupported; use a new-page conversion to apply them.
 
 Axis-FILL children touching a HUG track currently require a fixed track or a HUG/fixed child to avoid an unmodeled intrinsic-size cycle. This is diagnosed explicitly before claiming native Grid fidelity. Automatic rows derive the current occupied row count (within 24), extending new canonical rows as HUG and trimming trailing empty rows. Interior empty manual rows with automatic-row mode are diagnosed because Figma removes empty rows.
+
+Circular corner radii use the required uniform `cornerRadius` number by default.
+Rectangles, Frames, Components and images may additionally store `cornerRadii` as
+exactly four finite pixel values from 0 to 9999, clockwise from top-left
+(TL, TR, BR, BL). This optional tuple overrides the uniform radius, preserves
+authored values on resize, and uses CSS's common overlap scale when rendering.
+Editing the uniform radius clears the tuple. Text, groups, instances and ellipses
+do not accept a per-corner tuple. Percentage/elliptical CSS corners and native
+Figma corner smoothing produce explicit diagnostics. Figma export uses the
+[individual native radius properties](https://developers.figma.com/docs/plugins/api/FrameNode/);
+oversized asymmetric radii receive an export warning until native overlap
+behavior is verified against CSS.

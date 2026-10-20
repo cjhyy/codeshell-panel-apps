@@ -103,6 +103,7 @@ export function convert(
   const svgResources = new Map<object, string>();
   const backgrounds = new Map<object, Record<string, string>>();
   const gridSources = new Set<object>();
+  const corners = new Map<object, string[]>();
   const captureSvg = (node: RenderNode) => {
     if (
       node.metadata?.semantic &&
@@ -111,6 +112,8 @@ export function convert(
       gridSources.add(node.metadata.semantic);
     if (node.tag === "svg" && node.metadata?.semantic && node.domNode instanceof Element)
       svgResources.set(node.metadata.semantic, captureStandaloneSvg(node.domNode));
+    if (node.nodeType === "element" && node.metadata?.semantic && node.computedStyle)
+      corners.set(node.metadata.semantic, ["border-top-left-radius", "border-top-right-radius", "border-bottom-right-radius", "border-bottom-left-radius"].map((property) => node.computedStyle!.getPropertyValue(property)));
     // The immutable upstream gradient parser discards px stop units and cannot
     // distinguish repeated gradients. Retain computed CSS before that parse.
     if (node.nodeType === "element" && node.metadata?.semantic &&
@@ -141,6 +144,8 @@ export function convert(
       gridSources.has(node.semantic)
     )
       node.cssLayout = { ...node.cssLayout, "--codeshell-grid-legacy": "synthetic" };
+    if (node.nodeType !== "text" && node.semantic && corners.has(node.semantic))
+      node.cssBorderRadii = corners.get(node.semantic)!;
     if (node.nodeType !== "text" && node.semantic && backgrounds.has(node.semantic))
       node.cssBackground = backgrounds.get(node.semantic)!;
     if (node.nodeType === "svg" && node.semantic && svgResources.has(node.semantic))

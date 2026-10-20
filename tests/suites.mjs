@@ -93,6 +93,7 @@ export const suites = [
         "tests/apps/design-studio/recovery-ui.test.mjs",
         "tests/apps/design-studio/renderer-controller.test.mjs",
         "tests/apps/design-studio/canvas-interaction.test.mjs",
+        "tests/apps/design-studio/corner-radii.test.mjs",
         "tests/apps/design-studio/grida-scene.test.mjs",
         "tests/apps/design-studio/figma-bridge.test.mjs",
         "tests/apps/design-studio/long-canvas.test.mjs",
