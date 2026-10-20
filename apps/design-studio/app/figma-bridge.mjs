@@ -557,6 +557,14 @@ function text(source, node, report) {
   if (node.text.trim()) {
     node.textSource = node.text;
     if (style.textAutoResize !== "WIDTH_AND_HEIGHT") node.textFlow = "wrap";
+    if ((style.textTruncation ?? source.textTruncation) === "ENDING") {
+      if ((style.maxLines ?? source.maxLines) === 1) {
+        node.textOverflow = "ellipsis";
+        delete node.textFlow;
+      } else report.warn(
+        "text-truncation", source, "多行或按高度截断尚不能对应单行省略号；已保留完整文字。",
+      );
+    }
     node.textFlowWidth = node.width;
   }
   if (

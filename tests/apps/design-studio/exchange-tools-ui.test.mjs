@@ -24,6 +24,7 @@ import { parseFigmaBinding } from "../../../apps/design-studio/app/figma-binding
 import { planPortableDesign } from "../../../apps/design-studio/app/portable-backup.mjs";
 import { preparePluginFile } from "../../../apps/design-studio/app/figma-plugin/v3-input.mjs";
 import { htmlFontResources } from "../../../apps/design-studio/app/html-import-assets.mjs";
+import { nativeTextContent } from "../../../apps/design-studio/app/text-content.mjs";
 import {
   createDesignSidecarPlan,
   readDesignSidecar,
@@ -689,6 +690,56 @@ test("declared exchange tools import, save, reopen, edit and export a source-bou
     }),
     /不能覆盖/,
   );
+  assert.deepEqual(f.errors, []);
+});
+
+test("public text-only edits preserve authored whitespace through reflow, reopen and native patch export", async (t) => {
+  const f = await fixture(t);
+  await f.import();
+  let metadata = await f.metadata();
+  const heading = metadata.layers.find((node) => node.name === "Imported heading");
+  assert.equal((await readNode(f.page, heading.id)).textSource, "Original Figma heading");
+  const authored = "  Edited full authored content that can wrap at its current width  \n\n\tsecond explicit line with trailing spaces  ";
+  await f.tool("use_design", {
+    expected_state_revision: metadata.stateRevision,
+    save: true,
+    operations: [{ op: "update_node", node_id: heading.id, changes: { text: authored } }],
+  });
+  let node = await readNode(f.page, heading.id);
+  assert.equal(node.textSource, authored, "Reflow must not resurrect the imported source");
+  assert.equal(nativeTextContent(node), authored);
+  await f.reload();
+  metadata = await f.metadata();
+  node = await readNode(f.page, heading.id);
+  assert.equal(node.textSource, authored);
+  assert.equal(nativeTextContent(node), authored);
+  await f.tool("exchange_figma", {
+    action: "export", path: "designs/authored.figma-transfer.json",
+    expected_state_revision: metadata.stateRevision,
+  });
+  const output = JSON.parse(f.files.get("A:designs/authored.figma-transfer.json"));
+  const update = output.patch.operations.find((operation) => operation.sourceId === "1:2");
+  assert(update.changed.includes("text"));
+  assert.equal(nativeTextContent(update.after, update.baseline), authored);
+  assert.equal(update.before.characters, "Original Figma heading");
+
+  const explicitSource = "  Explicit caller source\n\nretains its spaces  ";
+  await f.tool("use_design", {
+    expected_state_revision: metadata.stateRevision, save: true,
+    operations: [{ op: "update_node", node_id: heading.id,
+      changes: { text: "Caller display", textSource: explicitSource } }],
+  });
+  assert.equal((await readNode(f.page, heading.id)).textSource, explicitSource);
+  metadata = await f.metadata();
+  await f.tool("use_design", {
+    expected_state_revision: metadata.stateRevision, save: true,
+    operations: [{ op: "update_node", node_id: heading.id, changes: { text: "" } }],
+  });
+  node = await readNode(f.page, heading.id);
+  assert.equal(node.textSource, "");
+  assert.equal(node.textFlow, undefined);
+  assert.equal(node.textOverflow, undefined);
+  assert.equal(node.textFlowWidth, undefined);
   assert.deepEqual(f.errors, []);
 });
 

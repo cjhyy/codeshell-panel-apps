@@ -1,4 +1,5 @@
 import { GRID_CONTAINER_FIELDS, GRID_CHILD_FIELDS } from "./grid.mjs";
+import { nativeTextContent } from "./text-content.mjs";
 import {
   normalizeDesignDocument,
   normalizeDesignState,
@@ -467,6 +468,10 @@ export function createFigmaPatch(bindingValue, currentDocument) {
     let changed = [...properties, "siblingIndex"].filter(
       (key) => JSON.stringify(baseline[key]) !== JSON.stringify(after[key]),
     );
+    if (after.type === "text") {
+      changed = changed.filter((key) => key !== "text");
+      if (nativeTextContent(baseline) !== nativeTextContent(after, baseline)) changed.push("text");
+    }
     // A native parent translation already carries its descendants. Compare local
     // offsets only for a fully mapped, unchanged, untransformed geometry chain.
     // Also retain a counter-move when the child's absolute position stayed fixed.

@@ -107,3 +107,33 @@ if (process.argv.includes("--check"))
   assert.equal(gridSource, gridOutput, "Figma plugin grid runtime is stale");
 else await writeFile(codePath, gridOutput);
 console.log(`Figma plugin grid runtime ${process.argv.includes("--check") ? "verified" : "built"}`);
+
+const textResult = await build({
+  absWorkingDir: root,
+  entryPoints: ["apps/design-studio/app/figma-plugin/text-runtime.mjs"],
+  bundle: true,
+  platform: "browser",
+  format: "iife",
+  globalName: "CodeShellFigmaText",
+  target: "es2020",
+  minify: true,
+  charset: "utf8",
+  write: false,
+  logLevel: "silent",
+});
+const textSource = await readFile(codePath, "utf8");
+const textBegin = "/* BEGIN GENERATED TEXT RUNTIME */",
+  textEnd = "/* END GENERATED TEXT RUNTIME */";
+assert.equal(textSource.split(textBegin).length, 2);
+assert.equal(textSource.split(textEnd).length, 2);
+const textOutput =
+  textSource.slice(0, textSource.indexOf(textBegin)) +
+  textBegin +
+  "\n" +
+  textResult.outputFiles[0].text +
+  textEnd +
+  textSource.slice(textSource.indexOf(textEnd) + textEnd.length);
+if (process.argv.includes("--check"))
+  assert.equal(textSource, textOutput, "Figma plugin text runtime is stale");
+else await writeFile(codePath, textOutput);
+console.log(`Figma plugin text runtime ${process.argv.includes("--check") ? "verified" : "built"}`);

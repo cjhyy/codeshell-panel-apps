@@ -4,6 +4,10 @@
 /* BEGIN GENERATED PAINT RUNTIME */
 "use strict";var CodeShellFigmaPaint=(()=>{var y=Object.defineProperty;var E=Object.getOwnPropertyDescriptor;var A=Object.getOwnPropertyNames;var D=Object.prototype.hasOwnProperty;var L=(t,r)=>{for(var e in r)y(t,e,{get:r[e],enumerable:!0})},S=(t,r,e,i)=>{if(r&&typeof r=="object"||typeof r=="function")for(let o of A(r))!D.call(t,o)&&o!==e&&y(t,o,{get:()=>r[o],enumerable:!(i=E(r,o))||i.enumerable});return t};var O=t=>S(y({},"__esModule",{value:!0}),t);var j={};L(j,{designPaintsToFigma:()=>I,figmaFillPaints:()=>b,normalizeDesignPaints:()=>d});var P=t=>t!==null&&typeof t=="object"&&!Array.isArray(t),u=t=>typeof t=="string"&&/^#[a-f\d]{6}$/iu.test(t),p=t=>typeof t=="number"&&Number.isFinite(t),h=t=>Math.max(0,Math.min(1,t));var w=t=>`#${[t.r,t.g,t.b].map(r=>Math.round(h(r)*255).toString(16).padStart(2,"0")).join("")}`,$=t=>[1,3,5].map(r=>parseInt(t.slice(r,r+2),16)/255);function g(t,r){if(!P(t)||Object.keys(t).some(e=>!r.includes(e)))throw new Error("绘制包含未知字段")}function f(t){if(!p(t)||t<0||t>1)throw new Error("绘制透明度必须在 0–1 之间");return t}function R(t){let[r,e,i]=t;return[[e.x-r.x,2*(i.x-r.x),2*r.x-i.x],[e.y-r.y,2*(i.y-r.y),2*r.y-i.y]]}function m(t){let[[r,e,i],[o,n,s]]=R(t),a=r*n-e*o;if(Math.abs(a)<1e-8)throw new Error("线性渐变坐标不可逆");return[[n/a,-e/a,(e*s-n*i)/a],[-o/a,r/a,(o*i-r*s)/a]]}function d(t){if(!Array.isArray(t)||!t.length||t.length>8)throw new Error("填充绘制必须为 1–8 层");return t.map(r=>{g(r,r?.type==="SOLID"?["type","color","opacity"]:["type","opacity","handles","stops"]);let e=f(r.opacity);if(r.type==="SOLID"){if(!u(r.color))throw new Error("纯色绘制必须是六位十六进制颜色");return{type:"SOLID",color:r.color.toLowerCase(),opacity:e}}if(r.type!=="GRADIENT_LINEAR"||!Array.isArray(r.handles)||r.handles.length!==3||!Array.isArray(r.stops)||r.stops.length<2||r.stops.length>16)throw new Error("仅支持有界纯色/线性渐变；渐变必须有三个控制点与 2–16 个色标");let i=r.handles.map(n=>{if(g(n,["x","y"]),![n.x,n.y].every(s=>p(s)&&Math.abs(s)<=100))throw new Error("渐变控制点超出范围");return{x:n.x,y:n.y}});m(i);let o=r.stops.map(n=>{if(g(n,["position","color","opacity"]),!u(n.color))throw new Error("渐变色标颜色无效");return{position:f(n.position),color:n.color.toLowerCase(),opacity:f(n.opacity)}});if(o.some((n,s)=>s&&n.position<o[s-1].position))throw new Error("渐变色标必须按位置排序");return{type:"GRADIENT_LINEAR",opacity:e,handles:i,stops:o}})}function M(t){if(!Array.isArray(t)||t.length!==2||!t.every(c=>Array.isArray(c)&&c.length===3&&c.every(p)))throw new Error("渐变矩阵无效");let[[r,e,i],[o,n,s]]=t,a=r*n-e*o;if(Math.abs(a)<1e-8)throw new Error("渐变矩阵不可逆");let l=(c,x)=>({x:(n*(c-i)-e*(x-s))/a,y:(-o*(c-i)+r*(x-s))/a});return[l(0,.5),l(1,.5),l(0,1)]}function b(t,r=()=>{}){if(!Array.isArray(t))return null;let e=t.filter(i=>i?.visible!==!1);if(!e.length||e.length>8||e.some(i=>!["SOLID","GRADIENT_LINEAR"].includes(i?.type)))return null;try{let i=e.map(o=>{if(o.blendMode&&o.blendMode!=="NORMAL")throw new Error("非 NORMAL 混合绘制需本地预览资源");let n=p(o.opacity)?h(o.opacity):1;if(o.type==="SOLID")return{type:"SOLID",color:w(o.color),opacity:n*(p(o.color?.a)?h(o.color.a):1)};let s=o.gradientStops?.map(l=>({position:l.position,color:w(l.color),opacity:p(l.color?.a)?h(l.color.a):1})),a=o.gradientHandlePositions??M(o.gradientTransform);try{m(a)}catch{if(!s?.length)throw new Error("缺少渐变色标");r("退化线性渐变没有可逆控制点；按零长度渐变的末色标保留，不猜测方向。");let l=s.at(-1);return{type:"SOLID",color:l.color,opacity:n*l.opacity}}return{type:"GRADIENT_LINEAR",opacity:n,handles:a,stops:s}});return d(i)}catch(i){return r(`绘制无法无损转换：${i.message}`),null}}function N(t){return t.fillPaints??(u(t.fill)?[{type:"SOLID",color:t.fill,opacity:1}]:[])}function I(t){return N(t).map(r=>r.type==="SOLID"?{type:"SOLID",color:Object.fromEntries(["r","g","b"].map((e,i)=>[e,$(r.color)[i]])),opacity:r.opacity}:{type:"GRADIENT_LINEAR",opacity:r.opacity,gradientTransform:m(r.handles),gradientStops:r.stops.map(e=>({position:e.position,color:{...Object.fromEntries(["r","g","b"].map((i,o)=>[i,$(e.color)[o]])),a:e.opacity}}))})}return O(j);})();
 /* END GENERATED PAINT RUNTIME */
+/* BEGIN GENERATED TEXT RUNTIME */
+"use strict";var CodeShellFigmaText=(()=>{var s=Object.defineProperty;var f=Object.getOwnPropertyDescriptor;var c=Object.getOwnPropertyNames;var g=Object.prototype.hasOwnProperty;var x=(t,e)=>{for(var i in e)s(t,i,{get:e[i],enumerable:!0})},p=(t,e,i,n)=>{if(e&&typeof e=="object"||typeof e=="function")for(let r of c(e))!g.call(t,r)&&r!==i&&s(t,r,{get:()=>e[r],enumerable:!(n=f(e,r))||n.enumerable});return t};var y=t=>p(s({},"__esModule",{value:!0}),t);var w={};x(w,{nativeTextContent:()=>a,nativeTextPlan:()=>h});function l(t){return!!(t&&typeof t=="object"&&!Array.isArray(t)&&Object.keys(t).every(e=>["version","signature","sourceSignature","lineWidths","lineInkBounds","height","fontAvailable"].includes(e))&&t.version===1&&typeof t.signature=="string"&&t.signature.length<=8500&&(t.sourceSignature===void 0||typeof t.sourceSignature=="string"&&t.sourceSignature.length<=8500)&&Array.isArray(t.lineWidths)&&t.lineWidths.length>=1&&t.lineWidths.length<=4001&&t.lineWidths.every(e=>Number.isFinite(e)&&e>=0&&e<=1e6)&&Array.isArray(t.lineInkBounds)&&t.lineInkBounds.length===t.lineWidths.length&&t.lineInkBounds.every(e=>e&&typeof e=="object"&&!Array.isArray(e)&&Object.keys(e).length===4&&["x","y","width","height"].every(i=>Number.isFinite(e[i])&&Math.abs(e[i])<=1e6)&&e.width>=0&&e.height>=0)&&Number.isFinite(t.height)&&t.height>=0&&t.height<=1e6&&typeof t.fontAvailable=="boolean")}var u=t=>{try{let e=JSON.parse(t);return Array.isArray(e)&&e.length===8&&typeof e[0]=="string"?e[0]:void 0}catch{return}};function d(t,e){let i=0;for(let n of t)if(e.startsWith(n,i))i+=n.length;else if(n!==`
+`)return!1;return i===e.length}function a(t,e){let i=t.text??"",n=t.textSource;if(typeof n!="string"||i===n)return i;if(l(t.textMetrics)){let r=u(t.textMetrics.signature),o=u(t.textMetrics.sourceSignature);if(i===r)return n;if(r!==void 0&&(o===void 0||n===o))return i}return e&&i===e.text&&n!==e.textSource||t.textFlow==="wrap"&&d(i,n)||t.textOverflow==="ellipsis"&&i.endsWith("…")&&n.startsWith(i.slice(0,-1).trimEnd())?n:i}function h(t,e){return{characters:a(t,e),autoResize:t.layoutSizingHorizontal==="hug"?"WIDTH_AND_HEIGHT":t.layoutSizingVertical==="hug"?"HEIGHT":"NONE",truncation:t.textOverflow==="ellipsis"?"ENDING":"DISABLED",maxLines:t.textOverflow==="ellipsis"?1:null}}return y(w);})();
+/* END GENERATED TEXT RUNTIME */
 /* Local Figma bridge. Original-node writes require a reviewed, conflict-checked patch. */
 (() => {
   const MAX_BYTES = 16 * 1024 * 1024;
@@ -226,9 +230,15 @@
         if (
           typeof node.text !== "string" ||
           node.text.length > 4000 ||
+          (node.textSource !== undefined &&
+            (typeof node.textSource !== "string" || node.textSource.length > 4000)) ||
           (node.fontFamily !== undefined && !string(node.fontFamily, 120))
         )
           throw new Error("文字内容或字体无效。");
+        optionalEnum(node, "textFlow", ["wrap"]);
+        optionalEnum(node, "textOverflow", ["ellipsis"]);
+        if ((node.textFlow || node.textOverflow) && !node.textSource?.trim())
+          throw new Error("响应式文字缺少原始内容。");
         range(node.fontSize, 6, 240, "fontSize");
         range(node.fontWeight, 100, 900, "fontWeight");
         range(node.lineHeight, 0.7, 3, "lineHeight");
@@ -389,6 +399,12 @@
         node.itemSpacing = source.rowGap;
     }
     function applySizing(node, source, parent, parentSource) {
+      if (node.type === "TEXT") {
+        const plan = CodeShellFigmaText.nativeTextPlan(source);
+        node.textAutoResize = plan.autoResize;
+        node.textTruncation = plan.truncation;
+        node.maxLines = plan.maxLines;
+      }
       const parentAuto = parent?.layoutMode && parent.layoutMode !== "NONE";
       let stretchAxis = null;
       if (parentAuto && parent.layoutMode !== "GRID") {
@@ -446,7 +462,7 @@
       if (node.type === "TEXT") {
         node.fontName = font;
         node.fontSize = source.fontSize;
-        node.characters = source.text;
+        node.characters = CodeShellFigmaText.nativeTextContent(source);
         node.lineHeight = { unit: "PERCENT", value: source.lineHeight * 100 };
         node.textAlignHorizontal = source.textAlign.toUpperCase();
         node.letterSpacing = { unit: "PIXELS", value: source.letterSpacing ?? 0 };
@@ -666,6 +682,9 @@
   ]);
   const FONT_KEYS = new Set([
     "text",
+    "textSource",
+    "textFlow",
+    "textOverflow",
     "fontSize",
     "fontWeight",
     "fontFamily",
@@ -704,7 +723,7 @@
     GEOMETRY_KEYS.has(key)
       ? ["absoluteBoundingBox", "size", "relativeTransform", "rotation"]
       : FONT_KEYS.has(key)
-        ? key === "text"
+        ? ["text", "textSource"].includes(key)
           ? ["characters", "characterStyleOverrides", "styleOverrideTable"]
           : ["style", "characterStyleOverrides", "styleOverrideTable"]
         : LAYOUT_KEYS.has(key)
@@ -771,6 +790,15 @@
               ...(track.type !== "HUG" && track.value !== undefined ? { value: track.value } : {}),
             }))
           : value;
+    }
+    if (node.type === "TEXT") {
+      // Preserve native truncation when JSON_REST_V1 omits these newer fields.
+      // Do not inject defaults into legacy snapshots used for conflict checks.
+      const style = object(raw.style) ? raw.style : {};
+      if (node.textTruncation === "ENDING" || hasOwn(style, "textTruncation"))
+        style.textTruncation = node.textTruncation;
+      if (node.maxLines != null || hasOwn(style, "maxLines")) style.maxLines = node.maxLines;
+      if (Object.keys(style).length) raw.style = style;
     }
     const children = new Map((node.children ?? []).map((child) => [child.id, child]));
     for (const child of raw.children ?? [])
@@ -1047,7 +1075,8 @@
             operation.changed.some(
               (key) =>
                 FONT_KEYS.has(key) ||
-                ["width", "height", "fill", "stroke", "strokeWidth"].includes(key),
+                ["width", "height", "fill", "stroke", "strokeWidth",
+                  "layoutSizingHorizontal", "layoutSizingVertical"].includes(key),
             )
           ) {
             const fonts =
@@ -1229,7 +1258,7 @@
     return (
       /font\s*awesome|material\s*(?:icons|symbols)|ionicons|icomoon|glyphicons|iconfont/iu.test(
         source.fontFamily || "",
-      ) || /[\uE000-\uF8FF\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/u.test(source.text || "")
+      ) || /[\uE000-\uF8FF\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/u.test(CodeShellFigmaText.nativeTextContent(source))
     );
   }
   async function applyPatch(plan, allowDeletes) {
@@ -1424,8 +1453,15 @@
           mutated = true;
           setCorners(node, after);
         }
+        if (
+          node.type === "TEXT" &&
+          operation.changed.some((key) => key === "text" || key === "textSource")
+        ) {
+          mutated = true;
+          node.characters = CodeShellFigmaText.nativeTextContent(after, baseline);
+        }
         for (const key of operation.changed) {
-          if (GEOMETRY_KEYS.has(key) || key === "cornerRadius" || key === "cornerRadii") continue;
+          if (GEOMETRY_KEYS.has(key) || ["cornerRadius", "cornerRadii", "text", "textSource"].includes(key)) continue;
           if (key === "opacity") {
             mutated = true;
             node.opacity =
@@ -1494,9 +1530,6 @@
                 scaleMode: after.objectFit === "contain" ? "FIT" : "FILL",
               },
             ];
-          } else if (key === "text") {
-            mutated = true;
-            node.characters = after.text;
           } else if (["fontFamily", "fontWeight", "fontStyle"].includes(key)) {
             mutated = true;
             node.fontName = patchFont(after);
@@ -1570,6 +1603,12 @@
             mutated = true;
             node.layoutAlign = after.layoutAlignSelf === "stretch" ? "STRETCH" : "INHERIT";
           }
+        }
+        if (node.type === "TEXT" && changed.has("textOverflow")) {
+          const plan = CodeShellFigmaText.nativeTextPlan(after, baseline);
+          mutated = true;
+          node.textTruncation = plan.truncation;
+          node.maxLines = plan.maxLines;
         }
         if (changed.has("constraintHorizontal") || changed.has("constraintVertical")) {
           mutated = true;

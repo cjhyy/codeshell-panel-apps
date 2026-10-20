@@ -14,6 +14,7 @@ import {
   createFigmaPatch,
 } from "../../../apps/design-studio/app/figma-binding.mjs";
 import { longFigmaSource } from "./fixtures/long-canvas.mjs";
+import { measuredWrap, textMetricsSignature, textSourceMetricsSignature } from "../../../apps/design-studio/app/text-metrics.mjs";
 
 const code = await readFile(
   new URL("../../../apps/design-studio/app/figma-plugin/code.js", import.meta.url),
@@ -33,7 +34,7 @@ const rect = (id = "1:2", properties = {}) => ({
 });
 const page = (children) => ({ id: "0:1", type: "CANVAS", name: "Home", children });
 
-function harness(source = page([rect()])) {
+function harness(source = page([rect()]), { nativeTextLayout = false } = {}) {
   const all = new Map(),
     messages = [],
     fonts = new Set(),
@@ -82,6 +83,11 @@ function harness(source = page([rect()])) {
       resize(width, height) {
         this.width = width;
         this.height = height;
+        if (nativeTextLayout && this.type === "TEXT" && this.textAutoResize === "HEIGHT")
+          this.height = this.nativeLines().length * this.fontSize * this.lineHeight.value / 100;
+      },
+      nativeLines() {
+        return measuredWrap(this.characters ?? "", this.width / 10, (value) => ({ width: Array.from(value).length }));
       },
       resizeWithoutConstraints(width, height) {
         this.width = width;
@@ -111,6 +117,13 @@ function harness(source = page([rect()])) {
       for (const [index, key] of ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"].entries())
         Object.defineProperty(node, key, { enumerable: false, get: () => radii[index], set: (value) => { radii[index] = value; } });
       Object.defineProperty(node, "cornerRadius", { enumerable: false, get: () => radii.every((value) => value === radii[0]) ? radii[0] : undefined, set: (value) => { radii = Array(4).fill(value); } });
+    }
+    if (node.type === "TEXT") {
+      node.characters = raw.characters ?? "";
+      node.fontName = { family: raw.style?.fontFamily ?? "Inter", style: "Regular" };
+      node.textAutoResize = raw.style?.textAutoResize ?? "NONE";
+      node.textTruncation = raw.style?.textTruncation ?? "DISABLED";
+      node.maxLines = raw.style?.maxLines ?? null;
     }
     let name = raw.name;
     if (raw.absoluteBoundingBox) node.absoluteBoundingBox = clone(raw.absoluteBoundingBox);
@@ -1299,6 +1312,141 @@ test("Bridge creates native editable linear-gradient text and layered fills with
   assert.equal(Object.keys(exported.previews).length, 0);
 });
 
+const authoredCopy = "Text wraps across ordinary block flow when the parent frame becomes narrower.";
+const capturedCopy = "Text wraps across ordinary block flow when the parent frame \nbecomes narrower.";
+function nativeTextFixture(characters = authoredCopy) {
+  return page([{ id: "1:1", type: "FRAME", name: "Editable flow", layoutMode: "VERTICAL",
+    absoluteBoundingBox: { x: 0, y: 0, width: 640, height: 240 }, children: [{
+      id: "1:2", type: "TEXT", name: "Editable copy", characters,
+      absoluteBoundingBox: { x: 0, y: 0, width: 600, height: 48 },
+      layoutSizingHorizontal: "FILL", layoutSizingVertical: "HUG",
+      style: { fontFamily: "Arial", fontSize: 20, fontWeight: 400, lineHeightPx: 24, textAutoResize: "HEIGHT" },
+      fills: [{ type: "SOLID", color: { r: 0, g: 0, b: 0 } }],
+    }] }]);
+}
+function recordWrappedCopy(node, display = capturedCopy) {
+  node.text = display;
+  const count = display.split("\n").length;
+  node.textMetrics = { version: 1, signature: textMetricsSignature(node), sourceSignature: textSourceMetricsSignature(node),
+    lineWidths: Array(count).fill(100), lineInkBounds: Array.from({ length: count }, () => ({ x: 0, y: 0, width: 100, height: 20 })),
+    height: count * 24, fontAvailable: true };
+}
+
+test("production native creation keeps authored text characters and rewraps after native resize without browser soft newlines", async () => {
+  const imported = importFigmaJson(nativeTextFixture());
+  const text = imported.document.nodes.find((node) => node.type === "text");
+  recordWrappedCopy(text);
+  const transfer = createFigmaTransfer(imported.document), runtime = harness(page([]), { nativeTextLayout: true });
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  const created = [...runtime.all.values()].find((node) => node.type === "TEXT");
+  assert.equal(created.characters, authoredCopy);
+  assert.equal(created.layoutSizingHorizontal, "FILL");
+  assert.equal(created.layoutSizingVertical, "HUG");
+  assert.equal(created.textAutoResize, "HEIGHT");
+  created.resize(400, created.height);
+  assert.equal(created.nativeLines().length, 2);
+  assert.equal(measuredWrap(capturedCopy, 40, (value) => ({ width: value.length })).length, 3,
+    "The previously exported hard newline would freeze an extra native line");
+  assert.equal(created.height, 48);
+  assert.equal(created.characters, authoredCopy);
+  const explicit = "  original indentation  \n\n\tsecond line with trailing spaces  ";
+  const preformatted = harness(page([]));
+  await preformatted.send({ type: "import-transfer", content: JSON.stringify(createFigmaTransfer(importFigmaJson(nativeTextFixture(explicit)).document)) });
+  assert.equal([...preformatted.all.values()].find((node) => node.type === "TEXT").characters, explicit);
+});
+
+test("native patches ignore soft-wrap content changes, apply source edits, and retain character concurrency guards", async () => {
+  const original = nativeTextFixture(), result = await prepareFigmaImport(original);
+  const text = result.document.nodes.find((node) => node.type === "text");
+  recordWrappedCopy(text);
+  const binding = createFigmaBinding(result);
+  recordWrappedCopy(text, "Text wraps across ordinary block flow \nwhen the parent frame becomes narrower.");
+  const wrapOnly = createFigmaPatch(binding, result.document);
+  assert.equal(wrapOnly.operations.length, 0, "Browser line wrapping is not a native character edit");
+  text.textSource = "Edited authored content\n\nkeeps its explicit lines.";
+  const transfer = createFigmaTransfer(result.document);
+  transfer.patch = createFigmaPatch(binding, result.document);
+  assert(transfer.patch.operations[0].changed.includes("text"));
+  assert(transfer.patch.operations[0].changed.includes("textSource"));
+  const runtime = harness(original);
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  const preview = runtime.messages.at(-1);
+  assert.equal(preview.type, "patch-preview", preview.message);
+  assert.deepEqual(preview.conflicts, []);
+  await runtime.send({ type: "apply-patch", token: preview.token });
+  assert.equal(runtime.messages.at(-1).type, "patched");
+  assert.equal(runtime.all.get("1:2").characters, text.textSource);
+  const concurrent = harness(original);
+  concurrent.all.get("1:2").characters = "Externally edited original Figma content";
+  await concurrent.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  assert(concurrent.messages.at(-1).conflicts.some((message) => message.includes("characters")));
+});
+
+test("native creation uses native truncation with full source, rejects malformed sources, and does not restore stale text", async () => {
+  const result = importFigmaJson(nativeTextFixture("Full authored content remains editable"));
+  const text = result.document.nodes.find((node) => node.type === "text");
+  text.text = "Full authored…";
+  text.textOverflow = "ellipsis";
+  delete text.textFlow;
+  text.layoutSizingVertical = "fixed";
+  const runtime = harness(page([]));
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(createFigmaTransfer(result.document)) });
+  const created = [...runtime.all.values()].find((node) => node.type === "TEXT");
+  assert.equal(created.characters, text.textSource);
+  assert.equal(created.textTruncation, "ENDING");
+  assert.equal(created.maxLines, 1);
+  await runtime.send({ type: "export-json", scope: "page" });
+  const exported = JSON.parse(runtime.messages.at(-1).content);
+  const restored = importFigmaJson(exported).document.nodes.find((node) => node.type === "text");
+  assert.equal(restored.textSource, text.textSource);
+  assert.equal(restored.textOverflow, "ellipsis");
+  assert.equal(restored.textFlow, undefined);
+  const stale = importFigmaJson(nativeTextFixture());
+  const staleText = stale.document.nodes.find((node) => node.type === "text");
+  recordWrappedCopy(staleText);
+  staleText.text = "Edited visible text\nwith a hard line.";
+  const changed = harness(page([]));
+  await changed.send({ type: "import-transfer", content: JSON.stringify(createFigmaTransfer(stale.document)) });
+  assert.equal([...changed.all.values()].find((node) => node.type === "TEXT").characters, staleText.text);
+  for (const invalid of ["x".repeat(4001), { text: "not a string" }]) {
+    const transfer = createFigmaTransfer(result.document);
+    transfer.pages[0].children[0].children[0].textSource = invalid;
+    const isolated = harness(page([]));
+    await isolated.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+    assert.equal(isolated.messages.at(-1).type, "error");
+    assert.equal(isolated.figma.root.children.length, 1);
+  }
+});
+
+test("source-bound native truncation patches preserve authored characters and clear live export metadata", async () => {
+  const source = nativeTextFixture("A full original label with editable authored characters");
+  const raw = source.children[0].children[0];
+  raw.style.textTruncation = "ENDING";
+  raw.style.maxLines = 1;
+  const result = await prepareFigmaImport(source);
+  const binding = createFigmaBinding(result);
+  const text = result.document.nodes.find((node) => node.type === "text");
+  assert.equal(text.textOverflow, "ellipsis");
+  delete text.textOverflow;
+  const transfer = createFigmaTransfer(result.document);
+  transfer.patch = createFigmaPatch(binding, result.document);
+  const runtime = harness(source);
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  const preview = runtime.messages.at(-1);
+  assert.equal(preview.type, "patch-preview", preview.message);
+  assert.deepEqual(preview.conflicts, []);
+  await runtime.send({ type: "apply-patch", token: preview.token });
+  const actual = runtime.all.get("1:2");
+  assert.equal(actual.characters, raw.characters);
+  assert.equal(actual.textTruncation, "DISABLED");
+  assert.equal(actual.maxLines, null);
+  await runtime.send({ type: "export-json", scope: "page" });
+  const exported = JSON.parse(runtime.messages.at(-1).content);
+  const restored = importFigmaJson(exported).document.nodes.find((node) => node.type === "text");
+  assert.equal(restored.textSource, raw.characters);
+  assert.equal(restored.textOverflow, undefined);
+});
 
 test("independent circular corners use native editable properties and export live values", async () => {
   const source = page([rect("1:2", { rectangleCornerRadii: [8, 24, 0, 16] })]);

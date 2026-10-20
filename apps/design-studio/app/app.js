@@ -7502,6 +7502,19 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
       node[key] = value;
     }
   }
+  if (
+    node.type === "text" && Object.hasOwn(changes, "text") && !Object.hasOwn(changes, "textSource")
+  ) {
+    // A text-only tool edit authors the same content as an inspector/inline edit.
+    // Otherwise reflow would restore the previous captured source over this edit.
+    if (Object.hasOwn(node, "textSource")) node.textSource = node.text;
+    delete node.textFlowWidth;
+    delete node.textMeasurement;
+    if (typeof node.text === "string" && !node.text.trim()) {
+      delete node.textFlow;
+      delete node.textOverflow;
+    }
+  }
   if (Object.hasOwn(changes, "fill") && !Object.hasOwn(changes, "fillPaints"))
     delete node.fillPaints;
   if (node.clipContent !== true) delete node.contentClipping;
