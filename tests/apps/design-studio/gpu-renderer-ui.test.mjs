@@ -9,7 +9,9 @@ import { PNG } from "pngjs";
 import {
   normalizeDesignDocument,
   serializeDesignDocument,
+  exportDesignSvg,
 } from "../../../apps/design-studio/app/document.mjs";
+import { comparePixels } from "../../../scripts/design-studio-production-fidelity.mjs";
 import { createDesignIndexPersistencePlan } from "../../../apps/design-studio/app/document-index.mjs";
 import { createDesignResourcePersistencePlan } from "../../../apps/design-studio/app/resource-store.mjs";
 
@@ -159,6 +161,129 @@ async function fixture(t, { capable = true, large = false, design = designFixtur
 async function frames(page) {
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
+
+test("actual GPU editor keeps system-font kerning aligned with the editable SVG at 1x", async (t) => {
+  const design = normalizeDesignDocument({
+    format: "codeshell.design",
+    version: 3,
+    name: "System text shaping",
+    canvas: { width: 640, height: 240, background: "#ffffff" },
+    tokens: { colors: [] },
+    resources: [],
+    activePageId: "page-1",
+    pages: [
+      {
+        id: "page-1",
+        name: "Text",
+        children: [
+          node("heading", "text", 36, 41.41, 568, 30, {
+            fill: "#0f172a",
+            text: "Editable Auto Layout",
+            fontFamily: "Arial",
+            fontSize: 24,
+            fontWeight: 700,
+            fontStyle: "normal",
+            lineHeight: 1.25,
+            textAlign: "left",
+            letterSpacing: 0,
+          }),
+        ],
+      },
+    ],
+  });
+  const { page } = await fixture(t, { design });
+  await active(page);
+  if ((await page.locator("#toggle-grid").getAttribute("aria-pressed")) === "true")
+    await page.locator("#toggle-grid").click();
+  const view = await page.locator("#stage").evaluate(async (canvas) => {
+    const nextFrame = () =>
+      new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const current = () => canvas.getContext("2d").getTransform();
+    const box = canvas.getBoundingClientRect();
+    canvas.dispatchEvent(
+      new WheelEvent("wheel", {
+        ctrlKey: true,
+        deltaY: Math.log(current().a / devicePixelRatio) / 0.006,
+        clientX: box.left,
+        clientY: box.top,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await nextFrame();
+    for (let index = 0; index < 5; index++) {
+      const matrix = current();
+      const x = matrix.e / devicePixelRatio,
+        y = matrix.f / devicePixelRatio;
+      if (x === 32 && y === 32) break;
+      canvas.dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaX: x - 32,
+          deltaY: y - 32,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await nextFrame();
+    }
+    const matrix = current();
+    return {
+      zoom: matrix.a / devicePixelRatio,
+      x: matrix.e / devicePixelRatio,
+      y: matrix.f / devicePixelRatio,
+      left: box.left,
+      top: box.top,
+    };
+  });
+  assert.equal(view.zoom, 1);
+  assert.equal(view.x, 32);
+  assert.equal(view.y, 32);
+  const actual = await page.screenshot({
+    clip: {
+      x: view.left + 32,
+      y: view.top + 32,
+      width: 640,
+      height: 240,
+    },
+  });
+  const reference = await page.context().newPage();
+  await reference.setViewportSize({ width: 640, height: 240 });
+  await reference.setContent(
+    `<style>html,body{margin:0;background:white}svg{display:block}</style>${exportDesignSvg(design)}`,
+  );
+  await reference.evaluate(() => document.fonts.ready);
+  const expected = await reference.screenshot();
+  await reference.close();
+  const comparison = comparePixels(expected, actual);
+  t.diagnostic(JSON.stringify(comparison.metrics));
+  const inkBounds = (bytes) => {
+    const image = PNG.sync.read(bytes);
+    let left = image.width,
+      top = image.height,
+      right = -1,
+      bottom = -1;
+    for (let y = 0; y < image.height; y++)
+      for (let x = 0; x < image.width; x++) {
+        const offset = (y * image.width + x) * 4;
+        if (![0, 1, 2].every((channel) => image.data[offset + channel] < 80)) continue;
+        left = Math.min(left, x);
+        top = Math.min(top, y);
+        right = Math.max(right, x);
+        bottom = Math.max(bottom, y);
+      }
+    return { left, top, right, bottom };
+  };
+  const actualInk = inkBounds(actual),
+    expectedInk = inkBounds(expected);
+  for (const side of ["left", "top", "right", "bottom"])
+    assert(
+      Math.abs(actualInk[side] - expectedInk[side]) <= 1,
+      "glyph bounds stay within one sampling pixel",
+    );
+  // The 2x system-font cache keeps antialiasing differences. Wrong kerning moves
+  // fully covered glyph pixels (delta 240), beyond these sampling differences.
+  assert(comparison.metrics.maximumChannelDelta <= 128);
+});
 async function active(page, expected = true, reason) {
   await page.waitForFunction(({ expected, reason }) =>
     document.querySelector("#stage-wrap").dataset.gpuActive === String(expected) &&

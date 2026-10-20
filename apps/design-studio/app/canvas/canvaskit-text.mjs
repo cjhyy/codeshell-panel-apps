@@ -117,6 +117,8 @@ export async function createCanvasKitText({
     measure.font = `${node.fontStyle || "normal"} ${node.fontWeight} ${node.fontSize}px ${designFontFamilyCss(alias ?? node.fontFamily)}`;
     measure.textBaseline = "hanging";
     measure.textAlign = "left";
+    // Canvas "auto" can disable pairs that the editable SVG text still kerns.
+    if ("fontKerning" in measure) measure.fontKerning = "normal";
     if ("letterSpacing" in measure) measure.letterSpacing = `${node.letterSpacing || 0}px`;
   }
   function hangingOffset(node, alias) {
@@ -347,6 +349,7 @@ export async function createCanvasKitText({
       ctx.translate(-left + padding, -top + padding);
       ctx.font = measure.font;
       ctx.textBaseline = "hanging";
+      if ("fontKerning" in ctx) ctx.fontKerning = "normal";
       if ("letterSpacing" in ctx) ctx.letterSpacing = `${node.letterSpacing || 0}px`;
       for (const fill of designFillPaints(node)) {
         if (fill.type === "SOLID") ctx.fillStyle = rgba(fill.color, fill.opacity);
