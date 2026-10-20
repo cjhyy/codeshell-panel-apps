@@ -14,6 +14,7 @@ import {
   planPortableDesign,
 } from "../../../apps/design-studio/app/portable-backup.mjs";
 import { preparePluginFile } from "../../../apps/design-studio/app/figma-plugin/v3-input.mjs";
+import { applyAllAutoLayouts } from "../../../apps/design-studio/app/layout.mjs";
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../apps/design-studio/app");
 const PNG =
@@ -110,6 +111,42 @@ async function fixture(t) {
     );
   return { page, capture, external, errors };
 }
+
+test("production HTML import keeps fixed-height flex children and CSS margins stable through reflow and resize", async (t) => {
+  const f = await fixture(t);
+  const html = `<style>*{box-sizing:border-box}body{margin:0}#root{display:flex;width:100%;height:240px;padding:20px;gap:16px}#fixed{width:100px;height:120px;background:blue}#fluid{flex:1;height:120px;background:orange}</style><main id="root"><div id="fixed"></div><div id="fluid"></div></main>`;
+  const captured = await f.capture(html, { rootSelector: "#root", width: 640, height: 240 });
+  const design = normalizeDesignDocument(captured.document);
+  const fixed = byHtmlId(design, "fixed"),
+    fluid = byHtmlId(design, "fluid");
+  const geometry = (node) => [node.x, node.y, node.width, node.height];
+  const before = design.nodes.map(geometry);
+  applyAllAutoLayouts(design.nodes);
+  assert.deepEqual(design.nodes.map(geometry), before);
+  assert.deepEqual(geometry(fixed), [20, 20, 100, 120]);
+  assert.deepEqual(geometry(fluid), [136, 20, 484, 120]);
+  design.nodes.find((node) => node.id === "html-viewport").width = 400;
+  byHtmlId(design, "root").width = 400;
+  applyAllAutoLayouts(design.nodes);
+  assert.deepEqual(geometry(fixed), [20, 20, 100, 120]);
+  assert.deepEqual(geometry(fluid), [136, 20, 244, 120]);
+
+  const margins = await f.capture(
+    `<style>*{box-sizing:border-box}body{margin:0}#root{display:flex;width:100%;height:240px;padding:20px;gap:12px}.item{width:100px;height:100px;margin-right:8px}</style><main id="root"><div id="first" class="item"></div><div id="second" class="item"></div></main>`,
+    { rootSelector: "#root", width: 640, height: 240 },
+  );
+  const marginDesign = normalizeDesignDocument(margins.document);
+  assert.equal(byHtmlId(marginDesign, "root").layout, "horizontal");
+  assert.equal(
+    margins.report.warnings.some((warning) => warning.code === "layout-margin-fixed"),
+    false,
+  );
+  applyAllAutoLayouts(marginDesign.nodes);
+  assert.deepEqual(geometry(byHtmlId(marginDesign, "first")), [20, 20, 100, 100]);
+  assert.deepEqual(geometry(byHtmlId(marginDesign, "second")), [140, 20, 100, 100]);
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});
 
 test("actual HTML capture imports editable v3, survives editing and a complete file, then the Figma plugin restores exact local assets", async (t) => {
   const f = await fixture(t);

@@ -7221,9 +7221,49 @@
           }
         }
       }
+      function captureLayoutValues(tree) {
+        const values = /* @__PURE__ */ new Map();
+        const visit = (node) => {
+          if (node.nodeType === "element" && node.metadata?.semantic) {
+            try {
+              const style = node.domNode.computedStyleMap?.();
+              if (style) {
+                const properties = [
+                  "width",
+                  "height",
+                  "flex-basis",
+                  "margin-top",
+                  "margin-right",
+                  "margin-bottom",
+                  "margin-left"
+                ];
+                const record = {};
+                for (const property of properties) {
+                  const value = style.get(property)?.toString();
+                  if (value) record[property] = value;
+                }
+                values.set(node.metadata.semantic, record);
+              }
+            } catch {
+            }
+          }
+          for (const child of node.children) visit(child);
+        };
+        visit(tree);
+        return values;
+      }
       function convert(root, options) {
         const tree = traverseDOM(root, { maxDepth: options.maxDepth });
-        return tree ? renderToDesignDSL(tree, options) : null;
+        if (!tree) return null;
+        const values = captureLayoutValues(tree);
+        const result = renderToDesignDSL(tree, options);
+        const attach = (node) => {
+          const cssLayout = node.nodeType !== "text" && node.semantic && values.get(node.semantic);
+          if (cssLayout && Object.keys(cssLayout).length > 0) node.cssLayout = cssLayout;
+          if (node.nodeType === "container") for (const child of node.children) attach(child);
+        };
+        if (result) attach(result);
+        return result;
       }
       return __toCommonJS(entry_exports);
     })();

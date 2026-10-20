@@ -14,6 +14,7 @@ import {
 import { transformedNodeBoundsInTree } from "../../../apps/design-studio/app/geometry.mjs";
 import { resolveDesignResource } from "../../../apps/design-studio/app/resource-store.mjs";
 import { createFigmaTransfer } from "../../../apps/design-studio/app/figma-bridge.mjs";
+import { applyAllAutoLayouts } from "../../../apps/design-studio/app/layout.mjs";
 import {
   createPortableDesign,
   planPortableDesign,
@@ -176,7 +177,7 @@ test("flex direction, wrap, padding, gaps and editable child sizing are represen
   assert.equal(child.layoutAlignSelf, "end");
 });
 
-test("uniform pixel Grid remains editable; irregular grids and CSS child margins keep measured geometry with diagnostics", async () => {
+test("uniform pixel Grid remains editable; irregular grids and nonuniform CSS child margins keep measured geometry with diagnostics", async () => {
   const grid = {
     display: "grid",
     grid: {
@@ -197,13 +198,150 @@ test("uniform pixel Grid remains editable; irregular grids and CSS child margins
   assert.equal(allNodes(irregular)[0].layout, "none");
   assert.ok(codes(irregular).includes("grid-fixed-geometry"));
   const margins = await designNodeToV3(
-    container([text("Margin", { margin: { left: 10 } })], {
+    container([text("Margin", { margin: { left: 10 } }), text("Different margin")], {
       layout: { display: "flex", flex: { direction: "row" } },
     }),
     options,
   );
   assert.equal(allNodes(margins)[0].layout, "none");
   assert.ok(codes(margins).includes("layout-margin-fixed"));
+});
+
+test("captured CSS sizing keeps fixed cross sizes, flex fill, intrinsic hug and definite basis editable", async () => {
+  const children = [
+    container([], {
+      bounds: bounds(12, 12, 100, 24),
+      cssLayout: { width: "100px", height: "24px", "flex-basis": "auto" },
+    }),
+    container([], {
+      bounds: bounds(120, 12, 168, 24),
+      cssLayout: { width: "auto", height: "24px", "flex-basis": "0%" },
+      flexItem: { grow: 1, shrink: 1, basis: 0, alignSelf: "auto" },
+    }),
+  ];
+  const tree = container(children, {
+    bounds: bounds(0, 0, 300, 100),
+    cssLayout: { width: "100%", height: "100px" },
+    layout: {
+      display: "flex",
+      padding: { top: 12, right: 12, bottom: 12, left: 12 },
+      flex: { direction: "row", gap: { row: 0, column: 8 }, alignItems: "stretch" },
+    },
+  });
+  const before = JSON.stringify(tree),
+    result = await designNodeToV3(tree, options);
+  const nodes = allNodes(result),
+    [frame, fixed, fluid] = nodes;
+  assert.equal(JSON.stringify(tree), before);
+  assert.equal(frame.layoutSizingHorizontal, "fixed");
+  assert.equal(fixed.layoutSizingVertical, "fixed");
+  assert.equal(fixed.layoutAlignSelf, "start");
+  assert.equal(fluid.layoutSizingHorizontal, "fill");
+  assert.equal(fluid.layoutAlignSelf, "start");
+  frame.width = 400;
+  applyAllAutoLayouts(nodes);
+  assert.deepEqual([fixed.x, fixed.y, fixed.width, fixed.height], [12, 12, 100, 24]);
+  assert.deepEqual([fluid.x, fluid.y, fluid.width, fluid.height], [120, 12, 268, 24]);
+
+  const intrinsic = container([], {
+    cssLayout: { width: "fit-content", height: "auto", "flex-basis": "auto" },
+    layout: { display: "inline-flex", flex: { direction: "row", alignItems: "start" } },
+  });
+  const hug = allNodes(await designNodeToV3(intrinsic, options))[0];
+  assert.deepEqual([hug.layoutSizingHorizontal, hug.layoutSizingVertical], ["hug", "hug"]);
+  const crossHug = allNodes(
+    await designNodeToV3(
+      container([intrinsic], {
+        layout: { display: "flex", flex: { direction: "column", alignItems: "stretch" } },
+      }),
+      options,
+    ),
+  )[1];
+  assert.equal(crossHug.layoutSizingHorizontal, "hug");
+  assert.equal(crossHug.layoutAlignSelf, "start");
+  const basis = structuredClone(intrinsic);
+  basis.cssLayout["flex-basis"] = "80px";
+  const basisNodes = allNodes(
+    await designNodeToV3(
+      container([basis], {
+        layout: { display: "flex", flex: { direction: "row", alignItems: "start" } },
+      }),
+      options,
+    ),
+  );
+  assert.equal(basisNodes[1].layoutSizingHorizontal, "fixed");
+});
+
+test("uniform nonnegative flex margins become padding and gaps without changing measured flow positions", async () => {
+  const child = (x) =>
+    container([], {
+      bounds: bounds(x, 14, 40, 20),
+      margin: { top: 4, right: 6, bottom: 4, left: 6 },
+      cssLayout: { width: "40px", height: "20px" },
+    });
+  const tree = container([child(16), child(76)], {
+    bounds: bounds(0, 0, 300, 100),
+    layout: {
+      display: "flex",
+      padding: { top: 10, right: 10, bottom: 10, left: 10 },
+      flex: { direction: "row", gap: { row: 0, column: 8 }, alignItems: "start" },
+    },
+  });
+  const result = await designNodeToV3(tree, options),
+    nodes = allNodes(result);
+  assert.equal(codes(result).includes("layout-margin-fixed"), false);
+  assert.equal(nodes[0].layout, "horizontal");
+  assert.deepEqual(
+    [nodes[0].paddingTop, nodes[0].paddingRight, nodes[0].columnGap, nodes[0].rowGap],
+    [14, 16, 20, 8],
+  );
+  applyAllAutoLayouts(nodes);
+  assert.deepEqual(
+    nodes.slice(1).map(({ x, y, width, height }) => [x, y, width, height]),
+    [
+      [16, 14, 40, 20],
+      [76, 14, 40, 20],
+    ],
+  );
+  const transfer = createFigmaTransfer({ ...result.document, nodes });
+  assert.equal(transfer.pages[0].children[0].layout, "horizontal");
+  assert.equal(
+    transfer.pages[0].children[0].children.some((node) => node.layoutPositioning === "absolute"),
+    false,
+  );
+});
+
+test("main-axis auto margins retain editable free space and out-of-flow margins do not disable flex", async () => {
+  const tree = container(
+    [
+      container([], { bounds: bounds(0, 0, 50, 20) }),
+      container([], {
+        bounds: bounds(250, 0, 50, 20),
+        margin: { left: 192 },
+        cssLayout: { "margin-left": "auto" },
+      }),
+      container([], {
+        bounds: bounds(20, 40, 10, 10),
+        positioning: { mode: "absolute" },
+        margin: { left: 5, top: 10 },
+      }),
+    ],
+    {
+      bounds: bounds(0, 0, 300, 100),
+      layout: {
+        display: "flex",
+        flex: { direction: "row", gap: { row: 0, column: 8 }, alignItems: "start" },
+      },
+    },
+  );
+  const result = await designNodeToV3(tree, options),
+    nodes = allNodes(result);
+  assert.equal(codes(result).includes("layout-margin-fixed"), false);
+  assert.equal(nodes[0].layout, "horizontal");
+  assert.equal(nodes[2].layoutMarginBefore, "auto");
+  nodes[0].width = 400;
+  applyAllAutoLayouts(nodes);
+  assert.deepEqual([nodes[1].x, nodes[2].x, nodes[3].x, nodes[3].y], [0, 350, 20, 40]);
 });
 
 test("viewport frame crops the first screen while preserving full editable content below it", async () => {

@@ -38,6 +38,18 @@ const semanticSuffix = (value) => {
     hash = Math.imul(hash ^ value.charCodeAt(index), 16777619);
   return `-${(hash >>> 0).toString(36)}`;
 };
+const cssLayoutValue = (source, property) =>
+  String(
+    source.cssLayout?.[property] ??
+      (source.nodeType !== "text" ? source.rawStyles?.[property] : undefined) ??
+      "",
+  )
+    .trim()
+    .toLowerCase();
+const mainAutoMarginBefore = (source, parent) =>
+  !parent.layoutReverse &&
+  ["horizontal", "vertical"].includes(parent.layout) &&
+  cssLayoutValue(source, parent.layout === "horizontal" ? "margin-left" : "margin-top") === "auto";
 const svgElements = new Set(
   "svg g path rect circle ellipse line polyline polygon defs clipPath mask linearGradient radialGradient stop pattern text tspan title desc metadata filter feGaussianBlur feOffset feBlend feColorMatrix feComposite feFlood feMerge feMergeNode feMorphology feTurbulence feDisplacementMap use symbol"
     .toLowerCase()
@@ -443,18 +455,71 @@ export async function designNodeToV3(tree, options = {}) {
           "不规则 Grid 已保留测量位置；网格轨道、命名区域及自动放置关系未保留。",
         );
     }
-    const margins = (source.children ?? []).some((child) =>
-      Object.values(child.margin ?? child.layout?.margin ?? {}).some(
-        (value) => finite(value) !== 0,
-      ),
+    const flowChildren = (source.children ?? []).filter(
+      (child) =>
+        child.visible !== false &&
+        child.layout?.display !== "none" &&
+        !["absolute", "fixed"].includes(child.positioning?.mode),
+    );
+    const margins = flowChildren.some((child) =>
+      ["top", "right", "bottom", "left"].some((side) => {
+        const value = cssLayoutValue(child, `margin-${side}`);
+        if (
+          value === "auto" &&
+          mainAutoMarginBefore(child, node) &&
+          side === (node.layout === "horizontal" ? "left" : "top")
+        )
+          return false;
+        return value === "auto" || finite((child.margin ?? child.layout?.margin)?.[side]) !== 0;
+      }),
     );
     if (node.layout !== "none" && margins) {
-      node.layout = "none";
-      warn(
-        "layout-margin-fixed",
-        node.id,
-        "子图层 CSS 外边距不受 v3 完整支持，已保留固定几何避免重新排列失真。",
+      const sides = ["top", "right", "bottom", "left"];
+      const spacing = flowChildren.map((child) =>
+        sides.map((side) => finite((child.margin ?? child.layout?.margin)?.[side])),
       );
+      const uniform =
+        ["horizontal", "vertical"].includes(node.layout) &&
+        spacing.length > 0 &&
+        spacing.every((values, index) =>
+          values.every(
+            (value, side) =>
+              value >= 0 &&
+              Math.abs(value - spacing[0][side]) < 0.01 &&
+              cssLayoutValue(flowChildren[index], `margin-${sides[side]}`) !== "auto",
+          ),
+        ) &&
+        // A percentage box plus margins can intentionally overflow its parent;
+        // FILL would instead consume the newly inset content box.
+        flowChildren.every((child) =>
+          ["width", "height"].every((axis) => !cssLayoutValue(child, axis).includes("%")),
+        );
+      const [top, right, bottom, left] = spacing[0] ?? [];
+      const rowGap = (node.rowGap ?? node.gap) + top + bottom;
+      const columnGap = (node.columnGap ?? node.gap) + left + right;
+      const representable =
+        uniform &&
+        rowGap <= 2000 &&
+        columnGap <= 2000 &&
+        ["Top", "Right", "Bottom", "Left"].every(
+          (side, index) => node[`padding${side}`] + spacing[0][index] <= 2000,
+        );
+      if (representable) {
+        // Flex margins do not collapse. Equal per-child margins are exactly an
+        // outer inset plus extra spacing between adjacent items/lines.
+        for (const [index, side] of ["Top", "Right", "Bottom", "Left"].entries())
+          node[`padding${side}`] += spacing[0][index];
+        node.rowGap = rowGap;
+        node.columnGap = columnGap;
+        node.gap = node.layout === "horizontal" ? columnGap : rowGap;
+      } else {
+        node.layout = "none";
+        warn(
+          "layout-margin-fixed",
+          node.id,
+          "子图层 CSS 外边距不受 v3 完整支持，已保留固定几何避免重新排列失真。",
+        );
+      }
     }
     for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"])
       if (sourceLayout.sizing?.[key] !== undefined && sourceLayout.sizing[key] > 0)
@@ -468,6 +533,58 @@ export async function designNodeToV3(tree, options = {}) {
     if (node.clipContent) node.contentClipping = "intentional";
     if (["scroll", "auto"].includes(source.overflow))
       warn("scroll-static", node.id, "滚动容器保留静态裁剪；没有交互滚动行为。");
+  };
+  const sizing = (source, node, parent) => {
+    const parentAuto =
+      node.layoutPositioning !== "absolute" &&
+      parent &&
+      ["horizontal", "vertical"].includes(parent.layout);
+    const ownAuto = ["horizontal", "vertical", "grid"].includes(node.layout);
+    const mainAxis = parent?.layout === "vertical" ? "Vertical" : "Horizontal";
+    const crossAxis = mainAxis === "Horizontal" ? "Vertical" : "Horizontal";
+    const inheritedAlignment = node.layoutAlignSelf;
+    const effectiveAlignment =
+      inheritedAlignment && inheritedAlignment !== "auto" ? inheritedAlignment : parent?.alignItems;
+    for (const [axis, property] of [
+      ["Horizontal", "width"],
+      ["Vertical", "height"],
+    ]) {
+      const value = cssLayoutValue(source, property);
+      if (!value) continue;
+      const intrinsic = ["auto", "min-content", "max-content", "fit-content"].includes(value);
+      let mode = "fixed";
+      if (parentAuto && /^100(?:\.0+)?%$/u.test(value)) mode = "fill";
+      else if (ownAuto && intrinsic) {
+        // Block-level auto width fills its containing block; a root's measured
+        // width stays fixed until that containing layout is actually represented.
+        if (parentAuto || axis === "Vertical" || source.layout?.display === "inline-flex")
+          mode = "hug";
+      }
+      if (parentAuto && axis === crossAxis && value === "auto" && effectiveAlignment === "stretch")
+        mode = "fill";
+      node[`layoutSizing${axis}`] = mode;
+      if (
+        parentAuto &&
+        axis === crossAxis &&
+        value !== "auto" &&
+        effectiveAlignment === "stretch"
+      ) {
+        // CSS stretch ignores a definite cross size. The v3 layout engine uses
+        // an explicit child alignment to distinguish that case from stretch.
+        node.layoutAlignSelf = "start";
+      }
+    }
+    if (!parentAuto || node.layoutPositioning === "absolute") return;
+    if (mainAutoMarginBefore(source, parent)) node.layoutMarginBefore = "auto";
+    if (source.flexItem?.grow > 0) node[`layoutSizing${mainAxis}`] = "fill";
+    else {
+      const basis = cssLayoutValue(source, "flex-basis");
+      if (
+        basis &&
+        !["auto", "content", "min-content", "max-content", "fit-content"].includes(basis)
+      )
+        node[`layoutSizing${mainAxis}`] = "fixed";
+    }
   };
   const transformPoint = (point, center, degrees) => {
     const radians = (degrees * Math.PI) / 180,
@@ -722,10 +839,6 @@ export async function designNodeToV3(tree, options = {}) {
       for (const [index, child] of (source.children ?? []).entries()) {
         const converted = await convert(child, [...path, index], anchor, [...ancestors, node]);
         if (node.layout !== "none") {
-          if (child.flexItem?.grow > 0)
-            converted[
-              node.layout === "vertical" ? "layoutSizingVertical" : "layoutSizingHorizontal"
-            ] = "fill";
           if (child.flexItem?.alignSelf)
             converted.layoutAlignSelf = alignment(
               child.flexItem.alignSelf,
@@ -734,12 +847,14 @@ export async function designNodeToV3(tree, options = {}) {
               converted.id,
             );
         }
+        sizing(child, converted, node);
         node.children.push(converted);
       }
     }
     return node;
   };
   const converted = await convert(tree, [0], { x: 0, y: 0 }, []);
+  sizing(tree, converted, null);
   const bounds = options.captureBounds;
   const viewportWidth = bounds ? bounds.right - bounds.left : options.viewportWidth;
   const viewportHeight = bounds ? bounds.bottom - bounds.top : options.viewportHeight;

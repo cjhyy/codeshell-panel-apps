@@ -33,6 +33,16 @@ imports or local source checkout. The caller owns safe HTML rendering, resource
 loading, input bounds, and adapter validation. This module measures an existing
 DOM; it does not itself create or load HTML documents.
 
+The integration also records CSS Typed OM width, height, flex basis, and margins
+as `cssLayout` on element-backed DesignNodes. These values retain `auto`,
+percentages and intrinsic sizing keywords separately from the upstream measured
+pixel bounds. Anonymous text never inherits its parent's box sizing. Browsers
+without CSS Typed OM retain the original measured conversion. The v3 adapter
+uses this metadata for editable Hug/Fill/Fixed sizing, definite cross-axis sizes,
+and main-axis auto margins. Uniform nonnegative flex margins become container
+insets and item/line gaps; unsupported nonuniform or negative margins retain a
+conversion diagnostic rather than claiming preserved Auto Layout behavior.
+
 ## MIT license terms
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

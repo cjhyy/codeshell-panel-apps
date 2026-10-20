@@ -233,3 +233,46 @@ test("independent iframe calls keep their own semantics and current DOM metadata
   assert.deepEqual(f.externalRequests, []);
   assert.deepEqual(f.errors, []);
 });
+
+test("capture retains CSS sizing intent separately from resolved pixels and does not apply box sizes to anonymous text", async (t) => {
+  const f = await fixture(t);
+  const result = await f.page.evaluate(async () => {
+    const { convertToDesignDSL } = await import("/html2figma-browser.mjs");
+    const iframe = document.createElement("iframe");
+    iframe.sandbox = "allow-same-origin";
+    iframe.srcdoc = `<!doctype html><style>body{margin:0}#root{display:flex;width:100%;height:120px}#fixed{width:40px;height:24px}#fluid{flex:1;height:24px;margin-left:auto}#hug{display:inline-flex;width:fit-content;height:auto}</style><main id="root"><div id="fixed"></div><div id="fluid"></div><div id="hug">Label</div></main>`;
+    const loaded = new Promise((resolve) =>
+      iframe.addEventListener("load", resolve, { once: true }),
+    );
+    document.body.append(iframe);
+    await loaded;
+    try {
+      const root = iframe.contentDocument.querySelector("#root");
+      const before = iframe.contentDocument.documentElement.outerHTML;
+      const tree = convertToDesignDSL(root, { includeRawStyles: false });
+      return { tree, unchanged: iframe.contentDocument.documentElement.outerHTML === before };
+    } finally {
+      iframe.remove();
+    }
+  });
+  const nodes = [];
+  const visit = (node) => {
+    nodes.push(node);
+    for (const child of node.children ?? []) visit(child);
+  };
+  visit(result.tree);
+  const byId = (id) =>
+    nodes.find((node) => node.nodeType !== "text" && node.semantic?.attributes?.id === id);
+  assert.equal(result.unchanged, true);
+  assert.equal(byId("root").cssLayout.width, "100%");
+  assert.equal(byId("fixed").cssLayout.height, "24px");
+  assert.equal(byId("fluid").cssLayout.width, "auto");
+  assert.equal(byId("fluid").cssLayout["margin-left"], "auto");
+  assert.equal(byId("hug").cssLayout.width, "fit-content");
+  assert.equal(byId("hug").cssLayout.height, "auto");
+  assert.ok(
+    nodes.filter((node) => node.nodeType === "text").every((node) => node.cssLayout === undefined),
+  );
+  assert.deepEqual(f.externalRequests, []);
+  assert.deepEqual(f.errors, []);
+});
