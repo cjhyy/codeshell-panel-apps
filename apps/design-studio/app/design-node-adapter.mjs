@@ -105,6 +105,7 @@ export async function designNodeToV3(tree, options = {}) {
   const seen = new Set(),
     assets = new Map(),
     fonts = [];
+  const autoMarginOverrides = new WeakMap();
   const localResources =
     options.resources instanceof Map
       ? options.resources
@@ -114,6 +115,18 @@ export async function designNodeToV3(tree, options = {}) {
     sourceNodes = 0,
     importedNodes = 0,
     totalImageBytes = 0;
+  const sourceReferences = new WeakSet();
+  const validateSourceGraph = (source, depth) => {
+    if (!object(source) || sourceReferences.has(source) || depth > 32)
+      throw new Error("DesignNode 包含无效、循环、重复引用或超过 32 层的结构");
+    sourceReferences.add(source);
+    if (++sourceNodes > MAX_DESIGN_NODES_PER_PAGE)
+      throw new Error("DesignNode 超过 10,000 个源节点");
+    if (source.children !== undefined && !Array.isArray(source.children))
+      throw new Error("DesignNode children 必须是数组");
+    for (const child of source.children ?? []) validateSourceGraph(child, depth + 1);
+  };
+  validateSourceGraph(tree, 1);
   const warn = (code, nodeId, message) => {
     warningCount += 1;
     if (warnings.length < 500) warnings.push({ code, nodeId, message });
@@ -471,8 +484,56 @@ export async function designNodeToV3(tree, options = {}) {
         child.layout?.display !== "none" &&
         !["absolute", "fixed"].includes(child.positioning?.mode),
     );
+    if (
+      ["horizontal", "vertical"].includes(node.layout) &&
+      (source.semantic || source.name !== "margin-wrapper")
+    ) {
+      const horizontal = node.layout === "horizontal";
+      const mainSides = horizontal ? ["left", "right"] : ["top", "bottom"];
+      const crossSides = horizontal ? ["top", "bottom"] : ["left", "right"];
+      for (const child of flowChildren) {
+        const handled = new Set();
+        const isAuto = (side) => cssLayoutValue(child, `margin-${side}`) === "auto";
+        const zeroOrAuto = (side) =>
+          isAuto(side) || finite((child.margin ?? child.layout?.margin)?.[side]) === 0;
+        const [before, after] = mainSides.map(isAuto);
+        const reversedOverflow =
+          node.layoutReverse &&
+          finite(child.bounds?.[horizontal ? "width" : "height"]) >
+            node[horizontal ? "width" : "height"] -
+              node[horizontal ? "paddingLeft" : "paddingTop"] -
+              node[horizontal ? "paddingRight" : "paddingBottom"];
+        // One item's main-axis auto margins are exactly the parent's alignment.
+        // Do not replace distributed margins in a multi-item or wrapping line.
+        const singleMain =
+          flowChildren.length === 1 &&
+          node.layoutWrap === "none" &&
+          !reversedOverflow &&
+          (before || after) &&
+          mainSides.every(zeroOrAuto);
+        if (singleMain) {
+          node.justifyContent = before && after ? "center" : before ? "end" : "start";
+          if (node.layoutReverse && node.justifyContent !== "center")
+            node.justifyContent = node.justifyContent === "start" ? "end" : "start";
+          for (const side of mainSides) if (isAuto(side)) handled.add(side);
+        }
+        const [crossBefore, crossAfter] = crossSides.map(isAuto);
+        const crossAuto =
+          (crossBefore || crossAfter) && crossSides.every(zeroOrAuto) && node.layoutWrap === "none";
+        if (crossAuto) for (const side of crossSides) if (isAuto(side)) handled.add(side);
+        if (handled.size)
+          autoMarginOverrides.set(child, {
+            handled,
+            singleMain,
+            ...(crossAuto
+              ? { crossAlign: crossBefore && crossAfter ? "center" : crossBefore ? "end" : "start" }
+              : {}),
+          });
+      }
+    }
     const margins = flowChildren.some((child) =>
       ["top", "right", "bottom", "left"].some((side) => {
+        if (autoMarginOverrides.get(child)?.handled.has(side)) return false;
         const value = cssLayoutValue(child, `margin-${side}`);
         if (
           value === "auto" &&
@@ -486,7 +547,11 @@ export async function designNodeToV3(tree, options = {}) {
     if (node.layout !== "none" && margins) {
       const sides = ["top", "right", "bottom", "left"];
       const spacing = flowChildren.map((child) =>
-        sides.map((side) => finite((child.margin ?? child.layout?.margin)?.[side])),
+        sides.map((side) =>
+          autoMarginOverrides.get(child)?.handled.has(side)
+            ? 0
+            : finite((child.margin ?? child.layout?.margin)?.[side]),
+        ),
       );
       const uniform =
         ["horizontal", "vertical"].includes(node.layout) &&
@@ -496,7 +561,8 @@ export async function designNodeToV3(tree, options = {}) {
             (value, side) =>
               value >= 0 &&
               Math.abs(value - spacing[0][side]) < 0.01 &&
-              cssLayoutValue(flowChildren[index], `margin-${sides[side]}`) !== "auto",
+              (autoMarginOverrides.get(flowChildren[index])?.handled.has(sides[side]) ||
+                cssLayoutValue(flowChildren[index], `margin-${sides[side]}`) !== "auto"),
           ),
         ) &&
         // A percentage box plus margins can intentionally overflow its parent;
@@ -549,6 +615,8 @@ export async function designNodeToV3(tree, options = {}) {
       node.layoutPositioning !== "absolute" &&
       parent &&
       ["horizontal", "vertical"].includes(parent.layout);
+    const marginOverride = parentAuto ? autoMarginOverrides.get(source) : undefined;
+    if (marginOverride?.crossAlign) node.layoutAlignSelf = "start";
     const ownAuto = ["horizontal", "vertical", "grid"].includes(node.layout);
     const mainAxis = parent?.layout === "vertical" ? "Vertical" : "Horizontal";
     const crossAxis = mainAxis === "Horizontal" ? "Vertical" : "Horizontal";
@@ -585,7 +653,8 @@ export async function designNodeToV3(tree, options = {}) {
       }
     }
     if (!parentAuto || node.layoutPositioning === "absolute") return;
-    if (mainAutoMarginBefore(source, parent)) node.layoutMarginBefore = "auto";
+    if (!marginOverride?.singleMain && mainAutoMarginBefore(source, parent))
+      node.layoutMarginBefore = "auto";
     if (source.flexItem?.grow > 0) node[`layoutSizing${mainAxis}`] = "fill";
     else {
       const basis = cssLayoutValue(source, "flex-basis");
@@ -606,16 +675,106 @@ export async function designNodeToV3(tree, options = {}) {
     };
   };
   const origin = { x: finite(tree.bounds?.x), y: finite(tree.bounds?.y) };
+  const wrapCrossAutoMargins = (source, node, parent) => {
+    const override = autoMarginOverrides.get(source);
+    if (!override?.crossAlign || !["horizontal", "vertical"].includes(parent.layout)) return node;
+    const horizontal = parent.layout === "horizontal";
+    const cross = horizontal ? "Vertical" : "Horizontal";
+    const main = horizontal ? "Horizontal" : "Vertical";
+    const paddingStart = horizontal ? parent.paddingTop : parent.paddingLeft;
+    const paddingEnd = horizontal ? parent.paddingBottom : parent.paddingRight;
+    const crossSize = horizontal ? "Height" : "Width";
+    const minimumCross =
+      node[`layoutSizing${cross}`] === "fill"
+        ? Math.max(1, finite(node[`min${crossSize}`], 1))
+        : node[crossSize.toLowerCase()];
+    if (node[`layoutSizing${cross}`] === "hug")
+      warn(
+        "auto-margin-intrinsic-minimum",
+        node.id,
+        "自动外边距包装框使用导入时的内容最小尺寸；编辑 Hug 内容后需要核对该最小尺寸。",
+      );
+    const wrapper = base(`${node.id}-auto-margin`, "frame", `${node.name} auto margins`, {
+      x: horizontal ? node.x : parent.x + paddingStart,
+      y: horizontal ? parent.y + paddingStart : node.y,
+      width: horizontal
+        ? node.width
+        : Math.max(minimumCross, parent.width - paddingStart - paddingEnd),
+      height: horizontal
+        ? Math.max(minimumCross, parent.height - paddingStart - paddingEnd)
+        : node.height,
+    });
+    Object.assign(wrapper, {
+      layout: horizontal ? "vertical" : "horizontal",
+      gap: 0,
+      padding: 0,
+      alignItems: "start",
+      justifyContent: override.crossAlign,
+      layoutAlignSelf: "stretch",
+      [`layoutSizing${cross}`]: "fill",
+      [`layoutSizing${main}`]: node[`layoutSizing${main}`] ?? "fixed",
+      [horizontal ? "minHeight" : "minWidth"]: minimumCross,
+      children: [node],
+    });
+    for (const prefix of ["min", "max"]) {
+      const property = `${prefix}${horizontal ? "Width" : "Height"}`;
+      if (node[property] !== undefined) wrapper[property] = node[property];
+    }
+    if (node.layoutMarginBefore) {
+      wrapper.layoutMarginBefore = node.layoutMarginBefore;
+      delete node.layoutMarginBefore;
+    }
+    // Main-axis alignment has nonnegative free space. A perpendicular wrapper
+    // preserves CSS auto-margin overflow toward cross-end, whereas align-self
+    // center/end would move oversized content before the parent's content box.
+    node.layoutAlignSelf = "start";
+    return wrapper;
+  };
   const convert = async (source, path, parentAnchor, ancestors) => {
     if (!object(source) || seen.has(source) || path.length > 32)
       throw new Error("DesignNode 包含无效、循环、重复引用或超过 32 层的结构");
     seen.add(source);
-    if (++sourceNodes > MAX_DESIGN_NODES_PER_PAGE)
-      throw new Error("DesignNode 超过 10,000 个源节点");
     if (!["container", "text", "image", "svg"].includes(source.nodeType))
       throw new Error(`不支持的 DesignNode 类型：${source.nodeType}`);
     if (source.children !== undefined && !Array.isArray(source.children))
       throw new Error("DesignNode children 必须是数组");
+    if (["flex", "inline-flex"].includes(source.layout?.display) && source.children) {
+      // The pinned converter turns resolved auto margins into fixed padding in
+      // synthetic wrappers. Recover the original child before interpreting its
+      // captured CSS intent; its measured bounds remain parent-relative.
+      source = {
+        ...source,
+        children: source.children.map((wrapper) => {
+          if (
+            wrapper?.nodeType !== "container" ||
+            wrapper.name !== "margin-wrapper" ||
+            wrapper.semantic ||
+            wrapper.children?.length !== 1
+          )
+            return wrapper;
+          const child = wrapper.children[0];
+          const sides = ["top", "right", "bottom", "left"];
+          const values = sides.map((side) => cssLayoutValue(child, `margin-${side}`));
+          if (
+            !values.includes("auto") ||
+            !values.every((value) => value === "auto" || /^0(?:\.0+)?(?:px)?$/u.test(value))
+          )
+            return wrapper;
+          return {
+            ...child,
+            bounds: {
+              ...child.bounds,
+              x:
+                finite(child.bounds?.x) +
+                (coordinateSpace === "parent-relative" ? finite(wrapper.bounds?.x) : 0),
+              y:
+                finite(child.bounds?.y) +
+                (coordinateSpace === "parent-relative" ? finite(wrapper.bounds?.y) : 0),
+            },
+          };
+        }),
+      };
+    }
     const id = `html-${path.map((value) => value.toString(36)).join("-")}${semanticSuffix(source.semantic?.semanticId)}`;
     let width = number(source.bounds?.width, 1, 1, 20000, id, "width"),
       height = number(source.bounds?.height, 1, 1, 20000, id, "height");
@@ -858,7 +1017,7 @@ export async function designNodeToV3(tree, options = {}) {
             );
         }
         sizing(child, converted, node);
-        node.children.push(converted);
+        node.children.push(wrapCrossAutoMargins(child, converted, node));
       }
     }
     return node;
