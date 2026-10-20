@@ -161,3 +161,54 @@ self:auto 维持一致，CSS 确定尺寸通过显式 self:start 避免拉伸。
 
 第二轮集成后的 targeted 81/81、validate、typecheck、build:check 和两插件确定性检查通过。
 等待 SVG 引用修复和实际 CanvasKit 文字修复后，再跑完整串行 Design Studio 门禁。
+
+## 第三轮与后续工作入口
+
+- `24f10c5`：SVG href/xlink 引用链、符号定义、XML 命名空间和 currentColor 保留。
+  真实 HTML → v3 → portable → 插件 UI 资源转换的最小样例严格 0 像素差异。
+- `74e668c`：内部 CSS opacity 冻结到 SVG；根 opacity 只由 v3 图层应用一次。
+  包含分组、path、use、外部 symbol 定义的透明叠加回归从 1,728 像素降为 0。
+- `82e0887`：CanvasKit 系统字体的 Canvas2D 测量/缓存绘制显式使用 normal 字偶距。
+  原默认 auto 在标题测量得到 240 px，与 SVG 的 239.109375 px 不同。
+  原始 Canvas2D 与 SVG 标题直接对照现在为 0 像素差；GPU 保持原 2× 缓存质量后，
+  全卡片差异 4,120 → 3,750，最大通道差 240 → 101，平均 RGBA 误差
+  0.7141 → 0.3432。仍非严格全零，不改变设计几何或字体来掩盖采样差异。
+
+第三轮串行完整 Design Studio 门禁基于 `24f10c5`：主阶段 355 通过/1 可选跳过，
+UI 阶段 88 通过/1 可选跳过，合计 443 通过/2 跳过/0 失败。
+随后两个 scoped 修复：GPU UI/cache 11/11；SVG runtime/import/adapter/HTML plugin
+针对性检查通过。最终日志在主任务父目录：`combined-design-final.log`、
+`gpu-kerning-final.log`、`svg-opacity-final.log` 与 `checkpoint-*.log`。
+两插件和 vendor 可独立确定性重建，未编辑任何用户已有设计或生产安装。
+
+Bootstrap 初始基线与 SVG 修复后的严格像素比例：
+
+| 状态             | 初始基线 | alpha + SVG 修复后 |
+| ---------------- | -------: | -----------------: |
+| 1280 px 初始导入 |   16.79% |             12.80% |
+| 1280 px 同宽重排 |   21.82% |             19.70% |
+| 768 px 重排      |   30.34% |             28.75% |
+
+较大剩余差异包括 CSS 渐变/各边描边/阴影与表格或普通块流的布局语义；
+不能只挑简单零误差样例替代这个真实网页门禁。证据 `evidence/bootstrap-after-svg/`。
+
+下一次继续的明确优先事项：
+
+1. 可编辑线性渐变：现有 v3、Figma 插件、CanvasKit 都支持 GRADIENT_LINEAR，
+   HTML 适配器却仍降级纯色。Bootstrap body 使用到 100 px 的渐变，
+   上游 parser 丢失了 px stop 单位；在维护的 integration 边界保留原始 CSS，
+   按 box 尺寸生成精确 handles/百分比或像素 stops/alpha/层次。禁止光栅化背景。
+2. Figma 原生 GRID：官方现有 GridTrackSize、gridColumnSizes/gridRowSizes、
+   gridItemsPositioning ROW_AUTO_FLOW 能表达规则 Grid。现有 bridge/plugin
+   仍主动转固定几何；先核对当前实际 API，再对可表示子集保留原生 Grid，真实验收。
+   官方入口：`https://developers.figma.com/docs/plugins/api/GridTrackSize/`、
+   `https://developers.figma.com/docs/plugins/api/properties/nodes-griditemspositioning/`。
+3. 修复实际工作台 GPU 字形缓存的采样相位/抗锯齿差异，保留可编辑文字，
+   不通过降低严格门禁阈值宣称成功。已有变体数据在
+   `evidence/ui-renderer-parity/text-context-variants.json`。
+4. 扩展真实网页到 Grid、wrap、表单、导航、混合文字，区分语义问题与渲染器 AA。
+5. 继续真实 Figma 文字验证，区分字体版本/原生 Hug 宽度取整与行框/字形来源。
+6. 完成最终集成与稳定安装验证后，才清理本任务已整合的工作树；不要清理其他任务。
+
+当前任务源码仍在隔离分支，未发布、未更新生产安装。24 小时目标保持 active，
+下一次不要重新开始或重复复制旧工作树；读最新日志和 Git 后继续尚未完成的队列。
