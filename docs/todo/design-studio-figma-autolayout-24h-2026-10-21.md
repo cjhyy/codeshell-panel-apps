@@ -527,3 +527,8 @@ typecheck、validate、两插件确定性输出通过（代理另有 100 项和 
 下一轮优先：合入经审查的基线及渐变修复，真实 400 文字导回复验、合并门禁；再补
 viewport 包装框响应式宽度关系、百分比 Flex 列、负外边距、边框各边/内侧绘制等主要
 网页残差。当前任务分支 HEAD 在 f48 之后仅本日志；目标 active，截止不变。
+
+基线代理随后更新方案：只放在测量 receipt 的来源标记无法跨未测量 Node 重排，拟改为
+有界 `layoutBaselineSource:'native'` 持久来源，在全体导入文字（含 root/absolute/manual）
+进入布局前按实际字体刷新原点；显式换行的单行省略也补真实测试。当前尚未提交，下一轮
+按最终经审查代码确认 Schema/来源绑定，不再假定会增加 textMetrics receipt 字段。
