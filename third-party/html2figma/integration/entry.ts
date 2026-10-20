@@ -30,6 +30,8 @@ function captureLayoutValues(tree: RenderNode) {
           const properties = [
             "width",
             "border-collapse",
+            "table-layout",
+            "border-spacing",
             "border-image-source",
             "height",
             "min-width",

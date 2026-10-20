@@ -8,6 +8,7 @@ import {
   safeHtmlAnchorHref,
   installHtmlCaptureNavigationGuard,
 } from "./html-capture-links.mjs";
+import { promoteHtmlFixedTables } from "./html-fixed-table-flow.mjs";
 import { createBrowserTextMeasurer, measureFigmaTextDocument } from "./text-metrics.mjs";
 import {
   createHtmlAssetResolver,
@@ -623,13 +624,33 @@ export async function captureWorkspaceHtmlResult({
       const canvasColor = htmlColor?.alpha ? htmlColor : bodyColor;
       options.background = canvasColor?.alpha === 1 ? canvasColor.hex : "#ffffff";
     }
+    const canonicalBySource = new WeakMap();
+    options.onNode = (source, node) => canonicalBySource.set(source, node);
     const result = await designNodeToV3(tree, options);
     alignHtmlTextBaselines(result.document, frameDocument);
-    await enableHtmlTextReflow(result.document, frameDocument, elements, (code, nodeId, message) => {
+    const warn = (code, nodeId, message) => {
       result.report.stats.warningCount += 1;
       if (result.report.warnings.length < 500) result.report.warnings.push({ code, nodeId, message });
       else result.report.stats.omittedWarnings += 1;
+    };
+    await enableHtmlTextReflow(result.document, frameDocument, elements, warn);
+    const tables = await promoteHtmlFixedTables(result.document, {
+      browserDocument: frameDocument, elements, sourceTree: tree, canonicalBySource, warn,
     });
+    if (tables.length) {
+      for (const table of tables) {
+        const recovered = new Set(table.recovered.map(({ code, nodeId }) => `${code}:${nodeId}`));
+        table.recoveredWarnings = [];
+        result.report.warnings = result.report.warnings.filter((warning) => {
+          if (!recovered.has(`${warning.code}:${warning.nodeId}`)) return true;
+          table.recoveredWarnings.push(warning);
+          result.report.stats.warningCount -= 1;
+          return false;
+        });
+        delete table.recovered;
+      }
+      result.report.tables = tables;
+    }
     result.report = {
       ...result.report,
       engine,

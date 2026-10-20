@@ -67,6 +67,17 @@ const allNodes = (result) => normalizeDesignDocument(result.document).nodes;
 const codes = (result) => result.report.warnings.map((warning) => warning.code);
 const options = { sha256Bytes: hash };
 
+test("capture-local ownership callback retains original source objects across local block clones", async () => {
+  const tree = container([container([text()])]), original = JSON.stringify(tree), pairs = new Map();
+  const result = await designNodeToV3(tree, { ...options, onNode: (source, node) => pairs.set(source, node) });
+  assert.equal(JSON.stringify(tree), original);
+  assert.equal(pairs.size, 3);
+  assert.equal(pairs.get(tree), result.document.pages[0].children[0]);
+  assert.equal(pairs.get(tree.children[0]), pairs.get(tree).children[0]);
+  assert.equal(pairs.get(tree.children[0].children[0]), pairs.get(tree).children[0].children[0]);
+  assert(!serializeDesignDocument(normalizeDesignDocument(result.document)).includes("onNode"));
+});
+
 test("final upstream parent-relative bounds become page coordinates; random and duplicate upstream IDs never become design IDs", async () => {
   const tree = container(
     [

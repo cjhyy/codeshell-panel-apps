@@ -5527,6 +5527,8 @@ var html2figmaCore = (() => {
             const properties = [
               "width",
               "border-collapse",
+              "table-layout",
+              "border-spacing",
               "border-image-source",
               "height",
               "min-width",
