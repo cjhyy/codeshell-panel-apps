@@ -2,7 +2,7 @@ import { validateLayoutSpacing, validateNativeLayoutSpacing, nativeMainGap, main
 import { distributeFillSizes } from "./layout.mjs";
 import { normalizeCornerRadii, effectiveCornerRadii } from "./corner-radii.mjs";
 import { figmaDesignStroke, nativeDesignStroke, hasDesignStroke, designStrokeSides, clearInvalidStrokeLayoutExclusion } from "./stroke.mjs";
-import { normalizeGridTracks, nativeGridPlan, GRID_CHILD_FIELDS } from "./grid.mjs";
+import { normalizeGridTracks, nativeGridPlan, GRID_CHILD_FIELDS, GRID_CONTAINER_FIELDS } from "./grid.mjs";
 import {
   figmaFillPaints,
   representativeDesignFill,
@@ -461,24 +461,8 @@ function layout(source, node, report) {
         justifyContent: "start",
         alignContent: "start",
       };
-      // Validate child relationships before claiming editable Grid fidelity.
-      // The complete children are converted below; this plan uses the same
-      // canonical sizing interpretation while retaining only bounded Grid data.
-      nativeGridPlan({
-        ...grid,
-        children: (source.children ?? []).map((child) => {
-          const sizing = {};
-          layoutSizing(child, sizing, grid);
-          return {
-            ...sizing,
-            ...gridChildProperties(child),
-            id: child.id,
-            name: child.name,
-            visible: child.visible !== false,
-            layoutPositioning: child.layoutPositioning === "ABSOLUTE" ? "absolute" : "auto",
-          };
-        }),
-      });
+      // Child intrinsic eligibility requires their complete converted tree.
+      // Validate after recursion below; do not guess it from shallow raw fields.
       Object.assign(node, grid);
     } catch (error) {
       report.warn(
@@ -999,6 +983,23 @@ function importFigmaJsonWithReport(
       node.children = (source.children ?? [])
         .map((child) => convert(child, [...ancestors, node], depth + 1, counter))
         .filter(Boolean);
+      if (node.layout === "grid") {
+        try {
+          nativeGridPlan(node);
+        } catch (error) {
+          report.warn(
+            "unsupported-grid",
+            source,
+            `原生 Grid 无法表示：${error.message}；保留测量几何，请修复轨道/子项的内在尺寸关系后重试。`,
+          );
+          node.layout = "none";
+          for (const key of ["gridColumns", ...GRID_CONTAINER_FIELDS]) delete node[key];
+          // These fields describe only this rejected parent relationship. A
+          // child's own nested Grid container fields remain intact.
+          for (const child of node.children)
+            for (const key of [...GRID_CHILD_FIELDS, "gridColumnSpan", "gridRowSpan"]) delete child[key];
+        }
+      }
       if (["horizontal", "vertical"].includes(node.layout) && mainAxisGap(node) < 0) {
         const rotated = [...ancestors, node, ...node.children.filter((child) => child.visible !== false && child.layoutPositioning !== "absolute")].some((entry) => entry.rotation);
         const axis = node.layout === "vertical" ? "height" : "width";

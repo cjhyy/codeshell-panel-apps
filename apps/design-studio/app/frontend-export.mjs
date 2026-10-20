@@ -4,6 +4,7 @@ import {
   gridPlacements,
   effectiveGridRows,
   effectiveGridRowTracks,
+  gridFillHugContentHeight,
 } from "./grid.mjs";
 import { designPaintCssImage } from "./paint.mjs";
 import { nativeTextContent } from "./text-content.mjs";
@@ -173,6 +174,7 @@ function sizingDeclarations(node, parent) {
       : [];
   const circularFill = (child, axis) => {
     if (child[`layoutSizing${axis}`] !== "fill") return false;
+    if (axis === "Vertical" && gridFillHugContentHeight(node, child) !== null) return false;
     const tracks = node[axis === "Horizontal" ? "gridColumnSizes" : "gridRowSizes"];
     const item = gridItems.find((entry) => entry.child === child);
     if (!tracks || !item) return true;

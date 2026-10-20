@@ -131,7 +131,83 @@ export function gridPlacements(children, columnCount, container = {}) {
     rowCount: Math.max(0, ...placements.map((item) => item.row + item.rowSpan)),
   };
 }
-export function gridTrackSizes(tracks, count, placements, axis, gap, available) {
+// Native run 289e088a proves this vertical dependency. Never use an old
+// stretched cell height as intrinsic content, or shrink edits retain the old row.
+export function gridFillHugContentHeight(container, child, children = child?.children) {
+  const unconstrained = (node) =>
+    ["minWidth", "maxWidth", "minHeight", "maxHeight"].every((key) => node[key] === undefined);
+  const noStroke = (node) =>
+    !(node.strokeWidth > 0) &&
+    (node.strokeSides === undefined ||
+      (Array.isArray(node.strokeSides) &&
+        node.strokeSides.every((side) => side && side.width === 0))) &&
+    !node.strokeLayoutExcluded;
+  const verticalPadding = (node) =>
+    (node.paddingTop ?? node.padding ?? 0) + (node.paddingBottom ?? node.padding ?? 0);
+  if (
+    !container ||
+    !child ||
+    container.layout !== "grid" ||
+    container.layoutSizingHorizontal !== "fixed" ||
+    container.layoutSizingVertical !== "hug" ||
+    container.gridRows !== 1 ||
+    container.gridRowSizes?.length !== 1 ||
+    container.gridRowSizes[0].type !== "hug" ||
+    container.gridColumnSizes?.some((track) => !["fixed", "flex"].includes(track.type)) ||
+    container.rotation ||
+    container.layoutReverse ||
+    (container.layoutWrap && container.layoutWrap !== "none") ||
+    (container.justifyContent && container.justifyContent !== "start") ||
+    (container.alignContent && container.alignContent !== "start") ||
+    (container.alignItems && container.alignItems !== "start") ||
+    verticalPadding(container) !== 0 ||
+    !unconstrained(container) ||
+    !noStroke(container) ||
+    child.type !== "frame" ||
+    child.layout !== "vertical" ||
+    child.layoutSizingHorizontal !== "fill" ||
+    child.layoutSizingVertical !== "fill" ||
+    (child.gridRowSpan ?? 1) !== 1 ||
+    child.visible === false ||
+    child.layoutPositioning === "absolute" ||
+    child.rotation ||
+    child.layoutReverse ||
+    (child.layoutWrap && child.layoutWrap !== "none") ||
+    child.layoutMarginBefore ||
+    (child.justifyContent && child.justifyContent !== "start") ||
+    (child.alignItems && child.alignItems !== "start") ||
+    (child.gap ?? 0) !== 0 ||
+    (child.rowGap ?? 0) !== 0 ||
+    verticalPadding(child) !== 0 ||
+    !unconstrained(child) ||
+    !noStroke(child)
+  )
+    return null;
+  // Flat layouts resolve descendants only after the bounded parent/cell check.
+  // Ordinary rectangles and unrelated layouts do not add a full document scan.
+  const resolvedChildren = typeof children === "function" ? children() : children;
+  if (!Array.isArray(resolvedChildren) || resolvedChildren.length !== 1) return null;
+  const content = resolvedChildren[0];
+  if (
+    !content ||
+    content.type !== "rectangle" ||
+    content.children !== undefined ||
+    content.visible === false ||
+    content.layoutPositioning === "absolute" ||
+    content.rotation ||
+    content.layoutMarginBefore ||
+    content.layoutSizingVertical !== "fixed" ||
+    !["fixed", "fill"].includes(content.layoutSizingHorizontal) ||
+    !Number.isFinite(content.height) ||
+    content.height < 1 ||
+    content.height > 20000 ||
+    !unconstrained(content) ||
+    !noStroke(content)
+  )
+    return null;
+  return content.height;
+}
+export function gridTrackSizes(tracks, count, placements, axis, gap, available, intrinsicSize) {
   const definitions = Array.from(
     { length: count },
     (_, i) => tracks?.[i] ?? { type: axis === "horizontal" ? "flex" : "hug", value: 1 },
@@ -167,7 +243,8 @@ export function gridTrackSizes(tracks, count, placements, axis, gap, available) 
       );
       const occupied =
         indices.reduce((sum, i) => sum + (sizes[i] ?? 0), 0) + gap * (item[span] - 1);
-      const needed = Math.max(0, item.child[dimension] - occupied);
+      const contribution = intrinsicSize?.(item.child) ?? item.child[dimension];
+      const needed = Math.max(0, contribution - occupied);
       for (const i of intrinsic) increases[i] = Math.max(increases[i], needed / intrinsic.length);
     }
     for (let i = 0; i < count; i++) sizes[i] += increases[i];
@@ -229,7 +306,8 @@ export function nativeGridPlan(source) {
       const span = axis === "Horizontal" ? item.columnSpan : item.rowSpan;
       if (
         (child[`layoutSizing${axis}`] === "fill" || stretch) &&
-        tracks.slice(start, start + span).some((track) => track.type === "hug")
+        tracks.slice(start, start + span).some((track) => track.type === "hug") &&
+        !(axis === "Vertical" && gridFillHugContentHeight(source, child) !== null)
       )
         throw new Error(
           `Grid ${axis}: FILL 子项与 HUG track 的内在尺寸循环尚不能保留；请改为固定 track 或 HUG/固定子项`,
