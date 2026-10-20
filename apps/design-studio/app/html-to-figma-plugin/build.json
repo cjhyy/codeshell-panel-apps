@@ -17,6 +17,7 @@
     "apps/design-studio/app/html-block-flow.mjs",
     "apps/design-studio/app/html-block-insets.mjs",
     "apps/design-studio/app/html-capture.mjs",
+    "apps/design-studio/app/html-fixed-table-flow.mjs",
     "apps/design-studio/app/html-float-columns.mjs",
     "apps/design-studio/app/html-grid.mjs",
     "apps/design-studio/app/html-import-assets.mjs",
@@ -75,8 +76,8 @@
     },
     {
       "path": "ui.html",
-      "bytes": 353549,
-      "sha256": "d049482c3cee43b66a6c897a6869b9b3b0ae71e5af4acf0792f44985768f6f9c"
+      "bytes": 353619,
+      "sha256": "84e7aed32421e852839883eeef5bf76d667e2e8d9c2302a81018f926cc54f64a"
     },
     {
       "path": "README.md",

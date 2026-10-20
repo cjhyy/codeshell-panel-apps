@@ -136,3 +136,18 @@ without geometry rounding and carries that capture-local decision through its
 plain/nowrap recovery. Resolved lengths, normal values, unavailable or ambiguous
 styles keep the existing diagnosed fallback. This does not change the standalone
 upstream Figma adapter's line-height conversion or claim responsive CSS font sizes.
+
+The capture also retains Typed OM `table-layout` and `border-spacing`. A separate
+current-capture HTML stage may recover a complete, bounded fixed/collapsed
+transparent two-column family: 1–64 direct rows, first-column content-box 30%
+plus 20px right padding, second-column auto width, 10px vertical cell padding,
+and one unopposed opaque bottom rule. Rows remain real Grid frames; all source
+row/cell/P/Text identities and the actual paragraph/margin-wrapper hierarchy
+remain. Shared edge halves become explicit cell/owner padding, while positive
+Grid tracks express the declared affine widths. This is a structural conversion,
+not general CSS table or media-query support. Opaque backgrounds, competing
+borders, spans/groups, rich/generated/hidden content, explicit heights,
+constraints, transforms, and other unproved grammar retain measured layout with
+a diagnostic. Planning and measurement occur on owned drafts; one failed row
+rejects the entire table. CSS/native fractional track quantization and centered
+side-stroke CSS frontend export remain explicit limitations.

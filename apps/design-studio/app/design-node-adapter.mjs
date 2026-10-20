@@ -960,6 +960,7 @@ export async function designNodeToV3(tree, options = {}) {
     return wrapper;
   };
   const convert = async (source, path, parentAnchor, ancestors) => {
+    const capturedSource = source;
     if (!object(source) || seen.has(source) || path.length > 32)
       throw new Error("DesignNode 包含无效、循环、重复引用或超过 32 层的结构");
     seen.add(source);
@@ -1269,6 +1270,9 @@ export async function designNodeToV3(tree, options = {}) {
         ancestorTransformed: ancestors.some((ancestor) => ancestor.rotation) });
     }
     if (source.nodeType === "container") recoverHtmlTextOverflow(source, node, warn);
+    // Optional capture-local ownership receipt. It never becomes document data
+    // and cannot qualify imported/saved nodes without a real current capture.
+    options.onNode?.(capturedSource, node);
     return node;
   };
   const converted = await convert(tree, [0], { x: 0, y: 0 }, []);
