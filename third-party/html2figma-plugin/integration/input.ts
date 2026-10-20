@@ -2,7 +2,7 @@ import { cssCornerRadii } from "../../../apps/design-studio/app/corner-radii.mjs
 import { FigmaAdapter } from "../upstream/packages/adapter/figma/FigmaAdapter";
 import { inertDesignSvg } from "../../../apps/design-studio/app/design-node-adapter.mjs";
 import { cssLinearBackgroundPaints } from "../../../apps/design-studio/app/css-linear-gradient.mjs";
-import { designPaintsToFigma } from "../../../apps/design-studio/app/paint.mjs";
+import { designPaintsToFigma, cssLinearNeedsNativeWarning } from "../../../apps/design-studio/app/paint.mjs";
 export { inertDesignSvg };
 export const MAX_INPUT_BYTES = 12 * 1024 * 1024;
 export const MAX_NODES = 3000;
@@ -80,7 +80,9 @@ export function prepareDesignInput(input: any) {
       node.background.layers = (node.background.layers ?? []).filter((layer: any) => !layer.type?.endsWith("gradient"));
       try {
         const fillPaints = cssLinearBackgroundPaints(node.cssBackground, node.bounds.width, node.bounds.height);
-        gradientPaints.set(node.id, designPaintsToFigma({ fillPaints }));
+        gradientPaints.set(node.id, designPaintsToFigma({ fillPaints, ...node.bounds }));
+        if (fillPaints.some(cssLinearNeedsNativeWarning))
+          warnings.push("CSS 角度/像素色标仅按当前尺寸创建为原生渐变，Figma 内调整尺寸可能改变外观；请通过 Design Studio 保留和编辑原始 CSS 意图。");
       } catch (error: any) {
         warnings.push(`渐变未导入，保留独立背景色：${error.message}。`);
       }

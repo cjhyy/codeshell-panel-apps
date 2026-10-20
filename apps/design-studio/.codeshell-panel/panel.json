@@ -395,6 +395,93 @@
                                     }
                                   }
                                 }
+                              },
+                              "cssLinear": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": [
+                                  "direction",
+                                  "positions"
+                                ],
+                                "properties": {
+                                  "direction": {
+                                    "oneOf": [
+                                      {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "required": [
+                                          "angle"
+                                        ],
+                                        "properties": {
+                                          "angle": {
+                                            "type": "number",
+                                            "minimum": 0,
+                                            "exclusiveMaximum": 360
+                                          }
+                                        }
+                                      },
+                                      {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "required": [
+                                          "corner"
+                                        ],
+                                        "properties": {
+                                          "corner": {
+                                            "type": "array",
+                                            "minItems": 2,
+                                            "maxItems": 2,
+                                            "items": {
+                                              "enum": [
+                                                -1,
+                                                1
+                                              ]
+                                            }
+                                          }
+                                        }
+                                      }
+                                    ]
+                                  },
+                                  "positions": {
+                                    "type": "array",
+                                    "minItems": 2,
+                                    "maxItems": 16,
+                                    "items": {
+                                      "oneOf": [
+                                        {
+                                          "type": "null"
+                                        },
+                                        {
+                                          "const": "previous"
+                                        },
+                                        {
+                                          "type": "object",
+                                          "additionalProperties": false,
+                                          "required": [
+                                            "unit",
+                                            "value"
+                                          ],
+                                          "properties": {
+                                            "unit": {
+                                              "enum": [
+                                                "px",
+                                                "percent"
+                                              ]
+                                            },
+                                            "value": {
+                                              "type": "number",
+                                              "minimum": -20000,
+                                              "maximum": 20000
+                                            }
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "sourceOnly": {
+                                    "const": true
+                                  }
+                                }
                               }
                             }
                           }

@@ -40,7 +40,15 @@ function geometryDelta(expected, actual) {
 }
 
 function paintSignature(paints) {
-  return JSON.stringify(paints == null ? null : normalizeDesignPaints(paints));
+  return JSON.stringify(
+    paints == null
+      ? null
+      : normalizeDesignPaints(paints).map((paint) => {
+          if (!paint.cssLinear || paint.cssLinear.sourceOnly) return paint;
+          const { handles, stops, ...intent } = paint;
+          return { ...intent, stops: stops.map(({ position, ...color }) => color) };
+        }),
+  );
 }
 
 // Compare effective defaults, rather than whether an optional field or shorthand
@@ -123,6 +131,7 @@ function styleDifferences(expected, actual) {
     "textAlign",
   ];
   const differences = properties
+    .filter((property) => property !== "fill" || !expected.fillPaints || !actual.fillPaints)
     .filter((property) =>
       property === "fillPaints"
         ? paintSignature(expected.fillPaints) !== paintSignature(actual.fillPaints)

@@ -19,6 +19,7 @@
     "apps/design-studio/app/html-grid.mjs",
     "apps/design-studio/app/html-import-assets.mjs",
     "apps/design-studio/app/html-import.mjs",
+    "apps/design-studio/app/linear-gradient-geometry.mjs",
     "apps/design-studio/app/paint.mjs",
     "apps/design-studio/app/resource-store.mjs",
     "apps/design-studio/app/text-metrics.mjs",
@@ -60,23 +61,23 @@
     },
     {
       "path": "code.js",
-      "bytes": 215578,
-      "sha256": "ad262adb75e28e3a08304726c146ff907a1c7f08daf7ab1e95504a2ba6b5b4a7"
+      "bytes": 223278,
+      "sha256": "29214105697183764810db0f98571883d2470edd2f6ec8e1d98c815c9942d996"
     },
     {
       "path": "ui.html",
-      "bytes": 331578,
-      "sha256": "ef9698b7e847c429ca01ded879a2c4b703d762cd37e08f6d2c964521078d5581"
+      "bytes": 339293,
+      "sha256": "eebb15ca49ec7baa9a8cee3c2609193d7143a1133c1016dc1c6e7324e6cf6daa"
     },
     {
       "path": "README.md",
-      "bytes": 5819,
-      "sha256": "26619d555e26ecac56b4e3d661e0034e4ff41c7ea38371ce0d980dd1b87d60e4"
+      "bytes": 6073,
+      "sha256": "d4cb1bea4b3e346feda326d5e3d51cd3284514bdc80f1b8d9ff448ac0bb4f638"
     },
     {
       "path": "NOTICE.md",
-      "bytes": 2808,
-      "sha256": "b8169626d8924c116f852a14cb612326a2b549f82da4fbdf6d9e150c79d37e6b"
+      "bytes": 3118,
+      "sha256": "9bb261a53cb8c6276eaf0f46c22706fca6b4e892a7ecddee39fd7c7fa294d737"
     }
   ]
 }

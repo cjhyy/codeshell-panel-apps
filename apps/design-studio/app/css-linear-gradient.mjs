@@ -1,12 +1,21 @@
 /* CSS background-image → bounded editable v3 paints. No DOM or upstream parser.
  * Gradient line, magic corners and stop fixup: https://www.w3.org/TR/css-images-3/
- * Only exact native-paint semantics are accepted; renderers can still quantize
- * alpha differently from browser CSS (see the strict production pixel evidence).
+ * Structured geometry stays editable across resize; native paints are a current
+ * size snapshot. Renderers can quantize alpha differently from browser CSS.
  */
-const fail = (message) => { throw new Error(message); };
+import {
+  parseCssLinearDirection,
+  cssLinearVector,
+  normalizeCssLinear,
+  validateCssLinearInterpolation,
+} from "./linear-gradient-geometry.mjs";
+const fail = (message) => {
+  throw new Error(message);
+};
 const split = (value) => {
   const parts = [];
-  let depth = 0, start = 0;
+  let depth = 0,
+    start = 0;
   for (let i = 0; i < value.length; i++) {
     if (value[i] === "(") depth++;
     if (value[i] === ")" && --depth < 0) fail("背景括号无效");
@@ -27,44 +36,23 @@ function cssColor(value) {
   const parts = match[1].trim().split(/[\s,/]+/u);
   if (parts.length < 3 || parts.length > 4 || parts.some((part) => !numeric.test(part)))
     fail("颜色通道格式不受支持");
-  const channels = parts.slice(0, 3).map(Number), opacity = Number(parts[3] ?? 1);
+  const channels = parts.slice(0, 3).map(Number),
+    opacity = Number(parts[3] ?? 1);
   if (channels.some((v) => !Number.isInteger(v) || v < 0 || v > 255) || opacity < 0 || opacity > 1)
     fail("颜色超出八位 sRGB/透明度范围");
   return { color: `#${channels.map((v) => v.toString(16).padStart(2, "0")).join("")}`, opacity };
-}
-function direction(value, width, height) {
-  if (value.startsWith("to ")) {
-    const words = value.slice(3).split(/\s+/u);
-    if (words.length > 2 || new Set(words).size !== words.length ||
-        words.some((word) => !["top", "right", "bottom", "left"].includes(word)))
-      fail("渐变方向不受支持");
-    const x = words.includes("right") ? 1 : words.includes("left") ? -1 : 0;
-    const y = words.includes("bottom") ? 1 : words.includes("top") ? -1 : 0;
-    if (words.length === 2 && (!x || !y)) fail("渐变方向冲突");
-    if (x && y) {
-      const diagonal = Math.hypot(width, height);
-      return { x: x * height / diagonal, y: y * width / diagonal };
-    }
-    return { x, y };
-  }
-  const match = /^([-+]?(?:\d+(?:\.\d*)?|\.\d+))(deg|grad|rad|turn)$/u.exec(value);
-  if (!match) fail("渐变角度不受支持");
-  const units = { deg: Math.PI / 180, grad: Math.PI / 200, rad: 1, turn: 2 * Math.PI };
-  const angle = Number(match[1]) * units[match[2]];
-  if (!Number.isFinite(angle)) fail("渐变角度无效");
-  // Snap cardinal angles so CSS's exact vertical/horizontal directions stay exact.
-  const snap = (v) => Math.abs(v) < 1e-12 ? 0 : Math.abs(Math.abs(v) - 1) < 1e-12 ? Math.sign(v) : v;
-  return { x: snap(Math.sin(angle)), y: snap(-Math.cos(angle)) };
 }
 function linear(value, width, height) {
   const match = /^linear-gradient\((.*)\)$/u.exec(value);
   if (!match) fail("仅支持非重复 linear-gradient；径向、锥形或重复渐变未转换");
   const parts = split(match[1]);
   const hasDirection = /^(?:to\s|[-+]?(?:\d|\.))/u.test(parts[0]);
-  const vector = direction(hasDirection ? parts.shift() : "180deg", width, height);
+  const direction = parseCssLinearDirection(hasDirection ? parts.shift() : "180deg");
+  const vector = cssLinearVector(direction, width, height);
   const length = Math.abs(width * vector.x) + Math.abs(height * vector.y);
   if (!Number.isFinite(length) || length < 0.0001) fail("渐变绘制区域退化");
-  const stops = [];
+  const stops = [],
+    authoredPositions = [];
   for (const part of parts) {
     const stop = /^(rgba?\([^()]*\)|transparent)(.*)$/u.exec(part);
     if (!stop) fail("颜色提示、插值色彩空间或复杂色标未转换");
@@ -72,12 +60,16 @@ function linear(value, width, height) {
     const positions = stop[2].trim() ? stop[2].trim().split(/\s+/u) : [null];
     if (positions.length > 2) fail("渐变色标位置过多");
     for (const position of positions) {
-      const parsed = position === null ? null : /^([-+]?(?:\d+(?:\.\d*)?|\.\d+))(%|px)?$/u.exec(position);
+      const parsed =
+        position === null ? null : /^([-+]?(?:\d+(?:\.\d*)?|\.\d+))(%|px)?$/u.exec(position);
       if (position !== null && (!parsed || (!parsed[2] && Number(parsed[1]) !== 0)))
         fail("色标仅支持像素、百分比或零；calc/其他单位未转换");
       const resolved = parsed ? Number(parsed[1]) / (parsed[2] === "%" ? 100 : length) : null;
       if (resolved !== null && !Number.isFinite(resolved)) fail("色标位置超出数值范围");
       stops.push({ ...color, position: resolved });
+      authoredPositions.push(
+        parsed ? { unit: parsed[2] === "%" ? "percent" : "px", value: Number(parsed[1]) } : null,
+      );
     }
   }
   if (stops.length < 2 || stops.length > 16) fail("渐变必须有 2–16 个色标");
@@ -85,21 +77,24 @@ function linear(value, width, height) {
   stops[0].position ??= 0;
   stops.at(-1).position ??= 1;
   let previous = -Infinity;
-  for (const stop of stops) if (stop.position !== null) {
-    stop.position = Math.max(previous, stop.position);
-    previous = stop.position;
-  }
+  for (const stop of stops)
+    if (stop.position !== null) {
+      stop.position = Math.max(previous, stop.position);
+      previous = stop.position;
+    }
   for (let i = 0; i < stops.length - 1; i++) {
     let next = i + 1;
     while (stops[next].position === null) next++;
     for (let j = i + 1; j < next; j++)
-      stops[j].position = stops[i].position + (stops[next].position - stops[i].position) * (j - i) / (next - i);
+      stops[j].position =
+        stops[i].position + ((stops[next].position - stops[i].position) * (j - i)) / (next - i);
     i = next - 1;
   }
   // Existing native paints interpolate RGB independently of alpha. CSS uses
   // premultiplied RGBA; same-color fades and constant-alpha spans are exact.
   for (let i = 0; i < stops.length - 1; i++) {
-    const a = stops[i], b = stops[i + 1];
+    const a = stops[i],
+      b = stops[i + 1];
     if (a.position === b.position || a.opacity === b.opacity || a.color === b.color) continue;
     if (a.opacity === 0 && b.opacity > 0) a.color = b.color;
     else if (b.opacity === 0 && a.opacity > 0) b.color = a.color;
@@ -108,24 +103,45 @@ function linear(value, width, height) {
   // A transparent interior stop can require two different colors at one point.
   // Retain each adjacent span independently using a duplicate zero-alpha stop.
   for (let i = 1; i < stops.length - 1; i++) {
-    if (stops[i].opacity !== 0 || stops[i - 1].opacity === 0 || stops[i + 1].opacity === 0 ||
-        stops[i - 1].color === stops[i + 1].color) continue;
+    if (
+      stops[i].opacity !== 0 ||
+      stops[i - 1].opacity === 0 ||
+      stops[i + 1].opacity === 0 ||
+      stops[i - 1].color === stops[i + 1].color
+    )
+      continue;
     const stop = stops[i];
     stop.color = stops[i - 1].color;
     stops.splice(i + 1, 0, { ...stop, color: stops[i + 1].color });
+    authoredPositions.splice(i + 1, 0, "previous");
     i++;
   }
   if (stops.length > 16) fail("透明色标展开后超过 16 项");
-  const start = Math.min(0, stops[0].position), end = Math.max(1, stops.at(-1).position);
+  const start = Math.min(0, stops[0].position),
+    end = Math.max(1, stops.at(-1).position);
   const point = (t, perpendicular = 0) => ({
     x: 0.5 + ((t - 0.5) * length * vector.x - perpendicular * length * vector.y) / width,
     y: 0.5 + ((t - 0.5) * length * vector.y + perpendicular * length * vector.x) / height,
   });
   const handles = [point(start), point(end), point(start, (end - start) / 2)];
-  if (handles.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y) || Math.abs(p.x) > 100 || Math.abs(p.y) > 100)) fail("渐变控制点超出原生范围");
+  if (
+    handles.some(
+      (p) =>
+        !Number.isFinite(p.x) ||
+        !Number.isFinite(p.y) ||
+        Math.abs(p.x) > 100 ||
+        Math.abs(p.y) > 100,
+    )
+  )
+    fail("渐变控制点超出原生范围");
+  const cssLinear = normalizeCssLinear({ direction, positions: authoredPositions }, stops);
+  validateCssLinearInterpolation(cssLinear, stops);
   return {
-    type: "GRADIENT_LINEAR", opacity: 1, handles,
+    type: "GRADIENT_LINEAR",
+    opacity: 1,
+    handles,
     stops: stops.map((stop) => ({ ...stop, position: (stop.position - start) / (end - start) })),
+    cssLinear,
   };
 }
 
@@ -145,14 +161,27 @@ export function cssLinearBackgroundPaints(style, width, height) {
   if (base.opacity > 0) paints.push({ type: "SOLID", ...base });
   for (let i = images.length - 1; i >= 0; i--) {
     if (images[i] === "none") continue;
-    if (perLayer("background-size", i, "auto") !== "auto" && perLayer("background-size", i, "auto") !== "auto auto")
+    if (
+      perLayer("background-size", i, "auto") !== "auto" &&
+      perLayer("background-size", i, "auto") !== "auto auto"
+    )
       fail("自定义背景尺寸的渐变未转换");
-    if (!/^(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)%|0(?:px)?)(?:\s+(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)%|0(?:px)?))?$/u.test(perLayer("background-position", i, "0% 0%")))
+    if (
+      !/^(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)%|0(?:px)?)(?:\s+(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)%|0(?:px)?))?$/u.test(
+        perLayer("background-position", i, "0% 0%"),
+      )
+    )
       fail("带像素偏移的渐变背景位置未转换");
     if (perLayer("background-blend-mode", i, "normal") !== "normal") fail("背景混合模式未转换");
     if (perLayer("background-attachment", i, "scroll") !== "scroll") fail("固定或局部背景未转换");
     const origin = perLayer("background-origin", i, "padding-box");
-    if (origin !== "border-box" && (origin !== "padding-box" || ["top", "right", "bottom", "left"].some((side) => parseFloat(style[`border-${side}-width`] ?? "0") !== 0)))
+    if (
+      origin !== "border-box" &&
+      (origin !== "padding-box" ||
+        ["top", "right", "bottom", "left"].some(
+          (side) => parseFloat(style[`border-${side}-width`] ?? "0") !== 0,
+        ))
+    )
       fail("非完整容器的渐变原点未转换");
     if (perLayer("background-clip", i, "border-box") !== "border-box") fail("渐变背景裁剪未转换");
     paints.push(linear(images[i], width, height));

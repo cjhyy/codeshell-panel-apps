@@ -1,4 +1,10 @@
 /* Bounded editable paint stacks. Entries keep Figma's bottom-to-top order. */
+import {
+  normalizeCssLinear,
+  resolveCssLinear,
+  validateCssLinearInterpolation,
+} from "./linear-gradient-geometry.mjs";
+export { cssLinearNeedsNativeWarning } from "./linear-gradient-geometry.mjs";
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const hex = (value) => typeof value === "string" && /^#[a-f\d]{6}$/iu.test(value);
 const finite = (value) => typeof value === "number" && Number.isFinite(value);
@@ -46,7 +52,7 @@ export function normalizeDesignPaints(value) {
       paint,
       paint?.type === "SOLID"
         ? ["type", "color", "opacity"]
-        : ["type", "opacity", "handles", "stops"],
+        : ["type", "opacity", "handles", "stops", "cssLinear"],
     );
     const opacity = alpha(paint.opacity);
     if (paint.type === "SOLID") {
@@ -80,7 +86,16 @@ export function normalizeDesignPaints(value) {
     });
     if (stops.some((stop, index) => index && stop.position < stops[index - 1].position))
       throw new Error("渐变色标必须按位置排序");
-    return { type: "GRADIENT_LINEAR", opacity, handles, stops };
+    const cssLinear =
+      paint.cssLinear === undefined ? undefined : normalizeCssLinear(paint.cssLinear, stops);
+    if (cssLinear) validateCssLinearInterpolation(cssLinear, stops);
+    return {
+      type: "GRADIENT_LINEAR",
+      opacity,
+      handles,
+      stops,
+      ...(cssLinear ? { cssLinear } : {}),
+    };
   });
 }
 export function gradientHandlesFromTransform(transform) {
@@ -143,9 +158,13 @@ export function figmaFillPaints(fills, warn = () => {}) {
   }
 }
 export function designFillPaints(node) {
-  return (
-    node.fillPaints ?? (hex(node.fill) ? [{ type: "SOLID", color: node.fill, opacity: 1 }] : [])
-  );
+  const paints =
+    node.fillPaints ?? (hex(node.fill) ? [{ type: "SOLID", color: node.fill, opacity: 1 }] : []);
+  return paints.some((paint) => paint.cssLinear && !paint.cssLinear.sourceOnly)
+    ? paints.map((paint) =>
+        paint.cssLinear ? resolveCssLinear(paint, node.width, node.height) : paint,
+      )
+    : paints;
 }
 export function hasVisibleDesignFill(node) {
   return designFillPaints(node).some(
@@ -236,13 +255,55 @@ export function designPaintSvg(node, id) {
   return { attributes: `fill="url(#${id}-stack)"`, definitions };
 }
 export function designPaintCssImage(node) {
+  if (node.fillPaints?.some((paint) => paint.cssLinear && !paint.cssLinear.sourceOnly))
+    return [...node.fillPaints]
+      .reverse()
+      .map((paint) => {
+        if (paint.type === "SOLID") {
+          const rgba = cssStopColor(paint, paint.opacity);
+          return `linear-gradient(${rgba}, ${rgba})`;
+        }
+        if (!paint.cssLinear || paint.cssLinear.sourceOnly)
+          return `${paintSvgImage({ ...node, fillPaints: [paint] })} 0 0 / 100% 100% no-repeat`;
+        const { direction, positions } = paint.cssLinear;
+        const orient = direction.corner
+          ? `to ${direction.corner[1] === -1 ? "top" : "bottom"} ${direction.corner[0] === -1 ? "left" : "right"}`
+          : `${direction.angle}deg`;
+        const stops = paint.stops.flatMap((stop, index) =>
+          positions[index] === "previous"
+            ? []
+            : [
+                `${cssStopColor(stop, stop.opacity * paint.opacity)}${positions[index] === null ? "" : ` ${positions[index].value}${positions[index].unit === "percent" ? "%" : "px"}`}`,
+              ],
+        );
+        return `linear-gradient(${orient}, ${stops.join(", ")})`;
+      })
+      .join(", ");
+  return `${paintSvgImage(node)} 0 0 / 100% 100% no-repeat`;
+}
+function cssStopColor(stop, opacity) {
+  return `rgba(${[1, 3, 5].map((offset) => parseInt(stop.color.slice(offset, offset + 2), 16)).join(",")},${opacity})`;
+}
+function paintSvgImage(node) {
   const local = { ...node, x: 0, y: 0 },
     paint = designPaintSvg(local, "paint");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${fmt(node.width)}" height="${fmt(node.height)}"><defs>${paint.definitions.join("")}</defs><rect width="100%" height="100%" ${paint.attributes}/></svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${fmt(node.width)}" height="${fmt(node.height)}" viewBox="0 0 ${fmt(node.width)} ${fmt(node.height)}" preserveAspectRatio="none"><defs>${paint.definitions.join("")}</defs><rect width="100%" height="100%" ${paint.attributes}/></svg>`;
   return `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}")`;
 }
 export function designPaintsToFigma(node) {
-  return designFillPaints(node).map((paint) =>
+  const paints = designFillPaints(node);
+  if (
+    paints.some(
+      (paint) =>
+        paint.cssLinear &&
+        !paint.cssLinear.sourceOnly &&
+        paint.handles.some((point) => Math.abs(point.x) > 100 || Math.abs(point.y) > 100),
+    )
+  )
+    throw new Error(
+      "当前 CSS 渐变尺寸/像素色标产生超出 ±100 的原生控制点；请调整尺寸或色标后再导出。原始 CSS 意图仍可在 Design Studio 中编辑。",
+    );
+  return paints.map((paint) =>
     paint.type === "SOLID"
       ? {
           type: "SOLID",
@@ -266,4 +327,99 @@ export function designPaintsToFigma(node) {
           })),
         },
   );
+}
+export function normalizeCssLinearSource(value) {
+  keys(value, ["version", "width", "height", "paints"]);
+  if (
+    value.version !== 1 ||
+    ![value.width, value.height].every((v) => finite(v) && v >= 1 && v <= 20000)
+  )
+    throw new Error("CSS 渐变来源尺寸无效");
+  const paints = normalizeDesignPaints(value.paints);
+  if (!paints.some((paint) => paint.cssLinear)) throw new Error("CSS 渐变来源缺少几何意图");
+  const result = { version: 1, width: value.width, height: value.height, paints };
+  if (JSON.stringify(result).length > 32768) throw new Error("CSS 渐变来源超过 32 KiB");
+  return result;
+}
+export function cssLinearSourceSnapshot(node) {
+  return node.fillPaints?.some((paint) => paint.cssLinear)
+    ? normalizeCssLinearSource({
+        version: 1,
+        width: node.width,
+        height: node.height,
+        paints: node.fillPaints,
+      })
+    : null;
+}
+export function restoreCssLinearSource(paints, raw, width, height, warn = () => {}) {
+  let source;
+  try {
+    source = normalizeCssLinearSource(raw);
+  } catch (error) {
+    warn(`CSS 渐变来源无效，已保留原生绘制：${error.message}`);
+    return paints;
+  }
+  let divergent = false;
+  const resolvedSource = source.paints.map((paint) => resolveCssLinear(paint, width, height));
+  const close = (a, b) => Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= 1e-6;
+  const sameGeometry = (a, b) => {
+    if (a.type !== "GRADIENT_LINEAR" || b.type !== "GRADIENT_LINEAR") return false;
+    const left = inverseGradientMatrix(a.handles)[0],
+      right = inverseGradientMatrix(b.handles)[0];
+    return (
+      left.every((value, index) => close(value, right[index])) &&
+      a.stops.length === b.stops.length &&
+      a.stops.every((stop, index) => close(stop.position, b.stops[index].position))
+    );
+  };
+  const sameColors = (a, b) =>
+    close(a.opacity, b.opacity) &&
+    a.stops.every(
+      (stop, index) =>
+        stop.color === b.stops[index].color && close(stop.opacity, b.stops[index].opacity),
+    );
+  const restored = paints.map((paint, index) => {
+    // Figma does not expose a persistent identity per paint. Color identity may
+    // prove a moved layer; unique geometry can prove a palette edit. Otherwise
+    // equal-geometry layers with different future intent must stay inactive.
+    const candidates = resolvedSource.flatMap((candidate, i) =>
+      sameGeometry(candidate, paint) ? [i] : [],
+    );
+    const colors = candidates.filter((i) => sameColors(resolvedSource[i], paint));
+    const matchedIndex = colors.length === 1 ? colors[0] : index;
+    const previous = source.paints[matchedIndex];
+    if (matchedIndex !== index && source.paints[index]?.cssLinear) divergent = true;
+    if (!previous?.cssLinear) return paint;
+    if (paint.type !== "GRADIENT_LINEAR") {
+      divergent = true;
+      return paint;
+    }
+    const ambiguous =
+      colors.length > 1 &&
+      new Set(colors.map((i) => JSON.stringify(source.paints[i].cssLinear ?? null))).size > 1;
+    const association =
+      colors.length > 0
+        ? !ambiguous && colors.includes(index)
+        : candidates.length === 1 && candidates[0] === index;
+    const matches =
+      !previous.cssLinear.sourceOnly &&
+      !paint.cssLinear?.sourceOnly &&
+      matchedIndex === index &&
+      association &&
+      sameGeometry(resolvedSource[matchedIndex], paint);
+    let cssLinear = { ...previous.cssLinear, ...(!matches ? { sourceOnly: true } : {}) };
+    try {
+      return normalizeDesignPaints([{ ...paint, cssLinear }])[0];
+    } catch {
+      cssLinear = { ...previous.cssLinear, sourceOnly: true };
+      divergent = true;
+    }
+    return normalizeDesignPaints([{ ...paint, cssLinear }])[0];
+  });
+  const inactive = restored.some((paint) => paint.cssLinear?.sourceOnly);
+  if (divergent || inactive || source.paints.length !== paints.length)
+    warn(
+      "原生绘制层、渐变几何或色标已改变或无法唯一匹配；保留当前原生外观，CSS 角度/像素坐标仅作为 sourceOnly 来源保存，须显式编辑后才能重新启用。",
+    );
+  return restored;
 }

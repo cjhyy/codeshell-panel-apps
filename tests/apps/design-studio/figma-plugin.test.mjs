@@ -96,6 +96,9 @@ function harness(source = page([rect()]), { nativeTextLayout = false } = {}) {
       setPluginData(key, value) {
         this.pluginData[key] = value;
       },
+      getPluginData(key) {
+        return this.pluginData[key] ?? "";
+      },
       remove() {
         this.removed = true;
         if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1);
@@ -1446,6 +1449,117 @@ test("source-bound native truncation patches preserve authored characters and cl
   const restored = importFigmaJson(exported).document.nodes.find((node) => node.type === "text");
   assert.equal(restored.textSource, raw.characters);
   assert.equal(restored.textOverflow, undefined);
+});
+
+test("CSS gradient native import retains bounded source and marks native resize intent inactive on official JSON roundtrip", async () => {
+  const { cssLinearBackgroundPaints } =
+    await import("../../../apps/design-studio/app/css-linear-gradient.mjs");
+  const { designPaintsToFigma } = await import("../../../apps/design-studio/app/paint.mjs");
+  const imported = importFigmaJson(
+    page([
+      rect("1:2", {
+        absoluteBoundingBox: { x: 0, y: 0, width: 640, height: 160 },
+      }),
+    ]),
+  );
+  const layer = imported.document.nodes[0];
+  layer.fillPaints = cssLinearBackgroundPaints(
+    { "background-image": "linear-gradient(45deg, rgb(255,0,0) 20px, rgb(0,0,255) 80%)" },
+    640,
+    160,
+  );
+  const transfer = createFigmaTransfer(imported.document),
+    runtime = harness();
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  assert(runtime.messages.at(-1).warnings.some((w) => w.includes("CSS")));
+  const created = runtime.figma.root.children[1].children[0];
+  assert.deepEqual(clone(created.fills), designPaintsToFigma(layer));
+  assert.equal(
+    JSON.parse(created.getPluginData("codeshellCssLinearSource")).paints[0].cssLinear.direction
+      .angle,
+    45,
+  );
+  runtime.figma.currentPage = created.parent;
+  runtime.figma.currentPage.selection = [created];
+  await runtime.send({ type: "export-json", scope: "selection" });
+  const initial = JSON.parse(runtime.messages.at(-1).content);
+  assert.equal(
+    importFigmaJson(initial).document.nodes[0].fillPaints[0].cssLinear.sourceOnly,
+    undefined,
+  );
+  created.resize(400, 160);
+  await runtime.send({ type: "export-json", scope: "selection" });
+  const exported = JSON.parse(runtime.messages.at(-1).content);
+  assert(exported.nodes[created.id].document.codeshellCssLinearSource);
+  const reopened = importFigmaJson(exported);
+  assert.equal(reopened.document.nodes[0].fillPaints[0].cssLinear.sourceOnly, true);
+  assert(reopened.warnings.some((w) => w.code === "css-gradient-native-source"));
+  const invalid = clone(transfer);
+  invalid.pages[0].children[0].fillPaints[0].cssLinear.positions[0].value = 20001;
+  const rejected = harness();
+  await rejected.send({ type: "import-transfer", content: JSON.stringify(invalid) });
+  assert.equal(rejected.messages.at(-1).type, "error");
+  assert.equal(
+    rejected.figma.root.children.length,
+    1,
+    "descriptor rejected before native mutation",
+  );
+  const extreme = clone(transfer);
+  extreme.pages[0].children[0].width = 1;
+  extreme.pages[0].children[0].height = 20000;
+  const bounded = harness();
+  await bounded.send({ type: "import-transfer", content: JSON.stringify(extreme) });
+  assert.equal(bounded.messages.at(-1).type, "error");
+  assert.match(bounded.messages.at(-1).message, /±100/u);
+  assert.equal(
+    bounded.figma.root.children.length,
+    1,
+    "resolved native handle bounds are checked before mutation",
+  );
+});
+
+test("reviewed CSS gradient resize recomputes current native geometry and guards concurrent paint edits", async () => {
+  const { cssLinearBackgroundPaints } =
+    await import("../../../apps/design-studio/app/css-linear-gradient.mjs");
+  const { cssLinearSourceSnapshot, designPaintsToFigma } =
+    await import("../../../apps/design-studio/app/paint.mjs");
+  const fillPaints = cssLinearBackgroundPaints(
+    { "background-image": "linear-gradient(45deg, rgb(255,0,0) 20px, rgb(0,0,255))" },
+    640,
+    160,
+  );
+  const canonical = { fillPaints, width: 640, height: 160 };
+  const snapshot = cssLinearSourceSnapshot(canonical);
+  const source = page([
+    rect("1:2", {
+      absoluteBoundingBox: { x: 0, y: 0, width: 640, height: 160 },
+      fills: designPaintsToFigma(canonical),
+      codeshellCssLinearSource: snapshot,
+    }),
+  ]);
+  const imported = await prepareFigmaImport(source),
+    binding = createFigmaBinding(imported);
+  imported.document.nodes[0].width = 400;
+  const transfer = createFigmaTransfer(imported.document);
+  transfer.patch = createFigmaPatch(binding, imported.document);
+  const runtime = harness(source);
+  runtime.all.get("1:2").setPluginData("codeshellCssLinearSource", JSON.stringify(snapshot));
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  const preview = runtime.messages.at(-1);
+  assert.equal(preview.type, "patch-preview");
+  assert.deepEqual(preview.conflicts, []);
+  await runtime.send({ type: "apply-patch", token: preview.token });
+  assert.equal(runtime.messages.at(-1).type, "patched");
+  assert.deepEqual(
+    clone(runtime.all.get("1:2").fills),
+    designPaintsToFigma({ ...canonical, width: 400 }),
+  );
+  const concurrent = harness(source);
+  concurrent.all.get("1:2").setPluginData("codeshellCssLinearSource", JSON.stringify(snapshot));
+  concurrent.all.get("1:2").fills[0].gradientStops[0].color.r = 0.2;
+  await concurrent.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  assert(concurrent.messages.at(-1).conflicts.some((message) => message.includes("fills")));
 });
 
 test("independent circular corners use native editable properties and export live values", async () => {

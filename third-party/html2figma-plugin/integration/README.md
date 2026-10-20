@@ -33,6 +33,7 @@ CodeShell v3 文档、设计备份、Figma REST `document` 包装及增量补丁
 - 本地文件选择最多 2000 项；图片/字体单项 8 MiB、合计 12 MiB；图片最多 8192 像素边长、1600 万像素。JSON 图片须内嵌 data URL 或属于当前 Figma 文件的 imageHash；不下载外链。
 - 保留上游布局、文字、渐变、阴影、矢量与语义映射能力；复杂 CSS 的结果仍受 html2figma/Figma 表达范围限制，不保证像素完全一致。字体须在 Figma 可用，缺失字体会提示并回退到 Inter Regular；HTML 内嵌字体只用于浏览器预览，不会安装字体。
 - 上游 GROUP 适配为 FRAME。HTML 预览是浏览器渲染，JSON 预览是简化布局，不是 Figma 原生渲染。
+- 非直角 CSS 渐变与像素色标按当前尺寸创建为可编辑原生渐变，并提示原生改尺寸可能改变外观。保留原始 CSS 角度／单位并继续响应式编辑时，请使用 Design Studio → Design Bridge 的 v3 工作流。
 - 本独立插件的 Grid 仍使用上游测量像素的 Flex 行／固定几何兼容路径；预览、下载 JSON 和创建结果会提示原生轨道与响应式尺寸未保留。需要可编辑原生 Grid 时，请通过 Design Studio 的 HTML 导入，再使用 Design Bridge；该路径保留可表达的固定／Flex／Hug 轨道与 Fill 子项。本插件构建回执记录 `legacy-synthetic-with-diagnostics`，工作台浏览器引擎默认保留原 Grid 结构。
 - 创建后核对每个非空 TEXT 的完整文字（富文本按完整字符串核对，不重复拼接样式范围）。文字缺失、截断或被替换时，本次导入失败并移除新节点、恢复原选择；上游显式报告的 creator 错误同样回滚。读取/预览不会修改设计。
 - 字体、富文本范围样式和复杂效果可能随 Figma 可用能力回退；成功结果会提示检查视觉效果。文字完整性校验不保证每项样式、布局或全部 Figma API 属性完全保真。

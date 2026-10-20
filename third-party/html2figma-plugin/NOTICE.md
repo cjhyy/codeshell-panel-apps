@@ -25,6 +25,11 @@ adapter does not yet implement native Figma Grid. The separate Design Studio
 workbench uses original Grid capture and the v3 Design Bridge for that path;
 both build receipts record their Grid capture mode.
 
+The maintained gradient adapter uses bounded structured CSS angle/stop parsing
+for an editable native snapshot and reports native resizing limitations. The
+separate v3 Design Bridge retains authored geometry intent; the standalone
+adapter does not claim responsive CSS gradient semantics inside native Figma.
+
 Upstream package.json and README declare MIT. There is no standalone LICENSE,
 COPYING or NOTICE in the pinned upstream tree; the original declarations are
 preserved and this notice does not invent an upstream copyright statement.

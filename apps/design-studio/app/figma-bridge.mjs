@@ -1,6 +1,12 @@
 import { normalizeCornerRadii, effectiveCornerRadii } from "./corner-radii.mjs";
 import { normalizeGridTracks, nativeGridPlan, GRID_CHILD_FIELDS } from "./grid.mjs";
-import { figmaFillPaints, representativeDesignFill } from "./paint.mjs";
+import {
+  figmaFillPaints,
+  representativeDesignFill,
+  restoreCssLinearSource,
+  cssLinearNeedsNativeWarning,
+  designPaintsToFigma,
+} from "./paint.mjs";
 /* Deliberately bounded Figma JSON bridge. Figma binary files are not supported. */
 import {
   MAX_DESIGN_NODES_PER_PAGE,
@@ -63,6 +69,7 @@ const LOSS_WARNINGS = new Set([
   "plugin-export-warning",
   "canvas-extent",
   "unsupported-grid",
+  "css-gradient-native-source",
 ]);
 const EFFECT_WARNINGS = new Set(["unsupported-effects", "stroke-alignment", "corner-shape"]);
 const ADVISORY_WARNINGS = new Set([
@@ -81,6 +88,7 @@ const ADVISORY_WARNINGS = new Set([
   "child-layout-export",
   "container-as-frame",
   "notes-plugin-data",
+  "css-gradient-native-resize",
 ]);
 function warningPriority({ code, message }) {
   // Missing image resources must remain visible even after hundreds of layout advisories.
@@ -715,7 +723,7 @@ function importFigmaJsonWithReport(
       recordMapping(source, node);
       return node;
     }
-    const fillPaints =
+    let fillPaints =
       !imagePaint && !["group", "image"].includes(type)
         ? figmaFillPaints(source.fills, (message) =>
             report.warn("paint-conversion", source, message),
@@ -759,6 +767,15 @@ function importFigmaJsonWithReport(
       visible: source.visible !== false,
       locked: source.locked === true,
     };
+    if (fillPaints && source.codeshellCssLinearSource) {
+      fillPaints = restoreCssLinearSource(
+        fillPaints,
+        source.codeshellCssLinearSource,
+        node.width,
+        node.height,
+        (message) => report.warn("css-gradient-native-source", source, message),
+      );
+    }
     if (source.rectangleCornerRadii !== undefined && ["frame", "rectangle", "component", "image"].includes(type)) {
       try {
         const radii = normalizeCornerRadii(source.rectangleCornerRadii);
@@ -1126,6 +1143,16 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
       return null;
     }
     const { children, ...copy } = node;
+    if (node.fillPaints?.some((paint) => paint.cssLinear && !paint.cssLinear.sourceOnly)) {
+      try { designPaintsToFigma(node); }
+      catch (error) { throw new Error(`${node.name}: ${error.message}`); }
+    }
+    if (node.fillPaints?.some(cssLinearNeedsNativeWarning))
+      report.warn(
+        "css-gradient-native-resize",
+        node,
+        "CSS 渐变按当前尺寸创建为可编辑原生渐变；非直角角度/像素色标不能保证随原生缩放保持 CSS 行为。原始几何意图随来源保存；请在 Design Studio 中调整尺寸以重新求值。",
+      );
     // Transfer only schema-validated design values. No raw Figma/plugin metadata is trusted.
     const sourceMatch = /^figma-(\d+)-(\d+)$/u.exec(node.id);
     if (sourceMatch) copy.sourceId = `${sourceMatch[1]}:${sourceMatch[2]}`;

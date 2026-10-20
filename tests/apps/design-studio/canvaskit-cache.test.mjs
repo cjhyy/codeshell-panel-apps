@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { chromium } from "playwright";
 import { PNG } from "pngjs";
+import { cssLinearBackgroundPaints } from "../../../apps/design-studio/app/css-linear-gradient.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
 const origin = "https://canvaskit-cache.test";
@@ -212,6 +213,61 @@ test("GPU tile cache preserves nonzero-position gradients, ancestor clip/alpha a
   assert.equal(second.pictureBuilds, 1);
   assert.equal(second.inputNodes, design.nodes.length);
   assert.ok(second.tileCacheBytes <= second.tileCacheBudget.maxBytes);
+});
+
+test("CanvasKit invalidates resized CSS gradient pictures and matches freshly resolved native paints exactly", async (t) => {
+  const page = await harness(t, { width: 640, height: 440 });
+  const image =
+    "linear-gradient(-45deg,rgba(255,0,0,.5) 20px,transparent),linear-gradient(to top right,rgb(0,0,255),rgb(0,255,0))";
+  const source = cssLinearBackgroundPaints({ "background-image": image }, 640, 160);
+  const design = (fillPaints, width, height, textPaints = fillPaints) => ({
+    canvas: { width: 640, height: 440, background: "#ffffff" },
+    resources: [],
+    nodes: [
+      base("responsive", "rectangle", 0, 0, width, height, { fillPaints }),
+      base("responsive-text", "text", 0, 350, width, 60, {
+        fillPaints: textPaints,
+        text: "Gradient glyphs",
+        fontFamily: "Roboto",
+        fontRef: "roboto",
+        fontSize: 36,
+        fontWeight: 700,
+        lineHeight: 1.2,
+        textAlign: "left",
+      }),
+    ],
+  });
+  const viewport = { zoom: 1, pan: { x: 0, y: 0 } };
+  await upload(page, design(source, 640, 160));
+  await draw(page, viewport);
+  for (const [width, height] of [
+    [400, 160],
+    [200, 320],
+  ]) {
+    await upload(page, design(source, width, height));
+    const actual = await draw(page, viewport);
+    const fresh = cssLinearBackgroundPaints({ "background-image": image }, width, height).map(
+      ({ cssLinear, ...paint }) => paint,
+    );
+    const textFresh = cssLinearBackgroundPaints({ "background-image": image }, width, 60).map(
+      ({ cssLinear, ...paint }) => paint,
+    );
+    await upload(page, design(fresh, width, height, textFresh));
+    const expected = await draw(page, viewport);
+    assert.deepEqual(
+      actual.data,
+      expected.data,
+      "all GPU pixels agree with a fresh current-size CSS capture",
+    );
+    const frozen = source.map(({ cssLinear, ...paint }) => paint);
+    await upload(page, design(frozen, width, height));
+    const wrong = await draw(page, viewport);
+    assert.notDeepEqual(
+      actual.data,
+      wrong.data,
+      "the old normalized capture would visibly rotate/move stops",
+    );
+  }
 });
 
 test("live scene revisions reuse font providers and local node pictures while invalidating GPU tiles", async (t) => {

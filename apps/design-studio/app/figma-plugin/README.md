@@ -1,5 +1,7 @@
 # CodeShell Design Bridge
 
+CSS 线性渐变的角度和像素色标按当前尺寸创建为可编辑原生渐变，并保留有界来源意图。Figma 内改变尺寸可能改变其物理角度或色标位置；导回 Design Studio 时，这类已变化的原生几何保留当前外观，原 CSS 意图标记为 `sourceOnly`，不会自行重新启用。需要继续按 CSS 规则调整尺寸时，请在 Design Studio 显式编辑来源意图并核对结果。
+
 This local development plugin connects Figma with the CodeShell Design Studio panel through JSON files. It does not access the network or need a Figma access token. It does not read or write binary `.fig` files.
 
 1. In Figma Desktop, use **Plugins → Development → New plugin** to create a plugin with a UI. Copy the `id` from its generated `manifest.json`; Figma must assign this ID.
