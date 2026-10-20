@@ -5,8 +5,8 @@
   "integrationVersion": 1,
   "esbuildVersion": "0.28.2",
   "output": "apps/design-studio/app/vendor/html2figma-browser.mjs",
-  "bytes": 201896,
-  "sha256": "1ecf41e3fb88a10d9a548a8cec3680708f323307f1cafa44f7f1595d5c78c2f3",
+  "bytes": 202141,
+  "sha256": "089dcd5b5e18207b71d8e43dfe11b4fd86a8dbe45fcfd4d9ff886167f601fb99",
   "notice": {
     "output": "apps/design-studio/app/vendor/html2figma-NOTICE.md",
     "bytes": 4184,

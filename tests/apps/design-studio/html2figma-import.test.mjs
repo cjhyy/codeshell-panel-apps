@@ -633,6 +633,85 @@ test("same-document SVG symbols and use chains remain standalone through pixels,
   assert.deepEqual(f.errors, []);
 });
 
+test("class-driven inner SVG opacity preserves group compositing and applies root opacity once", async (t) => {
+  const f = await fixture(t);
+  await f.page.setViewportSize({ width: 480, height: 360 });
+  const html = `<!doctype html><style>html,body{margin:0;background:#fff}main{display:flex;gap:16px;padding:20px;box-sizing:border-box;width:480px;height:360px}main svg{display:block;flex:none;fill:currentColor;color:#0d6efd}.muted,.root-opacity{opacity:.5}</style>
+    <svg style="display:none"><symbol id="tile" viewBox="0 0 24 24"><g class="muted"><path d="M0 0H24V24H0Z" fill="currentColor"/></g></symbol></svg>
+    <main id="icons"><svg id="group" class="root-opacity" width="24" height="24"><g class="muted"><rect width="16" height="24" fill="red"/><rect x="8" width="16" height="24" fill="blue"/></g></svg><svg id="path" width="24" height="24" style="opacity:.5"><path class="muted" d="M0 0H24V24H0Z"/></svg><svg id="use" width="24" height="24" opacity=".5"><use class="muted" href="#tile"/></svg><svg id="definition" width="24" height="24"><use href="#tile"/></svg></main>`;
+  await f.page.setContent(html);
+  const source = PngImage.sync.read(await f.page.screenshot());
+  const captured = await f.capture(html, { rootSelector: "#icons" });
+  const document = normalizeDesignDocument(captured.document);
+  assert.deepEqual(
+    ["group", "path", "use", "definition"].map((id) => byHtmlId(document, id, "image").opacity),
+    [0.5, 0.5, 0.5, 1],
+  );
+  const files = new Map(
+    captured.resourcePlans.flatMap((plan) => plan.parts.map((part) => [part.path, part.content])),
+  );
+  const portable = await createPortableDesign({
+    document,
+    source: { workspaceRoot: "/svg-opacity", sessionId: "svg", path: "opacity.codesign.json" },
+    readText: async (path) => files.get(path),
+    sha256Bytes: hash,
+  });
+  const prepared = await preparePluginFile(portable, { sha256Bytes: hash });
+  const dataUrls = Object.fromEntries(
+    Object.entries(prepared.transfer.assets).map(([id, asset]) => [
+      id,
+      `data:${asset.mime};base64,${asset.base64}`,
+    ]),
+  );
+  const svg = await f.page.evaluate(
+    async ({ document, dataUrls }) => {
+      const { normalizeDesignDocument, exportDesignSvg } = await import("/app/document.mjs");
+      await Promise.all(
+        Object.values(dataUrls).map(async (dataUrl) => {
+          const image = new Image();
+          image.src = dataUrl;
+          await image.decode();
+        }),
+      );
+      return exportDesignSvg(normalizeDesignDocument(document), {
+        resourceDataUrls: new Map(Object.entries(dataUrls)),
+      });
+    },
+    { document: captured.document, dataUrls },
+  );
+  await f.page.setContent(
+    `<!doctype html><style>html,body{margin:0;background:#fff}svg{display:block}</style>${svg}`,
+  );
+  await f.page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+  const rendered = PngImage.sync.read(await f.page.screenshot());
+  let changed = 0;
+  for (let offset = 0; offset < source.data.length; offset += 4)
+    if (
+      [0, 1, 2, 3].some(
+        (channel) => source.data[offset + channel] !== rendered.data[offset + channel],
+      )
+    )
+      changed++;
+  assert.equal(
+    changed,
+    0,
+    "inner SVG opacity and root layer opacity must preserve every source RGBA pixel",
+  );
+  for (const asset of Object.values(prepared.transfer.assets)) {
+    const xml = Buffer.from(asset.base64, "base64").toString("utf8");
+    const root = xml.match(/^<svg\b[^>]*>/u)[0];
+    assert.doesNotMatch(
+      root,
+      /(?:\s|;)opacity\s*[=:]/u,
+      "root opacity belongs only to the editable v3 node",
+    );
+  }
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});
+
 test("SVG missing, cyclic, external and excessive local reference graphs fail before a partial import", async (t) => {
   const f = await fixture(t);
   const cases = [

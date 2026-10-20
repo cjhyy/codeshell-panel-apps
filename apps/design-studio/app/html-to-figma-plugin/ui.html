@@ -7356,6 +7356,11 @@
         freeze(source, false);
         for (const clone of [...clones.values()]) for (const id of references(clone)) resolve(id, 0);
         attachDefinitions();
+        for (const [original, clone] of clones) {
+          clone.style.removeProperty("opacity");
+          if (original === source) clone.removeAttribute("opacity");
+          else clone.setAttribute("opacity", view.getComputedStyle(original).opacity);
+        }
         const serialized = new realm.XMLSerializer().serializeToString(root);
         if (new TextEncoder().encode(serialized).length > MAX_BYTES)
           throw Error("\\u72EC\\u7ACB SVG \\u8D85\\u8FC7 1 MiB \\u4E0A\\u9650");

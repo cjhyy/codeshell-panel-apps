@@ -146,6 +146,13 @@ export function captureStandaloneSvg(source: Element): string {
   // Computed CSS may introduce local clip/paint references absent from attributes.
   for (const clone of [...clones.values()]) for (const id of references(clone)) resolve(id, 0);
   attachDefinitions();
+  // Opacity is not inherited: keep each internal group's compositing, including
+  // copied definitions. The source SVG's opacity already belongs to its v3 node.
+  for (const [original, clone] of clones) {
+    (clone as SVGElement).style.removeProperty("opacity");
+    if (original === source) clone.removeAttribute("opacity");
+    else clone.setAttribute("opacity", view.getComputedStyle(original).opacity);
+  }
   const serialized = new XMLSerializer().serializeToString(root);
   if (new TextEncoder().encode(serialized).length > MAX_BYTES)
     throw Error("独立 SVG 超过 1 MiB 上限");

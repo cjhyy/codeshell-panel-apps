@@ -282,7 +282,7 @@ test("standalone SVG capture copies reference chains and inherited colors withou
   const result = await f.page.evaluate(async () => {
     const { convertToDesignDSL } = await import("/html2figma-browser.mjs");
     document.body.innerHTML =
-      '<svg style="display:none"><symbol id="check" viewBox="0 0 16 16"><path fill="currentColor" d="M0 0H16V16Z"/></symbol><symbol id="alias"><use href="#check"/></symbol></svg><svg id="icon" width="24" height="24" style="color:rgb(13,110,253)" fill="currentColor"><use xlink:href="#alias"/></svg>';
+      '<style>.muted{opacity:.5}</style><svg style="display:none"><symbol id="check" viewBox="0 0 16 16"><path class="muted" fill="currentColor" d="M0 0H16V16Z"/></symbol><symbol id="alias"><use href="#check"/></symbol></svg><svg id="icon" width="24" height="24" style="color:rgb(13,110,253);opacity:.5" opacity=".75" fill="currentColor"><g class="muted"><use xlink:href="#alias"/></g></svg>';
     const before = document.documentElement.outerHTML;
     const tree = convertToDesignDSL(document.querySelector("#icon"));
     const resource = new DOMParser().parseFromString(tree.svgContent, "image/svg+xml");
@@ -292,12 +292,22 @@ test("standalone SVG capture copies reference chains and inherited colors withou
       parseErrors: resource.querySelectorAll("parsererror").length,
       aliases: resource.querySelectorAll("#alias, #check").length,
       color: resource.documentElement.getAttribute("color"),
+      rootOpacity: resource.documentElement.getAttribute("opacity"),
+      rootInlineOpacity: resource.documentElement.style.opacity,
+      layerOpacity: tree.opacity,
+      internalOpacity: [...resource.querySelectorAll("g, path")].map((node) =>
+        node.getAttribute("opacity"),
+      ),
     };
   });
   assert.equal(result.unchanged, true);
   assert.equal(result.parseErrors, 0);
   assert.equal(result.aliases, 2);
   assert.equal(result.color, "rgb(13, 110, 253)");
+  assert.equal(result.rootOpacity, null);
+  assert.equal(result.rootInlineOpacity, "");
+  assert.equal(result.layerOpacity, 0.5);
+  assert.deepEqual(result.internalOpacity, ["0.5", "0.5"]);
   assert.match(result.xml, /xmlns:xlink="http:\/\/www\.w3\.org\/1999\/xlink"/u);
   assert.deepEqual(f.externalRequests, []);
   assert.deepEqual(f.errors, []);
