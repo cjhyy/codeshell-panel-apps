@@ -131,10 +131,11 @@ export function gridPlacements(children, columnCount, container = {}) {
     rowCount: Math.max(0, ...placements.map((item) => item.row + item.rowSpan)),
   };
 }
-// Native runs 289e088a (rectangle) and a4e5dd91 (plain Text) prove this vertical dependency.
+// Native runs 289e088a (rectangle), a4e5dd91 (plain Text), and fc6bb994 (padded
+// cells in externally sized rows) prove this vertical dependency.
 // Text height is its logical line box after the bounded responsive-text pass. Never use an old
 // stretched cell height as intrinsic content, or shrink edits retain the old row.
-export function gridFillHugContentHeight(container, child, children = child?.children) {
+export function gridFillHugContentHeight(container, child, children = child?.children, parent) {
   const unconstrained = (node) =>
     ["minWidth", "maxWidth", "minHeight", "maxHeight"].every((key) => node[key] === undefined);
   const noStroke = (node) =>
@@ -145,11 +146,37 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
     !node.strokeLayoutExcluded;
   const verticalPadding = (node) =>
     (node.paddingTop ?? node.padding ?? 0) + (node.paddingBottom ?? node.padding ?? 0);
+  const boundedPadding = (node) =>
+    ["Top", "Right", "Bottom", "Left"].every((side) => {
+      const value = node[`padding${side}`] ?? node.padding ?? 0;
+      return Number.isFinite(value) && value >= 0 && value <= 2000;
+    });
+  // A FILL row has a resolved width only in this proven, non-circular parent
+  // context. Persisted geometry alone is not evidence that a HUG owner resolves it.
+  const resolvedFillWidth =
+    container?.layoutSizingHorizontal === "fill" &&
+    parent?.layout === "vertical" &&
+    parent.layoutSizingHorizontal === "fixed" &&
+    Number.isFinite(parent.width) && parent.width >= 1 && parent.width <= 20000 &&
+    unconstrained(parent) &&
+    !parent.rotation && !parent.layoutReverse &&
+    (!parent.layoutWrap || parent.layoutWrap === "none") &&
+    container.layoutPositioning !== "absolute" &&
+    !container.layoutMarginBefore && unconstrained(container);
+  // Native fc6bb994 / 7937bd33 reserve exactly this INSIDE bottom rule when
+  // included. Canonical padding already contains that physical inset once.
+  const includedBottomRule =
+    container?.strokeAlign === "inside" &&
+    !container.strokeLayoutExcluded &&
+    Array.isArray(container.strokeSides) && container.strokeSides.length === 4 &&
+    container.strokeSides.every((side, index) => side && side.width === (index === 2 ? 1 : 0)) &&
+    ["Top", "Right", "Left"].every((side) => (container[`padding${side}`] ?? container.padding ?? 0) === 0) &&
+    (container.paddingBottom ?? container.padding ?? 0) === 1;
   if (
     !container ||
     !child ||
     container.layout !== "grid" ||
-    container.layoutSizingHorizontal !== "fixed" ||
+    (container.layoutSizingHorizontal !== "fixed" && !resolvedFillWidth) ||
     container.layoutSizingVertical !== "hug" ||
     container.gridRows !== 1 ||
     container.gridRowSizes?.length !== 1 ||
@@ -161,9 +188,9 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
     (container.justifyContent && container.justifyContent !== "start") ||
     (container.alignContent && container.alignContent !== "start") ||
     (container.alignItems && container.alignItems !== "start") ||
-    verticalPadding(container) !== 0 ||
+    (verticalPadding(container) !== 0 && !includedBottomRule) ||
     !unconstrained(container) ||
-    !noStroke(container) ||
+    (!noStroke(container) && !includedBottomRule) ||
     child.type !== "frame" ||
     child.layout !== "vertical" ||
     child.layoutSizingHorizontal !== "fill" ||
@@ -179,7 +206,7 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
     (child.alignItems && child.alignItems !== "start") ||
     (child.gap ?? 0) !== 0 ||
     (child.rowGap ?? 0) !== 0 ||
-    verticalPadding(child) !== 0 ||
+    !boundedPadding(child) ||
     !unconstrained(child) ||
     !noStroke(child)
   )
@@ -214,6 +241,7 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
   if (
     !content ||
     (!fixedRectangle && !plainText) ||
+    (fixedRectangle && verticalPadding(child) !== 0) ||
     content.children !== undefined ||
     content.visible === false ||
     content.layoutPositioning === "absolute" ||
@@ -226,7 +254,8 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
     !noStroke(content)
   )
     return null;
-  return content.height;
+  const height = content.height + verticalPadding(child);
+  return height <= 20000 ? height : null;
 }
 export function gridTrackSizes(tracks, count, placements, axis, gap, available, intrinsicSize) {
   const definitions = Array.from(
@@ -295,7 +324,7 @@ export function effectiveGridRowTracks(source, rowCount) {
     ? Array.from({ length: rowCount }, (_, index) => source.gridRowSizes[index] ?? { type: "hug" })
     : undefined;
 }
-export function nativeGridPlan(source) {
+export function nativeGridPlan(source, parent) {
   validateGridFields(source, true);
   const columns = source.gridColumns ?? 1;
   const placed = gridPlacements(source.children ?? [], columns, source);
@@ -328,7 +357,7 @@ export function nativeGridPlan(source) {
       if (
         (child[`layoutSizing${axis}`] === "fill" || stretch) &&
         tracks.slice(start, start + span).some((track) => track.type === "hug") &&
-        !(axis === "Vertical" && gridFillHugContentHeight(source, child) !== null)
+        !(axis === "Vertical" && gridFillHugContentHeight(source, child, child.children, parent) !== null)
       )
         throw new Error(
           `Grid ${axis}: FILL 子项与 HUG track 的内在尺寸循环尚不能保留；请改为固定 track 或 HUG/固定子项`,
@@ -348,8 +377,8 @@ export function nativeGridPlan(source) {
     throw new Error("Grid 反向/换行/track 分布不能对应 Figma；请使用 start 分布");
   return { columns, rows, columnSizes, rowSizes, ...placed };
 }
-export function configureNativeGrid(node, source) {
-  const plan = nativeGridPlan(source);
+export function configureNativeGrid(node, source, parent) {
+  const plan = nativeGridPlan(source, parent);
   for (const key of [
     "gridColumnCount",
     "gridRowCount",
@@ -423,10 +452,10 @@ export function positionNativeGridChild(node, source, parentSource, plan) {
       { start: "MIN", center: "CENTER", end: "MAX", stretch: "MIN", auto: "AUTO" }[self] ?? "MIN";
   }
 }
-export function finishNativeGrid(node, source) {
+export function finishNativeGrid(node, source, parent) {
   // Appending an eventual absolute overlay can temporarily add a grid row.
   // Once every child has its final positioning, remove those empty temporary rows.
-  node.gridRowCount = nativeGridPlan(source).rows;
+  node.gridRowCount = nativeGridPlan(source, parent).rows;
   node.gridItemsPositioning =
     source.gridItemsPositioning === "row-auto-flow" ? "ROW_AUTO_FLOW" : "MANUAL";
   node.gridAutoTracks = source.gridAutoTracks === "rows" ? "ROWS" : "NONE";

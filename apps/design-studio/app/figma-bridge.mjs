@@ -1056,10 +1056,13 @@ function importFigmaJsonWithReport(
         .filter(Boolean);
       if (node.layout === "grid") {
         try {
-          if (node.children.some((cell) => gridFillHugContentHeight(node, cell) !== null &&
+          if (node.children.some((cell) => gridFillHugContentHeight(node, cell, cell.children, parent) !== null &&
               cell.children?.some((content) => unsupportedGridText.has(content))))
             throw new Error("HUG 行内的 FILL 文字单元暂不支持列表、段落间距/缩进、截断、大小写转换或混合/非顶部左对齐样式");
-          nativeGridPlan(node);
+          if (node.children.some((cell) => gridFillHugContentHeight(node, cell, cell.children, parent) !== null) &&
+              node.strokeSides?.some((side) => side.width > 0) && source.strokesIncludedInLayout !== true)
+            throw new Error("HUG 行内的 FILL 文字单元仅支持明确 included 的 inside 描边");
+          nativeGridPlan(node, parent);
         } catch (error) {
           report.warn(
             "unsupported-grid",
@@ -1342,7 +1345,7 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
   const report = reporter();
   let exportedNodes = 0,
     skippedNodes = 0;
-  const convert = (node) => {
+  const convert = (node, parent) => {
     if (node.type === "instance") {
       skippedNodes += 1;
       report.warn(
@@ -1386,7 +1389,7 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
       report.warn("corner-overlap-export", node, "相邻圆角需要 CSS 共同缩放；Figma 原生的缩放结果可能不同，请核对角部外观。原始半径保持可编辑。");
     if (node.layout === "grid") {
       try {
-        nativeGridPlan(node);
+        nativeGridPlan(node, parent);
       } catch (error) {
         report.warn(
           "grid-export",
@@ -1420,13 +1423,13 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
       report.warn("child-layout-export", node, "单项对齐和自动外边距暂使用 Figma 默认布局行为。");
     if (++exportedNodes > MAX_FIGMA_TOTAL_NODES)
       throw new Error("Figma 传输包最多 50,000 个图层；请分页面导出。");
-    if (children) copy.children = children.map(convert).filter(Boolean);
+    if (children) copy.children = children.map((child) => convert(child, node)).filter(Boolean);
     return copy;
   };
   const pages = document.pages.map((page) => ({
     id: page.id,
     name: page.name,
-    children: repositoryDesignPage(document, page.id).children.map(convert).filter(Boolean),
+    children: repositoryDesignPage(document, page.id).children.map((child) => convert(child)).filter(Boolean),
   }));
   const warningCount = report.finish();
   const transfer = {

@@ -178,7 +178,7 @@ function sizingDeclarations(node, parent) {
       : [];
   const circularFill = (child, axis) => {
     if (child[`layoutSizing${axis}`] !== "fill") return false;
-    if (axis === "Vertical" && gridFillHugContentHeight(node, child) !== null) return false;
+    if (axis === "Vertical" && gridFillHugContentHeight(node, child, child.children, parent) !== null) return false;
     const tracks = node[axis === "Horizontal" ? "gridColumnSizes" : "gridRowSizes"];
     const item = gridItems.find((entry) => entry.child === child);
     if (!tracks || !item) return true;
