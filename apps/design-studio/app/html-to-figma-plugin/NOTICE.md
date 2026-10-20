@@ -53,3 +53,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+The standalone float adapter remains measured/manual and retains a visible
+percentage-flow loss warning in preview, downloaded JSON and native creation.
+Bounded native float-column Grid recovery belongs to Design Studio/Design Bridge.
