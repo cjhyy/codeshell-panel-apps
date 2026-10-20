@@ -1,4 +1,5 @@
 import { effectiveCornerRadii } from "./corner-radii.mjs";
+import { designStrokeOutset } from "./stroke.mjs";
 import { auditDesignPages, readableTextContrast, summarizeAudit } from "./audit.mjs";
 import {
   isDesignNodeVisible,
@@ -47,8 +48,8 @@ function visibleEffectBounds(view, node, byId) {
   if (node.type === "group") return null;
   const ink = measuredTextInkBounds(node);
   const stroke =
-    !["group", "instance"].includes(node.type) && node.stroke !== "transparent"
-      ? node.strokeWidth / 2
+    !["group", "instance"].includes(node.type)
+      ? designStrokeOutset(node)
       : 0;
   const shadow = node.shadow?.opacity > 0 ? node.shadow : null;
   const blur = shadow ? shadow.blur * 1.5 : 0;

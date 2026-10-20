@@ -24,6 +24,10 @@ export function prepareDesignInput(input: any) {
   const reservedIds = new Set<string>();
   const legacyGridWarning =
     "Grid 使用测量像素的 Flex 行/固定几何兼容转换，未保留原生轨道或响应式尺寸；需要原生 Grid 时请通过 Design Studio 导入并使用 Design Bridge。";
+  const legacyBorderWarning =
+    "CSS 边框使用独立插件的统一居中描边兼容转换，未保留各侧宽度、颜色或内部对齐；需要可编辑侧边时请通过 Design Studio 导入并使用 Design Bridge。";
+  const hasCssBorder = (node: any): boolean => Boolean(node.nodeType &&
+    ["top", "right", "bottom", "left"].some((side) => node.border?.[side]?.width > 0 && node.border[side].style !== "none"));
   function inspect(node: any, depth = 0) {
     if (!object(node) || depth > 60 || ++count > MAX_NODES)
       throw new Error("节点树最多 3000 个节点、60 层");
@@ -47,6 +51,7 @@ export function prepareDesignInput(input: any) {
       node.cssLayout?.["--codeshell-grid-legacy"] === "synthetic"
     )
       warnings.push(legacyGridWarning);
+    if (node.codeshellBorderFallback === true || hasCssBorder(node)) warnings.push(legacyBorderWarning);
     if (typeof node.id === "string" && node.id) reservedIds.add(node.id);
     for (const child of node.children ?? []) inspect(child, depth + 1);
   }
@@ -94,9 +99,12 @@ export function prepareDesignInput(input: any) {
     node.codeshellGridFallback === true ||
     node.cssLayout?.["--codeshell-grid-legacy"] === "synthetic" ||
     (node.children ?? []).some(hasLegacyGrid);
+  const hasLegacyBorder = (node: any): boolean =>
+    node.codeshellBorderFallback === true || hasCssBorder(node) || (node.children ?? []).some(hasLegacyBorder);
   const converted = roots.map((root: any) => {
     const converted = root.nodeType ? FigmaAdapter.toFigmaJSON(root) : root;
     if (hasLegacyGrid(root)) converted.codeshellGridFallback = true;
+    if (hasLegacyBorder(root)) converted.codeshellBorderFallback = true;
     return converted;
   });
   count = 0;

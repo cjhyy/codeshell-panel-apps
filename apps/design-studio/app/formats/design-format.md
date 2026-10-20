@@ -127,8 +127,8 @@ the node's own geometry still fits.
 HTML capture may add `effectClipping: "intentional"` for deliberately clipped shadows and
 `contentClipping: "intentional"` when the browser itself clips child overflow. These markers
 suppress only their corresponding false-positive clipping issues.
-Visible stroke width is audited the same way, because half of an SVG stroke extends outside the
-node geometry.
+Visible stroke width is audited using its alignment: legacy centered strokes extend half their
+width outside the node; inside sides add no outside extent.
 Shadow filter regions are derived from the rendered node, stroke, and instance-content bounds, so a
 small layer with a large blur is not silently cropped by the SVG filter itself.
 
@@ -242,6 +242,31 @@ Figma corner smoothing produce explicit diagnostics. Figma export uses the
 [individual native radius properties](https://developers.figma.com/docs/plugins/api/FrameNode/);
 oversized asymmetric radii receive an export warning until native overlap
 behavior is verified against CSS.
+
+Rectangles, Frames and Components may store optional `strokeAlign` (`inside`,
+`center`, `outside`) and `strokeSides`, exactly four solid side descriptors in
+clockwise top/right/bottom/left order. Each descriptor has only `width` (0–100px),
+`color` (six-digit RGB) and `opacity` (0–1). Side descriptors override compatibility
+`stroke`/`strokeWidth`; omitting the new fields preserves legacy centered strokes.
+Uniform edits recolor all sides or scale widths while preserving zero sides and
+relative widths. Unequal rounded sides and adjacent sides with different alpha
+are rejected explicitly. SVG/CanvasKit paint safe generated border geometry,
+without adding child layers. Small multicolor join antialiasing differences from
+CSS remain measured limitations.
+
+CSS capture records inside borders and includes their inset once in effective
+padding. HTML export subtracts this inset from CSS padding and corrects absolute
+child offsets for the border's containing block. It explicitly rejects inside
+flow padding smaller than the border, and unequal non-inside border export.
+Collapsed table borders receive a measured centered approximation and a loss
+diagnostic; shared edge ownership/table behavior is not retained.
+
+Native Figma interchange uses actual independent side weights and alignment for
+one shared RGB/alpha paint. Multicolor borders are rejected before native mutation;
+v3/SVG/HTML retain their editable source. Native `strokesIncludedInLayout` imports
+project side widths into effective padding, while INSIDE source-bound patches subtract
+those widths from raw native padding and guard concurrent side/layout changes.
+CSS-derived native copies disable stroke layout inclusion to preserve flow.
 
 Native Figma TEXT imports convert the native line-box top to the v3 hanging
 origin using the loaded browser font and line height. `layoutBaselineOffset`

@@ -1,4 +1,5 @@
 import { normalizeCornerRadii, effectiveCornerRadii } from "./corner-radii.mjs";
+import { figmaDesignStroke, nativeDesignStroke, hasDesignStroke, designStrokeSides } from "./stroke.mjs";
 import { normalizeGridTracks, nativeGridPlan, GRID_CHILD_FIELDS } from "./grid.mjs";
 import {
   figmaFillPaints,
@@ -69,6 +70,8 @@ const LOSS_WARNINGS = new Set([
   "plugin-export-warning",
   "canvas-extent",
   "unsupported-grid",
+  "unsupported-native-border",
+  "unsupported-stroke-layout",
   "css-gradient-native-source",
 ]);
 const EFFECT_WARNINGS = new Set(["unsupported-effects", "stroke-alignment", "corner-shape"]);
@@ -397,6 +400,14 @@ function gridChildProperties(source) {
 
 function layout(source, node, report) {
   node.layout = { HORIZONTAL: "horizontal", VERTICAL: "vertical" }[source.layoutMode] ?? "none";
+  if (source.strokesIncludedInLayout === true &&
+      (hasDesignStroke(node) ? designStrokeSides(node).some(side=>side.width>0) : node.strokeWidth>0) &&
+      (!hasDesignStroke(node) || node.strokeAlign!=="inside")) {
+    Object.assign(node,{layout:"none",gap:0,padding:0,alignItems:"start",justifyContent:"start"});
+    if(node.type === "frame")node.clipContent=source.clipsContent===true;
+    report.warn("unsupported-stroke-layout",source,"参与布局的描边暂只支持完整 INSIDE 侧边；CENTER/OUTSIDE 或不支持的描边保留测量几何，未猜测有效 padding。");
+    return;
+  }
   if (source.layoutMode === "GRID") {
     try {
       const columns = source.gridColumnCount,
@@ -479,6 +490,13 @@ function layout(source, node, report) {
       `padding${side}`,
       report,
     );
+  if (source.strokesIncludedInLayout === true) {
+    if (hasDesignStroke(node) && node.strokeAlign === "inside") designStrokeSides(node).forEach((stroke,i)=>{
+      const key=`padding${["Top","Right","Bottom","Left"][i]}`;
+      node[key]+=stroke.width;
+    });
+    else if (node.strokeWidth) report.warn("unsupported-stroke-layout",source,"原生描边参与布局但未保留完整侧边，内容缩进可能不同。");
+  }
   node.alignItems =
     { MIN: "start", CENTER: "center", MAX: "end", BASELINE: "baseline" }[
       source.counterAxisAlignItems
@@ -752,7 +770,7 @@ function importFigmaJsonWithReport(
         : fillPaints
           ? representativeDesignFill(fillPaints)
           : paint(source.fills, source, "填充", report),
-      stroke: paint(source.strokes, source, "描边", report),
+      stroke: "transparent",
       strokeWidth: number(source.strokeWeight, 0, 0, 100, source, "strokeWeight", report),
       opacity: number(source.opacity, 1, 0, 1, source, "opacity", report),
       cornerRadius: number(
@@ -785,6 +803,17 @@ function importFigmaJsonWithReport(
         report.warn("corner-shape", source, error.message);
       }
     }
+    try {
+      const border=figmaDesignStroke(source,node);
+      if (border) {
+        Object.assign(node,border);
+        node.stroke=border.strokeSides[0].opacity>0 ? border.strokeSides[0].color : "transparent";
+        node.strokeWidth=border.strokeSides[0].opacity>0 ? Math.max(...border.strokeSides.map(s=>s.width)) : 0;
+      } else node.stroke=paint(source.strokes,source,"描边",report);
+    } catch (error) {
+      report.warn("unsupported-native-border",source,error.message);
+      node.stroke=paint(source.strokes,source,"描边",report);
+    }
     if (
       fillPaints &&
       (fillPaints.length > 1 ||
@@ -792,7 +821,7 @@ function importFigmaJsonWithReport(
     )
       node.fillPaints = fillPaints;
     if (node.stroke === "transparent") node.strokeWidth = 0;
-    if (node.strokeWidth && source.strokeAlign !== "CENTER")
+    if (node.strokeWidth && !hasDesignStroke(node) && source.strokeAlign !== "CENTER")
       report.warn("stroke-alignment", source, "内侧或外侧描边暂按居中描边导入。");
     if (type === "group") {
       node.fill = "transparent";
@@ -1143,6 +1172,10 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
       return null;
     }
     const { children, ...copy } = node;
+    if (hasDesignStroke(node)) {
+      try { nativeDesignStroke(node); }
+      catch (error) { throw new Error(`${node.name}: ${error.message}`); }
+    }
     if (node.fillPaints?.some((paint) => paint.cssLinear && !paint.cssLinear.sourceOnly)) {
       try { designPaintsToFigma(node); }
       catch (error) { throw new Error(`${node.name}: ${error.message}`); }

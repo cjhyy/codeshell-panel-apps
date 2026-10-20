@@ -265,3 +265,23 @@ test("DesignNode JSON import uses the native upstream adapter and maps editable 
   assert.equal(f.harness.page.selection[0].fontName.style, "Bold");
   assert.deepEqual(f.errors, []);
 });
+
+
+test("standalone CSS border compatibility warnings survive preview and native JSON reimport", async (t) => {
+  const f = await fixture(t);
+  await f.frame.locator("#selector").fill("#fixture");
+  await f.frame.locator("#source").fill('<main id="fixture" style="width:400px;height:240px;border-bottom:1px solid #cecece"></main>');
+  await f.frame.locator("#preview").click();
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(), /边框.*未保留/u);
+  await f.frame.locator("#create").click();
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(), /边框.*未保留/u);
+  const requests = await f.page.evaluate(() => window.requests);
+  assert.equal(requests[0].designData[0].codeshellBorderFallback, true);
+  const again = await f.harness.importDesign(requests[0].designData);
+  assert.equal(again.type, "import-success");
+  assert(again.warnings.some(w => /边框.*未保留/u.test(w)));
+  assert.deepEqual(f.network, []);
+  assert.deepEqual(f.errors, []);
+});

@@ -34,7 +34,7 @@ const rect = (id = "1:2", properties = {}) => ({
 });
 const page = (children) => ({ id: "0:1", type: "CANVAS", name: "Home", children });
 
-function harness(source = page([rect()]), { nativeTextLayout = false } = {}) {
+function harness(source = page([rect()]), { nativeTextLayout = false, nativeStrokes = false } = {}) {
   const all = new Map(),
     messages = [],
     fonts = new Set(),
@@ -116,6 +116,15 @@ function harness(source = page([rect()]), { nativeTextLayout = false } = {}) {
       },
     };
     if (["RECTANGLE", "FRAME", "COMPONENT", "INSTANCE", "COMPONENT_SET", "SECTION"].includes(node.type)) {
+      if (nativeStrokes) {
+        const names=["Top","Right","Bottom","Left"];
+        let weights=names.map(side=>raw[`stroke${side}Weight`]??raw.individualStrokeWeights?.[side.toLowerCase()]??raw.strokeWeight??0);
+        names.forEach((side,i)=>Object.defineProperty(node,`stroke${side}Weight`,{get:()=>weights[i],set:v=>{weights[i]=v;}}));
+        Object.defineProperty(node,"strokeWeight",{get:()=>weights.every(v=>v===weights[0])?weights[0]:undefined,set:v=>{weights=Array(4).fill(v);}});
+        node.strokeAlign=raw.strokeAlign??"CENTER";
+        node.strokesIncludedInLayout=raw.strokesIncludedInLayout??false;
+        for(const side of names)node[`padding${side}`]=raw[`padding${side}`]??0;
+      }
       let radii = [...(raw.rectangleCornerRadii ?? Array(4).fill(raw.cornerRadius ?? 0))];
       for (const [index, key] of ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"].entries())
         Object.defineProperty(node, key, { enumerable: false, get: () => radii[index], set: (value) => { radii[index] = value; } });
@@ -188,7 +197,7 @@ function harness(source = page([rect()]), { nativeTextLayout = false } = {}) {
           ? { ...paint, imageRef: paint.imageHash, imageHash: undefined }
           : paint,
       );
-      if (node.raw.strokes) raw.strokes = clone(node.strokes);
+      if (nativeStrokes || node.raw.strokes) raw.strokes = clone(node.strokes);
       if (node.raw.relativeTransform) raw.relativeTransform = clone(node.relativeTransform);
       if (node.raw.size) raw.size = { x: node.width, y: node.height };
       for (const key of [
@@ -1687,4 +1696,74 @@ test("outgoing own-rotated hanging text diagnoses the unsupported native origin 
   Object.assign(result.document.nodes[0], { rotation: 30, layoutBaselineOffset: 4.59 });
   const transfer = createFigmaTransfer(result.document);
   assert.ok(transfer.warnings.some((warning) => warning.code === "text-baseline-export"));
+});
+
+test("inside per-side borders create real native stroke weights, preserve Auto Layout children and export actual values",async()=>{
+  const source=page([rect("1:2",{type:"FRAME",layoutMode:"VERTICAL",strokeAlign:"INSIDE",individualStrokeWeights:{top:0,right:0,bottom:1,left:0},strokes:[{type:"SOLID",color:{r:29/255,g:112/255,b:184/255},opacity:.5}],children:[rect("1:3")]} )]);
+  const imported=importFigmaJson(source),transfer=createFigmaTransfer(imported.document),runtime=harness(page([]),{nativeStrokes:true});
+  await runtime.send({type:"import-transfer",content:JSON.stringify(transfer)});
+  assert.equal(runtime.messages.at(-1).type,"imported");
+  const created=runtime.figma.root.children[1].children[0];
+  assert.equal(created.layoutMode,"VERTICAL");assert.equal(created.children.length,1,"no decorative children enter flow");
+  assert.deepEqual([created.strokeTopWeight,created.strokeRightWeight,created.strokeBottomWeight,created.strokeLeftWeight],[0,0,1,0]);
+  assert.equal(created.strokeAlign,"INSIDE");assert.equal(created.strokes[0].opacity,.5);assert.equal(created.strokesIncludedInLayout,false);
+  created.strokeBottomWeight=3;
+  runtime.figma.currentPage=created.parent;runtime.figma.currentPage.selection=[created];
+  await runtime.send({type:"export-json",scope:"selection"});
+  const exported=JSON.parse(runtime.messages.at(-1).content),reopened=importFigmaJson(exported);
+  assert.equal(reopened.document.nodes[0].strokeSides[2].width,3);
+  const invalid=clone(transfer);invalid.pages[0].children[0].strokeSides[0].width=101;
+  const blocked=harness(page([]),{nativeStrokes:true});await blocked.send({type:"import-transfer",content:JSON.stringify(invalid)});
+  assert.equal(blocked.messages.at(-1).type,"error");assert.equal(blocked.figma.root.children.length,1);
+  const multi=clone(transfer);multi.pages[0].children[0].strokeSides[0].width=1;multi.pages[0].children[0].strokeSides[0].color="#ff0000";
+  const rejected=harness(page([]),{nativeStrokes:true});await rejected.send({type:"import-transfer",content:JSON.stringify(multi)});
+  assert.equal(rejected.messages.at(-1).type,"error");assert.match(rejected.messages.at(-1).message,/多色/u);assert.equal(rejected.figma.root.children.length,1);
+});
+
+test("source-bound side edits retain conflicts and native included-layout effective padding",async()=>{
+  const source=page([rect("1:2",{type:"FRAME",layoutMode:"VERTICAL",strokeAlign:"INSIDE",strokesIncludedInLayout:true,paddingTop:8,paddingRight:8,paddingBottom:8,paddingLeft:8,individualStrokeWeights:{top:0,right:0,bottom:1,left:0},strokes:[{type:"SOLID",color:{r:.2,g:.4,b:.6}}],children:[]})]);
+  const imported=await prepareFigmaImport(source),binding=createFigmaBinding(imported),node=imported.document.nodes[0];
+  assert.equal(node.paddingBottom,9);node.strokeSides[2].width=3;
+  const transfer=createFigmaTransfer(imported.document);transfer.patch=createFigmaPatch(binding,imported.document);
+  const runtime=harness(source,{nativeStrokes:true});
+  await runtime.send({type:"preview-patch",content:JSON.stringify(transfer)});
+  const preview=runtime.messages.at(-1);assert.equal(preview.type,"patch-preview",JSON.stringify(preview));assert.deepEqual(preview.conflicts,[]);
+  await runtime.send({type:"apply-patch",token:preview.token});assert.equal(runtime.messages.at(-1).type,"patched");
+  const target=runtime.all.get("1:2");assert.equal(target.strokeBottomWeight,3);assert.equal(target.paddingBottom,6);assert.equal(target.strokesIncludedInLayout,true);assert.equal(target.paddingBottom+target.strokeBottomWeight,9);
+  const concurrent=harness(source,{nativeStrokes:true});concurrent.all.get("1:2").strokeBottomWeight=2;
+  await concurrent.send({type:"preview-patch",content:JSON.stringify(transfer)});assert(concurrent.messages.at(-1).conflicts.some(m=>m.includes("描边")));
+  const padding=harness(source,{nativeStrokes:true});padding.all.get("1:2").paddingBottom=12;
+  await padding.send({type:"preview-patch",content:JSON.stringify(transfer)});assert(padding.messages.at(-1).conflicts.some(m=>m.includes("paddingBottom")));
+});
+
+
+test("structured native square CENTER/OUTSIDE borders use sharp solid joins and diagnose unsupported source joins", async()=>{
+  for(const align of ["CENTER","OUTSIDE"]){
+    const source=page([rect("1:2",{strokeAlign:align,strokeWeight:8,strokes:[{type:"SOLID",color:{r:.2,g:.4,b:.6},opacity:.5}]})]);
+    const imported=importFigmaJson(source),runtime=harness(page([]),{nativeStrokes:true});
+    await runtime.send({type:"import-transfer",content:JSON.stringify(createFigmaTransfer(imported.document))});
+    assert.equal(runtime.messages.at(-1).type,"imported");
+    const created=runtime.figma.root.children[1].children[0];
+    assert.equal(created.strokeAlign,align);assert.equal(created.strokeJoin,"MITER");assert.deepEqual(Array.from(created.dashPattern),[]);assert.equal(created.cornerRadius,0);
+  }
+  for(const unsupported of [{strokeJoin:"ROUND"},{strokeJoin:"BEVEL"},{strokeMiterLimit:1}]){
+    const imported=importFigmaJson(page([rect("1:2",{strokeAlign:"OUTSIDE",strokeWeight:8,strokes:[{type:"SOLID",color:{r:.2,g:.4,b:.6}}],...unsupported})]));
+    assert(imported.warnings.some(w=>w.code==="unsupported-native-border"));
+    assert.equal(imported.document.nodes[0].strokeSides,undefined);
+  }
+});
+
+
+test("included CENTER/OUTSIDE layout stays measured and blocks guessed source padding edits before mutation", async()=>{
+  for(const strokeAlign of ["CENTER","OUTSIDE"]){
+    const source=page([rect("1:2",{type:"FRAME",layoutMode:"VERTICAL",strokeAlign,strokesIncludedInLayout:true,strokeWeight:4,paddingTop:8,paddingRight:8,paddingBottom:8,paddingLeft:8,strokes:[{type:"SOLID",color:{r:.2,g:.4,b:.6}}],children:[rect("1:3",{absoluteBoundingBox:{x:25,y:35,width:40,height:20}})]})]);
+    const imported=await prepareFigmaImport(source),node=imported.document.nodes[0];
+    assert.equal(node.layout,"none");assert(imported.warnings.some(w=>w.code==="unsupported-stroke-layout"));
+    assert.deepEqual([imported.document.nodes[1].x,imported.document.nodes[1].y],[25,35]);
+    const binding=createFigmaBinding(imported);node.strokeSides[0].width=6;
+    const transfer=createFigmaTransfer(imported.document);transfer.patch=createFigmaPatch(binding,imported.document);
+    const runtime=harness(source,{nativeStrokes:true});await runtime.send({type:"preview-patch",content:JSON.stringify(transfer)});
+    assert.equal(runtime.messages.at(-1).type,"error");assert.match(runtime.messages.at(-1).message,/INSIDE/u);
+    assert.equal(runtime.all.get("1:2").strokeTopWeight,4);
+  }
 });

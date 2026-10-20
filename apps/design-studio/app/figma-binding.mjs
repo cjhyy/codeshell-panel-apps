@@ -57,6 +57,8 @@ const properties = [
   "fillPaints",
   "stroke",
   "strokeWidth",
+  "strokeAlign",
+  "strokeSides",
   "cornerRadius",
   "cornerRadii",
   "visible",

@@ -53,3 +53,8 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+The standalone compatibility adapter retains its existing centered uniform CSS
+border conversion and now carries a visible side/alignment loss warning through
+preview, downloaded JSON and native creation. Design Studio/Design Bridge uses
+the separately maintained bounded inside-side representation.

@@ -2,6 +2,7 @@ import { effectiveCornerRadii } from "../corner-radii.mjs";
 /* Retained CanvasKit renderer. The document and editing state remain owned by Design Studio. */
 import { effectiveDesignNodeOpacity, isDesignNodeVisible } from "../document.mjs";
 import { designFillPaints, gradientMatrix } from "../paint.mjs";
+import { hasDesignStroke, designStrokePaths, designStrokeOutset } from "../stroke.mjs";
 import { transformedNodeBoundsInTree } from "../geometry.mjs";
 import { createCanvasKitText } from "./canvaskit-text.mjs";
 
@@ -496,7 +497,19 @@ export async function createRenderer({
               drawShape(CK, destination, node, paint);
               paint.delete();
             }
-            if (node.strokeWidth > 0 && !["none", "transparent"].includes(node.stroke)) {
+            if (hasDesignStroke(node)) {
+              const parts=designStrokePaths(node),common=parts.every(s=>s.opacity===parts[0]?.opacity);
+              const layered=parts.length && common && parts[0].opacity<1,layer=layered?new CK.Paint():null;
+              if(layer){layer.setAlphaf(parts[0].opacity);destination.saveLayer(layer);}
+              for (const part of parts) {
+                const path=CK.Path.MakeFromSVGString(part.path),paint=new CK.Paint();
+                if(!path)throw new Error("Generated border path is invalid");
+                path.setFillType(part.rule === "evenodd" ? CK.FillType.EvenOdd : CK.FillType.Winding);
+                paint.setAntiAlias(true);paint.setColor(canvasKitColor(CK,part.color));paint.setAlphaf(common?1:part.opacity);
+                destination.drawPath(path,paint);paint.delete();path.delete();
+              }
+              if(layer){destination.restore();layer.delete();}
+            } else if (node.strokeWidth > 0 && !["none", "transparent"].includes(node.stroke)) {
               const stroke = new CK.Paint();
               stroke.setAntiAlias(true);
               stroke.setStyle(CK.PaintStyle.Stroke);
@@ -524,7 +537,7 @@ export async function createRenderer({
               const content = new CK.PictureRecorder();
               // Bound raw commands conservatively before ancestors/effects are
               // applied by the outer display list. Text may extend beyond its box.
-              const pad = (node.strokeWidth || 0) + 2;
+              const pad = Math.max(node.strokeWidth || 0,designStrokeOutset(node)) + 2;
               const bounds = node.type === "text" ? text.contentBounds(local) : local;
               const before = Object.fromEntries(rawCounterKeys.map((key) => [key, counters[key]]));
               const issueStart = unsupported.length;

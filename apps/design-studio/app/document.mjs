@@ -1,4 +1,5 @@
 import { normalizeCornerRadii, roundedRectSvgGeometry } from "./corner-radii.mjs";
+import { normalizeStrokeSides, validateDesignStroke, hasDesignStroke, designStrokeSvg, designStrokeOutset } from "./stroke.mjs";
 import {
   GRID_CONTAINER_FIELDS,
   GRID_CHILD_FIELDS,
@@ -133,6 +134,8 @@ function normalizedNode(candidate, parentId) {
       : {}),
     stroke: candidate.stroke.toLowerCase(),
     strokeWidth: candidate.strokeWidth,
+    ...(candidate.strokeAlign !== undefined ? {strokeAlign:candidate.strokeAlign} : {}),
+    ...(candidate.strokeSides !== undefined ? {strokeSides:normalizeStrokeSides(candidate.strokeSides)} : {}),
     opacity: candidate.opacity,
     rotation: candidate.rotation,
     cornerRadius: candidate.cornerRadius,
@@ -284,6 +287,8 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "fillPaints",
     "stroke",
     "strokeWidth",
+    "strokeAlign",
+    "strokeSides",
     "opacity",
     "rotation",
     "cornerRadius",
@@ -391,6 +396,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     if (!["frame", "rectangle", "component", "image"].includes(candidate.type))
       throw new Error(`图层 ${candidate.id} 的类型不支持 cornerRadii`);
   }
+  validateDesignStroke(candidate);
   if (candidate.fillPaints !== undefined) {
     normalizeDesignPaints(candidate.fillPaints);
     if (["group", "instance", "image"].includes(candidate.type))
@@ -1152,12 +1158,7 @@ function renderedSourceNodeEffectBounds(document, nodes, node, instanceStack, av
       ? renderedDesignInstanceEffectOutsets(document, node, instanceStack, availableNodes)
       : emptyEffectOutsets();
   const visibleShadow = node.shadow?.opacity > 0 ? node.shadow : null;
-  const strokeOutset =
-    !["group", "instance"].includes(node.type) &&
-    node.stroke !== "transparent" &&
-    node.strokeWidth > 0
-      ? node.strokeWidth / 2
-      : 0;
+  const strokeOutset = !["group", "instance"].includes(node.type) ? designStrokeOutset(node) : 0;
   const hasInstanceEffect = Object.values(instanceOutsets).some((value) => value > 0);
   if (!visibleShadow && !hasInstanceEffect && strokeOutset <= 0) {
     return clipNodeBoundsToClippingAncestors(nodes, node);
@@ -1267,12 +1268,7 @@ export function renderedDesignNodeShadowFilterBounds(
     node.type === "instance"
       ? renderedDesignInstanceEffectOutsets(document, node, new Set(), availableNodes)
       : emptyEffectOutsets();
-  const strokeOutset =
-    !["group", "instance"].includes(node.type) &&
-    node.stroke !== "transparent" &&
-    node.strokeWidth > 0
-      ? node.strokeWidth / 2
-      : 0;
+  const strokeOutset = !["group", "instance"].includes(node.type) ? designStrokeOutset(node) : 0;
   const baseLeft = node.x - instanceOutsets.left - strokeOutset;
   const baseTop = node.y - instanceOutsets.top - strokeOutset;
   const baseRight = node.x + node.width + instanceOutsets.right + strokeOutset;
@@ -1459,6 +1455,9 @@ function exportNodeSvg(
   }
   if (node.type === "group") return "";
   const shape = roundedRectSvgGeometry(node);
+  if (hasDesignStroke(node)) return clipped(
+    `  <g${metadata}${opacity}${filter}${transform}><${shape.tag} ${shape.attributes} ${fillAttributes}/>${designStrokeSvg(node)}</g>`,
+  );
   return clipped(
     `  <${shape.tag}${metadata} ${shape.attributes} ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}"${opacity}${filter}${transform} />`,
   );
@@ -1505,6 +1504,10 @@ export function replaceDesignColors(document, replacements) {
           replacementCount += 1;
         }
       }
+    }
+    for (const side of node.strokeSides ?? []) {
+      const next = replacementFor(side.color);
+      if (next) { side.color = next; replacementCount += 1; }
     }
     if (node.fillPaints) node.fill = representativeDesignFill(node.fillPaints);
     const shadowReplacement = replacementFor(node.shadow?.color);

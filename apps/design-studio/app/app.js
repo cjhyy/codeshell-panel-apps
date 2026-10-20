@@ -1,4 +1,5 @@
 import { GRID_CONTAINER_FIELDS, GRID_CHILD_FIELDS, gridPlacements } from "./grid.mjs";
+import { designStrokeOutset, editDesignStrokeColor, editDesignStrokeWidth, validateDesignStroke } from "./stroke.mjs";
 /* Design Studio Panel App runtime. */
 /* global document, localStorage, requestAnimationFrame, window */
 import { projectContextChanged } from "./project-context.mjs";
@@ -5752,16 +5753,22 @@ bindColorTextInput(
   () => selectedNode()?.stroke ?? "transparent",
   (value) => {
     const node = selectedNode();
-    if (node && !isEffectivelyLocked(node)) node.stroke = value;
+    if (node && !isEffectivelyLocked(node)) {
+      try{editDesignStrokeColor(node,value);}catch(error){notify(error.message,"error");}
+    }
   },
   true,
 );
 bindPropertyInput(propertyInputs.cornerRadius, (node, value) => {
-  node.cornerRadius = clamp(Number(value) || 0, 0, 9999);
+  const radius=clamp(Number(value) || 0, 0, 9999);
+  try {validateDesignStroke({...node,cornerRadius:radius,cornerRadii:undefined});}
+  catch(error){propertyInputs.cornerRadius.value=String(node.cornerRadius);notify(error.message,"error");return;}
+  node.cornerRadius = radius;
   delete node.cornerRadii;
 });
 bindPropertyInput(propertyInputs.strokeWidth, (node, value) => {
-  node.strokeWidth = clamp(finiteOr(value, 0), 0, 100);
+  try{editDesignStrokeWidth(node,clamp(finiteOr(value, 0), 0, 100));}
+  catch(error){propertyInputs.strokeWidth.value=String(node.strokeWidth);notify(error.message,"error");}
 });
 bindPropertyInput(propertyInputs.opacity, (node, value) => {
   node.opacity = clamp((Number(value) || 0) / 100, 0, 1);
@@ -6068,8 +6075,10 @@ bindPropertyInput(
 bindPropertyInput(
   propertyInputs.strokeColor,
   (node, value) => {
-    node.stroke = value;
-    if (node.strokeWidth === 0) node.strokeWidth = 1;
+    try {
+      editDesignStrokeColor(node,value);
+      if (node.strokeWidth === 0) editDesignStrokeWidth(node,1);
+    }catch(error){notify(error.message,"error");}
   },
   "input",
 );
@@ -7208,10 +7217,8 @@ function renderedNodeEffectBounds(
       : zeroEffectOutsets();
   const hasInstanceEffect = Object.values(instanceEffectOutsets).some((value) => value > 0);
   const strokeOutset =
-    !["group", "instance"].includes(node.type) &&
-    node.stroke !== "transparent" &&
-    node.strokeWidth > 0
-      ? node.strokeWidth / 2
+    !["group", "instance"].includes(node.type)
+      ? designStrokeOutset(node)
       : 0;
   const visibleShadow = node.shadow?.opacity > 0 ? node.shadow : null;
   if (!visibleShadow && !hasInstanceEffect && strokeOutset <= 0) {
@@ -7362,6 +7369,8 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "fillPaints",
   "stroke",
   "strokeWidth",
+  "strokeSides",
+  "strokeAlign",
   "opacity",
   "rotation",
   "cornerRadius",
@@ -7463,6 +7472,8 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
         "notes",
         "shadow",
         "fillPaints",
+        "strokeSides",
+        "strokeAlign",
         "contentClipping",
         "textSource",
         "textFlow",
@@ -7523,6 +7534,10 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
   }
   if (Object.hasOwn(changes, "fill") && !Object.hasOwn(changes, "fillPaints"))
     delete node.fillPaints;
+  if(!Object.hasOwn(changes,"strokeSides")) {
+    if(typeof changes.stroke === "string")editDesignStrokeColor(node,node.stroke);
+    if(typeof changes.strokeWidth === "number")editDesignStrokeWidth(node,node.strokeWidth);
+  }
   if (node.clipContent !== true) delete node.contentClipping;
 }
 
