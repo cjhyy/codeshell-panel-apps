@@ -118,6 +118,7 @@ import { compareDesignDocuments, comparisonMarkdown } from "./design-compare.mjs
 import { exportDesignFrontend, isSafeFrontendPath } from "./frontend-export.mjs";
 import {
   applyAutoLayouts,
+  applyAllAutoLayouts,
   createComponentInstance,
   isAutoLayoutContainer,
   isContainerNode,

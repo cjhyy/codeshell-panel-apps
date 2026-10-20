@@ -2014,13 +2014,17 @@ test("inactive native stroke inspector/public activation preserves latent width,
   await f.page.locator("#prop-stroke-width").press("Tab");
   assert.equal((await readNode(f.page, "figma-1-2")).strokeWidth, 0);
   assert.equal((await readNode(f.page, "figma-1-2")).nativeStrokeInactive.strokeWeight, 3);
+  assert.equal(await f.page.locator("#prop-stroke-width").inputValue(), "3");
   await f.page.locator("#prop-stroke").fill("#123456");
+  assert.equal(await f.page.locator("#prop-stroke").inputValue(), "#123456");
   await f.page.locator("#prop-stroke").press("Tab");
   let frame = await readNode(f.page, "figma-1-2");
   assert.equal(frame.nativeStrokeInactive, undefined);
   assert.equal(frame.paddingTop, 11);
   assert.equal(frame.strokeWidth, 3);
+  assert.notEqual(await f.page.locator("#toast").getAttribute("data-kind"), "error", "successful activation must not mask an inspector helper exception");
   await f.page.locator("#prop-stroke-remove").click();
+  assert.notEqual(await f.page.locator("#toast").getAttribute("data-kind"), "error", "successful removal must reach history commit");
   frame = await readNode(f.page, "figma-1-2");
   assert.equal(frame.paddingTop, 8);
   assert.equal(frame.nativeStrokeInactive.strokeWeight, 3);
