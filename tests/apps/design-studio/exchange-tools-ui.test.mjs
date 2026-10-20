@@ -1880,7 +1880,7 @@ test("native stroke exclusion inspector/tool edits reflow siblings and preserve 
   assert.deepEqual(f.errors, []);
 });
 
-test("public negative spacing inspector and tools retain native bleed through outer-only resize and reopen", async (t) => {
+test("public negative spacing edits retain native-safe block insets through outer-only resize and reopen", async (t) => {
   const f = await fixture(t);
   const { negativeMarginFixtures } = await import("../../fixtures/design-studio-negative-margins/source.mjs");
   const fixtureSource = negativeMarginFixtures[0], path = "pages/negative-spacing.html";
@@ -1888,38 +1888,52 @@ test("public negative spacing inspector and tools retain native bleed through ou
   await f.tool("import_html", { path, root_selector: "#fixture", viewport_width: 640, viewport_height: 300,
     save: true, expected_state_revision: (await f.metadata()).stateRevision });
   let metadata = await f.metadata();
-  const wrapper = metadata.layers.find((node) => node.name.includes("horizontal margins"));
+  const main = metadata.layers.find((node) => node.name === "main#fixture");
   const row = metadata.layers.find((node) => node.name === "section#row");
-  assert.ok(wrapper && row);
-  await f.page.locator(`.layer-row[data-id="${wrapper.id}"] .layer-title`).click();
-  await f.page.locator("#prop-layout-gap").fill("-20");
-  assert.equal((await readNode(f.page, wrapper.id)).gap, -20);
-  const beforeInvalid = await readNode(f.page, row.id);
+  assert.ok(main && row);
+  assert.equal(metadata.layers.some((node) => /horizontal margins|flow spacer/u.test(node.name)), false);
+  const initialMain = await readNode(f.page, main.id);
+  assert.deepEqual([initialMain.paddingLeft, initialMain.paddingRight], [5, 5]);
+  assert.equal(row.parentId, main.id, "the real row directly fills the rebased parent");
+  await f.page.locator(`.layer-row[data-id="${row.id}"] .layer-title`).click();
   await f.page.locator("details.layout-advanced > summary").click();
+  await f.page.locator("#prop-layout-column-gap").fill("");
+  await f.page.locator("#prop-layout-gap").fill("-20");
+  assert.equal((await readNode(f.page, row.id)).gap, -20);
+  const beforeInvalid = await readNode(f.page, row.id);
+  const initialCells = metadata.layers.filter((node) => node.parentId === row.id);
+  assert.equal(initialCells.length, 2);
+  assert.deepEqual(await Promise.all(initialCells.map(async (node) => (await readNode(f.page, node.id)).width)), [325, 325],
+    "the inspector's negative main gap must actually reflow both Fill children");
   await f.page.locator("#prop-layout-wrap").selectOption("wrap");
-  assert.equal((await readNode(f.page, wrapper.id)).layoutWrap, "none");
+  assert.equal((await readNode(f.page, row.id)).layoutWrap, "none");
   await f.page.locator("#prop-layout-reverse").click();
-  assert.equal(Boolean((await readNode(f.page, wrapper.id)).layoutReverse), false);
+  assert.equal(Boolean((await readNode(f.page, row.id)).layoutReverse), false);
   await f.page.locator("#prop-layout-sizing-horizontal").selectOption("hug");
-  assert.equal((await readNode(f.page, wrapper.id)).layoutSizingHorizontal, "fill");
+  assert.equal((await readNode(f.page, row.id)).layoutSizingHorizontal, "fill");
   const afterInvalid = await readNode(f.page, row.id);
   assert.deepEqual([afterInvalid.x, afterInvalid.width], [beforeInvalid.x, beforeInvalid.width]);
   metadata = await f.metadata();
   await f.tool("use_design", { save: true, expected_state_revision: metadata.stateRevision,
-    operations: [{ op: "update_node", node_id: wrapper.id, changes: { gap: -16 } },
+    operations: [{ op: "update_node", node_id: row.id, changes: { gap: -16 } },
       { op: "update_node", node_id: "html-viewport", changes: { width: 400 } }] });
   await f.reload();
   const resized = await readNode(f.page, row.id);
   assert.deepEqual([resized.x, resized.width, resized.layoutSizingHorizontal], [5, 390, "fill"]);
   metadata = await f.metadata();
   await assert.rejects(f.tool("use_design", { expected_state_revision: metadata.stateRevision,
-    operations: [{ op: "update_node", node_id: wrapper.id, changes: { layoutWrap: "wrap" } }] }), /负间距/u);
+    operations: [{ op: "update_node", node_id: row.id, changes: { layoutWrap: "wrap" } }] }), /负间距/u);
   metadata = await f.metadata();
   await f.tool("exchange_figma", { action: "export", path: "designs/negative-spacing.figma-transfer.json", expected_state_revision: metadata.stateRevision });
   const transfer = JSON.parse(f.files.get("A:designs/negative-spacing.figma-transfer.json"));
   const flatten = (node) => [node, ...(node.children ?? []).flatMap(flatten)];
   const exported = transfer.pages.flatMap((page) => page.children.flatMap(flatten));
-  assert.equal(exported.find((node) => node.id === wrapper.id).gap, -16);
+  assert.equal(exported.find((node) => node.id === row.id).gap, -16);
+  assert.equal(exported.find((node) => node.id === row.id).columnGap, undefined);
+  const finalMain = exported.find((node) => node.id === main.id);
+  assert.equal(finalMain.children.some((node) => node.id === row.id), true, "hierarchical transfer retains the direct row parent");
+  assert.deepEqual([finalMain.paddingLeft, finalMain.paddingRight], [5, 5]);
+  assert.equal(exported.length, 7, "no old negative-gap spacer wrappers return after edit/reopen/export");
   assert.equal(exported.find((node) => node.id === row.id).layoutSizingHorizontal, "fill");
   assert.deepEqual(f.errors, []);
 });
