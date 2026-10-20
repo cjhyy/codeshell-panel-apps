@@ -2384,6 +2384,7 @@
       bytes += size(css);
       if (bytes > 512 * 1024) throw new Error("HTML \u4E0E CSS \u5408\u8BA1\u6700\u591A 512 KiB");
       const style = parsed.createElement("style");
+      if (link.hasAttribute("media")) style.setAttribute("media", link.getAttribute("media"));
       style.textContent = await resolver.css(css, path);
       link.replaceWith(style);
     }

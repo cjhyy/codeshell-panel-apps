@@ -125,6 +125,7 @@ export const suites = [
         "tests/apps/design-studio/html-grid.test.mjs",
         "tests/apps/design-studio/html2figma-browser.test.mjs",
         "tests/apps/design-studio/html2figma-import.test.mjs",
+        "tests/apps/design-studio/html-stylesheet-media.test.mjs",
         "tests/apps/design-studio/html-auto-margins.test.mjs",
         "tests/apps/design-studio/html-block-flow.test.mjs",
         "tests/apps/design-studio/html-float-columns.test.mjs",
