@@ -1,3 +1,4 @@
+import { nativeGridSource } from "../../fixtures/design-studio-native-grid/source.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
@@ -263,4 +264,28 @@ test("the standalone HTML plugin downloads with its own Figma-assigned id and at
   assert.match((await f.download('[data-html-plugin-file="README.md"]')).text, /Figma/);
   assert.match((await f.download('[data-html-plugin-file="code.js"]')).text, /html2figma/);
   assert.match((await f.download('[data-html-plugin-file="ui.html"]')).text, /HTML/);
+});
+
+test("native Grid import stays editable and invalid manual column/span changes leave a valid design", async (t) => {
+  const f = await fixture(t);
+  await f.open();
+  await f.choose(nativeGridSource());
+  await f.page.locator("#figma-import-apply").click();
+  await f.page.waitForFunction(() => document.querySelector("#figma-workflow-status").textContent.includes("已导入"));
+  await f.page.locator("#figma-workflow-close").click();
+  await gpuActive(f.page);
+  await clickWorld(f.page, { x: 450, y: 145 });
+  assert.equal((await readNode(f.page, "figma-21-1")).layout, "grid");
+  await f.page.locator(".layout-advanced summary").click();
+  await f.page.locator("#prop-grid-columns").fill("2");
+  assert.equal((await readNode(f.page, "figma-21-1")).gridColumns, 3);
+  assert.equal(await f.page.locator("#prop-grid-columns").inputValue(), "3");
+  await f.page.locator("#prop-grid-columns").fill("4");
+  const frame = await readNode(f.page, "figma-21-1");
+  assert.equal(frame.gridColumns, 4);
+  assert.equal(frame.gridColumnSizes.length, 4);
+  await clickWorld(f.page, { x: 200, y: 50 });
+  await f.page.locator("#prop-grid-column-span").fill("4");
+  assert.equal((await readNode(f.page, "figma-21-2")).gridColumnSpan, 2);
+  assert.deepEqual(f.errors, []);
 });

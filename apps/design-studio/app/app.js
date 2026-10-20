@@ -1,3 +1,4 @@
+import { GRID_CONTAINER_FIELDS, GRID_CHILD_FIELDS, gridPlacements } from "./grid.mjs";
 /* Design Studio Panel App runtime. */
 /* global document, localStorage, requestAnimationFrame, window */
 import { projectContextChanged } from "./project-context.mjs";
@@ -5420,6 +5421,7 @@ function buildAgentTargetContext(target) {
       "gap",
       "padding",
       "gridColumns",
+      ...GRID_CONTAINER_FIELDS,
     ])
       if (node[key] !== undefined) value[key] = node[key];
     if (node.type === "text")
@@ -5928,12 +5930,46 @@ bindPropertyInput(
   "change",
   "container",
 );
+function canApplyManualGridChange(node, changes) {
+  const container = Object.hasOwn(changes, "gridColumns")
+    ? node
+    : design.nodes.find((candidate) => candidate.id === node.parentId);
+  if (container?.layout !== "grid" || container.gridItemsPositioning !== "manual") return true;
+  try {
+    const children = design.nodes
+      .filter((child) => child.parentId === container.id)
+      .map((child) => (child === node ? { ...child, ...changes } : child));
+    const placed = gridPlacements(
+      children, changes.gridColumns ?? container.gridColumns ?? 1, container,
+    );
+    if (
+      container.gridAutoTracks !== "rows" &&
+      container.gridRows !== undefined &&
+      placed.rowCount > container.gridRows
+    )
+      throw new Error("跨度超过网格行数；请先增加行数。");
+    return true;
+  } catch (error) {
+    notify(`无法修改网格：${error.message}`, "error");
+    return false;
+  }
+}
 bindPropertyInput(
   propertyInputs.gridColumns,
   (node, value) => {
     if (!isContainerNode(node)) return;
     ensureDesignV3();
-    node.gridColumns = Math.round(clamp(finiteOr(value, 2), 1, 24));
+    const columns = Math.round(clamp(finiteOr(value, 2), 1, 24));
+    if (!canApplyManualGridChange(node, { gridColumns: columns })) {
+      propertyInputs.gridColumns.value = String(node.gridColumns ?? 1);
+      return;
+    }
+    node.gridColumns = columns;
+    if (node.gridColumnSizes)
+      node.gridColumnSizes = Array.from({ length: node.gridColumns }, (_, index) =>
+        node.gridColumnSizes[index] ??
+        (node.layoutSizingHorizontal === "hug" ? { type: "hug" } : { type: "flex", value: 1 }),
+      );
   },
   "input",
   "container",
@@ -5996,7 +6032,12 @@ for (const [input, property] of [
     input,
     (node, value) => {
       ensureDesignV3();
-      node[property] = Math.round(clamp(finiteOr(value, 1), 1, 24));
+      const span = Math.round(clamp(finiteOr(value, 1), 1, 24));
+      if (!canApplyManualGridChange(node, { [property]: span })) {
+        input.value = String(node[property] ?? 1);
+        return;
+      }
+      node[property] = span;
       reflowParent(node);
     },
     "input",
@@ -7355,6 +7396,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "justifyContent",
   "alignContent",
   "gridColumns",
+  ...GRID_CONTAINER_FIELDS,
   "minWidth",
   "maxWidth",
   "minHeight",
@@ -7366,6 +7408,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "layoutMarginBefore",
   "gridColumnSpan",
   "gridRowSpan",
+  ...GRID_CHILD_FIELDS,
   "constraintHorizontal",
   "constraintVertical",
   "constraintBaseWidth",
@@ -7429,6 +7472,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
         "columnGap",
         "alignContent",
         "gridColumns",
+        ...GRID_CONTAINER_FIELDS,
         "minWidth",
         "maxWidth",
         "minHeight",
@@ -7440,6 +7484,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
         "layoutMarginBefore",
         "gridColumnSpan",
         "gridRowSpan",
+        ...GRID_CHILD_FIELDS,
         "constraintHorizontal",
         "constraintVertical",
         "constraintBaseWidth",
@@ -7704,6 +7749,7 @@ async function applyAgentDesignOperations(args) {
               "justifyContent",
               "alignContent",
               "gridColumns",
+              ...GRID_CONTAINER_FIELDS,
               "minWidth",
               "maxWidth",
               "minHeight",
@@ -7732,6 +7778,7 @@ async function applyAgentDesignOperations(args) {
               "layoutAlignSelf",
               "gridColumnSpan",
               "gridRowSpan",
+              ...GRID_CHILD_FIELDS,
             ].includes(field),
           )
         ) {

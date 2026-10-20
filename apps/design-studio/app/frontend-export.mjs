@@ -1,3 +1,9 @@
+import {
+  cssGridTrack,
+  gridPlacements,
+  effectiveGridRows,
+  effectiveGridRowTracks,
+} from "./grid.mjs";
 import { designPaintCssImage } from "./paint.mjs";
 /* Deterministic CodeShell Design v3 to editable HTML/CSS export. */
 import { designFontFaceCss, designFontFamilyCss } from "./font-css.mjs";
@@ -144,10 +150,21 @@ function sizingDeclarations(node, parent) {
         (child) => child.visible !== false && child.layoutPositioning !== "absolute",
       )
     : [];
-  const circularHorizontalHug = flowChildren.some(
-    (child) => child.layoutSizingHorizontal === "fill",
-  );
-  const circularVerticalHug = flowChildren.some((child) => child.layoutSizingVertical === "fill");
+  const gridItems =
+    node.layout === "grid"
+      ? gridPlacements(flowChildren, node.gridColumns ?? 1, node).placements
+      : [];
+  const circularFill = (child, axis) => {
+    if (child[`layoutSizing${axis}`] !== "fill") return false;
+    const tracks = node[axis === "Horizontal" ? "gridColumnSizes" : "gridRowSizes"];
+    const item = gridItems.find((entry) => entry.child === child);
+    if (!tracks || !item) return true;
+    const start = axis === "Horizontal" ? item.column : item.row;
+    const span = axis === "Horizontal" ? item.columnSpan : item.rowSpan;
+    return tracks.slice(start, start + span).some((track) => track.type !== "fixed");
+  };
+  const circularHorizontalHug = flowChildren.some((child) => circularFill(child, "Horizontal"));
+  const circularVerticalHug = flowChildren.some((child) => circularFill(child, "Vertical"));
   const followsParentAlignment = !node.layoutAlignSelf || node.layoutAlignSelf === "auto";
   const parentStretchesHorizontal =
     followsParentAlignment &&
@@ -197,9 +214,23 @@ function sizingDeclarations(node, parent) {
   }
   if (parentLayout === "grid") {
     declarations.push(
-      ["grid-column", `span ${Math.max(1, Number(node.gridColumnSpan) || 1)}`],
-      ["grid-row", `span ${Math.max(1, Number(node.gridRowSpan) || 1)}`],
+      [
+        "grid-column",
+        `${parent.gridItemsPositioning === "manual" && Number.isInteger(node.gridColumnAnchorIndex) ? `${node.gridColumnAnchorIndex + 1} / ` : ""}span ${Math.max(1, Number(node.gridColumnSpan) || 1)}`,
+      ],
+      [
+        "grid-row",
+        `${parent.gridItemsPositioning === "manual" && Number.isInteger(node.gridRowAnchorIndex) ? `${node.gridRowAnchorIndex + 1} / ` : ""}span ${Math.max(1, Number(node.gridRowSpan) || 1)}`,
+      ],
     );
+    for (const [axis, css] of [
+      ["Horizontal", "justify-self"],
+      ["Vertical", "align-self"],
+    ]) {
+      const value = node[`gridChild${axis}Align`];
+      if (value && value !== "auto" && node[`layoutSizing${axis}`] !== "fill")
+        declarations.push([css, alignment(value)]);
+    }
   }
   if (Number.isFinite(Number(node.minWidth))) {
     declarations.push(["min-width", cssNumber(node.minWidth)]);
@@ -219,12 +250,28 @@ function sizingDeclarations(node, parent) {
 function layoutDeclarations(node) {
   if (!CONTAINER_TYPES.has(node.type) || node.layout === "none") return [];
   if (node.layout === "grid") {
+    const rows = effectiveGridRows(
+      node,
+      gridPlacements(
+        (node.children ?? []).filter((child) => child.visible !== false),
+        node.gridColumns ?? 1,
+        node,
+      ).rowCount,
+    );
+    const rowTracks = effectiveGridRowTracks(node, rows);
     return [
       ["display", "grid"],
       [
         "grid-template-columns",
-        `repeat(${Math.max(1, Number(node.gridColumns) || 1)}, minmax(0, 1fr))`,
+        node.gridColumnSizes?.map(cssGridTrack).join(" ") ??
+          `repeat(${Math.max(1, Number(node.gridColumns) || 1)}, minmax(0, 1fr))`,
       ],
+      ...(rowTracks
+        ? [["grid-template-rows", rowTracks.map(cssGridTrack).join(" ")]]
+        : node.gridRows || node.gridAutoTracks === "rows"
+          ? [["grid-template-rows", `repeat(${rows}, auto)`]]
+          : []),
+      ["grid-auto-flow", node.gridItemsPositioning ? "row" : "row dense"],
       ["row-gap", cssNumber(node.rowGap ?? node.gap)],
       ["column-gap", cssNumber(node.columnGap ?? node.gap)],
       ["align-items", alignment(node.alignItems)],

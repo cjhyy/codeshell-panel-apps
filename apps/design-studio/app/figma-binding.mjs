@@ -1,3 +1,4 @@
+import { GRID_CONTAINER_FIELDS, GRID_CHILD_FIELDS } from "./grid.mjs";
 import {
   normalizeDesignDocument,
   normalizeDesignState,
@@ -117,6 +118,8 @@ properties.push(
   "contentClipping",
 );
 const unsupportedProperties = [
+  ...GRID_CONTAINER_FIELDS,
+  ...GRID_CHILD_FIELDS,
   "gridColumns",
   "gridColumnSpan",
   "gridRowSpan",

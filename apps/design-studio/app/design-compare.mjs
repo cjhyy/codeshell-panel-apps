@@ -1,3 +1,10 @@
+import {
+  GRID_CONTAINER_FIELDS,
+  GRID_CHILD_FIELDS,
+  gridPlacements,
+  effectiveGridRows,
+  effectiveGridRowTracks,
+} from "./grid.mjs";
 /* Stable-id design/implementation comparison for the delivery workflow. */
 import { normalizeDesignPaints } from "./paint.mjs";
 
@@ -72,6 +79,20 @@ function semanticProperties(node) {
           .filter((child) => child.layoutPositioning !== "absolute")
           .map((child) => child.id),
       );
+  }
+  for (const key of [...GRID_CONTAINER_FIELDS, ...GRID_CHILD_FIELDS])
+    properties[key] = JSON.stringify(node[key] ?? null);
+  if (node.layout === "grid") {
+    const rows = effectiveGridRows(
+      node,
+      gridPlacements(
+        (node.children ?? []).filter((child) => child.visible !== false),
+        node.gridColumns ?? 1,
+        node,
+      ).rowCount,
+    );
+    properties.gridRows = JSON.stringify(rows);
+    properties.gridRowSizes = JSON.stringify(effectiveGridRowTracks(node, rows) ?? null);
   }
   if (node.type === "text") {
     Object.assign(properties, {

@@ -1,3 +1,4 @@
+import { normalizeGridTracks, nativeGridPlan, GRID_CHILD_FIELDS } from "./grid.mjs";
 import { figmaFillPaints, representativeDesignFill } from "./paint.mjs";
 /* Deliberately bounded Figma JSON bridge. Figma binary files are not supported. */
 import {
@@ -60,6 +61,7 @@ const LOSS_WARNINGS = new Set([
   "visual-fallback",
   "plugin-export-warning",
   "canvas-extent",
+  "unsupported-grid",
 ]);
 const EFFECT_WARNINGS = new Set(["unsupported-effects", "stroke-alignment", "corner-shape"]);
 const ADVISORY_WARNINGS = new Set([
@@ -344,9 +346,7 @@ function layoutSizing(source, node, parent) {
     const textAutoResize = source.style?.textAutoResize ?? source.textAutoResize;
     if (["NONE", "HEIGHT", "WIDTH_AND_HEIGHT", "TRUNCATE"].includes(textAutoResize)) {
       inferred.Horizontal = textAutoResize === "WIDTH_AND_HEIGHT" ? "hug" : "fixed";
-      inferred.Vertical = ["HEIGHT", "WIDTH_AND_HEIGHT"].includes(textAutoResize)
-        ? "hug"
-        : "fixed";
+      inferred.Vertical = ["HEIGHT", "WIDTH_AND_HEIGHT"].includes(textAutoResize) ? "hug" : "fixed";
     }
   }
   const parentPrimary = { horizontal: "Horizontal", vertical: "Vertical" }[parent?.layout];
@@ -366,8 +366,77 @@ function layoutSizing(source, node, parent) {
 
 function layout(source, node, report) {
   node.layout = { HORIZONTAL: "horizontal", VERTICAL: "vertical" }[source.layoutMode] ?? "none";
-  if (source.layoutMode === "GRID")
-    report.warn("grid-layout", source, "Figma Grid 暂按固定几何导入，未保留网格布局行为。");
+  if (source.layoutMode === "GRID") {
+    try {
+      const columns = source.gridColumnCount,
+        rows = source.gridRowCount;
+      if (
+        (source.gridItemsPositioning !== undefined &&
+          !["MANUAL", "ROW_AUTO_FLOW"].includes(source.gridItemsPositioning)) ||
+        (source.gridAutoTracks !== undefined && !["NONE", "ROWS"].includes(source.gridAutoTracks))
+      )
+        throw new Error("不支持的 Grid flow/automatic tracks 模式");
+      if (
+        source.gridItemsPositioning !== "ROW_AUTO_FLOW" &&
+        (source.children ?? []).some(
+          (child) =>
+            child.layoutPositioning !== "ABSOLUTE" &&
+            (!Number.isInteger(child.gridRowAnchorIndex) ||
+              !Number.isInteger(child.gridColumnAnchorIndex)),
+        )
+      )
+        throw new Error("MANUAL Grid 缺少子项锚点");
+      const tracks = (value) =>
+        normalizeGridTracks(
+          value.map((track) => ({
+            type: track.type.toLowerCase(),
+            ...(track.type === "HUG"
+              ? {}
+              : { value: track.value ?? (track.type === "FLEX" ? 1 : undefined) }),
+          })),
+        );
+      const grid = {
+        ...node,
+        layout: "grid",
+        gridColumns: columns,
+        gridRows: rows,
+        gridColumnSizes: tracks(source.gridColumnSizes),
+        gridRowSizes: tracks(source.gridRowSizes),
+        gridItemsPositioning:
+          source.gridItemsPositioning === "ROW_AUTO_FLOW" ? "row-auto-flow" : "manual",
+        gridAutoTracks: source.gridAutoTracks === "ROWS" ? "rows" : "none",
+        justifyContent: "start",
+        alignContent: "start",
+      };
+      // Validate child relationships before claiming editable Grid fidelity.
+      // The complete children are converted below; this plan uses the same
+      // canonical sizing interpretation while retaining only bounded Grid data.
+      nativeGridPlan({
+        ...grid,
+        children: (source.children ?? []).map((child) => {
+          const sizing = {};
+          layoutSizing(child, sizing, grid);
+          return {
+            ...sizing,
+            id: child.id,
+            name: child.name,
+            layoutPositioning: child.layoutPositioning === "ABSOLUTE" ? "absolute" : "auto",
+            gridColumnSpan: child.gridColumnSpan,
+            gridRowSpan: child.gridRowSpan,
+            gridColumnAnchorIndex: child.gridColumnAnchorIndex,
+            gridRowAnchorIndex: child.gridRowAnchorIndex,
+          };
+        }),
+      });
+      Object.assign(node, grid);
+    } catch (error) {
+      report.warn(
+        "unsupported-grid",
+        source,
+        `原生 Grid 无法表示：${error.message}。请使用插件重新导出完整 track 数据或把网格限制为 1–24 行/列；本次保留固定几何。`,
+      );
+    }
+  }
   node.gap = number(source.itemSpacing, 0, 0, 2000, source, "itemSpacing", report);
   node.padding = 0;
   for (const side of ["Top", "Right", "Bottom", "Left"])
@@ -412,6 +481,14 @@ function layout(source, node, report) {
       );
   }
   if (source.counterAxisAlignContent === "SPACE_BETWEEN") node.alignContent = "space-between";
+  if (node.layout === "grid") {
+    node.rowGap = number(source.gridRowGap, 0, 0, 2000, source, "gridRowGap", report);
+    node.columnGap = number(source.gridColumnGap, 0, 0, 2000, source, "gridColumnGap", report);
+    node.alignItems = "start";
+    node.justifyContent = "start";
+    node.alignContent = "start";
+    node.layoutWrap = "none";
+  }
   if (node.type === "frame") node.clipContent = source.clipsContent === true;
 }
 
@@ -738,6 +815,20 @@ function importFigmaJsonWithReport(
       report.warn("invalid-sizing", source, "maxHeight 小于 minHeight，已忽略。 ");
     }
     if (source.layoutPositioning === "ABSOLUTE") node.layoutPositioning = "absolute";
+    if (parent?.layout === "grid" && node.layoutPositioning !== "absolute") {
+      for (const key of [
+        "gridColumnSpan",
+        "gridRowSpan",
+        "gridRowAnchorIndex",
+        "gridColumnAnchorIndex",
+      ])
+        if (source[key] !== undefined) node[key] = source[key];
+      for (const axis of ["Horizontal", "Vertical"]) {
+        const key = `gridChild${axis}Align`;
+        if (source[key] !== undefined)
+          node[key] = { AUTO: "auto", MIN: "start", CENTER: "center", MAX: "end" }[source[key]];
+      }
+    }
     const parentCrossAxis = { horizontal: "Vertical", vertical: "Horizontal" }[parent?.layout];
     if (
       source.layoutAlign === "STRETCH" &&
@@ -1012,8 +1103,17 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
         node,
         "此容器将在 Figma 中创建为透明编组 Frame 或普通 Frame。 ",
       );
-    if (node.layout === "grid")
-      report.warn("grid-export", node, "Grid 将使用固定几何，Figma 自动布局关系未导出。");
+    if (node.layout === "grid") {
+      try {
+        nativeGridPlan(node);
+      } catch (error) {
+        report.warn(
+          "grid-export",
+          node,
+          `Grid 不能创建为原生布局：${error.message}。请修复后重试；插件会阻止有损导入。`,
+        );
+      }
+    }
     if (node.layoutWrap === "wrap-reverse" || node.layoutReverse)
       report.warn("reverse-layout-export", node, "反向布局将使用固定几何保留当前位置。");
     if (node.fontRef)
@@ -1030,7 +1130,9 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
       );
     if (
       node.layoutMarginBefore ||
-      (node.layoutAlignSelf && !["auto", "stretch"].includes(node.layoutAlignSelf))
+      (node.layoutAlignSelf &&
+        !["auto", "stretch"].includes(node.layoutAlignSelf) &&
+        !GRID_CHILD_FIELDS.some((key) => node[key] !== undefined))
     )
       report.warn("child-layout-export", node, "单项对齐和自动外边距暂使用 Figma 默认布局行为。");
     if (++exportedNodes > MAX_FIGMA_TOTAL_NODES)

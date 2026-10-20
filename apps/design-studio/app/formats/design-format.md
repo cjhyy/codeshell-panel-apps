@@ -214,3 +214,19 @@ than app-storage copies of the whole document.
 The older `codeshell.design.bundle` format remains readable and migrates on the next save. Use
 `codeshell-design-v3.schema.json` for repository validation. SVG and `*.audit.md` are generated
 review artifacts, never authoritative sources.
+
+Native Grid interchange can additionally preserve `gridRows` (1–24),
+`gridColumnSizes`/`gridRowSizes` (one `{type: "fixed", value: px}`,
+`{type: "flex", value: fr}` or `{type: "hug"}` per declared column/row),
+`gridItemsPositioning` (`manual` or `row-auto-flow`) and `gridAutoTracks`
+(`none` or `rows`). FLEX tracks require a non-HUG container axis. Manual children
+use zero-based `gridRowAnchorIndex`/`gridColumnAnchorIndex`; spans retain the existing
+1–24 bounds. `gridChildHorizontalAlign`/`gridChildVerticalAlign` accept `auto`,
+`start`, `center`, `end`; size still follows the existing axis sizing fields.
+Legacy equal-column grids remain valid and use their existing dense placement.
+The Figma plugin creates native GRID, uses live track setters and requires the
+current Grid plugin API. Unsupported grids fail with an actionable message; they
+are never silently rasterized. Changes to these advanced fields in a source-bound
+patch are diagnosed as unsupported; use a new-page conversion to apply them.
+
+Axis-FILL children touching a HUG track currently require a fixed track or a HUG/fixed child to avoid an unmodeled intrinsic-size cycle. This is diagnosed explicitly before claiming native Grid fidelity. Automatic rows derive the current occupied row count (within 24), extending new canonical rows as HUG and trimming trailing empty rows. Interior empty manual rows with automatic-row mode are diagnosed because Figma removes empty rows.

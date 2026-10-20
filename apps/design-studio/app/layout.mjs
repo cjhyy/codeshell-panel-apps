@@ -1,3 +1,4 @@
+import { gridPlacements, gridTrackSizes, effectiveGridRows } from "./grid.mjs";
 /* Auto-layout and reusable-component helpers for Design Studio v3 documents. */
 import { descendantIds, setNodeTreePosition } from "./geometry.mjs";
 import {
@@ -90,9 +91,9 @@ export function childNodes(nodes, parentId, { visibleOnly = false } = {}) {
 export function isAutoLayoutFlowChild(node, parent) {
   return Boolean(
     node &&
-      isAutoLayoutContainer(parent) &&
-      node.parentId === parent.id &&
-      node.layoutPositioning !== "absolute",
+    isAutoLayoutContainer(parent) &&
+    node.parentId === parent.id &&
+    node.layoutPositioning !== "absolute",
   );
 }
 
@@ -103,7 +104,8 @@ function layoutChildren(nodes, container) {
 }
 
 function axisSizing(node, axis) {
-  const explicit = node?.[axis === "horizontal" ? "layoutSizingHorizontal" : "layoutSizingVertical"];
+  const explicit =
+    node?.[axis === "horizontal" ? "layoutSizingHorizontal" : "layoutSizingVertical"];
   if (["fixed", "hug", "fill"].includes(explicit)) return explicit;
   return "fixed";
 }
@@ -208,16 +210,12 @@ function flexContentSize(container, children) {
   const lines = packFlexLines(children, mainSize, innerMain, mainGap, wrap);
   const lineMainSizes = lines.map(
     (line) =>
-      line.reduce(
-        (total, child) => total + limitedAxisSize(child, mainAxis, child[mainSize]),
-        0,
-      ) +
+      line.reduce((total, child) => total + limitedAxisSize(child, mainAxis, child[mainSize]), 0) +
       mainGap * Math.max(0, line.length - 1),
   );
   const lineCrossSizes = lines.map((line) =>
     line.reduce(
-      (largest, child) =>
-        Math.max(largest, limitedAxisSize(child, crossAxis, child[crossSize])),
+      (largest, child) => Math.max(largest, limitedAxisSize(child, crossAxis, child[crossSize])),
       0,
     ),
   );
@@ -231,50 +229,6 @@ function flexContentSize(container, children) {
       crossPadding.end +
       lineCrossSizes.reduce((total, size) => total + size, 0) +
       crossGap * Math.max(0, lineCrossSizes.length - 1),
-  };
-}
-
-function gridPlacements(children, columnCount) {
-  const occupied = [];
-  const placements = [];
-  const fits = (row, column, rowSpan, columnSpan) => {
-    if (column < 0 || column + columnSpan > columnCount) return false;
-    for (let rowOffset = 0; rowOffset < rowSpan; rowOffset += 1) {
-      for (let columnOffset = 0; columnOffset < columnSpan; columnOffset += 1) {
-        if (occupied[row + rowOffset]?.[column + columnOffset]) return false;
-      }
-    }
-    return true;
-  };
-  for (const child of children) {
-    const columnSpan = Math.min(
-      columnCount,
-      Math.max(1, Math.round(finite(child.gridColumnSpan, 1))),
-    );
-    const rowSpan = Math.max(1, Math.round(finite(child.gridRowSpan, 1)));
-    let row = 0;
-    let column = 0;
-    while (!fits(row, column, rowSpan, columnSpan)) {
-      column += 1;
-      if (column + columnSpan > columnCount) {
-        row += 1;
-        column = 0;
-      }
-    }
-    for (let rowOffset = 0; rowOffset < rowSpan; rowOffset += 1) {
-      occupied[row + rowOffset] ??= [];
-      for (let columnOffset = 0; columnOffset < columnSpan; columnOffset += 1) {
-        occupied[row + rowOffset][column + columnOffset] = true;
-      }
-    }
-    placements.push({ child, row, column, rowSpan, columnSpan });
-  }
-  return {
-    placements,
-    rowCount: placements.reduce(
-      (count, placement) => Math.max(count, placement.row + placement.rowSpan),
-      0,
-    ),
   };
 }
 
@@ -300,7 +254,7 @@ function gridContentSize(container, children) {
   const rowGap = axisGap(container, "vertical");
   const horizontalPadding = axisPadding(container, "horizontal");
   const verticalPadding = axisPadding(container, "vertical");
-  const { placements, rowCount } = gridPlacements(children, columns);
+  const { placements, rowCount } = gridPlacements(children, columns, container);
   const intrinsicColumn = placements.reduce(
     (largest, placement) =>
       Math.max(
@@ -311,12 +265,21 @@ function gridContentSize(container, children) {
       ),
     1,
   );
-  const rows = intrinsicGridRows(placements, rowCount, rowGap);
+  const explicitRows =
+    container.gridAutoTracks === "rows"
+      ? effectiveGridRows(container, rowCount)
+      : Math.max(rowCount, container.gridRows ?? 0);
+  const rows = container.gridRowSizes
+    ? gridTrackSizes(container.gridRowSizes, explicitRows, placements, "vertical", rowGap)
+    : intrinsicGridRows(placements, explicitRows, rowGap);
+  const columnWidths = container.gridColumnSizes
+    ? gridTrackSizes(container.gridColumnSizes, columns, placements, "horizontal", columnGap)
+    : Array(columns).fill(intrinsicColumn);
   return {
     width:
       horizontalPadding.start +
       horizontalPadding.end +
-      intrinsicColumn * columns +
+      columnWidths.reduce((total, size) => total + size, 0) +
       columnGap * Math.max(0, columns - 1),
     height:
       verticalPadding.start +
@@ -384,19 +347,13 @@ function childBaseline(nodes, child) {
         );
   if (!text) return limitedAxisSize(child, "vertical", child.height);
   const logicalTextTop = finite(text.y) - finite(text.layoutBaselineOffset);
-  const baseline =
-    logicalTextTop - finite(child.y) + finite(text.fontSize, 16) * 0.8;
-  return Math.min(
-    limitedAxisSize(child, "vertical", child.height),
-    Math.max(0, baseline),
-  );
+  const baseline = logicalTextTop - finite(child.y) + finite(text.fontSize, 16) * 0.8;
+  return Math.min(limitedAxisSize(child, "vertical", child.height), Math.max(0, baseline));
 }
 
 function lineBaselineMetrics(nodes, line, container, horizontal) {
   if (!horizontal) return null;
-  const baselineChildren = line.filter(
-    (child) => childAlignment(child, container) === "baseline",
-  );
+  const baselineChildren = line.filter((child) => childAlignment(child, container) === "baseline");
   if (baselineChildren.length === 0) return null;
   const values = baselineChildren.map((child) => ({
     child,
@@ -426,10 +383,7 @@ function applyFlexLayout(nodes, container, children) {
   const crossPadding = axisPadding(container, crossAxis);
   const mainGap = axisGap(container, mainAxis);
   const crossGap = axisGap(container, crossAxis);
-  const innerMain = Math.max(
-    0,
-    finite(container[mainSize]) - mainPadding.start - mainPadding.end,
-  );
+  const innerMain = Math.max(0, finite(container[mainSize]) - mainPadding.start - mainPadding.end);
   const innerCross = Math.max(
     0,
     finite(container[crossSize]) - crossPadding.start - crossPadding.end,
@@ -445,12 +399,8 @@ function applyFlexLayout(nodes, container, children) {
     if (fills.length === 0) continue;
     const fixed = line
       .filter((child) => axisSizing(child, mainAxis) !== "fill")
-      .reduce(
-        (total, child) => total + limitedAxisSize(child, mainAxis, child[mainSize]),
-        0,
-      );
-    const available =
-      innerMain - fixed - mainGap * Math.max(0, line.length - 1);
+      .reduce((total, child) => total + limitedAxisSize(child, mainAxis, child[mainSize]), 0);
+    const available = innerMain - fixed - mainGap * Math.max(0, line.length - 1);
     const fillSizes = distributeFillSizes(fills, mainAxis, available);
     for (const child of fills) {
       changed = assignAxisSize(child, mainAxis, fillSizes.get(child.id)) || changed;
@@ -464,8 +414,7 @@ function applyFlexLayout(nodes, container, children) {
     Math.max(
       baselineMetrics[index]?.size ?? 0,
       line.reduce(
-        (largest, child) =>
-          Math.max(largest, limitedAxisSize(child, crossAxis, child[crossSize])),
+        (largest, child) => Math.max(largest, limitedAxisSize(child, crossAxis, child[crossSize])),
         0,
       ),
     ),
@@ -475,25 +424,17 @@ function applyFlexLayout(nodes, container, children) {
     container.layoutWrap === "wrap-reverse"
       ? reverseAlignment(container.alignContent ?? "start")
       : (container.alignContent ?? "start");
-  const crossTrack = distributedTrack(
-    lineCrossSizes,
-    innerCross,
-    crossGap,
-    crossAlignment,
-  );
+  const crossTrack = distributedTrack(lineCrossSizes, innerCross, crossGap, crossAlignment);
   if (wrap && container.alignContent === "stretch" && lineCrossSizes.length > 0) {
     const stretch = crossTrack.free / lineCrossSizes.length;
     lineCrossSizes = lineCrossSizes.map((size) => size + stretch);
     crossTrack.offset = 0;
   }
 
-  let lineCrossCursor =
-    finite(container[crossPosition]) + crossPadding.start + crossTrack.offset;
+  let lineCrossCursor = finite(container[crossPosition]) + crossPadding.start + crossTrack.offset;
   for (const [lineIndex, line] of lines.entries()) {
     const lineCrossSize = Math.max(0, lineCrossSizes[lineIndex] ?? 0);
-    const mainValues = line.map((child) =>
-      limitedAxisSize(child, mainAxis, child[mainSize]),
-    );
+    const mainValues = line.map((child) => limitedAxisSize(child, mainAxis, child[mainSize]));
     const autoMargins = line.filter((child) => child.layoutMarginBefore === "auto");
     const mainTrack =
       autoMargins.length > 0
@@ -568,8 +509,31 @@ function applyGridLayout(nodes, container, children) {
     finite(container.height) - verticalPadding.start - verticalPadding.end,
   );
   const columnWidth = Math.max(1, (innerWidth - columnGap * Math.max(0, columns - 1)) / columns);
-  const { placements, rowCount } = gridPlacements(children, columns);
-  let rowHeights = intrinsicGridRows(placements, rowCount, rowGap);
+  const { placements, rowCount } = gridPlacements(children, columns, container);
+  const columnWidths = container.gridColumnSizes
+    ? gridTrackSizes(
+        container.gridColumnSizes,
+        columns,
+        placements,
+        "horizontal",
+        columnGap,
+        innerWidth,
+      )
+    : Array(columns).fill(columnWidth);
+  const explicitRows =
+    container.gridAutoTracks === "rows"
+      ? effectiveGridRows(container, rowCount)
+      : Math.max(rowCount, container.gridRows ?? 0);
+  let rowHeights = container.gridRowSizes
+    ? gridTrackSizes(
+        container.gridRowSizes,
+        explicitRows,
+        placements,
+        "vertical",
+        rowGap,
+        innerHeight,
+      )
+    : intrinsicGridRows(placements, explicitRows, rowGap);
   const rowTrack = distributedTrack(
     rowHeights,
     innerHeight,
@@ -593,38 +557,45 @@ function applyGridLayout(nodes, container, children) {
     const cellX =
       finite(container.x) +
       horizontalPadding.start +
-      placement.column * (columnWidth + columnGap);
+      columnWidths.slice(0, placement.column).reduce((sum, size) => sum + size, 0) +
+      placement.column * columnGap;
     const cellY = rowPositions[placement.row] ?? finite(container.y) + verticalPadding.start;
     const cellWidth =
-      columnWidth * placement.columnSpan + columnGap * Math.max(0, placement.columnSpan - 1);
+      columnWidths
+        .slice(placement.column, placement.column + placement.columnSpan)
+        .reduce((sum, size) => sum + size, 0) +
+      columnGap * Math.max(0, placement.columnSpan - 1);
     const cellHeight =
       rowHeights
         .slice(placement.row, placement.row + placement.rowSpan)
         .reduce((total, value) => total + value, 0) +
       rowTrack.gap * Math.max(0, placement.rowSpan - 1);
     const alignment = childAlignment(placement.child, container);
-    if (
-      axisSizing(placement.child, "horizontal") === "fill" ||
-      alignment === "stretch"
-    ) {
+    if (axisSizing(placement.child, "horizontal") === "fill" || alignment === "stretch") {
       changed = assignAxisSize(placement.child, "horizontal", cellWidth) || changed;
     }
-    if (
-      axisSizing(placement.child, "vertical") === "fill" ||
-      alignment === "stretch"
-    ) {
+    if (axisSizing(placement.child, "vertical") === "fill" || alignment === "stretch") {
       changed = assignAxisSize(placement.child, "vertical", cellHeight) || changed;
     }
+    const horizontalAlignment =
+      placement.child.gridChildHorizontalAlign &&
+      placement.child.gridChildHorizontalAlign !== "auto"
+        ? placement.child.gridChildHorizontalAlign
+        : alignment;
+    const verticalAlignment =
+      placement.child.gridChildVerticalAlign && placement.child.gridChildVerticalAlign !== "auto"
+        ? placement.child.gridChildVerticalAlign
+        : alignment;
     const horizontalOffset =
-      alignment === "center"
+      horizontalAlignment === "center"
         ? (cellWidth - placement.child.width) / 2
-        : alignment === "end"
+        : horizontalAlignment === "end"
           ? cellWidth - placement.child.width
           : 0;
     const verticalOffset =
-      alignment === "center"
+      verticalAlignment === "center"
         ? (cellHeight - placement.child.height) / 2
-        : alignment === "end"
+        : verticalAlignment === "end"
           ? cellHeight - placement.child.height
           : 0;
     changed =
@@ -633,8 +604,7 @@ function applyGridLayout(nodes, container, children) {
         placement.child.id,
         "x",
         round(layoutPosition(placement.child, "x", cellX + horizontalOffset)),
-      ) ||
-      changed;
+      ) || changed;
     changed =
       setNodeTreePosition(
         nodes,

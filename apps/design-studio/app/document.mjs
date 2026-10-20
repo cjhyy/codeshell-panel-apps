@@ -1,3 +1,9 @@
+import {
+  GRID_CONTAINER_FIELDS,
+  GRID_CHILD_FIELDS,
+  validateGridFields,
+  normalizeGridTracks,
+} from "./grid.mjs";
 import { normalizeDesignPaints, designPaintSvg, representativeDesignFill } from "./paint.mjs";
 /* Repository document codec used by the Design Studio Panel App. */
 import {
@@ -195,6 +201,9 @@ function normalizedNode(candidate, parentId) {
     node.justifyContent = candidate.justifyContent ?? "start";
     if (candidate.alignContent !== undefined) node.alignContent = candidate.alignContent;
     if (candidate.gridColumns !== undefined) node.gridColumns = candidate.gridColumns;
+    for (const key of GRID_CONTAINER_FIELDS)
+      if (candidate[key] !== undefined)
+        node[key] = key.endsWith("Sizes") ? normalizeGridTracks(candidate[key]) : candidate[key];
   }
   for (const property of [
     "minWidth",
@@ -208,6 +217,7 @@ function normalizedNode(candidate, parentId) {
     "layoutMarginBefore",
     "gridColumnSpan",
     "gridRowSpan",
+    ...GRID_CHILD_FIELDS,
     "constraintHorizontal",
     "constraintVertical",
     "constraintBaseWidth",
@@ -311,6 +321,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "justifyContent",
     "alignContent",
     "gridColumns",
+    ...GRID_CONTAINER_FIELDS,
     "minWidth",
     "maxWidth",
     "minHeight",
@@ -322,6 +333,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "layoutMarginBefore",
     "gridColumnSpan",
     "gridRowSpan",
+    ...GRID_CHILD_FIELDS,
     "constraintHorizontal",
     "constraintVertical",
     "constraintBaseWidth",
@@ -607,6 +619,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       "justifyContent",
       "alignContent",
       "gridColumns",
+      ...GRID_CONTAINER_FIELDS,
     ].some((property) => Object.prototype.hasOwnProperty.call(candidate, property))
   ) {
     throw new Error(`图层 ${candidate.id} 包含容器专属布局字段`);
@@ -691,6 +704,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
   ) {
     throw new Error(`非绝对定位图层 ${candidate.id} 包含 Constraints 字段`);
   }
+  validateGridFields(candidate, container);
   for (const property of ["gridColumnSpan", "gridRowSpan"]) {
     if (
       candidate[property] !== undefined &&

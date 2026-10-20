@@ -77,3 +77,33 @@ else await writeFile(codePath, paintOutput);
 console.log(
   `Figma plugin paint runtime ${process.argv.includes("--check") ? "verified" : "built"}`,
 );
+
+const gridResult = await build({
+  absWorkingDir: root,
+  entryPoints: ["apps/design-studio/app/figma-plugin/grid-runtime.mjs"],
+  bundle: true,
+  platform: "browser",
+  format: "iife",
+  globalName: "CodeShellFigmaGrid",
+  target: "es2020",
+  minify: true,
+  charset: "utf8",
+  write: false,
+  logLevel: "silent",
+});
+const gridSource = await readFile(codePath, "utf8");
+const gridBegin = "/* BEGIN GENERATED GRID RUNTIME */",
+  gridEnd = "/* END GENERATED GRID RUNTIME */";
+assert.equal(gridSource.split(gridBegin).length, 2);
+assert.equal(gridSource.split(gridEnd).length, 2);
+const gridOutput =
+  gridSource.slice(0, gridSource.indexOf(gridBegin)) +
+  gridBegin +
+  "\n" +
+  gridResult.outputFiles[0].text +
+  gridEnd +
+  gridSource.slice(gridSource.indexOf(gridEnd) + gridEnd.length);
+if (process.argv.includes("--check"))
+  assert.equal(gridSource, gridOutput, "Figma plugin grid runtime is stale");
+else await writeFile(codePath, gridOutput);
+console.log(`Figma plugin grid runtime ${process.argv.includes("--check") ? "verified" : "built"}`);

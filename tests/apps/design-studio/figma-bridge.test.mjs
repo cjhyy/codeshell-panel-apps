@@ -1,3 +1,5 @@
+import { normalizeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
+import { nativeGridSource } from "../../fixtures/design-studio-native-grid/source.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
@@ -711,7 +713,7 @@ test("malformed, cyclic, excessively deep and oversized imports fail without pro
   );
 });
 
-test("Figma transfer reports detached containers, notes and unsupported layout instead of claiming losslessness", () => {
+test("Figma transfer reports detached containers and notes while supported Grid stays editable", () => {
   const result = importFigmaJson(file([{ ...rect("1:1"), type: "FRAME", children: [rect()] }]));
   const parent = result.document.nodes[0];
   parent.type = "group";
@@ -723,7 +725,7 @@ test("Figma transfer reports detached containers, notes and unsupported layout i
   assert.equal(transfer.stats.exportedNodes, 2);
   assert.deepEqual(
     transfer.warnings.map((entry) => entry.code),
-    ["container-as-frame", "grid-export", "notes-plugin-data"],
+    ["container-as-frame", "notes-plugin-data"],
   );
   assert.equal(transfer.pages[0].children[0].notes, "Review with designer");
 });
@@ -738,6 +740,7 @@ function pluginHarness({
   failFallback = false,
   failNode = false,
   nativeAutoLayout = false,
+  nativeGrid = false,
 } = {}) {
   const messages = [],
     pages = [],
@@ -761,6 +764,24 @@ function pluginHarness({
         if (child.parent) child.parent.children.splice(child.parent.children.indexOf(child), 1);
         this.children.push(child);
         child.parent = this;
+        if (nativeGrid && this.layoutMode === "GRID") {
+          let cell = 0;
+          while (
+            this.children.some(
+              (other) =>
+                other !== child &&
+                other.gridRowAnchorIndex === Math.floor(cell / this.gridColumnCount) &&
+                other.gridColumnAnchorIndex === cell % this.gridColumnCount,
+            )
+          )
+            cell++;
+          const requiredRows = Math.floor(cell / this.gridColumnCount) + 1;
+          if (requiredRows > this.gridRowCount) this.gridRowCount = requiredRows;
+          child.setGridChildPosition(
+            Math.floor(cell / this.gridColumnCount),
+            cell % this.gridColumnCount,
+          );
+        }
       },
       resize(width, height) {
         this.width = width;
@@ -790,6 +811,120 @@ function pluginHarness({
         };
       },
     };
+    if (nativeGrid) {
+      let gridMode = "NONE";
+      Object.defineProperty(value, "layoutMode", {
+        get: () => gridMode,
+        set: (next) => {
+          gridMode = next;
+          if (next === "GRID") {
+            assert.equal(
+              value.children.length,
+              0,
+              "GRID must be configured empty to avoid occupied-cell span conflicts",
+            );
+            value.width = 100;
+            value.height = 100;
+          }
+        },
+      });
+      let row = 0,
+        column = 0;
+      Object.defineProperties(value, {
+        gridRowAnchorIndex: { get: () => row },
+        gridColumnAnchorIndex: { get: () => column },
+      });
+      value.setGridChildPosition = (nextRow, nextColumn) => {
+        assert.equal(value.parent.layoutMode, "GRID");
+        assert.equal(
+          value.parent.gridItemsPositioning,
+          "MANUAL",
+          "position setter throws in ROW_AUTO_FLOW",
+        );
+        assert(nextRow >= 0 && nextRow < value.parent.gridRowCount);
+        assert(nextColumn >= 0 && nextColumn < value.parent.gridColumnCount);
+        row = nextRow;
+        column = nextColumn;
+        calls.push(["grid-position", value.id, row, column]);
+      };
+      for (const [key, anchor, count] of [
+        ["gridRowSpan", "gridRowAnchorIndex", "gridRowCount"],
+        ["gridColumnSpan", "gridColumnAnchorIndex", "gridColumnCount"],
+      ]) {
+        let span = 1;
+        Object.defineProperty(value, key, {
+          get: () => span,
+          set: (next) => {
+            assert(value[anchor] + next <= value.parent[count], "span must fit authored tracks");
+            const rows = key === "gridRowSpan" ? next : value.gridRowSpan;
+            const columns = key === "gridColumnSpan" ? next : value.gridColumnSpan;
+            for (const other of value.parent.children.filter(
+              (child) => child !== value && child.layoutPositioning !== "ABSOLUTE",
+            )) {
+              const overlaps =
+                row < other.gridRowAnchorIndex + other.gridRowSpan &&
+                row + rows > other.gridRowAnchorIndex &&
+                column < other.gridColumnAnchorIndex + other.gridColumnSpan &&
+                column + columns > other.gridColumnAnchorIndex;
+              assert(!overlaps, "span setter rejects occupied cells");
+            }
+            span = next;
+          },
+        });
+      }
+      if (type === "FRAME") {
+        value.gridAutoTracks = "NONE";
+        value.gridItemsPositioning = "MANUAL";
+        for (const axis of ["Row", "Column"]) {
+          let count = 1,
+            tracks = [];
+          const track = () => {
+            let kind = "FLEX",
+              size = 1;
+            return Object.defineProperties(
+              {},
+              {
+                type: {
+                  enumerable: true,
+                  get: () => kind,
+                  set: (next) => {
+                    const sizing = axis === "Column" ? "Horizontal" : "Vertical";
+                    assert(!(next === "FLEX" && value[`layoutSizing${sizing}`] === "HUG"));
+                    kind = next;
+                  },
+                },
+                value: {
+                  enumerable: true,
+                  get: () => size,
+                  set: (next) => {
+                    size = next;
+                  },
+                },
+              },
+            );
+          };
+          tracks.push(track());
+          Object.defineProperty(value, `grid${axis}Count`, {
+            get: () => count,
+            set: (next) => {
+              assert(
+                !(axis === "Row" && value.gridAutoTracks === "ROWS"),
+                "automatic row counts are readonly",
+              );
+              count = next;
+              tracks = Array.from({ length: count }, (_, i) => tracks[i] ?? track());
+            },
+          });
+          Object.defineProperty(value, `grid${axis}Sizes`, {
+            get: () => tracks,
+            set: () =>
+              assert.fail(
+                "GridTrackSize values use live setters; array replacement is not supported",
+              ),
+          });
+        }
+      }
+    }
     Object.defineProperty(value, "fontName", {
       get: () => fontName,
       set: (font) => {
@@ -865,6 +1000,75 @@ function pluginHarness({
                 ? value.children.reduce((total, child) => total + child[dimension], 0) +
                   (value.itemSpacing ?? 0) * (value.children.length - 1)
                 : Math.max(...value.children.map((child) => child[dimension])));
+          }
+          if (nativeGrid && next === "FILL" && value.parent?.layoutMode === "GRID") {
+            const parent = value.parent;
+            const horizontal = axis === "Horizontal";
+            const dimension = horizontal ? "width" : "height";
+            const tracks = parent[horizontal ? "gridColumnSizes" : "gridRowSizes"];
+            const gap = parent[horizontal ? "gridColumnGap" : "gridRowGap"];
+            const padding = horizontal ? ["Left", "Right"] : ["Top", "Bottom"];
+            const available =
+              parent[dimension] -
+              padding.reduce((sum, side) => sum + (parent[`padding${side}`] ?? 0), 0) -
+              gap * (tracks.length - 1);
+            const fixed = tracks
+              .filter((track) => track.type === "FIXED")
+              .reduce((sum, track) => sum + track.value, 0);
+            const weight = tracks
+              .filter((track) => track.type === "FLEX")
+              .reduce((sum, track) => sum + track.value, 0);
+            const sizes = tracks.map((track, index) =>
+              track.type === "FIXED"
+                ? track.value
+                : track.type === "FLEX"
+                  ? ((available - fixed) * track.value) / Math.max(1, weight)
+                  : Math.max(
+                      0,
+                      ...parent.children
+                        .filter(
+                          (child) =>
+                            child[horizontal ? "gridColumnAnchorIndex" : "gridRowAnchorIndex"] ===
+                            index,
+                        )
+                        .map((child) => child[dimension]),
+                    ),
+            );
+            const anchor = value[horizontal ? "gridColumnAnchorIndex" : "gridRowAnchorIndex"];
+            const span = value[horizontal ? "gridColumnSpan" : "gridRowSpan"];
+            value[dimension] =
+              sizes.slice(anchor, anchor + span).reduce((a, b) => a + b, 0) + gap * (span - 1);
+          }
+          if (nativeGrid && next === "HUG" && value.layoutMode === "GRID") {
+            const horizontal = axis === "Horizontal";
+            const tracks = value[horizontal ? "gridColumnSizes" : "gridRowSizes"];
+            assert(
+              tracks.every((track) => track.type !== "FLEX"),
+              "FLEX tracks cannot be HUG",
+            );
+            const dimension = horizontal ? "width" : "height";
+            const gap = value[horizontal ? "gridColumnGap" : "gridRowGap"];
+            value[dimension] =
+              tracks.reduce(
+                (sum, track, index) =>
+                  sum +
+                  (track.type === "FIXED"
+                    ? track.value
+                    : Math.max(
+                        0,
+                        ...value.children
+                          .filter(
+                            (child) =>
+                              child[horizontal ? "gridColumnAnchorIndex" : "gridRowAnchorIndex"] ===
+                              index,
+                          )
+                          .map((child) => child[dimension]),
+                      )),
+                0,
+              ) +
+              gap * (tracks.length - 1) +
+              (value[horizontal ? "paddingLeft" : "paddingTop"] ?? 0) +
+              (value[horizontal ? "paddingRight" : "paddingBottom"] ?? 0);
           }
           sizing = next;
         },
@@ -1251,4 +1455,447 @@ test("plugin manifests local-only access and surfaces empty selections and fallb
   await failure.send({ type: "import-transfer", content: JSON.stringify(transfer) });
   assert.equal(failure.messages[0].type, "error");
   assert.equal(failure.pages.length, 1);
+});
+
+test("native Grid tracks, manual anchors, independent alignment and spans survive canonical save and editable Figma creation", async () => {
+  const imported = importFigmaJson(nativeGridSource());
+  assert(
+    !imported.warnings.some((warning) =>
+      ["grid-layout", "unsupported-grid"].includes(warning.code),
+    ),
+  );
+  const saved = JSON.parse(serializeDesignDocument(imported.document));
+  const frame = saved.pages[0].children[0];
+  assert.equal(frame.layout, "grid");
+  assert.equal(frame.gridColumns, 3);
+  assert.equal(frame.gridRows, 2);
+  assert.deepEqual(frame.gridColumnSizes, [
+    { type: "fixed", value: 100 },
+    { type: "flex", value: 1 },
+    { type: "flex", value: 2 },
+  ]);
+  assert.deepEqual(frame.gridRowSizes, [{ type: "fixed", value: 40 }, { type: "hug" }]);
+  assert.equal(frame.children[1].gridChildHorizontalAlign, "end");
+  assert.equal(frame.children[1].gridChildVerticalAlign, "center");
+  applyAllAutoLayouts(imported.document.nodes);
+  assert.deepEqual(
+    imported.document.nodes.slice(0, 4).map((node) => [node.x, node.y, node.width, node.height]),
+    [
+      [20, 30, 440, 128],
+      [140, 40, 310, 40],
+      [100, 50, 30, 20],
+      [30, 88, 40, 60],
+    ],
+  );
+  const html = exportDesignFrontend(saved);
+  assert.match(html, /100px minmax\(0, 1fr\) minmax\(0, 2fr\)/u);
+  assert.match(html, /40px fit-content\(100%\)/u);
+  assert.match(html, /grid-column:\s*2 \/ span 2/u);
+  const transfer = createFigmaTransfer(saved);
+  assert(!transfer.warnings.some((warning) => warning.code === "grid-export"));
+  const harness = pluginHarness({ nativeGrid: true });
+  await harness.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(harness.messages.at(-1).type, "imported", JSON.stringify(harness.messages.at(-1)));
+  const created = harness.pages[1].children[0];
+  assert.equal(created.layoutMode, "GRID");
+  assert.deepEqual(
+    created.gridColumnSizes.map((track) => [track.type, track.value]),
+    [
+      ["FIXED", 100],
+      ["FLEX", 1],
+      ["FLEX", 2],
+    ],
+  );
+  assert.equal(created.gridRowSizes[1].type, "HUG");
+  assert.equal(created.gridItemsPositioning, "MANUAL");
+  assert.equal(created.layoutSizingVertical, "HUG");
+  assert.deepEqual([created.width, created.height], [440, 128]);
+  const span = created.children[0];
+  assert.deepEqual(
+    [
+      span.gridRowAnchorIndex,
+      span.gridColumnAnchorIndex,
+      span.gridColumnSpan,
+      span.width,
+      span.height,
+    ],
+    [0, 1, 2, 310, 40],
+  );
+  assert.equal(span.layoutPositioning, "AUTO");
+  assert.equal(created.children[1].gridChildHorizontalAlign, "MAX");
+  assert.equal(created.children[1].gridChildVerticalAlign, "CENTER");
+  assert.equal(created.children[3].layoutSizingHorizontal, "HUG");
+  assert.equal(created.children[3].characters, "Editable");
+  assert.equal(created.children[3].type, "TEXT");
+});
+
+test("native row auto-flow configures spans in manual mode before restoring flow and automatic rows", async () => {
+  const raw = nativeGridSource({ gridItemsPositioning: "ROW_AUTO_FLOW", gridAutoTracks: "ROWS" });
+  const source = raw.document.children[0].children[0];
+  source.children = source.children.slice(0, 3);
+  const imported = importFigmaJson(raw);
+  const harness = pluginHarness({ nativeGrid: true });
+  await harness.send({
+    type: "import-transfer",
+    content: JSON.stringify(createFigmaTransfer(imported.document)),
+  });
+  assert.equal(harness.messages.at(-1).type, "imported", JSON.stringify(harness.messages.at(-1)));
+  const created = harness.pages[1].children[0];
+  assert.equal(created.gridItemsPositioning, "ROW_AUTO_FLOW");
+  assert.equal(created.gridAutoTracks, "ROWS");
+  assert.deepEqual(
+    created.children.map((child) => [
+      child.gridRowAnchorIndex,
+      child.gridColumnAnchorIndex,
+      child.gridColumnSpan,
+    ]),
+    [
+      [0, 0, 2],
+      [0, 2, 1],
+      [1, 0, 1],
+    ],
+  );
+});
+
+test("native Grid export reads live track and child semantics even when JSON_REST_V1 omits them", async () => {
+  const imported = importFigmaJson(nativeGridSource());
+  const harness = pluginHarness({ nativeGrid: true });
+  await harness.send({
+    type: "import-transfer",
+    content: JSON.stringify(createFigmaTransfer(imported.document)),
+  });
+  assert.equal(harness.messages.at(-1).type, "imported");
+  const created = harness.pages[1].children[0];
+  const rawNode = (node) => ({
+    ...rect(node.id),
+    type: node.type,
+    name: node.name,
+    absoluteBoundingBox: { x: 20, y: 30, width: node.width, height: node.height },
+    ...(node.type === "TEXT"
+      ? { characters: node.characters, style: { fontFamily: "Inter", fontSize: 16 } }
+      : {}),
+    ...(node.type === "FRAME" ? { children: node.children.map(rawNode) } : {}),
+  });
+  created.exportAsync = async () => ({ document: rawNode(created) });
+  harness.figma.currentPage.selection = [created];
+  await harness.send({ type: "export-json", scope: "selection" });
+  assert.equal(harness.messages.at(-1).type, "exported", JSON.stringify(harness.messages.at(-1)));
+  const exported = JSON.parse(harness.messages.at(-1).content);
+  const native = exported.nodes[created.id].document;
+  assert.equal(native.layoutMode, "GRID");
+  assert.deepEqual(native.gridColumnSizes, [
+    { type: "FIXED", value: 100 },
+    { type: "FLEX", value: 1 },
+    { type: "FLEX", value: 2 },
+  ]);
+  assert.deepEqual(native.gridRowSizes, [{ type: "FIXED", value: 40 }, { type: "HUG" }]);
+  assert.equal(native.children[0].gridColumnAnchorIndex, 1);
+  assert.equal(native.children[0].gridColumnSpan, 2);
+  assert.equal(native.children[0].layoutSizingHorizontal, "FILL");
+  assert.equal(importFigmaJson(exported).document.nodes[0].layout, "grid");
+});
+
+test("unsupported or malformed native Grid produces actionable diagnostics and preserves existing Figma pages", async () => {
+  const imported = importFigmaJson(nativeGridSource());
+  const transfer = createFigmaTransfer(imported.document);
+  const oldFigma = pluginHarness();
+  await oldFigma.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(oldFigma.messages.at(-1).type, "error");
+  assert.match(oldFigma.messages.at(-1).message, /不支持原生 GRID API/u);
+  assert.equal(oldFigma.pages.length, 1);
+  const invalid = clone(transfer);
+  invalid.pages[0].children[0].layoutSizingHorizontal = "hug";
+  const native = pluginHarness({ nativeGrid: true });
+  await native.send({ type: "import-transfer", content: JSON.stringify(invalid) });
+  assert.equal(native.messages.at(-1).type, "error");
+  assert.match(native.messages.at(-1).message, /HUG 容器不能包含 FLEX/u);
+  assert.equal(native.pages.length, 1);
+  const incomplete = nativeGridSource({ gridColumnSizes: undefined });
+  const fallback = importFigmaJson(incomplete);
+  assert.equal(fallback.document.nodes[0].layout, "none");
+  assert(
+    fallback.warnings.some(
+      (warning) => warning.code === "unsupported-grid" && warning.message.includes("重新导出"),
+    ),
+  );
+  const malformed = clone(transfer);
+  malformed.pages[0].children[0].gridRowSizes[0].value = -1;
+  await native.send({ type: "import-transfer", content: JSON.stringify(malformed) });
+  assert.equal(native.messages.at(-1).type, "error");
+  assert.equal(native.pages.length, 1);
+});
+
+test("an absolute Grid overlay cannot leave an extra row after temporary native auto placement", async () => {
+  const raw = nativeGridSource({
+    gridColumnCount: 1,
+    gridRowCount: 1,
+    gridColumnSizes: [{ type: "FIXED", value: 100 }],
+    gridRowSizes: [{ type: "FIXED", value: 40 }],
+    layoutSizingVertical: "FIXED",
+  });
+  const grid = raw.document.children[0].children[0];
+  grid.children = [
+    rect("33:1", { gridRowAnchorIndex: 0, gridColumnAnchorIndex: 0 }),
+    rect("33:2", { layoutPositioning: "ABSOLUTE" }),
+  ];
+  const harness = pluginHarness({ nativeGrid: true });
+  await harness.send({
+    type: "import-transfer",
+    content: JSON.stringify(createFigmaTransfer(importFigmaJson(raw).document)),
+  });
+  assert.equal(harness.messages.at(-1).type, "imported", JSON.stringify(harness.messages.at(-1)));
+  const created = harness.pages[1].children[0];
+  assert.equal(created.gridRowCount, 1);
+  assert.equal(created.children[1].layoutPositioning, "ABSOLUTE");
+});
+
+test("published v3 and Host patch schemas accept bounded native Grid fields and reject malformed tracks", async () => {
+  const { default: Ajv2020 } = await import("ajv/dist/2020.js");
+  const schema = JSON.parse(
+    await readFile(
+      new URL(
+        "../../../apps/design-studio/app/formats/codeshell-design-v3.schema.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const validate = new Ajv2020({ strict: false }).compile(schema);
+  const source = JSON.parse(serializeDesignDocument(importFigmaJson(nativeGridSource()).document));
+  assert(validate(source), JSON.stringify(validate.errors));
+  const invalid = clone(source);
+  invalid.pages[0].children[0].gridColumnSizes[0].value = -1;
+  assert.equal(validate(invalid), false);
+  invalid.pages[0].children[0].gridColumnSizes[0] = { type: "hug", value: 1 };
+  assert.equal(validate(invalid), false);
+  const manifest = JSON.parse(
+    await readFile(
+      new URL("../../../apps/design-studio/.codeshell-panel/panel.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const tool = manifest.agent.tools.find((entry) => entry.name === "use_design");
+  const { validateToolArgsStrict } = await import("@cjhyy/code-shell-core");
+  const request = {
+    expected_state_revision: "native-grid-test",
+    operations: [
+      {
+        op: "update_node",
+        node_id: "grid",
+        changes: {
+          gridColumns: 3,
+          gridRows: 2,
+          gridColumnSizes: source.pages[0].children[0].gridColumnSizes,
+          gridItemsPositioning: "manual",
+        },
+      },
+    ],
+  };
+  assert.equal(validateToolArgsStrict("use_design", request, tool.inputSchema), null);
+  request.operations[0].changes.gridColumnSizes = null;
+  assert.equal(validateToolArgsStrict("use_design", request, tool.inputSchema), null);
+  request.operations[0].changes.gridColumnSizes = [{ type: "fixed", value: -1 }];
+  assert.notEqual(validateToolArgsStrict("use_design", request, tool.inputSchema), null);
+});
+
+test("malformed manual Grid child spans fail before untrusted placement loops execute", () => {
+  const baseline = JSON.parse(
+    serializeDesignDocument(importFigmaJson(nativeGridSource()).document),
+  );
+  for (const value of [1e9, Infinity, -1, 1.5]) {
+    const invalid = clone(baseline);
+    invalid.pages[0].children[0].children[0].gridRowSpan = value;
+    assert.throws(() => normalizeDesignDocument(invalid), /gridRowSpan/u);
+  }
+});
+
+test("a spanning item crossing FLEX cannot inflate adjacent HUG tracks during reflow", () => {
+  const raw = nativeGridSource({
+    gridColumnCount: 2,
+    gridRowCount: 2,
+    absoluteBoundingBox: { x: 0, y: 0, width: 400, height: 80 },
+    layoutSizingVertical: "FIXED",
+    gridColumnSizes: [{ type: "HUG" }, { type: "FLEX", value: 1 }],
+    gridRowSizes: [
+      { type: "FIXED", value: 40 },
+      { type: "FIXED", value: 40 },
+    ],
+    gridColumnGap: 0,
+    gridRowGap: 0,
+    paddingLeft: 0,
+    paddingRight: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+  });
+  const source = raw.document.children[0].children[0];
+  source.children = [
+    rect("44:1", {
+      gridRowAnchorIndex: 0,
+      gridColumnAnchorIndex: 0,
+      gridColumnSpan: 2,
+      absoluteBoundingBox: { x: 0, y: 0, width: 300, height: 40 },
+    }),
+    rect("44:2", {
+      gridRowAnchorIndex: 1,
+      gridColumnAnchorIndex: 0,
+      absoluteBoundingBox: { x: 0, y: 40, width: 60, height: 40 },
+    }),
+    rect("44:3", {
+      gridRowAnchorIndex: 1,
+      gridColumnAnchorIndex: 1,
+      absoluteBoundingBox: { x: 60, y: 40, width: 20, height: 40 },
+    }),
+  ];
+  const result = importFigmaJson(raw);
+  assert.equal(result.document.nodes[0].layout, "grid");
+  applyAllAutoLayouts(result.document.nodes);
+  assert.equal(result.document.nodes[3].x, 60);
+  source.children[0].layoutSizingHorizontal = "FILL";
+  const cyclic = importFigmaJson(raw);
+  assert.equal(cyclic.document.nodes[0].layout, "none");
+  assert(
+    cyclic.warnings.some(
+      (warning) => warning.code === "unsupported-grid" && warning.message.includes("内在尺寸循环"),
+    ),
+  );
+});
+
+test("automatic rows grow after a canonical child edit and trim after deletion without changing track semantics", async () => {
+  const document = JSON.parse(
+    serializeDesignDocument(
+      importFigmaJson(
+        nativeGridSource({ gridItemsPositioning: "ROW_AUTO_FLOW", gridAutoTracks: "ROWS" }),
+      ).document,
+    ),
+  );
+  const grid = document.pages[0].children[0];
+  const extra = {
+    ...grid.children[2],
+    id: "automatic-extra",
+    name: "New row",
+    height: 50,
+    gridColumnSpan: 3,
+  };
+  delete extra.gridRowAnchorIndex;
+  delete extra.gridColumnAnchorIndex;
+  grid.children.push(extra);
+  const transfer = createFigmaTransfer(document);
+  assert(!transfer.warnings.some((warning) => warning.code === "grid-export"));
+  const native = pluginHarness({ nativeGrid: true });
+  await native.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(native.messages.at(-1).type, "imported", JSON.stringify(native.messages.at(-1)));
+  const created = native.pages[1].children[0];
+  assert.equal(created.gridRowCount, 3);
+  assert.equal(created.gridRowSizes[2].type, "HUG");
+  assert.equal(created.children.at(-1).gridRowAnchorIndex, 2);
+  assert.equal(created.gridAutoTracks, "ROWS");
+  assert.match(
+    exportDesignFrontend(document),
+    /grid-template-rows:40px fit-content\(100%\) fit-content\(100%\)/u,
+  );
+  grid.children.splice(2);
+  const trimmed = pluginHarness({ nativeGrid: true });
+  await trimmed.send({
+    type: "import-transfer",
+    content: JSON.stringify(createFigmaTransfer(document)),
+  });
+  assert.equal(trimmed.messages.at(-1).type, "imported", JSON.stringify(trimmed.messages.at(-1)));
+  assert.equal(trimmed.pages[1].children[0].gridRowCount, 1);
+  assert.match(exportDesignFrontend(document), /grid-template-rows:40px;/u);
+});
+
+test("overlapping HUG spans apply same-span contributions together and remain independent of layer order", () => {
+  const raw = nativeGridSource({
+    gridColumnCount: 3,
+    gridRowCount: 3,
+    absoluteBoundingBox: { x: 0, y: 0, width: 400, height: 90 },
+    layoutSizingVertical: "FIXED",
+    gridColumnSizes: [{ type: "HUG" }, { type: "HUG" }, { type: "HUG" }],
+    gridRowSizes: Array.from({ length: 3 }, () => ({ type: "FIXED", value: 30 })),
+    gridColumnGap: 0,
+    gridRowGap: 0,
+    paddingLeft: 0,
+    paddingRight: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+  });
+  const grid = raw.document.children[0].children[0];
+  grid.children = [
+    rect("55:1", {
+      gridRowAnchorIndex: 0,
+      gridColumnAnchorIndex: 0,
+      gridColumnSpan: 2,
+      absoluteBoundingBox: { x: 0, y: 0, width: 300, height: 30 },
+    }),
+    rect("55:2", {
+      gridRowAnchorIndex: 1,
+      gridColumnAnchorIndex: 1,
+      gridColumnSpan: 2,
+      absoluteBoundingBox: { x: 150, y: 30, width: 200, height: 30 },
+    }),
+    ...[0, 1, 2].map((column) =>
+      rect(`55:${column + 3}`, {
+        gridRowAnchorIndex: 2,
+        gridColumnAnchorIndex: column,
+        absoluteBoundingBox: { x: column * 150, y: 60, width: 10, height: 30 },
+      }),
+    ),
+  ];
+  for (const reversed of [false, true]) {
+    if (reversed) grid.children.reverse();
+    const result = importFigmaJson(raw);
+    assert.equal(result.document.nodes[0].layout, "grid");
+    applyAllAutoLayouts(result.document.nodes);
+    const positions = ["figma-55-3", "figma-55-4", "figma-55-5"].map(
+      (id) => result.document.nodes.find((node) => node.id === id).x,
+    );
+    assert.deepEqual(positions, [0, 150, 300]);
+  }
+});
+
+test("FLEX fractions totaling less than one preserve unused space rather than normalizing to full width", async () => {
+  const raw = nativeGridSource({
+    gridColumnCount: 2,
+    gridRowCount: 1,
+    absoluteBoundingBox: { x: 0, y: 0, width: 400, height: 40 },
+    layoutSizingVertical: "FIXED",
+    gridColumnSizes: [
+      { type: "FLEX", value: 0.25 },
+      { type: "FLEX", value: 0.25 },
+    ],
+    gridRowSizes: [{ type: "FIXED", value: 40 }],
+    gridColumnGap: 0,
+    gridRowGap: 0,
+    paddingLeft: 0,
+    paddingRight: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+  });
+  raw.document.children[0].children[0].children = [0, 1].map((column) =>
+    rect(`66:${column + 1}`, {
+      layoutSizingHorizontal: "FILL",
+      gridRowAnchorIndex: 0,
+      gridColumnAnchorIndex: column,
+      absoluteBoundingBox: { x: column * 100, y: 0, width: 100, height: 40 },
+    }),
+  );
+  const result = importFigmaJson(raw);
+  applyAllAutoLayouts(result.document.nodes);
+  assert.deepEqual(
+    result.document.nodes.slice(1).map((node) => [node.x, node.width]),
+    [
+      [0, 100],
+      [100, 100],
+    ],
+  );
+  const native = pluginHarness({ nativeGrid: true });
+  await native.send({
+    type: "import-transfer",
+    content: JSON.stringify(createFigmaTransfer(result.document)),
+  });
+  assert.equal(native.messages.at(-1).type, "imported", JSON.stringify(native.messages.at(-1)));
+  assert.deepEqual(
+    native.pages[1].children[0].children.map((node) => node.width),
+    [100, 100],
+  );
 });
