@@ -1,5 +1,6 @@
 import { mainAxisGap } from "./layout-spacing.mjs";
 import { gridPlacements, gridTrackSizes, effectiveGridRows } from "./grid.mjs";
+import { hasDesignStroke, designStrokeSides } from "./stroke.mjs";
 /* Auto-layout and reusable-component helpers for Design Studio v3 documents. */
 import { descendantIds, setNodeTreePosition } from "./geometry.mjs";
 import {
@@ -106,7 +107,10 @@ function axisSizeProperty(axis) {
 
 function axisSizeLimits(node, axis) {
   const prefix = axis === "horizontal" ? "Width" : "Height";
-  const minimum = Math.max(1, finite(node?.[`min${prefix}`], 1));
+  // A CSS border box cannot be smaller than its physical padding. Preserve the
+  // authored max field while resolving the same minimum when max < padding.
+  const paddingFloor = isAutoLayoutContainer(node) ? fillContentInset(node, axis) : 0;
+  const minimum = Math.min(20000, Math.max(1, paddingFloor, finite(node?.[`min${prefix}`], 1)));
   const maximum = Math.max(minimum, Math.min(20000, finite(node?.[`max${prefix}`], 20000)));
   return { minimum, maximum };
 }
@@ -120,24 +124,47 @@ function assignAxisSize(node, axis, value) {
   return assignNumber(node, axisSizeProperty(axis), limitedAxisSize(node, axis, value));
 }
 
+function fillContentInset(node, axis) {
+  if (isAutoLayoutContainer(node)) {
+    const padding = axisPadding(node, axis);
+    return padding.start + padding.end;
+  }
+  if (node?.type === "rectangle" && hasDesignStroke(node) && node.strokeAlign === "inside") {
+    const sides = designStrokeSides(node);
+    return axis === "horizontal" ? sides[1].width + sides[3].width : sides[0].width + sides[2].width;
+  }
+  return 0;
+}
+
 function distributeFillSizes(children, axis, available) {
   const sizes = new Map();
   let remaining = [...children];
   let remainingSpace = Math.max(0, finite(available));
   while (remaining.length > 0) {
-    const share = remainingSpace / remaining.length;
-    const clamped = remaining.filter((child) => {
-      const size = limitedAxisSize(child, axis, share);
-      if (Math.abs(size - share) <= 0.001) return false;
-      sizes.set(child.id, size);
-      remainingSpace -= size;
-      return true;
+    const insets = remaining.reduce((total, child) => total + fillContentInset(child, axis), 0);
+    const share = Math.max(0, remainingSpace - insets) / remaining.length;
+    const candidates = remaining.map((child) => {
+      const target = share + fillContentInset(child, axis);
+      const size = limitedAxisSize(child, axis, target);
+      return { child, size, violation: size - target };
     });
+    const violation = candidates.reduce((total, candidate) => total + candidate.violation, 0);
+    // Freeze only the limits responsible for the total violation. Freezing both
+    // a minimum and a maximum at once can otherwise leave distributable space.
+    const clamped = candidates.filter((candidate) =>
+      violation > 0.001 ? candidate.violation > 0.001 :
+      violation < -0.001 ? candidate.violation < -0.001 : false,
+    );
     if (clamped.length === 0) {
-      for (const child of remaining) sizes.set(child.id, limitedAxisSize(child, axis, share));
+      for (const { child, size } of candidates) sizes.set(child.id, size);
       break;
     }
-    const clampedIds = new Set(clamped.map((child) => child.id));
+    const clampedIds = new Set();
+    for (const { child, size } of clamped) {
+      sizes.set(child.id, size);
+      remainingSpace -= size;
+      clampedIds.add(child.id);
+    }
     remaining = remaining.filter((child) => !clampedIds.has(child.id));
   }
   return sizes;
@@ -865,20 +892,25 @@ function applyResponsiveText(nodes, containerIds, measurement) {
   return changed;
 }
 
+function applyContainerSizeLimits(nodes, container) {
+  let changed = false;
+  for (const node of [container, ...childNodes(nodes, container.id, { visibleOnly: true })]) {
+    if (isAutoLayoutContainer(node) || node.minWidth !== undefined || node.maxWidth !== undefined) {
+      changed = assignAxisSize(node, "horizontal", node.width) || changed;
+    }
+    if (isAutoLayoutContainer(node) || node.minHeight !== undefined || node.maxHeight !== undefined) {
+      changed = assignAxisSize(node, "vertical", node.height) || changed;
+    }
+  }
+  return changed;
+}
+
 export function applyAutoLayout(nodes, containerId, { textMeasurer } = {}) {
   if (!Array.isArray(nodes) || typeof containerId !== "string") return false;
   const container = nodes.find((node) => node.id === containerId);
   if (!isAutoLayoutContainer(container)) return false;
   const children = layoutChildren(nodes, container);
-  let changed = false;
-  for (const node of [container, ...childNodes(nodes, container.id, { visibleOnly: true })]) {
-    if (node.minWidth !== undefined || node.maxWidth !== undefined) {
-      changed = assignAxisSize(node, "horizontal", node.width) || changed;
-    }
-    if (node.minHeight !== undefined || node.maxHeight !== undefined) {
-      changed = assignAxisSize(node, "vertical", node.height) || changed;
-    }
-  }
+  let changed = applyContainerSizeLimits(nodes, container);
   changed = applyHugSize(nodes, container) || changed;
   if (children.length > 0) {
     changed =
@@ -953,6 +985,7 @@ export function applyAutoLayouts(nodes, containerIds, { textMeasurer } = {}) {
     for (let iteration = 0; containers.length && iteration < 8; iteration += 1) {
       let iterationChanged = false;
       for (const node of [...containers].reverse()) {
+        iterationChanged = applyContainerSizeLimits(nodes, node) || iterationChanged;
         iterationChanged = applyHugSize(nodes, node) || iterationChanged;
       }
       for (const node of containers) {
