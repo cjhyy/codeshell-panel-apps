@@ -499,6 +499,7 @@
                   "maximum": 100
                 },
                 "strokeAlign": {"enum":["inside","center","outside",null]},
+                "strokeLayoutExcluded": { "enum": [true, null], "description": "Native source provenance for inside strokes excluded from an H/V Frame or Component content inset. Null removes it; omitted defaults to included CSS effective padding." },
                 "strokeSides": {"type":["array","null"],"minItems":4,"maxItems":4,"items":{"type":"object","additionalProperties":false,"required":["width","color","opacity"],"properties":{"width":{"type":"number","minimum":0,"maximum":100},"color":{"type":"string","pattern":"^#[a-fA-F0-9]{6}$"},"opacity":{"type":"number","minimum":0,"maximum":1}}}},
                 "opacity": {
                   "type": "number",

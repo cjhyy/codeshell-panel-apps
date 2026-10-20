@@ -1,6 +1,7 @@
 import { validateLayoutSpacing, mainAxisGap } from "./layout-spacing.mjs";
+import { distributeFillSizes } from "./layout.mjs";
 import { normalizeCornerRadii, effectiveCornerRadii } from "./corner-radii.mjs";
-import { figmaDesignStroke, nativeDesignStroke, hasDesignStroke, designStrokeSides } from "./stroke.mjs";
+import { figmaDesignStroke, nativeDesignStroke, hasDesignStroke, designStrokeSides, clearInvalidStrokeLayoutExclusion } from "./stroke.mjs";
 import { normalizeGridTracks, nativeGridPlan, GRID_CHILD_FIELDS } from "./grid.mjs";
 import {
   figmaFillPaints,
@@ -73,6 +74,7 @@ const LOSS_WARNINGS = new Set([
   "unsupported-grid",
   "unsupported-native-border",
   "unsupported-stroke-layout",
+  "native-stroke-fill-model",
   "css-gradient-native-source",
 ]);
 const EFFECT_WARNINGS = new Set(["unsupported-effects", "stroke-alignment", "corner-shape"]);
@@ -402,6 +404,11 @@ function gridChildProperties(source) {
 function layout(source, node, report) {
   node.layout = { HORIZONTAL: "horizontal", VERTICAL: "vertical" }[source.layoutMode] ?? "none";
   const activeStrokeLayout = ["HORIZONTAL", "VERTICAL", "GRID"].includes(source.layoutMode);
+  if (source.strokesIncludedInLayout !== undefined && typeof source.strokesIncludedInLayout !== "boolean") {
+    Object.assign(node, { layout: "none", gap: 0, padding: 0, alignItems: "start", justifyContent: "start" });
+    report.warn("unsupported-stroke-layout", source, "strokesIncludedInLayout 必须为布尔值；保留测量几何，未猜测原生描边布局。");
+    return;
+  }
   if (activeStrokeLayout && source.strokesIncludedInLayout === true &&
       (hasDesignStroke(node) ? designStrokeSides(node).some(side=>side.width>0) : node.strokeWidth>0) &&
       (!hasDesignStroke(node) || node.strokeAlign!=="inside")) {
@@ -498,6 +505,14 @@ function layout(source, node, report) {
       node[key]+=stroke.width;
     });
     else if (node.strokeWidth) report.warn("unsupported-stroke-layout",source,"原生描边参与布局但未保留完整侧边，内容缩进可能不同。");
+  }
+  if (activeStrokeLayout && source.strokesIncludedInLayout !== true && node.strokeAlign === "inside") {
+    if (["horizontal", "vertical"].includes(node.layout) && ["frame", "component"].includes(node.type))
+      // REST omits its documented false default; fresh SDK Frame activation has
+      // a different live default and must be configured explicitly on export.
+      node.strokeLayoutExcluded = true;
+    else if (node.layout === "grid" && designStrokeSides(node).some(side => side.width > 0))
+      report.warn("unsupported-stroke-layout", source, "原生 Grid 排除 inside 描边的 Fill 基准暂未验证；保留当前内容缩进，请核对重排与原生副本。");
   }
   node.alignItems =
     { MIN: "start", CENTER: "center", MAX: "end", BASELINE: "baseline" }[
@@ -606,6 +621,37 @@ function text(source, node, report) {
 }
 
 /** Import a REST GET file response, DOCUMENT/CANVAS, selected node, or JSON_REST_V1 nodes response. */
+function diagnoseNativeStrokeFillModels(document, mapping, report) {
+  // Preserve measured geometry if an older/native layout disagrees with the
+  // verified content allocator; no unavailable layout-version field is inferred.
+  const sourceIds = new Map(mapping.map(entry => [entry.designId, entry.sourceId]));
+  for (const page of document.pages) {
+    const byParent = new Map();
+    for (const child of page.nodes) if (child.parentId) {
+      if (!byParent.has(child.parentId)) byParent.set(child.parentId, []);
+      byParent.get(child.parentId).push(child);
+    }
+    for (const parent of page.nodes) {
+      if (!["horizontal", "vertical"].includes(parent.layout) ||
+          parent.layoutWrap && parent.layoutWrap !== "none") continue;
+      const horizontal = parent.layout === "horizontal", axis = horizontal ? "horizontal" : "vertical";
+      const size = horizontal ? "width" : "height", sizing = horizontal ? "layoutSizingHorizontal" : "layoutSizingVertical";
+      if (parent[sizing] === "hug") continue;
+      const children = (byParent.get(parent.id) ?? []).filter(node => node.visible !== false && node.layoutPositioning !== "absolute");
+      if (!children.some(node => node.strokeLayoutExcluded === true && designStrokeSides(node).some(side => side.width > 0))) continue;
+      const fills = children.filter(node => node[sizing] === "fill");
+      if (fills.length < 2) continue;
+      const padding = (horizontal ? ["Left", "Right"] : ["Top", "Bottom"]).reduce((sum, side) => sum + (parent[`padding${side}`] ?? parent.padding ?? 0), 0);
+      const fixed = children.filter(node => node[sizing] !== "fill").reduce((sum, node) => sum + node[size], 0);
+      const predicted = distributeFillSizes(fills, axis, parent[size] - padding - fixed - mainAxisGap(parent) * (children.length - 1));
+      if (fills.some(node => Math.round(predicted.get(node.id) * 100) / 100 !== node[size])) {
+        const sourceId = sourceIds.get(parent.id);
+        report.warn("native-stroke-fill-model", { id: sourceId, name: parent.name }, "此来源排除 inside 描边的 Fill 尺寸与已验证的当前内容分配规则不同；已保留测量几何，重排/副本可能改变尺寸。未猜测原生布局版本。");
+      }
+    }
+  }
+}
+
 export function importFigmaJson(input, options = {}) {
   return importFigmaJsonWithReport(input, options, reporter());
 }
@@ -944,6 +990,7 @@ function importFigmaJsonWithReport(
       } catch (error) {
         report.warn("unsupported-negative-spacing", source, `${error.message}；保留测量几何。`);
         node.layout = "none";
+        clearInvalidStrokeLayoutExclusion(node);
         node.gap = 0;
         delete node.rowGap;
         delete node.columnGap;
@@ -1098,6 +1145,7 @@ function importFigmaJsonWithReport(
     activePageId: convertedPages[0].id,
     pages: convertedPages,
   });
+  diagnoseNativeStrokeFillModels(document, mapping, report);
   const warningCount = report.finish();
   return {
     document,

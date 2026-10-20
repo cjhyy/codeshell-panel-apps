@@ -59,6 +59,7 @@ const properties = [
   "strokeWidth",
   "strokeAlign",
   "strokeSides",
+  "strokeLayoutExcluded",
   "cornerRadius",
   "cornerRadii",
   "visible",
@@ -141,7 +142,7 @@ const translationStableProperties = [
   "height",
   "rotation",
   ...properties.filter((key) =>
-    /^(?:layout|constraint|padding|gap|rowGap|columnGap|align|justify|minWidth|minHeight|maxWidth|maxHeight)/u.test(
+    /^(?:layout|strokeLayoutExcluded|constraint|padding|gap|rowGap|columnGap|align|justify|minWidth|minHeight|maxWidth|maxHeight)/u.test(
       key,
     ),
   ),

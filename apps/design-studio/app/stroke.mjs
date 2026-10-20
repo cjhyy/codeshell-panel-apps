@@ -5,6 +5,18 @@ export const STROKE_SIDES = Object.freeze(["top", "right", "bottom", "left"]);
 const finite = (v) => typeof v === "number" && Number.isFinite(v);
 const hex = (v) => typeof v === "string" && /^#[a-f\d]{6}$/iu.test(v);
 const rectTypes = ["frame", "rectangle", "component"];
+export const strokeLayoutExclusionApplies = (node) =>
+  ["frame", "component"].includes(node?.type) &&
+  ["horizontal", "vertical"].includes(node.layout) && node.strokeAlign === "inside";
+export function clearInvalidStrokeLayoutExclusion(node) {
+  if (node.strokeLayoutExcluded === true && !strokeLayoutExclusionApplies(node))
+    delete node.strokeLayoutExcluded;
+}
+export function strokeLayoutBasisExtra(node, axis) {
+  if (node.strokeLayoutExcluded !== true) return 0;
+  const sides = designStrokeSides(node);
+  return axis === "horizontal" ? sides[1].width + sides[3].width : sides[0].width + sides[2].width;
+}
 export function normalizeStrokeSides(value) {
   if (!Array.isArray(value) || value.length !== 4)
     throw new Error("strokeSides 必须为上右下左四项");
@@ -43,6 +55,9 @@ const uniform = (sides) =>
       (!s.width || (s.opacity === sides[0].opacity && (!s.opacity || s.color === sides[0].color))),
   );
 export function validateDesignStroke(node) {
+  if (node.strokeLayoutExcluded !== undefined &&
+      (node.strokeLayoutExcluded !== true || !strokeLayoutExclusionApplies(node)))
+    throw new Error("strokeLayoutExcluded 只能为 true，且只适用于水平/垂直 Auto Layout Frame/Component 的 inside 描边");
   if (node.strokeAlign !== undefined && !["inside", "center", "outside"].includes(node.strokeAlign))
     throw new Error("strokeAlign 只支持 inside/center/outside");
   const sides = node.strokeSides === undefined ? null : normalizeStrokeSides(node.strokeSides);

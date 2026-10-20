@@ -1840,6 +1840,46 @@ test("public HTML ellipsis import saves full editable source and reflows after e
   assert.deepEqual(f.errors, []);
 });
 
+test("native stroke exclusion inspector/tool edits reflow siblings and preserve bounded provenance through reopen", async (t) => {
+  const f = await fixture(t);
+  const native = JSON.parse(await readFile(new URL("../../fixtures/design-studio-native-content-fill.json", import.meta.url), "utf8"));
+  const { importFigmaJson } = await import("../../../apps/design-studio/app/figma-bridge.mjs");
+  const value = importFigmaJson(native.cases[0].source).document, parent = value.nodes[0];
+  const origin = { x: parent.x, y: parent.y };
+  for (const node of value.nodes) { node.x -= origin.x; node.y -= origin.y; }
+  value.canvas.width = 640; value.canvas.height = 240;
+  const [first, second] = value.nodes.filter((node) => node.parentId === parent.id);
+  f.files.set(`A:${designPath}`, serializeDesignDocument(value)); await f.reload();
+  assert.equal((await readNode(f.page, first.id)).strokeLayoutExcluded, true);
+  assert.deepEqual([(await readNode(f.page, first.id)).width, (await readNode(f.page, second.id)).width], [290, 322]);
+  await f.page.locator(`.layer-row[data-id="${first.id}"] .layer-title`).click();
+  await f.page.locator("#prop-stroke-width").fill("8");
+  assert.deepEqual([(await readNode(f.page, first.id)).width, (await readNode(f.page, second.id)).width], [294, 318]);
+  await f.page.locator("details.layout-advanced > summary").click();
+  await f.page.locator("#prop-layout-padding-left").fill("12");
+  await f.page.locator("#prop-layout-padding-left").press("Tab");
+  assert.deepEqual([(await readNode(f.page, first.id)).width, (await readNode(f.page, second.id)).width], [296, 316]);
+  await f.tool("use_design", { save: true, expected_state_revision: (await f.metadata()).stateRevision,
+    operations: [{ op: "update_node", node_id: first.id, changes: { strokeLayoutExcluded: null } }] });
+  await f.reload();
+  assert.equal((await readNode(f.page, first.id)).strokeLayoutExcluded, undefined);
+  assert.deepEqual([(await readNode(f.page, first.id)).width, (await readNode(f.page, second.id)).width], [288, 324]);
+  await f.tool("use_design", { expected_state_revision: (await f.metadata()).stateRevision,
+    operations: [{ op: "update_node", node_id: first.id, changes: { strokeLayoutExcluded: true } }] });
+  await f.page.locator(`.layer-row[data-id="${first.id}"] .layer-title`).click();
+  await f.page.locator("details.layout-advanced > summary").click();
+  await f.page.locator("#prop-layout").selectOption("none");
+  assert.equal((await readNode(f.page, first.id)).strokeLayoutExcluded, undefined, "inspector layout edits clear inapplicable provenance");
+  await f.tool("use_design", { save: true, expected_state_revision: (await f.metadata()).stateRevision,
+    operations: [{ op: "update_node", node_id: second.id, changes: { strokeAlign: "outside" } }] });
+  await f.reload();
+  assert.equal((await readNode(f.page, second.id)).strokeLayoutExcluded, undefined, "public alignment edits clear inapplicable provenance");
+  await assert.rejects(f.tool("use_design", { expected_state_revision: (await f.metadata()).stateRevision,
+    operations: [{ op: "update_node", node_id: second.id, changes: { strokeLayoutExcluded: true } }] }), /strokeLayoutExcluded/u);
+  assert.equal((await readNode(f.page, second.id)).strokeLayoutExcluded, undefined);
+  assert.deepEqual(f.errors, []);
+});
+
 test("public negative spacing inspector and tools retain native bleed through outer-only resize and reopen", async (t) => {
   const f = await fixture(t);
   const { negativeMarginFixtures } = await import("../../fixtures/design-studio-negative-margins/source.mjs");

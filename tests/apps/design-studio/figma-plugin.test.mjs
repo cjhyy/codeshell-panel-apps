@@ -1911,7 +1911,85 @@ test("source activation of freeform Auto Layout uses canonical effective padding
     await runtime.send({ type: "apply-patch", token: preview.token });
     assert.equal(runtime.messages.at(-1).type, "patched", JSON.stringify(runtime.messages.at(-1)));
     assert.equal(runtime.all.get("1:2").layoutMode, "HORIZONTAL");
-    assert.equal(runtime.all.get("1:2").strokesIncludedInLayout, false);
-    assert.equal(runtime.all.get("1:2").paddingTop, 8);
+    assert.equal(runtime.all.get("1:2").strokesIncludedInLayout, weight > 0);
+    assert.equal(runtime.all.get("1:2").paddingTop, 8 - weight);
+  }
+});
+
+test("new CSS inside copies include physical strokes while excluded native sources retain their flag", async () => {
+  const source = page([rect("1:2", { type: "FRAME", layoutMode: "HORIZONTAL", strokeAlign: "INSIDE", strokeWeight: 4,
+    strokes: [{ type: "SOLID", color: { r: .2, g: .4, b: .6 } }], paddingTop: 12, paddingRight: 12, paddingBottom: 12, paddingLeft: 12, children: [] })]);
+  for (const excluded of [false, true]) {
+    const value = importFigmaJson(source).document;
+    if (!excluded) delete value.nodes[0].strokeLayoutExcluded;
+    const runtime = harness(page([]), { nativeStrokes: true });
+    await runtime.send({ type: "import-transfer", content: JSON.stringify(createFigmaTransfer(value)) });
+    assert.equal(runtime.messages.at(-1).type, "imported", JSON.stringify(runtime.messages.at(-1)));
+    const node = runtime.figma.root.children[1].children[0];
+    assert.equal(node.strokesIncludedInLayout, !excluded);
+    assert.equal(node.paddingTop, excluded ? 12 : 8);
+    assert.equal(node.paddingTop + (excluded ? 0 : node.strokeTopWeight), 12);
+  }
+});
+
+test("inclusion, stroke, and raw padding changes preflight together before any native writes", async () => {
+  for (const originallyIncluded of [false, true]) {
+    const source = page([rect("1:2", { type: "FRAME", layoutMode: "HORIZONTAL", strokeAlign: "INSIDE", strokeWeight: 4, strokesIncludedInLayout: originallyIncluded,
+      strokes: [{ type: "SOLID", color: { r: .2, g: .4, b: .6 } }], paddingTop: 8, paddingRight: 8, paddingBottom: 8, paddingLeft: 8, children: [] })]);
+    const imported = await prepareFigmaImport(source), binding = createFigmaBinding(imported), node = imported.document.nodes[0];
+    node.strokeSides.forEach(side => { side.width = 8; });
+    if (originallyIncluded) node.strokeLayoutExcluded = true;
+    else delete node.strokeLayoutExcluded;
+    for (const side of ["Top", "Right", "Bottom", "Left"]) node[`padding${side}`] = originallyIncluded ? 1 : 12;
+    const transfer = createFigmaTransfer(imported.document); transfer.patch = createFigmaPatch(binding, imported.document);
+    const runtime = harness(source, { nativeStrokes: true });
+    await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+    const preview = runtime.messages.at(-1); assert.equal(preview.type, "patch-preview", JSON.stringify(preview)); assert.deepEqual(preview.conflicts, []);
+    assert.equal(runtime.all.get("1:2").strokeWeight, 4, "preview performs no native writes");
+    await runtime.send({ type: "apply-patch", token: preview.token });
+    assert.equal(runtime.messages.at(-1).type, "patched", JSON.stringify(runtime.messages.at(-1)));
+    const target = runtime.all.get("1:2");
+    assert.equal(target.strokesIncludedInLayout, !originallyIncluded);
+    assert.equal(target.strokeWeight, 8); assert.equal(target.paddingTop, originallyIncluded ? 1 : 4);
+    for (const [field, value] of [["strokesIncludedInLayout", !originallyIncluded], ["paddingLeft", 30], ["strokeTopWeight", 6], ["layoutMode", "NONE"]]) {
+      const concurrent = harness(source, { nativeStrokes: true }); concurrent.all.get("1:2")[field] = value;
+      await concurrent.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+      assert.ok(concurrent.messages.at(-1).conflicts?.length, `${field}: ${JSON.stringify(concurrent.messages.at(-1))}`);
+    }
+  }
+});
+
+test("invalid final included padding and marker grammar reject before creating pages or applying source changes", async () => {
+  const source = page([rect("1:2", { type: "FRAME", layoutMode: "HORIZONTAL", strokeAlign: "INSIDE", strokeWeight: 4,
+    strokes: [{ type: "SOLID", color: { r: .2, g: .4, b: .6 } }], paddingTop: 8, paddingRight: 8, paddingBottom: 8, paddingLeft: 8, children: [] })]);
+  const transfer = patchTransfer(source, (node) => { delete node.strokeLayoutExcluded; node.paddingTop = 1; }, ["strokeLayoutExcluded", "paddingTop"]);
+  const runtime = harness(source, { nativeStrokes: true });
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "error"); assert.match(runtime.messages.at(-1).message, /缩进/u);
+  assert.equal(runtime.all.get("1:2").paddingTop, 8); assert.equal(runtime.all.get("1:2").strokesIncludedInLayout, false);
+  for (const marker of [false, null, 1, {}]) {
+    const invalid = createFigmaTransfer(importFigmaJson(source).document); invalid.pages[0].children[0].strokeLayoutExcluded = marker;
+    const rejected = harness(page([]), { nativeStrokes: true });
+    await rejected.send({ type: "import-transfer", content: JSON.stringify(invalid) });
+    assert.equal(rejected.messages.at(-1).type, "error"); assert.equal(rejected.figma.root.children.length, 1);
+  }
+});
+
+test("leaving inside layout clears exclusion without using an inactive inclusion setter or stale padding projection", async () => {
+  const source = page([rect("1:2", { type: "FRAME", layoutMode: "HORIZONTAL", strokeAlign: "INSIDE", strokeWeight: 4, strokesIncludedInLayout: true,
+    strokes: [{ type: "SOLID", color: { r: .2, g: .4, b: .6 } }], paddingTop: 8, paddingRight: 8, paddingBottom: 8, paddingLeft: 8, children: [] })]);
+  for (const mode of ["layout", "strokeAlign"]) {
+    const transfer = patchTransfer(source, (node) => {
+      node[mode] = mode === "layout" ? "none" : "center";
+      node.paddingTop = 1;
+    }, ["paddingTop", mode]);
+    const runtime = harness(source, { nativeStrokes: true });
+    await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+    const preview = runtime.messages.at(-1); assert.equal(preview.type, "patch-preview", JSON.stringify(preview)); assert.deepEqual(preview.conflicts, []);
+    await runtime.send({ type: "apply-patch", token: preview.token });
+    assert.equal(runtime.messages.at(-1).type, "patched", JSON.stringify(runtime.messages.at(-1)));
+    const target = runtime.all.get("1:2"); assert.equal(target.paddingTop, 1);
+    if (mode === "layout") assert.equal(target.layoutMode, "NONE");
+    else { assert.equal(target.strokeAlign, "CENTER"); assert.equal(target.strokesIncludedInLayout, false); }
   }
 });

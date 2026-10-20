@@ -1,6 +1,6 @@
 import { validateLayoutSpacing } from "./layout-spacing.mjs";
 import { GRID_CONTAINER_FIELDS, GRID_CHILD_FIELDS, gridPlacements } from "./grid.mjs";
-import { designStrokeOutset, editDesignStrokeColor, editDesignStrokeWidth, validateDesignStroke } from "./stroke.mjs";
+import { designStrokeOutset, editDesignStrokeColor, editDesignStrokeWidth, validateDesignStroke, clearInvalidStrokeLayoutExclusion } from "./stroke.mjs";
 /* Design Studio Panel App runtime. */
 /* global document, localStorage, requestAnimationFrame, window */
 import { projectContextChanged } from "./project-context.mjs";
@@ -5584,6 +5584,7 @@ function bindPropertyInput(input, update, eventName = "input", layoutEffect = "n
     if (!node || isEffectivelyLocked(node)) return;
     const before = isContainerNode(node) ? { ...node } : null;
     update(node, input.value);
+    clearInvalidStrokeLayoutExclusion(node);
     if (before) try { validateLayoutSpacing(node); } catch (error) {
       for (const key of Object.keys(node)) if (!(key in before)) delete node[key];
       Object.assign(node, before);
@@ -5596,7 +5597,7 @@ function bindPropertyInput(input, update, eventName = "input", layoutEffect = "n
     } else if (layoutEffect === "size") {
       reflowParent(node);
     } else if (layoutEffect === "container" && isContainerNode(node)) {
-      applyAutoLayouts(design.nodes, new Set([node.id]));
+      applyAutoLayouts(design.nodes, new Set([node.id, ...(node.parentId ? [node.parentId] : [])]));
     } else if (layoutEffect === "typography" && node.type === "text") {
       applyAutoLayouts(design.nodes, new Set(node.parentId ? [node.parentId] : []));
     }
@@ -5778,7 +5779,7 @@ bindPropertyInput(propertyInputs.cornerRadius, (node, value) => {
 bindPropertyInput(propertyInputs.strokeWidth, (node, value) => {
   try{editDesignStrokeWidth(node,clamp(finiteOr(value, 0), 0, 100));}
   catch(error){propertyInputs.strokeWidth.value=String(node.strokeWidth);notify(error.message,"error");}
-});
+}, "input", "size");
 bindPropertyInput(propertyInputs.opacity, (node, value) => {
   node.opacity = clamp((Number(value) || 0) / 100, 0, 1);
 });
@@ -7392,6 +7393,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "strokeWidth",
   "strokeSides",
   "strokeAlign",
+  "strokeLayoutExcluded",
   "opacity",
   "rotation",
   "cornerRadius",
@@ -7495,6 +7497,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
         "fillPaints",
         "strokeSides",
         "strokeAlign",
+        "strokeLayoutExcluded",
         "contentClipping",
         "textSource",
         "textFlow",
@@ -7555,6 +7558,9 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
   }
   if (Object.hasOwn(changes, "fill") && !Object.hasOwn(changes, "fillPaints"))
     delete node.fillPaints;
+  if (!Object.hasOwn(changes, "strokeLayoutExcluded") &&
+      (Object.hasOwn(changes, "layout") || Object.hasOwn(changes, "strokeAlign")))
+    clearInvalidStrokeLayoutExclusion(node);
   if(!Object.hasOwn(changes,"strokeSides")) {
     if(typeof changes.stroke === "string")editDesignStrokeColor(node,node.stroke);
     if(typeof changes.strokeWidth === "number")editDesignStrokeWidth(node,node.strokeWidth);
@@ -7822,6 +7828,16 @@ async function applyAgentDesignOperations(args) {
           isAutoLayoutContainer(parent) &&
           [...changedFields].some((field) =>
             [
+              "layout",
+              "padding",
+              "paddingTop",
+              "paddingRight",
+              "paddingBottom",
+              "paddingLeft",
+              "strokeWidth",
+              "strokeSides",
+              "strokeAlign",
+              "strokeLayoutExcluded",
               "width",
               "height",
               "minWidth",
@@ -8812,6 +8828,8 @@ function registerAgentTools(ready) {
         autoLayoutOwnsDirectFlowChildPositions: true,
         autoLayoutFlowChildCoordinates: "resolved-fallback",
         autoLayoutChildSizingAppliesToContainers: true,
+        mainAxisFillDistribution: "equal-content-plus-own-insets",
+        nativeExcludedInsideStrokeField: "strokeLayoutExcluded",
         asymmetricPaddingFields: ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"],
         independentGapFields: ["rowGap", "columnGap"],
         independentSizingFields: ["layoutSizingHorizontal", "layoutSizingVertical"],
