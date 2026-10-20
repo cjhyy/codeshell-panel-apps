@@ -842,3 +842,91 @@ root再跑完整冻结 GOV：188节点、55条诊断，import/relayout/narrow严
 已有cssSelector可能匹配多个DOM，因此其中计数不是最终门禁结论。下一独立调查针对
 纯文字普通块容器，表格/复杂行内内容仍保持明确限制。描边来源与原生负间距/bleed修复
 继续在独立工作树进行，目标active，截止仍为10月22日00:31 Asia/Singapore。
+
+### 原生负间距边界与正 inset 修复（约 04:08）
+
+`2b0039c` 合入 `1662066`：canonical CSS 负 gap 数学保持不变，但原生导出前根据
+实际可见 AUTO 子项的最小主轴尺寸检查 Figma 的全局负间距钳制。不能保留的请求在
+创建页面前以 `NATIVE_NEGATIVE_SPACING` 拒绝；保留 SVG 结果及原生 unsupported 状态，
+不会沿用旧成功文件。官方导回记录有效 gap，源绑定保留原请求；后续改变阈值的编辑
+必须预检。依据50组真实探针、270对间距（全局模型残差小于0.00001），并保留固定
+原始子树与3阶段 SDK 快照。root97项目标检查及3份生成物校验通过。
+
+`18d63fb` 合入 `bdab914`/`8c54cfe`，`6ff4550` 补组合断言：父框正 padding 足够时，
+降低父左右 inset，再为未外扩的普通兄弟添加透明 Fill/Hug 正补偿。真实外扩行直接
+Fill，无负 gap、绝对定位或装饰 spacer；零补偿包装直接省略。整个转换先检查节点、
+深度、几何、ID与备注预算再事务性应用。原行/子项 own style 与源 ID 不变，未证明的
+百分比、分数舍入或父 padding 不足继续保留明确边界。合并后23项相关检查通过。
+
+真实生产转换使用与旧失败 `f830b7d4` 字节完全相同的双侧 -15px HTML，run
+`be072c68` / 页 **62:652**，未改生产 main SHA
+`2c507f053883f0efd47ab7d8ada55b263b45a36965b76e6b1ff9d03167eb18a3`。
+7节点全部普通流：父左右 padding5，真实横行 gap10，宽630→390、两个 Fill 子项
+310→190；后续普通块通过左右15的透明纵向补偿框维持 x20、宽600→360。
+只改最外层640→400→640，全部独立几何断言差异0，无警告。
+两宽真实 PNG、官方首次导回、导回重排共 **6次严格0像素/max0**。
+`evidence/real-figma/negative-insets/acceptance-report.json` 保存所有冻结输入、官方原始
+JSON、PNG、比较及注册三文件精确恢复凭据，原生页面保留。
+
+两次验收器失败也保留：root 为脚本补恢复保护时漏接 startFlow，首次未启动/导入
+Figma；随后一次将官方 JSON 省略的零 padding 当作 undefined 错误，实际页面保留。
+修正验收器默认值读取后重跑，未改产品或参考图；都在 failed-attempts 下记录精确恢复。
+目标仍 active，截止10月22日00:31 Asia/Singapore。
+
+### 原生描边绘制层次与表格边界研究
+
+新增12组 H/V、INSIDE/CENTER/OUTSIDE、inclusion false/true 的真实白板研究。
+`97b0c040` 与 `d7b139e0` 每次14个新建自有节点、0接口错误，原页面/选择快照保持不变。
+父 Frame 的描边在贴边不透明子项下方；true INSIDE 会把子项缩入4px，因此边缘显露，
+不能误当成绘制顺序变化。两份独立解析几何参考与实际原生 PNG 都严格0/max0。
+原始 SHA、生成器、分析、PNG 与清理记录在 `native-stroke-paint-order-analysis/`。
+首次 `b0bb8b97` 因接收器残留旧节点数断言失败，未作为已验收原生证据使用。
+没有因此全局反转 SVG/前端 Frame 描边顺序。
+
+冻结 GOV 实际 DOM 在7个宽度的 table-cell box 已记录。桌面 content-box 30%+20px、
+50%-20px、20% 可由5个正 Grid track与跨度表达；4组极小 collapsed/separate、
+content/border-box CPU 构造640→400→640严格0，但原生尚未执行。
+不等高不透明单元格控制暴露只用 Hug 会缩短背景、产生大量像素差异；不能靠缩短真实
+单元格或固定旧高度宣称支持表格。`table-layout-boundary/native-table-design-findings.md`
+保留内在尺寸、分数轨道、原文绑定和共享边界的未解决项，下一探针验证 native HUG/FILL。
+
+### 描边来源保留合并（待本轮真实像素验收）
+
+`46ac3e0` 正常合并 `2477faf`：对已验证 H/V Frame/Component 保留
+`strokeLayoutExcluded:true` 来源；CSS effective padding 的普通新副本显式启用原生
+inside inclusion，并扣回原始 raw padding。来源排除者显式关闭 inclusion，Fill basis
+计入物理描边，canonical child inset不变。标志仅允许 true、inside、H/V Frame/Component；
+schema、Host工具、绑定、保存、前端、UI清理规则同时更新。
+源补丁先核对最终 layout、inclusion、描边和4侧 raw padding，全部预检后再分阶段写入；
+负 gap 阈值也使用最终外框尺寸。独立16组 VM 交叉审查通过，未将 VM 当真实原生证明。
+root69项 stroke/native 相关检查通过，实际 inset/float 文件10项通过，3份生成物校验通过。
+两次手工命令含不存在测试文件名的日志保留，真实执行总数分别69及4；以随后实际存在
+的两个 inset/float 文件10项记录为准。完整主/UI门禁仍以2790a44为最近一次，合并完文本
+守卫后将对最终组合重跑。本段不先宣称 CSS Fill 原生像素通过。
+
+真实 CSS Fill 后续 run `a601ac39` / 页 **62:665** 已完成，生产 main SHA
+`550d58faac7933b422c73c793c49dd0443f939ef6fd3577b0029ad084c2556ba` 未修改。
+与 `486735d4` 完全相同的冻结源码/参考：原始padding8/20、inside描边4/8，
+本机显式inclusion=true，实际rawpadding恢复8/20，640宽子项290/322；仅外层400后
+170/202，再返回640不变。4节点，没有边框装饰子项、图片或文字，全部普通AUTO。
+两宽真实PNG、官方首次导回、导回重排共 **6次严格0像素/max0、0警告**；旧640的
+1504/max217由此归零。证据在 `evidence/real-figma/content-fill-after/`。
+首次 `69f659e3` 已生成正确290/322，但验收器误把诊断名期望为完整CSS类名；其失败
+和精确恢复原样保存，之后只修正层名断言，未改HTML/参考或生产代码。最终运行插件
+关闭、relay正常退出，三份注册文件精确恢复，当前owned页62:665/viewport62:666宽640。
+
+### 普通文本来源绑定与交叉审查修复
+
+`cd8908d` 合入 `f1d20a3` 和审查修正 `1c4733e`。捕获时以semanticId→实际Element
+保存本地绑定；同Element的容器/文字共享合法，不同Element碰撞才记为歧义。只有没有
+精确绑定时才退到唯一CSS选择器，并保留显式诊断，不猜第一个class匹配。
+CSS normal只折叠ASCII HTML空白，真实NBSP与原始内容保留；普通单一文本块恢复为
+纵向Auto Layout＋Text Fill/Hug，可编辑后重新换行。
+
+受限子集明确排除table/inline/form/pseudo/mixed/隐藏/变换等，审查还复现了遗漏
+::first-line lineHeight和calc text-indent被parseFloat误当0的问题。修正后两例都保持
+原测量几何并发出html-plain-text-fixed；原有10393/5856像素失败照实保留，没有冒充修好。
+独立CPU复核和作者19项import测试通过。冻结GOV同base23329/23329/54075像素未变，
+6个原先因重复class被跳过的h2/p恢复流式，188个ID和父关系不变，剩余表格问题未掩盖。
+新组合完整门禁正在执行，证据以 `round17-main-combined.log` / `round17-ui-combined.log`
+与后续完成回执为准；此处不先记录完成。24小时目标继续active。
