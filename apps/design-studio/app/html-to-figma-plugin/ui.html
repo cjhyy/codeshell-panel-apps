@@ -207,6 +207,18 @@
     <script>
       "use strict";
 (() => {
+  // apps/design-studio/app/image-mime.mjs
+  function imageMimeFromBytes(bytes) {
+    const signature = [...bytes.subarray(0, 12)];
+    if (signature.slice(0, 8).join(",") === "137,80,78,71,13,10,26,10") return "image/png";
+    if (signature[0] === 255 && signature[1] === 216 && signature[2] === 255)
+      return "image/jpeg";
+    if (String.fromCharCode(...signature.slice(0, 6)).startsWith("GIF8")) return "image/gif";
+    if (String.fromCharCode(...signature.slice(0, 4)) === "RIFF" && String.fromCharCode(...signature.slice(8, 12)) === "WEBP")
+      return "image/webp";
+    return new TextDecoder().decode(bytes.subarray(0, 1024)).replace(/^\uFEFF/u, "").trimStart().match(/^(?:<\?xml[^>]*>\s*)?<svg[\s>]/iu) ? "image/svg+xml" : null;
+  }
+
   // apps/design-studio/app/html-import-assets.mjs
   var MAX_ASSET_BYTES = 8 * 1024 * 1024;
   var MAX_TOTAL_BYTES = 12 * 1024 * 1024;
@@ -254,15 +266,28 @@
     let totalBytes = 0;
     const cache = /* @__PURE__ */ new Map();
     const counted = /* @__PURE__ */ new Set();
-    const account = (dataUrl) => {
+    const account = (value) => {
+      let dataUrl = value;
       if (!safeHtmlDataUrl(dataUrl))
         throw new Error("HTML \u8D44\u6E90\u5FC5\u987B\u662F\u53D7\u652F\u6301\u7684\u5185\u5D4C\u56FE\u7247\u6216\u5B57\u4F53\uFF0C\u5355\u9879\u6700\u591A 8 MiB");
+      const [, declaredMime, base64] = DATA.exec(dataUrl);
+      const byteLength = base64.length / 4 * 3 - (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
+      if (byteLength > MAX_ASSET_BYTES) throw new Error("HTML \u672C\u5730\u8D44\u6E90\u8D85\u8FC7 8 MiB");
+      if (declaredMime.toLowerCase().startsWith("image/")) {
+        const binary = atob(base64), bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+        const mime = imageMimeFromBytes(bytes);
+        if (!mime)
+          throw new Error("HTML \u56FE\u7247\u65E0\u6CD5\u89E3\u7801\uFF1A\u56FE\u7247\u5B57\u8282\u4E0D\u662F\u53D7\u652F\u6301\u7684 PNG\u3001JPEG\u3001GIF\u3001WebP \u6216 SVG");
+        if (declaredMime.toLowerCase() === "image/svg+xml" !== (mime === "image/svg+xml"))
+          throw new Error("HTML \u56FE\u7247\u7684 SVG \u7C7B\u578B\u58F0\u660E\u4E0E\u5B9E\u9645\u5B57\u8282\u4E0D\u4E00\u81F4\uFF0C\u672A\u6539\u53D8\u6D4F\u89C8\u5668\u7684\u89E3\u7801\u8BED\u4E49");
+        dataUrl = `data:${mime};base64,${base64}`;
+      }
       if (!counted.has(dataUrl)) {
-        counted.add(dataUrl);
-        const base64 = DATA.exec(dataUrl)[2];
-        totalBytes += base64.length / 4 * 3 - (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
-        if (totalBytes > MAX_TOTAL_BYTES)
+        if (totalBytes + byteLength > MAX_TOTAL_BYTES)
           throw new Error("HTML \u56FE\u7247\u548C\u5B57\u4F53\u5408\u8BA1\u8D85\u8FC7 12 MiB\uFF0C\u8BF7\u5206\u9875\u9762\u5BFC\u5165");
+        totalBytes += byteLength;
+        counted.add(dataUrl);
       }
       return dataUrl;
     };
