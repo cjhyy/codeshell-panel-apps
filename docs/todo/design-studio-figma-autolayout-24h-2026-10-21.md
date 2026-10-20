@@ -126,3 +126,38 @@ SVG use 引用丢失、布局重排。对应 `evidence/bootstrap-production/`，
 - `design-studio-html-text-reflow-20261021/codeshell-panel-apps`：plain-text 容器和浏览器实测换行。
 - `design-studio-html-paint-fidelity-20261021/codeshell-panel-apps`：真实网页颜色/文字/SVG。
 - 主像素脚本新增 portable 资源验证、可配视口与真实浏览器 layout 环境，继续补充回归。
+
+## 第二轮（文字编辑、实际画布与原生 Figma 文字）
+
+`06f5556` 已修复普通文字块的 Hug/Fill、真实字体换行、同宽文字/字重变化、
+Hug 标签变宽及祖先/后续内容重新排版。保留既有字段，仅增加可选文字测量来源签名；
+Node 无真实测量器时仍明确采用估算，像素门禁在浏览器中实际排版。
+全部三样例初始/同宽/400 px 结果：两个纯布局样例始终 0；文字卡片始终
+96 像素、最大通道差 10（源 CSS 与 SVG 背景矩形的小数边缘抗锯齿），
+不再因窄屏出现明显文字位移。证据 `evidence/phase2-fidelity/`。
+
+`01a612d` 修复独立审查发现的 STRETCH 语义分叉：插件与编辑器对 fixed/hug +
+self:auto 维持一致，CSS 确定尺寸通过显式 self:start 避免拉伸。
+16 组横纵/尺寸/对齐组合对照编辑器结果，71 项插件相关回归通过。
+
+正式工作台默认使用 **CanvasKit WebGL2**，没有 SVG 场景作为默认后备。
+因此已增加使用隔离内存 Host、真实面板 UI、DPR=1/zoom=1/整数 pan 的实际画布对照：
+两个纯布局样例 0 像素；文字卡片 4,120 像素不同，最大通道差 240，
+排除外围 2 px 后仍相同，非编辑器边框。画布 SVG 数 0，工作区写入数 0。
+证据和复现脚本在 `evidence/ui-renderer-parity/`，渲染器修复中。
+
+真实 Figma 文字卡片也已创建本任务新页 `CodeShell HTML Acceptance 24697ffd · CodeShell`，
+12 图层含 4 个文字，原生 1x PNG 仍有 4,443 / 153,600 像素不同，最大通道差 240。
+所有容器几何与方向/尺寸关系保留，文字自身使用 Figma 行框；v3 的文字 y 为 SVG hanging
+锚点，两者不能直接用同一 y 断言比较。Figma 原生 Hug 字宽也与浏览器小数宽度存在差异。
+采集工具还曾错误比较官方省略的默认 gap undefined 与 0，原始失败保留用于改进工具。
+逐像素失败是真实的，不能因为容器几何通过就忽略。
+
+该次原生证据：`evidence/real-figma/native-nested-card-640.png`、差异图、
+像素报告、`text-07-official-source-after.json`、`text-region-diagnostic.json` 和
+`text-native-boundary.json`。relay 已停止、临时网络权限已移除、原 scratch 插件恢复。
+下一轮应分清字体版本/字宽、文字行框、Skia 与浏览器抗锯齿，优先修复可观察偏移，
+不得靠固定宽度或光栅化把 Hug 文字伪装成原生匹配。
+
+第二轮集成后的 targeted 81/81、validate、typecheck、build:check 和两插件确定性检查通过。
+等待 SVG 引用修复和实际 CanvasKit 文字修复后，再跑完整串行 Design Studio 门禁。
