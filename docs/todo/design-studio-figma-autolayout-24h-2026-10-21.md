@@ -1143,3 +1143,47 @@ getter未改变；12拒绝case未继续缩放，不能冒充负padding reflow。
 负Grid gap只作低成本边界复核，官方文档明确拒绝负值，不把它作为已支持方案。
 当前正执行该6case研究，完成后转向实际文字闭环和多行表格的正向能力证明。
 本地main仍203b79d稳定检查点，后续组合尚未推送/发布或更新Host安装。24小时目标active。
+
+
+### 文字 Grid 真实生产往返与多行能力验证（约 05:25）
+
+`b34b5dc` 完整组合门禁已完成，运行前后全部app文件SHA相同、HEAD相同，两组门禁
+使用同一文件快照：主测试 **558总/557通过/1既有跳过/0失败**（161527ms，CPU），
+UI **103总/102通过/1既有跳过/0失败**（108280ms，独占图形）。命令、全部SHA、日志
+保留于 `round24-{main,ui}-receipt.json` 与 `round24-full-gates-receipt.json`。
+此前b34的typecheck、validate、三份生成物check和Design Studio scoped build check均通过。
+
+文字真实生产闭环 `add2958c` / 页63:1039、board63:1040：精确a4e5dd91原生来源与同次
+live Grid supplement，经Panel导入、完整portable文件和未改的生产插件main导入，
+保留57节点/8Grid/24不透明真实cell/24真实Text；228几何数值、498模式/Grid字段精确相等。
+导出的760×1780原生PNG与原研究原生PNG **1,352,800像素全部相同，changedPixels0/max0**，
+编码PNG也同SHA `9e4ba502517793449a40c3831820922f38a6fc562ecb178a43f971821ce88f1e`。
+生产main仍ccd322c4…，没有新增原生PNG handler、文字替换、尺寸修补或阈值放宽。
+证据 `real-figma/native-text-grid-roundtrip/acceptance-report.json`，独立逐字段/解码像素审计
+在其 `independent-analysis/`。插件关闭、relay停止，注册三份SHA精确恢复。
+
+独立审计同时发现语义差异：全部24个Text的官方 `style.lineHeightUnit` 从PIXELS变为
+FONT_SIZE_%；16px字号时20/30px行高与像素仍相同，但后续字号编辑可能不等价。这是
+待修复项，不能将当前结果写成行高单位无损。生产回导后的文字/宽度/字号编辑尚未执行，
+浏览器与Figma字体字节/栅格一致性仍未证明。
+
+负Grid gap研究 `4565292e` 实际完成：6case/14新节点，4次负数setter全部明确拒绝且
+getter未变，拒绝case不继续resize；零gap的H/V控制960→400→960，Fill尺寸928→368→928、
+偏移16。144数值＋342可用官方/live检查delta0，恢复JSON和PNG字节一致。此路不能表达
+NHS负外扩，未新增canonical字段。证据 `native-negative-grid-gap-analysis/`；关闭插件、
+relayexit0、三份精确恢复，原页/选择未改。
+
+正向多行研究 `c8474231` / 新页64:1097：3case共62新节点含27真实Text；V父框HFixed/
+VHug、真实Grid HFill/VHug、3个等比例列/3个HUG行，真实cell H/VFill，Text HFill/VHug。
+table分别vertical padding0、padding10、padding10＋仅底INSIDE1/included；cell无padding。
+5阶段仅改首Text的2→4→2行字符，外框630→390→630；不修补Text/cell/table高度，不恢复
+被API意外改掉的模式。实际0case错误，文字恢复与宽度返回后的官方JSON/PNG均与初始
+字节一致。原始live/5次JSON/5张原生PNG在 `native-table-grid-intrinsic-analysis/actual-c8474231/`，
+raw SHA `8f3a61ea5653d6925421640d68c85ac4ddbd190f7ca2c3c62896388c24965e7c`。
+这是能力研究，自定义研究handler并非生产闭环，尚无CSS/native字体像素结论；详细行高、
+Fill、inset对比正在独立分析。插件关闭、relay自然exit0、原页面/选择与三份注册文件恢复。
+
+冻结网页审计另外确认：Bootstrap Pricing为AUTO表格，400px下列宽受内容最小宽度影响，
+不能直接将测量比例当固定tracks；28个单元格底边框被现有预处理丢掉前6行24条内部规则。
+下一轮先分别解决可靠来源事实与经过真实原生证明的多行布局，不将整页原有非零差异标记通过。
+本地检查点仍未push/发布或安装Host。24小时目标继续active，截止10月22日00:31不变。
