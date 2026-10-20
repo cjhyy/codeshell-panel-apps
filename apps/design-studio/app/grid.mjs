@@ -1,3 +1,4 @@
+import { textLineHeightRatio, validTextLineHeight } from "./text-line-height.mjs";
 /* Bounded native/CSS grid semantics shared by the document and Figma plugin. */
 export const GRID_CONTAINER_FIELDS = Object.freeze([
   "gridRows",
@@ -205,9 +206,9 @@ export function gridFillHugContentHeight(container, child, children = child?.chi
     Number.isFinite(content.fontSize) &&
     content.fontSize >= 6 &&
     content.fontSize <= 240 &&
-    Number.isFinite(content.lineHeight) &&
-    content.lineHeight >= 0.7 &&
-    content.lineHeight <= 3 &&
+    validTextLineHeight(content) &&
+    textLineHeightRatio(content) >= 0.7 &&
+    textLineHeightRatio(content) <= 3 &&
     (content.letterSpacing ?? 0) === 0 &&
     (content.textAlign ?? "left") === "left" &&
     (content.textDecoration ?? "none") === "none";

@@ -86,7 +86,8 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
         this.width = width;
         this.height = height;
         if (nativeTextLayout && this.type === "TEXT" && this.textAutoResize === "HEIGHT")
-          this.height = this.nativeLines().length * this.fontSize * this.lineHeight.value / 100;
+          this.height = this.nativeLines().length * (this.lineHeight.unit === "PIXELS"
+            ? this.lineHeight.value : this.fontSize * this.lineHeight.value / 100);
       },
       nativeLines() {
         return measuredWrap(this.characters ?? "", this.width / 10, (value) => ({ width: Array.from(value).length }));
@@ -148,6 +149,20 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
       node.textAutoResize = raw.style?.textAutoResize ?? "NONE";
       node.textTruncation = raw.style?.textTruncation ?? "DISABLED";
       node.maxLines = raw.style?.maxLines ?? null;
+      if (nativeTextLayout) {
+        let size = raw.style?.fontSize ?? 12;
+        let advance = raw.style?.lineHeightUnit === "PIXELS"
+          ? { unit: "PIXELS", value: raw.style.lineHeightPx }
+          : { unit: "PERCENT", value: raw.style?.lineHeightPercentFontSize ?? 120 };
+        const refresh = () => {
+          if (node.textAutoResize === "HEIGHT") node.height = node.nativeLines().length *
+            (advance.unit === "PIXELS" ? advance.value : size * advance.value / 100);
+        };
+        Object.defineProperty(node, "fontSize", { enumerable: true, get: () => size,
+          set: value => { size = value; refresh(); } });
+        Object.defineProperty(node, "lineHeight", { enumerable: true, get: () => advance,
+          set: value => { advance = value; refresh(); } });
+      }
     }
     let name = raw.name;
     if (raw.absoluteBoundingBox) node.absoluteBoundingBox = clone(raw.absoluteBoundingBox);
@@ -2142,4 +2157,74 @@ test("stroke-side color alone preserves independent source negative-gap edits", 
   const preview = runtime.messages.at(-1); assert.equal(preview.type, "patch-preview", JSON.stringify(preview)); assert.deepEqual(preview.conflicts, []);
   await runtime.send({ type: "apply-patch", token: preview.token });
   assert.equal(runtime.messages.at(-1).type, "patched"); assert.equal(runtime.all.get(source.children[0].id).itemSpacing, -16);
+});
+
+test("production Text create and reviewed patches preserve explicit pixel versus legacy percent units", async () => {
+  for (const pixels of [true, false]) {
+    const original = nativeTextFixture("Alpha\nBeta"), raw = original.children[0].children[0];
+    Object.assign(raw.absoluteBoundingBox, { height: 40 });
+    Object.assign(raw.style, { fontSize: 16, lineHeightPx: 20, lineHeightPercentFontSize: 125,
+      lineHeightUnit: pixels ? "PIXELS" : "FONT_SIZE_%" });
+    const prepared = await prepareFigmaImport(original), text = prepared.document.nodes.find(node => node.type === "text");
+    assert.equal(text.lineHeightUnit, pixels ? "pixels" : undefined);
+    const creation = harness(page([]), { nativeTextLayout: true });
+    await creation.send({ type: "import-transfer", content: JSON.stringify(createFigmaTransfer(prepared.document)) });
+    assert.equal(creation.messages.at(-1).type, "imported");
+    const created = [...creation.all.values()].find(node => node.type === "TEXT");
+    assert.deepEqual(clone(created.lineHeight), pixels ? { unit: "PIXELS", value: 20 } : { unit: "PERCENT", value: 125 });
+    assert.equal(created.characters, "Alpha\nBeta");
+    for (const size of [16, 24, 16]) {
+      created.fontSize = size; created.resize(created.width, created.height);
+      assert.equal(created.height, pixels ? 40 : size * 2.5);
+    }
+    const binding = createFigmaBinding(prepared);
+    text.fontSize = 24; text.height = pixels ? 40 : 60;
+    const transfer = createFigmaTransfer(prepared.document); transfer.patch = createFigmaPatch(binding, prepared.document);
+    const runtime = harness(original, { nativeTextLayout: true }), target = runtime.all.get("1:2");
+    target.fontSize = 16; target.lineHeight = pixels ? { unit: "PIXELS", value: 20 } : { unit: "PERCENT", value: 125 };
+    await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+    const preview = runtime.messages.at(-1); assert.equal(preview.type, "patch-preview"); assert.deepEqual(preview.conflicts, []);
+    await runtime.send({ type: "apply-patch", token: preview.token }); assert.equal(runtime.messages.at(-1).type, "patched");
+    assert.equal(target.fontSize, 24); assert.equal(target.height, pixels ? 40 : 60);
+    assert.deepEqual(clone(target.lineHeight), pixels ? { unit: "PIXELS", value: 20 } : { unit: "PERCENT", value: 125 });
+    const concurrent = harness(original); concurrent.all.get("1:2").raw.style.lineHeightUnit = pixels ? "FONT_SIZE_%" : "PIXELS";
+    await concurrent.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+    assert(concurrent.messages.at(-1).conflicts.some(message => message.includes("style")), "Same resolved pixels cannot hide concurrent unit edits");
+  }
+});
+
+test("production Text unit transitions use explicit setters and invalid pixel transfer fails before creation", async () => {
+  const original = nativeTextFixture("Alpha\nBeta"), raw = original.children[0].children[0];
+  Object.assign(raw.style, { fontSize: 16, lineHeightPx: 20, lineHeightUnit: "PIXELS" });
+  const prepared = await prepareFigmaImport(original), binding = createFigmaBinding(prepared), text = prepared.document.nodes.find(node => node.type === "text");
+  delete text.lineHeightUnit; text.lineHeight = 1.25;
+  const transfer = createFigmaTransfer(prepared.document); transfer.patch = createFigmaPatch(binding, prepared.document);
+  assert(transfer.patch.operations.some(operation => operation.changed?.includes("lineHeightUnit")));
+  const runtime = harness(original); await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  const preview = runtime.messages.at(-1); assert.equal(preview.type, "patch-preview"); assert.deepEqual(preview.conflicts, []);
+  await runtime.send({ type: "apply-patch", token: preview.token }); assert.equal(runtime.messages.at(-1).type, "patched");
+  assert.deepEqual(clone(runtime.all.get("1:2").lineHeight), { unit: "PERCENT", value: 125 });
+  for (const change of [{ lineHeightUnit: "pixels", lineHeight: 721 }, { lineHeightUnit: "AUTO", lineHeight: 1.25 }]) {
+    const invalid = createFigmaTransfer(prepared.document); Object.assign(invalid.pages[0].children[0].children[0], change);
+    const target = harness(page([])); await target.send({ type: "import-transfer", content: JSON.stringify(invalid) });
+    assert.equal(target.messages.at(-1).type, "error"); assert.equal([...target.all.values()].filter(node => node.type === "TEXT").length, 0);
+  }
+});
+
+test("generated native runtime recognizes pixel9 provenance without erasing an authored explicit newline", async () => {
+  for (const sourceEdit of [false, true]) {
+    const imported = importFigmaJson(nativeTextFixture("Alpha Beta")), text = imported.document.nodes.find(node => node.type === "text");
+    Object.assign(text, { fontSize: 16, lineHeight: 20, lineHeightUnit: "pixels", textSource: "Alpha Beta" });
+    recordWrappedCopy(text, "Alpha \nBeta");
+    assert.equal(JSON.parse(text.textMetrics.signature).length, 9);
+    text.fontSize = 24;
+    if (sourceEdit) text.textSource = "Edited source\nwith explicit LF";
+    else text.text = "Alpha\n Beta";
+    const runtime = harness(page([]));
+    await runtime.send({ type: "import-transfer", content: JSON.stringify(createFigmaTransfer(imported.document)) });
+    assert.equal(runtime.messages.at(-1).type, "imported");
+    const created = [...runtime.all.values()].find(node => node.type === "TEXT");
+    assert.equal(created.characters, sourceEdit ? "Edited source\nwith explicit LF" : "Alpha\n Beta");
+    assert.deepEqual(clone(created.lineHeight), { unit: "PIXELS", value: 20 });
+  }
 });

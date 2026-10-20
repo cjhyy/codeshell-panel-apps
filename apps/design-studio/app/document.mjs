@@ -1,3 +1,4 @@
+import { validTextLineHeight, textLineHeightPixels } from "./text-line-height.mjs";
 import { validateLayoutSpacing } from "./layout-spacing.mjs";
 import { normalizeCornerRadii, roundedRectSvgGeometry } from "./corner-radii.mjs";
 import { normalizeStrokeSides, validateDesignStroke, hasDesignStroke, designStrokeSvg, designStrokeOutset } from "./stroke.mjs";
@@ -167,6 +168,7 @@ function normalizedNode(candidate, parentId) {
     node.fontSize = candidate.fontSize;
     node.fontWeight = candidate.fontWeight;
     node.lineHeight = candidate.lineHeight;
+    if (candidate.lineHeightUnit !== undefined) node.lineHeightUnit = candidate.lineHeightUnit;
     node.textAlign = candidate.textAlign;
     if (candidate.fontFamily !== undefined) node.fontFamily = candidate.fontFamily;
     if (candidate.fontStyle !== undefined) node.fontStyle = candidate.fontStyle;
@@ -303,6 +305,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "fontSize",
     "fontWeight",
     "lineHeight",
+    "lineHeightUnit",
     "textAlign",
     "fontFamily",
     "fontStyle",
@@ -463,6 +466,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       "fontSize",
       "fontWeight",
       "lineHeight",
+      "lineHeightUnit",
       "textAlign",
       "fontFamily",
       "fontStyle",
@@ -490,10 +494,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       candidate.fontSize < 6 ||
       candidate.fontSize > 240 ||
       ![100, 200, 300, 400, 500, 600, 700, 800, 900].includes(candidate.fontWeight) ||
-      typeof candidate.lineHeight !== "number" ||
-      !Number.isFinite(candidate.lineHeight) ||
-      candidate.lineHeight < 0.7 ||
-      candidate.lineHeight > 3 ||
+      !validTextLineHeight(candidate) ||
       !["left", "center", "right"].includes(candidate.textAlign) ||
       (candidate.fontFamily !== undefined &&
         (typeof candidate.fontFamily !== "string" ||
@@ -1435,7 +1436,7 @@ function exportNodeSvg(
       .split("\n")
       .map(
         (line, index) =>
-          `    <text x="${round(textX)}" y="${round(node.y + index * node.fontSize * node.lineHeight)}" ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="${textDecoration}" text-anchor="${anchor}" dominant-baseline="hanging" xml:space="preserve">${escapeXml(line || " ")}</text>`,
+          `    <text x="${round(textX)}" y="${round(node.y + index * textLineHeightPixels(node))}" ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="${textDecoration}" text-anchor="${anchor}" dominant-baseline="hanging" xml:space="preserve">${escapeXml(line || " ")}</text>`,
       )
       .join("\n");
     return clipped(`  <g${metadata}${opacity}${filter}${transform}>\n${lines}\n  </g>`);

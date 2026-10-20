@@ -1,3 +1,4 @@
+import { textLineHeightCss, textLineHeightPixels, validTextLineHeight } from "./text-line-height.mjs";
 import { validateLayoutSpacing } from "./layout-spacing.mjs";
 import { GRID_CONTAINER_FIELDS, GRID_CHILD_FIELDS, gridPlacements } from "./grid.mjs";
 import { designStrokeOutset, editDesignStrokeColor, editDesignStrokeWidth, validateDesignStroke, clearInvalidStrokeLayoutExclusion } from "./stroke.mjs";
@@ -291,6 +292,7 @@ const propertyInputs = {
   fontFamily: document.querySelector("#prop-font-family"),
   fontStyle: document.querySelector("#prop-font-style"),
   lineHeight: document.querySelector("#prop-line-height"),
+  lineHeightUnit: document.querySelector("#prop-line-height-unit"),
   letterSpacing: document.querySelector("#prop-letter-spacing"),
   textDecoration: document.querySelector("#prop-text-decoration"),
   textAlign: document.querySelector("#prop-text-align"),
@@ -1669,7 +1671,7 @@ function updateInlineTextEditorPosition() {
     fontSize: `${node.fontSize}px`,
     fontWeight: String(node.fontWeight),
     fontStyle: node.fontStyle ?? "normal",
-    lineHeight: String(node.lineHeight ?? 1.2),
+    lineHeight: textLineHeightCss(node),
     letterSpacing: `${node.letterSpacing ?? 0}px`,
     textAlign: node.textAlign ?? "left",
     transform: `matrix(${matrix.join(",")})`,
@@ -1965,6 +1967,10 @@ function renderProperties() {
       single.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif";
     propertyInputs.fontStyle.value = single.fontStyle ?? "normal";
     propertyInputs.lineHeight.value = String(single.lineHeight);
+    propertyInputs.lineHeightUnit.value = single.lineHeightUnit ?? "ratio";
+    propertyInputs.lineHeight.min = single.lineHeightUnit === "pixels" ? "4.2" : "0.7";
+    propertyInputs.lineHeight.max = single.lineHeightUnit === "pixels" ? "720" : "3";
+    propertyInputs.lineHeight.step = single.lineHeightUnit === "pixels" ? "0.1" : "0.05";
     propertyInputs.letterSpacing.value = String(single.letterSpacing ?? 0);
     propertyInputs.textDecoration.value = single.textDecoration ?? "none";
     propertyInputs.textAlign.value = single.textAlign;
@@ -5723,8 +5729,22 @@ bindPropertyInput(
   "typography",
 );
 bindPropertyInput(propertyInputs.lineHeight, (node, value) => {
-  if (node.type === "text") node.lineHeight = clamp(finiteOr(value, 1.2), 0.7, 3);
+  if (node.type === "text") node.lineHeight = node.lineHeightUnit === "pixels"
+    ? clamp(finiteOr(value, 20), 4.2, 720)
+    : clamp(finiteOr(value, 1.2), 0.7, 3);
 }, "input", "typography");
+bindPropertyInput(propertyInputs.lineHeightUnit, (node, value) => {
+  if (node.type !== "text" || !["ratio", "pixels"].includes(value)) return;
+  const pixels = textLineHeightPixels(node);
+  const next = { ...node, lineHeight: value === "pixels" ? pixels : pixels / node.fontSize,
+    lineHeightUnit: value === "pixels" ? "pixels" : undefined };
+  if (!validTextLineHeight(next)) {
+    notify("当前行高不能在受支持范围内转换单位；已保留原值", "error"); renderProperties(); return;
+  }
+  node.lineHeight = next.lineHeight;
+  if (next.lineHeightUnit) node.lineHeightUnit = next.lineHeightUnit;
+  else delete node.lineHeightUnit;
+}, "change", "typography");
 bindPropertyInput(propertyInputs.letterSpacing, (node, value) => {
   if (node.type === "text") node.letterSpacing = clamp(finiteOr(value, 0), -20, 100);
 }, "input", "typography");
@@ -7407,6 +7427,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "fontFamily",
   "fontStyle",
   "lineHeight",
+  "lineHeightUnit",
   "letterSpacing",
   "textDecoration",
   "textMeasurement",
@@ -7499,6 +7520,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
         "strokeAlign",
         "strokeLayoutExcluded",
         "contentClipping",
+        "lineHeightUnit",
         "textSource",
         "textFlow",
         "textOverflow",

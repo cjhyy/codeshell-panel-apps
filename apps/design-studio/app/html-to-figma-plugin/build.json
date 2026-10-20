@@ -28,6 +28,7 @@
     "apps/design-studio/app/paint.mjs",
     "apps/design-studio/app/resource-store.mjs",
     "apps/design-studio/app/stroke.mjs",
+    "apps/design-studio/app/text-line-height.mjs",
     "apps/design-studio/app/text-metrics.mjs",
     "apps/design-studio/app/vendor/html2figma-browser.mjs",
     "third-party/html2figma-plugin/integration/capture.ts",

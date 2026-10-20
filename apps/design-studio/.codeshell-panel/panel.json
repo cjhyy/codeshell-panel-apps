@@ -246,6 +246,12 @@
               "additionalProperties": false
             },
             "nodePatch": {
+              "allOf": [
+                { "if": { "required": ["lineHeightUnit"], "properties": { "lineHeightUnit": { "const": "pixels" } } },
+                  "then": { "properties": { "lineHeight": { "minimum": 4.2, "maximum": 720 } } } },
+                { "if": { "required": ["lineHeightUnit"], "properties": { "lineHeightUnit": { "type": "null" } } },
+                  "then": { "properties": { "lineHeight": { "minimum": 0.7, "maximum": 3 } } } }
+              ],
               "type": "object",
               "properties": {
                 "name": {
@@ -557,10 +563,13 @@
                   "enum": ["normal", "italic"]
                 },
                 "lineHeight": {
-                  "type": "number",
-                  "minimum": 0.7,
-                  "maximum": 3
+                  "oneOf": [
+                    { "type": "number", "minimum": 0.7, "maximum": 3 },
+                    { "type": "number", "minimum": 4.2, "maximum": 720 }
+                  ],
+                  "description": "Legacy ratio0.7–3, or physical4.2–720px when the final Text has lineHeightUnit:pixels."
                 },
+                "lineHeightUnit": { "enum": ["pixels", null], "description": "Optional physical pixel line height; null restores legacy ratio semantics. Change lineHeight coherently when switching units." },
                 "letterSpacing": {
                   "type": "number",
                   "minimum": -20,

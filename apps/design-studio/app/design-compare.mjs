@@ -131,6 +131,7 @@ function styleDifferences(expected, actual) {
     "fontSize",
     "fontWeight",
     "lineHeight",
+    "lineHeightUnit",
     "letterSpacing",
     "textAlign",
   ];
