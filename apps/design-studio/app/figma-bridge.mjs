@@ -401,7 +401,8 @@ function gridChildProperties(source) {
 
 function layout(source, node, report) {
   node.layout = { HORIZONTAL: "horizontal", VERTICAL: "vertical" }[source.layoutMode] ?? "none";
-  if (source.strokesIncludedInLayout === true &&
+  const activeStrokeLayout = ["HORIZONTAL", "VERTICAL", "GRID"].includes(source.layoutMode);
+  if (activeStrokeLayout && source.strokesIncludedInLayout === true &&
       (hasDesignStroke(node) ? designStrokeSides(node).some(side=>side.width>0) : node.strokeWidth>0) &&
       (!hasDesignStroke(node) || node.strokeAlign!=="inside")) {
     Object.assign(node,{layout:"none",gap:0,padding:0,alignItems:"start",justifyContent:"start"});
@@ -491,7 +492,7 @@ function layout(source, node, report) {
       `padding${side}`,
       report,
     );
-  if (source.strokesIncludedInLayout === true) {
+  if (activeStrokeLayout && source.strokesIncludedInLayout === true) {
     if (hasDesignStroke(node) && node.strokeAlign === "inside") designStrokeSides(node).forEach((stroke,i)=>{
       const key=`padding${["Top","Right","Bottom","Left"][i]}`;
       node[key]+=stroke.width;

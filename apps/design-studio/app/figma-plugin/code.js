@@ -329,12 +329,16 @@
       operation.after.type === "text" && ["text", "textSource", "textOverflow", "fontFamily", "fontWeight", "fontStyle", "fontSize", "lineHeight", "letterSpacing"].includes(key),
     );
   const strokeSideNames = ["Top", "Right", "Bottom", "Left"];
+  const includesStrokeInLayout = (node) => ["HORIZONTAL", "VERTICAL", "GRID"].includes(node.layoutMode) && node.strokesIncludedInLayout === true;
   function liveStrokeWeights(node) {
     return strokeSideNames.map(side=>finite(node[`stroke${side}Weight`]) ? node[`stroke${side}Weight`] : finite(node.strokeWeight) ? node.strokeWeight : 0);
   }
+  const effectiveStrokeWeights = (node) => Array.isArray(node.strokes) && node.strokes.length
+    ? liveStrokeWeights(node) : [0, 0, 0, 0];
   function nativePadding(node,source,side) {
-    if(node.strokesIncludedInLayout === true && node.strokeAlign!=="INSIDE")throw new Error("参与布局的描边暂只支持 INSIDE；请先在 Figma 关闭描边参与布局或改为 INSIDE 后重新导入");
-    const weight=node.strokesIncludedInLayout === true ? liveStrokeWeights(node)[strokeSideNames.indexOf(side)] : 0;
+    const weights = includesStrokeInLayout(node) ? effectiveStrokeWeights(node) : [0, 0, 0, 0];
+    if(weights.some(weight=>weight>0) && node.strokeAlign!=="INSIDE")throw new Error("参与布局的描边暂只支持 INSIDE；请先在 Figma 关闭描边参与布局或改为 INSIDE 后重新导入");
+    const weight=weights[strokeSideNames.indexOf(side)];
     const value=(source[`padding${side}`]??source.padding??0)-weight;
     if(value<0)throw new Error("有效内容缩进小于参与布局的描边；请增加 padding 或关闭原生描边参与布局");
     return value;
@@ -342,7 +346,7 @@
   function setNodeStroke(node,source) {
     if (!CodeShellFigmaPaint.hasDesignStroke(source)) {
       node.strokes=paints(source.stroke);node.strokeWeight=source.strokeWidth;node.strokeAlign="CENTER";
-      if(node.strokesIncludedInLayout === true)for(const side of strokeSideNames)node[`padding${side}`]=nativePadding(node,source,side);
+      if(includesStrokeInLayout(node))for(const side of strokeSideNames)node[`padding${side}`]=nativePadding(node,source,side);
       return;
     }
     const plan=CodeShellFigmaPaint.nativeDesignStroke(source),unequal=plan.weights.some(w=>w!==plan.weights[0]);
@@ -351,7 +355,7 @@
     node.strokeJoin="MITER";node.dashPattern=[];
     node.strokeWeight=unequal?0:plan.weights[0];
     if(unequal)strokeSideNames.forEach((side,i)=>{node[`stroke${side}Weight`]=plan.weights[i];});
-    if(node.strokesIncludedInLayout === true)for(const side of strokeSideNames)node[`padding${side}`]=nativePadding(node,source,side);
+    if(includesStrokeInLayout(node))for(const side of strokeSideNames)node[`padding${side}`]=nativePadding(node,source,side);
   }
   const lineBoxY = (node) => node.y - (node.type === "text" ? node.layoutBaselineOffset ?? 0 : 0);
   function transform(source, parent) {
@@ -414,9 +418,16 @@
         warn(`${source.name}: 此布局按固定几何创建。`);
         return;
       }
-      if (source.layout === "grid") return CodeShellFigmaGrid.configureNativeGrid(node, source);
+      if (source.layout === "grid") {
+        const plan = CodeShellFigmaGrid.configureNativeGrid(node, source);
+        if ("strokesIncludedInLayout" in node) node.strokesIncludedInLayout = false;
+        return plan;
+      }
       node.layoutMode = { horizontal: "HORIZONTAL", vertical: "VERTICAL" }[source.layout] || "NONE";
       if (node.layoutMode === "NONE") return;
+      // This native setter is invalid on a newly created freeform Frame.
+      // Enable Auto Layout first; canonical padding already includes CSS borders.
+      if ("strokesIncludedInLayout" in node) node.strokesIncludedInLayout = false;
       node.primaryAxisSizingMode = "FIXED";
       node.counterAxisSizingMode = "FIXED";
       node.itemSpacing = CodeShellFigmaSpacing.mainAxisGap(source);
@@ -537,7 +548,6 @@
         ];
       } else node.fills = paints(source.fill, source.fillPaints, source.width, source.height);
       retainCssLinearSource(node, source);
-      if(node.type === "FRAME" && "strokesIncludedInLayout" in node)node.strokesIncludedInLayout=false;
       setNodeStroke(node,source);
       if (node.type === "FRAME" || node.type === "RECTANGLE")
         setCorners(node, source);
@@ -764,7 +774,7 @@
     smoothing: node.cornerSmoothing ?? 0,
   });
   const restStroke = (node) => ({
-    paints:node.strokes??[],align:node.strokeAlign??"CENTER",included:node.strokesIncludedInLayout??false,
+    paints:node.strokes??[],align:node.strokeAlign??"CENTER",included:includesStrokeInLayout(node),
     join:node.strokeJoin??"MITER",dash:node.dashPattern??[],miter:finite(node.strokeMiterLimit) && node.strokeMiterLimit<Math.SQRT2?node.strokeMiterLimit:null,
     weights:node.strokes?.length ? strokeSideNames.map(side=>node[`stroke${side}Weight`]??node.individualStrokeWeights?.[side.toLowerCase()]??node.strokeWeight??0) : [0,0,0,0],
   });
@@ -828,7 +838,7 @@
       strokeSideNames.forEach((side,i)=>{if(raw[`stroke${side}Weight`]!==undefined)raw[`stroke${side}Weight`]=weights[i];});
     }
     if(node.strokeAlign && (node.strokeAlign!=="CENTER" || raw.strokeAlign!==undefined))raw.strokeAlign=node.strokeAlign;
-    if(node.strokesIncludedInLayout === true || raw.strokesIncludedInLayout!==undefined)raw.strokesIncludedInLayout=node.strokesIncludedInLayout===true;
+    if(includesStrokeInLayout(node) || raw.strokesIncludedInLayout!==undefined)raw.strokesIncludedInLayout=node.strokesIncludedInLayout===true;
     if(typeof node.strokeJoin === "string" && (node.strokeJoin!=="MITER" || raw.strokeJoin!==undefined))raw.strokeJoin=node.strokeJoin;
     if(Array.isArray(node.dashPattern) && (node.dashPattern.length || raw.dashPattern!==undefined))raw.dashPattern=[...node.dashPattern];
     if(finite(node.strokeMiterLimit) && (node.strokeMiterLimit<Math.SQRT2 || raw.strokeMiterLimit!==undefined))raw.strokeMiterLimit=node.strokeMiterLimit;
@@ -1128,11 +1138,14 @@
               if (canonical(operation.before[property]) !== canonical(raw[property]))
                 conflicts.push(`${operation.sourceId} · ${property} 已在 Figma 中变化，不能重算 CSS 渐变。`);
           }
-          if(target.strokesIncludedInLayout === true && operation.changed.some(key=>["stroke","strokeWidth","strokeAlign","strokeSides"].includes(key) || key.startsWith("padding"))) {
+          if(includesStrokeInLayout(target) && operation.changed.some(key=>["stroke","strokeWidth","strokeAlign","strokeSides"].includes(key) || key.startsWith("padding"))) {
             const borderChanged=operation.changed.some(key=>["stroke","strokeWidth","strokeAlign","strokeSides"].includes(key));
             const plan=borderChanged ? CodeShellFigmaPaint.nativeDesignStroke(operation.after) : null;
-            if(target.strokeAlign!=="INSIDE" || (plan && plan.align!=="INSIDE"))throw new Error("参与布局的描边暂只支持 INSIDE；请先在 Figma 关闭描边参与布局或改为 INSIDE 后重新导入");
-            const weights=plan ? plan.weights : liveStrokeWeights(target);
+            const currentWeights=effectiveStrokeWeights(target);
+            const weights=plan ? plan.weights : currentWeights;
+            if((currentWeights.some(weight=>weight>0) && target.strokeAlign!=="INSIDE") ||
+              (weights.some(weight=>weight>0) && (plan?.align??target.strokeAlign)!=="INSIDE"))
+              throw new Error("参与布局的描边暂只支持 INSIDE；请先在 Figma 关闭描边参与布局或改为 INSIDE 后重新导入");
             for(const [i,side] of strokeSideNames.entries()) {
               if((operation.after[`padding${side}`]??operation.after.padding??0)<weights[i])throw new Error("有效内容缩进小于参与布局的描边；请增加 padding 或关闭原生描边参与布局");
               const property=`padding${side}`;
@@ -1666,10 +1679,13 @@
         for (const key of operation.changed)
           if (LAYOUT_KEYS.has(key)) {
             mutated = true;
-            if (key === "layout")
+            if (key === "layout") {
+              const wasFreeform = node.layoutMode === "NONE";
               node.layoutMode =
                 { horizontal: "HORIZONTAL", vertical: "VERTICAL" }[after.layout] ?? "NONE";
-            else if (key === "layoutWrap") {
+              if (wasFreeform && node.layoutMode !== "NONE" && "strokesIncludedInLayout" in node)
+                node.strokesIncludedInLayout = false;
+            } else if (key === "layoutWrap") {
               if (node.layoutMode !== "HORIZONTAL")
                 throw new Error("Figma 仅水平自动布局支持换行。");
               node.layoutWrap = after.layoutWrap === "wrap" ? "WRAP" : "NO_WRAP";
