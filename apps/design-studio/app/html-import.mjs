@@ -155,6 +155,7 @@ async function sanitizedHtmlSource(sourcePath, html, readText, readAsset) {
     }
     const style = parsed.createElement("style");
     style.dataset.captureSource = path;
+    if (source.hasAttribute("media")) style.setAttribute("media", source.getAttribute("media"));
     style.textContent = await assets.css(css, path);
     fonts.push(...htmlFontResources(style.textContent, assets.warnings));
     source.replaceWith(style);

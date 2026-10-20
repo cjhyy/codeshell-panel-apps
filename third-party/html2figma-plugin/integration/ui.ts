@@ -144,6 +144,7 @@ async function staticHtml(
     bytes += size(css);
     if (bytes > 512 * 1024) throw new Error("HTML 与 CSS 合计最多 512 KiB");
     const style = parsed.createElement("style");
+    if (link.hasAttribute("media")) style.setAttribute("media", link.getAttribute("media"));
     style.textContent = await resolver.css(css, path);
     link.replaceWith(style);
   }
