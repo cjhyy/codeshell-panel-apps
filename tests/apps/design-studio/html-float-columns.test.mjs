@@ -278,7 +278,19 @@ test("real capture/save/resize and HTML export preserve rational float Grid, neg
     assert(children.every((n) => n.layout === "vertical" && n.layoutSizingHorizontal === "fill"));
     assert(children.every((n) => n.gridRowAnchorIndex === 0));
     assert(!doc.nodes.some((n) => n.name.includes("::after")));
-    assert(observed.warnings.every((w) => w.code === "float-flow-captured-state"));
+    assert.deepEqual(
+      observed.warnings.map((warning) => warning.code).sort(),
+      observed.id === "two-thirds-bleed"
+        ? ["block-inset-rebased", "float-flow-captured-state"]
+        : ["float-flow-captured-state"],
+    );
+    assert.equal(observed.nativeTransfer.supported, true);
+    if (observed.id === "two-thirds-bleed") {
+      const main = byHtmlId(doc, "fixture");
+      assert.deepEqual([main.paddingLeft, main.paddingRight], [5, 5]);
+      assert.equal(row.parentId, main.id, "zero compensation keeps the real Grid directly in flow");
+      assert(!doc.nodes.some((node) => node.id.includes("-bleed-")));
+    }
     const transfer = createFigmaTransfer(doc);
     const visit = (n) => (n.id === row.id ? n : (n.children ?? []).map(visit).find(Boolean));
     const nativeRow = transfer.pages.map((p) => p.children.map(visit).find(Boolean)).find(Boolean);
