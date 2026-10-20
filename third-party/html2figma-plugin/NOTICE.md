@@ -12,6 +12,9 @@ React UI, network image downloads and settings with embedded browser conversion,
 static HTML preview, local selected resources, and bounded validated JSON.
 A fixed bundled capture script runs in an opaque iframe under a random nonce CSP;
 user HTML scripts are removed and receive no execution permission.
+Safe HTML anchor attributes retain authored link-selector styles. Capture frames
+are inert, and the reviewed runtime cancels click, auxiliary-click and submit
+defaults; retaining an anchor attribute does not authorize navigation or fetching.
 It directly bundles upstream FigmaAdapter, FigmaService, NodeCreatorFactory and
 creators. The existing CodeShell Design Bridge remains a separate plugin.
 

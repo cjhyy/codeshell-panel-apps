@@ -16,6 +16,7 @@ import {
 } from "../../../apps/design-studio/app/portable-backup.mjs";
 import { preparePluginFile } from "../../../apps/design-studio/app/figma-plugin/v3-input.mjs";
 import { applyAllAutoLayouts } from "../../../apps/design-studio/app/layout.mjs";
+import { linkCases, linkCaptureHtml } from "./fixtures/html-link-capture.mjs";
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../apps/design-studio/app");
 const PNG =
@@ -1179,6 +1180,57 @@ test("actual HTML import blocks scripts, handlers, navigations and remote resour
   assert.ok(nodes.some((node) => node.type === "text" && node.text === "Safe text"));
   assert.ok(nodes.some((node) => node.type === "text" && node.text === "Static form"));
   assert.ok(!nodes.some((node) => node.type === "text" && node.text.includes("importPwned")));
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("production capture preserves authored link selectors while keeping the frame inert and cancelling navigation", async (t) => {
+  const f = await fixture(t);
+  await f.page.evaluate(() => {
+    window.linkCaptureFrames = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) for (const frame of record.addedNodes) {
+        if (!(frame instanceof HTMLIFrameElement)) continue;
+        frame.addEventListener("load", () => {
+          const doc = frame.contentDocument;
+          const main = doc?.querySelector("main");
+          if (!main) return;
+          const probe = (target, type) => {
+            const event = new doc.defaultView.Event(type, { bubbles: true, cancelable: true });
+            return { dispatched: target.dispatchEvent(event), prevented: event.defaultPrevented };
+          };
+          window.linkCaptureFrames.push({
+            sandbox: frame.getAttribute("sandbox"), inert: frame.inert, tabIndex: frame.tabIndex,
+            hrefs: [...main.querySelectorAll("a")].map((a) => [a.id, a.getAttribute("href")]),
+            click: probe(main.querySelector("#external"), "click"),
+            auxclick: probe(main.querySelector("#external"), "auxclick"),
+            submit: probe(main.querySelector("form"), "submit"),
+            action: main.querySelector("form").getAttribute("action"),
+            scripts: doc.querySelectorAll("script").length,
+          });
+        });
+      }
+    });
+    observer.observe(document.body, { childList: true });
+  });
+  const result = await f.capture(linkCaptureHtml, { rootSelector: "main" });
+  const nodes = normalizeDesignDocument(result.document).nodes;
+  for (const [id, , color] of linkCases) {
+    const text = nodes.find((node) => node.type === "text" && node.text === `${id} link`);
+    assert(text, id);
+    assert.equal(text.fill, color, id);
+  }
+  const observed = await f.page.evaluate(() => window.linkCaptureFrames);
+  assert.equal(observed.length, 1);
+  assert.deepEqual(observed[0], {
+    sandbox: "allow-same-origin", inert: true, tabIndex: -1,
+    hrefs: linkCases.map(([id, href, color]) => [id, color === "#777777" ? null : href]),
+    click: { dispatched: false, prevented: true }, auxclick: { dispatched: false, prevented: true },
+    submit: { dispatched: false, prevented: true }, action: null, scripts: 0,
+  });
+  assert.equal(f.page.url(), "https://import.test/");
+  assert.equal(result.parentMarker, "Parent stays intact");
+  assert.equal(result.remainingFrames, 0);
   assert.deepEqual(f.external, []);
   assert.deepEqual(f.errors, []);
 });

@@ -16,6 +16,7 @@
     "apps/design-studio/app/grid.mjs",
     "apps/design-studio/app/html-block-flow.mjs",
     "apps/design-studio/app/html-block-insets.mjs",
+    "apps/design-studio/app/html-capture-links.mjs",
     "apps/design-studio/app/html-capture.mjs",
     "apps/design-studio/app/html-float-columns.mjs",
     "apps/design-studio/app/html-grid.mjs",
@@ -75,8 +76,8 @@
     },
     {
       "path": "ui.html",
-      "bytes": 353549,
-      "sha256": "d049482c3cee43b66a6c897a6869b9b3b0ae71e5af4acf0792f44985768f6f9c"
+      "bytes": 354656,
+      "sha256": "3d8d78e0b5ed5a04c32ee45d1b829b8d08f4da47eba698ab06ee890105c809f4"
     },
     {
       "path": "README.md",
@@ -85,8 +86,8 @@
     },
     {
       "path": "NOTICE.md",
-      "bytes": 3655,
-      "sha256": "351dce0b235ea02cd0f21fa3a7ff36e446e44a4993175838c114ba45e93f4d25"
+      "bytes": 3897,
+      "sha256": "7fd45dff9add4434d26b25a87d8ced5076e8c692a469d75a8e15bbb5a95c955d"
     }
   ]
 }

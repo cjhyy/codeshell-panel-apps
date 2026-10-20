@@ -1,6 +1,8 @@
 // The fixed reviewed capture runtime runs inside an opaque sandbox, never user scripts.
 import { convertToDesignDSL } from "../../../apps/design-studio/app/vendor/html2figma-browser.mjs";
+import { installHtmlCaptureNavigationGuard } from "../../../apps/design-studio/app/html-capture-links.mjs";
 declare const __captureOptions: { requestId: string; selector: string };
+installHtmlCaptureNavigationGuard(document);
 (async () => {
   try {
     await document.fonts.ready;
