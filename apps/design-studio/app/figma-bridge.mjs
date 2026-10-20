@@ -1121,8 +1121,9 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
         node,
         "此容器将在 Figma 中创建为透明编组 Frame 或普通 Frame。 ",
       );
-    if (node.cornerRadii && effectiveCornerRadii(node).some((radius) => radius > Math.min(node.width, node.height) / 2))
-      report.warn("corner-overlap-export", node, "CSS 大圆角使用共同缩放；Figma 的边缘半径钳制可能不同，请核对原生外观。原始半径保持可编辑。");
+    const resolvedCorners = node.cornerRadii && effectiveCornerRadii(node);
+    if (resolvedCorners && node.cornerRadii.some((radius, index) => radius > resolvedCorners[index] + 1e-6))
+      report.warn("corner-overlap-export", node, "相邻圆角需要 CSS 共同缩放；Figma 原生的缩放结果可能不同，请核对角部外观。原始半径保持可编辑。");
     if (node.layout === "grid") {
       try {
         nativeGridPlan(node);

@@ -27,6 +27,13 @@ test("four circular radii validate, survive save/transfer and use common CSS ove
   assert.deepEqual(normalizeDesignDocument(JSON.parse(serializeDesignDocument(doc))).nodes[0].cornerRadii, [80, 40, 0, 20]);
   assert.deepEqual(createFigmaTransfer(doc).pages[0].children[0].cornerRadii, [80, 40, 0, 20]);
   assert.ok(createFigmaTransfer(doc).warnings.some((warning) => warning.code === "corner-overlap-export"));
+  // Actual native Figma retains a lone 80px corner on a 100px square. The
+  // representability warning concerns adjacent overlap, not half-edge size.
+  const lone = normalizeDesignDocument(documentFor(shape({ width: 100, height: 100, cornerRadii: [80, 0, 0, 0] })));
+  assert.ok(!createFigmaTransfer(lone).warnings.some((warning) => warning.code === "corner-overlap-export"));
+  const overlapping = normalizeDesignDocument(documentFor(shape({ width: 100, height: 100, cornerRadii: [80, 80, 20, 0] })));
+  assert.deepEqual(effectiveCornerRadii(overlapping.nodes[0]), [50, 50, 12.5, 0]);
+  assert.ok(createFigmaTransfer(overlapping).warnings.some((warning) => warning.code === "corner-overlap-export"));
   for (const radii of [Array(4), [1, 2, 3], [1, 2, 3, 4, 5], [0, -1, 0, 0], [0, Infinity, 0, 0], [0, 10000, 0, 0]])
     assert.throws(() => normalizeDesignDocument(documentFor(shape({ cornerRadii: radii }))));
   for (const type of ["text", "ellipse", "group", "instance"])
