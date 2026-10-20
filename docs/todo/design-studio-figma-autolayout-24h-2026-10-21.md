@@ -1482,3 +1482,53 @@ html2figma捕获为正确蓝色，非链接状态CSS也正确。不是已证实�
 本轮继续保留所有严格失败。24小时目标active，10月22日00:31截止不变；未push、
 发布或安装Host。下一批为Fill祖先宽度证明、whole-DL提升、闲置描边完整激活语义、
 有序CSS阴影遮罩以及链接选择器捕获。
+
+
+### 第30轮：Fill 祖先宽度、链接选择器和严格阴影负例（约 07:20）
+
+第29轮已按完整709pass/2skip证据从干净primary main af07594 fast-forward到173436f7；
+113个app文件与测试源96113b0完全一致，记录在外部round29-primary-integration-receipt.json。
+经各owner确认、clean/ignored/ancestor审计后，不加force清理baseline8be、nested Grid4fe、
+Textshadow970和number73四个已合并闲置worktree/分支，外部证据父目录完整保留。
+
+本轮聚合e281da0包含两项独立修复，尚未同步primary：
+- 5e328a9通过捕获/运行期实际父对象证明Fixed→多层Fill→Grid的宽度依赖，所有链有界、
+  防循环，并拒绝未知祖先、Hug宽度、水平或其他未证明上下文；不从保存的Fill宽度推断。
+  真实层级保持、outer-only缩放、嵌套文案编辑、reparent和保存重开均有正负控制。
+- bc23c32在脚本隔离的静态捕获中保留安全HTML A[href]原属性，恢复 :link/[href] 样式。
+  共用谓词限制HTML命名空间、2048字符、控制字符及协议；不改写到伪造URL。工作台iframe
+  保持allow-same-origin无脚本，独立插件保持opaque allow-scripts仅固定nonce脚本；两端都
+  inert且capture-phase取消click/auxclick/submit，表单/资源/脚本原边界继续生效。
+
+链接候选48/48相关CPU浏览器测试、静态与三个generated校验通过。首次standalone颜色测试
+因VM对象prototype不同而失败，通道数值完全相同；首次日志保留，改为逐通道严格数值比较。
+上下文+链接组合9文件169/169通过。完整round30 gate对e281da0所有114app文件保持不变：
+主套614项，612pass/1skip/1fail，199385.213417ms；UI104项，103pass/1skip/0fail，
+120358.673333ms；typecheck/validate/3generated/Design Studio build check通过。
+唯一主套失败是已有970红色零模糊文字阴影四行copy在width400的1px严格差异（max2），
+与并行代理原始复现一致。完整失败receipt/log未重写，不能把本轮称为全绿；primary仍停在
+上一轮已验证173436f7。后续修复保留该原始case及其严格负例边界，不替换掉失败fixture。
+
+冻结真实网页在相同原始字节、相同字体与截图参考下成对执行：任务列表原/候选首次及重排
+15576→14791，768窄屏24470→23685；GOV Check Answers首次及重排31125→30417，窄屏
+70084→70083。两页原参考PNG逐字节一致；所有阶段54/188节点的身份、层级、layout、
+positioning和几何完全相同，仅5/29项颜色及href语义相关元数据变化。任务列表仍报flow
+absolute，检查答案仍被原生负间距预检拒绝，整页均严格失败；没有宣称普通流已修好。
+paired-real-web第一版因旧Check Answers receipt使用另一字段名而在运行候选前中止，
+首次脚本/log保留；v2绑定既有local-assets-receipt的b2220c13…源hash并使用全新输出目录。
+
+只读对照又确认任务列表真实CSS -webkit-font-smoothing:antialiased，字号/字重均19/400；
+源和sanitized computed style完全相同，候选颜色#1a65a6也与源一致，未证明font-weight错误。
+保持canonical/字体/坐标不变，SVG wrapper仅应用该原网页设置，14791→7580严格差异；
+max244和剩余差异仍保留，0网络请求/错误。此为独立控制实验，尚无产品改动或跨平台/
+Figma原生字体栅格一致性声明。原始underline thickness1px/offset2.9982px也尚未保留。
+证据在html-link-selector-capture外部父目录的paired-real-web-*、real-task-list-styles-v2.json
+和font-smoothing-control.json。下一独立修复先证明字体平滑可保存/渲染语义，再设计原生
+无法设置此浏览器属性时的明确诊断和往返元数据边界。
+
+下一真实生产验收计划已冻结：0172多P原始26节点/4Grid/8cell/2P/9Text，普通phone文本
+copy1→4→1及单DL width1220→708→1220，禁止后代height/sizing修补。保留原生Float32
+与CSS分数差异，固定原PNG ad97d9ee…，未安装或执行新native。当前Figma保留上轮
+66:1539/board66:1540；ORIG3已恢复，无native/GPU会话占用。
+
+24小时目标active，截止10月22日00:31不变。未push、发布或安装Host。
