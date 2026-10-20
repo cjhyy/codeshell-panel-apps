@@ -43,6 +43,15 @@ and main-axis auto margins. Uniform nonnegative flex margins become container
 insets and item/line gaps; unsupported nonuniform or negative margins retain a
 conversion diagnostic rather than claiming preserved Auto Layout behavior.
 
+Inline SVG resources are serialized from detached clones with explicit SVG and
+XLink namespaces. Same-document `#id` references, including chained `use`, paint,
+and clipping definitions, are copied into the resource; the measured document
+is unchanged. The visible SVG's paint context preserves inherited `currentColor`.
+External, missing, or cyclic references, duplicate IDs, and active SVG content fail
+before import. Each resource is bounded to 2,000 elements, 256 referenced IDs,
+32 nesting/reference levels, and 1 MiB; the normal inert SVG and portable-resource
+validators still run afterward. This does not add remote resource loading.
+
 ## MIT license terms
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

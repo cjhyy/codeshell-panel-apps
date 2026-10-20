@@ -56,6 +56,11 @@ async function fixture(t) {
         contentType: "text/html",
         body: '<!doctype html><div id="parent-marker">Parent stays intact</div>',
       });
+    if (url.href === "https://import.test/bridge-ui.html")
+      return route.fulfill({
+        contentType: "text/html",
+        body: await readFile(resolve(appRoot, "figma-plugin/ui.html")),
+      });
     if (
       url.origin === "https://import.test" &&
       url.pathname.startsWith("/app/") &&
@@ -520,6 +525,151 @@ test("translucent CSS card headers keep light backgrounds and readable editable 
     0,
     "CSS fill alpha must match every source RGBA pixel without flattening text",
   );
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("same-document SVG symbols and use chains remain standalone through pixels, portable files and the production plugin UI", async (t) => {
+  const f = await fixture(t);
+  await f.page.setViewportSize({ width: 480, height: 360 });
+  const html = `<!doctype html><style>html,body{margin:0;background:#fff}main{display:flex;gap:16px;padding:20px;box-sizing:border-box;width:480px;height:360px}main svg{display:block;flex:none;fill:currentColor}</style>
+    <svg style="display:none"><symbol id="check" viewBox="0 0 16 16"><path d="M2 8L6 12L14 3L12 2L6 9L3 6Z" fill="currentColor"/></symbol><symbol id="alias" viewBox="0 0 16 16"><use href="#check"/></symbol></svg>
+    <main id="icons"><svg width="24" height="24" style="color:#0d6efd"><use href="#alias"/></svg><svg width="24" height="24" style="color:#dc3545"><use xlink:href="#check"/></svg></main>`;
+  await f.page.setContent(html);
+  const source = PngImage.sync.read(await f.page.screenshot());
+  const captured = await f.capture(html, { rootSelector: "#icons" });
+  const document = normalizeDesignDocument(captured.document);
+  assert.equal(document.nodes.filter((node) => node.type === "image").length, 2);
+  assert.equal(
+    document.nodes.some((node) => node.layoutPositioning === "absolute"),
+    false,
+  );
+  const files = new Map(
+    captured.resourcePlans.flatMap((plan) => plan.parts.map((part) => [part.path, part.content])),
+  );
+  const portable = await createPortableDesign({
+    document,
+    source: {
+      workspaceRoot: "/svg-fixture",
+      sessionId: "svg",
+      path: "designs/icons.codesign.json",
+    },
+    readText: async (path) => files.get(path),
+    sha256Bytes: hash,
+  });
+  const prepared = await preparePluginFile(portable, { sha256Bytes: hash });
+  const svgAssets = Object.values(prepared.transfer.assets);
+  assert.equal(svgAssets.length, 2);
+  assert(svgAssets.every((asset) => asset.mime === "image/svg+xml"));
+  const dataUrls = Object.fromEntries(
+    Object.entries(prepared.transfer.assets).map(([id, asset]) => [
+      id,
+      `data:${asset.mime};base64,${asset.base64}`,
+    ]),
+  );
+  for (const asset of svgAssets) {
+    const xml = Buffer.from(asset.base64, "base64").toString("utf8");
+    assert.match(xml, /xmlns="http:\/\/www\.w3\.org\/2000\/svg"/u);
+    assert.match(xml, /id="check"/u);
+  }
+  const svg = await f.page.evaluate(
+    async ({ document, dataUrls }) => {
+      const { normalizeDesignDocument, exportDesignSvg } = await import("/app/document.mjs");
+      await Promise.all(
+        Object.values(dataUrls).map(async (dataUrl) => {
+          const image = new Image();
+          image.src = dataUrl;
+          await image.decode();
+        }),
+      );
+      return exportDesignSvg(normalizeDesignDocument(document), {
+        resourceDataUrls: new Map(Object.entries(dataUrls)),
+      });
+    },
+    { document: captured.document, dataUrls },
+  );
+  await f.page.setContent(
+    `<!doctype html><style>html,body{margin:0;background:#fff}svg{display:block}</style>${svg}`,
+  );
+  await f.page.evaluate(async () => {
+    await Promise.all([...document.images].map((image) => image.decode()));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+  const rendered = PngImage.sync.read(await f.page.screenshot());
+  let changed = 0;
+  for (let offset = 0; offset < source.data.length; offset += 4)
+    if (
+      [0, 1, 2, 3].some(
+        (channel) => source.data[offset + channel] !== rendered.data[offset + channel],
+      )
+    )
+      changed++;
+  assert.equal(changed, 0, "self-contained symbol resources must preserve every source RGBA pixel");
+
+  await f.page.evaluate(() => {
+    window.svgPluginRequests = [];
+    addEventListener("message", (event) => {
+      if (event.data?.pluginMessage?.type === "import-transfer")
+        window.svgPluginRequests.push(event.data.pluginMessage);
+    });
+    document.body.innerHTML =
+      '<iframe id="bridge" src="/bridge-ui.html" sandbox="allow-scripts allow-downloads" style="width:420px;height:600px"></iframe>';
+  });
+  const ui = f.page.frameLocator("#bridge");
+  await ui.locator("#paste-transfer-details summary").click();
+  await ui.locator("#paste-json").fill(portable);
+  await ui.locator("#load-pasted-json").click();
+  await ui.locator("body[aria-busy=false]").waitFor();
+  assert.equal(await ui.locator("#import").isEnabled(), true);
+  await ui.locator("#import").click();
+  await f.page.waitForFunction(() => window.svgPluginRequests.length === 1);
+  const transfer = JSON.parse(await f.page.evaluate(() => window.svgPluginRequests[0].content));
+  for (const asset of Object.values(transfer.assets)) {
+    assert.equal(asset.mime, "image/png");
+    const pixels = PngImage.sync.read(Buffer.from(asset.base64, "base64"));
+    assert([...pixels.data].some((value, index) => index % 4 === 3 && value > 0));
+  }
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("SVG missing, cyclic, external and excessive local reference graphs fail before a partial import", async (t) => {
+  const f = await fixture(t);
+  const cases = [
+    ['<svg width="24" height="24"><use href="#missing"/></svg>', /SVG 缺少/u],
+    [
+      '<svg style="display:none"><symbol id="a"><use href="#b"/></symbol><symbol id="b"><use href="#a"/></symbol></svg><svg width="24" height="24"><use href="#a"/></svg>',
+      /SVG 引用包含循环/u,
+    ],
+    [
+      '<svg width="24" height="24"><use href="https://untrusted.test/icons.svg#check"/></svg>',
+      /SVG use 缺少/u,
+    ],
+    [
+      '<svg width="24" height="24"><rect width="24" height="24" fill="url(https://untrusted.test/paint.svg#p)"/></svg>',
+      /同一文档内/u,
+    ],
+    [
+      `<svg style="display:none">${Array.from({ length: 35 }, (_, index) => `<symbol id="s${index}">${index === 34 ? '<rect width="24" height="24"/>' : `<use href="#s${index + 1}"/>`}</symbol>`).join("")}</svg><svg width="24" height="24"><use href="#s0"/></svg>`,
+      /32 层引用链/u,
+    ],
+    [
+      `<svg style="display:none">${Array.from({ length: 257 }, (_, index) => `<symbol id="s${index}"><rect width="24" height="24"/></symbol>`).join("")}</svg><svg width="24" height="24">${Array.from({ length: 257 }, (_, index) => `<use href="#s${index}"/>`).join("")}</svg>`,
+      /256 项引用/u,
+    ],
+    [
+      `<svg width="24" height="24">${'<rect width="1" height="1"/>'.repeat(2000)}</svg>`,
+      /2000 个元素/u,
+    ],
+    [
+      '<svg width="24" height="24"><foreignObject><div>Active foreign HTML</div></foreignObject></svg>',
+      /SVG 不允许 foreignObject/u,
+    ],
+  ];
+  for (const [source, expected] of cases) {
+    await assert.rejects(() => f.capture(`<!doctype html>${source}`), expected);
+    assert.equal(await f.page.locator("iframe").count(), 0);
+  }
   assert.deepEqual(f.external, []);
   assert.deepEqual(f.errors, []);
 });

@@ -2,6 +2,7 @@ import { traverseDOM } from "../upstream/packages/browser/traverser/core";
 import { renderToDesignDSL } from "../upstream/packages/browser/converter/convert";
 import type { DesignNode } from "../upstream/packages/shared/design-node";
 import type { RenderNode } from "../upstream/packages/browser/traverser/types";
+import { captureStandaloneSvg } from "./svg";
 
 type CapturedNode = DesignNode & { cssLayout?: Record<string, string> };
 type TypedStyleElement = Element & {
@@ -48,12 +49,21 @@ export function convert(root: Element, options: { includeRawStyles: boolean; max
   const tree = traverseDOM(root, { maxDepth: options.maxDepth });
   if (!tree) return null;
   const values = captureLayoutValues(tree);
+  const svgResources = new Map<object, string>();
+  const captureSvg = (node: RenderNode) => {
+    if (node.tag === "svg" && node.metadata?.semantic && node.domNode instanceof Element)
+      svgResources.set(node.metadata.semantic, captureStandaloneSvg(node.domNode));
+    for (const child of node.children) captureSvg(child);
+  };
+  captureSvg(tree);
   const result = renderToDesignDSL(tree, options);
   const attach = (node: CapturedNode) => {
     // Anonymous text inherits its parent's semantic metadata and CSS styles;
     // applying the parent's box dimensions to that text would be incorrect.
     const cssLayout = node.nodeType !== "text" && node.semantic && values.get(node.semantic);
     if (cssLayout && Object.keys(cssLayout).length > 0) node.cssLayout = cssLayout;
+    if (node.nodeType === "svg" && node.semantic && svgResources.has(node.semantic))
+      node.svgContent = svgResources.get(node.semantic)!;
     if (node.nodeType === "container") for (const child of node.children) attach(child);
   };
   if (result) attach(result);

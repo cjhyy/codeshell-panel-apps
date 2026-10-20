@@ -5,16 +5,17 @@
   "integrationVersion": 1,
   "esbuildVersion": "0.28.2",
   "output": "apps/design-studio/app/vendor/html2figma-browser.mjs",
-  "bytes": 194654,
-  "sha256": "9e5a825bd317222d9f961b667c7443075407bfadcb4620be7a2d3766c4063b4e",
+  "bytes": 201896,
+  "sha256": "1ecf41e3fb88a10d9a548a8cec3680708f323307f1cafa44f7f1595d5c78c2f3",
   "notice": {
     "output": "apps/design-studio/app/vendor/html2figma-NOTICE.md",
-    "bytes": 3541,
-    "sha256": "9f58d4d1a6d5a44dd1012102383b19b48f74405cab7c7137eeb0365cf5242167"
+    "bytes": 4184,
+    "sha256": "1a703972b4a424312df10556b187935f057c6c19987d2b6d0126717058811b48"
   },
   "runtimeInputs": [
     "third-party/html2figma/integration/entry.ts",
     "third-party/html2figma/integration/shared.ts",
+    "third-party/html2figma/integration/svg.ts",
     "third-party/html2figma/upstream/packages/browser/converter/convert.ts",
     "third-party/html2figma/upstream/packages/browser/converter/effectResolver.ts",
     "third-party/html2figma/upstream/packages/browser/converter/nodeBuilder.ts",

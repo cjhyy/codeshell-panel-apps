@@ -5248,6 +5248,148 @@ var html2figmaCore = (() => {
     }
   }
 
+  // third-party/html2figma/integration/svg.ts
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var XLINK_NS = "http://www.w3.org/1999/xlink";
+  var XMLNS_NS = "http://www.w3.org/2000/xmlns/";
+  var MAX_ELEMENTS = 2e3;
+  var MAX_REFERENCES = 256;
+  var MAX_DEPTH = 32;
+  var MAX_BYTES = 1024 * 1024;
+  var allowed = new Set(
+    "svg g path rect circle ellipse line polyline polygon defs clipPath mask linearGradient radialGradient stop pattern text tspan title desc metadata filter feGaussianBlur feOffset feBlend feColorMatrix feComposite feFlood feMerge feMergeNode feMorphology feTurbulence feDisplacementMap use symbol".toLowerCase().split(" ")
+  );
+  var fragment = /^#([a-z0-9_.:-]+)$/iu;
+  function captureStandaloneSvg(source) {
+    const ownerDocument = source.ownerDocument;
+    const view = ownerDocument.defaultView;
+    if (!view || source.namespaceURI !== SVG_NS || source.localName !== "svg")
+      throw Error("SVG \u6355\u83B7\u9700\u8981\u6D3B\u52A8\u6587\u6863\u5185\u7684 SVG \u6839\u8282\u70B9");
+    const clones = /* @__PURE__ */ new Map();
+    const ids = /* @__PURE__ */ new Map();
+    const completed = /* @__PURE__ */ new Set();
+    const active = /* @__PURE__ */ new Set();
+    let elementCount = 0;
+    let referenceCount = 0;
+    let bytes = 0;
+    const account = (value) => {
+      bytes += new TextEncoder().encode(value).length;
+      if (bytes > MAX_BYTES) throw Error("\u72EC\u7ACB SVG \u8D85\u8FC7 1 MiB \u4E0A\u9650");
+    };
+    const reference = (value) => {
+      const match = fragment.exec(value.trim());
+      if (!match) throw Error("SVG \u5F15\u7528\u5FC5\u987B\u662F\u540C\u4E00\u6587\u6863\u5185\u7684 #id\uFF0C\u4E0D\u80FD\u52A0\u8F7D\u5916\u90E8\u8D44\u6E90");
+      return match[1];
+    };
+    const references = (element) => {
+      const ids2 = [];
+      for (const attribute of [...element.attributes]) {
+        const name = attribute.name.toLowerCase();
+        if (name.startsWith("on") || name === "src" || name === "xml:base")
+          throw Error(`SVG \u4E0D\u5141\u8BB8 ${attribute.name} \u5C5E\u6027`);
+        if (name === "href" || name === "xlink:href") ids2.push(reference(attribute.value));
+        for (const url of attribute.value.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\s*\)/giu))
+          ids2.push(reference(url[1] ?? url[2] ?? url[3]));
+        if (/\\|@import|(?:javascript|vbscript|data|file)\s*:/iu.test(attribute.value))
+          throw Error("SVG \u4E0D\u5141\u8BB8\u6D3B\u52A8\u6837\u5F0F\u6216\u5916\u90E8\u8D44\u6E90");
+      }
+      if (element.localName === "use" && !element.hasAttribute("href") && !element.hasAttributeNS(XLINK_NS, "href"))
+        throw Error("SVG use \u7F3A\u5C11\u540C\u4E00\u6587\u6863\u5185\u7684 #id \u5F15\u7528");
+      return ids2;
+    };
+    const cloneTree = (original, depth = 0) => {
+      const existing = clones.get(original);
+      if (existing) return existing;
+      if (depth > MAX_DEPTH || ++elementCount > MAX_ELEMENTS)
+        throw Error("\u72EC\u7ACB SVG \u6700\u591A 2000 \u4E2A\u5143\u7D20\u53CA 32 \u5C42\u5D4C\u5957");
+      if (original.namespaceURI !== SVG_NS || !allowed.has(original.localName.toLowerCase()))
+        throw Error(`SVG \u4E0D\u5141\u8BB8 ${original.localName} \u5143\u7D20`);
+      references(original);
+      const id = original.getAttribute("id");
+      if (id && ids.has(id) && ids.get(id) !== original) throw Error(`SVG ID \u91CD\u590D\uFF1A${id}`);
+      if (id) ids.set(id, original);
+      const clone = original.cloneNode(false);
+      clones.set(original, clone);
+      account(original.localName);
+      for (const attribute of [...original.attributes]) account(attribute.name + attribute.value);
+      for (const child of [...original.childNodes]) {
+        if (child.nodeType === 1) clone.append(cloneTree(child, depth + 1));
+        else if (child.nodeType === 3) {
+          account(child.textContent ?? "");
+          clone.append(child.cloneNode(false));
+        }
+      }
+      return clone;
+    };
+    const root = cloneTree(source);
+    root.setAttributeNS(XMLNS_NS, "xmlns", SVG_NS);
+    root.setAttributeNS(XMLNS_NS, "xmlns:xlink", XLINK_NS);
+    const defs = ownerDocument.createElementNS(SVG_NS, "defs");
+    const attachDefinitions = () => {
+      if (!defs.childNodes.length || defs.parentNode) return;
+      if (++elementCount > MAX_ELEMENTS) throw Error("\u72EC\u7ACB SVG \u6700\u591A 2000 \u4E2A\u5143\u7D20");
+      root.prepend(defs);
+    };
+    const resolve = (id, depth) => {
+      if (active.has(id)) throw Error(`SVG \u5F15\u7528\u5305\u542B\u5FAA\u73AF\uFF1A#${id}`);
+      if (completed.has(id)) return;
+      if (depth > MAX_DEPTH || ++referenceCount > MAX_REFERENCES)
+        throw Error("\u72EC\u7ACB SVG \u6700\u591A 256 \u9879\u5F15\u7528\u53CA 32 \u5C42\u5F15\u7528\u94FE");
+      const original = ownerDocument.getElementById(id);
+      if (!original) throw Error(`SVG \u7F3A\u5C11\u540C\u4E00\u6587\u6863\u5185\u7684\u5F15\u7528\uFF1A#${id}`);
+      active.add(id);
+      if (!clones.has(original)) defs.append(cloneTree(original));
+      inspect(original, depth);
+      active.delete(id);
+      completed.add(id);
+    };
+    const inspect = (original, depth) => {
+      for (const id of references(original)) resolve(id, depth + 1);
+      for (const child of [...original.children]) inspect(child, depth);
+    };
+    inspect(source, 0);
+    attachDefinitions();
+    const properties = [
+      "color",
+      "fill",
+      "fill-opacity",
+      "fill-rule",
+      "stroke",
+      "stroke-opacity",
+      "stroke-width",
+      "stroke-linecap",
+      "stroke-linejoin",
+      "stroke-miterlimit",
+      "stroke-dasharray",
+      "stroke-dashoffset",
+      "clip-rule",
+      "clip-path",
+      "mask"
+    ];
+    const freeze = (original, insideDefinition) => {
+      const definition = insideDefinition || ["defs", "symbol"].includes(original.localName);
+      if (!definition) {
+        const clone = clones.get(original);
+        const computed = view.getComputedStyle(original);
+        for (const property of properties) {
+          const value = computed.getPropertyValue(property);
+          if (!value) continue;
+          clone.style.removeProperty(property);
+          clone.setAttribute(property, value);
+        }
+        references(clone);
+      }
+      for (const child of [...original.children]) freeze(child, definition);
+    };
+    freeze(source, false);
+    for (const clone of [...clones.values()]) for (const id of references(clone)) resolve(id, 0);
+    attachDefinitions();
+    const serialized = new realm.XMLSerializer().serializeToString(root);
+    if (new TextEncoder().encode(serialized).length > MAX_BYTES)
+      throw Error("\u72EC\u7ACB SVG \u8D85\u8FC7 1 MiB \u4E0A\u9650");
+    return serialized;
+  }
+
   // third-party/html2figma/integration/entry.ts
   function captureLayoutValues(tree) {
     const values = /* @__PURE__ */ new Map();
@@ -5284,10 +5426,19 @@ var html2figmaCore = (() => {
     const tree = traverseDOM(root, { maxDepth: options.maxDepth });
     if (!tree) return null;
     const values = captureLayoutValues(tree);
+    const svgResources = /* @__PURE__ */ new Map();
+    const captureSvg = (node) => {
+      if (node.tag === "svg" && node.metadata?.semantic && node.domNode instanceof realm.Element)
+        svgResources.set(node.metadata.semantic, captureStandaloneSvg(node.domNode));
+      for (const child of node.children) captureSvg(child);
+    };
+    captureSvg(tree);
     const result = renderToDesignDSL(tree, options);
     const attach = (node) => {
       const cssLayout = node.nodeType !== "text" && node.semantic && values.get(node.semantic);
       if (cssLayout && Object.keys(cssLayout).length > 0) node.cssLayout = cssLayout;
+      if (node.nodeType === "svg" && node.semantic && svgResources.has(node.semantic))
+        node.svgContent = svgResources.get(node.semantic);
       if (node.nodeType === "container") for (const child of node.children) attach(child);
     };
     if (result) attach(result);

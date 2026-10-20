@@ -276,3 +276,90 @@ test("capture retains CSS sizing intent separately from resolved pixels and does
   assert.deepEqual(f.externalRequests, []);
   assert.deepEqual(f.errors, []);
 });
+
+test("standalone SVG capture copies reference chains and inherited colors without changing original symbols or use nodes", async (t) => {
+  const f = await fixture(t);
+  const result = await f.page.evaluate(async () => {
+    const { convertToDesignDSL } = await import("/html2figma-browser.mjs");
+    document.body.innerHTML =
+      '<svg style="display:none"><symbol id="check" viewBox="0 0 16 16"><path fill="currentColor" d="M0 0H16V16Z"/></symbol><symbol id="alias"><use href="#check"/></symbol></svg><svg id="icon" width="24" height="24" style="color:rgb(13,110,253)" fill="currentColor"><use xlink:href="#alias"/></svg>';
+    const before = document.documentElement.outerHTML;
+    const tree = convertToDesignDSL(document.querySelector("#icon"));
+    const resource = new DOMParser().parseFromString(tree.svgContent, "image/svg+xml");
+    return {
+      unchanged: before === document.documentElement.outerHTML,
+      xml: tree.svgContent,
+      parseErrors: resource.querySelectorAll("parsererror").length,
+      aliases: resource.querySelectorAll("#alias, #check").length,
+      color: resource.documentElement.getAttribute("color"),
+    };
+  });
+  assert.equal(result.unchanged, true);
+  assert.equal(result.parseErrors, 0);
+  assert.equal(result.aliases, 2);
+  assert.equal(result.color, "rgb(13, 110, 253)");
+  assert.match(result.xml, /xmlns:xlink="http:\/\/www\.w3\.org\/1999\/xlink"/u);
+  assert.deepEqual(f.externalRequests, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("standalone SVG paint and clip dependencies stay local and definitions are not duplicated by child-first references", async (t) => {
+  const f = await fixture(t);
+  const result = await f.page.evaluate(async () => {
+    const { convertToDesignDSL } = await import("/html2figma-browser.mjs");
+    document.body.innerHTML =
+      '<svg style="display:none"><defs><linearGradient id="base"><stop stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient><linearGradient id="paint" href="#base"/><clipPath id="clip"><rect width="12" height="24"/></clipPath><symbol id="shape"><path id="path" d="M0 0H12V12Z"/></symbol></defs></svg><svg id="icon" width="24" height="24"><rect width="24" height="24" fill="url(#paint)" clip-path="url(#clip)"/><use href="#path"/><use href="#shape"/></svg>';
+    const before = document.documentElement.outerHTML;
+    const tree = convertToDesignDSL(document.querySelector("#icon"));
+    const parsed = new DOMParser().parseFromString(tree.svgContent, "image/svg+xml");
+    const image = new Image();
+    image.src = "data:image/svg+xml;base64," + btoa(tree.svgContent);
+    await image.decode();
+    return {
+      unchanged: before === document.documentElement.outerHTML,
+      errors: parsed.querySelectorAll("parsererror").length,
+      ids: [...parsed.querySelectorAll("[id]")].map((node) => node.id),
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+    };
+  });
+  assert.equal(result.unchanged, true);
+  assert.equal(result.errors, 0);
+  assert.deepEqual(
+    result.ids.filter((id) => ["base", "paint", "clip", "shape", "path"].includes(id)).sort(),
+    ["base", "clip", "paint", "path", "shape"],
+  );
+  assert.equal(result.width, 24);
+  assert.equal(result.height, 24);
+  assert.deepEqual(f.externalRequests, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("standalone SVG byte and nesting budgets reject oversized clones without changing the source document", async (t) => {
+  const f = await fixture(t);
+  const result = await f.page.evaluate(async () => {
+    const { convertToDesignDSL } = await import("/html2figma-browser.mjs");
+    const errors = [],
+      unchanged = [];
+    for (const content of [
+      "<title>" + "x".repeat(1024 * 1024) + '</title><rect width="24" height="24"/>',
+      "<g>".repeat(33) + '<rect width="24" height="24"/>' + "</g>".repeat(33),
+    ]) {
+      document.body.innerHTML = '<svg id="icon" width="24" height="24">' + content + "</svg>";
+      const before = document.documentElement.outerHTML;
+      try {
+        convertToDesignDSL(document.querySelector("#icon"));
+        errors.push(null);
+      } catch (error) {
+        errors.push(error.message);
+      }
+      unchanged.push(before === document.documentElement.outerHTML);
+    }
+    return { errors, unchanged };
+  });
+  assert.match(result.errors[0], /1 MiB/u);
+  assert.match(result.errors[1], /32 层嵌套/u);
+  assert.deepEqual(result.unchanged, [true, true]);
+  assert.deepEqual(f.externalRequests, []);
+  assert.deepEqual(f.errors, []);
+});
