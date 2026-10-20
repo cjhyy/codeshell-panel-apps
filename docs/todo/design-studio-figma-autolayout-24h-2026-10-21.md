@@ -978,3 +978,53 @@ W3C已定位具体解析错误：link stylesheet替换为style时丢失media=pri
 变差，说明正确屏幕样式还暴露已有响应式问题。独立新工作树正在同时修Panel与维护的
 standalone HTML插件，只保留media并加screen/print/视口条件回归，尚未合并本组合。
 目标继续active，24小时截止10月22日00:31 Asia/Singapore不变。
+
+
+### media 条件、空区块与 Grid 组合（约 04:44）
+
+`9e26969` 正常合入 media 修复 `1ca320e`：link stylesheet 内联为 style 时保留实际
+media 属性，Panel 与维护的 standalone HTML 插件一致处理。screen/print×视口条件、
+folder preview 的真实浏览器控制通过，独立审查未发现阻断。W3C同一冻结源的首次
+445663→53958、重排445941→75772，但窄屏141626→234531，后者如实保留为回归；
+不能把单次屏幕像素改善当作响应式完成。
+
+`6b08d75` 新增捕获时的 cssEmptyBlock 真 DOM 证据：只允许真实无元素子项、无有效
+文字、无生成内容的 block/flow-root；匿名文字、伪元素、表单/列表标记不能冒充空框。
+受限空块恢复 VERTICAL Auto Layout，有效 padding 含物理边框，源 ID/图层数量不变。
+交叉审查实际复现 aspect-ratio auto-height200→1、min-height50%120→1 的问题，最终
+guard 拒绝比例尺寸、百分比 padding/min/max、contain 等未建模情况并保留测量几何；
+没有直接放开所有空容器。4个生产HTML×SVG三模式共12次strict0，前端2宽共8次0，
+padding编辑与保存重开一致；真实DOM证据与负控制也通过。
+
+`53604ce` 正常合入 `5cc5f9f`，Grid新增严格单HUG行＋真实VERTICAL Fill cell＋固定
+高度Rectangle内容的内在高度支持；共享测量/布局/原生可表达性检查，导入使用完整子树
+预检，拒绝时只清除相应容器/直接关系，不破坏嵌套Grid。固定500px内容允许自然溢出，
+HUG内容40→80→40会使整行及不透明Fill背景同步变化，前端真实CSS也可编辑。
+Text、跨行、额外padding、约束/描边等尚未放开，没有用旧被拉伸cell高度当Hug依据。
+真实fixture同时注明官方JSON缺少Grid数组，补充来自同次live API的生产补全字段，
+两份来源分别保留SHA。作者147项/最终45项检查通过；root组合6个真实测试文件
+`round19-grid-empty-media-targets.log` **118/118、0失败**。组合typecheck、validate、
+三份生成物check、scoped build:check全部通过；尚未把旧完整main/UI门禁冒充本组合。
+
+新实际生产空block验收 `c7c6550a` / 页62:858、viewport62:859：冻结HTML仅把之前
+已验收CSSFill的display:flex换为display:block，4节点、0图片文字/额外绘制子项，
+两个空块均真正VERTICAL/AUTO Fill；production main SHA
+`0295f8273ec3f44cd178771a2d7cdb217648b195dc6b693beeb75888e3a902eb` 未修改。
+640子项290/322，仅外框改400后170/202，再回640；官方接口几何delta0。
+两宽原生PNG、官方回导、回导重新布局共 **6次changedPixels0/max0、0警告**。
+完整源码/参考/PNG/差图/哈希/清理回执在 `evidence/real-figma/empty-block-fill/`。
+插件关闭，relay正常exit0，注册code/ui/manifest精确恢复；原页面保留，未删除页面。
+
+原生included min/max控制 `72da637d`：10组40快照/32新自有节点，458数值与224精确
+getter检查全部delta0。设置maxB1再minB56会把max自动抬至56，反向设置则把min压至1；
+8次相反限制被SDK强制改写。先预留basis、按content cap分配的模型对两批120快照残差0，
+但正content minimum、center/end与极小外框前端映射仍未证明。具体可逆限制来源方案在
+`inactive-frame-fill-analysis/native-fill-model-design.md`，未据此引入全局新策略。
+
+真实Text Grid研究 `a4e5dd91` 已完成8组×7阶段、58新自有节点，原页面/选择元数据
+一致；raw SHA `6dd1cc6d09c5f5d0bd391d538a6255fef61fecadf263cf3f597eb0d072c931d6`。
+显式Inter Regular加载在创建新页前完成；内容2→4→2行与仅外框缩放自然执行，待独立
+分析高度/换行与两种setter顺序，暂不声称Text Grid生产支持或像素通过。
+定制main研究证据在 `native-grid-text-intrinsic-height-analysis/`，与未修改main的上述
+生产验收分别记录。研究插件关闭、relay正常exit0、三注册文件精确恢复。
+当前仍62:858/viewport62:859宽640。24小时目标持续active，截止10月22日00:31不变。
