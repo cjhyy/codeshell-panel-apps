@@ -363,7 +363,9 @@ function paintDeclarations(node) {
   }
   if (node.type === "ellipse") declarations.push(["border-radius", "50%"]);
   if (node.shadow) {
-    shadows.push(`${cssNumber(node.shadow.x)} ${cssNumber(node.shadow.y)} ${cssNumber(node.shadow.blur)} rgba(${Number.parseInt(node.shadow.color.slice(1, 3), 16)},${Number.parseInt(node.shadow.color.slice(3, 5), 16)},${Number.parseInt(node.shadow.color.slice(5, 7), 16)},${node.shadow.opacity})`);
+    const shadow = `${cssNumber(node.shadow.x)} ${cssNumber(node.shadow.y)} ${cssNumber(node.shadow.blur)} rgba(${Number.parseInt(node.shadow.color.slice(1, 3), 16)},${Number.parseInt(node.shadow.color.slice(3, 5), 16)},${Number.parseInt(node.shadow.color.slice(5, 7), 16)},${node.shadow.opacity})`;
+    if (node.type === "text") declarations.push(["text-shadow", shadow]);
+    else shadows.push(shadow);
   }
   if(shadows.length)declarations.push(["box-shadow",shadows.join(",")]);
   return declarations;
