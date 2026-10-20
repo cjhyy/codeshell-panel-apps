@@ -1349,3 +1349,67 @@ acceptance-runs，独立文件审计和完整归档现已完成于
 又清理3个已合入main、包含ignored/untracked检查也为空、且各负责人确认无运行依赖的
 旧border、px行高和padded Grid工作树/分支；外部证据父目录全部保留。收据
 `worktree-cleanup-receipt-20261021-0619.json`，活跃工作树及未合入的旧分支继续保留。
+
+
+### 第28轮：CENTER 行、图片 MIME、HTML number 行高与真实多段落（约 06:42）
+
+三个独立修复经正常merge形成 `462e735716f23eb2f2663c741d7a8192573beb4a`，生成文件均由
+各自builder重建，未手改生成逻辑。完整主门禁 **593总/592通过/1跳过/0失败**（178858ms），
+完整UI **104总/103通过/1跳过/0失败**（112791ms）；合计695通过、2跳过。typecheck、
+validate、三份生成物check、Design Studio scoped build check均通过。两组113个app文件
+完整快照和起止HEAD相同，`round28-full-gates-receipt.json` 绑定日志、精确runner与原生
+清理收据。全库Video Studio的旧构建差异不在本次Design Studio通过范围。
+
+`55ea2f3` 仅放行已由F456实际证明的CENTER/excluded底边1、row padding0、透明真实
+cell与单普通Text的Grid内在高度关系；不推广到rectangle、不透明cell或任意CENTER。
+实际67节点/9Grid/27Text的五阶段CPU回放、精确规则色正例和不透明负例均保留；前端
+非INSIDE独立侧边的拒绝仍明确。新增CENTER生产往返尚未执行，不能以研究handler代替。
+
+`1fbe4b5` 依据有界真实图片字节识别local/data raster MIME，保留原始资源、去重和预算；
+SVG/raster混淆继续拒绝，实际SVG声明的栅格不能因猜测而变成额外可见内容。真实mdo.png
+的JPEG字节不改名/重编码，最小头像三个模式从各1089差异降到0，25项解码矩阵通过。
+整页Headers仍是 **309241/589188/370744**（首次/重排/窄屏，max255），不是整页通过；
+两份头像保留、invalid-image诊断消失，主要inset-shadow差异仍存在。
+
+`73d9ea0` 只对实际Element、单一匹配样式和Typed OM unit:number证据保留未取整的
+有界CSS比例，adapter、普通文字和pre/nowrap恢复共享决定。真实GOV的Typed OM值
+1.3157894897460938不再被geometry helper变为1.32；computed px/%/em等仍保留原回退
+并明确作者依赖未证明，不假定所有resolved px为固定行高。继承/var/calc-number、
+保存/重开和最小三模式像素0；完整GOV两个页面仍分别28133/28133/63753、
+7536/7536/14116，失败不变。另发现并单独保留字号19→24→19时SVG **0→865→0** 的
+既存HTML baseline刷新缺失，前端三阶段0；后续独立修复正在验证，不混入本提交。
+
+真实整张无actions双段落Grid研究 `0172eaef` 已完成并关闭，使用新27节点页而不改旧页。
+完整DL→4DIV→8DT/DD，DD内真实wrapper(P(Text))+P(Text)、9Text均保留，普通Auto Layout
+Fill/Hug依赖不改为绝对定位。电话1→4→1行使P25→100→25、wrapper36→111→36、
+contact81→156→81、DL269→344→269；仅改字符或外层width1220→708→1220，未修补
+后代高度/模式。160作者纵向数值精确0，5625可用/保护字段独立核查，官方/live盒子0，
+22352个规则像素精确RGBA206/206/206/255。初始、字符恢复和宽度恢复的完整SDK/官方
+JSON/PNG字节一致；初始PNG SHA `ad97d9ee8c703836c15b412c0c1007afa6cae6ba4b2c9508786b9daa94a8807b`。
+原严格报告仍false：45项为9Text×5阶段的SDK fontName额外variationSettings，另32项为
+708宽时x/width的原生浮点差异，最大相对理想值2.441406252e-5；无y/height/层级缺失。
+与冻结CSS相比key/value宽各差+0.009384155/−0.009368896px，未加容差、偏移或取整。
+这不是GDS字体/整页CSS像素通过。完整归档、首次失败与补充独立审计在
+`native-table-multi-p-analysis/actual-0172eaef/`，下一步是有界递归V/Hug内在高度，再整体
+提升包含contact的DL，不能永久排除最复杂行。补充更正旧8df观察：当前f455/462外层
+body/DL/rows已能缩到768/708，尚未恢复的是cell列关系（仍386/834和旧valuex416）。
+
+真实阴影能力 `e57d7a65` 同样完成/关闭：7新节点、5case、3宽度阶段、21导出，几何0，
+每个frame恢复的640 PNG字节相同，原页/selection不变。相同CSS参数直接赋原生INNER
+不能宣称相同画面：640透明原图Header alpha0.1 **15449/max39**、无fill **30720/max50**、
+白不透明控制 **27896/max43**；Cover不透明无边框 **130308/max3**。无fill内区29440像素
+原生alpha全0，CSS全部有阴影；有边框顶部中心原生alpha93、CSS60。差异包含真实
+遮罩/边框语义，不能靠改blur或偷偷补不透明底消除。两层黑色effect getter次序保留，
+不能据黑色图证明任意彩色层的视觉叠放次序。原始32文件、透明PNG和实际白boardPNG
+各自保留，分析在 `native-inset-shadow-effects-analysis/analysis-e57d7a65.json`。
+两个研究relay均自然exit0，插件已关闭，固定ORIG3三份注册字节恢复、双锁释放，
+loopback端口关闭；`round28-native-cleanup-receipt.json` 记录独立复核。
+
+更宽的9834闲置stroke审计在原94项之外加入明确列出的weight等10个REST字段：64个
+空strokes节点共640检查，现记录 **152差异**（37 Frame INSIDE→CENTER、27 Text
+OUTSIDE→CENTER、58 weight1→0、30 included true→省略）。3个有paint行明确排除。
+旧94项窄范围报告不改写，原图0不能证明以后激活描边的语义；候选方案及原始逐字段
+清单在 `inactive-stroke-intent-audit/`，尚未实现，不以Figma默认值补猜。
+
+24小时目标仍active，截止10月22日00:31；未push、发布或安装Host。下一批独立分支
+继续HTML baseline、真实多段落内在高度和Text shadow；已有所有严格失败继续保留。
