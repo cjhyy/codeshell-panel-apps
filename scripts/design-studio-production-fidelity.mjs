@@ -18,6 +18,7 @@ import { loadFidelityLocalFixture } from "./design-studio-fidelity-local-assets.
 // Frozen folder: --fixture-dir <selected-folder> [--html relative/source.html]
 // [--selector '#fixture']. Reports archive that exact local snapshot; external
 // URLs remain blocked. --html alone keeps the original self-contained workflow.
+// --resize-mode viewport-only resizes only the outer imported viewport frame.
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const appRoot = join(root, "apps/design-studio/app");
@@ -95,21 +96,22 @@ async function settleFontsAndPaint(page) {
   });
 }
 
-async function resizeDocument(page, document, width, rootId) {
+async function resizeDocument(page, document, width, rootId, resizeMode) {
   const source = await page.evaluate(
-    async ({ source, width, rootId }) => {
+    async ({ source, width, rootId, resizeMode }) => {
       const { normalizeDesignDocument, serializeDesignDocument } =
         await import("/app/document.mjs");
       const { applyAllAutoLayouts } = await import("/app/layout.mjs");
       const resized = normalizeDesignDocument(JSON.parse(source));
       resized.canvas.width = width;
       for (const node of resized.nodes) {
-        if (node.id === "html-viewport" || node.id === rootId) node.width = width;
+        if (node.id === "html-viewport" ||
+            (resizeMode === "viewport-and-root" && node.id === rootId)) node.width = width;
       }
       applyAllAutoLayouts(resized.nodes);
       return serializeDesignDocument(resized);
     },
-    { source: serializeDesignDocument(document), width, rootId },
+    { source: serializeDesignDocument(document), width, rootId, resizeMode },
   );
   return normalizeDesignDocument(JSON.parse(source));
 }
@@ -123,7 +125,9 @@ export async function runProductionFidelity({
   width = 640,
   height = 240,
   narrowWidth = 400,
+  resizeMode = "viewport-and-root",
 } = {}) {
+  assert(["viewport-only", "viewport-and-root"].includes(resizeMode), "Unknown resize mode");
   output ??= await mkdtemp(join(tmpdir(), "design-production-fidelity-"));
   await mkdir(output, { recursive: true });
   const browser = await chromium.launch();
@@ -201,6 +205,7 @@ export async function runProductionFidelity({
       startedAt: new Date().toISOString(),
       thresholds: { channelTolerance, maximumChangedRatio },
       viewport: { width, height, narrowWidth },
+      resizeMode,
       rendering: "exportDesignSvg in Chromium; layout uses browser text metrics when available",
       cases: [],
     };
@@ -370,7 +375,7 @@ export async function runProductionFidelity({
         const candidate =
           mode === "imported"
             ? document
-            : await resizeDocument(page, document, frameWidth, main?.id);
+            : await resizeDocument(page, document, frameWidth, main?.id, resizeMode);
         await page.setViewportSize({ width: frameWidth, height });
         let source = original;
         if (mode === "narrow") {
@@ -378,6 +383,7 @@ export async function runProductionFidelity({
           source = await referencePage.screenshot({ animations: "disabled" });
         }
         const svg = exportDesignSvg(candidate, { resourceDataUrls, maxBytes: 4 * 1024 * 1024 });
+        await writeFile(join(directory, `${mode}.codesign.json`), serializeDesignDocument(candidate));
         await page.setContent(
           `<!doctype html><style>html,body{margin:0;background:white}svg{display:block}</style>${svg}`,
         );
@@ -453,6 +459,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     width,
     height,
     narrowWidth,
+    resizeMode: argument("--resize-mode", "viewport-and-root"),
   });
   console.log(JSON.stringify(result, null, 2));
   if (!result.passed && !result.recordOnly) process.exitCode = 1;

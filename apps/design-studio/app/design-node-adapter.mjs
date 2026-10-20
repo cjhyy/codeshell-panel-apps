@@ -4,6 +4,7 @@ import { normalizeDesignDocument, MAX_DESIGN_NODES_PER_PAGE } from "./document.m
 import { createDesignResourcePersistencePlan, MAX_DESIGN_RESOURCES } from "./resource-store.mjs";
 import { normalizeFigmaAsset } from "./figma-assets.mjs";
 import { planHtmlBlockFlow } from "./html-block-flow.mjs";
+import { planHtmlViewportFlow } from "./html-viewport-flow.mjs";
 import { cssLinearBackgroundPaints } from "./css-linear-gradient.mjs";
 import { representativeDesignFill } from "./paint.mjs";
 import { planHtmlGrid, sizeHtmlGridChild, validateHtmlGrid, removeHtmlGrid } from "./html-grid.mjs";
@@ -1161,7 +1162,8 @@ export async function designNodeToV3(tree, options = {}) {
   const bounds = options.captureBounds;
   const viewportWidth = bounds ? bounds.right - bounds.left : options.viewportWidth;
   const viewportHeight = bounds ? bounds.bottom - bounds.top : options.viewportHeight;
-  const viewport = viewportWidth !== undefined || viewportHeight !== undefined;
+  const viewport = options.includeViewport !== false &&
+    (viewportWidth !== undefined || viewportHeight !== undefined);
   if (
     viewport &&
     (![viewportWidth, viewportHeight].every(
@@ -1172,10 +1174,13 @@ export async function designNodeToV3(tree, options = {}) {
     throw new Error("HTML 捕获视口宽高必须在 100–10000 范围内");
   let roots = [converted];
   if (viewport) {
-    if (bounds && (bounds.left || bounds.top)) {
+    const relation = options.viewportRelation;
+    if ((bounds && (bounds.left || bounds.top)) || relation) {
+      const offsetX = finite(relation?.x) - finite(bounds?.left);
+      const offsetY = finite(relation?.y) - finite(bounds?.top);
       const shift = (node) => {
-        node.x = number(node.x - bounds.left, 0, -20000, 20000, node.id, "x");
-        node.y = number(node.y - bounds.top, 0, -20000, 20000, node.id, "y");
+        node.x = number(node.x + offsetX, 0, -20000, 20000, node.id, "x");
+        node.y = number(node.y + offsetY, 0, -20000, 20000, node.id, "y");
         for (const child of node.children ?? []) shift(child);
       };
       shift(converted);
@@ -1196,6 +1201,22 @@ export async function designNodeToV3(tree, options = {}) {
       contentClipping: "intentional",
       children: roots,
     });
+    const flow = planHtmlViewportFlow(tree, converted, relation, viewportWidth, viewportHeight, bounds);
+    if (flow?.unsupported) warn("viewport-flow-fixed", converted.id, flow.unsupported);
+    else if (flow) {
+      Object.assign(wrapper, {
+        layout: "vertical", layoutWrap: "none", rowGap: 0, columnGap: 0,
+        paddingTop: flow.top, paddingLeft: flow.left, paddingRight: flow.right, paddingBottom: flow.bottom,
+      });
+      delete converted.layoutPositioning;
+      converted.layoutAlignSelf = "start";
+      converted.layoutSizingHorizontal = flow.fill ? "fill" : "fixed";
+      if (flow.fillHeight) converted.layoutSizingVertical = "fill";
+      if (flow.crossAlign) autoMarginOverrides.set(tree, {
+        handled: new Set(["left", "right"]), singleMain: false, crossAlign: flow.crossAlign,
+      });
+      wrapper.children = [wrapCrossAutoMargins(tree, converted, wrapper)];
+    }
     roots = [wrapper];
   }
   const rootColor = tree.background?.layers?.find((layer) => layer.type === "color")?.color;

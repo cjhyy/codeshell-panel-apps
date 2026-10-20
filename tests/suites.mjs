@@ -124,6 +124,7 @@ export const suites = [
         "tests/apps/design-studio/html2figma-import.test.mjs",
         "tests/apps/design-studio/html-auto-margins.test.mjs",
         "tests/apps/design-studio/html-block-flow.test.mjs",
+        "tests/apps/design-studio/html-viewport-flow.test.mjs",
         "tests/apps/design-studio/figma-plugin-v3.test.mjs",
       ],
       // GPU processes need an exclusive run: concurrent browser suites can

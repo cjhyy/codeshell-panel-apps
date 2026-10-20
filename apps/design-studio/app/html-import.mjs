@@ -1,4 +1,5 @@
-import { captureHtmlToDesign, hangingBaselineOffset } from "./html-capture.mjs";
+import { captureHtmlToDesign, hangingBaselineOffset, parseCssColor } from "./html-capture.mjs";
+import { captureHtmlViewportRelation } from "./html-viewport-flow.mjs";
 import { convertToDesignDSL, HTML2FIGMA_PROVENANCE } from "./vendor/html2figma-browser.mjs";
 import { designNodeToV3 } from "./design-node-adapter.mjs";
 import { measureFigmaTextDocument } from "./text-metrics.mjs";
@@ -421,11 +422,13 @@ export async function captureWorkspaceHtmlResult({
   name,
   sha256Bytes,
   engine = "html2figma",
+  includeViewport = true,
 }) {
   if (!isSafeHtmlImportPath(sourcePath)) {
     throw new Error("HTML 路径必须是工作区内安全的相对 .html 文件");
   }
   if (typeof readText !== "function") throw new Error("HTML 导入缺少工作区读取能力");
+  if (typeof includeViewport !== "boolean") throw new Error("includeViewport 必须为布尔值");
   if (
     typeof rootSelector !== "string" ||
     !rootSelector.trim() ||
@@ -490,12 +493,13 @@ export async function captureWorkspaceHtmlResult({
       viewportHeight,
       sha256Bytes,
       fonts: prepared.fonts,
-      captureBounds: {
+      includeViewport,
+      ...(includeViewport ? { captureBounds: {
         left: 0,
         top: 0,
         right: viewportWidth,
         bottom: viewportHeight,
-      },
+      } } : {}),
     };
     if (engine === "measured")
       return {
@@ -505,6 +509,13 @@ export async function captureWorkspaceHtmlResult({
       };
     const tree = convertToDesignDSL(root);
     if (!tree) throw new Error("html2figma 没有生成可见 DesignNode");
+    if (includeViewport) {
+      options.viewportRelation = captureHtmlViewportRelation(root);
+      const htmlColor = parseCssColor(frameWindow.getComputedStyle(frameDocument.documentElement).backgroundColor);
+      const bodyColor = frameDocument.body && parseCssColor(frameWindow.getComputedStyle(frameDocument.body).backgroundColor);
+      const canvasColor = htmlColor?.alpha ? htmlColor : bodyColor;
+      options.background = canvasColor?.alpha === 1 ? canvasColor.hex : "#ffffff";
+    }
     const result = await designNodeToV3(tree, options);
     alignHtmlTextBaselines(result.document, frameDocument);
     await enableHtmlTextReflow(result.document, frameDocument);
