@@ -1,3 +1,4 @@
+import { mainAxisGap } from "./layout-spacing.mjs";
 import { gridPlacements, gridTrackSizes, effectiveGridRows } from "./grid.mjs";
 /* Auto-layout and reusable-component helpers for Design Studio v3 documents. */
 import { descendantIds, setNodeTreePosition } from "./geometry.mjs";
@@ -106,7 +107,7 @@ function axisSizeProperty(axis) {
 function axisSizeLimits(node, axis) {
   const prefix = axis === "horizontal" ? "Width" : "Height";
   const minimum = Math.max(1, finite(node?.[`min${prefix}`], 1));
-  const maximum = Math.max(minimum, finite(node?.[`max${prefix}`], Number.POSITIVE_INFINITY));
+  const maximum = Math.max(minimum, Math.min(20000, finite(node?.[`max${prefix}`], 20000)));
   return { minimum, maximum };
 }
 
@@ -144,6 +145,8 @@ function distributeFillSizes(children, axis, available) {
 
 function axisGap(container, axis) {
   const property = axis === "horizontal" ? "columnGap" : "rowGap";
+  if ((container.layout === "horizontal" && axis === "horizontal") ||
+      (container.layout === "vertical" && axis === "vertical")) return finite(mainAxisGap(container));
   return Math.max(0, finite(container[property], Math.max(0, finite(container.gap))));
 }
 

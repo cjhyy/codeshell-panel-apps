@@ -4,7 +4,7 @@ import { cssCornerRadii } from "./corner-radii.mjs";
 import { normalizeDesignDocument, MAX_DESIGN_NODES_PER_PAGE } from "./document.mjs";
 import { createDesignResourcePersistencePlan, MAX_DESIGN_RESOURCES } from "./resource-store.mjs";
 import { normalizeFigmaAsset } from "./figma-assets.mjs";
-import { planHtmlBlockFlow } from "./html-block-flow.mjs";
+import { planHtmlBlockFlow, htmlBlockHorizontalBleed } from "./html-block-flow.mjs";
 import { planHtmlViewportFlow } from "./html-viewport-flow.mjs";
 import { cssLinearBackgroundPaints } from "./css-linear-gradient.mjs";
 import { representativeDesignFill } from "./paint.mjs";
@@ -488,7 +488,7 @@ export async function designNodeToV3(tree, options = {}) {
         warn("grid-fixed-geometry", node.id, `${error.message}；已保留原始 Grid 测量几何。`);
       }
     }
-    const block = planHtmlBlockFlow(source, coordinateSpace);
+    const block = planHtmlBlockFlow(source, coordinateSpace, { x: node.x, y: node.y });
     if (block?.unsupported)
       warn("block-flow-fixed", node.id, block.unsupported);
     else if (block) {
@@ -827,6 +827,21 @@ export async function designNodeToV3(tree, options = {}) {
       overlap = 0;
     }
     node = wrapCrossAutoMargins(item.source, node, parent);
+    if (item.bleed) {
+      const magnitude = Math.max(item.bleed.left, item.bleed.right) + 1;
+      const width = Math.max(1, parent.width - (parent.paddingLeft ?? parent.padding ?? 0) - (parent.paddingRight ?? parent.padding ?? 0));
+      const wrapper = base(`${node.id}-horizontal-bleed`, "frame", `${node.name} horizontal margins`, {
+        x: parent.x + (parent.paddingLeft ?? parent.padding ?? 0), y: node.y, width, height: node.height,
+      });
+      const spacer = (side, size, x) => base(`${node.id}-bleed-${side}`, "rectangle", `Horizontal margin ${side}`, { x, y: node.y, width: size, height: 1 });
+      const before = spacer("start", magnitude - item.bleed.left, wrapper.x);
+      const after = spacer("end", magnitude - item.bleed.right, node.x + node.width - magnitude);
+      Object.assign(wrapper, { layout: "horizontal", layoutWrap: "none", gap: -magnitude, padding: 0,
+        alignItems: "start", justifyContent: "start", layoutSizingHorizontal: "fill", layoutSizingVertical: "hug",
+        clipContent: false, children: [before, node, after] });
+      node.layoutSizingHorizontal = "fill";
+      node = wrapper;
+    }
     if (!gap && !overlap) return node;
     const wrapper = base(`${node.id}-block-spacing`, "frame", `${node.name} block spacing`, {
       x: node.x, y: node.y - gap, width: node.width,
@@ -868,8 +883,8 @@ export async function designNodeToV3(tree, options = {}) {
           const sides = ["top", "right", "bottom", "left"];
           const values = sides.map((side) => cssLayoutValue(child, `margin-${side}`));
           if (
-            !values.includes("auto") ||
-            !values.every((value) => value === "auto" || /^0(?:\.0+)?(?:px)?$/u.test(value))
+            !htmlBlockHorizontalBleed(child) && (!values.includes("auto") ||
+            !values.every((value) => value === "auto" || /^0(?:\.0+)?(?:px)?$/u.test(value)))
           )
             return wrapper;
           const recovered = {

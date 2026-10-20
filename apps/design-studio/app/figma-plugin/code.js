@@ -1,3 +1,6 @@
+/* BEGIN GENERATED SPACING RUNTIME */
+"use strict";var CodeShellFigmaSpacing=(()=>{var t=Object.defineProperty;var p=Object.getOwnPropertyDescriptor;var w=Object.getOwnPropertyNames;var c=Object.prototype.hasOwnProperty;var e=(r,a)=>{for(var o in a)t(r,o,{get:a[o],enumerable:!0})},f=(r,a,o,l)=>{if(a&&typeof a=="object"||typeof a=="function")for(let i of w(a))!c.call(r,i)&&i!==o&&t(r,i,{get:()=>a[i],enumerable:!(l=p(a,i))||l.enumerable});return r};var y=r=>f(t({},"__esModule",{value:!0}),r);var G={};e(G,{mainAxisGap:()=>u,validateLayoutSpacing:()=>n});var u=r=>r?.[r.layout==="vertical"?"rowGap":"columnGap"]??r?.gap??0;function n(r){for(let o of["gap","rowGap","columnGap"])if(r[o]!==void 0&&(!Number.isFinite(r[o])||r[o]<-2e3||r[o]>2e3))throw new Error(`${o} 必须为 -2000–2000 的有限间距`);if(!["gap","rowGap","columnGap"].some(o=>r[o]<0))return;let a=r.layout==="horizontal";if(!["horizontal","vertical"].includes(r.layout))throw new Error("负间距只支持水平或垂直主轴；Grid 和自由布局不能使用负间距");if(r.layoutWrap&&r.layoutWrap!=="none")throw new Error("负间距换行尚不能可靠映射到原生与 CSS 布局");if(r.layoutReverse)throw new Error("负间距反向布局尚不支持");if(r[a?"rowGap":"columnGap"]<0)throw new Error("交叉轴间距不能为负数");if(r[a?"layoutSizingHorizontal":"layoutSizingVertical"]==="hug")throw new Error("负间距主轴的 Hug 尺寸尚未验证；请使用固定或 Fill 尺寸")}return y(G);})();
+/* END GENERATED SPACING RUNTIME */
 /* BEGIN GENERATED GRID RUNTIME */
 "use strict";var CodeShellFigmaGrid=(()=>{var y=Object.defineProperty;var R=Object.getOwnPropertyDescriptor;var E=Object.getOwnPropertyNames;var C=Object.prototype.hasOwnProperty;var z=(i,r)=>{for(var t in r)y(i,t,{get:r[t],enumerable:!0})},v=(i,r,t,n)=>{if(r&&typeof r=="object"||typeof r=="function")for(let a of E(r))!C.call(i,a)&&a!==t&&y(i,a,{get:()=>r[a],enumerable:!(n=R(r,a))||n.enumerable});return i};var M=i=>v(y({},"__esModule",{value:!0}),i);var $={};z($,{configureNativeGrid:()=>S,finishNativeGrid:()=>I,nativeGridPlan:()=>m,positionNativeGridChild:()=>G,validateGridFields:()=>A});var N=Object.freeze(["gridRows","gridColumnSizes","gridRowSizes","gridItemsPositioning","gridAutoTracks"]),b=Object.freeze(["gridRowAnchorIndex","gridColumnAnchorIndex","gridChildHorizontalAlign","gridChildVerticalAlign"]),h=(i,r,t)=>Number.isInteger(i)&&i>=r&&i<=t;function P(i){if(!Array.isArray(i)||!i.length||i.length>24)throw new Error("Grid tracks 必须为 1–24 项");return i.map(r=>{if(!r||typeof r!="object"||Array.isArray(r)||Object.keys(r).some(n=>!["type","value"].includes(n))||!["fixed","flex","hug"].includes(r.type))throw new Error("Grid track 类型无效");if(r.type==="hug"){if(r.value!==void 0)throw new Error("HUG track 不接受 value");return{type:"hug"}}let t=r.value??(r.type==="flex"?1:void 0);if(!Number.isFinite(t)||t<0||r.type==="flex"&&t===0||t>2e4)throw new Error("Grid track value 超出范围");return{type:r.type,value:t}})}function A(i,r=!1){for(let t of["gridRows","gridColumns","gridColumnSpan","gridRowSpan"])if(i[t]!==void 0&&!h(i[t],1,24))throw new Error(`${t} 必须为 1–24`);for(let t of["gridRowAnchorIndex","gridColumnAnchorIndex"])if(i[t]!==void 0&&!h(i[t],0,9999))throw new Error(`${t} 必须为 0–9999`);if(i.gridRowAnchorIndex===void 0!=(i.gridColumnAnchorIndex===void 0))throw new Error("Grid manual anchors 必须同时包含行和列");for(let t of["gridChildHorizontalAlign","gridChildVerticalAlign"])if(i[t]!==void 0&&!["auto","start","center","end"].includes(i[t]))throw new Error(`${t} 无效`);if(!r&&N.some(t=>i[t]!==void 0))throw new Error("Grid container 字段只适用于容器");if(i.gridItemsPositioning!==void 0&&!["manual","row-auto-flow"].includes(i.gridItemsPositioning))throw new Error("gridItemsPositioning 无效");if(i.gridAutoTracks!==void 0&&!["none","rows"].includes(i.gridAutoTracks))throw new Error("gridAutoTracks 无效");for(let[t,n]of[["gridColumnSizes",i.gridColumns],["gridRowSizes",i.gridRows]])if(i[t]!==void 0){let a=P(i[t]);if(n===void 0||a.length!==n)throw new Error(`${t} 数量与 grid count 不一致`)}if(r&&i.layout==="grid"&&i.gridItemsPositioning==="manual"&&Array.isArray(i.children)){let t=x(i.children,i.gridColumns??1,i);if(i.gridAutoTracks!=="rows"&&i.gridRows!==void 0&&t.rowCount>i.gridRows)throw new Error("Grid manual anchors/spans 超出 gridRows")}}function x(i,r,t={}){if(!h(r,1,24))throw new Error("Grid columns 必须为 1–24");let n=new Set,a=[],l=0,s=(o,e,g,w)=>{if(e+w>r)return!1;for(let f=o;f<o+g;f++)for(let d=e;d<e+w;d++)if(n.has(f*r+d))return!1;return!0};for(let o of i){if(!o||typeof o!="object")throw new Error("Grid 子项无效");for(let u of["gridColumnSpan","gridRowSpan"])if(o[u]!==void 0&&!h(o[u],1,24))throw new Error(`${u} 必须为 1–24`);for(let u of["gridRowAnchorIndex","gridColumnAnchorIndex"])if(o[u]!==void 0&&!h(o[u],0,9999))throw new Error(`${u} 必须为 0–9999`);if(o.visible===!1||o.layoutPositioning==="absolute")continue;let e=Math.min(r,Math.max(1,o.gridColumnSpan??1)),g=Math.max(1,o.gridRowSpan??1),w=t.gridItemsPositioning==="manual"&&Number.isInteger(o.gridRowAnchorIndex)&&Number.isInteger(o.gridColumnAnchorIndex),f=t.gridItemsPositioning==="row-auto-flow"?l:0,d=w?o.gridRowAnchorIndex:Math.floor(f/r),c=w?o.gridColumnAnchorIndex:f%r;if(w&&!s(d,c,g,e))throw new Error(`${o.name??o.id}: Grid placement 重叠或超出列范围`);for(;!w&&!s(d,c,g,e);)f++,d=Math.floor(f/r),c=f%r;for(let u=d;u<d+g;u++)for(let p=c;p<c+e;p++)n.add(u*r+p);l=d*r+c+e,a.push({child:o,row:d,column:c,rowSpan:g,columnSpan:e})}return{placements:a,rowCount:Math.max(0,...a.map(o=>o.row+o.rowSpan))}}function T(i,r){return i.gridAutoTracks==="rows"?Math.max(1,r):Math.max(1,i.gridRows??r,r)}function k(i,r){return i.gridRowSizes?Array.from({length:r},(t,n)=>i.gridRowSizes[n]??{type:"hug"}):void 0}function m(i){A(i,!0);let r=i.gridColumns??1,t=x(i.children??[],r,i),n=T(i,t.rowCount);if(n>24)throw new Error("原生 Grid 互换最多保留 24 行；请拆分网格");if(t.rowCount>n)throw new Error("Grid children 超出 gridRows；请增加行数");if(i.gridAutoTracks==="rows"&&i.gridItemsPositioning==="manual"){let s=new Set;for(let o of t.placements)for(let e=o.row;e<o.row+o.rowSpan;e++)s.add(e);if(s.size&&s.size!==n)throw new Error("自动 Grid 行中的空白手动行不能保留；请移除空行或关闭自动行")}let a=i.gridColumnSizes??Array.from({length:r},()=>({type:"flex",value:1})),l=k(i,n)??Array.from({length:n},()=>({type:"hug"}));for(let[s,o]of[["Horizontal",a],["Vertical",l]]){for(let e of t.placements){let g=e.child,w=g.layoutAlignSelf==="stretch"||(!g.layoutAlignSelf||g.layoutAlignSelf==="auto")&&i.alignItems==="stretch",f=s==="Horizontal"?e.column:e.row,d=s==="Horizontal"?e.columnSpan:e.rowSpan;if((g[`layoutSizing${s}`]==="fill"||w)&&o.slice(f,f+d).some(c=>c.type==="hug"))throw new Error(`Grid ${s}: FILL 子项与 HUG track 的内在尺寸循环尚不能保留；请改为固定 track 或 HUG/固定子项`)}if(i[`layoutSizing${s}`]==="hug"&&o.some(e=>e.type==="flex"))throw new Error(`Grid ${s}: HUG 容器不能包含 FLEX track；请改为 FIXED/HUG track 或固定容器尺寸`)}if(i.layoutReverse||i.layoutWrap&&i.layoutWrap!=="none"||i.justifyContent!=="start"||i.alignContent&&i.alignContent!=="start")throw new Error("Grid 反向/换行/track 分布不能对应 Figma；请使用 start 分布");return{columns:r,rows:n,columnSizes:a,rowSizes:l,...t}}function S(i,r){let t=m(r);for(let n of["gridColumnCount","gridRowCount","gridRowSizes","gridColumnSizes","gridAutoTracks","gridItemsPositioning"])if(!(n in i))throw new Error(`${r.name}: 当前 Figma 不支持原生 GRID API (${n})，请更新 Figma 后重试`);i.layoutMode="GRID",i.layoutSizingHorizontal="FIXED",i.layoutSizingVertical="FIXED",i.gridAutoTracks="NONE",i.gridItemsPositioning="MANUAL",i.gridColumnCount=t.columns,i.gridRowCount=t.rows,i.gridColumnGap=r.columnGap??r.gap,i.gridRowGap=r.rowGap??r.gap;for(let n of["Top","Right","Bottom","Left"])i[`padding${n}`]=r[`padding${n}`]??r.padding;for(let[n,a]of[["gridColumnSizes",t.columnSizes],["gridRowSizes",t.rowSizes]]){let l=i[n];if(l.length!==a.length)throw new Error(`${r.name}: Figma Grid track 数量不匹配`);a.forEach((s,o)=>{l[o].type=s.type.toUpperCase(),s.type!=="hug"&&(l[o].value=s.value??1)})}return t}function G(i,r,t,n){if(i.layoutPositioning=r.layoutPositioning==="absolute"?"ABSOLUTE":"AUTO",r.layoutPositioning==="absolute")return;let a=r.visible===!1,l=a?{row:n.rows,column:0,rowSpan:r.gridRowSpan??1,columnSpan:Math.min(n.columns,r.gridColumnSpan??1)}:n.placements.find(s=>s.child===r);if(typeof i.setGridChildPosition!="function")throw new Error("当前 Figma 不支持 Grid 子项位置；请更新后重试");a&&(i.parent.gridRowCount=Math.max(i.parent.gridRowCount,l.row+l.rowSpan),i.visible=!0),i.setGridChildPosition(l.row,l.column),i.gridColumnSpan=l.columnSpan,i.gridRowSpan=l.rowSpan,a&&(i.visible=!1);for(let s of["Horizontal","Vertical"]){let o=`gridChild${s}Align`,e=r[o]??(r.layoutAlignSelf&&r.layoutAlignSelf!=="auto"?r.layoutAlignSelf:t.alignItems);i[o]={start:"MIN",center:"CENTER",end:"MAX",stretch:"MIN",auto:"AUTO"}[e]??"MIN"}}function I(i,r){i.gridRowCount=m(r).rows,i.gridItemsPositioning=r.gridItemsPositioning==="row-auto-flow"?"ROW_AUTO_FLOW":"MANUAL",i.gridAutoTracks=r.gridAutoTracks==="rows"?"ROWS":"NONE"}return M($);})();
 /* END GENERATED GRID RUNTIME */
@@ -258,7 +261,8 @@
           !["none", "horizontal", "vertical", "grid"].includes(node.layout)
         )
           throw new Error("容器布局无效。");
-        for (const key of ["gap", "padding"]) range(node[key], 0, 2000, key);
+        range(node.gap, -2000, 2000, "gap");
+        range(node.padding, 0, 2000, "padding");
         for (const key of [
           "rowGap",
           "columnGap",
@@ -267,7 +271,8 @@
           "paddingBottom",
           "paddingLeft",
         ])
-          if (node[key] !== undefined) range(node[key], 0, 2000, key);
+          if (node[key] !== undefined) range(node[key], ["rowGap", "columnGap"].includes(key) ? -2000 : 0, 2000, key);
+        CodeShellFigmaSpacing.validateLayoutSpacing(node);
         optionalEnum(node, "layoutWrap", ["none", "wrap", "wrap-reverse"]);
         if (node.layoutReverse !== undefined && typeof node.layoutReverse !== "boolean")
           throw new Error("反向布局无效。");
@@ -387,7 +392,8 @@
       if (node.layoutMode === "NONE") return;
       node.primaryAxisSizingMode = "FIXED";
       node.counterAxisSizingMode = "FIXED";
-      node.itemSpacing = source.gap;
+      node.itemSpacing = CodeShellFigmaSpacing.mainAxisGap(source);
+      if (node.itemSpacing < 0) node.itemReverseZIndex = false;
       for (const side of ["Top", "Right", "Bottom", "Left"])
         node[`padding${side}`] = source[`padding${side}`] ?? source.padding;
       node.primaryAxisAlignItems = {
@@ -795,6 +801,13 @@
       else delete raw.cornerRadius;
     }
 
+    if (["HORIZONTAL", "VERTICAL"].includes(node.layoutMode)) {
+      for (const key of ["itemSpacing", "itemReverseZIndex", "layoutSizingHorizontal", "layoutSizingVertical", "layoutWrap", "counterAxisSpacing"])
+        if (node[key] !== undefined) raw[key] = node[key];
+    }
+    if (["HORIZONTAL", "VERTICAL"].includes(node.parent?.layoutMode))
+      for (const key of ["layoutPositioning", "layoutSizingHorizontal", "layoutSizingVertical", "layoutGrow", "layoutAlign"])
+        if (node[key] !== undefined) raw[key] = node[key];
     const keys = node.layoutMode === "GRID"
       ? [
           "layoutMode", "layoutSizingHorizontal", "layoutSizingVertical",
@@ -1077,6 +1090,11 @@
               entry?.sourcePageId;
             if (parentId && target.parent?.id !== parentId)
               conflicts.push(`${operation.sourceId} · 所属容器已变化。`);
+          }
+          if (containers.has(operation.after.type)) {
+            CodeShellFigmaSpacing.validateLayoutSpacing(operation.after);
+            if (CodeShellFigmaSpacing.mainAxisGap(operation.after) < 0 && target.itemReverseZIndex === true)
+              throw new Error("来源负间距的堆叠顺序不能无损修改。");
           }
           if (
             operation.changed.some((key) => LAYOUT_KEYS.has(key)) &&
@@ -1601,7 +1619,7 @@
               if (node.layoutMode !== "HORIZONTAL")
                 throw new Error("Figma 仅水平自动布局支持换行。");
               node.layoutWrap = after.layoutWrap === "wrap" ? "WRAP" : "NO_WRAP";
-            } else if (key === "gap") node.itemSpacing = after.gap;
+            } else if (key === "gap") node.itemSpacing = CodeShellFigmaSpacing.mainAxisGap(after);
             else if (key === "rowGap") {
               if (node.layoutMode === "HORIZONTAL" && node.layoutWrap === "WRAP")
                 node.counterAxisSpacing = after.rowGap ?? after.gap;

@@ -1,3 +1,4 @@
+import { validateLayoutSpacing } from "./layout-spacing.mjs";
 import { GRID_CONTAINER_FIELDS, GRID_CHILD_FIELDS, gridPlacements } from "./grid.mjs";
 /* Design Studio Panel App runtime. */
 /* global document, localStorage, requestAnimationFrame, window */
@@ -5580,7 +5581,15 @@ function bindPropertyInput(input, update, eventName = "input", layoutEffect = "n
   input.addEventListener(eventName, () => {
     const node = selectedNode();
     if (!node || isEffectivelyLocked(node)) return;
+    const before = isContainerNode(node) ? { ...node } : null;
     update(node, input.value);
+    if (before) try { validateLayoutSpacing(node); } catch (error) {
+      for (const key of Object.keys(node)) if (!(key in before)) delete node[key];
+      Object.assign(node, before);
+      notify(error.message, "error");
+      renderProperties();
+      return;
+    }
     if (layoutEffect === "size" && isContainerNode(node)) {
       applyAutoLayouts(design.nodes, new Set([node.id, ...(node.parentId ? [node.parentId] : [])]));
     } else if (layoutEffect === "size") {
@@ -5846,7 +5855,14 @@ propertyInputs.layoutReverse.addEventListener("change", () => {
   const node = selectedNode();
   if (!isContainerNode(node) || isEffectivelyLocked(node)) return;
   ensureDesignV3();
+  const previous = node.layoutReverse;
   node.layoutReverse = propertyInputs.layoutReverse.checked;
+  try { validateLayoutSpacing(node); } catch (error) {
+    node.layoutReverse = previous;
+    propertyInputs.layoutReverse.checked = Boolean(previous);
+    notify(error.message, "error");
+    return;
+  }
   applyAutoLayouts(design.nodes, new Set([node.id]));
   commitHistory();
   markChanged();
@@ -5856,7 +5872,7 @@ bindPropertyInput(
   (node, value) => {
     if (!isContainerNode(node)) return;
     ensureDesignV3();
-    node.gap = clamp(finiteOr(value, 0), 0, 2000);
+    node.gap = clamp(finiteOr(value, 0), -2000, 2000);
   },
   "input",
   "container",
@@ -5871,7 +5887,7 @@ for (const [input, property] of [
       if (!isContainerNode(node)) return;
       ensureDesignV3();
       if (value === "") delete node[property];
-      else node[property] = clamp(finiteOr(value, node.gap ?? 0), 0, 2000);
+      else node[property] = clamp(finiteOr(value, node.gap ?? 0), -2000, 2000);
     },
     "input",
     "container",
@@ -5987,6 +6003,11 @@ for (const [input, property] of [
     input,
     (node, value) => {
       ensureDesignV3();
+      if (isContainerNode(node)) try { validateLayoutSpacing({ ...node, [property]: value }); } catch (error) {
+        input.value = node[property] ?? "fixed";
+        notify(error.message, "error");
+        return;
+      }
       node[property] = value;
       reflowParent(node);
       if (isContainerNode(node)) applyAutoLayouts(design.nodes, new Set([node.id]));

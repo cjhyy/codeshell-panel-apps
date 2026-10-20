@@ -1722,3 +1722,41 @@ test("outgoing own-rotated hanging text diagnoses the unsupported native origin 
   const transfer = createFigmaTransfer(result.document);
   assert.ok(transfer.warnings.some((warning) => warning.code === "text-baseline-export"));
 });
+
+test("native signed main spacing creates editable nowrap stacks and guards incremental spacing edits", async () => {
+  const original = page([{ ...rect("1:2"), type: "FRAME", layoutMode: "HORIZONTAL", layoutWrap: "NO_WRAP", itemSpacing: -16,
+    itemReverseZIndex: false, primaryAxisSizingMode: "FIXED", counterAxisSizingMode: "AUTO", children: [
+      rect("1:3", { absoluteBoundingBox: { x: 30, y: 40, width: 1, height: 1 } }),
+      rect("1:4", { absoluteBoundingBox: { x: 15, y: 40, width: 130, height: 80 }, layoutSizingHorizontal: "FILL" }),
+      rect("1:5", { absoluteBoundingBox: { x: 129, y: 40, width: 1, height: 1 } }),
+    ] }]);
+  const imported = importFigmaJson(original), transfer = createFigmaTransfer(imported.document), runtime = harness();
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  const native = runtime.figma.root.children[1].children[0];
+  assert.equal(native.layoutMode, "HORIZONTAL"); assert.equal(native.layoutWrap, "NO_WRAP");
+  assert.equal(native.itemSpacing, -16); assert.equal(native.itemReverseZIndex, false);
+  assert.ok(native.children.every((child) => child.layoutPositioning === "AUTO"));
+  assert.equal(native.children[1].layoutSizingHorizontal, "FILL");
+  await runtime.send({ type: "export-json", scope: "page" });
+  const exported = runtime.messages.at(-1);
+  assert.equal(exported.type, "exported");
+  const raw = JSON.parse(exported.content).nodes[runtime.figma.currentPage.id].document.children[0];
+  assert.equal(raw.itemSpacing, -16); assert.equal(raw.itemReverseZIndex, false);
+  assert.equal(raw.children[1].layoutSizingHorizontal, "FILL");
+  const update = patchTransfer(original, (node) => { node.gap = -24; }, ["gap"]), live = harness(original);
+  await live.send({ type: "preview-patch", content: JSON.stringify(update) });
+  const preview = live.messages.at(-1); assert.equal(preview.type, "patch-preview"); assert.deepEqual(preview.conflicts, []);
+  await live.send({ type: "apply-patch", token: preview.token });
+  assert.equal(live.messages.at(-1).type, "patched"); assert.equal(live.all.get("1:2").itemSpacing, -24);
+  const conflict = harness(original); conflict.all.get("1:2").itemReverseZIndex = true;
+  await conflict.send({ type: "preview-patch", content: JSON.stringify(update) });
+  assert.equal(conflict.messages.at(-1).type, "error");
+  assert.equal(conflict.all.get("1:2").itemSpacing, undefined);
+  for (const changes of [{ layoutWrap: "wrap" }, { rowGap: -1 }, { layoutSizingHorizontal: "hug" }, { layoutReverse: true }]) {
+    const invalid = clone(transfer); Object.assign(invalid.pages[0].children[0], changes);
+    const rejected = harness(); await rejected.send({ type: "import-transfer", content: JSON.stringify(invalid) });
+    assert.equal(rejected.messages.at(-1).type, "error", JSON.stringify(changes));
+    assert.equal(rejected.figma.root.children.length, 1);
+  }
+});

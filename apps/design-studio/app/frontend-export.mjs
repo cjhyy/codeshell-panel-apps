@@ -1,3 +1,4 @@
+import { mainAxisGap } from "./layout-spacing.mjs";
 import {
   cssGridTrack,
   gridPlacements,
@@ -213,6 +214,13 @@ function sizingDeclarations(node, parent) {
   if (node.layoutMarginBefore === "auto") {
     declarations.push([parentLayout === "vertical" ? "margin-top" : "margin-left", "auto"]);
   }
+  if (!absolute && ["horizontal", "vertical"].includes(parentLayout) && mainAxisGap(parent) < 0) {
+    const siblings = parent.children.filter((child) => child.visible !== false && child.layoutPositioning !== "absolute");
+    if (siblings.at(-1)?.id !== node.id)
+      declarations.push([parentLayout === "horizontal" ? "margin-right" : "margin-bottom", cssNumber(mainAxisGap(parent))]);
+    // Fixed children must keep their authored border-box size under overflow.
+    if ((parentLayout === "horizontal" ? horizontal : vertical) !== "fill") declarations.push(["flex-shrink", "0"]);
+  }
   if (parentLayout === "grid") {
     declarations.push(
       [
@@ -273,8 +281,8 @@ function layoutDeclarations(node) {
           ? [["grid-template-rows", `repeat(${rows}, auto)`]]
           : []),
       ["grid-auto-flow", node.gridItemsPositioning ? "row" : "row dense"],
-      ["row-gap", cssNumber(node.rowGap ?? node.gap)],
-      ["column-gap", cssNumber(node.columnGap ?? node.gap)],
+      ["row-gap", cssNumber(Math.max(0, node.rowGap ?? node.gap))],
+      ["column-gap", cssNumber(Math.max(0, node.columnGap ?? node.gap))],
       ["align-items", alignment(node.alignItems)],
       ["align-content", alignment(node.alignContent)],
       ["justify-content", alignment(node.justifyContent)],
@@ -295,8 +303,8 @@ function layoutDeclarations(node) {
           ? "wrap"
           : "nowrap",
     ],
-    ["row-gap", cssNumber(node.rowGap ?? node.gap)],
-    ["column-gap", cssNumber(node.columnGap ?? node.gap)],
+    ["row-gap", cssNumber(Math.max(0, node.rowGap ?? node.gap))],
+    ["column-gap", cssNumber(Math.max(0, node.columnGap ?? node.gap))],
     ["align-items", alignment(node.alignItems)],
     ["align-content", alignment(node.alignContent)],
     ["justify-content", alignment(node.justifyContent)],

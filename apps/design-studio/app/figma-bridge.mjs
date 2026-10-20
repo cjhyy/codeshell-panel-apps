@@ -1,3 +1,4 @@
+import { validateLayoutSpacing, mainAxisGap } from "./layout-spacing.mjs";
 import { normalizeCornerRadii, effectiveCornerRadii } from "./corner-radii.mjs";
 import { normalizeGridTracks, nativeGridPlan, GRID_CHILD_FIELDS } from "./grid.mjs";
 import {
@@ -467,7 +468,7 @@ function layout(source, node, report) {
       );
     }
   }
-  node.gap = number(source.itemSpacing, 0, 0, 2000, source, "itemSpacing", report);
+  node.gap = number(source.itemSpacing, 0, -2000, 2000, source, "itemSpacing", report);
   node.padding = 0;
   for (const side of ["Top", "Right", "Bottom", "Left"])
     node[`padding${side}`] = number(
@@ -493,7 +494,7 @@ function layout(source, node, report) {
       node.rowGap = number(
         source.counterAxisSpacing,
         0,
-        0,
+        -2000,
         2000,
         source,
         "counterAxisSpacing",
@@ -503,7 +504,7 @@ function layout(source, node, report) {
       node.columnGap = number(
         source.counterAxisSpacing,
         0,
-        0,
+        -2000,
         2000,
         source,
         "counterAxisSpacing",
@@ -906,6 +907,17 @@ function importFigmaJsonWithReport(
       throw new Error("Figma children 必须是数组。");
     if (CONTAINERS.has(type)) {
       layout(source, node, report);
+      try {
+        validateLayoutSpacing(node);
+        if (mainAxisGap(node) < 0 && (source.itemReverseZIndex === true || source.itemSpacing < -2000))
+          throw new Error("负间距的原生堆叠顺序或尺寸超出可编辑范围");
+      } catch (error) {
+        report.warn("unsupported-negative-spacing", source, `${error.message}；保留测量几何。`);
+        node.layout = "none";
+        node.gap = 0;
+        delete node.rowGap;
+        delete node.columnGap;
+      }
       node.children = (source.children ?? [])
         .map((child) => convert(child, [...ancestors, node], depth + 1, counter))
         .filter(Boolean);
