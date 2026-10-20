@@ -99,7 +99,13 @@ FILL 子项保留，全部几何最大误差 0 px；仅创建本任务新页面�
 真实 Figma UI 1x PNG 导出原宽 `640×240`，严格 RGBA 比较 153,600 像素全部相同。
 证据：主任务 `evidence/real-figma/native-flex-fill-640.png`、
 `native-flex-fill-640-diff.png`、`native-flex-fill-640-pixel-report.json`。
-继续验收真实 Figma 400 px 重排和官方 JSON 回到工作台。
+真实 Figma 原生控件将父 Frame 缩窄到 400 px，再以 1x PNG 导出，96,000 个像素
+全部相同；固定子项仍 100 px，FILL 子项正确吸收剩余宽度。官方 640 px JSON
+经正式 `importFigmaJson` 导回工作台并导出 SVG，再截图比较仍为 0 个差异像素，
+水平 Auto Layout / fixed / fill 均保留。此真实样例仅含形状，没有验证文字/图片。
+清晰范围回执为 `evidence/real-figma/acceptance-report.json`；旧 relay 模板原始报告
+仍有未使用的 title/PNG 字段，不能据此声称本轮测试了它们。临时插件最后已恢复
+逐字节原始备份，回执 `plugin-restored-receipt.json`。
 
 官方 Bootstrap Pricing 网页已保存自包含原始 CSS/媒体查询样本（245,389 字节）。
 来源和改动回执在主任务 `evidence/web-bootstrap/receipt.json`。
@@ -107,6 +113,13 @@ FILL 子项保留，全部几何最大误差 0 px；仅创建本任务新页面�
 16.79% / 21.82% / 30.34%；255 个可编辑节点。主要问题是标题与浅色表头、
 SVG use 引用丢失、布局重排。对应 `evidence/bootstrap-production/`，
 不得将收集模式的退出码当成通过。已分派保持文本与布局的针对性修复。
+
+浅色表头原因已确认并修复：CSS `rgba(33,37,41,.03)` 先前丢失 alpha 变成深色，
+现在沿用 v3 `fillPaints` 保留透明度，文本仍可编辑；最小卡片严格 RGBA 差异为 0。
+任务提交 `93d39e8`。SVG 的本地 symbol 引用独立修复中。
+
+像素采集显式等待字体与两帧绘制；原生 authored absolute/fixed 覆盖层按源样式清点，
+不误报为转换把正常流布局降级。新增完整生产管线 overlay 回归 0 像素通过。
 
 下一轮工作树：
 

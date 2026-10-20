@@ -246,8 +246,36 @@ export async function runProductionFidelity({
         JSON.stringify(prepared.transfer, null, 2),
       );
       const main = document.nodes.find((node) => htmlId(node) === "fixture");
+      const sourceNodes = document.nodes
+        .flatMap((node) => {
+          try {
+            return [{ id: node.id, selector: JSON.parse(node.notes).cssSelector }];
+          } catch {
+            return [];
+          }
+        })
+        .filter((node) => node.selector);
+      const sourcePositions = await page.evaluate(
+        (nodes) =>
+          Object.fromEntries(
+            nodes.map((node) => {
+              let element;
+              try {
+                element = document.querySelector(node.selector);
+              } catch {
+                /* Unknown source selector. */
+              }
+              return [node.id, element ? getComputedStyle(element).position : null];
+            }),
+          ),
+        sourceNodes,
+      );
       const flow = document.nodes.filter(
-        (node) => node.parentId && node.parentId !== "html-viewport",
+        (node) =>
+          node.parentId &&
+          node.parentId !== "html-viewport" &&
+          sourcePositions[node.id] &&
+          !["absolute", "fixed"].includes(sourcePositions[node.id]),
       );
       const semanticIssues = [];
       if (
@@ -261,6 +289,7 @@ export async function runProductionFidelity({
       const result = {
         id: fixture.id,
         nodes: document.nodes.length,
+        sourcePositioning: sourcePositions,
         semanticIssues,
         warnings: captured.report.warnings,
         comparisons: [],
