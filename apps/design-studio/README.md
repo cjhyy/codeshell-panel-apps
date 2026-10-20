@@ -576,6 +576,12 @@ float wrapping are not retained; recapture after a source CSS breakpoint changes
 See `docs/todo/design-studio-floated-columns-2026-10-21.md` for strict source
 fixtures and the separate native negative-bleed/viewport limitations.
 
+Plain single-text block/inline-block frames can retain vertical Auto Layout with
+exact capture-local source binding even when class selectors repeat. Original
+NBSP and ASCII whitespace provenance stay distinct. Ambiguous sources, table or
+complex inline content and generated controls retain measured geometry with
+diagnostics; see `docs/todo/design-studio-plain-text-flow-2026-10-21.md`.
+
 ## Package boundary
 
 Renderable code lives under `app/`. The declarative Agent contribution lives

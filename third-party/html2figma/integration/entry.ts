@@ -99,7 +99,8 @@ function captureLayoutValues(tree: RenderNode) {
 
 export function convert(
   root: Element,
-  options: { includeRawStyles: boolean; maxDepth: number; preserveGrid: boolean },
+  options: { includeRawStyles: boolean; maxDepth: number; preserveGrid: boolean;
+    onElement?: (semanticId: string, element: Element) => void },
 ) {
   const tree = traverseDOM(root, { maxDepth: options.maxDepth });
   if (!tree) return null;
@@ -110,6 +111,9 @@ export function convert(
   const corners = new Map<object, string[]>();
   const textIntents = new Map<object, Record<string, string>>();
   const captureSvg = (node: RenderNode) => {
+    if (node.nodeType === "element" && node.metadata?.semantic &&
+        node.domNode instanceof Element && !node.metadata.isPseudoElement && !node.metadata.isFormContent)
+      options.onElement?.(node.metadata.semantic.semanticId ?? "", node.domNode);
     if (
       node.metadata?.semantic &&
       ["grid", "inline-grid"].includes(node.computedStyle?.display ?? "")

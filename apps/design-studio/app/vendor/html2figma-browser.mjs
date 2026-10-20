@@ -5521,6 +5521,8 @@ var html2figmaCore = (() => {
     const corners = /* @__PURE__ */ new Map();
     const textIntents = /* @__PURE__ */ new Map();
     const captureSvg = (node) => {
+      if (node.nodeType === "element" && node.metadata?.semantic && node.domNode instanceof realm.Element && !node.metadata.isPseudoElement && !node.metadata.isFormContent)
+        options.onElement?.(node.metadata.semantic.semanticId ?? "", node.domNode);
       if (node.metadata?.semantic && ["grid", "inline-grid"].includes(node.computedStyle?.display ?? ""))
         gridSources.add(node.metadata.semantic);
       if (node.tag === "svg" && node.metadata?.semantic && node.domNode instanceof realm.Element)
@@ -5605,6 +5607,8 @@ export function convertToDesignDSL(root, options = {}) {
     throw new RangeError("html2figma maxDepth must be an integer from 0 to 100");
   if (options.preserveGrid !== undefined && typeof options.preserveGrid !== "boolean")
     throw new TypeError("html2figma preserveGrid must be a boolean");
+  if (options.onElement !== undefined && typeof options.onElement !== "function")
+    throw new TypeError("html2figma onElement must be a function");
   const runtime = createRuntime(realm);
-  return runtime.convert(root, { includeRawStyles: options.includeRawStyles !== false, maxDepth, preserveGrid: options.preserveGrid !== false });
+  return runtime.convert(root, { includeRawStyles: options.includeRawStyles !== false, maxDepth, preserveGrid: options.preserveGrid !== false, onElement: options.onElement });
 }

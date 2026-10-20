@@ -315,6 +315,157 @@ test("plain HTML paragraphs retain measured wrapping and hug layout across resiz
   assert.deepEqual(f.errors, []);
 });
 
+test("duplicate selectors retain exact plain-text source identity through width, height, content and reopen edits", async (t) => {
+  const f = await fixture(t);
+  const original =
+    "Alpha\u00a0beta keeps its nonbreaking space and reflows across ordinary editable text containers without losing the original characters.";
+  const edited =
+    "Edited Alpha\u00a0beta keeps its nonbreaking space and grows the ordinary paragraph so following blocks move after every new measured line.";
+  const rawSecond = "\n\tPlain ASCII source\n  whitespace remains separately available.\n ";
+  const html = (copy, fixedHeight) =>
+    `<!doctype html><style>*{box-sizing:border-box}body{margin:0;font:16px/24px Arial;color:#0f172a;background:white}#root{width:100%;height:440px;padding:20px;background:#e2e8f0}h2,p{margin:0}h2{font:700 20px/28px Arial}h2:nth-of-type(2){font:700 24px/32px Arial}p{font:16px/24px Arial;margin-bottom:12px}${fixedHeight ? `p:first-of-type{height:${fixedHeight}px}` : ""}</style><main id="root"><h2 class="title">Repeated title</h2><p class="copy">${copy}</p><h2 class="title">Repeated title</h2><p class="copy">${rawSecond}</p></main>`;
+  const captured = await f.capture(html(original), {
+    rootSelector: "#root",
+    width: 640,
+    height: 440,
+  });
+  const initial = normalizeDesignDocument(captured.document);
+  const frames = initial.nodes.filter(
+    (node) => node.type === "frame" && /^(h2|p)\./u.test(node.name),
+  );
+  assert.equal(frames.length, 4);
+  assert(
+    frames.every((node) => node.layout === "vertical"),
+    JSON.stringify({
+      frames: frames.map((node) => ({
+        name: node.name,
+        layout: node.layout,
+        child: initial.nodes.find((n) => n.parentId === node.id),
+      })),
+      warnings: captured.report.warnings,
+    }),
+  );
+  assert.equal(
+    initial.nodes.length,
+    11,
+    "the existing upstream margin wrapper stays structural; text promotion adds no layers",
+  );
+  for (const frame of frames) {
+    const children = initial.nodes.filter((node) => node.parentId === frame.id);
+    assert.equal(children.length, 1);
+    assert.equal(children[0].type, "text");
+    assert.equal(children[0].layoutSizingHorizontal, "fill");
+    assert.equal(children[0].layoutSizingVertical, "hug");
+  }
+  assert.equal(
+    initial.nodes.find((node) => node.type === "text" && node.textSource === original).textSource,
+    original,
+  );
+  const second = initial.nodes.find(
+    (node) => node.type === "text" && node.textSource?.startsWith("Plain ASCII"),
+  );
+  assert.equal(JSON.parse(second.notes).htmlTextOriginal.rawSource, rawSecond);
+  assert(!captured.report.warnings.some((warning) => warning.code === "html-text-source-binding"));
+  for (const [width, copy, fixedHeight] of [
+    [640, original],
+    [400, original],
+    [400, edited],
+    [400, edited, 120],
+  ]) {
+    await f.page.setViewportSize({ width, height: 440 });
+    await f.page.setContent(html(copy, fixedHeight));
+    await f.page.evaluate(() => document.fonts.ready);
+    const reference = PngImage.sync.read(await f.page.screenshot());
+    const expected = await f.page.locator("h2,p").evaluateAll((elements) =>
+      elements.map((element) => {
+        const { x, y, width, height } = element.getBoundingClientRect();
+        return { x, y, width, height };
+      }),
+    );
+    const result = await f.page.evaluate(
+      async ({ input, width, copy, fixedHeight, original }) => {
+        const { normalizeDesignDocument, serializeDesignDocument, exportDesignSvg } =
+          await import("/app/document.mjs");
+        const { applyAllAutoLayouts } = await import("/app/layout.mjs");
+        const value = normalizeDesignDocument(input);
+        value.canvas.width = width;
+        value.nodes.find((node) => node.id === "html-viewport").width = width;
+        const text = value.nodes.find(
+          (node) => node.type === "text" && node.textSource === original,
+        );
+        text.textSource = copy;
+        if (fixedHeight) {
+          const parent = value.nodes.find((node) => node.id === text.parentId);
+          parent.layoutSizingVertical = "fixed";
+          parent.height = fixedHeight;
+        }
+        applyAllAutoLayouts(value.nodes);
+        const source = serializeDesignDocument(value),
+          reopened = normalizeDesignDocument(JSON.parse(source));
+        applyAllAutoLayouts(reopened.nodes);
+        return {
+          svg: exportDesignSvg(value),
+          source: text.textSource,
+          stable: source === serializeDesignDocument(reopened),
+          frames: value.nodes
+            .filter((node) => node.type === "frame" && /^(h2|p)\./u.test(node.name))
+            .map(({ x, y, width, height, layout }) => ({ x, y, width, height, layout })),
+          absolute: value.nodes.some((node) => node.layoutPositioning === "absolute"),
+        };
+      },
+      { input: captured.document, width, copy, fixedHeight, original },
+    );
+    assert.equal(result.source, copy);
+    assert.equal(result.stable, true);
+    assert.equal(result.absolute, false);
+    assert.deepEqual(
+      result.frames.map(({ layout, ...box }) => box),
+      expected,
+    );
+    await f.page.setContent(
+      `<!doctype html><style>html,body{margin:0}svg{display:block}</style>${result.svg}`,
+    );
+    const converted = PngImage.sync.read(await f.page.screenshot());
+    assert(
+      reference.data.equals(converted.data),
+      `strict pixels at width ${width}, fixedHeight ${fixedHeight ?? "auto"}`,
+    );
+  }
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("plain-text binding collisions and unsupported table, inline, pseudo and styled cases stay conservative", async (t) => {
+  const f = await fixture(t);
+  const html =
+    '<!doctype html><style>body{margin:0;font:16px/24px Arial}.copy{margin:0}#root{height:500px}.table{display:table-cell}.inline{display:inline}.generated::before{content:"prefix"}.first::first-letter{font-size:30px}.spaced{word-spacing:3px}.rtl{direction:rtl}</style><main id="root"><p class="copy" data-semantic-id="collision">First collision</p><p class="copy" data-semantic-id="collision">Second collision</p><p id="table" class="table">Table cell</p><a id="inline" class="inline">Inline anchor</a><p id="generated" class="generated">Generated</p><p id="first" class="first">First letter</p><p id="spaced" class="spaced">Word spacing</p><p id="rtl" class="rtl">RTL source</p><p id="mixed">Mixed <strong>style</strong></p><p id="fallback-one" data-semantic-id="fallback">Unique selector one</p><p id="fallback-two" data-semantic-id="fallback">Unique selector two</p></main>';
+  const captured = await f.capture(html, { rootSelector: "#root", width: 640, height: 400 });
+  const doc = normalizeDesignDocument(captured.document);
+  for (const id of ["table", "inline", "first", "spaced", "rtl"]) {
+    assert.equal(byHtmlId(doc, id, "frame").layout, "none", id);
+  }
+  for (const id of ["generated", "mixed"]) {
+    const frame = byHtmlId(doc, id, "frame");
+    assert.notEqual(frame.layout, "vertical", id);
+  }
+  const collisions = doc.nodes.filter(
+    (node) =>
+      node.type === "frame" && JSON.parse(node.notes ?? "{}").semanticId?.endsWith("collision"),
+  );
+  assert.equal(collisions.length, 2);
+  assert(collisions.every((node) => node.layout === "none"));
+  assert.equal(
+    captured.report.warnings.filter((warning) => warning.code === "html-text-source-binding")
+      .length,
+    4,
+  );
+  for (const id of ["fallback-one", "fallback-two"])
+    assert.equal(byHtmlId(doc, id, "frame").layout, "vertical");
+  assert(captured.report.warnings.some((warning) => warning.code === "html-plain-text-fixed"));
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});
+
 test("block text uses browser line breaks and moves following blocks after resize and source edits", async (t) => {
   const f = await fixture(t);
   const original = "Text wraps across ordinary block flow when the parent frame becomes narrower.";

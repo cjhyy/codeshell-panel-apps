@@ -199,7 +199,8 @@ test("independent iframe calls keep their own semantics and current DOM metadata
     const frames = await Promise.all([frame(18, 200), frame(42, 300)]);
     const roots = frames.map((item) => item.contentDocument.querySelector("#root"));
     try {
-      const first = convertToDesignDSL(roots[0]);
+      const bindings = [];
+      const first = convertToDesignDSL(roots[0], { onElement: (semanticId, element) => bindings.push({ semanticId, ownDocument: element.ownerDocument === frames[0].contentDocument }) });
       const second = convertToDesignDSL(roots[1]);
       roots[0].className = "after";
       const repeated = convertToDesignDSL(roots[0], { includeRawStyles: false });
@@ -207,6 +208,7 @@ test("independent iframe calls keep their own semantics and current DOM metadata
       for (const [root, options] of [
         [{}, {}],
         [roots[0], { maxDepth: 101 }],
+        [roots[0], { onElement: 42 }],
         [roots[0], null],
       ]) {
         try {
@@ -215,7 +217,7 @@ test("independent iframe calls keep their own semantics and current DOM metadata
           errors.push(error.name);
         }
       }
-      return { first, second, repeated, errors };
+      return { first, second, repeated, errors, bindings };
     } finally {
       frames.forEach((item) => item.remove());
     }
@@ -229,7 +231,9 @@ test("independent iframe calls keep their own semantics and current DOM metadata
   assert.deepEqual(result.first.semantic.classList, ["before"]);
   assert.deepEqual(result.repeated.semantic.classList, ["after"]);
   assert.equal(result.repeated.rawStyles, undefined);
-  assert.deepEqual(result.errors, ["TypeError", "RangeError", "TypeError"]);
+  assert.deepEqual(result.errors, ["TypeError", "RangeError", "TypeError", "TypeError"]);
+  assert.equal(result.bindings.length, 1, "only the real root element is bound; anonymous text reuses its identity");
+  assert(result.bindings.every(binding => binding.ownDocument && typeof binding.semanticId === "string"));
   assert.deepEqual(f.externalRequests, []);
   assert.deepEqual(f.errors, []);
 });

@@ -302,7 +302,7 @@ function alignHtmlTextBaselines(documentValue, browserDocument) {
   for (const page of documentValue.pages) page.children.forEach(visit);
 }
 
-async function enableHtmlTextReflow(documentValue, browserDocument) {
+async function enableHtmlTextReflow(documentValue, browserDocument, elements, warn) {
   const promoted = [];
   const sourceNodes = new Map(),
     sourceIds = new Map();
@@ -325,21 +325,56 @@ async function enableHtmlTextReflow(documentValue, browserDocument) {
       node.children[0].type === "text" &&
       !node.rotation
     ) {
-      let element;
+      let element, semantic;
       try {
-        const selector = JSON.parse(node.notes ?? "{}").cssSelector;
-        if (selector) {
-          const matches = browserDocument.querySelectorAll(selector);
-          if (matches.length === 1) element = matches[0];
-        }
-      } catch {
-        // Missing or ambiguous source semantics retain their measured geometry.
+        semantic = JSON.parse(node.notes ?? "{}");
+      } catch { /* Source metadata is optional; never guess by visible text. */ }
+      const bound = elements.get(semantic?.semanticId);
+      if (bound?.ownerDocument === browserDocument) element = bound;
+      else {
+        try {
+          const selector = semantic?.cssSelector;
+          if (selector) {
+            const matches = browserDocument.querySelectorAll(selector);
+            if (matches.length === 1) element = matches[0];
+          }
+        } catch { /* Missing, invalid or ambiguous selectors stay measured. */ }
+        warn("html-text-source-binding", node.id,
+          `${elements.has(semantic?.semanticId) ? "文字来源标识对应多个实际元素" : "文字来源没有唯一捕获绑定"}；${element ? "仅使用旧的唯一选择器来源" : "保留测量几何，不猜测第一个匹配项"}。`);
       }
       const text = node.children[0];
       const style = element && browserDocument.defaultView.getComputedStyle(element);
-      const source = element?.textContent?.replace(/\s+/gu, " ").trim();
+      // CSS normal collapses ASCII HTML whitespace, never NBSP or other Unicode
+      // spacing. Keep the exact DOM string separately when it differs.
+      const collapsed = (value) => value.replace(/[\t\n\f\r ]+/gu, " ").replace(/^ | $/gu, "");
+      const rawSource = element?.textContent ?? "";
+      const source = collapsed(rawSource);
+      // Upstream normal text may replace NBSP with SPACE or append an NBSP
+      // spacer. Compare that legacy shape only; the exact bound DOM source,
+      // including every real NBSP, is what we retain and measure below.
+      const legacyShape = (value) => collapsed(value.replace(/\u00a0/gu, " "));
+      const ordinary = style && ["block", "inline-block"].includes(style.display) &&
+        !element.matches("button,input,select,textarea,option") &&
+        style.direction === "ltr" && style.visibility === "visible" && style.transform === "none" &&
+        style.textTransform === "none" && ["normal", "0px"].includes(style.wordSpacing) &&
+        ["::before", "::after"].every((pseudo) => ["none", "normal"].includes(
+          browserDocument.defaultView.getComputedStyle(element, pseudo).content)) &&
+        ["::first-line", "::first-letter"].every((pseudo) => {
+          const variant = browserDocument.defaultView.getComputedStyle(element, pseudo);
+          return ["fontFamily", "fontSize", "fontWeight", "fontStyle", "letterSpacing", "wordSpacing", "textTransform", "color", "textShadow"]
+            .every((key) => variant[key] === style[key]);
+        }) && node.visible !== false && text.visible !== false &&
+        !(/[\r\n]/u.test(rawSource) && /[^\x00-\x7f]/u.test(rawSource));
+      const childSemantic = JSON.parse(text.notes ?? "{}");
+      const originalNotes = source !== rawSource
+        ? JSON.stringify({ ...childSemantic, htmlTextOriginal: { whiteSpace: "normal", rawSource } })
+        : text.notes;
+      if (style && (!ordinary || (childSemantic.styledSegments?.length ?? 0) > 1))
+        warn("html-plain-text-fixed", node.id, "表格/行内、表单控件、多样式、生成内容、隐藏或特殊文字样式不能恢复为单一普通文字 Auto Layout；保留测量几何。");
       if (
         style &&
+        ordinary &&
+        (childSemantic.styledSegments?.length ?? 0) <= 1 &&
         element.childElementCount === 0 &&
         style.whiteSpace === "normal" &&
         style.writingMode === "horizontal-tb" &&
@@ -348,8 +383,9 @@ async function enableHtmlTextReflow(documentValue, browserDocument) {
           (side) => (Number.parseFloat(style[`border${side}Width`]) || 0) === 0,
         ) &&
         source &&
-        source.length <= 4000 &&
-        source === (text.textSource ?? text.text).replace(/\s+/gu, " ").trim() &&
+        rawSource.length <= 4000 &&
+        (originalNotes?.length ?? 0) <= 2000 &&
+        legacyShape(source) === legacyShape(text.textSource ?? text.text) &&
         !text.rotation
       ) {
         const top = node.paddingTop ?? node.padding ?? 0;
@@ -397,6 +433,7 @@ async function enableHtmlTextReflow(documentValue, browserDocument) {
           text.lineHeight = lineHeight / text.fontSize;
           text.height = lineHeight * text.text.split("\n").length;
           text.textSource = source;
+          if (originalNotes !== undefined) text.notes = originalNotes;
           text.textFlow = "wrap";
           text.textFlowWidth = text.width;
           text.layoutBaselineOffset = Math.round(baseline * 10000) / 10000;
@@ -525,7 +562,12 @@ export async function captureWorkspaceHtmlResult({
         resourcePlans: [],
         report: { engine, warnings: prepared.warnings },
       };
-    const tree = convertToDesignDSL(root);
+    const elements = new Map();
+    const tree = convertToDesignDSL(root, { onElement: (semanticId, element) => {
+      if (element.ownerDocument !== frameDocument || !root.contains(element)) return;
+      if (!elements.has(semanticId)) elements.set(semanticId, element);
+      else if (elements.get(semanticId) !== element) elements.set(semanticId, null);
+    } });
     if (!tree) throw new Error("html2figma 没有生成可见 DesignNode");
     if (includeViewport) {
       options.viewportRelation = captureHtmlViewportRelation(root);
@@ -536,7 +578,11 @@ export async function captureWorkspaceHtmlResult({
     }
     const result = await designNodeToV3(tree, options);
     alignHtmlTextBaselines(result.document, frameDocument);
-    await enableHtmlTextReflow(result.document, frameDocument);
+    await enableHtmlTextReflow(result.document, frameDocument, elements, (code, nodeId, message) => {
+      result.report.stats.warningCount += 1;
+      if (result.report.warnings.length < 500) result.report.warnings.push({ code, nodeId, message });
+      else result.report.stats.omittedWarnings += 1;
+    });
     result.report = {
       ...result.report,
       engine,
