@@ -232,6 +232,7 @@ export async function createRenderer({
   fallbackFontUrls = {},
   background = "#ececea",
   tileCacheEnabled = true,
+  deviceTextSampling = true,
 }) {
   if (!canvas?.ownerDocument) throw new Error("CanvasKit renderer requires a browser canvas");
   const CK = await loadCanvasKit(assetsBaseUrl, canvas.ownerDocument);
@@ -275,13 +276,16 @@ export async function createRenderer({
   let sceneNodes = [],
     sceneIndex = new Map(),
     sceneChildren = new Map(),
-    hasInstances = false;
+    hasInstances = false,
+    deviceTextCandidates = [],
+    deviceCandidateOrigins = new Map();
   let sceneRevision = 0,
     resourceBuilds = 0,
     nodePictureBuilds = 0,
     nodePictureHits = 0,
     nodePictureBytes = 0,
-    qualityBuilds = 0;
+    qualityBuilds = 0,
+    deviceSamplingBuilds = 0;
   const tileCache = new Map();
   let tileBytes = 0,
     tileBuilds = 0,
@@ -504,7 +508,7 @@ export async function createRenderer({
             delete local.shadow;
             delete local.name;
             delete local.locked;
-            const signature = JSON.stringify([local, text.rasterScaleForNode?.(node) ?? 2]);
+            const signature = JSON.stringify([local, text.rasterScaleForNode?.(node) ?? 2, text.rasterSamplingForNode?.(node)]);
             let entry = nextNodePictures.get(node.id);
             if (entry?.signature === signature) {
               nodePictureHits++;
@@ -669,6 +673,14 @@ export async function createRenderer({
       sceneIndex = index;
       sceneChildren = children;
       hasInstances = design.nodes.some((node) => node.type === "instance");
+      deviceTextCandidates = deviceTextSampling && !hasInstances
+        ? design.nodes.filter((node) => node.type === "text" &&
+            isDesignNodeVisible(design, node, index) &&
+            ![...ancestors(node, index), node].some((item) => item.rotation))
+          .map((node) => ({ id: node.id, bounds: text.contentBounds(node),
+            pad: 0, origin: { x: node.x - Math.floor(node.x), y: node.y - Math.floor(node.y) } }))
+        : [];
+      deviceCandidateOrigins = new Map(deviceTextCandidates.map((candidate) => [candidate.id, candidate.origin]));
       nodePictureBytes = nextNodeBytes;
       sceneRevision++;
       clearTiles();
@@ -685,14 +697,15 @@ export async function createRenderer({
         };
       };
       updateStats();
-      recordCurrentScene = () => {
+      recordCurrentScene = (quality = true) => {
         const next = record();
         picture.delete();
         picture = next;
         nodePictureBytes = nextNodeBytes;
         sceneRevision++;
         clearTiles();
-        qualityBuilds++;
+        if (quality) qualityBuilds++;
+        else deviceSamplingBuilds++;
         updateStats();
       };
     } catch (error) {
@@ -794,7 +807,15 @@ export async function createRenderer({
       throw new Error("CanvasKit WebGL context lost; this frame was not rendered");
     if (![pan.x, pan.y, zoom].every(Number.isFinite) || zoom <= 0)
       throw new Error("Invalid viewport transform");
-    if (picture && (zoom * dpr > 2 || hasInstances) && currentDesign && sceneState.setRasterScale) {
+    // Match Skia's float32 matrix composition, including tiny residues left by
+    // public wheel controls even when the effective device transform is exact.
+    const physicalScale = Math.fround(Math.fround(zoom) * Math.fround(dpr));
+    const deviceEligible = deviceTextSampling && !hasInstances && physicalScale === 1 &&
+      Number.isInteger(Math.fround(Math.fround(pan.x) * Math.fround(dpr))) &&
+      Number.isInteger(Math.fround(Math.fround(pan.y) * Math.fround(dpr)));
+    const qualityNeeded = zoom * dpr > 2 || hasInstances;
+    if (picture && currentDesign && sceneState.setRasterScale &&
+        (qualityNeeded || deviceEligible || sceneState.hasDeviceSampling?.())) {
       const nodes = currentDesign.nodes,
         index = sceneIndex;
       const viewport = {
@@ -804,18 +825,27 @@ export async function createRenderer({
         height: cssHeight / zoom,
       };
       const visibleNodeIds = new Set(),
-        nodeScales = new Map();
+        nodeScales = new Map(),
+        deviceOrigins = new Map();
+      // Native pixel coverage is meaningful only at physical 1x with an integer
+      // device translation. All other transforms retain the high-resolution
+      // master. A shared component picture can also be used by scaled/rotated
+      // instances, so scenes containing instances conservatively use masters.
       const overlaps = (bounds, pad = 0) =>
         bounds &&
         bounds.x - pad < viewport.x + viewport.width &&
         bounds.x + bounds.width + pad > viewport.x &&
         bounds.y - pad < viewport.y + viewport.height &&
         bounds.y + bounds.height + pad > viewport.y;
-      for (const node of nodes) {
+      if (deviceEligible) for (const candidate of deviceTextCandidates)
+        if (overlaps(candidate.bounds, candidate.pad)) deviceOrigins.set(candidate.id, candidate.origin);
+      if (qualityNeeded) for (const node of nodes) {
         if (node.type !== "text" || !isDesignNodeVisible(currentDesign, node, index)) continue;
         const bounds = transformedNodeBoundsInTree(sceneNodes, node, index),
           pad = node.fontSize * 2;
-        if (overlaps(bounds, pad)) visibleNodeIds.add(node.id);
+        if (overlaps(bounds, pad)) {
+          visibleNodeIds.add(node.id);
+        }
       }
       const includeComponent = (componentId, scale, seen = new Set()) => {
         if (seen.has(componentId)) return;
@@ -852,8 +882,12 @@ export async function createRenderer({
               zoom * dpr * Math.max(node.width / component.width, node.height / component.height),
             );
         }
-      if (sceneState.setRasterScale(zoom * dpr, { visibleNodeIds, nodeScales }))
-        recordCurrentScene();
+      const qualityChanged = qualityNeeded &&
+        sceneState.setRasterScale(zoom * dpr, { visibleNodeIds, nodeScales });
+      const samplingChanged = sceneState.setDeviceSampling?.(deviceOrigins, {
+        retainOffscreen: deviceEligible, eligibleOrigins: deviceCandidateOrigins,
+      });
+      if (qualityChanged || samplingChanged) recordCurrentScene(Boolean(qualityChanged));
     }
     const started = now(),
       target = surface.getCanvas();
@@ -893,6 +927,7 @@ export async function createRenderer({
       nodePictureBuilds,
       nodePictureHits,
       textQualityBuilds: qualityBuilds,
+      deviceTextSamplingBuilds: deviceSamplingBuilds,
       nodePictureCacheBytes: nodePictureBytes,
       nodePictureCacheBudgetBytes: MAX_NODE_PICTURE_BYTES,
       renderMode: lastMode,

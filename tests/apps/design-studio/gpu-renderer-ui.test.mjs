@@ -66,9 +66,11 @@ function designFixture({ large = false } = {}) {
 }
 
 async function fixture(t, { capable = true, large = false, design = designFixture({ large }),
-  primarySource = serializeDesignDocument(design), parts = [], allowMemoryRecovery = false } = {}) {
+  primarySource = serializeDesignDocument(design), parts = [], allowMemoryRecovery = false,
+  forceSwiftShader = false, masterTextControl = false } = {}) {
   // This is a correctness test. SwiftShader is allowed as the WebGL driver; no physical-GPU speed is claimed.
-  const browser = await chromium.launch({ headless: true, args: ["--enable-webgl", "--enable-unsafe-swiftshader"] });
+  const browser = await chromium.launch({ headless: true, args: ["--enable-webgl", "--enable-unsafe-swiftshader",
+    ...(forceSwiftShader ? ["--use-angle=swiftshader"] : [])] });
   const context = await browser.newContext({ viewport: { width: 1500, height: 960 }, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
@@ -96,7 +98,14 @@ async function fixture(t, { capable = true, large = false, design = designFixtur
     }
     if (url.pathname.startsWith("/canvas/vendor/")) vendorRequests.push(url.pathname);
     try {
-      await route.fulfill({ body: await readFile(file), headers: { "Content-Security-Policy": csp },
+      let body = await readFile(file);
+      if (masterTextControl && url.pathname === "/canvas/canvaskit-renderer.mjs") {
+        // The actual UI uses renderer defaults. Its control changes only the
+        // public option default, keeping the same production UI and renderer.
+        assert.equal(body.toString().split("deviceTextSampling = true").length, 2);
+        body = Buffer.from(body.toString().replace("deviceTextSampling = true", "deviceTextSampling = false"));
+      }
+      await route.fulfill({ body, headers: { "Content-Security-Policy": csp },
         contentType: { ".html": "text/html", ".mjs": "text/javascript", ".js": "text/javascript",
           ".css": "text/css", ".wasm": "application/wasm", ".ttf": "font/ttf", ".woff2": "font/woff2" }[extname(file)],
       });
@@ -162,7 +171,7 @@ async function frames(page) {
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
 
-test("actual GPU editor keeps system-font kerning aligned with the editable SVG at 1x", async (t) => {
+test("actual GPU editor improves eligible system-font pixels against its unchanged master control", async (t) => {
   const design = normalizeDesignDocument({
     format: "codeshell.design",
     version: 3,
@@ -191,11 +200,11 @@ test("actual GPU editor keeps system-font kerning aligned with the editable SVG 
       },
     ],
   });
-  const { page } = await fixture(t, { design });
+  const { page } = await fixture(t, { design, forceSwiftShader: true });
   await active(page);
   if ((await page.locator("#toggle-grid").getAttribute("aria-pressed")) === "true")
     await page.locator("#toggle-grid").click();
-  const view = await page.locator("#stage").evaluate(async (canvas) => {
+  const alignView = async (canvas) => {
     const nextFrame = () =>
       new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const current = () => canvas.getContext("2d").getTransform();
@@ -234,7 +243,8 @@ test("actual GPU editor keeps system-font kerning aligned with the editable SVG 
       left: box.left,
       top: box.top,
     };
-  });
+  };
+  const view = await page.locator("#stage").evaluate(alignView);
   assert.equal(view.zoom, 1);
   assert.equal(view.x, 32);
   assert.equal(view.y, 32);
@@ -256,6 +266,16 @@ test("actual GPU editor keeps system-font kerning aligned with the editable SVG 
   await reference.close();
   const comparison = comparePixels(expected, actual);
   t.diagnostic(JSON.stringify(comparison.metrics));
+  const { page: control } = await fixture(t, { design, forceSwiftShader: true, masterTextControl: true });
+  await active(control);
+  if ((await control.locator("#toggle-grid").getAttribute("aria-pressed")) === "true")
+    await control.locator("#toggle-grid").click();
+  const controlView = await control.locator("#stage").evaluate(alignView);
+  const master = await control.screenshot({ clip: { x: controlView.left + 32, y: controlView.top + 32, width: 640, height: 240 } });
+  const masterComparison = comparePixels(expected, master);
+  t.diagnostic(`Unchanged master control: ${JSON.stringify(masterComparison.metrics)}`);
+  assert(comparison.metrics.meanAbsoluteChannelError < masterComparison.metrics.meanAbsoluteChannelError,
+    "count every channel difference when comparing real UI glyph coverage with the master control");
   const inkBounds = (bytes) => {
     const image = PNG.sync.read(bytes);
     let left = image.width,
@@ -280,8 +300,8 @@ test("actual GPU editor keeps system-font kerning aligned with the editable SVG 
       Math.abs(actualInk[side] - expectedInk[side]) <= 1,
       "glyph bounds stay within one sampling pixel",
     );
-  // The 2x system-font cache keeps antialiasing differences. Wrong kerning moves
-  // fully covered glyph pixels (delta 240), beyond these sampling differences.
+  // The existing geometry/error guard stays intact. Exact RGBA residuals vary
+  // by GPU backend and remain visible above; this is not a strict-zero receipt.
   assert(comparison.metrics.maximumChannelDelta <= 128);
 });
 async function active(page, expected = true, reason) {

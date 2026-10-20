@@ -44,9 +44,11 @@ export async function createCanvasKitText({
   let currentNodes = new Map(design.nodes.map((node) => [node.id, node]));
   const rasterImages = new Map(),
     rasterPlans = new Map(),
+    devicePlans = new Map(),
     contentBoundsCache = new Map(),
     missingByNode = new Map(),
     unrenderedByNode = new Map();
+  let activeDeviceIds = new Set(), deviceRequestKey = null, deviceEligibility = null;
   const maxRasterPixels = 16 * 1024 * 1024;
   let rasterPixels = 0,
     rasterHits = 0,
@@ -166,24 +168,40 @@ export async function createCanvasKitText({
       );
     return { bounds, left, top, bottom, padding, w, h };
   }
-  function estimatePixels(node, scale, alias) {
+  function lineGeometry(node, line, y, scale, alias, origin) {
+    const geometry = rasterBounds(node, line, scale, alias);
+    const x = alignedX(node, geometry.bounds.width);
+    if (!origin) return { ...geometry, x, offsetX: geometry.left - geometry.padding, offsetY: geometry.top - geometry.padding };
+    // Draw glyph coverage at its canonical device phase. The image's destination
+    // then lands on integer device pixels, avoiding a second interpolation pass.
+    const offsetX = Math.floor(x + geometry.left - geometry.padding + origin.x) - origin.x - x;
+    const offsetY = Math.floor(y + geometry.top - geometry.padding + origin.y) - origin.y - y;
+    return { ...geometry, x, offsetX, offsetY,
+      w: Math.max(geometry.w, Math.ceil(geometry.bounds.actualBoundingBoxRight + geometry.padding - offsetX)),
+      h: Math.max(geometry.h, Math.ceil(geometry.bottom + geometry.padding - offsetY)),
+    };
+  }
+  function estimatePixels(node, scale, alias, origin) {
     return String(node.text)
       .split("\n")
-      .reduce((sum, line) => {
-        const { w, h } = rasterBounds(node, line, scale, alias);
+      .reduce((sum, line, i) => {
+        const { w, h } = lineGeometry(node, line, node.y + i * node.fontSize * node.lineHeight, scale, alias, origin);
         return sum + w * h;
       }, 0);
   }
-  function dropNodeImages(id) {
+  function dropNodeImages(id, kind) {
     for (const [key, entry] of rasterImages)
-      if (entry.nodeId === id) {
+      if (entry.nodeId === id && (!kind || entry.kind === kind)) {
         entry.image.delete();
         rasterPixels -= entry.pixels;
         rasterImages.delete(key);
       }
   }
   function rasterScaleForNode(node) {
-    return rasterPlans.get(node.id)?.scale ?? 2;
+    return activeDeviceIds.has(node.id) ? 1 : rasterPlans.get(node.id)?.scale ?? 2;
+  }
+  function rasterSamplingForNode(node) {
+    return activeDeviceIds.has(node.id) ? devicePlans.get(node.id)?.origin : null;
   }
   const rasterSignature = (node, alias) =>
     JSON.stringify([
@@ -209,6 +227,7 @@ export async function createCanvasKitText({
     const signature = rasterSignature(node, alias);
     let plan = rasterPlans.get(node.id);
     if (!plan || plan.signature !== signature) {
+      deviceRequestKey = null;
       const scale = 2;
       dropNodeImages(node.id);
       plan = {
@@ -222,6 +241,55 @@ export async function createCanvasKitText({
       rasterPlans.set(node.id, plan);
     }
     return plan;
+  }
+  function trimDevicePlans(masterPixels, visibleIds = activeDeviceIds) {
+    let devicePixels = [...devicePlans.values()].reduce((sum, plan) => sum + plan.pixels, 0);
+    const cold = [...devicePlans].sort((a, b) =>
+      Number(visibleIds.has(a[0])) - Number(visibleIds.has(b[0])) || a[1].used - b[1].used);
+    for (const [id, plan] of cold) {
+      if (masterPixels + devicePixels <= maxRasterPixels) break;
+      dropNodeImages(id, "device");
+      devicePlans.delete(id);
+      activeDeviceIds.delete(id);
+      devicePixels -= plan.pixels;
+    }
+  }
+  function setDeviceSampling(origins = new Map(), { retainOffscreen = false, eligibleOrigins = origins } = {}) {
+    const requestKey = JSON.stringify([retainOffscreen, [...origins]]);
+    if (requestKey === deviceRequestKey && eligibleOrigins === deviceEligibility) return false;
+    const signature = () => JSON.stringify([...activeDeviceIds].map((id) => [id, devicePlans.get(id)?.origin]));
+    const before = signature();
+    // A device image remains correct when it leaves the viewport. Keep it in
+    // the display list so integer-pan return trips do not rebuild every tile.
+    if (!retainOffscreen) activeDeviceIds = new Set();
+    else for (const id of activeDeviceIds) {
+      const eligible = eligibleOrigins.get(id), cached = devicePlans.get(id)?.origin;
+      if (!eligible || !cached || eligible.x !== cached.x || eligible.y !== cached.y)
+        activeDeviceIds.delete(id);
+    }
+    for (const [id, origin] of origins) {
+      const master = rasterPlans.get(id);
+      if (!master) continue; // Native SkParagraph text never acquires bitmap variants.
+      let plan = devicePlans.get(id);
+      if (!plan || plan.origin.x !== origin.x || plan.origin.y !== origin.y) {
+        dropNodeImages(id, "device");
+        devicePlans.delete(id);
+        activeDeviceIds.delete(id);
+        try {
+          plan = { origin, pixels: estimatePixels(master.node, 1, master.alias, origin), used: ++rasterUse };
+          devicePlans.set(id, plan);
+        } catch {
+          // This optional variant cannot make a previously valid master fail.
+          continue;
+        }
+      }
+      plan.used = ++rasterUse;
+      activeDeviceIds.add(id);
+    }
+    trimDevicePlans([...rasterPlans.values()].reduce((sum, plan) => sum + plan.pixels, 0), new Set(origins.keys()));
+    deviceRequestKey = requestKey;
+    deviceEligibility = eligibleOrigins;
+    return before !== signature();
   }
   function setRasterScale(
     requestedScale,
@@ -241,6 +309,7 @@ export async function createCanvasKitText({
       total += pixels - plan.pixels;
     }
     if (!changes.size) return false;
+    deviceRequestKey = null;
     const cold = [...rasterPlans]
       .filter(([id, plan]) => !visibleNodeIds.has(id) && plan.scale > 2)
       .sort((a, b) => a[1].used - b[1].used);
@@ -257,6 +326,7 @@ export async function createCanvasKitText({
       dropNodeImages(id);
       Object.assign(plan, change, { used: ++rasterUse });
     }
+    trimDevicePlans(total);
     return true;
   }
   function beginScene(nextDesign) {
@@ -270,17 +340,32 @@ export async function createCanvasKitText({
         node.type === "text" &&
         rasterSignature(node) !== rasterSignature(currentNodes.get(node.id) ?? {}),
     );
+    if (contentChanged) {
+      deviceRequestKey = null;
+      // New/edited masters always get the full existing budget before optional
+      // device images. Otherwise a valid content revision could fail while an
+      // obsolete device variant still occupies its old pixels.
+      for (const id of devicePlans.keys()) dropNodeImages(id, "device");
+      devicePlans.clear();
+      activeDeviceIds.clear();
+    }
     currentNodes = new Map(nodes.map((node) => [node.id, node]));
     for (const [id, plan] of rasterPlans)
       if (currentNodes.get(id)?.type !== "text") {
         dropNodeImages(id);
         rasterPlans.delete(id);
+        deviceRequestKey = null;
+        devicePlans.delete(id);
+        activeDeviceIds.delete(id);
       } else if (plan.signature !== rasterSignature(currentNodes.get(id), plan.alias)) {
         // A content edit can make the previous high-quality line exceed the
         // budget even after it moves offscreen. Start the revision at 2x;
         // render() upgrades only text needed by the new viewport.
         dropNodeImages(id);
         rasterPlans.delete(id);
+        deviceRequestKey = null;
+        devicePlans.delete(id);
+        activeDeviceIds.delete(id);
       }
     if (contentChanged)
       for (const [id, plan] of rasterPlans)
@@ -333,10 +418,10 @@ export async function createCanvasKitText({
 
   function rasterLine(canvas, node, line, y, alias) {
     const plan = prepareRasterPlan(node, alias),
-      scale = plan.scale;
-    const { bounds, left, top, bottom, padding, w, h } = rasterBounds(node, line, scale, alias);
-    const x = alignedX(node, bounds.width);
-    const cacheKey = JSON.stringify([node.id, plan.signature, line, y, scale]);
+      origin = rasterSamplingForNode(node),
+      scale = origin ? 1 : plan.scale;
+    const { bounds, top, bottom, w, h, x, offsetX, offsetY } = lineGeometry(node, line, y, scale, alias, origin);
+    const cacheKey = JSON.stringify([node.id, plan.signature, line, y, scale, origin]);
     let image = rasterImages.get(cacheKey)?.image;
     if (!image) {
       if (rasterPixels + w * h > maxRasterPixels)
@@ -346,7 +431,7 @@ export async function createCanvasKitText({
       raster.height = h;
       const ctx = raster.getContext("2d", { willReadFrequently: true });
       ctx.scale(scale, scale);
-      ctx.translate(-left + padding, -top + padding);
+      ctx.translate(-offsetX, -offsetY);
       ctx.font = measure.font;
       ctx.textBaseline = "hanging";
       if ("fontKerning" in ctx) ctx.fontKerning = "normal";
@@ -402,7 +487,7 @@ export async function createCanvasKitText({
       if (!image) {
         throw new Error("Cannot create GPU-renderable system-text image");
       }
-      rasterImages.set(cacheKey, { image, nodeId: node.id, pixels: w * h });
+      rasterImages.set(cacheKey, { image, nodeId: node.id, kind: origin ? "device" : "master", pixels: w * h });
       rasterPixels += w * h;
       rasterMisses++;
     } else rasterHits++;
@@ -411,7 +496,7 @@ export async function createCanvasKitText({
     canvas.drawImageRectOptions(
       image,
       CK.XYWHRect(0, 0, w, h),
-      CK.XYWHRect(x + left - padding, y + top - padding, w / scale, h / scale),
+      CK.XYWHRect(x + offsetX, y + offsetY, w / scale, h / scale),
       CK.FilterMode.Linear,
       CK.MipmapMode.None,
       paint,
@@ -472,6 +557,9 @@ export async function createCanvasKitText({
     if (rasterPlans.has(node.id)) {
       dropNodeImages(node.id);
       rasterPlans.delete(node.id);
+      deviceRequestKey = null;
+      devicePlans.delete(node.id);
+      activeDeviceIds.delete(node.id);
     }
     counters.nativeTextNodes++;
     const baseline = hangingOffset(node, entry.alias);
@@ -543,7 +631,10 @@ export async function createCanvasKitText({
     draw,
     beginScene,
     setRasterScale,
+    setDeviceSampling,
+    hasDeviceSampling: () => activeDeviceIds.size > 0,
     rasterScaleForNode,
+    rasterSamplingForNode,
     contentBounds,
     stats: () => ({
       loadedFontResources: faces.size,
@@ -557,11 +648,15 @@ export async function createCanvasKitText({
       rasterTextCacheHits: rasterHits,
       rasterTextCacheMisses: rasterMisses,
       rasterNodeScales: [...rasterPlans].map(([nodeId, plan]) => ({ nodeId, scale: plan.scale })),
+      deviceTextNodes: activeDeviceIds.size,
+      deviceTextCacheVariants: devicePlans.size,
     }),
     dispose() {
       for (const entry of rasterImages.values()) entry.image.delete();
       rasterImages.clear();
       rasterPlans.clear();
+      devicePlans.clear();
+      activeDeviceIds.clear();
       contentBoundsCache.clear();
       rasterPixels = 0;
       for (const { face } of faces.values()) face.delete();
