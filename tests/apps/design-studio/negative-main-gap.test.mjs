@@ -37,6 +37,13 @@ test("signed main spacing reflows nowrap H/V, excludes hidden and absolute nodes
     applyAllAutoLayouts(design.nodes);
     assert.equal(last[position] + last[size], parent[size]);
   }
+  {
+    const design = importFigmaJson(source()).document, [parent, a, real, b] = design.nodes;
+    parent.width = 20000; a.width = b.width = 1; real.layoutSizingHorizontal = "fill";
+    applyAllAutoLayouts(design.nodes);
+    assert.equal(real.width, 20000, "signed spacing cannot create an invalid over-budget Fill dimension");
+    assert.doesNotThrow(() => roundTrip(design));
+  }
   for (const width of [640, 400]) {
     const design = importFigmaJson(source()).document, [parent, a, real, b] = design.nodes;
     parent.width = width; parent.height = 40; parent.layoutSizingVertical = "hug";

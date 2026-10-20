@@ -6003,6 +6003,11 @@ for (const [input, property] of [
     input,
     (node, value) => {
       ensureDesignV3();
+      if (isContainerNode(node)) try { validateLayoutSpacing({ ...node, [property]: value }); } catch (error) {
+        input.value = node[property] ?? "fixed";
+        notify(error.message, "error");
+        return;
+      }
       node[property] = value;
       reflowParent(node);
       if (isContainerNode(node)) applyAutoLayouts(design.nodes, new Set([node.id]));

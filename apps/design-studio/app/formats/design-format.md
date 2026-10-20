@@ -140,6 +140,15 @@ rendered component content.
 
 ## Auto layout and components
 
+Ordinary HTML block children with `width:auto` and resolved negative horizontal pixel margins
+can retain native flow through a transparent Fill-width/Hug-height horizontal wrapper. Two
+transparent fixed spacers and a negative main gap expand the real Fill child; its source ID,
+paint, children, and absolute min/max pixel limits remain on that child. Recovery requires a
+unique measured upstream placeholder or an inert margin wrapper. Positioned, transformed,
+floated, percentage-width, and relative-constraint cases retain measured geometry with a warning.
+Fractional CSS background edge snapping can still differ from SVG antialiasing; geometry is
+preserved and strict pixel reports retain that failure.
+
 Signed gaps down to −2000 are supported only on the main axis of horizontal/vertical nowrap
 stacks with fixed or Fill main sizing. Cross-axis and Grid gaps remain nonnegative. Negative
 spacing with wrapping, reverse order, or main-axis Hug is rejected; unsupported native imports

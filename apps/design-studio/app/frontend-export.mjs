@@ -184,7 +184,7 @@ function sizingDeclarations(node, parent) {
     declarations.push(["width", "fit-content"]);
   } else if (horizontal === "fill" && ["horizontal", "vertical"].includes(parentLayout)) {
     if (parentLayout === "horizontal") declarations.push(["flex", "1 1 0"], ["min-width", "0"]);
-    else declarations.push(["align-self", "stretch"], ["width", "auto"]);
+    else declarations.push(["align-self", "stretch"], ["width", "100%"]);
   } else if (horizontal === "fill" && parentLayout === "grid") {
     declarations.push(["width", "auto"], ["justify-self", "stretch"]);
   } else {

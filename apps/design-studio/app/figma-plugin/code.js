@@ -805,6 +805,9 @@
       for (const key of ["itemSpacing", "itemReverseZIndex", "layoutSizingHorizontal", "layoutSizingVertical", "layoutWrap", "counterAxisSpacing"])
         if (node[key] !== undefined) raw[key] = node[key];
     }
+    if (["HORIZONTAL", "VERTICAL"].includes(node.parent?.layoutMode))
+      for (const key of ["layoutPositioning", "layoutSizingHorizontal", "layoutSizingVertical", "layoutGrow", "layoutAlign"])
+        if (node[key] !== undefined) raw[key] = node[key];
     const keys = node.layoutMode === "GRID"
       ? [
           "layoutMode", "layoutSizingHorizontal", "layoutSizingVertical",

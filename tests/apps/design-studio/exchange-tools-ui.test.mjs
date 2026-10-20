@@ -1795,3 +1795,48 @@ test("the quality repair button preserves locked descendants and one undo restor
   assert.equal(f.files.get(`A:${designPath}`), original);
   assert.deepEqual(f.errors, []);
 });
+
+
+test("public negative spacing inspector and tools retain native bleed through outer-only resize and reopen", async (t) => {
+  const f = await fixture(t);
+  const { negativeMarginFixtures } = await import("../../fixtures/design-studio-negative-margins/source.mjs");
+  const fixtureSource = negativeMarginFixtures[0], path = "pages/negative-spacing.html";
+  f.files.set(`A:${path}`, `<!doctype html><style>*{box-sizing:border-box}body{margin:0;font-family:Arial}${fixtureSource.css}</style>${fixtureSource.html}`);
+  await f.tool("import_html", { path, root_selector: "#fixture", viewport_width: 640, viewport_height: 300,
+    save: true, expected_state_revision: (await f.metadata()).stateRevision });
+  let metadata = await f.metadata();
+  const wrapper = metadata.layers.find((node) => node.name.includes("horizontal margins"));
+  const row = metadata.layers.find((node) => node.name === "section#row");
+  assert.ok(wrapper && row);
+  await f.page.locator(`.layer-row[data-id="${wrapper.id}"] .layer-title`).click();
+  await f.page.locator("#prop-layout-gap").fill("-20");
+  assert.equal((await readNode(f.page, wrapper.id)).gap, -20);
+  const beforeInvalid = await readNode(f.page, row.id);
+  await f.page.locator("details.layout-advanced > summary").click();
+  await f.page.locator("#prop-layout-wrap").selectOption("wrap");
+  assert.equal((await readNode(f.page, wrapper.id)).layoutWrap, "none");
+  await f.page.locator("#prop-layout-reverse").click();
+  assert.equal(Boolean((await readNode(f.page, wrapper.id)).layoutReverse), false);
+  await f.page.locator("#prop-layout-sizing-horizontal").selectOption("hug");
+  assert.equal((await readNode(f.page, wrapper.id)).layoutSizingHorizontal, "fill");
+  const afterInvalid = await readNode(f.page, row.id);
+  assert.deepEqual([afterInvalid.x, afterInvalid.width], [beforeInvalid.x, beforeInvalid.width]);
+  metadata = await f.metadata();
+  await f.tool("use_design", { save: true, expected_state_revision: metadata.stateRevision,
+    operations: [{ op: "update_node", node_id: wrapper.id, changes: { gap: -16 } },
+      { op: "update_node", node_id: "html-viewport", changes: { width: 400 } }] });
+  await f.reload();
+  const resized = await readNode(f.page, row.id);
+  assert.deepEqual([resized.x, resized.width, resized.layoutSizingHorizontal], [5, 390, "fill"]);
+  metadata = await f.metadata();
+  await assert.rejects(f.tool("use_design", { expected_state_revision: metadata.stateRevision,
+    operations: [{ op: "update_node", node_id: wrapper.id, changes: { layoutWrap: "wrap" } }] }), /负间距/u);
+  metadata = await f.metadata();
+  await f.tool("exchange_figma", { action: "export", path: "designs/negative-spacing.figma-transfer.json", expected_state_revision: metadata.stateRevision });
+  const transfer = JSON.parse(f.files.get("A:designs/negative-spacing.figma-transfer.json"));
+  const flatten = (node) => [node, ...(node.children ?? []).flatMap(flatten)];
+  const exported = transfer.pages.flatMap((page) => page.children.flatMap(flatten));
+  assert.equal(exported.find((node) => node.id === wrapper.id).gap, -16);
+  assert.equal(exported.find((node) => node.id === row.id).layoutSizingHorizontal, "fill");
+  assert.deepEqual(f.errors, []);
+});

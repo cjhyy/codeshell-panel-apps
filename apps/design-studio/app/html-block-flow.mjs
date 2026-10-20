@@ -6,7 +6,24 @@ const flow = (node) => node.visible !== false && node.layout?.display !== "none"
 const absolute = (node) => ["absolute", "fixed"].includes(node.positioning?.mode);
 const zeroOffset = (value) => !value || value === "auto" || /^-?0(?:\.0+)?(?:px)?$/u.test(value);
 
-export function planHtmlBlockFlow(source, coordinateSpace = "parent-relative") {
+const pixels = (value) => /^(?:-?(?:\d+(?:\.\d+)?|\.\d+)px|-?0(?:\.0+)?)$/u.test(value) ? Number.parseFloat(value) : NaN;
+
+export function htmlBlockHorizontalBleed(child) {
+  const left = pixels(css(child, "margin-left")), right = pixels(css(child, "margin-right"));
+  if (![left, right].every(Number.isFinite) || left > 0 || right > 0 || Math.min(left, right) >= 0 ||
+      Math.min(left, right) < -1999 || css(child, "width") !== "auto" ||
+      !["block", "flow-root", "flex", "grid"].includes(child.layout?.display) ||
+      !["static", "relative"].includes(css(child, "position")) || child.transform ||
+      !["", "ltr"].includes(css(child, "direction")) || !["", "horizontal-tb"].includes(css(child, "writing-mode")) ||
+      !["", "none"].includes(css(child, "float")) || !["", "none"].includes(css(child, "clear")) ||
+      !["top", "bottom"].every((side) => pixels(css(child, `margin-${side}`)) >= 0) ||
+      !["top", "right", "bottom", "left"].every((side) => zeroOffset(css(child, side)))) return null;
+  for (const property of ["min-width", "max-width"])
+    if (!/^(?:none|auto|0|\d+(?:\.\d+)?px)$/u.test(css(child, property))) return null;
+  return { left: -left, right: -right };
+}
+
+export function planHtmlBlockFlow(source, coordinateSpace = "parent-relative", targetOrigin = { x: 0, y: 0 }) {
   if (
     source.nodeType !== "container" ||
     !["block", "flow-root"].includes(source.layout?.display) ||
@@ -32,6 +49,7 @@ export function planHtmlBlockFlow(source, coordinateSpace = "parent-relative") {
   for (const child of source.children) {
     const zeroRelative = css(child, "position") === "relative" &&
       ["top", "right", "bottom", "left"].every((key) => zeroOffset(css(child, key)));
+    const bleed = htmlBlockHorizontalBleed(child);
     const autoOverflow = ["static", "relative"].includes(css(child, "position")) &&
       ["left", "right"].some((side) => css(child, `margin-${side}`) === "auto") &&
       ["top", "right", "bottom", "left"].every((side) => {
@@ -39,17 +57,20 @@ export function planHtmlBlockFlow(source, coordinateSpace = "parent-relative") {
         return value === "auto" || /^0(?:\.0+)?(?:px)?$/u.test(value);
       }) && finite(child.bounds?.width) > contentWidth;
     if (
-      !absolute(child) || (!zeroRelative && !autoOverflow)
+      !absolute(child) || (!zeroRelative && !autoOverflow && !bleed)
     ) continue;
-    const placeholder = source.children.find((entry) =>
+    const matches = source.children.filter((entry) =>
       !replacements.has(entry) && entry.opacity === 0 && entry.children?.length === 0 &&
       ((zeroRelative && inert(entry, "z-index-placeholder") &&
         Math.abs(finite(entry.bounds?.width) - finite(child.bounds?.width)) < 0.02) ||
        (autoOverflow && inert(entry, "neg-margin-placeholder") &&
-        Math.abs(finite(entry.bounds?.width) - Math.max(1, contentWidth)) < 0.02)) &&
+        Math.abs(finite(entry.bounds?.width) - Math.max(1, contentWidth)) < 0.02) ||
+       (bleed && inert(entry, "neg-margin-placeholder") &&
+        Math.abs(finite(entry.bounds?.width) - Math.max(1, finite(child.bounds?.width) - bleed.left - bleed.right)) < 0.02)) &&
       ["x", "y", "height"].every((key) =>
         Math.abs(finite(entry.bounds?.[key]) - finite(child.bounds?.[key])) < 0.02));
-    if (placeholder) {
+    if (matches.length === 1) {
+      const placeholder = matches[0];
       promoted.add(child);
       replacements.set(placeholder, child);
     }
@@ -93,7 +114,10 @@ export function planHtmlBlockFlow(source, coordinateSpace = "parent-relative") {
     item.y = local(child, "y");
     item.gap = index === 0 ? 0 : item.y -
       local(items[index - 1].source, "y") - finite(items[index - 1].source.bounds?.height);
-    if (item.x < -0.02 || item.gap < -2 || item.gap > 2000)
+    item.bleed = htmlBlockHorizontalBleed(child);
+    if (!item.bleed && ["left", "right"].some((side) => Number.parseFloat(css(child, `margin-${side}`)) < 0))
+      return reason("负横向外边距仅支持已验证的普通 auto 宽度与固定像素约束，保留测量布局。");
+    if ((!item.bleed && item.x < -0.02) || item.gap < -2 || item.gap > 2000)
       return reason("块流包含负向外边距或相互覆盖，保留测量布局。");
     const left = finite(padding.left), right = finite(padding.right);
     const width = css(child, "width");
@@ -102,6 +126,25 @@ export function planHtmlBlockFlow(source, coordinateSpace = "parent-relative") {
       return reason("content-box 百分比宽度溢出的块需要保留测量布局。");
     item.fill = width === "auto" || /^100(?:\.0+)?%$/u.test(width) ||
       (!child.semantic && Math.abs(finite(child.bounds?.width) - finite(source.bounds?.width) + left + right) < 0.05);
+    if (item.bleed) {
+      const sizing = child.layout?.sizing ?? {};
+      const inset = sizing.boxSizing === "border-box" ? 0 : ["left", "right"].reduce((sum, side) =>
+        sum + finite(child.layout?.padding?.[side]) + finite(child.border?.[side]?.width), 0);
+      const min = sizing.minWidth > 0 ? sizing.minWidth + inset : 1;
+      const max = sizing.maxWidth > 0 ? Math.max(min, sizing.maxWidth + inset) : Infinity;
+      const expectedWidth = Math.min(max, Math.max(min, contentWidth + item.bleed.left + item.bleed.right));
+      const magnitude = Math.max(item.bleed.left, item.bleed.right) + 1;
+      const positions = [targetOrigin.x + left, targetOrigin.y + item.y,
+        targetOrigin.x + item.x + finite(child.bounds?.width) - magnitude];
+      if (magnitude > 2000 || contentWidth < 1 || contentWidth > 20000 || expectedWidth > 20000 ||
+          finite(child.bounds?.width) > 20000 || finite(child.bounds?.height) > 20000 || min > 20000 ||
+          (Number.isFinite(max) && max > 20000) || positions.some((value) => !Number.isFinite(value) || Math.abs(value) > 20000))
+        return reason("负横向外边距的包装框、占位或扩展尺寸超过 v3 的间距/20000px 几何预算，保留测量布局。");
+      if (Math.abs(item.x - left + item.bleed.left) > 0.05 || Math.abs(finite(child.bounds?.width) - expectedWidth) > 0.05)
+        return reason("负横向外边距与 auto 宽度的测量关系不一致，保留测量布局。");
+      item.fill = true;
+      continue;
+    }
     const beforeAuto = css(child, "margin-left") === "auto", afterAuto = css(child, "margin-right") === "auto";
     const horizontalAuto = beforeAuto || afterAuto;
     const free = Math.max(0, finite(source.bounds?.width) - left - right - finite(child.bounds?.width));
