@@ -68,7 +68,8 @@ function textDecoration(value) {
   return "none";
 }
 
-function hangingBaselineOffset(style, size, spacing, ownerDocument) {
+// Range bounds use the font box top; v3 text coordinates use an SVG hanging anchor.
+export function hangingBaselineOffset(style, size, spacing, ownerDocument) {
   let documentOffsets = hangingBaselineOffsets.get(ownerDocument);
   if (!documentOffsets) {
     documentOffsets = new Map();

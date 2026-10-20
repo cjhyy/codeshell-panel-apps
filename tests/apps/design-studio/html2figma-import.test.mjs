@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { PNG as PngImage } from "pngjs";
 import {
   normalizeDesignDocument,
   serializeDesignDocument,
@@ -284,6 +285,88 @@ test("workspace CSS and selected local image bytes resolve under their own paths
   );
   assert.equal(wide.remainingFrames, 0);
   assert.equal(narrow.remainingFrames, 0);
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("production HTML text uses measured hanging baselines across fonts, sizes and line heights", async (t) => {
+  const f = await fixture(t);
+  await f.page.setViewportSize({ width: 480, height: 360 });
+  const html = `<!doctype html><style>
+    *{box-sizing:border-box}html,body{margin:0;background:#fff;color:#172033;font-family:Arial}
+    main{width:480px;height:360px;padding:20px}h1,p{margin:0 0 12px}
+    h1{font-size:24px;line-height:30px}p{font-size:16px;line-height:24px}
+    .label{display:inline-block;padding:6px 12px;background:#dbeafe;font-size:14px;line-height:20px}
+    .serif{font-family:"Times New Roman";font-style:italic;font-size:20px;line-height:28px;margin-top:12px}
+    .mono{font-family:monospace;font-size:18px;line-height:24px}
+    </style><main><h1>Heading baseline</h1><p>Paragraph baseline</p><span class="label">Button label</span><p class="serif">Italic glyphs gjpq</p><p class="mono">Monospace baseline</p></main>`;
+  await f.page.setContent(html);
+  await f.page.evaluate(() => document.fonts.ready);
+  const source = PngImage.sync.read(await f.page.screenshot());
+  const captured = await f.capture(html);
+  const saved = serializeDesignDocument(normalizeDesignDocument(captured.document));
+  const nodes = normalizeDesignDocument(JSON.parse(saved)).nodes.filter(
+    (node) => node.type === "text",
+  );
+  assert.equal(nodes.length, 5);
+  const svg = await f.page.evaluate(async (value) => {
+    const { normalizeDesignDocument, exportDesignSvg } = await import("/app/document.mjs");
+    return exportDesignSvg(normalizeDesignDocument(JSON.parse(value)));
+  }, saved);
+  await f.page.setContent(
+    `<!doctype html><style>html,body{margin:0;background:#fff}svg{display:block}</style>${svg}`,
+  );
+  await f.page.evaluate(() => document.fonts.ready);
+  const converted = PngImage.sync.read(await f.page.screenshot());
+  let changed = 0,
+    exactChanged = 0;
+  for (let pixel = 0; pixel < source.width * source.height; pixel++) {
+    const offset = pixel * 4;
+    const delta = Math.max(
+      ...[0, 1, 2].map((channel) =>
+        Math.abs(source.data[offset + channel] - converted.data[offset + channel]),
+      ),
+    );
+    if (delta > 0) exactChanged++;
+    if (delta > 24) changed++;
+  }
+  t.diagnostic(
+    `${exactChanged}/${source.width * source.height} pixels differ exactly; ${changed} differ by more than 24 channel levels`,
+  );
+  assert(
+    changed / (source.width * source.height) < 0.005,
+    `text baseline drift changed ${changed} pixels`,
+  );
+  const inkBounds = (image, top, bottom) => {
+    const rows = [];
+    for (let y = top; y < bottom; y++) {
+      for (let x = 0; x < image.width; x++) {
+        const offset = (y * image.width + x) * 4;
+        if (Math.max(...image.data.subarray(offset, offset + 3)) < 128) {
+          rows.push(y);
+          break;
+        }
+      }
+    }
+    return [rows[0], rows.at(-1)];
+  };
+  for (const [top, bottom] of [
+    [20, 50],
+    [62, 86],
+    [104, 128],
+    [136, 164],
+    [176, 200],
+  ])
+    assert.deepEqual(
+      inkBounds(converted, top, bottom),
+      inkBounds(source, top, bottom),
+      `ink rows at ${top}–${bottom}`,
+    );
+  assert(nodes.every((node) => Number.isFinite(node.layoutBaselineOffset)));
+  assert(
+    new Set(nodes.map((node) => node.layoutBaselineOffset)).size > 1,
+    "offsets must follow the active font metrics",
+  );
   assert.deepEqual(f.external, []);
   assert.deepEqual(f.errors, []);
 });

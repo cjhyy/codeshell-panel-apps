@@ -1,4 +1,4 @@
-import { captureHtmlToDesign } from "./html-capture.mjs";
+import { captureHtmlToDesign, hangingBaselineOffset } from "./html-capture.mjs";
 import { convertToDesignDSL, HTML2FIGMA_PROVENANCE } from "./vendor/html2figma-browser.mjs";
 import { designNodeToV3 } from "./design-node-adapter.mjs";
 import {
@@ -280,6 +280,26 @@ async function verifyHtmlResources(frameWindow, prepared) {
   }
 }
 
+function alignHtmlTextBaselines(documentValue, browserDocument) {
+  const visit = (node) => {
+    if (node.type === "text") {
+      // html2figma preserves browser Range bounds. Convert just these new HTML
+      // text origins to the hanging-baseline convention already used by v3.
+      const offset = hangingBaselineOffset(
+        node,
+        node.fontSize,
+        node.letterSpacing ?? 0,
+        browserDocument,
+      );
+      const y = Math.min(20000, Math.max(-20000, node.y + offset));
+      node.layoutBaselineOffset = Math.round((y - node.y) * 10000) / 10000;
+      node.y = Math.round(y * 100) / 100;
+    }
+    for (const child of node.children ?? []) visit(child);
+  };
+  for (const page of documentValue.pages) page.children.forEach(visit);
+}
+
 export async function captureWorkspaceHtmlResult({
   sourcePath,
   html,
@@ -376,6 +396,7 @@ export async function captureWorkspaceHtmlResult({
     const tree = convertToDesignDSL(root);
     if (!tree) throw new Error("html2figma 没有生成可见 DesignNode");
     const result = await designNodeToV3(tree, options);
+    alignHtmlTextBaselines(result.document, frameDocument);
     result.report = {
       ...result.report,
       engine,
