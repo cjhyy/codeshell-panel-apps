@@ -504,6 +504,103 @@
                   "minimum": 0,
                   "maximum": 100
                 },
+                "nativeStrokeInactive": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "anyOf": [
+                    {
+                      "required": [
+                        "strokeAlign"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "strokeWeight"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "individualStrokeWeights"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "strokesIncludedInLayout"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "strokesIncludedInLayoutDefault"
+                      ]
+                    }
+                  ],
+                  "not": {
+                    "type": "object",
+                    "required": [
+                      "strokesIncludedInLayout",
+                      "strokesIncludedInLayoutDefault"
+                    ]
+                  },
+                  "properties": {
+                    "strokeAlign": {
+                      "enum": [
+                        "INSIDE",
+                        "CENTER",
+                        "OUTSIDE"
+                      ]
+                    },
+                    "strokeWeight": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 100
+                    },
+                    "individualStrokeWeights": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "top",
+                        "right",
+                        "bottom",
+                        "left"
+                      ],
+                      "properties": {
+                        "top": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 100
+                        },
+                        "right": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 100
+                        },
+                        "bottom": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 100
+                        },
+                        "left": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 100
+                        }
+                      }
+                    },
+                    "strokesIncludedInLayout": {
+                      "type": "boolean"
+                    },
+                    "strokesIncludedInLayoutDefault": {
+                      "const": false
+                    },
+                    "sourceOnly": {
+                      "const": true
+                    }
+                  }
+                },
                 "strokeAlign": {"enum":["inside","center","outside",null]},
                 "strokeLayoutExcluded": { "enum": [true, null], "description": "Native source provenance for inside strokes excluded from an H/V Frame or Component content inset. Null removes it; omitted defaults to included CSS effective padding." },
                 "strokeSides": {"type":["array","null"],"minItems":4,"maxItems":4,"items":{"type":"object","additionalProperties":false,"required":["width","color","opacity"],"properties":{"width":{"type":"number","minimum":0,"maximum":100},"color":{"type":"string","pattern":"^#[a-fA-F0-9]{6}$"},"opacity":{"type":"number","minimum":0,"maximum":1}}}},

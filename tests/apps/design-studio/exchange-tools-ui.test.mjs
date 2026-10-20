@@ -1937,3 +1937,116 @@ test("public negative spacing edits retain native-safe block insets through oute
   assert.equal(exported.find((node) => node.id === row.id).layoutSizingHorizontal, "fill");
   assert.deepEqual(f.errors, []);
 });
+
+
+test("inactive native stroke inspector/public activation preserves latent width, offers Text Center, and undo/reopen retains intent", async (t) => {
+  const f = await fixture(t),
+    { importFigmaJson } = await import("../../../apps/design-studio/app/figma-bridge.mjs");
+  const doc = importFigmaJson({
+    id: "0:1",
+    type: "CANVAS",
+    name: "Inactive stroke",
+    children: [
+      {
+        id: "1:2",
+        type: "FRAME",
+        name: "Latent Frame",
+        layoutMode: "VERTICAL",
+        strokeAlign: "INSIDE",
+        strokeWeight: 2,
+        strokesIncludedInLayout: true,
+        strokes: [],
+        paddingTop: 8,
+        paddingRight: 8,
+        paddingBottom: 8,
+        paddingLeft: 8,
+        absoluteBoundingBox: { x: 20, y: 20, width: 400, height: 140 },
+        fills: [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }],
+        children: [],
+      },
+      {
+        id: "1:3",
+        type: "TEXT",
+        name: "Latent Text",
+        strokeAlign: "OUTSIDE",
+        strokeWeight: 1,
+        strokes: [],
+        characters: "Original characters",
+        fills: [{ type: "SOLID", color: { r: 0, g: 0, b: 0 } }],
+        absoluteBoundingBox: { x: 20, y: 180, width: 300, height: 20 },
+        style: {
+          fontFamily: "Arial",
+          fontSize: 16,
+          fontWeight: 400,
+          lineHeightPx: 20,
+          lineHeightUnit: "PIXELS",
+        },
+      },
+    ],
+  }).document;
+  f.files.set(`A:${designPath}`, serializeDesignDocument(doc));
+  await f.reload();
+  await f.page.locator('.layer-row[data-id="figma-1-2"] .layer-title').click();
+  assert.equal(await f.page.locator("#prop-stroke-width").inputValue(), "2");
+  assert.equal(await f.page.locator("#prop-stroke-align").inputValue(), "inside");
+  assert.equal(await f.page.locator("#prop-stroke-layout").inputValue(), "included");
+  await f.page.locator("#prop-stroke-width").fill("3");
+  await f.page.locator("#prop-stroke-width").press("Tab");
+  assert.equal((await readNode(f.page, "figma-1-2")).strokeWidth, 0);
+  assert.equal((await readNode(f.page, "figma-1-2")).nativeStrokeInactive.strokeWeight, 3);
+  await f.page.locator("#prop-stroke").fill("#123456");
+  await f.page.locator("#prop-stroke").press("Tab");
+  let frame = await readNode(f.page, "figma-1-2");
+  assert.equal(frame.nativeStrokeInactive, undefined);
+  assert.equal(frame.paddingTop, 11);
+  assert.equal(frame.strokeWidth, 3);
+  await f.page.locator("#prop-stroke-remove").click();
+  frame = await readNode(f.page, "figma-1-2");
+  assert.equal(frame.paddingTop, 8);
+  assert.equal(frame.nativeStrokeInactive.strokeWeight, 3);
+  await f.page.evaluate(() => document.activeElement.blur());
+  await f.page.keyboard.press("Control+z");
+  assert.equal((await readNode(f.page, "figma-1-2")).nativeStrokeInactive, undefined);
+  await f.page.keyboard.press("Control+Shift+z");
+  assert.equal((await readNode(f.page, "figma-1-2")).nativeStrokeInactive.strokeWeight, 3);
+  await f.tool("use_design", {
+    save: true,
+    expected_state_revision: (await f.metadata()).stateRevision,
+    operations: [{ op: "update_node", node_id: "figma-1-2", changes: { stroke: "#654321" } }],
+  });
+  await f.reload();
+  assert.equal((await readNode(f.page, "figma-1-2")).paddingTop, 11);
+  await f.page.locator('.layer-row[data-id="figma-1-3"] .layer-title').click();
+  await f.page.locator("#prop-stroke").fill("#123456");
+  await f.page.locator("#prop-stroke").press("Tab");
+  assert.equal(
+    (await readNode(f.page, "figma-1-3")).stroke,
+    "transparent",
+    "unsupported Text OUTSIDE activation is not silently centered",
+  );
+  await f.page.locator("#prop-stroke-align").selectOption("center");
+  await f.page.locator("#prop-stroke").fill("#123456");
+  await f.page.locator("#prop-stroke").press("Tab");
+  const text = await readNode(f.page, "figma-1-3");
+  assert.equal(text.stroke, "#123456");
+  assert.equal(text.nativeStrokeInactive, undefined);
+  assert.equal(text.strokeAlign, undefined);
+  assert.equal(text.text, "Original characters");
+  await f.tool("use_design", {
+    save: true,
+    expected_state_revision: (await f.metadata()).stateRevision,
+    operations: [
+      {
+        op: "update_node",
+        node_id: "figma-1-2",
+        changes: { stroke: "transparent", strokeWidth: 4, strokeAlign: "outside" },
+      },
+    ],
+  });
+  await f.reload();
+  frame = await readNode(f.page, "figma-1-2");
+  assert.equal(frame.paddingTop, 8);
+  assert.equal(frame.nativeStrokeInactive.strokeWeight, 4);
+  assert.equal(frame.nativeStrokeInactive.strokeAlign, "OUTSIDE");
+  assert.deepEqual(f.errors, []);
+});

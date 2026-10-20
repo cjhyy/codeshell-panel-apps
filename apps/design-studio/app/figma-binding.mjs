@@ -58,6 +58,7 @@ const properties = [
   "fillPaints",
   "stroke",
   "strokeWidth",
+  "nativeStrokeInactive",
   "strokeAlign",
   "strokeSides",
   "strokeLayoutExcluded",
@@ -136,6 +137,7 @@ const unsupportedProperties = [
 ];
 
 const translationStableProperties = [
+  "nativeStrokeInactive",
   "type",
   "parentId",
   "pageId",

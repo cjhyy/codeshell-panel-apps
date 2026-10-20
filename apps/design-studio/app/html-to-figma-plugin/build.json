@@ -27,6 +27,7 @@
     "apps/design-studio/app/image-mime.mjs",
     "apps/design-studio/app/layout-spacing.mjs",
     "apps/design-studio/app/linear-gradient-geometry.mjs",
+    "apps/design-studio/app/native-stroke-inactive.mjs",
     "apps/design-studio/app/paint.mjs",
     "apps/design-studio/app/resource-store.mjs",
     "apps/design-studio/app/stroke.mjs",

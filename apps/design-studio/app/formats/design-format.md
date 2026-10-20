@@ -337,3 +337,32 @@ directions and unsupported percentages retain measured geometry with diagnostics
 Each recovered row explicitly retains only its captured CSS state: native resize
 does not execute source media queries. Separate mobile captures can retain their
 ordinary block flow. This projection adds no document fields or painted children.
+
+
+## Empty native stroke intent
+
+`nativeStrokeInactive` is optional on Frame, Component, Rectangle and Text. It records style from an
+exact native `strokes: []` array while the visible canonical fields remain `stroke: "transparent"`
+and `strokeWidth: 0`. It cannot coexist with `strokeSides`, `strokeAlign` or
+`strokeLayoutExcluded`. Its weights never reserve space, change bounds or paint pixels.
+
+The bounded native fields are `strokeAlign` (`INSIDE`, `CENTER`, `OUTSIDE`), `strokeWeight` (0–100),
+complete `individualStrokeWeights` (top/right/bottom/left, each 0–100), and Frame/Component-only
+`strokesIncludedInLayout`. Missing fields remain missing. The false-only
+`strokesIncludedInLayoutDefault: false` separately records the documented REST omission contract for
+native Auto Layout; it never fabricates raw key presence and is not applied to freeform frames.
+At least one style field is required. `sourceOnly: true` blocks unsafe copies/activation when extra
+native fields or an inconsistent scalar/side tuple cannot be reproduced. It does not erase the
+original raw source. An explicit inclusion flag on a freeform frame blocks a new copy because its
+setter is inapplicable. Color activation also waits for an Auto Layout mode when a known inclusion
+flag would otherwise be discarded; simultaneous mode and color changes validate the final mode.
+
+The inspector shows latent width, alignment and applicable inclusion choices. Adding a color to a
+supported Frame activates those saved styles atomically. Included INSIDE activation adds the widths
+to canonical physical padding exactly once; native creation/patching subtracts them to recover raw
+padding. Explicit removal reverses the old painted inset, then retains the requested next latent
+style. Text activation supports CENTER only: an imported INSIDE/OUTSIDE Text offers a normal Center
+choice instead of silently changing alignment. Grid activation validates the affected Grid trees
+without expanding the proven intrinsic sizing subset. Unknown or unsupported styles produce a
+specific error before any native writes. Hidden and zero-alpha paints are not empty arrays and are
+not automatically converted to this representation.

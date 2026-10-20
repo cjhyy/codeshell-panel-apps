@@ -940,6 +940,21 @@
                     <input id="prop-stroke-color" type="color" aria-label="选择图层描边色" />
                     <input id="prop-stroke" spellcheck="false" aria-label="图层描边色值" />
                   </div>
+                  <div id="stroke-inactive-controls" class="property-grid" hidden>
+                  <label id="stroke-align-field" hidden><span>描边对齐</span>
+                    <select id="prop-stroke-align" aria-label="描边对齐">
+                      <option value="">请选择对齐</option><option value="inside">内侧</option>
+                      <option value="center">居中</option><option value="outside">外侧</option>
+                    </select>
+                  </label>
+                  <label id="stroke-layout-field" hidden><span>描边布局</span>
+                    <select id="prop-stroke-layout" aria-label="描边是否参与布局">
+                      <option value="">请选择布局方式</option><option value="included">参与布局</option>
+                      <option value="excluded">不参与布局</option>
+                    </select>
+                  </label>
+                  </div>
+                  <button id="prop-stroke-remove" class="button" type="button">移除描边</button>
                   <div class="property-grid">
                     <label id="radius-field"
                       ><span>圆角</span><input id="prop-radius" type="number" min="0"

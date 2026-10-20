@@ -14,6 +14,7 @@ import {
   createFigmaPatch,
 } from "../../../apps/design-studio/app/figma-binding.mjs";
 import { applyAllAutoLayouts } from "../../../apps/design-studio/app/layout.mjs";
+import { editDesignStrokeColor, editDesignStrokeAlignment, editDesignStrokeWidth } from "../../../apps/design-studio/app/stroke.mjs";
 import { longFigmaSource } from "./fixtures/long-canvas.mjs";
 import { measuredWrap, textMetricsSignature, textSourceMetricsSignature } from "../../../apps/design-studio/app/text-metrics.mjs";
 
@@ -144,6 +145,7 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
       Object.defineProperty(node, "cornerRadius", { enumerable: false, get: () => radii.every((value) => value === radii[0]) ? radii[0] : undefined, set: (value) => { radii = Array(4).fill(value); } });
     }
     if (node.type === "TEXT") {
+      if (nativeStrokes) { node.strokeWeight = raw.strokeWeight ?? 1; node.strokeAlign = raw.strokeAlign ?? "CENTER"; }
       node.characters = raw.characters ?? "";
       node.fontName = { family: raw.style?.fontFamily ?? "Inter", style: "Regular" };
       node.textAutoResize = raw.style?.textAutoResize ?? "NONE";
@@ -1960,7 +1962,7 @@ test("source activation of freeform Auto Layout uses canonical effective padding
     await runtime.send({ type: "apply-patch", token: preview.token });
     assert.equal(runtime.messages.at(-1).type, "patched", JSON.stringify(runtime.messages.at(-1)));
     assert.equal(runtime.all.get("1:2").layoutMode, "HORIZONTAL");
-    assert.equal(runtime.all.get("1:2").strokesIncludedInLayout, weight > 0);
+    assert.equal(runtime.all.get("1:2").strokesIncludedInLayout, true, "an explicit latent true survives once Auto Layout makes its setter applicable");
     assert.equal(runtime.all.get("1:2").paddingTop, 8 - weight);
   }
 });
@@ -2227,4 +2229,362 @@ test("generated native runtime recognizes pixel9 provenance without erasing an a
     assert.equal(created.characters, sourceEdit ? "Edited source\nwith explicit LF" : "Alpha\n Beta");
     assert.deepEqual(clone(created.lineHeight), { unit: "PIXELS", value: 20 });
   }
+});
+
+
+test("inactive native copies preserve exact empty paints, scalar/side widths and Text OUTSIDE without any NONE inclusion setter", async () => {
+  const entries = [
+    {
+      type: "FRAME",
+      layoutMode: "HORIZONTAL",
+      strokeAlign: "INSIDE",
+      strokeWeight: 1,
+      strokesIncludedInLayout: true,
+    },
+    {
+      type: "FRAME",
+      layoutMode: "VERTICAL",
+      strokeAlign: "OUTSIDE",
+      strokeWeight: 2,
+      strokesIncludedInLayout: false,
+    },
+    { type: "FRAME", layoutMode: "NONE", strokeAlign: "INSIDE", strokeWeight: 0 },
+    {
+      type: "RECTANGLE",
+      strokeAlign: "OUTSIDE",
+      individualStrokeWeights: { top: 1, right: 2, bottom: 3, left: 4 },
+    },
+    {
+      type: "TEXT",
+      strokeAlign: "OUTSIDE",
+      strokeWeight: 1,
+      characters: "Original characters",
+      style: {
+        fontFamily: "Arial",
+        fontSize: 16,
+        fontWeight: 400,
+        lineHeightPx: 20,
+        lineHeightUnit: "PIXELS",
+      },
+    },
+  ];
+  const source = page(
+    entries.map((entry, index) =>
+      rect(`2:${index}`, {
+        ...entry,
+        strokes: [],
+        ...(entry.type === "FRAME" ? { children: [] } : {}),
+        paddingTop: 8,
+        paddingRight: 8,
+        paddingBottom: 8,
+        paddingLeft: 8,
+      }),
+    ),
+  );
+  const result = importFigmaJson(source),
+    runtime = harness(page([]), { nativeStrokes: true });
+  await runtime.send({
+    type: "import-transfer",
+    content: JSON.stringify(createFigmaTransfer(result.document)),
+  });
+  assert.equal(runtime.messages.at(-1).type, "imported", JSON.stringify(runtime.messages.at(-1)));
+  const copied = runtime.figma.root.children[1].children;
+  for (const [index, entry] of entries.entries()) {
+    assert.equal(copied[index].strokes.length, 0);
+    assert.equal(copied[index].strokeAlign, entry.strokeAlign);
+    if (entry.strokeWeight !== undefined)
+      assert.equal(copied[index].strokeWeight, entry.strokeWeight);
+    if (entry.individualStrokeWeights)
+      assert.deepEqual(
+        [
+          copied[index].strokeTopWeight,
+          copied[index].strokeRightWeight,
+          copied[index].strokeBottomWeight,
+          copied[index].strokeLeftWeight,
+        ],
+        [1, 2, 3, 4],
+      );
+    if (entry.layoutMode && entry.layoutMode !== "NONE") {
+      assert.equal(copied[index].strokesIncludedInLayout, entry.strokesIncludedInLayout);
+      assert.equal(copied[index].paddingTop, 8);
+    }
+  }
+  assert.equal(copied[4].characters, "Original characters");
+});
+
+test("inactive source activation/removal/width uses ordinary guarded patches and projects effective padding exactly once", async () => {
+  for (const included of [true, false]) {
+    let source = page([
+      rect("1:2", {
+        type: "FRAME",
+        layoutMode: "VERTICAL",
+        strokeAlign: "INSIDE",
+        strokeWeight: 2,
+        strokesIncludedInLayout: included,
+        strokes: [],
+        paddingTop: 8,
+        paddingRight: 8,
+        paddingBottom: 8,
+        paddingLeft: 8,
+        children: [],
+      }),
+    ]);
+    const runtime = harness(source, { nativeStrokes: true });
+    for (const action of [
+      (node) => editDesignStrokeColor(node, "#123456"),
+      (node) => editDesignStrokeColor(node, "transparent"),
+      (node) => editDesignStrokeWidth(node, 4),
+      (node) => editDesignStrokeColor(node, "#654321"),
+    ]) {
+      const result = await prepareFigmaImport(source),
+        binding = createFigmaBinding(result),
+        node = result.document.nodes[0];
+      action(node);
+      const transfer = createFigmaTransfer(result.document);
+      transfer.patch = createFigmaPatch(binding, result.document);
+      await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+      const preview = runtime.messages.at(-1);
+      assert.equal(preview.type, "patch-preview", JSON.stringify(preview));
+      assert.deepEqual(preview.conflicts, []);
+      await runtime.send({ type: "apply-patch", token: preview.token });
+      assert.equal(
+        runtime.messages.at(-1).type,
+        "patched",
+        JSON.stringify(runtime.messages.at(-1)),
+      );
+      const live = runtime.all.get("1:2");
+      assert.equal(live.paddingTop, 8);
+      assert.equal(live.strokesIncludedInLayout, included);
+      assert.equal(live.strokes.length, node.stroke === "transparent" ? 0 : 1);
+      assert.equal(live.strokeWeight, node.nativeStrokeInactive?.strokeWeight ?? node.strokeWidth);
+      await runtime.send({ type: "export-json", scope: "page" });
+      source = JSON.parse(runtime.messages.at(-1).content).nodes[runtime.figma.currentPage.id]
+        .document;
+    }
+  }
+});
+
+test("unknown inactive extras keep new copies blocked while unrelated source edits and NONE-to-flow transitions stay guarded", async () => {
+  for (const extras of [
+    { strokeJoin: "ROUND" },
+    { strokeWeight: 1, individualStrokeWeights: { top: 1, right: 2, bottom: 3, left: 4 } },
+  ]) {
+    const source = page([
+      rect("1:2", {
+        type: "FRAME",
+        layoutMode: "NONE",
+        strokeAlign: "INSIDE",
+        strokeWeight: 1,
+        strokesIncludedInLayout: true,
+        strokes: [],
+        paddingTop: 0,
+        paddingRight: 0,
+        paddingBottom: 0,
+        paddingLeft: 0,
+        children: [],
+        ...extras,
+      }),
+    ]);
+    const result = await prepareFigmaImport(source),
+      binding = createFigmaBinding(result),
+      node = result.document.nodes[0];
+    assert.equal(node.nativeStrokeInactive.sourceOnly, true);
+    node.layout = "vertical";
+    const transfer = createFigmaTransfer(result.document);
+    transfer.patch = createFigmaPatch(binding, result.document);
+    const runtime = harness(source, { nativeStrokes: true });
+    await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+    const preview = runtime.messages.at(-1);
+    assert.equal(preview.type, "patch-preview", JSON.stringify(preview));
+    if (extras.individualStrokeWeights)
+      assert.ok(
+        preview.conflicts.length,
+        "inconsistent raw mixed scalar/tuple is never silently repaired",
+      );
+    else {
+      assert.deepEqual(preview.conflicts, []);
+      await runtime.send({ type: "apply-patch", token: preview.token });
+      assert.equal(runtime.messages.at(-1).type, "patched");
+      assert.equal(runtime.all.get("1:2").strokesIncludedInLayout, true);
+    }
+    assert.equal(node.nativeStrokeInactive.sourceOnly, true);
+    const fresh = harness(page([]), { nativeStrokes: true });
+    delete transfer.patch;
+    await fresh.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+    assert.equal(fresh.messages.at(-1).type, "error");
+    assert.equal(fresh.figma.root.children.length, 1);
+    const before = clone(node);
+    assert.throws(() => editDesignStrokeColor(node, "#123456"));
+    assert.deepEqual(node, before);
+  }
+});
+
+test("inactive raw width and absent-versus-explicit inclusion conflicts stop all patch writes", async () => {
+  for (const field of ["strokeWeight", "strokesIncludedInLayout"]) {
+    const source = page([
+      rect("1:2", {
+        type: "FRAME",
+        layoutMode: "VERTICAL",
+        strokeAlign: "INSIDE",
+        strokeWeight: 1,
+        strokes: [],
+        paddingTop: 8,
+        paddingRight: 8,
+        paddingBottom: 8,
+        paddingLeft: 8,
+        children: [],
+      }),
+    ]);
+    const transfer = patchTransfer(source, (node) => editDesignStrokeColor(node, "#123456"), [
+      "stroke",
+      "strokeWidth",
+      "strokeAlign",
+      "strokeSides",
+      "strokeLayoutExcluded",
+      "nativeStrokeInactive",
+      "paddingTop",
+      "paddingRight",
+      "paddingBottom",
+      "paddingLeft",
+    ]);
+    const runtime = harness(source, { nativeStrokes: true });
+    runtime.all.get("1:2")[field] = field === "strokeWeight" ? 2 : false;
+    if (field === "strokesIncludedInLayout")
+      runtime.all.get("1:2").raw.strokesIncludedInLayout = false;
+    const before = JSON.stringify(runtime.snapshot(runtime.figma.currentPage));
+    await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+    const preview = runtime.messages.at(-1);
+    assert.equal(preview.type, "patch-preview");
+    assert.ok(
+      preview.conflicts.some((value) => value.includes("描边")),
+      JSON.stringify(preview),
+    );
+    await runtime.send({ type: "apply-patch", token: preview.token });
+    assert.equal(runtime.messages.at(-1).type, "error");
+    assert.equal(JSON.stringify(runtime.snapshot(runtime.figma.currentPage)), before);
+  }
+});
+
+test("untrusted patch fields cannot bypass inactive copy validation before any native creation", async () => {
+  const result = importFigmaJson(
+    page([
+      rect("1:2", {
+        type: "FRAME",
+        layoutMode: "NONE",
+        strokeAlign: "INSIDE",
+        strokeWeight: 1,
+        strokes: [],
+        strokesIncludedInLayout: true,
+        children: [],
+      }),
+    ]),
+  );
+  for (const patch of [true, {}, { format: "codeshell.figma.patch", version: 1, operations: [] }]) {
+    const transfer = createFigmaTransfer(result.document);
+    transfer.patch = patch;
+    const runtime = harness(page([]), { nativeStrokes: true });
+    await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+    assert.equal(runtime.messages.at(-1).type, "error");
+    assert.equal(runtime.all.size, 1, "validation precedes createPage, not merely rollback");
+  }
+});
+
+test("simultaneous source layout-and-stroke activation preserves original raw padding after becoming Auto Layout", async () => {
+  const source = page([
+    rect("1:2", {
+      type: "FRAME",
+      layoutMode: "NONE",
+      strokeAlign: "INSIDE",
+      strokeWeight: 4,
+      strokesIncludedInLayout: true,
+      strokes: [],
+      paddingTop: 8,
+      paddingRight: 8,
+      paddingBottom: 8,
+      paddingLeft: 8,
+      children: [],
+    }),
+  ]);
+  const result = await prepareFigmaImport(source),
+    binding = createFigmaBinding(result),
+    node = result.document.nodes[0];
+  const { applyDesignStrokeEdits } = await import("../../../apps/design-studio/app/stroke.mjs");
+  applyDesignStrokeEdits(node, { layout: "vertical", stroke: "#123456" });
+  node.layout = "vertical";
+  const transfer = createFigmaTransfer(result.document);
+  transfer.patch = createFigmaPatch(binding, result.document);
+  const runtime = harness(source, { nativeStrokes: true });
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  const preview = runtime.messages.at(-1);
+  assert.equal(preview.type, "patch-preview", JSON.stringify(preview));
+  assert.deepEqual(preview.conflicts, []);
+  await runtime.send({ type: "apply-patch", token: preview.token });
+  assert.equal(runtime.messages.at(-1).type, "patched", JSON.stringify(runtime.messages.at(-1)));
+  const live = runtime.all.get("1:2");
+  assert.equal(live.layoutMode, "VERTICAL");
+  assert.equal(live.paddingTop, 8);
+  assert.equal(live.strokesIncludedInLayout, true);
+  assert.equal(live.strokes.length, 1);
+  assert.equal(live.strokeWeight, 4);
+});
+
+test("removing unsupported painted raw style never fabricates clean reactivatable metadata", async () => {
+  const source = page([
+    rect("1:2", {
+      strokeAlign: "OUTSIDE",
+      strokeWeight: 2,
+      strokeJoin: "ROUND",
+      strokes: [{ type: "SOLID", color: { r: 1, g: 0, b: 0 } }],
+    }),
+  ]);
+  const result = await prepareFigmaImport(source),
+    binding = createFigmaBinding(result);
+  editDesignStrokeColor(result.document.nodes[0], "transparent");
+  const transfer = createFigmaTransfer(result.document);
+  transfer.patch = createFigmaPatch(binding, result.document);
+  const runtime = harness(source, { nativeStrokes: true }),
+    before = JSON.stringify(runtime.snapshot(runtime.figma.currentPage));
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.match(runtime.messages.at(-1).message, /特殊/u);
+  assert.equal(JSON.stringify(runtime.snapshot(runtime.figma.currentPage)), before);
+});
+
+test("removing already-painted native Text OUTSIDE cannot recapture its centered approximation as source intent", async () => {
+  const source = page([
+    rect("1:2", {
+      type: "TEXT",
+      characters: "Original text",
+      style: {
+        fontFamily: "Arial",
+        fontSize: 16,
+        fontWeight: 400,
+        lineHeightPx: 20,
+        lineHeightUnit: "PIXELS",
+      },
+      strokeAlign: "OUTSIDE",
+      strokeWeight: 1,
+      strokes: [{ type: "SOLID", color: { r: 1, g: 0, b: 0 } }],
+    }),
+  ]);
+  const result = await prepareFigmaImport(source),
+    binding = createFigmaBinding(result);
+  editDesignStrokeColor(result.document.nodes[0], "transparent");
+  const transfer = createFigmaTransfer(result.document);
+  transfer.patch = createFigmaPatch(binding, result.document);
+  const runtime = harness(source, { nativeStrokes: true }),
+    before = JSON.stringify(runtime.snapshot(runtime.figma.currentPage));
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.match(runtime.messages.at(-1).message, /近似/u);
+  assert.equal(JSON.stringify(runtime.snapshot(runtime.figma.currentPage)), before);
+});
+
+
+test("removing only sourceOnly metadata cannot erase unknown native style guards before a source patch", async () => {
+  const source=page([rect("1:2",{type:"FRAME",layoutMode:"VERTICAL",strokeAlign:"INSIDE",strokeWeight:1,strokeJoin:"ROUND",strokes:[],paddingTop:8,paddingRight:8,paddingBottom:8,paddingLeft:8,children:[]})]);
+  const result=await prepareFigmaImport(source),binding=createFigmaBinding(result);delete result.document.nodes[0].nativeStrokeInactive.sourceOnly;
+  const transfer=createFigmaTransfer(result.document);transfer.patch=createFigmaPatch(binding,result.document);
+  const runtime=harness(source,{nativeStrokes:true}),before=JSON.stringify(runtime.snapshot(runtime.figma.currentPage));
+  await runtime.send({type:"preview-patch",content:JSON.stringify(transfer)});assert.equal(runtime.messages.at(-1).type,"error");assert.match(runtime.messages.at(-1).message,/保留标记/u);assert.equal(JSON.stringify(runtime.snapshot(runtime.figma.currentPage)),before);
 });

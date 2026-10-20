@@ -67,6 +67,13 @@ function semanticProperties(node) {
     maxHeight: node.maxHeight ?? null,
     gridColumnSpan: node.gridColumnSpan ?? 1,
     gridRowSpan: node.gridRowSpan ?? 1,
+    nativeStrokeInactive: node.nativeStrokeInactive ? JSON.stringify([
+      node.nativeStrokeInactive.strokeAlign ?? null, node.nativeStrokeInactive.strokeWeight ?? null,
+      node.nativeStrokeInactive.individualStrokeWeights ? ["top","right","bottom","left"].map(side=>node.nativeStrokeInactive.individualStrokeWeights[side]) : null,
+      node.nativeStrokeInactive.strokesIncludedInLayout ?? null,
+      node.nativeStrokeInactive.strokesIncludedInLayoutDefault ?? null,
+      node.nativeStrokeInactive.sourceOnly ?? null,
+    ]) : null,
   };
   if (["frame", "group", "component"].includes(node.type)) {
     Object.assign(properties, {

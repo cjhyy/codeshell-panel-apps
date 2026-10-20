@@ -6,4 +6,4 @@ export {
   normalizeCssLinearSource,
   cssLinearNeedsNativeWarning,
 } from "../paint.mjs";
-export { normalizeStrokeSides, validateDesignStroke, hasDesignStroke, nativeDesignStroke } from "../stroke.mjs";
+export { normalizeStrokeSides, validateDesignStroke, hasDesignStroke, nativeDesignStroke, nativeInactiveStrokePlan } from "../stroke.mjs";

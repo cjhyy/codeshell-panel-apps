@@ -323,7 +323,10 @@ test("uniform color/width edits preserve side ratios and alpha, and invalid edit
   assert.throws(() => editDesignStrokeWidth(node, 101));
   assert.deepEqual(node, before);
   editDesignStrokeColor(node, "transparent");
-  assert(node.strokeSides.every((s) => s.opacity === 0));
+  assert.equal(node.strokeSides, undefined, "explicit removal produces no paints, rather than alpha-zero side paints");
+  assert.equal(node.strokeWidth, 0);
+  assert.deepEqual(node.nativeStrokeInactive.individualStrokeWeights, {top:4,right:8,bottom:12,left:0});
+  assert.equal(node.nativeStrokeInactive.strokeAlign, "INSIDE");
   editDesignStrokeColor(node, "#00ff00");
   assert(node.strokeSides.every((s) => s.opacity === 1));
   assert.equal(node.strokeSides[3].width, 0);
