@@ -1,4 +1,5 @@
 /* Bounded plain HTML text intent. Measured boxes stay structural/editable. */
+import { htmlTextLineHeightRatio } from "./html-line-height.mjs";
 const collapsed = (text) => text.replace(/[\t\n\f\r ]+/gu, " ").replace(/^ | $/gu, "");
 const clipped = (value) => ["hidden", "clip", "auto", "scroll"].includes(value);
 const zero = (value) => /^-?0(?:\.0+)?(?:px|%)?$/u.test(value);
@@ -50,7 +51,7 @@ export function recoverHtmlTextOverflow(source, node, warn) {
     alignItems: "start", justifyContent: "start", clipContent: clipped(css.overflowX) });
   if (node.clipContent) node.contentClipping = "intentional";
   Object.assign(text, { x: node.x + left, text: full, textSource: full,
-    lineHeight: lineHeight / text.fontSize, height: lineHeight * full.split("\n").length,
+    lineHeight: htmlTextLineHeightRatio(text, lineHeight / text.fontSize), height: lineHeight * full.split("\n").length,
     layoutBaselineOffset: Math.round(baseline * 10000) / 10000,
     layoutSizingHorizontal: ellipsis ? "fill" : "hug", layoutSizingVertical: "hug",
     layoutAlignSelf: "start", textFlowWidth: Math.max(1, node.width - left - right), notes });

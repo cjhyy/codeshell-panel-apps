@@ -76,7 +76,7 @@ test("ordinary block stacks retain collapsed margins, nested Hug/Fill and exact 
   });
   for (const observed of result.cases) {
     assert.deepEqual(observed.semanticIssues, [], observed.id);
-    assert.deepEqual(observed.warnings, [], observed.id);
+    assert.deepEqual(observed.warnings.filter(w => w.code !== "html-line-height-intent" || !w.message.startsWith("CSS 行高已解析为长度")), [], observed.id);
     assert.ok(observed.comparisons.every((value) => value.changedPixels === 0),
       JSON.stringify({ id: observed.id, comparisons: observed.comparisons }));
     const design = normalizeDesignDocument(JSON.parse(

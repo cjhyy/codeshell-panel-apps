@@ -22,7 +22,7 @@ test("plain CSS nowrap ellipsis retains full editable words, structural Fill and
   t.after(() => rm(output, { recursive: true, force: true }));
   const result = await runProductionFidelity({ output, cases: [{ id: "ellipsis", html: `<main id="fixture"><section class="row"><div class="copy">${full}</div></section><section class="row"><div class="copy">${spaced}</div></section></main>`, css: layout }] });
   const observed = result.cases[0];
-  assert.deepEqual(observed.warnings.filter((item) => item.code !== "layout-alignment"), []);
+  assert.deepEqual(observed.warnings.filter((item) => item.code !== "layout-alignment" && (item.code !== "html-line-height-intent" || !item.message.startsWith("CSS 行高已解析为长度"))), []);
   assert.deepEqual(observed.semanticIssues, []);
   assert.ok(observed.comparisons.every((item) => item.changedPixels === 0), JSON.stringify(observed.comparisons));
   const design = normalizeDesignDocument(JSON.parse(await readFile(join(output, "ellipsis/imported.codesign.json"), "utf8")));
@@ -94,7 +94,7 @@ test("nowrap clip and pre preserve clipping and literal whitespace without intro
     { id: "pre-lines", html: '<main id="fixture"><section class="row"><div class="copy">  First  literal line\n\nSecond literal line.  </div></section></main>', css: layout.replace("white-space:nowrap", "white-space:pre").replace("text-overflow:ellipsis", "text-overflow:clip") },
   ] });
   for (const observed of result.cases) {
-    assert.deepEqual(observed.warnings.filter((item) => item.code !== "layout-alignment"), [], observed.id);
+    assert.deepEqual(observed.warnings.filter((item) => item.code !== "layout-alignment" && (item.code !== "html-line-height-intent" || !item.message.startsWith("CSS 行高已解析为长度"))), [], observed.id);
     assert.ok(observed.comparisons.every((item) => item.changedPixels === 0), JSON.stringify(observed));
     const design = normalizeDesignDocument(JSON.parse(await readFile(join(output, observed.id, "imported.codesign.json"), "utf8")));
     const text = design.nodes.find((node) => node.type === "text");

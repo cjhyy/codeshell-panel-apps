@@ -21,6 +21,7 @@
     "apps/design-studio/app/html-grid.mjs",
     "apps/design-studio/app/html-import-assets.mjs",
     "apps/design-studio/app/html-import.mjs",
+    "apps/design-studio/app/html-line-height.mjs",
     "apps/design-studio/app/html-text-overflow.mjs",
     "apps/design-studio/app/html-viewport-flow.mjs",
     "apps/design-studio/app/image-mime.mjs",
@@ -74,8 +75,8 @@
     },
     {
       "path": "ui.html",
-      "bytes": 351688,
-      "sha256": "02567a43c88d1a26b241e97ff84851b93eb9154d2d96a21d17ad5b8188bdb99a"
+      "bytes": 353549,
+      "sha256": "d049482c3cee43b66a6c897a6869b9b3b0ae71e5af4acf0792f44985768f6f9c"
     },
     {
       "path": "README.md",

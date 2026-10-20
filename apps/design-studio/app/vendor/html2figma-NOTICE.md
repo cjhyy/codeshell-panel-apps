@@ -129,3 +129,10 @@ capture-local semantic identity. Design Studio uses those in-memory bindings for
 bounded plain block text recovery when class selectors repeat; DOM objects are
 never serialized. Duplicate identities retain the unique-selector fallback and
 an explicit diagnostic. Original ASCII whitespace and NBSP remain distinct.
+
+The maintained integration also retains bounded real-Element Typed OM line-height
+number evidence. Design Studio's v3 adapter preserves matching finite ratios
+without geometry rounding and carries that capture-local decision through its
+plain/nowrap recovery. Resolved lengths, normal values, unavailable or ambiguous
+styles keep the existing diagnosed fallback. This does not change the standalone
+upstream Figma adapter's line-height conversion or claim responsive CSS font sizes.
