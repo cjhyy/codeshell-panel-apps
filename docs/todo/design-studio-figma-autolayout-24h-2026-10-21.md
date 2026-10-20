@@ -1187,3 +1187,45 @@ Fill、inset对比正在独立分析。插件关闭、relay自然exit0、原页�
 不能直接将测量比例当固定tracks；28个单元格底边框被现有预处理丢掉前6行24条内部规则。
 下一轮先分别解决可靠来源事实与经过真实原生证明的多行布局，不将整页原有非零差异标记通过。
 本地检查点仍未push/发布或安装Host。24小时目标继续active，截止10月22日00:31不变。
+
+
+### 整页新增负样本与原行结构能力（约 05:35）
+
+又冻结官方Bootstrap Cover与Sign-in原始HTML/CSS/SVG，分别原始HTML SHA
+`1dfe546d7cc32394a2aff0197b507ff5b4b17da459ee7fe6cc51302396e6988d`、
+`977cea03905534c1db195f61c1a5d1b53633432a0a7fe211e91d3cab64f3b327`。
+未提交表单或登录。1280/768的原URL归档重放与仅本地URL改写副本均严格0像素、DOM几何
+相同、0未知请求/页面错误。生产c7c80b9（app与b34完全相同）CPU转换结果：Cover36节点、
+23警告，首次/重排/窄屏 **418868/419472/329391**；Sign-in42节点、16警告，
+**4379/4379/14885**；两者native transfer仅prepared，均strict=false、未真实原生执行。
+完整输入、PNGs、diff、报告在 `web-corpus/bootstrap-{cover,sign-in}/` 和
+`web-corpus/bootstrap-cover-signin-c7c80b9-result.json`。只读CSS核对确认Sign-in h1字号
+28px→25.408px，Cover h1 40px→33.52px，Cover原生CSS还有80px inset阴影与文字阴影；
+不将这些新失败解释为已支持的Figma响应式字体或阴影。CSS事实在同目录
+`bootstrap-cover-signin-css-facts.json`，未改参考样式或字节来得到通过。
+
+c847的最终分析确认15个case-stage几何模型残差0，1200官方/live坐标尺寸delta0，
+4120可用字段精确匹配。HUG track的无效value getter实际为1，Inter字体另有
+variationSettings，最初假定null/两键fontName的分析草稿和raw均保留；按官方类型语法
+区分这些无效/附加字段，不改变像素比较器。90个无字底色带66960像素与作者颜色严格0，
+只证明采样覆盖，未声称整张含字白板与CSS一致。
+
+更接近GOV原结构的 `fc6bb994` 实际研究完成，新页64:1159，共68新节点：3个V父框各有
+3个真实独立行Grid，每行5条affine轨道、3个真实cell及真实Text，保留行父节点。
+前两cell始终right20，三个case分别cell vertical padding0、10、10加每行bottom INSIDE1/
+included；五阶段只改原始字符和外框宽度。0case错误，文字与宽度恢复后的原生PNG都与
+初始SHA `10d1c9ec677f2c47609d59cd0114fad2d97be66f233c6f3f394bd5dfb8abf7c7` 相同。
+raw SHA `bc9cf9a35598a666b0f25ecb6d319ed8e482fdee59af098053c8edae1be181e6`，证据
+`native-govuk-row-grid-analysis/actual-fc6bb994/`。插件关闭、relay自然exit0、原页面/选择和
+三份注册文件精确恢复。详细模型分析仍在进行，此研究不是生产HTML/Figma闭环。
+
+source精确审查抓到两项不能跳过的差异：冻结GOV实际row border为#cecece，早先口头
+#b1b4b6是未经核验的简写错误，原DOM/inventory字节未变；45.5px首行与后续约46px来自
+折叠边框分摊，INSIDE1能力样本不能直接证明其CSS映射。实际GOV还有9个链接/隐藏文本
+cell和1个多P cell不在17个普通文字候选范围，尚不能宣称整表普通流布局已解决。
+
+已清理本目标14个干净、无untracked/ignored、明确合入main且无活动依赖的旧工作树和
+分支；外部evidence父目录全部保留。未合入的旧分支、其它任务、活跃总分支及新产品
+工作树保留。详见 `worktree-cleanup-receipt-20261021-0528.json`。
+完整门禁后的docs检查点c7c80b9已快进到干净本地main；未push/发布/安装Host。
+24小时目标继续active，下一轮为边框捕获与px行高单位的已审查实现、真实编辑及逐像素复核。
