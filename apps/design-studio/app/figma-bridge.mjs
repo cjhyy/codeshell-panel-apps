@@ -364,6 +364,28 @@ function layoutSizing(source, node, parent) {
   }
 }
 
+function gridChildProperties(source) {
+  const properties = {};
+  const inactiveAnchors =
+    source.visible === false &&
+    source.gridRowAnchorIndex === -1 &&
+    source.gridColumnAnchorIndex === -1;
+  for (const key of [
+    "gridColumnSpan",
+    "gridRowSpan",
+    "gridRowAnchorIndex",
+    "gridColumnAnchorIndex",
+  ])
+    if (source[key] !== undefined && !(inactiveAnchors && key.endsWith("AnchorIndex")))
+      properties[key] = source[key];
+  for (const axis of ["Horizontal", "Vertical"]) {
+    const key = `gridChild${axis}Align`;
+    if (source[key] !== undefined)
+      properties[key] = { AUTO: "auto", MIN: "start", CENTER: "center", MAX: "end" }[source[key]];
+  }
+  return properties;
+}
+
 function layout(source, node, report) {
   node.layout = { HORIZONTAL: "horizontal", VERTICAL: "vertical" }[source.layoutMode] ?? "none";
   if (source.layoutMode === "GRID") {
@@ -380,6 +402,7 @@ function layout(source, node, report) {
         source.gridItemsPositioning !== "ROW_AUTO_FLOW" &&
         (source.children ?? []).some(
           (child) =>
+            child.visible !== false &&
             child.layoutPositioning !== "ABSOLUTE" &&
             (!Number.isInteger(child.gridRowAnchorIndex) ||
               !Number.isInteger(child.gridColumnAnchorIndex)),
@@ -418,13 +441,11 @@ function layout(source, node, report) {
           layoutSizing(child, sizing, grid);
           return {
             ...sizing,
+            ...gridChildProperties(child),
             id: child.id,
             name: child.name,
+            visible: child.visible !== false,
             layoutPositioning: child.layoutPositioning === "ABSOLUTE" ? "absolute" : "auto",
-            gridColumnSpan: child.gridColumnSpan,
-            gridRowSpan: child.gridRowSpan,
-            gridColumnAnchorIndex: child.gridColumnAnchorIndex,
-            gridRowAnchorIndex: child.gridRowAnchorIndex,
           };
         }),
       });
@@ -815,20 +836,8 @@ function importFigmaJsonWithReport(
       report.warn("invalid-sizing", source, "maxHeight 小于 minHeight，已忽略。 ");
     }
     if (source.layoutPositioning === "ABSOLUTE") node.layoutPositioning = "absolute";
-    if (parent?.layout === "grid" && node.layoutPositioning !== "absolute") {
-      for (const key of [
-        "gridColumnSpan",
-        "gridRowSpan",
-        "gridRowAnchorIndex",
-        "gridColumnAnchorIndex",
-      ])
-        if (source[key] !== undefined) node[key] = source[key];
-      for (const axis of ["Horizontal", "Vertical"]) {
-        const key = `gridChild${axis}Align`;
-        if (source[key] !== undefined)
-          node[key] = { AUTO: "auto", MIN: "start", CENTER: "center", MAX: "end" }[source[key]];
-      }
-    }
+    if (parent?.layout === "grid" && node.layoutPositioning !== "absolute")
+      Object.assign(node, gridChildProperties(source));
     const parentCrossAxis = { horizontal: "Vertical", vertical: "Horizontal" }[parent?.layout];
     if (
       source.layoutAlign === "STRETCH" &&

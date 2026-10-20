@@ -770,6 +770,7 @@ function pluginHarness({
             this.children.some(
               (other) =>
                 other !== child &&
+                other.visible !== false &&
                 other.gridRowAnchorIndex === Math.floor(cell / this.gridColumnCount) &&
                 other.gridColumnAnchorIndex === cell % this.gridColumnCount,
             )
@@ -831,8 +832,12 @@ function pluginHarness({
       let row = 0,
         column = 0;
       Object.defineProperties(value, {
-        gridRowAnchorIndex: { get: () => row },
-        gridColumnAnchorIndex: { get: () => column },
+        gridRowAnchorIndex: {
+          get: () => (value.visible === false && value.parent?.layoutMode === "GRID" ? -1 : row),
+        },
+        gridColumnAnchorIndex: {
+          get: () => (value.visible === false && value.parent?.layoutMode === "GRID" ? -1 : column),
+        },
       });
       value.setGridChildPosition = (nextRow, nextColumn) => {
         assert.equal(value.parent.layoutMode, "GRID");
@@ -859,7 +864,10 @@ function pluginHarness({
             const rows = key === "gridRowSpan" ? next : value.gridRowSpan;
             const columns = key === "gridColumnSpan" ? next : value.gridColumnSpan;
             for (const other of value.parent.children.filter(
-              (child) => child !== value && child.layoutPositioning !== "ABSOLUTE",
+              (child) =>
+                child !== value &&
+                child.visible !== false &&
+                child.layoutPositioning !== "ABSOLUTE",
             )) {
               const overlaps =
                 row < other.gridRowAnchorIndex + other.gridRowSpan &&
@@ -911,6 +919,14 @@ function pluginHarness({
                 !(axis === "Row" && value.gridAutoTracks === "ROWS"),
                 "automatic row counts are readonly",
               );
+              if (axis === "Row")
+                for (const child of value.children.filter(
+                  (child) => child.visible !== false && child.layoutPositioning !== "ABSOLUTE",
+                ))
+                  assert(
+                    child.gridRowAnchorIndex + child.gridRowSpan <= next,
+                    "occupied rows cannot be removed",
+                  );
               count = next;
               tracks = Array.from({ length: count }, (_, i) => tracks[i] ?? track());
             },
@@ -1001,7 +1017,12 @@ function pluginHarness({
                   (value.itemSpacing ?? 0) * (value.children.length - 1)
                 : Math.max(...value.children.map((child) => child[dimension])));
           }
-          if (nativeGrid && next === "FILL" && value.parent?.layoutMode === "GRID") {
+          if (
+            nativeGrid &&
+            next === "FILL" &&
+            value.visible !== false &&
+            value.parent?.layoutMode === "GRID"
+          ) {
             const parent = value.parent;
             const horizontal = axis === "Horizontal";
             const dimension = horizontal ? "width" : "height";
@@ -1898,4 +1919,116 @@ test("FLEX fractions totaling less than one preserve unused space rather than no
     native.pages[1].children[0].children.map((node) => node.width),
     [100, 100],
   );
+});
+
+test("official native hidden ROW_AUTO_FLOW JSON retains Grid and its hidden layer without sentinel anchors", async () => {
+  const raw = JSON.parse(
+    await readFile(
+      new URL(
+        "../../fixtures/design-studio-native-grid/figma-hidden-row-flow.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const original = JSON.stringify(raw);
+  const result = importFigmaJson(raw);
+  assert.equal(
+    JSON.stringify(raw),
+    original,
+    "raw source and its inactive native anchors stay untouched",
+  );
+  assert.equal(result.document.nodes.length, 5);
+  const [grid, hidden, ...visible] = result.document.nodes;
+  assert.equal(grid.layout, "grid");
+  assert.equal(grid.gridRows, 1);
+  assert.deepEqual(grid.gridRowSizes, [{ type: "fixed", value: 40 }]);
+  assert.equal(hidden.visible, false);
+  assert.equal(hidden.gridColumnSpan, 2);
+  assert.equal(hidden.gridRowAnchorIndex, undefined);
+  assert.equal(hidden.gridColumnAnchorIndex, undefined);
+  assert(!result.warnings.some((warning) => warning.code === "unsupported-grid"));
+  assert.equal(result.mapping.length, 5);
+  const expected = visible.map((node) => [node.x, node.y, node.width, node.height]);
+  applyAllAutoLayouts(result.document.nodes);
+  assert.deepEqual(
+    result.document.nodes.slice(2).map((node) => [node.x, node.y, node.width, node.height]),
+    expected,
+  );
+  const saved = JSON.parse(serializeDesignDocument(result.document));
+  assert.equal(normalizeDesignDocument(saved).nodes[0].layout, "grid");
+  const prepared = await prepareFigmaImport(raw);
+  assert.equal(prepared.document.nodes[0].layout, "grid");
+  assert.equal(Object.values(prepared.source.nodes)[0].document.children[0].gridRowAnchorIndex, -1);
+  assert.equal(prepared.document.nodes[1].gridRowAnchorIndex, undefined);
+  const native = pluginHarness({ nativeGrid: true });
+  await native.send({
+    type: "import-transfer",
+    content: JSON.stringify(createFigmaTransfer(saved)),
+  });
+  assert.equal(native.messages.at(-1).type, "imported", JSON.stringify(native.messages.at(-1)));
+  const created = native.pages[1].children[0];
+  assert.equal(created.children.length, 4);
+  assert.equal(created.gridRowCount, 1);
+  assert.equal(created.children[0].visible, false);
+  assert.deepEqual(
+    [created.children[0].gridRowAnchorIndex, created.children[0].gridColumnAnchorIndex],
+    [-1, -1],
+  );
+  assert.equal(created.children[0].gridColumnSpan, 2);
+});
+
+test("hidden spanning Grid children preserve authored rows but do not create effective automatic rows", async () => {
+  const raw = nativeGridSource({
+    gridItemsPositioning: "ROW_AUTO_FLOW",
+    gridAutoTracks: "ROWS",
+    layoutSizingVertical: "FIXED",
+    gridRowSizes: [
+      { type: "FIXED", value: 40 },
+      { type: "FIXED", value: 60 },
+    ],
+  });
+  raw.document.children[0].children[0].children[0].visible = false;
+  const result = importFigmaJson(raw);
+  assert.equal(
+    result.document.nodes[0].gridRows,
+    2,
+    "declared rows are retained while ROWS derives its active row count",
+  );
+  const transfer = createFigmaTransfer(result.document);
+  assert.equal(transfer.pages[0].children[0].children.length, 4);
+  const native = pluginHarness({ nativeGrid: true });
+  await native.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(native.messages.at(-1).type, "imported", JSON.stringify(native.messages.at(-1)));
+  const created = native.pages[1].children[0];
+  assert.equal(created.gridRowCount, 1);
+  assert.deepEqual(
+    created.gridRowSizes.map((track) => [track.type, track.value]),
+    [["FIXED", 40]],
+  );
+  assert.deepEqual(
+    created.children
+      .slice(1)
+      .map((child) => [child.gridRowAnchorIndex, child.gridColumnAnchorIndex]),
+    [
+      [0, 0],
+      [0, 1],
+      [0, 2],
+    ],
+  );
+  const sourceHidden = transfer.pages[0].children[0].children[0];
+  assert.equal(created.children[0].visible, false);
+  assert.equal(created.children[0].gridColumnSpan, 2);
+  assert.deepEqual(clone(created.children[0].relativeTransform), [
+    [1, 0, sourceHidden.x - result.document.nodes[0].x],
+    [0, 1, sourceHidden.y - result.document.nodes[0].y],
+  ]);
+  for (const value of [1e9, Infinity, -1, 1.5]) {
+    const invalid = clone(transfer);
+    invalid.pages[0].children[0].children[0].gridRowSpan = value;
+    const rejected = pluginHarness({ nativeGrid: true });
+    await rejected.send({ type: "import-transfer", content: JSON.stringify(invalid) });
+    assert.equal(rejected.messages.at(-1).type, "error");
+    assert.equal(rejected.pages.length, 1, "invalid hidden fields fail before creating pages");
+  }
 });

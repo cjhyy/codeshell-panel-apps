@@ -102,7 +102,9 @@ export function gridPlacements(children, columnCount, container = {}) {
     for (const key of ["gridRowAnchorIndex", "gridColumnAnchorIndex"])
       if (child[key] !== undefined && !integer(child[key], 0, 9999))
         throw new Error(`${key} 必须为 0–9999`);
-    if (child.layoutPositioning === "absolute") continue;
+    // Hidden native Grid children remain editable layers but have no occupied
+    // cell (Figma reports -1 anchors). Validate them above before excluding them.
+    if (child.visible === false || child.layoutPositioning === "absolute") continue;
     const columnSpan = Math.min(columnCount, Math.max(1, child.gridColumnSpan ?? 1));
     const rowSpan = Math.max(1, child.gridRowSpan ?? 1);
     const manual =
@@ -289,12 +291,28 @@ export function configureNativeGrid(node, source) {
 export function positionNativeGridChild(node, source, parentSource, plan) {
   node.layoutPositioning = source.layoutPositioning === "absolute" ? "ABSOLUTE" : "AUTO";
   if (source.layoutPositioning === "absolute") return;
-  const item = plan.placements.find((entry) => entry.child === source);
+  const hidden = source.visible === false;
+  const item = hidden
+    ? {
+        row: plan.rows,
+        column: 0,
+        rowSpan: source.gridRowSpan ?? 1,
+        columnSpan: Math.min(plan.columns, source.gridColumnSpan ?? 1),
+      }
+    : plan.placements.find((entry) => entry.child === source);
   if (typeof node.setGridChildPosition !== "function")
     throw new Error("当前 Figma 不支持 Grid 子项位置；请更新后重试");
+  // Assign spans only while a child has a real cell. One bounded temporary row
+  // block is reused by every hidden child; hiding releases it before the next
+  // child is created. finishNativeGrid removes the now-empty temporary rows.
+  if (hidden) {
+    node.parent.gridRowCount = Math.max(node.parent.gridRowCount, item.row + item.rowSpan);
+    node.visible = true;
+  }
   node.setGridChildPosition(item.row, item.column);
   node.gridColumnSpan = item.columnSpan;
   node.gridRowSpan = item.rowSpan;
+  if (hidden) node.visible = false;
   for (const axis of ["Horizontal", "Vertical"]) {
     const key = `gridChild${axis}Align`;
     const self =
