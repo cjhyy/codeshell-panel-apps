@@ -118,9 +118,17 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
   text.setAttribute("dominant-baseline", "hanging");
   svg.append(text);
   documentValue.body.append(svg);
+  const lineBox = documentValue.createElement("div");
+  lineBox.style.cssText = "all:initial;display:block;position:fixed;left:-100000px;top:0;visibility:hidden;margin:0;padding:0;border:0;white-space:pre;width:max-content;height:auto";
+  lineBox.textContent = "Hg";
+  documentValue.body.append(lineBox);
+  const range = documentValue.createRange();
+  range.selectNodeContents(lineBox);
+  const baselineOffsets = new Map();
   const context = documentValue.createElement("canvas").getContext("2d");
   if (!context) {
     svg.remove();
+    lineBox.remove();
     throw Error("浏览器无法测量文字");
   }
   let actualInkAvailable = true;
@@ -144,6 +152,29 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
       context.textBaseline = "hanging";
       actualInkAvailable = !node.letterSpacing || "letterSpacing" in context;
       if ("letterSpacing" in context) context.letterSpacing = `${node.letterSpacing ?? 0}px`;
+    },
+    lineBoxOffset(node) {
+      const key = JSON.stringify([node.fontFamily, node.fontRef, node.fontSize,
+        node.fontWeight, node.fontStyle, node.letterSpacing, node.lineHeight]);
+      if (baselineOffsets.has(key)) return baselineOffsets.get(key);
+      Object.assign(lineBox.style, {
+        fontFamily: designFontFamilyCss(node.fontFamily),
+        fontSize: `${node.fontSize}px`,
+        fontWeight: String(node.fontWeight),
+        fontStyle: node.fontStyle ?? "normal",
+        letterSpacing: `${node.letterSpacing ?? 0}px`,
+        lineHeight: `${node.fontSize * node.lineHeight}px`,
+      });
+      // Native TEXT bounds start at the line box. Browser Range bounds start
+      // at its font box, whereas SVG/Canvas hanging text starts lower within
+      // that font box. Measure both pieces with the actual loaded font.
+      text.textContent = "Hg";
+      const offset = range.getBoundingClientRect().top - lineBox.getBoundingClientRect().top -
+        text.getBoundingClientRect().top;
+      if (!Number.isFinite(offset) || Math.abs(offset) > 100)
+        throw Error("浏览器文字行框与 hanging 基线差值超过支持范围");
+      baselineOffsets.set(key, offset);
+      return offset;
     },
     measure(value) {
       text.textContent = value || " ";
@@ -193,7 +224,7 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
         return Math.abs(context.measureText(probe).width - baseline) > 0.01;
       });
     },
-    close: () => svg.remove(),
+    close() { svg.remove(); lineBox.remove(); },
   };
 }
 
@@ -228,6 +259,20 @@ export function measuredWrap(source, width, measure) {
   });
 }
 
+export function measuredEllipsis(source, width, measure) {
+  const lines = source.split(/\r\n?|\n/u);
+  const first = lines[0];
+  if (lines.length === 1 && measure(first).width <= width) return first;
+  const characters = [...first];
+  let low = 0, high = characters.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (measure(`${characters.slice(0, middle).join("")}…`).width <= width) low = middle;
+    else high = middle - 1;
+  }
+  return `${characters.slice(0, low).join("").trimEnd()}…`;
+}
+
 /** Mutates only text layout fields; Node callers remain unmeasured unless a real measurer is supplied. */
 export async function measureFigmaTextDocument(
   documentValue,
@@ -236,6 +281,7 @@ export async function measureFigmaTextDocument(
     sourceIds = new Map(),
     browserDocument = globalThis.document,
     measurer,
+    nativeLineBoxes = false,
   } = {},
 ) {
   if (!measurer && (!browserDocument?.body || !browserDocument.createElementNS))
@@ -243,7 +289,9 @@ export async function measureFigmaTextDocument(
   await browserDocument?.fonts?.ready;
   const measurement = measurer ?? createBrowserTextMeasurer(browserDocument);
   const warnings = new Set(),
-    changed = [],
+    changed = new Set(),
+    unsupportedBaselines = [],
+    unsupportedTruncations = [],
     pages = documentValue.pages ?? [documentValue];
   let measured = 0;
   try {
@@ -252,11 +300,30 @@ export async function measureFigmaTextDocument(
         if (node.type !== "text") continue;
         const source = sourceNodes.get(sourceIds.get(node.id));
         const autoResize = source?.style?.textAutoResize;
-        measurement.configure(autoResize === "WIDTH_AND_HEIGHT"
-          ? node : { ...node, textFlow: "wrap" });
+        measurement.configure(node.textOverflow === "ellipsis"
+          ? { ...node, textFlow: undefined }
+          : autoResize === "WIDTH_AND_HEIGHT" ? node : { ...node, textFlow: "wrap" });
+        if (nativeLineBoxes && measurement.lineBoxOffset) {
+          try {
+            if (node.rotation) throw Error("旋转文字的原生行框尚不能映射为 hanging 基线");
+            const logicalY = node.y - (node.layoutBaselineOffset ?? 0);
+            const nextY = Math.round((logicalY + measurement.lineBoxOffset(node)) * 100) / 100;
+            if (nextY < -20000 || nextY > 20000) throw Error("文字基线映射会超过设计坐标范围");
+            if (node.y !== nextY) changed.add(node.id);
+            node.y = nextY;
+            node.layoutBaselineOffset = round(nextY - logicalY);
+            node.layoutBaselineSource = "native";
+          } catch (error) {
+            unsupportedBaselines.push({ nodeId: node.id, reason: error.message });
+          }
+        }
         const originalText = node.textSource ?? node.text;
+        if (node.textOverflow === "ellipsis" && /[\r\n]/u.test(originalText))
+          unsupportedTruncations.push({ nodeId: node.id, reason: "单行截断包含显式换行；暂以首行省略号预览，完整来源保留，请核对原生效果" });
         const lines =
-          autoResize === "WIDTH_AND_HEIGHT"
+          node.textOverflow === "ellipsis"
+            ? [measuredEllipsis(originalText, node.width, (value) => measurement.measure(value))]
+            : autoResize === "WIDTH_AND_HEIGHT"
             ? originalText.split("\n")
             : measuredWrap(originalText, node.width, (value) => measurement.measure(value));
         const text = lines.join("\n");
@@ -277,15 +344,15 @@ export async function measureFigmaTextDocument(
         );
         if (autoResize === "WIDTH_AND_HEIGHT" && width > node.width) {
           node.width = Math.ceil(width * 100) / 100;
-          changed.push(node.id);
+          changed.add(node.id);
         }
         if (["WIDTH_AND_HEIGHT", "HEIGHT"].includes(autoResize) && height > node.height) {
           node.height = Math.ceil(height * 100) / 100;
-          if (!changed.includes(node.id)) changed.push(node.id);
+          changed.add(node.id);
         }
         if (originalText.trim()) {
           node.textSource = originalText;
-          if (autoResize !== "WIDTH_AND_HEIGHT") node.textFlow = "wrap";
+          if (autoResize !== "WIDTH_AND_HEIGHT" && node.textOverflow !== "ellipsis") node.textFlow = "wrap";
           else delete node.textFlow;
           node.textFlowWidth = node.width;
         }
@@ -309,5 +376,5 @@ export async function measureFigmaTextDocument(
   if (documentValue.pages)
     documentValue.nodes =
       documentValue.pages.find((page) => page.id === documentValue.activePageId)?.nodes ?? [];
-  return { measured, unavailableFonts: [...warnings], geometryChangedIds: changed };
+  return { measured, unavailableFonts: [...warnings], geometryChangedIds: [...changed], unsupportedBaselines, unsupportedTruncations };
 }

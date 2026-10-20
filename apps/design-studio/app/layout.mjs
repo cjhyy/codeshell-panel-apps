@@ -5,6 +5,7 @@ import {
   createBrowserTextMeasurer,
   currentTextMetrics,
   measuredWrap,
+  measuredEllipsis,
   textMetricsSignature,
   textSourceMetricsSignature,
 } from "./text-metrics.mjs";
@@ -53,19 +54,7 @@ function ellipsizeTextValue(
   maximumWidth,
   widthOf = (value) => estimatedTextWidth(node, value),
 ) {
-  if (widthOf(source) <= maximumWidth) return source;
-  const characters = [...source];
-  let low = 0;
-  let high = characters.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (widthOf(`${characters.slice(0, middle).join("")}…`) <= maximumWidth) {
-      low = middle;
-    } else {
-      high = middle - 1;
-    }
-  }
-  return `${characters.slice(0, low).join("").trimEnd()}…`;
+  return measuredEllipsis(source, maximumWidth, (value) => ({ width: widthOf(value) }));
 }
 
 function containerPadding(container, side) {
@@ -726,6 +715,7 @@ function applyAbsoluteConstraints(nodes, container) {
 }
 
 const responsiveTextStates = new WeakMap();
+const nativeTextBaselineStates = new WeakMap();
 
 function textLayoutMeasurer(nodes, supplied) {
   if (supplied !== undefined) return supplied;
@@ -735,7 +725,8 @@ function textLayoutMeasurer(nodes, supplied) {
         node.type === "text" &&
         (node.textFlow === "wrap" ||
           node.textOverflow === "ellipsis" ||
-          axisSizing(node, "horizontal") === "hug"),
+          axisSizing(node, "horizontal") === "hug" ||
+          node.layoutBaselineSource === "native"),
     )
   )
     return null;
@@ -744,6 +735,32 @@ function textLayoutMeasurer(nodes, supplied) {
   } catch {
     return null;
   }
+}
+
+// Canonical y is a hanging origin; manual/native line-box geometry stays fixed.
+// Provenance lives outside glyph receipts so Node-only reflow cannot erase it.
+function refreshNativeTextBaselines(nodes, measurement) {
+  if (!measurement?.lineBoxOffset) return false;
+  let changed = false;
+  for (const node of nodes) {
+    if (node.type !== "text" || node.layoutBaselineSource !== "native" || node.rotation) continue;
+    const key = JSON.stringify([node.fontFamily, node.fontRef, node.fontSize, node.fontWeight,
+      node.fontStyle, node.letterSpacing, node.lineHeight]);
+    const cached = nativeTextBaselineStates.get(node);
+    if (cached?.key === key && cached.offset === node.layoutBaselineOffset) continue;
+    measurement.configure(node);
+    const logicalY = node.y - finite(node.layoutBaselineOffset);
+    const nextY = round(logicalY + measurement.lineBoxOffset(node));
+    if (nextY < -20000 || nextY > 20000) throw Error("文字基线映射会超过设计坐标范围");
+    const offset = round(nextY - logicalY, 4);
+    changed = assignNumber(node, "y", nextY) || changed;
+    if (node.layoutBaselineOffset !== offset) {
+      node.layoutBaselineOffset = offset;
+      changed = true;
+    }
+    nativeTextBaselineStates.set(node, { key, offset });
+  }
+  return changed;
 }
 
 function applyResponsiveText(nodes, containerIds, measurement) {
@@ -869,6 +886,7 @@ export function applyAutoLayout(nodes, containerId, { textMeasurer } = {}) {
   changed = applyAbsoluteConstraints(nodes, container) || changed;
   const measurement = textLayoutMeasurer(nodes, textMeasurer);
   try {
+    changed = refreshNativeTextBaselines(nodes, measurement) || changed;
     changed = applyResponsiveText(nodes, new Set([container.id]), measurement) || changed;
   } finally {
     if (textMeasurer === undefined) measurement?.close?.();
@@ -924,12 +942,12 @@ export function applyAutoLayouts(nodes, containerIds, { textMeasurer } = {}) {
   const containers = nodes
     .filter((candidate) => requested.has(candidate.id) && isAutoLayoutContainer(candidate))
     .sort((left, right) => nodeDepth(nodes, left) - nodeDepth(nodes, right));
-  if (containers.length === 0) return false;
   const containerIdSet = new Set(containers.map((container) => container.id));
   let changed = false;
   const measurement = textLayoutMeasurer(nodes, textMeasurer);
   try {
-    for (let iteration = 0; iteration < 8; iteration += 1) {
+    changed = refreshNativeTextBaselines(nodes, measurement) || changed;
+    for (let iteration = 0; containers.length && iteration < 8; iteration += 1) {
       let iterationChanged = false;
       for (const node of [...containers].reverse()) {
         iterationChanged = applyHugSize(nodes, node) || iterationChanged;

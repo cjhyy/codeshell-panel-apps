@@ -242,3 +242,14 @@ Figma corner smoothing produce explicit diagnostics. Figma export uses the
 [individual native radius properties](https://developers.figma.com/docs/plugins/api/FrameNode/);
 oversized asymmetric radii receive an export warning until native overlap
 behavior is verified against CSS.
+
+Native Figma TEXT imports convert the native line-box top to the v3 hanging
+origin using the loaded browser font and line height. `layoutBaselineOffset`
+retains the logical line-box origin, and optional text-only `layoutBaselineSource: "native"`
+records that convention independently of glyph receipts for later typography edits,
+including absolute/root text and Node-only reflow followed by browser editing. Native
+creation and source patches project the hanging origin back to the line box;
+a baseline-only change does not become a native translation. Own-rotated text
+and offsets exceeding the existing coordinate/baseline-field budgets are diagnosed
+without guessing an origin. Explicit newlines in native single-line ellipsis retain
+the full source, preview only the first line, and produce a truncation diagnostic.

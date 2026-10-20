@@ -5587,6 +5587,8 @@ function bindPropertyInput(input, update, eventName = "input", layoutEffect = "n
       reflowParent(node);
     } else if (layoutEffect === "container" && isContainerNode(node)) {
       applyAutoLayouts(design.nodes, new Set([node.id]));
+    } else if (layoutEffect === "typography" && node.type === "text") {
+      applyAutoLayouts(design.nodes, new Set(node.parentId ? [node.parentId] : []));
     }
     markChanged();
   });
@@ -5687,32 +5689,34 @@ bindPropertyInput(propertyInputs.text, (node, value) => {
 });
 bindPropertyInput(propertyInputs.fontSize, (node, value) => {
   if (node.type === "text") node.fontSize = clamp(Number(value) || 6, 6, 240);
-});
+}, "input", "typography");
 bindPropertyInput(
   propertyInputs.fontWeight,
   (node, value) => {
     if (node.type === "text") node.fontWeight = Number(value);
   },
   "change",
+  "typography",
 );
 bindPropertyInput(propertyInputs.fontFamily, (node, value) => {
   if (node.type !== "text") return;
   const family = value.trim().slice(0, 120);
   if (family) node.fontFamily = family;
-});
+}, "input", "typography");
 bindPropertyInput(
   propertyInputs.fontStyle,
   (node, value) => {
     if (node.type === "text" && ["normal", "italic"].includes(value)) node.fontStyle = value;
   },
   "change",
+  "typography",
 );
 bindPropertyInput(propertyInputs.lineHeight, (node, value) => {
   if (node.type === "text") node.lineHeight = clamp(finiteOr(value, 1.2), 0.7, 3);
-});
+}, "input", "typography");
 bindPropertyInput(propertyInputs.letterSpacing, (node, value) => {
   if (node.type === "text") node.letterSpacing = clamp(finiteOr(value, 0), -20, 100);
-});
+}, "input", "typography");
 bindPropertyInput(
   propertyInputs.textDecoration,
   (node, value) => {
@@ -7379,6 +7383,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "textOverflow",
   "textFlowWidth",
   "layoutBaselineOffset",
+  "layoutBaselineSource",
   "fontRef",
   "textAlign",
   "imageRef",
@@ -7464,6 +7469,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
         "textOverflow",
         "textFlowWidth",
         "layoutBaselineOffset",
+        "layoutBaselineSource",
         "fontRef",
         "imageRef",
         "objectFit",

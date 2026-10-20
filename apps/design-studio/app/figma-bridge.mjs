@@ -515,6 +515,7 @@ function layout(source, node, report) {
 }
 
 function text(source, node, report) {
+  node.layoutBaselineSource = "native";
   const style = object(source.style) ? source.style : {};
   if (typeof source.characters !== "string")
     report.warn("missing-text", source, "文字内容缺失，已导入空文本。");
@@ -1077,6 +1078,7 @@ export async function prepareFigmaImport(
   };
   for (const page of sourcePages(source)) collect(page);
   const textMeasurement = await measureFigmaTextDocument(result.document, {
+    nativeLineBoxes: true,
     sourceNodes,
     sourceIds: new Map(result.mapping.map((entry) => [entry.designId, entry.sourceId])),
     ...(textMeasurer ? { measurer: textMeasurer } : {}),
@@ -1089,6 +1091,10 @@ export async function prepareFigmaImport(
       `字体 ${family} 不可用，已实测浏览器实际回退字体；安装原字体后请重新导入。`,
     );
   }
+  for (const issue of textMeasurement.unsupportedBaselines ?? [])
+    report.warn("text-baseline-mapping", { id: issue.nodeId }, `${issue.reason}；已保留来源几何，请核对文字位置。`);
+  for (const issue of textMeasurement.unsupportedTruncations ?? [])
+    report.warn("text-truncation", { id: issue.nodeId }, issue.reason);
   result.document = normalizeDesignState(result.document);
   for (const message of source.warnings ?? []) report.warn("plugin-export-warning", null, message);
   result.stats.warningCount = report.finish();
@@ -1145,6 +1151,8 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
     }
     if (node.layoutWrap === "wrap-reverse" || node.layoutReverse)
       report.warn("reverse-layout-export", node, "反向布局将使用固定几何保留当前位置。");
+    if (node.type === "text" && node.rotation && node.layoutBaselineOffset)
+      report.warn("text-baseline-export", node, "自身旋转文字的 hanging 原点尚不能映射为原生行框；请核对旋转文字位置。");
     if (node.fontRef)
       report.warn(
         "font-resource-export",

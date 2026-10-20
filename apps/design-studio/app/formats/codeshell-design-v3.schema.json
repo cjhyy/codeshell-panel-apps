@@ -358,6 +358,7 @@
         "textFlow": { "enum": ["wrap"] },
         "textOverflow": { "enum": ["ellipsis"] },
         "textFlowWidth": { "type": "number", "minimum": 1, "maximum": 20000 },
+        "layoutBaselineSource": { "const": "native" },
         "layoutBaselineOffset": { "type": "number", "minimum": -100, "maximum": 100 },
         "fontRef": { "$ref": "#/$defs/pageId" },
         "textAlign": { "enum": ["left", "center", "right"] },
@@ -494,6 +495,7 @@
                 { "required": ["textOverflow"] },
                 { "required": ["textFlowWidth"] },
                 { "required": ["layoutBaselineOffset"] },
+                { "required": ["layoutBaselineSource"] },
                 { "required": ["fontRef"] },
                 { "required": ["textAlign"] }
               ]

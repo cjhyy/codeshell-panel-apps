@@ -1512,3 +1512,65 @@ test("uniform REST corner baselines do not falsely conflict and clearing a tuple
     assert.deepEqual([node.topLeftRadius, node.topRightRadius, node.bottomRightRadius, node.bottomLeftRadius], [12, 12, 12, 12]);
   }
 });
+
+
+test("absolute native text creation projects a canonical hanging origin back to its line box", async () => {
+  const input = page([rect("1:2", { type: "TEXT", characters: "Native line box", absoluteBoundingBox: { x: 30, y: 40, width: 100, height: 24 }, style: { fontFamily: "Arial", fontSize: 20, fontWeight: 400, lineHeightPx: 24, textAutoResize: "HEIGHT" } })]);
+  const result = importFigmaJson(input);
+  const node = result.document.nodes[0];
+  node.layoutBaselineOffset = 7.125;
+  node.y += node.layoutBaselineOffset;
+  const runtime = harness();
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(createFigmaTransfer(result.document)) });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  const native = runtime.figma.root.children[1].children[0];
+  assert.equal(native.relativeTransform[0][2], 30);
+  assert.equal(native.relativeTransform[1][2], 40);
+  assert.equal(native.height, 24);
+});
+
+
+test("font baseline metadata changes preserve the native line-box position and emit no geometry update", async () => {
+  const input = page([rect("1:2", { type: "TEXT", characters: "Baseline", absoluteBoundingBox: { x: 30, y: 40, width: 200, height: 24 }, style: { fontFamily: "Arial", fontSize: 20, fontWeight: 400, lineHeightPx: 24, textAutoResize: "HEIGHT" } })]);
+  const result = await prepareFigmaImport(input);
+  const node = result.document.nodes[0];
+  node.layoutBaselineOffset = 4.59; node.y += 4.59;
+  const binding = createFigmaBinding(result);
+  node.fontFamily = "Courier New"; node.layoutBaselineOffset = 3.41; node.y = 43.41;
+  const transfer = createFigmaTransfer(result.document); transfer.patch = createFigmaPatch(binding, result.document);
+  assert.equal(transfer.patch.operations.length, 1);
+  const operation = transfer.patch.operations[0];
+  assert.deepEqual(operation.changed, ["fontFamily"]);
+  assert.ok(!operation.changed.some((key) => ["x", "y", "width", "height", "rotation"].includes(key)));
+  const runtime = harness(input);
+  runtime.all.get("1:2").characters = "Baseline";
+  runtime.all.get("1:2").fontName = { family: "Arial", style: "Regular" };
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  const preview = runtime.messages.at(-1); assert.equal(preview.type, "patch-preview", JSON.stringify(preview)); assert.deepEqual(preview.conflicts, []);
+  await runtime.send({ type: "apply-patch", token: preview.token });
+  assert.equal(runtime.messages.at(-1).type, "patched");
+  const native = runtime.all.get("1:2");
+  assert.equal(native.relativeTransform[1][2], 40);
+  assert.equal(native.fontName.family, "Courier New");
+});
+
+test("logical native text y ignores cancellation noise but preserves actual motion", async () => {
+  const input = page([rect("1:2", { type: "TEXT", characters: "Fractional", absoluteBoundingBox: { x: 30, y: 0.1, width: 200, height: 24 }, style: { fontFamily: "Arial", fontSize: 20, fontWeight: 400, lineHeightPx: 24, textAutoResize: "HEIGHT" } })]);
+  const result = await prepareFigmaImport(input);
+  const node = result.document.nodes[0]; node.y = 2.8; node.layoutBaselineOffset = 2.7;
+  const binding = createFigmaBinding(result);
+  node.y = 3.5; node.layoutBaselineOffset = 3.4;
+  assert.equal(createFigmaPatch(binding, result.document).operations.length, 0, "baseline-only metadata has no native update");
+  node.fontFamily = "Courier New";
+  const patch = createFigmaPatch(binding, result.document);
+  assert.ok(!patch.operations[0].changed.includes("y"));
+  node.y += 0.01;
+  assert.ok(createFigmaPatch(binding, result.document).operations[0].changed.includes("y"));
+});
+
+test("outgoing own-rotated hanging text diagnoses the unsupported native origin mapping", () => {
+  const result = importFigmaJson(page([rect("1:2", { type: "TEXT", characters: "Rotated", style: { fontFamily: "Arial", fontSize: 20, fontWeight: 400, lineHeightPx: 24 } })]));
+  Object.assign(result.document.nodes[0], { rotation: 30, layoutBaselineOffset: 4.59 });
+  const transfer = createFigmaTransfer(result.document);
+  assert.ok(transfer.warnings.some((warning) => warning.code === "text-baseline-export"));
+});

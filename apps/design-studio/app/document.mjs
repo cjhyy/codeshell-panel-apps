@@ -174,6 +174,7 @@ function normalizedNode(candidate, parentId) {
     if (candidate.textFlow !== undefined) node.textFlow = candidate.textFlow;
     if (candidate.textOverflow !== undefined) node.textOverflow = candidate.textOverflow;
     if (candidate.textFlowWidth !== undefined) node.textFlowWidth = candidate.textFlowWidth;
+    if (candidate.layoutBaselineSource !== undefined) node.layoutBaselineSource = candidate.layoutBaselineSource;
     if (candidate.layoutBaselineOffset !== undefined) {
       node.layoutBaselineOffset = candidate.layoutBaselineOffset;
     }
@@ -306,6 +307,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "textOverflow",
     "textFlowWidth",
     "layoutBaselineOffset",
+    "layoutBaselineSource",
     "fontRef",
     "imageRef",
     "objectFit",
@@ -464,6 +466,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       "textOverflow",
       "textFlowWidth",
       "layoutBaselineOffset",
+      "layoutBaselineSource",
       "fontRef",
     ].some((property) => Object.prototype.hasOwnProperty.call(candidate, property))
   ) {
@@ -511,6 +514,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
           !Number.isFinite(candidate.textFlowWidth) ||
           candidate.textFlowWidth < 1 ||
           candidate.textFlowWidth > 20000)) ||
+      (candidate.layoutBaselineSource !== undefined && candidate.layoutBaselineSource !== "native") ||
       (candidate.layoutBaselineOffset !== undefined &&
         (typeof candidate.layoutBaselineOffset !== "number" ||
           !Number.isFinite(candidate.layoutBaselineOffset) ||

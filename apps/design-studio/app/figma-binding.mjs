@@ -99,6 +99,8 @@ const properties = [
   "imageRef",
   "objectFit",
 ];
+const comparedProperty = (node, key) => key === "y" && node.type === "text"
+  ? node.y - (node.layoutBaselineOffset ?? 0) : node[key];
 properties.push(
   "layoutReverse",
   "alignContent",
@@ -114,7 +116,6 @@ properties.push(
   "textOverflow",
   "textFlowWidth",
   "textMeasurement",
-  "layoutBaselineOffset",
   "fontRef",
   "effectClipping",
   "contentClipping",
@@ -356,7 +357,7 @@ export function createFigmaPatch(bindingValue, currentDocument) {
       box &&
       [box.x, box.y, box.width, box.height].every(Number.isFinite) &&
       Math.abs(before.x - box.x - entry.offsetX) <= 0.0001 &&
-      Math.abs(before.y - box.y - entry.offsetY) <= 0.0001 &&
+      Math.abs(before.y - (before.type === "text" ? before.layoutBaselineOffset ?? 0 : 0) - box.y - entry.offsetY) <= 0.0001 &&
       Math.abs(before.width - box.width) <= 0.0001 &&
       Math.abs(before.height - box.height) <= 0.0001 &&
       (!before.layout ||
@@ -466,7 +467,9 @@ export function createFigmaPatch(bindingValue, currentDocument) {
       continue;
     }
     let changed = [...properties, "siblingIndex"].filter(
-      (key) => JSON.stringify(baseline[key]) !== JSON.stringify(after[key]),
+      (key) => key === "y" && baseline.type === "text" && after.type === "text"
+        ? !positionEqual(comparedProperty(baseline, key), comparedProperty(after, key))
+        : JSON.stringify(comparedProperty(baseline, key)) !== JSON.stringify(comparedProperty(after, key)),
     );
     if (after.type === "text") {
       changed = changed.filter((key) => key !== "text");
@@ -479,7 +482,8 @@ export function createFigmaPatch(bindingValue, currentDocument) {
       const parentBefore = beforeNodes.get(baseline.parentId),
         parentAfter = afterNodes.get(after.parentId);
       const localChanged = (key) =>
-        !positionEqual(after[key] - parentAfter[key], baseline[key] - parentBefore[key]);
+        !positionEqual(comparedProperty(after, key) - comparedProperty(parentAfter, key),
+          comparedProperty(baseline, key) - comparedProperty(parentBefore, key));
       changed = [...properties, "siblingIndex"].filter((key) =>
         key === "x" || key === "y" ? localChanged(key) : changed.includes(key),
       );
