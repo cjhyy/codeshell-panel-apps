@@ -122,10 +122,10 @@ export async function designNodeToV3(tree, options = {}) {
       warn("bounded-number", id, `${property} 超出 v3 范围或缺失，已使用 ${result}。`);
     return result;
   };
-  const color = (value, id, context = "填充") => {
+  const color = (value, id, context = "填充", preserveAlpha = false) => {
     if (!object(value)) return "transparent";
     if (finite(value.a, 1) <= 0) return "transparent";
-    if (finite(value.a, 1) < 1)
+    if (finite(value.a, 1) < 1 && !preserveAlpha)
       warn(
         "paint-alpha",
         id,
@@ -138,6 +138,13 @@ export async function designNodeToV3(tree, options = {}) {
           .padStart(2, "0"),
       )
       .join("")}`;
+  };
+  const solidFill = (value, node, context = "填充") => {
+    node.fill = color(value, node.id, context, true);
+    delete node.fillPaints;
+    const opacity = clamp(finite(value?.a, 1), 0, 1);
+    if (node.fill !== "transparent" && opacity < 1)
+      node.fillPaints = [{ type: "SOLID", color: node.fill, opacity }];
   };
   const sha256Bytes =
     options.sha256Bytes ??
@@ -308,10 +315,10 @@ export async function designNodeToV3(tree, options = {}) {
   const styleSurface = (source, node) => {
     const layers = source.background?.layers ?? [];
     const solid = layers.find((layer) => layer.type === "color" && finite(layer.color?.a, 1) > 0);
-    if (solid) node.fill = color(solid.color, node.id);
+    if (solid) solidFill(solid.color, node);
     const gradients = layers.filter((layer) => layer.type.endsWith("gradient"));
     if (gradients.length) {
-      if (!solid) node.fill = color(gradients.at(-1).stops?.[0]?.color, node.id);
+      if (!solid) solidFill(gradients.at(-1).stops?.[0]?.color, node);
       warn(
         "gradient-solid-fallback",
         node.id,
@@ -741,7 +748,7 @@ export async function designNodeToV3(tree, options = {}) {
       node.textDecoration = ["none", "underline", "line-through"].includes(style.textDecoration)
         ? style.textDecoration
         : "none";
-      node.fill = color(style.color, id, "文字填充");
+      solidFill(style.color, node, "文字填充");
       node.cornerRadius = 0;
       node.textMeasurement = "browser";
       if (source.background?.layers?.length)

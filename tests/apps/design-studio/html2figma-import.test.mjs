@@ -371,6 +371,61 @@ test("production HTML text uses measured hanging baselines across fonts, sizes a
   assert.deepEqual(f.errors, []);
 });
 
+test("translucent CSS card headers keep light backgrounds and readable editable text in real pixels", async (t) => {
+  const f = await fixture(t);
+  await f.page.setViewportSize({ width: 480, height: 360 });
+  const html = `<!doctype html><style>
+    *{box-sizing:border-box}html,body{margin:0;font-family:Arial;color:#212529;background:#fff}
+    main{width:480px;height:360px;padding:20px}.card{display:flex;flex-direction:column;width:400px;height:220px;background:#fff}
+    header{display:flex;flex-direction:column;padding:16px;background:rgba(33,37,41,.03)}
+    h4{margin:0;font-size:24px;font-weight:400;line-height:30px}
+    p{margin:0;padding:16px;font-size:16px;line-height:24px;color:rgba(33,37,41,.75)}
+    </style><main><section class="card"><header id="header"><h4>Free plan</h4></header><p id="description">Editable translucent copy</p></section></main>`;
+  await f.page.setContent(html);
+  await f.page.evaluate(() => document.fonts.ready);
+  const source = PngImage.sync.read(await f.page.screenshot());
+  const captured = await f.capture(html);
+  const document = normalizeDesignDocument(captured.document);
+  const header = byHtmlId(document, "header", "frame");
+  assert.deepEqual(header.fillPaints, [{ type: "SOLID", color: "#212529", opacity: 0.03 }]);
+  assert(document.nodes.some((node) => node.type === "text" && node.text === "Free plan"));
+  assert(
+    document.nodes.some(
+      (node) =>
+        node.type === "text" &&
+        node.text === "Editable translucent copy" &&
+        node.fillPaints?.[0].opacity === 0.75,
+    ),
+  );
+  const svg = await f.page.evaluate(async (value) => {
+    const { exportDesignSvg, normalizeDesignDocument } = await import("/app/document.mjs");
+    return exportDesignSvg(normalizeDesignDocument(value));
+  }, captured.document);
+  await f.page.setContent(
+    `<!doctype html><style>html,body{margin:0;background:#fff}svg{display:block}</style>${svg}`,
+  );
+  await f.page.evaluate(() => document.fonts.ready);
+  await f.page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+  const rendered = PngImage.sync.read(await f.page.screenshot());
+  let changed = 0;
+  for (let offset = 0; offset < source.data.length; offset += 4)
+    if (
+      [0, 1, 2, 3].some(
+        (channel) => source.data[offset + channel] !== rendered.data[offset + channel],
+      )
+    )
+      changed++;
+  assert.equal(
+    changed,
+    0,
+    "CSS fill alpha must match every source RGBA pixel without flattening text",
+  );
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});
+
 test("actual HTML import blocks scripts, handlers, navigations and remote resources while reporting blocked assets", async (t) => {
   const f = await fixture(t);
   const html = `<!doctype html><base href="https://leak.test/"><meta http-equiv="refresh" content="0;url=https://leak.test/navigation"><link rel="stylesheet" href="https://leak.test/external.css"><style>@import "https://leak.test/import.css";body{margin:0}.remote{width:30px;height:30px;background-image:url(https://leak.test/background)}</style><script>parent.importPwned=1;fetch('https://leak.test/script')</script><iframe src="https://leak.test/frame"></iframe><main style="width:300px;height:160px"><p onclick="parent.importPwned=2">Safe text</p><img src="https://leak.test/image" onerror="parent.importPwned=3"><div class="remote"></div><form action="https://leak.test/form"><input value="Static form"></form><img src="data:image/png;base64,${PNG}" onload="parent.importPwned=4" width="12" height="12"></main>`;

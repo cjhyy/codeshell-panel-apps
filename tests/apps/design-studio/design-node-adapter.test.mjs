@@ -504,6 +504,30 @@ test("missing and invalid local image bytes are visible placeholders with explic
   }
 });
 
+test("CSS background and text alpha remain independent editable paints through save and Figma transfer", async () => {
+  const heading = text("Free");
+  heading.textStyle.color = rgb(33, 37, 41, 0.75);
+  heading.opacity = 0.7;
+  const result = await designNodeToV3(
+    container([heading], {
+      opacity: 0.6,
+      background: { layers: [{ type: "color", color: rgb(33, 37, 41, 0.03) }] },
+    }),
+    options,
+  );
+  const reopened = normalizeDesignDocument(JSON.parse(serializeDesignDocument(result.document)));
+  const [frame, label] = reopened.nodes;
+  assert.equal(frame.opacity, 0.6);
+  assert.equal(label.opacity, 0.7);
+  assert.deepEqual(frame.fillPaints, [{ type: "SOLID", color: "#212529", opacity: 0.03 }]);
+  assert.deepEqual(label.fillPaints, [{ type: "SOLID", color: "#212529", opacity: 0.75 }]);
+  assert.equal(codes(result).includes("paint-alpha"), false);
+  const native = createFigmaTransfer(reopened).pages[0].children[0];
+  assert.deepEqual(native.fillPaints, frame.fillPaints);
+  assert.deepEqual(native.children[0].fillPaints, label.fillPaints);
+  assert.equal(native.layoutPositioning, undefined);
+});
+
 test("unsupported paints, mixed text, effects and geometry corrections are reported, never silently claimed as faithful", async () => {
   const styled = text("Mixed", {
     styledSegments: [{ start: 0, end: 5, text: "Mixed", style: { fontWeight: 700 } }],
