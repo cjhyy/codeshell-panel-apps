@@ -617,3 +617,44 @@ CSS 为 22,783/max59。此物理角度限制真实存在，来源提示与 inact
 negative-main-gap 代理从 6f65 新隔离分支实现有界 nowrap 有符号主间距，再用透明
 spacer+Fill/AUTO 真子项表达负水平外边距，避免绝对定位；边框代理最小单色内侧/底边
 已为 0/0/0，多色接缝仍有 max1 原始严格失败，正接原生/CanvasKit。目标继续 active。
+
+### HTML 省略号实机、保留空格与字体轮廓探针（约 03:02）
+
+`930ce03` 合入代理 `f4bdc10`：捕获并恢复有界 plain nowrap/pre 文字意图，保留结构
+Frame、Fill/Hug、完整可编辑文字；nowrap 按 CSS 折叠的原始空白另存语义备注。
+伪元素/表单/列表/混合子元素、特殊书写等情况拒绝覆盖 DOM 原文并明确诊断。
+SVG 保留显式空白；前端导出使用完整原文动态截断，vertical Fill 使用 100% 宽度。
+root 合并后 54 项针对性检查通过，vendor 与两插件输出重建。
+
+新公开工具 UI 用例最初沿用旧的 main 固定宽度假设，编辑 Fill 子项而保留外框 640，
+因此正确重排后文字仍宽 576，并非 336。原失败日志保留；测试改为仅编辑外框，明确
+断言 main 仍是 Fill，导入→文字修改→保存→重开→完整 Figma 传输一项真实 UI 通过。
+
+实机 run `17832bd1` / 页 `62:153`，8 节点/6 Auto Layout/2 TEXT：独立断言原生
+characters 等于两段完整原句，ENDING/maxLines1、FILL/HUG；逻辑行框几何最大差
+0.0038px。仅将外框 640→400，两段文字均 576×24→336×24，未变为 ABSOLUTE。
+官方导回两宽首次显示/重排四次均 **0 像素差异**；原生 PNG 640/400 分别
+6,768/max210、3,706/max138，仍严格失败，字体残差不隐藏。
+回执 `evidence/real-figma/html-ellipsis/acceptance-report.json`；relay/插件关闭且 scratch
+原三文件精确恢复。
+
+审查补测 pre+ellipsis 暴露导出 CSS nowrap 折叠空格，以及 measuredEllipsis.trimEnd
+删除保留格式前缀空格。代理只读原始失败：普通保留空格前端 5,323/3,125 像素；
+200 空格前缀 SVG 各宽/重排 60/max240，前端 4,344/2,609 像素。
+root `02f9b68` 修复为 pre、保留已测量前缀全部字符，新增 outer-only 生产 SVG+前端
+精确比较先失败后通过。27 项 HTML/字体测量检查及上述公开 UI 一项通过；全仓
+typecheck/validate/build:check、vendor/两插件确定性校验通过。
+
+当前合并基线重跑冻结 GOV.UK，185 节点，27203/27203/62622，73 条分项诊断，
+仍有 ordinary-flow→absolute，strict=false；无外部请求或浏览器错误。
+`evidence/web-corpus/govuk-check-answers/round10-merged-baseline/` 保存原始结果。
+
+字体只读研究确认：所有标题/段落/单行在整数 ±4px 搜索中均以原位置 (0,0) 最优；
+不能靠移动文字解决。简单 1/16 覆盖量化仍留下大量 max135–165 差异，未修改渲染器。
+固定标题 `62:133` 的原生只读 SVG 轮廓/可编辑 SVG、透明 PNG1x/2x 已通过官方
+exportAsync 导出，前后节点/页面/选择元数据完全相同，hasMissingFont=false。
+目录 `evidence/native-text-raster-analysis/native-outline-2026-10-20T18-59-58.241Z-9f2eb6cb/`
+保留原始字节、设置、SHA 与恢复回执。这是明确标为 productionMainModifiedForReadOnlyProbe
+的研究探针，不能冒充未修改生产转换验收。运行时/relay 均退出，原 scratch 哈希恢复。
+下一步比较实际轮廓与本地 Arial 字形，尚不把字体名称相同当作字节/轮廓一致的证明。
+负主间距及边框分支继续独立实现/检查，目标 active，截止不变。
