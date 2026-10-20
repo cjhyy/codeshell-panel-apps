@@ -554,6 +554,10 @@ The product importer captures the visible first viewport rather than the root's 
 height. Partially visible layers retain their measured geometry behind an intentional root clip;
 fully offscreen descendants are not serialized. Choose a tighter root selector when the desired
 design is one visible region instead of the complete viewport.
+Document-root auto/scroll overflow can retain ordinary viewport Auto Layout when
+standards-mode measurements prove zero scroll offset, no horizontal overflow and
+no consumed scrollbar gutter. Independent ancestor clips, classic gutters and
+stable gutters retain measured geometry with diagnostics.
 Flex rows/columns map reverse direction, Wrap/Wrap Reverse, axis gaps, four-side padding, Baseline,
 Min/Max, alignment, distribution, and Fill/Fixed sizing into v3. Grid maps equal computed columns
 and row/column spans; direct absolute/fixed children are excluded from flow and retain measured

@@ -5,6 +5,23 @@ const pixel = (value) => /^(?:0|\d+(?:\.\d+)?px)$/u.test(value);
 const normalPosition = (values) => ["static", "relative"].includes(values.position) &&
   ["top", "right", "bottom", "left"].every((key) => zero(values[key]));
 
+// Root overflow propagates to the viewport. Only collapse that boundary when
+// there is no scrollbar gutter or horizontal/offset scroll state to reproduce.
+function viewportScroller(ancestor, style, document, window) {
+  if (ancestor !== document.documentElement || document.compatMode !== "CSS1Compat" ||
+      document.scrollingElement !== ancestor || style.scrollbarGutter !== "auto" ||
+      style.contain !== "none" ||
+      ![style.overflowX, style.overflowY].every((value) => ["visible", "auto", "scroll"].includes(value)))
+    return false;
+  const values = [window.innerWidth, window.innerHeight, window.scrollX, window.scrollY,
+    ancestor.clientWidth, ancestor.clientHeight, ancestor.scrollWidth, ancestor.scrollHeight,
+    ancestor.scrollLeft, ancestor.scrollTop];
+  return values.every(Number.isFinite) && window.innerWidth > 0 && window.innerHeight > 0 &&
+    ancestor.clientWidth === window.innerWidth && ancestor.clientHeight === window.innerHeight &&
+    ancestor.scrollWidth === ancestor.clientWidth && ancestor.scrollHeight >= ancestor.clientHeight &&
+    window.scrollX === 0 && window.scrollY === 0 && ancestor.scrollLeft === 0 && ancestor.scrollTop === 0;
+}
+
 /** Read only the root's containing-block relationship, before the converter normalizes its origin. */
 export function captureHtmlViewportRelation(root) {
   const document = root.ownerDocument, window = document.defaultView;
@@ -35,7 +52,8 @@ export function captureHtmlViewportRelation(root) {
         style.clipPath !== "none" || ["Top", "Right", "Bottom", "Left"].some((side) =>
           Number.parseFloat(style[`border${side}Width`]) > 0 && !transparent(style[`border${side}Color`])))
       return unsupported("祖先的边框或视觉效果不在选中子树中，需要完整页面捕获。");
-    if (![style.overflowX, style.overflowY].every((value) => value === "visible"))
+    if (![style.overflowX, style.overflowY].every((value) => value === "visible") &&
+        !viewportScroller(ancestor, style, document, window))
       return unsupported("选中根的祖先存在独立裁切或滚动边界，不能折叠为视口。");
     const width = typed.get("width")?.toString();
     heightFromViewport &&= typed.get("height")?.toString() === "100%";
