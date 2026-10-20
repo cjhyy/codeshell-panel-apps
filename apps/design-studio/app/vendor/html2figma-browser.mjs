@@ -5448,6 +5448,10 @@ var html2figmaCore = (() => {
             const properties = [
               "width",
               "height",
+              "min-width",
+              "max-width",
+              "min-height",
+              "max-height",
               "flex-basis",
               "margin-top",
               "margin-right",
@@ -5469,8 +5473,6 @@ var html2figmaCore = (() => {
               "align-self",
               "justify-content",
               "align-content",
-              "min-width",
-              "min-height",
               "writing-mode",
               "direction",
               "order",
@@ -5478,7 +5480,16 @@ var html2figmaCore = (() => {
               "aspect-ratio",
               "row-gap",
               "column-gap",
-              "box-sizing"
+              "box-sizing",
+              "display",
+              "position",
+              "top",
+              "right",
+              "bottom",
+              "left",
+              "float",
+              "clear",
+              "column-count"
             ];
             const record = {};
             for (const property of properties) {

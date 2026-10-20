@@ -26,6 +26,10 @@ function captureLayoutValues(tree: RenderNode) {
           const properties = [
             "width",
             "height",
+            "min-width",
+            "max-width",
+            "min-height",
+            "max-height",
             "flex-basis",
             "margin-top",
             "margin-right",
@@ -47,8 +51,6 @@ function captureLayoutValues(tree: RenderNode) {
             "align-self",
             "justify-content",
             "align-content",
-            "min-width",
-            "min-height",
             "writing-mode",
             "direction",
             "order",
@@ -57,6 +59,17 @@ function captureLayoutValues(tree: RenderNode) {
             "row-gap",
             "column-gap",
             "box-sizing",
+
+            "display",
+            "position",
+            "top",
+            "right",
+            "bottom",
+            "left",
+            "float",
+            "clear",
+            "column-count",
+
           ];
           const record: Record<string, string> = {};
           for (const property of properties) {

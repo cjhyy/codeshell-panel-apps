@@ -2,6 +2,7 @@
 import { normalizeDesignDocument, MAX_DESIGN_NODES_PER_PAGE } from "./document.mjs";
 import { createDesignResourcePersistencePlan, MAX_DESIGN_RESOURCES } from "./resource-store.mjs";
 import { normalizeFigmaAsset } from "./figma-assets.mjs";
+import { planHtmlBlockFlow } from "./html-block-flow.mjs";
 import { cssLinearBackgroundPaints } from "./css-linear-gradient.mjs";
 import { representativeDesignFill } from "./paint.mjs";
 import { planHtmlGrid, sizeHtmlGridChild, validateHtmlGrid, removeHtmlGrid } from "./html-grid.mjs";
@@ -108,6 +109,8 @@ export async function designNodeToV3(tree, options = {}) {
     fonts = [];
   const autoMarginOverrides = new WeakMap();
   const gridPlans = new WeakMap();
+  const blockFlowPlans = new WeakMap();
+  const blockUnwrappedPaths = new WeakMap();
   const localResources =
     options.resources instanceof Map
       ? options.resources
@@ -360,6 +363,8 @@ export async function designNodeToV3(tree, options = {}) {
     if (visibleSides.length) {
       node.stroke = color(visibleSides[0].color, node.id, "描边");
       node.strokeWidth = number(visibleSides[0].width, 0, 0, 100, node.id, "strokeWidth");
+      warn("border-stroke-alignment", node.id,
+        "CSS 边框的内容缩进已保留；当前居中描边与 CSS 内侧边框的绘制边缘可能不同。");
       if (sides.some((side) => JSON.stringify(side) !== JSON.stringify(sides[0])))
         warn("border-sides", node.id, "不同方向边框已近似为统一描边。");
       if (visibleSides.some((side) => side.style !== "solid"))
@@ -420,7 +425,8 @@ export async function designNodeToV3(tree, options = {}) {
     const sourceLayout = source.layout ?? {};
     for (const side of ["Top", "Right", "Bottom", "Left"])
       node[`padding${side}`] = number(
-        sourceLayout.padding?.[side.toLowerCase()] ?? 0,
+        finite(sourceLayout.padding?.[side.toLowerCase()]) +
+          finite(source.border?.[side.toLowerCase()]?.width),
         0,
         0,
         2000,
@@ -474,6 +480,22 @@ export async function designNodeToV3(tree, options = {}) {
         warn("grid-fixed-geometry", node.id, `${error.message}；已保留原始 Grid 测量几何。`);
       }
     }
+    const block = planHtmlBlockFlow(source, coordinateSpace);
+    if (block?.unsupported)
+      warn("block-flow-fixed", node.id, block.unsupported);
+    else if (block) {
+      blockFlowPlans.set(source, block);
+      Object.assign(node, {
+        layout: "vertical", layoutWrap: "none", gap: 0, rowGap: 0, columnGap: 0,
+        alignItems: "start", justifyContent: "start",
+        paddingTop: block.paddingTop, paddingBottom: block.paddingBottom,
+        paddingLeft: block.paddingLeft, paddingRight: block.paddingRight,
+      });
+      for (const item of block.items)
+        if (item.crossAlign) autoMarginOverrides.set(item.source, {
+          handled: new Set(["left", "right"]), singleMain: false, crossAlign: item.crossAlign,
+        });
+    }
     const flowChildren = (source.children ?? []).filter(
       (child) =>
         child.visible !== false &&
@@ -481,7 +503,7 @@ export async function designNodeToV3(tree, options = {}) {
         !["absolute", "fixed"].includes(child.positioning?.mode),
     );
     if (
-      ["horizontal", "vertical"].includes(node.layout) &&
+      !block && ["horizontal", "vertical"].includes(node.layout) &&
       (source.semantic || source.name !== "margin-wrapper")
     ) {
       const horizontal = node.layout === "horizontal";
@@ -540,7 +562,10 @@ export async function designNodeToV3(tree, options = {}) {
         return value === "auto" || finite((child.margin ?? child.layout?.margin)?.[side]) !== 0;
       }),
     );
-    if (node.layout !== "none" && margins) {
+    // The pinned inline-group has already consumed inline margins into its
+    // measured bounds and margin wrappers; it is not an authored CSS flex box.
+    if (node.layout !== "none" && margins && !block &&
+        !(!source.semantic && source.name === "inline-group")) {
       const sides = ["top", "right", "bottom", "left"];
       const spacing = flowChildren.map((child) =>
         sides.map((side) =>
@@ -593,14 +618,41 @@ export async function designNodeToV3(tree, options = {}) {
         );
       }
     }
-    for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"])
-      if (sourceLayout.sizing?.[key] !== undefined && sourceLayout.sizing[key] > 0)
-        node[key] = number(sourceLayout.sizing[key], 1, 1, 20000, node.id, key);
+    for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"]) {
+      const property = key.replace(/[A-Z]/gu, (letter) => `-${letter.toLowerCase()}`);
+      const declared = cssLayoutValue(source, property);
+      if (declared && !/^(?:none|auto|0|\d+(?:\.\d+)?px)$/u.test(declared)) {
+        // Upstream parsePx treats 100% as 100. A relative constraint must never
+        // silently become a pixel bound on the editable frame.
+        warn("css-size-bound-fixed", node.id,
+          `${property}: ${declared} 的相对或内在尺寸约束未保留；使用测量尺寸而不应用错误的像素边界。`);
+        continue;
+      }
+      if (sourceLayout.sizing?.[key] !== undefined && sourceLayout.sizing[key] > 0) {
+        const sides = key.endsWith("Width") ? ["left", "right"] : ["top", "bottom"];
+        const inset = sourceLayout.sizing.boxSizing === "border-box" ? 0 : sides.reduce(
+          (sum, side) => sum + finite(sourceLayout.padding?.[side]) + finite(source.border?.[side]?.width), 0);
+        node[key] = number(sourceLayout.sizing[key] + inset, 1, 1, 20000, node.id, key);
+      }
+    }
     for (const axis of ["Width", "Height"])
       if (node[`min${axis}`] > node[`max${axis}`]) {
         delete node[`max${axis}`];
         warn("invalid-sizing", node.id, "CSS 最大尺寸小于最小尺寸，已保留最小尺寸。");
       }
+    // A one-line inline button's natural box includes its CSS line box and
+    // border, while the upstream text child contains only the glyph bounds.
+    if (["flex", "inline-flex"].includes(sourceLayout.display) &&
+        cssLayoutValue(source, "height") === "auto" && source.children?.length === 1 &&
+        source.children[0].nodeType === "text" && !source.children[0].content?.includes("\n")) {
+      const capturedLine = source.children[0].textStyle?.lineHeight;
+      const lineHeight = capturedLine?.unit === "px" ? capturedLine.value :
+        Number.parseFloat(source.rawStyles?.["line-height"]);
+      if (Number.isFinite(lineHeight) && lineHeight > 0) {
+        const minimum = lineHeight + node.paddingTop + node.paddingBottom;
+        if (minimum <= node.height + 0.05) node.minHeight = Math.max(node.minHeight ?? 1, round(minimum));
+      }
+    }
     node.clipContent = ["hidden", "scroll", "auto"].includes(source.overflow);
     if (node.clipContent) node.contentClipping = "intentional";
     if (["scroll", "auto"].includes(source.overflow))
@@ -638,6 +690,9 @@ export async function designNodeToV3(tree, options = {}) {
     ]) {
       const value = cssLayoutValue(source, property);
       if (!value) continue;
+      if (parentAuto && value.includes("%") && !/^100(?:\.0+)?%$/u.test(value))
+        warn("css-percentage-size-fixed", node.id,
+          `${property}: ${value} 的百分比尺寸已保留为测量尺寸；父框改变时不会按该比例重新计算。`);
       const intrinsic = ["auto", "min-content", "max-content", "fit-content"].includes(value);
       let mode = "fixed";
       if (parentAuto && /^100(?:\.0+)?%$/u.test(value)) mode = "fill";
@@ -744,6 +799,41 @@ export async function designNodeToV3(tree, options = {}) {
     node.layoutAlignSelf = "start";
     return wrapper;
   };
+  const wrapBlockFlow = (item, next, original, parent) => {
+    let node = original;
+    if (item.fill) node.layoutSizingHorizontal = "fill";
+    node.layoutAlignSelf = "start";
+    delete node.layoutMarginBefore;
+    node.layoutSizingVertical = "fixed";
+    if (["horizontal", "vertical", "grid"].includes(node.layout) &&
+        (cssLayoutValue(item.source, "height") === "auto" || !item.source.semantic))
+      node.layoutSizingVertical = "hug";
+    const gap = Math.max(0, item.gap);
+    let overlap = Math.min(0, next?.gap ?? 0);
+    if (overlap && !item.source.semantic && item.source.name === "margin-wrapper" &&
+        node.layout === "vertical" && node.paddingBottom >= -overlap) {
+      // Upstream rounds collapsed gaps to integer pixels. Restore the exact
+      // browser interval in editable padding instead of freezing its height.
+      node.paddingBottom = round(node.paddingBottom + overlap);
+      node.height = round(node.height + overlap);
+      overlap = 0;
+    }
+    node = wrapCrossAutoMargins(item.source, node, parent);
+    if (!gap && !overlap) return node;
+    const wrapper = base(`${node.id}-block-spacing`, "frame", `${node.name} block spacing`, {
+      x: node.x, y: node.y - gap, width: node.width,
+      height: Math.max(1, node.height + gap + overlap),
+    });
+    Object.assign(wrapper, {
+      layout: "vertical", layoutWrap: "none", gap: 0, padding: 0,
+      paddingTop: gap, alignItems: "start", justifyContent: "start",
+      layoutSizingHorizontal: node.layoutSizingHorizontal ?? "fixed",
+      layoutSizingVertical: overlap ? "fixed" : "hug", children: [node],
+    });
+    if (overlap) warn("block-flow-overlap", node.id,
+      "微小负外边距使用固定流占位高度保留重叠；编辑该项高度后需核对占位高度。");
+    return wrapper;
+  };
   const convert = async (source, path, parentAnchor, ancestors) => {
     if (!object(source) || seen.has(source) || path.length > 32)
       throw new Error("DesignNode 包含无效、循环、重复引用或超过 32 层的结构");
@@ -752,7 +842,7 @@ export async function designNodeToV3(tree, options = {}) {
       throw new Error(`不支持的 DesignNode 类型：${source.nodeType}`);
     if (source.children !== undefined && !Array.isArray(source.children))
       throw new Error("DesignNode children 必须是数组");
-    if (["flex", "inline-flex"].includes(source.layout?.display) && source.children) {
+    if (["flex", "inline-flex", "block", "flow-root"].includes(source.layout?.display) && source.children) {
       // The pinned converter turns resolved auto margins into fixed padding in
       // synthetic wrappers. Recover the original child before interpreting its
       // captured CSS intent; its measured bounds remain parent-relative.
@@ -774,7 +864,7 @@ export async function designNodeToV3(tree, options = {}) {
             !values.every((value) => value === "auto" || /^0(?:\.0+)?(?:px)?$/u.test(value))
           )
             return wrapper;
-          return {
+          const recovered = {
             ...child,
             bounds: {
               ...child.bounds,
@@ -786,6 +876,11 @@ export async function designNodeToV3(tree, options = {}) {
                 (coordinateSpace === "parent-relative" ? finite(wrapper.bounds?.y) : 0),
             },
           };
+          // A block recovery keeps the original semantic child's source path,
+          // even though its inert margin wrapper no longer needs conversion.
+          if (["block", "flow-root"].includes(source.layout.display))
+            blockUnwrappedPaths.set(recovered, [0]);
+          return recovered;
         }),
       };
     }
@@ -1019,8 +1114,11 @@ export async function designNodeToV3(tree, options = {}) {
             "背景平铺、显式尺寸和偏移已近似为覆盖容器的图片。",
           );
       }
-      for (const [index, child] of (source.children ?? []).entries()) {
-        const converted = await convert(child, [...path, index], anchor, [...ancestors, node]);
+      const block = blockFlowPlans.get(source);
+      const entries = block?.entries ?? (source.children ?? []).map((child, index) => ({ source: child, index }));
+      for (const { source: child, index } of entries) {
+        const converted = await convert(child, [...path, index, ...(blockUnwrappedPaths.get(child) ?? [])], anchor, [...ancestors, node]);
+        if (block?.promoted.has(child)) delete converted.layoutPositioning;
         if (node.layout !== "none") {
           if (child.flexItem?.alignSelf)
             converted.layoutAlignSelf = alignment(
@@ -1031,7 +1129,10 @@ export async function designNodeToV3(tree, options = {}) {
             );
         }
         sizing(child, converted, node);
-        node.children.push(wrapCrossAutoMargins(child, converted, node));
+        const itemIndex = block?.items.findIndex((item) => item.source === child) ?? -1;
+        node.children.push(itemIndex >= 0
+          ? wrapBlockFlow(block.items[itemIndex], block.items[itemIndex + 1], converted, node)
+          : wrapCrossAutoMargins(child, converted, node));
       }
     }
     return node;

@@ -124,8 +124,10 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
     throw Error("浏览器无法测量文字");
   }
   let actualInkAvailable = true;
+  let wrapWidth = Infinity;
   return {
     configure(node) {
+      wrapWidth = node.textFlow === "wrap" ? node.width : Infinity;
       for (const [name, value] of Object.entries({
         "font-family": designFontFamilyCss(
           node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
@@ -147,6 +149,13 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
       text.textContent = value || " ";
       const bounds = text.getBBox();
       const actual = context.measureText(value);
+      let advance = value ? text.getComputedTextLength() : 0;
+      if (advance > wrapWidth + 0.01 && /\S/u.test(value) && / +$/u.test(value)) {
+        text.textContent = value.replace(/ +$/u, "");
+        const fittingAdvance = text.getComputedTextLength();
+        text.textContent = value;
+        if (fittingAdvance <= wrapWidth + 0.01) advance = fittingAdvance;
+      }
       const measuredInk =
         actualInkAvailable &&
         [
@@ -163,7 +172,7 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
             }
           : bounds;
       return {
-        width: value ? round(text.getComputedTextLength()) : 0,
+        width: round(advance),
         bottom: value ? round(Math.max(0, measuredInk.y + measuredInk.height)) : 0,
         ink: value
           ? {
@@ -195,12 +204,19 @@ export function measuredWrap(source, width, measure) {
     const lines = [];
     let line = "";
     for (const token of paragraph.match(/\S+\s*|\s+/gu) ?? []) {
-      if (line && measure(line + token).width > width + 0.01) {
+      // A word's following spaces hang at the line end in normal/pre-wrap
+      // browser layout. Count them once another word follows, retaining their
+      // exact bytes in the previous line and in textSource.
+      const trailingSpaces = /\S/u.test(token) ? / +$/u.exec(token)?.[0].length ?? 0 : 0;
+      const fittingToken = trailingSpaces ? token.slice(0, -trailingSpaces) : token;
+      if (line && measure(line + fittingToken).width > width + 0.01) {
         lines.push(line);
         line = "";
       }
-      for (const character of Array.from(token)) {
-        if (line && measure(line + character).width > width + 0.01) {
+      const characters = Array.from(token);
+      for (const [index, character] of characters.entries()) {
+        if (index < characters.length - trailingSpaces &&
+            line && measure(line + character).width > width + 0.01) {
           lines.push(line);
           line = "";
         }
@@ -234,9 +250,10 @@ export async function measureFigmaTextDocument(
     for (const page of pages)
       for (const node of page.nodes ?? []) {
         if (node.type !== "text") continue;
-        measurement.configure(node);
         const source = sourceNodes.get(sourceIds.get(node.id));
         const autoResize = source?.style?.textAutoResize;
+        measurement.configure(autoResize === "WIDTH_AND_HEIGHT"
+          ? node : { ...node, textFlow: "wrap" });
         const originalText = node.textSource ?? node.text;
         const lines =
           autoResize === "WIDTH_AND_HEIGHT"

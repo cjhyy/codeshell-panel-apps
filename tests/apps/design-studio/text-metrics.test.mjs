@@ -9,7 +9,16 @@ import {
   normalizeDesignState,
   serializeDesignDocument,
 } from "../../../apps/design-studio/app/document.mjs";
-import { currentTextMetrics } from "../../../apps/design-studio/app/text-metrics.mjs";
+import { currentTextMetrics, measuredWrap } from "../../../apps/design-studio/app/text-metrics.mjs";
+
+test("word fitting lets trailing spaces hang while preserving explicit lines, leading spaces and every source byte", () => {
+  const measure = (value) => ({ width: Array.from(value).length });
+  assert.deepEqual(measuredWrap("one two three", 7, measure), ["one two ", "three"]);
+  assert.deepEqual(measuredWrap("  one\n\n two\tthree  ", 30, measure), ["  one", "", " two\tthree  "]);
+  const source = "  one  two\t three  ";
+  assert.equal(measuredWrap(source, 7, measure).join(""), source);
+  assert.equal(measuredWrap("     ", 2, measure).join(""), "     ");
+});
 
 const source = (
   text,
@@ -70,6 +79,53 @@ test("Node imports retain conservative checks until a real browser measurement e
   );
 });
 
+test("normal and pre-wrap browser line fits agree on hanging spaces without changing explicit whitespace", async (t) => {
+  const page = await browserFixture(t);
+  const observed = await page.evaluate(async () => {
+    const { measuredWrap, createBrowserTextMeasurer } = await import("/text-metrics.mjs");
+    const results = [];
+    for (const [whiteSpace, source] of [["normal", "one two three"], ["pre-wrap", "  one two  three\n\n four five  "]]) {
+      const element = document.createElement("div");
+      Object.assign(element.style, { font: "20px/28px monospace", width: "85px", whiteSpace });
+      element.textContent = source;
+      document.body.append(element);
+      const measure = createBrowserTextMeasurer(document);
+      measure.configure({ fontFamily: "monospace", fontSize: 20, fontWeight: 400, width: element.getBoundingClientRect().width, textFlow: "wrap" });
+      const lines = measuredWrap(source, element.getBoundingClientRect().width, (value) => measure.measure(value));
+      measure.close();
+      const range = document.createRange();
+      range.setStart(element.firstChild, 0);
+      range.setEnd(element.firstChild, 1);
+      const top = range.getBoundingClientRect().top;
+      let offset = 0;
+      const positions = [];
+      for (const [lineIndex, line] of lines.entries()) {
+        for (const character of line) {
+          if (/\S/u.test(character)) {
+            range.setStart(element.firstChild, offset);
+            range.setEnd(element.firstChild, offset + 1);
+            positions.push({ expected: lineIndex, actual: Math.round((range.getBoundingClientRect().top - top) / 28) });
+          }
+          if (source[offset] !== character) throw Error("Wrapping changed a source character");
+          offset++;
+        }
+        if (source[offset] === "\n") offset++;
+      }
+      results.push({ whiteSpace, lines, positions, consumed: offset, length: source.length });
+      element.remove();
+    }
+    return results;
+  });
+  for (const result of observed) {
+    assert.equal(result.consumed, result.length);
+    assert(result.positions.every((position) => position.actual === position.expected), JSON.stringify(result));
+  }
+  assert.deepEqual(observed[0].lines, ["one two ", "three"]);
+  assert(observed[1].lines.some((line) => line === ""));
+  assert(observed[1].lines[0].startsWith("  "));
+  assert(observed[1].lines.at(-1).endsWith("  "));
+});
+
 test("browser soft wrapping retains every source character and agrees with the exported SVG", async (t) => {
   const page = await browserFixture(t);
   const original = "An editable paragraph with  two spaces, 中文换行 and explicit\nsecond line.";
@@ -79,9 +135,12 @@ test("browser soft wrapping retains every source character and agrees with the e
       const { exportDesignSvg } = await import("/document.mjs");
       const result = await prepareFigmaImport(input);
       document.body.innerHTML = exportDesignSvg(result.document);
-      const widths = [...document.querySelectorAll("svg text")].map((node) =>
-        node.getComputedTextLength(),
-      );
+      const widths = [...document.querySelectorAll("svg text")].map((node) => {
+        const trailing = / +$/u.exec(node.textContent)?.[0].length ?? 0;
+        // Hanging line-end spaces retain their source bytes but paint no ink.
+        return node.getComputedTextLength() - (trailing
+          ? node.getSubStringLength(node.getNumberOfChars() - trailing, trailing) : 0);
+      });
       return { result, widths };
     },
     source(original, { width: 135 }),

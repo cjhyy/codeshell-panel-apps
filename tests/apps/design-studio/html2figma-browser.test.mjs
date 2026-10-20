@@ -240,7 +240,7 @@ test("capture retains CSS sizing intent separately from resolved pixels and does
     const { convertToDesignDSL } = await import("/html2figma-browser.mjs");
     const iframe = document.createElement("iframe");
     iframe.sandbox = "allow-same-origin";
-    iframe.srcdoc = `<!doctype html><style>body{margin:0}#root{display:flex;width:100%;height:120px}#fixed{width:40px;height:24px}#fluid{flex:1;height:24px;margin-left:auto}#hug{display:inline-flex;width:fit-content;height:auto}</style><main id="root"><div id="fixed"></div><div id="fluid"></div><div id="hug">Label</div></main>`;
+    iframe.srcdoc = `<!doctype html><style>body{margin:0}#root{display:flex;width:100%;height:120px}#fixed{width:40px;height:24px;min-width:2em;max-width:100%;max-height:80px;min-height:10%}#fluid{flex:1;height:24px;margin-left:auto}#hug{display:inline-flex;width:fit-content;height:auto}</style><main id="root"><div id="fixed"></div><div id="fluid"></div><div id="hug">Label</div></main>`;
     const loaded = new Promise((resolve) =>
       iframe.addEventListener("load", resolve, { once: true }),
     );
@@ -266,10 +266,18 @@ test("capture retains CSS sizing intent separately from resolved pixels and does
   assert.equal(result.unchanged, true);
   assert.equal(byId("root").cssLayout.width, "100%");
   assert.equal(byId("fixed").cssLayout.height, "24px");
+  assert.equal(byId("fixed").cssLayout["min-width"], "32px");
+  assert.equal(byId("fixed").cssLayout["max-width"], "100%");
+  assert.equal(byId("fixed").cssLayout["min-height"], "10%");
+  assert.equal(byId("fixed").cssLayout["max-height"], "80px");
   assert.equal(byId("fluid").cssLayout.width, "auto");
   assert.equal(byId("fluid").cssLayout["margin-left"], "auto");
   assert.equal(byId("hug").cssLayout.width, "fit-content");
   assert.equal(byId("hug").cssLayout.height, "auto");
+  assert.equal(byId("root").cssLayout.display, "flex");
+  assert.equal(byId("root").cssLayout.position, "static");
+  assert.equal(byId("root").cssLayout.float, "none");
+  assert.equal(byId("root").cssLayout["writing-mode"], "horizontal-tb");
   assert.ok(
     nodes.filter((node) => node.nodeType === "text").every((node) => node.cssLayout === undefined),
   );

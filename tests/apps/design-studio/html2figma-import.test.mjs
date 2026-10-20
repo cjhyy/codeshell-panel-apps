@@ -154,6 +154,68 @@ test("production HTML import keeps fixed-height flex children and CSS margins st
   assert.deepEqual(f.errors, []);
 });
 
+test("bordered flex and block frames retain content insets and content-box size bounds after resize", async (t) => {
+  const f = await fixture(t);
+  const html = `<style>*{box-sizing:border-box}body{margin:0}#root{display:flex;flex-direction:column;width:100%;height:240px;padding:20px;border:2px solid #111}#card{padding:12px;border:3px solid #222}#bounded{box-sizing:content-box;max-width:160px;min-height:20px;height:20px;padding:4px;border:2px solid #333}#last{height:20px;margin-top:12px}</style><main id="root"><section id="card"><div id="bounded"></div><div id="last"></div></section></main>`;
+  const captured = await f.capture(html, { rootSelector: "#root", width: 640, height: 240 });
+  await f.page.setContent(html);
+  const observed = await f.page.evaluate(async ({ documentValue }) => {
+    const { normalizeDesignDocument } = await import("/app/document.mjs");
+    const { applyAllAutoLayouts } = await import("/app/layout.mjs");
+    const value = normalizeDesignDocument(documentValue);
+    const byId = (id) => value.nodes.find((node) =>
+      JSON.parse(node.notes ?? "{}").attributes?.id === id);
+    const results = [];
+    for (const width of [640, 400]) {
+      document.querySelector("#root").style.width = `${width}px`;
+      value.nodes.find((node) => node.id === "html-viewport").width = width;
+      byId("root").width = width;
+      applyAllAutoLayouts(value.nodes);
+      results.push(["root", "card", "bounded", "last"].map((id) => {
+        const expected = document.querySelector(`#${id}`).getBoundingClientRect(), actual = byId(id);
+        return { id, expected: [expected.x, expected.y, expected.width, expected.height],
+          actual: [actual.x, actual.y, actual.width, actual.height] };
+      }));
+    }
+    return { results, bounded: { minHeight: byId("bounded").minHeight, maxWidth: byId("bounded").maxWidth },
+      layouts: [byId("root").layout, byId("card").layout] };
+  }, { documentValue: captured.document });
+  for (const result of observed.results.flat()) assert.deepEqual(result.actual, result.expected, result.id);
+  assert.deepEqual(observed.bounded, { minHeight: 32, maxWidth: 172 });
+  assert.deepEqual(observed.layouts, ["vertical", "vertical"]);
+  assert(captured.report.warnings.some((warning) => warning.code === "border-stroke-alignment"));
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("CSS percentage bounds never become pixel bounds while px and resolved em constraints retain their box sizing", async (t) => {
+  const f = await fixture(t);
+  const captured = await f.capture(
+    `<style>*{box-sizing:border-box}body{margin:0;font:20px Arial}#root{display:flex;flex-direction:column;width:100%;height:240px;padding:20px}#fluid{max-width:100%;height:20px}#minimum{width:20px;min-width:50%;height:20px}#absolute,#borderbox{width:20px;min-width:2em;max-width:8em;height:20px;padding:4px;border:2px solid #111}#absolute{box-sizing:content-box}#pixels{width:20px;min-width:24px;max-width:96px;height:20px;padding:4px;border:2px solid #111;box-sizing:content-box}#fraction{width:50%;height:20px}</style><main id="root"><div id="fluid"></div><div id="minimum"></div><div id="absolute"></div><div id="borderbox"></div><div id="pixels"></div><div id="fraction"></div></main>`,
+    { rootSelector: "#root", width: 640, height: 240 },
+  );
+  const value = normalizeDesignDocument(captured.document);
+  const fluid = byHtmlId(value, "fluid"), minimum = byHtmlId(value, "minimum");
+  assert.equal(fluid.maxWidth, undefined);
+  assert.equal(minimum.minWidth, undefined);
+  assert.deepEqual([byHtmlId(value, "absolute").minWidth, byHtmlId(value, "absolute").maxWidth], [52, 172]);
+  assert.deepEqual([byHtmlId(value, "borderbox").minWidth, byHtmlId(value, "borderbox").maxWidth], [40, 160]);
+  assert.deepEqual([byHtmlId(value, "pixels").minWidth, byHtmlId(value, "pixels").maxWidth], [36, 108]);
+  for (const node of [fluid, minimum])
+    assert(captured.report.warnings.some((warning) => warning.code === "css-size-bound-fixed" && warning.nodeId === node.id));
+  assert(captured.report.warnings.some((warning) => warning.code === "css-percentage-size-fixed" && warning.nodeId === byHtmlId(value, "fraction").id));
+  for (const width of [640, 400]) {
+    value.nodes.find((node) => node.id === "html-viewport").width = width;
+    byHtmlId(value, "root").width = width;
+    applyAllAutoLayouts(value.nodes);
+    assert.equal(fluid.width, width - 40);
+    assert.equal(minimum.width, 300, "Unsupported relative minimum retains measured width");
+    assert.equal(byHtmlId(value, "fraction").width, 300, "Unsupported percentage width retains measured width");
+  }
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});
+
 test("plain HTML paragraphs retain measured wrapping and hug layout across resize, reopen and source edits", async (t) => {
   const f = await fixture(t);
   const captured = await f.capture(
@@ -248,6 +310,60 @@ test("plain HTML paragraphs retain measured wrapping and hug layout across resiz
   assert.equal(result.boldMeasured, true);
   assert.ok(result.boldHeight >= result.changed.height);
   assert.ok(result.nodes.every((node) => node.positioning !== "absolute"));
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("block text uses browser line breaks and moves following blocks after resize and source edits", async (t) => {
+  const f = await fixture(t);
+  const original = "Text wraps across ordinary block flow when the parent frame becomes narrower.";
+  const edited = "Edited text wraps across ordinary block flow and keeps its following editable block below every new line without changing the frame width.";
+  const html = (copy) => `<!doctype html><style>*{box-sizing:border-box}html,body{margin:0;background:white;font:20px/24px Arial;color:#0f172a}#root{width:100%;height:320px;padding:20px;background:#e2e8f0}#card{padding:12px;background:white}h1,p{margin:0;font:20px/24px Arial}h1{margin-bottom:12px}p{margin-top:6px;margin-bottom:16px}#last{height:20px;background:#2563eb}</style><main id="root"><section id="card"><h1>Editable blocks</h1><p id="copy">${copy}</p><div id="last"></div></section></main>`;
+  const captured = await f.capture(html(original), { rootSelector: "#root", width: 640, height: 320 });
+  for (const [width, copy] of [[640, original], [400, original], [400, edited]]) {
+    await f.page.setViewportSize({ width, height: 320 });
+    await f.page.setContent(html(copy));
+    await f.page.evaluate(async () => {
+      await document.fonts.ready;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
+    const source = PngImage.sync.read(await f.page.screenshot());
+    const expectedY = await f.page.locator("#last").evaluate((element) => element.getBoundingClientRect().y);
+    const result = await f.page.evaluate(async ({ input, width, copy }) => {
+      const { normalizeDesignDocument, serializeDesignDocument, exportDesignSvg } = await import("/app/document.mjs");
+      const { applyAllAutoLayouts } = await import("/app/layout.mjs");
+      const value = normalizeDesignDocument(input);
+      const byId = (id, type = "frame") => value.nodes.find((node) =>
+        node.type === type && JSON.parse(node.notes ?? "{}").attributes?.id === id);
+      value.canvas.width = width;
+      value.nodes.find((node) => node.id === "html-viewport").width = width;
+      byId("root").width = width;
+      const text = byId("copy", "text");
+      text.textSource = copy;
+      applyAllAutoLayouts(value.nodes);
+      const saved = serializeDesignDocument(value);
+      const reopened = normalizeDesignDocument(JSON.parse(saved));
+      applyAllAutoLayouts(reopened.nodes);
+      return {
+        svg: exportDesignSvg(value), text: text.text, source: text.textSource,
+        lastY: byId("last").y, stable: saved === serializeDesignDocument(reopened),
+        layout: byId("card").layout,
+        absolute: value.nodes.some((node) => node.layoutPositioning === "absolute"),
+      };
+    }, { input: captured.document, width, copy });
+    assert.equal(result.layout, "vertical");
+    assert.equal(result.absolute, false);
+    assert.equal(result.text.replaceAll("\n", ""), copy);
+    assert.equal(result.source, copy);
+    assert.equal(result.lastY, expectedY);
+    assert.equal(result.stable, true);
+    await f.page.setContent(`<!doctype html><style>html,body{margin:0}svg{display:block}</style>${result.svg}`);
+    const converted = PngImage.sync.read(await f.page.screenshot());
+    let changed = 0;
+    for (let offset = 0; offset < source.data.length; offset += 4)
+      if (source.data.subarray(offset, offset + 4).compare(converted.data.subarray(offset, offset + 4))) changed++;
+    assert.equal(changed, 0, `${width}px ${copy === edited ? "edited" : "original"} pixels`);
+  }
   assert.deepEqual(f.external, []);
   assert.deepEqual(f.errors, []);
 });
