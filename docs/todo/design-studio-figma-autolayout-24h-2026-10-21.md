@@ -577,3 +577,43 @@ build:check 及两插件确定性校验通过。root 另发现 HUG 文字字体 
 严格 0 的浏览器样本，尚未合入，后续仍需真实 Figma 外框缩窄验收。
 第三代理转向 GOV.UK 重复出现的 CSS 各边/内侧边框误差，先提出有界可编辑模型。
 目标继续 active；24 小时截止仍为 2026-10-22 00:31 Asia/Singapore。
+
+### 最外框驱动的真实 Grid、背景导出修复（约 02:47）
+
+`cf0f9cf` 合入 viewport 代理 `3ec8533`：从实际 DOM 捕获根与包含块关系，
+把受支持普通根接到最外框 Fill；保留 body 的固定内边距、固定/最大宽度的安全自动外
+边距，以及可证实 100% 高度链。缺少包含块、裁切选择、定位/变换、相对尺寸等情况
+明确诊断，旧直接 adapter 调用及 includeViewport:false 保持旧契约。
+生产 harness 新增显式 `--resize-mode viewport-only`，旧默认模式保留，报告标明模式。
+13 组浏览器样本×初始/重排/外框缩窄全部严格 0，代理 46 项、1 项实际公开 UI 检查通过；
+root 合并后 37 项适配器/auto-margin/block/Grid/viewport 检查通过。
+真实公共 Checkout/Album 的负外边距、浮动与百分比列等残差仍失败，未改样本 CSS。
+
+首次实机 run `533e6020` / 页 `62:143` 已证明只改外框 640→400 可保持有效
+VERTICAL→GRID、主框 Fill 600→360、x20、单元格 274→154，无 ABSOLUTE。
+但原生导出最外框 PNG 时，透明 viewport 未携带白色页面背景，640/400 分别有
+45,600/31,200 个 RGBA 像素差异；其余布局与颜色、官方导回四次比较均 0。
+失败原始 PNG/回执保留在 `evidence/real-figma/viewport-grid/acceptance-report.json`。
+
+`6f65c42` 将生产捕获的明确背景写到 viewport 自身，旧几何调用仍透明。
+先新增 transfer 背景断言复现失败，再修复；22 项 viewport/adapter 检查通过。
+没有在像素比较中合成白底、忽略 alpha 或放宽阈值。
+新实机 run `f8dd5c58` / 页 `62:148`，相同原始 HTML、同样只编辑最外框宽度，
+两宽原生 PNG 均 **0 像素差异**；官方 JSON 经生产浏览器导回的首次显示及重排
+四次也均 **0**，无警告、外部请求或浏览器错误。
+`evidence/real-figma/viewport-grid-fixed/acceptance-report.json` 保存原生几何与完整计数。
+
+另完成实际渐变意图 run `b9da271f` / 页 `62:138`，生产 main 来自 d89：3 个原生
+GRADIENT_LINEAR，几何差 0，初始官方导回 640 首次显示/重排均 0；原生 PNG 仍
+88,604/max2，严格失败。仅在 Figma 缩到 400 后，固定 200px 的 a 渐变仍 active，
+Fill 的 b 从 384→144 后成为 sourceOnly；竖直 100px 色标主框仍可匹配并保持 active。
+400 原生 PNG 对 HTML 为 54,389/max60，导回对原生 PNG 为 50,796/max2；导回对原始
+CSS 为 22,783/max59。此物理角度限制真实存在，来源提示与 inactive 行为经实机确认，
+没有把来源保留冒充原生响应式绘制一致。
+完整回执在 `evidence/real-figma/css-gradient-intent/acceptance-report.json`。
+以上三个新 relay 全部停止、插件关闭，scratch 原三文件哈希精确恢复，未确认云同步。
+
+接续任务：HTML 省略号代理最终生成内容防护与公开工具复测完成，提交待合入；
+negative-main-gap 代理从 6f65 新隔离分支实现有界 nowrap 有符号主间距，再用透明
+spacer+Fill/AUTO 真子项表达负水平外边距，避免绝对定位；边框代理最小单色内侧/底边
+已为 0/0/0，多色接缝仍有 max1 原始严格失败，正接原生/CanvasKit。目标继续 active。
