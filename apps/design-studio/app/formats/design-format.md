@@ -303,3 +303,13 @@ source; differing exact HTML bytes live in bounded `notes.htmlText.rawSource`.
 Tabs, multiline `pre` ellipsis, generated/rich text, non-left alignment,
 unsupported writing/overflow styles,
 and recovery metadata exceeding the 2000-character note budget are diagnosed.
+
+
+Captured isolated same-direction percentage float columns may map to the existing
+manual Grid tracks/spans (at most24), with FILL column widths and ordinary inner
+Auto Layout. Only a proven empty unpainted zero-height clearfix is omitted.
+Mixed text/float wrapping, shapes, clear on columns, min/max constraints, mixed
+directions and unsupported percentages retain measured geometry with diagnostics.
+Each recovered row explicitly retains only its captured CSS state: native resize
+does not execute source media queries. Separate mobile captures can retain their
+ordinary block flow. This projection adds no document fields or painted children.

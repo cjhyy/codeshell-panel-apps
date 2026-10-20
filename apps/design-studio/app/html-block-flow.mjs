@@ -1,3 +1,5 @@
+import { isHtmlEmptyClear } from "./html-float-columns.mjs";
+
 /* Bounded recovery of the pinned converter's ordinary vertical block stacks. */
 const finite = (value, fallback = 0) => Number.isFinite(value) ? value : fallback;
 const css = (node, key) => String(node.cssLayout?.[key] ?? node.rawStyles?.[key] ?? "").trim().toLowerCase();
@@ -23,7 +25,7 @@ export function htmlBlockHorizontalBleed(child) {
   return { left: -left, right: -right };
 }
 
-export function planHtmlBlockFlow(source, coordinateSpace = "parent-relative", targetOrigin = { x: 0, y: 0 }) {
+export function planHtmlBlockFlow(source, coordinateSpace = "parent-relative", targetOrigin = { x: 0, y: 0 }, { ignoreOuterFloat = false } = {}) {
   if (
     source.nodeType !== "container" ||
     !["block", "flow-root"].includes(source.layout?.display) ||
@@ -31,7 +33,7 @@ export function planHtmlBlockFlow(source, coordinateSpace = "parent-relative", t
     !source.children?.length
   ) return null;
   const reason = (message) => ({ unsupported: message });
-  if (source.transform || !["", "none"].includes(css(source, "float")) ||
+  if (source.transform || (!ignoreOuterFloat && !["", "none"].includes(css(source, "float"))) ||
       !["", "horizontal-tb"].includes(css(source, "writing-mode")) ||
       !["", "ltr"].includes(css(source, "direction")) ||
       !["", "auto", "1"].includes(css(source, "column-count")))
@@ -81,7 +83,7 @@ export function planHtmlBlockFlow(source, coordinateSpace = "parent-relative", t
   if (promoted.size && source.children.some((child) => absolute(child) && !promoted.has(child)))
     return reason("相对 z-index 与绝对覆盖层的绘制顺序需要保留测量布局。");
   const entries = source.children.flatMap((child, index) => {
-    if (promoted.has(child)) return [];
+    if (promoted.has(child) || isHtmlEmptyClear(child)) return [];
     const recovered = replacements.get(child) ?? child;
     return [{ source: recovered, index: replacements.has(child) ? source.children.indexOf(recovered) : index }];
   });

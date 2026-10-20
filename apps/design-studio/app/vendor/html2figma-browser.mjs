@@ -5490,6 +5490,7 @@ var html2figmaCore = (() => {
               "bottom",
               "left",
               "float",
+              "shape-outside",
               "clear",
               "column-count"
             ];

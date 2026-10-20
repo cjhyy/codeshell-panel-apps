@@ -558,11 +558,19 @@ Flex rows/columns map reverse direction, Wrap/Wrap Reverse, axis gaps, four-side
 Min/Max, alignment, distribution, and Fill/Fixed sizing into v3. Grid maps equal computed columns
 and row/column spans; direct absolute/fixed children are excluded from flow and retain measured
 Constraints. Opaque uniform borders remain editable decorations without forcing a manual-layout
-fallback. Unequal Flex grow, floats, unequal Grid tracks, and decoration-heavy controls keep
+fallback. Unequal Flex grow, unsupported floats, unequal Grid tracks, and decoration-heavy controls keep
 measured manual geometry.
 It is not an HTML parser and does not promise fidelity for unsupported visual primitives such as
 raster images, SVG paths, gradients, pseudo-elements, multiple shadows, or four independently
 editable corner radii.
+
+Isolated same-direction percentage float columns can recover a bounded single
+native Grid row (at most 24 tracks), with Fill widths and ordinary inner Auto
+Layout. Mixed text/shape wrapping and unsupported constraints retain measured
+geometry with diagnostics. Every recovered row reports that media queries and
+float wrapping are not retained; recapture after a source CSS breakpoint changes.
+See `docs/todo/design-studio-floated-columns-2026-10-21.md` for strict source
+fixtures and the separate native negative-bleed/viewport limitations.
 
 ## Package boundary
 

@@ -285,3 +285,16 @@ test("standalone CSS border compatibility warnings survive preview and native JS
   assert.deepEqual(f.network, []);
   assert.deepEqual(f.errors, []);
 });
+
+test("standalone float-column compatibility loss survives preview and native JSON import", async (t) => {
+  const f=await fixture(t);
+  await f.frame.locator("#selector").fill("#fixture");
+  await f.frame.locator("#source").fill('<style>#fixture{width:400px;height:240px;display:flow-root}section{float:left;width:66.6666667%;height:100px;background:blue}</style><main id="fixture"><section></section></main>');
+  await f.frame.locator("#preview").click();await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(),/浮动列.*未保留/u);
+  await f.frame.locator("#create").click();await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(),/浮动列.*未保留/u);
+  const requests=await f.page.evaluate(()=>window.requests);assert.equal(requests[0].designData[0].codeshellFloatFallback,true);
+  const again=await f.harness.importDesign(requests[0].designData);assert.equal(again.type,"import-success");assert(again.warnings.some(w=>/浮动列.*未保留/u.test(w)));
+  assert.deepEqual(f.network,[]);assert.deepEqual(f.errors,[]);
+});
