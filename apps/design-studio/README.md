@@ -582,6 +582,12 @@ NBSP and ASCII whitespace provenance stay distinct. Ambiguous sources, table or
 complex inline content and generated controls retain measured geometry with
 diagnostics; see `docs/todo/design-studio-plain-text-flow-2026-10-21.md`.
 
+Ordinary empty blocks retain vertical Auto Layout and physical padding when live
+DOM capture proves there is no text, generated content, control or list marker.
+They keep their original nodes and can participate in Fill sizing without spacer
+layers. Replaced elements, aspect ratios, relative padding/size limits and size
+containment retain measured geometry with explicit conversion boundaries.
+
 ## Package boundary
 
 Renderable code lives under `app/`. The declarative Agent contribution lives

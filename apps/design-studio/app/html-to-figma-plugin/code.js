@@ -5380,6 +5380,9 @@
   var MAX_FIGMA_ASSET_TOTAL_BYTES = 12 * 1024 * 1024;
   var MAX_FIGMA_SOURCE_BYTES = 16 * 1024 * 1024;
 
+  // apps/design-studio/app/html-block-flow.mjs
+  var intrinsicEmptyTags = new Set("input textarea select button option optgroup fieldset legend canvas img svg iframe object embed video audio meter progress details summary dialog table caption colgroup col thead tbody tfoot tr th td".split(" "));
+
   // apps/design-studio/app/css-linear-gradient.mjs
   var fail = (message) => {
     throw new Error(message);

@@ -10,6 +10,44 @@ const zeroOffset = (value) => !value || value === "auto" || /^-?0(?:\.0+)?(?:px)
 
 const pixels = (value) => /^(?:-?(?:\d+(?:\.\d+)?|\.\d+)px|-?0(?:\.0+)?)$/u.test(value) ? Number.parseFloat(value) : NaN;
 
+// Replaced elements and browser controls have intrinsic content even when their
+// DOM children are empty. The capture hint alone must not turn them into Hug.
+const intrinsicEmptyTags = new Set("input textarea select button option optgroup fieldset legend canvas img svg iframe object embed video audio meter progress details summary dialog table caption colgroup col thead tbody tfoot tr th td".split(" "));
+
+function emptyBlockFlow(source, ignoreOuterFloat) {
+  if (source.cssEmptyBlock !== true || !source.semantic || !source.cssLayout ||
+      intrinsicEmptyTags.has(String(source.tag ?? "").toLowerCase()) || source.visible === false ||
+      source.transform || (!ignoreOuterFloat && !["", "none"].includes(css(source, "float"))) ||
+      !["", "none"].includes(css(source, "clear")) ||
+      !["", "static", "relative"].includes(css(source, "position")) ||
+      !["top", "right", "bottom", "left"].every((side) => zeroOffset(css(source, side))) ||
+      !["", "horizontal-tb"].includes(css(source, "writing-mode")) ||
+      !["", "ltr"].includes(css(source, "direction")) ||
+      !["", "auto", "1"].includes(css(source, "column-count")) ||
+      ![source.bounds?.width, source.bounds?.height].every((value) => Number.isFinite(value) && value > 0 && value <= 20000)) return null;
+  if (!["", "auto"].includes(css(source, "aspect-ratio")) ||
+      !["", "none"].includes(css(source, "contain")) ||
+      !["", "visible"].includes(css(source, "content-visibility")) ||
+      !["top", "right", "bottom", "left"].every((side) => {
+        const value = css(source, `padding-${side}`);
+        return !value || Number.isFinite(pixels(value));
+      }) ||
+      !["min-width", "max-width", "min-height", "max-height"].every((key) => {
+        const value = css(source, key);
+        return !value || ["none", "auto"].includes(value) || Number.isFinite(pixels(value));
+      })) return { unsupported: "空块的相对 inset/尺寸约束、宽高比或尺寸包含尚不能随原生 Auto Layout 重排；保留测量布局。" };
+  const padding = Object.fromEntries(["top", "right", "bottom", "left"].map((side) =>
+    [side, finite(source.layout?.padding?.[side]) + finite(source.border?.[side]?.width)]));
+  if (Object.values(padding).some((value) => value < 0 || value > 2000) ||
+      padding.left + padding.right > source.bounds.width + .02 ||
+      padding.top + padding.bottom > source.bounds.height + .02) return null;
+  return {
+    entries: [], items: [], promoted: new Set(),
+    paddingTop: padding.top, paddingBottom: padding.bottom,
+    paddingLeft: padding.left, paddingRight: padding.right,
+  };
+}
+
 export function htmlBlockHorizontalBleed(child) {
   const left = pixels(css(child, "margin-left")), right = pixels(css(child, "margin-right"));
   if (![left, right].every(Number.isFinite) || left > 0 || right > 0 || Math.min(left, right) >= 0 ||
@@ -30,8 +68,9 @@ export function planHtmlBlockFlow(source, coordinateSpace = "parent-relative", t
     source.nodeType !== "container" ||
     !["block", "flow-root"].includes(source.layout?.display) ||
     (!source.cssLayout && !inert(source, "margin-wrapper")) ||
-    !source.children?.length
+    !Array.isArray(source.children)
   ) return null;
+  if (!source.children.length) return emptyBlockFlow(source, ignoreOuterFloat);
   const reason = (message) => ({ unsupported: message });
   if (source.transform || (!ignoreOuterFloat && !["", "none"].includes(css(source, "float"))) ||
       !["", "horizontal-tb"].includes(css(source, "writing-mode")) ||

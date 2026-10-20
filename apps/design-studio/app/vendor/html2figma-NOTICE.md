@@ -43,6 +43,13 @@ and main-axis auto margins. Uniform nonnegative flex margins become container
 insets and item/line gaps; unsupported nonuniform or negative margins retain a
 conversion diagnostic rather than claiming preserved Auto Layout behavior.
 
+An element-backed `cssEmptyBlock: true` hint records a live empty ordinary block:
+no child elements, only collapsible ASCII whitespace, and no generated before,
+after, form, or list-marker content. The v3 adapter can retain its padding as
+vertical Auto Layout without mistaking an empty converted child list for proof
+that captured text was absent. Intrinsic controls and replaced elements remain
+measured; the hint does not modify the immutable upstream source or DOM.
+
 Grid capture keeps original direct items outside the upstream synthetic Flex
 row/cell postprocessor. Each item still uses the pinned converter, with measured
 parent-relative bounds; anonymous text retains its actual parent's text style.

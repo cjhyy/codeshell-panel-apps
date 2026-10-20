@@ -9,6 +9,7 @@ type CapturedNode = DesignNode & {
   cssLayout?: Record<string, string>;
   cssBackground?: Record<string, string>;
   cssText?: Record<string, string>;
+  cssEmptyBlock?: true;
 };
 type TypedStyleElement = Element & {
   computedStyleMap?(): { get(property: string): { toString(): string } | undefined };
@@ -62,6 +63,13 @@ function captureLayoutValues(tree: RenderNode) {
             "row-gap",
             "column-gap",
             "box-sizing",
+            "padding-top",
+            "padding-right",
+            "padding-bottom",
+            "padding-left",
+            "contain",
+            "contain-intrinsic-size",
+            "content-visibility",
 
             "display",
             "position",
@@ -110,10 +118,26 @@ export function convert(
   const gridSources = new Set<object>();
   const corners = new Map<object, string[]>();
   const textIntents = new Map<object, Record<string, string>>();
+  const emptyBlocks = new Set<object>();
   const captureSvg = (node: RenderNode) => {
     if (node.nodeType === "element" && node.metadata?.semantic &&
         node.domNode instanceof Element && !node.metadata.isPseudoElement && !node.metadata.isFormContent)
       options.onElement?.(node.metadata.semantic.semanticId ?? "", node.domNode);
+    // An empty converted child list can also mean discarded text or generated
+    // content. Only the live DOM can establish an ordinary empty block.
+    if (node.nodeType === "element" && node.metadata?.semantic &&
+        node.domNode instanceof Element && node.computedStyle &&
+        !node.metadata.isPseudoElement && !node.metadata.isFormContent && !node.metadata.listMarker &&
+        ["block", "flow-root"].includes(node.computedStyle.display) &&
+        node.domNode.childElementCount === 0 &&
+        !/[^\t\n\f\r ]/u.test(node.domNode.textContent ?? "") &&
+        ["normal", "nowrap"].includes(node.computedStyle.whiteSpace)) {
+      const element = node.domNode;
+      const window = element.ownerDocument.defaultView;
+      if (window && ["::before", "::after"].every((pseudo) =>
+        ["none", "normal"].includes(window.getComputedStyle(element, pseudo).content)))
+        emptyBlocks.add(node.metadata.semantic);
+    }
     if (
       node.metadata?.semantic &&
       ["grid", "inline-grid"].includes(node.computedStyle?.display ?? "")
@@ -169,6 +193,8 @@ export function convert(
       node.cssLayout = { ...node.cssLayout, "--codeshell-grid-legacy": "synthetic" };
     if (node.nodeType === "container" && node.semantic && textIntents.has(node.semantic))
       node.cssText = textIntents.get(node.semantic)!;
+    if (node.nodeType === "container" && node.semantic && emptyBlocks.has(node.semantic))
+      node.cssEmptyBlock = true;
     if (node.nodeType !== "text" && node.semantic && corners.has(node.semantic))
       node.cssBorderRadii = corners.get(node.semantic)!;
     if (node.nodeType !== "text" && node.semantic && backgrounds.has(node.semantic))

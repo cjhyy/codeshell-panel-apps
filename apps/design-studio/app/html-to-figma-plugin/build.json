@@ -67,13 +67,13 @@
     },
     {
       "path": "code.js",
-      "bytes": 225039,
-      "sha256": "b09875be432b87194cd1167e63a1fbbefe831352baaf410d303acc0d76a33826"
+      "bytes": 225338,
+      "sha256": "0fc2e0a88520d97f719042dc6038f15916e82aa46914abe2a64d629224b849a3"
     },
     {
       "path": "ui.html",
-      "bytes": 343077,
-      "sha256": "cfa4e2f76c39829e49d1b279a64cad60e9ff60891512c8a547b61d7b88bbac90"
+      "bytes": 344597,
+      "sha256": "b325945dfbfcc9c45dec1cdd59e79c3b8e1a24c6cfe81e6315f275082fc35e94"
     },
     {
       "path": "README.md",
