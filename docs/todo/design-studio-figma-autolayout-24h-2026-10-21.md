@@ -1028,3 +1028,41 @@ getter检查全部delta0。设置maxB1再minB56会把max自动抬至56，反向�
 定制main研究证据在 `native-grid-text-intrinsic-height-analysis/`，与未修改main的上述
 生产验收分别记录。研究插件关闭、relay正常exit0、三注册文件精确恢复。
 当前仍62:858/viewport62:859宽640。24小时目标持续active，截止10月22日00:31不变。
+
+
+### 空状态节点真实互转、完整检查及 Bootstrap 样本（约 04:54）
+
+`8301513` 正常合入 `e36636a`：只有真实DOM证明为空、所有背景/边框/阴影/outline/
+filter/backdrop/blend/appearance/scrollbar等都明确无绘制的ABS节点，才能不再阻断
+旁边的普通 relative z-index 流恢复；节点本身、ID、ABS、几何、可见状态均保留。
+两位独立源码审查通过，作者69项CPU检查与root新组合11项检查通过。
+W3C导航得到Fill、header恢复Hug，但整页53958/75772/235427，窄屏比234531差896；
+冻结media的768也86411→87326差915。此结构改进没有标记整页像素通过。
+
+新真实生产 run `070581c8`，页62:921/viewport62:922：7个实际来源节点含viewport，
+其中唯一原生ABS仍为无绘制1×1状态span，普通nav/after全AUTO Fill，header真Hug。
+640→400→640只改外框，所有原生/官方几何delta0；两宽原生PNG、导回、导回重排共
+**6次changedPixels0/max0、无警告**，证据 `real-figma/empty-overlay/acceptance-report.json`。
+main仍为0295f827…未修改，仅生产UI验收桥附加通信；插件关闭、relay正常exit0，三份
+已注册文件精确恢复。当前页62:921/viewport62:922宽640，没有删除原页面。
+
+`8301513` 完整组合门禁已完成，运行前后全部app文件SHA相同、HEAD相同：
+主测试 **536总/535通过/1既有跳过/0失败**（138705ms），UI测试
+**103总/102通过/1既有跳过/0失败**（107643ms）。完整命令、日志SHA、前后文件SHA在
+`round20-full-gates-receipt.json`；旧GPU文字858/max1与其它整页差异并未因此宣称解决。
+
+又冻结官方 [Bootstrap Pricing](https://getbootstrap.com/docs/5.3/examples/pricing/) 和
+[Checkout](https://getbootstrap.com/docs/5.3/examples/checkout/) 原始HTML/CSS/SVG字节，
+仅移除脚本/非绘制链接、替换资源URL，不添加内容/CSS规则或提交表单。1280/768各自
+原URL归档重放↔本地资源版严格0像素且DOM几何相同、0未知请求/页面错误。
+生产转换（8301513，CPU）Pricing266节点：**62468/71172/196106**像素，原生预检因
+-13间距会被1px子项钳制而拒绝；Checkout255节点：**41042/287339/266388**，原生仅
+prepared且发现原始流变ABS，均strict=false，尚未真实原生执行。
+证据 `web-corpus/bootstrap-pages-result.json`、各自raw/local/receipt/equivalence目录。
+
+Checkout已定位Flex交叉轴margin丢失：原转换在align-items normal/center等非stretch
+情况下丢弃cross margin并清空源margin；Typed OM原始16/48px仍在。最小6项固定100px
+真实Flex换行复现首次0、重排19840、窄屏25200。准备恢复仅实际语义Flex父框/直接
+语义子项的可靠固定px意图，合成margin-wrapper不重复套用；混合主/交叉margin已被
+独立审查识别需诊断或另证，百分比子项尺寸仍保持保守。尚未提交此后续产品修改。
+24小时目标继续active，截止10月22日00:31 Asia/Singapore不变。
