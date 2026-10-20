@@ -41,9 +41,9 @@ export function planHtmlBlockFlow(source, coordinateSpace = "parent-relative", t
   if (source.children.length === 1 && source.children[0].nodeType === "text") return null;
   const local = (child, axis) => finite(child.bounds?.[axis]) -
     (coordinateSpace === "root-relative" ? finite(source.bounds?.[axis]) : 0);
-  // Native strokes do not consume the frame's content area. CSS borders do,
-  // so their layout inset belongs in native padding until stroke semantics
-  // can represent that separately.
+  // Canonical padding is the effective CSS content inset, including borders.
+  // Native export configures inside-stroke inclusion and projects this inset
+  // back to the corresponding raw SDK padding.
   const padding = Object.fromEntries(["top", "right", "bottom", "left"].map((side) =>
     [side, finite(source.layout?.padding?.[side]) + finite(source.border?.[side]?.width)]));
   const contentWidth = finite(source.bounds?.width) - padding.left - padding.right;
