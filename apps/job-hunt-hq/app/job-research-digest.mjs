@@ -71,7 +71,10 @@ export function jobEvidenceMarkdown(comparison) {
   return lines.join("\n");
 }
 
-export function buildJobResearchDigest(snapshot = {}, { now = new Date().toISOString(), since = "", limit = 20 } = {}) {
+export const JOB_DIGEST_BYTE_BUDGET = 256 * 1024;
+
+export function buildJobResearchDigest(snapshot = {}, { now = new Date().toISOString(), since = "", limit = 20, format } = {}) {
+  if (format !== undefined && !["json", "markdown"].includes(format)) throw new Error("不支持的摘要格式");
   if (!Number.isFinite(Date.parse(now)) || (since && !Number.isFinite(Date.parse(since))) || !Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error("摘要需要有效时间及 1–50 的 limit");
   const jobs = records(snapshot.jobs), leads = records(snapshot.jobLeads), research = records(snapshot.jobResearch);
   const rankedBase = jobs.map((job, sourceIndex) => {
@@ -85,9 +88,22 @@ export function buildJobResearchDigest(snapshot = {}, { now = new Date().toISOSt
   }).sort((a, b) => Number(b.verification.state === "verified_live") - Number(a.verification.state === "verified_live") || Number(Boolean(b.research?.sources.length)) - Number(Boolean(a.research?.sources.length)) || String(a.jobId).localeCompare(String(b.jobId)));
   const displayed = rankedBase.slice(0, limit);
   const ranked = displayed.map(({ sourceIndex, ...item }) => ({ ...item, fit: jobEvidenceComparison(jobs[sourceIndex], snapshot, { maxEvidence: 6, maxRequirements: 6, maxQuote: 180, referenceChars: 720 }) }));
+  const confirmedEvidence = jobEvidenceComparison({}, snapshot, { maxEvidence: 6, maxRequirements: 0, maxQuote: 180 }).evidence.map((item, index) => ({ evidenceId: `e${index + 1}`, ...item }));
+  const evidenceId = item => confirmedEvidence.find(source => source.kind === item.kind && source.id === item.id && source.field === item.field && source.quote === item.quote)?.evidenceId;
+  for (const job of ranked) {
+    job.fit.evidence = job.fit.evidence.map(item => evidenceId(item));
+    for (const requirement of job.fit.requirements) requirement.evidence = requirement.evidence.map(item => ({ evidenceId: evidenceId(item), sharedTerms: item.sharedTerms }));
+  }
   const counts = { formal: jobs.length, leads: leads.length, companyResearch: research.length, withCompanySources: rankedBase.filter(item => item.research?.sources.length).length, verifiedLive: rankedBase.filter(item => item.verification.state === "verified_live").length, unverified: rankedBase.filter(item => item.verification.state === "unverified").length };
-  const result = { format: "codeshell.job-research-digest", version: 1, generatedAt: now, window: { since: since || null, note: since ? "仅按已有时间记录显示变化；未记录的历史未知" : "当前快照概览；未推测新增数量" }, counts, limits: { sourcesPerCompany: 3, changesPerJob: 5, jobFieldChars: JOB_DISPLAY_CAPS, historyScope: "仅本次展示的岗位，未展示记录保持未知", note: "长字段为展示片段；完整资料请通过 get_job_search_context 按岗位ID读取。" }, profile: { status: jobEvidenceComparison({}, snapshot, { maxEvidence: 1, maxRequirements: 0 }).status }, ranked, omittedJobs: Math.max(0, rankedBase.length - limit), leads: leads.slice(0, limit).map(item => ({ ...digestFields(item), missingFields: records(item.missingFields).slice(0, 20).map(field => cut(field, 80)), omittedMissingFields: Math.max(0, records(item.missingFields).length - 20) })), changes: displayed.flatMap(item => records(item.changes).filter(change => !since || Date.parse(change.at) >= Date.parse(since)).map(change => ({ jobId: item.jobId, ...change }))), excluded: displayed.filter(item => item.exclusion).map(item => ({ jobId: item.jobId, ...item.exclusion })), nextSteps: ["通过真实官网/ATS/浏览器读取岗位在招语义，保留 URL、访问时间和原文；HTTP 200 不能证明在招。", "补充并由本人确认经历/问答，再复核 JD 原句。", "公司来源不足时补充调研；岗位研究与投递独立。"], disclaimer: "CLI 仅结构化读写与报告，不自动抓取或核验网页；未投递、未联系任何人。线索不计为正式岗位。" };
+  const result = { format: "codeshell.job-research-digest", version: 1, generatedAt: now, window: { since: since || null, note: since ? "仅按已有时间记录显示变化；未记录的历史未知" : "当前快照概览；未推测新增数量" }, counts, limits: { sourcesPerCompany: 3, changesPerJob: 5, jobFieldChars: JOB_DISPLAY_CAPS, historyScope: "仅本次展示的岗位，未展示记录保持未知", note: "长字段为展示片段；完整资料请通过 get_job_search_context 按岗位ID读取。" }, confirmedEvidence, profile: { status: jobEvidenceComparison({}, snapshot, { maxEvidence: 1, maxRequirements: 0 }).status }, ranked, omittedJobs: Math.max(0, rankedBase.length - limit), leads: leads.slice(0, limit).map(item => ({ ...digestFields(item), missingFields: records(item.missingFields).slice(0, 20).map(field => cut(field, 80)), omittedMissingFields: Math.max(0, records(item.missingFields).length - 20) })), changes: displayed.flatMap(item => records(item.changes).filter(change => !since || Date.parse(change.at) >= Date.parse(since)).map(change => ({ jobId: item.jobId, ...change }))), excluded: displayed.filter(item => item.exclusion).map(item => ({ jobId: item.jobId, ...item.exclusion })), nextSteps: ["通过真实官网/ATS/浏览器读取岗位在招语义，保留 URL、访问时间和原文；HTTP 200 不能证明在招。", "补充并由本人确认经历/问答，再复核 JD 原句。", "公司来源不足时补充调研；岗位研究与投递独立。"], disclaimer: "CLI 仅结构化读写与报告，不自动抓取或核验网页；未投递、未联系任何人。线索不计为正式岗位。" };
+  result.limits.totalByteBudget = JOB_DIGEST_BYTE_BUDGET;
+  result.limits.byteBudgetScope = "UTF-8 JSON.stringify(report) plus standalone Markdown bytes";
+  result.omittedLeads = Math.max(0, leads.length - result.leads.length);
+  result.budgetOmittedJobs = 0;
+  result.budgetOmittedLeads = 0;
+  const renderMarkdown = () => {
   const md = ["# 岗位研究日报", `生成时间：${esc(now)}`, `正式岗位 ${counts.formal} · 待补全线索 ${counts.leads} · 公司调研 ${counts.companyResearch} · 有在招证据 ${counts.verifiedLive} · 未核验 ${counts.unverified}`, "\n## 资料与未知约束", result.profile.status === "insufficient_profile" ? "无法个性化：尚无明确已确认的候选人资料。" : "仅使用当前已确认的经历/问答；字面证据不代表满足岗位要求。", "工作地点接受度、薪资期望、许可及到岗时间：未知。", "\n## 建议复核顺序及依据"];
+  for (const item of result.confirmedEvidence) md.push(`- [${item.evidenceId}] ${esc(item.kind)} [${esc(item.id)} / ${esc(item.field)}]：${esc(item.quote)}`);
   for (const job of result.ranked) {
     md.push(`### ${esc(job.company)} · ${esc(job.title)} [${esc(job.jobId)}]`, `来源：${esc(job.source)}；URL：${esc(job.url)}；获取：${esc(job.fetchedAt)}；发布：${esc(job.publishedAt)}`, `核验：${job.verificationLabel}；核验时间：${esc(job.verification.lastCheckedAt || "未知")}`, `核验原文：${esc(job.verification.evidenceExcerpt || "未知")}；核验 URL：${esc(job.verification.checkedUrl || "未知")}`, `复核依据：${job.rankKeys.join("；")}`, job.fit.explanation, `公司调研：${job.research ? `${esc(job.research.id)}，${esc(job.research.updatedAt)}` : "未知/未保存"}`);
     if (job.research) md.push(`已保存公司调研摘要（请复核来源）：${esc(job.research.summary || "未知")}${job.research.summaryTruncated ? "（摘要已截取，完整内容按岗位ID读取）" : ""}`);
@@ -99,6 +115,23 @@ export function buildJobResearchDigest(snapshot = {}, { now = new Date().toISOSt
   md.push("\n## 变化与排除", result.omittedJobs ? `另有 ${result.omittedJobs} 个岗位及其变化/排除记录未展开。` : "仅展示已有记录，不推断缺失历史。", result.changes.length ? result.changes.map(change => `- ${esc(change.jobId)}：${esc(JSON.stringify(change))}`).join("\n") : "变化记录未知；不能据此断言没有变化。", result.excluded.length ? result.excluded.map(item => `- ${esc(item.jobId)}：${esc(item.reasonCode || item.note || "原因未知")}`).join("\n") : "排除信息未知；没有自动规则筛除。", "\n## 待补全线索");
   for (const lead of result.leads) md.push(`- ${esc(lead.company)} · ${esc(lead.title)} [${esc(lead.id)}]：${esc(lead.url)}；获取 ${esc(lead.fetchedAt)}；缺少 ${esc(lead.missingFields.join("、") || "未知")}`);
   md.push("\n## 下一步", ...result.nextSteps.map(item => `- ${item}`), result.disclaimer);
-  result.markdown = md.join("\n");
+  md.push(`展示省略：岗位 ${result.omittedJobs}，线索 ${result.omittedLeads}；其中总字节预算省略岗位 ${result.budgetOmittedJobs}，线索 ${result.budgetOmittedLeads}。`);
+  return md.join("\n");
+  };
+  const bytes = value => new TextEncoder().encode(value).byteLength;
+  for (;;) {
+    result.markdown = renderMarkdown();
+    if (bytes(JSON.stringify(result)) + bytes(result.markdown) <= JOB_DIGEST_BYTE_BUDGET) break;
+    if (result.ranked.length) {
+      result.ranked.pop(); result.omittedJobs++; result.budgetOmittedJobs++;
+      const kept = displayed.slice(0, result.ranked.length);
+      result.changes = kept.flatMap(item => records(item.changes).filter(change => !since || Date.parse(change.at) >= Date.parse(since)).map(change => ({ jobId: item.jobId, ...change })));
+      result.excluded = kept.filter(item => item.exclusion).map(item => ({ jobId: item.jobId, ...item.exclusion }));
+    } else if (result.leads.length) {
+      result.leads.pop(); result.omittedLeads++; result.budgetOmittedLeads++;
+    } else throw new Error("摘要固定内容超出字节预算");
+  }
+  if (format === "json") { const { markdown, ...json } = result; return json; }
+  if (format === "markdown") return { format: result.format, version: result.version, counts, limits: result.limits, omittedJobs: result.omittedJobs, omittedLeads: result.omittedLeads, budgetOmittedJobs: result.budgetOmittedJobs, budgetOmittedLeads: result.budgetOmittedLeads, markdown: result.markdown };
   return result;
 }

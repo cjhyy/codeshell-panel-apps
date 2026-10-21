@@ -9,6 +9,32 @@ import { cli, run, tempProject, fileInventory } from "./fixtures/headless-runtim
 
 import { description, now, ctx, jobInput, researchInput } from "./fixtures/job-research-data.mjs";
 
+test("limit 50 multibyte report obeys combined byte budget and shares evidence without mutation", () => {
+  const text = "证".repeat(1200);
+  const fields = keys => Object.fromEntries(keys.split(" ").map(key => [key, text]));
+  const snapshot = {
+    jobs: Array.from({ length: 50 }, (_, i) => ({ ...fields("company title url source fetchedAt publishedAt"), id: `job-${i}`, description: Array(6).fill(`TypeScript ${text}`).join("\n"), verification: { state: "closed", ...fields("checkedUrl lastCheckedAt method sourceKind evidenceExcerpt notes") }, changeLog: Array.from({ length: 5 }, () => ({ ...fields("at via"), fields: Array(12).fill(text) })), exclusion: fields("reasonCode note decidedAt source") })),
+    careerQa: Array.from({ length: 6 }, (_, i) => ({ id: `qa-${i}`, status: "confirmed", answer: `TypeScript ${text}` })),
+  };
+  snapshot.jobResearch = snapshot.jobs.map(job => ({ jobId: job.id, ...fields("id updatedAt"), company: { summary: text }, sources: Array.from({ length: 3 }, () => fields("kind title url accessedAt")) }));
+  snapshot.jobLeads = snapshot.jobs.map(job => ({ ...job, missingFields: Array(20).fill(text) }));
+  const before = structuredClone(snapshot);
+  const report = buildJobResearchDigest(snapshot, { now, limit: 50 });
+  assert.ok(Buffer.byteLength(JSON.stringify(report)) + Buffer.byteLength(report.markdown) <= report.limits.totalByteBudget);
+  assert.ok(report.budgetOmittedJobs > 0);
+  assert.equal(report.omittedJobs, 50 - report.ranked.length);
+  assert.equal(report.omittedLeads, 50 - report.leads.length);
+  assert.equal(report.confirmedEvidence.length, 6);
+  for (const job of report.ranked) {
+    assert.deepEqual(job.fit.evidence, report.confirmedEvidence.map(item => item.evidenceId));
+    for (const requirement of job.fit.requirements) for (const ref of requirement.evidence) {
+      assert.ok(report.confirmedEvidence.some(item => item.evidenceId === ref.evidenceId));
+      assert.equal(ref.quote, undefined);
+    }
+  }
+  assert.deepEqual(snapshot, before);
+});
+
 test("pure job routing preserves completeness, URL dedupe and stable promotion without mutating caller", () => {
   const original = emptyProjectSnapshot(), before = structuredClone(original);
   const first = prepareJobOpportunities(original, { jobs: [{ ...jobInput, jd_completeness: "partial" }] }, ctx);
@@ -78,6 +104,12 @@ test("public CLI performs research writes, read-only digest and concurrent saves
   await run(project, "save_job_research", { ...researchInput, job_id: actualJob.id });
   const before = await fileInventory(project), digest = (await run(project, "get_job_research_digest", { now })).json.result;
   assert.equal(digest.counts.formal, 2); assert.equal(digest.counts.companyResearch, 1); assert.deepEqual(await fileInventory(project), before);
+  const jsonOnly = (await run(project, "get_job_research_digest", { now, format: "json" })).json.result;
+  assert.ok(jsonOnly.ranked); assert.equal(jsonOnly.markdown, undefined);
+  const markdownOnly = (await run(project, "get_job_research_digest", { now, format: "markdown" })).json.result;
+  assert.match(markdownOnly.markdown, /岗位研究日报/); assert.equal(markdownOnly.ranked, undefined);
+  assert.deepEqual(markdownOnly.counts, jsonOnly.counts);
+  assert.deepEqual(await fileInventory(project), before);
   await writeFile(join(project, "job-hunt-panel.json"), '{"schemaVersion":2,"jobs":"bad"}');
   const broken = await readFile(join(project, "job-hunt-panel.json"), "utf8");
   const result = await run(project, "save_job_opportunities", { jobs: [input] }, { expectedExit: 1 });
@@ -93,7 +125,7 @@ test("custom provider identity is identical in Panel/CLI contexts and digest evi
   snapshot.careerEpisodes = Array.from({ length: 100 }, (_, i) => ({ id: `episode-${i}`, status: "confirmed", myRole: "TypeScript ".repeat(1000) }));
   snapshot.jobs = Array.from({ length: 80 }, (_, i) => ({ ...a.snapshot.jobs[0], id: `job-${i}`, description: ("TypeScript ".repeat(80) + "\n").repeat(20) }));
   const digest = buildJobResearchDigest(snapshot, { now, limit: 50 });
-  assert.equal(digest.omittedJobs, 30);
+  assert.equal(digest.omittedJobs, 80 - digest.ranked.length);
   assert.ok(Buffer.byteLength(JSON.stringify(digest)) < 1500000);
   for (const fit of digest.ranked.map(item => item.fit)) assert.ok(fit.omittedEvidence > 0);
 });
