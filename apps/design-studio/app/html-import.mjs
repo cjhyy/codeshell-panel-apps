@@ -3,6 +3,7 @@ import { captureHtmlToDesign, hangingBaselineOffset, parseCssColor } from "./htm
 import { captureHtmlViewportRelation } from "./html-viewport-flow.mjs";
 import { convertToDesignDSL, HTML2FIGMA_PROVENANCE } from "./vendor/html2figma-browser.mjs";
 import { designNodeToV3 } from "./design-node-adapter.mjs";
+import { createHtmlAutoMarginCapture } from "./html-auto-margin-distribution.mjs";
 import { htmlTextLineHeightRatio } from "./html-line-height.mjs";
 import {
   isHtmlAnchorHref,
@@ -642,6 +643,7 @@ export async function captureWorkspaceHtmlResult({
       options.onSyntheticNode = (node) => syntheticFlowIds.add(node.id);
       options.onRecoveredFlow = (proof) => layoutFlowCandidates.push(proof);
     }
+    options.captureAutoMarginPlan = createHtmlAutoMarginCapture({ tree, root, elements, ambiguousElements });
     const result = await designNodeToV3(tree, options);
     alignHtmlTextBaselines(result.document, frameDocument);
     const warn = (code, nodeId, message) => {
