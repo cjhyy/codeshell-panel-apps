@@ -350,6 +350,16 @@ export async function designNodeToV3(tree, options = {}) {
       throw new Error("HTML 转换后的图层超过 10,000 个");
     return nodeSurface(id, type, name, geometry);
   };
+  const syntheticBase = (...args) => {
+    const node = base(...args);
+    options.onSyntheticNode?.(node);
+    return node;
+  };
+  const syntheticSurface = (...args) => {
+    const node = nodeSurface(...args);
+    if (node.type === "frame") options.onSyntheticNode?.(node);
+    return node;
+  };
   const styleSurface = (source, node) => {
     const layers = source.background?.layers ?? [];
     const solid = layers.find((layer) => layer.type === "color" && finite(layer.color?.a, 1) > 0);
@@ -864,7 +874,7 @@ export async function designNodeToV3(tree, options = {}) {
         node.id,
         "自动外边距包装框使用导入时的内容最小尺寸；编辑 Hug 内容后需要核对该最小尺寸。",
       );
-    const wrapper = base(`${node.id}-auto-margin`, "frame", `${node.name} auto margins`, {
+    const wrapper = syntheticBase(`${node.id}-auto-margin`, "frame", `${node.name} auto margins`, {
       x: horizontal ? node.x : parent.x + paddingStart,
       y: horizontal ? parent.y + paddingStart : node.y,
       width: horizontal
@@ -923,7 +933,7 @@ export async function designNodeToV3(tree, options = {}) {
     if (item.bleed) {
       const magnitude = Math.max(item.bleed.left, item.bleed.right) + 1;
       const width = Math.max(1, parent.width - (parent.paddingLeft ?? parent.padding ?? 0) - (parent.paddingRight ?? parent.padding ?? 0));
-      const wrapper = base(`${node.id}-horizontal-bleed`, "frame", `${node.name} horizontal margins`, {
+      const wrapper = syntheticBase(`${node.id}-horizontal-bleed`, "frame", `${node.name} horizontal margins`, {
         x: parent.x + (parent.paddingLeft ?? parent.padding ?? 0), y: node.y, width, height: node.height,
       });
       const spacer = (side, size, x) => base(`${node.id}-bleed-${side}`, "rectangle", `Horizontal margin ${side}`, { x, y: node.y, width: size, height: 1 });
@@ -936,7 +946,7 @@ export async function designNodeToV3(tree, options = {}) {
       node = wrapper;
     }
     if (!gap && !overlap) return node;
-    const wrapper = base(`${node.id}-block-spacing`, "frame", `${node.name} block spacing`, {
+    const wrapper = syntheticBase(`${node.id}-block-spacing`, "frame", `${node.name} block spacing`, {
       x: node.x, y: node.y - gap, width: node.width,
       height: Math.max(1, node.height + gap + overlap),
     });
@@ -1320,7 +1330,7 @@ export async function designNodeToV3(tree, options = {}) {
       };
       shift(converted);
     }
-    const wrapper = base("html-viewport", "frame", "HTML viewport", {
+    const wrapper = syntheticBase("html-viewport", "frame", "HTML viewport", {
       x: 0,
       y: 0,
       width: viewportWidth,
@@ -1354,7 +1364,7 @@ export async function designNodeToV3(tree, options = {}) {
     }
     roots = [wrapper];
   }
-  const rebasedNodeCount = applyHtmlBlockInsets(roots, blockInsetCandidates, nodeSurface, warn, MAX_DESIGN_NODES_PER_PAGE);
+  const rebasedNodeCount = applyHtmlBlockInsets(roots, blockInsetCandidates, syntheticSurface, warn, MAX_DESIGN_NODES_PER_PAGE);
   if (rebasedNodeCount !== null) importedNodes = rebasedNodeCount;
   const rootColor = tree.background?.layers?.find((layer) => layer.type === "color")?.color;
   const background =

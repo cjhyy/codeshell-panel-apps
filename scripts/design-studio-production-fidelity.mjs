@@ -1,3 +1,4 @@
+import { freezeHtmlFlowObligations, evaluateHtmlFlowAudit } from "../apps/design-studio/app/html-flow-audit.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile, mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
@@ -263,6 +264,7 @@ export async function runProductionFidelity({
             readText: async (path) => window.__fidelityReadText(path),
             ...(local ? { readAsset: async (path) => window.__fidelityReadAsset(path) } : {}),
             rootSelector,
+            includeFlowAudit: true,
             viewportWidth: width,
             viewportHeight: height,
           });
@@ -321,37 +323,9 @@ export async function runProductionFidelity({
         JSON.stringify(prepared.transfer, null, 2),
       );
       const main = document.nodes.find((node) => node.parentId === "html-viewport");
-      const sourceNodes = document.nodes
-        .flatMap((node) => {
-          try {
-            return [{ id: node.id, selector: JSON.parse(node.notes).cssSelector }];
-          } catch {
-            return [];
-          }
-        })
-        .filter((node) => node.selector);
-      const sourcePositions = await referencePage.evaluate(
-        (nodes) =>
-          Object.fromEntries(
-            nodes.map((node) => {
-              let element;
-              try {
-                element = document.querySelector(node.selector);
-              } catch {
-                /* Unknown source selector. */
-              }
-              return [node.id, element ? getComputedStyle(element).position : null];
-            }),
-          ),
-        sourceNodes,
-      );
-      const flow = document.nodes.filter(
-        (node) =>
-          node.parentId &&
-          node.parentId !== "html-viewport" &&
-          sourcePositions[node.id] &&
-          !["absolute", "fixed"].includes(sourcePositions[node.id]),
-      );
+      const flowObligations = freezeHtmlFlowObligations(captured.report.flowObligations);
+      await writeFile(join(directory, "flow-obligations.json"), JSON.stringify(flowObligations, null, 2) + "\n");
+      const sourcePositions = Object.fromEntries(flowObligations.bindings.map(binding => [binding.designId, binding.position]));
       const semanticIssues = [];
       if (nativeTransferError) semanticIssues.push(`Native transfer rejected: ${nativeTransferError.message}`);
       if (
@@ -360,8 +334,6 @@ export async function runProductionFidelity({
           main.layout === "none")
       )
         semanticIssues.push("Source flex/grid root lost Auto Layout");
-      if (flow.some((node) => node.layoutPositioning === "absolute"))
-        semanticIssues.push("Flow children became absolute");
       const result = {
         id: fixture.id,
         nodes: document.nodes.length,
@@ -380,6 +352,7 @@ export async function runProductionFidelity({
             }
           : {}),
         comparisons: [],
+        flowAudits: [],
       };
       for (const [mode, frameWidth] of [
         ["imported", width],
@@ -390,6 +363,9 @@ export async function runProductionFidelity({
           mode === "imported"
             ? document
             : await resizeDocument(page, document, frameWidth, main?.id, resizeMode);
+        const flowAudit = evaluateHtmlFlowAudit(candidate, flowObligations);
+        result.flowAudits.push({ mode, ...flowAudit });
+        if (!flowAudit.passed) semanticIssues.push(`${mode}: source flow audit ${flowAudit.status} (${flowAudit.failures} broken, ${flowAudit.unresolved} unresolved relationships)`);
         await page.setViewportSize({ width: frameWidth, height });
         let source = original;
         if (mode === "narrow") {

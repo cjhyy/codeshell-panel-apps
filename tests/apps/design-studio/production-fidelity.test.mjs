@@ -68,6 +68,7 @@ test("production gate preserves authored overlays without mistaking them for deg
   });
   assert.equal(result.passed, true);
   assert.deepEqual(result.cases[0].semanticIssues, []);
+  assert.deepEqual(result.cases[0].flowAudits.map(audit => [audit.mode, audit.status]), [["imported", "PASS"], ["relayout", "PASS"], ["narrow", "PASS"]]);
   assert.deepEqual(result.cases[0].nativeTransfer, { supported: true, status: "prepared", stage: "production-v3-transfer" });
   assert.equal(JSON.parse(await readFile(join(output, "authored-overlay/figma-transfer.json"), "utf8")).format, "codeshell.figma.transfer");
   assert.ok(Object.values(result.cases[0].sourcePositioning).includes("absolute"));

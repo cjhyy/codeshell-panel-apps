@@ -1,3 +1,4 @@
+import { captureHtmlFlowObligations } from "./html-flow-audit.mjs";
 import { captureHtmlToDesign, hangingBaselineOffset, parseCssColor } from "./html-capture.mjs";
 import { captureHtmlViewportRelation } from "./html-viewport-flow.mjs";
 import { convertToDesignDSL, HTML2FIGMA_PROVENANCE } from "./vendor/html2figma-browser.mjs";
@@ -526,12 +527,14 @@ export async function captureWorkspaceHtmlResult({
   sha256Bytes,
   engine = "html2figma",
   includeViewport = true,
+  includeFlowAudit = false,
 }) {
   if (!isSafeHtmlImportPath(sourcePath)) {
     throw new Error("HTML 路径必须是工作区内安全的相对 .html 文件");
   }
   if (typeof readText !== "function") throw new Error("HTML 导入缺少工作区读取能力");
   if (typeof includeViewport !== "boolean") throw new Error("includeViewport 必须为布尔值");
+  if (typeof includeFlowAudit !== "boolean") throw new Error("includeFlowAudit 必须为布尔值");
   if (
     typeof rootSelector !== "string" ||
     !rootSelector.trim() ||
@@ -550,6 +553,7 @@ export async function captureWorkspaceHtmlResult({
   }
 
   if (!["html2figma", "measured"].includes(engine)) throw new Error("未知 HTML 转换引擎");
+  if (includeFlowAudit && engine !== "html2figma") throw new Error("includeFlowAudit 需要当前 html2figma 捕获绑定");
   const prepared = await sanitizedHtmlSource(sourcePath, html, readText, readAsset);
   const frame = captureFrame(viewportWidth, viewportHeight);
   const loaded = waitForFrameLoad(frame);
@@ -610,11 +614,16 @@ export async function captureWorkspaceHtmlResult({
         resourcePlans: [],
         report: { engine, warnings: prepared.warnings },
       };
-    const elements = new Map();
+    const elements = new Map(), ambiguousElements = new WeakSet();
     const tree = convertToDesignDSL(root, { onElement: (semanticId, element) => {
       if (element.ownerDocument !== frameDocument || !root.contains(element)) return;
       if (!elements.has(semanticId)) elements.set(semanticId, element);
-      else if (elements.get(semanticId) !== element) elements.set(semanticId, null);
+      else if (elements.get(semanticId) !== element) {
+        const previous = elements.get(semanticId);
+        if (previous) ambiguousElements.add(previous);
+        ambiguousElements.add(element);
+        elements.set(semanticId, null);
+      }
     } });
     if (!tree) throw new Error("html2figma 没有生成可见 DesignNode");
     if (includeViewport) {
@@ -624,8 +633,12 @@ export async function captureWorkspaceHtmlResult({
       const canvasColor = htmlColor?.alpha ? htmlColor : bodyColor;
       options.background = canvasColor?.alpha === 1 ? canvasColor.hex : "#ffffff";
     }
-    const canonicalBySource = new WeakMap();
-    options.onNode = (source, node) => canonicalBySource.set(source, node);
+    const canonicalBySource = new WeakMap(), syntheticFlowIds = new Set();
+    options.onNode = (source, node) => {
+      canonicalBySource.set(source, node);
+      if (source.nodeType === "container" && !source.semantic && node.type === "frame") syntheticFlowIds.add(node.id);
+    };
+    if (includeFlowAudit) options.onSyntheticNode = (node) => syntheticFlowIds.add(node.id);
     const result = await designNodeToV3(tree, options);
     alignHtmlTextBaselines(result.document, frameDocument);
     const warn = (code, nodeId, message) => {
@@ -650,6 +663,12 @@ export async function captureWorkspaceHtmlResult({
         delete table.recovered;
       }
       result.report.tables = tables;
+    }
+    if (includeFlowAudit) {
+      result.report.flowObligations = captureHtmlFlowObligations({
+        root, elements, ambiguousElements, mapping: result.mapping, document: result.document,
+        syntheticIds: syntheticFlowIds,
+      });
     }
     result.report = {
       ...result.report,
