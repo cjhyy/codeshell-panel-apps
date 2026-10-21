@@ -825,18 +825,28 @@ function applyResponsiveText(nodes, containerIds, measurement) {
   const eligibleContainers = containerIds instanceof Set ? containerIds : new Set(containerIds);
   let changed = false;
   for (const node of nodes) {
+    const rangedSource =
+      node.type === "text" && node.textRanges !== undefined && node.textSource === undefined
+        ? node.text
+        : undefined;
     if (
       node.type !== "text" ||
       (node.textFlow !== "wrap" &&
         node.textOverflow !== "ellipsis" &&
         axisSizing(node, "horizontal") !== "hug") ||
-      !node.textSource
+      (typeof node.textSource !== "string" && rangedSource === undefined)
     ) {
       continue;
     }
     const parent = byId.get(node.parentId);
     if (!parent || !eligibleContainers.has(parent.id) || !isAutoLayoutContainer(parent)) {
       continue;
+    }
+    // Ranges may bind text directly. Retain that exact source before responsive
+    // layout can add display-only LF; this does not require source on all Text.
+    if (rangedSource !== undefined) {
+      node.textSource = rangedSource;
+      changed = true;
     }
     const contentLeft = parent.x + containerPadding(parent, "Left");
     const contentRight = parent.x + parent.width - containerPadding(parent, "Right");
