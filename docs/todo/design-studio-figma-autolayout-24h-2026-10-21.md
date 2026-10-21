@@ -2243,3 +2243,22 @@ Browser独立renderer已在CPU实测derived坐标/Hug/Fill污染、改文/改宽
 旋转/rounded ancestor clip命中和font/scene supersession；该工作树尚未稳定合入。
 CK仍为默认，两版都使用canonical模型，实机Figma同步继续独立验收。24小时目标active，
 截止仍2026-10-22 00:31 SG。
+## Original html2figma gallery corpus checkpoint · 2026-10-21
+
+原本地仓库精确停在 ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c；只读冻结全部221份
+tracked source，并保持用户原有untracked文件。完整64个运行时模板与原始gallery脚本、
+样式和资源引用保存为独立fixture，未再用20个改写样例代替。原gallery head脚本保持
+inert，不额外注入Tailwind。1280/768/400共192个真实CPU源页面、root PNG/DOM与15张
+gallery全页截图保留；网络响应/redirect按URL冻结。root溢出与完整可见paint范围分开记。
+
+先做7个代表模板宽/窄和相同内容编辑的source replay。Ruby textarea首LF序列化问题
+按独立原值hash修正；Welcome400仍1像素/max1，Ruby1280历史39/max1、Ruby400另有
+2/max4与19/max1严格差异，均保留原图/差异图且未放宽容差。仅11个完全通过的width
+状态进入当前production HTML→canonical，初始/源编辑×viewport/root模式共44次捕获，
+134份app字节前后相同。原Grid实际122项flow义务中42失败、canonical Grid为0；Flex
+Basis26/26和Nav14/14通过，inline仍PARTIAL。保存原canonical、warning、ALaudit、
+source mapping、同宽重排和22个model编辑控制，不把capture成功当像素成功。
+
+44个Figma transfer均明确REFUSED（36字体stack证明缺失、8阴影蒙版guard），非真实
+Figma执行。Browser与CK仍待用相同canonical/bytes比较；真实native与其像素验收NOT_RUN。
+详见 [原gallery corpus](../design-studio-original-gallery-corpus.md) 与外部不可变证据。

@@ -45,3 +45,60 @@ absolute positioning to fit a screenshot.
 This checkpoint is source inventory and browser observation only. Studio and
 renderer comparison results remain pending. Actual Figma execution is **NOT_RUN**;
 there is no native, renderer or pixel parity claim.
+
+## Bounded production capture checkpoint
+
+Seven originals were materialized at 1280 and 400: Welcome Card, Flex Basis Zero,
+Navigation Bar, Multiple Inline Spans, CSS Grid Layout Test, Ruby Jewelry and
+Fixed Position Test Enhanced. The materialization removes scripts, serializes
+independently known form state and maps frozen resource transport URLs. It does
+not change template text, CSS sizes or heights. Root-rectangle paint, whole visible
+viewport paint and raw geometry are checked separately before product capture.
+
+The first materialization lost Ruby's leading LF in the gallery source textarea:
+HTML parsing ignores its first LF. Correct state encoding now verifies the exact
+original textarea value hash before comparing pixels. Initial failed PNGs remain
+preserved. The second materialization still has strict source failures: Welcome
+400 has one whole-viewport pixel/max1 outside its identical root; Ruby1280 has a
+historical source replay difference 39/max1 despite a fresh original/localized
+pair at 0; Ruby400 has 2/max4 initial viewport pixels and 19/max1 edited root pixels.
+All raw geometry matched. No tolerance or raster setting was changed to erase
+these failures, and all three width states were excluded from product capture.
+
+The remaining 11 eligible width states entered the actual current production
+`captureWorkspaceHtmlResult` HTML→canonical path at commit
+`1541a5ffca45e060f65c6986bc622b2a2f0575ee`, a normal merge of stable 6b5 and the
+source fixture checkpoint. Both default viewport and explicitly unclipped-root
+modes were captured, for original and source-edited content: 44 successful CPU
+capture operations. Actual pre/post inventories show all 134 app files unchanged.
+Each operation saves the exact canonical document, full import warnings, source
+mapping, resources, flow obligations/audit and same-width reflow document. The 22
+initial imports also have an independently identified canonical Text edit control.
+
+Capture success is not layout success. Flex Basis Zero covers 26/26 source flow
+obligations and Navigation Bar 14/14. The original Grid template has 122 obligations,
+42 failures and no canonical Grid nodes; its first warnings identify unsupported
+bare-fr automatic minimums, partial anchors, named areas, shrink-to-fit alignment
+and auto-fit. Welcome has two manual-flow failures; inline text remains partial.
+Same-width reflow also changes measured geometry: for example Flex Basis Zero's
+root height 457.53→457.57 and Navigation Bar changes some dimensions by 0.01–0.02.
+These differences remain recorded for renderer comparison rather than treated as
+pixel matches.
+
+All 44 canonical→Figma transfer attempts refuse explicitly: 36 lack a proven single
+native face for the original CSS font stack and 8 retain the unsupported CSS shadow
+mask guard. No actual Figma creation occurred. Browser-canonical and CanvasKit
+rendering remain pending; SVG output is not used as an actual CanvasKit proxy.
+
+The production receipt is `original-production-v1/receipt.json`, SHA-256
+`c0ac24d6641dfb79b7322260b240caeb947e8bbeb0cf3e64b3c93294aebe567d`.
+Its529-artifact inventory and per-case summaries are in
+`original-production-v1-review.json`, SHA-256
+`dde65184f17c5b997b5de91b6154c662e753ab3d6b07234325faff9c59aeeec4`.
+
+A fixed three-sample repeatability diagnostic records four active Ruby CSS
+animations and unchanged-source root differences41/0/19pixels at400. It also
+records whole-viewport changes after element screenshot scrolling. These are
+observations, not proof that animation explains every historical difference.
+Welcome400 repeats were strict0; its earlier one-pixel failure remains preserved.
+No new raster setting, CSS override or phase workaround was introduced.
