@@ -42,7 +42,8 @@ async function relationBrowser(options = {}) {
       return page.evaluate(async () => {
         const { captureHtmlViewportRelation } = await import("/flow.mjs");
         const root = document.documentElement,
-          style = getComputedStyle(root);
+          style = getComputedStyle(root),
+          bounds = document.querySelector("#fixture").getBoundingClientRect();
         return {
           relation: captureHtmlViewportRelation(document.querySelector("#fixture")),
           innerWidth,
@@ -56,6 +57,7 @@ async function relationBrowser(options = {}) {
           scrollingElement: document.scrollingElement?.tagName,
           overflow: [style.overflowX, style.overflowY],
           gutter: style.scrollbarGutter,
+          bounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
         };
       });
     },
@@ -162,20 +164,29 @@ test("root viewport auto/scroll overflow preserves ordinary vertical Fill, save/
   }
 });
 
-test("unsupported gutters and private clipping retain full-width geometry and honest narrow pixel failures", async (t) => {
+test("unsupported gutters and private clipping retain measured root geometry and honest narrow pixel failures", async (t) => {
   const output = await mkdtemp(join(tmpdir(), "html-root-scroll-fixed-"));
   t.after(() => rm(output, { recursive: true, force: true }));
+  const cases = [
+    { id: "stable-gutter", source: fixture("overflow-y:scroll;scrollbar-gutter:stable") },
+    {
+      id: "body-private-clip",
+      source: fixture("overflow-y:scroll", "height:200px;overflow:hidden"),
+    },
+  ];
+  const reference = await relationBrowser();
+  t.after(() => reference.close());
+  const expectedBounds = new Map();
+  for (const source of cases) {
+    const measured = await reference.capture(source.source, 640);
+    assert(measured.relation.unsupported, source.id);
+    expectedBounds.set(source.id, measured.bounds);
+  }
   const result = await runProductionFidelity({
     output,
     resizeMode: "viewport-only",
     recordOnly: true,
-    cases: [
-      { id: "stable-gutter", source: fixture("overflow-y:scroll;scrollbar-gutter:stable") },
-      {
-        id: "body-private-clip",
-        source: fixture("overflow-y:scroll", "height:200px;overflow:hidden"),
-      },
-    ],
+    cases,
   });
   assert.equal(result.passed, false);
   for (const observed of result.cases) {
@@ -196,7 +207,15 @@ test("unsupported gutters and private clipping retain full-width geometry and ho
         JSON.parse(await readFile(join(output, observed.id, `${mode}.codesign.json`))),
       );
       assert.equal(document.nodes[0].layout, "none");
-      assert.equal(document.nodes.find((node) => node.parentId === "html-viewport").width, 640);
+      const root = document.nodes.find((node) => node.parentId === "html-viewport");
+      // Stable gutters can consume real viewport space even with hidden
+      // scrollbars. Both modes must retain the independently measured source
+      // box rather than assume it spans all 640 viewport pixels.
+      assert.deepEqual(
+        { x: root.x, y: root.y, width: root.width, height: root.height },
+        expectedBounds.get(observed.id),
+      );
+      assert.equal(document.nodes[0].width, mode === "imported" ? 640 : 400);
     }
   }
 });

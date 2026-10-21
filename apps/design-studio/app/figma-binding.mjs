@@ -13,7 +13,7 @@ import {
   readDesignSidecar,
   writeDesignSidecar,
 } from "./design-sidecar.mjs";
-import { normalizeFigmaSource } from "./figma-assets.mjs";
+import { MAX_FIGMA_SOURCE_BYTES, normalizeFigmaSource } from "./figma-assets.mjs";
 
 export const FIGMA_BINDING_FORMAT = "codeshell.figma.binding";
 const INDEX_FORMAT = "codeshell.figma.binding-index";
@@ -168,16 +168,77 @@ export function figmaBindingPath(path) {
   return designSidecarPath(path, ".figma-source.json");
 }
 export function figmaSourceNodes(source) {
-  const result = new Map();
-  let total = 0;
-  function visit(node, depth = 0) {
+  const result = new Map(), locations = new Map(), fingerprints = new WeakMap(), interned = new Map(), visiting = new Set();
+  let total = 0, bytes = 0, steps = 0;
+  const invalid = (code = "FIGMA_SOURCE_JSON_INVALID") => {
+    const message = code === "FIGMA_SOURCE_BUDGET" ? "Figma 来源 JSON 无效、过深或超过 16 MiB 上限" : "Figma 来源必须是有界无环的纯 JSON 数据";
+    throw Object.assign(Error(message), { code });
+  };
+  const charge = count => { if ((bytes += count) > MAX_FIGMA_SOURCE_BYTES) invalid("FIGMA_SOURCE_BUDGET"); };
+  const utf8 = text => {
+    let count = 0;
+    for (const scalar of text) {
+      const point = scalar.codePointAt(0);
+      count += point < 128 ? 1 : point < 2048 ? 2 : point < 65536 ? 3 : 4;
+    }
+    return count;
+  };
+  const intern = key => {
+    if (!interned.has(key)) interned.set(key, interned.size);
+    return interned.get(key);
+  };
+  // A collision-free structural interner compares complete raw descendants
+  // without serializing every ancestor subtree. Only object key order is ignored.
+  const inspect = (value, depth = 0) => {
+    if (++steps > 1000000 || depth > 128) invalid("FIGMA_SOURCE_BUDGET");
+    if (value === null || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value)) {
+      const text = String(value); charge(text.length); return intern(`p${text}`);
+    }
+    if (typeof value === "string") {
+      if (value.length > MAX_FIGMA_SOURCE_BYTES) invalid("FIGMA_SOURCE_BUDGET");
+      const text = JSON.stringify(value); charge(utf8(text)); return intern(`p${text}`);
+    }
+    const array = Array.isArray(value);
+    if (value === null || typeof value !== "object" || !array && ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || visiting.has(value)) invalid();
+    if (array && value.length > 1000000) invalid("FIGMA_SOURCE_BUDGET");
+    const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(descriptors);
+    if (keys.some(key => typeof key !== "string")) invalid();
+    const names = array ? keys.filter(key => key !== "length") : keys;
+    if (names.length > 1000000) invalid("FIGMA_SOURCE_BUDGET");
+    if (array && (names.length !== value.length || names.some((key, index) => key !== String(index)))) invalid();
+    visiting.add(value); charge(2);
+    const entries = [];
+    for (const [index, key] of names.entries()) {
+      const descriptor = descriptors[key];
+      if (!Object.hasOwn(descriptor, "value") || !descriptor.enumerable) invalid();
+      charge((index ? 1 : 0) + (array ? 0 : utf8(JSON.stringify(key)) + 1));
+      entries.push([key, inspect(descriptor.value, depth + 1)]);
+    }
+    visiting.delete(value);
+    if (!array) entries.sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    const token = intern(array ? `a${JSON.stringify(entries.map(entry => entry[1]))}` : `o${JSON.stringify(entries)}`);
+    fingerprints.set(value, token);
+    return token;
+  };
+  inspect(source);
+  function visit(node, depth = 0, parentId = null, siblingIndex = null) {
     if (!node || typeof node !== "object" || !id(node.id) || depth > 40 || ++total > 60000)
       throw Error("Figma 来源节点无效或超出上限");
     // Selection exports can include an ancestor and its child as separate roots.
-    if (!result.has(node.id)) result.set(node.id, node);
+    // The complete raw representations must agree before either can be indexed.
+    const previous = result.get(node.id);
+    if (previous && fingerprints.get(previous) !== fingerprints.get(node))
+      throw Object.assign(Error(`Figma 来源包含内容不一致的重复图层 ID：${node.id}；请重新导出来源`), { code: "FIGMA_SOURCE_DUPLICATE_ID_CONFLICT" });
+    if (!previous) result.set(node.id, node);
+    if (parentId !== null) {
+      const location = locations.get(node.id);
+      if (location && (location.parentId !== parentId || location.siblingIndex !== siblingIndex))
+        throw Object.assign(Error(`Figma 来源包含父级或顺序不一致的重复图层 ID：${node.id}；请重新导出来源`), { code: "FIGMA_SOURCE_DUPLICATE_LOCATION_CONFLICT" });
+      locations.set(node.id, { parentId, siblingIndex });
+    }
     if (node.children !== undefined && !Array.isArray(node.children))
       throw Error("Figma 来源层级无效");
-    for (const child of node.children ?? []) visit(child, depth + 1);
+    for (const [index, child] of (node.children ?? []).entries()) visit(child, depth + 1, node.id, index);
   }
   if (
     source?.format !== "codeshell.figma.source" ||
@@ -192,6 +253,8 @@ export function figmaSourceNodes(source) {
 }
 
 export function createFigmaBinding({ source, document, mapping, pageMappings = [] }) {
+  // Validate raw source before structuredClone can invoke a source accessor.
+  figmaSourceNodes(source);
   return parseFigmaBinding({
     format: FIGMA_BINDING_FORMAT,
     version: 1,
@@ -222,9 +285,9 @@ export function parseFigmaBinding(input) {
   const baseline = canonical(value.baseline),
     baselineNodes = new Map(flat(baseline).map((node) => [node.id, node]));
   // Validate source bounds and selection context without rewriting any preserved raw fields.
+  const sourceNodes = figmaSourceNodes(value.source);
   normalizeFigmaSource(value.source);
-  const sourceNodes = figmaSourceNodes(value.source),
-    designIds = new Set(),
+  const designIds = new Set(),
     sourceIds = new Set(),
     mappingByDesign = new Map(value.mapping.filter(object).map((entry) => [entry.designId, entry]));
   const pageIds = new Set(),
