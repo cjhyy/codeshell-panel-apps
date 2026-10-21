@@ -14,7 +14,7 @@ function bound(value) {
   return built;
 }
 
-test("actual1ed86d39 four complete sources bind without rewriting raw fields; requested canonical metrics still refuse", () => {
+test("actual1ed86d39 four complete sources bind and recover intent with exact native metric transport", () => {
   assert.equal(fixture.provenance.sourceSha256, "6c59ea3aaa84a46546c0dac30d7ebe4cbe5021509d1c470970f1ff4ff72f9c8c");
   assert.equal(fixture.cases.length, 4);
   for (const entry of fixture.cases) {
@@ -32,9 +32,10 @@ test("actual1ed86d39 four complete sources bind without rewriting raw fields; re
       assert(built.diagnostics.some(note => note.code === "NATIVE_TEXT_RANGES_SCALAR_OBSERVATION" && note.field === field));
     }
     const imported = importNativeTextRanges({ rest: value.rest, source: built.source, canonicalNode: entry.canonical });
-    assert.equal(imported.status, "unsupported");
-    assert(codes(imported).includes("NATIVE_TEXT_RANGES_UNSUPPORTED_METRICS"));
-    assert.equal(imported.textRanges, undefined); assert.equal(imported.pixelsVerified, false);
+    assert.equal(imported.status, entry.name === "plain20" ? "uniform" : "admitted-intent");
+    assert.equal(imported.pixelsVerified, false);
+    if (entry.variant.kind === "gap") assert.deepEqual(imported.textRanges.ranges,
+      [{ start: 4, end: 11, fill: "#1d70b8", href: "https://example.com/" }]);
     assert.deepEqual(validateNativeTextRangeSource(value.rest, JSON.parse(JSON.stringify(built.source))).source, built.source);
     assert.equal(JSON.stringify(entry), before);
   }

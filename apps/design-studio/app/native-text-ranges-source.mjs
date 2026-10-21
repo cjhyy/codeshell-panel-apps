@@ -1,5 +1,6 @@
 /** Read-only native text evidence. No SDK, DOM, mutation, or CSS/native underline conversion. */
 import { textRangeSourceSignature, validateTextRanges, isSafeTextRangeHref } from "./text-ranges.mjs";
+import { nativeTextLineHeight, validTextLineHeight } from "./text-line-height.mjs";
 
 export const MAX_NATIVE_TEXT_RANGE_SOURCE_BYTES = 256 * 1024;
 export const MAX_NATIVE_TEXT_RANGE_SEGMENTS = 256;
@@ -266,6 +267,15 @@ function exactColor(paints) {
   return `#${channels.map(byte => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 const METRICS = ["fontName", "fontSize", "lineHeight", "letterSpacing"];
+function matchesNativeLineHeight(observed, canonical) {
+  if (!plain(observed) || !Number.isFinite(observed.value) || !validTextLineHeight(canonical)) return false;
+  const requested = nativeTextLineHeight(canonical);
+  // SDK PERCENT stores a Float32 ratio and reports that ratio times100. REST
+  // has its separate Float32 percentage projection. Never round either source,
+  // fit a canonical value, or use this many-to-one predicate for snapshots.
+  return observed.unit === requested.unit && (observed.value === requested.value ||
+    requested.unit === "PERCENT" && observed.value === Math.fround(requested.value / 100) * 100);
+}
 function plainMetrics(v) {
   for (const key of METRICS) requireValue(v, key);
   for (const [key, allowed] of [["textCase", "ORIGINAL"], ["listSpacing", 0], ["indentation", 0], ["paragraphIndent", 0], ["paragraphSpacing", 0]])
@@ -310,8 +320,7 @@ export function importNativeTextRanges(input) {
       const font = requireValue(v, "fontName"), line = requireValue(v, "lineHeight"), spacing = requireValue(v, "letterSpacing");
       if (!plain(font) || font.family !== canonicalNode.fontFamily || valueOf(v, "fontSize") !== canonicalNode.fontSize ||
           requireValue(v, "fontWeight") !== canonicalNode.fontWeight || requireValue(v, "fontStyle") !== (canonicalNode.fontStyle === "italic" ? "ITALIC" : "REGULAR") ||
-          !plain(line) || line.unit !== (canonicalNode.lineHeightUnit === "pixels" ? "PIXELS" : "PERCENT") ||
-          line.value !== (canonicalNode.lineHeightUnit === "pixels" ? canonicalNode.lineHeight : canonicalNode.lineHeight * 100) ||
+          !matchesNativeLineHeight(line, canonicalNode) ||
           !plain(spacing) || !(spacing.value === 0 && canonicalNode.letterSpacing === 0 || spacing.unit === "PIXELS" && spacing.value === canonicalNode.letterSpacing))
         fail("Canonical font metrics differ from native", "NATIVE_TEXT_RANGES_UNSUPPORTED_METRICS");
       if (!keys(font, ["family", "style", "variationSettings"]) || !["Regular", "Bold", "Italic", "Bold Italic"].includes(font.style) ||

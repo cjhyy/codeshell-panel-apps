@@ -188,10 +188,12 @@ test("portable pure helper uses no TextEncoder/URL/structuredClone and fixed fie
   assert.ok(NATIVE_TEXT_RANGE_FIELDS.includes("textWrapStyle"));assert.ok(NATIVE_TEXT_RANGE_FIELDS.includes("boundVariables"));
   assert.ok(NATIVE_TEXT_RANGE_SCALAR_ONLY_FIELDS.includes("hasMissingFont"));
   assert.ok(!NATIVE_TEXT_RANGE_FIELDS.includes("hasMissingFont"));assert.ok(!NATIVE_TEXT_RANGE_FIELDS.includes("variationSettings"));
-  const module=(await readFile(moduleUrl,"utf8")).replace(/^import .*;$/m, "").replaceAll(/^export /gm, "");
+  const module=(await readFile(moduleUrl,"utf8")).replace(/^import .*;$/gm, "").replaceAll(/^export /gm, "");
   const core=(await readFile(new URL("../../../apps/design-studio/app/text-ranges.mjs", import.meta.url),"utf8")).replaceAll(/^export /gm, "");
+  const line=(await readFile(new URL("../../../apps/design-studio/app/text-line-height.mjs", import.meta.url),"utf8")).replaceAll(/^export /gm, "");
   const context=vm.createContext({});
   vm.runInContext(`Object.assign(this,(()=>{${core};return {textRangeSourceSignature,validateTextRanges,isSafeTextRangeHref};})());`,context);
+  vm.runInContext(`Object.assign(this,(()=>{${line};return {nativeTextLineHeight,validTextLineHeight};})());`,context);
   vm.runInContext(module+"\nthis.api={buildNativeTextRangeSource,validateNativeTextRangeSource,nativeTextRangeSnapshot,importNativeTextRanges};",context);
   context.inputJson=JSON.stringify(control().input);context.nodeJson=JSON.stringify(control().node);
   const result=vm.runInContext("api.buildNativeTextRangeSource(JSON.parse(inputJson))",context);

@@ -223,7 +223,7 @@ test("the complete comparison executes in a native-like VM without DOM, URL, Tex
   const root = new URL("../../../apps/design-studio/app/", import.meta.url);
   const core = (await readFile(new URL("text-ranges.mjs", root), "utf8")).replaceAll(/^export /gm, "");
   const source = (await readFile(new URL("native-text-ranges-source.mjs", root), "utf8"))
-    .replace(/^import .*;\n/mu, "").replaceAll(/^export /gm, "");
+    .replace(/^import .*;\n/gmu, "").replaceAll(/^export /gm, "");
   const module = (await readFile(new URL("native-text-range-compare.mjs", root), "utf8"))
     .replace(/^import [\s\S]*?;\n/u, "").replaceAll(/^export /gm, "");
   const context = vm.createContext({ inputJson: JSON.stringify({ expectedRest: entry(), currentRest: entry() }) });

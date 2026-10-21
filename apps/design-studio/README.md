@@ -674,17 +674,20 @@ Raw unknown getter observations remain in the snapshot; known segment values
 must independently prove the effective style. Hints have a 64 KiB UTF-8 JSON
 limit and include plugin ID/key overhead in the 100,000-byte storage-entry
 budget. Stale, partial, unsupported or oversized inputs refuse atomically.
-Line-height units and font axes remain exact: Float32 percentage transport that
-differs from the canonical scalar is deliberately refused, without rounding or
-tolerance. The creation candidate now uses this helper through final SDK capture
+Line-height units and font axes remain exact. PERCENT metrics accept the exact
+requested value or the SDK's exact Float32-ratio transport; PIXELS has no
+quantization allowance. No epsilon, scalar fitting or raw rewrite is used.
+The creation candidate now uses this helper through final SDK capture
 and plugin-data writes; export and author-hint restoration remain unhooked.
 
 Native text source binding compares REST character overrides in Unicode scalar
 order against SDK UTF16 segments and accepts the exact Float32 serialization of
-native percentage line heights. Raw observations remain unchanged, and
-canonical metric admission stays strict. See the
+native percentage line heights. Raw observations and snapshot comparisons remain
+unchanged. See the
 [actual SDK projection evidence](../../docs/todo/design-studio-native-text-rest-projection-2026-10-21.md)
-for preserved failures, deliberate admission refusals and Unicode controls.
+for historical failures and Unicode controls, and the
+[exact canonical transport contract](../../docs/todo/design-studio-native-percent-transport-2026-10-21.md)
+for current metric admission and remaining complete-writer/native-pixel limits.
 
 The staged pure `native-text-range-compare.mjs` helper compares complete historical
 and current native text evidence, each validated against its own REST node.
