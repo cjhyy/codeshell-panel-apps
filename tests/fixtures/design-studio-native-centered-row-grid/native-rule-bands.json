@@ -1,0 +1,1907 @@
+[
+  {
+    "case": "half-edge-transparent-positive",
+    "stage": "01-initial630-copy1",
+    "control": "Transparent geometry/rule positive candidate; not predeclared pass",
+    "rows": [
+      {
+        "row": 0,
+        "expectedLogicalCenter": 85.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 85,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 85,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 1,
+        "expectedLogicalCenter": 156.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 156,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 156,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 2,
+        "expectedLogicalCenter": 252.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 252,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 252,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "case": "half-edge-opaque-paint-negative",
+    "stage": "01-initial630-copy1",
+    "control": "Opaque paint-negative; do not suppress differing pixels",
+    "rows": [
+      {
+        "row": 0,
+        "expectedLogicalCenter": 425.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 425,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 425,
+            "ruleColorPixels": 0,
+            "whitePixels": 0,
+            "otherPixels": 630,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  254,
+                  202,
+                  202,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  187,
+                  247,
+                  208,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  191,
+                  219,
+                  254,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 1,
+        "expectedLogicalCenter": 496.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 496,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 496,
+            "ruleColorPixels": 0,
+            "whitePixels": 0,
+            "otherPixels": 630,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  254,
+                  202,
+                  202,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  187,
+                  247,
+                  208,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  191,
+                  219,
+                  254,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 2,
+        "expectedLogicalCenter": 592.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 592,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 592,
+            "ruleColorPixels": 0,
+            "whitePixels": 0,
+            "otherPixels": 630,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  230,
+                  204,
+                  204,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  196,
+                  226,
+                  207,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  198,
+                  212,
+                  230,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "case": "half-edge-last-rule-absent-positive",
+    "stage": "01-initial630-copy1",
+    "control": "Transparent geometry/rule positive candidate; not predeclared pass",
+    "rows": [
+      {
+        "row": 0,
+        "expectedLogicalCenter": 765.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 765,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 765,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 1,
+        "expectedLogicalCenter": 836.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 836,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 836,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 2,
+        "expectedLogicalCenter": 932,
+        "winningRuleWidth": 0,
+        "expectedCssFullColorRow": null,
+        "expectedCssRulePixels": 0,
+        "bands": []
+      }
+    ]
+  },
+  {
+    "case": "half-edge-transparent-positive",
+    "stage": "02-copy4",
+    "control": "Transparent geometry/rule positive candidate; not predeclared pass",
+    "rows": [
+      {
+        "row": 0,
+        "expectedLogicalCenter": 160.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 160,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 160,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 1,
+        "expectedLogicalCenter": 231.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 231,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 231,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 2,
+        "expectedLogicalCenter": 327.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 327,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 327,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "case": "half-edge-opaque-paint-negative",
+    "stage": "02-copy4",
+    "control": "Opaque paint-negative; do not suppress differing pixels",
+    "rows": [
+      {
+        "row": 0,
+        "expectedLogicalCenter": 500.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 500,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 500,
+            "ruleColorPixels": 0,
+            "whitePixels": 0,
+            "otherPixels": 630,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  254,
+                  202,
+                  202,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  187,
+                  247,
+                  208,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  191,
+                  219,
+                  254,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 1,
+        "expectedLogicalCenter": 571.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 571,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 571,
+            "ruleColorPixels": 0,
+            "whitePixels": 0,
+            "otherPixels": 630,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  254,
+                  202,
+                  202,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  187,
+                  247,
+                  208,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  191,
+                  219,
+                  254,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 2,
+        "expectedLogicalCenter": 667.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 667,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 667,
+            "ruleColorPixels": 0,
+            "whitePixels": 0,
+            "otherPixels": 630,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  230,
+                  204,
+                  204,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  196,
+                  226,
+                  207,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  198,
+                  212,
+                  230,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "case": "half-edge-last-rule-absent-positive",
+    "stage": "02-copy4",
+    "control": "Transparent geometry/rule positive candidate; not predeclared pass",
+    "rows": [
+      {
+        "row": 0,
+        "expectedLogicalCenter": 840.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 840,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 840,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 1,
+        "expectedLogicalCenter": 911.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 911,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 911,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 2,
+        "expectedLogicalCenter": 1007,
+        "winningRuleWidth": 0,
+        "expectedCssFullColorRow": null,
+        "expectedCssRulePixels": 0,
+        "bands": []
+      }
+    ]
+  },
+  {
+    "case": "half-edge-transparent-positive",
+    "stage": "03-copy1-restored",
+    "control": "Transparent geometry/rule positive candidate; not predeclared pass",
+    "rows": [
+      {
+        "row": 0,
+        "expectedLogicalCenter": 85.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 85,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 85,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 1,
+        "expectedLogicalCenter": 156.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 156,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 156,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 2,
+        "expectedLogicalCenter": 252.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 252,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 252,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "case": "half-edge-opaque-paint-negative",
+    "stage": "03-copy1-restored",
+    "control": "Opaque paint-negative; do not suppress differing pixels",
+    "rows": [
+      {
+        "row": 0,
+        "expectedLogicalCenter": 425.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 425,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 425,
+            "ruleColorPixels": 0,
+            "whitePixels": 0,
+            "otherPixels": 630,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  254,
+                  202,
+                  202,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  187,
+                  247,
+                  208,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  191,
+                  219,
+                  254,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 1,
+        "expectedLogicalCenter": 496.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 496,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 496,
+            "ruleColorPixels": 0,
+            "whitePixels": 0,
+            "otherPixels": 630,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  254,
+                  202,
+                  202,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  187,
+                  247,
+                  208,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  191,
+                  219,
+                  254,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 2,
+        "expectedLogicalCenter": 592.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 592,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 592,
+            "ruleColorPixels": 0,
+            "whitePixels": 0,
+            "otherPixels": 630,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  230,
+                  204,
+                  204,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  196,
+                  226,
+                  207,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  198,
+                  212,
+                  230,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "case": "half-edge-last-rule-absent-positive",
+    "stage": "03-copy1-restored",
+    "control": "Transparent geometry/rule positive candidate; not predeclared pass",
+    "rows": [
+      {
+        "row": 0,
+        "expectedLogicalCenter": 765.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 765,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 765,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 1,
+        "expectedLogicalCenter": 836.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 836,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 836,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 2,
+        "expectedLogicalCenter": 932,
+        "winningRuleWidth": 0,
+        "expectedCssFullColorRow": null,
+        "expectedCssRulePixels": 0,
+        "bands": []
+      }
+    ]
+  },
+  {
+    "case": "half-edge-transparent-positive",
+    "stage": "04-width390",
+    "control": "Transparent geometry/rule positive candidate; not predeclared pass",
+    "rows": [
+      {
+        "row": 0,
+        "expectedLogicalCenter": 85.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 85,
+        "expectedCssRulePixels": 390,
+        "bands": [
+          {
+            "y": 85,
+            "ruleColorPixels": 390,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 185,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 360,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 1,
+        "expectedLogicalCenter": 156.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 156,
+        "expectedCssRulePixels": 390,
+        "bands": [
+          {
+            "y": 156,
+            "ruleColorPixels": 390,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 185,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 360,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 2,
+        "expectedLogicalCenter": 252.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 252,
+        "expectedCssRulePixels": 390,
+        "bands": [
+          {
+            "y": 252,
+            "ruleColorPixels": 390,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 185,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 360,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "case": "half-edge-opaque-paint-negative",
+    "stage": "04-width390",
+    "control": "Opaque paint-negative; do not suppress differing pixels",
+    "rows": [
+      {
+        "row": 0,
+        "expectedLogicalCenter": 425.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 425,
+        "expectedCssRulePixels": 390,
+        "bands": [
+          {
+            "y": 425,
+            "ruleColorPixels": 0,
+            "whitePixels": 0,
+            "otherPixels": 390,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  254,
+                  202,
+                  202,
+                  255
+                ]
+              },
+              {
+                "x": 185,
+                "rgba": [
+                  187,
+                  247,
+                  208,
+                  255
+                ]
+              },
+              {
+                "x": 360,
+                "rgba": [
+                  191,
+                  219,
+                  254,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 1,
+        "expectedLogicalCenter": 496.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 496,
+        "expectedCssRulePixels": 390,
+        "bands": [
+          {
+            "y": 496,
+            "ruleColorPixels": 0,
+            "whitePixels": 0,
+            "otherPixels": 390,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  254,
+                  202,
+                  202,
+                  255
+                ]
+              },
+              {
+                "x": 185,
+                "rgba": [
+                  187,
+                  247,
+                  208,
+                  255
+                ]
+              },
+              {
+                "x": 360,
+                "rgba": [
+                  191,
+                  219,
+                  254,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 2,
+        "expectedLogicalCenter": 592.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 592,
+        "expectedCssRulePixels": 390,
+        "bands": [
+          {
+            "y": 592,
+            "ruleColorPixels": 0,
+            "whitePixels": 0,
+            "otherPixels": 390,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  230,
+                  204,
+                  204,
+                  255
+                ]
+              },
+              {
+                "x": 185,
+                "rgba": [
+                  196,
+                  226,
+                  207,
+                  255
+                ]
+              },
+              {
+                "x": 360,
+                "rgba": [
+                  198,
+                  212,
+                  230,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "case": "half-edge-last-rule-absent-positive",
+    "stage": "04-width390",
+    "control": "Transparent geometry/rule positive candidate; not predeclared pass",
+    "rows": [
+      {
+        "row": 0,
+        "expectedLogicalCenter": 765.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 765,
+        "expectedCssRulePixels": 390,
+        "bands": [
+          {
+            "y": 765,
+            "ruleColorPixels": 390,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 185,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 360,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 1,
+        "expectedLogicalCenter": 836.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 836,
+        "expectedCssRulePixels": 390,
+        "bands": [
+          {
+            "y": 836,
+            "ruleColorPixels": 390,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 185,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 360,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 2,
+        "expectedLogicalCenter": 932,
+        "winningRuleWidth": 0,
+        "expectedCssFullColorRow": null,
+        "expectedCssRulePixels": 0,
+        "bands": []
+      }
+    ]
+  },
+  {
+    "case": "half-edge-transparent-positive",
+    "stage": "05-width630-restored",
+    "control": "Transparent geometry/rule positive candidate; not predeclared pass",
+    "rows": [
+      {
+        "row": 0,
+        "expectedLogicalCenter": 85.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 85,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 85,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 1,
+        "expectedLogicalCenter": 156.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 156,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 156,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 2,
+        "expectedLogicalCenter": 252.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 252,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 252,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "case": "half-edge-opaque-paint-negative",
+    "stage": "05-width630-restored",
+    "control": "Opaque paint-negative; do not suppress differing pixels",
+    "rows": [
+      {
+        "row": 0,
+        "expectedLogicalCenter": 425.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 425,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 425,
+            "ruleColorPixels": 0,
+            "whitePixels": 0,
+            "otherPixels": 630,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  254,
+                  202,
+                  202,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  187,
+                  247,
+                  208,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  191,
+                  219,
+                  254,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 1,
+        "expectedLogicalCenter": 496.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 496,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 496,
+            "ruleColorPixels": 0,
+            "whitePixels": 0,
+            "otherPixels": 630,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  254,
+                  202,
+                  202,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  187,
+                  247,
+                  208,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  191,
+                  219,
+                  254,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 2,
+        "expectedLogicalCenter": 592.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 592,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 592,
+            "ruleColorPixels": 0,
+            "whitePixels": 0,
+            "otherPixels": 630,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  230,
+                  204,
+                  204,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  196,
+                  226,
+                  207,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  198,
+                  212,
+                  230,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "case": "half-edge-last-rule-absent-positive",
+    "stage": "05-width630-restored",
+    "control": "Transparent geometry/rule positive candidate; not predeclared pass",
+    "rows": [
+      {
+        "row": 0,
+        "expectedLogicalCenter": 765.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 765,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 765,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 1,
+        "expectedLogicalCenter": 836.5,
+        "winningRuleWidth": 1,
+        "expectedCssFullColorRow": 836,
+        "expectedCssRulePixels": 630,
+        "bands": [
+          {
+            "y": 836,
+            "ruleColorPixels": 630,
+            "whitePixels": 0,
+            "otherPixels": 0,
+            "perColumnRGBA": [
+              {
+                "x": 48,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 257,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              },
+              {
+                "x": 552,
+                "rgba": [
+                  206,
+                  206,
+                  206,
+                  255
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "row": 2,
+        "expectedLogicalCenter": 932,
+        "winningRuleWidth": 0,
+        "expectedCssFullColorRow": null,
+        "expectedCssRulePixels": 0,
+        "bands": []
+      }
+    ]
+  }
+]

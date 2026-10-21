@@ -178,6 +178,46 @@ test("SVG/HTML exports, PRD parsing and saved-design comparison use the shared d
   assert.equal(comparison.value.result.maximumGeometryDelta, 20);
 });
 
+test("installed PRD brief preserves authored requirement references and rejects invalid or conflicting IDs without writes", async (t) => {
+  const f = await fixture(t);
+  const source = await readFile(new URL("../../fixtures/design-studio-product-brief/checkout.md", import.meta.url), "utf8");
+  await f.put("docs/PRD.md", source);
+  const first = await f.run("brief", { path: "docs/PRD.md" });
+  assert.equal(first.code, 0);
+  const ids = first.value.result.requirements.slice(0, 2).map((item) => item.id);
+  assert.deepEqual(ids, ["req-sign-in", "req-orders-view"]);
+  const notes = `docs/PRD.md: ${ids.join(", ")}`;
+  await f.run("create", { path, document: document("Requirements", [rectangle("card", { notes })]) });
+  const saved = await readFile(join(f.project, path), "utf8");
+  for (const checkbox of ["[ ]", "[x]", "[X]"]) {
+    const reordered = `# 产品\n## 需求\n- ${checkbox} [id:req-orders-view] 订单详情\n- A new item\n- ${checkbox} [id:req-sign-in] P2 邮箱登录\n`;
+    await f.put("docs/PRD.md", reordered);
+    const second = await f.run("brief", { path: "docs/PRD.md" });
+    assert.equal(second.code, 0);
+    assert.ok(ids.every((id) => second.value.result.requirements.some((item) => item.id === id)));
+  }
+  const reopened = await f.run("read", { path, node_id: "card" });
+  assert.equal(reopened.value.result.node.notes, notes);
+  for (const items of [
+    "- [id:Invalid] Statement",
+    "- [id:req-login] First\n- [id:req-login] Second",
+    "- [id:req-02-p1-view-orders] Sign in\n- P1 View orders",
+    "- [ ] [id:Invalid] Statement",
+    "- [x] [id:req-login] First\n- [ ] [id:req-login] Second",
+    "- [X] [id:req-02-p1-view-orders] Sign in\n- P1 View orders",
+  ]) {
+    const invalid = `# Product\n## Requirements\n${items}\n`;
+    await f.put("docs/PRD.md", invalid);
+    const result = await f.run("brief", { path: "docs/PRD.md" });
+    assert.equal(result.code, 1);
+    assert.equal(result.value.ok, false);
+    assert.equal(result.value.error.code, "OPERATION_FAILED");
+    assert.match(result.value.error.message, /显式需求 ID|重复|冲突/u);
+    assert.equal(await readFile(join(f.project, "docs/PRD.md"), "utf8"), invalid);
+    assert.equal(await readFile(join(f.project, path), "utf8"), saved);
+  }
+});
+
 test("concurrent creators and editors have one winner and preserve the committed JSON", async (t) => {
   const f = await fixture(t);
   const created = await Promise.all(

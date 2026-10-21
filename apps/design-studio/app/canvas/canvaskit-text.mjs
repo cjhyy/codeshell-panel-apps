@@ -1,6 +1,26 @@
+import { textLineHeightPixels } from "../text-line-height.mjs";
 import { designFillPaints, gradientMatrix } from "../paint.mjs";
-import { designFontFamilyCss } from "../font-css.mjs";
+import { designFontFamilyCss, designNamedFontFamilyCss, designResourceFontFamilyCss } from "../font-css.mjs";
 import { currentTextMetrics } from "../text-metrics.mjs";
+import { projectTextRanges, validateTextRanges } from "../text-ranges.mjs";
+
+export function canvasKitTextRangePlan(node, { suppliedFont = true, missingGlyphs = 0 } = {}) {
+  const payload = validateTextRanges(node);
+  if (!payload) return null;
+  const refuse = (detail) => {
+    const error = new Error(`TEXT_RANGES_UNSUPPORTED: ${String(node.id).slice(0, 100)} · ${detail}`);
+    error.code = "TEXT_RANGES_UNSUPPORTED";
+    throw error;
+  };
+  if (!suppliedFont || missingGlyphs)
+    refuse("范围文字需要完整的已提供字体；浏览器逐段缓存不能保证整段塑形");
+  if (node.fillPaints?.length || node.strokeWidth > 0 && !["none", "transparent"].includes(node.stroke))
+    refuse("范围文字的多层填色或描边尚不能准确绘制");
+  if (payload.ranges.some((range) => ["textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk"]
+    .some((key) => Object.hasOwn(range, key))))
+    refuse("范围下划线的自定义厚度、偏移或跳墨尚不能准确绘制；文字和样式已保留");
+  return projectTextRanges(node);
+}
 
 const rgba = (hex, alpha = 1) =>
   ["transparent", "none"].includes(hex)
@@ -38,15 +58,18 @@ export async function createCanvasKitText({
 }) {
   const provider = CK.TypefaceFontProvider.Make(),
     faces = new Map(),
+    aliasFamilies = new Map(),
     domFaces = [];
   let counters = initialCounters,
     unsupportedNode = initialUnsupportedNode;
   let currentNodes = new Map(design.nodes.map((node) => [node.id, node]));
   const rasterImages = new Map(),
     rasterPlans = new Map(),
+    devicePlans = new Map(),
     contentBoundsCache = new Map(),
     missingByNode = new Map(),
     unrenderedByNode = new Map();
+  let activeDeviceIds = new Set(), deviceRequestKey = null, deviceEligibility = null;
   const maxRasterPixels = 16 * 1024 * 1024;
   let rasterPixels = 0,
     rasterHits = 0,
@@ -96,7 +119,8 @@ export async function createCanvasKitText({
       if (!face) continue;
       const alias = `${fontPrefix}-${faces.size}`;
       provider.registerFont(resource.bytes, alias);
-      faces.set(id, { face, alias });
+      faces.set(id, { face, alias, family: descriptor.family });
+      if (typeof descriptor.family === "string") aliasFamilies.set(alias, descriptor.family);
       const domFace = new FontFace(alias, resource.bytes, {
         weight: "1 1000",
         style: descriptor.style || "normal",
@@ -114,9 +138,14 @@ export async function createCanvasKitText({
   }
 
   function configure(node, alias) {
-    measure.font = `${node.fontStyle || "normal"} ${node.fontWeight} ${node.fontSize}px ${designFontFamilyCss(alias ?? node.fontFamily)}`;
+    const family = alias === undefined ? designFontFamilyCss(node.fontFamily) :
+      aliasFamilies.has(alias) ? designResourceFontFamilyCss(node.fontFamily, aliasFamilies.get(alias), alias) :
+        designNamedFontFamilyCss(alias);
+    measure.font = `${node.fontStyle || "normal"} ${node.fontWeight} ${node.fontSize}px ${family}`;
     measure.textBaseline = "hanging";
     measure.textAlign = "left";
+    // Canvas "auto" can disable pairs that the editable SVG text still kerns.
+    if ("fontKerning" in measure) measure.fontKerning = "normal";
     if ("letterSpacing" in measure) measure.letterSpacing = `${node.letterSpacing || 0}px`;
   }
   function hangingOffset(node, alias) {
@@ -164,24 +193,40 @@ export async function createCanvasKitText({
       );
     return { bounds, left, top, bottom, padding, w, h };
   }
-  function estimatePixels(node, scale, alias) {
+  function lineGeometry(node, line, y, scale, alias, origin) {
+    const geometry = rasterBounds(node, line, scale, alias);
+    const x = alignedX(node, geometry.bounds.width);
+    if (!origin) return { ...geometry, x, offsetX: geometry.left - geometry.padding, offsetY: geometry.top - geometry.padding };
+    // Draw glyph coverage at its canonical device phase. The image's destination
+    // then lands on integer device pixels, avoiding a second interpolation pass.
+    const offsetX = Math.floor(x + geometry.left - geometry.padding + origin.x) - origin.x - x;
+    const offsetY = Math.floor(y + geometry.top - geometry.padding + origin.y) - origin.y - y;
+    return { ...geometry, x, offsetX, offsetY,
+      w: Math.max(geometry.w, Math.ceil(geometry.bounds.actualBoundingBoxRight + geometry.padding - offsetX)),
+      h: Math.max(geometry.h, Math.ceil(geometry.bottom + geometry.padding - offsetY)),
+    };
+  }
+  function estimatePixels(node, scale, alias, origin) {
     return String(node.text)
       .split("\n")
-      .reduce((sum, line) => {
-        const { w, h } = rasterBounds(node, line, scale, alias);
+      .reduce((sum, line, i) => {
+        const { w, h } = lineGeometry(node, line, node.y + i * textLineHeightPixels(node), scale, alias, origin);
         return sum + w * h;
       }, 0);
   }
-  function dropNodeImages(id) {
+  function dropNodeImages(id, kind) {
     for (const [key, entry] of rasterImages)
-      if (entry.nodeId === id) {
+      if (entry.nodeId === id && (!kind || entry.kind === kind)) {
         entry.image.delete();
         rasterPixels -= entry.pixels;
         rasterImages.delete(key);
       }
   }
   function rasterScaleForNode(node) {
-    return rasterPlans.get(node.id)?.scale ?? 2;
+    return activeDeviceIds.has(node.id) ? 1 : rasterPlans.get(node.id)?.scale ?? 2;
+  }
+  function rasterSamplingForNode(node) {
+    return activeDeviceIds.has(node.id) ? devicePlans.get(node.id)?.origin : null;
   }
   const rasterSignature = (node, alias) =>
     JSON.stringify([
@@ -192,6 +237,7 @@ export async function createCanvasKitText({
       node.fontWeight,
       node.fontStyle,
       node.lineHeight,
+      node.lineHeightUnit,
       node.letterSpacing,
       node.textAlign,
       node.textDecoration,
@@ -207,6 +253,7 @@ export async function createCanvasKitText({
     const signature = rasterSignature(node, alias);
     let plan = rasterPlans.get(node.id);
     if (!plan || plan.signature !== signature) {
+      deviceRequestKey = null;
       const scale = 2;
       dropNodeImages(node.id);
       plan = {
@@ -220,6 +267,55 @@ export async function createCanvasKitText({
       rasterPlans.set(node.id, plan);
     }
     return plan;
+  }
+  function trimDevicePlans(masterPixels, visibleIds = activeDeviceIds) {
+    let devicePixels = [...devicePlans.values()].reduce((sum, plan) => sum + plan.pixels, 0);
+    const cold = [...devicePlans].sort((a, b) =>
+      Number(visibleIds.has(a[0])) - Number(visibleIds.has(b[0])) || a[1].used - b[1].used);
+    for (const [id, plan] of cold) {
+      if (masterPixels + devicePixels <= maxRasterPixels) break;
+      dropNodeImages(id, "device");
+      devicePlans.delete(id);
+      activeDeviceIds.delete(id);
+      devicePixels -= plan.pixels;
+    }
+  }
+  function setDeviceSampling(origins = new Map(), { retainOffscreen = false, eligibleOrigins = origins } = {}) {
+    const requestKey = JSON.stringify([retainOffscreen, [...origins]]);
+    if (requestKey === deviceRequestKey && eligibleOrigins === deviceEligibility) return false;
+    const signature = () => JSON.stringify([...activeDeviceIds].map((id) => [id, devicePlans.get(id)?.origin]));
+    const before = signature();
+    // A device image remains correct when it leaves the viewport. Keep it in
+    // the display list so integer-pan return trips do not rebuild every tile.
+    if (!retainOffscreen) activeDeviceIds = new Set();
+    else for (const id of activeDeviceIds) {
+      const eligible = eligibleOrigins.get(id), cached = devicePlans.get(id)?.origin;
+      if (!eligible || !cached || eligible.x !== cached.x || eligible.y !== cached.y)
+        activeDeviceIds.delete(id);
+    }
+    for (const [id, origin] of origins) {
+      const master = rasterPlans.get(id);
+      if (!master) continue; // Native SkParagraph text never acquires bitmap variants.
+      let plan = devicePlans.get(id);
+      if (!plan || plan.origin.x !== origin.x || plan.origin.y !== origin.y) {
+        dropNodeImages(id, "device");
+        devicePlans.delete(id);
+        activeDeviceIds.delete(id);
+        try {
+          plan = { origin, pixels: estimatePixels(master.node, 1, master.alias, origin), used: ++rasterUse };
+          devicePlans.set(id, plan);
+        } catch {
+          // This optional variant cannot make a previously valid master fail.
+          continue;
+        }
+      }
+      plan.used = ++rasterUse;
+      activeDeviceIds.add(id);
+    }
+    trimDevicePlans([...rasterPlans.values()].reduce((sum, plan) => sum + plan.pixels, 0), new Set(origins.keys()));
+    deviceRequestKey = requestKey;
+    deviceEligibility = eligibleOrigins;
+    return before !== signature();
   }
   function setRasterScale(
     requestedScale,
@@ -239,6 +335,7 @@ export async function createCanvasKitText({
       total += pixels - plan.pixels;
     }
     if (!changes.size) return false;
+    deviceRequestKey = null;
     const cold = [...rasterPlans]
       .filter(([id, plan]) => !visibleNodeIds.has(id) && plan.scale > 2)
       .sort((a, b) => a[1].used - b[1].used);
@@ -255,6 +352,7 @@ export async function createCanvasKitText({
       dropNodeImages(id);
       Object.assign(plan, change, { used: ++rasterUse });
     }
+    trimDevicePlans(total);
     return true;
   }
   function beginScene(nextDesign) {
@@ -268,17 +366,32 @@ export async function createCanvasKitText({
         node.type === "text" &&
         rasterSignature(node) !== rasterSignature(currentNodes.get(node.id) ?? {}),
     );
+    if (contentChanged) {
+      deviceRequestKey = null;
+      // New/edited masters always get the full existing budget before optional
+      // device images. Otherwise a valid content revision could fail while an
+      // obsolete device variant still occupies its old pixels.
+      for (const id of devicePlans.keys()) dropNodeImages(id, "device");
+      devicePlans.clear();
+      activeDeviceIds.clear();
+    }
     currentNodes = new Map(nodes.map((node) => [node.id, node]));
     for (const [id, plan] of rasterPlans)
       if (currentNodes.get(id)?.type !== "text") {
         dropNodeImages(id);
         rasterPlans.delete(id);
+        deviceRequestKey = null;
+        devicePlans.delete(id);
+        activeDeviceIds.delete(id);
       } else if (plan.signature !== rasterSignature(currentNodes.get(id), plan.alias)) {
         // A content edit can make the previous high-quality line exceed the
         // budget even after it moves offscreen. Start the revision at 2x;
         // render() upgrades only text needed by the new viewport.
         dropNodeImages(id);
         rasterPlans.delete(id);
+        deviceRequestKey = null;
+        devicePlans.delete(id);
+        activeDeviceIds.delete(id);
       }
     if (contentChanged)
       for (const [id, plan] of rasterPlans)
@@ -311,7 +424,7 @@ export async function createCanvasKitText({
       .forEach((line, i) => {
         const metric = measure.measureText(line || " "),
           x = alignedX(node, metric.width);
-        const y = node.y + i * node.fontSize * node.lineHeight;
+        const y = node.y + i * textLineHeightPixels(node);
         left = Math.min(left, x - metric.actualBoundingBoxLeft);
         right = Math.max(right, x + metric.width, x + metric.actualBoundingBoxRight);
         top = Math.min(top, y - metric.actualBoundingBoxAscent);
@@ -331,10 +444,10 @@ export async function createCanvasKitText({
 
   function rasterLine(canvas, node, line, y, alias) {
     const plan = prepareRasterPlan(node, alias),
-      scale = plan.scale;
-    const { bounds, left, top, bottom, padding, w, h } = rasterBounds(node, line, scale, alias);
-    const x = alignedX(node, bounds.width);
-    const cacheKey = JSON.stringify([node.id, plan.signature, line, y, scale]);
+      origin = rasterSamplingForNode(node),
+      scale = origin ? 1 : plan.scale;
+    const { bounds, top, bottom, w, h, x, offsetX, offsetY } = lineGeometry(node, line, y, scale, alias, origin);
+    const cacheKey = JSON.stringify([node.id, plan.signature, line, y, scale, origin]);
     let image = rasterImages.get(cacheKey)?.image;
     if (!image) {
       if (rasterPixels + w * h > maxRasterPixels)
@@ -344,9 +457,10 @@ export async function createCanvasKitText({
       raster.height = h;
       const ctx = raster.getContext("2d", { willReadFrequently: true });
       ctx.scale(scale, scale);
-      ctx.translate(-left + padding, -top + padding);
+      ctx.translate(-offsetX, -offsetY);
       ctx.font = measure.font;
       ctx.textBaseline = "hanging";
+      if ("fontKerning" in ctx) ctx.fontKerning = "normal";
       if ("letterSpacing" in ctx) ctx.letterSpacing = `${node.letterSpacing || 0}px`;
       for (const fill of designFillPaints(node)) {
         if (fill.type === "SOLID") ctx.fillStyle = rgba(fill.color, fill.opacity);
@@ -399,7 +513,7 @@ export async function createCanvasKitText({
       if (!image) {
         throw new Error("Cannot create GPU-renderable system-text image");
       }
-      rasterImages.set(cacheKey, { image, nodeId: node.id, pixels: w * h });
+      rasterImages.set(cacheKey, { image, nodeId: node.id, kind: origin ? "device" : "master", pixels: w * h });
       rasterPixels += w * h;
       rasterMisses++;
     } else rasterHits++;
@@ -408,12 +522,64 @@ export async function createCanvasKitText({
     canvas.drawImageRectOptions(
       image,
       CK.XYWHRect(0, 0, w, h),
-      CK.XYWHRect(x + left - padding, y + top - padding, w / scale, h / scale),
+      CK.XYWHRect(x + offsetX, y + offsetY, w / scale, h / scale),
       CK.FilterMode.Linear,
       CK.MipmapMode.None,
       paint,
     );
     paint.delete();
+  }
+
+  function drawTextRanges(canvas, node, alias, lines, runs, baseline, metrics) {
+    const styleFor = (decoration) => new CK.TextStyle({
+      fontFamilies: [alias],
+      fontSize: node.fontSize,
+      fontStyle: {
+        weight: CK.FontWeight[weightKey(node.fontWeight)],
+        width: CK.FontWidth.Normal,
+        slant: node.fontStyle === "italic" ? CK.FontSlant.Italic : CK.FontSlant.Upright,
+      },
+      fontVariations: [{ axis: "wght", value: node.fontWeight }],
+      letterSpacing: node.letterSpacing || 0,
+      decoration: decoration === "underline" ? CK.UnderlineDecoration :
+        decoration === "line-through" ? CK.LineThroughDecoration : CK.NoDecoration,
+    });
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index];
+      const fragments = runs.filter((run) => run.lineIndex === index && run.text !== "\n");
+      if (fragments.map((run) => run.text).join("") !== line)
+        throw new Error("TEXT_RANGES_UNSUPPORTED: 范围显示映射不属于当前完整文字行");
+      let builder, paragraph;
+      const paints = [];
+      try {
+        builder = CK.ParagraphBuilder.MakeFromFontProvider(
+          new CK.ParagraphStyle({ textStyle: styleFor(node.textDecoration), maxLines: 1 }), provider,
+        );
+        const background = new CK.Paint();
+        background.setAlphaf(0);
+        paints.push(background);
+        for (const run of fragments.length ? fragments : [{ text: " ", style: { fill: node.fill, textDecoration: node.textDecoration } }]) {
+          const foreground = makePaint(node, { type: "SOLID", color: run.style.fill, opacity: 1 });
+          paints.push(foreground);
+          builder.pushPaintStyle(styleFor(run.style.textDecoration), foreground, background);
+          builder.addText(run.text);
+          builder.pop();
+        }
+        // All paint runs share one builder/line and identical typography. Never
+        // shape substrings or place independent run Text/Canvas2D fragments.
+        paragraph = builder.build();
+        paragraph.layout(1048576);
+        const width = paragraph.getLongestLine();
+        if (metrics)
+          maxWidthDelta = Math.max(maxWidthDelta, Math.abs(width - metrics.lineWidths[index]));
+        canvas.drawParagraph(paragraph, alignedX(node, width),
+          node.y + index * textLineHeightPixels(node) + baseline - paragraph.getAlphabeticBaseline());
+      } finally {
+        paragraph?.delete();
+        builder?.delete();
+        for (const paint of paints) paint.delete();
+      }
+    }
   }
 
   function draw(canvas, node, nextCounters = counters, nextUnsupported = unsupportedNode) {
@@ -422,10 +588,12 @@ export async function createCanvasKitText({
     missingByNode.delete(node.id);
     unrenderedByNode.delete(node.id);
     const entry = faces.get(node.fontRef) ?? faces.get(node.fontFamily);
+    const rangePayload = node.textRanges === undefined ? undefined : validateTextRanges(node);
     const lines = String(node.text).split("\n"),
       metrics = currentTextMetrics(node);
     counters.textLines += lines.length;
     if (!entry) {
+      if (rangePayload) canvasKitTextRangePlan(node, { suppliedFont: false });
       counters.rasterTextNodes++;
       unsupportedNode(
         node,
@@ -442,7 +610,7 @@ export async function createCanvasKitText({
         return;
       }
       lines.forEach((line, i) =>
-        rasterLine(canvas, node, line, node.y + i * node.fontSize * node.lineHeight),
+        rasterLine(canvas, node, line, node.y + i * textLineHeightPixels(node)),
       );
       return;
     }
@@ -453,6 +621,7 @@ export async function createCanvasKitText({
     );
     const missing = [...glyphs].filter((glyph) => glyph === 0).length;
     probe.delete();
+    const rangeRuns = rangePayload ? canvasKitTextRangePlan(node, { missingGlyphs: missing }) : null;
     if (missing) {
       missingByNode.set(node.id, missing);
       counters.rasterTextNodes++;
@@ -462,16 +631,23 @@ export async function createCanvasKitText({
         `${missing} glyphs absent from supplied font; browser same-family raster cache`,
       );
       lines.forEach((line, i) =>
-        rasterLine(canvas, node, line, node.y + i * node.fontSize * node.lineHeight, entry.alias),
+        rasterLine(canvas, node, line, node.y + i * textLineHeightPixels(node), entry.alias),
       );
       return;
     }
     if (rasterPlans.has(node.id)) {
       dropNodeImages(node.id);
       rasterPlans.delete(node.id);
+      deviceRequestKey = null;
+      devicePlans.delete(node.id);
+      activeDeviceIds.delete(node.id);
     }
     counters.nativeTextNodes++;
     const baseline = hangingOffset(node, entry.alias);
+    if (rangeRuns) {
+      drawTextRanges(canvas, node, entry.alias, lines, rangeRuns, baseline, metrics);
+      return;
+    }
     lines.forEach((line, i) => {
       const style = new CK.TextStyle({
         fontFamilies: [entry.alias],
@@ -507,7 +683,7 @@ export async function createCanvasKitText({
         shape.layout(1048576);
         const width = shape.getLongestLine();
         x = alignedX(node, width);
-        y = node.y + i * node.fontSize * node.lineHeight + baseline - shape.getAlphabeticBaseline();
+        y = node.y + i * textLineHeightPixels(node) + baseline - shape.getAlphabeticBaseline();
         shape.delete();
         if (metrics)
           maxWidthDelta = Math.max(maxWidthDelta, Math.abs(width - metrics.lineWidths[i]));
@@ -540,7 +716,10 @@ export async function createCanvasKitText({
     draw,
     beginScene,
     setRasterScale,
+    setDeviceSampling,
+    hasDeviceSampling: () => activeDeviceIds.size > 0,
     rasterScaleForNode,
+    rasterSamplingForNode,
     contentBounds,
     stats: () => ({
       loadedFontResources: faces.size,
@@ -554,14 +733,19 @@ export async function createCanvasKitText({
       rasterTextCacheHits: rasterHits,
       rasterTextCacheMisses: rasterMisses,
       rasterNodeScales: [...rasterPlans].map(([nodeId, plan]) => ({ nodeId, scale: plan.scale })),
+      deviceTextNodes: activeDeviceIds.size,
+      deviceTextCacheVariants: devicePlans.size,
     }),
     dispose() {
       for (const entry of rasterImages.values()) entry.image.delete();
       rasterImages.clear();
       rasterPlans.clear();
+      devicePlans.clear();
+      activeDeviceIds.clear();
       contentBoundsCache.clear();
       rasterPixels = 0;
       for (const { face } of faces.values()) face.delete();
+      aliasFamilies.clear();
       for (const face of domFaces) document.fonts.delete(face);
       provider.delete();
     },

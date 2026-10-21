@@ -1,5 +1,7 @@
+import { normalizeNativeTextSupplement, copyNativeTextEnvelope } from "./native-text-import.mjs";
 /* Local asset tables for the Figma bridge. Binary bytes never enter the design schema. */
 import { createDesignResourcePersistencePlan, MAX_DESIGN_RESOURCES } from "./resource-store.mjs";
+import { imageMimeFromBytes } from "./image-mime.mjs";
 
 export const MAX_FIGMA_ASSET_BYTES = 8 * 1024 * 1024;
 export const MAX_FIGMA_ASSET_TOTAL_BYTES = 12 * 1024 * 1024;
@@ -33,23 +35,7 @@ export function normalizeFigmaAsset(value) {
   const base64 = match?.[2] ?? value?.base64;
   if (!MIMES.has(mime)) throw new Error("Figma 图片 MIME 类型不受支持。");
   const bytes = decodeFigmaAsset(base64);
-  const signature = [...bytes.slice(0, 12)];
-  const valid =
-    mime === "image/png"
-      ? signature.slice(0, 8).join(",") === "137,80,78,71,13,10,26,10"
-      : mime === "image/jpeg"
-        ? signature[0] === 255 && signature[1] === 216 && signature[2] === 255
-        : mime === "image/gif"
-          ? String.fromCharCode(...signature.slice(0, 6)).startsWith("GIF8")
-          : mime === "image/webp"
-            ? String.fromCharCode(...signature.slice(0, 4)) === "RIFF" &&
-              String.fromCharCode(...signature.slice(8, 12)) === "WEBP"
-            : new TextDecoder()
-                .decode(bytes.slice(0, 1024))
-                .replace(/^\uFEFF/u, "")
-                .trimStart()
-                .match(/^(?:<\?xml[^>]*>\s*)?<svg[\s>]/iu);
-  if (!valid) throw new Error("Figma 图片字节与 MIME 类型不一致。");
+  if (imageMimeFromBytes(bytes) !== mime) throw new Error("Figma 图片字节与 MIME 类型不一致。");
   return { mime, base64, bytes };
 }
 
@@ -67,7 +53,9 @@ export function normalizeFigmaSource(input) {
   } else {
     let content;
     try {
-      content = JSON.stringify(input);
+      // A source carrying native observations must not execute a toJSON or
+      // accessor hook before its complete16MiB budget is measured.
+      content = JSON.stringify(Object.hasOwn(input ?? {}, "nativeTextRanges") ? copyNativeTextEnvelope(input) : input);
     } catch {
       throw new Error("Figma JSON 包含循环或不可序列化数据。");
     }
@@ -168,6 +156,7 @@ export function normalizeFigmaSource(input) {
       )
         throw new Error("Figma 选区父级变换无效。");
   }
+  const nativeTextRanges = normalizeNativeTextSupplement(value.nativeTextRanges);
   return {
     format: "codeshell.figma.source",
     version: 1,
@@ -176,6 +165,7 @@ export function normalizeFigmaSource(input) {
     nodes,
     assets,
     previews,
+    ...(nativeTextRanges ? { nativeTextRanges } : {}),
     ...(value.selection ? { selection: value.selection } : {}),
     ...(Array.isArray(value.warnings)
       ? { warnings: value.warnings.slice(0, 200).map((warning) => String(warning).slice(0, 2000)) }

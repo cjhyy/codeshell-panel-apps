@@ -1,5 +1,7 @@
 # CodeShell Design Bridge
 
+CSS 线性渐变的角度和像素色标按当前尺寸创建为可编辑原生渐变，并保留有界来源意图。Figma 内改变尺寸可能改变其物理角度或色标位置；导回 Design Studio 时，这类已变化的原生几何保留当前外观，原 CSS 意图标记为 `sourceOnly`，不会自行重新启用。需要继续按 CSS 规则调整尺寸时，请在 Design Studio 显式编辑来源意图并核对结果。
+
 This local development plugin connects Figma with the CodeShell Design Studio panel through JSON files. It does not access the network or need a Figma access token. It does not read or write binary `.fig` files.
 
 1. In Figma Desktop, use **Plugins → Development → New plugin** to create a plugin with a UI. Copy the `id` from its generated `manifest.json`; Figma must assign this ID.
@@ -14,13 +16,17 @@ New-page imports validate the entire transfer and preflight all text fonts befor
 
 Design Studio's bundled `builtin-fa-*-5-*` resources contain complete Font Awesome 6.7.2 bytes under the original FA5 family aliases. New native copies of those nodes explicitly require Font Awesome 6 Free or Brands, preserving newer glyphs such as `U+E586`; an installed older FA5 font cannot substitute for this requirement. Their original family and characters remain unchanged in the transfer and source binding. External FA5 font resources keep their original family. Original-design patch edits also retain the requested original family.
 
-The editable subset includes frames, rectangles, ellipses, plain text, local image fills, solid fills, centered strokes, a single drop shadow, clipping, horizontal/vertical Auto Layout, spacing, padding, constraints, and supported sizing modes. Image bytes travel in a separate bounded asset table and become verified external resources in the design repository. SVG and WebP resources are converted locally to PNG in the plugin UI before importing into Figma. Organizational groups and components are recreated as frames in copies; Grid and reverse layouts retain fixed geometry.
+The editable subset includes frames, rectangles, ellipses, plain text, local image fills, solid fills, legacy centered strokes, bounded solid independent side weights with inside/center/outside alignment, a single drop shadow, clipping, horizontal/vertical Auto Layout, native Grid, spacing, padding, constraints, and supported sizing modes. Image bytes travel in a separate bounded asset table and become verified external resources in the design repository. SVG and WebP resources are converted locally to PNG in the plugin UI before importing into Figma. Organizational groups and components are recreated as frames in copies; reverse layouts retain fixed geometry.
+
+Native Grid preserves 1–24 rows/columns, FIXED/FLEX/HUG tracks (including fractional weights), separate gaps, padding, manual child anchors, spans, independent horizontal/vertical cell alignment, row auto-flow and automatic rows. FLEX tracks require a non-HUG container axis. The plugin configures an empty GRID using live track setters, assigns child positions/spans while in MANUAL mode, then restores flow and automatic-row settings. It preserves fixed sizes before resolving child FILL and container HUG. Legacy equal-column grids remain valid. Grid export supplements official JSON_REST_V1 with actual native properties so APIs that omit newer Grid fields cannot silently flatten the layout. Missing native APIs and unrepresentable track distributions fail with actionable errors. Imports missing complete source Grid metadata explicitly report a fixed-geometry fallback. Advanced Grid field edits in original-node patches remain diagnosed as unsupported; apply them through a new-page copy.
 
 Exported source packages retain official raw node JSON, source IDs, local image bytes, and SVG plus PNG previews for complex vectors, masks, gradients, and mixed text. Complex content appears as a visible image fallback in the design panel. Its paths, variables, component links, rich styles, and unknown Figma properties remain in the source record. Incremental updates modify the reviewed properties while retaining untouched original data and node identities. New-page copies of those fallbacks remain images. This is not a binary `.fig` codec or a universal lossless importer. Layer notes and panel-only layout metadata use private plugin data; they do not become Figma cloud comments. Missing fonts block original text edits rather than replacing original rich text fonts silently.
 
 Limits: 128 MiB for a complete design file; 16 MiB for the converted Figma transfer and existing transfer input; 1,000 pages, 10,000 editable nodes per page, 50,000 nodes per transfer, 32 nested editable levels, 2,048 image assets, 8 MiB per image and 12 MiB total image bytes, 256 complex root previews. Figma image creation supports PNG/JPEG/GIF with a maximum 4K dimension. Large designs should be exported in separate pages or selections. Selected layers whose ancestors are also selected are exported once.
 
 The plugin UI includes a generated, self-contained browser adapter compiled from the same Panel document, portable-file and transfer modules. Its installed `manifest.json`, `code.js`, and `ui.html` need no Node.js, repository checkout, runtime imports, CDN or network permission. The main Figma sandbox keeps the existing validated transfer protocol.
+
+Independent sides retain their native widths and one shared RGB/alpha paint; multicolor sides are rejected before mutation. Native solid joins use MITER. Non-MITER joins, unequal rounded sides and adjacent sides with different opacity are explicitly diagnosed. CSS-derived copies keep effective border insets in padding with native stroke layout inclusion disabled; source-bound edits preserve included-layout padding and concurrent style guards.
 
 After changing the adapter or its shared schemas, regenerate and check the committed UI from the repository:
 
@@ -40,3 +46,27 @@ Official API references:
 - [Local image bytes](https://developers.figma.com/docs/plugins/api/Image/)
 - [Image creation](https://developers.figma.com/docs/plugins/api/figma/)
 - [Fonts and mixed text](https://developers.figma.com/docs/plugins/working-with-text/)
+
+- [Grid track types and fractional values](https://developers.figma.com/docs/plugins/api/GridTrackSize/)
+- [Live Grid track setters](https://developers.figma.com/docs/plugins/api/properties/nodes-gridrowsizes/)
+- [Grid item positioning](https://developers.figma.com/docs/plugins/api/properties/nodes-griditemspositioning/)
+- [Automatic Grid rows](https://developers.figma.com/docs/plugins/api/properties/nodes-gridautotracks/)
+- [Grid span bounds and occupancy](https://developers.figma.com/docs/plugins/api/properties/nodes-gridrowspan/)
+
+Axis-FILL children touching a HUG track currently require a fixed track or a HUG/fixed child to avoid an unmodeled intrinsic-size cycle. This is diagnosed explicitly before claiming native Grid fidelity. Automatic rows derive the current occupied row count (within 24), extending new canonical rows as HUG and trimming trailing empty rows. Interior empty manual rows with automatic-row mode are diagnosed because Figma removes empty rows.
+
+
+Empty native stroke arrays preserve their inactive alignment, scalar/side weights and applicable
+layout inclusion in optional `nativeStrokeInactive`; visible canonical stroke remains transparent
+with width zero. Copies assign no stroke paints and restore only known style fields. Auto Layout
+inclusion is applied after its mode becomes active; freeform frames never receive that setter.
+REST omitted false inclusion is recorded separately from raw field presence. Unsupported extra
+style/mixed tuples or explicit inclusion on a freeform frame block a new copy; source-bound
+unrelated edits can retain the original styles. Width/alignment/raw-presence changes participate in
+patch concurrency checks even when no stroke currently paints.
+
+Panel activation/removal and source patches preserve included INSIDE raw padding through symmetric
+physical inset projection. Text INSIDE/OUTSIDE activation requires the user to choose Center; it is
+not silently converted to centered text. Strict CPU model, mock API and browser comparisons verify
+these bounded paths; original-versus-returned native activation remains a separate real Figma
+acceptance requirement. Existing raw inactive-field loss receipts are retained as baseline evidence.

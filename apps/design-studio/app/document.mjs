@@ -1,3 +1,15 @@
+import { normalizeShadowStack, validateShadowStack, shadowStackSvg, shadowStackOutsets } from "./shadow-stack.mjs";
+import { validTextLineHeight, textLineHeightPixels } from "./text-line-height.mjs";
+import { validateTextRanges, projectTextRanges } from "./text-ranges.mjs";
+import { validateLayoutSpacing } from "./layout-spacing.mjs";
+import { normalizeCornerRadii, roundedRectSvgGeometry } from "./corner-radii.mjs";
+import { normalizeStrokeSides, validateDesignStroke, hasDesignStroke, designStrokeSvg, designStrokeOutset } from "./stroke.mjs";
+import {
+  GRID_CONTAINER_FIELDS,
+  GRID_CHILD_FIELDS,
+  validateGridFields,
+  normalizeGridTracks,
+} from "./grid.mjs";
 import { normalizeDesignPaints, designPaintSvg, representativeDesignFill } from "./paint.mjs";
 /* Repository document codec used by the Design Studio Panel App. */
 import {
@@ -8,7 +20,7 @@ import {
 } from "./geometry.mjs";
 import { normalizeDesignResources } from "./resource-store.mjs";
 import { validTextMetrics } from "./text-metrics.mjs";
-import { designFontFaceCss, designFontFamilyCss } from "./font-css.mjs";
+import { designFontFaceCss, designFontFamilyCss, designResourceFontFamilyCss } from "./font-css.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 export const MAX_DESIGN_PAGES = 1_000;
@@ -126,9 +138,14 @@ function normalizedNode(candidate, parentId) {
       : {}),
     stroke: candidate.stroke.toLowerCase(),
     strokeWidth: candidate.strokeWidth,
+    ...(candidate.nativeStrokeInactive !== undefined ? { nativeStrokeInactive: structuredClone(candidate.nativeStrokeInactive) } : {}),
+    ...(candidate.strokeAlign !== undefined ? {strokeAlign:candidate.strokeAlign} : {}),
+    ...(candidate.strokeSides !== undefined ? {strokeSides:normalizeStrokeSides(candidate.strokeSides)} : {}),
+    ...(candidate.strokeLayoutExcluded !== undefined ? { strokeLayoutExcluded: candidate.strokeLayoutExcluded } : {}),
     opacity: candidate.opacity,
     rotation: candidate.rotation,
     cornerRadius: candidate.cornerRadius,
+    ...(candidate.cornerRadii !== undefined ? { cornerRadii: normalizeCornerRadii(candidate.cornerRadii) } : {}),
     visible: candidate.visible,
     locked: candidate.locked,
     ...(parentId ? { parentId } : {}),
@@ -137,6 +154,7 @@ function normalizedNode(candidate, parentId) {
     ...(candidate.contentClipping !== undefined
       ? { contentClipping: candidate.contentClipping }
       : {}),
+    ...(candidate.shadowStack !== undefined ? {shadowStack: normalizeShadowStack(candidate.shadowStack)} : {}),
     ...(candidate.shadow !== undefined
       ? {
           shadow: {
@@ -154,11 +172,14 @@ function normalizedNode(candidate, parentId) {
     node.fontSize = candidate.fontSize;
     node.fontWeight = candidate.fontWeight;
     node.lineHeight = candidate.lineHeight;
+    if (candidate.lineHeightUnit !== undefined) node.lineHeightUnit = candidate.lineHeightUnit;
     node.textAlign = candidate.textAlign;
     if (candidate.fontFamily !== undefined) node.fontFamily = candidate.fontFamily;
     if (candidate.fontStyle !== undefined) node.fontStyle = candidate.fontStyle;
     if (candidate.letterSpacing !== undefined) node.letterSpacing = candidate.letterSpacing;
     if (candidate.textDecoration !== undefined) node.textDecoration = candidate.textDecoration;
+    const ranges = validateTextRanges(candidate);
+    if (ranges) node.textRanges = ranges;
     if (candidate.textMeasurement !== undefined) node.textMeasurement = candidate.textMeasurement;
     if (candidate.textMetrics !== undefined)
       node.textMetrics = structuredClone(candidate.textMetrics);
@@ -166,6 +187,7 @@ function normalizedNode(candidate, parentId) {
     if (candidate.textFlow !== undefined) node.textFlow = candidate.textFlow;
     if (candidate.textOverflow !== undefined) node.textOverflow = candidate.textOverflow;
     if (candidate.textFlowWidth !== undefined) node.textFlowWidth = candidate.textFlowWidth;
+    if (candidate.layoutBaselineSource !== undefined) node.layoutBaselineSource = candidate.layoutBaselineSource;
     if (candidate.layoutBaselineOffset !== undefined) {
       node.layoutBaselineOffset = candidate.layoutBaselineOffset;
     }
@@ -195,6 +217,9 @@ function normalizedNode(candidate, parentId) {
     node.justifyContent = candidate.justifyContent ?? "start";
     if (candidate.alignContent !== undefined) node.alignContent = candidate.alignContent;
     if (candidate.gridColumns !== undefined) node.gridColumns = candidate.gridColumns;
+    for (const key of GRID_CONTAINER_FIELDS)
+      if (candidate[key] !== undefined)
+        node[key] = key.endsWith("Sizes") ? normalizeGridTracks(candidate[key]) : candidate[key];
   }
   for (const property of [
     "minWidth",
@@ -208,6 +233,7 @@ function normalizedNode(candidate, parentId) {
     "layoutMarginBefore",
     "gridColumnSpan",
     "gridRowSpan",
+    ...GRID_CHILD_FIELDS,
     "constraintHorizontal",
     "constraintVertical",
     "constraintBaseWidth",
@@ -263,6 +289,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "effectClipping",
     "contentClipping",
     "shadow",
+    "shadowStack",
     "x",
     "y",
     "width",
@@ -271,9 +298,14 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "fillPaints",
     "stroke",
     "strokeWidth",
+    "nativeStrokeInactive",
+    "strokeAlign",
+    "strokeSides",
+    "strokeLayoutExcluded",
     "opacity",
     "rotation",
     "cornerRadius",
+    "cornerRadii",
     "visible",
     "locked",
     "clipContent",
@@ -281,11 +313,13 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "fontSize",
     "fontWeight",
     "lineHeight",
+    "lineHeightUnit",
     "textAlign",
     "fontFamily",
     "fontStyle",
     "letterSpacing",
     "textDecoration",
+    "textRanges",
     "textMeasurement",
     "textMetrics",
     "textSource",
@@ -293,6 +327,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "textOverflow",
     "textFlowWidth",
     "layoutBaselineOffset",
+    "layoutBaselineSource",
     "fontRef",
     "imageRef",
     "objectFit",
@@ -311,6 +346,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "justifyContent",
     "alignContent",
     "gridColumns",
+    ...GRID_CONTAINER_FIELDS,
     "minWidth",
     "maxWidth",
     "minHeight",
@@ -322,6 +358,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "layoutMarginBefore",
     "gridColumnSpan",
     "gridRowSpan",
+    ...GRID_CHILD_FIELDS,
     "constraintHorizontal",
     "constraintVertical",
     "constraintBaseWidth",
@@ -369,6 +406,12 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
   ) {
     throw new Error(`图层 ${candidate.id} 的填充或描边色值无效`);
   }
+  if (candidate.cornerRadii !== undefined) {
+    normalizeCornerRadii(candidate.cornerRadii);
+    if (!["frame", "rectangle", "component", "image"].includes(candidate.type))
+      throw new Error(`图层 ${candidate.id} 的类型不支持 cornerRadii`);
+  }
+  validateDesignStroke(candidate);
   if (candidate.fillPaints !== undefined) {
     normalizeDesignPaints(candidate.fillPaints);
     if (["group", "instance", "image"].includes(candidate.type))
@@ -383,6 +426,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
   ) {
     throw new Error(`图层 ${candidate.id} 的 notes 无效`);
   }
+  validateShadowStack(candidate);
   if (candidate.shadow !== undefined) {
     if (candidate.type === "group") {
       throw new Error(`编组 ${candidate.id} 不支持投影；请把投影应用到有可见填充的子图层`);
@@ -432,11 +476,13 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       "fontSize",
       "fontWeight",
       "lineHeight",
+      "lineHeightUnit",
       "textAlign",
       "fontFamily",
       "fontStyle",
       "letterSpacing",
       "textDecoration",
+      "textRanges",
       "textMeasurement",
       "textMetrics",
       "textSource",
@@ -444,6 +490,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       "textOverflow",
       "textFlowWidth",
       "layoutBaselineOffset",
+      "layoutBaselineSource",
       "fontRef",
     ].some((property) => Object.prototype.hasOwnProperty.call(candidate, property))
   ) {
@@ -458,10 +505,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       candidate.fontSize < 6 ||
       candidate.fontSize > 240 ||
       ![100, 200, 300, 400, 500, 600, 700, 800, 900].includes(candidate.fontWeight) ||
-      typeof candidate.lineHeight !== "number" ||
-      !Number.isFinite(candidate.lineHeight) ||
-      candidate.lineHeight < 0.7 ||
-      candidate.lineHeight > 3 ||
+      !validTextLineHeight(candidate) ||
       !["left", "center", "right"].includes(candidate.textAlign) ||
       (candidate.fontFamily !== undefined &&
         (typeof candidate.fontFamily !== "string" ||
@@ -483,7 +527,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       (candidate.textFlow !== undefined && candidate.textFlow !== "wrap") ||
       (candidate.textOverflow !== undefined && candidate.textOverflow !== "ellipsis") ||
       (candidate.textFlow === "wrap" &&
-        (typeof candidate.textSource !== "string" || !candidate.textSource.trim())) ||
+        (typeof candidate.textSource !== "string" || candidate.textSource.length === 0)) ||
       (candidate.textOverflow === "ellipsis" &&
         (typeof candidate.textSource !== "string" || !candidate.textSource.trim())) ||
       (candidate.textFlowWidth !== undefined &&
@@ -491,6 +535,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
           !Number.isFinite(candidate.textFlowWidth) ||
           candidate.textFlowWidth < 1 ||
           candidate.textFlowWidth > 20000)) ||
+      (candidate.layoutBaselineSource !== undefined && !["native", "html"].includes(candidate.layoutBaselineSource)) ||
       (candidate.layoutBaselineOffset !== undefined &&
         (typeof candidate.layoutBaselineOffset !== "number" ||
           !Number.isFinite(candidate.layoutBaselineOffset) ||
@@ -502,6 +547,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
   ) {
     throw new Error(`文字图层 ${candidate.id} 的文字属性无效`);
   }
+  validateTextRanges(candidate);
   if (
     candidate.type === "image" &&
     (typeof candidate.imageRef !== "string" ||
@@ -565,8 +611,9 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       "paddingLeft",
     ]) {
       if (candidate[property] === undefined) continue;
-      assertFiniteRange(candidate[property], 0, 2000, `容器 ${candidate.id}.${property}`);
+      assertFiniteRange(candidate[property], ["gap", "rowGap", "columnGap"].includes(property) ? -2000 : 0, 2000, `容器 ${candidate.id}.${property}`);
     }
+    validateLayoutSpacing(candidate);
     if (!["start", "center", "end", "stretch", "baseline"].includes(candidate.alignItems)) {
       throw new Error(`容器 ${candidate.id} 的 alignItems 无效`);
     }
@@ -607,6 +654,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       "justifyContent",
       "alignContent",
       "gridColumns",
+      ...GRID_CONTAINER_FIELDS,
     ].some((property) => Object.prototype.hasOwnProperty.call(candidate, property))
   ) {
     throw new Error(`图层 ${candidate.id} 包含容器专属布局字段`);
@@ -691,6 +739,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
   ) {
     throw new Error(`非绝对定位图层 ${candidate.id} 包含 Constraints 字段`);
   }
+  validateGridFields(candidate, container);
   for (const property of ["gridColumnSpan", "gridRowSpan"]) {
     if (
       candidate[property] !== undefined &&
@@ -787,6 +836,9 @@ function nestFlatNodes(nodes) {
     if (visiting.has(node.id)) throw new Error(`图层层级存在循环：${node.id}`);
     visiting.add(node.id);
     const { parentId: _parentId, children: _children, ...copy } = node;
+    const ranges = validateTextRanges(node);
+    if (ranges) copy.textRanges = ranges;
+    else delete copy.textRanges;
     if (isContainerType(node.type)) {
       copy.children = (childrenByParent.get(node.id) ?? []).map((child) => build(child, depth + 1));
     }
@@ -1126,14 +1178,11 @@ function renderedSourceNodeEffectBounds(document, nodes, node, instanceStack, av
       ? renderedDesignInstanceEffectOutsets(document, node, instanceStack, availableNodes)
       : emptyEffectOutsets();
   const visibleShadow = node.shadow?.opacity > 0 ? node.shadow : null;
-  const strokeOutset =
-    !["group", "instance"].includes(node.type) &&
-    node.stroke !== "transparent" &&
-    node.strokeWidth > 0
-      ? node.strokeWidth / 2
-      : 0;
+  const strokeOutset = !["group", "instance"].includes(node.type) ? designStrokeOutset(node) : 0;
+  const stackOutsets = shadowStackOutsets(node, (node.rotation??0)+inheritedNodeRotation(nodes,node));
+  const hasStackEffect = Object.values(stackOutsets).some(value=>value>0);
   const hasInstanceEffect = Object.values(instanceOutsets).some((value) => value > 0);
-  if (!visibleShadow && !hasInstanceEffect && strokeOutset <= 0) {
+  if (!visibleShadow && !hasInstanceEffect && !hasStackEffect && strokeOutset <= 0) {
     return clipNodeBoundsToClippingAncestors(nodes, node);
   }
   const shadowOutset = visibleShadow?.blur * 1.5 || 0;
@@ -1144,6 +1193,7 @@ function renderedSourceNodeEffectBounds(document, nodes, node, instanceStack, av
   const rotatedInstanceOutset =
     totalRotation % 360 === 0 ? 0 : Math.max(...Object.values(instanceOutsets));
   const leftOutset = Math.max(
+    stackOutsets.left,
     rotatedInstanceOutset || instanceOutsets.left,
     strokeOutset,
     visibleShadow
@@ -1151,6 +1201,7 @@ function renderedSourceNodeEffectBounds(document, nodes, node, instanceStack, av
       : 0,
   );
   const topOutset = Math.max(
+    stackOutsets.top,
     rotatedInstanceOutset || instanceOutsets.top,
     strokeOutset,
     visibleShadow
@@ -1158,11 +1209,13 @@ function renderedSourceNodeEffectBounds(document, nodes, node, instanceStack, av
       : 0,
   );
   const rightOutset = Math.max(
+    stackOutsets.right,
     rotatedInstanceOutset || instanceOutsets.right,
     strokeOutset,
     visibleShadow ? strokeOutset + shadowOutset + (rotatedShadowOffset || Math.max(0, shadowX)) : 0,
   );
   const bottomOutset = Math.max(
+    stackOutsets.bottom,
     rotatedInstanceOutset || instanceOutsets.bottom,
     strokeOutset,
     visibleShadow ? strokeOutset + shadowOutset + (rotatedShadowOffset || Math.max(0, shadowY)) : 0,
@@ -1241,12 +1294,7 @@ export function renderedDesignNodeShadowFilterBounds(
     node.type === "instance"
       ? renderedDesignInstanceEffectOutsets(document, node, new Set(), availableNodes)
       : emptyEffectOutsets();
-  const strokeOutset =
-    !["group", "instance"].includes(node.type) &&
-    node.stroke !== "transparent" &&
-    node.strokeWidth > 0
-      ? node.strokeWidth / 2
-      : 0;
+  const strokeOutset = !["group", "instance"].includes(node.type) ? designStrokeOutset(node) : 0;
   const baseLeft = node.x - instanceOutsets.left - strokeOutset;
   const baseTop = node.y - instanceOutsets.top - strokeOutset;
   const baseRight = node.x + node.width + instanceOutsets.right + strokeOutset;
@@ -1396,20 +1444,38 @@ function exportNodeSvg(
       ? document.resources?.find((resource) => resource.id === node.fontRef)
       : null;
     const fontFamily = escapeXml(
-      designFontFamilyCss(
-        fontResource?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
+      fontResource ? designResourceFontFamilyCss(node.fontFamily, fontResource.family) : designFontFamilyCss(
+        node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
       ),
     );
     const fontStyle = node.fontStyle ?? "normal";
     const letterSpacing = node.letterSpacing ?? 0;
     const textDecoration = node.textDecoration ?? "none";
+    if (node.textRanges !== undefined) {
+      const runs = projectTextRanges(node);
+      if (runs.some((run) => run.overrides && ["textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk"].some((key) => Object.hasOwn(run.overrides, key)))) {
+        const error = new Error("SVG 文字尚不能保留范围自定义下划线厚度、偏移或 skip-ink；未输出近似样式");
+        error.code = "TEXT_RANGES_SVG_UNSUPPORTED_DECORATION";
+        throw error;
+      }
+      const lines = String(node.text).split("\n").map((_line, index) => {
+        const spans = runs.filter((run) => run.lineIndex === index && run.kind === "source" && run.text !== "\n").map((run) => {
+          const style = run.style;
+          const declarations = [`fill:${style.fill}`, `color:${style.fill}`, `text-decoration-line:${style.textDecoration}`, `text-decoration-color:${style.fill}`];
+          const span = `<tspan style="${escapeXml(declarations.join(";"))}">${escapeXml(run.text)}</tspan>`;
+          return run.href === undefined ? span : `<a href="${escapeXml(run.href)}" style="fill:inherit;text-decoration:none">${span}</a>`;
+        }).join("");
+        return `    <text x="${round(textX)}" y="${round(node.y + index * textLineHeightPixels(node))}" stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="none" text-anchor="${anchor}" dominant-baseline="hanging" xml:space="preserve">${spans || " "}</text>`;
+      }).join("\n");
+      return clipped(`  <g${metadata}${opacity}${filter}${transform}>\n${lines}\n  </g>`);
+    }
     // Separate text elements are more portable than tspans: several native
     // SVG renderers ignore tspan x/y or dy and collapse every line together.
     const lines = String(node.text)
       .split("\n")
       .map(
         (line, index) =>
-          `    <text x="${round(textX)}" y="${round(node.y + index * node.fontSize * node.lineHeight)}" ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="${textDecoration}" text-anchor="${anchor}" dominant-baseline="hanging">${escapeXml(line || " ")}</text>`,
+          `    <text x="${round(textX)}" y="${round(node.y + index * textLineHeightPixels(node))}" ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="${textDecoration}" text-anchor="${anchor}" dominant-baseline="hanging" xml:space="preserve">${escapeXml(line || " ")}</text>`,
       )
       .join("\n");
     return clipped(`  <g${metadata}${opacity}${filter}${transform}>\n${lines}\n  </g>`);
@@ -1428,12 +1494,23 @@ function exportNodeSvg(
           ? "xMidYMid meet"
           : "xMidYMid slice";
     return clipped(
-      `  <image${metadata} x="${round(node.x)}" y="${round(node.y)}" width="${round(node.width)}" height="${round(node.height)}" href="${escapeXml(href)}" preserveAspectRatio="${preserveAspectRatio}"${opacity}${filter}${transform} />`,
+      `  <g${opacity}${filter}><g clip-path="url(#${clipIds.get(node.id)})"><image${metadata} x="${round(node.x)}" y="${round(node.y)}" width="${round(node.width)}" height="${round(node.height)}" href="${escapeXml(href)}" preserveAspectRatio="${preserveAspectRatio}"${transform} /></g></g>`,
     );
   }
   if (node.type === "group") return "";
+  if (node.shadowStack) {
+    const shape = roundedRectSvgGeometry(node), stack = options.shadowStacks.get(node.id);
+    const stroke = hasDesignStroke(node) ? designStrokeSvg(node) : "";
+    // Paint servers use document coordinates; only the geometric masks are local.
+    const local = (markup) => `<g transform="translate(${node.x} ${node.y})">${markup}</g>`;
+    return clipped(`  <g${metadata}${opacity}${transform}>${local(stack.outer)}<${shape.tag} ${shape.attributes} ${fillAttributes}/>${local(stack.inner)}${stroke}</g>`);
+  }
+  const shape = roundedRectSvgGeometry(node);
+  if (hasDesignStroke(node)) return clipped(
+    `  <g${metadata}${opacity}${filter}${transform}><${shape.tag} ${shape.attributes} ${fillAttributes}/>${designStrokeSvg(node)}</g>`,
+  );
   return clipped(
-    `  <rect${metadata} x="${round(node.x)}" y="${round(node.y)}" width="${round(node.width)}" height="${round(node.height)}" rx="${round(Math.min(node.cornerRadius, node.width / 2, node.height / 2))}" ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}"${opacity}${filter}${transform} />`,
+    `  <${shape.tag}${metadata} ${shape.attributes} ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}"${opacity}${filter}${transform} />`,
   );
 }
 
@@ -1479,7 +1556,16 @@ export function replaceDesignColors(document, replacements) {
         }
       }
     }
+    for (const side of node.strokeSides ?? []) {
+      const next = replacementFor(side.color);
+      if (next) { side.color = next; replacementCount += 1; }
+    }
+    for (const range of node.textRanges?.ranges ?? []) {
+      const next = replacementFor(range.fill);
+      if (next) { range.fill = next; replacementCount += 1; }
+    }
     if (node.fillPaints) node.fill = representativeDesignFill(node.fillPaints);
+    if(node.shadowStack)for(const layer of node.shadowStack.layers){const replacement=replacementFor(layer.color);if(replacement){layer.color=replacement;replacementCount+=1;}}
     const shadowReplacement = replacementFor(node.shadow?.color);
     if (shadowReplacement) {
       node.shadow.color = shadowReplacement;
@@ -1502,6 +1588,7 @@ export function exportDesignSvg(document, options = {}) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_LOCAL_SVG_EXPORT_BYTES)
     throw Error("SVG byte budget must be between 1 B and 4 MiB");
   const renderNodes = allDocumentNodes(document);
+  renderNodes.forEach(validateTextRanges);
   const renderDocument = { ...document, nodes: renderNodes };
   const activePage = document.pages?.find((page) => page.id === document.activePageId);
   const pageName = activePage?.name ?? document.activePageId ?? "Page 1";
@@ -1510,15 +1597,16 @@ export function exportDesignSvg(document, options = {}) {
   const componentClipIds = new Map();
   const shadowIds = new Map();
   const shadowFilters = [];
+  const shadowStacks = new Map(renderNodes.map((node,index)=>[node.id,shadowStackSvg(node,`css-shadow-${index}`)]));
   const fontCss = designFontFaceCss(document.resources, options.resourceDataUrls);
   const fontFaceRules = fontCss ? [fontCss] : [];
   renderNodes.forEach((node, index) => {
-    if (["frame", "component"].includes(node.type) && node.clipContent === true) {
+    if ((["frame", "component"].includes(node.type) && node.clipContent === true) || node.type === "image") {
       const id = `frame-clip-${index}`;
       clipIds.set(node.id, id);
       const transform = svgTransform(renderDocument, node);
       clipPaths.push(
-        `    <clipPath id="${id}" clipPathUnits="userSpaceOnUse"><rect x="${round(node.x)}" y="${round(node.y)}" width="${round(node.width)}" height="${round(node.height)}" rx="${round(Math.min(node.cornerRadius, node.width / 2, node.height / 2))}"${transform} /></clipPath>`,
+        `    <clipPath id="${id}" clipPathUnits="userSpaceOnUse"><${roundedRectSvgGeometry(node).tag} ${roundedRectSvgGeometry(node).attributes}${transform} /></clipPath>`,
       );
     }
     if (node.shadow && node.shadow.opacity > 0 && node.type !== "group") {
@@ -1539,8 +1627,7 @@ export function exportDesignSvg(document, options = {}) {
     sourceDocument.nodes.forEach((node, nodeIndex) => {
       if (
         !sourceIds.has(node.id) ||
-        !["frame", "component"].includes(node.type) ||
-        node.clipContent !== true
+        !((["frame", "component"].includes(node.type) && node.clipContent === true) || node.type === "image")
       ) {
         return;
       }
@@ -1548,7 +1635,7 @@ export function exportDesignSvg(document, options = {}) {
       sourceClipIds.set(node.id, id);
       const transform = svgTransform(sourceDocument, node);
       clipPaths.push(
-        `    <clipPath id="${id}" clipPathUnits="userSpaceOnUse"><rect x="${round(node.x)}" y="${round(node.y)}" width="${round(node.width)}" height="${round(node.height)}" rx="${round(Math.min(node.cornerRadius, node.width / 2, node.height / 2))}"${transform} /></clipPath>`,
+        `    <clipPath id="${id}" clipPathUnits="userSpaceOnUse"><${roundedRectSvgGeometry(node).tag} ${roundedRectSvgGeometry(node).attributes}${transform} /></clipPath>`,
       );
     });
     componentClipIds.set(component.id, sourceClipIds);
@@ -1562,6 +1649,7 @@ export function exportDesignSvg(document, options = {}) {
       exportNodeSvg(renderDocument, node, clipIds, shadowIds, componentClipIds, new Set(), {
         ...options,
         paintFills,
+        shadowStacks,
       }),
     )
     .filter(Boolean)
@@ -1570,7 +1658,7 @@ export function exportDesignSvg(document, options = {}) {
     '<?xml version="1.0" encoding="UTF-8"?>',
     `<svg xmlns="${SVG_NS}" width="${document.canvas.width}" height="${document.canvas.height}" viewBox="0 0 ${document.canvas.width} ${document.canvas.height}" data-page-id="${escapeXml(document.activePageId ?? "page-1")}">`,
     `  <title>${escapeXml(`${document.name} — ${pageName}`)}</title>`,
-    ...(clipPaths.length + shadowFilters.length + fontFaceRules.length + paintDefinitions.length > 0
+    ...(clipPaths.length + shadowFilters.length + fontFaceRules.length + paintDefinitions.length + [...shadowStacks.values()].reduce((sum,stack)=>sum+stack.definitions.length,0) > 0
       ? [
           "  <defs>",
           ...(fontFaceRules.length > 0
@@ -1578,6 +1666,7 @@ export function exportDesignSvg(document, options = {}) {
             : []),
           ...clipPaths,
           ...shadowFilters,
+          ...[...shadowStacks.values()].flatMap(stack=>stack.definitions),
           ...paintDefinitions,
           "  </defs>",
         ]

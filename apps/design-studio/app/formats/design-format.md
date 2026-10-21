@@ -127,8 +127,8 @@ the node's own geometry still fits.
 HTML capture may add `effectClipping: "intentional"` for deliberately clipped shadows and
 `contentClipping: "intentional"` when the browser itself clips child overflow. These markers
 suppress only their corresponding false-positive clipping issues.
-Visible stroke width is audited the same way, because half of an SVG stroke extends outside the
-node geometry.
+Visible stroke width is audited using its alignment: legacy centered strokes extend half their
+width outside the node; inside sides add no outside extent.
 Shadow filter regions are derived from the rendered node, stroke, and instance-content bounds, so a
 small layer with a large blur is not silently cropped by the SVG filter itself.
 
@@ -139,6 +139,21 @@ support whole-layer opacity and rotation, while instances may also carry a shado
 rendered component content.
 
 ## Auto layout and components
+
+Ordinary HTML block children with `width:auto` and resolved negative horizontal pixel margins
+can retain native flow through a transparent Fill-width/Hug-height horizontal wrapper. Two
+transparent fixed spacers and a negative main gap expand the real Fill child; its source ID,
+paint, children, and absolute min/max pixel limits remain on that child. Recovery requires a
+unique measured upstream placeholder or an inert margin wrapper. Positioned, transformed,
+floated, percentage-width, and relative-constraint cases retain measured geometry with a warning.
+Fractional CSS background edge snapping can still differ from SVG antialiasing; geometry is
+preserved and strict pixel reports retain that failure.
+
+Signed gaps down to −2000 are supported only on the main axis of horizontal/vertical nowrap
+stacks with fixed or Fill main sizing. Cross-axis and Grid gaps remain nonnegative. Negative
+spacing with wrapping, reverse order, or main-axis Hug is rejected; unsupported native imports
+retain measured geometry with a diagnostic. Editable CSS export uses main-end child margins
+for signed spacing and excludes hidden/absolute children from inter-item spacing.
 
 Containers store `layout`, uniform `gap`/`padding`, `alignItems`, and `justifyContent`. Layout is
 `none`, `horizontal`, `vertical`, or `grid`. Optional `rowGap` and `columnGap` override the
@@ -156,6 +171,30 @@ Hug parent on the same axis uses its current intrinsic size so the circular requ
 deterministic. Optional `layoutAlignSelf` overrides the parent's cross-axis alignment for one flow
 child. Optional `minWidth`, `maxWidth`, `minHeight`, and `maxHeight` bound Fixed, Hug, Fill,
 stretch, scale, and responsive text sizing without discarding the selected sizing mode.
+Main-axis Fill siblings share their available content space equally, then add their own
+effective padding to obtain outer dimensions. Their outer min/max limits redistribute the
+remaining content space. An Auto Layout box cannot shrink below its physical padding total;
+this derived floor takes precedence over a smaller authored maximum without rewriting that
+maximum in the document. Inside borders on leaf rectangles contribute their physical border
+width to the content basis.
+Optional `strokeLayoutExcluded: true` preserves native H/V Frame/Component sources whose
+inside strokes are excluded from their own content inset. Only `true` is accepted, only
+with `strokeAlign: "inside"` and `layout: "horizontal"` or `"vertical"`. Their physical
+stroke widths contribute an additional Fill basis while canonical padding still describes
+the actual child inset. Omission uses CSS effective padding, already including the inside
+border. This provenance survives save/transfer and can be removed with `null` in a public
+tool edit. Layout/alignment edits clear it when it no longer applies. Zero stroke widths
+may retain the flag for later edits; Grid, leaf shapes and freeform containers cannot use it.
+Figma REST documents omit the documented `strokesIncludedInLayout: false` default, whereas
+fresh SDK Auto Layout activation currently defaults to `true`; export configures the live
+flag explicitly after activating the layout. See the [official REST node types](https://developers.figma.com/docs/rest-api/file-node-types/).
+The verified native Fill cases have positive remaining content space. Leaf rectangle
+inside-border floors and native behavior below the total stroke/content basis remain
+unverified; their min/max or zero-content behavior is not inferred from Frame padding.
+For source-bound negative gaps, changes to padding, physical stroke widths/alignment or
+this provenance recheck the raw request against final outer Fill sizes before any write.
+A simultaneous explicit gap edit and inclusion/padding edit must pass both final plans;
+stroke color alone does not force a gap rewrite or conflict with independent native spacing.
 Optional `layoutMarginBefore: "auto"` consumes surplus main-axis space before that child, matching
 `margin-left: auto` in a horizontal container or `margin-top: auto` in a vertical container.
 
@@ -214,3 +253,126 @@ than app-storage copies of the whole document.
 The older `codeshell.design.bundle` format remains readable and migrates on the next save. Use
 `codeshell-design-v3.schema.json` for repository validation. SVG and `*.audit.md` are generated
 review artifacts, never authoritative sources.
+
+Native Grid interchange can additionally preserve `gridRows` (1–24),
+`gridColumnSizes`/`gridRowSizes` (one `{type: "fixed", value: px}`,
+`{type: "flex", value: fr}` or `{type: "hug"}` per declared column/row),
+`gridItemsPositioning` (`manual` or `row-auto-flow`) and `gridAutoTracks`
+(`none` or `rows`). FLEX tracks require a non-HUG container axis. Manual children
+use zero-based `gridRowAnchorIndex`/`gridColumnAnchorIndex`; spans retain the existing
+1–24 bounds. `gridChildHorizontalAlign`/`gridChildVerticalAlign` accept `auto`,
+`start`, `center`, `end`; size still follows the existing axis sizing fields.
+Legacy equal-column grids remain valid and use their existing dense placement.
+The Figma plugin creates native GRID, uses live track setters and requires the
+current Grid plugin API. Unsupported grids fail with an actionable message; they
+are never silently rasterized. Changes to these advanced fields in a source-bound
+patch are diagnosed as unsupported; use a new-page conversion to apply them.
+
+Axis-FILL children touching a HUG track currently require a fixed track or a HUG/fixed child to avoid an unmodeled intrinsic-size cycle. This is diagnosed explicitly before claiming native Grid fidelity. Automatic rows derive the current occupied row count (within 24), extending new canonical rows as HUG and trimming trailing empty rows. Interior empty manual rows with automatic-row mode are diagnosed because Figma removes empty rows.
+
+Circular corner radii use the required uniform `cornerRadius` number by default.
+Rectangles, Frames, Components and images may additionally store `cornerRadii` as
+exactly four finite pixel values from 0 to 9999, clockwise from top-left
+(TL, TR, BR, BL). This optional tuple overrides the uniform radius, preserves
+authored values on resize, and uses CSS's common overlap scale when rendering.
+Editing the uniform radius clears the tuple. Text, groups, instances and ellipses
+do not accept a per-corner tuple. Percentage/elliptical CSS corners and native
+Figma corner smoothing produce explicit diagnostics. Figma export uses the
+[individual native radius properties](https://developers.figma.com/docs/plugins/api/FrameNode/);
+oversized asymmetric radii receive an export warning until native overlap
+behavior is verified against CSS.
+
+Rectangles, Frames and Components may store optional `strokeAlign` (`inside`,
+`center`, `outside`) and `strokeSides`, exactly four solid side descriptors in
+clockwise top/right/bottom/left order. Each descriptor has only `width` (0–100px),
+`color` (six-digit RGB) and `opacity` (0–1). Side descriptors override compatibility
+`stroke`/`strokeWidth`; omitting the new fields preserves legacy centered strokes.
+Uniform edits recolor all sides or scale widths while preserving zero sides and
+relative widths. Unequal rounded sides and adjacent sides with different alpha
+are rejected explicitly. SVG/CanvasKit paint safe generated border geometry,
+without adding child layers. Small multicolor join antialiasing differences from
+CSS remain measured limitations.
+
+CSS capture records inside borders and includes their inset once in effective
+padding. HTML export subtracts this inset from CSS padding and corrects absolute
+child offsets for the border's containing block. It explicitly rejects inside
+flow padding smaller than the border, and unequal non-inside border export.
+Collapsed table borders receive a measured centered approximation and a loss
+diagnostic; shared edge ownership/table behavior is not retained.
+
+Native Figma interchange uses actual independent side weights and alignment for
+one shared RGB/alpha paint. Multicolor borders are rejected before native mutation;
+v3/SVG/HTML retain their editable source. Native `strokesIncludedInLayout` imports
+project side widths into effective padding, while INSIDE source-bound patches subtract
+those widths from raw native padding and guard concurrent side/layout changes.
+CSS-derived native copies disable stroke layout inclusion to preserve flow.
+
+Native Figma TEXT imports convert the native line-box top to the v3 hanging
+origin using the loaded browser font and line height. `layoutBaselineOffset`
+retains the logical line-box origin, and optional text-only `layoutBaselineSource: "native"`
+records that convention independently of glyph receipts for later typography edits,
+including absolute/root text and Node-only reflow followed by browser editing. Native
+creation and source patches project the hanging origin back to the line box;
+a baseline-only change does not become a native translation. Own-rotated text
+and offsets exceeding the existing coordinate/baseline-field budgets are diagnosed
+without guessing an origin. Explicit newlines in native single-line ellipsis retain
+the full source, preview only the first line, and produce a truncation diagnostic.
+
+Verified ordinary HTML Text uses the separate `layoutBaselineSource: "html"` value.
+Only existing plain/pre/nowrap recovery with a matching real capture and an exact
+initial browser line-box mapping can enable this refresh. Font and line-height
+edits remeasure the hanging offset while keeping `y - layoutBaselineOffset` as
+the logical top. Node-only reflow retains provenance until browser measurement
+is available; save/reopen preserves it. Mixed, fixed measured and unsupported
+sources keep their original baseline behavior. A public manual baseline-offset
+edit retires HTML refresh. Provenance is internal metadata, omitted from native
+transfer; the physical offset and logical native position still apply.
+
+Plain HTML `nowrap`/`pre` text boxes keep their structural frame and native
+Fill/Hug sizing. Active one-line `ellipsis` uses full editable `textSource`
+with a measured display prefix; frontend HTML recomputes CSS ellipsis from the
+full content. CSS-collapsed ASCII whitespace is normalized in that canonical
+source; differing exact HTML bytes live in bounded `notes.htmlText.rawSource`.
+`pre` spaces and explicit blank lines remain literal, including in SVG export.
+Tabs, multiline `pre` ellipsis, generated/rich text, non-left alignment,
+unsupported writing/overflow styles,
+and recovery metadata exceeding the 2000-character note budget are diagnosed.
+
+
+Captured isolated same-direction percentage float columns may map to the existing
+manual Grid tracks/spans (at most24), with FILL column widths and ordinary inner
+Auto Layout. Only a proven empty unpainted zero-height clearfix is omitted.
+Mixed text/float wrapping, shapes, clear on columns, min/max constraints, mixed
+directions and unsupported percentages retain measured geometry with diagnostics.
+Each recovered row explicitly retains only its captured CSS state: native resize
+does not execute source media queries. Separate mobile captures can retain their
+ordinary block flow. This projection adds no document fields or painted children.
+
+
+## Empty native stroke intent
+
+`nativeStrokeInactive` is optional on Frame, Component, Rectangle and Text. It records style from an
+exact native `strokes: []` array while the visible canonical fields remain `stroke: "transparent"`
+and `strokeWidth: 0`. It cannot coexist with `strokeSides`, `strokeAlign` or
+`strokeLayoutExcluded`. Its weights never reserve space, change bounds or paint pixels.
+
+The bounded native fields are `strokeAlign` (`INSIDE`, `CENTER`, `OUTSIDE`), `strokeWeight` (0–100),
+complete `individualStrokeWeights` (top/right/bottom/left, each 0–100), and Frame/Component-only
+`strokesIncludedInLayout`. Missing fields remain missing. The false-only
+`strokesIncludedInLayoutDefault: false` separately records the documented REST omission contract for
+native Auto Layout; it never fabricates raw key presence and is not applied to freeform frames.
+At least one style field is required. `sourceOnly: true` blocks unsafe copies/activation when extra
+native fields or an inconsistent scalar/side tuple cannot be reproduced. It does not erase the
+original raw source. An explicit inclusion flag on a freeform frame blocks a new copy because its
+setter is inapplicable. Color activation also waits for an Auto Layout mode when a known inclusion
+flag would otherwise be discarded; simultaneous mode and color changes validate the final mode.
+
+The inspector shows latent width, alignment and applicable inclusion choices. Adding a color to a
+supported Frame activates those saved styles atomically. Included INSIDE activation adds the widths
+to canonical physical padding exactly once; native creation/patching subtracts them to recover raw
+padding. Explicit removal reverses the old painted inset, then retains the requested next latent
+style. Text activation supports CENTER only: an imported INSIDE/OUTSIDE Text offers a normal Center
+choice instead of silently changing alignment. Grid activation validates the affected Grid trees
+without expanding the proven intrinsic sizing subset. Unknown or unsupported styles produce a
+specific error before any native writes. Hidden and zero-alpha paints are not empty arrays and are
+not automatically converted to this representation.

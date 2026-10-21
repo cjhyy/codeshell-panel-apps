@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { chromium } from "playwright";
 import { PNG } from "pngjs";
+import { cssLinearBackgroundPaints } from "../../../apps/design-studio/app/css-linear-gradient.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
 const origin = "https://canvaskit-cache.test";
@@ -84,7 +85,7 @@ const fixture = () => ({
   ],
 });
 
-async function harness(t, { tileCacheEnabled = true, width = 900, height = 600, dpr = 1 } = {}) {
+async function harness(t, { tileCacheEnabled = true, deviceTextSampling = true, width = 900, height = 600, dpr = 1 } = {}) {
   const browser = await chromium.launch({
     args:
       process.platform === "darwin"
@@ -135,16 +136,17 @@ async function harness(t, { tileCacheEnabled = true, width = 900, height = 600, 
   });
   await page.goto(origin);
   await page.evaluate(
-    async ({ tileCacheEnabled, width, height, dpr }) => {
+    async ({ tileCacheEnabled, deviceTextSampling, width, height, dpr }) => {
       const { createRenderer } = await import("/canvas/canvaskit-renderer.mjs");
       window.renderer = await createRenderer({
         canvas: document.querySelector("canvas"),
         assetsBaseUrl: "/canvas/vendor/",
         tileCacheEnabled,
+        deviceTextSampling,
       });
       renderer.resize(width, height, dpr);
     },
-    { tileCacheEnabled, width, height, dpr },
+    { tileCacheEnabled, deviceTextSampling, width, height, dpr },
   );
   return page;
 }
@@ -211,6 +213,61 @@ test("GPU tile cache preserves nonzero-position gradients, ancestor clip/alpha a
   assert.equal(second.pictureBuilds, 1);
   assert.equal(second.inputNodes, design.nodes.length);
   assert.ok(second.tileCacheBytes <= second.tileCacheBudget.maxBytes);
+});
+
+test("CanvasKit invalidates resized CSS gradient pictures and matches freshly resolved native paints exactly", async (t) => {
+  const page = await harness(t, { width: 640, height: 440 });
+  const image =
+    "linear-gradient(-45deg,rgba(255,0,0,.5) 20px,transparent),linear-gradient(to top right,rgb(0,0,255),rgb(0,255,0))";
+  const source = cssLinearBackgroundPaints({ "background-image": image }, 640, 160);
+  const design = (fillPaints, width, height, textPaints = fillPaints) => ({
+    canvas: { width: 640, height: 440, background: "#ffffff" },
+    resources: [],
+    nodes: [
+      base("responsive", "rectangle", 0, 0, width, height, { fillPaints }),
+      base("responsive-text", "text", 0, 350, width, 60, {
+        fillPaints: textPaints,
+        text: "Gradient glyphs",
+        fontFamily: "Roboto",
+        fontRef: "roboto",
+        fontSize: 36,
+        fontWeight: 700,
+        lineHeight: 1.2,
+        textAlign: "left",
+      }),
+    ],
+  });
+  const viewport = { zoom: 1, pan: { x: 0, y: 0 } };
+  await upload(page, design(source, 640, 160));
+  await draw(page, viewport);
+  for (const [width, height] of [
+    [400, 160],
+    [200, 320],
+  ]) {
+    await upload(page, design(source, width, height));
+    const actual = await draw(page, viewport);
+    const fresh = cssLinearBackgroundPaints({ "background-image": image }, width, height).map(
+      ({ cssLinear, ...paint }) => paint,
+    );
+    const textFresh = cssLinearBackgroundPaints({ "background-image": image }, width, 60).map(
+      ({ cssLinear, ...paint }) => paint,
+    );
+    await upload(page, design(fresh, width, height, textFresh));
+    const expected = await draw(page, viewport);
+    assert.deepEqual(
+      actual.data,
+      expected.data,
+      "all GPU pixels agree with a fresh current-size CSS capture",
+    );
+    const frozen = source.map(({ cssLinear, ...paint }) => paint);
+    await upload(page, design(frozen, width, height));
+    const wrong = await draw(page, viewport);
+    assert.notDeepEqual(
+      actual.data,
+      wrong.data,
+      "the old normalized capture would visibly rotate/move stops",
+    );
+  }
 });
 
 test("live scene revisions reuse font providers and local node pictures while invalidating GPU tiles", async (t) => {
@@ -377,4 +434,283 @@ test("content edits start a safe text plan before high zoom, and cross-page inst
   assert.equal(stats.resourceBuilds, 1);
   assert.equal(stats.unrenderedTextLines, 0);
   await page.evaluate(() => renderer.dispose());
+});
+
+const phaseFixture = () => ({
+  canvas: { width: 700, height: 400, background: "#ffffff" }, resources: [],
+  nodes: [base("phase-text", "text", 36, 41.41, 568, 30, {
+    text: "Editable Auto Layout", fontFamily: "Arial", fontSize: 24, fontWeight: 700,
+    fontStyle: "normal", lineHeight: 1.25, textAlign: "left", fill: "#0f172a",
+  })],
+});
+
+test("device text coverage follows real browser pixel phase at physical 1x and integer pans reuse both master and device glyphs", async (t) => {
+  const page = await harness(t, { width: 700, height: 400 });
+  const control = await harness(t, { width: 700, height: 400, deviceTextSampling: false });
+  const design = phaseFixture();
+  await upload(page, design);
+  await upload(control, design);
+  const actual = await draw(page, { zoom: 1, pan: { x: 0, y: 0 } });
+  const reference = await page.evaluate(() => {
+    const reference = document.createElement("canvas");
+    reference.width = 700; reference.height = 400;
+    const ctx = reference.getContext("2d");
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, 700, 400);
+    ctx.font = 'normal 700 24px "Arial"'; ctx.fontKerning = "normal";
+    ctx.textBaseline = "hanging"; ctx.letterSpacing = "0px";
+    ctx.fillStyle = "#0f172a"; ctx.fillText("Editable Auto Layout", 36, 41.41);
+    return [...ctx.getImageData(0, 0, 700, 400).data];
+  });
+  const exactError = (pixels) => pixels.reduce((sum, value, i) => sum + Math.abs(value - reference[i]), 0);
+  const masterPixels = await draw(control, { zoom: 1, pan: { x: 0, y: 0 } });
+  const deviceError = exactError(actual.data), masterError = exactError(masterPixels.data);
+  t.diagnostic(`Browser reference exact RGBA absolute error: device ${deviceError}, master ${masterError}; no channel tolerance applied`);
+  assert(deviceError < masterError, "device sampling must improve actual glyph coverage, including every channel difference");
+  const before = await page.evaluate(() => renderer.stats());
+  assert.equal(before.deviceTextNodes, 1);
+  assert.equal(before.rasterNodeScales[0].scale, 2, "the master keeps its existing resolution");
+  assert.equal(before.rasterTextImages, 2);
+  await draw(page, { zoom: 1, pan: { x: 31, y: 19 } });
+  const panned = await page.evaluate(() => renderer.stats());
+  assert.equal(panned.rasterTextCacheMisses, before.rasterTextCacheMisses);
+  assert.equal(panned.nodePictureBuilds, before.nodePictureBuilds);
+  assert.equal(panned.deviceTextSamplingBuilds, before.deviceTextSamplingBuilds);
+  for (const viewport of [
+    { zoom: 1, pan: { x: 31.5, y: 19 } }, { zoom: 1.25, pan: { x: 0, y: 0 } },
+    { zoom: 2, pan: { x: 0, y: 0 } }, { zoom: 4, pan: { x: 0, y: 0 } },
+  ]) {
+    const fallback = await draw(page, viewport), expected = await draw(control, viewport);
+    assert.equal(Buffer.compare(fallback.data, expected.data), 0, "non-device transforms must retain the existing master pixels");
+    assert.equal((await page.evaluate(() => renderer.stats())).deviceTextNodes, 0);
+  }
+  const high = await page.evaluate(() => renderer.stats());
+  assert.equal(high.rasterNodeScales[0].scale, 4);
+  await draw(page, { zoom: 1, pan: { x: 0, y: 0 } });
+  const restored = await page.evaluate(() => renderer.stats());
+  assert.equal(restored.deviceTextNodes, 1);
+  assert.equal(restored.rasterNodeScales[0].scale, 4);
+  assert(restored.rasterTextCacheBytes <= restored.rasterTextCacheBudgetBytes);
+  await page.evaluate(() => {
+    for (let i = 0; i < 30; i++) renderer.render({ zoom: 1, pan: { x: i, y: 0 } });
+  });
+  const repeated = await page.evaluate(() => renderer.stats());
+  assert.equal(repeated.rasterTextCacheMisses, restored.rasterTextCacheMisses);
+  assert.equal(repeated.nodePictureBuilds, restored.nodePictureBuilds);
+});
+
+test("device glyph phases follow canonical moves while rotations, instances and fractional DPR pans select masters", async (t) => {
+  const page = await harness(t, { width: 700, height: 400 });
+  const fresh = await harness(t, { width: 700, height: 400 });
+  const design = phaseFixture();
+  await upload(page, design);
+  await draw(page, { zoom: 1 });
+  const before = await page.evaluate(() => renderer.stats());
+  design.nodes[0].x += 0.125; design.nodes[0].y += 0.25;
+  await upload(page, design);
+  await upload(fresh, design);
+  assert.equal(Buffer.compare((await draw(page, { zoom: 1 })).data, (await draw(fresh, { zoom: 1 })).data), 0,
+    "a moved fractional phase cannot reuse stale glyph coverage");
+  const moved = await page.evaluate(() => renderer.stats());
+  assert.equal(moved.rasterTextCacheMisses, before.rasterTextCacheMisses + 1);
+  assert.equal(moved.rasterTextImages, 2, "the prior phase is replaced rather than accumulated");
+  design.nodes[0].x += 1; design.nodes[0].y += 2;
+  await upload(page, design);
+  await draw(page, { zoom: 1 });
+  const integerMove = await page.evaluate(() => renderer.stats());
+  assert.equal(integerMove.rasterTextCacheMisses, moved.rasterTextCacheMisses);
+  assert.equal(integerMove.nodePictureBuilds, moved.nodePictureBuilds);
+  await page.evaluate(async () => {
+    for (let i = 1; i <= 16; i++) {
+      design.nodes[0].x = 36 + i / 32;
+      await renderer.setScene(design, { resources });
+      renderer.render({ zoom: 1 });
+    }
+  });
+  const phases = await page.evaluate(() => renderer.stats());
+  assert.equal(phases.deviceTextCacheVariants, 1);
+  assert.equal(phases.rasterTextImages, 2, "many drag phases retain one master and one device variant");
+  assert(phases.rasterTextCacheBytes <= phases.rasterTextCacheBudgetBytes);
+  design.nodes.push({ ...design.nodes[0], id: "native", y: 130, fontFamily: "Roboto", fontRef: "roboto", text: "Native font bytes" });
+  await upload(page, design);
+  await draw(page, { zoom: 1 });
+  const native = await page.evaluate(() => renderer.stats());
+  assert.equal(native.nativeTextNodes, 1);
+  assert.equal(native.deviceTextNodes, 1, "only the system font uses a device variant");
+  assert.equal(native.rasterNodeScales.some((entry) => entry.nodeId === "native"), false);
+  for (const kind of ["rotation", "instance"]) {
+    const guarded = phaseFixture();
+    const parent = base("parent", kind === "instance" ? "component" : "frame", 0, 0, 300, 200, { fill: "transparent", rotation: kind === "rotation" ? 15 : 0 });
+    guarded.nodes[0].parentId = parent.id;
+    guarded.nodes.unshift(parent);
+    if (kind === "instance") guarded.nodes.push(base("instance", "instance", 330, 0, 300, 200, { componentId: parent.id }));
+    await upload(page, guarded);
+    await draw(page, { zoom: 1 });
+    assert.equal((await page.evaluate(() => renderer.stats())).deviceTextNodes, 0, kind);
+  }
+  const dpr = await harness(t, { width: 700, height: 400, dpr: 2 });
+  await upload(dpr, phaseFixture());
+  await draw(dpr, { zoom: 0.5, pan: { x: 0.5, y: 0.5 } });
+  assert.equal((await dpr.evaluate(() => renderer.stats())).deviceTextNodes, 1);
+  await draw(dpr, { zoom: 0.5, pan: { x: 0.25, y: 0.5 } });
+  assert.equal((await dpr.evaluate(() => renderer.stats())).deviceTextNodes, 0);
+  await draw(dpr, { zoom: 1 });
+  assert.equal((await dpr.evaluate(() => renderer.stats())).deviceTextNodes, 0);
+});
+
+test("optional device variants yield their pixels to valid masters under the unchanged raster budget", async (t) => {
+  const page = await harness(t, { width: 700, height: 400, tileCacheEnabled: false });
+  const design = phaseFixture();
+  design.nodes[0].text = "Coverage budget ".repeat(12);
+  await upload(page, design);
+  const master = await page.evaluate(() => renderer.stats());
+  await draw(page, { zoom: 1 });
+  assert.equal((await page.evaluate(() => renderer.stats())).deviceTextNodes, 1);
+  const count = Math.floor(master.rasterTextCacheBudgetBytes / master.rasterTextCacheBytes);
+  assert(count > 10 && count < 300);
+  design.nodes = Array.from({ length: count }, (_, i) => ({ ...design.nodes[0], id: i ? `budget-${i}` : "phase-text" }));
+  await upload(page, design);
+  await draw(page, { zoom: 1 });
+  const full = await page.evaluate(() => renderer.stats());
+  assert.equal(full.rasterTextNodes, count);
+  assert(full.deviceTextNodes < count, "optional variants cannot displace required masters");
+  assert(full.rasterTextCacheBytes <= full.rasterTextCacheBudgetBytes);
+  assert.equal(full.unrenderedTextLines, 0);
+});
+
+test("integer pans retain offscreen device pictures and return trips do not rebuild the whole scene", async (t) => {
+  const page = await harness(t, { width: 300, height: 200 });
+  const design = phaseFixture();
+  design.canvas.width = 2000;
+  design.nodes = Array.from({ length: 5 }, (_, i) => ({ ...design.nodes[0], id: `phase-${i}`, x: 36 + i * 300 }));
+  await upload(page, design);
+  await draw(page, { zoom: 1, pan: { x: 0, y: 0 } });
+  const before = await page.evaluate(() => renderer.stats());
+  assert.equal(before.deviceTextNodes, 1);
+  await draw(page, { zoom: 1, pan: { x: -300, y: 0 } });
+  const entered = await page.evaluate(() => renderer.stats());
+  assert.equal(entered.deviceTextNodes, 2, "the offscreen phase stays active until an actual invalidation");
+  assert.equal(entered.deviceTextSamplingBuilds, before.deviceTextSamplingBuilds + 1);
+  assert.equal(entered.rasterTextCacheMisses, before.rasterTextCacheMisses + 1, "only the newly visible text is rasterized");
+  await page.evaluate(() => {
+    for (let i = 0; i < 20; i++) renderer.render({ zoom: 1, pan: { x: i % 2 ? -300 : 0, y: 0 } });
+  });
+  const returned = await page.evaluate(() => renderer.stats());
+  assert.equal(returned.sceneRevision, entered.sceneRevision);
+  assert.equal(returned.nodePictureBuilds, entered.nodePictureBuilds);
+  assert.equal(returned.deviceTextSamplingBuilds, entered.deviceTextSamplingBuilds);
+  assert.equal(returned.rasterTextCacheMisses, entered.rasterTextCacheMisses);
+  assert.equal(returned.tileBuilds, entered.tileBuilds);
+});
+
+test("native GPU per-corner shapes, ancestor clips and image clips retain asymmetric geometry and invalidate cached pictures", async (t) => {
+  const cached = await harness(t, { width: 600, height: 240 }),
+    direct = await harness(t, { tileCacheEnabled: false, width: 600, height: 240 });
+  const design = {
+    canvas: { width: 600, height: 240, background: "#ffffff" }, resources: [], nodes: [
+      base("shape", "rectangle", 40, 40, 100, 100, { fill: "#2563eb", cornerRadius: 40, cornerRadii: [40, 0, 24, 8] }),
+      base("clip", "frame", 200, 40, 100, 100, { fill: "transparent", clipContent: true, cornerRadius: 40, cornerRadii: [40, 0, 24, 8] }),
+      base("child", "rectangle", 180, 20, 140, 140, { parentId: "clip", fill: "#f97316" }),
+      base("image", "image", 360, 40, 100, 100, { fill: "transparent", imageRef: "pixel", objectFit: "fill", cornerRadius: 40, cornerRadii: [40, 0, 24, 8] }),
+    ],
+  };
+  const png = new PNG({ width: 1, height: 1 }); png.data.set([255, 0, 255, 255]);
+  const bytes = [...PNG.sync.write(png)];
+  for (const page of [cached, direct]) await page.evaluate(async ({ design, bytes }) => {
+    window.design = design;
+    window.resources = new Map([["pixel", { bytes: new Uint8Array(bytes), mimeType: "image/png", descriptor: { id: "pixel", kind: "image", mime: "image/png" } }]]);
+    await renderer.setScene(design, { resources });
+  }, { design, bytes });
+  for (const zoom of [1, 2]) {
+    const viewport = { pan: { x: 0, y: 0 }, zoom };
+    const actual = await draw(cached, viewport), expected = await draw(direct, viewport);
+    t.diagnostic(`cached/direct asymmetric exact pixels at ${zoom}x: ${actual.data.equals(expected.data)}`);
+    if (zoom === 1) {
+      const reference = await cached.context().newPage();
+      const dataUrl = `data:image/png;base64,${Buffer.from(bytes).toString("base64")}`;
+      await reference.setContent(`<style>body{margin:0;background:white}.box{position:absolute;top:40px;width:100px;height:100px;border-radius:40px 0 24px 8px}#shape{left:40px;background:#2563eb}#clip{left:200px;overflow:hidden}#child{position:absolute;left:-20px;top:-20px;width:140px;height:140px;background:#f97316}img{left:360px}</style><div id="shape" class="box"></div><div id="clip" class="box"><div id="child"></div></div><img class="box" src="${dataUrl}">`);
+      const css = PNG.sync.read(await reference.screenshot());
+      let changed = 0, max = 0, total = 0;
+      for (let i = 0; i < actual.data.length; i += 4) {
+        let differs = false;
+        for (let channel = 0; channel < 4; channel++) {
+          const delta = Math.abs(actual.data[i + channel] - css.data[i + channel]);
+          differs ||= delta > 0; max = Math.max(max, delta); total += delta;
+        }
+        if (differs) changed++;
+      }
+      t.diagnostic(`Native WebGL2 vs Chromium CSS exact pixels: ${changed}/${actual.width * actual.height}, max channel ${max}, mean RGBA ${total / actual.data.length}`);
+      await reference.close();
+    }
+
+    if (zoom === 1) for (const [x, color] of [[40, [37, 99, 235]], [200, [249, 115, 22]], [360, [255, 0, 255]]]) {
+      assert.deepEqual(pixel(expected, x + 1, 41), [255, 255, 255]);
+      assert.deepEqual(pixel(expected, x + 98, 41), color);
+      assert.deepEqual(pixel(actual, x + 1, 41), [255, 255, 255], "rounded top-left excludes ink");
+      assert.deepEqual(pixel(actual, x + 98, 41), color, "square top-right retains ink");
+      assert.deepEqual(pixel(actual, x + 50, 90), color, "interior retains ink");
+      assert.deepEqual(pixel(actual, x + 98, 138), [255, 255, 255], "bottom-right independent radius excludes ink");
+    }
+  }
+  const before = await cached.evaluate(() => renderer.stats());
+  for (const page of [cached, direct]) await page.evaluate(async () => {
+    const next = structuredClone(design); next.nodes[0].cornerRadii = [0, 40, 0, 24];
+    await renderer.setScene(next, { resources });
+  });
+  const viewport = { pan: { x: 0, y: 0 }, zoom: 1 };
+  const after = await draw(cached, viewport), control = await draw(direct, viewport);
+  t.diagnostic(`edited cached/direct asymmetric exact pixels: ${after.data.equals(control.data)}`);
+  assert.deepEqual(pixel(control, 41, 41), [37, 99, 235]);
+  assert.deepEqual(pixel(control, 138, 41), [255, 255, 255]);
+  assert.deepEqual(pixel(after, 41, 41), [37, 99, 235]);
+  assert.deepEqual(pixel(after, 138, 41), [255, 255, 255]);
+  const stats = await cached.evaluate(() => renderer.stats());
+  assert.equal(stats.nodePictureBuilds, before.nodePictureBuilds + 1);
+});
+
+
+test("native GPU inside side borders preserve zero edges, alpha corners and edited cached pictures", async (t) => {
+  const cached = await harness(t, { width: 600, height: 240 }),
+    direct = await harness(t, { tileCacheEnabled: false, width: 600, height: 240 });
+  const side = (width, opacity = 1) => ({ width, color: "#1d70b8", opacity });
+  const design = { canvas: { width: 600, height: 240, background: "#ffffff" }, resources: [], nodes: [
+    base("bottom", "rectangle", 40, 40, 100, 100, { fill: "#ffffff", strokeAlign: "inside", strokeSides: [side(0), side(0), side(1), side(0)] }),
+    base("alpha", "frame", 200, 40, 100, 100, { fill: "#ffffff", strokeAlign: "inside", strokeSides: Array.from({ length: 4 }, () => side(4, 0.5)) }),
+    base("unequal", "rectangle", 360, 40, 100, 100, { fill: "#ffffff", strokeAlign: "inside", strokeSides: [side(2), side(4), side(6), side(8)] }),
+  ] };
+  for (const page of [cached, direct]) await upload(page, design);
+  const viewport = { pan: { x: 0, y: 0 }, zoom: 1 };
+  const actual = await draw(cached, viewport), expected = await draw(direct, viewport);
+  assert.equal(actual.data.equals(expected.data), true, "tile and direct border pixels agree");
+  for (const png of [actual, expected]) {
+    assert.deepEqual(pixel(png, 40, 40), [255, 255, 255], "zero top and left edges stay unpainted");
+    assert.deepEqual(pixel(png, 80, 139), [29, 112, 184]);
+    near(pixel(png, 200, 40), [142, 184, 220], 1);
+    assert.deepEqual(pixel(png, 200, 40), pixel(png, 240, 40), "border corner alpha applies once");
+    assert.deepEqual(pixel(png, 360, 80), [29, 112, 184]);
+    assert.deepEqual(pixel(png, 370, 80), [255, 255, 255]);
+  }
+  const before = await cached.evaluate(() => renderer.stats());
+  design.nodes[0].width = 160;
+  design.nodes[0].strokeSides[2] = { width: 3, color: "#ff0000", opacity: 1 };
+  for (const page of [cached, direct]) await upload(page, design);
+  const edited = await draw(cached, viewport), control = await draw(direct, viewport);
+  assert.equal(edited.data.equals(control.data), true);
+  assert.deepEqual(pixel(edited, 198, 138), [255, 0, 0]);
+  assert.deepEqual(pixel(edited, 198, 135), [255, 255, 255]);
+  assert.equal((await cached.evaluate(() => renderer.stats())).nodePictureBuilds, before.nodePictureBuilds + 1);
+});
+
+test("CSS geometric shadow stacks keep transparent fill, colored order, border phase and cached repaint editable",async t=>{
+  const page=await harness(t,{width:640,height:240});
+  const layers=[{kind:"inner",color:"#dc2626",opacity:1,x:12,y:0,blur:0,spread:0,visible:true},{kind:"inner",color:"#2563eb",opacity:1,x:0,y:12,blur:0,spread:0,visible:true}];
+  const design={canvas:{width:640,height:240,background:"#ffffff"},resources:[],nodes:[base("masked","rectangle",30,30,160,100,{fill:"transparent",stroke:"#16a34a",strokeWidth:4,strokeAlign:"inside",strokeSides:Array.from({length:4},()=>({width:4,color:"#16a34a",opacity:1})),shadowStack:{basis:"css-box",layers}})]};
+  const viewport={zoom:1,pan:{x:0,y:0}};await upload(page,design);let image=await draw(page,viewport);
+  for(const [x,y,color] of [[31,50,[22,163,74]],[38,38,[220,38,38]],[60,38,[37,99,235]],[60,70,[255,255,255]],[28,38,[255,255,255]]])assert.deepEqual(pixel(image,x,y),color);
+  const first=await page.evaluate(()=>renderer.stats());
+  design.nodes[0].shadowStack.layers.reverse();await upload(page,design);image=await draw(page,viewport);assert.deepEqual(pixel(image,38,38),[37,99,235]);
+  const second=await page.evaluate(()=>renderer.stats());assert.equal(second.nodePictureBuilds,first.nodePictureBuilds+1);
+  await draw(page,{zoom:1,pan:{x:32,y:0}});const pan=await page.evaluate(()=>renderer.stats());assert.equal(pan.nodePictureBuilds,second.nodePictureBuilds);
+  design.nodes[0].shadowStack.layers[0].visible=false;await upload(page,design);image=await draw(page,viewport);assert.deepEqual(pixel(image,38,38),[220,38,38]);assert.deepEqual(pixel(image,60,38),[255,255,255]);
+  design.nodes[0].shadowStack.layers[0]={...layers[0],kind:"outer",color:"#2563eb",visible:true,x:-10,y:0,blur:8};await upload(page,design);image=await draw(page,viewport);assert.notDeepEqual(pixel(image,18,70),[255,255,255],"blurred outer mask survives raw-picture culling");assert.deepEqual(pixel(image,60,70),[255,255,255],"outer knockout never colors the transparent box interior");
+  const blur=await page.evaluate(()=>renderer.stats());assert(blur.unsupported.some(issue=>issue.code==="css-shadow-raster-kernel"),"kernel parity remains explicitly unverified");
 });

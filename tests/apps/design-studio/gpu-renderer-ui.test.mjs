@@ -9,7 +9,9 @@ import { PNG } from "pngjs";
 import {
   normalizeDesignDocument,
   serializeDesignDocument,
+  exportDesignSvg,
 } from "../../../apps/design-studio/app/document.mjs";
+import { comparePixels } from "../../../scripts/design-studio-production-fidelity.mjs";
 import { createDesignIndexPersistencePlan } from "../../../apps/design-studio/app/document-index.mjs";
 import { createDesignResourcePersistencePlan } from "../../../apps/design-studio/app/resource-store.mjs";
 
@@ -64,9 +66,11 @@ function designFixture({ large = false } = {}) {
 }
 
 async function fixture(t, { capable = true, large = false, design = designFixture({ large }),
-  primarySource = serializeDesignDocument(design), parts = [], allowMemoryRecovery = false } = {}) {
+  primarySource = serializeDesignDocument(design), parts = [], allowMemoryRecovery = false,
+  forceSwiftShader = false, masterTextControl = false } = {}) {
   // This is a correctness test. SwiftShader is allowed as the WebGL driver; no physical-GPU speed is claimed.
-  const browser = await chromium.launch({ headless: true, args: ["--enable-webgl", "--enable-unsafe-swiftshader"] });
+  const browser = await chromium.launch({ headless: true, args: ["--enable-webgl", "--enable-unsafe-swiftshader",
+    ...(forceSwiftShader ? ["--use-angle=swiftshader"] : [])] });
   const context = await browser.newContext({ viewport: { width: 1500, height: 960 }, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
@@ -94,7 +98,14 @@ async function fixture(t, { capable = true, large = false, design = designFixtur
     }
     if (url.pathname.startsWith("/canvas/vendor/")) vendorRequests.push(url.pathname);
     try {
-      await route.fulfill({ body: await readFile(file), headers: { "Content-Security-Policy": csp },
+      let body = await readFile(file);
+      if (masterTextControl && url.pathname === "/canvas/canvaskit-renderer.mjs") {
+        // The actual UI uses renderer defaults. Its control changes only the
+        // public option default, keeping the same production UI and renderer.
+        assert.equal(body.toString().split("deviceTextSampling = true").length, 2);
+        body = Buffer.from(body.toString().replace("deviceTextSampling = true", "deviceTextSampling = false"));
+      }
+      await route.fulfill({ body, headers: { "Content-Security-Policy": csp },
         contentType: { ".html": "text/html", ".mjs": "text/javascript", ".js": "text/javascript",
           ".css": "text/css", ".wasm": "application/wasm", ".ttf": "font/ttf", ".woff2": "font/woff2" }[extname(file)],
       });
@@ -159,6 +170,140 @@ async function fixture(t, { capable = true, large = false, design = designFixtur
 async function frames(page) {
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
+
+test("actual GPU editor improves eligible system-font pixels against its unchanged master control", async (t) => {
+  const design = normalizeDesignDocument({
+    format: "codeshell.design",
+    version: 3,
+    name: "System text shaping",
+    canvas: { width: 640, height: 240, background: "#ffffff" },
+    tokens: { colors: [] },
+    resources: [],
+    activePageId: "page-1",
+    pages: [
+      {
+        id: "page-1",
+        name: "Text",
+        children: [
+          node("heading", "text", 36, 41.41, 568, 30, {
+            fill: "#0f172a",
+            text: "Editable Auto Layout",
+            fontFamily: "Arial",
+            fontSize: 24,
+            fontWeight: 700,
+            fontStyle: "normal",
+            lineHeight: 1.25,
+            textAlign: "left",
+            letterSpacing: 0,
+          }),
+        ],
+      },
+    ],
+  });
+  const { page } = await fixture(t, { design, forceSwiftShader: true });
+  await active(page);
+  if ((await page.locator("#toggle-grid").getAttribute("aria-pressed")) === "true")
+    await page.locator("#toggle-grid").click();
+  const alignView = async (canvas) => {
+    const nextFrame = () =>
+      new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const current = () => canvas.getContext("2d").getTransform();
+    const box = canvas.getBoundingClientRect();
+    canvas.dispatchEvent(
+      new WheelEvent("wheel", {
+        ctrlKey: true,
+        deltaY: Math.log(current().a / devicePixelRatio) / 0.006,
+        clientX: box.left,
+        clientY: box.top,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await nextFrame();
+    for (let index = 0; index < 5; index++) {
+      const matrix = current();
+      const x = matrix.e / devicePixelRatio,
+        y = matrix.f / devicePixelRatio;
+      if (x === 32 && y === 32) break;
+      canvas.dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaX: x - 32,
+          deltaY: y - 32,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await nextFrame();
+    }
+    const matrix = current();
+    return {
+      zoom: matrix.a / devicePixelRatio,
+      x: matrix.e / devicePixelRatio,
+      y: matrix.f / devicePixelRatio,
+      left: box.left,
+      top: box.top,
+    };
+  };
+  const view = await page.locator("#stage").evaluate(alignView);
+  assert.equal(view.zoom, 1);
+  assert.equal(view.x, 32);
+  assert.equal(view.y, 32);
+  const actual = await page.screenshot({
+    clip: {
+      x: view.left + 32,
+      y: view.top + 32,
+      width: 640,
+      height: 240,
+    },
+  });
+  const reference = await page.context().newPage();
+  await reference.setViewportSize({ width: 640, height: 240 });
+  await reference.setContent(
+    `<style>html,body{margin:0;background:white}svg{display:block}</style>${exportDesignSvg(design)}`,
+  );
+  await reference.evaluate(() => document.fonts.ready);
+  const expected = await reference.screenshot();
+  await reference.close();
+  const comparison = comparePixels(expected, actual);
+  t.diagnostic(JSON.stringify(comparison.metrics));
+  const { page: control } = await fixture(t, { design, forceSwiftShader: true, masterTextControl: true });
+  await active(control);
+  if ((await control.locator("#toggle-grid").getAttribute("aria-pressed")) === "true")
+    await control.locator("#toggle-grid").click();
+  const controlView = await control.locator("#stage").evaluate(alignView);
+  const master = await control.screenshot({ clip: { x: controlView.left + 32, y: controlView.top + 32, width: 640, height: 240 } });
+  const masterComparison = comparePixels(expected, master);
+  t.diagnostic(`Unchanged master control: ${JSON.stringify(masterComparison.metrics)}`);
+  assert(comparison.metrics.meanAbsoluteChannelError < masterComparison.metrics.meanAbsoluteChannelError,
+    "count every channel difference when comparing real UI glyph coverage with the master control");
+  const inkBounds = (bytes) => {
+    const image = PNG.sync.read(bytes);
+    let left = image.width,
+      top = image.height,
+      right = -1,
+      bottom = -1;
+    for (let y = 0; y < image.height; y++)
+      for (let x = 0; x < image.width; x++) {
+        const offset = (y * image.width + x) * 4;
+        if (![0, 1, 2].every((channel) => image.data[offset + channel] < 80)) continue;
+        left = Math.min(left, x);
+        top = Math.min(top, y);
+        right = Math.max(right, x);
+        bottom = Math.max(bottom, y);
+      }
+    return { left, top, right, bottom };
+  };
+  const actualInk = inkBounds(actual),
+    expectedInk = inkBounds(expected);
+  for (const side of ["left", "top", "right", "bottom"])
+    assert(
+      Math.abs(actualInk[side] - expectedInk[side]) <= 1,
+      "glyph bounds stay within one sampling pixel",
+    );
+  // The existing geometry/error guard stays intact. Exact RGBA residuals vary
+  // by GPU backend and remain visible above; this is not a strict-zero receipt.
+  assert(comparison.metrics.maximumChannelDelta <= 128);
+});
 async function active(page, expected = true, reason) {
   await page.waitForFunction(({ expected, reason }) =>
     document.querySelector("#stage-wrap").dataset.gpuActive === String(expected) &&
