@@ -117,6 +117,7 @@ export const suites = [
         "tests/apps/design-studio/inactive-frame-fill.test.mjs",
         "tests/apps/design-studio/stroke-layout.test.mjs",
         "tests/apps/design-studio/builtin-fonts.test.mjs",
+        "tests/apps/design-studio/font-family.test.mjs",
         "tests/apps/design-studio/audit-review.test.mjs",
         "tests/apps/design-studio/html-plugin.test.mjs",
         "tests/apps/design-studio/html-plugin-ui.test.mjs",
@@ -170,6 +171,7 @@ export const suites = [
         "tests/apps/design-studio/html-line-height.test.mjs",
         "tests/apps/design-studio/html-baseline-refresh.test.mjs",
         "tests/apps/design-studio/html-collapsed-text-whitespace.test.mjs",
+        "tests/apps/design-studio/html-font-family.test.mjs",
         "tests/apps/design-studio/figma-plugin-v3.test.mjs",
       ],
       // GPU processes need an exclusive run: concurrent browser suites can

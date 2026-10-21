@@ -1,5 +1,6 @@
 /* Local file adapter. Shared Panel schemas are bundled into ui.html at build time. */
 import { normalizeDesignDocument } from "../document.mjs";
+import { assertNativeTransferFontFamilies } from "../font-family.mjs";
 import { createFigmaTransfer, MAX_FIGMA_JSON_BYTES } from "../figma-bridge.mjs";
 import { normalizeFigmaAsset } from "../figma-assets.mjs";
 import { planPortableDesign, MAX_PORTABLE_DESIGN_BYTES } from "../portable-backup.mjs";
@@ -123,6 +124,7 @@ export async function preparePluginFile(
   if (object(value) && value.format === "codeshell.figma.transfer" && value.version === 1) {
     if (length(text) > MAX_FIGMA_JSON_BYTES)
       throw Error("Figma 传输包超过 16 MiB；请分页面导出。 ");
+    assertNativeTransferFontFamilies(value);
     return { transfer: value, kind: "transfer", warnings: [], summary: null };
   }
   let document,
