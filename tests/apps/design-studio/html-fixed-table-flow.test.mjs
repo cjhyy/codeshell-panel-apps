@@ -57,7 +57,9 @@ test("fixed two-column source preserves every row/cell/P and responds to only it
       for (const row of rows) {
         const cells = value.nodes.filter((node) => node.parentId === row.id);
         assert.equal(cells.length, 2);
-        assert.deepEqual(cells.map((node) => node.width), [Math.round((.3 * (width-60) + 20)*100)/100, Math.round((.7 * (width-60) - 20)*100)/100]);
+        // Canonical flexible Grid endpoints retain Float32 results. The source
+        // browser's CSS layout quantization is checked independently in pixels.
+        assert.deepEqual(cells.map((node) => node.width), [Math.fround(.3 * (width-60) + 20), Math.fround(.7 * (width-60) - 20)]);
         assert(cells.every((cell) => cell.layoutSizingHorizontal === 'fill' && cell.layoutSizingVertical === 'fill'));
       }
       assert(value.nodes.every((node) => node.layoutPositioning !== 'absolute'));

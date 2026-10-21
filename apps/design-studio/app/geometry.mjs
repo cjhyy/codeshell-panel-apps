@@ -693,18 +693,19 @@ export function distributeNodeTrees(nodes, selectedIds, axis) {
   return true;
 }
 
-export function setNodeTreePosition(nodes, nodeId, axis, value) {
+export function setNodeTreePosition(nodes, nodeId, axis, value, { preservePrecision = false } = {}) {
   if (!Array.isArray(nodes) || !["x", "y"].includes(axis) || !Number.isFinite(value)) return false;
   const root = nodes.find((node) => node.id === nodeId);
   if (!root) return false;
   const delta = value - root[axis];
   if (delta === 0) return false;
-  root[axis] = round(value);
+  const position = preservePrecision ? value => Object.is(value, -0) ? 0 : value : round;
+  root[axis] = position(value);
   if (isContainerNode(root)) {
     const descendants = descendantIds(nodes, new Set([root.id]));
     for (const node of nodes) {
       if (!descendants.has(node.id)) continue;
-      node[axis] = round(node[axis] + delta);
+      node[axis] = position(node[axis] + delta);
     }
   }
   return true;

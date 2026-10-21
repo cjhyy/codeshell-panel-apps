@@ -27,6 +27,13 @@ import { planHtmlGrid, sizeHtmlGridChild, validateHtmlGrid, removeHtmlGrid } fro
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const finite = (value, fallback = 0) => (Number.isFinite(value) ? value : fallback);
 const round = (value) => Math.round(value * 100) / 100 || 0;
+// The capture's exact px transport can replace only the unchanged CSSOM numeric
+// projection. Postprocessed/synthetic layout values keep their own geometry.
+const preciseLayoutValue = (source, property, value) => {
+  const captured = source.cssGeometry?.[property];
+  return captured && Number.isFinite(captured.value) && captured.projection === value
+    ? captured.value : value;
+};
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
 const clean = (value, length = 120) =>
   String(value ?? "")
@@ -158,12 +165,16 @@ export async function designNodeToV3(tree, options = {}) {
     warningCount += 1;
     if (warnings.length < 500) warnings.push({ code, nodeId, message });
   };
-  const number = (value, fallback, low, high, id, property) => {
-    const result = round(clamp(finite(value, fallback), low, high));
+  const number = (value, fallback, low, high, id, property, format = round) => {
+    const result = format(clamp(finite(value, fallback), low, high));
     if (!Number.isFinite(value) || value < low || value > high)
       warn("bounded-number", id, `${property} 超出 v3 范围或缺失，已使用 ${result}。`);
     return result;
   };
+  // Geometry is transported as measured/authored; decimal rounding can lose a
+  // browser layout unit and accumulate across otherwise valid Auto Layout rows.
+  const geometryNumber = (value, fallback, low, high, id, property) =>
+    number(value, fallback, low, high, id, property, (value) => Object.is(value, -0) ? 0 : value);
   const color = (value, id, context = "填充", preserveAlpha = false) => {
     if (!object(value)) return "transparent";
     if (finite(value.a, 1) <= 0) return "transparent";
@@ -536,8 +547,8 @@ export async function designNodeToV3(tree, options = {}) {
       return amount !== 0 && (transformedSpace || child.transform) ? NaN : amount;
     };
     for (const side of ["Top", "Right", "Bottom", "Left"])
-      node[`padding${side}`] = number(
-        finite(sourceLayout.padding?.[side.toLowerCase()]) +
+      node[`padding${side}`] = geometryNumber(
+        finite(preciseLayoutValue(source, `padding-${side.toLowerCase()}`, sourceLayout.padding?.[side.toLowerCase()])) +
           finite(source.border?.[side.toLowerCase()]?.width),
         0,
         0,
@@ -551,8 +562,8 @@ export async function designNodeToV3(tree, options = {}) {
       node.layoutReverse = flex.direction?.endsWith("reverse") ?? false;
       node.layoutWrap =
         { nowrap: "none", wrap: "wrap", "wrap-reverse": "wrap-reverse" }[flex.wrap] ?? "none";
-      node.rowGap = number(flex.gap?.row ?? 0, 0, 0, 2000, node.id, "rowGap");
-      node.columnGap = number(flex.gap?.column ?? 0, 0, 0, 2000, node.id, "columnGap");
+      node.rowGap = geometryNumber(preciseLayoutValue(source, "row-gap", flex.gap?.row ?? 0), 0, 0, 2000, node.id, "rowGap");
+      node.columnGap = geometryNumber(preciseLayoutValue(source, "column-gap", flex.gap?.column ?? 0), 0, 0, 2000, node.id, "columnGap");
       node.gap = node.layout === "horizontal" ? node.columnGap : node.rowGap;
       node.alignItems = alignment(
         flex.alignItems,
@@ -578,15 +589,15 @@ export async function designNodeToV3(tree, options = {}) {
         Object.assign(node, plan.fields);
         gridPlans.set(node, plan);
         for (const message of plan.warnings) warn("grid-implicit-row-count", node.id, message);
-        node.columnGap = number(
-          sourceLayout.grid.gap?.column ?? 0,
+        node.columnGap = geometryNumber(
+          preciseLayoutValue(source, "column-gap", sourceLayout.grid.gap?.column ?? 0),
           0,
           0,
           2000,
           node.id,
           "columnGap",
         );
-        node.rowGap = number(sourceLayout.grid.gap?.row ?? 0, 0, 0, 2000, node.id, "rowGap");
+        node.rowGap = geometryNumber(preciseLayoutValue(source, "row-gap", sourceLayout.grid.gap?.row ?? 0), 0, 0, 2000, node.id, "rowGap");
         node.gap = node.columnGap;
       } catch (error) {
         warn("grid-fixed-geometry", node.id, `${error.message}；已保留原始 Grid 测量几何。`);
@@ -791,8 +802,8 @@ export async function designNodeToV3(tree, options = {}) {
       if (sourceLayout.sizing?.[key] !== undefined && sourceLayout.sizing[key] > 0) {
         const sides = key.endsWith("Width") ? ["left", "right"] : ["top", "bottom"];
         const inset = sourceLayout.sizing.boxSizing === "border-box" ? 0 : sides.reduce(
-          (sum, side) => sum + finite(sourceLayout.padding?.[side]) + finite(source.border?.[side]?.width), 0);
-        node[key] = number(sourceLayout.sizing[key] + inset, 1, 1, 20000, node.id, key);
+          (sum, side) => sum + finite(preciseLayoutValue(source, `padding-${side}`, sourceLayout.padding?.[side])) + finite(source.border?.[side]?.width), 0);
+        node[key] = geometryNumber(preciseLayoutValue(source, property, sourceLayout.sizing[key]) + inset, 1, 1, 20000, node.id, key);
       }
     }
     for (const axis of ["Width", "Height"])
@@ -810,7 +821,7 @@ export async function designNodeToV3(tree, options = {}) {
         Number.parseFloat(source.rawStyles?.["line-height"]);
       if (Number.isFinite(lineHeight) && lineHeight > 0) {
         const minimum = lineHeight + node.paddingTop + node.paddingBottom;
-        if (minimum <= node.height + 0.05) node.minHeight = Math.max(node.minHeight ?? 1, round(minimum));
+        if (minimum <= node.height + 0.05) node.minHeight = Math.max(node.minHeight ?? 1, minimum);
       }
     }
     node.clipContent = ["hidden", "scroll", "auto"].includes(source.overflow);
@@ -985,8 +996,8 @@ export async function designNodeToV3(tree, options = {}) {
         node.layout === "vertical" && node.paddingBottom >= -overlap) {
       // Upstream rounds collapsed gaps to integer pixels. Restore the exact
       // browser interval in editable padding instead of freezing its height.
-      node.paddingBottom = round(node.paddingBottom + overlap);
-      node.height = round(node.height + overlap);
+      node.paddingBottom += overlap;
+      node.height += overlap;
       overlap = 0;
     }
     node = wrapCrossAutoMargins(item.source, node, parent);
@@ -1075,14 +1086,14 @@ export async function designNodeToV3(tree, options = {}) {
     if (provenFloat) provenFloatSources.add(source);
     const id = `html-${path.map((value) => value.toString(36)).join("-")}${semanticSuffix(source.semantic?.semanticId)}`;
     if (source.transform) transformedSources.add(id);
-    let width = number(source.bounds?.width, 1, 1, 20000, id, "width"),
-      height = number(source.bounds?.height, 1, 1, 20000, id, "height");
+    let width = geometryNumber(source.bounds?.width, 1, 1, 20000, id, "width"),
+      height = geometryNumber(source.bounds?.height, 1, 1, 20000, id, "height");
     const anchor = {
       x:
-        number(source.bounds?.x, 0, -20000, 20000, id, "bounds.x") +
+        geometryNumber(source.bounds?.x, 0, -20000, 20000, id, "bounds.x") +
         (coordinateSpace === "parent-relative" ? parentAnchor.x : 0),
       y:
-        number(source.bounds?.y, 0, -20000, 20000, id, "bounds.y") +
+        geometryNumber(source.bounds?.y, 0, -20000, 20000, id, "bounds.y") +
         (coordinateSpace === "parent-relative" ? parentAnchor.y : 0),
     };
     const degrees = finite(source.transform?.rotation),
@@ -1125,8 +1136,8 @@ export async function designNodeToV3(tree, options = {}) {
       source.nodeType === "container" ? "frame" : source.nodeType === "text" ? "text" : "rectangle",
       source.name || source.tag || source.nodeType,
       {
-        x: number(center.x - width / 2, 0, -20000, 20000, id, "x"),
-        y: number(center.y - height / 2, 0, -20000, 20000, id, "y"),
+        x: geometryNumber(center.x - width / 2, 0, -20000, 20000, id, "x"),
+        y: geometryNumber(center.y - height / 2, 0, -20000, 20000, id, "y"),
         width,
         height,
       },
@@ -1415,8 +1426,8 @@ export async function designNodeToV3(tree, options = {}) {
       const offsetX = finite(relation?.x) - finite(bounds?.left);
       const offsetY = finite(relation?.y) - finite(bounds?.top);
       const shift = (node) => {
-        node.x = number(node.x + offsetX, 0, -20000, 20000, node.id, "x");
-        node.y = number(node.y + offsetY, 0, -20000, 20000, node.id, "y");
+        node.x = geometryNumber(node.x + offsetX, 0, -20000, 20000, node.id, "x");
+        node.y = geometryNumber(node.y + offsetY, 0, -20000, 20000, node.id, "y");
         for (const child of node.children ?? []) shift(child);
       };
       shift(converted);

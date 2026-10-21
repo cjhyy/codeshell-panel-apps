@@ -5586,6 +5586,52 @@ var html2figmaCore = (() => {
     };
   }
 
+  // third-party/html2figma/integration/geometry-precision.ts
+  function captureGeometryPrecision(tree) {
+    const records = /* @__PURE__ */ new Map();
+    const properties = [
+      "width",
+      "height",
+      "min-width",
+      "max-width",
+      "min-height",
+      "max-height",
+      "flex-basis",
+      "row-gap",
+      "column-gap",
+      "padding-top",
+      "padding-right",
+      "padding-bottom",
+      "padding-left"
+    ];
+    const visit = (node) => {
+      if (node.nodeType === "element" && node.tag && node.metadata?.semantic && node.domNode instanceof realm.Element && node.computedStyle && !node.metadata.isPseudoElement && !node.metadata.isFormContent && !node.metadata.listMarker) {
+        const values = {};
+        try {
+          const style = node.domNode.computedStyleMap?.();
+          for (const property of properties) {
+            const typed = style?.get(property), projection = Number.parseFloat(node.computedStyle.getPropertyValue(property));
+            if (typed?.unit === "px" && typeof typed.value === "number" && Number.isFinite(typed.value) && Number.isFinite(projection))
+              values[property] = { value: Object.is(typed.value, -0) ? 0 : typed.value, projection };
+          }
+        } catch {
+        }
+        records.set(node.metadata.semantic, { tag: node.tag, values });
+      }
+      for (const child of node.children) visit(child);
+    };
+    visit(tree);
+    return (node) => {
+      const record = node.semantic && records.get(node.semantic);
+      if (!record || node.nodeType === "text" || node.tag !== record.tag) return;
+      node.cssGeometry = record.values;
+      if (node.cssLayout) node.cssLayout = {
+        ...node.cssLayout,
+        ...Object.fromEntries(Object.entries(record.values).map(([key, { value }]) => [key, `${value}px`]))
+      };
+    };
+  }
+
   // third-party/html2figma/integration/text-whitespace.ts
   var collapseAscii = (value) => value.replace(/[\t\n\f\r ]+/gu, " ").replace(/^ | $/gu, "");
   var noPaintPseudo = (node, element) => {
@@ -5728,6 +5774,7 @@ var html2figmaCore = (() => {
     const values = captureLayoutValues(tree);
     const attachTableBorder = captureTableBottomBorders(tree);
     const attachImageBox = captureImageBoxes(tree);
+    const attachGeometryPrecision = captureGeometryPrecision(tree);
     const svgResources = /* @__PURE__ */ new Map();
     const backgrounds = /* @__PURE__ */ new Map();
     const gridSources = /* @__PURE__ */ new Set();
@@ -5820,6 +5867,7 @@ var html2figmaCore = (() => {
         node.cssLineHeight = lineHeights.get(node.semantic);
       const cssLayout = node.nodeType !== "text" && node.semantic && values.get(node.semantic);
       if (cssLayout && Object.keys(cssLayout).length > 0) node.cssLayout = cssLayout;
+      attachGeometryPrecision(node);
       if (!options.preserveGrid && node.nodeType === "container" && node.semantic && gridSources.has(node.semantic))
         node.cssLayout = { ...node.cssLayout, "--codeshell-grid-legacy": "synthetic" };
       if (node.nodeType === "container" && node.semantic && textIntents.has(node.semantic))

@@ -375,7 +375,10 @@ export function gridTrackSizes(tracks, count, placements, axis, gap, available, 
       if (track.type === "flex") sizes[i] = (free * (track.value ?? 1)) / Math.max(1, weight);
     });
   }
-  return sizes;
+  // A resolved flexible Grid track is a Float32 layout endpoint. Keep fixed
+  // authored tracks and intrinsic/Hug inputs as their original finite doubles.
+  return sizes.map((size, index) => definitions[index].type === "flex" && available !== undefined
+    ? Math.fround(size) : size);
 }
 export function effectiveGridRows(source, rowCount) {
   return source.gridAutoTracks === "rows"

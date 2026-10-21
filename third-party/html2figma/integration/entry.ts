@@ -6,6 +6,7 @@ import type { RenderNode } from "../upstream/packages/browser/traverser/types";
 import { captureStandaloneSvg } from "./svg";
 import { captureTableBottomBorders } from "./table-borders";
 import { captureImageBoxes } from "./image-box";
+import { captureGeometryPrecision } from "./geometry-precision";
 import { recoverCollapsedTextWhitespace, type TextWhitespaceRecovery } from "./text-whitespace";
 
 type CapturedNode = DesignNode & {
@@ -124,6 +125,7 @@ export function convert(
   const values = captureLayoutValues(tree);
   const attachTableBorder = captureTableBottomBorders(tree);
   const attachImageBox = captureImageBoxes(tree);
+  const attachGeometryPrecision = captureGeometryPrecision(tree);
   const svgResources = new Map<object, string>();
   const backgrounds = new Map<object, Record<string, string>>();
   const gridSources = new Set<object>();
@@ -227,6 +229,7 @@ export function convert(
     // applying the parent's box dimensions to that text would be incorrect.
     const cssLayout = node.nodeType !== "text" && node.semantic && values.get(node.semantic);
     if (cssLayout && Object.keys(cssLayout).length > 0) node.cssLayout = cssLayout;
+    attachGeometryPrecision(node);
     if (
       !options.preserveGrid &&
       node.nodeType === "container" &&

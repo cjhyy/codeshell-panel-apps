@@ -27,11 +27,19 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-function cssNumber(value, fallback = 0) {
+function cssRoundedNumber(value, fallback = 0) {
   const number = Number(value);
   if (!Number.isFinite(number)) return `${fallback}px`;
   const rounded = Math.round(number * 1000) / 1000;
   return `${Object.is(rounded, -0) ? 0 : rounded}px`;
+}
+
+// Preserve finite geometry without a decimal quantizer. Paint/typography keep
+// their existing serialization policy through cssRoundedNumber.
+function cssNumber(value, fallback = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return `${fallback}px`;
+  return `${Object.is(number, -0) ? 0 : number}px`;
 }
 
 function cssColor(value, fallback = "transparent") {
@@ -356,7 +364,7 @@ function paintDeclarations(node) {
   if (hasDesignStroke(node) && node.strokeAlign === "inside") {
     designStrokeSides(node).forEach((side,i)=>{
       const rgb=[1,3,5].map(offset=>parseInt(side.color.slice(offset,offset+2),16));
-      declarations.push([`border-${["top","right","bottom","left"][i]}`,`${cssNumber(side.width)} solid rgba(${rgb.join(",")},${side.opacity})`]);
+      declarations.push([`border-${["top","right","bottom","left"][i]}`,`${cssRoundedNumber(side.width)} solid rgba(${rgb.join(",")},${side.opacity})`]);
     });
   } else if (hasDesignStroke(node)) {
     const sides=designStrokeSides(node),side=sides[0];
@@ -364,20 +372,20 @@ function paintDeclarations(node) {
       throw new Error(`${node.name}: 非内侧的独立侧边暂不能导出为等价 CSS；请保留 SVG/v3 或使用内侧边框`);
     const rgba=`rgba(${[1,3,5].map(offset=>parseInt(side.color.slice(offset,offset+2),16)).join(",")},${side.opacity})`;
     const outside=node.strokeAlign === "outside"?side.width:side.width/2;
-    declarations.push(["outline",`${cssNumber(outside)} solid ${rgba}`]);
-    if(node.strokeAlign!=="outside")shadows.push(`inset 0 0 0 ${cssNumber(side.width/2)} ${rgba}`);
+    declarations.push(["outline",`${cssRoundedNumber(outside)} solid ${rgba}`]);
+    if(node.strokeAlign!=="outside")shadows.push(`inset 0 0 0 ${cssRoundedNumber(side.width/2)} ${rgba}`);
   } else if (Number(node.strokeWidth) > 0 && cssColor(node.stroke) !== "transparent") {
-    declarations.push(["border", `${cssNumber(node.strokeWidth)} solid ${cssColor(node.stroke)}`]);
+    declarations.push(["border", `${cssRoundedNumber(node.strokeWidth)} solid ${cssColor(node.stroke)}`]);
   }
   if (node.cornerRadii) {
-    declarations.push(["border-radius", node.cornerRadii.map(cssNumber).join(" ")]);
+    declarations.push(["border-radius", node.cornerRadii.map(cssRoundedNumber).join(" ")]);
   } else if (Number(node.cornerRadius) > 0) {
-    declarations.push(["border-radius", cssNumber(node.cornerRadius)]);
+    declarations.push(["border-radius", cssRoundedNumber(node.cornerRadius)]);
   }
   if (node.type === "ellipse") declarations.push(["border-radius", "50%"]);
   if (node.shadowStack) shadows.push(shadowStackCss(node));
   if (node.shadow) {
-    const shadow = `${cssNumber(node.shadow.x)} ${cssNumber(node.shadow.y)} ${cssNumber(node.shadow.blur)} rgba(${Number.parseInt(node.shadow.color.slice(1, 3), 16)},${Number.parseInt(node.shadow.color.slice(3, 5), 16)},${Number.parseInt(node.shadow.color.slice(5, 7), 16)},${node.shadow.opacity})`;
+    const shadow = `${cssRoundedNumber(node.shadow.x)} ${cssRoundedNumber(node.shadow.y)} ${cssRoundedNumber(node.shadow.blur)} rgba(${Number.parseInt(node.shadow.color.slice(1, 3), 16)},${Number.parseInt(node.shadow.color.slice(3, 5), 16)},${Number.parseInt(node.shadow.color.slice(5, 7), 16)},${node.shadow.opacity})`;
     if (node.type === "text") declarations.push(["text-shadow", shadow]);
     else shadows.push(shadow);
   }
@@ -414,11 +422,11 @@ function nodeStyle(node, parent, canvas, parentOf, fontFamilyOverride) {
       ["background-clip", node.fillPaints ? "text" : undefined],
       ["-webkit-background-clip", node.fillPaints ? "text" : undefined],
       ["font-family", fontFamilyOverride === undefined ? designFontFamilyCss(node.fontFamily) : designRuntimeFontFamilyCss(fontFamilyOverride)],
-      ["font-size", cssNumber(node.fontSize, 16)],
+      ["font-size", cssRoundedNumber(node.fontSize, 16)],
       ["font-weight", String(node.fontWeight ?? 400)],
       ["font-style", node.fontStyle ?? "normal"],
       ["line-height", textLineHeightCss(node)],
-      ["letter-spacing", cssNumber(node.letterSpacing, 0)],
+      ["letter-spacing", cssRoundedNumber(node.letterSpacing, 0)],
       ["text-align", node.textAlign ?? "left"],
       // A parent decoration propagates through inline children: a child `none`
       // cannot cancel it. Ranged paragraphs decorate their effective inline

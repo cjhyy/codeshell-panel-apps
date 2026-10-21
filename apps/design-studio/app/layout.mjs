@@ -126,7 +126,11 @@ function limitedAxisSize(node, axis, value) {
 }
 
 function assignAxisSize(node, axis, value) {
-  return assignNumber(node, axisSizeProperty(axis), limitedAxisSize(node, axis, value));
+  const property = axisSizeProperty(axis), limited = limitedAxisSize(node, axis, value);
+  const next = Object.is(limited, -0) ? 0 : limited;
+  if (node[property] === next) return false;
+  node[property] = next;
+  return true;
 }
 
 function fillContentInset(node, axis) {
@@ -408,7 +412,7 @@ function lineBaselineMetrics(nodes, line, container, horizontal) {
 
 function layoutPosition(child, property, value) {
   return property === "y" && child.type === "text"
-    ? value + finite(child.layoutBaselineOffset)
+    ? round(value + finite(child.layoutBaselineOffset))
     : value;
 }
 
@@ -521,14 +525,16 @@ function applyFlexLayout(nodes, container, children) {
           nodes,
           child.id,
           mainPosition,
-          round(layoutPosition(child, mainPosition, mainCursor)),
+          layoutPosition(child, mainPosition, mainCursor),
+          { preservePrecision: true },
         ) || changed;
       changed =
         setNodeTreePosition(
           nodes,
           child.id,
           crossPosition,
-          round(layoutPosition(child, crossPosition, lineCrossCursor + crossOffset)),
+          layoutPosition(child, crossPosition, lineCrossCursor + crossOffset),
+          { preservePrecision: true },
         ) || changed;
       mainCursor += limitedAxisSize(child, mainAxis, child[mainSize]) + mainTrack.gap;
     }
@@ -564,7 +570,7 @@ function applyGridLayout(nodes, container, children, parentOf) {
         columnGap,
         innerWidth,
       )
-    : Array(columns).fill(columnWidth);
+    : Array(columns).fill(Math.fround(columnWidth));
   const explicitRows =
     container.gridAutoTracks === "rows"
       ? effectiveGridRows(container, rowCount)
@@ -649,14 +655,16 @@ function applyGridLayout(nodes, container, children, parentOf) {
         nodes,
         placement.child.id,
         "x",
-        round(layoutPosition(placement.child, "x", cellX + horizontalOffset)),
+        Math.fround(layoutPosition(placement.child, "x", cellX + horizontalOffset)),
+        { preservePrecision: true },
       ) || changed;
     changed =
       setNodeTreePosition(
         nodes,
         placement.child.id,
         "y",
-        round(layoutPosition(placement.child, "y", cellY + verticalOffset)),
+        Math.fround(layoutPosition(placement.child, "y", cellY + verticalOffset)),
+        { preservePrecision: true },
       ) || changed;
   }
   return changed;
@@ -888,12 +896,11 @@ function applyResponsiveText(nodes, containerIds, measurement) {
         ? available
         : Math.min(available, widest);
     changed = assignAxisSize(node, "horizontal", nextWidth) || changed;
-    changed =
-      assignAxisSize(
-        node,
-        "vertical",
-        Math.max(1, lines.length * textLineHeightPixels(node)),
-      ) || changed;
+    // Responsive text line-box measurement retains its existing typography
+    // quantizer (for example the canonical 1.3333 ratio for a 16px line box).
+    // This is separate from transporting frame/track geometry without rounding.
+    changed = assignNumber(node, "height", limitedAxisSize(node, "vertical",
+      Math.max(1, lines.length * textLineHeightPixels(node)))) || changed;
     changed = assignNumber(node, "textFlowWidth", available) || changed;
     if (measurement) {
       const metrics = lines.map((line) => measurement.measure(line));
