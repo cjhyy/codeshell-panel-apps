@@ -14,6 +14,14 @@ alone is insufficient. Decoder completion order does not reorder the prepared
 resource map. The inputs come from the existing validated DesignResourceCache;
 this manager does not provide a new resource admission boundary.
 
+The committed FontFaceSet must also follow that order. For colliding literal
+family/weight/style faces, retaining their previous insertion order changes CSS
+font selection. A changed target removes only installed owned instances and
+readds the decoded target instances in Map order; failure restores the exact
+previous instances in their previous order. The fast path requires the same
+ordered instances and confirmed membership. A real Inter/Roboto reversal is
+compared with an independently reset/fresh reverse order, including exact RGBA.
+
 A branded `captureLease` retains the exact previous instances. `restoreLease`
 invalidates outstanding preparation and reinstalls that set, removing only new
 owned instances. The app retains its workspace/document/state/publication checks
@@ -44,6 +52,11 @@ descriptor checks occur before preparation and commit without rescanning every
 node for each resource decoder. Resource URLs are published only after complete
 font preparation succeeds. Renderers remain suspended while the new document's
 font resources are not ready.
+
+Final reference validation includes ID order. Recovery operations may replace
+the baseline resource metadata entirely; the replayed normalized descriptors
+therefore get a new validated workspace-scoped cache before final preparation.
+Reusing the baseline cache for newly recovered resources is invalid.
 
 Pagehide immediately invalidates pending font work and releases the app-owned
 public faces. For a persisted event it suspends both renderer controllers; for

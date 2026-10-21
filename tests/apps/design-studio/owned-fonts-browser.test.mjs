@@ -42,6 +42,19 @@ test("real CPU FontFace decoding stages atomically, restores exact leases and re
     await set([]); rows.empty=width(); rows.foreignAfterEmpty=document.fonts.has(foreign);
     await set([a]); const beforeHideLease=manager.captureLease(); manager.suspend(); rows.hidden=width(); rows.hiddenLeaseRefused=!manager.restoreLease(beforeHideLease);
     manager.resume(); await set([a]); rows.resumed=width(); manager.reset(); rows.reset=width(); rows.foreignAfterReset=document.fonts.has(foreign);
+    const distinctB={...b,descriptor:{...b.descriptor,id:"second-font"}};
+    const raster=()=>{
+      const canvas=document.createElement("canvas");canvas.width=1100;canvas.height=100;
+      const ctx=canvas.getContext("2d");ctx.fillStyle="#fff";ctx.fillRect(0,0,1100,100);
+      ctx.font=`32px "${family}",serif`;ctx.fillStyle="#111";ctx.fillText(document.querySelector("#probe").textContent,0,40);
+      return ctx.getImageData(0,0,1100,100).data;
+    };
+    const differentPixels=(a,b)=>{let different=0;for(let i=0;i<a.length;i+=4)if(a[i]!==b[i]||a[i+1]!==b[i+1]||a[i+2]!==b[i+2]||a[i+3]!==b[i+3])different++;return different;};
+    await set([a,distinctB]);rows.forward=width();const forward=raster(),created=faces.length;
+    await set([distinctB,a]);rows.reusedReversed=width();const reused=raster();rows.reusedNoDecode=faces.length===created;
+    manager.reset();await set([distinctB,a]);rows.freshReversed=width();const fresh=raster();
+    rows.reusedVsFreshPixels=differentPixels(reused,fresh);rows.forwardVsFreshPixels=differentPixels(forward,fresh);
+    rows.foreignAfterReorder=document.fonts.has(foreign);
     return rows;
   },{inter:inter.toString("base64"),roboto:roboto.toString("base64")});
   assert.equal(rows.stagedA,rows.fresh); assert(rows.stagedAbsent); assert(rows.oldPresent);
@@ -52,5 +65,8 @@ test("real CPU FontFace decoding stages atomically, restores exact leases and re
   assert.equal(rows.empty,rows.fresh); assert(rows.foreignAfterEmpty);
   assert.equal(rows.hidden,rows.fresh); assert(rows.hiddenLeaseRefused); assert.equal(rows.resumed,rows.a);
   assert.equal(rows.reset,rows.fresh); assert(rows.foreignAfterReset); assert.deepEqual(errors,[]);
+  assert(rows.reusedNoDecode);assert.notEqual(rows.forward,rows.freshReversed);
+  assert.equal(rows.reusedReversed,rows.freshReversed);assert.equal(rows.reusedVsFreshPixels,0);
+  assert(rows.forwardVsFreshPixels>0);assert(rows.foreignAfterReorder);
   if(process.env.CODESHELL_OWNED_FONT_EVIDENCE_DIR){const out=process.env.CODESHELL_OWNED_FONT_EVIDENCE_DIR;await mkdir(out,{recursive:true});await writeFile(join(out,"real-font-manager.json"),JSON.stringify({scope:"real CPU Chromium FontFace and Canvas2D; not product/Host/Figma/BFCache acceptance",browser:browser.version(),args:["--disable-gpu"],fonts:{inter:hash(inter),roboto:hash(roboto)},rows},null,2)+"\n");}
 });

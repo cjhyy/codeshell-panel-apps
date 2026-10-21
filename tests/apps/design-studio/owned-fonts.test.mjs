@@ -81,6 +81,15 @@ test("page hydration reconciles all still referenced fonts, preserving independe
   await f.set([resource("p2","2")]); assert(!f.fontSet.has(a)); assert(f.fontSet.has(b)); assert(f.fontSet.has(f.foreign));
 });
 
+test("retained same-family faces follow the requested order, including a failed reordered insertion rollback",async()=>{
+  const f=fixture(); await f.set([resource("a"),resource("b","2")]); const [a,b]=f.created,lease=f.manager.captureLease();
+  await f.set([resource("b","2"),resource("a")]); assert.equal(f.created.length,2);
+  assert.deepEqual([...f.fontSet],[f.foreign,b,a]);
+  f.manager.restoreLease(lease); assert.deepEqual([...f.fontSet],[f.foreign,a,b]);
+  const commit=await f.prepare([resource("b","2"),resource("a")]); f.failAdd(a);
+  assert.throws(commit,/add failure/); assert.deepEqual([...f.fontSet],[f.foreign,a,b]);
+});
+
 test("a native FontFaceSet insertion failure rolls back its partial insertion and retains the previous lease",async()=>{
   const f=fixture(); await f.set([resource()]); const old=f.created[0], commit=await f.prepare([resource("b","2")]);
   f.failAdd(f.created[1]); assert.throws(commit,/add failure/); assert.deepEqual([...f.fontSet],[f.foreign,old]);

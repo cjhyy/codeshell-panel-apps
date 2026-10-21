@@ -32,15 +32,24 @@ export function createOwnedFontManager({ fontSet, createFace } = {}) {
     const previous = active;
     const nextFaces = new Set([...next.values()].map((entry) => entry.face));
     const previousFaces = new Set([...previous.values()].map((entry) => entry.face));
+    const nextOrder = [...nextFaces], previousOrder = [...previousFaces];
+    const unchanged = nextOrder.length === previousOrder.length &&
+      nextOrder.every((face, index) => face === previousOrder[index]);
+    if (unchanged && installed.size === nextFaces.size &&
+      nextOrder.every((face) => installed.has(face) && fontSet.has(face))) return;
     try {
+      // CSS font selection observes insertion order for colliding faces. Reuse
+      // exact decoded instances, but install them in the complete target order.
+      for (const face of [...installed]) remove(face);
       for (const face of nextFaces) add(face);
-      for (const face of [...installed]) if (!nextFaces.has(face)) remove(face);
       active = next;
     } catch (error) {
       const errors = [error];
-      for (const face of previousFaces) { try { add(face); } catch (failure) { errors.push(failure); } }
-      for (const face of [...installed]) if (!previousFaces.has(face)) {
+      for (const face of [...installed]) {
         try { remove(face); } catch (failure) { errors.push(failure); }
+      }
+      for (const face of previousFaces) {
+        try { add(face); } catch (failure) { errors.push(failure); }
       }
       active = previous;
       if (errors.length > 1) throw new AggregateError(errors, "字体替换及回滚失败");

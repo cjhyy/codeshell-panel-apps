@@ -832,6 +832,7 @@ async function loadReferencedDesignResources() {
   const assertScope = captureDocumentScope();
   const cache = currentResourceCache;
   const referencedIds = referencedDesignResourceIds();
+  const referencedOrder = [...referencedIds];
   const resourceSignature = () => JSON.stringify((design.resources ?? []).filter((resource) => referencedIds.has(resource.id)));
   const signature = resourceSignature();
   const operation = ownedFonts.begin(() => {
@@ -843,7 +844,7 @@ async function loadReferencedDesignResources() {
     ownedFonts.assertCurrent(operation);
     const currentIds = referencedDesignResourceIds();
     if (signature !== resourceSignature() ||
-      currentIds.size !== referencedIds.size || [...currentIds].some((id) => !referencedIds.has(id)))
+      currentIds.size !== referencedIds.size || [...currentIds].some((id, index) => id !== referencedOrder[index]))
       throw new Error("设计资源已在字体加载期间变化；旧操作已取消");
   };
   fontResourcesReady = false;
@@ -7324,6 +7325,13 @@ async function restoreRecovery(
       }
     : null;
   designStateSequence += 1;
+  // Recovery operations can replace the baseline's entire resource registry.
+  // Resolve the replayed descriptors through the same validated scoped cache.
+  currentResourceCache = new DesignResourceCache({
+    resources: design.resources ?? [],
+    readText: (path) => bundleHostCall("workspace.readText", { path }, expectedWorkspaceEpoch),
+    sha256Bytes,
+  });
   await loadReferencedDesignResources();
   checkRecoveryScope();
   updateDirtyState();
