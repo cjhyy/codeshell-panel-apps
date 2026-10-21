@@ -2077,3 +2077,68 @@ browserGpuDisabled:true；结果仍分别0/0/54000、0/0/54000、0/0/21480、
 41c602a564adf444a3e7c01f3a509cb75f205120cf45ad1d406332e5e240dbc8。
 已在peer确认所有进程/读取结束后清理已合入的gutter与f61 baseline工作树和task-owned
 依赖软链接；外部证据、main内提交和未完成的其他候选均保留。
+
+
+## ROUND45 · 完整 CSS 字体列表、资源回退与两版渲染新方向 · 2026-10-21 14:50 SG
+
+稳定基线184d39b，font候选d87e2e4经独立peer发现/修复实际CanvasKit资源别名丢失
+字形回退链，再由e002da3修复pre空白来源兼容；正常合并后的代码门禁HEAD为
+3998ff508961aaca6e4af5e1fe8ea23ed18fd551。最新origin/main仍13d591ca，已刷新并保留。
+
+- HTML导入只从真实当前leaf/Element/source绑定恢复完整computed font-family；保留
+  CSS引号、转义、通用字体和顺序。独立字体资源只替换验证过的首项，后续回退不丢失。
+  原生Figma只准入可证明的单一具体字体，列表/通用字体明确拒绝，未假设字体可用。
+- root实际CanvasKit GPU计数案例：CaseFamily缺3个glyph时原6239/60000差异像素，
+  修复后同例0/max0；另有四个真实字体资源CPU软件surface对照0，未执行真实Figma。
+  GPU收据0ef88246b3064d4e792876540c8e27ee9d5b3c3cdebf9bc7ba20daedcd560b3f。
+- d87第一次完整CPU回归731项中729通过/1失败/1跳过：pre原文恢复正确但新字体
+  校验误报text-or-style。保留原门禁及clip/pre/pre-lines原图/转换图/差异图，未过滤
+  测试警告。e002使用真实onNode回调的private WeakMap初始projection，在源身份、
+  style/segments和当前原始leaf仍一致且canonical pre字节完全等于真实原文时恢复。
+  JSON notes不构成授权；getter不执行。预算为keys/string values共16384个输入UTF16
+  code units、256values、depth8、单字符串4000，并非encoded JSON字节预算。
+  该组两个版本的27PNGs均相同且像素0，pre警告1→0；原overflow测试文件未修改。
+- root新focused14/14、owner affected298/298；最终完整main734项733pass/1skip，
+  UI107项106pass/1skip，共841项839pass/2skip。125个安装包文件、测试catalog/文件、
+  HEAD和runner在各门禁前后不变；typecheck、validate、scoped build check及三个
+  生成物检查通过。门禁收据SHA361ffa242160e1593c5886912c8bd080e542ed9fb6746adaf78bc37e87d5e838。
+- 真实WSS全页1280×7000差异540091→482233，重排685683→670665；400×7000
+  600215→606326（增加6111）仍失败。crop另记，不当全页；18PNGs在v1/v2/v3间
+  不变，198/213流覆盖、15失败、252未解决未变，未做坐标拟合或ABS降级。
+  Bootstrap原始Pricing补充配对1280×3000/400×3000：两版均280924/294773/256018
+  差异像素，仍全失败；严格CPU、完整原始source/assets/converted/diff均保留。
+  新CPU配对SHA77866570dcea89ce1041268fa078fe1cbb55dc2ad0a257673726745f20307d85。
+
+新native source-import候选5534151单独冻结：完整835项834pass/1skip、affected430、
+root独立4项及当前UI107项106pass/1skip通过。最后measurer回调后的paint/range由
+descriptor-safe不可变语义快照复核，含有效hint作者意图；全4保留SDK案例仅mock测量。
+UI缺canvaskit-wasm的早先环境失败保留，使用显式NODE_PATH补充已存在的0.42.0开发依赖
+后通过，未修改依赖链接。该native候选尚未合入本轮稳定，仍无真实native/像素验收。
+root peer SHAaf351e7aff3b60134394898c0fb379e483b3b4c6ce8a1f02a9911fb833c73617。
+
+### 用户最新方向：原始64模板 + Browser/CanvasKit两版
+
+用户明确要求把HTML布局交给浏览器，并保留CanvasKit作为第二渲染版本对照。
+两版共用可编辑canonical结构；Browser以真实CSS Flex/Grid/Hug/Fill/gap/padding布局，
+对AL子项不用derived坐标充当绝对定位。预览与HTML导出复用映射，DOM几何仅作运行期
+hit-test/selection/zoom，不写回ABS模型。改字、改宽、拖拽与导出均需分别对比。
+
+已找到用户本地 /Users/admin/Documents/个人学习/代码学习/html2figma ，固定ea78385c，
+原始templates.ts SHA9ac86a4b3cd788e65f47993c22edfd995c140b39caded98dadb8f92f7c290fe4。
+实际runtime catalog64：basic8/components9/layout19/advanced28。现有20fixtures为改编，
+后续正式对照使用原始64项；不改用户upstream工作树。原gallery对head scripts的惰性
+行为和外部资产失败单列，不能静默补脚本或改写模板。
+
+活动工作树：
+- browser布局：design-studio-browser-layout-renderer-20261021/codeshell-panel-apps，
+  codex/design-studio/browser-layout-renderer-20261021，已正常合入e002，无inline WIP。
+- 原gallery：design-studio-html2figma-original-gallery-20261021/codeshell-panel-apps，
+  codex/design-studio/html2figma-original-gallery-20261021，原始文件/read-only gallery归档中。
+- zero token：design-studio-html-zero-flow-token-20261021/codeshell-panel-apps，独立推进
+  private source-only proof，尚未产品激活。0×0 shadow/counter/NBSP反例仍有91/86/25850
+  差异像素，不能按零尺寸直接删除源节点。
+- 原inline/foreignObject实验冻结2ec13ee4，生产import activation已移除。实际透明整段
+  文本CPU/CK五例为0/1/1/0/0像素，max1；字体/异步缓存控制未完成，未进入稳定版。
+
+真实Figma桌面能力06:13UTC复查cuaAvailable:false，既有探针保持unarmed；不把浏览器
+或VM称为实机执行。24小时任务仍active，截止不变2026-10-22 00:31 SG。
