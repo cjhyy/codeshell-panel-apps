@@ -1,0 +1,400 @@
+{
+  "originalStrictGeometry": false,
+  "originalStrictStructure": false,
+  "originalStrictCssColumns": false,
+  "exactDifferences": 77,
+  "geometryDifferences": [
+    {
+      "context": "04-width708/cell0",
+      "key": "width",
+      "actual": 232.40000915527344,
+      "expected": 232.4,
+      "delta": 0.000009155273431815658,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/cell1",
+      "key": "x",
+      "actual": 272.4000244140625,
+      "expected": 272.4,
+      "delta": 0.000024414062522737368,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/cell1",
+      "key": "width",
+      "actual": 475.6000061035156,
+      "expected": 475.59999999999997,
+      "delta": 0.000006103515659106051,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/cell2",
+      "key": "width",
+      "actual": 232.40000915527344,
+      "expected": 232.4,
+      "delta": 0.000009155273431815658,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/cell3",
+      "key": "x",
+      "actual": 272.4000244140625,
+      "expected": 272.4,
+      "delta": 0.000024414062522737368,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/cell3",
+      "key": "width",
+      "actual": 475.6000061035156,
+      "expected": 475.59999999999997,
+      "delta": 0.000006103515659106051,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/cell4",
+      "key": "width",
+      "actual": 232.40000915527344,
+      "expected": 232.4,
+      "delta": 0.000009155273431815658,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/cell5",
+      "key": "x",
+      "actual": 272.4000244140625,
+      "expected": 272.4,
+      "delta": 0.000024414062522737368,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/cell5",
+      "key": "width",
+      "actual": 475.6000061035156,
+      "expected": 475.59999999999997,
+      "delta": 0.000006103515659106051,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/cell6",
+      "key": "width",
+      "actual": 232.40000915527344,
+      "expected": 232.4,
+      "delta": 0.000009155273431815658,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/cell7",
+      "key": "x",
+      "actual": 272.4000244140625,
+      "expected": 272.4,
+      "delta": 0.000024414062522737368,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/cell7",
+      "key": "width",
+      "actual": 475.6000061035156,
+      "expected": 475.59999999999997,
+      "delta": 0.000006103515659106051,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/wrapper",
+      "key": "x",
+      "actual": 272.4000244140625,
+      "expected": 272.4,
+      "delta": 0.000024414062522737368,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/wrapper",
+      "key": "width",
+      "actual": 475.6000061035156,
+      "expected": 475.59999999999997,
+      "delta": 0.000006103515659106051,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/P0",
+      "key": "x",
+      "actual": 272.4000244140625,
+      "expected": 272.4,
+      "delta": 0.000024414062522737368,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/P0",
+      "key": "width",
+      "actual": 475.6000061035156,
+      "expected": 475.59999999999997,
+      "delta": 0.000006103515659106051,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/P1",
+      "key": "x",
+      "actual": 272.4000244140625,
+      "expected": 272.4,
+      "delta": 0.000024414062522737368,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/P1",
+      "key": "width",
+      "actual": 475.6000061035156,
+      "expected": 475.59999999999997,
+      "delta": 0.000006103515659106051,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/Text0",
+      "key": "width",
+      "actual": 212.40000915527344,
+      "expected": 212.4,
+      "delta": 0.000009155273431815658,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/Text1",
+      "key": "x",
+      "actual": 272.4000244140625,
+      "expected": 272.4,
+      "delta": 0.000024414062522737368,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/Text1",
+      "key": "width",
+      "actual": 475.6000061035156,
+      "expected": 475.59999999999997,
+      "delta": 0.000006103515659106051,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/Text2",
+      "key": "width",
+      "actual": 212.40000915527344,
+      "expected": 212.4,
+      "delta": 0.000009155273431815658,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/Text3",
+      "key": "x",
+      "actual": 272.4000244140625,
+      "expected": 272.4,
+      "delta": 0.000024414062522737368,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/Text3",
+      "key": "width",
+      "actual": 475.6000061035156,
+      "expected": 475.59999999999997,
+      "delta": 0.000006103515659106051,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/Text4",
+      "key": "width",
+      "actual": 212.40000915527344,
+      "expected": 212.4,
+      "delta": 0.000009155273431815658,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/Text5",
+      "key": "x",
+      "actual": 272.4000244140625,
+      "expected": 272.4,
+      "delta": 0.000024414062522737368,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/Text5",
+      "key": "width",
+      "actual": 475.6000061035156,
+      "expected": 475.59999999999997,
+      "delta": 0.000006103515659106051,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/Text6",
+      "key": "width",
+      "actual": 212.40000915527344,
+      "expected": 212.4,
+      "delta": 0.000009155273431815658,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/Text7",
+      "key": "x",
+      "actual": 272.4000244140625,
+      "expected": 272.4,
+      "delta": 0.000024414062522737368,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/Text7",
+      "key": "width",
+      "actual": 475.6000061035156,
+      "expected": 475.59999999999997,
+      "delta": 0.000006103515659106051,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/Text8",
+      "key": "x",
+      "actual": 272.4000244140625,
+      "expected": 272.4,
+      "delta": 0.000024414062522737368,
+      "geometry": true
+    },
+    {
+      "context": "04-width708/Text8",
+      "key": "width",
+      "actual": 475.6000061035156,
+      "expected": 475.59999999999997,
+      "delta": 0.000006103515659106051,
+      "geometry": true
+    }
+  ],
+  "fontGetterAugmentationCount": 45,
+  "fontGetterAugmentation": {
+    "slnt": 0,
+    "wght": 400
+  },
+  "classification": "Additional observed SDK getters are retained, not font-byte proof. All32 horizontal differences remain exact failures; no geometry tolerance.",
+  "columnComparisons": [
+    {
+      "stage": "01-initial1220-copy1",
+      "tableWidth": 1220,
+      "authoredIdeal": [
+        386,
+        834
+      ],
+      "frozenCss": [
+        386,
+        834
+      ],
+      "native": [
+        386,
+        834
+      ],
+      "nativeMinusIdeal": [
+        0,
+        0
+      ],
+      "nativeMinusCss": [
+        0,
+        0
+      ],
+      "exactCssColumns": true
+    },
+    {
+      "stage": "02-copy4",
+      "tableWidth": 1220,
+      "authoredIdeal": [
+        386,
+        834
+      ],
+      "frozenCss": [
+        386,
+        834
+      ],
+      "native": [
+        386,
+        834
+      ],
+      "nativeMinusIdeal": [
+        0,
+        0
+      ],
+      "nativeMinusCss": [
+        0,
+        0
+      ],
+      "exactCssColumns": true
+    },
+    {
+      "stage": "03-copy1-restored",
+      "tableWidth": 1220,
+      "authoredIdeal": [
+        386,
+        834
+      ],
+      "frozenCss": [
+        386,
+        834
+      ],
+      "native": [
+        386,
+        834
+      ],
+      "nativeMinusIdeal": [
+        0,
+        0
+      ],
+      "nativeMinusCss": [
+        0,
+        0
+      ],
+      "exactCssColumns": true
+    },
+    {
+      "stage": "04-width708",
+      "tableWidth": 708,
+      "authoredIdeal": [
+        232.4,
+        475.59999999999997
+      ],
+      "frozenCss": [
+        232.390625,
+        475.609375
+      ],
+      "native": [
+        232.40000915527344,
+        475.6000061035156
+      ],
+      "nativeMinusIdeal": [
+        0.000009155273431815658,
+        0.000006103515659106051
+      ],
+      "nativeMinusCss": [
+        0.0093841552734375,
+        -0.009368896484375
+      ],
+      "exactCssColumns": false
+    },
+    {
+      "stage": "05-width1220-restored",
+      "tableWidth": 1220,
+      "authoredIdeal": [
+        386,
+        834
+      ],
+      "frozenCss": [
+        386,
+        834
+      ],
+      "native": [
+        386,
+        834
+      ],
+      "nativeMinusIdeal": [
+        0,
+        0
+      ],
+      "nativeMinusCss": [
+        0,
+        0
+      ],
+      "exactCssColumns": true
+    }
+  ],
+  "rawSha256": "9830f5a684b8678aece825a0615a2f07cb013a24a5af233050bf396cc26824ac",
+  "originalAnalysisSha256": "465f5fc67157a284ea5b1e29e121f72b4d504956e36942f3df749a7ed2ccc2f8",
+  "independentAnalysisSha256": "14049cdc4e21de279a0b0820b00f8b8979dbe92918ea2ce7ecd1482aba6fc0a8"
+}

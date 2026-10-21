@@ -1,6 +1,8 @@
 // The fixed reviewed capture runtime runs inside an opaque sandbox, never user scripts.
 import { convertToDesignDSL } from "../../../apps/design-studio/app/vendor/html2figma-browser.mjs";
+import { installHtmlCaptureNavigationGuard } from "../../../apps/design-studio/app/html-capture-links.mjs";
 declare const __captureOptions: { requestId: string; selector: string };
+installHtmlCaptureNavigationGuard(document);
 (async () => {
   try {
     await document.fonts.ready;
@@ -21,7 +23,9 @@ declare const __captureOptions: { requestId: string; selector: string };
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const root = document.querySelector(__captureOptions.selector);
     if (!root) throw new Error("找不到根选择器");
-    const tree = convertToDesignDSL(root, { maxDepth: 60 });
+    // The standalone upstream adapter still expects synthetic Flex rows. The
+    // workbench's default capture preserves real Grid for its v3/native bridge.
+    const tree = convertToDesignDSL(root, { maxDepth: 60, preserveGrid: false });
     if (!tree) throw new Error("HTML 没有可见图层");
     parent.postMessage(
       { type: "html2figma-captured", requestId: __captureOptions.requestId, tree },

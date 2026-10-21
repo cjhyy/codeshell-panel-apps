@@ -199,7 +199,8 @@ test("independent iframe calls keep their own semantics and current DOM metadata
     const frames = await Promise.all([frame(18, 200), frame(42, 300)]);
     const roots = frames.map((item) => item.contentDocument.querySelector("#root"));
     try {
-      const first = convertToDesignDSL(roots[0]);
+      const bindings = [];
+      const first = convertToDesignDSL(roots[0], { onElement: (semanticId, element) => bindings.push({ semanticId, ownDocument: element.ownerDocument === frames[0].contentDocument }) });
       const second = convertToDesignDSL(roots[1]);
       roots[0].className = "after";
       const repeated = convertToDesignDSL(roots[0], { includeRawStyles: false });
@@ -207,6 +208,7 @@ test("independent iframe calls keep their own semantics and current DOM metadata
       for (const [root, options] of [
         [{}, {}],
         [roots[0], { maxDepth: 101 }],
+        [roots[0], { onElement: 42 }],
         [roots[0], null],
       ]) {
         try {
@@ -215,7 +217,7 @@ test("independent iframe calls keep their own semantics and current DOM metadata
           errors.push(error.name);
         }
       }
-      return { first, second, repeated, errors };
+      return { first, second, repeated, errors, bindings };
     } finally {
       frames.forEach((item) => item.remove());
     }
@@ -229,7 +231,157 @@ test("independent iframe calls keep their own semantics and current DOM metadata
   assert.deepEqual(result.first.semantic.classList, ["before"]);
   assert.deepEqual(result.repeated.semantic.classList, ["after"]);
   assert.equal(result.repeated.rawStyles, undefined);
-  assert.deepEqual(result.errors, ["TypeError", "RangeError", "TypeError"]);
+  assert.deepEqual(result.errors, ["TypeError", "RangeError", "TypeError", "TypeError"]);
+  assert.equal(result.bindings.length, 1, "only the real root element is bound; anonymous text reuses its identity");
+  assert(result.bindings.every(binding => binding.ownDocument && typeof binding.semanticId === "string"));
+  assert.deepEqual(f.externalRequests, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("capture retains CSS sizing intent separately from resolved pixels and does not apply box sizes to anonymous text", async (t) => {
+  const f = await fixture(t);
+  const result = await f.page.evaluate(async () => {
+    const { convertToDesignDSL } = await import("/html2figma-browser.mjs");
+    const iframe = document.createElement("iframe");
+    iframe.sandbox = "allow-same-origin";
+    iframe.srcdoc = `<!doctype html><style>body{margin:0}#root{display:flex;width:100%;height:120px}#fixed{width:40px;height:24px;min-width:2em;max-width:100%;max-height:80px;min-height:10%}#fluid{flex:1;height:24px;margin-left:auto}#hug{display:inline-flex;width:fit-content;height:auto}</style><main id="root"><div id="fixed"></div><div id="fluid"></div><div id="hug">Label</div></main>`;
+    const loaded = new Promise((resolve) =>
+      iframe.addEventListener("load", resolve, { once: true }),
+    );
+    document.body.append(iframe);
+    await loaded;
+    try {
+      const root = iframe.contentDocument.querySelector("#root");
+      const before = iframe.contentDocument.documentElement.outerHTML;
+      const tree = convertToDesignDSL(root, { includeRawStyles: false });
+      return { tree, unchanged: iframe.contentDocument.documentElement.outerHTML === before };
+    } finally {
+      iframe.remove();
+    }
+  });
+  const nodes = [];
+  const visit = (node) => {
+    nodes.push(node);
+    for (const child of node.children ?? []) visit(child);
+  };
+  visit(result.tree);
+  const byId = (id) =>
+    nodes.find((node) => node.nodeType !== "text" && node.semantic?.attributes?.id === id);
+  assert.equal(result.unchanged, true);
+  assert.equal(byId("root").cssLayout.width, "100%");
+  assert.equal(byId("fixed").cssLayout.height, "24px");
+  assert.equal(byId("fixed").cssLayout["min-width"], "32px");
+  assert.equal(byId("fixed").cssLayout["max-width"], "100%");
+  assert.equal(byId("fixed").cssLayout["min-height"], "10%");
+  assert.equal(byId("fixed").cssLayout["max-height"], "80px");
+  assert.equal(byId("fluid").cssLayout.width, "auto");
+  assert.equal(byId("fluid").cssLayout["margin-left"], "auto");
+  assert.equal(byId("hug").cssLayout.width, "fit-content");
+  assert.equal(byId("hug").cssLayout.height, "auto");
+  assert.equal(byId("root").cssLayout.display, "flex");
+  assert.equal(byId("root").cssLayout.position, "static");
+  assert.equal(byId("root").cssLayout.float, "none");
+  assert.equal(byId("root").cssLayout["writing-mode"], "horizontal-tb");
+  assert.ok(
+    nodes.filter((node) => node.nodeType === "text").every((node) => node.cssLayout === undefined),
+  );
+  assert.deepEqual(f.externalRequests, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("standalone SVG capture copies reference chains and inherited colors without changing original symbols or use nodes", async (t) => {
+  const f = await fixture(t);
+  const result = await f.page.evaluate(async () => {
+    const { convertToDesignDSL } = await import("/html2figma-browser.mjs");
+    document.body.innerHTML =
+      '<style>.muted{opacity:.5}</style><svg style="display:none"><symbol id="check" viewBox="0 0 16 16"><path class="muted" fill="currentColor" d="M0 0H16V16Z"/></symbol><symbol id="alias"><use href="#check"/></symbol></svg><svg id="icon" width="24" height="24" style="color:rgb(13,110,253);opacity:.5" opacity=".75" fill="currentColor"><g class="muted"><use xlink:href="#alias"/></g></svg>';
+    const before = document.documentElement.outerHTML;
+    const tree = convertToDesignDSL(document.querySelector("#icon"));
+    const resource = new DOMParser().parseFromString(tree.svgContent, "image/svg+xml");
+    return {
+      unchanged: before === document.documentElement.outerHTML,
+      xml: tree.svgContent,
+      parseErrors: resource.querySelectorAll("parsererror").length,
+      aliases: resource.querySelectorAll("#alias, #check").length,
+      color: resource.documentElement.getAttribute("color"),
+      rootOpacity: resource.documentElement.getAttribute("opacity"),
+      rootInlineOpacity: resource.documentElement.style.opacity,
+      layerOpacity: tree.opacity,
+      internalOpacity: [...resource.querySelectorAll("g, path")].map((node) =>
+        node.getAttribute("opacity"),
+      ),
+    };
+  });
+  assert.equal(result.unchanged, true);
+  assert.equal(result.parseErrors, 0);
+  assert.equal(result.aliases, 2);
+  assert.equal(result.color, "rgb(13, 110, 253)");
+  assert.equal(result.rootOpacity, null);
+  assert.equal(result.rootInlineOpacity, "");
+  assert.equal(result.layerOpacity, 0.5);
+  assert.deepEqual(result.internalOpacity, ["0.5", "0.5"]);
+  assert.match(result.xml, /xmlns:xlink="http:\/\/www\.w3\.org\/1999\/xlink"/u);
+  assert.deepEqual(f.externalRequests, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("standalone SVG paint and clip dependencies stay local and definitions are not duplicated by child-first references", async (t) => {
+  const f = await fixture(t);
+  const result = await f.page.evaluate(async () => {
+    const { convertToDesignDSL } = await import("/html2figma-browser.mjs");
+    document.body.innerHTML =
+      '<svg style="display:none"><defs><linearGradient id="base"><stop stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient><linearGradient id="paint" href="#base"/><clipPath id="clip"><rect width="12" height="24"/></clipPath><symbol id="shape"><path id="path" d="M0 0H12V12Z"/></symbol></defs></svg><svg id="icon" width="24" height="24"><rect width="24" height="24" fill="url(#paint)" clip-path="url(#clip)"/><use href="#path"/><use href="#shape"/></svg>';
+    const before = document.documentElement.outerHTML;
+    const tree = convertToDesignDSL(document.querySelector("#icon"));
+    const parsed = new DOMParser().parseFromString(tree.svgContent, "image/svg+xml");
+    const image = new Image();
+    image.src = "data:image/svg+xml;base64," + btoa(tree.svgContent);
+    await image.decode();
+    return {
+      unchanged: before === document.documentElement.outerHTML,
+      errors: parsed.querySelectorAll("parsererror").length,
+      ids: [...parsed.querySelectorAll("[id]")].map((node) => node.id),
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+    };
+  });
+  assert.equal(result.unchanged, true);
+  assert.equal(result.errors, 0);
+  assert.deepEqual(
+    result.ids.filter((id) => ["base", "paint", "clip", "shape", "path"].includes(id)).sort(),
+    ["base", "clip", "paint", "path", "shape"],
+  );
+  assert.equal(result.width, 24);
+  assert.equal(result.height, 24);
+  assert.deepEqual(f.externalRequests, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("standalone SVG byte and nesting budgets reject oversized clones without changing the source document", async (t) => {
+  const f = await fixture(t);
+  const result = await f.page.evaluate(async () => {
+    const { convertToDesignDSL } = await import("/html2figma-browser.mjs");
+    const errors = [],
+      unchanged = [];
+    for (const content of [
+      "<title>" + "x".repeat(1024 * 1024) + '</title><rect width="24" height="24"/>',
+      "<g>".repeat(33) + '<rect width="24" height="24"/>' + "</g>".repeat(33),
+    ]) {
+      document.body.innerHTML = '<svg id="icon" width="24" height="24">' + content + "</svg>";
+      const before = document.documentElement.outerHTML;
+      try {
+        convertToDesignDSL(document.querySelector("#icon"));
+        errors.push(null);
+      } catch (error) {
+        errors.push(error.message);
+      }
+      unchanged.push(before === document.documentElement.outerHTML);
+    }
+    return { errors, unchanged };
+  });
+  assert.match(result.errors[0], /1 MiB/u);
+  assert.match(result.errors[1], /32 层嵌套/u);
+  assert.deepEqual(result.unchanged, [true, true]);
   assert.deepEqual(f.externalRequests, []);
   assert.deepEqual(f.errors, []);
 });

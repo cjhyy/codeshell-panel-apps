@@ -1,3 +1,7 @@
+import { GRID_CONTAINER_FIELDS, GRID_CHILD_FIELDS } from "./grid.mjs";
+import { nativeTextContent } from "./text-content.mjs";
+import { assertNativeTextRangeBoundary } from "./native-text-ranges.mjs";
+import { mainAxisGap, nativeMainGap, validateNativeLayoutSpacing } from "./layout-spacing.mjs";
 import {
   normalizeDesignDocument,
   normalizeDesignState,
@@ -9,7 +13,7 @@ import {
   readDesignSidecar,
   writeDesignSidecar,
 } from "./design-sidecar.mjs";
-import { normalizeFigmaSource } from "./figma-assets.mjs";
+import { MAX_FIGMA_SOURCE_BYTES, normalizeFigmaSource } from "./figma-assets.mjs";
 
 export const FIGMA_BINDING_FORMAT = "codeshell.figma.binding";
 const INDEX_FORMAT = "codeshell.figma.binding-index";
@@ -55,11 +59,17 @@ const properties = [
   "fillPaints",
   "stroke",
   "strokeWidth",
+  "nativeStrokeInactive",
+  "strokeAlign",
+  "strokeSides",
+  "strokeLayoutExcluded",
   "cornerRadius",
+  "cornerRadii",
   "visible",
   "locked",
   "notes",
   "shadow",
+  "shadowStack",
   "clipContent",
   "text",
   "textSource",
@@ -68,6 +78,7 @@ const properties = [
   "fontWeight",
   "fontStyle",
   "lineHeight",
+  "lineHeightUnit",
   "letterSpacing",
   "textAlign",
   "textDecoration",
@@ -96,6 +107,8 @@ const properties = [
   "imageRef",
   "objectFit",
 ];
+const comparedProperty = (node, key) => key === "y" && node.type === "text"
+  ? node.y - (node.layoutBaselineOffset ?? 0) : node[key];
 properties.push(
   "layoutReverse",
   "alignContent",
@@ -111,12 +124,13 @@ properties.push(
   "textOverflow",
   "textFlowWidth",
   "textMeasurement",
-  "layoutBaselineOffset",
   "fontRef",
   "effectClipping",
   "contentClipping",
 );
 const unsupportedProperties = [
+  ...GRID_CONTAINER_FIELDS,
+  ...GRID_CHILD_FIELDS,
   "gridColumns",
   "gridColumnSpan",
   "gridRowSpan",
@@ -125,6 +139,7 @@ const unsupportedProperties = [
 ];
 
 const translationStableProperties = [
+  "nativeStrokeInactive",
   "type",
   "parentId",
   "pageId",
@@ -133,7 +148,7 @@ const translationStableProperties = [
   "height",
   "rotation",
   ...properties.filter((key) =>
-    /^(?:layout|constraint|padding|gap|rowGap|columnGap|align|justify|minWidth|minHeight|maxWidth|maxHeight)/u.test(
+    /^(?:layout|strokeLayoutExcluded|constraint|padding|gap|rowGap|columnGap|align|justify|minWidth|minHeight|maxWidth|maxHeight)/u.test(
       key,
     ),
   ),
@@ -153,16 +168,77 @@ export function figmaBindingPath(path) {
   return designSidecarPath(path, ".figma-source.json");
 }
 export function figmaSourceNodes(source) {
-  const result = new Map();
-  let total = 0;
-  function visit(node, depth = 0) {
+  const result = new Map(), locations = new Map(), fingerprints = new WeakMap(), interned = new Map(), visiting = new Set();
+  let total = 0, bytes = 0, steps = 0;
+  const invalid = (code = "FIGMA_SOURCE_JSON_INVALID") => {
+    const message = code === "FIGMA_SOURCE_BUDGET" ? "Figma 来源 JSON 无效、过深或超过 16 MiB 上限" : "Figma 来源必须是有界无环的纯 JSON 数据";
+    throw Object.assign(Error(message), { code });
+  };
+  const charge = count => { if ((bytes += count) > MAX_FIGMA_SOURCE_BYTES) invalid("FIGMA_SOURCE_BUDGET"); };
+  const utf8 = text => {
+    let count = 0;
+    for (const scalar of text) {
+      const point = scalar.codePointAt(0);
+      count += point < 128 ? 1 : point < 2048 ? 2 : point < 65536 ? 3 : 4;
+    }
+    return count;
+  };
+  const intern = key => {
+    if (!interned.has(key)) interned.set(key, interned.size);
+    return interned.get(key);
+  };
+  // A collision-free structural interner compares complete raw descendants
+  // without serializing every ancestor subtree. Only object key order is ignored.
+  const inspect = (value, depth = 0) => {
+    if (++steps > 1000000 || depth > 128) invalid("FIGMA_SOURCE_BUDGET");
+    if (value === null || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value)) {
+      const text = String(value); charge(text.length); return intern(`p${text}`);
+    }
+    if (typeof value === "string") {
+      if (value.length > MAX_FIGMA_SOURCE_BYTES) invalid("FIGMA_SOURCE_BUDGET");
+      const text = JSON.stringify(value); charge(utf8(text)); return intern(`p${text}`);
+    }
+    const array = Array.isArray(value);
+    if (value === null || typeof value !== "object" || !array && ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || visiting.has(value)) invalid();
+    if (array && value.length > 1000000) invalid("FIGMA_SOURCE_BUDGET");
+    const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(descriptors);
+    if (keys.some(key => typeof key !== "string")) invalid();
+    const names = array ? keys.filter(key => key !== "length") : keys;
+    if (names.length > 1000000) invalid("FIGMA_SOURCE_BUDGET");
+    if (array && (names.length !== value.length || names.some((key, index) => key !== String(index)))) invalid();
+    visiting.add(value); charge(2);
+    const entries = [];
+    for (const [index, key] of names.entries()) {
+      const descriptor = descriptors[key];
+      if (!Object.hasOwn(descriptor, "value") || !descriptor.enumerable) invalid();
+      charge((index ? 1 : 0) + (array ? 0 : utf8(JSON.stringify(key)) + 1));
+      entries.push([key, inspect(descriptor.value, depth + 1)]);
+    }
+    visiting.delete(value);
+    if (!array) entries.sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    const token = intern(array ? `a${JSON.stringify(entries.map(entry => entry[1]))}` : `o${JSON.stringify(entries)}`);
+    fingerprints.set(value, token);
+    return token;
+  };
+  inspect(source);
+  function visit(node, depth = 0, parentId = null, siblingIndex = null) {
     if (!node || typeof node !== "object" || !id(node.id) || depth > 40 || ++total > 60000)
       throw Error("Figma 来源节点无效或超出上限");
     // Selection exports can include an ancestor and its child as separate roots.
-    if (!result.has(node.id)) result.set(node.id, node);
+    // The complete raw representations must agree before either can be indexed.
+    const previous = result.get(node.id);
+    if (previous && fingerprints.get(previous) !== fingerprints.get(node))
+      throw Object.assign(Error(`Figma 来源包含内容不一致的重复图层 ID：${node.id}；请重新导出来源`), { code: "FIGMA_SOURCE_DUPLICATE_ID_CONFLICT" });
+    if (!previous) result.set(node.id, node);
+    if (parentId !== null) {
+      const location = locations.get(node.id);
+      if (location && (location.parentId !== parentId || location.siblingIndex !== siblingIndex))
+        throw Object.assign(Error(`Figma 来源包含父级或顺序不一致的重复图层 ID：${node.id}；请重新导出来源`), { code: "FIGMA_SOURCE_DUPLICATE_LOCATION_CONFLICT" });
+      locations.set(node.id, { parentId, siblingIndex });
+    }
     if (node.children !== undefined && !Array.isArray(node.children))
       throw Error("Figma 来源层级无效");
-    for (const child of node.children ?? []) visit(child, depth + 1);
+    for (const [index, child] of (node.children ?? []).entries()) visit(child, depth + 1, node.id, index);
   }
   if (
     source?.format !== "codeshell.figma.source" ||
@@ -177,6 +253,8 @@ export function figmaSourceNodes(source) {
 }
 
 export function createFigmaBinding({ source, document, mapping, pageMappings = [] }) {
+  // Validate raw source before structuredClone can invoke a source accessor.
+  figmaSourceNodes(source);
   return parseFigmaBinding({
     format: FIGMA_BINDING_FORMAT,
     version: 1,
@@ -207,9 +285,9 @@ export function parseFigmaBinding(input) {
   const baseline = canonical(value.baseline),
     baselineNodes = new Map(flat(baseline).map((node) => [node.id, node]));
   // Validate source bounds and selection context without rewriting any preserved raw fields.
+  const sourceNodes = figmaSourceNodes(value.source);
   normalizeFigmaSource(value.source);
-  const sourceNodes = figmaSourceNodes(value.source),
-    designIds = new Set(),
+  const designIds = new Set(),
     sourceIds = new Set(),
     mappingByDesign = new Map(value.mapping.filter(object).map((entry) => [entry.designId, entry]));
   const pageIds = new Set(),
@@ -313,6 +391,10 @@ export function createFigmaPatch(bindingValue, currentDocument) {
     current = canonical(currentDocument);
   const beforeNodes = new Map(flat(binding.baseline).map((node) => [node.id, node]));
   const afterNodes = new Map(flat(current).map((node) => [node.id, node]));
+  // Until range-aware create/apply/live-source validation is implemented, even
+  // a clear/removal must refuse instead of producing an apparently valid no-op.
+  for (const node of beforeNodes.values()) assertNativeTextRangeBoundary(node);
+  for (const node of afterNodes.values()) assertNativeTextRangeBoundary(node);
   const mapping = new Map(binding.mapping.map((entry) => [entry.designId, entry]));
   const sourceNodes = figmaSourceNodes(binding.source);
   const pages = new Map(binding.pageMappings.map((entry) => [entry.designId, entry]));
@@ -329,6 +411,17 @@ export function createFigmaPatch(bindingValue, currentDocument) {
   };
   const beforeOrder = childOrder(beforeNodes),
     afterOrder = childOrder(afterNodes);
+  for (const parent of afterNodes.values()) {
+    if (!["horizontal", "vertical"].includes(parent.layout) || mainAxisGap(parent) >= 0) continue;
+    const children = (afterOrder.get(JSON.stringify([parent.pageId, parent.id])) ?? []).map((id) => afterNodes.get(id));
+    validateNativeLayoutSpacing(parent, children);
+    const requested = sourceNodes.get(mapping.get(parent.id)?.sourceId)?.itemSpacing;
+    if (!(requested < 0) || mainAxisGap(beforeNodes.get(parent.id)) !== mainAxisGap(parent)) continue;
+    const key = parent.layout === "vertical" ? "rowGap" : "columnGap";
+    const plan = nativeMainGap({ ...parent, gap: requested, [key]: requested }, children);
+    if (plan.minimum !== null && Math.abs(plan.effective - mainAxisGap(parent)) > 0.0001)
+      throw Error("来源请求负间距的有效值会随子项尺寸/可见性变化；请明确调整主轴间距后重试，不能静默覆盖原始请求。");
+  }
   const translationChains = new Map();
   function translationChain(designId) {
     if (translationChains.has(designId)) return translationChains.get(designId);
@@ -351,7 +444,7 @@ export function createFigmaPatch(bindingValue, currentDocument) {
       box &&
       [box.x, box.y, box.width, box.height].every(Number.isFinite) &&
       Math.abs(before.x - box.x - entry.offsetX) <= 0.0001 &&
-      Math.abs(before.y - box.y - entry.offsetY) <= 0.0001 &&
+      Math.abs(before.y - (before.type === "text" ? before.layoutBaselineOffset ?? 0 : 0) - box.y - entry.offsetY) <= 0.0001 &&
       Math.abs(before.width - box.width) <= 0.0001 &&
       Math.abs(before.height - box.height) <= 0.0001 &&
       (!before.layout ||
@@ -461,8 +554,14 @@ export function createFigmaPatch(bindingValue, currentDocument) {
       continue;
     }
     let changed = [...properties, "siblingIndex"].filter(
-      (key) => JSON.stringify(baseline[key]) !== JSON.stringify(after[key]),
+      (key) => key === "y" && baseline.type === "text" && after.type === "text"
+        ? !positionEqual(comparedProperty(baseline, key), comparedProperty(after, key))
+        : JSON.stringify(comparedProperty(baseline, key)) !== JSON.stringify(comparedProperty(after, key)),
     );
+    if (after.type === "text") {
+      changed = changed.filter((key) => key !== "text");
+      if (nativeTextContent(baseline) !== nativeTextContent(after, baseline)) changed.push("text");
+    }
     // A native parent translation already carries its descendants. Compare local
     // offsets only for a fully mapped, unchanged, untransformed geometry chain.
     // Also retain a counter-move when the child's absolute position stayed fixed.
@@ -470,7 +569,8 @@ export function createFigmaPatch(bindingValue, currentDocument) {
       const parentBefore = beforeNodes.get(baseline.parentId),
         parentAfter = afterNodes.get(after.parentId);
       const localChanged = (key) =>
-        !positionEqual(after[key] - parentAfter[key], baseline[key] - parentBefore[key]);
+        !positionEqual(comparedProperty(after, key) - comparedProperty(parentAfter, key),
+          comparedProperty(baseline, key) - comparedProperty(parentBefore, key));
       changed = [...properties, "siblingIndex"].filter((key) =>
         key === "x" || key === "y" ? localChanged(key) : changed.includes(key),
       );

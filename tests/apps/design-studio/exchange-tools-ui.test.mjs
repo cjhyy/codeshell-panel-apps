@@ -24,6 +24,7 @@ import { parseFigmaBinding } from "../../../apps/design-studio/app/figma-binding
 import { planPortableDesign } from "../../../apps/design-studio/app/portable-backup.mjs";
 import { preparePluginFile } from "../../../apps/design-studio/app/figma-plugin/v3-input.mjs";
 import { htmlFontResources } from "../../../apps/design-studio/app/html-import-assets.mjs";
+import { nativeTextContent } from "../../../apps/design-studio/app/text-content.mjs";
 import {
   createDesignSidecarPlan,
   readDesignSidecar,
@@ -601,7 +602,9 @@ test("local HTML folder becomes editable v3, survives save/reopen and restores i
   );
   await writeFile(
     resolve(directory, "style.css"),
-    "body{margin:0}#card{width:500px;height:300px;padding:20px;background:#ffffff;display:flex;flex-direction:column;gap:16px}h1{font:24px/1.2 Arial;margin:0;color:#123456}img{width:80px;height:60px}",
+    // Keep this complete-file success path representable in native Figma. A
+    // stretched square bitmap has a separate explicit native-fill refusal.
+    "body{margin:0}#card{width:500px;height:300px;padding:20px;background:#ffffff;display:flex;flex-direction:column;gap:16px}h1{font:24px/1.2 Arial;margin:0;color:#123456}img{width:80px;height:60px;object-fit:contain}",
   );
   await writeFile(resolve(directory, "pixel.png"), Buffer.from(pixel, "base64"));
   await f.page.locator("#open-html-import").click();
@@ -640,6 +643,8 @@ test("local HTML folder becomes editable v3, survives save/reopen and restores i
     flattened.some((node) => node.id === heading.id && node.text === "Edited HTML product"),
   );
   assert.equal(Object.values(restored.transfer.assets)[0].base64, pixel);
+  const image = flattened.find((node) => node.type === "image");
+  assert.deepEqual([image.width, image.height, image.objectFit], [80, 60, "contain"]);
   assert.equal(await f.page.evaluate(() => window.htmlPwned), undefined);
   assert.deepEqual(f.errors, []);
 });
@@ -689,6 +694,56 @@ test("declared exchange tools import, save, reopen, edit and export a source-bou
     }),
     /不能覆盖/,
   );
+  assert.deepEqual(f.errors, []);
+});
+
+test("public text-only edits preserve authored whitespace through reflow, reopen and native patch export", async (t) => {
+  const f = await fixture(t);
+  await f.import();
+  let metadata = await f.metadata();
+  const heading = metadata.layers.find((node) => node.name === "Imported heading");
+  assert.equal((await readNode(f.page, heading.id)).textSource, "Original Figma heading");
+  const authored = "  Edited full authored content that can wrap at its current width  \n\n\tsecond explicit line with trailing spaces  ";
+  await f.tool("use_design", {
+    expected_state_revision: metadata.stateRevision,
+    save: true,
+    operations: [{ op: "update_node", node_id: heading.id, changes: { text: authored } }],
+  });
+  let node = await readNode(f.page, heading.id);
+  assert.equal(node.textSource, authored, "Reflow must not resurrect the imported source");
+  assert.equal(nativeTextContent(node), authored);
+  await f.reload();
+  metadata = await f.metadata();
+  node = await readNode(f.page, heading.id);
+  assert.equal(node.textSource, authored);
+  assert.equal(nativeTextContent(node), authored);
+  await f.tool("exchange_figma", {
+    action: "export", path: "designs/authored.figma-transfer.json",
+    expected_state_revision: metadata.stateRevision,
+  });
+  const output = JSON.parse(f.files.get("A:designs/authored.figma-transfer.json"));
+  const update = output.patch.operations.find((operation) => operation.sourceId === "1:2");
+  assert(update.changed.includes("text"));
+  assert.equal(nativeTextContent(update.after, update.baseline), authored);
+  assert.equal(update.before.characters, "Original Figma heading");
+
+  const explicitSource = "  Explicit caller source\n\nretains its spaces  ";
+  await f.tool("use_design", {
+    expected_state_revision: metadata.stateRevision, save: true,
+    operations: [{ op: "update_node", node_id: heading.id,
+      changes: { text: "Caller display", textSource: explicitSource } }],
+  });
+  assert.equal((await readNode(f.page, heading.id)).textSource, explicitSource);
+  metadata = await f.metadata();
+  await f.tool("use_design", {
+    expected_state_revision: metadata.stateRevision, save: true,
+    operations: [{ op: "update_node", node_id: heading.id, changes: { text: "" } }],
+  });
+  node = await readNode(f.page, heading.id);
+  assert.equal(node.textSource, "");
+  assert.equal(node.textFlow, undefined);
+  assert.equal(node.textOverflow, undefined);
+  assert.equal(node.textFlowWidth, undefined);
   assert.deepEqual(f.errors, []);
 });
 
@@ -1742,5 +1797,284 @@ test("the quality repair button preserves locked descendants and one undo restor
   assert.equal(undone.node.fill, "#cccccc");
   assert.equal((await f.metadata()).revision, before.revision);
   assert.equal(f.files.get(`A:${designPath}`), original);
+  assert.deepEqual(f.errors, []);
+});
+
+test("public HTML ellipsis import saves full editable source and reflows after edit and reopen", async (t) => {
+  const f = await fixture(t);
+  const full = "Full authored content remains editable when the frame becomes narrower and the visible line ends in an ellipsis.";
+  const raw = `  ${full}  `, path = "pages/ellipsis.html";
+  f.files.set(`A:${path}`, `<!doctype html><style>*{box-sizing:border-box}html,body{margin:0}#fixture{display:flex;flex-direction:column;width:100%;height:240px;padding:20px}.row{display:flex;min-width:0;width:100%;padding:12px}.copy{min-width:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font:20px/24px Arial}</style><main id="fixture"><section class="row"><div class="copy">${raw}</div></section></main>`);
+  await f.tool("import_html", { path, root_selector: "#fixture", viewport_width: 640, viewport_height: 240, save: true, expected_state_revision: (await f.metadata()).stateRevision });
+  let metadata = await f.metadata();
+  const textId = metadata.layers.find((node) => node.type === "text").id;
+  const rootId = metadata.layers.find((node) => node.name === "main#fixture").id;
+  const viewportId = metadata.layers.find((node) => node.id === "html-viewport").id;
+  const before = await readNode(f.page, textId);
+  assert.equal(before.textSource, full);
+  assert.equal(before.textOverflow, "ellipsis");
+  assert.equal(before.layoutSizingHorizontal, "fill");
+  assert.equal(before.width, 576);
+  assert.ok(before.text.endsWith("…"));
+  assert.equal(nativeTextContent(before), full);
+  assert.equal(JSON.parse(before.notes).htmlText.rawSource, raw);
+  const edited = full + " Newly edited words remain complete in the native transfer.";
+  await f.tool("use_design", { expected_state_revision: metadata.stateRevision, save: true, operations: [
+    { op: "update_node", node_id: viewportId, changes: { width: 400 } },
+    { op: "update_node", node_id: textId, changes: { text: edited } },
+  ] });
+  await f.reload();
+  const after = await readNode(f.page, textId);
+  const rootAfter = await readNode(f.page, rootId);
+  assert.equal(rootAfter.width, 400);
+  assert.equal(rootAfter.layoutSizingHorizontal, "fill");
+  assert.equal(after.width, 336);
+  assert.equal(after.textSource, edited);
+  assert.equal(after.textOverflow, "ellipsis");
+  assert.ok(after.text.endsWith("…"));
+  assert.ok(after.text.length < before.text.length);
+  assert.equal(nativeTextContent(after), edited);
+  const saved = normalizeDesignDocument(JSON.parse(f.files.get(`A:${designPath}`)));
+  assert.equal(saved.nodes.find((node) => node.id === textId).textSource, edited);
+  const prepared = await preparePluginFile(serializeDesignDocument(saved));
+  const walk = (nodes) => nodes.flatMap((node) => [node, ...walk(node.children ?? [])]);
+  const transferText = prepared.transfer.pages.flatMap((page) => walk(page.children)).find((node) => node.id === textId);
+  assert.equal(nativeTextContent(transferText), edited);
+  assert.equal(JSON.parse(transferText.notes).htmlText.rawSource, raw);
+  assert.deepEqual(f.errors, []);
+});
+
+test("native stroke exclusion inspector/tool edits reflow siblings and preserve bounded provenance through reopen", async (t) => {
+  const f = await fixture(t);
+  const native = JSON.parse(await readFile(new URL("../../fixtures/design-studio-native-content-fill.json", import.meta.url), "utf8"));
+  const { importFigmaJson } = await import("../../../apps/design-studio/app/figma-bridge.mjs");
+  const value = importFigmaJson(native.cases[0].source).document, parent = value.nodes[0];
+  const origin = { x: parent.x, y: parent.y };
+  for (const node of value.nodes) { node.x -= origin.x; node.y -= origin.y; }
+  value.canvas.width = 640; value.canvas.height = 240;
+  const [first, second] = value.nodes.filter((node) => node.parentId === parent.id);
+  f.files.set(`A:${designPath}`, serializeDesignDocument(value)); await f.reload();
+  assert.equal((await readNode(f.page, first.id)).strokeLayoutExcluded, true);
+  assert.deepEqual([(await readNode(f.page, first.id)).width, (await readNode(f.page, second.id)).width], [290, 322]);
+  await f.page.locator(`.layer-row[data-id="${first.id}"] .layer-title`).click();
+  await f.page.locator("#prop-stroke-width").fill("8");
+  assert.deepEqual([(await readNode(f.page, first.id)).width, (await readNode(f.page, second.id)).width], [294, 318]);
+  await f.page.locator("details.layout-advanced > summary").click();
+  await f.page.locator("#prop-layout-padding-left").fill("12");
+  await f.page.locator("#prop-layout-padding-left").press("Tab");
+  assert.deepEqual([(await readNode(f.page, first.id)).width, (await readNode(f.page, second.id)).width], [296, 316]);
+  await f.tool("use_design", { save: true, expected_state_revision: (await f.metadata()).stateRevision,
+    operations: [{ op: "update_node", node_id: first.id, changes: { strokeLayoutExcluded: null } }] });
+  await f.reload();
+  assert.equal((await readNode(f.page, first.id)).strokeLayoutExcluded, undefined);
+  assert.deepEqual([(await readNode(f.page, first.id)).width, (await readNode(f.page, second.id)).width], [288, 324]);
+  await f.tool("use_design", { expected_state_revision: (await f.metadata()).stateRevision,
+    operations: [{ op: "update_node", node_id: first.id, changes: { strokeLayoutExcluded: true } }] });
+  await f.page.locator(`.layer-row[data-id="${first.id}"] .layer-title`).click();
+  await f.page.locator("details.layout-advanced > summary").click();
+  await f.page.locator("#prop-layout").selectOption("none");
+  assert.equal((await readNode(f.page, first.id)).strokeLayoutExcluded, undefined, "inspector layout edits clear inapplicable provenance");
+  await f.tool("use_design", { save: true, expected_state_revision: (await f.metadata()).stateRevision,
+    operations: [{ op: "update_node", node_id: second.id, changes: { strokeAlign: "outside" } }] });
+  await f.reload();
+  assert.equal((await readNode(f.page, second.id)).strokeLayoutExcluded, undefined, "public alignment edits clear inapplicable provenance");
+  await assert.rejects(f.tool("use_design", { expected_state_revision: (await f.metadata()).stateRevision,
+    operations: [{ op: "update_node", node_id: second.id, changes: { strokeLayoutExcluded: true } }] }), /strokeLayoutExcluded/u);
+  assert.equal((await readNode(f.page, second.id)).strokeLayoutExcluded, undefined);
+  assert.deepEqual(f.errors, []);
+});
+
+test("public negative spacing edits retain native-safe block insets through outer-only resize and reopen", async (t) => {
+  const f = await fixture(t);
+  const { negativeMarginFixtures } = await import("../../fixtures/design-studio-negative-margins/source.mjs");
+  const fixtureSource = negativeMarginFixtures[0], path = "pages/negative-spacing.html";
+  f.files.set(`A:${path}`, `<!doctype html><style>*{box-sizing:border-box}body{margin:0;font-family:Arial}${fixtureSource.css}</style>${fixtureSource.html}`);
+  await f.tool("import_html", { path, root_selector: "#fixture", viewport_width: 640, viewport_height: 300,
+    save: true, expected_state_revision: (await f.metadata()).stateRevision });
+  let metadata = await f.metadata();
+  const main = metadata.layers.find((node) => node.name === "main#fixture");
+  const row = metadata.layers.find((node) => node.name === "section#row");
+  assert.ok(main && row);
+  assert.equal(metadata.layers.some((node) => /horizontal margins|flow spacer/u.test(node.name)), false);
+  const initialMain = await readNode(f.page, main.id);
+  assert.deepEqual([initialMain.paddingLeft, initialMain.paddingRight], [5, 5]);
+  assert.equal(row.parentId, main.id, "the real row directly fills the rebased parent");
+  await f.page.locator(`.layer-row[data-id="${row.id}"] .layer-title`).click();
+  await f.page.locator("details.layout-advanced > summary").click();
+  await f.page.locator("#prop-layout-column-gap").fill("");
+  await f.page.locator("#prop-layout-gap").fill("-20");
+  assert.equal((await readNode(f.page, row.id)).gap, -20);
+  const beforeInvalid = await readNode(f.page, row.id);
+  const initialCells = metadata.layers.filter((node) => node.parentId === row.id);
+  assert.equal(initialCells.length, 2);
+  assert.deepEqual(await Promise.all(initialCells.map(async (node) => (await readNode(f.page, node.id)).width)), [325, 325],
+    "the inspector's negative main gap must actually reflow both Fill children");
+  await f.page.locator("#prop-layout-wrap").selectOption("wrap");
+  assert.equal((await readNode(f.page, row.id)).layoutWrap, "none");
+  await f.page.locator("#prop-layout-reverse").click();
+  assert.equal(Boolean((await readNode(f.page, row.id)).layoutReverse), false);
+  await f.page.locator("#prop-layout-sizing-horizontal").selectOption("hug");
+  assert.equal((await readNode(f.page, row.id)).layoutSizingHorizontal, "fill");
+  const afterInvalid = await readNode(f.page, row.id);
+  assert.deepEqual([afterInvalid.x, afterInvalid.width], [beforeInvalid.x, beforeInvalid.width]);
+  metadata = await f.metadata();
+  await f.tool("use_design", { save: true, expected_state_revision: metadata.stateRevision,
+    operations: [{ op: "update_node", node_id: row.id, changes: { gap: -16 } },
+      { op: "update_node", node_id: "html-viewport", changes: { width: 400 } }] });
+  await f.reload();
+  const resized = await readNode(f.page, row.id);
+  assert.deepEqual([resized.x, resized.width, resized.layoutSizingHorizontal], [5, 390, "fill"]);
+  metadata = await f.metadata();
+  await assert.rejects(f.tool("use_design", { expected_state_revision: metadata.stateRevision,
+    operations: [{ op: "update_node", node_id: row.id, changes: { layoutWrap: "wrap" } }] }), /负间距/u);
+  metadata = await f.metadata();
+  await f.tool("exchange_figma", { action: "export", path: "designs/negative-spacing.figma-transfer.json", expected_state_revision: metadata.stateRevision });
+  const transfer = JSON.parse(f.files.get("A:designs/negative-spacing.figma-transfer.json"));
+  const flatten = (node) => [node, ...(node.children ?? []).flatMap(flatten)];
+  const exported = transfer.pages.flatMap((page) => page.children.flatMap(flatten));
+  assert.equal(exported.find((node) => node.id === row.id).gap, -16);
+  assert.equal(exported.find((node) => node.id === row.id).columnGap, undefined);
+  const finalMain = exported.find((node) => node.id === main.id);
+  assert.equal(finalMain.children.some((node) => node.id === row.id), true, "hierarchical transfer retains the direct row parent");
+  assert.deepEqual([finalMain.paddingLeft, finalMain.paddingRight], [5, 5]);
+  assert.equal(exported.length, 7, "no old negative-gap spacer wrappers return after edit/reopen/export");
+  assert.equal(exported.find((node) => node.id === row.id).layoutSizingHorizontal, "fill");
+  assert.deepEqual(f.errors, []);
+});
+
+test("CSS shadow layers remain public editable through inspector order, visibility, save and reopen",async t=>{
+ const f=await fixture(t),path="pages/shadows.html";
+ f.files.set(`A:${path}`,`<!doctype html><style>*{box-sizing:border-box}body{margin:0}main{display:flex;width:100%;height:240px;padding:20px}section{flex:1;height:100px;background:white;box-shadow:inset 8px 0 0 #dc2626,inset 0 8px 0 #2563eb}</style><main><section></section></main>`);
+ await f.tool("import_html",{path,root_selector:"body",viewport_width:640,viewport_height:240,save:true,expected_state_revision:(await f.metadata()).stateRevision});
+ const metadata=await f.metadata(),target=metadata.layers.find(n=>n.name==="section"),before=await readNode(f.page,target.id),geometry=[before.x,before.y,before.width,before.height];assert.equal(before.shadowStack.layers.length,2);
+ await f.tool("use_design",{expected_state_revision:metadata.stateRevision,save:true,operations:[{op:"update_node",node_id:target.id,changes:{shadowStack:{basis:"css-box",layers:[before.shadowStack.layers[0]]}}}]});
+ await f.page.locator(`.layer-row[data-id="${target.id}"] .layer-title`).click();await f.page.locator("#shadow-layer-add").click();assert.equal((await readNode(f.page,target.id)).shadowStack.layers.length,2);
+ await f.page.locator("#prop-shadow-layer").selectOption("0");await f.page.locator("#shadow-layer-down").click();let node=await readNode(f.page,target.id);assert.equal(node.shadowStack.layers[1].color,"#dc2626");
+ await f.page.locator("#prop-shadow-visible").uncheck();node=await readNode(f.page,target.id);assert.equal(node.shadowStack.layers[1].visible,false);
+ await f.page.locator("#prop-shadow-opacity").fill("35");node=await readNode(f.page,target.id);assert.equal(node.shadowStack.layers[1].opacity,.35);
+ await f.page.locator("#shadow-layer-remove").click();assert.equal((await readNode(f.page,target.id)).shadowStack.layers.length,1);
+ await f.tool("use_design",{expected_state_revision:(await f.metadata()).stateRevision,save:true,operations:[{op:"update_node",node_id:target.id,changes:{notes:"Edited shadow layers"}}]});
+ const saved=(await readNode(f.page,target.id)).shadowStack;await f.reload();node=await readNode(f.page,target.id);assert.deepEqual(node.shadowStack,saved);assert.deepEqual([node.x,node.y,node.width,node.height],geometry);assert.equal(node.shadow,undefined);
+ const revision=(await f.metadata()).stateRevision;await assert.rejects(f.tool("use_design",{expected_state_revision:revision,operations:[{op:"update_node",node_id:target.id,changes:{shadowStack:{basis:"css-box",layers:[{...saved.layers[0],spread:1}]}}}]}),/spread/);assert.deepEqual((await readNode(f.page,target.id)).shadowStack,saved);
+ await f.tool("use_design",{expected_state_revision:(await f.metadata()).stateRevision,operations:[{op:"update_node",node_id:target.id,changes:{stroke:"#16a34a",strokeWidth:4,strokeAlign:"inside"}}]});
+ await f.page.locator(`.layer-row[data-id="${target.id}"] .layer-title`).click();
+ await f.page.locator("#prop-radius").fill("8");
+ node=await readNode(f.page,target.id);assert.equal(node.cornerRadius,0,"inspector refuses an unproven rounded border mask atomically");assert.equal(node.strokeWidth,4);assert.deepEqual(node.shadowStack,saved);
+ assert.deepEqual(f.errors,[]);
+});
+
+test("inactive native stroke inspector/public activation preserves latent width, offers Text Center, and undo/reopen retains intent", async (t) => {
+  const f = await fixture(t),
+    { importFigmaJson } = await import("../../../apps/design-studio/app/figma-bridge.mjs");
+  const doc = importFigmaJson({
+    id: "0:1",
+    type: "CANVAS",
+    name: "Inactive stroke",
+    children: [
+      {
+        id: "1:2",
+        type: "FRAME",
+        name: "Latent Frame",
+        layoutMode: "VERTICAL",
+        strokeAlign: "INSIDE",
+        strokeWeight: 2,
+        strokesIncludedInLayout: true,
+        strokes: [],
+        paddingTop: 8,
+        paddingRight: 8,
+        paddingBottom: 8,
+        paddingLeft: 8,
+        absoluteBoundingBox: { x: 20, y: 20, width: 400, height: 140 },
+        fills: [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }],
+        children: [],
+      },
+      {
+        id: "1:3",
+        type: "TEXT",
+        name: "Latent Text",
+        strokeAlign: "OUTSIDE",
+        strokeWeight: 1,
+        strokes: [],
+        characters: "Original characters",
+        fills: [{ type: "SOLID", color: { r: 0, g: 0, b: 0 } }],
+        absoluteBoundingBox: { x: 20, y: 180, width: 300, height: 20 },
+        style: {
+          fontFamily: "Arial",
+          fontSize: 16,
+          fontWeight: 400,
+          lineHeightPx: 20,
+          lineHeightUnit: "PIXELS",
+        },
+      },
+    ],
+  }).document;
+  f.files.set(`A:${designPath}`, serializeDesignDocument(doc));
+  await f.reload();
+  await f.page.locator('.layer-row[data-id="figma-1-2"] .layer-title').click();
+  assert.equal(await f.page.locator("#prop-stroke-width").inputValue(), "2");
+  assert.equal(await f.page.locator("#prop-stroke-align").inputValue(), "inside");
+  assert.equal(await f.page.locator("#prop-stroke-layout").inputValue(), "included");
+  await f.page.locator("#prop-stroke-width").fill("3");
+  await f.page.locator("#prop-stroke-width").press("Tab");
+  assert.equal((await readNode(f.page, "figma-1-2")).strokeWidth, 0);
+  assert.equal((await readNode(f.page, "figma-1-2")).nativeStrokeInactive.strokeWeight, 3);
+  assert.equal(await f.page.locator("#prop-stroke-width").inputValue(), "3");
+  await f.page.locator("#prop-stroke").fill("#123456");
+  assert.equal(await f.page.locator("#prop-stroke").inputValue(), "#123456");
+  await f.page.locator("#prop-stroke").press("Tab");
+  let frame = await readNode(f.page, "figma-1-2");
+  assert.equal(frame.nativeStrokeInactive, undefined);
+  assert.equal(frame.paddingTop, 11);
+  assert.equal(frame.strokeWidth, 3);
+  assert.notEqual(await f.page.locator("#toast").getAttribute("data-kind"), "error", "successful activation must not mask an inspector helper exception");
+  await f.page.locator("#prop-stroke-remove").click();
+  assert.notEqual(await f.page.locator("#toast").getAttribute("data-kind"), "error", "successful removal must reach history commit");
+  frame = await readNode(f.page, "figma-1-2");
+  assert.equal(frame.paddingTop, 8);
+  assert.equal(frame.nativeStrokeInactive.strokeWeight, 3);
+  await f.page.evaluate(() => document.activeElement.blur());
+  await f.page.keyboard.press("Control+z");
+  assert.equal((await readNode(f.page, "figma-1-2")).nativeStrokeInactive, undefined);
+  await f.page.keyboard.press("Control+Shift+z");
+  assert.equal((await readNode(f.page, "figma-1-2")).nativeStrokeInactive.strokeWeight, 3);
+  await f.tool("use_design", {
+    save: true,
+    expected_state_revision: (await f.metadata()).stateRevision,
+    operations: [{ op: "update_node", node_id: "figma-1-2", changes: { stroke: "#654321" } }],
+  });
+  await f.reload();
+  assert.equal((await readNode(f.page, "figma-1-2")).paddingTop, 11);
+  await f.page.locator('.layer-row[data-id="figma-1-3"] .layer-title').click();
+  await f.page.locator("#prop-stroke").fill("#123456");
+  await f.page.locator("#prop-stroke").press("Tab");
+  assert.equal(
+    (await readNode(f.page, "figma-1-3")).stroke,
+    "transparent",
+    "unsupported Text OUTSIDE activation is not silently centered",
+  );
+  await f.page.locator("#prop-stroke-align").selectOption("center");
+  await f.page.locator("#prop-stroke").fill("#123456");
+  await f.page.locator("#prop-stroke").press("Tab");
+  const text = await readNode(f.page, "figma-1-3");
+  assert.equal(text.stroke, "#123456");
+  assert.equal(text.nativeStrokeInactive, undefined);
+  assert.equal(text.strokeAlign, undefined);
+  assert.equal(text.text, "Original characters");
+  await f.tool("use_design", {
+    save: true,
+    expected_state_revision: (await f.metadata()).stateRevision,
+    operations: [
+      {
+        op: "update_node",
+        node_id: "figma-1-2",
+        changes: { stroke: "transparent", strokeWidth: 4, strokeAlign: "outside" },
+      },
+    ],
+  });
+  await f.reload();
+  frame = await readNode(f.page, "figma-1-2");
+  assert.equal(frame.paddingTop, 8);
+  assert.equal(frame.nativeStrokeInactive.strokeWeight, 4);
+  assert.equal(frame.nativeStrokeInactive.strokeAlign, "OUTSIDE");
   assert.deepEqual(f.errors, []);
 });

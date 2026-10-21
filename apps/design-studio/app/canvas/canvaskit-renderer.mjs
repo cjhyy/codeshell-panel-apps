@@ -1,6 +1,9 @@
+import { validateShadowStack, shadowMaskGeometry, roundedShadowPath, visibleShadowLayers, shadowStackOutsets } from "../shadow-stack.mjs";
+import { effectiveCornerRadii } from "../corner-radii.mjs";
 /* Retained CanvasKit renderer. The document and editing state remain owned by Design Studio. */
 import { effectiveDesignNodeOpacity, isDesignNodeVisible } from "../document.mjs";
 import { designFillPaints, gradientMatrix } from "../paint.mjs";
+import { hasDesignStroke, designStrokePaths, designStrokeOutset } from "../stroke.mjs";
 import { transformedNodeBoundsInTree } from "../geometry.mjs";
 import { createCanvasKitText } from "./canvaskit-text.mjs";
 
@@ -158,14 +161,17 @@ function rotateChain(canvas, chain, inverse = false) {
   }
 }
 
+function roundedRect(CK, node) {
+  return [...rect(CK, node), ...effectiveCornerRadii(node).flatMap((radius) => [radius, radius])];
+}
+
 function clipAncestors(CK, canvas, chain) {
   const prefix = [];
   for (const node of chain) {
     prefix.push(node);
     if (!["frame", "component"].includes(node.type) || !node.clipContent) continue;
     rotateChain(canvas, prefix);
-    const radius = Math.min(node.cornerRadius || 0, node.width / 2, node.height / 2);
-    canvas.clipRRect(CK.RRectXY(rect(CK, node), radius, radius), CK.ClipOp.Intersect, true);
+    canvas.clipRRect(roundedRect(CK, node), CK.ClipOp.Intersect, true);
     rotateChain(canvas, prefix, true);
   }
 }
@@ -173,8 +179,7 @@ function clipAncestors(CK, canvas, chain) {
 function drawShape(CK, canvas, node, paint) {
   if (node.type === "ellipse") canvas.drawOval(rect(CK, node), paint);
   else {
-    const radius = Math.min(node.cornerRadius || 0, node.width / 2, node.height / 2);
-    canvas.drawRRect(CK.RRectXY(rect(CK, node), radius, radius), paint);
+    canvas.drawRRect(roundedRect(CK, node), paint);
   }
 }
 
@@ -194,6 +199,8 @@ function drawMissing(CK, canvas, node) {
 }
 
 function drawImage(CK, canvas, node, image) {
+  canvas.save();
+  canvas.clipRRect(roundedRect(CK, node), CK.ClipOp.Intersect, true);
   const width = image.width(),
     height = image.height();
   let source = CK.XYWHRect(0, 0, width, height),
@@ -223,6 +230,7 @@ function drawImage(CK, canvas, node, image) {
     paint,
   );
   paint.delete();
+  canvas.restore();
 }
 
 /** resources are decoded bytes, never screenshots of the scene. Extra fonts are optional real font URLs. */
@@ -232,6 +240,7 @@ export async function createRenderer({
   fallbackFontUrls = {},
   background = "#ececea",
   tileCacheEnabled = true,
+  deviceTextSampling = true,
 }) {
   if (!canvas?.ownerDocument) throw new Error("CanvasKit renderer requires a browser canvas");
   const CK = await loadCanvasKit(assetsBaseUrl, canvas.ownerDocument);
@@ -275,13 +284,16 @@ export async function createRenderer({
   let sceneNodes = [],
     sceneIndex = new Map(),
     sceneChildren = new Map(),
-    hasInstances = false;
+    hasInstances = false,
+    deviceTextCandidates = [],
+    deviceCandidateOrigins = new Map();
   let sceneRevision = 0,
     resourceBuilds = 0,
     nodePictureBuilds = 0,
     nodePictureHits = 0,
     nodePictureBytes = 0,
-    qualityBuilds = 0;
+    qualityBuilds = 0,
+    deviceSamplingBuilds = 0;
   const tileCache = new Map();
   let tileBytes = 0,
     tileBuilds = 0,
@@ -459,6 +471,26 @@ export async function createRenderer({
             "missingImages",
             "gradientPaints",
           ];
+          function drawCssShadows(destination,node,kind) {
+            const layers=visibleShadowLayers(node,kind);if(!layers.length)return;
+            const geometry=shadowMaskGeometry(node),box=kind==="inner"?geometry.inner:geometry.outer,radii=kind==="inner"?geometry.innerRadii:geometry.outerRadii;
+            if(box.width<=0 || box.height<=0)return;
+            const clip=CK.Path.MakeFromSVGString(kind==="inner"?geometry.innerPath:geometry.outerPath);
+            destination.save();
+            try {
+              destination.clipPath(clip,kind==="inner"?CK.ClipOp.Intersect:CK.ClipOp.Difference,true);
+              for(const layer of [...layers].reverse()){
+                const extent=layer.blur*3+Math.abs(layer.x)+Math.abs(layer.y)+2;
+                const cover=`M${-extent} ${-extent}H${node.width+extent}V${node.height+extent}H${-extent}Z`;
+                const d=(kind==="inner"?cover+" ":"")+roundedShadowPath(box,radii,layer.x,layer.y);
+                const path=CK.Path.MakeFromSVGString(d),paint=new CK.Paint();let blur;
+                try{path.setFillType(CK.FillType.EvenOdd);paint.setAntiAlias(true);paint.setColor(canvasKitColor(CK,layer.color,layer.opacity));
+                  if(layer.blur>0){blur=CK.MaskFilter.MakeBlur(CK.BlurStyle.Normal,layer.blur/2,true);paint.setMaskFilter(blur);}
+                  destination.drawPath(path,paint);
+                }finally{blur?.delete();paint.delete();path.delete();}
+              }
+            }finally{destination.restore();clip.delete();}
+          }
           function drawRawContent(destination, node) {
             if (node.type === "image") {
               const image = images.get(node.imageRef);
@@ -480,13 +512,28 @@ export async function createRenderer({
               drawMissing(CK, destination, node);
               return;
             }
+            if(node.shadowStack)validateShadowStack(node);
+            drawCssShadows(destination,node,"outer");
             for (const fill of designFillPaints(node)) {
               if (fill.type === "GRADIENT_LINEAR") counters.gradientPaints++;
               const paint = makePaint(CK, node, fill);
               drawShape(CK, destination, node, paint);
               paint.delete();
             }
-            if (node.strokeWidth > 0 && !["none", "transparent"].includes(node.stroke)) {
+            drawCssShadows(destination,node,"inner");
+            if (hasDesignStroke(node)) {
+              const parts=designStrokePaths(node),common=parts.every(s=>s.opacity===parts[0]?.opacity);
+              const layered=parts.length && common && parts[0].opacity<1,layer=layered?new CK.Paint():null;
+              if(layer){layer.setAlphaf(parts[0].opacity);destination.saveLayer(layer);}
+              for (const part of parts) {
+                const path=CK.Path.MakeFromSVGString(part.path),paint=new CK.Paint();
+                if(!path)throw new Error("Generated border path is invalid");
+                path.setFillType(part.rule === "evenodd" ? CK.FillType.EvenOdd : CK.FillType.Winding);
+                paint.setAntiAlias(true);paint.setColor(canvasKitColor(CK,part.color));paint.setAlphaf(common?1:part.opacity);
+                destination.drawPath(path,paint);paint.delete();path.delete();
+              }
+              if(layer){destination.restore();layer.delete();}
+            } else if (node.strokeWidth > 0 && !["none", "transparent"].includes(node.stroke)) {
               const stroke = new CK.Paint();
               stroke.setAntiAlias(true);
               stroke.setStyle(CK.PaintStyle.Stroke);
@@ -504,7 +551,7 @@ export async function createRenderer({
             delete local.shadow;
             delete local.name;
             delete local.locked;
-            const signature = JSON.stringify([local, text.rasterScaleForNode?.(node) ?? 2]);
+            const signature = JSON.stringify([local, text.rasterScaleForNode?.(node) ?? 2, text.rasterSamplingForNode?.(node)]);
             let entry = nextNodePictures.get(node.id);
             if (entry?.signature === signature) {
               nodePictureHits++;
@@ -514,7 +561,7 @@ export async function createRenderer({
               const content = new CK.PictureRecorder();
               // Bound raw commands conservatively before ancestors/effects are
               // applied by the outer display list. Text may extend beyond its box.
-              const pad = (node.strokeWidth || 0) + 2;
+              const pad = Math.max(node.strokeWidth || 0,designStrokeOutset(node),...Object.values(shadowStackOutsets(node))) + 2;
               const bounds = node.type === "text" ? text.contentBounds(local) : local;
               const before = Object.fromEntries(rawCounterKeys.map((key) => [key, counters[key]]));
               const issueStart = unsupported.length;
@@ -575,6 +622,7 @@ export async function createRenderer({
                 counters.clippedNodes++;
               rotateChain(target, [...chain, node]);
               if ([...chain, node].some((item) => item.rotation)) counters.rotatedNodes++;
+              if(visibleShadowLayers(node).length){counters.shadowNodes++;if(visibleShadowLayers(node).some(layer=>layer.blur>0))unsupportedNode(node,"css-shadow-raster-kernel","CSS 几何阴影层保持可编辑；模糊内核的严格像素一致性尚未验证");}
               const opacity = effectiveDesignNodeOpacity({ nodes: pageNodes }, node, nodeIndex);
               const layerPaint = new CK.Paint();
               layerPaint.setAlphaf(opacity);
@@ -669,6 +717,14 @@ export async function createRenderer({
       sceneIndex = index;
       sceneChildren = children;
       hasInstances = design.nodes.some((node) => node.type === "instance");
+      deviceTextCandidates = deviceTextSampling && !hasInstances
+        ? design.nodes.filter((node) => node.type === "text" &&
+            isDesignNodeVisible(design, node, index) &&
+            ![...ancestors(node, index), node].some((item) => item.rotation))
+          .map((node) => ({ id: node.id, bounds: text.contentBounds(node),
+            pad: 0, origin: { x: node.x - Math.floor(node.x), y: node.y - Math.floor(node.y) } }))
+        : [];
+      deviceCandidateOrigins = new Map(deviceTextCandidates.map((candidate) => [candidate.id, candidate.origin]));
       nodePictureBytes = nextNodeBytes;
       sceneRevision++;
       clearTiles();
@@ -685,14 +741,15 @@ export async function createRenderer({
         };
       };
       updateStats();
-      recordCurrentScene = () => {
+      recordCurrentScene = (quality = true) => {
         const next = record();
         picture.delete();
         picture = next;
         nodePictureBytes = nextNodeBytes;
         sceneRevision++;
         clearTiles();
-        qualityBuilds++;
+        if (quality) qualityBuilds++;
+        else deviceSamplingBuilds++;
         updateStats();
       };
     } catch (error) {
@@ -794,7 +851,15 @@ export async function createRenderer({
       throw new Error("CanvasKit WebGL context lost; this frame was not rendered");
     if (![pan.x, pan.y, zoom].every(Number.isFinite) || zoom <= 0)
       throw new Error("Invalid viewport transform");
-    if (picture && (zoom * dpr > 2 || hasInstances) && currentDesign && sceneState.setRasterScale) {
+    // Match Skia's float32 matrix composition, including tiny residues left by
+    // public wheel controls even when the effective device transform is exact.
+    const physicalScale = Math.fround(Math.fround(zoom) * Math.fround(dpr));
+    const deviceEligible = deviceTextSampling && !hasInstances && physicalScale === 1 &&
+      Number.isInteger(Math.fround(Math.fround(pan.x) * Math.fround(dpr))) &&
+      Number.isInteger(Math.fround(Math.fround(pan.y) * Math.fround(dpr)));
+    const qualityNeeded = zoom * dpr > 2 || hasInstances;
+    if (picture && currentDesign && sceneState.setRasterScale &&
+        (qualityNeeded || deviceEligible || sceneState.hasDeviceSampling?.())) {
       const nodes = currentDesign.nodes,
         index = sceneIndex;
       const viewport = {
@@ -804,18 +869,27 @@ export async function createRenderer({
         height: cssHeight / zoom,
       };
       const visibleNodeIds = new Set(),
-        nodeScales = new Map();
+        nodeScales = new Map(),
+        deviceOrigins = new Map();
+      // Native pixel coverage is meaningful only at physical 1x with an integer
+      // device translation. All other transforms retain the high-resolution
+      // master. A shared component picture can also be used by scaled/rotated
+      // instances, so scenes containing instances conservatively use masters.
       const overlaps = (bounds, pad = 0) =>
         bounds &&
         bounds.x - pad < viewport.x + viewport.width &&
         bounds.x + bounds.width + pad > viewport.x &&
         bounds.y - pad < viewport.y + viewport.height &&
         bounds.y + bounds.height + pad > viewport.y;
-      for (const node of nodes) {
+      if (deviceEligible) for (const candidate of deviceTextCandidates)
+        if (overlaps(candidate.bounds, candidate.pad)) deviceOrigins.set(candidate.id, candidate.origin);
+      if (qualityNeeded) for (const node of nodes) {
         if (node.type !== "text" || !isDesignNodeVisible(currentDesign, node, index)) continue;
         const bounds = transformedNodeBoundsInTree(sceneNodes, node, index),
           pad = node.fontSize * 2;
-        if (overlaps(bounds, pad)) visibleNodeIds.add(node.id);
+        if (overlaps(bounds, pad)) {
+          visibleNodeIds.add(node.id);
+        }
       }
       const includeComponent = (componentId, scale, seen = new Set()) => {
         if (seen.has(componentId)) return;
@@ -852,8 +926,12 @@ export async function createRenderer({
               zoom * dpr * Math.max(node.width / component.width, node.height / component.height),
             );
         }
-      if (sceneState.setRasterScale(zoom * dpr, { visibleNodeIds, nodeScales }))
-        recordCurrentScene();
+      const qualityChanged = qualityNeeded &&
+        sceneState.setRasterScale(zoom * dpr, { visibleNodeIds, nodeScales });
+      const samplingChanged = sceneState.setDeviceSampling?.(deviceOrigins, {
+        retainOffscreen: deviceEligible, eligibleOrigins: deviceCandidateOrigins,
+      });
+      if (qualityChanged || samplingChanged) recordCurrentScene(Boolean(qualityChanged));
     }
     const started = now(),
       target = surface.getCanvas();
@@ -893,6 +971,7 @@ export async function createRenderer({
       nodePictureBuilds,
       nodePictureHits,
       textQualityBuilds: qualityBuilds,
+      deviceTextSamplingBuilds: deviceSamplingBuilds,
       nodePictureCacheBytes: nodePictureBytes,
       nodePictureCacheBudgetBytes: MAX_NODE_PICTURE_BYTES,
       renderMode: lastMode,

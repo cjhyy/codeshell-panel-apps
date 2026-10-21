@@ -1,6 +1,18 @@
-import { captureHtmlToDesign } from "./html-capture.mjs";
+import { captureHtmlFlowObligations, prepareHtmlFixedTableFlowAudit, prepareHtmlLayoutFlowAudit } from "./html-flow-audit.mjs";
+import { captureHtmlToDesign, hangingBaselineOffset, parseCssColor } from "./html-capture.mjs";
+import { captureHtmlViewportRelation } from "./html-viewport-flow.mjs";
 import { convertToDesignDSL, HTML2FIGMA_PROVENANCE } from "./vendor/html2figma-browser.mjs";
 import { designNodeToV3 } from "./design-node-adapter.mjs";
+import { createHtmlAutoMarginCapture } from "./html-auto-margin-distribution.mjs";
+import { htmlTextLineHeightRatio } from "./html-line-height.mjs";
+import { captureHtmlFontFamilyElement, preserveHtmlFontFamilies } from "./html-font-family.mjs";
+import {
+  isHtmlAnchorHref,
+  safeHtmlAnchorHref,
+  installHtmlCaptureNavigationGuard,
+} from "./html-capture-links.mjs";
+import { promoteHtmlFixedTables } from "./html-fixed-table-flow.mjs";
+import { createBrowserTextMeasurer, measureFigmaTextDocument } from "./text-metrics.mjs";
 import {
   createHtmlAssetResolver,
   htmlFontResources,
@@ -101,6 +113,10 @@ function sourceByteLength(value) {
 function sanitizeElementAttributes(element) {
   for (const attribute of [...element.attributes]) {
     const name = attribute.name.toLowerCase();
+    if (isHtmlAnchorHref(element, name)) {
+      if (!safeHtmlAnchorHref(attribute.value)) element.removeAttribute(attribute.name);
+      continue;
+    }
     if (
       (name === "src" || name === "href" || name === "xlink:href") &&
       safeHtmlDataUrl(attribute.value)
@@ -153,6 +169,7 @@ async function sanitizedHtmlSource(sourcePath, html, readText, readAsset) {
     }
     const style = parsed.createElement("style");
     style.dataset.captureSource = path;
+    if (source.hasAttribute("media")) style.setAttribute("media", source.getAttribute("media"));
     style.textContent = await assets.css(css, path);
     fonts.push(...htmlFontResources(style.textContent, assets.warnings));
     source.replaceWith(style);
@@ -200,7 +217,11 @@ function captureFrame(viewportWidth, viewportHeight) {
   const frame = document.createElement("iframe");
   frame.setAttribute("sandbox", "allow-same-origin");
   frame.setAttribute("aria-hidden", "true");
+  frame.inert = true;
   frame.tabIndex = -1;
+  frame.addEventListener("load", () => {
+    if (frame.contentDocument) installHtmlCaptureNavigationGuard(frame.contentDocument);
+  });
   frame.style.cssText = [
     "position:fixed",
     "left:-20000px",
@@ -280,6 +301,222 @@ async function verifyHtmlResources(frameWindow, prepared) {
   }
 }
 
+function alignHtmlTextBaselines(documentValue, browserDocument) {
+  const visit = (node) => {
+    if (node.type === "text") {
+      // html2figma preserves browser Range bounds. Convert just these new HTML
+      // text origins to the hanging-baseline convention already used by v3.
+      const offset = hangingBaselineOffset(
+        node,
+        node.fontSize,
+        node.letterSpacing ?? 0,
+        browserDocument,
+      );
+      const y = Math.min(20000, Math.max(-20000, node.y + offset));
+      node.layoutBaselineOffset = Math.round(((node.layoutBaselineOffset ?? 0) + y - node.y) * 10000) / 10000;
+      node.y = Math.round(y * 100) / 100;
+    }
+    for (const child of node.children ?? []) visit(child);
+  };
+  for (const page of documentValue.pages) page.children.forEach(visit);
+}
+
+async function enableHtmlTextReflow(documentValue, browserDocument, elements, warn) {
+  const promoted = [];
+  const baselineCandidates = new Set();
+  const sourceNodes = new Map(),
+    sourceIds = new Map();
+  const visit = (node, parent) => {
+    if (node.type === "text") {
+      let intent;
+      try { intent = JSON.parse(node.notes ?? "{}").htmlText; } catch {}
+      if (intent) {
+        promoted.push(node);
+        // pre/nowrap recovery already proved a single ordinary Text box. Only
+        // the current capture's exact real Element can certify its baseline.
+        let semantic;
+        try { semantic = JSON.parse(parent?.notes ?? "{}"); } catch {}
+        const element = elements.get(semantic?.semanticId);
+        if (element?.ownerDocument === browserDocument && element.childElementCount === 0 &&
+            parent?.layout === "vertical" && parent.children?.length === 1 &&
+            node.layoutSizingVertical === "hug" && !node.rotation) {
+          const style = browserDocument.defaultView.getComputedStyle(element);
+          if (["pre", "nowrap"].includes(style.whiteSpace) && style.visibility === "visible" &&
+              Number.parseFloat(style.fontSize) === node.fontSize &&
+              Number.isFinite(node.layoutBaselineOffset)) baselineCandidates.add(node);
+        }
+        if (node.textOverflow !== "ellipsis") {
+          sourceNodes.set(node.id, { style: { textAutoResize: "WIDTH_AND_HEIGHT" } });
+          sourceIds.set(node.id, node.id);
+        }
+      }
+    }
+    if (
+      node.type === "frame" &&
+      node.layout === "none" &&
+      node.children?.length === 1 &&
+      node.children[0].type === "text" &&
+      !node.rotation
+    ) {
+      let element, semantic;
+      try {
+        semantic = JSON.parse(node.notes ?? "{}");
+      } catch { /* Source metadata is optional; never guess by visible text. */ }
+      const bound = elements.get(semantic?.semanticId);
+      if (bound?.ownerDocument === browserDocument) element = bound;
+      else {
+        try {
+          const selector = semantic?.cssSelector;
+          if (selector) {
+            const matches = browserDocument.querySelectorAll(selector);
+            if (matches.length === 1) element = matches[0];
+          }
+        } catch { /* Missing, invalid or ambiguous selectors stay measured. */ }
+        warn("html-text-source-binding", node.id,
+          `${elements.has(semantic?.semanticId) ? "文字来源标识对应多个实际元素" : "文字来源没有唯一捕获绑定"}；${element ? "仅使用旧的唯一选择器来源" : "保留测量几何，不猜测第一个匹配项"}。`);
+      }
+      const text = node.children[0];
+      const style = element && browserDocument.defaultView.getComputedStyle(element);
+      // CSS normal collapses ASCII HTML whitespace, never NBSP or other Unicode
+      // spacing. Keep the exact DOM string separately when it differs.
+      const collapsed = (value) => value.replace(/[\t\n\f\r ]+/gu, " ").replace(/^ | $/gu, "");
+      const rawSource = element?.textContent ?? "";
+      const source = collapsed(rawSource);
+      // Upstream normal text may replace NBSP with SPACE or append an NBSP
+      // spacer. Compare that legacy shape only; the exact bound DOM source,
+      // including every real NBSP, is what we retain and measure below.
+      const legacyShape = (value) => collapsed(value.replace(/\u00a0/gu, " "));
+      const ordinary = style && ["block", "inline-block"].includes(style.display) &&
+        !element.matches("button,input,select,textarea,option") &&
+        style.direction === "ltr" && style.visibility === "visible" && style.transform === "none" &&
+        style.textTransform === "none" && ["normal", "0px"].includes(style.wordSpacing) &&
+        style.textIndent === "0px" &&
+        ["::before", "::after"].every((pseudo) => ["none", "normal"].includes(
+          browserDocument.defaultView.getComputedStyle(element, pseudo).content)) &&
+        ["::first-line", "::first-letter"].every((pseudo) => {
+          const variant = browserDocument.defaultView.getComputedStyle(element, pseudo);
+          return ["fontFamily", "fontSize", "fontWeight", "fontStyle", "lineHeight", "letterSpacing", "wordSpacing", "textTransform", "color", "textShadow"]
+            .every((key) => variant[key] === style[key]);
+        }) && node.visible !== false && text.visible !== false &&
+        !(/[\r\n]/u.test(rawSource) && /[^\x00-\x7f]/u.test(rawSource));
+      const childSemantic = JSON.parse(text.notes ?? "{}");
+      const originalNotes = source !== rawSource
+        ? JSON.stringify({ ...childSemantic, htmlTextOriginal: { whiteSpace: "normal", rawSource } })
+        : text.notes;
+      if (style && (!ordinary || (childSemantic.styledSegments?.length ?? 0) > 1))
+        warn("html-plain-text-fixed", node.id, "表格/行内、表单控件、多样式、生成内容、隐藏或特殊文字样式不能恢复为单一普通文字 Auto Layout；保留测量几何。");
+      if (
+        style &&
+        ordinary &&
+        (childSemantic.styledSegments?.length ?? 0) <= 1 &&
+        element.childElementCount === 0 &&
+        style.whiteSpace === "normal" &&
+        style.writingMode === "horizontal-tb" &&
+        ["Top", "Right", "Bottom", "Left"].every(
+          (side) => (Number.parseFloat(style[`border${side}Width`]) || 0) === 0,
+        ) &&
+        source &&
+        rawSource.length <= 4000 &&
+        (originalNotes?.length ?? 0) <= 2000 &&
+        legacyShape(source) === legacyShape(text.textSource ?? text.text) &&
+        !text.rotation
+      ) {
+        const top = node.paddingTop ?? node.padding ?? 0;
+        const left = node.paddingLeft ?? node.padding ?? 0;
+        const right = node.paddingRight ?? node.padding ?? 0;
+        const baseline = text.y - node.y - top;
+        const lineHeight = Number.parseFloat(style.lineHeight);
+        if (
+          Math.abs(baseline) <= 100 &&
+          Number.isFinite(lineHeight) &&
+          lineHeight > 0 &&
+          lineHeight / text.fontSize >= 0.7 &&
+          lineHeight / text.fontSize <= 3
+        ) {
+          let cssWidth = "",
+            cssHeight = "";
+          try {
+            cssWidth = element.computedStyleMap?.().get("width")?.toString() ?? "";
+            cssHeight = element.computedStyleMap?.().get("height")?.toString() ?? "";
+          } catch {
+            // Engines without Typed OM keep the captured box sizing.
+          }
+          if (node.layoutSizingVertical !== "fill" && cssHeight === "auto")
+            node.layoutSizingVertical = "hug";
+          if (
+            node.layoutSizingHorizontal !== "fill" &&
+            ["auto", "min-content", "max-content", "fit-content"].includes(cssWidth) &&
+            (parent?.layout === "horizontal" || ["inline", "inline-block"].includes(style.display))
+          )
+            node.layoutSizingHorizontal = "hug";
+          Object.assign(node, {
+            layout: "vertical",
+            layoutWrap: "none",
+            gap: 0,
+            rowGap: 0,
+            columnGap: 0,
+            alignItems: "start",
+            justifyContent: "start",
+          });
+          text.x = node.x + left;
+          text.width =
+            node.layoutSizingHorizontal === "hug"
+              ? text.width
+              : Math.max(1, node.width - left - right);
+          text.lineHeight = htmlTextLineHeightRatio(text, lineHeight / text.fontSize);
+          text.height = lineHeight * text.text.split("\n").length;
+          text.textSource = source;
+          if (originalNotes !== undefined) text.notes = originalNotes;
+          text.textFlow = "wrap";
+          text.textFlowWidth = text.width;
+          text.layoutBaselineOffset = Math.round(baseline * 10000) / 10000;
+          text.layoutSizingHorizontal = node.layoutSizingHorizontal === "hug" ? "hug" : "fill";
+          text.layoutSizingVertical = "hug";
+          text.layoutAlignSelf = "start";
+          if (node.layoutSizingHorizontal === "hug") {
+            delete text.textFlow;
+            sourceNodes.set(text.id, { style: { textAutoResize: "WIDTH_AND_HEIGHT" } });
+            sourceIds.set(text.id, text.id);
+          }
+          promoted.push(text);
+          baselineCandidates.add(text);
+        }
+      }
+    }
+    for (const child of node.children ?? []) visit(child, node);
+  };
+  for (const page of documentValue.pages) page.children.forEach((node) => visit(node, null));
+  if (promoted.length) {
+    await measureFigmaTextDocument(
+      { nodes: promoted },
+      { browserDocument, sourceNodes, sourceIds },
+    );
+    for (const text of promoted) {
+      let intent;
+      try { intent = JSON.parse(text.notes ?? "{}").htmlText; } catch {}
+      if (intent && text.textOverflow !== "ellipsis" && text.textMetrics)
+        text.width = Math.ceil(Math.max(1, ...text.textMetrics.lineWidths) * 100) / 100;
+    }
+    const measurement = createBrowserTextMeasurer(browserDocument);
+    try {
+      for (const text of baselineCandidates) {
+        try {
+          measurement.configure(text);
+          const logicalY = text.y - text.layoutBaselineOffset;
+          const expectedY = Math.round((logicalY + measurement.lineBoxOffset(text)) * 100) / 100;
+          // Initial capture geometry is authoritative. Refresh is enabled only
+          // when the same browser/font line-box model reproduces that exact y.
+          if (expectedY === text.y) { text.layoutBaselineSource = "html"; continue; }
+        } catch { /* Unsupported fonts/origins keep their captured baseline. */ }
+        warn("html-text-baseline-fixed", text.id,
+          "捕获的文字原点与浏览器行框映射不完全一致；保留初始测量几何，后续字体编辑需核对基线。");
+      }
+    } finally {
+      measurement.close();
+    }
+  }
+}
+
 export async function captureWorkspaceHtmlResult({
   sourcePath,
   html,
@@ -291,11 +528,15 @@ export async function captureWorkspaceHtmlResult({
   name,
   sha256Bytes,
   engine = "html2figma",
+  includeViewport = true,
+  includeFlowAudit = false,
 }) {
   if (!isSafeHtmlImportPath(sourcePath)) {
     throw new Error("HTML 路径必须是工作区内安全的相对 .html 文件");
   }
   if (typeof readText !== "function") throw new Error("HTML 导入缺少工作区读取能力");
+  if (typeof includeViewport !== "boolean") throw new Error("includeViewport 必须为布尔值");
+  if (typeof includeFlowAudit !== "boolean") throw new Error("includeFlowAudit 必须为布尔值");
   if (
     typeof rootSelector !== "string" ||
     !rootSelector.trim() ||
@@ -314,6 +555,7 @@ export async function captureWorkspaceHtmlResult({
   }
 
   if (!["html2figma", "measured"].includes(engine)) throw new Error("未知 HTML 转换引擎");
+  if (includeFlowAudit && engine !== "html2figma") throw new Error("includeFlowAudit 需要当前 html2figma 捕获绑定");
   const prepared = await sanitizedHtmlSource(sourcePath, html, readText, readAsset);
   const frame = captureFrame(viewportWidth, viewportHeight);
   const loaded = waitForFrameLoad(frame);
@@ -360,12 +602,13 @@ export async function captureWorkspaceHtmlResult({
       viewportHeight,
       sha256Bytes,
       fonts: prepared.fonts,
-      captureBounds: {
+      includeViewport,
+      ...(includeViewport ? { captureBounds: {
         left: 0,
         top: 0,
         right: viewportWidth,
         bottom: viewportHeight,
-      },
+      } } : {}),
     };
     if (engine === "measured")
       return {
@@ -373,9 +616,81 @@ export async function captureWorkspaceHtmlResult({
         resourcePlans: [],
         report: { engine, warnings: prepared.warnings },
       };
-    const tree = convertToDesignDSL(root);
+    const elements = new Map(), ambiguousElements = new WeakSet(), fontRecords = new WeakMap();
+    const tree = convertToDesignDSL(root, { onElement: (semanticId, element) => {
+      if (element.ownerDocument !== frameDocument || !root.contains(element)) return;
+      if (!fontRecords.has(element)) fontRecords.set(element, captureHtmlFontFamilyElement(element));
+      if (!elements.has(semanticId)) elements.set(semanticId, element);
+      else if (elements.get(semanticId) !== element) {
+        const previous = elements.get(semanticId);
+        if (previous) ambiguousElements.add(previous);
+        ambiguousElements.add(element);
+        elements.set(semanticId, null);
+      }
+    } });
     if (!tree) throw new Error("html2figma 没有生成可见 DesignNode");
+    if (includeViewport) {
+      options.viewportRelation = captureHtmlViewportRelation(root);
+      const htmlColor = parseCssColor(frameWindow.getComputedStyle(frameDocument.documentElement).backgroundColor);
+      const bodyColor = frameDocument.body && parseCssColor(frameWindow.getComputedStyle(frameDocument.body).backgroundColor);
+      const canvasColor = htmlColor?.alpha ? htmlColor : bodyColor;
+      options.background = canvasColor?.alpha === 1 ? canvasColor.hex : "#ffffff";
+    }
+    const canonicalBySource = new WeakMap(), syntheticFlowIds = new Set(), layoutFlowCandidates = [], fontBindings = [];
+    options.onNode = (source, node) => {
+      canonicalBySource.set(source, node);
+      if (node.type === "text") fontBindings.push({source,node});
+      if (source.nodeType === "container" && !source.semantic && node.type === "frame") syntheticFlowIds.add(node.id);
+    };
+    if (includeFlowAudit) {
+      options.onSyntheticNode = (node) => syntheticFlowIds.add(node.id);
+      options.onRecoveredFlow = (proof) => layoutFlowCandidates.push(proof);
+    }
+    options.captureAutoMarginPlan = createHtmlAutoMarginCapture({ tree, root, elements, ambiguousElements });
     const result = await designNodeToV3(tree, options);
+    const warn = (code, nodeId, message) => {
+      result.report.stats.warningCount += 1;
+      if (result.report.warnings.length < 500) result.report.warnings.push({ code, nodeId, message });
+      else result.report.stats.omittedWarnings += 1;
+    };
+    result.report.fontFamilies = preserveHtmlFontFamilies({ tree, root, elements, records: fontRecords,
+      ambiguousElements, canonicalBySource, textBindings: fontBindings, resources: result.document.resources, warn });
+    alignHtmlTextBaselines(result.document, frameDocument);
+    await enableHtmlTextReflow(result.document, frameDocument, elements, warn);
+    const recoveredTableFlow = [];
+    const tables = await promoteHtmlFixedTables(result.document, {
+      browserDocument: frameDocument, elements, sourceTree: tree, canonicalBySource, warn,
+      ...(includeFlowAudit ? { prepareFlowAudit: (proof) => {
+        const prepared = prepareHtmlFixedTableFlowAudit({ root, elements, document: result.document, ambiguousElements }, proof);
+        return () => recoveredTableFlow.push(prepared);
+      } } : {}),
+    });
+    if (tables.length) {
+      for (const table of tables) {
+        const recovered = new Set(table.recovered.map(({ code, nodeId }) => `${code}:${nodeId}`));
+        table.recoveredWarnings = [];
+        result.report.warnings = result.report.warnings.filter((warning) => {
+          if (!recovered.has(`${warning.code}:${warning.nodeId}`)) return true;
+          table.recoveredWarnings.push(warning);
+          result.report.stats.warningCount -= 1;
+          return false;
+        });
+        delete table.recovered;
+      }
+      result.report.tables = tables;
+    }
+    if (includeFlowAudit) {
+      const recoveredLayouts = [];
+      for (const proof of layoutFlowCandidates) {
+        try { recoveredLayouts.push(prepareHtmlLayoutFlowAudit({ root, elements, document: result.document, canonicalBySource, ambiguousElements }, proof)); }
+        catch { warn("html-flow-audit-unverified", proof.node.id, "已有流布局未能绑定当前真实 Element/原始节点或空清除伪元素；保留未验证关系。"); }
+      }
+      result.report.flowObligations = captureHtmlFlowObligations({
+        root, elements, ambiguousElements, mapping: result.mapping, document: result.document,
+        syntheticIds: syntheticFlowIds, recoveredTables: recoveredTableFlow,
+        recoveredLayouts, canonicalBySource,
+      });
+    }
     result.report = {
       ...result.report,
       engine,

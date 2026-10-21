@@ -1,4 +1,7 @@
 /* Resolve only explicitly selected local files and inline data; never fetch a URL. */
+import { imageMimeFromBytes } from "./image-mime.mjs";
+import { parseDesignFontFamily } from "./font-family.mjs";
+
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 12 * 1024 * 1024;
 const MIMES = new Map([
@@ -49,16 +52,31 @@ export function createHtmlAssetResolver({ readAsset, warnings = [] } = {}) {
   let totalBytes = 0;
   const cache = new Map();
   const counted = new Set();
-  const account = (dataUrl) => {
+  const account = (value) => {
+    let dataUrl = value;
     if (!safeHtmlDataUrl(dataUrl))
       throw new Error("HTML 资源必须是受支持的内嵌图片或字体，单项最多 8 MiB");
+    const [, declaredMime, base64] = DATA.exec(dataUrl);
+    const byteLength =
+      (base64.length / 4) * 3 - (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
+    if (byteLength > MAX_ASSET_BYTES) throw new Error("HTML 本地资源超过 8 MiB");
+    if (declaredMime.toLowerCase().startsWith("image/")) {
+      const binary = atob(base64),
+        bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+      const mime = imageMimeFromBytes(bytes);
+      if (!mime)
+        throw new Error("HTML 图片无法解码：图片字节不是受支持的 PNG、JPEG、GIF、WebP 或 SVG");
+      if ((declaredMime.toLowerCase() === "image/svg+xml") !== (mime === "image/svg+xml"))
+        throw new Error("HTML 图片的 SVG 类型声明与实际字节不一致，未改变浏览器的解码语义");
+      // Supported raster MIME aliases follow bytes; SVG decoding remains distinct.
+      dataUrl = `data:${mime};base64,${base64}`;
+    }
     if (!counted.has(dataUrl)) {
-      counted.add(dataUrl);
-      const base64 = DATA.exec(dataUrl)[2];
-      totalBytes +=
-        (base64.length / 4) * 3 - (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
-      if (totalBytes > MAX_TOTAL_BYTES)
+      if (totalBytes + byteLength > MAX_TOTAL_BYTES)
         throw new Error("HTML 图片和字体合计超过 12 MiB，请分页面导入");
+      totalBytes += byteLength;
+      counted.add(dataUrl);
     }
     return dataUrl;
   };
@@ -134,7 +152,8 @@ export function htmlFontResources(css, warnings = []) {
     const rule = match[1];
     const property = (name) =>
       new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*([^;]+)`, "iu").exec(rule)?.[1]?.trim();
-    const family = property("font-family")?.replace(/^["']|["']$/gu, "");
+    const families = parseDesignFontFamily(property("font-family"));
+    const family = families?.length === 1 && !families[0].generic ? families[0].name : null;
     const source = /url\(["']?(data:font\/(?:woff2?|ttf|otf);base64,[A-Za-z0-9+/=]+)["']?\)/iu.exec(
       rule,
     )?.[1];

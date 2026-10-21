@@ -1,1 +1,11 @@
-export { normalizeDesignPaints, designPaintsToFigma, figmaFillPaints } from "../paint.mjs";
+export {
+  normalizeDesignPaints,
+  designPaintsToFigma,
+  figmaFillPaints,
+  cssLinearSourceSnapshot,
+  normalizeCssLinearSource,
+  cssLinearNeedsNativeWarning,
+} from "../paint.mjs";
+export { normalizeStrokeSides, validateDesignStroke, hasDesignStroke, nativeDesignStroke, nativeInactiveStrokePlan } from "../stroke.mjs";
+export { normalizeShadowStack, validateShadowStack, nativeShadowStackEffects } from "../shadow-stack.mjs";
+export { assertNativeImageFill } from "../image-dimensions.mjs";

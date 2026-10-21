@@ -1,4 +1,20 @@
-import { figmaFillPaints, representativeDesignFill } from "./paint.mjs";
+import { normalizeShadowStack, nativeShadowStackEffects } from "./shadow-stack.mjs";
+import { validTextLineHeight } from "./text-line-height.mjs";
+import { assertNativeTextRangeBoundary } from "./native-text-ranges.mjs";
+import { nativeDesignFontFamily } from "./font-family.mjs";
+import { assertNativeImageFill } from "./image-dimensions.mjs";
+import { validateLayoutSpacing, validateNativeLayoutSpacing, nativeMainGap, mainAxisGap } from "./layout-spacing.mjs";
+import { distributeFillSizes } from "./layout.mjs";
+import { normalizeCornerRadii, effectiveCornerRadii } from "./corner-radii.mjs";
+import { figmaDesignStroke, nativeDesignStroke, hasDesignStroke, designStrokeSides, clearInvalidStrokeLayoutExclusion, captureNativeStrokeInactive, nativeInactiveStrokePlan } from "./stroke.mjs";
+import { normalizeGridTracks, nativeGridPlan, gridFillHugContentHeight, GRID_CHILD_FIELDS, GRID_CONTAINER_FIELDS } from "./grid.mjs";
+import {
+  figmaFillPaints,
+  representativeDesignFill,
+  restoreCssLinearSource,
+  cssLinearNeedsNativeWarning,
+  designPaintsToFigma,
+} from "./paint.mjs";
 /* Deliberately bounded Figma JSON bridge. Figma binary files are not supported. */
 import {
   MAX_DESIGN_NODES_PER_PAGE,
@@ -15,6 +31,7 @@ import {
   normalizeFigmaSource,
   prepareFigmaAssets,
   createFigmaTransferAssets,
+  normalizeFigmaAsset,
 } from "./figma-assets.mjs";
 import { prepareBuiltinDesignFontResources, ensureBuiltinDesignFonts } from "./builtin-fonts.mjs";
 
@@ -55,11 +72,18 @@ const LOSS_WARNINGS = new Set([
   "text-truncated",
   "font-fallback",
   "font-resource-export",
+  "line-height-unit-fixed",
   "missing-geometry",
   "unsupported-mask",
   "visual-fallback",
   "plugin-export-warning",
   "canvas-extent",
+  "unsupported-grid",
+  "unsupported-native-border",
+  "unsupported-stroke-layout",
+  "native-stroke-fill-model",
+  "css-gradient-native-source",
+  "native-negative-gap-effective",
 ]);
 const EFFECT_WARNINGS = new Set(["unsupported-effects", "stroke-alignment", "corner-shape"]);
 const ADVISORY_WARNINGS = new Set([
@@ -78,6 +102,7 @@ const ADVISORY_WARNINGS = new Set([
   "child-layout-export",
   "container-as-frame",
   "notes-plugin-data",
+  "css-gradient-native-resize",
 ]);
 function warningPriority({ code, message }) {
   // Missing image resources must remain visible even after hundreds of layout advisories.
@@ -329,11 +354,132 @@ function geometry(source, ancestors, report) {
   };
 }
 
+function layoutSizing(source, node, parent) {
+  const inferred = {};
+  const primary = { HORIZONTAL: "Horizontal", VERTICAL: "Vertical" }[source.layoutMode];
+  if (primary) {
+    const counter = primary === "Horizontal" ? "Vertical" : "Horizontal";
+    for (const [axis, key] of [
+      [primary, "primaryAxisSizingMode"],
+      [counter, "counterAxisSizingMode"],
+    ])
+      if (["FIXED", "AUTO"].includes(source[key]))
+        inferred[axis] = source[key] === "AUTO" ? "hug" : "fixed";
+  } else if (source.type === "TEXT") {
+    const textAutoResize = source.style?.textAutoResize ?? source.textAutoResize;
+    if (["NONE", "HEIGHT", "WIDTH_AND_HEIGHT", "TRUNCATE"].includes(textAutoResize)) {
+      inferred.Horizontal = textAutoResize === "WIDTH_AND_HEIGHT" ? "hug" : "fixed";
+      inferred.Vertical = ["HEIGHT", "WIDTH_AND_HEIGHT"].includes(textAutoResize) ? "hug" : "fixed";
+    }
+  }
+  const parentPrimary = { horizontal: "Horizontal", vertical: "Vertical" }[parent?.layout];
+  if (parentPrimary && source.layoutPositioning !== "ABSOLUTE") {
+    // Filling the parent takes precedence over an inner frame's intrinsic sizing.
+    if (source.layoutGrow === 1) inferred[parentPrimary] = "fill";
+    if (source.layoutAlign === "STRETCH")
+      inferred[parentPrimary === "Horizontal" ? "Vertical" : "Horizontal"] = "fill";
+  }
+  for (const axis of ["Horizontal", "Vertical"]) {
+    const explicit = source[`layoutSizing${axis}`];
+    if (["FIXED", "HUG", "FILL"].includes(explicit))
+      node[`layoutSizing${axis}`] = explicit.toLowerCase();
+    else if (inferred[axis]) node[`layoutSizing${axis}`] = inferred[axis];
+  }
+}
+
+function gridChildProperties(source) {
+  const properties = {};
+  const inactiveAnchors =
+    source.visible === false &&
+    source.gridRowAnchorIndex === -1 &&
+    source.gridColumnAnchorIndex === -1;
+  for (const key of [
+    "gridColumnSpan",
+    "gridRowSpan",
+    "gridRowAnchorIndex",
+    "gridColumnAnchorIndex",
+  ])
+    if (source[key] !== undefined && !(inactiveAnchors && key.endsWith("AnchorIndex")))
+      properties[key] = source[key];
+  for (const axis of ["Horizontal", "Vertical"]) {
+    const key = `gridChild${axis}Align`;
+    if (source[key] !== undefined)
+      properties[key] = { AUTO: "auto", MIN: "start", CENTER: "center", MAX: "end" }[source[key]];
+  }
+  return properties;
+}
+
 function layout(source, node, report) {
   node.layout = { HORIZONTAL: "horizontal", VERTICAL: "vertical" }[source.layoutMode] ?? "none";
-  if (source.layoutMode === "GRID")
-    report.warn("grid-layout", source, "Figma Grid 暂按固定几何导入，未保留网格布局行为。");
-  node.gap = number(source.itemSpacing, 0, 0, 2000, source, "itemSpacing", report);
+  const activeStrokeLayout = ["HORIZONTAL", "VERTICAL", "GRID"].includes(source.layoutMode);
+  if (source.strokesIncludedInLayout !== undefined && typeof source.strokesIncludedInLayout !== "boolean") {
+    Object.assign(node, { layout: "none", gap: 0, padding: 0, alignItems: "start", justifyContent: "start" });
+    report.warn("unsupported-stroke-layout", source, "strokesIncludedInLayout 必须为布尔值；保留测量几何，未猜测原生描边布局。");
+    return;
+  }
+  if (activeStrokeLayout && source.strokesIncludedInLayout === true &&
+      (hasDesignStroke(node) ? designStrokeSides(node).some(side=>side.width>0) : node.strokeWidth>0) &&
+      (!hasDesignStroke(node) || node.strokeAlign!=="inside")) {
+    Object.assign(node,{layout:"none",gap:0,padding:0,alignItems:"start",justifyContent:"start"});
+    if(node.type === "frame")node.clipContent=source.clipsContent===true;
+    report.warn("unsupported-stroke-layout",source,"参与布局的描边暂只支持完整 INSIDE 侧边；CENTER/OUTSIDE 或不支持的描边保留测量几何，未猜测有效 padding。");
+    return;
+  }
+  if (source.layoutMode === "GRID") {
+    try {
+      const columns = source.gridColumnCount,
+        rows = source.gridRowCount;
+      if (
+        (source.gridItemsPositioning !== undefined &&
+          !["MANUAL", "ROW_AUTO_FLOW"].includes(source.gridItemsPositioning)) ||
+        (source.gridAutoTracks !== undefined && !["NONE", "ROWS"].includes(source.gridAutoTracks))
+      )
+        throw new Error("不支持的 Grid flow/automatic tracks 模式");
+      if (
+        source.gridItemsPositioning !== "ROW_AUTO_FLOW" &&
+        (source.children ?? []).some(
+          (child) =>
+            child.visible !== false &&
+            child.layoutPositioning !== "ABSOLUTE" &&
+            (!Number.isInteger(child.gridRowAnchorIndex) ||
+              !Number.isInteger(child.gridColumnAnchorIndex)),
+        )
+      )
+        throw new Error("MANUAL Grid 缺少子项锚点");
+      const tracks = (value) =>
+        normalizeGridTracks(
+          value.map((track) => ({
+            type: track.type.toLowerCase(),
+            ...(track.type === "HUG"
+              ? {}
+              : { value: track.value ?? (track.type === "FLEX" ? 1 : undefined) }),
+          })),
+        );
+      const grid = {
+        ...node,
+        layout: "grid",
+        gridColumns: columns,
+        gridRows: rows,
+        gridColumnSizes: tracks(source.gridColumnSizes),
+        gridRowSizes: tracks(source.gridRowSizes),
+        gridItemsPositioning:
+          source.gridItemsPositioning === "ROW_AUTO_FLOW" ? "row-auto-flow" : "manual",
+        gridAutoTracks: source.gridAutoTracks === "ROWS" ? "rows" : "none",
+        justifyContent: "start",
+        alignContent: "start",
+      };
+      // Child intrinsic eligibility requires their complete converted tree.
+      // Validate after recursion below; do not guess it from shallow raw fields.
+      Object.assign(node, grid);
+    } catch (error) {
+      report.warn(
+        "unsupported-grid",
+        source,
+        `原生 Grid 无法表示：${error.message}。请使用插件重新导出完整 track 数据或把网格限制为 1–24 行/列；本次保留固定几何。`,
+      );
+    }
+  }
+  node.gap = number(source.itemSpacing, 0, -2000, 2000, source, "itemSpacing", report);
   node.padding = 0;
   for (const side of ["Top", "Right", "Bottom", "Left"])
     node[`padding${side}`] = number(
@@ -345,6 +491,21 @@ function layout(source, node, report) {
       `padding${side}`,
       report,
     );
+  if (activeStrokeLayout && source.strokesIncludedInLayout === true) {
+    if (hasDesignStroke(node) && node.strokeAlign === "inside") designStrokeSides(node).forEach((stroke,i)=>{
+      const key=`padding${["Top","Right","Bottom","Left"][i]}`;
+      node[key]+=stroke.width;
+    });
+    else if (node.strokeWidth) report.warn("unsupported-stroke-layout",source,"原生描边参与布局但未保留完整侧边，内容缩进可能不同。");
+  }
+  if (activeStrokeLayout && source.strokesIncludedInLayout !== true && node.strokeAlign === "inside") {
+    if (["horizontal", "vertical"].includes(node.layout) && ["frame", "component"].includes(node.type))
+      // REST omits its documented false default; fresh SDK Frame activation has
+      // a different live default and must be configured explicitly on export.
+      node.strokeLayoutExcluded = true;
+    else if (node.layout === "grid" && designStrokeSides(node).some(side => side.width > 0))
+      report.warn("unsupported-stroke-layout", source, "原生 Grid 排除 inside 描边的 Fill 基准暂未验证；保留当前内容缩进，请核对重排与原生副本。");
+  }
   node.alignItems =
     { MIN: "start", CENTER: "center", MAX: "end", BASELINE: "baseline" }[
       source.counterAxisAlignItems
@@ -359,7 +520,7 @@ function layout(source, node, report) {
       node.rowGap = number(
         source.counterAxisSpacing,
         0,
-        0,
+        -2000,
         2000,
         source,
         "counterAxisSpacing",
@@ -369,7 +530,7 @@ function layout(source, node, report) {
       node.columnGap = number(
         source.counterAxisSpacing,
         0,
-        0,
+        -2000,
         2000,
         source,
         "counterAxisSpacing",
@@ -377,10 +538,19 @@ function layout(source, node, report) {
       );
   }
   if (source.counterAxisAlignContent === "SPACE_BETWEEN") node.alignContent = "space-between";
+  if (node.layout === "grid") {
+    node.rowGap = number(source.gridRowGap, 0, 0, 2000, source, "gridRowGap", report);
+    node.columnGap = number(source.gridColumnGap, 0, 0, 2000, source, "gridColumnGap", report);
+    node.alignItems = "start";
+    node.justifyContent = "start";
+    node.alignContent = "start";
+    node.layoutWrap = "none";
+  }
   if (node.type === "frame") node.clipContent = source.clipsContent === true;
 }
 
 function text(source, node, report) {
+  node.layoutBaselineSource = "native";
   const style = object(source.style) ? source.style : {};
   if (typeof source.characters !== "string")
     report.warn("missing-text", source, "文字内容缺失，已导入空文本。");
@@ -396,19 +566,25 @@ function text(source, node, report) {
       source,
       "字体数值字重已映射到最接近的百位字重；原始字体设置保存在来源记录中。",
     );
-  node.lineHeight = number(
-    finite(style.lineHeightPx)
-      ? style.lineHeightPx / node.fontSize
-      : finite(style.lineHeightPercentFontSize)
-        ? style.lineHeightPercentFontSize / 100
-        : undefined,
-    1.2,
-    0.7,
-    3,
-    source,
-    "lineHeight",
-    report,
-  );
+  const pixelLineHeight = { lineHeight: style.lineHeightPx, lineHeightUnit: "pixels" };
+  if (style.lineHeightUnit === "PIXELS" && validTextLineHeight(pixelLineHeight)) {
+    node.lineHeight = pixelLineHeight.lineHeight;
+    node.lineHeightUnit = "pixels";
+  } else {
+    node.lineHeight = number(
+      finite(style.lineHeightPx)
+        ? style.lineHeightPx / node.fontSize
+        : finite(style.lineHeightPercentFontSize)
+          ? style.lineHeightPercentFontSize / 100
+          : undefined,
+      1.2, 0.7, 3, source, "lineHeight", report,
+    );
+    if (style.lineHeightUnit === "PIXELS") report.warn("line-height-unit-fixed", source,
+      "像素行高超出受支持范围；已保留受限的测量行高，未标记为可保留的像素单位。 ");
+    else if (style.lineHeightUnit !== undefined && !["FONT_SIZE_%", "PERCENT"].includes(style.lineHeightUnit))
+      report.warn("line-height-unit-fixed", source,
+        "此行高单位尚不能保留为可编辑单位；已使用测量行高。 ");
+  }
   node.textAlign =
     { LEFT: "left", CENTER: "center", RIGHT: "right" }[style.textAlignHorizontal] ?? "left";
   if (style.textAlignHorizontal === "JUSTIFIED")
@@ -419,9 +595,18 @@ function text(source, node, report) {
   node.textDecoration =
     { UNDERLINE: "underline", STRIKETHROUGH: "line-through" }[style.textDecoration] ?? "none";
   node.cornerRadius = 0;
+  delete node.cornerRadii;
   if (node.text.trim()) {
     node.textSource = node.text;
     if (style.textAutoResize !== "WIDTH_AND_HEIGHT") node.textFlow = "wrap";
+    if ((style.textTruncation ?? source.textTruncation) === "ENDING") {
+      if ((style.maxLines ?? source.maxLines) === 1) {
+        node.textOverflow = "ellipsis";
+        delete node.textFlow;
+      } else report.warn(
+        "text-truncation", source, "多行或按高度截断尚不能对应单行省略号；已保留完整文字。",
+      );
+    }
     node.textFlowWidth = node.width;
   }
   if (
@@ -434,6 +619,96 @@ function text(source, node, report) {
 }
 
 /** Import a REST GET file response, DOCUMENT/CANVAS, selected node, or JSON_REST_V1 nodes response. */
+function diagnoseNativeStrokeFillModels(document, mapping, report, unsupportedBorders) {
+  // Preserve measured geometry if an older/native layout disagrees with the
+  // verified content allocator; no unavailable layout-version field is inferred.
+  const sourceIds = new Map(mapping.map(entry => [entry.designId, entry.sourceId]));
+  for (const page of document.pages) {
+    const nodeById = new Map(page.nodes.map(node => [node.id, node]));
+    const byParent = new Map();
+    for (const child of page.nodes) if (child.parentId) {
+      if (!byParent.has(child.parentId)) byParent.set(child.parentId, []);
+      byParent.get(child.parentId).push(child);
+    }
+    for (const parent of page.nodes) {
+      const children = (byParent.get(parent.id) ?? []).filter(node => node.visible !== false && node.layoutPositioning !== "absolute");
+      const horizontal = parent.layout === "horizontal", axis = horizontal ? "horizontal" : "vertical";
+      const size = horizontal ? "width" : "height", sizing = horizontal ? "layoutSizingHorizontal" : "layoutSizingVertical";
+      const inactiveFrame = node => ["frame", "component"].includes(node.type) && node.layout === "none";
+      const physicalStroke = node => hasDesignStroke(node) && node.strokeAlign === "inside"
+        ? designStrokeSides(node).filter((_, index) => horizontal ? index % 2 === 1 : index % 2 === 0).reduce((sum, side) => sum + side.width, 0)
+        : 0;
+      const inactiveFills = children.filter(node => node[sizing] === "fill" && inactiveFrame(node) &&
+        (physicalStroke(node) > 0 || unsupportedBorders.has(node.id)));
+      if (["horizontal", "vertical"].includes(parent.layout) && inactiveFills.length) {
+        // This new native basis is verified for two unrotated leaf Fill items,
+        // with positive remaining content and no content min / below-basis cap.
+        // Do not extend that evidence to active siblings or native cap rules.
+        const fills = children.filter(node => node[sizing] === "fill");
+        const padding = (horizontal ? ["Left", "Right"] : ["Top", "Bottom"]).map(side => parent[`padding${side}`] ?? parent.padding ?? 0);
+        const available = parent[size] - padding[0] - padding[1] - mainAxisGap(parent) * (children.length - 1);
+        const basis = fills.map(physicalStroke);
+        const prefix = horizontal ? "Width" : "Height";
+        const position = horizontal ? "x" : "y";
+        const ancestors = [];
+        for (let ancestor = parent; ancestor; ancestor = nodeById.get(ancestor.parentId)) ancestors.push(ancestor);
+        let reason = "";
+        if (parent.layoutWrap && parent.layoutWrap !== "none" || parent[sizing] === "hug" ||
+            parent.justifyContent !== "start" || mainAxisGap(parent) < 0 ||
+            ancestors.some(node => node.rotation) || children.some(node => node.rotation))
+          reason = "换行、Hug 主轴、非起始对齐、负间距或旋转尚未验证";
+        else if (children.length !== 2 || fills.length !== 2 || children.some(node =>
+          node.type !== "rectangle" && !inactiveFrame(node) || (byParent.get(node.id) ?? []).length))
+          reason = "只验证了两个空的 inactive Frame/矩形 Fill 子项，混合活动容器或更多子项尚未验证";
+        else if (children.some(node => unsupportedBorders.has(node.id)))
+          reason = "侧边描边无法完整转换";
+        else if (available <= basis.reduce((sum, value) => sum + value, 0) || fills.some((node, index) =>
+          node[`min${prefix}`] > basis[index] || node[`max${prefix}`] < basis[index]))
+          reason = "零/负剩余内容、正内容最小值或小于描边基准的最大值尚未验证";
+        else {
+          const predicted = distributeFillSizes(fills, axis, available);
+          let next = parent[position] + padding[0];
+          for (const child of children) {
+            if (round(predicted.get(child.id)) !== child[size] || round(next) !== child[position]) {
+              reason = "测量尺寸或主轴位置与已验证的分配规则不同";
+              break;
+            }
+            next += child[size] + mainAxisGap(parent);
+          }
+        }
+        if (reason) {
+          report.warn("native-stroke-fill-model", { id: sourceIds.get(parent.id), name: parent.name },
+            `inactive Frame 描边 Fill：${reason}；保留测量几何，不启用未验证的流式重排。未猜测原生布局版本。`);
+          parent.layout = "none";
+          parent.padding = 0;
+          parent.gap = 0;
+          clearInvalidStrokeLayoutExclusion(parent);
+          for (const key of ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "rowGap", "columnGap"]) delete parent[key];
+          for (const child of byParent.get(parent.id) ?? []) {
+            if (child.layoutSizingHorizontal === "fill") child.layoutSizingHorizontal = "fixed";
+            if (child.layoutSizingVertical === "fill") child.layoutSizingVertical = "fixed";
+            delete child.layoutAlignSelf;
+          }
+          continue;
+        }
+      }
+      if (!["horizontal", "vertical"].includes(parent.layout) ||
+          parent.layoutWrap && parent.layoutWrap !== "none") continue;
+      if (parent[sizing] === "hug") continue;
+      if (!children.some(node => node.strokeLayoutExcluded === true && designStrokeSides(node).some(side => side.width > 0))) continue;
+      const fills = children.filter(node => node[sizing] === "fill");
+      if (fills.length < 2) continue;
+      const padding = (horizontal ? ["Left", "Right"] : ["Top", "Bottom"]).reduce((sum, side) => sum + (parent[`padding${side}`] ?? parent.padding ?? 0), 0);
+      const fixed = children.filter(node => node[sizing] !== "fill").reduce((sum, node) => sum + node[size], 0);
+      const predicted = distributeFillSizes(fills, axis, parent[size] - padding - fixed - mainAxisGap(parent) * (children.length - 1));
+      if (fills.some(node => Math.round(predicted.get(node.id) * 100) / 100 !== node[size])) {
+        const sourceId = sourceIds.get(parent.id);
+        report.warn("native-stroke-fill-model", { id: sourceId, name: parent.name }, "此来源排除 inside 描边的 Fill 尺寸与已验证的当前内容分配规则不同；已保留测量几何，重排/副本可能改变尺寸。未猜测原生布局版本。");
+      }
+    }
+  }
+}
+
 export function importFigmaJson(input, options = {}) {
   return importFigmaJsonWithReport(input, options, reporter());
 }
@@ -452,9 +727,15 @@ function importFigmaJsonWithReport(
   let visited = 0,
     importedNodes = 0,
     skippedNodes = 0;
+  // Capture-local proof: raw multi-style/paragraph text must not become an
+  // accepted intrinsic leaf merely because conversion flattened its styles.
+  const unsupportedGridText = new WeakSet();
+  const gridParents = new WeakMap();
+  const gridParentOf = (node) => gridParents.get(node);
   const mapping = [],
     pageMappings = [];
   const nonRenderingSourceNodes = new Set();
+  const unsupportedBorders = new Set();
   let currentPage = null;
   const recordMapping = (source, node) => {
     if (source.absoluteRenderBounds === null) nonRenderingSourceNodes.add(node.id);
@@ -571,7 +852,7 @@ function importFigmaJsonWithReport(
       recordMapping(source, node);
       return node;
     }
-    const fillPaints =
+    let fillPaints =
       !imagePaint && !["group", "image"].includes(type)
         ? figmaFillPaints(source.fills, (message) =>
             report.warn("paint-conversion", source, message),
@@ -600,7 +881,7 @@ function importFigmaJsonWithReport(
         : fillPaints
           ? representativeDesignFill(fillPaints)
           : paint(source.fills, source, "填充", report),
-      stroke: paint(source.strokes, source, "描边", report),
+      stroke: "transparent",
       strokeWidth: number(source.strokeWeight, 0, 0, 100, source, "strokeWeight", report),
       opacity: number(source.opacity, 1, 0, 1, source, "opacity", report),
       cornerRadius: number(
@@ -615,6 +896,43 @@ function importFigmaJsonWithReport(
       visible: source.visible !== false,
       locked: source.locked === true,
     };
+    if (fillPaints && source.codeshellCssLinearSource) {
+      fillPaints = restoreCssLinearSource(
+        fillPaints,
+        source.codeshellCssLinearSource,
+        node.width,
+        node.height,
+        (message) => report.warn("css-gradient-native-source", source, message),
+      );
+    }
+    if (source.rectangleCornerRadii !== undefined && ["frame", "rectangle", "component", "image"].includes(type)) {
+      try {
+        const radii = normalizeCornerRadii(source.rectangleCornerRadii);
+        node.cornerRadius = radii[0];
+        if (radii.some((value) => value !== radii[0])) node.cornerRadii = radii;
+      } catch (error) {
+        report.warn("corner-shape", source, error.message);
+      }
+    }
+    try {
+      const border=figmaDesignStroke(source,node);
+      if (border) {
+        Object.assign(node,border);
+        node.stroke=border.strokeSides[0].opacity>0 ? border.strokeSides[0].color : "transparent";
+        node.strokeWidth=border.strokeSides[0].opacity>0 ? Math.max(...border.strokeSides.map(s=>s.width)) : 0;
+      } else {
+        if (["frame", "component", "rectangle"].includes(type) && source.strokeAlign === "INSIDE" &&
+            Array.isArray(source.strokes) && source.strokes.some(stroke => stroke.visible !== false) &&
+            ["Top", "Right", "Bottom", "Left"].some(side =>
+              (source[`stroke${side}Weight`] ?? source.individualStrokeWeights?.[side.toLowerCase()] ?? source.strokeWeight ?? 0) > 0))
+          unsupportedBorders.add(node.id);
+        node.stroke=paint(source.strokes,source,"描边",report);
+      }
+    } catch (error) {
+      unsupportedBorders.add(node.id);
+      report.warn("unsupported-native-border",source,error.message);
+      node.stroke=paint(source.strokes,source,"描边",report);
+    }
     if (
       fillPaints &&
       (fillPaints.length > 1 ||
@@ -622,7 +940,16 @@ function importFigmaJsonWithReport(
     )
       node.fillPaints = fillPaints;
     if (node.stroke === "transparent") node.strokeWidth = 0;
-    if (node.strokeWidth && source.strokeAlign !== "CENTER")
+    try {
+      const inactive = captureNativeStrokeInactive(source, node);
+      if (inactive) {
+        node.nativeStrokeInactive = inactive;
+        if (inactive.sourceOnly || inactive.strokesIncludedInLayout !== undefined && !["HORIZONTAL", "VERTICAL", "GRID"].includes(source.layoutMode))
+          report.warn("native-inactive-stroke", source, "空描边样式已保留；部分原生样式或自由布局中的布局选择尚不能安全创建新副本，请保留来源绑定。");
+      } else if (Array.isArray(source.strokes) && source.strokes.length && node.stroke === "transparent" && !hasDesignStroke(node))
+        report.warn("native-inactive-stroke", source, "不可见或全透明描边仍包含原始绘制项，不等于空描边数组；未猜测其未来激活样式，来源记录保留原值。");
+    } catch (error) { report.warn("native-inactive-stroke", source, `空描边样式不能无损表示：${error.message}；来源记录保留原值。`); }
+    if (node.strokeWidth && !hasDesignStroke(node) && source.strokeAlign !== "CENTER")
       report.warn("stroke-alignment", source, "内侧或外侧描边暂按居中描边导入。");
     if (type === "group") {
       node.fill = "transparent";
@@ -663,11 +990,8 @@ function importFigmaJsonWithReport(
       );
     if (source.type === "SECTION")
       report.warn("section-as-frame", source, "Section 已转换为普通 Frame。");
-    if (
-      source.rectangleCornerRadii?.some((value) => value !== source.rectangleCornerRadii[0]) ||
-      source.cornerSmoothing
-    )
-      report.warn("corner-shape", source, "独立圆角和圆角平滑暂按统一圆角导入。");
+    if (source.cornerSmoothing)
+      report.warn("corner-shape", source, "圆角平滑暂不能保留；已保留圆形圆角半径。");
     if (source.isMask)
       report.warn("unsupported-mask", source, "遮罩关系未保留。请检查相邻图层显示。 ");
     if (source.blendMode && !["NORMAL", "PASS_THROUGH"].includes(source.blendMode))
@@ -679,8 +1003,15 @@ function importFigmaJsonWithReport(
     const effects = (Array.isArray(source.effects) ? source.effects : []).filter(
       (effect) => effect?.visible !== false,
     );
+    if(source.codeshellCssShadowStack)try{
+      const stack=normalizeShadowStack(source.codeshellCssShadowStack),candidate={...node,shadowStack:stack};
+      const expected=nativeShadowStackEffects(candidate),actual=source.effects??[];
+      const comparable=effect=>({type:effect.type,color:Object.fromEntries(["r","g","b","a"].map(key=>[key,Math.fround(effect.color?.[key]??(key==="a"?1:0))])),x:Math.fround(effect.offset?.x??0),y:Math.fround(effect.offset?.y??0),radius:Math.fround(effect.radius??0),spread:effect.spread??0,visible:effect.visible!==false,blendMode:effect.blendMode??"NORMAL"});
+      if(JSON.stringify(expected.map(comparable))!==JSON.stringify(actual.map(comparable)))throw Error("原生效果已与 CSS 来源快照不同");
+      node.shadowStack=stack;
+    }catch(error){report.warn("css-shadow-source-invalid",source,error.message);}
     const shadow = effects.find((effect) => effect.type === "DROP_SHADOW");
-    if (shadow && type !== "group")
+    if (shadow && type !== "group" && !node.shadowStack)
       node.shadow = {
         color: color(shadow.color, "#000000"),
         opacity: number(shadow.color?.a, 1, 0, 1, source, "shadow.opacity", report),
@@ -688,11 +1019,11 @@ function importFigmaJsonWithReport(
         y: number(shadow.offset?.y, 0, -500, 500, source, "shadow.y", report),
         blur: number(shadow.radius, 0, 0, 200, source, "shadow.blur", report),
       };
-    if (effects.length > (node.shadow ? 1 : 0) || shadow?.spread)
+    if (!node.shadowStack && (effects.length > (node.shadow ? 1 : 0) || shadow?.spread))
       report.warn("unsupported-effects", source, "仅保留一个无扩散外投影；其他效果未导入。");
-    for (const axis of ["Horizontal", "Vertical"])
-      if (["FIXED", "HUG", "FILL"].includes(source[`layoutSizing${axis}`]))
-        node[`layoutSizing${axis}`] = source[`layoutSizing${axis}`].toLowerCase();
+    const parent = ancestors.at(-1);
+    gridParents.set(node, parent ?? null);
+    layoutSizing(source, node, parent);
     for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"])
       if (finite(source[key])) node[key] = number(source[key], 1, 1, 20000, source, key, report);
     if (node.minWidth > node.maxWidth) {
@@ -704,8 +1035,16 @@ function importFigmaJsonWithReport(
       report.warn("invalid-sizing", source, "maxHeight 小于 minHeight，已忽略。 ");
     }
     if (source.layoutPositioning === "ABSOLUTE") node.layoutPositioning = "absolute";
-    if (source.layoutAlign === "STRETCH") node.layoutAlignSelf = "stretch";
-    const parent = ancestors.at(-1);
+    if (parent?.layout === "grid" && node.layoutPositioning !== "absolute")
+      Object.assign(node, gridChildProperties(source));
+    const parentCrossAxis = { horizontal: "Vertical", vertical: "Horizontal" }[parent?.layout];
+    if (
+      source.layoutAlign === "STRETCH" &&
+      node.layoutPositioning !== "absolute" &&
+      parentCrossAxis &&
+      node[`layoutSizing${parentCrossAxis}`] === "fill"
+    )
+      node.layoutAlignSelf = "stretch";
     if (
       source.constraints &&
       parent &&
@@ -732,9 +1071,81 @@ function importFigmaJsonWithReport(
       throw new Error("Figma children 必须是数组。");
     if (CONTAINERS.has(type)) {
       layout(source, node, report);
+      try {
+        validateLayoutSpacing(node);
+        if (mainAxisGap(node) < 0 && (source.itemReverseZIndex === true || source.itemSpacing < -2000))
+          throw new Error("负间距的原生堆叠顺序或尺寸超出可编辑范围");
+      } catch (error) {
+        report.warn("unsupported-negative-spacing", source, `${error.message}；保留测量几何。`);
+        node.layout = "none";
+        clearInvalidStrokeLayoutExclusion(node);
+        node.gap = 0;
+        delete node.rowGap;
+        delete node.columnGap;
+      }
       node.children = (source.children ?? [])
         .map((child) => convert(child, [...ancestors, node], depth + 1, counter))
         .filter(Boolean);
+      if (node.layout === "grid") {
+        try {
+          const intrinsicCells = node.children.filter((cell) =>
+            gridFillHugContentHeight(node, cell, cell.children, parent, gridParentOf) !== null);
+          if (intrinsicCells.some((cell) => {
+            const pending = [cell];
+            // The intrinsic helper has already proved this subtree's bounded
+            // shape. Retain raw unsupported-typography checks at every leaf.
+            for (let visited = 0; pending.length && visited < 32; visited += 1) {
+              const content = pending.pop();
+              if (unsupportedGridText.has(content)) return true;
+              pending.push(...(content.children ?? []));
+            }
+            return pending.length > 0;
+          }))
+            throw new Error("HUG 行内的 FILL 文字单元暂不支持列表、段落间距/缩进、截断、大小写转换或混合/非顶部左对齐样式");
+          if (intrinsicCells.length &&
+              node.strokeSides?.some((side) => side.width > 0) && source.strokesIncludedInLayout !== true &&
+              node.strokeAlign !== "center")
+            throw new Error("HUG 行内的 FILL 文字单元仅支持 included 的 inside 或 excluded 的有界 center 底边描边");
+          nativeGridPlan(node, parent, gridParentOf);
+        } catch (error) {
+          report.warn(
+            "unsupported-grid",
+            source,
+            `原生 Grid 无法表示：${error.message}；保留测量几何，请修复轨道/子项的内在尺寸关系后重试。`,
+          );
+          node.layout = "none";
+          for (const key of ["gridColumns", ...GRID_CONTAINER_FIELDS]) delete node[key];
+          // These fields describe only this rejected parent relationship. A
+          // child's own nested Grid container fields remain intact.
+          for (const child of node.children)
+            for (const key of [...GRID_CHILD_FIELDS, "gridColumnSpan", "gridRowSpan"]) delete child[key];
+        }
+      }
+      if (["horizontal", "vertical"].includes(node.layout) && mainAxisGap(node) < 0) {
+        const rotated = [...ancestors, node, ...node.children.filter((child) => child.visible !== false && child.layoutPositioning !== "absolute")].some((entry) => entry.rotation);
+        const axis = node.layout === "vertical" ? "height" : "width";
+        const rawFlow = (source.children ?? []).filter((child) => child.visible !== false && child.layoutPositioning !== "ABSOLUTE");
+        const rawExtents = rawFlow
+          .map((child) => child.size?.[axis === "width" ? "x" : "y"] ?? child.absoluteBoundingBox?.[axis]);
+        const unbounded = rawExtents.some((size) => !finite(size) || size < 1 || size > 20000) ||
+          rawFlow.length !== node.children.filter((child) => child.visible !== false && child.layoutPositioning !== "absolute").length;
+        if (rotated || unbounded) {
+          report.warn("unsupported-negative-spacing", source, "旋转、缺失或超出 v3 范围的流项无法可靠求原生有效主轴间距；保留有界测量几何。");
+          node.layout = "none";
+          clearInvalidStrokeLayoutExclusion(node);
+          node.gap = 0;
+          delete node.rowGap;
+          delete node.columnGap;
+        }
+        const plan = node.layout === "none" ? null : nativeMainGap(node);
+        if (plan && plan.effective - plan.requested > 0.0001) {
+          node.gap = plan.effective;
+          const key = node.layout === "horizontal" ? "columnGap" : "rowGap";
+          if (node[key] !== undefined) node[key] = plan.effective;
+          report.warn("native-negative-gap-effective", source,
+            `原生请求间距 ${plan.requested}px 实际受最小可见 AUTO 子项限制为 ${plan.effective}px；可编辑布局使用实际间距，原始请求保留在来源绑定快照。`);
+        }
+      }
       if (imagePaint) {
         const background = {
           id: allocateId({ id: `${source.id ?? node.id}-background` }, `background-${visited}`),
@@ -752,6 +1163,7 @@ function importFigmaJsonWithReport(
           opacity: imagePaint.opacity ?? 1,
           rotation: 0,
           cornerRadius: node.cornerRadius,
+          ...(node.cornerRadii ? { cornerRadii: [...node.cornerRadii] } : {}),
           visible: true,
           locked: false,
           layoutPositioning: "absolute",
@@ -760,7 +1172,26 @@ function importFigmaJsonWithReport(
         importedNodes += 1;
       }
     } else if (source.children?.length) throw new Error("基础 Figma 图层不能包含 children。");
-    if (type === "text") text(source, node, report);
+    if (type === "text") {
+      text(source, node, report);
+      const style = source.style ?? {};
+      if (source.characterStyleOverrides?.some((value) => value !== 0) ||
+          Object.keys(source.styleOverrideTable ?? {}).length ||
+          (source.lineTypes !== undefined && (!Array.isArray(source.lineTypes) ||
+            source.lineTypes.some(value => value !== "NONE"))) ||
+          (source.lineIndentations !== undefined && (!Array.isArray(source.lineIndentations) ||
+            source.lineIndentations.some(value => value !== 0))) ||
+          (style.listSpacing ?? 0) !== 0 ||
+          (style.lineHeightUnit === "PIXELS" && node.lineHeightUnit !== "pixels") ||
+          (style.lineHeightUnit !== undefined && !["PIXELS", "FONT_SIZE_%", "PERCENT"].includes(style.lineHeightUnit)) ||
+          (style.paragraphSpacing ?? 0) !== 0 || (style.paragraphIndent ?? 0) !== 0 ||
+          ![undefined, "LEFT"].includes(style.textAlignHorizontal) ||
+          ![undefined, "TOP"].includes(style.textAlignVertical) ||
+          ![undefined, "ORIGINAL"].includes(style.textCase) ||
+          ![undefined, "DISABLED"].includes(style.textTruncation ?? source.textTruncation) ||
+          (style.maxLines ?? source.maxLines) != null)
+        unsupportedGridText.add(node);
+    }
     importedNodes += 1;
     recordMapping(source, node);
     return node;
@@ -808,6 +1239,8 @@ function importFigmaJsonWithReport(
             nonRenderingSourceNodes.has(node.id) &&
             node.visible !== false &&
             node.parentId &&
+            !(node.layoutPositioning !== "absolute" &&
+              ["horizontal", "vertical", "grid"].includes(nodeIndex.get(node.parentId)?.layout)) &&
             clipNodeBoundsToClippingAncestors(flat, node, nodeIndex) === null,
         )
         .map((node) => node.id),
@@ -881,6 +1314,7 @@ function importFigmaJsonWithReport(
     activePageId: convertedPages[0].id,
     pages: convertedPages,
   });
+  diagnoseNativeStrokeFillModels(document, mapping, report, unsupportedBorders);
   const warningCount = report.finish();
   return {
     document,
@@ -920,6 +1354,7 @@ export async function prepareFigmaImport(
   };
   for (const page of sourcePages(source)) collect(page);
   const textMeasurement = await measureFigmaTextDocument(result.document, {
+    nativeLineBoxes: true,
     sourceNodes,
     sourceIds: new Map(result.mapping.map((entry) => [entry.designId, entry.sourceId])),
     ...(textMeasurer ? { measurer: textMeasurer } : {}),
@@ -932,6 +1367,10 @@ export async function prepareFigmaImport(
       `字体 ${family} 不可用，已实测浏览器实际回退字体；安装原字体后请重新导入。`,
     );
   }
+  for (const issue of textMeasurement.unsupportedBaselines ?? [])
+    report.warn("text-baseline-mapping", { id: issue.nodeId }, `${issue.reason}；已保留来源几何，请核对文字位置。`);
+  for (const issue of textMeasurement.unsupportedTruncations ?? [])
+    report.warn("text-truncation", { id: issue.nodeId }, issue.reason);
   result.document = normalizeDesignState(result.document);
   for (const message of source.warnings ?? []) report.warn("plugin-export-warning", null, message);
   result.stats.warningCount = report.finish();
@@ -950,9 +1389,22 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
     ? normalizeDesignState(input)
     : normalizeDesignDocument(input);
   const report = reporter();
+  const assets = createFigmaTransferAssets(document, resources), imageAssets = new Map();
   let exportedNodes = 0,
     skippedNodes = 0;
-  const convert = (node) => {
+  const gridParents = new WeakMap();
+  const gridParentOf = (node) => gridParents.get(node);
+  const convert = (node, parent) => {
+    assertNativeTextRangeBoundary(node);
+    const nativeFamily = nativeDesignFontFamily(node);
+    if (node.type === "image" && node.objectFit === "fill") {
+      if (!imageAssets.has(node.imageRef)) imageAssets.set(node.imageRef, normalizeFigmaAsset(assets[node.imageRef]));
+      const asset = imageAssets.get(node.imageRef);
+      if (["image/svg+xml", "image/webp"].includes(asset.mime)) report.warn("native-image-fill-conversion", node,
+        "原生 fill 宽高比需等现有插件界面把 SVG/WebP 转换为 PNG 后校验；未转换的直接原生传输会被拒绝，尚未声明原生像素一致。");
+      else assertNativeImageFill(node, asset.bytes);
+    }
+    gridParents.set(node, parent ?? null);
     if (node.type === "instance") {
       skippedNodes += 1;
       report.warn(
@@ -963,6 +1415,34 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
       return null;
     }
     const { children, ...copy } = node;
+    if (nativeFamily !== null && node.fontFamily !== undefined) copy.fontFamily = nativeFamily;
+    // Browser baseline provenance drives only local typography refresh. Native
+    // creation consumes the physical offset, never an HTML measurement promise.
+    if (copy.layoutBaselineSource === "html") delete copy.layoutBaselineSource;
+    if(node.shadowStack){nativeShadowStackEffects(node);report.warn("css-shadow-native-raster",node,"保留可编辑 INNER_SHADOW 参数；原生与 CSS 的模糊内核仍有实测像素差异，未声明严格像素一致。");}
+    if (node.nativeStrokeInactive) {
+      try { nativeInactiveStrokePlan(node); }
+      catch (error) { report.warn("native-inactive-stroke-export", node, `${error.message}；传输文件保留样式，插件会阻止创建有损副本。来源绑定中的无关编辑仍可导回。`); }
+    }
+    if (["horizontal", "vertical"].includes(node.layout)) validateNativeLayoutSpacing(node);
+    if (mainAxisGap(node) < 0 && (node.children ?? []).some((child) => child.visible !== false &&
+        child.layoutPositioning !== "absolute" && child[node.layout === "vertical" ? "layoutSizingVertical" : "layoutSizingHorizontal"] === "fill" &&
+        (child[node.layout === "vertical" ? "minHeight" : "minWidth"] ?? 1) < -mainAxisGap(node)))
+      report.warn("native-negative-gap-resize", node, "原生缩小时若最小可见 AUTO 子项小于负间距幅度，Figma 会限制实际间距；当前几何已验证，后续更小尺寸需重新核对。");
+    if (hasDesignStroke(node)) {
+      try { nativeDesignStroke(node); }
+      catch (error) { throw new Error(`${node.name}: ${error.message}`); }
+    }
+    if (node.fillPaints?.some((paint) => paint.cssLinear && !paint.cssLinear.sourceOnly)) {
+      try { designPaintsToFigma(node); }
+      catch (error) { throw new Error(`${node.name}: ${error.message}`); }
+    }
+    if (node.fillPaints?.some(cssLinearNeedsNativeWarning))
+      report.warn(
+        "css-gradient-native-resize",
+        node,
+        "CSS 渐变按当前尺寸创建为可编辑原生渐变；非直角角度/像素色标不能保证随原生缩放保持 CSS 行为。原始几何意图随来源保存；请在 Design Studio 中调整尺寸以重新求值。",
+      );
     // Transfer only schema-validated design values. No raw Figma/plugin metadata is trusted.
     const sourceMatch = /^figma-(\d+)-(\d+)$/u.exec(node.id);
     if (sourceMatch) copy.sourceId = `${sourceMatch[1]}:${sourceMatch[2]}`;
@@ -972,10 +1452,24 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
         node,
         "此容器将在 Figma 中创建为透明编组 Frame 或普通 Frame。 ",
       );
-    if (node.layout === "grid")
-      report.warn("grid-export", node, "Grid 将使用固定几何，Figma 自动布局关系未导出。");
+    const resolvedCorners = node.cornerRadii && effectiveCornerRadii(node);
+    if (resolvedCorners && node.cornerRadii.some((radius, index) => radius > resolvedCorners[index] + 1e-6))
+      report.warn("corner-overlap-export", node, "相邻圆角需要 CSS 共同缩放；Figma 原生的缩放结果可能不同，请核对角部外观。原始半径保持可编辑。");
+    if (node.layout === "grid") {
+      try {
+        nativeGridPlan(node, parent, gridParentOf);
+      } catch (error) {
+        report.warn(
+          "grid-export",
+          node,
+          `Grid 不能创建为原生布局：${error.message}。请修复后重试；插件会阻止有损导入。`,
+        );
+      }
+    }
     if (node.layoutWrap === "wrap-reverse" || node.layoutReverse)
       report.warn("reverse-layout-export", node, "反向布局将使用固定几何保留当前位置。");
+    if (node.type === "text" && node.rotation && node.layoutBaselineOffset)
+      report.warn("text-baseline-export", node, "自身旋转文字的 hanging 原点尚不能映射为原生行框；请核对旋转文字位置。");
     if (node.fontRef)
       report.warn(
         "font-resource-export",
@@ -990,18 +1484,20 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
       );
     if (
       node.layoutMarginBefore ||
-      (node.layoutAlignSelf && !["auto", "stretch"].includes(node.layoutAlignSelf))
+      (node.layoutAlignSelf &&
+        !["auto", "stretch"].includes(node.layoutAlignSelf) &&
+        !GRID_CHILD_FIELDS.some((key) => node[key] !== undefined))
     )
       report.warn("child-layout-export", node, "单项对齐和自动外边距暂使用 Figma 默认布局行为。");
     if (++exportedNodes > MAX_FIGMA_TOTAL_NODES)
       throw new Error("Figma 传输包最多 50,000 个图层；请分页面导出。");
-    if (children) copy.children = children.map(convert).filter(Boolean);
+    if (children) copy.children = children.map((child) => convert(child, node)).filter(Boolean);
     return copy;
   };
   const pages = document.pages.map((page) => ({
     id: page.id,
     name: page.name,
-    children: repositoryDesignPage(document, page.id).children.map(convert).filter(Boolean),
+    children: repositoryDesignPage(document, page.id).children.map((child) => convert(child)).filter(Boolean),
   }));
   const warningCount = report.finish();
   const transfer = {
@@ -1010,7 +1506,7 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
     name: document.name,
     canvas: { ...document.canvas },
     pages,
-    assets: createFigmaTransferAssets(document, resources),
+    assets,
     warnings: report.warnings,
     warningGroups: report.warningGroups,
     stats: { pages: pages.length, exportedNodes, skippedNodes, warningCount },
