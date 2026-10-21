@@ -43,6 +43,7 @@ test("fixed two-column source preserves every row/cell/P and responds to only it
     assert(!observed.warnings.some((entry) => ['block-flow-fixed', 'html-plain-text-fixed', 'rich-text-uniform'].includes(entry.code)), 'only proved fallback warnings retire after complete admission');
     assert(observed.warnings.some((entry) => entry.code === 'collapsed-border'), 'collapsed paint/source limitation remains explicit');
     assert.deepEqual(observed.semanticIssues, []);
+    assert(observed.flowAudits.every((audit) => audit.status === "PASS" && audit.unresolved === 0));
     assert.equal(observed.nativeTransfer.supported, true);
     const count = Number(observed.id.split('-')[1]);
     let ids;
@@ -150,11 +151,75 @@ test("table admission refuses unproven CSS semantics and all late failures leave
     const before=JSON.stringify(value.document),sourceBefore=JSON.stringify(source),refs=table.children.flatMap(row=>[row,...row.children,...row.children.flatMap(cell=>cell.children)]),warnings=[];
     table.children[1].children[1].minHeight=1;
     const editedBefore=JSON.stringify(value.document);
-    const applied=await promoteHtmlFixedTables(value.document,{browserDocument:document,elements,sourceTree:source,canonicalBySource:mapping,warn:(...entry)=>warnings.push(entry)});
-    return { applied,unchanged:JSON.stringify(value.document)===editedBefore,sourceUnchanged:JSON.stringify(source)===sourceBefore,refsUnchanged:refs.every(node=>{const visit=n=>n===node||(n.children??[]).some(visit);return visit(table)}),warnings,beforeDiffers:before!==editedBefore };
+    let proofCalls=0;
+    const applied=await promoteHtmlFixedTables(value.document,{browserDocument:document,elements,sourceTree:source,canonicalBySource:mapping,warn:(...entry)=>warnings.push(entry),prepareFlowAudit:()=>{proofCalls++;return()=>{throw Error("Late failure must never publish")}}});
+    return { applied,proofCalls,unchanged:JSON.stringify(value.document)===editedBefore,sourceUnchanged:JSON.stringify(source)===sourceBefore,refsUnchanged:refs.every(node=>{const visit=n=>n===node||(n.children??[]).some(visit);return visit(table)}),warnings,beforeDiffers:before!==editedBefore };
   });
   assert.deepEqual(atomic.applied,[]);assert.equal(atomic.unchanged,true);assert.equal(atomic.sourceUnchanged,true);assert.equal(atomic.refsUnchanged,true);assert.equal(atomic.beforeDiffers,true);
   assert.equal(atomic.warnings[0][0],'html-table-flow-fixed');
+  assert.equal(atomic.proofCalls,0);
+});
+
+test("table audit proof requires original live identities and publishes only after complete commit", async (t) => {
+  const { page } = await sourceContext(t);
+  await page.setContent(tablePage([tableRows[0]], "dl{width:640px}"));
+  const results = await page.evaluate(async () => {
+    const { convertToDesignDSL } = await import("/app/vendor/html2figma-browser.mjs");
+    const { designNodeToV3 } = await import("/app/design-node-adapter.mjs");
+    const { promoteHtmlFixedTables } = await import("/app/html-fixed-table-flow.mjs");
+    const { createBrowserTextMeasurer } = await import("/app/text-metrics.mjs");
+    const { prepareHtmlFixedTableFlowAudit, captureHtmlFlowObligations, evaluateHtmlFlowAudit } = await import("/app/html-flow-audit.mjs");
+    const output = [];
+    for (const mode of ["success", "no-proof", "detached-same-ids", "ambiguous", "prepare-throws", "publish-throws", "unpublished", "unbranded", "invalid-br"]) {
+      const root = document.querySelector("dl"), elements = new Map(), ambiguousElements = new WeakSet();
+      const source = convertToDesignDSL(root, { onElement: (id, element) => elements.set(id, element) });
+      const bySource = new WeakMap(), value = await designNodeToV3(source, { includeViewport: false, onNode: (source, node) => bySource.set(source, node) });
+      const table = value.document.pages[0].children[0], measurement = createBrowserTextMeasurer();
+      for (const row of table.children) for (const cell of row.children) {
+        const text = cell.children[0]; measurement.configure(text);
+        text.y = Math.round((cell.y + 10 + measurement.lineBoxOffset(text)) * 100) / 100;
+      }
+      measurement.close();
+      if (mode === "ambiguous") ambiguousElements.add(root.querySelector("dd"));
+      const recoveredTables = [], warnings = []; let preparedBeforeCommit = false;
+      const applied = await promoteHtmlFixedTables(value.document, {
+        browserDocument: document, elements, sourceTree: source, canonicalBySource: bySource,
+        warn: (code) => warnings.push(code),
+        ...(mode === "no-proof" ? {} : { prepareFlowAudit: (proof) => {
+          preparedBeforeCommit = table.children.some((row) => row.layout !== "grid");
+          if (mode === "prepare-throws") throw Error("Report sink failed before commit");
+          if (mode === "invalid-br") proof.relations.find((entry) => entry.kind === "fixed-table-text").lineBreaks = [document.createElement("br")];
+          const prepared = prepareHtmlFixedTableFlowAudit({ root, elements, ambiguousElements,
+            document: mode === "detached-same-ids" ? structuredClone(value.document) : value.document }, proof);
+          return () => {
+            if (!table.children.every((row) => row.layout === "grid")) throw Error("Published before whole-table commit");
+            if (mode === "publish-throws") throw Error("Report sink failed after commit");
+            if (mode !== "unpublished") recoveredTables.push(mode === "unbranded" ? { ...prepared } : prepared);
+          };
+        } }),
+      });
+      const ledger = captureHtmlFlowObligations({ root, elements, ambiguousElements, mapping: value.mapping, document: value.document, recoveredTables });
+      output.push({ mode, applied: applied.length, document: JSON.stringify(value.document), preparedBeforeCommit,
+        proofCount: recoveredTables.length, warnings, audit: evaluateHtmlFlowAudit(value.document, ledger),
+        tableObligations: ledger.obligations.filter((entry) => entry.kind.startsWith("fixed-table-")).length });
+    }
+    return output;
+  });
+  const successful = results[0];
+  assert.equal(successful.audit.status, "PASS"); assert.equal(successful.tableObligations, 5);
+  assert.equal(successful.preparedBeforeCommit, true);
+  for (const result of results) {
+    assert.equal(result.applied, 1, result.mode);
+    assert.equal(result.document, successful.document, result.mode + " cannot alter converter output");
+    assert(!result.warnings.includes("html-table-flow-fixed"), result.mode + " must not falsely report a rollback");
+    if (result.mode !== "success") {
+      assert.equal(result.proofCount, result.mode === "unbranded" ? 1 : 0, result.mode);
+      assert.equal(result.tableObligations, 0, result.mode);
+      assert.equal(result.audit.status, "PARTIAL", result.mode);
+    }
+    if (["detached-same-ids", "ambiguous", "prepare-throws", "publish-throws", "invalid-br"].includes(result.mode))
+      assert(result.warnings.includes("html-flow-audit-unverified"), result.mode);
+  }
 });
 
 test("source-bound normal/BR/multi-P text survives copy, outer resize and save/reopen without geometry repair", async (t) => {
@@ -163,17 +228,41 @@ test("source-bound normal/BR/multi-P text survives copy, outer resize and save/r
   const initial=await page.evaluate(async html=>{
     const {captureWorkspaceHtmlResult}=await import('/app/html-import.mjs');
     const {normalizeDesignDocument}=await import('/app/document.mjs');
-    const result=await captureWorkspaceHtmlResult({sourcePath:'source.html',html,readText:async()=>'',rootSelector:'body',viewportWidth:1280,viewportHeight:600});
+    const result=await captureWorkspaceHtmlResult({sourcePath:'source.html',html,readText:async()=>'',rootSelector:'body',viewportWidth:1280,viewportHeight:600,includeFlowAudit:true});
     window.tableValue=normalizeDesignDocument(result.document);
+    window.tableFlowObligations=result.report.flowObligations;
     return { applied:result.report.tables, ids:window.tableValue.nodes.map(node=>[node.id,node.parentId]), text:window.tableValue.nodes.filter(node=>node.type==='text').map(node=>node.textSource) };
   },html);
   assert.equal(initial.applied.length,1);assert(initial.text.includes('Sarah Phillips'));assert(initial.text.includes('72 Guild Street\nLondon\nSE23 6FH'));
+  const broken = await page.evaluate(async () => {
+    const { evaluateHtmlFlowAudit } = await import("/app/html-flow-audit.mjs");
+    const value = window.tableValue, tag = (n) => { try { return JSON.parse(n.notes ?? "{}").tag; } catch {} };
+    const targets = [value.nodes.find((n) => n.layout === "grid"),
+      value.nodes.find((n) => value.nodes.find((p) => p.id === n.parentId)?.layout === "grid"),
+      value.nodes.find((n) => n.type === "frame" && tag(n) === "p"),
+      value.nodes.find((n) => n.name === "margin-wrapper")];
+    const result = [];
+    for (const target of targets) for (const kind of ["none", "absolute", "hidden"]) {
+      const changed = structuredClone(value), node = changed.nodes.find((n) => n.id === target.id);
+      if (kind === "none") node.layout = "none";
+      if (kind === "absolute") node.layoutPositioning = "absolute";
+      if (kind === "hidden") node.visible = false;
+      result.push({ kind, id: target.id, audit: evaluateHtmlFlowAudit(changed, window.tableFlowObligations) });
+    }
+    const reparented = structuredClone(value), paragraph = reparented.nodes.find((n) => n.id === targets[2].id);
+    paragraph.parentId = targets[1].id;
+    result.push({ kind: "foreign-parent", audit: evaluateHtmlFlowAudit(reparented, window.tableFlowObligations) });
+    return result;
+  });
+  assert.equal(broken.length,13);
+  for (const item of broken) assert.equal(item.audit.status,"FAIL",item.kind+" "+item.id);
   for(const [width,copy] of [[1280,'07700 900457'],[768,'This ordinary paragraph has enough real words to grow across multiple lines after only its outer viewport becomes narrower.'],[1280,'07700 900457']]){
     await reference.setViewportSize({width,height:600});await reference.setContent(html);await reference.locator('p').first().evaluate((node,copy)=>{node.textContent=copy},copy);
     const expected=await reference.evaluate(()=>({table:document.querySelector('dl').getBoundingClientRect().toJSON(),rows:[...document.querySelectorAll('dl>div')].map(row=>({row:row.getBoundingClientRect().toJSON(),cells:[...row.children].map(cell=>cell.getBoundingClientRect().toJSON())})),paragraphs:[...document.querySelectorAll('p')].map(node=>node.getBoundingClientRect().toJSON())}));
     const observed=await page.evaluate(async({width,copy})=>{
       const {createBrowserTextMeasurer}=await import('/app/text-metrics.mjs');const {applyAllAutoLayouts}=await import('/app/layout.mjs');
       const {serializeDesignDocument,normalizeDesignDocument}=await import('/app/document.mjs');const {createFigmaTransfer}=await import('/app/figma-bridge.mjs');
+      const {evaluateHtmlFlowAudit}=await import('/app/html-flow-audit.mjs');
       let value=window.tableValue;value.nodes.find(node=>node.id==='html-viewport').width=width;
       value.nodes.find(node=>node.type==='text'&&node.textSource.startsWith('07700')||node.type==='text'&&node.name==='07700 900457').textSource=copy;
       const measure=createBrowserTextMeasurer();try{applyAllAutoLayouts(value.nodes,{textMeasurer:measure})}finally{measure.close()}
@@ -182,9 +271,10 @@ test("source-bound normal/BR/multi-P text survives copy, outer resize and save/r
       const stable=serializeDesignDocument(value)===saved;window.tableValue=value;
       const tag=node=>{try{return JSON.parse(node.notes??'{}').tag}catch{return undefined}};
       const table=value.nodes.find(node=>tag(node)==='dl'),rows=value.nodes.filter(node=>node.parentId===table.id);
-      return{stable,ids:value.nodes.map(node=>[node.id,node.parentId]),table,rows:rows.map(row=>({row,cells:value.nodes.filter(node=>node.parentId===row.id)})),paragraphs:value.nodes.filter(node=>tag(node)==='p'&&node.type==='frame'),warnings:createFigmaTransfer(value).warnings.map(warning=>warning.code)};
+      return{stable,audit:evaluateHtmlFlowAudit(value,window.tableFlowObligations),ids:value.nodes.map(node=>[node.id,node.parentId]),table,rows:rows.map(row=>({row,cells:value.nodes.filter(node=>node.parentId===row.id)})),paragraphs:value.nodes.filter(node=>tag(node)==='p'&&node.type==='frame'),warnings:createFigmaTransfer(value).warnings.map(warning=>warning.code)};
     },{width,copy});
     assert.equal(observed.stable,true);assert.deepEqual(observed.ids,initial.ids);
+    assert.equal(observed.audit.status,"PASS"); assert.equal(observed.audit.obligations,24);
     assert.equal(observed.table.height,expected.table.height);assert.equal(observed.table.width,width-60);
     for(let rowIndex=0;rowIndex<4;rowIndex++){
       const row=observed.rows[rowIndex],source=expected.rows[rowIndex];
