@@ -54,7 +54,7 @@ After all image, measurement and table awaits, the importer synchronously
 rechecks every accepted token/source/parent/order/style. A late change aborts the
 capture and closes its iframe; it cannot publish a document with stale omission.
 An actual image-hash await test changes an empty token's box-shadow and verifies
-that final refusal. Original-node/range guards and native code remain unchanged.
+that final refusal. Manual native writer/source/range-patch logic remains unchanged.
 
 ## Evidence and limits
 
@@ -75,7 +75,9 @@ The safe empty custom/span production cases keep imported/reflow pixels0 and
 improve narrow1040→0. Tests assert original real node IDs and child order, vertical
 Auto Layout, horizontal Fill, parent Hug, no new absolute/hidden nodes, save/reopen,
 height edits and structural prepared transfer. That transfer is not native SDK
-execution or a font/layout parity claim.
+execution or a font/layout parity claim. Each safe case still has two existing
+internal text-flow failures and two unresolved relationships. Pixel0 does not
+make its entire flow audit pass.
 
 The real WSS proof qualifies exactly one `pagefind-config` token. Independent
 frozen DOM inspection confirms id/name absent, only excerpt-length=30,tabIndex-1,
@@ -86,7 +88,10 @@ or zero relationships relabelled as covered.
 
 Initial actual WSS candidate crop counts stay118680/141558/184453. Whole-page
 counts stay482233/670665 for imported/reflow; narrow606326→606327 worsens by1 and
-remains a strict failure. The existing media-query/fixed-wrapper and font limits
+remains a strict failure. A read-only diagnostic finds248 changed converted
+pixels: zero repaired pixels and one newly wrong pixel; the rest were already
+wrong. Existing Hug/reflow rounding changes159 shared nodes by at most0.01px.
+The existing media-query/fixed-wrapper and font limits
 remain; there is no position/width fitting or pixel tolerance. Final frozen
 candidate results and exact source pins belong in the external handoff receipt.
 
@@ -96,3 +101,17 @@ selector behavior. Future text insertion, script upgrades, CSS/media changes and
 nonlocal behavior require recapture. Standalone HTML/plugin inputs cannot mint
 the private current-DOM capability; this candidate does not qualify their omission
 or actual Figma execution. Native is NOT_RUN.
+
+## Combined freeze
+
+Stable6b5f57c was normally merged after a fresh origin fetch. The only conflict
+was the generated HTML-plugin build.json; all three generators rebuilt from the
+combined sources. The primary Figma-plugin directory remains byte-identical to
+that verified stable baseline. Final363 affected tests passed118082.831834ms;
+typecheck, validate, scoped build/check, all generated checks and diff check pass.
+The main/UI suites are reserved for the independent integration gate. Baseline6b5
+was separately archived/pinned, and its owned dependency symlink was removed after
+all runs ended. Candidate dependencies remain only for peer review. Final source
+pins, CPU invocation modes, complete original/converted/difference PNG inventory,
+unsafe retained failures and exact structural readbacks are in the external
+handoff receipt. No root aggregate or primary checkout was edited by this task.
