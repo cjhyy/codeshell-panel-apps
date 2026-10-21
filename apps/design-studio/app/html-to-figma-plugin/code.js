@@ -5177,6 +5177,7 @@
   var STROKE_SIDES = Object.freeze(["top", "right", "bottom", "left"]);
 
   // apps/design-studio/app/text-ranges.mjs
+  var MAX_TEXT_RANGES = 64;
   var MAX_TEXT_RANGES_BYTES = 32 * 1024;
 
   // apps/design-studio/app/linear-gradient-geometry.mjs
@@ -5630,12 +5631,29 @@
       warnings.push("\u5DF2\u7701\u7565\u6355\u83B7\u65F6\u65E0\u7ED8\u5236\u3001\u65E0\u6587\u5B57\u4E14\u8131\u79BB\u6587\u6863\u6D41\u7684\u7A7A\u4F2A\u5143\u7D20\uFF1B\u4FDD\u7559\u771F\u5B9E\u8282\u70B9\uFF0C\u4F46\u4E0D\u4FDD\u7559\u4F2A\u5143\u7D20\u6269\u5C55\u7684\u70B9\u51FB\u533A\u57DF\u3002");
   }
 
+  // apps/design-studio/app/native-text-range-plan.mjs
+  var MAX_NATIVE_TEXT_RANGE_RUNS = MAX_TEXT_RANGES * 2 + 1;
+  var geometry = ["textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk"];
+  var fields = [
+    "type",
+    "text",
+    "textSource",
+    "textFlow",
+    "textRanges",
+    "fill",
+    "fillPaints",
+    "textDecoration",
+    ...geometry,
+    "textOverflow",
+    "fontSize"
+  ];
+
   // apps/design-studio/app/native-text-ranges.mjs
   function assertNativeTextRangeBoundary(node) {
     if (node?.textRanges === void 0) return;
     const label = (typeof node.name === "string" ? node.name : typeof node.id === "string" ? node.id : "Text").slice(0, 120);
     const error = new Error(
-      label + "\uFF1A\u8303\u56F4\u6587\u5B57\u7684\u539F\u751F\u521B\u5EFA\u548C\u589E\u91CF\u5BFC\u56DE\u5C1A\u672A\u5B8C\u6210\u9A8C\u8BC1\uFF1B\u5DF2\u963B\u6B62\u4E92\u8F6C\uFF0C\u672A\u4E22\u5F03\u8303\u56F4\u6837\u5F0F\u3002"
+      label + "\uFF1A\u8303\u56F4\u6587\u5B57\u7684\u6B64\u9879\u539F\u751F\u4E92\u8F6C\u5C1A\u672A\u5B8C\u6210\u9A8C\u8BC1\uFF1B\u5DF2\u963B\u6B62\u4E92\u8F6C\uFF0C\u672A\u4E22\u5F03\u8303\u56F4\u6837\u5F0F\u3002"
     );
     error.code = "TEXT_RANGES_NATIVE_UNSUPPORTED";
     throw error;

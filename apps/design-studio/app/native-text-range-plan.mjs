@@ -116,7 +116,7 @@ function nativeHyperlink(value) {
 
 /**
  * Pure staged plan for ONE native Text; source indices never refer to soft LF.
- * No runtime consumes this until native creation/patch preflight is enabled.
+ * Runtime consumers must validate creation/patch applicability independently.
  * This validates content and range paint applicability, not the full node schema.
  */
 function plan(node) {

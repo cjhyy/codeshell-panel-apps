@@ -17,6 +17,7 @@ import { applyAllAutoLayouts } from "../../../apps/design-studio/app/layout.mjs"
 import { editDesignStrokeColor, editDesignStrokeAlignment, editDesignStrokeWidth } from "../../../apps/design-studio/app/stroke.mjs";
 import { longFigmaSource } from "./fixtures/long-canvas.mjs";
 import { measuredWrap, textMetricsSignature, textSourceMetricsSignature } from "../../../apps/design-studio/app/text-metrics.mjs";
+import { plainFixture } from "./fixtures/figma-plugin-v3.mjs";
 
 const code = await readFile(
   new URL("../../../apps/design-studio/app/figma-plugin/code.js", import.meta.url),
@@ -36,7 +37,7 @@ const rect = (id = "1:2", properties = {}) => ({
 });
 const page = (children) => ({ id: "0:1", type: "CANVAS", name: "Home", children });
 
-function harness(source = page([rect()]), { nativeTextLayout = false, nativeStrokes = false } = {}) {
+function harness(source = page([rect()]), { nativeTextLayout = false, nativeStrokes = false, nativeTextRanges = false } = {}) {
   const all = new Map(),
     messages = [],
     fonts = new Set(),
@@ -44,7 +45,7 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
     undo = [],
     calls = [];
   let serial = 100,
-    failName = null;
+    failName = null, failRangeName = null;
   function make(raw, parent = null) {
     const node = {
       raw: clone(raw),
@@ -145,6 +146,15 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
       Object.defineProperty(node, "cornerRadius", { enumerable: false, get: () => radii.every((value) => value === radii[0]) ? radii[0] : undefined, set: (value) => { radii = Array(4).fill(value); } });
     }
     if (node.type === "TEXT") {
+      if (nativeTextRanges) {
+        node.rangeWrites = [];
+        for (const method of ["setRangeHyperlink", "setRangeFills", "setRangeTextDecoration"])
+          node[method] = (...args) => {
+            calls.push([method, node.id]);
+            if (method === failRangeName) throw new Error("Native range setter failed");
+            node.rangeWrites.push([method, ...clone(args)]);
+          };
+      }
       if (nativeStrokes) { node.strokeWeight = raw.strokeWeight ?? 1; node.strokeAlign = raw.strokeAlign ?? "CENTER"; }
       node.characters = raw.characters ?? "";
       node.fontName = { family: raw.style?.fontFamily ?? "Inter", style: "Regular" };
@@ -369,6 +379,9 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
     failName(value) {
       failName = value;
     },
+    failRange(value) {
+      failRangeName = value;
+    },
     send: (message) => figma.ui.onmessage(message),
   };
 }
@@ -419,7 +432,18 @@ function fontTransfer(fonts) {
   );
 }
 
-test("staged text ranges refuse native transfer and every binding patch without changing source data", async () => {
+function rangeTransfer() {
+  const doc = plainFixture(); doc.pages = [doc.pages[0]];
+  const frame = doc.pages[0].children[0], text = frame.children[0], textSource = "A😀 linked\nend";
+  Object.assign(frame, { layout: "vertical", width: 400, height: 120, alignItems: "start" });
+  Object.assign(text, { text: "A😀\n linked\nend", textSource, textFlow: "wrap", width: 180, height: 48,
+    fill: "#000000", layoutSizingHorizontal: "fill", layoutSizingVertical: "hug",
+    textRanges: { version: 1, sourceSignature: JSON.stringify([textSource]),
+      ranges: [{ start: 4, end: 10, fill: "#1d70b8", href: "https://example.com/" }] } });
+  return createFigmaTransfer(doc);
+}
+
+test("paint/link range creation preserves transfer data while original-node range patches remain blocked", async () => {
   const imported = await prepareFigmaImport(page([rect("1:2", {
     type: "TEXT", characters: "A link", style: { fontFamily: "Inter", fontSize: 24, fontWeight: 400 },
   })]));
@@ -428,7 +452,8 @@ test("staged text ranges refuse native transfer and every binding patch without 
   text.textRanges = { version: 1, sourceSignature: JSON.stringify([source]), ranges: [{ start: 2, end: 6, fill: "#123456", href: "https://example.com/" }] };
   const before = JSON.stringify(current), originalBinding = JSON.stringify(binding);
   const unsupported = error => error.code === "TEXT_RANGES_NATIVE_UNSUPPORTED";
-  assert.throws(() => createFigmaTransfer(current), unsupported);
+  const transfer = createFigmaTransfer(current);
+  assert.deepEqual(transfer.pages[0].children[0].textRanges, text.textRanges);
   assert.throws(() => createFigmaPatch(binding, current), unsupported);
   const rangedBinding = createFigmaBinding({ ...imported, document: current }), cleared = clone(current);
   delete cleared.nodes[0].textRanges;
@@ -437,17 +462,52 @@ test("staged text ranges refuse native transfer and every binding patch without 
   assert.equal(JSON.stringify(binding), originalBinding);
 });
 
-test("native raw packages cannot bypass staged range rejection or create pages and load fonts", async () => {
+test("native raw packages cannot create unsupported decorated ranges or load fonts/pages before refusal", async () => {
   const transfer = fontTransfer([["Inter", 400, "A link"]]);
   const text = transfer.pages[0].children[0], source = text.textSource ?? text.text;
-  text.textRanges = { version: 1, sourceSignature: JSON.stringify([source]), ranges: [{ start: 2, end: 6, fill: "#123456" }] };
+  text.textRanges = { version: 1, sourceSignature: JSON.stringify([source]), ranges: [{ start: 2, end: 6, fill: "#123456", textDecoration: "underline" }] };
   const runtime = harness(), before = runtime.figma.root.children.map(runtime.snapshot);
   await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
   assert.equal(runtime.messages.at(-1).type, "error");
-  assert.match(runtime.messages.at(-1).message, /范围文字.*已阻止互转/u);
+  assert.match(runtime.messages.at(-1).message, /范围文字.*原生装饰/u);
   assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
   assert.deepEqual(runtime.calls, []);
   assert.equal(runtime.all.size, 2);
+});
+
+test("native range creation uses one editable AUTO Text, complete characters and real range setters", async () => {
+  const transfer = rangeTransfer(), runtime = harness(undefined, { nativeTextLayout: true, nativeTextRanges: true });
+  const original = runtime.figma.root.children.map(runtime.snapshot);
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported");
+  const created = runtime.figma.root.children.at(-1), frame = created.children[0], text = frame.children[0];
+  assert.equal(frame.layoutMode, "VERTICAL");
+  assert.equal(frame.children.length, 1);
+  assert.equal(text.type, "TEXT");
+  assert.equal(text.characters, "A😀 linked\nend");
+  assert.equal(text.layoutPositioning, "AUTO");
+  assert.equal(text.layoutSizingHorizontal, "FILL");
+  assert.equal(text.layoutSizingVertical, "HUG");
+  assert.equal(text.textAutoResize, "HEIGHT");
+  assert.deepEqual(text.rangeWrites.map(write => write.slice(0, 3)), [
+    ["setRangeHyperlink", 0, 4], ["setRangeFills", 0, 4], ["setRangeTextDecoration", 0, 4],
+    ["setRangeHyperlink", 4, 10], ["setRangeFills", 4, 10], ["setRangeTextDecoration", 4, 10],
+    ["setRangeHyperlink", 10, 14], ["setRangeFills", 10, 14], ["setRangeTextDecoration", 10, 14],
+  ]);
+  assert.deepEqual(text.rangeWrites[3][3], { type: "URL", value: "https://example.com/" });
+  assert.deepEqual(text.rangeWrites[4][3][0].color, { r: 29 / 255, g: 112 / 255, b: 184 / 255 });
+  assert.deepEqual(runtime.figma.root.children.slice(0, -1).map(runtime.snapshot), original);
+});
+
+test("a range setter failure rolls back only owned new pages and leaves the original file untouched", async () => {
+  const runtime = harness(undefined, { nativeTextRanges: true }), before = runtime.figma.root.children.map(runtime.snapshot), pageBefore = runtime.figma.currentPage;
+  runtime.failRange("setRangeFills");
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(rangeTransfer()) });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.match(runtime.messages.at(-1).message, /Native range setter failed/u);
+  assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
+  assert.equal(runtime.figma.currentPage, pageBefore);
+  assert(runtime.calls.some(call => call[0] === "setRangeHyperlink"));
 });
 
 test("raw native update clear and delete cannot hide staged ranges in either baseline snapshot", async () => {

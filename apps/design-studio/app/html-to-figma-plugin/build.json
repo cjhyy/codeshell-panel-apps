@@ -31,6 +31,7 @@
     "apps/design-studio/app/layout-spacing.mjs",
     "apps/design-studio/app/linear-gradient-geometry.mjs",
     "apps/design-studio/app/native-stroke-inactive.mjs",
+    "apps/design-studio/app/native-text-range-plan.mjs",
     "apps/design-studio/app/native-text-ranges.mjs",
     "apps/design-studio/app/paint.mjs",
     "apps/design-studio/app/resource-store.mjs",
@@ -78,13 +79,13 @@
     },
     {
       "path": "code.js",
-      "bytes": 230023,
-      "sha256": "70a06cf492c49b06cc106a024b5102dd128d26d0b503de4e41d0eb402d969288"
+      "bytes": 230445,
+      "sha256": "5dfa17fb031e08e408de6e0549475e70ac382db6a0ecf3613100c315852c2ecd"
     },
     {
       "path": "ui.html",
-      "bytes": 364841,
-      "sha256": "2aedd300581503bc684540e2aa55b88d593ee18565d05a4ee8acd223e60810fe"
+      "bytes": 365263,
+      "sha256": "f8e54295079dfcd00104b5416d1943c3d47adf09728126cd0d08e2b1a7d9d1f0"
     },
     {
       "path": "README.md",
