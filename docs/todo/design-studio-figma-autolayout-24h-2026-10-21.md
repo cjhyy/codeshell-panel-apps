@@ -1675,3 +1675,82 @@ master负例保留；真实WebGL/缩放/缓存还需独立证明。另窄范围�
 修复正在独立分支以真实Range和完整无绘制证明验证，尚未合入。
 
 24小时目标仍active，截止10月22日00:31不变。未push、发布或安装Host。
+
+
+### 第33轮：逐层流审查、来源空白和真实 Metal 文字对照（约 08:16）
+
+本轮有实际进展但最终组合尚未通过，primary保留7e989c9。聚合89f48ec正常合入
+468c7fa/fbdbd0c的逐层审查；9124557正常合入ea39804来源空白修复，唯一generated build
+JSON冲突由三个正常builder从最终组合源码重建，未手工取某一边输出。源码118文件在
+两套测试前后逐字节相同。完整主套661项：657pass/3fail/1skip，201052.539625ms；
+完整UI107项：106pass/0fail/1skip，111633.285333ms。合计763pass/3fail/2skip。
+typecheck/validate/3generated/Design Studio build check通过。首次完整失败receipt SHA
+7ef087e1c27702eb46f3bcb255663e0b9fec31856509c6920fecc1e755a6e3ee，原log/receipt不重写。
+
+三项红灯均由更严格的source-flow覆盖缺口触发：受控fixed-table第一例5个未覆盖关系；
+已有float-to-Grid/clear与mobile float:none/clear的report.passed不再为true。对应source/
+converted所有受控像素仍0/0/0，不能因此绕过新的语义检查。逐项CPU分类确认表格是
+DL→row、row→cell和cell→Text；浮动列是float owner/item与已吸收的空clearfix；mobile
+是block成功恢复与同一空clearfix。下一修复只从成功原子恢复的实际Element/原canonical
+对象发布捕获期证明，晚期失败、AUTO/不支持表格、未证明float或任意generated内容
+仍不能获得证明。不扩大CSS/native admission、不修改像素阈值或放宽旧测试断言。
+
+新审查不再通过querySelector挑第一个同名selector，也不依赖初始截图或serialized
+flag。每个当前import/relayout/narrow候选都对冻结的实际Element关系义务重审；嵌套NONE、
+ABS、隐藏、丢失、重复ID、坏祖先与换到真实兄弟父节点等都有负例。wrapper只由真正
+capture/adapter factory callback认证，删除了初版“所有无mapping Frame都是wrapper”
+推断。原sameSVG字节但V→NONE仍PASS、隐藏参与仍PASS的早期失败证据全部保留。
+7个最终audit控制、25个factory相关CPU控制、独立5个pure控制及static/generated通过；
+fbdb最终helper SHA681bab5c…，外部implementation/verification-explicit-factories receipt
+SHAa9db6b2e…。此为report-only追踪，未新增canonical/native admission字段。
+
+ea39804在维护的捕获边界克隆当前Render树，仅真实单Text、normal/nowrap横排LTR、
+无真实Unicode空白/ZWJ、raw及JSON转义各≤1000 UTF16、且实际尾部ASCII Range所有
+rect宽度严格0时，移除pin上游错误补入的一个尾NBSP。其他字符/DOM/styles/实测框不改。
+空before/after只在完整无字/无绘制且out-of-flow证明后省略，明确记录其扩展点击区域
+丢失。纯色/描边/阴影/滤镜/遮罩/appearance/overflow等反例保持原输出；真实NBSP、
+混合inline、BR/pre、可见边界空格不做猜测。canonical notes保留有界raw原文；不是布局
+认证标记。独立HTML插件也使用现有sharedPluginData信息通道，preview/create/download/
+reimport保留提示，stale/未知raw只记录不恢复文字/布局/paint。首次peer发现21,653字符
+receipt超过自身8000上限，修复为写入前校验并保留原未知raw；过大capture proof在改变
+文字/伪元素前拒绝。canonical 2000备注预算优先保留有界原文而非可选selector，旧overflow
+warning继续可见。新增29CPU、真实opaque standalone UI1项、最后notes预算控制均通过。
+交付receipt SHA41b832c41e25d1bb6d177dcee0cded634c21b3b11693baa0cda84dc7b71ac07d。
+
+同一冻结Tasklist的1280/768首次及重排14791→12911；fresh400为14720→12842；外层
+1280→400编辑30310→30264，全部strictfalse。仅省略5个已证明paintless after：54→49节点，
+ABS9→4，保留节点ID/测量几何和资源均一致。4个静态tag仍有未表达的负边距，不能称为
+普通AL成功。独立Arial underline控制203/max237→184/max4，未装饰控制严格0；剩余
+垂直underline差异和历史原图完整保留。
+
+另在未改b9ece840…生产文字模块和18个冻结canonical/source/font/reference输入的前提下，
+完成真实WebGL2输出研究。默认headless首先返回SwiftShader，被hardware guard拒绝并
+保留失败；显式ANGLE Metal后query真实Apple M4 Pro。三个create-only研究（Metal原
+readPixels、真正onscreen截图、attached scratch context将willReadFrequently请求true改false）
+各18例/90比较，8个加载文件均与记录7e989c9及当前源字节相同，所有browser正常关闭。
+false只是请求hint，不推断Canvas2D实际使用了GPU。原产品getContext设置与渲染仍未改。
+
+原CPU参考与fresh同Metal DOM虽源文本/样式/Range几何相同，却共有26405个±1/2 RGB
+取整差异、没有白/墨像素归属或alpha变化。原AA attached设备缓存13/18严格0只针对旧
+CPU参考；对fresh同Metal DOM为0/18、max2。真正onscreen截图与readPixels/CK PNG原始
+RGBA完全一致，排除仅PNG编码或输出截图阶段的解释。请求false的研究变体在同Metal
+DOM对照变为16/18严格0；其余两处为bold width400(271,58)、width640(31,58)，expected
+[220,232,242,255]、actual[221,233,242,255]。全部负例保留，未改源/坐标/阈值/geometry。
+默认supplied字体SkParagraph和2x masters仍为负例；没有移除fontRef/resources去伪造
+实际产品成功。三研究root receipt SHA fca4ecaf00467fe77dd9a2f921fe0c1833545aa8458cdd459492620dc10731df；
+独立GPU2D review SHA2db149b8…确认16/18、原数据/全部90 readPixels=decode PNG=onscreen、
+54个默认对照跨实验不变。真实supplied alias、缩放/DPR/phase/旋转/instance/预算/lifetime
+仍需证明；native无font-smoothing setter声明，不新增任何模型字段或scene image。
+
+下一主要内容失真也完成来源盘点：两通知栏真实P都是Text+A(Text)+Text，同P指标统一，
+只需颜色/underline/link范围；现有styledSegments只在2000备注内，原66单位含虚构NBSP/
+softLF，不能直接升级为authored offset。新CPU liveDOM读取6个1280/768/400 PNG对冻结
+参考全部严格0，记录每UTF16实际Range、3个Text叶、CSS/TypedOM/匹配规则。实际默认
+窄400是21px/25而非从旧摘要推测的19px，wide24/30；success始终19/25。underline厚1px、
+offset .1578em分别3.7872/3.3138/2.9982px、skip-ink auto。下一完整contract以一个可编辑
+Text和共享source/display范围投影贯穿model/schema/save/publicedit/render/native binding，
+不拆成绝对定位run节点。原整页5698/9036和400的13272/17133失败继续保留；未开启
+HTML新范围恢复或宣称native像素通过。
+
+24小时目标仍active，截止10月22日00:31不变。未push、发布或安装Host；primary继续
+使用上一完整通过和实际native验证的7e989c9，聚合候选待修复三项语义覆盖失败再集成。
