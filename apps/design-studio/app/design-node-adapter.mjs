@@ -254,7 +254,9 @@ export async function designNodeToV3(tree, options = {}) {
     throw new Error("HTML fonts 必须是最多 128 项的数组");
   for (const font of options.fonts ?? []) {
     const metadata = {
-      family: familyName(font.family),
+      // Font resource metadata is one literal decoded @font-face name. A comma
+      // inside that name is not a CSS fallback separator.
+      family: font.family,
       weight: weightValue(font.weight),
       style: font.style ?? "normal",
     };

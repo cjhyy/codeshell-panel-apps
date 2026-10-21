@@ -1,6 +1,7 @@
 import { normalizeShadowStack, nativeShadowStackEffects } from "./shadow-stack.mjs";
 import { validTextLineHeight } from "./text-line-height.mjs";
 import { assertNativeTextRangeBoundary } from "./native-text-ranges.mjs";
+import { nativeDesignFontFamily } from "./font-family.mjs";
 import { assertNativeImageFill } from "./image-dimensions.mjs";
 import { validateLayoutSpacing, validateNativeLayoutSpacing, nativeMainGap, mainAxisGap } from "./layout-spacing.mjs";
 import { distributeFillSizes } from "./layout.mjs";
@@ -1395,6 +1396,7 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
   const gridParentOf = (node) => gridParents.get(node);
   const convert = (node, parent) => {
     assertNativeTextRangeBoundary(node);
+    const nativeFamily = nativeDesignFontFamily(node);
     if (node.type === "image" && node.objectFit === "fill") {
       if (!imageAssets.has(node.imageRef)) imageAssets.set(node.imageRef, normalizeFigmaAsset(assets[node.imageRef]));
       const asset = imageAssets.get(node.imageRef);
@@ -1413,6 +1415,7 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
       return null;
     }
     const { children, ...copy } = node;
+    if (nativeFamily !== null && node.fontFamily !== undefined) copy.fontFamily = nativeFamily;
     // Browser baseline provenance drives only local typography refresh. Native
     // creation consumes the physical offset, never an HTML measurement promise.
     if (copy.layoutBaselineSource === "html") delete copy.layoutBaselineSource;

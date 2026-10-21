@@ -303,7 +303,7 @@ export async function runProductionFidelity({
       let prepared, nativeTransferError = null;
       try { prepared = await preparePluginFile(portable); }
       catch (error) {
-        if (!["NATIVE_NEGATIVE_SPACING","NATIVE_CSS_SHADOW_MASK"].includes(error.code)) throw error;
+        if (!["NATIVE_NEGATIVE_SPACING","NATIVE_CSS_SHADOW_MASK","NATIVE_CSS_FONT_FAMILY"].includes(error.code)) throw error;
         nativeTransferError = { code: error.code, message: String(error.message).slice(0, 2000),
           stage: "production-v3-transfer", status: "unsupported" };
         await rm(join(directory, "figma-transfer.json"), { force: true });
