@@ -478,6 +478,155 @@ function rangeTransfer() {
   return createFigmaTransfer(doc);
 }
 
+async function notesFixture({ unsupportedChild = false } = {}) {
+  const source = page([{ ...rect("1:2"), type: "FRAME", children: unsupportedChild
+    ? [{ id: "1:3", type: "VECTOR", name: "Unmapped requirement" }] : [] }]);
+  const runtime = harness(source), target = runtime.all.get("1:2");
+  target.setPluginData("codeshellNotes", "req-signin");
+  if (unsupportedChild) runtime.all.get("1:3").setPluginData("codeshellNotes", "req-unmapped");
+  await runtime.send({ type: "export-json", scope: "page" });
+  assert.equal(runtime.messages.at(-1).type, "exported", runtime.messages.at(-1).message);
+  const exported = JSON.parse(runtime.messages.at(-1).content), imported = await prepareFigmaImport(exported, { sha256Bytes });
+  return { runtime, target, exported, imported, binding: createFigmaBinding(imported) };
+}
+
+test("ordinary native notes survive production creator export canonical save/reopen without granting source authority", async () => {
+  const source = importFigmaJson(page([rect()])).document;
+  const value = JSON.stringify({ requirementIds: ["req-signin", "req-profile"], text: " A" + String.fromCodePoint(0x1f600) + String.fromCharCode(13, 10) + "B " });
+  source.nodes[0].notes = value;
+  const runtime = harness();
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(createFigmaTransfer(source)) });
+  assert.equal(runtime.messages.at(-1).type, "imported", runtime.messages.at(-1).message);
+  const target = runtime.figma.currentPage.children[0], before = clone(target.pluginData), selection = runtime.figma.currentPage.selection;
+  assert.equal(target.getPluginData("codeshellNotes"), value);
+  await runtime.send({ type: "export-json", scope: "page" });
+  assert.equal(runtime.messages.at(-1).type, "exported", runtime.messages.at(-1).message);
+  const exported = JSON.parse(runtime.messages.at(-1).content), imported = await prepareFigmaImport(exported, { sha256Bytes });
+  assert.deepEqual(exported.nativeNotes.nodes[target.id].notes, { kind: "value", value });
+  assert.equal(imported.document.nodes[0].notes, value);
+  const saved = JSON.parse(serializeDesignDocument(imported.document));
+  assert.equal(JSON.parse(serializeDesignDocument(saved)).pages[0].children[0].notes, value);
+  assert.equal(createFigmaBinding(imported).source.nativeNotes.nodes[target.id].notes.value, value);
+  assert.deepEqual(target.pluginData, before); assert.equal(runtime.figma.currentPage.selection, selection);
+  assert.equal(imported.document.nodes[0].textRanges, undefined);
+});
+
+test("notes-only native patches synchronously replace and clear exact fresh notes", async () => {
+  for (const next of ["req-local-change", "", undefined]) {
+    const f = await notesFixture(), current = clone(f.imported.document);
+    if (next === undefined) delete current.nodes[0].notes; else current.nodes[0].notes = next;
+    const payload = createFigmaTransfer(current); payload.patch = createFigmaPatch(f.binding, current);
+    const fontsBefore = f.runtime.calls.filter(call => call[0] === "font").length;
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(payload) });
+    const preview = f.runtime.messages.at(-1); assert.equal(preview.type, "patch-preview", preview.message);
+    assert.deepEqual(preview.conflicts, []);
+    await f.runtime.send({ type: "apply-patch", token: preview.token });
+    assert.equal(f.runtime.messages.at(-1).type, "patched", f.runtime.messages.at(-1).message);
+    assert.equal(f.target.getPluginData("codeshellNotes"), next ?? "");
+    assert.equal(f.runtime.calls.filter(call => call[0] === "font").length, fontsBefore);
+  }
+});
+
+test("notes metadata refuses late REST changes and same-ID object replacement before any original write", async () => {
+  for (const mutate of [f => f.target.setPluginData("codeshellNotes", "foreign-after-await"), f => {
+    const replacement = { ...f.target, pluginData: clone(f.target.pluginData) };
+    f.target.parent.children[0] = replacement; f.runtime.all.set(f.target.id, replacement);
+  }, f => { f.target.parent.children.push(f.target); }]) {
+    const f = await notesFixture(), current = clone(f.imported.document); current.nodes[0].notes = "local";
+    const payload = createFigmaTransfer(current); payload.patch = createFigmaPatch(f.binding, current);
+    const original = f.target.exportAsync; let writes = 0;
+    f.target.exportAsync = async settings => { const value = await original.call(f.target, settings); if (settings.format === "JSON_REST_V1") mutate(f); return value; };
+    const setter = f.target.setPluginData; f.target.setPluginData = function (...args) { writes++; return setter.apply(this, args); };
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(payload) });
+    assert.equal(f.runtime.messages.at(-1).type, "error");
+    // The fixture mutation writes once in the first case; the local patch never writes.
+    assert.equal(writes, f.target.getPluginData("codeshellNotes") === "foreign-after-await" ? 1 : 0);
+    assert.notEqual(f.target.getPluginData("codeshellNotes"), "local");
+  }
+});
+
+test("notes-sensitive mixed font/create patches and legacy missing baselines refuse before writes", async () => {
+  const f = await notesFixture(), current = clone(f.imported.document); current.nodes[0].notes = "local";
+  const payload = createFigmaTransfer(current); payload.patch = createFigmaPatch(f.binding, current);
+  const legacy = clone(payload); delete legacy.patch.nativeNotesBefore;
+  await f.runtime.send({ type: "preview-patch", content: JSON.stringify(legacy) });
+  assert.equal(f.runtime.messages.at(-1).type, "error"); assert.equal(f.target.getPluginData("codeshellNotes"), "req-signin");
+  const mixed = clone(payload); mixed.patch.operations[0].changed.push("name"); mixed.patch.operations[0].after.name = "mixed";
+  let fonts = 0; f.runtime.figma.loadFontAsync = async () => { fonts++; f.target.setPluginData("codeshellNotes", "late-font"); };
+  await f.runtime.send({ type: "preview-patch", content: JSON.stringify(mixed) });
+  assert.equal(f.runtime.messages.at(-1).type, "error"); assert.equal(fonts, 0); assert.equal(f.target.getPluginData("codeshellNotes"), "req-signin");
+  const asyncCurrent = JSON.parse(serializeDesignDocument(f.imported.document)); asyncCurrent.pages[0].children[0].notes = "local";
+  const newText = JSON.parse(serializeDesignDocument(importFigmaJson(page([rect("9:9", {
+    type: "TEXT", characters: "Valid new text", style: { fontFamily: "Inter", fontSize: 24, fontWeight: 400 },
+  })])).document)).pages[0].children[0];
+  newText.id = "notes-created-text"; asyncCurrent.pages[0].children.push(newText);
+  const asyncPayload = createFigmaTransfer(asyncCurrent); asyncPayload.patch = createFigmaPatch(f.binding, asyncCurrent);
+  assert(asyncPayload.patch.operations.some(operation => operation.op === "create"));
+  await f.runtime.send({ type: "preview-patch", content: JSON.stringify(asyncPayload) });
+  assert.equal(f.runtime.messages.at(-1).type, "error"); assert.match(f.runtime.messages.at(-1).message, /mixed asynchronous/u);
+  assert.equal(fonts, 0); assert.equal(f.target.getPluginData("codeshellNotes"), "req-signin");
+  const source = clone(f.binding.source); delete source.nativeNotes;
+  assert.throws(() => createFigmaPatch(createFigmaBinding({ ...f.imported, source }), current), error => error.code === "NATIVE_NOTES_BASELINE_REQUIRED");
+});
+
+test("notes-only update protects unmapped descendants even though ordinary update before omits children", async () => {
+  const f = await notesFixture({ unsupportedChild: true }), current = clone(f.imported.document); current.nodes[0].notes = "local";
+  const payload = createFigmaTransfer(current); payload.patch = createFigmaPatch(f.binding, current);
+  assert.equal(payload.patch.operations[0].before.children, undefined);
+  assert.deepEqual(payload.patch.nativeNotesBefore.nodes["1:2"].children, ["1:3"]);
+  const original = f.target.exportAsync; let ownWrites = 0;
+  f.target.exportAsync = async settings => { const value = await original.call(f.target, settings);
+    if (settings.format === "JSON_REST_V1") f.runtime.all.get("1:3").setPluginData("codeshellNotes", "late-unmapped-change"); return value; };
+  const setter = f.target.setPluginData; f.target.setPluginData = function (...args) { ownWrites++; return setter.apply(this, args); };
+  await f.runtime.send({ type: "preview-patch", content: JSON.stringify(payload) });
+  assert.equal(f.runtime.messages.at(-1).type, "error"); assert.equal(ownWrites, 0);
+  assert.equal(f.target.getPluginData("codeshellNotes"), "req-signin");
+  assert.equal(f.runtime.all.get("1:3").getPluginData("codeshellNotes"), "late-unmapped-change");
+});
+
+test("notes-only deletion protects complete unmapped descendant notes and remains explicitly confirmed", async () => {
+  for (const conflict of [false, true]) {
+    const f = await notesFixture({ unsupportedChild: true }), current = JSON.parse(serializeDesignDocument(f.imported.document));
+    assert.equal(f.imported.document.nodes.length, 1, "unsupported descendant is not an editable canonical node");
+    current.pages[0].children = [];
+    const payload = createFigmaTransfer(current); payload.patch = createFigmaPatch(f.binding, current);
+    assert.equal(payload.patch.nativeNotesBefore.nodes["1:3"].notes.value, "req-unmapped");
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(payload) });
+    const preview = f.runtime.messages.at(-1); assert.equal(preview.type, "patch-preview", preview.message);
+    if (conflict) f.runtime.all.get("1:3").setPluginData("codeshellNotes", "foreign-unmapped-note");
+    await f.runtime.send({ type: "apply-patch", token: preview.token, allowDeletes: true });
+    assert.equal(f.runtime.messages.at(-1).type, conflict ? "error" : "patched", f.runtime.messages.at(-1).message);
+    assert.equal(f.target.removed === true, !conflict);
+  }
+});
+
+test("notes metadata export rechecks non-Text notes and complete identity after preview awaits", async () => {
+  for (const mutate of [node => node.setPluginData("codeshellNotes", "after-preview"), node => node.remove(), node => {
+    node.parent.children[0] = { ...node }; }]) {
+    const runtime = harness(page([rect("1:2", { isMask: true })])), target = runtime.all.get("1:2");
+    target.setPluginData("codeshellNotes", "before-preview"); const original = target.exportAsync;
+    target.exportAsync = async settings => { const value = await original.call(target, settings); if (settings.format === "SVG_STRING") mutate(target); return value; };
+    await runtime.send({ type: "export-json", scope: "page" });
+    assert.equal(runtime.messages.at(-1).type, "error");
+    assert.match(runtime.messages.at(-1).message, /notes|Notes/u);
+  }
+});
+
+test("notes metadata export refuses explicitly stale raw own-plugin notes without changing raw data", async () => {
+  for (const changed of [false, true]) {
+    const source = page([rect("1:2", { pluginData: { "test-codeshell-native-factory": { codeshellNotes: "raw-current" }, foreign: { codeshellNotes: "ignored" } } })]);
+    const runtime = harness(source), target = runtime.all.get("1:2"); target.setPluginData("codeshellNotes", "raw-current");
+    const rawBefore = JSON.stringify(target.raw.pluginData), root = runtime.figma.currentPage, original = root.exportAsync;
+    root.exportAsync = async settings => { const value = await original.call(root, settings);
+      if (changed && settings.format === "JSON_REST_V1") target.setPluginData("codeshellNotes", "new-current"); return value; };
+    await runtime.send({ type: "export-json", scope: "page" });
+    assert.equal(runtime.messages.at(-1).type, changed ? "error" : "exported", runtime.messages.at(-1).message);
+    if (changed) assert.match(runtime.messages.at(-1).message, /contradict/u);
+    assert.equal(JSON.stringify(target.raw.pluginData), rawBefore);
+    assert.equal(target.getPluginData("codeshellNotes"), changed ? "new-current" : "raw-current");
+  }
+});
+
 test("paint/link range creation preserves transfer data while original-node range patches remain blocked", async () => {
   const imported = await prepareFigmaImport(page([rect("1:2", {
     type: "TEXT", characters: "A link", style: { fontFamily: "Inter", fontSize: 24, fontWeight: 400 },
@@ -1063,12 +1212,21 @@ test("deletions require unchanged raw subtree and an explicit reviewed-delete co
     ],
   };
   await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "error", "legacy deletion has no fresh metadata baseline");
+  assert.equal(runtime.all.get("1:2").removed, undefined);
+  // Generate the positive fixture through the production VM exporter.
+  await runtime.send({ type: "export-json", scope: "page" });
+  assert.equal(runtime.messages.at(-1).type, "exported");
+  const fresh = await prepareFigmaImport(JSON.parse(runtime.messages.at(-1).content), { sha256Bytes });
+  const cleared = JSON.parse(serializeDesignDocument(fresh.document)); cleared.pages[0].children = [];
+  const freshTransfer = createFigmaTransfer(cleared); freshTransfer.patch = createFigmaPatch(createFigmaBinding(fresh), cleared);
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(freshTransfer) });
   const first = runtime.messages.at(-1);
   assert.equal(first.deletions, 1);
   await runtime.send({ type: "apply-patch", token: first.token });
   assert.equal(runtime.messages.at(-1).type, "error");
   assert.equal(runtime.all.get("1:2").removed, undefined);
-  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(freshTransfer) });
   const second = runtime.messages.at(-1);
   await runtime.send({ type: "apply-patch", token: second.token, allowDeletes: true });
   assert.equal(runtime.messages.at(-1).type, "patched");
@@ -1215,12 +1373,16 @@ test("generated subtree deletes still reject an externally changed descendant be
   const current = importFigmaJson(source).document;
   current.nodes.splice(0);
   const transfer = createFigmaTransfer(current);
-  transfer.patch = createFigmaPatch(binding, current);
-  assert.equal(transfer.patch.operations[0].op, "delete");
-  assert.equal(transfer.patch.operations[0].before.children[0].children[0].id, "1:3");
+  assert.throws(() => createFigmaPatch(binding, current), error => error.code === "NATIVE_NOTES_BASELINE_REQUIRED");
   const runtime = harness(source);
+  await runtime.send({ type: "export-json", scope: "page" });
+  const fresh = await prepareFigmaImport(JSON.parse(runtime.messages.at(-1).content), { sha256Bytes });
+  const cleared = JSON.parse(serializeDesignDocument(fresh.document)); cleared.pages[0].children = [];
+  const freshTransfer = createFigmaTransfer(cleared); freshTransfer.patch = createFigmaPatch(createFigmaBinding(fresh), cleared);
+  assert.equal(freshTransfer.patch.operations[0].op, "delete");
+  assert.equal(freshTransfer.patch.operations[0].before.children[0].children[0].id, "1:3");
   runtime.all.get("1:3").name = "External descendant edit";
-  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(freshTransfer) });
   assert.ok(runtime.messages.at(-1).conflicts.length > 0);
   const token = runtime.messages.at(-1).token;
   await runtime.send({ type: "apply-patch", token, allowDeletes: true });
@@ -1496,7 +1658,7 @@ test("nested selection exports real page context and updates geometry through a 
   assert.equal(runtime.all.get("1:2").parent.id, "1:1");
 });
 
-test("reorder resolves new sibling anchors across permutations while preserving unknown siblings and reviewed deletes", async () => {
+test("reorder resolves new sibling anchors without deletion while legacy mixed deletes refuse", async () => {
   const source = {
     format: "codeshell.figma.source",
     version: 1,
@@ -1534,6 +1696,10 @@ test("reorder resolves new sibling anchors across permutations while preserving 
       added = { ...clone(nodes.get("A")), id: "new-sibling", name: "N" };
     current.nodes = order.map((name) => (name === "N" ? added : clone(nodes.get(name))));
     current.pages[0].nodes = current.nodes;
+    assert.throws(() => createFigmaPatch(binding, current), error => error.code === "NATIVE_NOTES_BASELINE_REQUIRED", order.join(""));
+    // Keep the original C; this positive now proves reorder/create without an
+    // unsupported deletion hidden in the same asynchronous patch.
+    current.nodes.unshift(clone(nodes.get("C")));
     const transfer = createFigmaTransfer(current);
     transfer.patch = createFigmaPatch(binding, current);
     const runtime = harness(source.nodes["0:1"].document);
@@ -1550,7 +1716,7 @@ test("reorder resolves new sibling anchors across permutations while preserving 
     const actual = runtime.figma.currentPage.children;
     assert.deepEqual(
       actual.filter((node) => !node.name.startsWith("Unknown")).map((node) => node.name),
-      order,
+      ["C", ...order],
       order.join(""),
     );
     assert.ok(actual.includes(runtime.all.get("1:99")));

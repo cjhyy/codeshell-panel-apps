@@ -745,7 +745,7 @@ function importFigmaJsonWithReport(
   report,
 ) {
   const rawValue = readJson(input),
-    value = Object.hasOwn(rawValue, "nativeTextRanges") ? normalizeFigmaSource(rawValue) : rawValue,
+    value = Object.hasOwn(rawValue, "nativeTextRanges") || Object.hasOwn(rawValue, "nativeNotes") ? normalizeFigmaSource(rawValue) : rawValue,
     pages = sourcePages(value);
   const textSupplement = value.nativeTextRanges, nativeAdmissions = new Map();
   if (textSupplement) {
@@ -772,6 +772,8 @@ function importFigmaJsonWithReport(
   const unsupportedBorders = new Set();
   let currentPage = null;
   const recordMapping = (source, node) => {
+    const notes = value.nativeNotes?.nodes?.[source.id]?.notes;
+    if (notes?.kind === "value") node.notes = notes.value;
     if (source.absoluteRenderBounds === null) nonRenderingSourceNodes.add(node.id);
     const context = value.selection?.roots?.[source.id];
     if (typeof source.id === "string")
