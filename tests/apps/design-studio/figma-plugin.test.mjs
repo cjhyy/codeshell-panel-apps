@@ -419,6 +419,58 @@ function fontTransfer(fonts) {
   );
 }
 
+test("staged text ranges refuse native transfer and every binding patch without changing source data", async () => {
+  const imported = await prepareFigmaImport(page([rect("1:2", {
+    type: "TEXT", characters: "A link", style: { fontFamily: "Inter", fontSize: 24, fontWeight: 400 },
+  })]));
+  const binding = createFigmaBinding(imported), current = clone(imported.document);
+  const text = current.nodes[0], source = text.textSource ?? text.text;
+  text.textRanges = { version: 1, sourceSignature: JSON.stringify([source]), ranges: [{ start: 2, end: 6, fill: "#123456", href: "https://example.com/" }] };
+  const before = JSON.stringify(current), originalBinding = JSON.stringify(binding);
+  const unsupported = error => error.code === "TEXT_RANGES_NATIVE_UNSUPPORTED";
+  assert.throws(() => createFigmaTransfer(current), unsupported);
+  assert.throws(() => createFigmaPatch(binding, current), unsupported);
+  const rangedBinding = createFigmaBinding({ ...imported, document: current }), cleared = clone(current);
+  delete cleared.nodes[0].textRanges;
+  assert.throws(() => createFigmaPatch(rangedBinding, cleared), unsupported);
+  assert.equal(JSON.stringify(current), before);
+  assert.equal(JSON.stringify(binding), originalBinding);
+});
+
+test("native raw packages cannot bypass staged range rejection or create pages and load fonts", async () => {
+  const transfer = fontTransfer([["Inter", 400, "A link"]]);
+  const text = transfer.pages[0].children[0], source = text.textSource ?? text.text;
+  text.textRanges = { version: 1, sourceSignature: JSON.stringify([source]), ranges: [{ start: 2, end: 6, fill: "#123456" }] };
+  const runtime = harness(), before = runtime.figma.root.children.map(runtime.snapshot);
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.match(runtime.messages.at(-1).message, /范围文字.*已阻止互转/u);
+  assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
+  assert.deepEqual(runtime.calls, []);
+  assert.equal(runtime.all.size, 2);
+});
+
+test("raw native update clear and delete cannot hide staged ranges in either baseline snapshot", async () => {
+  const source = page([rect("1:2", { type: "TEXT", characters: "A link", style: { fontFamily: "Inter", fontSize: 24, fontWeight: 400 } })]);
+  for (const location of ["update", "delete", "whole-baseline"]) {
+    const transfer = patchTransfer(source, node => { node.fontSize = 25; }, ["fontSize"]);
+    const operation = transfer.patch.operations[0];
+    const baseline = location === "whole-baseline" ? transfer.patch.baseline.pages[0].children[0] : operation.baseline;
+    baseline.textRanges = { version: 1, sourceSignature: JSON.stringify([baseline.textSource ?? baseline.text]), ranges: [{ start: 2, end: 6, fill: "#123456" }] };
+    baseline.name = "x".repeat(10000);
+    if (location === "delete") { operation.op = "delete"; delete operation.after; }
+    const runtime = harness(source), before = runtime.figma.root.children.map(runtime.snapshot);
+    const fontBefore = runtime.all.get("1:2").fontSize;
+    await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+    assert.equal(runtime.messages.at(-1).type, "error", location);
+    assert.match(runtime.messages.at(-1).message, /范围文字.*已阻止互转/u, location);
+    assert(runtime.messages.at(-1).message.length < 250, location);
+    assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before, location);
+    assert.deepEqual(runtime.calls, [], location);
+    assert.equal(runtime.all.get("1:2").fontSize, fontBefore, location);
+  }
+});
+
 test("native Figma icon fonts use Solid/Regular styles rather than generic Black weights", async () => {
   const transfer = fontTransfer([
     ["Font Awesome 5 Free", 900, "\uf007"],

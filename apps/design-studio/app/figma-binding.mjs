@@ -1,5 +1,6 @@
 import { GRID_CONTAINER_FIELDS, GRID_CHILD_FIELDS } from "./grid.mjs";
 import { nativeTextContent } from "./text-content.mjs";
+import { assertNativeTextRangeBoundary } from "./native-text-ranges.mjs";
 import { mainAxisGap, nativeMainGap, validateNativeLayoutSpacing } from "./layout-spacing.mjs";
 import {
   normalizeDesignDocument,
@@ -327,6 +328,10 @@ export function createFigmaPatch(bindingValue, currentDocument) {
     current = canonical(currentDocument);
   const beforeNodes = new Map(flat(binding.baseline).map((node) => [node.id, node]));
   const afterNodes = new Map(flat(current).map((node) => [node.id, node]));
+  // Until range-aware create/apply/live-source validation is implemented, even
+  // a clear/removal must refuse instead of producing an apparently valid no-op.
+  for (const node of beforeNodes.values()) assertNativeTextRangeBoundary(node);
+  for (const node of afterNodes.values()) assertNativeTextRangeBoundary(node);
   const mapping = new Map(binding.mapping.map((entry) => [entry.designId, entry]));
   const sourceNodes = figmaSourceNodes(binding.source);
   const pages = new Map(binding.pageMappings.map((entry) => [entry.designId, entry]));

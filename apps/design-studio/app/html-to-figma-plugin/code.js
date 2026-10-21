@@ -5630,6 +5630,17 @@
       warnings.push("\u5DF2\u7701\u7565\u6355\u83B7\u65F6\u65E0\u7ED8\u5236\u3001\u65E0\u6587\u5B57\u4E14\u8131\u79BB\u6587\u6863\u6D41\u7684\u7A7A\u4F2A\u5143\u7D20\uFF1B\u4FDD\u7559\u771F\u5B9E\u8282\u70B9\uFF0C\u4F46\u4E0D\u4FDD\u7559\u4F2A\u5143\u7D20\u6269\u5C55\u7684\u70B9\u51FB\u533A\u57DF\u3002");
   }
 
+  // apps/design-studio/app/native-text-ranges.mjs
+  function assertNativeTextRangeBoundary(node) {
+    if (node?.textRanges === void 0) return;
+    const label = (typeof node.name === "string" ? node.name : typeof node.id === "string" ? node.id : "Text").slice(0, 120);
+    const error = new Error(
+      label + "\uFF1A\u8303\u56F4\u6587\u5B57\u7684\u539F\u751F\u521B\u5EFA\u548C\u589E\u91CF\u5BFC\u56DE\u5C1A\u672A\u5B8C\u6210\u9A8C\u8BC1\uFF1B\u5DF2\u963B\u6B62\u4E92\u8F6C\uFF0C\u672A\u4E22\u5F03\u8303\u56F4\u6837\u5F0F\u3002"
+    );
+    error.code = "TEXT_RANGES_NATIVE_UNSUPPORTED";
+    throw error;
+  }
+
   // third-party/html2figma-plugin/integration/input.ts
   var MAX_INPUT_BYTES = 12 * 1024 * 1024;
   var MAX_NODES = 3e3;
@@ -5657,6 +5668,7 @@
     function inspect(node, depth = 0) {
       if (!object3(node) || depth > 60 || ++count > MAX_NODES)
         throw new Error("\u8282\u70B9\u6811\u6700\u591A 3000 \u4E2A\u8282\u70B9\u300160 \u5C42");
+      assertNativeTextRangeBoundary(node);
       if (!node.nodeType && !["FRAME", "GROUP", "RECTANGLE", "TEXT", "SVG"].includes(node.type))
         throw new Error(`\u4E0D\u652F\u6301\u8282\u70B9\u7C7B\u578B\uFF1A${String(node.type ?? "unknown").slice(0, 60)}`);
       if (node.nodeType && !["container", "text", "image", "svg"].includes(node.nodeType))

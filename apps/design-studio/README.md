@@ -16,6 +16,10 @@ Design Studio **0.22.0** 提供 HTML → DesignNode → v3 导入、Figma JSON �
 范围文字暂不接收基础渐变/paint stack 或省略截断；各渲染器和原生出口仍须通过自身
 能力检查，不能仅把区间写入元数据后声称绘制或往返成功。
 
+原生范围创建、来源快照和增量导回仍在实施验证。当前 Design Bridge 的传输、增量
+补丁（包括清除区间）和独立 HTML 插件原始输入均提前拒绝 `textRanges`，完整保留
+设计文档中的范围数据；不能绕过检查把新字段交给旧的统一文字创建器后静默丢失样式。
+
 ## 0.22：CanvasKit GPU 画布
 
 画布统一使用 CanvasKit 0.42.0（Skia C++ → WebAssembly → WebGL2）。全图概览、
