@@ -191,6 +191,134 @@ const legacyShape = (value) =>
     .replace(/\u00a0/gu, " ")
     .replace(/[\t\n\f\r ]+/gu, " ")
     .replace(/^ | $/gu, "");
+const plain = (value) =>
+  value !== null &&
+  typeof value === "object" &&
+  [Object.prototype, null].includes(Object.getPrototypeOf(value));
+const exactKeys = (value, allowed) =>
+  plain(value) && Object.keys(value).every((key) => allowed.includes(key));
+const familyName = (value) =>
+  value
+    .split(",")[0]
+    .trim()
+    .replace(/^["']|["']$/gu, "");
+const textBoundary = (value, at) =>
+  Number.isInteger(at) &&
+  at >= 0 &&
+  at <= value.length &&
+  !(
+    at > 0 &&
+    at < value.length &&
+    /[\ud800-\udbff]/u.test(value[at - 1]) &&
+    /[\udc00-\udfff]/u.test(value[at])
+  );
+
+function measuredSourceOwners(sourceText, source, base, link, literalHref) {
+  const allowedStyle = [
+    "fontFamily",
+    "fontSize",
+    "fontWeight",
+    "fontStyle",
+    "color",
+    "textAlign",
+    "verticalAlign",
+    "textDecoration",
+    "textTransform",
+    "lineHeight",
+    "letterSpacing",
+    "wordBreak",
+    "textOverflow",
+    "whiteSpace",
+    "maxLines",
+    "textShadow",
+    "gradientFill",
+  ];
+  const groups = [[], [], []];
+  let group = 0,
+    offset = 0;
+  for (const segment of sourceText.styledSegments) {
+    if (
+      !exactKeys(segment, ["start", "end", "text", "style", "tag", "href"]) ||
+      !textBoundary(sourceText.content, segment.start) ||
+      !textBoundary(sourceText.content, segment.end) ||
+      segment.start !== offset ||
+      segment.end <= segment.start ||
+      segment.text !== sourceText.content.slice(segment.start, segment.end)
+    )
+      fail("Original measured fragments must cover their exact complete UTF16 display snapshot");
+    if (group === 0 && segment.tag === "a") group = 1;
+    else if (group === 1 && segment.tag === "p") group = 2;
+    // The maintained producer emits `href: seg.href` even for ordinary P
+    // fragments. Only its optional undefined is unlinked; null is not guessed.
+    if (
+      segment.tag !== (group === 1 ? "a" : "p") ||
+      (group === 1 ? segment.href !== literalHref : segment.href !== undefined)
+    )
+      fail("Measured fragment order or link ownership is not logical P+/A+/P+");
+    const expected = group === 1 ? link : base,
+      style = segment.style;
+    const colorValue = style?.color;
+    if (
+      !exactKeys(style, allowedStyle) ||
+      style.fontFamily !== familyName(expected.fontFamily) ||
+      style.fontSize !== px(expected.fontSize) ||
+      Number(style.fontWeight) !== Number(expected.fontWeight) ||
+      style.fontStyle !== expected.fontStyle ||
+      style.textAlign !== "left" ||
+      style.verticalAlign !== expected.verticalAlign ||
+      style.textDecoration !== expected.textDecorationLine ||
+      style.textTransform !== expected.textTransform ||
+      style.wordBreak !== "normal" ||
+      expected.wordBreak !== "normal" ||
+      style.textOverflow !== expected.textOverflow ||
+      (style.whiteSpace !== undefined && style.whiteSpace !== expected.whiteSpace) ||
+      style.maxLines !== undefined ||
+      style.textShadow !== undefined ||
+      style.gradientFill !== undefined ||
+      !exactKeys(style.lineHeight, ["value", "unit"]) ||
+      style.lineHeight.unit !== "px" ||
+      style.lineHeight.value !== px(expected.lineHeight) ||
+      !exactKeys(style.letterSpacing, ["value", "unit"]) ||
+      style.letterSpacing.unit !== "px" ||
+      style.letterSpacing.value !== 0 ||
+      !exactKeys(colorValue, ["r", "g", "b", "a", "raw"]) ||
+      colorValue.a !== 1 ||
+      [colorValue.r, colorValue.g, colorValue.b].some(
+        (channel) => !Number.isInteger(channel) || !bounded(channel, 0, 255),
+      ) ||
+      "#" +
+        [colorValue.r, colorValue.g, colorValue.b]
+          .map((channel) => channel.toString(16).padStart(2, "0"))
+          .join("") !==
+        color(expected.color) ||
+      (colorValue.raw !== undefined && color(colorValue.raw) !== color(expected.color))
+    )
+      fail(
+        "Every original measured fragment must retain its current logical DOM owner's supported style",
+      );
+    groups[group].push(segment);
+    offset = segment.end;
+  }
+  if (
+    offset !== sourceText.content.length ||
+    groups.some((entries) => !entries.length) ||
+    groups.some(
+      (entries, index) =>
+        legacyShape(entries.map((entry) => entry.text).join("")) !==
+        legacyShape(source.values[index]),
+    )
+  )
+    fail(
+      "Complete original measured fragments do not reconstruct the three actual DOM Text owners",
+    );
+  return groups.map((entries) =>
+    Object.freeze({
+      measuredStart: entries[0].start,
+      measuredEnd: entries.at(-1).end,
+      measuredCount: entries.length,
+    }),
+  );
+}
 function typedObservation(element, property) {
   const value = element.computedStyleMap?.().get(property);
   if (!value) return null;
@@ -215,6 +343,29 @@ function neutralContext(style) {
     ["auto", "1"].includes(style.columnCount) &&
     style.columnWidth === "auto"
   );
+}
+
+const ownsTypographicPseudo = (style) =>
+  ["block", "flow-root", "inline-block", "list-item", "table-cell", "table-caption"].includes(
+    style.display,
+  );
+function typographicPseudosMatch(style, view, element) {
+  if (!ownsTypographicPseudo(style)) return true;
+  return ["::first-line", "::first-letter"].every((pseudo) => {
+    const variant = view.getComputedStyle(element, pseudo);
+    return [
+      ...METRICS,
+      "color",
+      "textDecorationLine",
+      "textDecorationStyle",
+      "textDecorationColor",
+      "textDecorationThickness",
+      "textUnderlineOffset",
+      "textDecorationSkipInk",
+      "textUnderlinePosition",
+      "textShadow",
+    ].every((key) => variant[key] === style[key]);
+  });
 }
 
 function ordinary(style, view, element) {
@@ -266,21 +417,7 @@ function ordinary(style, view, element) {
     ["::before", "::after"].some(
       (pseudo) => !["none", "normal"].includes(view.getComputedStyle(element, pseudo).content),
     ) ||
-    ["::first-line", "::first-letter"].some((pseudo) => {
-      const variant = view.getComputedStyle(element, pseudo);
-      return [
-        ...METRICS,
-        "color",
-        "textDecorationLine",
-        "textDecorationStyle",
-        "textDecorationColor",
-        "textDecorationThickness",
-        "textUnderlineOffset",
-        "textDecorationSkipInk",
-        "textUnderlinePosition",
-        "textShadow",
-      ].some((key) => variant[key] !== style[key]);
-    })
+    !typographicPseudosMatch(style, view, element)
   )
     fail("Special, hidden, generated or non-normal inline typography is unsupported");
 }
@@ -341,8 +478,9 @@ export function planHtmlInlineText({ document, paragraph, text, mapping, capture
       sourceText.content.length > 4000 ||
       sourceText.content !== text.textSource ||
       sourceText.content !== text.text ||
-      sourceText.styledSegments?.length !== 3 ||
-      sourceText.styledSegments.some((segment, index) => segment.tag !== (index === 1 ? "a" : "p"))
+      !Array.isArray(sourceText.styledSegments) ||
+      !sourceText.styledSegments.length ||
+      sourceText.styledSegments.length > 64
     )
       fail("Missing or ambiguous actual Element/original source ownership");
     const children = [...p.childNodes];
@@ -363,16 +501,6 @@ export function planHtmlInlineText({ document, paragraph, text, mapping, capture
       source = normalSource(textNodes);
     if (p.textContent !== source.raw)
       fail("Raw DOM ownership does not reconstruct the complete paragraph");
-    if (
-      sourceText.styledSegments.some(
-        (segment, index) =>
-          typeof segment.text !== "string" ||
-          legacyShape(segment.text) !== legacyShape(source.values[index]),
-      ) ||
-      sourceText.styledSegments.map((segment) => segment.text).join("") !== sourceText.content ||
-      sourceText.styledSegments[1].href !== a.getAttribute("href")
-    )
-      fail("Original merged source runs no longer belong to these current DOM Text/link owners");
     const base = view.getComputedStyle(p),
       link = view.getComputedStyle(a);
     ordinary(base, view, p);
@@ -423,13 +551,28 @@ export function planHtmlInlineText({ document, paragraph, text, mapping, capture
       color(link.textDecorationColor) !== color(link.color)
     )
       fail("Only solid same-color underline geometry is staged");
+    const measuredOwners = measuredSourceOwners(
+      sourceText,
+      source,
+      base,
+      link,
+      a.getAttribute("href"),
+    );
     for (
       let ancestor = p.parentElement, depth = 0;
       ancestor;
       ancestor = ancestor.parentElement, depth++
     ) {
       const context = view.getComputedStyle(ancestor);
-      if (depth > 32 || context.textDecorationLine !== "none" || !neutralContext(context))
+      if (
+        depth > 32 ||
+        context.textDecorationLine !== "none" ||
+        !neutralContext(context) ||
+        context.visibility !== "visible" ||
+        context.opacity !== "1" ||
+        context.display === "none" ||
+        !typographicPseudosMatch(context, view, ancestor)
+      )
         fail("Ancestor decoration, transform, zoom or multicolumn context is unsupported");
     }
     const thickness = px(link.textDecorationThickness),
@@ -491,6 +634,7 @@ export function planHtmlInlineText({ document, paragraph, text, mapping, capture
         ]),
       }),
       sourceMap: Object.freeze(source.sourceMap.map((unit) => Object.freeze(unit))),
+      measuredOwners: Object.freeze(measuredOwners),
       ownership: Object.freeze({
         paragraph: p,
         anchor: a,

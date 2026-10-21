@@ -511,6 +511,9 @@ Text IDs and all mappings. Its live source/UTF16 proof is not saved admission me
 whole-paragraph measurement, shared range validation, renderer/native capability and atomic
 capture/audit integration must pass before any importer can use it. Unproved authored CSS
 underline units remain explicit px snapshots with diagnostics.
+Measured line fragments are checked against their complete original UTF16 snapshot and
+current logical DOM owners; their count and manufactured soft-break offsets never define
+authored ranges. Typographic pseudo guards apply to their block containers and ancestors.
 
 Use the top-bar **HTML** action to convert a workspace-relative `.html` file, or call the
 revision-guarded `import_html` Agent tool. Version 0.20 uses `app/html-import.mjs`, the pinned

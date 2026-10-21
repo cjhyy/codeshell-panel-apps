@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readFile } from "node:fs/promises";
 import {
   planHtmlInlineText,
   isHtmlInlineTextDraft,
 } from "../../../apps/design-studio/app/html-inline-text-plan.mjs";
+const measuredCases = JSON.parse(
+  await readFile(
+    new URL("../../fixtures/design-studio/html-inline-measured-source.json", import.meta.url),
+  ),
+).cases;
 
 function setup({
   prefix = "\n    You have 7 days left to send your application.\n    ",
@@ -30,6 +36,7 @@ function setup({
     textTransform: "none",
     textIndent: "0px",
     wordSpacing: "normal",
+    wordBreak: "normal",
     letterSpacing: "normal",
     textAlign: "left",
     verticalAlign: "baseline",
@@ -151,12 +158,34 @@ function setup({
     layoutSizingHorizontal: "fill",
     children: [text],
   };
+  const capturedStyle = (style) => {
+    const [r, g, b] = style.color.match(/\d+/gu).map(Number);
+    return {
+      fontFamily: "GDS Transport",
+      fontSize: size,
+      fontWeight: String(weight),
+      fontStyle: "normal",
+      color: { r, g, b, a: 1, raw: style.color },
+      textAlign: "left",
+      verticalAlign: "baseline",
+      textDecoration: style.textDecorationLine,
+      textTransform: "none",
+      lineHeight: { value: size * ratio, unit: "px" },
+      letterSpacing: { value: 0, unit: "px" },
+      wordBreak: "normal",
+      textOverflow: "clip",
+    };
+  };
+  let measuredOffset = 0;
   const sourceText = {
       nodeType: "text",
       content: legacy,
       styledSegments: ["p", "a", "p"].map((tag, i) => ({
         tag,
         text: [prefix, link, suffix + "\u00a0"][i],
+        start: measuredOffset,
+        end: (measuredOffset += [prefix, link, suffix + "\u00a0"][i].length),
+        style: capturedStyle(i === 1 ? linkStyle : base),
         ...(i === 1 ? { href: "#" } : {}),
       })),
     },
@@ -413,10 +442,10 @@ test("first-line and first-letter decoration geometry variants do not become a u
       { textDecorationSkipInk: "none" },
       { textDecorationColor: "rgb(200, 0, 0)" },
     ]) {
-      const { value, a, linkStyle, doc } = setup();
+      const { value, p, base, doc } = setup();
       const original = doc.defaultView.getComputedStyle;
       doc.defaultView.getComputedStyle = (node, target) =>
-        node === a && target === pseudo ? { ...linkStyle, ...change } : original(node, target);
+        node === p && target === pseudo ? { ...base, ...change } : original(node, target);
       assert.equal(
         planHtmlInlineText(value).supported,
         false,
@@ -445,5 +474,180 @@ test("uniform unmodeled typography does not become a paint-only range draft", ()
     Object.assign(base, change);
     Object.assign(linkStyle, change);
     assert.equal(planHtmlInlineText(value).supported, false, JSON.stringify(change));
+  }
+});
+
+function actualMeasured(entry) {
+  const s = setup({
+    prefix: entry.rawDomOwners[0],
+    link: entry.rawDomOwners[1],
+    suffix: entry.rawDomOwners[2],
+    size: entry.fontSize,
+    weight: entry.fontWeight,
+    ratio: entry.lineHeightTyped.value,
+    offset: entry.computedOffset,
+    linkColor: entry.linkColor,
+  });
+  s.base.lineHeight = s.linkStyle.lineHeight = entry.computedLineHeight;
+  const previous = s.value.capture.sourceText,
+    sourceText = structuredClone(entry.sourceText);
+  s.value.capture.canonicalBySource.delete(previous);
+  s.value.capture.sourceText = sourceText;
+  s.value.capture.sourceParagraph.children = [sourceText];
+  s.value.capture.canonicalBySource.set(sourceText, s.value.text);
+  s.value.text.text = s.value.text.textSource = sourceText.content;
+  s.value.text.id = entry.textId;
+  s.value.paragraph.id = entry.paragraphId;
+  s.value.mapping[0].designId = entry.paragraphId;
+  s.value.mapping[1].designId = entry.textId;
+  return s;
+}
+
+test("actual wide and four-fragment400 snapshots reconstruct three owned DOM Text intervals without scene deletions", () => {
+  assert.equal(measuredCases.length, 6);
+  for (const entry of measuredCases) {
+    const { value } = actualMeasured(entry),
+      before = JSON.stringify(value.document),
+      mapping = JSON.stringify(value.mapping);
+    const result = planHtmlInlineText(value);
+    assert.equal(result.supported, true, `${entry.case}/${entry.width}: ${result.reason}`);
+    const success = entry.case.endsWith("-success"),
+      draft = result.draft;
+    assert.equal(draft.textSource.length, success ? 65 : 64);
+    assert.deepEqual(
+      [draft.textRanges.ranges[0].start, draft.textRanges.ranges[0].end],
+      success ? [8, 33] : [47, 63],
+    );
+    assert.equal(
+      draft.measuredOwners.reduce((sum, owner) => sum + owner.measuredCount, 0),
+      entry.width === 400 ? 4 : 3,
+    );
+    assert.equal(draft.measuredOwners.length, 3);
+    assert.deepEqual(draft.mappingEffects, {
+      keptIds: [entry.paragraphId, entry.textId],
+      removedIds: [],
+      added: [],
+    });
+    assert.equal(JSON.stringify(value.document), before);
+    assert.equal(JSON.stringify(value.mapping), mapping);
+    assert.strictEqual(draft.ownership.originalText, value.text);
+  }
+});
+
+test("line-fragment gaps, order, stale content, unowned styles and unsafe source records produce no draft", () => {
+  const entry = measuredCases.find((row) => row.width === 400 && !row.case.endsWith("-success"));
+  for (const change of [
+    (s) => s.value.capture.sourceText.styledSegments[1].start++,
+    (s) => s.value.capture.sourceText.styledSegments[0].end--,
+    (s) => (s.value.capture.sourceText.styledSegments[1].text = "stale fragment"),
+    (s) => (s.value.capture.sourceText.styledSegments[1].tag = "span"),
+    (s) => (s.value.capture.sourceText.styledSegments[2].href = "https://changed.example/"),
+    (s) => (s.value.capture.sourceText.styledSegments[0].href = null),
+    (s) => (s.value.capture.sourceText.styledSegments[0].href = "https://unowned.example/"),
+    (s) => (s.value.capture.sourceText.styledSegments[1].style.fontWeight = "400"),
+    (s) => s.value.capture.sourceText.styledSegments[1].style.fontSize++,
+    (s) => (s.value.capture.sourceText.styledSegments[1].style.color.a = 0.5),
+    (s) => (s.value.capture.sourceText.styledSegments[1].style.futureMetric = true),
+    (s) => (s.value.capture.sourceText.styledSegments[1].style.whiteSpace = "pre"),
+    (s) => (s.value.capture.sourceText.styledSegments[1].style.maxLines = null),
+    (s) => (s.value.capture.sourceText.styledSegments[1].style.textShadow = null),
+    (s) => (s.value.capture.sourceText.styledSegments[1].style.gradientFill = [{}]),
+    (s) =>
+      (s.value.capture.sourceText.styledSegments[1].style = structuredClone(
+        s.value.capture.sourceText.styledSegments[2].style,
+      )),
+    (s) =>
+      (s.value.capture.sourceText.styledSegments = Array(65).fill(
+        s.value.capture.sourceText.styledSegments[0],
+      )),
+    (s) => {
+      const segments = s.value.capture.sourceText.styledSegments;
+      segments.unshift(segments.splice(2, 1)[0]);
+      let offset = 0;
+      for (const segment of segments) {
+        segment.start = offset;
+        segment.end = offset += segment.text.length;
+      }
+      s.value.text.text =
+        s.value.text.textSource =
+        s.value.capture.sourceText.content =
+          segments.map((segment) => segment.text).join("");
+    },
+  ]) {
+    const s = actualMeasured(entry);
+    change(s);
+    const before = JSON.stringify(s.value.document),
+      mapping = JSON.stringify(s.value.mapping);
+    const result = planHtmlInlineText(s.value);
+    assert.equal(result.supported, false, change.toString());
+    assert.equal(result.draft, undefined);
+    assert.equal(JSON.stringify(s.value.document), before);
+    assert.equal(JSON.stringify(s.value.mapping), mapping);
+  }
+});
+
+test("live producer own undefined href on unlinked P fragments remains optional without interpreting null", () => {
+  const entry = measuredCases.find((row) => row.width === 400 && !row.case.endsWith("-success"));
+  const { value } = actualMeasured(entry);
+  for (const segment of value.capture.sourceText.styledSegments)
+    if (segment.tag === "p") segment.href = undefined;
+  for (const segment of value.capture.sourceText.styledSegments)
+    Object.assign(segment.style, {
+      whiteSpace: undefined,
+      maxLines: undefined,
+      textShadow: undefined,
+      gradientFill: undefined,
+    });
+  const result = planHtmlInlineText(value);
+  assert.equal(result.supported, true, result.reason);
+  assert(
+    value.capture.sourceText.styledSegments
+      .filter((segment) => segment.tag === "p")
+      .every((segment) => Object.hasOwn(segment, "href") && segment.href === undefined),
+  );
+});
+
+test("inline A typographic pseudo serialization is inert but generated A and real ancestor variants remain guarded", () => {
+  const { value, a, linkStyle, doc } = setup(),
+    original = doc.defaultView.getComputedStyle;
+  doc.defaultView.getComputedStyle = (node, pseudo) =>
+    node === a && ["::first-line", "::first-letter"].includes(pseudo)
+      ? { ...linkStyle, textDecorationLine: "none", textDecorationThickness: "auto" }
+      : original(node, pseudo);
+  assert.equal(planHtmlInlineText(value).supported, true);
+  for (const pseudo of ["::before", "::after"]) {
+    const s = setup(),
+      original = s.doc.defaultView.getComputedStyle;
+    s.doc.defaultView.getComputedStyle = (node, target) =>
+      node === s.a && target === pseudo
+        ? { content: '"real painted content"' }
+        : original(node, target);
+    assert.equal(planHtmlInlineText(s.value).supported, false);
+  }
+  for (const [pseudo, change] of [
+    ["::first-line", { fontSize: "40px" }],
+    ["::first-letter", { color: "rgb(255, 0, 0)" }],
+    [null, { opacity: "0" }],
+  ]) {
+    const s = setup(),
+      ancestor = { parentElement: null },
+      original = s.doc.defaultView.getComputedStyle;
+    s.p.parentElement = ancestor;
+    s.doc.defaultView.getComputedStyle = (node, target) =>
+      node === ancestor
+        ? { ...s.base, ...((pseudo === null ? !target : target === pseudo) ? change : {}) }
+        : original(node, target);
+    assert.equal(planHtmlInlineText(s.value).supported, false);
+  }
+  for (const display of ["table-cell", "table-caption"]) {
+    const s = setup(),
+      ancestor = { parentElement: null },
+      original = s.doc.defaultView.getComputedStyle;
+    s.p.parentElement = ancestor;
+    s.doc.defaultView.getComputedStyle = (node, target) =>
+      node === ancestor
+        ? { ...s.base, display, ...(target === "::first-line" ? { fontSize: "40px" } : {}) }
+        : original(node, target);
+    assert.equal(planHtmlInlineText(s.value).supported, false, display);
   }
 });
