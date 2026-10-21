@@ -125,6 +125,9 @@ test("own HTML root constraints and authored relative or conditional insets cann
     ["viewport padding", fixture(base + "padding:2vw")],
     ["variable padding", fixture(base + "--inset:12px;padding:var(--inset)")],
     ["logical relative padding", fixture(base + "padding-inline:2vw")],
+    ["relative logical border", fixture(base + "border-block-start:2vw solid transparent")],
+    ["relative inline border", fixture(base + "border-inline-start:2vw solid transparent")],
+    ["relative physical border", fixture(base + "border:2vw solid transparent")],
     ["conditional fixed padding", fixture(base, "", "@media(min-width:500px){html{padding:12px}}")],
     ["relative body margin", fixture(base, "margin-left:2vw")],
     ["relative selected margin", fixture(base, "", "#fixture{margin-left:2vw}")],
@@ -136,6 +139,10 @@ test("own HTML root constraints and authored relative or conditional insets cann
     const result = await browser.capture(source, width, { rootSelector });
     assert(result.relation.unsupported, `${label}/${rootSelector}/${width}: ${JSON.stringify(result)}`);
   }
+  for (const width of [640, 400]) for (const rootSelector of ["html", "body", "#fixture"])
+    for (const border of ["border-block-start:8px solid transparent", "border-inline-start:thin solid transparent"])
+      assert.equal((await browser.capture(fixture(base + border), width, { rootSelector })).relation.unsupported,
+        undefined, `${border}/${rootSelector}/${width}`);
 });
 
 test("variable physical and logical box declarations cannot authorize a fixed gutter context before a breakpoint", async (t) => {

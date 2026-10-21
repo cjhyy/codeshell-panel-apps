@@ -120,7 +120,7 @@ absolute positioning, scrollbar widget, inferred15px constant or pixel tolerance
 
 Computed Typed OM alone is insufficient: authored2vw is returned as a px value.
 A bounded read-only CSSOM pass also checks matching box declarations. Relative
-spacing, variable physical/logical dimensions or offsets, unresolved inset/
+spacing or border widths, variable physical/logical dimensions or offsets, unresolved inset/
 overflow/border shorthand substitutions and grouped/conditional box rules retain
 a diagnostic instead of becoming fixed ancestor insets. The
 scan caps64 stylesheets,10000 rules,16 nested groups,1024 declarations per rule

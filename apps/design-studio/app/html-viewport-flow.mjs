@@ -23,10 +23,11 @@ function fixedBoxDeclarations(element, document, window) {
       // authored intent, including for logical border shorthand families.
       if (boxProperty(key) && (!value || /\\|\b(?:var|env|attr)\(/iu.test(value))) return false;
     }
-    for (const prefix of ["margin", "padding"]) for (const side of ["top", "right", "bottom", "left",
+    for (const prefix of ["margin", "padding", "border"]) for (const side of ["top", "right", "bottom", "left",
       "inline-start", "inline-end", "block-start", "block-end"]) {
-      const value = style.getPropertyValue(`${prefix}-${side}`);
-      if (!value || value === "auto" || value === "initial") continue;
+      const value = style.getPropertyValue(`${prefix}-${side}${prefix === "border" ? "-width" : ""}`);
+      if (!value || value === "initial") continue;
+      if (prefix === "border" ? ["thin", "medium", "thick"].includes(value) : value === "auto") continue;
       try {
         const length = window.CSSNumericValue.parse(value).to("px").value;
         if (!Number.isFinite(length) || length < 0 || length > 2000) return false;
