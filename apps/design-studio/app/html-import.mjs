@@ -6,6 +6,7 @@ import { designNodeToV3 } from "./design-node-adapter.mjs";
 import { createHtmlAutoMarginCapture } from "./html-auto-margin-distribution.mjs";
 import { htmlTextLineHeightRatio } from "./html-line-height.mjs";
 import { captureHtmlFontFamilyElement, captureHtmlFontFamilyTextProjection, preserveHtmlFontFamilies } from "./html-font-family.mjs";
+import { createHtmlZeroFlowTokenCapture } from "./html-zero-flow-token.mjs";
 import {
   isHtmlAnchorHref,
   safeHtmlAnchorHref,
@@ -650,6 +651,8 @@ export async function captureWorkspaceHtmlResult({
       options.onRecoveredFlow = (proof) => layoutFlowCandidates.push(proof);
     }
     options.captureAutoMarginPlan = createHtmlAutoMarginCapture({ tree, root, elements, ambiguousElements });
+    const zeroFlowTokens = createHtmlZeroFlowTokenCapture({ tree, root, elements, ambiguousElements });
+    options.captureZeroFlowTokenPlan = zeroFlowTokens.capture;
     const result = await designNodeToV3(tree, options);
     const warn = (code, nodeId, message) => {
       result.report.stats.warningCount += 1;
@@ -682,6 +685,9 @@ export async function captureWorkspaceHtmlResult({
       }
       result.report.tables = tables;
     }
+    // No later asset/text/table await may invalidate an omitted source token.
+    zeroFlowTokens.verify();
+    result.report.sourceOnlyTokens = zeroFlowTokens.report();
     if (includeFlowAudit) {
       const recoveredLayouts = [];
       for (const proof of layoutFlowCandidates) {

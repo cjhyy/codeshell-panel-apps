@@ -173,6 +173,7 @@ export const suites = [
         "tests/apps/design-studio/html-auto-margin-distribution.test.mjs",
         "tests/apps/design-studio/html-block-flow.test.mjs",
         "tests/apps/design-studio/html-empty-block-flow.test.mjs",
+        "tests/apps/design-studio/html-zero-flow-token.test.mjs",
         "tests/apps/design-studio/html-empty-overlay-flow.test.mjs",
         "tests/apps/design-studio/html-flex-cross-margins.test.mjs",
         "tests/apps/design-studio/html-float-columns.test.mjs",

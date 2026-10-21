@@ -412,6 +412,12 @@
   // apps/design-studio/app/html-auto-margin-distribution.mjs
   var nonReplaced = new Set("div main header footer section article aside nav ul ol li h1 h2 h3 h4 h5 h6 p form figure figcaption".split(" "));
 
+  // apps/design-studio/app/html-zero-flow-token.mjs
+  var sides = ["top", "right", "bottom", "left"];
+  var forbiddenTags = new Set("a area audio br button canvas details dialog embed fieldset hr iframe img input label legend link math meter object option optgroup output picture progress script select slot source style summary svg table template textarea track video wbr".split(" "));
+  var geometryKeys = ["display", "position", "top", "right", "bottom", "left", "float", "clear", "width", "height", "min-width", "max-width", "min-height", "max-height", "font-family", "font-size", "line-height", "white-space", "writing-mode", "direction", "vertical-align", "transform", "translate", "rotate", "scale", "perspective", "zoom", "contain", "content-visibility", "counter-reset", "counter-increment", "counter-set", "content", "break-before", "break-after", "break-inside", ...sides.flatMap((side) => ["margin-" + side, "padding-" + side, "border-" + side + "-width"])];
+  var tokenKeys = [...geometryKeys, "visibility", "opacity", "background-color", "background-image", "border-image-source", "box-shadow", "text-shadow", "outline-style", "filter", "backdrop-filter", "mix-blend-mode", "appearance", "resize", "clip-path", "mask-image", "-webkit-mask-image", "overflow-x", "overflow-y", "animation-name", "transition-duration"];
+
   // apps/design-studio/app/text-ranges.mjs
   var MAX_TEXT_RANGES = 64;
   var MAX_TEXT_RANGES_BYTES = 32 * 1024;

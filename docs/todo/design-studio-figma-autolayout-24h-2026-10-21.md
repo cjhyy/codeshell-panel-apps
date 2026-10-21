@@ -2243,3 +2243,105 @@ Browser独立renderer已在CPU实测derived坐标/Hug/Fill污染、改文/改宽
 旋转/rounded ancestor clip命中和font/scene supersession；该工作树尚未稳定合入。
 CK仍为默认，两版都使用canonical模型，实机Figma同步继续独立验收。24小时目标active，
 截止仍2026-10-22 00:31 SG。
+
+## Original html2figma gallery corpus checkpoint · 2026-10-21
+
+原本地仓库精确停在 ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c；只读冻结全部221份
+tracked source，并保持用户原有untracked文件。完整64个运行时模板与原始gallery脚本、
+样式和资源引用保存为独立fixture，未再用20个改写样例代替。原gallery head脚本保持
+inert，不额外注入Tailwind。1280/768/400共192个真实CPU源页面、root PNG/DOM与15张
+gallery全页截图保留；网络响应/redirect按URL冻结。root溢出与完整可见paint范围分开记。
+
+先做7个代表模板宽/窄和相同内容编辑的source replay。Ruby textarea首LF序列化问题
+按独立原值hash修正；Welcome400仍1像素/max1，Ruby1280历史39/max1、Ruby400另有
+2/max4与19/max1严格差异，均保留原图/差异图且未放宽容差。仅11个完全通过的width
+状态进入当前production HTML→canonical，初始/源编辑×viewport/root模式共44次捕获，
+134份app字节前后相同。原Grid实际122项flow义务中42失败、canonical Grid为0；Flex
+Basis26/26和Nav14/14通过，inline仍PARTIAL。保存原canonical、warning、ALaudit、
+source mapping、同宽重排和22个model编辑控制，不把capture成功当像素成功。
+
+44个Figma transfer均明确REFUSED（36字体stack证明缺失、8阴影蒙版guard），非真实
+Figma执行。Browser与CK仍待用相同canonical/bytes比较；真实native与其像素验收NOT_RUN。
+详见 [原gallery corpus](../design-studio-original-gallery-corpus.md) 与外部不可变证据。
+
+### 原始 Grid 约束独立诊断（无准入提升）
+
+在独立 `html-original-grid-20261021` 分支从 fresh origin13d591ca 正常集成稳定
+6b5f57c，134个Design Studio安装文件保持逐字节不变。原始case19的两个宽度
+各9个Grid源节点完整DOM/Typed OM/DesignNode/映射证据已冻结；部分放置、命名区域
+仅映射坐标后仍被bare-fr自动内容最小尺寸警卫拒绝。全64静态CSS约束调查找到
+6个模板中的23个Grid框，未发现仅修placement就能诚实开放的原始案例。
+
+真实Text改长反例：原始命名区域middle track增至1228.125px，零最小fr替代只保留
+308/120px；原始居中auto宽度按150px换行，max-content替代宽1894.21875px。
+同视口v2四组差异143836/34799/69154/49731像素，均为有意负控制，不能称为
+转换结果。v1 element截图溢出范围不同，原证据保留并排除同视口验收。
+
+已核验官方当前GridTrackSize及Figma-owned typings dff4874：FLEX/FIXED/HUG和
+numeric value并不单独证明CSS自动min-content行为。既有实际289e088a fixed500
+溢出控制只支持原有狭窄合同；本轮真实native执行NOT_RUN。没有放宽bare-fr警卫、
+回填固定min-width、增加ABS或宣称Browser/CK像素通过。详见
+[原始Grid约束记录](design-studio-original-grid-contract-2026-10-21.md)。54项证据pin
+handoff v2 SHAa3fe910df3aef099b03e7d137234685936acee282be1e471ac5bc450a7291ea0。
+
+## ROUND47 · 空 inline 来源证明与原始模板独立验收 · 2026-10-21 16:08 SG
+
+正常合入zero-token冻结76797f9（代码4903a6d），组合代码774300b；再正常合入原始
+gallery b1f62f2与Grid诊断6bcd4df。后两项仅fixture/docs，不改变774300b的135个安装
+文件或测试catalog。Grid journal尾部冲突保存原文件后按顺序保留两侧全部记录，没有
+ours隐藏内容。最终文档组合63b6edc的产品字节另行复核，未重复计数历史门禁。
+
+只有真实捕获中的当前空inline/static非绘制节点，经过private WeakMap一次性能力、
+原DOM身份/顺序/完整样式及源descriptor快照检查，才可保留为source-only provenance。
+已有block planner仍须独立准入；真实块ID、Fill/Hug和原始索引保留，不生成虚假1px节点、
+隐藏占位或ABS。所有资源/文字/table await之后再次校验，后面不再await。ID/name、
+ARIA/交互、升级custom element、shadow/counter/NBSP等均拒绝；未来脚本/CSS行为须重捕获。
+
+root peer发现parent projection在descriptor-safe clone前读getter的问题，owner已修复；
+12项capture/final getter控制零读取。root另独立执行6focused和两个新生产案例：一个父
+容器含3token、两个嵌套父各含token，原宽/重排/窄屏均严格0像素，保存重开/改高度的流
+关系正确。真实image-await后新增ID/name均拒绝并清理iframe；这些仅CPU/browser SVG
+导出对照，不是CanvasKit GPU或真实Figma。root peer SHA8e4ea4743702678738364f9849b9a5e57f33cc0cbbae7c2565d62a33981e99f9。
+owner交接及491项证据共506条pin另经root核对；affected364/364通过。
+
+组合完整main855项854pass/1skip（228067.506334ms），UI107项106pass/1skip
+（103445.21675ms），共962项960pass/2skip。typecheck、validate、scoped build check、
+三个生成检查和diff check通过；各门禁HEAD/app/tests/catalog/helper前后不变。组合证据
+SHA7feee3a6abb0fbdc43c13960ee368bc54486b9e1d574f25a1c8c1c201186ad36。
+真实WSS仅流覆盖198→200/213、失败15→13、未解决252不变；全页初始/重排仍
+482233/670665差异像素，窄屏606326→606327仍失败。248个转换像素变化中0修复、
+1新增错误，其余原本已错；未用容差或坐标拟合掩盖已有0.01舍入影响。
+
+原gallery独立peer核对6raw/221源清单/134app/959证据pin与64项完整运行时内容，
+解码70组源对照；确认11eligible→44capture、22model edits及36字体/8阴影transfer
+拒绝，不把source replay当转换通过。peer SHA0ed3284c120ebe0c7f806ca0d25e90f190d587079246467944276e4ba735d848。
+Grid root另核对134app/54artifacts，并独立解码四组负控制PNG；peer
+SHA0311b9d196caf4a211426909b5eb8ca29ef5025112eba3babdd3d65e169f7cbf。没有Grid准入提升。
+
+ROUND46旧native9296/553工作树和分支在稳定同步、owner释放全部reader/依赖后普通
+移除，外部证据保留；cleanup SHA1b7994fef6645f9dee9cc93ed85959bcd758e15252be4d660dfa22490985adc5。
+08:00:40UTC复查cuaAvailable:false，当前实机Figma验收仍NOT_RUN。Browser显式第二版
+正在独立review：已修hidden Hug、反向流误重排和取消resize旧选框，加载中资源释放及
+固定尺寸组件master属性遗漏仍在修复；尚未合入。CK默认不变，截止00:31SG不变。
+
+### ROUND47 保存与下一阶段
+
+primary main与聚合均clean同步fe2eca7；135app及catalog共136pins与门禁代码一致。
+FF收据SHA076d619a1941c3cd7f53e2393856243aba3c0132f61b0dacdefdacb6d1f848ff。
+zero owner释放全部reader、移除精确依赖symlink后，root验证clean/无cwd reader/main
+祖先关系，普通移除76797f9工作树和已合入分支；无force，外部证据保留。cleanup
+SHA367af6ed2695ae5256f1877c20a21ed5affc2cbc2abb8f7d063a2af237c3f3c6。
+原gallery b1f62与Grid6bcd同样由owner释放reader/链接后普通移除；各自外部parent
+evidence保留，历史helper若硬编码旧app路径须重建精确commit checkout后重放。
+两项cleanup SHA91b2ae34f41da6aaf00ea26e6111712467aedd1f4c8af1fbb46a14e69a332e16。
+
+PRD真实纯JS/生产VM审计发现：插入/重排需求改变既有ordinal IDs；插件创建会保存
+codeshellNotes但当前export/import不将它恢复为canonical notes，raw binding仍保留
+未知pluginData，并非原始数据被删。两页prototype仅验证保存的引用及生成HTML内容，
+未运行浏览器导航或实际Figma交互；修正早先positiveControl命名，保留v1。
+审计v2 SHAece402942d5bbc8eca1d67a181f08a377a05abc12c83b770b02390afb0742950。
+已授权独立最小修复作者显式requirement IDs、重复/碰撞拒绝和legacy编号兼容，活动
+工作树design-studio-prd-requirement-ids-20261021/codeshell-panel-apps，branch
+codex/design-studio/prd-requirement-ids-20261021，fresh origin13d正常合入fe2eca7。
+notes跨Figma往返仍单独未修复，不把任意pluginData当受信来源。Browser活动树继续保留；
+root正在准备同canonical/bytes原模板的真实CK GPU与Browser截图对照，尚未执行。

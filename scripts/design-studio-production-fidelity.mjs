@@ -342,6 +342,7 @@ export async function runProductionFidelity({
         nativeTransfer: nativeTransferError ? { supported: false, status: "unsupported", stage: "production-v3-transfer", error: nativeTransferError }
           : { supported: true, status: "prepared", stage: "production-v3-transfer" },
         warnings: captured.report.warnings,
+        ...(captured.report.sourceOnlyTokens ? { sourceOnlyTokens: captured.report.sourceOnlyTokens } : {}),
         ...(activeFixture
           ? {
               localFixture: {

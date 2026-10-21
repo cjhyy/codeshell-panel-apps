@@ -88,7 +88,7 @@ export function htmlBlockHorizontalBleed(child) {
   return { left: -left, right: -right };
 }
 
-export function planHtmlBlockFlow(source, coordinateSpace = "parent-relative", targetOrigin = { x: 0, y: 0 }, { ignoreOuterFloat = false } = {}) {
+export function planHtmlBlockFlow(source, coordinateSpace = "parent-relative", targetOrigin = { x: 0, y: 0 }, { ignoreOuterFloat = false, sourceOnlyTokens = null } = {}) {
   if (
     source.nodeType !== "container" ||
     !["block", "flow-root"].includes(source.layout?.display) ||
@@ -147,7 +147,7 @@ export function planHtmlBlockFlow(source, coordinateSpace = "parent-relative", t
   if (promoted.size && source.children.some((child) => absolute(child) && !promoted.has(child) && !unpaintedEmptyAbsolute(child)))
     return reason("相对 z-index 与绝对覆盖层的绘制顺序需要保留测量布局。");
   const entries = source.children.flatMap((child, index) => {
-    if (promoted.has(child) || isHtmlEmptyClear(child)) return [];
+    if (promoted.has(child) || isHtmlEmptyClear(child) || sourceOnlyTokens?.has(child)) return [];
     const recovered = replacements.get(child) ?? child;
     return [{ source: recovered, index: replacements.has(child) ? source.children.indexOf(recovered) : index }];
   });
