@@ -135,7 +135,7 @@ export function createNativeNotesPatchCapture({ patch, indexes, pluginId, existi
   const baseline = normalizeNativeNotesPatchBaseline(patch.nativeNotesBefore);
   if (!baseline || baseline.pluginId !== pluginId)
     fail("NATIVE_NOTES_BASELINE_REQUIRED", "Existing notes writes/deletions require a fresh matching own-plugin baseline");
-  const topology = topologyCache(), captured = new Map(), operations = new Map();
+  const topology = topologyCache(), captured = new Map(), operations = new Map(), corroborated = new Map();
   for (const operation of patch.operations.filter(notesSensitiveOperation)) {
     if (operations.has(operation.sourceId)) fail("NATIVE_NOTES_PATCH", "Notes patch repeats a target");
     operations.set(operation.sourceId, operation);
@@ -174,15 +174,50 @@ export function createNativeNotesPatchCapture({ patch, indexes, pluginId, existi
       fail("NATIVE_NOTES_IDENTITY", "Notes catalog root does not match the original source snapshot");
     visit(id, target);
   };
+  const corroborateOwnRest = (id, raw) => {
+    if (!operations.has(id)) return;
+    let rawVisits = 0;
+    const field = (value, key) => {
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        fail("NATIVE_NOTES_RAW_CONFLICT", "Current official notes source must be an owned record");
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor && (!Object.hasOwn(descriptor, "value") || !descriptor.enumerable))
+        fail("NATIVE_NOTES_RAW_CONFLICT", "Current official notes source contains an accessor or hidden field");
+      return descriptor?.value;
+    };
+    const inspect = (sourceId, rest, depth = 0) => {
+      const entry = captured.get(sourceId);
+      if (!entry || depth > 34 || ++rawVisits > 60000 ||
+          field(rest, "id") !== sourceId || field(rest, "type") !== entry.expected.type)
+        fail("NATIVE_NOTES_RAW_CONFLICT", "Current official notes source and captured native identity disagree");
+      assertNativeNotesRawAgreement(rest, entry.expected.notes, pluginId);
+      const children = field(rest, "children") ?? [];
+      if (!Array.isArray(children) || children.length !== entry.expected.children.length)
+        fail("NATIVE_NOTES_RAW_CONFLICT", "Current official notes subtree does not cover every captured descendant");
+      const descriptors = Object.getOwnPropertyDescriptors(children);
+      if (Reflect.ownKeys(descriptors).length !== children.length + 1)
+        fail("NATIVE_NOTES_RAW_CONFLICT", "Current official notes child array is not dense owned data");
+      for (const [index, childId] of entry.expected.children.entries()) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor || !Object.hasOwn(descriptor, "value") || !descriptor.enumerable)
+          fail("NATIVE_NOTES_RAW_CONFLICT", "Current official notes child is not owned data");
+        inspect(childId, descriptor.value, depth + 1);
+      }
+    };
+    inspect(id, raw); corroborated.set(id, raw);
+  };
   const assertCurrent = (complete = true) => {
     if (complete && [...operations.keys()].some(id => !captured.has(id)))
       fail("NATIVE_NOTES_IDENTITY", "Notes patch did not capture every original target");
     if (complete && Object.keys(baseline.nodes).some(id => !captured.has(id)))
       fail("NATIVE_NOTES_IDENTITY", "Notes patch contains an unrelated catalog record");
+    if (complete && [...operations.keys()].some(id => !corroborated.has(id)))
+      fail("NATIVE_NOTES_RAW_CONFLICT", "Every notes-sensitive target requires its own current official source");
     for (const entry of captured.values())
       if (!sameObservation(entry.expected.notes, observe(entry.target, pluginId)))
         fail("NATIVE_NOTES_CONFLICT", "Native notes changed after preflight; no notes were written");
     topology.assertCurrent();
+    if (complete) for (const [id, raw] of corroborated) corroborateOwnRest(id, raw);
     for (const [id] of operations) {
       if (!captured.has(id)) continue;
       let depth = 0;
@@ -201,5 +236,5 @@ export function createNativeNotesPatchCapture({ patch, indexes, pluginId, existi
         fail("NATIVE_NOTES_READBACK", "Native notes readback differs from the exact prepared intent");
     }
   };
-  return { captureTarget, assertCurrent, assertApplied };
+  return { captureTarget, corroborateOwnRest, assertCurrent, assertApplied };
 }

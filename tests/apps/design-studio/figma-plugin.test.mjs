@@ -215,6 +215,9 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
           node[method] = (...args) => node.rangeWrites.push([method, ...clone(args)]);
       }
       const mock = installNativeTextRangeSdkMock(node, { mixed, toRuntime: value => toRuntime(value) });
+      // Explicit synthetic write-capability fixture only. The general SDK mock
+      // retains actual unknown numeric1; this known-null VM is not native proof.
+      if (nativeExistingUpdateProof) node.getRangeHyperlink = () => null;
       if (nativeTextRanges) nativeRangeMocks.set(node, mock);
     }
     let name = raw.name;
@@ -3645,4 +3648,66 @@ test("guarded mixed name and notes keep the entire unmapped descendant baseline"
   let writes = 0; const set = f.target.setPluginData; f.target.setPluginData = function (...args) { writes++; return set.apply(this, args); };
   await f.runtime.send({ type: "apply-patch", token: preview.token }); assert.equal(f.runtime.messages.at(-1).type, "error"); assert.equal(writes, 0);
   assert.equal(f.target.name, "Original"); assert.equal(f.runtime.all.get("1:3").getPluginData("codeshellNotes"), "Latest unmapped requirement");
+});
+
+test("destructive Text updates refuse unknown mixed throwing missing and disagreeing complete getters", async () => {
+  for (const kind of ["numeric1", "mixed", "throw", "missing", "decoration", "scalar", "segment"]) {
+    const f = await existingUpdateFixture(), value = existingUpdatePayload(f);
+    if (kind === "numeric1") f.target.getRangeHyperlink = () => 1;
+    if (kind === "mixed") f.target.getRangeHyperlink = () => f.runtime.figma.mixed;
+    if (kind === "throw") f.target.getRangeHyperlink = () => { throw Error("Unknown native getter"); };
+    if (kind === "missing") delete f.target.getRangeHyperlink;
+    if (kind === "decoration") f.target.getRangeTextDecorationOffset = () => 0;
+    if (kind === "scalar") f.target.textStyleId = "unknown-style";
+    if (kind === "segment") { const read = f.target.getStyledTextSegments; f.target.getStyledTextSegments = fields => {
+      const runs = read(fields); runs[0].fontSize += 1; return runs;
+    }; }
+    let writes = 0; const set = f.target.setPluginData; f.target.setPluginData = function (...args) { writes++; return set.apply(this, args); };
+    let chars = f.target.characters; Object.defineProperty(f.target, "characters", { configurable: true, enumerable: true, get: () => chars, set: value => { writes++; chars = value; } });
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) });
+    assert.equal(f.runtime.messages.at(-1).type, "error", kind); assert.equal(writes, 0, kind); assert.equal(chars, "Original text");
+  }
+});
+
+test("fresh own REST notes contradictions refuse mixed notes-only and unmapped descendant writes", async () => {
+  for (const lane of ["mixed", "notes-only", "descendant"]) for (const namespace of ["own", "foreign", "missing"]) {
+    const f = lane === "mixed" ? await existingUpdateFixture() : await notesFixture({ unsupportedChild: lane === "descendant" });
+    let value;
+    if (lane === "mixed") value = existingUpdatePayload(f);
+    else { const current = clone(f.imported.document); current.nodes[0].notes = "Local note";
+      if (lane === "descendant") current.nodes[0].name = "Local reviewed root";
+      value = createFigmaTransfer(current); value.patch = createFigmaPatch(f.binding, current);
+    }
+    const source = lane === "descendant" ? f.runtime.all.get("1:3") : f.target;
+    source.raw.pluginData = namespace === "missing" ? {} : { [namespace === "own" ? f.runtime.figma.pluginId : "foreign-plugin"]: { codeshellNotes: "Contradictory raw requirement" } };
+    let writes = 0; const set = f.target.setPluginData; f.target.setPluginData = function (...args) { writes++; return set.apply(this, args); };
+    const beforeName = f.target.name, beforeNotes = f.target.getPluginData("codeshellNotes");
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); const preview = f.runtime.messages.at(-1);
+    if (namespace === "own") { assert.equal(preview.type, "error", lane); assert.match(preview.message, /raw notes contradict/u);
+      assert.equal(writes, 0); assert.equal(f.target.name, beforeName); assert.equal(f.target.getPluginData("codeshellNotes"), beforeNotes);
+    } else { assert.equal(preview.type, "patch-preview", `${lane}/${namespace}: ${preview.message}`);
+      await f.runtime.send({ type: "apply-patch", token: preview.token }); assert.equal(f.runtime.messages.at(-1).type, "patched", f.runtime.messages.at(-1).message);
+    }
+  }
+});
+
+test("last font and undo edges cannot replace getter evidence or introduce consumed raw notes contradictions", async () => {
+  for (const edge of ["font", "undo"]) for (const field of ["getter", "raw-notes"]) {
+    const f = await existingUpdateFixture(), value = existingUpdatePayload(f);
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); const preview = f.runtime.messages.at(-1);
+    assert.equal(preview.type, "patch-preview"); let ownedRaw, injected = false, writes = 0;
+    const read = f.target.exportAsync; f.target.exportAsync = async settings => { const response = await read.call(f.target, settings);
+      if (settings.format === "JSON_REST_V1") ownedRaw = response.document; return response;
+    };
+    const mutate = () => { if (injected) return; injected = true;
+      if (field === "getter") f.target.getRangeHyperlink = () => 1;
+      else ownedRaw.pluginData = f.runtime.jsonRest({ [f.runtime.figma.pluginId]: { codeshellNotes: "Late raw contradiction" } });
+    };
+    if (edge === "font") { const load = f.runtime.figma.loadFontAsync.bind(f.runtime.figma); f.runtime.figma.loadFontAsync = async font => { await load(font); mutate(); }; }
+    else { const undo = f.runtime.figma.commitUndo.bind(f.runtime.figma); f.runtime.figma.commitUndo = () => { undo(); mutate(); }; }
+    const set = f.target.setPluginData; f.target.setPluginData = function (...args) { writes++; return set.apply(this, args); };
+    let chars = f.target.characters; Object.defineProperty(f.target, "characters", { configurable: true, enumerable: true, get: () => chars, set: value => { writes++; chars = value; } });
+    await f.runtime.send({ type: "apply-patch", token: preview.token }); assert(injected);
+    assert.equal(f.runtime.messages.at(-1).type, "error", `${edge}/${field}`); assert.equal(writes, 0); assert.equal(chars, "Original text");
+  }
 });

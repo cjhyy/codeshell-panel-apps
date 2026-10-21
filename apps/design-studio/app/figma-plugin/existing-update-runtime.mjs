@@ -36,6 +36,38 @@ const solid = value => {
 };
 const rawType = node => node.type === "PAGE" ? "CANVAS" : node.type;
 
+// Read-only import deliberately retains unknown getter values as diagnostics.
+// Destructive whole-Text setters need a stronger, independently supported proof.
+const assertPlainTextWriteEvidence = observations => {
+  const { scalars, segments, rangeChecks } = observations;
+  if (!segments.length || segments.length !== rangeChecks.length) unsupported();
+  const segmentOnly = new Set(["fontStyle", "listOptions", "indentation", "textStyleOverrides"]);
+  const getters = ["textDecoration", "textDecorationStyle", "textDecorationOffset",
+    "textDecorationThickness", "textDecorationColor", "textDecorationSkipInk", "hyperlink"];
+  const base = segments[0].values;
+  for (const field of NATIVE_TEXT_RANGE_FIELDS) {
+    if (base[field]?.kind !== "value") unsupported();
+    const scalar = scalars[field];
+    // These four SDK fields have a complete segment API but no scalar property.
+    // Missing is permitted only here; mixed/error/unknown values never qualify.
+    if (!(segmentOnly.has(field) && scalar?.kind === "missing") &&
+        (scalar?.kind !== "value" || stable(scalar) !== stable(base[field]))) unsupported();
+  }
+  for (const field of NATIVE_TEXT_RANGE_SCALAR_ONLY_FIELDS)
+    if (scalars[field]?.kind !== "value") unsupported();
+  if (base.textDecoration.value !== "NONE" || base.hyperlink.value !== null ||
+      base.textStyleId.value !== "" || base.fillStyleId.value !== "" ||
+      stable(base.textStyleOverrides.value) !== "[]" ||
+      !["NONE", "HEIGHT", "WIDTH_AND_HEIGHT"].includes(scalars.textAutoResize.value) ||
+      ["layoutSizingHorizontal", "layoutSizingVertical"].some(field => !["FIXED", "FILL", "HUG"].includes(scalars[field].value))) unsupported();
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index], check = rangeChecks[index];
+    if (stable(segment.values) !== stable(base) || check.start !== segment.start || check.end !== segment.end) unsupported();
+    for (const field of getters)
+      if (check.values[field]?.kind !== "value" || stable(check.values[field]) !== stable(segment.values[field])) unsupported();
+  }
+};
+
 export const isNativeExistingUpdateCapture = (capture, patch) => brands.get(capture) === patch;
 
 /** Returning null leaves the legacy unsupported/structural boundaries intact. */
@@ -101,6 +133,7 @@ export function createNativeExistingUpdateCapture({ patch, mixed }) {
         fields: NATIVE_TEXT_RANGE_FIELDS, scalarFields: NATIVE_TEXT_RANGE_SCALAR_ONLY_FIELDS,
       });
       if (result.status !== "captured") unsupported();
+      assertPlainTextWriteEvidence(result.observations);
       if (["fontName", "fontSize", "fontWeight", "lineHeight", "letterSpacing", "fills", "textDecoration"].some(key =>
         result.observations.scalars[key]?.kind !== "value")) unsupported();
       fields.text = result.observations;
