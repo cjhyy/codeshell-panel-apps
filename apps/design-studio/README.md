@@ -684,3 +684,10 @@ native percentage line heights. Raw observations remain unchanged, and
 canonical metric admission stays strict. See the
 [actual SDK projection evidence](../../docs/todo/design-studio-native-text-rest-projection-2026-10-21.md)
 for preserved failures, deliberate admission refusals and Unicode controls.
+
+The staged `figma-plugin/text-range-state.mjs` finalizer combines complete SDK
+capture with author-hint validation after final layout. It stages all hints and
+rechecks every owned Text after the last awaited export before writing metadata;
+the factory must provide its ownership check and rollback boundary. This module
+is not exported by the production text runtime or called by the creation path.
+Native writer, percentage transport and final factory acceptance remain pending.
