@@ -2709,3 +2709,64 @@ SHA3f74d9fb5ffab0ae606fb618f103ec86416bb409c992676c942b63eb73444058。
 没有合入2e5。owner正在同隔离树修复严格字段/getter准入及所有后代own REST备注复核，
 初步新增控制绿色，仍需冻结、独立复验和最终组合回归。13:55:21UTC documented
 node_repl实际复查cuaAvailable:false，真实Figma仍NOT_RUN；截止UTC16:31不变。
+
+### ROUND55 · 最终字段保护、备注读回与组合交付
+
+旧2e5失败保留后，普通后继3dc54790ed755a408e21da85ac9f0de6f8a36514加强破坏性
+整段Text写入准入：完整scalar/segment/range-getter必须有已支持且严格一致的值，只有
+4个没有scalar API的字段允许以完整segment证据证明；readonly uniform诊断不能当写入
+凭证。numeric1/mixed/error/missing均在原节点写入前拒绝，原SDKmock数字1未改成null。
+known-null正控明确标为synthetic VM能力控制，不能称原生Figma验收。备注对每个目标及
+完整未映射后代的新鲜own REST与独立SDK备注复核，并在最终同步checkpoint重查；
+foreign/missing namespace不提供写入权限。独立3dc peer58项VM及20项先bound再判定
+unsupported的语义控制全部通过，收据
+SHAf0e017871eea546c44c6a8fe7c9f2906debb8307b5ad23c4b97047161a3d184c。
+
+peer另在2e5及3dc均复现仅备注silent-noop仍返回patched的旧缺口。普通后继
+cc14ce5fa054a19d76da640d89473488af0dc276仅在notes-only分支全部为UPDATE时，于
+同步setters后、最终undo checkpoint前调用既有完整备注/后代/topology读回。单节点、
+多节点和clear均有正常及no-op正反控，失败报错并请求undo；含delete/delete-page的
+事务保留旧路径，不宣称新增读回保证或完整原生回滚。owner289/289及8项静态/生成
+检查通过，270实际文件前后不变；handoff
+SHAfd9bcab3f3bf5e38fd66d00201aae5f48e8663ab00428c49e896019117734aa9。
+独立cc14重放58旧VM及6新读回/2删除边界，66/66通过；20pure语义控制继承字节未变
+的3dc依赖，未冒称在cc14重跑。362snapshot/141package前后不变、12旧Text模块仍
+逐字相等，peer SHA659fe29ca475f3613bf67ebc25090997323eb8c1b45094aeed40d464a183239b。
+
+正常合入aa724397得到fda3d474e0b20ab48f8854db3aab8fc9b3643691，无手工冲突解法，
+三个builder顺序重建后无变化。native code.js的GRID块逐字等于098；该块之外每个
+原始字节（含最终LF）逐字等于cc14。核心Browser/CanvasKit/布局路径仍等于098，
+没有新像素结论。root完整main962项961pass/1skip，UI113项112pass/1skip，installed
+CLI6/6，static7项全通过；870 union pins/141完整包核验。最终组合收据
+SHAee4b6c2c6050aaadc21c518dd93f533c1bd1c732ec7074321ccbebab13753b5e。
+root最初checkpoint校验器对Git blob调用strip移除了EOF LF而产生断言失败，失败在写
+checkpoint前发生；改为读取原始blob后严格相等，产品未改，校验失败说明另存。
+本地main已clean正常FF fda，全部870pins相等，集成收据
+SHA8120f2a3b67c531cb6aa9f818f58af808e132bfa38f1a374fee594c0a9061751；无push/发布/Host安装。
+
+精度098 owner/peer/root全部reader释放后，普通移除工作树/分支，432外部证据及依赖
+目标inode保留，SHAea9b03b59c3aee117993602ee1a6beeec893a31690a2b025299e42262bd2e65f。
+另清理本轮12个已是localmain祖先、无active cwd且包括ignored完全clean的历史topic，
+均普通worktree remove及branch -d，无force；未合入/其他任务/主aggregate保留。
+收据SHAc821a7180588f9bfccd58efd51fe9e90ec82df678bddff9ad9b94be7a99950f2。
+cc14同样仅unlink owned依赖链接后普通清理，48个owner外部路径及362file独立快照
+保留，SHA3c90cea8cecfd5a537566475efdc595381431918c2e81c04933567e55ae3a302。
+历史硬编码WT路径回放需重建记录中的exact Git head，不再依赖已删除目录。
+
+窄682独立空间诊断：initial/edit均在y86及544两行、x59..399各341像素，interior
+155837像素RGBA exact；两状态mask相同，根几何86.78125/height457.53125在源、
+canonical、Browser一致。底部灰色属于捕获内部fill，不能全归咎gallery shell；具体
+合成/栅格化因果仍未证明，不改裁剪/平移或容差。收据
+SHA8d5a7616e9aff086ee303d198e0420cc3324df68125e1912729686b88704c60a。
+
+fda上另完成当前44次生产结构CPU复验（原11eligible宽度×initial/source-edit×
+viewport/root）：44/44捕获、0capture failure，实际44输入HTML与旧生产逐字节相等，
+46源/context/assets pins及141产品文件前后不变。22次模型Text edit APPLIED；节点ID
+集合/flow摘要44均等旧，仅21的8状态出现basis Frame Hug→Fixed及其Text Hug→Fill。
+无新增普通流ABS；43每态5个ABS都有源position:fixed。Figma transfer仍36字体栈与
+8shadow拒绝，19仍Grid0/42flow失败。同宽reflow在旧及当前均44/44有精确几何变化，
+不等于每个旧/新delta相同。原始值和528输出已保留；本轮无新源截图、无44像素结论、
+无Figma/GPU执行。owner handoff
+SHAd1c0bf94c02848dfdb123853371362d16c31f1a5418ba718121a1f66a9c75fd9；独立只读
+artifact复核及19剩余Grid约束分析正在进行，后续结果另记。截止UTC16:31不变，当前
+必要产品修复已保存，后续仅有界验证、记录与交付整理，不因局部绿色提前宣称完整对标。
