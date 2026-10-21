@@ -41,7 +41,11 @@ are separately checked. This is a current capture proof, not a blanket assertion
 about the public site's scripts or future upgrades.
 
 Descriptor-owned typed source snapshots refuse accessors/toJSON, cycles, unusual
-prototypes, functions and oversized fields without invoking them. Source snapshots
+prototypes, functions and oversized fields without invoking them. Independent peer
+review caught the original parent projection reading properties before that typed
+snapshot. Successor4903a6d projects only own data descriptors and preserves exact
+child-array/index ownership; accessors refuse before proof reads. Twelve capture
+and final parent/child-index controls verify zero getter reads. Source snapshots
 limit32768 input key/string UTF-16 units,2000 values,depth10 and4000 units per
 string. Style reads limit16384 input string units and4000 per value. Retained
 serialized snapshot strings are capped at524288 UTF-16 units per parent and
@@ -107,8 +111,12 @@ or actual Figma execution. Native is NOT_RUN.
 Stable6b5f57c was normally merged after a fresh origin fetch. The only conflict
 was the generated HTML-plugin build.json; all three generators rebuilt from the
 combined sources. The primary Figma-plugin directory remains byte-identical to
-that verified stable baseline. Final363 affected tests passed118082.831834ms;
-typecheck, validate, scoped build/check, all generated checks and diff check pass.
+that verified stable baseline. Historical7e380 passed363 affected tests before
+the parent-descriptor correction; its logs and evidence remain intact. Final4903a6d
+passes364/364 affected tests98377.866167ms with no skips. Typecheck, validate,
+scoped build/check, all three generated checks and diff check pass. All63 source,
+converted and difference PNGs in the final successor replay are byte-identical
+to the earlier paired candidate, preserving both the improvements and failures.
 The main/UI suites are reserved for the independent integration gate. Baseline6b5
 was separately archived/pinned, and its owned dependency symlink was removed after
 all runs ended. Candidate dependencies remain only for peer review. Final source
