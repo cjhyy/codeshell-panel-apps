@@ -37,6 +37,7 @@
     "apps/design-studio/app/stroke.mjs",
     "apps/design-studio/app/text-line-height.mjs",
     "apps/design-studio/app/text-metrics.mjs",
+    "apps/design-studio/app/text-ranges.mjs",
     "apps/design-studio/app/vendor/html2figma-browser.mjs",
     "third-party/html2figma-plugin/integration/capture.ts",
     "third-party/html2figma-plugin/integration/code.ts",
@@ -76,13 +77,13 @@
     },
     {
       "path": "code.js",
-      "bytes": 229281,
-      "sha256": "bd0939893e309ce64db71558fc43c008b300c7fbbfd17dc74192e830d5815438"
+      "bytes": 229367,
+      "sha256": "183ea0c0ad0d837065d145bdcddc4358e75454582edada3c431a76a9b820e9cf"
     },
     {
       "path": "ui.html",
-      "bytes": 364099,
-      "sha256": "5da6add8f063f4053c6738bea27b924da710934001929c24c723eeb59aa25c10"
+      "bytes": 364185,
+      "sha256": "6828e68566854ffdc61df2e90a978bff30329f9477833e63484ebf48c7cca387"
     },
     {
       "path": "README.md",

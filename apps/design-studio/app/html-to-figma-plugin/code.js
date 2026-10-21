@@ -5176,6 +5176,9 @@
   // apps/design-studio/app/stroke.mjs
   var STROKE_SIDES = Object.freeze(["top", "right", "bottom", "left"]);
 
+  // apps/design-studio/app/text-ranges.mjs
+  var MAX_TEXT_RANGES_BYTES = 32 * 1024;
+
   // apps/design-studio/app/linear-gradient-geometry.mjs
   var object = (v) => v && typeof v === "object" && !Array.isArray(v);
   var finite = (v) => typeof v === "number" && Number.isFinite(v);

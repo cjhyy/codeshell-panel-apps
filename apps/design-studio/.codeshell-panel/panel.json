@@ -203,6 +203,209 @@
         "inputSchema": {
           "type": "object",
           "$defs": {
+            "textRanges": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "version",
+                "sourceSignature",
+                "ranges"
+              ],
+              "properties": {
+                "version": {
+                  "const": 1
+                },
+                "sourceSignature": {
+                  "type": "string",
+                  "maxLength": 24004
+                },
+                "ranges": {
+                  "type": "array",
+                  "maxItems": 64,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "start",
+                      "end"
+                    ],
+                    "properties": {
+                      "start": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 4000
+                      },
+                      "end": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 4000
+                      },
+                      "fill": {
+                        "type": "string",
+                        "pattern": "^#[0-9a-fA-F]{6}$"
+                      },
+                      "textDecoration": {
+                        "enum": [
+                          "none",
+                          "underline",
+                          "line-through"
+                        ]
+                      },
+                      "textDecorationThickness": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "unit"
+                            ],
+                            "properties": {
+                              "unit": {
+                                "const": "auto"
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "unit",
+                              "value"
+                            ],
+                            "properties": {
+                              "unit": {
+                                "const": "px"
+                              },
+                              "value": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                                "maximum": 100
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "unit",
+                              "value"
+                            ],
+                            "properties": {
+                              "unit": {
+                                "const": "em"
+                              },
+                              "value": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                                "maximum": 10
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "textUnderlineOffset": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "unit"
+                            ],
+                            "properties": {
+                              "unit": {
+                                "const": "auto"
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "unit",
+                              "value"
+                            ],
+                            "properties": {
+                              "unit": {
+                                "const": "px"
+                              },
+                              "value": {
+                                "type": "number",
+                                "minimum": -100,
+                                "maximum": 100
+                              }
+                            }
+                          },
+                          {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "unit",
+                              "value"
+                            ],
+                            "properties": {
+                              "unit": {
+                                "const": "em"
+                              },
+                              "value": {
+                                "type": "number",
+                                "minimum": -10,
+                                "maximum": 10
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "textDecorationSkipInk": {
+                        "enum": [
+                          "auto",
+                          "none"
+                        ]
+                      },
+                      "href": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048,
+                        "anyOf": [{"pattern":"^#[^\\u0000-\\u001F\\u007F]*$"},{"pattern":"^[Hh][Tt][Tt][Pp]://[^\\u0000-\\u001F\\u007F]+$"},{"pattern":"^[Hh][Tt][Tt][Pp][Ss]://[^\\u0000-\\u001F\\u007F]+$"},{"pattern":"^[Mm][Aa][Ii][Ll][Tt][Oo]:[^\\u0000-\\u001F\\u007F]+$"},{"pattern":"^[Tt][Ee][Ll]:[^\\u0000-\\u001F\\u007F]+$"}]
+                      }
+                    },
+                    "allOf": [
+                      {
+                        "if": {
+                          "anyOf": [
+                            {
+                              "required": [
+                                "textDecorationThickness"
+                              ]
+                            },
+                            {
+                              "required": [
+                                "textUnderlineOffset"
+                              ]
+                            },
+                            {
+                              "required": [
+                                "textDecorationSkipInk"
+                              ]
+                            }
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "textDecoration"
+                          ],
+                          "properties": {
+                            "textDecoration": {
+                              "const": "underline"
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              "description": "Paint/link-only UTF16 source ranges. Runtime additionally checks exact content signature, Unicode boundaries, ordering, resolved length/UTF8 budgets and display ownership."
+            },
             "color": {
               "anyOf": [
                 {
@@ -678,6 +881,7 @@
                   "type": "string",
                   "enum": ["none", "underline", "line-through"]
                 },
+                "textRanges": { "anyOf": [{ "$ref": "#/$defs/textRanges" }, { "type": "null" }], "description": "Content-bound paint/link overrides. Content edits need a coherent final payload, or explicit null to clear." },
                 "textMeasurement": {
                   "type": "string",
                   "enum": ["browser"],
@@ -981,6 +1185,73 @@
               "maxItems": 50,
               "items": {
                 "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "op": {
+                        "const": "edit_text"
+                      },
+                      "node_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                        "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+                      },
+                      "start": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 4000
+                      },
+                      "end": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 4000
+                      },
+                      "text": {
+                        "type": "string",
+                        "maxLength": 4000
+                      },
+                      "affinity": {
+                        "enum": [
+                          "before",
+                          "after",
+                          "none"
+                        ]
+                      },
+                      "expectedSourceSignature": {
+                        "type": "string",
+                        "maxLength": 24004
+                      }
+                    },
+                    "required": [
+                      "op",
+                      "node_id",
+                      "start",
+                      "end",
+                      "text",
+                      "expectedSourceSignature"
+                    ],
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "text": {
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "text"
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "affinity"
+                          ]
+                        }
+                      }
+                    ]
+                  },
                   {
                     "type": "object",
                     "properties": {

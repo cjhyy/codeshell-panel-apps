@@ -1,4 +1,5 @@
 import { textLineHeightPixels } from "./text-line-height.mjs";
+import { validateTextRanges } from "./text-ranges.mjs";
 /* Browser measurements are receipts for specific text and typography, not audit exemptions. */
 import { designFontFamilyCss } from "./font-css.mjs";
 export function textMetricsSignature(node) {
@@ -231,7 +232,7 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
 }
 
 // Preserve every original character; line breaks are layout, and textSource retains the source.
-export function measuredWrap(source, width, measure) {
+function measuredWrapLines(source, width, measure) {
   return source.split("\n").flatMap((paragraph) => {
     if (!paragraph || measure(paragraph).width <= width + 0.01) return [paragraph];
     const lines = [];
@@ -261,6 +262,26 @@ export function measuredWrap(source, width, measure) {
   });
 }
 
+/** Indexed companion preserves authored hard breaks and all hanging spaces. */
+export function measuredWrapSource(source, width, measure) {
+  const values = measuredWrapLines(source, width, measure), lines = [];
+  let sourceOffset = 0, displayOffset = 0;
+  for (const [index, text] of values.entries()) {
+    const sourceEnd = sourceOffset + text.length, displayEnd = displayOffset + text.length;
+    if (source.slice(sourceOffset, sourceEnd) !== text) throw Error("Indexed text wrapping lost source characters");
+    const breakAfter = index === values.length - 1 ? null : source[sourceEnd] === "\n" ? "hard" : "soft";
+    lines.push({ sourceStart: sourceOffset, sourceEnd, displayStart: displayOffset, displayEnd, breakAfter });
+    sourceOffset = sourceEnd + (breakAfter === "hard" ? 1 : 0);
+    displayOffset = displayEnd + (breakAfter === null ? 0 : 1);
+  }
+  if (sourceOffset !== source.length) throw Error("Indexed text wrapping did not consume the complete source");
+  return { displayText: values.join("\n"), lines };
+}
+
+export function measuredWrap(source, width, measure) {
+  return measuredWrapSource(source, width, measure).displayText.split("\n");
+}
+
 export function measuredEllipsis(source, width, measure) {
   const lines = source.split(/\r\n?|\n/u);
   const first = lines[0];
@@ -286,6 +307,8 @@ export async function measureFigmaTextDocument(
     nativeLineBoxes = false,
   } = {},
 ) {
+  for (const page of documentValue.pages ?? [documentValue])
+    for (const node of page.nodes ?? []) validateTextRanges(node);
   if (!measurer && (!browserDocument?.body || !browserDocument.createElementNS))
     return { measured: 0, unavailableFonts: [], geometryChangedIds: [] };
   await browserDocument?.fonts?.ready;

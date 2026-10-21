@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   textRangeSourceSignature, validateTextRanges, mapTextDisplay, projectTextRanges,
   replaceTextRange, setTextRangeStyle, isSafeTextRangeHref,
+  replaceTextValue,
 } from "../../../apps/design-studio/app/text-ranges.mjs";
 
 const source = "You have 7 days left to send your application. View application.";
@@ -54,10 +55,22 @@ test("range count and escaped UTF8 budgets reject before truncation; safe links 
   assert.throws(() => validateTextRanges(node("x".repeat(65), ranges)));
   const many = Array.from({length:32}, (_,i)=>({start:i,end:i+1,href:"https://example.com/"+"x".repeat(1500)}));
   assert.throws(() => validateTextRanges(node("x".repeat(32), many)));
+  const unicode = node("x".repeat(22), Array.from({length:22},(_,i)=>({start:i,end:i+1,href:"#"+"中".repeat(500)})));
+  assert(new TextEncoder().encode(JSON.stringify(unicode.textRanges)).byteLength > 32768);
+  assert.throws(()=>validateTextRanges(unicode));
   for (const href of ["#","#section","https://example.com/a?b=c","mailto:a@example.com","tel:123"])
     assert.equal(isSafeTextRangeHref(href), true, href);
   for (const href of ["javascript:alert(1)","data:text/plain,a","file:///a","/relative"," #","#\n","https://example.com/\ud800"])
     assert.equal(isSafeTextRangeHref(href), false, href);
+});
+
+test("textarea source selection takes precedence over a coincidentally equal prefix/suffix",()=>{
+  const value=node(),text=source+" tail";
+  const selectedAll=replaceTextValue(value,text,"after",{start:0,end:source.length});
+  assert.equal(selectedAll.text,text);assert.equal(selectedAll.textRanges,undefined);
+  const selectedLink=replaceTextValue(value,source.replace("View application","New link"),"after",{start:47,end:63});
+  assert.deepEqual(selectedLink.textRanges.ranges,[{...link,end:55}]);
+  assert.deepEqual(value,node());
 });
 
 test("source/display mapping preserves every byte, repeated words, hard LF, CRLF, NBSP and surrogate scalars", () => {

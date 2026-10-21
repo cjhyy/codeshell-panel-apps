@@ -1,5 +1,6 @@
 import { normalizeShadowStack, validateShadowStack, shadowStackSvg, shadowStackOutsets } from "./shadow-stack.mjs";
 import { validTextLineHeight, textLineHeightPixels } from "./text-line-height.mjs";
+import { validateTextRanges, projectTextRanges } from "./text-ranges.mjs";
 import { validateLayoutSpacing } from "./layout-spacing.mjs";
 import { normalizeCornerRadii, roundedRectSvgGeometry } from "./corner-radii.mjs";
 import { normalizeStrokeSides, validateDesignStroke, hasDesignStroke, designStrokeSvg, designStrokeOutset } from "./stroke.mjs";
@@ -177,6 +178,8 @@ function normalizedNode(candidate, parentId) {
     if (candidate.fontStyle !== undefined) node.fontStyle = candidate.fontStyle;
     if (candidate.letterSpacing !== undefined) node.letterSpacing = candidate.letterSpacing;
     if (candidate.textDecoration !== undefined) node.textDecoration = candidate.textDecoration;
+    const ranges = validateTextRanges(candidate);
+    if (ranges) node.textRanges = ranges;
     if (candidate.textMeasurement !== undefined) node.textMeasurement = candidate.textMeasurement;
     if (candidate.textMetrics !== undefined)
       node.textMetrics = structuredClone(candidate.textMetrics);
@@ -316,6 +319,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "fontStyle",
     "letterSpacing",
     "textDecoration",
+    "textRanges",
     "textMeasurement",
     "textMetrics",
     "textSource",
@@ -478,6 +482,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       "fontStyle",
       "letterSpacing",
       "textDecoration",
+      "textRanges",
       "textMeasurement",
       "textMetrics",
       "textSource",
@@ -542,6 +547,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
   ) {
     throw new Error(`文字图层 ${candidate.id} 的文字属性无效`);
   }
+  validateTextRanges(candidate);
   if (
     candidate.type === "image" &&
     (typeof candidate.imageRef !== "string" ||
@@ -830,6 +836,9 @@ function nestFlatNodes(nodes) {
     if (visiting.has(node.id)) throw new Error(`图层层级存在循环：${node.id}`);
     visiting.add(node.id);
     const { parentId: _parentId, children: _children, ...copy } = node;
+    const ranges = validateTextRanges(node);
+    if (ranges) copy.textRanges = ranges;
+    else delete copy.textRanges;
     if (isContainerType(node.type)) {
       copy.children = (childrenByParent.get(node.id) ?? []).map((child) => build(child, depth + 1));
     }
@@ -1442,6 +1451,24 @@ function exportNodeSvg(
     const fontStyle = node.fontStyle ?? "normal";
     const letterSpacing = node.letterSpacing ?? 0;
     const textDecoration = node.textDecoration ?? "none";
+    if (node.textRanges !== undefined) {
+      const runs = projectTextRanges(node);
+      if (runs.some((run) => run.overrides && ["textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk"].some((key) => Object.hasOwn(run.overrides, key)))) {
+        const error = new Error("SVG 文字尚不能保留范围自定义下划线厚度、偏移或 skip-ink；未输出近似样式");
+        error.code = "TEXT_RANGES_SVG_UNSUPPORTED_DECORATION";
+        throw error;
+      }
+      const lines = String(node.text).split("\n").map((_line, index) => {
+        const spans = runs.filter((run) => run.lineIndex === index && run.kind === "source" && run.text !== "\n").map((run) => {
+          const style = run.style;
+          const declarations = [`fill:${style.fill}`, `color:${style.fill}`, `text-decoration-line:${style.textDecoration}`, `text-decoration-color:${style.fill}`];
+          const span = `<tspan style="${escapeXml(declarations.join(";"))}">${escapeXml(run.text)}</tspan>`;
+          return run.href === undefined ? span : `<a href="${escapeXml(run.href)}" style="fill:inherit;text-decoration:none">${span}</a>`;
+        }).join("");
+        return `    <text x="${round(textX)}" y="${round(node.y + index * textLineHeightPixels(node))}" stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="none" text-anchor="${anchor}" dominant-baseline="hanging" xml:space="preserve">${spans || " "}</text>`;
+      }).join("\n");
+      return clipped(`  <g${metadata}${opacity}${filter}${transform}>\n${lines}\n  </g>`);
+    }
     // Separate text elements are more portable than tspans: several native
     // SVG renderers ignore tspan x/y or dy and collapse every line together.
     const lines = String(node.text)
@@ -1533,6 +1560,10 @@ export function replaceDesignColors(document, replacements) {
       const next = replacementFor(side.color);
       if (next) { side.color = next; replacementCount += 1; }
     }
+    for (const range of node.textRanges?.ranges ?? []) {
+      const next = replacementFor(range.fill);
+      if (next) { range.fill = next; replacementCount += 1; }
+    }
     if (node.fillPaints) node.fill = representativeDesignFill(node.fillPaints);
     if(node.shadowStack)for(const layer of node.shadowStack.layers){const replacement=replacementFor(layer.color);if(replacement){layer.color=replacement;replacementCount+=1;}}
     const shadowReplacement = replacementFor(node.shadow?.color);
@@ -1557,6 +1588,7 @@ export function exportDesignSvg(document, options = {}) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_LOCAL_SVG_EXPORT_BYTES)
     throw Error("SVG byte budget must be between 1 B and 4 MiB");
   const renderNodes = allDocumentNodes(document);
+  renderNodes.forEach(validateTextRanges);
   const renderDocument = { ...document, nodes: renderNodes };
   const activePage = document.pages?.find((page) => page.id === document.activePageId);
   const pageName = activePage?.name ?? document.activePageId ?? "Page 1";

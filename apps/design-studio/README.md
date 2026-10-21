@@ -4,6 +4,18 @@ Design Studio **0.22.0** 提供 HTML → DesignNode → v3 导入、Figma JSON �
 多页 HTML 原型和项目评审。原生设计仍使用 v3 `.codesign.json`；16 个声明式 Agent
 工具与可视编辑器共用同一份设计、来源和评审数据。本版沿用现有 Host 权限。
 
+文字可选 `textRanges` v1 在同一个 Text 中保存颜色、装饰和链接区间，按完整
+`textSource ?? text` 的 UTF16 索引和精确内容签名绑定；不创建绝对定位的文字碎片。
+最多64个不重叠区间、32KiB；保留真实空格、NBSP、显式换行，并单独映射显示软换行。
+`use_design` 的 `edit_text` 用源索引和明确的插入亲和性更新内容及区间；整段
+`update_node` 改文字须带匹配区间，或显式 `textRanges:null` 清除。保存、完整备份、
+撤销和重新打开保留同一状态。旧稿未带区间时沿用原有行为。
+
+这项核心合同尚未开启 HTML 混合行内文字提升。SVG 已验证纯色/链接区间的流式排版；
+自定义下划线厚度、偏移和 skip-ink 会明确拒绝，避免 SVG 将它们当作 auto 输出。
+范围文字暂不接收基础渐变/paint stack 或省略截断；各渲染器和原生出口仍须通过自身
+能力检查，不能仅把区间写入元数据后声称绘制或往返成功。
+
 ## 0.22：CanvasKit GPU 画布
 
 画布统一使用 CanvasKit 0.42.0（Skia C++ → WebAssembly → WebGL2）。全图概览、
