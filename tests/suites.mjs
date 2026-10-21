@@ -100,6 +100,8 @@ export const suites = [
         "tests/apps/design-studio/renderer-controller.test.mjs",
         "tests/apps/design-studio/browser-renderer.test.mjs",
         "tests/apps/design-studio/font-runtime.test.mjs",
+        "tests/apps/design-studio/owned-fonts.test.mjs",
+        "tests/apps/design-studio/owned-fonts-browser.test.mjs",
         "tests/apps/design-studio/canvas-interaction.test.mjs",
         "tests/apps/design-studio/corner-radii.test.mjs",
         "tests/apps/design-studio/grida-scene.test.mjs",

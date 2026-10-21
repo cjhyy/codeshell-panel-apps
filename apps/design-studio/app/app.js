@@ -108,6 +108,7 @@ import { designPaintSvg } from "./paint.mjs";
 import { repairDesignQuality } from "./quality-repair.mjs";
 import { resourceDataUrlsFromPlans } from "./builtin-fonts.mjs";
 import { designFontFamilyCss, designResourceFontFamilyCss, designTextFontResourceIds } from "./font-css.mjs";
+import { createOwnedFontManager } from "./owned-fonts.mjs";
 import { groupAuditIssues, pageAuditIssues } from "./audit-review.mjs";
 import {
   captureWorkspaceHtml,
@@ -439,7 +440,16 @@ const resourceDataUrls = new Map();
 let localHtmlFiles = new Map();
 let lastHtmlImportReport = null;
 let htmlImportGeneration = 0;
-const loadedFontResourceIds = new Set();
+const ownedFonts = createOwnedFontManager({
+  fontSet: document.fonts,
+  createFace: typeof globalThis.FontFace === "function"
+    ? (family, source, descriptors) => new FontFace(family, source, descriptors)
+    : undefined,
+});
+let fontResourcesReady = true;
+let fontPageHidden = false;
+let fontPageLifecycle = 0;
+let fontPageRestorable = false;
 let liveRenderRevision = 0;
 let canvasHandles = [];
 let rendererMode = "gpu";
@@ -532,6 +542,8 @@ async function loadRendererPreference(expectedEpoch = workspaceEpoch) {
 
 function advanceDocumentEpoch() {
   documentEpoch += 1;
+  ownedFonts.invalidatePending();
+  fontResourcesReady = false;
   void gpuRenderer.update({ design: null, suspended: true });
   void browserRenderer.update({ design: null, suspended: true });
 }
@@ -577,7 +589,7 @@ function syncGpuRenderer() {
     capable: rendererMode === "browser" || (!window.codeshellPanel?.call
       ? typeof WebAssembly === "object"
       : context.capabilities?.packageAssets?.wasm === true),
-    suspended: workspaceLoading,
+    suspended: workspaceLoading || fontPageHidden || !fontResourcesReady,
     viewport: {
       width: bounds.width,
       height: bounds.height,
@@ -818,29 +830,34 @@ function captureDocumentScope() {
 
 async function loadReferencedDesignResources() {
   const assertScope = captureDocumentScope();
-  if (!currentResourceCache) return;
+  const cache = currentResourceCache;
   const referencedIds = referencedDesignResourceIds();
-  await Promise.all(
-    [...referencedIds].map(async (resourceId) => {
-      const resource = await currentResourceCache.load(resourceId);
-      assertScope();
-      resourceDataUrls.set(resourceId, resource.dataUrl);
-      if (
-        resource.descriptor.kind === "font" &&
-        !loadedFontResourceIds.has(resourceId) &&
-        typeof globalThis.FontFace === "function"
-      ) {
-        const fontFace = new FontFace(resource.descriptor.family, `url(${resource.dataUrl})`, {
-          weight: String(resource.descriptor.weight),
-          style: resource.descriptor.style,
-        });
-        await fontFace.load();
-        assertScope();
-        document.fonts.add(fontFace);
-        loadedFontResourceIds.add(resourceId);
-      }
-    }),
-  );
+  const resourceSignature = () => JSON.stringify((design.resources ?? []).filter((resource) => referencedIds.has(resource.id)));
+  const signature = resourceSignature();
+  const operation = ownedFonts.begin(() => {
+    assertScope();
+    if (cache !== currentResourceCache)
+      throw new Error("设计资源已在字体加载期间变化；旧操作已取消");
+  });
+  const assertResourceReferences = () => {
+    ownedFonts.assertCurrent(operation);
+    const currentIds = referencedDesignResourceIds();
+    if (signature !== resourceSignature() ||
+      currentIds.size !== referencedIds.size || [...currentIds].some((id) => !referencedIds.has(id)))
+      throw new Error("设计资源已在字体加载期间变化；旧操作已取消");
+  };
+  fontResourcesReady = false;
+  const resources = cache ? await Promise.all([...referencedIds].map(async (resourceId) => {
+    const resource = await cache.load(resourceId);
+    ownedFonts.assertCurrent(operation);
+    return resource;
+  })) : [];
+  assertResourceReferences();
+  const prepared = await ownedFonts.prepare(operation, resources);
+  assertResourceReferences();
+  ownedFonts.commit(operation, prepared);
+  for (const resource of resources) resourceDataUrls.set(resource.descriptor.id, resource.dataUrl);
+  fontResourcesReady = true;
 }
 
 async function ensureDesignPageLoaded(pageId) {
@@ -935,6 +952,8 @@ async function compactIndexedPageRuntime() {
   for (const resourceId of resourceDataUrls.keys()) {
     if (!retainedResourceIds.has(resourceId)) resourceDataUrls.delete(resourceId);
   }
+  await loadReferencedDesignResources();
+  assertScope();
 }
 
 async function activateDesignPage(pageId) {
@@ -4074,6 +4093,8 @@ async function openDocument(path, { discardChanges = false, onOpened = () => {} 
   const operationStateRevision = currentDesignStateRevision();
   clearTimeout(recoveryTimer);
   setSaveState("打开中…", "idle");
+  const before = captureImportRollback();
+  let appliedDocumentEpoch = null, appliedStateRevision = null;
   try {
     const result = await hostCall("workspace.readText", { path });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
@@ -4098,7 +4119,6 @@ async function openDocument(path, { discardChanges = false, onOpened = () => {} 
     currentPageCache = resolved.pageCache ?? null;
     currentResourceCache = resolved.resourceCache ?? null;
     resourceDataUrls.clear();
-    loadedFontResourceIds.clear();
     recoveryBaseDocument = null;
     currentPersistenceMode = resolved.mode;
     elements.path.value = path;
@@ -4106,6 +4126,8 @@ async function openDocument(path, { discardChanges = false, onOpened = () => {} 
     resetHistory();
     updateDirtyState();
     onOpened();
+    appliedDocumentEpoch = documentEpoch;
+    appliedStateRevision = currentDesignStateRevision();
     await loadReferencedDesignResources();
     setRepoLinkState("Repo · 已打开", "linked");
     renderAll();
@@ -4122,6 +4144,11 @@ async function openDocument(path, { discardChanges = false, onOpened = () => {} 
     return true;
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) throw error;
+    if (appliedDocumentEpoch === documentEpoch && appliedStateRevision === currentDesignStateRevision() &&
+      designPublicationSequence === before.publicationSequence) {
+      try { restoreImportRollback(before); }
+      catch (rollbackError) { throw new AggregateError([error, rollbackError], "打开设计失败，恢复先前状态时也发生错误"); }
+    }
     const message = error instanceof Error ? error.message : "打开失败";
     if (dirty && !discardChanges) queueRecovery();
     setSaveState("打开失败", "error");
@@ -4172,6 +4199,7 @@ async function checkExternalChange({ force = false } = {}) {
     }
     const externalVersion = disk.revision ?? `mtime:${disk.modifiedAt}`;
     if (!dirty) {
+      let before = null, appliedDocumentEpoch = null, appliedStateRevision = null;
       try {
         const resolved = await resolveWorkspaceDesignSource(disk, operationWorkspaceEpoch);
         const nextDesign = resolved.pageCache
@@ -4187,6 +4215,7 @@ async function checkExternalChange({ force = false } = {}) {
         ) {
           return false;
         }
+        before = captureImportRollback();
         cancelInteraction();
         design = nextDesign;
         advanceDocumentEpoch();
@@ -4199,19 +4228,23 @@ async function checkExternalChange({ force = false } = {}) {
         currentPageCache = resolved.pageCache ?? null;
         currentResourceCache = resolved.resourceCache ?? null;
         resourceDataUrls.clear();
-        loadedFontResourceIds.clear();
         recoveryBaseDocument = null;
         currentPersistenceMode = resolved.mode;
         warnedExternalVersion = null;
         savedSnapshot = serializeEditorState();
         resetHistory();
         updateDirtyState();
+        appliedDocumentEpoch = documentEpoch;
+        appliedStateRevision = currentDesignStateRevision();
         await loadReferencedDesignResources();
         renderAll();
         setRepoLinkState("Repo 已同步", "linked");
         notify(`已同步 Agent 对 ${sourcePath} 的修改`);
         return true;
       } catch (error) {
+        if (before && workspaceEpoch === operationWorkspaceEpoch && appliedDocumentEpoch === documentEpoch &&
+          appliedStateRevision === currentDesignStateRevision() && designPublicationSequence === before.publicationSequence)
+          restoreImportRollback(before);
         warnedExternalVersion = externalVersion;
         setSaveState("Repo 文件无效", "error");
         notify(error instanceof Error ? error.message : "Repo 中的设计文件无效", "error");
@@ -4879,7 +4912,8 @@ function captureImportRollback() {
     publicationSequence: designPublicationSequence,
     path: elements.path.value,
     resourceDataUrls: new Map(resourceDataUrls),
-    loadedFontResourceIds: new Set(loadedFontResourceIds),
+    fontLease: ownedFonts.captureLease(),
+    fontResourcesReady,
   };
 }
 
@@ -4914,8 +4948,8 @@ function restoreImportRollback(before) {
   elements.path.value = before.path;
   resourceDataUrls.clear();
   for (const [id, value] of before.resourceDataUrls) resourceDataUrls.set(id, value);
-  loadedFontResourceIds.clear();
-  for (const id of before.loadedFontResourceIds) loadedFontResourceIds.add(id);
+  const fontsRestored = ownedFonts.restoreLease(before.fontLease);
+  fontResourcesReady = fontsRestored && before.fontResourcesReady && !fontPageHidden;
   updateDirtyState();
   renderAll();
   if (dirty) queueRecovery();
@@ -4999,18 +5033,18 @@ async function replaceDesignWithHtmlImport(
     sha256Bytes,
   });
   resourceDataUrls.clear();
-  loadedFontResourceIds.clear();
   advanceDocumentEpoch();
   clearSelection();
   collapsedLayerIds.clear();
   commitHistory();
   if (targetPath) elements.path.value = targetPath;
   onReplaced();
-  markChanged();
+  markChanged(false);
   const importedDocumentEpoch = documentEpoch;
   const importedStateRevision = currentDesignStateRevision();
   let savedResult = null;
   try {
+    await loadReferencedDesignResources();
     await afterReplaced();
     assertWorkspaceEpoch(operationWorkspaceEpoch);
     if (currentDesignStateRevision() !== importedStateRevision)
@@ -5050,6 +5084,7 @@ async function replaceDesignWithHtmlImport(
       changedNodeIds: [...changedNodeIds],
     };
   }
+  renderAll();
   requestAnimationFrame(fitCanvas);
   return {
     path: elements.path.value.trim(),
@@ -5418,7 +5453,8 @@ function newDocument({
   currentPageCache = null;
   currentResourceCache = null;
   resourceDataUrls.clear();
-  loadedFontResourceIds.clear();
+  ownedFonts.clear();
+  fontResourcesReady = true;
   currentPersistenceMode = "single";
   elements.path.value = path;
   savedSnapshot = "";
@@ -6944,7 +6980,43 @@ window.addEventListener("blur", () => {
 });
 window.addEventListener("resize", () => scheduleViewportRender(true));
 new ResizeObserver(() => scheduleViewportRender(true)).observe(elements.stageWrap);
-window.addEventListener("pagehide", () => { void gpuRenderer.dispose(); void browserRenderer.dispose(); });
+window.addEventListener("pagehide", (event) => {
+  fontPageLifecycle += 1;
+  fontPageHidden = true;
+  fontPageRestorable = event.persisted === true;
+  fontResourcesReady = false;
+  try { ownedFonts.suspend(); }
+  finally {
+    if (event.persisted) {
+      void gpuRenderer.suspend("page-hidden");
+      void browserRenderer.suspend("page-hidden");
+    } else {
+      void gpuRenderer.dispose();
+      void browserRenderer.dispose();
+    }
+  }
+});
+window.addEventListener("pageshow", (event) => {
+  if (!event.persisted || !fontPageHidden || !fontPageRestorable) return;
+  const lifecycle = ++fontPageLifecycle;
+  const expectedWorkspaceEpoch = workspaceEpoch, expectedDocumentEpoch = documentEpoch;
+  fontPageHidden = false;
+  ownedFonts.resume();
+  void (async () => {
+    try {
+      await loadReferencedDesignResources();
+      if (fontPageHidden || lifecycle !== fontPageLifecycle || expectedWorkspaceEpoch !== workspaceEpoch || expectedDocumentEpoch !== documentEpoch) return;
+      liveRenderRevision += 1;
+      // Only the chosen renderer resumes; the other remains inactive.
+      await selectedRenderer().resume();
+      if (fontPageHidden || lifecycle !== fontPageLifecycle || expectedWorkspaceEpoch !== workspaceEpoch || expectedDocumentEpoch !== documentEpoch) return;
+      renderAll();
+    } catch (error) {
+      if (!fontPageHidden && lifecycle === fontPageLifecycle && expectedWorkspaceEpoch === workspaceEpoch && expectedDocumentEpoch === documentEpoch)
+        notify(error instanceof Error ? error.message : "页面恢复时字体加载失败，请重新打开设计", "error");
+    }
+  })();
+});
 window.addEventListener("focus", () => void checkExternalChange());
 window.addEventListener("beforeunload", (event) => {
   finishInlineTextEdit();
@@ -6984,7 +7056,8 @@ function updateContext(next) {
     currentPageCache = null;
     currentResourceCache = null;
     resourceDataUrls.clear();
-    loadedFontResourceIds.clear();
+    ownedFonts.reset();
+    fontResourcesReady = false;
     currentPersistenceMode = "single";
     warnedExternalVersion = null;
     fileDiscoveryCache = null;
@@ -7186,7 +7259,6 @@ async function restoreRecovery(
       sha256Bytes,
     });
   resourceDataUrls.clear();
-  loadedFontResourceIds.clear();
   advanceDocumentEpoch();
   clearSelection();
   const targetsBaseline = recovery.path === baselinePath;
@@ -7252,6 +7324,8 @@ async function restoreRecovery(
       }
     : null;
   designStateSequence += 1;
+  await loadReferencedDesignResources();
+  checkRecoveryScope();
   updateDirtyState();
   renderAll();
   requestAnimationFrame(fitCanvas);
@@ -7295,7 +7369,8 @@ function resetToRepoBlankDocument() {
   currentPageCache = null;
   currentResourceCache = null;
   resourceDataUrls.clear();
-  loadedFontResourceIds.clear();
+  ownedFonts.clear();
+  fontResourcesReady = true;
   currentPersistenceMode = "single";
   warnedExternalVersion = null;
   elements.path.value = DEFAULT_PATH;
