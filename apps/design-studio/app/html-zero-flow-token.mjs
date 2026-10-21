@@ -1,14 +1,19 @@
 /* Capture-local source-only treatment for empty inline tokens between block boxes. */
-const issuedPlans = new WeakSet();
+const issuedPlans = new WeakMap();
 const sides = ["top", "right", "bottom", "left"];
 const forbiddenTags = new Set("a area audio br button canvas details dialog embed fieldset hr iframe img input label legend link math meter object option optgroup output picture progress script select slot source style summary svg table template textarea track video wbr".split(" "));
 const sameBox = (a, b) => a && b && ["x", "y", "width", "height"].every(key => a[key] === b[key]);
 const bounded = value => Number.isFinite(value) && Math.abs(value) <= 20000;
 const geometryKeys = ["display", "position", "top", "right", "bottom", "left", "float", "clear", "width", "height", "min-width", "max-width", "min-height", "max-height", "font-family", "font-size", "line-height", "white-space", "writing-mode", "direction", "vertical-align", "transform", "translate", "rotate", "scale", "perspective", "zoom", "contain", "content-visibility", "counter-reset", "counter-increment", "counter-set", "content", "break-before", "break-after", "break-inside", ...sides.flatMap(side => ["margin-" + side, "padding-" + side, "border-" + side + "-width"])];
-const tokenKeys = [...geometryKeys, "visibility", "opacity", "background-color", "background-image", "border-image-source", "box-shadow", "text-shadow", "outline-style", "filter", "backdrop-filter", "mix-blend-mode", "appearance", "resize", "clip-path", "mask-image", "-webkit-mask-image", "overflow-x", "overflow-y"];
+const tokenKeys = [...geometryKeys, "visibility", "opacity", "background-color", "background-image", "border-image-source", "box-shadow", "text-shadow", "outline-style", "filter", "backdrop-filter", "mix-blend-mode", "appearance", "resize", "clip-path", "mask-image", "-webkit-mask-image", "overflow-x", "overflow-y", "animation-name", "transition-duration"];
 const signature = (view, element, keys) => {
   const style = view.getComputedStyle(element);
-  return JSON.stringify(keys.map(key => style.getPropertyValue(key)));
+  let remaining = 16384;
+  return JSON.stringify(keys.map(key => {
+    const value = style.getPropertyValue(key);
+    if (value.length > 4000 || (remaining -= value.length) < 0) fail();
+    return value;
+  }));
 };
 const fail = () => { throw Error("HTML_ZERO_FLOW_TOKEN_UNVERIFIED: source-only token proof changed"); };
 
@@ -48,7 +53,10 @@ function ordinary(view, element) {
 function nonpainting(view, element) {
   const style = view.getComputedStyle(element), box = element.getBoundingClientRect();
   return element.namespaceURI === "http://www.w3.org/1999/xhtml" && !forbiddenTags.has(element.localName) &&
+    !element.hasAttribute("id") && !element.hasAttribute("name") &&
     !element.hasAttribute("is") && !view.customElements?.get(element.localName) && !element.shadowRoot &&
+    element.attributes.length <= 64 && !element.isContentEditable && element.tabIndex < 0 && ![...element.attributes].some(attribute =>
+      /^(?:aria-|on)/u.test(attribute.name) || ["role", "title", "tabindex", "contenteditable", "accesskey", "draggable", "autofocus"].includes(attribute.name)) &&
     element.childNodes.length === 0 && element.textContent === "" && ordinary(view, element) &&
     style.display === "inline" && style.position === "static" && style.cssFloat === "none" && style.clear === "none" &&
     box.width === 0 && box.height === 0 && [...element.getClientRects()].length === 1 &&
@@ -57,6 +65,7 @@ function nonpainting(view, element) {
     ["normal", "none"].includes(style.content) &&
     ["counterReset", "counterIncrement", "counterSet"].every(key => style[key] === "none") &&
     ["breakBefore", "breakAfter", "breakInside"].every(key => style[key] === "auto") &&
+    style.animationName === "none" && style.transitionDuration.split(",").every(value => value.trim() === "0s") &&
     sides.every(side => ["margin-", "padding-", "border-"].every(prefix =>
       style.getPropertyValue(prefix + side + (prefix === "border-" ? "-width" : "")) === "0px")) &&
     /^rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0(?:\.0+)?\s*\)$/u.test(style.backgroundColor) &&
@@ -68,6 +77,7 @@ function nonpainting(view, element) {
 /** Private object identities and exact current source fields are the authority. */
 export function createHtmlZeroFlowTokenCapture({ tree, root, elements, ambiguousElements = new WeakSet() }) {
   const worlds = new WeakMap(), parents = new WeakMap(), containers = new Map(), seen = new Set(), accepted = [];
+  let acceptedStringUnits = 0;
   const result = { checked: 0, refused: 0, tokens: [] }, view = root.ownerDocument.defaultView;
   const visit = (source, parent, origin, depth) => {
     if (!source || typeof source !== "object" || seen.has(source) || seen.size >= 10000 || depth > 32 ||
@@ -96,7 +106,6 @@ export function createHtmlZeroFlowTokenCapture({ tree, root, elements, ambiguous
           ![1, 3, 8].includes(node.nodeType) || (node.nodeType === 3 && /[^\t\n\f\r ]/u.test(node.textContent ?? "")))) fail();
     for (let ancestor = parent, depth = 0; ancestor; ancestor = ancestor.parentElement) {
       if (++depth > 32 || !ordinary(view, ancestor)) fail();
-      if (ancestor === root) break;
     }
     const realTokens = tokenSources.map(token => {
       const element = elementFor(token);
@@ -111,6 +120,7 @@ export function createHtmlZeroFlowTokenCapture({ tree, root, elements, ambiguous
       if (current.display === "none" || ["absolute", "fixed"].includes(current.position)) continue;
       // No anonymous inline line or break may coexist with the zero tokens.
       if (!["block", "flow-root", "flex", "grid"].includes(current.display) || !ordinary(view, child) ||
+          current.cssFloat !== "none" || current.clear !== "none" ||
           child.getBoundingClientRect().width <= 0 || child.getBoundingClientRect().height <= 0) fail();
     }
     return { parent, realTokens };
@@ -135,20 +145,26 @@ export function createHtmlZeroFlowTokenCapture({ tree, root, elements, ambiguous
       if (!tokenSources.length) return null;
       result.checked += tokenSources.length;
       try {
-        if (tokenSources.length > 100 || accepted.length > 100) fail();
+        if (tokenSources.length > 100 || accepted.length >= 100 || result.tokens.length + tokenSources.length > 500) fail();
         const { parent, realTokens } = prove(source, tokenSources);
         const record = { source, tokenSources, parent, owner: parent.parentNode, nodes: [...parent.childNodes], children: [...source.children],
           sourceSnapshot: parentSnapshot(source), snapshots: tokenSources.map(snapshot),
           parentStyle: signature(view, parent, geometryKeys), tokenStyles: realTokens.map(element => signature(view, element, tokenKeys)),
           elements: [...parent.children].map(element => ({ element, box: element.getBoundingClientRect(), style: signature(view, element, geometryKeys) })) };
-        const plan = { source, tokens: new Set(tokenSources),
+        const stringUnits = record.sourceSnapshot.length + record.parentStyle.length +
+          [...record.snapshots, ...record.tokenStyles, ...record.elements.map(item => item.style)].reduce((sum, value) => sum + value.length, 0);
+        if (stringUnits > 512 * 1024 || acceptedStringUnits + stringUnits > 2 * 1024 * 1024) fail();
+        let consumed = false;
+        const plan = Object.freeze({});
+        issuedPlans.set(plan, { source, tokenSources,
           accept(parentNodeId) {
-            current(record); accepted.push(record);
-            for (const token of tokenSources) result.tokens.push({ parentNodeId, sourceId: String(token.id ?? "").slice(0, 200),
-              semanticId: String(token.semantic.semanticId).slice(0, 2000), tag: token.tag, sourceBounds: { ...worlds.get(token) },
+            if (consumed) fail(); consumed = true;
+            current(record); accepted.push(record); acceptedStringUnits += stringUnits;
+            for (const [index, token] of tokenSources.entries()) result.tokens.push({ parentNodeId, sourceId: String(token.id ?? "").slice(0, 200),
+              semanticId: String(token.semantic.semanticId).slice(0, 2000), tag: realTokens[index].localName, sourceBounds: { ...worlds.get(token) },
               reason: "verified-nonpainting-zero-inline-source-token" });
-          }, verify: () => current(record) };
-        issuedPlans.add(plan); return plan;
+          }, verify: () => current(record) });
+        return plan;
       } catch { result.refused += tokenSources.length; return null; }
     },
     verify() { for (const record of accepted) current(record); },
@@ -158,10 +174,11 @@ export function createHtmlZeroFlowTokenCapture({ tree, root, elements, ambiguous
 
 /** JSON, saved notes and public lookalikes cannot mint this one-use capability. */
 export function consumeHtmlZeroFlowTokenPlan(plan, original, current) {
-  if (!issuedPlans.has(plan)) return null;
+  const proof = issuedPlans.get(plan);
+  if (!proof) return null;
   issuedPlans.delete(plan);
-  if (plan.source !== original || current.semantic !== original.semantic || current.layout !== original.layout ||
+  if (proof.source !== original || current.semantic !== original.semantic || current.layout !== original.layout ||
       current.cssLayout !== original.cssLayout || current.children?.length !== original.children?.length ||
-      [...plan.tokens].some(token => current.children[original.children.indexOf(token)] !== token)) return null;
-  plan.verify(); return plan;
+      proof.tokenSources.some(token => current.children[original.children.indexOf(token)] !== token)) return null;
+  proof.verify(); return { tokens: new Set(proof.tokenSources), accept: proof.accept };
 }

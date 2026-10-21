@@ -31,6 +31,7 @@
     "apps/design-studio/app/html-line-height.mjs",
     "apps/design-studio/app/html-text-overflow.mjs",
     "apps/design-studio/app/html-viewport-flow.mjs",
+    "apps/design-studio/app/html-zero-flow-token.mjs",
     "apps/design-studio/app/image-mime.mjs",
     "apps/design-studio/app/layout-spacing.mjs",
     "apps/design-studio/app/linear-gradient-geometry.mjs",
@@ -82,13 +83,13 @@
     },
     {
       "path": "code.js",
-      "bytes": 230230,
-      "sha256": "7943f15fa14b5e93e074b5e4614f8a9c11d66d5d45e4fdebff9cca2b8b179e37"
+      "bytes": 231563,
+      "sha256": "b0238e2e98484c1744d52ffef8dcf9c7c083895b68cb53258a1f922d7708dfe3"
     },
     {
       "path": "ui.html",
-      "bytes": 368014,
-      "sha256": "df79fc8c7fa0a5e3b6be7511d46c6f455e14248e865c30b32db13db68e080882"
+      "bytes": 369347,
+      "sha256": "2e104c267b9fb9835f67e2e841d6ff68f1838f24bbbbc818674a50663c7890e9"
     },
     {
       "path": "README.md",

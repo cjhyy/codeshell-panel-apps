@@ -11,6 +11,7 @@ import { applyHtmlNumberLineHeight } from "./html-line-height.mjs";
 import { cssCornerRadii } from "./corner-radii.mjs";
 import { planHtmlImageBorderBox } from "./html-image-border-box.mjs";
 import { consumeHtmlAutoMarginPlan } from "./html-auto-margin-distribution.mjs";
+import { consumeHtmlZeroFlowTokenPlan } from "./html-zero-flow-token.mjs";
 /* Pure html2figma DesignNode → CodeShell v3 adapter. No DOM, network, or writes. */
 import { normalizeDesignDocument, MAX_DESIGN_NODES_PER_PAGE } from "./document.mjs";
 import { createDesignResourcePersistencePlan, MAX_DESIGN_RESOURCES } from "./resource-store.mjs";
@@ -599,17 +600,25 @@ export async function designNodeToV3(tree, options = {}) {
       floatPlans.set(node, floats);
       for (const item of floats.items) provenFloatSources.add(item.source);
     }
+    const tokenPlan = !floats && typeof options.captureZeroFlowTokenPlan === "function"
+      ? consumeHtmlZeroFlowTokenPlan(options.captureZeroFlowTokenPlan(capturedSource), capturedSource, source) : null;
     const block = floats
       ? null
       : planHtmlBlockFlow(
           source,
           coordinateSpace,
           { x: node.x, y: node.y },
-          { ignoreOuterFloat: provenFloatSources.has(source) },
+          { ignoreOuterFloat: provenFloatSources.has(source), sourceOnlyTokens: tokenPlan?.tokens },
         );
     if (block?.unsupported)
       warn("block-flow-fixed", node.id, block.unsupported);
     else if (block) {
+      if (tokenPlan) {
+        tokenPlan.accept(node.id);
+        block.sourceOnlyTokens = tokenPlan.tokens;
+        warn("html-nonpainting-source-token", node.id,
+          "已验证的空白零尺寸 inline 来源只保留在捕获报告，不生成虚假的 1px 流图层；保留真实块子层和原始顺序。此证明限当前捕获，不保留脚本升级、媒体查询或作者选择器行为。");
+      }
       blockFlowPlans.set(source, block);
       Object.assign(node, {
         layout: "vertical", layoutWrap: "none", gap: 0, rowGap: 0, columnGap: 0,
@@ -624,6 +633,7 @@ export async function designNodeToV3(tree, options = {}) {
     }
     const flowChildren = (source.children ?? []).filter(
       (child) =>
+        !block?.sourceOnlyTokens?.has(child) &&
         child.visible !== false &&
         child.layout?.display !== "none" &&
         !["absolute", "fixed"].includes(child.positioning?.mode),
