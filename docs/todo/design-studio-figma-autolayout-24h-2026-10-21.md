@@ -2142,3 +2142,15 @@ hit-test/selection/zoom，不写回ABS模型。改字、改宽、拖拽与导出
 
 真实Figma桌面能力06:13UTC复查cuaAvailable:false，既有探针保持unarmed；不把浏览器
 或VM称为实机执行。24小时任务仍active，截止不变2026-10-22 00:31 SG。
+
+
+### 用户再澄清 · 本地PRD→原型/设计稿→Figma同步
+
+用户强调终点是对标Figma的本地设计工作台，并询问CanvasKit是否妨碍这一目标。
+保留CanvasKit默认主画布与canonical设计模型；Browser仅作为显式可选的第二渲染/HTML
+预览对照，不替换设计节点、AL意图、组件/样式/资源、PRD/原型状态或Figma bindings。
+实际Figma同步须单独验证节点结构、可编辑范围、重排和来源绑定，不能以浏览器截图
+一致代替。渲染后端选择由两版同模型的实测决定，不把转换层/文字排版问题归因于
+CanvasKit本身。Figma官方2025-09-18工程文章说明其自研C++/Wasm renderer从WebGL
+扩展到WebGPU：https://www.figma.com/blog/figma-rendering-powered-by-webgpu/ 。
+Browser owner已确认默认不变、无自动fallback，DOM几何只保留在view/hit-test运行期。
