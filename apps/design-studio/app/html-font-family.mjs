@@ -4,6 +4,48 @@ const styleKeys = ["fontFamily", "fontSize", "fontWeight", "fontStyle", "whiteSp
   "textTransform", "visibility", "display", "direction", "writingMode"];
 const legacyFamily = (value) => value.split(",")[0].trim().replace(/['"]/gu, "");
 const normalText = (value) => value.replace(/[\t\n\f\r ]+/gu, " ").replace(/^ | $/gu, "");
+const initialTextProjections = new WeakMap();
+const own = (value, key) => {
+  if (!value || typeof value !== "object") return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined;
+};
+const projectionSnapshot = value => {
+  let count = 0, remaining = 16384;
+  const seen = new Set();
+  const visit = (item, depth) => {
+    if (++count > 256 || depth > 8) throw Error("projection budget");
+    if (item === undefined || item === null) return [item === null ? "null" : "undefined"];
+    if (typeof item === "string") {
+      if (item.length > 4000 || (remaining -= item.length) < 0) throw Error("projection string budget");
+      return ["string", item];
+    }
+    if (typeof item === "boolean" || typeof item === "number" && Number.isFinite(item)) return [typeof item, item];
+    if (typeof item !== "object" || seen.has(item) ||
+        ![Object.prototype, Array.prototype, null].includes(Object.getPrototypeOf(item))) throw Error("projection shape");
+    seen.add(item);
+    const entries = Reflect.ownKeys(item).map(key => {
+      const descriptor = Object.getOwnPropertyDescriptor(item, key);
+      if (typeof key !== "string" || key.length > 200 || (remaining -= key.length) < 0 ||
+          !descriptor || !Object.hasOwn(descriptor, "value")) throw Error("projection descriptor");
+      return [key, visit(descriptor.value, depth + 1)];
+    });
+    seen.delete(item);
+    return [Array.isArray(item) ? "array" : "object", entries];
+  };
+  try { return JSON.stringify(visit(value, 0)); } catch { return null; }
+};
+
+/** Record the actual adapter projection before its parent can restore pre text. */
+export function captureHtmlFontFamilyTextProjection(source, node) {
+  const content = own(source, "content"), text = own(node, "text"), textSource = own(node, "textSource"), style = own(source, "textStyle");
+  if (initialTextProjections.has(node) || own(source, "nodeType") !== "text" || own(node, "type") !== "text" ||
+      typeof content !== "string" || content.length > 4000 || text !== content || textSource !== content) return;
+  const styleSnapshot = projectionSnapshot(style), segments = own(source, "styledSegments"), segmentsSnapshot = projectionSnapshot(segments);
+  if (styleSnapshot === null || segmentsSnapshot === null) return;
+  initialTextProjections.set(node, { source, content, text, textSource, style, styleSnapshot,
+    segments, segmentsSnapshot, family: own(style, "fontFamily") });
+}
 
 /** Private current-capture record. Never serialized as source authority. */
 export function captureHtmlFontFamilyElement(element) {
@@ -48,16 +90,28 @@ function currentLeaf(record, root) {
 }
 
 function compatibleText(source, node, record) {
-  if (node.text !== source.content || node.textSource !== source.content ||
-      typeof source.content !== "string" || (source.styledSegments?.length ?? 0) > 1 ||
-      source.textStyle?.fontFamily !== legacyFamily(record.style.fontFamily) ||
-      node.fontFamily !== legacyFamily(record.style.fontFamily)) return false;
+  const content = own(source, "content"), style = own(source, "textStyle"), segments = own(source, "styledSegments"),
+    text = own(node, "text"), textSource = own(node, "textSource");
+  if (typeof content !== "string" || (segments != null && (!Array.isArray(segments) || segments.length > 1)) ||
+      own(style, "fontFamily") !== legacyFamily(record.style.fontFamily) ||
+      own(node, "fontFamily") !== legacyFamily(record.style.fontFamily)) return false;
+  const initial = initialTextProjections.get(node);
+  // The pinned converter changes pre spaces to NBSP/collapsed display text.
+  // Its existing parent overflow recovery then restores exact raw DOM text.
+  // Qualify that current canonical text from private identities/bytes, never notes.
+  if (record.style.whiteSpace === "pre" && initial?.source === source &&
+      initial.content === content && initial.text === initial.content && initial.textSource === initial.content &&
+      initial.style === style && initial.family === own(initial.style, "fontFamily") &&
+      initial.styleSnapshot === projectionSnapshot(style) && initial.segments === segments &&
+      initial.segmentsSnapshot === projectionSnapshot(segments) &&
+      text === record.text && textSource === record.text) return true;
+  if (text !== content || textSource !== content) return false;
   if (["normal", "nowrap"].includes(record.style.whiteSpace)) {
     // Compare the upstream display projection only; never replace any text byte.
     const legacy = (value) => normalText(value.replace(/\u00a0/gu, " "));
-    return legacy(source.content) === legacy(record.text);
+    return legacy(content) === legacy(record.text);
   }
-  return source.content === record.text;
+  return content === record.text;
 }
 
 /** Restore only a unique real current leaf's complete computed CSS family. */

@@ -6,6 +6,22 @@ import { htmlFontResources } from "../../../apps/design-studio/app/html-import-a
 import { importFigmaJson, createFigmaTransfer } from "../../../apps/design-studio/app/figma-bridge.mjs";
 import { serializeDesignDocument, normalizeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
 import { preparePluginFile } from "../../../apps/design-studio/app/figma-plugin/v3-input.mjs";
+import { captureHtmlFontFamilyTextProjection } from "../../../apps/design-studio/app/html-font-family.mjs";
+
+test("initial font projection capture never invokes source or canonical getters", () => {
+  const make = () => [{ nodeType: "text", content: "copy", textStyle: { fontFamily: "Inter" } },
+    { type: "text", text: "copy", textSource: "copy" }];
+  let reads = 0;
+  for (const [index, key] of [[0, "nodeType"], [0, "content"], [0, "textStyle"], [1, "type"], [1, "text"], [1, "textSource"]]) {
+    const args = make();
+    Object.defineProperty(args[index], key, { get() { reads++; throw Error("untrusted getter"); } });
+    assert.doesNotThrow(() => captureHtmlFontFamilyTextProjection(...args));
+  }
+  const args = make();
+  Object.defineProperty(args[0].textStyle, "fontFamily", { get() { reads++; throw Error("untrusted family getter"); } });
+  assert.doesNotThrow(() => captureHtmlFontFamilyTextProjection(...args));
+  assert.equal(reads, 0);
+});
 
 test("quoted commas, CSS escapes and quoted generic-looking names retain distinct family semantics", () => {
   const cases = [

@@ -111,3 +111,28 @@ refusal remain. This is a bounded renderer regression, not a whole-page or
 native pixel pass. The first test setup incorrectly passed CSS quotes to the
 FontFace constructor; the corrected fixture passes a literal name and reserves
 CSS quoting for face selection. Both stages are recorded in the handoff.
+
+## Full-suite pre text correction
+
+The root's v2 actual GPU replay fixes its original 6239-pixel resource-alias
+counterexample to strict 0. Its subsequent full main gate still failed one
+unchanged pre-overflow assertion (731 tests: 729 pass, one fail, one skip);
+the UI gate passed 106 with one skip. Those failures and receipts are retained.
+
+The converter projects leading/trailing pre spaces to NBSP and collapses internal
+space runs. Existing overflow recovery then restores the exact current raw DOM
+bytes. Font admission previously required that recovered text to equal the
+earlier display projection, producing an unnecessary unverified-font warning.
+It now records descriptor-owned initial source/canonical text and style identities
+in a private WeakMap at the actual adapter callback. A current owned pre leaf can
+use its restored raw text only if the upstream projection is unchanged and both
+canonical text and textSource exactly match the fresh private raw leaf. Saved
+notes, manufactured provenance, changed source/canonical bytes or absent private
+records do not authorize this path. Ordinary/mixed/pseudo restrictions remain.
+
+The original overflow tests remain unchanged. Additional controls retain literal
+leading/trailing NBSP, doubled spaces and blank LF lines, measure with the full
+font list, and reopen with the same source bytes. Getter controls prove the
+initial projection capture does not execute source/canonical accessors. No
+source characters, geometry, clipping or overflow behavior is fitted or rewritten
+by the font correction.
