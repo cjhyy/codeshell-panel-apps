@@ -2663,3 +2663,49 @@ root完整main934项933pass/1skip，static7项通过；本轮不把先前113项U
 独立raw PNG/固定ROI/差异图复算正在进行，不能提前扩大为全页或真实Figma通过。
 混合同步已冻结2e5abd222a624e5f9f64f9d39e87cf4f3ad5a188，owner284/284及static
 通过，12个原nativeText模块逐字未改；另一agent正在独立VM peer，尚未合入产品。
+
+### ROUND54 · 精确布局数值与原始模板三方复核
+
+ROUND53 CLI已正常同步本地primary main6cc17e3e6c8c29ab4790be31855ff4f87f47494c，
+集成收据SHA89812246b1915a14357e60e13c9f1d9914abbfeae55a85656815fa6baa41a841。
+owner精确unlink自有依赖链接并释放reader后，root核验clean、无active cwd、已是main
+祖先，普通移除CLI工作树/分支；1183个外部证据路径及primary依赖目录原inode保留。
+cleanup SHAfe05c695a108354ee42b6e4c26e7b0fa616eb36549cda01c697339ca9adcca2e。
+
+精度09848a正常合入6cc得到2990a4d303373c422893067ccbbdd6e80dedbc30。只在真实
+TypedOM明确有限px且与原CSSOM投影严格一致时保留gap/padding/minmax精度，adapter、
+Auto Layout尺寸/flow子树及frontend几何序列化不再提前量化；作者65.59与65.59375仍
+区分，百分比/calc不猜测。Grid仅派生FLEX端点及flow位置使用一致Float32政策，fixed/
+Hug实测输入、手动根位置保持其数值；旧文字基线及responsive测高量化政策保留。
+没有增加普通流ABS、坐标吸附、epsilon或按来源形状拟合，12旧nativeText模块未改。
+owner最终62文件553/553及静态通过，保留初次495pass/9fail证据和56773像素既有
+stretch-Fill/Hug长文案失败。独立源码审查141文件和4项纯控制无新增问题，收据
+SHA41ce1caca6c1d221268815e054658752996b9b818fde9195da0dc01190d791c1；这是有界
+源码/CPU审查，不冒充新Figma执行。此前455box数值政策证明范围保持ROUND52。
+
+root冻结299后完整main942项941pass/1skip、UI113项112pass/1skip、static7项通过。
+263 union pins及140完整安装包逐字复核；包除已验证CLI的README/RuntimeSkill/入口/
+新增prototype-source四路径外均等于098。组合checkpoint
+SHAf6e9c3beff11417e3eb45a62d9f5d6e653e94d2d4bcb70f149e079aa695f4e04。
+
+实际root matched-Metal六组三方source/Browser/CanvasKit，六源PNG的SHA与逐RGBA及
+完整DOM/CSS上下文与基线exact；固定ROI边界未改。21宽初始/编辑source→Browser
+各748→0，窄各2711→682。全部18项整viewport比较仍非零。CanvasKit实际M4Pro
+Metal WebGL2绘制，但六组nativeText0、raster fallback/font-unavailable，全部保留
+FAIL_UNSUPPORTED_DIAGNOSTIC_RENDER，不宣称CanvasKit文字或Figma验收通过。
+独立Pillow/NumPy复算72组新旧数值、72差异mask、350artifact与276包pins，数值及
+mask逐字一致；收据SHA9f3414016ff13b8a043f75e5b5075bd943f500c7882ceb3fe627646c3d5c9d11。
+另有CPU profile宽757→9、窄2718→688，不能与Metal0/682混用。04/19未修复为全页
+通过，窄682残差尚作只读空间诊断，不能直接归因字体。
+
+原64模板均无字体文件声明，历史44导入零字体计划；Ruby虽然首选Inter，实际CDP
+glyph字体为系统SFNS/PingFang。显式诊断clone补入Inter后仍因CSS字体栈拒绝Figma
+transfer，不能把替换字体称为原样还原。该诊断无GPU/原生Figma、无产品改动，收据
+SHA3f74d9fb5ffab0ae606fb618f103ec86416bb409c992676c942b63eb73444058。
+
+独立peer拒绝旧guard2e5：未知hyperlink getter的numeric1/mixed/error仍允许3次破坏
+写入；fresh own REST备注与SDK矛盾在mixed/notes-only路径分别仍写3/1次。失败证据
+保留，peer SHA4a42c6ac7e9d1a6c43176e6e76c070c758d2a2f5c80b8dccbea271800122fd77；
+没有合入2e5。owner正在同隔离树修复严格字段/getter准入及所有后代own REST备注复核，
+初步新增控制绿色，仍需冻结、独立复验和最终组合回归。13:55:21UTC documented
+node_repl实际复查cuaAvailable:false，真实Figma仍NOT_RUN；截止UTC16:31不变。
