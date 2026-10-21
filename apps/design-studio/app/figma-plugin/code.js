@@ -1719,6 +1719,8 @@
           if (operation.op === "update") method.call(target, "codeshellNotes", operation.after.notes ?? "");
           else method.call(target);
         }
+        if (mutations.every(({ operation }) => operation.op === "update"))
+          plan.notesCommit.assertApplied();
         figma.commitUndo();
         return { operations: mutations.length, warnings: [] };
       } catch (error) {

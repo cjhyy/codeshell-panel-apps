@@ -3711,3 +3711,27 @@ test("last font and undo edges cannot replace getter evidence or introduce consu
     assert.equal(f.runtime.messages.at(-1).type, "error", `${edge}/${field}`); assert.equal(writes, 0); assert.equal(chars, "Original text");
   }
 });
+
+test("notes-only pure updates read back single multiple and cleared values before reporting success", async () => {
+  for (const shape of ["single", "multiple", "clear"]) for (const noop of [false, true]) {
+    const f = await existingUpdateFixture({ two: true }), first = f.current.pages[0].children[0], second = f.current.pages[0].children[1];
+    first.notes = shape === "clear" ? "" : "Exact new note";
+    if (shape === "multiple") second.notes = "Exact second note";
+    const value = createFigmaTransfer(f.current); value.patch = createFigmaPatch(f.binding, f.current);
+    assert(value.patch.operations.every(op => op.op === "update" && op.changed.length === 1 && op.changed[0] === "notes"));
+    const target = shape === "multiple" ? f.runtime.all.get("1:3") : f.target;
+    const previous = f.target.getPluginData("codeshellNotes"), method = target.setPluginData;
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); const preview = f.runtime.messages.at(-1);
+    assert.equal(preview.type, "patch-preview", preview.message);
+    if (noop) target.setPluginData = function (key, value) { if (key !== "codeshellNotes") method.call(this, key, value); };
+    await f.runtime.send({ type: "apply-patch", token: preview.token }); const result = f.runtime.messages.at(-1);
+    if (noop) {
+      assert.equal(result.type, "error", shape); assert.match(result.message, /notes readback differs/u);
+      assert(f.runtime.calls.some(call => call[0] === "undo"), "Rejected no-op requests undo");
+      assert.equal(f.target.getPluginData("codeshellNotes"), previous, "Synthetic undo restores earlier pure updates");
+    } else {
+      assert.equal(result.type, "patched", result.message); assert.equal(f.target.getPluginData("codeshellNotes"), first.notes);
+      if (shape === "multiple") assert.equal(target.getPluginData("codeshellNotes"), second.notes);
+    }
+  }
+});
