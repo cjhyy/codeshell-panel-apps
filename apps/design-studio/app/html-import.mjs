@@ -5,7 +5,7 @@ import { convertToDesignDSL, HTML2FIGMA_PROVENANCE } from "./vendor/html2figma-b
 import { designNodeToV3 } from "./design-node-adapter.mjs";
 import { createHtmlAutoMarginCapture } from "./html-auto-margin-distribution.mjs";
 import { htmlTextLineHeightRatio } from "./html-line-height.mjs";
-import { captureHtmlFontFamilyElement, preserveHtmlFontFamilies } from "./html-font-family.mjs";
+import { captureHtmlFontFamilyElement, captureHtmlFontFamilyTextProjection, preserveHtmlFontFamilies } from "./html-font-family.mjs";
 import {
   isHtmlAnchorHref,
   safeHtmlAnchorHref,
@@ -639,7 +639,10 @@ export async function captureWorkspaceHtmlResult({
     const canonicalBySource = new WeakMap(), syntheticFlowIds = new Set(), layoutFlowCandidates = [], fontBindings = [];
     options.onNode = (source, node) => {
       canonicalBySource.set(source, node);
-      if (node.type === "text") fontBindings.push({source,node});
+      if (node.type === "text") {
+        captureHtmlFontFamilyTextProjection(source, node);
+        fontBindings.push({source,node});
+      }
       if (source.nodeType === "container" && !source.semantic && node.type === "frame") syntheticFlowIds.add(node.id);
     };
     if (includeFlowAudit) {

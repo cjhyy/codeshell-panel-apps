@@ -30,7 +30,7 @@ async function proof(page, html, mutation = 'none', alias = 'Inter') {
   return page.evaluate(async ({font, mutation, alias}) => {
     const {convertToDesignDSL}=await import('/app/vendor/html2figma-browser.mjs');
     const {designNodeToV3}=await import('/app/design-node-adapter.mjs');
-    const {captureHtmlFontFamilyElement,preserveHtmlFontFamilies}=await import('/app/html-font-family.mjs');
+    const {captureHtmlFontFamilyElement,captureHtmlFontFamilyTextProjection,preserveHtmlFontFamilies}=await import('/app/html-font-family.mjs');
     const {normalizeDesignDocument,serializeDesignDocument,exportDesignSvg}=await import('/app/document.mjs');
     const root=document.querySelector('#fixture'), element=document.querySelector('#copy');
     const originalHtml=document.documentElement.outerHTML;
@@ -42,7 +42,10 @@ async function proof(page, html, mutation = 'none', alias = 'Inter') {
     const flat=source=>[source,...(source.children??[]).flatMap(flat)];
     const textBindings=[];
     const adapted=await designNodeToV3(tree,{fonts:[{...font,family:alias}],viewportWidth:640,viewportHeight:240,
-      onNode:(source,node)=>{canonicalBySource.set(source,node);if(node.type==='text')textBindings.push({source,node});}});
+      onNode:(source,node)=>{canonicalBySource.set(source,node);if(node.type==='text'){
+        if(!['unregistered','manufactured-notes'].includes(mutation))captureHtmlFontFamilyTextProjection(source,node);
+        textBindings.push({source,node});
+      }}});
     // The mixed-descendant negative can be an upstream merged text without a
     // semantic leaf binding. Inspect its first text; product admission must refuse it.
     const binding=textBindings.find(({source})=>elements.get(source.semantic?.semanticId)===element)??textBindings[0];
@@ -53,6 +56,11 @@ async function proof(page, html, mutation = 'none', alias = 'Inter') {
     if(mutation==='foreign'){const other=document.createElement('p');other.textContent=element.textContent;document.body.append(other);elements.set(source.semantic.semanticId,other);records.set(other,captureHtmlFontFamilyElement(other));}
     if(mutation==='ambiguous')ambiguousElements.add(element);
     if(mutation==='source-style')source.textStyle.fontFamily='Foreign';
+    if(mutation==='source-content')source.content='Changed upstream projection';
+    if(mutation==='source-weight')source.textStyle.fontWeight=900;
+    if(mutation==='canonical-text')node.text='Changed canonical display';
+    if(mutation==='canonical-source')node.textSource='Changed canonical source';
+    if(mutation==='manufactured-notes')node.notes=JSON.stringify({htmlText:{whiteSpace:'pre',rawSource:element.textContent}});
     const warnings=[];
     const result=preserveHtmlFontFamilies({tree,root,elements,records,ambiguousElements,canonicalBySource,textBindings,
       resources:adapted.document.resources,warn:(code,nodeId,message)=>warnings.push({code,nodeId,message})});
@@ -135,4 +143,38 @@ test('production capture uses current full family in browser metric receipts wit
   assert.equal(p.signature[1],p.family);assert.equal(p.sourceSignature[1],p.family);
   assert.equal(p.reopened.fontFamily,p.family);assert.equal(p.reopened.textSource,p.textSource);
   assert(p.textSource.includes(String.fromCodePoint(0xa0)));assert.equal(p.textSource,p.text);
+});
+
+test('owned pre recovery retains literal spaces, NBSP and LF while refusing stale or manufactured projection authority', async t => {
+  const page=await setup(t);
+  const raw=String.fromCodePoint(0xa0)+'  First  literal line\n\nSecond literal line.  '+String.fromCodePoint(0xa0);
+  const html=markup('Inter, system-ui',raw,'#copy{white-space:pre;overflow:hidden;text-overflow:clip;width:280px}');
+  const positive=await proof(page,html);
+  assert.notEqual(positive.sourceContent,raw,'actual upstream pre projection must differ from restored raw bytes');
+  assert.equal(positive.family,positive.expectedFamily);assert.equal(positive.reopenedText,raw);
+  assert.equal(positive.result.restored,1);assert.equal(positive.result.retained,0);
+  assert(positive.otherPropertiesUnchanged&&positive.sourceTreeUnchanged&&positive.originalDomUnchanged);
+  assert(!positive.warnings.some(w=>w.code==='html-font-family-unverified'));
+  for(const mutation of ['source-content','source-weight','canonical-text','canonical-source','unregistered','manufactured-notes']) {
+    const p=await proof(page,html,mutation);
+    assert.equal(p.family,p.oldFamily,mutation);assert.equal(p.result.restored,0,mutation);
+    assert.equal(p.result.retained,1,mutation);assert(p.warnings.some(w=>w.code==='html-font-family-unverified'),mutation);
+  }
+});
+
+test('production pre recovery preserves current full family and raw bytes through measurement and reopen', async t => {
+  const page=await setup(t),raw='  First  literal line\n\nSecond '+String.fromCodePoint(0xa0)+' literal line.  ';
+  const html=markup('Inter, system-ui',raw,'#copy{white-space:pre;overflow:hidden;text-overflow:clip;width:280px}');
+  const p=await page.evaluate(async html=>{
+    const {captureWorkspaceHtmlResult}=await import('/app/html-import.mjs');
+    const {normalizeDesignDocument,serializeDesignDocument}=await import('/app/document.mjs');
+    const r=await captureWorkspaceHtmlResult({html,sourcePath:'source.html',readText:async()=>'',rootSelector:'#fixture',viewportWidth:640,viewportHeight:240});
+    const d=normalizeDesignDocument(r.document),text=d.nodes.find(n=>n.type==='text');
+    return {warnings:r.report.warnings,fontFamilies:r.report.fontFamilies,text,
+      reopened:normalizeDesignDocument(JSON.parse(serializeDesignDocument(d))).nodes.find(n=>n.type==='text')};
+  },html);
+  assert.equal(p.fontFamilies.restored,1);assert.equal(p.text.fontFamily,'Inter, system-ui');
+  assert.equal(p.text.textSource,raw);assert.equal(p.reopened.textSource,raw);assert.equal(p.reopened.fontFamily,p.text.fontFamily);
+  assert.equal(JSON.parse(p.text.textMetrics.sourceSignature)[1],p.text.fontFamily);
+  assert(!p.warnings.some(w=>w.code==='html-font-family-unverified'));
 });
