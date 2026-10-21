@@ -2201,3 +2201,45 @@ hit-test/selection/zoom，不写回ABS模型。改字、改宽、拖拽与导出
 CanvasKit本身。Figma官方2025-09-18工程文章说明其自研C++/Wasm renderer从WebGL
 扩展到WebGPU：https://www.figma.com/blog/figma-rendering-powered-by-webgpu/ 。
 Browser owner已确认默认不变、无自动fallback，DOM几何只保留在view/hit-test运行期。
+
+
+## ROUND46 · Native Text完整来源往返与字体组合验证 · 2026-10-21 15:10 SG
+
+在稳定d007386正常合并冻结5534151，组合代码HEAD
+0bf5b25c9ff993679cf69be86d7034b558573432。冲突保留两项独立检查：
+nativeTextRangeCreationPlan和nativeDesignFontFamily；未恢复旧的整体范围创建拒绝来
+掩盖组合问题，既有节点range patch/delete/clear及独立HTML插件入口边界仍保持关闭。
+完整source envelope经descriptor-owned clone/预算检查；真实SDK完整catalog、当前
+身份/祖先/paint/preview上下文构成准入，hint只恢复已验证作者fill/ranges，不能恢复
+原始作者line-height或伪造来源。postmeasure在normalize前后比较不可变语义快照。
+
+原始4份实机SDK观察的PERCENT值精确保留，例如120.00000476837158→
+1.2000000476837158，并保留UTF16范围[4,11)内的LF。四份来源的projection/
+save/reopen、mock wrapping及恶意callback/accessor控制不等于当前实机creator验收。
+源码、完整collector、纯protocol/model与生成runtime一同保存；手写native code在
+全部生成slot以外与5534151逐字节相同。UI/code slot从合并源码重建，未采用ours丢弃
+另一侧功能；原冲突、两父提交、生成前后hash均保留于round46-native-font-merge。
+
+最终完整main849项848pass/1skip（231071.259709ms），UI107项106pass/1skip
+（109151.91525ms），共956项954pass/2skip。134个安装包文件、对应catalog/测试、
+HEAD/helper在门禁前后不变；typecheck、validate、scoped build check、三个生成检查
+与diff check通过。收据SHA5fdf76d0a1588e3a9280104f9a09e1590d5155704a462b41a433a6f24f24fde2。
+此前source-owner35focused/430affected/835main和root4独立控制/107UI证据单列，不将
+它们重复计入956。07:08UTC再次验证cuaAvailable:false，无真实Figma执行或像素声明。
+
+font工作树/分支e002在owner确认全部reader终止且基线另存后普通移除；未强制删除，
+所有提交已在main。cleanup SHAaa2355b3b75c66b1c4388338c5e0098770213169a50c575435927f6ea683cd84。
+新native组合完成稳定同步后再清理已集成且无reader的旧candidate，活动Browser、原始
+64模板、zero-token与未完成实机probe工作树保留。没有push、发布或Host安装。
+
+原始64模板已完成192个源状态（1280/768/400）、192个root PNG和15张完整gallery
+截图；六种root overflow仅作为crop，不能称为完整paint范围。v2冻结30unique network
+bodies，零请求失败/URL正文冲突/未加载IMG；v1把redirect无正文记为failure的32条
+元数据保留并明确更正。v2收据ec8a2d8b12386e4bfae78e7448c54c7d4551042612ddfc2a24a551d24e4d6de8。
+七种原始模板正进行严格源重放与本地素材transport对照（含同样Text-node编辑），
+只有通过者进入生产转换；尚未宣称64项转换或Figma通过。
+
+Browser独立renderer已在CPU实测derived坐标/Hug/Fill污染、改文/改宽、min/max/Grid、
+旋转/rounded ancestor clip命中和font/scene supersession；该工作树尚未稳定合入。
+CK仍为默认，两版都使用canonical模型，实机Figma同步继续独立验收。24小时目标active，
+截止仍2026-10-22 00:31 SG。
