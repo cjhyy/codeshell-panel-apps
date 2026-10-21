@@ -152,6 +152,7 @@ export const suites = [
         "tests/apps/design-studio/html-asset-mime.test.mjs",
         "tests/apps/design-studio/html-stylesheet-media.test.mjs",
         "tests/apps/design-studio/html-auto-margins.test.mjs",
+        "tests/apps/design-studio/html-auto-margin-distribution.test.mjs",
         "tests/apps/design-studio/html-block-flow.test.mjs",
         "tests/apps/design-studio/html-empty-block-flow.test.mjs",
         "tests/apps/design-studio/html-empty-overlay-flow.test.mjs",
