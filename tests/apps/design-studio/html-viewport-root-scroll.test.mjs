@@ -138,6 +138,31 @@ test("own HTML root constraints and authored relative or conditional insets cann
   }
 });
 
+test("variable physical and logical box declarations cannot authorize a fixed gutter context before a breakpoint", async (t) => {
+  const browser = await relationBrowser();
+  t.after(() => browser.close());
+  const base = "overflow-y:scroll;scrollbar-gutter:stable;";
+  const cases = [
+    ["width", "--size:auto;width:var(--size)", "--size:300px"],
+    ["min-width", "--size:auto;min-width:var(--size)", "--size:300px"],
+    ["max-width", "--size:none;max-width:var(--size)", "--size:300px"],
+    ["left", "position:relative;--offset:0px;left:var(--offset)", "--offset:10px"],
+    ["inset shorthand", "position:relative;--offset:0px;inset:var(--offset)", "--offset:10px"],
+    ["overflow shorthand", "--over:scroll;overflow:var(--over)", "--over:hidden"],
+    ["inline-size", "--size:auto;inline-size:var(--size)", "--size:300px"],
+    ["conditional inline-size", "", "inline-size:300px"],
+    ["conditional min-inline-size", "", "min-inline-size:300px"],
+    ["conditional logical inset", "position:relative", "inset-inline-start:10px"],
+    ["conditional writing direction", "", "direction:rtl"],
+  ];
+  for (const [label, initial, narrow] of cases) for (const width of [640, 400])
+    for (const rootSelector of ["html", "body", "#fixture"]) {
+      const source = fixture(base + initial, "", `@media(max-width:500px){html{${narrow}}}`);
+      const observed = await browser.capture(source, width, { rootSelector });
+      assert(observed.relation.unsupported, `${label}/${rootSelector}/${width}: ${JSON.stringify(observed)}`);
+    }
+});
+
 test("root viewport auto/scroll overflow preserves ordinary vertical Fill, save/reopen and exact outer-only resize pixels", async (t) => {
   const output = await mkdtemp(join(tmpdir(), "html-root-scroll-"));
   t.after(() => rm(output, { recursive: true, force: true }));

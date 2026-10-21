@@ -9,18 +9,21 @@ const normalPosition = (values) => ["static", "relative"].includes(values.positi
 // authored, matching declarations as well before freezing ancestor box insets.
 function fixedBoxDeclarations(element, document, window) {
   const spacing = /^(?:margin|padding)(?:-(?:top|right|bottom|left|inline(?:-start|-end)?|block(?:-start|-end)?))?$/u;
-  const boxProperty = key => spacing.test(key) || /^(?:all|(?:min-|max-)?(?:width|height)|display|position|top|right|bottom|left|float|transform|translate|rotate|scale|zoom|contain|overflow(?:-x|-y)?|scrollbar-(?:gutter|width))$/u.test(key);
+  const boxProperty = key => spacing.test(key) || /^border(?:-|$)/u.test(key) ||
+    /^(?:all|(?:min-|max-)?(?:width|height|inline-size|block-size)|box-sizing|display|position|top|right|bottom|left|inset(?:-(?:inline|block)(?:-start|-end)?)?|float|transform|translate|rotate|scale|zoom|contain|content-visibility|writing-mode|direction|overflow(?:-x|-y|-inline|-block)?|scrollbar-(?:gutter|width))$/u.test(key);
   let rules = 0;
   const check = (style, conditional) => {
     if (style.length > 1024) return false;
-    for (const key of ["margin", "padding", "margin-inline", "margin-block", "padding-inline", "padding-block"])
+    for (const key of ["margin", "padding", "margin-inline", "margin-block", "padding-inline", "padding-block",
+      "inset", "inset-inline", "inset-block", "overflow", "border", "border-width", "border-inline", "border-block",
+      "border-inline-width", "border-block-width", "border-top", "border-right", "border-bottom", "border-left"])
       if (/\\|\b(?:var|env|attr)\(/iu.test(style.getPropertyValue(key))) return false;
     for (const key of style) {
       if (conditional && boxProperty(key)) return false;
       if (key === "all" && !["initial", "unset"].includes(style.getPropertyValue(key))) return false;
       // Pending shorthand substitutions can leave every expanded longhand
       // empty, so they must be rejected before inspecting those longhands.
-      if (spacing.test(key) && /\\|\b(?:var|env|attr)\(/iu.test(style.getPropertyValue(key))) return false;
+      if (boxProperty(key) && /\\|\b(?:var|env|attr)\(/iu.test(style.getPropertyValue(key))) return false;
     }
     for (const prefix of ["margin", "padding"]) for (const side of ["top", "right", "bottom", "left",
       "inline-start", "inline-end", "block-start", "block-end"]) {

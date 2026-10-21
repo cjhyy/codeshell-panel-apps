@@ -120,8 +120,9 @@ absolute positioning, scrollbar widget, inferred15px constant or pixel tolerance
 
 Computed Typed OM alone is insufficient: authored2vw is returned as a px value.
 A bounded read-only CSSOM pass also checks matching box declarations. Relative
-or variable spacing, unresolved shorthand substitutions and grouped/conditional
-box rules retain a diagnostic instead of becoming fixed ancestor insets. The
+spacing, variable physical/logical dimensions or offsets, unresolved inset/
+overflow/border shorthand substitutions and grouped/conditional box rules retain
+a diagnostic instead of becoming fixed ancestor insets. The
 scan caps64 stylesheets,10000 rules,16 nested groups,1024 declarations per rule
 and8192 selector characters; unreadable or unsupported CSSOM refuses the proof.
 This is a conservative capture boundary, not a complete CSS cascade or breakpoint
@@ -136,7 +137,7 @@ independently measure each selected DOM root, assert exact saved rectangles,
 real viewport padding and Fill transfer fields, and preserve save/reopen plus
 layout reflow. Custom gutters, real visible16px classic scrollbars, root width
 constraints, relative/variable/conditional insets, clipping, scroll offsets,
-quirks and horizontal overflow remain negative controls. The8 focused tests
+quirks and horizontal overflow remain negative controls. The9 focused tests
 pass; prior failed candidate runs and their explanations are retained outside
 the repository, including the extra root-margin accounting correction.
 
