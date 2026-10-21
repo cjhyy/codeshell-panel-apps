@@ -2060,3 +2060,20 @@ DOM，不删除可见覆盖层。1280×7000/400×7000完整内容截图对在线
 导出/范围准入候选e56b2a6在另一工作树，156项 focused通过，完整CPU与peer正在运行；
 精确SDK metric投影、source/hint恢复均未进入本次稳定同步，原节点范围修改入口仍关闭。
 24小时目标继续active，截止仍为10月22日00:31 SG。
+
+### ROUND44 运行模式更正 · 2026-10-21 13:34 SG
+
+peer复核后确认：其四次独立 production-fidelity调用使用 plain Node，未传cpuOnly、
+未加载root preload，不能声称这些调用关闭了GPU。其原报告browserGpuDisabled:false
+与此一致，PNG逐字节/逐像素计算仍有效；先前笼统的CPU/no-GPU描述明确撤回。
+直接DOM guard脚本则显式--disable-gpu。原报告不改，完整调用更正收据 SHA
+b515f4ddfe29ebec984902d1c943bc7ca7aa06a6a091ee4d1208a5f4ffd6d6b6。
+root的12个正例及主回归使用显式CPU preload，不受此处peer描述错误影响。
+
+随后root在稳定1e3f346明确传cpuOnly:true补跑四个生产负例和固定8px对照，报告
+browserGpuDisabled:true；结果仍分别0/0/54000、0/0/54000、0/0/21480、
+0/0/15640与0/0/0，警告分别为前四项viewport-flow-fixed、固定对照无此警告。
+保留两种模式的真实图与数值，未覆盖原artifact。补跑收据 SHA
+41c602a564adf444a3e7c01f3a509cb75f205120cf45ad1d406332e5e240dbc8。
+已在peer确认所有进程/读取结束后清理已合入的gutter与f61 baseline工作树和task-owned
+依赖软链接；外部证据、main内提交和未完成的其他候选均保留。

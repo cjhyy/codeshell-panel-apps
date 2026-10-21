@@ -170,3 +170,14 @@ original helper report field `browserGpuDisabled:false` reflects the omitted
 `cpuOnly` option, while that preload appends`--disable-gpu` to launch arguments.
 The additive`cpu-mode-metadata-clarification-v1.json` records this distinction
 and exact invocation/preload pins; original reports and PNGs are unchanged.
+
+The independent peer's four production calls, in contrast, used plain Node
+without either `cpuOnly` or that preload; its original reports correctly say
+`browserGpuDisabled:false`. Earlier blanket CPU wording for those peer calls
+is withdrawn in`execution-mode-clarification.json` (SHA
+`b515f4ddfe29ebec984902d1c943bc7ca7aa06a6a091ee4d1208a5f4ffd6d6b6`).
+Root subsequently reran the four production negatives plus the fixed8px control
+at stable1e3f346 with explicit`cpuOnly:true`: their exact pixel counts and warning
+behavior match the retained originals. Receipt SHA
+`41c602a564adf444a3e7c01f3a509cb75f205120cf45ad1d406332e5e240dbc8`.
+Independent PNG decode/byte checks did not launch a browser and remain valid.
