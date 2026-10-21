@@ -124,6 +124,7 @@ export const suites = [
         "tests/apps/design-studio/prepare-figma-cli.test.mjs",
         "tests/apps/design-studio/figma-assets.test.mjs",
         "tests/apps/design-studio/figma-binding.test.mjs",
+        "tests/apps/design-studio/figma-source-overlap.test.mjs",
         "tests/apps/design-studio/native-text-content.test.mjs",
         "tests/apps/design-studio/native-text-range-capture.test.mjs",
         "tests/apps/design-studio/native-text-range-write.test.mjs",

@@ -1901,3 +1901,86 @@ NOT_RUN，收据 SHA 5ca4d260124661f4d7ebf6cb8ec8bae9026ca58b1636917a0a6c0c8f06c
 ABS 加少24px高度的 synthetic placeholder；普通 HUG 父容器需要负 main gap，现有
 模型明确不支持。先补真正的 HUG/负 gap 原生证据，再讨论有界恢复；不以固定高度
 重叠 wrapper 冒充响应式 Auto Layout。24小时目标继续 active，截止不变。
+
+## ROUND40 · 2026-10-21 11:30 SG · 新建范围文字最终校验和普通流诊断继续推进
+
+独立 native 候选 f300894 将最终来源/作者意图保存接入新页面 factory：全部父子 AL
+尺寸结束后读取完整 SDK/REST，先暂存所有 hint，再同步复核每个 Text，最后写 metadata。
+转包省略的零 letterSpacing 使用 factory 实际写入的0证明，不改 raw 数字或拟合行高。
+空/无样式区间不获取非空 hint；显式空字符串来源仍有效，缺失/错误类型与4000单位
+上限继续拒绝。原节点的区间修改、清除、删除以及独立 HTML 插件入口仍关闭。
+
+peer 复现了额外异步风险：即使不直接给外来 child 写尺寸，await 后启用父 AL 仍会
+间接修改它。现在任何后续布局写入都校验最高已启用 AL 祖先的当前完整子树，使用
+原创建 child 引用而不是当前 children[index]。已有图层插入新页面时明确失败并保留
+该页；移到外部的 owned Text 不再写入或删除。回滚只移除当前子树全 owned 的新页，
+不覆盖外部导航和选区。真实完整字段 MOCK 覆盖两页 hint 存储中途失败、后一个 export
+改变前一个 getter1、普通/嵌套 Grid 外来图层等；Grid 间接改写复现从1次变为0。
+这些均是 VM/模拟布局检查，不是新的实机或像素验收。factory peer 收据 SHA
+852575d3e5ebd83ec5b26f1ff6d354b862c515c7f15b8a50bd83fd50f471804f。
+
+820e42d 的纯来源比较正常合入 native 候选 cacc9c1：历史和当前各自绑定自己的 REST，
+比较完整 raw snapshot，并按 Unicode scalar 解析 REST 样式，保留未知字段和 style refs。
+仅 override ID 重编号可相等，缺失历史明确要求 snapshot；未接入原节点写入。
+最终157/157相关 CPU 检查通过，3249.340666ms；typecheck、validate129（app/122）、
+三项 generated、scoped build 全部 exit0。前后 HEAD、129份文件SHA一致且 tracked clean。
+combined 收据 SHA0c23c56ae819804f4ecc90b6880da1a787dd1960f16d8825805b7b5b2a8a9ff5，
+位于外部 evidence/native-text-ranges-sdk/finalizer-combined-cacc9c1/receipt.json。
+候选仍未进入稳定 primary，源导出/作者 hint 恢复和 v4 完整 writer 实机验收未完成；
+没有把既有 NOT_RUN 改写成通过，原插件与原设计不再尝试重复改动。
+
+Features 负行 planner 4ac84d2 已独立保存并通过13项检查和 source peer；返回值始终
+blocked，没有接入转换。三宽度 source PNG 仍严格0，201条实际 callback 记录不变。
+Icon-grid 的纯 CSS Flex→CSS Grid 研究在三宽度及两个不等高 copy 控制为0，但631px
+分数宽度仍8像素/max1，负例和差异图保留。原生多行 HUG tracks/水平 Fill cells 及
+内部 flex-shrink 未证明，不能据此放宽 Grid guard。研究收据 SHA
+5a1e9b056500028af09e40dc0f84ad630c7f57d3519f2fb003fd352f78b993eb。
+
+另在新的隔离分支重新跑4个冻结真实网页×3宽度，发现 Cover 垂直普通流因 header/footer
+两个 internal auto margin 被整体降级成 manual，每宽度3个直接 flow 失败。正检查有界
+恢复为现有 space-between AL；不处理不均等 auto 边界或 endpoint auto，不升级现有
+Figma Legacy 布局。所有新主路径仍需成对像素/结构与完整检查后才集成。
+稳定产品继续1bbe0e6；本轮只同步任务记录，无 push、发布或 Host 安装。
+24小时目标继续 active，截止仍为10月22日00:31 SG。
+
+## ROUND41–42 · 2026-10-21 12:14 SG · 重叠 Figma 来源拒绝歧义，完整回归通过
+
+8ad6056 修复来源索引对重复 node ID 静默 first-wins 的问题。同一完整 raw 子树只有
+对象键顺序不同可复用原对象；样式、未知字段、子层或已知父节点/兄弟位置不同即拒绝。
+校验先于 clone/normalize，并对完整 UTF8 大小、深度、出现次数及非 plain data 有界
+检查。未添加原生写入权限，也未宣称已发生错误的实机修改。198项受影响检查通过，
+root 独立25项通过；source peer 收据 SHA
+cec2f91353f78b82954da6028b7608c3c5f0f968deae9f89c280e1dd91a3f8c3。
+
+ROUND41 冻结198663a：main711项709pass/1fail/1skip；UI107项106pass/0fail/1skip。
+唯一 main 失败是 unsupported stable scrollbar gutter 的旧测试把640px视口内的根宽度
+写死为640。独立 DOM 实测为625；400px视口实测385，转换正确保留已捕获的625。
+97f548c 只修正测试预期：与独立浏览器测得的完整根边界对照，同时增加外层640/400
+断言。stable gutter 窄屏5600像素/max218、private clipping 初始25600/max17和窄屏
+18000/max201继续明确失败；未改变转换代码或放宽逐像素判定。初次完整失败、单项
+复现和原始/转换/差异 PNG 均保留。独立测试审查收据 SHA
+1da3ec48f5c286b36623a42c01db2aaf3c3e017d0112dc161b162391987a6ad4。
+
+ROUND42 main 在97f548c完整通过：711项710pass/0fail/1skip，209427.264125ms。
+ROUND41 UI 为107项106pass/0fail/1skip，111314.4515ms；两版唯一差异为上述 main
+测试，122份 package 文件及10份 UI catalog 测试逐字节相等，允许复用这次 UI 结果。
+合计818项816pass/0fail/2skip；两套前后 HEAD、文件 SHA、helper 和 tracked clean
+均通过。typecheck、validate122、三项 generated、Design Studio scoped build 和 diff
+检查再次 exit0。combined 收据位于外部 evidence/round42-full-gates-receipt.json，SHA
+d3b2d2900ab4f60af25d430df86cec7ce38f3113958d3a62186a6bf142e20b49。
+稳定 primary 仅在完整检查后快进，无 push、发布或 Host 安装。
+
+独立 native 候选1ad67f0依据已保存的4份真实 SDK 原始数据，接受唯一已实测的 PERCENT
+传输表示 Math.fround(requestedPercent/100)*100；另保留完全相等路径，PIXELS仍严格
+相等。没有 epsilon、拟合或改写 raw snapshot，错误 Float32 管线和相邻 double 继续
+拒绝。实际四份样例现在1份统一样式、3份作者意图可验证，原 linked LF [4,11) 不裁剪。
+181项候选检查及52项独立 peer 通过；尚未运行完整 production writer 的新实机探针，
+source export/hint restore 和原节点范围更新仍未激活，候选不进入稳定 primary。
+PERCENT 决策收据 SHA
+f36397b8d8c53c68b12e9d49e102dd79ae70458dd78190cc95314478713c2729。
+
+Cover 的三个直接普通流失败正在隔离候选中恢复为真实 vertical space-between AL。
+三宽度初始和同宽重排图片与原产品逐字节不变；跨宽像素仍有变差的案例，已定位为
+既有固定 header 高度和捕获的桌面媒体字号与新 main HUG 重排的组合，保留全部负例。
+等待冻结候选的独立审查和最终配对证据，不把结构改善写成网页/Figma 像素通过。
+24小时目标继续 active，截止仍为10月22日00:31 SG。

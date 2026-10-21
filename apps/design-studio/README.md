@@ -643,6 +643,12 @@ containment retain measured geometry with explicit conversion boundaries.
 
 ## Package boundary
 
+Figma source bindings reject conflicting duplicate raw node IDs before planning
+original-node changes. Identical ancestor/selected-child overlap retains the first
+original raw object; full descendants, unknown styles, metadata and observed
+parent/order context must agree. See the
+[source overlap contract](../../docs/todo/design-studio-figma-source-overlap-2026-10-21.md).
+
 Renderable code lives under `app/`. The declarative Agent contribution lives
 under `agent/`: the manifest declares every callable tool, handlers execute
 inside the panel sandbox, and the bundled Skill is read-only Markdown. The
