@@ -27,7 +27,8 @@ Hug 内容编辑会重算尺寸。已知空来源按一行行高和1px宽度下�
 新页面创建复用这份完整计划，增量导回继续受独立的原生范围边界约束。
 
 原生新页面创建已接入纯色、无装饰、完整 HTTP(S)/简单 mailto 链接的单一 Text 写入；
-候选仍待最终来源/作者意图快照与实机往返验收。增量补丁（包括清除区间）和独立 HTML
+候选在全部父子 AL 尺寸完成后，完整读取并复核当前来源，再保存作者意图快照；实机
+完整写入、导出恢复和往返验收仍待完成。增量补丁（包括清除区间）和独立 HTML
 插件原始输入仍提前拒绝 `textRanges`，完整保留设计文档中的范围数据。自定义下划线、
 删除线、渐变/paint stack 和未支持的链接在页面、字体或文字写入之前拒绝。
 只读 SDK 范围观察器已具备完整 UTF16 边界、原始值和整包预算检查；目前尚未接入
@@ -675,8 +676,8 @@ limit and include plugin ID/key overhead in the 100,000-byte storage-entry
 budget. Stale, partial, unsupported or oversized inputs refuse atomically.
 Line-height units and font axes remain exact: Float32 percentage transport that
 differs from the canonical scalar is deliberately refused, without rounding or
-tolerance. This helper is not connected to SDK capture or plugin-data writes;
-its caller must capture after final layout and roll back a failed creation.
+tolerance. The creation candidate now uses this helper through final SDK capture
+and plugin-data writes; export and author-hint restoration remain unhooked.
 
 Native text source binding compares REST character overrides in Unicode scalar
 order against SDK UTF16 segments and accepts the exact Float32 serialization of
@@ -685,9 +686,21 @@ canonical metric admission stays strict. See the
 [actual SDK projection evidence](../../docs/todo/design-studio-native-text-rest-projection-2026-10-21.md)
 for preserved failures, deliberate admission refusals and Unicode controls.
 
-The staged `figma-plugin/text-range-state.mjs` finalizer combines complete SDK
+The `figma-plugin/text-range-state.mjs` finalizer combines complete SDK
 capture with author-hint validation after final layout. It stages all hints and
 rechecks every owned Text after the last awaited export before writing metadata;
-the factory must provide its ownership check and rollback boundary. This module
-is not exported by the production text runtime or called by the creation path.
-Native writer, percentage transport and final factory acceptance remain pending.
+the new-page factory supplies actual bounded ancestry and subtree checks, then
+rechecks final image sizes before exposing the result. Empty or normalized-away
+range payloads create ordinary Text without a nonempty intent hint. Explicit
+empty authored responsive content remains valid. Original-node range updates
+and the standalone HTML plugin remain blocked.
+
+Post-await mutations validate the highest enabled Auto Layout ancestor so that
+native reflow cannot resize a user-inserted foreign descendant. Rollback removes
+only newly owned pages whose current descendants are all owned; a page with an
+inserted external layer is retained with an explicit failure. Owned layers moved
+outside those pages are preserved, and cleanup does not reset external page
+navigation or selections. Complete-field SDK mocks cover staging, source races,
+storage failure across pages and foreign-layer preservation. These are VM
+checks, not actual native or cross-renderer pixel acceptance. Native complete
+writer, percentage transport and final factory acceptance remain pending.

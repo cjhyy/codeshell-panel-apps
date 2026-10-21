@@ -18,6 +18,7 @@ import { editDesignStrokeColor, editDesignStrokeAlignment, editDesignStrokeWidth
 import { longFigmaSource } from "./fixtures/long-canvas.mjs";
 import { measuredWrap, textMetricsSignature, textSourceMetricsSignature } from "../../../apps/design-studio/app/text-metrics.mjs";
 import { plainFixture } from "./fixtures/figma-plugin-v3.mjs";
+import { installNativeTextRangeSdkMock } from "./fixtures/native-text-sdk.mjs";
 
 const code = await readFile(
   new URL("../../../apps/design-studio/app/figma-plugin/code.js", import.meta.url),
@@ -39,6 +40,7 @@ const page = (children) => ({ id: "0:1", type: "CANVAS", name: "Home", children 
 
 function harness(source = page([rect()]), { nativeTextLayout = false, nativeStrokes = false, nativeTextRanges = false, nativeImageLayout = false } = {}) {
   const all = new Map(),
+    nativeRangeMocks = new WeakMap(), mixed = Symbol("mixed"),
     messages = [],
     fonts = new Set(),
     images = new Map(),
@@ -46,6 +48,7 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
     calls = [];
   let serial = 100,
     failName = null, failRangeName = null;
+  let toRuntime = clone;
   function make(raw, parent = null) {
     const node = {
       raw: clone(raw),
@@ -194,6 +197,8 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
         if (value === "STRETCH") node[`layoutSizing${node.parent.layoutMode === "VERTICAL" ? "Horizontal" : "Vertical"}`] = "FILL";
       } });
     }
+    if (nativeTextRanges && node.type === "TEXT")
+      nativeRangeMocks.set(node, installNativeTextRangeSdkMock(node, { mixed, toRuntime: value => toRuntime(value) }));
     let name = raw.name;
     if (raw.absoluteBoundingBox) node.absoluteBoundingBox = clone(raw.absoluteBoundingBox);
     Object.defineProperty(node, "name", {
@@ -249,7 +254,8 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
         width: Math.max(...xs) - Math.min(...xs),
         height: Math.max(...ys) - Math.min(...ys),
       };
-      raw.fills = clone(node.fills).map((paint) =>
+      const currentFills = node.fills === mixed && nativeRangeMocks.has(node) ? [] : node.fills;
+      raw.fills = clone(currentFills).map((paint) =>
         paint.type === "IMAGE" && paint.imageHash
           ? { ...paint, imageRef: paint.imageHash, imageHash: undefined }
           : paint,
@@ -287,7 +293,7 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
     }
     if (node.raw.children || node.children.length)
       raw.children = node.children.filter((child) => !child.removed).map(snapshot);
-    return raw;
+    return nativeRangeMocks.has(node) ? nativeRangeMocks.get(node).projectRest(raw) : raw;
   }
   const initial = make(source),
     root = {
@@ -301,7 +307,8 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
   initial.parent = root;
   const figma = {
     fileKey: "file-a",
-    mixed: Symbol("mixed"),
+    pluginId: "test-codeshell-native-factory",
+    mixed,
     root,
     currentPage: initial,
     ui: {
@@ -386,7 +393,10 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
       figma.currentPage.appendChild(node);
       return node;
     };
-  vm.runInNewContext(code, { figma, __html__: "UI", Uint8Array, ArrayBuffer });
+  const context = vm.createContext({ figma, __html__: "UI", Uint8Array, ArrayBuffer });
+  const parseRuntime = vm.runInContext("JSON.parse", context);
+  toRuntime = value => parseRuntime(JSON.stringify(value));
+  vm.runInContext(code, context);
   return {
     figma,
     all,
@@ -497,7 +507,7 @@ test("native range creation uses one editable AUTO Text, complete characters and
   const transfer = rangeTransfer(), runtime = harness(undefined, { nativeTextLayout: true, nativeTextRanges: true });
   const original = runtime.figma.root.children.map(runtime.snapshot);
   await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
-  assert.equal(runtime.messages.at(-1).type, "imported");
+  assert.equal(runtime.messages.at(-1).type, "imported", runtime.messages.at(-1).message);
   const created = runtime.figma.root.children.at(-1), frame = created.children[0], text = frame.children[0];
   assert.equal(frame.layoutMode, "VERTICAL");
   assert.equal(frame.children.length, 1);
@@ -514,6 +524,10 @@ test("native range creation uses one editable AUTO Text, complete characters and
   ]);
   assert.deepEqual(text.rangeWrites[3][3], { type: "URL", value: "https://example.com/" });
   assert.deepEqual(text.rangeWrites[4][3][0].color, { r: 29 / 255, g: 112 / 255, b: 184 / 255 });
+  const hint = JSON.parse(text.pluginData.codeshellTextRangeIntent);
+  assert.equal(hint.fill, "#000000");
+  assert.deepEqual(hint.textRanges, transfer.pages[0].children[0].children[0].textRanges);
+  assert(runtime.calls.some(call => call[0] === "export" && call[1] === text.id && call[2] === "JSON_REST_V1"));
   assert.deepEqual(runtime.figma.root.children.slice(0, -1).map(runtime.snapshot), original);
 });
 
@@ -526,6 +540,147 @@ test("a range setter failure rolls back only owned new pages and leaves the orig
   assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
   assert.equal(runtime.figma.currentPage, pageBefore);
   assert(runtime.calls.some(call => call[0] === "setRangeHyperlink"));
+});
+
+test("final native metadata is staged for every ranged Text and storage failure rolls back all owned pages", async () => {
+  const transfer = rangeTransfer(), frame = transfer.pages[0].children[0];
+  const secondFrame = clone(frame); secondFrame.id = "second-frame";
+  secondFrame.children[0].id = "second-range"; secondFrame.children[0].name = "Second range";
+  transfer.pages.push({ id: "second-page", name: "Second page", children: [secondFrame] });
+  const runtime = harness(undefined, { nativeTextLayout: true, nativeTextRanges: true });
+  const selection = [runtime.all.get("1:2")]; runtime.figma.currentPage.selection = selection;
+  const before = runtime.figma.root.children.map(runtime.snapshot), currentPage = runtime.figma.currentPage;
+  const createText = runtime.figma.createText, texts = [];
+  runtime.figma.createText = () => {
+    const node = createText(), save = node.setPluginData;
+    texts.push(node);
+    node.setPluginData = (key, value) => {
+      if (key === "codeshellTextRangeIntent") {
+        runtime.calls.push(["intent", node.id]);
+        if (node === texts[1]) throw new Error("native intent storage failed");
+      }
+      save.call(node, key, value);
+    };
+    return node;
+  };
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.match(runtime.messages.at(-1).message, /native intent storage failed/u);
+  assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
+  assert.equal(runtime.figma.currentPage, currentPage);
+  assert.equal(currentPage.selection, selection);
+  assert.equal(texts.length, 2);
+  assert(texts[0].pluginData.codeshellTextRangeIntent);
+  assert.equal(texts[1].pluginData.codeshellTextRangeIntent, undefined);
+  assert(texts.every(node => node.parent.parent.removed));
+  const firstHint = runtime.calls.findIndex(call => call[0] === "intent");
+  assert.equal(runtime.calls.slice(0, firstHint).filter(call => call[0] === "export" && call[2] === "JSON_REST_V1").length, 2);
+});
+
+test("empty or styleless authored ranges create ordinary Text without requiring a nonempty author hint", async () => {
+  for (const variant of ["empty-ranges", "styleless-range", "empty-source"]) {
+    const transfer = rangeTransfer(), source = transfer.pages[0].children[0].children[0];
+    source.textRanges.ranges = variant === "styleless-range" ? [{ start: 4, end: 10 }] : [];
+    if (variant === "empty-source") {
+      source.text = ""; source.textSource = ""; source.textRanges.sourceSignature = '[""]';
+    }
+    const runtime = harness(undefined, { nativeTextLayout: true, nativeTextRanges: true });
+    await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+    assert.equal(runtime.messages.at(-1).type, "imported", `${variant}: ${runtime.messages.at(-1).message}`);
+    const node = runtime.figma.root.children.at(-1).children[0].children[0];
+    assert.equal(node.characters, source.textSource);
+    assert.equal(node.pluginData.codeshellTextRangeIntent, undefined);
+    assert.equal(runtime.calls.filter(call => call[0] === "export").length, 0);
+  }
+});
+
+test("a later native export cannot alter an earlier raw range observation before metadata is saved", async () => {
+  const transfer = rangeTransfer(), frame = transfer.pages[0].children[0];
+  frame.children.push({ ...clone(frame.children[0]), id: "second-range", name: "Second range" });
+  const runtime = harness(undefined, { nativeTextLayout: true, nativeTextRanges: true });
+  const before = runtime.figma.root.children.map(runtime.snapshot), createText = runtime.figma.createText, texts = [];
+  runtime.figma.createText = () => {
+    const node = createText(), read = node.exportAsync;
+    texts.push(node);
+    node.exportAsync = async options => {
+      if (node === texts[1]) {
+        const earlier = texts[0], rangeHyperlink = earlier.getRangeHyperlink;
+        earlier.getRangeHyperlink = (start, end) => {
+          const value = rangeHyperlink(start, end);
+          return value === 1 ? null : value;
+        };
+      }
+      return read.call(node, options);
+    };
+    return node;
+  };
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.match(runtime.messages.at(-1).message, /最终读取期间发生变化/u);
+  assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
+  assert(texts.every(node => node.pluginData.codeshellTextRangeIntent === undefined));
+});
+
+test("an existing layer inserted during a child await is never resized or deleted by import rollback", async () => {
+  const runtime = harness(), originalPage = runtime.figma.currentPage, foreign = runtime.all.get("1:2");
+  const before = { width: foreign.width, height: foreign.height, transform: clone(foreign.relativeTransform),
+    data: clone(foreign.pluginData) };
+  const createFrame = runtime.figma.createFrame;
+  let enabled = false;
+  runtime.figma.createFrame = () => {
+    const node = createFrame(); let mode = node.layoutMode;
+    Object.defineProperty(node, "layoutMode", { get: () => mode, set: value => {
+      mode = value;
+      if (value !== "NONE") { enabled = true; foreign.width -= 1; }
+    } });
+    return node;
+  };
+  const createText = runtime.figma.createText;
+  runtime.figma.createText = () => {
+    const node = createText(), save = node.setPluginData;
+    node.setPluginData = (key, value) => {
+      save.call(node, key, value);
+      if (key === "codeshellNodeId") queueMicrotask(() => node.parent.insertChild(0, foreign));
+    };
+    return node;
+  };
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(createFigmaTransfer(plainFixture())) });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.match(runtime.messages.at(-1).message, /外部图层.*已保留/u);
+  assert.equal(runtime.figma.currentPage, originalPage);
+  assert.equal(runtime.figma.root.children.length, 2);
+  assert.equal(foreign.removed, false);
+  assert.equal(foreign.parent.parent, runtime.figma.root.children[1]);
+  assert.equal(enabled, false, "foreign descendants must be rejected before implicit Auto Layout resizing");
+  assert.deepEqual({ width: foreign.width, height: foreign.height, transform: foreign.relativeTransform,
+    data: foreign.pluginData }, before);
+  for (const key of ["layoutPositioning", "layoutSizingHorizontal", "layoutSizingVertical", "layoutAlign"])
+    assert.equal(foreign[key], undefined, key);
+});
+
+test("an owned Text moved to an existing page during await receives no later sizing or metadata writes", async () => {
+  const runtime = harness(), originalPage = runtime.figma.currentPage;
+  const createText = runtime.figma.createText;
+  let moved;
+  runtime.figma.createText = () => {
+    const node = createText(), save = node.setPluginData;
+    node.setPluginData = (key, value) => {
+      save.call(node, key, value);
+      if (key === "codeshellNodeId") queueMicrotask(() => { originalPage.appendChild(node); moved = node; });
+    };
+    return node;
+  };
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(createFigmaTransfer(plainFixture())) });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.match(runtime.messages.at(-1).message, /图层顺序或内容.*发生变化/u);
+  assert.equal(runtime.figma.root.children.length, 1);
+  assert.equal(runtime.figma.currentPage, originalPage);
+  assert.equal(moved.parent, originalPage);
+  assert.equal(moved.removed, false);
+  assert.equal(moved.textAutoResize, "NONE");
+  assert.equal(moved.layoutSizingHorizontal, undefined);
+  assert.equal(moved.layoutSizingVertical, undefined);
+  assert.equal(moved.pluginData.codeshellTextRangeIntent, undefined);
 });
 
 test("raw native update clear and delete cannot hide staged ranges in either baseline snapshot", async () => {
@@ -2889,4 +3044,60 @@ test('existing SVG/WebP UI conversion retains fill intent and native preflight v
     assert.equal(current.messages.at(-1).type, 'imported');
   }
   assert.deepEqual(external, []);
+});
+
+test("a foreign Grid sibling stays unchanged when nested creation resumes after await", async () => {
+  // Retain one real row from the frozen native multi-P source. Native Grid API
+  // and implicit ancestor reflow below are MOCKS, not new Figma execution.
+  const actual = JSON.parse(await readFile(new URL("../../fixtures/design-studio-native-grid-intrinsic-vflow/native-source.json", import.meta.url), "utf8"));
+  const transfer = createFigmaTransfer(importFigmaJson(actual).document);
+  const owner = transfer.pages[0].children[0].children[0];
+  owner.children = [owner.children[0]];
+  const runtime = harness(undefined, { nativeStrokes: true }), foreign = runtime.all.get("1:2"), originalPage = runtime.figma.currentPage;
+  const before = { width: foreign.width, height: foreign.height, transform: clone(foreign.relativeTransform), data: clone(foreign.pluginData) };
+  let injected = false, indirectWrites = 0, texts = 0;
+  const containsForeign = node => node === foreign || node.children.some(containsForeign);
+  const createFrame = runtime.figma.createFrame;
+  runtime.figma.createFrame = () => {
+    const node = createFrame(); let mode = node.layoutMode;
+    for (const [axis, key] of [["Row", "gridRowSizes"], ["Column", "gridColumnSizes"]]) {
+      let count = 1; node[key] = [{ type: "FIXED", value: 1 }];
+      Object.defineProperty(node, `grid${axis}Count`, { get: () => count, set: value => {
+        count = value; node[key] = Array.from({ length: value }, () => ({ type: "FIXED", value: 1 }));
+      } });
+    }
+    node.gridAutoTracks = "NONE"; node.gridItemsPositioning = "MANUAL";
+    node.setGridChildPosition = function (row, column) { this.gridRowAnchorIndex = row; this.gridColumnAnchorIndex = column; };
+    Object.defineProperty(node, "layoutMode", { get: () => mode, set: value => {
+      mode = value;
+      if (value === "NONE" || !injected) return;
+      for (let ancestor = node; ancestor?.type !== "PAGE"; ancestor = ancestor?.parent) {
+        if (ancestor?.layoutMode === "GRID" && containsForeign(ancestor)) {
+          indirectWrites++; foreign.width = 1; break;
+        }
+      }
+    } });
+    return node;
+  };
+  const createText = runtime.figma.createText;
+  runtime.figma.createText = () => {
+    const node = createText(), save = node.setPluginData, number = ++texts;
+    node.setPluginData = (key, value) => {
+      save.call(node, key, value);
+      if (key === "codeshellNodeId" && number === 2) queueMicrotask(() => {
+        const grid = node.parent.parent;
+        assert.equal(grid.layoutMode, "GRID");
+        grid.children[0].appendChild(foreign); injected = true;
+      });
+    };
+    return node;
+  };
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(injected, true); assert.equal(texts, 2);
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.match(runtime.messages.at(-1).message, /外部图层.*已保留/u);
+  assert.equal(indirectWrites, 0, "no nested layout setter can trigger foreign ancestor reflow");
+  assert.equal(foreign.removed, false); assert.equal(runtime.figma.currentPage, originalPage);
+  assert.equal(runtime.figma.root.children.length, 2);
+  assert.deepEqual({ width: foreign.width, height: foreign.height, transform: foreign.relativeTransform, data: foreign.pluginData }, before);
 });
