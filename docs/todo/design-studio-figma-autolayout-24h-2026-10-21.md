@@ -2380,3 +2380,102 @@ UI显示实例效果限制并保留用户Browser选择和canonical，无自动�
 此guard后193/193 affected pass，18410.994708ms；typecheck、validate136/94/93、
 3generated/scoped/diff均exit0，所有generated plugin字节与77d相同。原V1 root实际
 6state WebGL/Browser诊断不自动赋予source/旧ROI验收资格；owner没有GPU/Figma执行。
+
+### ROUND48 · 同模型双渲染版、稳定需求 ID 与同阶段 GPU 对照
+
+PRD570bd31与Browser29bc71b经独立peer正常合入ca408735；CanvasKit继续默认，
+Browser为用户显式选择并按workspace保存的第二版，无自动fallback。共享canonical
+中的普通流仍使用Flex/Grid/Auto Layout、Hug/Fill/Fixed，不为截图改写为ABS。
+Browser的实例尺寸/阴影等拒绝边界见独立文档，不能据局部0差异宣称整页兼容。
+root另验证固定实例master opacity/clip及pending decode时dispose立即释放私有face/host，
+peer SHA29c5c4e7457e9ebbd638cd9c521e5a99eb9364b34c92613a560cabcf1afb70ad；
+154文件pin与6日志逐项复核。实际Figma未执行。
+
+PRD可显式写[id:req-name]，可放在任务checkbox之后；插入、重排、翻译和切换checkbox
+不改变作者ID。未标注需求保持旧ordinal行为，非法/重复/碰撞拒绝。root对96组legacy、
+显式ID及notes保存重开/prepared transfer独立验证；peer
+SHAfa8810b89ddd0ae738dab6e787914adcf3c47b5f73f82b08274c8f5fc4f697ff。
+prepared transfer不等于真实Figma往返；需求notes的native导出/重导入丢失另行处理。
+
+组合main885项884pass/1skip。首轮UI113项110pass/2fail/1skip，两个既有VM fixture
+未声明新增browserRenderer；04ddd09仅补双renderer stub及失效断言，保留旧reentrancy
+断言，产品代码未改。重跑UI113项112pass/1skip。最终共998项996pass/2skip；独立
+installed panel-cli为6/6，不重复计数。typecheck、validate、scoped build、3generated
+check及diff check通过。独立复核239 main pins/148 UI pins、catalog和日志，ca408→04
+唯一路径是该UI fixture。combined peer
+SHAf944b335e51caeea1de0fc26444daee60b0f8810bb2b29f1a055be61ff3eb138。
+
+旧V1原图/转换图采用不同滚动阶段，source配对及旧ROI资格撤回；3个窄屏数值0是
+捕获内容在视口外的空画面，不计保真通过。原始PNG/失败记录保留。V2/V4改为外部
+调度探针：固定滚动，在stock第二RAF处等待原图截图，核对前后DOM/CSS/geometry，
+恢复外层host和原callback/timestamp；不修改inner HTML/CSS。它仍是instrumented
+stock-sanitized iframe，不能称未插桩原作者页面。stock自己留下空style属性的副作用
+单列；选定root保持不变。完整viewport含gallery shell，固定root border-box ROI可能
+裁掉溢出绘制，两类数值独立保存，未平移、拟合或加容差。
+
+root在04ddd09实际执行matched-Metal六例：fresh source、Browser和CanvasKit使用
+相同Metal launch profile/viewport/DPR，各例独立context；CK六例均确认M4Pro Metal
+live WebGL2和真实frame。六组严格比较全部失败。按04-1280、21-1280初始/编辑、
+21-400初始/编辑、19-400顺序，固定source ROI的source→Browser差异像素分别为
+54677/9457/9457/10252/10252/34268，source→CK为40167/7577/7909/6307/6626/7994；
+同canonical Browser→CK为38537/16240/16572/14958/15277/40937。完整viewport及差异
+PNG另存，不把gallery shell差异全归因转换。CK nativeTextNodes均0，rasterTextNodes
+分别3/11/11/11/11/51，均native-font-unavailable，属于失败诊断，不是原生字体验收。
+输入、136完整package文件与HEAD前后不变。GPU收据
+SHAf5d31163dcc39baee16d4628ab584beda1f41341e66c2d6ed4e7c74156a0494e；独立peer
+逐RGBA重算18 full及18 ROI比较、核对36diff mask和全部source边界，
+SHA326175abdab4a403d1bff75323616d56ab416c070d6078cdca8b3c6237569f72。
+
+21初始/编辑的Browser差异像素数碰巧相同，但PNG SHA和实际文字不同，编辑正常显示；
+root一度据数值推断同图，已查看原图并纠正。另确认source basis200px被canonical保留
+width200却标Hug，Browser实际hug约110.3；现有26/26 flow覆盖不能证明basis语义。
+额外raw-tree诊断也读到basis200px，但额外converter调用留下祖先空style属性，原有
+严格source边界正确拒绝两轮探针；不将这些失败探针用作像素验收。后续追查文字reflow
+恢复是否覆盖已确定的主轴尺寸，不用坐标拟合补偿。
+
+09:28:09UTC实际可用性复查cuaAvailable:false，真实Figma仍NOT_RUN。独立字体审计
+保留A→无资源B污染8302px、失败B回滚7772px；修复在owned-font-lifecycle独立树。
+首候选43394cd完整main898项897pass/1skip，但完整UI113项111pass/1fail/1skip，
+恢复未保存导入时错用baseline resource cache，未合入。root另发现cached同名字体
+反序不改变FontFaceSet优先级，owner真实CPU复现，亦需后继修复；原失败收据保留。
+另一个native-notes独立树正在实现惰性普通metadata往返及保守并发比较，不赋予notes
+任何布局/文字/native写入权限，未合入。截止时间00:31SG保持不变。
+
+### ROUND49 · 文档字体归属、顺序与恢复资源表
+
+f43b202后继修复433两处独立回归后，root完整main903项902pass/1skip、UI113项
+112pass/1skip，共1016项1014pass/2skip。原433的8377px顺序错误与UI恢复失败均保留。
+root typecheck、validate、scoped build、3generated check、diff全部通过。正常合入
+9c7ea240后逐项比对243 main pins、149 UI pins、140 static pins与门禁完全一致；组合
+收据SHA566c19b6a44fa03efb077c6849cbfaec57ebaeac9fe2e6249c5dd45bf360742f。
+CLI入口/Skill未改，R48独立6项不重复计入本轮。完整package137文件，其中app/130文件，
+避免把两个统计范围混用。
+
+新owned manager先解码全部字体，再同步提交精确实例集合；同ID需内容URL/SHA/描述符
+一致才复用。rollback恢复有品牌lease，workspace/pagehide使旧lease与pending失效；
+只移除自身FontFace，其他来源保留。复用的同族同weight/style字体按目标顺序重新安装，
+引用顺序或资源描述符在await期间改变均拒绝。恢复draft在replay完成后，用当前normalized
+resources重建校验过的scoped cache，保留原未保存导入/绑定/首次保存断言。
+
+独立CPU actual-app复测A→无资源B恢复clean serif，失败B真实Roboto已解码但未发布，
+回滚A字体未变；workspace/late hide释放owned faces，foreign精确实例保留。旧反序复用
+595.046875与fresh591.125相差8377px/max238；后继复用/fresh均591.125、严格0，且
+未重新解码。8项selected noGL及原污染控制通过。137文件immutable snapshot前后相同，
+peer SHA83d814afb6a9789b976ec67514f3d908bf70ee11cf6039ca5943e8bcc0274208。
+owner另16项synthetic pagehide/pageshow与实际编辑恢复通过，不能称真实BFCache/Host、
+CanvasKit原生段落或Figma验收；全页像素结果仍沿用R48失败，不据局部0提升资格。
+
+R48已clean FF本地main至1e74095，136package pins与门禁一致，FF收据
+SHAc517c9baa17af77f101040ed26314652cd004fcbe2b0e77a6c79716a1e51c67b。
+owner释放reader及精确owned dependency symlink后，普通移除已合入的旧Browser/PRD
+工作树和分支，外部证据保留；Browser链接实际指向aggregate依赖，未误删目标。
+初次branch -d因upstream origin/main未包含本地提交而拒绝；验证local main祖先后仅
+unset自己branch upstream，再普通-d，未force。cleanup
+SHAd015ab5a7e8b5e868d7eb1ee5af956856c379549babf5e8a41459ba91aa9c494。
+
+native-notes仍在独立树进行生产VM接线，尚未合入。root另在
+design-studio-html-text-flex-basis-20261021/codeshell-panel-apps（branch
+codex/design-studio/html-text-flex-basis-20261021）处理文字恢复覆盖main-axis basis；
+28项affected通过只是初步结果，peer指出应限真实TypedOM px，避免改变indefinite
+percentage basis原有content/Hug行为；未合入，后续须反例、原模板同阶段像素复验。
+截止时间仍UTC16:31，任务及heartbeat继续。
