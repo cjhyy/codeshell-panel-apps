@@ -10,6 +10,7 @@ import { canvasKitTextRangePlan } from "../../../apps/design-studio/app/canvas/c
 import { textRangeSourceSignature } from "../../../apps/design-studio/app/text-ranges.mjs";
 import { exportDesignFrontend } from "../../../apps/design-studio/app/frontend-export.mjs";
 import { createRendererController } from "../../../apps/design-studio/app/renderer-controller.mjs";
+import { normalizeDesignDocument, serializeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
 
 const app = resolve(fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
 const evidenceRoot = process.env.DESIGN_STUDIO_TEXT_RANGES_RENDERER_EVIDENCE;
@@ -32,13 +33,29 @@ const doc = node => ({ format: "codeshell.design", version: 3, name: "Ranged tex
     width: 630, height: 120, fill: "transparent", layout: "vertical", gap: 0, padding: 0, alignItems: "start", justifyContent: "start",
     layoutSizingVertical: "hug", children: [{ ...node, layoutSizingHorizontal: "fill", layoutSizingVertical: "hug" }] }] }] });
 
+test("frontend ranges survive normalized flat state, save/reopen and inherited scalar edits", () => {
+  const value = base("AV office e\u0301", [{ start: 1, end: 2, fill: "#991122", href: "#" }]);
+  delete value.fontRef;
+  const state = normalizeDesignDocument(doc(value));
+  const saved = serializeDesignDocument(state), reopened = normalizeDesignDocument(JSON.parse(saved));
+  const html = exportDesignFrontend(state);
+  assert.equal(exportDesignFrontend(reopened), html);
+  assert.equal(exportDesignFrontend(JSON.parse(saved)), html);
+  assert.match(html, /href="#"/);
+  assert.match(html, /color:inherit/);
+  assert.match(html, /color:#991122/);
+  state.nodes.find(node => node.id === "copy").fill = "#554433";
+  const edited = exportDesignFrontend(state);
+  assert.match(edited, /color:#554433/);
+  assert.match(edited, /color:#991122/);
+});
+
 test("CanvasKit range capability refuses exact custom decoration and fallback shaping without mutating data", () => {
   const node = base("AV office e\u0301");
   assert.equal(canvasKitTextRangePlan({ ...node, textRanges: undefined }, { suppliedFont: false }), null);
   assert.equal(canvasKitTextRangePlan(node).map(run => run.text).join(""), node.text);
   for (const [candidate, options] of [
     [node, { suppliedFont: false }], [node, { missingGlyphs: 1 }],
-    [{ ...node, fillPaints: [{ type: "SOLID", color: "#123456", opacity: 1 }] }],
     [{ ...node, stroke: "#000000", strokeWidth: 1 }],
     ...["textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk"].map(key => [base(node.text, [{ start: 0, end: 2,
       textDecoration: "underline", [key]: key === "textDecorationSkipInk" ? "auto" : { unit: "auto" } }])]),
@@ -47,6 +64,8 @@ test("CanvasKit range capability refuses exact custom decoration and fallback sh
     assert.throws(() => canvasKitTextRangePlan(candidate, options), error => error.code === "TEXT_RANGES_UNSUPPORTED");
     assert.deepEqual(candidate, before);
   }
+  assert.throws(() => canvasKitTextRangePlan({ ...node, fillPaints: [{ type: "SOLID", color: "#123456", opacity: 1 }] }),
+    error => error.code === "TEXT_RANGES_UNSUPPORTED_BASE_PAINT", "shared model rejects base paint stacks before renderer capability selection");
   const stale = { ...node, textSource: "Other source" };
   assert.throws(() => canvasKitTextRangePlan(stale), error => error.code === "TEXT_RANGES_STALE");
 });

@@ -55,3 +55,13 @@ trial was run by this task. Agent1's explicit SVG geometry222/400-pixel negative
 the supplied-alias underline2737-pixel negative and native literal# rejection
 remain separate failures. HTML positive admission stays closed until every
 consumer and native boundary has a proven supported contract.
+
+The renderer commit was then checked with core459a225/4b2df94 integrated. Flat
+normalized state, nested saved v3, reopening and scalar-fill inheritance retain
+the same ranged frontend output. The combined8-file CPU target passes46/46.
+Its first integration run passed45/46 because a test expected the renderer's
+generic paint refusal rather than the core's earlier, more specific
+`TEXT_RANGES_UNSUPPORTED_BASE_PAINT`; that original log is retained and the test
+now asserts the authoritative core boundary explicitly. Typecheck, validation,
+all three generated checks and the Design Studio build check pass. This adds no
+WebGL/editor/native or HTML admission claim.
