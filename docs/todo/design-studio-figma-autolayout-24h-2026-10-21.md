@@ -2323,3 +2323,25 @@ ROUND46旧native9296/553工作树和分支在稳定同步、owner释放全部rea
 08:00:40UTC复查cuaAvailable:false，当前实机Figma验收仍NOT_RUN。Browser显式第二版
 正在独立review：已修hidden Hug、反向流误重排和取消resize旧选框，加载中资源释放及
 固定尺寸组件master属性遗漏仍在修复；尚未合入。CK默认不变，截止00:31SG不变。
+
+### ROUND47 保存与下一阶段
+
+primary main与聚合均clean同步fe2eca7；135app及catalog共136pins与门禁代码一致。
+FF收据SHA076d619a1941c3cd7f53e2393856243aba3c0132f61b0dacdefdacb6d1f848ff。
+zero owner释放全部reader、移除精确依赖symlink后，root验证clean/无cwd reader/main
+祖先关系，普通移除76797f9工作树和已合入分支；无force，外部证据保留。cleanup
+SHA367af6ed2695ae5256f1877c20a21ed5affc2cbc2abb8f7d063a2af237c3f3c6。
+原gallery b1f62与Grid6bcd同样由owner释放reader/链接后普通移除；各自外部parent
+evidence保留，历史helper若硬编码旧app路径须重建精确commit checkout后重放。
+两项cleanup SHA91b2ae34f41da6aaf00ea26e6111712467aedd1f4c8af1fbb46a14e69a332e16。
+
+PRD真实纯JS/生产VM审计发现：插入/重排需求改变既有ordinal IDs；插件创建会保存
+codeshellNotes但当前export/import不将它恢复为canonical notes，raw binding仍保留
+未知pluginData，并非原始数据被删。两页prototype仅验证保存的引用及生成HTML内容，
+未运行浏览器导航或实际Figma交互；修正早先positiveControl命名，保留v1。
+审计v2 SHAece402942d5bbc8eca1d67a181f08a377a05abc12c83b770b02390afb0742950。
+已授权独立最小修复作者显式requirement IDs、重复/碰撞拒绝和legacy编号兼容，活动
+工作树design-studio-prd-requirement-ids-20261021/codeshell-panel-apps，branch
+codex/design-studio/prd-requirement-ids-20261021，fresh origin13d正常合入fe2eca7。
+notes跨Figma往返仍单独未修复，不把任意pluginData当受信来源。Browser活动树继续保留；
+root正在准备同canonical/bytes原模板的真实CK GPU与Browser截图对照，尚未执行。
