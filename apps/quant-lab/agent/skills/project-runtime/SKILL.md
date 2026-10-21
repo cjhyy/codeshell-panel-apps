@@ -1,6 +1,6 @@
 ---
 name: project-runtime
-description: Locate and run the Investment Desk CLI and programs from the Panel package selected by the current project. Use for local CSV diagnosis, backtests, parameter sweeps, walk-forward validation, watch checks, holdings, journal reading, market data, news synchronization, and market pulse tasks without opening the Panel.
+description: Locate and run the Investment Desk CLI and programs from the Panel package selected by the current project. Use for beginner presets, plain-language research reports, finite existing-CSV observation, local CSV diagnosis, backtests, parameter sweeps, walk-forward validation, watch checks, holdings, journal reading, market data, news synchronization, and market pulse tasks without opening the Panel.
 ---
 
 # Project Runtime
@@ -81,7 +81,7 @@ for their accepted forms. Backtests omit bars, equity, benchmark, and indicator
 series by default; set `includeSeries:true` to include them within the output
 limit. The output retains the engine release, dataset fingerprint, and warnings.
 
-All commands in this CLI are foreground, read-only calculations. They do not
+Research commands in this CLI are foreground, read-only calculations; `observe` writes only project-owned observation records. They do not
 fetch prices, send notifications, create workers, or write ledgers, journals,
 strategy files, or Host storage. Holdings are derived from the authoritative
 ledger with no current quotes, so unavailable valuations remain unavailable.
@@ -89,3 +89,53 @@ Journal link status depends on the context supplied; omitted news/rules cannot
 establish whether those references remain current. Use the existing collectors
 only when the task authorizes their data sources and writes. Their persisted
 local snapshots and Host task records remain separate protocols.
+
+
+## Beginner research report (0.47 candidate)
+
+The public CLI now also exposes offline, read-only `presets` and `research`.
+Use `ops` for exact schemas. Pass one JSON on stdin or a safe project-relative
+`--input-file`; stdout remains one JSON receipt, including `result.markdown`.
+
+```sh
+node "<package-root>/app/tools/quant-lab.mjs" presets
+node "<package-root>/app/tools/quant-lab.mjs" research --project "<current-project>" --input-file "research-request.json"
+```
+
+Request examples: `{ "demo":true, "preset":"trend-sma" }` or
+`{ "csv":"data/market/AAPL.csv", "preset":"trend-sma", "market":"us" }`.
+Exactly one `csv` / `demo:true` and one `preset` / complete `configuration` are
+required. Explicit configuration may provide `ranges`; presets already own their
+grid. Presets are SMA trend, RSI reversion and channel breakout, all experiments.
+Demo is synthetic, never real performance. No network fetching occurs.
+
+Report amounts come from the existing engine: next-open execution, fractional
+shares, entry-day stops not checked, final-close forced liquidation. The benchmark
+starts at the first close and has no fees. Model fee/slippage amounts can be
+reconstructed from each trade; they do not include unmodelled real-world costs.
+Defaults are transparent research assumptions, not current tax regulations.
+Drawdown money uses actual peak/trough equity and dates. Missing sample-out data
+means not run; each validation fold resets capital, never a continuous compounded
+account. Full-sample best parameters are not used as sample-out evidence.
+A CSV's optional `.meta.json` is trusted only if its fingerprint binds it to the
+CSV. Missing sidecar means unknown source/adjustment/time. Bad JSON, oversized data,
+symlinks and path escapes fail visibly. Fingerprints do not prove provenance.
+
+## Finite existing-CSV observation
+
+`observe` is the sole local CLI command that writes project-owned observation
+records; `research` and all other research commands remain read-only. `ops` lists
+`readOnlyCommands`. Use the same JSON input transport:
+
+`{ "action":"plan", "runId":"quant-existing", "task":{
+"csv":"data/market/AAPL.csv", "preset":"trend-sma", "market":"us" },
+"intervalSeconds":3600, "maxTicks":24 }`.
+
+Then send `{ "action":"tick", "runId":"quant-existing" }`, or `status`/`stop`.
+Each tick re-reads that existing CSV and makes one report, then exits. It does not
+fetch or update prices, call a model, place orders, or install any OS timer.
+`observations/<runId>/` contains the versioned plan, locked bounded ticks, logs,
+state and final receipt. Active locks are never removed by age; package changes,
+corrupt records and unsafe paths halt/fail visibly. Each plan defaults to 24 hours from creation, or an explicitly earlier deadline.
+The create-only plan cannot be extended through these commands. Actual time is reported; daily-bar observation is not strategy validation
+and these commands do not imply a completed 24-hour run.

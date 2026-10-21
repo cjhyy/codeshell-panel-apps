@@ -25,7 +25,7 @@ async function fixture(t, handler) {
         .writeHead(200, { "Content-Type": "application/json" })
         .end(JSON.stringify({ text: "这是我的实际练习回答。" }));
   });
-  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
   t.after(async () => {
     server.closeAllConnections();
     await new Promise((done) => server.close(done));

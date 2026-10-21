@@ -1770,6 +1770,14 @@
             <button id="research-demo-choose" type="button">切换为真实单股数据</button>
           </div>
         </aside>
+        <section class="plain-research-intro" aria-label="新手白话研究">
+          <h2>新手研究：先读规则和真实金额</h2>
+          <p>预设仅供实验。选择当前项目 CSV 或明确标注的合成演示行情，再生成包含费用、回撤和样本外限制的报告。</p>
+          <label>新手预设 <select id="plain-research-preset" aria-label="新手研究预设"></select></label>
+          <button type="button" id="apply-research-preset" class="ghost-button">应用预设</button>
+          <button type="button" id="generate-plain-research" class="run-button">一键生成白话报告</button>
+          <section id="plain-research-report" class="plain-research-report" hidden aria-live="polite" aria-label="白话研究结果"></section>
+        </section>
         <div class="instrument">
           <div class="instrument-row">
             <h2 id="instrument-name">合成演示行情</h2>

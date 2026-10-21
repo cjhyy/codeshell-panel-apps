@@ -417,3 +417,31 @@ Chromium、Poppler（`pdftotext`、`pdfinfo`、`pdfimages`）和中文字体，�
 核对实际状态；重新读取本身不会触发抓取。暂停、继续和立即运行会在操作前核对当前定义，
 并读回实际状态；Host 尚未提供这些操作的原子版本检查，应避免多端同时操作。
 旧 Host 继续提供原有配置，但会明确提示缺少并发保护，并在写入前再次读取核对。
+
+
+## 5.1 候选版：直接 Chat / CLI 岗位研究
+
+公开入口为本项目选中包的 `app/tools/job-hunt.mjs`，Node >=20.10，独立拷包可运行。
+`ops` 给出七个共享操作及准确输入 schema；`run save_job_opportunities`、
+`run save_job_research` 与 Panel 复用域模块，`run get_job_research_digest` 返回中文
+`result.markdown` 与结构化数据。命令使用 `--project <项目> --input-file <JSON文件>`。
+首次空项目用 `init --project <项目>`；经 Host Chat 写入须先通过 Runtime Skill 的真实
+workspace-write protocol 检查。不要直接修改 `job-hunt-panel.json`。
+
+Agent 先读取真实官网/ATS/浏览器正文，保留 URL、获取时间及原句，再保存。完整职责与要求
+通过既有门槛才进入岗位池，其余保存为线索。JD 附件是 `career-data/jd/jobs/` 下不可变内容
+文件，路径以成功收据为准；先附件后快照 CAS，冲突不删除可能已被引用的附件。
+可选 `verification` 是 Agent 提交的在招证据回执（详见 Runtime Skill），信息不足为
+`unverified`；HTTP200、完整 JD 和页面标题都不能证明仍在招。CLI 没有网络 `verify` 命令。
+
+“今日 → 查看研究日报”和“公司情报 → 岗位来源与证据对照”读取同一模型。
+对照仅展示当前已确认的经历/问答及 JD 原文、实体 ID 和字面重合；资料空时明确无法个性化，
+未知约束和缺口可见，不产生新匹配分数。旧估计标为未核验。输出有引用/字符上限与截取提示。
+变化、排除和公司来源无记录则显示未知。岗位研究不等于投递或联系第三方。
+
+`observe --project <项目> --input-file <请求>` 支持 `plan/tick/status/stop`，例如
+`{"action":"plan","runId":"jobs-existing","task":{"limit":10},"maxTicks":24}`，之后请求
+`{"action":"tick","runId":"jobs-existing"}`。只重读已有JD生成摘要；项目的
+`observations/jobs-existing/` 保存计划、状态、逐轮回执、日志、停止标记和结束摘要。
+每次执行一轮后退出，不抓取网页、不安装定时器；每份计划默认创建后24小时截止，也可指定更早截止。
+这是候选能力说明，并不表示已经启动或跑满24小时。

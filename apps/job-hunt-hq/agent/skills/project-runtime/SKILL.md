@@ -1,6 +1,6 @@
 ---
 name: project-runtime
-description: Run the selected Job Hunt HQ package's project CLI for bounded context reads, candidate facts, private experiences and factual QA, named library versions, and resume drafts from direct Chat or TUI requests without opening the panel.
+description: Run the selected Job Hunt HQ package's project CLI for job opportunities, company research, evidence digests, finite existing-file observation, bounded context reads, candidate facts, private experiences and factual QA, named library versions, and resume drafts from direct Chat or TUI requests without opening the panel.
 ---
 
 # Project Runtime
@@ -33,7 +33,7 @@ different, report `headless-host-upgrade-required` and do not run headless write
 or initialization. Never export, set, or fabricate this marker to pass the check.
 A global `code-shell --version`, Panel API version 14, or the installed package
 version cannot replace this probe of the actual Host. Read-only `ops` and
-`get_job_search_context` remain available. The manifest has no enforced minimum
+`get_job_search_context` / `get_job_research_digest` remain available. The manifest has no enforced minimum
 Host version field, so this check is required even when installation succeeded.
 Run the resolved CLI path as one properly quoted Node argument:
 
@@ -59,6 +59,9 @@ project instructions still follow the workflow's initialization module.
 
 | Operation | Purpose |
 | --- | --- |
+| `get_job_research_digest` | Read Chinese Markdown + structured job/lead/company research digest; no web fetching or new match scores. |
+| `save_job_opportunities` | Save 1–12 real opportunities; full JD gate, leads and immutable JD files share the Panel implementation. |
+| `save_job_research` | Save one company report with real URLs and access times. |
 | `get_job_search_context` | Read the smallest required scope; keep pagination and opaque IDs. |
 | `save_candidate_context` | Save complete candidate facts or one source / episode / qa / library_version / career_update mode. |
 | `save_resume_qa_answer` | Save an actual answer to an existing private resume question. |
@@ -88,11 +91,10 @@ the named version, so do not also create a separate version for that batch.
 If a receipt is lost, query the exact version before deciding to retry.
 `library_version` and `career_update` previews do not write a snapshot.
 
-This version supports these four operations only. Discovery, JD intake,
-application progress, interview writes, and `complete_execution_trace` still
-require the Panel. If a direct request needs one of the other 12 tools, state
-that it requires opening the Panel and use the workflow's Panel path; do not
-claim a headless save or fabricate a CLI operation. Open the Panel for an
+This version supports the seven operations listed above. The digest is a CLI-only
+read operation; the Panel UI uses its shared model without adding a seventeenth
+manifest Tool. JD intake, application progress, interview writes and
+`complete_execution_trace` still require the Panel. Do not invent CLI operations. Open the Panel for an
 explicit visual preview or export request as well.
 
 The CLI prints one JSON result on stdout. Treat `ok: true` as the write receipt;
@@ -123,3 +125,57 @@ retain that provenance. A candidate-profile change updates provenance on
 affected existing resumes, and a supplied Trace updates its matching
 `workflowRuns` entry. A standalone candidate save with neither an existing
 resume nor a matching Trace has no durable provenance record in this version.
+
+## Direct Chat: real job research
+
+Read `job-intelligence` for the source workflow. Read the real official/ATS page
+or browser-visible JD before saving. Preserve its HTTPS URL, `fetched_at` and
+visible text. An HTTP 200 response or title alone is not evidence of active
+hiring. When current hiring semantics were actually read, attach a `verification`
+receipt: `state`, `checkedUrl`, `lastCheckedAt`, `sourceKind` (`official`/`ats`),
+`method` (`browser-visible`/`ats-api`/`page-read`) and `evidenceExcerpt` containing
+the relevant original sentence. `verified_live` requires those fields and a URL
+matching the saved job; without adequate evidence use `unverified`. Receipts are
+Agent-provided evidence, not independent CLI network verification. Never convert
+mere reachability into `verified_live`. Closed/login/unreachable are distinct.
+
+Save actual source text with `run save_job_opportunities`, 1–12 per batch. Only a
+complete JD containing responsibilities and requirements enters the job pool;
+fragments remain leads, cannot be used as `job_id`, and do not count as jobs.
+The CLI writes a content-addressed immutable Markdown under `career-data/jd/jobs/`
+before the root compare-and-save. It never deletes orphan evidence after conflicts.
+Use returned `savedJobs[].jdPath`, not a guessed filename.
+Use `run save_job_research` for company research with actual source access dates.
+Then write `{ "limit": 10 }` to a request file and run:
+
+```sh
+node "<package-root>/app/tools/job-hunt.mjs" run get_job_research_digest --input-file "digest-request.json" --project "<current-project>"
+```
+
+The result contains `markdown` and structured data. Missing history/exclusion
+information is unknown, never inferred as no changes. Evidence uses only current
+`confirmed` career episodes and QA answers. Quotes/IDs are bounded excerpts;
+read the full entity when omitted/truncated. Literal overlap does not establish
+qualification; no new match percentage is computed. Legacy estimates are unverified.
+Research does not authorize applications or contacting anyone. This CLI does not
+fetch pages and has no `verify` or `discover-ats` command.
+
+## Finite observation of existing files
+
+`ops` also declares the `observe` command and schema. With the same Host write
+protocol probe as above, pass one JSON request via `--input-file`:
+
+```sh
+node "<package-root>/app/tools/job-hunt.mjs" observe --project "<current-project>" --input-file "observe-request.json"
+```
+
+Plan example: `{ "action":"plan", "runId":"jobs-existing", "task":{"limit":10},
+"intervalSeconds":3600, "maxTicks":24 }`.
+Subsequent requests are `{ "action":"tick|status|stop", "runId":"jobs-existing" }`
+using one concrete action. Each tick runs once and exits. Status is read-only;
+stop writes a persistent marker. Records are separate under
+`observations/<runId>/`; the snapshot is not changed. Each plan defaults to 24 hours from creation, or an explicitly earlier deadline.
+The create-only plan cannot be extended through these commands. State, bounded tick receipts/logs, lock and final summary
+belong to that project. A changed package halts the plan. Active locks are never
+removed by age; damaged locks/state fail visibly. No network fetching, continuous
+monitoring, agent development loop or OS timer is installed by these commands.

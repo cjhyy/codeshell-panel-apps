@@ -93,7 +93,7 @@ const seededStorage = [
 ];
 
 assert.equal(manifest.id, "quant-lab");
-assert.equal(manifest.version, "0.46.2");
+assert.equal(manifest.version, "0.47.0");
 assert.equal(manifest.schemaVersion, 2);
 assert.deepEqual(manifest.agent.tools.map((tool) => [tool.name, tool.readOnly]), [["get_portfolio_context", true], ["import_portfolio_snapshot", false]]);
 assert.deepEqual(manifest.agent.skills, ["agent/skills/investment-research/SKILL.md", "agent/skills/portfolio-management/SKILL.md", "agent/skills/project-runtime/SKILL.md"]);
@@ -1735,7 +1735,7 @@ async function installHostStub(
                   revision: "1",
                 });
               }
-              return Promise.reject(new Error("no sidecar"));
+              return Promise.reject(Object.assign(new Error("ENOENT: no sidecar"), { code: "ENOENT" }));
             }
             if (params.path.startsWith("data/market/")) {
               // Only the fixture symbol exists; anything else is unsynced.
@@ -4555,6 +4555,31 @@ async function openScenario(storageSeed, options) {
   await scenarioPage.goto("http://quant-lab.localhost/index.html");
   await scenarioPage.waitForSelector("#run-backtest", { state: "attached" });
   return { scenarioContext, scenarioPage };
+}
+
+// The new beginner flow exercises real controls and invalidates stale reports.
+{
+  const { scenarioContext, scenarioPage: p } = await openScenario([], { versionedStorage: true });
+  await p.click('[data-module-tab="research"]');
+  await p.waitForFunction(() => document.querySelector("#run-state").textContent === "已完成");
+  await p.fill("#max-holding-days", "17");
+  await p.fill("#risk-free-rate", "3");
+  await p.selectOption("#plain-research-preset", "rsi-reversion");
+  await p.click("#apply-research-preset");
+  assert.equal(await p.inputValue("#strategy-type"), "rsi-reversion");
+  assert.equal(await p.inputValue("#max-holding-days"), "0");
+  assert.equal(await p.inputValue("#risk-free-rate"), "0");
+  await p.click("#generate-plain-research");
+  assert.equal(await p.locator("#plain-research-report").isVisible(), true);
+  assert.match(await p.locator("#plain-research-report").textContent(), /非真实行情/);
+  assert.match(await p.locator("#plain-research-report").textContent(), /期末/);
+  await p.fill("#initial-capital", "200000");
+  assert.equal(await p.locator("#plain-research-report").isHidden(), true);
+  await p.click("#generate-plain-research");
+  assert.match(await p.locator("#plain-research-report").textContent(), /200000.00/);
+  await p.evaluate(() => window.__switchWorkspace("/tmp/quant-plain-second"));
+  assert.equal(await p.locator("#plain-research-report").isHidden(), true);
+  await scenarioContext.close();
 }
 
 // Backtest settings use the project's conditional storage without rewriting on open.

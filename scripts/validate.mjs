@@ -384,7 +384,7 @@ async function validatePackage(packagePath) {
     const queriedIds = [...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g)].map(
       (match) => match[1],
     );
-    assert.equal(manifest.version, "5.0.0", `${packagePath}: guided workflow version mismatch`);
+    assert.equal(manifest.version, "5.1.0", `${packagePath}: guided workflow version mismatch`);
     for (const id of [
       "view-career",
       "view-today",
@@ -3426,14 +3426,12 @@ async function validatePackage(packagePath) {
         "state.jdIntakeItems",
         "recordTraceArtifact",
       ],
-      ["save_job_opportunities", "previousOpportunityState", "state.jobs", "recordTraceArtifact"],
       [
         "update_application_progress",
         "previousApplicationState",
         "state.jobs",
         "recordTraceArtifact",
       ],
-      ["save_job_research", "previousResearchState", "state.jobResearch", "recordTraceArtifact"],
       [
         "save_preparation_plan",
         "previousPreparationState",
@@ -3454,6 +3452,9 @@ async function validatePackage(packagePath) {
         ),
         `${packagePath}: ${tool} must roll back project state before publishing its Trace outcome`,
       );
+    }
+    for (const tool of ["save_job_opportunities", "save_job_research"]) {
+      assert.match(appScript, new RegExp(`register\\("${tool}"[\\s\\S]*?await applyJobHuntPanelOperation\\("${tool}"[\\s\\S]*?fields: [\\s\\S]*?onRollback[\\s\\S]*?recordTraceArtifact`), `${packagePath}: ${tool} must use the shared operation and rollback adapter`);
     }
     assert.match(
       appScript,

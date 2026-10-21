@@ -115,6 +115,7 @@ export function upsertJobOpportunities(
       description:
         isStronger && job.description ? job.description : current.description || job.description,
       jdCompleteness: isStronger ? job.jdCompleteness : currentCompleteness,
+      ...(job.verification ? { verification: job.verification } : {}),
       verificationNotes: job.verificationNotes || current.verificationNotes || "",
       fetchedAt: job.fetchedAt || current.fetchedAt || "",
       match: Number.isInteger(job.match) ? job.match : current.match,
@@ -171,6 +172,7 @@ export function upsertJobDiscovery(
     if (assessment.isFormal) {
       const matchingLead = jobMatch(leads, incoming, { dedupeKey, metadataKey });
       formalIncoming.push({
+        ...matchingLead,
         ...incoming,
         id: matchingLead?.id || incoming.id,
         jdCompleteness: "full",
