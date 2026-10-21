@@ -107,7 +107,7 @@ import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
 import { designPaintSvg } from "./paint.mjs";
 import { repairDesignQuality } from "./quality-repair.mjs";
 import { resourceDataUrlsFromPlans } from "./builtin-fonts.mjs";
-import { designFontFamilyCss } from "./font-css.mjs";
+import { designFontFamilyCss, designResourceFontFamilyCss, designTextFontResourceIds } from "./font-css.mjs";
 import { groupAuditIssues, pageAuditIssues } from "./audit-review.mjs";
 import {
   captureWorkspaceHtml,
@@ -159,6 +159,8 @@ const elements = {
   stage: document.querySelector("#stage"),
   stageWrap: document.querySelector("#stage-wrap"),
   gpuCanvas: document.querySelector("#gpu-canvas"),
+  browserSurface: document.querySelector("#browser-surface"),
+  rendererMode: document.querySelector("#renderer-mode"),
   rendererState: document.querySelector("#renderer-state"),
   rendererMessage: document.querySelector("#renderer-message"),
   rendererMessageText: document.querySelector("#renderer-message-text"),
@@ -440,6 +442,8 @@ let htmlImportGeneration = 0;
 const loadedFontResourceIds = new Set();
 let liveRenderRevision = 0;
 let canvasHandles = [];
+let rendererMode = "gpu";
+let rendererPreferenceGeneration = 0;
 const decodedRendererResources = new Map();
 const gpuRenderer = createRendererController({
   canvas: elements.gpuCanvas,
@@ -450,35 +454,81 @@ const gpuRenderer = createRendererController({
       createRenderer: (options) => createRenderer({ ...options, background: "transparent" }),
     };
   },
-  onState(state) {
+  onState(state) { rendererStateChanged("gpu", state); },
+});
+const browserRenderer = createRendererController({
+  mode: "browser",
+  canvas: elements.browserSurface,
+  capability: true,
+  loadRenderer: async () => {
+    const { createBrowserRenderer } = await import("./canvas/browser-renderer.mjs");
+    return { createRenderer: ({canvas}) => createBrowserRenderer({container:canvas}) };
+  },
+  onState(state) { rendererStateChanged("browser", state); },
+});
+function selectedRenderer() { return rendererMode === "browser" ? browserRenderer : gpuRenderer; }
+function rendererStateChanged(mode, state) {
+    const surface = mode === "browser" ? elements.browserSurface : elements.gpuCanvas;
+    surface.hidden = mode !== rendererMode || !state.active;
+    if (mode !== rendererMode) return;
     const textRangeFailure = !state.active && typeof state.reason === "string" &&
       state.reason.includes("TEXT_RANGES_UNSUPPORTED:");
-    elements.gpuCanvas.hidden = !state.active;
-    elements.stageWrap.dataset.gpuActive = String(state.active);
+    const instanceSizingFailure = !state.active && mode === "browser" && typeof state.reason === "string" && state.reason.includes("BROWSER_INSTANCE_SIZING_UNSUPPORTED:");
+    elements.stageWrap.dataset.gpuActive = String(mode === "gpu" && state.active);
+    elements.stageWrap.dataset.browserActive = String(mode === "browser" && state.active);
+    elements.stageWrap.dataset.rendererMode = mode;
     elements.stageWrap.dataset.rendererStatus = state.status;
     elements.rendererState.textContent = state.active
-      ? "CanvasKit GPU"
+      ? mode === "browser" ? "浏览器 HTML/CSS" : "CanvasKit GPU"
       : textRangeFailure
         ? "范围文字不支持"
+      : instanceSizingFailure
+        ? "实例尺寸不支持"
       : state.loading
-        ? "GPU 加载中"
-        : "GPU 不可用";
-    elements.rendererState.title = state.reason || "CanvasKit · WebGL2";
+        ? mode === "browser" ? "浏览器加载中" : "GPU 加载中"
+        : mode === "browser" ? "浏览器不可用" : "GPU 不可用";
+    elements.rendererState.title = state.reason || (mode === "browser" ? "规范场景 · 浏览器 Flex/Grid" : "CanvasKit · WebGL2");
     elements.rendererMessage.hidden = state.active;
     elements.retryRenderer.hidden = state.loading;
     elements.rendererMessageText.textContent = state.loading
-      ? "正在准备 GPU 画布…"
+      ? mode === "browser" ? "正在准备浏览器画布…" : "正在准备 GPU 画布…"
       : textRangeFailure
         ? state.reason.split("TEXT_RANGES_UNSUPPORTED:").slice(1).join("TEXT_RANGES_UNSUPPORTED:").slice(0, 400)
+      : instanceSizingFailure
+        ? state.reason.split("BROWSER_INSTANCE_SIZING_UNSUPPORTED:").slice(1).join("BROWSER_INSTANCE_SIZING_UNSUPPORTED:").slice(0,400)
       : state.status === "unavailable"
         ? "当前宿主不支持 GPU 画布，请更新 CodeShell 后重试。"
-        : "GPU 画布暂时不可用，设计数据已保留。请点击重试。";
-  },
-});
+        : mode === "browser" ? "浏览器画布暂时不可用，设计数据已保留。请点击重试。" : "GPU 画布暂时不可用，设计数据已保留。请点击重试。";
+    elements.retryRenderer.textContent = mode === "browser" ? "重试浏览器画布" : "重试 GPU 画布";
+    if (state.active && mode === "browser") { renderSceneOverlays(); updateInlineTextEditorPosition(); }
+}
+
+function chooseRenderer(next, {persist = true} = {}) {
+  if (!["gpu", "browser"].includes(next)) return;
+  rendererPreferenceGeneration += 1;
+  if (next !== rendererMode) {
+    finishInlineTextEdit();
+    void selectedRenderer().suspend("renderer-inactive");
+    rendererMode = next;
+    elements.gpuCanvas.hidden = true; elements.browserSurface.hidden = true;
+    void selectedRenderer().resume();
+  }
+  elements.rendererMode.value = next;
+  syncGpuRenderer();
+  if (persist) void hostCall("storage.set", {key:scopedStorageKey("rendererMode"),value:next}).catch(() => undefined);
+}
+
+async function loadRendererPreference(expectedEpoch = workspaceEpoch) {
+  const ticket = rendererPreferenceGeneration, key = scopedStorageKey("rendererMode");
+  const value = await hostCall("storage.get", {key}).catch(() => null);
+  if (expectedEpoch !== workspaceEpoch || ticket !== rendererPreferenceGeneration) return;
+  chooseRenderer(["gpu", "browser"].includes(value) ? value : "gpu", {persist:false});
+}
 
 function advanceDocumentEpoch() {
   documentEpoch += 1;
   void gpuRenderer.update({ design: null, suspended: true });
+  void browserRenderer.update({ design: null, suspended: true });
 }
 
 function rendererResources() {
@@ -505,7 +555,7 @@ function rendererResources() {
 function syncGpuRenderer() {
   const bounds = elements.stage.getBoundingClientRect();
   elements.stageWrap.dataset.grid = String(showGrid);
-  const renderDesign = inlineTextEdit
+  const renderDesign = inlineTextEdit && rendererMode === "gpu"
     ? {
         ...design,
         nodes: design.nodes.map((node) =>
@@ -513,14 +563,15 @@ function syncGpuRenderer() {
         ),
       }
     : design;
-  void gpuRenderer.update({
+  void selectedRenderer().update({
     key: `${workspaceEpoch}/${documentEpoch}/${design.activePageId}`,
     revision: `${designStateSequence}/${liveRenderRevision}/${resourceDataUrls.size}/${inlineTextEdit?.nodeId ?? ""}`,
     design: renderDesign,
     getResources: rendererResources,
-    capable: !window.codeshellPanel?.call
+    viewOptions: {hiddenNodeIds:rendererMode === "browser" && inlineTextEdit ? [inlineTextEdit.nodeId] : []},
+    capable: rendererMode === "browser" || (!window.codeshellPanel?.call
       ? typeof WebAssembly === "object"
-      : context.capabilities?.packageAssets?.wasm === true,
+      : context.capabilities?.packageAssets?.wasm === true),
     suspended: workspaceLoading,
     viewport: {
       width: bounds.width,
@@ -745,7 +796,7 @@ function referencedDesignResourceIds(value = design) {
   const referencedIds = new Set();
   for (const node of allDesignNodes(value)) {
     if (node.type === "image" && node.imageRef) referencedIds.add(node.imageRef);
-    if (node.type === "text" && node.fontRef) referencedIds.add(node.fontRef);
+    for (const resourceId of designTextFontResourceIds(node,value.resources ?? [])) referencedIds.add(resourceId);
   }
   return referencedIds;
 }
@@ -1015,6 +1066,38 @@ function selectedTransformNodes() {
 function visualDeltaForNode(node, delta, movingIds) {
   const inheritedRotation = inheritedNodeRotation(design.nodes, node, movingIds);
   return inheritedRotation ? rotateVector(delta, -inheritedRotation) : delta;
+}
+
+function browserReorderState(node, point) {
+  if (rendererMode !== "browser" || selectedIds.size !== 1 || !isAutoLayoutPositionOwned(node)) return null;
+  const parent = nodeById(node.parentId);
+  if (!["horizontal", "vertical"].includes(parent.layout) || parent.layoutReverse || ["wrap","wrap-reverse"].includes(parent.layoutWrap) ||
+      node.rotation || inheritedNodeRotation(design.nodes, node) !== 0) return null;
+  const geometry = browserRenderer.geometry();
+  const siblings = design.nodes.filter(candidate => candidate.parentId === parent.id &&
+    candidate.id !== node.id && candidate.layoutPositioning !== "absolute" && candidate.visible !== false);
+  if (!geometry?.has(node.id) || siblings.some(candidate => !geometry.has(candidate.id))) return null;
+  return {kind:"reorder",nodeId:node.id,parentId:parent.id,start:point,axis:parent.layout === "horizontal" ? "x" : "y",
+    siblings:siblings.map(candidate => ({id:candidate.id,...geometry.get(candidate.id)})),
+    originalOrder:[...design.nodes],moved:false,guides:[]};
+}
+
+function moveBrowserReorder(state, point) {
+  if (Math.hypot(point.x-state.start.x,point.y-state.start.y) < 3/zoom) return;
+  const axis = state.axis, size = axis === "x" ? "width" : "height";
+  const before = state.siblings.find(sibling => point[axis] < sibling[axis]+sibling[size]/2);
+  const movingIds = new Set([state.nodeId,...descendantIds(design.nodes,new Set([state.nodeId]))]);
+  const tree = design.nodes.filter(node => movingIds.has(node.id));
+  const remaining = design.nodes.filter(node => !movingIds.has(node.id));
+  let at = before ? remaining.findIndex(node => node.id === before.id) : -1;
+  if (at < 0) {
+    const lastSibling = state.siblings.at(-1);
+    const lastIds = lastSibling ? new Set([lastSibling.id,...descendantIds(remaining,new Set([lastSibling.id]))]) : new Set([state.parentId]);
+    at = remaining.reduce((last,node,index) => lastIds.has(node.id) ? index+1 : last,0);
+  }
+  remaining.splice(at,0,...tree);
+  design.nodes.splice(0,design.nodes.length,...remaining);
+  state.moved = design.nodes.some((node,index) => node !== state.originalOrder[index]);
 }
 
 function containingFrame(point) {
@@ -1573,7 +1656,7 @@ function scheduleInteractionRender() {
   if (interactionRenderFrame) return;
   interactionRenderFrame = requestAnimationFrame(() => {
     interactionRenderFrame = 0;
-    if (["move", "resize", "create"].includes(interaction?.kind)) liveRenderRevision += 1;
+    if (["move", "resize", "create", "reorder"].includes(interaction?.kind)) liveRenderRevision += 1;
     renderScene();
     renderProperties();
   });
@@ -1590,8 +1673,9 @@ function renderScene() {
 
 function renderSceneOverlays() {
   const bounds = elements.stage.getBoundingClientRect();
+  const viewDesign = interactionDesign();
   canvasHandles = drawCanvasInteraction(elements.stage, {
-    design,
+    design: viewDesign,
     selectedIds,
     pan,
     zoom,
@@ -1601,13 +1685,37 @@ function renderSceneOverlays() {
     activeTool,
     interaction,
     isLocked: isEffectivelyLocked,
+    allowResize: node => rendererMode !== "browser" || !nodeOrAncestorRotated(nodeById(node.id)),
+    selectionGeometry: rendererMode === "browser" ? browserRenderer.geometry() : null,
   });
-  const index = new Map(design.nodes.map((node) => [node.id, node]));
-  renderSelectionSize(selectedNodes().filter((node) => isDesignNodeVisible(design, node, index)));
+  const index = new Map(viewDesign.nodes.map((node) => [node.id, node]));
+  renderSelectionSize(viewDesign.nodes.filter(node => selectedIds.has(node.id) && isDesignNodeVisible(viewDesign, node, index)), viewDesign.nodes);
 }
 
-function renderSelectionSize(nodes) {
-  const bounds = visualSelectionBounds(nodes, design.nodes);
+function interactionDesign() {
+  const geometry = rendererMode === "browser" ? browserRenderer.geometry() : null;
+  if (!geometry) return rendererMode === "browser" ? {...design,nodes:[]} : design;
+  return {...design,nodes:design.nodes.map(node => {
+    const box = geometry.get(node.id);
+    return box ? {...node,x:box.x,y:box.y,width:box.width,height:box.height,rotation:0} : node;
+  })};
+}
+
+function nodeOrAncestorRotated(node) {
+  const seen = new Set();
+  while (node && !seen.has(node.id)) { if (node.rotation) return true; seen.add(node.id); node = nodeById(node.parentId); }
+  return false;
+}
+
+function canvasHit(point) {
+  const viewDesign = interactionDesign();
+  const label = hitTestCanvasLabel(viewDesign, point, zoom, selectedIds, elements.stage.getContext("2d"));
+  if (label) return nodeById(label.id);
+  return rendererMode === "browser" ? nodeById(browserRenderer.hitTest(point)) : hitTestCanvasNode(design, point);
+}
+
+function renderSelectionSize(nodes, allNodes = design.nodes) {
+  const bounds = visualSelectionBounds(nodes, allNodes);
   if (!bounds) {
     elements.selectionSize.hidden = true;
     return;
@@ -1686,14 +1794,16 @@ function updateInlineTextEditorPosition() {
     return;
   }
   const node = edit.node;
-  const matrix = canvasNodeMatrix(node, design.nodes, pan, zoom);
+  const box = rendererMode === "browser" ? browserRenderer.geometry()?.get(node.id) : null;
+  const matrix = box ? [box.matrix[0]*zoom,box.matrix[1]*zoom,box.matrix[2]*zoom,box.matrix[3]*zoom,pan.x+box.matrix[4]*zoom,pan.y+box.matrix[5]*zoom]
+    : canvasNodeMatrix(node, design.nodes, pan, zoom);
   const font = design.resources?.find((resource) => resource.id === node.fontRef);
   Object.assign(elements.inlineTextEditor.style, {
-    width: `${Math.max(28, node.width)}px`,
-    height: `${Math.max(24, node.height)}px`,
-    fontFamily: designFontFamilyCss(
-      font?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
-    ),
+    width: `${Math.max(28, box?.boxWidth ?? node.width)}px`,
+    height: `${Math.max(24, box?.boxHeight ?? node.height)}px`,
+    fontFamily: box?.fontFamily ?? (font
+      ? designResourceFontFamilyCss(node.fontFamily, font.family)
+      : designFontFamilyCss(node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif")),
     fontSize: `${node.fontSize}px`,
     fontWeight: String(node.fontWeight),
     fontStyle: node.fontStyle ?? "normal",
@@ -2503,7 +2613,7 @@ function documentPoint(event) {
 }
 
 function pointerDown(event) {
-  if (interaction || !gpuRenderer.state().active || (event.button !== 0 && event.button !== 1))
+  if (interaction || !selectedRenderer().state().active || (event.button !== 0 && event.button !== 1))
     return;
   const before = {
     selectedId,
@@ -2517,10 +2627,7 @@ function pointerDown(event) {
     zoom,
     window.matchMedia("(pointer: coarse)").matches,
   );
-  const targetId = (
-    hitTestCanvasLabel(design, point, zoom, selectedIds, elements.stage.getContext("2d")) ??
-    hitTestCanvasNode(design, point)
-  )?.id;
+  const targetId = canvasHit(point)?.id;
   const shouldPan = activeTool === "hand" || spacePressed || event.button === 1;
 
   // Recognize completed stationary taps across pointer-capture transitions.
@@ -2566,12 +2673,14 @@ function pointerDown(event) {
     };
   } else if (handle && selectedNodes().length === 1 && selectedNode()) {
     const node = selectedNode();
+    const box = rendererMode === "browser" ? browserRenderer.geometry()?.get(node.id) : null;
     interaction = {
       kind: "resize",
       nodeId: node.id,
       handle,
       start: point,
-      bounds: { x: node.x, y: node.y, width: node.width, height: node.height },
+      bounds: box ? {x:box.x,y:box.y,width:box.width,height:box.height} : { x: node.x, y: node.y, width: node.width, height: node.height },
+      ...(box ? {browser:true,original:Object.fromEntries(["x","y","width","height","layoutSizingHorizontal","layoutSizingVertical"].map(key=>[key,node[key]]))} : {}),
     };
   } else if (activeTool === "select") {
     if (!targetId) {
@@ -2593,12 +2702,17 @@ function pointerDown(event) {
       if (!selectedIds.has(targetId)) selectOnly(targetId);
       const node = design.nodes.find((candidate) => candidate.id === targetId);
       const movableNodes = selectedTransformNodes();
-      if (node && !isEffectivelyLocked(node) && movableNodes.length > 0) {
+      const reorder = node && !isEffectivelyLocked(node) ? browserReorderState(node,point) : null;
+      if (reorder) interaction = reorder;
+      else if (node && !isEffectivelyLocked(node) && movableNodes.length > 0) {
         const movingIds = new Set(movableNodes.map((candidate) => candidate.id));
+        const viewDesign = interactionDesign(), viewNodes = viewDesign.nodes.filter(candidate=>movingIds.has(candidate.id));
+        const viewAnchor = viewNodes.find(candidate=>candidate.id===selectedId) ?? viewNodes[0];
         interaction = {
           kind: "move",
           start: point,
-          bounds: visualSelectionBounds(movableNodes, design.nodes),
+          bounds: visualSelectionBounds(viewNodes, viewDesign.nodes),
+          snapAnchor: viewAnchor ? {x:viewAnchor.x,y:viewAnchor.y} : null,
           origins: new Map(
             movableNodes.map((candidate) => [candidate.id, { x: candidate.x, y: candidate.y }]),
           ),
@@ -2683,15 +2797,16 @@ function pointerMove(event) {
   }
   const nodeIndex = new Map(design.nodes.map((node) => [node.id, node]));
   if (interaction.kind === "marquee") {
+    const viewDesign = interactionDesign(), viewIndex = new Map(viewDesign.nodes.map(node => [node.id,node]));
     interaction.current = point;
     const left = Math.min(interaction.start.x, point.x);
     const top = Math.min(interaction.start.y, point.y);
     const right = Math.max(interaction.start.x, point.x);
     const bottom = Math.max(interaction.start.y, point.y);
-    const enclosed = design.nodes
+    const enclosed = viewDesign.nodes
       .filter((node) => {
-        if (!isDesignNodeVisible(design, node, nodeIndex)) return false;
-        const bounds = transformedNodeBoundsInTree(design.nodes, node, nodeIndex);
+        if (!isDesignNodeVisible(viewDesign, node, viewIndex)) return false;
+        const bounds = transformedNodeBoundsInTree(viewDesign.nodes, node, viewIndex);
         return (
           bounds &&
           bounds.x >= left &&
@@ -2706,9 +2821,11 @@ function pointerMove(event) {
     renderAll();
     return;
   }
-  if (interaction.kind === "move") {
+  if (interaction.kind === "reorder") {
+    moveBrowserReorder(interaction, point);
+  } else if (interaction.kind === "move") {
     const anchorOrigin =
-      interaction.origins.get(selectedId) ?? interaction.origins.values().next().value;
+      interaction.snapAnchor ?? interaction.origins.get(selectedId) ?? interaction.origins.values().next().value;
     let deltaX = point.x - interaction.start.x;
     let deltaY = point.y - interaction.start.y;
     if (snapEnabled && !event.altKey && anchorOrigin && !interaction.inheritsRotation) {
@@ -2716,11 +2833,12 @@ function pointerMove(event) {
       deltaY = snapValue(anchorOrigin.y + deltaY) - anchorOrigin.y;
     }
     if (snapEnabled && !event.altKey && interaction.bounds && !interaction.inheritsRotation) {
-      const stationaryNodes = design.nodes.filter(
+      const viewDesign = interactionDesign(), viewIndex = new Map(viewDesign.nodes.map(candidate=>[candidate.id,candidate]));
+      const stationaryNodes = viewDesign.nodes.filter(
         (node) => !interaction.origins.has(node.id) && isDesignNodeVisible(design, node, nodeIndex),
       );
       const stationaryBounds = stationaryNodes.map((node) => ({
-        ...transformedNodeBoundsInTree(design.nodes, node, nodeIndex),
+        ...transformedNodeBoundsInTree(viewDesign.nodes, node, viewIndex),
         id: node.id,
       }));
       const snapped = snapBoundsToNodes(
@@ -2769,7 +2887,16 @@ function pointerMove(event) {
   } else if (interaction.kind === "resize") {
     const node = nodeById(interaction.nodeId);
     if (!node) return;
-    resizeNode(node, snapPoint(point, event.altKey), interaction, event.shiftKey);
+    if (interaction.browser) {
+      const resized = {...interaction.bounds};
+      resizeNode(resized, snapPoint(point,event.altKey), interaction,event.shiftKey);
+      node.width=resized.width; node.height=resized.height;
+      node.layoutSizingHorizontal="fixed"; node.layoutSizingVertical="fixed";
+      if (!isAutoLayoutPositionOwned(node)) {
+        node.x=round(interaction.original.x+resized.x-interaction.bounds.x);
+        node.y=round(interaction.original.y+resized.y-interaction.bounds.y);
+      }
+    } else resizeNode(node, snapPoint(point, event.altKey), interaction, event.shiftKey);
   }
   updateDirtyState();
   scheduleInteractionRender();
@@ -2846,7 +2973,7 @@ function finishInteraction(pointerId = null) {
   const changed =
     finished.kind === "create" ||
     finished.kind === "resize" ||
-    (finished.kind === "move" && finished.moved);
+    (["move","reorder"].includes(finished.kind) && finished.moved);
   if (changed) {
     if (node) {
       reflowParent(node);
@@ -2861,7 +2988,7 @@ function finishInteraction(pointerId = null) {
 
 function pointerUp(event) {
   if (lastTextPointer?.pointerId === event.pointerId && interactionIsCurrent(lastTextPointer)) {
-    lastTextPointer.completed = interaction?.kind === "move" && !interaction.moved;
+    lastTextPointer.completed = ["move","reorder"].includes(interaction?.kind) && !interaction.moved;
   }
   finishInteraction(event.pointerId);
 }
@@ -2878,9 +3005,13 @@ function cancelInteraction(pointerId = null) {
       const node = nodeById(nodeId);
       if (node) Object.assign(node, origin);
     }
+  } else if (cancelled.kind === "reorder") {
+    design.nodes.splice(0,design.nodes.length,...cancelled.originalOrder);
   } else if (cancelled.kind === "resize") {
     const node = nodeById(cancelled.nodeId);
-    if (node) Object.assign(node, cancelled.bounds);
+    if (node) for (const [key,value] of Object.entries(cancelled.original ?? cancelled.bounds)) {
+      if (value === undefined) delete node[key]; else node[key] = value;
+    }
   } else if (cancelled.kind === "pan") {
     Object.assign(pan, cancelled.startPan);
   }
@@ -2901,6 +3032,7 @@ function cancelInteraction(pointerId = null) {
   }
   syncActivePageNodes();
   updateDirtyState();
+  liveRenderRevision += 1;
   renderAll();
 }
 
@@ -6338,10 +6470,7 @@ elements.stage.addEventListener("lostpointercapture", (event) =>
 elements.stage.addEventListener("dblclick", (event) => {
   if (activeTool !== "select") return;
   const point = documentPoint(event);
-  let id = (
-    hitTestCanvasLabel(design, point, zoom, selectedIds, elements.stage.getContext("2d")) ??
-    hitTestCanvasNode(design, point)
-  )?.id;
+  let id = canvasHit(point)?.id;
   if (
     !id &&
     lastTextPointer &&
@@ -6395,8 +6524,9 @@ elements.stage.addEventListener(
   { passive: false },
 );
 elements.zoomOut.addEventListener("click", () => setZoom(zoom / 1.2));
+elements.rendererMode.addEventListener("change", () => chooseRenderer(elements.rendererMode.value));
 elements.retryRenderer.addEventListener("click", () => {
-  void gpuRenderer.setMode("gpu");
+  void selectedRenderer().setMode(rendererMode);
   syncGpuRenderer();
 });
 elements.zoomIn.addEventListener("click", () => setZoom(zoom * 1.2));
@@ -6809,7 +6939,7 @@ window.addEventListener("blur", () => {
 });
 window.addEventListener("resize", () => scheduleViewportRender(true));
 new ResizeObserver(() => scheduleViewportRender(true)).observe(elements.stageWrap);
-window.addEventListener("pagehide", () => gpuRenderer.dispose());
+window.addEventListener("pagehide", () => { void gpuRenderer.dispose(); void browserRenderer.dispose(); });
 window.addEventListener("focus", () => void checkExternalChange());
 window.addEventListener("beforeunload", (event) => {
   finishInlineTextEdit();
@@ -6867,6 +6997,10 @@ function updateContext(next) {
     elements.path.disabled = false;
   }
   context = nextContext;
+  if (workspaceChanged) {
+    chooseRenderer("gpu", {persist:false});
+    void loadRendererPreference(workspaceEpoch);
+  }
   syncGpuRenderer();
   contextInitialized = true;
   reviewCommentsUI?.update();
@@ -9646,6 +9780,8 @@ async function initialize() {
 
   initialContextPending = false;
   const initializationWorkspaceEpoch = workspaceEpoch;
+  await loadRendererPreference(initializationWorkspaceEpoch);
+  if (initializationWorkspaceEpoch !== workspaceEpoch) return;
   const uiPreferences = await hostCall("storage.get", { key: "uiPreferences" }).catch(() => null);
   if (initializationWorkspaceEpoch !== workspaceEpoch) return;
   if (uiPreferences && typeof uiPreferences === "object") {

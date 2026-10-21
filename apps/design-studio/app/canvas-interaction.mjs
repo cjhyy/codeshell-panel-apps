@@ -172,6 +172,8 @@ export function drawCanvasInteraction(
     activeTool,
     interaction,
     isLocked = () => false,
+    allowResize = () => true,
+    selectionGeometry,
   },
 ) {
   const w = Math.max(1, Math.ceil(width * dpr)),
@@ -226,14 +228,17 @@ export function drawCanvasInteraction(
   let handles = [];
   for (const node of selected) {
     ctx.save();
-    for (const n of [...ancestors(node, index), node]) rotate(ctx, n);
+    const measured = selectionGeometry?.get(node.id);
+    if (measured) ctx.transform(...measured.matrix);
+    else for (const n of [...ancestors(node, index), node]) rotate(ctx, n);
     const locked = isLocked(node);
     ctx.strokeStyle = locked ? "#ffae52" : "#4f7cff";
     ctx.lineWidth = 1.5 / zoom;
     ctx.setLineDash(locked ? [5 / zoom, 3 / zoom] : []);
-    ctx.strokeRect(node.x, node.y, node.width, node.height);
+    if (measured) ctx.strokeRect(0, 0, measured.boxWidth, measured.boxHeight);
+    else ctx.strokeRect(node.x, node.y, node.width, node.height);
     ctx.restore();
-    if (selected.length === 1)
+    if (selected.length === 1 && allowResize(node))
       handles = canvasResizeHandles(node, {
         zoom,
         locked,

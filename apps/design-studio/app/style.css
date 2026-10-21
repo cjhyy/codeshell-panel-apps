@@ -606,6 +606,16 @@ textarea:focus-visible {
   pointer-events: none;
 }
 
+#browser-surface {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+#browser-surface[hidden] { display: none; }
+
+#renderer-mode { max-width: 170px; font: inherit; color: inherit; background: var(--surface); }
+
 .stage-wrap[data-grid="true"] {
   background-image: radial-gradient(circle at 1px 1px, #323232 0.7px, transparent 0.8px);
   background-size: 16px 16px;

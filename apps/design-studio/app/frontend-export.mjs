@@ -14,7 +14,7 @@ import { nativeTextContent } from "./text-content.mjs";
 import { mapTextDisplay, projectTextRanges, validateTextRanges } from "./text-ranges.mjs";
 import { hasDesignStroke, designStrokeSides, strokeLayoutBasisExtra } from "./stroke.mjs";
 /* Deterministic CodeShell Design v3 to editable HTML/CSS export. */
-import { designFontFaceCss, designFontFamilyCss } from "./font-css.mjs";
+import { designFontFaceCss, designFontFamilyCss, designRuntimeFontFamilyCss } from "./font-css.mjs";
 
 const CONTAINER_TYPES = new Set(["frame", "group", "component"]);
 const PAINTLESS_TYPES = new Set(["group", "instance"]);
@@ -93,7 +93,9 @@ function positionDeclarations(node, parent, parentUsesLayout, canvas) {
   const parentY = Number(parent?.y) || 0;
   const border=parent && hasDesignStroke(parent) && parent.strokeAlign === "inside" ? designStrokeSides(parent).map(s=>s.width) : [0,0,0,0];
   const localLeft = (Number(node.x) || 0) - parentX-border[3];
-  const localTop = (Number(node.y) || 0) - parentY-border[0];
+  const baseline = node.type === "text" && ["html", "native"].includes(node.layoutBaselineSource)
+    ? Number(node.layoutBaselineOffset) || 0 : 0;
+  const localTop = (Number(node.y) || 0) - baseline - parentY-border[0];
   const parentWidth=Number(parent?.width??canvas?.width)-border[1]-border[3];
   const parentHeight=Number(parent?.height??canvas?.height)-border[0]-border[2];
   const declarations = [["position", "absolute"]];
@@ -157,6 +159,9 @@ function sizingDeclarations(node, parent, parentOf) {
   const horizontal = node.layoutSizingHorizontal ?? "fixed";
   const vertical = node.layoutSizingVertical ?? "fixed";
   const declarations = [];
+  if (["horizontal", "vertical"].includes(parentLayout) &&
+      (parentLayout === "horizontal" ? horizontal : vertical) !== "fill")
+    declarations.push(["flex-shrink", "0"]);
   const fillBasis = (axis) => {
     const extra = strokeLayoutBasisExtra(node, axis);
     if (!extra) return "0";
@@ -205,6 +210,8 @@ function sizingDeclarations(node, parent, parentOf) {
     // Left/right constraints own width.
   } else if (parentStretchesHorizontal) {
     declarations.push(["width", "auto"], ["align-self", "stretch"]);
+  } else if (horizontal === "hug" && node.type === "image") {
+    declarations.push(["width", "auto"]);
   } else if (horizontal === "hug" && hasIntrinsicHorizontalContent && !circularHorizontalHug) {
     declarations.push(["width", "fit-content"]);
   } else if (horizontal === "fill" && ["horizontal", "vertical"].includes(parentLayout)) {
@@ -220,6 +227,8 @@ function sizingDeclarations(node, parent, parentOf) {
     // Top/bottom constraints own height.
   } else if (parentStretchesVertical) {
     declarations.push(["height", "auto"], ["align-self", "stretch"]);
+  } else if (vertical === "hug" && node.type === "image") {
+    declarations.push(["height", "auto"]);
   } else if (vertical === "hug" && hasIntrinsicVerticalContent && !circularVerticalHug) {
     declarations.push(["height", "fit-content"]);
   } else if (vertical === "fill" && parentLayout === "vertical") {
@@ -384,7 +393,7 @@ function transformDeclarations(node) {
   return transforms.length > 0 ? [["transform", transforms.join(" ")]] : [];
 }
 
-function nodeStyle(node, parent, canvas, parentOf) {
+function nodeStyle(node, parent, canvas, parentOf, fontFamilyOverride) {
   const parentUsesLayout =
     CONTAINER_TYPES.has(parent?.type) && ["horizontal", "vertical", "grid"].includes(parent.layout);
   const declarations = [
@@ -404,7 +413,7 @@ function nodeStyle(node, parent, canvas, parentOf) {
       ["background", node.fillPaints ? designPaintCssImage(node) : "transparent"],
       ["background-clip", node.fillPaints ? "text" : undefined],
       ["-webkit-background-clip", node.fillPaints ? "text" : undefined],
-      ["font-family", designFontFamilyCss(node.fontFamily)],
+      ["font-family", fontFamilyOverride === undefined ? designFontFamilyCss(node.fontFamily) : designRuntimeFontFamilyCss(fontFamilyOverride)],
       ["font-size", cssNumber(node.fontSize, 16)],
       ["font-weight", String(node.fontWeight ?? 400)],
       ["font-style", node.fontStyle ?? "normal"],
@@ -428,6 +437,8 @@ function renderInstance(node, context) {
   if (!master || context.instanceDepth >= 16) return "";
   const scaleX = Number(node.width) / Math.max(1, Number(master.width));
   const scaleY = Number(node.height) / Math.max(1, Number(master.height));
+  const masterRotation = Number(master.rotation) || 0;
+  const masterTransform = masterRotation ? ` translate(${cssNumber(master.width/2)},${cssNumber(master.height/2)}) rotate(${masterRotation}deg) translate(${cssNumber(-master.width/2)},${cssNumber(-master.height/2)})` : "";
   const contentStyle = styleText([
     ["position", "absolute"],
     ["left", "0"],
@@ -435,7 +446,10 @@ function renderInstance(node, context) {
     ["width", cssNumber(master.width, 1)],
     ["height", cssNumber(master.height, 1)],
     ["transform-origin", "0 0"],
-    ["transform", `scale(${scaleX},${scaleY})`],
+    ["transform", `scale(${scaleX},${scaleY})${masterTransform}`],
+    ["opacity", String(master.opacity ?? 1)],
+    ["overflow", master.clipContent ? "hidden" : "visible"],
+    ["display", master.visible === false ? "none" : undefined],
     ...paintDeclarations(master),
     ...layoutDeclarations(master),
   ]);
@@ -495,6 +509,17 @@ function renderTextRanges(node) {
 }
 
 function renderNode(node, parent, context) {
+  if (context.renderBudget && ++context.renderBudget.nodes > context.renderBudget.maxNodes) throw Error("Browser canonical expansion exceeds its node budget");
+  context.onRenderNode?.(node,parent);
+  const markup = renderNodeMarkup(node, parent, context);
+  if (context.renderBudget) {
+    context.renderBudget.bytes += new TextEncoder().encode(markup).length;
+    if (context.renderBudget.bytes > context.renderBudget.maxBytes) throw Error("Browser canonical expansion exceeds its markup budget");
+  }
+  return markup;
+}
+
+function renderNodeMarkup(node, parent, context) {
   context.gridParents.set(node, parent ?? null);
   const exportedId = `${context.idPrefix}${node.id}`;
   const attributes = [
@@ -503,7 +528,7 @@ function renderNode(node, parent, context) {
     `data-codeshell-source-id="${escapeHtml(node.id)}"`,
     `data-codeshell-node-type="${escapeHtml(node.type)}"`,
     `data-codeshell-name="${escapeHtml(node.name)}"`,
-    `style="${escapeHtml(nodeStyle(node, parent, context.canvas, context.gridParentOf))}"`,
+    `style="${escapeHtml(nodeStyle(node, parent, context.canvas, context.gridParentOf, node.type === "text" && context.runtimeFontFamily ? context.runtimeFontFamily(node) : context.fontFamilyOverrides?.get(node.id)))}"`,
   ];
   if (node.notes) attributes.push(`title="${escapeHtml(node.notes)}"`);
   const link = context.idPrefix === "" ? context.prototypeLinks?.get(node.id) : null;
@@ -561,6 +586,10 @@ export function renderDesignFrontendPage(
     resourceDataUrls = new Map(),
     prototypeLinks,
     prototypeMode = false,
+    fontFamilyOverrides,
+    runtimeFontFamily,
+    onRenderNode,
+    renderBudget,
   } = {},
 ) {
   if (!design || design.format !== "codeshell.design" || design.version !== 3) {
@@ -590,6 +619,10 @@ export function renderDesignFrontendPage(
     idPrefix: "",
     prototypeLinks,
     prototypeMode,
+    fontFamilyOverrides,
+    runtimeFontFamily,
+    onRenderNode,
+    renderBudget: renderBudget ? {nodes:0,bytes:0,maxNodes:renderBudget.maxNodes,maxBytes:renderBudget.maxBytes} : null,
   };
   const body = roots.map((node) => renderNode(node, null, context)).join("\n");
   return `<main class="cs-page" data-codeshell-page-id="${escapeHtml(page.id)}" data-codeshell-name="${escapeHtml(page.name)}">
@@ -612,7 +645,20 @@ export function exportDesignFrontend(
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${escapeHtml(documentTitle)}</title>
     <style>
-      ${designFontFaceCss(design.resources, resourceDataUrls)}
+${designFrontendCss(design, { resourceDataUrls })}
+    </style>
+  </head>
+  <body>
+    ${pageMarkup}
+  </body>
+</html>
+`;
+}
+
+/** Shared canonical layout CSS for portable export and the live browser surface. */
+export function designFrontendCss(design, { resourceDataUrls = new Map() } = {}) {
+  const canvas = design.canvas ?? { width: 1440, height: 900, background: "#ffffff" };
+  return `      ${designFontFaceCss(design.resources, resourceDataUrls)}
       :root { color-scheme: light; }
       * { box-sizing: border-box; }
       html, body { min-height: 100%; margin: 0; }
@@ -630,11 +676,5 @@ export function exportDesignFrontend(
       .cs-text { margin: 0; }
       .cs-image { display: block; }
       .cs-instance-content { pointer-events: none; }
-    </style>
-  </head>
-  <body>
-    ${pageMarkup}
-  </body>
-</html>
 `;
 }
