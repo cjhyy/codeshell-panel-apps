@@ -2770,3 +2770,41 @@ viewport/root）：44/44捕获、0capture failure，实际44输入HTML与旧生�
 SHAd1c0bf94c02848dfdb123853371362d16c31f1a5418ba718121a1f66a9c75fd9；独立只读
 artifact复核及19剩余Grid约束分析正在进行，后续结果另记。截止UTC16:31不变，当前
 必要产品修复已保存，后续仅有界验证、记录与交付整理，不因局部绿色提前宣称完整对标。
+
+### ROUND56 · 当前44结构证据独立复核与真实布局差距
+
+current44独立只读peer核验全部44实际输入字节、46源/context/assets、141完整包
+对immutable Git fda及528输出hash，全相等。2594个canonical节点观察、22模型Text
+edit、36字体栈/8shadow拒绝均从raw独立统计。所有44当前canonical都有对旧几何的
+精度变化；只有8个21状态有Sizing结构变化，不能把结构摘要相同扩大为所有数值相同。
+当前44及历史44的同宽reflow都改变几何；driver用共享SVG/div/Canvas2D measurer与
+model layout，既不是Browser/CanvasKit绘制比较，也不是源iframe像素证明。handoff
+SHA7599ee675ed5bb184ef0adb79462fb00143fcc7d9642192fb956b19a76d0d834，review
+SHAed53660b6b51a73e77e75b5858d20b37866fb4005b69322a0e61acc2b4397d63。
+
+必须收窄ABS统计口径：此前40个ABS观察仅指canonical显式标记/source flow binding，
+确实均来自43的作者position:fixed；这不代表frontend所有普通流都没有CSS absolute。
+独立源码/实际19节点复核：只有父canonical为horizontal/vertical/grid且子非explicit
+ABS时，frontend才输出relative；manual父级仍按坐标输出absolute。当前与历史19都有
+普通Grid cell处于此路径，无新增标记并不等于真实Auto Layout已全部实现。独立addendum
+SHAbd7d4adf6b0632bdb22064291b70851311e915446ff2d22c7400ebb3323e2de8，旧收据未改。
+
+19专项只读核验8个状态：root/inner wrapper是source block→vertical AL，9个真正
+source display:grid容器却为canonical Grid0；42项manual flow失败细分为其中41项
+Grid cell关系、1项普通block段落，不能都叫Grid cell失败。首拒绝包含auto-min5个、
+partial placement、namedareas、child shrink-to-fit、auto-fit各1个；首原因不证明
+移除该guard就能通过所有后续约束。实际Node调用现有exporter并解析HTML，3个具体
+Grid容器自身relative，但其直接cell仍为CSS absolute，canonical标记却为auto。
+这是未解决的存量manual fallback，编辑/响应式行为不能冒称Figma式Auto Layout。
+conclusion SHA420b75d010d938965df5aa08d9d47bf7e87c254425df938f220cc878d051e7da，
+handoff SHA9d8a733d722b3a69fd4c30039bcc576cb3a224354b3497953b857b47c0b053a0；
+source/canonical 1280/400实际矩形、guard源码链接和纯Node输出完整保留，没有新Browser/
+GPU/Figma执行。首次exact-HEAD预检因docs-only07cf而拒绝已保留；随后以immutable fda
+raw及141包逐字一致定位，未放宽产品门禁。
+
+15:00:20UTC documented node_repl再次实际检查cuaAvailable:false。全部owner/peer及
+root门禁句柄已terminal，当前没有并发产品编辑；已测试代码仍为fda，后续只有任务记录。
+CanvasKit继续默认，Browser是显式同canonical比较版本；本轮未安装Host/覆盖原设计。
+剩余主要差距为CSS Grid真实流、字体/文字测量与同宽重排、整页像素、生产路径真实Figma
+验收及含删除事务的post-write读回。继续保留UTC16:31截止与原heartbeat，届时保存最终
+交付并停用；不能把当前有界成果称为完整Figma对标或全量Auto Layout通过。
