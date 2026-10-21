@@ -1754,3 +1754,47 @@ HTML新范围恢复或宣称native像素通过。
 
 24小时目标仍active，截止10月22日00:31不变。未push、发布或安装Host；primary继续
 使用上一完整通过和实际native验证的7e989c9，聚合候选待修复三项语义覆盖失败再集成。
+
+## ROUND34 · 2026-10-21 08:32 SG · 表格/浮动覆盖修复，完整检查恢复通过
+
+ROUND33 的三项完整测试失败保留，不修改比较器或把旧正例改成负例。独立分支
+cb1641c 固定表格、79e704c float/clearfix 分别经源码 peer 审查后正常合入；最终产品
+候选089a6def。表格只在整表恢复完整提交后发布当前真实 Element/原始 canonical 对象
+证明，BR 仅处理该单元的精确 token。审计发布失败单独报告，不能伪称表格回滚。
+Float 只接受最终 normalize 后再次通过 nativeGridPlan、相同原对象/轨道/placement/
+Fill/DOM顺序的成功计划；移动 block 只消费已验证的精确空 ::after 清除元素，不忽略
+真实文字、paint、非零或未知生成内容。已有显式 wrapper factory 仍是唯一中间层证明。
+
+30项受影响CPU检查通过。与同一clean912基线配对，GOV原有24/24义务在三种模式
+全部通过；rows1/splitrow/bleed/mobile 的 source、canonical、portable、transfer、SVG和
+所有PNG字节不变，warning与native admission不变。真实GOV像素仍7536/7536/7541、
+max95，未宣称整页0误差。交付verification SHA023c3cebfdbf25e78561be188ea3c2e3c5868dfbd13a406edef32613f33e1321；
+flow paired SHA3ed040938c9ecf85ca8821eb5f183a11654d709bf3683dcea8d497e0bf54a42b；
+GOV combined SHA9066a25c6e7112c04a622e4550a19679ff5f995d279cf7fcee892ea5e45ff1aa。
+
+089a6def 完整 main664项：663pass/0fail/1skip，198152.70625ms；UI107项：
+106pass/0fail/1skip，109455.337459ms；合计769pass/0fail/2skip。两套各自前后共四份
+118个app文件SHA一致、HEAD一致、tracked clean且runner/preload未改。typecheck、validate、
+三项generated检查和Design Studio scoped build:check均exit0；没有用仓库其他Panel的
+陈旧产物掩盖本次范围。root combined receipt位于外部evidence/round34-full-gates-receipt.json，
+SHA6d435aa2d13a34993b3c15c51bbe5a91ff427e1b50d5ad5dcbe5054f30d992a4。
+
+通知栏混合文字 exact-contract 已定：单一可编辑 Text，以完整authored source的精确
+JSON签名绑定有序、不重叠UTF16 paint/decoration/link范围；软换行投影不改作者字符，
+可明确编辑affinity/null清除并拒绝过期payload。合同SHA5ffa6cca9ae21b6cee536289c34a852b0b0d8613101e21b626b50b3cf6d541f1。
+core/schema/SVG、CanvasKit/frontend、native和capture planner正分隔离分支实施；尚未
+开启HTML正向提升。实际两个通知栏本来均为真实P+一个原Text，首个范围方案不删除
+任何9/12原节点或mapping。CanvasKit缺自定义underline offset/skipInk setter，保持
+supplied-font整段Paragraph；不能把现有2737像素underline负例缓存换成成功。
+
+CPU supplied-alias研究也已完成独立source/JSON审查：冻结18份freshCPU源参考全部0，
+显式研究alias附着缓存13/18为0、五例各1像素/max1；默认supplied Paragraph仍0/18，
+三个underline控制合计2737像素/max229。495项artifact hash/113比较可重放；产品文字
+模块b9ece840未改变。delivery SHA d235ffd2e36422d5584b4809f13b978547e3a8baf527acfa165f03d3565e1a24，
+peer SHA b04e2404911cc32c4a7a3865a6a3eed1d60f79ab1610752cf39b09587e0b29ca。
+
+新的本地native文字区间SDK能力探针仍是准备期，独立审查已在安装前拦截换行转义、
+JSON_REST返回对象类型等问题；8项VM检查通过，页ID/name/selection固定、一次派发、
+过期拒绝及返回原页面完整raw对照明确。它不是production互转或网页像素通过收据。
+本轮完整通过后把候选及本记录快进稳定primary；无push/发布/Host安装。
+24小时目标继续active，截止仍为10月22日00:31 SG。
