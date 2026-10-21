@@ -129,8 +129,10 @@ function href(value, rest = false) {
 }
 function consistent(rest, source) {
   const overrides = rest.characterStyleOverrides ?? [], table = rest.styleOverrideTable ?? {};
+  // REST override entries count Unicode characters; SDK ranges use UTF16 offsets.
+  const characterCount = Array.from(source.characters).length;
   if (rest.style !== undefined && !plain(rest.style)) fail("Malformed REST text style");
-  if (!Array.isArray(overrides) || overrides.length > source.characters.length || !plain(table) ||
+  if (!Array.isArray(overrides) || overrides.length > characterCount || !plain(table) ||
       overrides.some(id => !Number.isInteger(id) || id < 0 || id !== 0 && !plain(table[id]))) fail("Malformed REST character styles");
   const mismatch = () => fail("REST and live native style differ; source may have changed during capture", "NATIVE_TEXT_RANGES_CAPTURE_RACE");
   for (const key of NATIVE_TEXT_RANGE_SCALAR_ONLY_FIELDS) {
@@ -138,10 +140,11 @@ function consistent(rest, source) {
     if (obs?.kind !== "value") continue;
     if (own(rest, key) && !same(rest[key], obs.value) || own(rest.style ?? {}, key) && !same(rest.style[key], obs.value)) mismatch();
   }
+  let characterIndex = 0;
   for (const segment of source.segments) {
     const v = segment.values;
-    for (let i = segment.start; i < segment.end; i++) {
-      const id = overrides[i] ?? 0;
+    for (let i = segment.start; i < segment.end; i += source.characters.codePointAt(i) > 0xffff ? 2 : 1) {
+      const id = overrides[characterIndex++] ?? 0;
       const style = { ...(rest.style ?? {}), ...(id === 0 ? {} : table[id]) };
       for (const key of ["fontSize", "fontWeight", "textDecoration", "textCase"])
         if (own(style, key) && v[key]?.kind === "value" && !same(style[key], valueOf(v, key))) mismatch();
@@ -155,8 +158,12 @@ function consistent(rest, source) {
           href(style.hyperlink, true) !== href(valueOf(v, "hyperlink"))) mismatch();
       const line = valueOf(v, "lineHeight");
       if (style.lineHeightUnit === "PIXELS" && line && (line.unit !== "PIXELS" || style.lineHeightPx !== line.value)) mismatch();
+      // REST serializes the SDK percentage to Float32. Compare that exact
+      // projection without changing either observation or canonical admission.
       if (["FONT_SIZE_%", "PERCENT"].includes(style.lineHeightUnit) && line &&
-          (line.unit !== "PERCENT" || style.lineHeightPercentFontSize !== line.value)) mismatch();
+          (line.unit !== "PERCENT" || style.lineHeightPercentFontSize !== line.value &&
+            !(typeof line.value === "number" && typeof style.lineHeightPercentFontSize === "number" &&
+              style.lineHeightPercentFontSize === Math.fround(line.value)))) mismatch();
       const spacing = valueOf(v, "letterSpacing");
       if (own(style, "letterSpacing") && spacing && ["PIXELS", "PERCENT"].includes(spacing.unit)) {
         const pixels = spacing.unit === "PIXELS" ? spacing.value : spacing.value * valueOf(v, "fontSize") / 100;

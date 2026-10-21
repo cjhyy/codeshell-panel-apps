@@ -1,0 +1,2888 @@
+{
+  "provenance": {
+    "runId": "real-figma-native-text-ranges-1792546600104-1ed86d39",
+    "sourceFile": "native-result.json",
+    "sourceSha256": "6c59ea3aaa84a46546c0dac30d7ebe4cbe5021509d1c470970f1ff4ff72f9c8c",
+    "nativeRuntime": "actual Figma SDK; no production converter",
+    "transformation": "Complete original case objects projected without numeric/presence/string/observation changes; original page snapshots omitted"
+  },
+  "cases": [
+    {
+      "name": "plain20",
+      "variant": {
+        "name": "plain20",
+        "fontSize": 20,
+        "line": 120,
+        "kind": "plain"
+      },
+      "operations": [],
+      "rest": {
+        "id": "68:1679",
+        "name": "plain20",
+        "type": "TEXT",
+        "scrollBehavior": "SCROLLS",
+        "blendMode": "PASS_THROUGH",
+        "fills": [
+          {
+            "blendMode": "NORMAL",
+            "type": "SOLID",
+            "color": {
+              "r": 0,
+              "g": 0,
+              "b": 0,
+              "a": 1
+            }
+          }
+        ],
+        "strokes": [],
+        "strokeWeight": 1,
+        "strokeAlign": "OUTSIDE",
+        "absoluteBoundingBox": {
+          "x": 20,
+          "y": 20,
+          "width": 400,
+          "height": 48
+        },
+        "absoluteRenderBounds": {
+          "x": 20.511363983154297,
+          "y": 20.399999618530273,
+          "width": 92.54438781738281,
+          "height": 42.8272705078125
+        },
+        "constraints": {
+          "vertical": "TOP",
+          "horizontal": "LEFT"
+        },
+        "layoutAlign": "STRETCH",
+        "layoutGrow": 0,
+        "layoutSizingHorizontal": "FILL",
+        "layoutSizingVertical": "HUG",
+        "characters": "A😀 linked\nend",
+        "characterStyleOverrides": [],
+        "styleOverrideTable": {},
+        "lineTypes": [
+          "NONE",
+          "NONE"
+        ],
+        "lineIndentations": [
+          0,
+          0
+        ],
+        "style": {
+          "fontFamily": "Inter",
+          "fontPostScriptName": null,
+          "fontStyle": "Regular",
+          "fontWeight": 400,
+          "textAutoResize": "HEIGHT",
+          "fontSize": 20,
+          "textAlignHorizontal": "LEFT",
+          "textAlignVertical": "TOP",
+          "letterSpacing": 0,
+          "lineHeightPx": 24,
+          "lineHeightPercent": 99.15493774414062,
+          "lineHeightPercentFontSize": 120.00000762939453,
+          "lineHeightUnit": "FONT_SIZE_%"
+        },
+        "layoutVersion": 5,
+        "effects": [],
+        "interactions": [],
+        "complexStrokeProperties": {
+          "strokeType": "BASIC"
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "observations": {
+          "characters": "A😀 linked\nend",
+          "scalars": {
+            "fontName": {
+              "kind": "value",
+              "value": {
+                "family": "Inter",
+                "style": "Regular",
+                "variationSettings": {
+                  "slnt": 0,
+                  "wght": 400
+                }
+              }
+            },
+            "fontSize": {
+              "kind": "value",
+              "value": 20
+            },
+            "fontWeight": {
+              "kind": "value",
+              "value": 400
+            },
+            "fontStyle": {
+              "kind": "missing"
+            },
+            "lineHeight": {
+              "kind": "value",
+              "value": {
+                "unit": "PERCENT",
+                "value": 120.00000476837158
+              }
+            },
+            "letterSpacing": {
+              "kind": "value",
+              "value": {
+                "unit": "PIXELS",
+                "value": 0
+              }
+            },
+            "fills": {
+              "kind": "value",
+              "value": [
+                {
+                  "type": "SOLID",
+                  "visible": true,
+                  "opacity": 1,
+                  "blendMode": "NORMAL",
+                  "color": {
+                    "r": 0,
+                    "g": 0,
+                    "b": 0
+                  },
+                  "boundVariables": {}
+                }
+              ]
+            },
+            "textDecoration": {
+              "kind": "value",
+              "value": "NONE"
+            },
+            "textDecorationStyle": {
+              "kind": "value",
+              "value": null
+            },
+            "textDecorationOffset": {
+              "kind": "value",
+              "value": null
+            },
+            "textDecorationThickness": {
+              "kind": "value",
+              "value": null
+            },
+            "textDecorationColor": {
+              "kind": "value",
+              "value": null
+            },
+            "textDecorationSkipInk": {
+              "kind": "value",
+              "value": null
+            },
+            "hyperlink": {
+              "kind": "value",
+              "value": null
+            },
+            "textCase": {
+              "kind": "value",
+              "value": "ORIGINAL"
+            },
+            "openTypeFeatures": {
+              "kind": "value",
+              "value": {}
+            },
+            "textStyleId": {
+              "kind": "value",
+              "value": ""
+            },
+            "fillStyleId": {
+              "kind": "value",
+              "value": ""
+            },
+            "listOptions": {
+              "kind": "missing"
+            },
+            "listSpacing": {
+              "kind": "value",
+              "value": 0
+            },
+            "indentation": {
+              "kind": "missing"
+            },
+            "paragraphIndent": {
+              "kind": "value",
+              "value": 0
+            },
+            "paragraphSpacing": {
+              "kind": "value",
+              "value": 0
+            },
+            "textStyleOverrides": {
+              "kind": "missing"
+            },
+            "boundVariables": {
+              "kind": "value",
+              "value": {}
+            },
+            "textWrapStyle": {
+              "kind": "value",
+              "value": "AUTO"
+            },
+            "hasMissingFont": {
+              "kind": "value",
+              "value": false
+            },
+            "textTruncation": {
+              "kind": "value",
+              "value": "DISABLED"
+            },
+            "maxLines": {
+              "kind": "value",
+              "value": null
+            },
+            "leadingTrim": {
+              "kind": "value",
+              "value": "NONE"
+            },
+            "hangingPunctuation": {
+              "kind": "value",
+              "value": false
+            },
+            "hangingList": {
+              "kind": "value",
+              "value": false
+            },
+            "textAlignHorizontal": {
+              "kind": "value",
+              "value": "LEFT"
+            },
+            "textAlignVertical": {
+              "kind": "value",
+              "value": "TOP"
+            },
+            "textAutoResize": {
+              "kind": "value",
+              "value": "HEIGHT"
+            },
+            "layoutSizingHorizontal": {
+              "kind": "value",
+              "value": "FILL"
+            },
+            "layoutSizingVertical": {
+              "kind": "value",
+              "value": "HUG"
+            }
+          },
+          "segments": [
+            {
+              "start": 0,
+              "end": 14,
+              "characters": "A😀 linked\nend",
+              "values": {
+                "fontName": {
+                  "kind": "value",
+                  "value": {
+                    "family": "Inter",
+                    "style": "Regular",
+                    "variationSettings": {
+                      "slnt": 0,
+                      "wght": 400
+                    }
+                  }
+                },
+                "fontSize": {
+                  "kind": "value",
+                  "value": 20
+                },
+                "fontWeight": {
+                  "kind": "value",
+                  "value": 400
+                },
+                "fontStyle": {
+                  "kind": "value",
+                  "value": "REGULAR"
+                },
+                "lineHeight": {
+                  "kind": "value",
+                  "value": {
+                    "unit": "PERCENT",
+                    "value": 120.00000476837158
+                  }
+                },
+                "letterSpacing": {
+                  "kind": "value",
+                  "value": {
+                    "unit": "PIXELS",
+                    "value": 0
+                  }
+                },
+                "fills": {
+                  "kind": "value",
+                  "value": [
+                    {
+                      "type": "SOLID",
+                      "visible": true,
+                      "opacity": 1,
+                      "blendMode": "NORMAL",
+                      "color": {
+                        "r": 0,
+                        "g": 0,
+                        "b": 0
+                      },
+                      "boundVariables": {}
+                    }
+                  ]
+                },
+                "textDecoration": {
+                  "kind": "value",
+                  "value": "NONE"
+                },
+                "textDecorationStyle": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationOffset": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationThickness": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationColor": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationSkipInk": {
+                  "kind": "value",
+                  "value": null
+                },
+                "hyperlink": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textCase": {
+                  "kind": "value",
+                  "value": "ORIGINAL"
+                },
+                "openTypeFeatures": {
+                  "kind": "value",
+                  "value": {}
+                },
+                "textStyleId": {
+                  "kind": "value",
+                  "value": ""
+                },
+                "fillStyleId": {
+                  "kind": "value",
+                  "value": ""
+                },
+                "listOptions": {
+                  "kind": "value",
+                  "value": {
+                    "type": "NONE"
+                  }
+                },
+                "listSpacing": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "indentation": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "paragraphIndent": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "paragraphSpacing": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "textStyleOverrides": {
+                  "kind": "value",
+                  "value": []
+                },
+                "boundVariables": {
+                  "kind": "value",
+                  "value": {}
+                },
+                "textWrapStyle": {
+                  "kind": "value",
+                  "value": "AUTO"
+                }
+              }
+            }
+          ],
+          "rangeChecks": [
+            {
+              "start": 0,
+              "end": 14,
+              "values": {
+                "textDecoration": {
+                  "kind": "value",
+                  "value": "NONE"
+                },
+                "textDecorationStyle": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationOffset": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationThickness": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationColor": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationSkipInk": {
+                  "kind": "value",
+                  "value": null
+                },
+                "hyperlink": {
+                  "kind": "value",
+                  "value": 1
+                }
+              }
+            }
+          ]
+        },
+        "diagnostics": []
+      },
+      "fieldCatalog": [
+        "fontName",
+        "fontSize",
+        "fontWeight",
+        "fontStyle",
+        "lineHeight",
+        "letterSpacing",
+        "fills",
+        "textDecoration",
+        "textDecorationStyle",
+        "textDecorationOffset",
+        "textDecorationThickness",
+        "textDecorationColor",
+        "textDecorationSkipInk",
+        "hyperlink",
+        "textCase",
+        "openTypeFeatures",
+        "textStyleId",
+        "fillStyleId",
+        "listOptions",
+        "listSpacing",
+        "indentation",
+        "paragraphIndent",
+        "paragraphSpacing",
+        "textStyleOverrides",
+        "boundVariables",
+        "textWrapStyle"
+      ],
+      "scalarCatalog": [
+        "hasMissingFont",
+        "textTruncation",
+        "maxLines",
+        "leadingTrim",
+        "hangingPunctuation",
+        "hangingList",
+        "textAlignHorizontal",
+        "textAlignVertical",
+        "textAutoResize",
+        "layoutSizingHorizontal",
+        "layoutSizingVertical"
+      ],
+      "built": {
+        "status": "invalid",
+        "diagnostics": [
+          {
+            "code": "NATIVE_TEXT_RANGES_CAPTURE_RACE",
+            "message": "REST and live native style differ; source may have changed during capture"
+          }
+        ]
+      },
+      "canonical": {
+        "type": "text",
+        "text": "A😀 linked\nend",
+        "textSource": "A😀 linked\nend",
+        "textFlow": "wrap",
+        "fill": "#000000",
+        "fontFamily": "Inter",
+        "fontSize": 20,
+        "fontWeight": 400,
+        "fontStyle": "normal",
+        "lineHeight": 1.2,
+        "letterSpacing": 0,
+        "textAlign": "left",
+        "textDecoration": "none",
+        "layoutSizingHorizontal": "fill",
+        "layoutSizingVertical": "hug"
+      },
+      "css": {
+        "align-self": "stretch",
+        "color": "#000",
+        "font-family": "Inter",
+        "font-size": "20px",
+        "font-style": "normal",
+        "font-weight": "400",
+        "line-height": "120% /* 24px */"
+      },
+      "node": {
+        "id": "68:1679",
+        "type": "TEXT",
+        "characters": "A😀 linked\nend",
+        "width": 400,
+        "height": 48,
+        "layoutPositioning": "AUTO",
+        "layoutSizingHorizontal": "FILL",
+        "layoutSizingVertical": "HUG"
+      }
+    },
+    {
+      "name": "gapped-paint-link20",
+      "variant": {
+        "name": "gapped-paint-link20",
+        "fontSize": 20,
+        "line": 120,
+        "kind": "gap"
+      },
+      "operations": [
+        {
+          "name": "hyperlink",
+          "ok": true
+        },
+        {
+          "name": "fills",
+          "ok": true
+        },
+        {
+          "name": "decoration-none",
+          "ok": true
+        }
+      ],
+      "rest": {
+        "id": "68:1680",
+        "name": "gapped-paint-link20",
+        "type": "TEXT",
+        "scrollBehavior": "SCROLLS",
+        "blendMode": "PASS_THROUGH",
+        "fills": [
+          {
+            "blendMode": "NORMAL",
+            "type": "SOLID",
+            "color": {
+              "r": 0,
+              "g": 0,
+              "b": 0,
+              "a": 1
+            }
+          }
+        ],
+        "strokes": [],
+        "strokeWeight": 1,
+        "strokeAlign": "OUTSIDE",
+        "absoluteBoundingBox": {
+          "x": 20,
+          "y": 80,
+          "width": 400,
+          "height": 48
+        },
+        "absoluteRenderBounds": {
+          "x": 20.511363983154297,
+          "y": 80.4000015258789,
+          "width": 92.54438781738281,
+          "height": 42.8272705078125
+        },
+        "constraints": {
+          "vertical": "TOP",
+          "horizontal": "LEFT"
+        },
+        "layoutAlign": "STRETCH",
+        "layoutGrow": 0,
+        "layoutSizingHorizontal": "FILL",
+        "layoutSizingVertical": "HUG",
+        "characters": "A😀 linked\nend",
+        "characterStyleOverrides": [
+          0,
+          0,
+          0,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3
+        ],
+        "styleOverrideTable": {
+          "3": {
+            "hyperlink": {
+              "type": "URL",
+              "url": "https://example.com/"
+            },
+            "fills": [
+              {
+                "blendMode": "NORMAL",
+                "type": "SOLID",
+                "color": {
+                  "r": 0.11372549086809158,
+                  "g": 0.43921568989753723,
+                  "b": 0.7215686440467834,
+                  "a": 1
+                }
+              }
+            ]
+          }
+        },
+        "lineTypes": [
+          "NONE",
+          "NONE"
+        ],
+        "lineIndentations": [
+          0,
+          0
+        ],
+        "style": {
+          "fontFamily": "Inter",
+          "fontPostScriptName": null,
+          "fontStyle": "Regular",
+          "fontWeight": 400,
+          "textAutoResize": "HEIGHT",
+          "fontSize": 20,
+          "textAlignHorizontal": "LEFT",
+          "textAlignVertical": "TOP",
+          "letterSpacing": 0,
+          "lineHeightPx": 24,
+          "lineHeightPercent": 99.15493774414062,
+          "lineHeightPercentFontSize": 120.00000762939453,
+          "lineHeightUnit": "FONT_SIZE_%"
+        },
+        "layoutVersion": 5,
+        "effects": [],
+        "interactions": [],
+        "complexStrokeProperties": {
+          "strokeType": "BASIC"
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "observations": {
+          "characters": "A😀 linked\nend",
+          "scalars": {
+            "fontName": {
+              "kind": "value",
+              "value": {
+                "family": "Inter",
+                "style": "Regular",
+                "variationSettings": {
+                  "slnt": 0,
+                  "wght": 400
+                }
+              }
+            },
+            "fontSize": {
+              "kind": "value",
+              "value": 20
+            },
+            "fontWeight": {
+              "kind": "value",
+              "value": 400
+            },
+            "fontStyle": {
+              "kind": "missing"
+            },
+            "lineHeight": {
+              "kind": "value",
+              "value": {
+                "unit": "PERCENT",
+                "value": 120.00000476837158
+              }
+            },
+            "letterSpacing": {
+              "kind": "value",
+              "value": {
+                "unit": "PIXELS",
+                "value": 0
+              }
+            },
+            "fills": {
+              "kind": "mixed"
+            },
+            "textDecoration": {
+              "kind": "value",
+              "value": "NONE"
+            },
+            "textDecorationStyle": {
+              "kind": "value",
+              "value": null
+            },
+            "textDecorationOffset": {
+              "kind": "value",
+              "value": null
+            },
+            "textDecorationThickness": {
+              "kind": "value",
+              "value": null
+            },
+            "textDecorationColor": {
+              "kind": "value",
+              "value": null
+            },
+            "textDecorationSkipInk": {
+              "kind": "value",
+              "value": null
+            },
+            "hyperlink": {
+              "kind": "mixed"
+            },
+            "textCase": {
+              "kind": "value",
+              "value": "ORIGINAL"
+            },
+            "openTypeFeatures": {
+              "kind": "value",
+              "value": {}
+            },
+            "textStyleId": {
+              "kind": "value",
+              "value": ""
+            },
+            "fillStyleId": {
+              "kind": "value",
+              "value": ""
+            },
+            "listOptions": {
+              "kind": "missing"
+            },
+            "listSpacing": {
+              "kind": "value",
+              "value": 0
+            },
+            "indentation": {
+              "kind": "missing"
+            },
+            "paragraphIndent": {
+              "kind": "value",
+              "value": 0
+            },
+            "paragraphSpacing": {
+              "kind": "value",
+              "value": 0
+            },
+            "textStyleOverrides": {
+              "kind": "missing"
+            },
+            "boundVariables": {
+              "kind": "value",
+              "value": {}
+            },
+            "textWrapStyle": {
+              "kind": "value",
+              "value": "AUTO"
+            },
+            "hasMissingFont": {
+              "kind": "value",
+              "value": false
+            },
+            "textTruncation": {
+              "kind": "value",
+              "value": "DISABLED"
+            },
+            "maxLines": {
+              "kind": "value",
+              "value": null
+            },
+            "leadingTrim": {
+              "kind": "value",
+              "value": "NONE"
+            },
+            "hangingPunctuation": {
+              "kind": "value",
+              "value": false
+            },
+            "hangingList": {
+              "kind": "value",
+              "value": false
+            },
+            "textAlignHorizontal": {
+              "kind": "value",
+              "value": "LEFT"
+            },
+            "textAlignVertical": {
+              "kind": "value",
+              "value": "TOP"
+            },
+            "textAutoResize": {
+              "kind": "value",
+              "value": "HEIGHT"
+            },
+            "layoutSizingHorizontal": {
+              "kind": "value",
+              "value": "FILL"
+            },
+            "layoutSizingVertical": {
+              "kind": "value",
+              "value": "HUG"
+            }
+          },
+          "segments": [
+            {
+              "start": 0,
+              "end": 4,
+              "characters": "A😀 ",
+              "values": {
+                "fontName": {
+                  "kind": "value",
+                  "value": {
+                    "family": "Inter",
+                    "style": "Regular",
+                    "variationSettings": {
+                      "slnt": 0,
+                      "wght": 400
+                    }
+                  }
+                },
+                "fontSize": {
+                  "kind": "value",
+                  "value": 20
+                },
+                "fontWeight": {
+                  "kind": "value",
+                  "value": 400
+                },
+                "fontStyle": {
+                  "kind": "value",
+                  "value": "REGULAR"
+                },
+                "lineHeight": {
+                  "kind": "value",
+                  "value": {
+                    "unit": "PERCENT",
+                    "value": 120.00000476837158
+                  }
+                },
+                "letterSpacing": {
+                  "kind": "value",
+                  "value": {
+                    "unit": "PIXELS",
+                    "value": 0
+                  }
+                },
+                "fills": {
+                  "kind": "value",
+                  "value": [
+                    {
+                      "type": "SOLID",
+                      "visible": true,
+                      "opacity": 1,
+                      "blendMode": "NORMAL",
+                      "color": {
+                        "r": 0,
+                        "g": 0,
+                        "b": 0
+                      },
+                      "boundVariables": {}
+                    }
+                  ]
+                },
+                "textDecoration": {
+                  "kind": "value",
+                  "value": "NONE"
+                },
+                "textDecorationStyle": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationOffset": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationThickness": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationColor": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationSkipInk": {
+                  "kind": "value",
+                  "value": null
+                },
+                "hyperlink": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textCase": {
+                  "kind": "value",
+                  "value": "ORIGINAL"
+                },
+                "openTypeFeatures": {
+                  "kind": "value",
+                  "value": {}
+                },
+                "textStyleId": {
+                  "kind": "value",
+                  "value": ""
+                },
+                "fillStyleId": {
+                  "kind": "value",
+                  "value": ""
+                },
+                "listOptions": {
+                  "kind": "value",
+                  "value": {
+                    "type": "NONE"
+                  }
+                },
+                "listSpacing": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "indentation": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "paragraphIndent": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "paragraphSpacing": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "textStyleOverrides": {
+                  "kind": "value",
+                  "value": []
+                },
+                "boundVariables": {
+                  "kind": "value",
+                  "value": {}
+                },
+                "textWrapStyle": {
+                  "kind": "value",
+                  "value": "AUTO"
+                }
+              }
+            },
+            {
+              "start": 4,
+              "end": 11,
+              "characters": "linked\n",
+              "values": {
+                "fontName": {
+                  "kind": "value",
+                  "value": {
+                    "family": "Inter",
+                    "style": "Regular",
+                    "variationSettings": {
+                      "slnt": 0,
+                      "wght": 400
+                    }
+                  }
+                },
+                "fontSize": {
+                  "kind": "value",
+                  "value": 20
+                },
+                "fontWeight": {
+                  "kind": "value",
+                  "value": 400
+                },
+                "fontStyle": {
+                  "kind": "value",
+                  "value": "REGULAR"
+                },
+                "lineHeight": {
+                  "kind": "value",
+                  "value": {
+                    "unit": "PERCENT",
+                    "value": 120.00000476837158
+                  }
+                },
+                "letterSpacing": {
+                  "kind": "value",
+                  "value": {
+                    "unit": "PIXELS",
+                    "value": 0
+                  }
+                },
+                "fills": {
+                  "kind": "value",
+                  "value": [
+                    {
+                      "type": "SOLID",
+                      "visible": true,
+                      "opacity": 1,
+                      "blendMode": "NORMAL",
+                      "color": {
+                        "r": 0.11372549086809158,
+                        "g": 0.43921568989753723,
+                        "b": 0.7215686440467834
+                      },
+                      "boundVariables": {}
+                    }
+                  ]
+                },
+                "textDecoration": {
+                  "kind": "value",
+                  "value": "NONE"
+                },
+                "textDecorationStyle": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationOffset": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationThickness": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationColor": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationSkipInk": {
+                  "kind": "value",
+                  "value": null
+                },
+                "hyperlink": {
+                  "kind": "value",
+                  "value": {
+                    "type": "URL",
+                    "value": "https://example.com/"
+                  }
+                },
+                "textCase": {
+                  "kind": "value",
+                  "value": "ORIGINAL"
+                },
+                "openTypeFeatures": {
+                  "kind": "value",
+                  "value": {}
+                },
+                "textStyleId": {
+                  "kind": "value",
+                  "value": ""
+                },
+                "fillStyleId": {
+                  "kind": "value",
+                  "value": ""
+                },
+                "listOptions": {
+                  "kind": "value",
+                  "value": {
+                    "type": "NONE"
+                  }
+                },
+                "listSpacing": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "indentation": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "paragraphIndent": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "paragraphSpacing": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "textStyleOverrides": {
+                  "kind": "value",
+                  "value": []
+                },
+                "boundVariables": {
+                  "kind": "value",
+                  "value": {}
+                },
+                "textWrapStyle": {
+                  "kind": "value",
+                  "value": "AUTO"
+                }
+              }
+            },
+            {
+              "start": 11,
+              "end": 14,
+              "characters": "end",
+              "values": {
+                "fontName": {
+                  "kind": "value",
+                  "value": {
+                    "family": "Inter",
+                    "style": "Regular",
+                    "variationSettings": {
+                      "slnt": 0,
+                      "wght": 400
+                    }
+                  }
+                },
+                "fontSize": {
+                  "kind": "value",
+                  "value": 20
+                },
+                "fontWeight": {
+                  "kind": "value",
+                  "value": 400
+                },
+                "fontStyle": {
+                  "kind": "value",
+                  "value": "REGULAR"
+                },
+                "lineHeight": {
+                  "kind": "value",
+                  "value": {
+                    "unit": "PERCENT",
+                    "value": 120.00000476837158
+                  }
+                },
+                "letterSpacing": {
+                  "kind": "value",
+                  "value": {
+                    "unit": "PIXELS",
+                    "value": 0
+                  }
+                },
+                "fills": {
+                  "kind": "value",
+                  "value": [
+                    {
+                      "type": "SOLID",
+                      "visible": true,
+                      "opacity": 1,
+                      "blendMode": "NORMAL",
+                      "color": {
+                        "r": 0,
+                        "g": 0,
+                        "b": 0
+                      },
+                      "boundVariables": {}
+                    }
+                  ]
+                },
+                "textDecoration": {
+                  "kind": "value",
+                  "value": "NONE"
+                },
+                "textDecorationStyle": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationOffset": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationThickness": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationColor": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationSkipInk": {
+                  "kind": "value",
+                  "value": null
+                },
+                "hyperlink": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textCase": {
+                  "kind": "value",
+                  "value": "ORIGINAL"
+                },
+                "openTypeFeatures": {
+                  "kind": "value",
+                  "value": {}
+                },
+                "textStyleId": {
+                  "kind": "value",
+                  "value": ""
+                },
+                "fillStyleId": {
+                  "kind": "value",
+                  "value": ""
+                },
+                "listOptions": {
+                  "kind": "value",
+                  "value": {
+                    "type": "NONE"
+                  }
+                },
+                "listSpacing": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "indentation": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "paragraphIndent": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "paragraphSpacing": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "textStyleOverrides": {
+                  "kind": "value",
+                  "value": []
+                },
+                "boundVariables": {
+                  "kind": "value",
+                  "value": {}
+                },
+                "textWrapStyle": {
+                  "kind": "value",
+                  "value": "AUTO"
+                }
+              }
+            }
+          ],
+          "rangeChecks": [
+            {
+              "start": 0,
+              "end": 4,
+              "values": {
+                "textDecoration": {
+                  "kind": "value",
+                  "value": "NONE"
+                },
+                "textDecorationStyle": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationOffset": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationThickness": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationColor": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationSkipInk": {
+                  "kind": "value",
+                  "value": null
+                },
+                "hyperlink": {
+                  "kind": "value",
+                  "value": 1
+                }
+              }
+            },
+            {
+              "start": 4,
+              "end": 11,
+              "values": {
+                "textDecoration": {
+                  "kind": "value",
+                  "value": "NONE"
+                },
+                "textDecorationStyle": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationOffset": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationThickness": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationColor": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationSkipInk": {
+                  "kind": "value",
+                  "value": null
+                },
+                "hyperlink": {
+                  "kind": "value",
+                  "value": {
+                    "type": "URL",
+                    "value": "https://example.com/"
+                  }
+                }
+              }
+            },
+            {
+              "start": 11,
+              "end": 14,
+              "values": {
+                "textDecoration": {
+                  "kind": "value",
+                  "value": "NONE"
+                },
+                "textDecorationStyle": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationOffset": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationThickness": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationColor": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationSkipInk": {
+                  "kind": "value",
+                  "value": null
+                },
+                "hyperlink": {
+                  "kind": "value",
+                  "value": 1
+                }
+              }
+            }
+          ]
+        },
+        "diagnostics": []
+      },
+      "fieldCatalog": [
+        "fontName",
+        "fontSize",
+        "fontWeight",
+        "fontStyle",
+        "lineHeight",
+        "letterSpacing",
+        "fills",
+        "textDecoration",
+        "textDecorationStyle",
+        "textDecorationOffset",
+        "textDecorationThickness",
+        "textDecorationColor",
+        "textDecorationSkipInk",
+        "hyperlink",
+        "textCase",
+        "openTypeFeatures",
+        "textStyleId",
+        "fillStyleId",
+        "listOptions",
+        "listSpacing",
+        "indentation",
+        "paragraphIndent",
+        "paragraphSpacing",
+        "textStyleOverrides",
+        "boundVariables",
+        "textWrapStyle"
+      ],
+      "scalarCatalog": [
+        "hasMissingFont",
+        "textTruncation",
+        "maxLines",
+        "leadingTrim",
+        "hangingPunctuation",
+        "hangingList",
+        "textAlignHorizontal",
+        "textAlignVertical",
+        "textAutoResize",
+        "layoutSizingHorizontal",
+        "layoutSizingVertical"
+      ],
+      "built": {
+        "status": "invalid",
+        "diagnostics": [
+          {
+            "code": "NATIVE_TEXT_RANGES_CAPTURE_RACE",
+            "message": "REST and live native style differ; source may have changed during capture"
+          }
+        ]
+      },
+      "canonical": {
+        "type": "text",
+        "text": "A😀 linked\nend",
+        "textSource": "A😀 linked\nend",
+        "textFlow": "wrap",
+        "fill": "#000000",
+        "fontFamily": "Inter",
+        "fontSize": 20,
+        "fontWeight": 400,
+        "fontStyle": "normal",
+        "lineHeight": 1.2,
+        "letterSpacing": 0,
+        "textAlign": "left",
+        "textDecoration": "none",
+        "layoutSizingHorizontal": "fill",
+        "layoutSizingVertical": "hug"
+      },
+      "css": {
+        "align-self": "stretch",
+        "color": "#1D70B8",
+        "font-family": "Inter",
+        "font-size": "20px",
+        "font-style": "normal",
+        "font-weight": "400",
+        "line-height": "120%"
+      },
+      "node": {
+        "id": "68:1680",
+        "type": "TEXT",
+        "characters": "A😀 linked\nend",
+        "width": 400,
+        "height": 48,
+        "layoutPositioning": "AUTO",
+        "layoutSizingHorizontal": "FILL",
+        "layoutSizingVertical": "HUG"
+      }
+    },
+    {
+      "name": "full-range-blue20",
+      "variant": {
+        "name": "full-range-blue20",
+        "fontSize": 20,
+        "line": 120,
+        "kind": "full"
+      },
+      "operations": [
+        {
+          "name": "hyperlink",
+          "ok": true
+        },
+        {
+          "name": "fills",
+          "ok": true
+        },
+        {
+          "name": "decoration-none",
+          "ok": true
+        }
+      ],
+      "rest": {
+        "id": "68:1681",
+        "name": "full-range-blue20",
+        "type": "TEXT",
+        "scrollBehavior": "SCROLLS",
+        "blendMode": "PASS_THROUGH",
+        "fills": [
+          {
+            "blendMode": "NORMAL",
+            "type": "SOLID",
+            "color": {
+              "r": 0.11372549086809158,
+              "g": 0.43921568989753723,
+              "b": 0.7215686440467834,
+              "a": 1
+            }
+          }
+        ],
+        "strokes": [],
+        "strokeWeight": 1,
+        "strokeAlign": "OUTSIDE",
+        "absoluteBoundingBox": {
+          "x": 20,
+          "y": 140,
+          "width": 400,
+          "height": 48
+        },
+        "absoluteRenderBounds": {
+          "x": 20.511363983154297,
+          "y": 140.39999389648438,
+          "width": 92.54438781738281,
+          "height": 42.82728576660156
+        },
+        "constraints": {
+          "vertical": "TOP",
+          "horizontal": "LEFT"
+        },
+        "layoutAlign": "STRETCH",
+        "layoutGrow": 0,
+        "layoutSizingHorizontal": "FILL",
+        "layoutSizingVertical": "HUG",
+        "characters": "A😀 linked\nend",
+        "characterStyleOverrides": [],
+        "styleOverrideTable": {},
+        "lineTypes": [
+          "NONE",
+          "NONE"
+        ],
+        "lineIndentations": [
+          0,
+          0
+        ],
+        "style": {
+          "fontFamily": "Inter",
+          "fontPostScriptName": null,
+          "fontStyle": "Regular",
+          "fontWeight": 400,
+          "textAutoResize": "HEIGHT",
+          "fontSize": 20,
+          "textAlignHorizontal": "LEFT",
+          "textAlignVertical": "TOP",
+          "letterSpacing": 0,
+          "lineHeightPx": 24,
+          "lineHeightPercent": 99.15493774414062,
+          "lineHeightPercentFontSize": 120.00000762939453,
+          "lineHeightUnit": "FONT_SIZE_%"
+        },
+        "layoutVersion": 5,
+        "effects": [],
+        "interactions": [],
+        "complexStrokeProperties": {
+          "strokeType": "BASIC"
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "observations": {
+          "characters": "A😀 linked\nend",
+          "scalars": {
+            "fontName": {
+              "kind": "value",
+              "value": {
+                "family": "Inter",
+                "style": "Regular",
+                "variationSettings": {
+                  "slnt": 0,
+                  "wght": 400
+                }
+              }
+            },
+            "fontSize": {
+              "kind": "value",
+              "value": 20
+            },
+            "fontWeight": {
+              "kind": "value",
+              "value": 400
+            },
+            "fontStyle": {
+              "kind": "missing"
+            },
+            "lineHeight": {
+              "kind": "value",
+              "value": {
+                "unit": "PERCENT",
+                "value": 120.00000476837158
+              }
+            },
+            "letterSpacing": {
+              "kind": "value",
+              "value": {
+                "unit": "PIXELS",
+                "value": 0
+              }
+            },
+            "fills": {
+              "kind": "value",
+              "value": [
+                {
+                  "type": "SOLID",
+                  "visible": true,
+                  "opacity": 1,
+                  "blendMode": "NORMAL",
+                  "color": {
+                    "r": 0.11372549086809158,
+                    "g": 0.43921568989753723,
+                    "b": 0.7215686440467834
+                  },
+                  "boundVariables": {}
+                }
+              ]
+            },
+            "textDecoration": {
+              "kind": "value",
+              "value": "NONE"
+            },
+            "textDecorationStyle": {
+              "kind": "value",
+              "value": null
+            },
+            "textDecorationOffset": {
+              "kind": "value",
+              "value": null
+            },
+            "textDecorationThickness": {
+              "kind": "value",
+              "value": null
+            },
+            "textDecorationColor": {
+              "kind": "value",
+              "value": null
+            },
+            "textDecorationSkipInk": {
+              "kind": "value",
+              "value": null
+            },
+            "hyperlink": {
+              "kind": "value",
+              "value": null
+            },
+            "textCase": {
+              "kind": "value",
+              "value": "ORIGINAL"
+            },
+            "openTypeFeatures": {
+              "kind": "value",
+              "value": {}
+            },
+            "textStyleId": {
+              "kind": "value",
+              "value": ""
+            },
+            "fillStyleId": {
+              "kind": "value",
+              "value": ""
+            },
+            "listOptions": {
+              "kind": "missing"
+            },
+            "listSpacing": {
+              "kind": "value",
+              "value": 0
+            },
+            "indentation": {
+              "kind": "missing"
+            },
+            "paragraphIndent": {
+              "kind": "value",
+              "value": 0
+            },
+            "paragraphSpacing": {
+              "kind": "value",
+              "value": 0
+            },
+            "textStyleOverrides": {
+              "kind": "missing"
+            },
+            "boundVariables": {
+              "kind": "value",
+              "value": {}
+            },
+            "textWrapStyle": {
+              "kind": "value",
+              "value": "AUTO"
+            },
+            "hasMissingFont": {
+              "kind": "value",
+              "value": false
+            },
+            "textTruncation": {
+              "kind": "value",
+              "value": "DISABLED"
+            },
+            "maxLines": {
+              "kind": "value",
+              "value": null
+            },
+            "leadingTrim": {
+              "kind": "value",
+              "value": "NONE"
+            },
+            "hangingPunctuation": {
+              "kind": "value",
+              "value": false
+            },
+            "hangingList": {
+              "kind": "value",
+              "value": false
+            },
+            "textAlignHorizontal": {
+              "kind": "value",
+              "value": "LEFT"
+            },
+            "textAlignVertical": {
+              "kind": "value",
+              "value": "TOP"
+            },
+            "textAutoResize": {
+              "kind": "value",
+              "value": "HEIGHT"
+            },
+            "layoutSizingHorizontal": {
+              "kind": "value",
+              "value": "FILL"
+            },
+            "layoutSizingVertical": {
+              "kind": "value",
+              "value": "HUG"
+            }
+          },
+          "segments": [
+            {
+              "start": 0,
+              "end": 14,
+              "characters": "A😀 linked\nend",
+              "values": {
+                "fontName": {
+                  "kind": "value",
+                  "value": {
+                    "family": "Inter",
+                    "style": "Regular",
+                    "variationSettings": {
+                      "slnt": 0,
+                      "wght": 400
+                    }
+                  }
+                },
+                "fontSize": {
+                  "kind": "value",
+                  "value": 20
+                },
+                "fontWeight": {
+                  "kind": "value",
+                  "value": 400
+                },
+                "fontStyle": {
+                  "kind": "value",
+                  "value": "REGULAR"
+                },
+                "lineHeight": {
+                  "kind": "value",
+                  "value": {
+                    "unit": "PERCENT",
+                    "value": 120.00000476837158
+                  }
+                },
+                "letterSpacing": {
+                  "kind": "value",
+                  "value": {
+                    "unit": "PIXELS",
+                    "value": 0
+                  }
+                },
+                "fills": {
+                  "kind": "value",
+                  "value": [
+                    {
+                      "type": "SOLID",
+                      "visible": true,
+                      "opacity": 1,
+                      "blendMode": "NORMAL",
+                      "color": {
+                        "r": 0.11372549086809158,
+                        "g": 0.43921568989753723,
+                        "b": 0.7215686440467834
+                      },
+                      "boundVariables": {}
+                    }
+                  ]
+                },
+                "textDecoration": {
+                  "kind": "value",
+                  "value": "NONE"
+                },
+                "textDecorationStyle": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationOffset": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationThickness": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationColor": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationSkipInk": {
+                  "kind": "value",
+                  "value": null
+                },
+                "hyperlink": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textCase": {
+                  "kind": "value",
+                  "value": "ORIGINAL"
+                },
+                "openTypeFeatures": {
+                  "kind": "value",
+                  "value": {}
+                },
+                "textStyleId": {
+                  "kind": "value",
+                  "value": ""
+                },
+                "fillStyleId": {
+                  "kind": "value",
+                  "value": ""
+                },
+                "listOptions": {
+                  "kind": "value",
+                  "value": {
+                    "type": "NONE"
+                  }
+                },
+                "listSpacing": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "indentation": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "paragraphIndent": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "paragraphSpacing": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "textStyleOverrides": {
+                  "kind": "value",
+                  "value": []
+                },
+                "boundVariables": {
+                  "kind": "value",
+                  "value": {}
+                },
+                "textWrapStyle": {
+                  "kind": "value",
+                  "value": "AUTO"
+                }
+              }
+            }
+          ],
+          "rangeChecks": [
+            {
+              "start": 0,
+              "end": 14,
+              "values": {
+                "textDecoration": {
+                  "kind": "value",
+                  "value": "NONE"
+                },
+                "textDecorationStyle": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationOffset": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationThickness": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationColor": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationSkipInk": {
+                  "kind": "value",
+                  "value": null
+                },
+                "hyperlink": {
+                  "kind": "value",
+                  "value": 1
+                }
+              }
+            }
+          ]
+        },
+        "diagnostics": []
+      },
+      "fieldCatalog": [
+        "fontName",
+        "fontSize",
+        "fontWeight",
+        "fontStyle",
+        "lineHeight",
+        "letterSpacing",
+        "fills",
+        "textDecoration",
+        "textDecorationStyle",
+        "textDecorationOffset",
+        "textDecorationThickness",
+        "textDecorationColor",
+        "textDecorationSkipInk",
+        "hyperlink",
+        "textCase",
+        "openTypeFeatures",
+        "textStyleId",
+        "fillStyleId",
+        "listOptions",
+        "listSpacing",
+        "indentation",
+        "paragraphIndent",
+        "paragraphSpacing",
+        "textStyleOverrides",
+        "boundVariables",
+        "textWrapStyle"
+      ],
+      "scalarCatalog": [
+        "hasMissingFont",
+        "textTruncation",
+        "maxLines",
+        "leadingTrim",
+        "hangingPunctuation",
+        "hangingList",
+        "textAlignHorizontal",
+        "textAlignVertical",
+        "textAutoResize",
+        "layoutSizingHorizontal",
+        "layoutSizingVertical"
+      ],
+      "built": {
+        "status": "invalid",
+        "diagnostics": [
+          {
+            "code": "NATIVE_TEXT_RANGES_CAPTURE_RACE",
+            "message": "REST and live native style differ; source may have changed during capture"
+          }
+        ]
+      },
+      "canonical": {
+        "type": "text",
+        "text": "A😀 linked\nend",
+        "textSource": "A😀 linked\nend",
+        "textFlow": "wrap",
+        "fill": "#000000",
+        "fontFamily": "Inter",
+        "fontSize": 20,
+        "fontWeight": 400,
+        "fontStyle": "normal",
+        "lineHeight": 1.2,
+        "letterSpacing": 0,
+        "textAlign": "left",
+        "textDecoration": "none",
+        "layoutSizingHorizontal": "fill",
+        "layoutSizingVertical": "hug"
+      },
+      "css": {
+        "align-self": "stretch",
+        "color": "#1D70B8",
+        "font-family": "Inter",
+        "font-size": "20px",
+        "font-style": "normal",
+        "font-weight": "400",
+        "line-height": "120% /* 24px */"
+      },
+      "node": {
+        "id": "68:1681",
+        "type": "TEXT",
+        "characters": "A😀 linked\nend",
+        "width": 400,
+        "height": 48,
+        "layoutPositioning": "AUTO",
+        "layoutSizingHorizontal": "FILL",
+        "layoutSizingVertical": "HUG"
+      }
+    },
+    {
+      "name": "gapped-fractional19",
+      "variant": {
+        "name": "gapped-fractional19",
+        "fontSize": 19,
+        "line": 131.58,
+        "kind": "gap"
+      },
+      "operations": [
+        {
+          "name": "hyperlink",
+          "ok": true
+        },
+        {
+          "name": "fills",
+          "ok": true
+        },
+        {
+          "name": "decoration-none",
+          "ok": true
+        }
+      ],
+      "rest": {
+        "id": "68:1682",
+        "name": "gapped-fractional19",
+        "type": "TEXT",
+        "scrollBehavior": "SCROLLS",
+        "blendMode": "PASS_THROUGH",
+        "fills": [
+          {
+            "blendMode": "NORMAL",
+            "type": "SOLID",
+            "color": {
+              "r": 0,
+              "g": 0,
+              "b": 0,
+              "a": 1
+            }
+          }
+        ],
+        "strokes": [],
+        "strokeWeight": 1,
+        "strokeAlign": "OUTSIDE",
+        "absoluteBoundingBox": {
+          "x": 20,
+          "y": 200,
+          "width": 400,
+          "height": 50
+        },
+        "absoluteRenderBounds": {
+          "x": 20.485795974731445,
+          "y": 201.3300018310547,
+          "width": 87.91717529296875,
+          "height": 42.88591003417969
+        },
+        "constraints": {
+          "vertical": "TOP",
+          "horizontal": "LEFT"
+        },
+        "layoutAlign": "STRETCH",
+        "layoutGrow": 0,
+        "layoutSizingHorizontal": "FILL",
+        "layoutSizingVertical": "HUG",
+        "characters": "A😀 linked\nend",
+        "characterStyleOverrides": [
+          0,
+          0,
+          0,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3
+        ],
+        "styleOverrideTable": {
+          "3": {
+            "hyperlink": {
+              "type": "URL",
+              "url": "https://example.com/"
+            },
+            "fills": [
+              {
+                "blendMode": "NORMAL",
+                "type": "SOLID",
+                "color": {
+                  "r": 0.11372549086809158,
+                  "g": 0.43921568989753723,
+                  "b": 0.7215686440467834,
+                  "a": 1
+                }
+              }
+            ]
+          }
+        },
+        "lineTypes": [
+          "NONE",
+          "NONE"
+        ],
+        "lineIndentations": [
+          0,
+          0
+        ],
+        "style": {
+          "fontFamily": "Inter",
+          "fontPostScriptName": null,
+          "fontStyle": "Regular",
+          "fontWeight": 400,
+          "textAutoResize": "HEIGHT",
+          "fontSize": 19,
+          "textAlignHorizontal": "LEFT",
+          "textAlignVertical": "TOP",
+          "letterSpacing": 0,
+          "lineHeightPx": 25.000198364257812,
+          "lineHeightPercent": 108.72338104248047,
+          "lineHeightPercentFontSize": 131.5800018310547,
+          "lineHeightUnit": "FONT_SIZE_%"
+        },
+        "layoutVersion": 5,
+        "effects": [],
+        "interactions": [],
+        "complexStrokeProperties": {
+          "strokeType": "BASIC"
+        }
+      },
+      "capture": {
+        "status": "captured",
+        "observations": {
+          "characters": "A😀 linked\nend",
+          "scalars": {
+            "fontName": {
+              "kind": "value",
+              "value": {
+                "family": "Inter",
+                "style": "Regular",
+                "variationSettings": {
+                  "slnt": 0,
+                  "wght": 400
+                }
+              }
+            },
+            "fontSize": {
+              "kind": "value",
+              "value": 19
+            },
+            "fontWeight": {
+              "kind": "value",
+              "value": 400
+            },
+            "fontStyle": {
+              "kind": "missing"
+            },
+            "lineHeight": {
+              "kind": "value",
+              "value": {
+                "unit": "PERCENT",
+                "value": 131.57999515533447
+              }
+            },
+            "letterSpacing": {
+              "kind": "value",
+              "value": {
+                "unit": "PIXELS",
+                "value": 0
+              }
+            },
+            "fills": {
+              "kind": "mixed"
+            },
+            "textDecoration": {
+              "kind": "value",
+              "value": "NONE"
+            },
+            "textDecorationStyle": {
+              "kind": "value",
+              "value": null
+            },
+            "textDecorationOffset": {
+              "kind": "value",
+              "value": null
+            },
+            "textDecorationThickness": {
+              "kind": "value",
+              "value": null
+            },
+            "textDecorationColor": {
+              "kind": "value",
+              "value": null
+            },
+            "textDecorationSkipInk": {
+              "kind": "value",
+              "value": null
+            },
+            "hyperlink": {
+              "kind": "mixed"
+            },
+            "textCase": {
+              "kind": "value",
+              "value": "ORIGINAL"
+            },
+            "openTypeFeatures": {
+              "kind": "value",
+              "value": {}
+            },
+            "textStyleId": {
+              "kind": "value",
+              "value": ""
+            },
+            "fillStyleId": {
+              "kind": "value",
+              "value": ""
+            },
+            "listOptions": {
+              "kind": "missing"
+            },
+            "listSpacing": {
+              "kind": "value",
+              "value": 0
+            },
+            "indentation": {
+              "kind": "missing"
+            },
+            "paragraphIndent": {
+              "kind": "value",
+              "value": 0
+            },
+            "paragraphSpacing": {
+              "kind": "value",
+              "value": 0
+            },
+            "textStyleOverrides": {
+              "kind": "missing"
+            },
+            "boundVariables": {
+              "kind": "value",
+              "value": {}
+            },
+            "textWrapStyle": {
+              "kind": "value",
+              "value": "AUTO"
+            },
+            "hasMissingFont": {
+              "kind": "value",
+              "value": false
+            },
+            "textTruncation": {
+              "kind": "value",
+              "value": "DISABLED"
+            },
+            "maxLines": {
+              "kind": "value",
+              "value": null
+            },
+            "leadingTrim": {
+              "kind": "value",
+              "value": "NONE"
+            },
+            "hangingPunctuation": {
+              "kind": "value",
+              "value": false
+            },
+            "hangingList": {
+              "kind": "value",
+              "value": false
+            },
+            "textAlignHorizontal": {
+              "kind": "value",
+              "value": "LEFT"
+            },
+            "textAlignVertical": {
+              "kind": "value",
+              "value": "TOP"
+            },
+            "textAutoResize": {
+              "kind": "value",
+              "value": "HEIGHT"
+            },
+            "layoutSizingHorizontal": {
+              "kind": "value",
+              "value": "FILL"
+            },
+            "layoutSizingVertical": {
+              "kind": "value",
+              "value": "HUG"
+            }
+          },
+          "segments": [
+            {
+              "start": 0,
+              "end": 4,
+              "characters": "A😀 ",
+              "values": {
+                "fontName": {
+                  "kind": "value",
+                  "value": {
+                    "family": "Inter",
+                    "style": "Regular",
+                    "variationSettings": {
+                      "slnt": 0,
+                      "wght": 400
+                    }
+                  }
+                },
+                "fontSize": {
+                  "kind": "value",
+                  "value": 19
+                },
+                "fontWeight": {
+                  "kind": "value",
+                  "value": 400
+                },
+                "fontStyle": {
+                  "kind": "value",
+                  "value": "REGULAR"
+                },
+                "lineHeight": {
+                  "kind": "value",
+                  "value": {
+                    "unit": "PERCENT",
+                    "value": 131.57999515533447
+                  }
+                },
+                "letterSpacing": {
+                  "kind": "value",
+                  "value": {
+                    "unit": "PIXELS",
+                    "value": 0
+                  }
+                },
+                "fills": {
+                  "kind": "value",
+                  "value": [
+                    {
+                      "type": "SOLID",
+                      "visible": true,
+                      "opacity": 1,
+                      "blendMode": "NORMAL",
+                      "color": {
+                        "r": 0,
+                        "g": 0,
+                        "b": 0
+                      },
+                      "boundVariables": {}
+                    }
+                  ]
+                },
+                "textDecoration": {
+                  "kind": "value",
+                  "value": "NONE"
+                },
+                "textDecorationStyle": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationOffset": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationThickness": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationColor": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationSkipInk": {
+                  "kind": "value",
+                  "value": null
+                },
+                "hyperlink": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textCase": {
+                  "kind": "value",
+                  "value": "ORIGINAL"
+                },
+                "openTypeFeatures": {
+                  "kind": "value",
+                  "value": {}
+                },
+                "textStyleId": {
+                  "kind": "value",
+                  "value": ""
+                },
+                "fillStyleId": {
+                  "kind": "value",
+                  "value": ""
+                },
+                "listOptions": {
+                  "kind": "value",
+                  "value": {
+                    "type": "NONE"
+                  }
+                },
+                "listSpacing": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "indentation": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "paragraphIndent": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "paragraphSpacing": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "textStyleOverrides": {
+                  "kind": "value",
+                  "value": []
+                },
+                "boundVariables": {
+                  "kind": "value",
+                  "value": {}
+                },
+                "textWrapStyle": {
+                  "kind": "value",
+                  "value": "AUTO"
+                }
+              }
+            },
+            {
+              "start": 4,
+              "end": 11,
+              "characters": "linked\n",
+              "values": {
+                "fontName": {
+                  "kind": "value",
+                  "value": {
+                    "family": "Inter",
+                    "style": "Regular",
+                    "variationSettings": {
+                      "slnt": 0,
+                      "wght": 400
+                    }
+                  }
+                },
+                "fontSize": {
+                  "kind": "value",
+                  "value": 19
+                },
+                "fontWeight": {
+                  "kind": "value",
+                  "value": 400
+                },
+                "fontStyle": {
+                  "kind": "value",
+                  "value": "REGULAR"
+                },
+                "lineHeight": {
+                  "kind": "value",
+                  "value": {
+                    "unit": "PERCENT",
+                    "value": 131.57999515533447
+                  }
+                },
+                "letterSpacing": {
+                  "kind": "value",
+                  "value": {
+                    "unit": "PIXELS",
+                    "value": 0
+                  }
+                },
+                "fills": {
+                  "kind": "value",
+                  "value": [
+                    {
+                      "type": "SOLID",
+                      "visible": true,
+                      "opacity": 1,
+                      "blendMode": "NORMAL",
+                      "color": {
+                        "r": 0.11372549086809158,
+                        "g": 0.43921568989753723,
+                        "b": 0.7215686440467834
+                      },
+                      "boundVariables": {}
+                    }
+                  ]
+                },
+                "textDecoration": {
+                  "kind": "value",
+                  "value": "NONE"
+                },
+                "textDecorationStyle": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationOffset": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationThickness": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationColor": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationSkipInk": {
+                  "kind": "value",
+                  "value": null
+                },
+                "hyperlink": {
+                  "kind": "value",
+                  "value": {
+                    "type": "URL",
+                    "value": "https://example.com/"
+                  }
+                },
+                "textCase": {
+                  "kind": "value",
+                  "value": "ORIGINAL"
+                },
+                "openTypeFeatures": {
+                  "kind": "value",
+                  "value": {}
+                },
+                "textStyleId": {
+                  "kind": "value",
+                  "value": ""
+                },
+                "fillStyleId": {
+                  "kind": "value",
+                  "value": ""
+                },
+                "listOptions": {
+                  "kind": "value",
+                  "value": {
+                    "type": "NONE"
+                  }
+                },
+                "listSpacing": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "indentation": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "paragraphIndent": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "paragraphSpacing": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "textStyleOverrides": {
+                  "kind": "value",
+                  "value": []
+                },
+                "boundVariables": {
+                  "kind": "value",
+                  "value": {}
+                },
+                "textWrapStyle": {
+                  "kind": "value",
+                  "value": "AUTO"
+                }
+              }
+            },
+            {
+              "start": 11,
+              "end": 14,
+              "characters": "end",
+              "values": {
+                "fontName": {
+                  "kind": "value",
+                  "value": {
+                    "family": "Inter",
+                    "style": "Regular",
+                    "variationSettings": {
+                      "slnt": 0,
+                      "wght": 400
+                    }
+                  }
+                },
+                "fontSize": {
+                  "kind": "value",
+                  "value": 19
+                },
+                "fontWeight": {
+                  "kind": "value",
+                  "value": 400
+                },
+                "fontStyle": {
+                  "kind": "value",
+                  "value": "REGULAR"
+                },
+                "lineHeight": {
+                  "kind": "value",
+                  "value": {
+                    "unit": "PERCENT",
+                    "value": 131.57999515533447
+                  }
+                },
+                "letterSpacing": {
+                  "kind": "value",
+                  "value": {
+                    "unit": "PIXELS",
+                    "value": 0
+                  }
+                },
+                "fills": {
+                  "kind": "value",
+                  "value": [
+                    {
+                      "type": "SOLID",
+                      "visible": true,
+                      "opacity": 1,
+                      "blendMode": "NORMAL",
+                      "color": {
+                        "r": 0,
+                        "g": 0,
+                        "b": 0
+                      },
+                      "boundVariables": {}
+                    }
+                  ]
+                },
+                "textDecoration": {
+                  "kind": "value",
+                  "value": "NONE"
+                },
+                "textDecorationStyle": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationOffset": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationThickness": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationColor": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationSkipInk": {
+                  "kind": "value",
+                  "value": null
+                },
+                "hyperlink": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textCase": {
+                  "kind": "value",
+                  "value": "ORIGINAL"
+                },
+                "openTypeFeatures": {
+                  "kind": "value",
+                  "value": {}
+                },
+                "textStyleId": {
+                  "kind": "value",
+                  "value": ""
+                },
+                "fillStyleId": {
+                  "kind": "value",
+                  "value": ""
+                },
+                "listOptions": {
+                  "kind": "value",
+                  "value": {
+                    "type": "NONE"
+                  }
+                },
+                "listSpacing": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "indentation": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "paragraphIndent": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "paragraphSpacing": {
+                  "kind": "value",
+                  "value": 0
+                },
+                "textStyleOverrides": {
+                  "kind": "value",
+                  "value": []
+                },
+                "boundVariables": {
+                  "kind": "value",
+                  "value": {}
+                },
+                "textWrapStyle": {
+                  "kind": "value",
+                  "value": "AUTO"
+                }
+              }
+            }
+          ],
+          "rangeChecks": [
+            {
+              "start": 0,
+              "end": 4,
+              "values": {
+                "textDecoration": {
+                  "kind": "value",
+                  "value": "NONE"
+                },
+                "textDecorationStyle": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationOffset": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationThickness": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationColor": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationSkipInk": {
+                  "kind": "value",
+                  "value": null
+                },
+                "hyperlink": {
+                  "kind": "value",
+                  "value": 1
+                }
+              }
+            },
+            {
+              "start": 4,
+              "end": 11,
+              "values": {
+                "textDecoration": {
+                  "kind": "value",
+                  "value": "NONE"
+                },
+                "textDecorationStyle": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationOffset": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationThickness": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationColor": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationSkipInk": {
+                  "kind": "value",
+                  "value": null
+                },
+                "hyperlink": {
+                  "kind": "value",
+                  "value": {
+                    "type": "URL",
+                    "value": "https://example.com/"
+                  }
+                }
+              }
+            },
+            {
+              "start": 11,
+              "end": 14,
+              "values": {
+                "textDecoration": {
+                  "kind": "value",
+                  "value": "NONE"
+                },
+                "textDecorationStyle": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationOffset": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationThickness": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationColor": {
+                  "kind": "value",
+                  "value": null
+                },
+                "textDecorationSkipInk": {
+                  "kind": "value",
+                  "value": null
+                },
+                "hyperlink": {
+                  "kind": "value",
+                  "value": 1
+                }
+              }
+            }
+          ]
+        },
+        "diagnostics": []
+      },
+      "fieldCatalog": [
+        "fontName",
+        "fontSize",
+        "fontWeight",
+        "fontStyle",
+        "lineHeight",
+        "letterSpacing",
+        "fills",
+        "textDecoration",
+        "textDecorationStyle",
+        "textDecorationOffset",
+        "textDecorationThickness",
+        "textDecorationColor",
+        "textDecorationSkipInk",
+        "hyperlink",
+        "textCase",
+        "openTypeFeatures",
+        "textStyleId",
+        "fillStyleId",
+        "listOptions",
+        "listSpacing",
+        "indentation",
+        "paragraphIndent",
+        "paragraphSpacing",
+        "textStyleOverrides",
+        "boundVariables",
+        "textWrapStyle"
+      ],
+      "scalarCatalog": [
+        "hasMissingFont",
+        "textTruncation",
+        "maxLines",
+        "leadingTrim",
+        "hangingPunctuation",
+        "hangingList",
+        "textAlignHorizontal",
+        "textAlignVertical",
+        "textAutoResize",
+        "layoutSizingHorizontal",
+        "layoutSizingVertical"
+      ],
+      "built": {
+        "status": "invalid",
+        "diagnostics": [
+          {
+            "code": "NATIVE_TEXT_RANGES_CAPTURE_RACE",
+            "message": "REST and live native style differ; source may have changed during capture"
+          }
+        ]
+      },
+      "canonical": {
+        "type": "text",
+        "text": "A😀 linked\nend",
+        "textSource": "A😀 linked\nend",
+        "textFlow": "wrap",
+        "fill": "#000000",
+        "fontFamily": "Inter",
+        "fontSize": 19,
+        "fontWeight": 400,
+        "fontStyle": "normal",
+        "lineHeight": 1.3158,
+        "letterSpacing": 0,
+        "textAlign": "left",
+        "textDecoration": "none",
+        "layoutSizingHorizontal": "fill",
+        "layoutSizingVertical": "hug"
+      },
+      "css": {
+        "align-self": "stretch",
+        "color": "#1D70B8",
+        "font-family": "Inter",
+        "font-size": "19px",
+        "font-style": "normal",
+        "font-weight": "400",
+        "line-height": "131.58%"
+      },
+      "node": {
+        "id": "68:1682",
+        "type": "TEXT",
+        "characters": "A😀 linked\nend",
+        "width": 400,
+        "height": 50,
+        "layoutPositioning": "AUTO",
+        "layoutSizingHorizontal": "FILL",
+        "layoutSizingVertical": "HUG"
+      }
+    }
+  ]
+}
