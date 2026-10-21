@@ -1266,3 +1266,78 @@ test("missing local CSS or image data and undecodable inline images fail before 
   assert.deepEqual(f.external, []);
   assert.deepEqual(f.errors, []);
 });
+
+test("plain-text recovery preserves definite flex basis on both main axes while ordinary labels still hug", async (t) => {
+  const f = await fixture(t);
+  const html = `<style>*{box-sizing:border-box}body{margin:0;font:16px/24px Arial}#root{display:flex;flex-direction:column;width:320px;gap:8px}#row{display:flex;gap:8px}#basis-x{flex:0 0 200px;min-width:0;padding:10px;background:#eeeeee}#auto{padding:10px}#column{display:flex;flex-direction:column;height:120px}#basis-y{flex:0 0 80px;min-height:0;padding:10px;background:#dddddd}</style><main id="root"><section id="row"><div id="basis-x">Short text</div><div id="auto">Save</div></section><section id="column"><div id="basis-y">Fixed main height</div></section></main>`;
+  const captured = await f.capture(html, { rootSelector: "#root", width: 480, height: 360 });
+  const design = normalizeDesignDocument(captured.document);
+  const horizontal = byHtmlId(design, "basis-x", "frame");
+  const vertical = byHtmlId(design, "basis-y", "frame");
+  assert.equal(horizontal.layoutSizingHorizontal, "fixed");
+  assert.equal(vertical.layoutSizingVertical, "fixed");
+  assert.equal(byHtmlId(design, "auto", "frame").layoutSizingHorizontal, "hug");
+  applyAllAutoLayouts(design.nodes);
+  assert.equal(horizontal.width, 200);
+  assert.equal(vertical.height, 80);
+  const reopened = normalizeDesignDocument(JSON.parse(serializeDesignDocument(design)));
+  applyAllAutoLayouts(reopened.nodes);
+  assert.equal(byHtmlId(reopened, "basis-x", "frame").width, 200);
+  assert.equal(byHtmlId(reopened, "basis-y", "frame").height, 80);
+  const browserGeometry = await f.page.evaluate(async (input) => {
+    const { normalizeDesignDocument, serializeDesignDocument } = await import("/app/document.mjs");
+    const { createBrowserRenderer } = await import("/app/canvas/browser-renderer.mjs");
+    const value = normalizeDesignDocument(input), before = serializeDesignDocument(value);
+    document.body.replaceChildren(); document.body.style.margin = "0";
+    const container = document.createElement("div"); document.body.append(container);
+    const renderer = createBrowserRenderer({ container });
+    try {
+      await renderer.setScene(value); renderer.resize(480, 360); renderer.render({ pan: { x: 0, y: 0 }, zoom: 1 });
+      const geometry = [...renderer.geometry()].map(([id, box]) => ({ id, width: box.width, height: box.height }));
+      return { geometry, unchanged: before === serializeDesignDocument(value) };
+    } finally { renderer.dispose(); }
+  }, JSON.parse(serializeDesignDocument(reopened)));
+  assert.equal(browserGeometry.geometry.find((box) => box.id === horizontal.id).width, 200);
+  assert.equal(browserGeometry.geometry.find((box) => box.id === vertical.id).height, 80);
+  assert.equal(browserGeometry.unchanged, true);
+  assert(design.nodes.every((node) => node.layoutPositioning !== "absolute"));
+  assert.equal(captured.remainingFrames, 0);
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});
+
+test("percentage flex basis in an indefinite column retains content-driven text recovery", async (t) => {
+  const f = await fixture(t);
+  const html = `<!doctype html><style>*{box-sizing:border-box}body{margin:0;font:16px/24px Arial}#root{display:flex;flex-direction:column;width:320px;gap:8px}#basis{flex:0 0 50%;padding:10px;background:#dddddd}</style><main id="root"><div id="basis">Short text</div><div id="after">After</div></main>`;
+  const captured = await f.capture(html, { rootSelector: "#root", width: 480, height: 360 });
+  const design = normalizeDesignDocument(captured.document);
+  const box = byHtmlId(design, "basis", "frame");
+  assert.equal(box.layoutSizingVertical, "hug");
+  await f.page.setContent(html);
+  const result = await f.page.evaluate(async ({ input, id }) => {
+    const { normalizeDesignDocument } = await import("/app/document.mjs");
+    const { createBrowserRenderer } = await import("/app/canvas/browser-renderer.mjs");
+    const longText = Array(12).fill("Long content wraps into several lines.").join(" ");
+    const element = document.querySelector("#basis");
+    const sourceShort = element.getBoundingClientRect().height;
+    element.textContent = longText;
+    const sourceLong = element.getBoundingClientRect().height;
+    document.body.replaceChildren();
+    const container = document.createElement("div"); document.body.append(container);
+    const renderer = createBrowserRenderer({ container }), value = normalizeDesignDocument(input);
+    try {
+      await renderer.setScene(value); renderer.resize(480, 360); renderer.render({ pan: { x: 0, y: 0 }, zoom: 1 });
+      const browserShort = renderer.geometry().get(id).height;
+      const text = value.nodes.find((node) => node.parentId === id && node.type === "text");
+      text.text = text.textSource = longText;
+      await renderer.setScene(value);
+      return { sourceShort, sourceLong, browserShort, browserLong: renderer.geometry().get(id).height };
+    } finally { renderer.dispose(); }
+  }, { input: JSON.parse(serializeDesignDocument(design)), id: box.id });
+  assert.equal(result.browserShort, result.sourceShort);
+  assert.equal(result.browserLong, result.sourceLong);
+  assert(result.browserLong > result.browserShort);
+  assert(design.nodes.every((node) => node.layoutPositioning !== "absolute"));
+  assert.deepEqual(f.external, []);
+  assert.deepEqual(f.errors, []);
+});

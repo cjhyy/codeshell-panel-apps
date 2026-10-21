@@ -435,16 +435,28 @@ async function enableHtmlTextReflow(documentValue, browserDocument, elements, wa
           lineHeight / text.fontSize <= 3
         ) {
           let cssWidth = "",
-            cssHeight = "";
+            cssHeight = "",
+            pixelFlexBasis = false;
           try {
             cssWidth = element.computedStyleMap?.().get("width")?.toString() ?? "";
             cssHeight = element.computedStyleMap?.().get("height")?.toString() ?? "";
+            const basis = element.computedStyleMap?.().get("flex-basis");
+            pixelFlexBasis = basis?.unit === "px" && Number.isFinite(basis.value) && basis.value >= 0;
           } catch {
             // Engines without Typed OM keep the captured box sizing.
           }
-          if (node.layoutSizingVertical !== "fill" && cssHeight === "auto")
+          const parentStyle = element.parentElement && browserDocument.defaultView.getComputedStyle(element.parentElement);
+          const definiteFlexBasis = pixelFlexBasis &&
+            ["flex", "inline-flex"].includes(parentStyle?.display);
+          const basisAxis = definiteFlexBasis
+            ? parentStyle.flexDirection.startsWith("column") ? "vertical" : "horizontal"
+            : null;
+          // Text recovery may change the cross axis to Hug. Its main-axis size
+          // was already resolved from the real flex basis by the adapter.
+          if (basisAxis !== "vertical" && node.layoutSizingVertical !== "fill" && cssHeight === "auto")
             node.layoutSizingVertical = "hug";
           if (
+            basisAxis !== "horizontal" &&
             node.layoutSizingHorizontal !== "fill" &&
             ["auto", "min-content", "max-content", "fit-content"].includes(cssWidth) &&
             (parent?.layout === "horizontal" || ["inline", "inline-block"].includes(style.display))
