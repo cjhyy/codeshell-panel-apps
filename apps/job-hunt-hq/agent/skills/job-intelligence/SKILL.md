@@ -98,3 +98,20 @@ and freshness metadata, and finish the Trace through the workflow Skill. Report
 the number of formal JDs added or updated, the separate number of leads still
 awaiting completion, which sources were limited, and what would justify deeper
 research next.
+
+## Direct Chat without an open Panel (5.1)
+
+Use the selected package's `project-runtime` Skill and public
+`app/tools/job-hunt.mjs`; the internal `job-hunt-cli.mjs` is not the conversational
+entry. Read actual official/ATS/browser content first, preserve its URL, exact JD,
+`fetched_at` and hiring evidence. HTTP 200 does not establish an active vacancy.
+Default to `unverified`; only submit a `verified_live` receipt when the original
+hiring sentence, checked URL/time, official/ATS source kind and reading method are
+available. This is Agent evidence, not independent CLI verification.
+Save `save_job_opportunities`, use the returned formal job IDs, then
+`save_job_research` with actual accessed source URLs/times, and finally
+`get_job_research_digest` through `run --input-file`. Company research and
+applications are independent. The CLI only handles structured reads/writes and
+reports; no `verify`, generic fetcher or ATS discovery command exists.
+Only current confirmed personal career episodes/QA can support candidate claims;
+repository introductions, drafts and old match estimates are not confirmed facts.

@@ -43,6 +43,8 @@ export const suites = [
         "tests/apps/job-hunt-hq/browser-draft-storage.test.mjs",
         "tests/apps/job-hunt-hq/host-capabilities.test.mjs",
         "tests/apps/job-hunt-hq/headless-ops.test.mjs",
+        "tests/apps/job-hunt-hq/job-research-ops.test.mjs",
+        "tests/observation-runner.test.mjs",
         "tests/apps/job-hunt-hq/headless-parity.test.mjs",
         "tests/apps/job-hunt-hq/discovery-automation.test.mjs",
         "tests/apps/job-hunt-hq/draft-backup.test.mjs",

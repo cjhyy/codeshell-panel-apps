@@ -1,3 +1,5 @@
+import { normalizeJobVerification, normalizeIncomingOpportunity as normalizeSharedOpportunity } from "./ops/jobs.mjs";
+import { buildJobResearchDigest, jobEvidenceComparison, jobEvidenceMarkdown } from "./job-research-digest.mjs";
 import { supportsHostMethod, resumeFileAction } from "./host-capabilities.mjs";
 import { previewCareerLibrary, preserveOriginalCareerRecords } from "./career-service.mjs";
 import { commitNativeProjectSnapshot, supportsNativeProjectCommit } from "./native-project-commit.mjs";
@@ -4302,6 +4304,9 @@ function todayNextAction() {
 
 function renderToday() {
   if (!elements.todayFocusTitle) return;
+  const digest = buildJobResearchDigest(state);
+  document.querySelector("#today-research-overview").textContent = `正式岗位 ${digest.counts.formal} · 线索 ${digest.counts.leads} · 公司调研 ${digest.counts.companyResearch} · 未核验 ${digest.counts.unverified}`;
+  document.querySelector("#today-job-digest").textContent = digest.markdown;
   const next = todayNextAction();
   const date = new Date();
   elements.todayDate.textContent = new Intl.DateTimeFormat("zh-CN", {
@@ -4707,7 +4712,7 @@ function renderJobs() {
     top.className = "job-card-top";
     top.append(
       makeTextElement("span", "job-company", job.company),
-      makeTextElement("span", "match-pill", `${calculateMatch(job)}%`),
+      makeTextElement("span", "match-pill", `${calculateMatch(job)}% · 旧估计未核验`),
     );
 
     const title = makeTextElement("h3", "", job.title);
@@ -5998,7 +6003,7 @@ function renderInsights() {
   renderApplicationTracker(job);
   const keywords = extractKeywords(job);
   const matches = keywords.filter(keywordMatched);
-  elements.matchScore.textContent = job ? `${calculateMatch(job)}%` : "--";
+  elements.matchScore.textContent = job ? `${calculateMatch(job)}% · 旧估计未核验` : "--";
   elements.keywordCount.textContent = `${keywords.length} 项`;
   elements.coverageLabel.textContent = `${matches.length} / ${keywords.length}`;
   elements.keywordList.replaceChildren();
@@ -11113,6 +11118,14 @@ function renderResearch() {
 
   const report = selectedResearch();
   const job = selectedJob();
+  const evidenceView = document.querySelector("#job-research-evidence");
+  evidenceView.textContent = job ? [
+    `${job.company} · ${job.title} [${job.id}]`,
+    `来源：${job.source || "未知"}；URL：${job.url || "未知"}；获取时间：${job.fetchedAt || "未知"}`,
+    `在招状态：${normalizeJobVerification(job.verification, job).state}；完整 JD 不等于已核验在招。`,
+    `核验 URL：${normalizeJobVerification(job.verification, job).checkedUrl || "未知"}；核验时间：${normalizeJobVerification(job.verification, job).lastCheckedAt || "未知"}；核验原文：${normalizeJobVerification(job.verification, job).evidenceExcerpt || "未知"}`,
+    jobEvidenceMarkdown(jobEvidenceComparison(job, state)),
+  ].join("\n\n") : "尚未选择岗位；候选人和岗位证据均需真实资料。";
   elements.researchEmpty.hidden = Boolean(report);
   elements.researchContent.hidden = !report;
   elements.researchCompanySite.disabled = !report?.company?.website;
@@ -13933,44 +13946,7 @@ function cleanTextList(value, maxItems, maxLength) {
 }
 
 function normalizeIncomingOpportunity(job, index, label = "jobs") {
-  assertPlainObject(job, `${label}[${index}]`);
-  if (
-    typeof job.company !== "string" ||
-    !job.company.trim() ||
-    typeof job.title !== "string" ||
-    !job.title.trim()
-  ) {
-    throw new Error(`${label}[${index}] 缺少 company 或 title`);
-  }
-  const url = normalizeJobUrl(job.url);
-  const sourceId = normalizeSourceId(job.source_id ?? job.sourceId, job.source);
-  const description = cleanText(job.description, 20000);
-  const jdCompleteness = normalizeJdCompleteness(
-    job.jd_completeness ?? job.jdCompleteness,
-    description,
-  );
-  const now = new Date().toISOString();
-  return normalizeJobApplication({
-    id: cleanText(job.id, 100) || uid("agent-job"),
-    company: job.company.trim().slice(0, 80),
-    title: job.title.trim().slice(0, 120),
-    location: cleanText(job.location, 80),
-    salary: cleanText(job.salary, 80),
-    source: cleanText(job.source, 40) || "Agent 搜索",
-    sourceId,
-    url,
-    publishedAt: cleanText(job.published_at ?? job.publishedAt, 80),
-    employmentType: cleanText(job.employment_type ?? job.employmentType, 80),
-    description,
-    jdCompleteness,
-    verificationNotes: cleanText(job.verification_notes ?? job.verificationNotes, 2000),
-    fetchedAt: cleanText(job.fetched_at ?? job.fetchedAt, 80) || now,
-    match: Number.isInteger(job.match) ? Math.min(100, Math.max(0, job.match)) : null,
-    status: "inbox",
-    createdAt: cleanText(job.created_at ?? job.createdAt, 80) || now,
-    updatedAt: now,
-    sample: false,
-  });
+  return normalizeSharedOpportunity(job, index, jobHuntOperationContext(), label);
 }
 
 function jobHuntOperationContext() {
@@ -14266,124 +14242,16 @@ function registerAgentTools(ready) {
   });
 
   register("save_job_opportunities", async (args = {}) => {
-    await ready;
-    assertPlainObject(args, "save_job_opportunities");
-    if (!Array.isArray(args.jobs) || args.jobs.length < 1 || args.jobs.length > 12) {
-      throw new Error("jobs 必须包含 1–12 个职位");
-    }
-    const incoming = args.jobs.map((job, index) => normalizeIncomingOpportunity(job, index));
-    const previousOpportunityState = {
-      jobs: clone(state.jobs),
-      jobLeads: clone(state.jobLeads),
-      selectedJobId: state.selectedJobId,
-      jobSourceFilter: state.jobSourceFilter,
-      activeView: state.activeView,
-    };
-    const routed = upsertJobDiscovery(state.jobs, state.jobLeads, incoming, {
-      dedupeKey: jobDedupeKey,
-      metadataKey: jobMetadataKey,
+    const previousView = { activeView: state.activeView, jobSourceFilter: state.jobSourceFilter };
+    const result = await applyJobHuntPanelOperation("save_job_opportunities", args, {
+      fields: ["jobs", "jobLeads", "selectedJobId"],
+      onApplied() { state.jobSourceFilter = "all"; state.activeView = "dashboard"; },
+      onRollback() { Object.assign(state, previousView); },
     });
-    const formalIncoming = incoming.filter((job) => assessJobOpportunity(job).isFormal);
-    const formalJobs = formalIncoming
-      .map((sourceJob) =>
-        routed.jobs.find(
-          (item) =>
-            jobDedupeKey(item) === jobDedupeKey(sourceJob) ||
-            jobMetadataKey(item) === jobMetadataKey(sourceJob),
-        ),
-      )
-      .filter(Boolean);
-    for (const job of formalJobs) {
-      job.jdPath = formalJdPath(job);
-      await upsertWorkspaceText(job.jdPath, `${formalJdMarkdown(job)}\n`);
-    }
-    state.jobs = routed.jobs.slice(0, 80);
-    state.jobLeads = routed.leads.slice(0, 160);
-    if (routed.insertedJobs[0]) state.selectedJobId = routed.insertedJobs[0].id;
-    const savedJobs = incoming
-      .map((sourceJob) =>
-        state.jobs.find(
-          (item) =>
-            jobDedupeKey(item) === jobDedupeKey(sourceJob) ||
-            jobMetadataKey(item) === jobMetadataKey(sourceJob),
-        ),
-      )
-      .filter(Boolean)
-      .map((job) => ({
-        id: job.id,
-        company: job.company,
-        title: job.title,
-        jdPath: job.jdPath || "",
-      }));
-    const savedLeads = incoming
-      .map((sourceJob) =>
-        state.jobLeads.find(
-          (item) =>
-            jobDedupeKey(item) === jobDedupeKey(sourceJob) ||
-            jobMetadataKey(item) === jobMetadataKey(sourceJob),
-        ),
-      )
-      .filter(Boolean)
-      .map((lead) => ({
-        id: lead.id,
-        company: lead.company,
-        title: lead.title,
-        missingFields: lead.missingFields,
-      }));
-    state.jobSourceFilter = "all";
-    state.activeView = "dashboard";
-    persist();
-    renderAll();
-    const projectSaved = await writeProjectSnapshot();
-    if (!projectSaved) {
-      state.jobs = previousOpportunityState.jobs;
-      state.jobLeads = previousOpportunityState.jobLeads;
-      state.selectedJobId = previousOpportunityState.selectedJobId;
-      state.jobSourceFilter = previousOpportunityState.jobSourceFilter;
-      state.activeView = previousOpportunityState.activeView;
-      persist();
-      renderAll();
-      renderMaterials();
-      requireProjectSnapshot(false);
-    }
-    for (const sourceJob of incoming.slice(0, 8)) {
-      const savedJob = state.jobs.find(
-        (item) =>
-          jobDedupeKey(item) === jobDedupeKey(sourceJob) ||
-          jobMetadataKey(item) === jobMetadataKey(sourceJob),
-      );
-      if (savedJob) {
-        recordTraceArtifact("job", savedJob.id, `${savedJob.company} · ${savedJob.title}`);
-        continue;
-      }
-      const savedLead = state.jobLeads.find(
-        (item) =>
-          jobDedupeKey(item) === jobDedupeKey(sourceJob) ||
-          jobMetadataKey(item) === jobMetadataKey(sourceJob),
-      );
-      if (savedLead) {
-        recordTraceArtifact(
-          "job-lead",
-          savedLead.id,
-          `${savedLead.company} · ${savedLead.title} · 待补全`,
-        );
-      }
-    }
+    for (const item of result.savedJobs.slice(0, 8)) recordTraceArtifact("job", item.id, `${item.company} · ${item.title}`);
+    for (const item of result.savedLeads.slice(0, 8)) recordTraceArtifact("job-lead", item.id, `${item.company} · ${item.title} · 待补全`);
     renderMaterials();
-    return {
-      inboxAdded: routed.insertedJobs.length,
-      jobsUpdated: routed.updatedJobs,
-      leadsAdded: routed.insertedLeads.length,
-      leadsUpdated: routed.updatedLeads,
-      promoted: routed.promoted.length,
-      unchanged: routed.unchangedJobs + routed.unchangedLeads,
-      selectedJobId: state.selectedJobId,
-      totalJobs: state.jobs.length,
-      totalLeads: state.jobLeads.length,
-      savedJobs,
-      savedLeads,
-      projectSaved,
-    };
+    return result;
   });
 
   register("update_application_progress", async (args = {}) => {
@@ -14452,154 +14320,15 @@ function registerAgentTools(ready) {
   });
 
   register("save_job_research", async (args = {}) => {
-    await ready;
-    assertPlainObject(args, "save_job_research");
-    const job = state.jobs.find((item) => item.id === args.job_id);
-    if (!job) throw new Error("job_id 不存在，请先保存或读取岗位");
-    assertPlainObject(args.company, "company");
-    assertPlainObject(args.interview_intel, "interview_intel");
-    if (!cleanText(args.company.official_name, 100) || !cleanText(args.company.summary, 5000)) {
-      throw new Error("company 缺少 official_name 或 summary");
-    }
-    if (
-      !Array.isArray(args.reviews) ||
-      !Array.isArray(args.risks) ||
-      !Array.isArray(args.sources)
-    ) {
-      throw new Error("reviews、risks 和 sources 必须是数组");
-    }
-    const sentimentValues = ["positive", "mixed", "negative", "unknown"];
-    const confidenceValues = ["high", "medium", "low"];
-    const sourceKinds = ["official", "job", "review", "interview", "news", "other"];
-    const questionOrigins = ["reported", "predicted"];
-    const reviews = args.reviews.slice(0, 50).map((review, index) => {
-      assertPlainObject(review, `reviews[${index}]`);
-      if (
-        !cleanText(review.source, 120) ||
-        !cleanText(review.summary, 3000) ||
-        !sentimentValues.includes(review.sentiment) ||
-        !confidenceValues.includes(review.confidence)
-      ) {
-        throw new Error(`reviews[${index}] 缺少来源、摘要、情绪或可信度`);
-      }
-      return {
-        source: cleanText(review.source, 120),
-        title: cleanText(review.title, 200),
-        url: cleanText(review.url, 1000),
-        publishedAt: cleanText(review.published_at, 80),
-        sentiment: review.sentiment,
-        summary: cleanText(review.summary, 3000),
-        pros: cleanTextList(review.pros, 15, 500),
-        cons: cleanTextList(review.cons, 15, 500),
-        confidence: review.confidence,
-      };
+    const previousView = state.activeView;
+    const result = await applyJobHuntPanelOperation("save_job_research", args, {
+      fields: ["jobResearch", "selectedJobId"],
+      onApplied() { state.activeView = "research"; },
+      onRollback() { state.activeView = previousView; },
     });
-    const questions = Array.isArray(args.interview_intel.questions)
-      ? args.interview_intel.questions.slice(0, 30).map((question, index) => {
-          assertPlainObject(question, `interview_intel.questions[${index}]`);
-          const prompt = cleanText(question.question, 1000);
-          const sourceUrl = cleanText(question.source_url, 1000);
-          if (
-            prompt.length < 8 ||
-            !questionOrigins.includes(question.origin) ||
-            (question.origin === "reported" && !sourceUrl)
-          ) {
-            throw new Error(`interview_intel.questions[${index}] 缺少问题或有效 origin`);
-          }
-          return {
-            question: prompt,
-            category: cleanText(question.category, 100),
-            origin: question.origin,
-            sourceUrl,
-          };
-        })
-      : [];
-    const sources = args.sources.slice(0, 60).map((source, index) => {
-      assertPlainObject(source, `sources[${index}]`);
-      if (
-        !sourceKinds.includes(source.kind) ||
-        !cleanText(source.title, 300) ||
-        !cleanText(source.url, 1000) ||
-        !cleanText(source.accessed_at, 80)
-      ) {
-        throw new Error(`sources[${index}] 缺少类型、标题、URL 或访问时间`);
-      }
-      return {
-        kind: source.kind,
-        title: cleanText(source.title, 300),
-        publisher: cleanText(source.publisher, 200),
-        url: cleanText(source.url, 1000),
-        publishedAt: cleanText(source.published_at, 80),
-        accessedAt: cleanText(source.accessed_at, 80),
-        notes: cleanText(source.notes, 1000),
-      };
-    });
-    const existing = state.jobResearch.find((report) => report.jobId === job.id);
-    const report = {
-      id: existing?.id || uid("research"),
-      jobId: job.id,
-      updatedAt: new Date().toISOString(),
-      sample: false,
-      company: {
-        officialName: cleanText(args.company.official_name, 100),
-        website: cleanText(args.company.website, 1000),
-        careersUrl: cleanText(args.company.careers_url, 1000),
-        summary: cleanText(args.company.summary, 5000),
-        industry: cleanText(args.company.industry, 200),
-        stage: cleanText(args.company.stage, 200),
-        size: cleanText(args.company.size, 200),
-        locations: cleanTextList(args.company.locations, 20, 300),
-        products: cleanTextList(args.company.products, 30, 500),
-        techSignals: cleanTextList(args.company.tech_signals, 30, 300),
-        hiringSignals: cleanTextList(args.company.hiring_signals, 30, 500),
-      },
-      reviews,
-      interviewIntel: {
-        summary: cleanText(args.interview_intel.summary, 5000),
-        process: cleanTextList(args.interview_intel.process, 20, 500),
-        themes: cleanTextList(args.interview_intel.themes, 30, 300),
-        questions,
-      },
-      risks: cleanTextList(args.risks, 30, 1000),
-      sources,
-    };
-    const previousResearchState = {
-      jobResearch: clone(state.jobResearch),
-      selectedJobId: state.selectedJobId,
-      activeView: state.activeView,
-    };
-    state.jobResearch = [
-      report,
-      ...state.jobResearch.filter((item) => item.jobId !== job.id),
-    ].slice(0, 80);
-    state.selectedJobId = job.id;
-    state.activeView = "research";
-    persist();
-    renderAll();
-    const projectSaved = await writeProjectSnapshot();
-    if (!projectSaved) {
-      state.jobResearch = previousResearchState.jobResearch;
-      state.selectedJobId = previousResearchState.selectedJobId;
-      state.activeView = previousResearchState.activeView;
-      persist();
-      renderAll();
-      renderMaterials();
-      requireProjectSnapshot(false);
-    }
-    recordTraceArtifact(
-      "research",
-      report.id,
-      `${report.company?.officialName || job.company} · ${sources.length} 个 Source`,
-    );
+    recordTraceArtifact("research", result.researchId, `${result.sourceCount} 个 Source`);
     renderMaterials();
-    return {
-      saved: true,
-      jobId: job.id,
-      researchId: report.id,
-      reviewCount: reviews.length,
-      sourceCount: sources.length,
-      projectSaved,
-    };
+    return result;
   });
 
   register("save_interview_question_set", async (args = {}) => {
@@ -16762,7 +16491,7 @@ function bindEvents() {
     openSessionBridge({
       kind: "job",
       title: `${job.company} · ${job.title}`,
-      detail: `${job.source || "来源待确认"} · 匹配度 ${calculateMatch(job)}%`,
+      detail: `${job.source || "来源待确认"} · 旧估计 ${calculateMatch(job)}%（未核验）`,
       payload: { jobId: job.id },
     });
   });
@@ -17368,3 +17097,9 @@ const snapshotRecoveryUI = mountSnapshotRecovery({
 bindEvents();
 const ready = initialize();
 registerAgentTools(ready);
+
+document.querySelector("#open-job-digest").addEventListener("click", () => {
+  const view = document.querySelector("#today-job-digest");
+  view.textContent = buildJobResearchDigest(state).markdown;
+  view.hidden = !view.hidden;
+});

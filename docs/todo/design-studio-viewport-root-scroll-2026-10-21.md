@@ -95,3 +95,60 @@ Browser, Bridge and standalone generation checks, scoped panel build check,
 Prettier for the new regression file and `git diff --check` also pass. The changed
 viewport helper ships as an existing native app ES module; no embedded generated
 runtime changes are required, and all committed generated outputs verify intact.
+
+## Follow-up: reserved stable gutters
+
+The results above describe the original no-gutter implementation. This follow-up
+starts from reviewed `f61a8890641df6eb34a944ab93a85d99adbb85fd` and retains those
+earlier failures. A separate 32-capture CPU browser inventory distinguishes the
+document's reserved gutter from a visible classic scrollbar. With Chromium's
+hidden scrollbar mode, `clientWidth` remains640 while the actual HTML box and
+scrollable width are625; `stable both-edges` produces a610px box at x15.
+At400px the corresponding widths are385 and370. The previous implementation
+kept body/main roots Fixed and missed this space when HTML itself was selected:
+its same-width relayout expanded625 to640, differing by9300 pixels.
+
+The capture now corroborates `stable` or `stable both-edges` from the current
+standards document scroller, finite exact scroll/client/box measurements, zero
+offsets and no horizontal overflow. Actual root margins are accounted for in
+the scrollable width. Only a normal LTR block with auto/100% width, no min/max
+width restriction, no unsafe containing space/canvas effect and no custom
+nonzero scrollbar width qualifies. The reserved space must lie on the inline
+end edge or be exactly symmetric. It becomes existing viewport padding; the
+captured real root remains horizontal Fill. There is no new model property,
+absolute positioning, scrollbar widget, inferred15px constant or pixel tolerance.
+
+Computed Typed OM alone is insufficient: authored2vw is returned as a px value.
+A bounded read-only CSSOM pass also checks matching box declarations. Relative
+spacing or border widths, variable physical/logical dimensions or offsets, unresolved inset/
+overflow/border shorthand substitutions and grouped/conditional box rules retain
+a diagnostic instead of becoming fixed ancestor insets. The
+scan caps64 stylesheets,10000 rules,16 nested groups,1024 declarations per rule
+and8192 selector characters; unreadable or unsupported CSSOM refuses the proof.
+This is a conservative capture boundary, not a complete CSS cascade or breakpoint
+engine. In particular, an authored box longhand that CSSOM enumerates but
+serializes as empty is unresolved, rather than absent: pending physical/logical
+border substitutions can hide their variable expression this way. The proof
+rejects that representation without depending on a list of shorthand names.
+[CSS Overflow gutter rules](https://drafts.csswg.org/css-overflow-3/#scrollbar-gutter-property)
+and [Typed OM units](https://www.w3.org/TR/css-typed-om-1/#numeric-objects) are the
+primary references; the exact observed geometry remains in the local evidence.
+
+Twelve boxed production fixtures cover HTML/body/main selection, one/both-edge
+gutters and fixed HTML/body margins and padding. Their initial, same-width and
+outer-only narrow comparisons are all strictly0 changed pixels/max0. The tests
+independently measure each selected DOM root, assert exact saved rectangles,
+real viewport padding and Fill transfer fields, and preserve save/reopen plus
+layout reflow. Custom gutters, real visible16px classic scrollbars, root width
+constraints, relative/variable/conditional insets, clipping, scroll offsets,
+quirks and horizontal overflow remain negative controls. The10 focused tests
+pass; prior failed candidate runs and their explanations are retained outside
+the repository, including the extra root-margin accounting correction.
+
+Evidence lives under the task-owned `design-studio-stable-gutter-20261021/evidence/`
+directory: baseline DOM inventory, paired production source/converted/difference
+PNGs, SVG, canonical/portable/transfer JSON and scoped logs. CPU browser and
+transfer preparation are distinct from real Figma execution, which is NOT_RUN
+for this change. Existing new-page VERTICAL/padding/FILL setters require no new
+native API. Independent peer review and complete combined gates are still
+required before stable integration.

@@ -5,21 +5,105 @@ const pixel = (value) => /^(?:0|\d+(?:\.\d+)?px)$/u.test(value);
 const normalPosition = (values) => ["static", "relative"].includes(values.position) &&
   ["top", "right", "bottom", "left"].every((key) => zero(values[key]));
 
-// Root overflow propagates to the viewport. Only collapse that boundary when
-// there is no scrollbar gutter or horizontal/offset scroll state to reproduce.
+// Computed Typed OM resolves viewport lengths such as2vw to px. Inspect the
+// authored, matching declarations as well before freezing ancestor box insets.
+function fixedBoxDeclarations(element, document, window) {
+  const spacing = /^(?:margin|padding)(?:-(?:top|right|bottom|left|inline(?:-start|-end)?|block(?:-start|-end)?))?$/u;
+  const boxProperty = key => spacing.test(key) || /^border(?:-|$)/u.test(key) ||
+    /^(?:all|(?:min-|max-)?(?:width|height|inline-size|block-size)|box-sizing|display|position|top|right|bottom|left|inset(?:-(?:inline|block)(?:-start|-end)?)?|float|transform|translate|rotate|scale|zoom|contain|content-visibility|writing-mode|direction|overflow(?:-x|-y|-inline|-block)?|scrollbar-(?:gutter|width))$/u.test(key);
+  let rules = 0;
+  const check = (style, conditional) => {
+    if (style.length > 1024) return false;
+    for (const key of style) {
+      if (conditional && boxProperty(key)) return false;
+      const value = style.getPropertyValue(key);
+      if (key === "all" && !["initial", "unset"].includes(value)) return false;
+      // A declared longhand with an empty CSSOM value can be a pending
+      // shorthand substitution. Its computed px value does not prove fixed
+      // authored intent, including for logical border shorthand families.
+      if (boxProperty(key) && (!value || /\\|\b(?:var|env|attr)\(/iu.test(value))) return false;
+    }
+    for (const prefix of ["margin", "padding", "border"]) for (const side of ["top", "right", "bottom", "left",
+      "inline-start", "inline-end", "block-start", "block-end"]) {
+      const value = style.getPropertyValue(`${prefix}-${side}${prefix === "border" ? "-width" : ""}`);
+      if (!value || value === "initial") continue;
+      if (prefix === "border" ? ["thin", "medium", "thick"].includes(value) : value === "auto") continue;
+      try {
+        const length = window.CSSNumericValue.parse(value).to("px").value;
+        if (!Number.isFinite(length) || length < 0 || length > 2000) return false;
+      } catch { return false; }
+    }
+    return true;
+  };
+  const visit = (list, conditional, depth) => {
+    if (depth > 16) return false;
+    for (const rule of list) {
+      if (++rules > 10000) return false;
+      if (rule.selectorText) {
+        if (rule.selectorText.length > 8192) return false;
+        if (element.matches(rule.selectorText) && !check(rule.style, conditional)) return false;
+      }
+      if (rule.styleSheet && !visit(rule.styleSheet.cssRules, true, depth + 1)) return false;
+      if (rule.cssRules && !visit(rule.cssRules, true, depth + 1)) return false;
+    }
+    return true;
+  };
+  try {
+    const sheets = [...document.styleSheets, ...(document.adoptedStyleSheets ?? [])];
+    return sheets.length <= 64 && check(element.style, false) && sheets.every(sheet =>
+      sheet.disabled || visit(sheet.cssRules, Boolean(sheet.media?.mediaText), 0));
+  } catch { return false; }
+}
+
+// Root overflow propagates to the viewport. A reserved, unpainted gutter can
+// become fixed viewport padding; a visible classic scrollbar cannot.
 function viewportScroller(ancestor, style, document, window) {
   if (ancestor !== document.documentElement || document.compatMode !== "CSS1Compat" ||
-      document.scrollingElement !== ancestor || style.scrollbarGutter !== "auto" ||
+      document.scrollingElement !== ancestor ||
+      !["auto", "stable", "stable both-edges"].includes(style.scrollbarGutter) ||
       style.contain !== "none" ||
       ![style.overflowX, style.overflowY].every((value) => ["visible", "auto", "scroll"].includes(value)))
-    return false;
+    return null;
   const values = [window.innerWidth, window.innerHeight, window.scrollX, window.scrollY,
     ancestor.clientWidth, ancestor.clientHeight, ancestor.scrollWidth, ancestor.scrollHeight,
     ancestor.scrollLeft, ancestor.scrollTop];
-  return values.every(Number.isFinite) && window.innerWidth > 0 && window.innerHeight > 0 &&
+  if (!(values.every(Number.isFinite) && window.innerWidth > 0 && window.innerHeight > 0 &&
     ancestor.clientWidth === window.innerWidth && ancestor.clientHeight === window.innerHeight &&
-    ancestor.scrollWidth === ancestor.clientWidth && ancestor.scrollHeight >= ancestor.clientHeight &&
-    window.scrollX === 0 && window.scrollY === 0 && ancestor.scrollLeft === 0 && ancestor.scrollTop === 0;
+    ancestor.scrollHeight >= ancestor.clientHeight &&
+    window.scrollX === 0 && window.scrollY === 0 && ancestor.scrollLeft === 0 && ancestor.scrollTop === 0))
+    return null;
+  if (style.scrollbarGutter === "auto")
+    return ancestor.scrollWidth === ancestor.clientWidth ? { left: 0, right: 0 } : null;
+  const typed = ancestor.computedStyleMap?.(), box = ancestor.getBoundingClientRect();
+  if (!typed || !["auto", "100%"].includes(typed.get("width")?.toString()) ||
+      style.display !== "block" || style.direction !== "ltr" || style.writingMode !== "horizontal-tb" ||
+      style.cssFloat !== "none" || style.visibility !== "visible" || style.contentVisibility !== "visible" ||
+      !normalPosition(Object.fromEntries(["position", "top", "right", "bottom", "left"].map(key =>
+        [key, typed.get(key)?.toString() ?? ""]))) ||
+      style.transform !== "none" || style.perspective !== "none" ||
+      [style.translate, style.rotate, style.scale].some(value => value !== "none") ||
+      !["1", "normal"].includes(style.zoom) || style.backgroundImage !== "none" ||
+      style.opacity !== "1" || style.filter !== "none" || style.boxShadow !== "none" || style.clipPath !== "none" ||
+      !["auto", "0px"].includes(window.getComputedStyle(ancestor, "::-webkit-scrollbar").width) ||
+      ![box.x, box.y, box.width, box.height].every(Number.isFinite) || box.width < 1)
+    return null;
+  if (!["auto", "0px", "0"].includes(typed.get("min-width")?.toString()) ||
+      typed.get("max-width")?.toString() !== "none") return null;
+  if (!fixedBoxDeclarations(ancestor, document, window)) return null;
+  for (const side of ["top", "right", "bottom", "left"]) for (const prefix of ["padding", "margin"]) {
+    const value = typed.get(`${prefix}-${side}`)?.toString();
+    if (value !== "auto" && !pixel(value)) return null;
+  }
+  const margins = ["left", "right"].map(side => {
+    const intent = typed.get(`margin-${side}`)?.toString();
+    return intent === "auto" || pixel(intent) ? Number.parseFloat(style.getPropertyValue(`margin-${side}`)) : NaN;
+  });
+  if (margins.some(value => !Number.isFinite(value) || value < 0 || value > 2000)) return null;
+  if (ancestor.scrollWidth !== box.width + margins[0] + margins[1]) return null;
+  const left = box.left - margins[0], right = window.innerWidth - box.right - margins[1];
+  if ([left, right].some(value => !Number.isFinite(value) || value < 0 || value > 2000) ||
+      (style.scrollbarGutter === "stable" ? left !== 0 : left !== right)) return null;
+  return { left, right };
 }
 
 /** Read only the root's containing-block relationship, before the converter normalizes its origin. */
@@ -30,6 +114,13 @@ export function captureHtmlViewportRelation(root) {
   const unsupported = (reason) => ({ ...result, unsupported: reason });
   if (![document.documentElement, document.body].includes(root) && root.parentElement !== document.body)
     return unsupported("选中的嵌套根缺少其完整包含块，视口保留测量几何。");
+  const htmlStyle = window.getComputedStyle(document.documentElement);
+  const gutter = htmlStyle.scrollbarGutter === "auto" ? null :
+    viewportScroller(document.documentElement, htmlStyle, document, window);
+  if (htmlStyle.scrollbarGutter !== "auto" && !gutter)
+    return unsupported("根滚动条预留空间缺少无可见滚动条、无横向溢出的固定视口关系。");
+  if (gutter && !fixedBoxDeclarations(root, document, window))
+    return unsupported("根的间距依赖相对单位、变量或条件规则，不能冻结为视口固定内边距。");
   const ancestors = [];
   for (let parent = root.parentElement; parent; parent = parent.parentElement) ancestors.push(parent);
   let heightFromViewport = true;
@@ -40,6 +131,8 @@ export function captureHtmlViewportRelation(root) {
   for (const ancestor of ancestors) {
     const style = window.getComputedStyle(ancestor), typed = ancestor.computedStyleMap?.();
     if (!typed) return unsupported("浏览器没有提供根包含块的 CSS 尺寸意图。");
+    if (gutter && !fixedBoxDeclarations(ancestor, document, window))
+      return unsupported("根的祖先间距依赖相对单位、变量或条件规则，不能冻结为视口固定内边距。");
     const values = Object.fromEntries(["position", "top", "right", "bottom", "left"].map((key) =>
       [key, typed.get(key)?.toString() ?? ""]));
     if (style.display !== "block" || !normalPosition(values) || style.transform !== "none" ||
@@ -79,7 +172,8 @@ export function captureHtmlViewportRelation(root) {
     if (siblings.length) return unsupported("选中根的其他可见兄弟未捕获，不能重建完整视口关系。");
   }
   const parent = root.parentElement;
-  if (!parent) return { ...result, left: 0, right: 0, top: 0, bottom: 0, heightFromViewport };
+  if (!parent) return { ...result, left: gutter?.left ?? 0, right: gutter?.right ?? 0,
+    top: 0, bottom: 0, heightFromViewport };
   const box = parent.getBoundingClientRect(), style = window.getComputedStyle(parent);
   const inset = (side) => (Number.parseFloat(style[`padding${side}`]) || 0) +
     (Number.parseFloat(style[`border${side}Width`]) || 0);
