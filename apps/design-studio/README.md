@@ -339,7 +339,7 @@ surface: sixteen declared design/delivery tools plus a repository-design Skill.
   distribution, snapping, rotation, zoom, pan, undo, and redo.
 - A Figma-like three-column workspace: persistent pages and layers on the left, canvas in the
   center, and **设计 / 开发 / 文件** inspector tabs on the right.
-- A PRD delivery flow that reads workspace Markdown/MDX/text into goals, users, stable requirement
+- A PRD delivery flow that reads workspace Markdown/MDX/text into goals, users, authored requirement
   IDs, screens, acceptance criteria, and constraints before handing the structured brief to the
   current Agent.
 - Deterministic Design v3 → HTML generation. Auto Layout becomes Flex/Grid/Wrap, dual-axis
@@ -432,6 +432,39 @@ structural, visibility, sizing, or layout-property changes. Direct canvas draggi
 alignment, and distribution cannot bypass flow ownership. Agent-created
 nodes require a stable lowercase, hyphen-separated semantic id so transactions are
 reproducible and later operations can address every new node explicitly.
+
+## PRD requirement IDs
+
+Start a requirement list item with `[id:req-name]` to keep its ID when inserting,
+reordering, translating or editing other requirements. The declaration comes before
+an optional priority; its exact ID enters the existing brief `id` field.
+
+```markdown
+## Requirements
+- [ ] [id:req-sign-in] P0 Sign in with email acceptance: Reach Home.
+- [id:req-orders-view] P1 查看订单详情 验收：显示订单编号。
+```
+
+An optional leading task checkbox (`[ ]`, `[x]` or `[X]`) can immediately precede
+the ID declaration. Toggling it keeps the same authored ID. Unannotated task items
+retain their existing ID, statement and priority bytes for compatibility.
+
+IDs contain 1–64 ASCII lowercase letters, digits or hyphens and start with a letter.
+Keep the ID unchanged when editing the requirement's description. Invalid IDs,
+missing descriptions, duplicate declarations and collisions with generated IDs
+stop parsing with an error. The brief prompt carries these IDs for the Agent to
+retain in layer `notes`; saving and reopening the design preserves those notes.
+
+Unannotated requirements retain the existing `req-<ordinal>-<slug>` algorithm.
+Those IDs can change after insertion, reordering or wording changes. Existing PRDs
+and design notes are not migrated automatically. To make an existing reference
+explicit, the author can copy its exact old ID into `[id:...]` after checking for
+collisions. Screen IDs continue to use the existing positional algorithm.
+
+This syntax is shared by the Panel's PRD submission and the installed CLI `brief`
+operation. The current fresh Figma reimport does not restore `codeshellNotes` into
+canonical notes; the separate raw source binding preserves unknown metadata. Native
+prototype reactions and that notes roundtrip remain separate gaps.
 
 ## Install
 

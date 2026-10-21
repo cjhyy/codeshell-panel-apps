@@ -104,7 +104,7 @@ export const operations = [
     name: "brief",
     readOnly: true,
     description:
-      "Parse a project-local Markdown, MDX or text PRD with the Panel's product brief parser.",
+      "Parse a project-local Markdown, MDX or text PRD. A leading [id:req-name] preserves an authored requirement ID; unannotated requirements keep legacy positional IDs.",
     inputSchema: schema({ path: text }, ["path"]),
   },
   {

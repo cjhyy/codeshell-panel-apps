@@ -52,12 +52,26 @@ function priorityFromText(value) {
 }
 
 function requirementRecord(text, index) {
+  // Only annotated task items opt into structural checkbox handling. Untagged
+  // task text retains legacy bytes so existing notes are not rebound.
+  text = text.replace(/^\[[ xX]\]\s+(?=\[id:)/iu, "");
+  let explicitId;
+  if (/^\[id:/iu.test(text)) {
+    const declaration = text.match(/^\[id:([^\]]*)\](?:\s+|$)/iu);
+    if (!declaration || !/^[a-z][a-z0-9-]{0,63}$/u.test(declaration[1]))
+      throw new Error("PRD 显式需求 ID 无效；请使用 [id:req-name]，ID 为 1–64 位小写英文字母、数字或连字符，且以字母开头。");
+    explicitId = declaration[1];
+    text = text.slice(declaration[0].length);
+  }
   const acceptanceParts = text.split(/\s+(?:验收|acceptance)\s*[:：]\s*/iu);
   const statement = cleanInline(acceptanceParts.shift());
+  const description = statement.replace(/^\[?P[0-3]\]?\s*[:：-]?\s*/iu, "");
+  if (explicitId && (!description || /^\[id:/iu.test(description)))
+    throw new Error("PRD 显式需求 ID 后必须有需求描述；每条需求只能声明一个 ID。");
   return {
-    id: `req-${String(index + 1).padStart(2, "0")}-${slug(statement, "item").slice(0, 36)}`,
+    id: explicitId ?? `req-${String(index + 1).padStart(2, "0")}-${slug(statement, "item").slice(0, 36)}`,
     priority: priorityFromText(statement),
-    statement: statement.replace(/^\[?P[0-3]\]?\s*[:：-]?\s*/iu, ""),
+    statement: description,
     acceptanceCriteria: acceptanceParts.map(cleanInline).filter(Boolean),
   };
 }
@@ -139,6 +153,12 @@ export function parseProductBrief(markdown, { path = "PRD.md" } = {}) {
       .map(itemText)
       .filter(Boolean);
     requirements.push(...fallbackItems.slice(0, 50).map(requirementRecord));
+  }
+  const requirementIds = new Set();
+  for (const requirement of requirements) {
+    if (requirementIds.has(requirement.id))
+      throw new Error(`PRD 需求 ID ${requirement.id} 重复或与旧式自动 ID 冲突；请为该需求选择独立的显式 ID。`);
+    requirementIds.add(requirement.id);
   }
   const screens = itemsFor("screens").map(screenRecord);
   return {
