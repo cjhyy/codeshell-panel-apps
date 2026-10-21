@@ -14,6 +14,9 @@ import {
 import { transformedNodeBoundsInTree } from "../../../apps/design-studio/app/geometry.mjs";
 import { resolveDesignResource } from "../../../apps/design-studio/app/resource-store.mjs";
 import { createFigmaTransfer } from "../../../apps/design-studio/app/figma-bridge.mjs";
+import { applyAllAutoLayouts } from "../../../apps/design-studio/app/layout.mjs";
+import { cssLinearBackgroundPaints } from "../../../apps/design-studio/app/css-linear-gradient.mjs";
+import { inverseGradientMatrix, sampleDesignFill } from "../../../apps/design-studio/app/paint.mjs";
 import {
   createPortableDesign,
   planPortableDesign,
@@ -63,6 +66,17 @@ const text = (content = "Editable title", properties = {}) =>
 const allNodes = (result) => normalizeDesignDocument(result.document).nodes;
 const codes = (result) => result.report.warnings.map((warning) => warning.code);
 const options = { sha256Bytes: hash };
+
+test("capture-local ownership callback retains original source objects across local block clones", async () => {
+  const tree = container([container([text()])]), original = JSON.stringify(tree), pairs = new Map();
+  const result = await designNodeToV3(tree, { ...options, onNode: (source, node) => pairs.set(source, node) });
+  assert.equal(JSON.stringify(tree), original);
+  assert.equal(pairs.size, 3);
+  assert.equal(pairs.get(tree), result.document.pages[0].children[0]);
+  assert.equal(pairs.get(tree.children[0]), pairs.get(tree).children[0]);
+  assert.equal(pairs.get(tree.children[0].children[0]), pairs.get(tree).children[0].children[0]);
+  assert(!serializeDesignDocument(normalizeDesignDocument(result.document)).includes("onNode"));
+});
 
 test("final upstream parent-relative bounds become page coordinates; random and duplicate upstream IDs never become design IDs", async () => {
   const tree = container(
@@ -176,7 +190,7 @@ test("flex direction, wrap, padding, gaps and editable child sizing are represen
   assert.equal(child.layoutAlignSelf, "end");
 });
 
-test("uniform pixel Grid remains editable; irregular grids and CSS child margins keep measured geometry with diagnostics", async () => {
+test("uniform and unequal pixel Grid remain editable; unsupported tracks and nonuniform CSS child margins keep measured geometry with diagnostics", async () => {
   const grid = {
     display: "grid",
     grid: {
@@ -185,25 +199,173 @@ test("uniform pixel Grid remains editable; irregular grids and CSS child margins
       gap: { row: 5, column: 10 },
     },
   };
-  const result = await designNodeToV3(container([text()], { layout: grid }), options);
+  const result = await designNodeToV3(container([container()], { layout: grid }), options);
   assert.equal(allNodes(result)[0].layout, "grid");
   assert.equal(allNodes(result)[0].gridColumns, 2);
+  const unequal = await designNodeToV3(
+    container([container()], {
+      layout: { ...grid, grid: { ...grid.grid, templateColumns: "100px 200px" } },
+    }),
+    options,
+  );
+  assert.equal(allNodes(unequal)[0].layout, "grid");
+  assert.deepEqual(allNodes(unequal)[0].gridColumnSizes, [
+    { type: "fixed", value: 100 },
+    { type: "fixed", value: 200 },
+  ]);
   const irregular = await designNodeToV3(
     container([text()], {
-      layout: { ...grid, grid: { ...grid.grid, templateColumns: "100px 200px" } },
+      layout: { ...grid, grid: { ...grid.grid, templateColumns: "minmax(20px,1fr) 100px" } },
     }),
     options,
   );
   assert.equal(allNodes(irregular)[0].layout, "none");
   assert.ok(codes(irregular).includes("grid-fixed-geometry"));
   const margins = await designNodeToV3(
-    container([text("Margin", { margin: { left: 10 } })], {
+    container([text("Margin", { margin: { left: 10 } }), text("Different margin")], {
       layout: { display: "flex", flex: { direction: "row" } },
     }),
     options,
   );
   assert.equal(allNodes(margins)[0].layout, "none");
   assert.ok(codes(margins).includes("layout-margin-fixed"));
+});
+
+test("captured CSS sizing keeps fixed cross sizes, flex fill, intrinsic hug and definite basis editable", async () => {
+  const children = [
+    container([], {
+      bounds: bounds(12, 12, 100, 24),
+      cssLayout: { width: "100px", height: "24px", "flex-basis": "auto" },
+    }),
+    container([], {
+      bounds: bounds(120, 12, 168, 24),
+      cssLayout: { width: "auto", height: "24px", "flex-basis": "0%" },
+      flexItem: { grow: 1, shrink: 1, basis: 0, alignSelf: "auto" },
+    }),
+  ];
+  const tree = container(children, {
+    bounds: bounds(0, 0, 300, 100),
+    cssLayout: { width: "100%", height: "100px" },
+    layout: {
+      display: "flex",
+      padding: { top: 12, right: 12, bottom: 12, left: 12 },
+      flex: { direction: "row", gap: { row: 0, column: 8 }, alignItems: "stretch" },
+    },
+  });
+  const before = JSON.stringify(tree),
+    result = await designNodeToV3(tree, options);
+  const nodes = allNodes(result),
+    [frame, fixed, fluid] = nodes;
+  assert.equal(JSON.stringify(tree), before);
+  assert.equal(frame.layoutSizingHorizontal, "fixed");
+  assert.equal(fixed.layoutSizingVertical, "fixed");
+  assert.equal(fixed.layoutAlignSelf, "start");
+  assert.equal(fluid.layoutSizingHorizontal, "fill");
+  assert.equal(fluid.layoutAlignSelf, "start");
+  frame.width = 400;
+  applyAllAutoLayouts(nodes);
+  assert.deepEqual([fixed.x, fixed.y, fixed.width, fixed.height], [12, 12, 100, 24]);
+  assert.deepEqual([fluid.x, fluid.y, fluid.width, fluid.height], [120, 12, 268, 24]);
+
+  const intrinsic = container([], {
+    cssLayout: { width: "fit-content", height: "auto", "flex-basis": "auto" },
+    layout: { display: "inline-flex", flex: { direction: "row", alignItems: "start" } },
+  });
+  const hug = allNodes(await designNodeToV3(intrinsic, options))[0];
+  assert.deepEqual([hug.layoutSizingHorizontal, hug.layoutSizingVertical], ["hug", "hug"]);
+  const crossHug = allNodes(
+    await designNodeToV3(
+      container([intrinsic], {
+        layout: { display: "flex", flex: { direction: "column", alignItems: "stretch" } },
+      }),
+      options,
+    ),
+  )[1];
+  assert.equal(crossHug.layoutSizingHorizontal, "hug");
+  assert.equal(crossHug.layoutAlignSelf, "start");
+  const basis = structuredClone(intrinsic);
+  basis.cssLayout["flex-basis"] = "80px";
+  const basisNodes = allNodes(
+    await designNodeToV3(
+      container([basis], {
+        layout: { display: "flex", flex: { direction: "row", alignItems: "start" } },
+      }),
+      options,
+    ),
+  );
+  assert.equal(basisNodes[1].layoutSizingHorizontal, "fixed");
+});
+
+test("uniform nonnegative flex margins become padding and gaps without changing measured flow positions", async () => {
+  const child = (x) =>
+    container([], {
+      bounds: bounds(x, 14, 40, 20),
+      margin: { top: 4, right: 6, bottom: 4, left: 6 },
+      cssLayout: { width: "40px", height: "20px" },
+    });
+  const tree = container([child(16), child(76)], {
+    bounds: bounds(0, 0, 300, 100),
+    layout: {
+      display: "flex",
+      padding: { top: 10, right: 10, bottom: 10, left: 10 },
+      flex: { direction: "row", gap: { row: 0, column: 8 }, alignItems: "start" },
+    },
+  });
+  const result = await designNodeToV3(tree, options),
+    nodes = allNodes(result);
+  assert.equal(codes(result).includes("layout-margin-fixed"), false);
+  assert.equal(nodes[0].layout, "horizontal");
+  assert.deepEqual(
+    [nodes[0].paddingTop, nodes[0].paddingRight, nodes[0].columnGap, nodes[0].rowGap],
+    [14, 16, 20, 8],
+  );
+  applyAllAutoLayouts(nodes);
+  assert.deepEqual(
+    nodes.slice(1).map(({ x, y, width, height }) => [x, y, width, height]),
+    [
+      [16, 14, 40, 20],
+      [76, 14, 40, 20],
+    ],
+  );
+  const transfer = createFigmaTransfer({ ...result.document, nodes });
+  assert.equal(transfer.pages[0].children[0].layout, "horizontal");
+  assert.equal(
+    transfer.pages[0].children[0].children.some((node) => node.layoutPositioning === "absolute"),
+    false,
+  );
+});
+
+test("main-axis auto margins retain editable free space and out-of-flow margins do not disable flex", async () => {
+  const tree = container(
+    [
+      container([], { bounds: bounds(0, 0, 50, 20) }),
+      container([], {
+        bounds: bounds(250, 0, 50, 20),
+        margin: { left: 192 },
+        cssLayout: { "margin-left": "auto" },
+      }),
+      container([], {
+        bounds: bounds(20, 40, 10, 10),
+        positioning: { mode: "absolute" },
+        margin: { left: 5, top: 10 },
+      }),
+    ],
+    {
+      bounds: bounds(0, 0, 300, 100),
+      layout: {
+        display: "flex",
+        flex: { direction: "row", gap: { row: 0, column: 8 }, alignItems: "start" },
+      },
+    },
+  );
+  const result = await designNodeToV3(tree, options),
+    nodes = allNodes(result);
+  assert.equal(codes(result).includes("layout-margin-fixed"), false);
+  assert.equal(nodes[0].layout, "horizontal");
+  assert.equal(nodes[2].layoutMarginBefore, "auto");
+  nodes[0].width = 400;
+  applyAllAutoLayouts(nodes);
+  assert.deepEqual([nodes[1].x, nodes[2].x, nodes[3].x, nodes[3].y], [0, 350, 20, 40]);
 });
 
 test("viewport frame crops the first screen while preserving full editable content below it", async () => {
@@ -366,6 +528,30 @@ test("missing and invalid local image bytes are visible placeholders with explic
   }
 });
 
+test("CSS background and text alpha remain independent editable paints through save and Figma transfer", async () => {
+  const heading = text("Free");
+  heading.textStyle.color = rgb(33, 37, 41, 0.75);
+  heading.opacity = 0.7;
+  const result = await designNodeToV3(
+    container([heading], {
+      opacity: 0.6,
+      background: { layers: [{ type: "color", color: rgb(33, 37, 41, 0.03) }] },
+    }),
+    options,
+  );
+  const reopened = normalizeDesignDocument(JSON.parse(serializeDesignDocument(result.document)));
+  const [frame, label] = reopened.nodes;
+  assert.equal(frame.opacity, 0.6);
+  assert.equal(label.opacity, 0.7);
+  assert.deepEqual(frame.fillPaints, [{ type: "SOLID", color: "#212529", opacity: 0.03 }]);
+  assert.deepEqual(label.fillPaints, [{ type: "SOLID", color: "#212529", opacity: 0.75 }]);
+  assert.equal(codes(result).includes("paint-alpha"), false);
+  const native = createFigmaTransfer(reopened).pages[0].children[0];
+  assert.deepEqual(native.fillPaints, frame.fillPaints);
+  assert.deepEqual(native.children[0].fillPaints, label.fillPaints);
+  assert.equal(native.layoutPositioning, undefined);
+});
+
 test("unsupported paints, mixed text, effects and geometry corrections are reported, never silently claimed as faithful", async () => {
   const styled = text("Mixed", {
     styledSegments: [{ start: 0, end: 5, text: "Mixed", style: { fontWeight: 700 } }],
@@ -385,15 +571,68 @@ test("unsupported paints, mixed text, effects and geometry corrections are repor
     }),
     options,
   );
-  assert.equal(allNodes(result)[0].fill, "#c80a14");
+  assert.equal(allNodes(result)[0].fill, "transparent");
   for (const code of [
-    "gradient-solid-fallback",
+    "unsupported-css-gradient",
     "rich-text-uniform",
-    "shadow-approximation",
+    "unsupported-shadow-stack",
     "unsupported-effects",
   ])
     assert.ok(codes(result).includes(code), code);
   assert.equal(JSON.parse(allNodes(result)[1].notes).styledSegments[0].style.fontWeight, 700);
+  assert.equal(allNodes(result)[0].shadow, undefined);
+  assert.equal(allNodes(result)[0].shadowStack, undefined, "unsupported complete stacks never become a first-layer approximation");
+});
+
+test("retained CSS gradient units, angles and stop fixup map to editable paints rather than upstream unit guesses", () => {
+  const gradient = (image, extra = {}, width = 200, height = 100) =>
+    cssLinearBackgroundPaints({ "background-image": image, ...extra }, width, height).at(-1);
+  const px = gradient("linear-gradient(rgb(0,0,0), rgb(255,255,255) 100px)", {}, 200, 400);
+  assert.equal(px.stops[1].position, 0.25);
+  assert.deepEqual(px.handles.slice(0, 2), [{ x: 0.5, y: 0 }, { x: 0.5, y: 1 }]);
+  const sample = (paint, x, y) => sampleDesignFill({ fillPaints: [paint] }, { x, y });
+  assert.equal(sample(px, 0.5, 0.125).red, 0.5);
+  assert.equal(sample(px, 0.5, 0.5).red, 1);
+  const angle = gradient("linear-gradient(45deg, rgb(0,0,0), rgb(255,255,255))");
+  const [row] = inverseGradientMatrix(angle.handles);
+  assert(Math.abs(row[0] / 200 + row[1] / 100) < 1e-12, "45° must project equally in physical pixels");
+  assert(Math.abs(sample(angle, 0.5, 0.5).red - 0.5) < 1e-12);
+  const corner = gradient("linear-gradient(to top right, rgb(0,0,0), rgb(255,255,255))");
+  assert(Math.abs(sample(corner, 0, 0).red - 0.5) < 1e-12);
+  assert(Math.abs(sample(corner, 1, 1).red - 0.5) < 1e-12);
+  const fixed = gradient("linear-gradient(0.25turn, rgb(0,0,0) 60%, rgb(20,20,20), rgb(40,40,40) 20%, rgb(255,255,255))");
+  assert.deepEqual(fixed.stops.map((stop) => stop.position), [0.6, 0.6, 0.6, 1]);
+  const outside = gradient("linear-gradient(90deg, rgb(0,0,0) -100%, rgb(255,255,255) 200%)");
+  assert.deepEqual(outside.stops.map((stop) => stop.position), [0, 1]);
+  assert(Math.abs(sample(outside, 0.5, 0.5).red - 0.5) < 1e-12);
+});
+
+test("CSS background stacks keep alpha and layer order and refuse unsupported interpolation or background geometry", () => {
+  const style = (image, extra = {}) => ({ "background-image": image, ...extra });
+  const paints = cssLinearBackgroundPaints(style(
+    "linear-gradient(90deg, rgba(255,0,0,.5), transparent), linear-gradient(rgb(0,0,255), rgb(0,0,255))",
+    { "background-color": "rgb(0,255,0)" },
+  ), 200, 100);
+  assert.equal(paints.length, 3);
+  assert.deepEqual(paints[0], { type: "SOLID", color: "#00ff00", opacity: 1 });
+  assert.equal(paints[1].stops[0].color, "#0000ff");
+  assert.deepEqual(paints[2].stops.map(({ color, opacity }) => [color, opacity]), [["#ff0000", 0.5], ["#ff0000", 0]]);
+  const internal = cssLinearBackgroundPaints(style("linear-gradient(rgb(255,0,0), transparent, rgb(0,0,255))"), 200, 100)[0];
+  assert.deepEqual(internal.stops.map(({ position, color, opacity }) => [position, color, opacity]),
+    [[0, "#ff0000", 1], [0.5, "#ff0000", 0], [0.5, "#0000ff", 0], [1, "#0000ff", 1]]);
+  for (const image of [
+    "radial-gradient(rgb(0,0,0), rgb(255,255,255))",
+    "conic-gradient(rgb(0,0,0), rgb(255,255,255))",
+    "repeating-linear-gradient(rgb(0,0,0), rgb(255,255,255))",
+    "linear-gradient(in oklab, rgb(0,0,0), rgb(255,255,255))",
+    "linear-gradient(rgb(0,0,0), 30%, rgb(255,255,255))",
+    "linear-gradient(rgba(255,0,0,.5), rgba(0,0,255,.75))",
+  ]) assert.throws(() => cssLinearBackgroundPaints(style(image), 200, 100), /未转换|无法/u, image);
+  for (const extra of [{ "background-size": "100px 100px" }, { "background-blend-mode": "multiply" },
+    { "background-position": "10px 0px" },
+    { "background-clip": "padding-box" }, { "background-origin": "content-box" },
+    { "border-top-width": "2px" }, { "background-attachment": "fixed" }])
+    assert.throws(() => cssLinearBackgroundPaints(style("linear-gradient(rgb(0,0,0), rgb(255,255,255))", extra), 200, 100));
 });
 
 test("cycles, unsupported nodes, excessive nesting and text limits fail clearly before any caller can persist data", async () => {
@@ -408,7 +647,7 @@ test("cycles, unsupported nodes, excessive nesting and text limits fail clearly 
 });
 
 test("real Chromium HTML → pinned original DesignNode → v3 retains nested positions, text, local PNG and SVG", async (t) => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({ args: ["--disable-gpu"] });
   t.after(() => browser.close());
   const page = await browser.newPage();
   const runtime = await readFile(

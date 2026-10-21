@@ -1,3 +1,4 @@
+import { cssCornerRadii } from "./corner-radii.mjs";
 /* Browser-rendered HTML to CodeShell Design v3 capture. */
 
 const TEXT_NODE = 3;
@@ -68,7 +69,8 @@ function textDecoration(value) {
   return "none";
 }
 
-function hangingBaselineOffset(style, size, spacing, ownerDocument) {
+// Range bounds use the font box top; v3 text coordinates use an SVG hanging anchor.
+export function hangingBaselineOffset(style, size, spacing, ownerDocument) {
   let documentOffsets = hangingBaselineOffsets.get(ownerDocument);
   if (!documentOffsets) {
     documentOffsets = new Map();
@@ -234,23 +236,15 @@ export function parseCssBoxShadow(value) {
   };
 }
 
+function capturedCornerProperties(style, inset = 0) {
+  const radii = cssCornerRadii([
+    style.borderTopLeftRadius, style.borderTopRightRadius,
+    style.borderBottomRightRadius, style.borderBottomLeftRadius,
+  ]).map((radius) => round(Math.max(0, radius - inset)));
+  return { cornerRadius: radii[0], ...(radii.some((radius) => radius !== radii[0]) ? { cornerRadii: radii } : {}) };
+}
 function representativeCornerRadius(style) {
-  const radii = [
-    style.borderTopLeftRadius,
-    style.borderTopRightRadius,
-    style.borderBottomRightRadius,
-    style.borderBottomLeftRadius,
-  ].map((value) => pixelValue(value));
-  if (radii.every((value) => Math.abs(value - radii[0]) < 0.1)) return round(radii[0]);
-  // v3 currently stores one radius. Pick the observed corner value with the
-  // smallest squared error so a single exceptional corner does not square all
-  // four corners (a common chat-bubble pattern).
-  const best = radii.reduce((current, candidate) => {
-    const score = radii.reduce((sum, value) => sum + (value - candidate) ** 2, 0);
-    const currentScore = radii.reduce((sum, value) => sum + (value - current) ** 2, 0);
-    return score < currentScore ? candidate : current;
-  }, radii[0]);
-  return round(best);
+  return capturedCornerProperties(style).cornerRadius;
 }
 
 function isVisibleElement(element, style, rect) {
@@ -716,7 +710,7 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
       rectangleNode(nextId("surface"), `${frame.name} surface`, rect, {
         fill: fill?.alpha > 0 ? fill.hex : "transparent",
         opacity: fill?.alpha > 0 ? round(fill.alpha, 4) : 1,
-        cornerRadius: radius,
+        ...capturedCornerProperties(style),
         layoutPositioning: "absolute",
         constraintHorizontal: "stretch",
         constraintVertical: "stretch",
@@ -756,7 +750,7 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
           stroke: border.color.hex,
           strokeWidth: round(border.width),
           opacity: round(border.color.alpha, 4),
-          cornerRadius: round(Math.max(0, radius - border.width / 2)),
+          ...capturedCornerProperties(style, border.width / 2),
           layoutPositioning: "absolute",
           constraintHorizontal: "stretch",
           constraintVertical: "stretch",
@@ -1241,7 +1235,7 @@ export async function captureHtmlToDesign(root, options = {}) {
     const holder = needsFrame
       ? frameNode(nextId(explicitId || name, { preserve: Boolean(explicitId) }), name, rect, {
           opacity: round(clamp(Number.parseFloat(style.opacity || "1"), 0, 1), 4),
-          cornerRadius: representativeCornerRadius(style),
+          ...capturedCornerProperties(style),
           padding: 0,
           paddingTop: round(measuredInsets.top),
           paddingRight: round(measuredInsets.right),

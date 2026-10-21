@@ -4,6 +4,25 @@ Design Studio **0.22.0** 提供 HTML → DesignNode → v3 导入、Figma JSON �
 多页 HTML 原型和项目评审。原生设计仍使用 v3 `.codesign.json`；16 个声明式 Agent
 工具与可视编辑器共用同一份设计、来源和评审数据。本版沿用现有 Host 权限。
 
+文字可选 `textRanges` v1 在同一个 Text 中保存颜色、装饰和链接区间，按完整
+`textSource ?? text` 的 UTF16 索引和精确内容签名绑定；不创建绝对定位的文字碎片。
+最多64个不重叠区间、32KiB；保留真实空格、NBSP、显式换行，并单独映射显示软换行。
+`use_design` 的 `edit_text` 用源索引和明确的插入亲和性更新内容及区间；整段
+`update_node` 改文字须带匹配区间，或显式 `textRanges:null` 清除。保存、完整备份、
+撤销和重新打开保留同一状态。旧稿未带区间时沿用原有行为。
+`textSource` 仍是可选字段；范围文字首次进入响应式自动布局时保留其完整来源，
+Hug 内容编辑会重算尺寸。已知空来源按一行行高和1px宽度下限排版，现有最小宽度
+仍生效；每个显式换行保留一个真实分行。
+
+这项核心合同尚未开启 HTML 混合行内文字提升。SVG 已验证纯色/链接区间的流式排版；
+自定义下划线厚度、偏移和 skip-ink 会明确拒绝，避免 SVG 将它们当作 auto 输出。
+范围文字暂不接收基础渐变/paint stack 或省略截断；各渲染器和原生出口仍须通过自身
+能力检查，不能仅把区间写入元数据后声称绘制或往返成功。
+
+原生范围创建、来源快照和增量导回仍在实施验证。当前 Design Bridge 的传输、增量
+补丁（包括清除区间）和独立 HTML 插件原始输入均提前拒绝 `textRanges`，完整保留
+设计文档中的范围数据；不能绕过检查把新字段交给旧的统一文字创建器后静默丢失样式。
+
 ## 0.22：CanvasKit GPU 画布
 
 画布统一使用 CanvasKit 0.42.0（Skia C++ → WebAssembly → WebGL2）。全图概览、
@@ -482,6 +501,29 @@ is available.
 
 ## HTML fidelity fixture
 
+The production fidelity harness (`npm run test:fidelity:production`) requests report-only
+capture-local flow obligations. It binds actual source Element identities to canonical nodes
+while the capture iframe is alive, then audits each imported/relayout/narrow candidate against
+that immutable evidence. Ordinary in-flow relationships must retain an Auto Layout ancestry
+path, including only wrapper IDs proven by that capture; NONE hops fail even when SVG pixels
+are unchanged. Actual absolute/fixed source children are excluded from their outer flow
+relationship, and image/SVG/empty leaves need no child layout. Ambiguous identities and
+unsupported inline/table/transform/other source flows remain separately reported as PARTIAL,
+so an empty issue list cannot certify complete flow coverage. The evidence is archived as
+`flow-obligations.json` and per-mode `flowAudits`, never saved as document admission metadata.
+The existing atomic fixed two-column table recovery publishes its exact live Element/original
+node relationships only after the complete table commits. This covers real rows, cells, P
+frames and their original Text; only the exact validated BR tokens become text line breaks.
+Unpromoted/AUTO tables, failed drafts or ID-only metadata cannot supply this proof. Existing
+capture factory callbacks remain the sole authority for intermediate synthetic wrappers.
+Successful rational-float plans also publish exact original row/column relationships after
+final Grid validation. Only a successful float/block plan's verified empty `::after` clearfix
+can discharge that generated-content detail; other floats, paint and generated text remain
+unverified. Each resized candidate is still checked against the immutable source obligations.
+No pixel thresholds are changed. Callers may request this diagnostic with
+`captureWorkspaceHtmlResult({ ...options, includeFlowAudit: true })`; ordinary import behavior
+is unchanged when the option is absent.
+
 Use the top-bar **HTML** action to convert a workspace-relative `.html` file, or call the
 revision-guarded `import_html` Agent tool. Version 0.20 uses `app/html-import.mjs`, the pinned
 html2figma runtime and `design-node-adapter.mjs`. The independent measured reference helper
@@ -554,20 +596,60 @@ The product importer captures the visible first viewport rather than the root's 
 height. Partially visible layers retain their measured geometry behind an intentional root clip;
 fully offscreen descendants are not serialized. Choose a tighter root selector when the desired
 design is one visible region instead of the complete viewport.
+Document-root auto/scroll overflow can retain ordinary viewport Auto Layout when
+standards-mode measurements prove zero scroll offset, no horizontal overflow and
+no consumed scrollbar gutter. Independent ancestor clips, classic gutters and
+stable gutters retain measured geometry with diagnostics.
 Flex rows/columns map reverse direction, Wrap/Wrap Reverse, axis gaps, four-side padding, Baseline,
 Min/Max, alignment, distribution, and Fill/Fixed sizing into v3. Grid maps equal computed columns
 and row/column spans; direct absolute/fixed children are excluded from flow and retain measured
 Constraints. Opaque uniform borders remain editable decorations without forcing a manual-layout
-fallback. Unequal Flex grow, floats, unequal Grid tracks, and decoration-heavy controls keep
+fallback. Unequal Flex grow, unsupported floats, unequal Grid tracks, and decoration-heavy controls keep
 measured manual geometry.
 It is not an HTML parser and does not promise fidelity for unsupported visual primitives such as
 raster images, SVG paths, gradients, pseudo-elements, multiple shadows, or four independently
 editable corner radii.
 
+Isolated same-direction percentage float columns can recover a bounded single
+native Grid row (at most 24 tracks), with Fill widths and ordinary inner Auto
+Layout. Mixed text/shape wrapping and unsupported constraints retain measured
+geometry with diagnostics. Every recovered row reports that media queries and
+float wrapping are not retained; recapture after a source CSS breakpoint changes.
+See `docs/todo/design-studio-floated-columns-2026-10-21.md` for strict source
+fixtures and the separate native negative-bleed/viewport limitations.
+
+Plain single-text block/inline-block frames can retain vertical Auto Layout with
+exact capture-local source binding even when class selectors repeat. Original
+NBSP and ASCII whitespace provenance stay distinct. Ambiguous sources, table or
+complex inline content and generated controls retain measured geometry with
+diagnostics; see `docs/todo/design-studio-plain-text-flow-2026-10-21.md`.
+
+Ordinary empty blocks retain vertical Auto Layout and physical padding when live
+DOM capture proves there is no text, generated content, control or list marker.
+They keep their original nodes and can participate in Fill sizing without spacer
+layers. Replaced elements, aspect ratios, relative padding/size limits and size
+containment retain measured geometry with explicit conversion boundaries.
+
 ## Package boundary
+
+Figma source bindings reject conflicting duplicate raw node IDs before planning
+original-node changes. Identical ancestor/selected-child overlap retains the first
+original raw object; full descendants, unknown styles, metadata and observed
+parent/order context must agree. See the
+[source overlap contract](../../docs/todo/design-studio-figma-source-overlap-2026-10-21.md).
 
 Renderable code lives under `app/`. The declarative Agent contribution lives
 under `agent/`: the manifest declares every callable tool, handlers execute
 inside the panel sandbox, and the bundled Skill is read-only Markdown. The
 installer still rejects traditional plugin backends, hooks, commands, and MCP
 configuration, so one install does not collapse the runtime isolation.
+
+
+Solid CSS borders can retain four bounded editable side paints and inside alignment
+without adding decorative child layers. Effective border insets count once in Auto
+Layout padding and HTML export. Legacy centered strokes keep their existing semantics.
+Native Figma supports independent weights with one shared RGB/alpha paint; multicolor
+native transfer, unequal rounded side joins and adjacent sides with different alpha
+are explicitly rejected or diagnosed. Collapsed table borders retain a diagnosed
+measured approximation. Strict border evidence and remaining antialiasing limits are
+recorded in `docs/todo/design-studio-css-border-sides-2026-10-21.md`.
