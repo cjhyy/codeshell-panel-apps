@@ -1,0 +1,3497 @@
+{
+  "rawSha256": "829289f20304e3619a107edbfc9993feb7458788c299de4957a9c7a78125cffa",
+  "source": "Actual owned native negative-spacing research; selected unchanged subtrees from official JSON_REST_V1 after wide-again.",
+  "cases": [
+    {
+      "index": 5,
+      "name": "gap--16",
+      "controlId": "62:310",
+      "parentId": "62:310",
+      "middleId": "62:312",
+      "direction": "HORIZONTAL",
+      "snapshots": [
+        {
+          "stage": "wide",
+          "parentMainExtent": 600,
+          "middleMainStart": 0,
+          "middleMainExtent": 600,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:310",
+              "name": "05 gap--16",
+              "x": 1260,
+              "y": 125,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:311",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:310"
+            },
+            {
+              "id": "62:312",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 600,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:310"
+            },
+            {
+              "id": "62:313",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:312"
+            },
+            {
+              "id": "62:314",
+              "name": "Real child 1",
+              "x": 305,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:312"
+            },
+            {
+              "id": "62:315",
+              "name": "End spacer",
+              "x": 599,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:310"
+            }
+          ]
+        },
+        {
+          "stage": "narrow-control-only",
+          "parentMainExtent": 360,
+          "middleMainStart": 0,
+          "middleMainExtent": 360,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:310",
+              "name": "05 gap--16",
+              "x": 1260,
+              "y": 125,
+              "width": 360,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:311",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:310"
+            },
+            {
+              "id": "62:312",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 360,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:310"
+            },
+            {
+              "id": "62:313",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 175,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:312"
+            },
+            {
+              "id": "62:314",
+              "name": "Real child 1",
+              "x": 185,
+              "y": 0,
+              "width": 175,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:312"
+            },
+            {
+              "id": "62:315",
+              "name": "End spacer",
+              "x": 359,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:310"
+            }
+          ]
+        },
+        {
+          "stage": "wide-again",
+          "parentMainExtent": 600,
+          "middleMainStart": 0,
+          "middleMainExtent": 600,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:310",
+              "name": "05 gap--16",
+              "x": 1260,
+              "y": 125,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:311",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:310"
+            },
+            {
+              "id": "62:312",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 600,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:310"
+            },
+            {
+              "id": "62:313",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:312"
+            },
+            {
+              "id": "62:314",
+              "name": "Real child 1",
+              "x": 305,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:312"
+            },
+            {
+              "id": "62:315",
+              "name": "End spacer",
+              "x": 599,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:310"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "index": 13,
+      "name": "asymmetric-1-2",
+      "controlId": "62:358",
+      "parentId": "62:358",
+      "middleId": "62:360",
+      "direction": "HORIZONTAL",
+      "snapshots": [
+        {
+          "stage": "wide",
+          "parentMainExtent": 600,
+          "middleMainStart": 0,
+          "middleMainExtent": 599,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:358",
+              "name": "13 asymmetric-1-2",
+              "x": 640,
+              "y": 440,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:359",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:358"
+            },
+            {
+              "id": "62:360",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 599,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:358"
+            },
+            {
+              "id": "62:361",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 294.5,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:360"
+            },
+            {
+              "id": "62:362",
+              "name": "Real child 1",
+              "x": 304.5,
+              "y": 0,
+              "width": 294.5,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:360"
+            },
+            {
+              "id": "62:363",
+              "name": "End spacer",
+              "x": 598,
+              "y": 0,
+              "width": 2,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:358"
+            }
+          ]
+        },
+        {
+          "stage": "narrow-control-only",
+          "parentMainExtent": 360,
+          "middleMainStart": 0,
+          "middleMainExtent": 359,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:358",
+              "name": "13 asymmetric-1-2",
+              "x": 640,
+              "y": 440,
+              "width": 360,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:359",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:358"
+            },
+            {
+              "id": "62:360",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 359,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:358"
+            },
+            {
+              "id": "62:361",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 174.5,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:360"
+            },
+            {
+              "id": "62:362",
+              "name": "Real child 1",
+              "x": 184.5,
+              "y": 0,
+              "width": 174.5,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:360"
+            },
+            {
+              "id": "62:363",
+              "name": "End spacer",
+              "x": 358,
+              "y": 0,
+              "width": 2,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:358"
+            }
+          ]
+        },
+        {
+          "stage": "wide-again",
+          "parentMainExtent": 600,
+          "middleMainStart": 0,
+          "middleMainExtent": 599,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:358",
+              "name": "13 asymmetric-1-2",
+              "x": 640,
+              "y": 440,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:359",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:358"
+            },
+            {
+              "id": "62:360",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 599,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:358"
+            },
+            {
+              "id": "62:361",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 294.5,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:360"
+            },
+            {
+              "id": "62:362",
+              "name": "Real child 1",
+              "x": 304.5,
+              "y": 0,
+              "width": 294.5,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:360"
+            },
+            {
+              "id": "62:363",
+              "name": "End spacer",
+              "x": 598,
+              "y": 0,
+              "width": 2,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:358"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "index": 14,
+      "name": "asymmetric-2-1",
+      "controlId": "62:364",
+      "parentId": "62:364",
+      "middleId": "62:366",
+      "direction": "HORIZONTAL",
+      "snapshots": [
+        {
+          "stage": "wide",
+          "parentMainExtent": 600,
+          "middleMainStart": 1,
+          "middleMainExtent": 599,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:364",
+              "name": "14 asymmetric-2-1",
+              "x": 1260,
+              "y": 440,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:365",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 2,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:364"
+            },
+            {
+              "id": "62:366",
+              "name": "Real AUTO middle",
+              "x": 1,
+              "y": 0,
+              "width": 599,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:364"
+            },
+            {
+              "id": "62:367",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 294.5,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:366"
+            },
+            {
+              "id": "62:368",
+              "name": "Real child 1",
+              "x": 304.5,
+              "y": 0,
+              "width": 294.5,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:366"
+            },
+            {
+              "id": "62:369",
+              "name": "End spacer",
+              "x": 599,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:364"
+            }
+          ]
+        },
+        {
+          "stage": "narrow-control-only",
+          "parentMainExtent": 360,
+          "middleMainStart": 1,
+          "middleMainExtent": 359,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:364",
+              "name": "14 asymmetric-2-1",
+              "x": 1260,
+              "y": 440,
+              "width": 360,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:365",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 2,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:364"
+            },
+            {
+              "id": "62:366",
+              "name": "Real AUTO middle",
+              "x": 1,
+              "y": 0,
+              "width": 359,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:364"
+            },
+            {
+              "id": "62:367",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 174.5,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:366"
+            },
+            {
+              "id": "62:368",
+              "name": "Real child 1",
+              "x": 184.5,
+              "y": 0,
+              "width": 174.5,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:366"
+            },
+            {
+              "id": "62:369",
+              "name": "End spacer",
+              "x": 359,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:364"
+            }
+          ]
+        },
+        {
+          "stage": "wide-again",
+          "parentMainExtent": 600,
+          "middleMainStart": 1,
+          "middleMainExtent": 599,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:364",
+              "name": "14 asymmetric-2-1",
+              "x": 1260,
+              "y": 440,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:365",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 2,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:364"
+            },
+            {
+              "id": "62:366",
+              "name": "Real AUTO middle",
+              "x": 1,
+              "y": 0,
+              "width": 599,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:364"
+            },
+            {
+              "id": "62:367",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 294.5,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:366"
+            },
+            {
+              "id": "62:368",
+              "name": "Real child 1",
+              "x": 304.5,
+              "y": 0,
+              "width": 294.5,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:366"
+            },
+            {
+              "id": "62:369",
+              "name": "End spacer",
+              "x": 599,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:364"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "index": 28,
+      "name": "FIXED630-MIN",
+      "controlId": "62:448",
+      "parentId": "62:448",
+      "middleId": "62:450",
+      "direction": "HORIZONTAL",
+      "snapshots": [
+        {
+          "stage": "wide",
+          "parentMainExtent": 600,
+          "middleMainStart": 0,
+          "middleMainExtent": 630,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:448",
+              "name": "28 FIXED630-MIN",
+              "x": 640,
+              "y": 965,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:449",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:448"
+            },
+            {
+              "id": "62:450",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 630,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:448"
+            },
+            {
+              "id": "62:451",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:450"
+            },
+            {
+              "id": "62:452",
+              "name": "Real child 1",
+              "x": 320,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:450"
+            },
+            {
+              "id": "62:453",
+              "name": "End spacer",
+              "x": 629,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:448"
+            }
+          ]
+        },
+        {
+          "stage": "narrow-control-only",
+          "parentMainExtent": 360,
+          "middleMainStart": 0,
+          "middleMainExtent": 630,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:448",
+              "name": "28 FIXED630-MIN",
+              "x": 640,
+              "y": 965,
+              "width": 360,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:449",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:448"
+            },
+            {
+              "id": "62:450",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 630,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:448"
+            },
+            {
+              "id": "62:451",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:450"
+            },
+            {
+              "id": "62:452",
+              "name": "Real child 1",
+              "x": 320,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:450"
+            },
+            {
+              "id": "62:453",
+              "name": "End spacer",
+              "x": 629,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:448"
+            }
+          ]
+        },
+        {
+          "stage": "wide-again",
+          "parentMainExtent": 600,
+          "middleMainStart": 0,
+          "middleMainExtent": 630,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:448",
+              "name": "28 FIXED630-MIN",
+              "x": 640,
+              "y": 965,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:449",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:448"
+            },
+            {
+              "id": "62:450",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 630,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:448"
+            },
+            {
+              "id": "62:451",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:450"
+            },
+            {
+              "id": "62:452",
+              "name": "Real child 1",
+              "x": 320,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:450"
+            },
+            {
+              "id": "62:453",
+              "name": "End spacer",
+              "x": 629,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:448"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "index": 29,
+      "name": "FIXED630-CENTER",
+      "controlId": "62:454",
+      "parentId": "62:454",
+      "middleId": "62:456",
+      "direction": "HORIZONTAL",
+      "snapshots": [
+        {
+          "stage": "wide",
+          "parentMainExtent": 600,
+          "middleMainStart": -15,
+          "middleMainExtent": 630,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:454",
+              "name": "29 FIXED630-CENTER",
+              "x": 1260,
+              "y": 965,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:455",
+              "name": "Start spacer",
+              "x": -15,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:454"
+            },
+            {
+              "id": "62:456",
+              "name": "Real AUTO middle",
+              "x": -15,
+              "y": 0,
+              "width": 630,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:454"
+            },
+            {
+              "id": "62:457",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:456"
+            },
+            {
+              "id": "62:458",
+              "name": "Real child 1",
+              "x": 320,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:456"
+            },
+            {
+              "id": "62:459",
+              "name": "End spacer",
+              "x": 614,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:454"
+            }
+          ]
+        },
+        {
+          "stage": "narrow-control-only",
+          "parentMainExtent": 360,
+          "middleMainStart": -135,
+          "middleMainExtent": 630,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:454",
+              "name": "29 FIXED630-CENTER",
+              "x": 1260,
+              "y": 965,
+              "width": 360,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:455",
+              "name": "Start spacer",
+              "x": -135,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:454"
+            },
+            {
+              "id": "62:456",
+              "name": "Real AUTO middle",
+              "x": -135,
+              "y": 0,
+              "width": 630,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:454"
+            },
+            {
+              "id": "62:457",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:456"
+            },
+            {
+              "id": "62:458",
+              "name": "Real child 1",
+              "x": 320,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:456"
+            },
+            {
+              "id": "62:459",
+              "name": "End spacer",
+              "x": 494,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:454"
+            }
+          ]
+        },
+        {
+          "stage": "wide-again",
+          "parentMainExtent": 600,
+          "middleMainStart": -15,
+          "middleMainExtent": 630,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:454",
+              "name": "29 FIXED630-CENTER",
+              "x": 1260,
+              "y": 965,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:455",
+              "name": "Start spacer",
+              "x": -15,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:454"
+            },
+            {
+              "id": "62:456",
+              "name": "Real AUTO middle",
+              "x": -15,
+              "y": 0,
+              "width": 630,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:454"
+            },
+            {
+              "id": "62:457",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:456"
+            },
+            {
+              "id": "62:458",
+              "name": "Real child 1",
+              "x": 320,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:456"
+            },
+            {
+              "id": "62:459",
+              "name": "End spacer",
+              "x": 614,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:454"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "index": 30,
+      "name": "FIXED630-MAX",
+      "controlId": "62:460",
+      "parentId": "62:460",
+      "middleId": "62:462",
+      "direction": "HORIZONTAL",
+      "snapshots": [
+        {
+          "stage": "wide",
+          "parentMainExtent": 600,
+          "middleMainStart": -30,
+          "middleMainExtent": 630,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:460",
+              "name": "30 FIXED630-MAX",
+              "x": 20,
+              "y": 1070,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:461",
+              "name": "Start spacer",
+              "x": -30,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:460"
+            },
+            {
+              "id": "62:462",
+              "name": "Real AUTO middle",
+              "x": -30,
+              "y": 0,
+              "width": 630,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:460"
+            },
+            {
+              "id": "62:463",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:462"
+            },
+            {
+              "id": "62:464",
+              "name": "Real child 1",
+              "x": 320,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:462"
+            },
+            {
+              "id": "62:465",
+              "name": "End spacer",
+              "x": 599,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:460"
+            }
+          ]
+        },
+        {
+          "stage": "narrow-control-only",
+          "parentMainExtent": 360,
+          "middleMainStart": -270,
+          "middleMainExtent": 630,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:460",
+              "name": "30 FIXED630-MAX",
+              "x": 20,
+              "y": 1070,
+              "width": 360,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:461",
+              "name": "Start spacer",
+              "x": -270,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:460"
+            },
+            {
+              "id": "62:462",
+              "name": "Real AUTO middle",
+              "x": -270,
+              "y": 0,
+              "width": 630,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:460"
+            },
+            {
+              "id": "62:463",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:462"
+            },
+            {
+              "id": "62:464",
+              "name": "Real child 1",
+              "x": 320,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:462"
+            },
+            {
+              "id": "62:465",
+              "name": "End spacer",
+              "x": 359,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:460"
+            }
+          ]
+        },
+        {
+          "stage": "wide-again",
+          "parentMainExtent": 600,
+          "middleMainStart": -30,
+          "middleMainExtent": 630,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:460",
+              "name": "30 FIXED630-MAX",
+              "x": 20,
+              "y": 1070,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:461",
+              "name": "Start spacer",
+              "x": -30,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:460"
+            },
+            {
+              "id": "62:462",
+              "name": "Real AUTO middle",
+              "x": -30,
+              "y": 0,
+              "width": 630,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:460"
+            },
+            {
+              "id": "62:463",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:462"
+            },
+            {
+              "id": "62:464",
+              "name": "Real child 1",
+              "x": 320,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:462"
+            },
+            {
+              "id": "62:465",
+              "name": "End spacer",
+              "x": 599,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:460"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "index": 32,
+      "name": "FIXED600-CENTER",
+      "controlId": "62:472",
+      "parentId": "62:472",
+      "middleId": "62:474",
+      "direction": "HORIZONTAL",
+      "snapshots": [
+        {
+          "stage": "wide",
+          "parentMainExtent": 600,
+          "middleMainStart": 0,
+          "middleMainExtent": 600,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:472",
+              "name": "32 FIXED600-CENTER",
+              "x": 1260,
+              "y": 1070,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:473",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:472"
+            },
+            {
+              "id": "62:474",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 600,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:472"
+            },
+            {
+              "id": "62:475",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:474"
+            },
+            {
+              "id": "62:476",
+              "name": "Real child 1",
+              "x": 305,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:474"
+            },
+            {
+              "id": "62:477",
+              "name": "End spacer",
+              "x": 599,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:472"
+            }
+          ]
+        },
+        {
+          "stage": "narrow-control-only",
+          "parentMainExtent": 360,
+          "middleMainStart": -120,
+          "middleMainExtent": 600,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:472",
+              "name": "32 FIXED600-CENTER",
+              "x": 1260,
+              "y": 1070,
+              "width": 360,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:473",
+              "name": "Start spacer",
+              "x": -120,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:472"
+            },
+            {
+              "id": "62:474",
+              "name": "Real AUTO middle",
+              "x": -120,
+              "y": 0,
+              "width": 600,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:472"
+            },
+            {
+              "id": "62:475",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:474"
+            },
+            {
+              "id": "62:476",
+              "name": "Real child 1",
+              "x": 305,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:474"
+            },
+            {
+              "id": "62:477",
+              "name": "End spacer",
+              "x": 479,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:472"
+            }
+          ]
+        },
+        {
+          "stage": "wide-again",
+          "parentMainExtent": 600,
+          "middleMainStart": 0,
+          "middleMainExtent": 600,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:472",
+              "name": "32 FIXED600-CENTER",
+              "x": 1260,
+              "y": 1070,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:473",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:472"
+            },
+            {
+              "id": "62:474",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 600,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:472"
+            },
+            {
+              "id": "62:475",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:474"
+            },
+            {
+              "id": "62:476",
+              "name": "Real child 1",
+              "x": 305,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:474"
+            },
+            {
+              "id": "62:477",
+              "name": "End spacer",
+              "x": 599,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:472"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "index": 33,
+      "name": "FIXED600-MAX",
+      "controlId": "62:478",
+      "parentId": "62:478",
+      "middleId": "62:480",
+      "direction": "HORIZONTAL",
+      "snapshots": [
+        {
+          "stage": "wide",
+          "parentMainExtent": 600,
+          "middleMainStart": 0,
+          "middleMainExtent": 600,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:478",
+              "name": "33 FIXED600-MAX",
+              "x": 20,
+              "y": 1175,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:479",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:478"
+            },
+            {
+              "id": "62:480",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 600,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:478"
+            },
+            {
+              "id": "62:481",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:480"
+            },
+            {
+              "id": "62:482",
+              "name": "Real child 1",
+              "x": 305,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:480"
+            },
+            {
+              "id": "62:483",
+              "name": "End spacer",
+              "x": 599,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:478"
+            }
+          ]
+        },
+        {
+          "stage": "narrow-control-only",
+          "parentMainExtent": 360,
+          "middleMainStart": -240,
+          "middleMainExtent": 600,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:478",
+              "name": "33 FIXED600-MAX",
+              "x": 20,
+              "y": 1175,
+              "width": 360,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:479",
+              "name": "Start spacer",
+              "x": -240,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:478"
+            },
+            {
+              "id": "62:480",
+              "name": "Real AUTO middle",
+              "x": -240,
+              "y": 0,
+              "width": 600,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:478"
+            },
+            {
+              "id": "62:481",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:480"
+            },
+            {
+              "id": "62:482",
+              "name": "Real child 1",
+              "x": 305,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:480"
+            },
+            {
+              "id": "62:483",
+              "name": "End spacer",
+              "x": 359,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:478"
+            }
+          ]
+        },
+        {
+          "stage": "wide-again",
+          "parentMainExtent": 600,
+          "middleMainStart": 0,
+          "middleMainExtent": 600,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:478",
+              "name": "33 FIXED600-MAX",
+              "x": 20,
+              "y": 1175,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:479",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:478"
+            },
+            {
+              "id": "62:480",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 600,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:478"
+            },
+            {
+              "id": "62:481",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:480"
+            },
+            {
+              "id": "62:482",
+              "name": "Real child 1",
+              "x": 305,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:480"
+            },
+            {
+              "id": "62:483",
+              "name": "End spacer",
+              "x": 599,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:478"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "index": 36,
+      "name": "Fill-min630",
+      "controlId": "62:494",
+      "parentId": "62:494",
+      "middleId": "62:496",
+      "direction": "HORIZONTAL",
+      "snapshots": [
+        {
+          "stage": "wide",
+          "parentMainExtent": 600,
+          "middleMainStart": 0,
+          "middleMainExtent": 630,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:494",
+              "name": "36 Fill-min630",
+              "x": 20,
+              "y": 1280,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:495",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:494"
+            },
+            {
+              "id": "62:496",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 630,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:494"
+            },
+            {
+              "id": "62:497",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:496"
+            },
+            {
+              "id": "62:498",
+              "name": "Real child 1",
+              "x": 320,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:496"
+            },
+            {
+              "id": "62:499",
+              "name": "End spacer",
+              "x": 629,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:494"
+            }
+          ]
+        },
+        {
+          "stage": "narrow-control-only",
+          "parentMainExtent": 360,
+          "middleMainStart": 0,
+          "middleMainExtent": 630,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:494",
+              "name": "36 Fill-min630",
+              "x": 20,
+              "y": 1280,
+              "width": 360,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:495",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:494"
+            },
+            {
+              "id": "62:496",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 630,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:494"
+            },
+            {
+              "id": "62:497",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:496"
+            },
+            {
+              "id": "62:498",
+              "name": "Real child 1",
+              "x": 320,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:496"
+            },
+            {
+              "id": "62:499",
+              "name": "End spacer",
+              "x": 629,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:494"
+            }
+          ]
+        },
+        {
+          "stage": "wide-again",
+          "parentMainExtent": 600,
+          "middleMainStart": 0,
+          "middleMainExtent": 630,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:494",
+              "name": "36 Fill-min630",
+              "x": 20,
+              "y": 1280,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:495",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:494"
+            },
+            {
+              "id": "62:496",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 630,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:494"
+            },
+            {
+              "id": "62:497",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:496"
+            },
+            {
+              "id": "62:498",
+              "name": "Real child 1",
+              "x": 320,
+              "y": 0,
+              "width": 310,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:496"
+            },
+            {
+              "id": "62:499",
+              "name": "End spacer",
+              "x": 629,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:494"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "index": 37,
+      "name": "Fill-max570",
+      "controlId": "62:500",
+      "parentId": "62:500",
+      "middleId": "62:502",
+      "direction": "HORIZONTAL",
+      "snapshots": [
+        {
+          "stage": "wide",
+          "parentMainExtent": 600,
+          "middleMainStart": 0,
+          "middleMainExtent": 570,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:500",
+              "name": "37 Fill-max570",
+              "x": 640,
+              "y": 1280,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:501",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:500"
+            },
+            {
+              "id": "62:502",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 570,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:500"
+            },
+            {
+              "id": "62:503",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 280,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:502"
+            },
+            {
+              "id": "62:504",
+              "name": "Real child 1",
+              "x": 290,
+              "y": 0,
+              "width": 280,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:502"
+            },
+            {
+              "id": "62:505",
+              "name": "End spacer",
+              "x": 569,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:500"
+            }
+          ]
+        },
+        {
+          "stage": "narrow-control-only",
+          "parentMainExtent": 360,
+          "middleMainStart": 0,
+          "middleMainExtent": 360,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:500",
+              "name": "37 Fill-max570",
+              "x": 640,
+              "y": 1280,
+              "width": 360,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:501",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:500"
+            },
+            {
+              "id": "62:502",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 360,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:500"
+            },
+            {
+              "id": "62:503",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 175,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:502"
+            },
+            {
+              "id": "62:504",
+              "name": "Real child 1",
+              "x": 185,
+              "y": 0,
+              "width": 175,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:502"
+            },
+            {
+              "id": "62:505",
+              "name": "End spacer",
+              "x": 359,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:500"
+            }
+          ]
+        },
+        {
+          "stage": "wide-again",
+          "parentMainExtent": 600,
+          "middleMainStart": 0,
+          "middleMainExtent": 570,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:500",
+              "name": "37 Fill-max570",
+              "x": 640,
+              "y": 1280,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:501",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:500"
+            },
+            {
+              "id": "62:502",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 570,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:500"
+            },
+            {
+              "id": "62:503",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 280,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:502"
+            },
+            {
+              "id": "62:504",
+              "name": "Real child 1",
+              "x": 290,
+              "y": 0,
+              "width": 280,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:502"
+            },
+            {
+              "id": "62:505",
+              "name": "End spacer",
+              "x": 569,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:500"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "index": 42,
+      "name": "nested-parent-fill",
+      "controlId": "62:530",
+      "parentId": "62:531",
+      "middleId": "62:533",
+      "direction": "HORIZONTAL",
+      "snapshots": [
+        {
+          "stage": "wide",
+          "parentMainExtent": 600,
+          "middleMainStart": 0,
+          "middleMainExtent": 600,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:530",
+              "name": "42 nested-parent-fill",
+              "x": 20,
+              "y": 1490,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:531",
+              "name": "Nested parent Fill wrapper",
+              "x": 0,
+              "y": 0,
+              "width": 600,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:530"
+            },
+            {
+              "id": "62:532",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:531"
+            },
+            {
+              "id": "62:533",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 600,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:531"
+            },
+            {
+              "id": "62:534",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:533"
+            },
+            {
+              "id": "62:535",
+              "name": "Real child 1",
+              "x": 305,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:533"
+            },
+            {
+              "id": "62:536",
+              "name": "End spacer",
+              "x": 599,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:531"
+            }
+          ]
+        },
+        {
+          "stage": "narrow-control-only",
+          "parentMainExtent": 360,
+          "middleMainStart": 0,
+          "middleMainExtent": 360,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:530",
+              "name": "42 nested-parent-fill",
+              "x": 20,
+              "y": 1490,
+              "width": 360,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:531",
+              "name": "Nested parent Fill wrapper",
+              "x": 0,
+              "y": 0,
+              "width": 360,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:530"
+            },
+            {
+              "id": "62:532",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:531"
+            },
+            {
+              "id": "62:533",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 360,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:531"
+            },
+            {
+              "id": "62:534",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 175,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:533"
+            },
+            {
+              "id": "62:535",
+              "name": "Real child 1",
+              "x": 185,
+              "y": 0,
+              "width": 175,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:533"
+            },
+            {
+              "id": "62:536",
+              "name": "End spacer",
+              "x": 359,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:531"
+            }
+          ]
+        },
+        {
+          "stage": "wide-again",
+          "parentMainExtent": 600,
+          "middleMainStart": 0,
+          "middleMainExtent": 600,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:530",
+              "name": "42 nested-parent-fill",
+              "x": 20,
+              "y": 1490,
+              "width": 600,
+              "height": 60,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:531",
+              "name": "Nested parent Fill wrapper",
+              "x": 0,
+              "y": 0,
+              "width": 600,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:530"
+            },
+            {
+              "id": "62:532",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:531"
+            },
+            {
+              "id": "62:533",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 600,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:531"
+            },
+            {
+              "id": "62:534",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:533"
+            },
+            {
+              "id": "62:535",
+              "name": "Real child 1",
+              "x": 305,
+              "y": 0,
+              "width": 295,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:533"
+            },
+            {
+              "id": "62:536",
+              "name": "End spacer",
+              "x": 599,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:531"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "index": 43,
+      "name": "vertical-Fill",
+      "controlId": "62:537",
+      "parentId": "62:537",
+      "middleId": "62:539",
+      "direction": "VERTICAL",
+      "snapshots": [
+        {
+          "stage": "wide",
+          "parentMainExtent": 80,
+          "middleMainStart": 0,
+          "middleMainExtent": 80,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:537",
+              "name": "43 vertical-Fill",
+              "x": 640,
+              "y": 1490,
+              "width": 60,
+              "height": 80,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:538",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:537"
+            },
+            {
+              "id": "62:539",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 80,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:537"
+            },
+            {
+              "id": "62:540",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 35,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:539"
+            },
+            {
+              "id": "62:541",
+              "name": "Real child 1",
+              "x": 0,
+              "y": 45,
+              "width": 50,
+              "height": 35,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:539"
+            },
+            {
+              "id": "62:542",
+              "name": "End spacer",
+              "x": 0,
+              "y": 79,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:537"
+            }
+          ]
+        },
+        {
+          "stage": "narrow-control-only",
+          "parentMainExtent": 48,
+          "middleMainStart": 0,
+          "middleMainExtent": 48,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:537",
+              "name": "43 vertical-Fill",
+              "x": 640,
+              "y": 1490,
+              "width": 60,
+              "height": 48,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:538",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:537"
+            },
+            {
+              "id": "62:539",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 48,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:537"
+            },
+            {
+              "id": "62:540",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 19,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:539"
+            },
+            {
+              "id": "62:541",
+              "name": "Real child 1",
+              "x": 0,
+              "y": 29,
+              "width": 50,
+              "height": 19,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:539"
+            },
+            {
+              "id": "62:542",
+              "name": "End spacer",
+              "x": 0,
+              "y": 47,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:537"
+            }
+          ]
+        },
+        {
+          "stage": "wide-again",
+          "parentMainExtent": 80,
+          "middleMainStart": 0,
+          "middleMainExtent": 80,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:537",
+              "name": "43 vertical-Fill",
+              "x": 640,
+              "y": 1490,
+              "width": 60,
+              "height": 80,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:538",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:537"
+            },
+            {
+              "id": "62:539",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 80,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:537"
+            },
+            {
+              "id": "62:540",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 35,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:539"
+            },
+            {
+              "id": "62:541",
+              "name": "Real child 1",
+              "x": 0,
+              "y": 45,
+              "width": 50,
+              "height": 35,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:539"
+            },
+            {
+              "id": "62:542",
+              "name": "End spacer",
+              "x": 0,
+              "y": 79,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:537"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "index": 44,
+      "name": "vertical-fixed110",
+      "controlId": "62:543",
+      "parentId": "62:543",
+      "middleId": "62:545",
+      "direction": "VERTICAL",
+      "snapshots": [
+        {
+          "stage": "wide",
+          "parentMainExtent": 80,
+          "middleMainStart": 0,
+          "middleMainExtent": 110,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:543",
+              "name": "44 vertical-fixed110",
+              "x": 1260,
+              "y": 1490,
+              "width": 60,
+              "height": 80,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:544",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:543"
+            },
+            {
+              "id": "62:545",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 110,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:543"
+            },
+            {
+              "id": "62:546",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:545"
+            },
+            {
+              "id": "62:547",
+              "name": "Real child 1",
+              "x": 0,
+              "y": 60,
+              "width": 50,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:545"
+            },
+            {
+              "id": "62:548",
+              "name": "End spacer",
+              "x": 0,
+              "y": 109,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:543"
+            }
+          ]
+        },
+        {
+          "stage": "narrow-control-only",
+          "parentMainExtent": 48,
+          "middleMainStart": 0,
+          "middleMainExtent": 110,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:543",
+              "name": "44 vertical-fixed110",
+              "x": 1260,
+              "y": 1490,
+              "width": 60,
+              "height": 48,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:544",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:543"
+            },
+            {
+              "id": "62:545",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 110,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:543"
+            },
+            {
+              "id": "62:546",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:545"
+            },
+            {
+              "id": "62:547",
+              "name": "Real child 1",
+              "x": 0,
+              "y": 60,
+              "width": 50,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:545"
+            },
+            {
+              "id": "62:548",
+              "name": "End spacer",
+              "x": 0,
+              "y": 109,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:543"
+            }
+          ]
+        },
+        {
+          "stage": "wide-again",
+          "parentMainExtent": 80,
+          "middleMainStart": 0,
+          "middleMainExtent": 110,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -1,
+            -1
+          ],
+          "nodes": [
+            {
+              "id": "62:543",
+              "name": "44 vertical-fixed110",
+              "x": 1260,
+              "y": 1490,
+              "width": 60,
+              "height": 80,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:544",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:543"
+            },
+            {
+              "id": "62:545",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 110,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:543"
+            },
+            {
+              "id": "62:546",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:545"
+            },
+            {
+              "id": "62:547",
+              "name": "Real child 1",
+              "x": 0,
+              "y": 60,
+              "width": 50,
+              "height": 50,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:545"
+            },
+            {
+              "id": "62:548",
+              "name": "End spacer",
+              "x": 0,
+              "y": 109,
+              "width": 1,
+              "height": 1,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:543"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "index": 45,
+      "name": "vertical-spacers16",
+      "controlId": "62:549",
+      "parentId": "62:549",
+      "middleId": "62:551",
+      "direction": "VERTICAL",
+      "snapshots": [
+        {
+          "stage": "wide",
+          "parentMainExtent": 80,
+          "middleMainStart": 0,
+          "middleMainExtent": 80,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -16,
+            -16
+          ],
+          "nodes": [
+            {
+              "id": "62:549",
+              "name": "45 vertical-spacers16",
+              "x": 20,
+              "y": 1595,
+              "width": 60,
+              "height": 80,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:550",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 16,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:549"
+            },
+            {
+              "id": "62:551",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 80,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:549"
+            },
+            {
+              "id": "62:552",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 35,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:551"
+            },
+            {
+              "id": "62:553",
+              "name": "Real child 1",
+              "x": 0,
+              "y": 45,
+              "width": 50,
+              "height": 35,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:551"
+            },
+            {
+              "id": "62:554",
+              "name": "End spacer",
+              "x": 0,
+              "y": 64,
+              "width": 1,
+              "height": 16,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:549"
+            }
+          ]
+        },
+        {
+          "stage": "narrow-control-only",
+          "parentMainExtent": 48,
+          "middleMainStart": 0,
+          "middleMainExtent": 48,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -16,
+            -16
+          ],
+          "nodes": [
+            {
+              "id": "62:549",
+              "name": "45 vertical-spacers16",
+              "x": 20,
+              "y": 1595,
+              "width": 60,
+              "height": 48,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:550",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 16,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:549"
+            },
+            {
+              "id": "62:551",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 48,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:549"
+            },
+            {
+              "id": "62:552",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 19,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:551"
+            },
+            {
+              "id": "62:553",
+              "name": "Real child 1",
+              "x": 0,
+              "y": 29,
+              "width": 50,
+              "height": 19,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:551"
+            },
+            {
+              "id": "62:554",
+              "name": "End spacer",
+              "x": 0,
+              "y": 32,
+              "width": 1,
+              "height": 16,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:549"
+            }
+          ]
+        },
+        {
+          "stage": "wide-again",
+          "parentMainExtent": 80,
+          "middleMainStart": 0,
+          "middleMainExtent": 80,
+          "spacerCountIncluded": 2,
+          "measuredGaps": [
+            -16,
+            -16
+          ],
+          "nodes": [
+            {
+              "id": "62:549",
+              "name": "45 vertical-spacers16",
+              "x": 20,
+              "y": 1595,
+              "width": 60,
+              "height": 80,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:279"
+            },
+            {
+              "id": "62:550",
+              "name": "Start spacer",
+              "x": 0,
+              "y": 0,
+              "width": 1,
+              "height": 16,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:549"
+            },
+            {
+              "id": "62:551",
+              "name": "Real AUTO middle",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 80,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:549"
+            },
+            {
+              "id": "62:552",
+              "name": "Real child 0",
+              "x": 0,
+              "y": 0,
+              "width": 50,
+              "height": 35,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:551"
+            },
+            {
+              "id": "62:553",
+              "name": "Real child 1",
+              "x": 0,
+              "y": 45,
+              "width": 50,
+              "height": 35,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:551"
+            },
+            {
+              "id": "62:554",
+              "name": "End spacer",
+              "x": 0,
+              "y": 64,
+              "width": 1,
+              "height": 16,
+              "layoutPositioning": "AUTO",
+              "visible": true,
+              "parentId": "62:549"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

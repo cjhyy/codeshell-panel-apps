@@ -1,3 +1,5 @@
+import { textLineHeightPixels } from "./text-line-height.mjs";
+import { validateTextRanges } from "./text-ranges.mjs";
 /* Browser measurements are receipts for specific text and typography, not audit exemptions. */
 import { designFontFamilyCss } from "./font-css.mjs";
 export function textMetricsSignature(node) {
@@ -10,7 +12,12 @@ export function textMetricsSignature(node) {
     node.fontStyle ?? "normal",
     node.letterSpacing ?? 0,
     node.lineHeight,
+    ...(node.lineHeightUnit === undefined ? [] : [node.lineHeightUnit]),
   ]);
+}
+
+export function textSourceMetricsSignature(node) {
+  return textMetricsSignature({ ...node, text: node.textSource ?? node.text });
 }
 
 export function validTextMetrics(metrics) {
@@ -19,13 +26,21 @@ export function validTextMetrics(metrics) {
     typeof metrics === "object" &&
     !Array.isArray(metrics) &&
     Object.keys(metrics).every((key) =>
-      ["version", "signature", "lineWidths", "lineInkBounds", "height", "fontAvailable"].includes(
-        key,
-      ),
+      [
+        "version",
+        "signature",
+        "sourceSignature",
+        "lineWidths",
+        "lineInkBounds",
+        "height",
+        "fontAvailable",
+      ].includes(key),
     ) &&
     metrics.version === 1 &&
     typeof metrics.signature === "string" &&
     metrics.signature.length <= 8500 &&
+    (metrics.sourceSignature === undefined ||
+      (typeof metrics.sourceSignature === "string" && metrics.sourceSignature.length <= 8500)) &&
     Array.isArray(metrics.lineWidths) &&
     metrics.lineWidths.length >= 1 &&
     metrics.lineWidths.length <= 4001 &&
@@ -66,7 +81,7 @@ export function measuredTextInkBounds(node) {
             : 0;
       return {
         x: box.x + offset,
-        y: box.y + index * node.fontSize * node.lineHeight,
+        y: box.y + index * textLineHeightPixels(node),
         width: box.width,
         height: box.height,
       };
@@ -86,6 +101,8 @@ export function measuredTextInkBounds(node) {
 export function currentTextMetrics(node) {
   return validTextMetrics(node.textMetrics) &&
     node.textMetrics.signature === textMetricsSignature(node) &&
+    (node.textMetrics.sourceSignature === undefined ||
+      node.textMetrics.sourceSignature === textSourceMetricsSignature(node)) &&
     node.textMetrics.lineWidths.length === String(node.text).split("\n").length
     ? node.textMetrics
     : null;
@@ -93,7 +110,8 @@ export function currentTextMetrics(node) {
 
 const round = (value) => Math.round(value * 10000) / 10000;
 
-function createBrowserMeasurer(documentValue) {
+export function createBrowserTextMeasurer(documentValue = globalThis.document) {
+  if (!documentValue?.body || !documentValue.createElementNS) return null;
   const svg = documentValue.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute(
     "style",
@@ -103,14 +121,24 @@ function createBrowserMeasurer(documentValue) {
   text.setAttribute("dominant-baseline", "hanging");
   svg.append(text);
   documentValue.body.append(svg);
+  const lineBox = documentValue.createElement("div");
+  lineBox.style.cssText = "all:initial;display:block;position:fixed;left:-100000px;top:0;visibility:hidden;margin:0;padding:0;border:0;white-space:pre;width:max-content;height:auto";
+  lineBox.textContent = "Hg";
+  documentValue.body.append(lineBox);
+  const range = documentValue.createRange();
+  range.selectNodeContents(lineBox);
+  const baselineOffsets = new Map();
   const context = documentValue.createElement("canvas").getContext("2d");
   if (!context) {
     svg.remove();
+    lineBox.remove();
     throw Error("浏览器无法测量文字");
   }
   let actualInkAvailable = true;
+  let wrapWidth = Infinity;
   return {
     configure(node) {
+      wrapWidth = node.textFlow === "wrap" ? node.width : Infinity;
       for (const [name, value] of Object.entries({
         "font-family": designFontFamilyCss(
           node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
@@ -128,10 +156,40 @@ function createBrowserMeasurer(documentValue) {
       actualInkAvailable = !node.letterSpacing || "letterSpacing" in context;
       if ("letterSpacing" in context) context.letterSpacing = `${node.letterSpacing ?? 0}px`;
     },
+    lineBoxOffset(node) {
+      const key = JSON.stringify([node.fontFamily, node.fontRef, node.fontSize,
+        node.fontWeight, node.fontStyle, node.letterSpacing, node.lineHeight, node.lineHeightUnit]);
+      if (baselineOffsets.has(key)) return baselineOffsets.get(key);
+      Object.assign(lineBox.style, {
+        fontFamily: designFontFamilyCss(node.fontFamily),
+        fontSize: `${node.fontSize}px`,
+        fontWeight: String(node.fontWeight),
+        fontStyle: node.fontStyle ?? "normal",
+        letterSpacing: `${node.letterSpacing ?? 0}px`,
+        lineHeight: `${textLineHeightPixels(node)}px`,
+      });
+      // Native TEXT bounds start at the line box. Browser Range bounds start
+      // at its font box, whereas SVG/Canvas hanging text starts lower within
+      // that font box. Measure both pieces with the actual loaded font.
+      text.textContent = "Hg";
+      const offset = range.getBoundingClientRect().top - lineBox.getBoundingClientRect().top -
+        text.getBoundingClientRect().top;
+      if (!Number.isFinite(offset) || Math.abs(offset) > 100)
+        throw Error("浏览器文字行框与 hanging 基线差值超过支持范围");
+      baselineOffsets.set(key, offset);
+      return offset;
+    },
     measure(value) {
       text.textContent = value || " ";
       const bounds = text.getBBox();
       const actual = context.measureText(value);
+      let advance = value ? text.getComputedTextLength() : 0;
+      if (advance > wrapWidth + 0.01 && /\S/u.test(value) && / +$/u.test(value)) {
+        text.textContent = value.replace(/ +$/u, "");
+        const fittingAdvance = text.getComputedTextLength();
+        text.textContent = value;
+        if (fittingAdvance <= wrapWidth + 0.01) advance = fittingAdvance;
+      }
       const measuredInk =
         actualInkAvailable &&
         [
@@ -148,7 +206,7 @@ function createBrowserMeasurer(documentValue) {
             }
           : bounds;
       return {
-        width: value ? round(text.getComputedTextLength()) : 0,
+        width: round(advance),
         bottom: value ? round(Math.max(0, measuredInk.y + measuredInk.height)) : 0,
         ink: value
           ? {
@@ -169,23 +227,30 @@ function createBrowserMeasurer(documentValue) {
         return Math.abs(context.measureText(probe).width - baseline) > 0.01;
       });
     },
-    close: () => svg.remove(),
+    close() { svg.remove(); lineBox.remove(); },
   };
 }
 
 // Preserve every original character; line breaks are layout, and textSource retains the source.
-function measuredWrap(source, width, measure) {
+function measuredWrapLines(source, width, measure) {
   return source.split("\n").flatMap((paragraph) => {
     if (!paragraph || measure(paragraph).width <= width + 0.01) return [paragraph];
     const lines = [];
     let line = "";
     for (const token of paragraph.match(/\S+\s*|\s+/gu) ?? []) {
-      if (line && measure(line + token).width > width + 0.01) {
+      // A word's following spaces hang at the line end in normal/pre-wrap
+      // browser layout. Count them once another word follows, retaining their
+      // exact bytes in the previous line and in textSource.
+      const trailingSpaces = /\S/u.test(token) ? / +$/u.exec(token)?.[0].length ?? 0 : 0;
+      const fittingToken = trailingSpaces ? token.slice(0, -trailingSpaces) : token;
+      if (line && measure(line + fittingToken).width > width + 0.01) {
         lines.push(line);
         line = "";
       }
-      for (const character of Array.from(token)) {
-        if (line && measure(line + character).width > width + 0.01) {
+      const characters = Array.from(token);
+      for (const [index, character] of characters.entries()) {
+        if (index < characters.length - trailingSpaces &&
+            line && measure(line + character).width > width + 0.01) {
           lines.push(line);
           line = "";
         }
@@ -197,6 +262,40 @@ function measuredWrap(source, width, measure) {
   });
 }
 
+/** Indexed companion preserves authored hard breaks and all hanging spaces. */
+export function measuredWrapSource(source, width, measure) {
+  const values = measuredWrapLines(source, width, measure), lines = [];
+  let sourceOffset = 0, displayOffset = 0;
+  for (const [index, text] of values.entries()) {
+    const sourceEnd = sourceOffset + text.length, displayEnd = displayOffset + text.length;
+    if (source.slice(sourceOffset, sourceEnd) !== text) throw Error("Indexed text wrapping lost source characters");
+    const breakAfter = index === values.length - 1 ? null : source[sourceEnd] === "\n" ? "hard" : "soft";
+    lines.push({ sourceStart: sourceOffset, sourceEnd, displayStart: displayOffset, displayEnd, breakAfter });
+    sourceOffset = sourceEnd + (breakAfter === "hard" ? 1 : 0);
+    displayOffset = displayEnd + (breakAfter === null ? 0 : 1);
+  }
+  if (sourceOffset !== source.length) throw Error("Indexed text wrapping did not consume the complete source");
+  return { displayText: values.join("\n"), lines };
+}
+
+export function measuredWrap(source, width, measure) {
+  return measuredWrapSource(source, width, measure).displayText.split("\n");
+}
+
+export function measuredEllipsis(source, width, measure) {
+  const lines = source.split(/\r\n?|\n/u);
+  const first = lines[0];
+  if (lines.length === 1 && measure(first).width <= width) return first;
+  const characters = [...first];
+  let low = 0, high = characters.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (measure(`${characters.slice(0, middle).join("")}…`).width <= width) low = middle;
+    else high = middle - 1;
+  }
+  return `${characters.slice(0, low).join("")}…`;
+}
+
 /** Mutates only text layout fields; Node callers remain unmeasured unless a real measurer is supplied. */
 export async function measureFigmaTextDocument(
   documentValue,
@@ -205,26 +304,51 @@ export async function measureFigmaTextDocument(
     sourceIds = new Map(),
     browserDocument = globalThis.document,
     measurer,
+    nativeLineBoxes = false,
   } = {},
 ) {
+  for (const page of documentValue.pages ?? [documentValue])
+    for (const node of page.nodes ?? []) validateTextRanges(node);
   if (!measurer && (!browserDocument?.body || !browserDocument.createElementNS))
     return { measured: 0, unavailableFonts: [], geometryChangedIds: [] };
   await browserDocument?.fonts?.ready;
-  const measurement = measurer ?? createBrowserMeasurer(browserDocument);
+  const measurement = measurer ?? createBrowserTextMeasurer(browserDocument);
   const warnings = new Set(),
-    changed = [],
+    changed = new Set(),
+    unsupportedBaselines = [],
+    unsupportedTruncations = [],
     pages = documentValue.pages ?? [documentValue];
   let measured = 0;
   try {
     for (const page of pages)
       for (const node of page.nodes ?? []) {
         if (node.type !== "text") continue;
-        measurement.configure(node);
         const source = sourceNodes.get(sourceIds.get(node.id));
         const autoResize = source?.style?.textAutoResize;
+        measurement.configure(node.textOverflow === "ellipsis"
+          ? { ...node, textFlow: undefined }
+          : autoResize === "WIDTH_AND_HEIGHT" ? node : { ...node, textFlow: "wrap" });
+        if (nativeLineBoxes && measurement.lineBoxOffset) {
+          try {
+            if (node.rotation) throw Error("旋转文字的原生行框尚不能映射为 hanging 基线");
+            const logicalY = node.y - (node.layoutBaselineOffset ?? 0);
+            const nextY = Math.round((logicalY + measurement.lineBoxOffset(node)) * 100) / 100;
+            if (nextY < -20000 || nextY > 20000) throw Error("文字基线映射会超过设计坐标范围");
+            if (node.y !== nextY) changed.add(node.id);
+            node.y = nextY;
+            node.layoutBaselineOffset = round(nextY - logicalY);
+            node.layoutBaselineSource = "native";
+          } catch (error) {
+            unsupportedBaselines.push({ nodeId: node.id, reason: error.message });
+          }
+        }
         const originalText = node.textSource ?? node.text;
+        if (node.textOverflow === "ellipsis" && /[\r\n]/u.test(originalText))
+          unsupportedTruncations.push({ nodeId: node.id, reason: "单行截断包含显式换行；暂以首行省略号预览，完整来源保留，请核对原生效果" });
         const lines =
-          autoResize === "WIDTH_AND_HEIGHT"
+          node.textOverflow === "ellipsis"
+            ? [measuredEllipsis(originalText, node.width, (value) => measurement.measure(value))]
+            : autoResize === "WIDTH_AND_HEIGHT"
             ? originalText.split("\n")
             : measuredWrap(originalText, node.width, (value) => measurement.measure(value));
         const text = lines.join("\n");
@@ -240,20 +364,20 @@ export async function measureFigmaTextDocument(
         const height = Math.max(
           0,
           ...metrics.map(
-            (metric, index) => metric.bottom + index * node.fontSize * node.lineHeight,
+            (metric, index) => metric.bottom + index * textLineHeightPixels(node),
           ),
         );
         if (autoResize === "WIDTH_AND_HEIGHT" && width > node.width) {
           node.width = Math.ceil(width * 100) / 100;
-          changed.push(node.id);
+          changed.add(node.id);
         }
         if (["WIDTH_AND_HEIGHT", "HEIGHT"].includes(autoResize) && height > node.height) {
           node.height = Math.ceil(height * 100) / 100;
-          if (!changed.includes(node.id)) changed.push(node.id);
+          changed.add(node.id);
         }
         if (originalText.trim()) {
           node.textSource = originalText;
-          if (autoResize !== "WIDTH_AND_HEIGHT") node.textFlow = "wrap";
+          if (autoResize !== "WIDTH_AND_HEIGHT" && node.textOverflow !== "ellipsis") node.textFlow = "wrap";
           else delete node.textFlow;
           node.textFlowWidth = node.width;
         }
@@ -262,6 +386,7 @@ export async function measureFigmaTextDocument(
         node.textMetrics = {
           version: 1,
           signature: textMetricsSignature(node),
+          sourceSignature: textSourceMetricsSignature(node),
           lineWidths: metrics.map((metric) => metric.width),
           lineInkBounds: metrics.map((metric) => metric.ink),
           height: round(height),
@@ -276,5 +401,5 @@ export async function measureFigmaTextDocument(
   if (documentValue.pages)
     documentValue.nodes =
       documentValue.pages.find((page) => page.id === documentValue.activePageId)?.nodes ?? [];
-  return { measured, unavailableFonts: [...warnings], geometryChangedIds: changed };
+  return { measured, unavailableFonts: [...warnings], geometryChangedIds: [...changed], unsupportedBaselines, unsupportedTruncations };
 }

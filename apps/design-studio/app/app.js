@@ -1,3 +1,9 @@
+import { validateShadowStack, shadowStackOutsets } from "./shadow-stack.mjs";
+import { validateTextRanges, validateTextRangeNodePatch, replaceTextRange, replaceTextValue } from "./text-ranges.mjs";
+import { textLineHeightCss, textLineHeightPixels, validTextLineHeight } from "./text-line-height.mjs";
+import { validateLayoutSpacing } from "./layout-spacing.mjs";
+import { GRID_CONTAINER_FIELDS, GRID_CHILD_FIELDS, gridPlacements } from "./grid.mjs";
+import { designStrokeOutset, editDesignStrokeColor, editDesignStrokeWidth, editDesignStrokeAlignment, applyDesignStrokeEdits, inactiveStrokeWidth, strokeAlignment, validateDesignStroke, clearInvalidStrokeLayoutExclusion } from "./stroke.mjs";
 /* Design Studio Panel App runtime. */
 /* global document, localStorage, requestAnimationFrame, window */
 import { projectContextChanged } from "./project-context.mjs";
@@ -113,6 +119,7 @@ import { compareDesignDocuments, comparisonMarkdown } from "./design-compare.mjs
 import { exportDesignFrontend, isSafeFrontendPath } from "./frontend-export.mjs";
 import {
   applyAutoLayouts,
+  applyAllAutoLayouts,
   createComponentInstance,
   isAutoLayoutContainer,
   isContainerNode,
@@ -288,6 +295,7 @@ const propertyInputs = {
   fontFamily: document.querySelector("#prop-font-family"),
   fontStyle: document.querySelector("#prop-font-style"),
   lineHeight: document.querySelector("#prop-line-height"),
+  lineHeightUnit: document.querySelector("#prop-line-height-unit"),
   letterSpacing: document.querySelector("#prop-letter-spacing"),
   textDecoration: document.querySelector("#prop-text-decoration"),
   textAlign: document.querySelector("#prop-text-align"),
@@ -296,6 +304,9 @@ const propertyInputs = {
   stroke: document.querySelector("#prop-stroke"),
   strokeColor: document.querySelector("#prop-stroke-color"),
   strokeWidth: document.querySelector("#prop-stroke-width"),
+  strokeAlign: document.querySelector("#prop-stroke-align"),
+  strokeLayout: document.querySelector("#prop-stroke-layout"),
+  strokeRemove: document.querySelector("#prop-stroke-remove"),
   cornerRadius: document.querySelector("#prop-radius"),
   opacity: document.querySelector("#prop-opacity"),
   rotation: document.querySelector("#prop-rotation"),
@@ -440,11 +451,15 @@ const gpuRenderer = createRendererController({
     };
   },
   onState(state) {
+    const textRangeFailure = !state.active && typeof state.reason === "string" &&
+      state.reason.includes("TEXT_RANGES_UNSUPPORTED:");
     elements.gpuCanvas.hidden = !state.active;
     elements.stageWrap.dataset.gpuActive = String(state.active);
     elements.stageWrap.dataset.rendererStatus = state.status;
     elements.rendererState.textContent = state.active
       ? "CanvasKit GPU"
+      : textRangeFailure
+        ? "范围文字不支持"
       : state.loading
         ? "GPU 加载中"
         : "GPU 不可用";
@@ -453,6 +468,8 @@ const gpuRenderer = createRendererController({
     elements.retryRenderer.hidden = state.loading;
     elements.rendererMessageText.textContent = state.loading
       ? "正在准备 GPU 画布…"
+      : textRangeFailure
+        ? state.reason.split("TEXT_RANGES_UNSUPPORTED:").slice(1).join("TEXT_RANGES_UNSUPPORTED:").slice(0, 400)
       : state.status === "unavailable"
         ? "当前宿主不支持 GPU 画布，请更新 CodeShell 后重试。"
         : "GPU 画布暂时不可用，设计数据已保留。请点击重试。";
@@ -1607,7 +1624,20 @@ function renderSelectionSize(nodes) {
   elements.selectionSize.hidden = false;
 }
 
-function setTextNodeValue(node, value) {
+const textInputSelections = new WeakMap();
+function setTextNodeValue(node, value, { draft, affinity = "before", selection } = {}) {
+  if (node.textRanges !== undefined) {
+    const contentKeys = ["text", "textSource", "textRanges", "textMetrics", "textMeasurement", "textFlow", "textOverflow", "textFlowWidth"];
+    const next = draft ? { ...node } : replaceTextValue(node, value, affinity, selection);
+    if (draft) for (const key of contentKeys) {
+      if (Object.hasOwn(draft, key)) next[key] = draft[key]; else delete next[key];
+    }
+    validateTextRanges(next);
+    for (const key of Object.keys(node)) if (!Object.hasOwn(next, key)) delete node[key];
+    Object.assign(node, next);
+    reflowParent(node);
+    return;
+  }
   node.text = value.slice(0, 4000);
   if (Object.hasOwn(node, "textSource")) node.textSource = node.text;
   delete node.textFlowWidth;
@@ -1634,11 +1664,12 @@ function finishInlineTextEdit({ cancel = false, focusStage = false } = {}) {
   ) {
     if (
       String(edit.node.text ?? "") !== edit.originalText ||
-      edit.node.textSource !== edit.originalSource
+      edit.node.textSource !== edit.originalSource ||
+      JSON.stringify(edit.node.textRanges) !== edit.originalRanges
     ) {
       notify("图层文字在编辑期间已变化；未覆盖较新的文字，请核对后重试", "error");
     } else {
-      setTextNodeValue(edit.node, value);
+      setTextNodeValue(edit.node, value, { draft: edit.draft });
       commitHistory();
       markChanged();
     }
@@ -1666,7 +1697,7 @@ function updateInlineTextEditorPosition() {
     fontSize: `${node.fontSize}px`,
     fontWeight: String(node.fontWeight),
     fontStyle: node.fontStyle ?? "normal",
-    lineHeight: String(node.lineHeight ?? 1.2),
+    lineHeight: textLineHeightCss(node),
     letterSpacing: `${node.letterSpacing ?? 0}px`,
     textAlign: node.textAlign ?? "left",
     transform: `matrix(${matrix.join(",")})`,
@@ -1692,6 +1723,8 @@ function beginInlineTextEdit(node) {
     nodeId: node.id,
     originalText: String(node.text ?? ""),
     originalSource: node.textSource,
+    originalRanges: JSON.stringify(node.textRanges),
+    ...(node.textRanges !== undefined ? { draft: clone(node) } : {}),
     originalValue: String(node.textSource ?? node.text ?? ""),
     workspaceEpoch,
     documentEpoch,
@@ -1803,7 +1836,15 @@ function renderProperties() {
   propertyInputs.height.value = String(round(single.height));
   propertyInputs.fill.value = single.fill;
   propertyInputs.stroke.value = single.stroke;
-  propertyInputs.strokeWidth.value = String(round(single.strokeWidth));
+  const strokeWidth = inactiveStrokeWidth(single);
+  propertyInputs.strokeWidth.value = Number.isFinite(strokeWidth) ? String(round(strokeWidth)) : "";
+  propertyInputs.strokeAlign.value = single.nativeStrokeInactive && !single.nativeStrokeInactive.strokeAlign ? "" : strokeAlignment(single);
+  document.getElementById("stroke-inactive-controls").hidden = !single.nativeStrokeInactive;
+  document.getElementById("stroke-align-field").hidden = !single.nativeStrokeInactive;
+  const inactiveIncluded = single.nativeStrokeInactive?.strokesIncludedInLayout ?? single.nativeStrokeInactive?.strokesIncludedInLayoutDefault;
+  propertyInputs.strokeLayout.value = inactiveIncluded === undefined ? "" : inactiveIncluded ? "included" : "excluded";
+  document.getElementById("stroke-layout-field").hidden = !single.nativeStrokeInactive || !["frame", "component"].includes(single.type) || !["horizontal", "vertical", "grid"].includes(single.layout);
+  propertyInputs.strokeRemove.disabled = single.stroke === "transparent" && !single.strokeSides;
   propertyInputs.cornerRadius.value = String(round(single.cornerRadius));
   propertyInputs.opacity.value = String(Math.round(single.opacity * 100));
   propertyInputs.rotation.value = String(round(single.rotation));
@@ -1940,15 +1981,27 @@ function renderProperties() {
   propertyInputs.notes.value = single.notes ?? "";
   const shadowSupported = single.type !== "group";
   elements.shadowSection.hidden = !shadowSupported;
-  propertyInputs.shadowEnabled.checked = Boolean(single.shadow);
-  elements.shadowControls.hidden = !single.shadow;
-  if (single.shadow) {
-    propertyInputs.shadowColor.value = single.shadow.color;
-    propertyInputs.shadowColorPicker.value = single.shadow.color;
-    propertyInputs.shadowX.value = String(round(single.shadow.x));
-    propertyInputs.shadowY.value = String(round(single.shadow.y));
-    propertyInputs.shadowBlur.value = String(round(single.shadow.blur));
-    propertyInputs.shadowOpacity.value = String(Math.round(single.shadow.opacity * 100));
+  if(shadowLayerNodeId!==single.id){shadowLayerIndex=0;shadowLayerNodeId=single.id;}
+  shadowLayerIndex=Math.min(shadowLayerIndex,(single.shadowStack?.layers.length??1)-1);
+  const selectedShadow=single.shadowStack?.layers[shadowLayerIndex]??single.shadow;
+  const stackTools=document.getElementById("shadow-stack-tools"),stackSelect=document.getElementById("prop-shadow-layer");
+  stackTools.hidden=!["frame","rectangle","component"].includes(single.type);
+  stackSelect.replaceChildren();
+  for(const [index,layer] of (single.shadowStack?.layers??[]).entries()){const option=document.createElement("option");option.value=index;option.textContent=`${index+1}. ${layer.kind==="inner"?"内阴影":"外阴影"}${layer.visible?"":"（隐藏）"}`;stackSelect.append(option);}
+  stackSelect.value=String(shadowLayerIndex);stackSelect.hidden=!single.shadowStack;
+  document.getElementById("shadow-layer-add").disabled=isEffectivelyLocked(single) || (single.shadowStack?.layers.length??0)>=8;
+  document.getElementById("prop-shadow-inner").checked=selectedShadow?.kind==="inner";
+  document.getElementById("prop-shadow-visible").checked=selectedShadow?.visible!==false;
+  for(const id of ["prop-shadow-inner","prop-shadow-visible","shadow-layer-remove","shadow-layer-up","shadow-layer-down"])document.getElementById(id).disabled=!single.shadowStack || isEffectivelyLocked(single);
+  propertyInputs.shadowEnabled.checked = Boolean(selectedShadow);
+  elements.shadowControls.hidden = !selectedShadow;
+  if (selectedShadow) {
+    propertyInputs.shadowColor.value = selectedShadow.color;
+    propertyInputs.shadowColorPicker.value = selectedShadow.color;
+    propertyInputs.shadowX.value = String(round(selectedShadow.x));
+    propertyInputs.shadowY.value = String(round(selectedShadow.y));
+    propertyInputs.shadowBlur.value = String(round(selectedShadow.blur));
+    propertyInputs.shadowOpacity.value = String(Math.round(selectedShadow.opacity * 100));
   }
 
   const isText = single.type === "text";
@@ -1962,6 +2015,10 @@ function renderProperties() {
       single.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif";
     propertyInputs.fontStyle.value = single.fontStyle ?? "normal";
     propertyInputs.lineHeight.value = String(single.lineHeight);
+    propertyInputs.lineHeightUnit.value = single.lineHeightUnit ?? "ratio";
+    propertyInputs.lineHeight.min = single.lineHeightUnit === "pixels" ? "4.2" : "0.7";
+    propertyInputs.lineHeight.max = single.lineHeightUnit === "pixels" ? "720" : "3";
+    propertyInputs.lineHeight.step = single.lineHeightUnit === "pixels" ? "0.1" : "0.05";
     propertyInputs.letterSpacing.value = String(single.letterSpacing ?? 0);
     propertyInputs.textDecoration.value = single.textDecoration ?? "none";
     propertyInputs.textAlign.value = single.textAlign;
@@ -5420,6 +5477,7 @@ function buildAgentTargetContext(target) {
       "gap",
       "padding",
       "gridColumns",
+      ...GRID_CONTAINER_FIELDS,
     ])
       if (node[key] !== undefined) value[key] = node[key];
     if (node.type === "text")
@@ -5578,13 +5636,32 @@ function bindPropertyInput(input, update, eventName = "input", layoutEffect = "n
   input.addEventListener(eventName, () => {
     const node = selectedNode();
     if (!node || isEffectivelyLocked(node)) return;
-    update(node, input.value);
+    const before = isContainerNode(node) ? { ...node } : node.textRanges !== undefined ? clone(node) : null;
+    try {
+      update(node, input.value);
+      validateTextRanges(node);
+    } catch (error) {
+      if (!before) throw error;
+      for (const key of Object.keys(node)) if (!Object.hasOwn(before, key)) delete node[key];
+      Object.assign(node, before);
+      notify(error.message, "error"); renderProperties(); return;
+    }
+    clearInvalidStrokeLayoutExclusion(node);
+    if (before) try { validateLayoutSpacing(node); } catch (error) {
+      for (const key of Object.keys(node)) if (!(key in before)) delete node[key];
+      Object.assign(node, before);
+      notify(error.message, "error");
+      renderProperties();
+      return;
+    }
     if (layoutEffect === "size" && isContainerNode(node)) {
       applyAutoLayouts(design.nodes, new Set([node.id, ...(node.parentId ? [node.parentId] : [])]));
     } else if (layoutEffect === "size") {
       reflowParent(node);
     } else if (layoutEffect === "container" && isContainerNode(node)) {
-      applyAutoLayouts(design.nodes, new Set([node.id]));
+      applyAutoLayouts(design.nodes, new Set([node.id, ...(node.parentId ? [node.parentId] : [])]));
+    } else if (layoutEffect === "typography" && node.type === "text") {
+      applyAutoLayouts(design.nodes, new Set(node.parentId ? [node.parentId] : []));
     }
     markChanged();
   });
@@ -5622,7 +5699,9 @@ function bindColorTextInput(input, currentValue, update, allowTransparent = fals
   });
 }
 
+let shadowLayerIndex = 0, shadowLayerNodeId = null;
 function ensureNodeShadow(node) {
+  if(node?.shadowStack)return node.shadowStack.layers[shadowLayerIndex];
   if (!node || node.type === "group") return null;
   if (!node.shadow) {
     node.shadow = {
@@ -5681,36 +5760,58 @@ bindPropertyInput(propertyInputs.notes, (node, value) => {
   else delete node.notes;
 });
 bindPropertyInput(propertyInputs.text, (node, value) => {
-  if (node.type === "text") setTextNodeValue(node, value);
+  const selection = textInputSelections.get(propertyInputs.text);
+  textInputSelections.delete(propertyInputs.text);
+  if (node.type === "text") setTextNodeValue(node, value, { affinity: selection?.affinity ?? "before", selection });
+});
+propertyInputs.text.addEventListener("beforeinput", () => {
+  const start = propertyInputs.text.selectionStart, end = propertyInputs.text.selectionEnd;
+  textInputSelections.set(propertyInputs.text, { start, end, affinity: start === end ? "before" : "after" });
 });
 bindPropertyInput(propertyInputs.fontSize, (node, value) => {
   if (node.type === "text") node.fontSize = clamp(Number(value) || 6, 6, 240);
-});
+}, "input", "typography");
 bindPropertyInput(
   propertyInputs.fontWeight,
   (node, value) => {
     if (node.type === "text") node.fontWeight = Number(value);
   },
   "change",
+  "typography",
 );
 bindPropertyInput(propertyInputs.fontFamily, (node, value) => {
   if (node.type !== "text") return;
   const family = value.trim().slice(0, 120);
   if (family) node.fontFamily = family;
-});
+}, "input", "typography");
 bindPropertyInput(
   propertyInputs.fontStyle,
   (node, value) => {
     if (node.type === "text" && ["normal", "italic"].includes(value)) node.fontStyle = value;
   },
   "change",
+  "typography",
 );
 bindPropertyInput(propertyInputs.lineHeight, (node, value) => {
-  if (node.type === "text") node.lineHeight = clamp(finiteOr(value, 1.2), 0.7, 3);
-});
+  if (node.type === "text") node.lineHeight = node.lineHeightUnit === "pixels"
+    ? clamp(finiteOr(value, 20), 4.2, 720)
+    : clamp(finiteOr(value, 1.2), 0.7, 3);
+}, "input", "typography");
+bindPropertyInput(propertyInputs.lineHeightUnit, (node, value) => {
+  if (node.type !== "text" || !["ratio", "pixels"].includes(value)) return;
+  const pixels = textLineHeightPixels(node);
+  const next = { ...node, lineHeight: value === "pixels" ? pixels : pixels / node.fontSize,
+    lineHeightUnit: value === "pixels" ? "pixels" : undefined };
+  if (!validTextLineHeight(next)) {
+    notify("当前行高不能在受支持范围内转换单位；已保留原值", "error"); renderProperties(); return;
+  }
+  node.lineHeight = next.lineHeight;
+  if (next.lineHeightUnit) node.lineHeightUnit = next.lineHeightUnit;
+  else delete node.lineHeightUnit;
+}, "change", "typography");
 bindPropertyInput(propertyInputs.letterSpacing, (node, value) => {
   if (node.type === "text") node.letterSpacing = clamp(finiteOr(value, 0), -20, 100);
-});
+}, "input", "typography");
 bindPropertyInput(
   propertyInputs.textDecoration,
   (node, value) => {
@@ -5746,15 +5847,38 @@ bindColorTextInput(
   () => selectedNode()?.stroke ?? "transparent",
   (value) => {
     const node = selectedNode();
-    if (node && !isEffectivelyLocked(node)) node.stroke = value;
+    if (node && !isEffectivelyLocked(node)) {
+      try{editDesignStrokeColor(node,value,{nodes:design.nodes,parent:nodeById(node.parentId)});applyAllAutoLayouts(design.nodes);}catch(error){notify(error.message,"error");}
+    }
   },
   true,
 );
 bindPropertyInput(propertyInputs.cornerRadius, (node, value) => {
-  node.cornerRadius = clamp(Number(value) || 0, 0, 9999);
+  const radius=clamp(Number(value) || 0, 0, 9999);
+  try {const next={...node,cornerRadius:radius,cornerRadii:undefined};validateDesignStroke(next);validateShadowStack(next);}
+  catch(error){propertyInputs.cornerRadius.value=String(node.cornerRadius);notify(error.message,"error");return;}
+  node.cornerRadius = radius;
+  delete node.cornerRadii;
 });
 bindPropertyInput(propertyInputs.strokeWidth, (node, value) => {
-  node.strokeWidth = clamp(finiteOr(value, 0), 0, 100);
+  try{editDesignStrokeWidth(node,clamp(finiteOr(value, 0), 0, 100),{nodes:design.nodes,parent:nodeById(node.parentId)});}
+  catch(error){propertyInputs.strokeWidth.value=String(inactiveStrokeWidth(node) ?? "");notify(error.message,"error");}
+}, "input", "size");
+bindPropertyInput(propertyInputs.strokeAlign, (node, value) => {
+  try { editDesignStrokeAlignment(node, value, {nodes:design.nodes,parent:nodeById(node.parentId)}); }
+  catch(error) { notify(error.message,"error"); renderProperties(); }
+}, "change", "size");
+bindPropertyInput(propertyInputs.strokeLayout, (node, value) => {
+  if (!value) return;
+  try { applyDesignStrokeEdits(node, { strokeLayoutExcluded: value === "excluded" ? true : null }, { nodes: design.nodes, parent: nodeById(node.parentId) }); }
+  catch(error) { notify(error.message,"error"); renderProperties(); }
+}, "change", "size");
+propertyInputs.strokeRemove.addEventListener("click", () => {
+  const node=selectedNode(); if(!node || isEffectivelyLocked(node))return;
+  try {
+    editDesignStrokeColor(node,"transparent",{nodes:design.nodes,parent:nodeById(node.parentId)});
+    applyAllAutoLayouts(design.nodes); commitHistory(); markChanged(); renderProperties();
+  } catch(error) { notify(error.message,"error"); }
 });
 bindPropertyInput(propertyInputs.opacity, (node, value) => {
   node.opacity = clamp((Number(value) || 0) / 100, 0, 1);
@@ -5762,17 +5886,28 @@ bindPropertyInput(propertyInputs.opacity, (node, value) => {
 bindPropertyInput(propertyInputs.rotation, (node, value) => {
   node.rotation = clamp(finiteOr(value, 0), -360, 360);
 });
+function editShadowLayers(edit) {
+  const node=selectedNode();if(!node || isEffectivelyLocked(node))return;
+  try{const candidate=structuredClone(node);edit(candidate);validateShadowStack(candidate);Object.assign(node,candidate);if(!candidate.shadow)delete node.shadow;if(!candidate.shadowStack)delete node.shadowStack;commitHistory();markChanged();renderProperties();}
+  catch(error){notify(error.message,"error");}
+}
+document.getElementById("prop-shadow-layer").addEventListener("change",event=>{shadowLayerIndex=Number(event.target.value);renderProperties();});
+document.getElementById("shadow-layer-add").addEventListener("click",()=>editShadowLayers(node=>{delete node.shadow;node.shadowStack??={basis:"css-box",layers:[]};if(node.shadowStack.layers.length>=8)throw Error("最多 8 个 CSS 阴影层");node.shadowStack.layers.push({kind:"inner",color:"#000000",opacity:.2,x:0,y:2,blur:8,spread:0,visible:true});shadowLayerIndex=node.shadowStack.layers.length-1;}));
+document.getElementById("shadow-layer-remove").addEventListener("click",()=>editShadowLayers(node=>{node.shadowStack.layers.splice(shadowLayerIndex,1);if(!node.shadowStack.layers.length)delete node.shadowStack;shadowLayerIndex=Math.max(0,shadowLayerIndex-1);}));
+for(const [id,step] of [["shadow-layer-up",-1],["shadow-layer-down",1]])document.getElementById(id).addEventListener("click",()=>editShadowLayers(node=>{const next=shadowLayerIndex+step;if(next<0||next>=node.shadowStack.layers.length)return;[node.shadowStack.layers[next],node.shadowStack.layers[shadowLayerIndex]]=[node.shadowStack.layers[shadowLayerIndex],node.shadowStack.layers[next]];shadowLayerIndex=next;}));
+document.getElementById("prop-shadow-inner").addEventListener("change",event=>editShadowLayers(node=>{node.shadowStack.layers[shadowLayerIndex].kind=event.target.checked?"inner":"outer";}));
+document.getElementById("prop-shadow-visible").addEventListener("change",event=>editShadowLayers(node=>{node.shadowStack.layers[shadowLayerIndex].visible=event.target.checked;}));
 propertyInputs.shadowEnabled.addEventListener("change", () => {
   const node = selectedNode();
   if (!node || node.type === "group" || isEffectivelyLocked(node)) return;
   if (propertyInputs.shadowEnabled.checked) ensureNodeShadow(node);
-  else delete node.shadow;
+  else {delete node.shadow;delete node.shadowStack;}
   commitHistory();
   markChanged();
 });
 bindColorTextInput(
   propertyInputs.shadowColor,
-  () => selectedNode()?.shadow?.color ?? "#000000",
+  () => selectedNode()?.shadowStack?.layers[shadowLayerIndex]?.color ?? selectedNode()?.shadow?.color ?? "#000000",
   (value) => {
     const node = selectedNode();
     if (!node || isEffectivelyLocked(node)) return;
@@ -5839,7 +5974,14 @@ propertyInputs.layoutReverse.addEventListener("change", () => {
   const node = selectedNode();
   if (!isContainerNode(node) || isEffectivelyLocked(node)) return;
   ensureDesignV3();
+  const previous = node.layoutReverse;
   node.layoutReverse = propertyInputs.layoutReverse.checked;
+  try { validateLayoutSpacing(node); } catch (error) {
+    node.layoutReverse = previous;
+    propertyInputs.layoutReverse.checked = Boolean(previous);
+    notify(error.message, "error");
+    return;
+  }
   applyAutoLayouts(design.nodes, new Set([node.id]));
   commitHistory();
   markChanged();
@@ -5849,7 +5991,7 @@ bindPropertyInput(
   (node, value) => {
     if (!isContainerNode(node)) return;
     ensureDesignV3();
-    node.gap = clamp(finiteOr(value, 0), 0, 2000);
+    node.gap = clamp(finiteOr(value, 0), -2000, 2000);
   },
   "input",
   "container",
@@ -5864,7 +6006,7 @@ for (const [input, property] of [
       if (!isContainerNode(node)) return;
       ensureDesignV3();
       if (value === "") delete node[property];
-      else node[property] = clamp(finiteOr(value, node.gap ?? 0), 0, 2000);
+      else node[property] = clamp(finiteOr(value, node.gap ?? 0), -2000, 2000);
     },
     "input",
     "container",
@@ -5928,12 +6070,46 @@ bindPropertyInput(
   "change",
   "container",
 );
+function canApplyManualGridChange(node, changes) {
+  const container = Object.hasOwn(changes, "gridColumns")
+    ? node
+    : design.nodes.find((candidate) => candidate.id === node.parentId);
+  if (container?.layout !== "grid" || container.gridItemsPositioning !== "manual") return true;
+  try {
+    const children = design.nodes
+      .filter((child) => child.parentId === container.id)
+      .map((child) => (child === node ? { ...child, ...changes } : child));
+    const placed = gridPlacements(
+      children, changes.gridColumns ?? container.gridColumns ?? 1, container,
+    );
+    if (
+      container.gridAutoTracks !== "rows" &&
+      container.gridRows !== undefined &&
+      placed.rowCount > container.gridRows
+    )
+      throw new Error("跨度超过网格行数；请先增加行数。");
+    return true;
+  } catch (error) {
+    notify(`无法修改网格：${error.message}`, "error");
+    return false;
+  }
+}
 bindPropertyInput(
   propertyInputs.gridColumns,
   (node, value) => {
     if (!isContainerNode(node)) return;
     ensureDesignV3();
-    node.gridColumns = Math.round(clamp(finiteOr(value, 2), 1, 24));
+    const columns = Math.round(clamp(finiteOr(value, 2), 1, 24));
+    if (!canApplyManualGridChange(node, { gridColumns: columns })) {
+      propertyInputs.gridColumns.value = String(node.gridColumns ?? 1);
+      return;
+    }
+    node.gridColumns = columns;
+    if (node.gridColumnSizes)
+      node.gridColumnSizes = Array.from({ length: node.gridColumns }, (_, index) =>
+        node.gridColumnSizes[index] ??
+        (node.layoutSizingHorizontal === "hug" ? { type: "hug" } : { type: "flex", value: 1 }),
+      );
   },
   "input",
   "container",
@@ -5946,6 +6122,11 @@ for (const [input, property] of [
     input,
     (node, value) => {
       ensureDesignV3();
+      if (isContainerNode(node)) try { validateLayoutSpacing({ ...node, [property]: value }); } catch (error) {
+        input.value = node[property] ?? "fixed";
+        notify(error.message, "error");
+        return;
+      }
       node[property] = value;
       reflowParent(node);
       if (isContainerNode(node)) applyAutoLayouts(design.nodes, new Set([node.id]));
@@ -5996,7 +6177,12 @@ for (const [input, property] of [
     input,
     (node, value) => {
       ensureDesignV3();
-      node[property] = Math.round(clamp(finiteOr(value, 1), 1, 24));
+      const span = Math.round(clamp(finiteOr(value, 1), 1, 24));
+      if (!canApplyManualGridChange(node, { [property]: span })) {
+        input.value = String(node[property] ?? 1);
+        return;
+      }
+      node[property] = span;
       reflowParent(node);
     },
     "input",
@@ -6022,8 +6208,17 @@ bindPropertyInput(
 bindPropertyInput(
   propertyInputs.strokeColor,
   (node, value) => {
-    node.stroke = value;
-    if (node.strokeWidth === 0) node.strokeWidth = 1;
+    try {
+      // The legacy color picker also offers a first 1px stroke. Validate that
+      // whole choice before touching live state, retaining inactive intent/padding.
+      const next={...node},hadInactive=!!node.nativeStrokeInactive;
+      const options={nodes:design.nodes,parent:nodeById(node.parentId)};
+      editDesignStrokeColor(next,value,options);
+      if (!hadInactive && next.strokeWidth === 0) editDesignStrokeWidth(next,1,options);
+      for(const key of Object.keys(node))if(!Object.hasOwn(next,key))delete node[key];
+      Object.assign(node,next);
+      applyAllAutoLayouts(design.nodes);
+    }catch(error){notify(error.message,"error");}
   },
   "input",
 );
@@ -6165,6 +6360,23 @@ elements.inlineTextEditor.addEventListener("keydown", (event) => {
   }
 });
 elements.inlineTextEditor.addEventListener("blur", () => finishInlineTextEdit());
+elements.inlineTextEditor.addEventListener("beforeinput", () => {
+  if (inlineTextEdit) {
+    const start = elements.inlineTextEditor.selectionStart, end = elements.inlineTextEditor.selectionEnd;
+    inlineTextEdit.selection = { start, end, affinity: start === end ? "before" : "after" };
+  }
+});
+elements.inlineTextEditor.addEventListener("input", () => {
+  if (!inlineTextEdit?.draft) return;
+  try {
+    const selection = inlineTextEdit.selection;
+    inlineTextEdit.selection = undefined;
+    inlineTextEdit.draft = replaceTextValue(inlineTextEdit.draft, elements.inlineTextEditor.value, selection?.affinity ?? "before", selection);
+  } catch (error) {
+    elements.inlineTextEditor.value = inlineTextEdit.draft.textSource ?? inlineTextEdit.draft.text;
+    notify(error.message, "error");
+  }
+});
 document
   .getElementById("edit-text-selection")
   .addEventListener("click", () => beginInlineTextEdit(selectedNode()));
@@ -7160,15 +7372,15 @@ function renderedNodeEffectBounds(
     node.type === "instance"
       ? renderedDesignInstanceEffectOutsets(documentValue, node, instanceStack, availableNodes)
       : zeroEffectOutsets();
+  const stackOutsets=shadowStackOutsets(node,(node.rotation??0)+inheritedNodeRotation(nodes,node));
+  const hasStackEffect=Object.values(stackOutsets).some(value=>value>0);
   const hasInstanceEffect = Object.values(instanceEffectOutsets).some((value) => value > 0);
   const strokeOutset =
-    !["group", "instance"].includes(node.type) &&
-    node.stroke !== "transparent" &&
-    node.strokeWidth > 0
-      ? node.strokeWidth / 2
+    !["group", "instance"].includes(node.type)
+      ? designStrokeOutset(node)
       : 0;
   const visibleShadow = node.shadow?.opacity > 0 ? node.shadow : null;
-  if (!visibleShadow && !hasInstanceEffect && strokeOutset <= 0) {
+  if (!visibleShadow && !hasInstanceEffect && !hasStackEffect && strokeOutset <= 0) {
     return clipNodeBoundsToClippingAncestors(nodes, node);
   }
   const shadowOutset = visibleShadow?.blur * 1.5 || 0;
@@ -7179,6 +7391,7 @@ function renderedNodeEffectBounds(
   const rotatedInstanceOutset =
     totalRotation % 360 === 0 ? 0 : Math.max(...Object.values(instanceEffectOutsets));
   const leftOutset = Math.max(
+    stackOutsets.left,
     rotatedInstanceOutset || instanceEffectOutsets.left,
     strokeOutset,
     visibleShadow
@@ -7186,6 +7399,7 @@ function renderedNodeEffectBounds(
       : 0,
   );
   const topOutset = Math.max(
+    stackOutsets.top,
     rotatedInstanceOutset || instanceEffectOutsets.top,
     strokeOutset,
     visibleShadow
@@ -7193,11 +7407,13 @@ function renderedNodeEffectBounds(
       : 0,
   );
   const rightOutset = Math.max(
+    stackOutsets.right,
     rotatedInstanceOutset || instanceEffectOutsets.right,
     strokeOutset,
     visibleShadow ? strokeOutset + shadowOutset + (rotatedShadowOffset || Math.max(0, shadowX)) : 0,
   );
   const bottomOutset = Math.max(
+    stackOutsets.bottom,
     rotatedInstanceOutset || instanceEffectOutsets.bottom,
     strokeOutset,
     visibleShadow ? strokeOutset + shadowOutset + (rotatedShadowOffset || Math.max(0, shadowY)) : 0,
@@ -7306,6 +7522,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "name",
   "notes",
   "shadow",
+  "shadowStack",
   "effectClipping",
   "contentClipping",
   "x",
@@ -7316,9 +7533,14 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "fillPaints",
   "stroke",
   "strokeWidth",
+  "nativeStrokeInactive",
+  "strokeSides",
+  "strokeAlign",
+  "strokeLayoutExcluded",
   "opacity",
   "rotation",
   "cornerRadius",
+  "cornerRadii",
   "visible",
   "locked",
   "clipContent",
@@ -7328,14 +7550,17 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "fontFamily",
   "fontStyle",
   "lineHeight",
+  "lineHeightUnit",
   "letterSpacing",
   "textDecoration",
+  "textRanges",
   "textMeasurement",
   "textSource",
   "textFlow",
   "textOverflow",
   "textFlowWidth",
   "layoutBaselineOffset",
+  "layoutBaselineSource",
   "fontRef",
   "textAlign",
   "imageRef",
@@ -7355,6 +7580,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "justifyContent",
   "alignContent",
   "gridColumns",
+  ...GRID_CONTAINER_FIELDS,
   "minWidth",
   "maxWidth",
   "minHeight",
@@ -7366,6 +7592,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "layoutMarginBefore",
   "gridColumnSpan",
   "gridRowSpan",
+  ...GRID_CHILD_FIELDS,
   "constraintHorizontal",
   "constraintVertical",
   "constraintBaseWidth",
@@ -7380,6 +7607,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
 const AGENT_OPERATION_FIELDS = new Map([
   ["create_node", new Set(["op", "type", "id", "parent_id", "before_id", "properties"])],
   ["update_node", new Set(["op", "node_id", "changes"])],
+  ["edit_text", new Set(["op", "node_id", "start", "end", "text", "affinity", "expectedSourceSignature"])],
   ["move_node", new Set(["op", "node_id", "parent_id", "before_id"])],
   ["delete_node", new Set(["op", "node_id"])],
   ["set_document", new Set(["op", "changes"])],
@@ -7395,16 +7623,28 @@ const AGENT_PAGE_OPERATIONS = new Set([
   "set_active_page",
   "delete_page",
 ]);
-const AGENT_NODE_OPERATIONS = new Set(["create_node", "update_node", "move_node", "delete_node"]);
+const AGENT_NODE_OPERATIONS = new Set(["create_node", "update_node", "edit_text", "move_node", "delete_node"]);
 
 function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
   if (!changes || typeof changes !== "object" || Array.isArray(changes)) {
     throw new Error("changes 必须是对象");
   }
+  for (const key of Object.keys(changes))
+    if (!AGENT_NODE_PATCH_FIELDS.has(key))
+      throw new Error(`Agent 不可直接修改图层字段：${key}`);
+  validateTextRangeNodePatch(node, changes);
+  const strokeKeys = ["stroke", "strokeWidth", "strokeAlign", "strokeSides", "strokeLayoutExcluded", "nativeStrokeInactive"];
+  const strokeHandled = strokeKeys.some(key => Object.hasOwn(changes, key)) &&
+    applyDesignStrokeEdits(node, changes, { nodes: design.nodes, parent: nodeById(node.parentId) });
   for (const [key, value] of Object.entries(changes)) {
     if (!AGENT_NODE_PATCH_FIELDS.has(key)) {
       throw new Error(`Agent 不可直接修改图层字段：${key}`);
     }
+    // An explicit manual offset retires only the new HTML refresh contract.
+    // Native provenance keeps its existing editing behavior.
+    if (key === "layoutBaselineOffset" && node.layoutBaselineSource === "html")
+      delete node.layoutBaselineSource;
+    if (strokeHandled && (strokeKeys.includes(key) || /^padding(?:Top|Right|Bottom|Left)$/u.test(key))) continue;
     if (moveTree && ["x", "y"].includes(key) && Number.isFinite(value)) {
       setNodeTreePosition(design.nodes, node.id, key, value);
     } else if (
@@ -7412,13 +7652,21 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
       [
         "notes",
         "shadow",
+        "shadowStack",
         "fillPaints",
+        "strokeSides",
+        "nativeStrokeInactive",
+        "strokeAlign",
+        "strokeLayoutExcluded",
         "contentClipping",
+        "lineHeightUnit",
         "textSource",
+        "textRanges",
         "textFlow",
         "textOverflow",
         "textFlowWidth",
         "layoutBaselineOffset",
+        "layoutBaselineSource",
         "fontRef",
         "imageRef",
         "objectFit",
@@ -7429,6 +7677,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
         "columnGap",
         "alignContent",
         "gridColumns",
+        ...GRID_CONTAINER_FIELDS,
         "minWidth",
         "maxWidth",
         "minHeight",
@@ -7440,6 +7689,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
         "layoutMarginBefore",
         "gridColumnSpan",
         "gridRowSpan",
+        ...GRID_CHILD_FIELDS,
         "constraintHorizontal",
         "constraintVertical",
         "constraintBaseWidth",
@@ -7455,8 +7705,28 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
       node[key] = value;
     }
   }
+  if (
+    node.type === "text" && Object.hasOwn(changes, "text") && !Object.hasOwn(changes, "textSource")
+  ) {
+    // A text-only tool edit authors the same content as an inspector/inline edit.
+    // Otherwise reflow would restore the previous captured source over this edit.
+    if (Object.hasOwn(node, "textSource")) node.textSource = node.text;
+    delete node.textFlowWidth;
+    delete node.textMeasurement;
+    if (typeof node.text === "string" && !node.text.trim()) {
+      delete node.textFlow;
+      delete node.textOverflow;
+    }
+  }
   if (Object.hasOwn(changes, "fill") && !Object.hasOwn(changes, "fillPaints"))
     delete node.fillPaints;
+  if (!Object.hasOwn(changes, "strokeLayoutExcluded") &&
+      (Object.hasOwn(changes, "layout") || Object.hasOwn(changes, "strokeAlign")))
+    clearInvalidStrokeLayoutExclusion(node);
+  if(!strokeHandled && !Object.hasOwn(changes,"strokeSides")) {
+    if(typeof changes.stroke === "string")editDesignStrokeColor(node,node.stroke);
+    if(typeof changes.strokeWidth === "number")editDesignStrokeWidth(node,node.strokeWidth);
+  }
   if (node.clipContent !== true) delete node.contentClipping;
 }
 
@@ -7591,7 +7861,7 @@ async function applyAgentDesignOperations(args) {
         }
       }
       if (
-        ["update_node", "move_node", "delete_node"].includes(operation.op) &&
+        ["update_node", "edit_text", "move_node", "delete_node"].includes(operation.op) &&
         !isAgentNodeReference(operation.node_id)
       ) {
         throw new Error(`操作 ${index + 1} 的 node_id 必须是 1–160 个安全字符`);
@@ -7658,6 +7928,15 @@ async function applyAgentDesignOperations(args) {
         requestParentReflow(node.parentId);
         if (isAutoLayoutContainer(node)) layoutContainerIds.add(node.id);
         changedIds.add(node.id);
+      } else if (operation.op === "edit_text") {
+        const node = nodeById(operation.node_id);
+        if (!node) throw new Error(`图层不存在：${operation.node_id}`);
+        const { op: _op, node_id: _nodeId, ...edit } = operation;
+        const next = replaceTextRange(node, edit);
+        for (const key of Object.keys(node)) if (!Object.hasOwn(next, key)) delete node[key];
+        Object.assign(node, next);
+        requestParentReflow(node.parentId);
+        changedIds.add(node.id);
       } else if (operation.op === "update_node") {
         const node = nodeById(operation.node_id);
         if (!node) throw new Error(`图层不存在：${operation.node_id}`);
@@ -7704,6 +7983,7 @@ async function applyAgentDesignOperations(args) {
               "justifyContent",
               "alignContent",
               "gridColumns",
+              ...GRID_CONTAINER_FIELDS,
               "minWidth",
               "maxWidth",
               "minHeight",
@@ -7719,6 +7999,16 @@ async function applyAgentDesignOperations(args) {
           isAutoLayoutContainer(parent) &&
           [...changedFields].some((field) =>
             [
+              "layout",
+              "padding",
+              "paddingTop",
+              "paddingRight",
+              "paddingBottom",
+              "paddingLeft",
+              "strokeWidth",
+              "strokeSides",
+              "strokeAlign",
+              "strokeLayoutExcluded",
               "width",
               "height",
               "minWidth",
@@ -7732,6 +8022,7 @@ async function applyAgentDesignOperations(args) {
               "layoutAlignSelf",
               "gridColumnSpan",
               "gridRowSpan",
+              ...GRID_CHILD_FIELDS,
             ].includes(field),
           )
         ) {
@@ -8708,6 +8999,8 @@ function registerAgentTools(ready) {
         autoLayoutOwnsDirectFlowChildPositions: true,
         autoLayoutFlowChildCoordinates: "resolved-fallback",
         autoLayoutChildSizingAppliesToContainers: true,
+        mainAxisFillDistribution: "equal-content-plus-own-insets",
+        nativeExcludedInsideStrokeField: "strokeLayoutExcluded",
         asymmetricPaddingFields: ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"],
         independentGapFields: ["rowGap", "columnGap"],
         independentSizingFields: ["layoutSizingHorizontal", "layoutSizingVertical"],

@@ -1,4 +1,18 @@
+import { shadowStackCss } from "./shadow-stack.mjs";
+import { textLineHeightCss } from "./text-line-height.mjs";
+import { mainAxisGap } from "./layout-spacing.mjs";
+import { repositoryDesignPage } from "./document.mjs";
+import {
+  cssGridTrack,
+  gridPlacements,
+  effectiveGridRows,
+  effectiveGridRowTracks,
+  gridFillHugContentHeight,
+} from "./grid.mjs";
 import { designPaintCssImage } from "./paint.mjs";
+import { nativeTextContent } from "./text-content.mjs";
+import { mapTextDisplay, projectTextRanges, validateTextRanges } from "./text-ranges.mjs";
+import { hasDesignStroke, designStrokeSides, strokeLayoutBasisExtra } from "./stroke.mjs";
 /* Deterministic CodeShell Design v3 to editable HTML/CSS export. */
 import { designFontFaceCss, designFontFamilyCss } from "./font-css.mjs";
 
@@ -26,12 +40,15 @@ function cssColor(value, fallback = "transparent") {
     : fallback;
 }
 
-function pageChildren(page) {
-  return Array.isArray(page?.children)
-    ? page.children
-    : Array.isArray(page?.nodes)
-      ? page.nodes
-      : [];
+function pageChildren(page, design) {
+  if (Array.isArray(page?.children)) return page.children;
+  if (Array.isArray(page?.nodes) ||
+      page?.id === design?.activePageId && Array.isArray(design?.nodes)) {
+    // Panel/CLI state is flat: parentId owns the hierarchy, and the active
+    // page's current nodes can differ from its saved page.nodes snapshot.
+    return repositoryDesignPage({ ...design, nodes: design.nodes ?? page.nodes }, page.id).children;
+  }
+  return [];
 }
 
 function allNodes(nodes, result = []) {
@@ -51,11 +68,14 @@ function styleText(declarations) {
 
 function paddingDeclarations(node) {
   const uniform = Number(node.padding) || 0;
+  const widths=hasDesignStroke(node) && node.strokeAlign === "inside" ? designStrokeSides(node).map(s=>s.width) : [0,0,0,0];
+  if(widths.some((width,i)=>width>(node[`padding${["Top","Right","Bottom","Left"][i]}`]??uniform)))
+    throw new Error(`${node.name}: 内侧边框宽度大于有效 padding，CSS 流式边框不能保留该原生重叠；请增加 padding 后导出`);
   return [
-    ["padding-top", cssNumber(node.paddingTop ?? uniform)],
-    ["padding-right", cssNumber(node.paddingRight ?? uniform)],
-    ["padding-bottom", cssNumber(node.paddingBottom ?? uniform)],
-    ["padding-left", cssNumber(node.paddingLeft ?? uniform)],
+    ["padding-top", cssNumber(Math.max(0,(node.paddingTop ?? uniform)-widths[0]))],
+    ["padding-right", cssNumber(Math.max(0,(node.paddingRight ?? uniform)-widths[1]))],
+    ["padding-bottom", cssNumber(Math.max(0,(node.paddingBottom ?? uniform)-widths[2]))],
+    ["padding-left", cssNumber(Math.max(0,(node.paddingLeft ?? uniform)-widths[3]))],
   ];
 }
 
@@ -71,8 +91,11 @@ function positionDeclarations(node, parent, parentUsesLayout, canvas) {
 
   const parentX = Number(parent?.x) || 0;
   const parentY = Number(parent?.y) || 0;
-  const localLeft = (Number(node.x) || 0) - parentX;
-  const localTop = (Number(node.y) || 0) - parentY;
+  const border=parent && hasDesignStroke(parent) && parent.strokeAlign === "inside" ? designStrokeSides(parent).map(s=>s.width) : [0,0,0,0];
+  const localLeft = (Number(node.x) || 0) - parentX-border[3];
+  const localTop = (Number(node.y) || 0) - parentY-border[0];
+  const parentWidth=Number(parent?.width??canvas?.width)-border[1]-border[3];
+  const parentHeight=Number(parent?.height??canvas?.height)-border[0]-border[2];
   const declarations = [["position", "absolute"]];
   const horizontal = node.constraintHorizontal;
   const vertical = node.constraintVertical;
@@ -87,53 +110,61 @@ function positionDeclarations(node, parent, parentUsesLayout, canvas) {
 
   if (horizontal === "stretch" || rootFillHorizontal) {
     declarations.push(
-      ["left", cssNumber(node.constraintLeft ?? localLeft)],
+      ["left", cssNumber(node.constraintLeft !== undefined ? node.constraintLeft-border[3] : localLeft)],
       [
         "right",
         cssNumber(
-          node.constraintRight ??
-            Math.max(0, Number(parent?.width ?? canvas?.width) - localLeft - Number(node.width)),
+          node.constraintRight !== undefined ? node.constraintRight-border[1] :
+            Math.max(0,parentWidth-localLeft-Number(node.width)+border[1])-border[1],
         ),
       ],
     );
   } else if (horizontal === "end") {
-    declarations.push(["right", cssNumber(node.constraintRight ?? 0)]);
+    declarations.push(["right", cssNumber((node.constraintRight ?? 0)-border[1])]);
   } else if (horizontal === "center") {
-    const initialParentWidth = Number(parent?.width ?? canvas?.width) || 0;
+    const initialParentWidth = parentWidth || 0;
     const offset = localLeft + Number(node.width) / 2 - initialParentWidth / 2;
     declarations.push(["left", `calc(50% + ${cssNumber(offset)})`]);
   } else {
-    declarations.push(["left", cssNumber(node.constraintLeft ?? localLeft)]);
+    declarations.push(["left", cssNumber(node.constraintLeft !== undefined ? node.constraintLeft-border[3] : localLeft)]);
   }
 
   if (vertical === "stretch" || rootFillVertical) {
     declarations.push(
-      ["top", cssNumber(node.constraintTop ?? localTop)],
+      ["top", cssNumber(node.constraintTop !== undefined ? node.constraintTop-border[0] : localTop)],
       [
         "bottom",
         cssNumber(
-          node.constraintBottom ??
-            Math.max(0, Number(parent?.height ?? canvas?.height) - localTop - Number(node.height)),
+          node.constraintBottom !== undefined ? node.constraintBottom-border[2] :
+            Math.max(0,parentHeight-localTop-Number(node.height)+border[2])-border[2],
         ),
       ],
     );
   } else if (vertical === "end") {
-    declarations.push(["bottom", cssNumber(node.constraintBottom ?? 0)]);
+    declarations.push(["bottom", cssNumber((node.constraintBottom ?? 0)-border[2])]);
   } else if (vertical === "center") {
-    const initialParentHeight = Number(parent?.height ?? canvas?.height) || 0;
+    const initialParentHeight = parentHeight || 0;
     const offset = localTop + Number(node.height) / 2 - initialParentHeight / 2;
     declarations.push(["top", `calc(50% + ${cssNumber(offset)})`]);
   } else {
-    declarations.push(["top", cssNumber(node.constraintTop ?? localTop)]);
+    declarations.push(["top", cssNumber(node.constraintTop !== undefined ? node.constraintTop-border[0] : localTop)]);
   }
   return declarations;
 }
 
-function sizingDeclarations(node, parent) {
-  const parentLayout = parent?.layout ?? "none";
+function sizingDeclarations(node, parent, parentOf) {
+  const parentLayout = node.layoutPositioning === "absolute" ? "none" : parent?.layout ?? "none";
   const horizontal = node.layoutSizingHorizontal ?? "fixed";
   const vertical = node.layoutSizingVertical ?? "fixed";
   const declarations = [];
+  const fillBasis = (axis) => {
+    const extra = strokeLayoutBasisExtra(node, axis);
+    if (!extra) return "0";
+    const sides = axis === "horizontal" ? ["Left", "Right"] : ["Top", "Bottom"];
+    // flex-basis obeys this element's border-box sizing. Add the already
+    // physical canonical inset so the requested extra remains content space.
+    return cssNumber(extra + sides.reduce((sum, side) => sum + (node[`padding${side}`] ?? node.padding ?? 0), 0));
+  };
   const absolute = node.layoutPositioning === "absolute" || parentLayout === "none" || !parent;
   const hasIntrinsicHorizontalContent =
     node.type === "text" ||
@@ -144,10 +175,22 @@ function sizingDeclarations(node, parent) {
         (child) => child.visible !== false && child.layoutPositioning !== "absolute",
       )
     : [];
-  const circularHorizontalHug = flowChildren.some(
-    (child) => child.layoutSizingHorizontal === "fill",
-  );
-  const circularVerticalHug = flowChildren.some((child) => child.layoutSizingVertical === "fill");
+  const gridItems =
+    node.layout === "grid"
+      ? gridPlacements(flowChildren, node.gridColumns ?? 1, node).placements
+      : [];
+  const circularFill = (child, axis) => {
+    if (child[`layoutSizing${axis}`] !== "fill") return false;
+    if (axis === "Vertical" && gridFillHugContentHeight(node, child, child.children, parent, parentOf) !== null) return false;
+    const tracks = node[axis === "Horizontal" ? "gridColumnSizes" : "gridRowSizes"];
+    const item = gridItems.find((entry) => entry.child === child);
+    if (!tracks || !item) return true;
+    const start = axis === "Horizontal" ? item.column : item.row;
+    const span = axis === "Horizontal" ? item.columnSpan : item.rowSpan;
+    return tracks.slice(start, start + span).some((track) => track.type !== "fixed");
+  };
+  const circularHorizontalHug = flowChildren.some((child) => circularFill(child, "Horizontal"));
+  const circularVerticalHug = flowChildren.some((child) => circularFill(child, "Vertical"));
   const followsParentAlignment = !node.layoutAlignSelf || node.layoutAlignSelf === "auto";
   const parentStretchesHorizontal =
     followsParentAlignment &&
@@ -165,8 +208,8 @@ function sizingDeclarations(node, parent) {
   } else if (horizontal === "hug" && hasIntrinsicHorizontalContent && !circularHorizontalHug) {
     declarations.push(["width", "fit-content"]);
   } else if (horizontal === "fill" && ["horizontal", "vertical"].includes(parentLayout)) {
-    if (parentLayout === "horizontal") declarations.push(["flex", "1 1 0"], ["min-width", "0"]);
-    else declarations.push(["align-self", "stretch"], ["width", "auto"]);
+    if (parentLayout === "horizontal") declarations.push(["flex", `1 1 ${fillBasis("horizontal")}`], ["min-width", "0"]);
+    else declarations.push(["align-self", "stretch"], ["width", "100%"]);
   } else if (horizontal === "fill" && parentLayout === "grid") {
     declarations.push(["width", "auto"], ["justify-self", "stretch"]);
   } else {
@@ -180,7 +223,7 @@ function sizingDeclarations(node, parent) {
   } else if (vertical === "hug" && hasIntrinsicVerticalContent && !circularVerticalHug) {
     declarations.push(["height", "fit-content"]);
   } else if (vertical === "fill" && parentLayout === "vertical") {
-    declarations.push(["flex", "1 1 0"], ["min-height", "0"]);
+    declarations.push(["flex", `1 1 ${fillBasis("vertical")}`], ["min-height", "0"]);
   } else if (vertical === "fill" && parentLayout === "horizontal") {
     declarations.push(["align-self", "stretch"], ["height", "auto"]);
   } else if (vertical === "fill" && parentLayout === "grid") {
@@ -195,11 +238,32 @@ function sizingDeclarations(node, parent) {
   if (node.layoutMarginBefore === "auto") {
     declarations.push([parentLayout === "vertical" ? "margin-top" : "margin-left", "auto"]);
   }
+  if (!absolute && ["horizontal", "vertical"].includes(parentLayout) && mainAxisGap(parent) < 0) {
+    const siblings = parent.children.filter((child) => child.visible !== false && child.layoutPositioning !== "absolute");
+    if (siblings.at(-1)?.id !== node.id)
+      declarations.push([parentLayout === "horizontal" ? "margin-right" : "margin-bottom", cssNumber(mainAxisGap(parent))]);
+    // Fixed children must keep their authored border-box size under overflow.
+    if ((parentLayout === "horizontal" ? horizontal : vertical) !== "fill") declarations.push(["flex-shrink", "0"]);
+  }
   if (parentLayout === "grid") {
     declarations.push(
-      ["grid-column", `span ${Math.max(1, Number(node.gridColumnSpan) || 1)}`],
-      ["grid-row", `span ${Math.max(1, Number(node.gridRowSpan) || 1)}`],
+      [
+        "grid-column",
+        `${parent.gridItemsPositioning === "manual" && Number.isInteger(node.gridColumnAnchorIndex) ? `${node.gridColumnAnchorIndex + 1} / ` : ""}span ${Math.max(1, Number(node.gridColumnSpan) || 1)}`,
+      ],
+      [
+        "grid-row",
+        `${parent.gridItemsPositioning === "manual" && Number.isInteger(node.gridRowAnchorIndex) ? `${node.gridRowAnchorIndex + 1} / ` : ""}span ${Math.max(1, Number(node.gridRowSpan) || 1)}`,
+      ],
     );
+    for (const [axis, css] of [
+      ["Horizontal", "justify-self"],
+      ["Vertical", "align-self"],
+    ]) {
+      const value = node[`gridChild${axis}Align`];
+      if (value && value !== "auto" && node[`layoutSizing${axis}`] !== "fill")
+        declarations.push([css, alignment(value)]);
+    }
   }
   if (Number.isFinite(Number(node.minWidth))) {
     declarations.push(["min-width", cssNumber(node.minWidth)]);
@@ -219,14 +283,30 @@ function sizingDeclarations(node, parent) {
 function layoutDeclarations(node) {
   if (!CONTAINER_TYPES.has(node.type) || node.layout === "none") return [];
   if (node.layout === "grid") {
+    const rows = effectiveGridRows(
+      node,
+      gridPlacements(
+        (node.children ?? []).filter((child) => child.visible !== false),
+        node.gridColumns ?? 1,
+        node,
+      ).rowCount,
+    );
+    const rowTracks = effectiveGridRowTracks(node, rows);
     return [
       ["display", "grid"],
       [
         "grid-template-columns",
-        `repeat(${Math.max(1, Number(node.gridColumns) || 1)}, minmax(0, 1fr))`,
+        node.gridColumnSizes?.map(cssGridTrack).join(" ") ??
+          `repeat(${Math.max(1, Number(node.gridColumns) || 1)}, minmax(0, 1fr))`,
       ],
-      ["row-gap", cssNumber(node.rowGap ?? node.gap)],
-      ["column-gap", cssNumber(node.columnGap ?? node.gap)],
+      ...(rowTracks
+        ? [["grid-template-rows", rowTracks.map(cssGridTrack).join(" ")]]
+        : node.gridRows || node.gridAutoTracks === "rows"
+          ? [["grid-template-rows", `repeat(${rows}, auto)`]]
+          : []),
+      ["grid-auto-flow", node.gridItemsPositioning ? "row" : "row dense"],
+      ["row-gap", cssNumber(Math.max(0, node.rowGap ?? node.gap))],
+      ["column-gap", cssNumber(Math.max(0, node.columnGap ?? node.gap))],
       ["align-items", alignment(node.alignItems)],
       ["align-content", alignment(node.alignContent)],
       ["justify-content", alignment(node.justifyContent)],
@@ -247,8 +327,8 @@ function layoutDeclarations(node) {
           ? "wrap"
           : "nowrap",
     ],
-    ["row-gap", cssNumber(node.rowGap ?? node.gap)],
-    ["column-gap", cssNumber(node.columnGap ?? node.gap)],
+    ["row-gap", cssNumber(Math.max(0, node.rowGap ?? node.gap))],
+    ["column-gap", cssNumber(Math.max(0, node.columnGap ?? node.gap))],
     ["align-items", alignment(node.alignItems)],
     ["align-content", alignment(node.alignContent)],
     ["justify-content", alignment(node.justifyContent)],
@@ -260,20 +340,39 @@ function paintDeclarations(node) {
   if (PAINTLESS_TYPES.has(node.type)) return [];
   const declarations = [
     ["background", node.fillPaints ? designPaintCssImage(node) : cssColor(node.fill)],
+    // Canonical paints cover the border box, including beneath translucent sides.
+    ["background-origin", node.fillPaints ? "border-box" : undefined],
   ];
-  if (Number(node.strokeWidth) > 0 && cssColor(node.stroke) !== "transparent") {
+  const shadows=[];
+  if (hasDesignStroke(node) && node.strokeAlign === "inside") {
+    designStrokeSides(node).forEach((side,i)=>{
+      const rgb=[1,3,5].map(offset=>parseInt(side.color.slice(offset,offset+2),16));
+      declarations.push([`border-${["top","right","bottom","left"][i]}`,`${cssNumber(side.width)} solid rgba(${rgb.join(",")},${side.opacity})`]);
+    });
+  } else if (hasDesignStroke(node)) {
+    const sides=designStrokeSides(node),side=sides[0];
+    if(sides.some(s=>s.width!==side.width || s.color!==side.color || s.opacity!==side.opacity))
+      throw new Error(`${node.name}: 非内侧的独立侧边暂不能导出为等价 CSS；请保留 SVG/v3 或使用内侧边框`);
+    const rgba=`rgba(${[1,3,5].map(offset=>parseInt(side.color.slice(offset,offset+2),16)).join(",")},${side.opacity})`;
+    const outside=node.strokeAlign === "outside"?side.width:side.width/2;
+    declarations.push(["outline",`${cssNumber(outside)} solid ${rgba}`]);
+    if(node.strokeAlign!=="outside")shadows.push(`inset 0 0 0 ${cssNumber(side.width/2)} ${rgba}`);
+  } else if (Number(node.strokeWidth) > 0 && cssColor(node.stroke) !== "transparent") {
     declarations.push(["border", `${cssNumber(node.strokeWidth)} solid ${cssColor(node.stroke)}`]);
   }
-  if (Number(node.cornerRadius) > 0) {
+  if (node.cornerRadii) {
+    declarations.push(["border-radius", node.cornerRadii.map(cssNumber).join(" ")]);
+  } else if (Number(node.cornerRadius) > 0) {
     declarations.push(["border-radius", cssNumber(node.cornerRadius)]);
   }
   if (node.type === "ellipse") declarations.push(["border-radius", "50%"]);
+  if (node.shadowStack) shadows.push(shadowStackCss(node));
   if (node.shadow) {
-    declarations.push([
-      "box-shadow",
-      `${cssNumber(node.shadow.x)} ${cssNumber(node.shadow.y)} ${cssNumber(node.shadow.blur)} rgba(${Number.parseInt(node.shadow.color.slice(1, 3), 16)},${Number.parseInt(node.shadow.color.slice(3, 5), 16)},${Number.parseInt(node.shadow.color.slice(5, 7), 16)},${node.shadow.opacity})`,
-    ]);
+    const shadow = `${cssNumber(node.shadow.x)} ${cssNumber(node.shadow.y)} ${cssNumber(node.shadow.blur)} rgba(${Number.parseInt(node.shadow.color.slice(1, 3), 16)},${Number.parseInt(node.shadow.color.slice(3, 5), 16)},${Number.parseInt(node.shadow.color.slice(5, 7), 16)},${node.shadow.opacity})`;
+    if (node.type === "text") declarations.push(["text-shadow", shadow]);
+    else shadows.push(shadow);
   }
+  if(shadows.length)declarations.push(["box-shadow",shadows.join(",")]);
   return declarations;
 }
 
@@ -285,18 +384,18 @@ function transformDeclarations(node) {
   return transforms.length > 0 ? [["transform", transforms.join(" ")]] : [];
 }
 
-function nodeStyle(node, parent, canvas) {
+function nodeStyle(node, parent, canvas, parentOf) {
   const parentUsesLayout =
     CONTAINER_TYPES.has(parent?.type) && ["horizontal", "vertical", "grid"].includes(parent.layout);
   const declarations = [
     ...positionDeclarations(node, parent, parentUsesLayout, canvas),
-    ...sizingDeclarations(node, parent),
+    ...sizingDeclarations(node, parent, parentOf),
     ...layoutDeclarations(node),
     ...paintDeclarations(node),
     ...transformDeclarations(node),
     ["box-sizing", "border-box"],
     ["opacity", String(Number.isFinite(Number(node.opacity)) ? Number(node.opacity) : 1)],
-    ["overflow", node.clipContent ? "hidden" : "visible"],
+    ["overflow", node.clipContent || node.textOverflow === "ellipsis" ? "hidden" : "visible"],
     ["display", node.visible === false ? "none" : undefined],
   ];
   if (node.type === "text") {
@@ -309,11 +408,15 @@ function nodeStyle(node, parent, canvas) {
       ["font-size", cssNumber(node.fontSize, 16)],
       ["font-weight", String(node.fontWeight ?? 400)],
       ["font-style", node.fontStyle ?? "normal"],
-      ["line-height", String(node.lineHeight ?? 1.2)],
+      ["line-height", textLineHeightCss(node)],
       ["letter-spacing", cssNumber(node.letterSpacing, 0)],
       ["text-align", node.textAlign ?? "left"],
-      ["text-decoration", node.textDecoration ?? "none"],
-      ["white-space", node.textFlow === "wrap" ? "pre-wrap" : "pre"],
+      // A parent decoration propagates through inline children: a child `none`
+      // cannot cancel it. Ranged paragraphs decorate their effective inline
+      // runs, including inherited gaps, instead of the parent box.
+      ["text-decoration", validateTextRanges(node) ? "none" : node.textDecoration ?? "none"],
+      ["white-space", node.textOverflow === "ellipsis" ? "pre" : node.textFlow === "wrap" ? "pre-wrap" : "pre"],
+      ["text-overflow", node.textOverflow === "ellipsis" ? "ellipsis" : undefined],
       ["overflow-wrap", node.textFlow === "wrap" ? "anywhere" : "normal"],
     );
   }
@@ -348,7 +451,51 @@ function renderInstance(node, context) {
   return `<div class="cs-instance-content" style="${contentStyle}">${children}</div>`;
 }
 
+const rangeLengthCss = (length) => length?.unit === "auto" ? "auto" :
+  length ? `${length.value}${length.unit}` : undefined;
+
+function renderTextRanges(node) {
+  if (node.fillPaints?.length || node.strokeWidth > 0 && !["none", "transparent"].includes(node.stroke)) {
+    const error = new Error("TEXT_RANGES_UNSUPPORTED: 范围文字的多层填色或描边尚不能准确导出前端");
+    error.code = "TEXT_RANGES_UNSUPPORTED";
+    throw error;
+  }
+  const { sourceText } = mapTextDisplay(node);
+  // The browser owns live wrapping of the authored paragraph. Saved display
+  // soft LF must never become authored characters or link boundaries here.
+  const runs = [];
+  for (const run of projectTextRanges({ ...node, text: sourceText })) {
+    const previous = runs.at(-1);
+    // A source LF may split the shared projection, but must not manufacture
+    // extra anchor elements/tab stops within one unchanged source range.
+    if (previous && previous.sourceEnd === run.sourceStart &&
+        JSON.stringify([previous.overrides, previous.style, previous.href]) ===
+          JSON.stringify([run.overrides, run.style, run.href])) {
+      previous.text += run.text;
+      previous.sourceEnd = run.sourceEnd;
+    } else runs.push({ ...run });
+  }
+  return runs
+    .map((run) => {
+      const style = styleText([
+        ["font", "inherit"],
+        ["color", run.overrides.fill === undefined ? "inherit" : run.style.fill],
+        ["text-decoration-line", run.style.textDecoration],
+        ["text-decoration-style", "solid"],
+        ["text-decoration-color", "currentColor"],
+        ["text-decoration-thickness", rangeLengthCss(run.style.textDecorationThickness)],
+        ["text-underline-offset", rangeLengthCss(run.style.textUnderlineOffset)],
+        ["text-decoration-skip-ink", run.style.textDecorationSkipInk],
+      ]);
+      const tag = run.href === undefined ? "span" : "a";
+      const href = run.href === undefined ? "" : ` href="${escapeHtml(run.href)}"`;
+      return `<${tag}${href} style="${escapeHtml(style)}">${escapeHtml(run.text)}</${tag}>`;
+    })
+    .join("");
+}
+
 function renderNode(node, parent, context) {
+  context.gridParents.set(node, parent ?? null);
   const exportedId = `${context.idPrefix}${node.id}`;
   const attributes = [
     `class="cs-node cs-${escapeHtml(node.type)}"`,
@@ -356,7 +503,7 @@ function renderNode(node, parent, context) {
     `data-codeshell-source-id="${escapeHtml(node.id)}"`,
     `data-codeshell-node-type="${escapeHtml(node.type)}"`,
     `data-codeshell-name="${escapeHtml(node.name)}"`,
-    `style="${escapeHtml(nodeStyle(node, parent, context.canvas))}"`,
+    `style="${escapeHtml(nodeStyle(node, parent, context.canvas, context.gridParentOf))}"`,
   ];
   if (node.notes) attributes.push(`title="${escapeHtml(node.notes)}"`);
   const link = context.idPrefix === "" ? context.prototypeLinks?.get(node.id) : null;
@@ -364,14 +511,17 @@ function renderNode(node, parent, context) {
     ? `<a class="cs-prototype-hotspot" data-prototype-link="${escapeHtml(link.id)}" href="${escapeHtml(link.href)}" aria-label="${escapeHtml(link.label || node.name)}"${link.external ? ' target="_blank" rel="noopener noreferrer"' : ""}></a>`
     : "";
   if (node.type === "text") {
-    return `<div ${attributes.join(" ")}>${hotspot}${escapeHtml(node.text)}</div>`;
+    const ranges = validateTextRanges(node);
+    const content = ranges ? renderTextRanges(node) :
+      escapeHtml(node.textOverflow === "ellipsis" || node.textFlow === "wrap" ? nativeTextContent(node) : node.text);
+    return `<div ${attributes.join(" ")}>${hotspot}${content}</div>`;
   }
   if (node.type === "image") {
     const source = context.resourceDataUrls.get(node.imageRef);
     if (source) {
       const imageAttributes = attributes.filter((attribute) => !attribute.startsWith("style="));
       imageAttributes.push(
-        `style="${escapeHtml(`${nodeStyle(node, parent, context.canvas)};object-fit:${node.objectFit ?? "cover"}`)}"`,
+        `style="${escapeHtml(`${nodeStyle(node, parent, context.canvas, context.gridParentOf)};object-fit:${node.objectFit ?? "cover"}`)}"`,
       );
       if (context.prototypeMode) {
         return `<div ${attributes.join(" ")}>${hotspot}<img class="cs-prototype-image" src="${escapeHtml(source)}" alt="${escapeHtml(node.name)}" style="width:100%;height:100%;object-fit:${escapeHtml(node.objectFit ?? "cover")}"></div>`;
@@ -419,14 +569,17 @@ export function renderDesignFrontendPage(
   const page = design.pages?.find((candidate) => candidate.id === pageId);
   if (!page) throw new Error(`设计页面不存在：${pageId}`);
   const canvas = design.canvas ?? { width: 1440, height: 900, background: "#ffffff" };
-  const roots = pageChildren(page);
+  const roots = pageChildren(page, design);
   const components = new Map(
     design.pages
-      .flatMap((candidate) => allNodes(pageChildren(candidate)))
+      .flatMap((candidate) => allNodes(pageChildren(candidate, design)))
       .filter((node) => node.type === "component")
       .map((node) => [node.id, node]),
   );
+  const gridParents = new WeakMap();
   const context = {
+    gridParents,
+    gridParentOf: (node) => gridParents.get(node),
     canvas,
     components,
     resourceDataUrls:

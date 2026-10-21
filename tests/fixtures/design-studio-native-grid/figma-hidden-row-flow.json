@@ -1,0 +1,326 @@
+{
+  "format": "codeshell.figma.source",
+  "version": 1,
+  "name": "Actual native hidden Grid regression",
+  "nodes": {
+    "62:63": {
+      "document": {
+        "id": "62:63",
+        "name": "Native tracks",
+        "type": "FRAME",
+        "scrollBehavior": "SCROLLS",
+        "children": [
+          {
+            "id": "62:64",
+            "name": "Span two",
+            "visible": false,
+            "type": "RECTANGLE",
+            "scrollBehavior": "SCROLLS",
+            "blendMode": "PASS_THROUGH",
+            "fills": [
+              {
+                "blendMode": "NORMAL",
+                "type": "SOLID",
+                "color": {
+                  "r": 0.14509804546833038,
+                  "g": 0.38823530077934265,
+                  "b": 0.9215686321258545,
+                  "a": 1
+                }
+              }
+            ],
+            "strokes": [],
+            "strokeWeight": 0,
+            "strokeAlign": "CENTER",
+            "absoluteBoundingBox": {
+              "x": 140,
+              "y": 40,
+              "width": 310,
+              "height": 40
+            },
+            "absoluteRenderBounds": null,
+            "constraints": {
+              "vertical": "TOP",
+              "horizontal": "LEFT"
+            },
+            "layoutAlign": "STRETCH",
+            "layoutGrow": 1,
+            "gridRowAnchorIndex": -1,
+            "gridColumnAnchorIndex": -1,
+            "gridRowSpan": 1,
+            "gridColumnSpan": 2,
+            "gridChildHorizontalAlign": "MIN",
+            "gridChildVerticalAlign": "MIN",
+            "layoutSizingHorizontal": "FIXED",
+            "layoutSizingVertical": "FIXED",
+            "effects": [],
+            "interactions": [],
+            "complexStrokeProperties": {
+              "strokeType": "BASIC"
+            },
+            "layoutPositioning": "AUTO"
+          },
+          {
+            "id": "62:65",
+            "name": "Card",
+            "type": "RECTANGLE",
+            "scrollBehavior": "SCROLLS",
+            "blendMode": "PASS_THROUGH",
+            "fills": [
+              {
+                "blendMode": "NORMAL",
+                "type": "SOLID",
+                "color": {
+                  "r": 0.9764705896377563,
+                  "g": 0.45098039507865906,
+                  "b": 0.08627451211214066,
+                  "a": 1
+                }
+              }
+            ],
+            "strokes": [],
+            "strokeWeight": 0,
+            "strokeAlign": "CENTER",
+            "absoluteBoundingBox": {
+              "x": 100,
+              "y": 50,
+              "width": 30,
+              "height": 20
+            },
+            "absoluteRenderBounds": {
+              "x": 100,
+              "y": 50,
+              "width": 30,
+              "height": 20
+            },
+            "constraints": {
+              "vertical": "TOP",
+              "horizontal": "LEFT"
+            },
+            "layoutAlign": "INHERIT",
+            "layoutGrow": 0,
+            "gridRowAnchorIndex": 0,
+            "gridColumnAnchorIndex": 0,
+            "gridRowSpan": 1,
+            "gridColumnSpan": 1,
+            "gridChildHorizontalAlign": "MAX",
+            "gridChildVerticalAlign": "CENTER",
+            "layoutSizingHorizontal": "FIXED",
+            "layoutSizingVertical": "FIXED",
+            "effects": [],
+            "interactions": [],
+            "complexStrokeProperties": {
+              "strokeType": "BASIC"
+            },
+            "layoutPositioning": "AUTO"
+          },
+          {
+            "id": "62:66",
+            "name": "Card",
+            "type": "RECTANGLE",
+            "scrollBehavior": "SCROLLS",
+            "blendMode": "PASS_THROUGH",
+            "fills": [
+              {
+                "blendMode": "NORMAL",
+                "type": "SOLID",
+                "color": {
+                  "r": 0.08627451211214066,
+                  "g": 0.6392157077789307,
+                  "b": 0.29019609093666077,
+                  "a": 1
+                }
+              }
+            ],
+            "strokes": [],
+            "strokeWeight": 0,
+            "strokeAlign": "CENTER",
+            "absoluteBoundingBox": {
+              "x": 140,
+              "y": 40,
+              "width": 40,
+              "height": 60
+            },
+            "absoluteRenderBounds": {
+              "x": 140,
+              "y": 40,
+              "width": 40,
+              "height": 60
+            },
+            "constraints": {
+              "vertical": "TOP",
+              "horizontal": "LEFT"
+            },
+            "layoutAlign": "INHERIT",
+            "layoutGrow": 0,
+            "gridRowAnchorIndex": 0,
+            "gridColumnAnchorIndex": 1,
+            "gridRowSpan": 1,
+            "gridColumnSpan": 1,
+            "gridChildHorizontalAlign": "MIN",
+            "gridChildVerticalAlign": "MIN",
+            "layoutSizingHorizontal": "FIXED",
+            "layoutSizingVertical": "FIXED",
+            "effects": [],
+            "interactions": [],
+            "complexStrokeProperties": {
+              "strokeType": "BASIC"
+            },
+            "layoutPositioning": "AUTO"
+          },
+          {
+            "id": "62:67",
+            "name": "Visible last rectangle",
+            "type": "RECTANGLE",
+            "scrollBehavior": "SCROLLS",
+            "blendMode": "PASS_THROUGH",
+            "fills": [
+              {
+                "blendMode": "NORMAL",
+                "type": "SOLID",
+                "color": {
+                  "r": 0.05882352963089943,
+                  "g": 0.09019608050584793,
+                  "b": 0.16470588743686676,
+                  "a": 1
+                }
+              }
+            ],
+            "strokes": [],
+            "strokeWeight": 0,
+            "strokeAlign": "CENTER",
+            "absoluteBoundingBox": {
+              "x": 250,
+              "y": 40,
+              "width": 60,
+              "height": 20
+            },
+            "absoluteRenderBounds": {
+              "x": 250,
+              "y": 40,
+              "width": 60,
+              "height": 20
+            },
+            "constraints": {
+              "vertical": "TOP",
+              "horizontal": "LEFT"
+            },
+            "layoutAlign": "INHERIT",
+            "layoutGrow": 0,
+            "gridRowAnchorIndex": 0,
+            "gridColumnAnchorIndex": 2,
+            "gridRowSpan": 1,
+            "gridColumnSpan": 1,
+            "gridChildHorizontalAlign": "MIN",
+            "gridChildVerticalAlign": "MIN",
+            "layoutSizingHorizontal": "FIXED",
+            "layoutSizingVertical": "FIXED",
+            "effects": [],
+            "interactions": [],
+            "complexStrokeProperties": {
+              "strokeType": "BASIC"
+            },
+            "layoutPositioning": "AUTO"
+          }
+        ],
+        "blendMode": "PASS_THROUGH",
+        "clipsContent": false,
+        "background": [
+          {
+            "blendMode": "NORMAL",
+            "type": "SOLID",
+            "color": {
+              "r": 0.886274516582489,
+              "g": 0.9098039269447327,
+              "b": 0.9411764740943909,
+              "a": 1
+            }
+          }
+        ],
+        "fills": [
+          {
+            "blendMode": "NORMAL",
+            "type": "SOLID",
+            "color": {
+              "r": 0.886274516582489,
+              "g": 0.9098039269447327,
+              "b": 0.9411764740943909,
+              "a": 1
+            }
+          }
+        ],
+        "strokes": [],
+        "strokeWeight": 0,
+        "strokeAlign": "CENTER",
+        "backgroundColor": {
+          "r": 0.886274516582489,
+          "g": 0.9098039269447327,
+          "b": 0.9411764740943909,
+          "a": 1
+        },
+        "layoutMode": "GRID",
+        "counterAxisSizingMode": "FIXED",
+        "primaryAxisSizingMode": "FIXED",
+        "paddingLeft": 10,
+        "paddingRight": 10,
+        "paddingTop": 10,
+        "paddingBottom": 10,
+        "strokesIncludedInLayout": true,
+        "gridColumnCount": 3,
+        "gridRowCount": 1,
+        "gridRowGap": 8,
+        "gridColumnGap": 10,
+        "gridColumnsSizing": "   100px minmax(0,1fr) minmax(0,2fr)",
+        "gridRowsSizing": " 40px",
+        "gridAutoTracks": "ROWS",
+        "gridItemsPositioning": "ROW_AUTO_FLOW",
+        "absoluteBoundingBox": {
+          "x": 20,
+          "y": 30,
+          "width": 440,
+          "height": 128
+        },
+        "absoluteRenderBounds": {
+          "x": 20,
+          "y": 30,
+          "width": 440,
+          "height": 128
+        },
+        "constraints": {
+          "vertical": "TOP",
+          "horizontal": "LEFT"
+        },
+        "layoutSizingHorizontal": "FIXED",
+        "layoutSizingVertical": "FIXED",
+        "effects": [],
+        "interactions": [],
+        "complexStrokeProperties": {
+          "strokeType": "BASIC"
+        },
+        "gridRowSizes": [
+          {
+            "type": "FIXED",
+            "value": 40
+          }
+        ],
+        "gridColumnSizes": [
+          {
+            "type": "FIXED",
+            "value": 100
+          },
+          {
+            "type": "FLEX",
+            "value": 1
+          },
+          {
+            "type": "FLEX",
+            "value": 2
+          }
+        ]
+      }
+    }
+  },
+  "assets": {},
+  "previews": {},
+  "warnings": []
+}

@@ -1,7 +1,27 @@
+import { normalizeShadowStack, validateShadowStack } from "./shadow-stack.mjs";
+import {
+  planHtmlFloatColumns,
+  sizeHtmlFloatColumn,
+  validateHtmlFloatColumns,
+  removeHtmlFloatColumns,
+  isHtmlEmptyClear,
+} from "./html-float-columns.mjs";
+import { recoverHtmlTextOverflow } from "./html-text-overflow.mjs";
+import { applyHtmlNumberLineHeight } from "./html-line-height.mjs";
+import { cssCornerRadii } from "./corner-radii.mjs";
+import { planHtmlImageBorderBox } from "./html-image-border-box.mjs";
+import { consumeHtmlAutoMarginPlan } from "./html-auto-margin-distribution.mjs";
 /* Pure html2figma DesignNode → CodeShell v3 adapter. No DOM, network, or writes. */
 import { normalizeDesignDocument, MAX_DESIGN_NODES_PER_PAGE } from "./document.mjs";
 import { createDesignResourcePersistencePlan, MAX_DESIGN_RESOURCES } from "./resource-store.mjs";
 import { normalizeFigmaAsset } from "./figma-assets.mjs";
+import { planHtmlBlockFlow, htmlBlockHorizontalBleed } from "./html-block-flow.mjs";
+import { applyHtmlBlockInsets } from "./html-block-insets.mjs";
+import { planHtmlViewportFlow } from "./html-viewport-flow.mjs";
+import { cssLinearBackgroundPaints } from "./css-linear-gradient.mjs";
+import { representativeDesignFill } from "./paint.mjs";
+import { normalizeStrokeSides, validateDesignStroke } from "./stroke.mjs";
+import { planHtmlGrid, sizeHtmlGridChild, validateHtmlGrid, removeHtmlGrid } from "./html-grid.mjs";
 
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const finite = (value, fallback = 0) => (Number.isFinite(value) ? value : fallback);
@@ -38,6 +58,18 @@ const semanticSuffix = (value) => {
     hash = Math.imul(hash ^ value.charCodeAt(index), 16777619);
   return `-${(hash >>> 0).toString(36)}`;
 };
+const cssLayoutValue = (source, property) =>
+  String(
+    source.cssLayout?.[property] ??
+      (source.nodeType !== "text" ? source.rawStyles?.[property] : undefined) ??
+      "",
+  )
+    .trim()
+    .toLowerCase();
+const mainAutoMarginBefore = (source, parent) =>
+  !parent.layoutReverse &&
+  ["horizontal", "vertical"].includes(parent.layout) &&
+  cssLayoutValue(source, parent.layout === "horizontal" ? "margin-left" : "margin-top") === "auto";
 const svgElements = new Set(
   "svg g path rect circle ellipse line polyline polygon defs clipPath mask linearGradient radialGradient stop pattern text tspan title desc metadata filter feGaussianBlur feOffset feBlend feColorMatrix feComposite feFlood feMerge feMergeNode feMorphology feTurbulence feDisplacementMap use symbol"
     .toLowerCase()
@@ -91,6 +123,15 @@ export async function designNodeToV3(tree, options = {}) {
   const seen = new Set(),
     assets = new Map(),
     fonts = [];
+  const autoMarginOverrides = new WeakMap();
+  const gridPlans = new WeakMap();
+  const blockFlowPlans = new WeakMap();
+  const floatPlans = new WeakMap();
+  const transformedSources = new Set();
+  const provenFloatSources = new WeakSet();
+  const blockInsetCandidates = [];
+  const blockUnwrappedPaths = new WeakMap();
+  const flowAuditCandidates = [], flowAuditNodes = new WeakMap(), successfulFloatNodes = new WeakSet();
   const localResources =
     options.resources instanceof Map
       ? options.resources
@@ -100,6 +141,18 @@ export async function designNodeToV3(tree, options = {}) {
     sourceNodes = 0,
     importedNodes = 0,
     totalImageBytes = 0;
+  const sourceReferences = new WeakSet();
+  const validateSourceGraph = (source, depth) => {
+    if (!object(source) || sourceReferences.has(source) || depth > 32)
+      throw new Error("DesignNode 包含无效、循环、重复引用或超过 32 层的结构");
+    sourceReferences.add(source);
+    if (++sourceNodes > MAX_DESIGN_NODES_PER_PAGE)
+      throw new Error("DesignNode 超过 10,000 个源节点");
+    if (source.children !== undefined && !Array.isArray(source.children))
+      throw new Error("DesignNode children 必须是数组");
+    for (const child of source.children ?? []) validateSourceGraph(child, depth + 1);
+  };
+  validateSourceGraph(tree, 1);
   const warn = (code, nodeId, message) => {
     warningCount += 1;
     if (warnings.length < 500) warnings.push({ code, nodeId, message });
@@ -110,10 +163,10 @@ export async function designNodeToV3(tree, options = {}) {
       warn("bounded-number", id, `${property} 超出 v3 范围或缺失，已使用 ${result}。`);
     return result;
   };
-  const color = (value, id, context = "填充") => {
+  const color = (value, id, context = "填充", preserveAlpha = false) => {
     if (!object(value)) return "transparent";
     if (finite(value.a, 1) <= 0) return "transparent";
-    if (finite(value.a, 1) < 1)
+    if (finite(value.a, 1) < 1 && !preserveAlpha)
       warn(
         "paint-alpha",
         id,
@@ -126,6 +179,13 @@ export async function designNodeToV3(tree, options = {}) {
           .padStart(2, "0"),
       )
       .join("")}`;
+  };
+  const solidFill = (value, node, context = "填充") => {
+    node.fill = color(value, node.id, context, true);
+    delete node.fillPaints;
+    const opacity = clamp(finite(value?.a, 1), 0, 1);
+    if (node.fill !== "transparent" && opacity < 1)
+      node.fillPaints = [{ type: "SOLID", color: node.fill, opacity }];
   };
   const sha256Bytes =
     options.sha256Bytes ??
@@ -253,6 +313,21 @@ export async function designNodeToV3(tree, options = {}) {
       if (source.semantic?.[key] !== undefined) value[key] = source.semantic[key];
     }
     if (source.styledSegments?.length) value.styledSegments = source.styledSegments;
+    const whitespace = source.cssTextWhitespace;
+    if (whitespace && ["normal", "nowrap"].includes(whitespace.whiteSpace) &&
+        typeof whitespace.rawSource === "string" && whitespace.rawSource.length <= 1000 &&
+        JSON.stringify(whitespace.rawSource).length <= 1000) {
+      if (source.nodeType === "text" && whitespace.removedTrailingNbsp === true)
+        value.htmlTextOriginal = { whiteSpace: whitespace.whiteSpace, rawSource: whitespace.rawSource,
+          removedSyntheticTrailingNbsp: true };
+      if (source.nodeType === "container" && Array.isArray(whitespace.omittedPseudos) &&
+          whitespace.omittedPseudos.length <= 2 && whitespace.omittedPseudos.length > 0 &&
+          whitespace.omittedPseudos.every((pseudo) => ["::before", "::after"].includes(pseudo))) {
+        value.htmlOmittedPseudos = whitespace.omittedPseudos;
+        warn("html-empty-pseudo-hit-area", id,
+          "已省略实际捕获中无绘制、无文字且脱离文档流的空伪元素；保留真实节点，但不保留伪元素扩展的点击区域。");
+      }
+    }
     let serialized;
     try {
       serialized = JSON.stringify(value);
@@ -263,50 +338,75 @@ export async function designNodeToV3(tree, options = {}) {
       warn(
         "semantic-notes-limit",
         id,
-        "HTML 语义或富文本元数据超过 2000 字符，备注只保留标签与有界来源标识。",
+        value.htmlTextOriginal || value.htmlOmittedPseudos
+          ? "HTML 语义或富文本元数据超过 2000 字符，备注保留标签、有界来源标识与原始文字收据。"
+          : "HTML 语义或富文本元数据超过 2000 字符，备注只保留标签与有界来源标识。",
       );
-      return JSON.stringify({
+      const minimal = {
         format: value.format,
         version: 1,
         tag: value.tag,
         ...(value.semanticId ? { semanticId: clean(value.semanticId, 300) } : {}),
         ...(value.cssSelector ? { cssSelector: clean(value.cssSelector, 500) } : {}),
-      });
+        ...(value.htmlTextOriginal ? { htmlTextOriginal: value.htmlTextOriginal } : {}),
+        ...(value.htmlOmittedPseudos ? { htmlOmittedPseudos: value.htmlOmittedPseudos } : {}),
+      };
+      // Capture bounds the escaped raw string before correcting any characters.
+      // Preserve that evidence even when unrelated class/attribute notes overflow.
+      if (value.htmlTextOriginal || value.htmlOmittedPseudos) {
+        if (JSON.stringify(minimal).length > 2000) delete minimal.cssSelector;
+        if (JSON.stringify(minimal).length > 2000) delete minimal.semanticId;
+      }
+      return JSON.stringify(minimal);
     }
     return serialized;
   };
+  const nodeSurface = (id, type, name, geometry) => ({
+    id,
+    type,
+    name: clean(name),
+    ...geometry,
+    fill: "transparent",
+    stroke: "transparent",
+    strokeWidth: 0,
+    cornerRadius: 0,
+    rotation: 0,
+    opacity: 1,
+    visible: true,
+    locked: false,
+  });
   const base = (id, type, name, geometry) => {
     if (++importedNodes > MAX_DESIGN_NODES_PER_PAGE)
       throw new Error("HTML 转换后的图层超过 10,000 个");
-    return {
-      id,
-      type,
-      name: clean(name),
-      ...geometry,
-      fill: "transparent",
-      stroke: "transparent",
-      strokeWidth: 0,
-      cornerRadius: 0,
-      rotation: 0,
-      opacity: 1,
-      visible: true,
-      locked: false,
-    };
+    return nodeSurface(id, type, name, geometry);
+  };
+  const imageBorderBoxNodes = new WeakSet();
+  const percentImageBoxes = new WeakSet();
+  const syntheticBase = (...args) => {
+    const node = base(...args);
+    options.onSyntheticNode?.(node);
+    return node;
+  };
+  const syntheticSurface = (...args) => {
+    const node = nodeSurface(...args);
+    if (node.type === "frame") options.onSyntheticNode?.(node);
+    return node;
   };
   const styleSurface = (source, node) => {
     const layers = source.background?.layers ?? [];
     const solid = layers.find((layer) => layer.type === "color" && finite(layer.color?.a, 1) > 0);
-    if (solid) node.fill = color(solid.color, node.id);
+    if (solid) solidFill(solid.color, node);
     const gradients = layers.filter((layer) => layer.type.endsWith("gradient"));
-    if (gradients.length) {
-      if (!solid) node.fill = color(gradients.at(-1).stops?.[0]?.color, node.id);
-      warn(
-        "gradient-solid-fallback",
-        node.id,
-        "v3 不支持渐变；已使用纯色近似，渐变方向与色标不能编辑或完整回导。",
-      );
+    const hasGradient = gradients.length || source.cssBackground?.["background-image"]?.includes("gradient(");
+    if (hasGradient) {
+      try {
+        node.fillPaints = cssLinearBackgroundPaints(source.cssBackground, node.width, node.height);
+        node.fill = representativeDesignFill(node.fillPaints);
+      } catch (error) {
+        warn("unsupported-css-gradient", node.id, `渐变未导入，保留独立背景色：${error.message}。`);
+      }
     }
-    if (layers.length > 1)
+    if (layers.length > 1 && !hasGradient)
       warn(
         "multiple-backgrounds",
         node.id,
@@ -316,45 +416,77 @@ export async function designNodeToV3(tree, options = {}) {
       warn("background-clip", node.id, "背景裁剪区域已近似为容器边界。");
     if (source.borderGradientLayers?.length)
       warn("gradient-border", node.id, "渐变边框未转换为原生描边。");
-    const sides = ["top", "right", "bottom", "left"].map((key) => source.border?.[key]);
+    let bottom = source.border?.bottom;
+    if (source.cssTableBottomBorder !== undefined) {
+      const hint = source.cssTableBottomBorder;
+      if (source.nodeType === "container" && typeof source.semantic?.semanticId === "string" && source.semantic.semanticId &&
+          ["td", "th"].includes(source.tag) && cssLayoutValue(source, "display") === "table-cell" &&
+          cssLayoutValue(source, "border-collapse") === "collapse" &&
+          object(hint) && Object.keys(hint).every((key) => ["width", "style", "color"].includes(key)) &&
+          Number.isFinite(hint.width) && hint.width > 0 && hint.width <= 100 && hint.style === "solid" &&
+          object(hint.color) && Object.keys(hint.color).every((key) => ["r", "g", "b", "a", "raw"].includes(key)) &&
+          ["r", "g", "b"].every((key) => Number.isFinite(hint.color[key]) && hint.color[key] >= 0 && hint.color[key] <= 255) &&
+          hint.color.a === 1 && (hint.color.raw === undefined || typeof hint.color.raw === "string" && hint.color.raw.length <= 1000) &&
+          ["top", "right", "left"].every((key) => source.border?.[key]?.width === 0 && source.border[key].style === "none"))
+        bottom = hint;
+      else warn("unsupported-css-table-border", node.id, "折叠表格边框来源提示无效；保留原有边框与测量布局。");
+    }
+    // The captured edge is paint only; source.border remains the pinned layout
+    // input so no padding, min-size or content sizing acquires an extra inset.
+    const sides = [source.border?.top, source.border?.right, bottom, source.border?.left];
     const visibleSides = sides.filter(
       (side) => side && side.style !== "none" && side.width > 0 && finite(side.color?.a, 1) > 0,
     );
     if (visibleSides.length) {
       node.stroke = color(visibleSides[0].color, node.id, "描边");
       node.strokeWidth = number(visibleSides[0].width, 0, 0, 100, node.id, "strokeWidth");
-      if (sides.some((side) => JSON.stringify(side) !== JSON.stringify(sides[0])))
-        warn("border-sides", node.id, "不同方向边框已近似为统一描边。");
-      if (visibleSides.some((side) => side.style !== "solid"))
-        warn("border-style", node.id, "虚线、点线或双线边框已近似为实线。");
     }
-    const radii = Object.values(source.border?.radius ?? {});
-    node.cornerRadius = number(
-      radii.length ? Math.max(...radii) : 0,
-      0,
-      0,
-      9999,
-      node.id,
-      "cornerRadius",
-    );
-    if (new Set(radii).size > 1)
-      warn("corner-radii", node.id, "各角半径不同，已近似为统一最大圆角。");
-    const shadows = source.effects?.boxShadows ?? [];
-    const shadow = shadows.find((entry) => !entry.inset);
-    if (shadow)
-      node.shadow = {
-        color: color({ ...shadow.color, a: 1 }, node.id),
-        opacity: number(shadow.color?.a ?? 1, 1, 0, 1, node.id, "shadow.opacity"),
-        x: number(shadow.offsetX, 0, -500, 500, node.id, "shadow.x"),
-        y: number(shadow.offsetY, 0, -500, 500, node.id, "shadow.y"),
-        blur: number(shadow.blurRadius, 0, 0, 200, node.id, "shadow.blur"),
-      };
-    if (shadows.length > 1 || shadows.some((entry) => entry.inset || entry.spreadRadius))
-      warn(
-        "shadow-approximation",
-        node.id,
-        "只保留第一项外投影；内阴影、扩散与多重阴影不受 v3 支持。",
+    try {
+      // Validate raw units before using the converter's transform-scaled px values.
+      if (source.cssBorderRadii && !(source.nodeType === "image" &&
+          source.cssBorderRadii.length === 4 && source.cssBorderRadii.every((value) => value === "50%") &&
+          sides.some((side) => side?.width > 0))) cssCornerRadii(source.cssBorderRadii);
+      const radii = ["topLeft", "topRight", "bottomRight", "bottomLeft"].map((key) =>
+        number(source.border?.radius?.[key] ?? 0, 0, 0, 9999, node.id, `cornerRadii.${key}`),
       );
+      if (radii.some((radius) => radius > 0) && source.transform?.scale &&
+          Math.abs(Math.abs(source.transform.scale.x) - Math.abs(source.transform.scale.y)) > 1e-6)
+        throw new Error("非等比 CSS 缩放产生椭圆圆角，暂不能保留");
+      node.cornerRadius = radii[0];
+      if (radii.some((value) => value !== radii[0])) node.cornerRadii = radii;
+    } catch (error) {
+      node.cornerRadius = 0;
+      delete node.cornerRadii;
+      warn("unsupported-corner-radii", node.id, `${error.message}；未近似圆角。`);
+    }
+    const borderImage=source.cssLayout?.["border-image-source"];
+    if ((borderImage && borderImage!=="none") || sides.some(side=>side?.width>0 && side.style!=="none")) {
+      try {
+        if(borderImage && borderImage!=="none")throw new Error("border-image 暂不能保留为可编辑实线侧边");
+        if (sides.some(side=>side?.width>0 && !["none","solid"].includes(side.style))) throw new Error("虚线、点线或双线暂不能保留");
+        node.strokeSides=normalizeStrokeSides(sides.map(side=>({
+          width:side?.style === "none" ? 0 : side?.width??0,
+          color:color({r:0,g:0,b:0,...side?.color,a:1},node.id,"边框"),
+          opacity:side?.color?.a??1,
+        })));
+        node.strokeAlign="inside";
+        validateDesignStroke(node);
+        if(visibleSides.length)node.strokeWidth=Math.max(...node.strokeSides.map(s=>s.width));
+        if (source.cssLayout?.["border-collapse"] === "collapse" && /^table/u.test(source.cssLayout?.display??"")) {
+          node.strokeAlign="center";
+          warn("collapsed-border",node.id,"折叠表格边框的共享边缘/半像素归属暂不能保留；侧边按测量边界居中绘制，未声明为完整表格边框语义。");
+        }
+      } catch (error) {
+        delete node.strokeSides;delete node.strokeAlign;
+        warn("unsupported-css-border",node.id,`${error.message}；保留测量几何并按统一居中描边近似，原始侧边未声明为无损。`);
+      }
+    }
+    const shadows = source.effects?.boxShadows ?? [];
+    if(shadows.length)try{
+      const stack=normalizeShadowStack({basis:"css-box",layers:shadows.map(entry=>({kind:entry.inset?"inner":"outer",color:color({...entry.color,a:1},node.id),opacity:entry.color?.a??1,x:entry.offsetX,y:entry.offsetY,blur:entry.blurRadius,spread:entry.spreadRadius??0,visible:true}))});
+      validateShadowStack({...node,shadowStack:stack});node.shadowStack=stack;
+      if(stack.layers.some(layer=>layer.blur>0))warn("shadow-raster-kernel",node.id,"保留完整有序 CSS 阴影与几何蒙版；SVG/CanvasKit/Figma 模糊内核仍可能与浏览器存在像素差异，未声明严格像素一致。");
+    }catch(error){warn("unsupported-shadow-stack",node.id,`${error.message}；未截取首层或静默近似，原始效果保留在来源。`);}
     if (
       source.effects?.filters?.length ||
       source.effects?.backdropFilters?.length ||
@@ -371,7 +503,7 @@ export async function designNodeToV3(tree, options = {}) {
       warn("layout-alignment", id, `${value} 对齐不受 v3 支持，已使用 ${fallback}。`);
     return values.includes(mapped) ? mapped : fallback;
   };
-  const layout = (source, node) => {
+  const layout = (source, node, ancestors = [], capturedSource = source) => {
     Object.assign(node, {
       layout: "none",
       gap: 0,
@@ -381,9 +513,29 @@ export async function designNodeToV3(tree, options = {}) {
       children: [],
     });
     const sourceLayout = source.layout ?? {};
+    const authoredFlex = source.semantic && sourceLayout.flex &&
+      ["flex", "inline-flex"].includes(sourceLayout.display);
+    const transformedSpace = source.transform || ancestors.some(ancestor => transformedSources.has(ancestor.id));
+    const declaredMargin = (child, side) => {
+      if (!authoredFlex || child.nodeType === "text" || !child.semantic) return undefined;
+      const value = child.cssLayout?.[`margin-${side}`];
+      return typeof value === "string" ? value.trim().toLowerCase() : undefined;
+    };
+    const marginPixels = (value) => /^(?:-?(?:\d+(?:\.\d+)?|\.\d+)px|-?0(?:\.0+)?)$/u.test(value)
+      ? Number.parseFloat(value) : NaN;
+    const sourceMargin = (child, side) => {
+      const value = declaredMargin(child, side);
+      if (value === undefined || value === "auto") return finite((child.margin ?? child.layout?.margin)?.[side]);
+      const amount = marginPixels(value);
+      // The pinned converter clears these margins after dropping the cross
+      // sides for normal/center alignment. Recover only fixed CSS intent on
+      // actual direct children; synthetic wrappers already own their insets.
+      return amount !== 0 && (transformedSpace || child.transform) ? NaN : amount;
+    };
     for (const side of ["Top", "Right", "Bottom", "Left"])
       node[`padding${side}`] = number(
-        sourceLayout.padding?.[side.toLowerCase()] ?? 0,
+        finite(sourceLayout.padding?.[side.toLowerCase()]) +
+          finite(source.border?.[side.toLowerCase()]?.width),
         0,
         0,
         2000,
@@ -418,56 +570,328 @@ export async function designNodeToV3(tree, options = {}) {
         node.id,
       );
     } else if (["grid", "inline-grid"].includes(sourceLayout.display) && sourceLayout.grid) {
-      const grid = sourceLayout.grid;
-      const columns = String(grid.templateColumns ?? "")
-        .trim()
-        .split(/\s+/u);
-      const tracks = columns.map((track) =>
-        /^\d+(?:\.\d+)?px$/u.test(track) ? Number.parseFloat(track) : NaN,
-      );
-      const simple =
-        tracks.length <= 24 &&
-        tracks.every(Number.isFinite) &&
-        tracks.every((track) => Math.abs(track - tracks[0]) < 0.5) &&
-        !/dense|column/u.test(grid.autoFlow ?? "");
-      if (simple) {
-        node.layout = "grid";
-        node.gridColumns = tracks.length;
-        node.columnGap = number(grid.gap?.column ?? 0, 0, 0, 2000, node.id, "columnGap");
-        node.rowGap = number(grid.gap?.row ?? 0, 0, 0, 2000, node.id, "rowGap");
-        node.gap = node.columnGap;
-      } else
-        warn(
-          "grid-fixed-geometry",
+      try {
+        const plan = planHtmlGrid(source);
+        Object.assign(node, plan.fields);
+        gridPlans.set(node, plan);
+        for (const message of plan.warnings) warn("grid-implicit-row-count", node.id, message);
+        node.columnGap = number(
+          sourceLayout.grid.gap?.column ?? 0,
+          0,
+          0,
+          2000,
           node.id,
-          "不规则 Grid 已保留测量位置；网格轨道、命名区域及自动放置关系未保留。",
+          "columnGap",
         );
+        node.rowGap = number(sourceLayout.grid.gap?.row ?? 0, 0, 0, 2000, node.id, "rowGap");
+        node.gap = node.columnGap;
+      } catch (error) {
+        warn("grid-fixed-geometry", node.id, `${error.message}；已保留原始 Grid 测量几何。`);
+      }
     }
-    const margins = (source.children ?? []).some((child) =>
-      Object.values(child.margin ?? child.layout?.margin ?? {}).some(
-        (value) => finite(value) !== 0,
-      ),
+    const floats = planHtmlFloatColumns(source, coordinateSpace);
+    if (floats?.unsupported)
+      warn("float-flow-fixed", node.id, `${floats.unsupported}；保留测量布局。`);
+    else if (floats) {
+      Object.assign(node, floats.fields);
+      floatPlans.set(node, floats);
+      for (const item of floats.items) provenFloatSources.add(item.source);
+    }
+    const block = floats
+      ? null
+      : planHtmlBlockFlow(
+          source,
+          coordinateSpace,
+          { x: node.x, y: node.y },
+          { ignoreOuterFloat: provenFloatSources.has(source) },
+        );
+    if (block?.unsupported)
+      warn("block-flow-fixed", node.id, block.unsupported);
+    else if (block) {
+      blockFlowPlans.set(source, block);
+      Object.assign(node, {
+        layout: "vertical", layoutWrap: "none", gap: 0, rowGap: 0, columnGap: 0,
+        alignItems: "start", justifyContent: "start",
+        paddingTop: block.paddingTop, paddingBottom: block.paddingBottom,
+        paddingLeft: block.paddingLeft, paddingRight: block.paddingRight,
+      });
+      for (const item of block.items)
+        if (item.crossAlign) autoMarginOverrides.set(item.source, {
+          handled: new Set(["left", "right"]), singleMain: false, crossAlign: item.crossAlign,
+        });
+    }
+    const flowChildren = (source.children ?? []).filter(
+      (child) =>
+        child.visible !== false &&
+        child.layout?.display !== "none" &&
+        !["absolute", "fixed"].includes(child.positioning?.mode),
     );
-    if (node.layout !== "none" && margins) {
-      node.layout = "none";
-      warn(
-        "layout-margin-fixed",
-        node.id,
-        "子图层 CSS 外边距不受 v3 完整支持，已保留固定几何避免重新排列失真。",
-      );
+    if (!block && node.layout === "vertical" && !transformedSpace && options.captureAutoMarginPlan) {
+      const captured = options.captureAutoMarginPlan(capturedSource);
+      const distribution = consumeHtmlAutoMarginPlan(captured, capturedSource, source);
+      if (distribution) {
+        node.justifyContent = "space-between";
+        for (const [index, item] of distribution.items.entries()) {
+          const handled = new Set(["top", "bottom"].filter((side, sideIndex) => item.margins[sideIndex] === "auto"));
+          if (handled.size) autoMarginOverrides.set(source.children[index], { handled, singleMain: true });
+        }
+        warn("auto-margin-distribution", node.id,
+          "当前可见子层的等量内部自动外边距已恢复为 Auto Layout 两端分布；隐藏、删除或重排子层后请核对间距。原生目标为新建的 Latest 布局，未升级旧图层。");
+      } else if (captured?.unsupported) warn("auto-margin-distribution-fixed", node.id,
+        `内部自动外边距未获得当前来源证明 (${captured.unsupported})；保留已有布局边界。`);
     }
-    for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"])
-      if (sourceLayout.sizing?.[key] !== undefined && sourceLayout.sizing[key] > 0)
-        node[key] = number(sourceLayout.sizing[key], 1, 1, 20000, node.id, key);
+    if (
+      !block && ["horizontal", "vertical"].includes(node.layout) &&
+      (source.semantic || source.name !== "margin-wrapper")
+    ) {
+      const horizontal = node.layout === "horizontal";
+      const mainSides = horizontal ? ["left", "right"] : ["top", "bottom"];
+      const crossSides = horizontal ? ["top", "bottom"] : ["left", "right"];
+      for (const child of flowChildren) {
+        const handled = new Set();
+        const isAuto = (side) => cssLayoutValue(child, `margin-${side}`) === "auto";
+        const zeroOrAuto = (side) =>
+          isAuto(side) || sourceMargin(child, side) === 0;
+        const [before, after] = mainSides.map(isAuto);
+        const reversedOverflow =
+          node.layoutReverse &&
+          finite(child.bounds?.[horizontal ? "width" : "height"]) >
+            node[horizontal ? "width" : "height"] -
+              node[horizontal ? "paddingLeft" : "paddingTop"] -
+              node[horizontal ? "paddingRight" : "paddingBottom"];
+        // One item's main-axis auto margins are exactly the parent's alignment.
+        // Do not replace distributed margins in a multi-item or wrapping line.
+        const singleMain =
+          flowChildren.length === 1 &&
+          node.layoutWrap === "none" &&
+          !reversedOverflow &&
+          (before || after) &&
+          mainSides.every(zeroOrAuto);
+        if (singleMain) {
+          node.justifyContent = before && after ? "center" : before ? "end" : "start";
+          if (node.layoutReverse && node.justifyContent !== "center")
+            node.justifyContent = node.justifyContent === "start" ? "end" : "start";
+          for (const side of mainSides) if (isAuto(side)) handled.add(side);
+        }
+        const [crossBefore, crossAfter] = crossSides.map(isAuto);
+        const crossAuto =
+          (crossBefore || crossAfter) && crossSides.every(zeroOrAuto) && node.layoutWrap === "none";
+        if (crossAuto) for (const side of crossSides) if (isAuto(side)) handled.add(side);
+        if (handled.size)
+          autoMarginOverrides.set(child, {
+            handled,
+            singleMain,
+            ...(crossAuto
+              ? { crossAlign: crossBefore && crossAfter ? "center" : crossBefore ? "end" : "start" }
+              : {}),
+          });
+      }
+    }
+    const margins = flowChildren.some((child) =>
+      ["top", "right", "bottom", "left"].some((side) => {
+        if (autoMarginOverrides.get(child)?.handled.has(side)) return false;
+        const value = cssLayoutValue(child, `margin-${side}`);
+        if (
+          value === "auto" &&
+          mainAutoMarginBefore(child, node) &&
+          side === (node.layout === "horizontal" ? "left" : "top")
+        )
+          return false;
+        return value === "auto" || sourceMargin(child, side) !== 0;
+      }),
+    );
+    const crossSides = node.layout === "horizontal" ? ["top", "bottom"] : ["left", "right"];
+    const lostWrappedCrossMargin = authoredFlex && flowChildren.some(wrapper =>
+      !wrapper.semantic && wrapper.nodeType === "container" && wrapper.name === "margin-wrapper" &&
+      wrapper.children?.length === 1 && crossSides.some(side => {
+        const value = declaredMargin(wrapper.children[0], side);
+        if (value === undefined) return false;
+        const amount = marginPixels(value);
+        return !Number.isFinite(amount) || amount < 0 ||
+          amount > finite(wrapper.layout?.padding?.[side]) + .02;
+      }));
+    // The pinned inline-group has already consumed inline margins into its
+    // measured bounds and margin wrappers; it is not an authored CSS flex box.
+    if (node.layout !== "none" && (margins || lostWrappedCrossMargin) && !block &&
+        !(!source.semantic && source.name === "inline-group")) {
+      const sides = ["top", "right", "bottom", "left"];
+      const spacing = flowChildren.map((child) =>
+        sides.map((side) =>
+          autoMarginOverrides.get(child)?.handled.has(side)
+            ? 0
+            : sourceMargin(child, side),
+        ),
+      );
+      const uniform =
+        !lostWrappedCrossMargin && ["horizontal", "vertical"].includes(node.layout) &&
+        spacing.length > 0 &&
+        spacing.every((values, index) =>
+          values.every(
+            (value, side) =>
+              value >= 0 &&
+              Math.abs(value - spacing[0][side]) < 0.01 &&
+              (autoMarginOverrides.get(flowChildren[index])?.handled.has(sides[side]) ||
+                cssLayoutValue(flowChildren[index], `margin-${sides[side]}`) !== "auto"),
+          ),
+        ) &&
+        // A percentage box plus margins can intentionally overflow its parent;
+        // FILL would instead consume the newly inset content box.
+        flowChildren.every((child) =>
+          ["width", "height"].every((axis) => !cssLayoutValue(child, axis).includes("%")),
+        );
+      const [top, right, bottom, left] = spacing[0] ?? [];
+      const rowGap = (node.rowGap ?? node.gap) + top + bottom;
+      const columnGap = (node.columnGap ?? node.gap) + left + right;
+      const representable =
+        uniform &&
+        rowGap <= 2000 &&
+        columnGap <= 2000 &&
+        ["Top", "Right", "Bottom", "Left"].every(
+          (side, index) => node[`padding${side}`] + spacing[0][index] <= 2000,
+        );
+      if (representable) {
+        // Flex margins do not collapse. Equal per-child margins are exactly an
+        // outer inset plus extra spacing between adjacent items/lines.
+        for (const [index, side] of ["Top", "Right", "Bottom", "Left"].entries())
+          node[`padding${side}`] += spacing[0][index];
+        node.rowGap = rowGap;
+        node.columnGap = columnGap;
+        node.gap = node.layout === "horizontal" ? columnGap : rowGap;
+      } else {
+        node.layout = "none";
+        warn(
+          "layout-margin-fixed",
+          node.id,
+          "子图层 CSS 外边距不受 v3 完整支持，已保留固定几何避免重新排列失真。",
+        );
+      }
+    }
+    for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"]) {
+      const property = key.replace(/[A-Z]/gu, (letter) => `-${letter.toLowerCase()}`);
+      const declared = cssLayoutValue(source, property);
+      if (declared && !/^(?:none|auto|0|\d+(?:\.\d+)?px)$/u.test(declared)) {
+        // Upstream parsePx treats 100% as 100. A relative constraint must never
+        // silently become a pixel bound on the editable frame.
+        warn("css-size-bound-fixed", node.id,
+          `${property}: ${declared} 的相对或内在尺寸约束未保留；使用测量尺寸而不应用错误的像素边界。`);
+        continue;
+      }
+      if (sourceLayout.sizing?.[key] !== undefined && sourceLayout.sizing[key] > 0) {
+        const sides = key.endsWith("Width") ? ["left", "right"] : ["top", "bottom"];
+        const inset = sourceLayout.sizing.boxSizing === "border-box" ? 0 : sides.reduce(
+          (sum, side) => sum + finite(sourceLayout.padding?.[side]) + finite(source.border?.[side]?.width), 0);
+        node[key] = number(sourceLayout.sizing[key] + inset, 1, 1, 20000, node.id, key);
+      }
+    }
     for (const axis of ["Width", "Height"])
       if (node[`min${axis}`] > node[`max${axis}`]) {
         delete node[`max${axis}`];
         warn("invalid-sizing", node.id, "CSS 最大尺寸小于最小尺寸，已保留最小尺寸。");
       }
+    // A one-line inline button's natural box includes its CSS line box and
+    // border, while the upstream text child contains only the glyph bounds.
+    if (["flex", "inline-flex"].includes(sourceLayout.display) &&
+        cssLayoutValue(source, "height") === "auto" && source.children?.length === 1 &&
+        source.children[0].nodeType === "text" && !source.children[0].content?.includes("\n")) {
+      const capturedLine = source.children[0].textStyle?.lineHeight;
+      const lineHeight = capturedLine?.unit === "px" ? capturedLine.value :
+        Number.parseFloat(source.rawStyles?.["line-height"]);
+      if (Number.isFinite(lineHeight) && lineHeight > 0) {
+        const minimum = lineHeight + node.paddingTop + node.paddingBottom;
+        if (minimum <= node.height + 0.05) node.minHeight = Math.max(node.minHeight ?? 1, round(minimum));
+      }
+    }
     node.clipContent = ["hidden", "scroll", "auto"].includes(source.overflow);
     if (node.clipContent) node.contentClipping = "intentional";
     if (["scroll", "auto"].includes(source.overflow))
       warn("scroll-static", node.id, "滚动容器保留静态裁剪；没有交互滚动行为。");
+  };
+  const sizing = (source, node, parent) => {
+    if (
+      node.layoutPositioning !== "absolute" &&
+      parent?.layout === "grid" &&
+      gridPlans.has(parent)
+    ) {
+      try {
+        sizeHtmlGridChild(source, node, parent, gridPlans.get(parent));
+      } catch (error) {
+        removeHtmlGrid(parent);
+        warn("grid-fixed-geometry", parent.id, `${error.message}；已保留原始 Grid 测量几何。`);
+      }
+      return;
+    }
+    if (parent?.layout === "grid" && floatPlans.has(parent)) {
+      const plan = floatPlans.get(parent);
+      try {
+        sizeHtmlFloatColumn(source, node, plan);
+      } catch (error) {
+        removeHtmlFloatColumns(parent, plan);
+        floatPlans.delete(parent);
+        warn("float-flow-fixed", parent.id, `${error.message}；保留测量布局。`);
+      }
+      return;
+    }
+    const parentAuto =
+      node.layoutPositioning !== "absolute" &&
+      parent &&
+      ["horizontal", "vertical"].includes(parent.layout);
+    const marginOverride = parentAuto ? autoMarginOverrides.get(source) : undefined;
+    if (marginOverride?.crossAlign) node.layoutAlignSelf = "start";
+    const ownAuto = ["horizontal", "vertical", "grid"].includes(node.layout);
+    const mainAxis = parent?.layout === "vertical" ? "Vertical" : "Horizontal";
+    const crossAxis = mainAxis === "Horizontal" ? "Vertical" : "Horizontal";
+    const inheritedAlignment = node.layoutAlignSelf;
+    const effectiveAlignment =
+      inheritedAlignment && inheritedAlignment !== "auto" ? inheritedAlignment : parent?.alignItems;
+    for (const [axis, property] of [
+      ["Horizontal", "width"],
+      ["Vertical", "height"],
+    ]) {
+      const value = cssLayoutValue(source, property);
+      if (!value) continue;
+      if (parentAuto && value.includes("%") && !/^100(?:\.0+)?%$/u.test(value))
+        warn("css-percentage-size-fixed", node.id,
+          `${property}: ${value} 的百分比尺寸已保留为测量尺寸；父框改变时不会按该比例重新计算。`);
+      const intrinsic = ["auto", "min-content", "max-content", "fit-content"].includes(value);
+      let mode = "fixed";
+      if (parentAuto && /^100(?:\.0+)?%$/u.test(value)) mode = "fill";
+      else if (ownAuto && intrinsic && !imageBorderBoxNodes.has(node)) {
+        // Block-level auto width fills its containing block; a root's measured
+        // width stays fixed until that containing layout is actually represented.
+        if (
+          (node.layout === "grid" && value === "max-content") ||
+          parentAuto ||
+          axis === "Vertical" ||
+          ["inline-flex", "inline-grid"].includes(source.layout?.display)
+        )
+          mode = "hug";
+      }
+      if (parentAuto && axis === crossAxis && value === "auto" && effectiveAlignment === "stretch")
+        mode = "fill";
+      node[`layoutSizing${axis}`] = mode;
+      if (
+        parentAuto &&
+        axis === crossAxis &&
+        value !== "auto" &&
+        effectiveAlignment === "stretch"
+      ) {
+        // CSS stretch ignores a definite cross size. The v3 layout engine uses
+        // an explicit child alignment to distinguish that case from stretch.
+        node.layoutAlignSelf = "start";
+      }
+    }
+    if (!parentAuto || node.layoutPositioning === "absolute") return;
+    if (!marginOverride?.singleMain && mainAutoMarginBefore(source, parent))
+      node.layoutMarginBefore = "auto";
+    if (source.flexItem?.grow > 0) node[`layoutSizing${mainAxis}`] = "fill";
+    else {
+      const basis = cssLayoutValue(source, "flex-basis");
+      if (
+        basis &&
+        !["auto", "content", "min-content", "max-content", "fit-content"].includes(basis)
+      )
+        node[`layoutSizing${mainAxis}`] = "fixed";
+    }
   };
   const transformPoint = (point, center, degrees) => {
     const radians = (degrees * Math.PI) / 180,
@@ -479,17 +903,166 @@ export async function designNodeToV3(tree, options = {}) {
     };
   };
   const origin = { x: finite(tree.bounds?.x), y: finite(tree.bounds?.y) };
+  const wrapCrossAutoMargins = (source, node, parent) => {
+    const override = autoMarginOverrides.get(source);
+    if (!override?.crossAlign || !["horizontal", "vertical"].includes(parent.layout)) return node;
+    const horizontal = parent.layout === "horizontal";
+    const cross = horizontal ? "Vertical" : "Horizontal";
+    const main = horizontal ? "Horizontal" : "Vertical";
+    const paddingStart = horizontal ? parent.paddingTop : parent.paddingLeft;
+    const paddingEnd = horizontal ? parent.paddingBottom : parent.paddingRight;
+    const crossSize = horizontal ? "Height" : "Width";
+    const minimumCross =
+      node[`layoutSizing${cross}`] === "fill"
+        ? Math.max(1, finite(node[`min${crossSize}`], 1))
+        : node[crossSize.toLowerCase()];
+    if (node[`layoutSizing${cross}`] === "hug")
+      warn(
+        "auto-margin-intrinsic-minimum",
+        node.id,
+        "自动外边距包装框使用导入时的内容最小尺寸；编辑 Hug 内容后需要核对该最小尺寸。",
+      );
+    const wrapper = syntheticBase(`${node.id}-auto-margin`, "frame", `${node.name} auto margins`, {
+      x: horizontal ? node.x : parent.x + paddingStart,
+      y: horizontal ? parent.y + paddingStart : node.y,
+      width: horizontal
+        ? node.width
+        : Math.max(minimumCross, parent.width - paddingStart - paddingEnd),
+      height: horizontal
+        ? Math.max(minimumCross, parent.height - paddingStart - paddingEnd)
+        : node.height,
+    });
+    Object.assign(wrapper, {
+      layout: horizontal ? "vertical" : "horizontal",
+      gap: 0,
+      padding: 0,
+      alignItems: "start",
+      justifyContent: override.crossAlign,
+      layoutAlignSelf: "stretch",
+      [`layoutSizing${cross}`]: "fill",
+      [`layoutSizing${main}`]: node[`layoutSizing${main}`] ?? "fixed",
+      [horizontal ? "minHeight" : "minWidth"]: minimumCross,
+      children: [node],
+    });
+    for (const prefix of ["min", "max"]) {
+      const property = `${prefix}${horizontal ? "Width" : "Height"}`;
+      if (node[property] !== undefined) wrapper[property] = node[property];
+    }
+    if (node.layoutMarginBefore) {
+      wrapper.layoutMarginBefore = node.layoutMarginBefore;
+      delete node.layoutMarginBefore;
+    }
+    // Main-axis alignment has nonnegative free space. A perpendicular wrapper
+    // preserves CSS auto-margin overflow toward cross-end, whereas align-self
+    // center/end would move oversized content before the parent's content box.
+    node.layoutAlignSelf = "start";
+    return wrapper;
+  };
+  const wrapBlockFlow = (item, next, original, parent) => {
+    let node = original;
+    if (item.fill) node.layoutSizingHorizontal = "fill";
+    node.layoutAlignSelf = "start";
+    delete node.layoutMarginBefore;
+    node.layoutSizingVertical = "fixed";
+    if (["horizontal", "vertical", "grid"].includes(node.layout) &&
+        (cssLayoutValue(item.source, "height") === "auto" || !item.source.semantic))
+      node.layoutSizingVertical = "hug";
+    const gap = Math.max(0, item.gap);
+    let overlap = Math.min(0, next?.gap ?? 0);
+    if (overlap && !item.source.semantic && item.source.name === "margin-wrapper" &&
+        node.layout === "vertical" && node.paddingBottom >= -overlap) {
+      // Upstream rounds collapsed gaps to integer pixels. Restore the exact
+      // browser interval in editable padding instead of freezing its height.
+      node.paddingBottom = round(node.paddingBottom + overlap);
+      node.height = round(node.height + overlap);
+      overlap = 0;
+    }
+    node = wrapCrossAutoMargins(item.source, node, parent);
+    if (item.bleed) {
+      const magnitude = Math.max(item.bleed.left, item.bleed.right) + 1;
+      const width = Math.max(1, parent.width - (parent.paddingLeft ?? parent.padding ?? 0) - (parent.paddingRight ?? parent.padding ?? 0));
+      const wrapper = syntheticBase(`${node.id}-horizontal-bleed`, "frame", `${node.name} horizontal margins`, {
+        x: parent.x + (parent.paddingLeft ?? parent.padding ?? 0), y: node.y, width, height: node.height,
+      });
+      const spacer = (side, size, x) => base(`${node.id}-bleed-${side}`, "rectangle", `Horizontal margin ${side}`, { x, y: node.y, width: size, height: 1 });
+      const before = spacer("start", magnitude - item.bleed.left, wrapper.x);
+      const after = spacer("end", magnitude - item.bleed.right, node.x + node.width - magnitude);
+      Object.assign(wrapper, { layout: "horizontal", layoutWrap: "none", gap: -magnitude, padding: 0,
+        alignItems: "start", justifyContent: "start", layoutSizingHorizontal: "fill", layoutSizingVertical: "hug",
+        clipContent: false, children: [before, node, after] });
+      node.layoutSizingHorizontal = "fill";
+      node = wrapper;
+    }
+    if (!gap && !overlap) return node;
+    const wrapper = syntheticBase(`${node.id}-block-spacing`, "frame", `${node.name} block spacing`, {
+      x: node.x, y: node.y - gap, width: node.width,
+      height: Math.max(1, node.height + gap + overlap),
+    });
+    Object.assign(wrapper, {
+      layout: "vertical", layoutWrap: "none", gap: 0, padding: 0,
+      paddingTop: gap, alignItems: "start", justifyContent: "start",
+      layoutSizingHorizontal: node.layoutSizingHorizontal ?? "fixed",
+      layoutSizingVertical: overlap ? "fixed" : "hug", children: [node],
+    });
+    if (overlap) warn("block-flow-overlap", node.id,
+      "微小负外边距使用固定流占位高度保留重叠；编辑该项高度后需核对占位高度。");
+    return wrapper;
+  };
   const convert = async (source, path, parentAnchor, ancestors) => {
+    const capturedSource = source;
     if (!object(source) || seen.has(source) || path.length > 32)
       throw new Error("DesignNode 包含无效、循环、重复引用或超过 32 层的结构");
     seen.add(source);
-    if (++sourceNodes > MAX_DESIGN_NODES_PER_PAGE)
-      throw new Error("DesignNode 超过 10,000 个源节点");
+    const provenFloat = provenFloatSources.has(source);
     if (!["container", "text", "image", "svg"].includes(source.nodeType))
       throw new Error(`不支持的 DesignNode 类型：${source.nodeType}`);
     if (source.children !== undefined && !Array.isArray(source.children))
       throw new Error("DesignNode children 必须是数组");
+    if (["flex", "inline-flex", "block", "flow-root"].includes(source.layout?.display) && source.children) {
+      // The pinned converter turns resolved auto margins into fixed padding in
+      // synthetic wrappers. Recover the original child before interpreting its
+      // captured CSS intent; its measured bounds remain parent-relative.
+      source = {
+        ...source,
+        children: source.children.map((wrapper) => {
+          if (
+            wrapper?.nodeType !== "container" ||
+            wrapper.name !== "margin-wrapper" ||
+            wrapper.semantic ||
+            wrapper.children?.length !== 1
+          )
+            return wrapper;
+          const child = wrapper.children[0];
+          const sides = ["top", "right", "bottom", "left"];
+          const values = sides.map((side) => cssLayoutValue(child, `margin-${side}`));
+          if (
+            !htmlBlockHorizontalBleed(child) && (!values.includes("auto") ||
+            !values.every((value) => value === "auto" || /^0(?:\.0+)?(?:px)?$/u.test(value)))
+          )
+            return wrapper;
+          const recovered = {
+            ...child,
+            bounds: {
+              ...child.bounds,
+              x:
+                finite(child.bounds?.x) +
+                (coordinateSpace === "parent-relative" ? finite(wrapper.bounds?.x) : 0),
+              y:
+                finite(child.bounds?.y) +
+                (coordinateSpace === "parent-relative" ? finite(wrapper.bounds?.y) : 0),
+            },
+          };
+          // A block recovery keeps the original semantic child's source path,
+          // even though its inert margin wrapper no longer needs conversion.
+          if (["block", "flow-root"].includes(source.layout.display))
+            blockUnwrappedPaths.set(recovered, [0]);
+          return recovered;
+        }),
+      };
+    }
+    if (provenFloat) provenFloatSources.add(source);
     const id = `html-${path.map((value) => value.toString(36)).join("-")}${semanticSuffix(source.semantic?.semanticId)}`;
+    if (source.transform) transformedSources.add(id);
     let width = number(source.bounds?.width, 1, 1, 20000, id, "width"),
       height = number(source.bounds?.height, 1, 1, 20000, id, "height");
     const anchor = {
@@ -609,6 +1182,7 @@ export async function designNodeToV3(tree, options = {}) {
       );
       if (lineHeight?.unit === "normal")
         warn("line-height-normal", id, "normal 行高暂使用 1.2 倍字号，需要视觉核对。");
+      applyHtmlNumberLineHeight(source, node, warn);
       node.letterSpacing = number(
         finite(style.letterSpacing?.value) *
           (style.letterSpacing?.unit === "em" ? node.fontSize : 1),
@@ -624,8 +1198,9 @@ export async function designNodeToV3(tree, options = {}) {
       node.textDecoration = ["none", "underline", "line-through"].includes(style.textDecoration)
         ? style.textDecoration
         : "none";
-      node.fill = color(style.color, id, "文字填充");
+      solidFill(style.color, node, "文字填充");
       node.cornerRadius = 0;
+      delete node.cornerRadii;
       node.textMeasurement = "browser";
       if (source.background?.layers?.length)
         warn("text-background", id, "文字节点背景无法与文字填充独立保留；应使用外层容器背景。");
@@ -686,13 +1261,33 @@ export async function designNodeToV3(tree, options = {}) {
         node.objectFit = ["fill", "contain", "cover"].includes(fit) ? fit : "contain";
         if (!["fill", "contain", "cover"].includes(fit))
           warn("image-object-fit", id, `${fit} 已近似为 contain。`);
+        const box = planHtmlImageBorderBox(source, node, {
+          transformedAncestor: ancestors.some((ancestor) => transformedSources.has(ancestor.id)),
+        });
+        if (box) {
+          imageBorderBoxNodes.add(node);
+          if (box.percentCircle) percentImageBoxes.add(node);
+          const image = syntheticBase(`${id}-image-content`, "image", `${node.name} content`, {
+            x: node.x + box.width, y: node.y + box.width,
+            width: node.width - 2 * box.width, height: node.height - 2 * box.width,
+          });
+          Object.assign(image, { imageRef, objectFit: node.objectFit, cornerRadius: box.innerRadius,
+            layoutSizingHorizontal: "fill", layoutSizingVertical: "fill" });
+          delete node.imageRef; delete node.objectFit; delete node.cornerRadii;
+          Object.assign(node, { type: "frame", layout: "vertical", gap: 0, padding: box.width,
+            alignItems: "stretch", justifyContent: "start", cornerRadius: box.radius,
+            layoutSizingHorizontal: "fixed", layoutSizingVertical: "fixed", clipContent: true,
+            children: [image] });
+          if (box.percentCircle) warn("image-radius-captured-size", id,
+            "50% 圆角仅按当前固定方形投影为可编辑像素半径；原始 CSS 保留在来源，改变尺寸后不声明动态百分比圆角一致。");
+        }
       } else {
         node.fill = "#e2e8f0";
         node.stroke = "#64748b";
         node.strokeWidth = 1;
       }
     } else {
-      layout(source, node);
+      layout(source, node, ancestors, capturedSource);
       for (const [index, layer] of (source.background?.layers ?? []).entries()) {
         if (layer.type !== "image") continue;
         const imageRef = await localImage({ src: layer.url, base64: layer.base64 }, id);
@@ -719,13 +1314,12 @@ export async function designNodeToV3(tree, options = {}) {
             "背景平铺、显式尺寸和偏移已近似为覆盖容器的图片。",
           );
       }
-      for (const [index, child] of (source.children ?? []).entries()) {
-        const converted = await convert(child, [...path, index], anchor, [...ancestors, node]);
+      const block = blockFlowPlans.get(source);
+      const entries = floatPlans.get(node)?.entries ?? block?.entries ?? (source.children ?? []).map((child, index) => ({ source: child, index }));
+      for (const { source: child, index } of entries) {
+        const converted = await convert(child, [...path, index, ...(blockUnwrappedPaths.get(child) ?? [])], anchor, [...ancestors, node]);
+        if (block?.promoted.has(child)) delete converted.layoutPositioning;
         if (node.layout !== "none") {
-          if (child.flexItem?.grow > 0)
-            converted[
-              node.layout === "vertical" ? "layoutSizingVertical" : "layoutSizingHorizontal"
-            ] = "fill";
           if (child.flexItem?.alignSelf)
             converted.layoutAlignSelf = alignment(
               child.flexItem.alignSelf,
@@ -734,16 +1328,66 @@ export async function designNodeToV3(tree, options = {}) {
               converted.id,
             );
         }
-        node.children.push(converted);
+        sizing(child, converted, node);
+        const itemIndex = block?.items.findIndex((item) => item.source === child) ?? -1;
+        if (itemIndex >= 0) block.items[itemIndex].original = converted;
+        node.children.push(itemIndex >= 0
+          ? wrapBlockFlow(block.items[itemIndex], block.items[itemIndex + 1], converted, node)
+          : wrapCrossAutoMargins(child, converted, node));
       }
+      if (block?.items.some((item) => item.bleed)) blockInsetCandidates.push({ source, node, block,
+        ancestorTransformed: ancestors.some((ancestor) => ancestor.rotation) });
+    }
+    if (source.nodeType === "container") recoverHtmlTextOverflow(source, node, warn);
+    // Optional capture-local ownership receipt. It never becomes document data
+    // and cannot qualify imported/saved nodes without a real current capture.
+    options.onNode?.(capturedSource, node);
+    if (options.onRecoveredFlow) {
+      flowAuditNodes.set(capturedSource, node);
+      const floats = floatPlans.get(node), block = blockFlowPlans.get(source);
+      if (floats || block) flowAuditCandidates.push({ source: capturedSource, node,
+        type: floats ? "float" : "block-clear", items: floats?.items ?? [],
+        clears: (source.children ?? []).filter(isHtmlEmptyClear) });
     }
     return node;
   };
   const converted = await convert(tree, [0], { x: 0, y: 0 }, []);
+  sizing(tree, converted, null);
+  const validateGrids = (node) => {
+    for (const child of node.children ?? []) validateGrids(child);
+    if (percentImageBoxes.has(node) &&
+        ["Horizontal", "Vertical"].some((axis) => node[`layoutSizing${axis}`] !== "fixed"))
+      throw new Error("HTML_IMAGE_BORDER_UNSUPPORTED: 50% 圆角投影需要最终两轴固定，不能随父布局 Fill/Hug");
+    if (floatPlans.has(node)) {
+      const plan = floatPlans.get(node);
+      try {
+        validateHtmlFloatColumns(node);
+        successfulFloatNodes.add(node);
+        warn(
+          "float-flow-captured-state",
+          node.id,
+          "浮动列按捕获时的百分比恢复为原生 Grid；不保留媒体查询断点、浮动换行或文字环绕，跨 CSS 状态请重新捕获。",
+        );
+      } catch (error) {
+        removeHtmlFloatColumns(node, plan);
+        warn("float-flow-fixed", node.id, `${error.message}；保留测量布局。`);
+      }
+    }
+    if (!gridPlans.has(node)) return;
+    try {
+      if (node.layout === "grid") validateHtmlGrid(node);
+      else removeHtmlGrid(node);
+    } catch (error) {
+      removeHtmlGrid(node);
+      warn("grid-fixed-geometry", node.id, `${error.message}；已保留原始 Grid 测量几何。`);
+    }
+  };
+  validateGrids(converted);
   const bounds = options.captureBounds;
   const viewportWidth = bounds ? bounds.right - bounds.left : options.viewportWidth;
   const viewportHeight = bounds ? bounds.bottom - bounds.top : options.viewportHeight;
-  const viewport = viewportWidth !== undefined || viewportHeight !== undefined;
+  const viewport = options.includeViewport !== false &&
+    (viewportWidth !== undefined || viewportHeight !== undefined);
   if (
     viewport &&
     (![viewportWidth, viewportHeight].every(
@@ -754,15 +1398,18 @@ export async function designNodeToV3(tree, options = {}) {
     throw new Error("HTML 捕获视口宽高必须在 100–10000 范围内");
   let roots = [converted];
   if (viewport) {
-    if (bounds && (bounds.left || bounds.top)) {
+    const relation = options.viewportRelation;
+    if ((bounds && (bounds.left || bounds.top)) || relation) {
+      const offsetX = finite(relation?.x) - finite(bounds?.left);
+      const offsetY = finite(relation?.y) - finite(bounds?.top);
       const shift = (node) => {
-        node.x = number(node.x - bounds.left, 0, -20000, 20000, node.id, "x");
-        node.y = number(node.y - bounds.top, 0, -20000, 20000, node.id, "y");
+        node.x = number(node.x + offsetX, 0, -20000, 20000, node.id, "x");
+        node.y = number(node.y + offsetY, 0, -20000, 20000, node.id, "y");
         for (const child of node.children ?? []) shift(child);
       };
       shift(converted);
     }
-    const wrapper = base("html-viewport", "frame", "HTML viewport", {
+    const wrapper = syntheticBase("html-viewport", "frame", "HTML viewport", {
       x: 0,
       y: 0,
       width: viewportWidth,
@@ -778,12 +1425,34 @@ export async function designNodeToV3(tree, options = {}) {
       contentClipping: "intentional",
       children: roots,
     });
+    const flow = planHtmlViewportFlow(tree, converted, relation, viewportWidth, viewportHeight, bounds);
+    if (flow?.unsupported) warn("viewport-flow-fixed", converted.id, flow.unsupported);
+    else if (flow) {
+      Object.assign(wrapper, {
+        layout: "vertical", layoutWrap: "none", rowGap: 0, columnGap: 0,
+        paddingTop: flow.top, paddingLeft: flow.left, paddingRight: flow.right, paddingBottom: flow.bottom,
+      });
+      delete converted.layoutPositioning;
+      converted.layoutAlignSelf = "start";
+      converted.layoutSizingHorizontal = flow.fill ? "fill" : "fixed";
+      if (flow.fillHeight) converted.layoutSizingVertical = "fill";
+      if (flow.crossAlign) autoMarginOverrides.set(tree, {
+        handled: new Set(["left", "right"]), singleMain: false, crossAlign: flow.crossAlign,
+      });
+      wrapper.children = [wrapCrossAutoMargins(tree, converted, wrapper)];
+    }
     roots = [wrapper];
   }
+  const rebasedNodeCount = applyHtmlBlockInsets(roots, blockInsetCandidates, syntheticSurface, warn, MAX_DESIGN_NODES_PER_PAGE);
+  if (rebasedNodeCount !== null) importedNodes = rebasedNodeCount;
   const rootColor = tree.background?.layers?.find((layer) => layer.type === "color")?.color;
   const background =
     options.background ??
     (rootColor && finite(rootColor.a, 1) >= 1 ? color(rootColor, converted.id) : "#ffffff");
+  // A captured webpage carries its viewport color when exported on its own.
+  // Native frame exports do not include the Figma page's canvas background.
+  if (viewport && options.viewportRelation && options.background !== undefined)
+    roots[0].fill = background;
   const document = {
     format: "codeshell.design",
     version: 3,
@@ -813,6 +1482,39 @@ export async function designNodeToV3(tree, options = {}) {
     pages: [{ id: "page-html", name: clean(options.pageName || "HTML import"), children: roots }],
   };
   normalizeDesignDocument(document);
+  // Optional report-only evidence is emitted after all children, final native
+  // Grid checks, inset rebasing and document validation. Eager float hints never
+  // certify a successful row or authorize generated-content exceptions.
+  if (options.onRecoveredFlow) {
+    const current = new Set();
+    const visit = (node) => { current.add(node); node.children?.forEach(visit); };
+    roots.forEach(visit);
+    for (const candidate of flowAuditCandidates) {
+      if (!current.has(candidate.node)) continue;
+      if (candidate.type === "float") {
+        if (!successfulFloatNodes.has(candidate.node) || candidate.node.layout !== "grid") continue;
+        const plan = floatPlans.get(candidate.node);
+        if (!plan || Object.entries(plan.fields).some(([key, value]) => JSON.stringify(candidate.node[key]) !== JSON.stringify(value))) continue;
+        try { validateHtmlFloatColumns(candidate.node); } catch { continue; }
+      } else if (!candidate.clears.length || candidate.node.layout !== "vertical") continue;
+      try {
+        const items = candidate.items.map((item) => ({ source: item.source, node: flowAuditNodes.get(item.source) }));
+        if (items.some((item) => !current.has(item.node))) continue;
+        if (candidate.type === "float") {
+          const plan = floatPlans.get(candidate.node), children = candidate.node.children.filter((child) => child.layoutPositioning !== "absolute");
+          if (children.length !== items.length || items.some((item, index) => {
+            const placement = plan.placements.get(item.source);
+            return children[index] !== item.node || !placement || item.node.gridRowAnchorIndex !== 0 ||
+              item.node.gridColumnAnchorIndex !== placement.column || item.node.gridColumnSpan !== placement.span ||
+              item.node.gridRowSpan !== 1 || item.node.layoutSizingHorizontal !== "fill";
+          })) continue;
+        }
+        options.onRecoveredFlow({ ...candidate, items });
+      } catch {
+        warn("html-flow-audit-unverified", candidate.node.id, "当前流布局已完成，但捕获内审计证明未发布；保留未验证关系。");
+      }
+    }
+  }
   return {
     document,
     resourcePlans,

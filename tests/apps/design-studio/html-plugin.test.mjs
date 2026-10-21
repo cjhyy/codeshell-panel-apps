@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import { build } from "esbuild";
 import {
   htmlPluginHarness,
   frameFixture,
@@ -57,6 +58,45 @@ test("real upstream FigmaService creates editable styled text/frame, preserves e
   assert.equal(imported.children[0].fontName.family, "Inter");
   assert.equal(imported.children[0].fontSize, 24);
   assert(f.calls.some((c) => c[0] === "undo"));
+});
+
+test("standalone raw inputs refuse staged text ranges before upstream mutation or font loading", async () => {
+  const f = htmlPluginHarness(), text = textFixture();
+  text.textRanges = { version: 1, sourceSignature: JSON.stringify([text.characters]), ranges: [{ start: 0, end: 1, fill: "#123456" }] };
+  const before = JSON.stringify(text), callCount = f.calls.length;
+  const result = await f.importDesign(frameFixture([text]));
+  assert.equal(result.type, "import-error");
+  assert.match(result.message, /范围文字.*已阻止互转/u);
+  assert.deepEqual(f.page.children, [f.existing]);
+  assert.equal(f.calls.length, callCount);
+  assert.equal(f.fonts.size, 0);
+  assert.equal(JSON.stringify(text), before);
+});
+
+test("missing and duplicate DesignNode IDs cannot leak retained gradient paints onto unrelated nodes", async () => {
+  for (const id of [undefined, "duplicate"]) {
+    const f = htmlPluginHarness();
+    const text = (name) => ({
+      ...(id ? { id } : {}), nodeType: "text", tag: "span", name, content: name,
+      bounds: { x: 0, y: 0, width: 180, height: 30 }, opacity: 1,
+      visible: true, positioning: { mode: "static" },
+      textStyle: { fontFamily: "Arial", fontSize: 20, fontWeight: 400, fontStyle: "normal",
+        color: { r: 0, g: 0, b: 255, a: 1 }, textAlign: "left", textDecoration: "none", textTransform: "none",
+        lineHeight: { value: 28, unit: "px" }, letterSpacing: { value: 0, unit: "px" } },
+    });
+    const gradient = text("Gradient"), plain = text("Plain");
+    gradient.cssBackground = { "background-image": "linear-gradient(rgb(255,0,0),rgb(0,255,0))" };
+    gradient.background = { layers: [] };
+    const native = { ...frameFixture(), ...(id ? { id } : { id: undefined }) };
+    const result = await f.importDesign([gradient, plain, native]);
+    assert.equal(result.type, "import-success", result.message);
+    const created = f.page.selection;
+    assert.equal(created[0].fills[0].type, "GRADIENT_LINEAR");
+    assert.equal(created[1].fills[0].type, "SOLID");
+    assert.equal(created[1].characters, "Plain");
+    assert.equal(created[2].fills[0].type, "SOLID");
+    assert.equal(gradient.id, id, "the caller's source must remain untouched");
+  }
 });
 
 test("partial upstream child failure rolls back only newly created layers and restores selection", async () => {
@@ -153,5 +193,35 @@ test("malformed trees, unsupported formats and active SVG fail before document m
   ]) {
     assert.equal((await f.importDesign(input)).type, "import-error");
     assert.deepEqual(f.page.children, [f.existing]);
+  }
+});
+
+
+test("whitespace source receipts are informational even when stale, malformed or supplied in JSON", async () => {
+  for (const stored of ["not JSON", "x".repeat(8001), JSON.stringify({format:"codeshell.html.text-whitespace",version:1,
+    source:{whiteSpace:"normal",rawSource:"Old caption ",removedTrailingNbsp:true},snapshot:{characters:"Old caption"}})]) {
+    const f = htmlPluginHarness(), source = frameFixture([textFixture()]);
+    source.children[0].characters = "Keep authored\u00a0 ";
+    source.children[0].sharedPluginData = {htmlTextWhitespace:stored};
+    const before = JSON.stringify(source), result = await f.importDesign(source);
+    assert.equal(result.type,"import-success",result.message);
+    assert(result.warnings.some(warning=>/来源备注/u.test(warning)));
+    assert(f.nodes.some(node=>node.characters==="Keep authored\u00a0 "));
+    assert.equal(JSON.stringify(source),before,"JSON source and raw receipt stay untouched");
+    assert.equal(f.nodes.find(node=>node.characters==="Keep authored\u00a0 ").metadata["html2figma:htmlTextWhitespace"],stored);
+  }
+});
+
+
+test("oversized standalone source snapshots never overwrite existing raw metadata", async () => {
+  const compiled = (await build({entryPoints:['third-party/html2figma-plugin/integration/text-whitespace.ts'],bundle:true,write:false,platform:'node',format:'esm'})).outputFiles[0].text;
+  const {retainTextWhitespace} = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
+  for (const original of [undefined,'keep this unknown raw receipt']) {
+    const node={type:'FRAME',width:400,height:200,children:Array.from({length:80},(_,index)=>({type:'TEXT',x:0,y:index,width:200,height:20,characters:'x'.repeat(200)})),
+      ...(original?{sharedPluginData:{htmlTextWhitespace:original}}:{})};
+    const before=JSON.stringify(node),warnings=[];
+    retainTextWhitespace(node,{whiteSpace:'normal',rawSource:'Caption ',removedTrailingNbsp:true},warnings);
+    assert.equal(JSON.stringify(node),before,'an overcap informational source must leave the entire caller payload unchanged');
+    assert(warnings.some(warning=>/8000 UTF-16/u.test(warning)));
   }
 });

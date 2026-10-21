@@ -404,3 +404,27 @@ test("mobile text editing and comments remain reachable without overflow or a se
   assert.equal(f.calls.filter(call => call.method === "agent.submitPrompt").length, 0);
   assert.deepEqual(f.errors, []);
 });
+
+test("pixel line-height inspector edits retain units through font changes, undo, duplicate and reopen", async t => {
+  const f = await fixture(t); await f.select("body");
+  await f.page.locator("#prop-line-height").fill("1.25"); await f.page.locator("#prop-line-height").press("Tab");
+  await f.page.locator("#prop-line-height-unit").selectOption("pixels");
+  let body = await canvasNode(f.page, "body"); assert.equal(body.lineHeight, 20); assert.equal(body.lineHeightUnit, "pixels");
+  assert.equal(await f.page.locator("#prop-line-height").getAttribute("max"), "720");
+  await f.page.locator("#prop-font-size").fill("24"); await f.page.locator("#prop-font-size").press("Tab");
+  body = await canvasNode(f.page, "body"); assert.equal(body.fontSize, 24); assert.equal(body.lineHeight, 20); assert.equal(body.lineHeightUnit, "pixels");
+  await f.page.locator("#stage").press("Control+z");
+  body = await canvasNode(f.page, "body"); assert.equal(body.fontSize, 16); assert.equal(body.lineHeight, 20); assert.equal(body.lineHeightUnit, "pixels");
+  await f.page.locator("#duplicate-layer").click();
+  const duplicate = (await canvasNodes(f.page)).find(node => node.id !== "body" && node.name === "Body 副本");
+  assert(duplicate); assert.equal(duplicate.lineHeightUnit, "pixels"); assert.equal(duplicate.lineHeight, 20);
+  await f.page.locator("#save").click(); await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "已保存");
+  await f.page.reload(); await waitForCanvas(f.page); await f.select(duplicate.id);
+  const reopened = await canvasNode(f.page, duplicate.id); assert.equal(reopened.lineHeight, 20); assert.equal(reopened.lineHeightUnit, "pixels");
+  assert.equal(await f.page.locator("#prop-line-height-unit").inputValue(), "pixels");
+  assert.equal(await f.page.locator("#prop-line-height").inputValue(), "20");
+  await f.page.locator("#prop-line-height-unit").selectOption("ratio");
+  const relative = await canvasNode(f.page, duplicate.id); assert.equal(relative.lineHeight, 1.25); assert.equal(relative.lineHeightUnit, undefined);
+  assert.equal(await f.page.locator("#prop-line-height").getAttribute("max"), "3");
+  assert.deepEqual(f.errors, []);
+});

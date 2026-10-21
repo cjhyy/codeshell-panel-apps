@@ -2686,8 +2686,8 @@
     /**
      * Convert hex color to RGB
      */
-    static hexToRgb(hex) {
-      const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    static hexToRgb(hex2) {
+      const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex2);
       return result ? {
         r: parseInt(result[1], 16) / 255,
         g: parseInt(result[2], 16) / 255,
@@ -2697,21 +2697,21 @@
     /**
      * Convert RGB to hex
      */
-    static rgbToHex(rgb) {
+    static rgbToHex(rgb2) {
       const toHex = (c) => {
-        const hex = Math.round(c * 255).toString(16);
-        return hex.length === 1 ? "0" + hex : hex;
+        const hex2 = Math.round(c * 255).toString(16);
+        return hex2.length === 1 ? "0" + hex2 : hex2;
       };
-      return `#${toHex(rgb.r)}${toHex(rgb.g)}${toHex(rgb.b)}`;
+      return `#${toHex(rgb2.r)}${toHex(rgb2.g)}${toHex(rgb2.b)}`;
     }
     /**
      * Convert CSS color string to RGB
      */
-    static cssColorToRgb(cssColor) {
-      if (cssColor.startsWith("#")) {
-        return this.hexToRgb(cssColor);
+    static cssColorToRgb(cssColor2) {
+      if (cssColor2.startsWith("#")) {
+        return this.hexToRgb(cssColor2);
       }
-      const rgbMatch = cssColor.match(/rgba?\(([^)]+)\)/);
+      const rgbMatch = cssColor2.match(/rgba?\(([^)]+)\)/);
       if (rgbMatch) {
         const values = rgbMatch[1].split(",").map((v) => parseFloat(v.trim()));
         if (values.length >= 3) {
@@ -2722,7 +2722,7 @@
           };
         }
       }
-      if (cssColor.toLowerCase() === "transparent") {
+      if (cssColor2.toLowerCase() === "transparent") {
         return { r: 0, g: 0, b: 0 };
       }
       const namedColors = {
@@ -2737,7 +2737,7 @@
         "gray": { r: 0.5, g: 0.5, b: 0.5 },
         "grey": { r: 0.5, g: 0.5, b: 0.5 }
       };
-      return namedColors[cssColor.toLowerCase()] || null;
+      return namedColors[cssColor2.toLowerCase()] || null;
     }
     /**
      * Create gradient from any CSS gradient string (auto-detect type)
@@ -2794,15 +2794,15 @@
     /**
      * Convert CSS color string to RGBA with opacity support
      */
-    static cssColorToRgba(cssColor) {
-      if (cssColor.toLowerCase() === "transparent") {
+    static cssColorToRgba(cssColor2) {
+      if (cssColor2.toLowerCase() === "transparent") {
         return { r: 0, g: 0, b: 0, a: 0 };
       }
-      if (cssColor.startsWith("#")) {
-        const rgb2 = this.hexToRgb(cssColor);
-        return rgb2 ? { ...rgb2, a: 1 } : null;
+      if (cssColor2.startsWith("#")) {
+        const rgb3 = this.hexToRgb(cssColor2);
+        return rgb3 ? { ...rgb3, a: 1 } : null;
       }
-      const rgbaMatch = cssColor.match(/rgba\(([^)]+)\)/);
+      const rgbaMatch = cssColor2.match(/rgba\(([^)]+)\)/);
       if (rgbaMatch) {
         const values = rgbaMatch[1].split(",").map((v) => parseFloat(v.trim()));
         if (values.length >= 4) {
@@ -2814,7 +2814,7 @@
           };
         }
       }
-      const rgbMatch = cssColor.match(/rgb\(([^)]+)\)/);
+      const rgbMatch = cssColor2.match(/rgb\(([^)]+)\)/);
       if (rgbMatch) {
         const values = rgbMatch[1].split(",").map((v) => parseFloat(v.trim()));
         if (values.length >= 3) {
@@ -2826,8 +2826,8 @@
           };
         }
       }
-      const rgb = this.cssColorToRgb(cssColor);
-      return rgb ? { ...rgb, a: 1 } : null;
+      const rgb2 = this.cssColorToRgb(cssColor2);
+      return rgb2 ? { ...rgb2, a: 1 } : null;
     }
     /**
      * Create gradient from CSS linear-gradient with enhanced transparency support
@@ -3126,9 +3126,9 @@
           const spreadRadius = parseFloat(parts[3]) || 0;
           let color = { r: 0, g: 0, b: 0, a: 0.25 };
           if (parts[4]) {
-            const rgb = this.cssColorToRgb(parts[4]);
-            if (rgb) {
-              color = { ...rgb, a: 1 };
+            const rgb2 = this.cssColorToRgb(parts[4]);
+            if (rgb2) {
+              color = { ...rgb2, a: 1 };
             }
           }
           const isInset = shadow.includes("inset");
@@ -3796,6 +3796,30 @@
       }
     }
     return fonts;
+  }
+
+  // apps/design-studio/app/corner-radii.mjs
+  var CORNER_RADIUS_PROPERTIES = Object.freeze([
+    "border-top-left-radius",
+    "border-top-right-radius",
+    "border-bottom-right-radius",
+    "border-bottom-left-radius"
+  ]);
+  function normalizeCornerRadii(value) {
+    if (!Array.isArray(value) || value.length !== 4 || Array.from(value).some((radius) => !Number.isFinite(radius) || radius < 0 || radius > 9999))
+      throw new Error("cornerRadii \u5FC5\u987B\u662F\u56DB\u4E2A 0\u20139999 \u7684\u6709\u9650\u5706\u5F62\u50CF\u7D20\u534A\u5F84\uFF08\u5DE6\u4E0A\u3001\u53F3\u4E0A\u3001\u53F3\u4E0B\u3001\u5DE6\u4E0B\uFF09");
+    return [...value];
+  }
+  function cssCornerRadii(values) {
+    return normalizeCornerRadii(values.map((value) => {
+      const parts = String(value).trim().split(/\s+/u);
+      if (parts.length < 1 || parts.length > 2 || parts.some((part) => !/^(?:(?:\d+(?:\.\d+)?|\.\d+)px|0(?:\.0+)?)$/u.test(part)))
+        throw new Error("CSS \u5706\u89D2\u53EA\u652F\u6301\u5706\u5F62 px \u534A\u5F84\uFF1B\u767E\u5206\u6BD4\u3001\u692D\u5706\u548C\u590D\u6742\u8868\u8FBE\u5F0F\u6682\u4E0D\u80FD\u4FDD\u7559");
+      const radii = parts.map(Number.parseFloat);
+      if (radii.length === 2 && radii[0] !== radii[1])
+        throw new Error("CSS \u692D\u5706\u5706\u89D2\u6682\u4E0D\u80FD\u4FDD\u7559\uFF1B\u8BF7\u4F7F\u7528\u76F8\u7B49\u7684\u6C34\u5E73\u548C\u5782\u76F4 px \u534A\u5F84");
+      return radii[0];
+    }));
   }
 
   // third-party/html2figma-plugin/upstream/packages/adapter/figma/layoutMapper.ts
@@ -5134,6 +5158,216 @@
     }
   };
 
+  // apps/design-studio/app/grid.mjs
+  var GRID_CONTAINER_FIELDS = Object.freeze([
+    "gridRows",
+    "gridColumnSizes",
+    "gridRowSizes",
+    "gridItemsPositioning",
+    "gridAutoTracks"
+  ]);
+  var GRID_CHILD_FIELDS = Object.freeze([
+    "gridRowAnchorIndex",
+    "gridColumnAnchorIndex",
+    "gridChildHorizontalAlign",
+    "gridChildVerticalAlign"
+  ]);
+
+  // apps/design-studio/app/stroke.mjs
+  var STROKE_SIDES = Object.freeze(["top", "right", "bottom", "left"]);
+
+  // apps/design-studio/app/html-auto-margin-distribution.mjs
+  var nonReplaced = new Set("div main header footer section article aside nav ul ol li h1 h2 h3 h4 h5 h6 p form figure figcaption".split(" "));
+
+  // apps/design-studio/app/text-ranges.mjs
+  var MAX_TEXT_RANGES_BYTES = 32 * 1024;
+
+  // apps/design-studio/app/linear-gradient-geometry.mjs
+  var object = (v) => v && typeof v === "object" && !Array.isArray(v);
+  var finite = (v) => typeof v === "number" && Number.isFinite(v);
+  var keys = (v, allowed) => {
+    if (!object(v) || Object.keys(v).some((key) => !allowed.includes(key)))
+      throw new Error("CSS \u6E10\u53D8\u51E0\u4F55\u5305\u542B\u672A\u77E5\u5B57\u6BB5");
+  };
+  function normalizeCssLinear(value, stops) {
+    keys(value, ["direction", "positions", "sourceOnly"]);
+    const direction = value.direction;
+    keys(direction, ["angle", "corner"]);
+    let normalized;
+    if (Object.keys(direction).length !== 1) throw new Error("CSS \u6E10\u53D8\u65B9\u5411\u5FC5\u987B\u552F\u4E00");
+    if (direction.angle !== void 0) {
+      if (!finite(direction.angle) || direction.angle < 0 || direction.angle >= 360)
+        throw new Error("CSS \u6E10\u53D8\u89D2\u5EA6\u5FC5\u987B\u4E3A 0\u2013360\uFF08\u4E0D\u542B 360\uFF09");
+      normalized = { angle: direction.angle };
+    } else {
+      if (!Array.isArray(direction.corner) || direction.corner.length !== 2 || !Array.from(direction.corner).every((v) => v === -1 || v === 1))
+        throw new Error("CSS \u6E10\u53D8\u89D2\u65B9\u5411\u5FC5\u987B\u4E3A\u4E24\u4E2A \xB11");
+      normalized = { corner: [...direction.corner] };
+    }
+    if (value.sourceOnly !== void 0 && value.sourceOnly !== true)
+      throw new Error("CSS \u6E10\u53D8 sourceOnly \u53EA\u80FD\u4E3A true");
+    if (!Array.isArray(value.positions) || value.positions.length < 2 || value.positions.length > 16 || !value.sourceOnly && value.positions.length !== stops.length)
+      throw new Error("CSS \u6E10\u53D8\u4F4D\u7F6E\u5FC5\u987B\u4E3A 2\u201316 \u9879\u4E14\u4E0E\u53EF\u7F16\u8F91\u8272\u6807\u5BF9\u5E94");
+    const positions = Array.from(value.positions, (position, index) => {
+      if (position === null) return null;
+      if (position === "previous") {
+        if (!index || value.positions[index - 1] === "previous" || !value.sourceOnly && (stops[index].opacity !== 0 || stops[index - 1].opacity !== 0))
+          throw new Error("CSS \u900F\u660E\u8272\u6807\u91CD\u590D\u4F4D\u7F6E\u65E0\u6548");
+        return "previous";
+      }
+      keys(position, ["unit", "value"]);
+      if (!["px", "percent"].includes(position.unit) || !finite(position.value) || Math.abs(position.value) > 2e4)
+        throw new Error("CSS \u8272\u6807\u53EA\u652F\u6301\u6709\u754C px/percent \u5750\u6807");
+      return { unit: position.unit, value: position.value };
+    });
+    if (positions.filter((p) => p !== "previous").length < 2)
+      throw new Error("CSS \u6E10\u53D8\u81F3\u5C11\u9700\u8981\u4E24\u4E2A\u539F\u59CB\u8272\u6807");
+    return { direction: normalized, positions, ...value.sourceOnly ? { sourceOnly: true } : {} };
+  }
+  function parseCssLinearDirection(value) {
+    if (value.startsWith("to ")) {
+      const words = value.slice(3).split(/\s+/u);
+      if (!words.length || words.length > 2 || new Set(words).size !== words.length || words.some((word) => !["top", "right", "bottom", "left"].includes(word)))
+        throw new Error("\u6E10\u53D8\u65B9\u5411\u4E0D\u53D7\u652F\u6301");
+      const x = words.includes("right") ? 1 : words.includes("left") ? -1 : 0;
+      const y = words.includes("bottom") ? 1 : words.includes("top") ? -1 : 0;
+      if (words.length === 2 && (!x || !y)) throw new Error("\u6E10\u53D8\u65B9\u5411\u51B2\u7A81");
+      return x && y ? { corner: [x, y] } : { angle: x ? x > 0 ? 90 : 270 : y > 0 ? 180 : 0 };
+    }
+    const match = /^([-+]?(?:\d+(?:\.\d*)?|\.\d+))(deg|grad|rad|turn)$/u.exec(value);
+    if (!match) throw new Error("\u6E10\u53D8\u89D2\u5EA6\u4E0D\u53D7\u652F\u6301");
+    const degrees = Number(match[1]) * { deg: 1, grad: 0.9, rad: 180 / Math.PI, turn: 360 }[match[2]];
+    if (!finite(degrees) || Math.abs(degrees) > 36e5) throw new Error("\u6E10\u53D8\u89D2\u5EA6\u8D85\u51FA\u8303\u56F4");
+    return { angle: (degrees % 360 + 360) % 360 };
+  }
+  function cssLinearVector(direction, width, height) {
+    if (direction.corner) {
+      const diagonal = Math.hypot(width, height);
+      return {
+        x: direction.corner[0] * height / diagonal,
+        y: direction.corner[1] * width / diagonal
+      };
+    }
+    const angle = direction.angle * Math.PI / 180;
+    const snap = (v) => Math.abs(v) < 1e-12 ? 0 : Math.abs(Math.abs(v) - 1) < 1e-12 ? Math.sign(v) : v;
+    return { x: snap(Math.sin(angle)), y: snap(-Math.cos(angle)) };
+  }
+  function resolveCssLinear(paint, width, height) {
+    var _a, _b;
+    const intent = paint.cssLinear;
+    if (!intent || intent.sourceOnly || !(width > 0 && height > 0) || ![width, height].every(finite))
+      return paint;
+    const vector = cssLinearVector(intent.direction, width, height);
+    const length = Math.abs(width * vector.x) + Math.abs(height * vector.y);
+    const primary = intent.positions.flatMap(
+      (p, index) => p === "previous" ? [] : [{ index, value: p === null ? null : p.value / (p.unit === "percent" ? 100 : length) }]
+    );
+    (_a = primary[0]).value ?? (_a.value = 0);
+    (_b = primary.at(-1)).value ?? (_b.value = 1);
+    let previous = -Infinity;
+    for (const stop of primary)
+      if (stop.value !== null) {
+        stop.value = Math.max(previous, stop.value);
+        previous = stop.value;
+      }
+    for (let i = 0; i < primary.length - 1; i++) {
+      let next = i + 1;
+      while (primary[next].value === null) next++;
+      for (let j = i + 1; j < next; j++)
+        primary[j].value = primary[i].value + (primary[next].value - primary[i].value) * (j - i) / (next - i);
+      i = next - 1;
+    }
+    const values = [];
+    for (const item of primary) values[item.index] = item.value;
+    intent.positions.forEach((p, index) => {
+      if (p === "previous") values[index] = values[index - 1];
+    });
+    const start = Math.min(0, values[0]), end = Math.max(1, values.at(-1));
+    const point = (t, perpendicular = 0) => ({
+      x: 0.5 + ((t - 0.5) * length * vector.x - perpendicular * length * vector.y) / width,
+      y: 0.5 + ((t - 0.5) * length * vector.y + perpendicular * length * vector.x) / height
+    });
+    return {
+      ...paint,
+      handles: [point(start), point(end), point(start, (end - start) / 2)],
+      stops: paint.stops.map((stop, index) => ({
+        ...stop,
+        position: (values[index] - start) / (end - start)
+      }))
+    };
+  }
+  function cssLinearNeedsNativeWarning(paint) {
+    const intent = paint.cssLinear;
+    return Boolean(
+      intent && (intent.sourceOnly || intent.direction.angle !== void 0 && Math.abs(intent.direction.angle % 90) > 1e-9 || intent.positions.some((p) => p && p.unit === "px" && p.value !== 0))
+    );
+  }
+  function validateCssLinearInterpolation(intent, stops) {
+    if (intent.sourceOnly) return;
+    for (let i = 1; i < stops.length; i++) {
+      const a = stops[i - 1], b = stops[i], p = intent.positions[i - 1], q = intent.positions[i];
+      const hard = q === "previous" || p && q && typeof p === "object" && typeof q === "object" && p.unit === q.unit && p.value >= q.value;
+      if (!hard && a.opacity !== b.opacity && a.color !== b.color)
+        throw new Error("\u4E0D\u540C\u989C\u8272\u4E14\u900F\u660E\u5EA6\u53D8\u5316\u7684 CSS \u9884\u4E58\u63D2\u503C\u65E0\u6CD5\u7531\u5F53\u524D\u539F\u751F\u6E10\u53D8\u65E0\u635F\u8868\u793A");
+    }
+  }
+
+  // apps/design-studio/app/paint.mjs
+  var hex = (value) => typeof value === "string" && /^#[a-f\d]{6}$/iu.test(value);
+  var rgb = (value) => [1, 3, 5].map((offset) => parseInt(value.slice(offset, offset + 2), 16) / 255);
+  function gradientMatrix(handles) {
+    const [a, b, c] = handles;
+    return [
+      [b.x - a.x, 2 * (c.x - a.x), 2 * a.x - c.x],
+      [b.y - a.y, 2 * (c.y - a.y), 2 * a.y - c.y]
+    ];
+  }
+  function inverseGradientMatrix(handles) {
+    const [[a, b, c], [d, e, f]] = gradientMatrix(handles), determinant = a * e - b * d;
+    if (Math.abs(determinant) < 1e-8) throw new Error("\u7EBF\u6027\u6E10\u53D8\u5750\u6807\u4E0D\u53EF\u9006");
+    return [
+      [e / determinant, -b / determinant, (b * f - e * c) / determinant],
+      [-d / determinant, a / determinant, (d * c - a * f) / determinant]
+    ];
+  }
+  function designFillPaints(node) {
+    const paints = node.fillPaints ?? (hex(node.fill) ? [{ type: "SOLID", color: node.fill, opacity: 1 }] : []);
+    return paints.some((paint) => paint.cssLinear && !paint.cssLinear.sourceOnly) ? paints.map(
+      (paint) => paint.cssLinear ? resolveCssLinear(paint, node.width, node.height) : paint
+    ) : paints;
+  }
+  function designPaintsToFigma(node) {
+    const paints = designFillPaints(node);
+    if (paints.some(
+      (paint) => paint.cssLinear && !paint.cssLinear.sourceOnly && paint.handles.some((point) => Math.abs(point.x) > 100 || Math.abs(point.y) > 100)
+    ))
+      throw new Error(
+        "\u5F53\u524D CSS \u6E10\u53D8\u5C3A\u5BF8/\u50CF\u7D20\u8272\u6807\u4EA7\u751F\u8D85\u51FA \xB1100 \u7684\u539F\u751F\u63A7\u5236\u70B9\uFF1B\u8BF7\u8C03\u6574\u5C3A\u5BF8\u6216\u8272\u6807\u540E\u518D\u5BFC\u51FA\u3002\u539F\u59CB CSS \u610F\u56FE\u4ECD\u53EF\u5728 Design Studio \u4E2D\u7F16\u8F91\u3002"
+      );
+    return paints.map(
+      (paint) => paint.type === "SOLID" ? {
+        type: "SOLID",
+        color: Object.fromEntries(
+          ["r", "g", "b"].map((key, index) => [key, rgb(paint.color)[index]])
+        ),
+        opacity: paint.opacity
+      } : {
+        type: "GRADIENT_LINEAR",
+        opacity: paint.opacity,
+        gradientTransform: inverseGradientMatrix(paint.handles),
+        gradientStops: paint.stops.map((stop) => ({
+          position: stop.position,
+          color: {
+            ...Object.fromEntries(
+              ["r", "g", "b"].map((key, index) => [key, rgb(stop.color)[index]])
+            ),
+            a: stop.opacity
+          }
+        }))
+      }
+    );
+  }
+
   // apps/design-studio/app/document-bundle.mjs
   var MAX_WORKSPACE_DESIGN_TEXT_BYTES = 384 * 1024;
   var MAX_DESIGN_BUNDLE_PART_BYTES = 360 * 1024;
@@ -5151,6 +5385,158 @@
   var MAX_FIGMA_ASSET_BYTES = 8 * 1024 * 1024;
   var MAX_FIGMA_ASSET_TOTAL_BYTES = 12 * 1024 * 1024;
   var MAX_FIGMA_SOURCE_BYTES = 16 * 1024 * 1024;
+
+  // apps/design-studio/app/html-block-flow.mjs
+  var intrinsicEmptyTags = new Set("input textarea select button option optgroup fieldset legend canvas img svg iframe object embed video audio meter progress details summary dialog table caption colgroup col thead tbody tfoot tr th td".split(" "));
+
+  // apps/design-studio/app/css-linear-gradient.mjs
+  var fail = (message) => {
+    throw new Error(message);
+  };
+  var split = (value) => {
+    const parts = [];
+    let depth = 0, start = 0;
+    for (let i = 0; i < value.length; i++) {
+      if (value[i] === "(") depth++;
+      if (value[i] === ")" && --depth < 0) fail("\u80CC\u666F\u62EC\u53F7\u65E0\u6548");
+      if (value[i] === "," && depth === 0) {
+        parts.push(value.slice(start, i).trim());
+        start = i + 1;
+      }
+    }
+    if (depth) fail("\u80CC\u666F\u62EC\u53F7\u65E0\u6548");
+    parts.push(value.slice(start).trim());
+    return parts;
+  };
+  var numeric = /^[-+]?(?:\d+(?:\.\d*)?|\.\d+)$/u;
+  function cssColor(value) {
+    if (value === "transparent") return { color: "#000000", opacity: 0 };
+    const match = /^rgba?\(([^()]*)\)$/u.exec(value);
+    if (!match) fail("\u4EC5\u652F\u6301\u8BA1\u7B97\u540E\u7684 sRGB rgb/rgba \u989C\u8272");
+    const parts = match[1].trim().split(/[\s,/]+/u);
+    if (parts.length < 3 || parts.length > 4 || parts.some((part) => !numeric.test(part)))
+      fail("\u989C\u8272\u901A\u9053\u683C\u5F0F\u4E0D\u53D7\u652F\u6301");
+    const channels = parts.slice(0, 3).map(Number), opacity = Number(parts[3] ?? 1);
+    if (channels.some((v) => !Number.isInteger(v) || v < 0 || v > 255) || opacity < 0 || opacity > 1)
+      fail("\u989C\u8272\u8D85\u51FA\u516B\u4F4D sRGB/\u900F\u660E\u5EA6\u8303\u56F4");
+    return { color: `#${channels.map((v) => v.toString(16).padStart(2, "0")).join("")}`, opacity };
+  }
+  function linear(value, width, height) {
+    var _a, _b;
+    const match = /^linear-gradient\((.*)\)$/u.exec(value);
+    if (!match) fail("\u4EC5\u652F\u6301\u975E\u91CD\u590D linear-gradient\uFF1B\u5F84\u5411\u3001\u9525\u5F62\u6216\u91CD\u590D\u6E10\u53D8\u672A\u8F6C\u6362");
+    const parts = split(match[1]);
+    const hasDirection = /^(?:to\s|[-+]?(?:\d|\.))/u.test(parts[0]);
+    const direction = parseCssLinearDirection(hasDirection ? parts.shift() : "180deg");
+    const vector = cssLinearVector(direction, width, height);
+    const length = Math.abs(width * vector.x) + Math.abs(height * vector.y);
+    if (!Number.isFinite(length) || length < 1e-4) fail("\u6E10\u53D8\u7ED8\u5236\u533A\u57DF\u9000\u5316");
+    const stops = [], authoredPositions = [];
+    for (const part of parts) {
+      const stop = /^(rgba?\([^()]*\)|transparent)(.*)$/u.exec(part);
+      if (!stop) fail("\u989C\u8272\u63D0\u793A\u3001\u63D2\u503C\u8272\u5F69\u7A7A\u95F4\u6216\u590D\u6742\u8272\u6807\u672A\u8F6C\u6362");
+      const color = cssColor(stop[1]);
+      const positions = stop[2].trim() ? stop[2].trim().split(/\s+/u) : [null];
+      if (positions.length > 2) fail("\u6E10\u53D8\u8272\u6807\u4F4D\u7F6E\u8FC7\u591A");
+      for (const position of positions) {
+        const parsed = position === null ? null : /^([-+]?(?:\d+(?:\.\d*)?|\.\d+))(%|px)?$/u.exec(position);
+        if (position !== null && (!parsed || !parsed[2] && Number(parsed[1]) !== 0))
+          fail("\u8272\u6807\u4EC5\u652F\u6301\u50CF\u7D20\u3001\u767E\u5206\u6BD4\u6216\u96F6\uFF1Bcalc/\u5176\u4ED6\u5355\u4F4D\u672A\u8F6C\u6362");
+        const resolved = parsed ? Number(parsed[1]) / (parsed[2] === "%" ? 100 : length) : null;
+        if (resolved !== null && !Number.isFinite(resolved)) fail("\u8272\u6807\u4F4D\u7F6E\u8D85\u51FA\u6570\u503C\u8303\u56F4");
+        stops.push({ ...color, position: resolved });
+        authoredPositions.push(
+          parsed ? { unit: parsed[2] === "%" ? "percent" : "px", value: Number(parsed[1]) } : null
+        );
+      }
+    }
+    if (stops.length < 2 || stops.length > 16) fail("\u6E10\u53D8\u5FC5\u987B\u6709 2\u201316 \u4E2A\u8272\u6807");
+    (_a = stops[0]).position ?? (_a.position = 0);
+    (_b = stops.at(-1)).position ?? (_b.position = 1);
+    let previous = -Infinity;
+    for (const stop of stops)
+      if (stop.position !== null) {
+        stop.position = Math.max(previous, stop.position);
+        previous = stop.position;
+      }
+    for (let i = 0; i < stops.length - 1; i++) {
+      let next = i + 1;
+      while (stops[next].position === null) next++;
+      for (let j = i + 1; j < next; j++)
+        stops[j].position = stops[i].position + (stops[next].position - stops[i].position) * (j - i) / (next - i);
+      i = next - 1;
+    }
+    for (let i = 0; i < stops.length - 1; i++) {
+      const a = stops[i], b = stops[i + 1];
+      if (a.position === b.position || a.opacity === b.opacity || a.color === b.color) continue;
+      if (a.opacity === 0 && b.opacity > 0) a.color = b.color;
+      else if (b.opacity === 0 && a.opacity > 0) b.color = a.color;
+      else fail("\u4E0D\u540C\u989C\u8272\u4E14\u900F\u660E\u5EA6\u53D8\u5316\u7684 CSS \u9884\u4E58\u63D2\u503C\u65E0\u6CD5\u7531\u5F53\u524D\u539F\u751F\u6E10\u53D8\u65E0\u635F\u8868\u793A");
+    }
+    for (let i = 1; i < stops.length - 1; i++) {
+      if (stops[i].opacity !== 0 || stops[i - 1].opacity === 0 || stops[i + 1].opacity === 0 || stops[i - 1].color === stops[i + 1].color)
+        continue;
+      const stop = stops[i];
+      stop.color = stops[i - 1].color;
+      stops.splice(i + 1, 0, { ...stop, color: stops[i + 1].color });
+      authoredPositions.splice(i + 1, 0, "previous");
+      i++;
+    }
+    if (stops.length > 16) fail("\u900F\u660E\u8272\u6807\u5C55\u5F00\u540E\u8D85\u8FC7 16 \u9879");
+    const start = Math.min(0, stops[0].position), end = Math.max(1, stops.at(-1).position);
+    const point = (t, perpendicular = 0) => ({
+      x: 0.5 + ((t - 0.5) * length * vector.x - perpendicular * length * vector.y) / width,
+      y: 0.5 + ((t - 0.5) * length * vector.y + perpendicular * length * vector.x) / height
+    });
+    const handles = [point(start), point(end), point(start, (end - start) / 2)];
+    if (handles.some(
+      (p) => !Number.isFinite(p.x) || !Number.isFinite(p.y) || Math.abs(p.x) > 100 || Math.abs(p.y) > 100
+    ))
+      fail("\u6E10\u53D8\u63A7\u5236\u70B9\u8D85\u51FA\u539F\u751F\u8303\u56F4");
+    const cssLinear = normalizeCssLinear({ direction, positions: authoredPositions }, stops);
+    validateCssLinearInterpolation(cssLinear, stops);
+    return {
+      type: "GRADIENT_LINEAR",
+      opacity: 1,
+      handles,
+      stops: stops.map((stop) => ({ ...stop, position: (stop.position - start) / (end - start) })),
+      cssLinear
+    };
+  }
+  function cssLinearBackgroundPaints(style, width, height) {
+    if (!(width > 0 && height > 0)) fail("\u6E10\u53D8\u7ED8\u5236\u533A\u57DF\u5FC5\u987B\u5927\u4E8E\u96F6");
+    if (typeof style?.["background-image"] !== "string" || style["background-image"].length > 16e3)
+      fail("\u7F3A\u5C11\u6709\u754C\u539F\u59CB CSS \u6E10\u53D8\uFF0C\u4E0D\u80FD\u4ECE\u4E0A\u6E38\u5DF2\u4E22\u5931\u5355\u4F4D\u7684\u8272\u6807\u731C\u6D4B");
+    const images = split(style["background-image"]);
+    if (images.length > 8) fail("\u80CC\u666F\u6700\u591A\u516B\u5C42");
+    const perLayer = (property, index, fallback) => {
+      const values = split(String(style[property] ?? fallback));
+      return values[index % values.length];
+    };
+    const paints = [];
+    const base = cssColor(style["background-color"] ?? "transparent");
+    if (base.opacity > 0) paints.push({ type: "SOLID", ...base });
+    for (let i = images.length - 1; i >= 0; i--) {
+      if (images[i] === "none") continue;
+      if (perLayer("background-size", i, "auto") !== "auto" && perLayer("background-size", i, "auto") !== "auto auto")
+        fail("\u81EA\u5B9A\u4E49\u80CC\u666F\u5C3A\u5BF8\u7684\u6E10\u53D8\u672A\u8F6C\u6362");
+      if (!/^(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)%|0(?:px)?)(?:\s+(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)%|0(?:px)?))?$/u.test(
+        perLayer("background-position", i, "0% 0%")
+      ))
+        fail("\u5E26\u50CF\u7D20\u504F\u79FB\u7684\u6E10\u53D8\u80CC\u666F\u4F4D\u7F6E\u672A\u8F6C\u6362");
+      if (perLayer("background-blend-mode", i, "normal") !== "normal") fail("\u80CC\u666F\u6DF7\u5408\u6A21\u5F0F\u672A\u8F6C\u6362");
+      if (perLayer("background-attachment", i, "scroll") !== "scroll") fail("\u56FA\u5B9A\u6216\u5C40\u90E8\u80CC\u666F\u672A\u8F6C\u6362");
+      const origin = perLayer("background-origin", i, "padding-box");
+      if (origin !== "border-box" && (origin !== "padding-box" || ["top", "right", "bottom", "left"].some(
+        (side) => parseFloat(style[`border-${side}-width`] ?? "0") !== 0
+      )))
+        fail("\u975E\u5B8C\u6574\u5BB9\u5668\u7684\u6E10\u53D8\u539F\u70B9\u672A\u8F6C\u6362");
+      if (perLayer("background-clip", i, "border-box") !== "border-box") fail("\u6E10\u53D8\u80CC\u666F\u88C1\u526A\u672A\u8F6C\u6362");
+      paints.push(linear(images[i], width, height));
+    }
+    if (!paints.length || paints.length > 8) fail("\u80CC\u666F\u7ED8\u5236\u5C42\u6570\u8D85\u51FA 1\u20138 \u5C42\u8303\u56F4");
+    return paints;
+  }
 
   // apps/design-studio/app/design-node-adapter.mjs
   var textBytes = (value) => new TextEncoder().encode(value);
@@ -5181,10 +5567,87 @@
     return source;
   }
 
+  // third-party/html2figma-plugin/integration/text-whitespace.ts
+  var KEY = "htmlTextWhitespace";
+  var object2 = (value) => value && typeof value === "object" && !Array.isArray(value);
+  function textWhitespaceSource(value) {
+    if (!object2(value) || !["normal", "nowrap"].includes(value.whiteSpace) || typeof value.rawSource !== "string" || value.rawSource.length > 1e3 || JSON.stringify(value.rawSource).length > 1e3 || value.removedTrailingNbsp !== void 0 && value.removedTrailingNbsp !== true || value.omittedPseudos !== void 0 && (!Array.isArray(value.omittedPseudos) || value.omittedPseudos.length < 1 || value.omittedPseudos.length > 2 || value.omittedPseudos.some((pseudo) => !["::before", "::after"].includes(pseudo)) || new Set(value.omittedPseudos).size !== value.omittedPseudos.length) || !value.removedTrailingNbsp && !value.omittedPseudos) return null;
+    return {
+      whiteSpace: value.whiteSpace,
+      rawSource: value.rawSource,
+      ...value.removedTrailingNbsp ? { removedTrailingNbsp: true } : {},
+      ...value.omittedPseudos ? { omittedPseudos: [...value.omittedPseudos] } : {}
+    };
+  }
+  var snapshot = (node) => ({
+    type: node.type,
+    x: node.x,
+    y: node.y,
+    width: node.width,
+    height: node.height,
+    ...node.type === "TEXT" ? {
+      characters: node.characters,
+      fontName: node.fontName,
+      fontSize: node.fontSize,
+      lineHeight: node.lineHeight,
+      letterSpacing: node.letterSpacing
+    } : {},
+    ...node.children ? { children: node.children.map((child) => ({
+      type: child.type,
+      x: child.x,
+      y: child.y,
+      width: child.width,
+      height: child.height,
+      ...child.type === "TEXT" ? { characters: child.characters } : {}
+    })) } : {}
+  });
+  function retainTextWhitespace(node, source, warnings) {
+    const receipt = textWhitespaceSource(source);
+    if (receipt) {
+      const serialized = JSON.stringify({
+        format: "codeshell.html.text-whitespace",
+        version: 1,
+        source: receipt,
+        snapshot: snapshot(node)
+      });
+      if (serialized.length <= 8e3) {
+        node.sharedPluginData ?? (node.sharedPluginData = {});
+        node.sharedPluginData[KEY] = serialized;
+      } else warnings.push("HTML \u6587\u5B57\u6765\u6E90\u5FEB\u7167\u8D85\u8FC7 8000 UTF-16 \u5355\u5143\uFF1B\u672A\u8986\u76D6\u539F\u59CB\u5907\u6CE8\uFF0C\u672A\u4FEE\u6539\u6587\u5B57\u6216\u5E03\u5C40\u3002");
+    }
+    const raw = node.sharedPluginData?.[KEY];
+    if (raw === void 0) return;
+    let value;
+    try {
+      if (typeof raw === "string" && raw.length <= 8e3) value = JSON.parse(raw);
+    } catch {
+    }
+    const original = textWhitespaceSource(value?.source);
+    if (!original || value?.format !== "codeshell.html.text-whitespace" || value.version !== 1) {
+      warnings.push("HTML \u6587\u5B57\u6765\u6E90\u5907\u6CE8\u65E0\u6548\uFF1B\u539F\u59CB\u5907\u6CE8\u4EC5\u4F5C\u8BB0\u5F55\uFF0C\u672A\u7528\u4E8E\u4FEE\u6539\u6587\u5B57\u6216\u5E03\u5C40\u3002");
+      return;
+    }
+    if (JSON.stringify(value.snapshot) !== JSON.stringify(snapshot(node)))
+      warnings.push("HTML \u6587\u5B57\u6765\u6E90\u5907\u6CE8\u4E0E\u5F53\u524D\u56FE\u5C42\u5FEB\u7167\u4E0D\u540C\uFF1B\u4EC5\u4FDD\u7559\u539F\u59CB\u8BB0\u5F55\uFF0C\u672A\u7528\u4E8E\u4FEE\u6539\u6587\u5B57\u6216\u5E03\u5C40\u3002");
+    if (original.omittedPseudos)
+      warnings.push("\u5DF2\u7701\u7565\u6355\u83B7\u65F6\u65E0\u7ED8\u5236\u3001\u65E0\u6587\u5B57\u4E14\u8131\u79BB\u6587\u6863\u6D41\u7684\u7A7A\u4F2A\u5143\u7D20\uFF1B\u4FDD\u7559\u771F\u5B9E\u8282\u70B9\uFF0C\u4F46\u4E0D\u4FDD\u7559\u4F2A\u5143\u7D20\u6269\u5C55\u7684\u70B9\u51FB\u533A\u57DF\u3002");
+  }
+
+  // apps/design-studio/app/native-text-ranges.mjs
+  function assertNativeTextRangeBoundary(node) {
+    if (node?.textRanges === void 0) return;
+    const label = (typeof node.name === "string" ? node.name : typeof node.id === "string" ? node.id : "Text").slice(0, 120);
+    const error = new Error(
+      label + "\uFF1A\u8303\u56F4\u6587\u5B57\u7684\u539F\u751F\u521B\u5EFA\u548C\u589E\u91CF\u5BFC\u56DE\u5C1A\u672A\u5B8C\u6210\u9A8C\u8BC1\uFF1B\u5DF2\u963B\u6B62\u4E92\u8F6C\uFF0C\u672A\u4E22\u5F03\u8303\u56F4\u6837\u5F0F\u3002"
+    );
+    error.code = "TEXT_RANGES_NATIVE_UNSUPPORTED";
+    throw error;
+  }
+
   // third-party/html2figma-plugin/integration/input.ts
   var MAX_INPUT_BYTES = 12 * 1024 * 1024;
   var MAX_NODES = 3e3;
-  var object = (v) => v && typeof v === "object" && !Array.isArray(v);
+  var object3 = (v) => v && typeof v === "object" && !Array.isArray(v);
   function prepareDesignInput(input) {
     const text = typeof input === "string" ? input : JSON.stringify(input);
     if (typeof text !== "string" || new TextEncoder().encode(text).length > MAX_INPUT_BYTES)
@@ -5199,29 +5662,89 @@
     if (!roots.length || roots.length > 20) throw new Error("\u6BCF\u6B21\u5BFC\u5165 1\u201320 \u4E2A\u6839\u8282\u70B9");
     let count = 0;
     const warnings = [];
+    const reservedIds = /* @__PURE__ */ new Set();
+    const legacyGridWarning = "Grid \u4F7F\u7528\u6D4B\u91CF\u50CF\u7D20\u7684 Flex \u884C/\u56FA\u5B9A\u51E0\u4F55\u517C\u5BB9\u8F6C\u6362\uFF0C\u672A\u4FDD\u7559\u539F\u751F\u8F68\u9053\u6216\u54CD\u5E94\u5F0F\u5C3A\u5BF8\uFF1B\u9700\u8981\u539F\u751F Grid \u65F6\u8BF7\u901A\u8FC7 Design Studio \u5BFC\u5165\u5E76\u4F7F\u7528 Design Bridge\u3002";
+    const legacyBorderWarning = "CSS \u8FB9\u6846\u4F7F\u7528\u72EC\u7ACB\u63D2\u4EF6\u7684\u7EDF\u4E00\u5C45\u4E2D\u63CF\u8FB9\u517C\u5BB9\u8F6C\u6362\uFF0C\u672A\u4FDD\u7559\u5404\u4FA7\u5BBD\u5EA6\u3001\u989C\u8272\u6216\u5185\u90E8\u5BF9\u9F50\uFF1B\u9700\u8981\u53EF\u7F16\u8F91\u4FA7\u8FB9\u65F6\u8BF7\u901A\u8FC7 Design Studio \u5BFC\u5165\u5E76\u4F7F\u7528 Design Bridge\u3002";
+    const hasCssBorder = (node) => Boolean(node.nodeType && ["top", "right", "bottom", "left"].some((side) => node.border?.[side]?.width > 0 && node.border[side].style !== "none"));
+    const legacyFloatWarning = "\u6D6E\u52A8\u5217\u5728\u672C\u72EC\u7ACB\u63D2\u4EF6\u4E2D\u4F7F\u7528\u56FA\u5B9A\u6D4B\u91CF\u5E03\u5C40\uFF0C\u672A\u4FDD\u7559\u767E\u5206\u6BD4\u5217\u6D41\uFF1B\u9700\u8981\u6709\u754C\u53EF\u7F16\u8F91\u5217\u5E03\u5C40\u65F6\u8BF7\u901A\u8FC7 Design Studio \u5BFC\u5165\u5E76\u4F7F\u7528 Design Bridge\u3002";
+    const isFloatFallback = (node) => node.codeshellFloatFallback === true || node.nodeType === "container" && node.layout?.hasFloatChildren === true;
     function inspect(node, depth = 0) {
-      if (!object(node) || depth > 60 || ++count > MAX_NODES)
+      if (!object3(node) || depth > 60 || ++count > MAX_NODES)
         throw new Error("\u8282\u70B9\u6811\u6700\u591A 3000 \u4E2A\u8282\u70B9\u300160 \u5C42");
+      assertNativeTextRangeBoundary(node);
       if (!node.nodeType && !["FRAME", "GROUP", "RECTANGLE", "TEXT", "SVG"].includes(node.type))
         throw new Error(`\u4E0D\u652F\u6301\u8282\u70B9\u7C7B\u578B\uFF1A${String(node.type ?? "unknown").slice(0, 60)}`);
       if (node.nodeType && !["container", "text", "image", "svg"].includes(node.nodeType))
         throw new Error("\u4E0D\u652F\u6301\u7684 DesignNode \u7C7B\u578B");
       const bounds = node.nodeType ? node.bounds : node;
-      if (!object(bounds) || !["width", "height"].every(
+      if (!object3(bounds) || !["width", "height"].every(
         (k) => Number.isFinite(bounds[k]) && bounds[k] >= 0 && bounds[k] <= 2e4
       ))
         throw new Error("\u8282\u70B9\u5BBD\u9AD8\u5FC5\u987B\u5728 0\u201320000 \u4E4B\u95F4");
       if (node.nodeType === "svg" || node.type === "SVG") inertDesignSvg(node.svgContent);
       if (node.children !== void 0 && !Array.isArray(node.children))
         throw new Error("children \u5FC5\u987B\u662F\u6570\u7EC4");
+      if (node.codeshellGridFallback === true || node.cssLayout?.["--codeshell-grid-legacy"] === "synthetic")
+        warnings.push(legacyGridWarning);
+      if (node.codeshellBorderFallback === true || hasCssBorder(node)) warnings.push(legacyBorderWarning);
+      if (isFloatFallback(node)) warnings.push(legacyFloatWarning);
+      if (typeof node.id === "string" && node.id) reservedIds.add(node.id);
       for (const child of node.children ?? []) inspect(child, depth + 1);
     }
     roots.forEach((root) => inspect(root));
-    const converted = roots.map(
-      (root) => root.nodeType ? FigmaAdapter.toFigmaJSON(root) : root
-    );
+    const gradientPaints = /* @__PURE__ */ new Map();
+    const textWhitespace = /* @__PURE__ */ new Map();
+    const assignedIds = /* @__PURE__ */ new Set();
+    let sourceSerial = 0;
+    function retainGradients(node) {
+      if (typeof node.id !== "string" || !node.id || assignedIds.has(node.id)) {
+        let id;
+        do {
+          id = `codeshell-source-${sourceSerial++}`;
+        } while (reservedIds.has(id));
+        node.id = id;
+        reservedIds.add(id);
+      }
+      assignedIds.add(node.id);
+      const whitespace = node.nodeType && textWhitespaceSource(node.cssTextWhitespace);
+      if (whitespace) textWhitespace.set(node.id, whitespace);
+      if (node.nodeType && node.cssBorderRadii) {
+        try {
+          cssCornerRadii(node.cssBorderRadii);
+        } catch (error) {
+          node.border ?? (node.border = {});
+          node.border.radius = { topLeft: 0, topRight: 0, bottomRight: 0, bottomLeft: 0 };
+          warnings.push(`\u5706\u89D2\u672A\u5BFC\u5165\uFF1A${error.message}\u3002`);
+        }
+      }
+      if (node.nodeType && (node.cssBackground?.["background-image"]?.includes("gradient(") || node.background?.layers?.some((layer) => layer.type?.endsWith("gradient")))) {
+        node.background ?? (node.background = { layers: [] });
+        node.background.layers = (node.background.layers ?? []).filter((layer) => !layer.type?.endsWith("gradient"));
+        try {
+          const fillPaints = cssLinearBackgroundPaints(node.cssBackground, node.bounds.width, node.bounds.height);
+          gradientPaints.set(node.id, designPaintsToFigma({ fillPaints, ...node.bounds }));
+          if (fillPaints.some(cssLinearNeedsNativeWarning))
+            warnings.push("CSS \u89D2\u5EA6/\u50CF\u7D20\u8272\u6807\u4EC5\u6309\u5F53\u524D\u5C3A\u5BF8\u521B\u5EFA\u4E3A\u539F\u751F\u6E10\u53D8\uFF0CFigma \u5185\u8C03\u6574\u5C3A\u5BF8\u53EF\u80FD\u6539\u53D8\u5916\u89C2\uFF1B\u8BF7\u901A\u8FC7 Design Studio \u4FDD\u7559\u548C\u7F16\u8F91\u539F\u59CB CSS \u610F\u56FE\u3002");
+        } catch (error) {
+          warnings.push(`\u6E10\u53D8\u672A\u5BFC\u5165\uFF0C\u4FDD\u7559\u72EC\u7ACB\u80CC\u666F\u8272\uFF1A${error.message}\u3002`);
+        }
+      }
+      for (const child of node.children ?? []) retainGradients(child);
+    }
+    roots.forEach(retainGradients);
+    const hasLegacyGrid = (node) => node.codeshellGridFallback === true || node.cssLayout?.["--codeshell-grid-legacy"] === "synthetic" || (node.children ?? []).some(hasLegacyGrid);
+    const hasLegacyBorder = (node) => node.codeshellBorderFallback === true || hasCssBorder(node) || (node.children ?? []).some(hasLegacyBorder);
+    const hasLegacyFloat = (node) => isFloatFallback(node) || (node.children ?? []).some(hasLegacyFloat);
+    const converted = roots.map((root) => {
+      const converted2 = root.nodeType ? FigmaAdapter.toFigmaJSON(root) : root;
+      if (hasLegacyGrid(root)) converted2.codeshellGridFallback = true;
+      if (hasLegacyBorder(root)) converted2.codeshellBorderFallback = true;
+      if (hasLegacyFloat(root)) converted2.codeshellFloatFallback = true;
+      return converted2;
+    });
     count = 0;
     function normalizeOnce(node) {
+      if (gradientPaints.has(node.id)) node.fills = gradientPaints.get(node.id);
       node.name = String(node.name || node.type || "HTML layer").slice(0, 120);
       node.id || (node.id = `html-${serial++}`);
       node.width = Math.max(1, node.width);
@@ -5235,6 +5758,7 @@
       if (node.type === "TEXT" && (typeof node.characters !== "string" || node.characters.length > 1e4))
         throw new Error("\u5355\u4E2A\u6587\u672C\u8282\u70B9\u6700\u591A 10000 \u5B57\u7B26");
       (node.children ?? []).forEach(normalizeOnce);
+      retainTextWhitespace(node, textWhitespace.get(node.id), warnings);
     }
     converted.forEach((root) => inspect(root));
     let serial = 0;

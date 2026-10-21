@@ -1,0 +1,87 @@
+const rect = (id, props = {}) => ({
+  id,
+  type: "RECTANGLE",
+  name: "Card",
+  absoluteBoundingBox: { x: 30, y: 40, width: 120, height: 80 },
+  fills: [{ type: "SOLID", color: { r: 1, g: 0, b: 0 } }],
+  ...props,
+});
+const file = (children) => ({
+  name: "Native Grid Acceptance",
+  document: {
+    id: "0:0",
+    type: "DOCUMENT",
+    children: [{ id: "0:1", type: "CANVAS", name: "Native Grid", children }],
+  },
+});
+export function nativeGridSource(overrides = {}) {
+  return file([
+    {
+      ...rect("21:1"),
+      type: "FRAME",
+      name: "Native tracks",
+      absoluteBoundingBox: { x: 20, y: 30, width: 440, height: 128 },
+      layoutMode: "GRID",
+      layoutSizingHorizontal: "FIXED",
+      layoutSizingVertical: "HUG",
+      gridColumnCount: 3,
+      gridRowCount: 2,
+      gridColumnSizes: [
+        { type: "FIXED", value: 100 },
+        { type: "FLEX", value: 1 },
+        { type: "FLEX", value: 2 },
+      ],
+      gridRowSizes: [{ type: "FIXED", value: 40 }, { type: "HUG" }],
+      gridColumnGap: 10,
+      gridRowGap: 8,
+      gridItemsPositioning: "MANUAL",
+      gridAutoTracks: "NONE",
+      paddingLeft: 10,
+      paddingRight: 10,
+      paddingTop: 10,
+      paddingBottom: 10,
+      children: [
+        rect("21:2", {
+          name: "Span two",
+          absoluteBoundingBox: { x: 140, y: 40, width: 310, height: 40 },
+          gridRowAnchorIndex: 0,
+          gridColumnAnchorIndex: 1,
+          gridColumnSpan: 2,
+          gridRowSpan: 1,
+          layoutSizingHorizontal: "FILL",
+          layoutSizingVertical: "FILL",
+        }),
+        rect("21:3", {
+          absoluteBoundingBox: { x: 30, y: 40, width: 30, height: 20 },
+          gridRowAnchorIndex: 0,
+          gridColumnAnchorIndex: 0,
+          gridColumnSpan: 1,
+          gridRowSpan: 1,
+          gridChildHorizontalAlign: "MAX",
+          gridChildVerticalAlign: "CENTER",
+        }),
+        rect("21:4", {
+          absoluteBoundingBox: { x: 30, y: 88, width: 40, height: 60 },
+          gridRowAnchorIndex: 1,
+          gridColumnAnchorIndex: 0,
+          gridColumnSpan: 1,
+          gridRowSpan: 1,
+        }),
+        rect("21:5", {
+          type: "TEXT",
+          name: "Hug text",
+          characters: "Editable",
+          style: { fontFamily: "Inter", fontSize: 16, textAutoResize: "WIDTH_AND_HEIGHT" },
+          absoluteBoundingBox: { x: 140, y: 88, width: 60, height: 20 },
+          gridRowAnchorIndex: 1,
+          gridColumnAnchorIndex: 1,
+          gridColumnSpan: 1,
+          gridRowSpan: 1,
+          layoutSizingHorizontal: "HUG",
+          layoutSizingVertical: "HUG",
+        }),
+      ],
+      ...overrides,
+    },
+  ]);
+}

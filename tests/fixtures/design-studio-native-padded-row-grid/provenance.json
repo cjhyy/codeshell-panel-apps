@@ -1,0 +1,302 @@
+{
+  "researchOnly": true,
+  "nativeRun": "native-govuk-row-grid-2026-10-20T21-30-08.162Z-fc6bb994",
+  "providedDesktopVersion": "126.9.13",
+  "rawResultSha256": "bc9cf9a35598a666b0f25ecb6d319ed8e482fdee59af098053c8edae1be181e6",
+  "officialFile": "01-initial630-copy2.official.json",
+  "officialSha256": "b996db6290bfff7b5c1442efd1a407977ae33fbc81dfc2ae6725a0d5d05f3716",
+  "derivedSourceSha256": "4bc40a27a01dad5e5dba03e9996ef4775d4c221a2a3de89c99b11288fafa9169",
+  "transformation": "Exact production preserveNativeGrid supplement from archived same-run live getters. Original IDs, geometry, characters, style and hierarchy unchanged. No HTML/GOV collapsed-border parity claim.",
+  "supplementedFields": {
+    "64:1159": [
+      "children"
+    ],
+    "64:1160": [
+      "children"
+    ],
+    "64:1161": [
+      "children",
+      "itemSpacing"
+    ],
+    "64:1162": [
+      "children",
+      "layoutPositioning",
+      "gridRowSizes",
+      "gridColumnSizes"
+    ],
+    "64:1163": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1164": [
+      "layoutPositioning"
+    ],
+    "64:1165": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1166": [
+      "layoutPositioning"
+    ],
+    "64:1167": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1168": [
+      "layoutPositioning"
+    ],
+    "64:1169": [
+      "children",
+      "layoutPositioning",
+      "gridRowSizes",
+      "gridColumnSizes"
+    ],
+    "64:1170": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1171": [
+      "layoutPositioning"
+    ],
+    "64:1172": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1173": [
+      "layoutPositioning"
+    ],
+    "64:1174": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1175": [
+      "layoutPositioning"
+    ],
+    "64:1176": [
+      "children",
+      "layoutPositioning",
+      "gridRowSizes",
+      "gridColumnSizes"
+    ],
+    "64:1177": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1178": [
+      "layoutPositioning"
+    ],
+    "64:1179": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1180": [
+      "layoutPositioning"
+    ],
+    "64:1181": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1182": [
+      "layoutPositioning"
+    ],
+    "64:1183": [
+      "children",
+      "itemSpacing"
+    ],
+    "64:1184": [
+      "children",
+      "layoutPositioning",
+      "gridRowSizes",
+      "gridColumnSizes"
+    ],
+    "64:1185": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1186": [
+      "layoutPositioning"
+    ],
+    "64:1187": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1188": [
+      "layoutPositioning"
+    ],
+    "64:1189": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1190": [
+      "layoutPositioning"
+    ],
+    "64:1191": [
+      "children",
+      "layoutPositioning",
+      "gridRowSizes",
+      "gridColumnSizes"
+    ],
+    "64:1192": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1193": [
+      "layoutPositioning"
+    ],
+    "64:1194": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1195": [
+      "layoutPositioning"
+    ],
+    "64:1196": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1197": [
+      "layoutPositioning"
+    ],
+    "64:1198": [
+      "children",
+      "layoutPositioning",
+      "gridRowSizes",
+      "gridColumnSizes"
+    ],
+    "64:1199": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1200": [
+      "layoutPositioning"
+    ],
+    "64:1201": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1202": [
+      "layoutPositioning"
+    ],
+    "64:1203": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1204": [
+      "layoutPositioning"
+    ],
+    "64:1205": [
+      "children",
+      "itemSpacing"
+    ],
+    "64:1206": [
+      "children",
+      "layoutPositioning",
+      "gridRowSizes",
+      "gridColumnSizes"
+    ],
+    "64:1207": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1208": [
+      "layoutPositioning"
+    ],
+    "64:1209": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1210": [
+      "layoutPositioning"
+    ],
+    "64:1211": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1212": [
+      "layoutPositioning"
+    ],
+    "64:1213": [
+      "children",
+      "layoutPositioning",
+      "gridRowSizes",
+      "gridColumnSizes"
+    ],
+    "64:1214": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1215": [
+      "layoutPositioning"
+    ],
+    "64:1216": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1217": [
+      "layoutPositioning"
+    ],
+    "64:1218": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1219": [
+      "layoutPositioning"
+    ],
+    "64:1220": [
+      "children",
+      "layoutPositioning",
+      "gridRowSizes",
+      "gridColumnSizes"
+    ],
+    "64:1221": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1222": [
+      "layoutPositioning"
+    ],
+    "64:1223": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1224": [
+      "layoutPositioning"
+    ],
+    "64:1225": [
+      "children",
+      "itemSpacing",
+      "layoutPositioning"
+    ],
+    "64:1226": [
+      "layoutPositioning"
+    ]
+  },
+  "ruleBoundary": "Probe row color #b1b4b6 differs from frozen GOV #cecece; included INSIDE1 is capability only. Native font bytes unknown; no CSS/native glyph parity.",
+  "initialGeometryReceiptSha256": "51af516faba6e08bee58ffbea60643452c614b717172d123716822d4ab9055ac"
+}

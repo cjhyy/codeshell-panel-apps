@@ -1,5 +1,13 @@
+import {
+  GRID_CONTAINER_FIELDS,
+  GRID_CHILD_FIELDS,
+  gridPlacements,
+  effectiveGridRows,
+  effectiveGridRowTracks,
+} from "./grid.mjs";
 /* Stable-id design/implementation comparison for the delivery workflow. */
 import { normalizeDesignPaints } from "./paint.mjs";
+import { designStrokeSides } from "./stroke.mjs";
 
 function childrenOf(page) {
   return page?.children ?? page?.nodes ?? [];
@@ -33,28 +41,122 @@ function geometryDelta(expected, actual) {
 }
 
 function paintSignature(paints) {
-  return JSON.stringify(paints == null ? null : normalizeDesignPaints(paints));
+  return JSON.stringify(
+    paints == null
+      ? null
+      : normalizeDesignPaints(paints).map((paint) => {
+          if (!paint.cssLinear || paint.cssLinear.sourceOnly) return paint;
+          const { handles, stops, ...intent } = paint;
+          return { ...intent, stops: stops.map(({ position, ...color }) => color) };
+        }),
+  );
+}
+
+// Compare effective defaults, rather than whether an optional field or shorthand
+// happened to be serialized. Measured geometry alone cannot prove layout survived.
+function semanticProperties(node) {
+  const properties = {
+    layoutSizingHorizontal: node.layoutSizingHorizontal ?? "fixed",
+    layoutSizingVertical: node.layoutSizingVertical ?? "fixed",
+    layoutPositioning: node.layoutPositioning ?? "auto",
+    layoutAlignSelf: node.layoutAlignSelf ?? "auto",
+    layoutMarginBefore: node.layoutMarginBefore ?? null,
+    minWidth: node.minWidth ?? 1,
+    minHeight: node.minHeight ?? 1,
+    maxWidth: node.maxWidth ?? null,
+    maxHeight: node.maxHeight ?? null,
+    gridColumnSpan: node.gridColumnSpan ?? 1,
+    gridRowSpan: node.gridRowSpan ?? 1,
+    nativeStrokeInactive: node.nativeStrokeInactive ? JSON.stringify([
+      node.nativeStrokeInactive.strokeAlign ?? null, node.nativeStrokeInactive.strokeWeight ?? null,
+      node.nativeStrokeInactive.individualStrokeWeights ? ["top","right","bottom","left"].map(side=>node.nativeStrokeInactive.individualStrokeWeights[side]) : null,
+      node.nativeStrokeInactive.strokesIncludedInLayout ?? null,
+      node.nativeStrokeInactive.strokesIncludedInLayoutDefault ?? null,
+      node.nativeStrokeInactive.sourceOnly ?? null,
+    ]) : null,
+  };
+  if (["frame", "group", "component"].includes(node.type)) {
+    Object.assign(properties, {
+      layout: node.layout ?? "none",
+      layoutReverse: node.layoutReverse ?? false,
+      layoutWrap: node.layoutWrap ?? "none",
+      rowGap: node.rowGap ?? node.gap ?? 0,
+      columnGap: node.columnGap ?? node.gap ?? 0,
+      alignItems: node.alignItems ?? "start",
+      justifyContent: node.justifyContent ?? "start",
+      alignContent: node.alignContent ?? "start",
+      gridColumns: node.gridColumns ?? 1,
+    });
+    for (const side of ["Top", "Right", "Bottom", "Left"])
+      properties[`padding${side}`] = node[`padding${side}`] ?? node.padding ?? 0;
+    if (["horizontal", "vertical", "grid"].includes(node.layout))
+      properties.layoutChildOrder = JSON.stringify(
+        (node.children ?? [])
+          .filter((child) => child.layoutPositioning !== "absolute")
+          .map((child) => child.id),
+      );
+  }
+  for (const key of [...GRID_CONTAINER_FIELDS, ...GRID_CHILD_FIELDS])
+    properties[key] = JSON.stringify(node[key] ?? null);
+  if (node.layout === "grid") {
+    const rows = effectiveGridRows(
+      node,
+      gridPlacements(
+        (node.children ?? []).filter((child) => child.visible !== false),
+        node.gridColumns ?? 1,
+        node,
+      ).rowCount,
+    );
+    properties.gridRows = JSON.stringify(rows);
+    properties.gridRowSizes = JSON.stringify(effectiveGridRowTracks(node, rows) ?? null);
+  }
+  if (node.type === "text") {
+    Object.assign(properties, {
+      text: node.text,
+      textSource: node.textSource ?? node.text,
+      textFlow: node.textFlow ?? null,
+      textOverflow: node.textOverflow ?? null,
+      layoutBaselineOffset: node.layoutBaselineOffset ?? 0,
+    });
+  }
+  return properties;
 }
 
 function styleDifferences(expected, actual) {
   const properties = [
     "fill",
     "fillPaints",
+    "shadowStack",
     "stroke",
     "strokeWidth",
+    "strokeAlign",
+    "strokeSides",
+    "strokeLayoutExcluded",
     "cornerRadius",
+    "cornerRadii",
     "opacity",
     "fontFamily",
     "fontSize",
     "fontWeight",
     "lineHeight",
+    "lineHeightUnit",
     "letterSpacing",
     "textAlign",
   ];
   const differences = properties
+    .filter((property) => property !== "fill" || !expected.fillPaints || !actual.fillPaints)
+    .filter((property) => !["stroke","strokeWidth"].includes(property) || !expected.strokeSides || !actual.strokeSides)
     .filter((property) =>
-      property === "fillPaints"
+      property === "shadowStack"
+        ? JSON.stringify(expected.shadowStack??null)!==JSON.stringify(actual.shadowStack??null)
+        : property === "fillPaints"
         ? paintSignature(expected.fillPaints) !== paintSignature(actual.fillPaints)
+        : property === "strokeSides"
+          ? JSON.stringify(designStrokeSides(expected)) !== JSON.stringify(designStrokeSides(actual))
+          : property === "strokeAlign"
+            ? (expected.strokeAlign??"center") !== (actual.strokeAlign??"center")
+          : property === "strokeLayoutExcluded"
+            ? (expected.strokeLayoutExcluded === true) !== (actual.strokeLayoutExcluded === true)
         : expected[property] !== undefined &&
           actual[property] !== undefined &&
           String(expected[property]) !== String(actual[property]),
@@ -70,6 +172,20 @@ function styleDifferences(expected, actual) {
       expected: expected.type,
       actual: actual.type,
     });
+  }
+  const expectedSemantics = semanticProperties(expected);
+  const actualSemantics = semanticProperties(actual);
+  for (const property of new Set([
+    ...Object.keys(expectedSemantics),
+    ...Object.keys(actualSemantics),
+  ])) {
+    if (expectedSemantics[property] !== actualSemantics[property]) {
+      differences.push({
+        property,
+        expected: expectedSemantics[property],
+        actual: actualSemantics[property],
+      });
+    }
   }
   return differences;
 }
@@ -170,10 +286,10 @@ export function comparisonMarkdown(
 - 设计源：${designPath ?? "当前设计"}
 - 前端实现：${implementationPath ?? "未指定"}
 - 稳定 ID 覆盖：${(comparison.coverage * 100).toFixed(2)}%
-- 2px 内且样式一致：${(comparison.closeRate * 100).toFixed(2)}%
+- 2px 内且内容、布局与样式一致：${(comparison.closeRate * 100).toFixed(2)}%
 - 最大几何偏差：${comparison.maximumGeometryDelta}px
 - 缺少 / 额外节点：${comparison.missingNodeCount} / ${comparison.unexpectedNodeCount}
-- 样式差异：${comparison.styleDifferenceCount}
+- 内容、布局与样式差异：${comparison.styleDifferenceCount}
 ${pixelLines.join("\n")}
 
 ## 需要优先修正

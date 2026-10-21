@@ -109,6 +109,7 @@ const receipt = {
   format: "codeshell.html2figma.plugin-build",
   version: 1,
   upstreamCommit: "ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c",
+  gridCapture: "legacy-synthetic-with-diagnostics",
   esbuildVersion,
   runtimeInputs: [...runtimeInputs].sort(),
   outputs: [...files].map(([path, bytes]) => ({
