@@ -3,6 +3,14 @@
 const MAX_NODES = 10_000;
 const MAX_DEPTH = 32;
 const MAX_DETAILS = 500;
+const ORIGINAL = Symbol("current-capture-node");
+const tableProofs = new WeakSet();
+const TABLE_KINDS = [
+  "fixed-table-row",
+  "fixed-table-cell",
+  "fixed-table-content",
+  "fixed-table-text",
+];
 const AUTO = new Set(["horizontal", "vertical", "grid"]);
 const FLEX_GRID = new Set(["flex", "inline-flex", "grid", "inline-grid"]);
 const BLOCK = new Set(["block", "flow-root", "inline-block"]);
@@ -37,7 +45,7 @@ function nodeIndex(document) {
       index.size >= MAX_NODES
     )
       throw new Error("Flow audit contains missing/duplicate or excessive canonical IDs");
-    index.set(node.id, { ...node, parentId });
+    index.set(node.id, { ...node, parentId, [ORIGINAL]: node });
   };
   if (Array.isArray(document?.nodes)) for (const node of document.nodes) add(node);
   else if (Array.isArray(document?.pages)) {
@@ -108,6 +116,103 @@ function ordinary(style, owner = false) {
   );
 }
 
+function validateTableProof(
+  proof,
+  { root, elements, document, ambiguousElements = new WeakSet() },
+  committed,
+) {
+  const index = nodeIndex(document),
+    bound = new Set(elements.values());
+  const element = (value) =>
+    htmlElement(value) &&
+    value.ownerDocument === root.ownerDocument &&
+    root.contains(value) &&
+    bound.has(value) &&
+    !ambiguousElements.has(value);
+  const node = (value) => value && index.get(value.id)?.[ORIGINAL] === value;
+  if (
+    !plain(proof) ||
+    !element(proof.tableElement) ||
+    !node(proof.tableNode) ||
+    !Array.isArray(proof.relations) ||
+    !proof.relations.length ||
+    proof.relations.length > MAX_NODES ||
+    (committed && proof.tableNode.layout !== "vertical")
+  )
+    throw new Error("Fixed-table flow proof lacks current Element/original node ownership");
+  const seen = new Set();
+  for (const relation of proof.relations) {
+    const { parentElement, childElement, parentNode, childNode, kind } = relation;
+    if (
+      !TABLE_KINDS.includes(kind) ||
+      !element(parentElement) ||
+      !element(childElement) ||
+      !proof.tableElement.contains(parentElement) ||
+      !proof.tableElement.contains(childElement) ||
+      !node(parentNode) ||
+      !node(childNode) ||
+      parentNode === childNode ||
+      !ancestor(index, parentNode.id, proof.tableNode.id) ||
+      !ancestor(index, childNode.id, parentNode.id)
+    )
+      throw new Error(
+        "Fixed-table flow proof has detached or unrelated source/canonical identities",
+      );
+    const key = `${parentNode.id}:${childNode.id}`;
+    if (seen.has(key)) throw new Error("Fixed-table flow proof repeats a relationship");
+    seen.add(key);
+    if (kind === "fixed-table-text") {
+      if (
+        parentElement !== childElement ||
+        childNode.type !== "text" ||
+        index.get(childNode.id).parentId !== parentNode.id ||
+        !Array.isArray(relation.lineBreaks) ||
+        relation.lineBreaks.length > 4000 ||
+        relation.lineBreaks.length !== parentElement.children.length ||
+        relation.lineBreaks.some(
+          (br, i) =>
+            br !== parentElement.children[i] ||
+            br.localName !== "br" ||
+            br.parentElement !== parentElement ||
+            br.childNodes.length,
+        )
+      )
+        throw new Error("Fixed-table own Text/BR proof does not match its exact current owner");
+    } else if (
+      childElement.parentElement !== parentElement ||
+      parentElement === childElement ||
+      Object.hasOwn(relation, "lineBreaks")
+    )
+      throw new Error("Fixed-table source relationship is not an exact direct Element edge");
+    if (
+      committed &&
+      (parentNode.layout !== (kind === "fixed-table-cell" ? "grid" : "vertical") ||
+        (kind !== "fixed-table-text" &&
+          childNode.layout !== (kind === "fixed-table-row" ? "grid" : "vertical")))
+    )
+      throw new Error("Fixed-table flow proof was not published after its complete layout commit");
+  }
+}
+
+/** Prepare only current live references before the promoter commits any draft. */
+export function prepareHtmlFixedTableFlowAudit(context, proof) {
+  validateTableProof(proof, context, false);
+  const prepared = Object.freeze({
+    tableElement: proof.tableElement,
+    tableNode: proof.tableNode,
+    relations: Object.freeze(
+      proof.relations.map((relation) =>
+        Object.freeze({
+          ...relation,
+          ...(relation.lineBreaks ? { lineBreaks: Object.freeze([...relation.lineBreaks]) } : {}),
+        }),
+      ),
+    ),
+  });
+  tableProofs.add(prepared);
+  return prepared;
+}
+
 /** Called only before the capture iframe closes; never binds by CSS selectors. */
 export function captureHtmlFlowObligations({
   root,
@@ -116,9 +221,17 @@ export function captureHtmlFlowObligations({
   document,
   ambiguousElements = new WeakSet(),
   syntheticIds = new Set(),
+  recoveredTables = [],
 }) {
   const view = root?.ownerDocument?.defaultView;
-  if (!view || !(elements instanceof Map) || !Array.isArray(mapping) || mapping.length > MAX_NODES)
+  if (
+    !view ||
+    !(elements instanceof Map) ||
+    !Array.isArray(mapping) ||
+    mapping.length > MAX_NODES ||
+    !Array.isArray(recoveredTables) ||
+    recoveredTables.length > 32
+  )
     throw new Error("Flow audit requires the current capture's DOM bindings");
   const index = nodeIndex(document),
     records = new Map(),
@@ -170,6 +283,24 @@ export function captureHtmlFlowObligations({
     if (ledger.source.details.length < MAX_DETAILS) ledger.source.details.push(value);
     else ledger.source.omittedDetails++;
   };
+  const tableRelations = new Map(),
+    tableTexts = new Map();
+  for (const proof of recoveredTables) {
+    try {
+      if (!tableProofs.has(proof)) throw new Error("Unprepared fixed-table proof");
+      validateTableProof(proof, { root, elements, document, ambiguousElements }, true);
+      for (const relation of proof.relations) {
+        if (relation.kind === "fixed-table-text") tableTexts.set(relation.parentElement, relation);
+        else {
+          if (!tableRelations.has(relation.parentElement))
+            tableRelations.set(relation.parentElement, new Map());
+          tableRelations.get(relation.parentElement).set(relation.childElement, relation);
+        }
+      }
+    } catch {
+      detail("unsupported", "fixed-table-proof-unverified", root);
+    }
+  }
   // A semantic ID may be referenced by container and Text for the same Element.
   // Only a collision between different actual Elements makes it ambiguous.
   for (const [semanticId, element] of elements) {
@@ -211,7 +342,7 @@ export function captureHtmlFlowObligations({
       style.display !== "none" && style.visibility === "visible" && box.width > 0 && box.height > 0
     );
   };
-  const obligation = (parent, child, kind, childId = null) => {
+  const obligation = (parent, child, kind, childId = null, exact = null) => {
     const owner = resolve(parent),
       target = childId ? { id: childId } : resolve(child);
     for (const proof of [owner, target])
@@ -219,6 +350,10 @@ export function captureHtmlFlowObligations({
         detail(proof.category, proof.reason, parent, child);
         return;
       }
+    if (exact && (owner.id !== exact.parentNode.id || target.id !== exact.childNode.id)) {
+      detail("ambiguous", "fixed-table-canonical-binding-mismatch", parent, child);
+      return;
+    }
     if (ledger.obligations.length >= MAX_NODES)
       throw new Error("Flow audit exceeds 10,000 obligations");
     if (parent !== child && owner.id === target.id) {
@@ -260,7 +395,12 @@ export function captureHtmlFlowObligations({
       detail("excluded", "replaced-leaf-internals", parent);
       return;
     }
-    const children = [...parent.children].filter(htmlElement);
+    const textProof = tableTexts.get(parent);
+    const children = [...parent.children].filter(htmlElement).filter((child) => {
+      if (!textProof?.lineBreaks.includes(child)) return true;
+      detail("excluded", "fixed-table-line-break-token", parent, child);
+      return false;
+    });
     for (const child of children) {
       record(child);
       const style = styleOf(child);
@@ -276,7 +416,10 @@ export function captureHtmlFlowObligations({
           parent,
           child,
         );
-      else if (FLEX_GRID.has(parentStyle.display)) obligation(parent, child, "flex-grid-item");
+      else if (tableRelations.get(parent)?.has(child)) {
+        const proof = tableRelations.get(parent).get(child);
+        obligation(parent, child, proof.kind, null, proof);
+      } else if (FLEX_GRID.has(parentStyle.display)) obligation(parent, child, "flex-grid-item");
       else if (BLOCK.has(parentStyle.display) && BLOCK_CHILD.has(style.display))
         obligation(parent, child, "block-item");
       else detail("unsupported", "table-inline-contents-or-other-box-flow", parent, child);
@@ -299,7 +442,8 @@ export function captureHtmlFlowObligations({
       }
       const node = index.get(owner.id);
       if (node.type === "text") return;
-      if (
+      if (textProof) obligation(parent, parent, textProof.kind, textProof.childNode.id, textProof);
+      else if (
         ordinary(parentStyle, true) &&
         BLOCK.has(parentStyle.display) &&
         !generated(view, parent) &&
@@ -379,7 +523,7 @@ export function freezeHtmlFlowObligations(value) {
             "wrapperIds",
           ].includes(key),
       ) ||
-      !["block-item", "flex-grid-item", "plain-own-text"].includes(entry.kind) ||
+      !["block-item", "flex-grid-item", "plain-own-text", ...TABLE_KINDS].includes(entry.kind) ||
       typeof entry.id !== "string" ||
       entry.id.length > 300 ||
       ids.has(entry.id) ||

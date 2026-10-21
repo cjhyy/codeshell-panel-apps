@@ -102,7 +102,7 @@ function textContent(element, browserDocument) {
 
 /** A current-capture stage; no serialized flag can activate this promotion. */
 export async function promoteHtmlFixedTables(documentValue, {
-  browserDocument, elements, sourceTree, canonicalBySource, warn,
+  browserDocument, elements, sourceTree, canonicalBySource, warn, prepareFlowAudit,
 }) {
   const sources = [];
   const collect = (source) => {
@@ -112,6 +112,7 @@ export async function promoteHtmlFixedTables(documentValue, {
   collect(sourceTree);
   const applied = [];
   for (const source of sources.slice(0, 32)) {
+    let committedAudit;
     const original = canonicalBySource.get(source);
     if (!original) {
       warn("html-table-flow-fixed", null, "固定表格缺少当前捕获的一一对应原始节点所有权；保留测量布局，未从字符串 ID 或选择器猜测绑定。");
@@ -140,7 +141,7 @@ export async function promoteHtmlFixedTables(documentValue, {
       const rows = [...element.children];
       assert(noAnonymousContent(element) && rows.length >= 1 && rows.length <= 64 && source.children?.length === rows.length, "表格需要 1–64 个直接且一致的真实行；匿名内容、分组/额外层级未验证");
       const draftDocument = structuredClone(documentValue), draftIndex = indexDocument(draftDocument), originalIndex = indexDocument(documentValue);
-      const table = draftIndex.nodes.get(original.id), texts = [], rowsDraft = [], recovered = [];
+      const table = draftIndex.nodes.get(original.id), texts = [], rowsDraft = [], recovered = [], flowRelations = [];
       Object.assign(table, { layout: "vertical", layoutSizingVertical: "hug", layoutWrap: "none", gap: 0, rowGap: 0, columnGap: 0, padding: 0, paddingTop: 0, paddingLeft: 0, paddingRight: 0, alignItems: "start", justifyContent: "start" });
       let ruleColor;
       for (let index = 0; index < rows.length; index++) {
@@ -148,6 +149,7 @@ export async function promoteHtmlFixedTables(documentValue, {
         assert(rowOriginal && rowSource.semantic?.semanticId && elements.get(rowSource.semantic.semanticId) === rowElement &&
           originalIndex.parentOf(rowOriginal) === original, "真实行及其原始父层级必须一一对应");
         const rowStyle = plainBox(rowElement, browserDocument);
+        flowRelations.push({ kind: "fixed-table-row", parentElement: element, childElement: rowElement, parentNode: original, childNode: rowOriginal });
         assert(rowStyle.display === "table-row" && rowSource.cssLayout?.display === "table-row" &&
           rowStyle.whiteSpace === "normal" &&
           unconstrainedBox(rowElement) &&
@@ -172,6 +174,7 @@ export async function promoteHtmlFixedTables(documentValue, {
           assert(cellOriginal && originalIndex.parentOf(cellOriginal) === rowOriginal && elements.get(cellSource.semantic?.semanticId) === cellElement &&
             !["colspan", "rowspan"].some((key) => ![null, "1"].includes(cellElement.getAttribute(key))), "单元格身份、父层级或跨度未验证");
           const style = plainBox(cellElement, browserDocument);
+          flowRelations.push({ kind: "fixed-table-cell", parentElement: rowElement, childElement: cellElement, parentNode: rowOriginal, childNode: cellOriginal });
           assert(style.display === "table-cell" && cellSource.cssLayout?.display === "table-cell" && style.verticalAlign === "top" &&
             cellSource.cssLayout.width === (column === 0 ? "30%" : "auto") && style.boxSizing === "content-box" && noBorders(style) &&
             sides.every((side) => pixel(style[`padding${side}`]) === (side === "Right" ? column === 0 ? 20 : 0 : ["Top", "Bottom"].includes(side) ? 10 : 0)) &&
@@ -184,6 +187,7 @@ export async function promoteHtmlFixedTables(documentValue, {
           if ([...cellElement.children].every((child) => child.tagName === "BR")) {
             assert(cell.children?.length === 1 && cell.children[0].type === "text", "普通/BR 单元必须保留唯一原始 Text 节点");
             const text = cell.children[0], content = textContent(cellElement, browserDocument), proof = typography(cellElement, text, browserDocument);
+            flowRelations.push({ kind: "fixed-table-text", parentElement: cellElement, childElement: cellElement, parentNode: cellOriginal, childNode: cellOriginal.children[0], lineBreaks: [...cellElement.children] });
             const logicalTop = cell.y + top, baseline = text.y - logicalTop;
             assert(Number.isFinite(baseline) && Math.abs(baseline) <= 100, "文字行框原点超出有界范围");
             Object.assign(text, { text: content.source, textSource: content.source, textFlow: "wrap", textFlowWidth: cell.width - cell.paddingLeft - cell.paddingRight, width: cell.width - cell.paddingLeft - cell.paddingRight, lineHeight: proof.ratio, layoutSizingHorizontal: "fill", layoutSizingVertical: "hug", layoutAlignSelf: "start", layoutBaselineOffset: round(baseline) });
@@ -216,6 +220,7 @@ export async function promoteHtmlFixedTables(documentValue, {
               const paragraphNode = canonicalBySource.get(paragraphSource);
               assert(elements.get(paragraphSource.semantic?.semanticId) === paragraph && paragraphNode?.children?.length === 1 &&
                 paragraphNode.children[0].type === "text", "真实 P 与其原始唯一 Text 必须保持一一对应");
+              flowRelations.push({ kind: "fixed-table-content", parentElement: cellElement, childElement: paragraph, parentNode: cellOriginal, childNode: paragraphNode });
               const paragraphStyle = plainBox(paragraph, browserDocument);
               assert(paragraphStyle.display === "block" && paragraph.childElementCount === 0 && noBorders(paragraphStyle) &&
                 unconstrainedBox(paragraph) &&
@@ -269,6 +274,15 @@ export async function promoteHtmlFixedTables(documentValue, {
         observations.push({ rowId: row.id, sourceWidths: row.children.map((cell) => cell.width), idealWidths: ideal, exact: row.children.every((cell, column) => cell.width === ideal[column]) });
       }
       normalizeDesignDocument(draftDocument);
+      // Report validation cannot change converter admission. Prevalidate owned
+      // references before commit; publish only after the whole table succeeds.
+      let publishAudit, auditFailure;
+      if (prepareFlowAudit) {
+        try {
+          publishAudit = prepareFlowAudit({ tableElement: element, tableNode: original, relations: flowRelations });
+          assert(typeof publishAudit === "function", "表格流审计没有返回当前捕获的发布函数");
+        } catch (error) { auditFailure = error; }
+      }
       // All measurement and admission happened on owned drafts. Commit only
       // corresponding node fields, retaining every original object/child array.
       const commit = (node) => {
@@ -277,10 +291,21 @@ export async function promoteHtmlFixedTables(documentValue, {
         Object.assign(target, fields); children?.forEach(commit);
       };
       commit(table);
+      committedAudit = { publishAudit, auditFailure };
       applied.push({ tableId: table.id, rows: rowsDraft.length, observations, recovered });
       warn("html-table-captured-state", table.id, "已按源声明恢复 fixed/collapse 透明两列表格和完整 P 层级；30%+右20 为共享原生正轨道，半边归属写入有效内缩。保留捕获时媒体状态，分数列宽差异需按原始收据核对。");
     } catch (error) {
       warn("html-table-flow-fixed", original.id, `${error.message}；整张表格保留当前测量布局，未部分提升行或文字。`);
+    }
+    // A report-only sink failure after commit must never masquerade as a
+    // conversion rollback or remove the successful table's warning recovery.
+    if (committedAudit) {
+      try {
+        if (committedAudit.auditFailure) throw committedAudit.auditFailure;
+        committedAudit.publishAudit?.();
+      } catch {
+        warn("html-flow-audit-unverified", original.id, "表格已完整恢复，但当前捕获的流审计证明未发布；保留未验证关系，未从序列化标志或字符串 ID 推断通过。");
+      }
     }
   }
   if (sources.length > 32) warn("html-table-flow-fixed", null, "固定表格规划超过每次 32 张的边界，其余保留测量布局。");

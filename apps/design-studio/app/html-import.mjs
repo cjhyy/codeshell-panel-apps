@@ -1,4 +1,4 @@
-import { captureHtmlFlowObligations } from "./html-flow-audit.mjs";
+import { captureHtmlFlowObligations, prepareHtmlFixedTableFlowAudit } from "./html-flow-audit.mjs";
 import { captureHtmlToDesign, hangingBaselineOffset, parseCssColor } from "./html-capture.mjs";
 import { captureHtmlViewportRelation } from "./html-viewport-flow.mjs";
 import { convertToDesignDSL, HTML2FIGMA_PROVENANCE } from "./vendor/html2figma-browser.mjs";
@@ -647,8 +647,13 @@ export async function captureWorkspaceHtmlResult({
       else result.report.stats.omittedWarnings += 1;
     };
     await enableHtmlTextReflow(result.document, frameDocument, elements, warn);
+    const recoveredTableFlow = [];
     const tables = await promoteHtmlFixedTables(result.document, {
       browserDocument: frameDocument, elements, sourceTree: tree, canonicalBySource, warn,
+      ...(includeFlowAudit ? { prepareFlowAudit: (proof) => {
+        const prepared = prepareHtmlFixedTableFlowAudit({ root, elements, document: result.document, ambiguousElements }, proof);
+        return () => recoveredTableFlow.push(prepared);
+      } } : {}),
     });
     if (tables.length) {
       for (const table of tables) {
@@ -667,7 +672,7 @@ export async function captureWorkspaceHtmlResult({
     if (includeFlowAudit) {
       result.report.flowObligations = captureHtmlFlowObligations({
         root, elements, ambiguousElements, mapping: result.mapping, document: result.document,
-        syntheticIds: syntheticFlowIds,
+        syntheticIds: syntheticFlowIds, recoveredTables: recoveredTableFlow,
       });
     }
     result.report = {

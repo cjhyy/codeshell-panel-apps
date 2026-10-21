@@ -492,6 +492,11 @@ relationship, and image/SVG/empty leaves need no child layout. Ambiguous identit
 unsupported inline/table/transform/other source flows remain separately reported as PARTIAL,
 so an empty issue list cannot certify complete flow coverage. The evidence is archived as
 `flow-obligations.json` and per-mode `flowAudits`, never saved as document admission metadata.
+The existing atomic fixed two-column table recovery publishes its exact live Element/original
+node relationships only after the complete table commits. This covers real rows, cells, P
+frames and their original Text; only the exact validated BR tokens become text line breaks.
+Unpromoted/AUTO tables, failed drafts or ID-only metadata cannot supply this proof. Existing
+capture factory callbacks remain the sole authority for intermediate synthetic wrappers.
 No pixel thresholds are changed. Callers may request this diagnostic with
 `captureWorkspaceHtmlResult({ ...options, includeFlowAudit: true })`; ordinary import behavior
 is unchanged when the option is absent.
