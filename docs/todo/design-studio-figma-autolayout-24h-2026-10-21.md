@@ -1901,3 +1901,44 @@ NOT_RUN，收据 SHA 5ca4d260124661f4d7ebf6cb8ec8bae9026ca58b1636917a0a6c0c8f06c
 ABS 加少24px高度的 synthetic placeholder；普通 HUG 父容器需要负 main gap，现有
 模型明确不支持。先补真正的 HUG/负 gap 原生证据，再讨论有界恢复；不以固定高度
 重叠 wrapper 冒充响应式 Auto Layout。24小时目标继续 active，截止不变。
+
+## ROUND40 · 2026-10-21 11:30 SG · 新建范围文字最终校验和普通流诊断继续推进
+
+独立 native 候选 f300894 将最终来源/作者意图保存接入新页面 factory：全部父子 AL
+尺寸结束后读取完整 SDK/REST，先暂存所有 hint，再同步复核每个 Text，最后写 metadata。
+转包省略的零 letterSpacing 使用 factory 实际写入的0证明，不改 raw 数字或拟合行高。
+空/无样式区间不获取非空 hint；显式空字符串来源仍有效，缺失/错误类型与4000单位
+上限继续拒绝。原节点的区间修改、清除、删除以及独立 HTML 插件入口仍关闭。
+
+peer 复现了额外异步风险：即使不直接给外来 child 写尺寸，await 后启用父 AL 仍会
+间接修改它。现在任何后续布局写入都校验最高已启用 AL 祖先的当前完整子树，使用
+原创建 child 引用而不是当前 children[index]。已有图层插入新页面时明确失败并保留
+该页；移到外部的 owned Text 不再写入或删除。回滚只移除当前子树全 owned 的新页，
+不覆盖外部导航和选区。真实完整字段 MOCK 覆盖两页 hint 存储中途失败、后一个 export
+改变前一个 getter1、普通/嵌套 Grid 外来图层等；Grid 间接改写复现从1次变为0。
+这些均是 VM/模拟布局检查，不是新的实机或像素验收。factory peer 收据 SHA
+852575d3e5ebd83ec5b26f1ff6d354b862c515c7f15b8a50bd83fd50f471804f。
+
+820e42d 的纯来源比较正常合入 native 候选 cacc9c1：历史和当前各自绑定自己的 REST，
+比较完整 raw snapshot，并按 Unicode scalar 解析 REST 样式，保留未知字段和 style refs。
+仅 override ID 重编号可相等，缺失历史明确要求 snapshot；未接入原节点写入。
+最终157/157相关 CPU 检查通过，3249.340666ms；typecheck、validate129（app/122）、
+三项 generated、scoped build 全部 exit0。前后 HEAD、129份文件SHA一致且 tracked clean。
+combined 收据 SHA0c23c56ae819804f4ecc90b6880da1a787dd1960f16d8825805b7b5b2a8a9ff5，
+位于外部 evidence/native-text-ranges-sdk/finalizer-combined-cacc9c1/receipt.json。
+候选仍未进入稳定 primary，源导出/作者 hint 恢复和 v4 完整 writer 实机验收未完成；
+没有把既有 NOT_RUN 改写成通过，原插件与原设计不再尝试重复改动。
+
+Features 负行 planner 4ac84d2 已独立保存并通过13项检查和 source peer；返回值始终
+blocked，没有接入转换。三宽度 source PNG 仍严格0，201条实际 callback 记录不变。
+Icon-grid 的纯 CSS Flex→CSS Grid 研究在三宽度及两个不等高 copy 控制为0，但631px
+分数宽度仍8像素/max1，负例和差异图保留。原生多行 HUG tracks/水平 Fill cells 及
+内部 flex-shrink 未证明，不能据此放宽 Grid guard。研究收据 SHA
+5a1e9b056500028af09e40dc0f84ad630c7f57d3519f2fb003fd352f78b993eb。
+
+另在新的隔离分支重新跑4个冻结真实网页×3宽度，发现 Cover 垂直普通流因 header/footer
+两个 internal auto margin 被整体降级成 manual，每宽度3个直接 flow 失败。正检查有界
+恢复为现有 space-between AL；不处理不均等 auto 边界或 endpoint auto，不升级现有
+Figma Legacy 布局。所有新主路径仍需成对像素/结构与完整检查后才集成。
+稳定产品继续1bbe0e6；本轮只同步任务记录，无 push、发布或 Host 安装。
+24小时目标继续 active，截止仍为10月22日00:31 SG。
