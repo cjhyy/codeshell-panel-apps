@@ -10768,3 +10768,5 @@ body.panel-interview-focus-active .toast {
 .interview-cloud-audio select, .interview-cloud-audio textarea { width: 100%; min-width: 0; }
 .interview-cloud-audio article { display: grid; gap: 8px; margin-top: 12px; }
 .interview-cloud-audio textarea { min-height: 110px; }
+
+.research-readable { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.75; max-height: 42rem; overflow: auto; }

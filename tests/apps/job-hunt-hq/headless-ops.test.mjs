@@ -56,16 +56,16 @@ async function snapshot(project) {
   return hydrateProjectSnapshotDocuments(root, documents);
 }
 
-test("CLI lists the four manifest operations and reading an absent project never initializes it", async t => {
+test("CLI lists the shared manifest operations and reading an absent project never initializes it", async t => {
   const project = await tempProject(t);
   const manifest = JSON.parse(await readFile(new URL("../../../apps/job-hunt-hq/.codeshell-panel/panel.json", import.meta.url), "utf8"));
   const result = (await cli(["ops"], { cwd: project })).json;
   assert.equal(result.ok, true);
-  assert.deepEqual(result.result.map(item => item.name).sort(), ["get_job_search_context", "save_candidate_context", "save_resume_draft", "save_resume_qa_answer"].sort());
+  assert.deepEqual(result.result.map(item => item.name).sort(), ["get_job_search_context", "save_candidate_context", "save_resume_draft", "save_resume_qa_answer", "save_job_opportunities", "save_job_research", "get_job_research_digest"].sort());
   for (const item of result.result) {
     const declared = manifest.agent.tools.find(tool => tool.name === item.name);
-    assert.deepEqual(item.inputSchema, declared.inputSchema);
-    assert.equal(item.readOnly, declared.readOnly);
+    assert.deepEqual(item.inputSchema, (declared || jobHuntOperations[item.name]).inputSchema);
+    assert.equal(item.readOnly, declared ? declared.readOnly : !jobHuntOperations[item.name].mutates);
   }
   const missing = await run(project, "get_job_search_context", { scope: "candidate" }, { expectedExit: 1 });
   assert.equal(missing.json.ok, false);

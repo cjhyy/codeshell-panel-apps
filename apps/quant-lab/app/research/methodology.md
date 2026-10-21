@@ -29,8 +29,8 @@ proof that a dataset is invalid or adjusted correctly.
 - Orders execute at the next bar's open with configured slippage and fees.
 - The engine is long-only and commits all available cash to each position.
 - A configured stop is checked against the current bar's low. Existing positions execute at the
-  lower of the bar open and stop level, then apply slippage; a position opened that morning uses the
-  stop level. A stopped position cannot re-enter on that same bar. Intraday ordering is therefore
+  lower of the bar open and stop level, then apply slippage. A position opened that morning is not
+  checked for a stop on its entry bar. A stopped position cannot re-enter on that same bar. Intraday ordering is therefore
   simplified.
 - Any final open position is closed at the final close.
 - The buy-and-hold benchmark begins at the first close and ignores fees.
@@ -64,7 +64,7 @@ impact, delistings, borrow, taxes, corporate actions, or order queueing.
   there are no losing trades.
 - Maximum drawdown is the worst close-equity decline from a prior close-equity peak.
 - Exposure is the fraction of bars during which the strategy held a position at any point,
-  including a same-day entry and stop; it is still only a coarse daily-bar approximation.
+  including entry and exit bars (entry-day stops are not checked); it is still only a coarse daily-bar approximation.
 - Win rate counts only closed trades; an open final position is closed at the final close first.
 
 ## Strategy spec

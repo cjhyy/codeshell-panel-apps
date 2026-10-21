@@ -16,7 +16,7 @@ test("reviewed PDF tool creates selectable Chinese A4 text without page scripts 
   const directory = await mkdtemp(join(tmpdir(), "job-hunt-pdf-"));
   let requests = 0;
   const server = createServer((_request, response) => { requests++; response.end("blocked input"); });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = `http://127.0.0.1:${server.address().port}`;
   const previous = process.env.CODESHELL_PDF_BROWSER;
   process.env.CODESHELL_PDF_BROWSER = chromium.executablePath();
