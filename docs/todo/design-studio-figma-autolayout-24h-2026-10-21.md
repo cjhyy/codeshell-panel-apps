@@ -2243,6 +2243,7 @@ Browser独立renderer已在CPU实测derived坐标/Hug/Fill污染、改文/改宽
 旋转/rounded ancestor clip命中和font/scene supersession；该工作树尚未稳定合入。
 CK仍为默认，两版都使用canonical模型，实机Figma同步继续独立验收。24小时目标active，
 截止仍2026-10-22 00:31 SG。
+
 ## Original html2figma gallery corpus checkpoint · 2026-10-21
 
 原本地仓库精确停在 ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c；只读冻结全部221份
@@ -2262,3 +2263,23 @@ source mapping、同宽重排和22个model编辑控制，不把capture成功当�
 44个Figma transfer均明确REFUSED（36字体stack证明缺失、8阴影蒙版guard），非真实
 Figma执行。Browser与CK仍待用相同canonical/bytes比较；真实native与其像素验收NOT_RUN。
 详见 [原gallery corpus](../design-studio-original-gallery-corpus.md) 与外部不可变证据。
+
+### 原始 Grid 约束独立诊断（无准入提升）
+
+在独立 `html-original-grid-20261021` 分支从 fresh origin13d591ca 正常集成稳定
+6b5f57c，134个Design Studio安装文件保持逐字节不变。原始case19的两个宽度
+各9个Grid源节点完整DOM/Typed OM/DesignNode/映射证据已冻结；部分放置、命名区域
+仅映射坐标后仍被bare-fr自动内容最小尺寸警卫拒绝。全64静态CSS约束调查找到
+6个模板中的23个Grid框，未发现仅修placement就能诚实开放的原始案例。
+
+真实Text改长反例：原始命名区域middle track增至1228.125px，零最小fr替代只保留
+308/120px；原始居中auto宽度按150px换行，max-content替代宽1894.21875px。
+同视口v2四组差异143836/34799/69154/49731像素，均为有意负控制，不能称为
+转换结果。v1 element截图溢出范围不同，原证据保留并排除同视口验收。
+
+已核验官方当前GridTrackSize及Figma-owned typings dff4874：FLEX/FIXED/HUG和
+numeric value并不单独证明CSS自动min-content行为。既有实际289e088a fixed500
+溢出控制只支持原有狭窄合同；本轮真实native执行NOT_RUN。没有放宽bare-fr警卫、
+回填固定min-width、增加ABS或宣称Browser/CK像素通过。详见
+[原始Grid约束记录](design-studio-original-grid-contract-2026-10-21.md)。54项证据pin
+handoff v2 SHAa3fe910df3aef099b03e7d137234685936acee282be1e471ac5bc450a7291ea0。
