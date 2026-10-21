@@ -2078,6 +2078,53 @@ browserGpuDisabled:true；结果仍分别0/0/54000、0/0/54000、0/0/21480、
 已在peer确认所有进程/读取结束后清理已合入的gutter与f61 baseline工作树和task-owned
 依赖软链接；外部证据、main内提交和未完成的其他候选均保留。
 
+## Native Text source-import isolated candidate · 2026-10-21
+
+在新隔离分支接入只读完整 SDK capture 与外层 supplemental source table；官方 REST
+保持原样。独立 SDK→canonical PERCENT/PIXELS 投影不恢复作者度量，完整 catalog、
+256KiB 节点 proof、64KiB hint/100000 字节插件存储与整个16MiB UTF8 信封继续有界。
+源索引拒绝内容或位置冲突，最终无 await 的 SDK/identity/topology/preview 原因复查
+位于所有图片/PNG/SVG 导出之后；只证明被观察字段相对初始 REST 的新鲜度。
+
+恢复仅限完整同一度量下的颜色/链接意图；坏 hint 保留独立当前意图。只有 Text 自身
+mixed-fill 原因可绕过已有预览，mask、祖先预览和不支持 paint 不变。原图预览保留。
+普通 HUG Grid 的有界 paint/link Text 控制保留真实 Fill/Hug 与内容增长；不完整来源
+和段落变体仍拒绝。空白源按实际 NBSP/CR/LF/emoji 码元测试，空源与缺失源区分。
+
+最初156项121pass/35fail与冻结旧 native 代码137项116pass/21fail日志均保留。
+21项继承失败来自旧 VM mock 缺少 root parent 和真实来源关系；另14项为新增严格
+owned-data/source proof 发现的 mock realm/ID 问题。只修正 mock 行为后旧137项全过，
+未放宽产品 guard。早期 double-escaped NBSP/CRLF 误称覆盖已更正并保留原收据。
+详细范围、失败原因和限制见 [native Text source-import](../design-studio-native-text-source-import.md)。
+所有本轮执行为 CPU/VM；真实 production native 执行 **NOT_RUN**，没有像素通过声明。
+
+该候选 v2 全 main catalog 默认文件并发执行817项816pass/0fail/1skip，仍未据此
+认定路径安全：后续固定重放与独立 peer 实证 initial SDK mask/effect/blend 可已与
+初次 REST 不同，之后保持不变；选中 Text 的真实祖先未包含在 REST 时也有同样问题。
+保留6条 peer 复现与原通过日志，v3 增加仅供内部使用的 initial/final context 准入。
+完整独立可编辑 proof 真正会取消 Text 自身 mixed 预览时，实际 Text 与 Scene 祖先
+还须无独立 mask、可见 stroke/effect 或不支持 blend/paint/子 mask 原因；否则明确
+拒绝导出，不让 public supplemental 标志产生权限。PAGE/DOCUMENT 不虚构 paint字段。
+8个生产 VM own/omitted-ancestor 负例、late race、祖先 mask sibling、不支持 paint和
+安全纯色祖先控制均保存；真实 native 与像素验收继续 NOT_RUN。
+
+v3 固定显式 sequential main820项819pass/0fail/1skip，226091.4595ms；真实前后131份
+package、全部 main test/helper/catalog SHA与HEAD均未变化。v4再收紧一个已知拓扑边界：
+PAGE虽无 Scene paint字段，实际 mask sibling 不能在 paint skip时丢弃。纯 helper与
+生产 VM 的 direct-Page选中文字成对控制为安全页面保留source/预览、有mask则拒绝，
+导出没有原生写入。v4受影响固定检查与独立审查后再交付，不把v3通过移作v4完整验收。
+
+v4与稳定Cover/gutter正常合并为77c410d，native来源模块逐字节保留；426项受影响检查
+与固定顺序main831项830pass/0fail/1skip通过，前后132份package/95个main文件SHA不变。
+候选UI103/104中唯一失败为依赖目录缺少开发用canvaskit-wasm，原失败证据保留，不能
+记作UI通过。随后合成measurer复现共享range.fill被改为红色后仍返回成功；原source、
+精确度量与LF未变，说明重新导入source不等于验证当前range未丢失。保留该失败与浅拷贝
+delete未影响真node的独立非失败控制；新增测量前不可变意图快照与normalize前/后复核，
+拒绝颜色/链接/装饰/删除/poisoned payload/度量漂移，hint恢复的显式no-op范围也必须保留。
+四个实际留存来源的度量原先仅投影/保存重开；另加四例CPU mock换行，不能称真实SDK或
+浏览器字形测量。真实native执行和像素验收仍NOT_RUN。
+
+
 
 ## ROUND45 · 完整 CSS 字体列表、资源回退与两版渲染新方向 · 2026-10-21 14:50 SG
 

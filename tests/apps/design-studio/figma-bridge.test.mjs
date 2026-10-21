@@ -750,6 +750,7 @@ function pluginHarness({
     removed = [];
   let serial = 0,
     nodeCreations = 0;
+  let toRuntime = clone;
   function node(type, id = `plugin:${++serial}`) {
     let fontName;
     const value = {
@@ -806,11 +807,11 @@ function pluginHarness({
       },
       async exportAsync(settings) {
         calls.push(["export", id, settings.format]);
-        return {
-          document: type === "PAGE" ? canvas([rect()], { id }) : rect(id),
-          components: {},
-          styles: {},
-        };
+        const rawNode = current => current.type === "PAGE"
+          ? canvas(current.children.map(rawNode), { id: current.id })
+          : { ...rect(current.id), type: current.type,
+            ...(current.children.length ? { children: current.children.map(rawNode) } : {}) };
+        return toRuntime({ document: rawNode(value), components: {}, styles: {} });
       },
     };
     if (nativeGrid) {
@@ -1130,7 +1131,8 @@ function pluginHarness({
   existing.appendChild(originalNode);
   const figma = {
     currentPage: existing,
-    root: { children: pages },
+    mixed: Symbol("test native mixed"),
+    root: { id: "0:0", type: "DOCUMENT", children: pages },
     viewport: {
       scrollAndZoomIntoView(nodes) {
         calls.push(["viewport", nodes.length]);
@@ -1145,6 +1147,7 @@ function pluginHarness({
     createPage() {
       const page = node("PAGE");
       pages.push(page);
+      page.parent = figma.root;
       return page;
     },
     async setCurrentPageAsync(page) {
@@ -1169,7 +1172,11 @@ function pluginHarness({
       figma.currentPage.appendChild(created);
       return created;
     };
-  vm.runInNewContext(pluginCode, { figma, __html__: "local UI" });
+  existing.parent = figma.root;
+  const context = vm.createContext({ figma, __html__: "local UI" });
+  const parseRuntime = vm.runInContext("JSON.parse", context);
+  toRuntime = value => parseRuntime(JSON.stringify(value));
+  vm.runInContext(pluginCode, context);
   return {
     figma,
     existing,
@@ -1178,6 +1185,7 @@ function pluginHarness({
     messages,
     calls,
     removed,
+    jsonRest: value => toRuntime(value),
     send: (message) => figma.ui.onmessage(message),
   };
 }
@@ -1623,7 +1631,7 @@ test("native Grid export reads live track and child semantics even when JSON_RES
       : {}),
     ...(node.type === "FRAME" ? { children: node.children.map(rawNode) } : {}),
   });
-  created.exportAsync = async () => ({ document: rawNode(created) });
+  created.exportAsync = async () => harness.jsonRest({ document: rawNode(created) });
   harness.figma.currentPage.selection = [created];
   await harness.send({ type: "export-json", scope: "selection" });
   assert.equal(harness.messages.at(-1).type, "exported", JSON.stringify(harness.messages.at(-1)));

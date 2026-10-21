@@ -527,7 +527,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       (candidate.textFlow !== undefined && candidate.textFlow !== "wrap") ||
       (candidate.textOverflow !== undefined && candidate.textOverflow !== "ellipsis") ||
       (candidate.textFlow === "wrap" &&
-        (typeof candidate.textSource !== "string" || !candidate.textSource.trim())) ||
+        (typeof candidate.textSource !== "string" || candidate.textSource.length === 0)) ||
       (candidate.textOverflow === "ellipsis" &&
         (typeof candidate.textSource !== "string" || !candidate.textSource.trim())) ||
       (candidate.textFlowWidth !== undefined &&
