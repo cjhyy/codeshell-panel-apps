@@ -133,6 +133,8 @@ export const suites = [
         "tests/apps/design-studio/prototype.test.mjs",
         "tests/apps/design-studio/prototype-ui.test.mjs",
         "tests/apps/design-studio/design-node-adapter.test.mjs",
+        "tests/apps/design-studio/html-image-border-box.test.mjs",
+        "tests/apps/design-studio/image-dimensions.test.mjs",
         "tests/apps/design-studio/html-grid.test.mjs",
         "tests/apps/design-studio/grid-intrinsic-height.test.mjs",
         "tests/apps/design-studio/grid-text-intrinsic-height.test.mjs",

@@ -37,7 +37,7 @@ const rect = (id = "1:2", properties = {}) => ({
 });
 const page = (children) => ({ id: "0:1", type: "CANVAS", name: "Home", children });
 
-function harness(source = page([rect()]), { nativeTextLayout = false, nativeStrokes = false, nativeTextRanges = false } = {}) {
+function harness(source = page([rect()]), { nativeTextLayout = false, nativeStrokes = false, nativeTextRanges = false, nativeImageLayout = false } = {}) {
   const all = new Map(),
     messages = [],
     fonts = new Set(),
@@ -175,6 +175,24 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
         Object.defineProperty(node, "lineHeight", { enumerable: true, get: () => advance,
           set: value => { advance = value; refresh(); } });
       }
+    }
+    if (nativeImageLayout && ["RECTANGLE", "FRAME"].includes(node.type)) {
+      for (const [axis, size, edges] of [["Horizontal", "width", ["Left", "Right"]], ["Vertical", "height", ["Top", "Bottom"]]]) {
+        let mode = "FIXED";
+        Object.defineProperty(node, `layoutSizing${axis}`, { get: () => mode, set: (value) => {
+          mode = value;
+          if (value === "FILL" && node.parent?.layoutMode !== "NONE") {
+            const parent = node.parent;
+            node[size] = parent[size] - edges.reduce((sum, edge) => sum + (parent[`padding${edge}`] ?? 0) +
+              (parent.strokesIncludedInLayout && parent.strokeAlign === "INSIDE" ? parent[`stroke${edge}Weight`] ?? parent.strokeWeight ?? 0 : 0), 0);
+          }
+        } });
+      }
+      let align = "INHERIT";
+      Object.defineProperty(node, "layoutAlign", { get: () => align, set: value => {
+        align = value;
+        if (value === "STRETCH") node[`layoutSizing${node.parent.layoutMode === "VERTICAL" ? "Horizontal" : "Vertical"}`] = "FILL";
+      } });
     }
     let name = raw.name;
     if (raw.absoluteBoundingBox) node.absoluteBoundingBox = clone(raw.absoluteBoundingBox);
@@ -2772,4 +2790,103 @@ test("sparse or undeclared CSS shadow intent cannot bypass current native mask p
     }
     assert.equal(JSON.stringify(runtime.snapshot(runtime.figma.currentPage)), before);
   }
+});
+
+function imageBoxTransfer(width = 32) {
+  const transfer = fontTransfer([]);
+  const common = { x: 0, y: 0, rotation: 0, opacity: 1, fill: 'transparent', stroke: 'transparent', strokeWidth: 0, cornerRadius: 0, visible: true, locked: false };
+  transfer.assets = { 'original-image': { mime: 'image/png', base64: PNG } };
+  transfer.pages[0].children = [{ ...common, id: 'original-img', type: 'frame', name: 'img', width, height: 32,
+    layout: 'vertical', layoutSizingHorizontal: 'fixed', layoutSizingVertical: 'fixed', gap: 0, padding: 1,
+    alignItems: 'stretch', justifyContent: 'start', stroke: '#ffffff', strokeWidth: 1, strokeAlign: 'inside',
+    children: [{ ...common, id: 'original-img-image-content', name: 'content', type: 'image', x: 1, y: 1,
+      width: 30, height: 30, imageRef: 'original-image', objectFit: 'fill', layoutSizingHorizontal: 'fill', layoutSizingVertical: 'fill' }] }];
+  return transfer;
+}
+
+test('editable image border Frame creates real inset Fill image with included native stroke', async () => {
+  const runtime = harness(undefined, { nativeStrokes: true, nativeImageLayout: true });
+  await runtime.send({ type: 'import-transfer', content: JSON.stringify(imageBoxTransfer()) });
+  assert.equal(runtime.messages.at(-1).type, 'imported', JSON.stringify(runtime.messages.at(-1)));
+  const outer = [...runtime.all.values()].find(node => node.getPluginData('codeshellNodeId') === 'original-img');
+  const inner = outer.children[0];
+  assert.equal(outer.layoutMode, 'VERTICAL'); assert.equal(outer.strokesIncludedInLayout, true);
+  assert.equal(outer.paddingLeft, 0); assert.equal(outer.strokeLeftWeight, 1);
+  assert.equal(inner.width, 30); assert.equal(inner.height, 30);
+  assert.equal(inner.layoutSizingHorizontal, 'FILL'); assert.equal(inner.layoutSizingVertical, 'FILL');
+  assert.equal(inner.fills[0].scaleMode, 'FILL'); assert.equal(inner.layoutPositioning, 'AUTO');
+  assert.equal(runtime.images.size, 1);
+});
+
+test('native image fill rejects early unequal aspect and rolls back stale Fill boxes after parent layout', async () => {
+  const early = imageBoxTransfer(); early.pages[0].children[0].children[0].width = 29;
+  const rejected = harness(); const before = rejected.figma.root.children.map(rejected.snapshot);
+  await rejected.send({ type: 'import-transfer', content: JSON.stringify(early) });
+  assert.equal(rejected.messages.at(-1).type, 'error'); assert.match(rejected.messages.at(-1).message, /宽高比/u);
+  assert.deepEqual(rejected.figma.root.children.map(rejected.snapshot), before);
+  assert.deepEqual(rejected.calls, []);
+  const stale = harness(undefined, { nativeStrokes: true, nativeImageLayout: true });
+  const original = stale.figma.root.children.map(stale.snapshot);
+  await stale.send({ type: 'import-transfer', content: JSON.stringify(imageBoxTransfer(62)) });
+  assert.equal(stale.messages.at(-1).type, 'error'); assert.match(stale.messages.at(-1).message, /宽高比/u);
+  assert.deepEqual(stale.figma.root.children.map(stale.snapshot), original);
+  assert([...stale.all.values()].some(node => node.type === 'PAGE' && node.removed), 'only newly owned page was removed');
+  for (const fit of ['cover', 'contain']) {
+    const allowed = imageBoxTransfer(62); allowed.pages[0].children[0].children[0].objectFit = fit;
+    const control = harness(undefined, { nativeStrokes: true, nativeImageLayout: true });
+    await control.send({ type: 'import-transfer', content: JSON.stringify(allowed) });
+    assert.equal(control.messages.at(-1).type, 'imported');
+  }
+});
+
+test('existing SVG/WebP UI conversion retains fill intent and native preflight validates converted PNG bytes', async (t) => {
+  const { chromium } = await import('playwright');
+  const { portableFixture } = await import('./fixtures/figma-plugin-v3.mjs');
+  const { preparePluginFile } = await import('../../../apps/design-studio/app/figma-plugin/v3-input.mjs');
+  const { imageByteDimensions } = await import('../../../apps/design-studio/app/image-dimensions.mjs');
+  const browser = await chromium.launch({ args: ['--disable-gpu'] }); t.after(() => browser.close());
+  const ui = await readFile(new URL('../../../apps/design-studio/app/figma-plugin/ui.html', import.meta.url), 'utf8');
+  const html = '<!doctype html><iframe id="plugin" src="/ui.html" style="width:800px;height:950px"></iframe><script>addEventListener("message",async e=>{if(!e.data?.pluginMessage)return;const reply=await runNativeImport(e.data.pluginMessage);document.querySelector("iframe").contentWindow.postMessage({pluginMessage:reply},"*")})</script>';
+  const context = await browser.newContext();
+  const external = []; await context.route('**/*', route => {
+    const url = route.request().url();
+    if (url === 'https://fill-conversion.test/') return route.fulfill({ contentType: 'text/html', body: html });
+    if (url === 'https://fill-conversion.test/ui.html') return route.fulfill({ contentType: 'text/html', body: ui });
+    external.push(url); return route.abort();
+  });
+  const page = await context.newPage(); let current, forwarded;
+  await page.exposeFunction('runNativeImport', async message => {
+    forwarded = JSON.parse(message.content); await current.send(message); return current.messages.at(-1);
+  });
+  await page.goto('https://fill-conversion.test/');
+  await page.frameLocator('#plugin').locator('#paste-transfer-details > summary').click();
+  const webp = await page.evaluate(() => { const c=document.createElement('canvas');c.width=c.height=30;return c.toDataURL('image/webp').split(',')[1]; });
+  for (const [mime, base64] of [
+    ['image/svg+xml', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30"><rect width="30" height="30" fill="#123456"/></svg>').toString('base64')],
+    ['image/webp', webp],
+  ]) {
+    const portable = await portableFixture({ imageMime: mime, imageBase64: base64 });
+    const image = portable.document.pages[1].children[1]; image.objectFit = 'fill'; image.width = image.height = 100;
+    const prepared = await preparePluginFile(JSON.stringify(portable));
+    assert(prepared.warnings.some(warning => /PNG 后校验/u.test(warning)));
+    assert.equal(prepared.transfer.assets.photo.base64, base64, 'bridge keeps exact original bytes');
+    const unconverted = harness(); const before = unconverted.figma.root.children.map(unconverted.snapshot);
+    await unconverted.send({ type: 'import-transfer', content: JSON.stringify(prepared.transfer) });
+    assert.equal(unconverted.messages.at(-1).type, 'error'); assert.match(unconverted.messages.at(-1).message, /PNG、JPEG 或 GIF/u);
+    assert.deepEqual(unconverted.figma.root.children.map(unconverted.snapshot), before); assert.deepEqual(unconverted.calls, []);
+    current = harness(); forwarded = undefined;
+    const frame = page.frameLocator('#plugin');
+    await frame.locator('#paste-json').fill(JSON.stringify(portable)); await frame.locator('#load-pasted-json').click();
+    await frame.locator('body[aria-busy="false"]').waitFor();
+    assert.match(await frame.locator('#status').textContent(), /PNG 后校验/u);
+    await frame.locator('#import').click();
+    await frame.locator('body[aria-busy="false"]').waitFor();
+    assert.match(await frame.locator('#status').textContent(), /已新增/u);
+    assert.equal(forwarded.assets.photo.mime, 'image/png');
+    const converted = new Uint8Array(Buffer.from(forwarded.assets.photo.base64, 'base64'));
+    assert.deepEqual(imageByteDimensions(converted), { width: 30, height: 30 });
+    assert.equal(forwarded.pages[1].children[1].objectFit, 'fill');
+    assert.equal(current.messages.at(-1).type, 'imported');
+  }
+  assert.deepEqual(external, []);
 });

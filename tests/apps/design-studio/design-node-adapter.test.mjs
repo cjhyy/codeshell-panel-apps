@@ -647,7 +647,7 @@ test("cycles, unsupported nodes, excessive nesting and text limits fail clearly 
 });
 
 test("real Chromium HTML → pinned original DesignNode → v3 retains nested positions, text, local PNG and SVG", async (t) => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({ args: ["--disable-gpu"] });
   t.after(() => browser.close());
   const page = await browser.newPage();
   const runtime = await readFile(
