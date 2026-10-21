@@ -17,6 +17,9 @@ test("CPU public edit_text/update_node are atomic and preserve ranges through ro
   const doc=plainFixture(),frame=doc.pages[0].children[0],text=frame.children[0],source="Alpha link beta.\n\nBlank space \u00a0";
   Object.assign(frame,{layout:"vertical",width:320,height:220,padding:16,alignItems:"start"});
   Object.assign(text,{text:source,textSource:source,textFlow:"wrap",fontSize:20,lineHeight:1.25,layoutSizingHorizontal:"fill",layoutSizingVertical:"hug",textRanges:{version:1,sourceSignature:textRangeSourceSignature(source),ranges:[{start:6,end:10,fill:"#1a65a6",href:"#"}]}});
+  const hug={...text,id:"hug-rich",text:"AB",width:20,height:25,minWidth:12,layoutSizingHorizontal:"hug",textRanges:{version:1,sourceSignature:textRangeSourceSignature("AB"),ranges:[{start:0,end:2,fill:"#ff0000"}]}};
+  delete hug.textSource;delete hug.textFlow;frame.children.push(hug);
+  const plainHug={...hug,id:"hug-plain"};delete plainHug.textRanges;frame.children.push(plainHug);
   const files=new Map([[path,serializeDesignDocument(normalizeDesignDocument(doc))]]),records=new Map(),errors=[];
   page.on("pageerror",e=>errors.push(e.message));
   await context.route("**/*",async route=>{
@@ -77,5 +80,17 @@ test("CPU public edit_text/update_node are atomic and preserve ranges through ro
   await page.reload();await loaded();
   saved=normalizeDesignDocument(JSON.parse(files.get(path))).nodes.find(n=>n.id===text.id);
   assert.equal(saved.textSource,"Plain\n\n \u00a0");assert.equal(saved.textRanges,undefined);
+  await tool("use_design",{expected_state_revision:(await tool("get_design_metadata")).stateRevision,operations:[{op:"edit_text",node_id:hug.id,start:2,end:2,text:"CDEFGHIJ",affinity:"before",expectedSourceSignature:hug.textRanges.sourceSignature}]});
+  let savedHug=normalizeDesignDocument(JSON.parse(files.get(path))).nodes.find(n=>n.id===hug.id);
+  assert.equal(savedHug.textSource,"ABCDEFGHIJ");assert(savedHug.width>20);const hugWidth=savedHug.width;
+  await page.reload();await loaded();
+  savedHug=normalizeDesignDocument(JSON.parse(files.get(path))).nodes.find(n=>n.id===hug.id);
+  assert.equal(savedHug.width,hugWidth);assert.equal(savedHug.textSource,"ABCDEFGHIJ");
+  await tool("use_design",{expected_state_revision:(await tool("get_design_metadata")).stateRevision,operations:[{op:"edit_text",node_id:hug.id,start:0,end:10,text:"",affinity:"none",expectedSourceSignature:savedHug.textRanges.sourceSignature}]});
+  savedHug=normalizeDesignDocument(JSON.parse(files.get(path))).nodes.find(n=>n.id===hug.id);
+  assert.equal(savedHug.width,12);assert.equal(savedHug.height,25);assert.equal(savedHug.textSource,"");assert.equal(savedHug.textRanges,undefined);
+  await tool("use_design",{expected_state_revision:(await tool("get_design_metadata")).stateRevision,operations:[{op:"edit_text",node_id:plainHug.id,start:2,end:2,text:"CDEFGHIJ",affinity:"none",expectedSourceSignature:textRangeSourceSignature("AB")}]});
+  const savedPlainHug=normalizeDesignDocument(JSON.parse(files.get(path))).nodes.find(n=>n.id===plainHug.id);
+  assert.equal(savedPlainHug.textSource,"ABCDEFGHIJ");assert(savedPlainHug.width>20);assert.equal(savedPlainHug.textRanges,undefined);
   assert.deepEqual(errors,[]);
 });
