@@ -488,6 +488,13 @@ for (const action of ["edit", "new-document"])
       const start = app.indexOf("function captureImportRollback()");
       const end = app.indexOf("async function importHtmlFromWorkspace(", start);
       assert.ok(start >= 0 && end > start);
+      const rendererResets = [];
+      const renderer = (mode) => ({
+        update: async (update) => {
+          rendererResets.push({ mode, ...structuredClone(update) });
+          return { active: false };
+        },
+      });
       const state = {
         design: { name: "Before", nodes: [{ id: "old" }], pages: [] },
         workspaceEpoch: 1,
@@ -537,7 +544,8 @@ for (const action of ["edit", "new-document"])
         renderAll() {},
         queueRecovery() {},
         requestAnimationFrame() {},
-        gpuRenderer: { update: async () => ({ active: false }) },
+        gpuRenderer: renderer("gpu"),
+        browserRenderer: renderer("browser"),
         elements: { path: { value: designPath } },
       };
       state.serializeDesign = () => JSON.stringify(state.design);
@@ -589,6 +597,11 @@ for (const action of ["edit", "new-document"])
       assert.deepEqual(state.history, newer.history);
       assert.equal(state.selectedId, newer.selectedId);
       assert.equal(state.resourceDataUrls.has("newer-resource"), true);
+      assert.deepEqual(rendererResets.map((reset) => reset.mode), noOp ? [] : ["gpu", "browser"]);
+      for (const reset of rendererResets) {
+        assert.equal(reset.design, null);
+        assert.equal(reset.suspended, true);
+      }
     });
   }
 
