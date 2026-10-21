@@ -95,3 +95,89 @@ Browser, Bridge and standalone generation checks, scoped panel build check,
 Prettier for the new regression file and `git diff --check` also pass. The changed
 viewport helper ships as an existing native app ES module; no embedded generated
 runtime changes are required, and all committed generated outputs verify intact.
+
+## Follow-up: reserved stable gutters
+
+The results above describe the original no-gutter implementation. This follow-up
+starts from reviewed `f61a8890641df6eb34a944ab93a85d99adbb85fd` and retains those
+earlier failures. A separate 32-capture CPU browser inventory distinguishes the
+document's reserved gutter from a visible classic scrollbar. With Chromium's
+hidden scrollbar mode, `clientWidth` remains640 while the actual HTML box and
+scrollable width are625; `stable both-edges` produces a610px box at x15.
+At400px the corresponding widths are385 and370. The previous implementation
+kept body/main roots Fixed and missed this space when HTML itself was selected:
+its same-width relayout expanded625 to640, differing by9300 pixels.
+
+The capture now corroborates `stable` or `stable both-edges` from the current
+standards document scroller, finite exact scroll/client/box measurements, zero
+offsets and no horizontal overflow. Actual root margins are accounted for in
+the scrollable width. Only a normal LTR block with auto/100% width, no min/max
+width restriction, no unsafe containing space/canvas effect and no custom
+nonzero scrollbar width qualifies. The reserved space must lie on the inline
+end edge or be exactly symmetric. It becomes existing viewport padding; the
+captured real root remains horizontal Fill. There is no new model property,
+absolute positioning, scrollbar widget, inferred15px constant or pixel tolerance.
+
+Computed Typed OM alone is insufficient: authored2vw is returned as a px value.
+A bounded read-only CSSOM pass also checks matching box declarations. Relative
+spacing or border widths, variable physical/logical dimensions or offsets, unresolved inset/
+overflow/border shorthand substitutions and grouped/conditional box rules retain
+a diagnostic instead of becoming fixed ancestor insets. The
+scan caps64 stylesheets,10000 rules,16 nested groups,1024 declarations per rule
+and8192 selector characters; unreadable or unsupported CSSOM refuses the proof.
+This is a conservative capture boundary, not a complete CSS cascade or breakpoint
+engine. In particular, an authored box longhand that CSSOM enumerates but
+serializes as empty is unresolved, rather than absent: pending physical/logical
+border substitutions can hide their variable expression this way. The proof
+rejects that representation without depending on a list of shorthand names.
+[CSS Overflow gutter rules](https://drafts.csswg.org/css-overflow-3/#scrollbar-gutter-property)
+and [Typed OM units](https://www.w3.org/TR/css-typed-om-1/#numeric-objects) are the
+primary references; the exact observed geometry remains in the local evidence.
+
+Twelve boxed production fixtures cover HTML/body/main selection, one/both-edge
+gutters and fixed HTML/body margins and padding. Their initial, same-width and
+outer-only narrow comparisons are all strictly0 changed pixels/max0. The tests
+independently measure each selected DOM root, assert exact saved rectangles,
+real viewport padding and Fill transfer fields, and preserve save/reopen plus
+layout reflow. Custom gutters, real visible16px classic scrollbars, root width
+constraints, relative/variable/conditional insets, clipping, scroll offsets,
+quirks and horizontal overflow remain negative controls. The10 focused tests
+pass; prior failed candidate runs and their explanations are retained outside
+the repository, including the extra root-margin accounting correction.
+
+Evidence lives under the task-owned `design-studio-stable-gutter-20261021/evidence/`
+directory: baseline DOM inventory, paired production source/converted/difference
+PNGs, SVG, canonical/portable/transfer JSON and scoped logs. CPU browser and
+transfer preparation are distinct from real Figma execution, which is NOT_RUN
+for this change. Existing new-page VERTICAL/padding/FILL setters require no new
+native API. Final peer review at75845a7 verified114 negative DOM refusals,
+12 fixed-border admissions,36 strict-zero positive comparisons and byte-identical
+source references. Four unsupported production counterexamples still differ by
+54000/54000/21480/15640 pixels after narrowing and explicitly report
+`viewport-flow-fixed`; they remain failures. The fixed8px border control is
+0/0/0. Earlier erroneous variable and relative-border admissions remain in the
+external versioned receipts rather than being overwritten.
+
+The normal integration at8e50633 includes fresh origin13d591c, whose unrelated
+Job/Quant changes leave all123 Design Studio package files and its main/UI
+catalog commands unchanged. ROUND44 main720 (719pass,1skip) and UI107 (106pass,
+1skip) pass with no failures; complete source/HEAD/helper freeze checks, static
+validation and generated-output checks pass. The combined receipt SHA is
+`b1853696d2a041b383cf8540d33dc40da06de8283382807e0ac7f1d04912fa68`.
+
+The boxed evidence commands explicitly import the pinned CPU preload. Their
+original helper report field `browserGpuDisabled:false` reflects the omitted
+`cpuOnly` option, while that preload appends`--disable-gpu` to launch arguments.
+The additive`cpu-mode-metadata-clarification-v1.json` records this distinction
+and exact invocation/preload pins; original reports and PNGs are unchanged.
+
+The independent peer's four production calls, in contrast, used plain Node
+without either `cpuOnly` or that preload; its original reports correctly say
+`browserGpuDisabled:false`. Earlier blanket CPU wording for those peer calls
+is withdrawn in`execution-mode-clarification.json` (SHA
+`b515f4ddfe29ebec984902d1c943bc7ca7aa06a6a091ee4d1208a5f4ffd6d6b6`).
+Root subsequently reran the four production negatives plus the fixed8px control
+at stable1e3f346 with explicit`cpuOnly:true`: their exact pixel counts and warning
+behavior match the retained originals. Receipt SHA
+`41c602a564adf444a3e7c01f3a509cb75f205120cf45ad1d406332e5e240dbc8`.
+Independent PNG decode/byte checks did not launch a browser and remain valid.

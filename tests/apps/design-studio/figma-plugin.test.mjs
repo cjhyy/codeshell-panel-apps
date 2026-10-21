@@ -3227,3 +3227,40 @@ test("production direct-Page selected Text keeps safe source but refuses an obse
     assert.equal(page.selection[0], text); assert.equal(runtime.figma.root.children.length, pages);
   }
 });
+
+test("new vertical distributed auto-margin transfers keep the existing native space-between setters", async () => {
+  // VM setter/ownership coverage only; this does not simulate native gap math.
+  for (const height of [300, 190, 140]) {
+    const source = page([{
+      id: "2:1", type: "FRAME", name: "Distributed column", layoutMode: "VERTICAL",
+      primaryAxisAlignItems: "SPACE_BETWEEN", counterAxisAlignItems: "MIN",
+      layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED", itemSpacing: 0,
+      paddingTop: 20, paddingRight: 20, paddingBottom: 20, paddingLeft: 20,
+      absoluteBoundingBox: { x: 0, y: 0, width: 640, height },
+      children: [40, 50, 60].map((extent, index) => ({
+        id: "2:" + (index + 2), type: "FRAME", name: "Hug child " + index,
+        layoutMode: "VERTICAL", layoutSizingHorizontal: "FILL", layoutSizingVertical: "HUG",
+        primaryAxisSizingMode: "AUTO", counterAxisSizingMode: "FIXED",
+        primaryAxisAlignItems: "MIN", counterAxisAlignItems: "MIN", itemSpacing: 0,
+        absoluteBoundingBox: { x: 20, y: 20 + index * 70, width: 600, height: extent },
+        children: [rect("3:" + index, {
+          name: "Fixed content " + index, layoutSizingHorizontal: "FILL",
+          absoluteBoundingBox: { x: 20, y: 20 + index * 70, width: 600, height: extent },
+        })],
+      })),
+    }]);
+    const imported = importFigmaJson(source), transfer = createFigmaTransfer(imported.document);
+    const runtime = harness(source), original = runtime.figma.root.children[0];
+    const before = runtime.snapshot(original);
+    await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+    assert.equal(runtime.messages.at(-1).type, "imported");
+    assert.deepEqual(runtime.snapshot(original), before);
+    const created = runtime.figma.currentPage.children[0];
+    assert.equal(created.layoutMode, "VERTICAL");
+    assert.equal(created.primaryAxisAlignItems, "SPACE_BETWEEN");
+    assert.equal(created.itemSpacing, 0);
+    assert.deepEqual(created.children.map(node => node.name), ["Hug child 0", "Hug child 1", "Hug child 2"]);
+    assert(created.children.every(node => node.layoutSizingHorizontal === "FILL" &&
+      node.layoutSizingVertical === "HUG" && node.layoutPositioning !== "ABSOLUTE"));
+  }
+});

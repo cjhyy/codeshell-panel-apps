@@ -14,6 +14,7 @@
     "apps/design-studio/app/font-css.mjs",
     "apps/design-studio/app/geometry.mjs",
     "apps/design-studio/app/grid.mjs",
+    "apps/design-studio/app/html-auto-margin-distribution.mjs",
     "apps/design-studio/app/html-block-flow.mjs",
     "apps/design-studio/app/html-block-insets.mjs",
     "apps/design-studio/app/html-capture-links.mjs",
@@ -83,13 +84,13 @@
     },
     {
       "path": "code.js",
-      "bytes": 231893,
-      "sha256": "2db87e277a2b842434aa2ab0a9a112dff0924706272a3b0bb6abbab1f1c63d84"
+      "bytes": 232100,
+      "sha256": "7141e4bfd08aeff174dacfe1466ad2f19bb41eac61578de1cc7153cb66eadedc"
     },
     {
       "path": "ui.html",
-      "bytes": 369677,
-      "sha256": "e0f0ce68d668312a6337743edd775d043788bef2d4acf9f99ce87b9de75b78bb"
+      "bytes": 369884,
+      "sha256": "cd48f588d56df82f7c3494337229be9612934ed9676d2a179ff3059e4f267608"
     },
     {
       "path": "README.md",

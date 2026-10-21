@@ -1943,7 +1943,7 @@ Figma Legacy 布局。所有新主路径仍需成对像素/结构与完整检查
 稳定产品继续1bbe0e6；本轮只同步任务记录，无 push、发布或 Host 安装。
 24小时目标继续 active，截止仍为10月22日00:31 SG。
 
-## ROUND41–42 · 2026-10-21 12:14 SG · 重叠 Figma 来源拒绝歧义，完整回归通过
+## ROUND41–42 · 2026-10-21 12:10 SG · 重叠 Figma 来源拒绝歧义，完整回归通过
 
 8ad6056 修复来源索引对重复 node ID 静默 first-wins 的问题。同一完整 raw 子树只有
 对象键顺序不同可复用原对象；样式、未知字段、子层或已知父节点/兄弟位置不同即拒绝。
@@ -1984,6 +1984,99 @@ Cover 的三个直接普通流失败正在隔离候选中恢复为真实 vertica
 既有固定 header 高度和捕获的桌面媒体字号与新 main HUG 重排的组合，保留全部负例。
 等待冻结候选的独立审查和最终配对证据，不把结构改善写成网页/Figma 像素通过。
 24小时目标继续 active，截止仍为10月22日00:31 SG。
+
+## ROUND43 · 2026-10-21 12:29 SG · Cover 内部 auto margin 恢复真实两端分布
+
+4bd8d4f/2aba76a 已正常合入17a46ab：当前真实 DOM 的静态垂直单行 Flex，只有内部
+边界且每处 auto slot 数相等时，恢复现有 vertical space-between AL。真实子层来源、
+顺序、Fill/HUG/fixed 保留；不产生 absolute、spacer 或新模型字段。源对象身份、完整
+world boxes、固定 padding/零 gap、shrink/overflow 和可见参与者拓扑均需证明；计划
+仅消费一次。768px 下真实 slot336.890625 与 CSSOM 序列化336.891px分别校验，后者
+只证明 pinned synthetic wrapper 的元数据运算。±0.0001 padding、size、真实位置控制
+均拒绝，没有容差或坐标拟合。
+
+peer 独立4/4通过，核验69份 artifact 并重算18份严格 RGBA 对比；六份原宽度初始/
+重排 converted PNG 与1bbe逐字节相同。三个宽度的直接 flow 失败由3降至0，但未解决
+关系仍15/15/7，整页初始像素仍106413/87286/71764。跨宽像素93225→95459、
+94337→97536、118621→116674全部保留：桌面固定 header 高度、媒体字号未随宽度变化，
+与新的 main HUG 重排共同导致前两例变差。整页像素未通过，真实 native 执行仍 NOT_RUN，
+独立 HTML 插件未获得当前 DOM 证明。peer 收据 SHA
+28cd9c1844ad478f2e170e5a323d220a5dfd76efb93dae76457e70046a2b0c64。
+
+冻结17a46ab完整 main716项715pass/0fail/1skip，218822.023584ms；UI107项106pass/
+0fail/1skip，107850.58875ms；合计823项821pass/0fail/2skip。两套前后123份 package
+文件、HEAD、helper 和 tracked clean 均相等，typecheck、validate123、三项 generated、
+scoped build 和 diff 检查 exit0。combined 收据 SHA
+49c5b3547fea364a39822428e22c5a391fa48009acb6668a0dd14b0d09426dc9。
+只有完成这些检查后同步本地稳定 primary，无 push、发布或 Host 安装。
+
+另在隔离分支验证 stable scrollbar gutter：32份真实 DOM/PNG 基线揭示选中 HTML 时
+原有同宽重排也会扩宽15px。候选以已证明的固定 gutter 转为视口 padding，六个
+HTML/body/main 与 stable/both-edges 样例的初始、重排、缩窄18份像素对比目前全部0。
+候选仍需固定根间距/约束负例、独立 peer 及完整回归，不在本次 primary 同步内。
+native 独立分支正常合入来源修复后216项受影响检查通过；新完整 factory 探针仅准备，
+source capture/精确 SDK metric 投影与 hint 恢复正在另一分支实施，均未宣称实机通过。
+24小时目标继续 active，截止仍为10月22日00:31 SG。
+
+## ROUND44 · 2026-10-21 13:20 SG · stable gutter 成为真实视口 padding
+
+隔离候选75845a7正常合入8e50633。当前标准 HTML 滚动根的 stable/both-edges
+保留空间，只有实际 scroll/client/box、零偏移、固定作者间距及边界均证明时，才转为
+现有视口 padding；HTML/body/main 选中根保持真实 vertical AL 与 horizontal Fill。
+没有硬编码15px、增加 ABS、spacer、新模型字段或像素容差。12个含固定根 margin/
+padding 的样例×初始/同宽重排/缩窄，共36组严格 RGBA 比较全部0/max0；相同源图
+字节不变，原基线的差异像素合计239200降为0，ID、parent、保存重开及 transfer 保留。
+
+peer先后发现宽度/逻辑尺寸变量、pending border 简写和2vw边框漏判，所有失败原始
+截图/数值与各版 source pin 保留。CSSOM 枚举却序列化为空的已声明 box longhand
+明确视为 unresolved，不依靠简写名单；物理/逻辑 border width 与间距一样要求有界
+绝对长度证明。最终114次负例拒绝和12次固定边框接受通过。四个不支持场景仍有
+54000/54000/21480/15640窄屏差异像素并提示 viewport-flow-fixed，不能列为像素成功。
+固定8px边框正例0/0/0。最终 peer 收据 SHA
+88b11799911d96da86f81869c4a0a6c3a4f2bb27ba00a2fce4255989dddab466。
+
+fresh origin13d591c 的 Job/Quant改动正常合入，123份 Design Studio package 与其
+main/UI catalog 命令前后逐字节不变。ROUND44 main720项719pass/0fail/1skip，
+221413.422125ms；UI107项106pass/0fail/1skip，106270.547167ms；合计827项
+825pass/0fail/2skip。前后 HEAD、package、helper 和 tracked clean 均通过，
+typecheck、validate123、三项 generated、scoped build、diff检查 exit0。combined
+收据 SHA b1853696d2a041b383cf8540d33dc40da06de8283382807e0ac7f1d04912fa68。
+boxed evidence 的原 browserGpuDisabled:false 是 helper省略cpuOnly选项的字段值；
+实际命令显式加载固定 CPU preload 并附加--disable-gpu。原报告不重写，外部 additive
+clarification收据SHA60fc56a88fedfc8badd21430ebb39c73a22525ad9d7da535177f8df12ad7c119
+分别保存选项和真实调用依据，不宣称额外记录了每次 launch trace。此轮仍无真实 Figma
+执行、push、发布或 Host安装。
+
+新增真实 WSS scrollbar-gutter 页面；保留原响应/CSS和启用 JS 后含 TOC/privacy 的
+DOM，不删除可见覆盖层。1280×7000/400×7000完整内容截图对在线源均严格0；原
+900px crop与错误复用不同高度 DOM 的436像素失败分开保留。稳定产品转换的全页
+差异仍540091/685683/600215，15条流失败、252条未解决，native因CSS shadow mask
+拒绝，不能用首屏或字体诊断截图宣称全页通过。source handoff收据 SHA
+2374d163ef2f9c2dd2634d322bf088285313177b6809e566ba278ab7786749c6。
+已确认首个字体名截断完整 CSS stack 会导致回退错误，正在新隔离分支修复。
+
+完整 production factory 探针v3仅PREPARED_UNARMED；29项 owner及29项peer VM控制
+通过，包含最后await后复核所有Text的identity/catalog/hint，未运行实机。native来源
+导出/范围准入候选e56b2a6在另一工作树，156项 focused通过，完整CPU与peer正在运行；
+精确SDK metric投影、source/hint恢复均未进入本次稳定同步，原节点范围修改入口仍关闭。
+24小时目标继续active，截止仍为10月22日00:31 SG。
+
+### ROUND44 运行模式更正 · 2026-10-21 13:34 SG
+
+peer复核后确认：其四次独立 production-fidelity调用使用 plain Node，未传cpuOnly、
+未加载root preload，不能声称这些调用关闭了GPU。其原报告browserGpuDisabled:false
+与此一致，PNG逐字节/逐像素计算仍有效；先前笼统的CPU/no-GPU描述明确撤回。
+直接DOM guard脚本则显式--disable-gpu。原报告不改，完整调用更正收据 SHA
+b515f4ddfe29ebec984902d1c943bc7ca7aa06a6a091ee4d1208a5f4ffd6d6b6。
+root的12个正例及主回归使用显式CPU preload，不受此处peer描述错误影响。
+
+随后root在稳定1e3f346明确传cpuOnly:true补跑四个生产负例和固定8px对照，报告
+browserGpuDisabled:true；结果仍分别0/0/54000、0/0/54000、0/0/21480、
+0/0/15640与0/0/0，警告分别为前四项viewport-flow-fixed、固定对照无此警告。
+保留两种模式的真实图与数值，未覆盖原artifact。补跑收据 SHA
+41c602a564adf444a3e7c01f3a509cb75f205120cf45ad1d406332e5e240dbc8。
+已在peer确认所有进程/读取结束后清理已合入的gutter与f61 baseline工作树和task-owned
+依赖软链接；外部证据、main内提交和未完成的其他候选均保留。
 
 ## Native Text source-import isolated candidate · 2026-10-21
 
