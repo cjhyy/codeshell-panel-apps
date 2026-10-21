@@ -3202,3 +3202,28 @@ test("production selected Text refuses safe REST with an initially unsafe own or
     assert.equal(runtime.figma.currentPage.selection[0], text);
   }
 });
+
+test("production direct-Page selected Text keeps safe source but refuses an observed Page mask sibling", async () => {
+  for (const masked of [false, true]) {
+    const runtime = harness(undefined, { nativeTextRanges: true, nativeTextLayout: true });
+    await runtime.send({ type: "import-transfer", content: JSON.stringify(rangeTransfer()) });
+    assert.equal(runtime.messages.at(-1).type, "imported", runtime.messages.at(-1).message);
+    const page = runtime.figma.currentPage, text = page.children[0].children[0];
+    page.appendChild(text);
+    const sibling = runtime.figma.createRectangle(); sibling.isMask = masked;
+    text.absoluteBoundingBox = { x: 20, y: 20, width: text.width, height: text.height };
+    page.selection = [text];
+    const data = JSON.stringify(text.pluginData), writes = text.rangeWrites.length, pages = runtime.figma.root.children.length;
+    await runtime.send({ type: "export-json", scope: "selection" });
+    if (masked) {
+      assert.equal(runtime.messages.at(-1).type, "error");
+      assert.match(runtime.messages.at(-1).message, /known mask child/u);
+    } else {
+      assert.equal(runtime.messages.at(-1).type, "exported", runtime.messages.at(-1).message);
+      const source = JSON.parse(runtime.messages.at(-1).content);
+      assert(source.nativeTextRanges.nodes[text.id].source); assert(source.previews[text.id]);
+    }
+    assert.equal(text.rangeWrites.length, writes); assert.equal(JSON.stringify(text.pluginData), data);
+    assert.equal(page.selection[0], text); assert.equal(runtime.figma.root.children.length, pages);
+  }
+});

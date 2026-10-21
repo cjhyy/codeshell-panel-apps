@@ -2014,3 +2014,9 @@ owned-data/source proof 发现的 mock realm/ID 问题。只修正 mock 行为�
 拒绝导出，不让 public supplemental 标志产生权限。PAGE/DOCUMENT 不虚构 paint字段。
 8个生产 VM own/omitted-ancestor 负例、late race、祖先 mask sibling、不支持 paint和
 安全纯色祖先控制均保存；真实 native 与像素验收继续 NOT_RUN。
+
+v3 固定显式 sequential main820项819pass/0fail/1skip，226091.4595ms；真实前后131份
+package、全部 main test/helper/catalog SHA与HEAD均未变化。v4再收紧一个已知拓扑边界：
+PAGE虽无 Scene paint字段，实际 mask sibling 不能在 paint skip时丢弃。纯 helper与
+生产 VM 的 direct-Page选中文字成对控制为安全页面保留source/预览、有mask则拒绝，
+导出没有原生写入。v4受影响固定检查与独立审查后再交付，不把v3通过移作v4完整验收。

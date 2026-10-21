@@ -164,3 +164,16 @@ test("unsupported canonical metrics keep fresh raw evidence and fallback without
   assert.equal(exported.supplement.nodes[value.node.id].source.scalars.fontName.value.family, "serif");
   assert.equal(value.counters().writes, 0);
 });
+
+test("known Page mask sibling refuses selected Text bypass before unavailable Page paint fields are skipped", () => {
+  for (const mask of [false, true]) {
+    const value = fixture(), original = JSON.stringify(value.rest);
+    value.page.children.push({ id: "page-sibling", type: "RECTANGLE", isMask: mask, parent: value.page, children: [] });
+    assert.equal(value.page.fills, undefined); assert.equal(value.page.effects, undefined);
+    const capture = createNativeTextExportCapture({ roots: [value.node], mixed });
+    if (mask) assert.throws(() => capture.add(value.rest, value.node),
+      error => error.code === "NATIVE_TEXT_EXPORT_PREVIEW_CONTEXT");
+    else { capture.add(value.rest, value.node); assert(capture.finalize().supplement.nodes[value.node.id]); }
+    assert.equal(JSON.stringify(value.rest), original); assert.equal(value.counters().writes, 0);
+  }
+});

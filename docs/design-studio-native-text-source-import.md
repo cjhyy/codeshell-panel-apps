@@ -80,7 +80,9 @@ mask, visible stroke/effect or blend cause on that Text and its actual Scene
 ancestry, including ancestors outside a selection export. Supported ancestor
 paint must pass the existing editable paint gate. Otherwise export explicitly
 refuses, instead of publishing a proof that could cancel an actual preview cause.
-Page/Document retain topology checks without inventing Scene paint fields.
+Page/Document retain topology checks without inventing Scene paint fields. A
+known mask child on Page/Document refuses bypass before skipping absent paint
+fields; a safe page with those fields unavailable remains accepted.
 
 The existing HUG Grid raw rich-text refusal relaxes only for independently proven
 uniform paint/link metrics. A synthetic composition of retained native padded
@@ -119,3 +121,11 @@ REST basis before capture and then stay unchanged, satisfying freshness alone.
 The peer also reproduced selected Text ancestors omitted from raw REST. Those
 failures and the v2 passing log remain preserved; v3 adds explicit private
 initial/final context admission and selected-ancestor controls.
+
+Frozen v3 explicit sequential main passed820tests/819pass/1skip in226091.4595ms,
+with actual pre/post131package/test/helper inventories and HEAD unchanged. A
+final narrow review identified that the Page paint skip also skipped a known
+mask-child observation. v4 checks that topology before the paint skip, with
+paired direct-Page selected-Text mask refusal and safe-Page controls. This removes
+an unsupported clipping assumption; it does not claim actual native clipping
+semantics or new native pixel acceptance.

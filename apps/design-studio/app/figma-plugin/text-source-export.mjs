@@ -54,6 +54,10 @@ function assertOwnPreviewContext(rest, source, ancestry) {
     // These private snapshots come from actual native getters, never from a
     // public supplemental marker. Page/Document have no Scene paint contract.
     const context = JSON.parse(item.context);
+    // Known mask children remain relevant topology even on Page/Document,
+    // whose absent Scene paint fields must not be invented or interpreted.
+    if (context.childMasks.some(([, mask]) => mask))
+      fail("NATIVE_TEXT_EXPORT_PREVIEW_CONTEXT", "Actual native ancestor has a known mask child; editable range preview bypass was refused");
     if (index && ["PAGE", "DOCUMENT"].includes(context.type)) continue;
     const safeBase = !context.isMask && ["NORMAL", "PASS_THROUGH"].includes(context.blendMode) &&
       noVisible(context.strokes) && noVisible(context.effects) &&
