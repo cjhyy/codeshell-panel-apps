@@ -2624,3 +2624,42 @@ root另存外部immutable130个app文件并作三种明确标为diagnostic的数
 CLI候选已实现方案为严格prototype:true与有界companion诊断，安装包与导航回归待完成。
 12:13:20UTC documented node_repl仍cuaAvailable:false；真实Figma本轮NOT_RUN。
 UTC16:31截止保持不变，不因候选早期绿色而提前宣称完整完成。
+
+12:20恢复记录：三个agent虽在list中显示running，实际interrupt工具均返回previous_status:
+interrupted；没有live scoped cwd/执行句柄，证据最后修改停在10:59–11:00。已用同一agent
+followup恢复各自现有工作树，不重建、不重置、不重复已terminal门禁。后续heartbeat若
+中断turn，应核验真实状态并恢复被中断agent；不能仅凭一次观察超时另起重复编辑。
+
+### ROUND53 · 本地CLI多页原型与失效引用诊断
+
+dd36f3b功能正常合入bba文档后得到c7ef902ffcef80c2bb0eac80ecd7458964c53cb6。
+frontend显式prototype:true复用生产原型exporter导出全部页，false/默认保持单页；严格
+boolean且true不能同时page_id。读取与校验有界prototype companion，只有缺primary
+允许明确default，坏文件/缺parts/断链均拒绝导出。validate纳入blocking诊断，不再在
+nodeID改变而原型链接丢失时报告0issues；不自动改ID或写design/sidecar。RuntimeSkill
+与ops已同步。此功能不增加Figma原生reactions，requirement ID也不等于自动重生成绑定。
+
+owner68/68、installed CLI6/6及静态检查通过，140package/133app和359前后FS文件
+不变，handoff SHA8a58cc429ef8c9d88cafb589d1127e6c388d074126678b58548737d36614066b。
+首次68项有1个旧测试用非JSON companion却期望忽略的失败，原始失败已保留；该测试
+现在先断言invalid且字节保留，再用合法fixture作正控制，没有改生产逻辑绕过校验。
+owner实际安装包10次CLI/12个CPU导航截图及2本地帮助popup均关闭后收据保存。
+
+root另从Git对象提取安装包，独立11项控制/12次CLI/10个实际CPU导航截图通过，包括
+三页前进和两种返回、1280/400、104断链诊断计数与100条上限、empty/absent/分片缺失
+区别、大声明在part读取前拒绝、create-only和严格flag。截图已实际目检，普通AL子项
+保持relative，画布顶层定位及hotspot单独保留。peer
+SHAcbff02460ede744ccd53297ff84a84990cff051026f996fd2637c404466f8d0b。
+root完整main934项933pass/1skip，static7项通过；本轮不把先前113项UI重新计数，
+131个既有app文件（除CLI入口）逐字等于bba，新增模块仅CLI引用。后续renderer组合
+仍需新跑完整UI。CLI组合checkpoint含完整pins，产品已正常FF到aggregate，primary
+同步待记录；没有真实Figma/Host/CanvasKit/GPU或新像素结论。
+
+精度候选已冻结09848a825bc2de643f1a498ec176ca20c0a7fa31（正常合入Notes+bba）。
+先前506/506 CPU定向已通过，新的62文件组合仍在验证。root已实际跑同profile Metal
+六组三方：初步source→Browser宽ROI748→0（初始/编辑）、窄2711→682；整viewport
+仍非零，CK六组仍nativeText0/raster/font-unavailable并标FAIL_UNSUPPORTED_DIAGNOSTIC_RENDER。
+收据SHA3029846a5dd2ec0694331cca9ec1687c1c187b218992f62c9cce887cf61eeb0a。
+独立raw PNG/固定ROI/差异图复算正在进行，不能提前扩大为全页或真实Figma通过。
+混合同步已冻结2e5abd222a624e5f9f64f9d39e87cf4f3ad5a188，owner284/284及static
+通过，12个原nativeText模块逐字未改；另一agent正在独立VM peer，尚未合入产品。
