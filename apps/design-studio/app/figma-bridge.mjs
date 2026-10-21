@@ -1,6 +1,7 @@
 import { normalizeShadowStack, nativeShadowStackEffects } from "./shadow-stack.mjs";
 import { validTextLineHeight } from "./text-line-height.mjs";
 import { assertNativeTextRangeBoundary } from "./native-text-ranges.mjs";
+import { assertNativeImageFill } from "./image-dimensions.mjs";
 import { validateLayoutSpacing, validateNativeLayoutSpacing, nativeMainGap, mainAxisGap } from "./layout-spacing.mjs";
 import { distributeFillSizes } from "./layout.mjs";
 import { normalizeCornerRadii, effectiveCornerRadii } from "./corner-radii.mjs";
@@ -29,6 +30,7 @@ import {
   normalizeFigmaSource,
   prepareFigmaAssets,
   createFigmaTransferAssets,
+  normalizeFigmaAsset,
 } from "./figma-assets.mjs";
 import { prepareBuiltinDesignFontResources, ensureBuiltinDesignFonts } from "./builtin-fonts.mjs";
 
@@ -1386,12 +1388,20 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
     ? normalizeDesignState(input)
     : normalizeDesignDocument(input);
   const report = reporter();
+  const assets = createFigmaTransferAssets(document, resources), imageAssets = new Map();
   let exportedNodes = 0,
     skippedNodes = 0;
   const gridParents = new WeakMap();
   const gridParentOf = (node) => gridParents.get(node);
   const convert = (node, parent) => {
     assertNativeTextRangeBoundary(node);
+    if (node.type === "image" && node.objectFit === "fill") {
+      if (!imageAssets.has(node.imageRef)) imageAssets.set(node.imageRef, normalizeFigmaAsset(assets[node.imageRef]));
+      const asset = imageAssets.get(node.imageRef);
+      if (["image/svg+xml", "image/webp"].includes(asset.mime)) report.warn("native-image-fill-conversion", node,
+        "原生 fill 宽高比需等现有插件界面把 SVG/WebP 转换为 PNG 后校验；未转换的直接原生传输会被拒绝，尚未声明原生像素一致。");
+      else assertNativeImageFill(node, asset.bytes);
+    }
     gridParents.set(node, parent ?? null);
     if (node.type === "instance") {
       skippedNodes += 1;
@@ -1493,7 +1503,7 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
     name: document.name,
     canvas: { ...document.canvas },
     pages,
-    assets: createFigmaTransferAssets(document, resources),
+    assets,
     warnings: report.warnings,
     warningGroups: report.warningGroups,
     stats: { pages: pages.length, exportedNodes, skippedNodes, warningCount },

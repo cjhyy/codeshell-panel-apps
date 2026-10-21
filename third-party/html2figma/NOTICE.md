@@ -43,6 +43,12 @@ and main-axis auto margins. Uniform nonnegative flex margins become container
 insets and item/line gaps; unsupported nonuniform or negative margins retain a
 conversion diagnostic rather than claiming preserved Auto Layout behavior.
 
+An element-backed `cssImageBox` hint records ordinary IMG object-position, paint,
+inside-border and own/ancestor transform facts by the original semantic object
+identity. It does not alter the pinned image resolver or authorize native writes.
+The v3 adapter can use this capture-only evidence for a real Auto Layout border
+Frame with one inset image; unsupported joins refuse recovery.
+
 An element-backed `cssEmptyBlock: true` hint records a live empty ordinary block:
 no child elements, only collapsible ASCII whitespace, and no generated before,
 after, form, or list-marker content. The v3 adapter can retain its padding as

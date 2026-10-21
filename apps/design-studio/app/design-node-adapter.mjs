@@ -9,6 +9,7 @@ import {
 import { recoverHtmlTextOverflow } from "./html-text-overflow.mjs";
 import { applyHtmlNumberLineHeight } from "./html-line-height.mjs";
 import { cssCornerRadii } from "./corner-radii.mjs";
+import { planHtmlImageBorderBox } from "./html-image-border-box.mjs";
 /* Pure html2figma DesignNode → CodeShell v3 adapter. No DOM, network, or writes. */
 import { normalizeDesignDocument, MAX_DESIGN_NODES_PER_PAGE } from "./document.mjs";
 import { createDesignResourcePersistencePlan, MAX_DESIGN_RESOURCES } from "./resource-store.mjs";
@@ -378,6 +379,8 @@ export async function designNodeToV3(tree, options = {}) {
       throw new Error("HTML 转换后的图层超过 10,000 个");
     return nodeSurface(id, type, name, geometry);
   };
+  const imageBorderBoxNodes = new WeakSet();
+  const percentImageBoxes = new WeakSet();
   const syntheticBase = (...args) => {
     const node = base(...args);
     options.onSyntheticNode?.(node);
@@ -439,7 +442,9 @@ export async function designNodeToV3(tree, options = {}) {
     }
     try {
       // Validate raw units before using the converter's transform-scaled px values.
-      if (source.cssBorderRadii) cssCornerRadii(source.cssBorderRadii);
+      if (source.cssBorderRadii && !(source.nodeType === "image" &&
+          source.cssBorderRadii.length === 4 && source.cssBorderRadii.every((value) => value === "50%") &&
+          sides.some((side) => side?.width > 0))) cssCornerRadii(source.cssBorderRadii);
       const radii = ["topLeft", "topRight", "bottomRight", "bottomLeft"].map((key) =>
         number(source.border?.radius?.[key] ?? 0, 0, 0, 9999, node.id, `cornerRadii.${key}`),
       );
@@ -835,7 +840,7 @@ export async function designNodeToV3(tree, options = {}) {
       const intrinsic = ["auto", "min-content", "max-content", "fit-content"].includes(value);
       let mode = "fixed";
       if (parentAuto && /^100(?:\.0+)?%$/u.test(value)) mode = "fill";
-      else if (ownAuto && intrinsic) {
+      else if (ownAuto && intrinsic && !imageBorderBoxNodes.has(node)) {
         // Block-level auto width fills its containing block; a root's measured
         // width stays fixed until that containing layout is actually represented.
         if (
@@ -1241,6 +1246,26 @@ export async function designNodeToV3(tree, options = {}) {
         node.objectFit = ["fill", "contain", "cover"].includes(fit) ? fit : "contain";
         if (!["fill", "contain", "cover"].includes(fit))
           warn("image-object-fit", id, `${fit} 已近似为 contain。`);
+        const box = planHtmlImageBorderBox(source, node, {
+          transformedAncestor: ancestors.some((ancestor) => transformedSources.has(ancestor.id)),
+        });
+        if (box) {
+          imageBorderBoxNodes.add(node);
+          if (box.percentCircle) percentImageBoxes.add(node);
+          const image = syntheticBase(`${id}-image-content`, "image", `${node.name} content`, {
+            x: node.x + box.width, y: node.y + box.width,
+            width: node.width - 2 * box.width, height: node.height - 2 * box.width,
+          });
+          Object.assign(image, { imageRef, objectFit: node.objectFit, cornerRadius: box.innerRadius,
+            layoutSizingHorizontal: "fill", layoutSizingVertical: "fill" });
+          delete node.imageRef; delete node.objectFit; delete node.cornerRadii;
+          Object.assign(node, { type: "frame", layout: "vertical", gap: 0, padding: box.width,
+            alignItems: "stretch", justifyContent: "start", cornerRadius: box.radius,
+            layoutSizingHorizontal: "fixed", layoutSizingVertical: "fixed", clipContent: true,
+            children: [image] });
+          if (box.percentCircle) warn("image-radius-captured-size", id,
+            "50% 圆角仅按当前固定方形投影为可编辑像素半径；原始 CSS 保留在来源，改变尺寸后不声明动态百分比圆角一致。");
+        }
       } else {
         node.fill = "#e2e8f0";
         node.stroke = "#64748b";
@@ -1315,6 +1340,9 @@ export async function designNodeToV3(tree, options = {}) {
   sizing(tree, converted, null);
   const validateGrids = (node) => {
     for (const child of node.children ?? []) validateGrids(child);
+    if (percentImageBoxes.has(node) &&
+        ["Horizontal", "Vertical"].some((axis) => node[`layoutSizing${axis}`] !== "fixed"))
+      throw new Error("HTML_IMAGE_BORDER_UNSUPPORTED: 50% 圆角投影需要最终两轴固定，不能随父布局 Fill/Hug");
     if (floatPlans.has(node)) {
       const plan = floatPlans.get(node);
       try {

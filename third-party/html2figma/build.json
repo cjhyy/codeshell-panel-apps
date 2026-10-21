@@ -7,16 +7,17 @@
   "legacyGridOption": "preserveGrid:false",
   "esbuildVersion": "0.28.2",
   "output": "apps/design-studio/app/vendor/html2figma-browser.mjs",
-  "bytes": 222610,
-  "sha256": "3568e44948be5ac7f0b0e40400cf9d83219e77f2c4c8b78432be706731a78296",
+  "bytes": 225350,
+  "sha256": "444a285f3cb8a7305d657915214c6c2190a3cb29121786d2b82ab21145f04117",
   "notice": {
     "output": "apps/design-studio/app/vendor/html2figma-NOTICE.md",
-    "bytes": 11331,
-    "sha256": "6dab34e14126c0f7203382ead14af6e7b69f0e7436c25eea25f8c085e01bb65f"
+    "bytes": 11718,
+    "sha256": "893bbbfd172dac0d5c59004268280ca1630286c1e94d09fe0d9a8f8cd1f73d72"
   },
   "runtimeInputs": [
     "third-party/html2figma/integration/entry.ts",
     "third-party/html2figma/integration/grid.ts",
+    "third-party/html2figma/integration/image-box.ts",
     "third-party/html2figma/integration/shared.ts",
     "third-party/html2figma/integration/svg.ts",
     "third-party/html2figma/integration/table-borders.ts",

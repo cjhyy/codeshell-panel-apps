@@ -22,6 +22,7 @@
     "apps/design-studio/app/html-float-columns.mjs",
     "apps/design-studio/app/html-flow-audit.mjs",
     "apps/design-studio/app/html-grid.mjs",
+    "apps/design-studio/app/html-image-border-box.mjs",
     "apps/design-studio/app/html-import-assets.mjs",
     "apps/design-studio/app/html-import.mjs",
     "apps/design-studio/app/html-line-height.mjs",
@@ -83,8 +84,8 @@
     },
     {
       "path": "ui.html",
-      "bytes": 364841,
-      "sha256": "2aedd300581503bc684540e2aa55b88d593ee18565d05a4ee8acd223e60810fe"
+      "bytes": 367807,
+      "sha256": "cde9e941c406f239b488e6ec4c7c5008e75993d9c3b2a550c3d18f2c70d3821d"
     },
     {
       "path": "README.md",
