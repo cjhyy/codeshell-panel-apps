@@ -451,11 +451,15 @@ const gpuRenderer = createRendererController({
     };
   },
   onState(state) {
+    const textRangeFailure = !state.active && typeof state.reason === "string" &&
+      state.reason.includes("TEXT_RANGES_UNSUPPORTED:");
     elements.gpuCanvas.hidden = !state.active;
     elements.stageWrap.dataset.gpuActive = String(state.active);
     elements.stageWrap.dataset.rendererStatus = state.status;
     elements.rendererState.textContent = state.active
       ? "CanvasKit GPU"
+      : textRangeFailure
+        ? "范围文字不支持"
       : state.loading
         ? "GPU 加载中"
         : "GPU 不可用";
@@ -464,6 +468,8 @@ const gpuRenderer = createRendererController({
     elements.retryRenderer.hidden = state.loading;
     elements.rendererMessageText.textContent = state.loading
       ? "正在准备 GPU 画布…"
+      : textRangeFailure
+        ? state.reason.split("TEXT_RANGES_UNSUPPORTED:").slice(1).join("TEXT_RANGES_UNSUPPORTED:").slice(0, 400)
       : state.status === "unavailable"
         ? "当前宿主不支持 GPU 画布，请更新 CodeShell 后重试。"
         : "GPU 画布暂时不可用，设计数据已保留。请点击重试。";
