@@ -636,8 +636,9 @@ export async function captureWorkspaceHtmlResult({
     const canonicalBySource = new WeakMap(), syntheticFlowIds = new Set();
     options.onNode = (source, node) => {
       canonicalBySource.set(source, node);
-      if (source.nodeType === "container" && !source.semantic) syntheticFlowIds.add(node.id);
+      if (source.nodeType === "container" && !source.semantic && node.type === "frame") syntheticFlowIds.add(node.id);
     };
+    if (includeFlowAudit) options.onSyntheticNode = (node) => syntheticFlowIds.add(node.id);
     const result = await designNodeToV3(tree, options);
     alignHtmlTextBaselines(result.document, frameDocument);
     const warn = (code, nodeId, message) => {

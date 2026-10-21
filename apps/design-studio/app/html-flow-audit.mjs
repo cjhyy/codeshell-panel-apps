@@ -128,10 +128,14 @@ export function captureHtmlFlowObligations({
     if (!canonicalChildren.has(node.parentId)) canonicalChildren.set(node.parentId, []);
     canonicalChildren.get(node.parentId).push(node);
   }
-  const sourceIds = new Set(mapping.map((entry) => entry.designId));
-  const wrappers = new Set(syntheticIds);
-  for (const node of index.values())
-    if (node.type === "frame" && !sourceIds.has(node.id)) wrappers.add(node.id);
+  // Only IDs reported by a trusted current producer factory are wrapper proof.
+  // A missing mapping or candidate name/notes never admits an intermediate frame.
+  const semanticSourceIds = new Set(
+    mapping
+      .filter((entry) => typeof entry.semanticId === "string" && entry.semanticId)
+      .map((entry) => entry.designId),
+  );
+  const wrappers = new Set([...syntheticIds].filter((id) => !semanticSourceIds.has(id)));
   const ledger = {
     format: "codeshell.html.flow-obligations",
     version: 1,

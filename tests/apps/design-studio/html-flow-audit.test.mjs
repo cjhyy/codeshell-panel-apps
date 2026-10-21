@@ -80,6 +80,16 @@ const clone = (value) => JSON.parse(JSON.stringify(value));
 test("actual source relationships allow only capture-proven wrappers and reevaluate each current candidate", () => {
   const value = setup(),
     evidence = captureHtmlFlowObligations(value.input);
+  const unproven = setup();
+  unproven.input.syntheticIds.clear();
+  unproven.spacer.name = "margin-wrapper";
+  unproven.spacer.notes = JSON.stringify({ role: "container" });
+  const missingProof = captureHtmlFlowObligations(unproven.input);
+  assert.deepEqual(missingProof.obligations[0].wrapperIds, []);
+  assert.equal(
+    evaluateHtmlFlowAudit(unproven.value, missingProof).issues[0].code,
+    "FLOW_SOURCE_PARENT_CHANGED",
+  );
   assert(Object.isFrozen(evidence));
   assert(Object.isFrozen(evidence.obligations[0]));
   assert.equal(evidence.obligations.length, 1);
