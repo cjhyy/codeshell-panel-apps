@@ -57,6 +57,8 @@ test("awaited source, getter and noncatalog preview/topology changes refuse the 
     value => value.observations.rangeChecks[0].values.hyperlink.value = null,
     value => value.node.isMask = true,
     value => value.node.effects.push({ type: "DROP_SHADOW", visible: true }),
+    value => value.node.strokes.push({ type: "SOLID", color: { r: 0, g: 0, b: 0 } }),
+    value => value.node.blendMode = "MULTIPLY",
     value => value.page.children.reverse(),
     value => value.node.parent = { type: "FRAME", id: "other", parent: value.page, children: [value.node] },
   ]) {
@@ -117,4 +119,48 @@ test("official source type/order disagreements refuse and optional hint read fai
   assert(result.supplement.nodes[value.node.id].source);
   assert.equal(result.supplement.nodes[value.node.id].hint, undefined);
   assert(result.warnings.some(note => note.includes("optional author hint unavailable")));
+});
+
+test("initial actual own and selected-root ancestor preview causes cannot borrow safe REST to authorize bypass", () => {
+  const mutations = [value => value.isMask = true,
+    value => value.strokes = [{ type: "SOLID", color: { r: 0, g: 0, b: 0 } }],
+    value => value.effects = [{ type: "DROP_SHADOW", visible: true }],
+    value => value.blendMode = "MULTIPLY",
+    value => value.fills = [{ type: "GRADIENT_RADIAL", gradientStops: [] }],
+    value => value.children.push({ id: "mask-sibling", isMask: true })];
+  for (const selected of [false, true]) for (const [mutationIndex, mutate] of mutations.entries()) {
+    if (!selected && mutationIndex >= 4) continue;
+    const value = fixture(), parent = { type: "FRAME", id: "parent", parent: value.page, children: [value.node],
+      fills: [], strokes: [], effects: [], blendMode: "PASS_THROUGH", isMask: false };
+    if (selected) { value.node.parent = parent; value.page.children = [parent]; mutate(parent); }
+    else mutate(value.node);
+    const capture = createNativeTextExportCapture({ roots: [value.node], mixed });
+    assert.throws(() => capture.add(value.rest, value.node),
+      error => error.code === "NATIVE_TEXT_EXPORT_PREVIEW_CONTEXT", "unsafe initial SDK context cannot acquire raw REST preview authority");
+    assert.equal(value.counters().writes, 0);
+  }
+  const safe = fixture(), parent = { type: "FRAME", id: "parent", parent: safe.page, children: [safe.node],
+    fills: [{ type: "SOLID", color: { r: 1, g: 0, b: 0 } }], strokes: [], effects: [], blendMode: "PASS_THROUGH", isMask: false };
+  safe.node.parent = parent; safe.page.children = [parent];
+  const capture = createNativeTextExportCapture({ roots: [safe.node], mixed });
+  capture.add(safe.rest, safe.node); assert(capture.finalize().supplement.nodes[safe.node.id]);
+  const late = fixture(), lateParent = { ...parent, children: [late.node], parent: late.page };
+  late.node.parent = lateParent; late.page.children = [lateParent];
+  const staged = createNativeTextExportCapture({ roots: [late.node], mixed }); staged.add(late.rest, late.node);
+  lateParent.effects.push({ type: "DROP_SHADOW", visible: true });
+  assert.throws(() => staged.finalize(), error => error.code === "NATIVE_TEXT_EXPORT_RACE");
+});
+
+test("unsupported canonical metrics keep fresh raw evidence and fallback without borrowing editable preview authority", () => {
+  const value = fixture();
+  value.rest.style.fontFamily = "serif";
+  value.observations.scalars.fontName.value.family = "serif";
+  for (const segment of value.observations.segments) segment.values.fontName.value.family = "serif";
+  value.node.isMask = true;
+  const capture = createNativeTextExportCapture({ roots: [value.node], mixed });
+  capture.add(value.rest, value.node);
+  const exported = capture.finalize();
+  assert(exported.supplement.nodes[value.node.id].source, "raw complete evidence remains available when canonical admission refuses");
+  assert.equal(exported.supplement.nodes[value.node.id].source.scalars.fontName.value.family, "serif");
+  assert.equal(value.counters().writes, 0);
 });

@@ -69,6 +69,7 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
       ),
       fills: clone(raw.fills ?? []),
       strokes: clone(raw.strokes ?? []),
+      ...(nativeTextRanges ? { effects: clone(raw.effects ?? []), blendMode: raw.blendMode ?? "PASS_THROUGH" } : {}),
       layoutMode: raw.layoutMode ?? "NONE",
       ...(raw.itemSpacing !== undefined ? { itemSpacing: raw.itemSpacing } : {}),
       opacity: raw.opacity ?? 1,
@@ -3176,4 +3177,28 @@ test("production export measures the whole16MiB envelope after individually boun
   assert.match(large.messages.at(-1).message, /16 MiB/u);
   assert.equal(large.figma.root.children.length, pages);
   assert(!large.calls.some(call => call[0].startsWith("setRange")));
+});
+
+test("production selected Text refuses safe REST with an initially unsafe own or omitted ancestor SDK context", async () => {
+  for (const ancestor of [false, true]) for (const property of ["isMask", "strokes", "effects", "blendMode"]) {
+    const runtime = harness(undefined, { nativeTextRanges: true, nativeTextLayout: true });
+    await runtime.send({ type: "import-transfer", content: JSON.stringify(rangeTransfer()) });
+    assert.equal(runtime.messages.at(-1).type, "imported", runtime.messages.at(-1).message);
+    const frame = runtime.figma.currentPage.children[0], text = frame.children[0], target = ancestor ? frame : text;
+    text.absoluteBoundingBox = { x: 20, y: 20, width: text.width, height: text.height };
+    runtime.figma.currentPage.selection = [text];
+    const original = text.exportAsync, data = JSON.stringify(text.pluginData), writes = text.rangeWrites.length;
+    text.exportAsync = async settings => {
+      const response = await original.call(text, settings);
+      if (settings.format === "JSON_REST_V1") target[property] = property === "isMask" ? true :
+        property === "blendMode" ? "MULTIPLY" : runtime.jsonRest(property === "strokes"
+          ? [{ type: "SOLID", color: { r: 0, g: 0, b: 0 } }] : [{ type: "DROP_SHADOW", visible: true }]);
+      return response;
+    };
+    await runtime.send({ type: "export-json", scope: "selection" });
+    assert.equal(runtime.messages.at(-1).type, "error");
+    assert.match(runtime.messages.at(-1).message, /independent preview cause/u);
+    assert.equal(text.rangeWrites.length, writes); assert.equal(JSON.stringify(text.pluginData), data);
+    assert.equal(runtime.figma.currentPage.selection[0], text);
+  }
 });

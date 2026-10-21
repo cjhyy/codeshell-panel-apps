@@ -74,7 +74,13 @@ Admission can bypass only a leaf Text's own mixed-fill preview reason after the
 complete independent paint/link-only proof. It cannot suppress masks, unsupported
 paint/stroke/effect/blend causes, malformed children or an ancestor image fallback.
 The original preview and asset remain saved for fallback. A public supplemental
-flag supplies no preview authority.
+flag supplies no preview authority. When raw REST would allow own mixed-preview
+bypass, private initial and final SDK snapshots must also prove no independent
+mask, visible stroke/effect or blend cause on that Text and its actual Scene
+ancestry, including ancestors outside a selection export. Supported ancestor
+paint must pass the existing editable paint gate. Otherwise export explicitly
+refuses, instead of publishing a proof that could cancel an actual preview cause.
+Page/Document retain topology checks without inventing Scene paint fields.
 
 The existing HUG Grid raw rich-text refusal relaxes only for independently proven
 uniform paint/link metrics. A synthetic composition of retained native padded
@@ -105,3 +111,11 @@ controls assert actual code units0xA0,13,10 and the emoji surrogate pair0xD83D/0
 Initial SHA-256 test setup, warning object access and an incomplete mock measurer
 were also corrected in tests. Their failed logs remain in external task evidence;
 no immutable retained source or source image was altered.
+
+The frozen v2 full main catalog passed817tests/816pass/1skip under default
+file parallelism. A subsequent pinned replay and independent peer nevertheless
+found an unsafe initial-context path: a mask/effect/blend could differ from the
+REST basis before capture and then stay unchanged, satisfying freshness alone.
+The peer also reproduced selected Text ancestors omitted from raw REST. Those
+failures and the v2 passing log remain preserved; v3 adds explicit private
+initial/final context admission and selected-ancestor controls.

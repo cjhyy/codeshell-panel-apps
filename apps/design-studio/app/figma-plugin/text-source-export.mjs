@@ -1,7 +1,9 @@
 /** Read-only export staging. Private native references never enter saved JSON. */
 import { captureBoundNativeTextRanges } from "./text-range-state.mjs";
 import { nativeTextRangeSnapshot, MAX_NATIVE_TEXT_RANGE_SOURCE_BYTES } from "../native-text-ranges-source.mjs";
-import { completeNativeTextSource, hasReservedNativeTextMetadata, NATIVE_TEXT_IMPORT_HINT_KEY } from "../native-text-import.mjs";
+import { completeNativeTextSource, hasReservedNativeTextMetadata, admitNativeTextImport, NATIVE_TEXT_IMPORT_HINT_KEY } from "../native-text-import.mjs";
+
+import { figmaFillPaints } from "../paint.mjs";
 
 const MAX_BYTES = 16 * 1024 * 1024;
 const plain = value => value !== null && typeof value === "object" && !Array.isArray(value) &&
@@ -42,6 +44,29 @@ export function nativeTextExportPreviewContext(node, mixed) {
     mixedFontName: node.fontName === mixed, mixedFontSize: node.fontSize === mixed,
     childMasks: Array.isArray(node.children) ? node.children.map(child => [child.id, child.isMask === true]) : [],
   });
+}
+
+const noVisible = values => Array.isArray(values) && values.every(value => plain(value) && value.visible === false);
+const sceneAncestors = new Set(["FRAME", "GROUP", "COMPONENT", "COMPONENT_SET", "INSTANCE", "SECTION"]);
+function assertOwnPreviewContext(rest, source, ancestry) {
+  if (!admitNativeTextImport({ rest, source }).ownMixedPreview) return;
+  for (const [index, item] of ancestry.entries()) {
+    // These private snapshots come from actual native getters, never from a
+    // public supplemental marker. Page/Document have no Scene paint contract.
+    const context = JSON.parse(item.context);
+    if (index && ["PAGE", "DOCUMENT"].includes(context.type)) continue;
+    const safeBase = !context.isMask && ["NORMAL", "PASS_THROUGH"].includes(context.blendMode) &&
+      noVisible(context.strokes) && noVisible(context.effects) &&
+      context.childMasks.every(([, mask]) => !mask);
+    const safeOwn = index === 0 && context.type === "TEXT" &&
+      plain(context.fills) && context.fills.mixed === true && Object.keys(context.fills).length === 1 &&
+      !context.mixedFontName && !context.mixedFontSize;
+    const fills = Array.isArray(context.fills) ? context.fills.filter(paint => paint.visible !== false) : null;
+    const safeAncestor = index > 0 && sceneAncestors.has(context.type) && fills &&
+      (fills.length === 0 || !!figmaFillPaints(fills));
+    if (!safeBase || !(safeOwn || safeAncestor))
+      fail("NATIVE_TEXT_EXPORT_PREVIEW_CONTEXT", "Actual native Text or ancestor has an independent preview cause; editable range preview bypass was refused");
+  }
 }
 
 /**
@@ -124,7 +149,9 @@ export function createNativeTextExportCapture({ roots, mixed, pluginId } = {}) {
         sourceBytes += utf8(JSON.stringify(captured.source));
         if (sourceBytes > MAX_BYTES) fail("NATIVE_TEXT_EXPORT_BUDGET", "Complete native sources exceed16MiB");
       } else warnings.push(rest.id + ": complete native range source unavailable; existing fallback retained");
-      entries.set(rest.id, { rest, target, fingerprint, lineage: lineage(target), bound,
+      const ancestry = lineage(target);
+      if (bound) assertOwnPreviewContext(rest, captured.source, ancestry);
+      entries.set(rest.id, { rest, target, fingerprint, lineage: ancestry, bound,
         source: bound ? captured.source : undefined, snapshot: bound ? nativeTextRangeSnapshot(captured.source) : null });
       return;
     }
@@ -172,6 +199,7 @@ export function createNativeTextExportCapture({ roots, mixed, pluginId } = {}) {
       const bound = current.status === "bound" && completeNativeTextSource(current.source);
       if (bound !== entry.bound || bound && nativeTextRangeSnapshot(current.source) !== entry.snapshot)
         fail("NATIVE_TEXT_EXPORT_RACE", "Complete observed native Text changed during awaited export");
+      if (bound) assertOwnPreviewContext(entry.rest, current.source, lineage(entry.target, finalContexts, finalChildren));
       if (bound) Object.defineProperty(nodes, entry.target.id, { enumerable: true, configurable: true, writable: true,
         value: { source: current.source, ...(hints.has(entry.target.id) ? { hint: hints.get(entry.target.id) } : {}) } });
     }

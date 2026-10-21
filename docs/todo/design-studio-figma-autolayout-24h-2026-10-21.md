@@ -2004,3 +2004,13 @@ owned-data/source proof 发现的 mock realm/ID 问题。只修正 mock 行为�
 未放宽产品 guard。早期 double-escaped NBSP/CRLF 误称覆盖已更正并保留原收据。
 详细范围、失败原因和限制见 [native Text source-import](../design-studio-native-text-source-import.md)。
 所有本轮执行为 CPU/VM；真实 production native 执行 **NOT_RUN**，没有像素通过声明。
+
+该候选 v2 全 main catalog 默认文件并发执行817项816pass/0fail/1skip，仍未据此
+认定路径安全：后续固定重放与独立 peer 实证 initial SDK mask/effect/blend 可已与
+初次 REST 不同，之后保持不变；选中 Text 的真实祖先未包含在 REST 时也有同样问题。
+保留6条 peer 复现与原通过日志，v3 增加仅供内部使用的 initial/final context 准入。
+完整独立可编辑 proof 真正会取消 Text 自身 mixed 预览时，实际 Text 与 Scene 祖先
+还须无独立 mask、可见 stroke/effect 或不支持 blend/paint/子 mask 原因；否则明确
+拒绝导出，不让 public supplemental 标志产生权限。PAGE/DOCUMENT 不虚构 paint字段。
+8个生产 VM own/omitted-ancestor 负例、late race、祖先 mask sibling、不支持 paint和
+安全纯色祖先控制均保存；真实 native 与像素验收继续 NOT_RUN。
