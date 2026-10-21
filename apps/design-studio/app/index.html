@@ -274,6 +274,7 @@
         </aside>
 
         <section id="stage-wrap" class="stage-wrap" aria-label="设计画布">
+          <div id="browser-surface" aria-hidden="true" hidden></div>
           <canvas id="gpu-canvas" aria-hidden="true" hidden></canvas>
           <canvas id="stage" role="img" aria-label="Design canvas" tabindex="0"></canvas>
           <div id="renderer-message" class="renderer-message" role="status">
@@ -281,6 +282,10 @@
             <button id="retry-renderer" type="button" hidden>重试 GPU 画布</button>
           </div>
           <div class="canvas-meta">
+            <select id="renderer-mode" aria-label="画布渲染器">
+              <option value="gpu">CanvasKit</option>
+              <option value="browser">浏览器 HTML/CSS</option>
+            </select>
             <span id="renderer-state" role="status" aria-live="polite">GPU 加载中</span>
             <span class="meta-divider"></span>
             <button id="zoom-out" type="button" aria-label="缩小">−</button>

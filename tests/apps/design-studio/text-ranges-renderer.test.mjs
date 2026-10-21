@@ -72,12 +72,13 @@ test("CanvasKit range capability refuses exact custom decoration and fallback sh
 
 test("range capability failure reaches actual app status text through the controller failure path", async () => {
   const source = await readFile(resolve(app, "app.js"), "utf8");
-  const start = source.indexOf("  onState(state) {", source.indexOf("const gpuRenderer ="));
-  const end = source.indexOf("\n  },\n});", start);
+  assert.match(source,/onState\(state\) \{ rendererStateChanged\("gpu", state\); \}/u);
+  const start = source.indexOf("function rendererStateChanged(");
+  const end = source.indexOf("\nfunction chooseRenderer(", start);
   assert(start >= 0 && end > start);
-  const elements = Object.fromEntries(["gpuCanvas", "stageWrap", "rendererState", "rendererMessage", "retryRenderer", "rendererMessageText"]
+  const elements = Object.fromEntries(["gpuCanvas", "browserSurface", "stageWrap", "rendererState", "rendererMessage", "retryRenderer", "rendererMessageText"]
     .map(key => [key, { dataset: {}, hidden: false, textContent: "", title: "" }]));
-  const onState = new vm.Script(`(state) => {${source.slice(start + "  onState(state) {".length, end)}\n}`).runInContext(vm.createContext({ elements }));
+  const onState = new vm.Script(`${source.slice(start,end)}\n(state) => rendererStateChanged("gpu",state)`).runInContext(vm.createContext({ elements,rendererMode:"gpu" }));
   let disposed = 0;
   const controller = createRendererController({ canvas: new EventTarget(), capability: true, onState,
     loadRenderer: async () => ({ createRenderer: async () => ({

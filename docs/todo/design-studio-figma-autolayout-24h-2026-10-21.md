@@ -2345,3 +2345,38 @@ codeshellNotes但当前export/import不将它恢复为canonical notes，raw bind
 codex/design-studio/prd-requirement-ids-20261021，fresh origin13d正常合入fe2eca7。
 notes跨Figma往返仍单独未修复，不把任意pluginData当受信来源。Browser活动树继续保留；
 root正在准备同canonical/bytes原模板的真实CK GPU与Browser截图对照，尚未执行。
+
+### Browser comparative checkpoint · 2026-10-21 16:25 SG
+
+独立Browser候选32020fd正常合入最新2572276后冻结cfcfb556；CanvasKit仍默认，
+用户显式选择Browser且按workspace保存，不自动切换。Browser消费同一canonical，
+用真实CSS Flex/Grid/AL和私有DOM几何进行选择、编辑、拖动、同父流重排及resize；
+普通流未降级ABS。完整font stack、私有family字重/字形回退、资源SHA与owned clone、
+真实image decode、hidden Hug和pending DOM/FontFace同步清理都有控制。
+
+最终affected191/191 pass，18599.176ms；实际Browser UI含pan/zoom的drag/reorder/
+resize/cancel及font fallback编辑。typecheck、validate136/94/93、3generated、scoped
+build、diff均exit0。首次190/191失败是旧测试对inline onState的源码切片，已改为调用
+真实named handler；保留失败日志，未放松CanvasKit或native范围准入。
+
+完整120-unit字体stack和fixed组件独立transform tree严格像素差0；Fill实例真实外框
+300却用旧9999缩放的14100px/max255失败保留，当前明确拒绝Hug/Fill/拉伸实例，
+改Fixed300后0差恢复；UI解释限制且不自动切CK。reverse/wrap/Grid流拖拽及旋转
+resize未扩展。source400截图与后续geometry时刻不同的gallery旧烟测不能算保真。
+完整边界见docs/todo/design-studio-browser-renderer-2026-10-21.md。
+
+冻结收据fb767562614cbf423ab547cab6e5e235f3302b1027e41baddce0d90d5c25ea31；
+passing191日志b442f7954631243d3a1f26581143103bf5689ff9365d9a13bb993da0ec74bd32。
+仅CPU/VM；此owner没有实际Figma、安装、GPU或发布。root后续运行同canonical/
+bytes原模板的CK GPU与Browser对照；独立peer和最终产品合入仍单独记录。
+
+随后实际CPU对照确认：Fixed实例自身scalar shadow在shared frontend被paintless
+wrapper忽略，相对现有canonical SVG有1400px/max128差异；冻结77d原图/转换图/
+差异图和canonical收据233e83aea8bad49d12e7d6590059b376c8226d4376c97547117e22dd7e296bdf
+保留。仅Browser增加opacity>0的发布前明确拒绝，含nested instance；不猜测CSS
+box-shadow等价性、不改共享模型或CK/native。opacity0和显式移除效果可恢复；实际
+UI显示实例效果限制并保留用户Browser选择和canonical，无自动切CK。
+
+此guard后193/193 affected pass，18410.994708ms；typecheck、validate136/94/93、
+3generated/scoped/diff均exit0，所有generated plugin字节与77d相同。原V1 root实际
+6state WebGL/Browser诊断不自动赋予source/旧ROI验收资格；owner没有GPU/Figma执行。

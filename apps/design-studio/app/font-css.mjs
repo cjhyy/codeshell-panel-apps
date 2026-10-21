@@ -1,4 +1,5 @@
 import { parseDesignFontFamily } from "./font-family.mjs";
+const runtimeFamilies = new WeakMap();
 
 const escapeCss = (value) =>
   String(value)
@@ -54,6 +55,41 @@ export function designResourceFontFamilyCss(family, resourceFamily, alias = reso
   // named item; retain every remaining named/generic glyph fallback.
   return [designNamedFontFamilyCss(alias), ...parsed.slice(1).map(({name,generic}) =>
     generic ? name.toLowerCase() : designNamedFontFamilyCss(name))].join(", ");
+}
+
+/** Private runtime aliases do not change the canonical 120-unit family contract. */
+export function createDesignRuntimeFontFamily(family, { resourceFamily, resourceAlias, aliases = [] } = {}) {
+  const parsed = parseDesignFontFamily(family);
+  if (!parsed || !Array.isArray(aliases) || aliases.length > 32) throw Error("Invalid canonical runtime font source");
+  const literal = value => typeof value === "string" && value.length > 0 && value.length <= 120 && !/[\u0000-\u001f\u007f]/u.test(value);
+  if (!aliases.every(value => value && literal(value.name) && literal(value.alias))) throw Error("Invalid runtime font alias");
+  const first = parsed[0];
+  const selected = resourceAlias !== undefined;
+  if (selected && (!literal(resourceFamily) || !literal(resourceAlias))) throw Error("Invalid primary resource font alias");
+  const explicitOverride = selected && (first.generic || first.name.toLowerCase() !== resourceFamily.toLowerCase());
+  const css = explicitOverride ? designNamedFontFamilyCss(resourceAlias) : parsed.map((part, index) => {
+    if (part.generic) return part.name.toLowerCase();
+    const alias = selected && index === 0 ? resourceAlias : aliases.find(value => value.name.toLowerCase() === part.name.toLowerCase())?.alias;
+    return designNamedFontFamilyCss(alias ?? part.name);
+  }).join(", ");
+  if (new TextEncoder().encode(css).length > 16 * 1024) throw Error("Runtime font CSS exceeds its separate 16 KiB budget");
+  const token = Object.freeze({}); runtimeFamilies.set(token, css); return token;
+}
+
+export function designRuntimeFontFamilyCss(token) {
+  if (!runtimeFamilies.has(token)) throw Error("Runtime font CSS requires a private generated family token");
+  return runtimeFamilies.get(token);
+}
+
+/** Resource-backed named fallbacks participate in the same CSS family search. */
+export function designTextFontResourceIds(node, resources = []) {
+  if (node?.type !== "text") return [];
+  const ids = new Set(node.fontRef ? [node.fontRef] : []);
+  const parsed = parseDesignFontFamily(node.fontFamily), selected = resources.find(resource => resource.id === node.fontRef);
+  if (!parsed || selected && (parsed[0].generic || parsed[0].name.toLowerCase() !== selected.family.toLowerCase())) return [...ids];
+  const names = new Set(parsed.filter(part => !part.generic).map(part => part.name.toLowerCase()));
+  for (const resource of resources) if (resource.kind === "font" && names.has(resource.family.toLowerCase())) ids.add(resource.id);
+  return [...ids];
 }
 
 /** Variable built-in weights share one full font URL, keeping portable exports bounded. */

@@ -1,12 +1,13 @@
-/* Owns the GPU surface; the saved design and interaction overlays stay external. */
+/* Owns one selected surface; saved design and interaction overlays stay external. */
 export function createRendererController({
   canvas,
   assetsBaseUrl = "",
   loadRenderer,
   capability,
+  mode = "gpu",
   onState = () => {},
 } = {}) {
-  const mode = "gpu";
+  if (!["gpu", "browser"].includes(mode)) throw Error("Unknown explicit renderer mode");
   let document = null, generation = 0, disposed = false;
   let capable, suspended = false, suspensionReason = "suspended";
   let lost = false, failure = null, slot = null, loaderPromise = null;
@@ -16,7 +17,7 @@ export function createRendererController({
     fallback: false, reason: "initializing", key: null };
   const retired = new WeakSet();
   const isCurrent = (token, target) => !disposed && generation === token && document === target;
-  const capabilityAllowed = (value) => value === true ||
+  const capabilityAllowed = (value) => mode === "browser" || value === true ||
     value?.packageAssets?.wasm === true || value?.capabilities?.packageAssets?.wasm === true;
   const validViewport = () => [viewport.width, viewport.height, viewport.dpr, viewport.zoom]
     .every((value) => Number.isFinite(value) && value > 0) &&
@@ -163,7 +164,8 @@ export function createRendererController({
       slot.drawnVersion = -1;
       slot.stats = undefined;
       stage = "setScene";
-      await instance.setScene(target.design, { resources });
+      const accepted = await instance.setScene(target.design, { resources, viewOptions: target.viewOptions });
+      if (mode === "browser" && accepted === false) return;
       if (!isCurrent(token, target)) {
         // Content revisions share a healthy surface, but a different document,
         // page, workspace or lost context can never inherit the old surface.
@@ -208,12 +210,12 @@ export function createRendererController({
     publish({ reason: "context-lost" });
     void request();
   };
-  canvas?.addEventListener?.("webglcontextlost", contextLost);
+  if (mode === "gpu") canvas?.addEventListener?.("webglcontextlost", contextLost);
 
   return {
     /** Explicitly retry GPU initialization or a failed/lost surface. */
     setMode(next = "gpu") {
-      if (next !== "gpu") throw new Error("Only GPU rendering is supported");
+      if (next !== mode) throw new Error(mode === "gpu" ? "Only GPU rendering is supported by this CanvasKit controller" : "Only browser rendering is supported by this browser controller");
       if (disposed) return Promise.resolve({ ...lastState });
       if (lost || failure) {
         const failedResources = failure?.startsWith("resources:");
@@ -236,11 +238,13 @@ export function createRendererController({
           !Object.is(input.revision, document.revision) || input.design === null;
         if (changed) {
           generation += 1; failure = null;
+          if (mode === "browser") slot?.instance.cancelPreparation?.();
           // Hide the previous scene before cloning, fetching assets or loading SDKs.
           publish({ reason: "document-changed" });
           try {
             document = input.design === null ? null : { key: input.key, revision: input.revision,
               design: structuredClone(input.design), getResources: input.getResources,
+              viewOptions: structuredClone(input.viewOptions ?? {}),
               resourcePromise: null };
           } catch (error) {
             document = null; failure = `snapshot: ${error?.message ?? String(error)}`;
@@ -259,6 +263,9 @@ export function createRendererController({
     suspend(reason = "suspended") {
       if (disposed) return Promise.resolve({ ...lastState });
       suspended = true; suspensionReason = reason;
+      if (mode === "browser" && slot && !slot.ready) {
+        generation += 1; slot.instance.cancelPreparation?.();
+      }
       publish({ reason });
       return request();
     },
@@ -268,10 +275,13 @@ export function createRendererController({
       return request();
     },
     state() { return { ...lastState }; },
+    geometry() { return lastState.active && slot?.ready && slot.document === document ? slot.instance.geometry?.() ?? null : null; },
+    hitTest(point) { return lastState.active && slot?.ready && slot.document === document ? slot.instance.hitTest?.(point) ?? null : null; },
     dispose() {
       if (!disposed) {
         disposed = true; generation += 1;
-        canvas?.removeEventListener?.("webglcontextlost", contextLost);
+        if (mode === "browser") void retire(slot?.instance);
+        if (mode === "gpu") canvas?.removeEventListener?.("webglcontextlost", contextLost);
         publish({ reason: "disposed" });
       }
       return pump ? pump.then(() => ({ ...lastState })) : clearSlot().then(() => ({ ...lastState }));
