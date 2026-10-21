@@ -375,9 +375,9 @@ export async function measureFigmaTextDocument(
           node.height = Math.ceil(height * 100) / 100;
           changed.add(node.id);
         }
-        if (originalText.trim()) {
+        if (originalText.trim() || Object.hasOwn(node, "textSource")) {
           node.textSource = originalText;
-          if (autoResize !== "WIDTH_AND_HEIGHT" && node.textOverflow !== "ellipsis") node.textFlow = "wrap";
+          if (originalText.length && autoResize !== "WIDTH_AND_HEIGHT" && node.textOverflow !== "ellipsis") node.textFlow = "wrap";
           else delete node.textFlow;
           node.textFlowWidth = node.width;
         }

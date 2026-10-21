@@ -19,9 +19,20 @@ Hug 内容编辑会重算尺寸。已知空来源按一行行高和1px宽度下�
 范围文字暂不接收基础渐变/paint stack 或省略截断；各渲染器和原生出口仍须通过自身
 能力检查，不能仅把区间写入元数据后声称绘制或往返成功。
 
-原生范围创建、来源快照和增量导回仍在实施验证。当前 Design Bridge 的传输、增量
-补丁（包括清除区间）和独立 HTML 插件原始输入均提前拒绝 `textRanges`，完整保留
-设计文档中的范围数据；不能绕过检查把新字段交给旧的统一文字创建器后静默丢失样式。
+原生范围规划器是共享纯函数：它为同一个 Text 输出完整来源字符及包含继承
+空隙的填色/链接区间，软换行不进入原生字符。首个子集只接受不透明六位十六进制纯色、
+无装饰，以及保守的绝对 HTTP(S) 或裸 ASCII mailto 地址；片段链接（包括实际原生 API
+拒绝的 #）、tel、IPv6 和 mailto 查询参数均明确拒绝。空文字返回零区间，最多64个
+输入范围生成129个范围与空隙。显式相同覆盖保持自己的边界；原稿和来源字节不变。
+新页面创建复用这份完整计划，增量导回继续受独立的原生范围边界约束。
+
+原生新页面创建已接入纯色、无装饰、完整 HTTP(S)/简单 mailto 链接的单一 Text 写入；
+候选在全部父子 AL 尺寸完成后，完整读取并复核当前来源，再保存作者意图快照；实机
+完整写入、导出恢复和往返验收仍待完成。增量补丁（包括清除区间）和独立 HTML
+插件原始输入仍提前拒绝 `textRanges`，完整保留设计文档中的范围数据。自定义下划线、
+删除线、渐变/paint stack 和未支持的链接在页面、字体或文字写入之前拒绝。
+只读 SDK 范围观察器已具备完整 UTF16 边界、原始值和整包预算检查；目前尚未接入
+导出流程，不表示原生范围来源或往返已完成。
 
 ## 0.22：CanvasKit GPU 画布
 
@@ -653,3 +664,60 @@ native transfer, unequal rounded side joins and adjacent sides with different al
 are explicitly rejected or diagnosed. Collapsed table borders retain a diagnosed
 measured approximation. Strict border evidence and remaining antialiasing limits are
 recorded in `docs/todo/design-studio-css-border-sides-2026-10-21.md`.
+
+The staged pure `native-text-range-hint.mjs` helper preserves author range intent
+that effective native styles cannot distinguish, including explicit same-color
+overrides and an unused base color beneath a full-source override.
+`buildNativeTextRangeHint({rest, source, authorNode, pluginId, key})` requires a
+complete independently bound final native source and an equal effective
+paint/link setter plan. `restoreNativeTextRangeHint({rest, source,
+canonicalNode, hint, pluginId, key})` returns only an owned `{fill, textRanges}`
+patch after the complete current snapshot and effective plan both agree.
+Stored metadata never overrides native characters, typography or identity.
+It records author intent, not cryptographic proof of historical unused colors
+or explicit same-style boundaries; equivalent hints cannot change live paint.
+Raw unknown getter observations remain in the snapshot; known segment values
+must independently prove the effective style. Hints have a 64 KiB UTF-8 JSON
+limit and include plugin ID/key overhead in the 100,000-byte storage-entry
+budget. Stale, partial, unsupported or oversized inputs refuse atomically.
+Line-height units and font axes remain exact. PERCENT metrics accept the exact
+requested value or the SDK's exact Float32-ratio transport; PIXELS has no
+quantization allowance. No epsilon, scalar fitting or raw rewrite is used.
+The creation candidate now uses this helper through final SDK capture
+and plugin-data writes; export and author-hint restoration remain unhooked.
+
+Native text source binding compares REST character overrides in Unicode scalar
+order against SDK UTF16 segments and accepts the exact Float32 serialization of
+native percentage line heights. Raw observations and snapshot comparisons remain
+unchanged. See the
+[actual SDK projection evidence](../../docs/todo/design-studio-native-text-rest-projection-2026-10-21.md)
+for historical failures and Unicode controls, and the
+[exact canonical transport contract](../../docs/todo/design-studio-native-percent-transport-2026-10-21.md)
+for current metric admission and remaining complete-writer/native-pixel limits.
+
+The staged pure `native-text-range-compare.mjs` helper compares complete historical
+and current native text evidence, each validated against its own REST node.
+It preserves exact raw observations and separately compares resolved REST styles,
+including unknown keys and style references. Equivalent override ID renumbering
+passes; missing history explicitly requires a snapshot. It does not activate
+original-node writes or replace geometry/source checks. See the
+[comparison contract and controls](../../docs/todo/design-studio-native-text-source-compare-2026-10-21.md).
+
+The `figma-plugin/text-range-state.mjs` finalizer combines complete SDK
+capture with author-hint validation after final layout. It stages all hints and
+rechecks every owned Text after the last awaited export before writing metadata;
+the new-page factory supplies actual bounded ancestry and subtree checks, then
+rechecks final image sizes before exposing the result. Empty or normalized-away
+range payloads create ordinary Text without a nonempty intent hint. Explicit
+empty authored responsive content remains valid. Original-node range updates
+and the standalone HTML plugin remain blocked.
+
+Post-await mutations validate the highest enabled Auto Layout ancestor so that
+native reflow cannot resize a user-inserted foreign descendant. Rollback removes
+only newly owned pages whose current descendants are all owned; a page with an
+inserted external layer is retained with an explicit failure. Owned layers moved
+outside those pages are preserved, and cleanup does not reset external page
+navigation or selections. Complete-field SDK mocks cover staging, source races,
+storage failure across pages and foreign-layer preservation. These are VM
+checks, not actual native or cross-renderer pixel acceptance. Native complete
+writer, percentage transport and final factory acceptance remain pending.

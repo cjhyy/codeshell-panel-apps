@@ -216,7 +216,8 @@ function editedNode(node, source, ranges) {
   // an empty result or an edit on a previously unstyled Text.
   next.textSource = source;
   delete next.textMetrics; delete next.textMeasurement; delete next.textFlowWidth;
-  if (!source.trim()) { delete next.textFlow; delete next.textOverflow; }
+  if (!source.length) delete next.textFlow;
+  if (!source.trim()) delete next.textOverflow;
   const normalized = coalesce(ranges);
   if (normalized.length) next.textRanges = { version: 1, sourceSignature: textRangeSourceSignature(source), ranges: normalized };
   else delete next.textRanges;

@@ -5186,6 +5186,7 @@
   var tokenKeys = [...geometryKeys, "visibility", "opacity", "background-color", "background-image", "border-image-source", "box-shadow", "text-shadow", "outline-style", "filter", "backdrop-filter", "mix-blend-mode", "appearance", "resize", "clip-path", "mask-image", "-webkit-mask-image", "overflow-x", "overflow-y", "animation-name", "transition-duration"];
 
   // apps/design-studio/app/text-ranges.mjs
+  var MAX_TEXT_RANGES = 64;
   var MAX_TEXT_RANGES_BYTES = 32 * 1024;
 
   // apps/design-studio/app/linear-gradient-geometry.mjs
@@ -5386,6 +5387,79 @@
   // apps/design-studio/app/document.mjs
   var MAX_SVG_EXPORT_BYTES = 384 * 1024;
   var MAX_LOCAL_SVG_EXPORT_BYTES = 4 * 1024 * 1024;
+
+  // apps/design-studio/app/native-text-ranges-source.mjs
+  var MAX_NATIVE_TEXT_RANGE_SOURCE_BYTES = 256 * 1024;
+  var NATIVE_TEXT_RANGE_FIELDS = Object.freeze([
+    "fontName",
+    "fontSize",
+    "fontWeight",
+    "fontStyle",
+    "lineHeight",
+    "letterSpacing",
+    "fills",
+    "textDecoration",
+    "textDecorationStyle",
+    "textDecorationOffset",
+    "textDecorationThickness",
+    "textDecorationColor",
+    "textDecorationSkipInk",
+    "hyperlink",
+    "textCase",
+    "openTypeFeatures",
+    "textStyleId",
+    "fillStyleId",
+    "listOptions",
+    "listSpacing",
+    "indentation",
+    "paragraphIndent",
+    "paragraphSpacing",
+    "textStyleOverrides",
+    "boundVariables",
+    "textWrapStyle"
+  ]);
+  var NATIVE_TEXT_RANGE_SCALAR_ONLY_FIELDS = Object.freeze([
+    "hasMissingFont",
+    "textTruncation",
+    "maxLines",
+    "leadingTrim",
+    "hangingPunctuation",
+    "hangingList",
+    "textAlignHorizontal",
+    "textAlignVertical",
+    "textAutoResize",
+    "layoutSizingHorizontal",
+    "layoutSizingVertical"
+  ]);
+
+  // apps/design-studio/app/native-text-range-plan.mjs
+  var MAX_NATIVE_TEXT_RANGE_RUNS = MAX_TEXT_RANGES * 2 + 1;
+  var geometry = ["textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk"];
+  var fields = [
+    "type",
+    "text",
+    "textSource",
+    "textFlow",
+    "textRanges",
+    "fill",
+    "fillPaints",
+    "textDecoration",
+    ...geometry,
+    "textOverflow",
+    "fontSize"
+  ];
+
+  // apps/design-studio/app/native-text-range-hint.mjs
+  var MAX_NATIVE_TEXT_RANGE_HINT_BYTES = 64 * 1024;
+
+  // apps/design-studio/app/native-text-import.mjs
+  var NATIVE_TEXT_SUPPLEMENT_KEY = "nativeTextRanges";
+  var NATIVE_TEXT_RESERVED_RAW_KEYS = Object.freeze([
+    "codeshellNativeTextRanges",
+    "codeshellNativeTextRangeHint",
+    "codeshellTextRangeIntent",
+    NATIVE_TEXT_SUPPLEMENT_KEY
+  ]);
 
   // apps/design-studio/app/figma-assets.mjs
   var MAX_FIGMA_ASSET_BYTES = 8 * 1024 * 1024;
@@ -5644,7 +5718,7 @@
     if (node?.textRanges === void 0) return;
     const label = (typeof node.name === "string" ? node.name : typeof node.id === "string" ? node.id : "Text").slice(0, 120);
     const error = new Error(
-      label + "\uFF1A\u8303\u56F4\u6587\u5B57\u7684\u539F\u751F\u521B\u5EFA\u548C\u589E\u91CF\u5BFC\u56DE\u5C1A\u672A\u5B8C\u6210\u9A8C\u8BC1\uFF1B\u5DF2\u963B\u6B62\u4E92\u8F6C\uFF0C\u672A\u4E22\u5F03\u8303\u56F4\u6837\u5F0F\u3002"
+      label + "\uFF1A\u8303\u56F4\u6587\u5B57\u7684\u6B64\u9879\u539F\u751F\u4E92\u8F6C\u5C1A\u672A\u5B8C\u6210\u9A8C\u8BC1\uFF1B\u5DF2\u963B\u6B62\u4E92\u8F6C\uFF0C\u672A\u4E22\u5F03\u8303\u56F4\u6837\u5F0F\u3002"
     );
     error.code = "TEXT_RANGES_NATIVE_UNSUPPORTED";
     throw error;
