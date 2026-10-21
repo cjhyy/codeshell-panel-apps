@@ -474,6 +474,7 @@ function rendererStateChanged(mode, state) {
     const textRangeFailure = !state.active && typeof state.reason === "string" &&
       state.reason.includes("TEXT_RANGES_UNSUPPORTED:");
     const instanceSizingFailure = !state.active && mode === "browser" && typeof state.reason === "string" && state.reason.includes("BROWSER_INSTANCE_SIZING_UNSUPPORTED:");
+    const instanceEffectFailure = !state.active && mode === "browser" && typeof state.reason === "string" && state.reason.includes("BROWSER_INSTANCE_EFFECT_UNSUPPORTED:");
     elements.stageWrap.dataset.gpuActive = String(mode === "gpu" && state.active);
     elements.stageWrap.dataset.browserActive = String(mode === "browser" && state.active);
     elements.stageWrap.dataset.rendererMode = mode;
@@ -484,6 +485,8 @@ function rendererStateChanged(mode, state) {
         ? "范围文字不支持"
       : instanceSizingFailure
         ? "实例尺寸不支持"
+      : instanceEffectFailure
+        ? "实例效果不支持"
       : state.loading
         ? mode === "browser" ? "浏览器加载中" : "GPU 加载中"
         : mode === "browser" ? "浏览器不可用" : "GPU 不可用";
@@ -496,6 +499,8 @@ function rendererStateChanged(mode, state) {
         ? state.reason.split("TEXT_RANGES_UNSUPPORTED:").slice(1).join("TEXT_RANGES_UNSUPPORTED:").slice(0, 400)
       : instanceSizingFailure
         ? state.reason.split("BROWSER_INSTANCE_SIZING_UNSUPPORTED:").slice(1).join("BROWSER_INSTANCE_SIZING_UNSUPPORTED:").slice(0,400)
+      : instanceEffectFailure
+        ? state.reason.split("BROWSER_INSTANCE_EFFECT_UNSUPPORTED:").slice(1).join("BROWSER_INSTANCE_EFFECT_UNSUPPORTED:").slice(0,400)
       : state.status === "unavailable"
         ? "当前宿主不支持 GPU 画布，请更新 CodeShell 后重试。"
         : mode === "browser" ? "浏览器画布暂时不可用，设计数据已保留。请点击重试。" : "GPU 画布暂时不可用，设计数据已保留。请点击重试。";

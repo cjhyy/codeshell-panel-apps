@@ -2369,3 +2369,14 @@ resize未扩展。source400截图与后续geometry时刻不同的gallery旧烟�
 passing191日志b442f7954631243d3a1f26581143103bf5689ff9365d9a13bb993da0ec74bd32。
 仅CPU/VM；此owner没有实际Figma、安装、GPU或发布。root后续运行同canonical/
 bytes原模板的CK GPU与Browser对照；独立peer和最终产品合入仍单独记录。
+
+随后实际CPU对照确认：Fixed实例自身scalar shadow在shared frontend被paintless
+wrapper忽略，相对现有canonical SVG有1400px/max128差异；冻结77d原图/转换图/
+差异图和canonical收据233e83aea8bad49d12e7d6590059b376c8226d4376c97547117e22dd7e296bdf
+保留。仅Browser增加opacity>0的发布前明确拒绝，含nested instance；不猜测CSS
+box-shadow等价性、不改共享模型或CK/native。opacity0和显式移除效果可恢复；实际
+UI显示实例效果限制并保留用户Browser选择和canonical，无自动切CK。
+
+此guard后193/193 affected pass，18410.994708ms；typecheck、validate136/94/93、
+3generated/scoped/diff均exit0，所有generated plugin字节与77d相同。原V1 root实际
+6state WebGL/Browser诊断不自动赋予source/旧ROI验收资格；owner没有GPU/Figma执行。

@@ -64,6 +64,13 @@ instance counterexample is preserved separately. Returning the canonical instanc
 to explicit Fixed dimensions recovers the same Browser surface choice. Fixed
 instances preserve the master's opacity, clipping, visibility and rotation in
 component coordinates before the instance's nonuniform scale and outer transform.
+An instance's own visible scalar shadow (`shadow.opacity > 0`) also refuses before
+publication, including instances inside another component. The existing shared
+frontend exporter omits that effect on its paintless instance wrapper; this view
+does not substitute a CSS box shadow for the canonical alpha shadow. The actual
+Browser-versus-canonical-SVG counterexample is 1,400 pixels/max128 and is retained.
+The UI names the unsupported effect, retains canonical data and keeps the explicit
+Browser choice; removing the effect or retaining only opacity0 recovers rendering.
 
 ## Evidence and limits
 

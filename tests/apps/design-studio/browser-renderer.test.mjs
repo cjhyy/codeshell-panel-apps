@@ -5,7 +5,7 @@ import { resolve, sep, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { PNG } from "pngjs";
-import { normalizeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
+import { normalizeDesignDocument, exportDesignSvg } from "../../../apps/design-studio/app/document.mjs";
 
 const app = resolve(fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
 const evidence = process.env.CODESHELL_BROWSER_RENDERER_EVIDENCE_DIR;
@@ -241,4 +241,22 @@ test("Fill instances explicitly refuse before publication and recover with autho
  const recovered=await page.evaluate(async design=>{await renderer.setScene(design);return renderer.geometry().get("fill-instance");},fixed),fixedPng=await page.screenshot(),comparison=pixelDiff(source,fixedPng);
  if(evidence){await writeFile(join(evidence,"fixed-instance-recovered.png"),fixedPng);await writeFile(join(evidence,"fixed-instance-diff.png"),comparison.png);await writeFile(join(evidence,"fixed-instance-recovered.json"),JSON.stringify({cpuOnly:true,recovered,differentPixels:comparison.differentPixels,maxDelta:comparison.maxDelta},null,2)+"\n");}
  assert.deepEqual([recovered.x,recovered.y,recovered.width,recovered.height],[30,30,300,30]);assert.equal(comparison.differentPixels,0);
+});
+
+test("visible scalar instance shadows refuse before publication, including nested instances, and clearing recovers",async t=>{
+ const {page}=await fixture(t),shadow={color:"#000000",opacity:.5,x:20,y:10,blur:0};
+ const master=base("master","component",500,500,100,30,{fill:"transparent",children:[base("blue","rectangle",500,500,100,30,{fill:"#0000ff"})]});
+ const source={format:"codeshell.design",version:3,name:"Instance shadow",canvas:{width:800,height:500,background:"#ffffff"},tokens:{colors:[]},resources:[],activePageId:"page",pages:[{id:"page",name:"Page",children:[base("instance","instance",40,40,100,30,{fill:"transparent",componentId:"master",shadow})]},{id:"library",name:"Library",children:[master]}]};
+ const design=normalizeDesignDocument(source),safe=structuredClone(design);delete safe.nodes[0].shadow;
+ const nestedSource=structuredClone(source);nestedSource.pages[0].children[0].componentId="parent";delete nestedSource.pages[0].children[0].shadow;nestedSource.pages[1].children.push(base("parent","component",0,0,100,30,{fill:"transparent",children:[base("inner","instance",0,0,100,30,{fill:"transparent",componentId:"master",shadow})]}));
+ const nested=normalizeDesignDocument(nestedSource);
+ const proof=await page.evaluate(async({safe,design,nested})=>{
+  await renderer.setScene(safe);renderer.resize(800,500);renderer.render();const prior=[...renderer.geometry()],raw=JSON.stringify(design),nestedRaw=JSON.stringify(nested);const errors=[];
+  for(const candidate of [design,nested])try{await renderer.setScene(candidate);errors.push(null);}catch(error){errors.push({code:error.code,message:error.message});}
+  const retained=JSON.stringify(prior)===JSON.stringify([...renderer.geometry()]);const inactive=structuredClone(design);inactive.nodes[0].shadow.opacity=0;const acceptedInactive=await renderer.setScene(inactive);await renderer.setScene(safe);
+  return{errors,retained,acceptedInactive,sourceUnchanged:raw===JSON.stringify(design),nestedUnchanged:nestedRaw===JSON.stringify(nested),recovered:renderer.geometry().get("instance")};
+ },{safe,design,nested});
+ const converted=await page.screenshot(),svg=exportDesignSvg(safe);await page.evaluate(svg=>{renderer.dispose();document.body.innerHTML=svg;},svg);const reference=await page.screenshot(),comparison=pixelDiff(reference,converted);
+ if(evidence){await mkdir(evidence,{recursive:true});await writeFile(join(evidence,"instance-shadow-cleared-reference.png"),reference);await writeFile(join(evidence,"instance-shadow-cleared-converted.png"),converted);await writeFile(join(evidence,"instance-shadow-cleared-diff.png"),comparison.png);await writeFile(join(evidence,"instance-shadow-guard.json"),JSON.stringify({cpuOnly:true,proof,differentPixels:comparison.differentPixels,maxDelta:comparison.maxDelta},null,2)+"\n");}
+ assert(proof.errors.every(error=>error?.code==="BROWSER_INSTANCE_EFFECT_UNSUPPORTED"));assert(proof.retained&&proof.acceptedInactive&&proof.sourceUnchanged&&proof.nestedUnchanged);assert.deepEqual([proof.recovered.x,proof.recovered.y,proof.recovered.width,proof.recovered.height],[40,40,100,30]);assert.equal(comparison.differentPixels,0);
 });

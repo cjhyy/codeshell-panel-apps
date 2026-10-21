@@ -14,7 +14,7 @@ CanvasKit `MakeSurface` font/range controls and native source/import/plugin VM
 tests. Browser launches in this set explicitly pass `--disable-gpu`. Native VM
 controls are not actual Figma execution. Typecheck, validation (Design Studio136,
 Job94, Quant93 and other packages), all three generated checks, scoped package
-build check and diff check passed. The final follow-up changes only this record,
+build check and diff check passed. The `77d6d01` follow-up changes only this record,
 the shared task journal and the existing range-status test's source extractor.
 
 The first affected run had 190/191 passes: its existing test sliced the old inline
@@ -72,3 +72,23 @@ and later geometry were not simultaneous and do not prove source fidelity.
 Browser/CanvasKit GPU paired acceptance is owned by the parent task and was not
 run by this owner. Actual Figma execution remains **NOT_RUN**; native font/range
 eligibility, source binding and SDK safety are independent boundaries.
+
+The scalar instance-shadow successor preserves a real 1,400-pixel/max128 CPU
+Browser-versus-existing-canonical-SVG counterexample from exact `77d6d01` bytes.
+Its receipt has SHA-256
+`233e83aea8bad49d12e7d6590059b376c8226d4376c97547117e22dd7e296bdf`.
+The shared frontend omits a scalar instance's own alpha shadow. The narrow
+Browser-only successor refuses `shadow.opacity > 0` before publication, including
+nested instances, without changing the shared model, CanvasKit or native output.
+Two new CPU controls prove prior-safe geometry/source retention, inactive0,
+clearing-effect strict0 recovery and the actual UI's localized refusal/removal
+recovery with no automatic switch. The original failure is not rewritten as a
+zero-pixel conversion pass.
+
+The scalar-shadow successor affected gate passed 193/193 in 18,410.994708 ms,
+with typecheck, validate136/94/93/all packages, all three generated checks, scoped
+build and diff checks passing. Its generated plugin files remain byte-identical
+to `77d6d01`; this guard changes only the Browser renderer and its app diagnostic.
+The preserved shadow failure is a canonical SVG reference, not native or GPU
+acceptance. Parent-owned final peer, full combined gate and qualified original
+gallery comparison remain separate.

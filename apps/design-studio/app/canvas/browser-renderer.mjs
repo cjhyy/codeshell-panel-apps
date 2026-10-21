@@ -124,6 +124,10 @@ export function createBrowserRenderer({ container, document = container?.ownerDo
       const onRenderNode = (node,parent) => {
         if (node.type === "image") assert(assets.has(node.imageRef), `Missing owned image bytes for ${node.id}`);
         if (node.type !== "instance") return;
+        if (node.shadow?.opacity > 0) {
+          const error=Error(`BROWSER_INSTANCE_EFFECT_UNSUPPORTED: 浏览器画布暂不支持实例“${String(node.name ?? node.id).slice(0,120)}”自身的可见阴影。请移除该效果或手动选择 CanvasKit；设计数据已保留。`);
+          error.code="BROWSER_INSTANCE_EFFECT_UNSUPPORTED";throw error;
+        }
         const parentLayout = node.layoutPositioning === "absolute" ? "none" : parent?.layout;
         const inheritedStretch = parent?.alignItems === "stretch" && (!node.layoutAlignSelf || node.layoutAlignSelf === "auto") && ["horizontal","vertical","grid"].includes(parentLayout);
         const constrained = ["Horizontal","Vertical"].some(axis=>node[`constraint${axis}`] === "stretch") ||
