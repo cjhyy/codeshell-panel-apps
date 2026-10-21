@@ -44,8 +44,15 @@ async function proof(page, html, mutation = "none") {
     let getterReads = 0;
     if (mutation === "accessor" && zero) Object.defineProperty(zero, "extra", { get() { getterReads++; throw Error("must not invoke"); } });
     if (mutation === "budget" && zero) zero.extra = "x".repeat(4001);
-    const before = mutation === "accessor" ? null : JSON.stringify(tree), domBefore = root.outerHTML;
+    const getterMutation = mutation.includes("parent-getter");
+    const before = mutation === "accessor" || getterMutation ? null : JSON.stringify(tree), domBefore = root.outerHTML;
     const control = createHtmlZeroFlowTokenCapture({ tree, root, elements, ambiguousElements });
+    const installParentGetter = () => {
+      const key = mutation.replace(/^late-/u, "").slice("parent-getter-".length);
+      Object.defineProperty(key === "child-index" ? tree.children : tree, key === "child-index" ? "0" : key,
+        { configurable: true, get() { getterReads++; throw Error("must not invoke parent projection getter"); } });
+    };
+    if (getterMutation && !mutation.startsWith("late-")) installParentGetter();
     const candidate = control.capture(tree), opaque = !candidate || Object.isFrozen(candidate) && Reflect.ownKeys(candidate).length === 0;
     const plan = consumeHtmlZeroFlowTokenPlan(candidate, tree, tree);
     if (plan) plan.accept("parent");
@@ -57,11 +64,12 @@ async function proof(page, html, mutation = "none") {
     if (mutation === "late-source" && zero) zero.bounds.y += 1;
     if (mutation === "late-reorder" && token) root.append(token);
     if (mutation === "late-upgrade") customElements.define("silent-config", class extends HTMLElement { constructor() { super(); this.attachShadow({ mode: "closed" }); } });
+    if (getterMutation && mutation.startsWith("late-")) installParentGetter();
     await Promise.resolve();
     let finalError = null;
     try { control.verify(); } catch (error) { finalError = error.message; }
     return { admitted: Boolean(plan), opaque, secondUse: Boolean(secondUse), report: control.report(), finalError, getterReads,
-      sourceUnchanged: before === null || before === JSON.stringify(tree), domUnchanged: domBefore === root.outerHTML,
+      sourceUnchanged: before === null ? null : before === JSON.stringify(tree), domUnchanged: domBefore === root.outerHTML,
       fakePlan: consumeHtmlZeroFlowTokenPlan({ source: tree, tokens: new Set([zero]) }, tree, tree) };
   }, mutation);
 }
@@ -194,5 +202,16 @@ test("final source-only proof refuses post-await identity, content, paint, sourc
   for (const mutation of ["replace", "late-text", "late-shadow", "late-source", "late-reorder", "late-upgrade"]) {
     const page = await setup(t), p = await proof(page, markup(), mutation);
     assert.equal(p.admitted, true, mutation); assert.match(p.finalError, /HTML_ZERO_FLOW_TOKEN_UNVERIFIED/u, mutation);
+  }
+});
+
+test("parent projection and child-order descriptors refuse capture and final getters without executing them", async t => {
+  const page = await setup(t);
+  for (const field of ["name", "layout", "bounds", "semantic", "children", "child-index"]) {
+    const early = await proof(page, markup(), "parent-getter-" + field);
+    assert.equal(early.admitted, false, field); assert.equal(early.getterReads, 0, field); assert(early.domUnchanged);
+    const late = await proof(page, markup(), "late-parent-getter-" + field);
+    assert.equal(late.admitted, true, field); assert.equal(late.getterReads, 0, field);
+    assert.match(late.finalError, /HTML_ZERO_FLOW_TOKEN_UNVERIFIED/u, field); assert(late.domUnchanged);
   }
 });

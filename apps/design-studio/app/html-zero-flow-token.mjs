@@ -16,6 +16,18 @@ const signature = (view, element, keys) => {
   }));
 };
 const fail = () => { throw Error("HTML_ZERO_FLOW_TOKEN_UNVERIFIED: source-only token proof changed"); };
+const own = (value, key) => {
+  if (!value || typeof value !== "object") return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (descriptor && !Object.hasOwn(descriptor, "value")) fail();
+  return descriptor?.value;
+};
+const childrenOf = source => {
+  const children = own(source, "children");
+  if (children === undefined) return [];
+  if (!Array.isArray(children) || children.length > 10000) fail();
+  return Array.from({ length: children.length }, (_, index) => own(children, String(index)));
+};
 
 // Source snapshots never invoke getters, toJSON or inherited serialization code.
 function snapshot(value) {
@@ -41,7 +53,10 @@ function snapshot(value) {
   };
   return JSON.stringify(visit(value, 0));
 }
-const parentSnapshot = source => snapshot(Object.fromEntries(["id", "nodeType", "name", "tag", "semantic", "bounds", "layout", "cssLayout", "positioning", "transform"].map(key => [key, source[key]])));
+const parentSnapshot = source => snapshot({
+  ...Object.fromEntries(["id", "nodeType", "name", "tag", "semantic", "bounds", "layout", "cssLayout", "positioning", "transform"].map(key => [key, own(source, key)])),
+  childCount: childrenOf(source).length,
+});
 
 function ordinary(view, element) {
   const style = view.getComputedStyle(element);
@@ -80,15 +95,16 @@ export function createHtmlZeroFlowTokenCapture({ tree, root, elements, ambiguous
   let acceptedStringUnits = 0;
   const result = { checked: 0, refused: 0, tokens: [] }, view = root.ownerDocument.defaultView;
   const visit = (source, parent, origin, depth) => {
-    if (!source || typeof source !== "object" || seen.has(source) || seen.size >= 10000 || depth > 32 ||
-        !source.bounds || !["x", "y", "width", "height"].every(key => bounded(source.bounds[key])) ||
-        (source.children !== undefined && !Array.isArray(source.children))) fail();
+    if (!source || typeof source !== "object" || seen.has(source) || seen.size >= 10000 || depth > 32) fail();
+    const originalBounds = own(source, "bounds"), children = childrenOf(source),
+      bounds = Object.fromEntries(["x", "y", "width", "height"].map(key => [key, own(originalBounds, key)]));
+    if (!Object.values(bounds).every(bounded)) fail();
     seen.add(source); parents.set(source, parent);
-    const box = { ...source.bounds, x: origin.x + source.bounds.x, y: origin.y + source.bounds.y };
+    const box = { ...bounds, x: origin.x + bounds.x, y: origin.y + bounds.y };
     if (![box.x, box.y].every(bounded)) fail(); worlds.set(source, box);
-    const id = source.nodeType === "container" && source.semantic?.semanticId;
+    const id = own(source, "nodeType") === "container" && own(own(source, "semantic"), "semanticId");
     if (id) containers.set(id, (containers.get(id) ?? 0) + 1);
-    for (const child of source.children ?? []) visit(child, source, box, depth + 1);
+    for (const child of children) visit(child, source, box, depth + 1);
   };
   try { visit(tree, null, { x: 0, y: 0 }, 0); } catch { return { capture: () => null, verify() {}, report: () => result }; }
   const elementFor = source => {
@@ -126,29 +142,34 @@ export function createHtmlZeroFlowTokenCapture({ tree, root, elements, ambiguous
     return { parent, realTokens };
   };
   const current = record => {
+    const sourceSnapshot = parentSnapshot(record.source), sourceChildren = childrenOf(record.source),
+      snapshots = record.tokenSources.map(snapshot);
     const { parent, realTokens } = prove(record.source, record.tokenSources);
     if (parent !== record.parent || parent.parentNode !== record.owner ||
         parent.childNodes.length !== record.nodes.length || record.nodes.some((node, index) => parent.childNodes[index] !== node) ||
-        sourceChildrenChanged(record) || parentSnapshot(record.source) !== record.sourceSnapshot ||
+        own(record.source, "children") !== record.childrenArray || sourceChildren.length !== record.children.length ||
+        record.children.some((child, index) => sourceChildren[index] !== child) || sourceSnapshot !== record.sourceSnapshot ||
         signature(view, parent, geometryKeys) !== record.parentStyle ||
         record.elements.some(item => item.element.parentElement !== parent || !sameBox(item.box, item.element.getBoundingClientRect()) ||
           signature(view, item.element, geometryKeys) !== item.style) ||
-        record.tokenSources.some((token, index) => snapshot(token) !== record.snapshots[index] ||
+        record.tokenSources.some((token, index) => snapshots[index] !== record.snapshots[index] ||
           signature(view, realTokens[index], tokenKeys) !== record.tokenStyles[index])) fail();
   };
-  const sourceChildrenChanged = record => record.source.children.length !== record.children.length ||
-    record.children.some((child, index) => record.source.children[index] !== child);
   return {
     capture(source) {
-      if (!seen.has(source) || !["block", "flow-root"].includes(source.layout?.display)) return null;
-      const tokenSources = (source.children ?? []).filter(child => child.bounds?.width === 0 && child.bounds?.height === 0 && child.nodeType === "container");
-      if (!tokenSources.length) return null;
-      result.checked += tokenSources.length;
+      if (!seen.has(source)) return null;
+      let tokenSources = [];
       try {
+        const sourceSnapshot = parentSnapshot(source), children = childrenOf(source);
+        if (!["block", "flow-root"].includes(source.layout?.display)) return null;
+        tokenSources = children.filter(child => worlds.get(child)?.width === 0 && worlds.get(child)?.height === 0 && own(child, "nodeType") === "container");
+        if (!tokenSources.length) return null;
+        result.checked += tokenSources.length;
         if (tokenSources.length > 100 || accepted.length >= 100 || result.tokens.length + tokenSources.length > 500) fail();
+        const snapshots = tokenSources.map(snapshot);
         const { parent, realTokens } = prove(source, tokenSources);
-        const record = { source, tokenSources, parent, owner: parent.parentNode, nodes: [...parent.childNodes], children: [...source.children],
-          sourceSnapshot: parentSnapshot(source), snapshots: tokenSources.map(snapshot),
+        const record = { source, tokenSources, parent, owner: parent.parentNode, nodes: [...parent.childNodes], children, childrenArray: own(source, "children"),
+          sourceSnapshot, snapshots,
           parentStyle: signature(view, parent, geometryKeys), tokenStyles: realTokens.map(element => signature(view, element, tokenKeys)),
           elements: [...parent.children].map(element => ({ element, box: element.getBoundingClientRect(), style: signature(view, element, geometryKeys) })) };
         const stringUnits = record.sourceSnapshot.length + record.parentStyle.length +
@@ -177,8 +198,10 @@ export function consumeHtmlZeroFlowTokenPlan(plan, original, current) {
   const proof = issuedPlans.get(plan);
   if (!proof) return null;
   issuedPlans.delete(plan);
-  if (proof.source !== original || current.semantic !== original.semantic || current.layout !== original.layout ||
-      current.cssLayout !== original.cssLayout || current.children?.length !== original.children?.length ||
-      proof.tokenSources.some(token => current.children[original.children.indexOf(token)] !== token)) return null;
-  proof.verify(); return { tokens: new Set(proof.tokenSources), accept: proof.accept };
+  proof.verify();
+  const originalChildren = childrenOf(original), currentChildren = childrenOf(current);
+  if (proof.source !== original || own(current, "semantic") !== own(original, "semantic") || own(current, "layout") !== own(original, "layout") ||
+      own(current, "cssLayout") !== own(original, "cssLayout") || currentChildren.length !== originalChildren.length ||
+      proof.tokenSources.some(token => currentChildren[originalChildren.indexOf(token)] !== token)) return null;
+  return { tokens: new Set(proof.tokenSources), accept: proof.accept };
 }
