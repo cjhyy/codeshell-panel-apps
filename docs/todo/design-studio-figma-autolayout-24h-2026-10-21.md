@@ -2283,3 +2283,43 @@ numeric value并不单独证明CSS自动min-content行为。既有实际289e088a
 回填固定min-width、增加ABS或宣称Browser/CK像素通过。详见
 [原始Grid约束记录](design-studio-original-grid-contract-2026-10-21.md)。54项证据pin
 handoff v2 SHAa3fe910df3aef099b03e7d137234685936acee282be1e471ac5bc450a7291ea0。
+
+## ROUND47 · 空 inline 来源证明与原始模板独立验收 · 2026-10-21 16:08 SG
+
+正常合入zero-token冻结76797f9（代码4903a6d），组合代码774300b；再正常合入原始
+gallery b1f62f2与Grid诊断6bcd4df。后两项仅fixture/docs，不改变774300b的135个安装
+文件或测试catalog。Grid journal尾部冲突保存原文件后按顺序保留两侧全部记录，没有
+ours隐藏内容。最终文档组合63b6edc的产品字节另行复核，未重复计数历史门禁。
+
+只有真实捕获中的当前空inline/static非绘制节点，经过private WeakMap一次性能力、
+原DOM身份/顺序/完整样式及源descriptor快照检查，才可保留为source-only provenance。
+已有block planner仍须独立准入；真实块ID、Fill/Hug和原始索引保留，不生成虚假1px节点、
+隐藏占位或ABS。所有资源/文字/table await之后再次校验，后面不再await。ID/name、
+ARIA/交互、升级custom element、shadow/counter/NBSP等均拒绝；未来脚本/CSS行为须重捕获。
+
+root peer发现parent projection在descriptor-safe clone前读getter的问题，owner已修复；
+12项capture/final getter控制零读取。root另独立执行6focused和两个新生产案例：一个父
+容器含3token、两个嵌套父各含token，原宽/重排/窄屏均严格0像素，保存重开/改高度的流
+关系正确。真实image-await后新增ID/name均拒绝并清理iframe；这些仅CPU/browser SVG
+导出对照，不是CanvasKit GPU或真实Figma。root peer SHA8e4ea4743702678738364f9849b9a5e57f33cc0cbbae7c2565d62a33981e99f9。
+owner交接及491项证据共506条pin另经root核对；affected364/364通过。
+
+组合完整main855项854pass/1skip（228067.506334ms），UI107项106pass/1skip
+（103445.21675ms），共962项960pass/2skip。typecheck、validate、scoped build check、
+三个生成检查和diff check通过；各门禁HEAD/app/tests/catalog/helper前后不变。组合证据
+SHA7feee3a6abb0fbdc43c13960ee368bc54486b9e1d574f25a1c8c1c201186ad36。
+真实WSS仅流覆盖198→200/213、失败15→13、未解决252不变；全页初始/重排仍
+482233/670665差异像素，窄屏606326→606327仍失败。248个转换像素变化中0修复、
+1新增错误，其余原本已错；未用容差或坐标拟合掩盖已有0.01舍入影响。
+
+原gallery独立peer核对6raw/221源清单/134app/959证据pin与64项完整运行时内容，
+解码70组源对照；确认11eligible→44capture、22model edits及36字体/8阴影transfer
+拒绝，不把source replay当转换通过。peer SHA0ed3284c120ebe0c7f806ca0d25e90f190d587079246467944276e4ba735d848。
+Grid root另核对134app/54artifacts，并独立解码四组负控制PNG；peer
+SHA0311b9d196caf4a211426909b5eb8ca29ef5025112eba3babdd3d65e169f7cbf。没有Grid准入提升。
+
+ROUND46旧native9296/553工作树和分支在稳定同步、owner释放全部reader/依赖后普通
+移除，外部证据保留；cleanup SHA1b7994fef6645f9dee9cc93ed85959bcd758e15252be4d660dfa22490985adc5。
+08:00:40UTC复查cuaAvailable:false，当前实机Figma验收仍NOT_RUN。Browser显式第二版
+正在独立review：已修hidden Hug、反向流误重排和取消resize旧选框，加载中资源释放及
+固定尺寸组件master属性遗漏仍在修复；尚未合入。CK默认不变，截止00:31SG不变。
