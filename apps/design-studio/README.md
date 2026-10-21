@@ -441,9 +441,13 @@ an optional priority; its exact ID enters the existing brief `id` field.
 
 ```markdown
 ## Requirements
-- [id:req-sign-in] P0 Sign in with email acceptance: Reach Home.
+- [ ] [id:req-sign-in] P0 Sign in with email acceptance: Reach Home.
 - [id:req-orders-view] P1 查看订单详情 验收：显示订单编号。
 ```
+
+An optional leading task checkbox (`[ ]`, `[x]` or `[X]`) can immediately precede
+the ID declaration. Toggling it keeps the same authored ID. Unannotated task items
+retain their existing ID, statement and priority bytes for compatibility.
 
 IDs contain 1–64 ASCII lowercase letters, digits or hyphens and start with a letter.
 Keep the ID unchanged when editing the requirement's description. Invalid IDs,

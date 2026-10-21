@@ -143,3 +143,55 @@ test("the existing no-requirements-section fallback also retains authored IDs", 
   assert.equal(brief.requirements[0].statement, "Sign in");
   assert.throws(() => parseProductBrief("# Product\n- [id:req-login] First\n- [id:req-login] Second\n"), /重复|冲突/u);
 });
+
+test("annotated task items retain authored IDs through checkbox toggles and reordering", () => {
+  for (const checkbox of ["[ ]", "[x]", "[X]"]) {
+    const brief = parseProductBrief(requirements([
+      `${checkbox} [id:req-sign-in] P0 Must sign in acceptance: Reach Home.`,
+      `${checkbox} [id:req-orders-view] P1 查看订单`,
+    ]));
+    assert.deepEqual(brief.requirements.map((item) => item.id), explicitIds);
+    assert.equal(brief.requirements[0].statement, "Must sign in");
+    assert.equal(brief.requirements[0].priority, "P0");
+    assert.deepEqual(brief.requirements[0].acceptanceCriteria, ["Reach Home."]);
+    const changed = parseProductBrief(requirements([
+      "A new item",
+      `[X] [id:req-orders-view] 更新订单说明`,
+      `[ ] [id:req-sign-in] P2 Change sign-in copy`,
+    ]));
+    assert.deepEqual(changed.requirements.slice(1).map((item) => item.id), [...explicitIds].reverse());
+  }
+  const inferred = parseProductBrief("# Tasks\n- [x] [id:req-sign-in] Sign in\n");
+  assert.equal(inferred.requirements[0].id, "req-sign-in");
+});
+
+test("unannotated task items preserve legacy ID, statement and priority bytes", () => {
+  for (const [checkbox, id] of [
+    ["[ ]", "req-01-p0-must-sign-in"],
+    ["[x]", "req-01-x-p0-must-sign-in"],
+    ["[X]", "req-01-x-p0-must-sign-in"],
+  ]) {
+    assert.deepEqual(parseProductBrief(requirements([
+      `${checkbox} P0 Must sign in acceptance: Reach Home.`,
+    ])).requirements[0], {
+      id,
+      priority: "P0",
+      statement: `${checkbox} P0 Must sign in`,
+      acceptanceCriteria: ["Reach Home."],
+    });
+  }
+});
+
+test("annotated task declarations reject invalid IDs, duplicates and legacy collisions", () => {
+  for (const checkbox of ["[ ]", "[x]", "[X]"]) {
+    for (const declaration of ["[id:] Text", "[id:Invalid] Text", "[id:req_login] Text", "[id:req-login", "[id:req-login]", "[id:req-login] P0"]) {
+      assert.throws(() => parseProductBrief(requirements([`${checkbox} ${declaration}`])), /显式需求 ID/u);
+    }
+    for (const items of [
+      [`${checkbox} [id:req-login] First`, "[id:req-login] Second"],
+      ["[id:req-login] First", `${checkbox} [id:req-login] Second`],
+      [`${checkbox} [id:req-02-p1-view-orders] First`, "P1 View orders"],
+      ["[ ] P0 Must sign in", `${checkbox} [id:req-01-p0-must-sign-in] Second`],
+    ]) assert.throws(() => parseProductBrief(requirements(items)), /重复|冲突/u);
+  }
+});

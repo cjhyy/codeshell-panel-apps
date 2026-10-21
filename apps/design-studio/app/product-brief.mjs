@@ -52,6 +52,9 @@ function priorityFromText(value) {
 }
 
 function requirementRecord(text, index) {
+  // Only annotated task items opt into structural checkbox handling. Untagged
+  // task text retains legacy bytes so existing notes are not rebound.
+  text = text.replace(/^\[[ xX]\]\s+(?=\[id:)/iu, "");
   let explicitId;
   if (/^\[id:/iu.test(text)) {
     const declaration = text.match(/^\[id:([^\]]*)\](?:\s+|$)/iu);

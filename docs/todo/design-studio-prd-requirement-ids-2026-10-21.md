@@ -25,6 +25,12 @@ insertion/reordering/wording limitation is documented. No PRD, saved layer note,
 screen ID, document schema/version or prototype configuration is migrated. An
 author may explicitly retain an old generated ID after checking for collisions.
 
+Root's independent peer found that optional Markdown task checkboxes hid a
+following declaration behind legacy item text. The bounded correction recognizes
+`[ ]`, `[x]` or `[X]` only when immediately followed by `[id:]`. It then uses the
+same declaration/error/collision path. Untagged task ID, statement and priority
+bytes remain unchanged; global `itemText` behavior is deliberately retained.
+
 Both the live Panel's PRD submission and installed CLI `brief` call this same
 parser. CLI discovery describes the syntax. The prompt still asks the Agent to
 put IDs into existing layer notes. No arbitrary Figma `pluginData` is consumed.
@@ -50,6 +56,14 @@ and failed6/7, as expected. The baseline source/test/log and receipt remain unde
 `/Users/admin/.codex/worktrees/design-studio-prd-requirement-ids-20261021/evidence/`.
 After the repair, focused parser/CLI/installed-discovery checks passed29/29
 (`12678.103833ms`). This includes the added author-retained old-reference control.
+
+Historical commit `875c700` subsequently passed the sequential main catalogue:
+865 total,864 pass,1skip (`250226.97825ms`). That result predates the checkbox
+correction. Its evidence remains intact; the successor records new focused/CLI
+and static checks independently and leaves the final combined full gate to root.
+The checkbox successor passes32/32 focused parser, installed CLI and discovery
+checks (`11753.318208ms`), including exact legacy unannotated task bytes and
+annotated task toggles/reordering plus all corresponding refusal paths.
 
 Three generated-runtime checks, repository validation, TypeScript, Design Studio
 native-app build check and diff check pass. The parser and CLI discovery module are

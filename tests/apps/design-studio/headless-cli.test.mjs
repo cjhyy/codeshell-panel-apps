@@ -189,17 +189,22 @@ test("installed PRD brief preserves authored requirement references and rejects 
   const notes = `docs/PRD.md: ${ids.join(", ")}`;
   await f.run("create", { path, document: document("Requirements", [rectangle("card", { notes })]) });
   const saved = await readFile(join(f.project, path), "utf8");
-  const reordered = "# 产品\n## 需求\n- [id:req-orders-view] 订单详情\n- A new item\n- [id:req-sign-in] P2 邮箱登录\n";
-  await f.put("docs/PRD.md", reordered);
-  const second = await f.run("brief", { path: "docs/PRD.md" });
-  assert.equal(second.code, 0);
-  assert.ok(ids.every((id) => second.value.result.requirements.some((item) => item.id === id)));
+  for (const checkbox of ["[ ]", "[x]", "[X]"]) {
+    const reordered = `# 产品\n## 需求\n- ${checkbox} [id:req-orders-view] 订单详情\n- A new item\n- ${checkbox} [id:req-sign-in] P2 邮箱登录\n`;
+    await f.put("docs/PRD.md", reordered);
+    const second = await f.run("brief", { path: "docs/PRD.md" });
+    assert.equal(second.code, 0);
+    assert.ok(ids.every((id) => second.value.result.requirements.some((item) => item.id === id)));
+  }
   const reopened = await f.run("read", { path, node_id: "card" });
   assert.equal(reopened.value.result.node.notes, notes);
   for (const items of [
     "- [id:Invalid] Statement",
     "- [id:req-login] First\n- [id:req-login] Second",
     "- [id:req-02-p1-view-orders] Sign in\n- P1 View orders",
+    "- [ ] [id:Invalid] Statement",
+    "- [x] [id:req-login] First\n- [ ] [id:req-login] Second",
+    "- [X] [id:req-02-p1-view-orders] Sign in\n- P1 View orders",
   ]) {
     const invalid = `# Product\n## Requirements\n${items}\n`;
     await f.put("docs/PRD.md", invalid);
