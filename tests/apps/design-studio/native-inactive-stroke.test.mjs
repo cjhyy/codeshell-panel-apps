@@ -38,6 +38,11 @@ import {
 } from "../../../apps/design-studio/app/stroke.mjs";
 import { exportDesignFrontend } from "../../../apps/design-studio/app/frontend-export.mjs";
 import { applyAllAutoLayouts } from "../../../apps/design-studio/app/layout.mjs";
+import { validateTextRangeNodePatch } from "../../../apps/design-studio/app/text-ranges.mjs";
+
+// VM literals belong to another realm; pass owned plain data to the real validator.
+const validateVmTextRangePatch = (node, changes) =>
+  validateTextRangeNodePatch(node, structuredClone(changes));
 
 const fixture = JSON.parse(
   await readFile(
@@ -368,6 +373,7 @@ test("public stroke edits preserve latent intent through real operation-log undo
     ),
     before = captureDesignOperationState(doc);
   const context = vm.createContext({
+    validateTextRangeNodePatch: validateVmTextRangePatch,
     design: doc,
     applyDesignStrokeEdits,
     editDesignStrokeColor,
@@ -478,6 +484,7 @@ test("simultaneous public NONE-to-AutoLayout activation uses final applicability
       }),
       design = { nodes: [target] };
     const context = vm.createContext({
+      validateTextRangeNodePatch: validateVmTextRangePatch,
       design,
       target,
       applyDesignStrokeEdits,
@@ -673,7 +680,7 @@ test("public combined shadow retirement and stroke activation validate one final
   const app = await readFile(new URL("../../../apps/design-studio/app/app.js", import.meta.url), "utf8");
   const target = empty({ id: "combined-shadow", width: 100, height: 80, cornerRadius: 12, fill: "#ffffff", layoutBaselineSource: "html", layoutBaselineOffset: 2, shadowStack: { basis: "css-box", layers: [{ kind: "inner", color: "#000000", opacity: 0.5, x: 0, y: 2, blur: 8, spread: 0, visible: true }] } });
   const design = { nodes: [target] };
-  const context = vm.createContext({ design, target, applyDesignStrokeEdits, editDesignStrokeColor, editDesignStrokeWidth, clearInvalidStrokeLayoutExclusion, GRID_CHILD_FIELDS, GRID_CONTAINER_FIELDS, nodeById: () => undefined });
+  const context = vm.createContext({ design, target, validateTextRangeNodePatch: validateVmTextRangePatch, applyDesignStrokeEdits, editDesignStrokeColor, editDesignStrokeWidth, clearInvalidStrokeLayoutExclusion, GRID_CHILD_FIELDS, GRID_CONTAINER_FIELDS, nodeById: () => undefined });
   vm.runInContext(app.slice(app.indexOf("const AGENT_NODE_PATCH_FIELDS ="), app.indexOf("const AGENT_OPERATION_FIELDS")), context);
   vm.runInContext(app.slice(app.indexOf("function applyAgentNodePatch("), app.indexOf("function applyAgentDocumentTokens(")), context);
   const before = structuredClone(target);
