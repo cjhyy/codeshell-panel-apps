@@ -2593,3 +2593,34 @@ handoff SHAe30474ad0fb9c84610162a5b22fd92876100e1dc36ac21f383f2b10927aec69f；
 稳定或原生Figma reactions。后续CLI独立topic仅增加frontend prototype:true复用多页
 exporter及validate companion诊断；严格boolean、现有安全读取预算与create-only输出，
 缺primary可默认、坏manifest/缺parts/danglinglinks必须报错，不自动改ID或设计/sidecar。
+
+### ROUND52 · 仍在验证的几何精度与同步候选
+
+已验证产品边界为25fc5ea22ddcfe48a8077b1f6d38d32ec31cb871，本地main与aggregate
+clean；865门禁pins保持ROUND51，final收据
+SHAff5dbfccbd7e49c5a411bd5cdb9e6ab4ce76d3db5b2276f2eb838cd61a1de2f2。
+后续三个独立工作树分别为design-studio-html-geometry-precision-20261021、
+design-studio-native-existing-update-guard-20261021、design-studio-cli-prototype-parity-20261021，
+均在/Users/admin/.codex/worktrees/下，根目录codeshell-panel-apps；尚未冻结或合入。
+
+精度候选6个早期控制通过，实际初始、同行编辑及独立Hug长文案增长案例几何与RGBA
+均精确；原stretch-Fill/Hug长文案失败在immutable805和候选均56773像素，明确保留。
+但58文件CPU/noGL组合504项495pass/9fail，不能交付。除了HTML旧舍入预期，真实
+native Grid及Text保存重开也出现回归，未通过放宽断言掩盖。content-box min/max的
+padding inset遗漏已交owner修复；Text baseline固定点仍在追查。
+
+root另存外部immutable130个app文件并作三种明确标为diagnostic的数值政策实验，不改产品。
+20个历史真实native Grid阶段、每种455个box：纯double有280个box不同、36个重开
+节点改变；仅derived FLEX结果Float32为12/0；再对Grid派生flow位置Float32为0/0。
+收据SHA59ce387935f569de7a10cd2021d904c8e3d18f79ad49dbfcaf4876cf1cf1736f。
+这是保留的实际原生stage geometry＋确定性文字宽度测量，未新跑Figma、Browser或GPU，
+不构成新像素/字体证据。授权owner采用独立于来源或数值形状的有限Grid政策：仅计算
+得到的FLEX track及Grid flow位置使用Float32端点；fixed/Hug输入、测得尺寸及手动根
+坐标保留精度，不做小数拟合、吸附、epsilon或缓存。必须保留65.59与65.59375区别，
+再过完整组合和真实源截图验证；这不是所有CSS/Grid/Figma行为已一致的结论。
+
+普通文字/标量＋备注候选初轮114/114 production VM通过，旧no-notes末次font竞态已在
+该有限通道变成0写入冲突；root要求增加最终同步readback和silent setter负控，尚待冻结。
+CLI候选已实现方案为严格prototype:true与有界companion诊断，安装包与导航回归待完成。
+12:13:20UTC documented node_repl仍cuaAvailable:false；真实Figma本轮NOT_RUN。
+UTC16:31截止保持不变，不因候选早期绿色而提前宣称完整完成。
