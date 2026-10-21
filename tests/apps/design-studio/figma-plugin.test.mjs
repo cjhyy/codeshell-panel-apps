@@ -38,7 +38,7 @@ const rect = (id = "1:2", properties = {}) => ({
 });
 const page = (children) => ({ id: "0:1", type: "CANVAS", name: "Home", children });
 
-function harness(source = page([rect()]), { nativeTextLayout = false, nativeStrokes = false, nativeTextRanges = false, nativeImageLayout = false } = {}) {
+function harness(source = page([rect()]), { nativeTextLayout = false, nativeStrokes = false, nativeTextRanges = false, nativeImageLayout = false, nativeExistingUpdateProof = false } = {}) {
   const all = new Map(),
     nativeRangeMocks = new WeakMap(), mixed = Symbol("mixed"),
     messages = [],
@@ -68,6 +68,8 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
         ],
       ),
       fills: clone(raw.fills ?? []),
+      fillStyleId: raw.styles?.fill ?? "",
+      boundVariables: clone(raw.boundVariables ?? {}),
       strokes: clone(raw.strokes ?? []),
       ...(nativeTextRanges ? { effects: clone(raw.effects ?? []), blendMode: raw.blendMode ?? "PASS_THROUGH" } : {}),
       layoutMode: raw.layoutMode ?? "NONE",
@@ -165,6 +167,14 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
       node.textAutoResize = raw.style?.textAutoResize ?? "NONE";
       node.textTruncation = raw.style?.textTruncation ?? "DISABLED";
       node.maxLines = raw.style?.maxLines ?? null;
+      if (nativeExistingUpdateProof) {
+        node.fontSize = raw.style?.fontSize ?? 12;
+        node.lineHeight = raw.style?.lineHeightUnit === "PIXELS" ? { unit: "PIXELS", value: raw.style.lineHeightPx } :
+          { unit: "PERCENT", value: raw.style?.lineHeightPercentFontSize ?? (raw.style?.lineHeightPx ? raw.style.lineHeightPx / node.fontSize * 100 : 120) };
+        node.letterSpacing = { unit: "PIXELS", value: raw.style?.letterSpacing ?? 0 };
+        node.layoutSizingHorizontal = raw.layoutSizingHorizontal ?? "FIXED";
+        node.layoutSizingVertical = raw.layoutSizingVertical ?? "FIXED";
+      }
       if (nativeTextLayout) {
         let size = raw.style?.fontSize ?? 12;
         let advance = raw.style?.lineHeightUnit === "PIXELS"
@@ -198,8 +208,18 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
         if (value === "STRETCH") node[`layoutSizing${node.parent.layoutMode === "VERTICAL" ? "Horizontal" : "Vertical"}`] = "FILL";
       } });
     }
-    if (nativeTextRanges && node.type === "TEXT")
-      nativeRangeMocks.set(node, installNativeTextRangeSdkMock(node, { mixed, toRuntime: value => toRuntime(value) }));
+    if ((nativeTextRanges || nativeExistingUpdateProof) && node.type === "TEXT") {
+      if (!nativeTextRanges) {
+        node.rangeWrites = [];
+        for (const method of ["setRangeHyperlink", "setRangeFills", "setRangeTextDecoration"])
+          node[method] = (...args) => node.rangeWrites.push([method, ...clone(args)]);
+      }
+      const mock = installNativeTextRangeSdkMock(node, { mixed, toRuntime: value => toRuntime(value) });
+      // Explicit synthetic write-capability fixture only. The general SDK mock
+      // retains actual unknown numeric1; this known-null VM is not native proof.
+      if (nativeExistingUpdateProof) node.getRangeHyperlink = () => null;
+      if (nativeTextRanges) nativeRangeMocks.set(node, mock);
+    }
     let name = raw.name;
     if (raw.absoluteBoundingBox) node.absoluteBoundingBox = clone(raw.absoluteBoundingBox);
     Object.defineProperty(node, "name", {
@@ -400,7 +420,7 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
   toRuntime = value => parseRuntime(JSON.stringify(value));
   // SDK value records belong to the plugin realm; cross-realm host objects
   // are deliberately refused by the production owned-data proof.
-  for (const node of all.values()) for (const key of ["fills", "strokes", "effects", "fontName", "lineHeight", "letterSpacing"])
+  for (const node of all.values()) for (const key of ["fills", "strokes", "effects", "fontName", "lineHeight", "letterSpacing", "boundVariables"])
     if (node[key] && node[key] !== mixed) node[key] = toRuntime(node[key]);
   vm.runInContext(code, context);
   return {
@@ -551,7 +571,7 @@ test("notes-sensitive mixed font/create patches and legacy missing baselines ref
   const legacy = clone(payload); delete legacy.patch.nativeNotesBefore;
   await f.runtime.send({ type: "preview-patch", content: JSON.stringify(legacy) });
   assert.equal(f.runtime.messages.at(-1).type, "error"); assert.equal(f.target.getPluginData("codeshellNotes"), "req-signin");
-  const mixed = clone(payload); mixed.patch.operations[0].changed.push("name"); mixed.patch.operations[0].after.name = "mixed";
+  const mixed = clone(payload); mixed.patch.operations[0].changed.push("width"); mixed.patch.operations[0].after.width += 1;
   let fonts = 0; f.runtime.figma.loadFontAsync = async () => { fonts++; f.target.setPluginData("codeshellNotes", "late-font"); };
   await f.runtime.send({ type: "preview-patch", content: JSON.stringify(mixed) });
   assert.equal(f.runtime.messages.at(-1).type, "error"); assert.equal(fonts, 0); assert.equal(f.target.getPluginData("codeshellNotes"), "req-signin");
@@ -1359,7 +1379,7 @@ test("shallow generated update snapshots retain style concurrency guards without
   assert.equal(transfer.patch.operations[0].before.children, undefined);
   const runtime = harness(source),
     target = runtime.all.get("1:1");
-  target.fills = [{ type: "SOLID", color: { r: 0, g: 1, b: 0 } }];
+  target.fills = runtime.jsonRest([{ type: "SOLID", color: { r: 0, g: 1, b: 0 } }]);
   await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
   assert.ok(runtime.messages.at(-1).conflicts.some((value) => value.includes("fills")));
   const token = runtime.messages.at(-1).token;
@@ -1868,7 +1888,7 @@ test("native patches ignore soft-wrap content changes, apply source edits, and r
   transfer.patch = createFigmaPatch(binding, result.document);
   assert(transfer.patch.operations[0].changed.includes("text"));
   assert(transfer.patch.operations[0].changed.includes("textSource"));
-  const runtime = harness(original);
+  const runtime = harness(original, { nativeExistingUpdateProof: true });
   await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
   const preview = runtime.messages.at(-1);
   assert.equal(preview.type, "patch-preview", preview.message);
@@ -1876,10 +1896,11 @@ test("native patches ignore soft-wrap content changes, apply source edits, and r
   await runtime.send({ type: "apply-patch", token: preview.token });
   assert.equal(runtime.messages.at(-1).type, "patched");
   assert.equal(runtime.all.get("1:2").characters, text.textSource);
-  const concurrent = harness(original);
+  const concurrent = harness(original, { nativeExistingUpdateProof: true });
   concurrent.all.get("1:2").characters = "Externally edited original Figma content";
   await concurrent.send({ type: "preview-patch", content: JSON.stringify(transfer) });
-  assert(concurrent.messages.at(-1).conflicts.some((message) => message.includes("characters")));
+  assert.equal(concurrent.messages.at(-1).type, "error", "Complete current SDK proof refuses the stale character baseline before a write plan exists");
+  assert.match(concurrent.messages.at(-1).message, /matching own REST evidence/u);
 });
 
 test("native creation uses native truncation with full source, rejects malformed sources, and does not restore stale text", async () => {
@@ -2186,13 +2207,13 @@ test("font baseline metadata changes preserve the native line-box position and e
   const operation = transfer.patch.operations[0];
   assert.deepEqual(operation.changed, ["fontFamily"]);
   assert.ok(!operation.changed.some((key) => ["x", "y", "width", "height", "rotation"].includes(key)));
-  const runtime = harness(input);
+  const runtime = harness(input, { nativeExistingUpdateProof: true });
   runtime.all.get("1:2").characters = "Baseline";
-  runtime.all.get("1:2").fontName = { family: "Arial", style: "Regular" };
+  runtime.all.get("1:2").fontName = runtime.jsonRest({ family: "Arial", style: "Regular" });
   await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
   const preview = runtime.messages.at(-1); assert.equal(preview.type, "patch-preview", JSON.stringify(preview)); assert.deepEqual(preview.conflicts, []);
   await runtime.send({ type: "apply-patch", token: preview.token });
-  assert.equal(runtime.messages.at(-1).type, "patched");
+  assert.equal(runtime.messages.at(-1).type, "patched", runtime.messages.at(-1).message);
   const native = runtime.all.get("1:2");
   assert.equal(native.relativeTransform[1][2], 40);
   assert.equal(native.fontName.family, "Courier New");
@@ -2640,16 +2661,18 @@ test("production Text create and reviewed patches preserve explicit pixel versus
     const binding = createFigmaBinding(prepared);
     text.fontSize = 24; text.height = pixels ? 40 : 60;
     const transfer = createFigmaTransfer(prepared.document); transfer.patch = createFigmaPatch(binding, prepared.document);
-    const runtime = harness(original, { nativeTextLayout: true }), target = runtime.all.get("1:2");
-    target.fontSize = 16; target.lineHeight = pixels ? { unit: "PIXELS", value: 20 } : { unit: "PERCENT", value: 125 };
+    const runtime = harness(original, { nativeTextLayout: true, nativeExistingUpdateProof: true }), target = runtime.all.get("1:2");
+    target.fontSize = 16; target.lineHeight = runtime.jsonRest(pixels ? { unit: "PIXELS", value: 20 } : { unit: "PERCENT", value: 125 });
     await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
     const preview = runtime.messages.at(-1); assert.equal(preview.type, "patch-preview"); assert.deepEqual(preview.conflicts, []);
     await runtime.send({ type: "apply-patch", token: preview.token }); assert.equal(runtime.messages.at(-1).type, "patched");
     assert.equal(target.fontSize, 24); assert.equal(target.height, pixels ? 40 : 60);
     assert.deepEqual(clone(target.lineHeight), pixels ? { unit: "PIXELS", value: 20 } : { unit: "PERCENT", value: 125 });
-    const concurrent = harness(original); concurrent.all.get("1:2").raw.style.lineHeightUnit = pixels ? "FONT_SIZE_%" : "PIXELS";
+    const concurrent = harness(original, { nativeExistingUpdateProof: true }); concurrent.all.get("1:2").raw.style.lineHeightUnit = pixels ? "FONT_SIZE_%" : "PIXELS";
     await concurrent.send({ type: "preview-patch", content: JSON.stringify(transfer) });
-    assert(concurrent.messages.at(-1).conflicts.some(message => message.includes("style")), "Same resolved pixels cannot hide concurrent unit edits");
+    const unitConflict = concurrent.messages.at(-1);
+    if (unitConflict.type === "patch-preview") assert(unitConflict.conflicts.some(message => message.includes("style")), "Same resolved pixels cannot hide concurrent unit edits");
+    else { assert.equal(unitConflict.type, "error"); assert.match(unitConflict.message, /matching own REST evidence/u); }
   }
 });
 
@@ -2660,7 +2683,7 @@ test("production Text unit transitions use explicit setters and invalid pixel tr
   delete text.lineHeightUnit; text.lineHeight = 1.25;
   const transfer = createFigmaTransfer(prepared.document); transfer.patch = createFigmaPatch(binding, prepared.document);
   assert(transfer.patch.operations.some(operation => operation.changed?.includes("lineHeightUnit")));
-  const runtime = harness(original); await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  const runtime = harness(original, { nativeExistingUpdateProof: true }); await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
   const preview = runtime.messages.at(-1); assert.equal(preview.type, "patch-preview"); assert.deepEqual(preview.conflicts, []);
   await runtime.send({ type: "apply-patch", token: preview.token }); assert.equal(runtime.messages.at(-1).type, "patched");
   assert.deepEqual(clone(runtime.all.get("1:2").lineHeight), { unit: "PERCENT", value: 125 });
@@ -3428,5 +3451,287 @@ test("new vertical distributed auto-margin transfers keep the existing native sp
     assert.deepEqual(created.children.map(node => node.name), ["Hug child 0", "Hug child 1", "Hug child 2"]);
     assert(created.children.every(node => node.layoutSizingHorizontal === "FILL" &&
       node.layoutSizingVertical === "HUG" && node.layoutPositioning !== "ABSOLUTE"));
+  }
+});
+
+// Bounded existing updates: real production handler, complete read-only SDK mock.
+async function existingUpdateFixture({ two = false } = {}) {
+  const raw = rect("1:2", { type: "TEXT", characters: "Original text", fills: [{ type: "SOLID", color: { r: 0, g: 0, b: 0 } }],
+    style: { fontFamily: "Arial", fontSize: 20, fontWeight: 400, lineHeightUnit: "PIXELS", lineHeightPx: 24, textAutoResize: "NONE" } });
+  const runtime = harness(page([raw, ...(two ? [rect("1:3")] : [])]), { nativeExistingUpdateProof: true });
+  runtime.all.get("1:2").pluginData.codeshellNotes = "Nondefault original note";
+  runtime.all.get("1:2").pluginData.codeshellDesignMetadata = JSON.stringify({ unknownFuture: { retained: "exact" }, textSource: "Original text" });
+  await runtime.send({ type: "export-json", scope: "page" });
+  assert.equal(runtime.messages.at(-1).type, "exported", runtime.messages.at(-1).message);
+  const imported = await prepareFigmaImport(JSON.parse(runtime.messages.at(-1).content), { sha256Bytes });
+  const binding = createFigmaBinding(imported), current = JSON.parse(serializeDesignDocument(imported.document));
+  assert.equal(current.pages[0].children[0].textRanges, undefined, "Uniform black Text remains the original plain-text boundary");
+  return { runtime, target: runtime.all.get("1:2"), imported, binding, current };
+}
+function existingUpdatePayload(f, { notes = true, two = false } = {}) {
+  const text = f.current.pages[0].children[0]; text.text = text.textSource = "Local edited text";
+  if (notes) text.notes = "Local edited note";
+  if (two) f.current.pages[0].children[1].name = "Local rectangle name";
+  const value = createFigmaTransfer(f.current); value.patch = createFigmaPatch(f.binding, f.current); return value;
+}
+
+test("guarded existing updates commit plain Text plus notes and preserve unrelated plugin keys", async () => {
+  for (const note of ["Local edited note", "", undefined]) {
+    const f = await existingUpdateFixture(), value = existingUpdatePayload(f);
+    const op = value.patch.operations[0];
+    if (note === undefined) delete op.after.notes; else op.after.notes = note;
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) });
+    const preview = f.runtime.messages.at(-1); assert.equal(preview.type, "patch-preview", preview.message); assert.deepEqual(preview.conflicts, []);
+    await f.runtime.send({ type: "apply-patch", token: preview.token });
+    assert.equal(f.runtime.messages.at(-1).type, "patched", f.runtime.messages.at(-1).message);
+    assert.equal(f.target.characters, "Local edited text"); assert.equal(f.target.getPluginData("codeshellNotes"), note ?? "");
+    assert.deepEqual(JSON.parse(f.target.getPluginData("codeshellDesignMetadata")), { unknownFuture: { retained: "exact" }, textSource: "Local edited text" });
+    assert.equal(f.target.rangeWrites.length, 0, "Read-only complete range proof never grants range setters");
+  }
+  const f = await existingUpdateFixture(), value = existingUpdatePayload(f, { notes: false });
+  await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); const preview = f.runtime.messages.at(-1);
+  assert.equal(preview.type, "patch-preview", preview.message); await f.runtime.send({ type: "apply-patch", token: preview.token });
+  assert.equal(f.runtime.messages.at(-1).type, "patched"); assert.equal(f.target.getPluginData("codeshellNotes"), "Nondefault original note");
+});
+
+test("guarded existing solid fill scalar edits plus notes preserve unrelated latest state", async () => {
+  const f = await notesFixture(), current = clone(f.imported.document); const node = current.nodes[0];
+  Object.assign(node, { name: "Reviewed", fill: "#123456", opacity: 0.5, visible: false, locked: true, notes: "Updated requirement" });
+  const value = createFigmaTransfer(current); value.patch = createFigmaPatch(f.binding, current);
+  await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); const preview = f.runtime.messages.at(-1);
+  assert.equal(preview.type, "patch-preview", preview.message); f.target.pluginData.unrelated = "latest foreign key";
+  await f.runtime.send({ type: "apply-patch", token: preview.token }); assert.equal(f.runtime.messages.at(-1).type, "patched", f.runtime.messages.at(-1).message);
+  assert.equal(f.target.name, "Reviewed"); assert.equal(f.target.opacity, 0.5); assert.equal(f.target.visible, false); assert.equal(f.target.locked, true);
+  assert.deepEqual(clone(f.target.fills), [{ type: "SOLID", color: { r: 0x12 / 255, g: 0x34 / 255, b: 0x56 / 255 } }]);
+  assert.equal(f.target.getPluginData("codeshellNotes"), "Updated requirement"); assert.equal(f.target.pluginData.unrelated, "latest foreign key");
+});
+
+test("guarded existing updates reject late changes at lookup REST font and undo boundaries with zero local writes", async () => {
+  for (const edge of ["lookup", "REST", "font", "undo"]) for (const field of ["characters", "notes", "metadata"]) {
+    const f = await existingUpdateFixture({ two: true }), value = existingUpdatePayload(f, { two: true });
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); const preview = f.runtime.messages.at(-1);
+    assert.equal(preview.type, "patch-preview", `${edge}/${field}: ${preview.message}`);
+    let injected = false, localWrites = 0;
+    const setter = f.target.setPluginData; f.target.setPluginData = function (...args) { localWrites++; return setter.apply(this, args); };
+    let chars = f.target.characters; Object.defineProperty(f.target, "characters", { enumerable: true, configurable: true, get: () => chars, set: next => { localWrites++; chars = next; } });
+    const mutate = () => { if (injected) return; injected = true;
+      if (field === "characters") chars = "Foreign late text";
+      if (field === "notes") f.target.pluginData.codeshellNotes = "Foreign late note";
+      if (field === "metadata") f.target.pluginData.codeshellDesignMetadata = JSON.stringify({ unknownFuture: "foreign latest" });
+    };
+    if (edge === "lookup") { const get = f.runtime.figma.getNodeByIdAsync.bind(f.runtime.figma); f.runtime.figma.getNodeByIdAsync = async id => { const result = await get(id); if (id === "1:3") mutate(); return result; }; }
+    if (edge === "REST") { const last = f.runtime.all.get("1:3"), read = last.exportAsync; last.exportAsync = async settings => { const result = await read.call(last, settings); if (settings.format === "JSON_REST_V1") mutate(); return result; }; }
+    if (edge === "font") { const load = f.runtime.figma.loadFontAsync.bind(f.runtime.figma); f.runtime.figma.loadFontAsync = async font => { await load(font); mutate(); }; }
+    if (edge === "undo") { const undo = f.runtime.figma.commitUndo.bind(f.runtime.figma); f.runtime.figma.commitUndo = () => { undo(); mutate(); }; }
+    await f.runtime.send({ type: "apply-patch", token: preview.token }); const outcome = f.runtime.messages.at(-1);
+    assert(injected, edge); assert.equal(outcome.type, "error", `${edge}/${field}: ${JSON.stringify(outcome)}`); assert.equal(localWrites, 0);
+    assert.equal(f.runtime.all.get("1:3").name, "Original");
+    if (field === "characters") assert.equal(chars, "Foreign late text");
+    if (field === "notes") assert.equal(f.target.getPluginData("codeshellNotes"), "Foreign late note");
+  }
+});
+
+test("ordinary no-notes late-font counterexample now refuses instead of overwriting latest characters", async () => {
+  const f = await existingUpdateFixture(), value = existingUpdatePayload(f, { notes: false });
+  await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); const preview = f.runtime.messages.at(-1); assert.equal(preview.type, "patch-preview");
+  let chars = f.target.characters, writes = 0; Object.defineProperty(f.target, "characters", { enumerable: true, get: () => chars, set: value => { writes++; chars = value; } });
+  const load = f.runtime.figma.loadFontAsync.bind(f.runtime.figma); f.runtime.figma.loadFontAsync = async font => { await load(font); chars = "Foreign late text"; };
+  await f.runtime.send({ type: "apply-patch", token: preview.token }); assert.equal(f.runtime.messages.at(-1).type, "error");
+  assert.equal(chars, "Foreign late text"); assert.equal(writes, 0); assert.equal(f.target.getPluginData("codeshellNotes"), "Nondefault original note");
+});
+
+test("guarded existing updates detect replacement movement and ordered topology changes after font await", async () => {
+  for (const kind of ["same-id", "move", "order", "removed"]) {
+    const f = await existingUpdateFixture({ two: true }), value = existingUpdatePayload(f, { two: true });
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); const preview = f.runtime.messages.at(-1); assert.equal(preview.type, "patch-preview");
+    let writes = 0; const set = f.target.setPluginData; f.target.setPluginData = function (...args) { writes++; return set.apply(this, args); };
+    const load = f.runtime.figma.loadFontAsync.bind(f.runtime.figma); let changed = false;
+    f.runtime.figma.loadFontAsync = async font => { await load(font); if (changed) return; changed = true;
+      const parent = f.target.parent;
+      if (kind === "same-id") { const replacement = { ...f.target, pluginData: clone(f.target.pluginData) }; parent.children[parent.children.indexOf(f.target)] = replacement; f.runtime.all.set(f.target.id, replacement); }
+      if (kind === "move") f.runtime.figma.root.appendChild(f.target);
+      if (kind === "order") parent.children.reverse();
+      if (kind === "removed") f.target.remove();
+    };
+    await f.runtime.send({ type: "apply-patch", token: preview.token }); assert.equal(f.runtime.messages.at(-1).type, "error", kind); assert.equal(writes, 0);
+  }
+});
+
+test("guarded existing updates refuse missing mixed unknown raw or throwing required native fields", async () => {
+  for (const kind of ["missing", "mixed", "throw", "raw", "raw-unknown", "raw-reference", "raw-table", "unknown", "hidden-link"]) {
+    const f = await existingUpdateFixture(), value = existingUpdatePayload(f);
+    if (kind === "missing") delete f.target.getStyledTextSegments;
+    if (kind === "mixed") f.target.fontName = f.runtime.figma.mixed;
+    if (kind === "throw") Object.defineProperty(f.target, "fontSize", { configurable: true, get() { throw Error("getter refused"); } });
+    if (kind === "raw") f.target.raw.style.fontFamily = "Another family";
+    if (kind === "raw-unknown") f.target.raw.style.futureNativeStyle = "unknown";
+    if (kind === "raw-reference") f.target.raw.styles = { text: "style:unknown" };
+    if (kind === "raw-table") f.target.raw.styleOverrideTable = { 7: { futureNativeStyle: "unused but preserved" } };
+    if (kind === "unknown") f.target.boundVariables = f.runtime.jsonRest({ futureUnknownBinding: { id: "var:1" } });
+    if (kind === "hidden-link") f.target.setRangeHyperlink(0, f.target.characters.length, { type: "URL", value: "https://example.com" });
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); assert.equal(f.runtime.messages.at(-1).type, "error", kind);
+    assert.equal(f.target.getPluginData("codeshellNotes"), "Nondefault original note");
+  }
+});
+
+test("guarded existing setter failure preserves original error and undo failure diagnostics", async () => {
+  for (const brokenUndo of [false, true]) {
+    const f = await existingUpdateFixture({ two: true }), value = existingUpdatePayload(f, { two: true });
+    value.patch.operations.find(op => op.sourceId === "1:3").after.name = "Rejected change"; f.runtime.failName("Rejected change");
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); const preview = f.runtime.messages.at(-1); assert.equal(preview.type, "patch-preview", preview.message);
+    if (brokenUndo) f.runtime.figma.triggerUndo = () => { throw Error("undo request unavailable"); };
+    await f.runtime.send({ type: "apply-patch", token: preview.token }); const outcome = f.runtime.messages.at(-1); assert.equal(outcome.type, "error");
+    assert.match(outcome.message, /setter rejected/u);
+    if (brokenUndo) assert.match(outcome.message, /undo request unavailable/u);
+    else { assert.equal(f.target.characters, "Original text"); assert.equal(f.target.getPluginData("codeshellNotes"), "Nondefault original note"); }
+  }
+});
+
+test("notes-only existing lane retains a latest blue fill without font or appearance setters", async () => {
+  const f = await notesFixture(), current = clone(f.imported.document); current.nodes[0].notes = "Local note only";
+  const value = createFigmaTransfer(current); value.patch = createFigmaPatch(f.binding, current);
+  await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); const preview = f.runtime.messages.at(-1); assert.equal(preview.type, "patch-preview");
+  f.target.fills = f.runtime.jsonRest([{ type: "SOLID", color: { r: 0, g: 0, b: 1 } }]); let paints = f.target.fills, writes = 0;
+  Object.defineProperty(f.target, "fills", { enumerable: true, get: () => paints, set: value => { writes++; paints = value; } });
+  const fonts = f.runtime.calls.filter(call => call[0] === "font").length;
+  await f.runtime.send({ type: "apply-patch", token: preview.token }); assert.equal(f.runtime.messages.at(-1).type, "patched");
+  assert.equal(writes, 0); assert.equal(f.runtime.calls.filter(call => call[0] === "font").length, fonts);
+  assert.deepEqual(clone(paints), [{ type: "SOLID", color: { r: 0, g: 0, b: 1 } }]);
+});
+
+test("guarded existing final readback rejects silent no-op string boolean notes and numeric setters", async () => {
+  for (const field of ["characters", "notes", "metadata", "name", "visible", "fontSize", "fontSize-normalized"]) {
+    const f = await existingUpdateFixture(), value = existingUpdatePayload(f), op = value.patch.operations[0];
+    if (field === "name") { op.changed.push("name"); op.after.name = "Local reviewed name"; }
+    if (field === "visible") { op.changed.push("visible"); op.after.visible = false; }
+    if (field.startsWith("fontSize")) { op.changed.push("fontSize"); op.after.fontSize = 20.1; }
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); const preview = f.runtime.messages.at(-1); assert.equal(preview.type, "patch-preview", preview.message);
+    if (["notes", "metadata"].includes(field)) {
+      const set = f.target.setPluginData, ignored = field === "notes" ? "codeshellNotes" : "codeshellDesignMetadata";
+      f.target.setPluginData = function (key, value) { if (key !== ignored) set.call(this, key, value); };
+    } else {
+      const key = field === "fontSize-normalized" ? "fontSize" : field; let initial = f.target[key];
+      Object.defineProperty(f.target, key, { configurable: true, enumerable: true, get: () => initial,
+        set: value => { if (field === "fontSize-normalized") initial = Math.fround(value); } });
+    }
+    await f.runtime.send({ type: "apply-patch", token: preview.token }); const outcome = f.runtime.messages.at(-1);
+    assert.equal(outcome.type, "error", field); assert.match(outcome.message, /readback differs/u, field); assert(f.runtime.calls.some(call => call[0] === "undo"));
+  }
+});
+
+test("guarded existing scalar typography readback keeps exact units and known PERCENT transport only", async () => {
+  for (const percent of [false, true]) {
+    const f = await existingUpdateFixture(), value = existingUpdatePayload(f), op = value.patch.operations[0];
+    Object.assign(op.after, { fontWeight: 700, fontStyle: "italic", fontSize: 22, textAlign: "right", letterSpacing: 1.5,
+      lineHeight: percent ? 1.3158 : 27.5, ...(percent ? {} : { lineHeightUnit: "pixels" }) });
+    if (percent) delete op.after.lineHeightUnit;
+    op.changed.push("fontWeight", "fontStyle", "fontSize", "textAlign", "letterSpacing", "lineHeight", "lineHeightUnit");
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); const preview = f.runtime.messages.at(-1); assert.equal(preview.type, "patch-preview", preview.message);
+    if (percent) { let line = f.target.lineHeight; Object.defineProperty(f.target, "lineHeight", { enumerable: true, configurable: true, get: () => line,
+      set: value => { line = f.runtime.jsonRest({ unit: value.unit, value: Math.fround(value.value / 100) * 100 }); } }); }
+    await f.runtime.send({ type: "apply-patch", token: preview.token }); assert.equal(f.runtime.messages.at(-1).type, "patched", f.runtime.messages.at(-1).message);
+    assert.equal(f.target.characters, "Local edited text"); assert.equal(f.target.fontName.style, "Bold Italic"); assert.equal(f.target.textAlignHorizontal, "RIGHT");
+    assert.equal(f.target.lineHeight.unit, percent ? "PERCENT" : "PIXELS");
+  }
+});
+
+test("guarded mixed name and notes keep the entire unmapped descendant baseline", async () => {
+  const f = await notesFixture({ unsupportedChild: true }), current = clone(f.imported.document);
+  current.nodes[0].name = "Reviewed fallback"; current.nodes[0].notes = "Local root requirement";
+  const value = createFigmaTransfer(current); value.patch = createFigmaPatch(f.binding, current);
+  assert(value.patch.nativeNotesBefore.nodes["1:3"], "Unmapped descendant requires the full independent notes baseline");
+  await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); const preview = f.runtime.messages.at(-1); assert.equal(preview.type, "patch-preview", preview.message);
+  const read = f.target.exportAsync; f.target.exportAsync = async settings => { const result = await read.call(f.target, settings);
+    if (settings.format === "JSON_REST_V1") f.runtime.all.get("1:3").pluginData.codeshellNotes = "Latest unmapped requirement";
+    return result;
+  };
+  let writes = 0; const set = f.target.setPluginData; f.target.setPluginData = function (...args) { writes++; return set.apply(this, args); };
+  await f.runtime.send({ type: "apply-patch", token: preview.token }); assert.equal(f.runtime.messages.at(-1).type, "error"); assert.equal(writes, 0);
+  assert.equal(f.target.name, "Original"); assert.equal(f.runtime.all.get("1:3").getPluginData("codeshellNotes"), "Latest unmapped requirement");
+});
+
+test("destructive Text updates refuse unknown mixed throwing missing and disagreeing complete getters", async () => {
+  for (const kind of ["numeric1", "mixed", "throw", "missing", "decoration", "scalar", "segment"]) {
+    const f = await existingUpdateFixture(), value = existingUpdatePayload(f);
+    if (kind === "numeric1") f.target.getRangeHyperlink = () => 1;
+    if (kind === "mixed") f.target.getRangeHyperlink = () => f.runtime.figma.mixed;
+    if (kind === "throw") f.target.getRangeHyperlink = () => { throw Error("Unknown native getter"); };
+    if (kind === "missing") delete f.target.getRangeHyperlink;
+    if (kind === "decoration") f.target.getRangeTextDecorationOffset = () => 0;
+    if (kind === "scalar") f.target.textStyleId = "unknown-style";
+    if (kind === "segment") { const read = f.target.getStyledTextSegments; f.target.getStyledTextSegments = fields => {
+      const runs = read(fields); runs[0].fontSize += 1; return runs;
+    }; }
+    let writes = 0; const set = f.target.setPluginData; f.target.setPluginData = function (...args) { writes++; return set.apply(this, args); };
+    let chars = f.target.characters; Object.defineProperty(f.target, "characters", { configurable: true, enumerable: true, get: () => chars, set: value => { writes++; chars = value; } });
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) });
+    assert.equal(f.runtime.messages.at(-1).type, "error", kind); assert.equal(writes, 0, kind); assert.equal(chars, "Original text");
+  }
+});
+
+test("fresh own REST notes contradictions refuse mixed notes-only and unmapped descendant writes", async () => {
+  for (const lane of ["mixed", "notes-only", "descendant"]) for (const namespace of ["own", "foreign", "missing"]) {
+    const f = lane === "mixed" ? await existingUpdateFixture() : await notesFixture({ unsupportedChild: lane === "descendant" });
+    let value;
+    if (lane === "mixed") value = existingUpdatePayload(f);
+    else { const current = clone(f.imported.document); current.nodes[0].notes = "Local note";
+      if (lane === "descendant") current.nodes[0].name = "Local reviewed root";
+      value = createFigmaTransfer(current); value.patch = createFigmaPatch(f.binding, current);
+    }
+    const source = lane === "descendant" ? f.runtime.all.get("1:3") : f.target;
+    source.raw.pluginData = namespace === "missing" ? {} : { [namespace === "own" ? f.runtime.figma.pluginId : "foreign-plugin"]: { codeshellNotes: "Contradictory raw requirement" } };
+    let writes = 0; const set = f.target.setPluginData; f.target.setPluginData = function (...args) { writes++; return set.apply(this, args); };
+    const beforeName = f.target.name, beforeNotes = f.target.getPluginData("codeshellNotes");
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); const preview = f.runtime.messages.at(-1);
+    if (namespace === "own") { assert.equal(preview.type, "error", lane); assert.match(preview.message, /raw notes contradict/u);
+      assert.equal(writes, 0); assert.equal(f.target.name, beforeName); assert.equal(f.target.getPluginData("codeshellNotes"), beforeNotes);
+    } else { assert.equal(preview.type, "patch-preview", `${lane}/${namespace}: ${preview.message}`);
+      await f.runtime.send({ type: "apply-patch", token: preview.token }); assert.equal(f.runtime.messages.at(-1).type, "patched", f.runtime.messages.at(-1).message);
+    }
+  }
+});
+
+test("last font and undo edges cannot replace getter evidence or introduce consumed raw notes contradictions", async () => {
+  for (const edge of ["font", "undo"]) for (const field of ["getter", "raw-notes"]) {
+    const f = await existingUpdateFixture(), value = existingUpdatePayload(f);
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); const preview = f.runtime.messages.at(-1);
+    assert.equal(preview.type, "patch-preview"); let ownedRaw, injected = false, writes = 0;
+    const read = f.target.exportAsync; f.target.exportAsync = async settings => { const response = await read.call(f.target, settings);
+      if (settings.format === "JSON_REST_V1") ownedRaw = response.document; return response;
+    };
+    const mutate = () => { if (injected) return; injected = true;
+      if (field === "getter") f.target.getRangeHyperlink = () => 1;
+      else ownedRaw.pluginData = f.runtime.jsonRest({ [f.runtime.figma.pluginId]: { codeshellNotes: "Late raw contradiction" } });
+    };
+    if (edge === "font") { const load = f.runtime.figma.loadFontAsync.bind(f.runtime.figma); f.runtime.figma.loadFontAsync = async font => { await load(font); mutate(); }; }
+    else { const undo = f.runtime.figma.commitUndo.bind(f.runtime.figma); f.runtime.figma.commitUndo = () => { undo(); mutate(); }; }
+    const set = f.target.setPluginData; f.target.setPluginData = function (...args) { writes++; return set.apply(this, args); };
+    let chars = f.target.characters; Object.defineProperty(f.target, "characters", { configurable: true, enumerable: true, get: () => chars, set: value => { writes++; chars = value; } });
+    await f.runtime.send({ type: "apply-patch", token: preview.token }); assert(injected);
+    assert.equal(f.runtime.messages.at(-1).type, "error", `${edge}/${field}`); assert.equal(writes, 0); assert.equal(chars, "Original text");
+  }
+});
+
+test("notes-only pure updates read back single multiple and cleared values before reporting success", async () => {
+  for (const shape of ["single", "multiple", "clear"]) for (const noop of [false, true]) {
+    const f = await existingUpdateFixture({ two: true }), first = f.current.pages[0].children[0], second = f.current.pages[0].children[1];
+    first.notes = shape === "clear" ? "" : "Exact new note";
+    if (shape === "multiple") second.notes = "Exact second note";
+    const value = createFigmaTransfer(f.current); value.patch = createFigmaPatch(f.binding, f.current);
+    assert(value.patch.operations.every(op => op.op === "update" && op.changed.length === 1 && op.changed[0] === "notes"));
+    const target = shape === "multiple" ? f.runtime.all.get("1:3") : f.target;
+    const previous = f.target.getPluginData("codeshellNotes"), method = target.setPluginData;
+    await f.runtime.send({ type: "preview-patch", content: JSON.stringify(value) }); const preview = f.runtime.messages.at(-1);
+    assert.equal(preview.type, "patch-preview", preview.message);
+    if (noop) target.setPluginData = function (key, value) { if (key !== "codeshellNotes") method.call(this, key, value); };
+    await f.runtime.send({ type: "apply-patch", token: preview.token }); const result = f.runtime.messages.at(-1);
+    if (noop) {
+      assert.equal(result.type, "error", shape); assert.match(result.message, /notes readback differs/u);
+      assert(f.runtime.calls.some(call => call[0] === "undo"), "Rejected no-op requests undo");
+      assert.equal(f.target.getPluginData("codeshellNotes"), previous, "Synthetic undo restores earlier pure updates");
+    } else {
+      assert.equal(result.type, "patched", result.message); assert.equal(f.target.getPluginData("codeshellNotes"), first.notes);
+      if (shape === "multiple") assert.equal(target.getPluginData("codeshellNotes"), second.notes);
+    }
   }
 });

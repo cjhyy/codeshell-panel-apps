@@ -97,11 +97,26 @@ test("notes patch rechecks exact target/subtree after the last await with zero w
   for (const mutate of [f => f.set("foreign change"), f => f.setChild("foreign unmapped change"),
     f => { f.page.children[0] = { ...f.target }; }, f => { f.target.children[0] = { ...f.child }; }]) {
     const f = patchFixture(), staged = createNativeNotesPatchCapture({ patch: f.patch, indexes: f.indexes, pluginId });
-    staged.captureTarget("1:2", f.target); await Promise.resolve(); mutate(f);
+    staged.captureTarget("1:2", f.target); staged.corroborateOwnRest("1:2", f.raw.children[0]); await Promise.resolve(); mutate(f);
     assert.throws(() => staged.assertCurrent()); assert.equal(f.writes(), 0);
   }
   const f = patchFixture(), staged = createNativeNotesPatchCapture({ patch: f.patch, indexes: f.indexes, pluginId });
-  staged.captureTarget("1:2", f.target); await Promise.resolve(); staged.assertCurrent(); assert.equal(f.writes(), 0);
+  staged.captureTarget("1:2", f.target); staged.corroborateOwnRest("1:2", f.raw.children[0]); await Promise.resolve(); staged.assertCurrent(); assert.equal(f.writes(), 0);
+});
+
+test("notes patch corroborates every fresh raw descendant without invoking source accessors", () => {
+  for (const kind of ["missing", "own", "descendant", "accessor", "sparse", "cycle", "late"]) {
+    const f = patchFixture(), staged = createNativeNotesPatchCapture({ patch: f.patch, indexes: f.indexes, pluginId });
+    staged.captureTarget("1:2", f.target); const raw = f.raw.children[0]; let reads = 0;
+    if (kind === "own") raw.pluginData = { [pluginId]: { codeshellNotes: "contradiction" } };
+    if (kind === "descendant") raw.children[0].pluginData = { [pluginId]: { codeshellNotes: "contradiction" } };
+    if (kind === "accessor") Object.defineProperty(raw, "children", { enumerable: true, get() { reads++; return []; } });
+    if (kind === "sparse") delete raw.children[0];
+    if (kind === "cycle") raw.children[0] = raw;
+    if (kind === "late") { staged.corroborateOwnRest("1:2", raw); raw.pluginData = { [pluginId]: { codeshellNotes: "late contradiction" } }; }
+    assert.throws(() => { if (!["missing", "late"].includes(kind)) staged.corroborateOwnRest("1:2", raw); staged.assertCurrent(); }, code("NATIVE_NOTES_RAW_CONFLICT"), kind);
+    assert.equal(reads, 0); assert.equal(f.writes(), 0);
+  }
 });
 
 test("maximum bounded source catalog retains all50000 observations with cached sibling identities", () => {
