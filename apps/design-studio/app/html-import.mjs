@@ -5,6 +5,7 @@ import { convertToDesignDSL, HTML2FIGMA_PROVENANCE } from "./vendor/html2figma-b
 import { designNodeToV3 } from "./design-node-adapter.mjs";
 import { createHtmlAutoMarginCapture } from "./html-auto-margin-distribution.mjs";
 import { htmlTextLineHeightRatio } from "./html-line-height.mjs";
+import { captureHtmlFontFamilyElement, captureHtmlFontFamilyTextProjection, preserveHtmlFontFamilies } from "./html-font-family.mjs";
 import {
   isHtmlAnchorHref,
   safeHtmlAnchorHref,
@@ -615,9 +616,10 @@ export async function captureWorkspaceHtmlResult({
         resourcePlans: [],
         report: { engine, warnings: prepared.warnings },
       };
-    const elements = new Map(), ambiguousElements = new WeakSet();
+    const elements = new Map(), ambiguousElements = new WeakSet(), fontRecords = new WeakMap();
     const tree = convertToDesignDSL(root, { onElement: (semanticId, element) => {
       if (element.ownerDocument !== frameDocument || !root.contains(element)) return;
+      if (!fontRecords.has(element)) fontRecords.set(element, captureHtmlFontFamilyElement(element));
       if (!elements.has(semanticId)) elements.set(semanticId, element);
       else if (elements.get(semanticId) !== element) {
         const previous = elements.get(semanticId);
@@ -634,9 +636,13 @@ export async function captureWorkspaceHtmlResult({
       const canvasColor = htmlColor?.alpha ? htmlColor : bodyColor;
       options.background = canvasColor?.alpha === 1 ? canvasColor.hex : "#ffffff";
     }
-    const canonicalBySource = new WeakMap(), syntheticFlowIds = new Set(), layoutFlowCandidates = [];
+    const canonicalBySource = new WeakMap(), syntheticFlowIds = new Set(), layoutFlowCandidates = [], fontBindings = [];
     options.onNode = (source, node) => {
       canonicalBySource.set(source, node);
+      if (node.type === "text") {
+        captureHtmlFontFamilyTextProjection(source, node);
+        fontBindings.push({source,node});
+      }
       if (source.nodeType === "container" && !source.semantic && node.type === "frame") syntheticFlowIds.add(node.id);
     };
     if (includeFlowAudit) {
@@ -645,12 +651,14 @@ export async function captureWorkspaceHtmlResult({
     }
     options.captureAutoMarginPlan = createHtmlAutoMarginCapture({ tree, root, elements, ambiguousElements });
     const result = await designNodeToV3(tree, options);
-    alignHtmlTextBaselines(result.document, frameDocument);
     const warn = (code, nodeId, message) => {
       result.report.stats.warningCount += 1;
       if (result.report.warnings.length < 500) result.report.warnings.push({ code, nodeId, message });
       else result.report.stats.omittedWarnings += 1;
     };
+    result.report.fontFamilies = preserveHtmlFontFamilies({ tree, root, elements, records: fontRecords,
+      ambiguousElements, canonicalBySource, textBindings: fontBindings, resources: result.document.resources, warn });
+    alignHtmlTextBaselines(result.document, frameDocument);
     await enableHtmlTextReflow(result.document, frameDocument, elements, warn);
     const recoveredTableFlow = [];
     const tables = await promoteHtmlFixedTables(result.document, {

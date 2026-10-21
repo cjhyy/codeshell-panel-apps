@@ -20,7 +20,7 @@ import {
 } from "./geometry.mjs";
 import { normalizeDesignResources } from "./resource-store.mjs";
 import { validTextMetrics } from "./text-metrics.mjs";
-import { designFontFaceCss, designFontFamilyCss } from "./font-css.mjs";
+import { designFontFaceCss, designFontFamilyCss, designResourceFontFamilyCss } from "./font-css.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 export const MAX_DESIGN_PAGES = 1_000;
@@ -1444,8 +1444,8 @@ function exportNodeSvg(
       ? document.resources?.find((resource) => resource.id === node.fontRef)
       : null;
     const fontFamily = escapeXml(
-      designFontFamilyCss(
-        fontResource?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
+      fontResource ? designResourceFontFamilyCss(node.fontFamily, fontResource.family) : designFontFamilyCss(
+        node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
       ),
     );
     const fontStyle = node.fontStyle ?? "normal";

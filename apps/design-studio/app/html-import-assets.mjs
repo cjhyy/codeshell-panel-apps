@@ -1,5 +1,6 @@
 /* Resolve only explicitly selected local files and inline data; never fetch a URL. */
 import { imageMimeFromBytes } from "./image-mime.mjs";
+import { parseDesignFontFamily } from "./font-family.mjs";
 
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 12 * 1024 * 1024;
@@ -151,7 +152,8 @@ export function htmlFontResources(css, warnings = []) {
     const rule = match[1];
     const property = (name) =>
       new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*([^;]+)`, "iu").exec(rule)?.[1]?.trim();
-    const family = property("font-family")?.replace(/^["']|["']$/gu, "");
+    const families = parseDesignFontFamily(property("font-family"));
+    const family = families?.length === 1 && !families[0].generic ? families[0].name : null;
     const source = /url\(["']?(data:font\/(?:woff2?|ttf|otf);base64,[A-Za-z0-9+/=]+)["']?\)/iu.exec(
       rule,
     )?.[1];
