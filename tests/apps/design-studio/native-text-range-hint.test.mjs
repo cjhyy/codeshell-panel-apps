@@ -36,10 +36,10 @@ function fixture({ text = "ABCD", pieces = [{ start: 0, end: text.length, fill: 
     textAlignVertical: val("TOP"), textAlignHorizontal: val("LEFT"), textTruncation: val("DISABLED"), maxLines: val(null) });
   const rest = { id, type: "TEXT", characters: text, fills: paint(pieces[0].fill),
     style: { fontFamily: "Inter", fontStyle: "Regular", fontSize: 24, fontWeight: 400, lineHeightUnit: "PIXELS", lineHeightPx: 30, textDecoration: "NONE" },
-    characterStyleOverrides: Array(text.length).fill(0), styleOverrideTable: {} };
+    characterStyleOverrides: Array.from(text, () => 0), styleOverrideTable: {} };
   pieces.forEach((piece, index) => {
     rest.styleOverrideTable[index + 1] = { fills: paint(piece.fill), hyperlink: piece.href ? { type: "URL", url: piece.href } : null };
-    rest.characterStyleOverrides.fill(index + 1, piece.start, piece.end);
+    rest.characterStyleOverrides.fill(index + 1, Array.from(text.slice(0, piece.start)).length, Array.from(text.slice(0, piece.end)).length);
   });
   const rangeChecks = pieces.map(piece => ({ start: piece.start, end: piece.end,
     values: { hyperlink: val(piece.href ? { type: "URL", value: piece.href } : getter) } }));

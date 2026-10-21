@@ -677,3 +677,10 @@ Line-height units and font axes remain exact: Float32 percentage transport that
 differs from the canonical scalar is deliberately refused, without rounding or
 tolerance. This helper is not connected to SDK capture or plugin-data writes;
 its caller must capture after final layout and roll back a failed creation.
+
+Native text source binding compares REST character overrides in Unicode scalar
+order against SDK UTF16 segments and accepts the exact Float32 serialization of
+native percentage line heights. Raw observations remain unchanged, and
+canonical metric admission stays strict. See the
+[actual SDK projection evidence](../../docs/todo/design-studio-native-text-rest-projection-2026-10-21.md)
+for preserved failures, deliberate admission refusals and Unicode controls.
