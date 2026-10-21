@@ -128,6 +128,7 @@ export const suites = [
         "tests/apps/design-studio/native-text-range-capture.test.mjs",
         "tests/apps/design-studio/native-text-range-write.test.mjs",
         "tests/apps/design-studio/native-text-range-state.test.mjs",
+        "tests/apps/design-studio/native-text-sdk-mock.test.mjs",
         "tests/apps/design-studio/figma-plugin.test.mjs",
         "tests/apps/design-studio/figma-plugin-ui.test.mjs",
         "tests/apps/design-studio/prototype.test.mjs",
