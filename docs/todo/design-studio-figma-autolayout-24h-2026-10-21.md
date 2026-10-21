@@ -2537,3 +2537,10 @@ handoff SHA58b2b4621f460f5bf16b2b69a7f68fa2e6d88726b60292beecda74cc252553f0。
 source_compare独立peer正在检查未映射后代、最后await竞态、raw own namespace矛盾及
 旧nativeText硬拒绝，root完整main/UI尚未执行。候选在独立native-notes-roundtrip工作树，
 不影响已合入的本地main；全程无实际Figma执行。
+
+残差只读初步定位：Metal宽屏748像素全部在y598底边、没有glyph差异；窄屏2711为
+顶/底边各341及第三行容器/文字2029，不能全归因字体。source root457.53125与Browser
+457.484375、三行65.59375→canonical65.59→Browser65.578125提示量化关联；尚未做
+因果修复试验，不通过向作者数值加1/64或坐标拟合伪造0。137包已另存immutable810
+snapshot，全部root/peer reader释放后普通移除已合入的basis工作树/分支及精确owned
+依赖symlink；目标目录和外部证据保留，历史硬编码路径需重建exact810再重放。
