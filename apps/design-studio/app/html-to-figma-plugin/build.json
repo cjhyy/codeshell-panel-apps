@@ -12,6 +12,7 @@
     "apps/design-studio/app/document.mjs",
     "apps/design-studio/app/figma-assets.mjs",
     "apps/design-studio/app/font-css.mjs",
+    "apps/design-studio/app/font-family.mjs",
     "apps/design-studio/app/geometry.mjs",
     "apps/design-studio/app/grid.mjs",
     "apps/design-studio/app/html-auto-margin-distribution.mjs",
@@ -22,6 +23,7 @@
     "apps/design-studio/app/html-fixed-table-flow.mjs",
     "apps/design-studio/app/html-float-columns.mjs",
     "apps/design-studio/app/html-flow-audit.mjs",
+    "apps/design-studio/app/html-font-family.mjs",
     "apps/design-studio/app/html-grid.mjs",
     "apps/design-studio/app/html-image-border-box.mjs",
     "apps/design-studio/app/html-import-assets.mjs",
@@ -33,6 +35,10 @@
     "apps/design-studio/app/layout-spacing.mjs",
     "apps/design-studio/app/linear-gradient-geometry.mjs",
     "apps/design-studio/app/native-stroke-inactive.mjs",
+    "apps/design-studio/app/native-text-import.mjs",
+    "apps/design-studio/app/native-text-range-hint.mjs",
+    "apps/design-studio/app/native-text-range-plan.mjs",
+    "apps/design-studio/app/native-text-ranges-source.mjs",
     "apps/design-studio/app/native-text-ranges.mjs",
     "apps/design-studio/app/paint.mjs",
     "apps/design-studio/app/resource-store.mjs",
@@ -80,13 +86,13 @@
     },
     {
       "path": "code.js",
-      "bytes": 230230,
-      "sha256": "7943f15fa14b5e93e074b5e4614f8a9c11d66d5d45e4fdebff9cca2b8b179e37"
+      "bytes": 232100,
+      "sha256": "7141e4bfd08aeff174dacfe1466ad2f19bb41eac61578de1cc7153cb66eadedc"
     },
     {
       "path": "ui.html",
-      "bytes": 368014,
-      "sha256": "df79fc8c7fa0a5e3b6be7511d46c6f455e14248e865c30b32db13db68e080882"
+      "bytes": 369884,
+      "sha256": "cd48f588d56df82f7c3494337229be9612934ed9676d2a179ff3059e4f267608"
     },
     {
       "path": "README.md",

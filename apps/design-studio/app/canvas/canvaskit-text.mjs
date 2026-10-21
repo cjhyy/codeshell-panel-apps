@@ -1,6 +1,6 @@
 import { textLineHeightPixels } from "../text-line-height.mjs";
 import { designFillPaints, gradientMatrix } from "../paint.mjs";
-import { designFontFamilyCss } from "../font-css.mjs";
+import { designFontFamilyCss, designNamedFontFamilyCss, designResourceFontFamilyCss } from "../font-css.mjs";
 import { currentTextMetrics } from "../text-metrics.mjs";
 import { projectTextRanges, validateTextRanges } from "../text-ranges.mjs";
 
@@ -58,6 +58,7 @@ export async function createCanvasKitText({
 }) {
   const provider = CK.TypefaceFontProvider.Make(),
     faces = new Map(),
+    aliasFamilies = new Map(),
     domFaces = [];
   let counters = initialCounters,
     unsupportedNode = initialUnsupportedNode;
@@ -118,7 +119,8 @@ export async function createCanvasKitText({
       if (!face) continue;
       const alias = `${fontPrefix}-${faces.size}`;
       provider.registerFont(resource.bytes, alias);
-      faces.set(id, { face, alias });
+      faces.set(id, { face, alias, family: descriptor.family });
+      if (typeof descriptor.family === "string") aliasFamilies.set(alias, descriptor.family);
       const domFace = new FontFace(alias, resource.bytes, {
         weight: "1 1000",
         style: descriptor.style || "normal",
@@ -136,7 +138,10 @@ export async function createCanvasKitText({
   }
 
   function configure(node, alias) {
-    measure.font = `${node.fontStyle || "normal"} ${node.fontWeight} ${node.fontSize}px ${designFontFamilyCss(alias ?? node.fontFamily)}`;
+    const family = alias === undefined ? designFontFamilyCss(node.fontFamily) :
+      aliasFamilies.has(alias) ? designResourceFontFamilyCss(node.fontFamily, aliasFamilies.get(alias), alias) :
+        designNamedFontFamilyCss(alias);
+    measure.font = `${node.fontStyle || "normal"} ${node.fontWeight} ${node.fontSize}px ${family}`;
     measure.textBaseline = "hanging";
     measure.textAlign = "left";
     // Canvas "auto" can disable pairs that the editable SVG text still kerns.
@@ -740,6 +745,7 @@ export async function createCanvasKitText({
       contentBoundsCache.clear();
       rasterPixels = 0;
       for (const { face } of faces.values()) face.delete();
+      aliasFamilies.clear();
       for (const face of domFaces) document.fonts.delete(face);
       provider.delete();
     },
