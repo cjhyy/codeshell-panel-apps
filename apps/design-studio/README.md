@@ -685,6 +685,14 @@ canonical metric admission stays strict. See the
 [actual SDK projection evidence](../../docs/todo/design-studio-native-text-rest-projection-2026-10-21.md)
 for preserved failures, deliberate admission refusals and Unicode controls.
 
+The staged pure `native-text-range-compare.mjs` helper compares complete historical
+and current native text evidence, each validated against its own REST node.
+It preserves exact raw observations and separately compares resolved REST styles,
+including unknown keys and style references. Equivalent override ID renumbering
+passes; missing history explicitly requires a snapshot. It does not activate
+original-node writes or replace geometry/source checks. See the
+[comparison contract and controls](../../docs/todo/design-studio-native-text-source-compare-2026-10-21.md).
+
 The staged `figma-plugin/text-range-state.mjs` finalizer combines complete SDK
 capture with author-hint validation after final layout. It stages all hints and
 rechecks every owned Text after the last awaited export before writing metadata;
