@@ -140,6 +140,7 @@ export const suites = [
         "tests/apps/design-studio/text-line-height.test.mjs",
         "tests/apps/design-studio/text-ranges.test.mjs",
         "tests/apps/design-studio/text-ranges-document.test.mjs",
+        "tests/apps/design-studio/native-text-range-plan.test.mjs",
         "tests/apps/design-studio/text-ranges-svg.test.mjs",
         "tests/apps/design-studio/text-ranges-tools.test.mjs",
         "tests/apps/design-studio/html2figma-browser.test.mjs",
