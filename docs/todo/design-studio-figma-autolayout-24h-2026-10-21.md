@@ -2577,3 +2577,19 @@ flow子树精度；普通手动移动、paint、排版基线策略保持原政�
 三是PRD→原型实际CPU导航复核：已有多页前进/返回/外链可运行，但CLI没有prototype
 操作，且requirement ID并不会自动修复改名nodeID的原型引用；审计最终收据待冻结。
 截止UTC16:31不变；这些后续候选尚未合入本次已验证产品。
+
+ROUND51保存：本地primary与aggregate已clean正常FF同步39a14ab9f556fc95c021497b7d820eed6f1e7ded，
+865门禁pins逐字一致，集成收据SHA20a72af7666b0bb88a55f2ac331bb113cbd647774809eb8baaec24cdb6805719。
+全部reader释放后，owner仅unlink精确owned primary依赖symlink（目标目录保留），root
+复查无ignored/untracked/activecwd、126已为localmain祖先后，普通移除旧Notes126工作树/
+分支，没有force。外部证据保留，历史硬编码路径重放需恢复exact126 checkout；cleanup
+SHAfb705262aa5a9e42a7ad2c48f0e6bd988562614d72f766f2ecf84aa63b75119f。
+
+PRD工作流审计已冻结：17次实际CLI、40个CPU Browser状态/截图、4个本地帮助popup、
+1280/400导航与resize，220外部artifact pins、1354源snapshot及137安装包逐字核对。
+handoff SHAe30474ad0fb9c84610162a5b22fd92876100e1dc36ac21f383f2b10927aec69f；
+报告SHAe62c507ef0e6f76c269e237e5dd3ca45d01ecb2b0c0143f59435feffb1dc28e9。
+明确只证明显式requirement ID元数据及真实Browser原型导航，不证明Agent重生成节点ID
+稳定或原生Figma reactions。后续CLI独立topic仅增加frontend prototype:true复用多页
+exporter及validate companion诊断；严格boolean、现有安全读取预算与create-only输出，
+缺primary可默认、坏manifest/缺parts/danglinglinks必须报错，不自动改ID或设计/sidecar。
