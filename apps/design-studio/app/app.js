@@ -1,4 +1,5 @@
 import { validateShadowStack, shadowStackOutsets } from "./shadow-stack.mjs";
+import { validateTextRanges, validateTextRangeNodePatch, replaceTextRange, replaceTextValue } from "./text-ranges.mjs";
 import { textLineHeightCss, textLineHeightPixels, validTextLineHeight } from "./text-line-height.mjs";
 import { validateLayoutSpacing } from "./layout-spacing.mjs";
 import { GRID_CONTAINER_FIELDS, GRID_CHILD_FIELDS, gridPlacements } from "./grid.mjs";
@@ -1617,7 +1618,20 @@ function renderSelectionSize(nodes) {
   elements.selectionSize.hidden = false;
 }
 
-function setTextNodeValue(node, value) {
+const textInputSelections = new WeakMap();
+function setTextNodeValue(node, value, { draft, affinity = "before", selection } = {}) {
+  if (node.textRanges !== undefined) {
+    const contentKeys = ["text", "textSource", "textRanges", "textMetrics", "textMeasurement", "textFlow", "textOverflow", "textFlowWidth"];
+    const next = draft ? { ...node } : replaceTextValue(node, value, affinity, selection);
+    if (draft) for (const key of contentKeys) {
+      if (Object.hasOwn(draft, key)) next[key] = draft[key]; else delete next[key];
+    }
+    validateTextRanges(next);
+    for (const key of Object.keys(node)) if (!Object.hasOwn(next, key)) delete node[key];
+    Object.assign(node, next);
+    reflowParent(node);
+    return;
+  }
   node.text = value.slice(0, 4000);
   if (Object.hasOwn(node, "textSource")) node.textSource = node.text;
   delete node.textFlowWidth;
@@ -1644,11 +1658,12 @@ function finishInlineTextEdit({ cancel = false, focusStage = false } = {}) {
   ) {
     if (
       String(edit.node.text ?? "") !== edit.originalText ||
-      edit.node.textSource !== edit.originalSource
+      edit.node.textSource !== edit.originalSource ||
+      JSON.stringify(edit.node.textRanges) !== edit.originalRanges
     ) {
       notify("图层文字在编辑期间已变化；未覆盖较新的文字，请核对后重试", "error");
     } else {
-      setTextNodeValue(edit.node, value);
+      setTextNodeValue(edit.node, value, { draft: edit.draft });
       commitHistory();
       markChanged();
     }
@@ -1702,6 +1717,8 @@ function beginInlineTextEdit(node) {
     nodeId: node.id,
     originalText: String(node.text ?? ""),
     originalSource: node.textSource,
+    originalRanges: JSON.stringify(node.textRanges),
+    ...(node.textRanges !== undefined ? { draft: clone(node) } : {}),
     originalValue: String(node.textSource ?? node.text ?? ""),
     workspaceEpoch,
     documentEpoch,
@@ -5613,8 +5630,16 @@ function bindPropertyInput(input, update, eventName = "input", layoutEffect = "n
   input.addEventListener(eventName, () => {
     const node = selectedNode();
     if (!node || isEffectivelyLocked(node)) return;
-    const before = isContainerNode(node) ? { ...node } : null;
-    update(node, input.value);
+    const before = isContainerNode(node) ? { ...node } : node.textRanges !== undefined ? clone(node) : null;
+    try {
+      update(node, input.value);
+      validateTextRanges(node);
+    } catch (error) {
+      if (!before) throw error;
+      for (const key of Object.keys(node)) if (!Object.hasOwn(before, key)) delete node[key];
+      Object.assign(node, before);
+      notify(error.message, "error"); renderProperties(); return;
+    }
     clearInvalidStrokeLayoutExclusion(node);
     if (before) try { validateLayoutSpacing(node); } catch (error) {
       for (const key of Object.keys(node)) if (!(key in before)) delete node[key];
@@ -5729,7 +5754,13 @@ bindPropertyInput(propertyInputs.notes, (node, value) => {
   else delete node.notes;
 });
 bindPropertyInput(propertyInputs.text, (node, value) => {
-  if (node.type === "text") setTextNodeValue(node, value);
+  const selection = textInputSelections.get(propertyInputs.text);
+  textInputSelections.delete(propertyInputs.text);
+  if (node.type === "text") setTextNodeValue(node, value, { affinity: selection?.affinity ?? "before", selection });
+});
+propertyInputs.text.addEventListener("beforeinput", () => {
+  const start = propertyInputs.text.selectionStart, end = propertyInputs.text.selectionEnd;
+  textInputSelections.set(propertyInputs.text, { start, end, affinity: start === end ? "before" : "after" });
 });
 bindPropertyInput(propertyInputs.fontSize, (node, value) => {
   if (node.type === "text") node.fontSize = clamp(Number(value) || 6, 6, 240);
@@ -6323,6 +6354,23 @@ elements.inlineTextEditor.addEventListener("keydown", (event) => {
   }
 });
 elements.inlineTextEditor.addEventListener("blur", () => finishInlineTextEdit());
+elements.inlineTextEditor.addEventListener("beforeinput", () => {
+  if (inlineTextEdit) {
+    const start = elements.inlineTextEditor.selectionStart, end = elements.inlineTextEditor.selectionEnd;
+    inlineTextEdit.selection = { start, end, affinity: start === end ? "before" : "after" };
+  }
+});
+elements.inlineTextEditor.addEventListener("input", () => {
+  if (!inlineTextEdit?.draft) return;
+  try {
+    const selection = inlineTextEdit.selection;
+    inlineTextEdit.selection = undefined;
+    inlineTextEdit.draft = replaceTextValue(inlineTextEdit.draft, elements.inlineTextEditor.value, selection?.affinity ?? "before", selection);
+  } catch (error) {
+    elements.inlineTextEditor.value = inlineTextEdit.draft.textSource ?? inlineTextEdit.draft.text;
+    notify(error.message, "error");
+  }
+});
 document
   .getElementById("edit-text-selection")
   .addEventListener("click", () => beginInlineTextEdit(selectedNode()));
@@ -7499,6 +7547,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "lineHeightUnit",
   "letterSpacing",
   "textDecoration",
+  "textRanges",
   "textMeasurement",
   "textSource",
   "textFlow",
@@ -7552,6 +7601,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
 const AGENT_OPERATION_FIELDS = new Map([
   ["create_node", new Set(["op", "type", "id", "parent_id", "before_id", "properties"])],
   ["update_node", new Set(["op", "node_id", "changes"])],
+  ["edit_text", new Set(["op", "node_id", "start", "end", "text", "affinity", "expectedSourceSignature"])],
   ["move_node", new Set(["op", "node_id", "parent_id", "before_id"])],
   ["delete_node", new Set(["op", "node_id"])],
   ["set_document", new Set(["op", "changes"])],
@@ -7567,7 +7617,7 @@ const AGENT_PAGE_OPERATIONS = new Set([
   "set_active_page",
   "delete_page",
 ]);
-const AGENT_NODE_OPERATIONS = new Set(["create_node", "update_node", "move_node", "delete_node"]);
+const AGENT_NODE_OPERATIONS = new Set(["create_node", "update_node", "edit_text", "move_node", "delete_node"]);
 
 function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
   if (!changes || typeof changes !== "object" || Array.isArray(changes)) {
@@ -7576,6 +7626,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
   for (const key of Object.keys(changes))
     if (!AGENT_NODE_PATCH_FIELDS.has(key))
       throw new Error(`Agent 不可直接修改图层字段：${key}`);
+  validateTextRangeNodePatch(node, changes);
   const strokeKeys = ["stroke", "strokeWidth", "strokeAlign", "strokeSides", "strokeLayoutExcluded", "nativeStrokeInactive"];
   const strokeHandled = strokeKeys.some(key => Object.hasOwn(changes, key)) &&
     applyDesignStrokeEdits(node, changes, { nodes: design.nodes, parent: nodeById(node.parentId) });
@@ -7604,6 +7655,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
         "contentClipping",
         "lineHeightUnit",
         "textSource",
+        "textRanges",
         "textFlow",
         "textOverflow",
         "textFlowWidth",
@@ -7803,7 +7855,7 @@ async function applyAgentDesignOperations(args) {
         }
       }
       if (
-        ["update_node", "move_node", "delete_node"].includes(operation.op) &&
+        ["update_node", "edit_text", "move_node", "delete_node"].includes(operation.op) &&
         !isAgentNodeReference(operation.node_id)
       ) {
         throw new Error(`操作 ${index + 1} 的 node_id 必须是 1–160 个安全字符`);
@@ -7869,6 +7921,15 @@ async function applyAgentDesignOperations(args) {
         }
         requestParentReflow(node.parentId);
         if (isAutoLayoutContainer(node)) layoutContainerIds.add(node.id);
+        changedIds.add(node.id);
+      } else if (operation.op === "edit_text") {
+        const node = nodeById(operation.node_id);
+        if (!node) throw new Error(`图层不存在：${operation.node_id}`);
+        const { op: _op, node_id: _nodeId, ...edit } = operation;
+        const next = replaceTextRange(node, edit);
+        for (const key of Object.keys(node)) if (!Object.hasOwn(next, key)) delete node[key];
+        Object.assign(node, next);
+        requestParentReflow(node.parentId);
         changedIds.add(node.id);
       } else if (operation.op === "update_node") {
         const node = nodeById(operation.node_id);

@@ -10,7 +10,25 @@ const fail = (message, code = "TEXT_RANGES_INVALID") => {
 };
 const own = (value, key) => Object.hasOwn(value, key);
 const exactKeys = (value, keys) => plain(value) && Object.keys(value).every((key) => keys.includes(key));
-const bytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+// Figma main has no guaranteed DOM globals. Keep validation identical there.
+function bytes(value) {
+  const text = JSON.stringify(value);
+  let count = 0;
+  for (let index = 0; index < text.length; index++) {
+    const unit = text.charCodeAt(index);
+    count += unit < 0x80 ? 1 : unit < 0x800 ? 2 : high(unit) && low(text.charCodeAt(index + 1)) ? (index++, 4) : 3;
+  }
+  return count;
+}
+function clone(value, seen = new Set(), depth = 0) {
+  if (value === null || typeof value !== "object") return value;
+  if (depth > 64 || seen.has(value) || (!Array.isArray(value) && !plain(value))) fail("文字编辑仅接受有界无环纯数据");
+  seen.add(value);
+  const output = Array.isArray(value) ? value.map((entry) => clone(entry, seen, depth + 1))
+    : Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, clone(entry, seen, depth + 1)]));
+  seen.delete(value);
+  return output;
+}
 const high = (unit) => unit >= 0xd800 && unit <= 0xdbff;
 const low = (unit) => unit >= 0xdc00 && unit <= 0xdfff;
 function validString(value) {
@@ -32,7 +50,7 @@ export function textRangeSourceSignature(sourceText) {
 }
 const sourceOf = (node) => typeof node.textSource === "string" ? node.textSource : node.text;
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
-const overrides = (range) => Object.fromEntries(STYLE_KEYS.filter((key) => own(range, key)).map((key) => [key, structuredClone(range[key])]));
+const overrides = (range) => Object.fromEntries(STYLE_KEYS.filter((key) => own(range, key)).map((key) => [key, clone(range[key])]));
 function lengthValue(value, fontSize, thickness) {
   if (!exactKeys(value, ["unit", "value"])) fail("文字装饰长度包含未知字段");
   if (value.unit === "auto") {
@@ -52,8 +70,13 @@ export function isSafeTextRangeHref(value) {
       /[\u0000-\u0020\u007f]/u.test(value[0]) || /[\u0000-\u0020\u007f]/u.test(value.at(-1)) ||
       /[\u0000-\u001f\u007f]/u.test(value) || !validString(value)) return false;
   if (value.startsWith("#")) return true;
-  try { const url = new URL(value); return ["http:", "https:", "mailto:", "tel:"].includes(url.protocol); }
-  catch { return false; }
+  if (/^(?:mailto|tel):[^\s\\]+$/iu.test(value)) return true;
+  const match = /^https?:\/\/([^/?#]+)(?:[/?#][^\\]*)?$/iu.exec(value);
+  if (!match || /\s|\\/u.test(value)) return false;
+  // A conservative absolute-URL subset: no credentials or browser-dependent
+  // backslash/IDN normalization. Literal fragments need no URL resolver.
+  const host = /^(\[[0-9a-f:.]+\]|[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::([0-9]+))?$/iu.exec(match[1]);
+  return Boolean(host && !host[1].includes("..") && (!host[2] || Number(host[2]) <= 65535));
 }
 function normalizeStyle(value, fontSize) {
   if (!exactKeys(value, STYLE_KEYS)) fail("文字范围样式包含未知字段");
@@ -104,6 +127,8 @@ function payload(node) {
   if (value.sourceSignature !== textRangeSourceSignature(source))
     fail("textRanges 与当前完整文字来源签名不一致", "TEXT_RANGES_STALE");
   if (node.textOverflow !== undefined) fail("范围文字暂不支持截断", "TEXT_RANGES_UNSUPPORTED_TRUNCATION");
+  if (node.fillPaints !== undefined && value.ranges.length)
+    fail("范围文字暂不支持基础 paint stack；请先显式选择纯色", "TEXT_RANGES_UNSUPPORTED_BASE_PAINT");
   let end = 0;
   const normalized = Array.from(value.ranges, (range, index) => {
     if (!exactKeys(range, ["start", "end", ...STYLE_KEYS]) ||
@@ -185,7 +210,7 @@ function editBounds(node, edit, allowEmpty = true) {
   return source;
 }
 function editedNode(node, source, ranges) {
-  const next = structuredClone(node);
+  const next = clone(node);
   next.text = source;
   if (own(node, "textSource") || node.textFlow === "wrap") next.textSource = source;
   delete next.textMetrics; delete next.textMeasurement; delete next.textFlowWidth;
@@ -216,6 +241,25 @@ export function replaceTextRange(node, edit) {
   output.sort((left, right) => left.start - right.start);
   return editedNode(node, text, output);
 }
+
+/** One contiguous textarea input; callers supply the user's selection affinity. */
+export function replaceTextValue(node, text, affinity = "before", selection) {
+  const source = sourceOf(node);
+  if (!validString(source) || !validString(text)) fail("文字编辑内容无效");
+  if (selection && boundary(source, selection.start) && boundary(source, selection.end) && selection.start <= selection.end) {
+    const prefix = source.slice(0, selection.start), suffix = source.slice(selection.end);
+    if (text.length >= prefix.length + suffix.length && text.startsWith(prefix) && text.endsWith(suffix))
+      return replaceTextRange(node, { start: selection.start, end: selection.end,
+        text: text.slice(prefix.length, text.length - suffix.length), affinity, expectedSourceSignature: textRangeSourceSignature(source) });
+  }
+  const previous = Array.from(source), next = Array.from(text);
+  let start = 0, suffix = 0;
+  while (start < previous.length && start < next.length && previous[start] === next[start]) start++;
+  while (suffix < previous.length - start && suffix < next.length - start && previous[previous.length - 1 - suffix] === next[next.length - 1 - suffix]) suffix++;
+  const offset = previous.slice(0, start).join("").length;
+  return replaceTextRange(node, { start: offset, end: source.length - previous.slice(previous.length - suffix).join("").length,
+    text: next.slice(start, next.length - suffix).join(""), affinity, expectedSourceSignature: textRangeSourceSignature(source) });
+}
 export function setTextRangeStyle(node, edit) {
   if (!exactKeys(edit, ["start", "end", "style", "expectedSourceSignature"]) || !exactKeys(edit.style, STYLE_KEYS)) fail("文字范围样式编辑无效");
   const source = editBounds(node, edit, false), ranges = validateTextRanges(node)?.ranges ?? [];
@@ -226,7 +270,7 @@ export function setTextRangeStyle(node, edit) {
     const style = range ? overrides(range) : {};
     if (start >= edit.start && end <= edit.end) {
       for (const [key, value] of Object.entries(edit.style)) {
-        if (value === null) delete style[key]; else style[key] = structuredClone(value);
+        if (value === null) delete style[key]; else style[key] = clone(value);
       }
       if (own(edit.style, "textDecoration") && edit.style.textDecoration !== "underline") {
         for (const key of ["textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk"]) {
@@ -238,9 +282,24 @@ export function setTextRangeStyle(node, edit) {
     if (Object.keys(style).length) output.push({ start, end, ...normalizeStyle(style, node.fontSize) });
   }
   // Style-only edits preserve display bytes and font measurement receipts.
-  const result = structuredClone(node), normalized = coalesce(output);
+  const result = clone(node), normalized = coalesce(output);
   if (normalized.length) result.textRanges = { version: 1, sourceSignature: textRangeSourceSignature(source), ranges: normalized };
   else delete result.textRanges;
   validateTextRanges(result);
   return result;
+}
+
+/** Validate the final content/range state before a generic public node patch. */
+export function validateTextRangeNodePatch(node, changes) {
+  if (!plain(changes)) fail("文字图层修改必须是对象");
+  if (own(changes, "textRanges") && changes.textRanges === undefined) fail("范围清除需要显式 null");
+  const final = { ...node, ...changes };
+  for (const key of ["textRanges", "textSource", "textFlow", "textOverflow", "fillPaints"])
+    if (changes[key] === null) delete final[key];
+  if (own(changes, "fill") && !own(changes, "fillPaints")) delete final.fillPaints;
+  if (final.type === "text" && own(changes, "text") && !own(changes, "textSource") && own(node, "textSource"))
+    final.textSource = final.text;
+  if (node.textRanges !== undefined && sourceOf(final) !== sourceOf(node) && !own(changes, "textRanges"))
+    fail("修改范围文字内容需要同时提供匹配的 textRanges 或显式 null 清除", "TEXT_RANGES_STALE");
+  validateTextRanges(final);
 }
