@@ -1943,7 +1943,7 @@ Figma Legacy 布局。所有新主路径仍需成对像素/结构与完整检查
 稳定产品继续1bbe0e6；本轮只同步任务记录，无 push、发布或 Host 安装。
 24小时目标继续 active，截止仍为10月22日00:31 SG。
 
-## ROUND41–42 · 2026-10-21 12:14 SG · 重叠 Figma 来源拒绝歧义，完整回归通过
+## ROUND41–42 · 2026-10-21 12:10 SG · 重叠 Figma 来源拒绝歧义，完整回归通过
 
 8ad6056 修复来源索引对重复 node ID 静默 first-wins 的问题。同一完整 raw 子树只有
 对象键顺序不同可复用原对象；样式、未知字段、子层或已知父节点/兄弟位置不同即拒绝。
@@ -1983,4 +1983,37 @@ Cover 的三个直接普通流失败正在隔离候选中恢复为真实 vertica
 三宽度初始和同宽重排图片与原产品逐字节不变；跨宽像素仍有变差的案例，已定位为
 既有固定 header 高度和捕获的桌面媒体字号与新 main HUG 重排的组合，保留全部负例。
 等待冻结候选的独立审查和最终配对证据，不把结构改善写成网页/Figma 像素通过。
+24小时目标继续 active，截止仍为10月22日00:31 SG。
+
+## ROUND43 · 2026-10-21 12:29 SG · Cover 内部 auto margin 恢复真实两端分布
+
+4bd8d4f/2aba76a 已正常合入17a46ab：当前真实 DOM 的静态垂直单行 Flex，只有内部
+边界且每处 auto slot 数相等时，恢复现有 vertical space-between AL。真实子层来源、
+顺序、Fill/HUG/fixed 保留；不产生 absolute、spacer 或新模型字段。源对象身份、完整
+world boxes、固定 padding/零 gap、shrink/overflow 和可见参与者拓扑均需证明；计划
+仅消费一次。768px 下真实 slot336.890625 与 CSSOM 序列化336.891px分别校验，后者
+只证明 pinned synthetic wrapper 的元数据运算。±0.0001 padding、size、真实位置控制
+均拒绝，没有容差或坐标拟合。
+
+peer 独立4/4通过，核验69份 artifact 并重算18份严格 RGBA 对比；六份原宽度初始/
+重排 converted PNG 与1bbe逐字节相同。三个宽度的直接 flow 失败由3降至0，但未解决
+关系仍15/15/7，整页初始像素仍106413/87286/71764。跨宽像素93225→95459、
+94337→97536、118621→116674全部保留：桌面固定 header 高度、媒体字号未随宽度变化，
+与新的 main HUG 重排共同导致前两例变差。整页像素未通过，真实 native 执行仍 NOT_RUN，
+独立 HTML 插件未获得当前 DOM 证明。peer 收据 SHA
+28cd9c1844ad478f2e170e5a323d220a5dfd76efb93dae76457e70046a2b0c64。
+
+冻结17a46ab完整 main716项715pass/0fail/1skip，218822.023584ms；UI107项106pass/
+0fail/1skip，107850.58875ms；合计823项821pass/0fail/2skip。两套前后123份 package
+文件、HEAD、helper 和 tracked clean 均相等，typecheck、validate123、三项 generated、
+scoped build 和 diff 检查 exit0。combined 收据 SHA
+49c5b3547fea364a39822428e22c5a391fa48009acb6668a0dd14b0d09426dc9。
+只有完成这些检查后同步本地稳定 primary，无 push、发布或 Host 安装。
+
+另在隔离分支验证 stable scrollbar gutter：32份真实 DOM/PNG 基线揭示选中 HTML 时
+原有同宽重排也会扩宽15px。候选以已证明的固定 gutter 转为视口 padding，六个
+HTML/body/main 与 stable/both-edges 样例的初始、重排、缩窄18份像素对比目前全部0。
+候选仍需固定根间距/约束负例、独立 peer 及完整回归，不在本次 primary 同步内。
+native 独立分支正常合入来源修复后216项受影响检查通过；新完整 factory 探针仅准备，
+source capture/精确 SDK metric 投影与 hint 恢复正在另一分支实施，均未宣称实机通过。
 24小时目标继续 active，截止仍为10月22日00:31 SG。
