@@ -2544,3 +2544,36 @@ source_compare独立peer正在检查未映射后代、最后await竞态、raw ow
 因果修复试验，不通过向作者数值加1/64或坐标拟合伪造0。137包已另存immutable810
 snapshot，全部root/peer reader释放后普通移除已合入的basis工作树/分支及精确owned
 依赖symlink；目标目录和外部证据保留，历史硬编码路径需重建exact810再重放。
+
+### ROUND51 · 原生需求备注往返与完整组合回归
+
+1261503正常合入80566e得到80c375c。新增独立version1 nativeNotes supplement，按实际
+own-plugin SDK getter观察全部来源节点（含未映射后代）的精确备注与拓扑；原始REST及
+未知字段完整保留。缺记录代表未知，不能当作无备注；空SDK字符串无法区分空值与删除，
+不宣称该区别无损。备注只作普通文本保存，不解释为PRD、HTML或动作，也不能授予原生
+写入权限。现有备注更新/清除/删除要求新鲜同plugin来源基线，并在全部await后同步检查
+实际对象、父子关系、完整后代及备注。当前备注敏感写入仅支持notes-only更新/删除；
+混合异步操作在写入前拒绝。原nativeText范围更新、清除、删除硬边界未开放，12模块
+逐字未变。没有覆盖用户设计，也没有执行真实Figma。
+
+独立peer45/45 VM控制通过，覆盖末次REST/font/SVG等待、same-ID替换、移动、未映射
+后代、raw own namespace矛盾、getter失败、公有伪造proof及旧Text边界；完整139package
+与冻结126一致，peer SHAe16c30d27f71b9deef3ed91a4050be63c9192f285b9705f329177344fa3f6577。
+root组合main927项926pass/1skip，UI113项112pass/1skip，共1040项1038pass/2skip；
+另installed CLI6/6及typecheck、validate、scoped build、3generated、diff均通过。
+四组门禁865 union pins全部与80c375c一致；139package除html-import.mjs取已验证805
+之外均逐字等于126。组合收据SHA2f8d18f504e8fc4d5eeb76164b631c7668ee55b432fd713c66491f2e72936491。
+本轮没有新像素结论；上一轮Metal固定ROI宽748、窄2711仍非零。
+10:48:38UTC documented node_repl复查cuaAvailable:false，真实Figma仍NOT_RUN。
+
+后续已隔离并行：一是几何精度修复，实测源65.59375在adapter/核心AL被量化为65.59，
+CSS px序列化再损失浏览器1/64。授权仅保留真实有限几何数值、TypedOM明确px及AL尺寸/
+flow子树精度；普通手动移动、paint、排版基线策略保持原政策，不做坐标拟合或全量1/64
+吸附。初始纯几何控制通过但实际三行源242.8125→Browser242.78125的失败证据已保留，
+不将其零RGBA冒充精确几何。二是共享最终字段校验：独立5项VM观察确认当前混合操作
+安全拒绝，同时旧普通文字路径在font等待后可能覆盖晚到外部修改。新分支先支持已有
+图层标量/普通文字与备注的同步提交；创建、移动、复杂布局/paint仍需后续独立stage。
+审计方案SHA31083b938b6c6e6fe5d6e53d183829aefb3edcf6a28c1214063e01dae2ade1cf。
+三是PRD→原型实际CPU导航复核：已有多页前进/返回/外链可运行，但CLI没有prototype
+操作，且requirement ID并不会自动修复改名nodeID的原型引用；审计最终收据待冻结。
+截止UTC16:31不变；这些后续候选尚未合入本次已验证产品。
