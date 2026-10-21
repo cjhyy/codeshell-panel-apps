@@ -139,6 +139,7 @@ export const suites = [
         "tests/apps/design-studio/grid-fill-width-context.test.mjs",
         "tests/apps/design-studio/text-line-height.test.mjs",
         "tests/apps/design-studio/text-ranges.test.mjs",
+        "tests/apps/design-studio/native-text-ranges-source.test.mjs",
         "tests/apps/design-studio/text-ranges-document.test.mjs",
         "tests/apps/design-studio/text-ranges-svg.test.mjs",
         "tests/apps/design-studio/text-ranges-tools.test.mjs",
