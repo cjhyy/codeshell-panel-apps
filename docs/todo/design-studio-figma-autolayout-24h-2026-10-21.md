@@ -2440,3 +2440,42 @@ width200却标Hug，Browser实际hug约110.3；现有26/26 flow覆盖不能证�
 反序不改变FontFaceSet优先级，owner真实CPU复现，亦需后继修复；原失败收据保留。
 另一个native-notes独立树正在实现惰性普通metadata往返及保守并发比较，不赋予notes
 任何布局/文字/native写入权限，未合入。截止时间00:31SG保持不变。
+
+### ROUND49 · 文档字体归属、顺序与恢复资源表
+
+f43b202后继修复433两处独立回归后，root完整main903项902pass/1skip、UI113项
+112pass/1skip，共1016项1014pass/2skip。原433的8377px顺序错误与UI恢复失败均保留。
+root typecheck、validate、scoped build、3generated check、diff全部通过。正常合入
+9c7ea240后逐项比对243 main pins、149 UI pins、140 static pins与门禁完全一致；组合
+收据SHA566c19b6a44fa03efb077c6849cbfaec57ebaeac9fe2e6249c5dd45bf360742f。
+CLI入口/Skill未改，R48独立6项不重复计入本轮。完整package137文件，其中app/130文件，
+避免把两个统计范围混用。
+
+新owned manager先解码全部字体，再同步提交精确实例集合；同ID需内容URL/SHA/描述符
+一致才复用。rollback恢复有品牌lease，workspace/pagehide使旧lease与pending失效；
+只移除自身FontFace，其他来源保留。复用的同族同weight/style字体按目标顺序重新安装，
+引用顺序或资源描述符在await期间改变均拒绝。恢复draft在replay完成后，用当前normalized
+resources重建校验过的scoped cache，保留原未保存导入/绑定/首次保存断言。
+
+独立CPU actual-app复测A→无资源B恢复clean serif，失败B真实Roboto已解码但未发布，
+回滚A字体未变；workspace/late hide释放owned faces，foreign精确实例保留。旧反序复用
+595.046875与fresh591.125相差8377px/max238；后继复用/fresh均591.125、严格0，且
+未重新解码。8项selected noGL及原污染控制通过。137文件immutable snapshot前后相同，
+peer SHA83d814afb6a9789b976ec67514f3d908bf70ee11cf6039ca5943e8bcc0274208。
+owner另16项synthetic pagehide/pageshow与实际编辑恢复通过，不能称真实BFCache/Host、
+CanvasKit原生段落或Figma验收；全页像素结果仍沿用R48失败，不据局部0提升资格。
+
+R48已clean FF本地main至1e74095，136package pins与门禁一致，FF收据
+SHAc517c9baa17af77f101040ed26314652cd004fcbe2b0e77a6c79716a1e51c67b。
+owner释放reader及精确owned dependency symlink后，普通移除已合入的旧Browser/PRD
+工作树和分支，外部证据保留；Browser链接实际指向aggregate依赖，未误删目标。
+初次branch -d因upstream origin/main未包含本地提交而拒绝；验证local main祖先后仅
+unset自己branch upstream，再普通-d，未force。cleanup
+SHAd015ab5a7e8b5e868d7eb1ee5af956856c379549babf5e8a41459ba91aa9c494。
+
+native-notes仍在独立树进行生产VM接线，尚未合入。root另在
+design-studio-html-text-flex-basis-20261021/codeshell-panel-apps（branch
+codex/design-studio/html-text-flex-basis-20261021）处理文字恢复覆盖main-axis basis；
+28项affected通过只是初步结果，peer指出应限真实TypedOM px，避免改变indefinite
+percentage basis原有content/Hug行为；未合入，后续须反例、原模板同阶段像素复验。
+截止时间仍UTC16:31，任务及heartbeat继续。
