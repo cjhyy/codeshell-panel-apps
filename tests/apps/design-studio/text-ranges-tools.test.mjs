@@ -69,7 +69,16 @@ test("CPU public edit_text/update_node are atomic and preserve ranges through ro
   }
   await page.locator("#edit-text-selection").click();
   const inline=page.locator("#inline-text-editor");
-  await inline.evaluate(e=>e.setSelectionRange(6,17));await page.keyboard.insertText("short");
+  // Opening the editor focuses/selects in its first animation frame.
+  await page.waitForFunction(()=>document.activeElement?.id==="inline-text-editor");
+  const selected=await inline.evaluate(e=>{
+    e.setSelectionRange(6,17);
+    e.addEventListener("beforeinput",()=>e.dataset.testSelection=JSON.stringify([e.selectionStart,e.selectionEnd]),{once:true});
+    return {focused:document.activeElement===e,start:e.selectionStart,end:e.selectionEnd};
+  });
+  assert.deepEqual(selected,{focused:true,start:6,end:17});
+  await page.keyboard.insertText("short");
+  assert.deepEqual(JSON.parse(await inline.getAttribute("data-test-selection")),[6,17]);
   await page.keyboard.press("Control+Enter");
   await tool("save_design",{action:"save",expected_state_revision:(await tool("get_design_metadata")).stateRevision});
   saved=normalizeDesignDocument(JSON.parse(files.get(path))).nodes.find(n=>n.id===text.id);
