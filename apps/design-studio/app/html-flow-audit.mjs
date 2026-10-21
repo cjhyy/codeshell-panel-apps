@@ -1,10 +1,12 @@
 // Report-only capture evidence. Nothing in this module admits saved documents or
 // changes layout: actual DOM identities are discarded after binding stable IDs.
+import { isHtmlEmptyClear } from "./html-float-columns.mjs";
 const MAX_NODES = 10_000;
 const MAX_DEPTH = 32;
 const MAX_DETAILS = 500;
 const ORIGINAL = Symbol("current-capture-node");
 const tableProofs = new WeakSet();
+const layoutProofs = new WeakSet();
 const TABLE_KINDS = [
   "fixed-table-row",
   "fixed-table-cell",
@@ -90,17 +92,19 @@ function outermost(index, ids) {
   const roots = candidates.filter((id) => candidates.every((other) => ancestor(index, other, id)));
   return roots.length === 1 ? roots[0] : null;
 }
-function generated(view, element) {
+function generated(view, element, clearedAfter = false) {
   return ["::before", "::after"].some(
-    (pseudo) => !["none", "normal"].includes(view.getComputedStyle(element, pseudo).content),
+    (pseudo) =>
+      !(clearedAfter && pseudo === "::after") &&
+      !["none", "normal"].includes(view.getComputedStyle(element, pseudo).content),
   );
 }
-function ordinary(style, owner = false) {
+function ordinary(style, owner = false, outerFloat = false) {
   return (
     (owner ? ["static", "relative", "absolute", "fixed"] : ["static", "relative"]).includes(
       style.position,
     ) &&
-    style.cssFloat === "none" &&
+    (style.cssFloat === "none" || outerFloat) &&
     style.transform === "none" &&
     ["rotate", "scale", "translate", "perspective"].every(
       (key) => !style[key] || style[key] === "none",
@@ -214,6 +218,129 @@ export function prepareHtmlFixedTableFlowAudit(context, proof) {
 }
 
 /** Called only before the capture iframe closes; never binds by CSS selectors. */
+const clearSnapshot = (view, element) => {
+  const style = view.getComputedStyle(element, "::after");
+  const values = [
+    "content",
+    "display",
+    "clear",
+    "cssFloat",
+    "height",
+    "backgroundColor",
+    "backgroundImage",
+    "outlineStyle",
+    "boxShadow",
+    "textShadow",
+    "borderImageSource",
+    "filter",
+    "backdropFilter",
+    "transform",
+    "mixBlendMode",
+    ...["Top", "Right", "Bottom", "Left"].flatMap((side) => [
+      `border${side}Width`,
+      `padding${side}`,
+      `margin${side}`,
+    ]),
+  ];
+  if (
+    !['""', "''"].includes(style.content) ||
+    !["block", "table"].includes(style.display) ||
+    style.clear !== "both" ||
+    style.cssFloat !== "none" ||
+    style.height !== "0px" ||
+    !/^rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0(?:\.0+)?\s*\)$/u.test(style.backgroundColor) ||
+    [
+      "backgroundImage",
+      "outlineStyle",
+      "boxShadow",
+      "textShadow",
+      "borderImageSource",
+      "filter",
+      "backdropFilter",
+      "transform",
+    ].some((key) => !["", "none"].includes(style[key] ?? "")) ||
+    style.mixBlendMode !== "normal" ||
+    ["Top", "Right", "Bottom", "Left"].some((side) =>
+      ["border", "padding", "margin"].some(
+        (key) => style[`${key}${side}${key === "border" ? "Width" : ""}`] !== "0px",
+      ),
+    )
+  )
+    throw new Error("Empty-clear audit proof does not match the exact current unpainted pseudo");
+  return JSON.stringify(values.map((key) => style[key] ?? ""));
+};
+
+function validateLayoutProof(
+  proof,
+  { root, elements, document, canonicalBySource, ambiguousElements = new WeakSet() },
+) {
+  const index = nodeIndex(document),
+    view = root.ownerDocument.defaultView;
+  const own = (source, node) => {
+    const element = elements.get(source?.semantic?.semanticId);
+    if (
+      !htmlElement(element) ||
+      element.ownerDocument !== root.ownerDocument ||
+      !root.contains(element) ||
+      ambiguousElements.has(element) ||
+      canonicalBySource.get(source) !== node ||
+      index.get(node?.id)?.[ORIGINAL] !== node
+    )
+      throw new Error("Layout proof lacks current source/Element/original ownership");
+    return element;
+  };
+  if (
+    !plain(proof) ||
+    !["float", "block-clear"].includes(proof.type) ||
+    !Array.isArray(proof.items) ||
+    !Array.isArray(proof.clears) ||
+    proof.items.length > 24 ||
+    proof.clears.length > 1
+  )
+    throw new Error("Invalid recovered layout audit proof");
+  const element = own(proof.source, proof.node);
+  if (
+    proof.node.layout !== (proof.type === "float" ? "grid" : "vertical") ||
+    (proof.type === "float" && !proof.items.length) ||
+    (proof.type === "block-clear" && (proof.items.length || !proof.clears.length))
+  )
+    throw new Error(
+      "Recovered layout audit proof was not published after successful flow validation",
+    );
+  const items = proof.items.map((item) => {
+    const child = own(item.source, item.node),
+      floatSide = view.getComputedStyle(child).cssFloat;
+    if (
+      child.parentElement !== element ||
+      !ancestor(index, item.node.id, proof.node.id) ||
+      !["left", "right"].includes(floatSide) ||
+      (item.floatSide && item.floatSide !== floatSide)
+    )
+      throw new Error("Float item proof lacks an exact current parent/child relationship");
+    return { ...item, element: child, floatSide };
+  });
+  if (
+    proof.clears.some(
+      (clear) => !proof.source.children?.includes(clear) || !isHtmlEmptyClear(clear),
+    )
+  )
+    throw new Error("Clear proof lacks its exact validated current source child");
+  const snapshot = proof.clears.length ? clearSnapshot(view, element) : null;
+  if (Object.hasOwn(proof, "clearSnapshot") && snapshot !== proof.clearSnapshot)
+    throw new Error("Current clear pseudo no longer matches its captured proof");
+  return { ...proof, element, items, clearSnapshot: snapshot };
+}
+
+/** Report-only producer receipts are accepted only with current source objects. */
+export function prepareHtmlLayoutFlowAudit(context, proof) {
+  const prepared = validateLayoutProof(proof, context);
+  Object.freeze(prepared.items);
+  Object.freeze(prepared.clears);
+  Object.freeze(prepared);
+  layoutProofs.add(prepared);
+  return prepared;
+}
+
 export function captureHtmlFlowObligations({
   root,
   elements,
@@ -222,6 +349,8 @@ export function captureHtmlFlowObligations({
   ambiguousElements = new WeakSet(),
   syntheticIds = new Set(),
   recoveredTables = [],
+  recoveredLayouts = [],
+  canonicalBySource = new WeakMap(),
 }) {
   const view = root?.ownerDocument?.defaultView;
   if (
@@ -230,7 +359,9 @@ export function captureHtmlFlowObligations({
     !Array.isArray(mapping) ||
     mapping.length > MAX_NODES ||
     !Array.isArray(recoveredTables) ||
-    recoveredTables.length > 32
+    recoveredTables.length > 32 ||
+    !Array.isArray(recoveredLayouts) ||
+    recoveredLayouts.length > MAX_NODES
   )
     throw new Error("Flow audit requires the current capture's DOM bindings");
   const index = nodeIndex(document),
@@ -301,6 +432,32 @@ export function captureHtmlFlowObligations({
       detail("unsupported", "fixed-table-proof-unverified", root);
     }
   }
+  const floatRelations = new Map(),
+    floatOwners = new Map(),
+    clearOwners = new Map();
+  for (const proof of recoveredLayouts) {
+    try {
+      if (!layoutProofs.has(proof)) throw new Error("Unprepared layout proof");
+      const current = validateLayoutProof(proof, {
+        root,
+        elements,
+        document,
+        canonicalBySource,
+        ambiguousElements,
+      });
+      if (current.clears.length) clearOwners.set(current.element, current.node);
+      if (current.type === "float") {
+        const items = new Map();
+        floatRelations.set(current.element, items);
+        for (const item of current.items) {
+          items.set(item.element, { parentNode: current.node, childNode: item.node });
+          floatOwners.set(item.element, item.node);
+        }
+      }
+    } catch {
+      detail("unsupported", "recovered-layout-proof-unverified", root);
+    }
+  }
   // A semantic ID may be referenced by container and Text for the same Element.
   // Only a collision between different actual Elements makes it ambiguous.
   for (const [semanticId, element] of elements) {
@@ -335,6 +492,10 @@ export function captureHtmlFlowObligations({
     if (!styles.has(element)) styles.set(element, view.getComputedStyle(element));
     return styles.get(element);
   };
+  const clearBound = (element) =>
+    Boolean(clearOwners.has(element) && clearOwners.get(element).id === resolve(element).id);
+  const floatBound = (element) =>
+    Boolean(floatOwners.has(element) && floatOwners.get(element).id === resolve(element).id);
   const visibleBox = (element) => {
     const style = styleOf(element),
       box = element.getBoundingClientRect();
@@ -385,12 +546,14 @@ export function captureHtmlFlowObligations({
     if (!htmlElement(parent)) return;
     record(parent);
     const parentStyle = styleOf(parent);
+    const clear = clearBound(parent);
     if (parentStyle.display === "none") {
       detail("excluded", "display-none-subtree", parent);
       return;
     }
     if (!visibleBox(parent)) detail("unsupported", "zero-contents-or-invisible-owner-box", parent);
-    if (generated(view, parent)) detail("unsupported", "generated-content-flow", parent);
+    if (clear) detail("excluded", "verified-empty-clear-token", parent);
+    if (generated(view, parent, clear)) detail("unsupported", "generated-content-flow", parent);
     if (REPLACED.has(parent.localName)) {
       detail("excluded", "replaced-leaf-internals", parent);
       return;
@@ -409,14 +572,20 @@ export function captureHtmlFlowObligations({
       else if (style.display === "none") detail("excluded", "display-none-child", parent, child);
       else if (!visibleBox(child) || !visibleBox(parent))
         detail("unsupported", "zero-contents-or-invisible-flow-box", parent, child);
-      else if (!ordinary(parentStyle, true) || !ordinary(style) || generated(view, parent))
+      else if (
+        !ordinary(parentStyle, true, floatBound(parent)) ||
+        !ordinary(style, false, floatRelations.get(parent)?.has(child)) ||
+        generated(view, parent, clear)
+      )
         detail(
           "unsupported",
           "special-position-transform-writing-or-generated-flow",
           parent,
           child,
         );
-      else if (tableRelations.get(parent)?.has(child)) {
+      else if (floatRelations.get(parent)?.has(child)) {
+        obligation(parent, child, "float-item", null, floatRelations.get(parent).get(child));
+      } else if (tableRelations.get(parent)?.has(child)) {
         const proof = tableRelations.get(parent).get(child);
         obligation(parent, child, proof.kind, null, proof);
       } else if (FLEX_GRID.has(parentStyle.display)) obligation(parent, child, "flex-grid-item");
@@ -444,9 +613,9 @@ export function captureHtmlFlowObligations({
       if (node.type === "text") return;
       if (textProof) obligation(parent, parent, textProof.kind, textProof.childNode.id, textProof);
       else if (
-        ordinary(parentStyle, true) &&
+        ordinary(parentStyle, true, floatBound(parent)) &&
         BLOCK.has(parentStyle.display) &&
-        !generated(view, parent) &&
+        !generated(view, parent, clear) &&
         ["", "0px"].includes(parentStyle.textIndent ?? "") &&
         ["::first-line", "::first-letter"].every((pseudo) => {
           const variant = view.getComputedStyle(parent, pseudo);
@@ -523,7 +692,9 @@ export function freezeHtmlFlowObligations(value) {
             "wrapperIds",
           ].includes(key),
       ) ||
-      !["block-item", "flex-grid-item", "plain-own-text", ...TABLE_KINDS].includes(entry.kind) ||
+      !["block-item", "flex-grid-item", "plain-own-text", "float-item", ...TABLE_KINDS].includes(
+        entry.kind,
+      ) ||
       typeof entry.id !== "string" ||
       entry.id.length > 300 ||
       ids.has(entry.id) ||
