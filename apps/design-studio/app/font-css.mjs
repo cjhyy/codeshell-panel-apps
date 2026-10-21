@@ -45,10 +45,15 @@ export function designNamedFontFamilyCss(family) {
 }
 
 /** A verified first-face resource must not discard the remaining glyph fallback chain. */
-export function designResourceFontFamilyCss(family, resourceFamily) {
-  const first = parseDesignFontFamily(family)?.[0];
-  return first && !first.generic && first.name.toLowerCase() === resourceFamily.toLowerCase()
-    ? designFontFamilyCss(family) : designNamedFontFamilyCss(resourceFamily);
+export function designResourceFontFamilyCss(family, resourceFamily, alias = resourceFamily) {
+  const parsed = parseDesignFontFamily(family), first = parsed?.[0];
+  if (!first || first.generic || first.name.toLowerCase() !== resourceFamily.toLowerCase())
+    return designNamedFontFamilyCss(alias);
+  if (alias === resourceFamily) return designFontFamilyCss(family);
+  // A private FontFace aliases this exact first resource. Only replace that
+  // named item; retain every remaining named/generic glyph fallback.
+  return [designNamedFontFamilyCss(alias), ...parsed.slice(1).map(({name,generic}) =>
+    generic ? name.toLowerCase() : designNamedFontFamilyCss(name))].join(", ");
 }
 
 /** Variable built-in weights share one full font URL, keeping portable exports bounded. */

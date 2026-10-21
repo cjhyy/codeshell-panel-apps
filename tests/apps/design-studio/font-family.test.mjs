@@ -29,6 +29,10 @@ test("quoted commas, CSS escapes and quoted generic-looking names retain distinc
   assert.equal(designNamedFontFamilyCss('A, B'), '"A, B"');
   assert.equal(designResourceFontFamilyCss('"A, B", serif', 'A, B'), '"A, B", serif');
   assert.equal(designResourceFontFamilyCss('A, B', 'A, B'), '"A, B"');
+  assert.equal(designResourceFontFamilyCss('"A, B", monospace', 'A, B', 'private-face'), '"private-face", monospace');
+  assert.equal(designResourceFontFamilyCss('Arial, monospace', 'A, B', 'private-face'), '"private-face"');
+  assert.equal(designResourceFontFamilyCss('"serif", sans-serif', 'serif', 'private-face'), '"private-face", sans-serif');
+  assert.equal(designResourceFontFamilyCss('serif, sans-serif', 'serif', 'private-face'), '"private-face"');
 });
 
 test("local font declarations retain one literal family instead of silently splitting its comma or escape", () => {

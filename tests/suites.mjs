@@ -118,6 +118,7 @@ export const suites = [
         "tests/apps/design-studio/stroke-layout.test.mjs",
         "tests/apps/design-studio/builtin-fonts.test.mjs",
         "tests/apps/design-studio/font-family.test.mjs",
+        "tests/apps/design-studio/font-family-renderer.test.mjs",
         "tests/apps/design-studio/audit-review.test.mjs",
         "tests/apps/design-studio/html-plugin.test.mjs",
         "tests/apps/design-studio/html-plugin-ui.test.mjs",

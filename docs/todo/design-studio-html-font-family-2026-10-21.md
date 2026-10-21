@@ -31,8 +31,10 @@ TEXT bundle has identifier renaming; source changes outside its generated slot
 remain separate from the frozen native candidate/probe.
 
 The direct native factory/API bypass is not qualified by these browser/transfer
-helpers. Existing original-node/range patch guards remain blocked. No Figma,
-native application, installation, GPU or existing design was exercised.
+helpers. Existing original-node/range patch guards remain blocked. This task's
+checks used CPU Chromium and software CanvasKit; no Figma, native application,
+installation or existing design was exercised. A separate root peer used the
+actual GPU workbench renderer to identify the resource-alias issue below.
 
 ## Evidence and limitations
 
@@ -83,3 +85,29 @@ races, duplicate/foreign bindings, mixed/pseudo fallback and budgets. Final
 combined gates, paired result pins and cleanup are recorded in the external
 handoff receipt. Browser pixels, plugin VM/UI harnesses and real native execution
 remain distinct categories.
+
+## CanvasKit resource fallback correction
+
+The first peer review found that CanvasKit's browser-raster fallback still
+replaced the complete family list with its private resource alias. Real supplied
+Font Awesome bytes lack the test's ordinary ASCII glyphs. With the resource
+family `CaseFamily` and source family `CaseFamily, monospace`, the root's actual
+workbench comparison differed by 6239 pixels: the alias-only width was 472.5,
+while the complete fallback width was 501.908203125. The v1 peer evidence and
+paired web-page results remain saved unchanged.
+
+CanvasKit now retains each private alias's literal descriptor family. It replaces
+only a verified matching first named source face with that alias, retaining all
+later named and generic fallbacks. A first-face/resource mismatch keeps the
+existing explicit resource override. No width, position, generic mapping, native
+missing-glyph or ranged-text capability guard changes are involved.
+
+The CPU software CanvasKit regression uses the same real font bytes and source
+text. Matching ordinary, quoted-comma and escaped-quote names, plus a mismatched
+resource control, each compare at strict pixel 0 against an independently loaded
+public-family control. It records only 2d contexts and uses `CK.MakeSurface` with
+`--disable-gpu`. Missing-glyph/unavailable-font diagnostics and ranged-text
+refusal remain. This is a bounded renderer regression, not a whole-page or
+native pixel pass. The first test setup incorrectly passed CSS quotes to the
+FontFace constructor; the corrected fixture passes a literal name and reserves
+CSS quoting for face selection. Both stages are recorded in the handoff.
