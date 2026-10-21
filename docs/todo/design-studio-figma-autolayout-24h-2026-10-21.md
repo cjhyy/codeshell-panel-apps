@@ -1846,3 +1846,58 @@ PNG严格0，错误字号公式分别244/440像素；这只证明原生对照，
 wide inline-A伪元素适用性和400px测量line split，正在独立分支修正，入口继续关闭。
 
 24小时目标仍active；当前约已运行8小时37分，继续至10月22日00:31 SG。
+
+## ROUND38–39 · 2026-10-21 09:54 SG · 图片边框恢复真实 Auto Layout，文字继续实机校验
+
+新增 Bootstrap Features 官方静态页面，冻结 HTML 和7份资源。最初背景 URL 的引号重写
+错误造成全页负例，已保留；修正本地转义后，1280/768/400三个宽度、全5691px参考图
+全部逐像素0，不能只用首屏0替代全页检查。原转换在三个32px带边框头像处因 Image
+不支持 strokeSides 整页中止；adaffaa 改为真实 AL 外框承载 inside 描边，内容 Image
+Fill/Fill，保留原 DOM ID、mapping、资源和组透明度。固定方形50%圆角只保留当前
+尺寸的可编辑投影，原百分比和限制明确记录。没有增加 ABS 遮罩或扩张 Image schema。
+
+原生 object-fit:fill 不再静默映射成不同宽高比的 FILL 裁剪：PNG/JPEG/GIF 用有界
+字节尺寸校验，拒绝尚未证明的方向/像素比元数据；最终 AL 完成后再校验新建 Image
+实际尺寸。SVG/WebP 保留原有 UI 转 PNG 流程，原生端只检查转换后的真实 PNG。
+127项相关 CPU 检查、typecheck、validate122、三项 generated、scoped build 均通过，
+peer source 审查通过。square/opacity/cover/contain 的控制 SVG 及全部 frontend
+控制为0；圆角 SVG 仍79/189像素、max23，未消除。Features 已能生成313个有效节点并
+保存 portable，但初始差异仍462554/496678/297334像素；每宽度60项流失败、16项未解决，
+不能写成网页/Figma 像素通过。交付收据 SHA c0e487c5c756ccf221c3d556ed8bf9772af8e83800dbf87f764365deff389e83。
+
+ROUND38 冻结52d007a：主回归700项699pass/0fail/1skip，215325.229292ms；UI107项
+105pass/1fail/1skip，106740.751125ms。唯一失败是旧成功流程 fixture 把1×1 PNG 拉伸
+为80×60后要求原生恢复，现被新的语义校验正确拒绝。5169850将该成功 fixture 明确改为
+contain，保留80×60和相同原字节，并增加恢复模式/尺寸断言；原拉伸拒绝的专项检查
+与此次完整失败日志保留。该单项实浏览器检查1/1通过，2323.3565ms；ROUND39完整 UI
+在5169850通过107项106pass/0fail/1skip，107197.446833ms。52d→516唯一 diff 为这个
+UI 测试，主回归 catalog 不包含它；整个 Design Studio 目录122份文件（其中 app/115份）
+及全部81份主回归测试文件逐字节相等。
+合计807项805pass/0fail/2skip；只在完整通过后快进稳定 primary，未push/发布/Host安装。
+
+文字创建候选仍在独立 native 分支。一次完整来源计划写入同一个原生 Text 的 link、
+opaque fill 和 NONE，包含所有继承空隙；当前原节点的范围更新/清除/删除继续关闭。
+范围实机 v3 的4个样例完整读取成功，却全被旧 codec 判为 REST/live 冲突。df26565
+仅修正两处已实测表示：REST override 数组按 Unicode scalar，SDK 区间按 UTF16；
+REST PERCENT 序列化为 live 百分比的精确 Float32。四份原始数据现在完整绑定，所有
+raw 数字、缺失字段、getter numeric1 和 LF 边界保持不变。作者 canonical 行高不完全
+相等仍拒绝，未加入容差或四舍五入。原始实机页/selection/selected REST 前后相等，
+UI关闭、relay停止、原插件三文件恢复，收据 SHA edb8cbf40da034a562cbb59d05fde7a13881590674dba91ae7cb58887e90c4f5。
+
+独立作者 hint 验证保留未使用的 base fill 和显式同值区间，只有完整当前 snapshot
+及独立有效范围计划均相等才恢复 {fill,textRanges}。44a3ca4 新增最终状态 helper：
+先完成所有 await/来源验证，再同步复核每个新建 Text，最后保存 metadata；必须由
+真实祖先 ownership 和整页回滚调用。helper仍未接入产品 factory/export。56项当前纯
+检查通过，1207.054459ms；不能替代原生往返或像素验收。
+
+v4 准备直接运行真实完整 gap writer。peer 在安装前发现历史 ownedSet 不足以防止
+await 后 Text/board 被移出新页，已补真实有界祖先链；18项 VM 和独立重建通过，
+原复现从69次写入变为0。一次安装尝试 adba28a8 没有启动原生插件：当前 GUI 为旧
+Native tracks/62:50、无选区，点击/键盘无变化，scroll 报 noWindowsAvailable。没有
+获得 /start 或 native result；服务 exit1、固定原插件恢复、两锁释放。明确记为
+NOT_RUN，收据 SHA 5ca4d260124661f4d7ebf6cb8ec8bae9026ca58b1636917a0a6c0c8f06c81a91。
+
+下一处普通流错误已冻结：Features 的静态 `.row.g-4` 被 upstream marginCollapse 变成
+ABS 加少24px高度的 synthetic placeholder；普通 HUG 父容器需要负 main gap，现有
+模型明确不支持。先补真正的 HUG/负 gap 原生证据，再讨论有界恢复；不以固定高度
+重叠 wrapper 冒充响应式 Auto Layout。24小时目标继续 active，截止不变。
