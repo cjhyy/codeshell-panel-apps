@@ -1,8 +1,11 @@
 #!/usr/bin/env node
+import { buildResearchReport, parseResearchMetadata, RESEARCH_PRESETS } from "../research-report.mjs";
+import { createHash } from "node:crypto";
+import { observe, observationInputSchema } from "./observation-runner.mjs";
 import { constants } from "node:fs";
 import { lstat, open, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   BACKTEST_ENGINE_RELEASE,
   analyzeDataset,
@@ -93,6 +96,9 @@ const rule = object(
   ["type"],
 );
 const schemas = {
+  presets: object({}),
+  research: object({ csv: string, demo: { type: "boolean" }, preset: choice(...RESEARCH_PRESETS.map(item => item.id)), configuration, ranges,
+    market: choice("cn", "us"), format: choice("json", "markdown"), options: object({ inSampleBars: integer(30, MAX_BARS), outOfSampleBars: integer(10, MAX_BARS), warmupBars: integer(0, MAX_BARS) }) }),
   dataset: object({ csv: string }, ["csv"]),
   backtest: object({ csv: string, configuration, includeSeries: { type: "boolean" } }, [
     "csv",
@@ -130,6 +136,10 @@ const schemas = {
   portfolio: object({ ledger: string }),
   notes: object({ path: string, ledger: string }),
 };
+schemas.observe = observationInputSchema(object({
+  csv: string, preset: choice(...RESEARCH_PRESETS.map(item => item.id)), configuration, ranges,
+  market: choice("cn", "us"), options: schemas.research.properties.options,
+}, ["csv"]));
 const aliases = {
   analyze: "dataset",
   "dataset/analyze": "dataset",
@@ -144,6 +154,9 @@ const exampleConfiguration = {
   stopLossPct: 8,
 };
 const inputExamples = {
+  presets: {},
+  observe: { action: "plan", runId: "quant-existing-csv", task: { csv: "data/prices.csv", preset: "trend-sma" } },
+  research: { demo: true, preset: "trend-sma" },
   dataset: { csv: "data/prices.csv" },
   backtest: { csv: "data/prices.csv", configuration: exampleConfiguration, includeSeries: false },
   "parameter-sweep": {
@@ -376,7 +389,8 @@ export async function runQuantLab(command, input, { project = process.cwd() } = 
           bars: MAX_BARS,
           barEvaluations: MAX_WORK,
         },
-        readOnly: true,
+        readOnly: false,
+        readOnlyCommands: Object.keys(schemas).filter(name => name !== "observe"),
         input:
           "--input-file <project-relative.json> or one JSON object on stdin; --project defaults to cwd",
       },
@@ -385,6 +399,9 @@ export async function runQuantLab(command, input, { project = process.cwd() } = 
     throw failure("INVALID_ARGUMENT", `Unknown command: ${command ?? "(missing)"}; use ops`);
   validate(input, schemas[command]);
   validateConfiguration(input);
+  if (command === "presets") return { ok: true, command, package: selectedPackage, result: { presets: RESEARCH_PRESETS, note: "实验规则，不承诺收益；cn 默认双边各5.5bps/滑点10bps，us为1/5bps，均为研究假设。" } };
+  if (command === "research" && (Boolean(input.csv) === (input.demo === true) || (input.demo !== undefined && input.demo !== true))) throw failure("INVALID_INPUT", "csv 与 demo:true 必须且只能提供一个");
+  if (command === "research" && Boolean(input.preset) === Boolean(input.configuration)) throw failure("INVALID_INPUT", "preset 与 configuration 必须且只能提供一个");
   let root;
   try {
     root = await realpath(resolve(project));
@@ -395,7 +412,26 @@ export async function runQuantLab(command, input, { project = process.cwd() } = 
     throw failure("INVALID_PATH", "--project must name a directory");
   let result;
   try {
-    if (command === "portfolio") {
+    if (command === "observe") {
+      const hash = createHash("sha256");
+      for (const path of [import.meta.url, new URL("./observation-runner.mjs", import.meta.url), new URL("../research-report.mjs", import.meta.url), new URL("../engine.mjs", import.meta.url)]) hash.update(await readFile(new URL(path)));
+      result = await observe(input, { project: root, app: selectedPackage.id,
+        package: { version: selectedPackage.version, toolPath: fileURLToPath(import.meta.url), codeSha256: hash.digest("hex") },
+        validateTask(task) { validate(task, schemas.observe.properties.task); validateConfiguration(task); if (Boolean(task.preset) === Boolean(task.configuration)) throw failure("INVALID_INPUT", "观察任务必须且只能提供 preset/configuration 一个"); if (task.preset && task.ranges) throw failure("INVALID_INPUT", "预设不能覆盖 ranges"); projectPath(task.csv); },
+        execute: async task => (await runQuantLab("research", task, { project: root })).result,
+      });
+    } else if (command === "research") {
+      let bars, metadata = null;
+      if (input.csv) {
+        if (!input.csv.toLowerCase().endsWith(".csv")) throw failure("INVALID_PATH", "csv must name a .csv file");
+        bars = parseOhlcvCsv(await readProjectFile(root, input.csv, DATA_BYTES));
+        let sidecar;
+        try { sidecar = await readProjectFile(root, input.csv.replace(/\.csv$/i, ".meta.json"), INPUT_BYTES); }
+        catch (error) { if (error.code !== "FILE_NOT_FOUND") throw error; }
+        if (sidecar !== undefined) metadata = parseResearchMetadata(sidecar, bars);
+      }
+      result = buildResearchReport({ ...input, bars, metadata, path: input.csv || null, synthetic: input.demo === true });
+    } else if (command === "portfolio") {
       const path = input.ledger ?? "portfolio/transactions.json";
       const { ledger, fingerprint } = parseTransactions(
         await readProjectFile(root, path, DATA_BYTES),

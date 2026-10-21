@@ -1,6 +1,7 @@
+import { observe, observationInputSchema } from "./observation-runner.mjs";
 import { validatePanelToolInput } from "../tool-input-validation.mjs";
 import { readFile, realpath } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { jobHuntOperations } from "../ops/index.mjs";
@@ -15,9 +16,12 @@ import { writeProjectSnapshotDocuments } from "../snapshot-storage.mjs";
 import { PROJECT_CANDIDATE_TEMPLATE_PATHS } from "../project-bootstrap.mjs";
 import { createNodeWorkspaceScope, findJobHuntProject } from "./node-workspace-scope.mjs";
 
+const observationTaskSchema = { type: "object", additionalProperties: false, properties: { limit: { type: "integer", minimum: 1, maximum: 50 } } };
+const observationSchema = observationInputSchema(observationTaskSchema);
+
 const invalid = (message) => Object.assign(new Error(message), { code: "INVALID_ARGUMENT" });
 
-// The installed Tool and both CLI adapters share the manifest contract.
+// Panel write operations reuse the manifest contract; CLI-only read operations declare their schema in the registry.
 export function validateToolInput(value, schema, path = "arguments") {
   try { return validatePanelToolInput(schema, value, path); }
   catch (error) { throw invalid(error.message); }
@@ -25,7 +29,7 @@ export function validateToolInput(value, schema, path = "arguments") {
 
 function parse(argv) {
   const [command, ...remaining] = argv;
-  if (!["ops", "init", "run"].includes(command))
+  if (!["ops", "init", "run", "observe"].includes(command))
     throw invalid(
       "用法：job-hunt.mjs ops | init [--project dir] | run <op> --input-file req.json [--project dir] [--session id] [--trace id]",
     );
@@ -34,7 +38,7 @@ function parse(argv) {
     throw invalid("run 必须指定操作名");
   const options = {};
   const allowed =
-    command === "run"
+    command === "observe" ? ["project", "input-file"] : command === "run"
       ? ["project", "input-file", "session", "trace"]
       : command === "init"
         ? ["project"]
@@ -53,7 +57,7 @@ function parse(argv) {
       throw invalid(`无效参数：${flag || ""}`);
     options[name] = value;
   }
-  if (command === "run" && !options["input-file"]) throw invalid("run 必须提供 --input-file");
+  if (["run", "observe"].includes(command) && !options["input-file"]) throw invalid("run/observe 必须提供 --input-file");
   for (const key of ["session", "trace"])
     if (options[key]?.length > 100) throw invalid(`--${key} 最多 100 字符`);
   return { command, operation, options };
@@ -108,11 +112,36 @@ export async function main(argv, { cwd = process.cwd() } = {}) {
   );
   if (manifest.id !== "job-hunt-hq") throw new Error("bundled-job-hunt-cli-not-found");
   const tools = manifest.agent.tools.filter((tool) => Object.hasOwn(jobHuntOperations, tool.name));
+  for (const [name, op] of Object.entries(jobHuntOperations))
+    if (op.inputSchema && !tools.some(tool => tool.name === name)) tools.push({ name, inputSchema: op.inputSchema, readOnly: !op.mutates });
   if (command === "ops")
     return {
       ok: true,
+      observation: { command: "observe", inputSchema: observationSchema, note: "单轮执行并退出；只重读已有 JD，无自动抓取或 OS 调度。" },
       result: tools.map(({ name, inputSchema, readOnly }) => ({ name, inputSchema, readOnly })),
     };
+  if (command === "observe") {
+    let input;
+    const raw = await readFile(resolve(cwd, options["input-file"]), "utf8");
+    if (Buffer.byteLength(raw) > 65536) throw invalid("观察输入超过64KiB");
+    try { input = JSON.parse(raw); } catch { throw invalid("input-file 不是有效 JSON"); }
+    validateToolInput(input, observationSchema);
+    const root = options.project ? resolve(cwd, options.project) : cwd;
+    const entry = fileURLToPath(import.meta.url);
+    const hash = createHash("sha256");
+    for (const path of [import.meta.url, new URL("./observation-runner.mjs", import.meta.url), new URL("../job-research-digest.mjs", import.meta.url), new URL("../ops/jobs.mjs", import.meta.url)]) hash.update(await readFile(new URL(path)));
+    const result = await observe(input, { project: root, app: manifest.id,
+      package: { version: manifest.version, toolPath: entry, codeSha256: hash.digest("hex") },
+      validateTask: task => validateToolInput(task, observationTaskSchema),
+      execute: async task => {
+        const scope = await createNodeWorkspaceScope(root);
+        const { snapshot } = await readProjectSnapshot(scope);
+        const { result } = await jobHuntOperations.get_job_research_digest.run(snapshot, task, { now: new Date().toISOString() });
+        return { kind: "existing-jd-digest", generatedAt: result.generatedAt, counts: result.counts, markdown: result.markdown, note: "没有自动抓取或网络核验。" };
+      },
+    });
+    return { ok: true, result };
+  }
   let tool, op, args;
   if (command === "run") {
     tool = tools.find((item) => item.name === operation);

@@ -79,7 +79,7 @@ function fixture() {
 }
 
 test("career Agent schemas cannot impersonate user confirmation", () => {
-  assert.equal(manifest.version, "5.0.0");
+  assert.equal(manifest.version, "5.1.0");
   assert.equal(manifest.agent.tools.length, 16);
   PanelAppManifest.parse(manifest);
   const tool = tools.get("save_candidate_context");

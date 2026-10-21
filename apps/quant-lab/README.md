@@ -820,3 +820,34 @@ HTTP 和云端 HTTP 验证，运行脚本／模型／手机通知的完整业务
 项目切换使旧保存失效；暂停行情扫描不会使项目存储失效，也不会因关注保存而重新
 启动扫描。控制器、390px 浏览器冲突／下载／恢复及实际 Node Host 磁盘存储验证通过；
 浏览器 Host 为夹具，实际 Host 验证另行进行，不能替代真实手机、服务商或完整提醒验收。
+
+
+## 0.47 候选版：新手规则与白话报告
+
+在研究区选择“SMA趋势 / RSI回归 / 通道突破”并点击“应用预设”，再点“一键生成白话报告”。
+仍可调整高级参数；调整参数、换数据或切项目会清掉旧报告，重新生成后才显示新结论。
+CLI 与 UI 复用 `app/research-report.mjs`，不改变回测引擎或固定结果。
+
+```sh
+node "<选中包>/app/tools/quant-lab.mjs" presets
+node "<选中包>/app/tools/quant-lab.mjs" research --project "<项目>" --input-file "request.json"
+```
+
+请求为 `{"demo":true,"preset":"trend-sma"}` 或
+`{"csv":"data/market/AAPL.csv","preset":"trend-sma","market":"us"}`。
+`csv`/`demo:true`、`preset`/`configuration` 各互斥且必选其一；显式配置可带 `ranges`。
+输出始终单行 JSON，`result.markdown` 是中文报告。预设不是买卖推荐；合成行情醒目标为
+非真实行情、非真实绩效。报告说明何时买卖、本金仓位、期末金额和盈亏、实际峰谷回撤金额与
+日期、逐笔可还原模型费用/滑点、未扣费基准、样本外状态、数据来源/复权/同步时间和指纹。
+费用是双边同费率研究假设，绝不宣称实时税率；默认cn为5.5/10bps，us为1/5bps。
+
+下一根开盘成交、零碎股、入场当天不查止损、期末强平；未建模涨跌停、手数、最低佣金、
+非对称费率和流动性。样本外不足明确没跑，各折本金重置不是复利。历史表现不保证未来收益。
+缺少匹配 CSV 指纹的侧车时来源/复权/时间未知；坏JSON、超限、软链接与越权显式报错。
+
+`observe` 接受同样的 stdin/`--input-file` JSON，提供 `plan/tick/status/stop`：
+`{"action":"plan","runId":"quant-existing","task":{"csv":"data/market/AAPL.csv","preset":"trend-sma"},"maxTicks":24}`。
+之后 `{"action":"tick","runId":"quant-existing"}` 只重读已有CSV生成报告，单轮后退出。
+观察记录放项目 `observations/<runId>/`，带版本化计划、单实例锁、日志、轮次上限、失败退避、
+停止标记与每份计划自创建起最多24小时的绝对截止。没有行情自动抓取、实时监控或OS定时器安装。
+`ops`列出观察 schema 与只读命令列表。观察日志不代替策略验证，也不表示已跑完24小时。

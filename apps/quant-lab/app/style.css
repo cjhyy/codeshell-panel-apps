@@ -16033,3 +16033,15 @@ button.stock-financial-history-row:focus-visible {
 .backtest-storage select { min-height: 44px; width: 100%; min-width: 0; max-width: 320px; }
 .backtest-storage button { min-height: 44px; }
 .backtest-storage [data-tone="error"] { color: var(--danger, #b42318); }
+
+.plain-research-intro { padding: 20px; margin: 16px 0; border: 1px solid var(--accent, #57e39a); border-radius: 12px; }
+.plain-research-intro p { line-height: 1.65; }
+.plain-research-intro button { margin: 8px; }
+.plain-research-report { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.8; max-height: 44rem; overflow: auto; padding: 18px; background: var(--surface, #131c18); }
+
+.plain-research-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 14px; }
+.plain-research-summary-grid article { padding: 14px; border: 1px solid #33483d; border-radius: 8px; }
+.plain-research-summary-grid h4 { margin: 0 0 8px; font-size: 15px; }
+.plain-research-summary-grid p { margin: 0; }
+.plain-research-report { white-space: normal; }
+.plain-research-full-report { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }

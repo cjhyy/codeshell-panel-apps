@@ -197,6 +197,12 @@
             </button>
           </section>
 
+          <section class="today-panel" aria-label="岗位研究日报">
+            <h2>岗位研究概览</h2>
+            <p id="today-research-overview"></p>
+            <button type="button" class="button button-primary" id="open-job-digest">查看研究日报</button>
+            <pre id="today-job-digest" class="research-readable" hidden></pre>
+          </section>
           <div class="today-grid">
             <section class="today-panel" aria-labelledby="today-tasks-title">
               <header>
@@ -242,6 +248,7 @@
             <button type="button" class="active" data-view-target="dashboard">机会</button>
             <button type="button" data-view-target="job-inbox">JD 收件箱</button>
             <button type="button" data-view-target="channels">获取岗位</button>
+            <button type="button" data-view-target="research">岗位研究</button>
           </nav>
 
           <nav class="career-flow" aria-label="求职工作流" hidden>
@@ -1491,6 +1498,10 @@
                 </div>
               </header>
 
+              <section class="today-panel" aria-label="岗位来源与证据对照">
+                <h2>岗位来源与证据对照</h2>
+                <pre id="job-research-evidence" class="research-readable"></pre>
+              </section>
               <div id="research-empty" class="research-empty">
                 <strong>还没有调研报告</strong>
                 <p>

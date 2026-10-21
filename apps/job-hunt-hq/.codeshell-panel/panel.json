@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "job-hunt-hq",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "title": {
     "default": "Job Hunt HQ",
     "en": "Job Hunt HQ",
@@ -35,7 +35,7 @@
     },
     "job-hunt": {
       "entry": "app/tools/job-hunt.mjs",
-      "sha256": "ffecc8d243ebddb48b2d734cb9c54898a4916aec7ab7113ef8f05c41e6fefbb5"
+      "sha256": "8c159582ee8bd8bbe7a7826577ff2418119f827408a8739ac51973ced88771bc"
     },
     "resume-pdf": {
       "entry": "app/tools/resume-pdf.mjs",
@@ -1168,6 +1168,40 @@
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 100
+                  },
+                  "verification": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "state": {
+                        "type": "string",
+                        "maxLength": 40
+                      },
+                      "lastCheckedAt": {
+                        "type": "string",
+                        "maxLength": 80
+                      },
+                      "checkedUrl": {
+                        "type": "string",
+                        "maxLength": 1000
+                      },
+                      "method": {
+                        "type": "string",
+                        "maxLength": 80
+                      },
+                      "sourceKind": {
+                        "type": "string",
+                        "maxLength": 40
+                      },
+                      "evidenceExcerpt": {
+                        "type": "string",
+                        "maxLength": 1000
+                      },
+                      "notes": {
+                        "type": "string",
+                        "maxLength": 2000
+                      }
+                    }
                   }
                 },
                 "required": [
