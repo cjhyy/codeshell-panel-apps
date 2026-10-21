@@ -5561,10 +5561,76 @@
     return source;
   }
 
+  // third-party/html2figma-plugin/integration/text-whitespace.ts
+  var KEY = "htmlTextWhitespace";
+  var object2 = (value) => value && typeof value === "object" && !Array.isArray(value);
+  function textWhitespaceSource(value) {
+    if (!object2(value) || !["normal", "nowrap"].includes(value.whiteSpace) || typeof value.rawSource !== "string" || value.rawSource.length > 1e3 || JSON.stringify(value.rawSource).length > 1e3 || value.removedTrailingNbsp !== void 0 && value.removedTrailingNbsp !== true || value.omittedPseudos !== void 0 && (!Array.isArray(value.omittedPseudos) || value.omittedPseudos.length < 1 || value.omittedPseudos.length > 2 || value.omittedPseudos.some((pseudo) => !["::before", "::after"].includes(pseudo)) || new Set(value.omittedPseudos).size !== value.omittedPseudos.length) || !value.removedTrailingNbsp && !value.omittedPseudos) return null;
+    return {
+      whiteSpace: value.whiteSpace,
+      rawSource: value.rawSource,
+      ...value.removedTrailingNbsp ? { removedTrailingNbsp: true } : {},
+      ...value.omittedPseudos ? { omittedPseudos: [...value.omittedPseudos] } : {}
+    };
+  }
+  var snapshot = (node) => ({
+    type: node.type,
+    x: node.x,
+    y: node.y,
+    width: node.width,
+    height: node.height,
+    ...node.type === "TEXT" ? {
+      characters: node.characters,
+      fontName: node.fontName,
+      fontSize: node.fontSize,
+      lineHeight: node.lineHeight,
+      letterSpacing: node.letterSpacing
+    } : {},
+    ...node.children ? { children: node.children.map((child) => ({
+      type: child.type,
+      x: child.x,
+      y: child.y,
+      width: child.width,
+      height: child.height,
+      ...child.type === "TEXT" ? { characters: child.characters } : {}
+    })) } : {}
+  });
+  function retainTextWhitespace(node, source, warnings) {
+    const receipt = textWhitespaceSource(source);
+    if (receipt) {
+      const serialized = JSON.stringify({
+        format: "codeshell.html.text-whitespace",
+        version: 1,
+        source: receipt,
+        snapshot: snapshot(node)
+      });
+      if (serialized.length <= 8e3) {
+        node.sharedPluginData ?? (node.sharedPluginData = {});
+        node.sharedPluginData[KEY] = serialized;
+      } else warnings.push("HTML \u6587\u5B57\u6765\u6E90\u5FEB\u7167\u8D85\u8FC7 8000 UTF-16 \u5355\u5143\uFF1B\u672A\u8986\u76D6\u539F\u59CB\u5907\u6CE8\uFF0C\u672A\u4FEE\u6539\u6587\u5B57\u6216\u5E03\u5C40\u3002");
+    }
+    const raw = node.sharedPluginData?.[KEY];
+    if (raw === void 0) return;
+    let value;
+    try {
+      if (typeof raw === "string" && raw.length <= 8e3) value = JSON.parse(raw);
+    } catch {
+    }
+    const original = textWhitespaceSource(value?.source);
+    if (!original || value?.format !== "codeshell.html.text-whitespace" || value.version !== 1) {
+      warnings.push("HTML \u6587\u5B57\u6765\u6E90\u5907\u6CE8\u65E0\u6548\uFF1B\u539F\u59CB\u5907\u6CE8\u4EC5\u4F5C\u8BB0\u5F55\uFF0C\u672A\u7528\u4E8E\u4FEE\u6539\u6587\u5B57\u6216\u5E03\u5C40\u3002");
+      return;
+    }
+    if (JSON.stringify(value.snapshot) !== JSON.stringify(snapshot(node)))
+      warnings.push("HTML \u6587\u5B57\u6765\u6E90\u5907\u6CE8\u4E0E\u5F53\u524D\u56FE\u5C42\u5FEB\u7167\u4E0D\u540C\uFF1B\u4EC5\u4FDD\u7559\u539F\u59CB\u8BB0\u5F55\uFF0C\u672A\u7528\u4E8E\u4FEE\u6539\u6587\u5B57\u6216\u5E03\u5C40\u3002");
+    if (original.omittedPseudos)
+      warnings.push("\u5DF2\u7701\u7565\u6355\u83B7\u65F6\u65E0\u7ED8\u5236\u3001\u65E0\u6587\u5B57\u4E14\u8131\u79BB\u6587\u6863\u6D41\u7684\u7A7A\u4F2A\u5143\u7D20\uFF1B\u4FDD\u7559\u771F\u5B9E\u8282\u70B9\uFF0C\u4F46\u4E0D\u4FDD\u7559\u4F2A\u5143\u7D20\u6269\u5C55\u7684\u70B9\u51FB\u533A\u57DF\u3002");
+  }
+
   // third-party/html2figma-plugin/integration/input.ts
   var MAX_INPUT_BYTES = 12 * 1024 * 1024;
   var MAX_NODES = 3e3;
-  var object2 = (v) => v && typeof v === "object" && !Array.isArray(v);
+  var object3 = (v) => v && typeof v === "object" && !Array.isArray(v);
   function prepareDesignInput(input) {
     const text = typeof input === "string" ? input : JSON.stringify(input);
     if (typeof text !== "string" || new TextEncoder().encode(text).length > MAX_INPUT_BYTES)
@@ -5586,14 +5652,14 @@
     const legacyFloatWarning = "\u6D6E\u52A8\u5217\u5728\u672C\u72EC\u7ACB\u63D2\u4EF6\u4E2D\u4F7F\u7528\u56FA\u5B9A\u6D4B\u91CF\u5E03\u5C40\uFF0C\u672A\u4FDD\u7559\u767E\u5206\u6BD4\u5217\u6D41\uFF1B\u9700\u8981\u6709\u754C\u53EF\u7F16\u8F91\u5217\u5E03\u5C40\u65F6\u8BF7\u901A\u8FC7 Design Studio \u5BFC\u5165\u5E76\u4F7F\u7528 Design Bridge\u3002";
     const isFloatFallback = (node) => node.codeshellFloatFallback === true || node.nodeType === "container" && node.layout?.hasFloatChildren === true;
     function inspect(node, depth = 0) {
-      if (!object2(node) || depth > 60 || ++count > MAX_NODES)
+      if (!object3(node) || depth > 60 || ++count > MAX_NODES)
         throw new Error("\u8282\u70B9\u6811\u6700\u591A 3000 \u4E2A\u8282\u70B9\u300160 \u5C42");
       if (!node.nodeType && !["FRAME", "GROUP", "RECTANGLE", "TEXT", "SVG"].includes(node.type))
         throw new Error(`\u4E0D\u652F\u6301\u8282\u70B9\u7C7B\u578B\uFF1A${String(node.type ?? "unknown").slice(0, 60)}`);
       if (node.nodeType && !["container", "text", "image", "svg"].includes(node.nodeType))
         throw new Error("\u4E0D\u652F\u6301\u7684 DesignNode \u7C7B\u578B");
       const bounds = node.nodeType ? node.bounds : node;
-      if (!object2(bounds) || !["width", "height"].every(
+      if (!object3(bounds) || !["width", "height"].every(
         (k) => Number.isFinite(bounds[k]) && bounds[k] >= 0 && bounds[k] <= 2e4
       ))
         throw new Error("\u8282\u70B9\u5BBD\u9AD8\u5FC5\u987B\u5728 0\u201320000 \u4E4B\u95F4");
@@ -5609,6 +5675,7 @@
     }
     roots.forEach((root) => inspect(root));
     const gradientPaints = /* @__PURE__ */ new Map();
+    const textWhitespace = /* @__PURE__ */ new Map();
     const assignedIds = /* @__PURE__ */ new Set();
     let sourceSerial = 0;
     function retainGradients(node) {
@@ -5621,6 +5688,8 @@
         reservedIds.add(id);
       }
       assignedIds.add(node.id);
+      const whitespace = node.nodeType && textWhitespaceSource(node.cssTextWhitespace);
+      if (whitespace) textWhitespace.set(node.id, whitespace);
       if (node.nodeType && node.cssBorderRadii) {
         try {
           cssCornerRadii(node.cssBorderRadii);
@@ -5671,6 +5740,7 @@
       if (node.type === "TEXT" && (typeof node.characters !== "string" || node.characters.length > 1e4))
         throw new Error("\u5355\u4E2A\u6587\u672C\u8282\u70B9\u6700\u591A 10000 \u5B57\u7B26");
       (node.children ?? []).forEach(normalizeOnce);
+      retainTextWhitespace(node, textWhitespace.get(node.id), warnings);
     }
     converted.forEach((root) => inspect(root));
     let serial = 0;

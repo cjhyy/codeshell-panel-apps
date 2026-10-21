@@ -42,6 +42,7 @@
     "third-party/html2figma-plugin/integration/input.ts",
     "third-party/html2figma-plugin/integration/sandbox-globals.ts",
     "third-party/html2figma-plugin/integration/shared.ts",
+    "third-party/html2figma-plugin/integration/text-whitespace.ts",
     "third-party/html2figma-plugin/integration/ui.ts",
     "third-party/html2figma-plugin/upstream/packages/adapter/figma/FigmaAdapter.ts",
     "third-party/html2figma-plugin/upstream/packages/adapter/figma/layoutMapper.ts",
@@ -74,13 +75,13 @@
     },
     {
       "path": "code.js",
-      "bytes": 225338,
-      "sha256": "0fc2e0a88520d97f719042dc6038f15916e82aa46914abe2a64d629224b849a3"
+      "bytes": 229281,
+      "sha256": "bd0939893e309ce64db71558fc43c008b300c7fbbfd17dc74192e830d5815438"
     },
     {
       "path": "ui.html",
-      "bytes": 354726,
-      "sha256": "6b907a217f371c5ca1f8788ad766cfc0bd33868462c6e35a7382b527efb99dad"
+      "bytes": 363892,
+      "sha256": "bbfe4b0be777f5abb4a9c86bd09dd2815457a1e08d28248e41d0c0a04ac33f32"
     },
     {
       "path": "README.md",

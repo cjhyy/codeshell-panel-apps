@@ -5516,6 +5516,58 @@ var html2figmaCore = (() => {
     };
   }
 
+  // third-party/html2figma/integration/text-whitespace.ts
+  var collapseAscii = (value) => value.replace(/[\t\n\f\r ]+/gu, " ").replace(/^ | $/gu, "");
+  var noPaintPseudo = (node, element) => {
+    const style = node.computedStyle;
+    if (!style || node.domNode !== element || node.nodeType !== "element" || node.metadata?.isPseudoElement !== true || !["::before", "::after"].includes(node.tag ?? "") || !['""', "''"].includes(style.content) || node.textContent || node.children.length || !["absolute", "fixed"].includes(style.position) || style.display !== "block" || style.appearance !== "none" || style.textDecorationLine !== "none" || style.overflowX !== "visible" || style.overflowY !== "visible" || style.resize !== "none") return false;
+    return ["transparent", "rgba(0, 0, 0, 0)"].includes(style.backgroundColor) && style.backgroundImage === "none" && style.boxShadow === "none" && style.textShadow === "none" && ["Top", "Right", "Bottom", "Left"].every((side) => style[`border${side}Style`] === "none" && style[`border${side}Width`] === "0px") && style.borderImageSource === "none" && style.outlineStyle === "none" && style.filter === "none" && style.backdropFilter === "none" && style.clip === "auto" && style.clipPath === "none" && style.maskImage === "none" && style.getPropertyValue("-webkit-box-reflect") === "none" && style.transform === "none" && style.mixBlendMode === "normal" && style.visibility === "visible" && style.opacity === "1";
+  };
+  function recoverCollapsedTextWhitespace(tree) {
+    const recovered = /* @__PURE__ */ new Map();
+    const visit = (source) => {
+      const node = { ...source, children: source.children.map(visit) };
+      const element = node.domNode;
+      const style = node.computedStyle;
+      if (node.nodeType !== "element" || !(element instanceof realm.Element) || element.namespaceURI !== "http://www.w3.org/1999/xhtml" || !node.metadata?.semantic || node.metadata.isPseudoElement || node.metadata.isFormContent || node.metadata.listMarker || !style || element.childNodes.length !== 1 || !(element.firstChild instanceof realm.Text) || element.matches("button,input,select,textarea,option,svg,canvas,video,audio,object,embed,iframe") || !["normal", "nowrap"].includes(style.whiteSpace) || style.direction !== "ltr" || style.writingMode !== "horizontal-tb" || style.visibility !== "visible" || style.textTransform !== "none" || !["normal", "0px"].includes(style.wordSpacing) || style.fontFamily.length > 256) return node;
+      const textNode = element.firstChild;
+      const rawSource = textNode.data;
+      if (!rawSource || rawSource.length > 1e3 || JSON.stringify(rawSource).length > 1e3 || /\s/u.test(rawSource.replace(/[\t\n\f\r ]/gu, "")) || /[\u200b\u200c\u200d]/u.test(rawSource)) return node;
+      const text = node.children.filter((child) => child.nodeType === "text" && child.domNode === textNode && !child.metadata?.isPseudoElement && !child.metadata?.isFormContent && !child.metadata?.isTextSegment);
+      if (text.length !== 1 || node.children.some((child) => child !== text[0] && !noPaintPseudo(child, element))) return node;
+      const view = element.ownerDocument.defaultView;
+      if (!view || !["::before", "::after"].every((pseudo) => {
+        const current = view.getComputedStyle(element, pseudo);
+        return ["none", "normal"].includes(current.content) || current.display === "none" || node.children.some((child) => child.tag === pseudo && noPaintPseudo(child, element));
+      })) return node;
+      const receipt = {
+        whiteSpace: style.whiteSpace,
+        rawSource
+      };
+      const omitted = node.children.filter((child) => child !== text[0]);
+      let nextText = text[0];
+      const suffix = /[\t\n\f\r ]+$/u.exec(rawSource);
+      if (suffix && text[0].textContent?.endsWith("\xA0") && collapseAscii(text[0].textContent.replace(/\u00a0/gu, " ")) === collapseAscii(rawSource)) {
+        try {
+          const range = element.ownerDocument.createRange();
+          range.setStart(textNode, suffix.index);
+          range.setEnd(textNode, rawSource.length);
+          const rects = Array.from(range.getClientRects());
+          if (rects.length > 0 && rects.every((rect) => rect.width === 0) && range.getBoundingClientRect().width === 0 && !text[0].textContent.slice(0, -1).endsWith("\n")) {
+            nextText = { ...text[0], textContent: text[0].textContent.slice(0, -1) };
+            receipt.removedTrailingNbsp = true;
+          }
+        } catch {
+        }
+      }
+      if (omitted.length) receipt.omittedPseudos = omitted.map((child) => child.tag);
+      if (!receipt.removedTrailingNbsp && !receipt.omittedPseudos) return node;
+      recovered.set(node.metadata.semantic, receipt);
+      return { ...node, children: [nextText] };
+    };
+    return { tree: visit(tree), recovered };
+  }
+
   // third-party/html2figma/integration/entry.ts
   function captureLayoutValues(tree) {
     const values = /* @__PURE__ */ new Map();
@@ -5600,8 +5652,9 @@ var html2figmaCore = (() => {
     return values;
   }
   function convert(root, options) {
-    const tree = traverseDOM(root, { maxDepth: options.maxDepth });
-    if (!tree) return null;
+    const capturedTree = traverseDOM(root, { maxDepth: options.maxDepth });
+    if (!capturedTree) return null;
+    const { tree, recovered: textWhitespace } = recoverCollapsedTextWhitespace(capturedTree);
     const values = captureLayoutValues(tree);
     const attachTableBorder = captureTableBottomBorders(tree);
     const svgResources = /* @__PURE__ */ new Map();
@@ -5689,6 +5742,8 @@ var html2figmaCore = (() => {
     const result = options.preserveGrid ? renderPreservingGrid(tree, options) : renderToDesignDSL(tree, options);
     const attach = (node) => {
       attachTableBorder(node);
+      if (node.semantic && textWhitespace.has(node.semantic))
+        node.cssTextWhitespace = textWhitespace.get(node.semantic);
       if (node.nodeType === "text" && node.semantic && lineHeights.has(node.semantic))
         node.cssLineHeight = lineHeights.get(node.semantic);
       const cssLayout = node.nodeType !== "text" && node.semantic && values.get(node.semantic);

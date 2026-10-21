@@ -3,6 +3,7 @@ import { FigmaAdapter } from "../upstream/packages/adapter/figma/FigmaAdapter";
 import { inertDesignSvg } from "../../../apps/design-studio/app/design-node-adapter.mjs";
 import { cssLinearBackgroundPaints } from "../../../apps/design-studio/app/css-linear-gradient.mjs";
 import { designPaintsToFigma, cssLinearNeedsNativeWarning } from "../../../apps/design-studio/app/paint.mjs";
+import { textWhitespaceSource, retainTextWhitespace } from "./text-whitespace";
 export { inertDesignSvg };
 export const MAX_INPUT_BYTES = 12 * 1024 * 1024;
 export const MAX_NODES = 3000;
@@ -63,6 +64,7 @@ export function prepareDesignInput(input: any) {
   }
   roots.forEach((root: any) => inspect(root));
   const gradientPaints = new Map<string, any[]>();
+  const textWhitespace = new Map<string, any>();
   const assignedIds = new Set<string>();
   let sourceSerial = 0;
   function retainGradients(node: any) {
@@ -75,6 +77,8 @@ export function prepareDesignInput(input: any) {
       reservedIds.add(id);
     }
     assignedIds.add(node.id);
+    const whitespace = node.nodeType && textWhitespaceSource(node.cssTextWhitespace);
+    if (whitespace) textWhitespace.set(node.id, whitespace);
     if (node.nodeType && node.cssBorderRadii) {
       try { cssCornerRadii(node.cssBorderRadii); }
       catch (error: any) {
@@ -136,6 +140,7 @@ export function prepareDesignInput(input: any) {
     )
       throw new Error("单个文本节点最多 10000 字符");
     (node.children ?? []).forEach(normalizeOnce);
+    retainTextWhitespace(node, textWhitespace.get(node.id), warnings);
   }
   converted.forEach((root: any) => inspect(root));
   let serial = 0;
