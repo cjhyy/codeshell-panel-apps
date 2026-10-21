@@ -2528,3 +2528,12 @@ SHAc4fdc98c3383493063a852b10619b46e2f2a32144eba65c4ae48ffe1c2031e24。
 10:16:04UTC node_repl实际复查cuaAvailable:false，真实Figma仍NOT_RUN。
 native-notes候选正在冻结供独立peer；另继续只读分解748/2711残差，未将其全部归因字体
 或舍入，截止UTC16:31保持不变。
+
+ROUND50保存：primary main与aggregate已clean FF同步16be7d5，137package与门禁完全
+一致，收据SHAb18ae1e303257ed929047083f69c554db8c6e1ea0fbc8c1f03c359118ed8cdbc。
+native-notes已冻结1261503a8f6d5d0967a902c26d4689aa84dbdcfe（935为组合基础），owner
+290/290定向VM/CPU及静态检查通过，139package/132app，12个原nativeText模块未变；
+handoff SHA58b2b4621f460f5bf16b2b69a7f68fa2e6d88726b60292beecda74cc252553f0。
+source_compare独立peer正在检查未映射后代、最后await竞态、raw own namespace矛盾及
+旧nativeText硬拒绝，root完整main/UI尚未执行。候选在独立native-notes-roundtrip工作树，
+不影响已合入的本地main；全程无实际Figma执行。
