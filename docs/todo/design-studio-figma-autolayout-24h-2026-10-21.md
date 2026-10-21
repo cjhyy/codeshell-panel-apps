@@ -2479,3 +2479,52 @@ codex/design-studio/html-text-flex-basis-20261021）处理文字恢复覆盖main
 28项affected通过只是初步结果，peer指出应限真实TypedOM px，避免改变indefinite
 percentage basis原有content/Hug行为；未合入，后续须反例、原模板同阶段像素复验。
 截止时间仍UTC16:31，任务及heartbeat继续。
+
+### ROUND50 · 修正文字恢复覆盖像素 flex-basis
+
+6c94056修复后正常合入已验证935字体版本，候选810d80a冻结。实际CSS Flex父级且
+TypedOM basis为finite nonnegative px时，普通文字恢复保留adapter原main-axis模式；
+另一轴及auto label仍可Hug。最初草稿泛化到所有nonintrinsic basis，peer实测
+indefinite50%会把原Hug44→308误变Fixed44→44，未合入。已收窄真实CSSUnitValue px，
+并加入原百分比反例。旧peer失败a9fa0054867d67eda01320bf3d52eaec65138e0ef7785ed3f3481d88ae3b4b84保留。
+
+回归包含横向200px/纵向80px、min-width/height0隔离automatic minimum、普通label Hug、
+canonical reflow、保存重开、真实Browser geometry及indefinite百分比content edit。
+独立14项source/production/Browser控制中9项初始/编辑精确一致；5项旧百分比、auto-min、
+默认stretch/Hug-parent-Fill-cross限制明确保留，不据此宣称一般CSS Flex已实现。
+peer SHAd9213c833ba963385eafb37920e5d9d2e1ca9e5d0a528f790b9cdf1b390138d6；
+137package仅html-import.mjs改变，native guards和其他136文件与935一致。
+
+root main905项904pass/1skip、UI113项112pass/1skip，共1018项1016pass/2skip；
+typecheck、validate、scoped build、3generated、diff均通过。UI首次在launch前因测试树
+链接的primary依赖缺外部canvaskit-wasm而拒绝，未跑任何测试。仅重定向自己的依赖
+symlink至现有aggregate，保留两个目标目录；5个直接依赖version/package/entrypoint
+一致，external CK0.42可用，105个main文件无直接CK引用，原Grida encoder skip不变；
+不声称全部transitive bytes相同。后续UI完整通过。组合独立核验254code/catalog/test
+pins（137package），SHAceacd435a2cc16148803c0b5a548b70eb5c077917c14fa5b9a10ac8ae3889978。
+aggregate正常FF810后main/UI/static共256 union pins完全一致，checkpoint
+SHAeee560e052380f9c53ddc347d593c146719fd84e70a01a298538bb9385ee294b。
+
+原gallery同阶段CPU六源图的PNG SHA、逐RGBA、DOM/CSS/scroll及input/assets与旧基线
+全部exact。21宽初始/编辑source→Browser full686532→677829、固定ROI9460→757；
+21窄full146768→139231、ROI10255→2718。04/19不变，六组仍全strict FAIL。
+CPU peer SHAc62570914282ce4be0bb355852c3b67b4f2ca5040e0f41d72569b14a727991ba。
+
+root另在810实际执行matched-Metal三方六例，6 source及6 CK PNG与R48逐RGBA/SHA
+完全相同；21 Browser宽变化8709像素、窄8486像素。source→Browser固定ROI宽
+9457→748、窄10252→2711，04/19完全不变。Browser→CK宽初始16240→7577、编辑
+16572→7909，窄初始14958→7336、编辑15277→7655。200px图层canonical已Fixed，
+真实Browser宽200，无ABS/平移拟合。205raw pins、18full+18ROI/36diff masks独立核验，
+peer SHA1470d8377333fb46510eaae32f953efa353c6a252290c3b8b6e23bf9e846d2de。
+CK仍M4Pro Metal liveWebGL2但nativeText0/raster fallback/font-unavailable；六组全部
+strict FAIL。CPU与GPU数字各自保留，不混作同一launch profile。
+
+R49已clean FF本地main935，137package与full gates一致，收据
+SHA2c885db74a3d97381f7b4de7e9b4ca42cc924fb6ba29afd15d09b865aeb70331。
+owner/factory全部reader释放后普通移除已合入font工作树/分支，精确unlink其aggregate
+依赖symlink、目标保留；外部证据及immutable snapshot保留。旧helper硬编码app路径需
+恢复精确f43 checkout后重放；cleanup
+SHAc4fdc98c3383493063a852b10619b46e2f2a32144eba65c4ae48ffe1c2031e24。
+10:16:04UTC node_repl实际复查cuaAvailable:false，真实Figma仍NOT_RUN。
+native-notes候选正在冻结供独立peer；另继续只读分解748/2711残差，未将其全部归因字体
+或舍入，截止UTC16:31保持不变。
