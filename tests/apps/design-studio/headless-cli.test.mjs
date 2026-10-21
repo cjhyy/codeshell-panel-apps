@@ -106,7 +106,7 @@ test("installed package discovers CLI schemas without a webview, dependencies or
   assert.deepEqual(await readdir(f.project), []);
 });
 
-test("create, read, CAS edit and zero-warning validation persist actual reopenable v3 source", async (t) => {
+test("create/read/CAS preserve companions and report malformed metadata before zero-warning validation", async (t) => {
   const f = await fixture(t);
   const created = await f.run("create", { path, document: document() });
   assert.equal(created.code, 0);
@@ -134,6 +134,18 @@ test("create, read, CAS edit and zero-warning validation persist actual reopenab
     await readFile(join(f.project, "designs/design.prototype.json"), "utf8"),
     "preserved companion",
   );
+  const malformed = await f.run("validate", { path });
+  assert.equal(malformed.value.result.valid, false);
+  assert.equal(malformed.value.result.issueCount, 1);
+  assert.equal(malformed.value.result.errorCount, 1);
+  assert.equal(malformed.value.result.prototype.status, "invalid");
+  assert.equal(malformed.value.result.issues[0].code, "prototype.invalid-sidecar");
+  assert.equal(malformed.value.result.canonical, true);
+  assert.equal(await readFile(join(f.project, "designs/design.prototype.json"), "utf8"), "preserved companion");
+  // A distinct, explicitly authored valid companion is the positive fixture.
+  await f.put("designs/design.prototype.json", JSON.stringify({
+    format: "codeshell.design.prototype", version: 1, startPageId: "page-one", links: [],
+  }));
   const audit = await f.run("validate", { path });
   assert.equal(audit.value.result.valid, true);
   assert.equal(audit.value.result.issueCount, 0);

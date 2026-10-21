@@ -497,8 +497,22 @@ node "<selected-package>/app/tools/design-studio.mjs" run inspect \
 ```
 
 An inspect request is `{ "path": "designs/design.codesign.json" }`. Operations
-include `inspect`, bounded `read`, all-page `validate`, `svg`, static HTML
-`frontend`, PRD `brief`, saved-design `compare`, `create`, and `edit`. Create
+include `inspect`, bounded `read`, all-page `validate`, `svg`, HTML
+`frontend`, PRD `brief`, saved-design `compare`, `create`, and `edit`. Frontend
+defaults to one static page; explicit `prototype: true` exports all pages using
+the saved `.prototype.json` companion and verified design resources. It cannot
+be combined with `page_id`. A missing primary companion uses the same default
+as the Panel: the active page starts an all-page prototype with no authored
+links. The receipt marks `status: "absent"` and `defaulted: true`; no companion
+is created. Present malformed, incomplete or dangling companions refuse
+prototype export. `prototype` accepts only a JSON boolean.
+
+`validate` reports the companion's `absent`, `valid` or `invalid` status and up
+to100 prototype diagnostics, alongside existing all-page design issues. Invalid
+references or unreadable metadata contribute to the error/blocking counts and
+make `valid: false`; they never silently become a link-free default. Raw and
+reconstructed prototype data are limited to2MiB through the shared bounded
+project reader, including verified multipart companions. Create
 accepts a complete v3 `document`; edit also requires the exact saved-file
 `expected_revision` returned by a read. Both use the shared document codec and
 resource verification. They persist actual project source and the same page
@@ -518,7 +532,9 @@ Host file commits use owned directory locks with a five-second wait; a crash
 may leave a lock requiring verification that no writer is active before removal.
 
 Complete-document edits preserve companion files but do not reconcile comments,
-prototype targets or Figma mappings after ID changes. They accept materialized
+prototype targets or Figma mappings after ID changes. Validate the saved source
+after editing; prototype diagnostics expose dangling page/node references.
+These operations do not rewrite IDs or repair companions. They accept materialized
 geometry and do not execute the live editor's Auto Layout operations or undo.
 Open the Panel for those workflows, live screenshots, HTML capture/import,
 Figma exchange and resource insertion. The CLI reads saved files; unsaved live

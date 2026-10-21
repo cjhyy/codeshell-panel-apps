@@ -20,6 +20,8 @@ import {
 } from "../document-index.mjs";
 import { resolveDesignResource } from "../resource-store.mjs";
 import { exportDesignFrontend } from "../frontend-export.mjs";
+import { exportDesignPrototype } from "../prototype.mjs";
+import { readSavedPrototype } from "./prototype-source.mjs";
 import { parseProductBrief, isSafeProductBriefPath } from "../product-brief.mjs";
 import { compareDesignDocuments } from "../design-compare.mjs";
 import {
@@ -80,18 +82,20 @@ export const operations = [
   {
     name: "validate",
     readOnly: true,
-    description: "Audit every saved page with the Panel's document codec and audit rules.",
+    description: "Audit every saved page and report bounded diagnostics for an existing prototype companion.",
     inputSchema: schema({ path: designPath }, ["path"]),
   },
   ...["svg", "frontend"].map((name) => ({
     name,
     readOnly: false,
-    description:
-      "Render one saved page. Output, when supplied, is create-only; otherwise content is returned in JSON.",
+    description: name === "frontend"
+      ? "Render one static page, or all pages with prototype:true and the saved prototype companion. Output is create-only; otherwise content is returned in JSON."
+      : "Render one saved page. Output is create-only; otherwise content is returned in JSON.",
     inputSchema: schema(
       {
         path: designPath,
         page_id: pageId,
+        ...(name === "frontend" ? { prototype: { type: "boolean", description: "Export all pages as an interactive prototype; cannot be combined with page_id. Missing companion uses a default start page with no links." } } : {}),
         output: {
           ...text,
           description: `New designs/ artifact ending in ${name === "svg" ? ".svg" : ".html"}.`,
@@ -160,6 +164,8 @@ function validateInput(operation, input) {
     )
       throw fail("INVALID_ARGUMENT", `Invalid ${key}.`);
     if (rule.type === "object" && !object(value)) throw fail("INVALID_ARGUMENT", `Invalid ${key}.`);
+    if (rule.type === "boolean" && typeof value !== "boolean")
+      throw fail("INVALID_ARGUMENT", `Invalid ${key}.`);
   }
   if (operation.name !== "brief" && !isSafeDesignPath(input.path))
     throw fail("UNSAFE_PATH", "Design path must be a portable designs/*.codesign.json path.");
@@ -180,6 +186,8 @@ function validateInput(operation, input) {
     throw fail("UNSAFE_PATH", "Brief must be a portable project-relative .md, .mdx or .txt path.");
   if (input.max_depth !== undefined && input.node_id === undefined)
     throw fail("INVALID_ARGUMENT", "max_depth requires node_id.");
+  if (input.prototype === true && input.page_id !== undefined)
+    throw fail("INVALID_ARGUMENT", "prototype:true exports all pages and cannot be combined with page_id.");
 }
 
 async function resourcesFor(project, document) {
@@ -387,7 +395,17 @@ export async function runOperation(project, name, input) {
   if (name === "inspect") return catalog(saved);
   if (name === "read") return readContext(saved, input);
   if (name === "validate") {
-    const issues = auditDesignPages(saved.document);
+    const prototype = await readSavedPrototype(project, input.path, saved.document);
+    const issues = [
+      ...auditDesignPages(saved.document),
+      ...prototype.diagnostics.map(diagnostic => ({
+        ...diagnostic,
+        code: `prototype.${diagnostic.code}`,
+        severity: "error",
+        blocking: true,
+        companionPath: prototype.summary.path,
+      })),
+    ];
     return {
       path: input.path,
       revision: saved.primary.revision,
@@ -395,6 +413,7 @@ export async function runOperation(project, name, input) {
       ...summarizeAudit(issues),
       issues: issues.slice(0, 400),
       truncatedIssueCount: Math.max(0, issues.length - 400),
+      prototype: prototype.summary,
     };
   }
   if (name === "compare") {
@@ -418,6 +437,10 @@ export async function runOperation(project, name, input) {
         Math.max(0, comparison.differences.length - 400),
     };
   }
+  const prototype = input.prototype === true
+    ? await readSavedPrototype(project, input.path, saved.document) : null;
+  if (prototype?.diagnostics.length)
+    throw fail("INVALID_DESIGN", `Prototype export refused: ${prototype.diagnostics[0].message}`);
   const page = saved.document.pages.find(
     (item) => item.id === (input.page_id ?? saved.document.activePageId),
   );
@@ -429,11 +452,19 @@ export async function runOperation(project, name, input) {
           resourceDataUrls: saved.resourceDataUrls,
           maxBytes: 4 * 1024 * 1024,
         })
-      : exportDesignFrontend(document, {
+      : prototype
+        ? exportDesignPrototype(saved.document, {
+            prototype: prototype.model,
+            resourceDataUrls: saved.resourceDataUrls,
+          })
+        : exportDesignFrontend(document, {
           pageId: page.id,
           resourceDataUrls: saved.resourceDataUrls,
         });
-  const provenance = { path: input.path, revision: saved.primary.revision, pageId: page.id };
+  const provenance = { path: input.path, revision: saved.primary.revision,
+    ...(prototype ? { prototype: prototype.summary, pageCount: saved.document.pages.length,
+      startPageId: prototype.model.startPageId } : { pageId: page.id }),
+  };
   if (!input.output) return { ...provenance, content, bytes: Buffer.byteLength(content) };
   const receipt = await project.withWriteLock(() => project.write(input.output, content, null));
   return { ...provenance, output: receipt };

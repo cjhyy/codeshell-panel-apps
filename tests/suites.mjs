@@ -89,6 +89,7 @@ export const suites = [
       [
         "--test",
         "tests/apps/design-studio/headless-cli.test.mjs",
+        "tests/apps/design-studio/headless-prototype.test.mjs",
         "tests/apps/design-studio/product-brief.test.mjs",
         "tests/apps/design-studio/frontend-export.test.mjs",
         "tests/apps/design-studio/frontend-responsive-text-source.test.mjs",
