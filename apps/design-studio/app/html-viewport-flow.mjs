@@ -14,16 +14,14 @@ function fixedBoxDeclarations(element, document, window) {
   let rules = 0;
   const check = (style, conditional) => {
     if (style.length > 1024) return false;
-    for (const key of ["margin", "padding", "margin-inline", "margin-block", "padding-inline", "padding-block",
-      "inset", "inset-inline", "inset-block", "overflow", "border", "border-width", "border-inline", "border-block",
-      "border-inline-width", "border-block-width", "border-top", "border-right", "border-bottom", "border-left"])
-      if (/\\|\b(?:var|env|attr)\(/iu.test(style.getPropertyValue(key))) return false;
     for (const key of style) {
       if (conditional && boxProperty(key)) return false;
-      if (key === "all" && !["initial", "unset"].includes(style.getPropertyValue(key))) return false;
-      // Pending shorthand substitutions can leave every expanded longhand
-      // empty, so they must be rejected before inspecting those longhands.
-      if (boxProperty(key) && /\\|\b(?:var|env|attr)\(/iu.test(style.getPropertyValue(key))) return false;
+      const value = style.getPropertyValue(key);
+      if (key === "all" && !["initial", "unset"].includes(value)) return false;
+      // A declared longhand with an empty CSSOM value can be a pending
+      // shorthand substitution. Its computed px value does not prove fixed
+      // authored intent, including for logical border shorthand families.
+      if (boxProperty(key) && (!value || /\\|\b(?:var|env|attr)\(/iu.test(value))) return false;
     }
     for (const prefix of ["margin", "padding"]) for (const side of ["top", "right", "bottom", "left",
       "inline-start", "inline-end", "block-start", "block-end"]) {

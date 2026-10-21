@@ -126,7 +126,11 @@ a diagnostic instead of becoming fixed ancestor insets. The
 scan caps64 stylesheets,10000 rules,16 nested groups,1024 declarations per rule
 and8192 selector characters; unreadable or unsupported CSSOM refuses the proof.
 This is a conservative capture boundary, not a complete CSS cascade or breakpoint
-engine. [CSS Overflow gutter rules](https://drafts.csswg.org/css-overflow-3/#scrollbar-gutter-property)
+engine. In particular, an authored box longhand that CSSOM enumerates but
+serializes as empty is unresolved, rather than absent: pending physical/logical
+border substitutions can hide their variable expression this way. The proof
+rejects that representation without depending on a list of shorthand names.
+[CSS Overflow gutter rules](https://drafts.csswg.org/css-overflow-3/#scrollbar-gutter-property)
 and [Typed OM units](https://www.w3.org/TR/css-typed-om-1/#numeric-objects) are the
 primary references; the exact observed geometry remains in the local evidence.
 
@@ -137,7 +141,7 @@ independently measure each selected DOM root, assert exact saved rectangles,
 real viewport padding and Fill transfer fields, and preserve save/reopen plus
 layout reflow. Custom gutters, real visible16px classic scrollbars, root width
 constraints, relative/variable/conditional insets, clipping, scroll offsets,
-quirks and horizontal overflow remain negative controls. The9 focused tests
+quirks and horizontal overflow remain negative controls. The10 focused tests
 pass; prior failed candidate runs and their explanations are retained outside
 the repository, including the extra root-margin accounting correction.
 

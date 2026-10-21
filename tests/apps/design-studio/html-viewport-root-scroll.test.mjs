@@ -163,6 +163,26 @@ test("variable physical and logical box declarations cannot authorize a fixed gu
     }
 });
 
+test("pending physical and logical border substitutions cannot authorize fixed gutters", async (t) => {
+  const browser = await relationBrowser();
+  t.after(() => browser.close());
+  const base = "overflow-y:scroll;scrollbar-gutter:stable;";
+  const cases = [
+    ...["border-inline-start", "border-inline-end", "border-block-start", "border-block-end"].map(
+      (property) => [property, `--edge:0px solid transparent;${property}:var(--edge)`, "--edge:8px solid transparent"],
+    ),
+    ["border-style", "--edge:none;border-style:var(--edge)", "--edge:solid"],
+    ["border-inline-style", "--edge:none;border-inline-style:var(--edge)", "--edge:solid"],
+    ["border-image", "--edge:none;border-image:var(--edge)", "--edge:linear-gradient(red,blue) 1"],
+  ];
+  for (const [label, initial, narrow] of cases) for (const width of [640, 400])
+    for (const rootSelector of ["html", "body", "#fixture"]) {
+      const source = fixture(base + initial, "", `@media(max-width:500px){html{${narrow}}}`);
+      const observed = await browser.capture(source, width, { rootSelector });
+      assert(observed.relation.unsupported, `${label}/${rootSelector}/${width}: ${JSON.stringify(observed)}`);
+    }
+});
+
 test("root viewport auto/scroll overflow preserves ordinary vertical Fill, save/reopen and exact outer-only resize pixels", async (t) => {
   const output = await mkdtemp(join(tmpdir(), "html-root-scroll-"));
   t.after(() => rm(output, { recursive: true, force: true }));
