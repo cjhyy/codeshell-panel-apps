@@ -5176,6 +5176,9 @@
   // apps/design-studio/app/stroke.mjs
   var STROKE_SIDES = Object.freeze(["top", "right", "bottom", "left"]);
 
+  // apps/design-studio/app/html-auto-margin-distribution.mjs
+  var nonReplaced = new Set("div main header footer section article aside nav ul ol li h1 h2 h3 h4 h5 h6 p form figure figcaption".split(" "));
+
   // apps/design-studio/app/text-ranges.mjs
   var MAX_TEXT_RANGES_BYTES = 32 * 1024;
 

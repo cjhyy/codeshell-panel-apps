@@ -10,6 +10,7 @@ import { recoverHtmlTextOverflow } from "./html-text-overflow.mjs";
 import { applyHtmlNumberLineHeight } from "./html-line-height.mjs";
 import { cssCornerRadii } from "./corner-radii.mjs";
 import { planHtmlImageBorderBox } from "./html-image-border-box.mjs";
+import { consumeHtmlAutoMarginPlan } from "./html-auto-margin-distribution.mjs";
 /* Pure html2figma DesignNode → CodeShell v3 adapter. No DOM, network, or writes. */
 import { normalizeDesignDocument, MAX_DESIGN_NODES_PER_PAGE } from "./document.mjs";
 import { createDesignResourcePersistencePlan, MAX_DESIGN_RESOURCES } from "./resource-store.mjs";
@@ -502,7 +503,7 @@ export async function designNodeToV3(tree, options = {}) {
       warn("layout-alignment", id, `${value} 对齐不受 v3 支持，已使用 ${fallback}。`);
     return values.includes(mapped) ? mapped : fallback;
   };
-  const layout = (source, node, ancestors = []) => {
+  const layout = (source, node, ancestors = [], capturedSource = source) => {
     Object.assign(node, {
       layout: "none",
       gap: 0,
@@ -625,6 +626,20 @@ export async function designNodeToV3(tree, options = {}) {
         child.layout?.display !== "none" &&
         !["absolute", "fixed"].includes(child.positioning?.mode),
     );
+    if (!block && node.layout === "vertical" && !transformedSpace && options.captureAutoMarginPlan) {
+      const captured = options.captureAutoMarginPlan(capturedSource);
+      const distribution = consumeHtmlAutoMarginPlan(captured, capturedSource, source);
+      if (distribution) {
+        node.justifyContent = "space-between";
+        for (const [index, item] of distribution.items.entries()) {
+          const handled = new Set(["top", "bottom"].filter((side, sideIndex) => item.margins[sideIndex] === "auto"));
+          if (handled.size) autoMarginOverrides.set(source.children[index], { handled, singleMain: true });
+        }
+        warn("auto-margin-distribution", node.id,
+          "当前可见子层的等量内部自动外边距已恢复为 Auto Layout 两端分布；隐藏、删除或重排子层后请核对间距。原生目标为新建的 Latest 布局，未升级旧图层。");
+      } else if (captured?.unsupported) warn("auto-margin-distribution-fixed", node.id,
+        `内部自动外边距未获得当前来源证明 (${captured.unsupported})；保留已有布局边界。`);
+    }
     if (
       !block && ["horizontal", "vertical"].includes(node.layout) &&
       (source.semantic || source.name !== "margin-wrapper")
@@ -1272,7 +1287,7 @@ export async function designNodeToV3(tree, options = {}) {
         node.strokeWidth = 1;
       }
     } else {
-      layout(source, node, ancestors);
+      layout(source, node, ancestors, capturedSource);
       for (const [index, layer] of (source.background?.layers ?? []).entries()) {
         if (layer.type !== "image") continue;
         const imageRef = await localImage({ src: layer.url, base64: layer.base64 }, id);
