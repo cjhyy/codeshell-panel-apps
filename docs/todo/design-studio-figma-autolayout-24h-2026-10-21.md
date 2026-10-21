@@ -2077,3 +2077,169 @@ browserGpuDisabled:true；结果仍分别0/0/54000、0/0/54000、0/0/21480、
 41c602a564adf444a3e7c01f3a509cb75f205120cf45ad1d406332e5e240dbc8。
 已在peer确认所有进程/读取结束后清理已合入的gutter与f61 baseline工作树和task-owned
 依赖软链接；外部证据、main内提交和未完成的其他候选均保留。
+
+## Native Text source-import isolated candidate · 2026-10-21
+
+在新隔离分支接入只读完整 SDK capture 与外层 supplemental source table；官方 REST
+保持原样。独立 SDK→canonical PERCENT/PIXELS 投影不恢复作者度量，完整 catalog、
+256KiB 节点 proof、64KiB hint/100000 字节插件存储与整个16MiB UTF8 信封继续有界。
+源索引拒绝内容或位置冲突，最终无 await 的 SDK/identity/topology/preview 原因复查
+位于所有图片/PNG/SVG 导出之后；只证明被观察字段相对初始 REST 的新鲜度。
+
+恢复仅限完整同一度量下的颜色/链接意图；坏 hint 保留独立当前意图。只有 Text 自身
+mixed-fill 原因可绕过已有预览，mask、祖先预览和不支持 paint 不变。原图预览保留。
+普通 HUG Grid 的有界 paint/link Text 控制保留真实 Fill/Hug 与内容增长；不完整来源
+和段落变体仍拒绝。空白源按实际 NBSP/CR/LF/emoji 码元测试，空源与缺失源区分。
+
+最初156项121pass/35fail与冻结旧 native 代码137项116pass/21fail日志均保留。
+21项继承失败来自旧 VM mock 缺少 root parent 和真实来源关系；另14项为新增严格
+owned-data/source proof 发现的 mock realm/ID 问题。只修正 mock 行为后旧137项全过，
+未放宽产品 guard。早期 double-escaped NBSP/CRLF 误称覆盖已更正并保留原收据。
+详细范围、失败原因和限制见 [native Text source-import](../design-studio-native-text-source-import.md)。
+所有本轮执行为 CPU/VM；真实 production native 执行 **NOT_RUN**，没有像素通过声明。
+
+该候选 v2 全 main catalog 默认文件并发执行817项816pass/0fail/1skip，仍未据此
+认定路径安全：后续固定重放与独立 peer 实证 initial SDK mask/effect/blend 可已与
+初次 REST 不同，之后保持不变；选中 Text 的真实祖先未包含在 REST 时也有同样问题。
+保留6条 peer 复现与原通过日志，v3 增加仅供内部使用的 initial/final context 准入。
+完整独立可编辑 proof 真正会取消 Text 自身 mixed 预览时，实际 Text 与 Scene 祖先
+还须无独立 mask、可见 stroke/effect 或不支持 blend/paint/子 mask 原因；否则明确
+拒绝导出，不让 public supplemental 标志产生权限。PAGE/DOCUMENT 不虚构 paint字段。
+8个生产 VM own/omitted-ancestor 负例、late race、祖先 mask sibling、不支持 paint和
+安全纯色祖先控制均保存；真实 native 与像素验收继续 NOT_RUN。
+
+v3 固定显式 sequential main820项819pass/0fail/1skip，226091.4595ms；真实前后131份
+package、全部 main test/helper/catalog SHA与HEAD均未变化。v4再收紧一个已知拓扑边界：
+PAGE虽无 Scene paint字段，实际 mask sibling 不能在 paint skip时丢弃。纯 helper与
+生产 VM 的 direct-Page选中文字成对控制为安全页面保留source/预览、有mask则拒绝，
+导出没有原生写入。v4受影响固定检查与独立审查后再交付，不把v3通过移作v4完整验收。
+
+v4与稳定Cover/gutter正常合并为77c410d，native来源模块逐字节保留；426项受影响检查
+与固定顺序main831项830pass/0fail/1skip通过，前后132份package/95个main文件SHA不变。
+候选UI103/104中唯一失败为依赖目录缺少开发用canvaskit-wasm，原失败证据保留，不能
+记作UI通过。随后合成measurer复现共享range.fill被改为红色后仍返回成功；原source、
+精确度量与LF未变，说明重新导入source不等于验证当前range未丢失。保留该失败与浅拷贝
+delete未影响真node的独立非失败控制；新增测量前不可变意图快照与normalize前/后复核，
+拒绝颜色/链接/装饰/删除/poisoned payload/度量漂移，hint恢复的显式no-op范围也必须保留。
+四个实际留存来源的度量原先仅投影/保存重开；另加四例CPU mock换行，不能称真实SDK或
+浏览器字形测量。真实native执行和像素验收仍NOT_RUN。
+
+
+
+## ROUND45 · 完整 CSS 字体列表、资源回退与两版渲染新方向 · 2026-10-21 14:50 SG
+
+稳定基线184d39b，font候选d87e2e4经独立peer发现/修复实际CanvasKit资源别名丢失
+字形回退链，再由e002da3修复pre空白来源兼容；正常合并后的代码门禁HEAD为
+3998ff508961aaca6e4af5e1fe8ea23ed18fd551。最新origin/main仍13d591ca，已刷新并保留。
+
+- HTML导入只从真实当前leaf/Element/source绑定恢复完整computed font-family；保留
+  CSS引号、转义、通用字体和顺序。独立字体资源只替换验证过的首项，后续回退不丢失。
+  原生Figma只准入可证明的单一具体字体，列表/通用字体明确拒绝，未假设字体可用。
+- root实际CanvasKit GPU计数案例：CaseFamily缺3个glyph时原6239/60000差异像素，
+  修复后同例0/max0；另有四个真实字体资源CPU软件surface对照0，未执行真实Figma。
+  GPU收据0ef88246b3064d4e792876540c8e27ee9d5b3c3cdebf9bc7ba20daedcd560b3f。
+- d87第一次完整CPU回归731项中729通过/1失败/1跳过：pre原文恢复正确但新字体
+  校验误报text-or-style。保留原门禁及clip/pre/pre-lines原图/转换图/差异图，未过滤
+  测试警告。e002使用真实onNode回调的private WeakMap初始projection，在源身份、
+  style/segments和当前原始leaf仍一致且canonical pre字节完全等于真实原文时恢复。
+  JSON notes不构成授权；getter不执行。预算为keys/string values共16384个输入UTF16
+  code units、256values、depth8、单字符串4000，并非encoded JSON字节预算。
+  该组两个版本的27PNGs均相同且像素0，pre警告1→0；原overflow测试文件未修改。
+- root新focused14/14、owner affected298/298；最终完整main734项733pass/1skip，
+  UI107项106pass/1skip，共841项839pass/2skip。125个安装包文件、测试catalog/文件、
+  HEAD和runner在各门禁前后不变；typecheck、validate、scoped build check及三个
+  生成物检查通过。门禁收据SHA361ffa242160e1593c5886912c8bd080e542ed9fb6746adaf78bc37e87d5e838。
+- 真实WSS全页1280×7000差异540091→482233，重排685683→670665；400×7000
+  600215→606326（增加6111）仍失败。crop另记，不当全页；18PNGs在v1/v2/v3间
+  不变，198/213流覆盖、15失败、252未解决未变，未做坐标拟合或ABS降级。
+  Bootstrap原始Pricing补充配对1280×3000/400×3000：两版均280924/294773/256018
+  差异像素，仍全失败；严格CPU、完整原始source/assets/converted/diff均保留。
+  新CPU配对SHA77866570dcea89ce1041268fa078fe1cbb55dc2ad0a257673726745f20307d85。
+
+新native source-import候选5534151单独冻结：完整835项834pass/1skip、affected430、
+root独立4项及当前UI107项106pass/1skip通过。最后measurer回调后的paint/range由
+descriptor-safe不可变语义快照复核，含有效hint作者意图；全4保留SDK案例仅mock测量。
+UI缺canvaskit-wasm的早先环境失败保留，使用显式NODE_PATH补充已存在的0.42.0开发依赖
+后通过，未修改依赖链接。该native候选尚未合入本轮稳定，仍无真实native/像素验收。
+root peer SHAaf351e7aff3b60134394898c0fb379e483b3b4c6ce8a1f02a9911fb833c73617。
+
+### 用户最新方向：原始64模板 + Browser/CanvasKit两版
+
+用户明确要求把HTML布局交给浏览器，并保留CanvasKit作为第二渲染版本对照。
+两版共用可编辑canonical结构；Browser以真实CSS Flex/Grid/Hug/Fill/gap/padding布局，
+对AL子项不用derived坐标充当绝对定位。预览与HTML导出复用映射，DOM几何仅作运行期
+hit-test/selection/zoom，不写回ABS模型。改字、改宽、拖拽与导出均需分别对比。
+
+已找到用户本地 /Users/admin/Documents/个人学习/代码学习/html2figma ，固定ea78385c，
+原始templates.ts SHA9ac86a4b3cd788e65f47993c22edfd995c140b39caded98dadb8f92f7c290fe4。
+实际runtime catalog64：basic8/components9/layout19/advanced28。现有20fixtures为改编，
+后续正式对照使用原始64项；不改用户upstream工作树。原gallery对head scripts的惰性
+行为和外部资产失败单列，不能静默补脚本或改写模板。
+
+活动工作树：
+- browser布局：design-studio-browser-layout-renderer-20261021/codeshell-panel-apps，
+  codex/design-studio/browser-layout-renderer-20261021，已正常合入e002，无inline WIP。
+- 原gallery：design-studio-html2figma-original-gallery-20261021/codeshell-panel-apps，
+  codex/design-studio/html2figma-original-gallery-20261021，原始文件/read-only gallery归档中。
+- zero token：design-studio-html-zero-flow-token-20261021/codeshell-panel-apps，独立推进
+  private source-only proof，尚未产品激活。0×0 shadow/counter/NBSP反例仍有91/86/25850
+  差异像素，不能按零尺寸直接删除源节点。
+- 原inline/foreignObject实验冻结2ec13ee4，生产import activation已移除。实际透明整段
+  文本CPU/CK五例为0/1/1/0/0像素，max1；字体/异步缓存控制未完成，未进入稳定版。
+
+真实Figma桌面能力06:13UTC复查cuaAvailable:false，既有探针保持unarmed；不把浏览器
+或VM称为实机执行。24小时任务仍active，截止不变2026-10-22 00:31 SG。
+
+
+### 用户再澄清 · 本地PRD→原型/设计稿→Figma同步
+
+用户强调终点是对标Figma的本地设计工作台，并询问CanvasKit是否妨碍这一目标。
+保留CanvasKit默认主画布与canonical设计模型；Browser仅作为显式可选的第二渲染/HTML
+预览对照，不替换设计节点、AL意图、组件/样式/资源、PRD/原型状态或Figma bindings。
+实际Figma同步须单独验证节点结构、可编辑范围、重排和来源绑定，不能以浏览器截图
+一致代替。渲染后端选择由两版同模型的实测决定，不把转换层/文字排版问题归因于
+CanvasKit本身。Figma官方2025-09-18工程文章说明其自研C++/Wasm renderer从WebGL
+扩展到WebGPU：https://www.figma.com/blog/figma-rendering-powered-by-webgpu/ 。
+Browser owner已确认默认不变、无自动fallback，DOM几何只保留在view/hit-test运行期。
+
+
+## ROUND46 · Native Text完整来源往返与字体组合验证 · 2026-10-21 15:10 SG
+
+在稳定d007386正常合并冻结5534151，组合代码HEAD
+0bf5b25c9ff993679cf69be86d7034b558573432。冲突保留两项独立检查：
+nativeTextRangeCreationPlan和nativeDesignFontFamily；未恢复旧的整体范围创建拒绝来
+掩盖组合问题，既有节点range patch/delete/clear及独立HTML插件入口边界仍保持关闭。
+完整source envelope经descriptor-owned clone/预算检查；真实SDK完整catalog、当前
+身份/祖先/paint/preview上下文构成准入，hint只恢复已验证作者fill/ranges，不能恢复
+原始作者line-height或伪造来源。postmeasure在normalize前后比较不可变语义快照。
+
+原始4份实机SDK观察的PERCENT值精确保留，例如120.00000476837158→
+1.2000000476837158，并保留UTF16范围[4,11)内的LF。四份来源的projection/
+save/reopen、mock wrapping及恶意callback/accessor控制不等于当前实机creator验收。
+源码、完整collector、纯protocol/model与生成runtime一同保存；手写native code在
+全部生成slot以外与5534151逐字节相同。UI/code slot从合并源码重建，未采用ours丢弃
+另一侧功能；原冲突、两父提交、生成前后hash均保留于round46-native-font-merge。
+
+最终完整main849项848pass/1skip（231071.259709ms），UI107项106pass/1skip
+（109151.91525ms），共956项954pass/2skip。134个安装包文件、对应catalog/测试、
+HEAD/helper在门禁前后不变；typecheck、validate、scoped build check、三个生成检查
+与diff check通过。收据SHA5fdf76d0a1588e3a9280104f9a09e1590d5155704a462b41a433a6f24f24fde2。
+此前source-owner35focused/430affected/835main和root4独立控制/107UI证据单列，不将
+它们重复计入956。07:08UTC再次验证cuaAvailable:false，无真实Figma执行或像素声明。
+
+font工作树/分支e002在owner确认全部reader终止且基线另存后普通移除；未强制删除，
+所有提交已在main。cleanup SHAaa2355b3b75c66b1c4388338c5e0098770213169a50c575435927f6ea683cd84。
+新native组合完成稳定同步后再清理已集成且无reader的旧candidate，活动Browser、原始
+64模板、zero-token与未完成实机probe工作树保留。没有push、发布或Host安装。
+
+原始64模板已完成192个源状态（1280/768/400）、192个root PNG和15张完整gallery
+截图；六种root overflow仅作为crop，不能称为完整paint范围。v2冻结30unique network
+bodies，零请求失败/URL正文冲突/未加载IMG；v1把redirect无正文记为failure的32条
+元数据保留并明确更正。v2收据ec8a2d8b12386e4bfae78e7448c54c7d4551042612ddfc2a24a551d24e4d6de8。
+七种原始模板正进行严格源重放与本地素材transport对照（含同样Text-node编辑），
+只有通过者进入生产转换；尚未宣称64项转换或Figma通过。
+
+Browser独立renderer已在CPU实测derived坐标/Hug/Fill污染、改文/改宽、min/max/Grid、
+旋转/rounded ancestor clip命中和font/scene supersession；该工作树尚未稳定合入。
+CK仍为默认，两版都使用canonical模型，实机Figma同步继续独立验收。24小时目标active，
+截止仍2026-10-22 00:31 SG。
