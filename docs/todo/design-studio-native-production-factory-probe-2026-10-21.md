@@ -89,7 +89,7 @@ retention normally. Neither an earlier SDK failure nor interrupted cleanup is
 established by those broad observations. This is a reporting issue; the run was
 still refused and the foreign node remained intact.
 
-The current prepared successor uses `native-text-production-factory-v2.program.js`,
+The first prepared successor uses `native-text-production-factory-v2.program.js`,
 `.mock.js`, `.test.mjs` and `native-text-production-factory-24h-research-v2.mjs`.
 It shares the exact immutable v1 production code, data, observer, basis and
 closure proof. All ten v1 artifacts and their evidence remain unchanged.
@@ -114,3 +114,51 @@ the known combined cleanup failure and successful-export foreign retention.
 The only v2 CLI mode executed was also `--prepare-only`; its state remains
 `PREPARED_UNARMED`, with no relay, endpoint or installation lock. Registered
 plugin bytes and old v4/HUG artifacts remained unchanged.
+
+Further independent review reproduced a stale observation race in preserved v2.
+After a successful second observed Text export, the first Text's hyperlink getter
+could change from1 to2. Earlier source/hint proof stayed verified and the v2 run
+incorrectly remained accepted. The exact synthetic misleading-success result is
+preserved in `production-factory-preparation-peer-v2/`; it is not a native result.
+
+The current prepared successor is v3: `native-text-production-factory-v3.program.js`,
+`.test.mjs` and `native-text-production-factory-24h-research-v3.mjs`, sharing the
+unchanged v2 mock and exact v1 production/data/observer/basis/closure. After the
+last awaited original-page/selected-node REST return operation, one final
+synchronous phase checks all eight Text objects immediately before acceptance
+and result serialization. There are no further awaits, exports, SDK writes,
+hint repairs or patches. The existing creation/current-page/root facade is
+unchanged; only this read-only final observation phase allows the original page.
+
+That phase checks exact owned page/frame/Text references, order, IDs, characters
+and actual ancestry. It recaptures the complete SDK catalog against each Text's
+previous own REST, compares its exact raw snapshot and saved hint bytes, and
+independently restores the fixed authored intent again. A mismatch retains both
+the original and final raw observations with case-specific refusal diagnostics.
+If a Text left exact owned ancestry, its identity/parent refusal is retained and
+source capture is skipped outside that ancestry. The receiver requires all eight
+final proofs and their mappings/snapshots/hints/restoration to match.
+
+The29 v3 CPU VM checks pass,2767.949625ms. They additionally reproduce first-Text
+getter changes during a later Text export, created-page export, original-page
+return export and final selected-node return export. All four now refuse and
+preserve the original getter1 and final getter2 observations. Late hint-byte,
+character and ancestry changes also refuse without repair. An initial run's
+seven new controls failed before production creation because the synthetic
+wrapper dropped the mock `createText` receiver; fixing that mock-only binding
+made the actual race controls execute. Production code and guards stayed pinned.
+
+Final synchronous capture establishes current exposed SDK observations anchored
+to each previous own REST. It cannot establish fresh unknown REST-only values
+without another awaited export. The original full-REST/selected-REST return
+proofs are sequential observations, not an atomic whole-document snapshot.
+Native layout dimensions remain recorded observations and real pixel parity
+remains NOT_RUN.
+
+The v3 evidence directory is `production-factory-preparation-v3/`, with receipt
+SHA `f9f4d8452962e61c3be32aa97547d930f0f0d9d7f3315ab291afc28afe7dcd81`.
+It preserves four complete synthetic results, including both getter-race edges
+and a final hint mutation. Its only CLI invocation used `--prepare-only` and
+returned `PREPARED_UNARMED`; no service, endpoint, lock or installation was
+started. All v1/v2 artifacts, old v4/HUG runners and registered plugin bytes
+remain unchanged.
