@@ -412,3 +412,72 @@ test("real duplicate selector positions bind the actual elements and real SVG is
   assert.equal(result.result.status, "PASS");
   assert(result.evidence.source.excluded >= 2);
 });
+
+const floatFixture = (extra = "") => `<!doctype html><style>*{box-sizing:border-box}body{margin:0}main{width:100%;height:240px;padding:20px}.row::after{content:"";display:block;clear:both}.col{float:left;width:50%}.content{height:60px;background:#2563eb}${extra}</style><main><div class="row"><section class="col"><div class="content"></div></section><section class="col"><div class="content"></div></section></div></main>`;
+
+test("only successful owned float/clear plans discharge exact source exceptions and current paths remain mandatory", async (t) => {
+  const page = await pageFor(t);
+  const observed = await page.evaluate(async (html) => {
+    const { captureWorkspaceHtmlResult } = await import("/html-import.mjs");
+    const { normalizeDesignDocument, serializeDesignDocument } = await import("/document.mjs");
+    const { evaluateHtmlFlowAudit } = await import("/html-flow-audit.mjs");
+    const capture = (audit, extra = "") => captureWorkspaceHtmlResult({ sourcePath: "source.html", html: html.replace("</style>", extra + "</style>"), readText: async () => "", rootSelector: "main", viewportWidth: 640, viewportHeight: 240, includeFlowAudit: audit });
+    const captured = await capture(true), plain = await capture(false), value = normalizeDesignDocument(captured.document), ledger = captured.report.flowObligations;
+    const row = value.nodes.find((n) => n.layout === "grid"), columns = value.nodes.filter((n) => n.parentId === row.id), broken = [];
+    for (const target of [row, ...columns]) for (const kind of ["none", "absolute", "hidden"]) {
+      const candidate = structuredClone(value), node = candidate.nodes.find((n) => n.id === target.id);
+      if (kind === "none") node.layout = "none";
+      if (kind === "absolute") node.layoutPositioning = "absolute";
+      if (kind === "hidden") node.visible = false;
+      broken.push(evaluateHtmlFlowAudit(candidate, ledger).status);
+    }
+    const foreign = structuredClone(value); foreign.nodes.find((n) => n.parentId === columns[0].id).parentId = columns[1].id;
+    broken.push(evaluateHtmlFlowAudit(foreign, ledger).status);
+    const negatives = [];
+    for (const extra of ['.row::after{content:"real text"}', '.row::after{background:red}', '.row::after{height:1px}', '.row::before{content:"real"}', '.col{width:31.2345%}']) {
+      const result = await capture(true, extra);
+      negatives.push({ extra, status: evaluateHtmlFlowAudit(result.document, result.report.flowObligations).status });
+    }
+    const mobile = await capture(true, '.col{float:none;width:auto}');
+    return { initial: evaluateHtmlFlowAudit(value, ledger), broken, negatives,
+      sameDocument: serializeDesignDocument(value) === serializeDesignDocument(normalizeDesignDocument(plain.document)),
+      sameWarnings: JSON.stringify(captured.report.warnings) === JSON.stringify(plain.report.warnings),
+      mobile: evaluateHtmlFlowAudit(mobile.document, mobile.report.flowObligations) };
+  }, floatFixture());
+  assert.equal(observed.initial.status, "PASS"); assert.equal(observed.initial.obligations, 5);
+  assert(observed.broken.every((status) => status === "FAIL"));
+  assert(observed.negatives.every((result) => result.status !== "PASS"), JSON.stringify(observed.negatives));
+  assert.equal(observed.sameDocument, true); assert.equal(observed.sameWarnings, true);
+  assert.equal(observed.mobile.status, "PASS");
+});
+
+test("float/clear source proof rejects detached IDs, ambiguity, missing ownership, malformed clear and unpublished receipts", async (t) => {
+  const page = await pageFor(t); await page.setContent(floatFixture());
+  const results = await page.evaluate(async () => {
+    const { convertToDesignDSL } = await import("/vendor/html2figma-browser.mjs");
+    const { designNodeToV3 } = await import("/design-node-adapter.mjs");
+    const { prepareHtmlLayoutFlowAudit, captureHtmlFlowObligations, evaluateHtmlFlowAudit } = await import("/html-flow-audit.mjs");
+    const results = [];
+    for (const mode of ["valid", "detached", "ambiguous", "missing-owner", "malformed-clear", "no-proof", "unbranded"]) {
+      const root = document.querySelector("main"), elements = new Map(), canonicalBySource = new WeakMap(), ambiguousElements = new WeakSet(), receipts = [];
+      const source = convertToDesignDSL(root, { onElement: (id, element) => elements.set(id, element) });
+      const value = await designNodeToV3(source, { includeViewport: false, onNode: (source, node) => canonicalBySource.set(source, node), onRecoveredFlow: (proof) => receipts.push(proof) });
+      if (mode === "ambiguous") ambiguousElements.add(root.querySelector(".col"));
+      if (mode === "missing-owner") canonicalBySource.delete(receipts[0].source);
+      if (mode === "malformed-clear") receipts.find((r) => r.type === "float").clears[0].rawStyles["box-shadow"] = "0 0 1px red";
+      const recoveredLayouts = []; let rejected = false;
+      if (mode !== "no-proof") for (const receipt of receipts) {
+        try {
+          const prepared = prepareHtmlLayoutFlowAudit({ root, elements, canonicalBySource, ambiguousElements, document: mode === "detached" ? structuredClone(value.document) : value.document }, receipt);
+          recoveredLayouts.push(mode === "unbranded" ? { ...prepared } : prepared);
+        } catch { rejected = true; }
+      }
+      const ledger = captureHtmlFlowObligations({ root, elements, canonicalBySource, ambiguousElements, mapping: value.mapping, document: value.document, recoveredLayouts });
+      results.push({ mode, rejected, status: evaluateHtmlFlowAudit(value.document, ledger).status });
+    }
+    return results;
+  });
+  assert.equal(results[0].status, "PASS");
+  for (const result of results.slice(1)) assert.equal(result.status, "PARTIAL", JSON.stringify(result));
+  assert(results.filter((r) => ["detached", "ambiguous", "missing-owner", "malformed-clear"].includes(r.mode)).every((r) => r.rejected));
+});

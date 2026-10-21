@@ -497,6 +497,10 @@ node relationships only after the complete table commits. This covers real rows,
 frames and their original Text; only the exact validated BR tokens become text line breaks.
 Unpromoted/AUTO tables, failed drafts or ID-only metadata cannot supply this proof. Existing
 capture factory callbacks remain the sole authority for intermediate synthetic wrappers.
+Successful rational-float plans also publish exact original row/column relationships after
+final Grid validation. Only a successful float/block plan's verified empty `::after` clearfix
+can discharge that generated-content detail; other floats, paint and generated text remain
+unverified. Each resized candidate is still checked against the immutable source obligations.
 No pixel thresholds are changed. Callers may request this diagnostic with
 `captureWorkspaceHtmlResult({ ...options, includeFlowAudit: true })`; ordinary import behavior
 is unchanged when the option is absent.

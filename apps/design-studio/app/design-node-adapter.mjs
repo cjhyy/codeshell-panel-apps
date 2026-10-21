@@ -4,6 +4,7 @@ import {
   sizeHtmlFloatColumn,
   validateHtmlFloatColumns,
   removeHtmlFloatColumns,
+  isHtmlEmptyClear,
 } from "./html-float-columns.mjs";
 import { recoverHtmlTextOverflow } from "./html-text-overflow.mjs";
 import { applyHtmlNumberLineHeight } from "./html-line-height.mjs";
@@ -128,6 +129,7 @@ export async function designNodeToV3(tree, options = {}) {
   const provenFloatSources = new WeakSet();
   const blockInsetCandidates = [];
   const blockUnwrappedPaths = new WeakMap();
+  const flowAuditCandidates = [], flowAuditNodes = new WeakMap(), successfulFloatNodes = new WeakSet();
   const localResources =
     options.resources instanceof Map
       ? options.resources
@@ -1300,6 +1302,13 @@ export async function designNodeToV3(tree, options = {}) {
     // Optional capture-local ownership receipt. It never becomes document data
     // and cannot qualify imported/saved nodes without a real current capture.
     options.onNode?.(capturedSource, node);
+    if (options.onRecoveredFlow) {
+      flowAuditNodes.set(capturedSource, node);
+      const floats = floatPlans.get(node), block = blockFlowPlans.get(source);
+      if (floats || block) flowAuditCandidates.push({ source: capturedSource, node,
+        type: floats ? "float" : "block-clear", items: floats?.items ?? [],
+        clears: (source.children ?? []).filter(isHtmlEmptyClear) });
+    }
     return node;
   };
   const converted = await convert(tree, [0], { x: 0, y: 0 }, []);
@@ -1310,6 +1319,7 @@ export async function designNodeToV3(tree, options = {}) {
       const plan = floatPlans.get(node);
       try {
         validateHtmlFloatColumns(node);
+        successfulFloatNodes.add(node);
         warn(
           "float-flow-captured-state",
           node.id,
@@ -1429,6 +1439,39 @@ export async function designNodeToV3(tree, options = {}) {
     pages: [{ id: "page-html", name: clean(options.pageName || "HTML import"), children: roots }],
   };
   normalizeDesignDocument(document);
+  // Optional report-only evidence is emitted after all children, final native
+  // Grid checks, inset rebasing and document validation. Eager float hints never
+  // certify a successful row or authorize generated-content exceptions.
+  if (options.onRecoveredFlow) {
+    const current = new Set();
+    const visit = (node) => { current.add(node); node.children?.forEach(visit); };
+    roots.forEach(visit);
+    for (const candidate of flowAuditCandidates) {
+      if (!current.has(candidate.node)) continue;
+      if (candidate.type === "float") {
+        if (!successfulFloatNodes.has(candidate.node) || candidate.node.layout !== "grid") continue;
+        const plan = floatPlans.get(candidate.node);
+        if (!plan || Object.entries(plan.fields).some(([key, value]) => JSON.stringify(candidate.node[key]) !== JSON.stringify(value))) continue;
+        try { validateHtmlFloatColumns(candidate.node); } catch { continue; }
+      } else if (!candidate.clears.length || candidate.node.layout !== "vertical") continue;
+      try {
+        const items = candidate.items.map((item) => ({ source: item.source, node: flowAuditNodes.get(item.source) }));
+        if (items.some((item) => !current.has(item.node))) continue;
+        if (candidate.type === "float") {
+          const plan = floatPlans.get(candidate.node), children = candidate.node.children.filter((child) => child.layoutPositioning !== "absolute");
+          if (children.length !== items.length || items.some((item, index) => {
+            const placement = plan.placements.get(item.source);
+            return children[index] !== item.node || !placement || item.node.gridRowAnchorIndex !== 0 ||
+              item.node.gridColumnAnchorIndex !== placement.column || item.node.gridColumnSpan !== placement.span ||
+              item.node.gridRowSpan !== 1 || item.node.layoutSizingHorizontal !== "fill";
+          })) continue;
+        }
+        options.onRecoveredFlow({ ...candidate, items });
+      } catch {
+        warn("html-flow-audit-unverified", candidate.node.id, "当前流布局已完成，但捕获内审计证明未发布；保留未验证关系。");
+      }
+    }
+  }
   return {
     document,
     resourcePlans,
