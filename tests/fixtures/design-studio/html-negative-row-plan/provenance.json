@@ -1,0 +1,49 @@
+{
+  "kind": "DERIVED_CURRENT_SOURCE_PROOF_FIXTURES_NOT_CANONICAL_OR_NATIVE_ADMISSION",
+  "baseCommit": "1bbe0e6a28afcba3d43ec63486d9ddc49788fa57",
+  "sourceUrl": "https://getbootstrap.com/docs/5.3/examples/features/",
+  "frozenLocalHtmlSha256": "e8a4b6969a31167ae330797f9ecbe145ff93ecb42d97d4c810d85ea924824eba",
+  "sourceReadOnlyTriageProposalSha256": "34ebfc44d32ceb5a0de3bb5751dc8cf57b8245634fda405506d1d67007b9e7b1",
+  "correction": "Original receipt records201 actual Element callbacks at each width; earlier prose176 was incorrect.",
+  "fixtureProjection": "Related real source and anonymous ownership path; unrelated scene payloads omitted. Actual full-graph proof is separate external browser evidence.",
+  "sourceCrop": {
+    "height": 5691,
+    "dpr": 1,
+    "widths": [
+      1280,
+      768,
+      400
+    ],
+    "alignment": "none",
+    "tolerance": 0
+  },
+  "fixtures": [
+    {
+      "path": "tests/fixtures/design-studio/html-negative-row-plan/features-1280.json",
+      "bytes": 49203,
+      "sha256": "ba5c30b81bae1305274bb39596ca5ceef512f1c07160f7142e2e5d4f4a31e9fb"
+    },
+    {
+      "path": "tests/fixtures/design-studio/html-negative-row-plan/features-768.json",
+      "bytes": 49151,
+      "sha256": "14c91be141f3c51441c355f5559d0031bd6f802fa89e21de14d13a3c0b25aae9"
+    },
+    {
+      "path": "tests/fixtures/design-studio/html-negative-row-plan/features-400.json",
+      "bytes": 43079,
+      "sha256": "c278bf6fded40404e4d9bf6203ef7c18e964f2943f32a23c33a4c7e199956b1a"
+    }
+  ],
+  "visibility": "Explicit CSS visibility is corroborated by final-live-v3 current unmodified browser captures at each corresponding semantic identity.",
+  "externalReceipts": {
+    "originalCapture": {
+      "path": "evidence/source-plan-browser-receipt.json",
+      "sha256": "9238bc4c88020a2b4718d7e70facf908fc781e5dcecb45c92f123acce4408c9d"
+    },
+    "finalVisibilityCapture": {
+      "path": "evidence/final-live-v3/source-plan-browser-receipt.json",
+      "sha256": "f9b4d75e080686d28ad092b92fdbfe5dd536d63dc4b7bf6033facf1f4be8bc3d"
+    }
+  },
+  "captureIdentity": "Fixture node ids and opaque Element tokens come from the original capture; explicit visibility was corroborated by semantic identity in final-live-v3. Fresh converter-generated ids differ between runs. Neither saved fixture is current runtime ownership authority."
+}
