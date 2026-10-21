@@ -48,6 +48,15 @@ empty-present and symlink-part refusal, Offscreen/GPU denial, and browser launch
 failure cleanup. Final frozen affected/static results and retained artifacts
 are in the external owner handoff receipt for this task.
 
+The first combined owner gate on e7c5f8e retained68total/67pass/1fail: an old
+CAS-preservation fixture deliberately saved the non-JSON string `preserved
+companion`, then expected validation to ignore it. The new required behavior
+correctly reports that metadata invalid. The fixture keeps that exact negative
+and its byte-preservation assertion, followed by a separately authored valid
+companion for the zero-warning positive. Product source is unchanged by this
+test correction. CLI discovery6/6 and every static/generated check passed in
+that same historical run; its actual pre/post359-file inventory was unchanged.
+
 The new tests cover strict flags, default/static compatibility, explicit absent
 semantics, verified resources, create-only output, malformed/oversize/multipart
 and symlink boundaries, exact blocking diagnostic counts and actual node-ID
