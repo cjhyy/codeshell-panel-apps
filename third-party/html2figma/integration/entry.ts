@@ -5,6 +5,7 @@ import type { DesignNode } from "../upstream/packages/shared/design-node";
 import type { RenderNode } from "../upstream/packages/browser/traverser/types";
 import { captureStandaloneSvg } from "./svg";
 import { captureTableBottomBorders } from "./table-borders";
+import { captureImageBoxes } from "./image-box";
 import { recoverCollapsedTextWhitespace, type TextWhitespaceRecovery } from "./text-whitespace";
 
 type CapturedNode = DesignNode & {
@@ -12,6 +13,7 @@ type CapturedNode = DesignNode & {
   cssBackground?: Record<string, string>;
   cssText?: Record<string, string>;
   cssEmptyBlock?: true;
+  cssImageBox?: Record<string, string>;
   cssTextWhitespace?: TextWhitespaceRecovery;
   cssLineHeight?: { kind: string; value?: number; fontSize: number };
 };
@@ -121,6 +123,7 @@ export function convert(
   const { tree, recovered: textWhitespace } = recoverCollapsedTextWhitespace(capturedTree);
   const values = captureLayoutValues(tree);
   const attachTableBorder = captureTableBottomBorders(tree);
+  const attachImageBox = captureImageBoxes(tree);
   const svgResources = new Map<object, string>();
   const backgrounds = new Map<object, Record<string, string>>();
   const gridSources = new Set<object>();
@@ -215,6 +218,7 @@ export function convert(
     : renderToDesignDSL(tree, options);
   const attach = (node: CapturedNode) => {
     attachTableBorder(node);
+    attachImageBox(node);
     if (node.semantic && textWhitespace.has(node.semantic))
       node.cssTextWhitespace = textWhitespace.get(node.semantic)!;
     if (node.nodeType === "text" && node.semantic && lineHeights.has(node.semantic))
