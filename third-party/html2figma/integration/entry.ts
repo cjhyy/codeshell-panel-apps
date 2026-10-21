@@ -5,12 +5,14 @@ import type { DesignNode } from "../upstream/packages/shared/design-node";
 import type { RenderNode } from "../upstream/packages/browser/traverser/types";
 import { captureStandaloneSvg } from "./svg";
 import { captureTableBottomBorders } from "./table-borders";
+import { recoverCollapsedTextWhitespace, type TextWhitespaceRecovery } from "./text-whitespace";
 
 type CapturedNode = DesignNode & {
   cssLayout?: Record<string, string>;
   cssBackground?: Record<string, string>;
   cssText?: Record<string, string>;
   cssEmptyBlock?: true;
+  cssTextWhitespace?: TextWhitespaceRecovery;
   cssLineHeight?: { kind: string; value?: number; fontSize: number };
 };
 type TypedStyleElement = Element & {
@@ -114,8 +116,9 @@ export function convert(
   options: { includeRawStyles: boolean; maxDepth: number; preserveGrid: boolean;
     onElement?: (semanticId: string, element: Element) => void },
 ) {
-  const tree = traverseDOM(root, { maxDepth: options.maxDepth });
-  if (!tree) return null;
+  const capturedTree = traverseDOM(root, { maxDepth: options.maxDepth });
+  if (!capturedTree) return null;
+  const { tree, recovered: textWhitespace } = recoverCollapsedTextWhitespace(capturedTree);
   const values = captureLayoutValues(tree);
   const attachTableBorder = captureTableBottomBorders(tree);
   const svgResources = new Map<object, string>();
@@ -212,6 +215,8 @@ export function convert(
     : renderToDesignDSL(tree, options);
   const attach = (node: CapturedNode) => {
     attachTableBorder(node);
+    if (node.semantic && textWhitespace.has(node.semantic))
+      node.cssTextWhitespace = textWhitespace.get(node.semantic)!;
     if (node.nodeType === "text" && node.semantic && lineHeights.has(node.semantic))
       node.cssLineHeight = lineHeights.get(node.semantic)!;
     // Anonymous text inherits its parent's semantic metadata and CSS styles;

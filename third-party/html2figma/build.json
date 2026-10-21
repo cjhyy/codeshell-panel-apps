@@ -7,12 +7,12 @@
   "legacyGridOption": "preserveGrid:false",
   "esbuildVersion": "0.28.2",
   "output": "apps/design-studio/app/vendor/html2figma-browser.mjs",
-  "bytes": 217564,
-  "sha256": "abbf38066b2ecf761ca7baf82f3e4e9d1db0ca143c249ba0aa49b3ab0fbecf4d",
+  "bytes": 222610,
+  "sha256": "3568e44948be5ac7f0b0e40400cf9d83219e77f2c4c8b78432be706731a78296",
   "notice": {
     "output": "apps/design-studio/app/vendor/html2figma-NOTICE.md",
-    "bytes": 9741,
-    "sha256": "8b4e241ce70d729a75790a66a159897b7f360593eeec4882d4c82b1bfe440da2"
+    "bytes": 11331,
+    "sha256": "6dab34e14126c0f7203382ead14af6e7b69f0e7436c25eea25f8c085e01bb65f"
   },
   "runtimeInputs": [
     "third-party/html2figma/integration/entry.ts",
@@ -20,6 +20,7 @@
     "third-party/html2figma/integration/shared.ts",
     "third-party/html2figma/integration/svg.ts",
     "third-party/html2figma/integration/table-borders.ts",
+    "third-party/html2figma/integration/text-whitespace.ts",
     "third-party/html2figma/upstream/packages/browser/converter/convert.ts",
     "third-party/html2figma/upstream/packages/browser/converter/effectResolver.ts",
     "third-party/html2figma/upstream/packages/browser/converter/nodeBuilder.ts",

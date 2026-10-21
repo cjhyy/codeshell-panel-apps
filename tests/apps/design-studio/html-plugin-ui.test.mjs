@@ -15,9 +15,9 @@ const ui = await readFile(
   new URL("../../../apps/design-studio/app/html-to-figma-plugin/ui.html", import.meta.url),
   "utf8",
 );
-async function fixture(t) {
+async function fixture(t, { cpuOnly = false } = {}) {
   const harness = htmlPluginHarness();
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(cpuOnly ? { args: ["--disable-gpu"] } : {});
   t.after(() => browser.close());
   const context = await browser.newContext({ viewport: { width: 820, height: 850 } });
   const page = await context.newPage();
@@ -332,4 +332,59 @@ test("standalone float-column compatibility loss survives preview and native JSO
   const requests=await f.page.evaluate(()=>window.requests);assert.equal(requests[0].designData[0].codeshellFloatFallback,true);
   const again=await f.harness.importDesign(requests[0].designData);assert.equal(again.type,"import-success");assert(again.warnings.some(w=>/浮动列.*未保留/u.test(w)));
   assert.deepEqual(f.network,[]);assert.deepEqual(f.errors,[]);
+});
+
+
+test("standalone discarded-whitespace receipts and lost pseudo hit-area warnings survive native JSON download/reimport", async (t) => {
+  const f = await fixture(t, { cpuOnly: true });
+  const markup = `<!doctype html><meta charset="utf-8"><style>body{margin:0}main{position:relative;width:400px;height:100px;font:20px/24px Arial}a::after{content:"";position:absolute;inset:0}</style><main><a href="#">\n  Alpha Beta\n </a></main>`;
+  await f.frame.locator("#selector").fill("main");
+  await f.frame.locator("#source").fill(markup);
+  await f.frame.locator("#preview").click();
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(), /伪元素扩展的点击区域/u);
+  const download = f.page.waitForEvent("download");
+  await f.frame.locator("#download").click();
+  const downloaded = await download;
+  const data = JSON.parse(await readFile(await downloaded.path(), "utf8"));
+  const all = (node) => [node, ...(node.children ?? []).flatMap(all)];
+  const nodes = data.flatMap(all), text = nodes.find(node => node.type === "TEXT");
+  assert.equal(text.characters, "Alpha Beta");
+  const receipt = JSON.parse(text.sharedPluginData.htmlTextWhitespace);
+  assert.equal(receipt.source.rawSource, "\n  Alpha Beta\n ");
+  assert.equal(receipt.snapshot.characters, "Alpha Beta");
+  assert(!nodes.some(node => node.name.startsWith("::after")));
+  await f.frame.locator("#create").click();
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(), /伪元素扩展的点击区域/u);
+  const native = f.harness.nodes.find(node => node.characters === "Alpha Beta");
+  assert.equal(JSON.parse(native.metadata["html2figma:htmlTextWhitespace"]).source.rawSource, receipt.source.rawSource);
+  await f.frame.locator("#mode").selectOption("json");
+  await f.frame.locator("#source").fill(JSON.stringify(data));
+  await f.frame.locator("#preview").click();
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(), /伪元素扩展的点击区域/u);
+  assert.doesNotMatch(await f.frame.locator("#status").textContent(), /快照不同/u);
+  text.characters = "Edited caption";
+  await f.frame.locator("#source").fill(JSON.stringify(data));
+  await f.frame.locator("#preview").click();
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert.match(await f.frame.locator("#status").textContent(), /快照不同/u);
+  await f.frame.locator("#create").click();
+  await f.frame.locator("body[aria-busy=false]").waitFor();
+  assert(f.harness.nodes.some(node => node.characters === "Edited caption"), "source receipt cannot restore old characters");
+  for (const [name, content, css] of [["authored-nbsp", "Alpha\u00a0 ", ""], ["painted", " Alpha Beta ", "background:red"]]) {
+    await f.frame.locator("#mode").selectOption("html");
+    await f.frame.locator("#source").fill(markup.replace("\n  Alpha Beta\n ", content).replace("inset:0", `inset:0;${css}`));
+    await f.frame.locator("#preview").click();
+    await f.frame.locator("body[aria-busy=false]").waitFor();
+    assert.doesNotMatch(await f.frame.locator("#status").textContent(), /伪元素扩展的点击区域/u, name);
+    await f.frame.locator("#create").click();
+    await f.frame.locator("body[aria-busy=false]").waitFor();
+    const requests = await f.page.evaluate(() => window.requests), latest = requests.at(-1).designData.flatMap(all);
+    assert(latest.some(node => node.name.startsWith("::after")), name + " keeps original pseudo");
+    assert(!latest.some(node => node.sharedPluginData?.htmlTextWhitespace), name);
+    if (name === "authored-nbsp") assert(latest.some(node => node.characters === "Alpha\u00a0"));
+  }
+  assert.deepEqual(f.errors, []); assert.deepEqual(f.network, []);
 });

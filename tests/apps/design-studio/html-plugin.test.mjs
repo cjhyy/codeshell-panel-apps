@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import { build } from "esbuild";
 import {
   htmlPluginHarness,
   frameFixture,
@@ -179,5 +180,35 @@ test("malformed trees, unsupported formats and active SVG fail before document m
   ]) {
     assert.equal((await f.importDesign(input)).type, "import-error");
     assert.deepEqual(f.page.children, [f.existing]);
+  }
+});
+
+
+test("whitespace source receipts are informational even when stale, malformed or supplied in JSON", async () => {
+  for (const stored of ["not JSON", "x".repeat(8001), JSON.stringify({format:"codeshell.html.text-whitespace",version:1,
+    source:{whiteSpace:"normal",rawSource:"Old caption ",removedTrailingNbsp:true},snapshot:{characters:"Old caption"}})]) {
+    const f = htmlPluginHarness(), source = frameFixture([textFixture()]);
+    source.children[0].characters = "Keep authored\u00a0 ";
+    source.children[0].sharedPluginData = {htmlTextWhitespace:stored};
+    const before = JSON.stringify(source), result = await f.importDesign(source);
+    assert.equal(result.type,"import-success",result.message);
+    assert(result.warnings.some(warning=>/来源备注/u.test(warning)));
+    assert(f.nodes.some(node=>node.characters==="Keep authored\u00a0 "));
+    assert.equal(JSON.stringify(source),before,"JSON source and raw receipt stay untouched");
+    assert.equal(f.nodes.find(node=>node.characters==="Keep authored\u00a0 ").metadata["html2figma:htmlTextWhitespace"],stored);
+  }
+});
+
+
+test("oversized standalone source snapshots never overwrite existing raw metadata", async () => {
+  const compiled = (await build({entryPoints:['third-party/html2figma-plugin/integration/text-whitespace.ts'],bundle:true,write:false,platform:'node',format:'esm'})).outputFiles[0].text;
+  const {retainTextWhitespace} = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
+  for (const original of [undefined,'keep this unknown raw receipt']) {
+    const node={type:'FRAME',width:400,height:200,children:Array.from({length:80},(_,index)=>({type:'TEXT',x:0,y:index,width:200,height:20,characters:'x'.repeat(200)})),
+      ...(original?{sharedPluginData:{htmlTextWhitespace:original}}:{})};
+    const before=JSON.stringify(node),warnings=[];
+    retainTextWhitespace(node,{whiteSpace:'normal',rawSource:'Caption ',removedTrailingNbsp:true},warnings);
+    assert.equal(JSON.stringify(node),before,'an overcap informational source must leave the entire caller payload unchanged');
+    assert(warnings.some(warning=>/8000 UTF-16/u.test(warning)));
   }
 });

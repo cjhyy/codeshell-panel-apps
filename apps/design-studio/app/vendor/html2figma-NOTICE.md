@@ -100,6 +100,29 @@ the computed border-spacing, including the browser's default2px. This bounded
 paint-input correction does not implement responsive table tracks or the full
 collapsed-border conflict algorithm; Design Studio retains its border diagnostic.
 
+The maintained boundary also clones the captured render tree to correct one
+synthetic trailing NBSP from the pinned normalizer. It requires a single actual
+DOM Text child, normal/nowrap horizontal LTR whitespace, exact legacy content
+identity, no authored Unicode spacing, and zero width for every browser Range
+rectangle of the trailing ASCII suffix. Visible inline boundary spaces,
+authored NBSP, mixed inline/BR/preformatted content, and unavailable proof keep
+the original conversion. Captured geometry and all other characters stay intact;
+bounded exact DOM bytes are retained separately for the corrected text. Raw and
+JSON-escaped source strings are checked before correction; overly long font names
+are outside this bounded path. Oversized native snapshots cannot overwrite an
+existing source record or change text/layout.
+
+A current-capture empty before/after pseudo can be omitted only when it is out
+of flow and its complete supported style proof shows no paint, generated glyph,
+marker, scrollbar, resize handle, mask, filter, border, shadow or native appearance.
+Design Studio records the omitted pseudo and warns that its extended click region
+is lost. Painted or unproved pseudo boxes stay in the original converter. This
+is not ordinary-flow recovery, a text trimming rule, or CSS AUTO-table support.
+The standalone plugin retains bounded raw-source records through its existing
+semantic shared-plugin-data channel and displays the same loss warning. These
+snapshot-bound records are informational; stale or malformed records cannot
+modify text or layout on JSON reimport.
+
 ## MIT license terms
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

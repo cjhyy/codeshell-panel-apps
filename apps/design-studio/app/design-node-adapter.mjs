@@ -309,6 +309,21 @@ export async function designNodeToV3(tree, options = {}) {
       if (source.semantic?.[key] !== undefined) value[key] = source.semantic[key];
     }
     if (source.styledSegments?.length) value.styledSegments = source.styledSegments;
+    const whitespace = source.cssTextWhitespace;
+    if (whitespace && ["normal", "nowrap"].includes(whitespace.whiteSpace) &&
+        typeof whitespace.rawSource === "string" && whitespace.rawSource.length <= 1000 &&
+        JSON.stringify(whitespace.rawSource).length <= 1000) {
+      if (source.nodeType === "text" && whitespace.removedTrailingNbsp === true)
+        value.htmlTextOriginal = { whiteSpace: whitespace.whiteSpace, rawSource: whitespace.rawSource,
+          removedSyntheticTrailingNbsp: true };
+      if (source.nodeType === "container" && Array.isArray(whitespace.omittedPseudos) &&
+          whitespace.omittedPseudos.length <= 2 && whitespace.omittedPseudos.length > 0 &&
+          whitespace.omittedPseudos.every((pseudo) => ["::before", "::after"].includes(pseudo))) {
+        value.htmlOmittedPseudos = whitespace.omittedPseudos;
+        warn("html-empty-pseudo-hit-area", id,
+          "已省略实际捕获中无绘制、无文字且脱离文档流的空伪元素；保留真实节点，但不保留伪元素扩展的点击区域。");
+      }
+    }
     let serialized;
     try {
       serialized = JSON.stringify(value);
@@ -319,15 +334,26 @@ export async function designNodeToV3(tree, options = {}) {
       warn(
         "semantic-notes-limit",
         id,
-        "HTML 语义或富文本元数据超过 2000 字符，备注只保留标签与有界来源标识。",
+        value.htmlTextOriginal || value.htmlOmittedPseudos
+          ? "HTML 语义或富文本元数据超过 2000 字符，备注保留标签、有界来源标识与原始文字收据。"
+          : "HTML 语义或富文本元数据超过 2000 字符，备注只保留标签与有界来源标识。",
       );
-      return JSON.stringify({
+      const minimal = {
         format: value.format,
         version: 1,
         tag: value.tag,
         ...(value.semanticId ? { semanticId: clean(value.semanticId, 300) } : {}),
         ...(value.cssSelector ? { cssSelector: clean(value.cssSelector, 500) } : {}),
-      });
+        ...(value.htmlTextOriginal ? { htmlTextOriginal: value.htmlTextOriginal } : {}),
+        ...(value.htmlOmittedPseudos ? { htmlOmittedPseudos: value.htmlOmittedPseudos } : {}),
+      };
+      // Capture bounds the escaped raw string before correcting any characters.
+      // Preserve that evidence even when unrelated class/attribute notes overflow.
+      if (value.htmlTextOriginal || value.htmlOmittedPseudos) {
+        if (JSON.stringify(minimal).length > 2000) delete minimal.cssSelector;
+        if (JSON.stringify(minimal).length > 2000) delete minimal.semanticId;
+      }
+      return JSON.stringify(minimal);
     }
     return serialized;
   };
