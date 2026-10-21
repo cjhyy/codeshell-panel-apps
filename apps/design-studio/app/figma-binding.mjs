@@ -14,6 +14,7 @@ import {
   writeDesignSidecar,
 } from "./design-sidecar.mjs";
 import { MAX_FIGMA_SOURCE_BYTES, normalizeFigmaSource } from "./figma-assets.mjs";
+import { nativeNotesPatchBaseline } from "./native-notes.mjs";
 
 export const FIGMA_BINDING_FORMAT = "codeshell.figma.binding";
 const INDEX_FORMAT = "codeshell.figma.binding-index";
@@ -640,6 +641,7 @@ export function createFigmaPatch(bindingValue, currentDocument) {
     }
   }
   if (operations.length > 50000) throw Error("Figma 修改数量超过上限，请分批处理");
+  const nativeNotesBefore = nativeNotesPatchBaseline(binding.source, operations, sourceNodes);
   return {
     format: "codeshell.figma.patch",
     version: 1,
@@ -651,6 +653,7 @@ export function createFigmaPatch(bindingValue, currentDocument) {
       ? { documentId: binding.source.documentId }
       : {}),
     operations,
+    ...(nativeNotesBefore ? { nativeNotesBefore } : {}),
     diagnostics,
     summary: {
       updates: operations.filter((op) => op.op === "update" || op.op === "rename-page").length,

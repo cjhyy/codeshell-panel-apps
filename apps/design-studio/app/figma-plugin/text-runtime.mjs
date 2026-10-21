@@ -5,3 +5,4 @@ export { applyCreatedNativeTextRanges } from "./text-range-write.mjs";
 export { finalizeCreatedNativeTextRanges } from "./text-range-state.mjs";
 export { validateTextRanges } from "../text-ranges.mjs";
 export { createNativeTextExportCapture } from "./text-source-export.mjs";
+export { createNativeNotesExportCapture, createNativeNotesPatchCapture } from "./notes-runtime.mjs";

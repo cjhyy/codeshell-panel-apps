@@ -797,6 +797,9 @@ function pluginHarness({
       setPluginData(key, data) {
         this.pluginData[key] = data;
       },
+      getPluginData(key) {
+        return this.pluginData[key] ?? "";
+      },
       remove() {
         removed.push(this);
         const index = pages.indexOf(this);
@@ -1130,6 +1133,9 @@ function pluginHarness({
   const originalNode = node("RECTANGLE", "original");
   existing.appendChild(originalNode);
   const figma = {
+    // Real SDK context and own-plugin getter used by the notes collector.
+    // These are VM capabilities, not an actual Figma execution receipt.
+    pluginId: "test-codeshell-design-bridge",
     currentPage: existing,
     mixed: Symbol("test native mixed"),
     root: { id: "0:0", type: "DOCUMENT", children: pages },
