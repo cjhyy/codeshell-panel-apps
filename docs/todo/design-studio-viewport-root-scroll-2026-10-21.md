@@ -150,5 +150,23 @@ directory: baseline DOM inventory, paired production source/converted/difference
 PNGs, SVG, canonical/portable/transfer JSON and scoped logs. CPU browser and
 transfer preparation are distinct from real Figma execution, which is NOT_RUN
 for this change. Existing new-page VERTICAL/padding/FILL setters require no new
-native API. Independent peer review and complete combined gates are still
-required before stable integration.
+native API. Final peer review at75845a7 verified114 negative DOM refusals,
+12 fixed-border admissions,36 strict-zero positive comparisons and byte-identical
+source references. Four unsupported production counterexamples still differ by
+54000/54000/21480/15640 pixels after narrowing and explicitly report
+`viewport-flow-fixed`; they remain failures. The fixed8px border control is
+0/0/0. Earlier erroneous variable and relative-border admissions remain in the
+external versioned receipts rather than being overwritten.
+
+The normal integration at8e50633 includes fresh origin13d591c, whose unrelated
+Job/Quant changes leave all123 Design Studio package files and its main/UI
+catalog commands unchanged. ROUND44 main720 (719pass,1skip) and UI107 (106pass,
+1skip) pass with no failures; complete source/HEAD/helper freeze checks, static
+validation and generated-output checks pass. The combined receipt SHA is
+`b1853696d2a041b383cf8540d33dc40da06de8283382807e0ac7f1d04912fa68`.
+
+The boxed evidence commands explicitly import the pinned CPU preload. Their
+original helper report field `browserGpuDisabled:false` reflects the omitted
+`cpuOnly` option, while that preload appends`--disable-gpu` to launch arguments.
+The additive`cpu-mode-metadata-clarification-v1.json` records this distinction
+and exact invocation/preload pins; original reports and PNGs are unchanged.
