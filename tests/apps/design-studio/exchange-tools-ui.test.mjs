@@ -602,7 +602,9 @@ test("local HTML folder becomes editable v3, survives save/reopen and restores i
   );
   await writeFile(
     resolve(directory, "style.css"),
-    "body{margin:0}#card{width:500px;height:300px;padding:20px;background:#ffffff;display:flex;flex-direction:column;gap:16px}h1{font:24px/1.2 Arial;margin:0;color:#123456}img{width:80px;height:60px}",
+    // Keep this complete-file success path representable in native Figma. A
+    // stretched square bitmap has a separate explicit native-fill refusal.
+    "body{margin:0}#card{width:500px;height:300px;padding:20px;background:#ffffff;display:flex;flex-direction:column;gap:16px}h1{font:24px/1.2 Arial;margin:0;color:#123456}img{width:80px;height:60px;object-fit:contain}",
   );
   await writeFile(resolve(directory, "pixel.png"), Buffer.from(pixel, "base64"));
   await f.page.locator("#open-html-import").click();
@@ -641,6 +643,8 @@ test("local HTML folder becomes editable v3, survives save/reopen and restores i
     flattened.some((node) => node.id === heading.id && node.text === "Edited HTML product"),
   );
   assert.equal(Object.values(restored.transfer.assets)[0].base64, pixel);
+  const image = flattened.find((node) => node.type === "image");
+  assert.deepEqual([image.width, image.height, image.objectFit], [80, 60, "contain"]);
   assert.equal(await f.page.evaluate(() => window.htmlPwned), undefined);
   assert.deepEqual(f.errors, []);
 });
