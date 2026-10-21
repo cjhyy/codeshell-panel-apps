@@ -1,4 +1,4 @@
-import { admitNativeTextImport } from "./native-text-import.mjs";
+import { admitNativeTextImport, nativeTextImportIntentSnapshot } from "./native-text-import.mjs";
 import { importNativeTextRanges } from "./native-text-ranges-source.mjs";
 import { validateTextRanges } from "./text-ranges.mjs";
 import { figmaSourceNodes } from "./figma-binding.mjs";
@@ -43,19 +43,23 @@ export const MAX_FIGMA_TOTAL_NODES = 50_000;
 const MAX_DEPTH = 32;
 const MAX_WARNINGS = 200;
 const nativeTextAdmissionContexts = new WeakMap();
-const nativeMetricKeys = ["fontFamily", "fontSize", "fontWeight", "fontStyle", "lineHeight",
-  "lineHeightUnit", "letterSpacing", "textAlign"];
 function verifyNativeTextAdmissions(document, contexts) {
   if (!contexts?.size) return;
   const nodes = new Map(document.pages.flatMap(page => page.nodes).map(node => [node.id, node]));
   for (const [id, context] of contexts) {
-    const node = nodes.get(id), patch = context.patch;
-    const admitted = node && importNativeTextRanges({ rest: context.rest, source: context.source, canonicalNode: node });
-    if (!node || node.textSource !== patch.textSource || !nativeMetricKeys.every(key => node[key] === patch[key]) ||
-        !["uniform", "admitted-intent"].includes(admitted?.status))
+    const node = nodes.get(id);
+    try {
+      // Re-admission reconstructs ranges; it does not prove the current payload
+      // survived a measurer. Compare the exact independently admitted intent
+      // first, without invoking nested accessors or toJSON.
+      if (!node || nativeTextImportIntentSnapshot(node) !== context.intent) throw Error("Native Text intent changed");
+      const admitted = importNativeTextRanges({ rest: context.rest, source: context.source, canonicalNode: node });
+      if (!["uniform", "admitted-intent"].includes(admitted.status)) throw Error("Native Text source no longer matches");
+      validateTextRanges(node);
+    } catch {
       throw Object.assign(Error("原生范围文字在转换或测量后不再匹配完整来源；未扁平化范围样式。"),
         { code: "NATIVE_TEXT_IMPORT_FINAL_DRIFT" });
-    validateTextRanges(node);
+    }
   }
 }
 const TYPES = {
@@ -1214,7 +1218,8 @@ function importFigmaJsonWithReport(
         Object.assign(node, nativeAdmission.patch);
         if (nativeAdmission.patch.lineHeightUnit === undefined) delete node.lineHeightUnit;
         if (nativeAdmission.patch.textFlow === undefined) delete node.textFlow;
-        nativeAdmissions.set(node.id, { rest: source, source: supplemental.source, patch: nativeAdmission.patch });
+        nativeAdmissions.set(node.id, { rest: source, source: supplemental.source,
+          intent: nativeTextImportIntentSnapshot({ type: "text", ...nativeAdmission.patch }) });
         report.warn("native-text-range-intent", source, "已恢复完整原生颜色和链接范围意图；原始数值保留，跨渲染器像素尚未验证。");
         for (const note of nativeAdmission.diagnostics.filter(note => note.code.includes("HINT")))
           report.warn("native-text-range-hint", source, note.message);
@@ -1408,6 +1413,8 @@ export async function prepareFigmaImport(
     ...(textMeasurer ? { measurer: textMeasurer } : {}),
     ...(browserDocument ? { browserDocument } : {}),
   });
+  // Reject poisoned or changed intent before normalization can read or discard it.
+  verifyNativeTextAdmissions(result.document, nativeTextAdmissionContexts.get(result));
   for (const family of textMeasurement.unavailableFonts) {
     report.warn(
       "font-fallback",

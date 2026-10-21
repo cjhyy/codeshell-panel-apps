@@ -48,7 +48,10 @@ the original observed SDK value. SDK PIXELS stays an exact explicit pixel value.
 There is no rounding, fitting, epsilon or authored metric restoration. REST
 lineHeightPx and REST percentage representation remain unchanged in raw source.
 All four retained actual cases preserve ratios1.2000000476837158 or
-1.3157999515533447 through normalization, measurement, save and reopen.
+1.3157999515533447 through exact projection, normalization, save and reopen.
+A separate CPU mock-measurer control applies synthetic wrapping to all four
+retained sources and checks those exact metrics, complete intent and authored
+LF/range offsets again. This is not actual native or browser glyph measurement.
 
 Raw SDK font families containing comma, quote or escape syntax, or equal to CSS
 font generics, refuse admission before editable preview bypass. Their literal
@@ -60,6 +63,16 @@ metrics may carry paint/link ranges. Canonical intent admission is distinct from
 native-create eligibility. Bad hints leave independently admitted current intent
 untouched; successful hint restoration applies only `{fill, textRanges}` after
 snapshot, plugin/key, current source and effective plan checks.
+
+Before measurement, the bridge retains an immutable bounded snapshot of the
+independently admitted source, metrics, fill/decoration and complete range payload,
+including successfully restored author intent. After measurement it compares
+descriptor-owned semantic data before normalization can read or discard a
+poisoned payload, then repeats the check after normalization. A measurer may
+change display wrapping and geometry, but cannot silently change or erase range
+colors, links, decoration, author no-op ranges or the observed base metrics.
+The comparison ignores object key insertion order. It supplies no source or
+preview authority; independent full source admission remains required.
 
 The complete supplemental public import route descriptor-clones owned JSON
 before serialization, so accessors or toJSON cannot hide bytes. Each full
@@ -129,3 +142,13 @@ mask-child observation. v4 checks that topology before the paint skip, with
 paired direct-Page selected-Text mask refusal and safe-Page controls. This removes
 an unsupported clipping assumption; it does not claim actual native clipping
 semantics or new native pixel acceptance.
+
+Combined v5 passed831tests/830pass/1skip under explicit sequential execution,
+with actual132package and95main-test inventories unchanged. A later synthetic
+measurer control nevertheless changed a shared nested range fill to red while
+the prior final check re-admitted the native source and returned success. The
+original replay remains preserved. A shallow-copy property deletion control did
+not mutate the real node and is retained separately as a non-failure. The next
+candidate compares immutable exact intent, with mutation/removal, accessor and
+toJSON refusal, hint no-op range retention and unmodified positive controls.
+These are CPU/VM behavioral checks; actual native execution remains NOT_RUN.

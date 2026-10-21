@@ -69,6 +69,25 @@ export function copyNativeTextEnvelope(input) {
   return ownedData(input, 16 * 1024 * 1024, undefined, 0,
     { steps: 1000000, depth: 128, keys: 1000000 });
 }
+const intentFields = ["type", "textSource", "textFlow", "textOverflow", "fill", "fillPaints",
+  "textDecoration", "textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk", "textRanges",
+  "fontFamily", "fontSize", "fontWeight", "fontStyle", "lineHeight", "lineHeightUnit", "letterSpacing", "textAlign"];
+/** Immutable semantic postcondition; display wrapping and measured geometry may change. */
+export function nativeTextImportIntentSnapshot(node) {
+  if (!plain(node)) throw Error("Native Text intent requires owned data");
+  const descriptors = Object.getOwnPropertyDescriptors(node), projected = {};
+  for (const key of intentFields) {
+    const descriptor = descriptors[key];
+    if (!descriptor) continue;
+    if (!own(descriptor, "value") || !descriptor.enumerable) throw Error("Native Text intent accessor refused");
+    // Canonical optional undefined fields normalize to absence.
+    if (descriptor.value !== undefined) projected[key] = descriptor.value;
+  }
+  const copied = ownedData(projected, MAX_NATIVE_TEXT_RANGE_SOURCE_BYTES);
+  const ordered = value => Array.isArray(value) ? value.map(ordered) : plain(value)
+    ? Object.fromEntries(Object.keys(value).sort().map(key => [key, ordered(value[key])])) : value;
+  return JSON.stringify(ordered(copied));
+}
 function argument(input, key) {
   if (!plain(input)) throw Error("Native import arguments must be an owned record");
   const descriptor = Object.getOwnPropertyDescriptor(input, key);

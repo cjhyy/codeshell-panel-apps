@@ -2113,3 +2113,13 @@ package、全部 main test/helper/catalog SHA与HEAD均未变化。v4再收紧�
 PAGE虽无 Scene paint字段，实际 mask sibling 不能在 paint skip时丢弃。纯 helper与
 生产 VM 的 direct-Page选中文字成对控制为安全页面保留source/预览、有mask则拒绝，
 导出没有原生写入。v4受影响固定检查与独立审查后再交付，不把v3通过移作v4完整验收。
+
+v4与稳定Cover/gutter正常合并为77c410d，native来源模块逐字节保留；426项受影响检查
+与固定顺序main831项830pass/0fail/1skip通过，前后132份package/95个main文件SHA不变。
+候选UI103/104中唯一失败为依赖目录缺少开发用canvaskit-wasm，原失败证据保留，不能
+记作UI通过。随后合成measurer复现共享range.fill被改为红色后仍返回成功；原source、
+精确度量与LF未变，说明重新导入source不等于验证当前range未丢失。保留该失败与浅拷贝
+delete未影响真node的独立非失败控制；新增测量前不可变意图快照与normalize前/后复核，
+拒绝颜色/链接/装饰/删除/poisoned payload/度量漂移，hint恢复的显式no-op范围也必须保留。
+四个实际留存来源的度量原先仅投影/保存重开；另加四例CPU mock换行，不能称真实SDK或
+浏览器字形测量。真实native执行和像素验收仍NOT_RUN。

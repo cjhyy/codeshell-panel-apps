@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { buildNativeTextRangeSource, importNativeTextRanges, nativeTextRangeSnapshot } from "../../../apps/design-studio/app/native-text-ranges-source.mjs";
-import { admitNativeTextImport } from "../../../apps/design-studio/app/native-text-import.mjs";
+import { admitNativeTextImport, nativeTextImportIntentSnapshot } from "../../../apps/design-studio/app/native-text-import.mjs";
 import { buildNativeTextRangeHint } from "../../../apps/design-studio/app/native-text-range-hint.mjs";
 import { nativeTextLineHeight } from "../../../apps/design-studio/app/text-line-height.mjs";
 import { measureFigmaTextDocument } from "../../../apps/design-studio/app/text-metrics.mjs";
@@ -317,5 +317,118 @@ test("literal native family names cannot become CSS lists, stripped quotes or ge
     assert.equal(imported.document.nodes[0].type, "image");
     assert.equal(JSON.stringify(imported.source.nativeTextRanges.nodes[id].source), JSON.stringify(built.source));
     assert(imported.warnings.some(note => note.code === "native-text-source-unsupported"));
+  }
+});
+
+function measuredEnvelope(input, supplemental = {}) {
+  const { entry, ...table } = supplemental;
+  return { nodes: { "0:1": { document: { id: "0:1", type: "CANVAS", children: [input.rest] } } },
+    nativeTextRanges: { version: 1, ...table,
+      nodes: { [input.rest.id]: { source: input.source, ...entry } } } };
+}
+const mockTextMeasurer = overrides => ({ configure() {}, lineBoxOffset: () => 0, fontAvailable: () => true,
+  measure: text => ({ width: [...text].length * 8, bottom: 20,
+    ink: { x: 0, y: 0, width: [...text].length * 8, height: 20 } }), ...overrides });
+
+test("native intent snapshots are immutable, key-order independent and bounded without invoking accessors or toJSON", () => {
+  const patch = { type: "text", ...admitNativeTextImport(source(1)).patch };
+  const expected = nativeTextImportIntentSnapshot(patch), reordered = copy(patch);
+  reordered.textRanges.ranges[0] = Object.fromEntries(Object.entries(reordered.textRanges.ranges[0]).reverse());
+  reordered.text = "display lines may differ"; reordered.width = 12; reordered.textMetrics = { height: 99 };
+  assert.equal(nativeTextImportIntentSnapshot(reordered), expected);
+  reordered.textRanges.ranges[0].fill = "#ff0000";
+  assert.notEqual(nativeTextImportIntentSnapshot(reordered), expected);
+  assert.equal(nativeTextImportIntentSnapshot(patch), expected);
+  let calls = 0;
+  for (const poison of [node => Object.defineProperty(node, "textRanges", {
+    enumerable: true, get() { calls++; return patch.textRanges; } }),
+  node => Object.defineProperty(node.textRanges.ranges[0], "fill", {
+    enumerable: true, get() { calls++; return "#1d70b8"; } }),
+  node => node.textRanges.toJSON = () => { calls++; return patch.textRanges; }]) {
+    const changed = copy(patch); poison(changed);
+    assert.throws(() => nativeTextImportIntentSnapshot(changed), /accessor|owned JSON/);
+  }
+  assert.equal(calls, 0);
+  assert.throws(() => nativeTextImportIntentSnapshot({ ...patch, textSource: "x".repeat(256 * 1024) }), /budget/);
+});
+
+test("production final admission rejects postmeasure paint/range loss, mutations and poisoned nested payloads before normalization", async () => {
+  const { prepareFigmaImport } = await import("../../../apps/design-studio/app/figma-bridge.mjs");
+  let calls = 0;
+  const mutations = [
+    node => node.textRanges.ranges[0].fill = "#ff0000",
+    node => node.textRanges.ranges[0].href = "https://other.example/",
+    node => node.textRanges.ranges[0].textDecoration = "underline",
+    node => delete node.textRanges,
+    node => node.textRanges.ranges = [],
+    node => node.fill = "#ff0000",
+    node => node.fillPaints = [{ type: "solid", color: "#ff0000", opacity: 1 }],
+    node => node.textDecoration = "underline",
+    node => node.lineHeight = 1.2,
+    node => Object.defineProperty(node.textRanges.ranges[0], "fill", {
+      enumerable: true, get() { calls++; return "#1d70b8"; } }),
+    node => node.textRanges.toJSON = () => { calls++; return null; },
+  ];
+  for (const mutate of mutations) {
+    const input = source(1), envelope = measuredEnvelope(input), before = JSON.stringify(envelope);
+    let changed = 0;
+    await assert.rejects(prepareFigmaImport(envelope, { textMeasurer: mockTextMeasurer({
+      lineBoxOffset(node) { changed++; mutate(node); return 0; },
+    }) }), error => error.code === "NATIVE_TEXT_IMPORT_FINAL_DRIFT");
+    assert.equal(changed, 1); assert.equal(JSON.stringify(envelope), before);
+  }
+  // This is the exact shallow configure-copy alias used by the preserved v5 repro.
+  await assert.rejects(prepareFigmaImport(measuredEnvelope(source(1)), { textMeasurer: mockTextMeasurer({
+    configure(node) { node.textRanges.ranges[0].fill = "#ff0000"; },
+  }) }), error => error.code === "NATIVE_TEXT_IMPORT_FINAL_DRIFT");
+  assert.equal(calls, 0, "nested poison is refused before normalization or JSON serialization reads it");
+});
+
+test("postmeasure admission preserves valid hint author ranges even when removing them would keep the same effective native color", async () => {
+  const { prepareFigmaImport } = await import("../../../apps/design-studio/app/figma-bridge.mjs");
+  const input = source(2), patch = admitNativeTextImport(input).patch;
+  const author = { type: "text", ...patch, fill: "#1d70b8" };
+  const hint = buildNativeTextRangeHint({ ...input, authorNode: author,
+    pluginId: "native-import-test", key: "codeshellTextRangeIntent" });
+  const envelope = measuredEnvelope(input, { pluginId: "native-import-test", entry: { hint } });
+  const before = JSON.stringify(envelope);
+  const good = await prepareFigmaImport(envelope, { textMeasurer: mockTextMeasurer() });
+  assert.equal(good.document.nodes[0].fill, "#1d70b8");
+  assert.deepEqual(good.document.nodes[0].textRanges, author.textRanges);
+  await assert.rejects(prepareFigmaImport(envelope, { textMeasurer: mockTextMeasurer({
+    lineBoxOffset(node) { delete node.textRanges; return 0; },
+  }) }), error => error.code === "NATIVE_TEXT_IMPORT_FINAL_DRIFT");
+  assert.equal(JSON.stringify(envelope), before);
+  const stale = copy(envelope); stale.nativeTextRanges.nodes[input.rest.id].hint.snapshot = "stale";
+  const independent = await prepareFigmaImport(stale, { textMeasurer: mockTextMeasurer() });
+  assert.equal(independent.document.nodes[0].fill, patch.fill);
+  assert.deepEqual(independent.document.nodes[0].textRanges, patch.textRanges);
+});
+
+test("all four retained sources retain exact intent and metrics through CPU mock wrapping, normalization and reopen", async () => {
+  const { prepareFigmaImport } = await import("../../../apps/design-studio/app/figma-bridge.mjs");
+  for (let index = 0; index < fixture.cases.length; index++) {
+    const input = source(index), envelope = measuredEnvelope(input), before = JSON.stringify(envelope);
+    let expected;
+    const result = await prepareFigmaImport(envelope, { textMeasurer: mockTextMeasurer({
+      configure(node) {
+        expected = nativeTextImportIntentSnapshot(node);
+        // Changing key insertion order is semantically inert.
+        if (node.textRanges) node.textRanges.ranges[0] = Object.fromEntries(Object.entries(node.textRanges.ranges[0]).reverse());
+      },
+      measure: text => ({ width: [...text].length * 80, bottom: 20,
+        ink: { x: 0, y: 0, width: [...text].length * 80, height: 20 } }),
+    }) });
+    const node = result.document.nodes[0];
+    assert.equal(result.textMeasurement.measured, 1);
+    assert.notEqual(node.text, node.textSource, "mock width inserts soft display breaks");
+    assert.equal(node.textSource, input.rest.characters);
+    assert.equal(nativeTextImportIntentSnapshot(node), expected);
+    assert.equal(nativeTextLineHeight(node).value, input.source.scalars.lineHeight.value.value);
+    const reopened = normalizeDesignDocument(JSON.parse(serializeDesignDocument(result.document)));
+    assert.equal(nativeTextImportIntentSnapshot(reopened.nodes[0]), expected);
+    if (index === 1 || index === 3) assert.deepEqual(reopened.nodes[0].textRanges.ranges,
+      [{ start: 4, end: 11, fill: "#1d70b8", href: "https://example.com/" }]);
+    assert.equal(JSON.stringify(envelope), before);
   }
 });
