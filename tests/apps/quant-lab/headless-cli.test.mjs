@@ -118,6 +118,8 @@ test("installed selected package discovers exact schemas without dependencies, c
     "use this installed package, not another checkout/version",
   );
   assert.deepEqual(result.commands, [
+    "presets",
+    "research",
     "dataset",
     "backtest",
     "parameter-sweep",
@@ -125,12 +127,14 @@ test("installed selected package discovers exact schemas without dependencies, c
     "watch",
     "portfolio",
     "notes",
+    "observe",
   ]);
   assert.deepEqual(result.inputSchemas.backtest.required, ["csv", "configuration"]);
   assert.equal(result.inputSchemas.backtest.additionalProperties, false);
   assert.equal(result.inputExamples.backtest.configuration.strategy.type, "sma-cross");
   assert.equal(result.aliases.holdings, "portfolio");
-  assert.equal(result.readOnly, true);
+  assert.equal(result.readOnly, false);
+  assert.ok(result.readOnlyCommands.includes("research"));
   assert.deepEqual(f.invoke("--help").result, result);
   const alias = join(f.root, "quant-command.mjs");
   await symlink(join(f.selected, "app/tools/quant-lab.mjs"), alias);
@@ -377,4 +381,44 @@ test("bar count, data byte size and parameter workload have independent limits",
   );
   await f.csv(100_001);
   assert.equal(f.invoke("dataset", { csv: name }, { expected: 2 }).error.code, "INPUT_TOO_LARGE");
+});
+
+test("installed research is offline/read-only and rejects ambiguous input and unsafe metadata", async t => {
+  const f = await fixture(t), before = await snapshot(f.project);
+  assert.equal(f.invoke("presets").result.presets.length, 3);
+  const demo = f.invoke("research", { demo: true, preset: "trend-sma" }).result;
+  assert.equal(demo.data.synthetic, true); assert.match(demo.markdown, /非真实行情/);
+  assert.equal(demo.outOfSample.ran, false);
+  assert.deepEqual(await snapshot(f.project), before);
+  f.invoke("research", { demo: true, csv: "data/prices.csv", preset: "trend-sma" }, { expected: 2 });
+  f.invoke("research", { demo: true, preset: "trend-sma", configuration }, { expected: 2 });
+  f.invoke("research", { demo: true, preset: "trend-sma", ranges: { fast: [2] } }, { expected: 2 });
+  const { name } = await f.csv();
+  const inventory = await snapshot(f.project);
+  const report = f.invoke("research", { csv: name, preset: "trend-sma" }).result;
+  assert.equal(report.data.source, "未知"); assert.equal(report.data.synthetic, false);
+  assert.deepEqual(await snapshot(f.project), inventory);
+  await writeFile(join(f.project, "data/prices.meta.json"), "{bad");
+  assert.equal(f.invoke("research", { csv: name, preset: "trend-sma" }, { expected: 2 }).error.code, "INVALID_INPUT");
+  await rm(join(f.project, "data/prices.meta.json"));
+  await symlink(join(f.root, "outside.json"), join(f.project, "data/prices.meta.json"));
+  await writeFile(join(f.root, "outside.json"), "{}");
+  assert.equal(f.invoke("research", { csv: name, preset: "trend-sma" }, { expected: 2 }).error.code, "INVALID_PATH");
+  f.invoke("research", { csv: "../outside.csv", preset: "trend-sma" }, { expected: 2 });
+});
+
+test("installed observation is one-shot and existing-CSV only, while research enforces total OOS work", async t => {
+  const f = await fixture(t), { name, bars } = await f.csv(760);
+  const before = await readFile(join(f.project, name), "utf8");
+  const task = { csv: name, preset: "trend-sma" };
+  assert.equal(f.invoke("observe", { action: "plan", runId: "quant-existing", task, maxTicks: 2 }).result.plan.app, "quant-lab");
+  assert.equal(f.invoke("observe", { action: "tick", runId: "quant-existing" }).result.state.ticks, 1);
+  const inventory = await snapshot(f.project);
+  assert.equal(f.invoke("observe", { action: "status", runId: "quant-existing" }).result.effectiveStatus, "idle");
+  assert.deepEqual(await snapshot(f.project), inventory);
+  f.invoke("observe", { action: "stop", runId: "quant-existing" });
+  assert.equal(f.invoke("observe", { action: "tick", runId: "quant-existing" }).result.state.status, "stopped");
+  assert.equal(await readFile(join(f.project, name), "utf8"), before);
+  f.invoke("observe", { action: "plan", runId: "bad-demo", task: { demo: true, preset: "trend-sma" } }, { expected: 2 });
+  assert.equal(f.invoke("research", { csv: name, configuration: { ...configuration, strategy: { type: "sma-cross", fast: 5, slow: 10 } }, ranges: { fast: Array(64).fill(5), slow: Array(64).fill(10) }, options: { inSampleBars: 100, outOfSampleBars: 10 } }, { expected: 2 }).error.code, "WORK_LIMIT");
 });

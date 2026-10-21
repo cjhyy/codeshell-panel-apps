@@ -1,3 +1,4 @@
+import { buildResearchReport, parseResearchMetadata, RESEARCH_PRESETS, researchPreset } from "./research-report.mjs";
 import { createProjectSetting } from "./modules/project-setting.mjs";
 import { projectContextChanged, projectContextKey, projectIdentity } from "./project-context.mjs";
 import { createDataSourcesController } from "./modules/data-sources-ui.mjs";
@@ -2739,6 +2740,7 @@ function renderMetrics() {
 }
 
 function clearRunResult() {
+  clearPlainResearch();
   result = null;
   elements.backtestRunVersion.textContent = "结果编号 · 待运行";
   elements.backtestRunVersion.removeAttribute("title");
@@ -3043,6 +3045,7 @@ function renderTrades() {
 }
 
 function run({ persist = true } = {}) {
+  clearPlainResearch();
   if (configurationSession?.loading) return false;
   elements.runBacktest.disabled = true;
   setRunState("回测中");
@@ -3081,29 +3084,11 @@ async function loadCsv() {
       .pop()
       .replace(/\.csv$/i, "")
       .slice(0, 120);
-    // Read the sidecar written by app/tools/fetch-market-data.mjs. Absent or
-    // unreadable metadata is not an error -- hand-placed CSVs stay loadable,
-    // they just carry no declared adjustment basis.
     let meta = null;
-    try {
-      const sidecar = await hostCall("workspace.readText", {
-        path: path.replace(/\.csv$/i, ".meta.json"),
-      });
-      const parsed = JSON.parse(sidecar.content);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        // Only trust the declared adjustment basis if the sidecar actually
-        // describes this CSV. A stale or copied sidecar would otherwise let the
-        // panel report the wrong basis with full confidence.
-        const actual = fingerprintBars(loadedBars);
-        const matches =
-          parsed.format === "codeshell.quant-dataset" &&
-          typeof parsed.fingerprint === "string" &&
-          parsed.fingerprint === actual;
-        meta = matches ? parsed : { ...parsed, stale: true, actualFingerprint: actual };
-      }
-    } catch {
-      meta = null;
-    }
+    let sidecar;
+    try { sidecar = await hostCall("workspace.readText", { path: path.replace(/\.csv$/i, ".meta.json") }); }
+    catch (error) { if (error.code !== "ENOENT" && error.code !== "FILE_NOT_FOUND" && !/\bENOENT\b|no such file|file not found/i.test(String(error.message))) throw error; }
+    if (sidecar) meta = parseResearchMetadata(sidecar.content, loadedBars);
     if (operationWorkspaceEpoch !== workspaceEpoch) return;
     bars = loadedBars;
     invalidateValidation();
@@ -3944,6 +3929,7 @@ async function loadConfiguration(workspaceRoot, storageRoot, epoch, { reload = f
 }
 
 function resetUiState() {
+  clearPlainResearch();
   elements.strategyType.value = "sma-cross";
   elements.fastPeriod.value = "20";
   elements.slowPeriod.value = "50";
@@ -4467,6 +4453,7 @@ function updateContext(next) {
   const nextWorkspaceRoot = typeof nextContext.cwd === "string" ? nextContext.cwd : null;
   const workspaceChanged = contextInitialized && projectContextChanged(context, nextContext);
   if (workspaceChanged) {
+    clearPlainResearch();
     // The Host has already switched projects: do not submit an old-project write.
     if (configurationSession?.dirty) rememberConfigurationDraft();
     configurationSession = null;
@@ -5600,6 +5587,7 @@ function renderValidation(walk, sweep) {
 // Validation is tied to one dataset and one configuration; any change makes the
 // displayed folds stale, so drop them rather than let them describe a stale run.
 function invalidateValidation() {
+  clearPlainResearch();
   if (lastValidation === null && elements.validationCard.hidden) return;
   lastValidation = null;
   elements.validationCard.hidden = true;
@@ -6083,3 +6071,60 @@ registerPortfolioTools({
   refresh: (epoch) => holdingsController.load(epoch),
   displayedPositions: () => holdingsController.noteContext().holdings?.positionsByAccount ?? [],
 });
+
+function clearPlainResearch() {
+  const card = document.querySelector("#plain-research-report");
+  if (card) { card.hidden = true; card.textContent = ""; delete card.dataset.fingerprint; }
+}
+function renderPlainResearchCard(card, report) {
+  card.replaceChildren();
+  const addText = (parent, tag, text) => {
+    const node = document.createElement(tag); node.textContent = text; parent.append(node); return node;
+  };
+  addText(card, "h3", report.data.synthetic ? "合成演示 · 非真实行情、非真实绩效" : "历史行情模拟 · 不是未来收益预测");
+  const money = value => value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const pct = value => `${(value * 100).toFixed(2)}%`;
+  const d = report.outcome.maxDrawdown;
+  addText(card, "p", report.verdict.tier === "insufficient_evidence" ? "当前结论：证据不足，请先核对数据和限制。" : "当前结论：仅值得继续研究，不构成买卖建议。");
+  addText(card, "p", `资料来源：${report.data.source}；复权：${report.data.adjust}；同步时间：${report.data.syncedAt}。`);
+  const summaries = [
+    ["什么时候买卖？", `${report.rules.buy} ${report.rules.sell}`],
+    ["模拟赚亏多少？", `本金 ${money(report.money.initialCapital)}，期末 ${money(report.outcome.finalEquity)}，模拟${report.outcome.pnl >= 0 ? "赚" : "亏"} ${money(Math.abs(report.outcome.pnl))}（${pct(report.outcome.totalReturn)}）。共 ${report.outcome.trades} 笔平仓交易。金额与输入价格使用相同币种。`],
+    ["从高点最多亏多少？", `从 ${d.peakDate} 的 ${money(d.peakValue)} 降到 ${d.troughDate} 的 ${money(d.troughValue)}，损失 ${money(d.amount)}（${pct(-d.pct)}）。这是实际峰谷差，可能高于最初本金的同比例金额。`],
+    ["和一直持有相比？", `规则收益 ${pct(report.outcome.totalReturn)}，一直持有 ${pct(report.benchmark.return)}。一直持有从第一根收盘开始、不扣费；策略含费，口径存在差异。`],
+    ["验证够不够？", report.outOfSample.ran ? `在训练资料之外测试了 ${report.outOfSample.usableFolds} 个有效时间段，另有 ${report.outOfSample.failedFolds} 段失败、末尾 ${report.outOfSample.untestedTailBars} 根未测。每段重新放入本金，不能视为一个账户持续复利。` : `样本外验证没跑：需要 ${report.outOfSample.neededBars} 根，当前 ${report.data.bars} 根。现在只能查看规则在这份资料中怎样运行。`],
+  ];
+  const grid = document.createElement("div"); grid.className = "plain-research-summary-grid"; card.append(grid);
+  for (const [title, text] of summaries) { const item = document.createElement("article"); grid.append(item); addText(item, "h4", title); addText(item, "p", text); }
+  addText(card, "p", `成本是假设：每次买入或卖出手续费 ${(report.money.feeBps / 100).toFixed(3)}%，滑点 ${(report.money.slippageBps / 100).toFixed(3)}%（1bps = 0.01%）。本次模型费用 ${money(report.money.feesPaid)}，滑点成本 ${money(report.money.slippageCost)}。`);
+  addText(card, "p", "允许零碎股；入场当天不查止损；期末强平；未模拟现实手数、涨跌停与流动性。历史盈利和样本外表现都不能保证未来收益。");
+  const details = document.createElement("details"); card.append(details);
+  addText(details, "summary", "查看完整来源、数据指纹、成本还原与研究限制");
+  addText(details, "pre", report.markdown).className = "plain-research-full-report";
+}
+function generatePlainResearch() {
+  clearPlainResearch();
+  try {
+    if (configurationSession?.loading) throw new Error("正在切换项目，请稍后生成报告");
+    const current = currentConfiguration();
+    const applied = document.querySelector("#plain-research-preset").dataset;
+    const presetRanges = applied.appliedConfiguration === JSON.stringify(current) ? researchPreset(applied.appliedId).ranges : undefined;
+    const report = buildResearchReport({ bars, configuration: current, ranges: presetRanges, options: {
+      inSampleBars: numberValue(elements.wfInSample, "样本内长度", { minimum: 30, maximum: 100000 }),
+      outOfSampleBars: numberValue(elements.wfOutSample, "样本外长度", { minimum: 10, maximum: 100000 }),
+    }, path: dataset.path, synthetic: dataset.kind === "demo", metadata: dataset.meta });
+    const card = document.querySelector("#plain-research-report");
+    renderPlainResearchCard(card, report); card.hidden = false; card.dataset.fingerprint = report.data.fingerprint;
+  } catch (error) { notify(error.message || "研究报告生成失败", "error"); }
+}
+const plainPreset = document.querySelector("#plain-research-preset");
+for (const preset of RESEARCH_PRESETS) plainPreset.add(new Option(preset.title, preset.id));
+document.querySelector("#apply-research-preset").addEventListener("click", () => {
+  const { configuration } = researchPreset(plainPreset.value, dataset.meta?.market === "us" ? "us" : "cn");
+  restoreUiState(configuration);
+  plainPreset.dataset.appliedId = plainPreset.value;
+  plainPreset.dataset.appliedConfiguration = JSON.stringify(currentConfiguration());
+  invalidateValidation(); run();
+});
+document.querySelector("#generate-plain-research").addEventListener("click", generatePlainResearch);
+for (const input of [elements.wfInSample, elements.wfOutSample]) input.addEventListener("input", clearPlainResearch);

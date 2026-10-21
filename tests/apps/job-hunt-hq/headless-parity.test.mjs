@@ -23,7 +23,7 @@ before(async () => {
       response.end(await readFile(path));
     } catch { response.writeHead(404).end(); }
   });
-  await new Promise(done => server.listen(0, "127.0.0.1", done));
+  await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
   url = `http://127.0.0.1:${server.address().port}`;
   browser = await chromium.launch({ headless: true });
 });
@@ -83,7 +83,7 @@ async function panel(t, project) {
     };
   }, project);
   await page.goto(url);
-  await page.waitForFunction(() => !document.querySelector(".app-shell").inert && document.querySelector("#draft-storage-status").textContent !== "正在连接草稿存储…");
+  await page.waitForFunction(() => !document.querySelector(".app-shell").inert && document.querySelector("#draft-storage-status").textContent !== "正在连接草稿存储…", { timeout: 20000 });
   return { page, host };
 }
 const invoke = (page, name, args) => page.evaluate(({ name, args }) => window.__headless.tools[name](args), { name, args });
@@ -330,4 +330,48 @@ test("Tool and CLI reject schema-valid astral facts that exceed storage capacity
   const command = await run(project, "save_candidate_context", input, { expectedExit: 2 });
   assert.match(command.json.error.message, /超过/);
   assert.deepEqual(await fileInventory(project), before);
+});
+
+for (const sharded of [false, true]) test(`shared job research CLI/Panel parity and evidence UI (${sharded ? "sharded" : "direct"})`, async t => {
+  const { jobInput, researchInput, ctx } = await import("./fixtures/job-research-data.mjs");
+  const { prepareJobOpportunities, saveJobResearch } = await import("../../../apps/job-hunt-hq/app/ops/jobs.mjs");
+  const panelProject = await tempProject(t), cliProject = await tempProject(t);
+  await cli(["init", "--project", panelProject]);
+  const scope = await createNodeWorkspaceScope(panelProject);
+  const previousSnapshot = await scope.call("workspace.readText", { path: snapshotPath });
+  let snapshot = prepareJobOpportunities(JSON.parse(previousSnapshot.content), { jobs: [jobInput] }, ctx).snapshot;
+  snapshot.jobs[0].status = "saved";
+  snapshot.jobs[0].verification = { state: "verified_live", lastCheckedAt: ctx.now, checkedUrl: "https://example.invalid/jobs/1", sourceKind: "official", method: "browser-visible", evidenceExcerpt: "We are hiring TypeScript engineers." };
+  snapshot.jobs[0].changeLog = [{ at: ctx.now, fields: ["description"], via: "save" }];
+  snapshot.jobs[0].exclusion = { reasonCode: "location", note: "夹具排除标记" };
+  snapshot = saveJobResearch(snapshot, researchInput, ctx).snapshot;
+  if (sharded) snapshot.versions = Array.from({ length: 18 }, (_, index) => normalizeResumeRecord({ versionId: `history-jobs-${index}`, title: `History ${index}`, kind: "base", category: `History ${index}`, markdown: "# History\n\n" + "Public fixture evidence. ".repeat(900), updatedAt: "2025-01-01T00:00:00Z" }));
+  await writeProjectSnapshotDocuments(prepareProjectSnapshotDocuments(snapshot), { scope, previousSnapshot });
+  await cp(panelProject, cliProject, { recursive: true });
+  const { page } = await panel(t, panelProject);
+  const { id, ...input } = jobInput;
+  for (const [name, args] of [["save_job_opportunities", { jobs: [input] }], ["save_job_research", researchInput]]) {
+    assert.equal((await invoke(page, name, args)).projectSaved, true);
+    assert.equal((await run(cliProject, name, args)).json.ok, true);
+    assert.deepEqual(normalizeInvocation(await readSnapshot(panelProject)), normalizeInvocation(await readSnapshot(cliProject)), name);
+  }
+  // A later CLI receipt must survive browser normalization and the next Panel save.
+  const receipt = { state: "verified_live", lastCheckedAt: ctx.now, checkedUrl: "https://example.invalid/jobs/1", sourceKind: "official", method: "browser-visible", evidenceExcerpt: "We are hiring TypeScript engineers." };
+  await run(panelProject, "save_job_opportunities", { jobs: [{ ...input, verification: receipt }] });
+  await page.reload();
+  await page.waitForFunction(() => !document.querySelector(".app-shell").inert && document.querySelector("#draft-storage-status").textContent !== "正在连接草稿存储…", { timeout: 20000 });
+  assert.equal((await invoke(page, "save_job_research", researchInput)).projectSaved, true);
+  const saved = await readSnapshot(panelProject);
+  assert.equal(saved.jobs[0].verification.state, "verified_live");
+  assert.equal(saved.jobs[0].exclusion.reasonCode, "location");
+  if (sharded) assert.ok(JSON.parse(await readFile(join(panelProject, snapshotPath), "utf8")).artifactStorage.shards.length > 0);
+  await page.locator('[data-view-target="today"]').first().click();
+  await page.locator("#open-job-digest").click();
+  await page.locator("#today-job-digest").waitFor({ state: "visible" });
+  assert.match(await page.locator("#today-job-digest").textContent(), /岗位研究日报/);
+  assert.match(await page.locator("#today-job-digest").textContent(), /无法个性化/);
+  await page.locator('.nav-item[data-view-target="dashboard"]').click();
+  await page.locator('[data-view-target="research"]:visible').first().click();
+  assert.match(await page.locator("#job-research-evidence").textContent(), /来源/);
+  assert.match(await page.locator("#job-research-evidence").textContent(), /无法个性化/);
 });
