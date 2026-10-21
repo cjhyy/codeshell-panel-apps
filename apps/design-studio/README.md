@@ -656,3 +656,23 @@ native transfer, unequal rounded side joins and adjacent sides with different al
 are explicitly rejected or diagnosed. Collapsed table borders retain a diagnosed
 measured approximation. Strict border evidence and remaining antialiasing limits are
 recorded in `docs/todo/design-studio-css-border-sides-2026-10-21.md`.
+
+The staged pure `native-text-range-hint.mjs` helper preserves author range intent
+that effective native styles cannot distinguish, including explicit same-color
+overrides and an unused base color beneath a full-source override.
+`buildNativeTextRangeHint({rest, source, authorNode, pluginId, key})` requires a
+complete independently bound final native source and an equal effective
+paint/link setter plan. `restoreNativeTextRangeHint({rest, source,
+canonicalNode, hint, pluginId, key})` returns only an owned `{fill, textRanges}`
+patch after the complete current snapshot and effective plan both agree.
+Stored metadata never overrides native characters, typography or identity.
+It records author intent, not cryptographic proof of historical unused colors
+or explicit same-style boundaries; equivalent hints cannot change live paint.
+Raw unknown getter observations remain in the snapshot; known segment values
+must independently prove the effective style. Hints have a 64 KiB UTF-8 JSON
+limit and include plugin ID/key overhead in the 100,000-byte storage-entry
+budget. Stale, partial, unsupported or oversized inputs refuse atomically.
+Line-height units and font axes remain exact: Float32 percentage transport that
+differs from the canonical scalar is deliberately refused, without rounding or
+tolerance. This helper is not connected to SDK capture or plugin-data writes;
+its caller must capture after final layout and roll back a failed creation.
