@@ -36,12 +36,11 @@ allowed. No success is accepted after any guard event.
 
 One combined failure has a deliberate limit: if an earlier native error enters
 rollback and the first deadline refusal occurs inside `removableOwnedPage`, the
-guard can interrupt cleanup and replace the unobservable inner error. This is
-explicitly reported as `guard-interrupted cleanup; owned pages may remain;
-original inner SDK cause unavailable`. The exact final production message and
-guard trace remain preserved. Such a run is a refusal, never factory acceptance
-or proof of rollback/error equivalence. Foreign nodes are never deleted by the
-probe; it records all created identities and remaining owned/foreign-page views.
+guard can interrupt cleanup and replace the unobservable inner error. The exact
+final production message and guard trace remain preserved. Such a run is a
+refusal, never factory acceptance or proof of rollback/error equivalence.
+Foreign nodes are never deleted by the probe; it records all created identities
+and remaining owned/foreign-page views.
 
 The fixed data has one vertical Auto Layout frame with eight Text cases:
 Unicode/ASCII gapped paint+link, full blue with unused black author base, explicit
@@ -81,3 +80,37 @@ native/hint/remove failures, guard-interrupted cleanup, persistent LF inheritanc
 late stale hints and receiver tampering. Mock logs show no native metadata/layout
 writes after a scope refusal. These are synthetic host checks; their source/size
 values and successful setter behavior are not actual Figma results.
+
+Independent review found a reporting overclaim in preserved v1: it classified
+every guard refusal with retained pages as interrupted cleanup with an
+unavailable inner SDK cause. A successful native export followed by external
+child insertion and deadline expiry can instead finish production's foreign-safe
+retention normally. Neither an earlier SDK failure nor interrupted cleanup is
+established by those broad observations. This is a reporting issue; the run was
+still refused and the foreign node remained intact.
+
+The current prepared successor uses `native-text-production-factory-v2.program.js`,
+`.mock.js`, `.test.mjs` and `native-text-production-factory-24h-research-v2.mjs`.
+It shares the exact immutable v1 production code, data, observer, basis and
+closure proof. All ten v1 artifacts and their evidence remain unchanged.
+The v2 program reports the generic classification `guard refusal with retained
+owned pages; cleanup completeness and inner cause not established`. It does not
+infer the earlier SDK cause or completeness of cleanup. The known combined
+failure above remains a distinct documented limitation.
+
+The22 v2 CPU VM checks pass,1340.520625ms, including successful export followed
+by foreign insertion plus expiry. Both that case and the earlier-error case
+retain exact final production messages and refuse acceptance. The `accepted`
+flag covers complete source/hint proof and original full-REST/selection return.
+Final native dimensions and FILL/HUG/Auto Layout readbacks are recorded for
+review; real native layout parity is not asserted by this flag. Expected mock
+layout values in CPU tests do not establish actual Figma behavior.
+
+The v2 evidence directory is the adjacent
+`production-factory-preparation-v2/`, with preparation receipt SHA
+`3ba2ab992d3b36d85fc92e5135390ac6c21579cc067e4975e028844253491ce2`.
+Its three full synthetic examples distinguish successful source/hint proof,
+the known combined cleanup failure and successful-export foreign retention.
+The only v2 CLI mode executed was also `--prepare-only`; its state remains
+`PREPARED_UNARMED`, with no relay, endpoint or installation lock. Registered
+plugin bytes and old v4/HUG artifacts remained unchanged.
