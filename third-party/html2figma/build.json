@@ -7,8 +7,8 @@
   "legacyGridOption": "preserveGrid:false",
   "esbuildVersion": "0.28.2",
   "output": "apps/design-studio/app/vendor/html2figma-browser.mjs",
-  "bytes": 225350,
-  "sha256": "444a285f3cb8a7305d657915214c6c2190a3cb29121786d2b82ab21145f04117",
+  "bytes": 227286,
+  "sha256": "c07e461725d2ea44c2dd2ae761d5a6a357635514d1ae29f2308554205d3ce2e9",
   "notice": {
     "output": "apps/design-studio/app/vendor/html2figma-NOTICE.md",
     "bytes": 11718,
@@ -16,6 +16,7 @@
   },
   "runtimeInputs": [
     "third-party/html2figma/integration/entry.ts",
+    "third-party/html2figma/integration/geometry-precision.ts",
     "third-party/html2figma/integration/grid.ts",
     "third-party/html2figma/integration/image-box.ts",
     "third-party/html2figma/integration/shared.ts",

@@ -171,6 +171,7 @@ export const suites = [
         "tests/apps/design-studio/html-table-borders.test.mjs",
         "tests/apps/design-studio/html-fixed-table-flow.test.mjs",
         "tests/apps/design-studio/html2figma-import.test.mjs",
+        "tests/apps/design-studio/html-geometry-precision.test.mjs",
         "tests/apps/design-studio/html-asset-mime.test.mjs",
         "tests/apps/design-studio/html-stylesheet-media.test.mjs",
         "tests/apps/design-studio/html-auto-margins.test.mjs",

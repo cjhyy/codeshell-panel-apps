@@ -84,7 +84,7 @@ test("scoped nested copy edits derive every Hug height and match all actual vert
     assert.equal(stable(snapshot(reopened)), stable(saved), `${stage.name} reopen/reflow`);
     assert.deepEqual(createFigmaTransfer(reopened).warnings, []);
   }
-  assert.equal(strictHorizontalDifferences, 32, "native Float32/fractional column differences remain strict failures");
+  assert.equal(strictHorizontalDifferences, 0, "resolved Grid Float32 endpoints preserve every retained actual fractional column exactly");
   assert.equal(residuals.originalStrictGeometry, false);
 });
 

@@ -139,16 +139,16 @@ test("rounded CSSOM margin-wrapper metadata does not replace exact fractional DO
   });
   const observed = result.cases[0];
   assert(observed.warnings.some(warning => warning.code === "auto-margin-distribution"));
-  // Fractional colored rectangle edges retain the renderer's known strict
-  // pixel differences. Saved canonical geometry rounds to two decimals; the
-  // live-capture test below separately proves full-precision DOM slot algebra.
+  // Keep the actual authored 50.21875px height and equal distribution of the
+  // remaining 109.78125px. Saving no longer rounds those source box values.
+  // Pixel acceptance remains governed by the independent strict comparisons.
   assert(observed.flowAudits.every(item => item.failures === 0 && item.unresolved === 0));
   for (const mode of ["imported", "relayout", "narrow"]) {
     const document = normalizeDesignDocument(JSON.parse(await readFile(join(output, "fractional", mode + ".codesign.json"))));
     const parent = byHtmlId(document, "fixture"), children = ["first", "middle", "last"].map(id => byHtmlId(document, id));
     assert.equal(parent.justifyContent, "space-between");
-    assert.deepEqual(children.map(node => node.y), [20, 114.89, 220]);
-    assert.deepEqual(children.map(node => node.height), [40, 50.22, 60]);
+    assert.deepEqual(children.map(node => node.y), [20, 20 + 40 + 109.78125 / 2, 220]);
+    assert.deepEqual(children.map(node => node.height), [40, 50.21875, 60]);
   }
 });
 
