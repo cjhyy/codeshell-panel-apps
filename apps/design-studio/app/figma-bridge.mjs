@@ -1,3 +1,7 @@
+import { admitNativeTextImport } from "./native-text-import.mjs";
+import { importNativeTextRanges } from "./native-text-ranges-source.mjs";
+import { validateTextRanges } from "./text-ranges.mjs";
+import { figmaSourceNodes } from "./figma-binding.mjs";
 import { normalizeShadowStack, nativeShadowStackEffects } from "./shadow-stack.mjs";
 import { validTextLineHeight } from "./text-line-height.mjs";
 import { nativeTextRangeCreationPlan } from "./native-text-ranges.mjs";
@@ -38,6 +42,22 @@ export const MAX_FIGMA_JSON_BYTES = 16 * 1024 * 1024;
 export const MAX_FIGMA_TOTAL_NODES = 50_000;
 const MAX_DEPTH = 32;
 const MAX_WARNINGS = 200;
+const nativeTextAdmissionContexts = new WeakMap();
+const nativeMetricKeys = ["fontFamily", "fontSize", "fontWeight", "fontStyle", "lineHeight",
+  "lineHeightUnit", "letterSpacing", "textAlign"];
+function verifyNativeTextAdmissions(document, contexts) {
+  if (!contexts?.size) return;
+  const nodes = new Map(document.pages.flatMap(page => page.nodes).map(node => [node.id, node]));
+  for (const [id, context] of contexts) {
+    const node = nodes.get(id), patch = context.patch;
+    const admitted = node && importNativeTextRanges({ rest: context.rest, source: context.source, canonicalNode: node });
+    if (!node || node.textSource !== patch.textSource || !nativeMetricKeys.every(key => node[key] === patch[key]) ||
+        !["uniform", "admitted-intent"].includes(admitted?.status))
+      throw Object.assign(Error("原生范围文字在转换或测量后不再匹配完整来源；未扁平化范围样式。"),
+        { code: "NATIVE_TEXT_IMPORT_FINAL_DRIFT" });
+    validateTextRanges(node);
+  }
+}
 const TYPES = {
   FRAME: "frame",
   RECTANGLE: "rectangle",
@@ -548,12 +568,14 @@ function layout(source, node, report) {
   if (node.type === "frame") node.clipContent = source.clipsContent === true;
 }
 
-function text(source, node, report) {
+function text(source, node, report, nativeAdmission) {
   node.layoutBaselineSource = "native";
   const style = object(source.style) ? source.style : {};
   if (typeof source.characters !== "string")
     report.warn("missing-text", source, "文字内容缺失，已导入空文本。");
   node.text = typeof source.characters === "string" ? source.characters.slice(0, 4000) : "";
+  if (typeof source.characters === "string" && source.characters.length <= 4000)
+    node.textSource = source.characters;
   if (source.characters?.length > 4000)
     report.warn("text-truncated", source, "文字超过 4000 字符，已截断。");
   node.fontSize = number(style.fontSize, 16, 6, 240, source, "fontSize", report);
@@ -609,8 +631,8 @@ function text(source, node, report) {
     node.textFlowWidth = node.width;
   }
   if (
-    source.characterStyleOverrides?.some((value) => value !== 0) ||
-    Object.keys(source.styleOverrideTable ?? {}).length
+    !nativeAdmission?.patch && (source.characterStyleOverrides?.some((value) => value !== 0) ||
+    Object.keys(source.styleOverrideTable ?? {}).length)
   )
     report.warn("rich-text", source, "混合文字样式已统一为图层基本样式。");
   if (style.textAlignVertical && style.textAlignVertical !== "TOP")
@@ -717,8 +739,16 @@ function importFigmaJsonWithReport(
   { resources = [], imageRefs = new Map(), previews = {} },
   report,
 ) {
-  const value = readJson(input),
+  const rawValue = readJson(input),
+    value = Object.hasOwn(rawValue, "nativeTextRanges") ? normalizeFigmaSource(rawValue) : rawValue,
     pages = sourcePages(value);
+  const textSupplement = value.nativeTextRanges, nativeAdmissions = new Map();
+  if (textSupplement) {
+    const owners = figmaSourceNodes(value);
+    for (const id of Object.keys(textSupplement.nodes))
+      if (owners.get(id)?.type !== "TEXT")
+        throw Object.assign(Error("原生范围文字补充记录没有唯一匹配的 TEXT 来源。"), { code: "NATIVE_TEXT_IMPORT_TABLE_OWNER" });
+  }
   if (!pages.length || pages.length > MAX_DESIGN_PAGES)
     throw new Error(`Figma 页面数量必须为 1–${MAX_DESIGN_PAGES}。`);
   const ids = new Set(),
@@ -778,8 +808,15 @@ function importFigmaJsonWithReport(
     seen.add(source);
     if (++visited > MAX_FIGMA_TOTAL_NODES || ++counter.count > MAX_DESIGN_NODES_PER_PAGE)
       throw new Error("Figma 图层超出导入上限；请拆分页面或文件。");
+    const supplemental = source.type === "TEXT" ? textSupplement?.nodes?.[source.id] : undefined;
+    const nativeAdmission = supplemental ? admitNativeTextImport({ rest: source, source: supplemental.source,
+      ...(Object.hasOwn(supplemental, "hint") ? { hint: supplemental.hint } : {}), pluginId: textSupplement.pluginId }) : null;
+    if (nativeAdmission?.status === "unsupported")
+      report.warn("native-text-source-unsupported", source, "完整原生范围来源未通过可编辑准入；保留已有预览或来源边界。");
     const preview = previews[source.id];
-    const previewRef = preview && imageRefs.get(preview.assetId);
+    // Only the independently proved Text's own mixed-fill cause is bypassed.
+    // Ancestor previews return before this descendant is ever converted.
+    const previewRef = nativeAdmission?.ownMixedPreview ? null : preview && imageRefs.get(preview.assetId);
     const imagePaint = Array.isArray(source.fills)
       ? source.fills.find(
           (entry) =>
@@ -1172,10 +1209,19 @@ function importFigmaJsonWithReport(
       }
     } else if (source.children?.length) throw new Error("基础 Figma 图层不能包含 children。");
     if (type === "text") {
-      text(source, node, report);
+      text(source, node, report, nativeAdmission);
+      if (nativeAdmission?.patch) {
+        Object.assign(node, nativeAdmission.patch);
+        if (nativeAdmission.patch.lineHeightUnit === undefined) delete node.lineHeightUnit;
+        if (nativeAdmission.patch.textFlow === undefined) delete node.textFlow;
+        nativeAdmissions.set(node.id, { rest: source, source: supplemental.source, patch: nativeAdmission.patch });
+        report.warn("native-text-range-intent", source, "已恢复完整原生颜色和链接范围意图；原始数值保留，跨渲染器像素尚未验证。");
+        for (const note of nativeAdmission.diagnostics.filter(note => note.code.includes("HINT")))
+          report.warn("native-text-range-hint", source, note.message);
+      }
       const style = source.style ?? {};
-      if (source.characterStyleOverrides?.some((value) => value !== 0) ||
-          Object.keys(source.styleOverrideTable ?? {}).length ||
+      if (((source.characterStyleOverrides?.some((value) => value !== 0) ||
+          Object.keys(source.styleOverrideTable ?? {}).length) && !nativeAdmission?.paintLinkOnly) ||
           (source.lineTypes !== undefined && (!Array.isArray(source.lineTypes) ||
             source.lineTypes.some(value => value !== "NONE"))) ||
           (source.lineIndentations !== undefined && (!Array.isArray(source.lineIndentations) ||
@@ -1314,8 +1360,9 @@ function importFigmaJsonWithReport(
     pages: convertedPages,
   });
   diagnoseNativeStrokeFillModels(document, mapping, report, unsupportedBorders);
+  verifyNativeTextAdmissions(document, nativeAdmissions);
   const warningCount = report.finish();
-  return {
+  const result = {
     document,
     warnings: report.warnings,
     warningGroups: report.warningGroups,
@@ -1323,6 +1370,8 @@ function importFigmaJsonWithReport(
     mapping,
     pageMappings,
   };
+  nativeTextAdmissionContexts.set(result, nativeAdmissions);
+  return result;
 }
 
 /** Import local images and preserve the complete official source alongside the editable document. */
@@ -1371,6 +1420,7 @@ export async function prepareFigmaImport(
   for (const issue of textMeasurement.unsupportedTruncations ?? [])
     report.warn("text-truncation", { id: issue.nodeId }, issue.reason);
   result.document = normalizeDesignState(result.document);
+  verifyNativeTextAdmissions(result.document, nativeTextAdmissionContexts.get(result));
   for (const message of source.warnings ?? []) report.warn("plugin-export-warning", null, message);
   result.stats.warningCount = report.finish();
   result.warningGroups = report.warningGroups;

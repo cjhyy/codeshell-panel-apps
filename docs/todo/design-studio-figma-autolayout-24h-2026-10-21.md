@@ -1984,3 +1984,23 @@ Cover 的三个直接普通流失败正在隔离候选中恢复为真实 vertica
 既有固定 header 高度和捕获的桌面媒体字号与新 main HUG 重排的组合，保留全部负例。
 等待冻结候选的独立审查和最终配对证据，不把结构改善写成网页/Figma 像素通过。
 24小时目标继续 active，截止仍为10月22日00:31 SG。
+
+## Native Text source-import isolated candidate · 2026-10-21
+
+在新隔离分支接入只读完整 SDK capture 与外层 supplemental source table；官方 REST
+保持原样。独立 SDK→canonical PERCENT/PIXELS 投影不恢复作者度量，完整 catalog、
+256KiB 节点 proof、64KiB hint/100000 字节插件存储与整个16MiB UTF8 信封继续有界。
+源索引拒绝内容或位置冲突，最终无 await 的 SDK/identity/topology/preview 原因复查
+位于所有图片/PNG/SVG 导出之后；只证明被观察字段相对初始 REST 的新鲜度。
+
+恢复仅限完整同一度量下的颜色/链接意图；坏 hint 保留独立当前意图。只有 Text 自身
+mixed-fill 原因可绕过已有预览，mask、祖先预览和不支持 paint 不变。原图预览保留。
+普通 HUG Grid 的有界 paint/link Text 控制保留真实 Fill/Hug 与内容增长；不完整来源
+和段落变体仍拒绝。空白源按实际 NBSP/CR/LF/emoji 码元测试，空源与缺失源区分。
+
+最初156项121pass/35fail与冻结旧 native 代码137项116pass/21fail日志均保留。
+21项继承失败来自旧 VM mock 缺少 root parent 和真实来源关系；另14项为新增严格
+owned-data/source proof 发现的 mock realm/ID 问题。只修正 mock 行为后旧137项全过，
+未放宽产品 guard。早期 double-escaped NBSP/CRLF 误称覆盖已更正并保留原收据。
+详细范围、失败原因和限制见 [native Text source-import](../design-studio-native-text-source-import.md)。
+所有本轮执行为 CPU/VM；真实 production native 执行 **NOT_RUN**，没有像素通过声明。

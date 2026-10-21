@@ -147,6 +147,8 @@ export const suites = [
         "tests/apps/design-studio/text-line-height.test.mjs",
         "tests/apps/design-studio/text-ranges.test.mjs",
         "tests/apps/design-studio/native-text-ranges-source.test.mjs",
+        "tests/apps/design-studio/native-text-import.test.mjs",
+        "tests/apps/design-studio/native-text-export.test.mjs",
         "tests/apps/design-studio/native-text-range-rest-projection.test.mjs",
         "tests/apps/design-studio/native-text-percent-transport.test.mjs",
         "tests/apps/design-studio/native-text-range-compare.test.mjs",

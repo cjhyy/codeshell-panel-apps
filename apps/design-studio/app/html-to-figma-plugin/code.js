@@ -5379,6 +5379,79 @@
   var MAX_SVG_EXPORT_BYTES = 384 * 1024;
   var MAX_LOCAL_SVG_EXPORT_BYTES = 4 * 1024 * 1024;
 
+  // apps/design-studio/app/native-text-ranges-source.mjs
+  var MAX_NATIVE_TEXT_RANGE_SOURCE_BYTES = 256 * 1024;
+  var NATIVE_TEXT_RANGE_FIELDS = Object.freeze([
+    "fontName",
+    "fontSize",
+    "fontWeight",
+    "fontStyle",
+    "lineHeight",
+    "letterSpacing",
+    "fills",
+    "textDecoration",
+    "textDecorationStyle",
+    "textDecorationOffset",
+    "textDecorationThickness",
+    "textDecorationColor",
+    "textDecorationSkipInk",
+    "hyperlink",
+    "textCase",
+    "openTypeFeatures",
+    "textStyleId",
+    "fillStyleId",
+    "listOptions",
+    "listSpacing",
+    "indentation",
+    "paragraphIndent",
+    "paragraphSpacing",
+    "textStyleOverrides",
+    "boundVariables",
+    "textWrapStyle"
+  ]);
+  var NATIVE_TEXT_RANGE_SCALAR_ONLY_FIELDS = Object.freeze([
+    "hasMissingFont",
+    "textTruncation",
+    "maxLines",
+    "leadingTrim",
+    "hangingPunctuation",
+    "hangingList",
+    "textAlignHorizontal",
+    "textAlignVertical",
+    "textAutoResize",
+    "layoutSizingHorizontal",
+    "layoutSizingVertical"
+  ]);
+
+  // apps/design-studio/app/native-text-range-plan.mjs
+  var MAX_NATIVE_TEXT_RANGE_RUNS = MAX_TEXT_RANGES * 2 + 1;
+  var geometry = ["textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk"];
+  var fields = [
+    "type",
+    "text",
+    "textSource",
+    "textFlow",
+    "textRanges",
+    "fill",
+    "fillPaints",
+    "textDecoration",
+    ...geometry,
+    "textOverflow",
+    "fontSize"
+  ];
+
+  // apps/design-studio/app/native-text-range-hint.mjs
+  var MAX_NATIVE_TEXT_RANGE_HINT_BYTES = 64 * 1024;
+
+  // apps/design-studio/app/native-text-import.mjs
+  var NATIVE_TEXT_SUPPLEMENT_KEY = "nativeTextRanges";
+  var NATIVE_TEXT_RESERVED_RAW_KEYS = Object.freeze([
+    "codeshellNativeTextRanges",
+    "codeshellNativeTextRangeHint",
+    "codeshellTextRangeIntent",
+    NATIVE_TEXT_SUPPLEMENT_KEY
+  ]);
+
   // apps/design-studio/app/figma-assets.mjs
   var MAX_FIGMA_ASSET_BYTES = 8 * 1024 * 1024;
   var MAX_FIGMA_ASSET_TOTAL_BYTES = 12 * 1024 * 1024;
@@ -5630,23 +5703,6 @@
     if (original.omittedPseudos)
       warnings.push("\u5DF2\u7701\u7565\u6355\u83B7\u65F6\u65E0\u7ED8\u5236\u3001\u65E0\u6587\u5B57\u4E14\u8131\u79BB\u6587\u6863\u6D41\u7684\u7A7A\u4F2A\u5143\u7D20\uFF1B\u4FDD\u7559\u771F\u5B9E\u8282\u70B9\uFF0C\u4F46\u4E0D\u4FDD\u7559\u4F2A\u5143\u7D20\u6269\u5C55\u7684\u70B9\u51FB\u533A\u57DF\u3002");
   }
-
-  // apps/design-studio/app/native-text-range-plan.mjs
-  var MAX_NATIVE_TEXT_RANGE_RUNS = MAX_TEXT_RANGES * 2 + 1;
-  var geometry = ["textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk"];
-  var fields = [
-    "type",
-    "text",
-    "textSource",
-    "textFlow",
-    "textRanges",
-    "fill",
-    "fillPaints",
-    "textDecoration",
-    ...geometry,
-    "textOverflow",
-    "fontSize"
-  ];
 
   // apps/design-studio/app/native-text-ranges.mjs
   function assertNativeTextRangeBoundary(node) {

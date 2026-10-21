@@ -120,7 +120,7 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
         if (settings.format === "PNG") return new Uint8Array(Buffer.from(PNG, "base64"));
         if (settings.format === "SVG_STRING")
           return '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L1 1Z"/></svg>';
-        return { document: snapshot(this), components: {}, styles: {} };
+        return toRuntime({ document: snapshot(this), components: {}, styles: {} });
       },
     };
     if (["RECTANGLE", "FRAME", "COMPONENT", "INSTANCE", "COMPONENT_SET", "SECTION"].includes(node.type)) {
@@ -297,6 +297,7 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
   }
   const initial = make(source),
     root = {
+      id: "0:0", type: "DOCUMENT",
       children: [initial],
       appendChild(node) {
         if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1);
@@ -396,6 +397,10 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
   const context = vm.createContext({ figma, __html__: "UI", Uint8Array, ArrayBuffer });
   const parseRuntime = vm.runInContext("JSON.parse", context);
   toRuntime = value => parseRuntime(JSON.stringify(value));
+  // SDK value records belong to the plugin realm; cross-realm host objects
+  // are deliberately refused by the production owned-data proof.
+  for (const node of all.values()) for (const key of ["fills", "strokes", "effects", "fontName", "lineHeight", "letterSpacing"])
+    if (node[key] && node[key] !== mixed) node[key] = toRuntime(node[key]);
   vm.runInContext(code, context);
   return {
     figma,
@@ -404,6 +409,7 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
     calls,
     images,
     snapshot,
+    jsonRest: value => toRuntime(value),
     failName(value) {
       failName = value;
     },
@@ -3100,4 +3106,74 @@ test("a foreign Grid sibling stays unchanged when nested creation resumes after 
   assert.equal(foreign.removed, false); assert.equal(runtime.figma.currentPage, originalPage);
   assert.equal(runtime.figma.root.children.length, 2);
   assert.deepEqual({ width: foreign.width, height: foreign.height, transform: foreign.relativeTransform, data: foreign.pluginData }, before);
+});
+
+test("read-only production export captures complete Text ranges and reimports exact current intent with raw fallback retained", async () => {
+  const runtime = harness(undefined, { nativeTextRanges: true, nativeTextLayout: true });
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(rangeTransfer()) });
+  assert.equal(runtime.messages.at(-1).type, "imported", runtime.messages.at(-1).message);
+  const frame = runtime.figma.currentPage.children[0], text = frame.children[0];
+  text.absoluteBoundingBox = { x: 20, y: 20, width: text.width, height: text.height };
+  const selection = runtime.figma.currentPage.selection, dataBefore = JSON.stringify(text.pluginData);
+  const writesBefore = text.rangeWrites.length, pagesBefore = runtime.figma.root.children.length;
+  await runtime.send({ type: "export-json", scope: "page" });
+  assert.equal(runtime.messages.at(-1).type, "exported", runtime.messages.at(-1).message);
+  const exported = JSON.parse(runtime.messages.at(-1).content), entry = exported.nativeTextRanges.nodes[text.id];
+  assert.equal(exported.nativeTextRanges.pluginId, runtime.figma.pluginId);
+  assert.equal(entry.source.characters, "A😀 linked\nend");
+  assert.equal(entry.hint, text.pluginData.codeshellTextRangeIntent);
+  assert(exported.previews[text.id], "the mixed-fill PNG remains available as raw fallback");
+  assert.equal(text.rangeWrites.length, writesBefore); assert.equal(JSON.stringify(text.pluginData), dataBefore);
+  assert.equal(runtime.figma.currentPage.selection, selection); assert.equal(runtime.figma.root.children.length, pagesBefore);
+  const restored = await prepareFigmaImport(exported, { sha256Bytes: async bytes => createHash("sha256").update(bytes).digest("hex") });
+  const canonical = restored.document.nodes.find(node => node.type === "text");
+  assert(canonical); assert.equal(canonical.textSource, text.characters);
+  assert.equal(canonical.lineHeight, text.lineHeight.value / 100);
+  assert.deepEqual(canonical.textRanges.ranges, [{ start: 4, end: 10, fill: "#1d70b8", href: "https://example.com/" }]);
+  assert.equal(JSON.stringify(restored.source.nativeTextRanges), JSON.stringify(exported.nativeTextRanges));
+  const binding = createFigmaBinding(restored), baseline = JSON.parse(serializeDesignDocument(restored.document));
+  assert.throws(() => createFigmaPatch(binding, baseline), error => error.code === "TEXT_RANGES_NATIVE_UNSUPPORTED");
+});
+
+test("production export rechecks earlier Text after preview awaits and never publishes stale supplemental data", async () => {
+  for (const mutate of [text => text.getRangeHyperlink = () => null, text => text.isMask = true,
+    (text, runtime) => text.effects = runtime.jsonRest([{ type: "DROP_SHADOW", visible: true }])]) {
+    const runtime = harness(undefined, { nativeTextRanges: true, nativeTextLayout: true });
+    await runtime.send({ type: "import-transfer", content: JSON.stringify(rangeTransfer()) });
+    assert.equal(runtime.messages.at(-1).type, "imported", runtime.messages.at(-1).message);
+    const text = runtime.figma.currentPage.children[0].children[0];
+    text.absoluteBoundingBox = { x: 20, y: 20, width: text.width, height: text.height };
+    const originalExport = text.exportAsync;
+    text.exportAsync = async settings => {
+      const response = await originalExport.call(text, settings);
+      if (settings.format === "SVG_STRING") mutate(text, runtime);
+      return response;
+    };
+    const writes = text.rangeWrites.length, data = JSON.stringify(text.pluginData);
+    await runtime.send({ type: "export-json", scope: "page" });
+    assert.equal(runtime.messages.at(-1).type, "error");
+    assert.match(runtime.messages.at(-1).message, /changed|unavailable/u);
+    assert.equal(text.rangeWrites.length, writes); assert.equal(JSON.stringify(text.pluginData), data);
+  }
+});
+
+test("production export measures the whole16MiB envelope after individually bounded sources and raw hints", async () => {
+  const original = rect("1:2", { type: "TEXT", characters: "Bounded current source", unknownFutureRaw: "x".repeat(100000),
+    style: { fontFamily: "Inter", fontSize: 20, fontWeight: 400, lineHeightPercentFontSize: 120, lineHeightUnit: "FONT_SIZE_%", textAutoResize: "HEIGHT" } });
+  const small = harness(page([original]), { nativeTextRanges: true, nativeTextLayout: true });
+  small.all.get("1:2").pluginData.codeshellTextRangeIntent = "x".repeat(60000);
+  await small.send({ type: "export-json", scope: "page" });
+  assert.equal(small.messages.at(-1).type, "exported", small.messages.at(-1).message);
+  const first = JSON.parse(small.messages.at(-1).content);
+  assert(first.nativeTextRanges.nodes["1:2"].source);
+  assert.equal(first.nativeTextRanges.nodes["1:2"].hint.length, 60000);
+  const source = page(Array.from({ length: 100 }, (_, index) => ({ ...clone(original), id: `bulk:${index}` })));
+  const large = harness(source, { nativeTextRanges: true, nativeTextLayout: true });
+  for (const text of large.figma.currentPage.children) text.pluginData.codeshellTextRangeIntent = "x".repeat(60000);
+  const pages = large.figma.root.children.length;
+  await large.send({ type: "export-json", scope: "page" });
+  assert.equal(large.messages.at(-1).type, "error");
+  assert.match(large.messages.at(-1).message, /16 MiB/u);
+  assert.equal(large.figma.root.children.length, pages);
+  assert(!large.calls.some(call => call[0].startsWith("setRange")));
 });

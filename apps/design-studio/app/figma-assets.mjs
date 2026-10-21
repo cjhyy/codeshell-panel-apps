@@ -1,3 +1,4 @@
+import { normalizeNativeTextSupplement, copyNativeTextEnvelope } from "./native-text-import.mjs";
 /* Local asset tables for the Figma bridge. Binary bytes never enter the design schema. */
 import { createDesignResourcePersistencePlan, MAX_DESIGN_RESOURCES } from "./resource-store.mjs";
 import { imageMimeFromBytes } from "./image-mime.mjs";
@@ -52,7 +53,9 @@ export function normalizeFigmaSource(input) {
   } else {
     let content;
     try {
-      content = JSON.stringify(input);
+      // A source carrying native observations must not execute a toJSON or
+      // accessor hook before its complete16MiB budget is measured.
+      content = JSON.stringify(Object.hasOwn(input ?? {}, "nativeTextRanges") ? copyNativeTextEnvelope(input) : input);
     } catch {
       throw new Error("Figma JSON 包含循环或不可序列化数据。");
     }
@@ -153,6 +156,7 @@ export function normalizeFigmaSource(input) {
       )
         throw new Error("Figma 选区父级变换无效。");
   }
+  const nativeTextRanges = normalizeNativeTextSupplement(value.nativeTextRanges);
   return {
     format: "codeshell.figma.source",
     version: 1,
@@ -161,6 +165,7 @@ export function normalizeFigmaSource(input) {
     nodes,
     assets,
     previews,
+    ...(nativeTextRanges ? { nativeTextRanges } : {}),
     ...(value.selection ? { selection: value.selection } : {}),
     ...(Array.isArray(value.warnings)
       ? { warnings: value.warnings.slice(0, 200).map((warning) => String(warning).slice(0, 2000)) }
