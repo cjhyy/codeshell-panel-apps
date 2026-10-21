@@ -291,3 +291,31 @@ test("uniform SDK font weight must preserve the observed named face or an explic
   assert.equal(built.status, "bound");
   assert.equal(admitNativeTextImport({ rest: input.rest, source: built.source }).status, "unsupported");
 });
+
+test("literal native family names cannot become CSS lists, stripped quotes or generic fallback before preview bypass", async () => {
+  const { designFontFamilyCss } = await import("../../../apps/design-studio/app/font-css.mjs");
+  const { prepareFigmaImport } = await import("../../../apps/design-studio/app/figma-bridge.mjs");
+  assert.equal(designFontFamilyCss("Example, Family"), '"Example", "Family"');
+  assert.equal(designFontFamilyCss('"Quoted Face"'), '"Quoted Face"');
+  assert.equal(designFontFamilyCss("SeRiF"), "serif");
+  for (const family of ["Example, Family", '"Quoted Face"', "'Quoted Face'", "serif", "SeRiF", "system-ui", "emoji", "Back\\slash"]) {
+    const input = source(1), observations = copy(fixture.cases[1].capture.observations);
+    input.rest.style.fontFamily = family; observations.scalars.fontName.value.family = family;
+    for (const segment of observations.segments) segment.values.fontName.value.family = family;
+    const built = buildNativeTextRangeSource({ rest: input.rest, ...observations });
+    assert.equal(built.status, "bound");
+    const before = JSON.stringify({ rest: input.rest, source: built.source });
+    const result = admitNativeTextImport({ rest: input.rest, source: built.source });
+    assert.equal(result.status, "unsupported"); assert.equal(result.ownMixedPreview, undefined);
+    assert.equal(JSON.stringify({ rest: input.rest, source: built.source }), before);
+    const id = input.rest.id;
+    const envelope = { nodes: { "0:1": { document: { id: "0:1", type: "CANVAS", children: [input.rest] } } },
+      nativeTextRanges: { version: 1, nodes: { [id]: { source: built.source } } },
+      assets: { preview: { mime: "image/png", base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7S8AAAAASUVORK5CYII=" } },
+      previews: { [id]: { assetId: "preview", bounds: input.rest.absoluteBoundingBox } } };
+    const imported = await prepareFigmaImport(envelope, { sha256Bytes: async bytes => createHash("sha256").update(bytes).digest("hex") });
+    assert.equal(imported.document.nodes[0].type, "image");
+    assert.equal(JSON.stringify(imported.source.nativeTextRanges.nodes[id].source), JSON.stringify(built.source));
+    assert(imported.warnings.some(note => note.code === "native-text-source-unsupported"));
+  }
+});

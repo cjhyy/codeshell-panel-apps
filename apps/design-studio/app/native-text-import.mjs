@@ -11,6 +11,11 @@ export const NATIVE_TEXT_SUPPLEMENT_KEY = "nativeTextRanges";
 export const NATIVE_TEXT_RESERVED_RAW_KEYS = Object.freeze([
   "codeshellNativeTextRanges", "codeshellNativeTextRangeHint", "codeshellTextRangeIntent", NATIVE_TEXT_SUPPLEMENT_KEY,
 ]);
+// Raw SDK names are literal. The current canonical renderer parses a CSS
+// family list, strips quote pairs and recognizes these unquoted generics.
+// Refuse the ambiguous native subset instead of aliasing its face.
+const genericFamilies = new Set(["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui",
+  "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded", "emoji", "math", "fangsong"]);
 const getters = ["textDecoration", "textDecorationStyle", "textDecorationOffset",
   "textDecorationThickness", "textDecorationColor", "textDecorationSkipInk", "hyperlink"];
 const own = (value, key) => Object.hasOwn(value, key);
@@ -137,7 +142,8 @@ export function admitNativeTextImport(input) {
     const font = value(first, "fontName"), size = value(first, "fontSize"), weight = value(first, "fontWeight"),
       style = value(first, "fontStyle"), line = value(first, "lineHeight"), spacing = value(first, "letterSpacing");
     if (!plain(font) || typeof font.family !== "string" || !font.family.length ||
-        font.family !== font.family.trim() || font.family.length > 120 || /[\u0000-\u001f\u007f]/u.test(font.family) ||
+        font.family !== font.family.trim() || font.family.length > 120 || /[\u0000-\u001f\u007f,"'\\]/u.test(font.family) ||
+        genericFamilies.has(font.family.toLowerCase()) ||
         !Number.isFinite(size) || size < 6 || size > 240 ||
         ![100,200,300,400,500,600,700,800,900].includes(weight) ||
         !["REGULAR", "ITALIC"].includes(style) ||

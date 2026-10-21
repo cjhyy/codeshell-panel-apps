@@ -50,6 +50,10 @@ lineHeightPx and REST percentage representation remain unchanged in raw source.
 All four retained actual cases preserve ratios1.2000000476837158 or
 1.3157999515533447 through normalization, measurement, save and reopen.
 
+Raw SDK font families containing comma, quote or escape syntax, or equal to CSS
+font generics, refuse admission before editable preview bypass. Their literal
+native family cannot yet be proved equivalent to the canonical CSS family-list
+representation; no alias is substituted and raw source/fallback stays retained.
 Font face/style/weight, alignment, letter spacing, paragraph/list/variable and
 paint/link context must fit the existing canonical subset. Only supported uniform
 metrics may carry paint/link ranges. Canonical intent admission is distinct from
