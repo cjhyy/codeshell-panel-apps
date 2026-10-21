@@ -1,5 +1,6 @@
 import { normalizeShadowStack, nativeShadowStackEffects } from "./shadow-stack.mjs";
 import { validTextLineHeight } from "./text-line-height.mjs";
+import { assertNativeTextRangeBoundary } from "./native-text-ranges.mjs";
 import { validateLayoutSpacing, validateNativeLayoutSpacing, nativeMainGap, mainAxisGap } from "./layout-spacing.mjs";
 import { distributeFillSizes } from "./layout.mjs";
 import { normalizeCornerRadii, effectiveCornerRadii } from "./corner-radii.mjs";
@@ -1390,6 +1391,7 @@ export function createFigmaTransfer(input, { resources = new Map() } = {}) {
   const gridParents = new WeakMap();
   const gridParentOf = (node) => gridParents.get(node);
   const convert = (node, parent) => {
+    assertNativeTextRangeBoundary(node);
     gridParents.set(node, parent ?? null);
     if (node.type === "instance") {
       skippedNodes += 1;

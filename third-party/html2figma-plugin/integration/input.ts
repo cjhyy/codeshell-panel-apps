@@ -4,6 +4,7 @@ import { inertDesignSvg } from "../../../apps/design-studio/app/design-node-adap
 import { cssLinearBackgroundPaints } from "../../../apps/design-studio/app/css-linear-gradient.mjs";
 import { designPaintsToFigma, cssLinearNeedsNativeWarning } from "../../../apps/design-studio/app/paint.mjs";
 import { textWhitespaceSource, retainTextWhitespace } from "./text-whitespace";
+import { assertNativeTextRangeBoundary } from "../../../apps/design-studio/app/native-text-ranges.mjs";
 export { inertDesignSvg };
 export const MAX_INPUT_BYTES = 12 * 1024 * 1024;
 export const MAX_NODES = 3000;
@@ -37,6 +38,7 @@ export function prepareDesignInput(input: any) {
   function inspect(node: any, depth = 0) {
     if (!object(node) || depth > 60 || ++count > MAX_NODES)
       throw new Error("节点树最多 3000 个节点、60 层");
+    assertNativeTextRangeBoundary(node);
     if (!node.nodeType && !["FRAME", "GROUP", "RECTANGLE", "TEXT", "SVG"].includes(node.type))
       throw new Error(`不支持节点类型：${String(node.type ?? "unknown").slice(0, 60)}`);
     if (node.nodeType && !["container", "text", "image", "svg"].includes(node.nodeType))

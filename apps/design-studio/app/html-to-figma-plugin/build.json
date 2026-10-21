@@ -31,12 +31,14 @@
     "apps/design-studio/app/layout-spacing.mjs",
     "apps/design-studio/app/linear-gradient-geometry.mjs",
     "apps/design-studio/app/native-stroke-inactive.mjs",
+    "apps/design-studio/app/native-text-ranges.mjs",
     "apps/design-studio/app/paint.mjs",
     "apps/design-studio/app/resource-store.mjs",
     "apps/design-studio/app/shadow-stack.mjs",
     "apps/design-studio/app/stroke.mjs",
     "apps/design-studio/app/text-line-height.mjs",
     "apps/design-studio/app/text-metrics.mjs",
+    "apps/design-studio/app/text-ranges.mjs",
     "apps/design-studio/app/vendor/html2figma-browser.mjs",
     "third-party/html2figma-plugin/integration/capture.ts",
     "third-party/html2figma-plugin/integration/code.ts",
@@ -76,13 +78,13 @@
     },
     {
       "path": "code.js",
-      "bytes": 229281,
-      "sha256": "bd0939893e309ce64db71558fc43c008b300c7fbbfd17dc74192e830d5815438"
+      "bytes": 230023,
+      "sha256": "70a06cf492c49b06cc106a024b5102dd128d26d0b503de4e41d0eb402d969288"
     },
     {
       "path": "ui.html",
-      "bytes": 364099,
-      "sha256": "afdb04d176d3da63d92121897a796d53ef41c70d9f8253e05831d69eb979f2d0"
+      "bytes": 364841,
+      "sha256": "2aedd300581503bc684540e2aa55b88d593ee18565d05a4ee8acd223e60810fe"
     },
     {
       "path": "README.md",

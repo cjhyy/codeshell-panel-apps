@@ -1,4 +1,5 @@
 import { textLineHeightPixels } from "./text-line-height.mjs";
+import { validateTextRanges } from "./text-ranges.mjs";
 import { mainAxisGap } from "./layout-spacing.mjs";
 import {
   gridPlacements, gridTrackSizes, effectiveGridRows, gridFillHugContentHeight,
@@ -933,6 +934,7 @@ function applyContainerSizeLimits(nodes, container) {
 
 export function applyAutoLayout(nodes, containerId, { textMeasurer } = {}) {
   if (!Array.isArray(nodes) || typeof containerId !== "string") return false;
+  nodes.forEach(validateTextRanges);
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const parentOf = (node) => node.parentId ? byId.get(node.parentId) : null;
   const container = byId.get(containerId);
@@ -979,6 +981,7 @@ function nodeDepth(nodes, node) {
  */
 export function applyAutoLayouts(nodes, containerIds, { textMeasurer } = {}) {
   if (!Array.isArray(nodes) || !containerIds) return false;
+  nodes.forEach(validateTextRanges);
   const requested = new Set(containerIds);
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const parentOf = (node) => node.parentId ? byId.get(node.parentId) : null;

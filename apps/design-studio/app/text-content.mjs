@@ -1,4 +1,5 @@
 import { validTextMetrics } from "./text-metrics.mjs";
+import { validateTextRanges, mapTextDisplay } from "./text-ranges.mjs";
 
 const recordedText = (signature) => {
   try {
@@ -22,6 +23,10 @@ function onlySoftBreaks(display, source) {
 
 /** Native characters are authored content; browser soft breaks are display layout. */
 export function nativeTextContent(node, baseline) {
+  if (node.textRanges !== undefined) {
+    validateTextRanges(node);
+    return mapTextDisplay(node).sourceText;
+  }
   const display = node.text ?? "",
     source = node.textSource;
   if (typeof source !== "string" || display === source) return display;

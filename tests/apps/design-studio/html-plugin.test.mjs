@@ -60,6 +60,19 @@ test("real upstream FigmaService creates editable styled text/frame, preserves e
   assert(f.calls.some((c) => c[0] === "undo"));
 });
 
+test("standalone raw inputs refuse staged text ranges before upstream mutation or font loading", async () => {
+  const f = htmlPluginHarness(), text = textFixture();
+  text.textRanges = { version: 1, sourceSignature: JSON.stringify([text.characters]), ranges: [{ start: 0, end: 1, fill: "#123456" }] };
+  const before = JSON.stringify(text), callCount = f.calls.length;
+  const result = await f.importDesign(frameFixture([text]));
+  assert.equal(result.type, "import-error");
+  assert.match(result.message, /范围文字.*已阻止互转/u);
+  assert.deepEqual(f.page.children, [f.existing]);
+  assert.equal(f.calls.length, callCount);
+  assert.equal(f.fonts.size, 0);
+  assert.equal(JSON.stringify(text), before);
+});
+
 test("missing and duplicate DesignNode IDs cannot leak retained gradient paints onto unrelated nodes", async () => {
   for (const id of [undefined, "duplicate"]) {
     const f = htmlPluginHarness();
