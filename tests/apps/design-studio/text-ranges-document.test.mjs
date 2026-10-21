@@ -88,3 +88,38 @@ test("shared range validation/edits work with no URL, TextEncoder or structuredC
   assert.equal(context.result.payload.sourceSignature,value.textRanges.sourceSignature);
   assert.equal(context.result.edited.text.slice(6,9),"new");
 });
+
+test("optional-source ranged HUG text reflows copy edits and survives save/reopen without changing the original",()=>{
+  const value=plainFixture(),frame=value.pages[0].children[0],text=frame.children[0];
+  Object.assign(frame,{layout:"vertical",width:400,height:50,padding:0,alignItems:"start",layoutSizingVertical:"hug"});
+  Object.assign(text,{x:frame.x,y:frame.y,text:"AB",width:20,height:24,layoutSizingHorizontal:"hug",layoutSizingVertical:"hug",textRanges:{version:1,sourceSignature:textRangeSourceSignature("AB"),ranges:[{start:0,end:2,fill:"#ff0000"}]}});
+  const original=structuredClone(value),doc=normalizeDesignDocument(value),node=textOf(doc);
+  assert.equal(node.textSource,undefined);
+  const measurement={configure(){},measure:text=>({width:text.length*10,ink:{x:0,y:0,width:text.length*10,height:20},bottom:20}),fontAvailable:()=>true};
+  const reflow=document=>applyAutoLayouts(document.nodes,[frame.id],{textMeasurer:measurement});
+  const manual=normalizeDesignDocument(value);manual.nodes.find(n=>n.id===frame.id).layout="none";reflow(manual);assert.equal(textOf(manual).textSource,undefined);
+  const plain=normalizeDesignDocument(value),plainNode=textOf(plain);delete plainNode.textRanges;
+  const plainEdit=replaceTextRange(plainNode,{start:2,end:2,text:"CDEFGHIJ",affinity:"none",expectedSourceSignature:textRangeSourceSignature("AB")});
+  Object.assign(plainNode,plainEdit);reflow(plain);assert.equal(plainNode.width,100);assert.equal(plainNode.textSource,"ABCDEFGHIJ");
+  reflow(doc);assert.equal(node.width,20);assert.equal(node.textSource,"AB");
+  const edited=replaceTextRange(node,{start:2,end:2,text:"CDEFGHIJ",affinity:"before",expectedSourceSignature:node.textRanges.sourceSignature});
+  Object.assign(node,edited);reflow(doc);assert.equal(node.width,100);assert.equal(node.height,24);
+  const reopened=normalizeDesignDocument(JSON.parse(serializeDesignDocument(doc))),restored=textOf(reopened);
+  for(const width of [120,400]){reopened.nodes.find(n=>n.id===frame.id).width=width;reflow(reopened);assert.equal(restored.width,100);assert.equal(restored.textSource,"ABCDEFGHIJ");}
+  assert.deepEqual(value,original);
+});
+
+test("range edits retain known authored empty/LF sources with existing one-line floor and min-width rules",()=>{
+  const value=plainFixture(),frame=value.pages[0].children[0],text=frame.children[0];
+  Object.assign(frame,{layout:"vertical",padding:0,alignItems:"start",layoutSizingVertical:"hug"});
+  Object.assign(text,{text:"AB",width:20,height:24,minWidth:12,layoutSizingHorizontal:"hug",layoutSizingVertical:"hug",textRanges:{version:1,sourceSignature:textRangeSourceSignature("AB"),ranges:[{start:0,end:2,fill:"#ff0000"}]}});
+  const doc=normalizeDesignDocument(value),node=textOf(doc),measurement={configure(){},measure:text=>({width:text.length*10,ink:{x:0,y:0,width:text.length*10,height:20},bottom:20}),fontAvailable:()=>true};
+  const reflow=()=>applyAutoLayouts(doc.nodes,[frame.id],{textMeasurer:measurement});
+  const emptied=replaceTextRange(node,{start:0,end:2,text:"",affinity:"none",expectedSourceSignature:node.textRanges.sourceSignature});
+  for(const key of Object.keys(node))if(!Object.hasOwn(emptied,key))delete node[key];Object.assign(node,emptied);
+  assert.equal(node.textSource,"");assert.equal(node.textRanges,undefined);reflow();assert.equal(node.width,12);assert.equal(node.height,24);
+  const floor=replaceTextRange(node,{start:0,end:0,text:"",affinity:"none",expectedSourceSignature:textRangeSourceSignature("")});
+  delete floor.minWidth;for(const key of Object.keys(node))if(!Object.hasOwn(floor,key))delete node[key];Object.assign(node,floor);reflow();assert.equal(node.width,1);
+  const lines=replaceTextRange(node,{start:0,end:0,text:"AB\n\nCD",affinity:"none",expectedSourceSignature:textRangeSourceSignature("")});
+  Object.assign(node,lines);reflow();assert.equal(node.textSource,"AB\n\nCD");assert.equal(node.text,"AB\n\nCD");assert.equal(node.width,20);assert.equal(node.height,72);
+});

@@ -212,7 +212,9 @@ function editBounds(node, edit, allowEmpty = true) {
 function editedNode(node, source, ranges) {
   const next = clone(node);
   next.text = source;
-  if (own(node, "textSource") || node.textFlow === "wrap") next.textSource = source;
+  // An explicit source-indexed edit knows the full authored value, including
+  // an empty result or an edit on a previously unstyled Text.
+  next.textSource = source;
   delete next.textMetrics; delete next.textMeasurement; delete next.textFlowWidth;
   if (!source.trim()) { delete next.textFlow; delete next.textOverflow; }
   const normalized = coalesce(ranges);
