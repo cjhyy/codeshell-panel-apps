@@ -171,14 +171,19 @@ test("one live CSSOM serialization validates fractional wrappers and rejects nea
   const results = await page.evaluate(async () => {
     const { convertToDesignDSL } = await import("/vendor.mjs");
     const { createHtmlAutoMarginCapture, consumeHtmlAutoMarginPlan } = await import("/proof.mjs");
-    return ["original", "padding-plus", "padding-minus", "placement-plus", "placement-minus"].map(mode => {
+    return ["original", "padding-plus", "padding-minus", "size-plus", "size-minus", "placement-plus", "placement-minus"].map(mode => {
       const elements = new Map(), root = document.querySelector("#fixture");
       const tree = convertToDesignDSL(root, { onElement: (id, element) => elements.set(id, element) });
       const wrapper = tree.children.find(node => node.name === "margin-wrapper");
       if (!wrapper) throw new Error("Missing upstream wrapper");
       const delta = mode.endsWith("minus") ? -0.0001 : 0.0001;
       if (mode.startsWith("padding")) wrapper.layout.padding.bottom += delta;
-      if (mode.startsWith("placement")) wrapper.bounds.height += delta;
+      if (mode.startsWith("size")) wrapper.bounds.height += delta;
+      if (mode.startsWith("placement")) {
+        const originalChildY = wrapper.bounds.y + wrapper.children[0].bounds.y;
+        wrapper.bounds.y += delta;
+        wrapper.children[0].bounds.y = originalChildY - wrapper.bounds.y;
+      }
       const plan = createHtmlAutoMarginCapture({ tree, root, elements, ambiguousElements: new WeakSet() })(tree);
       const serialized = getComputedStyle(root.children[0]).marginBottom;
       const exactUsed = (root.getBoundingClientRect().height - 40 -
