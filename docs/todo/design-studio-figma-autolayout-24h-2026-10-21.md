@@ -1754,3 +1754,95 @@ HTML新范围恢复或宣称native像素通过。
 
 24小时目标仍active，截止10月22日00:31不变。未push、发布或安装Host；primary继续
 使用上一完整通过和实际native验证的7e989c9，聚合候选待修复三项语义覆盖失败再集成。
+
+## ROUND34 · 2026-10-21 08:32 SG · 表格/浮动覆盖修复，完整检查恢复通过
+
+ROUND33 的三项完整测试失败保留，不修改比较器或把旧正例改成负例。独立分支
+cb1641c 固定表格、79e704c float/clearfix 分别经源码 peer 审查后正常合入；最终产品
+候选089a6def。表格只在整表恢复完整提交后发布当前真实 Element/原始 canonical 对象
+证明，BR 仅处理该单元的精确 token。审计发布失败单独报告，不能伪称表格回滚。
+Float 只接受最终 normalize 后再次通过 nativeGridPlan、相同原对象/轨道/placement/
+Fill/DOM顺序的成功计划；移动 block 只消费已验证的精确空 ::after 清除元素，不忽略
+真实文字、paint、非零或未知生成内容。已有显式 wrapper factory 仍是唯一中间层证明。
+
+30项受影响CPU检查通过。与同一clean912基线配对，GOV原有24/24义务在三种模式
+全部通过；rows1/splitrow/bleed/mobile 的 source、canonical、portable、transfer、SVG和
+所有PNG字节不变，warning与native admission不变。真实GOV像素仍7536/7536/7541、
+max95，未宣称整页0误差。交付verification SHA023c3cebfdbf25e78561be188ea3c2e3c5868dfbd13a406edef32613f33e1321；
+flow paired SHA3ed040938c9ecf85ca8821eb5f183a11654d709bf3683dcea8d497e0bf54a42b；
+GOV combined SHA9066a25c6e7112c04a622e4550a19679ff5f995d279cf7fcee892ea5e45ff1aa。
+
+089a6def 完整 main664项：663pass/0fail/1skip，198152.70625ms；UI107项：
+106pass/0fail/1skip，109455.337459ms；合计769pass/0fail/2skip。两套各自前后共四份
+118个app文件SHA一致、HEAD一致、tracked clean且runner/preload未改。typecheck、validate、
+三项generated检查和Design Studio scoped build:check均exit0；没有用仓库其他Panel的
+陈旧产物掩盖本次范围。root combined receipt位于外部evidence/round34-full-gates-receipt.json，
+SHA6d435aa2d13a34993b3c15c51bbe5a91ff427e1b50d5ad5dcbe5054f30d992a4。
+
+通知栏混合文字 exact-contract 已定：单一可编辑 Text，以完整authored source的精确
+JSON签名绑定有序、不重叠UTF16 paint/decoration/link范围；软换行投影不改作者字符，
+可明确编辑affinity/null清除并拒绝过期payload。合同SHA5ffa6cca9ae21b6cee536289c34a852b0b0d8613101e21b626b50b3cf6d541f1。
+core/schema/SVG、CanvasKit/frontend、native和capture planner正分隔离分支实施；尚未
+开启HTML正向提升。实际两个通知栏本来均为真实P+一个原Text，首个范围方案不删除
+任何9/12原节点或mapping。CanvasKit缺自定义underline offset/skipInk setter，保持
+supplied-font整段Paragraph；不能把现有2737像素underline负例缓存换成成功。
+
+CPU supplied-alias研究也已完成独立source/JSON审查：冻结18份freshCPU源参考全部0，
+显式研究alias附着缓存13/18为0、五例各1像素/max1；默认supplied Paragraph仍0/18，
+三个underline控制合计2737像素/max229。495项artifact hash/113比较可重放；产品文字
+模块b9ece840未改变。delivery SHA d235ffd2e36422d5584b4809f13b978547e3a8baf527acfa165f03d3565e1a24，
+peer SHA b04e2404911cc32c4a7a3865a6a3eed1d60f79ab1610752cf39b09587e0b29ca。
+
+新的本地native文字区间SDK能力探针仍是准备期，独立审查已在安装前拦截换行转义、
+JSON_REST返回对象类型等问题；8项VM检查通过，页ID/name/selection固定、一次派发、
+过期拒绝及返回原页面完整raw对照明确。它不是production互转或网页像素通过收据。
+本轮完整通过后把候选及本记录快进稳定primary；无push/发布/Host安装。
+24小时目标继续active，截止仍为10月22日00:31 SG。
+
+## ROUND35–37 · 2026-10-21 09:08 SG · 单一 Text 范围编辑与 HUG 修复通过完整检查
+
+完整文字合同已进入产品候选：核心范围验证、来源/显示软换行映射、schema、保存/备份、
+public edit_text/inspector/inline 编辑，以及 supplied-font CanvasKit Paragraph、流式 frontend
+和 SVG 纯色/链接输出。范围只改变同一个 Text 的样式，不产生绝对定位 run 节点。
+CanvasKit 和 SVG 对未证明的自定义 underline geometry 明确拒绝；frontend 保留作者
+CSS 单位。native create/patch/clear/delete baseline 与独立 HTML 插件入口暂提前拒绝
+全部 textRanges，防止新字段被旧统一文字创建器静默丢弃。HTML 混合文字提升未开启。
+
+原 valid ranged Text 可只带 text、没有 textSource；这时 HUG 编辑曾从20px停留在20px，
+独立 supplied-measurer 应为100px。保留4b前复现；7a161修复仅在响应式 AL 保留其已知
+作者来源，显式 source-indexed 内容编辑也保留完整来源。手工未编辑 Text 的可选字段
+不被全局补写。空来源遵守已有1px/minWidth与一行行高，显式 LF 保留真实分行。纯测试
+与真实 public 编辑、save/reopen、最终范围删除、plain edit_text HUG 均通过。
+
+ROUND35 冻结9cbc914：main689项684pass/4fail/1skip；UI107项106pass/1skip，源及
+helper未变。四项旧 VM fixture 漏接真实 validateTextRangeNodePatch；直接接入后还暴露
+三项跨 realm literal 不是本 realm plain data。fixture 传入 owned clone 后19/19通过，
+保留原断言与两次失败。ROUND36 冻结c7e9286：main691项689pass/1fail/1skip，UI
+106pass/1skip。新增范围 public 浏览器测试未等待首个 RAF 的 focus/select，导致预期
+替换变为插入；494c8f3补实际 activeElement 等待，并断言 beforeinput 确为[6,17]选区。
+旧失败日志均保留，未弱化最终来源或范围断言。
+
+ROUND37 main 在494c8f3完整通过：691项690pass/0fail/1skip，216999.613375ms。
+UI沿用ROUND36的107项106pass/0fail/1skip，117663.291958ms；两版唯一 diff 为上述
+测试文件，main/UI前后及当前120个app SHA全部相等。typecheck、validate120、三项
+generated和Design Studio scoped build:check均exit0。合计798项，796pass/0fail/2skip。
+外部evidence/round37-full-gates-receipt.json记录严格库存相等、失败保留和复用依据。
+稳定primary只在这份完整通过后快进；未push、发布或Host安装。
+
+原生 SDK 探针也完成了实际读取：首个2e78因UI错误假设event.source===parent未收到
+结果，保留失败；v2精确runId/nonce验证后，实际630cc收到6组/84次range操作，其中
+82成功、两个literal#目标被Figma拒绝。原始页面、选择和原selected board完整raw前后
+相等；owned探针页保留，UI关闭、relay停止、固定原插件三文件恢复且锁已释放。
+原生getRangeHyperlink的未知numeric1与null/mixed分开保存；REST遗漏的offset/thickness/
+skipInk从live getter读取，原Float32单位和值不量化。原生PERCENT与等价PIXELS两组
+PNG严格0，错误字号公式分别244/440像素；这只证明原生对照，不证明CSS underline
+基线。root analysis SHA8202ac8797cbedd0ed38ed83bbacf28e6e71590cfd0e5a1a55f6b574c8e5bacb；
+独立直接raw PNG重放SHA48ca3e5386ae91db7614841af91894c1db634e992f299128eafcdd4f64f146fd。
+
+只读capture及source/codec在隔离分支通过8+10独立控制、25项纯测试和peer审查，尚未
+激活产品提取/导入；任何非精确8bit颜色或无法表达的native underline整节点拒绝，保留
+原始观察，不截取styled prefix。HTML planner对真实6个宽度案例仍全部拒绝；它们的
+源PNG均与冻结参考严格0，graph仍9/12，不能把planner拒绝写成网页互转成功。已定位
+wide inline-A伪元素适用性和400px测量line split，正在独立分支修正，入口继续关闭。
+
+24小时目标仍active；当前约已运行8小时37分，继续至10月22日00:31 SG。

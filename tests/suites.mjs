@@ -89,6 +89,7 @@ export const suites = [
         "tests/apps/design-studio/headless-cli.test.mjs",
         "tests/apps/design-studio/frontend-export.test.mjs",
         "tests/apps/design-studio/frontend-responsive-text-source.test.mjs",
+        "tests/apps/design-studio/text-ranges-renderer.test.mjs",
         "tests/apps/design-studio/legacy-backup.test.mjs",
         "tests/apps/design-studio/portable-backup.test.mjs",
         "tests/apps/design-studio/recovery-session.test.mjs",

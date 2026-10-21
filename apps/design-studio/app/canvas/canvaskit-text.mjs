@@ -2,6 +2,25 @@ import { textLineHeightPixels } from "../text-line-height.mjs";
 import { designFillPaints, gradientMatrix } from "../paint.mjs";
 import { designFontFamilyCss } from "../font-css.mjs";
 import { currentTextMetrics } from "../text-metrics.mjs";
+import { projectTextRanges, validateTextRanges } from "../text-ranges.mjs";
+
+export function canvasKitTextRangePlan(node, { suppliedFont = true, missingGlyphs = 0 } = {}) {
+  const payload = validateTextRanges(node);
+  if (!payload) return null;
+  const refuse = (detail) => {
+    const error = new Error(`TEXT_RANGES_UNSUPPORTED: ${String(node.id).slice(0, 100)} · ${detail}`);
+    error.code = "TEXT_RANGES_UNSUPPORTED";
+    throw error;
+  };
+  if (!suppliedFont || missingGlyphs)
+    refuse("范围文字需要完整的已提供字体；浏览器逐段缓存不能保证整段塑形");
+  if (node.fillPaints?.length || node.strokeWidth > 0 && !["none", "transparent"].includes(node.stroke))
+    refuse("范围文字的多层填色或描边尚不能准确绘制");
+  if (payload.ranges.some((range) => ["textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk"]
+    .some((key) => Object.hasOwn(range, key))))
+    refuse("范围下划线的自定义厚度、偏移或跳墨尚不能准确绘制；文字和样式已保留");
+  return projectTextRanges(node);
+}
 
 const rgba = (hex, alpha = 1) =>
   ["transparent", "none"].includes(hex)
@@ -506,16 +525,70 @@ export async function createCanvasKitText({
     paint.delete();
   }
 
+  function drawTextRanges(canvas, node, alias, lines, runs, baseline, metrics) {
+    const styleFor = (decoration) => new CK.TextStyle({
+      fontFamilies: [alias],
+      fontSize: node.fontSize,
+      fontStyle: {
+        weight: CK.FontWeight[weightKey(node.fontWeight)],
+        width: CK.FontWidth.Normal,
+        slant: node.fontStyle === "italic" ? CK.FontSlant.Italic : CK.FontSlant.Upright,
+      },
+      fontVariations: [{ axis: "wght", value: node.fontWeight }],
+      letterSpacing: node.letterSpacing || 0,
+      decoration: decoration === "underline" ? CK.UnderlineDecoration :
+        decoration === "line-through" ? CK.LineThroughDecoration : CK.NoDecoration,
+    });
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index];
+      const fragments = runs.filter((run) => run.lineIndex === index && run.text !== "\n");
+      if (fragments.map((run) => run.text).join("") !== line)
+        throw new Error("TEXT_RANGES_UNSUPPORTED: 范围显示映射不属于当前完整文字行");
+      let builder, paragraph;
+      const paints = [];
+      try {
+        builder = CK.ParagraphBuilder.MakeFromFontProvider(
+          new CK.ParagraphStyle({ textStyle: styleFor(node.textDecoration), maxLines: 1 }), provider,
+        );
+        const background = new CK.Paint();
+        background.setAlphaf(0);
+        paints.push(background);
+        for (const run of fragments.length ? fragments : [{ text: " ", style: { fill: node.fill, textDecoration: node.textDecoration } }]) {
+          const foreground = makePaint(node, { type: "SOLID", color: run.style.fill, opacity: 1 });
+          paints.push(foreground);
+          builder.pushPaintStyle(styleFor(run.style.textDecoration), foreground, background);
+          builder.addText(run.text);
+          builder.pop();
+        }
+        // All paint runs share one builder/line and identical typography. Never
+        // shape substrings or place independent run Text/Canvas2D fragments.
+        paragraph = builder.build();
+        paragraph.layout(1048576);
+        const width = paragraph.getLongestLine();
+        if (metrics)
+          maxWidthDelta = Math.max(maxWidthDelta, Math.abs(width - metrics.lineWidths[index]));
+        canvas.drawParagraph(paragraph, alignedX(node, width),
+          node.y + index * textLineHeightPixels(node) + baseline - paragraph.getAlphabeticBaseline());
+      } finally {
+        paragraph?.delete();
+        builder?.delete();
+        for (const paint of paints) paint.delete();
+      }
+    }
+  }
+
   function draw(canvas, node, nextCounters = counters, nextUnsupported = unsupportedNode) {
     counters = nextCounters;
     unsupportedNode = nextUnsupported;
     missingByNode.delete(node.id);
     unrenderedByNode.delete(node.id);
     const entry = faces.get(node.fontRef) ?? faces.get(node.fontFamily);
+    const rangePayload = node.textRanges === undefined ? undefined : validateTextRanges(node);
     const lines = String(node.text).split("\n"),
       metrics = currentTextMetrics(node);
     counters.textLines += lines.length;
     if (!entry) {
+      if (rangePayload) canvasKitTextRangePlan(node, { suppliedFont: false });
       counters.rasterTextNodes++;
       unsupportedNode(
         node,
@@ -543,6 +616,7 @@ export async function createCanvasKitText({
     );
     const missing = [...glyphs].filter((glyph) => glyph === 0).length;
     probe.delete();
+    const rangeRuns = rangePayload ? canvasKitTextRangePlan(node, { missingGlyphs: missing }) : null;
     if (missing) {
       missingByNode.set(node.id, missing);
       counters.rasterTextNodes++;
@@ -565,6 +639,10 @@ export async function createCanvasKitText({
     }
     counters.nativeTextNodes++;
     const baseline = hangingOffset(node, entry.alias);
+    if (rangeRuns) {
+      drawTextRanges(canvas, node, entry.alias, lines, rangeRuns, baseline, metrics);
+      return;
+    }
     lines.forEach((line, i) => {
       const style = new CK.TextStyle({
         fontFamilies: [entry.alias],

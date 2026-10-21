@@ -11,6 +11,7 @@ import {
 } from "./grid.mjs";
 import { designPaintCssImage } from "./paint.mjs";
 import { nativeTextContent } from "./text-content.mjs";
+import { mapTextDisplay, projectTextRanges, validateTextRanges } from "./text-ranges.mjs";
 import { hasDesignStroke, designStrokeSides, strokeLayoutBasisExtra } from "./stroke.mjs";
 /* Deterministic CodeShell Design v3 to editable HTML/CSS export. */
 import { designFontFaceCss, designFontFamilyCss } from "./font-css.mjs";
@@ -410,7 +411,10 @@ function nodeStyle(node, parent, canvas, parentOf) {
       ["line-height", textLineHeightCss(node)],
       ["letter-spacing", cssNumber(node.letterSpacing, 0)],
       ["text-align", node.textAlign ?? "left"],
-      ["text-decoration", node.textDecoration ?? "none"],
+      // A parent decoration propagates through inline children: a child `none`
+      // cannot cancel it. Ranged paragraphs decorate their effective inline
+      // runs, including inherited gaps, instead of the parent box.
+      ["text-decoration", validateTextRanges(node) ? "none" : node.textDecoration ?? "none"],
       ["white-space", node.textOverflow === "ellipsis" ? "pre" : node.textFlow === "wrap" ? "pre-wrap" : "pre"],
       ["text-overflow", node.textOverflow === "ellipsis" ? "ellipsis" : undefined],
       ["overflow-wrap", node.textFlow === "wrap" ? "anywhere" : "normal"],
@@ -447,6 +451,49 @@ function renderInstance(node, context) {
   return `<div class="cs-instance-content" style="${contentStyle}">${children}</div>`;
 }
 
+const rangeLengthCss = (length) => length?.unit === "auto" ? "auto" :
+  length ? `${length.value}${length.unit}` : undefined;
+
+function renderTextRanges(node) {
+  if (node.fillPaints?.length || node.strokeWidth > 0 && !["none", "transparent"].includes(node.stroke)) {
+    const error = new Error("TEXT_RANGES_UNSUPPORTED: 范围文字的多层填色或描边尚不能准确导出前端");
+    error.code = "TEXT_RANGES_UNSUPPORTED";
+    throw error;
+  }
+  const { sourceText } = mapTextDisplay(node);
+  // The browser owns live wrapping of the authored paragraph. Saved display
+  // soft LF must never become authored characters or link boundaries here.
+  const runs = [];
+  for (const run of projectTextRanges({ ...node, text: sourceText })) {
+    const previous = runs.at(-1);
+    // A source LF may split the shared projection, but must not manufacture
+    // extra anchor elements/tab stops within one unchanged source range.
+    if (previous && previous.sourceEnd === run.sourceStart &&
+        JSON.stringify([previous.overrides, previous.style, previous.href]) ===
+          JSON.stringify([run.overrides, run.style, run.href])) {
+      previous.text += run.text;
+      previous.sourceEnd = run.sourceEnd;
+    } else runs.push({ ...run });
+  }
+  return runs
+    .map((run) => {
+      const style = styleText([
+        ["font", "inherit"],
+        ["color", run.overrides.fill === undefined ? "inherit" : run.style.fill],
+        ["text-decoration-line", run.style.textDecoration],
+        ["text-decoration-style", "solid"],
+        ["text-decoration-color", "currentColor"],
+        ["text-decoration-thickness", rangeLengthCss(run.style.textDecorationThickness)],
+        ["text-underline-offset", rangeLengthCss(run.style.textUnderlineOffset)],
+        ["text-decoration-skip-ink", run.style.textDecorationSkipInk],
+      ]);
+      const tag = run.href === undefined ? "span" : "a";
+      const href = run.href === undefined ? "" : ` href="${escapeHtml(run.href)}"`;
+      return `<${tag}${href} style="${escapeHtml(style)}">${escapeHtml(run.text)}</${tag}>`;
+    })
+    .join("");
+}
+
 function renderNode(node, parent, context) {
   context.gridParents.set(node, parent ?? null);
   const exportedId = `${context.idPrefix}${node.id}`;
@@ -464,7 +511,10 @@ function renderNode(node, parent, context) {
     ? `<a class="cs-prototype-hotspot" data-prototype-link="${escapeHtml(link.id)}" href="${escapeHtml(link.href)}" aria-label="${escapeHtml(link.label || node.name)}"${link.external ? ' target="_blank" rel="noopener noreferrer"' : ""}></a>`
     : "";
   if (node.type === "text") {
-    return `<div ${attributes.join(" ")}>${hotspot}${escapeHtml(node.textOverflow === "ellipsis" || node.textFlow === "wrap" ? nativeTextContent(node) : node.text)}</div>`;
+    const ranges = validateTextRanges(node);
+    const content = ranges ? renderTextRanges(node) :
+      escapeHtml(node.textOverflow === "ellipsis" || node.textFlow === "wrap" ? nativeTextContent(node) : node.text);
+    return `<div ${attributes.join(" ")}>${hotspot}${content}</div>`;
   }
   if (node.type === "image") {
     const source = context.resourceDataUrls.get(node.imageRef);

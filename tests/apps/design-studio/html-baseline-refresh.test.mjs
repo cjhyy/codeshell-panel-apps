@@ -10,6 +10,7 @@ import {
   serializeDesignDocument,
 } from "../../../apps/design-studio/app/document.mjs";
 import { applyAllAutoLayouts } from "../../../apps/design-studio/app/layout.mjs";
+import { validateTextRangeNodePatch } from "../../../apps/design-studio/app/text-ranges.mjs";
 import {
   createFigmaTransfer,
   importFigmaJson,
@@ -116,6 +117,7 @@ test("public manual offset edits retire only HTML baseline refresh", async () =>
     end = source.indexOf("\nfunction applyAgentDocumentTokens(", start);
   assert(start > 0 && end > start);
   const apply = runInNewContext(`(${source.slice(start, end)})`, {
+    validateTextRangeNodePatch,
     AGENT_NODE_PATCH_FIELDS: new Set(["layoutBaselineOffset", "fontSize"]),
     GRID_CONTAINER_FIELDS: [],
     GRID_CHILD_FIELDS: [],

@@ -383,7 +383,8 @@ test("late native-plan rejection restores child sizing and leaves its own nested
     "justify-items": "stretch",
     "align-items": "start",
   });
-  const result = await designNodeToV3(source, { includeViewport: false }),
+  const flowReceipts = [];
+  const result = await designNodeToV3(source, { includeViewport: false, onRecoveredFlow: (proof) => flowReceipts.push(proof) }),
     doc = normalizeDesignDocument(result.document),
     row = byHtmlId(doc, "root"),
     nested = byHtmlId(doc, "col");
@@ -398,4 +399,5 @@ test("late native-plan rejection restores child sizing and leaves its own nested
   assert.equal(nested.gridColumnSpan, undefined);
   assert.notEqual(nested.layoutSizingHorizontal, "fill");
   assert.equal(byHtmlId(doc, "leaf").gridColumnSpan, 1);
+  assert(!flowReceipts.some((proof) => proof.type === "float"), "a late failed native plan cannot publish eager float proof");
 });

@@ -1,4 +1,4 @@
-import { captureHtmlFlowObligations, prepareHtmlFixedTableFlowAudit } from "./html-flow-audit.mjs";
+import { captureHtmlFlowObligations, prepareHtmlFixedTableFlowAudit, prepareHtmlLayoutFlowAudit } from "./html-flow-audit.mjs";
 import { captureHtmlToDesign, hangingBaselineOffset, parseCssColor } from "./html-capture.mjs";
 import { captureHtmlViewportRelation } from "./html-viewport-flow.mjs";
 import { convertToDesignDSL, HTML2FIGMA_PROVENANCE } from "./vendor/html2figma-browser.mjs";
@@ -633,12 +633,15 @@ export async function captureWorkspaceHtmlResult({
       const canvasColor = htmlColor?.alpha ? htmlColor : bodyColor;
       options.background = canvasColor?.alpha === 1 ? canvasColor.hex : "#ffffff";
     }
-    const canonicalBySource = new WeakMap(), syntheticFlowIds = new Set();
+    const canonicalBySource = new WeakMap(), syntheticFlowIds = new Set(), layoutFlowCandidates = [];
     options.onNode = (source, node) => {
       canonicalBySource.set(source, node);
       if (source.nodeType === "container" && !source.semantic && node.type === "frame") syntheticFlowIds.add(node.id);
     };
-    if (includeFlowAudit) options.onSyntheticNode = (node) => syntheticFlowIds.add(node.id);
+    if (includeFlowAudit) {
+      options.onSyntheticNode = (node) => syntheticFlowIds.add(node.id);
+      options.onRecoveredFlow = (proof) => layoutFlowCandidates.push(proof);
+    }
     const result = await designNodeToV3(tree, options);
     alignHtmlTextBaselines(result.document, frameDocument);
     const warn = (code, nodeId, message) => {
@@ -670,9 +673,15 @@ export async function captureWorkspaceHtmlResult({
       result.report.tables = tables;
     }
     if (includeFlowAudit) {
+      const recoveredLayouts = [];
+      for (const proof of layoutFlowCandidates) {
+        try { recoveredLayouts.push(prepareHtmlLayoutFlowAudit({ root, elements, document: result.document, canonicalBySource, ambiguousElements }, proof)); }
+        catch { warn("html-flow-audit-unverified", proof.node.id, "已有流布局未能绑定当前真实 Element/原始节点或空清除伪元素；保留未验证关系。"); }
+      }
       result.report.flowObligations = captureHtmlFlowObligations({
         root, elements, ambiguousElements, mapping: result.mapping, document: result.document,
         syntheticIds: syntheticFlowIds, recoveredTables: recoveredTableFlow,
+        recoveredLayouts, canonicalBySource,
       });
     }
     result.report = {
