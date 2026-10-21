@@ -510,7 +510,9 @@ for (const action of ["edit", "new-document"])
         currentPageCache: null,
         currentResourceCache: null,
         resourceDataUrls: new Map(),
-        loadedFontResourceIds: new Set(),
+        ownedFonts: { captureLease: () => ({}), restoreLease: () => true, invalidatePending() {} },
+        fontResourcesReady: true,
+        fontPageHidden: false,
         currentModifiedAt: 1,
         currentRevision: "old",
         currentSourcePath: designPath,
@@ -531,6 +533,7 @@ for (const action of ["edit", "new-document"])
         normalizeDesignState: (value) => value,
         cancelInteraction() {},
         async ensureAllDesignPagesLoaded() {},
+        async loadReferencedDesignResources() {},
         assertWorkspaceEpoch() {},
         serializeDocument: JSON.stringify,
         measureDesignDocumentBytes: () => 1,
@@ -1105,6 +1108,21 @@ test("an unsaved imported source survives recovery, reopen and its first later s
     save: false,
     expected_state_revision: metadata.stateRevision,
   });
+  const fontProof = () => f.page.evaluate(async () => {
+    const metadata = await tools.get_design_metadata(), faces = [...document.fonts];
+    return metadata.resources.filter(resource => resource.kind === "font").map(resource => {
+      const context = document.createElement("canvas").getContext("2d");
+      context.font = `${resource.style} ${resource.weight} 32px ${JSON.stringify(resource.family)}, serif`;
+      return {
+        id: resource.id, sha256: resource.sha256, family: resource.family,
+        registered: faces.some(face => face.family === resource.family && face.weight === String(resource.weight) && face.style === resource.style && face.status === "loaded"),
+        width: context.measureText("iiii WWWW 0123456789 Hamburgefontsiv").width,
+      };
+    });
+  });
+  const importedFonts = await fontProof();
+  assert(importedFonts.length > 0, "the imported fixture must require actual resource fonts");
+  assert(importedFonts.every(font => font.registered), "import must install the decoded resource faces");
   let recovery;
   for (let attempt = 0; attempt < 150; attempt++) {
     recovery = [...f.records.values()].find(
@@ -1122,6 +1140,7 @@ test("an unsaved imported source survives recovery, reopen and its first later s
   const restored = await f.metadata();
   assert.equal(restored.name, "Imported product");
   assert.equal(restored.dirty, true);
+  assert.deepEqual(await fontProof(), importedFonts, "recovery must decode the replayed resource registry and preserve actual font selection");
   const receipt = await f.tool("exchange_figma", {
     action: "export",
     path: "designs/recovered.figma-transfer.json",
