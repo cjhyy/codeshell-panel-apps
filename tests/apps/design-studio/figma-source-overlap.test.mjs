@@ -6,6 +6,7 @@ import { figmaSourceNodes, createFigmaBinding, parseFigmaBinding, createFigmaPat
   from "../../../apps/design-studio/app/figma-binding.mjs";
 import { prepareFigmaImport } from "../../../apps/design-studio/app/figma-bridge.mjs";
 import { MAX_FIGMA_SOURCE_BYTES } from "../../../apps/design-studio/app/figma-assets.mjs";
+import { createNativeNotesExportCapture } from "../../../apps/design-studio/app/figma-plugin/notes-runtime.mjs";
 
 const copy = value => structuredClone(value);
 const box = { x: 0, y: 0, width: 100, height: 60 };
@@ -120,7 +121,18 @@ test("identical page/selected-child envelopes preserve full binding and update/d
   assert.equal(update.sourceId, "1:2"); assert.deepEqual(update.before.styles, { fill: "style-old" });
   assert.equal(update.before.futurePaint.blendBasis, "old");
   current.nodes.splice(0);
-  assert.equal(createFigmaPatch(binding, current).operations[0].before.futurePaint.blendBasis, "old");
+  assert.throws(() => createFigmaPatch(binding, current), error => error.code === "NATIVE_NOTES_BASELINE_REQUIRED");
+  // Explicit own-plugin SDK mocks qualify only the new metadata positive;
+  // the original legacy binding stays byte-identical and deletion stays refused.
+  const document = { id: "0:0", type: "DOCUMENT", parent: null, children: [] };
+  const page = { id: "0:1", type: "PAGE", parent: document, children: [], getPluginData: () => "" };
+  const target = { id: "1:2", type: "RECTANGLE", parent: page, children: [], getPluginData: () => "" };
+  page.children.push(target); document.children.push(page);
+  const observed = createNativeNotesExportCapture({ roots: [page], pluginId: "overlap-notes-sdk-mock" });
+  observed.add(binding.source.nodes["0:1"].document, page);
+  observed.add(binding.source.nodes["1:2"].document, target);
+  const fresh = copy(binding); fresh.source.nativeNotes = observed.finalize();
+  assert.equal(createFigmaPatch(fresh, current).operations[0].before.futurePaint.blendBasis, "old");
   assert.equal(JSON.stringify(binding), before);
 });
 
