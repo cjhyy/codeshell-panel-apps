@@ -237,6 +237,7 @@ export const suites = [
           "download-service",
           "service",
           "unified-runtime-ui",
+          "setup-ui",
           "cookie-runtime",
           "download-library",
           "download-task",
