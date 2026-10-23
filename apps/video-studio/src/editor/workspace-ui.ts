@@ -219,11 +219,15 @@ export class EditorWorkspace {
         ["redo", "redo"],
         ["new-sequence", "plus"],
         ["marker", "clock"],
+        ["gain-audition", "volume"],
+        ["loop-playback", "loop"],
+        ["save-frame", "image"],
       ]) {
-        const control = this.get<HTMLButtonElement>(`[data-ew-action="${action}"]`);
+        const control = container.querySelector<HTMLButtonElement>(`[data-ew-action="${action}"]`);
+        if (!control) continue;
         const label = control.textContent ?? "";
         control.setAttribute("aria-label", label);
-        control.title = label;
+        control.title ||= label;
         control.classList.add("ew-icon-button");
         control.innerHTML = icon(glyph!, 16);
       }
@@ -882,7 +886,7 @@ export class EditorWorkspace {
       control = this.get<HTMLButtonElement>('[data-ew-action="gain-audition"]');
     control.disabled = !this.options.prepareAudio || this.selected.length !== 1 || !clip || !("audio" in clip) || typeof clip.audio.volume !== "number";
     control.setAttribute("aria-pressed", String(Boolean(this.gainAudition)));
-    control.textContent = this.gainAudition ? "结束调音试听" : "调音试听";
+    this.labelControl(control, this.gainAudition ? "结束调音试听" : "调音试听");
     this.get('[data-ew-action="clear-solo"]').hidden = !this.soloTracks.size;
     const names = sequence.tracks.filter((track) => this.soloTracks.has(track.id)).map((track) => track.name),
       output = this.get('[data-ew-audition-status]');
@@ -1307,12 +1311,17 @@ export class EditorWorkspace {
     this.run(() => this.seek(at, true));
     this.revealSelection();
   }
+  /** Embedded transport controls are icons, so their state changes the spoken name only. */
+  private labelControl(control: HTMLButtonElement, label: string): void {
+    if (control.classList.contains("ew-icon-button")) control.setAttribute("aria-label", label);
+    else control.textContent = label;
+  }
   private updateFrameCaptureControl(): void {
     const control = this.container.querySelector<HTMLButtonElement>('[data-ew-action="save-frame"]');
     if (!control || this.disposed) return;
     const size = this.frameCaptureSize, quality = Number(this.get<HTMLSelectElement>("[data-ew-quality]").value);
     control.disabled = !!this.frameCapture || !this.visible || this.sourcePreview || !size?.duration;
-    control.textContent = this.frameCapture ? "正在保存…" : "保存已应用画面 PNG";
+    this.labelControl(control, this.frameCapture ? "正在保存…" : "保存已应用画面 PNG");
     control.title = this.sourcePreview ? "请返回成片预览后保存画面" : !size?.duration ? "当前序列没有可保存的片段" :
       `保存已应用画面 PNG · ${Math.max(1, Math.round(size.width * quality))} × ${Math.max(1, Math.round(size.height * quality))}（按预览质量）· 会暂停播放；结束位置保存最后一帧。未应用的时间调整不会自动应用。`;
   }

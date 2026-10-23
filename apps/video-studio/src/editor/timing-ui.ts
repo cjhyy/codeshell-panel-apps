@@ -274,7 +274,8 @@ export class EditorTiming {
       error.setAttribute("role", "alert");
       this.root.append(error);
     }
-    this.drawTiming(scope, this.section("片段时间"));
+    // Transitions and arrangement act on the sequence; clip timing waits for a selection.
+    if (scope.clips.length) this.drawTiming(scope, this.section("片段时间"));
     this.drawTransitions(scope, this.section("相邻转场"));
     this.drawArrangement(scope, this.section("时间线排列"));
   }
@@ -296,12 +297,6 @@ export class EditorTiming {
     }
   }
   private drawTiming(scope: Scope, body: HTMLElement): void {
-    if (!scope.clips.length) {
-      body.append(
-        element("p", "etime-note", "选择媒体片段后，可调整速度、倒放、定格或保留播放头一侧。"),
-      );
-      return;
-    }
     body.append(
       element("p", "etime-selection", scope.clips.map((clip) => clip.label || clip.id).join("、")),
     );

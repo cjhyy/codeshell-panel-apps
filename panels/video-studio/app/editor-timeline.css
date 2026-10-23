@@ -648,6 +648,22 @@
   margin-top: 3px;
   color: #747a83;
 }
+/* Mixing and ordering stay out of sight until the track is pointed at or focused;
+   a changed volume or pan keeps showing so a quiet track never looks unchanged. */
+.et-track-head .et-track-mix:not(.is-mixed) {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.et-track-head:is(:hover, :focus-within) .et-track-mix {
+  opacity: 1;
+}
+.et-track-head .et-track-mix.is-mixed > button {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.et-track-head:is(:hover, :focus-within) .et-track-mix.is-mixed > button {
+  opacity: 1;
+}
 .et-track-confirm {
   display: flex;
   align-items: center;

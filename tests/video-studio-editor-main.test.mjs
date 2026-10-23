@@ -783,7 +783,9 @@ test("main rail and original-source previews retain the mounted canonical canvas
   assert.equal(await page.locator("#editor-workspace .ew-tools").isVisible(), true);
   assert.equal(await page.locator("#studio .timeline-panel").isVisible(), false);
   assert.equal(await page.locator("#editor-workspace .ew-viewer").isVisible(), false);
-  assert.equal(await page.locator("#editor-workspace .ew-properties").isVisible(), false);
+  // Browsing a source swaps only the monitor; the editor's inspector stays.
+  assert.equal(await page.locator("#editor-workspace .ew-properties").isVisible(), true);
+  assert.equal(await page.locator("#studio .inspector").isVisible(), false);
   assert.equal(
     await page.locator('#studio .viewer-panel[aria-label="原素材预览"]').isVisible(),
     true,
@@ -2585,7 +2587,7 @@ test("main exposes sync through its existing AI tool and reports missing transpo
   assert.deepEqual(await saved(page), before);
 });
 
-test("main lazily opens multicam monitoring and releases it when returning to production", async (t) => {
+test("main lazily opens multicam monitoring, keeps it beside AI 制作 and releases it when closed", async (t) => {
   const page = await openPage(t),
     before = await saved(page);
   assert.equal(await page.getByRole("region", { name: "多机位剪辑", exact: true }).count(), 0);
@@ -2594,8 +2596,9 @@ test("main lazily opens multicam monitoring and releases it when returning to pr
   await section.waitFor({ state: "visible" });
   assert.match(await section.innerText(), /创建机位组/);
   await page.screenshot({ path: "/tmp/video-studio-multicam-main.png", fullPage: true });
+  // The one inspector stays in AI 制作, so the open multicam section does too.
   await production(page);
-  assert.equal(await section.isVisible(), false);
+  assert.equal(await section.isVisible(), true);
   await returnEditor(page);
   assert.equal(await section.isVisible(), true);
   await clickEditorAction(page, "multicam");
@@ -2724,54 +2727,23 @@ test("AI 制作 rule drafts and imported plans review and apply on real off-fram
   assert.doesNotMatch(toasts, /旧视图/);
 });
 
-test("the AI 制作 inspector trims a main clip of a multitrack project the old view cannot fully show", async (t) => {
-  const main = (id, start, duration, source) => ({
-    ...picture(id, "v1", start, duration),
-    timeMap: {
-      points: [
-        { time: 0, source },
-        { time: duration, source: source + duration },
-      ],
-    },
-  });
-  const inspectorSeed = {
-    ...realMediaSeed,
-    id: "inspector-multitrack",
-    name: "多轨检查器",
-    sequences: [
-      {
-        ...realMediaSeed.sequences[0],
-        frameRate: { numerator: 30, denominator: 1 },
-        timelineMode: "magnetic",
-        clips: [
-          main("main-a", 0, 90 * 8000, 0),
-          main("main-b", 90 * 8000, 90 * 8000, 100 * 8000),
-          picture("camera-overlay", "v2", 0, 2_400_011),
-        ],
-      },
-    ],
-  };
-  const page = await openPage(t, { seed: inspectorSeed });
+test("AI 制作 keeps the editor's one inspector instead of the old page's clip controls", async (t) => {
+  const page = await openPage(t, { seed: { ...realMediaSeed, id: "one-inspector" } });
   const before = await saved(page);
-  await page.locator('[data-et-clip="main-a"]').click();
+  await page.locator('[data-et-clip="camera-main"]').click();
   await production(page);
-  await page.locator("#trim-out").fill("2");
-  await page.getByRole("button", { name: "应用裁剪", exact: true }).click();
-  await page.waitForFunction(
-    (revision) => window.__mainHost.current().revision > revision,
-    before.revision,
-  );
-  const after = await waitSaved(page);
-  const clips = Object.fromEntries(after.sequences[0].clips.map((clip) => [clip.id, clip]));
-  assert.equal(clips["main-a"].duration, 60 * 8000);
-  assert.equal(clips["main-b"].start, 60 * 8000, "The magnetic main track closes the gap");
-  assert.deepEqual(
-    clips["camera-overlay"],
-    before.sequences[0].clips.find((clip) => clip.id === "camera-overlay"),
+  assert.equal(await page.locator("#editor-workspace .ew-properties").isVisible(), true);
+  assert.equal(await page.locator("#studio .inspector").isVisible(), false);
+  assert.equal(await page.locator("#trim-out").isVisible(), false);
+  assert.equal(await page.getByRole("button", { name: "应用裁剪", exact: true }).isVisible(), false);
+  assert.equal(
+    await page.locator('[data-et-clip="camera-main"]').getAttribute("aria-selected"),
+    "true",
+    "Switching to AI 制作 keeps the editor selection",
   );
   await returnEditor(page);
-  await clickEditorAction(page, "undo");
-  assert.deepEqual((await waitSaved(page)).sequences, before.sequences);
+  assert.equal(await page.locator("#editor-workspace .ew-properties").isVisible(), true);
+  assert.deepEqual(await saved(page), before);
 });
 
 test("real off-frame multitrack footage shows plain wording, its real frame rate and one AI request", async (t) => {
@@ -2805,73 +2777,6 @@ test("real off-frame multitrack footage shows plain wording, its real frame rate
   assert.doesNotMatch(await heading.innerText(), /\b30 fps/);
 });
 
-test("the AI 制作 inspector explains clips it cannot adjust instead of failing on click", async (t) => {
-  const loud = {
-    ...picture("loud-main", "v1", 0, 90 * 8000),
-    audio: {
-      volume: {
-        keyframes: [
-          { time: 0, value: 0.4 },
-          { time: 90 * 8000, value: 1.4 },
-        ],
-      },
-      pan: 0,
-      fadeIn: 0,
-      fadeOut: 0,
-      pitchSemitones: 0,
-      preservePitch: true,
-    },
-  };
-  const inspectorSeed = {
-    ...realMediaSeed,
-    id: "inspector-reasons",
-    name: "检查器说明",
-    sequences: [
-      {
-        ...realMediaSeed.sequences[0],
-        frameRate: { numerator: 30, denominator: 1 },
-        clips: [loud, picture("camera-main", "v1", 1_234_567, 1_000_123)],
-      },
-    ],
-  };
-  const page = await openPage(t, { seed: inspectorSeed });
-  await page.evaluate(() => {
-    window.__toasts = [];
-    new MutationObserver(() => window.__toasts.push(document.querySelector("#toast").textContent)).observe(
-      document.querySelector("#toast"),
-      { childList: true, characterData: true, subtree: true },
-    );
-  });
-  const before = await saved(page);
-  const inspector = page.locator("#studio .inspector");
-
-  // Real footage the old inspector cannot show: the reason instead of an empty prompt.
-  await page.locator('[data-et-clip="camera-main"]').click();
-  await production(page);
-  const notice = inspector.locator("[data-inspector-issue]");
-  await notice.waitFor({ state: "visible" });
-  assert.match(await notice.innerText(), /包含变速或非整帧时间/);
-  assert.equal(await inspector.getByRole("button", { name: "应用裁剪", exact: true }).count(), 0);
-
-  // Volume automation: trimming stays available, the volume slider is disabled with its reason.
-  await returnEditor(page);
-  await page.locator('[data-et-clip="loud-main"]').click();
-  await production(page);
-  const volume = page.locator("#clip-volume");
-  await volume.waitFor({ state: "visible" });
-  assert.equal(await volume.isDisabled(), true);
-  assert.match(
-    await inspector.locator(".property-section").filter({ has: volume }).innerText(),
-    /包含音量自动化或超过 200% 的音量/,
-  );
-  assert.equal(
-    await inspector.getByRole("button", { name: "应用裁剪", exact: true }).isEnabled(),
-    true,
-  );
-  assert.deepEqual(await saved(page), before, "Explaining never edits the project");
-  const toasts = await page.evaluate(() => window.__toasts.join("\n"));
-  assert.doesNotMatch(toasts, /旧视图|旧流程|新版/);
-});
 
 /** A saved automatic run that is waiting on its agent: the request token the agent was given. */
 const automaticRun = (projectId, mode) => ({
