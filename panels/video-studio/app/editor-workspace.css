@@ -736,12 +736,99 @@
   line-height: 1.4;
 }
 
+/* The unified workbench's pages are tabs in the top bar, not a column beside the panels. */
+.topbar:has(> .rail-top) {
+  gap: 16px;
+}
+.topbar:has(> .rail-top) .project-breadcrumb {
+  flex: 0 1 auto;
+}
+.topbar:has(> .rail-top) .project-breadcrumb > span,
+.topbar:has(> .rail-top) .project-breadcrumb > svg {
+  display: none;
+}
+.rail.rail-top {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.rail-top .rail-item {
+  flex: 0 0 auto;
+  flex-direction: row;
+  min-height: 30px;
+  gap: 5px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.rail-top .rail-bottom {
+  flex-direction: row;
+  margin: 0 0 0 6px;
+  padding-left: 8px;
+  border-left: 1px solid var(--line, #282b2e);
+}
+.rail-top .rail-bottom > span {
+  display: none;
+}
+/* Below this the tabs keep only their icons; names stay readable and in title tooltips. */
+@media (max-width: 1320px) {
+  .rail-top .rail-item {
+    padding-inline: 7px;
+  }
+  .rail-top .rail-item > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+/* A narrow panel gives the tabs their own row, with names, under the project bar. */
+@media (max-width: 900px) {
+  .topbar:has(> .rail-top) {
+    flex-wrap: wrap;
+    height: auto;
+    row-gap: 0;
+  }
+  .rail.rail-top {
+    order: 10;
+    flex-basis: 100%;
+    justify-content: flex-start;
+    height: 38px;
+    margin-inline: -10px;
+    padding-inline: 8px;
+    border-top: 1px solid var(--line, #282b2e);
+  }
+  .rail-top .rail-item > span {
+    position: static;
+    width: auto;
+    height: auto;
+    clip-path: none;
+  }
+}
+
 /* The installed editor shares the original Material page's chrome and asset library.
    Standalone editor mounts keep their existing component layout. */
 .workspace.editor-mode {
   position: relative;
   grid-template-columns: 66px var(--studio-library-width, 260px) minmax(320px, 1fr) var(--studio-inspector-width, 270px);
   grid-template-rows: minmax(260px, 1fr) auto var(--studio-timeline-height, 340px);
+}
+/* With its navigation in the top bar, the first column stays as an empty track so every
+   panel keeps its column number. */
+.workspace.editor-mode:not(:has(> .rail)) {
+  grid-template-columns: 0 var(--studio-library-width, 260px) minmax(320px, 1fr) var(--studio-inspector-width, 270px);
 }
 .workspace.editor-mode > .rail {
   grid-row: 1 / -1;
@@ -1287,6 +1374,11 @@
     width: calc(100% - 66px);
   }
 }
+/* No navigation column: the import status sits at the library's own edge. */
+.workspace:not(:has(> .rail)) .editor-workspace-embedded > .ew-import-host {
+  left: 10px;
+  width: min(340px, calc(100% - 20px));
+}
 
 /* Source inspection keeps the canonical editing tools and timeline mounted. */
 .workspace.editor-mode.editor-source-mode > .viewer-panel {
@@ -1406,9 +1498,16 @@
     display: none;
   }
 }
+
+
 @media (max-width: 640px) {
   .workspace.editor-mode {
     grid-template-columns: 46px minmax(0, 1fr);
+  }
+}
+@media (max-width: 900px) {
+  .workspace.editor-mode:not(:has(> .rail)) {
+    grid-template-columns: 0 minmax(0, 1fr);
   }
 }
 

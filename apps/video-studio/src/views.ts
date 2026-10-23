@@ -179,6 +179,27 @@ export function createViews(state: ViewState) {
       : "任务正在进行，完成或取消后再试";
 
   function shell(): string {
+    // The unified workbench reads its pages as tabs in the top bar, like a single app's
+    // sections; the browser-only legacy view keeps them in its own column.
+    const topNavigation = Boolean(state.unifiedWorkspace);
+    const navigation = html`<nav class="rail${topNavigation ? " rail-top" : ""}" aria-label="工作台导航">
+          ${railTabs
+            .map(
+              ([id, label, glyph]) =>
+                `<button data-tab="${id}" class="rail-item ${tab === id ? "active" : ""}" aria-pressed="${tab === id}"${topNavigation ? ` title="${label}"` : ""}>${icon(glyph, topNavigation ? 15 : 22)}<span>${label}</span></button>`,
+            )
+            .join("")}
+          <div class="rail-bottom">
+            <button
+              type="button"
+              data-action="new"
+              class="rail-item rail-new"
+              title="新建工程：先保存并归档当前工程，再打开一个空白工程"
+            >
+              ${icon("plus", topNavigation ? 15 : 20)}<span>新建工程</span></button
+            ><span>v${panelVersion}</span>
+          </div>
+        </nav>`;
     return html`<header class="topbar">
         <div class="brand">
           <span class="brand-mark">${icon("film", 21)}</span><strong>mimi<span>studio</span></strong
@@ -192,6 +213,7 @@ export function createViews(state: ViewState) {
             maxlength="160"
           />
         </div>
+        ${topNavigation ? navigation : ""}
         <div class="header-actions">
           <span class="save-indicator"
             ><i></i><span id="save-state" title="${esc(projectError)}">${saveText}</span></span
@@ -228,24 +250,7 @@ export function createViews(state: ViewState) {
             )
             .join("")}
         </div>
-        <nav class="rail" aria-label="工作台导航">
-          ${railTabs
-            .map(
-              ([id, label, glyph]) =>
-                `<button data-tab="${id}" class="rail-item ${tab === id ? "active" : ""}" aria-pressed="${tab === id}">${icon(glyph, 22)}<span>${label}</span></button>`,
-            )
-            .join("")}
-          <div class="rail-bottom">
-            <button
-              type="button"
-              data-action="new"
-              class="rail-item rail-new"
-              title="新建工程：先保存并归档当前工程，再打开一个空白工程"
-            >
-              ${icon("plus", 20)}<span>新建工程</span></button
-            ><span>v${panelVersion}</span>
-          </div>
-        </nav>
+        ${topNavigation ? "" : navigation}
         <aside class="library-panel">${renderLibrary()}</aside>
         <section class="viewer-panel" aria-label="${source ? "原素材预览" : "视频预览"}">
           <div class="panel-heading">

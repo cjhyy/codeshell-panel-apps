@@ -42,7 +42,8 @@ export function createWorkspaceLayout(studio: HTMLElement, store: LayoutStore) {
   const limits = (pane: Pane): [number, number] => {
     const host = workspace();
     if (!host) return pane === "timeline" ? [200, 600] : [180, 500];
-    const rail = host.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? 66;
+    // The unified workbench keeps its navigation in the top bar, outside this grid.
+    const rail = host.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? 0;
     const width = host.getBoundingClientRect().width;
     if (pane === "library") return [180, Math.min(500, width - rail - sizes.inspector - 320)];
     if (pane === "inspector") return [220, Math.min(500, width - rail - sizes.library - 320)];
@@ -52,7 +53,8 @@ export function createWorkspaceLayout(studio: HTMLElement, store: LayoutStore) {
   const apply = () => {
     const host = workspace();
     if (!host) return;
-    const rail = host.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? 66;
+    // The unified workbench keeps its navigation in the top bar, outside this grid.
+    const rail = host.querySelector<HTMLElement>(".rail")?.getBoundingClientRect().width ?? 0;
     const width = host.getBoundingClientRect().width;
     const library = clamp(sizes.library, 180, Math.min(500, width - rail - 320 - 220));
     const inspector = clamp(sizes.inspector, 220, Math.min(500, width - rail - library - 320));
