@@ -1,5 +1,6 @@
 /* Auto-layout and reusable-component helpers for Design Studio v3 documents. */
 import { descendantIds, setNodeTreePosition } from "./geometry.mjs";
+import { designCoordinateLimit } from "./document.mjs";
 
 export const CONTAINER_NODE_TYPES = Object.freeze(["frame", "group", "component"]);
 
@@ -937,6 +938,15 @@ export function createComponentInstance(component, id, offset = 32, canvas = nul
     { x: component.x - component.width - offset, y: component.y },
     { x: component.x, y: component.y - component.height - offset },
   ];
+  if (canvas?.mode === "infinite") {
+    const limit = designCoordinateLimit(canvas);
+    const position = candidates.find((candidate) =>
+      Math.abs(candidate.x) <= limit && Math.abs(candidate.y) <= limit) ?? {
+      x: Math.min(limit, Math.max(-limit, component.x + offset)),
+      y: Math.min(limit, Math.max(-limit, component.y + offset)),
+    };
+    return componentInstanceAt(component, id, position);
+  }
   const fitsCanvas = (candidate) =>
     canvas &&
     candidate.x >= 0 &&
@@ -952,6 +962,10 @@ export function createComponentInstance(component, id, offset = 32, canvas = nul
         ),
       })
     : candidates[0];
+  return componentInstanceAt(component, id, position);
+}
+
+function componentInstanceAt(component, id, position) {
   return {
     id,
     type: "instance",

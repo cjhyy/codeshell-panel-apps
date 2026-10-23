@@ -1,21 +1,31 @@
-import { normalizeDesignPaints, designPaintSvg, representativeDesignFill } from "./paint.mjs";
+import {
+  normalizeDesignPaints,
+  designPaintSvg,
+  representativeDesignFill,
+  hasVisibleDesignFill,
+} from "./paint.mjs";
 /* Repository document codec used by the Design Studio Panel App. */
 import {
   clipBoundsToClippingAncestors,
   clipNodeBoundsToClippingAncestors,
   inheritedNodeRotation,
+  pointFromNodeSpace,
   transformedNodeBoundsInTree,
 } from "./geometry.mjs";
 import { normalizeDesignResources } from "./resource-store.mjs";
-import { validTextMetrics } from "./text-metrics.mjs";
+import { measuredTextInkBounds, validTextMetrics } from "./text-metrics.mjs";
 import { designFontFaceCss, designFontFamilyCss } from "./font-css.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 export const MAX_DESIGN_PAGES = 1_000;
 export const MAX_DESIGN_NODES_PER_PAGE = 10_000;
-// Canvas geometry shares the existing finite node dimension/coordinate budget.
-// Raster previews impose their own lower pixel and edge limits.
+// Individual artboards retain finite dimensions. Infinite workspaces have a
+// separate world-coordinate budget; raster exports keep their own pixel caps.
 export const MAX_DESIGN_CANVAS_SIZE = 20_000;
+export const MAX_DESIGN_COORDINATE = 1_000_000;
+export function designCoordinateLimit(canvas) {
+  return canvas?.mode === "infinite" ? MAX_DESIGN_COORDINATE : MAX_DESIGN_CANVAS_SIZE;
+}
 export const MAX_SVG_EXPORT_BYTES = 384 * 1024;
 export const MAX_LOCAL_SVG_EXPORT_BYTES = 4 * 1024 * 1024;
 export const MAX_COMPONENT_INSTANCE_DEPTH = 16;
@@ -352,8 +362,8 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     throw new Error(`图层 ${candidate.id} 的名称无效`);
   }
   for (const [property, minimum, maximum] of [
-    ["x", -20000, 20000],
-    ["y", -20000, 20000],
+    ["x", -state.coordinateLimit, state.coordinateLimit],
+    ["y", -state.coordinateLimit, state.coordinateLimit],
     ["width", 1, 20000],
     ["height", 1, 20000],
     ["strokeWidth", 0, 100],
@@ -842,7 +852,9 @@ export function normalizeDesignDocument(input) {
   ) {
     throw new Error("设计名称必须是 1–120 个安全字符");
   }
-  assertObject(input.canvas, "canvas", ["width", "height", "background"]);
+  assertObject(input.canvas, "canvas", ["width", "height", "background", "mode"]);
+  if (input.canvas.mode !== undefined && input.canvas.mode !== "infinite")
+    throw new Error('canvas.mode 只能是 "infinite"；旧版有界文档请省略此字段');
   assertFiniteRange(input.canvas.width, 100, MAX_DESIGN_CANVAS_SIZE, "canvas.width");
   assertFiniteRange(input.canvas.height, 100, MAX_DESIGN_CANVAS_SIZE, "canvas.height");
   if (!validHex(input.canvas.background))
@@ -871,7 +883,12 @@ export function normalizeDesignDocument(input) {
     }
     pageIds.add(page.id);
     const pageNodes = [];
-    const state = { ids: allIds, nodes: pageNodes, resources: resourcesById };
+    const state = {
+      ids: allIds,
+      nodes: pageNodes,
+      resources: resourcesById,
+      coordinateLimit: designCoordinateLimit(input.canvas),
+    };
     for (const [nodeIndex, node] of page.children.entries()) {
       validateAndFlattenNode(node, undefined, 0, state, `页面 ${page.id}.children[${nodeIndex}]`);
     }
@@ -973,6 +990,7 @@ export function normalizeDesignDocument(input) {
       width: input.canvas.width,
       height: input.canvas.height,
       background: input.canvas.background.toLowerCase(),
+      ...(input.canvas.mode === "infinite" ? { mode: "infinite" } : {}),
     },
     tokens: { colors },
     resources,
@@ -1118,8 +1136,55 @@ function emptyEffectOutsets() {
   return { left: 0, top: 0, right: 0, bottom: 0 };
 }
 
-function renderedSourceNodeEffectBounds(document, nodes, node, instanceStack, availableNodes) {
-  const bounds = transformedNodeBoundsInTree(nodes, node);
+function textPaintBounds(node) {
+  const receipt = measuredTextInkBounds(node);
+  const boxes = receipt ? [receipt] : String(node.text).split("\n").map((line, index) => {
+    // Same conservative character classes as the text audit. Unmeasured SVG
+    // text draws natural lines, so its node width is not an implicit clip.
+    const characters = Array.from(line);
+    const width = Math.max(0, characters.reduce((sum, character) => {
+      const factor = /\s/u.test(character) ? 0.33
+        : /[ilI1.,:;'|!•·…]/u.test(character) ? 0.28
+        : /[mwMW@#%&]/u.test(character) ? 0.9
+        : /[\u0000-\u00ff]/u.test(character) ? 0.56 : 1;
+      return sum + factor * node.fontSize;
+    }, 0) + Math.max(0, characters.length - 1) * (node.letterSpacing ?? 0));
+    const x = node.textAlign === "center" ? (node.width - width) / 2
+      : node.textAlign === "right" ? node.width - width : 0;
+    // Font bearings and decorations can protrude beyond an estimated advance.
+    // Keep this bounded font-sized margin only on unmeasured text itself.
+    const pad = node.fontSize;
+    return { x: x - pad, y: index * node.fontSize * node.lineHeight - pad,
+      width: width + pad * 2, height: node.fontSize + pad * 2 };
+  });
+  const left = Math.min(0, ...boxes.map(box => box.x));
+  const top = Math.min(0, ...boxes.map(box => box.y));
+  const right = Math.max(node.width, ...boxes.map(box => box.x + box.width));
+  const bottom = Math.max(node.height, ...boxes.map(box => box.y + box.height));
+  return { x: node.x + left, y: node.y + top, width: right - left, height: bottom - top };
+}
+
+function renderedSourceNodeBounds(document, nodes, node, nodeIndex) {
+  if (document.canvas.mode !== "infinite" || node.type !== "text")
+    return transformedNodeBoundsInTree(nodes, node, nodeIndex);
+  const local = textPaintBounds(node);
+  // Keep the real text-node pivot, rather than rotating around the larger ink box.
+  const points = [
+    { x: local.x, y: local.y }, { x: local.x + local.width, y: local.y },
+    { x: local.x, y: local.y + local.height },
+    { x: local.x + local.width, y: local.y + local.height },
+  ].map(point => pointFromNodeSpace(nodes, node, point, nodeIndex)).filter(Boolean);
+  if (!points.length) return null;
+  const x = Math.min(...points.map(point => point.x));
+  const y = Math.min(...points.map(point => point.y));
+  return { x, y, width: Math.max(...points.map(point => point.x)) - x,
+    height: Math.max(...points.map(point => point.y)) - y };
+}
+
+function renderedSourceNodeEffectBounds(
+  document, nodes, node, instanceStack, availableNodes, nodeIndex = null,
+) {
+  const bounds = renderedSourceNodeBounds(document, nodes, node, nodeIndex);
   if (!bounds) return null;
   const instanceOutsets =
     node.type === "instance"
@@ -1134,7 +1199,9 @@ function renderedSourceNodeEffectBounds(document, nodes, node, instanceStack, av
       : 0;
   const hasInstanceEffect = Object.values(instanceOutsets).some((value) => value > 0);
   if (!visibleShadow && !hasInstanceEffect && strokeOutset <= 0) {
-    return clipNodeBoundsToClippingAncestors(nodes, node);
+    if (document.canvas.mode === "infinite" && node.type === "text")
+      return clipBoundsToClippingAncestors(nodes, node, bounds, nodeIndex);
+    return clipNodeBoundsToClippingAncestors(nodes, node, nodeIndex);
   }
   const shadowOutset = visibleShadow?.blur * 1.5 || 0;
   const shadowX = visibleShadow?.x || 0;
@@ -1167,12 +1234,68 @@ function renderedSourceNodeEffectBounds(document, nodes, node, instanceStack, av
     strokeOutset,
     visibleShadow ? strokeOutset + shadowOutset + (rotatedShadowOffset || Math.max(0, shadowY)) : 0,
   );
-  return clipBoundsToClippingAncestors(nodes, node, {
-    x: bounds.x - leftOutset,
-    y: bounds.y - topOutset,
-    width: bounds.width + leftOutset + rightOutset,
-    height: bounds.height + topOutset + bottomOutset,
-  });
+  return clipBoundsToClippingAncestors(
+    nodes, node,
+    {
+      x: bounds.x - leftOutset,
+      y: bounds.y - topOutset,
+      width: bounds.width + leftOutset + rightOutset,
+      height: bounds.height + topOutset + bottomOutset,
+    },
+    nodeIndex,
+  );
+}
+
+function pageRenderNodes(document, page) {
+  if (page?.id === document.activePageId && Array.isArray(document.nodes)) return document.nodes;
+  if (Array.isArray(page?.nodes)) return page.nodes;
+  const nodes = [];
+  const collect = (children, parentId) => {
+    for (const node of children ?? []) {
+      nodes.push(parentId ? { ...node, parentId } : node);
+      collect(node.children, node.id);
+    }
+  };
+  collect(page?.children);
+  return nodes;
+}
+
+/** Finite export/fit viewport, independent of an infinite page's world origin.
+ * Accepts both repository (nested children) and live (flat nodes) documents.
+ * It never changes node coordinates or source-binding offsets.
+ */
+export function designPageBounds(
+  document,
+  { pageId = document.activePageId ?? document.pages?.[0]?.id } = {},
+) {
+  const fallback = { x: 0, y: 0, width: document.canvas.width, height: document.canvas.height };
+  const page = document.pages?.find((candidate) => candidate.id === pageId);
+  if (pageId !== undefined && Array.isArray(document.pages) && !page)
+    throw new Error(`页面不存在：${pageId}`);
+  if (document.canvas.mode !== "infinite") return fallback;
+  const nodes = page ? pageRenderNodes(document, page) : (document.nodes ?? []);
+  const availableNodes = document.pages?.length
+    ? document.pages.flatMap((candidate) => pageRenderNodes(document, candidate))
+    : nodes;
+  const view = { ...document, activePageId: pageId, nodes };
+  const nodeIndex = new Map(nodes.map((node) => [node.id, node]));
+  const bounds = nodes
+    .filter((node) => node.type !== "group" && isDesignNodeVisible(view, node, nodeIndex))
+    .filter((node) =>
+      ["instance", "image"].includes(node.type) ||
+      hasVisibleDesignFill(node) ||
+      (node.stroke !== "transparent" && node.strokeWidth > 0),
+    )
+    .map((node) =>
+      renderedSourceNodeEffectBounds(view, nodes, node, new Set(), availableNodes, nodeIndex),
+    )
+    .filter((box) => box && box.width > 0 && box.height > 0);
+  if (bounds.length === 0) return fallback;
+  const left = Math.floor(Math.min(...bounds.map((box) => box.x)));
+  const top = Math.floor(Math.min(...bounds.map((box) => box.y)));
+  const right = Math.ceil(Math.max(...bounds.map((box) => box.x + box.width)));
+  const bottom = Math.ceil(Math.max(...bounds.map((box) => box.y + box.height)));
+  return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
 export function renderedDesignInstanceEffectOutsets(
@@ -1247,10 +1370,12 @@ export function renderedDesignNodeShadowFilterBounds(
     node.strokeWidth > 0
       ? node.strokeWidth / 2
       : 0;
-  const baseLeft = node.x - instanceOutsets.left - strokeOutset;
-  const baseTop = node.y - instanceOutsets.top - strokeOutset;
-  const baseRight = node.x + node.width + instanceOutsets.right + strokeOutset;
-  const baseBottom = node.y + node.height + instanceOutsets.bottom + strokeOutset;
+  const content = document.canvas.mode === "infinite" && node.type === "text"
+    ? textPaintBounds(node) : node;
+  const baseLeft = content.x - instanceOutsets.left - strokeOutset;
+  const baseTop = content.y - instanceOutsets.top - strokeOutset;
+  const baseRight = content.x + content.width + instanceOutsets.right + strokeOutset;
+  const baseBottom = content.y + content.height + instanceOutsets.bottom + strokeOutset;
   const blurOutset = shadow.blur * 1.5;
   const left = baseLeft - blurOutset + Math.min(0, shadow.x);
   const top = baseTop - blurOutset + Math.min(0, shadow.y);
@@ -1501,6 +1626,14 @@ export function exportDesignSvg(document, options = {}) {
   const maxBytes = options.maxBytes ?? MAX_SVG_EXPORT_BYTES;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_LOCAL_SVG_EXPORT_BYTES)
     throw Error("SVG byte budget must be between 1 B and 4 MiB");
+  const bounds = options.bounds ?? designPageBounds(document);
+  if (
+    !bounds || typeof bounds !== "object" || Array.isArray(bounds) ||
+    !["x", "y", "width", "height"].every((key) => Number.isFinite(bounds[key])) ||
+    bounds.width <= 0 || bounds.height <= 0 ||
+    !Number.isFinite(bounds.x + bounds.width) || !Number.isFinite(bounds.y + bounds.height)
+  )
+    throw new Error("SVG bounds 必须是有效的有限坐标和正尺寸");
   const renderNodes = allDocumentNodes(document);
   const renderDocument = { ...document, nodes: renderNodes };
   const activePage = document.pages?.find((page) => page.id === document.activePageId);
@@ -1568,7 +1701,7 @@ export function exportDesignSvg(document, options = {}) {
     .join("\n");
   const svg = [
     '<?xml version="1.0" encoding="UTF-8"?>',
-    `<svg xmlns="${SVG_NS}" width="${document.canvas.width}" height="${document.canvas.height}" viewBox="0 0 ${document.canvas.width} ${document.canvas.height}" data-page-id="${escapeXml(document.activePageId ?? "page-1")}">`,
+    `<svg xmlns="${SVG_NS}" width="${bounds.width}" height="${bounds.height}" viewBox="${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}" data-page-id="${escapeXml(document.activePageId ?? "page-1")}">`,
     `  <title>${escapeXml(`${document.name} — ${pageName}`)}</title>`,
     ...(clipPaths.length + shadowFilters.length + fontFaceRules.length + paintDefinitions.length > 0
       ? [
@@ -1582,7 +1715,7 @@ export function exportDesignSvg(document, options = {}) {
           "  </defs>",
         ]
       : []),
-    `  <rect width="${document.canvas.width}" height="${document.canvas.height}" fill="${escapeXml(document.canvas.background)}" />`,
+    `  <rect${bounds.x !== 0 || bounds.y !== 0 ? ` x="${bounds.x}" y="${bounds.y}"` : ""} width="${bounds.width}" height="${bounds.height}" fill="${escapeXml(document.canvas.background)}" />`,
     body,
     "</svg>",
     "",

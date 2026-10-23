@@ -1555,6 +1555,26 @@ test("audit UI and tools expose all grouped issues with filtered pagination", as
   }));
   f.files.set(`A:${inputPath}`, JSON.stringify(source));
   await f.import();
+  const importedMetadata = await f.metadata();
+  assert.equal(importedMetadata.canvas.mode, "infinite");
+  const infiniteAudit = await f.tool("validate_design", {
+    code: "layout.canvas-overflow",
+    limit: 50,
+  });
+  assert.equal(infiniteAudit.page.total, 0);
+
+  // Pagination still covers all 125 real overflow issues in an explicit legacy
+  // fixed document. Figma's infinite workspace no longer has a global boundary.
+  const boundedPath = "designs/audit-fixed-legacy.codesign.json";
+  const boundedDocument = JSON.parse(f.files.get(`A:${importedMetadata.path}`));
+  delete boundedDocument.canvas.mode;
+  f.files.set(`A:${boundedPath}`, JSON.stringify(boundedDocument));
+  await f.tool("save_design", {
+    action: "open",
+    path: boundedPath,
+    expected_state_revision: (await f.metadata()).stateRevision,
+  });
+  assert.equal((await f.metadata()).canvas.mode, undefined);
   const audit = await f.tool("validate_design", { code: "layout.canvas-overflow", limit: 50 });
   assert.equal(audit.page.total, 125);
   assert.equal(audit.issues.length, 50);

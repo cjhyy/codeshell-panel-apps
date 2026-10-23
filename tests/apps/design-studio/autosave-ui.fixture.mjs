@@ -15,26 +15,28 @@ export const source = name => serializeDesignDocument(normalizeDesignDocument({
   activePageId: "page-1", pages: [{ id: "page-1", name: "One", children: [] }],
 }));
 
-export async function fixture(t, { blank = false, browserOnly = false, sourceOverrides = new Map() } = {}) {
+export async function fixture(t, { blank = false, browserOnly = false, sourceOverrides = new Map(), sourceRoot = root, initialSource, gpu = false, extraFiles = new Map() } = {}) {
+  const serveRoot = `${resolve(sourceRoot)}${sep}`;
   const files = new Map(), records = new Map(), calls = [], errors = [], dialogs = [];
+  for (const [path, content] of extraFiles) files.set(`/project/A:${path}`, content);
   if (!blank) {
-    files.set(`/project/A:${initialPath}`, source("First"));
+    files.set(`/project/A:${initialPath}`, initialSource ?? source("First"));
     files.set(`/project/A:${secondPath}`, source("Second"));
   }
   const server = createServer(async (request, response) => {
-    const path = resolve(root, `.${new URL(request.url, "http://test").pathname}`);
-    if (!path.startsWith(root)) return response.writeHead(403).end();
+    const path = resolve(serveRoot, `.${new URL(request.url, "http://test").pathname}`);
+    if (path !== resolve(serveRoot) && !path.startsWith(serveRoot)) return response.writeHead(403).end();
     try {
-      const target = path === resolve(root) || path.endsWith(sep) ? resolve(root, "index.html") : path;
-      const relative = target.slice(root.length);
+      const target = path === resolve(serveRoot) || path.endsWith(sep) ? resolve(serveRoot, "index.html") : path;
+      const relative = target.slice(serveRoot.length);
       const contents = sourceOverrides.has(relative) ? sourceOverrides.get(relative)
-        : await readFile(target === resolve(root, "app.js") && process.env.DESIGN_STUDIO_AUTOSAVE_OLD_APP_JS
+        : await readFile(target === resolve(serveRoot, "app.js") && process.env.DESIGN_STUDIO_AUTOSAVE_OLD_APP_JS
           ? process.env.DESIGN_STUDIO_AUTOSAVE_OLD_APP_JS : target);
-      response.writeHead(200, { "content-type": ({ ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css" })[extname(target)] ?? "application/octet-stream" }).end(contents);
+      response.writeHead(200, { "content-type": ({ ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".woff2": "font/woff2", ".ttf": "font/ttf" })[extname(target)] ?? "application/octet-stream" }).end(contents);
     } catch { response.writeHead(404).end(); }
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: true, ...(gpu ? { args: ["--enable-webgl", "--enable-unsafe-swiftshader"] } : {}) });
   const context = await browser.newContext();
   const page = await context.newPage();
   t.after(async () => { await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
@@ -78,16 +80,18 @@ export async function fixture(t, { blank = false, browserOnly = false, sourceOve
       }
       throw Error(`Unsupported ${method}`);
     });
-    await page.addInitScript(() => {
+    await page.addInitScript(gpu => {
       let scope = "/project/A", listener;
       const state = { cwd: scope, sessionId: scope, trusted: true, visible: true, busy: false,
+        ...(gpu ? { capabilities: { packageAssets: { wasm: true, fetch: "package" } } } : {}),
         availableMethods: ["storage.getSnapshot", "storage.compareAndSet", "storage.get", "storage.set", "workspace.info", "workspace.list", "workspace.readText", "workspace.writeText"] };
+      window.tools = {};
       window.codeshellPanel = {
         getContext: async () => ({ ...state }), call: (method, params) => window.autosaveHost(scope, method, params),
-        on: (name, callback) => { if (name === "context.changed") listener = callback; }, registerTool() {},
+        on: (name, callback) => { if (name === "context.changed") listener = callback; }, registerTool(name, callback) { window.tools[name] = callback; },
       };
       window.switchAutosaveProject = next => { scope = next; state.cwd = next; state.sessionId = next; listener?.({ ...state }); };
-    });
+    }, gpu);
   }
   await page.goto(`http://127.0.0.1:${server.address().port}/index.html`);
   await page.waitForFunction(() => !document.querySelector(".workspace").inert);

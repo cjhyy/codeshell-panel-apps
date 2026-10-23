@@ -681,6 +681,22 @@ textarea:focus-visible {
   background: var(--canvas);
 }
 
+.infinite-canvas-hint {
+  position: absolute;
+  z-index: 1;
+  top: 46%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--muted);
+  font-size: 16px;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.infinite-canvas-hint span { display: block; margin-top: 10px; font-size: 12px; }
+.infinite-canvas-hint[hidden], #canvas-dimensions[hidden] { display: none; }
+.canvas-mode-upgrade { width: 100%; margin-bottom: 12px; }
+
 #stage {
   position: absolute;
   top: 0;

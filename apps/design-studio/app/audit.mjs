@@ -859,6 +859,7 @@ export function auditDesign(document) {
     const visualBounds = transformedNodeBoundsInTree(document.nodes, node, byId);
     const visibleBounds = clipNodeBoundsToClippingAncestors(document.nodes, node, byId);
     if (
+      document.canvas.mode !== "infinite" &&
       node.type !== "group" &&
       (!visualBounds || (visibleBounds && !contains(canvas, visibleBounds)))
     ) {
@@ -879,6 +880,7 @@ export function auditDesign(document) {
       byId,
     );
     if (
+      document.canvas.mode !== "infinite" &&
       visibleEffectBounds &&
       visibleBounds &&
       contains(canvas, visibleBounds) &&

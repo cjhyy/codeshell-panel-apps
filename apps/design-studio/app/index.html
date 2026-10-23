@@ -246,6 +246,7 @@
         </aside>
 
         <section id="stage-wrap" class="stage-wrap" aria-label="设计画布">
+          <div id="infinite-canvas-hint" class="infinite-canvas-hint" hidden>无限画布<span>按 F 创建画板 · 空格拖动平移</span></div>
           <canvas id="gpu-canvas" aria-hidden="true" hidden></canvas>
           <canvas id="stage" role="img" aria-label="Design canvas" tabindex="0"></canvas>
           <div id="renderer-message" class="renderer-message" role="status">
@@ -388,8 +389,9 @@
                 </label>
               </div>
               <div class="property-section">
-                <div class="section-label">画布</div>
-                <div class="property-grid">
+                <div id="canvas-mode" class="section-label">工作区</div>
+                <button id="enable-infinite-canvas" class="button canvas-mode-upgrade" type="button" hidden>改为无限画布</button>
+                <div id="canvas-dimensions" class="property-grid">
                   <label
                     ><span>W</span
                     ><input

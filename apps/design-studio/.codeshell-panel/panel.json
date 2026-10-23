@@ -280,14 +280,14 @@
                 },
                 "x": {
                   "type": "number",
-                  "minimum": -20000,
-                  "maximum": 20000,
+                  "minimum": -1000000,
+                  "maximum": 1000000,
                   "description": "Absolute canvas X for a root/manual/absolute-positioned node. Never make it parent-relative; omit it only for a flow child."
                 },
                 "y": {
                   "type": "number",
-                  "minimum": -20000,
-                  "maximum": 20000,
+                  "minimum": -1000000,
+                  "maximum": 1000000,
                   "description": "Absolute canvas Y for a root/manual/absolute-positioned node. Never make it parent-relative; omit it only for a flow child."
                 },
                 "width": {
@@ -709,6 +709,11 @@
                 "canvas": {
                   "type": "object",
                   "properties": {
+                    "mode": {
+                      "type": "string",
+                      "enum": ["infinite"],
+                      "description": "Use an infinite workspace; width and height remain the empty-export fallback, not layer boundaries. Existing documents can enable this without moving layers."
+                    },
                     "width": {
                       "type": "number",
                       "minimum": 100,

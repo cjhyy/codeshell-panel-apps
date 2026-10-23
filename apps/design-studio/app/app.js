@@ -34,6 +34,8 @@ import {
 } from "./geometry.mjs";
 import {
   designNodeRemovalIds,
+  designCoordinateLimit,
+  designPageBounds,
   effectiveDesignNodeOpacity,
   externalComponentInstancesForPage,
   exportDesignSvg,
@@ -237,6 +239,10 @@ const elements = {
   multiSelection: document.querySelector("#multi-selection"),
   multiSelectionCount: document.querySelector("#multi-selection-count"),
   canvasProperties: document.querySelector("#canvas-properties"),
+  canvasDimensions: document.querySelector("#canvas-dimensions"),
+  canvasMode: document.querySelector("#canvas-mode"),
+  enableInfiniteCanvas: document.querySelector("#enable-infinite-canvas"),
+  infiniteCanvasHint: document.querySelector("#infinite-canvas-hint"),
   selectionProperties: document.querySelector("#selection-properties"),
   parentField: document.querySelector("#prop-parent-field"),
   frameSection: document.querySelector("#frame-section"),
@@ -652,7 +658,8 @@ function createBlankDocument(name = "Repo design") {
     canvas: {
       width: 1280,
       height: 820,
-      background: "#f7f7f3",
+      background: "#e8e8e8",
+      mode: "infinite",
     },
     tokens: {
       colors: clone(DEFAULT_COLOR_TOKENS),
@@ -1017,6 +1024,31 @@ function selectedTransformNodes() {
 function visualDeltaForNode(node, delta, movingIds) {
   const inheritedRotation = inheritedNodeRotation(design.nodes, node, movingIds);
   return inheritedRotation ? rotateVector(delta, -inheritedRotation) : delta;
+}
+
+function positionWithinDesignBudget(position) {
+  const limit = designCoordinateLimit(design.canvas);
+  return [position.x, position.y].every((value) => Number.isFinite(value) && Math.abs(value) <= limit);
+}
+
+function geometryWithinDesignBudget(node) {
+  return positionWithinDesignBudget(node) &&
+    [node.width, node.height].every((value) => Number.isFinite(value) && value >= 1 && value <= 20000);
+}
+
+function applyPositionChangesSafely(changes) {
+  if (changes.some((change) => !positionWithinDesignBudget(change))) return false;
+  for (const { node, x, y } of changes) Object.assign(node, { x, y });
+  return true;
+}
+
+function setTreePositionSafely(node, axis, value) {
+  const previous = design.nodes.map((entry) => ({ node: entry, x: entry.x, y: entry.y }));
+  if (!setNodeTreePosition(design.nodes, node.id, axis, value)) return false;
+  if (design.nodes.every(positionWithinDesignBudget)) return true;
+  for (const { node: entry, x, y } of previous) Object.assign(entry, { x, y });
+  notify("移动后的子图层超出坐标范围，已保留原位置", "error");
+  return false;
 }
 
 function containingFrame(point) {
@@ -1593,9 +1625,30 @@ function renderViewport() {
   if (viewportRenderFrame) cancelAnimationFrame(viewportRenderFrame);
   viewportRenderFrame = 0;
   renderSceneOverlays();
-  elements.zoomValue.textContent = `${Math.round(zoom * 100)}%`;
+  elements.zoomValue.textContent = zoomLabel();
+  renderWorkspaceBackground();
   updateInlineTextEditorPosition();
   syncGpuRenderer();
+}
+
+function zoomLabel() {
+  const percent = zoom * 100;
+  return `${percent < 1 ? Number(percent.toFixed(2)) : percent < 10 ? Number(percent.toFixed(1)) : Math.round(percent)}%`;
+}
+
+function renderWorkspaceBackground() {
+  const infinite = design.canvas.mode === "infinite";
+  elements.stageWrap.dataset.canvasMode = infinite ? "infinite" : "bounded";
+  elements.stageWrap.style.backgroundColor = infinite ? design.canvas.background : "";
+  elements.infiniteCanvasHint.hidden = !infinite || design.nodes.length > 0;
+  if (infinite) {
+    const spacing = 16 * zoom * 2 ** Math.max(0, Math.ceil(Math.log2(0.5 / zoom)));
+    elements.stageWrap.style.backgroundSize = `${spacing}px ${spacing}px`;
+    elements.stageWrap.style.backgroundPosition = `${pan.x}px ${pan.y}px`;
+  } else {
+    elements.stageWrap.style.backgroundSize = "";
+    elements.stageWrap.style.backgroundPosition = "";
+  }
 }
 
 function scheduleInteractionRender() {
@@ -1618,6 +1671,7 @@ function renderScene() {
 }
 
 function renderSceneOverlays() {
+  renderWorkspaceBackground();
   const bounds = elements.stage.getBoundingClientRect();
   canvasHandles = drawCanvasInteraction(elements.stage, {
     design,
@@ -1834,6 +1888,10 @@ function renderProperties() {
     return;
   }
   if (!single) {
+    const infinite = design.canvas.mode === "infinite";
+    elements.canvasDimensions.hidden = infinite;
+    elements.canvasMode.textContent = infinite ? "无限工作区" : "固定画布 · 旧稿";
+    elements.enableInfiniteCanvas.hidden = infinite;
     canvasInputs.name.value = design.name;
     canvasInputs.width.value = String(round(design.canvas.width));
     canvasInputs.height.value = String(round(design.canvas.height));
@@ -2449,7 +2507,7 @@ function renderAll() {
   renderAuditStatus();
   updateLayoutControlState();
   updateInlineTextEditorPosition();
-  elements.zoomValue.textContent = `${Math.round(zoom * 100)}%`;
+  elements.zoomValue.textContent = zoomLabel();
   elements.stageWrap.dataset.grid = String(showGrid);
   elements.toggleGrid.classList.toggle("active", showGrid);
   elements.toggleGrid.setAttribute("aria-pressed", String(showGrid));
@@ -2609,6 +2667,10 @@ function pointerDown(event) {
     const parent = activeTool === "frame" ? null : containingFrame(point);
     const localPoint = pointToParentSpace(point, parent) ?? point;
     const origin = snapPoint(localPoint, event.altKey);
+    if (!positionWithinDesignBudget(origin)) {
+      notify("当前位置超出设计坐标范围，请移回内容附近创建", "error");
+      return;
+    }
     const node = baseNode(activeTool, {
       x: round(origin.x),
       y: round(origin.y),
@@ -2727,12 +2789,17 @@ function pointerMove(event) {
     } else {
       interaction.guides = [];
     }
+    const changes = [];
     for (const [nodeId, origin] of interaction.origins) {
       const node = nodeById(nodeId);
       if (!node) continue;
       const nodeDelta = visualDeltaForNode(node, { x: deltaX, y: deltaY }, interaction.movingIds);
-      node.x = round(origin.x + nodeDelta.x);
-      node.y = round(origin.y + nodeDelta.y);
+      changes.push({ node, x: round(origin.x + nodeDelta.x), y: round(origin.y + nodeDelta.y) });
+    }
+    if (!applyPositionChangesSafely(changes)) {
+      interaction.guides = [];
+      scheduleInteractionRender();
+      return;
     }
     interaction.moved =
       interaction.moved ||
@@ -2754,14 +2821,23 @@ function pointerMove(event) {
       endX = interaction.start.x + (endX < interaction.start.x ? -size : size);
       endY = interaction.start.y + (endY < interaction.start.y ? -size : size);
     }
-    node.x = round(Math.min(endX, interaction.start.x));
-    node.y = round(Math.min(endY, interaction.start.y));
-    node.width = round(Math.max(1, Math.abs(endX - interaction.start.x)));
-    node.height = round(Math.max(1, Math.abs(endY - interaction.start.y)));
+    endX = interaction.start.x + clamp(endX - interaction.start.x, -20000, 20000);
+    endY = interaction.start.y + clamp(endY - interaction.start.y, -20000, 20000);
+    const next = {
+      x: round(Math.min(endX, interaction.start.x)),
+      y: round(Math.min(endY, interaction.start.y)),
+      width: round(Math.max(1, Math.abs(endX - interaction.start.x))),
+      height: round(Math.max(1, Math.abs(endY - interaction.start.y))),
+    };
+    if (!geometryWithinDesignBudget(next)) return;
+    Object.assign(node, next);
   } else if (interaction.kind === "resize") {
     const node = nodeById(interaction.nodeId);
     if (!node) return;
-    resizeNode(node, snapPoint(point, event.altKey), interaction, event.shiftKey);
+    const next = { ...node };
+    resizeNode(next, snapPoint(point, event.altKey), interaction, event.shiftKey);
+    if (!geometryWithinDesignBudget(next)) return;
+    Object.assign(node, { x: next.x, y: next.y, width: next.width, height: next.height });
   }
   updateDirtyState();
   scheduleInteractionRender();
@@ -2781,6 +2857,9 @@ function resizeNode(node, point, state, preserveAspect) {
     let height = Math.max(minimum, Math.abs(point.y - anchorY));
     if (width / height > aspect) height = width / aspect;
     else width = height * aspect;
+    const scale = Math.min(1, 20000 / Math.max(width, height));
+    width = Math.max(1, width * scale);
+    height = Math.max(1, height * scale);
     node.width = round(width);
     node.height = round(height);
     node.x = round(directionX < 0 ? anchorX - width : anchorX);
@@ -2788,18 +2867,18 @@ function resizeNode(node, point, state, preserveAspect) {
     return;
   }
   if (state.handle.includes("w")) {
-    node.x = round(Math.min(point.x, right - minimum));
-    node.width = round(Math.max(minimum, right - point.x));
+    node.x = round(clamp(point.x, right - 20000, right - minimum));
+    node.width = round(clamp(right - point.x, minimum, 20000));
   }
   if (state.handle.includes("e")) {
-    node.width = round(Math.max(minimum, point.x - state.bounds.x));
+    node.width = round(clamp(point.x - state.bounds.x, minimum, 20000));
   }
   if (state.handle.includes("n")) {
-    node.y = round(Math.min(point.y, bottom - minimum));
-    node.height = round(Math.max(minimum, bottom - point.y));
+    node.y = round(clamp(point.y, bottom - 20000, bottom - minimum));
+    node.height = round(clamp(bottom - point.y, minimum, 20000));
   }
   if (state.handle.includes("s")) {
-    node.height = round(Math.max(minimum, point.y - state.bounds.y));
+    node.height = round(clamp(point.y - state.bounds.y, minimum, 20000));
   }
 }
 
@@ -2840,9 +2919,32 @@ function finishInteraction(pointerId = null) {
     finished.kind === "resize" ||
     (finished.kind === "move" && finished.moved);
   if (changed) {
+    const previousNodes = design.canvas.mode === "infinite" ? clone(design.nodes) : null;
     if (node) {
       reflowParent(node);
       if (isContainerNode(node)) applyAutoLayouts(design.nodes, new Set([node.id]));
+    }
+    if (previousNodes && !design.nodes.every(geometryWithinDesignBudget)) {
+      design.nodes = previousNodes;
+      if (finished.kind === "create") {
+        design.nodes = design.nodes.filter((entry) => entry.id !== finished.nodeId);
+      } else if (finished.kind === "resize") {
+        const resized = nodeById(finished.nodeId);
+        if (resized) Object.assign(resized, finished.bounds);
+      } else if (finished.kind === "move") {
+        for (const [nodeId, origin] of finished.origins) {
+          const moved = nodeById(nodeId);
+          if (moved) Object.assign(moved, origin);
+        }
+      }
+      selectedId = finished.before.selectedId;
+      selectedIds = new Set(finished.before.selectedIds);
+      setActiveTool(finished.before.tool);
+      syncActivePageNodes();
+      updateDirtyState();
+      renderAll();
+      notify("布局后的图层超出坐标或尺寸范围，已撤销此次操作", "error");
+      return;
     }
     commitHistory();
     markChanged(false);
@@ -3231,13 +3333,13 @@ function distributeSelected(axis) {
     return node && (!node.parentId || !ids.has(node.parentId));
   }).length;
   if (rootCount < 3) return notify("等距分布至少需要 3 个独立的未锁定图层");
-  if (!distributeNodeTrees(design.nodes, ids, axis)) return;
+  if (!distributeNodeTrees(design.nodes, ids, axis, design.canvas)) return;
   commitHistory();
   markChanged();
 }
 
 function setZoom(next, focalClient) {
-  const nextZoom = clamp(next, 0.1, 4);
+  const nextZoom = clamp(next, design.canvas.mode === "infinite" ? 0.0001 : 0.1, design.canvas.mode === "infinite" ? 16 : 4);
   const rect = elements.stage.getBoundingClientRect();
   const focal = focalClient ?? {
     x: rect.left + elements.stage.clientWidth / 2,
@@ -3255,9 +3357,10 @@ function fitCanvas() {
   const padding = 62;
   const width = Math.max(100, elements.stage.clientWidth - padding * 2);
   const height = Math.max(100, elements.stage.clientHeight - padding * 2);
-  zoom = clamp(Math.min(width / design.canvas.width, height / design.canvas.height), 0.1, 2);
-  pan.x = (elements.stage.clientWidth - design.canvas.width * zoom) / 2;
-  pan.y = (elements.stage.clientHeight - design.canvas.height * zoom) / 2;
+  const bounds = designPageBounds(design);
+  zoom = clamp(Math.min(width / bounds.width, height / bounds.height), design.canvas.mode === "infinite" ? 0.0001 : 0.1, 2);
+  pan.x = elements.stage.clientWidth / 2 - (bounds.x + bounds.width / 2) * zoom;
+  pan.y = elements.stage.clientHeight / 2 - (bounds.y + bounds.height / 2) * zoom;
   renderViewport(true);
 }
 
@@ -3272,7 +3375,7 @@ function fitSelection() {
   const height = Math.max(100, elements.stage.clientHeight - padding * 2);
   zoom = clamp(
     Math.min(width / Math.max(1, bounds.width), height / Math.max(1, bounds.height)),
-    0.1,
+    design.canvas.mode === "infinite" ? 0.0001 : 0.1,
     4,
   );
   pan.x = elements.stage.clientWidth / 2 - (bounds.x + bounds.width / 2) * zoom;
@@ -5146,6 +5249,7 @@ async function importHtmlFromWorkspace({
     sha256Bytes,
   });
   check();
+  captured.document.canvas.mode = "infinite";
   for (const plan of captured.resourcePlans ?? []) {
     for (const part of plan.parts) {
       check();
@@ -5808,6 +5912,7 @@ function bindPropertyInput(input, update, eventName = "input", layoutEffect = "n
   input.addEventListener(eventName, () => {
     const node = selectedNode();
     if (!node || isEffectivelyLocked(node)) return;
+    const previousNodes = design.canvas.mode === "infinite" ? clone(design.nodes) : null;
     update(node, input.value);
     if (layoutEffect === "size" && isContainerNode(node)) {
       applyAutoLayouts(design.nodes, new Set([node.id, ...(node.parentId ? [node.parentId] : [])]));
@@ -5816,8 +5921,18 @@ function bindPropertyInput(input, update, eventName = "input", layoutEffect = "n
     } else if (layoutEffect === "container" && isContainerNode(node)) {
       applyAutoLayouts(design.nodes, new Set([node.id]));
     }
+    if (previousNodes && !design.nodes.every(geometryWithinDesignBudget)) {
+      design.nodes = previousNodes;
+      const page = activeDesignPage();
+      if (page) page.nodes = previousNodes;
+      renderAll();
+      notify("此次修改会使图层超出坐标或尺寸范围，已保留原设计", "error");
+      return;
+    }
     markChanged();
   });
+  // Empty operation records are ignored, while a valid intermediate input in
+  // the same focus session still needs its own undo record after a rejection.
   input.addEventListener("change", commitHistory);
 }
 
@@ -5870,10 +5985,10 @@ bindPropertyInput(propertyInputs.name, (node, value) => {
   node.name = value.slice(0, 120) || node.type;
 });
 bindPropertyInput(propertyInputs.x, (node, value) => {
-  setNodeTreePosition(design.nodes, node.id, "x", round(Number(value) || 0));
+  setTreePositionSafely(node, "x", round(clamp(finiteOr(value, 0), -designCoordinateLimit(design.canvas), designCoordinateLimit(design.canvas))));
 });
 bindPropertyInput(propertyInputs.y, (node, value) => {
-  setNodeTreePosition(design.nodes, node.id, "y", round(Number(value) || 0));
+  setTreePositionSafely(node, "y", round(clamp(finiteOr(value, 0), -designCoordinateLimit(design.canvas), designCoordinateLimit(design.canvas))));
 });
 bindPropertyInput(
   propertyInputs.width,
@@ -6260,6 +6375,16 @@ bindPropertyInput(
 
 bindCanvasInput(canvasInputs.name, (value) => {
   design.name = value.slice(0, 120);
+});
+elements.enableInfiniteCanvas.addEventListener("click", () => {
+  finishInlineTextEdit();
+  cancelInteraction();
+  if (design.canvas.mode === "infinite") return;
+  design.canvas.mode = "infinite";
+  commitHistory();
+  markChanged();
+  requestAnimationFrame(fitCanvas);
+  notify("已切换到无限工作区；图层坐标和来源保持不变");
 });
 bindCanvasInput(canvasInputs.width, (value) => {
   design.canvas.width = clamp(finiteOr(value, 1280), 100, MAX_DESIGN_CANVAS_SIZE);
@@ -6815,7 +6940,7 @@ window.addEventListener("keydown", (event) => {
     event.preventDefault();
     const amount = event.shiftKey ? 10 : 1;
     const movingIds = new Set(transformNodes.map((node) => node.id));
-    for (const node of transformNodes) {
+    const changes = transformNodes.map((node) => {
       const delta = visualDeltaForNode(
         node,
         {
@@ -6824,9 +6949,9 @@ window.addEventListener("keydown", (event) => {
         },
         movingIds,
       );
-      node.x = round(node.x + delta.x);
-      node.y = round(node.y + delta.y);
-    }
+      return { node, x: round(node.x + delta.x), y: round(node.y + delta.y) };
+    });
+    if (!applyPositionChangesSafely(changes)) return;
     commitHistory();
     markChanged();
   }
@@ -7486,10 +7611,7 @@ function designScreenshotSource(nodeId, pageId) {
   };
   if (typeof nodeId !== "string" || !nodeId) {
     return {
-      x: 0,
-      y: 0,
-      width: screenshotDesign.canvas.width,
-      height: screenshotDesign.canvas.height,
+      ...designPageBounds(screenshotDesign),
       nodeId: null,
       pageId: page.id,
       pageName: page.name,
@@ -7528,13 +7650,14 @@ function designScreenshotSource(nodeId, pageId) {
     24,
     Math.max(8, Math.min(effectBounds.width, effectBounds.height) * 0.04),
   );
-  const left = Math.max(0, effectBounds.x - padding);
-  const top = Math.max(0, effectBounds.y - padding);
-  const right = Math.min(
+  const infinite = screenshotDesign.canvas.mode === "infinite";
+  const left = infinite ? effectBounds.x - padding : Math.max(0, effectBounds.x - padding);
+  const top = infinite ? effectBounds.y - padding : Math.max(0, effectBounds.y - padding);
+  const right = infinite ? effectBounds.x + effectBounds.width + padding : Math.min(
     screenshotDesign.canvas.width,
     effectBounds.x + effectBounds.width + padding,
   );
-  const bottom = Math.min(
+  const bottom = infinite ? effectBounds.y + effectBounds.height + padding : Math.min(
     screenshotDesign.canvas.height,
     effectBounds.y + effectBounds.height + padding,
   );
@@ -8679,7 +8802,7 @@ function registerAgentTools(ready) {
           throw Error("Figma 输入已在预检后变化；请重新 prepare");
         const prepared =
           cached?.prepared ??
-          reviewPreparedFigma(await prepareFigmaImport(source.content, { sha256Bytes }));
+          reviewPreparedFigma(await prepareFigmaImport(source.content, { sha256Bytes, canvasMode: "infinite" }));
         checkExchangeScope(scope);
         if (args.action === "prepare") {
           const id = `figma-prepare-${++figmaPreparationSequence}-${sourceHash.slice(0, 12)}`;
@@ -9432,7 +9555,11 @@ function registerAgentTools(ready) {
     let width = Math.max(1, Math.round(source.width * scale));
     let height = Math.max(1, Math.round(source.height * scale));
     await loadReferencedDesignResources();
-    const svg = exportDesignSvg(source.document, { resourceDataUrls, maxBytes: 4 * 1024 * 1024 });
+    const bounds = { x: source.x, y: source.y, width: source.width, height: source.height };
+    const svg = exportDesignSvg(source.document, { resourceDataUrls, maxBytes: 4 * 1024 * 1024, bounds });
+    const svgRoot = new window.DOMParser().parseFromString(svg, "image/svg+xml").documentElement;
+    svgRoot.setAttribute("width", String(width));
+    svgRoot.setAttribute("height", String(height));
     const image = new window.Image();
     await new Promise((resolve, reject) => {
       const timer = window.setTimeout(
@@ -9455,7 +9582,7 @@ function registerAgentTools(ready) {
         },
         { once: true },
       );
-      image.src = `data:image/svg+xml;base64,${utf8Base64(svg)}`;
+      image.src = `data:image/svg+xml;base64,${utf8Base64(new window.XMLSerializer().serializeToString(svgRoot))}`;
     });
     const canvas = document.createElement("canvas");
     let dataUrl;
@@ -9468,10 +9595,6 @@ function registerAgentTools(ready) {
       if (!context) throw new Error("浏览器不支持设计预览");
       context.drawImage(
         image,
-        source.x,
-        source.y,
-        source.width,
-        source.height,
         0,
         0,
         width,
@@ -9505,6 +9628,7 @@ function registerAgentTools(ready) {
       nodeId: source.nodeId,
       pageId: source.pageId,
       pageName: source.pageName,
+      bounds,
       path: elements.path.value.trim(),
       revision: screenshotRevision,
       stateRevision: screenshotStateRevision,
@@ -9951,7 +10075,7 @@ figmaWorkflowUI = mountFigmaWorkflow({
     return snapshot;
   },
   prepareImport: async (input) => {
-    const prepared = reviewPreparedFigma(await prepareFigmaImport(input, { sha256Bytes }));
+    const prepared = reviewPreparedFigma(await prepareFigmaImport(input, { sha256Bytes, canvasMode: "infinite" }));
     const resourceDataUrls = resourceDataUrlsFromPlans(prepared.resourcePlans ?? []);
     const previewSvg = exportDesignSvg(normalizeDesignState(prepared.document), {
       resourceDataUrls,

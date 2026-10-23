@@ -117,6 +117,7 @@
     if (
       value.canvas !== undefined &&
       (!object(value.canvas) ||
+        (value.canvas.mode !== undefined && value.canvas.mode !== "infinite") ||
         !color(value.canvas.background) ||
         value.canvas.background === "transparent" ||
         !finite(value.canvas.width) ||
@@ -127,6 +128,7 @@
         value.canvas.height > 20000)
     )
       throw new Error("画布尺寸或背景无效。");
+    const coordinateLimit = value.canvas?.mode === "infinite" ? 1000000 : 20000;
     const ids = new Set(),
       seen = new Set();
     let total = 0;
@@ -153,8 +155,8 @@
       if (++total > MAX_TOTAL || ++counter.count > 10000)
         throw new Error("传输包图层数量超出上限。");
       for (const [key, min, max] of [
-        ["x", -20000, 20000],
-        ["y", -20000, 20000],
+        ["x", -coordinateLimit, coordinateLimit],
+        ["y", -coordinateLimit, coordinateLimit],
         ["width", 1, 20000],
         ["height", 1, 20000],
         ["rotation", -360, 360],
@@ -841,6 +843,7 @@
           format: "codeshell.figma.transfer",
           version: 1,
           name: "Patch validation",
+          canvas: value.canvas,
           pages: [{ id: "validate", name: "Patch", children: [copy] }],
         },
         assets,
