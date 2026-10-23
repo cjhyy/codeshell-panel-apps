@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { isAbsolute } from "node:path";
 import { runEditorRequest, type EditorRuntimeContext } from "./runtime.js";
-import { EditorTaskError, record } from "./protocol.js";
+import { EditorTaskError, publicEditorErrorMessage, record } from "./protocol.js";
 import { readHostOriginals, sealed } from "./files.js";
 import { combineAbortSignals } from "../signals.js";
 
@@ -125,13 +125,8 @@ export async function runEditorCli(
       ? "编辑器任务已取消"
       : known
         ? error.message
-        : candidate.length < 350 &&
-            candidate &&
-            !/(?:\/Users\/|\/home\/|\/tmp\/|\/private\/|[A-Z]:\\|https?:|ENOENT|EACCES|exited with code)/.test(
-              candidate,
-            )
-          ? candidate
-          : "编辑器处理未完成，请检查运行依赖、素材和任务状态后重试";
+        : (publicEditorErrorMessage(candidate) ??
+          "编辑器处理未完成，请检查运行依赖、素材和任务状态后重试");
     emit({
       type: "error",
       code,

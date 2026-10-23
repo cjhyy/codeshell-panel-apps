@@ -187,8 +187,9 @@ async function call(request, inputs = [], extra = {}) {
     if (inputs[i]) await copyFile(inputs[i], join(jobDir, "inputs", `resource-${i}.bin`));
   const args = [cli, "--job-dir", jobDir, "--runtime-dir", runtimeDir];
   if (extra.originals) {
-    const originals = Object.fromEntries(await Promise.all([...extra.originals].map(async ([id, path]) =>
-      [`original-${id}`, { path, bytes: (await stat(path)).size }])));
+    // A string is a present file; an object is a sealed entry whose file may have vanished since.
+    const originals = Object.fromEntries(await Promise.all([...extra.originals].map(async ([id, entry]) =>
+      [`original-${id}`, typeof entry === "string" ? { path: entry, bytes: (await stat(entry)).size } : entry])));
     const manifest = join(jobDir, "originals.json");
     await writeFile(manifest, JSON.stringify({ originals }), { mode: 0o600 });
     args.push("--originals", manifest);
@@ -343,6 +344,11 @@ test("sealed direct originals support inspection, proxies, sound and portable ex
   const linked = await call({ action: "inspect-source", transferId: `editor-${randomUUID()}`, resourceIds: [videoId] }, [],
     { originals: new Map([[videoId, link]]), fail: true });
   assert.equal(linked.error.code, "SOURCE_CHANGED");
+  const unplugged = join(temp, "已断开的移动硬盘", "原片.mov");
+  const gone = await call({ action: "inspect-source", transferId: `editor-${randomUUID()}`, resourceIds: [videoId] }, [],
+    { originals: new Map([[videoId, { path: unplugged, bytes: 1024 }]]), fail: true });
+  assert.equal(gone.error.code, "SOURCE_CHANGED", "a vanished original is a relink prompt, not a missing dependency");
+  assert.ok(!gone.error.message.includes(temp), "the Guest never sees the original's path");
 });
 test("native short-range export bounds preparation and isolates range WAV receipts from full preview audio", { timeout: 120000 }, async () => {
   const d = document(), seq = d.sequences[0], T = 240000,

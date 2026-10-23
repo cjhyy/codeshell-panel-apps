@@ -96,14 +96,19 @@ export async function readHostOriginals(path: string): Promise<EditorOriginals> 
 }
 /** Explicit read-only source path. Generated files continue to use regular() containment. */
 export async function originalFile(original: EditorOriginal): Promise<string> {
-  const info = await lstat(original.path);
-  if (
-    !info.isFile() ||
-    info.isSymbolicLink() ||
-    info.size !== original.bytes ||
-    (await realpath(original.path)) !== original.path
-  )
-    throw new EditorTaskError("SOURCE_CHANGED", "已授权原始素材发生变化");
+  let unchanged: boolean;
+  try {
+    const info = await lstat(original.path);
+    unchanged =
+      info.isFile() &&
+      !info.isSymbolicLink() &&
+      info.size === original.bytes &&
+      (await realpath(original.path)) === original.path;
+  } catch {
+    // A drive may disappear mid-job; native messages name the user's path.
+    throw new EditorTaskError("SOURCE_CHANGED", "已授权原始素材已移动、断开或无法读取，请重新连接原文件");
+  }
+  if (!unchanged) throw new EditorTaskError("SOURCE_CHANGED", "已授权原始素材发生变化");
   return original.path;
 }
 export async function fileHash(path: string, signal: AbortSignal): Promise<string> {

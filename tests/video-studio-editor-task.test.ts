@@ -15,7 +15,10 @@ import {
 import { constantTimeMap } from "../apps/video-studio/src/editor/time";
 import type { EditorDocument, MediaClip } from "../apps/video-studio/src/editor/types";
 import type { RuntimeBridge, RuntimeJob } from "../apps/video-studio/src/sdk/panel-runtime";
-import { validateEditorRequest } from "../apps/video-studio/native/editor-runtime/protocol";
+import {
+  publicEditorErrorMessage,
+  validateEditorRequest,
+} from "../apps/video-studio/native/editor-runtime/protocol";
 import { createExportPresets } from "../apps/video-studio/src/editor/export-settings";
 import {
   audioMixWarning,
@@ -538,4 +541,19 @@ test("native request schema rejects paths, prototype fields, unsupported actions
   assert.throws(() => validateEditorRequest({ ...base, resourceIds: new Array(1) }));
   assert.throws(() => validateEditorRequest({ ...base, transferId: "../escape" }));
   assert.throws(() => validateEditorRequest({ ...base, action: "exec" }));
+});
+
+test("unexpected native errors reach the Guest only without local paths", () => {
+  assert.equal(publicEditorErrorMessage("音频轨道数量超过限制"), "音频轨道数量超过限制");
+  for (const message of [
+    "EPERM: operation not permitted, lstat '/Volumes/T7/原片.mov'",
+    "EIO: i/o error, open '/Volumes/T7/原片.mov'",
+    "read failed for /media/user/disk/clip.mov",
+    "read failed for /mnt/nas/clip.mov",
+    "cannot open /var/folders/xy/T/clip.mov",
+    "ENOENT: no such file or directory",
+    "x".repeat(350),
+    "",
+  ])
+    assert.equal(publicEditorErrorMessage(message), undefined, message);
 });

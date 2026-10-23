@@ -12,6 +12,16 @@ export class EditorTaskError extends Error {
     this.name = "EditorTaskError";
   }
 }
+/** Unexpected native messages reach the Guest only when they cannot carry a local path. */
+export function publicEditorErrorMessage(candidate: string): string | undefined {
+  return candidate.length < 350 &&
+    candidate &&
+    !/(?:\/Users\/|\/home\/|\/tmp\/|\/private\/|\/var\/|\/Volumes\/|\/media\/|\/mnt\/|'\/|[A-Z]:\\|https?:|ENOENT|EACCES|EPERM|exited with code)/.test(
+      candidate,
+    )
+    ? candidate
+    : undefined;
+}
 export interface EditorRequest {
   action:
     | "inspect-source"
