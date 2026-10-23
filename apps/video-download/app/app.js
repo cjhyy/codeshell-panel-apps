@@ -1479,10 +1479,22 @@ function cookieRequestUrl(urlValue) {
   try {
     const url = new URL(urlValue);
     if (url.protocol !== "https:" || url.username || url.password) return null;
-    const host = url.hostname.toLowerCase().replace(/^www\./, "");
-    // These short links belong to the same video service. Use its login site
-    // consistently for account lookup, login, and the Host authorization check.
-    const siteHost = { "youtu.be": "youtube.com", "b23.tv": "bilibili.com" }[host] || host;
+    const host = url.hostname.toLowerCase();
+    // Account identity belongs to cookieSite(), not to a stripped network host.
+    // Bilibili's working login origin is www; also use it for account discovery
+    // and authorization so both old root-domain and www-domain accounts match.
+    // Only known service aliases are remapped. Other sites keep their real host.
+    const siteHost =
+      {
+        "youtu.be": "youtube.com",
+        "www.youtu.be": "youtube.com",
+        "www.youtube.com": "youtube.com",
+        "b23.tv": "www.bilibili.com",
+        "www.b23.tv": "www.bilibili.com",
+        "bilibili.com": "www.bilibili.com",
+        "www.bilibili.com": "www.bilibili.com",
+        "m.bilibili.com": "www.bilibili.com",
+      }[host] || host;
     return `https://${siteHost}/`;
   } catch {
     return null;

@@ -184,7 +184,59 @@ test("late failures and late successes cannot replace newer accounts or clear th
   await current;
   assert.equal(app.elements.cookieSelect.options[1].value, "bilibili");
   assert.equal(app.run("cookieLoading"), false);
-  assert.equal(app.calls[1].params.url, "https://bilibili.com/");
+  assert.equal(app.calls[1].params.url, "https://www.bilibili.com/");
+});
+
+test("Bilibili aliases use the working www origin while keeping one account identity", async () => {
+  const legacy = { id: "bili-root", label: "旧账号", domain: "bilibili.com", health: "ready", revision: "a".repeat(64) };
+  const account = { id: "bili-www", label: "新账号", domain: "www.bilibili.com", health: "ready", revision: "b".repeat(64) };
+  for (const [url, taskCookies] of [
+    "https://www.bilibili.com/video/BVexample",
+    "https://bilibili.com/video/BVexample",
+    "https://m.bilibili.com/video/BVexample",
+    "https://b23.tv/example",
+    "https://www.b23.tv/example",
+  ].flatMap((url) => [[url, false], [url, true]])) {
+    const app = mount({
+      url,
+      taskCookies,
+      processCookies: taskCookies,
+      call: (method, params) => {
+        assert.equal(params.url, "https://www.bilibili.com/");
+        if (method.endsWith(".list") || method.endsWith(".listForTask"))
+          return { accounts: [legacy, account] };
+        if (method.endsWith(".loginAndSave")) return { ok: true, credential: account };
+        return { authorized: true, fileArgumentHandle: "opaque-bili-grant" };
+      },
+    });
+    if (taskCookies) app.sandbox.context.availableMethods.push("credentials.cookies.loginAndSave");
+    await app.run("refreshCookieAccounts()");
+    assert.equal(app.elements.cookieSelect.options.length, 3);
+    app.choose(legacy.id);
+    await app.run("cookieFileArguments(normalizedUrl())");
+    assert.equal(app.calls.at(-1).params.credentialId, legacy.id);
+    app.changeUrl("https://b23.tv/another-video");
+    await app.run("refreshCookieAccounts()");
+    assert.equal(app.elements.cookieSelect.value, legacy.id);
+    await app.run("loginAndSaveCookie()");
+    const login = app.calls.find(({ method }) => method.endsWith(".loginAndSave"));
+    assert.equal(login.params.providerId, "bilibili");
+    assert.equal(login.params.providerLabel, "Bilibili");
+    assert.equal(app.elements.cookieSelect.value, account.id);
+  }
+});
+
+test("login routing preserves unrelated www hosts and never trusts lookalike service domains", async () => {
+  for (const host of ["www.example.com", "www.bilibili.com.attacker.example", "b23.tv.attacker.example"]) {
+    const app = mount({ url: `https://${host}/video` });
+    await app.run("loginAndSaveCookie()");
+    assert.equal(app.calls[0].params.url, `https://${host}/`);
+    assert.notEqual(app.calls[0].params.providerId, "bilibili");
+  }
+  const youtube = mount({ url: "https://www.youtube.com/watch?v=example" });
+  await youtube.run("loginAndSaveCookie()");
+  assert.equal(youtube.calls[0].params.url, "https://youtube.com/");
+  assert.equal(youtube.calls[0].params.providerId, "youtube");
 });
 
 test("unknown hosts stay scoped to their exact site and HTTP links explain unavailable cookies", async () => {
