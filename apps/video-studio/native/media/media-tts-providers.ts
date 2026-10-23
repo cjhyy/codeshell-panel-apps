@@ -68,7 +68,7 @@ export interface ManagedTtsResult {
 const VERSION = 1;
 const SCRIPT_HASH = createHash("sha256").update(MANAGED_TTS_SCRIPT).digest("hex");
 const PACKAGES = {
-  "edge-tts": ["edge-tts==7.2.8"],
+  "edge-tts": ["edge-tts==7.3.1"],
   kokoro: ["kokoro-onnx==0.6.1", "misaki[zh]==0.9.4", "soundfile==0.14.0", "onnxruntime==1.29.0"],
 } as const;
 const RESOURCES = [
@@ -651,7 +651,7 @@ export function createManagedTtsProviders(options: ManagedTtsOptions) {
       try {
         const version = await execute(id, { action: "probe" }, context, signal);
         installed =
-          version.version === (id === "kokoro" ? "0.6.1" : "7.2.8") &&
+          version.version === (id === "kokoro" ? "0.6.1" : "7.3.1") &&
           (id !== "kokoro" || version.frontend === "0.9.4");
       } catch (error) {
         if (signal.aborted) throw error;

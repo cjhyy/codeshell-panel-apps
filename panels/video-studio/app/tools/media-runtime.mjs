@@ -4455,7 +4455,7 @@ async function generateLocalTts(raw, context, options = {}) {
 var VERSION = 1;
 var SCRIPT_HASH3 = createHash6("sha256").update(MANAGED_TTS_SCRIPT).digest("hex");
 var PACKAGES3 = {
-  "edge-tts": ["edge-tts==7.2.8"],
+  "edge-tts": ["edge-tts==7.3.1"],
   kokoro: ["kokoro-onnx==0.6.1", "misaki[zh]==0.9.4", "soundfile==0.14.0", "onnxruntime==1.29.0"]
 };
 var RESOURCES2 = [
@@ -4949,7 +4949,7 @@ function createManagedTtsProviders(options) {
       let installed = false;
       try {
         const version = await execute(id2, { action: "probe" }, context, signal);
-        installed = version.version === (id2 === "kokoro" ? "0.6.1" : "7.2.8") && (id2 !== "kokoro" || version.frontend === "0.9.4");
+        installed = version.version === (id2 === "kokoro" ? "0.6.1" : "7.3.1") && (id2 !== "kokoro" || version.frontend === "0.9.4");
       } catch (error) {
         if (signal.aborted) throw error;
       }

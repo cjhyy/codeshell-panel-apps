@@ -51,7 +51,7 @@
 - [edge-tts](https://github.com/rany2/edge-tts) 是第三方客户端，调用 Edge 在线声音，无需 API key；安装成功不代表在线服务可达，也不构成微软官方 API 承诺。
 - 本地 [Kokoro ONNX](https://github.com/thewh1teagle/kokoro-onnx) 使用单独模型、声音和语音前端；本机已有 HyperFrames 的 v1.0 缓存可经大小/哈希核验后复用。准备完成后本地推理无需网络。声音质量、中文与混合语言需要实际短句验收，不能把能产生 WAV 等同于所有语言效果合格。
 
-当前处理器固定 `edge-tts 7.2.8`、`kokoro-onnx 0.6.1`、`misaki[zh] 0.9.4`、`soundfile 0.14.0`、`onnxruntime 1.29.0`，使用独立 Python 3.12 环境，安装器依赖 Host 已有的 `uv`、Python 3.12、FFmpeg/ffprobe。首版安装器明确支持 macOS/Linux 的 ARM64/x64；其他平台报告不可用，不假装安装成功。包及依赖下载量是估计值，模型文件按固定大小和 SHA-256 验证。
+当前处理器固定 `edge-tts 7.3.1`、`kokoro-onnx 0.6.1`、`misaki[zh] 0.9.4`、`soundfile 0.14.0`、`onnxruntime 1.29.0`，使用独立 Python 3.12 环境，安装器依赖 Host 已有的 `uv`、Python 3.12、FFmpeg/ffprobe。首版安装器明确支持 macOS/Linux 的 ARM64/x64；其他平台报告不可用，不假装安装成功。包及依赖下载量是估计值，模型文件按固定大小和 SHA-256 验证。
 
 | 实际使用资源 | 固定文件大小 | 许可 / 发布源 |
 | --- | ---: | --- |

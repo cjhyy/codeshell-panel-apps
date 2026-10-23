@@ -1,9 +1,22 @@
 import { constants } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { link, lstat, mkdir, open, realpath, rename, rm, rmdir, unlink } from "node:fs/promises";
+import {
+  copyFile,
+  link,
+  lstat,
+  mkdir,
+  open,
+  realpath,
+  rename,
+  rm,
+  rmdir,
+  unlink,
+} from "node:fs/promises";
 
 export const PROJECT_FILE = "video-studio-cli.json";
+/** Local media the CLI project may read; the schema-2 document holds only resource IDs. */
+export const MEDIA_FILE = "video-studio-media.json";
 export const DOCUMENT_BYTES = 32 * 1024 * 1024;
 export const REQUEST_BYTES = 256 * 1024;
 export const OUTPUT_BYTES = 64 * 1024;
@@ -210,14 +223,89 @@ export async function createProjectStore(project: string) {
       if (ownedTemporary) await rm(temporary, { force: true });
     }
   };
+  /** Copy a generated file below the project without replacing anything already there. */
+  const publishFile = async (path: string, source: string) => {
+    if (path === PROJECT_FILE || path === MEDIA_FILE)
+      throw cliError("INVALID_INPUT", "输出路径不能覆盖 CLI 工程文件");
+    const destination = await pathFor(path, true),
+      parent = dirname(destination),
+      temporary = join(parent, `.video-studio-${randomUUID()}.tmp`);
+    try {
+      // A clone where the file system supports it; never an overwrite.
+      await copyFile(source, temporary, constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE);
+      await pathFor(path);
+      try {
+        await link(temporary, destination);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST")
+          throw cliError("OUTPUT_EXISTS", `${path} 已存在，保留原文件；请换一个输出路径`);
+        throw error;
+      }
+      return destination;
+    } finally {
+      await rm(temporary, { force: true });
+    }
+  };
+  /** An existing regular file below the project, for commands that read project media. */
+  const existingFile = async (path: string) => {
+    const resolved = await pathFor(path),
+      info = await lstat(resolved).catch(() => undefined);
+    if (!info?.isFile()) throw cliError("INVALID_INPUT", `${path} 不是项目内的文件`);
+    return resolved;
+  };
+  /** Whether a project-relative output is still free, checked before long work starts. */
+  const assertFree = async (path: string) => {
+    if (path === PROJECT_FILE || path === MEDIA_FILE)
+      throw cliError("INVALID_INPUT", "输出路径不能覆盖 CLI 工程文件");
+    const resolved = await pathFor(path);
+    if (await lstat(resolved).then(() => true, () => false))
+      throw cliError("OUTPUT_EXISTS", `${path} 已存在，保留原文件；请换一个输出路径`);
+  };
+  const readMedia = async () => {
+    const path = await pathFor(MEDIA_FILE);
+    try {
+      return (await readJsonFile(path, DOCUMENT_BYTES)).data;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return undefined;
+    }
+  };
+  /** Replace the media list; callers hold the project lock. */
+  const writeMedia = async (data: unknown) => {
+    const destination = await pathFor(MEDIA_FILE),
+      temporary = join(dirname(destination), `.video-studio-${randomUUID()}.tmp`);
+    try {
+      const file = await open(
+        temporary,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+        0o600,
+      );
+      try {
+        await file.writeFile(`${JSON.stringify(data, null, 2)}\n`, "utf8");
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      await pathFor(MEDIA_FILE);
+      await rename(temporary, destination);
+    } finally {
+      await rm(temporary, { force: true });
+    }
+  };
   return {
     root,
     read,
     withLock,
+    publishFile,
+    existingFile,
+    assertFree,
+    readMedia,
+    writeMedia,
     write: (data: unknown, expected: string | null) =>
       publish(PROJECT_FILE, `${JSON.stringify(data)}\n`, expected, true),
     export: (path: string, data: unknown) => {
-      if (path === PROJECT_FILE) throw cliError("INVALID_INPUT", "导出路径不能覆盖 CLI 工程文件");
+      if (path === PROJECT_FILE || path === MEDIA_FILE)
+        throw cliError("INVALID_INPUT", "导出路径不能覆盖 CLI 工程文件");
       return publish(path, `${JSON.stringify(data, null, 2)}\n`, null, false);
     },
   };

@@ -1,5 +1,17 @@
 # Video Studio · 视频工作台 0.8.0
 
+## 待发布：命令行直接出片
+
+项目 CLI 现在能在任意终端或 agent 会话里从素材做到成片，不用打开面板：
+
+- `add-media` 登记本地视频、音频、图片并按顺序放上时间线；素材原地读取、不复制，工程文档只存 `external-<sha256>`，路径记在项目的 `video-studio-media.json`。
+- `render` 用面板自己的渲染器（FFmpeg + Chrome）导出并校验 MP4，从不覆盖已有文件；声音不变时复用已准备的混音。
+- `voices`、`setup-voice`、`voiceover` 生成配音：macOS 系统配音离线可用，Edge 在线语音（如晓晓）和 Kokoro 在本机安装一次后各项目共用。
+- `transcribe` 用本机 Whisper 写出源时间 JSON 和 SRT；`frames` 抽帧并拼成一张图，用来自查画面。
+- `project-runtime` Skill 写明完整流程；在 CodeShell 之外（Codex、Claude Code）使用 `~/.code-shell/panel-apps/video-studio` 中的安装包。
+
+同时修复 Edge 在线语音：固定的 `edge-tts 7.2.8` 已被微软语音服务拒绝（HTTP 403），升级到 `7.3.1`。已安装旧版的设备会提示重新准备该声音。
+
 ## 0.8.0：一套工作台
 
 桌面安装版的编辑界面收敛为一套：画面在中间、时间线在下方，素材与属性分在两侧。
@@ -507,9 +519,11 @@ Host 提供 `resources.recordAudio`、`resources.list/get/open` 时，录制页�
 
 安装包自带 `app/tools/video-studio.mjs`，Node.js 20.10+ 可直接执行。
 `project-runtime` Runtime Skill 从当前项目所选的安装包解析入口，支持
-`ops`、`init`、`inspect`、`validate`、`edit`（别名 `apply`）、`plan`、`import`、`export`。
-命令输出一行 JSON；`ops` 提供当前输入契约。源码维护于 `native/project-cli.ts`
-和 `native/project-store.ts`，构建时随其他原生入口打包，不依赖开发仓库。
+`ops`、`init`、`inspect`、`validate`、`edit`（别名 `apply`）、`plan`、`import`、`export`，
+以及出片相关的 `add-media`、`render`、`voices`、`setup-voice`、`voiceover`、`transcribe`、`frames`。
+命令输出一行 JSON，耗时命令在 stderr 输出进度；`ops` 提供当前输入契约。源码维护于
+`native/project-cli.ts`、`native/project-media.ts` 和 `native/project-store.ts`，构建时随其他
+原生入口打包，不依赖开发仓库。
 
 ```sh
 node "<package>/app/tools/video-studio.mjs" ops
@@ -531,8 +545,11 @@ Host 私有任务。文件是正式 schema-2 编辑文档，时间为每秒 2400
 原媒体，不授予资源 ID 的访问权限，也不等于含媒体的 `.mimiproject` 工程包。
 
 `plan` 校验导出配置、原序列范围、帧数与音轨计划；输出明确区分请求范围样本数和
-完整序列音轨统计。它不检查已安装编码器或媒体可访问性、不生成成片；实际媒体
-导入、转写、TTS、录制、渲染、同步和工程包仍走已授权面板流程。
+完整序列音轨统计，不生成成片。`render` 在本机实际渲染并校验成片。录制、多机位同步和
+含媒体的工程包仍走面板流程。本机运行状态（声音引擎、渲染缓存、临时任务）保存在
+`VIDEO_STUDIO_CLI_HOME` 或 `~/.cache/video-studio-cli`；Chrome 不在常见位置时设置
+`VIDEO_STUDIO_BROWSER`。验证命令另有 `node --test tests/video-studio-project-cli-media.test.mjs`
+（需要 FFmpeg 与 Chrome）。
 
 请求最多 256 KiB，工程最多 32 MiB，回执最多 64 KiB。CLI 写入使用 SHA-256 CAS、
 私有临时文件和原子发布；并发命令通过项目根的 `.video-studio-cli-write.lock`

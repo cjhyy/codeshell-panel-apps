@@ -1,16 +1,2342 @@
 import { createRequire as __panelCreateRequire } from "node:module"; const require = __panelCreateRequire(import.meta.url);
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
+  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
+}) : x)(function(x) {
+  if (typeof require !== "undefined") return require.apply(this, arguments);
+  throw Error('Dynamic require of "' + x + '" is not supported');
+});
+var __commonJS = (cb, mod) => function __require2() {
+  try {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  } catch (e) {
+    throw mod = 0, e;
+  }
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
+
+// ../../node_modules/pend/index.js
+var require_pend = __commonJS({
+  "../../node_modules/pend/index.js"(exports, module) {
+    module.exports = Pend;
+    function Pend() {
+      this.pending = 0;
+      this.max = Infinity;
+      this.listeners = [];
+      this.waiting = [];
+      this.error = null;
+    }
+    Pend.prototype.go = function(fn) {
+      if (this.pending < this.max) {
+        pendGo(this, fn);
+      } else {
+        this.waiting.push(fn);
+      }
+    };
+    Pend.prototype.wait = function(cb) {
+      if (this.pending === 0) {
+        cb(this.error);
+      } else {
+        this.listeners.push(cb);
+      }
+    };
+    Pend.prototype.hold = function() {
+      return pendHold(this);
+    };
+    function pendHold(self) {
+      self.pending += 1;
+      var called = false;
+      return onCb;
+      function onCb(err) {
+        if (called) throw new Error("callback called twice");
+        called = true;
+        self.error = self.error || err;
+        self.pending -= 1;
+        if (self.waiting.length > 0 && self.pending < self.max) {
+          pendGo(self, self.waiting.shift());
+        } else if (self.pending === 0) {
+          var listeners = self.listeners;
+          self.listeners = [];
+          listeners.forEach(cbListener);
+        }
+      }
+      function cbListener(listener) {
+        listener(self.error);
+      }
+    }
+    function pendGo(self, fn) {
+      fn(pendHold(self));
+    }
+  }
+});
+
+// ../../node_modules/yauzl/fd-slicer.js
+var require_fd_slicer = __commonJS({
+  "../../node_modules/yauzl/fd-slicer.js"(exports) {
+    var fs = __require("fs");
+    var util = __require("util");
+    var stream = __require("stream");
+    var Readable = stream.Readable;
+    var PassThrough = stream.PassThrough;
+    var Pend = require_pend();
+    var EventEmitter = __require("events").EventEmitter;
+    exports.BufferSlicer = BufferSlicer;
+    exports.FdSlicer = FdSlicer;
+    util.inherits(FdSlicer, EventEmitter);
+    function FdSlicer(fd) {
+      EventEmitter.call(this);
+      this.fd = fd;
+      this.pend = new Pend();
+      this.pend.max = 1;
+      this.refCount = 0;
+    }
+    FdSlicer.prototype.read = function(buffer, offset, length, position, callback) {
+      var self = this;
+      self.pend.go(function(cb) {
+        fs.read(self.fd, buffer, offset, length, position, function(err, bytesRead, buffer2) {
+          cb();
+          callback(err, bytesRead, buffer2);
+        });
+      });
+    };
+    FdSlicer.prototype.createReadStream = function(options2) {
+      return new ReadStream(this, options2);
+    };
+    FdSlicer.prototype.ref = function() {
+      this.refCount += 1;
+    };
+    FdSlicer.prototype.unref = function() {
+      var self = this;
+      self.refCount -= 1;
+      if (self.refCount < 0) throw new Error("invalid unref");
+      if (self.refCount > 0) return;
+      fs.close(self.fd, onCloseDone);
+      function onCloseDone(err) {
+        if (err) {
+          self.emit("error", err);
+        } else {
+          self.emit("close");
+        }
+      }
+    };
+    util.inherits(ReadStream, Readable);
+    function ReadStream(context2, options2) {
+      options2 = options2 || {};
+      Readable.call(this, options2);
+      this.context = context2;
+      this.context.ref();
+      this.start = options2.start || 0;
+      this.endOffset = options2.end;
+      this.pos = this.start;
+    }
+    ReadStream.prototype._read = function(n) {
+      var self = this;
+      var toRead = Math.min(self._readableState.highWaterMark, n);
+      if (self.endOffset != null) {
+        toRead = Math.min(toRead, self.endOffset - self.pos);
+      }
+      if (toRead <= 0) {
+        self.push(null);
+        this._cleanup();
+        return;
+      }
+      self.context.pend.go(function(cb) {
+        var buffer = Buffer.allocUnsafe(toRead);
+        fs.read(self.context.fd, buffer, 0, toRead, self.pos, function(err, bytesRead) {
+          if (err) {
+            self.destroy(err);
+          } else if (bytesRead === 0) {
+            self.push(null);
+            self._cleanup();
+          } else {
+            self.pos += bytesRead;
+            self.push(buffer.slice(0, bytesRead));
+          }
+          cb();
+        });
+      });
+    };
+    ReadStream.prototype._destroy = function(err, cb) {
+      this._cleanup();
+      cb(err);
+    };
+    ReadStream.prototype._cleanup = function() {
+      if (this.context != null) {
+        this.context.unref();
+        this.context = null;
+      }
+    };
+    util.inherits(BufferSlicer, EventEmitter);
+    function BufferSlicer(buffer) {
+      EventEmitter.call(this);
+      this.refCount = 0;
+      this.buffer = buffer;
+    }
+    BufferSlicer.prototype.read = function(buffer, offset, length, position, callback) {
+      if (!(0 <= offset && offset <= buffer.length)) throw new RangeError("offset outside buffer: 0 <= " + offset + " <= " + buffer.length);
+      if (position < 0) throw new RangeError("position is negative: " + position);
+      if (offset + length > buffer.length) {
+        length = buffer.length - offset;
+      }
+      if (position + length > this.buffer.length) {
+        length = this.buffer.length - position;
+      }
+      if (length <= 0) {
+        setImmediate(function() {
+          callback(null, 0);
+        });
+        return;
+      }
+      this.buffer.copy(buffer, offset, position, position + length);
+      setImmediate(function() {
+        callback(null, length);
+      });
+    };
+    BufferSlicer.prototype.createReadStream = function(options2) {
+      options2 = options2 || {};
+      var readStream = new PassThrough(options2);
+      readStream.start = options2.start || 0;
+      readStream.endOffset = options2.end;
+      readStream.pos = readStream.endOffset || this.buffer.length;
+      var entireSlice = this.buffer.slice(readStream.start, readStream.pos);
+      var maxChunkSize = 65536;
+      var offset = 0;
+      while (true) {
+        var nextOffset = offset + maxChunkSize;
+        if (nextOffset >= entireSlice.length) {
+          if (offset < entireSlice.length) {
+            readStream.write(entireSlice.slice(offset, entireSlice.length));
+          }
+          break;
+        }
+        readStream.write(entireSlice.slice(offset, nextOffset));
+        offset = nextOffset;
+      }
+      readStream.end();
+      return readStream;
+    };
+    BufferSlicer.prototype.ref = function() {
+      this.refCount += 1;
+    };
+    BufferSlicer.prototype.unref = function() {
+      this.refCount -= 1;
+      if (this.refCount < 0) {
+        throw new Error("invalid unref");
+      }
+    };
+  }
+});
+
+// ../../node_modules/yauzl/crc32.js
+var require_crc32 = __commonJS({
+  "../../node_modules/yauzl/crc32.js"(exports, module) {
+    var CRC_TABLE = new Int32Array([
+      0,
+      1996959894,
+      3993919788,
+      2567524794,
+      124634137,
+      1886057615,
+      3915621685,
+      2657392035,
+      249268274,
+      2044508324,
+      3772115230,
+      2547177864,
+      162941995,
+      2125561021,
+      3887607047,
+      2428444049,
+      498536548,
+      1789927666,
+      4089016648,
+      2227061214,
+      450548861,
+      1843258603,
+      4107580753,
+      2211677639,
+      325883990,
+      1684777152,
+      4251122042,
+      2321926636,
+      335633487,
+      1661365465,
+      4195302755,
+      2366115317,
+      997073096,
+      1281953886,
+      3579855332,
+      2724688242,
+      1006888145,
+      1258607687,
+      3524101629,
+      2768942443,
+      901097722,
+      1119000684,
+      3686517206,
+      2898065728,
+      853044451,
+      1172266101,
+      3705015759,
+      2882616665,
+      651767980,
+      1373503546,
+      3369554304,
+      3218104598,
+      565507253,
+      1454621731,
+      3485111705,
+      3099436303,
+      671266974,
+      1594198024,
+      3322730930,
+      2970347812,
+      795835527,
+      1483230225,
+      3244367275,
+      3060149565,
+      1994146192,
+      31158534,
+      2563907772,
+      4023717930,
+      1907459465,
+      112637215,
+      2680153253,
+      3904427059,
+      2013776290,
+      251722036,
+      2517215374,
+      3775830040,
+      2137656763,
+      141376813,
+      2439277719,
+      3865271297,
+      1802195444,
+      476864866,
+      2238001368,
+      4066508878,
+      1812370925,
+      453092731,
+      2181625025,
+      4111451223,
+      1706088902,
+      314042704,
+      2344532202,
+      4240017532,
+      1658658271,
+      366619977,
+      2362670323,
+      4224994405,
+      1303535960,
+      984961486,
+      2747007092,
+      3569037538,
+      1256170817,
+      1037604311,
+      2765210733,
+      3554079995,
+      1131014506,
+      879679996,
+      2909243462,
+      3663771856,
+      1141124467,
+      855842277,
+      2852801631,
+      3708648649,
+      1342533948,
+      654459306,
+      3188396048,
+      3373015174,
+      1466479909,
+      544179635,
+      3110523913,
+      3462522015,
+      1591671054,
+      702138776,
+      2966460450,
+      3352799412,
+      1504918807,
+      783551873,
+      3082640443,
+      3233442989,
+      3988292384,
+      2596254646,
+      62317068,
+      1957810842,
+      3939845945,
+      2647816111,
+      81470997,
+      1943803523,
+      3814918930,
+      2489596804,
+      225274430,
+      2053790376,
+      3826175755,
+      2466906013,
+      167816743,
+      2097651377,
+      4027552580,
+      2265490386,
+      503444072,
+      1762050814,
+      4150417245,
+      2154129355,
+      426522225,
+      1852507879,
+      4275313526,
+      2312317920,
+      282753626,
+      1742555852,
+      4189708143,
+      2394877945,
+      397917763,
+      1622183637,
+      3604390888,
+      2714866558,
+      953729732,
+      1340076626,
+      3518719985,
+      2797360999,
+      1068828381,
+      1219638859,
+      3624741850,
+      2936675148,
+      906185462,
+      1090812512,
+      3747672003,
+      2825379669,
+      829329135,
+      1181335161,
+      3412177804,
+      3160834842,
+      628085408,
+      1382605366,
+      3423369109,
+      3138078467,
+      570562233,
+      1426400815,
+      3317316542,
+      2998733608,
+      733239954,
+      1555261956,
+      3268935591,
+      3050360625,
+      752459403,
+      1541320221,
+      2607071920,
+      3965973030,
+      1969922972,
+      40735498,
+      2617837225,
+      3943577151,
+      1913087877,
+      83908371,
+      2512341634,
+      3803740692,
+      2075208622,
+      213261112,
+      2463272603,
+      3855990285,
+      2094854071,
+      198958881,
+      2262029012,
+      4057260610,
+      1759359992,
+      534414190,
+      2176718541,
+      4139329115,
+      1873836001,
+      414664567,
+      2282248934,
+      4279200368,
+      1711684554,
+      285281116,
+      2405801727,
+      4167216745,
+      1634467795,
+      376229701,
+      2685067896,
+      3608007406,
+      1308918612,
+      956543938,
+      2808555105,
+      3495958263,
+      1231636301,
+      1047427035,
+      2932959818,
+      3654703836,
+      1088359270,
+      936918e3,
+      2847714899,
+      3736837829,
+      1202900863,
+      817233897,
+      3183342108,
+      3401237130,
+      1404277552,
+      615818150,
+      3134207493,
+      3453421203,
+      1423857449,
+      601450431,
+      3009837614,
+      3294710456,
+      1567103746,
+      711928724,
+      3020668471,
+      3272380065,
+      1510334235,
+      755167117
+    ]);
+    function crc32(buf) {
+      let crc = -1;
+      for (let x of buf) {
+        crc = CRC_TABLE[(crc ^ x) & 255] ^ crc >>> 8;
+      }
+      return (crc ^ -1) >>> 0;
+    }
+    module.exports = crc32;
+  }
+});
+
+// ../../node_modules/yauzl/index.js
+var require_yauzl = __commonJS({
+  "../../node_modules/yauzl/index.js"(exports) {
+    var fs = __require("fs");
+    var zlib = __require("zlib");
+    var fd_slicer = require_fd_slicer();
+    var util = __require("util");
+    var EventEmitter = __require("events").EventEmitter;
+    var Transform2 = __require("stream").Transform;
+    var PassThrough = __require("stream").PassThrough;
+    var Writable = __require("stream").Writable;
+    var crc32 = typeof zlib.crc32 === "function" ? zlib.crc32 : require_crc32();
+    exports.open = open9;
+    exports.fromFd = fromFd;
+    exports.fromBuffer = fromBuffer;
+    exports.fromRandomAccessReader = fromRandomAccessReader;
+    exports.openPromise = openPromise;
+    exports.fromFdPromise = fromFdPromise;
+    exports.fromBufferPromise = fromBufferPromise;
+    exports.fromRandomAccessReaderPromise = fromRandomAccessReaderPromise;
+    exports.dosDateTimeToDate = dosDateTimeToDate;
+    exports.getFileNameLowLevel = getFileNameLowLevel;
+    exports.validateFileName = validateFileName;
+    exports.parseExtraFields = parseExtraFields;
+    exports.ZipFile = ZipFile;
+    exports.Entry = Entry;
+    exports.LocalFileHeader = LocalFileHeader;
+    exports.RandomAccessReader = RandomAccessReader;
+    function openPromise(path, options2) {
+      return new Promise((resolve10, reject) => {
+        open9(path, { ...options2, lazyEntries: true }, function(err, zipfile) {
+          if (err) return reject(err);
+          resolve10(zipfile);
+        });
+      });
+    }
+    function fromFdPromise(fd, options2) {
+      return new Promise((resolve10, reject) => {
+        fromFd(fd, { ...options2, lazyEntries: true }, function(err, zipfile) {
+          if (err) return reject(err);
+          resolve10(zipfile);
+        });
+      });
+    }
+    function fromBufferPromise(buffer, options2) {
+      return new Promise((resolve10, reject) => {
+        fromBuffer(buffer, { ...options2, lazyEntries: true }, function(err, zipfile) {
+          if (err) return reject(err);
+          resolve10(zipfile);
+        });
+      });
+    }
+    function fromRandomAccessReaderPromise(reader, totalSize, options2) {
+      return new Promise((resolve10, reject) => {
+        fromRandomAccessReader(reader, totalSize, { ...options2, lazyEntries: true }, function(err, zipfile) {
+          if (err) return reject(err);
+          resolve10(zipfile);
+        });
+      });
+    }
+    function open9(path, options2, callback) {
+      if (typeof options2 === "function") {
+        callback = options2;
+        options2 = null;
+      }
+      if (options2 == null) options2 = {};
+      if (options2.autoClose == null) options2.autoClose = true;
+      if (options2.lazyEntries == null) options2.lazyEntries = false;
+      if (options2.decodeStrings == null) options2.decodeStrings = true;
+      if (options2.validateEntrySizes == null) options2.validateEntrySizes = true;
+      if (options2.strictFileNames == null) options2.strictFileNames = false;
+      if (callback == null) callback = defaultCallback;
+      fs.open(path, "r", function(err, fd) {
+        if (err) return callback(err);
+        fromFd(fd, options2, function(err2, zipfile) {
+          if (err2) fs.close(fd, defaultCallback);
+          callback(err2, zipfile);
+        });
+      });
+    }
+    function fromFd(fd, options2, callback) {
+      if (typeof options2 === "function") {
+        callback = options2;
+        options2 = null;
+      }
+      if (options2 == null) options2 = {};
+      if (options2.autoClose == null) options2.autoClose = false;
+      if (options2.lazyEntries == null) options2.lazyEntries = false;
+      if (options2.decodeStrings == null) options2.decodeStrings = true;
+      if (options2.validateEntrySizes == null) options2.validateEntrySizes = true;
+      if (options2.strictFileNames == null) options2.strictFileNames = false;
+      if (callback == null) callback = defaultCallback;
+      fs.fstat(fd, function(err, stats) {
+        if (err) return callback(err);
+        var reader = new fd_slicer.FdSlicer(fd);
+        fromRandomAccessReader(reader, stats.size, options2, callback);
+      });
+    }
+    function fromBuffer(buffer, options2, callback) {
+      if (typeof options2 === "function") {
+        callback = options2;
+        options2 = null;
+      }
+      if (options2 == null) options2 = {};
+      options2.autoClose = false;
+      if (options2.lazyEntries == null) options2.lazyEntries = false;
+      if (options2.decodeStrings == null) options2.decodeStrings = true;
+      if (options2.validateEntrySizes == null) options2.validateEntrySizes = true;
+      if (options2.strictFileNames == null) options2.strictFileNames = false;
+      var reader = new fd_slicer.BufferSlicer(buffer);
+      fromRandomAccessReader(reader, buffer.length, options2, callback);
+    }
+    function fromRandomAccessReader(reader, totalSize, options2, callback) {
+      if (typeof options2 === "function") {
+        callback = options2;
+        options2 = null;
+      }
+      if (options2 == null) options2 = {};
+      if (options2.autoClose == null) options2.autoClose = true;
+      if (options2.lazyEntries == null) options2.lazyEntries = false;
+      if (options2.decodeStrings == null) options2.decodeStrings = true;
+      var decodeStrings = !!options2.decodeStrings;
+      if (options2.validateEntrySizes == null) options2.validateEntrySizes = true;
+      if (options2.strictFileNames == null) options2.strictFileNames = false;
+      if (callback == null) callback = defaultCallback;
+      if (typeof totalSize !== "number") throw new Error("expected totalSize parameter to be a number");
+      if (totalSize > Number.MAX_SAFE_INTEGER) {
+        throw new Error("zip file too large. only file sizes up to 2^52 are supported due to JavaScript's Number type being an IEEE 754 double.");
+      }
+      reader.ref();
+      var eocdrWithoutCommentSize = 22;
+      var zip64EocdlSize = 20;
+      var maxCommentSize = 65535;
+      var bufferSize = Math.min(zip64EocdlSize + eocdrWithoutCommentSize + maxCommentSize, totalSize);
+      var buffer = newBuffer(bufferSize);
+      var bufferReadStart = totalSize - buffer.length;
+      readAndAssertNoEof(reader, buffer, 0, bufferSize, bufferReadStart, function(err) {
+        if (err) return callback(err);
+        for (var i = bufferSize - eocdrWithoutCommentSize; i >= 0; i -= 1) {
+          if (buffer.readUInt32LE(i) !== 101010256) continue;
+          var eocdrBuffer = buffer.subarray(i);
+          var diskNumber = eocdrBuffer.readUInt16LE(4);
+          var entryCount = eocdrBuffer.readUInt16LE(10);
+          var centralDirectoryOffset = eocdrBuffer.readUInt32LE(16);
+          var commentLength = eocdrBuffer.readUInt16LE(20);
+          var expectedCommentLength = eocdrBuffer.length - eocdrWithoutCommentSize;
+          if (commentLength !== expectedCommentLength) {
+            return callback(new Error("Invalid comment length. Expected: " + expectedCommentLength + ". Found: " + commentLength + ". Are there extra bytes at the end of the file? Or is the end of central dir signature `PK☺☻` in the comment?"));
+          }
+          var comment = decodeStrings ? decodeBuffer(eocdrBuffer.subarray(22), false) : eocdrBuffer.subarray(22);
+          if (i - zip64EocdlSize >= 0 && buffer.readUInt32LE(i - zip64EocdlSize) === 117853008) {
+            var zip64EocdlBuffer = buffer.subarray(i - zip64EocdlSize, i - zip64EocdlSize + zip64EocdlSize);
+            var zip64EocdrOffset = readUInt64LE(zip64EocdlBuffer, 8);
+            var zip64EocdrBuffer = newBuffer(56);
+            return readAndAssertNoEof(reader, zip64EocdrBuffer, 0, zip64EocdrBuffer.length, zip64EocdrOffset, function(err2) {
+              if (err2) return callback(err2);
+              if (zip64EocdrBuffer.readUInt32LE(0) !== 101075792) {
+                return callback(new Error("invalid zip64 end of central directory record signature"));
+              }
+              diskNumber = zip64EocdrBuffer.readUInt32LE(16);
+              if (diskNumber !== 0) {
+                return callback(new Error("multi-disk zip files are not supported: found disk number: " + diskNumber));
+              }
+              entryCount = readUInt64LE(zip64EocdrBuffer, 32);
+              centralDirectoryOffset = readUInt64LE(zip64EocdrBuffer, 48);
+              return callback(null, new ZipFile(reader, centralDirectoryOffset, totalSize, entryCount, comment, options2.autoClose, options2.lazyEntries, decodeStrings, options2.validateEntrySizes, options2.strictFileNames));
+            });
+          }
+          if (diskNumber !== 0) {
+            return callback(new Error("multi-disk zip files are not supported: found disk number: " + diskNumber));
+          }
+          return callback(null, new ZipFile(reader, centralDirectoryOffset, totalSize, entryCount, comment, options2.autoClose, options2.lazyEntries, decodeStrings, options2.validateEntrySizes, options2.strictFileNames));
+        }
+        callback(new Error("End of central directory record signature not found. Either not a zip file, or file is truncated."));
+      });
+    }
+    util.inherits(ZipFile, EventEmitter);
+    function ZipFile(reader, centralDirectoryOffset, fileSize, entryCount, comment, autoClose, lazyEntries, decodeStrings, validateEntrySizes, strictFileNames) {
+      var self = this;
+      EventEmitter.call(self);
+      self.reader = reader;
+      self.reader.on("error", function(err) {
+        emitError(self, err);
+      });
+      self.reader.once("close", function() {
+        self.emit("close");
+      });
+      self.readEntryCursor = centralDirectoryOffset;
+      self.fileSize = fileSize;
+      self.entryCount = entryCount;
+      self.comment = comment;
+      self.entriesRead = 0;
+      self.autoClose = !!autoClose;
+      self.lazyEntries = !!lazyEntries;
+      self.decodeStrings = !!decodeStrings;
+      self.validateEntrySizes = !!validateEntrySizes;
+      self.strictFileNames = !!strictFileNames;
+      self.isOpen = true;
+      self.emittedError = false;
+      self.hasEachEntryBeenCalled = false;
+      if (!self.lazyEntries) self._readEntry();
+    }
+    ZipFile.prototype.close = function() {
+      if (!this.isOpen) return;
+      this.isOpen = false;
+      this.reader.unref();
+    };
+    function emitErrorAndAutoClose(self, err) {
+      if (self.autoClose) self.close();
+      emitError(self, err);
+    }
+    function emitError(self, err) {
+      if (self.emittedError) return;
+      self.emittedError = true;
+      self.emit("error", err);
+    }
+    ZipFile.prototype.readEntry = function() {
+      if (!this.lazyEntries) throw new Error("readEntry() called without lazyEntries:true");
+      this._readEntry();
+    };
+    ZipFile.prototype._readEntry = function() {
+      var self = this;
+      if (self.entryCount === self.entriesRead) {
+        setImmediate(function() {
+          if (self.autoClose) self.close();
+          if (self.emittedError) return;
+          self.emit("end");
+        });
+        return;
+      }
+      if (self.emittedError) return;
+      var buffer = newBuffer(46);
+      readAndAssertNoEof(self.reader, buffer, 0, buffer.length, self.readEntryCursor, function(err) {
+        if (err) return emitErrorAndAutoClose(self, err);
+        if (self.emittedError) return;
+        var entry = new Entry();
+        var signature2 = buffer.readUInt32LE(0);
+        if (signature2 !== 33639248) return emitErrorAndAutoClose(self, new Error("invalid central directory file header signature: 0x" + signature2.toString(16)));
+        entry.versionMadeBy = buffer.readUInt16LE(4);
+        entry.versionNeededToExtract = buffer.readUInt16LE(6);
+        entry.generalPurposeBitFlag = buffer.readUInt16LE(8);
+        entry.compressionMethod = buffer.readUInt16LE(10);
+        entry.lastModFileTime = buffer.readUInt16LE(12);
+        entry.lastModFileDate = buffer.readUInt16LE(14);
+        entry.crc32 = buffer.readUInt32LE(16);
+        entry.compressedSize = buffer.readUInt32LE(20);
+        entry.uncompressedSize = buffer.readUInt32LE(24);
+        entry.fileNameLength = buffer.readUInt16LE(28);
+        entry.extraFieldLength = buffer.readUInt16LE(30);
+        entry.fileCommentLength = buffer.readUInt16LE(32);
+        entry.internalFileAttributes = buffer.readUInt16LE(36);
+        entry.externalFileAttributes = buffer.readUInt32LE(38);
+        entry.relativeOffsetOfLocalHeader = buffer.readUInt32LE(42);
+        if (entry.generalPurposeBitFlag & 64) return emitErrorAndAutoClose(self, new Error("strong encryption is not supported"));
+        self.readEntryCursor += 46;
+        buffer = newBuffer(entry.fileNameLength + entry.extraFieldLength + entry.fileCommentLength);
+        readAndAssertNoEof(self.reader, buffer, 0, buffer.length, self.readEntryCursor, function(err2) {
+          if (err2) return emitErrorAndAutoClose(self, err2);
+          if (self.emittedError) return;
+          entry.fileNameRaw = buffer.subarray(0, entry.fileNameLength);
+          var fileCommentStart = entry.fileNameLength + entry.extraFieldLength;
+          entry.extraFieldRaw = buffer.subarray(entry.fileNameLength, fileCommentStart);
+          entry.fileCommentRaw = buffer.subarray(fileCommentStart, fileCommentStart + entry.fileCommentLength);
+          try {
+            entry.extraFields = parseExtraFields(entry.extraFieldRaw);
+          } catch (err3) {
+            return emitErrorAndAutoClose(self, err3);
+          }
+          if (self.decodeStrings) {
+            var isUtf8 = (entry.generalPurposeBitFlag & 2048) !== 0;
+            entry.fileComment = decodeBuffer(entry.fileCommentRaw, isUtf8);
+            entry.fileName = getFileNameLowLevel(entry.generalPurposeBitFlag, entry.fileNameRaw, entry.extraFields, self.strictFileNames);
+            var errorMessage = validateFileName(entry.fileName);
+            if (errorMessage != null) return emitErrorAndAutoClose(self, new Error(errorMessage));
+          } else {
+            entry.fileComment = entry.fileCommentRaw;
+            entry.fileName = entry.fileNameRaw;
+          }
+          entry.comment = entry.fileComment;
+          self.readEntryCursor += buffer.length;
+          self.entriesRead += 1;
+          for (var i = 0; i < entry.extraFields.length; i++) {
+            var extraField = entry.extraFields[i];
+            if (extraField.id !== 1) continue;
+            var zip64EiefBuffer = extraField.data;
+            var index2 = 0;
+            if (entry.uncompressedSize === 4294967295) {
+              if (index2 + 8 > zip64EiefBuffer.length) {
+                return emitErrorAndAutoClose(self, new Error("zip64 extended information extra field does not include uncompressed size"));
+              }
+              entry.uncompressedSize = readUInt64LE(zip64EiefBuffer, index2);
+              index2 += 8;
+            }
+            if (entry.compressedSize === 4294967295) {
+              if (index2 + 8 > zip64EiefBuffer.length) {
+                return emitErrorAndAutoClose(self, new Error("zip64 extended information extra field does not include compressed size"));
+              }
+              entry.compressedSize = readUInt64LE(zip64EiefBuffer, index2);
+              index2 += 8;
+            }
+            if (entry.relativeOffsetOfLocalHeader === 4294967295) {
+              if (index2 + 8 > zip64EiefBuffer.length) {
+                return emitErrorAndAutoClose(self, new Error("zip64 extended information extra field does not include relative header offset"));
+              }
+              entry.relativeOffsetOfLocalHeader = readUInt64LE(zip64EiefBuffer, index2);
+              index2 += 8;
+            }
+            break;
+          }
+          if (self.validateEntrySizes && entry.compressionMethod === 0) {
+            var expectedCompressedSize = entry.uncompressedSize;
+            if (entry.isEncrypted()) {
+              expectedCompressedSize += 12;
+            }
+            if (entry.compressedSize !== expectedCompressedSize) {
+              var msg = "compressed/uncompressed size mismatch for stored file: " + entry.compressedSize + " != " + entry.uncompressedSize;
+              return emitErrorAndAutoClose(self, new Error(msg));
+            }
+          }
+          self.emit("entry", entry);
+          if (!self.lazyEntries) self._readEntry();
+        });
+      });
+    };
+    ZipFile.prototype.eachEntry = function() {
+      const self = this;
+      if (!self.lazyEntries) throw new Error("eachEntry() requires lazyEntries: true");
+      if (self.hasEachEntryBeenCalled) throw new Error("eachEntry() must only be called once per ZipFile");
+      self.hasEachEntryBeenCalled = true;
+      let pendingResolveReject = null;
+      self.on("entry", onEntry);
+      self.on("end", onEnd);
+      self.on("error", onError);
+      function cleanup() {
+        self.removeListener("entry", onEntry);
+        self.removeListener("end", onEnd);
+        self.removeListener("error", onError);
+        if (self.autoClose) self.close();
+      }
+      function onEntry(entry) {
+        let { resolve: resolve10 } = pendingResolveReject;
+        pendingResolveReject = null;
+        resolve10({ value: entry });
+      }
+      function onEnd() {
+        let { resolve: resolve10 } = pendingResolveReject;
+        pendingResolveReject = null;
+        cleanup();
+        resolve10({ done: true });
+      }
+      function onError(err) {
+        let { reject } = pendingResolveReject;
+        pendingResolveReject = null;
+        cleanup();
+        reject(err);
+      }
+      return {
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+        next() {
+          const promise = new Promise((resolve10, reject) => {
+            if (pendingResolveReject != null) throw new Error("next() called before previous Promise was resolved.");
+            pendingResolveReject = { resolve: resolve10, reject };
+          });
+          self.readEntry();
+          return promise;
+        },
+        return(value) {
+          cleanup();
+          return Promise.resolve({ done: true, value });
+        },
+        throw(value) {
+          cleanup();
+          return Promise.reject(value);
+        }
+      };
+    };
+    ZipFile.prototype.openReadStream = function(entry, options2, callback) {
+      var self = this;
+      var relativeStart = 0;
+      var relativeEnd = entry.compressedSize;
+      if (callback == null) {
+        callback = options2;
+        options2 = null;
+      }
+      if (options2 == null) {
+        options2 = {};
+      } else {
+        if (options2.decodeFileData === false) {
+          if (options2.decrypt != null) {
+            throw new Error("cannot use options.decrypt when options.decodeFileData === false");
+          }
+          if (options2.decompress != null) {
+            throw new Error("cannot use options.decompress when options.decodeFileData === false");
+          }
+        } else {
+          if (options2.decrypt != null) {
+            if (!entry.isEncrypted()) {
+              throw new Error("options.decrypt can only be specified for encrypted entries. See also option decodeFileData.");
+            }
+            if (options2.decrypt !== false) throw new Error("invalid options.decrypt value: " + options2.decrypt);
+            if (entry.isCompressed()) {
+              if (options2.decompress !== false) throw new Error("entry is encrypted and compressed, and options.decompress !== false. See also option decodeFileData.");
+            }
+          }
+          if (options2.decompress != null) {
+            if (!entry.isCompressed()) {
+              throw new Error("options.decompress can only be specified for compressed entries. See also option decodeFileData.");
+            }
+            if (!(options2.decompress === false || options2.decompress === true)) {
+              throw new Error("invalid options.decompress value: " + options2.decompress);
+            }
+            decompress = options2.decompress;
+          }
+        }
+        if (options2.start != null) {
+          relativeStart = options2.start;
+          if (relativeStart < 0) throw new Error("options.start < 0");
+          if (relativeStart > entry.compressedSize) throw new Error("options.start > entry.compressedSize");
+        }
+        if (options2.end != null) {
+          relativeEnd = options2.end;
+          if (relativeEnd < 0) throw new Error("options.end < 0");
+          if (relativeEnd > entry.compressedSize) throw new Error("options.end > entry.compressedSize");
+          if (relativeEnd < relativeStart) throw new Error("options.end < options.start");
+        }
+      }
+      var rawMode = options2.decodeFileData === false || // Explicitly requested raw.
+      (entry.compressionMethod === 0 || // Naturally without compression.
+      entry.compressionMethod === 8 && options2.decompress === false) && (!entry.isEncrypted() || // Naturally without encryption.
+      options2.decrypt === false);
+      if (options2.start != null || options2.end != null) {
+        if (!rawMode) throw new Error("start/end range require options.decodeFileData === false for non-trivial encoded entries.");
+      }
+      if (!self.isOpen) return callback(new Error("closed"));
+      if (entry.isEncrypted() && !rawMode) {
+        if (options2.decrypt !== false) return callback(new Error("entry is encrypted, and options.decodeFileData !== false"));
+      }
+      var decompress;
+      if (rawMode) {
+        decompress = false;
+      } else if (entry.compressionMethod === 8) {
+        decompress = options2.decodeFileData !== true;
+      } else {
+        return callback(new Error("unsupported compression method: " + entry.compressionMethod));
+      }
+      self.readLocalFileHeader(entry, { minimal: true }, function(err, localFileHeader) {
+        if (err) return callback(err);
+        self.openReadStreamLowLevel(
+          localFileHeader.fileDataStart,
+          entry.compressedSize,
+          relativeStart,
+          relativeEnd,
+          decompress,
+          entry.uncompressedSize,
+          callback
+        );
+      });
+    };
+    ZipFile.prototype.openReadStreamLowLevel = function(fileDataStart, compressedSize, relativeStart, relativeEnd, decompress, uncompressedSize, callback) {
+      var self = this;
+      var fileDataEnd = fileDataStart + compressedSize;
+      var readStream = self.reader.createReadStream({
+        start: fileDataStart + relativeStart,
+        end: fileDataStart + relativeEnd
+      });
+      var endpointStream = readStream;
+      if (decompress) {
+        var destroyed = false;
+        var inflateFilter = zlib.createInflateRaw();
+        readStream.on("error", function(err) {
+          setImmediate(function() {
+            if (!destroyed) inflateFilter.emit("error", err);
+          });
+        });
+        readStream.pipe(inflateFilter);
+        if (self.validateEntrySizes) {
+          endpointStream = new AssertByteCountStream(uncompressedSize);
+          inflateFilter.on("error", function(err) {
+            setImmediate(function() {
+              if (!destroyed) endpointStream.emit("error", err);
+            });
+          });
+          inflateFilter.pipe(endpointStream);
+        } else {
+          endpointStream = inflateFilter;
+        }
+        installDestroyFn(endpointStream, function() {
+          destroyed = true;
+          if (inflateFilter !== endpointStream) inflateFilter.unpipe(endpointStream);
+          readStream.unpipe(inflateFilter);
+          readStream.destroy();
+        });
+      }
+      callback(null, endpointStream);
+    };
+    ZipFile.prototype.readLocalFileHeader = function(entry, options2, callback) {
+      var self = this;
+      if (callback == null) {
+        callback = options2;
+        options2 = null;
+      }
+      if (options2 == null) options2 = {};
+      self.reader.ref();
+      var buffer = newBuffer(30);
+      readAndAssertNoEof(self.reader, buffer, 0, buffer.length, entry.relativeOffsetOfLocalHeader, function(err) {
+        try {
+          if (err) return callback(err);
+          var signature2 = buffer.readUInt32LE(0);
+          if (signature2 !== 67324752) {
+            return callback(new Error("invalid local file header signature: 0x" + signature2.toString(16)));
+          }
+          var fileNameLength = buffer.readUInt16LE(26);
+          var extraFieldLength = buffer.readUInt16LE(28);
+          var fileDataStart = entry.relativeOffsetOfLocalHeader + 30 + fileNameLength + extraFieldLength;
+          if (fileDataStart + entry.compressedSize > self.fileSize) {
+            return callback(new Error("file data overflows file bounds: " + fileDataStart + " + " + entry.compressedSize + " > " + self.fileSize));
+          }
+          if (options2.minimal) {
+            return callback(null, { fileDataStart });
+          }
+          var localFileHeader = new LocalFileHeader();
+          localFileHeader.fileDataStart = fileDataStart;
+          localFileHeader.versionNeededToExtract = buffer.readUInt16LE(4);
+          localFileHeader.generalPurposeBitFlag = buffer.readUInt16LE(6);
+          localFileHeader.compressionMethod = buffer.readUInt16LE(8);
+          localFileHeader.lastModFileTime = buffer.readUInt16LE(10);
+          localFileHeader.lastModFileDate = buffer.readUInt16LE(12);
+          localFileHeader.crc32 = buffer.readUInt32LE(14);
+          localFileHeader.compressedSize = buffer.readUInt32LE(18);
+          localFileHeader.uncompressedSize = buffer.readUInt32LE(22);
+          localFileHeader.fileNameLength = fileNameLength;
+          localFileHeader.extraFieldLength = extraFieldLength;
+          buffer = newBuffer(fileNameLength + extraFieldLength);
+          self.reader.ref();
+          readAndAssertNoEof(self.reader, buffer, 0, buffer.length, entry.relativeOffsetOfLocalHeader + 30, function(err2) {
+            try {
+              if (err2) return callback(err2);
+              localFileHeader.fileName = buffer.subarray(0, fileNameLength);
+              localFileHeader.extraField = buffer.subarray(fileNameLength);
+              return callback(null, localFileHeader);
+            } finally {
+              self.reader.unref();
+            }
+          });
+        } finally {
+          self.reader.unref();
+        }
+      });
+    };
+    ZipFile.prototype.openReadStreamPromise = function(entry, options2) {
+      return new Promise((resolve10, reject) => {
+        this.openReadStream(entry, options2, function(err, readStream) {
+          if (err) return reject(err);
+          resolve10(readStream);
+        });
+      });
+    };
+    ZipFile.prototype.openReadStreamLowLevelPromise = function(fileDataStart, compressedSize, relativeStart, relativeEnd, decompress, uncompressedSize) {
+      return new Promise((resolve10, reject) => {
+        this.openReadStream(fileDataStart, compressedSize, relativeStart, relativeEnd, decompress, uncompressedSize, function(err, readStream) {
+          if (err) return reject(err);
+          resolve10(readStream);
+        });
+      });
+    };
+    ZipFile.prototype.readLocalFileHeaderPromise = function(entry, options2) {
+      return new Promise((resolve10, reject) => {
+        this.readLocalFileHeader(entry, options2, function(err, localFileHeader) {
+          if (err) return reject(err);
+          resolve10(localFileHeader);
+        });
+      });
+    };
+    function Entry() {
+    }
+    Entry.prototype.getLastModDate = function(options2) {
+      if (options2 == null) options2 = {};
+      if (!options2.forceDosFormat) {
+        for (var i = 0; i < this.extraFields.length; i++) {
+          var extraField = this.extraFields[i];
+          if (extraField.id === 21589) {
+            var data = extraField.data;
+            if (data.length < 5) continue;
+            var flags = data[0];
+            var HAS_MTIME = 1;
+            if (!(flags & HAS_MTIME)) continue;
+            var posixTimestamp = data.readInt32LE(1);
+            return new Date(posixTimestamp * 1e3);
+          } else if (extraField.id === 10) {
+            var data = extraField.data;
+            if (data.length !== 32) continue;
+            if (data.readUInt16LE(4) !== 1) continue;
+            if (data.readUInt16LE(6) !== 24) continue;
+            var hundredNanoSecondsSince1601 = data.readUInt32LE(8) + 4294967296 * data.readInt32LE(12);
+            var millisecondsSince1970 = hundredNanoSecondsSince1601 / 1e4 - 116444736e5;
+            return new Date(millisecondsSince1970);
+          }
+        }
+      }
+      return dosDateTimeToDate(this.lastModFileDate, this.lastModFileTime, options2.timezone);
+    };
+    Entry.prototype.canDecodeFileData = function() {
+      return !this.isEncrypted() && (this.compressionMethod === 0 || this.compressionMethod === 8);
+    };
+    Entry.prototype.isEncrypted = function() {
+      return (this.generalPurposeBitFlag & 1) !== 0;
+    };
+    Entry.prototype.isCompressed = function() {
+      return this.compressionMethod === 8;
+    };
+    function LocalFileHeader() {
+    }
+    function dosDateTimeToDate(date, time2, timezone) {
+      var day = date & 31;
+      var month = (date >> 5 & 15) - 1;
+      var year = (date >> 9 & 127) + 1980;
+      var millisecond = 0;
+      var second = (time2 & 31) * 2;
+      var minute = time2 >> 5 & 63;
+      var hour = time2 >> 11 & 31;
+      if (timezone == null || timezone === "local") {
+        return new Date(year, month, day, hour, minute, second, millisecond);
+      } else if (timezone === "UTC") {
+        return new Date(Date.UTC(year, month, day, hour, minute, second, millisecond));
+      } else {
+        throw new Error("unrecognized options.timezone: " + options.timezone);
+      }
+    }
+    function getFileNameLowLevel(generalPurposeBitFlag, fileNameBuffer, extraFields, strictFileNames) {
+      var fileName = null;
+      for (var i = 0; i < extraFields.length; i++) {
+        var extraField = extraFields[i];
+        if (extraField.id === 28789) {
+          if (extraField.data.length < 6) {
+            continue;
+          }
+          if (extraField.data.readUInt8(0) !== 1) {
+            continue;
+          }
+          var oldNameCrc32 = extraField.data.readUInt32LE(1);
+          if (crc32(fileNameBuffer) !== oldNameCrc32) {
+            continue;
+          }
+          fileName = decodeBuffer(extraField.data.subarray(5), true);
+          break;
+        }
+      }
+      if (fileName == null) {
+        var isUtf8 = (generalPurposeBitFlag & 2048) !== 0;
+        fileName = decodeBuffer(fileNameBuffer, isUtf8);
+      }
+      if (!strictFileNames) {
+        fileName = fileName.replace(/\\/g, "/");
+      }
+      return fileName;
+    }
+    function validateFileName(fileName) {
+      if (fileName.indexOf("\\") !== -1) {
+        return "invalid characters in fileName: " + fileName;
+      }
+      if (/^[a-zA-Z]:/.test(fileName) || /^\//.test(fileName)) {
+        return "absolute path: " + fileName;
+      }
+      if (fileName.split("/").indexOf("..") !== -1) {
+        return "invalid relative path: " + fileName;
+      }
+      return null;
+    }
+    function parseExtraFields(extraFieldBuffer) {
+      var extraFields = [];
+      var i = 0;
+      while (i < extraFieldBuffer.length - 3) {
+        var headerId = extraFieldBuffer.readUInt16LE(i + 0);
+        var dataSize = extraFieldBuffer.readUInt16LE(i + 2);
+        var dataStart = i + 4;
+        var dataEnd = dataStart + dataSize;
+        if (dataEnd > extraFieldBuffer.length) throw new Error("extra field length exceeds extra field buffer size");
+        var dataBuffer = extraFieldBuffer.subarray(dataStart, dataEnd);
+        extraFields.push({
+          id: headerId,
+          data: dataBuffer
+        });
+        i = dataEnd;
+      }
+      return extraFields;
+    }
+    function readAndAssertNoEof(reader, buffer, offset, length, position, callback) {
+      if (length === 0) {
+        return setImmediate(function() {
+          callback(null, newBuffer(0));
+        });
+      }
+      reader.read(buffer, offset, length, position, function(err, bytesRead) {
+        if (err) return callback(err);
+        if (bytesRead < length) {
+          return callback(new Error("unexpected EOF"));
+        }
+        callback();
+      });
+    }
+    util.inherits(AssertByteCountStream, Transform2);
+    function AssertByteCountStream(byteCount) {
+      Transform2.call(this);
+      this.actualByteCount = 0;
+      this.expectedByteCount = byteCount;
+    }
+    AssertByteCountStream.prototype._transform = function(chunk, encoding, cb) {
+      this.actualByteCount += chunk.length;
+      if (this.actualByteCount > this.expectedByteCount) {
+        var msg = "too many bytes in the stream. expected " + this.expectedByteCount + ". got at least " + this.actualByteCount;
+        return cb(new Error(msg));
+      }
+      cb(null, chunk);
+    };
+    AssertByteCountStream.prototype._flush = function(cb) {
+      if (this.actualByteCount < this.expectedByteCount) {
+        var msg = "not enough bytes in the stream. expected " + this.expectedByteCount + ". got only " + this.actualByteCount;
+        return cb(new Error(msg));
+      }
+      cb();
+    };
+    util.inherits(RandomAccessReader, EventEmitter);
+    function RandomAccessReader() {
+      EventEmitter.call(this);
+      this.refCount = 0;
+    }
+    RandomAccessReader.prototype.ref = function() {
+      this.refCount += 1;
+    };
+    RandomAccessReader.prototype.unref = function() {
+      var self = this;
+      self.refCount -= 1;
+      if (self.refCount > 0) return;
+      if (self.refCount < 0) throw new Error("invalid unref");
+      self.close(onCloseDone);
+      function onCloseDone(err) {
+        if (err) return self.emit("error", err);
+        self.emit("close");
+      }
+    };
+    RandomAccessReader.prototype.createReadStream = function(options2) {
+      if (options2 == null) options2 = {};
+      var start = options2.start;
+      var end = options2.end;
+      if (start === end) {
+        var emptyStream = new PassThrough();
+        setImmediate(function() {
+          emptyStream.end();
+        });
+        return emptyStream;
+      }
+      var stream = this._readStreamForRange(start, end);
+      var destroyed = false;
+      var refUnrefFilter = new RefUnrefFilter(this);
+      stream.on("error", function(err) {
+        setImmediate(function() {
+          if (!destroyed) refUnrefFilter.emit("error", err);
+        });
+      });
+      installDestroyFn(refUnrefFilter, function() {
+        stream.unpipe(refUnrefFilter);
+        refUnrefFilter.unref();
+        stream.destroy();
+      });
+      var byteCounter = new AssertByteCountStream(end - start);
+      refUnrefFilter.on("error", function(err) {
+        setImmediate(function() {
+          if (!destroyed) byteCounter.emit("error", err);
+        });
+      });
+      installDestroyFn(byteCounter, function() {
+        destroyed = true;
+        refUnrefFilter.unpipe(byteCounter);
+        refUnrefFilter.destroy();
+      });
+      return stream.pipe(refUnrefFilter).pipe(byteCounter);
+    };
+    RandomAccessReader.prototype._readStreamForRange = function(start, end) {
+      throw new Error("not implemented");
+    };
+    RandomAccessReader.prototype.read = function(buffer, offset, length, position, callback) {
+      var readStream = this.createReadStream({ start: position, end: position + length });
+      var writeStream = new Writable();
+      var written = 0;
+      writeStream._write = function(chunk, encoding, cb) {
+        chunk.copy(buffer, offset + written, 0, chunk.length);
+        written += chunk.length;
+        cb();
+      };
+      writeStream.on("finish", callback);
+      readStream.on("error", function(error) {
+        callback(error);
+      });
+      readStream.pipe(writeStream);
+    };
+    RandomAccessReader.prototype.close = function(callback) {
+      setImmediate(callback);
+    };
+    util.inherits(RefUnrefFilter, PassThrough);
+    function RefUnrefFilter(context2) {
+      PassThrough.call(this);
+      this.context = context2;
+      this.context.ref();
+      this.unreffedYet = false;
+    }
+    RefUnrefFilter.prototype._flush = function(cb) {
+      this.unref();
+      cb();
+    };
+    RefUnrefFilter.prototype.unref = function(cb) {
+      if (this.unreffedYet) return;
+      this.unreffedYet = true;
+      this.context.unref();
+    };
+    var cp437 = "\0☺☻♥♦♣♠•◘○◙♂♀♪♫☼►◄↕‼¶§▬↨↑↓→←∟↔▲▼ !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~⌂ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■ ";
+    function decodeBuffer(buffer, isUtf8) {
+      if (isUtf8) {
+        return buffer.toString("utf8");
+      } else {
+        var result = "";
+        for (var i = 0; i < buffer.length; i++) {
+          result += cp437[buffer[i]];
+        }
+        return result;
+      }
+    }
+    function readUInt64LE(buffer, offset) {
+      var lower32 = buffer.readUInt32LE(offset);
+      var upper32 = buffer.readUInt32LE(offset + 4);
+      return upper32 * 4294967296 + lower32;
+    }
+    var newBuffer;
+    if (typeof Buffer.allocUnsafe === "function") {
+      newBuffer = function(len) {
+        return Buffer.allocUnsafe(len);
+      };
+    } else {
+      newBuffer = function(len) {
+        return new Buffer(len);
+      };
+    }
+    function installDestroyFn(stream, fn) {
+      if (typeof stream.destroy === "function") {
+        stream._destroy = function(err, cb) {
+          fn();
+          if (cb != null) cb(err);
+        };
+      } else {
+        stream.destroy = fn;
+      }
+    }
+    function defaultCallback(err) {
+      if (err) throw err;
+    }
+  }
+});
+
+// ../../node_modules/buffer-crc32/dist/index.cjs
+var require_dist = __commonJS({
+  "../../node_modules/buffer-crc32/dist/index.cjs"(exports, module) {
+    "use strict";
+    function getDefaultExportFromCjs(x) {
+      return x && x.__esModule && Object.prototype.hasOwnProperty.call(x, "default") ? x["default"] : x;
+    }
+    var CRC_TABLE = new Int32Array([
+      0,
+      1996959894,
+      3993919788,
+      2567524794,
+      124634137,
+      1886057615,
+      3915621685,
+      2657392035,
+      249268274,
+      2044508324,
+      3772115230,
+      2547177864,
+      162941995,
+      2125561021,
+      3887607047,
+      2428444049,
+      498536548,
+      1789927666,
+      4089016648,
+      2227061214,
+      450548861,
+      1843258603,
+      4107580753,
+      2211677639,
+      325883990,
+      1684777152,
+      4251122042,
+      2321926636,
+      335633487,
+      1661365465,
+      4195302755,
+      2366115317,
+      997073096,
+      1281953886,
+      3579855332,
+      2724688242,
+      1006888145,
+      1258607687,
+      3524101629,
+      2768942443,
+      901097722,
+      1119000684,
+      3686517206,
+      2898065728,
+      853044451,
+      1172266101,
+      3705015759,
+      2882616665,
+      651767980,
+      1373503546,
+      3369554304,
+      3218104598,
+      565507253,
+      1454621731,
+      3485111705,
+      3099436303,
+      671266974,
+      1594198024,
+      3322730930,
+      2970347812,
+      795835527,
+      1483230225,
+      3244367275,
+      3060149565,
+      1994146192,
+      31158534,
+      2563907772,
+      4023717930,
+      1907459465,
+      112637215,
+      2680153253,
+      3904427059,
+      2013776290,
+      251722036,
+      2517215374,
+      3775830040,
+      2137656763,
+      141376813,
+      2439277719,
+      3865271297,
+      1802195444,
+      476864866,
+      2238001368,
+      4066508878,
+      1812370925,
+      453092731,
+      2181625025,
+      4111451223,
+      1706088902,
+      314042704,
+      2344532202,
+      4240017532,
+      1658658271,
+      366619977,
+      2362670323,
+      4224994405,
+      1303535960,
+      984961486,
+      2747007092,
+      3569037538,
+      1256170817,
+      1037604311,
+      2765210733,
+      3554079995,
+      1131014506,
+      879679996,
+      2909243462,
+      3663771856,
+      1141124467,
+      855842277,
+      2852801631,
+      3708648649,
+      1342533948,
+      654459306,
+      3188396048,
+      3373015174,
+      1466479909,
+      544179635,
+      3110523913,
+      3462522015,
+      1591671054,
+      702138776,
+      2966460450,
+      3352799412,
+      1504918807,
+      783551873,
+      3082640443,
+      3233442989,
+      3988292384,
+      2596254646,
+      62317068,
+      1957810842,
+      3939845945,
+      2647816111,
+      81470997,
+      1943803523,
+      3814918930,
+      2489596804,
+      225274430,
+      2053790376,
+      3826175755,
+      2466906013,
+      167816743,
+      2097651377,
+      4027552580,
+      2265490386,
+      503444072,
+      1762050814,
+      4150417245,
+      2154129355,
+      426522225,
+      1852507879,
+      4275313526,
+      2312317920,
+      282753626,
+      1742555852,
+      4189708143,
+      2394877945,
+      397917763,
+      1622183637,
+      3604390888,
+      2714866558,
+      953729732,
+      1340076626,
+      3518719985,
+      2797360999,
+      1068828381,
+      1219638859,
+      3624741850,
+      2936675148,
+      906185462,
+      1090812512,
+      3747672003,
+      2825379669,
+      829329135,
+      1181335161,
+      3412177804,
+      3160834842,
+      628085408,
+      1382605366,
+      3423369109,
+      3138078467,
+      570562233,
+      1426400815,
+      3317316542,
+      2998733608,
+      733239954,
+      1555261956,
+      3268935591,
+      3050360625,
+      752459403,
+      1541320221,
+      2607071920,
+      3965973030,
+      1969922972,
+      40735498,
+      2617837225,
+      3943577151,
+      1913087877,
+      83908371,
+      2512341634,
+      3803740692,
+      2075208622,
+      213261112,
+      2463272603,
+      3855990285,
+      2094854071,
+      198958881,
+      2262029012,
+      4057260610,
+      1759359992,
+      534414190,
+      2176718541,
+      4139329115,
+      1873836001,
+      414664567,
+      2282248934,
+      4279200368,
+      1711684554,
+      285281116,
+      2405801727,
+      4167216745,
+      1634467795,
+      376229701,
+      2685067896,
+      3608007406,
+      1308918612,
+      956543938,
+      2808555105,
+      3495958263,
+      1231636301,
+      1047427035,
+      2932959818,
+      3654703836,
+      1088359270,
+      936918e3,
+      2847714899,
+      3736837829,
+      1202900863,
+      817233897,
+      3183342108,
+      3401237130,
+      1404277552,
+      615818150,
+      3134207493,
+      3453421203,
+      1423857449,
+      601450431,
+      3009837614,
+      3294710456,
+      1567103746,
+      711928724,
+      3020668471,
+      3272380065,
+      1510334235,
+      755167117
+    ]);
+    function ensureBuffer(input) {
+      if (Buffer.isBuffer(input)) {
+        return input;
+      }
+      if (typeof input === "number") {
+        return Buffer.alloc(input);
+      } else if (typeof input === "string") {
+        return Buffer.from(input);
+      } else {
+        throw new Error("input must be buffer, number, or string, received " + typeof input);
+      }
+    }
+    function bufferizeInt(num) {
+      const tmp = ensureBuffer(4);
+      tmp.writeInt32BE(num, 0);
+      return tmp;
+    }
+    function _crc32(buf, previous) {
+      buf = ensureBuffer(buf);
+      if (Buffer.isBuffer(previous)) {
+        previous = previous.readUInt32BE(0);
+      }
+      let crc = ~~previous ^ -1;
+      for (var n = 0; n < buf.length; n++) {
+        crc = CRC_TABLE[(crc ^ buf[n]) & 255] ^ crc >>> 8;
+      }
+      return crc ^ -1;
+    }
+    function crc32() {
+      return bufferizeInt(_crc32.apply(null, arguments));
+    }
+    crc32.signed = function() {
+      return _crc32.apply(null, arguments);
+    };
+    crc32.unsigned = function() {
+      return _crc32.apply(null, arguments) >>> 0;
+    };
+    var bufferCrc32 = crc32;
+    var index2 = /* @__PURE__ */ getDefaultExportFromCjs(bufferCrc32);
+    module.exports = index2;
+  }
+});
+
+// ../../node_modules/yazl/index.js
+var require_yazl = __commonJS({
+  "../../node_modules/yazl/index.js"(exports) {
+    var fs = __require("fs");
+    var Transform2 = __require("stream").Transform;
+    var PassThrough = __require("stream").PassThrough;
+    var zlib = __require("zlib");
+    var util = __require("util");
+    var EventEmitter = __require("events").EventEmitter;
+    var errorMonitor = __require("events").errorMonitor;
+    var crc32 = require_dist();
+    exports.ZipFile = ZipFile;
+    exports.dateToDosDateTime = dateToDosDateTime;
+    util.inherits(ZipFile, EventEmitter);
+    function ZipFile() {
+      this.outputStream = new PassThrough();
+      this.entries = [];
+      this.outputStreamCursor = 0;
+      this.ended = false;
+      this.allDone = false;
+      this.forceZip64Eocd = false;
+      this.errored = false;
+      this.on(errorMonitor, function() {
+        this.errored = true;
+      });
+    }
+    ZipFile.prototype.addFile = function(realPath, metadataPath, options2) {
+      var self = this;
+      metadataPath = validateMetadataPath(metadataPath, false);
+      if (options2 == null) options2 = {};
+      if (shouldIgnoreAdding(self)) return;
+      var entry = new Entry(metadataPath, false, options2);
+      self.entries.push(entry);
+      fs.stat(realPath, function(err, stats) {
+        if (err) return self.emit("error", err);
+        if (!stats.isFile()) return self.emit("error", new Error("not a file: " + realPath));
+        entry.uncompressedSize = stats.size;
+        if (options2.mtime == null) entry.setLastModDate(stats.mtime);
+        if (options2.mode == null) entry.setFileAttributesMode(stats.mode);
+        entry.setFileDataPumpFunction(function() {
+          var readStream = fs.createReadStream(realPath);
+          entry.state = Entry.FILE_DATA_IN_PROGRESS;
+          readStream.on("error", function(err2) {
+            self.emit("error", err2);
+          });
+          pumpFileDataReadStream(self, entry, readStream);
+        });
+        pumpEntries(self);
+      });
+    };
+    ZipFile.prototype.addReadStream = function(readStream, metadataPath, options2) {
+      this.addReadStreamLazy(metadataPath, options2, function(cb) {
+        cb(null, readStream);
+      });
+    };
+    ZipFile.prototype.addReadStreamLazy = function(metadataPath, options2, getReadStreamFunction) {
+      var self = this;
+      if (typeof options2 === "function") {
+        getReadStreamFunction = options2;
+        options2 = null;
+      }
+      if (options2 == null) options2 = {};
+      metadataPath = validateMetadataPath(metadataPath, false);
+      if (shouldIgnoreAdding(self)) return;
+      var entry = new Entry(metadataPath, false, options2);
+      self.entries.push(entry);
+      entry.setFileDataPumpFunction(function() {
+        entry.state = Entry.FILE_DATA_IN_PROGRESS;
+        getReadStreamFunction(function(err, readStream) {
+          if (err) return self.emit("error", err);
+          pumpFileDataReadStream(self, entry, readStream);
+        });
+      });
+      pumpEntries(self);
+    };
+    ZipFile.prototype.addBuffer = function(buffer, metadataPath, options2) {
+      var self = this;
+      metadataPath = validateMetadataPath(metadataPath, false);
+      if (buffer.length > 1073741823) throw new Error("buffer too large: " + buffer.length + " > 1073741823");
+      if (options2 == null) options2 = {};
+      if (options2.size != null) throw new Error("options.size not allowed");
+      if (shouldIgnoreAdding(self)) return;
+      var entry = new Entry(metadataPath, false, options2);
+      entry.uncompressedSize = buffer.length;
+      entry.crc32 = crc32.unsigned(buffer);
+      entry.crcAndFileSizeKnown = true;
+      self.entries.push(entry);
+      if (entry.compressionLevel === 0) {
+        setCompressedBuffer(buffer);
+      } else {
+        zlib.deflateRaw(buffer, { level: entry.compressionLevel }, function(err, compressedBuffer) {
+          setCompressedBuffer(compressedBuffer);
+        });
+      }
+      function setCompressedBuffer(compressedBuffer) {
+        entry.compressedSize = compressedBuffer.length;
+        entry.setFileDataPumpFunction(function() {
+          writeToOutputStream(self, compressedBuffer);
+          writeToOutputStream(self, entry.getDataDescriptor());
+          entry.state = Entry.FILE_DATA_DONE;
+          setImmediate(function() {
+            pumpEntries(self);
+          });
+        });
+        pumpEntries(self);
+      }
+    };
+    ZipFile.prototype.addEmptyDirectory = function(metadataPath, options2) {
+      var self = this;
+      metadataPath = validateMetadataPath(metadataPath, true);
+      if (options2 == null) options2 = {};
+      if (options2.size != null) throw new Error("options.size not allowed");
+      if (options2.compress != null) throw new Error("options.compress not allowed");
+      if (options2.compressionLevel != null) throw new Error("options.compressionLevel not allowed");
+      if (shouldIgnoreAdding(self)) return;
+      var entry = new Entry(metadataPath, true, options2);
+      self.entries.push(entry);
+      entry.setFileDataPumpFunction(function() {
+        writeToOutputStream(self, entry.getDataDescriptor());
+        entry.state = Entry.FILE_DATA_DONE;
+        pumpEntries(self);
+      });
+      pumpEntries(self);
+    };
+    var eocdrSignatureBuffer = bufferFrom([80, 75, 5, 6]);
+    ZipFile.prototype.end = function(options2, calculatedTotalSizeCallback) {
+      if (typeof options2 === "function") {
+        calculatedTotalSizeCallback = options2;
+        options2 = null;
+      }
+      if (options2 == null) options2 = {};
+      if (this.ended) return;
+      this.ended = true;
+      if (this.errored) return;
+      this.calculatedTotalSizeCallback = calculatedTotalSizeCallback;
+      this.forceZip64Eocd = !!options2.forceZip64Format;
+      if (options2.comment) {
+        if (typeof options2.comment === "string") {
+          this.comment = encodeCp437(options2.comment);
+        } else {
+          this.comment = options2.comment;
+        }
+        if (this.comment.length > 65535) throw new Error("comment is too large");
+        if (bufferIncludes(this.comment, eocdrSignatureBuffer)) throw new Error("comment contains end of central directory record signature");
+      } else {
+        this.comment = EMPTY_BUFFER;
+      }
+      pumpEntries(this);
+    };
+    function writeToOutputStream(self, buffer) {
+      self.outputStream.write(buffer);
+      self.outputStreamCursor += buffer.length;
+    }
+    function pumpFileDataReadStream(self, entry, readStream) {
+      var crc32Watcher = new Crc32Watcher();
+      var uncompressedSizeCounter = new ByteCounter();
+      var compressor = entry.compressionLevel !== 0 ? new zlib.DeflateRaw({ level: entry.compressionLevel }) : new PassThrough();
+      var compressedSizeCounter = new ByteCounter();
+      readStream.pipe(crc32Watcher).pipe(uncompressedSizeCounter).pipe(compressor).pipe(compressedSizeCounter).pipe(self.outputStream, { end: false });
+      compressedSizeCounter.on("end", function() {
+        entry.crc32 = crc32Watcher.crc32;
+        if (entry.uncompressedSize == null) {
+          entry.uncompressedSize = uncompressedSizeCounter.byteCount;
+        } else {
+          if (entry.uncompressedSize !== uncompressedSizeCounter.byteCount) return self.emit("error", new Error("file data stream has unexpected number of bytes"));
+        }
+        entry.compressedSize = compressedSizeCounter.byteCount;
+        self.outputStreamCursor += entry.compressedSize;
+        writeToOutputStream(self, entry.getDataDescriptor());
+        entry.state = Entry.FILE_DATA_DONE;
+        pumpEntries(self);
+      });
+    }
+    function determineCompressionLevel(options2) {
+      if (options2.compress != null && options2.compressionLevel != null) {
+        if (!!options2.compress !== !!options2.compressionLevel) throw new Error("conflicting settings for compress and compressionLevel");
+      }
+      if (options2.compressionLevel != null) return options2.compressionLevel;
+      if (options2.compress === false) return 0;
+      return 6;
+    }
+    function pumpEntries(self) {
+      if (self.allDone || self.errored) return;
+      if (self.ended && self.calculatedTotalSizeCallback != null) {
+        var calculatedTotalSize = calculateTotalSize(self);
+        if (calculatedTotalSize != null) {
+          self.calculatedTotalSizeCallback(calculatedTotalSize);
+          self.calculatedTotalSizeCallback = null;
+        }
+      }
+      var entry = getFirstNotDoneEntry();
+      function getFirstNotDoneEntry() {
+        for (var i = 0; i < self.entries.length; i++) {
+          var entry2 = self.entries[i];
+          if (entry2.state < Entry.FILE_DATA_DONE) return entry2;
+        }
+        return null;
+      }
+      if (entry != null) {
+        if (entry.state < Entry.READY_TO_PUMP_FILE_DATA) return;
+        if (entry.state === Entry.FILE_DATA_IN_PROGRESS) return;
+        entry.relativeOffsetOfLocalHeader = self.outputStreamCursor;
+        var localFileHeader = entry.getLocalFileHeader();
+        writeToOutputStream(self, localFileHeader);
+        entry.doFileDataPump();
+      } else {
+        if (self.ended) {
+          self.offsetOfStartOfCentralDirectory = self.outputStreamCursor;
+          self.entries.forEach(function(entry2) {
+            var centralDirectoryRecord = entry2.getCentralDirectoryRecord();
+            writeToOutputStream(self, centralDirectoryRecord);
+          });
+          writeToOutputStream(self, getEndOfCentralDirectoryRecord(self));
+          self.outputStream.end();
+          self.allDone = true;
+        }
+      }
+    }
+    function calculateTotalSize(self) {
+      var pretendOutputCursor = 0;
+      var centralDirectorySize = 0;
+      for (var i = 0; i < self.entries.length; i++) {
+        var entry = self.entries[i];
+        if (entry.compressionLevel !== 0) return -1;
+        if (entry.state >= Entry.READY_TO_PUMP_FILE_DATA) {
+          if (entry.uncompressedSize == null) return -1;
+        } else {
+          if (entry.uncompressedSize == null) return null;
+        }
+        entry.relativeOffsetOfLocalHeader = pretendOutputCursor;
+        var useZip64Format = entry.useZip64Format();
+        pretendOutputCursor += LOCAL_FILE_HEADER_FIXED_SIZE + entry.utf8FileName.length;
+        pretendOutputCursor += entry.uncompressedSize;
+        if (!entry.crcAndFileSizeKnown) {
+          if (useZip64Format) {
+            pretendOutputCursor += ZIP64_DATA_DESCRIPTOR_SIZE;
+          } else {
+            pretendOutputCursor += DATA_DESCRIPTOR_SIZE;
+          }
+        }
+        centralDirectorySize += CENTRAL_DIRECTORY_RECORD_FIXED_SIZE + entry.utf8FileName.length + entry.fileComment.length;
+        if (!entry.forceDosTimestamp) {
+          centralDirectorySize += INFO_ZIP_UNIVERSAL_TIMESTAMP_EXTRA_FIELD_SIZE;
+        }
+        if (useZip64Format) {
+          centralDirectorySize += ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_SIZE;
+        }
+      }
+      var endOfCentralDirectorySize = 0;
+      if (self.forceZip64Eocd || self.entries.length >= 65535 || centralDirectorySize >= 65535 || pretendOutputCursor >= 4294967295) {
+        endOfCentralDirectorySize += ZIP64_END_OF_CENTRAL_DIRECTORY_RECORD_SIZE + ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE;
+      }
+      endOfCentralDirectorySize += END_OF_CENTRAL_DIRECTORY_RECORD_SIZE + self.comment.length;
+      return pretendOutputCursor + centralDirectorySize + endOfCentralDirectorySize;
+    }
+    function shouldIgnoreAdding(self) {
+      if (self.ended) throw new Error("cannot add entries after calling end()");
+      if (self.errored) return true;
+      return false;
+    }
+    var ZIP64_END_OF_CENTRAL_DIRECTORY_RECORD_SIZE = 56;
+    var ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE = 20;
+    var END_OF_CENTRAL_DIRECTORY_RECORD_SIZE = 22;
+    function getEndOfCentralDirectoryRecord(self, actuallyJustTellMeHowLongItWouldBe) {
+      var needZip64Format = false;
+      var normalEntriesLength = self.entries.length;
+      if (self.forceZip64Eocd || self.entries.length >= 65535) {
+        normalEntriesLength = 65535;
+        needZip64Format = true;
+      }
+      var sizeOfCentralDirectory = self.outputStreamCursor - self.offsetOfStartOfCentralDirectory;
+      var normalSizeOfCentralDirectory = sizeOfCentralDirectory;
+      if (self.forceZip64Eocd || sizeOfCentralDirectory >= 4294967295) {
+        normalSizeOfCentralDirectory = 4294967295;
+        needZip64Format = true;
+      }
+      var normalOffsetOfStartOfCentralDirectory = self.offsetOfStartOfCentralDirectory;
+      if (self.forceZip64Eocd || self.offsetOfStartOfCentralDirectory >= 4294967295) {
+        normalOffsetOfStartOfCentralDirectory = 4294967295;
+        needZip64Format = true;
+      }
+      if (actuallyJustTellMeHowLongItWouldBe) {
+        if (needZip64Format) {
+          return ZIP64_END_OF_CENTRAL_DIRECTORY_RECORD_SIZE + ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE + END_OF_CENTRAL_DIRECTORY_RECORD_SIZE;
+        } else {
+          return END_OF_CENTRAL_DIRECTORY_RECORD_SIZE;
+        }
+      }
+      var eocdrBuffer = bufferAlloc(END_OF_CENTRAL_DIRECTORY_RECORD_SIZE + self.comment.length);
+      eocdrBuffer.writeUInt32LE(101010256, 0);
+      eocdrBuffer.writeUInt16LE(0, 4);
+      eocdrBuffer.writeUInt16LE(0, 6);
+      eocdrBuffer.writeUInt16LE(normalEntriesLength, 8);
+      eocdrBuffer.writeUInt16LE(normalEntriesLength, 10);
+      eocdrBuffer.writeUInt32LE(normalSizeOfCentralDirectory, 12);
+      eocdrBuffer.writeUInt32LE(normalOffsetOfStartOfCentralDirectory, 16);
+      eocdrBuffer.writeUInt16LE(self.comment.length, 20);
+      self.comment.copy(eocdrBuffer, 22);
+      if (!needZip64Format) return eocdrBuffer;
+      var zip64EocdrBuffer = bufferAlloc(ZIP64_END_OF_CENTRAL_DIRECTORY_RECORD_SIZE);
+      zip64EocdrBuffer.writeUInt32LE(101075792, 0);
+      writeUInt64LE(zip64EocdrBuffer, ZIP64_END_OF_CENTRAL_DIRECTORY_RECORD_SIZE - 12, 4);
+      zip64EocdrBuffer.writeUInt16LE(VERSION_MADE_BY, 12);
+      zip64EocdrBuffer.writeUInt16LE(VERSION_NEEDED_TO_EXTRACT_ZIP64, 14);
+      zip64EocdrBuffer.writeUInt32LE(0, 16);
+      zip64EocdrBuffer.writeUInt32LE(0, 20);
+      writeUInt64LE(zip64EocdrBuffer, self.entries.length, 24);
+      writeUInt64LE(zip64EocdrBuffer, self.entries.length, 32);
+      writeUInt64LE(zip64EocdrBuffer, sizeOfCentralDirectory, 40);
+      writeUInt64LE(zip64EocdrBuffer, self.offsetOfStartOfCentralDirectory, 48);
+      var zip64EocdlBuffer = bufferAlloc(ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE);
+      zip64EocdlBuffer.writeUInt32LE(117853008, 0);
+      zip64EocdlBuffer.writeUInt32LE(0, 4);
+      writeUInt64LE(zip64EocdlBuffer, self.outputStreamCursor, 8);
+      zip64EocdlBuffer.writeUInt32LE(1, 16);
+      return Buffer.concat([
+        zip64EocdrBuffer,
+        zip64EocdlBuffer,
+        eocdrBuffer
+      ]);
+    }
+    function validateMetadataPath(metadataPath, isDirectory) {
+      if (metadataPath === "") throw new Error("empty metadataPath");
+      metadataPath = metadataPath.replace(/\\/g, "/");
+      if (/^[a-zA-Z]:/.test(metadataPath) || /^\//.test(metadataPath)) throw new Error("absolute path: " + metadataPath);
+      if (metadataPath.split("/").indexOf("..") !== -1) throw new Error("invalid relative path: " + metadataPath);
+      var looksLikeDirectory = /\/$/.test(metadataPath);
+      if (isDirectory) {
+        if (!looksLikeDirectory) metadataPath += "/";
+      } else {
+        if (looksLikeDirectory) throw new Error("file path cannot end with '/': " + metadataPath);
+      }
+      return metadataPath;
+    }
+    var EMPTY_BUFFER = bufferAlloc(0);
+    function Entry(metadataPath, isDirectory, options2) {
+      this.utf8FileName = bufferFrom(metadataPath);
+      if (this.utf8FileName.length > 65535) throw new Error("utf8 file name too long. " + utf8FileName.length + " > 65535");
+      this.isDirectory = isDirectory;
+      this.state = Entry.WAITING_FOR_METADATA;
+      this.setLastModDate(options2.mtime != null ? options2.mtime : /* @__PURE__ */ new Date());
+      this.forceDosTimestamp = !!options2.forceDosTimestamp;
+      if (options2.mode != null) {
+        this.setFileAttributesMode(options2.mode);
+      } else {
+        this.setFileAttributesMode(isDirectory ? 16893 : 33204);
+      }
+      if (isDirectory) {
+        this.crcAndFileSizeKnown = true;
+        this.crc32 = 0;
+        this.uncompressedSize = 0;
+        this.compressedSize = 0;
+      } else {
+        this.crcAndFileSizeKnown = false;
+        this.crc32 = null;
+        this.uncompressedSize = null;
+        this.compressedSize = null;
+        if (options2.size != null) this.uncompressedSize = options2.size;
+      }
+      if (isDirectory) {
+        this.compressionLevel = 0;
+      } else {
+        this.compressionLevel = determineCompressionLevel(options2);
+      }
+      this.forceZip64Format = !!options2.forceZip64Format;
+      if (options2.fileComment) {
+        if (typeof options2.fileComment === "string") {
+          this.fileComment = bufferFrom(options2.fileComment, "utf-8");
+        } else {
+          this.fileComment = options2.fileComment;
+        }
+        if (this.fileComment.length > 65535) throw new Error("fileComment is too large");
+      } else {
+        this.fileComment = EMPTY_BUFFER;
+      }
+    }
+    Entry.WAITING_FOR_METADATA = 0;
+    Entry.READY_TO_PUMP_FILE_DATA = 1;
+    Entry.FILE_DATA_IN_PROGRESS = 2;
+    Entry.FILE_DATA_DONE = 3;
+    Entry.prototype.setLastModDate = function(date) {
+      this.mtime = date;
+      var dosDateTime = dateToDosDateTime(date);
+      this.lastModFileTime = dosDateTime.time;
+      this.lastModFileDate = dosDateTime.date;
+    };
+    Entry.prototype.setFileAttributesMode = function(mode) {
+      if ((mode & 65535) !== mode) throw new Error("invalid mode. expected: 0 <= " + mode + " <= 65535");
+      this.externalFileAttributes = mode << 16 >>> 0;
+    };
+    Entry.prototype.setFileDataPumpFunction = function(doFileDataPump) {
+      this.doFileDataPump = doFileDataPump;
+      this.state = Entry.READY_TO_PUMP_FILE_DATA;
+    };
+    Entry.prototype.useZip64Format = function() {
+      return this.forceZip64Format || this.uncompressedSize != null && this.uncompressedSize > 4294967294 || this.compressedSize != null && this.compressedSize > 4294967294 || this.relativeOffsetOfLocalHeader != null && this.relativeOffsetOfLocalHeader > 4294967294;
+    };
+    var LOCAL_FILE_HEADER_FIXED_SIZE = 30;
+    var VERSION_NEEDED_TO_EXTRACT_UTF8 = 20;
+    var VERSION_NEEDED_TO_EXTRACT_ZIP64 = 45;
+    var VERSION_MADE_BY = 3 << 8 | 63;
+    var FILE_NAME_IS_UTF8 = 1 << 11;
+    var UNKNOWN_CRC32_AND_FILE_SIZES = 1 << 3;
+    Entry.prototype.getLocalFileHeader = function() {
+      var crc322 = 0;
+      var compressedSize = 0;
+      var uncompressedSize = 0;
+      if (this.crcAndFileSizeKnown) {
+        crc322 = this.crc32;
+        compressedSize = this.compressedSize;
+        uncompressedSize = this.uncompressedSize;
+      }
+      var fixedSizeStuff = bufferAlloc(LOCAL_FILE_HEADER_FIXED_SIZE);
+      var generalPurposeBitFlag = FILE_NAME_IS_UTF8;
+      if (!this.crcAndFileSizeKnown) generalPurposeBitFlag |= UNKNOWN_CRC32_AND_FILE_SIZES;
+      fixedSizeStuff.writeUInt32LE(67324752, 0);
+      fixedSizeStuff.writeUInt16LE(VERSION_NEEDED_TO_EXTRACT_UTF8, 4);
+      fixedSizeStuff.writeUInt16LE(generalPurposeBitFlag, 6);
+      fixedSizeStuff.writeUInt16LE(this.getCompressionMethod(), 8);
+      fixedSizeStuff.writeUInt16LE(this.lastModFileTime, 10);
+      fixedSizeStuff.writeUInt16LE(this.lastModFileDate, 12);
+      fixedSizeStuff.writeUInt32LE(crc322, 14);
+      fixedSizeStuff.writeUInt32LE(compressedSize, 18);
+      fixedSizeStuff.writeUInt32LE(uncompressedSize, 22);
+      fixedSizeStuff.writeUInt16LE(this.utf8FileName.length, 26);
+      fixedSizeStuff.writeUInt16LE(0, 28);
+      return Buffer.concat([
+        fixedSizeStuff,
+        // file name (variable size)
+        this.utf8FileName
+        // extra field (variable size)
+        // no extra fields
+      ]);
+    };
+    var DATA_DESCRIPTOR_SIZE = 16;
+    var ZIP64_DATA_DESCRIPTOR_SIZE = 24;
+    Entry.prototype.getDataDescriptor = function() {
+      if (this.crcAndFileSizeKnown) {
+        return EMPTY_BUFFER;
+      }
+      if (!this.useZip64Format()) {
+        var buffer = bufferAlloc(DATA_DESCRIPTOR_SIZE);
+        buffer.writeUInt32LE(134695760, 0);
+        buffer.writeUInt32LE(this.crc32, 4);
+        buffer.writeUInt32LE(this.compressedSize, 8);
+        buffer.writeUInt32LE(this.uncompressedSize, 12);
+        return buffer;
+      } else {
+        var buffer = bufferAlloc(ZIP64_DATA_DESCRIPTOR_SIZE);
+        buffer.writeUInt32LE(134695760, 0);
+        buffer.writeUInt32LE(this.crc32, 4);
+        writeUInt64LE(buffer, this.compressedSize, 8);
+        writeUInt64LE(buffer, this.uncompressedSize, 16);
+        return buffer;
+      }
+    };
+    var CENTRAL_DIRECTORY_RECORD_FIXED_SIZE = 46;
+    var INFO_ZIP_UNIVERSAL_TIMESTAMP_EXTRA_FIELD_SIZE = 9;
+    var ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_SIZE = 28;
+    Entry.prototype.getCentralDirectoryRecord = function() {
+      var fixedSizeStuff = bufferAlloc(CENTRAL_DIRECTORY_RECORD_FIXED_SIZE);
+      var generalPurposeBitFlag = FILE_NAME_IS_UTF8;
+      if (!this.crcAndFileSizeKnown) generalPurposeBitFlag |= UNKNOWN_CRC32_AND_FILE_SIZES;
+      var izutefBuffer = EMPTY_BUFFER;
+      if (!this.forceDosTimestamp) {
+        izutefBuffer = bufferAlloc(INFO_ZIP_UNIVERSAL_TIMESTAMP_EXTRA_FIELD_SIZE);
+        izutefBuffer.writeUInt16LE(21589, 0);
+        izutefBuffer.writeUInt16LE(INFO_ZIP_UNIVERSAL_TIMESTAMP_EXTRA_FIELD_SIZE - 4, 2);
+        var EB_UT_FL_MTIME = 1 << 0;
+        var EB_UT_FL_ATIME = 1 << 1;
+        izutefBuffer.writeUInt8(EB_UT_FL_MTIME | EB_UT_FL_ATIME, 4);
+        var timestamp = Math.floor(this.mtime.getTime() / 1e3);
+        if (timestamp < -2147483648) timestamp = -2147483648;
+        if (timestamp > 2147483647) timestamp = 2147483647;
+        izutefBuffer.writeUInt32LE(timestamp, 5);
+      }
+      var normalCompressedSize = this.compressedSize;
+      var normalUncompressedSize = this.uncompressedSize;
+      var normalRelativeOffsetOfLocalHeader = this.relativeOffsetOfLocalHeader;
+      var versionNeededToExtract = VERSION_NEEDED_TO_EXTRACT_UTF8;
+      var zeiefBuffer = EMPTY_BUFFER;
+      if (this.useZip64Format()) {
+        normalCompressedSize = 4294967295;
+        normalUncompressedSize = 4294967295;
+        normalRelativeOffsetOfLocalHeader = 4294967295;
+        versionNeededToExtract = VERSION_NEEDED_TO_EXTRACT_ZIP64;
+        zeiefBuffer = bufferAlloc(ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_SIZE);
+        zeiefBuffer.writeUInt16LE(1, 0);
+        zeiefBuffer.writeUInt16LE(ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_SIZE - 4, 2);
+        writeUInt64LE(zeiefBuffer, this.uncompressedSize, 4);
+        writeUInt64LE(zeiefBuffer, this.compressedSize, 12);
+        writeUInt64LE(zeiefBuffer, this.relativeOffsetOfLocalHeader, 20);
+      }
+      fixedSizeStuff.writeUInt32LE(33639248, 0);
+      fixedSizeStuff.writeUInt16LE(VERSION_MADE_BY, 4);
+      fixedSizeStuff.writeUInt16LE(versionNeededToExtract, 6);
+      fixedSizeStuff.writeUInt16LE(generalPurposeBitFlag, 8);
+      fixedSizeStuff.writeUInt16LE(this.getCompressionMethod(), 10);
+      fixedSizeStuff.writeUInt16LE(this.lastModFileTime, 12);
+      fixedSizeStuff.writeUInt16LE(this.lastModFileDate, 14);
+      fixedSizeStuff.writeUInt32LE(this.crc32, 16);
+      fixedSizeStuff.writeUInt32LE(normalCompressedSize, 20);
+      fixedSizeStuff.writeUInt32LE(normalUncompressedSize, 24);
+      fixedSizeStuff.writeUInt16LE(this.utf8FileName.length, 28);
+      fixedSizeStuff.writeUInt16LE(izutefBuffer.length + zeiefBuffer.length, 30);
+      fixedSizeStuff.writeUInt16LE(this.fileComment.length, 32);
+      fixedSizeStuff.writeUInt16LE(0, 34);
+      fixedSizeStuff.writeUInt16LE(0, 36);
+      fixedSizeStuff.writeUInt32LE(this.externalFileAttributes, 38);
+      fixedSizeStuff.writeUInt32LE(normalRelativeOffsetOfLocalHeader, 42);
+      return Buffer.concat([
+        fixedSizeStuff,
+        // file name (variable size)
+        this.utf8FileName,
+        // extra field (variable size)
+        izutefBuffer,
+        zeiefBuffer,
+        // file comment (variable size)
+        this.fileComment
+      ]);
+    };
+    Entry.prototype.getCompressionMethod = function() {
+      var NO_COMPRESSION = 0;
+      var DEFLATE_COMPRESSION = 8;
+      return this.compressionLevel === 0 ? NO_COMPRESSION : DEFLATE_COMPRESSION;
+    };
+    var minDosDate = new Date(1980, 0, 1);
+    var maxDosDate = new Date(2107, 11, 31, 23, 59, 58);
+    function dateToDosDateTime(jsDate) {
+      if (jsDate < minDosDate) jsDate = minDosDate;
+      else if (jsDate > maxDosDate) jsDate = maxDosDate;
+      var date = 0;
+      date |= jsDate.getDate() & 31;
+      date |= (jsDate.getMonth() + 1 & 15) << 5;
+      date |= (jsDate.getFullYear() - 1980 & 127) << 9;
+      var time2 = 0;
+      time2 |= Math.floor(jsDate.getSeconds() / 2);
+      time2 |= (jsDate.getMinutes() & 63) << 5;
+      time2 |= (jsDate.getHours() & 31) << 11;
+      return { date, time: time2 };
+    }
+    function writeUInt64LE(buffer, n, offset) {
+      var high = Math.floor(n / 4294967296);
+      var low = n % 4294967296;
+      buffer.writeUInt32LE(low, offset);
+      buffer.writeUInt32LE(high, offset + 4);
+    }
+    util.inherits(ByteCounter, Transform2);
+    function ByteCounter(options2) {
+      Transform2.call(this, options2);
+      this.byteCount = 0;
+    }
+    ByteCounter.prototype._transform = function(chunk, encoding, cb) {
+      this.byteCount += chunk.length;
+      cb(null, chunk);
+    };
+    util.inherits(Crc32Watcher, Transform2);
+    function Crc32Watcher(options2) {
+      Transform2.call(this, options2);
+      this.crc32 = 0;
+    }
+    Crc32Watcher.prototype._transform = function(chunk, encoding, cb) {
+      this.crc32 = crc32.unsigned(chunk, this.crc32);
+      cb(null, chunk);
+    };
+    var cp437 = "\0☺☻♥♦♣♠•◘○◙♂♀♪♫☼►◄↕‼¶§▬↨↑↓→←∟↔▲▼ !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~⌂ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■ ";
+    if (cp437.length !== 256) throw new Error("assertion failure");
+    var reverseCp437 = null;
+    function encodeCp437(string) {
+      if (/^[\x20-\x7e]*$/.test(string)) {
+        return bufferFrom(string, "utf-8");
+      }
+      if (reverseCp437 == null) {
+        reverseCp437 = {};
+        for (var i = 0; i < cp437.length; i++) {
+          reverseCp437[cp437[i]] = i;
+        }
+      }
+      var result = bufferAlloc(string.length);
+      for (var i = 0; i < string.length; i++) {
+        var b = reverseCp437[string[i]];
+        if (b == null) throw new Error("character not encodable in CP437: " + JSON.stringify(string[i]));
+        result[i] = b;
+      }
+      return result;
+    }
+    function bufferAlloc(size2) {
+      bufferAlloc = modern;
+      try {
+        return bufferAlloc(size2);
+      } catch (e) {
+        bufferAlloc = legacy;
+        return bufferAlloc(size2);
+      }
+      function modern(size3) {
+        return Buffer.allocUnsafe(size3);
+      }
+      function legacy(size3) {
+        return new Buffer(size3);
+      }
+    }
+    function bufferFrom(something, encoding) {
+      bufferFrom = modern;
+      try {
+        return bufferFrom(something, encoding);
+      } catch (e) {
+        bufferFrom = legacy;
+        return bufferFrom(something, encoding);
+      }
+      function modern(something2, encoding2) {
+        return Buffer.from(something2, encoding2);
+      }
+      function legacy(something2, encoding2) {
+        return new Buffer(something2, encoding2);
+      }
+    }
+    function bufferIncludes(buffer, content) {
+      bufferIncludes = modern;
+      try {
+        return bufferIncludes(buffer, content);
+      } catch (e) {
+        bufferIncludes = legacy;
+        return bufferIncludes(buffer, content);
+      }
+      function modern(buffer2, content2) {
+        return buffer2.includes(content2);
+      }
+      function legacy(buffer2, content2) {
+        for (var i = 0; i <= buffer2.length - content2.length; i++) {
+          for (var j = 0; ; j++) {
+            if (j === content2.length) return true;
+            if (buffer2[i + j] !== content2[j]) break;
+          }
+        }
+        return false;
+      }
+    }
+  }
+});
 
 // native/project-cli.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
-import { resolve as resolve2 } from "node:path";
+import { randomUUID as randomUUID21 } from "node:crypto";
+import { resolve as resolve9 } from "node:path";
 
 // src/ids.ts
 function randomId() {
-  const source2 = globalThis.crypto;
-  if (typeof source2?.randomUUID === "function") return source2.randomUUID();
-  if (typeof source2?.getRandomValues !== "function")
+  const source3 = globalThis.crypto;
+  if (typeof source3?.randomUUID === "function") return source3.randomUUID();
+  if (typeof source3?.getRandomValues !== "function")
     throw new Error("当前浏览器无法安全创建任务标识，请使用支持安全随机数的浏览器。");
-  const bytes = source2.getRandomValues(new Uint8Array(16));
+  const bytes = source3.getRandomValues(new Uint8Array(16));
   bytes[6] = bytes[6] & 15 | 64;
   bytes[8] = bytes[8] & 63 | 128;
   const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
@@ -19,6 +2345,16 @@ function randomId() {
 
 // src/editor/time.ts
 var TICKS_PER_SECOND = 24e4;
+function mergeTimeRanges(ranges, gap = 0) {
+  const result = [];
+  for (const range of [...ranges].sort((a, b) => a.start - b.start || a.end - b.end)) {
+    if (range.end <= range.start) continue;
+    const last = result.at(-1);
+    if (last && range.start <= last.end + gap) last.end = Math.max(last.end, range.end);
+    else result.push({ ...range });
+  }
+  return result;
+}
 var MAX_TICK = BigInt(Number.MAX_SAFE_INTEGER);
 var SUPPORTED_RATES = /* @__PURE__ */ new Set([
   "24/1",
@@ -58,9 +2394,9 @@ function validateFrameRate(value) {
   if (!SUPPORTED_RATES.has(`${numerator}/${denominator}`)) throw new Error("不支持此工程帧率");
   return { numerator, denominator };
 }
-function secondsToTicks(seconds2) {
-  if (!Number.isFinite(seconds2) || seconds2 < 0) throw new Error("秒数必须是非负有限数");
-  return assertTick(Math.round(seconds2 * TICKS_PER_SECOND));
+function secondsToTicks(seconds3) {
+  if (!Number.isFinite(seconds3) || seconds3 < 0) throw new Error("秒数必须是非负有限数");
+  return assertTick(Math.round(seconds3 * TICKS_PER_SECOND));
 }
 function ticksToSeconds(tick2) {
   return assertTick(tick2) / TICKS_PER_SECOND;
@@ -83,10 +2419,10 @@ function ticksToFrame(tick2, rate2, mode = "round") {
   const offset = mode === "ceil" ? unit - 1n : mode === "round" ? unit / 2n : 0n;
   return Number((value + offset) / unit);
 }
-function validateTimeMap(value, duration, sourceDuration) {
-  assertTick(duration, "片段时长");
+function validateTimeMap(value, duration2, sourceDuration) {
+  assertTick(duration2, "片段时长");
   assertTick(sourceDuration, "素材时长");
-  if (!duration) throw new Error("片段时长必须大于零");
+  if (!duration2) throw new Error("片段时长必须大于零");
   const data = object(value, "时间映射", ["points"]);
   if (!Array.isArray(data.points) || data.points.length < 2 || data.points.length > 1e5)
     throw new Error("时间映射需要 2 至 100000 个节点");
@@ -97,35 +2433,35 @@ function validateTimeMap(value, duration, sourceDuration) {
   let previous = -1;
   const points = data.points.map((raw) => {
     const point = object(raw, "时间映射节点", ["time", "source"]);
-    const time = assertTick(point.time, "局部时间");
-    const source2 = assertTick(point.source, "源时间");
-    if (time <= previous || time > duration) throw new Error("时间映射的局部时间必须严格递增");
-    if (source2 > sourceDuration) throw new Error("时间映射超出素材时长");
-    previous = time;
-    return { time, source: source2 };
+    const time2 = assertTick(point.time, "局部时间");
+    const source3 = assertTick(point.source, "源时间");
+    if (time2 <= previous || time2 > duration2) throw new Error("时间映射的局部时间必须严格递增");
+    if (source3 > sourceDuration) throw new Error("时间映射超出素材时长");
+    previous = time2;
+    return { time: time2, source: source3 };
   });
-  if (points[0].time !== 0 || points.at(-1).time !== duration)
+  if (points[0].time !== 0 || points.at(-1).time !== duration2)
     throw new Error("时间映射必须覆盖片段的完整时长");
   return { points };
 }
-function interpolateSource(a, b, time) {
+function interpolateSource(a, b, time2) {
   const width = BigInt(b.time - a.time);
-  const elapsed = BigInt(time - a.time);
+  const elapsed = BigInt(time2 - a.time);
   const numerator = BigInt(a.source) * (width - elapsed) + BigInt(b.source) * elapsed;
   return tickFromBigInt((2n * numerator + width) / (2n * width));
 }
-function sourceTimeAt(map2, time) {
-  assertTick(time, "局部时间");
+function sourceTimeAt(map2, time2) {
+  assertTick(time2, "局部时间");
   if (map2.points.length < 2) throw new Error("时间映射缺少节点");
-  if (time <= map2.points[0].time) return map2.points[0].source;
-  if (time >= map2.points.at(-1).time) return map2.points.at(-1).source;
+  if (time2 <= map2.points[0].time) return map2.points[0].source;
+  if (time2 >= map2.points.at(-1).time) return map2.points.at(-1).source;
   let left = 0, right = map2.points.length - 1;
   while (left + 1 < right) {
     const middle = left + Math.floor((right - left) / 2);
-    if (map2.points[middle].time <= time) left = middle;
+    if (map2.points[middle].time <= time2) left = middle;
     else right = middle;
   }
-  return interpolateSource(map2.points[left], map2.points[right], time);
+  return interpolateSource(map2.points[left], map2.points[right], time2);
 }
 function firstTick(start, end, test) {
   let left = start, right = end;
@@ -144,20 +2480,20 @@ function sourceRangesToTimeline(map2, start, end) {
   const ranges = [];
   for (let i = 0; i + 1 < map2.points.length; i++) {
     const a = map2.points[i], b = map2.points[i + 1];
-    const at = (time) => interpolateSource(a, b, time);
+    const at = (time2) => interpolateSource(a, b, time2);
     let range;
     if (a.source === b.source) {
       if (a.source < start || a.source >= end) continue;
       range = { start: a.time, end: b.time };
     } else if (b.source > a.source) {
       range = {
-        start: firstTick(a.time, b.time, (time) => at(time) >= start),
-        end: firstTick(a.time, b.time, (time) => at(time) >= end)
+        start: firstTick(a.time, b.time, (time2) => at(time2) >= start),
+        end: firstTick(a.time, b.time, (time2) => at(time2) >= end)
       };
     } else {
       range = {
-        start: firstTick(a.time, b.time, (time) => at(time) < end),
-        end: firstTick(a.time, b.time, (time) => at(time) < start)
+        start: firstTick(a.time, b.time, (time2) => at(time2) < end),
+        end: firstTick(a.time, b.time, (time2) => at(time2) < start)
       };
     }
     if (range.start >= range.end) continue;
@@ -185,26 +2521,26 @@ function constantTimeMap(inTick, outTick, rate2 = 1) {
   assertTick(outTick, "源出点");
   if (!Number.isFinite(rate2) || rate2 <= 0) throw new Error("速度必须是正有限数");
   if (inTick === outTick) throw new Error("定格请使用独立的定格时间映射");
-  const duration = assertTick(Math.round(Math.abs(outTick - inTick) / rate2), "片段时长");
-  if (!duration) throw new Error("变速后时长不能小于一个刻度");
+  const duration2 = assertTick(Math.round(Math.abs(outTick - inTick) / rate2), "片段时长");
+  if (!duration2) throw new Error("变速后时长不能小于一个刻度");
   return {
-    duration,
+    duration: duration2,
     timeMap: {
       points: [
         { time: 0, source: inTick },
-        { time: duration, source: outTick }
+        { time: duration2, source: outTick }
       ]
     }
   };
 }
-function freezeTimeMap(sourceTick, duration) {
+function freezeTimeMap(sourceTick, duration2) {
   assertTick(sourceTick, "定格源时间");
-  assertTick(duration, "定格时长");
-  if (!duration) throw new Error("定格时长必须大于零");
+  assertTick(duration2, "定格时长");
+  if (!duration2) throw new Error("定格时长必须大于零");
   return {
     points: [
       { time: 0, source: sourceTick },
-      { time: duration, source: sourceTick }
+      { time: duration2, source: sourceTick }
     ]
   };
 }
@@ -240,8 +2576,8 @@ function validateEasing(value) {
     throw new Error("贝塞尔横轴控制点须在 0–1，纵轴控制点须在 -4–4");
   return result;
 }
-function validateKeyframes(value, duration) {
-  if (duration !== void 0) assertTick(duration, "动画时长");
+function validateKeyframes(value, duration2) {
+  if (duration2 !== void 0) assertTick(duration2, "动画时长");
   if (!Array.isArray(value) || !value.length || value.length > 1e5)
     throw new Error("动画需要 1 至 100000 个关键帧");
   if (Object.getPrototypeOf(value) !== Array.prototype || Reflect.ownKeys(value).length !== value.length + 1)
@@ -251,22 +2587,22 @@ function validateKeyframes(value, duration) {
   let previous = -1;
   return value.map((raw) => {
     const data = object2(raw, ["time", "value", "easing"], "关键帧");
-    const time = assertTick(data.time, "关键帧时间");
-    if (time <= previous || duration !== void 0 && time > duration)
+    const time2 = assertTick(data.time, "关键帧时间");
+    if (time2 <= previous || duration2 !== void 0 && time2 > duration2)
       throw new Error("关键帧时间必须严格递增且位于动画时长内");
-    previous = time;
+    previous = time2;
     return {
-      time,
+      time: time2,
       value: finite(data.value, "关键帧数值"),
       ...data.easing === void 0 ? {} : { easing: validateEasing(data.easing) }
     };
   });
 }
-function validateAnimatedNumber(value, duration) {
-  if (duration !== void 0) assertTick(duration, "动画时长");
+function validateAnimatedNumber(value, duration2) {
+  if (duration2 !== void 0) assertTick(duration2, "动画时长");
   if (typeof value === "number") return finite(value, "动画数值");
   const data = object2(value, ["keyframes"], "动画数值");
-  return { keyframes: validateKeyframes(data.keyframes, duration) };
+  return { keyframes: validateKeyframes(data.keyframes, duration2) };
 }
 function cubicFor(easing) {
   if (typeof easing === "object") return easing;
@@ -297,25 +2633,25 @@ function progress(easing, x) {
   const cubic = cubicFor(easing);
   return cubic ? coordinate(parameterAtX(cubic, x), cubic.y1, cubic.y2) : x;
 }
-function preceding(keys3, time) {
+function preceding(keys3, time2) {
   let left = 0, right = keys3.length - 1;
   while (left + 1 < right) {
     const middle = left + Math.floor((right - left) / 2);
-    if (keys3[middle].time <= time) left = middle;
+    if (keys3[middle].time <= time2) left = middle;
     else right = middle;
   }
   return left;
 }
-function evaluateAnimatedNumber(value, time) {
-  assertTick(time, "动画时间");
+function evaluateAnimatedNumber(value, time2) {
+  assertTick(time2, "动画时间");
   if (typeof value === "number") return value;
   const keys3 = value.keyframes;
   if (!keys3.length) throw new Error("动画缺少关键帧");
-  if (time <= keys3[0].time) return keys3[0].value;
-  if (time >= keys3.at(-1).time) return keys3.at(-1).value;
-  const index2 = preceding(keys3, time), left = keys3[index2], right = keys3[index2 + 1];
-  if (time === left.time || left.value === right.value) return left.value;
-  const amount = progress(left.easing ?? "linear", (time - left.time) / (right.time - left.time));
+  if (time2 <= keys3[0].time) return keys3[0].value;
+  if (time2 >= keys3.at(-1).time) return keys3.at(-1).value;
+  const index2 = preceding(keys3, time2), left = keys3[index2], right = keys3[index2 + 1];
+  if (time2 === left.time || left.value === right.value) return left.value;
+  const amount = progress(left.easing ?? "linear", (time2 - left.time) / (right.time - left.time));
   return left.value * (1 - amount) + right.value * amount;
 }
 function mix(a, b, t) {
@@ -350,7 +2686,7 @@ function restrictCubic(cubic, from, to) {
     y2: (part2[2].y - part2[0].y) / height
   };
   if (![result.y1, result.y2].every(
-    (number3) => Number.isFinite(number3) && number3 >= -4 && number3 <= 4
+    (number5) => Number.isFinite(number5) && number5 >= -4 && number5 <= 4
   ))
     return void 0;
   return result;
@@ -378,8 +2714,8 @@ function sliceAnimatedNumber(value, start, end) {
     if (!cubic || right.time <= start || left.time >= end || left.value === right.value) continue;
     for (const parameter of turningParameters(cubic)) {
       if (parameter <= 0 || parameter >= 1) continue;
-      const time = left.time + coordinate(parameter, cubic.x1, cubic.x2) * (right.time - left.time);
-      for (const tick2 of [Math.floor(time), Math.ceil(time)])
+      const time2 = left.time + coordinate(parameter, cubic.x1, cubic.x2) * (right.time - left.time);
+      for (const tick2 of [Math.floor(time2), Math.ceil(time2)])
         if (tick2 > start && tick2 < end) times.add(tick2);
     }
   }
@@ -457,13 +2793,13 @@ function rate(value) {
 }
 function validateExportProfile(value) {
   const data = object3(value, PROFILE_KEYS, "导出配置");
-  const id5 = label(data.id, 128, "导出配置 ID");
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(id5)) throw new Error("导出配置 ID 无效");
+  const id7 = label(data.id, 128, "导出配置 ID");
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(id7)) throw new Error("导出配置 ID 无效");
   const name = label(data.name, 200, "导出配置名称");
   const width = integer(data.width, 16, 8192, "导出宽度");
   const height = integer(data.height, 16, 8192, "导出高度");
   if (width % 2 || height % 2) throw new Error("导出画面宽高必须是偶数");
-  const frameRate = rate(data.frameRate);
+  const frameRate2 = rate(data.frameRate);
   if (!["mp4", "mov", "webm"].includes(data.container)) throw new Error("不支持此导出容器");
   if (!Object.hasOwn(VIDEO_ENCODERS, data.videoCodec)) throw new Error("不支持此视频编码");
   if (!Object.hasOwn(AUDIO_ENCODERS, data.audioCodec)) throw new Error("不支持此音频编码");
@@ -490,11 +2826,11 @@ function validateExportProfile(value) {
   if (data.sampleRate !== 48e3) throw new Error("导出音频采样率必须为 48000 Hz");
   if (typeof data.includeCaptions !== "boolean") throw new Error("请明确是否导出字幕");
   return {
-    id: id5,
+    id: id7,
     name,
     width,
     height,
-    frameRate,
+    frameRate: frameRate2,
     container,
     videoCodec,
     audioCodec,
@@ -527,6 +2863,96 @@ function requiredExportEncoders(profile) {
   const valid = validateExportProfile(profile);
   return [VIDEO_ENCODERS[valid.videoCodec], AUDIO_ENCODERS[valid.audioCodec]];
 }
+function assertExportEncodersAvailable(profile, available) {
+  const found = new Set(available);
+  const missing = requiredExportEncoders(profile).filter((name) => !found.has(name));
+  if (missing.length) throw new Error(`当前 FFmpeg 缺少导出编码器：${missing.join("、")}`);
+}
+function exportEncodingArguments(profile) {
+  const p = validateExportProfile(profile);
+  const args = [
+    "-c:v",
+    VIDEO_ENCODERS[p.videoCodec],
+    "-pix_fmt",
+    p.videoCodec === "prores" ? "yuv422p10le" : "yuv420p",
+    "-s:v",
+    `${p.width}x${p.height}`,
+    "-r",
+    `${p.frameRate.numerator}/${p.frameRate.denominator}`,
+    "-fps_mode",
+    "cfr"
+  ];
+  if (p.videoCodec === "h264" || p.videoCodec === "hevc") args.push("-preset", "medium");
+  if (p.videoCodec === "hevc") args.push("-tag:v", "hvc1");
+  if (p.videoCodec === "vp9") args.push("-deadline", "good", "-cpu-used", "2", "-row-mt", "1");
+  if (p.videoCodec === "prores") args.push("-profile:v", "3");
+  if (p.quality.mode === "bitrate") args.push("-b:v", String(p.quality.bitsPerSecond));
+  else if (p.videoCodec === "prores")
+    args.push("-qscale:v", String(31 - Math.round(p.quality.value * 30 / 100)));
+  else {
+    const maximum = p.videoCodec === "vp9" ? 63 : 51;
+    args.push("-crf", String(maximum - Math.round(p.quality.value * maximum / 100)));
+    if (p.videoCodec === "vp9") args.push("-b:v", "0");
+  }
+  args.push("-c:a", AUDIO_ENCODERS[p.audioCodec], "-ar", "48000", "-ac", "2");
+  if (p.audioCodec !== "pcm") args.push("-b:a", String(p.audioBitrate));
+  if (p.container !== "webm") args.push("-movflags", "+faststart");
+  args.push("-f", p.container);
+  return args;
+}
+function probeRate(value) {
+  if (typeof value !== "string" || !/^\d+(?:\/\d+)?$/.test(value)) return void 0;
+  const [num, den = "1"] = value.split("/");
+  const number5 = Number(num) / Number(den);
+  return Number.isFinite(number5) && number5 > 0 ? number5 : void 0;
+}
+function probeSeconds(value) {
+  if (typeof value !== "string" && typeof value !== "number") return void 0;
+  if (typeof value === "string" && !/^\d+(?:\.\d+)?$/.test(value)) return void 0;
+  const number5 = Number(value);
+  return Number.isFinite(number5) && number5 > 0 ? number5 : void 0;
+}
+function verifyExportOutput(profile, probe, expectedDurationSeconds) {
+  const p = validateExportProfile(profile);
+  const maximumDurationSeconds = Math.ceil(86400 * p.frameRate.numerator / p.frameRate.denominator) * p.frameRate.denominator / p.frameRate.numerator;
+  if (!Number.isFinite(expectedDurationSeconds) || expectedDurationSeconds <= 0 || expectedDurationSeconds > maximumDurationSeconds)
+    throw new Error("预期成片时长无效");
+  if (!probe || typeof probe !== "object" || !Array.isArray(probe.streams))
+    throw new Error("导出文件缺少有效的音视频检测结果");
+  const value = probe;
+  if (value.streams.some((stream) => !stream || typeof stream !== "object" || Array.isArray(stream)))
+    throw new Error("导出文件的媒体流信息无效");
+  const videos = value.streams.filter(
+    (stream) => stream.codec_type === "video" && !stream.disposition?.attached_pic
+  );
+  const audios = value.streams.filter((stream) => stream.codec_type === "audio");
+  if (videos.length !== 1 || audios.length !== 1)
+    throw new Error("导出文件必须包含一个画面流和一个混音流");
+  const video = videos[0], audio2 = audios[0];
+  if (video.codec_name !== p.videoCodec || audio2.codec_name !== (p.audioCodec === "pcm" ? "pcm_s16le" : p.audioCodec))
+    throw new Error("导出文件的实际音视频编码与所选配置不一致");
+  if (video.width !== p.width || video.height !== p.height)
+    throw new Error("导出文件的实际画面尺寸与所选配置不一致");
+  if (Number(audio2.sample_rate) !== p.sampleRate || audio2.channels !== 2)
+    throw new Error("导出文件的音频采样率或声道数量不正确");
+  const expectedRate = p.frameRate.numerator / p.frameRate.denominator;
+  const actualRates = [probeRate(video.avg_frame_rate), probeRate(video.r_frame_rate)].filter(
+    (rate2) => rate2 !== void 0
+  );
+  if (!actualRates.length || actualRates.some(
+    (rate2) => Math.abs(rate2 - expectedRate) > 1e-6 && (p.container !== "webm" || Math.abs(1 / rate2 - 1 / expectedRate) > 1e-9)
+  ))
+    throw new Error("导出文件的实际帧率与所选配置不一致");
+  const durations = [probeSeconds(video.duration), probeSeconds(value.format?.duration)].filter(
+    (v) => v !== void 0
+  );
+  if (!durations.length) throw new Error("导出文件缺少可核验的时长");
+  const tolerance = 1 / expectedRate + 1e-6;
+  if (durations.some((seconds3) => Math.abs(seconds3 - expectedDurationSeconds) > tolerance))
+    throw new Error("导出文件时长与时间线不一致，差异超过一帧");
+  const formats = typeof value.format?.format_name === "string" ? value.format.format_name.split(",") : [];
+  if (!formats.includes(p.container)) throw new Error("导出文件的实际容器与所选配置不一致");
+}
 
 // src/editor/validation.ts
 var MAX_EDITOR_TICK = 24 * 60 * 60 * TICKS_PER_SECOND;
@@ -550,23 +2976,23 @@ function copyData(value) {
     }
     if (!item || typeof item !== "object") throw new Error("工程必须只包含 JSON 数据");
     if (ancestors.has(item)) throw new Error("工程 JSON 数据不能循环引用");
-    const array2 = Array.isArray(item);
+    const array4 = Array.isArray(item);
     const prototype = Object.getPrototypeOf(item);
-    if (array2 ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null)
+    if (array4 ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null)
       throw new Error("工程数据必须是普通对象或数组");
     ancestors.add(item);
     try {
-      const result = array2 ? [] : {};
+      const result = array4 ? [] : {};
       const keys3 = Reflect.ownKeys(item);
-      if (array2 && keys3.length !== item.length + 1)
+      if (array4 && keys3.length !== item.length + 1)
         throw new Error("工程数组不能有空洞或额外属性");
       for (const key of keys3) {
-        if (array2 && key === "length") continue;
+        if (array4 && key === "length") continue;
         if (typeof key !== "string" || ["__proto__", "constructor", "prototype"].includes(key))
           throw new Error("工程包含不安全的数据键");
         characters += key.length;
         if (characters > MAX_DOCUMENT_CHARACTERS) throw new Error("工程文字超过容量限制");
-        if (array2 && !/^(0|[1-9]\d*)$/.test(key)) throw new Error("工程数组包含额外属性");
+        if (array4 && !/^(0|[1-9]\d*)$/.test(key)) throw new Error("工程数组包含额外属性");
         const descriptor = Object.getOwnPropertyDescriptor(item, key);
         if (!descriptor.enumerable || !("value" in descriptor))
           throw new Error("工程不接受隐藏属性或访问器");
@@ -605,8 +3031,8 @@ function integer2(value, min, max, label3) {
 function tick(value, label3, positive2 = false) {
   return integer2(value, positive2 ? 1 : 0, MAX_EDITOR_TICK, label3);
 }
-function text(value, max, label3, empty = false, multiline = false) {
-  if (typeof value !== "string" || value.length > max || !empty && !value.trim() || controls.test(value) || !multiline && /[\n\r\t]/.test(value))
+function text(value, max, label3, empty2 = false, multiline = false) {
+  if (typeof value !== "string" || value.length > max || !empty2 && !value.trim() || controls.test(value) || !multiline && /[\n\r\t]/.test(value))
     throw new Error(`${label3}文字无效或超过 ${max} 字符`);
   return value;
 }
@@ -641,7 +3067,7 @@ function dataObject(value, label3) {
     throw new Error(`${label3}必须是对象`);
   return value;
 }
-function animated(value, duration, min, max, label3) {
+function animated(value, duration2, min, max, label3) {
   if (typeof value === "number") return number(value, min, max, label3);
   const data = object4(value, ["keyframes"], label3);
   for (const raw of list(data.keyframes, 1e4, `${label3}关键帧`, 1)) {
@@ -650,13 +3076,13 @@ function animated(value, duration, min, max, label3) {
     if (typeof frame2.easing === "object")
       object4(frame2.easing, ["type", "x1", "y1", "x2", "y2"], "缓动曲线");
   }
-  return validateAnimatedNumber(data, duration);
+  return validateAnimatedNumber(data, duration2);
 }
-function timeMap(value, duration, sourceDuration) {
+function timeMap(value, duration2, sourceDuration) {
   const data = object4(value, ["points"], "时间映射");
   for (const point of list(data.points, 1e4, "时间映射节点", 2))
     object4(point, ["time", "source"], "时间映射节点");
-  return validateTimeMap(data, duration, sourceDuration);
+  return validateTimeMap(data, duration2, sourceDuration);
 }
 function assertNoEmptyHold(map2, sourceDuration, label3) {
   if (map2.points.some(
@@ -664,7 +3090,7 @@ function assertNoEmptyHold(map2, sourceDuration, label3) {
   ))
     throw new Error(`${label3}不能在素材结束边界定格`);
 }
-function transform(value, duration) {
+function transform(value, duration2) {
   const data = object4(
     value,
     ["x", "y", "scaleX", "scaleY", "rotation", "opacity", "flipX", "flipY", "fit", "crop"],
@@ -680,19 +3106,19 @@ function transform(value, duration) {
   if (bounds.left + bounds.right >= 1 || bounds.top + bounds.bottom >= 1)
     throw new Error("裁切后必须保留有效画面");
   return {
-    x: animated(data.x, duration, -10, 10, "水平位置"),
-    y: animated(data.y, duration, -10, 10, "垂直位置"),
-    scaleX: animated(data.scaleX, duration, 0, 100, "水平缩放"),
-    scaleY: animated(data.scaleY, duration, 0, 100, "垂直缩放"),
-    rotation: animated(data.rotation, duration, -36e4, 36e4, "旋转"),
-    opacity: animated(data.opacity, duration, 0, 1, "不透明度"),
+    x: animated(data.x, duration2, -10, 10, "水平位置"),
+    y: animated(data.y, duration2, -10, 10, "垂直位置"),
+    scaleX: animated(data.scaleX, duration2, 0, 100, "水平缩放"),
+    scaleY: animated(data.scaleY, duration2, 0, 100, "垂直缩放"),
+    rotation: animated(data.rotation, duration2, -36e4, 36e4, "旋转"),
+    opacity: animated(data.opacity, duration2, 0, 1, "不透明度"),
     flipX: bool(data.flipX, "水平翻转"),
     flipY: bool(data.flipY, "垂直翻转"),
     fit: choice(data.fit, ["contain", "cover", "stretch"], "画面适配"),
     crop: bounds
   };
 }
-function adjustment(value, duration) {
+function adjustment(value, duration2) {
   const data = object4(
     value,
     [
@@ -736,13 +3162,13 @@ function adjustment(value, duration) {
     };
   });
   return {
-    exposure: animated(data.exposure, duration, -10, 10, "曝光"),
-    brightness: animated(data.brightness, duration, -1, 1, "亮度"),
-    contrast: animated(data.contrast, duration, 0, 4, "对比度"),
-    saturation: animated(data.saturation, duration, 0, 4, "饱和度"),
-    temperature: animated(data.temperature, duration, -1, 1, "色温"),
-    tint: animated(data.tint, duration, -1, 1, "色调"),
-    hue: animated(data.hue, duration, -360, 360, "色相"),
+    exposure: animated(data.exposure, duration2, -10, 10, "曝光"),
+    brightness: animated(data.brightness, duration2, -1, 1, "亮度"),
+    contrast: animated(data.contrast, duration2, 0, 4, "对比度"),
+    saturation: animated(data.saturation, duration2, 0, 4, "饱和度"),
+    temperature: animated(data.temperature, duration2, -1, 1, "色温"),
+    tint: animated(data.tint, duration2, -1, 1, "色调"),
+    hue: animated(data.hue, duration2, -360, 360, "色相"),
     curves,
     hsl
   };
@@ -775,10 +3201,10 @@ function mask(value) {
     ...points ? { points } : {}
   };
 }
-function visual(data, duration) {
+function visual(data, duration2) {
   return {
-    transform: transform(data.transform, duration),
-    color: adjustment(data.color, duration),
+    transform: transform(data.transform, duration2),
+    color: adjustment(data.color, duration2),
     blendMode: choice(
       data.blendMode,
       ["normal", "multiply", "screen", "overlay", "darken", "lighten"],
@@ -787,7 +3213,7 @@ function visual(data, duration) {
     ...data.mask === void 0 ? {} : { mask: mask(data.mask) }
   };
 }
-function audio(value, duration) {
+function audio(value, duration2) {
   const data = object4(
     value,
     ["volume", "pan", "fadeIn", "fadeOut", "pitchSemitones", "preservePitch", "ducking"],
@@ -814,10 +3240,10 @@ function audio(value, duration) {
     };
   }
   return {
-    volume: animated(data.volume, duration, 0, 4, "音量"),
-    pan: animated(data.pan, duration, -1, 1, "声像"),
-    fadeIn: integer2(data.fadeIn, 0, duration, "声音淡入"),
-    fadeOut: integer2(data.fadeOut, 0, duration, "声音淡出"),
+    volume: animated(data.volume, duration2, 0, 4, "音量"),
+    pan: animated(data.pan, duration2, -1, 1, "声像"),
+    fadeIn: integer2(data.fadeIn, 0, duration2, "声音淡入"),
+    fadeOut: integer2(data.fadeOut, 0, duration2, "声音淡出"),
     pitchSemitones: number(data.pitchSemitones, -24, 24, "音高"),
     preservePitch: bool(data.preservePitch, "保持音高"),
     ...ducking ? { ducking } : {}
@@ -892,10 +3318,10 @@ function asset(value) {
     "素材"
   );
   const kind = choice(data.kind, ["video", "audio", "image", "demo"], "素材类型");
-  let resourceId;
+  let resourceId2;
   if (data.resourceId !== void 0) {
-    resourceId = text(data.resourceId, 256, "素材资源 ID");
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(resourceId))
+    resourceId2 = text(data.resourceId, 256, "素材资源 ID");
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(resourceId2))
       throw new Error("素材资源 ID 无效");
   }
   if (data.fingerprint !== void 0 && (typeof data.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(data.fingerprint)))
@@ -907,7 +3333,7 @@ function asset(value) {
     duration: tick(data.duration, "素材时长", kind !== "image"),
     ...data.width === void 0 ? {} : { width: integer2(data.width, 1, 32768, "素材宽度") },
     ...data.height === void 0 ? {} : { height: integer2(data.height, 1, 32768, "素材高度") },
-    ...resourceId === void 0 ? {} : { resourceId },
+    ...resourceId2 === void 0 ? {} : { resourceId: resourceId2 },
     ...data.fingerprint === void 0 ? {} : { fingerprint: data.fingerprint },
     ...data.metadata === void 0 ? {} : { metadata: dataObject(data.metadata, "素材元数据") }
   };
@@ -977,32 +3403,32 @@ function clip(value, assets) {
     multicam: ["timeMap", "angles", "switches", "audioAngleId", "audio"]
   };
   const data = object4(raw, [...clipKeys, ...keys3[kind]], "片段");
-  const start = tick(data.start, "片段起点"), duration = tick(data.duration, "片段时长", true);
-  if (start + duration > MAX_EDITOR_TICK) throw new Error("片段末端超过 24 小时");
+  const start = tick(data.start, "片段起点"), duration2 = tick(data.duration, "片段时长", true);
+  if (start + duration2 > MAX_EDITOR_TICK) throw new Error("片段末端超过 24 小时");
   const base = {
     id: id(data.id, "片段 ID"),
     trackId: id(data.trackId, "片段轨道 ID"),
     start,
-    duration,
+    duration: duration2,
     label: text(data.label, 256, "片段名称", true),
     ...data.groupId === void 0 ? {} : { groupId: id(data.groupId, "分组 ID") },
     ...data.linkGroupId === void 0 ? {} : { linkGroupId: id(data.linkGroupId, "关联组 ID") },
-    ...visual(data, duration)
+    ...visual(data, duration2)
   };
   if (kind === "media") {
-    const assetId = id(data.assetId, "片段素材 ID"), source2 = assets.get(assetId);
-    if (!source2) throw new Error(`片段引用不存在的素材：${assetId}`);
-    const mapping = timeMap(data.timeMap, duration, source2.duration);
-    if (source2.kind !== "image") assertNoEmptyHold(mapping, source2.duration, "媒体片段");
-    return { ...base, kind, assetId, timeMap: mapping, audio: audio(data.audio, duration) };
+    const assetId = id(data.assetId, "片段素材 ID"), source3 = assets.get(assetId);
+    if (!source3) throw new Error(`片段引用不存在的素材：${assetId}`);
+    const mapping = timeMap(data.timeMap, duration2, source3.duration);
+    if (source3.kind !== "image") assertNoEmptyHold(mapping, source3.duration, "媒体片段");
+    return { ...base, kind, assetId, timeMap: mapping, audio: audio(data.audio, duration2) };
   }
   if (kind === "sequence")
     return {
       ...base,
       kind,
       sequenceId: id(data.sequenceId, "嵌套序列 ID"),
-      timeMap: timeMap(data.timeMap, duration, MAX_EDITOR_TICK),
-      audio: audio(data.audio, duration)
+      timeMap: timeMap(data.timeMap, duration2, MAX_EDITOR_TICK),
+      audio: audio(data.audio, duration2)
     };
   if (kind === "shape")
     return {
@@ -1029,12 +3455,12 @@ function clip(value, assets) {
     let previous = -1;
     const switches = list(data.switches, 1e4, "机位切换", 1).map((raw2) => {
       const change = object4(raw2, ["time", "angleId"], "机位切换");
-      const time = integer2(change.time, 0, duration - 1, "机位切换时间");
-      if (time <= previous) throw new Error("机位切换时间必须严格递增");
-      previous = time;
+      const time2 = integer2(change.time, 0, duration2 - 1, "机位切换时间");
+      if (time2 <= previous) throw new Error("机位切换时间必须严格递增");
+      previous = time2;
       const angleId = id(change.angleId, "切换机位 ID");
       if (!anglesById.has(angleId)) throw new Error("切换引用不存在的机位");
-      return { time, angleId };
+      return { time: time2, angleId };
     });
     if (switches[0].time !== 0) throw new Error("多机位须从零时刻指定画面");
     const audioAngleId = id(data.audioAngleId, "主声音机位 ID");
@@ -1042,18 +3468,18 @@ function clip(value, assets) {
     return {
       ...base,
       kind,
-      timeMap: timeMap(data.timeMap, duration, MAX_EDITOR_TICK),
+      timeMap: timeMap(data.timeMap, duration2, MAX_EDITOR_TICK),
       angles,
       switches,
       audioAngleId,
-      audio: audio(data.audio, duration)
+      audio: audio(data.audio, duration2)
     };
   }
   let previousStart = -1, previousEnd = -1;
   const words = list(data.words, 1e4, "逐字字幕").map((raw2) => {
     const word = object4(raw2, ["text", "start", "end"], "字幕词");
-    const start2 = integer2(word.start, 0, duration - 1, "字幕词入点");
-    const end = integer2(word.end, start2 + 1, duration, "字幕词出点");
+    const start2 = integer2(word.start, 0, duration2 - 1, "字幕词入点");
+    const end = integer2(word.end, start2 + 1, duration2, "字幕词出点");
     if (start2 < previousStart || end < previousEnd) throw new Error("字幕词时间必须按顺序排列");
     previousStart = start2;
     previousEnd = end;
@@ -1098,7 +3524,7 @@ function clip(value, assets) {
       translation.originalWords = list(translated.originalWords, 1e4, "字幕原文词时间").map(
         (raw2) => {
           const word = object4(raw2, ["text", "start", "end"], "原文词");
-          const start2 = integer2(word.start, 0, duration - 1, "原文词入点"), end = integer2(word.end, start2 + 1, duration, "原文词出点");
+          const start2 = integer2(word.start, 0, duration2 - 1, "原文词入点"), end = integer2(word.end, start2 + 1, duration2, "原文词出点");
           if (start2 < previousStart2 || end < previousEnd2)
             throw new Error("原文词时间必须按顺序排列");
           previousStart2 = start2;
@@ -1120,13 +3546,13 @@ function clip(value, assets) {
   };
 }
 function sequenceDuration(sequence5) {
-  let duration = 0;
+  let duration2 = 0;
   for (const clip3 of sequence5.clips) {
     const end = tick(clip3.start, "片段起点") + tick(clip3.duration, "片段时长", true);
     if (end > MAX_EDITOR_TICK) throw new Error("序列超过 24 小时");
-    duration = Math.max(duration, end);
+    duration2 = Math.max(duration2, end);
   }
-  return duration;
+  return duration2;
 }
 function sequence(value, assets) {
   const data = object4(
@@ -1161,14 +3587,14 @@ function sequence(value, assets) {
       ["id", "fromClipId", "toClipId", "start", "duration", "kind"],
       "转场"
     );
-    const start = tick(transition.start, "转场起点"), duration = tick(transition.duration, "转场时长", true);
-    if (start + duration > MAX_EDITOR_TICK) throw new Error("转场超过 24 小时");
+    const start = tick(transition.start, "转场起点"), duration2 = tick(transition.duration, "转场时长", true);
+    if (start + duration2 > MAX_EDITOR_TICK) throw new Error("转场超过 24 小时");
     return {
       id: id(transition.id, "转场 ID"),
       fromClipId: id(transition.fromClipId, "转场起始片段"),
       toClipId: id(transition.toClipId, "转场结束片段"),
       start,
-      duration,
+      duration: duration2,
       kind: choice(
         transition.kind,
         ["dissolve", "fade-black", "wipe-left", "wipe-right", "push-left", "push-right"],
@@ -1179,12 +3605,12 @@ function sequence(value, assets) {
   unique(transitions, "转场");
   const markers = list(data.markers, 1e4, "时间轴标记").map((raw) => {
     const marker = object4(raw, ["id", "time", "duration", "name", "note", "color"], "时间轴标记");
-    const time = tick(marker.time, "标记时间"), duration = tick(marker.duration, "标记范围");
-    if (time + duration > MAX_EDITOR_TICK) throw new Error("标记范围超过 24 小时");
+    const time2 = tick(marker.time, "标记时间"), duration2 = tick(marker.duration, "标记范围");
+    if (time2 + duration2 > MAX_EDITOR_TICK) throw new Error("标记范围超过 24 小时");
     return {
       id: id(marker.id, "标记 ID"),
-      time,
-      duration,
+      time: time2,
+      duration: duration2,
       name: text(marker.name, 200, "标记名称"),
       note: text(marker.note, 1e4, "标记备注", true, true),
       color: color(marker.color, "标记颜色")
@@ -1210,24 +3636,24 @@ function compatibleTrack(clip3, track3, assets) {
   if (clip3.kind === "text") return track3.kind === "text";
   if (clip3.kind === "shape" || clip3.kind === "multicam") return track3.kind === "video";
   if (clip3.kind === "sequence") return track3.kind !== "text";
-  const source2 = assets.get(clip3.assetId);
-  return source2.kind === "audio" ? track3.kind === "audio" : source2.kind === "video" ? track3.kind !== "text" : track3.kind === "video";
+  const source3 = assets.get(clip3.assetId);
+  return source3.kind === "audio" ? track3.kind === "audio" : source3.kind === "video" ? track3.kind !== "text" : track3.kind === "video";
 }
 function multicamBounds(clip3, assets) {
   const angles = new Map(clip3.angles.map((angle) => [angle.id, angle]));
   function range(angleId, start, end) {
-    const angle = angles.get(angleId), source2 = assets.get(angle.assetId);
+    const angle = angles.get(angleId), source3 = assets.get(angle.assetId);
     const coordinates = [
       sourceTimeAt(clip3.timeMap, start),
       ...clip3.timeMap.points.filter((point) => point.time > start && point.time < end).map((point) => point.source),
       sourceTimeAt(clip3.timeMap, end)
     ];
     if (coordinates.some(
-      (position) => position + angle.offset < 0 || position + angle.offset > source2.duration
+      (position) => position + angle.offset < 0 || position + angle.offset > source3.duration
     ))
       throw new Error(`机位 ${angle.name} 的画面或声音范围超出素材`);
     if (coordinates.some(
-      (position, index2) => index2 > 0 && position + angle.offset === source2.duration && coordinates[index2 - 1] + angle.offset === source2.duration
+      (position, index2) => index2 > 0 && position + angle.offset === source3.duration && coordinates[index2 - 1] + angle.offset === source3.duration
     ))
       throw new Error(`机位 ${angle.name} 不能在素材结束边界定格`);
   }
@@ -1245,9 +3671,9 @@ function checkSequenceReferences(sequence5, assets, sequences) {
     if (!track3) throw new Error(`片段引用不存在的轨道：${clip3.trackId}`);
     if (!compatibleTrack(clip3, track3, assets)) throw new Error(`片段 ${clip3.id} 与轨道类型不兼容`);
     if (clip3.kind === "sequence") {
-      const source2 = sequences.get(clip3.sequenceId);
-      if (!source2) throw new Error(`嵌套引用不存在的序列：${clip3.sequenceId}`);
-      const sourceDuration = sequenceDuration(source2);
+      const source3 = sequences.get(clip3.sequenceId);
+      if (!source3) throw new Error(`嵌套引用不存在的序列：${clip3.sequenceId}`);
+      const sourceDuration = sequenceDuration(source3);
       if (!sourceDuration) throw new Error("嵌套片段不能引用空序列");
       validateTimeMap(clip3.timeMap, clip3.duration, sourceDuration);
       assertNoEmptyHold(clip3.timeMap, sourceDuration, "嵌套片段");
@@ -1255,20 +3681,20 @@ function checkSequenceReferences(sequence5, assets, sequences) {
     if (clip3.kind === "multicam") multicamBounds(clip3, assets);
     if ("audio" in clip3 && clip3.audio.ducking)
       for (const trackId of clip3.audio.ducking.sidechainTrackIds) {
-        const source2 = tracks.get(trackId);
-        if (!source2 || source2.kind === "text" || source2.id === clip3.trackId)
+        const source3 = tracks.get(trackId);
+        if (!source3 || source3.kind === "text" || source3.id === clip3.trackId)
           throw new Error("压低背景声须引用其他有效声音轨道");
       }
     if (clip3.kind === "text" && clip3.sourceBinding) {
-      const binding = clip3.sourceBinding, source2 = clips.get(binding.clipId);
-      if (!source2 || !("timeMap" in source2)) throw new Error("字幕来源须引用有效的媒体或序列片段");
-      const sourceSequence = source2.kind === "sequence" ? sequences.get(source2.sequenceId) : void 0;
-      if (source2.kind === "sequence" && !sourceSequence)
+      const binding = clip3.sourceBinding, source3 = clips.get(binding.clipId);
+      if (!source3 || !("timeMap" in source3)) throw new Error("字幕来源须引用有效的媒体或序列片段");
+      const sourceSequence = source3.kind === "sequence" ? sequences.get(source3.sequenceId) : void 0;
+      if (source3.kind === "sequence" && !sourceSequence)
         throw new Error("字幕来源引用不存在的嵌套序列");
-      const sourceDuration = source2.kind === "media" ? assets.get(source2.assetId).duration : source2.kind === "sequence" ? sequenceDuration(sourceSequence) : MAX_EDITOR_TICK;
+      const sourceDuration = source3.kind === "media" ? assets.get(source3.assetId).duration : source3.kind === "sequence" ? sequenceDuration(sourceSequence) : MAX_EDITOR_TICK;
       if (binding.sourceEnd > sourceDuration) throw new Error("字幕来源范围超出素材");
       if (binding.provenance) {
-        let leaf = source2;
+        let leaf = source3;
         for (const clipId of binding.provenance.path) {
           if (leaf.kind !== "sequence") throw new Error("字幕嵌套音源路径须经过序列片段");
           const child = sequences.get(leaf.sequenceId)?.clips.find((item) => item.id === clipId);
@@ -1333,14 +3759,14 @@ function validateEditorDocument(value) {
   if (!sequencesById.has(activeSequenceId)) throw new Error("活动序列不存在");
   for (const sequence5 of sequences) checkSequenceReferences(sequence5, assetsById, sequencesById);
   const visiting = /* @__PURE__ */ new Set(), visited = /* @__PURE__ */ new Set();
-  function acyclic(id5) {
-    if (visiting.has(id5)) throw new Error("嵌套序列不能循环引用");
-    if (visited.has(id5)) return;
-    visiting.add(id5);
-    for (const clip3 of sequencesById.get(id5).clips)
+  function acyclic(id7) {
+    if (visiting.has(id7)) throw new Error("嵌套序列不能循环引用");
+    if (visited.has(id7)) return;
+    visiting.add(id7);
+    for (const clip3 of sequencesById.get(id7).clips)
       if (clip3.kind === "sequence") acyclic(clip3.sequenceId);
-    visiting.delete(id5);
-    visited.add(id5);
+    visiting.delete(id7);
+    visited.add(id7);
   }
   for (const sequence5 of sequences) acyclic(sequence5.id);
   const exportProfiles = list(data.exportProfiles, 64, "导出配置").map(validateExportProfile);
@@ -1360,16 +3786,16 @@ function validateEditorDocument(value) {
 }
 
 // src/editor/caption-bindings.ts
-function route(document, sequenceId, binding) {
-  const sequences = new Map(document.sequences.map((seq2) => [seq2.id, seq2]));
+function route(document2, sequenceId, binding) {
+  const sequences = new Map(document2.sequences.map((seq2) => [seq2.id, seq2]));
   let seq = sequences.get(sequenceId), clip3 = seq?.clips.find((item) => item.id === binding.clipId);
   const stages = [];
   if (!clip3 || !("timeMap" in clip3)) return null;
   stages.push({ clip: clip3, sequenceId });
-  for (const id5 of binding.provenance?.path ?? []) {
+  for (const id7 of binding.provenance?.path ?? []) {
     if (clip3.kind !== "sequence") return null;
     seq = sequences.get(clip3.sequenceId);
-    clip3 = seq?.clips.find((item) => item.id === id5);
+    clip3 = seq?.clips.find((item) => item.id === id7);
     if (!seq || !clip3 || !("timeMap" in clip3)) return null;
     stages.push({ clip: clip3, sequenceId: seq.id });
   }
@@ -1438,20 +3864,20 @@ function normalized(path) {
   }
   return JSON.stringify({ chain, outputOffset: shift + path.offset });
 }
-function stretch(value, oldDuration, duration) {
+function stretch(value, oldDuration, duration2) {
   if (!value || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map((item) => stretch(item, oldDuration, duration));
+  if (Array.isArray(value)) return value.map((item) => stretch(item, oldDuration, duration2));
   if (Object.hasOwn(value, "keyframes")) {
     const keys3 = value.keyframes.map((key) => ({
       ...key,
-      time: Math.round(key.time * duration / oldDuration)
+      time: Math.round(key.time * duration2 / oldDuration)
     }));
     if (new Set(keys3.map((key) => key.time)).size !== keys3.length)
       throw new Error("字幕动画变速后过密，请先调整关键帧");
     return { keyframes: keys3 };
   }
   return Object.fromEntries(
-    Object.entries(value).map(([key, child]) => [key, stretch(child, oldDuration, duration)])
+    Object.entries(value).map(([key, child]) => [key, stretch(child, oldDuration, duration2)])
   );
 }
 function reconcileDependentCaptions(before, after) {
@@ -1502,7 +3928,7 @@ function reconcileDependentCaptions(before, after) {
         return !next || Math.min(...old) !== Math.min(...next) || Math.max(...old) !== Math.max(...next);
       }))
         throw new Error("裁掉嵌套音源会改变外层字幕内容，请先解绑或重新生成外层字幕");
-      const duration = range.end - range.start;
+      const duration2 = range.end - range.start;
       const remapWords = (input, originals) => input.map((word, wordIndex) => {
         const original = originals[wordIndex];
         if (!original) throw new Error("同批修改逐字内容和嵌套时间，请分步处理");
@@ -1529,9 +3955,9 @@ function reconcileDependentCaptions(before, after) {
         )
       ))
         throw new Error("倒放改变字幕词顺序，请先解绑或重新生成");
-      const updated = stretch(current, current.duration, duration);
+      const updated = stretch(current, current.duration, duration2);
       updated.start = range.start;
-      updated.duration = duration;
+      updated.duration = duration2;
       updated.words = words;
       if (originalWords) updated.translation.originalWords = originalWords;
       const owner = nextPath.stages[0].clip, a = sourceTimeAt(owner.timeMap, range.start - owner.start), b = sourceTimeAt(owner.timeMap, range.end - 1 - owner.start);
@@ -1638,8 +4064,8 @@ function index(value, length) {
     throw new Error("插入位置超出范围");
   return Number(value);
 }
-function sequence2(document, sequenceId) {
-  const found = document.sequences.find((item) => item.id === id2(sequenceId, "时间线 ID"));
+function sequence2(document2, sequenceId) {
+  const found = document2.sequences.find((item) => item.id === id2(sequenceId, "时间线 ID"));
   if (!found) throw new Error(`时间线不存在：${sequenceId}`);
   return found;
 }
@@ -1740,10 +4166,10 @@ function moveClips(sequence5, data) {
     position.item.trackId = position.trackId;
   }
 }
-function applyEditorOperations(document, operations, baseRevision) {
-  return applyOperationsToDraft(document, validateEditorDocument(document), operations, baseRevision);
+function applyEditorOperations(document2, operations, baseRevision) {
+  return applyOperationsToDraft(document2, validateEditorDocument(document2), operations, baseRevision);
 }
-function applyOperationsToDraft(document, next, operations, baseRevision) {
+function applyOperationsToDraft(document2, next, operations, baseRevision) {
   "use strict";
   if (!Number.isSafeInteger(baseRevision) || baseRevision < 0 || next.revision !== baseRevision)
     throw new Error(`工程已更新（当前修订 ${next.revision}），请刷新后重试`);
@@ -1902,7 +4328,7 @@ function applyOperationsToDraft(document, next, operations, baseRevision) {
     }
   }
   if (operations.length) {
-    reconcileDependentCaptions(document, next);
+    reconcileDependentCaptions(document2, next);
     if (!Number.isSafeInteger(next.revision + 1)) throw new Error("工程修订号已超出范围");
     next.revision += 1;
   }
@@ -1940,8 +4366,8 @@ var colorBounds = {
 var clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
 var MAX_KEYS = 1e4;
 var GAIN_TOLERANCE = 1e-6;
-function context(document, sequenceId) {
-  const snapshot = validateEditorDocument(document);
+function context(document2, sequenceId) {
+  const snapshot = validateEditorDocument(document2);
   const sequence5 = snapshot.sequences.find((sequence6) => sequence6.id === sequenceId);
   if (!sequence5) throw new Error("时间线不存在，请刷新后重试");
   return { document: snapshot, sequence: sequence5 };
@@ -1956,15 +4382,15 @@ function sourceClip(clip3) {
   return clip3;
 }
 function selectedIds(sequence5, values) {
-  if (!Array.isArray(values) || !values.length || values.length > 2e3 || new Set(values).size !== values.length || values.some((id5) => typeof id5 !== "string"))
+  if (!Array.isArray(values) || !values.length || values.length > 2e3 || new Set(values).size !== values.length || values.some((id7) => typeof id7 !== "string"))
     throw new Error("请选择有效且不重复的片段");
-  for (const id5 of values) findClip(sequence5, id5);
+  for (const id7 of values) findClip(sequence5, id7);
   return new Set(values);
 }
-function allocate(document, factory) {
+function allocate(document2, factory) {
   if (typeof factory !== "function") throw new Error("需要新片段 ID 生成器");
   const used = new Set(
-    document.sequences.flatMap((sequence5) => [
+    document2.sequences.flatMap((sequence5) => [
       sequence5.id,
       ...sequence5.tracks.map((track3) => track3.id),
       ...sequence5.transitions.map((transition) => transition.id),
@@ -1972,15 +4398,15 @@ function allocate(document, factory) {
     ])
   );
   return (kind) => {
-    const id5 = factory(kind);
-    if (typeof id5 !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(id5) || used.has(id5))
+    const id7 = factory(kind);
+    if (typeof id7 !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(id7) || used.has(id7))
       throw new Error("新片段或分组 ID 无效或已存在，请重新操作");
-    used.add(id5);
-    return id5;
+    used.add(id7);
+    return id7;
   };
 }
-function finish(document, operations) {
-  applyEditorOperations(document, operations, document.revision);
+function finish(document2, operations) {
+  applyEditorOperations(document2, operations, document2.revision);
   return structuredClone(operations);
 }
 function update(sequenceId, before, after) {
@@ -2003,28 +4429,28 @@ function boundText(sequence5, owner) {
 }
 function approximate(sample2, start, end, anchors, tolerance = GAIN_TOLERANCE) {
   const points = [
-    .../* @__PURE__ */ new Set([start, end, ...anchors.filter((time) => time > start && time < end)])
+    .../* @__PURE__ */ new Set([start, end, ...anchors.filter((time2) => time2 > start && time2 < end)])
   ].sort((a, b) => a - b);
   const result = [];
-  function add(time, value) {
+  function add2(time2, value) {
     if (result.length >= MAX_KEYS) throw new Error("保留声音或动画需要过多关键帧，请先缩短片段");
-    result.push({ time: time - start, value, easing: "linear" });
+    result.push({ time: time2 - start, value, easing: "linear" });
   }
   function segment(a, b, av, bv) {
     const checks = [
       ...new Set([1, 2, 3].map((part2) => a + Math.floor((b - a) * part2 / 4)))
     ].filter((t) => t > a && t < b);
     if (checks.some(
-      (time) => Math.abs(sample2(time) - (av + (bv - av) * (time - a) / (b - a))) > tolerance
+      (time2) => Math.abs(sample2(time2) - (av + (bv - av) * (time2 - a) / (b - a))) > tolerance
     )) {
       const middle = a + Math.floor((b - a) / 2), value = sample2(middle);
       segment(a, middle, av, value);
       segment(middle, b, value, bv);
-    } else add(a, av);
+    } else add2(a, av);
   }
   for (let i = 0; i + 1 < points.length; i++)
     segment(points[i], points[i + 1], sample2(points[i]), sample2(points[i + 1]));
-  add(end, sample2(end));
+  add2(end, sample2(end));
   return { keyframes: result };
 }
 function keyTimes(value) {
@@ -2035,10 +4461,10 @@ function sliceProperty(value, start, end, min, max) {
   if (typeof sliced === "number" || sliced.keyframes.every((key) => key.value >= min && key.value <= max))
     return sliced;
   return approximate(
-    (time) => clamp(evaluateAnimatedNumber(value, time), min, max),
+    (time2) => clamp(evaluateAnimatedNumber(value, time2), min, max),
     start,
     end,
-    keyTimes(sliced).map((time) => time + start)
+    keyTimes(sliced).map((time2) => time2 + start)
   );
 }
 function sliceText(clip3, start, end) {
@@ -2109,7 +4535,7 @@ function sliceClip(clip3, start, end) {
       next.audio.fadeIn = start === 0 ? Math.min(fadeIn, next.duration) : 0;
       next.audio.fadeOut = end === clip3.duration ? Math.min(fadeOut, next.duration) : 0;
     } else {
-      const gain = (time) => clamp(evaluateAnimatedNumber(clip3.audio.volume, time), 0, 4) * (fadeIn ? clamp(time / fadeIn) : 1) * (fadeOut ? clamp((clip3.duration - time) / fadeOut) : 1);
+      const gain = (time2) => clamp(evaluateAnimatedNumber(clip3.audio.volume, time2), 0, 4) * (fadeIn ? clamp(time2 / fadeIn) : 1) * (fadeOut ? clamp((clip3.duration - time2) / fadeOut) : 1);
       next.audio.volume = approximate(gain, start, end, [
         ...keyTimes(clip3.audio.volume),
         fadeIn,
@@ -2128,8 +4554,8 @@ function sliceClip(clip3, start, end) {
   }
   if (clip3.kind === "text" && next.kind === "text" && clip3.style.animation === "fade") {
     next.transform.opacity = approximate(
-      (time) => clamp(evaluateAnimatedNumber(clip3.transform.opacity, time)) * clamp(
-        Math.min(time / (clip3.duration * 0.1), (clip3.duration - time) / (clip3.duration * 0.1))
+      (time2) => clamp(evaluateAnimatedNumber(clip3.transform.opacity, time2)) * clamp(
+        Math.min(time2 / (clip3.duration * 0.1), (clip3.duration - time2) / (clip3.duration * 0.1))
       ),
       start,
       end,
@@ -2143,25 +4569,25 @@ function sliceClip(clip3, start, end) {
   }
   return next;
 }
-function tightenBinding(text5, owner) {
-  if (!text5.sourceBinding) return;
-  const start = text5.start - owner.start, end = start + text5.duration;
+function tightenBinding(text7, owner) {
+  if (!text7.sourceBinding) return;
+  const start = text7.start - owner.start, end = start + text7.duration;
   if (start < 0 || end > owner.duration)
     throw new Error("关联字幕与源片段尚未对齐，请先修正字幕时间再剪切");
   const points = sliceTimeMap(owner.timeMap, start, end).points.map((point) => point.source);
-  const first2 = Math.max(text5.sourceBinding.sourceStart, Math.min(...points));
-  const last = Math.min(text5.sourceBinding.sourceEnd, Math.max(...points));
+  const first2 = Math.max(text7.sourceBinding.sourceStart, Math.min(...points));
+  const last = Math.min(text7.sourceBinding.sourceEnd, Math.max(...points));
   if (first2 < last) {
-    text5.sourceBinding.sourceStart = first2;
-    text5.sourceBinding.sourceEnd = last;
+    text7.sourceBinding.sourceStart = first2;
+    text7.sourceBinding.sourceEnd = last;
   } else if (!points.every(
-    (point) => point >= text5.sourceBinding.sourceStart && point < text5.sourceBinding.sourceEnd
+    (point) => point >= text7.sourceBinding.sourceStart && point < text7.sourceBinding.sourceEnd
   ))
     throw new Error("字幕来源与保留片段不一致，请先重新对齐字幕");
 }
 function trimClip(value, sequenceId, clipId, localStart, localEnd) {
-  const { document, sequence: sequence5 } = context(value, sequenceId), operations = trimOperations(sequence5, sequenceId, clipId, localStart, localEnd);
-  return operations.length ? finish(document, operations) : operations;
+  const { document: document2, sequence: sequence5 } = context(value, sequenceId), operations = trimOperations(sequence5, sequenceId, clipId, localStart, localEnd);
+  return operations.length ? finish(document2, operations) : operations;
 }
 function trimOperations(sequence5, sequenceId, clipId, localStart, localEnd) {
   const before = findClip(sequence5, clipId);
@@ -2185,11 +4611,11 @@ function trimOperations(sequence5, sequenceId, clipId, localStart, localEnd) {
   return operations;
 }
 function splitClip(value, sequenceId, clipId, timelineTick, idFactory) {
-  const { document, sequence: sequence5 } = context(value, sequenceId), before = findClip(sequence5, clipId);
+  const { document: document2, sequence: sequence5 } = context(value, sequenceId), before = findClip(sequence5, clipId);
   assertTick(timelineTick);
   return finish(
-    document,
-    splitOperations(sequence5, before, timelineTick, allocate(document, idFactory))
+    document2,
+    splitOperations(sequence5, before, timelineTick, allocate(document2, idFactory))
   );
 }
 function splitOperations(sequence5, before, timelineTick, newId) {
@@ -2237,13 +4663,13 @@ function selectionClosure(sequence5, ids3) {
     const clips = sequence5.clips.filter((clip3) => selected3.has(clip3.id));
     const groups = new Set(clips.flatMap((clip3) => clip3.groupId ? [clip3.groupId] : []));
     const links = new Set(clips.flatMap((clip3) => clip3.linkGroupId ? [clip3.linkGroupId] : []));
-    const owners = new Set(
+    const owners3 = new Set(
       clips.flatMap(
         (clip3) => clip3.kind === "text" && clip3.sourceBinding ? [clip3.sourceBinding.clipId] : []
       )
     );
     for (const clip3 of sequence5.clips) {
-      if (!selected3.has(clip3.id) && (owners.has(clip3.id) || clip3.groupId && groups.has(clip3.groupId) || clip3.linkGroupId && links.has(clip3.linkGroupId) || clip3.kind === "text" && clip3.sourceBinding && selected3.has(clip3.sourceBinding.clipId))) {
+      if (!selected3.has(clip3.id) && (owners3.has(clip3.id) || clip3.groupId && groups.has(clip3.groupId) || clip3.linkGroupId && links.has(clip3.linkGroupId) || clip3.kind === "text" && clip3.sourceBinding && selected3.has(clip3.sourceBinding.clipId))) {
         selected3.add(clip3.id);
         changed = true;
       }
@@ -2251,23 +4677,23 @@ function selectionClosure(sequence5, ids3) {
   }
   return selected3;
 }
-function dependencySnapshot(document, source2, selected3) {
-  const clips = source2.clips.filter((clip3) => selected3.has(clip3.id));
-  for (const transition of source2.transitions)
+function dependencySnapshot(document2, source3, selected3) {
+  const clips = source3.clips.filter((clip3) => selected3.has(clip3.id));
+  for (const transition of source3.transitions)
     if (selected3.has(transition.fromClipId) !== selected3.has(transition.toClipId))
       throw new Error("复制带转场的片段时，请同时选择转场两端片段");
   const root = {
-    ...source2,
+    ...source3,
     clips,
-    transitions: source2.transitions.filter((transition) => selected3.has(transition.fromClipId)),
+    transitions: source3.transitions.filter((transition) => selected3.has(transition.fromClipId)),
     markers: []
   };
-  const sequences = [root], seen = /* @__PURE__ */ new Set([source2.id]);
+  const sequences = [root], seen = /* @__PURE__ */ new Set([source3.id]);
   for (let index2 = 0; index2 < sequences.length; index2++)
     for (const clip3 of sequences[index2].clips)
       if (clip3.kind === "sequence" && !seen.has(clip3.sequenceId)) {
         seen.add(clip3.sequenceId);
-        sequences.push(document.sequences.find((sequence5) => sequence5.id === clip3.sequenceId));
+        sequences.push(document2.sequences.find((sequence5) => sequence5.id === clip3.sequenceId));
       }
   const assets = new Set(
     sequences.flatMap(
@@ -2278,19 +4704,19 @@ function dependencySnapshot(document, source2, selected3) {
   );
   return validateEditorDocument({
     schemaVersion: 2,
-    timebase: document.timebase,
-    id: document.id,
-    name: document.name,
-    revision: document.revision,
-    assets: document.assets.filter((asset2) => assets.has(asset2.id)),
+    timebase: document2.timebase,
+    id: document2.id,
+    name: document2.name,
+    revision: document2.revision,
+    assets: document2.assets.filter((asset2) => assets.has(asset2.id)),
     sequences,
-    activeSequenceId: source2.id,
+    activeSequenceId: source3.id,
     exportProfiles: []
   });
 }
 function copyClips(value, sequenceId, clipIds) {
-  const { document, sequence: sequence5 } = context(value, sequenceId), selected3 = selectionClosure(sequence5, clipIds);
-  const snapshot = dependencySnapshot(document, sequence5, selected3);
+  const { document: document2, sequence: sequence5 } = context(value, sequenceId), selected3 = selectionClosure(sequence5, clipIds);
+  const snapshot = dependencySnapshot(document2, sequence5, selected3);
   return {
     schemaVersion: 1,
     sequenceId,
@@ -2305,14 +4731,14 @@ function validateClipClipboard(value) {
     throw new Error("片段剪贴板格式无效");
   const raw = value;
   if (raw.schemaVersion !== 1) throw new Error("不支持此片段剪贴板版本");
-  const document = validateEditorDocument(raw.document), sequence5 = document.sequences.find((sequence6) => sequence6.id === raw.sequenceId);
+  const document2 = validateEditorDocument(raw.document), sequence5 = document2.sequences.find((sequence6) => sequence6.id === raw.sequenceId);
   assertTick(raw.origin);
-  if (!sequence5 || document.activeSequenceId !== sequence5.id || !sequence5.clips.length || raw.origin !== Math.min(...sequence5.clips.map((clip3) => clip3.start)))
+  if (!sequence5 || document2.activeSequenceId !== sequence5.id || !sequence5.clips.length || raw.origin !== Math.min(...sequence5.clips.map((clip3) => clip3.start)))
     throw new Error("片段剪贴板缺少有效选择或起点");
-  return { schemaVersion: 1, origin: raw.origin, sequenceId: raw.sequenceId, document };
+  return { schemaVersion: 1, origin: raw.origin, sequenceId: raw.sequenceId, document: document2 };
 }
-function sameAsset(source2, target, sameDocument) {
-  return source2.kind === target.kind && source2.duration === target.duration && (source2.resourceId !== void 0 && source2.resourceId === target.resourceId || source2.fingerprint !== void 0 && source2.fingerprint === target.fingerprint || sameDocument && source2.id === target.id && source2.resourceId === void 0 && target.resourceId === void 0);
+function sameAsset(source3, target, sameDocument) {
+  return source3.kind === target.kind && source3.duration === target.duration && (source3.resourceId !== void 0 && source3.resourceId === target.resourceId || source3.fingerprint !== void 0 && source3.fingerprint === target.fingerprint || sameDocument && source3.id === target.id && source3.resourceId === void 0 && target.resourceId === void 0);
 }
 var ClipboardDependencyError = class extends Error {
   constructor(assetIds, sequenceIds) {
@@ -2325,48 +4751,48 @@ var ClipboardDependencyError = class extends Error {
   sequenceIds;
   code = "CLIPBOARD_DEPENDENCIES_MISSING";
 };
-function pasteClips(value, sequenceId, payload, options) {
-  const { document, sequence: sequence5 } = context(value, sequenceId), copied = validateClipClipboard(payload);
-  assertTick(options.at);
-  const source2 = copied.document.sequences.find((sequence6) => sequence6.id === copied.sequenceId);
-  const sameDocument = document.id === copied.document.id, assets = /* @__PURE__ */ new Map(), missingAssets = [], missingSequences = [];
+function pasteClips(value, sequenceId, payload, options2) {
+  const { document: document2, sequence: sequence5 } = context(value, sequenceId), copied = validateClipClipboard(payload);
+  assertTick(options2.at);
+  const source3 = copied.document.sequences.find((sequence6) => sequence6.id === copied.sequenceId);
+  const sameDocument = document2.id === copied.document.id, assets = /* @__PURE__ */ new Map(), missingAssets = [], missingSequences = [];
   for (const asset2 of copied.document.assets) {
-    const target = document.assets.find(
+    const target = document2.assets.find(
       (candidate) => candidate.id === asset2.id && sameAsset(asset2, candidate, sameDocument)
-    ) ?? document.assets.find((candidate) => sameAsset(asset2, candidate, sameDocument));
+    ) ?? document2.assets.find((candidate) => sameAsset(asset2, candidate, sameDocument));
     if (target) assets.set(asset2.id, target.id);
     else missingAssets.push(asset2.id);
   }
-  for (const dependency of copied.document.sequences.filter((item) => item.id !== source2.id)) {
-    const target = document.sequences.find((item) => item.id === dependency.id);
+  for (const dependency of copied.document.sequences.filter((item) => item.id !== source3.id)) {
+    const target = document2.sequences.find((item) => item.id === dependency.id);
     if (!target || !sameDocument && JSON.stringify(target) !== JSON.stringify(dependency))
       missingSequences.push(dependency.id);
   }
   if (missingAssets.length || missingSequences.length)
     throw new ClipboardDependencyError(missingAssets, missingSequences);
-  const usedTracks = source2.tracks.filter(
-    (track3) => source2.clips.some((clip3) => clip3.trackId === track3.id)
+  const usedTracks = source3.tracks.filter(
+    (track3) => source3.clips.some((clip3) => clip3.trackId === track3.id)
   );
-  const sourceAnchor = source2.tracks.indexOf(usedTracks[0]);
-  const targetAnchor = options.trackId === void 0 ? sequence5.tracks.findIndex((track3) => track3.id === usedTracks[0].id) : sequence5.tracks.findIndex((track3) => track3.id === options.trackId);
-  if (!options.trackMap && targetAnchor < 0) throw new Error("请选择对应的目标轨道后粘贴");
+  const sourceAnchor = source3.tracks.indexOf(usedTracks[0]);
+  const targetAnchor = options2.trackId === void 0 ? sequence5.tracks.findIndex((track3) => track3.id === usedTracks[0].id) : sequence5.tracks.findIndex((track3) => track3.id === options2.trackId);
+  if (!options2.trackMap && targetAnchor < 0) throw new Error("请选择对应的目标轨道后粘贴");
   const tracks = /* @__PURE__ */ new Map();
-  for (const track3 of source2.tracks) {
-    const target = options.trackMap ? sequence5.tracks.find((candidate) => candidate.id === options.trackMap[track3.id]) : sequence5.tracks[targetAnchor + source2.tracks.indexOf(track3) - sourceAnchor];
+  for (const track3 of source3.tracks) {
+    const target = options2.trackMap ? sequence5.tracks.find((candidate) => candidate.id === options2.trackMap[track3.id]) : sequence5.tracks[targetAnchor + source3.tracks.indexOf(track3) - sourceAnchor];
     if (target && target.kind === track3.kind) tracks.set(track3.id, target.id);
   }
   if (usedTracks.some((track3) => !tracks.has(track3.id)))
     throw new Error("目标轨道不足或类型不匹配，请先准备对应轨道");
-  const newId = allocate(document, options.idFactory), clipIds = new Map(source2.clips.map((clip3) => [clip3.id, newId("clip")]));
+  const newId = allocate(document2, options2.idFactory), clipIds = new Map(source3.clips.map((clip3) => [clip3.id, newId("clip")]));
   const groups = /* @__PURE__ */ new Map(), links = /* @__PURE__ */ new Map();
-  function remapGroup(id5, values, kind) {
-    if (!values.has(id5)) values.set(id5, newId(kind));
-    return values.get(id5);
+  function remapGroup(id7, values, kind) {
+    if (!values.has(id7)) values.set(id7, newId(kind));
+    return values.get(id7);
   }
-  const operations = source2.clips.map((original) => {
+  const operations = source3.clips.map((original) => {
     const clip3 = structuredClone(original);
     clip3.id = clipIds.get(original.id);
-    clip3.start = options.at + original.start - copied.origin;
+    clip3.start = options2.at + original.start - copied.origin;
     clip3.trackId = tracks.get(original.trackId);
     if (clip3.groupId) clip3.groupId = remapGroup(clip3.groupId, groups, "group");
     if (clip3.linkGroupId) clip3.linkGroupId = remapGroup(clip3.linkGroupId, links, "link");
@@ -2384,32 +4810,32 @@ function pasteClips(value, sequenceId, payload, options) {
       }
     }
     if ("audio" in clip3 && clip3.audio.ducking)
-      clip3.audio.ducking.sidechainTrackIds = clip3.audio.ducking.sidechainTrackIds.map((id5) => {
-        const target = tracks.get(id5);
+      clip3.audio.ducking.sidechainTrackIds = clip3.audio.ducking.sidechainTrackIds.map((id7) => {
+        const target = tracks.get(id7);
         if (!target) throw new Error("目标时间线缺少压低背景声所需的参考轨道");
         return target;
       });
     return { type: "clip.add", sequenceId, clip: clip3 };
   });
-  for (const original of source2.transitions) {
+  for (const original of source3.transitions) {
     const transition = {
       ...original,
       id: newId("transition"),
       fromClipId: clipIds.get(original.fromClipId),
       toClipId: clipIds.get(original.toClipId),
-      start: options.at + original.start - copied.origin
+      start: options2.at + original.start - copied.origin
     };
     operations.push({ type: "transition.add", sequenceId, transition });
   }
-  return finish(document, operations);
+  return finish(document2, operations);
 }
 function groupClips(value, sequenceId, clipIds, groupId) {
-  const { document, sequence: sequence5 } = context(value, sequenceId), selected3 = selectionClosure(sequence5, clipIds);
+  const { document: document2, sequence: sequence5 } = context(value, sequenceId), selected3 = selectionClosure(sequence5, clipIds);
   if (selected3.size < 2) throw new Error("至少选择两个片段才能编组");
   if (typeof groupId !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(groupId) || sequence5.clips.some((clip3) => clip3.groupId === groupId && !selected3.has(clip3.id)))
     throw new Error("请使用有效且未被其他片段占用的分组 ID");
   return finish(
-    document,
+    document2,
     [...selected3].map((clipId) => ({
       type: "clip.update",
       sequenceId,
@@ -2419,12 +4845,12 @@ function groupClips(value, sequenceId, clipIds, groupId) {
   );
 }
 function ungroupClips(value, sequenceId, clipIds) {
-  const { document, sequence: sequence5 } = context(value, sequenceId), selected3 = selectedIds(sequence5, clipIds);
+  const { document: document2, sequence: sequence5 } = context(value, sequenceId), selected3 = selectedIds(sequence5, clipIds);
   const groups = new Set(
     sequence5.clips.filter((clip3) => selected3.has(clip3.id)).flatMap((clip3) => clip3.groupId ? [clip3.groupId] : [])
   );
   return finish(
-    document,
+    document2,
     sequence5.clips.filter((clip3) => clip3.groupId && groups.has(clip3.groupId)).map((clip3) => ({
       type: "clip.update",
       sequenceId,
@@ -2433,54 +4859,54 @@ function ungroupClips(value, sequenceId, clipIds) {
     }))
   );
 }
-function scaleTick(value, oldDuration, duration) {
-  const n = BigInt(value) * BigInt(duration), d = BigInt(oldDuration);
+function scaleTick(value, oldDuration, duration2) {
+  const n = BigInt(value) * BigInt(duration2), d = BigInt(oldDuration);
   return Number((2n * n + d) / (2n * d));
 }
-function stretchProperty(value, from, duration) {
+function stretchProperty(value, from, duration2) {
   if (typeof value === "number") return value;
   let previous = -1;
   return {
     keyframes: value.keyframes.map((key) => {
-      const time = scaleTick(key.time, from, duration);
-      if (time <= previous) throw new Error("变速后关键帧落在同一刻度，请降低速度或先整理关键帧");
-      previous = time;
-      return { ...structuredClone(key), time };
+      const time2 = scaleTick(key.time, from, duration2);
+      if (time2 <= previous) throw new Error("变速后关键帧落在同一刻度，请降低速度或先整理关键帧");
+      previous = time2;
+      return { ...structuredClone(key), time: time2 };
     })
   };
 }
-function stretchDecorations(clip3, duration, stretchSwitches = true) {
+function stretchDecorations(clip3, duration2, stretchSwitches = true) {
   const next = structuredClone(clip3);
-  next.duration = duration;
+  next.duration = duration2;
   for (const key of transformKeys)
-    next.transform[key] = stretchProperty(clip3.transform[key], clip3.duration, duration);
+    next.transform[key] = stretchProperty(clip3.transform[key], clip3.duration, duration2);
   for (const key of colorKeys)
-    next.color[key] = stretchProperty(clip3.color[key], clip3.duration, duration);
+    next.color[key] = stretchProperty(clip3.color[key], clip3.duration, duration2);
   if ("audio" in clip3 && "audio" in next) {
-    next.audio.volume = stretchProperty(clip3.audio.volume, clip3.duration, duration);
-    next.audio.pan = stretchProperty(clip3.audio.pan, clip3.duration, duration);
-    next.audio.fadeIn = scaleTick(clip3.audio.fadeIn, clip3.duration, duration);
-    next.audio.fadeOut = scaleTick(clip3.audio.fadeOut, clip3.duration, duration);
+    next.audio.volume = stretchProperty(clip3.audio.volume, clip3.duration, duration2);
+    next.audio.pan = stretchProperty(clip3.audio.pan, clip3.duration, duration2);
+    next.audio.fadeIn = scaleTick(clip3.audio.fadeIn, clip3.duration, duration2);
+    next.audio.fadeOut = scaleTick(clip3.audio.fadeOut, clip3.duration, duration2);
   }
   if (stretchSwitches && clip3.kind === "multicam" && next.kind === "multicam") {
     next.switches = clip3.switches.map((change) => ({
       ...change,
-      time: scaleTick(change.time, clip3.duration, duration)
+      time: scaleTick(change.time, clip3.duration, duration2)
     }));
-    if (new Set(next.switches.map((change) => change.time)).size !== next.switches.length || next.switches.at(-1).time >= duration)
+    if (new Set(next.switches.map((change) => change.time)).size !== next.switches.length || next.switches.at(-1).time >= duration2)
       throw new Error("变速后机位切点过密，请降低速度");
   }
   if (clip3.kind === "text" && next.kind === "text")
     next.words = clip3.words.map((word) => ({
       ...word,
-      start: scaleTick(word.start, clip3.duration, duration),
-      end: scaleTick(word.end, clip3.duration, duration)
+      start: scaleTick(word.start, clip3.duration, duration2),
+      end: scaleTick(word.end, clip3.duration, duration2)
     }));
   if (clip3.kind === "text" && next.kind === "text" && clip3.translation?.originalWords)
     next.translation.originalWords = clip3.translation.originalWords.map((word) => ({
       ...word,
-      start: scaleTick(word.start, clip3.duration, duration),
-      end: scaleTick(word.end, clip3.duration, duration)
+      start: scaleTick(word.start, clip3.duration, duration2),
+      end: scaleTick(word.end, clip3.duration, duration2)
     }));
   return next;
 }
@@ -2517,15 +4943,15 @@ function retimeBoundCaption(caption, before, after) {
     next.translation.originalWords = caption.translation.originalWords.map(mapWord);
   return next;
 }
-function retime(document, sequence5, before, duration, timeMap2, adjust) {
+function retime(document2, sequence5, before, duration2, timeMap2, adjust) {
   assertNoTransition(sequence5, /* @__PURE__ */ new Set([before.id]));
-  const after = stretchDecorations(before, duration, !adjust);
+  const after = stretchDecorations(before, duration2, !adjust);
   after.timeMap = timeMap2;
   adjust?.(after);
   const operations = [update(sequence5.id, before, after)];
   for (const caption of boundText(sequence5, before))
     operations.push(update(sequence5.id, caption, retimeBoundCaption(caption, before, after)));
-  return finish(document, operations);
+  return finish(document2, operations);
 }
 function speed(value) {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0.05 || value > 100)
@@ -2542,28 +4968,28 @@ function sourceEndpoints(clip3) {
   return [start, end];
 }
 function setClipSpeed(value, sequenceId, clipId, rate2) {
-  const { document, sequence: sequence5 } = context(value, sequenceId), clip3 = sourceClip(findClip(sequence5, clipId));
+  const { document: document2, sequence: sequence5 } = context(value, sequenceId), clip3 = sourceClip(findClip(sequence5, clipId));
   const [start, end] = sourceEndpoints(clip3), result = constantTimeMap(start, end, speed(rate2));
-  return retime(document, sequence5, clip3, result.duration, result.timeMap);
+  return retime(document2, sequence5, clip3, result.duration, result.timeMap);
 }
 function setClipTimeMap(value, sequenceId, clipId, mapping) {
-  const { document, sequence: sequence5 } = context(value, sequenceId), clip3 = sourceClip(findClip(sequence5, clipId));
-  const duration = assertTick(mapping?.points?.at(-1)?.time, "曲线输出时长");
-  const sourceDuration = clip3.kind === "media" ? document.assets.find((asset2) => asset2.id === clip3.assetId).duration : clip3.kind === "sequence" ? sequenceDuration(document.sequences.find((item) => item.id === clip3.sequenceId)) : MAX_EDITOR_TICK;
+  const { document: document2, sequence: sequence5 } = context(value, sequenceId), clip3 = sourceClip(findClip(sequence5, clipId));
+  const duration2 = assertTick(mapping?.points?.at(-1)?.time, "曲线输出时长");
+  const sourceDuration = clip3.kind === "media" ? document2.assets.find((asset2) => asset2.id === clip3.assetId).duration : clip3.kind === "sequence" ? sequenceDuration(document2.sequences.find((item) => item.id === clip3.sequenceId)) : MAX_EDITOR_TICK;
   return retime(
-    document,
+    document2,
     sequence5,
     clip3,
-    duration,
-    validateTimeMap(mapping, duration, sourceDuration)
+    duration2,
+    validateTimeMap(mapping, duration2, sourceDuration)
   );
 }
 function reverseClip(value, sequenceId, clipId) {
-  const { document, sequence: sequence5 } = context(value, sequenceId), clip3 = sourceClip(findClip(sequence5, clipId));
+  const { document: document2, sequence: sequence5 } = context(value, sequenceId), clip3 = sourceClip(findClip(sequence5, clipId));
   const timeMap2 = {
     points: [...clip3.timeMap.points].reverse().map((point) => ({ time: clip3.duration - point.time, source: point.source }))
   };
-  return retime(document, sequence5, clip3, clip3.duration, timeMap2, (after) => {
+  return retime(document2, sequence5, clip3, clip3.duration, timeMap2, (after) => {
     if (clip3.kind === "multicam" && after.kind === "multicam")
       after.switches = [
         { time: 0, angleId: clip3.switches.at(-1).angleId },
@@ -2574,18 +5000,18 @@ function reverseClip(value, sequenceId, clipId) {
       ];
   });
 }
-function freezeClip(value, sequenceId, clipId, timelineTick, duration) {
-  const { document, sequence: sequence5 } = context(value, sequenceId), clip3 = sourceClip(findClip(sequence5, clipId));
+function freezeClip(value, sequenceId, clipId, timelineTick, duration2) {
+  const { document: document2, sequence: sequence5 } = context(value, sequenceId), clip3 = sourceClip(findClip(sequence5, clipId));
   assertTick(timelineTick);
-  assertTick(duration);
+  assertTick(duration2);
   if (timelineTick < clip3.start || timelineTick >= clip3.start + clip3.duration)
     throw new Error("定格位置须位于所选片段内部");
   return retime(
-    document,
+    document2,
     sequence5,
     clip3,
-    duration,
-    freezeTimeMap(sourceTimeAt(clip3.timeMap, timelineTick - clip3.start), duration),
+    duration2,
+    freezeTimeMap(sourceTimeAt(clip3.timeMap, timelineTick - clip3.start), duration2),
     (after) => {
       if (clip3.kind === "multicam" && after.kind === "multicam")
         after.switches = [
@@ -2607,61 +5033,61 @@ function magneticTrackMatches(sequence5, trackId) {
 }
 var equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function scope(value, sequenceId) {
-  const document = validateEditorDocument(value), sequence5 = document.sequences.find((item) => item.id === sequenceId);
+  const document2 = validateEditorDocument(value), sequence5 = document2.sequences.find((item) => item.id === sequenceId);
   if (!sequence5) throw new Error("时间线不存在");
-  return { document, sequence: sequence5 };
+  return { document: document2, sequence: sequence5 };
 }
-function find(sequence5, id5) {
-  const clip3 = sequence5.clips.find((item) => item.id === id5);
+function find(sequence5, id7) {
+  const clip3 = sequence5.clips.find((item) => item.id === id7);
   if (!clip3) throw new Error("片段不存在，请重新选择");
   return clip3;
 }
 function components(sequence5, includeBindings = true, includeTransitions = false) {
   const parents = new Map(sequence5.clips.map((clip3) => [clip3.id, clip3.id]));
-  const root = (id5) => {
-    let current = id5;
+  const root = (id7) => {
+    let current = id7;
     while (parents.get(current) !== current) current = parents.get(current);
-    while (id5 !== current) {
-      const next = parents.get(id5);
-      parents.set(id5, current);
-      id5 = next;
+    while (id7 !== current) {
+      const next = parents.get(id7);
+      parents.set(id7, current);
+      id7 = next;
     }
     return current;
   };
-  const join2 = (a, b) => parents.set(root(a), root(b));
+  const join26 = (a, b) => parents.set(root(a), root(b));
   const groupIds = /* @__PURE__ */ new Map(), linkIds = /* @__PURE__ */ new Map();
   for (const clip3 of sequence5.clips) {
-    for (const [id5, ids3] of [
+    for (const [id7, ids3] of [
       [clip3.groupId, groupIds],
       [clip3.linkGroupId, linkIds]
     ])
-      if (id5) {
-        const other = ids3.get(id5);
-        if (other) join2(clip3.id, other);
-        else ids3.set(id5, clip3.id);
+      if (id7) {
+        const other = ids3.get(id7);
+        if (other) join26(clip3.id, other);
+        else ids3.set(id7, clip3.id);
       }
     if (includeBindings && clip3.kind === "text" && clip3.sourceBinding)
-      join2(clip3.id, clip3.sourceBinding.clipId);
+      join26(clip3.id, clip3.sourceBinding.clipId);
   }
   if (includeTransitions)
-    for (const transition of sequence5.transitions) join2(transition.fromClipId, transition.toClipId);
+    for (const transition of sequence5.transitions) join26(transition.fromClipId, transition.toClipId);
   const result = /* @__PURE__ */ new Map();
   for (const clip3 of sequence5.clips) {
-    const id5 = root(clip3.id);
-    if (!result.has(id5)) result.set(id5, /* @__PURE__ */ new Set());
-    result.get(id5).add(clip3.id);
+    const id7 = root(clip3.id);
+    if (!result.has(id7)) result.set(id7, /* @__PURE__ */ new Set());
+    result.get(id7).add(clip3.id);
   }
   return [...result.values()];
 }
 function selected(sequence5, ids3) {
   if (!Array.isArray(ids3) || !ids3.length || ids3.length > 2e3 || new Set(ids3).size !== ids3.length)
     throw new Error("请选择有效且不重复的片段");
-  ids3.forEach((id5) => find(sequence5, id5));
+  ids3.forEach((id7) => find(sequence5, id7));
   const chosen = new Set(ids3), groups = components(sequence5, false);
   for (; ; ) {
     const size2 = chosen.size;
     for (const group of groups)
-      if ([...group].some((id5) => chosen.has(id5))) group.forEach((id5) => chosen.add(id5));
+      if ([...group].some((id7) => chosen.has(id7))) group.forEach((id7) => chosen.add(id7));
     for (const clip3 of sequence5.clips)
       if (clip3.kind === "text" && clip3.sourceBinding && chosen.has(clip3.sourceBinding.clipId))
         chosen.add(clip3.id);
@@ -2669,8 +5095,8 @@ function selected(sequence5, ids3) {
   }
 }
 function unlocked2(sequence5, ids3, index2) {
-  for (const id5 of ids3)
-    if ((index2 ? index2.tracks.get(index2.clips.get(id5).trackId) : sequence5.tracks.find((track3) => track3.id === find(sequence5, id5).trackId))?.locked !== false)
+  for (const id7 of ids3)
+    if ((index2 ? index2.tracks.get(index2.clips.get(id7).trackId) : sequence5.tracks.find((track3) => track3.id === find(sequence5, id7).trackId))?.locked !== false)
       throw new Error("操作涉及已锁定轨道，请先解锁；所有片段均未修改");
 }
 function ordered(sequence5, trackId) {
@@ -2685,19 +5111,19 @@ function moveTargets(before, after, targets) {
     tracks: new Map(before.tracks.map((track3) => [track3.id, track3]))
   };
   for (const group of components(before)) {
-    const requests = [...group].filter((id5) => targets.has(id5) && afterClips.has(id5)).map((id5) => targets.get(id5) - afterClips.get(id5).start);
+    const requests = [...group].filter((id7) => targets.has(id7) && afterClips.has(id7)).map((id7) => targets.get(id7) - afterClips.get(id7).start);
     if (!requests.length) continue;
     if (requests.some((delta2) => delta2 !== requests[0]))
       throw new Error("成组或关联片段需要不同位移，无法保持相对位置；请先调整分组或间隙");
     const delta = requests[0];
     if (!delta) continue;
     unlocked2(before, group, beforeIndex);
-    for (const id5 of group) {
-      const clip3 = afterClips.get(id5);
+    for (const id7 of group) {
+      const clip3 = afterClips.get(id7);
       if (clip3) {
         clip3.start += delta;
         assertTick(clip3.start, "移动后起点");
-        shifts.set(id5, delta);
+        shifts.set(id7, delta);
       }
     }
   }
@@ -2709,7 +5135,7 @@ function moveTargets(before, after, targets) {
   }
   return shifts;
 }
-function finish2(document, before, after, shifts = /* @__PURE__ */ new Map()) {
+function finish2(document2, before, after, shifts = /* @__PURE__ */ new Map()) {
   const operations = [], sequenceId = before.id, beforeClips = new Map(before.clips.map((clip3) => [clip3.id, clip3])), afterClips = new Map(after.clips.map((clip3) => [clip3.id, clip3])), beforeTransitions = new Map(before.transitions.map((item) => [item.id, item])), afterTransitions = new Map(after.transitions.map((item) => [item.id, item]));
   for (const transition of before.transitions)
     if (!equal(afterTransitions.get(transition.id), transition))
@@ -2733,7 +5159,7 @@ function finish2(document, before, after, shifts = /* @__PURE__ */ new Map()) {
   }
   const movement = /* @__PURE__ */ new Map();
   for (const group of components(before)) {
-    const members = [...group].filter((id5) => shifts.has(id5) && !removedIds.has(id5));
+    const members = [...group].filter((id7) => shifts.has(id7) && !removedIds.has(id7));
     if (!members.length) continue;
     const delta = shifts.get(members[0]);
     if (!movement.has(delta)) movement.set(delta, []);
@@ -2756,10 +5182,10 @@ function finish2(document, before, after, shifts = /* @__PURE__ */ new Map()) {
       sequenceId,
       patch: { timelineMode: after.timelineMode }
     });
-  applyEditorOperations(document, operations, document.revision);
+  applyEditorOperations(document2, operations, document2.revision);
   return structuredClone(operations);
 }
-function isolated(document, sequence5, clip3) {
+function isolated(document2, sequence5, clip3) {
   const ids3 = /* @__PURE__ */ new Set([sequence5.id]), sequences = [
     {
       ...sequence5,
@@ -2774,54 +5200,54 @@ function isolated(document, sequence5, clip3) {
     for (const item of sequences[index2].clips)
       if (item.kind === "sequence" && !ids3.has(item.sequenceId)) {
         ids3.add(item.sequenceId);
-        sequences.push(document.sequences.find((sequence6) => sequence6.id === item.sequenceId));
+        sequences.push(document2.sequences.find((sequence6) => sequence6.id === item.sequenceId));
       }
-  return validateEditorDocument({ ...document, activeSequenceId: sequence5.id, sequences });
+  return validateEditorDocument({ ...document2, activeSequenceId: sequence5.id, sequences });
 }
-function planClipTiming(value, sequenceId, clipIds, action, options = {}) {
-  const { document, sequence: before } = scope(value, sequenceId), chosen = selected(before, clipIds), after = structuredClone(before);
+function planClipTiming(value, sequenceId, clipIds, action, options2 = {}) {
+  const { document: document2, sequence: before } = scope(value, sequenceId), chosen = selected(before, clipIds), after = structuredClone(before);
   unlocked2(before, chosen);
   const affected = before.transitions.filter(
     (item) => chosen.has(item.fromClipId) || chosen.has(item.toClipId)
   );
-  if (affected.length && !options.removeTransitions)
+  if (affected.length && !options2.removeTransitions)
     throw new Error("所选片段带有转场；如需修改时间，请明确选择移除相关转场");
   after.transitions = after.transitions.filter(
     (item) => !affected.some((original) => original.id === item.id)
   );
-  if (options.detachCaptions) {
+  if (options2.detachCaptions) {
     for (const clip3 of after.clips)
       if (clip3.kind === "text" && clip3.sourceBinding && chosen.has(clip3.sourceBinding.clipId))
         delete clip3.sourceBinding;
   }
-  const owners = [...chosen].filter((id5) => {
-    const clip3 = find(before, id5);
+  const owners3 = [...chosen].filter((id7) => {
+    const clip3 = find(before, id7);
     return !(clip3.kind === "text" && clip3.sourceBinding && chosen.has(clip3.sourceBinding.clipId));
   });
-  if (action.kind === "map" && owners.length > 1) {
-    const anchor = find(before, owners[0]);
-    if (!("timeMap" in anchor) || owners.some((id5) => {
-      const member = find(before, id5);
+  if (action.kind === "map" && owners3.length > 1) {
+    const anchor = find(before, owners3[0]);
+    if (!("timeMap" in anchor) || owners3.some((id7) => {
+      const member = find(before, id7);
       return !("timeMap" in member) || member.start !== anchor.start || member.duration !== anchor.duration || !equal(member.timeMap, anchor.timeMap);
     }))
       throw new Error(
         "共同编辑点表需要成组片段具有相同的起点、时长和来源映射；请先单独整理不同步片段"
       );
   }
-  for (const id5 of owners) {
-    const clip3 = find(after, id5), input = isolated(document, after, clip3);
+  for (const id7 of owners3) {
+    const clip3 = find(after, id7), input = isolated(document2, after, clip3);
     let operations;
-    if (action.kind === "speed") operations = setClipSpeed(input, sequenceId, id5, action.rate);
+    if (action.kind === "speed") operations = setClipSpeed(input, sequenceId, id7, action.rate);
     else if (action.kind === "map") {
-      operations = setClipTimeMap(input, sequenceId, id5, action.timeMap);
-    } else if (action.kind === "reverse") operations = reverseClip(input, sequenceId, id5);
+      operations = setClipTimeMap(input, sequenceId, id7, action.timeMap);
+    } else if (action.kind === "reverse") operations = reverseClip(input, sequenceId, id7);
     else if (action.kind === "freeze")
-      operations = freezeClip(input, sequenceId, id5, action.time, action.duration);
+      operations = freezeClip(input, sequenceId, id7, action.time, action.duration);
     else {
       assertTick(action.time, "播放头时间");
       const start = action.kind === "keep-right" ? Math.max(0, action.time - clip3.start) : 0;
       const end = action.kind === "keep-left" ? Math.min(clip3.duration, action.time - clip3.start) : clip3.duration;
-      operations = start >= end ? [{ type: "clip.remove", sequenceId, clipIds: [id5] }] : trimClip(input, sequenceId, id5, start, end);
+      operations = start >= end ? [{ type: "clip.remove", sequenceId, clipIds: [id7] }] : trimClip(input, sequenceId, id7, start, end);
     }
     const edited = applyEditorOperations(input, operations, input.revision).sequences.find(
       (item) => item.id === sequenceId
@@ -2829,15 +5255,15 @@ function planClipTiming(value, sequenceId, clipIds, action, options = {}) {
     const included = input.sequences.find((item) => item.id === sequenceId).clips.map((item) => item.id);
     after.clips = after.clips.filter((item) => !included.includes(item.id)).concat(edited.clips);
     if (action.kind === "speed" && action.preservePitch !== void 0) {
-      const next = find(after, id5);
+      const next = find(after, id7);
       if ("audio" in next) next.audio.preservePitch = action.preservePitch;
     }
   }
   const targets = /* @__PURE__ */ new Map();
-  if (options.ripple ?? before.timelineMode === "magnetic") {
+  if (options2.ripple ?? before.timelineMode === "magnetic") {
     const tracks = new Set(
-      owners.map((id5) => find(before, id5).trackId).filter(
-        (id5) => before.tracks.find((track3) => track3.id === id5)?.kind !== "text" && (options.ripple !== void 0 || isMagneticTrack(before, id5))
+      owners3.map((id7) => find(before, id7).trackId).filter(
+        (id7) => before.tracks.find((track3) => track3.id === id7)?.kind !== "text" && (options2.ripple !== void 0 || isMagneticTrack(before, id7))
       )
     );
     const afterClips = new Map(after.clips.map((clip3) => [clip3.id, clip3]));
@@ -2862,42 +5288,42 @@ function planClipTiming(value, sequenceId, clipIds, action, options = {}) {
     }
   } else if (affected.length) throw new Error("移除转场需要联动后续片段以消除重叠，请开启联动排列");
   const shifts = moveTargets(before, after, targets);
-  return finish2(document, before, after, shifts);
+  return finish2(document2, before, after, shifts);
 }
-function planTransition(value, sequenceId, fromClipId, toClipId, options) {
-  const { document, sequence: before } = scope(value, sequenceId), from = find(before, fromClipId), to = find(before, toClipId), after = structuredClone(before);
+function planTransition(value, sequenceId, fromClipId, toClipId, options2) {
+  const { document: document2, sequence: before } = scope(value, sequenceId), from = find(before, fromClipId), to = find(before, toClipId), after = structuredClone(before);
   if (from.trackId !== to.trackId || before.tracks.find((track3) => track3.id === from.trackId)?.kind !== "video")
     throw new Error("转场需要同一画面轨的相邻片段");
   const clips = ordered(before, from.trackId), fromIndex = clips.findIndex((item) => item.id === from.id);
   if (clips[fromIndex + 1]?.id !== to.id) throw new Error("请选择从前到后相邻的两个画面片段");
   unlocked2(before, [from.id, to.id]);
-  const existing = pairTransition(before, from.id, to.id), duration = options.remove ? 0 : assertTick(options.duration, "转场时长");
-  if (!options.remove && (!duration || duration >= Math.min(from.duration, to.duration)))
+  const existing = pairTransition(before, from.id, to.id), duration2 = options2.remove ? 0 : assertTick(options2.duration, "转场时长");
+  if (!options2.remove && (!duration2 || duration2 >= Math.min(from.duration, to.duration)))
     throw new Error("转场须短于前后两个片段的时长，且大于零");
-  if (options.remove && !existing) throw new Error("这两个片段之间没有转场");
+  if (options2.remove && !existing) throw new Error("这两个片段之间没有转场");
   after.transitions = after.transitions.filter((item) => item.id !== existing?.id);
-  const target = from.start + from.duration - duration, delta = target - to.start, targets = /* @__PURE__ */ new Map([[from.id, from.start]]);
-  const suffix = options.placement === "overlap" ? [to] : clips.slice(fromIndex + 1);
+  const target = from.start + from.duration - duration2, delta = target - to.start, targets = /* @__PURE__ */ new Map([[from.id, from.start]]);
+  const suffix = options2.placement === "overlap" ? [to] : clips.slice(fromIndex + 1);
   suffix.forEach((clip3) => targets.set(clip3.id, clip3.start + delta));
   const shifts = moveTargets(before, after, targets);
-  if (!options.remove)
+  if (!options2.remove)
     after.transitions.push({
-      id: existing?.id ?? options.id,
+      id: existing?.id ?? options2.id,
       fromClipId: from.id,
       toClipId: to.id,
       start: find(after, to.id).start,
-      duration,
-      kind: options.kind
+      duration: duration2,
+      kind: options2.kind
     });
-  return finish2(document, before, after, shifts);
+  return finish2(document2, before, after, shifts);
 }
-function planTimelineArrangement(value, sequenceId, options) {
-  const { document, sequence: before } = scope(value, sequenceId), after = structuredClone(before);
-  if (!["magnetic", "free"].includes(options.mode)) throw new Error("排列方式无效");
-  after.timelineMode = options.mode;
+function planTimelineArrangement(value, sequenceId, options2) {
+  const { document: document2, sequence: before } = scope(value, sequenceId), after = structuredClone(before);
+  if (!["magnetic", "free"].includes(options2.mode)) throw new Error("排列方式无效");
+  after.timelineMode = options2.mode;
   let shifts = /* @__PURE__ */ new Map();
-  if (options.compact) {
-    const trackId = options.trackId ?? before.magneticTrackId ?? before.tracks.find((track3) => track3.kind === "video")?.id;
+  if (options2.compact) {
+    const trackId = options2.trackId ?? before.magneticTrackId ?? before.tracks.find((track3) => track3.kind === "video")?.id;
     if (!trackId || before.tracks.find((track3) => track3.id === trackId)?.kind !== "video")
       throw new Error("请选择需要整理的画面轨");
     const clips = ordered(before, trackId), targets = /* @__PURE__ */ new Map();
@@ -2910,10 +5336,10 @@ function planTimelineArrangement(value, sequenceId, options) {
     }
     shifts = moveTargets(before, after, targets);
   }
-  return finish2(document, before, after, shifts);
+  return finish2(document2, before, after, shifts);
 }
 function blocks(sequence5, trackId, ids3) {
-  const groups = components(sequence5, true, true), groupByClip = new Map(groups.flatMap((group, index2) => [...group].map((id5) => [id5, index2]))), values = groups.map(() => ({ clips: [], start: 0, duration: 0 }));
+  const groups = components(sequence5, true, true), groupByClip = new Map(groups.flatMap((group, index2) => [...group].map((id7) => [id7, index2]))), values = groups.map(() => ({ clips: [], start: 0, duration: 0 }));
   for (const clip3 of ordered(sequence5, trackId)) {
     if (ids3 && !ids3.has(clip3.id)) continue;
     const block = values[groupByClip.get(clip3.id)];
@@ -2930,31 +5356,31 @@ function packBlocks(values, targets) {
     cursor += block.duration;
   }
 }
-function planMagneticMove(value, sequenceId, clipIds, options) {
-  const { document, sequence: before } = scope(value, sequenceId), after = structuredClone(before);
-  if (!Number.isSafeInteger(options.delta)) throw new Error("移动距离必须为有效刻度");
-  const anchor = find(before, options.anchorClipId ?? clipIds[0]);
+function planMagneticMove(value, sequenceId, clipIds, options2) {
+  const { document: document2, sequence: before } = scope(value, sequenceId), after = structuredClone(before);
+  if (!Number.isSafeInteger(options2.delta)) throw new Error("移动距离必须为有效刻度");
+  const anchor = find(before, options2.anchorClipId ?? clipIds[0]);
   if (!clipIds.includes(anchor.id)) throw new Error("移动锚点必须是所选片段");
-  const destinationId = options.trackId ?? anchor.trackId;
+  const destinationId = options2.trackId ?? anchor.trackId;
   if (before.tracks.find((track3) => track3.id === anchor.trackId)?.kind !== "video" || !magneticTrackMatches(before, anchor.trackId) && !magneticTrackMatches(before, destinationId)) {
     const operations = [
       {
         type: "clip.move",
         sequenceId,
         clipIds: [...clipIds],
-        delta: options.delta,
-        ...options.trackId === void 0 ? {} : { trackId: options.trackId }
+        delta: options2.delta,
+        ...options2.trackId === void 0 ? {} : { trackId: options2.trackId }
       }
     ];
-    applyEditorOperations(document, operations, document.revision);
+    applyEditorOperations(document2, operations, document2.revision);
     return operations;
   }
   const initial = selected(before, clipIds);
   const chosen = new Set(
-    components(before, true, true).filter((group) => [...group].some((id5) => initial.has(id5))).flatMap((group) => [...group])
+    components(before, true, true).filter((group) => [...group].some((id7) => initial.has(id7))).flatMap((group) => [...group])
   );
   unlocked2(before, chosen);
-  const fromIndex = before.tracks.findIndex((track3) => track3.id === anchor.trackId), toIndex = options.trackId === void 0 ? fromIndex : before.tracks.findIndex((track3) => track3.id === options.trackId), trackShift = toIndex - fromIndex;
+  const fromIndex = before.tracks.findIndex((track3) => track3.id === anchor.trackId), toIndex = options2.trackId === void 0 ? fromIndex : before.tracks.findIndex((track3) => track3.id === options2.trackId), trackShift = toIndex - fromIndex;
   if (toIndex < 0 || before.tracks[toIndex].kind !== "video")
     throw new Error("请选择有效的画面目标轨道");
   const destination = before.tracks[toIndex].id;
@@ -2978,30 +5404,30 @@ function planMagneticMove(value, sequenceId, clipIds, options) {
     duration: Math.max(...movingClips.map((clip3) => clip3.start + clip3.duration)) - start
   };
   const remaining = blocks(after, destination, kept);
-  const desired = start + options.delta;
+  const desired = start + options2.delta;
   let index2 = remaining.filter((block) => desired >= block.start + block.duration / 2).length;
-  if (options.direction && destination === anchor.trackId) {
+  if (options2.direction && destination === anchor.trackId) {
     const oldIndex = remaining.filter((block) => block.start < start).length;
     index2 = Math.max(
       0,
-      Math.min(remaining.length, oldIndex + (options.direction === "previous" ? -1 : 1))
+      Math.min(remaining.length, oldIndex + (options2.direction === "previous" ? -1 : 1))
     );
   }
   if (magneticTrackMatches(before, destination)) {
     remaining.splice(index2, 0, moving);
     packBlocks(remaining, targets);
   } else {
-    for (const clip3 of moving.clips) targets.set(clip3.id, clip3.start + options.delta);
+    for (const clip3 of moving.clips) targets.set(clip3.id, clip3.start + options2.delta);
   }
   const shifts = moveTargets(before, after, targets);
-  return finish2(document, before, after, shifts);
+  return finish2(document2, before, after, shifts);
 }
 function planMagneticRemove(value, sequenceId, clipIds) {
-  const { document, sequence: before } = scope(value, sequenceId), chosen = selected(before, clipIds), after = structuredClone(before);
+  const { document: document2, sequence: before } = scope(value, sequenceId), chosen = selected(before, clipIds), after = structuredClone(before);
   unlocked2(before, chosen);
   const tracks = new Set(
-    [...chosen].map((id5) => find(before, id5).trackId).filter(
-      (id5) => before.tracks.find((track3) => track3.id === id5)?.kind === "video" && magneticTrackMatches(before, id5)
+    [...chosen].map((id7) => find(before, id7).trackId).filter(
+      (id7) => before.tracks.find((track3) => track3.id === id7)?.kind === "video" && magneticTrackMatches(before, id7)
     )
   );
   after.clips = after.clips.filter((clip3) => !chosen.has(clip3.id));
@@ -3011,14 +5437,14 @@ function planMagneticRemove(value, sequenceId, clipIds) {
   const targets = /* @__PURE__ */ new Map();
   for (const trackId of tracks) packBlocks(blocks(after, trackId), targets);
   const shifts = moveTargets(before, after, targets);
-  return finish2(document, before, after, shifts);
+  return finish2(document2, before, after, shifts);
 }
 
 // src/editor/clipboard-edits.ts
 function planCutClips(value, sequenceId, clipIds) {
-  const document = validateEditorDocument(value), sequence5 = document.sequences.find((item) => item.id === sequenceId);
+  const document2 = validateEditorDocument(value), sequence5 = document2.sequences.find((item) => item.id === sequenceId);
   if (!sequence5) throw new Error("序列不存在");
-  const payload = copyClips(document, sequenceId, clipIds);
+  const payload = copyClips(document2, sequenceId, clipIds);
   const selected3 = new Set(clipIds);
   for (; ; ) {
     const count = selected3.size, members = sequence5.clips.filter((clip3) => selected3.has(clip3.id)), groups = new Set(members.map((clip3) => clip3.groupId).filter(Boolean)), links = new Set(members.map((clip3) => clip3.linkGroupId).filter(Boolean));
@@ -3027,44 +5453,44 @@ function planCutClips(value, sequenceId, clipIds) {
         selected3.add(clip3.id);
     if (count === selected3.size) break;
   }
-  const operations = sequence5.timelineMode === "magnetic" ? planMagneticRemove(document, sequenceId, [...selected3]) : [{ type: "clip.remove", sequenceId, clipIds: [...selected3] }];
-  const after = applyEditorOperations(document, operations, document.revision), remaining = new Set(
+  const operations = sequence5.timelineMode === "magnetic" ? planMagneticRemove(document2, sequenceId, [...selected3]) : [{ type: "clip.remove", sequenceId, clipIds: [...selected3] }];
+  const after = applyEditorOperations(document2, operations, document2.revision), remaining = new Set(
     after.sequences.find((item) => item.id === sequenceId).clips.map((clip3) => clip3.id)
   );
   if (payload.document.sequences.find((item) => item.id === sequenceId).clips.some((clip3) => remaining.has(clip3.id)))
     throw new Error("剪切来源字幕时，请同时选择来源片段，或先明确解除字幕绑定");
   return { operations, payload };
 }
-function duplicateClipsInPlace(value, sequenceId, clipIds, options) {
-  const document = validateEditorDocument(value), sequence5 = document.sequences.find((item) => item.id === sequenceId);
+function duplicateClipsInPlace(value, sequenceId, clipIds, options2) {
+  const document2 = validateEditorDocument(value), sequence5 = document2.sequences.find((item) => item.id === sequenceId);
   if (!sequence5) throw new Error("序列不存在");
-  const payload = copyClips(document, sequenceId, clipIds), source2 = payload.document.sequences.find((item) => item.id === sequenceId), usedTracks = new Set(source2.clips.map((clip3) => clip3.trackId)), trackMap = Object.fromEntries(
+  const payload = copyClips(document2, sequenceId, clipIds), source3 = payload.document.sequences.find((item) => item.id === sequenceId), usedTracks = new Set(source3.clips.map((clip3) => clip3.trackId)), trackMap = Object.fromEntries(
     sequence5.tracks.map((track3) => [track3.id, track3.id])
   ), operations = [];
   for (const track3 of sequence5.tracks.filter((item) => usedTracks.has(item.id))) {
     if (track3.locked) throw new Error(`轨道“${track3.name}”已锁定，请先解锁`);
-    const id5 = options.idFactory("track");
-    trackMap[track3.id] = id5;
+    const id7 = options2.idFactory("track");
+    trackMap[track3.id] = id7;
     operations.push({
       type: "track.add",
       sequenceId,
-      track: { ...structuredClone(track3), id: id5, name: `${track3.name.slice(0, 190)} 副本` }
+      track: { ...structuredClone(track3), id: id7, name: `${track3.name.slice(0, 190)} 副本` }
     });
   }
-  const draft = applyEditorOperations(document, operations, document.revision);
+  const draft = applyEditorOperations(document2, operations, document2.revision);
   operations.push(
     ...pasteClips(draft, sequenceId, payload, {
       at: payload.origin,
       trackMap,
-      idFactory: options.idFactory
+      idFactory: options2.idFactory
     })
   );
-  applyEditorOperations(document, operations, document.revision);
+  applyEditorOperations(document2, operations, document2.revision);
   return operations;
 }
 
 // src/editor/marker-edits.ts
-function planMarkerEdit(document, sequenceId, request) {
+function planMarkerEdit(document2, sequenceId, request) {
   if (!request || typeof request !== "object" || Array.isArray(request) || ![Object.prototype, null].includes(Object.getPrototypeOf(request)))
     throw new Error("标记操作格式无效");
   if (Reflect.ownKeys(request).some(
@@ -3077,7 +5503,7 @@ function planMarkerEdit(document, sequenceId, request) {
   ))
     throw new Error("标记操作包含未知字段或动态属性");
   const operation = request.action === "add" ? { type: "marker.add", sequenceId, marker: request.marker } : request.action === "update" ? { type: "marker.update", sequenceId, markerId: request.markerId, patch: request.patch } : { type: "marker.remove", sequenceId, markerId: request.markerId };
-  applyEditorOperations(document, [operation], document.revision);
+  applyEditorOperations(document2, [operation], document2.revision);
   return {
     operations: structuredClone([operation]),
     sequenceId,
@@ -3223,17 +5649,17 @@ function defaultTextStyle() {
     animation: "none"
   };
 }
-function createTrack(id5, kind, name) {
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(id5)) throw new Error("轨道 ID 无效");
+function createTrack(id7, kind, name) {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(id7)) throw new Error("轨道 ID 无效");
   if (!["video", "audio", "text"].includes(kind)) throw new Error("轨道类型无效");
   const label3 = name ?? { video: "画面", audio: "声音", text: "文字" }[kind];
   if (typeof label3 !== "string" || !label3.trim() || label3.length > 200 || /[\x00-\x1f\x7f]/.test(label3))
     throw new Error("轨道名称无效");
-  return { id: id5, kind, name: label3, locked: false, hidden: false, muted: false, volume: 1, pan: 0 };
+  return { id: id7, kind, name: label3, locked: false, hidden: false, muted: false, volume: 1, pan: 0 };
 }
 
 // src/external-media.ts
-var isResourceId = (id5) => typeof id5 === "string" && /^(?:asset|external)-[a-f0-9]{64}$/.test(id5);
+var isResourceId = (id7) => typeof id7 === "string" && /^(?:asset|external)-[a-f0-9]{64}$/.test(id7);
 
 // src/editor/audio-enhancement.ts
 function readSettings(raw, requireEffect) {
@@ -3253,8 +5679,8 @@ function validateAudioEnhancementSettings(raw) {
 // src/editor/sequence-edits.ts
 var clone = (value) => structuredClone(value);
 var same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-function sequence3(doc, id5) {
-  const result = doc.sequences.find((item) => item.id === id5);
+function sequence3(doc, id7) {
+  const result = doc.sequences.find((item) => item.id === id7);
   if (!result) throw new Error("序列不存在");
   return result;
 }
@@ -3272,11 +5698,11 @@ function fresh(doc, factory) {
     });
   }
   return (kind) => {
-    const id5 = factory ? factory(kind) : `${kind}-${randomId()}`;
-    if (typeof id5 !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id5) || used.has(id5))
+    const id7 = factory ? factory(kind) : `${kind}-${randomId()}`;
+    if (typeof id7 !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id7) || used.has(id7))
       throw new Error("新对象标识无效或重复");
-    used.add(id5);
-    return id5;
+    used.add(id7);
+    return id7;
   };
 }
 function finish3(doc, plan2) {
@@ -3290,21 +5716,21 @@ function unlocked3(seq, clip3) {
 function neutralClip(clip3) {
   return !clip3.mask && clip3.blendMode === "normal" && same(clip3.transform, defaultTransform()) && same(clip3.color, defaultColorAdjustment()) && same(clip3.audio, defaultAudioMix());
 }
-function wrapper(id5, child, trackId, start) {
-  const duration = sequenceDuration(child);
-  if (!duration) throw new Error("空序列不能作为复合片段加入时间轴");
+function wrapper(id7, child, trackId, start) {
+  const duration2 = sequenceDuration(child);
+  if (!duration2) throw new Error("空序列不能作为复合片段加入时间轴");
   return {
-    id: id5,
+    id: id7,
     kind: "sequence",
     sequenceId: child.id,
     label: child.name,
     trackId,
     start,
-    duration,
+    duration: duration2,
     timeMap: {
       points: [
         { time: 0, source: 0 },
-        { time: duration, source: duration }
+        { time: duration2, source: duration2 }
       ]
     },
     transform: defaultTransform(),
@@ -3313,15 +5739,15 @@ function wrapper(id5, child, trackId, start) {
     audio: defaultAudioMix()
   };
 }
-function planCreateSequence(document, options) {
-  const doc = validateEditorDocument(document), ids3 = fresh(doc, options.idFactory), id5 = ids3("sequence");
+function planCreateSequence(document2, options2) {
+  const doc = validateEditorDocument(document2), ids3 = fresh(doc, options2.idFactory), id7 = ids3("sequence");
   const seq = {
-    id: id5,
-    name: options.name,
-    width: options.width,
-    height: options.height,
-    frameRate: clone(options.frameRate),
-    background: options.background ?? "#000000",
+    id: id7,
+    name: options2.name,
+    width: options2.width,
+    height: options2.height,
+    frameRate: clone(options2.frameRate),
+    background: options2.background ?? "#000000",
     timelineMode: "free",
     tracks: [
       createTrack(ids3("track"), "video", "画面"),
@@ -3335,15 +5761,15 @@ function planCreateSequence(document, options) {
   return finish3(doc, {
     operations: [
       { type: "sequence.add", sequence: seq },
-      ...options.activate === false ? [] : [{ type: "sequence.activate", sequenceId: id5 }]
+      ...options2.activate === false ? [] : [{ type: "sequence.activate", sequenceId: id7 }]
     ],
-    sequenceId: id5,
+    sequenceId: id7,
     clipIds: [],
-    createdSequenceId: id5
+    createdSequenceId: id7
   });
 }
-function planRenameSequence(document, sequenceId, name) {
-  const doc = validateEditorDocument(document);
+function planRenameSequence(document2, sequenceId, name) {
+  const doc = validateEditorDocument(document2);
   sequence3(doc, sequenceId);
   return finish3(doc, {
     operations: [{ type: "sequence.rename", sequenceId, name }],
@@ -3351,8 +5777,8 @@ function planRenameSequence(document, sequenceId, name) {
     clipIds: []
   });
 }
-function planRemoveSequence(document, sequenceId, replacementId) {
-  const doc = validateEditorDocument(document);
+function planRemoveSequence(document2, sequenceId, replacementId) {
+  const doc = validateEditorDocument(document2);
   sequence3(doc, sequenceId);
   if (doc.sequences.length === 1) throw new Error("工程至少保留一个序列");
   if (doc.sequences.some(
@@ -3394,7 +5820,7 @@ function copyClip(doc, original, raw, maps, ids3, shift = 0) {
   if (clip3.linkGroupId) clip3.linkGroupId = map2.links.get(clip3.linkGroupId);
   if ("audio" in clip3 && clip3.audio.ducking)
     clip3.audio.ducking.sidechainTrackIds = clip3.audio.ducking.sidechainTrackIds.map(
-      (id5) => map2.tracks.get(id5)
+      (id7) => map2.tracks.get(id7)
     );
   if (clip3.kind === "sequence")
     clip3.sequenceId = maps.get(clip3.sequenceId)?.sequenceId ?? clip3.sequenceId;
@@ -3413,17 +5839,17 @@ function copyClip(doc, original, raw, maps, ids3, shift = 0) {
     let owner = original.clips.find((item) => item.id === binding.clipId);
     binding.clipId = map2.clips.get(binding.clipId);
     if (binding.provenance)
-      binding.provenance.path = binding.provenance.path.map((id5) => {
+      binding.provenance.path = binding.provenance.path.map((id7) => {
         if (owner.kind !== "sequence") throw new Error("字幕来源路径无效");
         const child = sequence3(doc, owner.sequenceId);
-        owner = child.clips.find((item) => item.id === id5);
-        return maps.get(child.id)?.clips.get(id5) ?? id5;
+        owner = child.clips.find((item) => item.id === id7);
+        return maps.get(child.id)?.clips.get(id7) ?? id7;
       });
   }
   return clip3;
 }
-function planDuplicateSequence(document, sequenceId, options = {}) {
-  const doc = validateEditorDocument(document), source2 = sequence3(doc, sequenceId), ids3 = fresh(doc, options.idFactory), closure = [], visited = /* @__PURE__ */ new Set();
+function planDuplicateSequence(document2, sequenceId, options2 = {}) {
+  const doc = validateEditorDocument(document2), source3 = sequence3(doc, sequenceId), ids3 = fresh(doc, options2.idFactory), closure = [], visited = /* @__PURE__ */ new Set();
   const visit = (seq) => {
     if (visited.has(seq.id)) return;
     visited.add(seq.id);
@@ -3432,7 +5858,7 @@ function planDuplicateSequence(document, sequenceId, options = {}) {
       if (clip3.kind === "sequence") visit(sequence3(doc, clip3.sequenceId));
     });
   };
-  visit(source2);
+  visit(source3);
   const maps = new Map(closure.map((seq) => [seq.id, copyMap(seq, ids3("sequence"), ids3)]));
   const operations = closure.map((seq) => {
     const map2 = maps.get(seq.id);
@@ -3442,7 +5868,7 @@ function planDuplicateSequence(document, sequenceId, options = {}) {
         ...clone(seq),
         id: map2.sequenceId,
         ...seq.magneticTrackId ? { magneticTrackId: map2.tracks.get(seq.magneticTrackId) } : {},
-        name: seq.id === source2.id ? options.name ?? `${seq.name} 副本` : `${seq.name} 副本`,
+        name: seq.id === source3.id ? options2.name ?? `${seq.name} 副本` : `${seq.name} 副本`,
         tracks: seq.tracks.map((track3) => ({ ...clone(track3), id: map2.tracks.get(track3.id) })),
         clips: seq.clips.map((clip3) => copyClip(doc, seq, clip3, maps, ids3)),
         transitions: seq.transitions.map((item) => ({
@@ -3455,16 +5881,16 @@ function planDuplicateSequence(document, sequenceId, options = {}) {
       }
     };
   });
-  const id5 = maps.get(source2.id).sequenceId;
-  if (options.activate !== false) operations.push({ type: "sequence.activate", sequenceId: id5 });
-  return finish3(doc, { operations, sequenceId: id5, clipIds: [], createdSequenceId: id5 });
+  const id7 = maps.get(source3.id).sequenceId;
+  if (options2.activate !== false) operations.push({ type: "sequence.activate", sequenceId: id7 });
+  return finish3(doc, { operations, sequenceId: id7, clipIds: [], createdSequenceId: id7 });
 }
-function planNestSequence(document, parentId, childId, options) {
-  const doc = validateEditorDocument(document), parent = sequence3(doc, parentId), child = sequence3(doc, childId), ids3 = fresh(doc, options.idFactory);
-  assertTick(options.at);
+function planNestSequence(document2, parentId, childId, options2) {
+  const doc = validateEditorDocument(document2), parent = sequence3(doc, parentId), child = sequence3(doc, childId), ids3 = fresh(doc, options2.idFactory);
+  assertTick(options2.at);
   const operations = [];
-  const trackId = options.trackId ?? ids3("track");
-  if (!options.trackId)
+  const trackId = options2.trackId ?? ids3("track");
+  if (!options2.trackId)
     operations.push({
       type: "track.add",
       sequenceId: parentId,
@@ -3472,7 +5898,7 @@ function planNestSequence(document, parentId, childId, options) {
     });
   else if (parent.tracks.find((track3) => track3.id === trackId)?.kind !== "video")
     throw new Error("嵌套序列需要画面轨道");
-  const clip3 = wrapper(ids3("clip"), child, trackId, options.at);
+  const clip3 = wrapper(ids3("clip"), child, trackId, options2.at);
   operations.push({ type: "clip.add", sequenceId: parentId, clip: clip3 });
   return finish3(doc, { operations, sequenceId: parentId, clipIds: [clip3.id] });
 }
@@ -3480,7 +5906,7 @@ function expanded(seq, requested) {
   if (!requested.length || requested.length > 2e3 || new Set(requested).size !== requested.length)
     throw new Error("请选择 1 至 2000 个不同片段");
   const selected3 = new Set(requested);
-  if (requested.some((id5) => !seq.clips.some((clip3) => clip3.id === id5)))
+  if (requested.some((id7) => !seq.clips.some((clip3) => clip3.id === id7)))
     throw new Error("选中片段已不存在");
   let changed = true;
   while (changed) {
@@ -3506,8 +5932,8 @@ function expanded(seq, requested) {
 }
 var overlaps = (clip3, start, end) => clip3.start < end && clip3.start + clip3.duration > start;
 function checkIsolation(seq, selected3, start, end) {
-  const inside = seq.clips.filter((clip3) => selected3.has(clip3.id)), outside = seq.clips.filter((clip3) => !selected3.has(clip3.id));
-  const visual2 = inside.filter(
+  const inside2 = seq.clips.filter((clip3) => selected3.has(clip3.id)), outside = seq.clips.filter((clip3) => !selected3.has(clip3.id));
+  const visual2 = inside2.filter(
     (clip3) => seq.tracks.find((track3) => track3.id === clip3.trackId).kind !== "audio"
   );
   const indices = visual2.map((clip3) => seq.tracks.findIndex((track3) => track3.id === clip3.trackId));
@@ -3537,16 +5963,16 @@ function route2(doc, seq, caption) {
   if (!caption.sourceBinding) return [];
   let owner = seq.clips.find((clip3) => clip3.id === caption.sourceBinding.clipId);
   const result = [{ sequenceId: seq.id, clip: owner }];
-  for (const id5 of caption.sourceBinding.provenance?.path ?? []) {
+  for (const id7 of caption.sourceBinding.provenance?.path ?? []) {
     if (owner.kind !== "sequence") throw new Error("字幕来源路径无效");
     seq = sequence3(doc, owner.sequenceId);
-    owner = seq.clips.find((clip3) => clip3.id === id5);
+    owner = seq.clips.find((clip3) => clip3.id === id7);
     result.push({ sequenceId: seq.id, clip: owner });
   }
   return result;
 }
-function planCreateCompound(document, sequenceId, clipIds, options) {
-  const doc = validateEditorDocument(document), parent = sequence3(doc, sequenceId), ids3 = fresh(doc, options.idFactory), selected3 = expanded(parent, clipIds);
+function planCreateCompound(document2, sequenceId, clipIds, options2) {
+  const doc = validateEditorDocument(document2), parent = sequence3(doc, sequenceId), ids3 = fresh(doc, options2.idFactory), selected3 = expanded(parent, clipIds);
   const clips = parent.clips.filter((clip3) => selected3.has(clip3.id));
   clips.forEach((clip3) => unlocked3(parent, clip3));
   const start = Math.min(...clips.map((clip3) => clip3.start)), end = Math.max(...clips.map((clip3) => clip3.start + clip3.duration));
@@ -3554,7 +5980,7 @@ function planCreateCompound(document, sequenceId, clipIds, options) {
   const child = {
     ...clone(parent),
     id: ids3("sequence"),
-    name: options.name,
+    name: options2.name,
     background: "#00000000",
     timelineMode: "free",
     ...parent.magneticTrackId ? { magneticTrackId: tracks.get(parent.magneticTrackId) } : {},
@@ -3565,7 +5991,7 @@ function planCreateCompound(document, sequenceId, clipIds, options) {
       clip3.trackId = tracks.get(clip3.trackId);
       if ("audio" in clip3 && clip3.audio.ducking)
         clip3.audio.ducking.sidechainTrackIds = clip3.audio.ducking.sidechainTrackIds.map(
-          (id5) => tracks.get(id5)
+          (id7) => tracks.get(id7)
         );
       return clip3;
     }),
@@ -3582,7 +6008,7 @@ function planCreateCompound(document, sequenceId, clipIds, options) {
         clips.every(
           (clip3) => parent.tracks.find((track3) => track3.id === clip3.trackId).kind === "audio"
         ) ? "audio" : "video",
-        options.name
+        options2.name
       ),
       index: trackIndex
     }
@@ -3619,10 +6045,10 @@ function planCreateCompound(document, sequenceId, clipIds, options) {
     createdSequenceId: child.id
   });
 }
-function planUnpackCompound(document, sequenceId, clipId, options = {}) {
-  const doc = validateEditorDocument(document), parent = sequence3(doc, sequenceId), raw = parent.clips.find((clip3) => clip3.id === clipId);
+function planUnpackCompound(document2, sequenceId, clipId, options2 = {}) {
+  const doc = validateEditorDocument(document2), parent = sequence3(doc, sequenceId), raw = parent.clips.find((clip3) => clip3.id === clipId);
   if (!raw || raw.kind !== "sequence") throw new Error("请选择一个复合片段");
-  const nested = raw, child = sequence3(doc, nested.sequenceId), duration = sequenceDuration(child), ids3 = fresh(doc, options.idFactory);
+  const nested = raw, child = sequence3(doc, nested.sequenceId), duration2 = sequenceDuration(child), ids3 = fresh(doc, options2.idFactory);
   unlocked3(parent, nested);
   const track3 = parent.tracks.find((item) => item.id === nested.trackId);
   if (track3.kind === "audio" && (!/^#[0-9a-f]{6}00$/i.test(child.background) || child.clips.some(
@@ -3633,7 +6059,7 @@ function planUnpackCompound(document, sequenceId, clipId, options = {}) {
     throw new Error("复合片段或所在轨道已有整体效果，请先恢复默认效果后解除复合");
   if (nested.groupId || nested.linkGroupId)
     throw new Error("请先解除复合片段与其他片段的分组或链接");
-  if (nested.duration !== duration || nested.timeMap.points.some((point) => point.source !== point.time))
+  if (nested.duration !== duration2 || nested.timeMap.points.some((point) => point.source !== point.time))
     throw new Error("已裁剪、变速、倒放或定格的复合片段暂不能无损解除");
   if (parent.width !== child.width || parent.height !== child.height)
     throw new Error("不同画布尺寸的复合片段暂不能无损解除");
@@ -3751,7 +6177,7 @@ function planUnpackCompound(document, sequenceId, clipId, options = {}) {
 var AUDIO_SAMPLE_RATE = 48e3;
 var TICKS_PER_AUDIO_SAMPLE = 5;
 var clamp2 = (n, low, high) => Math.max(low, Math.min(high, n));
-var part = (kind, id5) => `${kind}:${encodeURIComponent(id5)}`;
+var part = (kind, id7) => `${kind}:${encodeURIComponent(id7)}`;
 var trackPath = (stage) => `${stage.sequencePath}/${part("track", stage.track.id)}`;
 function rateAt(map2, tick2) {
   let lo = 0, hi = map2.points.length - 1;
@@ -3766,11 +6192,11 @@ function rateAt(map2, tick2) {
 function sampleAudioLane(lane, sample2) {
   if (!Number.isSafeInteger(sample2) || sample2 < 0 || !Number.isSafeInteger(sample2 * TICKS_PER_AUDIO_SAMPLE))
     throw new TypeError("Audio sample must be a nonnegative safe integer within the tick clock");
-  let time = sample2 * TICKS_PER_AUDIO_SAMPLE;
+  let time2 = sample2 * TICKS_PER_AUDIO_SAMPLE;
   let gain = 1, pan = 0, pitchSemitones = 0, preservePitch = true, playbackRate = 1, fadeGain = 1, local = 0;
   const ducking = [];
   for (const stage of lane.stages) {
-    local = time - stage.start;
+    local = time2 - stage.start;
     if (local < 0 || local >= stage.duration) return null;
     const mix2 = stage.audio;
     const fade = (mix2.fadeIn ? clamp2(local / mix2.fadeIn, 0, 1) : 1) * (mix2.fadeOut ? clamp2((stage.duration - local) / mix2.fadeOut, 0, 1) : 1);
@@ -3789,16 +6215,16 @@ function sampleAudioLane(lane, sample2) {
         ...mix2.ducking,
         sidechainTrackIds: [...mix2.ducking.sidechainTrackIds],
         sequenceId: stage.sequenceId,
-        sequenceTime: time,
+        sequenceTime: time2,
         trackInstanceId: trackPath(stage),
         sidechainTrackInstanceIds: mix2.ducking.sidechainTrackIds.map(
-          (id5) => `${stage.sequencePath}/${part("track", id5)}`
+          (id7) => `${stage.sequencePath}/${part("track", id7)}`
         )
       });
-    time = sourceTimeAt(stage.timeMap, local);
+    time2 = sourceTimeAt(stage.timeMap, local);
   }
-  time += lane.sourceOffset;
-  if (time < 0 || time >= lane.sourceDuration) return null;
+  time2 += lane.sourceOffset;
+  if (time2 < 0 || time2 >= lane.sourceDuration) return null;
   const leaf = lane.stages[lane.stages.length - 1];
   return {
     instanceId: lane.instanceId,
@@ -3808,7 +6234,7 @@ function sampleAudioLane(lane, sample2) {
     trackInstanceId: trackPath(leaf),
     trackInstancePath: [...lane.trackInstancePath],
     assetId: lane.assetId,
-    sourceTime: time,
+    sourceTime: time2,
     localTime: local,
     playbackRate,
     gain,
@@ -3843,7 +6269,7 @@ function toRoot(ranges, stages, before) {
   }
   return ranges;
 }
-function laneSpans(lane, duration) {
+function laneSpans(lane, duration2) {
   const stages = lane.stages, leaf = stages[stages.length - 1];
   const lower = Math.max(0, -lane.sourceOffset), upper = lane.sourceDuration - lane.sourceOffset;
   if (upper <= lower) return [];
@@ -3855,8 +6281,8 @@ function laneSpans(lane, duration) {
     stages,
     stages.length - 1
   );
-  const boundaries = /* @__PURE__ */ new Set([0, Math.ceil(duration / TICKS_PER_AUDIO_SAMPLE)]);
-  const add = (ranges) => {
+  const boundaries = /* @__PURE__ */ new Set([0, Math.ceil(duration2 / TICKS_PER_AUDIO_SAMPLE)]);
+  const add2 = (ranges) => {
     for (const range of ranges) {
       boundaries.add(Math.ceil(range.start / TICKS_PER_AUDIO_SAMPLE));
       boundaries.add(Math.ceil(range.end / TICKS_PER_AUDIO_SAMPLE));
@@ -3864,11 +6290,11 @@ function laneSpans(lane, duration) {
     if (boundaries.size > 1e6)
       throw new RangeError("Expanded audio map exceeds one million spans");
   };
-  add(valid);
+  add2(valid);
   for (let index2 = 0; index2 < stages.length; index2++) {
     const stage = stages[index2];
     for (let point = 0; point + 1 < stage.timeMap.points.length; point++) {
-      add(
+      add2(
         toRoot(
           [
             {
@@ -3885,7 +6311,7 @@ function laneSpans(lane, duration) {
   const sorted = [...boundaries].sort((a, b) => a - b), spans = [];
   for (let index2 = 0; index2 + 1 < sorted.length; index2++) {
     const startSample = sorted[index2], endSample = sorted[index2 + 1];
-    if (startSample >= Math.ceil(duration / TICKS_PER_AUDIO_SAMPLE)) break;
+    if (startSample >= Math.ceil(duration2 / TICKS_PER_AUDIO_SAMPLE)) break;
     const first2 = sampleAudioLane(lane, startSample);
     if (!first2 || startSample === endSample) continue;
     const last = sampleAudioLane(lane, endSample - 1);
@@ -3908,22 +6334,22 @@ function freeze(value) {
   }
   return value;
 }
-function compileAudioPlan(value, sequenceId, options = {}) {
-  const document = validateEditorDocument(value);
-  const sequenceMap = new Map(document.sequences.map((sequence5) => [sequence5.id, sequence5]));
-  const assets = new Map(document.assets.map((asset2) => [asset2.id, asset2]));
+function compileAudioPlan(value, sequenceId, options2 = {}) {
+  const document2 = validateEditorDocument(value);
+  const sequenceMap = new Map(document2.sequences.map((sequence5) => [sequence5.id, sequence5]));
+  const assets = new Map(document2.assets.map((asset2) => [asset2.id, asset2]));
   const selected3 = sequenceMap.get(sequenceId);
   if (!selected3) throw new Error(`Unknown audio sequence: ${sequenceId}`);
-  const maxLanes = options.maxLanes ?? 4096;
+  const maxLanes = options2.maxLanes ?? 4096;
   if (!Number.isSafeInteger(maxLanes) || maxLanes < 1 || maxLanes > 16384)
     throw new RangeError("maxLanes must be between 1 and 16384");
-  const duration = sequenceDuration(selected3);
+  const duration2 = sequenceDuration(selected3);
   const plan2 = {
     sequenceId,
-    duration,
+    duration: duration2,
     sampleRate: AUDIO_SAMPLE_RATE,
     channels: 2,
-    sampleCount: Math.ceil(duration / TICKS_PER_AUDIO_SAMPLE),
+    sampleCount: Math.ceil(duration2 / TICKS_PER_AUDIO_SAMPLE),
     lanes: [],
     ducking: []
   };
@@ -3967,15 +6393,15 @@ function compileAudioPlan(value, sequenceId, options = {}) {
         const duckingIds = [];
         for (const ancestor of stages)
           if (ancestor.audio.ducking) {
-            const id5 = `${ancestor.sequencePath}/${part("clip", ancestor.clipId)}/ducking`;
-            requests.set(id5, {
+            const id7 = `${ancestor.sequencePath}/${part("clip", ancestor.clipId)}/ducking`;
+            requests.set(id7, {
               ...ancestor.audio.ducking,
-              id: id5,
+              id: id7,
               sidechainTrackInstanceIds: ancestor.audio.ducking.sidechainTrackIds.map(
                 (trackId) => `${ancestor.sequencePath}/${part("track", trackId)}`
               )
             });
-            duckingIds.push(id5);
+            duckingIds.push(id7);
           }
         const lane = {
           instanceId: `${clipPath}/audio`,
@@ -3989,7 +6415,7 @@ function compileAudioPlan(value, sequenceId, options = {}) {
           spans: [],
           ...angleId ? { angleId } : {}
         };
-        lane.spans = laneSpans(lane, duration);
+        lane.spans = laneSpans(lane, duration2);
         spanCount += lane.spans.length;
         if (spanCount > 1e6)
           throw new RangeError("Audio plan exceeds one million expanded spans");
@@ -4065,30 +6491,30 @@ function validateVideoWorkflow(value, assets) {
   }
   const byId2 = new Map(assets.map((asset2) => [asset2.id, asset2]));
   const sources = list2(data.sources, 0, 100, "制作单素材").map((value2) => {
-    const source2 = record(value2, "制作单素材", ["assetId", "role", "note", "inFrame", "outFrame"]);
-    const assetId = source2.assetId;
+    const source3 = record(value2, "制作单素材", ["assetId", "role", "note", "inFrame", "outFrame"]);
+    const assetId = source3.assetId;
     if (typeof assetId !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(assetId)) {
       throw new Error("制作单素材 ID 格式不正确");
     }
     const asset2 = byId2.get(assetId);
     if (!asset2) throw new Error(`制作单引用了不属于当前工程的素材：${assetId}`);
-    if (typeof source2.role !== "string" || !Object.hasOwn(ROLES, source2.role)) {
+    if (typeof source3.role !== "string" || !Object.hasOwn(ROLES, source3.role)) {
       throw new Error("制作单素材用途不受支持");
     }
     const result = {
       assetId,
-      role: source2.role,
-      note: text2(source2.note, 800, "制作单素材说明")
+      role: source3.role,
+      note: text2(source3.note, 800, "制作单素材说明")
     };
-    const hasIn = Object.hasOwn(source2, "inFrame"), hasOut = Object.hasOwn(source2, "outFrame");
+    const hasIn = Object.hasOwn(source3, "inFrame"), hasOut = Object.hasOwn(source3, "outFrame");
     if (hasIn !== hasOut) throw new Error("素材源范围必须同时提供入点和出点");
     if (hasIn) {
       if (!Number.isSafeInteger(asset2.durationFrames) || asset2.durationFrames < 1) {
         throw new Error("制作单素材缺少有效的真实时长");
       }
-      result.inFrame = frame(source2.inFrame, 0, asset2.durationFrames - 1, "制作单素材入点");
+      result.inFrame = frame(source3.inFrame, 0, asset2.durationFrames - 1, "制作单素材入点");
       result.outFrame = frame(
-        source2.outFrame,
+        source3.outFrame,
         result.inFrame + 1,
         asset2.durationFrames,
         "制作单素材出点"
@@ -4146,7 +6572,7 @@ function validateNarration(value, assets) {
     throw new Error("真实录音字幕只能用于已对齐阶段");
   if (!Array.isArray(data.draftCaptionIds) || data.draftCaptionIds.length > 1e3)
     throw new Error("临时字幕 ID 必须是最多 1000 项的数组");
-  const draftCaptionIds = Array.from(data.draftCaptionIds, (id5) => identifier(id5, "临时字幕 ID"));
+  const draftCaptionIds = Array.from(data.draftCaptionIds, (id7) => identifier(id7, "临时字幕 ID"));
   if (new Set(draftCaptionIds).size !== draftCaptionIds.length)
     throw new Error("临时字幕 ID 不能重复");
   const result = {
@@ -4167,11 +6593,11 @@ function validateNarration(value, assets) {
     result.alignmentFingerprint = data.alignmentFingerprint;
   }
   if (Object.hasOwn(data, "recordingAssetId")) {
-    const id5 = identifier(data.recordingAssetId, "本人录音素材 ID");
-    const asset2 = assets.find((item) => item.id === id5);
+    const id7 = identifier(data.recordingAssetId, "本人录音素材 ID");
+    const asset2 = assets.find((item) => item.id === id7);
     if (!asset2 || asset2.kind !== "audio" && asset2.kind !== "video")
       throw new Error("本人录音必须引用当前工程的音频或视频素材");
-    result.recordingAssetId = id5;
+    result.recordingAssetId = id7;
   }
   if (["recorded", "aligned"].includes(result.phase) && !result.recordingAssetId)
     throw new Error("此阶段需要已保存的本人录音素材");
@@ -4439,18 +6865,18 @@ function readClip(value, assets) {
     ...data.startFrame !== void 0 ? { startFrame: integer3(data.startFrame, 0, MAX_FRAMES2 - outFrame + inFrame, "片段开始时间") } : {}
   };
 }
-function readCaption(value, duration) {
+function readCaption(value, duration2) {
   const data = record2(value, "字幕");
   keys(data, ["id", "startFrame", "endFrame", "text"], "字幕");
-  const startFrame = integer3(data.startFrame, 0, Math.max(0, duration - 1), "字幕开始时间");
+  const startFrame = integer3(data.startFrame, 0, Math.max(0, duration2 - 1), "字幕开始时间");
   return {
     id: identifier2(data.id, "字幕 ID"),
     startFrame,
-    endFrame: integer3(data.endFrame, startFrame + 1, duration, "字幕结束时间"),
+    endFrame: integer3(data.endFrame, startFrame + 1, duration2, "字幕结束时间"),
     text: text3(data.text, MAX_CAPTION_TEXT, "字幕内容", true).replace(/\r\n?/g, "\n")
   };
 }
-function readAudioClip(value, assets, duration) {
+function readAudioClip(value, assets, duration2) {
   const data = record2(value, "音频片段");
   keys(data, ["id", "assetId", "inFrame", "outFrame", "volume", "startFrame"], "音频片段");
   const { startFrame, ...clipData } = data;
@@ -4460,7 +6886,7 @@ function readAudioClip(value, assets, duration) {
   }
   return {
     ...clip3,
-    startFrame: integer3(startFrame, 0, duration - (clip3.outFrame - clip3.inFrame), "音轨开始时间")
+    startFrame: integer3(startFrame, 0, duration2 - (clip3.outFrame - clip3.inFrame), "音轨开始时间")
   };
 }
 function validateProject(value) {
@@ -4513,7 +6939,7 @@ function validateProject(value) {
   } else if (clips.some((clip3) => clip3.startFrame !== void 0)) {
     throw new Error("磁性时间轴不能指定片段开始时间，请先关闭主序列磁性");
   }
-  const duration = integer3(
+  const duration2 = integer3(
     timelineDuration({ clips, timelineMode }),
     0,
     MAX_FRAMES2,
@@ -4523,10 +6949,10 @@ function validateProject(value) {
     data.audioClips === void 0 ? [] : data.audioClips,
     MAX_AUDIO_CLIPS,
     "音轨列表"
-  ).map((clip3) => readAudioClip(clip3, assetsById, duration));
+  ).map((clip3) => readAudioClip(clip3, assetsById, duration2));
   uniqueIds(audioClips, "音轨");
   const captions = list3(data.captions, MAX_CAPTIONS, "字幕列表").map(
-    (caption) => readCaption(caption, duration)
+    (caption) => readCaption(caption, duration2)
   );
   uniqueIds(captions, "字幕");
   captions.sort((a, b) => a.startFrame - b.startFrame || a.endFrame - b.endFrame);
@@ -4552,13 +6978,13 @@ function validateProject(value) {
 }
 function timelineDuration(project) {
   let cursor = 0;
-  let duration = 0;
+  let duration2 = 0;
   for (const clip3 of project.clips) {
     const start = project.timelineMode === "free" ? clip3.startFrame ?? cursor : cursor;
     cursor = start + clip3.outFrame - clip3.inFrame;
-    duration = Math.max(duration, cursor);
+    duration2 = Math.max(duration2, cursor);
   }
-  return duration;
+  return duration2;
 }
 function timelineClips(project) {
   let cursor = 0;
@@ -4595,9 +7021,9 @@ function list4(value, max) {
   if (!Array.isArray(value) || value.length > max) throw new Error(`旧工程列表最多 ${max} 项`);
   return Array.from(value);
 }
-function number2(value, min, max, integer5 = false) {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max || integer5 && !Number.isSafeInteger(value))
-    throw new Error(`旧工程数值须在 ${min} 到 ${max} 之间${integer5 ? "且为整数" : ""}`);
+function number2(value, min, max, integer7 = false) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max || integer7 && !Number.isSafeInteger(value))
+    throw new Error(`旧工程数值须在 ${min} 到 ${max} 之间${integer7 ? "且为整数" : ""}`);
   return value;
 }
 function id3(value) {
@@ -4625,10 +7051,10 @@ function readTrack(value) {
   };
   if (track3.id === LEGACY_MAIN_VIDEO_TRACK && track3.kind !== "video" || track3.id === MAIN_AUDIO && track3.kind !== "audio")
     throw new Error("旧工程主轨道类型不一致");
-  for (const field of ["muted", "hidden", "locked"])
-    if (data[field] !== void 0) {
-      if (typeof data[field] !== "boolean") throw new Error("旧工程轨道状态须为布尔值");
-      track3[field] = data[field];
+  for (const field2 of ["muted", "hidden", "locked"])
+    if (data[field2] !== void 0) {
+      if (typeof data[field2] !== "boolean") throw new Error("旧工程轨道状态须为布尔值");
+      track3[field2] = data[field2];
     }
   return track3;
 }
@@ -4732,15 +7158,15 @@ function readLegacyMultitrackProject(value) {
       throw new Error("旧工程同一轨道片段不能重叠");
     laneEnds.set(clip3.trackId, clip3.startFrame + clip3.outFrame - clip3.inFrame);
   }
-  const duration = number2(Math.max(0, ...laneEnds.values()), 0, MAX_FRAMES3, true);
+  const duration2 = number2(Math.max(0, ...laneEnds.values()), 0, MAX_FRAMES3, true);
   const captions = list4(rawCaptions, 1e4).map((value2) => {
     const caption = record3(value2);
     keys2(caption, ["id", "startFrame", "endFrame", "text"]);
-    const startFrame = number2(caption.startFrame, 0, Math.max(0, duration - 1), true);
+    const startFrame = number2(caption.startFrame, 0, Math.max(0, duration2 - 1), true);
     return {
       id: id3(caption.id),
       startFrame,
-      endFrame: number2(caption.endFrame, startFrame + 1, duration, true),
+      endFrame: number2(caption.endFrame, startFrame + 1, duration2, true),
       text: text4(caption.text, 4e3, true).replace(/\r\n?/g, "\n")
     };
   }).sort((a, b) => a.startFrame - b.startFrame || a.endFrame - b.endFrame);
@@ -4761,9 +7187,9 @@ function hasLegacyMultitrackFields(value) {
 var LEGACY_RATE = { numerator: 30, denominator: 1 };
 var ticks = (frame2) => frameToTicks(frame2, LEGACY_RATE);
 function migrateAsset(asset2) {
-  const { id: id5, name, kind, durationFrames, width, height, mediaId: mediaId2, ...metadata } = asset2;
+  const { id: id7, name, kind, durationFrames, width, height, mediaId: mediaId2, ...metadata } = asset2;
   return {
-    id: id5,
+    id: id7,
     name,
     kind,
     duration: ticks(durationFrames),
@@ -4774,7 +7200,7 @@ function migrateAsset(asset2) {
   };
 }
 function migrateMedia(clip3, trackId, label3) {
-  const duration = ticks(clip3.outFrame - clip3.inFrame);
+  const duration2 = ticks(clip3.outFrame - clip3.inFrame);
   return {
     kind: "media",
     id: clip3.id,
@@ -4782,11 +7208,11 @@ function migrateMedia(clip3, trackId, label3) {
     trackId,
     assetId: clip3.assetId,
     start: ticks(clip3.startFrame),
-    duration,
+    duration: duration2,
     timeMap: {
       points: [
         { time: 0, source: ticks(clip3.inFrame) },
-        { time: duration, source: ticks(clip3.outFrame) }
+        { time: duration2, source: ticks(clip3.outFrame) }
       ]
     },
     transform: defaultTransform(),
@@ -4964,7 +7390,7 @@ function captionTemplate(project) {
   const key = `${project.width}:${project.height}:${project.captionStyle ?? "classic"}`;
   const cached = templates.get(key);
   if (cached) return structuredClone(cached);
-  const document = migrateLegacyProject({
+  const document2 = migrateLegacyProject({
     schemaVersion: 1,
     id: "legacy-caption-template",
     name: "字幕",
@@ -4979,7 +7405,7 @@ function captionTemplate(project) {
     ],
     captions: [{ id: "template-text", text: "字幕", startFrame: 0, endFrame: 1 }]
   });
-  const result = document.sequences[0].clips.find((clip3) => clip3.kind === "text");
+  const result = document2.sequences[0].clips.find((clip3) => clip3.kind === "text");
   if (templates.size >= 24) templates.clear();
   templates.set(key, result);
   return structuredClone(result);
@@ -5031,8 +7457,8 @@ function planCaptionPreset(value, sequenceId, chosen) {
 var MAX_RANGES = 1e5;
 var MAX_CAPTIONS2 = 2e3;
 var uniqueId = () => randomId();
-function sequence4(doc, id5) {
-  const result = doc.sequences.find((item) => item.id === id5);
+function sequence4(doc, id7) {
+  const result = doc.sequences.find((item) => item.id === id7);
   if (!result) throw new Error("字幕时间线不存在");
   return result;
 }
@@ -5081,17 +7507,17 @@ function first(start, end, test) {
   }
   return start;
 }
-function positive(value, duration) {
-  if (typeof value === "number") return value > 0 ? [{ start: 0, end: duration }] : [];
-  const boundaries = /* @__PURE__ */ new Set([0, duration]);
-  const add = (time) => {
-    for (const t of [Math.floor(time) - 1, Math.floor(time), Math.ceil(time), Math.ceil(time) + 1])
-      if (t >= 0 && t <= duration) boundaries.add(t);
+function positive(value, duration2) {
+  if (typeof value === "number") return value > 0 ? [{ start: 0, end: duration2 }] : [];
+  const boundaries = /* @__PURE__ */ new Set([0, duration2]);
+  const add2 = (time2) => {
+    for (const t of [Math.floor(time2) - 1, Math.floor(time2), Math.ceil(time2), Math.ceil(time2) + 1])
+      if (t >= 0 && t <= duration2) boundaries.add(t);
   };
   const keys3 = value.keyframes;
   for (let index2 = 0; index2 < keys3.length; index2++) {
     const a = keys3[index2], b = keys3[index2 + 1];
-    add(a.time);
+    add2(a.time);
     if (!b || typeof a.easing !== "object") continue;
     const c = a.easing, A = 3 * (1 + 3 * c.y1 - 3 * c.y2), B = 6 * (c.y2 - 2 * c.y1), C = 3 * c.y1;
     const roots = Math.abs(A) < 1e-12 ? Math.abs(B) < 1e-12 ? [] : [-C / B] : B * B - 4 * A * C < 0 ? [] : [
@@ -5100,11 +7526,11 @@ function positive(value, duration) {
     ];
     for (const t of roots.filter((t2) => t2 > 0 && t2 < 1)) {
       const x = 3 * (1 - t) * (1 - t) * t * c.x1 + 3 * (1 - t) * t * t * c.x2 + t * t * t;
-      add(a.time + (b.time - a.time) * x);
+      add2(a.time + (b.time - a.time) * x);
     }
   }
   const ordered2 = [...boundaries].sort((a, b) => a - b), result = [];
-  const audible = (time) => evaluateAnimatedNumber(value, time) > 0;
+  const audible = (time2) => evaluateAnimatedNumber(value, time2) > 0;
   for (let i = 0; i + 1 < ordered2.length; i++) {
     const start = ordered2[i], end = ordered2[i + 1];
     if (start === end) continue;
@@ -5173,8 +7599,8 @@ function compileCaptionSources(value, sequenceId) {
   }
   return result;
 }
-function mapCaptionSourceRange(source2, start, end) {
-  return intersect(sourceRange2(source2.lane, start, end), source2.ranges);
+function mapCaptionSourceRange(source3, start, end) {
+  return intersect(sourceRange2(source3.lane, start, end), source3.ranges);
 }
 function cleanText(value, label3, max = 1e4) {
   if (typeof value !== "string" || !value.trim() || value.length > max || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value))
@@ -5191,11 +7617,11 @@ function validateCaptionTranscript(value) {
   let wordsCount = 0, characters = 0;
   return value.map((raw) => {
     if (!raw || typeof raw !== "object") throw new Error("转写段落无效");
-    const start = seconds(raw.start), end = seconds(raw.end), text5 = cleanText(raw.text, "转写文字");
-    characters += text5.length;
+    const start = seconds(raw.start), end = seconds(raw.end), text7 = cleanText(raw.text, "转写文字");
+    characters += text7.length;
     if (characters > 16 * 1024 * 1024) throw new Error("转写文本超过16 MiB容量，请拆分素材");
     if (end <= start) throw new Error("转写段落必须有正时长");
-    const result = { start, end, text: text5 };
+    const result = { start, end, text: text7 };
     if (raw.id !== void 0) {
       if (!["string", "number"].includes(typeof raw.id) || String(raw.id).length > 128)
         throw new Error("转写段落ID无效");
@@ -5263,19 +7689,19 @@ function readableSegments(segment) {
     words: words.slice(from, to)
   }));
 }
-function captionTrack(seq, options) {
-  const requested = options.trackId ? seq.tracks.find((track4) => track4.id === options.trackId) : void 0;
-  if (options.trackId && (!requested || requested.kind !== "text" || requested.locked))
+function captionTrack(seq, options2) {
+  const requested = options2.trackId ? seq.tracks.find((track4) => track4.id === options2.trackId) : void 0;
+  if (options2.trackId && (!requested || requested.kind !== "text" || requested.locked))
     throw new Error("请选择未锁定的字幕轨道");
   const holds = (trackId, role) => seq.clips.some((clip3) => clip3.trackId === trackId && clip3.kind === "text" && clip3.role === role);
   const usable = seq.tracks.filter((track4) => track4.kind === "text" && !track4.locked);
   const track3 = requested ?? usable.find((track4) => holds(track4.id, "subtitle")) ?? usable.find((track4) => !holds(track4.id, "title"));
   if (track3) return { id: track3.id, operations: [] };
-  const id5 = (options.idFactory ?? uniqueId)();
+  const id7 = (options2.idFactory ?? uniqueId)();
   return {
-    id: id5,
+    id: id7,
     operations: [
-      { type: "track.add", sequenceId: seq.id, track: createTrack(id5, "text", subtitleTrackName(seq)) }
+      { type: "track.add", sequenceId: seq.id, track: createTrack(id7, "text", subtitleTrackName(seq)) }
     ]
   };
 }
@@ -5286,9 +7712,9 @@ function subtitleTrackName(seq) {
   while (names.has(`字幕 ${index2}`)) index2++;
   return `字幕 ${index2}`;
 }
-function coversSubtitle(seq, trackId, start, end, options) {
-  return !!options.avoidOverlaps && seq.clips.some(
-    (clip3) => clip3.trackId === trackId && isSubtitleClip(clip3) && !options.overlapExempt?.has(clip3.id) && clip3.start < end && clip3.start + clip3.duration > start
+function coversSubtitle(seq, trackId, start, end, options2) {
+  return !!options2.avoidOverlaps && seq.clips.some(
+    (clip3) => clip3.trackId === trackId && isSubtitleClip(clip3) && !options2.overlapExempt?.has(clip3.id) && clip3.start < end && clip3.start + clip3.duration > start
   );
 }
 var overlapNotice = (count) => `${count} 条字幕与字幕轨上已有字幕时间重叠，已跳过以免互相遮挡；如需替换，请先删除或调整旧字幕`;
@@ -5300,16 +7726,16 @@ function captionLook(doc, seq) {
   const preset2 = currentCaptionPreset(seq, subtitles) ?? CAPTION_PRESETS.find((item) => item.value === preference)?.value ?? "classic";
   return captionTemplate({ width: seq.width, height: seq.height, captionStyle: preset2 });
 }
-function textClip(id5, trackId, start, end, text5, look) {
+function textClip(id7, trackId, start, end, text7, look) {
   return {
-    id: id5,
+    id: id7,
     trackId,
     start,
     duration: end - start,
     label: "字幕",
     kind: "text",
     role: "subtitle",
-    text: text5,
+    text: text7,
     style: structuredClone(look.style),
     words: [],
     transform: structuredClone(look.transform),
@@ -5321,30 +7747,30 @@ function finish4(doc, plan2) {
   applyEditorOperations(doc, plan2.operations, doc.revision);
   return plan2;
 }
-function planTranscriptCaptions(value, sequenceId, transcripts, options = {}) {
-  const doc = validateEditorDocument(value), seq = sequence4(doc, sequenceId), track3 = captionTrack(seq, options), look = captionLook(doc, seq);
+function planTranscriptCaptions(value, sequenceId, transcripts, options2 = {}) {
+  const doc = validateEditorDocument(value), seq = sequence4(doc, sequenceId), track3 = captionTrack(seq, options2), look = captionLook(doc, seq);
   const sources = compileCaptionSources(doc, sequenceId).filter(
-    (source2) => (!options.assetIds || options.assetIds.includes(source2.assetId)) && (!options.sourceFilter || options.sourceFilter(source2))
+    (source3) => (!options2.assetIds || options2.assetIds.includes(source3.assetId)) && (!options2.sourceFilter || options2.sourceFilter(source3))
   );
   const result = { sequenceId, operations: [], added: 0, skipped: 0, notices: [] };
   let overlapping = 0;
   const existing = new Map(seq.clips.map((clip3) => [clip3.id, clip3])), generated = /* @__PURE__ */ new Set(), displayed = new Set(
     seq.clips.filter(isSubtitleClip).map((clip3) => JSON.stringify([clip3.start, clip3.duration, clip3.text]))
   );
-  for (const assetId of new Set(sources.map((source2) => source2.assetId)))
+  for (const assetId of new Set(sources.map((source3) => source3.assetId)))
     if (!transcripts.has(assetId))
       result.notices.push(
         `素材尚无转写：${doc.assets.find((asset2) => asset2.id === assetId).name}`
       );
-  for (const source2 of sources) {
-    const segments = validateCaptionTranscript(transcripts.get(source2.assetId) ?? []);
+  for (const source3 of sources) {
+    const segments = validateCaptionTranscript(transcripts.get(source3.assetId) ?? []);
     for (const [segmentIndex, segment] of segments.flatMap(readableSegments).entries()) {
       const from = secondsToTicks(segment.start), to = secondsToTicks(segment.end);
-      if (to > source2.lane.sourceDuration) throw new Error(`转写超出素材实际时长：${source2.name}`);
-      for (const [rangeIndex, range] of mapCaptionSourceRange(source2, from, to).entries()) {
+      if (to > source3.lane.sourceDuration) throw new Error(`转写超出素材实际时长：${source3.name}`);
+      for (const [rangeIndex, range] of mapCaptionSourceRange(source3, from, to).entries()) {
         const mapped = (segment.words ?? []).flatMap(
           (word, index2) => mapCaptionSourceRange(
-            source2,
+            source3,
             secondsToTicks(word.start),
             secondsToTicks(word.end)
           ).flatMap((item) => {
@@ -5361,21 +7787,21 @@ function planTranscriptCaptions(value, sequenceId, transcripts, options = {}) {
           result.notices.push("倒放段按播放顺序显示真实转写词语");
         if (!segment.words?.length && !result.notices.includes("部分转写仅有句子时间，字幕未伪造逐字时间；裁剪处请校对句子内容"))
           result.notices.push("部分转写仅有句子时间，字幕未伪造逐字时间；裁剪处请校对句子内容");
-        const id5 = options.captionId ? options.captionId(source2, segmentIndex, rangeIndex) : `caption-asr-${hash(JSON.stringify([sequenceId, source2.instanceId, source2.assetId, from, to, rangeIndex]))}`;
-        if (generated.has(id5)) {
+        const id7 = options2.captionId ? options2.captionId(source3, segmentIndex, rangeIndex) : `caption-asr-${hash(JSON.stringify([sequenceId, source3.instanceId, source3.assetId, from, to, rangeIndex]))}`;
+        if (generated.has(id7)) {
           result.skipped++;
           continue;
         }
-        generated.add(id5);
-        const old = existing.get(id5);
+        generated.add(id7);
+        const old = existing.get(id7);
         if (old) {
-          if (old.kind !== "text" || old.role !== "subtitle" || old.sourceBinding?.clipId !== source2.ownerClipId)
+          if (old.kind !== "text" || old.role !== "subtitle" || old.sourceBinding?.clipId !== source3.ownerClipId)
             throw new Error("字幕ID与既有内容冲突，请保留工程并重新选择");
           result.skipped++;
           continue;
         }
         if (seq.clips.some(
-          (item) => item.kind === "text" && item.sourceBinding?.clipId === source2.ownerClipId && item.sourceBinding.provenance?.assetId === source2.assetId && item.sourceBinding.provenance.start === from && item.sourceBinding.provenance.end === to && JSON.stringify(item.sourceBinding.provenance.path) === JSON.stringify(source2.lane.stages.slice(1).map((stage) => stage.clipId)) && item.start < range.end && item.start + item.duration > range.start
+          (item) => item.kind === "text" && item.sourceBinding?.clipId === source3.ownerClipId && item.sourceBinding.provenance?.assetId === source3.assetId && item.sourceBinding.provenance.start === from && item.sourceBinding.provenance.end === to && JSON.stringify(item.sourceBinding.provenance.path) === JSON.stringify(source3.lane.stages.slice(1).map((stage) => stage.clipId)) && item.start < range.end && item.start + item.duration > range.start
         )) {
           result.skipped++;
           continue;
@@ -5385,23 +7811,23 @@ function planTranscriptCaptions(value, sequenceId, transcripts, options = {}) {
           result.skipped++;
           continue;
         }
-        if (coversSubtitle(seq, track3.id, range.start, range.end, options)) {
+        if (coversSubtitle(seq, track3.id, range.start, range.end, options2)) {
           result.skipped++;
           overlapping++;
           continue;
         }
         displayed.add(key);
-        const clip3 = textClip(id5, track3.id, range.start, range.end, content, look), owner = source2.lane.stages[0];
+        const clip3 = textClip(id7, track3.id, range.start, range.end, content, look), owner = source3.lane.stages[0];
         clip3.words = mapped.map(({ index: _, ...word }) => ({ ...word, text: word.text.trim() }));
-        if (options.wordHighlight && clip3.words.length) clip3.style.animation = "word-highlight";
+        if (options2.wordHighlight && clip3.words.length) clip3.style.animation = "word-highlight";
         const a = sourceTimeAt(owner.timeMap, range.start - owner.start), b = sourceTimeAt(owner.timeMap, range.end - 1 - owner.start);
         clip3.sourceBinding = {
           clipId: owner.clipId,
           sourceStart: Math.min(a, b),
           sourceEnd: Math.max(a, b) + 1,
           provenance: {
-            path: source2.lane.stages.slice(1).map((stage) => stage.clipId),
-            assetId: source2.assetId,
+            path: source3.lane.stages.slice(1).map((stage) => stage.clipId),
+            assetId: source3.assetId,
             start: from,
             end: to
           }
@@ -5417,12 +7843,12 @@ function planTranscriptCaptions(value, sequenceId, transcripts, options = {}) {
   if (result.added) result.operations.unshift(...track3.operations);
   return finish4(doc, result);
 }
-function parseEditorSrt(text5) {
-  if (typeof text5 !== "string" || text5.length > 4 * 1024 * 1024)
+function parseEditorSrt(text7) {
+  if (typeof text7 !== "string" || text7.length > 4 * 1024 * 1024)
     throw new Error("SRT 文件过大或不是文字");
-  const input = text5.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").trim();
+  const input = text7.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").trim();
   if (!input) return [];
-  const time = (h, m, s, ms) => {
+  const time2 = (h, m, s, ms) => {
     if (+m > 59 || +s > 59) throw new Error("SRT 时间无效");
     const tick2 = ((+h * 3600 + +m * 60 + +s) * 1e3 + +ms) * 240;
     if (tick2 > MAX_EDITOR_TICK) throw new Error("SRT 超过24小时");
@@ -5437,16 +7863,16 @@ function parseEditorSrt(text5) {
       lines.shift()?.trim() ?? ""
     );
     if (!match) throw new Error(`SRT 第${index2 + 1}条时间格式无效`);
-    const start = time(match[1], match[2], match[3], match[4]), end = time(match[5], match[6], match[7], match[8]);
+    const start = time2(match[1], match[2], match[3], match[4]), end = time2(match[5], match[6], match[7], match[8]);
     if (end <= start) throw new Error(`SRT 第${index2 + 1}条没有正时长`);
     return { start, end, text: cleanText(lines.join("\n"), "SRT 字幕") };
   });
 }
-function planSrtImport(value, sequenceId, text5, options = {}) {
-  return planImportedCaptions(value, sequenceId, parseEditorSrt(text5), options);
+function planSrtImport(value, sequenceId, text7, options2 = {}) {
+  return planImportedCaptions(value, sequenceId, parseEditorSrt(text7), options2);
 }
-function planImportedCaptions(value, sequenceId, cues, options, notices = []) {
-  const doc = validateEditorDocument(value), seq = sequence4(doc, sequenceId), track3 = captionTrack(seq, options), look = captionLook(doc, seq);
+function planImportedCaptions(value, sequenceId, cues, options2, notices = []) {
+  const doc = validateEditorDocument(value), seq = sequence4(doc, sequenceId), track3 = captionTrack(seq, options2), look = captionLook(doc, seq);
   const operations = [], keys3 = new Set(
     seq.clips.filter(isSubtitleClip).map((clip3) => JSON.stringify([clip3.start, clip3.duration, clip3.text]))
   );
@@ -5457,7 +7883,7 @@ function planImportedCaptions(value, sequenceId, cues, options, notices = []) {
       skipped++;
       continue;
     }
-    if (coversSubtitle(seq, track3.id, cue.start, cue.end, options)) {
+    if (coversSubtitle(seq, track3.id, cue.start, cue.end, options2)) {
       skipped++;
       overlapping++;
       continue;
@@ -5467,7 +7893,7 @@ function planImportedCaptions(value, sequenceId, cues, options, notices = []) {
       type: "clip.add",
       sequenceId,
       clip: textClip(
-        (options.idFactory ?? uniqueId)(),
+        (options2.idFactory ?? uniqueId)(),
         track3.id,
         cue.start,
         cue.end,
@@ -5487,8 +7913,8 @@ function planImportedCaptions(value, sequenceId, cues, options, notices = []) {
 }
 function selectedCaptions(seq, ids3) {
   if (ids3 && (new Set(ids3).size !== ids3.length || ids3.some(
-    (id5) => !seq.clips.some(
-      (clip3) => clip3.id === id5 && isSubtitleClip(clip3)
+    (id7) => !seq.clips.some(
+      (clip3) => clip3.id === id7 && isSubtitleClip(clip3)
     )
   )))
     throw new Error("请选择有效的字幕片段");
@@ -5505,7 +7931,7 @@ function planCaptionTranslation(value, sequenceId, clipIds, language, mode, tran
   const doc = validateEditorDocument(value), seq = sequence4(doc, sequenceId), items = captionTranslationItems(doc, sequenceId, clipIds);
   cleanText(language, "翻译语言", 80);
   if (!["bilingual", "translated"].includes(mode)) throw new Error("请选择双语或仅译文");
-  if (!Array.isArray(translations) || translations.length !== items.length || new Set(translations.map((item) => item.id)).size !== items.length || translations.some((item) => !items.some((source2) => source2.id === item.id)))
+  if (!Array.isArray(translations) || translations.length !== items.length || new Set(translations.map((item) => item.id)).size !== items.length || translations.some((item) => !items.some((source3) => source3.id === item.id)))
     throw new Error("翻译结果数量或ID不匹配，原字幕已保留");
   const operations = items.map((item) => {
     const clip3 = seq.clips.find((clip4) => clip4.id === item.id), translated = cleanText(translations.find((result) => result.id === item.id).text, "译文");
@@ -5547,7 +7973,7 @@ function planCaptionStyle(value, sequenceId, clipIds, patch2) {
   applyEditorOperations(doc, operations, doc.revision);
   return operations;
 }
-function retainedCaptionWords(clip3, text5) {
+function retainedCaptionWords(clip3, text7) {
   if (clip3.role !== "subtitle" || !clip3.words.length) return void 0;
   const gaps = (value, words) => {
     let cursor = 0;
@@ -5566,7 +7992,7 @@ function retainedCaptionWords(clip3, text5) {
     return [...result, tail];
   };
   for (const words of [clip3.words, clip3.words.map((word) => ({ ...word, text: word.text.trim() }))]) {
-    const before = gaps(clip3.text, words), after = gaps(text5, words);
+    const before = gaps(clip3.text, words), after = gaps(text7, words);
     if (!before || !after) continue;
     const safe = before.every((gap, index2) => {
       if (gap === after[index2]) return true;
@@ -5579,17 +8005,17 @@ function retainedCaptionWords(clip3, text5) {
   }
   return void 0;
 }
-function captionTextOperations(sequenceId, clip3, text5) {
-  cleanText(text5, "字幕文字");
-  if (text5 === clip3.text) return [];
-  const retained = retainedCaptionWords(clip3, text5);
+function captionTextOperations(sequenceId, clip3, text7) {
+  cleanText(text7, "字幕文字");
+  if (text7 === clip3.text) return [];
+  const retained = retainedCaptionWords(clip3, text7);
   return [
     {
       type: "clip.update",
       sequenceId,
       clipId: clip3.id,
       patch: {
-        text: text5,
+        text: text7,
         words: retained ?? [],
         translation: null,
         style: {
@@ -5600,12 +8026,12 @@ function captionTextOperations(sequenceId, clip3, text5) {
     }
   ];
 }
-function planCaptionText(value, sequenceId, clipId, text5) {
+function planCaptionText(value, sequenceId, clipId, text7) {
   const doc = validateEditorDocument(value), clip3 = sequence4(doc, sequenceId).clips.find(
     (item) => item.id === clipId && item.kind === "text"
   );
   if (!clip3) throw new Error("请选择有效的字幕或文字片段");
-  const operations = captionTextOperations(sequenceId, clip3, text5);
+  const operations = captionTextOperations(sequenceId, clip3, text7);
   if (!operations.length) return [];
   applyEditorOperations(doc, operations, doc.revision);
   return operations;
@@ -5623,27 +8049,27 @@ function planDetachCaptions(value, sequenceId, clipIds) {
   return operations;
 }
 var DEFAULT_CAPTION_DURATION = 3 * TICKS_PER_SECOND;
-function planAddCaptions(value, sequenceId, items, options = {}) {
+function planAddCaptions(value, sequenceId, items, options2 = {}) {
   const doc = validateEditorDocument(value), seq = sequence4(doc, sequenceId), limit = sequenceDuration(seq), look = captionLook(doc, seq);
   if (!Array.isArray(items) || !items.length) throw new Error("请提供要添加的字幕");
   if (seq.clips.length + items.length > MAX_CAPTIONS2)
     throw new Error("字幕超过序列2000片段容量，请先整理时间线片段");
   const used = new Set(seq.clips.map((clip3) => clip3.id)), operations = [], tracks = /* @__PURE__ */ new Map();
   for (const item of items) {
-    const text5 = cleanText(item?.text, "字幕文字"), start = assertTick(item.start, "字幕开始时间"), requested = assertTick(item.end, "字幕结束时间");
+    const text7 = cleanText(item?.text, "字幕文字"), start = assertTick(item.start, "字幕开始时间"), requested = assertTick(item.end, "字幕结束时间");
     if (requested <= start) throw new Error("字幕结束时间必须晚于开始时间");
     if (start >= limit) throw new Error("字幕开始时间超出画面范围，请放在画面时长之内");
-    const id5 = item.id ?? (options.idFactory ?? uniqueId)();
-    if (typeof id5 !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(id5))
+    const id7 = item.id ?? (options2.idFactory ?? uniqueId)();
+    if (typeof id7 !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(id7))
       throw new Error("字幕 ID 格式不正确");
-    if (used.has(id5)) throw new Error(`字幕 ID 已被时间线片段使用：${id5}`);
-    used.add(id5);
-    const key = item.trackId ?? options.trackId ?? "";
+    if (used.has(id7)) throw new Error(`字幕 ID 已被时间线片段使用：${id7}`);
+    used.add(id7);
+    const key = item.trackId ?? options2.trackId ?? "";
     let trackId = tracks.get(key);
     if (trackId === void 0) {
       const track3 = captionTrack(seq, {
         ...key ? { trackId: key } : {},
-        ...options.idFactory ? { idFactory: options.idFactory } : {}
+        ...options2.idFactory ? { idFactory: options2.idFactory } : {}
       });
       operations.push(...track3.operations);
       tracks.set(key, trackId = track3.id);
@@ -5651,7 +8077,7 @@ function planAddCaptions(value, sequenceId, items, options = {}) {
     operations.push({
       type: "clip.add",
       sequenceId,
-      clip: textClip(id5, trackId, start, Math.min(requested, limit), text5, look)
+      clip: textClip(id7, trackId, start, Math.min(requested, limit), text7, look)
     });
   }
   applyEditorOperations(doc, operations, doc.revision);
@@ -5669,36 +8095,36 @@ function selected2(doc, sequenceId, clipId) {
     throw new Error("多机位片段所在轨道已锁定");
   return { sequence: sequence5, clip: clip3 };
 }
-function finish5(document, operations) {
-  applyEditorOperations(document, operations, document.revision);
+function finish5(document2, operations) {
+  applyEditorOperations(document2, operations, document2.revision);
   return structuredClone(operations);
 }
-function planCreateMulticam(value, sequenceId, options) {
-  const document = validateEditorDocument(value), { sequence: sequence5 } = selected2(document, sequenceId);
-  if (!Array.isArray(options.assetIds) || options.assetIds.length < 2 || options.assetIds.length > 32 || new Set(options.assetIds).size !== options.assetIds.length)
+function planCreateMulticam(value, sequenceId, options2) {
+  const document2 = validateEditorDocument(value), { sequence: sequence5 } = selected2(document2, sequenceId);
+  if (!Array.isArray(options2.assetIds) || options2.assetIds.length < 2 || options2.assetIds.length > 32 || new Set(options2.assetIds).size !== options2.assetIds.length)
     throw new Error("多机位需要 2 至 32 个不同视频素材");
-  const assets = options.assetIds.map((id6) => {
-    const asset2 = document.assets.find((asset3) => asset3.id === id6);
+  const assets = options2.assetIds.map((id8) => {
+    const asset2 = document2.assets.find((asset3) => asset3.id === id8);
     if (!asset2 || asset2.kind !== "video") throw new Error("多机位须使用工程中的视频素材");
     return asset2;
   });
-  const offsets = options.offsets ?? {};
-  if (![Object.prototype, null].includes(Object.getPrototypeOf(offsets)) || Object.keys(offsets).some((id6) => !options.assetIds.includes(id6)))
+  const offsets = options2.offsets ?? {};
+  if (![Object.prototype, null].includes(Object.getPrototypeOf(offsets)) || Object.keys(offsets).some((id8) => !options2.assetIds.includes(id8)))
     throw new Error("机位偏移包含未知素材");
   for (const offset of Object.values(offsets))
     if (!Number.isSafeInteger(offset) || Math.abs(offset) > 86400 * 24e4)
       throw new Error("机位偏移无效");
-  assertTick(options.at);
+  assertTick(options2.at);
   const used = /* @__PURE__ */ new Set();
-  for (const seq of document.sequences) {
+  for (const seq of document2.sequences) {
     seq.tracks.forEach((track3) => used.add(track3.id));
     seq.clips.forEach((clip4) => {
       used.add(clip4.id);
       if (clip4.kind === "multicam") clip4.angles.forEach((angle) => used.add(angle.id));
     });
   }
-  const id5 = (kind) => {
-    const result = options.idFactory?.(kind) ?? `${kind}-${randomId()}`;
+  const id7 = (kind) => {
+    const result = options2.idFactory?.(kind) ?? `${kind}-${randomId()}`;
     if (used.has(result)) throw new Error("多机位对象编号重复");
     used.add(result);
     return result;
@@ -5706,25 +8132,25 @@ function planCreateMulticam(value, sequenceId, options) {
   const start = Math.max(0, ...assets.map((asset2) => -(offsets[asset2.id] ?? 0))), end = Math.min(...assets.map((asset2) => asset2.duration - (offsets[asset2.id] ?? 0)));
   if (end <= start) throw new Error("机位没有共同有效的时间范围，请调整同步偏移");
   const angles = assets.map((asset2) => ({
-    id: id5("angle"),
+    id: id7("angle"),
     name: asset2.name,
     assetId: asset2.id,
     offset: offsets[asset2.id] ?? 0
   }));
-  const audio2 = angles.find((angle) => angle.assetId === (options.audioAssetId ?? assets[0].id));
+  const audio2 = angles.find((angle) => angle.assetId === (options2.audioAssetId ?? assets[0].id));
   if (!audio2) throw new Error("请选择有效的主声音机位");
-  const trackId = options.trackId ?? id5("track"), ops = [];
-  if (options.trackId) {
+  const trackId = options2.trackId ?? id7("track"), ops = [];
+  if (options2.trackId) {
     if (sequence5.tracks.find((track3) => track3.id === trackId)?.kind !== "video")
       throw new Error("多机位需要画面轨道");
   } else
-    ops.push({ type: "track.add", sequenceId, track: createTrack(trackId, "video", options.name) });
+    ops.push({ type: "track.add", sequenceId, track: createTrack(trackId, "video", options2.name) });
   const clip3 = {
-    id: id5("clip"),
+    id: id7("clip"),
     kind: "multicam",
-    label: options.name,
+    label: options2.name,
     trackId,
-    start: options.at,
+    start: options2.at,
     duration: end - start,
     angles,
     audioAngleId: audio2.id,
@@ -5741,20 +8167,20 @@ function planCreateMulticam(value, sequenceId, options) {
     blendMode: "normal"
   };
   ops.push({ type: "clip.add", sequenceId, clip: clip3 });
-  return finish5(document, ops);
+  return finish5(document2, ops);
 }
-function planUpdateMulticamAngles(value, sequenceId, clipId, patch2, options = {}) {
-  const document = validateEditorDocument(value), { clip: clip3, sequence: sequence5 } = selected2(document, sequenceId, clipId);
+function planUpdateMulticamAngles(value, sequenceId, clipId, patch2, options2 = {}) {
+  const document2 = validateEditorDocument(value), { clip: clip3, sequence: sequence5 } = selected2(document2, sequenceId, clipId);
   if (!patch2 || ![Object.prototype, null].includes(Object.getPrototypeOf(patch2)) || Object.keys(patch2).some((key) => !["angles", "audioAngleId"].includes(key)))
     throw new Error("机位更新字段无效");
   const operations = [];
-  if (options.trimToCommonRange && patch2.angles) {
+  if (options2.trimToCommonRange && patch2.angles) {
     const sourceStart = clip3.timeMap.points[0].source;
     if (clip3.timeMap.points.some((point) => point.source - point.time !== sourceStart))
       throw new Error("变速或倒放机位请先手动裁剪到共同范围，再修改偏移");
     const minimum = Math.max(0, ...patch2.angles.map((angle) => -angle.offset)), maximum = Math.min(
       ...patch2.angles.map((angle) => {
-        const asset2 = document.assets.find((asset3) => asset3.id === angle.assetId);
+        const asset2 = document2.assets.find((asset3) => asset3.id === angle.assetId);
         if (!asset2 || asset2.kind !== "video") throw new Error("机位素材无效");
         return asset2.duration - angle.offset;
       })
@@ -5765,15 +8191,15 @@ function planUpdateMulticamAngles(value, sequenceId, clipId, patch2, options = {
       (other) => other.id !== clipId && (clip3.groupId && other.groupId === clip3.groupId || clip3.linkGroupId && other.linkGroupId === clip3.linkGroupId)
     ))
       throw new Error("共同范围裁剪会影响分组或链接片段，请先解除分组或链接");
-    operations.push(...trimClip(document, sequenceId, clipId, start, end));
+    operations.push(...trimClip(document2, sequenceId, clipId, start, end));
   }
   operations.push({ type: "clip.update", sequenceId, clipId, patch: structuredClone(patch2) });
-  return finish5(document, operations);
+  return finish5(document2, operations);
 }
 function planMulticamSwitches(value, sequenceId, clipId, switches) {
-  const document = validateEditorDocument(value);
-  selected2(document, sequenceId, clipId);
-  return finish5(document, [
+  const document2 = validateEditorDocument(value);
+  selected2(document2, sequenceId, clipId);
+  return finish5(document2, [
     { type: "clip.update", sequenceId, clipId, patch: { switches: structuredClone(switches) } }
   ]);
 }
@@ -5782,17 +8208,17 @@ function compress(switches) {
     (item, index2) => index2 === 0 || item.angleId !== switches[index2 - 1].angleId
   );
 }
-function planMulticamCut(value, sequenceId, clipId, time, angleId) {
-  const document = validateEditorDocument(value), clip3 = selected2(document, sequenceId, clipId).clip;
-  assertTick(time);
-  if (time >= clip3.duration) throw new Error("切换点必须位于多机位片段内");
-  const switches = clip3.switches.filter((item) => item.time !== time);
-  switches.push({ time, angleId });
+function planMulticamCut(value, sequenceId, clipId, time2, angleId) {
+  const document2 = validateEditorDocument(value), clip3 = selected2(document2, sequenceId, clipId).clip;
+  assertTick(time2);
+  if (time2 >= clip3.duration) throw new Error("切换点必须位于多机位片段内");
+  const switches = clip3.switches.filter((item) => item.time !== time2);
+  switches.push({ time: time2, angleId });
   switches.sort((a, b) => a.time - b.time);
-  return planMulticamSwitches(document, sequenceId, clipId, compress(switches));
+  return planMulticamSwitches(document2, sequenceId, clipId, compress(switches));
 }
 function planRecordMulticamSwitches(value, sequenceId, clipId, start, end, cuts) {
-  const document = validateEditorDocument(value), clip3 = selected2(document, sequenceId, clipId).clip;
+  const document2 = validateEditorDocument(value), clip3 = selected2(document2, sequenceId, clipId).clip;
   assertTick(start);
   assertTick(end);
   if (start >= end || end > clip3.duration || !cuts.length || cuts[0].time !== start || cuts.some(
@@ -5800,7 +8226,7 @@ function planRecordMulticamSwitches(value, sequenceId, clipId, start, end, cuts)
   ))
     throw new Error("录制切点范围无效，请重新录制");
   return planMulticamSwitches(
-    document,
+    document2,
     sequenceId,
     clipId,
     compress([
@@ -5830,14 +8256,14 @@ function json(value, max = EDITOR_AGENT_LIMITS.inputBytes) {
     if (typeof item === "number" && Number.isFinite(item)) return item;
     if (!item || typeof item !== "object" || parents.has(item))
       throw new Error("工具参数必须是有限 JSON 数据");
-    const array2 = Array.isArray(item), prototype = Object.getPrototypeOf(item), keys3 = Reflect.ownKeys(item);
-    if (array2 ? prototype !== Array.prototype || keys3.length !== item.length + 1 : prototype !== Object.prototype && prototype !== null)
+    const array4 = Array.isArray(item), prototype = Object.getPrototypeOf(item), keys3 = Reflect.ownKeys(item);
+    if (array4 ? prototype !== Array.prototype || keys3.length !== item.length + 1 : prototype !== Object.prototype && prototype !== null)
       throw new Error("工具参数须为普通对象或完整数组");
     parents.add(item);
-    const result2 = array2 ? [] : {};
+    const result2 = array4 ? [] : {};
     for (const key of keys3) {
-      if (array2 && key === "length") continue;
-      if (typeof key !== "string" || ["__proto__", "constructor", "prototype"].includes(key) || array2 && !/^(0|[1-9]\d*)$/.test(key))
+      if (array4 && key === "length") continue;
+      if (typeof key !== "string" || ["__proto__", "constructor", "prototype"].includes(key) || array4 && !/^(0|[1-9]\d*)$/.test(key))
         throw new Error("工具参数含不安全字段");
       const descriptor = Object.getOwnPropertyDescriptor(item, key);
       if (!descriptor.enumerable || !("value" in descriptor))
@@ -6017,15 +8443,15 @@ function rawOperations(value) {
   }
   return value;
 }
-function plan(document, raw, factory) {
+function plan(document2, raw, factory) {
   const kind = raw.kind;
   if (kind === "operations") return rawOperations(object6(raw, ["kind", "operations"]).operations);
-  if (kind === "sequence") return planSequenceStep(document, raw, factory);
-  if (kind === "captions") return planCaptionsStep(document, raw, factory);
-  if (kind === "multicam") return planMulticamStep(document, raw, factory);
+  if (kind === "sequence") return planSequenceStep(document2, raw, factory);
+  if (kind === "captions") return planCaptionsStep(document2, raw, factory);
+  if (kind === "multicam") return planMulticamStep(document2, raw, factory);
   if (kind === "marker") {
     const step2 = object6(raw, ["kind", "sequenceId", "action"]);
-    return planMarkerEdit(document, id4(step2.sequenceId), step2.action).operations;
+    return planMarkerEdit(document2, id4(step2.sequenceId), step2.action).operations;
   }
   const keys3 = {
     split: ["clipId", "time"],
@@ -6043,20 +8469,20 @@ function plan(document, raw, factory) {
   const step = object6(raw, ["kind", "sequenceId", ...keys3[kind]]), sequenceId = id4(step.sequenceId);
   const tick2 = (value) => integer4(value, 0, Number.MAX_SAFE_INTEGER, "时间刻度");
   if (kind === "split")
-    return splitClip(document, sequenceId, id4(step.clipId), tick2(step.time), factory);
+    return splitClip(document2, sequenceId, id4(step.clipId), tick2(step.time), factory);
   if (kind === "trim")
     return trimClip(
-      document,
+      document2,
       sequenceId,
       id4(step.clipId),
       tick2(step.localStart),
       tick2(step.localEnd)
     );
   if (kind === "duplicate")
-    return duplicateClipsInPlace(document, sequenceId, ids2(step.clipIds), { idFactory: factory });
+    return duplicateClipsInPlace(document2, sequenceId, ids2(step.clipIds), { idFactory: factory });
   if (kind === "group")
-    return groupClips(document, sequenceId, ids2(step.clipIds), factory("group"));
-  if (kind === "ungroup") return ungroupClips(document, sequenceId, ids2(step.clipIds));
+    return groupClips(document2, sequenceId, ids2(step.clipIds), factory("group"));
+  if (kind === "ungroup") return ungroupClips(document2, sequenceId, ids2(step.clipIds));
   if (kind === "timing") {
     const action = object6(step.action, [
       "kind",
@@ -6076,37 +8502,37 @@ function plan(document, raw, factory) {
     };
     if (!Object.hasOwn(actionKeys, action.kind)) throw new Error("未知时间编辑");
     object6(action, ["kind", ...actionKeys[action.kind]]);
-    const options2 = object6(step.options ?? {}, ["ripple", "removeTransitions", "detachCaptions"]);
-    for (const value of Object.values(options2))
+    const options3 = object6(step.options ?? {}, ["ripple", "removeTransitions", "detachCaptions"]);
+    for (const value of Object.values(options3))
       if (typeof value !== "boolean") throw new Error("时间编辑选项须为布尔值");
     if (action.preservePitch !== void 0 && typeof action.preservePitch !== "boolean")
       throw new Error("preservePitch 须为布尔值");
-    return planClipTiming(document, sequenceId, ids2(step.clipIds), action, options2);
+    return planClipTiming(document2, sequenceId, ids2(step.clipIds), action, options3);
   }
-  const sequence5 = document.sequences.find((item) => item.id === sequenceId);
+  const sequence5 = document2.sequences.find((item) => item.id === sequenceId);
   if (!sequence5) throw new Error("序列不存在");
   if (kind === "move") {
-    const options2 = object6(step.options, ["delta", "trackId", "anchorClipId", "direction"]), selected3 = ids2(step.clipIds);
-    integer4(options2.delta, -Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, "移动刻度");
-    if (options2.direction !== void 0 && !["previous", "next"].includes(options2.direction))
+    const options3 = object6(step.options, ["delta", "trackId", "anchorClipId", "direction"]), selected3 = ids2(step.clipIds);
+    integer4(options3.delta, -Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, "移动刻度");
+    if (options3.direction !== void 0 && !["previous", "next"].includes(options3.direction))
       throw new Error("移动方向无效");
     if (sequence5.timelineMode === "magnetic")
-      return planMagneticMove(document, sequenceId, selected3, options2);
-    if (options2.direction !== void 0)
+      return planMagneticMove(document2, sequenceId, selected3, options3);
+    if (options3.direction !== void 0)
       throw new Error("自由时间线请使用精确 delta，不能隐式磁吸重排");
     return [
       {
         type: "clip.move",
         sequenceId,
         clipIds: selected3,
-        delta: options2.delta,
-        ...options2.trackId === void 0 ? {} : { trackId: id4(options2.trackId) }
+        delta: options3.delta,
+        ...options3.trackId === void 0 ? {} : { trackId: id4(options3.trackId) }
       }
     ];
   }
   if (kind === "remove") {
     if (sequence5.timelineMode === "magnetic")
-      return planMagneticRemove(document, sequenceId, ids2(step.clipIds));
+      return planMagneticRemove(document2, sequenceId, ids2(step.clipIds));
     const chosen = new Set(ids2(step.clipIds));
     for (; ; ) {
       const previous = chosen.size, members = sequence5.clips.filter((clip3) => chosen.has(clip3.id));
@@ -6119,25 +8545,25 @@ function plan(document, raw, factory) {
     return [{ type: "clip.remove", sequenceId, clipIds: [...chosen] }];
   }
   if (kind === "transition") {
-    const options2 = object6(step.options, ["id", "kind", "duration", "placement", "remove"]);
-    if (options2.remove !== void 0 && typeof options2.remove !== "boolean")
+    const options3 = object6(step.options, ["id", "kind", "duration", "placement", "remove"]);
+    if (options3.remove !== void 0 && typeof options3.remove !== "boolean")
       throw new Error("remove 须为布尔值");
-    if (options2.placement !== void 0 && !["ripple", "overlap"].includes(options2.placement))
+    if (options3.placement !== void 0 && !["ripple", "overlap"].includes(options3.placement))
       throw new Error("转场放置方式无效");
     return planTransition(
-      document,
+      document2,
       sequenceId,
       id4(step.fromClipId),
       id4(step.toClipId),
-      options2
+      options3
     );
   }
-  const options = object6(step.options, ["mode", "trackId", "compact"]);
-  if (options.compact !== void 0 && typeof options.compact !== "boolean")
+  const options2 = object6(step.options, ["mode", "trackId", "compact"]);
+  if (options2.compact !== void 0 && typeof options2.compact !== "boolean")
     throw new Error("compact 须为布尔值");
-  return planTimelineArrangement(document, sequenceId, options);
+  return planTimelineArrangement(document2, sequenceId, options2);
 }
-function planMulticamStep(document, raw, factory) {
+function planMulticamStep(document2, raw, factory) {
   const step = object6(raw, ["kind", "sequenceId", "action"]), sequenceId = id4(step.sequenceId), action = object6(step.action, [
     "kind",
     "clipId",
@@ -6160,7 +8586,7 @@ function planMulticamStep(document, raw, factory) {
   const tick2 = (value) => integer4(value, 0, Number.MAX_SAFE_INTEGER, "时间刻度");
   if (action.kind === "create") {
     object6(action, ["kind", "assetIds", "at", "name", "offsets", "audioAssetId", "trackId"]);
-    return planCreateMulticam(document, sequenceId, {
+    return planCreateMulticam(document2, sequenceId, {
       assetIds: ids2(action.assetIds),
       at: tick2(action.at),
       name: action.name,
@@ -6180,7 +8606,7 @@ function planMulticamStep(document, raw, factory) {
       action.angles.forEach((angle) => object6(angle, ["id", "name", "assetId", "offset"]));
     }
     return planUpdateMulticamAngles(
-      document,
+      document2,
       sequenceId,
       clipId,
       {
@@ -6192,7 +8618,7 @@ function planMulticamStep(document, raw, factory) {
   }
   if (action.kind === "cut") {
     object6(action, ["kind", "clipId", "time", "angleId"]);
-    return planMulticamCut(document, sequenceId, clipId, tick2(action.time), id4(action.angleId));
+    return planMulticamCut(document2, sequenceId, clipId, tick2(action.time), id4(action.angleId));
   }
   if (action.kind === "switches" || action.kind === "record") {
     object6(
@@ -6203,8 +8629,8 @@ function planMulticamStep(document, raw, factory) {
     if (!Array.isArray(cuts) || !cuts.length || cuts.length > 2e3)
       throw new Error("切点须包含 1 至 2000 项");
     for (const cut of cuts) object6(cut, ["time", "angleId"]);
-    return action.kind === "switches" ? planMulticamSwitches(document, sequenceId, clipId, cuts) : planRecordMulticamSwitches(
-      document,
+    return action.kind === "switches" ? planMulticamSwitches(document2, sequenceId, clipId, cuts) : planRecordMulticamSwitches(
+      document2,
       sequenceId,
       clipId,
       tick2(action.start),
@@ -6214,7 +8640,7 @@ function planMulticamStep(document, raw, factory) {
   }
   throw new Error("未知多机位编辑");
 }
-function planSequenceStep(document, raw, factory) {
+function planSequenceStep(document2, raw, factory) {
   const step = object6(raw, ["kind", "sequenceId", "action"]), action = object6(step.action, [
     "kind",
     "name",
@@ -6235,7 +8661,7 @@ function planSequenceStep(document, raw, factory) {
     if (step.sequenceId !== void 0) throw new Error("新建序列不能指定既有 sequenceId");
     object6(action, ["kind", "name", "width", "height", "frameRate", "background", "activate"]);
     object6(action.frameRate, ["numerator", "denominator"]);
-    return planCreateSequence(document, {
+    return planCreateSequence(document2, {
       name: action.name,
       width: action.width,
       height: action.height,
@@ -6249,40 +8675,40 @@ function planSequenceStep(document, raw, factory) {
   switch (action.kind) {
     case "rename":
       object6(action, ["kind", "name"]);
-      return planRenameSequence(document, sequenceId, action.name).operations;
+      return planRenameSequence(document2, sequenceId, action.name).operations;
     case "duplicate":
       object6(action, ["kind", "name", "activate"]);
-      return planDuplicateSequence(document, sequenceId, {
+      return planDuplicateSequence(document2, sequenceId, {
         name: action.name,
         activate: action.activate,
         idFactory: factory
       }).operations;
     case "nest":
       object6(action, ["kind", "childSequenceId", "at", "trackId"]);
-      return planNestSequence(document, sequenceId, id4(action.childSequenceId), {
+      return planNestSequence(document2, sequenceId, id4(action.childSequenceId), {
         at: integer4(action.at, 0, Number.MAX_SAFE_INTEGER, "嵌套起点"),
         ...action.trackId === void 0 ? {} : { trackId: id4(action.trackId) },
         idFactory: factory
       }).operations;
     case "compound":
       object6(action, ["kind", "clipIds", "name"]);
-      return planCreateCompound(document, sequenceId, ids2(action.clipIds), {
+      return planCreateCompound(document2, sequenceId, ids2(action.clipIds), {
         name: action.name,
         idFactory: factory
       }).operations;
     case "unpack":
       object6(action, ["kind", "clipId"]);
-      return planUnpackCompound(document, sequenceId, id4(action.clipId), {
+      return planUnpackCompound(document2, sequenceId, id4(action.clipId), {
         idFactory: factory
       }).operations;
     case "remove":
       object6(action, ["kind"]);
-      return planRemoveSequence(document, sequenceId).operations;
+      return planRemoveSequence(document2, sequenceId).operations;
     default:
       throw new Error("未知序列编辑");
   }
 }
-function planCaptionsStep(document, raw, factory) {
+function planCaptionsStep(document2, raw, factory) {
   const step = object6(raw, ["kind", "sequenceId", "action"]), sequenceId = id4(step.sequenceId), action = object6(step.action, [
     "kind",
     "text",
@@ -6304,7 +8730,7 @@ function planCaptionsStep(document, raw, factory) {
     case "add":
       object6(action, ["kind", "text", "start", "end", "trackId"]);
       return planAddCaptions(
-        document,
+        document2,
         sequenceId,
         [
           {
@@ -6318,7 +8744,7 @@ function planCaptionsStep(document, raw, factory) {
       );
     case "import-srt":
       object6(action, ["kind", "text", "trackId"]);
-      return planSrtImport(document, sequenceId, action.text, {
+      return planSrtImport(document2, sequenceId, action.text, {
         ...action.trackId === void 0 ? {} : { trackId: id4(action.trackId) },
         idFactory: () => factory("clip")
       }).operations;
@@ -6332,7 +8758,7 @@ function planCaptionsStep(document, raw, factory) {
       for (const value of action.transcripts) {
         const item = object6(value, ["assetId", "segments"]), assetId = id4(item.assetId);
         if (transcripts.has(assetId)) throw new Error("转写来源不能重复");
-        if (!document.assets.some((asset2) => asset2.id === assetId))
+        if (!document2.assets.some((asset2) => asset2.id === assetId))
           throw new Error("转写素材不存在");
         if (!Array.isArray(item.segments)) throw new Error("转写段落须为数组");
         for (const segment of item.segments) {
@@ -6344,7 +8770,7 @@ function planCaptionsStep(document, raw, factory) {
         }
         transcripts.set(assetId, validateCaptionTranscript(item.segments));
       }
-      return planTranscriptCaptions(document, sequenceId, transcripts, {
+      return planTranscriptCaptions(document2, sequenceId, transcripts, {
         ...action.trackId === void 0 ? {} : { trackId: id4(action.trackId) },
         ...action.assetIds === void 0 ? {} : { assetIds: ids2(action.assetIds) },
         wordHighlight: action.wordHighlight,
@@ -6353,11 +8779,11 @@ function planCaptionsStep(document, raw, factory) {
     }
     case "text":
       object6(action, ["kind", "clipId", "text"]);
-      return planCaptionText(document, sequenceId, id4(action.clipId), action.text);
+      return planCaptionText(document2, sequenceId, id4(action.clipId), action.text);
     case "style":
       object6(action, ["kind", "clipIds", "patch"]);
       return planCaptionStyle(
-        document,
+        document2,
         sequenceId,
         ids2(action.clipIds),
         object6(action.patch, [...Object.keys(defaultTextStyle()), "keywords"])
@@ -6367,7 +8793,7 @@ function planCaptionsStep(document, raw, factory) {
       if (!Array.isArray(action.translations)) throw new Error("译文须为数组");
       for (const translation of action.translations) object6(translation, ["id", "text"]);
       return planCaptionTranslation(
-        document,
+        document2,
         sequenceId,
         ids2(action.clipIds),
         action.language,
@@ -6376,18 +8802,18 @@ function planCaptionsStep(document, raw, factory) {
       ).operations;
     case "detach":
       object6(action, ["kind", "clipIds"]);
-      return planDetachCaptions(document, sequenceId, ids2(action.clipIds));
+      return planDetachCaptions(document2, sequenceId, ids2(action.clipIds));
     case "preset":
       object6(action, ["kind", "preset"]);
-      return planCaptionPreset(document, sequenceId, action.preset);
+      return planCaptionPreset(document2, sequenceId, action.preset);
     default:
       throw new Error("未知字幕编辑");
   }
 }
-function compileEditorSteps(document, steps, factory) {
+function compileEditorSteps(document2, steps, factory) {
   if (!Array.isArray(steps) || !steps.length || steps.length > EDITOR_AGENT_LIMITS.steps)
     throw new Error("编辑须包含 1 至 100 个步骤");
-  let draft = document;
+  let draft = document2;
   const operations = [];
   for (const raw of json(steps)) {
     const batch = plan(draft, object6(raw, Object.keys(raw ?? {})), factory);
@@ -6919,20 +9345,10 @@ function createEditorAgentTools(context2) {
   return tools;
 }
 
-// src/editor/export-range.ts
-function validateExportRange(value, sequenceDuration2) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.keys(value).some((key) => key !== "start" && key !== "duration")) throw new Error("导出范围格式无效");
-  const range = value;
-  assertTick(range.start);
-  assertTick(range.duration);
-  if (!range.duration || range.start + range.duration > MAX_EDITOR_TICK || sequenceDuration2 !== void 0 && range.start + range.duration > sequenceDuration2) throw new Error("导出范围须位于当前序列内，且结束晚于开始");
-  return { start: range.start, duration: range.duration };
-}
-
 // src/editor/production-guard.ts
 var byId = (a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 var record4 = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
-function dependencies(document, known = document) {
+function dependencies(document2, known2 = document2) {
   const seen = /* @__PURE__ */ new Set(), assets = /* @__PURE__ */ new Set();
   const clip3 = (item) => {
     const base = {
@@ -6974,12 +9390,12 @@ function dependencies(document, known = document) {
       };
     return null;
   };
-  const sequence5 = (id5) => {
-    if (seen.has(id5)) return { reference: id5 };
-    seen.add(id5);
-    const value = document.sequences.find((item) => item.id === id5);
+  const sequence5 = (id7) => {
+    if (seen.has(id7)) return { reference: id7 };
+    seen.add(id7);
+    const value = document2.sequences.find((item) => item.id === id7);
     return {
-      id: id5,
+      id: id7,
       duration: sequenceDuration(value),
       frameRate: value.frameRate,
       tracks: value.tracks.filter(
@@ -6998,22 +9414,22 @@ function dependencies(document, known = document) {
       transitions: value.transitions.slice().sort(byId)
     };
   };
-  const timeline = sequence5(document.activeSequenceId);
-  const active = document.sequences.find((item) => item.id === document.activeSequenceId);
+  const timeline2 = sequence5(document2.activeSequenceId);
+  const active = document2.sequences.find((item) => item.id === document2.activeSequenceId);
   return JSON.stringify({
-    script: document.production?.script ?? "",
+    script: document2.production?.script ?? "",
     // The recorded narration was approved against this picture size and arrangement,
     // as the old view's approval snapshot also records.
     canvas: { width: active.width, height: active.height, timelineMode: active.timelineMode },
-    timeline,
-    assets: document.assets.filter((item) => assets.has(item.id)).map((item) => ({
+    timeline: timeline2,
+    assets: document2.assets.filter((item) => assets.has(item.id)).map((item) => ({
       id: item.id,
       kind: item.kind,
       duration: item.duration,
       resourceId: item.resourceId,
       // A newly computed fingerprint records an existing source; only a change to an
       // already known fingerprint establishes changed bytes. Proxies/analysis are preparation.
-      fingerprint: known?.assets.find((asset2) => asset2.id === item.id)?.fingerprint ? item.fingerprint : void 0
+      fingerprint: known2?.assets.find((asset2) => asset2.id === item.id)?.fingerprint ? item.fingerprint : void 0
     })).sort(byId)
   });
 }
@@ -7045,11 +9461,11 @@ function reconcileEditorProduction(beforeValue, afterValue) {
 
 // src/editor/history.ts
 var EditorHistory = class {
-  constructor(document, limit = 50) {
+  constructor(document2, limit = 50) {
     this.limit = limit;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200)
       throw new Error("撤销历史数量须为 1–200");
-    this.value = validateEditorDocument(document);
+    this.value = validateEditorDocument(document2);
   }
   limit;
   value;
@@ -7119,8 +9535,8 @@ var EditorHistory = class {
     return this.read();
   }
   /** Replace only after an import/restore has been fully validated; never preserve foreign undo. */
-  replace(document) {
-    const next = validateEditorDocument(document);
+  replace(document2) {
+    const next = validateEditorDocument(document2);
     this.value = next;
     this.past = [];
     this.future = [];
@@ -7188,14 +9604,14 @@ function legacyCopy(raw) {
     }
     if (!value || typeof value !== "object" || ancestors.has(value))
       throw new Error("旧工程须为有效 JSON 数据");
-    const array2 = Array.isArray(value), prototype = Object.getPrototypeOf(value), keys3 = Reflect.ownKeys(value);
-    if ((array2 ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) || array2 && keys3.length !== value.length + 1)
+    const array4 = Array.isArray(value), prototype = Object.getPrototypeOf(value), keys3 = Reflect.ownKeys(value);
+    if ((array4 ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) || array4 && keys3.length !== value.length + 1)
       throw new Error("旧工程须为普通对象和完整数组");
     ancestors.add(value);
-    const result = array2 ? [] : {};
+    const result = array4 ? [] : {};
     for (const key of keys3) {
-      if (array2 && key === "length") continue;
-      if (typeof key !== "string" || ["__proto__", "constructor", "prototype"].includes(key) || array2 && !/^(0|[1-9]\d*)$/.test(key))
+      if (array4 && key === "length") continue;
+      if (typeof key !== "string" || ["__proto__", "constructor", "prototype"].includes(key) || array4 && !/^(0|[1-9]\d*)$/.test(key))
         throw new Error("旧工程包含无效数据键");
       characters += key.length;
       if (characters > 16 * 1024 * 1024) throw new Error("旧工程文字超过验证范围");
@@ -7217,11 +9633,11 @@ function imported(value) {
   return { document: validateEditorDocument(value) };
 }
 var EditorSession = class _EditorSession {
-  constructor(storage, document, storageRevision, delay, historyLimit, legacy) {
+  constructor(storage, document2, storageRevision, delay, historyLimit, legacy) {
     this.storage = storage;
     this.storageRevision = storageRevision;
     this.delay = delay;
-    this.history = new EditorHistory(document, historyLimit);
+    this.history = new EditorHistory(document2, historyLimit);
     this.legacy = legacy;
   }
   storage;
@@ -7241,20 +9657,20 @@ var EditorSession = class _EditorSession {
   legacy;
   discardOnClose = false;
   listeners = /* @__PURE__ */ new Set();
-  static async open(storage, options = {}) {
-    const delay = options.autosaveDelayMs ?? 400;
+  static async open(storage, options2 = {}) {
+    const delay = options2.autosaveDelayMs ?? 400;
     if (!Number.isSafeInteger(delay) || delay < 0 || delay > 6e4)
       throw new Error("自动保存延迟须为 0 至 60000 毫秒");
     const stored = await storage.read(), base = revision(stored.revision);
-    if (stored.data === null && options.initialDocument === void 0)
+    if (stored.data === null && options2.initialDocument === void 0)
       throw new Error("尚无工程，请先提供新工程");
-    const loaded = stored.data === null ? { document: validateEditorDocument(options.initialDocument) } : imported(stored.data);
+    const loaded = stored.data === null ? { document: validateEditorDocument(options2.initialDocument) } : imported(stored.data);
     const session = new _EditorSession(
       storage,
       loaded.document,
       base,
       delay,
-      options.historyLimit,
+      options2.historyLimit,
       "legacy" in loaded ? loaded.legacy : void 0
     );
     if (stored.data === null || session.legacy !== void 0)
@@ -7343,9 +9759,9 @@ var EditorSession = class _EditorSession {
     cancelled(signal);
     const prepared = this.history.prepare(operations, identity2.revision, editLabel, actor);
     let complete, reject;
-    const completion = new Promise((resolve3, fail) => {
-      complete = resolve3;
-      reject = fail;
+    const completion = new Promise((resolve10, fail2) => {
+      complete = resolve10;
+      reject = fail2;
     });
     this.replacement = completion;
     void completion.catch(() => {
@@ -7464,30 +9880,30 @@ var EditorSession = class _EditorSession {
     if (this.fault?.kind === "conflict") throw new EditorStorageConflictError(this.fault.message);
     do {
       if (!this.worker && this.pending) {
-        const run = Promise.resolve().then(() => this.drain()).finally(() => {
-          if (this.worker === run) this.worker = null;
+        const run2 = Promise.resolve().then(() => this.drain()).finally(() => {
+          if (this.worker === run2) this.worker = null;
         });
-        this.worker = run;
-        void run.catch(() => {
+        this.worker = run2;
+        void run2.catch(() => {
         });
       }
       if (this.worker) await this.worker;
     } while (this.pending && !this.discardOnClose);
   }
-  async replace(value, options = {}) {
+  async replace(value, options2 = {}) {
     this.editable();
-    if (options.identity) this.checkIdentity(options.identity);
-    cancelled(options.signal);
-    const editLabel = label2(options.label ?? "打开工程"), loaded = imported(value), current = this.history.read();
+    if (options2.identity) this.checkIdentity(options2.identity);
+    cancelled(options2.signal);
+    const editLabel = label2(options2.label ?? "打开工程"), loaded = imported(value), current = this.history.read();
     if (loaded.document.id === current.id)
       loaded.document = validateEditorDocument({
         ...loaded.document,
         revision: Math.max(loaded.document.revision, current.revision + 1)
       });
     let complete, reject;
-    const completion = new Promise((resolve3, fail) => {
-      complete = resolve3;
-      reject = fail;
+    const completion = new Promise((resolve10, fail2) => {
+      complete = resolve10;
+      reject = fail2;
     });
     this.replacement = completion;
     void completion.catch(() => {
@@ -7497,11 +9913,11 @@ var EditorSession = class _EditorSession {
     let stage = "old";
     try {
       await this.flushQueue();
-      cancelled(options.signal);
+      cancelled(options2.signal);
       if (loaded.legacy !== void 0) {
         stage = "backup";
         await this.storage.backupLegacy(legacyCopy(loaded.legacy));
-        cancelled(options.signal);
+        cancelled(options2.signal);
       }
       stage = "write";
       this.writing = true;
@@ -7530,14 +9946,14 @@ var EditorSession = class _EditorSession {
     }
   }
   /** Explicitly discard only unsubmitted saves when save:false. In-flight writes always finish before close resolves. */
-  async close(options = {}) {
+  async close(options2 = {}) {
     if (this.phase === "closed") return;
     this.editable();
     this.phase = "closing";
     this.clearTimer();
     this.notify();
     try {
-      if (options.save !== false) await this.flush();
+      if (options2.save !== false) await this.flush();
       else {
         this.discardOnClose = true;
         this.pending = null;
@@ -7555,21 +9971,11404 @@ var EditorSession = class _EditorSession {
   }
 };
 
-// native/project-store.ts
+// native/project-media.ts
+import { createHash as createHash15, randomUUID as randomUUID20 } from "node:crypto";
+import { lstat as lstat8, mkdir as mkdir18, mkdtemp as mkdtemp3, readdir as readdir6, realpath as realpath7, rm as rm22, stat as stat19 } from "node:fs/promises";
+import { homedir as homedir6 } from "node:os";
+import { basename as basename5, extname as extname2, isAbsolute as isAbsolute13, join as join25, relative as relative6, resolve as resolve8, sep as sep6 } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// panel-browser:editor-renderer
+var source2 = '"use strict";\n(() => {\n  // src/editor/color.ts\n  var clamp = (value) => Math.max(0, Math.min(1, value));\n  var wrap = (degrees) => (degrees % 360 + 360) % 360;\n  function evaluateColorCurve(points, input) {\n    const value = clamp(input);\n    if (!points.length) return value;\n    if (value <= points[0].x) return points[0].y;\n    if (value >= points.at(-1).x) return points.at(-1).y;\n    let left = 0, right = points.length - 1;\n    while (left + 1 < right) {\n      const middle = left + right >> 1;\n      if (points[middle].x <= value) left = middle;\n      else right = middle;\n    }\n    const a = points[left], b = points[right];\n    return a.y + (value - a.x) / (b.x - a.x) * (b.y - a.y);\n  }\n  function hasColorAdjustment(color2) {\n    return color2.exposure !== 0 || color2.brightness !== 0 || color2.contrast !== 1 || color2.saturation !== 1 || color2.temperature !== 0 || color2.tint !== 0 || color2.hue !== 0 || color2.curves.some((curve) => curve.points.some((point) => point.x !== point.y)) || color2.hsl.some((band) => band.hueShift !== 0 || band.saturation !== 0 || band.lightness !== 0);\n  }\n  function rgbToHsl(r, g, b) {\n    const max = Math.max(r, g, b), min = Math.min(r, g, b);\n    const lightness = (max + min) / 2, delta = max - min;\n    if (delta === 0) return [0, 0, lightness];\n    const saturation = delta / (1 - Math.abs(2 * lightness - 1));\n    const hue = max === r ? (g - b) / delta : max === g ? (b - r) / delta + 2 : (r - g) / delta + 4;\n    return [wrap(hue * 60), saturation, lightness];\n  }\n  function hslToRgb(hue, saturation, lightness) {\n    const h = wrap(hue) / 60;\n    const c = (1 - Math.abs(2 * lightness - 1)) * saturation;\n    const x = c * (1 - Math.abs(h % 2 - 1));\n    const m = lightness - c / 2;\n    const rgb = h < 1 ? [c, x, 0] : h < 2 ? [x, c, 0] : h < 3 ? [0, c, x] : h < 4 ? [0, x, c] : h < 5 ? [x, 0, c] : [c, 0, x];\n    return [rgb[0] + m, rgb[1] + m, rgb[2] + m];\n  }\n  function applyColorToRgba(pixels, color2) {\n    if (pixels.length % 4) throw new Error("颜色缓冲必须包含完整 RGBA 像素");\n    if (!hasColorAdjustment(color2)) return;\n    const exposure = 2 ** color2.exposure;\n    const redGain = exposure * (1 + color2.temperature * 0.25 + color2.tint * 0.1);\n    const greenGain = exposure * (1 - color2.tint * 0.2);\n    const blueGain = exposure * (1 - color2.temperature * 0.25 + color2.tint * 0.1);\n    const curves = new Map(color2.curves.map((curve) => [curve.channel, curve.points]));\n    const master = curves.get("rgb"), redCurve = curves.get("red"), greenCurve = curves.get("green"), blueCurve = curves.get("blue");\n    const tone = (input, specific) => {\n      const value = master ? evaluateColorCurve(master, input) : input;\n      return specific ? evaluateColorCurve(specific, value) : value;\n    };\n    if (color2.hue === 0 && color2.saturation === 1 && !color2.hsl.length && pixels.length >= 4096) {\n      const red = new Uint8Array(256), green = new Uint8Array(256), blue = new Uint8Array(256);\n      for (let value = 0; value < 256; value++) {\n        const input = value / 255;\n        red[value] = Math.round(clamp(tone(\n          clamp((input * redGain - 0.5) * color2.contrast + 0.5 + color2.brightness),\n          redCurve\n        )) * 255);\n        green[value] = Math.round(clamp(tone(\n          clamp((input * greenGain - 0.5) * color2.contrast + 0.5 + color2.brightness),\n          greenCurve\n        )) * 255);\n        blue[value] = Math.round(clamp(tone(\n          clamp((input * blueGain - 0.5) * color2.contrast + 0.5 + color2.brightness),\n          blueCurve\n        )) * 255);\n      }\n      for (let index = 0; index < pixels.length; index += 4) {\n        if (pixels[index + 3] === 0) continue;\n        pixels[index] = red[pixels[index]];\n        pixels[index + 1] = green[pixels[index + 1]];\n        pixels[index + 2] = blue[pixels[index + 2]];\n      }\n      return;\n    }\n    const boundedHsl = color2.hsl.every((band) => band.hue >= 0 && band.hue <= 360);\n    for (let index = 0; index < pixels.length; index += 4) {\n      if (pixels[index + 3] === 0) continue;\n      let r = clamp(\n        (pixels[index] / 255 * redGain - 0.5) * color2.contrast + 0.5 + color2.brightness\n      );\n      let g = clamp(\n        (pixels[index + 1] / 255 * greenGain - 0.5) * color2.contrast + 0.5 + color2.brightness\n      );\n      let b = clamp(\n        (pixels[index + 2] / 255 * blueGain - 0.5) * color2.contrast + 0.5 + color2.brightness\n      );\n      if (color2.hue !== 0 || color2.saturation !== 1 || color2.hsl.length) {\n        let [h, s, l] = rgbToHsl(r, g, b);\n        let hueDelta = color2.hue, saturationDelta = 0, lightnessDelta = 0;\n        if (s > 0)\n          for (const band of color2.hsl) {\n            const distance = boundedHsl ? Math.min((h - band.hue + 360) % 360, (band.hue - h + 360) % 360) : Math.min(wrap(h - band.hue), wrap(band.hue - h));\n            const weight = distance >= band.width / 2 ? 0 : (1 + Math.cos(2 * Math.PI * distance / band.width)) / 2;\n            hueDelta += band.hueShift * weight;\n            saturationDelta += band.saturation * weight;\n            lightnessDelta += band.lightness * weight;\n          }\n        h += hueDelta;\n        s = clamp(s * color2.saturation + saturationDelta);\n        l = clamp(l + lightnessDelta);\n        [r, g, b] = hslToRgb(h, s, l);\n      }\n      pixels[index] = Math.round(clamp(tone(r, redCurve)) * 255);\n      pixels[index + 1] = Math.round(clamp(tone(g, greenCurve)) * 255);\n      pixels[index + 2] = Math.round(clamp(tone(b, blueCurve)) * 255);\n    }\n  }\n\n  // src/editor/visual-layout.ts\n  function fitVisualSource(source, canvas, transform2) {\n    const crop = transform2.crop;\n    const sourceX = crop.left * source.width, sourceY = crop.top * source.height;\n    const croppedWidth = source.width * (1 - crop.left - crop.right);\n    const croppedHeight = source.height * (1 - crop.top - crop.bottom);\n    if (![source.width, source.height, canvas.width, canvas.height, croppedWidth, croppedHeight].every(\n      (value) => Number.isFinite(value) && value > 0\n    ))\n      throw new Error("画面尺寸或裁切范围无效");\n    const factor = transform2.fit === "cover" ? Math.max(canvas.width / croppedWidth, canvas.height / croppedHeight) : Math.min(canvas.width / croppedWidth, canvas.height / croppedHeight);\n    const fittedWidth = transform2.fit === "stretch" ? canvas.width : croppedWidth * factor;\n    const fittedHeight = transform2.fit === "stretch" ? canvas.height : croppedHeight * factor;\n    return {\n      sourceX,\n      sourceY,\n      croppedWidth,\n      croppedHeight,\n      fittedWidth,\n      fittedHeight,\n      originalWidth: fittedWidth / (1 - crop.left - crop.right),\n      originalHeight: fittedHeight / (1 - crop.top - crop.bottom)\n    };\n  }\n\n  // src/editor/compositor.ts\n  var MAX_SIDE = 8192;\n  var MAX_ACTIVE_PIXELS = 128 * 1024 * 1024;\n  var MAX_CACHED_PIXELS = 16 * 1024 * 1024;\n  var clamp2 = (value) => Math.max(0, Math.min(1, value));\n  function dimensions(width, height) {\n    if (![width, height].every((value) => Number.isSafeInteger(value) && value > 0 && value <= MAX_SIDE))\n      throw new Error("合成画面宽高必须是 1–8192 范围内的整数");\n  }\n  function context(canvas) {\n    const value = canvas.getContext("2d");\n    if (!value) throw new Error("当前浏览器无法创建二维画面合成器");\n    return value;\n  }\n  function reset(buffer) {\n    buffer.context.reset();\n    buffer.context.scale(buffer.canvas.width / buffer.width, buffer.canvas.height / buffer.height);\n  }\n  function drawBuffer(target, buffer, x = 0) {\n    target.drawImage(buffer.canvas, x, 0, buffer.width, buffer.height);\n  }\n  function composite(mode) {\n    return mode === "normal" ? "source-over" : mode;\n  }\n  function directGroup(layer, width, height) {\n    const transform2 = layer.transform;\n    return layer.width === width && layer.height === height && /^#[0-9a-f]{6}00$/i.test(layer.background) && layer.blendMode === "normal" && !layer.mask && transform2.x === 0 && transform2.y === 0 && transform2.scaleX === 1 && transform2.scaleY === 1 && transform2.rotation === 0 && transform2.opacity === 1 && !transform2.flipX && !transform2.flipY && transform2.fit === "contain" && Object.values(transform2.crop).every((value) => value === 0) && !hasColorAdjustment(layer.color) && layer.color.curves.length === 0 && layer.color.hsl.length === 0 && layer.layers.every(\n      (child) => child.kind === "transition" ? (!child.from || child.from.blendMode === "normal") && (!child.to || child.to.blendMode === "normal") : child.blendMode === "normal"\n    );\n  }\n  function sourceDimensions(source, instanceId) {\n    const item = source;\n    if (typeof item.videoWidth === "number" && Number(item.readyState) < 2 || item.complete === false)\n      throw new Error(`素材画面尚未就绪：${instanceId}`);\n    const width = item.videoWidth ?? item.naturalWidth ?? item.displayWidth ?? item.width?.baseVal?.value ?? item.width;\n    const height = item.videoHeight ?? item.naturalHeight ?? item.displayHeight ?? item.height?.baseVal?.value ?? item.height;\n    if (![width, height].every(\n      (value) => typeof value === "number" && Number.isFinite(value) && value > 0\n    ))\n      throw new Error(`素材画面尺寸无效或已释放：${instanceId}`);\n    return [width, height];\n  }\n  var FrameCompositor = class {\n    free = [];\n    active = /* @__PURE__ */ new Set();\n    allocatedPixels = 0;\n    drawing = false;\n    resolution = 1;\n    dispose() {\n      if (this.drawing) throw new Error("正在合成画面，暂时无法释放合成器");\n      for (const item of this.free) {\n        item.canvas.width = 1;\n        item.canvas.height = 1;\n      }\n      this.free = [];\n      this.allocatedPixels = 0;\n    }\n    take(width, height) {\n      dimensions(width, height);\n      const physicalWidth = Math.max(1, Math.round(width * this.resolution)), physicalHeight = Math.max(1, Math.round(height * this.resolution));\n      const position = this.free.findIndex(\n        (item) => item.canvas.width === physicalWidth && item.canvas.height === physicalHeight\n      );\n      let buffer = position < 0 ? void 0 : this.free.splice(position, 1)[0];\n      if (!buffer) {\n        const pixels = physicalWidth * physicalHeight;\n        while (this.free.length && this.allocatedPixels + pixels > MAX_ACTIVE_PIXELS) {\n          const evicted = this.free.pop();\n          this.allocatedPixels -= evicted.pixels;\n          evicted.canvas.width = 1;\n          evicted.canvas.height = 1;\n        }\n        if (this.allocatedPixels + pixels > MAX_ACTIVE_PIXELS || this.active.size >= 64)\n          throw new Error("画面合成缓冲超过上限，请减小画面尺寸或减少嵌套层级");\n        const canvas = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(physicalWidth, physicalHeight) : Object.assign(document.createElement("canvas"), {\n          width: physicalWidth,\n          height: physicalHeight\n        });\n        buffer = { canvas, context: context(canvas), pixels, width, height };\n        this.allocatedPixels += buffer.pixels;\n      }\n      buffer.width = width;\n      buffer.height = height;\n      reset(buffer);\n      this.active.add(buffer);\n      return buffer;\n    }\n    release(buffer) {\n      if (!this.active.delete(buffer)) throw new Error("画面缓冲已释放");\n      if (this.free.length < 4 && this.free.reduce((sum, item) => sum + item.pixels, 0) + buffer.pixels <= MAX_CACHED_PIXELS)\n        this.free.push(buffer);\n      else {\n        this.allocatedPixels -= buffer.pixels;\n        buffer.canvas.width = 1;\n        buffer.canvas.height = 1;\n      }\n    }\n    preflight(layers, media, depth = 0) {\n      if (depth > 50 || layers.length > 2e3) throw new Error("画面层数或嵌套深度超过上限");\n      for (const layer of layers) {\n        if (layer.kind === "media") {\n          const source = media.get(layer.instanceId);\n          if (!source) throw new Error(`缺少已解码的素材画面：${layer.instanceId}`);\n          sourceDimensions(source, layer.instanceId);\n        } else if (layer.kind === "group") {\n          dimensions(layer.width, layer.height);\n          this.preflight(layer.layers, media, depth + 1);\n        } else if (layer.kind === "transition")\n          this.preflight(\n            [layer.from, layer.to].filter((item) => item !== null),\n            media,\n            depth + 1\n          );\n      }\n    }\n    draw(canvas, frame, media, resolution = 1) {\n      if (this.drawing) throw new Error("合成器不能同时绘制两个画面");\n      if (![1, 0.5, 0.25].includes(resolution)) throw new Error("预览质量无效");\n      dimensions(frame.width, frame.height);\n      this.preflight(frame.layers, media);\n      this.drawing = true;\n      this.resolution = resolution;\n      try {\n        const width = Math.max(1, Math.round(frame.width * resolution)), height = Math.max(1, Math.round(frame.height * resolution));\n        if (canvas.width !== width) canvas.width = width;\n        if (canvas.height !== height) canvas.height = height;\n        const target = context(canvas);\n        target.reset();\n        target.scale(width / frame.width, height / frame.height);\n        target.fillStyle = frame.background;\n        target.fillRect(0, 0, frame.width, frame.height);\n        this.drawLayers(target, frame.layers, frame.width, frame.height, media);\n      } finally {\n        for (const item of [...this.active]) this.release(item);\n        this.drawing = false;\n      }\n    }\n    drawLayers(target, layers, width, height, media) {\n      for (let index = 0; index < layers.length; index++) {\n        const layer = layers[index];\n        if (layer.kind === "transition") this.drawTransition(target, layer, width, height, media);\n        else if (layer.kind === "group" && directGroup(layer, width, height)) {\n          this.drawLayers(target, layer.layers, width, height, media);\n        } else {\n          let captions;\n          if (layer.kind === "text" && layer.style.layout === "caption-stack" && layer.style.animation === "none") {\n            captions = [layer.text];\n            const key = captionKey(layer);\n            while (index + 1 < layers.length) {\n              const next = layers[index + 1];\n              if (next.kind !== "text" || next.style.animation !== "none" || captionKey(next) !== key)\n                break;\n              captions.push(next.text);\n              index++;\n            }\n          }\n          const picture = this.visual(layer, width, height, media, captions);\n          try {\n            target.save();\n            target.globalCompositeOperation = composite(layer.blendMode);\n            drawBuffer(target, picture);\n            target.restore();\n          } finally {\n            this.release(picture);\n          }\n        }\n      }\n    }\n    visual(layer, width, height, media, captions) {\n      const picture = this.take(width, height);\n      let content;\n      try {\n        let source;\n        let sourceWidth, sourceHeight;\n        if (layer.kind === "media") {\n          source = media.get(layer.instanceId);\n          [sourceWidth, sourceHeight] = sourceDimensions(source, layer.instanceId);\n        } else if (layer.kind === "group") {\n          content = this.group(layer, media);\n          source = content.canvas;\n          sourceWidth = layer.width;\n          sourceHeight = layer.height;\n        } else {\n          content = this.take(width, height);\n          if (layer.kind === "text") drawText(content.context, layer, width, height, captions);\n          else drawShape(content.context, layer, width, height);\n          source = content.canvas;\n          sourceWidth = width;\n          sourceHeight = height;\n        }\n        const crop = layer.transform.crop;\n        const { sourceX, sourceY, croppedWidth, croppedHeight, fittedWidth, fittedHeight } = fitVisualSource(\n          { width: sourceWidth, height: sourceHeight },\n          { width, height },\n          layer.transform\n        );\n        const placement = (target) => {\n          target.translate(width * (0.5 + layer.transform.x), height * (0.5 + layer.transform.y));\n          target.rotate(layer.transform.rotation * Math.PI / 180);\n          target.scale(\n            layer.transform.scaleX * (layer.transform.flipX ? -1 : 1),\n            layer.transform.scaleY * (layer.transform.flipY ? -1 : 1)\n          );\n        };\n        const ctx = picture.context;\n        const sourceScaleX = content ? content.canvas.width / sourceWidth : 1, sourceScaleY = content ? content.canvas.height / sourceHeight : 1;\n        ctx.save();\n        placement(ctx);\n        ctx.drawImage(\n          source,\n          sourceX * sourceScaleX,\n          sourceY * sourceScaleY,\n          croppedWidth * sourceScaleX,\n          croppedHeight * sourceScaleY,\n          -fittedWidth / 2,\n          -fittedHeight / 2,\n          fittedWidth,\n          fittedHeight\n        );\n        ctx.restore();\n        if (hasColorAdjustment(layer.color)) {\n          let pixels;\n          try {\n            pixels = ctx.getImageData(0, 0, picture.canvas.width, picture.canvas.height);\n          } catch {\n            throw new Error(`素材画面无法读取像素进行调色：${layer.instanceId}`);\n          }\n          applyColorToRgba(pixels.data, layer.color);\n          ctx.putImageData(pixels, 0, 0);\n        }\n        if (layer.mask) {\n          const mask2 = this.take(width, height);\n          try {\n            const originalWidth = fittedWidth / (1 - crop.left - crop.right);\n            const originalHeight = fittedHeight / (1 - crop.top - crop.bottom);\n            const originX = -fittedWidth / 2 - crop.left * originalWidth;\n            const originY = -fittedHeight / 2 - crop.top * originalHeight;\n            const radius = layer.mask.feather * Math.min(\n              originalWidth * layer.transform.scaleX,\n              originalHeight * layer.transform.scaleY\n            ) / 2;\n            if (radius > 0) {\n              const rasterScale = Math.min(mask2.canvas.width / width, mask2.canvas.height / height);\n              mask2.context.filter = `blur(${Math.min(MAX_SIDE, radius) * rasterScale}px)`;\n            }\n            mask2.context.save();\n            placement(mask2.context);\n            drawMask(mask2.context, layer.mask, originX, originY, originalWidth, originalHeight);\n            mask2.context.restore();\n            ctx.save();\n            ctx.globalCompositeOperation = layer.mask.inverted ? "destination-out" : "destination-in";\n            drawBuffer(ctx, mask2);\n            ctx.restore();\n          } finally {\n            this.release(mask2);\n          }\n        }\n        if (layer.transform.opacity < 1) {\n          ctx.save();\n          ctx.globalCompositeOperation = "destination-in";\n          ctx.fillStyle = `rgba(0,0,0,${clamp2(layer.transform.opacity)})`;\n          ctx.fillRect(0, 0, width, height);\n          ctx.restore();\n        }\n        return picture;\n      } catch (error) {\n        this.release(picture);\n        throw error;\n      } finally {\n        if (content) this.release(content);\n      }\n    }\n    group(layer, media) {\n      const buffer = this.take(layer.width, layer.height);\n      try {\n        buffer.context.fillStyle = layer.background;\n        buffer.context.fillRect(0, 0, layer.width, layer.height);\n        this.drawLayers(buffer.context, layer.layers, layer.width, layer.height, media);\n        return buffer;\n      } catch (error) {\n        this.release(buffer);\n        throw error;\n      }\n    }\n    drawTransition(target, transition, width, height, media) {\n      const progress2 = clamp2(transition.progress);\n      let from, to;\n      try {\n        if (transition.from) from = this.visual(transition.from, width, height, media);\n        if (transition.to) to = this.visual(transition.to, width, height, media);\n        const draw = (ctx, picture, layer, x = 0) => {\n          if (!picture || !layer) return;\n          ctx.globalCompositeOperation = composite(layer.blendMode);\n          drawBuffer(ctx, picture, x);\n        };\n        if (transition.transitionKind === "dissolve" || transition.transitionKind === "fade-black") {\n          const a = this.take(width, height), b = this.take(width, height);\n          try {\n            a.context.drawImage(target.canvas, 0, 0, width, height);\n            b.context.drawImage(target.canvas, 0, 0, width, height);\n            draw(a.context, from, transition.from);\n            draw(b.context, to, transition.to);\n            target.save();\n            target.clearRect(0, 0, width, height);\n            if (transition.transitionKind === "fade-black") {\n              target.globalCompositeOperation = "source-over";\n              target.fillStyle = "#000000";\n              target.fillRect(0, 0, width, height);\n              target.globalAlpha = Math.abs(progress2 * 2 - 1);\n              drawBuffer(target, progress2 < 0.5 ? a : b);\n            } else {\n              target.globalCompositeOperation = "lighter";\n              target.globalAlpha = 1 - progress2;\n              drawBuffer(target, a);\n              target.globalAlpha = progress2;\n              drawBuffer(target, b);\n            }\n            target.restore();\n          } finally {\n            this.release(a);\n            this.release(b);\n          }\n        } else if (transition.transitionKind === "push-left" || transition.transitionKind === "push-right") {\n          const direction = transition.transitionKind === "push-left" ? -1 : 1;\n          const a = this.take(width, height);\n          let b;\n          try {\n            if ((!transition.from || transition.from.blendMode === "normal") && (!transition.to || transition.to.blendMode === "normal")) {\n              a.context.globalCompositeOperation = "lighter";\n              if (from) drawBuffer(a.context, from, direction * progress2 * width);\n              if (to) drawBuffer(a.context, to, -direction * (1 - progress2) * width);\n              target.save();\n              target.globalCompositeOperation = "source-over";\n              drawBuffer(target, a);\n              target.restore();\n            } else {\n              b = this.take(width, height);\n              a.context.drawImage(target.canvas, 0, 0, width, height);\n              b.context.drawImage(target.canvas, 0, 0, width, height);\n              draw(a.context, from, transition.from, direction * progress2 * width);\n              draw(b.context, to, transition.to, -direction * (1 - progress2) * width);\n              let backdrop, first, second;\n              try {\n                backdrop = target.getImageData(0, 0, target.canvas.width, target.canvas.height);\n                first = a.context.getImageData(0, 0, a.canvas.width, a.canvas.height);\n                second = b.context.getImageData(0, 0, b.canvas.width, b.canvas.height);\n              } catch {\n                throw new Error("素材画面无法读取像素进行推移转场");\n              }\n              for (let i = 0; i < backdrop.data.length; i += 4) {\n                const originalAlpha = backdrop.data[i + 3] / 255;\n                const aAlpha = first.data[i + 3] / 255, bAlpha = second.data[i + 3] / 255;\n                const alpha = clamp2(aAlpha + bAlpha - originalAlpha);\n                for (let channel = 0; channel < 3; channel++)\n                  backdrop.data[i + channel] = alpha === 0 ? 0 : (first.data[i + channel] * aAlpha + second.data[i + channel] * bAlpha - backdrop.data[i + channel] * originalAlpha) / alpha;\n                backdrop.data[i + 3] = Math.round(alpha * 255);\n              }\n              target.putImageData(backdrop, 0, 0);\n            }\n          } finally {\n            this.release(a);\n            if (b) this.release(b);\n          }\n        } else {\n          const split = transition.transitionKind === "wipe-left" ? width * (1 - progress2) : width * progress2;\n          const incomingLeft = transition.transitionKind === "wipe-right";\n          const a = this.take(width, height), b = this.take(width, height);\n          try {\n            a.context.drawImage(target.canvas, 0, 0, width, height);\n            b.context.drawImage(target.canvas, 0, 0, width, height);\n            draw(a.context, from, transition.from);\n            draw(b.context, to, transition.to);\n            target.save();\n            target.clearRect(0, 0, width, height);\n            target.globalCompositeOperation = "lighter";\n            target.save();\n            target.beginPath();\n            target.rect(incomingLeft ? split : 0, 0, incomingLeft ? width - split : split, height);\n            target.clip();\n            drawBuffer(target, a);\n            target.restore();\n            target.save();\n            target.beginPath();\n            target.rect(incomingLeft ? 0 : split, 0, incomingLeft ? split : width - split, height);\n            target.clip();\n            drawBuffer(target, b);\n            target.restore();\n            target.restore();\n          } finally {\n            this.release(a);\n            this.release(b);\n          }\n        }\n      } finally {\n        if (from) this.release(from);\n        if (to) this.release(to);\n      }\n    }\n  };\n  function drawMask(ctx, mask2, originX, originY, width, height) {\n    ctx.translate(originX + width * (0.5 + mask2.x), originY + height * (0.5 + mask2.y));\n    ctx.rotate(mask2.rotation * Math.PI / 180);\n    const w = width * mask2.width, h = height * mask2.height;\n    ctx.fillStyle = "#ffffff";\n    ctx.beginPath();\n    if (mask2.kind === "ellipse") ctx.ellipse(0, 0, w / 2, h / 2, 0, 0, Math.PI * 2);\n    else if (mask2.kind === "path") {\n      mask2.points.forEach((point, index) => {\n        if (index === 0) ctx.moveTo((point.x - 0.5) * w, (point.y - 0.5) * h);\n        else ctx.lineTo((point.x - 0.5) * w, (point.y - 0.5) * h);\n      });\n      ctx.closePath();\n    } else {\n      ctx.rect(-w / 2, -h / 2, w, h);\n      if (mask2.kind === "linear") {\n        const gradient = ctx.createLinearGradient(-w / 2, 0, w / 2, 0);\n        gradient.addColorStop(0, "#ffffff00");\n        gradient.addColorStop(1, "#ffffff");\n        ctx.fillStyle = gradient;\n      }\n    }\n    ctx.fill();\n  }\n  function captionKey(layer) {\n    return JSON.stringify([\n      layer.trackId,\n      layer.style,\n      layer.transform,\n      layer.color,\n      layer.blendMode,\n      layer.mask\n    ]);\n  }\n  function font(ctx, style) {\n    ctx.font = `${style.italic ? "italic " : ""}${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;\n    ctx.letterSpacing = `${style.letterSpacing}px`;\n    ctx.textAlign = "left";\n    ctx.textBaseline = "alphabetic";\n  }\n  function graphemes(text2) {\n    const segmenter = new Intl.Segmenter(void 0, { granularity: "grapheme" });\n    return Array.from(segmenter.segment(text2), (segment) => ({\n      text: segment.segment,\n      index: segment.index\n    }));\n  }\n  function keywordRanges(text2, keywords) {\n    const colors = new Uint8Array(text2.length);\n    for (const [index, keyword] of (keywords ?? []).entries()) {\n      if (!keyword.text) continue;\n      for (let at = text2.indexOf(keyword.text); at >= 0; at = text2.indexOf(keyword.text, at + keyword.text.length))\n        colors.fill(index + 1, at, at + keyword.text.length);\n    }\n    const ranges = [];\n    for (let start = 0; start < colors.length; ) {\n      let end = start + 1;\n      while (end < colors.length && colors[end] === colors[start]) end++;\n      if (colors[start]) ranges.push({ start, end, color: keywords[colors[start] - 1].color });\n      start = end;\n    }\n    return ranges;\n  }\n  function wrap2(ctx, text2, maxWidth, maximum = 1e4) {\n    const result = [];\n    let line = "", start = 0;\n    for (const item of graphemes(text2)) {\n      if (item.text === "\\n" || line && ctx.measureText(line + item.text).width > maxWidth) {\n        result.push({ text: line, start });\n        if (result.length >= maximum) return result;\n        line = item.text === "\\n" ? "" : item.text;\n        start = item.index + (item.text === "\\n" ? 1 : 0);\n      } else line += item.text;\n    }\n    if (line) result.push({ text: line, start });\n    return result.slice(0, maximum);\n  }\n  function drawText(ctx, layer, width, height, captions) {\n    const style = layer.style;\n    font(ctx, style);\n    let text2 = layer.text.replace(/\\r\\n?/g, "\\n");\n    if (style.animation === "typewriter") {\n      const letters = graphemes(text2), count = Math.floor(clamp2(layer.animationProgress / 0.6) * letters.length);\n      text2 = letters.slice(0, count).map((item) => item.text).join("");\n    }\n    if (style.animation === "fade")\n      ctx.globalAlpha = clamp2(\n        Math.min(layer.animationProgress / 0.1, (1 - layer.animationProgress) / 0.1)\n      );\n    const stack = style.layout === "caption-stack";\n    const textLines = (item, maximum = 1e4) => {\n      const sourceText = item.replace(/\\r\\n?/g, "\\n");\n      const emphasis = keywordRanges(\n        style.animation === "typewriter" ? layer.text.replace(/\\r\\n?/g, "\\n") : sourceText,\n        style.keywords\n      );\n      return wrap2(ctx, sourceText, width * style.maxWidth, maximum).map((line) => ({\n        ...line,\n        emphasis\n      }));\n    };\n    const lines = stack ? (captions ?? [text2]).flatMap((item) => textLines(item, 4)).slice(0, 4) : textLines(text2);\n    if (!lines.length) return;\n    const lineHeight = style.fontSize * style.lineHeight;\n    const textWidth = Math.max(...lines.map((line) => ctx.measureText(line.text).width));\n    const textHeight = lines.length * lineHeight;\n    const top = stack ? height / 2 - textHeight : (height - textHeight) / 2;\n    const boxWidth = Math.min(stack ? width * 0.93 : width, textWidth + style.padding * 2);\n    const boxTop = stack ? top : top - style.padding;\n    const boxHeight = textHeight + (stack ? style.padding : style.padding * 2);\n    ctx.fillStyle = style.background;\n    ctx.beginPath();\n    ctx.roundRect((width - boxWidth) / 2, boxTop, boxWidth, boxHeight, style.backgroundRadius);\n    ctx.fill();\n    ctx.shadowColor = style.shadow.color;\n    const raster = ctx.getTransform();\n    ctx.shadowBlur = style.shadow.blur * Math.min(raster.a, raster.d);\n    ctx.shadowOffsetX = style.shadow.x * raster.a;\n    ctx.shadowOffsetY = style.shadow.y * raster.d;\n    ctx.fillStyle = style.color;\n    ctx.strokeStyle = style.strokeColor;\n    ctx.lineWidth = style.strokeWidth;\n    ctx.lineJoin = "round";\n    const highlights = [];\n    if (style.animation === "word-highlight") {\n      let cursor = 0;\n      layer.words.forEach((word, index) => {\n        const start = text2.indexOf(word.text, cursor);\n        if (start < 0) return;\n        cursor = start + word.text.length;\n        if (layer.activeWordIndices.includes(index))\n          highlights.push({ start, end: cursor, color: style.highlightColor });\n      });\n    }\n    const metrics = ctx.measureText("国M");\n    const ascent = metrics.actualBoundingBoxAscent || style.fontSize * 0.8;\n    const descent = metrics.actualBoundingBoxDescent || style.fontSize * 0.2;\n    lines.forEach((line, index) => {\n      const lineWidth = ctx.measureText(line.text).width;\n      const x = style.align === "left" ? (width - textWidth) / 2 : style.align === "right" ? (width + textWidth) / 2 - lineWidth : (width - lineWidth) / 2;\n      const y = stack ? top + lineHeight * (index + 1) - style.fontSize * 0.1 : top + lineHeight * index + (lineHeight - ascent - descent) / 2 + ascent;\n      if (style.strokeWidth > 0) ctx.strokeText(line.text, x, y);\n      ctx.fillText(line.text, x, y);\n      for (const highlight of [...line.emphasis, ...highlights]) {\n        const from = Math.max(0, highlight.start - line.start), to = Math.min(line.text.length, highlight.end - line.start);\n        if (to <= from) continue;\n        const left = ctx.measureText(line.text.slice(0, from)).width;\n        const right = ctx.measureText(line.text.slice(0, to)).width;\n        ctx.save();\n        ctx.beginPath();\n        ctx.rect(x + left, y - style.fontSize * 1.5, right - left, style.fontSize * 2);\n        ctx.clip();\n        ctx.shadowColor = "transparent";\n        ctx.shadowBlur = 0;\n        ctx.fillStyle = highlight.color;\n        ctx.fillText(line.text, x, y);\n        ctx.restore();\n      }\n    });\n  }\n  function drawShape(ctx, layer, width, height) {\n    ctx.beginPath();\n    if (layer.shape === "ellipse")\n      ctx.ellipse(width / 2, height / 2, width / 2, height / 2, 0, 0, Math.PI * 2);\n    else if (layer.shape === "line") {\n      ctx.moveTo(0, height / 2);\n      ctx.lineTo(width, height / 2);\n    } else ctx.rect(0, 0, width, height);\n    if (layer.shape !== "line") {\n      ctx.fillStyle = layer.fill;\n      ctx.fill();\n    }\n    if (layer.strokeWidth > 0) {\n      ctx.strokeStyle = layer.stroke;\n      ctx.lineWidth = layer.strokeWidth;\n      ctx.stroke();\n    }\n  }\n\n  // src/editor/time.ts\n  var TICKS_PER_SECOND = 24e4;\n  var MAX_TICK = BigInt(Number.MAX_SAFE_INTEGER);\n  var SUPPORTED_RATES = /* @__PURE__ */ new Set([\n    "24/1",\n    "25/1",\n    "30/1",\n    "48/1",\n    "50/1",\n    "60/1",\n    "24000/1001",\n    "30000/1001",\n    "60000/1001"\n  ]);\n  function assertTick(value, label2 = "时间") {\n    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)\n      throw new Error(`${label2}必须是非负安全整数刻度`);\n    return value;\n  }\n  function object(value, label2, allowed) {\n    if (!value || typeof value !== "object" || Array.isArray(value))\n      throw new Error(`${label2}必须是对象`);\n    const prototype = Object.getPrototypeOf(value);\n    if (prototype !== Object.prototype && prototype !== null)\n      throw new Error(`${label2}必须是普通对象`);\n    if (Reflect.ownKeys(value).some((key) => typeof key !== "string" || !allowed.includes(key)))\n      throw new Error(`${label2}包含不支持的字段`);\n    return value;\n  }\n  function validateFrameRate(value) {\n    const data = object(value, "帧率", ["numerator", "denominator"]);\n    let numerator = assertTick(data.numerator, "帧率分子");\n    let denominator = assertTick(data.denominator, "帧率分母");\n    if (!numerator || !denominator) throw new Error("帧率分子和分母必须大于零");\n    let a = numerator, b = denominator;\n    while (b) [a, b] = [b, a % b];\n    numerator /= a;\n    denominator /= a;\n    if (!SUPPORTED_RATES.has(`${numerator}/${denominator}`)) throw new Error("不支持此工程帧率");\n    return { numerator, denominator };\n  }\n  function ticksToSeconds(tick2) {\n    return assertTick(tick2) / TICKS_PER_SECOND;\n  }\n  function tickFromBigInt(value) {\n    if (value < 0n || value > MAX_TICK) throw new Error("时间超过安全整数刻度范围");\n    return Number(value);\n  }\n  function validateTimeMap(value, duration, sourceDuration) {\n    assertTick(duration, "片段时长");\n    assertTick(sourceDuration, "素材时长");\n    if (!duration) throw new Error("片段时长必须大于零");\n    const data = object(value, "时间映射", ["points"]);\n    if (!Array.isArray(data.points) || data.points.length < 2 || data.points.length > 1e5)\n      throw new Error("时间映射需要 2 至 100000 个节点");\n    if (Object.getPrototypeOf(data.points) !== Array.prototype || Reflect.ownKeys(data.points).length !== data.points.length + 1)\n      throw new Error("时间映射节点必须是连续的普通数组");\n    for (let index = 0; index < data.points.length; index++)\n      if (!Object.hasOwn(data.points, index)) throw new Error("时间映射节点不能留空");\n    let previous = -1;\n    const points = data.points.map((raw) => {\n      const point = object(raw, "时间映射节点", ["time", "source"]);\n      const time = assertTick(point.time, "局部时间");\n      const source = assertTick(point.source, "源时间");\n      if (time <= previous || time > duration) throw new Error("时间映射的局部时间必须严格递增");\n      if (source > sourceDuration) throw new Error("时间映射超出素材时长");\n      previous = time;\n      return { time, source };\n    });\n    if (points[0].time !== 0 || points.at(-1).time !== duration)\n      throw new Error("时间映射必须覆盖片段的完整时长");\n    return { points };\n  }\n  function interpolateSource(a, b, time) {\n    const width = BigInt(b.time - a.time);\n    const elapsed = BigInt(time - a.time);\n    const numerator = BigInt(a.source) * (width - elapsed) + BigInt(b.source) * elapsed;\n    return tickFromBigInt((2n * numerator + width) / (2n * width));\n  }\n  function sourceTimeAt(map, time) {\n    assertTick(time, "局部时间");\n    if (map.points.length < 2) throw new Error("时间映射缺少节点");\n    if (time <= map.points[0].time) return map.points[0].source;\n    if (time >= map.points.at(-1).time) return map.points.at(-1).source;\n    let left = 0, right = map.points.length - 1;\n    while (left + 1 < right) {\n      const middle = left + Math.floor((right - left) / 2);\n      if (map.points[middle].time <= time) left = middle;\n      else right = middle;\n    }\n    return interpolateSource(map.points[left], map.points[right], time);\n  }\n\n  // src/editor/animation.ts\n  function finite(value, label2) {\n    if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${label2}必须是有限数`);\n    return value;\n  }\n  function object2(value, allowed, label2) {\n    if (!value || typeof value !== "object" || Array.isArray(value))\n      throw new Error(`${label2}必须是对象`);\n    const prototype = Object.getPrototypeOf(value);\n    if (prototype !== Object.prototype && prototype !== null)\n      throw new Error(`${label2}必须是普通对象`);\n    if (Reflect.ownKeys(value).some((key) => typeof key !== "string" || !allowed.includes(key)))\n      throw new Error(`${label2}包含不支持的字段`);\n    return value;\n  }\n  function validateEasing(value) {\n    if (typeof value === "string" && ["linear", "hold", "ease-in", "ease-out", "ease-in-out"].includes(value))\n      return value;\n    const data = object2(value, ["type", "x1", "y1", "x2", "y2"], "关键帧缓动");\n    if (data.type !== "cubic-bezier") throw new Error("未知关键帧缓动");\n    const result = {\n      type: "cubic-bezier",\n      x1: finite(data.x1, "贝塞尔 x1"),\n      y1: finite(data.y1, "贝塞尔 y1"),\n      x2: finite(data.x2, "贝塞尔 x2"),\n      y2: finite(data.y2, "贝塞尔 y2")\n    };\n    if (result.x1 < 0 || result.x1 > 1 || result.x2 < 0 || result.x2 > 1 || result.y1 < -4 || result.y1 > 4 || result.y2 < -4 || result.y2 > 4)\n      throw new Error("贝塞尔横轴控制点须在 0–1，纵轴控制点须在 -4–4");\n    return result;\n  }\n  function validateKeyframes(value, duration) {\n    if (duration !== void 0) assertTick(duration, "动画时长");\n    if (!Array.isArray(value) || !value.length || value.length > 1e5)\n      throw new Error("动画需要 1 至 100000 个关键帧");\n    if (Object.getPrototypeOf(value) !== Array.prototype || Reflect.ownKeys(value).length !== value.length + 1)\n      throw new Error("关键帧必须是连续的普通数组");\n    for (let index = 0; index < value.length; index++)\n      if (!Object.hasOwn(value, index)) throw new Error("关键帧不能留空");\n    let previous = -1;\n    return value.map((raw) => {\n      const data = object2(raw, ["time", "value", "easing"], "关键帧");\n      const time = assertTick(data.time, "关键帧时间");\n      if (time <= previous || duration !== void 0 && time > duration)\n        throw new Error("关键帧时间必须严格递增且位于动画时长内");\n      previous = time;\n      return {\n        time,\n        value: finite(data.value, "关键帧数值"),\n        ...data.easing === void 0 ? {} : { easing: validateEasing(data.easing) }\n      };\n    });\n  }\n  function validateAnimatedNumber(value, duration) {\n    if (duration !== void 0) assertTick(duration, "动画时长");\n    if (typeof value === "number") return finite(value, "动画数值");\n    const data = object2(value, ["keyframes"], "动画数值");\n    return { keyframes: validateKeyframes(data.keyframes, duration) };\n  }\n  function cubicFor(easing) {\n    if (typeof easing === "object") return easing;\n    if (easing === "ease-in") return { type: "cubic-bezier", x1: 0.42, y1: 0, x2: 1, y2: 1 };\n    if (easing === "ease-out") return { type: "cubic-bezier", x1: 0, y1: 0, x2: 0.58, y2: 1 };\n    if (easing === "ease-in-out") return { type: "cubic-bezier", x1: 0.42, y1: 0, x2: 0.58, y2: 1 };\n    return void 0;\n  }\n  function coordinate(t, p1, p2) {\n    const rest = 1 - t;\n    return 3 * rest * rest * t * p1 + 3 * rest * t * t * p2 + t * t * t;\n  }\n  function parameterAtX(cubic, x) {\n    if (x <= 0) return 0;\n    if (x >= 1) return 1;\n    let left = 0, right = 1;\n    for (let i = 0; i < 56; i++) {\n      const middle = (left + right) / 2;\n      if (coordinate(middle, cubic.x1, cubic.x2) < x) left = middle;\n      else right = middle;\n    }\n    return (left + right) / 2;\n  }\n  function progress(easing, x) {\n    if (x <= 0) return 0;\n    if (x >= 1) return 1;\n    if (easing === "hold") return 0;\n    const cubic = cubicFor(easing);\n    return cubic ? coordinate(parameterAtX(cubic, x), cubic.y1, cubic.y2) : x;\n  }\n  function preceding(keys, time) {\n    let left = 0, right = keys.length - 1;\n    while (left + 1 < right) {\n      const middle = left + Math.floor((right - left) / 2);\n      if (keys[middle].time <= time) left = middle;\n      else right = middle;\n    }\n    return left;\n  }\n  function evaluateAnimatedNumber(value, time) {\n    assertTick(time, "动画时间");\n    if (typeof value === "number") return value;\n    const keys = value.keyframes;\n    if (!keys.length) throw new Error("动画缺少关键帧");\n    if (time <= keys[0].time) return keys[0].value;\n    if (time >= keys.at(-1).time) return keys.at(-1).value;\n    const index = preceding(keys, time), left = keys[index], right = keys[index + 1];\n    if (time === left.time || left.value === right.value) return left.value;\n    const amount = progress(left.easing ?? "linear", (time - left.time) / (right.time - left.time));\n    return left.value * (1 - amount) + right.value * amount;\n  }\n\n  // src/editor/export-settings.ts\n  var VIDEO_ENCODERS = {\n    h264: "libx264",\n    hevc: "libx265",\n    vp9: "libvpx-vp9",\n    prores: "prores_ks"\n  };\n  var AUDIO_ENCODERS = { aac: "aac", opus: "libopus", pcm: "pcm_s16le" };\n  var PROFILE_KEYS = [\n    "id",\n    "name",\n    "width",\n    "height",\n    "frameRate",\n    "container",\n    "videoCodec",\n    "audioCodec",\n    "quality",\n    "audioBitrate",\n    "sampleRate",\n    "includeCaptions"\n  ];\n  function object3(value, keys, label2) {\n    if (!value || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.keys(value).some((key) => !keys.includes(key)))\n      throw new Error(`${label2}格式无效或包含未知字段`);\n    return value;\n  }\n  function integer(value, min, max, label2) {\n    if (!Number.isSafeInteger(value) || Number(value) < min || Number(value) > max)\n      throw new Error(`${label2}必须是 ${min}–${max} 范围内的整数`);\n    return Number(value);\n  }\n  function label(value, max, name) {\n    if (typeof value !== "string" || !value.trim() || value.length > max || /[\\x00-\\x1f\\x7f]/.test(value))\n      throw new Error(`${name}无效`);\n    return value;\n  }\n  function rate(value) {\n    const data = object3(value, ["numerator", "denominator"], "导出帧率");\n    return validateFrameRate(data);\n  }\n  function validateExportProfile(value) {\n    const data = object3(value, PROFILE_KEYS, "导出配置");\n    const id2 = label(data.id, 128, "导出配置 ID");\n    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(id2)) throw new Error("导出配置 ID 无效");\n    const name = label(data.name, 200, "导出配置名称");\n    const width = integer(data.width, 16, 8192, "导出宽度");\n    const height = integer(data.height, 16, 8192, "导出高度");\n    if (width % 2 || height % 2) throw new Error("导出画面宽高必须是偶数");\n    const frameRate = rate(data.frameRate);\n    if (!["mp4", "mov", "webm"].includes(data.container)) throw new Error("不支持此导出容器");\n    if (!Object.hasOwn(VIDEO_ENCODERS, data.videoCodec)) throw new Error("不支持此视频编码");\n    if (!Object.hasOwn(AUDIO_ENCODERS, data.audioCodec)) throw new Error("不支持此音频编码");\n    const container = data.container;\n    const videoCodec = data.videoCodec;\n    const audioCodec = data.audioCodec;\n    const compatible = container === "webm" ? videoCodec === "vp9" && audioCodec === "opus" : container === "mp4" ? ["h264", "hevc"].includes(videoCodec) && audioCodec === "aac" : ["h264", "hevc"].includes(videoCodec) && audioCodec === "aac" || videoCodec === "prores" && audioCodec === "pcm";\n    if (!compatible) throw new Error("所选容器与音视频编码不兼容");\n    const rawQuality = object3(data.quality, ["mode", "value", "bitsPerSecond"], "导出质量");\n    let quality;\n    if (rawQuality.mode === "quality") {\n      if (Object.hasOwn(rawQuality, "bitsPerSecond")) throw new Error("质量模式不能同时指定码率");\n      quality = { mode: "quality", value: integer(rawQuality.value, 0, 100, "导出质量") };\n    } else if (rawQuality.mode === "bitrate") {\n      if (Object.hasOwn(rawQuality, "value")) throw new Error("码率模式不能同时指定质量");\n      if (videoCodec === "prores")\n        throw new Error("ProRes 请使用质量模式，编码器不支持此目标码率控制");\n      quality = {\n        mode: "bitrate",\n        bitsPerSecond: integer(rawQuality.bitsPerSecond, 1e5, 5e8, "视频目标码率")\n      };\n    } else throw new Error("导出质量模式无效");\n    const audioBitrate = audioCodec === "pcm" ? integer(data.audioBitrate, 1536e3, 1536e3, "PCM 音频码率") : integer(data.audioBitrate, 32e3, audioCodec === "opus" ? 51e4 : 512e3, "音频目标码率");\n    if (data.sampleRate !== 48e3) throw new Error("导出音频采样率必须为 48000 Hz");\n    if (typeof data.includeCaptions !== "boolean") throw new Error("请明确是否导出字幕");\n    return {\n      id: id2,\n      name,\n      width,\n      height,\n      frameRate,\n      container,\n      videoCodec,\n      audioCodec,\n      quality,\n      audioBitrate,\n      sampleRate: 48e3,\n      includeCaptions: data.includeCaptions\n    };\n  }\n\n  // src/editor/validation.ts\n  var MAX_EDITOR_TICK = 24 * 60 * 60 * TICKS_PER_SECOND;\n  var MAX_DOCUMENT_NODES = 1e6;\n  var MAX_DOCUMENT_CHARACTERS = 16 * 1024 * 1024;\n  var controls = /[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]/;\n  function copyData(value) {\n    let nodes = 0, characters = 0;\n    const ancestors = /* @__PURE__ */ new Set();\n    function visit(item, depth) {\n      if (++nodes > MAX_DOCUMENT_NODES || depth > 64) throw new Error("工程结构超过容量限制");\n      if (item === null || typeof item === "boolean") return item;\n      if (typeof item === "number") {\n        if (!Number.isFinite(item)) throw new Error("工程不能包含非有限数字");\n        return item;\n      }\n      if (typeof item === "string") {\n        characters += item.length;\n        if (characters > MAX_DOCUMENT_CHARACTERS) throw new Error("工程文字超过容量限制");\n        return item;\n      }\n      if (!item || typeof item !== "object") throw new Error("工程必须只包含 JSON 数据");\n      if (ancestors.has(item)) throw new Error("工程 JSON 数据不能循环引用");\n      const array = Array.isArray(item);\n      const prototype = Object.getPrototypeOf(item);\n      if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null)\n        throw new Error("工程数据必须是普通对象或数组");\n      ancestors.add(item);\n      try {\n        const result = array ? [] : {};\n        const keys = Reflect.ownKeys(item);\n        if (array && keys.length !== item.length + 1)\n          throw new Error("工程数组不能有空洞或额外属性");\n        for (const key of keys) {\n          if (array && key === "length") continue;\n          if (typeof key !== "string" || ["__proto__", "constructor", "prototype"].includes(key))\n            throw new Error("工程包含不安全的数据键");\n          characters += key.length;\n          if (characters > MAX_DOCUMENT_CHARACTERS) throw new Error("工程文字超过容量限制");\n          if (array && !/^(0|[1-9]\\d*)$/.test(key)) throw new Error("工程数组包含额外属性");\n          const descriptor = Object.getOwnPropertyDescriptor(item, key);\n          if (!descriptor.enumerable || !("value" in descriptor))\n            throw new Error("工程不接受隐藏属性或访问器");\n          result[key] = visit(descriptor.value, depth + 1);\n        }\n        return result;\n      } finally {\n        ancestors.delete(item);\n      }\n    }\n    return visit(value, 0);\n  }\n  function object4(value, allowed, label2) {\n    if (!value || typeof value !== "object" || Array.isArray(value))\n      throw new Error(`${label2}必须是对象`);\n    const data = value;\n    for (const key of Object.keys(data))\n      if (!allowed.includes(key)) throw new Error(`${label2}包含未知字段：${key}`);\n    return data;\n  }\n  function list(value, limit, label2, minimum = 0) {\n    if (!Array.isArray(value) || value.length < minimum || value.length > limit)\n      throw new Error(`${label2}需要 ${minimum} 至 ${limit} 项`);\n    return value;\n  }\n  function number(value, min, max, label2) {\n    if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max)\n      throw new Error(`${label2}必须在 ${min} 至 ${max} 之间`);\n    return value;\n  }\n  function integer2(value, min, max, label2) {\n    const result = number(value, min, max, label2);\n    if (!Number.isSafeInteger(result)) throw new Error(`${label2}必须是安全整数`);\n    return result;\n  }\n  function tick(value, label2, positive = false) {\n    return integer2(value, positive ? 1 : 0, MAX_EDITOR_TICK, label2);\n  }\n  function text(value, max, label2, empty = false, multiline = false) {\n    if (typeof value !== "string" || value.length > max || !empty && !value.trim() || controls.test(value) || !multiline && /[\\n\\r\\t]/.test(value))\n      throw new Error(`${label2}文字无效或超过 ${max} 字符`);\n    return value;\n  }\n  function id(value, label2) {\n    const result = text(value, 128, label2);\n    if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(result)) throw new Error(`${label2}无效`);\n    return result;\n  }\n  function bool(value, label2) {\n    if (typeof value !== "boolean") throw new Error(`${label2}必须是布尔值`);\n    return value;\n  }\n  function choice(value, allowed, label2) {\n    if (typeof value !== "string" || !allowed.includes(value)) throw new Error(`${label2}无效`);\n    return value;\n  }\n  function color(value, label2) {\n    if (typeof value !== "string" || !(value === "transparent" || /^#(?:[\\da-f]{3,4}|[\\da-f]{6}|[\\da-f]{8})$/i.test(value)))\n      throw new Error(`${label2}须为十六进制颜色或 transparent`);\n    return value;\n  }\n  function unique(items, label2) {\n    const result = /* @__PURE__ */ new Map();\n    for (const item of items) {\n      if (result.has(item.id)) throw new Error(`${label2} ID 重复：${item.id}`);\n      result.set(item.id, item);\n    }\n    return result;\n  }\n  function dataObject(value, label2) {\n    if (!value || typeof value !== "object" || Array.isArray(value))\n      throw new Error(`${label2}必须是对象`);\n    return value;\n  }\n  function animated(value, duration, min, max, label2) {\n    if (typeof value === "number") return number(value, min, max, label2);\n    const data = object4(value, ["keyframes"], label2);\n    for (const raw of list(data.keyframes, 1e4, `${label2}关键帧`, 1)) {\n      const frame = object4(raw, ["time", "value", "easing"], "关键帧");\n      number(frame.value, min, max, label2);\n      if (typeof frame.easing === "object")\n        object4(frame.easing, ["type", "x1", "y1", "x2", "y2"], "缓动曲线");\n    }\n    return validateAnimatedNumber(data, duration);\n  }\n  function timeMap(value, duration, sourceDuration) {\n    const data = object4(value, ["points"], "时间映射");\n    for (const point of list(data.points, 1e4, "时间映射节点", 2))\n      object4(point, ["time", "source"], "时间映射节点");\n    return validateTimeMap(data, duration, sourceDuration);\n  }\n  function assertNoEmptyHold(map, sourceDuration, label2) {\n    if (map.points.some(\n      (point, index) => index > 0 && point.source === sourceDuration && map.points[index - 1].source === sourceDuration\n    ))\n      throw new Error(`${label2}不能在素材结束边界定格`);\n  }\n  function transform(value, duration) {\n    const data = object4(\n      value,\n      ["x", "y", "scaleX", "scaleY", "rotation", "opacity", "flipX", "flipY", "fit", "crop"],\n      "构图"\n    );\n    const crop = object4(data.crop, ["left", "top", "right", "bottom"], "裁切");\n    const bounds = {\n      left: number(crop.left, 0, 1, "左裁切"),\n      top: number(crop.top, 0, 1, "上裁切"),\n      right: number(crop.right, 0, 1, "右裁切"),\n      bottom: number(crop.bottom, 0, 1, "下裁切")\n    };\n    if (bounds.left + bounds.right >= 1 || bounds.top + bounds.bottom >= 1)\n      throw new Error("裁切后必须保留有效画面");\n    return {\n      x: animated(data.x, duration, -10, 10, "水平位置"),\n      y: animated(data.y, duration, -10, 10, "垂直位置"),\n      scaleX: animated(data.scaleX, duration, 0, 100, "水平缩放"),\n      scaleY: animated(data.scaleY, duration, 0, 100, "垂直缩放"),\n      rotation: animated(data.rotation, duration, -36e4, 36e4, "旋转"),\n      opacity: animated(data.opacity, duration, 0, 1, "不透明度"),\n      flipX: bool(data.flipX, "水平翻转"),\n      flipY: bool(data.flipY, "垂直翻转"),\n      fit: choice(data.fit, ["contain", "cover", "stretch"], "画面适配"),\n      crop: bounds\n    };\n  }\n  function adjustment(value, duration) {\n    const data = object4(\n      value,\n      [\n        "exposure",\n        "brightness",\n        "contrast",\n        "saturation",\n        "temperature",\n        "tint",\n        "hue",\n        "curves",\n        "hsl"\n      ],\n      "调色"\n    );\n    const channels = /* @__PURE__ */ new Set();\n    const curves = list(data.curves, 4, "调色曲线").map((raw) => {\n      const curve = object4(raw, ["channel", "points"], "调色曲线");\n      const channel = choice(curve.channel, ["rgb", "red", "green", "blue"], "曲线通道");\n      if (channels.has(channel)) throw new Error("调色曲线通道重复");\n      channels.add(channel);\n      let last = -1;\n      const points = list(curve.points, 256, "曲线节点", 2).map((entry) => {\n        const point = object4(entry, ["x", "y"], "曲线节点");\n        const x = number(point.x, 0, 1, "曲线输入"), y = number(point.y, 0, 1, "曲线输出");\n        if (x <= last) throw new Error("调色曲线输入必须严格递增");\n        last = x;\n        return { x, y };\n      });\n      if (points[0].x !== 0 || points.at(-1).x !== 1) throw new Error("调色曲线必须覆盖 0 至 1");\n      return { channel, points };\n    });\n    const hsl = list(data.hsl, 24, "HSL 调整").map((raw) => {\n      const band = object4(raw, ["hue", "width", "hueShift", "saturation", "lightness"], "HSL 调整");\n      return {\n        hue: number(band.hue, 0, 360, "HSL 色相"),\n        width: number(band.width, 1e-3, 360, "HSL 范围"),\n        hueShift: number(band.hueShift, -180, 180, "HSL 色相偏移"),\n        saturation: number(band.saturation, -1, 1, "HSL 饱和度"),\n        lightness: number(band.lightness, -1, 1, "HSL 明度")\n      };\n    });\n    return {\n      exposure: animated(data.exposure, duration, -10, 10, "曝光"),\n      brightness: animated(data.brightness, duration, -1, 1, "亮度"),\n      contrast: animated(data.contrast, duration, 0, 4, "对比度"),\n      saturation: animated(data.saturation, duration, 0, 4, "饱和度"),\n      temperature: animated(data.temperature, duration, -1, 1, "色温"),\n      tint: animated(data.tint, duration, -1, 1, "色调"),\n      hue: animated(data.hue, duration, -360, 360, "色相"),\n      curves,\n      hsl\n    };\n  }\n  function mask(value) {\n    const data = object4(\n      value,\n      ["kind", "x", "y", "width", "height", "rotation", "feather", "inverted", "points"],\n      "蒙版"\n    );\n    const kind = choice(data.kind, ["rectangle", "ellipse", "linear", "path"], "蒙版类型");\n    let points;\n    if (kind === "path") {\n      points = list(data.points, 256, "蒙版顶点", 3).map((raw) => {\n        const point = object4(raw, ["x", "y"], "蒙版顶点");\n        return { x: number(point.x, 0, 1, "蒙版顶点 x"), y: number(point.y, 0, 1, "蒙版顶点 y") };\n      });\n      if (new Set(points.map((point) => `${point.x}:${point.y}`)).size < 3)\n        throw new Error("路径蒙版至少需要三个不同顶点");\n    } else if (data.points !== void 0) throw new Error("只有路径蒙版可以保存顶点");\n    return {\n      kind,\n      x: number(data.x, -2, 2, "蒙版 x"),\n      y: number(data.y, -2, 2, "蒙版 y"),\n      width: number(data.width, 1e-3, 4, "蒙版宽度"),\n      height: number(data.height, 1e-3, 4, "蒙版高度"),\n      rotation: number(data.rotation, -36e4, 36e4, "蒙版旋转"),\n      feather: number(data.feather, 0, 1, "蒙版羽化"),\n      inverted: bool(data.inverted, "蒙版反转"),\n      ...points ? { points } : {}\n    };\n  }\n  function visual(data, duration) {\n    return {\n      transform: transform(data.transform, duration),\n      color: adjustment(data.color, duration),\n      blendMode: choice(\n        data.blendMode,\n        ["normal", "multiply", "screen", "overlay", "darken", "lighten"],\n        "混合模式"\n      ),\n      ...data.mask === void 0 ? {} : { mask: mask(data.mask) }\n    };\n  }\n  function audio(value, duration) {\n    const data = object4(\n      value,\n      ["volume", "pan", "fadeIn", "fadeOut", "pitchSemitones", "preservePitch", "ducking"],\n      "音频混音"\n    );\n    let ducking;\n    if (data.ducking !== void 0) {\n      const sidechain = object4(\n        data.ducking,\n        ["sidechainTrackIds", "thresholdDb", "attenuationDb", "attack", "release"],\n        "自动压低背景声"\n      );\n      const sidechainTrackIds = list(sidechain.sidechainTrackIds, 64, "参考音轨", 1).map(\n        (value2) => id(value2, "参考音轨 ID")\n      );\n      if (new Set(sidechainTrackIds).size !== sidechainTrackIds.length)\n        throw new Error("参考音轨重复");\n      ducking = {\n        sidechainTrackIds,\n        thresholdDb: number(sidechain.thresholdDb, -96, 0, "压低触发电平"),\n        attenuationDb: number(sidechain.attenuationDb, 0, 60, "压低分贝"),\n        attack: integer2(sidechain.attack, 0, TICKS_PER_SECOND * 10, "压低启动时间"),\n        release: integer2(sidechain.release, 0, TICKS_PER_SECOND * 30, "压低恢复时间")\n      };\n    }\n    return {\n      volume: animated(data.volume, duration, 0, 4, "音量"),\n      pan: animated(data.pan, duration, -1, 1, "声像"),\n      fadeIn: integer2(data.fadeIn, 0, duration, "声音淡入"),\n      fadeOut: integer2(data.fadeOut, 0, duration, "声音淡出"),\n      pitchSemitones: number(data.pitchSemitones, -24, 24, "音高"),\n      preservePitch: bool(data.preservePitch, "保持音高"),\n      ...ducking ? { ducking } : {}\n    };\n  }\n  function textStyle(value) {\n    const data = object4(\n      value,\n      [\n        "layout",\n        "fontFamily",\n        "fontSize",\n        "fontWeight",\n        "italic",\n        "color",\n        "strokeColor",\n        "strokeWidth",\n        "background",\n        "backgroundRadius",\n        "padding",\n        "align",\n        "lineHeight",\n        "letterSpacing",\n        "maxWidth",\n        "highlightColor",\n        "keywords",\n        "shadow",\n        "animation"\n      ],\n      "文字样式"\n    );\n    const shadow = object4(data.shadow, ["color", "blur", "x", "y"], "文字阴影");\n    return {\n      layout: choice(data.layout, ["box", "caption-stack"], "文字布局"),\n      fontFamily: text(data.fontFamily, 200, "字体"),\n      fontSize: number(data.fontSize, 1, 2048, "字号"),\n      fontWeight: integer2(data.fontWeight, 1, 1e3, "字重"),\n      italic: bool(data.italic, "斜体"),\n      color: color(data.color, "文字颜色"),\n      strokeColor: color(data.strokeColor, "文字描边颜色"),\n      strokeWidth: number(data.strokeWidth, 0, 100, "文字描边宽度"),\n      background: color(data.background, "文字背景"),\n      backgroundRadius: number(data.backgroundRadius, 0, 512, "文字背景圆角"),\n      padding: number(data.padding, 0, 512, "文字背景内边距"),\n      align: choice(data.align, ["left", "center", "right"], "文字对齐"),\n      lineHeight: number(data.lineHeight, 0.5, 5, "文字行高"),\n      letterSpacing: number(data.letterSpacing, -100, 100, "字间距"),\n      maxWidth: number(data.maxWidth, 0.01, 1, "文字最大宽度比例"),\n      highlightColor: color(data.highlightColor, "文字高亮颜色"),\n      ...data.keywords === void 0 ? {} : {\n        keywords: list(data.keywords, 32, "关键词强调").map((value2) => {\n          const keyword = object4(value2, ["text", "color"], "关键词强调");\n          return {\n            text: text(keyword.text, 200, "关键词"),\n            color: color(keyword.color, "关键词颜色")\n          };\n        })\n      },\n      shadow: {\n        color: color(shadow.color, "文字阴影颜色"),\n        blur: number(shadow.blur, 0, 256, "文字阴影模糊"),\n        x: number(shadow.x, -2048, 2048, "文字阴影水平偏移"),\n        y: number(shadow.y, -2048, 2048, "文字阴影垂直偏移")\n      },\n      animation: choice(data.animation, ["none", "fade", "typewriter", "word-highlight"], "文字动画")\n    };\n  }\n  function asset(value) {\n    const data = object4(\n      value,\n      ["id", "name", "kind", "duration", "width", "height", "resourceId", "fingerprint", "metadata"],\n      "素材"\n    );\n    const kind = choice(data.kind, ["video", "audio", "image", "demo"], "素材类型");\n    let resourceId;\n    if (data.resourceId !== void 0) {\n      resourceId = text(data.resourceId, 256, "素材资源 ID");\n      if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(resourceId))\n        throw new Error("素材资源 ID 无效");\n    }\n    if (data.fingerprint !== void 0 && (typeof data.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(data.fingerprint)))\n      throw new Error("素材指纹须为 SHA-256");\n    return {\n      id: id(data.id, "素材 ID"),\n      name: text(data.name, 256, "素材名称"),\n      kind,\n      duration: tick(data.duration, "素材时长", kind !== "image"),\n      ...data.width === void 0 ? {} : { width: integer2(data.width, 1, 32768, "素材宽度") },\n      ...data.height === void 0 ? {} : { height: integer2(data.height, 1, 32768, "素材高度") },\n      ...resourceId === void 0 ? {} : { resourceId },\n      ...data.fingerprint === void 0 ? {} : { fingerprint: data.fingerprint },\n      ...data.metadata === void 0 ? {} : { metadata: dataObject(data.metadata, "素材元数据") }\n    };\n  }\n  function track(value) {\n    const data = object4(\n      value,\n      ["id", "name", "kind", "locked", "hidden", "muted", "volume", "pan"],\n      "轨道"\n    );\n    return {\n      id: id(data.id, "轨道 ID"),\n      name: text(data.name, 200, "轨道名称"),\n      kind: choice(data.kind, ["video", "audio", "text"], "轨道类型"),\n      locked: bool(data.locked, "锁定轨道"),\n      hidden: bool(data.hidden, "隐藏轨道"),\n      muted: bool(data.muted, "静音轨道"),\n      volume: number(data.volume, 0, 4, "轨道音量"),\n      pan: number(data.pan, -1, 1, "轨道声像")\n    };\n  }\n  var clipKeys = [\n    "id",\n    "kind",\n    "trackId",\n    "start",\n    "duration",\n    "label",\n    "groupId",\n    "linkGroupId",\n    "transform",\n    "color",\n    "blendMode",\n    "mask"\n  ];\n  function clip(value, assets) {\n    const raw = object4(\n      value,\n      [\n        ...clipKeys,\n        "assetId",\n        "timeMap",\n        "audio",\n        "role",\n        "text",\n        "style",\n        "words",\n        "sourceBinding",\n        "translation",\n        "shape",\n        "fill",\n        "stroke",\n        "strokeWidth",\n        "sequenceId",\n        "angles",\n        "switches",\n        "audioAngleId"\n      ],\n      "片段"\n    );\n    const kind = choice(raw.kind, ["media", "text", "shape", "sequence", "multicam"], "片段类型");\n    const keys = {\n      media: ["assetId", "timeMap", "audio"],\n      text: ["role", "text", "style", "words", "sourceBinding", "translation"],\n      shape: ["shape", "fill", "stroke", "strokeWidth"],\n      sequence: ["sequenceId", "timeMap", "audio"],\n      multicam: ["timeMap", "angles", "switches", "audioAngleId", "audio"]\n    };\n    const data = object4(raw, [...clipKeys, ...keys[kind]], "片段");\n    const start = tick(data.start, "片段起点"), duration = tick(data.duration, "片段时长", true);\n    if (start + duration > MAX_EDITOR_TICK) throw new Error("片段末端超过 24 小时");\n    const base = {\n      id: id(data.id, "片段 ID"),\n      trackId: id(data.trackId, "片段轨道 ID"),\n      start,\n      duration,\n      label: text(data.label, 256, "片段名称", true),\n      ...data.groupId === void 0 ? {} : { groupId: id(data.groupId, "分组 ID") },\n      ...data.linkGroupId === void 0 ? {} : { linkGroupId: id(data.linkGroupId, "关联组 ID") },\n      ...visual(data, duration)\n    };\n    if (kind === "media") {\n      const assetId = id(data.assetId, "片段素材 ID"), source = assets.get(assetId);\n      if (!source) throw new Error(`片段引用不存在的素材：${assetId}`);\n      const mapping = timeMap(data.timeMap, duration, source.duration);\n      if (source.kind !== "image") assertNoEmptyHold(mapping, source.duration, "媒体片段");\n      return { ...base, kind, assetId, timeMap: mapping, audio: audio(data.audio, duration) };\n    }\n    if (kind === "sequence")\n      return {\n        ...base,\n        kind,\n        sequenceId: id(data.sequenceId, "嵌套序列 ID"),\n        timeMap: timeMap(data.timeMap, duration, MAX_EDITOR_TICK),\n        audio: audio(data.audio, duration)\n      };\n    if (kind === "shape")\n      return {\n        ...base,\n        kind,\n        shape: choice(data.shape, ["rectangle", "ellipse", "line"], "图形类型"),\n        fill: color(data.fill, "图形填充"),\n        stroke: color(data.stroke, "图形描边"),\n        strokeWidth: number(data.strokeWidth, 0, 1024, "图形描边宽度")\n      };\n    if (kind === "multicam") {\n      const angles = list(data.angles, 32, "多机位", 2).map((raw2) => {\n        const angle = object4(raw2, ["id", "name", "assetId", "offset"], "机位");\n        const assetId = id(angle.assetId, "机位素材 ID");\n        if (assets.get(assetId)?.kind !== "video") throw new Error("多机位须引用有效的视频素材");\n        return {\n          id: id(angle.id, "机位 ID"),\n          name: text(angle.name, 200, "机位名称"),\n          assetId,\n          offset: integer2(angle.offset, -MAX_EDITOR_TICK, MAX_EDITOR_TICK, "机位同步偏移")\n        };\n      });\n      const anglesById = unique(angles, "机位");\n      let previous = -1;\n      const switches = list(data.switches, 1e4, "机位切换", 1).map((raw2) => {\n        const change = object4(raw2, ["time", "angleId"], "机位切换");\n        const time = integer2(change.time, 0, duration - 1, "机位切换时间");\n        if (time <= previous) throw new Error("机位切换时间必须严格递增");\n        previous = time;\n        const angleId = id(change.angleId, "切换机位 ID");\n        if (!anglesById.has(angleId)) throw new Error("切换引用不存在的机位");\n        return { time, angleId };\n      });\n      if (switches[0].time !== 0) throw new Error("多机位须从零时刻指定画面");\n      const audioAngleId = id(data.audioAngleId, "主声音机位 ID");\n      if (!anglesById.has(audioAngleId)) throw new Error("主声音引用不存在的机位");\n      return {\n        ...base,\n        kind,\n        timeMap: timeMap(data.timeMap, duration, MAX_EDITOR_TICK),\n        angles,\n        switches,\n        audioAngleId,\n        audio: audio(data.audio, duration)\n      };\n    }\n    let previousStart = -1, previousEnd = -1;\n    const words = list(data.words, 1e4, "逐字字幕").map((raw2) => {\n      const word = object4(raw2, ["text", "start", "end"], "字幕词");\n      const start2 = integer2(word.start, 0, duration - 1, "字幕词入点");\n      const end = integer2(word.end, start2 + 1, duration, "字幕词出点");\n      if (start2 < previousStart || end < previousEnd) throw new Error("字幕词时间必须按顺序排列");\n      previousStart = start2;\n      previousEnd = end;\n      return { text: text(word.text, 1e3, "字幕词"), start: start2, end };\n    });\n    let sourceBinding;\n    if (data.sourceBinding !== void 0) {\n      const binding = object4(\n        data.sourceBinding,\n        ["clipId", "sourceStart", "sourceEnd", "provenance"],\n        "字幕来源"\n      );\n      const sourceStart = tick(binding.sourceStart, "字幕源入点"), sourceEnd = tick(binding.sourceEnd, "字幕源出点");\n      if (sourceEnd <= sourceStart) throw new Error("字幕来源须有有效时长");\n      sourceBinding = { clipId: id(binding.clipId, "字幕来源片段 ID"), sourceStart, sourceEnd };\n      if (binding.provenance !== void 0) {\n        const raw2 = object4(binding.provenance, ["path", "assetId", "start", "end"], "字幕实际音源");\n        const start2 = tick(raw2.start, "转写素材入点"), end = tick(raw2.end, "转写素材出点");\n        if (end <= start2) throw new Error("字幕实际音源须有正时长");\n        sourceBinding.provenance = {\n          path: list(raw2.path, 50, "嵌套音源路径").map((value2) => id(value2, "嵌套来源片段 ID")),\n          assetId: id(raw2.assetId, "转写素材 ID"),\n          start: start2,\n          end\n        };\n      }\n    }\n    let translation;\n    if (data.translation !== void 0) {\n      const translated = object4(\n        data.translation,\n        ["original", "language", "mode", "originalWords"],\n        "字幕翻译"\n      );\n      translation = {\n        original: text(translated.original, 1e4, "字幕原文", false, true),\n        language: text(translated.language, 80, "字幕语言"),\n        mode: choice(translated.mode, ["bilingual", "translated"], "字幕翻译模式")\n      };\n      if (translated.originalWords !== void 0) {\n        let previousStart2 = -1, previousEnd2 = -1;\n        translation.originalWords = list(translated.originalWords, 1e4, "字幕原文词时间").map(\n          (raw2) => {\n            const word = object4(raw2, ["text", "start", "end"], "原文词");\n            const start2 = integer2(word.start, 0, duration - 1, "原文词入点"), end = integer2(word.end, start2 + 1, duration, "原文词出点");\n            if (start2 < previousStart2 || end < previousEnd2)\n              throw new Error("原文词时间必须按顺序排列");\n            previousStart2 = start2;\n            previousEnd2 = end;\n            return { text: text(word.text, 1e3, "原文词"), start: start2, end };\n          }\n        );\n      }\n    }\n    return {\n      ...base,\n      kind: "text",\n      role: choice(data.role, ["title", "subtitle"], "文字用途"),\n      text: text(data.text, 1e4, "文字内容", true, true),\n      style: textStyle(data.style),\n      words,\n      ...sourceBinding ? { sourceBinding } : {},\n      ...translation ? { translation } : {}\n    };\n  }\n  function sequenceDuration(sequence2) {\n    let duration = 0;\n    for (const clip2 of sequence2.clips) {\n      const end = tick(clip2.start, "片段起点") + tick(clip2.duration, "片段时长", true);\n      if (end > MAX_EDITOR_TICK) throw new Error("序列超过 24 小时");\n      duration = Math.max(duration, end);\n    }\n    return duration;\n  }\n  function sequence(value, assets) {\n    const data = object4(\n      value,\n      [\n        "id",\n        "name",\n        "width",\n        "height",\n        "frameRate",\n        "background",\n        "timelineMode",\n        "magneticTrackId",\n        "tracks",\n        "clips",\n        "transitions",\n        "markers"\n      ],\n      "序列"\n    );\n    object4(data.frameRate, ["numerator", "denominator"], "序列帧率");\n    const tracks = list(data.tracks, 128, "轨道").map(track);\n    unique(tracks, "轨道");\n    const magneticTrackId = data.magneticTrackId === void 0 ? void 0 : id(data.magneticTrackId, "磁吸主轨 ID");\n    if (magneticTrackId !== void 0 && !tracks.some((track2) => track2.id === magneticTrackId && track2.kind === "video"))\n      throw new Error("磁吸主轨必须引用现有画面轨");\n    const clips = list(data.clips, 2e3, "片段").map((value2) => clip(value2, assets));\n    unique(clips, "片段");\n    const transitions = list(data.transitions, 2e3, "转场").map((raw) => {\n      const transition = object4(\n        raw,\n        ["id", "fromClipId", "toClipId", "start", "duration", "kind"],\n        "转场"\n      );\n      const start = tick(transition.start, "转场起点"), duration = tick(transition.duration, "转场时长", true);\n      if (start + duration > MAX_EDITOR_TICK) throw new Error("转场超过 24 小时");\n      return {\n        id: id(transition.id, "转场 ID"),\n        fromClipId: id(transition.fromClipId, "转场起始片段"),\n        toClipId: id(transition.toClipId, "转场结束片段"),\n        start,\n        duration,\n        kind: choice(\n          transition.kind,\n          ["dissolve", "fade-black", "wipe-left", "wipe-right", "push-left", "push-right"],\n          "转场类型"\n        )\n      };\n    });\n    unique(transitions, "转场");\n    const markers = list(data.markers, 1e4, "时间轴标记").map((raw) => {\n      const marker = object4(raw, ["id", "time", "duration", "name", "note", "color"], "时间轴标记");\n      const time = tick(marker.time, "标记时间"), duration = tick(marker.duration, "标记范围");\n      if (time + duration > MAX_EDITOR_TICK) throw new Error("标记范围超过 24 小时");\n      return {\n        id: id(marker.id, "标记 ID"),\n        time,\n        duration,\n        name: text(marker.name, 200, "标记名称"),\n        note: text(marker.note, 1e4, "标记备注", true, true),\n        color: color(marker.color, "标记颜色")\n      };\n    });\n    unique(markers, "标记");\n    return {\n      id: id(data.id, "序列 ID"),\n      name: text(data.name, 200, "序列名称"),\n      width: integer2(data.width, 16, 8192, "序列宽度"),\n      height: integer2(data.height, 16, 8192, "序列高度"),\n      frameRate: validateFrameRate(data.frameRate),\n      background: color(data.background, "序列背景"),\n      timelineMode: choice(data.timelineMode, ["magnetic", "free"], "排列方式"),\n      ...magneticTrackId === void 0 ? {} : { magneticTrackId },\n      tracks,\n      clips,\n      transitions,\n      markers\n    };\n  }\n  function compatibleTrack(clip2, track2, assets) {\n    if (clip2.kind === "text") return track2.kind === "text";\n    if (clip2.kind === "shape" || clip2.kind === "multicam") return track2.kind === "video";\n    if (clip2.kind === "sequence") return track2.kind !== "text";\n    const source = assets.get(clip2.assetId);\n    return source.kind === "audio" ? track2.kind === "audio" : source.kind === "video" ? track2.kind !== "text" : track2.kind === "video";\n  }\n  function multicamBounds(clip2, assets) {\n    const angles = new Map(clip2.angles.map((angle) => [angle.id, angle]));\n    function range(angleId, start, end) {\n      const angle = angles.get(angleId), source = assets.get(angle.assetId);\n      const coordinates = [\n        sourceTimeAt(clip2.timeMap, start),\n        ...clip2.timeMap.points.filter((point) => point.time > start && point.time < end).map((point) => point.source),\n        sourceTimeAt(clip2.timeMap, end)\n      ];\n      if (coordinates.some(\n        (position) => position + angle.offset < 0 || position + angle.offset > source.duration\n      ))\n        throw new Error(`机位 ${angle.name} 的画面或声音范围超出素材`);\n      if (coordinates.some(\n        (position, index) => index > 0 && position + angle.offset === source.duration && coordinates[index - 1] + angle.offset === source.duration\n      ))\n        throw new Error(`机位 ${angle.name} 不能在素材结束边界定格`);\n    }\n    for (const [index, change] of clip2.switches.entries())\n      range(change.angleId, change.time, clip2.switches[index + 1]?.time ?? clip2.duration);\n    const volume = clip2.audio.volume;\n    if (typeof volume === "number" ? volume > 0 : volume.keyframes.some((frame) => frame.value > 0))\n      range(clip2.audioAngleId, 0, clip2.duration);\n  }\n  function checkSequenceReferences(sequence2, assets, sequences) {\n    const tracks = new Map(sequence2.tracks.map((track2) => [track2.id, track2]));\n    const clips = new Map(sequence2.clips.map((clip2) => [clip2.id, clip2]));\n    for (const clip2 of sequence2.clips) {\n      const track2 = tracks.get(clip2.trackId);\n      if (!track2) throw new Error(`片段引用不存在的轨道：${clip2.trackId}`);\n      if (!compatibleTrack(clip2, track2, assets)) throw new Error(`片段 ${clip2.id} 与轨道类型不兼容`);\n      if (clip2.kind === "sequence") {\n        const source = sequences.get(clip2.sequenceId);\n        if (!source) throw new Error(`嵌套引用不存在的序列：${clip2.sequenceId}`);\n        const sourceDuration = sequenceDuration(source);\n        if (!sourceDuration) throw new Error("嵌套片段不能引用空序列");\n        validateTimeMap(clip2.timeMap, clip2.duration, sourceDuration);\n        assertNoEmptyHold(clip2.timeMap, sourceDuration, "嵌套片段");\n      }\n      if (clip2.kind === "multicam") multicamBounds(clip2, assets);\n      if ("audio" in clip2 && clip2.audio.ducking)\n        for (const trackId of clip2.audio.ducking.sidechainTrackIds) {\n          const source = tracks.get(trackId);\n          if (!source || source.kind === "text" || source.id === clip2.trackId)\n            throw new Error("压低背景声须引用其他有效声音轨道");\n        }\n      if (clip2.kind === "text" && clip2.sourceBinding) {\n        const binding = clip2.sourceBinding, source = clips.get(binding.clipId);\n        if (!source || !("timeMap" in source)) throw new Error("字幕来源须引用有效的媒体或序列片段");\n        const sourceSequence = source.kind === "sequence" ? sequences.get(source.sequenceId) : void 0;\n        if (source.kind === "sequence" && !sourceSequence)\n          throw new Error("字幕来源引用不存在的嵌套序列");\n        const sourceDuration = source.kind === "media" ? assets.get(source.assetId).duration : source.kind === "sequence" ? sequenceDuration(sourceSequence) : MAX_EDITOR_TICK;\n        if (binding.sourceEnd > sourceDuration) throw new Error("字幕来源范围超出素材");\n        if (binding.provenance) {\n          let leaf = source;\n          for (const clipId of binding.provenance.path) {\n            if (leaf.kind !== "sequence") throw new Error("字幕嵌套音源路径须经过序列片段");\n            const child = sequences.get(leaf.sequenceId)?.clips.find((item) => item.id === clipId);\n            if (!child || !("timeMap" in child)) throw new Error("字幕嵌套音源不存在");\n            leaf = child;\n          }\n          const assetId = leaf.kind === "media" ? leaf.assetId : leaf.kind === "multicam" ? leaf.angles.find((angle) => angle.id === leaf.audioAngleId)?.assetId : void 0;\n          const asset2 = assets.get(binding.provenance.assetId);\n          if (assetId !== binding.provenance.assetId || !asset2 || !["audio", "video"].includes(asset2.kind) || binding.provenance.end > asset2.duration)\n            throw new Error("字幕实际音源或转写范围与来源片段不一致");\n        }\n      }\n    }\n    const pairs = /* @__PURE__ */ new Set();\n    for (const transition of sequence2.transitions) {\n      const from = clips.get(transition.fromClipId), to = clips.get(transition.toClipId);\n      if (!from || !to || from.id === to.id || from.trackId !== to.trackId || tracks.get(from.trackId)?.kind !== "video")\n        throw new Error("转场两端须为同一画面轨的两个有效片段");\n      const end = from.start + from.duration;\n      if (from.start >= to.start || end >= to.start + to.duration || to.start >= end || transition.start !== to.start || transition.duration !== end - to.start)\n        throw new Error("转场时间须精确覆盖前后片段的重叠范围");\n      const key = JSON.stringify([from.id, to.id]);\n      if (pairs.has(key)) throw new Error("同一片段交界不能重复设置转场");\n      pairs.add(key);\n    }\n    for (const track2 of sequence2.tracks.filter((track3) => track3.kind === "video")) {\n      const placed = sequence2.clips.filter((clip2) => clip2.trackId === track2.id).sort((a, b) => a.start - b.start || a.duration - b.duration);\n      let active = [];\n      for (const clip2 of placed) {\n        active = active.filter((previous) => previous.start + previous.duration > clip2.start);\n        if (active.length > 1) throw new Error("同一画面轨不能同时重叠三个片段");\n        for (const previous of active)\n          if (!pairs.has(JSON.stringify([previous.id, clip2.id])))\n            throw new Error("同轨画面重叠需要明确的转场");\n        active.push(clip2);\n      }\n    }\n  }\n  function validateEditorDocument(value) {\n    const data = object4(\n      copyData(value),\n      [\n        "schemaVersion",\n        "timebase",\n        "id",\n        "name",\n        "revision",\n        "assets",\n        "sequences",\n        "activeSequenceId",\n        "exportProfiles",\n        "production"\n      ],\n      "工程"\n    );\n    if (data.schemaVersion !== 2 || data.timebase !== TICKS_PER_SECOND)\n      throw new Error("不支持此工程版本或时间基准");\n    const assets = list(data.assets, 1e3, "素材").map(asset), assetsById = unique(assets, "素材");\n    const sequences = list(data.sequences, 50, "序列", 1).map((value2) => sequence(value2, assetsById));\n    const sequencesById = unique(sequences, "序列");\n    const activeSequenceId = id(data.activeSequenceId, "活动序列 ID");\n    if (!sequencesById.has(activeSequenceId)) throw new Error("活动序列不存在");\n    for (const sequence2 of sequences) checkSequenceReferences(sequence2, assetsById, sequencesById);\n    const visiting = /* @__PURE__ */ new Set(), visited = /* @__PURE__ */ new Set();\n    function acyclic(id2) {\n      if (visiting.has(id2)) throw new Error("嵌套序列不能循环引用");\n      if (visited.has(id2)) return;\n      visiting.add(id2);\n      for (const clip2 of sequencesById.get(id2).clips)\n        if (clip2.kind === "sequence") acyclic(clip2.sequenceId);\n      visiting.delete(id2);\n      visited.add(id2);\n    }\n    for (const sequence2 of sequences) acyclic(sequence2.id);\n    const exportProfiles = list(data.exportProfiles, 64, "导出配置").map(validateExportProfile);\n    unique(exportProfiles, "导出配置");\n    return {\n      schemaVersion: 2,\n      timebase: TICKS_PER_SECOND,\n      id: id(data.id, "工程 ID"),\n      name: text(data.name, 200, "工程名称"),\n      revision: integer2(data.revision, 0, Number.MAX_SAFE_INTEGER - 1, "修订号"),\n      assets,\n      sequences,\n      activeSequenceId,\n      exportProfiles,\n      ...data.production === void 0 ? {} : { production: dataObject(data.production, "制作记录") }\n    };\n  }\n\n  // src/editor/evaluate.ts\n  var neutralAudio = () => ({\n    gain: 1,\n    pan: 0,\n    pitchSemitones: 0,\n    preservePitch: true,\n    playbackRate: 1,\n    fadeGain: 1,\n    ducking: [],\n    trackInstancePath: []\n  });\n  var clamp3 = (value, min, max) => Math.max(min, Math.min(max, value));\n  var pathPart = (kind, id2) => `${kind}:${encodeURIComponent(id2)}`;\n  var inside = (clip2, time) => time >= clip2.start && time - clip2.start < clip2.duration;\n  function resolveTransform(value, local) {\n    const number2 = (key) => evaluateAnimatedNumber(value[key], local);\n    return {\n      x: clamp3(number2("x"), -10, 10),\n      y: clamp3(number2("y"), -10, 10),\n      scaleX: clamp3(number2("scaleX"), 0, 100),\n      scaleY: clamp3(number2("scaleY"), 0, 100),\n      rotation: clamp3(number2("rotation"), -36e4, 36e4),\n      opacity: clamp3(number2("opacity"), 0, 1),\n      flipX: value.flipX,\n      flipY: value.flipY,\n      fit: value.fit,\n      crop: { ...value.crop }\n    };\n  }\n  function resolveColor(value, local) {\n    const number2 = (key) => evaluateAnimatedNumber(value[key], local);\n    return {\n      exposure: clamp3(number2("exposure"), -10, 10),\n      brightness: clamp3(number2("brightness"), -1, 1),\n      contrast: clamp3(number2("contrast"), 0, 4),\n      saturation: clamp3(number2("saturation"), 0, 4),\n      temperature: clamp3(number2("temperature"), -1, 1),\n      tint: clamp3(number2("tint"), -1, 1),\n      hue: clamp3(number2("hue"), -360, 360),\n      curves: value.curves.map((curve) => ({\n        ...curve,\n        points: curve.points.map((point) => ({ ...point }))\n      })),\n      hsl: value.hsl.map((range) => ({ ...range }))\n    };\n  }\n  function timeMapRate(map, time) {\n    let left = 0, right = map.points.length - 1;\n    while (left + 1 < right) {\n      const middle = left + Math.floor((right - left) / 2);\n      if (map.points[middle].time <= time) left = middle;\n      else right = middle;\n    }\n    const a = map.points[left], b = map.points[right];\n    return (b.source - a.source) / (b.time - a.time);\n  }\n  function audioContext(clip2, track2, local, parent, sequenceId, sequencePath) {\n    const mix = clip2.audio;\n    const fade = (mix.fadeIn ? clamp3(local / mix.fadeIn, 0, 1) : 1) * (mix.fadeOut ? clamp3((clip2.duration - local) / mix.fadeOut, 0, 1) : 1);\n    const playbackRate = parent.playbackRate * timeMapRate(clip2.timeMap, local);\n    const ducking = parent.ducking.map((item) => ({\n      ...item,\n      sidechainTrackIds: [...item.sidechainTrackIds],\n      sidechainTrackInstanceIds: [...item.sidechainTrackInstanceIds]\n    }));\n    if (mix.ducking)\n      ducking.push({\n        ...mix.ducking,\n        sidechainTrackIds: [...mix.ducking.sidechainTrackIds],\n        sequenceId,\n        sequenceTime: clip2.start + local,\n        trackInstanceId: `${sequencePath}/${pathPart("track", track2.id)}`,\n        sidechainTrackInstanceIds: mix.ducking.sidechainTrackIds.map(\n          (id2) => `${sequencePath}/${pathPart("track", id2)}`\n        )\n      });\n    return {\n      gain: track2.muted || !playbackRate ? 0 : clamp3(evaluateAnimatedNumber(mix.volume, local), 0, 4) * track2.volume * fade * parent.gain,\n      pan: clamp3(\n        parent.pan + track2.pan + clamp3(evaluateAnimatedNumber(mix.pan, local), -1, 1),\n        -1,\n        1\n      ),\n      pitchSemitones: parent.pitchSemitones + mix.pitchSemitones,\n      preservePitch: parent.preservePitch && mix.preservePitch,\n      playbackRate,\n      fadeGain: parent.fadeGain * fade,\n      ducking,\n      trackInstancePath: [\n        ...parent.trackInstancePath,\n        `${sequencePath}/${pathPart("track", track2.id)}`\n      ]\n    };\n  }\n  function prepareEvaluator(value) {\n    return createEvaluator(validateEditorDocument(value));\n  }\n  function createEvaluator(document2) {\n    const assets = new Map(document2.assets.map((asset2) => [asset2.id, asset2]));\n    const sequences = new Map(document2.sequences.map((sequence2) => [sequence2.id, sequence2]));\n    const durations = new Map(\n      document2.sequences.map((sequence2) => [sequence2.id, sequenceDuration(sequence2)])\n    );\n    const tracks = new Map(\n      document2.sequences.map((sequence2) => {\n        const transitions = /* @__PURE__ */ new Map(), indexTransitions = sequence2.transitions.length > 0 && sequence2.tracks.filter((track2) => track2.kind === "video").length > 1;\n        if (indexTransitions) {\n          const clipTracks = new Map(sequence2.clips.map((clip2) => [clip2.id, clip2.trackId]));\n          for (const transition of sequence2.transitions) {\n            const trackId = clipTracks.get(transition.fromClipId);\n            const entries = transitions.get(trackId) ?? [];\n            entries.push(transition);\n            transitions.set(trackId, entries);\n          }\n        }\n        return [\n          sequence2.id,\n          sequence2.tracks.map((track2) => ({\n            track: track2,\n            clips: sequence2.clips.filter((clip2) => clip2.trackId === track2.id).sort((a, b) => a.start - b.start),\n            transitions: track2.kind !== "video" ? [] : indexTransitions ? transitions.get(track2.id) ?? [] : sequence2.transitions\n          }))\n        ];\n      })\n    );\n    function evaluateSequence(sequence2, tick2, sequencePath, parent, visible) {\n      const frame = {\n        sequenceId: sequence2.id,\n        time: tick2,\n        width: sequence2.width,\n        height: sequence2.height,\n        background: sequence2.background,\n        layers: [],\n        audio: []\n      };\n      if (tick2 >= durations.get(sequence2.id)) return frame;\n      for (const { track: track2, clips, transitions } of tracks.get(sequence2.id)) {\n        const visual2 = /* @__PURE__ */ new Map();\n        const active = clips.filter((clip2) => inside(clip2, tick2));\n        const picture = visible && !track2.hidden && track2.kind !== "audio";\n        for (const clip2 of active) {\n          const localTime = tick2 - clip2.start;\n          const instanceId = `${sequencePath}/${pathPart("clip", clip2.id)}`;\n          const base = () => ({\n            instanceId,\n            sequenceId: sequence2.id,\n            clipId: clip2.id,\n            trackId: track2.id,\n            localTime,\n            transform: resolveTransform(clip2.transform, localTime),\n            color: resolveColor(clip2.color, localTime),\n            blendMode: clip2.blendMode,\n            ...clip2.mask ? { mask: structuredClone(clip2.mask) } : {}\n          });\n          const mediaLayer = (asset2, sourceTime, angleId) => picture && asset2.kind !== "audio" && sourceTime >= 0 && (asset2.kind === "image" || sourceTime < asset2.duration) ? {\n            ...base(),\n            kind: "media",\n            assetId: asset2.id,\n            assetKind: asset2.kind,\n            sourceTime,\n            naturalWidth: asset2.width ?? sequence2.width,\n            naturalHeight: asset2.height ?? sequence2.height,\n            ...angleId ? { angleId } : {}\n          } : null;\n          const addAudio = (asset2, sourceTime, context2, angleId) => {\n            if (asset2.kind !== "video" && asset2.kind !== "audio" || sourceTime < 0 || sourceTime >= asset2.duration)\n              return;\n            frame.audio.push({\n              ...context2,\n              instanceId: `${instanceId}/audio`,\n              sequenceId: sequence2.id,\n              clipId: clip2.id,\n              trackId: track2.id,\n              trackInstanceId: `${sequencePath}/${pathPart("track", track2.id)}`,\n              assetId: asset2.id,\n              sourceTime,\n              localTime,\n              ...angleId ? { angleId } : {}\n            });\n          };\n          if (clip2.kind === "media") {\n            const asset2 = assets.get(clip2.assetId), sourceTime = sourceTimeAt(clip2.timeMap, localTime);\n            visual2.set(clip2.id, mediaLayer(asset2, sourceTime));\n            addAudio(\n              asset2,\n              sourceTime,\n              audioContext(clip2, track2, localTime, parent, sequence2.id, sequencePath)\n            );\n          } else if (clip2.kind === "multicam") {\n            const source = sourceTimeAt(clip2.timeMap, localTime);\n            let switchIndex = clip2.switches.length - 1;\n            while (switchIndex > 0 && clip2.switches[switchIndex].time > localTime) switchIndex--;\n            const activeSwitch = clip2.switches[switchIndex];\n            const angle = clip2.angles.find((item) => item.id === activeSwitch.angleId);\n            const audioAngle = clip2.angles.find((item) => item.id === clip2.audioAngleId);\n            visual2.set(\n              clip2.id,\n              mediaLayer(assets.get(angle.assetId), source + angle.offset, angle.id)\n            );\n            addAudio(\n              assets.get(audioAngle.assetId),\n              source + audioAngle.offset,\n              audioContext(clip2, track2, localTime, parent, sequence2.id, sequencePath),\n              audioAngle.id\n            );\n          } else if (clip2.kind === "sequence") {\n            const sourceTime = sourceTimeAt(clip2.timeMap, localTime), nested = sequences.get(clip2.sequenceId);\n            const child = evaluateSequence(\n              nested,\n              sourceTime,\n              `${instanceId}/${pathPart("sequence", nested.id)}`,\n              audioContext(clip2, track2, localTime, parent, sequence2.id, sequencePath),\n              picture\n            );\n            frame.audio.push(...child.audio);\n            visual2.set(\n              clip2.id,\n              picture && sourceTime < durations.get(nested.id) ? {\n                ...base(),\n                kind: "group",\n                sourceSequenceId: nested.id,\n                sourceTime,\n                width: nested.width,\n                height: nested.height,\n                background: nested.background,\n                layers: child.layers\n              } : null\n            );\n          } else if (clip2.kind === "text") {\n            visual2.set(\n              clip2.id,\n              picture ? {\n                ...base(),\n                kind: "text",\n                role: clip2.role,\n                text: clip2.text,\n                style: structuredClone(clip2.style),\n                words: clip2.words.map((word) => ({ ...word })),\n                activeWordIndices: clip2.words.flatMap(\n                  (word, index) => localTime >= word.start && localTime < word.end ? [index] : []\n                ),\n                animationProgress: localTime / clip2.duration\n              } : null\n            );\n          } else {\n            visual2.set(\n              clip2.id,\n              picture ? {\n                ...base(),\n                kind: "shape",\n                shape: clip2.shape,\n                fill: clip2.fill,\n                stroke: clip2.stroke,\n                strokeWidth: clip2.strokeWidth\n              } : null\n            );\n          }\n        }\n        if (!picture) continue;\n        const transitionByClip = /* @__PURE__ */ new Map();\n        for (const transition of transitions) {\n          if (tick2 < transition.start || tick2 - transition.start >= transition.duration || !visual2.has(transition.fromClipId) || !visual2.has(transition.toClipId))\n            continue;\n          transitionByClip.set(transition.fromClipId, transition);\n          transitionByClip.set(transition.toClipId, transition);\n        }\n        const emitted = /* @__PURE__ */ new Set();\n        for (const clip2 of active) {\n          const transition = transitionByClip.get(clip2.id);\n          if (transition) {\n            if (emitted.has(transition.id)) continue;\n            emitted.add(transition.id);\n            frame.layers.push({\n              kind: "transition",\n              instanceId: `${sequencePath}/${pathPart("transition", transition.id)}`,\n              sequenceId: sequence2.id,\n              trackId: track2.id,\n              transitionId: transition.id,\n              transitionKind: transition.kind,\n              progress: (tick2 - transition.start) / transition.duration,\n              from: visual2.get(transition.fromClipId) ?? null,\n              to: visual2.get(transition.toClipId) ?? null\n            });\n          } else {\n            const layer = visual2.get(clip2.id);\n            if (layer) frame.layers.push(layer);\n          }\n        }\n      }\n      return frame;\n    }\n    return {\n      evaluate(sequenceId, tick2) {\n        assertTick(tick2, "求值时间");\n        const sequence2 = sequences.get(sequenceId);\n        if (!sequence2) throw new Error("待求值的序列不存在");\n        return evaluateSequence(\n          sequence2,\n          tick2,\n          pathPart("sequence", sequenceId),\n          neutralAudio(),\n          true\n        );\n      }\n    };\n  }\n\n  // src/demo-drawing.ts\n  function rounded(ctx, x, y, w, h, radius, fill) {\n    ctx.fillStyle = fill;\n    ctx.beginPath();\n    ctx.roundRect(x, y, w, h, radius);\n    ctx.fill();\n  }\n  function drawDemo(ctx, width, height, index, frame) {\n    ctx.save();\n    const s = Math.min(width / 1280, height / 720);\n    ctx.fillStyle = "#101918";\n    ctx.fillRect(0, 0, width, height);\n    ctx.translate((width - 1280 * s) / 2, (height - 720 * s) / 2);\n    ctx.scale(s, s);\n    const gradient = ctx.createLinearGradient(0, 0, 1280, 720);\n    gradient.addColorStop(0, "#123b35");\n    gradient.addColorStop(0.55, "#112b29");\n    gradient.addColorStop(1, "#111a22");\n    ctx.fillStyle = gradient;\n    ctx.fillRect(0, 0, 1280, 720);\n    ctx.strokeStyle = "#95c5ad0c";\n    ctx.lineWidth = 1;\n    for (let x = 0; x < 1280; x += 64) {\n      ctx.beginPath();\n      ctx.moveTo(x, 0);\n      ctx.lineTo(x, 720);\n      ctx.stroke();\n    }\n    for (let y = 0; y < 720; y += 64) {\n      ctx.beginPath();\n      ctx.moveTo(0, y);\n      ctx.lineTo(1280, y);\n      ctx.stroke();\n    }\n    ctx.fillStyle = "#bceac9";\n    ctx.font = "500 18px system-ui";\n    ctx.fillText("MIMI STUDIO   /   CREATE SOMETHING GOOD", 82, 90);\n    rounded(ctx, 82, 170, 124, 34, 17, "#a6e5be19");\n    ctx.fillStyle = "#bceac9";\n    ctx.font = "500 15px system-ui";\n    ctx.fillText(["01 / THE IDEA", "02 / THE EDIT", "03 / YOUR STORY"][index % 3], 98, 193);\n    ctx.fillStyle = "#edf7ee";\n    ctx.font = "600 76px system-ui";\n    ctx.fillText(["从想法，", "让每一帧，", "你的故事，"][index % 3], 78, 316);\n    ctx.fillStyle = "#b6efca";\n    ctx.fillText(["到成片。", "恰到好处。", "现在开始。 "][index % 3], 78, 416);\n    ctx.fillStyle = "#b5c6c1";\n    ctx.font = "400 23px system-ui";\n    ctx.fillText("留住值得讲述的瞬间。其余的，交给剪辑。", 82, 480);\n    const p = frame / 30;\n    ctx.save();\n    ctx.translate(957, 337);\n    ctx.rotate(-0.2 + Math.sin(p * 0.3) * 0.025);\n    rounded(ctx, -158, -187, 288, 370, 24, "#0b171acc");\n    rounded(ctx, -141, -170, 254, 243, 12, "#397765");\n    const g = ctx.createLinearGradient(-141, -170, 113, 73);\n    g.addColorStop(0, "#9bd5a4");\n    g.addColorStop(1, "#254e4f");\n    rounded(ctx, -141, -170, 254, 243, 12, g);\n    ctx.fillStyle = "#e3ecc6";\n    ctx.beginPath();\n    ctx.arc(38, -94, 33, 0, Math.PI * 2);\n    ctx.fill();\n    ctx.fillStyle = "#204f45";\n    ctx.beginPath();\n    ctx.moveTo(-141, 73);\n    ctx.lineTo(-64, -77);\n    ctx.lineTo(48, 73);\n    ctx.fill();\n    ctx.fillStyle = "#163a37";\n    ctx.beginPath();\n    ctx.moveTo(-37, 73);\n    ctx.lineTo(60, -34);\n    ctx.lineTo(113, 73);\n    ctx.fill();\n    rounded(ctx, -141, 99, 157, 9, 4, "#d9e9e0");\n    rounded(ctx, -141, 122, 225, 6, 3, "#45655a");\n    rounded(ctx, -141, 140, 178, 6, 3, "#45655a");\n    ctx.restore();\n    rounded(ctx, 827, 506, 271, 59, 12, "#b9edc6");\n    ctx.fillStyle = "#173c2d";\n    ctx.font = "500 19px system-ui";\n    ctx.fillText("▶   Made of little moments", 845, 543);\n    ctx.fillStyle = "#8dafa0";\n    ctx.font = "400 15px system-ui";\n    ctx.fillText("示例画面 · 可自由剪辑与导出", 82, 643);\n    ctx.restore();\n  }\n\n  // src/editor/media-pool.ts\n  var MediaPoolError = class extends Error {\n    constructor(code, message, options) {\n      super(message, options);\n      this.code = code;\n      this.name = code === "aborted" ? "AbortError" : "MediaPoolError";\n    }\n    code;\n  };\n  var aborted = () => new MediaPoolError("aborted", "画面准备已取消或被较新的请求替代");\n  function assertActive(signal) {\n    if (signal.aborted) throw aborted();\n  }\n  function boundedInteger(value, min, max, label2) {\n    if (!Number.isSafeInteger(value) || value < min || value > max)\n      throw new Error(`${label2}必须是 ${min}–${max} 范围内的整数`);\n    return value;\n  }\n  function requiredMedia(frame) {\n    const required = /* @__PURE__ */ new Map();\n    function visit(layer) {\n      if (layer.kind === "group") layer.layers.forEach(visit);\n      else if (layer.kind === "transition") {\n        if (layer.from) visit(layer.from);\n        if (layer.to) visit(layer.to);\n      } else if (layer.kind === "media") {\n        const previous = required.get(layer.instanceId);\n        if (previous && (previous.assetId !== layer.assetId || previous.assetKind !== layer.assetKind || previous.sourceTime !== layer.sourceTime))\n          throw new MediaPoolError("conflict", `同一画面实例包含不同素材或时间：${layer.instanceId}`);\n        if (layer.assetKind === "audio")\n          throw new MediaPoolError("decode", "声音素材不能作为画面解码");\n        required.set(layer.instanceId, layer);\n      }\n    }\n    frame.layers.forEach(visit);\n    return required;\n  }\n  function waitFor(promise, signal, timeoutMs, timeoutMessage) {\n    return new Promise((resolve, reject) => {\n      let settled = false;\n      const finish = (error, result) => {\n        if (settled) return;\n        settled = true;\n        clearTimeout(timer);\n        signal.removeEventListener("abort", cancel);\n        error === void 0 ? resolve(result) : reject(error);\n      };\n      const cancel = () => finish(aborted());\n      const timer = setTimeout(\n        () => finish(new MediaPoolError("timeout", timeoutMessage)),\n        timeoutMs\n      );\n      signal.addEventListener("abort", cancel, { once: true });\n      promise.then(\n        (result) => finish(void 0, result),\n        (error) => finish(error)\n      );\n      if (signal.aborted) cancel();\n    });\n  }\n  function videoReady(video) {\n    return !video.seeking && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && video.videoHeight > 0;\n  }\n  var initialVideoFrames = /* @__PURE__ */ new WeakMap();\n  function loadDecodedVideo(video, url, signal, timeoutMs, assetId) {\n    return new Promise((resolve, reject) => {\n      let settled = false;\n      const events = ["loadedmetadata", "loadeddata", "canplay"];\n      let framePoll;\n      initialVideoFrames.delete(video);\n      const finish = (error) => {\n        if (settled) return;\n        settled = true;\n        clearTimeout(timer);\n        clearTimeout(framePoll);\n        for (const event of events) video.removeEventListener(event, inspect);\n        video.removeEventListener("error", failed);\n        signal.removeEventListener("abort", cancel);\n        error ? reject(error) : resolve();\n      };\n      const inspect = () => {\n        clearTimeout(framePoll);\n        if (settled || !videoReady(video)) return;\n        if (video.currentTime === 0) {\n          let frame;\n          try {\n            frame = new VideoFrame(video);\n          } catch (cause) {\n            if (cause instanceof DOMException && cause.name === "InvalidStateError") {\n              framePoll = setTimeout(inspect, 16);\n              return;\n            }\n            finish(new MediaPoolError("decode", `无法读取视频首帧：${assetId}`, { cause }));\n            return;\n          }\n          initialVideoFrames.set(video, { source: video.currentSrc, timestamp: frame.timestamp });\n          frame.close();\n        }\n        finish();\n      };\n      const failed = () => finish(new MediaPoolError("decode", `无法解码视频素材：${assetId}`));\n      const cancel = () => finish(aborted());\n      const timer = setTimeout(\n        () => finish(new MediaPoolError("timeout", `视频素材加载超时：${assetId}`)),\n        timeoutMs\n      );\n      for (const event of events) video.addEventListener(event, inspect);\n      video.addEventListener("error", failed);\n      signal.addEventListener("abort", cancel, { once: true });\n      if (signal.aborted) {\n        cancel();\n        return;\n      }\n      video.src = url;\n      video.load();\n      inspect();\n    });\n  }\n  function seekVideo(video, seconds, signal, timeoutMs, assetId) {\n    const seekTime = Math.ceil(seconds * 1e6) / 1e6;\n    return new Promise((resolve, reject) => {\n      let settled = false, sought = false;\n      let poll;\n      let callback;\n      let presentedTime;\n      let decodedTiming;\n      const finish = (error, frame) => {\n        if (settled) {\n          frame?.close();\n          return;\n        }\n        settled = true;\n        clearTimeout(timer);\n        clearTimeout(poll);\n        if (callback !== void 0) video.cancelVideoFrameCallback(callback);\n        video.removeEventListener("seeked", onSeeked);\n        video.removeEventListener("loadeddata", inspect);\n        video.removeEventListener("canplay", inspect);\n        video.removeEventListener("error", failed);\n        signal.removeEventListener("abort", cancel);\n        error ? reject(error) : resolve(frame);\n      };\n      const inspect = () => {\n        clearTimeout(poll);\n        if (settled) return;\n        if (sought && videoReady(video) && Math.abs(video.currentTime - seconds) < 1e-5) {\n          let frame;\n          try {\n            frame = new VideoFrame(video);\n          } catch (cause) {\n            if (cause instanceof DOMException && cause.name === "InvalidStateError") {\n              poll = setTimeout(inspect, 16);\n              return;\n            }\n            finish(new MediaPoolError("decode", `无法读取视频帧：${assetId}`, { cause }));\n            return;\n          }\n          decodedTiming = { timestamp: frame.timestamp, duration: frame.duration };\n          const time = Math.floor(video.currentTime * 1e6 + 1e-4);\n          const initial = initialVideoFrames.get(video);\n          if (\n            // An exact timestamp is already the requested picture, even when a\n            // MediaRecorder frame reports duration 0 and no new presentation fires.\n            Math.abs(frame.timestamp - time) <= 1 || // Before the first picture begins, use only the frame captured from\n            // this source\'s fresh decoder. A random later/stale surface cannot\n            // authorize a leading gap even when no compositor callback arrives.\n            initial?.source === video.currentSrc && time >= 0 && time <= initial.timestamp && frame.timestamp === initial.timestamp || frame.timestamp <= time && frame.duration !== null && frame.duration > 0 && time < frame.timestamp + frame.duration || // Audio may begin before the first video frame. In that leading gap\n            // Chromium presents the first picture, whose timestamp is after the\n            // requested clock. A validated receipt confirms that exact surface.\n            presentedTime !== void 0 && Math.abs(presentedTime - frame.timestamp) <= 1\n          ) {\n            finish(void 0, frame);\n            return;\n          }\n          frame.close();\n        }\n        poll = setTimeout(inspect, 16);\n      };\n      const onSeeked = () => {\n        sought = true;\n        inspect();\n      };\n      const failed = () => finish(new MediaPoolError("decode", `视频寻帧失败：${assetId}`));\n      const cancel = () => finish(aborted());\n      const timer = setTimeout(\n        () => finish(new MediaPoolError("timeout", `视频寻帧或解码超时：${assetId} ${JSON.stringify({\n          target: seconds,\n          current: video.currentTime,\n          sought,\n          seeking: video.seeking,\n          readyState: video.readyState,\n          decodedTiming,\n          presentedTime\n        })}`)),\n        timeoutMs\n      );\n      video.addEventListener("seeked", onSeeked);\n      video.addEventListener("loadeddata", inspect);\n      video.addEventListener("canplay", inspect);\n      video.addEventListener("error", failed);\n      signal.addEventListener("abort", cancel, { once: true });\n      if (signal.aborted) {\n        cancel();\n        return;\n      }\n      try {\n        const seekStartedAt = performance.now();\n        const unchangedPosition = videoReady(video) && video.currentTime === seekTime;\n        const requestPresentation = () => {\n          if (settled || typeof video.requestVideoFrameCallback !== "function") return;\n          callback = video.requestVideoFrameCallback((_now, metadata) => {\n            callback = void 0;\n            if (unchangedPosition || metadata.presentationTime >= seekStartedAt)\n              presentedTime = metadata.mediaTime * 1e6;\n            inspect();\n            requestPresentation();\n          });\n        };\n        requestPresentation();\n        video.currentTime = seekTime;\n      } catch (cause) {\n        finish(new MediaPoolError("decode", `无法定位视频素材：${assetId}`, { cause }));\n      }\n    });\n  }\n  var EditorMediaPool = class {\n    constructor(options) {\n      this.options = options;\n      if (typeof options.resolveAsset !== "function") throw new Error("必须提供素材资源解析器");\n      this.maxInstances = boundedInteger(options.maxInstances ?? 32, 1, 256, "同时解码实例上限");\n      this.timeoutMs = boundedInteger(options.timeoutMs ?? 15e3, 1, 12e4, "媒体等待时限");\n    }\n    options;\n    maxInstances;\n    timeoutMs;\n    instances = /* @__PURE__ */ new Map();\n    resources = /* @__PURE__ */ new Map();\n    urlLifetimes = /* @__PURE__ */ new Map();\n    pending;\n    generation = 0;\n    disposed = false;\n    releaseInstance(instanceId) {\n      const instance = this.instances.get(instanceId);\n      if (!instance) return;\n      this.instances.delete(instanceId);\n      instance.bitmap?.close();\n      instance.videoFrame?.close();\n      if (instance.element instanceof HTMLVideoElement) instance.element.pause();\n      instance.element.removeAttribute("src");\n      if (instance.element instanceof HTMLVideoElement) instance.element.load();\n      if (instance.element instanceof HTMLCanvasElement) {\n        instance.element.width = 0;\n        instance.element.height = 0;\n      }\n      instance.element.remove();\n    }\n    retainResource(resource) {\n      const lifetime = this.urlLifetimes.get(resource.url) ?? { references: 0, owned: false };\n      lifetime.references++;\n      lifetime.owned ||= Boolean(resource.owned);\n      this.urlLifetimes.set(resource.url, lifetime);\n    }\n    releaseResource(resource) {\n      const lifetime = this.urlLifetimes.get(resource.url);\n      if (!lifetime) return;\n      lifetime.references--;\n      if (lifetime.references) return;\n      this.urlLifetimes.delete(resource.url);\n      if (lifetime.owned) URL.revokeObjectURL(resource.url);\n    }\n    clearResources() {\n      for (const instanceId of this.instances.keys()) this.releaseInstance(instanceId);\n      for (const resource of this.resources.values()) this.releaseResource(resource);\n      this.resources.clear();\n    }\n    /** Cancel pending work, release all decoders/owned URLs, and permit a new generation. */\n    reset() {\n      this.generation++;\n      this.pending?.controller.abort();\n      this.pending = void 0;\n      this.clearResources();\n    }\n    dispose() {\n      this.disposed = true;\n      this.reset();\n    }\n    async resource(assetId, request) {\n      const existing = this.resources.get(assetId);\n      if (existing) return existing;\n      const promise = Promise.resolve().then(() => {\n        assertActive(request.controller.signal);\n        return this.options.resolveAsset(assetId, request.controller.signal);\n      }).then(\n        (result) => {\n          const raw = typeof result === "string" ? { url: result } : result;\n          if (!raw || typeof raw.url !== "string" || !raw.url.trim() || raw.owned !== void 0 && typeof raw.owned !== "boolean" || raw.owned && !raw.url.startsWith("blob:"))\n            throw new MediaPoolError("resolve", `素材资源 URL 或所有权无效：${assetId}`);\n          const resource = { assetId, url: raw.url, owned: raw.owned ?? false };\n          this.retainResource(resource);\n          if (request.controller.signal.aborted || request.generation !== this.generation || this.disposed) {\n            this.releaseResource(resource);\n            throw aborted();\n          }\n          this.resources.set(assetId, resource);\n          return resource;\n        },\n        (cause) => {\n          if (request.controller.signal.aborted) throw aborted();\n          throw new MediaPoolError("resolve", `无法读取素材资源：${assetId}`, { cause });\n        }\n      );\n      return waitFor(\n        promise,\n        request.controller.signal,\n        this.timeoutMs,\n        `素材资源解析超时：${assetId}`\n      );\n    }\n    async decode(layer, request) {\n      const signal = request.controller.signal;\n      assertActive(signal);\n      let instance = this.instances.get(layer.instanceId);\n      if (layer.assetKind === "demo") {\n        if (!instance) {\n          instance = {\n            assetId: layer.assetId,\n            kind: "demo",\n            element: document.createElement("canvas")\n          };\n          this.instances.set(layer.instanceId, instance);\n        }\n        const canvas = instance.element;\n        if (instance.preparedSource !== layer.sourceTime || canvas.width !== layer.naturalWidth || canvas.height !== layer.naturalHeight) {\n          canvas.width = layer.naturalWidth;\n          canvas.height = layer.naturalHeight;\n          const context2 = canvas.getContext("2d");\n          if (!context2) throw new MediaPoolError("decode", "无法创建示例画面");\n          const index = layer.assetId === "demo-city" ? 1 : layer.assetId === "demo-outro" ? 2 : 0;\n          drawDemo(\n            context2,\n            canvas.width,\n            canvas.height,\n            index,\n            ticksToSeconds(layer.sourceTime) * 30\n          );\n          instance.preparedSource = layer.sourceTime;\n        }\n        return canvas;\n      }\n      const resource = this.resources.get(layer.assetId);\n      if (!instance) {\n        const element2 = layer.assetKind === "image" ? new Image() : document.createElement("video");\n        element2.crossOrigin = "anonymous";\n        instance = { assetId: layer.assetId, kind: layer.assetKind, element: element2 };\n        this.instances.set(layer.instanceId, instance);\n        if (element2 instanceof HTMLVideoElement) {\n          element2.muted = true;\n          element2.defaultMuted = true;\n          element2.playsInline = true;\n          element2.preload = "auto";\n          await loadDecodedVideo(element2, resource.url, signal, this.timeoutMs, layer.assetId);\n        } else {\n          element2.src = resource.url;\n          try {\n            await waitFor(element2.decode(), signal, this.timeoutMs, `图片解码超时：${layer.assetId}`);\n          } catch (cause) {\n            if (cause instanceof MediaPoolError) throw cause;\n            throw new MediaPoolError("decode", `无法解码图片素材：${layer.assetId}`, { cause });\n          }\n          if (!element2.naturalWidth || !element2.naturalHeight)\n            throw new MediaPoolError("decode", `图片没有可用画面：${layer.assetId}`);\n          if (typeof createImageBitmap !== "function")\n            throw new MediaPoolError("decode", "当前浏览器无法冻结图片的静态首帧");\n          const owner = instance;\n          const freezing = createImageBitmap(element2).then((bitmap) => {\n            if (signal.aborted || request.generation !== this.generation || this.instances.get(layer.instanceId) !== owner) {\n              bitmap.close();\n              throw aborted();\n            }\n            owner.bitmap = bitmap;\n            return bitmap;\n          });\n          try {\n            await waitFor(freezing, signal, this.timeoutMs, `图片首帧准备超时：${layer.assetId}`);\n          } catch (cause) {\n            if (cause instanceof MediaPoolError) throw cause;\n            throw new MediaPoolError("decode", `无法冻结图片首帧：${layer.assetId}`, { cause });\n          }\n          element2.removeAttribute("src");\n        }\n      }\n      assertActive(signal);\n      const element = instance.element;\n      if (element instanceof HTMLVideoElement) {\n        const seconds = ticksToSeconds(layer.sourceTime);\n        if (Number.isFinite(element.duration) && seconds >= element.duration)\n          throw new MediaPoolError("decode", `请求画面已超出视频源时长：${layer.assetId}`);\n        if (instance.preparedSource !== layer.sourceTime || !videoReady(element) || Math.abs(element.currentTime - seconds) >= 1e-5) {\n          const decoded = await seekVideo(element, seconds, signal, this.timeoutMs, layer.assetId);\n          if (signal.aborted || request.generation !== this.generation) {\n            decoded.close();\n            throw aborted();\n          }\n          instance.videoFrame?.close();\n          instance.videoFrame = decoded;\n        }\n        assertActive(signal);\n        instance.preparedSource = layer.sourceTime;\n      }\n      return instance.videoFrame ?? instance.bitmap ?? element;\n    }\n    async prepare(frame, signal) {\n      if (this.disposed) throw new MediaPoolError("disposed", "媒体解码池已释放");\n      if (this.pending) this.reset();\n      const request = { controller: new AbortController(), generation: this.generation };\n      this.pending = request;\n      const cancel = () => {\n        request.controller.abort();\n        if (this.pending === request) this.clearResources();\n      };\n      signal?.addEventListener("abort", cancel, { once: true });\n      if (signal?.aborted) cancel();\n      try {\n        assertActive(request.controller.signal);\n        const required = requiredMedia(frame);\n        if (required.size > this.maxInstances)\n          throw new MediaPoolError(\n            "capacity",\n            `当前画面需要 ${required.size} 个解码实例，超过上限 ${this.maxInstances}`\n          );\n        const assetIds = new Set(\n          [...required.values()].filter((layer) => layer.assetKind !== "demo").map((layer) => layer.assetId)\n        );\n        for (const [id2, instance] of this.instances) {\n          const layer = required.get(id2);\n          if (!layer || layer.assetId !== instance.assetId || layer.assetKind !== instance.kind)\n            this.releaseInstance(id2);\n        }\n        for (const [id2, resource] of this.resources) {\n          if (assetIds.has(id2)) continue;\n          this.resources.delete(id2);\n          this.releaseResource(resource);\n        }\n        await Promise.all([...assetIds].map((id2) => this.resource(id2, request)));\n        assertActive(request.controller.signal);\n        const surfaces = await Promise.all(\n          [...required.values()].map(\n            async (layer) => [layer.instanceId, await this.decode(layer, request)]\n          )\n        );\n        assertActive(request.controller.signal);\n        return new Map(surfaces);\n      } catch (error) {\n        if (this.pending === request) {\n          request.controller.abort();\n          this.clearResources();\n        }\n        throw error;\n      } finally {\n        signal?.removeEventListener("abort", cancel);\n        if (this.pending === request) this.pending = void 0;\n      }\n    }\n  };\n\n  // src/editor/render-entry.ts\n  function withoutSubtitles(layers) {\n    return layers.flatMap((layer) => {\n      if (layer.kind === "text" && layer.role === "subtitle") return [];\n      if (layer.kind === "group") return [{ ...layer, layers: withoutSubtitles(layer.layers) }];\n      if (layer.kind === "transition") {\n        const from = layer.from ? withoutSubtitles([layer.from])[0] ?? null : null;\n        const to = layer.to ? withoutSubtitles([layer.to])[0] ?? null : null;\n        return [{ ...layer, from, to }];\n      }\n      return [layer];\n    });\n  }\n  function createRenderRuntime() {\n    let evaluator;\n    let media;\n    let compositor;\n    let sequenceId = "";\n    let profile;\n    let uploadUrl = "";\n    let rendering = false;\n    const scene = document.createElement("canvas");\n    const output = document.createElement("canvas");\n    const dispose = () => {\n      media?.dispose();\n      compositor?.dispose();\n      media = void 0;\n      compositor = void 0;\n      evaluator = void 0;\n      scene.width = scene.height = output.width = output.height = 1;\n    };\n    return {\n      async initialize(documentValue, id2, settings, urls, endpoint) {\n        if (rendering) throw new Error("上一画面仍在绘制");\n        dispose();\n        profile = validateExportProfile(settings);\n        evaluator = prepareEvaluator(documentValue);\n        evaluator.evaluate(id2, 0);\n        sequenceId = id2;\n        uploadUrl = endpoint;\n        if (new URL(endpoint).origin !== location.origin) throw new Error("渲染输出地址无效");\n        media = new EditorMediaPool({\n          resolveAsset: (assetId) => {\n            const url = urls[assetId];\n            if (!url || new URL(url).origin !== location.origin)\n              throw new Error(`未提供渲染素材：${assetId}`);\n            return url;\n          }\n        });\n        compositor = new FrameCompositor();\n        output.width = profile.width;\n        output.height = profile.height;\n        await document.fonts.ready;\n        return true;\n      },\n      async render(time, requestId) {\n        if (rendering || !evaluator || !media || !compositor || !profile)\n          throw new Error("画面渲染器未就绪或正在工作");\n        if (!Number.isSafeInteger(requestId) || requestId < 0) throw new Error("画面请求编号无效");\n        rendering = true;\n        try {\n          const frame = evaluator.evaluate(sequenceId, time);\n          if (!profile.includeCaptions) frame.layers = withoutSubtitles(frame.layers);\n          const sources = await media.prepare(frame);\n          compositor.draw(scene, frame, sources);\n          const context2 = output.getContext("2d");\n          context2.reset();\n          context2.fillStyle = frame.background;\n          context2.fillRect(0, 0, output.width, output.height);\n          const scale = Math.min(output.width / scene.width, output.height / scene.height);\n          context2.drawImage(\n            scene,\n            (output.width - scene.width * scale) / 2,\n            (output.height - scene.height * scale) / 2,\n            scene.width * scale,\n            scene.height * scale\n          );\n          const blob = await new Promise(\n            (resolve, reject) => output.toBlob(\n              (value) => value ? resolve(value) : reject(new Error("无法编码画面 PNG")),\n              "image/png"\n            )\n          );\n          const response = await fetch(`${uploadUrl}/${requestId}`, {\n            method: "POST",\n            headers: { "Content-Type": "image/png" },\n            body: blob\n          });\n          if (!response.ok) throw new Error("无法传递已完成的画面");\n          return true;\n        } finally {\n          rendering = false;\n        }\n      },\n      dispose\n    };\n  }\n  globalThis.videoStudioRender = createRenderRuntime();\n})();\n';
+var sha256 = "86be9ad761be48857604a0bc05237ae3a40fb1901c23713e41649a051dfbbfd4";
+
+// src/editor/export-range.ts
+function validateExportRange(value, sequenceDuration2) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.keys(value).some((key) => key !== "start" && key !== "duration")) throw new Error("导出范围格式无效");
+  const range = value;
+  assertTick(range.start);
+  assertTick(range.duration);
+  if (!range.duration || range.start + range.duration > MAX_EDITOR_TICK || sequenceDuration2 !== void 0 && range.start + range.duration > sequenceDuration2) throw new Error("导出范围须位于当前序列内，且结束晚于开始");
+  return { start: range.start, duration: range.duration };
+}
+function sameExportRange(expected2, actual) {
+  if (expected2 === void 0 || actual === void 0) return expected2 === actual;
+  try {
+    const first2 = validateExportRange(expected2), second = validateExportRange(actual);
+    return first2.start === second.start && first2.duration === second.duration;
+  } catch {
+    return false;
+  }
+}
+
+// src/editor/placement.ts
+var overlaps2 = (sequence5, trackId, start, duration2) => sequence5.clips.some(
+  (clip3) => clip3.trackId === trackId && clip3.start < start + duration2 && clip3.start + clip3.duration > start
+);
+var trackEnd = (sequence5, trackId) => sequence5.clips.filter((clip3) => clip3.trackId === trackId).reduce((end, clip3) => Math.max(end, clip3.start + clip3.duration), 0);
+function findFreeTrack(sequence5, kind, start, duration2, idFactory) {
+  const track3 = sequence5.tracks.find(
+    (item) => item.kind === kind && !item.locked && !overlaps2(sequence5, item.id, start, duration2)
+  );
+  if (track3) return { trackId: track3.id, operations: [] };
+  const created = createTrack(idFactory("track"), kind);
+  return {
+    trackId: created.id,
+    operations: [{ type: "track.add", sequenceId: sequence5.id, track: created }]
+  };
+}
+function mainPictureTrack(sequence5) {
+  const firstFree = () => sequence5.tracks.find((item) => item.kind === "video" && !item.locked);
+  return sequence5.timelineMode === "magnetic" ? sequence5.tracks.find((item) => item.id === sequence5.magneticTrackId) ?? firstFree() : firstFree();
+}
+function planAppendPlacement(sequence5, kind, idFactory) {
+  const target = kind === "video" ? mainPictureTrack(sequence5) : sequence5.tracks.find((item) => item.kind === "audio" && !item.locked);
+  if (target?.locked) throw new Error("主画面轨道已锁定，请先解锁后再加入");
+  if (target?.kind === kind)
+    return { trackId: target.id, start: trackEnd(sequence5, target.id), operations: [] };
+  const created = createTrack(idFactory("track"), kind);
+  return {
+    trackId: created.id,
+    start: 0,
+    operations: [
+      {
+        type: "track.add",
+        sequenceId: sequence5.id,
+        track: created,
+        ...kind === "video" ? { index: 0 } : {}
+      }
+    ]
+  };
+}
+
+// src/editor/portable-project.ts
+var PORTABLE_PROJECT_FORMAT = "mimi-video-project";
+var PORTABLE_PROJECT_VERSION = 1;
+var MAX_PORTABLE_MEDIA = 1e4;
+var PortableProjectError = class extends Error {
+  constructor(code, message, issues = []) {
+    super(message);
+    this.code = code;
+    this.issues = issues;
+    this.name = "PortableProjectError";
+  }
+  code;
+  issues;
+};
+var invalid = (message) => {
+  throw new PortableProjectError("INVALID_BUNDLE", message);
+};
+function object7(value, keys3, label3) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid(`${label3}必须是对象`);
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) invalid(`${label3}必须是普通对象`);
+  const own = Reflect.ownKeys(value);
+  if (own.length !== keys3.length || keys3.some((key) => !own.includes(key)))
+    invalid(`${label3}字段缺失或不支持`);
+  for (const key of own) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (typeof key !== "string" || !keys3.includes(key) || !descriptor.enumerable || !("value" in descriptor))
+      invalid(`${label3}不能包含额外字段或访问器`);
+  }
+  return value;
+}
+function array2(value, label3, minimum = 0) {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length < minimum || value.length > MAX_PORTABLE_MEDIA)
+    invalid(`${label3}项数无效（最多 ${MAX_PORTABLE_MEDIA}）`);
+  const list5 = value;
+  if (Reflect.ownKeys(list5).length !== list5.length + 1) invalid(`${label3}不能有空洞或额外属性`);
+  for (let i = 0; i < list5.length; i++) {
+    const descriptor = Object.getOwnPropertyDescriptor(list5, String(i));
+    if (!descriptor?.enumerable || !("value" in descriptor)) invalid(`${label3}不能有空洞或访问器`);
+  }
+  return list5;
+}
+function portableMediaPath(sha2562) {
+  if (typeof sha2562 !== "string" || !/^[a-f0-9]{64}$/.test(sha2562)) invalid("素材 SHA-256 无效");
+  return `media/${sha2562}`;
+}
+function validatePortableProjectManifest(value) {
+  const data = object7(value, ["format", "formatVersion", "document", "media"], "工程包清单");
+  if (data.format !== PORTABLE_PROJECT_FORMAT) invalid("不是 Mimi 视频工程包");
+  if (data.formatVersion !== PORTABLE_PROJECT_VERSION)
+    throw new PortableProjectError(
+      "UNSUPPORTED_BUNDLE_VERSION",
+      `不支持的工程包版本：${String(data.formatVersion)}`
+    );
+  const document2 = validateEditorDocument(data.document);
+  if (document2.assets.length > MAX_PORTABLE_MEDIA)
+    invalid(`工程最多包含 ${MAX_PORTABLE_MEDIA} 个素材`);
+  const assets = new Map(document2.assets.map((asset2) => [asset2.id, asset2]));
+  const hashes = /* @__PURE__ */ new Set(), bound = /* @__PURE__ */ new Set();
+  const media3 = array2(data.media, "素材清单").map((value2) => {
+    const item = object7(value2, ["sha256", "bytes", "assetIds"], "素材记录");
+    portableMediaPath(item.sha256);
+    const sha2562 = item.sha256;
+    if (hashes.has(sha2562)) invalid(`素材摘要重复：${sha2562}`);
+    hashes.add(sha2562);
+    if (!Number.isSafeInteger(item.bytes) || item.bytes < 1)
+      invalid("素材大小必须是正整数");
+    const assetIds = array2(item.assetIds, "素材引用", 1).map((id7) => {
+      if (typeof id7 !== "string") invalid("素材引用必须是 ID");
+      const asset2 = assets.get(id7);
+      if (!asset2 || asset2.kind === "demo" || bound.has(id7))
+        invalid(`素材引用无效或重复：${String(id7)}`);
+      if (asset2.fingerprint && asset2.fingerprint !== sha2562)
+        invalid(`素材摘要与工程不一致：${id7}`);
+      bound.add(id7);
+      return id7;
+    });
+    return { sha256: sha2562, bytes: item.bytes, assetIds };
+  });
+  const missing = document2.assets.filter((asset2) => asset2.kind !== "demo" && !bound.has(asset2.id));
+  if (missing.length)
+    throw new PortableProjectError(
+      "MISSING_MEDIA",
+      "工程包没有包含全部原始素材",
+      missing.map((asset2) => ({ assetId: asset2.id, message: `缺少素材：${asset2.name}` }))
+    );
+  return {
+    format: PORTABLE_PROJECT_FORMAT,
+    formatVersion: PORTABLE_PROJECT_VERSION,
+    document: document2,
+    media: media3
+  };
+}
+
+// src/editor/waveform.ts
+var WAVEFORM_LIMITS = Object.freeze({
+  bins: 65536,
+  bytes: 768 * 1024,
+  sampleRate: 48e3,
+  seconds: 86400
+});
+function decodeEditorWaveform(value) {
+  const v = value;
+  if (!v || typeof v !== "object" || Array.isArray(v) || Object.keys(v).sort().join() !== "channels,hasAudio,peakScale,peaksBase64,sampleCount,sampleRate,samplesPerBin,schemaVersion,sourceHash" || v.schemaVersion !== 1 || !/^[a-f0-9]{64}$/.test(v.sourceHash) || v.sampleRate !== 48e3 || v.channels !== 2 || typeof v.hasAudio !== "boolean" || !Number.isSafeInteger(v.sampleCount) || v.sampleCount < 0 || v.sampleCount > WAVEFORM_LIMITS.seconds * 48e3 || !Number.isSafeInteger(v.samplesPerBin) || v.samplesPerBin < 1 || v.samplesPerBin > WAVEFORM_LIMITS.seconds * 48e3 || !Number.isFinite(v.peakScale) || v.peakScale < 1 || v.peakScale > 1e6 || typeof v.peaksBase64 !== "string" || v.peaksBase64.length > WAVEFORM_LIMITS.bins * 8 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(v.peaksBase64))
+    throw new Error("波形数据无效或超过大小限制");
+  const binary = atob(v.peaksBase64), bins = Math.ceil(v.sampleCount / v.samplesPerBin);
+  if (bins > WAVEFORM_LIMITS.bins || binary.length !== bins * 6 || (v.hasAudio ? v.sampleCount === 0 : v.sampleCount !== 0))
+    throw new Error("波形长度不匹配");
+  const data = new Int16Array(bins * 3);
+  for (let i = 0; i < data.length; i++)
+    data[i] = (binary.charCodeAt(i * 2) | binary.charCodeAt(i * 2 + 1) << 8) << 16 >> 16;
+  for (let i = 0; i < data.length; i += 3)
+    if (data[i] > data[i + 1] || data[i + 2] < 0 || data[i + 2] > Math.max(Math.abs(data[i]), Math.abs(data[i + 1])) + 1)
+      throw new Error("波形包络无效");
+  const { peaksBase64: _, ...metadata } = v;
+  return { ...metadata, data };
+}
+
+// src/editor/audio-mix-report.ts
+function validateAudioMixReport(value) {
+  const report2 = value;
+  if (!report2 || !Number.isSafeInteger(report2.sampleCount) || report2.sampleCount < 0 || report2.sampleCount > 86400 * 48e3 || !Number.isFinite(report2.peak) || report2.peak < 0 || !Number.isSafeInteger(report2.samplesOverFullScale) || report2.samplesOverFullScale < 0 || report2.samplesOverFullScale > report2.sampleCount || report2.peak > 1 !== report2.samplesOverFullScale > 0 || !report2.sampleCount && report2.peak !== 0)
+    throw new Error("混音测量结果无效，请重新准备声音");
+  return {
+    sampleCount: report2.sampleCount,
+    peak: report2.peak,
+    samplesOverFullScale: report2.samplesOverFullScale
+  };
+}
+function audioMixWarning(value) {
+  const report2 = validateAudioMixReport(value);
+  if (!report2.samplesOverFullScale) return "";
+  const db = 20 * Math.log10(report2.peak);
+  const level = db < 0.05 ? "略高于 0 dBFS" : `+${db.toFixed(1)} dBFS`;
+  return `混音峰值 ${level}，声音叠加或音量过高可能导致失真。请降低音轨或片段音量后重新播放或导出。`;
+}
+
+// src/editor/playback-cache.ts
+function isEditorDemoNarration(asset2) {
+  return asset2.id === "demo-narration-v1" && asset2.name === "示例旁白 · 从想法，到成片。" && asset2.kind === "audio" && asset2.duration === 24 * 24e4 && asset2.metadata?.mimeType === "audio/mpeg" && !asset2.resourceId;
+}
+
+// src/editor/task-bridge.ts
+var EDITOR_DEMO_NARRATION_SHA = "a57af26cc6bec773097f739da61e222548d72a5edc4fcaf377276696e7da3d40";
+var EDITOR_TASK_LIMITS = Object.freeze({
+  resourcesPerTask: 128,
+  inputBytes: 2 * 1024 * 1024,
+  documentBytes: 32 * 1024 * 1024,
+  chunkBytes: 512 * 1024,
+  snapshotResources: 1e4,
+  proxiesPerTask: 120
+});
+function editorTaskDocument(value, sequenceId) {
+  const document2 = validateEditorDocument(value), sequences = new Map(document2.sequences.map((sequence5) => [sequence5.id, sequence5]));
+  if (!sequences.has(sequenceId)) throw new Error("所选导出序列不存在");
+  const sequenceIds = /* @__PURE__ */ new Set(), assetIds = /* @__PURE__ */ new Set();
+  const visit = (id7) => {
+    if (sequenceIds.has(id7)) return;
+    sequenceIds.add(id7);
+    for (const clip3 of sequences.get(id7).clips) {
+      if (clip3.kind === "sequence") visit(clip3.sequenceId);
+      else if (clip3.kind === "media") assetIds.add(clip3.assetId);
+      else if (clip3.kind === "multicam")
+        clip3.angles.forEach((angle) => assetIds.add(angle.assetId));
+    }
+  };
+  visit(sequenceId);
+  document2.sequences = document2.sequences.filter((sequence5) => sequenceIds.has(sequence5.id));
+  document2.assets = document2.assets.filter((asset2) => assetIds.has(asset2.id));
+  document2.activeSequenceId = sequenceId;
+  const resourceIds = /* @__PURE__ */ new Set();
+  for (const asset2 of document2.assets) {
+    if (asset2.kind === "demo" || isEditorDemoNarration(asset2)) continue;
+    const id7 = asset2.resourceId ?? asset2.id;
+    if (!isResourceId(id7)) throw new Error(`素材「${asset2.name}」尚未保存为可用于本地任务的资源`);
+    asset2.resourceId = id7;
+    resourceIds.add(id7);
+  }
+  if (resourceIds.size > EDITOR_TASK_LIMITS.snapshotResources)
+    throw new Error(
+      `单个导出快照最多包含 ${EDITOR_TASK_LIMITS.snapshotResources} 个资源，请拆分序列`
+    );
+  return { document: document2, resourceIds: [...resourceIds].sort() };
+}
+function editorProjectDocument(value) {
+  const document2 = validateEditorDocument(value), resources = /* @__PURE__ */ new Set();
+  if (document2.assets.length > EDITOR_TASK_LIMITS.snapshotResources)
+    throw new Error("完整工程最多包含 10000 个素材");
+  for (const asset2 of document2.assets) {
+    if (asset2.kind === "demo" || isEditorDemoNarration(asset2)) continue;
+    const id7 = asset2.resourceId ?? asset2.id;
+    if (!isResourceId(id7))
+      throw new Error(`素材「${asset2.name}」缺少已保存的原始资源，无法生成完整工程包`);
+    resources.add(id7);
+  }
+  return { document: document2, resourceIds: [...resources].sort() };
+}
+
+// native/editor-runtime/inspect.ts
+import { stat as stat3 } from "node:fs/promises";
+
+// native/process-runner.ts
+import { spawn } from "node:child_process";
+function mediaAbortError() {
+  return Object.assign(new Error("Media processing was cancelled"), { name: "AbortError" });
+}
+async function runMediaProcess(executable, args, options2) {
+  if (options2.signal.aborted) throw mediaAbortError();
+  return new Promise((resolve10, reject) => {
+    const child = spawn(executable, [...args], {
+      cwd: options2.cwd,
+      env: options2.env,
+      stdio: [options2.input ? "pipe" : "ignore", "pipe", "pipe"],
+      // Keep every descendant in the Host-owned tool process group.
+      detached: false,
+      windowsHide: true
+    });
+    const stdout = [];
+    let bytes = 0;
+    let stderr = "";
+    let progressBuffer = "";
+    let lastProgress = 0;
+    let failure2;
+    let spawnFailure;
+    let pipeFailure;
+    let exited = false;
+    let inputFinished = !options2.input;
+    const inputController = new AbortController();
+    let killTimer;
+    let progressWork = Promise.resolve();
+    let inputWork = Promise.resolve();
+    const asError = (error) => error instanceof Error ? error : new Error(String(error));
+    const kill = (signal) => {
+      try {
+        child.kill(signal);
+      } catch {
+      }
+    };
+    const stop = () => {
+      inputController.abort();
+      child.stdin?.destroy();
+      if (exited) return;
+      kill("SIGTERM");
+      killTimer ??= setTimeout(() => kill("SIGKILL"), 1500);
+      killTimer.unref();
+    };
+    const cleanup = () => {
+      options2.signal.removeEventListener("abort", stop);
+      if (killTimer) clearTimeout(killTimer);
+    };
+    options2.signal.addEventListener("abort", stop, { once: true });
+    if (options2.signal.aborted) stop();
+    const consumeProgress = (text7) => {
+      if (options2.durationSeconds && options2.onProgress) {
+        progressBuffer += text7;
+        const lines = progressBuffer.split(/\r?\n/);
+        progressBuffer = (lines.pop() ?? "").slice(-4096);
+        for (const line of lines) {
+          const match = /^out_time_us=(\d+)$/.exec(line);
+          if (!match || Date.now() - lastProgress < 150) continue;
+          lastProgress = Date.now();
+          const fraction = Math.min(0.999, Number(match[1]) / 1e6 / options2.durationSeconds);
+          progressWork = progressWork.then(async () => {
+            await options2.onProgress?.({ fraction });
+          }).catch((error) => {
+            failure2 = error instanceof Error ? error : new Error(String(error));
+            stop();
+          });
+        }
+      }
+    };
+    child.stdout.on("data", (chunk) => {
+      try {
+        if (options2.onStdout) options2.onStdout(chunk);
+        else {
+          bytes += chunk.length;
+          if (bytes > (options2.maxStdoutBytes ?? 4 * 1024 * 1024)) {
+            failure2 = new Error("Media tool output exceeds its bounded result budget");
+            stop();
+            return;
+          }
+          stdout.push(chunk);
+        }
+        if (options2.progressStream !== "stderr") consumeProgress(chunk.toString("utf8"));
+      } catch (error) {
+        failure2 = error instanceof Error ? error : new Error(String(error));
+        stop();
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      const text7 = chunk.toString("utf8");
+      stderr = (stderr + text7).slice(-128 * 1024);
+      try {
+        options2.onStderr?.(text7);
+        if (options2.progressStream === "stderr") consumeProgress(text7);
+      } catch (error) {
+        failure2 = error instanceof Error ? error : new Error(String(error));
+        stop();
+      }
+    });
+    child.once("error", (error) => {
+      spawnFailure = error;
+      stop();
+    });
+    child.once("exit", () => {
+      exited = true;
+      inputController.abort();
+      child.stdin?.destroy();
+    });
+    child.stdin?.on("error", (error) => {
+      if (!inputController.signal.aborted) {
+        pipeFailure = error;
+        stop();
+      }
+    });
+    child.once("close", async (code) => {
+      exited = true;
+      inputController.abort();
+      try {
+        await Promise.all([inputWork, progressWork]);
+        if (options2.signal.aborted) throw mediaAbortError();
+        if (spawnFailure) throw spawnFailure;
+        if (failure2) throw failure2;
+        if (code !== 0)
+          throw new Error(`${executable} exited with code ${code}: ${stderr.slice(-4e3)}`);
+        if (pipeFailure) throw pipeFailure;
+        if (!inputFinished)
+          throw new Error(`${executable} exited before all media input was written`);
+        resolve10({ stdout: Buffer.concat(stdout), stderr });
+      } catch (error) {
+        reject(error);
+      } finally {
+        cleanup();
+      }
+    });
+    if (options2.input) {
+      const input = options2.input;
+      const signal = inputController.signal;
+      const write = (chunk) => new Promise((accept, decline) => {
+        const aborted = () => {
+          signal.removeEventListener("abort", aborted);
+          decline(mediaAbortError());
+        };
+        const complete = (error) => {
+          signal.removeEventListener("abort", aborted);
+          if (error) decline(error);
+          else accept();
+        };
+        signal.addEventListener("abort", aborted, { once: true });
+        if (signal.aborted) return aborted();
+        try {
+          if (chunk) child.stdin.write(chunk, complete);
+          else child.stdin.end(() => complete());
+        } catch (error) {
+          complete(asError(error));
+        }
+      });
+      inputWork = (async () => {
+        let iterator;
+        let exhausted = false;
+        try {
+          if (signal.aborted) return;
+          iterator = input(signal)[Symbol.asyncIterator]();
+          while (!signal.aborted) {
+            const next = await iterator.next();
+            if (next.done) {
+              exhausted = true;
+              break;
+            }
+            if (signal.aborted) break;
+            if (!(next.value instanceof Uint8Array))
+              throw new Error("Media input must yield Uint8Array chunks");
+            await write(next.value);
+          }
+          if (!signal.aborted && exhausted) {
+            await write();
+            inputFinished = true;
+          }
+        } catch (error) {
+          if (!signal.aborted) {
+            failure2 ??= asError(error);
+            stop();
+          }
+        } finally {
+          if (iterator && !exhausted) {
+            try {
+              await iterator.return?.();
+            } catch (error) {
+              failure2 ??= asError(error);
+              stop();
+            }
+          }
+        }
+      })();
+    }
+  });
+}
+
+// native/editor-runtime/protocol.ts
+var EditorTaskError = class extends Error {
+  constructor(code, message, retryable = false) {
+    super(message);
+    this.code = code;
+    this.retryable = retryable;
+    this.name = "EditorTaskError";
+  }
+  code;
+  retryable;
+};
+function record5(value, keys3, label3) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Reflect.ownKeys(value).some((key) => typeof key !== "string" || !keys3.includes(key)))
+    throw new EditorTaskError("INVALID_REQUEST", `${label3}包含无效或不支持的字段`);
+  return value;
+}
+function hash2(value) {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value))
+    throw new EditorTaskError("INVALID_REQUEST", "内容校验编号无效");
+  return value;
+}
+function resourceId(value) {
+  if (typeof value !== "string" || !/^(?:asset|external)-[a-f0-9]{64}$/.test(value))
+    throw new EditorTaskError("INVALID_REQUEST", "素材资源编号无效");
+  return value;
+}
+function integer5(value, min, max) {
+  if (!Number.isSafeInteger(value) || Number(value) < min || Number(value) > max)
+    throw new EditorTaskError("INVALID_REQUEST", "请求数量或范围无效");
+  return Number(value);
+}
+function id5(value) {
+  if (typeof value !== "string" || !value || value.length > 128 || /[\x00-\x1f\x7f]/.test(value))
+    throw new EditorTaskError("INVALID_REQUEST", "编辑器对象编号无效");
+  return value;
+}
+function array3(value, maximum, item) {
+  if (!Array.isArray(value) || value.length > maximum || Reflect.ownKeys(value).length !== value.length + 1)
+    throw new EditorTaskError("INVALID_REQUEST", "请求列表无效或超过上限");
+  const list5 = value.map(item);
+  if (new Set(list5).size !== list5.length)
+    throw new EditorTaskError("INVALID_REQUEST", "请求列表存在重复项");
+  return list5;
+}
+function validateEditorRequest(value) {
+  const input = record5(
+    value,
+    [
+      "action",
+      "transferId",
+      "documentHash",
+      "sequenceId",
+      "resourceIds",
+      "confirmedReferences",
+      "assetIds",
+      "chunkIndex",
+      "chunkCount",
+      "byteLength",
+      "dataBase64",
+      "profile",
+      "preparedAudio",
+      "range",
+      "sourceDuration",
+      "alignment",
+      "bundleHash",
+      "batchIndex"
+    ],
+    "编辑器任务"
+  );
+  const actions = {
+    "inspect-source": ["resourceIds"],
+    "analyze-waveform": ["resourceIds", "sourceDuration"],
+    "align-multicam": ["resourceIds", "alignment"],
+    "analyze-asset-waveform": ["documentHash", "sequenceId", "assetIds"],
+    "prepare-source-video": ["resourceIds", "sourceDuration"],
+    "stage-status": ["documentHash", "resourceIds", "confirmedReferences"],
+    "stage-resources": ["resourceIds"],
+    "stage-document": ["documentHash", "chunkIndex", "chunkCount", "dataBase64"],
+    commit: ["documentHash", "sequenceId", "chunkCount", "byteLength"],
+    "commit-project": ["documentHash", "sequenceId", "chunkCount", "byteLength"],
+    "export-project": ["documentHash", "sequenceId"],
+    "import-project": ["resourceIds"],
+    "project-import-status": ["bundleHash"],
+    "publish-project-media": ["bundleHash", "batchIndex"],
+    "discard-project-import": ["bundleHash"],
+    "prepare-audio": ["documentHash", "sequenceId"],
+    "prepare-video": ["documentHash", "sequenceId", "assetIds"],
+    render: ["documentHash", "sequenceId", "profile", "preparedAudio", "range"],
+    discard: ["documentHash", "sequenceId"]
+  };
+  if (typeof input.action !== "string" || !Object.hasOwn(actions, input.action))
+    throw new EditorTaskError("INVALID_REQUEST", "不支持此编辑器任务");
+  const action = input.action;
+  record5(input, ["action", "transferId", ...actions[action]], "编辑器任务");
+  if (typeof input.transferId !== "string" || !/^editor-[a-f0-9-]{36}$/.test(input.transferId))
+    throw new EditorTaskError("INVALID_REQUEST", "编辑器传输编号无效");
+  const result = { action, transferId: input.transferId };
+  if (actions[action].includes("bundleHash")) result.bundleHash = hash2(input.bundleHash);
+  if (action === "publish-project-media")
+    result.batchIndex = integer5(
+      input.batchIndex,
+      0,
+      Math.ceil(EDITOR_TASK_LIMITS.snapshotResources / 120) - 1
+    );
+  if (actions[action].includes("documentHash")) result.documentHash = hash2(input.documentHash);
+  if (actions[action].includes("sequenceId")) result.sequenceId = id5(input.sequenceId);
+  if (actions[action].includes("resourceIds"))
+    result.resourceIds = array3(input.resourceIds, EDITOR_TASK_LIMITS.resourcesPerTask, resourceId);
+  if (["inspect-source", "analyze-waveform", "prepare-source-video", "import-project"].includes(
+    action
+  ) && result.resourceIds.length !== 1)
+    throw new EditorTaskError("INVALID_REQUEST", "每个素材分析任务须提供一个资源");
+  if (["analyze-waveform", "prepare-source-video"].includes(action))
+    result.sourceDuration = integer5(input.sourceDuration, 1, 86400 * 24e4);
+  if (action === "align-multicam") {
+    const value2 = record5(
+      input.alignment,
+      [
+        "referenceResourceId",
+        "windowSeconds",
+        "maxOffsetSeconds",
+        "sourceDurations",
+        "sourceHashes",
+        "origin"
+      ],
+      "机位同步参数"
+    );
+    if (result.resourceIds.length < 2 || result.resourceIds.length > 32)
+      throw new EditorTaskError("INVALID_REQUEST", "机位同步需要 2 至 32 个资源");
+    const referenceResourceId = resourceId(value2.referenceResourceId), windowSeconds = integer5(value2.windowSeconds, 3, 180), maxOffsetSeconds = integer5(value2.maxOffsetSeconds, 0, 60);
+    if (!result.resourceIds.includes(referenceResourceId) || maxOffsetSeconds >= windowSeconds - 2 || !Array.isArray(value2.sourceDurations) || value2.sourceDurations.length !== result.resourceIds.length)
+      throw new EditorTaskError("INVALID_REQUEST", "机位同步范围或基准无效");
+    result.alignment = {
+      referenceResourceId,
+      windowSeconds,
+      maxOffsetSeconds,
+      sourceDurations: value2.sourceDurations.map(
+        (duration2) => integer5(duration2, 1, 86400 * 24e4)
+      )
+    };
+    if (value2.sourceHashes !== void 0) {
+      if (!Array.isArray(value2.sourceHashes) || value2.sourceHashes.length !== result.resourceIds.length)
+        throw new EditorTaskError("INVALID_REQUEST", "素材指纹列表无效");
+      result.alignment.sourceHashes = value2.sourceHashes.map(
+        (value3) => value3 === null ? null : hash2(value3)
+      );
+    }
+    if (value2.origin !== void 0) {
+      const origin = record5(
+        value2.origin,
+        ["documentId", "revision", "documentHash", "referenceAssetId", "assets"],
+        "机位同步来源"
+      );
+      if (!Array.isArray(origin.assets) || origin.assets.length !== result.resourceIds.length)
+        throw new EditorTaskError("INVALID_REQUEST", "机位同步来源列表无效");
+      const assets = origin.assets.map((raw, index2) => {
+        const asset2 = record5(raw, ["assetId", "resourceId"], "机位素材映射");
+        if (asset2.resourceId !== result.resourceIds[index2])
+          throw new EditorTaskError("INVALID_REQUEST", "机位素材映射不匹配");
+        return { assetId: id5(asset2.assetId), resourceId: resourceId(asset2.resourceId) };
+      });
+      if (new Set(assets.map((asset2) => asset2.assetId)).size !== assets.length || !assets.some(
+        (asset2) => asset2.assetId === origin.referenceAssetId && asset2.resourceId === referenceResourceId
+      ))
+        throw new EditorTaskError("INVALID_REQUEST", "同步基准机位映射无效");
+      result.alignment.origin = {
+        documentId: id5(origin.documentId),
+        revision: integer5(origin.revision, 0, Number.MAX_SAFE_INTEGER),
+        documentHash: hash2(origin.documentHash),
+        referenceAssetId: id5(origin.referenceAssetId),
+        assets
+      };
+    }
+  }
+  if (action === "stage-status" && input.confirmedReferences !== void 0) {
+    if (!Array.isArray(input.confirmedReferences) || input.confirmedReferences.length > result.resourceIds.length)
+      throw new EditorTaskError("INVALID_REQUEST", "外部素材确认列表无效");
+    result.confirmedReferences = input.confirmedReferences.map((raw) => {
+      const value2 = record5(raw, ["resourceId", "bytes"], "外部素材确认");
+      const id7 = resourceId(value2.resourceId);
+      if (!id7.startsWith("external-") || !result.resourceIds.includes(id7))
+        throw new EditorTaskError("INVALID_REQUEST", "外部素材确认不属于本批资源");
+      return { resourceId: id7, bytes: integer5(value2.bytes, 1, 20 * 1024 ** 3) };
+    });
+    if (new Set(result.confirmedReferences.map((item) => item.resourceId)).size !== result.confirmedReferences.length)
+      throw new EditorTaskError("INVALID_REQUEST", "外部素材确认存在重复项");
+  }
+  if (action === "stage-resources" && !result.resourceIds.length)
+    throw new EditorTaskError("INVALID_REQUEST", "请提供本批素材资源");
+  if (["prepare-video", "analyze-asset-waveform"].includes(action)) {
+    result.assetIds = array3(input.assetIds, EDITOR_TASK_LIMITS.proxiesPerTask, id5);
+    if (action === "analyze-asset-waveform" && result.assetIds.length !== 1)
+      throw new EditorTaskError("INVALID_REQUEST", "每次分析一个工程声音素材");
+    if (!result.assetIds.length) throw new EditorTaskError("INVALID_REQUEST", "请提供视频素材");
+  }
+  if (action === "stage-document" || action === "commit" || action === "commit-project")
+    result.chunkCount = integer5(
+      input.chunkCount,
+      1,
+      EDITOR_TASK_LIMITS.documentBytes / EDITOR_TASK_LIMITS.chunkBytes
+    );
+  if (action === "stage-document") {
+    result.chunkIndex = integer5(input.chunkIndex, 0, result.chunkCount - 1);
+    if (typeof input.dataBase64 !== "string" || input.dataBase64.length > Math.ceil(EDITOR_TASK_LIMITS.chunkBytes / 3) * 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.dataBase64) || !input.dataBase64)
+      throw new EditorTaskError("INVALID_REQUEST", "工程数据块无效或超过大小限制");
+    result.dataBase64 = input.dataBase64;
+  }
+  if (action === "commit" || action === "commit-project")
+    result.byteLength = integer5(input.byteLength, 1, EDITOR_TASK_LIMITS.documentBytes);
+  if (action === "render") {
+    result.profile = validateExportProfile(input.profile);
+    if (input.range !== void 0) {
+      try {
+        result.range = validateExportRange(record5(input.range, ["start", "duration"], "导出范围"));
+      } catch (error) {
+        throw new EditorTaskError(
+          "INVALID_REQUEST",
+          error instanceof Error ? error.message : "导出范围无效"
+        );
+      }
+    }
+    if (input.preparedAudio !== void 0) {
+      const audio2 = record5(
+        input.preparedAudio,
+        ["documentHash", "sequenceId", "recipeHash", "assetId", "range"],
+        "已准备声音"
+      );
+      result.preparedAudio = {
+        documentHash: hash2(audio2.documentHash),
+        sequenceId: id5(audio2.sequenceId),
+        recipeHash: hash2(audio2.recipeHash),
+        assetId: resourceId(audio2.assetId),
+        ...audio2.range === void 0 ? {} : { range: validateExportRange(record5(audio2.range, ["start", "duration"], "已准备声音范围")) }
+      };
+      if (!result.preparedAudio.assetId.startsWith("asset-") || audio2.documentHash !== result.documentHash || audio2.sequenceId !== result.sequenceId || audio2.range !== void 0 && !sameExportRange(audio2.range, result.range))
+        throw new EditorTaskError("MIX_MISMATCH", "已准备声音与当前工程快照不一致");
+    }
+  }
+  return result;
+}
+
+// native/editor-runtime/proxy.ts
+import { rename as rename2, rm as rm2 } from "node:fs/promises";
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+import { join as join2 } from "node:path";
+
+// native/editor-runtime/files.ts
 import { constants } from "node:fs";
+import { copyFile, lstat, mkdir, open, realpath, rename, rm, stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { link, lstat, mkdir, open, realpath, rename, rm, rmdir, unlink } from "node:fs/promises";
+import { isAbsolute, join, relative, sep } from "node:path";
+var digest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+var bytesHash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+function abort(signal) {
+  if (signal.aborted) throw mediaAbortError();
+}
+async function sealed(path) {
+  const info = await lstat(path);
+  if (!info.isDirectory() || info.isSymbolicLink())
+    throw new EditorTaskError("INVALID_DIRECTORY", "任务目录不是授权的普通目录");
+  return realpath(path);
+}
+async function directory(root, parts) {
+  let path = root;
+  for (const part2 of parts) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(part2) || part2 === "." || part2 === "..")
+      throw new EditorTaskError("INVALID_DIRECTORY", "任务子目录无效");
+    path = join(path, part2);
+    await mkdir(path, { mode: 448 }).catch((error) => {
+      if (error.code !== "EEXIST") throw error;
+    });
+    const info = await lstat(path);
+    if (!info.isDirectory() || info.isSymbolicLink() || await realpath(path) !== path)
+      throw new EditorTaskError("INVALID_DIRECTORY", "任务子目录已变化");
+  }
+  return path;
+}
+async function regular(root, parts) {
+  let path = root;
+  for (const part2 of parts) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(part2) || part2 === "." || part2 === "..")
+      throw new EditorTaskError("INVALID_FILE", "任务文件名无效");
+    path = join(path, part2);
+    if ((await lstat(path)).isSymbolicLink())
+      throw new EditorTaskError("INVALID_FILE", "任务材料不能使用符号链接");
+  }
+  const canonical = await realpath(path);
+  if (!canonical.startsWith(root + sep) || !(await stat(canonical)).isFile())
+    throw new EditorTaskError("INVALID_FILE", "任务材料不在授权目录内");
+  return canonical;
+}
+async function originalFile(original) {
+  let unchanged;
+  try {
+    const info = await lstat(original.path);
+    unchanged = info.isFile() && !info.isSymbolicLink() && info.size === original.bytes && await realpath(original.path) === original.path;
+  } catch {
+    throw new EditorTaskError("SOURCE_CHANGED", "已授权原始素材已移动、断开或无法读取，请重新连接原文件");
+  }
+  if (!unchanged) throw new EditorTaskError("SOURCE_CHANGED", "已授权原始素材发生变化");
+  return original.path;
+}
+async function fileHash(path, signal) {
+  abort(signal);
+  const hash4 = createHash("sha256"), file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)), stream = file.createReadStream();
+  const stop = () => stream.destroy(mediaAbortError());
+  signal.addEventListener("abort", stop, { once: true });
+  try {
+    for await (const data of stream) {
+      abort(signal);
+      hash4.update(data);
+    }
+    return hash4.digest("hex");
+  } finally {
+    stream.destroy();
+    await file.close();
+    signal.removeEventListener("abort", stop);
+  }
+}
+async function readBytes(root, parts, maximum) {
+  const path = await regular(root, parts), file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    if ((await file.stat()).size > maximum)
+      throw new EditorTaskError("LIMIT_EXCEEDED", "保存的任务数据超过大小限制");
+    return await file.readFile();
+  } finally {
+    await file.close();
+  }
+}
+async function readSourcePrefix(path, length = 32) {
+  const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const result = Buffer.alloc(length), { bytesRead } = await file.read(result, 0, length, 0);
+    return result.subarray(0, bytesRead);
+  } finally {
+    await file.close();
+  }
+}
+async function json2(root, parts, maximum = 65536) {
+  return JSON.parse((await readBytes(root, parts, maximum)).toString("utf8"));
+}
+async function optionalJson(root, parts, maximum) {
+  try {
+    return await json2(root, parts, maximum);
+  } catch (error) {
+    if (error.code === "ENOENT") return void 0;
+    throw error;
+  }
+}
+async function atomic(path, bytes) {
+  const scratch = `${path}.${randomUUID()}.tmp`, file = await open(scratch, "wx", 384);
+  try {
+    await file.writeFile(bytes);
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+  try {
+    await rename(scratch, path);
+  } finally {
+    await rm(scratch, { force: true });
+  }
+}
+async function publish(root, path, extension, mimeType, role, signal) {
+  abort(signal);
+  const sha2562 = await fileHash(path, signal), bytes = (await stat(path)).size;
+  if (bytes < 1 || bytes > 20 * 1024 ** 3)
+    throw new EditorTaskError("LIMIT_EXCEEDED", "输出文件超过当前资源接口的 20GiB 限制");
+  const outputs = await directory(root, ["outputs"]), target = join(outputs, `${sha2562}.${extension}`);
+  if (path !== target)
+    await copyFile(path, target, constants.COPYFILE_EXCL).catch(async (error) => {
+      if (error.code !== "EEXIST" || await fileHash(await regular(outputs, [`${sha2562}.${extension}`]), signal) !== sha2562)
+        throw error;
+    });
+  return {
+    file: relative(root, target).split(sep).join("/"),
+    role,
+    name: `${role}.${extension}`,
+    mimeType,
+    bytes,
+    sha256: sha2562,
+    assetId: `asset-${sha2562}`
+  };
+}
+
+// native/editor-runtime/proxy.ts
+var safety = [
+  "-protocol_whitelist",
+  "file,pipe",
+  "-format_whitelist",
+  "mov,matroska,webm,avi,mpeg,mpegts,ogg"
+];
+var known = (value) => typeof value === "string" && !["unknown", "unspecified", "reserved"].includes(value) ? value : void 0;
+function ratio(value) {
+  if (typeof value !== "string" || !/^\d+[:/]\d+$/.test(value)) return 1;
+  const [a, b] = value.split(/[:/]/).map(Number);
+  return a > 0 && b > 0 ? a / b : 1;
+}
+async function timeline(path, streamIndex, origin, context2, onFrame) {
+  let pending = "", count = 0, previous = -1, firstTick2 = -1, endTick = -1;
+  const hash4 = createHash2("sha256");
+  const consume = (chunk) => {
+    const lines = (pending + chunk.toString("utf8")).split(/\r?\n/);
+    pending = lines.pop();
+    if (pending.length > 4096) throw new EditorTaskError("INVALID_MEDIA", "视频帧时间数据无效");
+    for (const line of lines) {
+      const fields2 = Object.fromEntries(
+        line.trim().split("|").map((field2) => field2.split("="))
+      );
+      if (!fields2.best_effort_timestamp_time) continue;
+      const seconds3 = Number(fields2.best_effort_timestamp_time), tick2 = Math.round((seconds3 - origin) * 24e4);
+      if (!Number.isFinite(seconds3) || !Number.isSafeInteger(tick2) || tick2 < 0 || tick2 <= previous)
+        throw new EditorTaskError(
+          "UNSUPPORTED_TIMESTAMPS",
+          "源视频存在缺失或重复的画面时间戳，请先修复素材"
+        );
+      if (firstTick2 < 0) firstTick2 = tick2;
+      const duration2 = Number(fields2.duration_time ?? fields2.pkt_duration_time);
+      if (!Number.isFinite(duration2) || duration2 <= 0)
+        throw new EditorTaskError(
+          "UNSUPPORTED_TIMESTAMPS",
+          "源视频缺少准确的画面持续时间，请先修复素材"
+        );
+      endTick = Math.round((seconds3 - origin + duration2) * 24e4);
+      if (endTick > 86400 * 24e4)
+        throw new EditorTaskError("LIMIT_EXCEEDED", "兼容画面最多支持 24 小时视频");
+      previous = tick2;
+      count++;
+      hash4.update(`${tick2}
+`);
+      onFrame?.(count);
+    }
+  };
+  await runMediaProcess(
+    context2.ffprobePath,
+    [
+      "-v",
+      "error",
+      ...safety,
+      "-select_streams",
+      String(streamIndex),
+      "-show_entries",
+      "frame=best_effort_timestamp_time,duration_time,pkt_duration_time",
+      "-of",
+      "compact=p=0:nk=0",
+      path
+    ],
+    { signal: context2.signal, onStdout: consume }
+  );
+  consume(Buffer.from("\n"));
+  if (!count) throw new EditorTaskError("INVALID_MEDIA", "源视频没有可解码画面");
+  return { hash: hash4.digest("hex"), count, firstTick: firstTick2, endTick };
+}
+function describeEditorVideo(stream) {
+  const trc = known(stream.color_transfer), primaries = known(stream.color_primaries), matrix = known(stream.color_space), range = known(stream.color_range);
+  if (["smpte2084", "arib-std-b67"].includes(trc ?? "") || ["bt2020", "smpte431", "smpte432"].includes(primaries ?? "") || ["bt2020nc", "bt2020c"].includes(matrix ?? ""))
+    throw new EditorTaskError(
+      "UNSUPPORTED_HDR",
+      "当前合成管线支持 SDR；HDR 或广色域素材需明确转换后导入"
+    );
+  if (/^(?:yuva|gbrap|rgba|bgra|argb|abgr|ya)/.test(String(stream.pix_fmt)))
+    throw new EditorTaskError(
+      "UNSUPPORTED_ALPHA_VIDEO",
+      "当前视频中间格式不支持透明通道，请先保留透明度导出为图片序列"
+    );
+  const rotation = Number(
+    stream.side_data_list?.find((item) => Number.isFinite(item.rotation))?.rotation ?? stream.tags?.rotate ?? 0
+  );
+  if (!Number.isFinite(rotation) || Math.abs(rotation / 90 - Math.round(rotation / 90)) > 1e-5)
+    throw new EditorTaskError("UNSUPPORTED_ORIENTATION", "源视频方向元数据不是直角旋转");
+  const sar = ratio(stream.sample_aspect_ratio), unrotatedWidth = Math.round(stream.width * sar), rotated = Math.abs(Math.round(rotation / 90)) % 2 === 1;
+  const width = rotated ? stream.height : unrotatedWidth, height = rotated ? unrotatedWidth : stream.height;
+  if (width < 1 || height < 1 || width > 8192 || height > 8192)
+    throw new EditorTaskError("LIMIT_EXCEEDED", "源视频显示尺寸超过当前 8192 像素合成上限");
+  const assumptions = [], sd = stream.height <= 576;
+  const inputMatrix = matrix ?? (sd ? "smpte170m" : "bt709"), inputPrimaries = primaries ?? (sd ? "smpte170m" : "bt709"), inputTransfer = trc ?? "bt709", inputRange = range ?? "tv";
+  if (!matrix) assumptions.push(`未标记色彩矩阵，使用${inputMatrix}`);
+  if (!primaries) assumptions.push(`未标记色彩原色，使用${inputPrimaries}`);
+  if (!trc) assumptions.push("未标记传递函数，使用bt709");
+  if (!range) assumptions.push("未标记视频范围，使用limited");
+  if (!["bt709", "bt470bg", "smpte170m", "smpte240m", "gbr"].includes(inputMatrix) || !["bt709", "bt470bg", "bt470m", "smpte170m", "smpte240m"].includes(inputPrimaries) || !["bt709", "iec61966-2-1", "gamma22", "gamma28", "smpte170m", "smpte240m"].includes(
+    inputTransfer
+  ) || !["pc", "tv"].includes(inputRange))
+    throw new EditorTaskError(
+      "UNSUPPORTED_COLOR",
+      "源素材色彩描述尚不支持，请先明确转换为 SDR Rec.709"
+    );
+  const sourceBitDepth = Number(stream.bits_per_raw_sample) || Number(/p(\d+)(?:le|be)$/.exec(String(stream.pix_fmt))?.[1]) || 8;
+  return {
+    rotation,
+    sar,
+    width,
+    height,
+    assumptions,
+    inputMatrix,
+    inputPrimaries,
+    inputTransfer,
+    inputRange,
+    sourceBitDepth
+  };
+}
+async function prepareEditorProxy(path, sourceHash, context2, purpose = "export") {
+  const probe = JSON.parse(
+    (await runMediaProcess(
+      context2.ffprobePath,
+      ["-v", "error", ...safety, "-show_streams", "-show_format", "-of", "json", path],
+      { signal: context2.signal }
+    )).stdout.toString()
+  );
+  const stream = probe.streams?.find(
+    (item) => item.codec_type === "video" && !item.disposition?.attached_pic
+  );
+  if (!stream || !Number.isInteger(stream.index) || !Number.isInteger(stream.width) || !Number.isInteger(stream.height))
+    throw new EditorTaskError("INVALID_MEDIA", "视频素材没有有效画面流");
+  const {
+    rotation,
+    sar,
+    width,
+    height,
+    assumptions,
+    inputMatrix,
+    inputPrimaries,
+    inputTransfer,
+    inputRange,
+    sourceBitDepth
+  } = describeEditorVideo(stream);
+  if (Number(probe.format?.duration) > 86400)
+    throw new EditorTaskError("LIMIT_EXCEEDED", "兼容画面最多支持 24 小时视频");
+  const sourceOriginSeconds = Number(probe.format?.start_time ?? 0);
+  if (!Number.isFinite(sourceOriginSeconds))
+    throw new EditorTaskError("INVALID_MEDIA", "源视频起始时间无效");
+  const previewScale = Math.min(1, 1920 / width, 1080 / height);
+  const encodedWidth = purpose === "preview" ? Math.max(2, Math.round(width * previewScale / 2) * 2) : width;
+  const encodedHeight = purpose === "preview" ? Math.max(2, Math.round(height * previewScale / 2) * 2) : height;
+  const recipeHash = digest({
+    version: purpose === "preview" ? "editor-sdr-preview-v1" : "editor-sdr-proxy-v2-duration",
+    sourceHash,
+    ffmpeg: context2.ffmpegVersion,
+    stream: stream.index,
+    width,
+    height,
+    ...purpose === "preview" ? { encodedWidth, encodedHeight } : {},
+    rotation,
+    sar,
+    inputMatrix,
+    inputPrimaries,
+    inputTransfer,
+    inputRange,
+    sourceOriginSeconds
+  });
+  const cache = await directory(context2.cacheDir, ["video", recipeHash]);
+  const receipt = await optionalJson(cache, ["receipt.json"]);
+  if (receipt?.recipeHash === recipeHash && receipt.sourceHash === sourceHash) {
+    const saved = await regular(cache, ["video.mp4"]);
+    if (await fileHash(saved, context2.signal) === receipt.sha256) {
+      context2.onProgress?.(1);
+      return { ...receipt, path: saved };
+    }
+    throw new EditorTaskError("CACHE_CHANGED", "已准备视频内容发生变化，请清理该任务缓存后重试");
+  }
+  let reported = -1;
+  const report2 = (fraction) => {
+    if (fraction >= 1 || fraction - reported >= 0.01) {
+      reported = fraction;
+      context2.onProgress?.(fraction);
+    }
+  };
+  const durationSeconds = Number(stream.duration) || Number(probe.format?.duration) || 0, [rateNumerator, rateDenominator] = String(stream.avg_frame_rate || stream.r_frame_rate).split("/").map(Number), expectedFrames = Number(stream.nb_frames) || Math.round(durationSeconds * rateNumerator / (rateDenominator || 1)) || 0;
+  const scanned = (start, span) => (count) => {
+    if (expectedFrames > 0) report2(start + span * Math.min(1, count / expectedFrames));
+  };
+  const original = await timeline(path, stream.index, sourceOriginSeconds, context2, scanned(0, 0.6));
+  if (original.firstTick !== 0)
+    throw new EditorTaskError(
+      "UNSUPPORTED_TIMESTAMPS",
+      "当前合成器尚不支持晚于素材起点出现的第一帧，请先整理画面起点"
+    );
+  const output = join2(context2.workDir, `proxy-${randomUUID2()}.mp4`);
+  const filter = `scale=${encodedWidth}:${encodedHeight}:flags=${purpose === "preview" ? "bilinear" : "lanczos"},setsar=1,colorspace=ispace=${inputMatrix}:iprimaries=${inputPrimaries}:itrc=${inputTransfer}:irange=${inputRange}:space=bt709:primaries=bt709:trc=bt709:range=tv:format=${purpose === "preview" ? "yuv420p" : "yuv444p"}:dither=fsb`;
+  try {
+    await runMediaProcess(
+      context2.ffmpegPath,
+      [
+        "-nostdin",
+        "-v",
+        "error",
+        ...safety,
+        "-copyts",
+        "-start_at_zero",
+        "-i",
+        path,
+        "-map",
+        `0:${stream.index}`,
+        "-an",
+        "-sn",
+        "-dn",
+        "-vf",
+        filter,
+        "-fps_mode",
+        "passthrough",
+        "-enc_time_base",
+        "1:240000",
+        "-c:v",
+        purpose === "preview" ? "libx264" : "libvpx-vp9",
+        ...purpose === "preview" ? ["-crf", "23", "-preset", "ultrafast", "-pix_fmt", "yuv420p"] : [
+          "-lossless",
+          "1",
+          "-pix_fmt",
+          "yuv444p",
+          "-deadline",
+          "good",
+          "-cpu-used",
+          "4",
+          "-row-mt",
+          "1"
+        ],
+        "-color_primaries",
+        "bt709",
+        "-color_trc",
+        "bt709",
+        "-colorspace",
+        "bt709",
+        "-color_range",
+        "tv",
+        "-video_track_timescale",
+        "240000",
+        "-movflags",
+        "+faststart",
+        "-y",
+        "-nostats",
+        "-progress",
+        "pipe:1",
+        output
+      ],
+      {
+        signal: context2.signal,
+        durationSeconds,
+        onStdout: () => {
+        },
+        onProgress: ({ fraction }) => report2(0.6 + 0.25 * (fraction ?? 0))
+      }
+    );
+    report2(0.85);
+    const actual = await timeline(output, 0, 0, context2, scanned(0.85, 0.149));
+    if (actual.hash !== original.hash || actual.count !== original.count || actual.endTick !== original.endTick)
+      throw new EditorTaskError(
+        "PROXY_TIMING_MISMATCH",
+        "兼容视频的帧时间与原素材不一致，已停止输出"
+      );
+    const saved = join2(cache, "video.mp4");
+    await rename2(output, saved);
+    const result = {
+      path: saved,
+      mimeType: "video/mp4",
+      sha256: await fileHash(saved, context2.signal),
+      recipeHash,
+      sourceHash,
+      width,
+      height,
+      sourceOriginSeconds,
+      frameCount: actual.count,
+      color: {
+        space: "bt709",
+        primaries: "bt709",
+        transfer: "bt709",
+        range: "tv",
+        sourceBitDepth,
+        assumptions
+      }
+    };
+    const { path: _path, ...publicReceipt } = result;
+    await atomic(join2(cache, "receipt.json"), Buffer.from(JSON.stringify(publicReceipt)));
+    report2(1);
+    return result;
+  } finally {
+    await rm2(output, { force: true });
+  }
+}
+
+// native/editor-runtime/inspect.ts
+var inputOptions = [
+  "-protocol_whitelist",
+  "file,pipe",
+  "-format_whitelist",
+  "mov,matroska,webm,avi,mp3,wav,aiff,flac,ogg,aac,mpeg,mpegts,png_pipe,jpeg_pipe,webp_pipe,bmp_pipe,tiff_pipe,gif,apng,j2k_pipe"
+];
+function rational(n, d = 1n) {
+  if (d === 0n) throw new Error("无效时间基准");
+  if (d < 0n) {
+    n = -n;
+    d = -d;
+  }
+  let a = n < 0n ? -n : n, b = d;
+  while (b) {
+    const r = a % b;
+    a = b;
+    b = r;
+  }
+  return { n: n / (a || 1n), d: d / (a || 1n) };
+}
+var add = (a, b) => rational(a.n * b.d + b.n * a.d, a.d * b.d);
+var sub = (a, b) => add(a, rational(-b.n, b.d));
+var compare = (a, b) => a.n * b.d - b.n * a.d;
+var publicRational = (v) => ({ numerator: String(v.n), denominator: String(v.d) });
+function ratio2(value) {
+  if (typeof value !== "string" || !/^[-+]?\d+[/:]\d+$/.test(value)) return;
+  const [n, d] = value.split(/[/:]/).map(BigInt);
+  if (!d) return;
+  return rational(n, d);
+}
+function decimal(value) {
+  if (typeof value !== "string" || !/^[-+]?\d+(?:\.\d+)?$/.test(value)) return;
+  const whole2 = value.split(".");
+  return rational(BigInt(whole2.join("")), 10n ** BigInt(whole2[1]?.length ?? 0));
+}
+function whole(value) {
+  if (typeof value === "number" && !Number.isSafeInteger(value)) return;
+  if (!/^[-+]?\d+$/.test(String(value))) return;
+  return BigInt(String(value));
+}
+var time = (pts, base) => {
+  const n = whole(pts);
+  return n === void 0 ? void 0 : rational(n * base.n, base.d);
+};
+var numeric = (r) => Number(r.n) / Number(r.d);
+var ticks2 = (r) => {
+  const n = r.n * 240000n;
+  return Number(n < 0n ? -((-n + r.d / 2n) / r.d) : (n + r.d / 2n) / r.d);
+};
+var frameRate = (value) => {
+  const r = ratio2(value);
+  if (!r || r.n <= 0 || r.d <= 0 || r.n > 1000000000n || r.d > 1000000000n) return null;
+  return { numerator: Number(r.n), denominator: Number(r.d) };
+};
+var field = (value) => typeof value === "string" ? value.slice(0, 128) : "unknown";
+async function inspectEditorSource(path, resourceId2, ffprobePath, signal) {
+  const bytes = (await stat3(path)).size;
+  if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > 20 * 1024 ** 3)
+    throw new EditorTaskError("INVALID_MEDIA", "素材为空或超过 20GiB 限制");
+  const sha2562 = await fileHash(path, signal);
+  if (resourceId2.startsWith("asset-") && resourceId2 !== `asset-${sha2562}`)
+    throw new EditorTaskError("SOURCE_CHANGED", "素材内容与资源身份不一致");
+  const probe = JSON.parse(
+    (await runMediaProcess(
+      ffprobePath,
+      ["-v", "error", ...inputOptions, "-show_streams", "-show_format", "-of", "json", path],
+      { signal, maxStdoutBytes: 512 * 1024 }
+    )).stdout.toString()
+  );
+  if (!Array.isArray(probe.streams) || probe.streams.length > 64)
+    throw new EditorTaskError("INVALID_MEDIA", "媒体轨道列表无效或超过 64 条限制");
+  const video = probe.streams.find(
+    (s) => s.codec_type === "video" && !s.disposition?.attached_pic
+  ), audio2 = probe.streams.find((s) => s.codec_type === "audio");
+  if (!video && !audio2) throw new EditorTaskError("INVALID_MEDIA", "素材没有可解析的画面或声音");
+  const magic = await readSourcePrefix(path), format = field(probe.format?.format_name);
+  const imageMime = magic.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? "image/png" : magic[0] === 255 && magic[1] === 216 ? "image/jpeg" : magic.subarray(0, 3).toString() === "GIF" ? "image/gif" : magic.subarray(8, 12).toString() === "WEBP" ? "image/webp" : magic.subarray(4, 12).toString().includes("ftypavif") ? "image/avif" : magic.subarray(0, 2).toString() === "BM" ? "image/bmp" : magic.subarray(0, 4).equals(Buffer.from([73, 73, 42, 0])) || magic.subarray(0, 4).equals(Buffer.from([77, 77, 0, 42])) ? "image/tiff" : void 0;
+  const kind = imageMime && video ? "image" : video ? "video" : "audio";
+  const selected3 = [video, audio2].filter(Boolean);
+  const bases = /* @__PURE__ */ new Map();
+  for (const stream of selected3) {
+    const base = ratio2(stream.time_base);
+    if (!base || base.n <= 0n)
+      throw new EditorTaskError("INVALID_MEDIA", "媒体缺少有效的有理时间基准");
+    bases.set(stream.index, base);
+  }
+  const starts = selected3.map((s) => time(s.start_pts, bases.get(s.index))).filter((v) => Boolean(v));
+  let origin = starts.length ? starts.reduce((a, b) => compare(a, b) < 0 ? a : b) : decimal(probe.format?.start_time) ?? rational(0n);
+  if (kind === "image") origin = rational(0n);
+  const streams = /* @__PURE__ */ new Map();
+  for (const s of selected3)
+    streams.set(s.index, { count: 0, variable: false, invalid: false, samples: 0n });
+  let pending = "";
+  const consume = (chunk) => {
+    const lines = (pending + chunk.toString()).split(/\r?\n/);
+    pending = lines.pop();
+    if (pending.length > 8192) throw new EditorTaskError("INVALID_MEDIA", "媒体帧记录超出限制");
+    for (const line of lines) {
+      const f = Object.fromEntries(line.split("|").map((part2) => part2.split("=")));
+      const index2 = Number(f.stream_index), state = streams.get(index2), base = bases.get(index2);
+      if (!state || !base) continue;
+      state.count++;
+      if (state.count > 1e7)
+        throw new EditorTaskError("LIMIT_EXCEEDED", "素材解码帧数超过当前分析限制");
+      const pts = time(f.best_effort_timestamp ?? f.pts, base);
+      if (!pts) {
+        state.invalid = true;
+        continue;
+      }
+      let duration3;
+      if (audio2?.index === index2) {
+        const samples = whole(f.nb_samples);
+        if (samples === void 0 || samples <= 0n || !Number.isSafeInteger(Number(audio2.sample_rate)) || Number(audio2.sample_rate) < 1) {
+          state.invalid = true;
+          continue;
+        }
+        state.samples += samples;
+        duration3 = rational(samples, BigInt(audio2.sample_rate));
+      } else duration3 = time(f.duration ?? f.pkt_duration, base);
+      if (!duration3 || duration3.n <= 0n) {
+        state.invalid = true;
+        continue;
+      }
+      if (!state.first) state.first = pts;
+      if (state.last) {
+        const step = sub(pts, state.last);
+        if (step.n <= 0n) state.invalid = true;
+        else if (state.step && compare(step, state.step) !== 0n) state.variable = true;
+        state.step = step;
+      }
+      state.last = pts;
+      const end = add(pts, duration3);
+      if (!state.end || compare(end, state.end) > 0n) state.end = end;
+    }
+  };
+  await runMediaProcess(
+    ffprobePath,
+    [
+      "-v",
+      "error",
+      ...inputOptions,
+      ...kind === "image" ? ["-read_intervals", "%+#1"] : [],
+      "-show_frames",
+      "-show_entries",
+      "frame=stream_index,pts,best_effort_timestamp,duration,pkt_duration,nb_samples",
+      "-of",
+      "compact=p=0:nk=0",
+      path
+    ],
+    { signal, onStdout: consume }
+  );
+  consume(Buffer.from("\n"));
+  if (video && !streams.get(video.index)?.count || audio2 && !streams.get(audio2.index)?.count)
+    throw new EditorTaskError("INVALID_MEDIA", "素材没有能够实际解码的画面或声音");
+  const limitations = [];
+  let duration2 = rational(0n), trimmedAudioPadding = rational(0n);
+  for (const stream of selected3) {
+    const state = streams.get(stream.index);
+    if (kind === "image") continue;
+    let end = state.end;
+    if (state.invalid || !end) {
+      const declared2 = time(stream.duration_ts, bases.get(stream.index));
+      if (!declared2) throw new EditorTaskError("INVALID_MEDIA", "素材缺少准确时长，无法加入工程");
+      end = add(time(stream.start_pts, bases.get(stream.index)) ?? origin, declared2);
+      limitations.push({
+        code: "UNSUPPORTED_TIMESTAMPS",
+        message: "素材包含无法准确定位的帧时间，需先修复时间戳后预览或导出"
+      });
+    }
+    const declared = time(stream.duration_ts, bases.get(stream.index));
+    if (stream === audio2 && declared && declared.n > 0n) {
+      const declaredEnd = add(time(stream.start_pts, bases.get(stream.index)) ?? origin, declared);
+      if (compare(declaredEnd, end) < 0n) {
+        trimmedAudioPadding = sub(end, declaredEnd);
+        end = declaredEnd;
+      }
+    }
+    const span = sub(end, origin);
+    if (compare(span, duration2) > 0n) duration2 = span;
+  }
+  const durationTick = kind === "image" ? 0 : ticks2(duration2);
+  if (!Number.isSafeInteger(durationTick) || kind !== "image" && durationTick < 1 || durationTick > MAX_EDITOR_TICK)
+    throw new EditorTaskError("LIMIT_EXCEEDED", "素材时长无效或超过当前 24 小时限制");
+  let width, height;
+  let videoInfo;
+  if (video) {
+    const sar = ratio2(video.sample_aspect_ratio) ?? rational(1n), rotation = Number(
+      video.side_data_list?.find((s) => Number.isFinite(s.rotation))?.rotation ?? video.tags?.rotate ?? 0
+    );
+    if (!Number.isSafeInteger(video.width) || !Number.isSafeInteger(video.height) || video.width < 1 || video.height < 1)
+      throw new EditorTaskError("INVALID_MEDIA", "素材画面尺寸无效");
+    const displayWidth = Math.round(video.width * numeric(sar)), rotated = Math.abs(Math.round(rotation / 90)) % 2 === 1;
+    width = rotated ? video.height : displayWidth;
+    height = rotated ? displayWidth : video.height;
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || width > 8192 || height > 8192)
+      throw new EditorTaskError("LIMIT_EXCEEDED", "素材显示尺寸超过当前 8192 像素限制");
+    const state = streams.get(video.index);
+    videoInfo = {
+      streamIndex: video.index,
+      codec: field(video.codec_name),
+      pixelFormat: field(video.pix_fmt),
+      codedWidth: video.width,
+      codedHeight: video.height,
+      displayWidth: width,
+      displayHeight: height,
+      sampleAspectRatio: publicRational(sar),
+      rotation,
+      frameRate: frameRate(video.r_frame_rate),
+      averageFrameRate: frameRate(video.avg_frame_rate),
+      timeBase: publicRational(bases.get(video.index)),
+      frameCount: state.count,
+      variableFrameRate: state.variable,
+      firstFrame: state.first ? publicRational(sub(state.first, origin)) : null,
+      color: {
+        space: field(video.color_space),
+        primaries: field(video.color_primaries),
+        transfer: field(video.color_transfer),
+        range: field(video.color_range),
+        sourceBitDepth: Number(video.bits_per_raw_sample) || Number(/p(\d+)(?:le|be)$/.exec(String(video.pix_fmt))?.[1]) || 8
+      }
+    };
+    if (kind === "video") {
+      try {
+        const policy = describeEditorVideo(video);
+        videoInfo.conversionAssumptions = policy.assumptions;
+      } catch (error) {
+        if (!(error instanceof EditorTaskError)) throw error;
+        limitations.push({ code: error.code, message: error.message });
+      }
+      if (state.first && ticks2(sub(state.first, origin)) !== 0)
+        limitations.push({
+          code: "UNSUPPORTED_TIMESTAMPS",
+          message: "第一帧晚于素材起点，当前合成器需要先整理画面起点"
+        });
+    } else if (!["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"].includes(imageMime))
+      limitations.push({
+        code: "UNSUPPORTED_IMAGE",
+        message: "图片已入库；当前合成器需要先转换为 PNG 或 JPEG"
+      });
+  }
+  const audioInfo = audio2 ? {
+    streamIndex: audio2.index,
+    codec: field(audio2.codec_name),
+    sampleRate: Number(audio2.sample_rate) || 0,
+    channels: Number(audio2.channels) || 0,
+    timeBase: publicRational(bases.get(audio2.index)),
+    decodedSamples: String(streams.get(audio2.index).samples),
+    trimmedEncoderPadding: publicRational(trimmedAudioPadding)
+  } : void 0;
+  const mimeType = imageMime ?? (kind === "video" ? format.includes("matroska") ? "video/x-matroska" : format.includes("avi") ? "video/x-msvideo" : format.includes("mpegts") ? "video/mp2t" : format === "mpeg" ? "video/mpeg" : String(probe.format?.tags?.major_brand).trim() === "qt" ? "video/quicktime" : "video/mp4" : format.includes("mp3") ? "audio/mpeg" : format.includes("wav") ? "audio/wav" : format.includes("aiff") ? "audio/aiff" : format.includes("flac") ? "audio/flac" : format.includes("ogg") ? "audio/ogg" : format.includes("aac") ? "audio/aac" : "audio/mp4");
+  return {
+    resourceId: resourceId2,
+    sha256: sha2562,
+    bytes,
+    kind,
+    duration: durationTick,
+    ...width === void 0 ? {} : { width, height },
+    mimeType,
+    inspection: {
+      schemaVersion: 1,
+      format,
+      timing: {
+        origin: publicRational(origin),
+        duration: publicRational(duration2),
+        tickRounding: "nearest",
+        basis: kind === "image" ? "static-image" : trimmedAudioPadding.n ? "decoded-frames-and-stream-duration" : "decoded-frames"
+      },
+      ...videoInfo ? { video: videoInfo } : {},
+      ...audioInfo ? { audio: audioInfo } : {},
+      compatibility: {
+        preview: limitations.length ? "unsupported" : kind === "video" ? "native-proxy" : kind === "audio" ? "prepared-audio" : "static-image",
+        export: limitations.length ? "unsupported" : "supported",
+        limitations
+      }
+    }
+  };
+}
+
+// native/editor-runtime/runtime.ts
+import { copyFile as copyFile3, link as hardLink, lstat as lstat4, readdir as readdir2, rename as rename4, rm as rm9, stat as stat10, utimes } from "node:fs/promises";
+import { randomUUID as randomUUID7 } from "node:crypto";
+import { join as join12 } from "node:path";
+
+// native/media/editor-audio-renderer.ts
+import { createHash as createHash3, randomUUID as randomUUID3 } from "node:crypto";
+import { createReadStream, closeSync, openSync, readSync, statSync, writeSync } from "node:fs";
+import { mkdir as mkdir2, mkdtemp, rename as rename3, rm as rm3, stat as stat4 } from "node:fs/promises";
+import { dirname, isAbsolute as isAbsolute2, join as join3 } from "node:path";
+import { setImmediate as yieldTask } from "node:timers/promises";
+
+// native/media/editor-range-preparation.ts
+function editorRangeVisualAssets(value, sequenceId, valueRange) {
+  const document2 = validateEditorDocument(value), sequences = new Map(document2.sequences.map((sequence5) => [sequence5.id, sequence5])), selected3 = sequences.get(sequenceId);
+  if (!selected3) throw new Error("导出序列不存在");
+  const range = validateExportRange(valueRange, sequenceDuration(selected3)), assets = /* @__PURE__ */ new Set();
+  let expanded2 = 0;
+  const mapped = (map2, ranges) => mergeTimeRanges(ranges.flatMap((range2) => {
+    const result = [];
+    for (let index2 = 0; index2 + 1 < map2.points.length; index2++) {
+      const start = Math.max(range2.start, map2.points[index2].time), end = Math.min(range2.end, map2.points[index2 + 1].time);
+      if (start >= end) continue;
+      const a = sourceTimeAt(map2, start), b = sourceTimeAt(map2, end - 1);
+      result.push({ start: Math.min(a, b), end: Math.max(a, b) + 1 });
+    }
+    return result;
+  }));
+  const visit = (id7, ranges) => {
+    const sequence5 = sequences.get(id7), tracks = new Map(sequence5.tracks.map((track3) => [track3.id, track3]));
+    for (const clip3 of sequence5.clips) {
+      if (++expanded2 > 1e5) throw new RangeError("导出范围的嵌套素材超过准备上限");
+      const track3 = tracks.get(clip3.trackId);
+      if (track3.hidden || track3.kind === "audio") continue;
+      const local = ranges.flatMap((range2) => {
+        const start = Math.max(range2.start, clip3.start), end = Math.min(range2.end, clip3.start + clip3.duration);
+        return start < end ? [{ start: start - clip3.start, end: end - clip3.start }] : [];
+      });
+      if (!local.length) continue;
+      if (clip3.kind === "media") assets.add(clip3.assetId);
+      else if (clip3.kind === "sequence") visit(clip3.sequenceId, mapped(clip3.timeMap, local));
+      else if (clip3.kind === "multicam") {
+        for (let index2 = 0; index2 < clip3.switches.length; index2++) {
+          const item = clip3.switches[index2], end = clip3.switches[index2 + 1]?.time ?? clip3.duration;
+          if (local.some((range2) => range2.start < end && range2.end > item.time))
+            assets.add(clip3.angles.find((angle) => angle.id === item.angleId).assetId);
+        }
+      }
+    }
+  };
+  visit(sequenceId, [{ start: range.start, end: range.start + range.duration }]);
+  return assets;
+}
+function editorRangeAudioPreparation(plan2, value) {
+  const range = validateExportRange(value, plan2.duration), start = Math.ceil(range.start / 5), end = Math.ceil((range.start + range.duration) / 5);
+  if (start === end) return { fallback: "sub-sample" };
+  if (plan2.ducking.length) return { fallback: "ducking" };
+  for (const lane of plan2.lanes)
+    for (const span of lane.spans) {
+      if (span.startSample >= end || span.endSample <= start) continue;
+      const state = sampleAudioLane(lane, Math.max(start, span.startSample));
+      if (state.playbackRate && (Math.abs(state.playbackRate) !== 1 || state.pitchSemitones !== 0))
+        return { fallback: "stretch" };
+    }
+  return { range };
+}
+
+// native/media/editor-audio-renderer.ts
+var RATE = AUDIO_SAMPLE_RATE;
+var CHANNELS = 2;
+var BYTES = 8;
+var BLOCK = 1024;
+var CONTEXT = RATE / 4;
+var CACHE_VERSION = "editor-audio-pcm-v2-timestamps";
+var inputSafety = [
+  "-protocol_whitelist",
+  "file,pipe",
+  "-format_whitelist",
+  "mov,matroska,webm,avi,mp3,wav,aiff,flac,ogg,aac"
+];
+var digest2 = (value) => createHash3("sha256").update(JSON.stringify(value)).digest("hex");
+function editorSourcePcmCacheKey(sourceHash, sourceDuration, ffmpegVersion) {
+  return digest2({
+    version: CACHE_VERSION,
+    decoder: ffmpegVersion,
+    hash: sourceHash,
+    samples: Math.ceil(sourceDuration / TICKS_PER_AUDIO_SAMPLE) + RATE
+  });
+}
+function cancelled2(signal) {
+  if (signal.aborted) throw mediaAbortError();
+}
+async function hashFile(path, signal) {
+  const hash4 = createHash3("sha256"), stream = createReadStream(path);
+  const abort4 = () => stream.destroy(mediaAbortError());
+  signal.addEventListener("abort", abort4, { once: true });
+  try {
+    cancelled2(signal);
+    for await (const chunk of stream) hash4.update(chunk);
+    return hash4.digest("hex");
+  } finally {
+    signal.removeEventListener("abort", abort4);
+    stream.destroy();
+  }
+}
+async function pcmExists(path, exactSamples) {
+  try {
+    const info = await stat4(path);
+    return info.isFile() && info.size % BYTES === 0 && (exactSamples === void 0 || info.size === exactSamples * BYTES);
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+function writeAll(fd, buffer) {
+  let offset = 0;
+  while (offset < buffer.length) offset += writeSync(fd, buffer, offset, buffer.length - offset);
+}
+var PcmStore = class {
+  files = /* @__PURE__ */ new Map();
+  blocks = /* @__PURE__ */ new Map();
+  blockSamples = 8192;
+  file(path) {
+    const saved = this.files.get(path);
+    if (saved) {
+      this.files.delete(path);
+      this.files.set(path, saved);
+      return saved;
+    }
+    if (this.files.size >= 32) {
+      const key = this.files.keys().next().value;
+      closeSync(this.files.get(key).fd);
+      this.files.delete(key);
+    }
+    const size2 = statSync(path).size;
+    if (size2 % BYTES) throw new Error(`Incomplete PCM cache: ${path}`);
+    const file = { fd: openSync(path, "r"), samples: size2 / BYTES };
+    this.files.set(path, file);
+    return file;
+  }
+  sample(path, position, channel) {
+    const lo = Math.floor(position), fraction = position - lo;
+    const first2 = this.integer(path, lo, channel);
+    return fraction ? first2 + (this.integer(path, lo + 1, channel) - first2) * fraction : first2;
+  }
+  integer(path, sample2, channel) {
+    const file = this.file(path);
+    if (sample2 < 0 || sample2 >= file.samples) return 0;
+    const block = Math.floor(sample2 / this.blockSamples), key = `${path}\0${block}`;
+    let bytes = this.blocks.get(key);
+    if (bytes) {
+      this.blocks.delete(key);
+      this.blocks.set(key, bytes);
+    } else {
+      if (this.blocks.size >= 64) this.blocks.delete(this.blocks.keys().next().value);
+      bytes = Buffer.alloc(
+        Math.min(this.blockSamples, file.samples - block * this.blockSamples) * BYTES
+      );
+      let read = 0;
+      while (read < bytes.length) {
+        const count = readSync(
+          file.fd,
+          bytes,
+          read,
+          bytes.length - read,
+          block * this.blockSamples * BYTES + read
+        );
+        if (!count) throw new Error("PCM cache was truncated during render");
+        read += count;
+      }
+      this.blocks.set(key, bytes);
+    }
+    const value = bytes.readFloatLE(sample2 % this.blockSamples * BYTES + channel * 4);
+    if (!Number.isFinite(value)) throw new Error("Audio PCM contains a non-finite sample");
+    return value;
+  }
+  dispose() {
+    for (const file of this.files.values()) closeSync(file.fd);
+    this.files.clear();
+    this.blocks.clear();
+  }
+};
+function tempoFilters(factor) {
+  if (!(factor > 0) || !Number.isFinite(factor))
+    throw new Error("The requested audio tempo is not representable");
+  const filters = [];
+  while (factor < 0.5) {
+    filters.push("atempo=0.5");
+    factor /= 0.5;
+  }
+  while (factor > 2) {
+    filters.push("atempo=2");
+    factor /= 2;
+  }
+  if (Math.abs(factor - 1) > 1e-12) filters.push(`atempo=${factor.toPrecision(17)}`);
+  return filters;
+}
+async function renderEditorAudio(options2) {
+  const { signal } = options2;
+  cancelled2(signal);
+  for (const [name, path] of Object.entries({
+    workDir: options2.workDir,
+    cacheDir: options2.cacheDir,
+    outputPath: options2.outputPath
+  }))
+    if (!isAbsolute2(path)) throw new Error(`${name} must be an absolute authorized path`);
+  const plan2 = compileAudioPlan(options2.document, options2.sequenceId);
+  const preparation = options2.range === void 0 ? {} : editorRangeAudioPreparation(plan2, options2.range), range = preparation.range, mixStart = range ? Math.ceil(range.start / TICKS_PER_AUDIO_SAMPLE) : 0, mixEnd = range ? Math.ceil((range.start + range.duration) / TICKS_PER_AUDIO_SAMPLE) : plan2.sampleCount, sampleCount = mixEnd - mixStart, lanes = plan2.lanes.map((lane) => ({ ...lane, spans: lane.spans.filter(
+    (span) => span.startSample < mixEnd && span.endSample > mixStart
+  ) })).filter((lane) => lane.spans.length > 0);
+  const budget = options2.maxPcmBytes ?? 64 * 1024 ** 3;
+  const mixBudget = options2.maxMixBytes ?? 256 * 1024 ** 2;
+  if (!Number.isSafeInteger(mixBudget) || mixBudget < BYTES)
+    throw new RangeError("maxMixBytes must be a positive safe byte budget");
+  if (!Number.isSafeInteger(budget) || budget < BYTES)
+    throw new RangeError("maxPcmBytes must be a positive safe byte budget");
+  let reserved = 0;
+  const reserve = (bytes) => {
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || reserved + bytes > budget)
+      throw new Error(`Audio PCM exceeds the configured ${budget} byte disk budget`);
+    reserved += bytes;
+  };
+  reserve(sampleCount * BYTES * 2);
+  await mkdir2(options2.workDir, { recursive: true });
+  await mkdir2(options2.cacheDir, { recursive: true });
+  await mkdir2(dirname(options2.outputPath), { recursive: true });
+  const temporary = await mkdtemp(join3(options2.workDir, "editor-audio-"));
+  const outputTemporary = `${options2.outputPath}.${randomUUID3()}.tmp`;
+  const store = new PcmStore();
+  const run2 = (executable, args) => runMediaProcess(executable, args, { signal });
+  const result = {
+    path: options2.outputPath,
+    sampleRate: RATE,
+    channels: CHANNELS,
+    sampleCount,
+    ...range ? { range } : {},
+    ...preparation.fallback ? { rangeFallback: preparation.fallback } : {},
+    peak: 0,
+    samplesOverFullScale: 0,
+    assets: [],
+    processing: {
+      algorithm: "sample-mapped-pcm+ffmpeg-atempo-wsola-v1",
+      processedSpans: 0,
+      spanCacheHits: 0,
+      contextSamples: CONTEXT,
+      pitchFactors: []
+    },
+    ducking: {
+      detector: "10ms-exponential-rms",
+      envelope: "one-pole-gain",
+      sidechain: "pre-ducking-scoped-bus",
+      requestCount: plan2.ducking.length
+    }
+  };
+  const progress2 = async (fraction, stage) => {
+    cancelled2(signal);
+    await options2.onProgress?.({ fraction, stage });
+  };
+  try {
+    const version = (await run2(options2.ffmpegPath, ["-hide_banner", "-version"])).stdout.toString();
+    const filters = (await run2(options2.ffmpegPath, ["-hide_banner", "-filters"])).stdout.toString();
+    for (const filter of ["aresample", "asetrate", "atempo", "atrim"])
+      if (!new RegExp(`\\s${filter}\\s+A->A`).test(filters))
+        throw new Error(`FFmpeg lacks the required ${filter} audio filter`);
+    const assets = /* @__PURE__ */ new Map();
+    const unique3 = [...new Map(lanes.map((lane) => [lane.assetId, lane])).values()];
+    for (let index2 = 0; index2 < unique3.length; index2++) {
+      const lane = unique3[index2];
+      await progress2(0.2 * index2 / Math.max(1, unique3.length), "decode-audio");
+      const path = await options2.resolveAssetPath(lane.assetId, signal);
+      cancelled2(signal);
+      if (!isAbsolute2(path))
+        throw new Error(
+          `Audio asset ${lane.assetId} was not materialized to an absolute local path`
+        );
+      const before = await stat4(path);
+      if (!before.isFile()) throw new Error(`Audio asset ${lane.assetId} is not a file`);
+      const hash4 = await hashFile(path, signal);
+      const probe = JSON.parse(
+        (await run2(options2.ffprobePath, [
+          "-v",
+          "error",
+          ...inputSafety,
+          "-select_streams",
+          "a:0",
+          "-show_entries",
+          "stream=codec_type,sample_rate,channels",
+          "-of",
+          "json",
+          path
+        ])).stdout.toString()
+      );
+      if (!Array.isArray(probe.streams))
+        throw new Error(`Invalid audio probe result for ${lane.assetId}`);
+      if (!probe.streams.some((stream) => stream.codec_type === "audio")) {
+        if (lane.assetKind === "audio")
+          throw new Error(`Audio asset ${lane.assetId} contains no decodable audio stream`);
+        assets.set(lane.assetId, { path: null, hash: hash4 });
+        result.assets.push({
+          assetId: lane.assetId,
+          status: "no-audio-stream",
+          sourceHash: hash4,
+          sampleCount: 0,
+          cacheHit: false
+        });
+        continue;
+      }
+      const samples = Math.ceil(lane.sourceDuration / TICKS_PER_AUDIO_SAMPLE) + RATE;
+      reserve(samples * BYTES);
+      const cachePath = join3(
+        options2.cacheDir,
+        `${editorSourcePcmCacheKey(hash4, lane.sourceDuration, version)}.f32`
+      );
+      const cacheHit = await pcmExists(cachePath);
+      if (!cacheHit) {
+        const scratch = join3(temporary, `${randomUUID3()}.f32`);
+        await run2(options2.ffmpegPath, [
+          "-nostdin",
+          "-v",
+          "error",
+          ...inputSafety,
+          "-copyts",
+          "-start_at_zero",
+          "-i",
+          path,
+          "-map",
+          "0:a:0",
+          "-vn",
+          "-sn",
+          "-dn",
+          // Preserve the audio stream's offset within a video and real timestamp gaps.
+          "-af",
+          `aresample=${RATE}:async=1:first_pts=0`,
+          "-t",
+          (samples / RATE).toPrecision(17),
+          "-ac",
+          "2",
+          "-ar",
+          String(RATE),
+          "-c:a",
+          "pcm_f32le",
+          "-f",
+          "f32le",
+          "-y",
+          scratch
+        ]);
+        if (!await pcmExists(scratch))
+          throw new Error(`Decoder produced incomplete PCM for ${lane.assetId}`);
+        const after = await stat4(path);
+        if (before.size !== after.size || before.mtimeMs !== after.mtimeMs)
+          throw new Error(`Audio asset ${lane.assetId} changed during rendering`);
+        await rename3(scratch, cachePath);
+      }
+      const sampleCount2 = (await stat4(cachePath)).size / BYTES;
+      if (!sampleCount2) throw new Error(`Audio stream for ${lane.assetId} decoded to no samples`);
+      if (sampleCount2 > samples)
+        throw new Error(`Decoder exceeded the expected PCM bound for ${lane.assetId}`);
+      assets.set(lane.assetId, { path: cachePath, hash: hash4 });
+      result.assets.push({
+        assetId: lane.assetId,
+        status: "decoded",
+        sourceHash: hash4,
+        sampleCount: sampleCount2,
+        cacheHit
+      });
+    }
+    const processed = /* @__PURE__ */ new Map();
+    const spanTotal = lanes.reduce((sum, lane) => sum + lane.spans.length, 0);
+    let spanIndex = 0;
+    for (const lane of lanes)
+      for (const span of lane.spans) {
+        await progress2(0.2 + 0.3 * spanIndex++ / Math.max(1, spanTotal), "retime-audio");
+        const asset2 = assets.get(lane.assetId);
+        if (!asset2.path || span.playbackRate === 0) continue;
+        const state = sampleAudioLane(lane, span.startSample);
+        const speed2 = Math.abs(span.playbackRate), pitch = 2 ** (state.pitchSemitones / 12) * (state.preservePitch ? 1 : speed2);
+        if (state.pitchSemitones === 0 && speed2 === 1) continue;
+        const shiftedRate = Math.round(RATE * pitch);
+        if (!Number.isSafeInteger(shiftedRate) || shiftedRate < 1 || shiftedRate > 2147483647)
+          throw new Error(
+            `Audio pitch for ${lane.instanceId} exceeds FFmpeg's sample-rate capability`
+          );
+        const effectivePitch = shiftedRate / RATE;
+        result.processing.pitchFactors.push({
+          instanceId: lane.instanceId,
+          requested: pitch,
+          effective: effectivePitch
+        });
+        const count = span.endSample - span.startSample;
+        const sourceCount = Math.ceil(count * speed2) + 2 * CONTEXT;
+        reserve((sourceCount + count) * BYTES);
+        const cachePath = join3(
+          options2.cacheDir,
+          `${digest2({ version: CACHE_VERSION, decoder: version, source: asset2.hash, start: span.sourceStart, count, speed: speed2, direction: Math.sign(span.playbackRate), shiftedRate, context: CONTEXT })}.f32`
+        );
+        result.processing.processedSpans++;
+        if (await pcmExists(cachePath, count)) {
+          result.processing.spanCacheHits++;
+          processed.set(span, cachePath);
+          continue;
+        }
+        const input = join3(temporary, `${randomUUID3()}.f32`), output = join3(temporary, `${randomUUID3()}.f32`);
+        const fd2 = openSync(input, "wx"), direction = Math.sign(span.playbackRate);
+        try {
+          for (let start = 0; start < sourceCount; start += BLOCK) {
+            cancelled2(signal);
+            const length = Math.min(BLOCK, sourceCount - start), bytes = Buffer.allocUnsafe(length * BYTES);
+            for (let i = 0; i < length; i++)
+              for (let channel = 0; channel < CHANNELS; channel++)
+                bytes.writeFloatLE(
+                  store.sample(
+                    asset2.path,
+                    span.sourceStart / TICKS_PER_AUDIO_SAMPLE + direction * (start + i - CONTEXT),
+                    channel
+                  ),
+                  i * BYTES + channel * 4
+                );
+            writeAll(fd2, bytes);
+            await yieldTask();
+          }
+        } finally {
+          closeSync(fd2);
+        }
+        const trimStart = Math.round(CONTEXT / speed2);
+        const chain = [
+          `asetrate=${shiftedRate}`,
+          `aresample=${RATE}`,
+          ...tempoFilters(speed2 / effectivePitch),
+          `atrim=start_sample=${trimStart}:end_sample=${trimStart + count}`
+        ];
+        await run2(options2.ffmpegPath, [
+          "-nostdin",
+          "-v",
+          "error",
+          "-f",
+          "f32le",
+          "-ar",
+          String(RATE),
+          "-ac",
+          "2",
+          "-i",
+          input,
+          "-af",
+          chain.join(","),
+          "-c:a",
+          "pcm_f32le",
+          "-f",
+          "f32le",
+          "-y",
+          output
+        ]);
+        if (!await pcmExists(output, count))
+          throw new Error(
+            `FFmpeg time stretching could not provide all ${count} samples for ${lane.instanceId}; no silent tail was substituted`
+          );
+        await rename3(output, cachePath);
+        await rm3(input);
+        processed.set(span, cachePath);
+      }
+    const dryBuses = new Set(plan2.ducking.flatMap((request) => request.sidechainTrackInstanceIds));
+    const detector = new Map(plan2.ducking.map((request) => [request.id, { power: 0, gain: 1 }]));
+    const rmsCoefficient = Math.exp(-1 / (RATE * 0.01));
+    const cursors = new Map(lanes.map((lane) => [lane, 0]));
+    const raw = join3(temporary, "mix.f32"), fd = openSync(raw, "wx");
+    try {
+      for (let start = mixStart; start < mixEnd; start += BLOCK) {
+        const count = Math.min(BLOCK, mixEnd - start), end = start + count;
+        let mixBytes = count * BYTES * 3;
+        if (mixBytes > mixBudget)
+          throw new Error(`Audio mixing exceeds the configured ${mixBudget} byte memory budget`);
+        const allocate2 = (length) => {
+          mixBytes += length * 8;
+          if (mixBytes > mixBudget)
+            throw new Error(`Audio mixing exceeds the configured ${mixBudget} byte memory budget`);
+          return new Float64Array(length);
+        };
+        const buses = /* @__PURE__ */ new Map();
+        const dry = [];
+        for (const lane of lanes) {
+          const asset2 = assets.get(lane.assetId);
+          if (!asset2.path) continue;
+          let cursor = cursors.get(lane);
+          while (cursor < lane.spans.length && lane.spans[cursor].endSample <= start) cursor++;
+          cursors.set(lane, cursor);
+          const spans = [];
+          while (cursor < lane.spans.length && lane.spans[cursor].startSample < end)
+            spans.push(lane.spans[cursor++]);
+          if (!spans.length) continue;
+          const samples = allocate2(count * CHANNELS);
+          for (const span of spans)
+            for (let sample2 = Math.max(start, span.startSample); sample2 < Math.min(end, span.endSample); sample2++) {
+              const state = sampleAudioLane(lane, sample2);
+              if (!state.gain || !state.playbackRate) continue;
+              const transformed = processed.get(span), sourcePath2 = transformed ?? asset2.path;
+              const coordinate2 = transformed ? sample2 - span.startSample : state.sourceTime / TICKS_PER_AUDIO_SAMPLE;
+              const left = store.sample(sourcePath2, coordinate2, 0), right = store.sample(sourcePath2, coordinate2, 1);
+              const angle = (state.pan <= 0 ? state.pan + 1 : state.pan) * Math.PI / 2;
+              const l = (state.pan <= 0 ? left + right * Math.cos(angle) : left * Math.cos(angle)) * state.gain;
+              const r = (state.pan <= 0 ? right * Math.sin(angle) : right + left * Math.sin(angle)) * state.gain;
+              const offset = (sample2 - start) * CHANNELS;
+              samples[offset] = l;
+              samples[offset + 1] = r;
+              for (const busId of lane.trackInstancePath) {
+                if (dryBuses.has(busId)) {
+                  let bus = buses.get(busId);
+                  if (!bus) {
+                    bus = allocate2(count * CHANNELS);
+                    buses.set(busId, bus);
+                  }
+                  bus[offset] += l;
+                  bus[offset + 1] += r;
+                }
+              }
+            }
+          dry.push({ lane, samples });
+        }
+        const envelopes = /* @__PURE__ */ new Map();
+        for (const request of plan2.ducking) {
+          const state = detector.get(request.id), envelope = allocate2(count);
+          const threshold = 10 ** (request.thresholdDb / 10), attenuation = 10 ** (-request.attenuationDb / 20);
+          const attack = request.attack ? Math.exp(-TICKS_PER_AUDIO_SAMPLE / request.attack) : 0;
+          const release2 = request.release ? Math.exp(-TICKS_PER_AUDIO_SAMPLE / request.release) : 0;
+          for (let i = 0; i < count; i++) {
+            let l = 0, r = 0;
+            for (const id7 of request.sidechainTrackInstanceIds) {
+              const bus = buses.get(id7);
+              if (bus) {
+                l += bus[i * CHANNELS];
+                r += bus[i * CHANNELS + 1];
+              }
+            }
+            state.power = rmsCoefficient * state.power + (1 - rmsCoefficient) * (l * l + r * r) / 2;
+            const target = state.power >= threshold ? attenuation : 1;
+            const coefficient = target < state.gain ? attack : release2;
+            state.gain = target + coefficient * (state.gain - target);
+            envelope[i] = state.gain;
+          }
+          envelopes.set(request.id, envelope);
+        }
+        const mix2 = new Float64Array(count * CHANNELS);
+        for (const item of dry)
+          for (let i = 0; i < count; i++) {
+            let gain = 1;
+            for (const id7 of item.lane.duckingIds) gain *= envelopes.get(id7)[i];
+            mix2[i * CHANNELS] += item.samples[i * CHANNELS] * gain;
+            mix2[i * CHANNELS + 1] += item.samples[i * CHANNELS + 1] * gain;
+          }
+        const bytes = Buffer.allocUnsafe(count * BYTES);
+        for (let i = 0; i < count; i++) {
+          const peak = Math.max(Math.abs(mix2[i * CHANNELS]), Math.abs(mix2[i * CHANNELS + 1]));
+          if (!Number.isFinite(peak) || peak > 34028234663852886e22)
+            throw new Error(`Audio mix exceeds finite float PCM at sample ${start + i}`);
+          result.peak = Math.max(result.peak, peak);
+          if (peak > 1) result.samplesOverFullScale++;
+          bytes.writeFloatLE(mix2[i * CHANNELS], i * BYTES);
+          bytes.writeFloatLE(mix2[i * CHANNELS + 1], i * BYTES + 4);
+        }
+        writeAll(fd, bytes);
+        await yieldTask();
+        await progress2(0.5 + 0.45 * (end - mixStart) / Math.max(1, sampleCount), "mix-audio");
+      }
+    } finally {
+      closeSync(fd);
+    }
+    await run2(options2.ffmpegPath, [
+      "-nostdin",
+      "-v",
+      "error",
+      "-f",
+      "f32le",
+      "-ar",
+      String(RATE),
+      "-ac",
+      "2",
+      "-i",
+      raw,
+      "-c:a",
+      "pcm_f32le",
+      "-rf64",
+      "auto",
+      "-f",
+      "wav",
+      "-y",
+      outputTemporary
+    ]);
+    cancelled2(signal);
+    await rename3(outputTemporary, options2.outputPath);
+    await progress2(1, "audio-ready");
+    return result;
+  } finally {
+    store.dispose();
+    await rm3(outputTemporary, { force: true });
+    await rm3(temporary, { recursive: true, force: true });
+  }
+}
+
+// native/media/editor-export.ts
+import { constants as constants3 } from "node:fs";
+import { copyFile as copyFile2, link, mkdir as mkdir5, rm as rm6, stat as stat6 } from "node:fs/promises";
+import { randomUUID as randomUUID4 } from "node:crypto";
+import { dirname as dirname3, isAbsolute as isAbsolute4, join as join6, relative as relative2, sep as sep2 } from "node:path";
+
+// native/media/editor-frame-renderer.ts
+import { createReadStream as createReadStream2 } from "node:fs";
+import { mkdir as mkdir4, mkdtemp as mkdtemp2, rm as rm5, stat as stat5 } from "node:fs/promises";
+import { createServer } from "node:http";
+import { randomBytes } from "node:crypto";
+import { isAbsolute as isAbsolute3, join as join5 } from "node:path";
+
+// native/media/media-caption-renderer.ts
+import { spawn as spawn2 } from "node:child_process";
+import { createHash as createHash4 } from "node:crypto";
+import { constants as constants2 } from "node:fs";
+import { access, mkdir as mkdir3, readdir, rm as rm4, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { delimiter, dirname as dirname2, join as join4 } from "node:path";
+function validateCaptionImageRequest(request) {
+  if (!request || typeof request !== "object" || Object.keys(request).some(
+    (key) => !["width", "height", "fontSize", "texts", "style"].includes(key)
+  ))
+    throw new Error("Invalid caption image request");
+  if (request.style !== void 0 && !["classic", "bold", "minimal"].includes(request.style))
+    throw new Error("Unsupported caption style");
+  if (![request.width, request.height].every(
+    (value) => Number.isSafeInteger(value) && value >= 16 && value <= 8192
+  ) || !Number.isSafeInteger(request.fontSize) || request.fontSize < 1 || request.fontSize > 512 || !Array.isArray(request.texts) || request.texts.length > 1e4 || request.texts.some((text7) => typeof text7 !== "string" || text7.length > 4e3))
+    throw new Error("Invalid caption image dimensions or text");
+}
+function drawCaptionPng(request) {
+  const canvas = document.createElement("canvas");
+  canvas.width = request.width;
+  canvas.height = request.height;
+  const ctx = canvas.getContext("2d");
+  const { width: w, height: h, fontSize } = request;
+  const style = request.style ?? "classic";
+  if (!["classic", "bold", "minimal"].includes(style)) throw new Error("Unsupported caption style");
+  ctx.save();
+  ctx.shadowColor = "transparent";
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 0;
+  ctx.font = `${style === "bold" ? 800 : style === "minimal" ? 500 : 600} ${fontSize}px system-ui`;
+  ctx.textAlign = "center";
+  const lines = [];
+  outer: for (const text7 of request.texts) {
+    let line = "";
+    for (const char of text7) {
+      if (char === "\n" || line && ctx.measureText(line + char).width > w * 0.85) {
+        lines.push(line);
+        if (lines.length === 4) break outer;
+        line = char === "\n" ? "" : char;
+      } else line += char;
+    }
+    if (line) lines.push(line);
+    if (lines.length === 4) break;
+  }
+  const visible = lines.slice(0, 4), lineHeight = fontSize * 1.4;
+  if (visible.length) {
+    const y = h * 0.9 - visible.length * lineHeight;
+    if (style === "classic") {
+      const boxWidth = Math.min(
+        w * 0.93,
+        Math.max(...visible.map((line) => ctx.measureText(line).width)) + fontSize
+      );
+      ctx.fillStyle = "#050909b8";
+      ctx.beginPath();
+      ctx.roundRect(
+        (w - boxWidth) / 2,
+        y,
+        boxWidth,
+        visible.length * lineHeight + fontSize * 0.5,
+        8
+      );
+      ctx.fill();
+    } else if (style === "minimal") {
+      ctx.shadowColor = "#000b";
+      ctx.shadowBlur = Math.max(2, fontSize * 0.08);
+      ctx.shadowOffsetY = Math.max(1, fontSize * 0.04);
+    }
+    ctx.fillStyle = style === "bold" ? "#ffe46b" : "#fff";
+    if (style === "bold") {
+      ctx.strokeStyle = "#101010";
+      ctx.lineWidth = Math.max(2, fontSize * 0.12);
+      ctx.lineJoin = "round";
+    }
+    visible.forEach((line, i) => {
+      const baseline = y + lineHeight * (i + 1) - fontSize * 0.1;
+      if (style === "bold") ctx.strokeText(line, w / 2, baseline);
+      ctx.fillText(line, w / 2, baseline);
+    });
+  }
+  ctx.restore();
+  return canvas.toDataURL("image/png");
+}
+async function findCaptionBrowser() {
+  const names = process.platform === "win32" ? ["chrome.exe", "msedge.exe"] : process.platform === "linux" ? ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"] : ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"];
+  const directories = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  const candidates = process.platform === "linux" ? names.flatMap((name) => directories.map((path) => join4(path, name))) : directories.flatMap((path) => names.map((name) => join4(path, name)));
+  const home = homedir();
+  const localAppData = process.env.LOCALAPPDATA || join4(home, "AppData", "Local");
+  if (process.platform === "win32") {
+    const systemDrive = dirname2(process.env.SystemRoot || process.env.WINDIR || "C:\\Windows");
+    for (const root of [
+      localAppData,
+      process.env.PROGRAMFILES || join4(systemDrive, "Program Files"),
+      process.env["PROGRAMFILES(X86)"] || join4(systemDrive, "Program Files (x86)")
+    ])
+      candidates.push(
+        join4(root, "Google", "Chrome", "Application", "chrome.exe"),
+        join4(root, "Microsoft", "Edge", "Application", "msedge.exe")
+      );
+  }
+  if (process.platform === "darwin")
+    candidates.push(
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+      join4(home, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    );
+  const cacheRoots = process.platform === "win32" ? [join4(localAppData, "ms-playwright")] : [join4(home, "Library/Caches/ms-playwright"), join4(home, ".cache/ms-playwright")];
+  for (const root of cacheRoots) {
+    for (const name of await readdir(root).catch(() => [])) {
+      if (!/^chromium[-_]/.test(name)) continue;
+      for (const binary of [
+        "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+        "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+        "chrome-linux/chrome",
+        "chrome-linux64/chrome",
+        "chrome-win/chrome.exe",
+        "chrome-win64/chrome.exe"
+      ])
+        candidates.push(join4(root, name, binary));
+    }
+  }
+  for (const path of candidates)
+    if (await access(path, constants2.X_OK).then(
+      () => true,
+      () => false
+    ))
+      return path;
+  return void 0;
+}
+var CaptionBrowser = class {
+  child;
+  pending = /* @__PURE__ */ new Map();
+  nextId = 0;
+  buffer = Buffer.alloc(0);
+  closed = false;
+  closingStarted = false;
+  closing;
+  exited;
+  diagnostic = new Error("浏览器未提供启动诊断");
+  constructor(executable, profile) {
+    this.child = spawn2(
+      executable,
+      [
+        "--headless=new",
+        "--remote-debugging-pipe",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-sync",
+        "--disable-extensions",
+        `--user-data-dir=${profile}`,
+        "about:blank"
+      ],
+      {
+        detached: false,
+        windowsHide: true,
+        stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"]
+      }
+    );
+    let stderr = Buffer.alloc(0);
+    this.diagnostic.name = "CaptionBrowserDiagnostics";
+    const updateDiagnostic = (exit = "") => {
+      this.diagnostic.message = `Browser: ${executable}
+${stderr.toString("utf8")}
+${exit}`.slice(
+        -12288
+      );
+    };
+    updateDiagnostic();
+    this.child.stderr.on("data", (chunk) => {
+      stderr = Buffer.from(Buffer.concat([stderr, chunk]).subarray(-8192));
+      updateDiagnostic();
+    });
+    this.child.stderr.on("error", () => {
+    });
+    this.exited = new Promise(
+      (resolve10) => this.child.once("close", (code, signal) => {
+        updateDiagnostic(`Exit code: ${code ?? "none"}; signal: ${signal ?? "none"}`);
+        this.fail(this.failure("字幕绘制进程已停止"));
+        resolve10();
+      })
+    );
+    this.child.once("error", () => this.fail(this.failure("无法启动字幕绘制浏览器")));
+    for (const pipe of [this.child.stdio[3], this.child.stdio[4]])
+      pipe.on("error", (error) => {
+        if (this.closingStarted && ["ECONNRESET", "EPIPE", "ERR_STREAM_DESTROYED"].includes(error.code ?? ""))
+          return;
+        this.fail(this.failure("字幕绘制连接已中断"));
+        void this.close();
+      });
+    this.child.stdio[4].on("data", (chunk) => {
+      this.buffer = Buffer.concat([this.buffer, chunk]);
+      if (this.buffer.length > 32 * 1024 * 1024) {
+        this.fail(new Error("字幕图像超过大小限制"));
+        void this.close();
+        return;
+      }
+      let end;
+      while ((end = this.buffer.indexOf(0)) >= 0) {
+        const part2 = this.buffer.subarray(0, end);
+        this.buffer = this.buffer.subarray(end + 1);
+        let message;
+        try {
+          message = JSON.parse(part2.toString("utf8"));
+        } catch {
+          this.fail(new Error("字幕绘制返回无效数据"));
+          continue;
+        }
+        const entry = this.pending.get(message.id);
+        if (!entry) continue;
+        this.pending.delete(message.id);
+        if (message.error) entry.reject(new Error("字幕绘制命令失败"));
+        else entry.resolve(message.result);
+      }
+    });
+  }
+  failure(message) {
+    if (this.diagnostic.message.includes("No usable sandbox"))
+      message = "字幕浏览器的安全环境不可用，请安装或选择可用的系统版 Chrome 后重试";
+    return new Error(message, { cause: this.diagnostic });
+  }
+  fail(error) {
+    this.closed = true;
+    for (const entry of this.pending.values()) entry.reject(error);
+    this.pending.clear();
+  }
+  call(method, params = {}, sessionId) {
+    if (this.closed) return Promise.reject(new Error("字幕绘制进程已停止"));
+    return new Promise((resolve10, reject) => {
+      const id7 = ++this.nextId;
+      this.pending.set(id7, { resolve: resolve10, reject });
+      this.child.stdio[3].write(
+        JSON.stringify({ id: id7, method, params, ...sessionId ? { sessionId } : {} }) + "\0",
+        (error) => {
+          if (error) {
+            this.pending.delete(id7);
+            reject(new Error("无法发送字幕绘制请求"));
+          }
+        }
+      );
+    });
+  }
+  close() {
+    if (this.closing) return this.closing;
+    this.closingStarted = true;
+    this.fail(new Error("字幕绘制已取消"));
+    this.closing = Promise.resolve().then(async () => {
+      let timer;
+      if (this.child.exitCode === null && this.child.signalCode === null) {
+        this.child.kill("SIGTERM");
+        timer = setTimeout(() => this.child.kill("SIGKILL"), 1500);
+        timer.unref();
+      }
+      await this.exited;
+      if (timer) clearTimeout(timer);
+    });
+    return this.closing;
+  }
+};
+var MediaCaptionRenderer = class {
+  constructor(options2 = {}) {
+    this.options = options2;
+  }
+  options;
+  closing = /* @__PURE__ */ new Map();
+  browsers = /* @__PURE__ */ new Map();
+  close(jobId) {
+    const pending = this.closing.get(jobId);
+    if (pending) return pending;
+    const entry = this.browsers.get(jobId);
+    if (!entry) return Promise.resolve();
+    this.browsers.delete(jobId);
+    entry.signal.removeEventListener("abort", entry.onAbort);
+    const operation = (async () => {
+      await entry.browser.close();
+      await rm4(entry.profile, { recursive: true, force: true }).catch(() => {
+      });
+    })().finally(() => {
+      if (this.closing.get(jobId) === operation) this.closing.delete(jobId);
+    });
+    this.closing.set(jobId, operation);
+    return operation;
+  }
+  async render(request, context2) {
+    validateCaptionImageRequest(request);
+    await this.closing.get(context2.jobId);
+    if (context2.signal.aborted) throw mediaAbortError();
+    let entry = this.browsers.get(context2.jobId);
+    if (!entry) {
+      const executable = this.options.browserPath ?? await findCaptionBrowser();
+      if (!executable) throw new Error("字幕渲染需要已安装的 Chrome、Chromium 或 Edge 浏览器");
+      const profile = join4(context2.workDir, "caption-browser");
+      await mkdir3(profile, { recursive: true, mode: 448 });
+      const browser = new CaptionBrowser(executable, profile);
+      const session = (async () => {
+        const target = await browser.call("Target.createTarget", { url: "about:blank" });
+        const result = await browser.call("Target.attachToTarget", {
+          targetId: target.targetId,
+          flatten: true
+        });
+        await browser.call("Network.enable", {}, result.sessionId);
+        await browser.call("Network.setBlockedURLs", { urls: ["*"] }, result.sessionId);
+        return result.sessionId;
+      })();
+      const onAbort = () => {
+        void this.close(context2.jobId);
+      };
+      entry = { browser, session, profile, onAbort, signal: context2.signal };
+      this.browsers.set(context2.jobId, entry);
+      context2.signal.addEventListener("abort", onAbort, { once: true });
+      if (context2.signal.aborted) onAbort();
+    }
+    let timer;
+    try {
+      const rendered = await Promise.race([
+        (async () => {
+          const sessionId = await entry.session;
+          const response = await entry.browser.call(
+            "Runtime.evaluate",
+            {
+              expression: `(async()=>{await document.fonts.ready;return (${drawCaptionPng.toString()})(${JSON.stringify(request)})})()`,
+              awaitPromise: true,
+              returnByValue: true
+            },
+            sessionId
+          );
+          if (response.exceptionDetails) throw new Error("字幕绘制失败");
+          return response.result?.value;
+        })(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            void this.close(context2.jobId);
+            reject(new Error("字幕绘制超时"));
+          }, this.options.timeoutMs ?? 3e4);
+        })
+      ]);
+      if (context2.signal.aborted) throw mediaAbortError();
+      if (typeof rendered !== "string" || !rendered.startsWith("data:image/png;base64,"))
+        throw new Error("字幕绘制未返回 PNG");
+      const path = join4(
+        context2.workDir,
+        `caption-${createHash4("sha256").update(JSON.stringify(request)).digest("hex")}.png`
+      );
+      const bytes = Buffer.from(rendered.slice("data:image/png;base64,".length), "base64");
+      if (bytes.length < 24 || bytes.readUInt32BE(16) !== request.width || bytes.readUInt32BE(20) !== request.height)
+        throw new Error("字幕图像尺寸无效");
+      await writeFile(path, bytes, { signal: context2.signal, mode: 384 });
+      return path;
+    } catch (error) {
+      await this.close(context2.jobId);
+      if (context2.signal.aborted) throw mediaAbortError();
+      throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+};
+
+// native/media/editor-frame-renderer.ts
+var MIME_TYPES = /* @__PURE__ */ new Set([
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "image/avif"
+]);
+var abortError = () => new DOMException("画面渲染已取消", "AbortError");
+var EditorFrameRenderer = class _EditorFrameRenderer {
+  constructor(options2) {
+    this.options = options2;
+    this.document = validateEditorDocument(options2.document);
+    this.profile = validateExportProfile(options2.profile);
+    const sequence5 = this.document.sequences.find((item) => item.id === options2.sequenceId);
+    if (!sequence5) throw new Error("渲染序列不存在");
+    this.duration = sequenceDuration(sequence5);
+    if (!this.duration) throw new Error("空序列没有可导出的画面");
+    if (!isAbsolute3(options2.workDir)) throw new Error("渲染工作目录无效");
+    if (typeof options2.runtimeSource !== "string" || !options2.runtimeSource || options2.runtimeSource.length > 4 * 1024 * 1024)
+      throw new Error("渲染运行代码无效");
+    if (options2.timeoutMs !== void 0 && (!Number.isInteger(options2.timeoutMs) || options2.timeoutMs < 100 || options2.timeoutMs > 3e5))
+      throw new Error("渲染超时设置无效");
+  }
+  options;
+  document;
+  profile;
+  duration;
+  server;
+  browser;
+  browserProfile = "";
+  sessionId = "";
+  origin = "";
+  base = `/${randomBytes(24).toString("hex")}`;
+  files = /* @__PURE__ */ new Map();
+  requestId = 0;
+  upload;
+  closed = false;
+  closing;
+  busy = false;
+  onAbort = () => {
+    void this.close();
+  };
+  static async create(options2) {
+    const renderer = new _EditorFrameRenderer(options2);
+    try {
+      await renderer.bounded(() => renderer.initialize());
+      return renderer;
+    } catch (error) {
+      await renderer.close();
+      if (options2.signal.aborted) throw abortError();
+      throw error;
+    }
+  }
+  async initialize() {
+    if (this.options.signal.aborted) throw abortError();
+    this.options.signal.addEventListener("abort", this.onAbort, { once: true });
+    const urls = /* @__PURE__ */ Object.create(null);
+    let fileIndex = 0;
+    for (const [assetId, file] of this.options.mediaFiles) {
+      if (!this.document.assets.some((asset2) => asset2.id === assetId))
+        throw new Error("渲染文件包含未知素材");
+      if (!isAbsolute3(file.path) || !MIME_TYPES.has(file.mimeType))
+        throw new Error(`渲染素材类型或路径无效：${assetId}`);
+      const info = await stat5(file.path);
+      if (!info.isFile() || info.size <= 0) throw new Error(`渲染素材不可读取：${assetId}`);
+      const route3 = `${this.base}/media/${fileIndex++}`;
+      this.files.set(route3, { ...file });
+      urls[assetId] = route3;
+      if (this.closed) throw abortError();
+    }
+    this.server = createServer((request, response) => {
+      void this.serve(request, response).catch(() => {
+        if (!response.headersSent) response.writeHead(500);
+        response.end();
+      });
+    });
+    this.server.requestTimeout = 3e4;
+    this.server.headersTimeout = 1e4;
+    await new Promise((resolve10, reject) => {
+      this.server.once("error", reject);
+      this.server.listen(0, "127.0.0.1", () => {
+        this.server.removeListener("error", reject);
+        resolve10();
+      });
+    });
+    if (this.closed) {
+      this.server.closeAllConnections();
+      await new Promise((resolve10) => this.server.close(() => resolve10()));
+      throw abortError();
+    }
+    const address = this.server.address();
+    if (!address || typeof address === "string") throw new Error("无法准备画面渲染媒体服务");
+    this.origin = `http://127.0.0.1:${address.port}`;
+    const executable = this.options.browserPath ?? await findCaptionBrowser();
+    if (this.closed) throw abortError();
+    if (!executable) throw new Error("视频渲染需要已安装的 Chrome、Chromium 或 Edge 浏览器");
+    await mkdir4(this.options.workDir, { recursive: true });
+    if (this.closed) throw abortError();
+    this.browserProfile = await mkdtemp2(join5(this.options.workDir, "editor-browser-"));
+    if (this.closed) {
+      await rm5(this.browserProfile, { recursive: true, force: true });
+      throw abortError();
+    }
+    this.browser = new CaptionBrowser(executable, this.browserProfile);
+    const target = await this.browser.call("Target.createTarget", { url: "about:blank" });
+    const session = await this.browser.call("Target.attachToTarget", {
+      targetId: target.targetId,
+      flatten: true
+    });
+    this.sessionId = session.sessionId;
+    await this.browser.call("Page.enable", {}, this.sessionId);
+    await this.browser.call(
+      "Page.navigate",
+      { url: `${this.origin}${this.base}/` },
+      this.sessionId
+    );
+    for (; ; ) {
+      const response = await this.browser.call(
+        "Runtime.evaluate",
+        {
+          expression: `location.href === ${JSON.stringify(`${this.origin}${this.base}/`)} && document.readyState === 'complete'`,
+          returnByValue: true
+        },
+        this.sessionId
+      );
+      if (response.result?.value === true) break;
+      if (this.closed) throw abortError();
+      await new Promise((resolve10) => setTimeout(resolve10, 20));
+    }
+    await this.evaluate(this.options.runtimeSource);
+    for (const key of Object.keys(urls)) urls[key] = `${this.origin}${urls[key]}`;
+    const args = [
+      this.document,
+      this.options.sequenceId,
+      this.profile,
+      urls,
+      `${this.origin}${this.base}/frame`
+    ];
+    await this.evaluate(`globalThis.videoStudioRender.initialize(...${JSON.stringify(args)})`);
+  }
+  async evaluate(expression) {
+    if (this.closed || !this.browser) throw abortError();
+    const response = await this.browser.call(
+      "Runtime.evaluate",
+      { expression, awaitPromise: true, returnByValue: true },
+      this.sessionId
+    );
+    if (response.exceptionDetails) {
+      const raw = response.exceptionDetails.exception?.description ?? "画面合成失败";
+      const firstLine = String(raw).split("\n", 1)[0].slice(0, 500);
+      throw new Error(`画面合成失败：${firstLine}`);
+    }
+  }
+  async bounded(operation) {
+    let timer;
+    try {
+      return await Promise.race([
+        operation(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            void this.close();
+            reject(new Error("画面渲染超时"));
+          }, this.options.timeoutMs ?? 3e4);
+        })
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  async render(time2) {
+    assertTick(time2);
+    if (time2 >= this.duration) throw new Error("渲染时间超出序列范围");
+    if (this.closed || this.options.signal.aborted) throw abortError();
+    if (this.busy) throw new Error("请等待上一画面绘制完成");
+    this.busy = true;
+    const current = { id: this.requestId++, receiving: false };
+    this.upload = current;
+    try {
+      await this.bounded(
+        () => this.evaluate(`globalThis.videoStudioRender.render(${time2}, ${current.id})`)
+      );
+      if (this.options.signal.aborted) throw abortError();
+      if (!current.bytes) throw new Error("渲染器未返回画面");
+      return current.bytes;
+    } catch (error) {
+      await this.close();
+      if (this.options.signal.aborted) throw abortError();
+      throw error;
+    } finally {
+      this.upload = void 0;
+      this.busy = false;
+    }
+  }
+  async serve(request, response) {
+    const deny = (code = 404) => {
+      response.writeHead(code);
+      response.end();
+    };
+    if (this.closed || request.headers.host !== this.origin.slice(7) || request.headers.origin && request.headers.origin !== this.origin)
+      return deny(403);
+    response.setHeader("Cache-Control", "no-store");
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    const route3 = request.url ?? "";
+    if (route3 === `${this.base}/` && request.method === "GET") {
+      response.setHeader(
+        "Content-Security-Policy",
+        "default-src 'none'; img-src 'self'; media-src 'self'; connect-src 'self'; font-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+      );
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      response.end("<!doctype html><meta charset=utf-8><title>Video Studio renderer</title>");
+      return;
+    }
+    const current = this.upload;
+    if (current && route3 === `${this.base}/frame/${current.id}` && request.method === "POST") {
+      if (current.receiving || current.bytes || request.headers["content-type"] !== "image/png")
+        return deny(409);
+      current.receiving = true;
+      const maxBytes = this.profile.width * this.profile.height * 5 + 1024 * 1024;
+      if (Number(request.headers["content-length"]) > maxBytes) return deny(413);
+      const chunks = [];
+      let length = 0;
+      for await (const chunk of request) {
+        length += chunk.length;
+        if (length > maxBytes || this.closed) {
+          request.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      }
+      const bytes = Buffer.concat(chunks, length);
+      if (bytes.length < 24 || !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) || bytes.readUInt32BE(16) !== this.profile.width || bytes.readUInt32BE(20) !== this.profile.height)
+        return deny(422);
+      current.bytes = bytes;
+      response.writeHead(204);
+      response.end();
+      return;
+    }
+    const file = this.files.get(route3);
+    if (!file || !["GET", "HEAD"].includes(request.method ?? "")) return deny();
+    const info = await stat5(file.path);
+    if (!info.isFile()) return deny();
+    let start = 0, end = info.size - 1, partial = false;
+    if (request.headers.range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(request.headers.range);
+      if (!match || !match[1] && !match[2]) return deny(416);
+      start = match[1] ? Number(match[1]) : Math.max(0, info.size - Number(match[2]));
+      end = match[1] && match[2] ? Math.min(Number(match[2]), end) : end;
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= info.size)
+        return deny(416);
+      partial = true;
+    }
+    response.setHeader("Accept-Ranges", "bytes");
+    response.setHeader("Content-Type", file.mimeType);
+    response.setHeader("Content-Length", end - start + 1);
+    if (partial) response.setHeader("Content-Range", `bytes ${start}-${end}/${info.size}`);
+    response.writeHead(partial ? 206 : 200);
+    if (request.method === "HEAD") {
+      response.end();
+      return;
+    }
+    const stream = createReadStream2(file.path, { start, end });
+    response.once("close", () => stream.destroy());
+    stream.once("error", () => response.destroy());
+    stream.pipe(response);
+  }
+  close() {
+    if (this.closing) return this.closing;
+    this.closed = true;
+    this.options.signal.removeEventListener("abort", this.onAbort);
+    this.closing = (async () => {
+      await this.browser?.close();
+      if (this.server?.listening) {
+        this.server.closeAllConnections();
+        await new Promise((resolve10) => this.server.close(() => resolve10()));
+      }
+      if (this.browserProfile) await rm5(this.browserProfile, { recursive: true, force: true });
+      this.files.clear();
+      this.upload = void 0;
+    })();
+    return this.closing;
+  }
+};
+
+// native/media/editor-export.ts
+function exportRangeAudioFilter(value) {
+  const range = validateExportRange(value);
+  return `atrim=start_sample=${Math.ceil(range.start / 5)}:end_sample=${Math.ceil((range.start + range.duration) / 5)},asetpts=PTS-STARTPTS`;
+}
+async function measureEditorExportAudioRange(options2) {
+  const range = validateExportRange(options2.range), expected2 = Math.ceil((range.start + range.duration) / 5) - Math.ceil(range.start / 5);
+  let sampleCount = 0, peak = 0, samplesOverFullScale = 0, pending = Buffer.alloc(0);
+  await runMediaProcess(options2.ffmpegPath, [
+    "-nostdin",
+    "-v",
+    "error",
+    "-i",
+    options2.audioFile,
+    "-map",
+    "0:a:0",
+    "-af",
+    exportRangeAudioFilter(range),
+    "-ac",
+    "2",
+    "-ar",
+    "48000",
+    "-c:a",
+    "pcm_f32le",
+    "-f",
+    "f32le",
+    "pipe:1"
+  ], {
+    signal: options2.signal,
+    onStdout(chunk) {
+      const bytes = pending.length ? Buffer.concat([pending, chunk]) : chunk, complete = bytes.length - bytes.length % 8;
+      for (let index2 = 0; index2 < complete; index2 += 8) {
+        const level = Math.max(Math.abs(bytes.readFloatLE(index2)), Math.abs(bytes.readFloatLE(index2 + 4)));
+        if (!Number.isFinite(level) || ++sampleCount > expected2)
+          throw new Error("导出范围混音数据无效");
+        peak = Math.max(peak, level);
+        if (level > 1) samplesOverFullScale++;
+      }
+      pending = Buffer.from(bytes.subarray(complete));
+    }
+  });
+  if (pending.length || sampleCount !== expected2) throw new Error("导出范围混音数据不完整");
+  return validateAudioMixReport({ sampleCount, peak, samplesOverFullScale });
+}
+async function publishWithoutOverwrite(source3, destination) {
+  try {
+    await link(source3, destination);
+  } catch (error) {
+    if (error.code !== "EXDEV") throw error;
+    await copyFile2(source3, destination, constants3.COPYFILE_EXCL);
+  }
+  await rm6(source3);
+}
+async function exportEditorSequence(options2) {
+  const document2 = validateEditorDocument(options2.document);
+  const profile = validateExportProfile(options2.profile);
+  const sequence5 = document2.sequences.find((item) => item.id === options2.sequenceId);
+  if (!sequence5) throw new Error("导出序列不存在");
+  const fullDuration = sequenceDuration(sequence5), range = options2.range === void 0 ? void 0 : validateExportRange(options2.range, fullDuration), duration2 = range?.duration ?? fullDuration;
+  const audioRange = options2.audioRange === void 0 ? void 0 : validateExportRange(options2.audioRange, fullDuration);
+  if (audioRange && !sameExportRange(range, audioRange))
+    throw new Error("音频混音范围与导出范围不一致");
+  const audioDurationSeconds = audioRange ? (Math.ceil((audioRange.start + audioRange.duration) / 5) - Math.ceil(audioRange.start / 5)) / 48e3 : ticksToSeconds(fullDuration);
+  const frameCount = ticksToFrame(duration2, profile.frameRate, "ceil");
+  if (!frameCount) throw new Error("空序列无法导出");
+  const durationSeconds = frameCount * profile.frameRate.denominator / profile.frameRate.numerator;
+  const outputRelation = relative2(options2.workDir, options2.outputPath);
+  if (!isAbsolute4(options2.workDir) || !isAbsolute4(options2.outputPath) || !outputRelation || outputRelation === ".." || outputRelation.startsWith(`..${sep2}`) || isAbsolute4(outputRelation))
+    throw new Error("导出文件必须位于当前任务工作目录中");
+  if (!isAbsolute4(options2.audioFile) || !(await stat6(options2.audioFile)).isFile())
+    throw new Error("导出缺少完整的音频混音文件");
+  const ffmpeg = options2.ffmpegPath ?? "ffmpeg", ffprobe = options2.ffprobePath ?? "ffprobe";
+  const signal = options2.signal;
+  await options2.onProgress?.({ phase: "prepare", completedFrames: 0, totalFrames: frameCount });
+  const encoders = await runMediaProcess(ffmpeg, ["-hide_banner", "-encoders"], { signal });
+  const names = encoders.stdout.toString("utf8").split("\n").flatMap((line) => /^\s*[VAS][A-Z.]{5}\s+(\S+)/.exec(line)?.[1] ?? []);
+  assertExportEncodersAvailable(profile, names);
+  const audioResult = await runMediaProcess(
+    ffprobe,
+    ["-v", "error", "-show_streams", "-show_format", "-of", "json", options2.audioFile],
+    { signal }
+  );
+  const audioProbe = JSON.parse(audioResult.stdout.toString("utf8"));
+  const tracks = audioProbe.streams;
+  const seconds3 = Number(tracks?.[0]?.duration ?? audioProbe.format?.duration);
+  if (!Array.isArray(tracks) || tracks.length !== 1 || tracks[0].codec_type !== "audio" || !["pcm_s16le", "pcm_f32le"].includes(tracks[0].codec_name) || Number(tracks[0].sample_rate) !== 48e3 || tracks[0].channels !== 2 || !Number.isFinite(seconds3) || Math.abs(seconds3 - audioDurationSeconds) > 1 / 48e3 + 1e-6)
+    throw new Error("音频混音的格式或时长与序列不一致");
+  await mkdir5(dirname3(options2.outputPath), { recursive: true });
+  const temporary = join6(
+    dirname3(options2.outputPath),
+    `.render-${randomUUID4()}.${profile.container}`
+  );
+  let renderer;
+  try {
+    renderer = await EditorFrameRenderer.create({ ...options2, document: document2, profile });
+    await runMediaProcess(
+      ffmpeg,
+      [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-n",
+        "-f",
+        "image2pipe",
+        "-vcodec",
+        "png",
+        "-framerate",
+        `${profile.frameRate.numerator}/${profile.frameRate.denominator}`,
+        "-i",
+        "pipe:0",
+        "-i",
+        options2.audioFile,
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-vf",
+        // Lock conversion before the output size/pixel-format stage. Older FFmpeg
+        // can otherwise negotiate RGB here and insert a later default BT.601 conversion.
+        `scale=out_color_matrix=bt709:out_range=limited,format=${profile.videoCodec === "prores" ? "yuv422p10le" : "yuv420p"},setparams=colorspace=bt709:range=limited`,
+        "-af",
+        `${range && !audioRange ? `${exportRangeAudioFilter(range)},` : ""}apad,atrim=end_sample=${Math.ceil(durationSeconds * 48e3)}`,
+        ...exportEncodingArguments(profile),
+        "-color_primaries",
+        "bt709",
+        "-color_trc",
+        "iec61966-2-1",
+        "-colorspace",
+        "bt709",
+        "-color_range",
+        "tv",
+        // The producer writes exactly frameCount images and closes stdin; the
+        // audio filter also has a finite sample count. Do not use -frames:v:
+        // FFmpeg 5 can stop the entire mux before draining the audio input.
+        temporary
+      ],
+      {
+        signal,
+        input: async function* (inputSignal) {
+          const stop = () => {
+            void renderer?.close();
+          };
+          inputSignal.addEventListener("abort", stop, { once: true });
+          try {
+            for (let frame2 = 0; frame2 < frameCount; frame2++) {
+              if (inputSignal.aborted) throw new DOMException("视频编码已取消", "AbortError");
+              yield await renderer.render((range?.start ?? 0) + frameToTicks(frame2, profile.frameRate));
+              await options2.onProgress?.({
+                phase: "render",
+                completedFrames: frame2 + 1,
+                totalFrames: frameCount
+              });
+            }
+          } finally {
+            inputSignal.removeEventListener("abort", stop);
+          }
+        }
+      }
+    );
+    await renderer.close();
+    await options2.onProgress?.({
+      phase: "verify",
+      completedFrames: frameCount,
+      totalFrames: frameCount
+    });
+    const result = await runMediaProcess(
+      ffprobe,
+      ["-v", "error", "-show_streams", "-show_format", "-of", "json", temporary],
+      { signal }
+    );
+    const probe = JSON.parse(result.stdout.toString("utf8"));
+    verifyExportOutput(profile, probe, range ? durationSeconds : ticksToSeconds(duration2));
+    if (signal.aborted) throw new DOMException("视频导出已取消", "AbortError");
+    await publishWithoutOverwrite(temporary, options2.outputPath);
+    return { path: options2.outputPath, frameCount, durationSeconds, probe, ...range ? { range } : {} };
+  } finally {
+    await renderer?.close();
+    await rm6(temporary, { force: true });
+  }
+}
+
+// native/media/media-executables.ts
+import { constants as constants4 } from "node:fs";
+import { access as access2, realpath as realpath2, stat as stat7 } from "node:fs/promises";
+import { homedir as homedir2 } from "node:os";
+import { delimiter as delimiter2, isAbsolute as isAbsolute5, join as join7 } from "node:path";
+function executableSearchDirectories() {
+  return [
+    ...new Set(
+      [
+        ...(process.env.PATH ?? "").split(delimiter2),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        join7(homedir2(), ".local/bin")
+      ].filter(isAbsolute5)
+    )
+  ];
+}
+async function findExecutable(name, explicit, directories = executableSearchDirectories()) {
+  const choices = explicit ? [explicit] : directories.map((dir) => join7(dir, process.platform === "win32" ? `${name}.exe` : name));
+  for (const path of choices) {
+    try {
+      await access2(path, constants4.X_OK);
+      if ((await stat7(path)).isFile()) return await realpath2(path);
+    } catch {
+    }
+  }
+  return void 0;
+}
+function redactHomePath(message) {
+  const home = homedir2().replace(/[\\/]+$/, "");
+  if (!home) return message;
+  const escaped = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return message.replace(new RegExp(`${escaped}(?![A-Za-z0-9_-]|\\.[A-Za-z0-9_-])`, "g"), "~");
+}
+
+// native/editor-runtime/bundle.ts
+var yauzl = __toESM(require_yauzl(), 1);
+var yazl = __toESM(require_yazl(), 1);
+import {
+  constants as constants5,
+  createWriteStream,
+  open as openFd,
+  close as closeFd,
+  fstat as statFd
+} from "node:fs";
+import { link as link2, lstat as lstat2, open as open2, rm as rm7 } from "node:fs/promises";
+import { createHash as createHash5, randomUUID as randomUUID5 } from "node:crypto";
+import { dirname as dirname4, isAbsolute as isAbsolute6, join as join8, relative as relative3, sep as sep3 } from "node:path";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+/*! Bundled ZIP dependencies: yauzl / yazl (Copyright (c) 2014 Josh Wolfe),
+ * buffer-crc32 (Copyright (c) 2013-2024 Brian J. Brennan), and pend / fd-slicer
+ * (Copyright (c) 2014 Andrew Kelley). MIT License:
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+var PORTABLE_BUNDLE_LIMITS = Object.freeze({
+  maxManifestBytes: 32 * 1024 ** 2,
+  maxMedia: MAX_PORTABLE_MEDIA,
+  maxFileBytes: 20 * 1024 ** 3,
+  maxTotalBytes: 20 * 1024 ** 3,
+  maxArchiveBytes: 20 * 1024 ** 3,
+  maxCompressionRatio: 1e3
+});
+var readerApi = yauzl;
+var writerApi = yazl;
+var fail = (code, message) => {
+  throw new PortableProjectError(code, message);
+};
+function abort2(signal) {
+  if (signal.aborted) throw new DOMException("工程包任务已取消", "AbortError");
+}
+function limitsFor(value = {}) {
+  for (const key of Object.keys(value))
+    if (!(key in PORTABLE_BUNDLE_LIMITS)) fail("INVALID_LIMIT", `未知工程包限制：${key}`);
+  const result = { ...PORTABLE_BUNDLE_LIMITS, ...value };
+  for (const key of Object.keys(result))
+    if (!Number.isSafeInteger(result[key]) || result[key] < 1 || result[key] > PORTABLE_BUNDLE_LIMITS[key])
+      fail("INVALID_LIMIT", `工程包限制无效：${key}`);
+  return result;
+}
+async function rootsFor(options2) {
+  abort2(options2.signal);
+  if (!options2.sourceRoots.length || options2.sourceRoots.length > 16)
+    fail("INVALID_DIRECTORY", "必须提供 Host 材料目录白名单");
+  return {
+    root: await sealed(options2.workDir),
+    roots: await Promise.all(options2.sourceRoots.map(sealed))
+  };
+}
+async function sourcePath(path, roots, originals) {
+  if (!isAbsolute6(path)) fail("INVALID_FILE", "材料路径必须由 Host 物化");
+  const original = originals?.get(path);
+  if (original) return originalFile(original);
+  for (const root of roots) {
+    const part2 = relative3(root, path);
+    if (part2 && !isAbsolute6(part2) && part2 !== ".." && !part2.startsWith(`..${sep3}`))
+      return regular(root, part2.split(sep3));
+  }
+  return fail("INVALID_FILE", "材料路径不在 Host 授权目录中");
+}
+async function outputPath(path, root) {
+  if (!isAbsolute6(path)) fail("INVALID_FILE", "输出路径必须位于任务目录");
+  const part2 = relative3(root, path);
+  if (!part2 || isAbsolute6(part2) || part2 === ".." || part2.startsWith(`..${sep3}`))
+    fail("INVALID_FILE", "输出路径不在任务目录内");
+  const parts = part2.split(sep3), name = parts.pop();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) fail("INVALID_FILE", "输出文件名无效");
+  const parent = await directory(root, parts), target = join8(parent, name);
+  try {
+    await lstat2(target);
+  } catch (error) {
+    if (error.code === "ENOENT") return target;
+    throw error;
+  }
+  return fail("OUTPUT_EXISTS", "工程包输出文件已经存在");
+}
+var crcTable = Uint32Array.from({ length: 256 }, (_, index2) => {
+  let n = index2;
+  for (let i = 0; i < 8; i++) n = n & 1 ? 3988292384 ^ n >>> 1 : n >>> 1;
+  return n >>> 0;
+});
+function crcUpdate(crc, bytes) {
+  for (const byte of bytes) crc = crcTable[(crc ^ byte) & 255] ^ crc >>> 8;
+  return crc;
+}
+async function inspectFile(path, maximum, signal) {
+  abort2(signal);
+  const hash4 = createHash5("sha256");
+  let bytes = 0;
+  const handle = await open2(path, constants5.O_RDONLY | constants5.O_NOFOLLOW);
+  const stream = handle.createReadStream({ highWaterMark: 128 * 1024 });
+  const stop = () => stream.destroy(new DOMException("工程包任务已取消", "AbortError"));
+  signal.addEventListener("abort", stop, { once: true });
+  try {
+    for await (const chunk of stream) {
+      abort2(signal);
+      bytes += chunk.length;
+      if (bytes > maximum) fail("LIMIT_EXCEEDED", "原始素材超过工程包单文件限制");
+      hash4.update(chunk);
+    }
+    if (!bytes) fail("INVALID_MEDIA", "原始素材为空文件");
+    return { bytes, sha256: hash4.digest("hex") };
+  } finally {
+    stream.destroy();
+    await handle.close();
+    signal.removeEventListener("abort", stop);
+  }
+}
+async function exportPortableProject(options2) {
+  const document2 = validateEditorDocument(options2.document), limits = limitsFor(options2.limits);
+  if (document2.assets.length > limits.maxMedia)
+    fail("LIMIT_EXCEEDED", "工程素材数量超过工程包限制");
+  const { root, roots } = await rootsFor(options2), target = await outputPath(options2.outputPath, root);
+  const originals = document2.assets.filter((asset2) => asset2.kind !== "demo");
+  const blobs = /* @__PURE__ */ new Map(), issues = [];
+  let total = 0, checked = 0;
+  for (const asset2 of originals) {
+    abort2(options2.signal);
+    try {
+      const source3 = await options2.resolveAsset(structuredClone(asset2), options2.signal);
+      abort2(options2.signal);
+      const path = await sourcePath(source3.path, roots, options2.originalSources), actual = await inspectFile(path, limits.maxFileBytes, options2.signal);
+      if (source3.bytes !== void 0 && source3.bytes !== actual.bytes || source3.sha256 !== void 0 && source3.sha256 !== actual.sha256 || asset2.fingerprint && asset2.fingerprint !== actual.sha256)
+        fail("HASH_MISMATCH", "原始素材已变化或摘要不符");
+      const previous = blobs.get(actual.sha256);
+      if (previous) previous.assetIds.push(asset2.id);
+      else {
+        total += actual.bytes;
+        blobs.set(actual.sha256, { ...actual, path, assetIds: [asset2.id] });
+      }
+    } catch (error) {
+      abort2(options2.signal);
+      issues.push({
+        assetId: asset2.id,
+        message: `${asset2.name}：${error instanceof Error ? error.message : String(error)}`
+      });
+    }
+    options2.onProgress?.({
+      phase: "checking",
+      completed: ++checked,
+      total: originals.length,
+      bytes: total
+    });
+    if (total > limits.maxTotalBytes) fail("LIMIT_EXCEEDED", "工程素材总大小超过工程包限制");
+  }
+  if (issues.length)
+    throw new PortableProjectError("MISSING_MEDIA", "原始素材不可用，未生成工程包", issues);
+  if (total > limits.maxTotalBytes) fail("LIMIT_EXCEEDED", "工程素材总大小超过工程包限制");
+  const files = [...blobs.values()].sort((a, b) => a.sha256.localeCompare(b.sha256));
+  const manifest = validatePortableProjectManifest({
+    format: PORTABLE_PROJECT_FORMAT,
+    formatVersion: PORTABLE_PROJECT_VERSION,
+    document: document2,
+    media: files.map(({ path: _, ...item }) => item)
+  });
+  const json4 = Buffer.from(JSON.stringify(manifest));
+  if (json4.length > limits.maxManifestBytes || total + json4.length > limits.maxTotalBytes)
+    fail("LIMIT_EXCEEDED", "工程清单或展开后总大小超过工程包限制");
+  const scratch = join8(dirname4(target), `bundle-${randomUUID5()}.partial`), zip = new writerApi.ZipFile();
+  const active = /* @__PURE__ */ new Set();
+  const stopStreams = (error) => {
+    for (const stream of active) stream.destroy(error);
+  };
+  const zipError = (error) => {
+    zip.outputStream.destroy(error);
+    stopStreams(error);
+  };
+  zip.on("error", zipError);
+  const stop = () => zipError(new DOMException("工程包任务已取消", "AbortError"));
+  options2.signal.addEventListener("abort", stop, { once: true });
+  let completed = 0, packed = 0, archiveBytes = 0;
+  const output = createWriteStream(scratch, { flags: "wx", mode: 384 });
+  try {
+    const counter = new Transform({
+      transform(chunk, _encoding, done) {
+        archiveBytes += chunk.length;
+        if (archiveBytes > limits.maxArchiveBytes)
+          done(new PortableProjectError("LIMIT_EXCEEDED", "工程包超过输出大小限制"));
+        else done(null, chunk);
+      }
+    });
+    const finished = pipeline(zip.outputStream, counter, output, { signal: options2.signal });
+    void finished.catch(() => {
+    });
+    const entryOptions = {
+      compress: false,
+      mtime: /* @__PURE__ */ new Date("2000-01-01T00:00:00Z"),
+      mode: 33152,
+      forceDosTimestamp: true
+    };
+    zip.addBuffer(json4, "manifest.json", entryOptions);
+    for (const file of files)
+      zip.addReadStreamLazy(
+        portableMediaPath(file.sha256),
+        { ...entryOptions, size: file.bytes },
+        (provide) => {
+          void (async () => {
+            abort2(options2.signal);
+            const path = await sourcePath(file.path, roots, options2.originalSources), hash4 = createHash5("sha256");
+            let size2 = 0;
+            const handle = await open2(path, constants5.O_RDONLY | constants5.O_NOFOLLOW);
+            const source3 = handle.createReadStream({ highWaterMark: 128 * 1024 });
+            const verify = new Transform({
+              transform(chunk, _encoding, done) {
+                size2 += chunk.length;
+                if (size2 > file.bytes)
+                  done(new PortableProjectError("HASH_MISMATCH", "打包期间原始素材大小发生变化"));
+                else {
+                  hash4.update(chunk);
+                  done(null, chunk);
+                }
+              },
+              flush(done) {
+                if (size2 !== file.bytes || hash4.digest("hex") !== file.sha256)
+                  done(new PortableProjectError("HASH_MISMATCH", "打包期间原始素材发生变化"));
+                else {
+                  try {
+                    packed += size2;
+                    options2.onProgress?.({
+                      phase: "packing",
+                      completed: ++completed,
+                      total: files.length,
+                      bytes: packed
+                    });
+                    done();
+                  } catch (error) {
+                    done(error);
+                  }
+                }
+              }
+            });
+            active.add(source3);
+            active.add(verify);
+            for (const stream of [source3, verify]) {
+              stream.on("error", zipError);
+              stream.once("close", () => active.delete(stream));
+            }
+            source3.pipe(verify);
+            provide(null, verify);
+          })().catch((error) => {
+            provide(error);
+            zipError(error);
+          });
+        }
+      );
+    zip.end();
+    await finished;
+    abort2(options2.signal);
+    const persisted = await open2(scratch, constants5.O_RDWR | constants5.O_NOFOLLOW);
+    try {
+      await persisted.sync();
+    } finally {
+      await persisted.close();
+    }
+    const actual = await inspectFile(scratch, limits.maxArchiveBytes, options2.signal);
+    abort2(options2.signal);
+    await link2(scratch, target);
+    return { manifest, path: target, ...actual };
+  } finally {
+    options2.signal.removeEventListener("abort", stop);
+    stopStreams();
+    zip.outputStream.destroy();
+    await new Promise((resolve10) => {
+      if (output.closed) resolve10();
+      else {
+        output.once("close", resolve10);
+        output.destroy();
+      }
+    });
+    await rm7(scratch, { force: true });
+  }
+}
+async function readEntry(zip, entry, signal, consume) {
+  abort2(signal);
+  const stream = await zip.openReadStreamPromise(entry);
+  let bytes = 0, crc = 4294967295;
+  const stop = () => stream.destroy(new DOMException("工程包任务已取消", "AbortError"));
+  signal.addEventListener("abort", stop, { once: true });
+  try {
+    for await (const chunk of stream) {
+      abort2(signal);
+      bytes += chunk.length;
+      if (bytes > entry.uncompressedSize) fail("INVALID_ZIP", "ZIP 实际解压大小超过清单");
+      crc = crcUpdate(crc, chunk);
+      await consume(chunk);
+    }
+    if (bytes !== entry.uncompressedSize || (crc ^ 4294967295) >>> 0 !== entry.crc32)
+      fail("INVALID_ZIP", "ZIP 内容大小或 CRC 校验失败");
+  } finally {
+    stream.destroy();
+    signal.removeEventListener("abort", stop);
+  }
+}
+async function importPortableProject(options2) {
+  const limits = limitsFor(options2.limits), { root, roots } = await rootsFor(options2);
+  const input = await sourcePath(options2.inputPath, roots);
+  const fd = await new Promise(
+    (resolve10, reject) => openFd(
+      input,
+      constants5.O_RDONLY | constants5.O_NOFOLLOW,
+      (error, fd2) => error ? reject(error) : resolve10(fd2)
+    )
+  );
+  let zip, extraction, succeeded = false;
+  try {
+    const inputInfo = await new Promise(
+      (resolve10, reject) => statFd(fd, (error, info) => error ? reject(error) : resolve10(info))
+    );
+    if (!inputInfo.isFile()) fail("INVALID_FILE", "工程包必须是普通文件");
+    if (inputInfo.size > limits.maxArchiveBytes) fail("LIMIT_EXCEEDED", "工程包文件超过大小限制");
+    zip = await readerApi.fromFdPromise(fd, {
+      autoClose: false,
+      lazyEntries: true,
+      strictFileNames: true,
+      decodeStrings: true,
+      validateEntrySizes: true
+    });
+    let readerError;
+    zip.on("error", (error) => {
+      readerError = error;
+    });
+    const centralStart = zip.readEntryCursor;
+    if (zip.entryCount > limits.maxMedia + 1) fail("LIMIT_EXCEEDED", "ZIP 条目数量超过限制");
+    const entries = /* @__PURE__ */ new Map(), ranges = [];
+    let expanded2 = 0;
+    for await (const entry of zip.eachEntry()) {
+      abort2(options2.signal);
+      if (entries.size >= limits.maxMedia + 1) fail("LIMIT_EXCEEDED", "ZIP 条目数量超过限制");
+      if (entry.fileName !== "manifest.json" && !/^media\/[a-f0-9]{64}$/.test(entry.fileName))
+        fail("INVALID_ZIP", `ZIP 包含不支持的路径：${entry.fileName}`);
+      if (entries.has(entry.fileName)) fail("INVALID_ZIP", `ZIP 路径重复：${entry.fileName}`);
+      const type = entry.externalFileAttributes >>> 16 & 61440;
+      if (type !== 0 && type !== 32768 || entry.externalFileAttributes & 16)
+        fail("INVALID_ZIP", "ZIP 只能包含普通文件，不能包含符号链接或目录");
+      if (entry.generalPurposeBitFlag & 1 || ![0, 8].includes(entry.compressionMethod))
+        fail("INVALID_ZIP", "不支持加密或此压缩方式的 ZIP");
+      const maximum = entry.fileName === "manifest.json" ? limits.maxManifestBytes : limits.maxFileBytes;
+      if (!Number.isSafeInteger(entry.uncompressedSize) || entry.uncompressedSize < 1 || entry.uncompressedSize > maximum || !Number.isSafeInteger(entry.compressedSize) || entry.compressedSize < 1 || entry.uncompressedSize / entry.compressedSize > limits.maxCompressionRatio)
+        fail("LIMIT_EXCEEDED", "ZIP 文件大小或压缩比超过限制");
+      expanded2 += entry.uncompressedSize;
+      if (expanded2 > limits.maxTotalBytes) fail("LIMIT_EXCEEDED", "ZIP 展开后总大小超过限制");
+      const local = await zip.readLocalFileHeaderPromise(entry, { minimal: false });
+      if (!local.fileName.equals(Buffer.from(entry.fileName)) || local.compressionMethod !== entry.compressionMethod || local.generalPurposeBitFlag !== entry.generalPurposeBitFlag)
+        fail("INVALID_ZIP", "ZIP 本地头与目录记录不一致");
+      const end = local.fileDataStart + entry.compressedSize;
+      if (!Number.isSafeInteger(end) || entry.relativeOffsetOfLocalHeader < 0 || end > centralStart)
+        fail("INVALID_ZIP", "ZIP 文件数据边界无效");
+      ranges.push([entry.relativeOffsetOfLocalHeader, end]);
+      entries.set(entry.fileName, entry);
+    }
+    ranges.sort((a, b) => a[0] - b[0]);
+    if (ranges.some((range, index2) => index2 > 0 && range[0] < ranges[index2 - 1][1]))
+      fail("INVALID_ZIP", "ZIP 文件内容区间重叠");
+    const manifestEntry = entries.get("manifest.json");
+    if (!manifestEntry) fail("INVALID_BUNDLE", "ZIP 缺少根 manifest.json");
+    const chunks = [];
+    await readEntry(zip, manifestEntry, options2.signal, async (chunk) => {
+      chunks.push(chunk);
+    });
+    let raw;
+    try {
+      raw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+    } catch {
+      fail("INVALID_BUNDLE", "工程包清单不是有效的 UTF-8 JSON");
+    }
+    const manifest = validatePortableProjectManifest(raw);
+    const missing = manifest.media.filter((item) => !entries.has(portableMediaPath(item.sha256)));
+    if (missing.length)
+      throw new PortableProjectError(
+        "MISSING_MEDIA",
+        "工程包缺少素材文件",
+        missing.map((item) => ({
+          sha256: item.sha256,
+          message: `缺少 ${portableMediaPath(item.sha256)}`
+        }))
+      );
+    if (entries.size !== manifest.media.length + 1)
+      fail("INVALID_BUNDLE", "ZIP 含有清单未引用的素材");
+    for (const item of manifest.media)
+      if (entries.get(portableMediaPath(item.sha256)).uncompressedSize !== item.bytes)
+        fail("HASH_MISMATCH", "素材大小与工程清单不符");
+    extraction = await directory(root, [`bundle-import-${randomUUID5()}`]);
+    const mediaRoot = await directory(extraction, ["media"]), media3 = [];
+    let extracted = 0;
+    for (const item of manifest.media) {
+      abort2(options2.signal);
+      const path = join8(mediaRoot, item.sha256), output = await open2(path, "wx", 384), hash4 = createHash5("sha256");
+      try {
+        await readEntry(
+          zip,
+          entries.get(portableMediaPath(item.sha256)),
+          options2.signal,
+          async (chunk) => {
+            hash4.update(chunk);
+            await output.writeFile(chunk);
+          }
+        );
+        if (hash4.digest("hex") !== item.sha256)
+          fail("HASH_MISMATCH", `素材 SHA-256 校验失败：${item.sha256}`);
+        await output.sync();
+      } finally {
+        await output.close();
+      }
+      media3.push({ ...item, assetIds: [...item.assetIds], path });
+      extracted += item.bytes;
+      options2.onProgress?.({
+        phase: "unpacking",
+        completed: media3.length,
+        total: manifest.media.length,
+        bytes: extracted
+      });
+    }
+    abort2(options2.signal);
+    if (readerError) throw readerError;
+    succeeded = true;
+    return { manifest, document: structuredClone(manifest.document), directory: extraction, media: media3 };
+  } catch (error) {
+    if (error instanceof PortableProjectError || error instanceof Error && error.name === "AbortError")
+      throw error;
+    throw new PortableProjectError(
+      "INVALID_ZIP",
+      `工程包读取失败：${error instanceof Error ? error.message : String(error)}`
+    );
+  } finally {
+    if (zip)
+      await new Promise((resolve10) => {
+        zip.once("close", resolve10);
+        zip.close();
+      });
+    else await new Promise((resolve10) => closeFd(fd, () => resolve10()));
+    if (!succeeded && extraction) await rm7(extraction, { recursive: true, force: true });
+  }
+}
+
+// native/editor-runtime/bundle-tasks.ts
+import { rm as rm8, stat as stat8, open as open3, link as link3 } from "node:fs/promises";
+import { basename, join as join9 } from "node:path";
+import { randomUUID as randomUUID6 } from "node:crypto";
+var PORTABLE_PUBLICATION_BATCH = 120;
+function checkedReceipt(value) {
+  const receipt = value;
+  if (!receipt || receipt.schemaVersion !== 1 || !/^bundle-import-[a-f0-9-]{36}$/.test(receipt.directory) || !Number.isSafeInteger(receipt.manifestBytes) || receipt.manifestBytes < 1 || receipt.manifestBytes > 32 * 1024 ** 2)
+    throw new EditorTaskError("IMPORT_RECEIPT_INVALID", "工程包暂存回执无效，请重新导入");
+  hash2(receipt.bundleHash);
+  hash2(receipt.manifestHash);
+  resourceId(receipt.sourceResourceId);
+  if (!Number.isSafeInteger(receipt.mediaCount) || receipt.mediaCount < 0 || receipt.mediaCount > 1e4 || !Array.isArray(receipt.pages) || receipt.pages.length !== Math.ceil(receipt.mediaCount / PORTABLE_PUBLICATION_BATCH))
+    throw new EditorTaskError("IMPORT_RECEIPT_INVALID", "工程包批次回执无效");
+  for (const page of receipt.pages) {
+    hash2(page.sha256);
+    if (!Number.isSafeInteger(page.bytes) || page.bytes < 1 || page.bytes > 128 * 1024)
+      throw new EditorTaskError("IMPORT_RECEIPT_INVALID", "工程包批次大小无效");
+  }
+  return receipt;
+}
+async function loadManifest(base, receipt) {
+  const data = await readBytes(base, [receipt.directory, "manifest.json"], 32 * 1024 ** 2);
+  if (data.length !== receipt.manifestBytes || bytesHash(data) !== receipt.manifestHash)
+    throw new EditorTaskError("IMPORT_RECEIPT_INVALID", "工程包暂存清单已变化，请重新导入");
+  return validatePortableProjectManifest(
+    JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(data))
+  );
+}
+function mediaMime(manifest, assetIds) {
+  const types = new Set(
+    assetIds.map((id7) => {
+      const asset2 = manifest.document.assets.find((asset3) => asset3.id === id7);
+      const mime = asset2?.metadata?.mimeType ?? asset2?.metadata?.sourceMimeType;
+      return typeof mime === "string" && /^(?:image|audio|video)\/[A-Za-z0-9!#$&^_.+-]+$/.test(mime) ? mime : "application/octet-stream";
+    })
+  );
+  return types.size === 1 ? [...types][0] : "application/octet-stream";
+}
+async function runPortableImportRequest(request, context2) {
+  const base = await directory(context2.transfer, ["portable-import"]);
+  const discarded = await optionalJson(base, ["discarded.json"]);
+  if (discarded) {
+    if (request.action === "discard-project-import" && discarded.bundleHash === request.bundleHash)
+      return { discarded: true, transferId: request.transferId, bundleHash: request.bundleHash };
+    throw new EditorTaskError("IMPORT_DISCARDED", "此工程包暂存已释放，请开始新的导入");
+  }
+  let receipt = await optionalJson(base, ["receipt.json"]);
+  if (request.action === "import-project") {
+    const sourceResourceId = request.resourceIds[0];
+    if (receipt) {
+      receipt = checkedReceipt(receipt);
+      if (receipt.sourceResourceId !== sourceResourceId)
+        throw new EditorTaskError("IMPORT_MISMATCH", "同一导入暂存不能改用另一个工程包");
+    } else {
+      const input = await regular(context2.root, ["inputs", "resource-0.bin"]);
+      const before = await stat8(input), bundleHash = await fileHash(input, context2.signal);
+      if (sourceResourceId.startsWith("asset-") && sourceResourceId !== `asset-${bundleHash}`)
+        throw new EditorTaskError("SOURCE_CHANGED", "工程包内容与资源编号不匹配");
+      let progressFailure;
+      const imported2 = await importPortableProject({
+        inputPath: input,
+        sourceRoots: [context2.root],
+        workDir: base,
+        signal: context2.signal,
+        onProgress: (item) => {
+          void context2.progress(item.total ? item.completed / item.total * 0.9 : 0.9, "import-project").catch((error) => {
+            progressFailure ??= error;
+          });
+        }
+      });
+      let published = false;
+      try {
+        if (progressFailure) throw progressFailure;
+        const after = await stat8(input);
+        if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs)
+          throw new EditorTaskError("SOURCE_CHANGED", "工程包在读取时发生变化，请重新导入");
+        const bytes = Buffer.from(JSON.stringify(imported2.manifest));
+        const pages = [];
+        for (let index2 = 0; index2 < imported2.manifest.media.length; index2 += PORTABLE_PUBLICATION_BATCH) {
+          const items = imported2.manifest.media.slice(index2, index2 + PORTABLE_PUBLICATION_BATCH).map((item) => ({
+            sha256: item.sha256,
+            bytes: item.bytes,
+            mimeType: mediaMime(imported2.manifest, item.assetIds)
+          }));
+          const data = Buffer.from(JSON.stringify(items));
+          await atomic(join9(imported2.directory, `page-${pages.length}.json`), data);
+          pages.push({ sha256: bytesHash(data), bytes: data.length });
+        }
+        receipt = {
+          schemaVersion: 1,
+          bundleHash,
+          sourceResourceId,
+          directory: basename(imported2.directory),
+          manifestHash: bytesHash(bytes),
+          manifestBytes: bytes.length,
+          mediaCount: imported2.manifest.media.length,
+          pages
+        };
+        await atomic(join9(imported2.directory, "manifest.json"), bytes);
+        abort(context2.signal);
+        const temporary = join9(base, `receipt-${randomUUID6()}.tmp`), file = await open3(temporary, "wx", 384);
+        try {
+          await file.writeFile(JSON.stringify(receipt));
+          await file.sync();
+        } finally {
+          await file.close();
+        }
+        try {
+          await link3(temporary, join9(base, "receipt.json"));
+          published = true;
+        } finally {
+          await rm8(temporary, { force: true });
+        }
+      } finally {
+        if (!published) await rm8(imported2.directory, { recursive: true, force: true });
+      }
+    }
+  }
+  if (!receipt)
+    throw new EditorTaskError("IMPORT_NOT_READY", "工程包尚未完整校验，请先导入原始工程包");
+  receipt = checkedReceipt(receipt);
+  if (request.bundleHash && request.bundleHash !== receipt.bundleHash)
+    throw new EditorTaskError("IMPORT_MISMATCH", "请求与已校验的工程包不一致");
+  if (request.action === "discard-project-import") {
+    await atomic(
+      join9(base, "discarded.json"),
+      Buffer.from(JSON.stringify({ bundleHash: receipt.bundleHash }))
+    );
+    await rm8(join9(base, receipt.directory), { recursive: true, force: true });
+    await rm8(join9(base, "receipt.json"), { force: true });
+    return { discarded: true, transferId: request.transferId, bundleHash: receipt.bundleHash };
+  }
+  if (request.action === "publish-project-media") {
+    const page = receipt.pages[request.batchIndex];
+    if (!page) throw new EditorTaskError("INVALID_REQUEST", "工程包素材批次不存在");
+    const data = await readBytes(
+      base,
+      [receipt.directory, `page-${request.batchIndex}.json`],
+      128 * 1024
+    );
+    if (data.length !== page.bytes || bytesHash(data) !== page.sha256)
+      throw new EditorTaskError("IMPORT_RECEIPT_INVALID", "工程包素材批次回执已变化");
+    const batch = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(data)), media3 = [];
+    if (!Array.isArray(batch) || batch.length !== Math.min(
+      PORTABLE_PUBLICATION_BATCH,
+      receipt.mediaCount - request.batchIndex * PORTABLE_PUBLICATION_BATCH
+    ))
+      throw new EditorTaskError("IMPORT_RECEIPT_INVALID", "工程包素材批次不完整");
+    for (const item of batch) {
+      abort(context2.signal);
+      const path = await regular(base, [receipt.directory, "media", item.sha256]);
+      if ((await stat8(path)).size !== item.bytes)
+        throw new EditorTaskError("SOURCE_CHANGED", "已校验的暂存素材发生变化，请重新导入");
+      const artifact2 = await context2.add(path, "bin", item.mimeType, "portable-media");
+      if (artifact2.sha256 !== item.sha256 || artifact2.bytes !== item.bytes)
+        throw new EditorTaskError("SOURCE_CHANGED", "发布素材时内容发生变化");
+      media3.push(artifact2);
+      await context2.progress(media3.length / batch.length, "publish-project-media");
+    }
+    return {
+      transferId: request.transferId,
+      bundleHash: receipt.bundleHash,
+      batchIndex: request.batchIndex,
+      media: media3
+    };
+  }
+  await loadManifest(base, receipt);
+  const artifact = await context2.add(
+    await regular(base, [receipt.directory, "manifest.json"]),
+    "json",
+    "application/json",
+    "portable-manifest"
+  );
+  if (artifact.sha256 !== receipt.manifestHash)
+    throw new EditorTaskError("IMPORT_RECEIPT_INVALID", "发布的工程清单校验失败");
+  await context2.progress(1, "complete");
+  return {
+    transferId: request.transferId,
+    sourceResourceId: receipt.sourceResourceId,
+    bundleHash: receipt.bundleHash,
+    manifest: artifact,
+    mediaCount: receipt.mediaCount
+  };
+}
+function portableTaskError(error) {
+  if (error instanceof PortableProjectError) {
+    const detail = error.issues.slice(0, 5).map((issue) => issue.message.slice(0, 120)).join("；");
+    throw new EditorTaskError(
+      error.code,
+      `${error.message}${detail ? `：${detail}${error.issues.length > 5 ? `；另有 ${error.issues.length - 5} 项` : ""}` : ""}`,
+      false
+    );
+  }
+  throw error;
+}
+
+// native/editor-runtime/waveform.ts
+import { createReadStream as createReadStream3 } from "node:fs";
+import { lstat as lstat3, readFile } from "node:fs/promises";
+import { join as join10 } from "node:path";
+var RATE2 = 48e3;
+var MAX_SAMPLES = RATE2 * WAVEFORM_LIMITS.seconds;
+var safety2 = [
+  "-protocol_whitelist",
+  "file,pipe",
+  "-format_whitelist",
+  "mov,matroska,webm,avi,mp3,wav,aiff,flac,ogg,aac"
+];
+var empty = () => ({ min: Infinity, max: -Infinity, squares: 0, count: 0 });
+var WaveformAccumulator = class {
+  bins = [];
+  current = empty();
+  tail = Buffer.alloc(0);
+  samplesPerBin = 960;
+  sampleCount = 0;
+  push(bytes) {
+    const data = this.tail.length ? Buffer.concat([this.tail, bytes]) : bytes;
+    const length = data.length - data.length % 8;
+    for (let offset = 0; offset < length; offset += 8) {
+      if (++this.sampleCount > MAX_SAMPLES)
+        throw new EditorTaskError("LIMIT_EXCEEDED", "波形分析最多支持 24 小时音频");
+      const left = data.readFloatLE(offset), right = data.readFloatLE(offset + 4);
+      if (!Number.isFinite(left) || !Number.isFinite(right) || Math.max(Math.abs(left), Math.abs(right)) > 1e6)
+        throw new EditorTaskError("INVALID_AUDIO", "音频解码包含无效采样");
+      this.current.min = Math.min(this.current.min, left, right);
+      this.current.max = Math.max(this.current.max, left, right);
+      this.current.squares += left * left + right * right;
+      this.current.count++;
+      if (this.current.count === this.samplesPerBin) {
+        this.bins.push(this.current);
+        this.current = empty();
+        if (this.bins.length === WAVEFORM_LIMITS.bins) {
+          const compact = [];
+          for (let i = 0; i < this.bins.length; i += 2) {
+            const a = this.bins[i], b = this.bins[i + 1];
+            compact.push({
+              min: Math.min(a.min, b.min),
+              max: Math.max(a.max, b.max),
+              squares: a.squares + b.squares,
+              count: a.count + b.count
+            });
+          }
+          this.bins = compact;
+          this.samplesPerBin *= 2;
+        }
+      }
+    }
+    this.tail = Buffer.from(data.subarray(length));
+  }
+  finish(sourceHash, hasAudio = true) {
+    if (this.tail.length || hasAudio && !this.sampleCount)
+      throw new EditorTaskError("INVALID_AUDIO", "音频解码未得到完整采样");
+    const bins = this.current.count ? [...this.bins, this.current] : this.bins;
+    let peakScale = 1;
+    for (const bin of bins) peakScale = Math.max(peakScale, Math.abs(bin.min), Math.abs(bin.max));
+    const data = Buffer.alloc(bins.length * 6), scale = 32767 / peakScale;
+    bins.forEach((bin, i) => {
+      data.writeInt16LE(Math.round(bin.min * scale), i * 6);
+      data.writeInt16LE(Math.round(bin.max * scale), i * 6 + 2);
+      data.writeInt16LE(Math.round(Math.sqrt(bin.squares / (bin.count * 2)) * scale), i * 6 + 4);
+    });
+    return {
+      schemaVersion: 1,
+      sourceHash,
+      sampleRate: RATE2,
+      channels: 2,
+      hasAudio,
+      sampleCount: this.sampleCount,
+      samplesPerBin: this.samplesPerBin,
+      peakScale,
+      peaksBase64: data.toString("base64")
+    };
+  }
+};
+async function analyzeEditorWaveform(options2) {
+  const { input, signal } = options2;
+  abort(signal);
+  const sourceHash = await fileHash(input, signal);
+  const version = (await runMediaProcess(options2.ffmpegPath, ["-hide_banner", "-version"], {
+    signal,
+    maxStdoutBytes: 65536
+  })).stdout.toString();
+  const recipeHash = digest({ algorithm: "stereo-envelope-v1", sourceHash, decoder: version });
+  const path = join10(options2.cacheDir, `${recipeHash}.json`);
+  try {
+    const cached = await regular(options2.cacheDir, [`${recipeHash}.json`]);
+    if ((await lstat3(cached)).size > WAVEFORM_LIMITS.bytes)
+      throw new EditorTaskError("INVALID_CACHE", "波形缓存超出大小限制");
+    const waveform2 = decodeEditorWaveform(JSON.parse(await readFile(cached, "utf8")));
+    if (waveform2.sourceHash !== sourceHash)
+      throw new EditorTaskError("INVALID_CACHE", "波形缓存与素材不匹配");
+    return { path, sourceHash, recipeHash, reused: true, reusedPcm: false };
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const probe = JSON.parse(
+    (await runMediaProcess(
+      options2.ffprobePath,
+      [
+        "-v",
+        "error",
+        ...safety2,
+        "-show_entries",
+        "format=start_time,duration:stream=codec_type,start_time,duration",
+        "-of",
+        "json",
+        input
+      ],
+      { signal, maxStdoutBytes: 1024 * 1024 }
+    )).stdout.toString()
+  );
+  if (!Array.isArray(probe.streams)) throw new EditorTaskError("INVALID_AUDIO", "音频信息无效");
+  const audio2 = probe.streams.find((s) => s.codec_type === "audio");
+  const accumulator = new WaveformAccumulator();
+  let reusedPcm = false;
+  if (audio2) {
+    const origin = Number(probe.format?.start_time ?? 0), end = Number(audio2.start_time ?? origin) - origin + Number(audio2.duration);
+    if (Number.isFinite(end) && end > WAVEFORM_LIMITS.seconds)
+      throw new EditorTaskError("LIMIT_EXCEEDED", "波形分析最多支持 24 小时音频");
+    const basename6 = `${editorSourcePcmCacheKey(sourceHash, options2.sourceDuration, version)}.f32`;
+    let pcm;
+    try {
+      const candidate = await regular(options2.pcmCacheDir, [basename6]), size2 = (await lstat3(candidate)).size;
+      if (Number.isFinite(end) && end > 0 && size2 % 8 === 0 && size2 / 8 >= Math.ceil(end * RATE2) - 1 && options2.sourceDuration / 24e4 + 1 > end && size2 / 8 <= MAX_SAMPLES)
+        pcm = candidate;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (pcm) {
+      const stream = createReadStream3(pcm), cancel = () => stream.destroy(new DOMException("Cancelled", "AbortError"));
+      signal.addEventListener("abort", cancel, { once: true });
+      try {
+        abort(signal);
+        for await (const bytes of stream) {
+          abort(signal);
+          accumulator.push(bytes);
+        }
+        reusedPcm = true;
+      } finally {
+        signal.removeEventListener("abort", cancel);
+        stream.destroy();
+      }
+    } else {
+      await runMediaProcess(
+        options2.ffmpegPath,
+        [
+          "-nostdin",
+          "-v",
+          "error",
+          ...safety2,
+          "-copyts",
+          "-start_at_zero",
+          "-i",
+          input,
+          "-map",
+          "0:a:0",
+          "-vn",
+          "-sn",
+          "-dn",
+          "-af",
+          "aresample=48000:async=1:first_pts=0",
+          "-ac",
+          "2",
+          "-ar",
+          "48000",
+          "-c:a",
+          "pcm_f32le",
+          "-f",
+          "f32le",
+          "pipe:1"
+        ],
+        { signal, progressStream: "stderr", onStdout: (bytes) => accumulator.push(bytes) }
+      );
+    }
+  }
+  abort(signal);
+  if (await fileHash(input, signal) !== sourceHash)
+    throw new EditorTaskError("SOURCE_CHANGED", "素材在波形分析时发生变化");
+  const waveform = accumulator.finish(sourceHash, !!audio2);
+  decodeEditorWaveform(waveform);
+  await atomic(path, Buffer.from(JSON.stringify(waveform)));
+  abort(signal);
+  return { path, sourceHash, recipeHash, reused: false, reusedPcm };
+}
+
+// native/editor-runtime/multicam.ts
+import { createReadStream as createReadStream4 } from "node:fs";
+import { readFile as readFile2, stat as stat9 } from "node:fs/promises";
+import { join as join11 } from "node:path";
+
+// src/editor/audio-correlation.ts
+function fft(real, imag, inverse) {
+  const n = real.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      [real[i], real[j]] = [real[j], real[i]];
+      [imag[i], imag[j]] = [imag[j], imag[i]];
+    }
+  }
+  for (let size2 = 2; size2 <= n; size2 *= 2) {
+    const angle = (inverse ? 2 : -2) * Math.PI / size2, wr = Math.cos(angle), wi = Math.sin(angle);
+    for (let begin = 0; begin < n; begin += size2) {
+      let ur = 1, ui = 0;
+      for (let j = 0; j < size2 / 2; j++) {
+        const a = begin + j, b = a + size2 / 2, vr = real[b] * ur - imag[b] * ui, vi = real[b] * ui + imag[b] * ur;
+        real[b] = real[a] - vr;
+        imag[b] = imag[a] - vi;
+        real[a] += vr;
+        imag[a] += vi;
+        const nr = ur * wr - ui * wi;
+        ui = ur * wi + ui * wr;
+        ur = nr;
+      }
+    }
+  }
+  if (inverse)
+    for (let i = 0; i < n; i++) {
+      real[i] /= n;
+      imag[i] /= n;
+    }
+}
+function sums(values) {
+  const sum = new Float64Array(values.length + 1), squares = new Float64Array(values.length + 1);
+  for (let i = 0; i < values.length; i++) {
+    sum[i + 1] = sum[i] + values[i];
+    squares[i + 1] = squares[i] + values[i] * values[i];
+  }
+  return [sum, squares];
+}
+function correlateAudioFeatures(reference, target, maxLag, minOverlap = 400) {
+  if (![reference, target].every(
+    (values) => values instanceof Float32Array && values.length >= minOverlap && values.length <= 36e3 && values.every(Number.isFinite)
+  ) || !Number.isSafeInteger(maxLag) || maxLag < 0 || maxLag > 12e3 || !Number.isSafeInteger(minOverlap) || minOverlap < 200)
+    throw new Error("音频相关分析范围无效，至少需要一段完整声音");
+  let n = 1;
+  while (n < reference.length + target.length - 1) n *= 2;
+  const ar = new Float64Array(n), ai = new Float64Array(n), br = new Float64Array(n), bi = new Float64Array(n);
+  for (let i = 0; i < reference.length; i++) ar[i] = reference[reference.length - 1 - i];
+  br.set(target);
+  fft(ar, ai, false);
+  fft(br, bi, false);
+  for (let i = 0; i < n; i++) {
+    const real = ar[i] * br[i] - ai[i] * bi[i];
+    ai[i] = ar[i] * bi[i] + ai[i] * br[i];
+    ar[i] = real;
+  }
+  fft(ar, ai, true);
+  const [rs, rq] = sums(reference), [ts, tq] = sums(target), candidates = [];
+  for (let lag = -maxLag; lag <= maxLag; lag++) {
+    const r0 = Math.max(0, -lag), r1 = Math.min(reference.length, target.length - lag), count = r1 - r0;
+    if (count < minOverlap) continue;
+    const t0 = r0 + lag, t1 = r1 + lag, sa = rs[r1] - rs[r0], sb = ts[t1] - ts[t0], va = rq[r1] - rq[r0] - sa * sa / count, vb = tq[t1] - tq[t0] - sb * sb / count;
+    if (va / count < 1e-5 || vb / count < 1e-5) continue;
+    const dot = ar[reference.length - 1 + lag], score = Math.max(-1, Math.min(1, (dot - sa * sb / count) / Math.sqrt(va * vb)));
+    candidates.push({ lag, score, overlap: count });
+  }
+  candidates.sort(
+    (a, b) => b.score - a.score || b.overlap - a.overlap || Math.abs(a.lag) - Math.abs(b.lag)
+  );
+  const best = candidates[0];
+  if (!best)
+    return {
+      lag: 0,
+      confidence: 0,
+      secondPeak: 0,
+      overlap: 0,
+      reliable: false,
+      reason: "声音静音或缺少可辨认的变化，请手动对齐"
+    };
+  const second = candidates.find((item) => Math.abs(item.lag - best.lag) > 20)?.score ?? 0;
+  const reliable = best.score >= 0.65 && best.score - second >= 0.075 && !(maxLag > 0 && Math.abs(best.lag) === maxLag);
+  const reason = best.score < 0.65 ? "两段声音相似度不足，请选择包含共同声音的分析范围" : best.score - second < 0.075 ? "声音存在重复节奏或多个相近匹配，请手动确认偏移" : Math.abs(best.lag) === maxLag && maxLag > 0 ? "最佳匹配位于搜索边界，请扩大最大偏移" : void 0;
+  return {
+    lag: best.lag,
+    confidence: Math.max(0, best.score),
+    secondPeak: Math.max(0, second),
+    overlap: best.overlap,
+    reliable,
+    ...reason ? { reason } : {}
+  };
+}
+
+// native/editor-runtime/multicam.ts
+var safety3 = [
+  "-protocol_whitelist",
+  "file,pipe",
+  "-format_whitelist",
+  "mov,matroska,webm,avi,mp3,wav,aiff,flac,ogg,aac"
+];
+var RATE3 = 48e3;
+var BIN = 240;
+var Features = class {
+  constructor(maxSamples) {
+    this.maxSamples = maxSamples;
+  }
+  maxSamples;
+  values = [];
+  tail = Buffer.alloc(0);
+  count = 0;
+  squares = 0;
+  total = 0;
+  push(bytes) {
+    const data = this.tail.length ? Buffer.concat([this.tail, bytes]) : bytes, length = data.length - data.length % 8;
+    for (let at = 0; at < length; at += 8) {
+      if (this.total++ >= this.maxSamples) break;
+      const left = data.readFloatLE(at), right = data.readFloatLE(at + 4);
+      if (!Number.isFinite(left) || !Number.isFinite(right) || Math.max(Math.abs(left), Math.abs(right)) > 1e6)
+        throw new EditorTaskError("INVALID_AUDIO", "机位声音包含无效采样");
+      this.squares += left * left + right * right;
+      this.count++;
+      if (this.count === BIN) {
+        this.values.push(Math.log1p(1e3 * Math.sqrt(this.squares / (2 * this.count))));
+        this.squares = 0;
+        this.count = 0;
+      }
+    }
+    this.tail = Buffer.from(data.subarray(length));
+  }
+  finish() {
+    if (this.tail.length) throw new EditorTaskError("INVALID_AUDIO", "机位声音采样不完整");
+    return Float32Array.from(this.values);
+  }
+};
+async function alignEditorMulticam(options2) {
+  const { signal } = options2;
+  abort(signal);
+  if (options2.sources.length < 2 || options2.sources.length > 32 || !Number.isFinite(options2.windowSeconds) || options2.windowSeconds < 3 || options2.windowSeconds > 180 || !Number.isFinite(options2.maxOffsetSeconds) || options2.maxOffsetSeconds < 0 || options2.maxOffsetSeconds > 60 || options2.maxOffsetSeconds >= options2.windowSeconds - 2)
+    throw new EditorTaskError(
+      "INVALID_REQUEST",
+      "对齐分析需要 3 至 180 秒，最大偏移小于分析时长减 2 秒"
+    );
+  if (new Set(options2.sources.map((source3) => source3.resourceId)).size !== options2.sources.length || !options2.sources.some((source3) => source3.resourceId === options2.referenceResourceId))
+    throw new EditorTaskError("INVALID_REQUEST", "对齐机位列表或基准机位无效");
+  const version = (await runMediaProcess(options2.ffmpegPath, ["-hide_banner", "-version"], {
+    signal,
+    maxStdoutBytes: 65536
+  })).stdout.toString();
+  const decoded = [];
+  for (const source3 of options2.sources) {
+    abort(signal);
+    const sourceHash = await fileHash(source3.path, signal), key = digest({
+      algorithm: "stereo-log-energy-5ms-v1",
+      sourceHash,
+      windowSeconds: options2.windowSeconds,
+      decoder: version
+    }), path = join11(options2.cacheDir, `${key}.json`);
+    try {
+      const cached = await regular(options2.cacheDir, [`${key}.json`]);
+      if ((await stat9(cached)).size > 1024 * 1024) throw new Error("机位缓存超过范围");
+      const value = JSON.parse(await readFile2(cached, "utf8"));
+      if (value.sourceHash !== sourceHash || !Array.isArray(value.features) || value.features.length < 400 || value.features.length > 36e3 || !value.features.every(
+        (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v < 30
+      ))
+        throw new Error("机位声音缓存无效");
+      decoded.push({
+        source: source3,
+        sourceHash,
+        features: Float32Array.from(value.features),
+        reused: true
+      });
+      continue;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const accumulator = new Features(Math.floor(options2.windowSeconds * RATE3));
+    const pcmKey = editorSourcePcmCacheKey(sourceHash, source3.duration, version);
+    let usedPcm = false;
+    try {
+      const pcm = await regular(options2.pcmCacheDir, [`${pcmKey}.f32`]), info = await stat9(pcm);
+      if (info.size % 8 !== 0 || info.size < RATE3 * 2 * 8)
+        throw new Error("声音缓存不完整或不足两秒");
+      const stream = createReadStream4(pcm, {
+        start: 0,
+        end: Math.min(info.size, options2.windowSeconds * RATE3 * 8) - 1
+      });
+      const cancel = () => stream.destroy(new DOMException("Cancelled", "AbortError"));
+      signal.addEventListener("abort", cancel, { once: true });
+      try {
+        for await (const bytes of stream) {
+          abort(signal);
+          accumulator.push(bytes);
+        }
+        usedPcm = true;
+      } finally {
+        signal.removeEventListener("abort", cancel);
+        stream.destroy();
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (!usedPcm) {
+      const probe = JSON.parse(
+        (await runMediaProcess(
+          options2.ffprobePath,
+          [
+            "-v",
+            "error",
+            ...safety3,
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "json",
+            source3.path
+          ],
+          { signal, maxStdoutBytes: 1024 * 1024 }
+        )).stdout.toString()
+      );
+      if (!probe.streams?.some((stream) => stream.codec_type === "audio"))
+        throw new EditorTaskError("NO_AUDIO", "所选机位没有可用于同步的声音，请手动设置偏移");
+      await runMediaProcess(
+        options2.ffmpegPath,
+        [
+          "-v",
+          "error",
+          "-nostdin",
+          ...safety3,
+          "-copyts",
+          "-start_at_zero",
+          "-i",
+          source3.path,
+          "-map",
+          "0:a:0",
+          "-vn",
+          "-af",
+          "aresample=48000:async=1:first_pts=0",
+          "-ac",
+          "2",
+          "-t",
+          String(options2.windowSeconds),
+          "-c:a",
+          "pcm_f32le",
+          "-f",
+          "f32le",
+          "pipe:1"
+        ],
+        { signal, maxStdoutBytes: 0, onStdout: (bytes) => accumulator.push(bytes) }
+      );
+    }
+    const features = accumulator.finish();
+    if (features.length < 400)
+      throw new EditorTaskError("SHORT_AUDIO", "机位共同声音至少需要 2 秒");
+    abort(signal);
+    if (await fileHash(source3.path, signal) !== sourceHash)
+      throw new EditorTaskError("SOURCE_CHANGED", "机位素材在声音分析期间发生变化");
+    await atomic(path, Buffer.from(JSON.stringify({ sourceHash, features: Array.from(features) })));
+    decoded.push({ source: source3, sourceHash, features, reused: false });
+  }
+  const reference = decoded.find((item) => item.source.resourceId === options2.referenceResourceId);
+  const results = decoded.map((item) => {
+    abort(signal);
+    const referenceOnly = item === reference, result = referenceOnly ? { lag: 0, confidence: 1, secondPeak: 0, overlap: item.features.length, reliable: true } : correlateAudioFeatures(
+      reference.features,
+      item.features,
+      Math.round(options2.maxOffsetSeconds * 200)
+    );
+    return {
+      resourceId: item.source.resourceId,
+      sourceHash: item.sourceHash,
+      offset: result.lag * 1200,
+      confidence: result.confidence,
+      secondPeak: result.secondPeak,
+      overlapSeconds: result.overlap / 200,
+      precisionTicks: 1200,
+      reliable: result.reliable,
+      ...result.reason ? { reason: result.reason } : {}
+    };
+  });
+  return {
+    referenceResourceId: options2.referenceResourceId,
+    reused: decoded.every((item) => item.reused),
+    results
+  };
+}
+
+// native/editor-runtime/runtime.ts
+var artifactValue = (artifact) => ({
+  id: artifact.assetId,
+  name: artifact.name,
+  mimeType: artifact.mimeType,
+  bytes: artifact.bytes,
+  sha256: artifact.sha256
+});
+async function runEditorRequest(raw, context2) {
+  const request = validateEditorRequest(raw);
+  abort(context2.signal);
+  const [ffmpegPath, ffprobePath] = await Promise.all(
+    ["ffmpeg", "ffprobe"].map(
+      async (name) => context2.tools?.[`${name}Path`] ?? await findExecutable(name, void 0, context2.toolSearchDirectories)
+    )
+  );
+  context2 = {
+    ...context2,
+    tools: {
+      ...context2.tools,
+      ...ffmpegPath ? { ffmpegPath } : {},
+      ...ffprobePath ? { ffprobePath } : {}
+    }
+  };
+  hash2(context2.scopeKey);
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(context2.jobId))
+    throw new EditorTaskError("INVALID_REQUEST", "主程序任务编号无效");
+  const root = await sealed(context2.jobDir), runtime = await sealed(context2.runtimeDir);
+  const directOriginal = (id7) => context2.originals?.get(`original-${id7}`);
+  const inputSource = async (id7, index2) => {
+    const source3 = directOriginal(id7);
+    return source3 ? originalFile(source3) : regular(root, ["inputs", `resource-${index2}.bin`]);
+  };
+  if (request.action === "inspect-source") {
+    const id7 = request.resourceIds[0], input = await inputSource(id7, 0);
+    await context2.reportProgress({ fraction: 0, stage: "inspect-source" });
+    const result = await inspectEditorSource(
+      input,
+      id7,
+      context2.tools?.ffprobePath ?? "ffprobe",
+      context2.signal
+    );
+    if (await fileHash(input, context2.signal) !== result.sha256)
+      throw new EditorTaskError("SOURCE_CHANGED", "素材在分析过程中发生变化，请重新导入");
+    await context2.reportProgress({ fraction: 1, stage: "complete" });
+    return { result, artifacts: [] };
+  }
+  const scope2 = await directory(runtime, ["scopes", context2.scopeKey]);
+  const transfer = await directory(scope2, ["transfers", request.transferId]);
+  const work = await directory(root, [`work-${randomUUID7()}`]);
+  const resources = await directory(transfer, ["resources"]);
+  const cache = await directory(scope2, ["cache"]);
+  const artifacts = [];
+  let succeeded = false;
+  let mixWarning = "";
+  const progress2 = async (fraction, stage, message) => {
+    abort(context2.signal);
+    const detail = [message, mixWarning].filter(Boolean).join(" ");
+    await context2.reportProgress({ fraction, stage, ...detail ? { message: detail } : {} });
+  };
+  const add2 = async (path, extension, mimeType, role) => {
+    const artifact = await publish(root, path, extension, mimeType, role, context2.signal);
+    if (!artifacts.some((item) => item.assetId === artifact.assetId)) artifacts.push(artifact);
+    if (artifacts.length > 128)
+      throw new EditorTaskError("LIMIT_EXCEEDED", "本批输出超过 128 个资源，请继续分批准备");
+    return artifactValue(artifact);
+  };
+  const report2 = async (value) => {
+    const path = join12(work, `report-${randomUUID7()}.json`);
+    await atomic(path, Buffer.from(JSON.stringify(value)));
+    return add2(path, "json", "application/json", "editor-report");
+  };
+  const material = async (binding) => {
+    record5(binding, ["resourceId", "sha256", "bytes", "access"], "原始素材绑定");
+    const id7 = resourceId(binding.resourceId);
+    if (binding.access !== void 0 && (binding.access !== "read" || !id7.startsWith("external-")))
+      throw new EditorTaskError("INVALID_FILE", "原始素材读取授权无效");
+    const source3 = binding.access === "read" ? directOriginal(id7) : void 0;
+    if (binding.access === "read" && !source3)
+      throw new EditorTaskError("INCOMPLETE_STAGE", "原始素材读取授权缺失，请重新准备工程");
+    const path = source3 ? await originalFile(source3) : await regular(resources, [`${id7}.bin`]);
+    if (await fileHash(path, context2.signal) !== hash2(binding.sha256) || (await stat10(path)).size !== binding.bytes)
+      throw new EditorTaskError("SOURCE_CHANGED", "已准备素材内容发生变化，请重新建立快照");
+    return path;
+  };
+  const LIBRARY_DAYS = 14;
+  const verificationFailure = (error) => error instanceof EditorTaskError && ["SOURCE_CHANGED", "INVALID_FILE", "INVALID_REQUEST"].includes(error.code) || error instanceof SyntaxError || error?.code === "ENOENT";
+  const forget = async (library, id7) => {
+    for (const name of [`${id7}.json`, `${id7}.bin`])
+      await rm9(join12(library, name), { force: true }).catch(() => {
+      });
+  };
+  const remember = async (binding, path) => {
+    try {
+      const library = await directory(scope2, ["resources"]), id7 = resourceId(binding.resourceId), temporary = join12(library, `${id7}.bin.${randomUUID7()}.tmp`);
+      try {
+        await hardLink(path, temporary);
+        await rename4(temporary, join12(library, `${id7}.bin`));
+        await atomic(join12(library, `${id7}.json`), Buffer.from(JSON.stringify(binding)));
+      } finally {
+        await rm9(temporary, { force: true });
+      }
+    } catch (error) {
+      if (context2.signal.aborted) throw error;
+    }
+  };
+  const reuse = async (id7, confirmed) => {
+    if (id7.startsWith("external-") && !confirmed.has(id7)) return void 0;
+    const library = await directory(scope2, ["resources"]);
+    let binding, temporary;
+    try {
+      const raw2 = await optionalJson(library, [`${id7}.json`]);
+      if (!raw2) return void 0;
+      const value = record5(raw2, ["resourceId", "sha256", "bytes"], "已保存的原始素材");
+      binding = { resourceId: value.resourceId, sha256: hash2(value.sha256), bytes: value.bytes };
+      if (binding.resourceId !== id7 || !Number.isSafeInteger(binding.bytes) || binding.bytes < 1 || id7.startsWith("asset-") && id7 !== `asset-${binding.sha256}`)
+        throw new EditorTaskError("SOURCE_CHANGED", "已保存的原始素材回执无效");
+      if (id7.startsWith("external-") && confirmed.get(id7) !== binding.bytes) return void 0;
+      const source3 = await regular(library, [`${id7}.bin`]);
+      temporary = join12(resources, `${id7}.bin.${randomUUID7()}.tmp`);
+      try {
+        await hardLink(source3, temporary);
+      } catch (error) {
+        if (context2.signal.aborted) throw error;
+        return void 0;
+      }
+      if ((await lstat4(temporary)).size !== binding.bytes || await fileHash(temporary, context2.signal) !== binding.sha256)
+        throw new EditorTaskError("SOURCE_CHANGED", "已保存的原始素材校验失败");
+      await rename4(temporary, join12(resources, `${id7}.bin`));
+      temporary = void 0;
+      await atomic(join12(resources, `${id7}.json`), Buffer.from(JSON.stringify(binding)));
+      const now = /* @__PURE__ */ new Date();
+      await utimes(join12(library, `${id7}.json`), now, now).catch(() => {
+      });
+      return binding;
+    } catch (error) {
+      if (context2.signal.aborted) throw error;
+      if (verificationFailure(error)) await forget(library, id7);
+      return void 0;
+    } finally {
+      if (temporary) await rm9(temporary, { force: true });
+    }
+  };
+  const prune = async (keep) => {
+    try {
+      const library = await directory(scope2, ["resources"]), cutoff = Date.now() - LIBRARY_DAYS * 24 * 60 * 60 * 1e3, names = await readdir2(library), used = /* @__PURE__ */ new Map();
+      for (const name of names)
+        if (name.endsWith(".json"))
+          used.set(name.slice(0, -5), (await lstat4(join12(library, name))).mtimeMs);
+      for (const name of names) {
+        const id7 = name.split(".")[0];
+        if (keep.has(id7)) continue;
+        const last = used.get(id7) ?? (await lstat4(join12(library, name))).mtimeMs;
+        if (last < cutoff) await rm9(join12(library, name), { force: true });
+      }
+    } catch (error) {
+      if (context2.signal.aborted) throw error;
+    }
+  };
+  const builtin = async () => {
+    const id7 = `asset-${EDITOR_DEMO_NARRATION_SHA}`;
+    let binding = await optionalJson(resources, [`${id7}.json`]);
+    if (!binding) {
+      if (!context2.builtinNarrationPath || await fileHash(context2.builtinNarrationPath, context2.signal) !== EDITOR_DEMO_NARRATION_SHA)
+        throw new EditorTaskError(
+          "BUILTIN_CHANGED",
+          "安装包中的示例旁白缺失或校验失败，请重新安装视频面板"
+        );
+      const bytes = (await stat10(context2.builtinNarrationPath)).size;
+      const temporary = join12(resources, `${id7}.${randomUUID7()}.tmp`);
+      try {
+        await copyFile3(context2.builtinNarrationPath, temporary);
+        if (await fileHash(temporary, context2.signal) !== EDITOR_DEMO_NARRATION_SHA)
+          throw new EditorTaskError("BUILTIN_CHANGED", "示例旁白内容变化");
+        await rename4(temporary, join12(resources, `${id7}.bin`));
+        binding = { resourceId: id7, sha256: EDITOR_DEMO_NARRATION_SHA, bytes };
+        await atomic(join12(resources, `${id7}.json`), Buffer.from(JSON.stringify(binding)));
+      } finally {
+        await rm9(temporary, { force: true });
+      }
+    }
+    if (binding.sha256 !== EDITOR_DEMO_NARRATION_SHA || binding.resourceId !== id7)
+      throw new EditorTaskError("BUILTIN_CHANGED", "示例旁白回执无效");
+    return { binding, path: await material(binding) };
+  };
+  try {
+    if (request.action === "align-multicam") {
+      const settings = request.alignment, sources = [];
+      for (const [index2, resourceId2] of request.resourceIds.entries()) {
+        const path = await inputSource(resourceId2, index2), sha2 = await fileHash(path, context2.signal);
+        if (resourceId2.startsWith("asset-") && resourceId2 !== `asset-${sha2}` || settings.sourceHashes?.[index2] && settings.sourceHashes[index2] !== sha2)
+          throw new EditorTaskError("SOURCE_CHANGED", "机位素材内容与资源编号或工程指纹不匹配");
+        sources.push({ resourceId: resourceId2, path, duration: settings.sourceDurations[index2] });
+      }
+      await progress2(0, "align-multicam");
+      const result = await alignEditorMulticam({
+        sources,
+        referenceResourceId: settings.referenceResourceId,
+        windowSeconds: settings.windowSeconds,
+        maxOffsetSeconds: settings.maxOffsetSeconds,
+        cacheDir: await directory(cache, ["multicam"]),
+        pcmCacheDir: await directory(cache, ["pcm"]),
+        ffmpegPath: context2.tools?.ffmpegPath ?? "ffmpeg",
+        ffprobePath: context2.tools?.ffprobePath ?? "ffprobe",
+        signal: context2.signal
+      });
+      await progress2(1, "complete");
+      succeeded = true;
+      return {
+        result: { ...result, ...settings.origin ? { origin: settings.origin } : {} },
+        artifacts
+      };
+    }
+    if (request.action === "prepare-source-video") {
+      const id7 = request.resourceIds[0], input = await inputSource(id7, 0), sourceHash = await fileHash(input, context2.signal);
+      if (id7.startsWith("asset-") && id7 !== `asset-${sourceHash}`)
+        throw new EditorTaskError("SOURCE_CHANGED", "素材内容与资源编号不匹配");
+      await progress2(0, "prepare-source-video");
+      const ffmpegPath3 = context2.tools?.ffmpegPath ?? "ffmpeg", ffprobePath3 = context2.tools?.ffprobePath ?? "ffprobe";
+      const ffmpegVersion2 = (await runMediaProcess(ffmpegPath3, ["-hide_banner", "-version"], { signal: context2.signal })).stdout.toString();
+      const proxy = await prepareEditorProxy(input, sourceHash, {
+        ffmpegPath: ffmpegPath3,
+        ffprobePath: ffprobePath3,
+        ffmpegVersion: ffmpegVersion2,
+        cacheDir: cache,
+        workDir: work,
+        signal: context2.signal
+      });
+      if (await fileHash(input, context2.signal) !== sourceHash)
+        throw new EditorTaskError("SOURCE_CHANGED", "素材在兼容画面准备时发生变化");
+      const artifact = await add2(proxy.path, "mp4", "video/mp4", "editor-video-source"), { path: _path, ...recipe } = proxy;
+      await progress2(1, "complete");
+      succeeded = true;
+      return { result: { resourceId: id7, sourceHash, proxy: artifact, recipe }, artifacts };
+    }
+    if (request.action === "analyze-waveform") {
+      const id7 = request.resourceIds[0], input = await inputSource(id7, 0);
+      await progress2(0, "analyze-waveform");
+      const analysis = await analyzeEditorWaveform({
+        input,
+        sourceDuration: request.sourceDuration,
+        cacheDir: await directory(cache, ["waveforms"]),
+        pcmCacheDir: await directory(cache, ["pcm"]),
+        ffmpegPath: context2.tools?.ffmpegPath ?? "ffmpeg",
+        ffprobePath: context2.tools?.ffprobePath ?? "ffprobe",
+        signal: context2.signal
+      });
+      if (id7.startsWith("asset-") && id7 !== `asset-${analysis.sourceHash}`)
+        throw new EditorTaskError("SOURCE_CHANGED", "素材内容与资源编号不匹配");
+      const waveform = await add2(analysis.path, "json", "application/json", "editor-waveform");
+      await progress2(1, "complete");
+      succeeded = true;
+      return {
+        result: {
+          resourceId: id7,
+          sourceHash: analysis.sourceHash,
+          recipeHash: analysis.recipeHash,
+          waveform,
+          reused: analysis.reused,
+          reusedPcm: analysis.reusedPcm
+        },
+        artifacts
+      };
+    }
+    if ([
+      "import-project",
+      "project-import-status",
+      "publish-project-media",
+      "discard-project-import"
+    ].includes(request.action)) {
+      const result = await runPortableImportRequest(request, {
+        root,
+        transfer,
+        signal: context2.signal,
+        add: add2,
+        progress: progress2
+      }).catch(portableTaskError);
+      succeeded = true;
+      return { result, artifacts };
+    }
+    const discarded = await optionalJson(transfer, ["discarded.json"]);
+    if (discarded && request.action !== "discard")
+      throw new EditorTaskError("TRANSFER_DISCARDED", "此快照已释放，请创建新的准备任务");
+    if (request.action === "stage-status") {
+      const present = [];
+      const confirmed = new Map(
+        (request.confirmedReferences ?? []).map((item) => [item.resourceId, item.bytes])
+      );
+      for (const [index2, id7] of request.resourceIds.entries()) {
+        const binding = await optionalJson(resources, [`${id7}.json`]);
+        if (binding) await material(binding);
+        if (binding || !directOriginal(id7) && await reuse(id7, confirmed)) present.push(id7);
+        await progress2((index2 + 1) / request.resourceIds.length, "stage-status");
+      }
+      const chunks = [], documentDir = await directory(transfer, ["documents", request.documentHash]);
+      for (const name of await readdir2(documentDir))
+        if (/^chunk-\d+\.json$/.test(name)) {
+          const receipt = await json2(documentDir, [name]);
+          const index2 = Number(/^chunk-(\d+)\.json$/.exec(name)[1]);
+          if (index2 >= EDITOR_TASK_LIMITS.documentBytes / EDITOR_TASK_LIMITS.chunkBytes) continue;
+          const bytes = await readBytes(
+            documentDir,
+            [`chunk-${index2}.bin`],
+            EDITOR_TASK_LIMITS.chunkBytes
+          );
+          if (receipt.sha256 === bytesHash(bytes)) chunks.push(index2);
+        }
+      const manifest2 = await optionalJson(
+        transfer,
+        ["manifest.json"],
+        EDITOR_TASK_LIMITS.documentBytes + 2 * 1024 * 1024
+      );
+      succeeded = true;
+      return {
+        result: {
+          resourceIds: present,
+          chunks: chunks.sort((a, b) => a - b),
+          ...manifest2 ? {
+            committedDocumentHash: manifest2.documentHash,
+            sequenceId: manifest2.sequenceId,
+            ...manifest2.kind ? { kind: manifest2.kind } : {}
+          } : {}
+        },
+        artifacts
+      };
+    }
+    if (request.action === "stage-resources") {
+      const staged = [];
+      for (let index2 = 0; index2 < request.resourceIds.length; index2++) {
+        const id7 = request.resourceIds[index2];
+        const direct = directOriginal(id7), path = await inputSource(id7, index2);
+        const bytes = (await stat10(path)).size;
+        if (bytes < 1 || bytes > 20 * 1024 ** 3)
+          throw new EditorTaskError("LIMIT_EXCEEDED", "素材超过当前 20GiB 资源大小限制");
+        const sha2562 = await fileHash(path, context2.signal);
+        if (id7.startsWith("asset-") && id7 !== `asset-${sha2562}`)
+          throw new EditorTaskError("SOURCE_CHANGED", "主程序素材内容校验失败");
+        const binding = { resourceId: id7, sha256: sha2562, bytes, ...direct ? { access: "read" } : {} };
+        const previous = await optionalJson(resources, [`${id7}.json`]);
+        if (previous && (previous.sha256 !== sha2562 || previous.bytes !== bytes))
+          throw new EditorTaskError("SOURCE_CHANGED", "同一快照中的原文件已变化，请创建新快照");
+        if (previous) await material(previous);
+        else if (direct) {
+          await atomic(join12(resources, `${id7}.json`), Buffer.from(JSON.stringify(binding)));
+        } else {
+          const temporary = join12(resources, `${id7}.${randomUUID7()}.tmp`);
+          try {
+            await copyFile3(path, temporary);
+            abort(context2.signal);
+            if (await fileHash(temporary, context2.signal) !== sha2562)
+              throw new EditorTaskError("SOURCE_CHANGED", "素材在准备时发生变化");
+            await rename4(temporary, join12(resources, `${id7}.bin`));
+            await atomic(join12(resources, `${id7}.json`), Buffer.from(JSON.stringify(binding)));
+          } finally {
+            await rm9(temporary, { force: true });
+          }
+        }
+        if (!direct) await remember(binding, join12(resources, `${id7}.bin`));
+        staged.push(binding);
+        await progress2((index2 + 1) / request.resourceIds.length, "stage-resources");
+      }
+      succeeded = true;
+      return { result: { resources: staged }, artifacts };
+    }
+    if (request.action === "stage-document") {
+      const bytes = Buffer.from(request.dataBase64, "base64");
+      if (!bytes.length || bytes.length > EDITOR_TASK_LIMITS.chunkBytes || bytes.toString("base64") !== request.dataBase64)
+        throw new EditorTaskError("INVALID_REQUEST", "工程数据块编码无效");
+      const committed = await optionalJson(
+        transfer,
+        ["manifest.json"],
+        EDITOR_TASK_LIMITS.documentBytes + 2 * 1024 * 1024
+      );
+      if (committed && committed.documentHash !== request.documentHash)
+        throw new EditorTaskError("SNAPSHOT_MISMATCH", "快照已提交，请为新修改建立新的快照");
+      const doc = await directory(transfer, ["documents", request.documentHash]);
+      const metadata = await optionalJson(doc, ["chunks.json"]);
+      if (metadata && metadata.count !== request.chunkCount)
+        throw new EditorTaskError("INVALID_REQUEST", "工程数据块总数不一致");
+      await atomic(
+        join12(doc, "chunks.json"),
+        Buffer.from(JSON.stringify({ count: request.chunkCount }))
+      );
+      await atomic(join12(doc, `chunk-${request.chunkIndex}.bin`), bytes);
+      await atomic(
+        join12(doc, `chunk-${request.chunkIndex}.json`),
+        Buffer.from(JSON.stringify({ sha256: bytesHash(bytes) }))
+      );
+      succeeded = true;
+      return { result: { chunkIndex: request.chunkIndex, bytes: bytes.length }, artifacts };
+    }
+    if (request.action === "commit" || request.action === "commit-project") {
+      const project = request.action === "commit-project";
+      const previous = await optionalJson(
+        transfer,
+        ["manifest.json"],
+        EDITOR_TASK_LIMITS.documentBytes + 2 * 1024 * 1024
+      );
+      if (previous && (previous.documentHash !== request.documentHash || previous.sequenceId !== request.sequenceId || previous.kind === "project" !== project))
+        throw new EditorTaskError("SNAPSHOT_MISMATCH", "快照已提交，请为新修改建立新的快照");
+      const doc = await directory(transfer, ["documents", request.documentHash]);
+      const metadata = await json2(doc, ["chunks.json"]);
+      if (metadata.count !== request.chunkCount)
+        throw new EditorTaskError("INCOMPLETE_STAGE", "工程数据块尚未完整准备");
+      const chunks = [];
+      let total = 0;
+      for (let index2 = 0; index2 < request.chunkCount; index2++) {
+        const bytes2 = await readBytes(doc, [`chunk-${index2}.bin`], EDITOR_TASK_LIMITS.chunkBytes);
+        total += bytes2.length;
+        if (total > EDITOR_TASK_LIMITS.documentBytes || index2 < request.chunkCount - 1 && bytes2.length !== EDITOR_TASK_LIMITS.chunkBytes)
+          throw new EditorTaskError("INCOMPLETE_STAGE", "工程数据块长度不一致");
+        chunks.push(bytes2);
+      }
+      const bytes = Buffer.concat(chunks);
+      if (total !== request.byteLength || bytesHash(bytes) !== request.documentHash)
+        throw new EditorTaskError("SNAPSHOT_MISMATCH", "工程内容校验失败，请重新分批准备");
+      const rawDocument = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes));
+      const selected4 = project ? editorProjectDocument(rawDocument) : editorTaskDocument(rawDocument, request.sequenceId);
+      if (project && selected4.document.activeSequenceId !== request.sequenceId)
+        throw new EditorTaskError("SNAPSHOT_MISMATCH", "完整工程的当前序列不一致");
+      if (bytesHash(Buffer.from(JSON.stringify(selected4.document))) !== request.documentHash)
+        throw new EditorTaskError("SNAPSHOT_MISMATCH", "工程快照不是规范化的依赖闭包");
+      const bindings = [];
+      for (const id7 of selected4.resourceIds) {
+        const binding = await json2(resources, [`${id7}.json`]);
+        await material(binding);
+        bindings.push(binding);
+      }
+      if (selected4.document.assets.some(isEditorDemoNarration)) await builtin();
+      const manifest2 = {
+        ...project ? { kind: "project" } : {},
+        documentHash: request.documentHash,
+        sequenceId: request.sequenceId,
+        document: selected4.document,
+        bindings
+      };
+      await atomic(join12(transfer, "manifest.json"), Buffer.from(JSON.stringify(manifest2)));
+      await prune(new Set(bindings.map((binding) => binding.resourceId)));
+      succeeded = true;
+      return {
+        result: {
+          documentHash: manifest2.documentHash,
+          sequenceId: manifest2.sequenceId,
+          documentId: manifest2.document.id,
+          revision: manifest2.document.revision,
+          resourceCount: bindings.length,
+          ...project ? { kind: "project" } : {}
+        },
+        artifacts
+      };
+    }
+    if (request.action === "discard") {
+      await atomic(join12(transfer, "discarded.json"), Buffer.from("{}"));
+      for (const name of ["resources", "documents"])
+        await rm9(join12(transfer, name), { recursive: true, force: true });
+      await rm9(join12(transfer, "manifest.json"), { force: true });
+      succeeded = true;
+      return { result: { discarded: true, transferId: request.transferId }, artifacts };
+    }
+    const manifest = await json2(
+      transfer,
+      ["manifest.json"],
+      EDITOR_TASK_LIMITS.documentBytes + 2 * 1024 * 1024
+    );
+    record5(manifest, ["kind", "documentHash", "sequenceId", "document", "bindings"], "工程快照");
+    if (manifest.kind !== void 0 && manifest.kind !== "project")
+      throw new EditorTaskError("SNAPSHOT_MISMATCH", "工程快照类型无效");
+    if (manifest.kind === "project" !== (request.action === "export-project"))
+      throw new EditorTaskError("SNAPSHOT_MISMATCH", "完整工程包需要独立的完整工程快照");
+    if (manifest.documentHash !== request.documentHash || manifest.sequenceId !== request.sequenceId)
+      throw new EditorTaskError("SNAPSHOT_MISMATCH", "请求与已提交工程快照不一致");
+    const selected3 = manifest.kind === "project" ? editorProjectDocument(manifest.document) : editorTaskDocument(manifest.document, manifest.sequenceId);
+    if (bytesHash(Buffer.from(JSON.stringify(selected3.document))) !== request.documentHash)
+      throw new EditorTaskError("SNAPSHOT_MISMATCH", "保存的工程快照内容已变化");
+    if (request.range) {
+      try {
+        validateExportRange(
+          request.range,
+          sequenceDuration(selected3.document.sequences.find((item) => item.id === manifest.sequenceId))
+        );
+      } catch (error) {
+        throw new EditorTaskError(
+          "INVALID_REQUEST",
+          error instanceof Error ? error.message : "导出范围无效"
+        );
+      }
+    }
+    if (!Array.isArray(manifest.bindings) || manifest.bindings.length !== selected3.resourceIds.length)
+      throw new EditorTaskError("INCOMPLETE_STAGE", "工程素材绑定不完整");
+    const byResource = /* @__PURE__ */ new Map();
+    for (const binding of manifest.bindings) {
+      if (!selected3.resourceIds.includes(binding.resourceId) || byResource.has(binding.resourceId))
+        throw new EditorTaskError("INCOMPLETE_STAGE", "工程素材绑定存在无效项");
+      byResource.set(binding.resourceId, { binding, path: await material(binding) });
+    }
+    const installedNarration = selected3.document.assets.some(isEditorDemoNarration) ? await builtin() : void 0;
+    const original = (assetId) => {
+      const asset2 = selected3.document.assets.find((item) => item.id === assetId), value = asset2 && byResource.get(asset2.resourceId ?? asset2.id);
+      if (asset2 && isEditorDemoNarration(asset2) && installedNarration) return installedNarration;
+      if (!value) throw new EditorTaskError("INCOMPLETE_STAGE", "当前工程缺少已授权的素材");
+      return value;
+    };
+    if (request.action === "analyze-asset-waveform") {
+      const assetId = request.assetIds[0], asset2 = selected3.document.assets.find((item) => item.id === assetId);
+      if (!asset2 || !["video", "audio"].includes(asset2.kind))
+        throw new EditorTaskError("INVALID_REQUEST", "请从当前序列选择一个声音或视频素材");
+      const annotation = selected3.document.production?.waveformAnalysisOrigin;
+      let origin;
+      if (annotation !== void 0) {
+        const value = record5(
+          annotation,
+          ["documentId", "revision", "sequenceId", "assetId", "documentHash"],
+          "波形分析来源"
+        );
+        if (!["documentId", "sequenceId", "assetId"].every(
+          (key) => typeof value[key] === "string" && value[key].length > 0 && value[key].length <= 128
+        ) || !Number.isSafeInteger(value.revision) || value.revision < 0 || value.assetId !== assetId || !isEditorDemoNarration(asset2) || selected3.document.assets.length !== 1 || selected3.document.sequences.length !== 1 || selected3.document.id === value.documentId)
+          throw new EditorTaskError("SNAPSHOT_MISMATCH", "波形分析来源与只读分析快照不一致");
+        origin = {
+          documentId: value.documentId,
+          revision: value.revision,
+          sequenceId: value.sequenceId,
+          assetId: value.assetId,
+          documentHash: hash2(value.documentHash)
+        };
+        if (selected3.document.id !== `waveform-analysis-${digest(origin)}`)
+          throw new EditorTaskError("SNAPSHOT_MISMATCH", "波形分析快照编号与来源不匹配");
+      } else
+        origin = {
+          documentId: selected3.document.id,
+          revision: selected3.document.revision,
+          sequenceId: selected3.document.activeSequenceId,
+          assetId,
+          documentHash: request.documentHash
+        };
+      const input = original(assetId);
+      await progress2(0, "analyze-waveform");
+      const analysis = await analyzeEditorWaveform({
+        input: input.path,
+        sourceDuration: asset2.duration,
+        cacheDir: await directory(cache, ["waveforms"]),
+        pcmCacheDir: await directory(cache, ["pcm"]),
+        ffmpegPath: context2.tools?.ffmpegPath ?? "ffmpeg",
+        ffprobePath: context2.tools?.ffprobePath ?? "ffprobe",
+        signal: context2.signal
+      });
+      if (analysis.sourceHash !== input.binding.sha256)
+        throw new EditorTaskError("SOURCE_CHANGED", "工程声音素材内容发生变化");
+      const waveform = await add2(analysis.path, "json", "application/json", "editor-waveform");
+      await progress2(1, "complete");
+      succeeded = true;
+      return {
+        result: {
+          documentHash: request.documentHash,
+          sequenceId: request.sequenceId,
+          assetId,
+          origin,
+          resourceId: input.binding.resourceId,
+          sourceHash: analysis.sourceHash,
+          recipeHash: analysis.recipeHash,
+          waveform,
+          reused: analysis.reused,
+          reusedPcm: analysis.reusedPcm
+        },
+        artifacts
+      };
+    }
+    if (request.action === "export-project") {
+      let progressFailure;
+      const packed = await exportPortableProject({
+        document: selected3.document,
+        workDir: work,
+        sourceRoots: [resources],
+        originalSources: new Map([...byResource.values()].filter((item) => item.binding.access === "read").map((item) => [item.path, { path: item.path, bytes: item.binding.bytes }])),
+        outputPath: join12(work, "project.mimiproject"),
+        signal: context2.signal,
+        resolveAsset: async (asset2) => {
+          const source3 = original(asset2.id);
+          return { path: source3.path, bytes: source3.binding.bytes, sha256: source3.binding.sha256 };
+        },
+        onProgress: (item) => {
+          void progress2(
+            (item.phase === "checking" ? 0 : 0.45) + (item.total ? item.completed / item.total : 1) * 0.45,
+            `bundle-${item.phase}`
+          ).catch((error) => {
+            progressFailure ??= error;
+          });
+        }
+      }).catch(portableTaskError);
+      if (progressFailure) throw progressFailure;
+      const bundle = await add2(packed.path, "mimiproject", "application/zip", "portable-project");
+      if (bundle.sha256 !== packed.sha256)
+        throw new EditorTaskError("SOURCE_CHANGED", "工程包发布校验失败");
+      await progress2(1, "complete");
+      succeeded = true;
+      return {
+        result: {
+          documentHash: manifest.documentHash,
+          bundle,
+          mediaCount: packed.manifest.media.length,
+          formatVersion: 1
+        },
+        artifacts
+      };
+    }
+    const ffmpegPath2 = context2.tools?.ffmpegPath ?? "ffmpeg", ffprobePath2 = context2.tools?.ffprobePath ?? "ffprobe";
+    const ffmpegVersion = (await runMediaProcess(ffmpegPath2, ["-hide_banner", "-version"], { signal: context2.signal })).stdout.toString();
+    const proxyContext = {
+      ffmpegPath: ffmpegPath2,
+      ffprobePath: ffprobePath2,
+      ffmpegVersion,
+      cacheDir: cache,
+      workDir: work,
+      signal: context2.signal
+    };
+    const videos = /* @__PURE__ */ new Map();
+    const video = async (assetId, requireGeometry, purpose = "export", onProgress) => {
+      const asset2 = selected3.document.assets.find((item) => item.id === assetId);
+      if (asset2?.kind !== "video")
+        throw new EditorTaskError("INVALID_REQUEST", "请仅选择视频素材准备兼容画面");
+      const input = original(assetId), proxy = await prepareEditorProxy(
+        input.path,
+        input.binding.sha256,
+        { ...proxyContext, onProgress },
+        purpose
+      );
+      if (requireGeometry && (asset2.width !== proxy.width || asset2.height !== proxy.height))
+        throw new EditorTaskError(
+          "SOURCE_GEOMETRY_MISMATCH",
+          `素材「${asset2.name}」的显示尺寸与旋转或像素比例不一致，请先更新素材显示尺寸`
+        );
+      videos.set(assetId, proxy);
+      return proxy;
+    };
+    if (request.action === "prepare-video") {
+      const sources = [], count = request.assetIds.length;
+      for (let index2 = 0; index2 < count; index2++) {
+        const assetId = request.assetIds[index2], proxy = await video(assetId, false, "preview", (fraction) => {
+          progress2((index2 + fraction) / count, "prepare-video").catch(() => {
+          });
+        }), { path: _path, ...recipe } = proxy;
+        const asset2 = await add2(proxy.path, "mp4", "video/mp4", "editor-video-source");
+        sources.push({ assetId, proxy: asset2, recipe });
+        await progress2((index2 + 1) / count, "prepare-video");
+      }
+      succeeded = true;
+      return {
+        result: { documentHash: request.documentHash, sequenceId: request.sequenceId, sources },
+        artifacts
+      };
+    }
+    const audioPlan = compileAudioPlan(selected3.document, manifest.sequenceId);
+    const fullRecipeHash = digest({
+      recipe: "editor-audio-v3-content",
+      plan: audioPlan,
+      sources: [...new Set(audioPlan.lanes.map((lane) => lane.assetId))].sort().map((assetId) => {
+        const binding = original(assetId).binding;
+        return { assetId, sha256: binding.sha256, bytes: binding.bytes };
+      }),
+      ffmpegVersion
+    });
+    const expected2 = request.preparedAudio, fullMixes = await directory(cache, ["mixes", fullRecipeHash]), fullMix = await optionalJson(fullMixes, ["receipt.json"]), preparation = request.range && (expected2?.range || !expected2 && !fullMix) ? editorRangeAudioPreparation(audioPlan, request.range) : {}, audioRange = preparation.range, recipeHash = audioRange ? digest({ recipe: "editor-audio-range-v1", fullRecipeHash, range: audioRange }) : fullRecipeHash, mixes = audioRange ? await directory(cache, ["mixes", recipeHash]) : fullMixes;
+    let mix2 = audioRange ? await optionalJson(mixes, ["receipt.json"]) : fullMix;
+    if (expected2 && (expected2.recipeHash !== recipeHash || expected2.documentHash !== manifest.documentHash || expected2.sequenceId !== manifest.sequenceId || !sameExportRange(expected2.range, audioRange)))
+      throw new EditorTaskError("MIX_MISMATCH", "声音处理配方或源素材已变化，请重新准备声音");
+    if (expected2 && !mix2)
+      throw new EditorTaskError("MIX_UNAVAILABLE", "已准备声音缓存已释放，请重新准备声音");
+    let reused = Boolean(mix2);
+    if (mix2) {
+      if (mix2.recipeHash !== recipeHash || mix2.sequenceId !== manifest.sequenceId || !sameExportRange(mix2.range, audioRange) || expected2 && expected2.assetId !== mix2.assetId)
+        throw new EditorTaskError("MIX_MISMATCH", "已准备声音回执不匹配");
+      const audioPath = await regular(mixes, ["audio.wav"]);
+      if (`asset-${await fileHash(audioPath, context2.signal)}` !== mix2.assetId || await fileHash(await regular(mixes, ["report.json"]), context2.signal) !== mix2.reportHash)
+        throw new EditorTaskError("CACHE_CHANGED", "已准备声音内容校验失败");
+    } else {
+      const rendered = await renderEditorAudio({
+        document: selected3.document,
+        sequenceId: manifest.sequenceId,
+        ...audioRange ? { range: audioRange } : {},
+        resolveAssetPath: async (id7) => original(id7).path,
+        ffmpegPath: ffmpegPath2,
+        ffprobePath: ffprobePath2,
+        workDir: work,
+        cacheDir: await directory(cache, ["pcm"]),
+        outputPath: join12(work, "mix.wav"),
+        signal: context2.signal,
+        onProgress: (item) => progress2(
+          request.action === "render" ? item.fraction * 0.25 : item.fraction * 0.9,
+          "prepare-audio"
+        )
+      });
+      const { path: _path, ...details2 } = rendered;
+      const reportBytes = Buffer.from(JSON.stringify(details2));
+      const assetId = `asset-${await fileHash(rendered.path, context2.signal)}`;
+      await rename4(rendered.path, join12(mixes, "audio.wav"));
+      await atomic(join12(mixes, "report.json"), reportBytes);
+      mix2 = {
+        documentHash: manifest.documentHash,
+        sequenceId: manifest.sequenceId,
+        recipeHash,
+        assetId,
+        sampleCount: rendered.sampleCount,
+        ...rendered.range ? { range: rendered.range } : {},
+        peak: rendered.peak,
+        samplesOverFullScale: rendered.samplesOverFullScale,
+        reportHash: bytesHash(reportBytes)
+      };
+      await atomic(join12(mixes, "receipt.json"), Buffer.from(JSON.stringify(mix2)));
+    }
+    const preparedAudio = {
+      documentHash: manifest.documentHash,
+      sequenceId: mix2.sequenceId,
+      recipeHash: mix2.recipeHash,
+      assetId: mix2.assetId,
+      ...mix2.range ? { range: mix2.range } : {}
+    };
+    const audio2 = await add2(
+      await regular(mixes, ["audio.wav"]),
+      "wav",
+      "audio/wav",
+      "editor-preview-audio"
+    );
+    if (request.action === "prepare-audio") {
+      const details2 = await add2(
+        await regular(mixes, ["report.json"]),
+        "json",
+        "application/json",
+        "editor-audio-report"
+      );
+      await progress2(1, "complete");
+      succeeded = true;
+      return {
+        result: {
+          preparedAudio,
+          audio: audio2,
+          report: details2,
+          sampleCount: mix2.sampleCount,
+          peak: mix2.peak,
+          samplesOverFullScale: mix2.samplesOverFullScale,
+          reused
+        },
+        artifacts
+      };
+    }
+    const audioMix = {
+      documentHash: manifest.documentHash,
+      sequenceId: manifest.sequenceId,
+      ...request.range ? { range: request.range } : {},
+      ...request.range ? await measureEditorExportAudioRange({
+        audioFile: await regular(mixes, ["audio.wav"]),
+        range: mix2.range ? { start: 0, duration: mix2.sampleCount * 5 } : request.range,
+        ffmpegPath: ffmpegPath2,
+        signal: context2.signal
+      }) : validateAudioMixReport(mix2)
+    };
+    mixWarning = audioMixWarning(audioMix);
+    if (bytesHash(Buffer.from(context2.runtimeSource)) !== context2.runtimeSha)
+      throw new EditorTaskError("RUNTIME_CHANGED", "安装的渲染运行代码校验失败");
+    const mediaFiles = /* @__PURE__ */ new Map();
+    const visualAssets = request.range ? editorRangeVisualAssets(selected3.document, manifest.sequenceId, request.range) : void 0, pictureAssets = selected3.document.assets.filter((asset2) => !visualAssets || visualAssets.has(asset2.id));
+    for (let index2 = 0; index2 < pictureAssets.length; index2++) {
+      const asset2 = pictureAssets[index2];
+      if (asset2.kind === "video") {
+        const proxy = await video(asset2.id, true);
+        mediaFiles.set(asset2.id, { path: proxy.path, mimeType: proxy.mimeType });
+      } else if (asset2.kind === "image") {
+        const input = original(asset2.id), magic = await readSourcePrefix(input.path);
+        const mimeType2 = magic.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? "image/png" : magic[0] === 255 && magic[1] === 216 ? "image/jpeg" : magic.subarray(0, 3).toString() === "GIF" ? "image/gif" : magic.subarray(8, 12).toString() === "WEBP" ? "image/webp" : magic.subarray(4, 12).toString().includes("ftypavif") ? "image/avif" : void 0;
+        if (!mimeType2)
+          throw new EditorTaskError(
+            "UNSUPPORTED_IMAGE",
+            "此图片格式尚不能用于共享浏览器合成，请转换为 PNG 或 JPEG"
+          );
+        mediaFiles.set(asset2.id, { path: input.path, mimeType: mimeType2 });
+      }
+      await progress2(
+        0.25 + (index2 + 1) / Math.max(1, pictureAssets.length) * 0.15,
+        "prepare-video"
+      );
+    }
+    const outputPath2 = join12(work, `video.${request.profile.container}`);
+    const output = await exportEditorSequence({
+      document: selected3.document,
+      sequenceId: manifest.sequenceId,
+      profile: request.profile,
+      ...request.range ? { range: request.range } : {},
+      mediaFiles,
+      runtimeSource: context2.runtimeSource,
+      workDir: work,
+      audioFile: await regular(mixes, ["audio.wav"]),
+      ...mix2.range ? { audioRange: mix2.range } : {},
+      outputPath: outputPath2,
+      ffmpegPath: ffmpegPath2,
+      ffprobePath: ffprobePath2,
+      signal: context2.signal,
+      browserPath: context2.tools?.browserPath,
+      onProgress: (item) => progress2(
+        item.phase === "verify" ? 0.98 : 0.4 + item.completedFrames / Math.max(1, item.totalFrames) * 0.55,
+        item.phase === "verify" ? "verify-video" : "render-video"
+      )
+    });
+    const mimeType = request.profile.container === "webm" ? "video/webm" : request.profile.container === "mov" ? "video/quicktime" : "video/mp4";
+    const exported = await add2(output.path, request.profile.container, mimeType, "editor-video");
+    const details = await report2({
+      documentHash: manifest.documentHash,
+      sequenceId: manifest.sequenceId,
+      ...request.range ? { range: request.range } : {},
+      preparedAudio,
+      audioMix,
+      preparation: {
+        pictureAssetCount: pictureAssets.filter((asset2) => ["video", "image"].includes(asset2.kind)).length,
+        audio: mix2.range ? "range" : "full",
+        ...preparation.fallback ? { audioFallback: preparation.fallback } : {}
+      },
+      runtimeSha: context2.runtimeSha,
+      profile: request.profile,
+      frameCount: output.frameCount,
+      durationSeconds: output.durationSeconds,
+      proxies: [...videos].map(([assetId, proxy]) => {
+        const { path: _path, ...value } = proxy;
+        return { assetId, ...value };
+      })
+    });
+    await progress2(1, "complete");
+    succeeded = true;
+    return {
+      result: {
+        video: exported,
+        audio: audio2,
+        preparedAudio,
+        audioMix,
+        reusedAudio: reused,
+        report: details,
+        frameCount: output.frameCount,
+        durationSeconds: output.durationSeconds,
+        verified: true,
+        ...request.range ? { range: request.range } : {}
+      },
+      artifacts
+    };
+  } finally {
+    await rm9(work, { recursive: true, force: true });
+    if (!succeeded) await rm9(join12(root, "outputs"), { recursive: true, force: true });
+  }
+}
+
+// ../../shared/model-observability.mjs
+import { randomUUID as randomUUID8 } from "node:crypto";
+import { writeSync as writeSync2 } from "node:fs";
+var MAX_FRAME_BYTES = 256 * 1024;
+var SECRET_KEY = /^(?:authorization|proxyAuthorization|apiKey|accessToken|refreshToken|password|secret|clientSecret|cookie|setCookie|credentials)$/i;
+var OMITTED = "[binary content omitted]";
+function safeBody(value) {
+  let truncated = false, nodes = 0, remaining = 96 * 1024;
+  const seen = /* @__PURE__ */ new WeakSet();
+  const visit = (item, depth = 0) => {
+    if (++nodes > 2048 || depth > 12) {
+      truncated = true;
+      return "[truncated]";
+    }
+    if (item === null || typeof item === "boolean") return item;
+    if (typeof item === "number") return Number.isFinite(item) ? item : null;
+    if (typeof item === "string") {
+      if (/^data:[^,]*;base64,/i.test(item)) return OMITTED;
+      let text7 = item.replace(/\bBearer\s+[^\s"']+/gi, "Bearer [redacted]").replace(/\b(?:sk|sk-proj|sk-ant)-[A-Za-z0-9_-]{8,}/g, "[redacted]");
+      const maximum = Math.max(0, Math.min(16 * 1024, remaining));
+      if (Buffer.byteLength(JSON.stringify(text7)) > maximum) {
+        let low = 0, high = text7.length;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2);
+          if (Buffer.byteLength(JSON.stringify(text7.slice(0, middle))) <= Math.max(0, maximum - 16))
+            low = middle;
+          else high = middle - 1;
+        }
+        text7 = text7.slice(0, low) + " [truncated]";
+        truncated = true;
+      }
+      remaining = Math.max(0, remaining - Buffer.byteLength(JSON.stringify(text7)));
+      return text7;
+    }
+    if (typeof item !== "object") return void 0;
+    if (ArrayBuffer.isView(item) || item instanceof ArrayBuffer) return OMITTED;
+    if (seen.has(item)) {
+      truncated = true;
+      return "[circular value omitted]";
+    }
+    seen.add(item);
+    if (Array.isArray(item)) {
+      if (item.length > 256) truncated = true;
+      return item.slice(0, 256).map((entry) => visit(entry, depth + 1));
+    }
+    const entries = Object.entries(item);
+    if (entries.length > 64) truncated = true;
+    const result = /* @__PURE__ */ Object.create(null);
+    for (const [key, entry] of entries.slice(0, 64)) {
+      const keyBytes = Buffer.byteLength(JSON.stringify(key));
+      if (key.length > 128 || keyBytes > remaining) {
+        truncated = true;
+        continue;
+      }
+      remaining -= keyBytes;
+      result[key] = SECRET_KEY.test(key.replace(/[-_]/g, "")) ? "[redacted]" : /^(?:base64|audioBytes|imageBytes|fileBytes|binary)$/i.test(key) ? OMITTED : visit(entry, depth + 1);
+    }
+    return result;
+  };
+  return { value: visit(value), truncated };
+}
+function emit(frame2) {
+  try {
+    const message = Buffer.from(JSON.stringify(frame2));
+    if (message.length > MAX_FRAME_BYTES) return false;
+    const atomic2 = (line) => writeSync2(3, line) === line.length;
+    if (message.length + 1 <= 512) return atomic2(Buffer.concat([message, Buffer.from("\n")]));
+    const messageId = randomUUID8();
+    for (let offset = 0, part2 = 0; offset < message.length; offset += 192, part2++) {
+      const line = Buffer.from(
+        JSON.stringify({
+          version: 1,
+          type: "model_trace_chunk",
+          messageId,
+          part: part2,
+          data: message.subarray(offset, offset + 192).toString("base64"),
+          final: offset + 192 >= message.length
+        }) + "\n"
+      );
+      if (line.length > 512 || !atomic2(line)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function observeModelCall(request, operation, options2 = {}) {
+  if (process.env.CODESHELL_MODEL_TRACE_FD !== "3") return operation();
+  const callId = randomUUID8();
+  let admitted = false;
+  try {
+    const input = safeBody({
+      systemPrompt: request.input.systemPrompt ?? "",
+      messages: request.input.messages ?? [],
+      tools: request.input.tools ?? [],
+      parameters: request.input.parameters ?? {}
+    });
+    admitted = emit({
+      version: 1,
+      type: "model_trace",
+      phase: "start",
+      callId,
+      provider: request.provider.slice(0, 200),
+      model: request.model.slice(0, 200),
+      purpose: request.purpose.slice(0, 200),
+      stream: request.stream === true,
+      input: input.value,
+      ...input.truncated ? { inputState: "truncated" } : {}
+    });
+  } catch {
+  }
+  try {
+    const result = await operation();
+    if (admitted) {
+      try {
+        const output = safeBody(options2.output?.(result) ?? {});
+        emit({
+          version: 1,
+          type: "model_trace",
+          phase: "finish",
+          callId,
+          status: "completed",
+          output: output.value,
+          ...output.truncated ? { outputState: "truncated" } : {},
+          ...options2.usage ? { usage: safeBody(options2.usage(result)).value } : {}
+        });
+      } catch {
+        emit({ version: 1, type: "model_trace", phase: "finish", callId, status: "completed" });
+      }
+    }
+    return result;
+  } catch (error) {
+    if (admitted) {
+      const cancelled3 = options2.signal?.aborted || error instanceof Error && error.name === "AbortError";
+      emit({
+        version: 1,
+        type: "model_trace",
+        phase: "finish",
+        callId,
+        status: cancelled3 ? "cancelled" : "failed",
+        error: cancelled3 ? "Model call cancelled" : "Model call failed"
+      });
+    }
+    throw error;
+  }
+}
+
+// native/media/media-processors.ts
+import { createHash as createHash6, randomUUID as randomUUID9 } from "node:crypto";
+import {
+  copyFile as copyFile4,
+  link as link4,
+  mkdir as mkdir6,
+  readFile as readFile3,
+  realpath as realpath3,
+  rename as rename5,
+  stat as stat11,
+  writeFile as writeFile2
+} from "node:fs/promises";
+import { homedir as homedir3 } from "node:os";
+import { basename as basename2, isAbsolute as isAbsolute7, join as join13, resolve } from "node:path";
+var MEDIA_PROCESSOR_CACHE_VERSION = 4;
+function object8(value, label3) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(`${label3} must be an object`);
+  return value;
+}
+function bounded(value, min, max, label3) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max)
+    throw new Error(`Invalid ${label3}`);
+  return value;
+}
+function integer6(value, min, max, label3) {
+  const result = bounded(value, min, max, label3);
+  if (!Number.isSafeInteger(result)) throw new Error(`Invalid integer ${label3}`);
+  return result;
+}
+function id6(value) {
+  if (typeof value !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(value))
+    throw new Error("Invalid asset ID");
+  return value;
+}
+function ratio3(value) {
+  const parts = String(value ?? "").split("/").map(Number);
+  const result = parts.length === 2 ? parts[0] / parts[1] : parts[0];
+  return result && Number.isFinite(result) && result > 0 ? result : null;
+}
+function finiteDuration(value) {
+  const seconds3 = Number(value);
+  return Number.isFinite(seconds3) && seconds3 > 0 ? seconds3 : null;
+}
+function hash3(value) {
+  return createHash6("sha256").update(JSON.stringify(value)).digest("hex");
+}
+function check(context2) {
+  if (context2.signal.aborted) throw mediaAbortError();
+}
+async function writeJson(path, value) {
+  const temporary = `${path}.${randomUUID9()}.tmp`;
+  await writeFile2(temporary, JSON.stringify(value), { flag: "wx" });
+  await rename5(temporary, path);
+}
+async function regularFile(path) {
+  const canonical = await realpath3(path);
+  if (!(await stat11(canonical)).isFile()) throw new Error("Media source must be a regular file");
+  return canonical;
+}
+var sourceOptions = [
+  "-protocol_whitelist",
+  "file,pipe",
+  "-format_whitelist",
+  "mov,matroska,webm,avi,mp3,wav,aiff,flac,ogg,aac,png_pipe,jpeg_pipe,webp_pipe,bmp_pipe,tiff_pipe,gif,j2k_pipe"
+];
+async function executablePath(command) {
+  if (isAbsolute7(command) || command.includes("/") || command.includes("\\"))
+    return regularFile(resolve(command));
+  const found = await findExecutable(command);
+  if (!found) throw new Error(`本机语音转写未就绪：未找到 ${command} 命令`);
+  return found;
+}
+var missingModel = (path) => new Error(`本机语音转写未就绪：缺少 ${basename2(path, ".pt")} 模型 ${redactHomePath(path)}`);
+async function inspectMediaFile(path, context2, options2 = {}) {
+  path = await regularFile(path);
+  const probe = options2.ffprobePath ?? "ffprobe";
+  const result = await runMediaProcess(
+    probe,
+    ["-v", "error", "-show_format", "-show_streams", "-of", "json", ...sourceOptions, path],
+    { signal: context2.signal }
+  );
+  const raw = JSON.parse(result.stdout.toString("utf8"));
+  const video = raw.streams?.find(
+    (stream) => stream.codec_type === "video" && !stream.disposition?.attached_pic
+  );
+  const audio2 = raw.streams?.find((stream) => stream.codec_type === "audio");
+  if (!video && !audio2) throw new Error("No supported video, image or audio stream found");
+  let durationSeconds = finiteDuration(raw.format?.duration) ?? finiteDuration(video?.duration) ?? finiteDuration(audio2?.duration);
+  const image = video && !audio2 && !durationSeconds && /^(png|mjpeg|webp|bmp|tiff|gif|jpeg2000)$/.test(video.codec_name);
+  if (!durationSeconds && !image) {
+    let pending = "", lastEnd = 0;
+    const streams = /* @__PURE__ */ new Map();
+    const consume = (chunk) => {
+      const lines = (pending + chunk.toString("utf8")).split(/\r?\n/);
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        const fields2 = Object.fromEntries(line.split("|").map((part2) => part2.split("=")));
+        const time2 = Number(fields2.pts_time ?? fields2.dts_time), stream = Number(fields2.stream_index);
+        if (!Number.isFinite(time2) || !Number.isFinite(stream)) continue;
+        const previous = streams.get(stream);
+        const delta = previous && time2 > previous.time ? time2 - previous.time : previous?.delta ?? 0;
+        streams.set(stream, { time: time2, delta });
+        const duration2 = finiteDuration(fields2.duration_time) ?? delta;
+        lastEnd = Math.max(lastEnd, time2 + duration2);
+      }
+    };
+    await context2.reportProgress({ stage: "inspect", message: "Measuring media packet duration" });
+    await runMediaProcess(
+      probe,
+      [
+        "-v",
+        "error",
+        "-show_entries",
+        "packet=stream_index,pts_time,dts_time,duration_time",
+        "-of",
+        "compact=p=0:nk=0",
+        ...sourceOptions,
+        path
+      ],
+      { signal: context2.signal, onStdout: consume }
+    );
+    consume(Buffer.from("\n"));
+    const origin = Math.max(0, Number(raw.format?.start_time) || 0);
+    durationSeconds = finiteDuration(lastEnd - origin);
+    if (!durationSeconds) throw new Error("Media duration could not be measured from its packets");
+  }
+  const inspection = {
+    kind: image ? "image" : video ? "video" : "audio",
+    durationSeconds,
+    bytes: (await stat11(path)).size,
+    format: String(raw.format?.format_name ?? "unknown")
+  };
+  if (video) {
+    const rotation = Number(
+      video.side_data_list?.find((item) => Number.isFinite(item.rotation))?.rotation ?? video.tags?.rotate ?? 0
+    );
+    const rotated = Math.abs(Math.round(rotation / 90)) % 2 === 1;
+    inspection.video = {
+      codec: String(video.codec_name),
+      width: Number(video.width),
+      height: Number(video.height),
+      displayWidth: Number(rotated ? video.height : video.width),
+      displayHeight: Number(rotated ? video.width : video.height),
+      rotation,
+      pixelFormat: String(video.pix_fmt ?? "unknown"),
+      frameRate: ratio3(video.avg_frame_rate) ?? ratio3(video.r_frame_rate),
+      variableFrameRate: image ? false : null,
+      sampledSeconds: 0
+    };
+    if (!image) {
+      const frames2 = await runMediaProcess(
+        probe,
+        [
+          "-v",
+          "error",
+          "-select_streams",
+          "v:0",
+          "-read_intervals",
+          "%+10",
+          "-show_entries",
+          "frame=best_effort_timestamp_time",
+          "-of",
+          "json",
+          ...sourceOptions,
+          path
+        ],
+        { signal: context2.signal }
+      );
+      const times = (JSON.parse(frames2.stdout.toString("utf8")).frames ?? []).map((frame2) => Number(frame2.best_effort_timestamp_time)).filter(Number.isFinite);
+      const deltas = times.slice(1).map((time2, index2) => time2 - times[index2]).filter((delta) => delta > 0);
+      inspection.video.variableFrameRate = deltas.length > 1 ? Math.max(...deltas) - Math.min(...deltas) > 2e-3 : null;
+      inspection.video.sampledSeconds = times.length > 1 ? times.at(-1) - times[0] : 0;
+    }
+  }
+  if (audio2)
+    inspection.audio = {
+      codec: String(audio2.codec_name),
+      channels: Number(audio2.channels),
+      sampleRate: Number(audio2.sample_rate)
+    };
+  return inspection;
+}
+function captionsToSrt(captions, fps = 30) {
+  const timestamp = (frame2) => {
+    const ms = Math.round(frame2 / fps * 1e3);
+    return `${String(Math.floor(ms / 36e5)).padStart(2, "0")}:${String(Math.floor(ms / 6e4) % 60).padStart(2, "0")}:${String(Math.floor(ms / 1e3) % 60).padStart(2, "0")},${String(ms % 1e3).padStart(3, "0")}`;
+  };
+  return [...captions].sort((a, b) => a.startFrame - b.startFrame).map(
+    (caption, index2) => `${index2 + 1}
+${timestamp(caption.startFrame)} --> ${timestamp(caption.endFrame)}
+${caption.text.replace(/\r\n?/g, "\n")}
+`
+  ).join("\n");
+}
+function renderProject(value) {
+  const project = object8(value, "project");
+  if (project.schemaVersion !== 1 || project.fps !== 30)
+    throw new Error("Only version 1, 30 fps projects are supported");
+  if (project.timelineMode !== void 0 && project.timelineMode !== "magnetic" && project.timelineMode !== "free")
+    throw new Error("Timeline mode must be magnetic or free");
+  if (project.captionStyle !== void 0 && !["classic", "bold", "minimal"].includes(project.captionStyle))
+    throw new Error("Caption style must be classic, bold or minimal");
+  integer6(project.width, 16, 8192, "width");
+  integer6(project.height, 16, 8192, "height");
+  if (project.width % 2 || project.height % 2)
+    throw new Error("MP4 canvas dimensions must be even");
+  integer6(project.revision, 0, Number.MAX_SAFE_INTEGER, "revision");
+  if (!Array.isArray(project.assets) || !Array.isArray(project.clips) || !project.clips.length || project.clips.length > 2e3)
+    throw new Error("Invalid render assets or clips");
+  const assets = new Set(project.assets.map((asset2) => id6(asset2.id)));
+  if (assets.size !== project.assets.length) throw new Error("Duplicate render asset IDs");
+  let frames2 = 0;
+  const validateClip = (clip3) => {
+    if (!assets.has(id6(clip3.assetId))) throw new Error("A render clip references missing media");
+    integer6(clip3.inFrame, 0, 30 * 86400, "clip inFrame");
+    integer6(clip3.outFrame, clip3.inFrame + 1, 30 * 86400, "clip outFrame");
+    bounded(clip3.volume, 0, 2, "clip volume");
+    if (clip3.crop || clip3.zoom || clip3.speed)
+      throw new Error("This processor does not yet render crop, zoom or speed operations");
+  };
+  for (const clip3 of project.clips) {
+    validateClip(clip3);
+    if (clip3.startFrame !== void 0)
+      integer6(clip3.startFrame, 0, 30 * 86400 - 1, "video startFrame");
+    const startFrame = project.timelineMode === "free" ? clip3.startFrame ?? frames2 : frames2;
+    if (startFrame < frames2) throw new Error("Video clips must be ordered without overlap");
+    frames2 = startFrame + clip3.outFrame - clip3.inFrame;
+  }
+  integer6(frames2, 1, 30 * 86400, "timeline duration");
+  if (!Array.isArray(project.captions) || project.captions.length > 1e4)
+    throw new Error("Invalid captions");
+  for (const caption of project.captions) {
+    integer6(caption.startFrame, 0, frames2 - 1, "caption start");
+    integer6(caption.endFrame, caption.startFrame + 1, frames2, "caption end");
+    if (typeof caption.text !== "string" || !caption.text.trim() || caption.text.length > 4e3)
+      throw new Error("Invalid caption text");
+  }
+  if (project.audioClips !== void 0) {
+    if (!Array.isArray(project.audioClips) || project.audioClips.length > 64)
+      throw new Error("At most 64 independent audio clips are supported");
+    for (const clip3 of project.audioClips) {
+      validateClip(clip3);
+      integer6(clip3.startFrame, 0, frames2 - 1, "audio startFrame");
+    }
+  }
+  return project;
+}
+function createMediaJobProcessors(options2) {
+  const ffmpeg = options2.ffmpegPath ?? "ffmpeg";
+  let toolVersions;
+  const source3 = async (input, context2) => regularFile(await options2.resolveAssetPath(context2.scope, id6(input.assetId)));
+  const publish2 = async (path, mimeType, context2) => options2.publishArtifact ? { asset: await options2.publishArtifact(context2.scope, path, mimeType), mimeType } : { path, mimeType };
+  const encode = (args, context2, duration2, progress2) => runMediaProcess(
+    ffmpeg,
+    ["-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-nostats", ...args],
+    {
+      signal: context2.signal,
+      cwd: context2.workDir,
+      durationSeconds: duration2,
+      onProgress: (update2) => context2.reportProgress({
+        fraction: progress2 && update2.fraction !== void 0 ? progress2(update2.fraction) : update2.fraction
+      })
+    }
+  );
+  const cachedArtifactsExist = async (value, context2) => {
+    if (!value || typeof value !== "object") return true;
+    const record6 = value;
+    if (typeof record6.path === "string" && typeof record6.mimeType === "string") {
+      return regularFile(record6.path).then(
+        () => true,
+        () => false
+      );
+    }
+    if (record6.asset && typeof record6.mimeType === "string") {
+      const assetId = record6.asset.id;
+      if (typeof assetId !== "string") return false;
+      return options2.resolveAssetPath(context2.scope, assetId).then(regularFile).then(
+        () => true,
+        () => false
+      );
+    }
+    for (const child of Object.values(record6))
+      if (!await cachedArtifactsExist(child, context2)) return false;
+    return true;
+  };
+  const materializeCached = async (value, context2) => {
+    if (!value || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      const items = [];
+      for (const item of value) items.push(await materializeCached(item, context2));
+      return items;
+    }
+    const record6 = value;
+    if (typeof record6.path === "string" && typeof record6.mimeType === "string") {
+      const cached = await regularFile(record6.path), directory2 = join13(context2.workDir, "cached");
+      await mkdir6(directory2, { recursive: true });
+      const target = join13(directory2, `${randomUUID9()}-${basename2(cached)}`);
+      await link4(cached, target).catch(() => copyFile4(cached, target));
+      return { ...record6, path: target };
+    }
+    const output = {};
+    for (const [key, child] of Object.entries(record6))
+      output[key] = await materializeCached(child, context2);
+    return output;
+  };
+  const withJob2 = (kind, work) => ({
+    recovery: "restart",
+    async run(input, context2) {
+      check(context2);
+      await Promise.all(
+        [context2.workDir, context2.outputDir, context2.cacheDir].map(
+          (path) => mkdir6(path, { recursive: true })
+        )
+      );
+      await context2.reportProgress({ fraction: 0, stage: kind });
+      toolVersions ??= Promise.all(
+        [ffmpeg, options2.ffprobePath ?? "ffprobe"].map(async (tool2) => {
+          const result2 = await runMediaProcess(tool2, ["-version"], {
+            signal: AbortSignal.timeout(5e3)
+          });
+          return result2.stdout.toString("utf8").split("\n")[0] ?? tool2;
+        })
+      ).catch((error) => {
+        toolVersions = void 0;
+        throw error;
+      });
+      let modelIdentity;
+      if (kind === "transcribe") {
+        const modelPath = options2.whisperModelPath ?? join13(homedir3(), ".cache", "whisper", "base.pt");
+        const info = await stat11(modelPath).catch(() => {
+          throw missingModel(modelPath);
+        });
+        const whisperExecutable = await executablePath(options2.whisperPath ?? "whisper");
+        const executableInfo = await stat11(whisperExecutable);
+        const shebang = (await readFile3(whisperExecutable, "utf8")).split("\n")[0] ?? "";
+        const python = /^#!(\/[^\r\n ]*python[\d.]*)\s*$/.exec(shebang)?.[1];
+        const version = python ? (await runMediaProcess(
+          python,
+          [
+            "-c",
+            "import importlib.metadata; print(importlib.metadata.version('openai-whisper'))"
+          ],
+          { signal: context2.signal }
+        )).stdout.toString("utf8").trim() : "wrapper";
+        modelIdentity = {
+          path: modelPath,
+          bytes: info.size,
+          modifiedAt: info.mtimeMs,
+          executable: whisperExecutable,
+          executableModifiedAt: executableInfo.mtimeMs,
+          version
+        };
+      }
+      const payload = object8(input, `${kind} input`);
+      if (kind === "render") {
+        const project = renderProject(payload.project), mappings = payload.sources ?? {};
+        for (const assetId of new Set(
+          [...project.clips, ...project.audioClips ?? []].map((clip3) => clip3.assetId)
+        ))
+          await regularFile(
+            await options2.resolveAssetPath(context2.scope, id6(mappings[assetId] ?? assetId))
+          );
+      } else await source3(payload, context2);
+      const cacheDirectory = options2.cacheRoot ? await options2.cacheRoot(context2.scope) : context2.cacheDir;
+      await mkdir6(cacheDirectory, { recursive: true });
+      const key = hash3({
+        processorVersion: MEDIA_PROCESSOR_CACHE_VERSION,
+        scope: context2.scope,
+        kind,
+        input,
+        tools: await toolVersions,
+        modelIdentity,
+        captions: Boolean(options2.renderCaptionPng)
+      });
+      const cachePath = join13(cacheDirectory, `${kind}-${key}.json`);
+      try {
+        const cached = JSON.parse(await readFile3(cachePath, "utf8"));
+        if (cached.version === 1 && await cachedArtifactsExist(cached.result, context2)) {
+          check(context2);
+          const result2 = await materializeCached(cached.result, context2);
+          check(context2);
+          await context2.reportProgress({ fraction: 1, stage: "cached" });
+          return result2;
+        }
+      } catch {
+      }
+      check(context2);
+      const result = await work(payload, context2);
+      check(context2);
+      await writeJson(cachePath, {
+        version: 1,
+        kind,
+        input,
+        result,
+        completedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      await context2.reportProgress({ fraction: 1, stage: "complete" });
+      return result;
+    }
+  });
+  const handlers = {};
+  handlers.inspect = withJob2("inspect", async (input, context2) => ({
+    assetId: id6(input.assetId),
+    inspection: await inspectMediaFile(await source3(input, context2), context2, options2)
+  }));
+  handlers.proxy = withJob2("proxy", async (input, context2) => {
+    const path = await source3(input, context2), info = await inspectMediaFile(path, context2, options2);
+    const width = integer6(input.maxWidth ?? 1280, 160, 3840, "proxy width");
+    const output = join13(
+      context2.outputDir,
+      `proxy-${randomUUID9()}.${info.kind === "audio" ? "m4a" : "mp4"}`
+    );
+    if (info.kind === "image") throw new Error("Still images do not require a playback proxy");
+    await encode(
+      [
+        ...sourceOptions,
+        "-i",
+        path,
+        ...info.video ? [
+          "-map",
+          "0:v:0",
+          "-vf",
+          `scale=w='trunc(min(${width},iw)/2)*2':h=-2,fps=30:eof_action=pass,tpad=stop_mode=clone:stop=-1,setsar=1`,
+          "-c:v",
+          "libx264",
+          "-preset",
+          "veryfast",
+          "-crf",
+          "24",
+          "-pix_fmt",
+          "yuv420p"
+        ] : ["-vn"],
+        "-map",
+        "0:a:0?",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-movflags",
+        "+faststart",
+        ...info.durationSeconds ? ["-t", String(info.durationSeconds)] : [],
+        output
+      ],
+      context2,
+      info.durationSeconds ?? void 0
+    );
+    return {
+      assetId: id6(input.assetId),
+      inspection: info,
+      proxy: await publish2(output, info.kind === "audio" ? "audio/mp4" : "video/mp4", context2)
+    };
+  });
+  handlers.thumbnail = withJob2("thumbnail", async (input, context2) => {
+    const path = await source3(input, context2), info = await inspectMediaFile(path, context2, options2);
+    const output = join13(context2.outputDir, `thumbnail-${randomUUID9()}.png`);
+    const seconds3 = bounded(
+      input.seconds ?? 0,
+      0,
+      Math.max(0, (info.durationSeconds ?? 86400) - 1e-3),
+      "thumbnail position"
+    );
+    const width = integer6(input.width ?? 480, 64, 1920, "thumbnail width");
+    if (info.kind === "audio")
+      await encode(
+        [
+          ...sourceOptions,
+          "-i",
+          path,
+          "-filter_complex",
+          `showwavespic=s=${width}x160:colors=0x8fd6ad`,
+          "-frames:v",
+          "1",
+          output
+        ],
+        context2,
+        info.durationSeconds ?? void 0
+      );
+    else
+      await encode(
+        [
+          "-ss",
+          String(seconds3),
+          ...sourceOptions,
+          "-i",
+          path,
+          "-vf",
+          `scale=${width}:-2`,
+          "-frames:v",
+          "1",
+          output
+        ],
+        context2
+      );
+    return {
+      assetId: id6(input.assetId),
+      seconds: seconds3,
+      thumbnail: await publish2(output, "image/png", context2)
+    };
+  });
+  handlers.waveform = withJob2("waveform", async (input, context2) => {
+    const path = await source3(input, context2), info = await inspectMediaFile(path, context2, options2);
+    if (!info.audio || !info.durationSeconds)
+      throw new Error("Waveforms require a finite audio stream");
+    const points = integer6(input.points ?? 1024, 32, 4096, "waveform points");
+    const perBucket = Math.max(1, Math.ceil(info.durationSeconds * 8e3 / points));
+    const peaks = [], rms = [];
+    let pending = Buffer.alloc(0), samples = 0, peak = 0, sum = 0;
+    const flush = () => {
+      if (samples) {
+        peaks.push(Number(peak.toFixed(5)));
+        rms.push(Number(Math.sqrt(sum / samples).toFixed(5)));
+      }
+      samples = 0;
+      peak = 0;
+      sum = 0;
+    };
+    await runMediaProcess(
+      ffmpeg,
+      [
+        "-hide_banner",
+        "-nostdin",
+        "-v",
+        "error",
+        "-progress",
+        "pipe:2",
+        ...sourceOptions,
+        "-i",
+        path,
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "8000",
+        "-f",
+        "f32le",
+        "pipe:1"
+      ],
+      {
+        signal: context2.signal,
+        durationSeconds: info.durationSeconds,
+        progressStream: "stderr",
+        onProgress: (update2) => context2.reportProgress(update2),
+        onStdout(chunk) {
+          const data = Buffer.concat([pending, chunk]), end = data.length - data.length % 4;
+          for (let offset = 0; offset < end; offset += 4) {
+            const value = data.readFloatLE(offset);
+            peak = Math.max(peak, Math.abs(value));
+            sum += value * value;
+            samples++;
+            if (samples >= perBucket) flush();
+          }
+          pending = data.subarray(end);
+        }
+      }
+    );
+    flush();
+    return {
+      assetId: id6(input.assetId),
+      durationSeconds: info.durationSeconds,
+      sampleRate: 8e3,
+      samplesPerPoint: perBucket,
+      peaks,
+      rms
+    };
+  });
+  handlers.silence = withJob2("silence", async (input, context2) => {
+    const path = await source3(input, context2), info = await inspectMediaFile(path, context2, options2);
+    if (!info.audio || !info.durationSeconds)
+      throw new Error("Silence detection requires a finite audio stream");
+    const thresholdDb = bounded(input.thresholdDb ?? -35, -90, -5, "silence threshold"), minSeconds = bounded(input.minSeconds ?? 0.45, 0.05, 30, "silence minimum duration");
+    let pending = "", start = null;
+    const intervals = [];
+    const consume = (chunk) => {
+      pending += chunk;
+      const lines = pending.split(/[\r\n]/);
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        const begin = /silence_start:\s*([\d.]+)/.exec(line), end = /silence_end:\s*([\d.]+)/.exec(line);
+        if (begin) start = Number(begin[1]);
+        if (end && start !== null) {
+          intervals.push({ start, end: Math.min(info.durationSeconds, Number(end[1])) });
+          start = null;
+        }
+      }
+    };
+    await runMediaProcess(
+      ffmpeg,
+      [
+        "-hide_banner",
+        "-nostdin",
+        "-progress",
+        "pipe:1",
+        ...sourceOptions,
+        "-i",
+        path,
+        "-vn",
+        "-af",
+        `silencedetect=noise=${thresholdDb}dB:d=${minSeconds}`,
+        "-f",
+        "null",
+        "-"
+      ],
+      {
+        signal: context2.signal,
+        durationSeconds: info.durationSeconds ?? void 0,
+        onProgress: (update2) => context2.reportProgress(update2),
+        onStderr: consume
+      }
+    );
+    consume("\n");
+    if (start !== null) intervals.push({ start, end: info.durationSeconds });
+    const complete = {
+      assetId: id6(input.assetId),
+      detector: "ffmpeg-silencedetect",
+      thresholdDb,
+      minSeconds,
+      intervals
+    };
+    const analysisPath = join13(context2.outputDir, `silence-${randomUUID9()}.json`);
+    await writeJson(analysisPath, complete);
+    return {
+      ...complete,
+      intervals: intervals.slice(0, 1024),
+      totalCount: intervals.length,
+      truncated: intervals.length > 1024,
+      analysis: { path: analysisPath, mimeType: "application/json" }
+    };
+  });
+  handlers.scenes = withJob2("scenes", async (input, context2) => {
+    const path = await source3(input, context2), info = await inspectMediaFile(path, context2, options2);
+    if (info.kind !== "video") throw new Error("Scene detection requires video");
+    const threshold = bounded(input.threshold ?? 0.3, 0.01, 0.99, "scene threshold");
+    const cuts = [];
+    let pending = "";
+    const consume = (chunk) => {
+      pending += chunk;
+      const lines = pending.split(/[\r\n]/);
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        const match = /pts_time:([\d.]+)/.exec(line);
+        if (match) cuts.push(Number(match[1]));
+      }
+    };
+    await runMediaProcess(
+      ffmpeg,
+      [
+        "-hide_banner",
+        "-nostdin",
+        "-progress",
+        "pipe:1",
+        ...sourceOptions,
+        "-i",
+        path,
+        "-an",
+        "-vf",
+        `select='gt(scene,${threshold})',showinfo`,
+        "-fps_mode",
+        "vfr",
+        "-f",
+        "null",
+        "-"
+      ],
+      {
+        signal: context2.signal,
+        durationSeconds: info.durationSeconds ?? void 0,
+        onProgress: (update2) => context2.reportProgress(update2),
+        onStderr: consume
+      }
+    );
+    consume("\n");
+    const complete = {
+      assetId: id6(input.assetId),
+      detector: "ffmpeg-scene-change",
+      threshold,
+      cuts,
+      durationSeconds: info.durationSeconds
+    };
+    const analysisPath = join13(context2.outputDir, `scenes-${randomUUID9()}.json`);
+    await writeJson(analysisPath, complete);
+    return {
+      ...complete,
+      cuts: cuts.slice(0, 1024),
+      totalCount: cuts.length,
+      truncated: cuts.length > 1024,
+      analysis: { path: analysisPath, mimeType: "application/json" }
+    };
+  });
+  handlers.transcribe = withJob2("transcribe", async (input, context2) => {
+    const path = await source3(input, context2), info = await inspectMediaFile(path, context2, options2);
+    if (!info.audio || !info.durationSeconds)
+      throw new Error("Transcription requires a finite audio stream");
+    const language = input.language === void 0 || input.language === "auto" ? void 0 : String(input.language);
+    if (language && !/^[a-z]{2,3}$/.test(language))
+      throw new Error("Invalid transcription language");
+    const configuredModel = options2.whisperModelPath ?? join13(homedir3(), ".cache", "whisper", "base.pt");
+    const modelPath = await regularFile(configuredModel).catch(() => {
+      throw missingModel(configuredModel);
+    });
+    const audioPath = join13(context2.workDir, "transcribe-source.wav");
+    await encode(
+      [
+        ...sourceOptions,
+        "-i",
+        path,
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "pcm_s16le",
+        audioPath
+      ],
+      context2,
+      info.durationSeconds,
+      (fraction) => fraction * 0.1
+    );
+    await context2.reportProgress({
+      fraction: 0.1,
+      stage: "transcribing",
+      message: `Local Whisper ${basename2(modelPath)}`
+    });
+    const raw = await observeModelCall(
+      {
+        provider: "local-whisper",
+        model: basename2(modelPath),
+        purpose: "transcribe",
+        input: {
+          parameters: {
+            assetId: id6(input.assetId),
+            language: language ?? "auto",
+            device: "cpu",
+            fp16: false,
+            wordTimestamps: true,
+            threads: 4,
+            audio: { durationSeconds: info.durationSeconds, sampleRate: 16e3, channels: 1 },
+            capture: { recording: "logical-input", omitted: "binary-audio-and-private-paths" }
+          }
+        }
+      },
+      async () => {
+        await runMediaProcess(
+          options2.whisperPath ?? "whisper",
+          [
+            audioPath,
+            "--model",
+            modelPath,
+            "--device",
+            "cpu",
+            "--fp16",
+            "False",
+            "--word_timestamps",
+            "True",
+            "--output_format",
+            "json",
+            "--output_dir",
+            context2.outputDir,
+            "--threads",
+            "4",
+            "--verbose",
+            "False",
+            ...language ? ["--language", language] : []
+          ],
+          { signal: context2.signal, cwd: context2.workDir }
+        );
+        const raw2 = JSON.parse(
+          await readFile3(join13(context2.outputDir, "transcribe-source.json"), "utf8")
+        );
+        if (!Array.isArray(raw2.segments))
+          throw new Error("Whisper did not produce a timestamped transcript");
+        return raw2;
+      },
+      {
+        signal: context2.signal,
+        output: (value) => ({
+          text: String(value.text ?? ""),
+          data: { language: value.language, segments: value.segments }
+        })
+      }
+    );
+    const segments = raw.segments.map((segment) => ({
+      start: bounded(segment.start, 0, info.durationSeconds + 1, "transcript start"),
+      end: bounded(segment.end, segment.start, info.durationSeconds + 1, "transcript end"),
+      text: String(segment.text ?? ""),
+      words: Array.isArray(segment.words) ? segment.words.map((word) => ({
+        start: Number(word.start),
+        end: Number(word.end),
+        text: String(word.word),
+        probability: Number(word.probability)
+      })) : []
+    }));
+    const output = join13(context2.outputDir, "transcript.srt");
+    await writeFile2(
+      output,
+      captionsToSrt(
+        segments.filter((segment) => segment.end > segment.start && segment.text.trim()).map((segment, index2) => ({
+          id: String(index2),
+          startFrame: Math.round(segment.start * 30),
+          endFrame: Math.round(segment.end * 30),
+          text: segment.text
+        }))
+      )
+    );
+    const transcriptPath = join13(context2.outputDir, "transcript.json");
+    const languageDetected = String(raw.language ?? language ?? "unknown");
+    await writeJson(transcriptPath, {
+      version: 1,
+      assetId: id6(input.assetId),
+      engine: "local-whisper",
+      model: basename2(modelPath),
+      language: languageDetected,
+      durationSeconds: info.durationSeconds,
+      text: String(raw.text ?? ""),
+      segments
+    });
+    return {
+      assetId: id6(input.assetId),
+      engine: "local-whisper",
+      model: basename2(modelPath),
+      language: languageDetected,
+      durationSeconds: info.durationSeconds,
+      segmentCount: segments.length,
+      wordCount: segments.reduce((total, segment) => total + segment.words.length, 0),
+      transcript: { path: transcriptPath, mimeType: "application/json" },
+      subtitles: (await stat11(output)).size ? await publish2(output, "application/x-subrip", context2) : null
+    };
+  });
+  handlers.render = withJob2("render", async (input, context2) => {
+    const project = renderProject(input.project);
+    const mappings = input.sources === void 0 ? {} : object8(input.sources, "source mappings");
+    const sources = /* @__PURE__ */ new Map();
+    const usedIds = new Set(
+      [...project.clips, ...project.audioClips ?? []].map((clip3) => clip3.assetId)
+    );
+    for (const assetId of usedIds) {
+      const path = await regularFile(
+        await options2.resolveAssetPath(context2.scope, id6(mappings[assetId] ?? assetId))
+      );
+      sources.set(assetId, { path, inspection: await inspectMediaFile(path, context2, options2) });
+    }
+    const frames2 = timelineDuration(project), duration2 = frames2 / 30;
+    const subtitleMode = input.subtitleMode ?? "burn";
+    if (!["burn", "soft", "none"].includes(subtitleMode)) throw new Error("Invalid subtitle mode");
+    if (project.captions.length && subtitleMode === "burn" && !options2.renderCaptionPng)
+      throw new Error("Burned captions require the Host caption PNG renderer");
+    const paths = [];
+    const segments = [];
+    let cursor = 0;
+    for (const clip3 of timelineClips(project)) {
+      if (clip3.startFrame > cursor) segments.push({ frames: clip3.startFrame - cursor });
+      segments.push({ frames: clip3.endFrame - clip3.startFrame, clip: clip3 });
+      cursor = clip3.endFrame;
+    }
+    let finishedFrames = 0;
+    for (const [index2, segment] of segments.entries()) {
+      check(context2);
+      const clip3 = segment.clip, media3 = clip3 ? sources.get(clip3.assetId) : void 0, seconds3 = segment.frames / 30;
+      if (clip3 && media3 && media3.inspection.kind !== "image" && (!media3.inspection.durationSeconds || clip3.outFrame / 30 > media3.inspection.durationSeconds + 1 / 30))
+        throw new Error("Clip range exceeds its source media duration");
+      const output2 = join13(context2.workDir, `segment-${index2}.mkv`);
+      const args2 = [];
+      if (clip3 && media3) {
+        if (media3.inspection.kind === "image")
+          args2.push("-loop", "1", "-framerate", "30", ...sourceOptions, "-i", media3.path);
+        else args2.push("-ss", String(clip3.inFrame / 30), ...sourceOptions, "-i", media3.path);
+      }
+      if (!media3?.inspection.video)
+        args2.push(
+          "-f",
+          "lavfi",
+          "-i",
+          `color=c=${media3 ? "0x0a0e10" : "black"}:s=${project.width}x${project.height}:r=30`
+        );
+      if (!media3?.inspection.audio) args2.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
+      const videoInput = !media3 || media3.inspection.video ? 0 : 1, audioInput = media3?.inspection.audio ? 0 : media3 && !media3.inspection.video ? 2 : 1;
+      const filter = `[${videoInput}:v]scale=${project.width}:${project.height}:force_original_aspect_ratio=decrease,pad=${project.width}:${project.height}:(ow-iw)/2:(oh-ih)/2:color=0x0a0e10,setsar=1,fps=30:eof_action=pass,tpad=stop_mode=clone:stop=-1,setpts=PTS-STARTPTS[v];[${audioInput}:a]aresample=48000,volume=${clip3?.volume ?? 1},apad,atrim=duration=${seconds3},asetpts=PTS-STARTPTS[a]`;
+      args2.push(
+        "-filter_complex",
+        filter,
+        "-map",
+        "[v]",
+        "-map",
+        "[a]",
+        "-t",
+        String(seconds3),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "pcm_s16le",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        output2
+      );
+      const base = finishedFrames;
+      await encode(
+        args2,
+        context2,
+        seconds3,
+        (fraction) => (base + fraction * segment.frames) / frames2 * 0.7
+      );
+      finishedFrames += segment.frames;
+      paths.push(output2);
+    }
+    const listPath = join13(context2.workDir, "segments.txt");
+    await writeFile2(
+      listPath,
+      paths.map((path) => `file '${path.replace(/'/g, "'\\''")}'`).join("\n")
+    );
+    const joined = join13(context2.workDir, "joined.mkv");
+    await encode(
+      ["-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", joined],
+      context2,
+      duration2,
+      (fraction) => 0.7 + fraction * 0.05
+    );
+    const prefix = `render-r${project.revision}-${randomUUID9()}`;
+    const output = join13(context2.outputDir, `${prefix}.mp4`), srt = join13(context2.outputDir, `${prefix}.srt`);
+    await writeFile2(srt, captionsToSrt(project.captions));
+    const args = ["-i", joined], filters = [];
+    let videoLabel = "0:v", audioLabel = "0:a", inputIndex = 1;
+    if (project.captions.length && subtitleMode === "burn") {
+      const boundaries = [
+        .../* @__PURE__ */ new Set([
+          0,
+          frames2,
+          ...project.captions.flatMap((caption) => [caption.startFrame, caption.endFrame])
+        ])
+      ].sort((a, b) => a - b);
+      const imageCache = /* @__PURE__ */ new Map();
+      const captionSequence = ["ffconcat version 1.0"];
+      let lastImage = "";
+      for (let index2 = 0; index2 < boundaries.length - 1; index2++) {
+        const start = boundaries[index2], end = boundaries[index2 + 1];
+        const texts = project.captions.filter((caption) => caption.startFrame <= start && caption.endFrame > start).map((caption) => caption.text);
+        check(context2);
+        const imageKey = hash3(texts);
+        let overlay = imageCache.get(imageKey);
+        if (!overlay) {
+          overlay = await regularFile(
+            await options2.renderCaptionPng(
+              {
+                width: project.width,
+                height: project.height,
+                texts,
+                fontSize: Math.round(Math.min(project.width * 0.035, project.height * 0.05)),
+                style: project.captionStyle ?? "classic"
+              },
+              context2
+            )
+          );
+          imageCache.set(imageKey, overlay);
+        }
+        captionSequence.push(
+          `file '${overlay.replace(/'/g, "'\\''")}'`,
+          "option framerate 30",
+          `duration ${((end - start) / 30).toFixed(10)}`
+        );
+        lastImage = overlay;
+      }
+      captionSequence.push(`file '${lastImage.replace(/'/g, "'\\''")}'`, "option framerate 30");
+      const captionList = join13(context2.workDir, "captions.ffconcat");
+      await writeFile2(captionList, captionSequence.join("\n"));
+      args.push("-f", "concat", "-safe", "0", "-i", captionList);
+      filters.push(
+        `[${inputIndex}:v]fps=30,format=rgba[captiontrack]`,
+        "[0:v][captiontrack]overlay=0:0:shortest=1[captioned]"
+      );
+      videoLabel = "captioned";
+      inputIndex++;
+    }
+    if (project.audioClips?.length) {
+      const labels = ["[0:a]"];
+      for (const [index2, clip3] of project.audioClips.entries()) {
+        const media3 = sources.get(clip3.assetId);
+        if (!media3.inspection.audio || !media3.inspection.durationSeconds || clip3.outFrame / 30 > media3.inspection.durationSeconds + 1 / 30)
+          throw new Error("Invalid independent audio source range");
+        args.push(
+          "-ss",
+          String(clip3.inFrame / 30),
+          "-t",
+          String((clip3.outFrame - clip3.inFrame) / 30),
+          ...sourceOptions,
+          "-i",
+          media3.path
+        );
+        const delaySamples = clip3.startFrame * (48e3 / 30), label3 = `music${index2}`;
+        filters.push(
+          `[${inputIndex}:a]aresample=48000,asetpts=N/SR/TB,volume=${clip3.volume},adelay=${delaySamples}S:all=1,asetpts=N/SR/TB,apad,atrim=duration=${duration2}[${label3}]`
+        );
+        labels.push(`[${label3}]`);
+        inputIndex++;
+      }
+      filters.push(
+        `${labels.join("")}amix=inputs=${labels.length}:duration=first:normalize=0[audio]`
+      );
+      audioLabel = "audio";
+    }
+    let subtitleInput;
+    if (project.captions.length && subtitleMode === "soft") {
+      subtitleInput = inputIndex;
+      args.push("-i", srt);
+    }
+    if (filters.length) {
+      const filterPath = join13(context2.workDir, "composition.filter");
+      await writeFile2(filterPath, filters.join(";"));
+      args.push("-filter_complex_script", filterPath);
+    }
+    args.push(
+      "-map",
+      videoLabel === "0:v" ? videoLabel : `[${videoLabel}]`,
+      "-map",
+      audioLabel === "0:a" ? audioLabel : `[${audioLabel}]`
+    );
+    if (subtitleInput !== void 0) args.push("-map", `${subtitleInput}:s:0`, "-c:s", "mov_text");
+    args.push(
+      "-c:v",
+      videoLabel === "0:v" ? "copy" : "libx264",
+      ...videoLabel === "0:v" ? [] : ["-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"],
+      "-c:a",
+      "aac",
+      "-b:a",
+      "192k",
+      "-ar",
+      "48000",
+      "-ac",
+      "2",
+      "-t",
+      String(duration2),
+      "-movflags",
+      "+faststart",
+      output
+    );
+    await encode(args, context2, duration2, (fraction) => 0.75 + fraction * 0.24);
+    const inspection = await inspectMediaFile(output, context2, options2);
+    if (!inspection.video || !inspection.audio || !inspection.durationSeconds || Math.abs(inspection.durationSeconds - duration2) > Math.max(0.15, duration2 * 2e-3))
+      throw new Error("Rendered MP4 failed duration or audio/video validation");
+    return {
+      revision: project.revision,
+      frames: frames2,
+      durationSeconds: inspection.durationSeconds,
+      subtitleMode,
+      inspection,
+      video: await publish2(output, "video/mp4", context2),
+      subtitles: project.captions.length ? await publish2(srt, "application/x-subrip", context2) : null
+    };
+  });
+  return handlers;
+}
+
+// native/media/media-runtime.ts
+import { createHash as createHash13 } from "node:crypto";
+
+// native/signals.ts
+function combineAbortSignals(signals) {
+  if (typeof AbortSignal.any === "function") return AbortSignal.any(signals);
+  const controller = new AbortController();
+  const abort4 = () => {
+    for (const signal of signals) signal.removeEventListener("abort", abort4);
+    controller.abort();
+  };
+  for (const signal of signals) {
+    if (signal.aborted) {
+      abort4();
+      break;
+    }
+    signal.addEventListener("abort", abort4, { once: true });
+  }
+  return controller.signal;
+}
+
+// native/providers/audio8.ts
+import { createHash as createHash7, randomUUID as randomUUID10 } from "node:crypto";
+import { createReadStream as createReadStream5 } from "node:fs";
+import {
+  link as link5,
+  mkdir as mkdir7,
+  open as open4,
+  readFile as readFile4,
+  readdir as readdir3,
+  rename as rename6,
+  rm as rm10,
+  stat as stat12,
+  statfs,
+  writeFile as writeFile3
+} from "node:fs/promises";
+import { cpus, totalmem } from "node:os";
+import { isAbsolute as isAbsolute8, join as join14, resolve as resolve2 } from "node:path";
+import { StringDecoder } from "node:string_decoder";
+
+// native/validation.ts
+function validateLocalTtsInput(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("配音参数必须是对象");
+  const input = raw;
+  if (typeof input.text !== "string") throw new Error("请输入配音文字");
+  const text7 = input.text.replace(/\r\n?/g, "\n").trim();
+  if (!text7 || Array.from(text7).length > 6e3) throw new Error("配音文字须为 1 至 6000 字");
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text7) || /\[\[|\]\]/.test(text7))
+    throw new Error("配音仅支持普通文字，不支持语音控制标记或控制字符");
+  let voiceId;
+  if (input.voiceId !== void 0) {
+    if (typeof input.voiceId !== "string" || !input.voiceId.trim() || input.voiceId.length > 200)
+      throw new Error("声音标识无效");
+    voiceId = input.voiceId.trim();
+  }
+  const rate2 = input.rate === void 0 ? 1 : input.rate;
+  if (typeof rate2 !== "number" || !Number.isFinite(rate2) || rate2 < 0.5 || rate2 > 2)
+    throw new Error("语速须在 0.5 至 2 倍之间");
+  return { text: text7, ...voiceId ? { voiceId } : {}, rate: rate2 };
+}
+
+// native/providers/audio8-resources.ts
+var AUDIO8_COMMIT = "07e40f5d0b03fc473635ef378654bfb581027ac3";
+var AUDIO8_REVISION = "818569c6b832118ad68d61bbd873abe250fcd68a";
+var AUDIO8_RESOURCES = [
+  {
+    kind: "code",
+    path: "arktts_runtime/__init__.py",
+    url: "https://raw.githubusercontent.com/Edge0-AI/Audio8_TTS/07e40f5d0b03fc473635ef378654bfb581027ac3/onnx_runtime/arktts_runtime/__init__.py",
+    bytes: 155,
+    sha256: "d92cf94702c27a68f61f3c2e93229e61613fcbecb24d4845b97605cd9accf06c"
+  },
+  {
+    kind: "code",
+    path: "arktts_runtime/runtime.py",
+    url: "https://raw.githubusercontent.com/Edge0-AI/Audio8_TTS/07e40f5d0b03fc473635ef378654bfb581027ac3/onnx_runtime/arktts_runtime/runtime.py",
+    bytes: 12148,
+    sha256: "e0cab4f04d2138a5e49bcdb632aad777f270c1bc8dbbb810430d1b08843a917f"
+  },
+  {
+    kind: "code",
+    path: "arktts_runtime/prompt.py",
+    url: "https://raw.githubusercontent.com/Edge0-AI/Audio8_TTS/07e40f5d0b03fc473635ef378654bfb581027ac3/onnx_runtime/arktts_runtime/prompt.py",
+    bytes: 3204,
+    sha256: "62df836597d88d05c7879fee5c1d2b3d864db4331aa58fd6641f2df93f377a04"
+  },
+  {
+    kind: "code",
+    path: "arktts_runtime/voices.py",
+    url: "https://raw.githubusercontent.com/Edge0-AI/Audio8_TTS/07e40f5d0b03fc473635ef378654bfb581027ac3/onnx_runtime/arktts_runtime/voices.py",
+    bytes: 1515,
+    sha256: "71dbde111ff2536f57f11099e3be2b20ee6807390b126ccfe39d22a022088277"
+  },
+  {
+    kind: "code",
+    path: "arktts_runtime/registration.py",
+    url: "https://raw.githubusercontent.com/Edge0-AI/Audio8_TTS/07e40f5d0b03fc473635ef378654bfb581027ac3/onnx_runtime/arktts_runtime/registration.py",
+    bytes: 5919,
+    sha256: "aadaffd6b3024408399af9de042afab312ba46892d7fd38af954ce182b7ec89f"
+  },
+  {
+    kind: "code",
+    path: "LICENSE",
+    url: "https://raw.githubusercontent.com/Edge0-AI/Audio8_TTS/07e40f5d0b03fc473635ef378654bfb581027ac3/LICENSE",
+    bytes: 11357,
+    sha256: "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  },
+  {
+    kind: "model",
+    path: "codec_decoder_fp16.onnx",
+    url: "https://huggingface.co/Edge0/Audio8-TTS-Preview-0.6B-ONNX-INT4/resolve/818569c6b832118ad68d61bbd873abe250fcd68a/codec_decoder_fp16.onnx",
+    bytes: 594319,
+    sha256: "6e379be31db6c1b0c111e0e3d2aeb10717ee96b197462b926de411e75a1fd019"
+  },
+  {
+    kind: "model",
+    path: "codec_decoder_fp16.onnx.data",
+    url: "https://huggingface.co/Edge0/Audio8-TTS-Preview-0.6B-ONNX-INT4/resolve/818569c6b832118ad68d61bbd873abe250fcd68a/codec_decoder_fp16.onnx.data",
+    bytes: 260741440,
+    sha256: "18838f686aa7c1528fb69ec11e1ab404fdc4dc823d13219abfd4b327988527c0"
+  },
+  {
+    kind: "model",
+    path: "fast_ar_int4.onnx",
+    url: "https://huggingface.co/Edge0/Audio8-TTS-Preview-0.6B-ONNX-INT4/resolve/818569c6b832118ad68d61bbd873abe250fcd68a/fast_ar_int4.onnx",
+    bytes: 156318,
+    sha256: "808c5a0c95c28d90337d925a9a8f6075f7ff8eb7b3080d2b34c4133479a6dc94"
+  },
+  {
+    kind: "model",
+    path: "fast_ar_int4.onnx.data",
+    url: "https://huggingface.co/Edge0/Audio8-TTS-Preview-0.6B-ONNX-INT4/resolve/818569c6b832118ad68d61bbd873abe250fcd68a/fast_ar_int4.onnx.data",
+    bytes: 35055104,
+    sha256: "183be0c9f26b27c605b92a0875beb93f8f98b771f27f65cab133c73610868325"
+  },
+  {
+    kind: "model",
+    path: "registration/codec_encoder_fp16.onnx",
+    url: "https://huggingface.co/Edge0/Audio8-TTS-Preview-0.6B-ONNX-INT4/resolve/818569c6b832118ad68d61bbd873abe250fcd68a/registration/codec_encoder_fp16.onnx",
+    bytes: 940787,
+    sha256: "e856d7999442cdc8f1f2ed0d2c055532cf359f0dd6d9a44fd4b98584c5d5dfa5"
+  },
+  {
+    kind: "model",
+    path: "registration/codec_encoder_fp16.onnx.data",
+    url: "https://huggingface.co/Edge0/Audio8-TTS-Preview-0.6B-ONNX-INT4/resolve/818569c6b832118ad68d61bbd873abe250fcd68a/registration/codec_encoder_fp16.onnx.data",
+    bytes: 414425088,
+    sha256: "19c740fcc4d45aa2546e9ab86e31c6200955c4b0a139758296fbf1064bf009cd"
+  },
+  {
+    kind: "model",
+    path: "registration/registration_manifest.json",
+    url: "https://huggingface.co/Edge0/Audio8-TTS-Preview-0.6B-ONNX-INT4/resolve/818569c6b832118ad68d61bbd873abe250fcd68a/registration/registration_manifest.json",
+    bytes: 165,
+    sha256: "36ef9d2f435f0f7b5ab66dc78a44411a24c0ab9e3a2c63738babe575747a584f"
+  },
+  {
+    kind: "model",
+    path: "runtime_manifest.json",
+    url: "https://huggingface.co/Edge0/Audio8-TTS-Preview-0.6B-ONNX-INT4/resolve/818569c6b832118ad68d61bbd873abe250fcd68a/runtime_manifest.json",
+    bytes: 1080,
+    sha256: "6473ae7d0106a2e369e442c72a71d2d46d8fbd3fe18c80d80b1b46e4aa241930"
+  },
+  {
+    kind: "model",
+    path: "slow_ar_int4.onnx",
+    url: "https://huggingface.co/Edge0/Audio8-TTS-Preview-0.6B-ONNX-INT4/resolve/818569c6b832118ad68d61bbd873abe250fcd68a/slow_ar_int4.onnx",
+    bytes: 900218,
+    sha256: "0cf7701d6da81f888b49ba6e752445d9786a9915ba30dcf084f7743bdda96834"
+  },
+  {
+    kind: "model",
+    path: "slow_ar_int4.onnx.data",
+    url: "https://huggingface.co/Edge0/Audio8-TTS-Preview-0.6B-ONNX-INT4/resolve/818569c6b832118ad68d61bbd873abe250fcd68a/slow_ar_int4.onnx.data",
+    bytes: 290267090,
+    sha256: "bb217f654039692204386b7e5b74d98e9268863bb664a849aa123a9053d6c824"
+  },
+  {
+    kind: "model",
+    path: "tokenizer/tokenizer.json",
+    url: "https://huggingface.co/Edge0/Audio8-TTS-Preview-0.6B-ONNX-INT4/resolve/818569c6b832118ad68d61bbd873abe250fcd68a/tokenizer/tokenizer.json",
+    bytes: 12217872,
+    sha256: "f24e08099d45a8adf3f52f5f0b03276e433bb9d689bb15fcbcc48ce58744588b"
+  }
+];
+
+// native/providers/audio8-script.ts
+var AUDIO8_SCRIPT = String.raw`
+import gc, hashlib, json, os, socket, sys
+from pathlib import Path
+from importlib.metadata import version
+
+os.umask(0o077)
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+def offline(*args, **kwargs):
+    raise RuntimeError("Network access is disabled for local voice generation")
+socket.socket.connect = offline
+socket.socket.connect_ex = offline
+socket.socket.sendto = offline
+socket.create_connection = offline
+
+request = json.loads(Path(sys.argv[1]).read_text())
+def emit(value):
+    print(json.dumps(value), flush=True)
+
+if request["action"] == "probe":
+    import numpy, onnxruntime, soundfile, scipy, tokenizers
+    emit({"result": {"packages": [f"{name}=={version(name)}" for name in request["packageNames"]]}})
+elif request["action"] == "generate":
+    import numpy as np
+    import soundfile as sf
+    # -I excludes working-directory and user-site imports. Only this Host-owned code is added.
+    sys.path.insert(0, request["codePath"])
+    from arktts_runtime.registration import VoiceRegistration
+    from arktts_runtime.runtime import ArkTtsRuntime
+
+    model_path = Path(request["modelPath"])
+    voices_path = Path(request["voicesPath"])
+    voice = request["voiceName"]
+    manifest = json.loads((model_path / "runtime_manifest.json").read_text())
+    fingerprint = manifest["model_fingerprint"]
+    reference_data = Path(request["referencePath"]).read_bytes()
+    reference_sha = hashlib.sha256(reference_data).hexdigest()
+    reference_text = " ".join(request["referenceText"].strip().split())
+
+    def valid_voice():
+        try:
+            folder = voices_path / voice
+            if (folder / "meta.json").stat().st_size > 16384 or (folder / "codes.npy").stat().st_size > 65536:
+                return False
+            meta = json.loads((folder / "meta.json").read_text())
+            codes = np.load(folder / "codes.npy", allow_pickle=False)
+            return (meta.get("model_fingerprint") == fingerprint
+                    and meta.get("reference_text") == reference_text
+                    and meta.get("source_sha256") == reference_sha
+                    and codes.dtype == np.uint16 and codes.ndim == 2
+                    and codes.shape[0] == manifest["num_codebooks"]
+                    and 0 < codes.shape[1] <= 650
+                    and int(codes.max()) < manifest["codebook_size"])
+        except (OSError, ValueError, KeyError):
+            return False
+
+    cached_voice = valid_voice()
+    if not cached_voice:
+        emit({"progress": {"fraction": 0.16, "stage": "register"}})
+        registration = VoiceRegistration(model_path / "registration", voices_path, fingerprint)
+        registration.register(reference_data, "reference.wav", reference_text, voice, overwrite=True)
+        del registration
+        gc.collect()
+        if not valid_voice():
+            raise RuntimeError("Registered voice failed validation")
+    del reference_data
+
+    # Upstream iter_codes also returns when its context/token budget is exhausted. Track
+    # the actual EOS decision so a truncated sentence cannot become a successful WAV.
+    class CheckedRuntime(ArkTtsRuntime):
+        saw_eos = False
+        def _sample_semantic(self, *args, **kwargs):
+            token = super()._sample_semantic(*args, **kwargs)
+            if token == int(self.manifest["im_end_id"]):
+                self.saw_eos = True
+            return token
+
+    model = CheckedRuntime(model_path, voices_path, threads=request["threads"])
+    sample_rate = int(model.manifest["sample_rate"])
+    pieces = request["pieces"]
+    assert pieces and all(0 < len(piece) <= 150 for piece in pieces)
+    samples = 0
+    with sf.SoundFile(request["output"], mode="w", samplerate=sample_rate,
+                      channels=1, subtype="PCM_16", format="WAV") as output:
+        for index, text in enumerate(pieces):
+            model.saw_eos = False
+            frames = list(model.iter_codes(text=text, voice=voice, max_new_tokens=2048,
+                                          temperature=0.3, top_p=0.9, top_k=50, seed=42))
+            if not frames:
+                emit({"failure": "empty-segment"})
+                raise RuntimeError("Model produced no speech for a script segment")
+            if not model.saw_eos:
+                emit({"failure": "token-budget"})
+                raise RuntimeError("Speech did not reach EOS before its token/context limit")
+            audio = model.decode_codes(np.stack(frames, axis=1))
+            if not audio.size or not np.isfinite(audio).all() or np.max(np.abs(audio)) < 0.0003:
+                emit({"failure": "empty-segment"})
+                raise RuntimeError("Model produced invalid or silent speech")
+            samples += audio.size
+            if samples > sample_rate * 1800:
+                raise RuntimeError("Speech exceeds its duration budget")
+            output.write(audio)
+            if index + 1 < len(pieces):
+                pause = np.zeros(round(sample_rate * 0.12), dtype=np.float32)
+                samples += pause.size
+                output.write(pause)
+            emit({"progress": {"fraction": 0.2 + 0.6 * (index + 1) / len(pieces), "stage": "speech"}})
+    emit({"result": {"sampleRate": sample_rate, "samples": samples, "cachedVoice": cached_voice}})
+else:
+    raise ValueError("Unsupported managed action")
+`;
+
+// native/providers/audio-probe.ts
+var AUDIO_PROBE_MESSAGES = [
+  "参考素材中没有可用音轨，请选择音频或带声音的视频",
+  "无法解析这段声音，请先提取为 WAV 参考录音后重试",
+  "暂时无法测量这段录音时长，请先提取为 WAV 参考录音后重试",
+  "声音时长检查超时，请先裁剪或提取参考录音后重试"
+];
+var [NO_AUDIO, UNSUPPORTED, NO_DURATION, TIMEOUT] = AUDIO_PROBE_MESSAGES;
+var number3 = (value) => {
+  if (typeof value !== "string" && typeof value !== "number" || value === "") return;
+  const result = Number(value);
+  return Number.isFinite(result) ? result : void 0;
+};
+var duration = (value) => {
+  const result = number3(value);
+  return result !== void 0 && result > 0 ? result : void 0;
+};
+async function probeVoiceAudio(path, signal, options2) {
+  const deadline = AbortSignal.timeout(15e3);
+  const bounded3 = combineAbortSignals([signal, deadline]);
+  const source3 = ["-protocol_whitelist", "file,pipe", "-format_whitelist", options2.formats];
+  try {
+    const raw = await runMediaProcess(
+      options2.ffprobePath ?? "ffprobe",
+      [
+        "-v",
+        "error",
+        ...source3,
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "format=duration,start_time:stream=codec_name,sample_rate,channels,duration,start_time",
+        "-of",
+        "json",
+        path
+      ],
+      { signal: bounded3, maxStdoutBytes: 64 * 1024 }
+    );
+    const data = JSON.parse(raw.stdout.toString("utf8"));
+    const audio2 = data.streams?.[0];
+    if (!audio2) throw new Error(NO_AUDIO);
+    let durationSeconds = duration(audio2.duration) ?? duration(data.format?.duration);
+    if (durationSeconds !== void 0) return { audio: audio2, durationSeconds };
+    let pending = "", bytes = 0, packets = 0;
+    let firstTime, lastTime, lastDelta = 0, lastEnd = -Infinity;
+    const consume = (chunk) => {
+      bytes += chunk.length;
+      if (bytes > 4 * 1024 * 1024) throw new Error(NO_DURATION);
+      const lines = (pending + chunk.toString("utf8")).split(/\r?\n/);
+      pending = lines.pop() ?? "";
+      if (pending.length > 4096) throw new Error(NO_DURATION);
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        if (++packets > 2e4) throw new Error(NO_DURATION);
+        const fields2 = Object.fromEntries(line.split("|").map((part2) => part2.split("=")));
+        const time2 = number3(fields2.pts_time) ?? number3(fields2.dts_time);
+        if (time2 === void 0) continue;
+        firstTime = firstTime === void 0 ? time2 : Math.min(firstTime, time2);
+        if (lastTime !== void 0 && time2 > lastTime) lastDelta = time2 - lastTime;
+        lastTime = time2;
+        lastEnd = Math.max(lastEnd, time2 + (duration(fields2.duration_time) ?? lastDelta));
+      }
+    };
+    await runMediaProcess(
+      options2.ffprobePath ?? "ffprobe",
+      [
+        "-v",
+        "error",
+        ...source3,
+        "-select_streams",
+        "a:0",
+        "-read_intervals",
+        "%+31",
+        "-show_entries",
+        "packet=pts_time,dts_time,duration_time",
+        "-of",
+        "compact=p=0:nk=0",
+        path
+      ],
+      { signal: bounded3, onStdout: consume }
+    );
+    consume(Buffer.from("\n"));
+    const origin = number3(audio2.start_time) ?? number3(data.format?.start_time) ?? firstTime;
+    durationSeconds = origin === void 0 ? void 0 : duration(lastEnd - origin);
+    if (durationSeconds === void 0) throw new Error(NO_DURATION);
+    return { audio: audio2, durationSeconds };
+  } catch (error) {
+    if (signal.aborted) throw mediaAbortError();
+    if (deadline.aborted) throw new Error(TIMEOUT, { cause: error });
+    if (error instanceof Error && AUDIO_PROBE_MESSAGES.includes(error.message)) throw error;
+    throw new Error(UNSUPPORTED, { cause: error });
+  }
+}
+
+// native/providers/audio8.ts
+var PACKAGES = [
+  "numpy==2.4.3",
+  "onnxruntime==1.24.4",
+  "soundfile==0.13.1",
+  "scipy==1.17.1",
+  "tokenizers==0.22.2",
+  "flatbuffers==25.12.19",
+  "packaging==26.3",
+  "protobuf==7.36.1",
+  "sympy==1.14.0",
+  "mpmath==1.3.0",
+  "cffi==2.1.1",
+  "pycparser==3.0"
+];
+var VOICE = { id: "reference", name: "我的声音 · 参考录音", language: "zh-CN" };
+var MAX_SECONDS = 1800;
+var MAX_BYTES = MAX_SECONDS * 48e3 * 2 + 4096;
+var FORMATS = "wav,aiff,mp3,flac,ogg,mov,matroska,webm,aac,amr";
+var owners = /* @__PURE__ */ new Set();
+var generationQueues = /* @__PURE__ */ new Map();
+function splitAudio8Text(text7) {
+  const pieces = [];
+  for (const sentence of text7.split(/(?<=[。！？!?；;\n])/u)) {
+    let characters = Array.from(sentence.trim());
+    while (characters.length) {
+      let boundary = Math.min(150, characters.length);
+      if (characters.length > 150) {
+        for (let index2 = boundary - 1; index2 >= 0; index2--) {
+          if (/[，,、：:\s]/u.test(characters[index2])) {
+            boundary = index2 + 1;
+            break;
+          }
+        }
+      }
+      const piece = characters.slice(0, boundary).join("").trim();
+      if (/[\p{L}\p{N}]/u.test(piece)) pieces.push(piece);
+      characters = characters.slice(boundary);
+    }
+  }
+  return pieces;
+}
+function audio8VoiceCacheKey(scope2, audioSha256, referenceText) {
+  const hash4 = (value) => createHash7("sha256").update(JSON.stringify(value)).digest("hex");
+  const scopeKey = hash4([scope2.appId, resolve2(scope2.projectPath)]);
+  return {
+    scopeKey,
+    voiceName: hash4([
+      "audio8-reference-v1",
+      scopeKey,
+      AUDIO8_COMMIT,
+      AUDIO8_REVISION,
+      audioSha256,
+      referenceText
+    ])
+  };
+}
+async function acquireGeneration(dir, context2, signal) {
+  const pending = generationQueues.get(dir);
+  const previous = pending ?? Promise.resolve();
+  let release2;
+  const gate = new Promise((resolve10) => {
+    release2 = resolve10;
+  });
+  const tail = previous.then(() => gate);
+  generationQueues.set(dir, tail);
+  void tail.then(() => {
+    if (generationQueues.get(dir) === tail) generationQueues.delete(dir);
+  });
+  try {
+    if (pending)
+      await context2.reportProgress({ stage: "waiting", message: "等待上一段本地配音完成" });
+    await new Promise((resolve10, reject) => {
+      const abort4 = () => {
+        signal.removeEventListener("abort", abort4);
+        reject(mediaAbortError());
+      };
+      signal.addEventListener("abort", abort4, { once: true });
+      void previous.then(() => {
+        signal.removeEventListener("abort", abort4);
+        resolve10();
+      });
+      if (signal.aborted) abort4();
+    });
+    if (signal.aborted) throw mediaAbortError();
+    return release2;
+  } catch (error) {
+    release2();
+    throw error;
+  }
+}
+function validateAudio8TtsInput(raw) {
+  const speech = validateLocalTtsInput(raw);
+  const input = raw;
+  if (Array.from(speech.text).length > 2e3) throw new Error("声音克隆每次最多支持 2000 字");
+  if (!/[\p{L}\p{N}]/u.test(speech.text)) throw new Error("配音文字至少需要一个可朗读的字词");
+  const reference = validateLocalTtsInput({ text: input.referenceText });
+  if (Array.from(reference.text).length > 1e3 || !/[\p{L}\p{N}]/u.test(reference.text))
+    throw new Error("请填写参考录音的逐字稿，最多 1000 字");
+  if (typeof input.referencePath !== "string" || !isAbsolute8(input.referencePath) || input.referencePath.includes("\0"))
+    throw new Error("参考录音必须来自宿主已授权的本地素材");
+  return {
+    text: speech.text,
+    referencePath: input.referencePath,
+    referenceText: reference.text,
+    rate: speech.rate
+  };
+}
+var SCRIPT_HASH = createHash7("sha256").update(AUDIO8_SCRIPT).digest("hex");
+async function readJson(path) {
+  if ((await stat12(path)).size > 16 * 1024) throw new Error("Runtime metadata exceeds its budget");
+  return JSON.parse(await readFile4(path, "utf8"));
+}
+async function saveJson(path, value) {
+  const partial = `${path}-${randomUUID10()}.partial`;
+  try {
+    await writeFile3(partial, JSON.stringify(value), { mode: 384 });
+    await rename6(partial, path);
+  } finally {
+    await rm10(partial, { force: true });
+  }
+}
+async function digest3(path, signal) {
+  const hash4 = createHash7("sha256");
+  for await (const chunk of createReadStream5(path, { signal })) hash4.update(chunk);
+  return hash4.digest("hex");
+}
+async function acquireSetupLock(path) {
+  const candidate = `${path}-${randomUUID10()}.candidate`;
+  let published = false;
+  try {
+    await writeFile3(candidate, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), {
+      flag: "wx",
+      mode: 384
+    });
+    try {
+      await link5(candidate, path);
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      const before = await stat12(path);
+      const existing = await readJson(path).catch(() => null);
+      if (Number.isSafeInteger(existing?.pid) && existing.pid > 0) {
+        let alive2 = false;
+        try {
+          process.kill(existing.pid, 0);
+          alive2 = true;
+        } catch (error2) {
+          if (error2.code !== "ESRCH") alive2 = true;
+        }
+        if (alive2) throw new Error("另一个宿主正在准备本地声音服务", { cause: error });
+      } else if (Date.now() - before.mtimeMs < 12e4) {
+        throw new Error("本地声音准备锁正在初始化，请稍候再试", { cause: error });
+      }
+      const current = await stat12(path);
+      if (current.ino !== before.ino || current.mtimeMs !== before.mtimeMs || current.size !== before.size)
+        throw new Error("声音准备锁已更新，请稍候再试", { cause: error });
+      await rm10(path);
+      await link5(candidate, path);
+    }
+    published = true;
+  } finally {
+    await rm10(candidate, { force: true }).catch(async (error) => {
+      if (published) await rm10(path, { force: true }).catch(() => {
+      });
+      throw error;
+    });
+  }
+}
+async function cleanupSetup(paths, lockPath, signal) {
+  try {
+    try {
+      await Promise.all(paths.map((path) => rm10(path, { force: true })));
+    } finally {
+      if (lockPath) await rm10(lockPath, { force: true });
+    }
+  } catch (error) {
+    if (signal.aborted) throw mediaAbortError();
+    throw new Error("Audio8 临时文件清理未完成，请检查目录权限后重试", { cause: error });
+  }
+}
+function createAudio8TtsProvider(options2) {
+  if (!isAbsolute8(options2.runtimeDir))
+    throw new Error("TTS runtimeDir must be an absolute Host path");
+  const root = resolve2(options2.runtimeDir);
+  const dir = join14(root, "audio8-tts");
+  const python = join14(dir, "venv", "bin", "python");
+  const script2 = join14(dir, "runner.py");
+  const modelPath = join14(dir, "model");
+  const codePath = join14(dir, "code");
+  const manifestPath = join14(dir, "runtime.json");
+  const failurePath = join14(dir, "failure.json");
+  const env = (online = false) => {
+    const clean = { ...process.env };
+    for (const key of Object.keys(clean))
+      if (/^(UV_|PIP_|PYTHON|VIRTUAL_ENV|CONDA|HF_|HUGGING|TRANSFORMERS_|ARKTTS_|ORT_)/i.test(key))
+        delete clean[key];
+    return {
+      ...clean,
+      UV_NO_CONFIG: "1",
+      UV_CACHE_DIR: join14(root, "package-cache"),
+      UV_PYTHON_INSTALL_DIR: join14(root, "python"),
+      PYTHONNOUSERSITE: "1",
+      HF_HOME: join14(dir, "hub-cache"),
+      HF_HUB_DISABLE_IMPLICIT_TOKEN: "1",
+      HF_HUB_DISABLE_TELEMETRY: "1",
+      HF_HUB_OFFLINE: online ? "0" : "1",
+      TRANSFORMERS_OFFLINE: online ? "0" : "1",
+      DO_NOT_TRACK: "1"
+    };
+  };
+  async function status(signal) {
+    if (signal?.aborted) throw mediaAbortError();
+    const base = {
+      id: "audio8-tts",
+      name: "Audio8-TTS · 本人声音克隆",
+      mode: "offline",
+      state: "not-installed",
+      available: false,
+      installed: false,
+      voices: [{ ...VOICE }],
+      defaultVoiceId: VOICE.id,
+      downloadBytes: 1250 * 1048576,
+      requiredDiskBytes: 4 * 1024 ** 3
+    };
+    if (process.platform !== "darwin" || process.arch !== "arm64")
+      return {
+        ...base,
+        state: "unavailable",
+        reason: "本地声音克隆需要 Apple Silicon Mac（M 系列芯片）"
+      };
+    if (totalmem() < 4 * 1024 ** 3)
+      return { ...base, state: "unavailable", reason: "本地声音克隆至少需要 4 GB 内存" };
+    base.installed = await stat12(python).then(
+      (s) => s.isFile(),
+      () => false
+    );
+    if (owners.has(dir))
+      return { ...base, state: "installing", reason: "正在准备并验证本地声音克隆" };
+    try {
+      const manifest = await readJson(manifestPath);
+      if (!base.installed || manifest.scriptHash !== SCRIPT_HASH || manifest.revision !== AUDIO8_REVISION || manifest.commit !== AUDIO8_COMMIT || JSON.stringify(manifest.packages) !== JSON.stringify(PACKAGES) || await readFile4(script2, "utf8") !== AUDIO8_SCRIPT)
+        throw new Error("Incomplete runtime");
+      for (const item of AUDIO8_RESOURCES)
+        if ((await stat12(join14(dir, item.kind, item.path))).size !== item.bytes)
+          throw new Error("Incomplete model");
+      if (manifest.state !== "ready") throw new Error("Runtime not validated");
+      return {
+        ...base,
+        state: "ready",
+        available: true,
+        verifiedAt: manifest.verifiedAt,
+        version: PACKAGES.join("; ")
+      };
+    } catch {
+      const failure2 = await readJson(failurePath).catch(() => null);
+      const reason = typeof failure2?.reason === "string" ? failure2.reason : void 0;
+      return {
+        ...base,
+        state: reason ? "failed" : base.installed ? "needs-setup" : "not-installed",
+        reason: reason ?? "首次需下载约 1.2 GB；准备完成后，参考录音与配音均在本机处理"
+      };
+    }
+  }
+  async function executeRuntime(data, context2, signal) {
+    await mkdir7(context2.workDir, { recursive: true });
+    const request = join14(context2.workDir, `audio8-request-${randomUUID10()}.json`);
+    await writeFile3(
+      request,
+      JSON.stringify({ ...data, modelPath, codePath, threads: Math.min(5, cpus().length) }),
+      { mode: 384 }
+    );
+    let pending = "";
+    const decoder = new StringDecoder("utf8");
+    let result;
+    let failure2;
+    let progress2 = Promise.resolve();
+    try {
+      await runMediaProcess(python, ["-I", script2, request], {
+        signal,
+        env: env(),
+        onStdout(chunk) {
+          pending += decoder.write(chunk);
+          if (Buffer.byteLength(pending) > 256 * 1024)
+            throw new Error("Audio8 runtime response exceeds budget");
+          const lines = pending.split("\n");
+          pending = lines.pop() ?? "";
+          for (const line of lines) {
+            let value;
+            try {
+              value = JSON.parse(line);
+            } catch {
+              continue;
+            }
+            if (value.result) result = value.result;
+            if (value.failure === "token-budget" || value.failure === "empty-segment")
+              failure2 = value.failure;
+            if (typeof value.progress?.fraction === "number") {
+              progress2 = progress2.then(
+                () => context2.reportProgress({
+                  fraction: value.progress.fraction,
+                  stage: value.progress.stage === "register" ? "register" : "speech",
+                  message: value.progress.stage === "register" ? "正在保存参考音色，后续配音会自动复用" : "正在本机生成你的声音"
+                })
+              );
+              void progress2.catch(() => {
+              });
+            }
+          }
+        }
+      });
+      await progress2;
+      if (!result) throw new Error("Audio8 runtime did not return a complete result");
+      return result;
+    } catch (error) {
+      if (failure2 && !signal.aborted)
+        throw new Error(
+          failure2 === "token-budget" ? "部分配音未完整结束，请缩短参考逐字稿或文稿后重试" : "有一段文字未生成有效人声，请调整这段文稿后重试",
+          { cause: error }
+        );
+      throw error;
+    } finally {
+      await progress2.catch(() => {
+      });
+      await rm10(request, { force: true });
+    }
+  }
+  async function execute(data, context2, signal) {
+    const run2 = () => executeRuntime(data, context2, signal);
+    if (data.action !== "generate") return run2();
+    return observeModelCall(
+      {
+        provider: "local-onnx",
+        model: "audio8-tts",
+        purpose: "tts-clone",
+        input: {
+          messages: Array.isArray(data.pieces) ? data.pieces.map((content) => ({ role: "user", content })) : [{ role: "user", content: data.text }],
+          parameters: {
+            action: "generate",
+            pieces: data.pieces,
+            referenceText: data.referenceText,
+            threads: Math.min(5, cpus().length),
+            modelRevision: AUDIO8_REVISION,
+            codeRevision: AUDIO8_COMMIT,
+            referenceAudio: { content: "[binary content omitted]" },
+            capture: { recording: "logical-input", omitted: "binary-data-and-private-paths" }
+          }
+        }
+      },
+      run2,
+      {
+        signal,
+        output: (value) => ({
+          data: {
+            mimeType: "audio/wav",
+            sampleRate: value.sampleRate,
+            samples: value.samples,
+            ...typeof value.cachedVoice === "boolean" ? { cachedVoice: value.cachedVoice } : {}
+          }
+        })
+      }
+    );
+  }
+  async function downloadResource2(resource, signal, report2) {
+    const path = join14(dir, resource.kind, resource.path);
+    const valid = await stat12(path).then(
+      async (s) => s.size === resource.bytes && await digest3(path, signal) === resource.sha256,
+      () => false
+    );
+    if (valid) {
+      await report2(resource.bytes);
+      return;
+    }
+    await mkdir7(resolve2(path, ".."), { recursive: true, mode: 448 });
+    const partial = `${path}-${randomUUID10()}.partial`;
+    const handle = await open4(partial, "wx", 384);
+    try {
+      const response = await fetch(resource.url, { signal });
+      if (!response.ok || !response.body || !response.url.startsWith("https://"))
+        throw new Error("Audio8 resource download failed");
+      const hash4 = createHash7("sha256");
+      let bytes = 0;
+      let reportedAt = 0;
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          bytes += chunk.value.byteLength;
+          if (bytes > resource.bytes) throw new Error("Audio8 download exceeds expected size");
+          hash4.update(chunk.value);
+          let offset = 0;
+          while (offset < chunk.value.byteLength) {
+            const written = await handle.write(chunk.value.subarray(offset));
+            if (!written.bytesWritten) throw new Error("Audio8 download could not be saved");
+            offset += written.bytesWritten;
+          }
+          if (Date.now() - reportedAt >= 1e3) {
+            await report2(bytes);
+            reportedAt = Date.now();
+          }
+        }
+      } finally {
+        await reader.cancel().catch(() => {
+        });
+      }
+      if (bytes !== resource.bytes || hash4.digest("hex") !== resource.sha256)
+        throw new Error("Audio8 resource integrity check failed");
+      if (signal.aborted) throw mediaAbortError();
+      await handle.close();
+      await rename6(partial, path);
+      await report2(bytes);
+    } finally {
+      await handle.close().catch(() => {
+      });
+      await rm10(partial, { force: true });
+    }
+  }
+  async function verifyResources(signal, hashes) {
+    for (const resource of AUDIO8_RESOURCES) {
+      const path = join14(dir, resource.kind, resource.path);
+      if ((await stat12(path)).size !== resource.bytes || hashes && "sha256" in resource && await digest3(path, signal) !== resource.sha256)
+        throw new Error("本地模型校验失败，请重新准备声音克隆");
+    }
+  }
+  async function probe(path, signal, formats = FORMATS) {
+    return probeVoiceAudio(path, signal, { ffprobePath: options2.ffprobePath, formats });
+  }
+  async function audible(path, signal) {
+    const raw = await runMediaProcess(
+      options2.ffmpegPath ?? "ffmpeg",
+      [
+        "-nostdin",
+        "-v",
+        "info",
+        "-protocol_whitelist",
+        "file,pipe",
+        "-format_whitelist",
+        "wav",
+        "-i",
+        path,
+        "-af",
+        "volumedetect",
+        "-f",
+        "null",
+        "-"
+      ],
+      { signal }
+    );
+    const match = /max_volume: ([-\d.]+) dB/.exec(raw.stderr);
+    if (!match || Number(match[1]) < -70) throw new Error("录音中没有可听见的声音");
+  }
+  async function render2(input, context2, signal) {
+    await mkdir7(context2.workDir, { recursive: true });
+    await mkdir7(context2.outputDir, { recursive: true });
+    const nonce = randomUUID10();
+    const reference = join14(context2.workDir, `audio8-reference-${nonce}.wav`);
+    const raw = join14(context2.workDir, `audio8-raw-${nonce}.wav`);
+    const partial = join14(context2.outputDir, `speech-${nonce}.partial.wav`);
+    const output = join14(context2.outputDir, `speech-${nonce}.wav`);
+    let complete = false;
+    let voicesPath;
+    let voiceName;
+    try {
+      const source3 = await stat12(input.referencePath);
+      if (!source3.isFile() || source3.size > 512 * 1024 ** 2)
+        throw new Error("参考录音须为 512 MB 以内的本地素材");
+      const meta = await probe(input.referencePath, signal);
+      if (meta.durationSeconds < 3 || meta.durationSeconds > 30)
+        throw new Error("参考录音需要 3 至 30 秒，请先裁剪为一段清晰的人声");
+      await runMediaProcess(
+        options2.ffmpegPath ?? "ffmpeg",
+        [
+          "-nostdin",
+          "-v",
+          "error",
+          "-y",
+          "-protocol_whitelist",
+          "file,pipe",
+          "-format_whitelist",
+          FORMATS,
+          "-i",
+          input.referencePath,
+          "-map",
+          "0:a:0",
+          "-vn",
+          "-sn",
+          "-dn",
+          "-t",
+          "30.01",
+          "-ac",
+          "1",
+          "-ar",
+          "44100",
+          "-c:a",
+          "pcm_s16le",
+          reference
+        ],
+        { signal }
+      );
+      await audible(reference, signal);
+      const cache = audio8VoiceCacheKey(
+        context2.scope,
+        await digest3(reference, signal),
+        input.referenceText
+      );
+      voicesPath = join14(dir, "voices", cache.scopeKey);
+      voiceName = cache.voiceName;
+      await mkdir7(voicesPath, { recursive: true, mode: 448 });
+      await context2.reportProgress({
+        fraction: 0.15,
+        stage: "speech",
+        message: "正在加载本地模型；首次生成可能需要几分钟"
+      });
+      await execute(
+        {
+          action: "generate",
+          pieces: splitAudio8Text(input.text),
+          referencePath: reference,
+          referenceText: input.referenceText,
+          voicesPath,
+          voiceName,
+          output: raw
+        },
+        context2,
+        signal
+      );
+      await context2.reportProgress({
+        fraction: 0.86,
+        stage: "speech",
+        message: "正在统一配音格式并检查声音"
+      });
+      await runMediaProcess(
+        options2.ffmpegPath ?? "ffmpeg",
+        [
+          "-nostdin",
+          "-v",
+          "error",
+          "-y",
+          "-protocol_whitelist",
+          "file,pipe",
+          "-format_whitelist",
+          "wav",
+          "-i",
+          raw,
+          "-map",
+          "0:a:0",
+          "-vn",
+          "-af",
+          `atempo=${input.rate}`,
+          "-ac",
+          "1",
+          "-ar",
+          "48000",
+          "-c:a",
+          "pcm_s16le",
+          "-fs",
+          String(MAX_BYTES),
+          partial
+        ],
+        { signal }
+      );
+      const result = await probe(partial, signal, "wav");
+      if (result.audio.codec_name !== "pcm_s16le" || Number(result.audio.sample_rate) !== 48e3 || result.audio.channels !== 1 || result.durationSeconds > MAX_SECONDS || (await stat12(partial)).size >= MAX_BYTES)
+        throw new Error("未生成合格的 48 kHz WAV 配音");
+      await audible(partial, signal);
+      if (signal.aborted) throw mediaAbortError();
+      await rename6(partial, output);
+      await context2.reportProgress({
+        fraction: 1,
+        stage: "ready",
+        message: "已完成本地声音克隆配音"
+      });
+      if (signal.aborted) throw mediaAbortError();
+      complete = true;
+      return { path: output, durationSeconds: result.durationSeconds };
+    } finally {
+      const cleanup = [reference, raw, partial, ...!complete ? [output] : []].map((path) => ({
+        path,
+        recursive: false
+      }));
+      if (voicesPath && voiceName) {
+        const incomplete = await readdir3(voicesPath).catch(() => []);
+        cleanup.push(
+          ...incomplete.filter((name) => name.startsWith(`.${voiceName}.`)).map((name) => ({ path: join14(voicesPath, name), recursive: true }))
+        );
+      }
+      await Promise.all(cleanup.map(({ path, recursive }) => rm10(path, { recursive, force: true })));
+    }
+  }
+  async function setup(context2) {
+    if (context2.signal.aborted) throw mediaAbortError();
+    const initial = await status();
+    if (initial.state === "unavailable") throw new Error(initial.reason);
+    if (owners.has(dir) || generationQueues.has(dir))
+      throw new Error("本地声音服务正在运行，请等待或取消当前任务");
+    owners.add(dir);
+    const deadline = AbortSignal.timeout(40 * 6e4);
+    const signal = combineAbortSignals([context2.signal, deadline]);
+    const lockPath = join14(dir, "setup.lock");
+    let lock = false;
+    const cleanup = [];
+    try {
+      await mkdir7(dir, { recursive: true, mode: 448 });
+      await acquireSetupLock(lockPath);
+      lock = true;
+      const disk = await statfs(dir);
+      if (disk.bavail * disk.bsize < initial.requiredDiskBytes)
+        throw new Error("空间不足，准备声音克隆至少需要 4 GB 可用空间");
+      await Promise.all([
+        runMediaProcess(options2.ffmpegPath ?? "ffmpeg", ["-version"], { signal }),
+        runMediaProcess(options2.ffprobePath ?? "ffprobe", ["-version"], { signal })
+      ]);
+      await writeFile3(script2, AUDIO8_SCRIPT, { mode: 384 });
+      await context2.reportProgress({
+        fraction: 0.02,
+        stage: "setup",
+        message: "准备独立 Python 环境与本地声音克隆，预计下载约 1.2 GB"
+      });
+      let installed = false;
+      try {
+        const probe2 = await execute(
+          { action: "probe", packageNames: PACKAGES.map((p) => p.split("==")[0]) },
+          context2,
+          signal
+        );
+        installed = JSON.stringify(probe2.packages) === JSON.stringify(PACKAGES);
+      } catch (error) {
+        if (signal.aborted) throw error;
+      }
+      if (!installed) {
+        await runMediaProcess(
+          options2.uvPath ?? "uv",
+          ["venv", "--clear", "--no-config", "--python", "3.12", join14(dir, "venv")],
+          { signal, env: env(true) }
+        );
+        await context2.reportProgress({
+          fraction: 0.08,
+          stage: "install",
+          message: "正在安装固定版本的本地推理依赖"
+        });
+        await runMediaProcess(
+          options2.uvPath ?? "uv",
+          [
+            "pip",
+            "install",
+            "--no-config",
+            "--python",
+            python,
+            "--index-url",
+            "https://pypi.org/simple",
+            "--no-deps",
+            "--only-binary",
+            ":all:",
+            ...PACKAGES
+          ],
+          { signal, env: env(true) }
+        );
+        const probe2 = await execute(
+          { action: "probe", packageNames: PACKAGES.map((p) => p.split("==")[0]) },
+          context2,
+          signal
+        );
+        if (JSON.stringify(probe2.packages) !== JSON.stringify(PACKAGES))
+          throw new Error("声音依赖版本验证失败");
+      }
+      let resourcesValid = false;
+      try {
+        await verifyResources(signal, true);
+        resourcesValid = true;
+      } catch (error) {
+        if (signal.aborted) throw error;
+      }
+      if (!resourcesValid) {
+        for (const item of AUDIO8_RESOURCES) {
+          const path = join14(dir, item.kind, item.path);
+          const valid = await stat12(path).then(
+            async (s) => s.size === item.bytes && (!("sha256" in item) || await digest3(path, signal) === item.sha256),
+            () => false
+          );
+          if (!valid) await rm10(path, { force: true });
+        }
+        await context2.reportProgress({
+          fraction: 0.2,
+          stage: "download",
+          message: "正在下载固定版本的 Audio8 模型与声音编码器（约 1 GB）"
+        });
+        const total = AUDIO8_RESOURCES.reduce((sum, item) => sum + item.bytes, 0);
+        let completed = 0;
+        for (const item of AUDIO8_RESOURCES) {
+          await downloadResource2(item, signal, async (bytes) => {
+            const downloaded = completed + bytes;
+            await context2.reportProgress({
+              fraction: 0.2 + 0.45 * downloaded / total,
+              stage: "download",
+              message: `正在下载 Audio8（${Math.floor(downloaded / 1048576)} / ${Math.ceil(total / 1048576)} MB）`
+            });
+          });
+          completed += item.bytes;
+        }
+        await verifyResources(signal, true);
+      }
+      await context2.reportProgress({
+        fraction: 0.7,
+        stage: "verify",
+        message: "正在用系统测试音验证真实离线推理"
+      });
+      await mkdir7(context2.workDir, { recursive: true });
+      const reference = join14(context2.workDir, `audio8-setup-${randomUUID10()}.aiff`);
+      const transcript = join14(context2.workDir, `audio8-setup-${randomUUID10()}.txt`);
+      cleanup.push(reference, transcript);
+      const referenceText = "This is a local voice test. Clear speech helps prepare the audio model.";
+      await writeFile3(transcript, referenceText, { mode: 384 });
+      await observeModelCall(
+        {
+          provider: "macos-speech",
+          model: "system-default-voice",
+          purpose: "tts-setup-reference",
+          input: {
+            messages: [{ role: "user", content: referenceText }],
+            parameters: { wordsPerMinute: 165, capture: { recording: "logical-input" } }
+          }
+        },
+        () => runMediaProcess("/usr/bin/say", ["-r", "165", "-f", transcript, "-o", reference], {
+          signal
+        }),
+        {
+          signal,
+          output: () => ({ data: { mimeType: "audio/aiff", binaryContent: "omitted" } })
+        }
+      );
+      const sample2 = await render2(
+        { text: "你好，这是本地声音克隆测试。", referencePath: reference, referenceText, rate: 1 },
+        { ...context2, scope: { appId: "__audio8-setup", projectPath: dir } },
+        signal
+      );
+      cleanup.push(sample2.path);
+      if (signal.aborted) throw mediaAbortError();
+      await saveJson(manifestPath, {
+        scriptHash: SCRIPT_HASH,
+        revision: AUDIO8_REVISION,
+        commit: AUDIO8_COMMIT,
+        packages: PACKAGES,
+        state: "ready",
+        verifiedAt: Date.now()
+      });
+      await rm10(failurePath, { force: true });
+      await context2.reportProgress({
+        fraction: 1,
+        stage: "ready",
+        message: "本地声音克隆已通过真实离线推理验证"
+      });
+      if (signal.aborted) throw mediaAbortError();
+    } catch (error) {
+      if (!lock) {
+        if (context2.signal.aborted) throw mediaAbortError();
+        const message = error instanceof Error ? error.message : "";
+        const safe = [
+          "本地声音准备锁正在初始化，请稍候再试",
+          "另一个宿主正在准备本地声音服务",
+          "声音准备锁已更新，请稍候再试"
+        ];
+        throw new Error(
+          safe.includes(message) ? message : "Audio8 无法创建独立环境，请检查磁盘空间和目录权限",
+          { cause: error }
+        );
+      }
+      const reason = signal.aborted ? context2.signal.aborted ? "声音克隆准备已取消，可以重新准备" : "声音克隆准备超时，请检查网络后重试" : "Audio8 声音克隆准备失败；需要 uv、FFmpeg、完整模型与可用空间，请检查网络和本机环境后重试";
+      await saveJson(failurePath, { reason, at: Date.now() }).catch(() => {
+      });
+      await rm10(manifestPath, { force: true }).catch(() => {
+      });
+      throw context2.signal.aborted ? mediaAbortError() : new Error(reason, { cause: error });
+    } finally {
+      try {
+        await cleanupSetup(cleanup, lock ? lockPath : void 0, context2.signal);
+      } finally {
+        owners.delete(dir);
+      }
+    }
+    return status();
+  }
+  async function generate(raw, context2) {
+    const input = validateAudio8TtsInput(raw);
+    if (context2.signal.aborted) throw mediaAbortError();
+    const runtime = await status(context2.signal);
+    if (!runtime.available) throw new Error(runtime.reason ?? "请先准备本地声音克隆");
+    if (owners.has(dir)) throw new Error("本地声音服务正在运行，请等待或取消当前任务");
+    const deadline = AbortSignal.timeout(20 * 6e4);
+    const signal = combineAbortSignals([context2.signal, deadline]);
+    let release2;
+    try {
+      release2 = await acquireGeneration(dir, context2, signal);
+      try {
+        await verifyResources(signal, true);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        const reason = "本地模型校验失败，请重新准备声音克隆";
+        await saveJson(failurePath, { reason, at: Date.now() });
+        await rm10(manifestPath, { force: true });
+        throw new Error(reason, { cause: error });
+      }
+      const result = await render2(input, context2, signal);
+      return {
+        ...result,
+        mimeType: "audio/wav",
+        engine: "audio8-tts",
+        voice: { ...VOICE },
+        rate: input.rate,
+        sampleRate: 48e3,
+        channels: 1,
+        cached: false
+      };
+    } catch (error) {
+      if (context2.signal.aborted) throw mediaAbortError();
+      if (deadline.aborted) throw new Error("本地声音生成超时，请缩短文稿后重试", { cause: error });
+      const message = error instanceof Error ? error.message : "";
+      const safeMessages = [
+        ...AUDIO_PROBE_MESSAGES,
+        "本地模型校验失败，请重新准备声音克隆",
+        "参考录音须为 512 MB 以内的本地素材",
+        "无法读取录音时长，请选择有效的音频或视频素材",
+        "参考录音需要 3 至 30 秒，请先裁剪为一段清晰的人声",
+        "录音中没有可听见的声音",
+        "未生成合格的 48 kHz WAV 配音",
+        "部分配音未完整结束，请缩短参考逐字稿或文稿后重试",
+        "有一段文字未生成有效人声，请调整这段文稿后重试"
+      ];
+      throw new Error(
+        safeMessages.includes(message) ? message : "本地声音生成失败，请检查参考素材与逐字稿，或缩短文稿后重试",
+        { cause: error }
+      );
+    } finally {
+      release2?.();
+    }
+  }
+  return { status, setup, generate };
+}
+
+// native/providers/qwen.ts
+import { createHash as createHash8, randomUUID as randomUUID11 } from "node:crypto";
+import { createReadStream as createReadStream6 } from "node:fs";
+import { mkdir as mkdir8, open as open5, readFile as readFile5, rename as rename7, rm as rm11, stat as stat13, statfs as statfs2, writeFile as writeFile4 } from "node:fs/promises";
+import { totalmem as totalmem2 } from "node:os";
+import { isAbsolute as isAbsolute9, join as join15, resolve as resolve3 } from "node:path";
+import { StringDecoder as StringDecoder2 } from "node:string_decoder";
+var MODEL = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit";
+var REVISION = "50f45ef0047cde7e84c2ef04326acb8ada2436a7";
+var PACKAGES2 = [
+  "mlx-audio==0.5.3",
+  "mlx==0.32.2",
+  "transformers==5.17.0",
+  "huggingface-hub==1.31.0",
+  "soundfile==0.14.0"
+];
+var VOICE2 = { id: "reference", name: "我的声音 · 参考录音", language: "zh-CN" };
+var MAX_SECONDS2 = 1800;
+var MAX_BYTES2 = MAX_SECONDS2 * 48e3 * 2 + 4096;
+var FORMATS2 = "wav,aiff,mp3,flac,ogg,mov,matroska,webm,aac,amr";
+var owners2 = /* @__PURE__ */ new Set();
+var generationQueues2 = /* @__PURE__ */ new Map();
+async function acquireGeneration2(dir, context2, signal) {
+  const pending = generationQueues2.get(dir);
+  const previous = pending ?? Promise.resolve();
+  let release2;
+  const gate = new Promise((resolve10) => {
+    release2 = resolve10;
+  });
+  const tail = previous.then(() => gate);
+  generationQueues2.set(dir, tail);
+  void tail.then(() => {
+    if (generationQueues2.get(dir) === tail) generationQueues2.delete(dir);
+  });
+  try {
+    if (pending)
+      await context2.reportProgress({ stage: "waiting", message: "等待上一段本地配音完成" });
+    await new Promise((resolve10, reject) => {
+      const abort4 = () => {
+        signal.removeEventListener("abort", abort4);
+        reject(mediaAbortError());
+      };
+      signal.addEventListener("abort", abort4, { once: true });
+      void previous.then(() => {
+        signal.removeEventListener("abort", abort4);
+        resolve10();
+      });
+      if (signal.aborted) abort4();
+    });
+    if (signal.aborted) throw mediaAbortError();
+    return release2;
+  } catch (error) {
+    release2();
+    throw error;
+  }
+}
+var RESOURCES = [
+  {
+    path: "config.json",
+    bytes: 5522,
+    sha256: "b404fb6f99dac6f7a81f3a03af5675b131ecf9936ac75a7c9d75e54044600044"
+  },
+  {
+    path: "generation_config.json",
+    bytes: 245,
+    sha256: "f1b90b4513f3b34c62851049e2492d7b4c5940daf1276f89c82b8ef04127f3aa"
+  },
+  {
+    path: "merges.txt",
+    bytes: 1671839,
+    sha256: "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3"
+  },
+  {
+    path: "model.safetensors",
+    bytes: 1304461214,
+    sha256: "9488e7005cc0cf44f8804eb543668d0763bb1c649ce6f1eddc663519524b3182"
+  },
+  {
+    path: "model.safetensors.index.json",
+    bytes: 77731,
+    sha256: "7829f1cc24f5cbd7d7a3ba888bb08c7cf52d82ba79a4f0f3756d41f8bf5e52b4"
+  },
+  {
+    path: "preprocessor_config.json",
+    bytes: 127,
+    sha256: "efdde1022ea9d76928bf7a9cd53139138f5ba2e466e837f08f6105ab1af1c119"
+  },
+  {
+    path: "speech_tokenizer/config.json",
+    bytes: 2336,
+    sha256: "ee65bb901c876664ab8707c487157aa1a6ee57c65969b28fb5ec9dc211e68167"
+  },
+  {
+    path: "speech_tokenizer/configuration.json",
+    bytes: 76,
+    sha256: "6bc26d64eb5024b4d1dab5a52371958b429256d6c9d59787f1f5294a54e0cebd"
+  },
+  {
+    path: "speech_tokenizer/model.safetensors",
+    bytes: 682293092,
+    sha256: "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
+  },
+  {
+    path: "speech_tokenizer/preprocessor_config.json",
+    bytes: 234,
+    sha256: "fcb3805e597e786d4067706e602f6688524640f8d3396790e2e09b5942fcbdfb"
+  },
+  {
+    path: "tokenizer_config.json",
+    bytes: 7344,
+    sha256: "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670"
+  },
+  {
+    path: "vocab.json",
+    bytes: 2776833,
+    sha256: "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+  }
+];
+function validateQwenTtsInput(raw) {
+  const speech = validateLocalTtsInput(raw);
+  const input = raw;
+  if (Array.from(speech.text).length > 2e3) throw new Error("声音克隆每次最多支持 2000 字");
+  if (!/[\p{L}\p{N}]/u.test(speech.text)) throw new Error("配音文字至少需要一个可朗读的字词");
+  const reference = validateLocalTtsInput({ text: input.referenceText });
+  if (Array.from(reference.text).length > 1e3 || !/[\p{L}\p{N}]/u.test(reference.text))
+    throw new Error("请填写参考录音的逐字稿，最多 1000 字");
+  if (typeof input.referencePath !== "string" || !isAbsolute9(input.referencePath) || input.referencePath.includes("\0"))
+    throw new Error("参考录音必须来自宿主已授权的本地素材");
+  return {
+    text: speech.text,
+    referencePath: input.referencePath,
+    referenceText: reference.text,
+    rate: speech.rate
+  };
+}
+var SCRIPT = String.raw`
+import json, os, sys, socket, re
+from pathlib import Path
+from importlib.metadata import version
+
+request = json.loads(Path(sys.argv[1]).read_text())
+action = request["action"]
+def emit(value):
+    print(json.dumps(value), flush=True)
+
+if action != "download":
+    # Fail closed even if a future library attempts an implicit download.
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    def offline(*args, **kwargs):
+        raise RuntimeError("Network access is disabled for local voice generation")
+    socket.socket.connect = offline
+    socket.socket.connect_ex = offline
+    socket.create_connection = offline
+
+if action == "probe":
+    from mlx_audio.tts.utils import load_model
+    from mlx_audio.tts.models.qwen3_tts import Model
+    import soundfile
+    import inspect
+    assert all(x in inspect.signature(Model.generate).parameters for x in ["ref_audio", "ref_text", "text"])
+    emit({"result": {"packages": [f"{name}=={version(name)}" for name in request["packageNames"]]}})
+elif action == "download":
+    from huggingface_hub import snapshot_download
+    snapshot_download(repo_id=request["modelId"], revision=request["revision"],
+        local_dir=request["modelPath"], allow_patterns=request["files"],
+        token=False, max_workers=2)
+    emit({"result": {"downloaded": True}})
+elif action == "generate":
+    import mlx.core as mx
+    import numpy as np
+    import soundfile as sf
+    from mlx_audio.tts.utils import load_model
+    model_path = Path(request["modelPath"])
+    assert model_path.is_absolute() and model_path.is_dir()
+    model = load_model(str(model_path))
+    assert model.tokenizer is not None and model.speech_tokenizer is not None
+    assert model.speech_tokenizer.has_encoder and model.config.tts_model_type == "base"
+    mx.random.seed(0)
+    # Bound each decode so long scripts do not allocate a full-length waveform on the GPU.
+    pieces = []
+    for sentence in re.split(r"(?<=[。！？!?；;\n])", request["text"]):
+        sentence = sentence.strip()
+        while sentence:
+            boundary = min(160, len(sentence))
+            if len(sentence) > 160:
+                breaks = list(re.finditer(r"[，,、：:\s]", sentence[:160]))
+                if breaks:
+                    boundary = breaks[-1].end()
+            piece = sentence[:boundary].strip()
+            if any(character.isalnum() for character in piece):
+                pieces.append(piece)
+            sentence = sentence[boundary:].strip()
+    samples = 0
+    with sf.SoundFile(request["output"], mode="w", samplerate=model.sample_rate,
+                      channels=1, subtype="PCM_16", format="WAV") as output:
+        for index, text in enumerate(pieces):
+            before = samples
+            for result in model.generate(text=text, ref_audio=request["referencePath"],
+                ref_text=request["referenceText"], lang_code="auto", stream=False,
+                temperature=0.7, max_tokens=2048, verbose=False):
+                if result.token_count >= 2048:
+                    raise RuntimeError("Speech reached its token budget; shorten the script and retry")
+                audio = np.asarray(result.audio, dtype=np.float32).reshape(-1)
+                if not audio.size or not np.isfinite(audio).all():
+                    raise RuntimeError("Model returned invalid audio")
+                samples += audio.size
+                if samples > model.sample_rate * 1800:
+                    raise RuntimeError("Generated speech exceeds its duration budget")
+                output.write(audio)
+            if samples == before:
+                raise RuntimeError("Model did not generate speech for a script segment; retry this sentence")
+            if index + 1 < len(pieces):
+                pause = np.zeros(round(model.sample_rate * 0.12), dtype=np.float32)
+                output.write(pause)
+                samples += pause.size
+            emit({"progress": {"fraction": 0.2 + 0.6 * (index + 1) / len(pieces)}})
+    emit({"result": {"sampleRate": model.sample_rate, "samples": samples}})
+else:
+    raise ValueError("Unsupported managed action")
+`;
+var SCRIPT_HASH2 = createHash8("sha256").update(SCRIPT).digest("hex");
+async function readJson2(path) {
+  if ((await stat13(path)).size > 16 * 1024) throw new Error("Runtime metadata exceeds its budget");
+  return JSON.parse(await readFile5(path, "utf8"));
+}
+async function saveJson2(path, value) {
+  const partial = `${path}-${randomUUID11()}.partial`;
+  try {
+    await writeFile4(partial, JSON.stringify(value), { mode: 384 });
+    await rename7(partial, path);
+  } finally {
+    await rm11(partial, { force: true });
+  }
+}
+async function digest4(path, signal) {
+  const hash4 = createHash8("sha256");
+  for await (const chunk of createReadStream6(path, { signal })) hash4.update(chunk);
+  return hash4.digest("hex");
+}
+function createQwenTtsProvider(options2) {
+  if (!isAbsolute9(options2.runtimeDir))
+    throw new Error("TTS runtimeDir must be an absolute Host path");
+  const root = resolve3(options2.runtimeDir);
+  const dir = join15(root, "qwen3-tts");
+  const python = join15(dir, "venv", "bin", "python");
+  const script2 = join15(dir, "runner.py");
+  const modelPath = join15(dir, "model");
+  const manifestPath = join15(dir, "runtime.json");
+  const failurePath = join15(dir, "failure.json");
+  const env = (online = false) => {
+    const clean = { ...process.env };
+    for (const key of Object.keys(clean))
+      if (/^(UV_|PIP_|PYTHON|VIRTUAL_ENV|CONDA|HF_|HUGGING|TRANSFORMERS_|MLX_)/i.test(key))
+        delete clean[key];
+    return {
+      ...clean,
+      UV_NO_CONFIG: "1",
+      UV_CACHE_DIR: join15(root, "package-cache"),
+      UV_PYTHON_INSTALL_DIR: join15(root, "python"),
+      PYTHONNOUSERSITE: "1",
+      HF_HOME: join15(dir, "hub-cache"),
+      HF_HUB_DISABLE_IMPLICIT_TOKEN: "1",
+      HF_HUB_DISABLE_TELEMETRY: "1",
+      HF_HUB_OFFLINE: online ? "0" : "1",
+      TRANSFORMERS_OFFLINE: online ? "0" : "1",
+      DO_NOT_TRACK: "1"
+    };
+  };
+  async function status(signal) {
+    if (signal?.aborted) throw mediaAbortError();
+    const base = {
+      id: "qwen3-tts",
+      name: "Qwen3-TTS · 本人声音克隆",
+      mode: "offline",
+      state: "not-installed",
+      available: false,
+      installed: false,
+      voices: [{ ...VOICE2 }],
+      defaultVoiceId: VOICE2.id,
+      downloadBytes: 2400 * 1048576,
+      requiredDiskBytes: 6 * 1024 ** 3
+    };
+    if (process.platform !== "darwin" || process.arch !== "arm64")
+      return {
+        ...base,
+        state: "unavailable",
+        reason: "本地声音克隆需要 Apple Silicon Mac（M 系列芯片）"
+      };
+    if (totalmem2() < 8 * 1024 ** 3)
+      return { ...base, state: "unavailable", reason: "本地声音克隆至少需要 8 GB 内存" };
+    base.installed = await stat13(python).then(
+      (s) => s.isFile(),
+      () => false
+    );
+    if (owners2.has(dir))
+      return { ...base, state: "installing", reason: "正在准备并验证本地声音克隆" };
+    try {
+      const manifest = await readJson2(manifestPath);
+      if (!base.installed || manifest.scriptHash !== SCRIPT_HASH2 || manifest.revision !== REVISION || JSON.stringify(manifest.packages) !== JSON.stringify(PACKAGES2) || await readFile5(script2, "utf8") !== SCRIPT)
+        throw new Error("Incomplete runtime");
+      for (const item of RESOURCES)
+        if ((await stat13(join15(modelPath, item.path))).size !== item.bytes)
+          throw new Error("Incomplete model");
+      if (manifest.state !== "ready") throw new Error("Runtime not validated");
+      return {
+        ...base,
+        state: "ready",
+        available: true,
+        verifiedAt: manifest.verifiedAt,
+        version: PACKAGES2.join("; ")
+      };
+    } catch {
+      const failure2 = await readJson2(failurePath).catch(() => null);
+      const reason = typeof failure2?.reason === "string" ? failure2.reason : void 0;
+      return {
+        ...base,
+        state: reason ? "failed" : base.installed ? "needs-setup" : "not-installed",
+        reason: reason ?? "首次需下载约 2.4 GB；准备完成后，参考录音与配音均在本机处理"
+      };
+    }
+  }
+  async function executeRuntime(data, context2, signal) {
+    await mkdir8(context2.workDir, { recursive: true });
+    const request = join15(context2.workDir, `qwen-request-${randomUUID11()}.json`);
+    await writeFile4(request, JSON.stringify({ ...data, modelPath }), { mode: 384 });
+    let pending = "";
+    const decoder = new StringDecoder2("utf8");
+    let result;
+    let progress2 = Promise.resolve();
+    try {
+      await runMediaProcess(python, ["-I", script2, request], {
+        signal,
+        env: env(data.action === "download"),
+        onStdout(chunk) {
+          pending += decoder.write(chunk);
+          if (Buffer.byteLength(pending) > 256 * 1024)
+            throw new Error("Qwen runtime response exceeds budget");
+          const lines = pending.split("\n");
+          pending = lines.pop() ?? "";
+          for (const line of lines) {
+            let value;
+            try {
+              value = JSON.parse(line);
+            } catch {
+              continue;
+            }
+            if (value.result) result = value.result;
+            if (typeof value.progress?.fraction === "number") {
+              progress2 = progress2.then(
+                () => context2.reportProgress({
+                  fraction: value.progress.fraction,
+                  stage: "speech",
+                  message: "正在本机生成你的声音"
+                })
+              );
+              void progress2.catch(() => {
+              });
+            }
+          }
+        }
+      });
+      await progress2;
+      if (!result) throw new Error("Qwen runtime did not return a complete result");
+      return result;
+    } finally {
+      await progress2.catch(() => {
+      });
+      await rm11(request, { force: true });
+    }
+  }
+  async function execute(data, context2, signal) {
+    const run2 = () => executeRuntime(data, context2, signal);
+    if (data.action !== "generate") return run2();
+    return observeModelCall(
+      {
+        provider: "local-mlx",
+        model: MODEL,
+        purpose: "tts-clone",
+        input: {
+          messages: [{ role: "user", content: data.text ?? data.pieces }],
+          parameters: {
+            action: "generate",
+            text: data.text,
+            referenceText: data.referenceText,
+            language: "auto",
+            temperature: 0.7,
+            maxTokens: 2048,
+            seed: 0,
+            modelRevision: REVISION,
+            referenceAudio: { content: "[binary content omitted]" },
+            capture: { recording: "logical-input", omitted: "binary-data-and-private-paths" }
+          }
+        }
+      },
+      run2,
+      {
+        signal,
+        output: (value) => ({
+          data: {
+            mimeType: "audio/wav",
+            sampleRate: value.sampleRate,
+            samples: value.samples,
+            ...typeof value.cachedVoice === "boolean" ? { cachedVoice: value.cachedVoice } : {}
+          }
+        })
+      }
+    );
+  }
+  async function verifyResources(signal, hashes) {
+    for (const resource of RESOURCES) {
+      const path = join15(modelPath, resource.path);
+      if ((await stat13(path)).size !== resource.bytes || hashes && "sha256" in resource && await digest4(path, signal) !== resource.sha256)
+        throw new Error("本地模型校验失败，请重新准备声音克隆");
+    }
+  }
+  async function probe(path, signal, formats = FORMATS2) {
+    return probeVoiceAudio(path, signal, { ffprobePath: options2.ffprobePath, formats });
+  }
+  async function audible(path, signal) {
+    const raw = await runMediaProcess(
+      options2.ffmpegPath ?? "ffmpeg",
+      [
+        "-nostdin",
+        "-v",
+        "info",
+        "-protocol_whitelist",
+        "file,pipe",
+        "-format_whitelist",
+        "wav",
+        "-i",
+        path,
+        "-af",
+        "volumedetect",
+        "-f",
+        "null",
+        "-"
+      ],
+      { signal }
+    );
+    const match = /max_volume: ([-\d.]+) dB/.exec(raw.stderr);
+    if (!match || Number(match[1]) < -70) throw new Error("录音中没有可听见的声音");
+  }
+  async function render2(input, context2, signal) {
+    await mkdir8(context2.workDir, { recursive: true });
+    await mkdir8(context2.outputDir, { recursive: true });
+    const nonce = randomUUID11();
+    const reference = join15(context2.workDir, `qwen-reference-${nonce}.wav`);
+    const raw = join15(context2.workDir, `qwen-raw-${nonce}.wav`);
+    const partial = join15(context2.outputDir, `speech-${nonce}.partial.wav`);
+    const output = join15(context2.outputDir, `speech-${nonce}.wav`);
+    let complete = false;
+    try {
+      const source3 = await stat13(input.referencePath);
+      if (!source3.isFile() || source3.size > 512 * 1024 ** 2)
+        throw new Error("参考录音须为 512 MB 以内的本地素材");
+      const meta = await probe(input.referencePath, signal);
+      if (meta.durationSeconds < 3 || meta.durationSeconds > 30)
+        throw new Error("参考录音需要 3 至 30 秒，请先裁剪为一段清晰的人声");
+      await runMediaProcess(
+        options2.ffmpegPath ?? "ffmpeg",
+        [
+          "-nostdin",
+          "-v",
+          "error",
+          "-y",
+          "-protocol_whitelist",
+          "file,pipe",
+          "-format_whitelist",
+          FORMATS2,
+          "-i",
+          input.referencePath,
+          "-map",
+          "0:a:0",
+          "-vn",
+          "-sn",
+          "-dn",
+          "-t",
+          "30.01",
+          "-ac",
+          "1",
+          "-ar",
+          "24000",
+          "-c:a",
+          "pcm_s16le",
+          reference
+        ],
+        { signal }
+      );
+      await audible(reference, signal);
+      await context2.reportProgress({
+        fraction: 0.15,
+        stage: "speech",
+        message: "正在加载本地模型；首次生成可能需要几分钟"
+      });
+      await execute(
+        {
+          action: "generate",
+          text: input.text,
+          referencePath: reference,
+          referenceText: input.referenceText,
+          output: raw
+        },
+        context2,
+        signal
+      );
+      await context2.reportProgress({
+        fraction: 0.86,
+        stage: "speech",
+        message: "正在统一配音格式并检查声音"
+      });
+      await runMediaProcess(
+        options2.ffmpegPath ?? "ffmpeg",
+        [
+          "-nostdin",
+          "-v",
+          "error",
+          "-y",
+          "-protocol_whitelist",
+          "file,pipe",
+          "-format_whitelist",
+          "wav",
+          "-i",
+          raw,
+          "-map",
+          "0:a:0",
+          "-vn",
+          "-af",
+          `atempo=${input.rate}`,
+          "-ac",
+          "1",
+          "-ar",
+          "48000",
+          "-c:a",
+          "pcm_s16le",
+          "-fs",
+          String(MAX_BYTES2),
+          partial
+        ],
+        { signal }
+      );
+      const result = await probe(partial, signal, "wav");
+      if (result.audio.codec_name !== "pcm_s16le" || Number(result.audio.sample_rate) !== 48e3 || result.audio.channels !== 1 || result.durationSeconds > MAX_SECONDS2 || (await stat13(partial)).size >= MAX_BYTES2)
+        throw new Error("未生成合格的 48 kHz WAV 配音");
+      await audible(partial, signal);
+      if (signal.aborted) throw mediaAbortError();
+      await rename7(partial, output);
+      await context2.reportProgress({
+        fraction: 1,
+        stage: "ready",
+        message: "已完成本地声音克隆配音"
+      });
+      if (signal.aborted) throw mediaAbortError();
+      complete = true;
+      return { path: output, durationSeconds: result.durationSeconds };
+    } finally {
+      await Promise.all(
+        [reference, raw, partial, ...!complete ? [output] : []].map(
+          (path) => rm11(path, { force: true })
+        )
+      );
+    }
+  }
+  async function setup(context2) {
+    if (context2.signal.aborted) throw mediaAbortError();
+    const initial = await status();
+    if (initial.state === "unavailable") throw new Error(initial.reason);
+    if (owners2.has(dir) || generationQueues2.has(dir))
+      throw new Error("本地声音服务正在运行，请等待或取消当前任务");
+    owners2.add(dir);
+    const deadline = AbortSignal.timeout(40 * 6e4);
+    const signal = combineAbortSignals([context2.signal, deadline]);
+    const lockPath = join15(dir, "setup.lock");
+    let lock;
+    const cleanup = [];
+    try {
+      await mkdir8(dir, { recursive: true });
+      try {
+        lock = await open5(lockPath, "wx", 384);
+      } catch {
+        const existing = await readJson2(lockPath).catch(() => null);
+        if (!Number.isSafeInteger(existing?.pid) || existing.pid <= 0)
+          throw new Error("本地声音准备锁正在初始化或需要宿主重启后检查");
+        let alive2 = false;
+        try {
+          process.kill(existing.pid, 0);
+          alive2 = true;
+        } catch (error) {
+          if (error.code !== "ESRCH") alive2 = true;
+        }
+        if (alive2) throw new Error("另一个宿主正在准备本地声音服务");
+        await rm11(lockPath, { force: true });
+        lock = await open5(lockPath, "wx", 384);
+      }
+      await lock.writeFile(JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
+      const disk = await statfs2(dir);
+      if (disk.bavail * disk.bsize < initial.requiredDiskBytes)
+        throw new Error("空间不足，准备声音克隆至少需要 6 GB 可用空间");
+      await Promise.all([
+        runMediaProcess(options2.ffmpegPath ?? "ffmpeg", ["-version"], { signal }),
+        runMediaProcess(options2.ffprobePath ?? "ffprobe", ["-version"], { signal })
+      ]);
+      await writeFile4(script2, SCRIPT, { mode: 384 });
+      await context2.reportProgress({
+        fraction: 0.02,
+        stage: "setup",
+        message: "准备独立 Python 环境与本地声音克隆，预计下载约 2.4 GB"
+      });
+      let installed = false;
+      try {
+        const probe2 = await execute(
+          { action: "probe", packageNames: PACKAGES2.map((p) => p.split("==")[0]) },
+          context2,
+          signal
+        );
+        installed = JSON.stringify(probe2.packages) === JSON.stringify(PACKAGES2);
+      } catch (error) {
+        if (signal.aborted) throw error;
+      }
+      if (!installed) {
+        await runMediaProcess(
+          options2.uvPath ?? "uv",
+          ["venv", "--clear", "--no-config", "--python", "3.12", join15(dir, "venv")],
+          { signal, env: env(true) }
+        );
+        await context2.reportProgress({
+          fraction: 0.08,
+          stage: "install",
+          message: "正在安装固定版本的本地推理依赖"
+        });
+        await runMediaProcess(
+          options2.uvPath ?? "uv",
+          [
+            "pip",
+            "install",
+            "--no-config",
+            "--python",
+            python,
+            "--index-url",
+            "https://pypi.org/simple",
+            ...PACKAGES2
+          ],
+          { signal, env: env(true) }
+        );
+        const probe2 = await execute(
+          { action: "probe", packageNames: PACKAGES2.map((p) => p.split("==")[0]) },
+          context2,
+          signal
+        );
+        if (JSON.stringify(probe2.packages) !== JSON.stringify(PACKAGES2))
+          throw new Error("声音依赖版本验证失败");
+      }
+      let resourcesValid = false;
+      try {
+        await verifyResources(signal, true);
+        resourcesValid = true;
+      } catch (error) {
+        if (signal.aborted) throw error;
+      }
+      if (!resourcesValid) {
+        for (const item of RESOURCES) {
+          const path = join15(modelPath, item.path);
+          const valid = await stat13(path).then(
+            async (s) => s.size === item.bytes && (!("sha256" in item) || await digest4(path, signal) === item.sha256),
+            () => false
+          );
+          if (!valid) await rm11(path, { force: true });
+        }
+        await context2.reportProgress({
+          fraction: 0.2,
+          stage: "download",
+          message: "正在下载固定版本的 Qwen3 模型与声音编码器（约 2 GB）"
+        });
+        await execute(
+          {
+            action: "download",
+            modelId: MODEL,
+            revision: REVISION,
+            files: RESOURCES.map((r) => r.path)
+          },
+          context2,
+          signal
+        );
+        await verifyResources(signal, true);
+      }
+      await context2.reportProgress({
+        fraction: 0.7,
+        stage: "verify",
+        message: "正在用系统测试音验证真实离线推理"
+      });
+      await mkdir8(context2.workDir, { recursive: true });
+      const reference = join15(context2.workDir, `qwen-setup-${randomUUID11()}.aiff`);
+      const transcript = join15(context2.workDir, `qwen-setup-${randomUUID11()}.txt`);
+      cleanup.push(reference, transcript);
+      const referenceText = "This is a local voice test. Clear speech helps prepare the audio model.";
+      await writeFile4(transcript, referenceText, { mode: 384 });
+      await observeModelCall(
+        {
+          provider: "macos-speech",
+          model: "system-default-voice",
+          purpose: "tts-setup-reference",
+          input: {
+            messages: [{ role: "user", content: referenceText }],
+            parameters: { wordsPerMinute: 165, capture: { recording: "logical-input" } }
+          }
+        },
+        () => runMediaProcess("/usr/bin/say", ["-r", "165", "-f", transcript, "-o", reference], {
+          signal
+        }),
+        {
+          signal,
+          output: () => ({ data: { mimeType: "audio/wav", binaryContent: "omitted" } })
+        }
+      );
+      const sample2 = await render2(
+        { text: "你好，这是本地声音克隆测试。", referencePath: reference, referenceText, rate: 1 },
+        context2,
+        signal
+      );
+      cleanup.push(sample2.path);
+      if (signal.aborted) throw mediaAbortError();
+      await saveJson2(manifestPath, {
+        scriptHash: SCRIPT_HASH2,
+        revision: REVISION,
+        packages: PACKAGES2,
+        state: "ready",
+        verifiedAt: Date.now()
+      });
+      await rm11(failurePath, { force: true });
+      await context2.reportProgress({
+        fraction: 1,
+        stage: "ready",
+        message: "本地声音克隆已通过真实离线推理验证"
+      });
+    } catch (error) {
+      if (!lock) throw error;
+      const reason = signal.aborted ? context2.signal.aborted ? "声音克隆准备已取消，可以重新准备" : "声音克隆准备超时，请检查网络后重试" : "Qwen3 声音克隆准备失败；需要 uv、FFmpeg、完整模型与可用空间，请检查网络和本机环境后重试";
+      await saveJson2(failurePath, { reason, at: Date.now() }).catch(() => {
+      });
+      await rm11(manifestPath, { force: true });
+      throw context2.signal.aborted ? mediaAbortError() : new Error(reason, { cause: error });
+    } finally {
+      try {
+        try {
+          await Promise.all(cleanup.map((path) => rm11(path, { force: true })));
+        } finally {
+          if (lock) {
+            try {
+              await lock.close();
+            } finally {
+              await rm11(lockPath, { force: true });
+            }
+          }
+        }
+      } finally {
+        owners2.delete(dir);
+      }
+    }
+    return status();
+  }
+  async function generate(raw, context2) {
+    const input = validateQwenTtsInput(raw);
+    if (context2.signal.aborted) throw mediaAbortError();
+    const runtime = await status(context2.signal);
+    if (!runtime.available) throw new Error(runtime.reason ?? "请先准备本地声音克隆");
+    if (owners2.has(dir)) throw new Error("本地声音服务正在运行，请等待或取消当前任务");
+    const deadline = AbortSignal.timeout(20 * 6e4);
+    const signal = combineAbortSignals([context2.signal, deadline]);
+    let release2;
+    try {
+      release2 = await acquireGeneration2(dir, context2, signal);
+      try {
+        await verifyResources(signal, true);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        const reason = "本地模型校验失败，请重新准备声音克隆";
+        await saveJson2(failurePath, { reason, at: Date.now() });
+        await rm11(manifestPath, { force: true });
+        throw new Error(reason, { cause: error });
+      }
+      const result = await render2(input, context2, signal);
+      return {
+        ...result,
+        mimeType: "audio/wav",
+        engine: "qwen3-tts",
+        voice: { ...VOICE2 },
+        rate: input.rate,
+        sampleRate: 48e3,
+        channels: 1,
+        cached: false
+      };
+    } catch (error) {
+      if (context2.signal.aborted) throw mediaAbortError();
+      if (deadline.aborted) throw new Error("本地声音生成超时，请缩短文稿后重试", { cause: error });
+      const message = error instanceof Error ? error.message : "";
+      const safeMessages = [
+        ...AUDIO_PROBE_MESSAGES,
+        "本地模型校验失败，请重新准备声音克隆",
+        "参考录音须为 512 MB 以内的本地素材",
+        "无法读取录音时长，请选择有效的音频或视频素材",
+        "参考录音需要 3 至 30 秒，请先裁剪为一段清晰的人声",
+        "录音中没有可听见的声音",
+        "未生成合格的 48 kHz WAV 配音"
+      ];
+      throw new Error(
+        safeMessages.includes(message) ? message : "本地声音生成失败，请检查参考素材与逐字稿，或缩短文稿后重试",
+        { cause: error }
+      );
+    } finally {
+      release2?.();
+    }
+  }
+  return { status, setup, generate };
+}
+
+// native/queue.ts
+import { randomUUID as randomUUID12 } from "node:crypto";
+import { mkdir as mkdir9, readFile as readFile6, readdir as readdir4, rename as rename8, rm as rm12, writeFile as writeFile5 } from "node:fs/promises";
+import { join as join16 } from "node:path";
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== "ESRCH";
+  }
+}
+function pause(signal) {
+  return new Promise((resolve10, reject) => {
+    const abort4 = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort4);
+      reject(mediaAbortError());
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", abort4);
+      resolve10();
+    }, 150);
+    signal.addEventListener("abort", abort4, { once: true });
+    if (signal.aborted) abort4();
+  });
+}
+async function acquireVoiceQueue(root, signal, waiting) {
+  if (signal.aborted) throw mediaAbortError();
+  await mkdir9(root, { recursive: true, mode: 448 });
+  const identity2 = `${process.pid}-${randomUUID12()}`;
+  const choosing = join16(root, `${identity2}.choosing`);
+  const ticketPath = join16(root, `${identity2}.ticket`);
+  const partial = join16(root, `${identity2}.partial`);
+  const release2 = async () => {
+    await Promise.all([choosing, ticketPath, partial].map((path) => rm12(path, { force: true })));
+  };
+  async function peers() {
+    const names = await readdir4(root);
+    if (names.length > 4096) throw new Error("本地声音等待队列过长，请稍后重试");
+    const entries = /* @__PURE__ */ new Map();
+    for (const name of names) {
+      const match = /^([1-9]\d*)-([a-f0-9-]{36})\.(choosing|ticket|partial)$/.exec(name);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      if (!Number.isSafeInteger(pid) || !alive(pid)) {
+        await rm12(join16(root, name), { force: true });
+        continue;
+      }
+      const id7 = `${match[1]}-${match[2]}`;
+      const entry = entries.get(id7) ?? { choosing: false, ticket: 0 };
+      if (match[3] === "choosing") entry.choosing = true;
+      if (match[3] === "ticket") {
+        try {
+          const value = await readFile6(join16(root, name), "utf8");
+          if (value.length > 32) throw new Error("invalid ticket");
+          entry.ticket = Number(value);
+          if (!Number.isSafeInteger(entry.ticket) || entry.ticket < 1)
+            throw new Error("invalid ticket");
+        } catch (error) {
+          if (error.code === "ENOENT") continue;
+          throw new Error("本地声音等待队列需要重试", { cause: error });
+        }
+      }
+      entries.set(id7, entry);
+    }
+    return entries;
+  }
+  try {
+    await writeFile5(choosing, "", { flag: "wx", mode: 384 });
+    const existing = await peers();
+    const ticket = Math.max(0, ...Array.from(existing.values(), (entry) => entry.ticket)) + 1;
+    if (!Number.isSafeInteger(ticket)) throw new Error("本地声音等待队列需要重试");
+    await writeFile5(partial, String(ticket), { flag: "wx", mode: 384 });
+    await rename8(partial, ticketPath);
+    await rm12(choosing);
+    let reported = false;
+    for (; ; ) {
+      if (signal.aborted) throw mediaAbortError();
+      const entries = await peers();
+      const blocked = Array.from(entries).some(
+        ([id7, entry]) => id7 !== identity2 && (entry.choosing || entry.ticket > 0 && (entry.ticket < ticket || entry.ticket === ticket && id7 < identity2))
+      );
+      if (!blocked) return release2;
+      if (!reported) {
+        await waiting();
+        reported = true;
+      }
+      await pause(signal);
+    }
+  } catch (error) {
+    await release2();
+    throw error;
+  }
+}
+
+// native/media/media-connections.ts
+import { createHash as createHash9 } from "node:crypto";
+function resolveMediaConnections(raw, options2 = {}) {
+  if (Array.isArray(raw)) {
+    if (options2.publicOnly) throw new Error("公开连接须使用通用目录格式");
+    return { connections: validateMediaConnections(raw) };
+  }
+  if (!raw || typeof raw !== "object" || !Array.isArray(raw.connections))
+    throw new Error("配音连接配置无效");
+  const value = raw;
+  if (value.connections.length > 1e3) throw new Error("配音连接配置过多");
+  const connections = [], seen = /* @__PURE__ */ new Set();
+  for (const c of value.connections) {
+    if (!c || c.tag !== "speech" || c.entry?.tag !== "speech" || c.adapterKind !== "openai" || typeof c.id !== "string" || seen.has(c.id) || typeof c.catalogId !== "string" || !c.preset || typeof c.model !== "string" || !c.model || (options2.publicOnly ? !c.hasCredentials : typeof c.apiKey !== "string" || !c.apiKey.trim()))
+      continue;
+    seen.add(c.id);
+    const fingerprint = typeof c.fingerprint === "string" && /^[a-f0-9]{32}$/.test(c.fingerprint) ? c.fingerprint : void 0;
+    if (options2.publicOnly && !fingerprint && typeof c.baseUrl !== "string") continue;
+    if (!options2.publicOnly) {
+      if (typeof c.baseUrl !== "string") continue;
+      let url;
+      try {
+        url = new URL(c.baseUrl);
+      } catch {
+        continue;
+      }
+      if (url.username || url.password || url.search || url.hash || !(url.protocol === "https:" || url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))
+        continue;
+    }
+    const params = Array.isArray(c.preset.params) ? c.preset.params : [], values = c.paramValues ?? {};
+    const voiceSpec = params.find((p) => p.name === "voice");
+    const voiceIds = voiceSpec?.control === "enum" ? voiceSpec.options ?? [] : typeof values.voice === "string" ? [values.voice] : [];
+    if (!Array.isArray(voiceIds)) continue;
+    const voices2 = [...new Set(voiceIds)].filter((v) => typeof v === "string" && Boolean(v.trim()) && v.length <= 200).slice(0, 64).map((id8) => ({ id: id8, name: id8, language: "und" }));
+    if (!voices2.length) continue;
+    const defaultVoiceId = values.voice ?? voiceSpec?.default ?? voices2[0].id;
+    if (!voices2.some((v) => v.id === defaultVoiceId)) continue;
+    const defaultRate = values.speed ?? params.find((p) => p.name === "speed")?.default ?? 1;
+    if (typeof defaultRate !== "number" || !Number.isFinite(defaultRate) || defaultRate < 0.5 || defaultRate > 2)
+      continue;
+    const supportsInstructions = params.some((p) => p.name === "instructions") && !["tts-1", "tts-1-hd"].includes(c.model);
+    const instructions = options2.publicOnly ? void 0 : values.instructions;
+    if (instructions !== void 0 && (typeof instructions !== "string" || instructions.length > 2e3 || instructions.trim() && !supportsInstructions))
+      continue;
+    const id7 = `speech-${options2.publicOnly && fingerprint ? fingerprint : createHash9("sha256").update(JSON.stringify([c.id, c.catalogId, c.model, c.baseUrl])).digest("hex").slice(0, 32)}`;
+    connections.push({
+      description: {
+        id: id7,
+        name: `${c.id} · ${c.preset.label ?? c.model}`.slice(0, 256),
+        provider: String(c.providerName ?? c.entry.displayName ?? c.entry.id ?? c.catalogId).slice(
+          0,
+          256
+        ),
+        available: true,
+        voices: voices2,
+        defaultVoiceId,
+        maxTextLength: 4096,
+        supportsInstructions
+      },
+      connectionId: c.id,
+      model: c.model,
+      baseUrl: options2.publicOnly ? "" : c.baseUrl,
+      apiKey: options2.publicOnly ? "" : c.apiKey,
+      defaultRate,
+      ...instructions?.trim() ? { defaultInstructions: instructions.trim() } : {}
+    });
+  }
+  const preferred = connections.find((c) => c.connectionId === value.defaults?.speech);
+  return { connections, ...preferred ? { defaultModelId: preferred.description.id } : {} };
+}
+
+// native/media/media-runtime.ts
+import { createReadStream as createReadStream10 } from "node:fs";
+import { access as access4, copyFile as copyFile8, lstat as lstat6, mkdir as mkdir16, realpath as realpath5, rm as rm20, stat as stat18 } from "node:fs/promises";
+import { homedir as homedir5 } from "node:os";
+import { basename as basename4, extname, join as join23, relative as relative5, resolve as resolve6, sep as sep5 } from "node:path";
+
+// native/media/media-audio-enhance.ts
+import { randomUUID as randomUUID13 } from "node:crypto";
+import { mkdir as mkdir10, rename as rename9, rm as rm13 } from "node:fs/promises";
+import { join as join17 } from "node:path";
+function validateAudioEnhanceInput(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    throw new Error("Audio enhancement parameters must be an object");
+  const input = raw;
+  if (Object.keys(input).some((key) => !["assetId", "preset", "denoise", "normalize"].includes(key)))
+    throw new Error("Unsupported audio enhancement parameter");
+  if (typeof input.assetId !== "string" || !/^(?:asset|external)-[a-f0-9]{64}$/.test(input.assetId))
+    throw new Error("Select an authorized source asset");
+  if (input.preset !== void 0 && input.preset !== "light" && input.preset !== "balanced")
+    throw new Error("Audio enhancement preset must be light or balanced");
+  for (const key of ["denoise", "normalize"])
+    if (input[key] !== void 0 && typeof input[key] !== "boolean")
+      throw new Error(`Invalid ${key} option`);
+  return {
+    assetId: input.assetId,
+    preset: input.preset ?? "balanced",
+    denoise: input.denoise !== false,
+    normalize: input.normalize !== false
+  };
+}
+var sourceOptions2 = [
+  "-protocol_whitelist",
+  "file,pipe",
+  "-format_whitelist",
+  "mov,matroska,webm,avi,mp3,wav,aiff,flac,ogg,aac"
+];
+function createAudioEnhanceProcessor(options2) {
+  const maxOutputBytes = options2.maxOutputBytes ?? 20 * 1024 ** 3;
+  if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 4096 || maxOutputBytes > 20 * 1024 ** 3)
+    throw new Error("Invalid enhanced audio file budget");
+  return {
+    recovery: "restart",
+    async run(raw, context2) {
+      const input = validateAudioEnhanceInput(raw);
+      context2.signal.throwIfAborted();
+      const source3 = await options2.resolveAssetPath(context2.scope, input.assetId);
+      const original = await inspectMediaFile(source3, context2, options2);
+      const duration2 = original.durationSeconds;
+      if (!original.audio || !duration2 || duration2 > 24 * 60 * 60 || original.audio.channels < 1 || original.audio.channels > 8)
+        throw new Error("Audio enhancement requires an audio stream up to 24 hours and 8 channels");
+      if (Math.ceil(duration2 * 48e3) * original.audio.channels * 2 + 4096 > maxOutputBytes)
+        throw new Error("Enhanced WAV would exceed the media file budget");
+      await mkdir10(context2.outputDir, { recursive: true });
+      const temporary = join17(context2.outputDir, `enhanced-${randomUUID13()}.partial.wav`);
+      const output = join17(context2.outputDir, `enhanced-${randomUUID13()}.wav`);
+      const baseFilters = [
+        // Keep the full source timeline, including a video whose audio begins late
+        // or ends early. first_pts pads leading audio gaps and apad fills its tail.
+        "aresample=48000:async=1:first_pts=0",
+        `highpass=f=${input.preset === "light" ? 60 : 80}:p=2`,
+        ...input.denoise ? [`afftdn=nr=${input.preset === "light" ? 6 : 12}:nf=-45:tn=1`] : [],
+        "apad",
+        `atrim=duration=${duration2}`
+      ];
+      const target = input.preset === "light" ? -18 : -16;
+      const loudness = `loudnorm=I=${target}:TP=-1.5:LRA=11`;
+      let normalization;
+      try {
+        if (input.normalize) {
+          await context2.reportProgress({
+            stage: "measure",
+            fraction: 0,
+            message: "Measuring source loudness"
+          });
+          const measured = await runMediaProcess(
+            options2.ffmpegPath ?? "ffmpeg",
+            [
+              "-hide_banner",
+              "-nostdin",
+              ...sourceOptions2,
+              "-i",
+              source3,
+              "-map",
+              "0:a:0",
+              "-vn",
+              "-sn",
+              "-dn",
+              "-af",
+              [...baseFilters, `${loudness}:print_format=json`].join(","),
+              "-f",
+              "null",
+              "-"
+            ],
+            { signal: context2.signal, maxStdoutBytes: 64 * 1024 }
+          );
+          const block = measured.stderr.match(/\{\s*"input_i"[\s\S]*?\}/)?.[0];
+          if (!block) throw new Error("FFmpeg did not return measured loudness");
+          const levels = JSON.parse(block);
+          const fields2 = {
+            measured_I: "input_i",
+            measured_LRA: "input_lra",
+            measured_TP: "input_tp",
+            measured_thresh: "input_thresh",
+            offset: "target_offset"
+          };
+          if (Object.values(fields2).every((key) => Number.isFinite(Number(levels[key]))))
+            normalization = `${loudness}:${Object.entries(fields2).map(([name, key]) => `${name}=${Number(levels[key])}`).join(":")}:linear=true`;
+        }
+        await context2.reportProgress({
+          stage: "enhance",
+          fraction: input.normalize ? 0.4 : 0,
+          message: "Creating enhanced audio"
+        });
+        const filters = [
+          ...baseFilters,
+          ...normalization ? [normalization] : [],
+          "alimiter=limit=0.891251:level=false:latency=true",
+          "aresample=48000",
+          "apad",
+          `atrim=duration=${duration2}`
+        ];
+        await runMediaProcess(
+          options2.ffmpegPath ?? "ffmpeg",
+          [
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            ...sourceOptions2,
+            "-i",
+            source3,
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-sn",
+            "-dn",
+            "-af",
+            filters.join(","),
+            "-ar",
+            "48000",
+            "-ac",
+            String(original.audio.channels),
+            "-c:a",
+            "pcm_s16le",
+            "-rf64",
+            "auto",
+            "-map_metadata",
+            "-1",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            "-n",
+            temporary
+          ],
+          {
+            signal: context2.signal,
+            durationSeconds: duration2,
+            onProgress: (progress2) => context2.reportProgress({
+              stage: "enhance",
+              fraction: (input.normalize ? 0.4 : 0) + (progress2.fraction ?? 0) * (input.normalize ? 0.55 : 0.95)
+            })
+          }
+        );
+        const inspection = await inspectMediaFile(temporary, context2, options2);
+        if (inspection.kind !== "audio" || inspection.audio?.sampleRate !== 48e3 || inspection.audio.channels !== original.audio.channels || !inspection.durationSeconds || Math.abs(inspection.durationSeconds - duration2) > Math.max(1 / 30, duration2 * 1e-5))
+          throw new Error("Enhanced audio did not preserve its source duration and channels");
+        context2.signal.throwIfAborted();
+        await rename9(temporary, output);
+        const asset2 = await options2.publishArtifact(context2.scope, output, "audio/wav", context2);
+        context2.signal.throwIfAborted();
+        await context2.reportProgress({
+          stage: "complete",
+          fraction: 1,
+          message: "Enhanced audio is ready"
+        });
+        return {
+          asset: asset2,
+          inspection,
+          provenance: {
+            sourceAssetId: input.assetId,
+            preset: input.preset,
+            denoise: input.denoise,
+            normalize: input.normalize,
+            processor: "ffmpeg-audio-enhance",
+            version: 1
+          }
+        };
+      } finally {
+        await Promise.all(
+          [temporary, output].map((path) => rm13(path, { force: true }).catch(() => {
+          }))
+        );
+      }
+    }
+  };
+}
+
+// native/media/media-audio-extract.ts
+import { randomUUID as randomUUID14 } from "node:crypto";
+import { mkdir as mkdir11, rename as rename10, rm as rm14 } from "node:fs/promises";
+import { join as join18 } from "node:path";
+function validateAudioExtractInput(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    throw new Error("请选择要提取的本人录音片段");
+  const input = raw;
+  if (Object.keys(input).some((key) => !["assetId", "inFrame", "outFrame", "fps"].includes(key)))
+    throw new Error("不支持此参考录音提取参数");
+  if (typeof input.assetId !== "string" || !/^(?:asset|external)-[a-f0-9]{64}$/.test(input.assetId))
+    throw new Error("请选择当前项目已保存的素材");
+  for (const key of ["inFrame", "outFrame"])
+    if (typeof input[key] !== "number" || !Number.isSafeInteger(input[key]) || input[key] < 0 || input[key] > 24 * 3600 * 30)
+      throw new Error("参考片段的起止位置无效");
+  if (input.fps !== 30) throw new Error("参考片段须使用 30 fps 时间基准");
+  const inFrame = input.inFrame, outFrame = input.outFrame;
+  if (outFrame - inFrame < 90 || outFrame - inFrame > 900)
+    throw new Error("本人声音参考片段需要 3–30 秒");
+  return { assetId: input.assetId, inFrame, outFrame, fps: 30 };
+}
+function createAudioExtractProcessor(options2) {
+  return {
+    recovery: "restart",
+    async run(raw, context2) {
+      const input = validateAudioExtractInput(raw);
+      try {
+        context2.signal.throwIfAborted();
+        const source3 = await options2.resolveAssetPath(context2.scope, input.assetId);
+        const original = await inspectMediaFile(source3, context2, options2);
+        if (!original.audio || !original.durationSeconds || original.audio.channels < 1 || original.audio.channels > 8)
+          throw new Error("这个素材没有可用的声音，请选择本人录音或带原声的视频");
+        if (input.outFrame / 30 > original.durationSeconds + 1 / 60)
+          throw new Error("参考片段超出原始素材时长，请重新选择起止位置");
+        const duration2 = (input.outFrame - input.inFrame) / 30;
+        await mkdir11(context2.outputDir, { recursive: true });
+        const temporary = join18(context2.outputDir, `reference-${randomUUID14()}.partial.wav`);
+        const output = join18(context2.outputDir, `reference-${randomUUID14()}.wav`);
+        try {
+          await context2.reportProgress({
+            stage: "extract",
+            fraction: 0,
+            message: "正在提取选中的本人录音片段"
+          });
+          await runMediaProcess(
+            options2.ffmpegPath ?? "ffmpeg",
+            [
+              "-hide_banner",
+              "-loglevel",
+              "error",
+              "-nostdin",
+              "-protocol_whitelist",
+              "file,pipe",
+              "-format_whitelist",
+              "mov,matroska,webm,avi,mp3,wav,aiff,flac,ogg,aac",
+              "-ss",
+              String(input.inFrame / 30),
+              "-i",
+              source3,
+              "-map",
+              "0:a:0",
+              "-vn",
+              "-sn",
+              "-dn",
+              // Accurate input seeking avoids decoding hours before a late selection.
+              // FFmpeg shifts source timestamps by the seek position. Keep any remaining
+              // leading audio gap, then retain precisely 1600 samples per selected frame.
+              "-af",
+              [
+                "aresample=48000:async=1:first_pts=0",
+                "apad",
+                `atrim=end_sample=${(input.outFrame - input.inFrame) * 1600}`,
+                "asetpts=PTS-STARTPTS"
+              ].join(","),
+              "-t",
+              String(duration2),
+              "-ar",
+              "48000",
+              "-ac",
+              "1",
+              "-c:a",
+              "pcm_s16le",
+              "-map_metadata",
+              "-1",
+              "-progress",
+              "pipe:1",
+              "-nostats",
+              "-n",
+              temporary
+            ],
+            {
+              signal: context2.signal,
+              durationSeconds: duration2,
+              onProgress: (progress2) => context2.reportProgress({
+                stage: "extract",
+                fraction: (progress2.fraction ?? 0) * 0.95
+              })
+            }
+          );
+          const inspection = await inspectMediaFile(temporary, context2, options2);
+          if (inspection.kind !== "audio" || inspection.audio?.sampleRate !== 48e3 || inspection.audio.channels !== 1 || !inspection.durationSeconds || Math.abs(inspection.durationSeconds - duration2) > 1 / 48e3 + 1e-6)
+            throw new Error("参考录音提取未保留完整片段，请重试");
+          context2.signal.throwIfAborted();
+          await rename10(temporary, output);
+          const asset2 = await options2.publishArtifact(context2.scope, output, "audio/wav", context2);
+          context2.signal.throwIfAborted();
+          await context2.reportProgress({
+            stage: "complete",
+            fraction: 1,
+            message: "参考录音片段已保存"
+          });
+          return {
+            asset: asset2,
+            inspection,
+            provenance: {
+              sourceAssetId: input.assetId,
+              inFrame: input.inFrame,
+              outFrame: input.outFrame,
+              fps: 30,
+              processor: "ffmpeg-audio-extract",
+              version: 1
+            }
+          };
+        } finally {
+          await Promise.all(
+            [temporary, output].map((path) => rm14(path, { force: true }).catch(() => {
+            }))
+          );
+        }
+      } catch (error) {
+        if (context2.signal.aborted) throw mediaAbortError();
+        const message = error instanceof Error ? error.message : "";
+        const publicMessages = [
+          "这个素材没有可用的声音，请选择本人录音或带原声的视频",
+          "参考片段超出原始素材时长，请重新选择起止位置",
+          "参考录音提取未保留完整片段，请重试"
+        ];
+        throw new Error(
+          publicMessages.includes(message) ? message : "参考录音提取失败，请检查素材是否可播放，以及本机音频处理工具是否就绪",
+          { cause: error }
+        );
+      }
+    }
+  };
+}
+
+// native/media/media-tts-providers.ts
+import { createHash as createHash11, randomUUID as randomUUID16 } from "node:crypto";
+import { createReadStream as createReadStream8 } from "node:fs";
+import {
+  copyFile as copyFile6,
+  mkdir as mkdir13,
+  open as open6,
+  readFile as readFile8,
+  rename as rename12,
+  rm as rm17,
+  stat as stat15,
+  statfs as statfs3,
+  writeFile as writeFile7
+} from "node:fs/promises";
+import { totalmem as totalmem3 } from "node:os";
+import { isAbsolute as isAbsolute10, join as join20, resolve as resolve4 } from "node:path";
+import { StringDecoder as StringDecoder3 } from "node:string_decoder";
+
+// native/media/media-tts-provider-script.ts
+var MANAGED_TTS_SCRIPT = String.raw`
+import asyncio, importlib.metadata, json, os, pathlib, re, socket, sys
+
+request = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+provider = request["providerId"]
+action = request["action"]
+def emit(value):
+    print(json.dumps(value, ensure_ascii=False), flush=True)
+
+if provider == "edge-tts":
+    import edge_tts
+    async def edge():
+        if action == "probe":
+            emit({"result": {"version": importlib.metadata.version("edge-tts")}})
+        elif action == "voices":
+            voices = await edge_tts.list_voices()
+            emit({"result": {"voices": [{"id": v["ShortName"], "name": v.get("FriendlyName", v["ShortName"]), "language": v["Locale"]} for v in voices]}})
+        elif action == "generate":
+            rate = f'{round((request["rate"] - 1) * 100):+d}%'
+            speak = edge_tts.Communicate(request["text"], request["voiceId"], rate=rate)
+            count = 0
+            with open(request["output"], "wb") as output:
+                async for chunk in speak.stream():
+                    if chunk["type"] == "audio":
+                        count += len(chunk["data"])
+                        if count > 64 * 1024 * 1024:
+                            raise ValueError("Audio exceeds its bounded download budget")
+                        output.write(chunk["data"])
+                        emit({"progress": {"stage": "speech", "message": "正在接收在线配音", "bytes": count}})
+            emit({"result": {"bytes": count}})
+        else:
+            raise ValueError("Unsupported action")
+    asyncio.run(edge())
+elif provider == "kokoro":
+    # Local generation must never silently fetch a model or contact an online provider.
+    def offline(*args, **kwargs):
+        raise RuntimeError("Kokoro synthesis is offline; network access is disabled")
+    socket.create_connection = offline
+    socket.socket.connect = offline
+    socket.socket.connect_ex = offline
+    import numpy as np
+    import kokoro_onnx
+    import soundfile as sf
+    from misaki.zh import ZHG2P
+    if action == "probe":
+        emit({"result": {"version": importlib.metadata.version("kokoro-onnx"), "frontend": importlib.metadata.version("misaki")}})
+    elif action == "voices":
+        with np.load(request["voicesPath"], allow_pickle=False) as voices:
+            supported = []
+            for name in sorted(voices.files):
+                language = "zh-CN" if name.startswith("z") else "en-US" if name.startswith("a") else "en-GB" if name.startswith("b") else None
+                if language:
+                    supported.append({"id": name, "name": name, "language": language})
+            emit({"result": {"voices": supported}})
+    elif action == "generate":
+        import onnxruntime as ort
+        from kokoro_onnx.tokenizer import Tokenizer
+        config = ort.SessionOptions()
+        config.intra_op_num_threads = min(4, os.cpu_count() or 1)
+        config.inter_op_num_threads = 1
+        session = ort.InferenceSession(request["modelPath"], sess_options=config, providers=["CPUExecutionProvider"])
+        model = kokoro_onnx.Kokoro.from_session(session, request["voicesPath"])
+        voice = request["voiceId"]
+        segments = [s.strip() for s in re.split(r"(?<=[。！？.!?；;])|\n+", request["text"]) if s.strip()]
+        parts = []
+        frames = 0
+        zh = ZHG2P() if voice.startswith("z") else None
+        for index, segment in enumerate(segments):
+            if zh:
+                # Keep English insertions pronounceable instead of passing Latin letters as IPA.
+                phonemes = ""
+                for piece in re.findall(r"[A-Za-z][A-Za-z '\-]*|[^A-Za-z]+", segment):
+                    phonemes += (model.tokenizer.phonemize(piece, "en-us") if re.match(r"[A-Za-z]", piece) else zh(piece)[0]) + " "
+                samples, sr = model.create(phonemes, voice=voice, speed=request["rate"], is_phonemes=True)
+            else:
+                if re.search(r"[\u4e00-\u9fff]", segment):
+                    raise ValueError("Choose a Chinese voice for Chinese text")
+                samples, sr = model.create(segment, voice=voice, speed=request["rate"], lang="en-gb" if voice.startswith("b") else "en-us")
+            frames += len(samples)
+            if frames > 24000 * 1800:
+                raise ValueError("Speech exceeds 30 minutes")
+            parts.append(samples)
+            emit({"progress": {"fraction": 0.1 + 0.7 * (index + 1) / len(segments), "stage": "speech", "message": "正在本地生成配音"}})
+        if not parts:
+            raise ValueError("No spoken text")
+        audio = np.concatenate(parts)
+        if not np.isfinite(audio).all() or np.max(np.abs(audio)) < 0.0001:
+            raise ValueError("Speech output is empty or silent")
+        sf.write(request["output"], audio, 24000, subtype="PCM_16")
+        emit({"result": {"durationSeconds": len(audio) / 24000}})
+    else:
+        raise ValueError("Unsupported action")
+else:
+    raise ValueError("Unsupported provider")
+`;
+
+// native/media/media-tts-setup-cleanup.ts
+import { rm as rm15 } from "node:fs/promises";
+async function releaseManagedTtsSetupResources(lock, lockPath, sample2, primaryFailure) {
+  const failures = [];
+  const attempt = async (cleanup) => {
+    try {
+      await cleanup();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  if (lock) {
+    await attempt(() => lock.close());
+    await attempt(() => rm15(lockPath, { force: true }));
+  }
+  if (sample2) await attempt(() => rm15(sample2, { force: true }));
+  if (failures.length === 0) return;
+  if (primaryFailure) {
+    primaryFailure.cause = new AggregateError(
+      [...primaryFailure.cause === void 0 ? [] : [primaryFailure.cause], ...failures],
+      "Managed speech setup failed and resource cleanup also failed"
+    );
+  } else {
+    throw new AggregateError(failures, "Managed speech setup resource cleanup failed");
+  }
+}
+
+// native/media/media-tts.ts
+import { createHash as createHash10, randomUUID as randomUUID15 } from "node:crypto";
+import { createReadStream as createReadStream7 } from "node:fs";
+import { copyFile as copyFile5, mkdir as mkdir12, readFile as readFile7, rename as rename11, rm as rm16, stat as stat14, writeFile as writeFile6 } from "node:fs/promises";
+import { release } from "node:os";
+import { join as join19 } from "node:path";
+var CACHE_VERSION2 = 1;
+var MAX_AUDIO_SECONDS = 30 * 60;
+var MAX_WAV_BYTES = MAX_AUDIO_SECONDS * 48e3 * 2 + 4096;
+function validateLocalTtsInput2(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("配音参数必须是对象");
+  const input = raw;
+  if (typeof input.text !== "string") throw new Error("请输入配音文字");
+  const text7 = input.text.replace(/\r\n?/g, "\n").trim();
+  if (!text7 || Array.from(text7).length > 6e3) throw new Error("配音文字须为 1 至 6000 字");
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text7) || /\[\[|\]\]/.test(text7))
+    throw new Error("配音仅支持普通文字，不支持语音控制标记或控制字符");
+  let voiceId;
+  if (input.voiceId !== void 0) {
+    if (typeof input.voiceId !== "string" || !input.voiceId.trim() || input.voiceId.length > 200)
+      throw new Error("声音标识无效");
+    voiceId = input.voiceId.trim();
+  }
+  const rate2 = input.rate === void 0 ? 1 : input.rate;
+  if (typeof rate2 !== "number" || !Number.isFinite(rate2) || rate2 < 0.5 || rate2 > 2)
+    throw new Error("语速须在 0.5 至 2 倍之间");
+  return { text: text7, ...voiceId ? { voiceId } : {}, rate: rate2 };
+}
+async function detectLocalTts(options2 = {}) {
+  if (options2.signal?.aborted) throw mediaAbortError();
+  if (process.platform !== "darwin")
+    return {
+      available: false,
+      engine: "unavailable",
+      voices: [],
+      reason: "当前内置配音使用 macOS 系统声音；此系统暂不支持本地配音"
+    };
+  const signal = options2.signal ?? AbortSignal.timeout(1e4);
+  const say = options2.sayPath ?? "/usr/bin/say";
+  try {
+    const [listed, binary, ffmpeg, ffprobe] = await Promise.all([
+      runMediaProcess(say, ["-v", "?"], { signal, maxStdoutBytes: 256 * 1024 }),
+      stat14(say),
+      runMediaProcess(options2.ffmpegPath ?? "ffmpeg", ["-version"], { signal }),
+      runMediaProcess(options2.ffprobePath ?? "ffprobe", ["-version"], { signal })
+    ]);
+    const voices2 = [];
+    for (const line of listed.stdout.toString("utf8").split(/\r?\n/)) {
+      const match = /^(.+?)\s+([a-z]{2,3}_[A-Z0-9]{2,3})\s+#/.exec(line);
+      if (match) voices2.push({ id: match[1].trim(), name: match[1].trim(), language: match[2] });
+    }
+    if (!voices2.length) throw new Error("未发现已安装的系统声音");
+    const preferred = voices2.find((voice) => voice.id === "Tingting") ?? voices2.find((voice) => voice.language === "zh_CN") ?? voices2.find((voice) => voice.id === "Samantha") ?? voices2[0];
+    return {
+      available: true,
+      engine: "macos-say",
+      version: [
+        `macOS-${release()}`,
+        `say-${binary.size}-${binary.mtimeMs}`,
+        ffmpeg.stdout.toString("utf8").split("\n")[0],
+        ffprobe.stdout.toString("utf8").split("\n")[0]
+      ].join("; "),
+      voices: voices2,
+      defaultVoiceId: preferred.id
+    };
+  } catch (error) {
+    if (options2.signal?.aborted) throw mediaAbortError();
+    return {
+      available: false,
+      engine: "unavailable",
+      voices: [],
+      reason: `本地配音需要已安装的系统声音、FFmpeg 和 ffprobe：${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+async function digestFile(path, signal) {
+  const hash4 = createHash10("sha256");
+  for await (const chunk of createReadStream7(path, { signal })) hash4.update(chunk);
+  return hash4.digest("hex");
+}
+async function inspectWav(path, signal, options2) {
+  const info = await stat14(path);
+  if (!info.isFile() || info.size <= 44 || info.size > MAX_WAV_BYTES)
+    throw new Error("系统未生成有效或大小合适的语音文件");
+  const probe = await runMediaProcess(
+    options2.ffprobePath ?? "ffprobe",
+    [
+      "-v",
+      "error",
+      "-protocol_whitelist",
+      "file,pipe",
+      "-format_whitelist",
+      "wav",
+      "-show_entries",
+      "format=duration:stream=codec_type,codec_name,sample_rate,channels",
+      "-of",
+      "json",
+      path
+    ],
+    { signal }
+  );
+  const result = JSON.parse(probe.stdout.toString("utf8"));
+  const audio2 = result.streams?.find(
+    (stream) => stream.codec_type === "audio"
+  );
+  const durationSeconds = Number(result.format?.duration);
+  if (!audio2 || audio2.codec_name !== "pcm_s16le" || Number(audio2.sample_rate) !== 48e3 || audio2.channels !== 1 || !Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > MAX_AUDIO_SECONDS)
+    throw new Error("系统配音不是有效的 48kHz 单声道 WAV，或超过 30 分钟");
+  return { durationSeconds, bytes: info.size };
+}
+async function generateLocalTts(raw, context2, options2 = {}) {
+  const input = validateLocalTtsInput2(raw);
+  if (context2.signal.aborted) throw mediaAbortError();
+  const deadline = AbortSignal.timeout(18e4);
+  const signal = AbortSignal.any([context2.signal, deadline]);
+  const runtime = await detectLocalTts({ ...options2, signal });
+  if (!runtime.available) throw new Error(runtime.reason);
+  const voice = runtime.voices.find(
+    (item) => item.id === (input.voiceId ?? runtime.defaultVoiceId)
+  );
+  if (!voice) throw new Error("所选声音未安装，请选择列表中的系统声音");
+  const cacheKey = createHash10("sha256").update(
+    JSON.stringify({
+      version: CACHE_VERSION2,
+      runtime: runtime.version,
+      voice,
+      text: input.text,
+      rate: input.rate
+    })
+  ).digest("hex");
+  const nonce = randomUUID15();
+  const output = join19(context2.outputDir, `speech-${nonce}.wav`);
+  const textPath = join19(context2.workDir, `speech-${nonce}.txt`);
+  const aiff = join19(context2.workDir, `speech-${nonce}.aiff`);
+  const partial = join19(context2.outputDir, `speech-${nonce}.partial.wav`);
+  const cacheWav = join19(context2.cacheDir, `tts-${cacheKey}.wav`);
+  const cacheJson = join19(context2.cacheDir, `tts-${cacheKey}.json`);
+  const cacheTemp = join19(context2.cacheDir, `tts-${cacheKey}-${nonce}.tmp.wav`);
+  const metadataTemp = join19(context2.cacheDir, `tts-${cacheKey}-${nonce}.tmp.json`);
+  let completed = false;
+  try {
+    for (const directory2 of [context2.workDir, context2.outputDir, context2.cacheDir])
+      await mkdir12(directory2, { recursive: true });
+    await context2.reportProgress({
+      fraction: 0.03,
+      stage: "speech",
+      message: "检查系统声音与配音缓存"
+    });
+    let cachedMetadata;
+    try {
+      if ((await stat14(cacheJson)).size > 4096) throw new Error("Oversized speech cache metadata");
+      const cached = JSON.parse(await readFile7(cacheJson, "utf8"));
+      const metadata2 = await inspectWav(cacheWav, signal, options2);
+      if (cached.version !== CACHE_VERSION2 || cached.cacheKey !== cacheKey || cached.bytes !== metadata2.bytes || cached.durationSeconds !== metadata2.durationSeconds || cached.sha256 !== await digestFile(cacheWav, signal))
+        throw new Error("Stale speech cache");
+      cachedMetadata = metadata2;
+    } catch (error) {
+      if (signal.aborted) throw error;
+    }
+    if (cachedMetadata) {
+      await copyFile5(cacheWav, partial);
+      if (signal.aborted) throw mediaAbortError();
+      await rename11(partial, output);
+      await context2.reportProgress({
+        fraction: 1,
+        stage: "speech",
+        message: "已复用相同文字的本地配音"
+      });
+      if (signal.aborted) throw mediaAbortError();
+      completed = true;
+      return {
+        path: output,
+        mimeType: "audio/wav",
+        engine: "macos-say",
+        voice,
+        rate: input.rate,
+        durationSeconds: cachedMetadata.durationSeconds,
+        sampleRate: 48e3,
+        channels: 1,
+        cached: true,
+        cacheKey
+      };
+    }
+    await writeFile6(textPath, input.text, { encoding: "utf8", mode: 384, flag: "wx" });
+    await context2.reportProgress({
+      fraction: 0.12,
+      stage: "synthesize",
+      message: `正在用 ${voice.name} 生成配音`
+    });
+    await observeModelCall(
+      {
+        provider: "macos-speech",
+        model: voice.id,
+        purpose: "tts",
+        input: {
+          messages: [{ role: "user", content: input.text }],
+          parameters: {
+            voice: voice.id,
+            wordsPerMinute: Math.round(175 * input.rate),
+            capture: { recording: "logical-input", omitted: "binary-data-and-private-paths" }
+          }
+        }
+      },
+      () => runMediaProcess(
+        options2.sayPath ?? "/usr/bin/say",
+        ["-v", voice.id, "-r", String(Math.round(175 * input.rate)), "-f", textPath, "-o", aiff],
+        { signal }
+      ),
+      { signal, output: () => ({ data: { mimeType: "audio/aiff", binaryContent: "omitted" } }) }
+    );
+    await context2.reportProgress({ fraction: 0.7, stage: "encode", message: "正在整理语音音轨" });
+    await runMediaProcess(
+      options2.ffmpegPath ?? "ffmpeg",
+      [
+        "-nostdin",
+        "-v",
+        "error",
+        "-y",
+        "-protocol_whitelist",
+        "file,pipe",
+        "-format_whitelist",
+        "aiff",
+        "-i",
+        aiff,
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-af",
+        "loudnorm=I=-18:TP=-2:LRA=11",
+        "-ar",
+        "48000",
+        "-ac",
+        "1",
+        "-c:a",
+        "pcm_s16le",
+        partial
+      ],
+      { signal }
+    );
+    const metadata = await inspectWav(partial, signal, options2);
+    const sha2562 = await digestFile(partial, signal);
+    await copyFile5(partial, cacheTemp);
+    await writeFile6(
+      metadataTemp,
+      JSON.stringify({ version: CACHE_VERSION2, cacheKey, sha256: sha2562, ...metadata }),
+      { mode: 384, flag: "wx" }
+    );
+    if (signal.aborted) throw mediaAbortError();
+    await rename11(cacheTemp, cacheWav);
+    await rename11(metadataTemp, cacheJson);
+    await rename11(partial, output);
+    await context2.reportProgress({ fraction: 1, stage: "speech", message: "本地配音已生成" });
+    if (signal.aborted) throw mediaAbortError();
+    completed = true;
+    return {
+      path: output,
+      mimeType: "audio/wav",
+      engine: "macos-say",
+      voice,
+      rate: input.rate,
+      durationSeconds: metadata.durationSeconds,
+      sampleRate: 48e3,
+      channels: 1,
+      cached: false,
+      cacheKey
+    };
+  } catch (error) {
+    if (context2.signal.aborted) throw mediaAbortError();
+    if (deadline.aborted)
+      throw new Error("系统配音超过 3 分钟处理时限，请缩短文字后重试", { cause: error });
+    throw error;
+  } finally {
+    await Promise.all(
+      [textPath, aiff, partial, cacheTemp, metadataTemp, ...completed ? [] : [output]].map(
+        (path) => rm16(path, { force: true })
+      )
+    );
+  }
+}
+
+// native/media/media-tts-providers.ts
+var VERSION = 1;
+var SCRIPT_HASH3 = createHash11("sha256").update(MANAGED_TTS_SCRIPT).digest("hex");
+var PACKAGES3 = {
+  "edge-tts": ["edge-tts==7.3.1"],
+  kokoro: ["kokoro-onnx==0.6.1", "misaki[zh]==0.9.4", "soundfile==0.14.0", "onnxruntime==1.29.0"]
+};
+var RESOURCES2 = [
+  {
+    name: "kokoro-v1.0.onnx",
+    reuse: "models",
+    bytes: 325532387,
+    sha256: "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5"
+  },
+  {
+    name: "voices-v1.0.bin",
+    reuse: "voices",
+    bytes: 28214398,
+    sha256: "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"
+  }
+];
+var setupOwners = /* @__PURE__ */ new Set();
+function validateManagedTtsProviderId(raw) {
+  if (raw !== "edge-tts" && raw !== "kokoro")
+    throw new Error("仅支持白名单中的 Edge TTS 或 Kokoro");
+  return raw;
+}
+function validateManagedTtsInput(raw) {
+  const normalized2 = validateLocalTtsInput2(raw);
+  const providerId = validateManagedTtsProviderId(raw.providerId);
+  if (!/[\p{L}\p{N}]/u.test(normalized2.text)) throw new Error("配音文字至少需要一个可朗读的字词");
+  return { providerId, ...normalized2 };
+}
+async function digest5(path, signal) {
+  const hash4 = createHash11("sha256");
+  for await (const chunk of createReadStream8(path, { signal })) hash4.update(chunk);
+  return hash4.digest("hex");
+}
+async function jsonFile(path, maxBytes = 256 * 1024) {
+  if ((await stat15(path)).size > maxBytes) throw new Error("Runtime metadata exceeds its budget");
+  return JSON.parse(await readFile8(path, "utf8"));
+}
+async function atomicJson(path, value) {
+  const temporary = `${path}-${randomUUID16()}.partial`;
+  try {
+    await writeFile7(temporary, JSON.stringify(value), { mode: 384 });
+    await rename12(temporary, path);
+  } finally {
+    await rm17(temporary, { force: true });
+  }
+}
+async function downloadResource(resource, target, context2, signal) {
+  let url = `https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/${resource.name}`;
+  let response;
+  for (let redirects = 0; redirects <= 4; redirects++) {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || ![
+      "github.com",
+      "release-assets.githubusercontent.com",
+      "objects.githubusercontent.com"
+    ].includes(parsed.hostname))
+      throw new Error("模型下载地址不在受信任的发布源内");
+    response = await fetch(url, { signal, redirect: "manual" });
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      const location = response.headers.get("location");
+      await response.body?.cancel();
+      if (!location) throw new Error("模型下载重定向无效");
+      url = new URL(location, url).href;
+    } else break;
+  }
+  if (!response?.ok || !response.body) throw new Error("模型下载失败，请检查网络后重试");
+  const declared = Number(response.headers.get("content-length"));
+  if (declared && declared !== resource.bytes) {
+    await response.body.cancel();
+    throw new Error("模型下载大小与固定版本不一致");
+  }
+  const partial = `${target}-${randomUUID16()}.partial`;
+  const handle = await open6(partial, "wx", 384);
+  const reader = response.body.getReader();
+  let bytes = 0;
+  let last = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > resource.bytes) throw new Error("模型下载超出固定大小预算");
+      let written = 0;
+      while (written < value.byteLength) {
+        const chunk = await handle.write(value.subarray(written));
+        if (!chunk.bytesWritten) throw new Error("模型文件写入失败");
+        written += chunk.bytesWritten;
+      }
+      if (Date.now() - last > 250) {
+        last = Date.now();
+        await context2.reportProgress({
+          fraction: 0.3 + 0.35 * bytes / resource.bytes,
+          stage: "download",
+          message: `正在下载 ${resource.name}：${Math.round(bytes / 1048576)} / ${Math.round(resource.bytes / 1048576)} MB`
+        });
+      }
+    }
+    await handle.close();
+    if (bytes !== resource.bytes || await digest5(partial, signal) !== resource.sha256)
+      throw new Error("模型校验失败，未启用该资源");
+    if (signal.aborted) throw mediaAbortError();
+    await rename12(partial, target);
+  } finally {
+    await reader.cancel().catch(() => {
+    });
+    await handle.close().catch(() => {
+    });
+    await rm17(partial, { force: true });
+  }
+}
+function createManagedTtsProviders(options2) {
+  if (!isAbsolute10(options2.runtimeDir))
+    throw new Error("TTS runtimeDir must be an absolute Host path");
+  const root = resolve4(options2.runtimeDir);
+  const directory2 = (id7) => join20(root, id7);
+  const python = (id7) => join20(directory2(id7), "venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+  const script2 = (id7) => join20(directory2(id7), "runner.py");
+  const manifestPath = (id7) => join20(directory2(id7), "runtime.json");
+  const isolatedEnvironment = () => {
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) {
+      if (/^(UV_|PIP_|PYTHON|VIRTUAL_ENV|CONDA|PHONEMIZER_ESPEAK_LIBRARY)/i.test(key))
+        delete env[key];
+    }
+    return {
+      ...env,
+      UV_CACHE_DIR: join20(root, "package-cache"),
+      UV_NO_CONFIG: "1",
+      PYTHONNOUSERSITE: "1"
+    };
+  };
+  function baseStatus(id7) {
+    return {
+      id: id7,
+      name: id7 === "kokoro" ? "Kokoro 本地声音" : "Edge 在线声音（第三方客户端）",
+      mode: id7 === "kokoro" ? "offline" : "online",
+      state: "not-installed",
+      available: false,
+      installed: false,
+      voices: [],
+      downloadBytes: id7 === "kokoro" ? 550 * 1048576 : 25 * 1048576,
+      requiredDiskBytes: id7 === "kokoro" ? 2 * 1024 ** 3 : 256 * 1048576
+    };
+  }
+  async function loadManifest2(id7) {
+    const value = await jsonFile(manifestPath(id7));
+    if (value.version !== VERSION || value.scriptHash !== SCRIPT_HASH3 || JSON.stringify(value.packages) !== JSON.stringify(PACKAGES3[id7]) || !Array.isArray(value.voices) || !value.voices.length || value.voices.length > 2e3 || value.voices.some(
+      (v) => typeof v.id !== "string" || typeof v.name !== "string" || typeof v.language !== "string"
+    ) || !value.voices.some((v) => v.id === value.defaultVoiceId))
+      throw new Error("Stale runtime manifest");
+    return value;
+  }
+  async function status(rawId, signal) {
+    const id7 = validateManagedTtsProviderId(rawId);
+    if (signal?.aborted) throw mediaAbortError();
+    const result = baseStatus(id7);
+    if (!["darwin", "linux"].includes(process.platform) || !["arm64", "x64"].includes(process.arch))
+      return {
+        ...result,
+        state: "unavailable",
+        reason: "当前安装器仅支持 macOS / Linux 的 ARM64 或 x64；请使用其他已配置声音"
+      };
+    if (id7 === "kokoro" && totalmem3() < 4 * 1024 ** 3)
+      return { ...result, state: "unavailable", reason: "Kokoro 本地推理至少需要 4 GB 内存" };
+    try {
+      result.installed = (await stat15(python(id7))).isFile();
+    } catch {
+    }
+    if (setupOwners.has(directory2(id7)))
+      return { ...result, state: "installing", reason: "正在准备并验证声音资源" };
+    try {
+      const manifest = await loadManifest2(id7);
+      if (!result.installed || await readFile8(script2(id7), "utf8") !== MANAGED_TTS_SCRIPT)
+        throw new Error("Incomplete runtime");
+      if (id7 === "kokoro") {
+        for (const resource of RESOURCES2)
+          if ((await stat15(join20(directory2(id7), resource.name))).size !== resource.bytes)
+            throw new Error("Incomplete model");
+      }
+      return {
+        ...result,
+        state: manifest.state,
+        available: manifest.state === "ready",
+        voices: manifest.voices,
+        defaultVoiceId: manifest.defaultVoiceId,
+        reason: manifest.reason,
+        verifiedAt: manifest.verifiedAt,
+        version: PACKAGES3[id7].join("; ")
+      };
+    } catch {
+      let reason;
+      try {
+        reason = (await jsonFile(join20(directory2(id7), "failure.json"), 4096)).reason;
+      } catch {
+      }
+      return {
+        ...result,
+        state: reason ? "failed" : result.installed ? "needs-setup" : "not-installed",
+        reason: reason ?? "需要准备客户端与声音资源；完成短句验证后才能使用"
+      };
+    }
+  }
+  async function executeRuntime(id7, data, context2, signal) {
+    await mkdir13(context2.workDir, { recursive: true });
+    const requestPath = join20(context2.workDir, `tts-request-${randomUUID16()}.json`);
+    await writeFile7(
+      requestPath,
+      JSON.stringify({
+        providerId: id7,
+        modelPath: join20(directory2(id7), RESOURCES2[0].name),
+        voicesPath: join20(directory2(id7), RESOURCES2[1].name),
+        ...data
+      }),
+      { mode: 384 }
+    );
+    let buffer = "";
+    const decoder = new StringDecoder3("utf8");
+    let result;
+    let last = 0;
+    let progress2 = Promise.resolve();
+    try {
+      await runMediaProcess(python(id7), ["-I", script2(id7), requestPath], {
+        signal,
+        env: isolatedEnvironment(),
+        onStdout(chunk) {
+          buffer += decoder.write(chunk);
+          if (Buffer.byteLength(buffer) > 1024 * 1024)
+            throw new Error("TTS runtime response exceeds budget");
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            let value;
+            try {
+              value = JSON.parse(line);
+            } catch {
+              continue;
+            }
+            if (value.result) result = value.result;
+            if (value.progress && Date.now() - last > 250) {
+              last = Date.now();
+              const update2 = value.progress;
+              progress2 = progress2.then(
+                () => context2.reportProgress({
+                  fraction: typeof update2.fraction === "number" ? update2.fraction : void 0,
+                  stage: "speech",
+                  message: id7 === "kokoro" ? "正在本地生成配音" : "正在接收在线配音"
+                })
+              );
+              void progress2.catch(() => {
+              });
+            }
+          }
+        }
+      });
+      await progress2;
+      if (!result) throw new Error("TTS runtime did not return a complete result");
+      return result;
+    } finally {
+      await progress2.catch(() => {
+      });
+      await rm17(requestPath, { force: true });
+    }
+  }
+  async function execute(id7, data, context2, signal) {
+    const run2 = () => executeRuntime(id7, data, context2, signal);
+    if (data.action !== "generate") return run2();
+    return observeModelCall(
+      {
+        provider: id7 === "kokoro" ? "local-onnx" : "edge-tts",
+        model: id7 === "kokoro" ? "kokoro-v1.0" : String(data.voiceId),
+        purpose: "tts",
+        input: {
+          messages: [{ role: "user", content: data.text }],
+          parameters: {
+            action: "generate",
+            text: data.text,
+            voice: data.voiceId,
+            rate: data.rate,
+            capture: { recording: "logical-input", omitted: "binary-data-and-private-paths" }
+          }
+        }
+      },
+      run2,
+      {
+        signal,
+        output: (value) => ({
+          data: {
+            mimeType: id7 === "kokoro" ? "audio/wav" : "audio/mpeg",
+            ...typeof value.bytes === "number" ? { bytes: value.bytes } : {},
+            ...typeof value.durationSeconds === "number" ? { durationSeconds: value.durationSeconds } : {},
+            binaryContent: "omitted"
+          }
+        })
+      }
+    );
+  }
+  async function checkTools(signal) {
+    await Promise.all([
+      runMediaProcess(options2.ffmpegPath ?? "ffmpeg", ["-version"], { signal }),
+      runMediaProcess(options2.ffprobePath ?? "ffprobe", ["-version"], { signal })
+    ]);
+  }
+  async function inspect(path, signal) {
+    const size2 = (await stat15(path)).size;
+    if (size2 < 44 || size2 > 1800 * 48e3 * 2 + 4096)
+      throw new Error("配音音频为空或超出 30 分钟预算");
+    const probe = await runMediaProcess(
+      options2.ffprobePath ?? "ffprobe",
+      [
+        "-v",
+        "error",
+        "-protocol_whitelist",
+        "file,pipe",
+        "-format_whitelist",
+        "wav",
+        "-show_entries",
+        "format=duration:stream=codec_name,sample_rate,channels",
+        "-of",
+        "json",
+        path
+      ],
+      { signal }
+    );
+    const metadata = JSON.parse(probe.stdout.toString("utf8"));
+    const audio2 = metadata.streams?.[0];
+    const durationSeconds = Number(metadata.format?.duration);
+    if (audio2?.codec_name !== "pcm_s16le" || Number(audio2.sample_rate) !== 48e3 || audio2.channels !== 1 || !Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 1800)
+      throw new Error("未生成合格的 48 kHz WAV 配音");
+    const volume2 = await runMediaProcess(
+      options2.ffmpegPath ?? "ffmpeg",
+      [
+        "-nostdin",
+        "-v",
+        "info",
+        "-protocol_whitelist",
+        "file,pipe",
+        "-format_whitelist",
+        "wav",
+        "-i",
+        path,
+        "-af",
+        "volumedetect",
+        "-f",
+        "null",
+        "-"
+      ],
+      { signal }
+    );
+    const peak = /max_volume: ([-\d.]+) dB/.exec(volume2.stderr);
+    if (!peak || Number(peak[1]) < -70) throw new Error("配音输出没有可听见的声音");
+    return { durationSeconds, bytes: size2 };
+  }
+  async function render2(id7, input, voice, context2, signal) {
+    await mkdir13(context2.outputDir, { recursive: true });
+    const nonce = randomUUID16();
+    const raw = join20(context2.workDir, `tts-${nonce}.${id7 === "kokoro" ? "wav" : "mp3"}`);
+    const partial = join20(context2.outputDir, `speech-${nonce}.partial.wav`);
+    const output = join20(context2.outputDir, `speech-${nonce}.wav`);
+    let complete = false;
+    try {
+      await execute(
+        id7,
+        { action: "generate", text: input.text, voiceId: voice.id, rate: input.rate, output: raw },
+        context2,
+        signal
+      );
+      await context2.reportProgress({
+        fraction: 0.86,
+        stage: "speech",
+        message: "正在统一音频格式并验证真实声音"
+      });
+      await runMediaProcess(
+        options2.ffmpegPath ?? "ffmpeg",
+        [
+          "-nostdin",
+          "-v",
+          "error",
+          "-y",
+          "-protocol_whitelist",
+          "file,pipe",
+          "-format_whitelist",
+          id7 === "kokoro" ? "wav" : "mp3",
+          "-i",
+          raw,
+          "-map",
+          "0:a:0",
+          "-vn",
+          "-ac",
+          "1",
+          "-ar",
+          "48000",
+          "-c:a",
+          "pcm_s16le",
+          "-fs",
+          String(1800 * 48e3 * 2 + 1048576),
+          partial
+        ],
+        { signal }
+      );
+      const metadata = await inspect(partial, signal);
+      if (signal.aborted) throw mediaAbortError();
+      await rename12(partial, output);
+      complete = true;
+      return { path: output, ...metadata };
+    } finally {
+      await Promise.all([
+        rm17(raw, { force: true }),
+        rm17(partial, { force: true }),
+        ...!complete ? [rm17(output, { force: true })] : []
+      ]);
+    }
+  }
+  async function resources(id7, context2, signal) {
+    if (id7 !== "kokoro") return;
+    for (const resource of RESOURCES2) {
+      const target = join20(directory2(id7), resource.name);
+      const valid = async (path) => {
+        try {
+          return (await stat15(path)).size === resource.bytes && await digest5(path, signal) === resource.sha256;
+        } catch (error) {
+          if (signal.aborted) throw error;
+          return false;
+        }
+      };
+      if (await valid(target)) continue;
+      const candidates = options2.reuseKokoroDir ? [
+        join20(options2.reuseKokoroDir, resource.reuse, resource.name),
+        join20(options2.reuseKokoroDir, resource.name)
+      ] : [];
+      let reuse;
+      for (const candidate of candidates)
+        if (await valid(candidate)) {
+          reuse = candidate;
+          break;
+        }
+      if (reuse) {
+        await context2.reportProgress({
+          fraction: 0.55,
+          stage: "resources",
+          message: `正在复用已校验的 ${resource.name}`
+        });
+        await copyFile6(reuse, target);
+      } else await downloadResource(resource, target, context2, signal);
+    }
+  }
+  async function setup(rawId, context2) {
+    const id7 = validateManagedTtsProviderId(rawId);
+    if (context2.signal.aborted) throw mediaAbortError();
+    const initial = await status(id7);
+    if (initial.state === "unavailable") throw new Error(initial.reason);
+    const dir = directory2(id7);
+    if (setupOwners.has(dir)) throw new Error("这个声音服务正在准备，请等待当前任务或取消它");
+    setupOwners.add(dir);
+    const deadline = AbortSignal.timeout(20 * 6e4);
+    const signal = AbortSignal.any([context2.signal, deadline]);
+    let lock;
+    const lockPath = join20(dir, "setup.lock");
+    let sample2;
+    let setupFailure;
+    try {
+      await mkdir13(dir, { recursive: true });
+      try {
+        lock = await open6(lockPath, "wx", 384);
+      } catch {
+        const existing = await jsonFile(lockPath, 4096).catch(() => null);
+        let alive2 = false;
+        if (Number.isSafeInteger(existing?.pid)) {
+          try {
+            process.kill(existing.pid, 0);
+            alive2 = true;
+          } catch {
+          }
+        }
+        if (alive2) throw new Error("另一个宿主正在准备这个声音服务");
+        await rm17(lockPath, { force: true });
+        lock = await open6(lockPath, "wx", 384);
+      }
+      await lock.writeFile(JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
+      const disk = await statfs3(dir);
+      if (disk.bavail * disk.bsize < initial.requiredDiskBytes)
+        throw new Error(
+          `空间不足，至少需要 ${Math.ceil(initial.requiredDiskBytes / 1024 ** 3)} GB 可用空间`
+        );
+      await checkTools(signal);
+      await context2.reportProgress({
+        fraction: 0.02,
+        stage: "setup",
+        message: `准备独立 Python 环境；预计下载约 ${Math.ceil(initial.downloadBytes / 1048576)} MB，已有模型可复用`
+      });
+      await writeFile7(script2(id7), MANAGED_TTS_SCRIPT, { mode: 384 });
+      let installed = false;
+      try {
+        const version = await execute(id7, { action: "probe" }, context2, signal);
+        installed = version.version === (id7 === "kokoro" ? "0.6.1" : "7.3.1") && (id7 !== "kokoro" || version.frontend === "0.9.4");
+      } catch (error) {
+        if (signal.aborted) throw error;
+      }
+      if (!installed) {
+        const uv = options2.uvPath ?? "uv";
+        await runMediaProcess(
+          uv,
+          [
+            "venv",
+            "--clear",
+            "--no-config",
+            "--python",
+            options2.pythonPath ?? "3.12",
+            "--no-python-downloads",
+            join20(dir, "venv")
+          ],
+          { signal, env: isolatedEnvironment() }
+        );
+        await context2.reportProgress({
+          fraction: 0.1,
+          stage: "install",
+          message: "正在安装固定版本的声音客户端与依赖"
+        });
+        await runMediaProcess(
+          uv,
+          [
+            "pip",
+            "install",
+            "--no-config",
+            "--python",
+            python(id7),
+            "--index-url",
+            "https://pypi.org/simple",
+            ...PACKAGES3[id7]
+          ],
+          { signal, env: isolatedEnvironment(), maxStdoutBytes: 2 * 1024 * 1024 }
+        );
+      }
+      await resources(id7, context2, signal);
+      await context2.reportProgress({
+        fraction: 0.7,
+        stage: "verify",
+        message: id7 === "kokoro" ? "验证本地模型和中文声音" : "向在线服务获取实际可用声音"
+      });
+      const listed = await execute(id7, { action: "voices" }, context2, signal);
+      const voices2 = listed.voices;
+      if (!Array.isArray(voices2) || !voices2.length || voices2.length > 2e3)
+        throw new Error("没有找到可使用的声音");
+      const voice = voices2.find((v) => v.id === (id7 === "kokoro" ? "zf_xiaobei" : "zh-CN-XiaoxiaoNeural")) ?? voices2.find((v) => v.language === "zh-CN");
+      if (!voice) throw new Error("没有找到可验证的中文声音");
+      const validation = await render2(
+        id7,
+        { providerId: id7, text: "你好，这是视频工作台的中文声音测试。", rate: 1 },
+        voice,
+        context2,
+        signal
+      );
+      sample2 = validation.path;
+      if (signal.aborted) throw mediaAbortError();
+      await atomicJson(manifestPath(id7), {
+        version: VERSION,
+        scriptHash: SCRIPT_HASH3,
+        packages: PACKAGES3[id7],
+        verifiedAt: Date.now(),
+        voices: voices2,
+        defaultVoiceId: voice.id,
+        state: "ready"
+      });
+      await rm17(join20(dir, "failure.json"), { force: true });
+      await context2.reportProgress({
+        fraction: 1,
+        stage: "ready",
+        message: "已通过真实中文配音验证，可以使用"
+      });
+    } catch (error) {
+      if (!lock) {
+        setupFailure = error instanceof Error ? error : new Error(String(error));
+        throw setupFailure;
+      }
+      const reason = signal.aborted ? context2.signal.aborted ? "声音准备已取消，可以重新准备" : "声音准备超时，请检查网络和运行环境后重试" : id7 === "edge-tts" ? "Edge 在线声音准备失败；需要 uv、Python 3.12、FFmpeg 及可访问的在线语音服务，可选择系统声音或本地 Kokoro" : "Kokoro 准备失败；需要 uv、Python 3.12、FFmpeg、可用依赖与完整模型，请检查网络和空间后重试";
+      await atomicJson(join20(dir, "failure.json"), { reason, at: Date.now() }).catch(() => {
+      });
+      try {
+        const manifest = await loadManifest2(id7);
+        await atomicJson(manifestPath(id7), { ...manifest, state: "failed", reason });
+      } catch {
+      }
+      setupFailure = context2.signal.aborted ? mediaAbortError() : new Error(reason, { cause: error });
+      throw setupFailure;
+    } finally {
+      setupOwners.delete(dir);
+      await releaseManagedTtsSetupResources(lock, lockPath, sample2, setupFailure);
+    }
+    return status(id7);
+  }
+  async function generate(raw, context2) {
+    const input = validateManagedTtsInput(raw);
+    const id7 = input.providerId;
+    if (context2.signal.aborted) throw mediaAbortError();
+    const runtime = await status(id7, context2.signal);
+    if (!runtime.available) throw new Error(runtime.reason ?? "请先准备并验证所选声音服务");
+    const voice = runtime.voices.find((v) => v.id === (input.voiceId ?? runtime.defaultVoiceId));
+    if (!voice) throw new Error("所选声音不在已验证的声音列表中，请刷新声音服务");
+    const deadline = AbortSignal.timeout(10 * 6e4);
+    const signal = AbortSignal.any([context2.signal, deadline]);
+    await checkTools(signal);
+    if (id7 === "kokoro") {
+      for (const resource of RESOURCES2)
+        if (await digest5(join20(directory2(id7), resource.name), signal) !== resource.sha256) {
+          const reason = "本地模型校验失败，请重新准备声音服务";
+          const manifest = await loadManifest2(id7);
+          await atomicJson(manifestPath(id7), { ...manifest, state: "failed", reason });
+          throw new Error(reason);
+        }
+    }
+    const cacheKey = createHash11("sha256").update(
+      JSON.stringify({
+        version: VERSION,
+        scriptHash: SCRIPT_HASH3,
+        packages: PACKAGES3[id7],
+        resources: id7 === "kokoro" ? RESOURCES2 : [],
+        input: { ...input, voiceId: voice.id }
+      })
+    ).digest("hex");
+    await mkdir13(context2.cacheDir, { recursive: true });
+    const cacheWav = join20(context2.cacheDir, `speech-${cacheKey}.wav`);
+    const cacheMeta = join20(context2.cacheDir, `speech-${cacheKey}.json`);
+    try {
+      const cached = await jsonFile(cacheMeta, 4096);
+      if (cached.cacheKey !== cacheKey || await digest5(cacheWav, signal) !== cached.sha256)
+        throw new Error("Invalid speech cache");
+      const metadata = await inspect(cacheWav, signal);
+      await mkdir13(context2.outputDir, { recursive: true });
+      const output = join20(context2.outputDir, `speech-${randomUUID16()}.wav`);
+      await copyFile6(cacheWav, output);
+      if (signal.aborted) {
+        await rm17(output, { force: true });
+        throw mediaAbortError();
+      }
+      await context2.reportProgress({
+        fraction: 1,
+        stage: "speech",
+        message: "已复用相同文案、声音和语速的配音"
+      });
+      return {
+        path: output,
+        mimeType: "audio/wav",
+        engine: id7,
+        voice,
+        rate: input.rate,
+        durationSeconds: metadata.durationSeconds,
+        sampleRate: 48e3,
+        channels: 1,
+        cached: true
+      };
+    } catch (error) {
+      if (signal.aborted) throw error;
+    }
+    try {
+      const result = await render2(id7, input, voice, context2, signal);
+      const temporary = `${cacheWav}-${randomUUID16()}.partial`;
+      try {
+        await copyFile6(result.path, temporary);
+        await rename12(temporary, cacheWav);
+        await atomicJson(cacheMeta, { cacheKey, sha256: await digest5(cacheWav, signal) });
+      } finally {
+        await rm17(temporary, { force: true });
+      }
+      await context2.reportProgress({
+        fraction: 1,
+        stage: "speech",
+        message: "配音已生成并验证，可以用于导出"
+      });
+      return {
+        path: result.path,
+        mimeType: "audio/wav",
+        engine: id7,
+        voice,
+        rate: input.rate,
+        durationSeconds: result.durationSeconds,
+        sampleRate: 48e3,
+        channels: 1,
+        cached: false
+      };
+    } catch (error) {
+      if (context2.signal.aborted) throw mediaAbortError();
+      const reason = id7 === "edge-tts" ? "Edge 在线配音失败，服务可能不可达；请重新验证或选择本地声音" : "Kokoro 本地配音失败，请检查文案语言和模型资源后重试";
+      if (id7 === "edge-tts") {
+        try {
+          const manifest = await loadManifest2(id7);
+          await atomicJson(manifestPath(id7), { ...manifest, state: "failed", reason });
+        } catch {
+        }
+      }
+      throw new Error(reason, { cause: error });
+    }
+  }
+  return { status, setup, generate };
+}
+
+// native/media/media-tts-openai.ts
+import { randomUUID as randomUUID17 } from "node:crypto";
+import { mkdir as mkdir14, open as open7, rename as rename13, rm as rm18, stat as stat16 } from "node:fs/promises";
+import { join as join21 } from "node:path";
+var MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+var MAX_DURATION_SECONDS = 600;
+var WAV_TYPES = /* @__PURE__ */ new Set(["audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave"]);
+var GENERIC_BINARY_TYPES = /* @__PURE__ */ new Set(["application/octet-stream", ""]);
+var SpeechError = class extends Error {
+};
+function requestUrl(baseUrl) {
+  let url;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    throw new SpeechError("配音服务地址无效");
+  }
+  const loopback = url.hostname === "localhost" || url.hostname === "[::1]" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(url.hostname);
+  if (url.username || url.password || url.search || url.hash || url.protocol !== "https:" && !(url.protocol === "http:" && loopback))
+    throw new SpeechError(
+      "配音服务须使用 HTTPS；本机兼容服务可使用回环 HTTP，地址不可包含凭据或查询参数"
+    );
+  url.pathname = `${url.pathname.replace(/\/+$/, "")}/audio/speech`;
+  return url;
+}
+function validateInput(input) {
+  if (!input || typeof input.text !== "string" || !input.text.trim() || Array.from(input.text.trim()).length > 4096)
+    throw new SpeechError("在线配音文稿须为 1 至 4096 字");
+  for (const value of [input.model, input.voiceId])
+    if (typeof value !== "string" || !value.trim() || value.length > 256 || /[\r\n\u0000]/.test(value))
+      throw new SpeechError("配音模型或声音标识无效");
+  if (!Number.isFinite(input.rate) || input.rate < 0.5 || input.rate > 2)
+    throw new SpeechError("配音速度须在 0.5 至 2 倍之间");
+  if (input.instructions !== void 0 && (typeof input.instructions !== "string" || Array.from(input.instructions).length > 4096))
+    throw new SpeechError("声音风格说明不可超过 4096 字");
+  return {
+    ...input,
+    text: input.text.trim(),
+    model: input.model.trim(),
+    voiceId: input.voiceId.trim()
+  };
+}
+async function inspectWav2(path, signal, options2) {
+  const result = await runMediaProcess(
+    options2.ffprobePath ?? "ffprobe",
+    [
+      "-v",
+      "error",
+      "-protocol_whitelist",
+      "file,pipe",
+      "-format_whitelist",
+      "wav",
+      "-show_entries",
+      "format=duration:stream=codec_type,codec_name,sample_rate,channels",
+      "-of",
+      "json",
+      path
+    ],
+    { signal }
+  );
+  const metadata = JSON.parse(result.stdout.toString("utf8"));
+  const audio2 = metadata.streams?.find(
+    (stream) => stream.codec_type === "audio"
+  );
+  const durationSeconds = Number(metadata.format?.duration);
+  if (!audio2 || !Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > MAX_DURATION_SECONDS)
+    throw new SpeechError("配音服务未返回有效音频，或音频超过 10 分钟");
+  return {
+    durationSeconds,
+    sampleRate: Number(audio2.sample_rate),
+    channels: Number(audio2.channels),
+    codec: audio2.codec_name
+  };
+}
+async function saveResponse(response, path, signal, context2) {
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => void 0);
+    throw new SpeechError(
+      `配音服务请求失败（HTTP ${response.status}），请检查模型权限、额度或服务设置`
+    );
+  }
+  const type = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  const length = Number(response.headers.get("content-length")) || void 0;
+  if (!WAV_TYPES.has(type) && !GENERIC_BINARY_TYPES.has(type) || !response.body) {
+    await response.body?.cancel().catch(() => void 0);
+    throw new SpeechError("配音服务未返回 WAV 音频");
+  }
+  if (length && (!Number.isSafeInteger(length) || length < 0 || length > MAX_RESPONSE_BYTES)) {
+    await response.body.cancel().catch(() => void 0);
+    throw new SpeechError("配音响应超过 64 MiB，已停止接收");
+  }
+  const reader = response.body.getReader();
+  const cancel = () => {
+    void reader.cancel().catch(() => void 0);
+  };
+  signal.addEventListener("abort", cancel, { once: true });
+  let file;
+  let bytes = 0, signature2 = Buffer.alloc(0), lastProgress = 0;
+  try {
+    file = await open7(path, "wx", 384);
+    while (true) {
+      if (signal.aborted) throw mediaAbortError();
+      const { value, done } = await reader.read();
+      if (signal.aborted) throw mediaAbortError();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > MAX_RESPONSE_BYTES) throw new SpeechError("配音响应超过 64 MiB，已停止接收");
+      if (signature2.length < 12) {
+        signature2 = Buffer.concat([
+          signature2,
+          Buffer.from(value.subarray(0, 12 - signature2.length))
+        ]);
+        if (signature2.length === 12 && (signature2.toString("ascii", 0, 4) !== "RIFF" || signature2.toString("ascii", 8, 12) !== "WAVE"))
+          throw new SpeechError("配音服务返回的数据不是 WAV 音频");
+      }
+      await file.writeFile(value);
+      if (Date.now() - lastProgress >= 200) {
+        lastProgress = Date.now();
+        await context2.reportProgress({
+          stage: "speech-download",
+          message: "正在接收生成的配音",
+          ...length ? { fraction: Math.min(0.65, 0.1 + 0.55 * bytes / length) } : {}
+        });
+      }
+    }
+    if (bytes <= 44 || signature2.length < 12 || length !== void 0 && bytes !== length)
+      throw new SpeechError("配音服务返回的音频为空或不完整");
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    await reader.cancel().catch(() => void 0);
+    reader.releaseLock();
+    await file?.close();
+  }
+}
+async function generateOpenAiTts(raw, context2, options2) {
+  const input = validateInput(raw), url = requestUrl(options2.baseUrl);
+  if (typeof options2.apiKey !== "string" || !options2.apiKey.trim() || /[\r\n]/.test(options2.apiKey))
+    throw new SpeechError("配音服务尚未配置有效凭据");
+  const timeoutMs = options2.timeoutMs ?? 18e4;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 6e5)
+    throw new SpeechError("配音服务超时设置无效");
+  if (context2.signal.aborted) throw mediaAbortError();
+  const deadline = AbortSignal.timeout(timeoutMs), signal = AbortSignal.any([context2.signal, deadline]);
+  const nonce = randomUUID17();
+  const source3 = join21(context2.workDir, `speech-response-${nonce}.wav`);
+  const partial = join21(context2.outputDir, `speech-${nonce}.partial.wav`);
+  const output = join21(context2.outputDir, `speech-${nonce}.wav`);
+  let completed = false, failureMessage = "连接配音服务失败，请检查服务地址、凭据和网络";
+  try {
+    await mkdir14(context2.workDir, { recursive: true });
+    await mkdir14(context2.outputDir, { recursive: true });
+    await context2.reportProgress({
+      fraction: 0.03,
+      stage: "synthesize",
+      message: "正在请求所选模型生成配音"
+    });
+    const requestBody = {
+      model: input.model,
+      input: input.text,
+      voice: input.voiceId,
+      speed: input.rate,
+      response_format: "wav",
+      ...input.instructions?.trim() ? { instructions: input.instructions.trim() } : {}
+    };
+    await observeModelCall(
+      {
+        provider: "openai-compatible",
+        model: input.model,
+        purpose: "tts",
+        input: {
+          systemPrompt: requestBody.instructions ?? "",
+          messages: [{ role: "user", content: requestBody.input }],
+          parameters: {
+            request: requestBody,
+            capture: { recording: "logical-input", transport: "json", omitted: "binary-response" }
+          }
+        }
+      },
+      async () => {
+        const response = await (options2.fetchImpl ?? fetch)(url, {
+          method: "POST",
+          redirect: "error",
+          signal,
+          headers: {
+            Authorization: `Bearer ${options2.apiKey}`,
+            "Content-Type": "application/json",
+            Accept: "audio/wav"
+          },
+          body: JSON.stringify(requestBody)
+        });
+        failureMessage = "接收配音失败，服务未返回完整可用的音频";
+        await saveResponse(response, source3, signal, context2);
+        failureMessage = "配音音频处理失败，请检查音频格式与本机 FFmpeg";
+        const metadata2 = await inspectWav2(source3, signal, options2);
+        return { ...metadata2, bytes: (await stat16(source3)).size };
+      },
+      {
+        signal,
+        output: (metadata2) => ({
+          data: { mimeType: "audio/wav", ...metadata2, binaryContent: "omitted" }
+        })
+      }
+    );
+    await context2.reportProgress({
+      fraction: 0.75,
+      stage: "speech-encode",
+      message: "正在整理配音音轨"
+    });
+    await runMediaProcess(
+      options2.ffmpegPath ?? "ffmpeg",
+      [
+        "-nostdin",
+        "-v",
+        "error",
+        "-y",
+        "-protocol_whitelist",
+        "file,pipe",
+        "-format_whitelist",
+        "wav",
+        "-i",
+        source3,
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-t",
+        String(MAX_DURATION_SECONDS + 1),
+        "-ar",
+        "48000",
+        "-ac",
+        "1",
+        "-c:a",
+        "pcm_s16le",
+        partial
+      ],
+      { signal }
+    );
+    const metadata = await inspectWav2(partial, signal, options2);
+    if (metadata.sampleRate !== 48e3 || metadata.channels !== 1 || metadata.codec !== "pcm_s16le" || (await stat16(partial)).size > MAX_DURATION_SECONDS * 48e3 * 2 + 4096)
+      throw new SpeechError("配音未能转换为有效的 48kHz 单声道 WAV");
+    if (signal.aborted) throw mediaAbortError();
+    await rename13(partial, output);
+    await context2.reportProgress({ fraction: 1, stage: "speech", message: "配音已生成" });
+    if (signal.aborted) throw mediaAbortError();
+    completed = true;
+    return {
+      path: output,
+      mimeType: "audio/wav",
+      engine: "openai-compatible",
+      durationSeconds: metadata.durationSeconds,
+      sampleRate: 48e3,
+      channels: 1
+    };
+  } catch (error) {
+    if (context2.signal.aborted) throw mediaAbortError();
+    if (deadline.aborted)
+      throw new SpeechError("配音生成超时，已停止请求；请检查任务后再决定是否重试");
+    if (error instanceof SpeechError) throw error;
+    throw new SpeechError(failureMessage);
+  } finally {
+    await Promise.all(
+      [source3, partial, ...completed ? [] : [output]].map((path) => rm18(path, { force: true }))
+    );
+  }
+}
+
+// native/media/hyperframes-adapter.ts
+import { spawn as spawn3 } from "node:child_process";
+import { createHash as createHash12, randomUUID as randomUUID18 } from "node:crypto";
+import { createReadStream as createReadStream9, constants as constants6 } from "node:fs";
+import {
+  access as access3,
+  copyFile as copyFile7,
+  lstat as lstat5,
+  mkdir as mkdir15,
+  readFile as readFile9,
+  readdir as readdir5,
+  realpath as realpath4,
+  rename as rename14,
+  rm as rm19,
+  stat as stat17,
+  writeFile as writeFile8
+} from "node:fs/promises";
+import { homedir as homedir4 } from "node:os";
+import { basename as basename3, delimiter as delimiter3, dirname as dirname5, isAbsolute as isAbsolute11, join as join22, relative as relative4, resolve as resolve5, sep as sep4 } from "node:path";
+import { createServer as createServer2 } from "node:net";
+var TEMPLATE_VERSION = 1;
+var MAX_SOURCE_BYTES = 1024 * 1024 * 1024;
+var MAX_SOURCE_FILES = 1e4;
+var MAX_LOG_BYTES = 1024 * 1024;
+var SKIP_DIRECTORIES = /* @__PURE__ */ new Set([
+  "node_modules",
+  ".git",
+  ".hyperframes",
+  "renders",
+  "snapshots",
+  ".debug"
+]);
+var META_NAME = ".codeshell-hyperframes.json";
+function abort3(signal) {
+  if (signal?.aborted) throw new DOMException("HyperFrames operation cancelled", "AbortError");
+}
+function report(ctx, event) {
+  void Promise.resolve(ctx.onProgress?.(event)).catch(() => {
+  });
+}
+function terminate(child) {
+  if (!child.pid) return;
+  try {
+    child.kill("SIGTERM");
+  } catch {
+  }
+  const timer = setTimeout(() => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+    }
+  }, 1500);
+  timer.unref();
+  child.once("close", () => clearTimeout(timer));
+}
+function executionEnvironment(runtime) {
+  const paths = [runtime?.ffmpegPath, runtime?.ffprobePath, runtime?.nodePath].filter(Boolean).map((path) => dirname5(path));
+  return {
+    ...process.env,
+    PATH: [.../* @__PURE__ */ new Set([...paths, ...(process.env.PATH ?? "").split(delimiter3)])].join(delimiter3),
+    ELECTRON_RUN_AS_NODE: "1",
+    HYPERFRAMES_TELEMETRY_DISABLED: "1",
+    DO_NOT_TRACK: "1",
+    NO_COLOR: "1"
+  };
+}
+async function run(executable, args, options2 = {}) {
+  abort3(options2.signal);
+  return new Promise((resolveRun, reject) => {
+    const child = spawn3(executable, args, {
+      cwd: options2.cwd,
+      env: executionEnvironment(options2.runtime),
+      shell: false,
+      detached: false,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "", stderr = "", timedOut = false;
+    const onAbort = () => terminate(child);
+    options2.signal?.addEventListener("abort", onAbort, { once: true });
+    const timer = setTimeout(
+      () => {
+        timedOut = true;
+        terminate(child);
+      },
+      options2.timeoutMs ?? 10 * 6e4
+    );
+    const collect = (chunk, stream) => {
+      const message = chunk.toString();
+      if (stream === "stdout") stdout = (stdout + message).slice(-MAX_LOG_BYTES);
+      else stderr = (stderr + message).slice(-MAX_LOG_BYTES);
+      const match = [...message.matchAll(/(?:^|\s)(\d{1,3}(?:\.\d+)?)%/g)].at(-1);
+      if (options2.phase && match) {
+        const progress2 = Math.min(1, Number(match[1]) / 100);
+        report(options2, {
+          phase: options2.phase,
+          message: `HyperFrames ${options2.phase} ${Math.round(progress2 * 100)}%`,
+          progress: progress2
+        });
+      }
+    };
+    child.stdout.on("data", (chunk) => collect(chunk, "stdout"));
+    child.stderr.on("data", (chunk) => collect(chunk, "stderr"));
+    child.once("error", reject);
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      options2.signal?.removeEventListener("abort", onAbort);
+      if (options2.signal?.aborted)
+        reject(new DOMException("HyperFrames operation cancelled", "AbortError"));
+      else if (timedOut) reject(new Error("HyperFrames command timed out"));
+      else if (code !== 0)
+        reject(
+          new Error(`HyperFrames command failed (${code}): ${(stderr || stdout).slice(-4e3)}`)
+        );
+      else resolveRun({ stdout, stderr });
+    });
+  });
+}
+async function discoverCli(options2) {
+  if (options2.cliPath) {
+    await access3(options2.cliPath, constants6.R_OK);
+    return realpath4(options2.cliPath);
+  }
+  const candidates = [];
+  if (options2.projectDir)
+    candidates.push(join22(options2.projectDir, "node_modules/hyperframes/bin/hyperframes.mjs"));
+  const global = await findExecutable("hyperframes");
+  if (global) candidates.push(global);
+  const cache = join22(homedir4(), ".npm/_npx");
+  try {
+    const entries = await readdir5(cache, { withFileTypes: true });
+    for (const entry of entries.filter((entry2) => entry2.isDirectory()).sort((a, b) => a.name.localeCompare(b.name)).slice(0, 100)) {
+      candidates.push(join22(cache, entry.name, "node_modules/hyperframes/bin/hyperframes.mjs"));
+    }
+  } catch {
+  }
+  for (const path of candidates) {
+    try {
+      await access3(path, constants6.R_OK);
+      return realpath4(path);
+    } catch {
+    }
+  }
+  return void 0;
+}
+async function detectHyperframesRuntime(options2 = {}) {
+  const runtime = { available: false, checks: [] };
+  runtime.nodePath = await findExecutable("node", options2.nodePath);
+  runtime.ffmpegPath = await findExecutable("ffmpeg", options2.ffmpegPath);
+  runtime.ffprobePath = await findExecutable("ffprobe", options2.ffprobePath);
+  try {
+    runtime.cliPath = await discoverCli(options2);
+  } catch (error) {
+    runtime.checks.push({ name: "HyperFrames", ok: false, detail: String(error) });
+  }
+  for (const [name, path, versionArgs] of [
+    ["Node.js", runtime.nodePath, ["--version"]],
+    ["FFmpeg", runtime.ffmpegPath, ["-version"]],
+    ["FFprobe", runtime.ffprobePath, ["-version"]]
+  ]) {
+    try {
+      if (!path) throw new Error(`${name} is not installed`);
+      const result = await run(path, [...versionArgs], { runtime, timeoutMs: 15e3 });
+      const version = result.stdout.split("\n")[0].trim();
+      if (name === "Node.js") {
+        runtime.nodeVersion = version;
+        if (Number(version.replace(/^v/, "").split(".")[0]) < 22)
+          throw new Error("Node.js 22 or newer is required");
+      }
+      runtime.checks.push({ name, ok: true, detail: version });
+    } catch (error) {
+      runtime.checks.push({ name, ok: false, detail: String(error) });
+    }
+  }
+  if (runtime.cliPath && runtime.nodePath) {
+    try {
+      const result = await run(runtime.nodePath, [runtime.cliPath, "--version"], {
+        runtime,
+        timeoutMs: 2e4
+      });
+      runtime.version = result.stdout.trim();
+      if (!/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(runtime.version))
+        throw new Error("Unrecognized HyperFrames version");
+      runtime.checks.push({ name: "HyperFrames", ok: true, detail: runtime.version });
+      const browser = await run(runtime.nodePath, [runtime.cliPath, "browser", "path"], {
+        runtime,
+        timeoutMs: 2e4
+      });
+      const browserPath = browser.stdout.trim().split("\n").at(-1);
+      if (!isAbsolute11(browserPath)) throw new Error("Bundled Chrome is not available");
+      await access3(browserPath, constants6.X_OK);
+      runtime.browserPath = browserPath;
+      runtime.checks.push({ name: "Chrome", ok: true, detail: browserPath });
+    } catch (error) {
+      runtime.checks.push({ name: "HyperFrames / Chrome", ok: false, detail: String(error) });
+    }
+  } else if (!runtime.checks.some((check2) => check2.name === "HyperFrames")) {
+    runtime.checks.push({
+      name: "HyperFrames",
+      ok: false,
+      detail: "Install HyperFrames with Node.js 22+, then install its bundled Chrome"
+    });
+  }
+  runtime.available = runtime.checks.every((check2) => check2.ok) && Boolean(runtime.version && runtime.browserPath);
+  return runtime;
+}
+function inside(root, path) {
+  return path === root || path.startsWith(root + sep4);
+}
+async function within(root, path) {
+  const canonicalRoot = await realpath4(root);
+  const canonical = await realpath4(resolve5(root, path));
+  if (!inside(canonicalRoot, canonical))
+    throw new Error("HyperFrames path is outside its authorized workspace");
+  return canonical;
+}
+async function digestFile2(path) {
+  const hash4 = createHash12("sha256");
+  for await (const chunk of createReadStream9(path)) hash4.update(chunk);
+  return hash4.digest("hex");
+}
+async function sourceFiles(projectDir) {
+  const files = [];
+  let total = 0;
+  async function visit(dir) {
+    for (const entry of (await readdir5(dir, { withFileTypes: true })).sort(
+      (a, b) => a.name.localeCompare(b.name)
+    )) {
+      if (SKIP_DIRECTORIES.has(entry.name) || entry.name === META_NAME || entry.name === ".DS_Store")
+        continue;
+      const path = join22(dir, entry.name);
+      if (entry.isSymbolicLink())
+        throw new Error("HyperFrames source snapshots do not follow symbolic links");
+      if (entry.isDirectory()) await visit(path);
+      else if (entry.isFile()) {
+        const size2 = (await lstat5(path)).size;
+        total += size2;
+        if (total > MAX_SOURCE_BYTES || files.length >= MAX_SOURCE_FILES)
+          throw new Error("HyperFrames source exceeds the 1 GiB / 10,000 file import limit");
+        files.push({
+          path: relative4(projectDir, path).split(sep4).join("/"),
+          hash: await digestFile2(path),
+          size: size2
+        });
+      } else throw new Error("HyperFrames sources must contain regular files");
+    }
+  }
+  await visit(projectDir);
+  return files;
+}
+function contentHash(value) {
+  return createHash12("sha256").update(JSON.stringify(value)).digest("hex");
+}
+function text5(value, max, field2) {
+  if (typeof value !== "string" || !value.trim() || value.length > max || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value))
+    throw new Error(`Invalid HyperFrames ${field2}`);
+  return value.trim();
+}
+function number4(value, min, max, field2) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max)
+    throw new Error(`Invalid HyperFrames ${field2}`);
+  return value;
+}
+function normalizeParams(params) {
+  if (!params || !["chapter", "explainer"].includes(params.kind))
+    throw new Error("Scene kind must be chapter or explainer");
+  const width = number4(params.width ?? 1920, 320, 3840, "width"), height = number4(params.height ?? 1080, 180, 3840, "height");
+  if (!Number.isInteger(width / 2) || !Number.isInteger(height / 2))
+    throw new Error("MP4 scene dimensions must be even integers");
+  const palette = params.palette ?? {
+    background: "#142823",
+    foreground: "#f2f4e9",
+    accent: "#b5e3ac"
+  };
+  for (const value of Object.values(palette))
+    if (!/^#[\da-fA-F]{6}$/.test(value))
+      throw new Error("Scene palette requires six-digit hex colors");
+  if (!palette.background || !palette.foreground || !palette.accent)
+    throw new Error("Scene palette requires background, foreground and accent");
+  if (params.bullets !== void 0 && (!Array.isArray(params.bullets) || params.bullets.length > 4))
+    throw new Error("Explainer scenes support up to four points");
+  return {
+    kind: params.kind,
+    title: text5(params.title, 120, "title"),
+    subtitle: params.subtitle ? text5(params.subtitle, 240, "subtitle") : "",
+    eyebrow: params.eyebrow ? text5(params.eyebrow, 60, "eyebrow") : params.kind === "chapter" ? "CHAPTER" : "EXPLAINER",
+    bullets: (params.bullets ?? []).map((line) => text5(line, 140, "bullet")),
+    durationSeconds: number4(params.durationSeconds ?? 4, 0.5, 60, "duration"),
+    width,
+    height,
+    palette: { ...palette }
+  };
+}
+function escape(value) {
+  return value.replace(
+    /[&<>"']/g,
+    (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]
+  );
+}
+function sceneHtml(p) {
+  const unit = Math.min(p.width / 1280, p.height / 720);
+  const titleSize = Math.round((p.kind === "explainer" ? 64 : 84) * unit);
+  const points = p.kind === "explainer" ? p.bullets.map(
+    (line, index2) => `<li><span class="point-number">${String(index2 + 1).padStart(2, "0")}</span><span>${escape(line)}</span></li>`
+  ).join("") : "";
+  return `<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>${escape(p.title)}</title>
+<meta name="viewport" content="width=${p.width}, height=${p.height}">
+<style>
+*{box-sizing:border-box}body{margin:0;background:${p.palette.background};color:${p.palette.foreground};font-family:system-ui,sans-serif}
+#scene{position:relative;width:${p.width}px;height:${p.height}px;overflow:hidden} .clip{position:absolute;inset:0;padding:${Math.round(64 * unit)}px;display:flex;flex-direction:column;justify-content:center;gap:${Math.round(24 * unit)}px}
+.eyebrow{font:600 ${Math.max(14, Math.round(18 * unit))}px ui-monospace,monospace;letter-spacing:.18em;color:${p.palette.accent};margin:0}h1{font-size:${titleSize}px;line-height:1.16;letter-spacing:-.035em;font-weight:750;margin:0;max-width:94%;overflow-wrap:anywhere} .subtitle{font-size:${Math.round(28 * unit)}px;line-height:1.5;max-width:88%;margin:0}ul{padding:0;margin:0;display:flex;flex-direction:column;gap:${Math.round(15 * unit)}px;list-style:none}li{display:flex;gap:${Math.round(22 * unit)}px;align-items:baseline;font-size:${Math.round(27 * unit)}px;line-height:1.45}.point-number{color:${p.palette.accent};font-family:monospace}.progress{position:absolute;left:0;bottom:0;width:100%;height:${Math.max(3, Math.round(5 * unit))}px;background:${p.palette.accent};transform-origin:left center}
+</style></head><body><div id="scene" data-composition-id="scene" data-no-timeline data-width="${p.width}" data-height="${p.height}" data-duration="${p.durationSeconds}">
+<section id="scene-content" class="clip" data-start="0" data-duration="${p.durationSeconds}" data-track-index="0"><p class="eyebrow">${escape(p.eyebrow)}</p><h1>${escape(p.title)}</h1>${p.subtitle ? `<p class="subtitle">${escape(p.subtitle)}</p>` : ""}${points ? `<ul>${points}</ul>` : ""}</section><div class="progress" data-layout-ignore="true"></div></div>
+<script>
+const duration=${p.durationSeconds * 1e3};
+for(const [index,element] of [...document.querySelectorAll('.eyebrow,h1,.subtitle,li')].entries()){
+const effect=element.animate([{opacity:0,transform:'translateY(18px)'},{opacity:1,transform:'translateY(0)'}],{duration:Math.min(550,duration*.22),delay:Math.min(index*100,duration*.3),fill:'both',iterations:1,easing:'cubic-bezier(.2,.7,.2,1)'});effect.pause();}
+const progress=document.querySelector('.progress').animate([{transform:'scaleX(0)'},{transform:'scaleX(1)'}],{duration,fill:'both',iterations:1});progress.pause();
+</script></body></html>
+`;
+}
+async function inspectDirectory(projectDir, kind) {
+  const sourcePath2 = join22(projectDir, "index.html");
+  if ((await stat17(sourcePath2)).size > 8 * 1024 * 1024)
+    throw new Error("HyperFrames index.html exceeds 8 MiB");
+  const html = await readFile9(sourcePath2, "utf8");
+  const root = /<[a-z][^>]*\bdata-composition-id\s*=\s*["'][^"']+["'][^>]*>/i.exec(html)?.[0];
+  if (!root) throw new Error("index.html does not contain a HyperFrames composition root");
+  const attr = (name) => {
+    const value = new RegExp(`\\b${name}\\s*=\\s*["']([^"']+)["']`, "i").exec(root)?.[1];
+    return value && Number.isFinite(Number(value)) ? Number(value) : void 0;
+  };
+  const files = await sourceFiles(projectDir);
+  const externalUrls = /* @__PURE__ */ new Set();
+  for (const file of files.filter(
+    (file2) => /\.(html|css|js|mjs)$/i.test(file2.path) && file2.size <= 8 * 1024 * 1024
+  )) {
+    const source3 = await readFile9(join22(projectDir, file.path), "utf8");
+    for (const match of source3.matchAll(/https?:\/\/[^\s"'<>`)]+/g)) externalUrls.add(match[0]);
+  }
+  let pkg = {};
+  try {
+    pkg = JSON.parse(await readFile9(join22(projectDir, "package.json"), "utf8"));
+  } catch {
+  }
+  const pin = Object.values(pkg.scripts ?? {}).join(" ").match(/hyperframes@(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)/)?.[1];
+  return {
+    projectDir,
+    sourcePath: sourcePath2,
+    paramsPath: join22(projectDir, META_NAME),
+    contentHash: contentHash(files),
+    kind,
+    width: attr("data-width"),
+    height: attr("data-height"),
+    durationSeconds: attr("data-duration"),
+    pinnedVersion: pin,
+    externalUrls: [...externalUrls],
+    packageDependencies: [
+      .../* @__PURE__ */ new Set([
+        ...Object.keys(pkg.dependencies ?? {}),
+        ...Object.keys(pkg.devDependencies ?? {})
+      ])
+    ].sort()
+  };
+}
+async function probeVideo(runtime, path, signal) {
+  const result = await run(
+    runtime.ffprobePath,
+    [
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "stream=codec_name,width,height,r_frame_rate:format=duration",
+      "-of",
+      "json",
+      path
+    ],
+    { runtime, signal, timeoutMs: 3e4 }
+  );
+  const info = JSON.parse(result.stdout);
+  const stream = info.streams?.[0];
+  const durationSeconds = Number(info.format?.duration);
+  if (!stream || stream.codec_name !== "h264" || !Number.isFinite(durationSeconds) || durationSeconds <= 0)
+    throw new Error("HyperFrames output is not a valid H.264 MP4");
+  const [n, d] = stream.r_frame_rate.split("/").map(Number);
+  const fps = n / d;
+  if (!Number.isFinite(fps) || fps <= 0 || !Number.isSafeInteger(stream.width) || !Number.isSafeInteger(stream.height) || stream.width <= 0 || stream.height <= 0)
+    throw new Error("HyperFrames output has invalid video dimensions or frame rate");
+  return { durationSeconds, width: stream.width, height: stream.height, fps };
+}
+function createHyperframesAdapter(options2) {
+  let runtimePromise;
+  const runtime = async () => {
+    runtimePromise ??= detectHyperframesRuntime(options2);
+    const found = await runtimePromise;
+    if (!found.available)
+      throw new Error(
+        `HyperFrames is unavailable: ${found.checks.filter((check3) => !check3.ok).map((check3) => check3.detail).join("; ")}`
+      );
+    return found;
+  };
+  const cacheRoot = resolve5(options2.cacheRoot);
+  const prepare = async () => {
+    await mkdir15(join22(cacheRoot, "sources"), { recursive: true });
+    await mkdir15(join22(cacheRoot, "renders"), { recursive: true });
+  };
+  async function managed(source3) {
+    await prepare();
+    const dir = await within(join22(cacheRoot, "sources"), source3.projectDir);
+    return inspectDirectory(dir, source3.kind);
+  }
+  async function inspectProject(relativeDir) {
+    if (typeof relativeDir !== "string" || !relativeDir || isAbsolute11(relativeDir))
+      throw new Error("HyperFrames import requires a workspace-relative directory");
+    const dir = await within(options2.workspaceRoot, relativeDir);
+    return inspectDirectory(dir, "imported");
+  }
+  async function createScene(params, ctx = {}) {
+    abort3(ctx.signal);
+    await prepare();
+    const p = normalizeParams(params), found = await runtime();
+    const key = contentHash({ template: TEMPLATE_VERSION, params: p });
+    const target = join22(cacheRoot, "sources", key);
+    try {
+      await access3(join22(target, META_NAME));
+      return await inspectDirectory(target, "generated");
+    } catch {
+    }
+    const temporary = join22(cacheRoot, "sources", `.tmp-${randomUUID18()}`);
+    await mkdir15(temporary);
+    try {
+      await writeFile8(join22(temporary, "index.html"), sceneHtml(p));
+      await writeFile8(
+        join22(temporary, "hyperframes.json"),
+        JSON.stringify({ skill: "general-video" }, null, 2)
+      );
+      await writeFile8(
+        join22(temporary, "package.json"),
+        JSON.stringify(
+          {
+            private: true,
+            scripts: {
+              check: `npx hyperframes@${found.version} check`,
+              render: `npx hyperframes@${found.version} render`
+            }
+          },
+          null,
+          2
+        )
+      );
+      await writeFile8(
+        join22(temporary, META_NAME),
+        JSON.stringify(
+          { schemaVersion: 1, templateVersion: TEMPLATE_VERSION, kind: "generated", params: p },
+          null,
+          2
+        )
+      );
+      abort3(ctx.signal);
+      await rename14(temporary, target).catch(async (error) => {
+        if (error.code !== "EEXIST" && error.code !== "ENOTEMPTY")
+          throw error;
+      });
+      report(ctx, {
+        phase: "inspect",
+        message: "Parameterized HyperFrames source saved",
+        progress: 1
+      });
+      return inspectDirectory(target, "generated");
+    } finally {
+      await rm19(temporary, { recursive: true, force: true });
+    }
+  }
+  async function importProject(relativeDir, ctx = {}) {
+    abort3(ctx.signal);
+    await prepare();
+    const original = await inspectProject(relativeDir), files = await sourceFiles(original.projectDir);
+    const target = join22(cacheRoot, "sources", original.contentHash);
+    try {
+      await access3(join22(target, META_NAME));
+      return await inspectDirectory(target, "imported");
+    } catch {
+    }
+    const temporary = join22(cacheRoot, "sources", `.tmp-${randomUUID18()}`);
+    await mkdir15(temporary);
+    try {
+      for (const file of files) {
+        abort3(ctx.signal);
+        await mkdir15(dirname5(join22(temporary, file.path)), { recursive: true });
+        await copyFile7(join22(original.projectDir, file.path), join22(temporary, file.path));
+        if (await digestFile2(join22(temporary, file.path)) !== file.hash)
+          throw new Error("HyperFrames source changed during import; retry the snapshot");
+      }
+      await writeFile8(
+        join22(temporary, META_NAME),
+        JSON.stringify(
+          {
+            schemaVersion: 1,
+            kind: "imported",
+            originalRelativeDir: relative4(
+              await realpath4(options2.workspaceRoot),
+              original.projectDir
+            ),
+            sourceHash: original.contentHash,
+            files
+          },
+          null,
+          2
+        )
+      );
+      await rename14(temporary, target).catch((error) => {
+        if (error.code !== "EEXIST" && error.code !== "ENOTEMPTY") throw error;
+      });
+      return inspectDirectory(target, "imported");
+    } finally {
+      await rm19(temporary, { recursive: true, force: true });
+    }
+  }
+  async function check2(source3, ctx = {}) {
+    const current = await managed(source3), found = await runtime();
+    report(ctx, {
+      phase: "check",
+      message: "Checking HyperFrames source, layout, motion and runtime",
+      progress: 0
+    });
+    const result = await run(
+      found.nodePath,
+      [found.cliPath, "check", current.projectDir, "--json"],
+      { ...ctx, runtime: found, phase: "check", timeoutMs: 18e4 }
+    );
+    const parsed = JSON.parse(result.stdout);
+    if (parsed.ok !== true)
+      throw new Error(`HyperFrames check did not pass: ${JSON.stringify(parsed).slice(-4e3)}`);
+    await mkdir15(join22(current.projectDir, ".hyperframes"), { recursive: true });
+    await writeFile8(
+      join22(current.projectDir, ".hyperframes/codeshell-check.json"),
+      JSON.stringify(parsed, null, 2)
+    );
+    report(ctx, { phase: "check", message: "HyperFrames checks passed", progress: 1 });
+    return parsed;
+  }
+  async function render2(source3, ctx = {}) {
+    abort3(ctx.signal);
+    const current = await managed(source3), found = await runtime();
+    const quality = ctx.quality ?? "standard", fps = ctx.fps ?? 30;
+    if (!["draft", "standard", "high"].includes(quality) || ![24, 30, 60].includes(fps))
+      throw new Error("Invalid HyperFrames render quality or fps");
+    const key = contentHash({ source: current.contentHash, version: found.version, quality, fps });
+    const directory2 = join22(cacheRoot, "renders", key), artifactPath = join22(directory2, "scene.mp4"), manifestPath = join22(directory2, "render.json");
+    if (!current.externalUrls.length) {
+      try {
+        const stored = JSON.parse(await readFile9(manifestPath, "utf8"));
+        if (stored.artifactHash === await digestFile2(artifactPath)) {
+          const video = await probeVideo(found, artifactPath, ctx.signal);
+          report(ctx, {
+            phase: "cache",
+            message: "Reused verified HyperFrames scene render",
+            progress: 1
+          });
+          return {
+            ...current,
+            ...video,
+            artifactPath,
+            cached: true,
+            format: "mp4",
+            rendererVersion: found.version
+          };
+        }
+      } catch {
+        abort3(ctx.signal);
+      }
+    }
+    await check2(current, ctx);
+    abort3(ctx.signal);
+    await mkdir15(directory2, { recursive: true });
+    const temporary = join22(directory2, `.partial-${randomUUID18()}.mp4`);
+    try {
+      report(ctx, { phase: "render", message: "Rendering scene with HyperFrames", progress: 0 });
+      await run(
+        found.nodePath,
+        [
+          found.cliPath,
+          "render",
+          current.projectDir,
+          "--output",
+          temporary,
+          "--format",
+          "mp4",
+          "--quality",
+          quality,
+          "--fps",
+          String(fps),
+          "--workers",
+          "1",
+          "--strict",
+          "--no-best-effort"
+        ],
+        { ...ctx, runtime: found, phase: "render", timeoutMs: 30 * 6e4 }
+      );
+      abort3(ctx.signal);
+      const video = await probeVideo(found, temporary, ctx.signal);
+      if (current.durationSeconds && Math.abs(video.durationSeconds - current.durationSeconds) > Math.max(0.15, 2 / fps))
+        throw new Error("HyperFrames output duration does not match its source");
+      if (current.width && video.width !== current.width || current.height && video.height !== current.height || Math.abs(video.fps - fps) > 0.01)
+        throw new Error("HyperFrames output dimensions or frame rate do not match the request");
+      const artifactHash = await digestFile2(temporary);
+      if ((await managed(current)).contentHash !== current.contentHash)
+        throw new Error("HyperFrames source changed during rendering; retry with the new source");
+      await rename14(temporary, artifactPath);
+      const result = {
+        ...current,
+        ...video,
+        artifactPath,
+        cached: false,
+        format: "mp4",
+        rendererVersion: found.version
+      };
+      const temporaryManifest = join22(directory2, `.render-${randomUUID18()}.json`);
+      await writeFile8(temporaryManifest, JSON.stringify({ ...result, artifactHash }, null, 2));
+      await rename14(temporaryManifest, manifestPath);
+      report(ctx, { phase: "render", message: "HyperFrames MP4 verified", progress: 1 });
+      return result;
+    } finally {
+      await rm19(temporary, { force: true });
+    }
+  }
+  async function preview(source3, ctx = {}) {
+    const current = await managed(source3), found = await runtime();
+    await check2(current, ctx);
+    abort3(ctx.signal);
+    let port = ctx.port;
+    if (port !== void 0 && (!Number.isInteger(port) || port < 1024 || port > 65535))
+      throw new Error("Preview port must be between 1024 and 65535");
+    if (!port)
+      port = await new Promise((resolvePort, reject) => {
+        const server = createServer2();
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => {
+          const address = server.address();
+          const chosen = typeof address === "object" && address ? address.port : 0;
+          server.close((error2) => error2 ? reject(error2) : resolvePort(chosen));
+        });
+      });
+    const url = `http://127.0.0.1:${port}/#project/${encodeURIComponent(basename3(current.projectDir))}`;
+    const child = spawn3(
+      found.nodePath,
+      [
+        found.cliPath,
+        "preview",
+        current.projectDir,
+        "--foreground",
+        "--json",
+        "--no-open",
+        "--port",
+        String(port)
+      ],
+      {
+        cwd: current.projectDir,
+        env: executionEnvironment(found),
+        shell: false,
+        detached: false,
+        stdio: ["ignore", "pipe", "pipe"]
+      }
+    );
+    let closed = false, error, log = "";
+    const closing = new Promise((resolveClose) => {
+      child.once("close", () => {
+        closed = true;
+        resolveClose();
+      });
+    });
+    child.once("error", (failure2) => {
+      error = failure2;
+    });
+    child.stdout.on("data", (data) => {
+      log = (log + data.toString()).slice(-4e3);
+    });
+    child.stderr.on("data", (data) => {
+      log = (log + data.toString()).slice(-4e3);
+    });
+    const stop = async () => {
+      if (!closed) terminate(child);
+      await closing;
+      ctx.signal?.removeEventListener("abort", stop);
+    };
+    ctx.signal?.addEventListener("abort", stop, { once: true });
+    try {
+      for (let attempt = 0; attempt < 100; attempt++) {
+        abort3(ctx.signal);
+        if (closed || error) throw error ?? new Error(`HyperFrames preview stopped: ${log}`);
+        try {
+          const response = await fetch(url, { signal: AbortSignal.timeout(1e3) });
+          if (response.ok) {
+            report(ctx, { phase: "preview", message: "HyperFrames Studio is ready", progress: 1 });
+            return { url, stop };
+          }
+        } catch {
+        }
+        await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+      }
+      throw new Error(`HyperFrames preview did not start: ${log}`);
+    } catch (failure2) {
+      await stop();
+      throw failure2;
+    }
+  }
+  return {
+    inspectProject,
+    createScene,
+    importProject,
+    check: check2,
+    render: render2,
+    preview,
+    detectRuntime: () => detectHyperframesRuntime(options2)
+  };
+}
+
+// native/media/media-runtime.ts
+var MEDIA_ACTIONS = [
+  "status",
+  "voices",
+  "import",
+  "inspect",
+  "prepare",
+  "proxy",
+  "thumbnail",
+  "waveform",
+  "silence",
+  "scenes",
+  "transcribe",
+  "render",
+  "audio-extract",
+  "audio-enhance",
+  "tts",
+  "tts-clone",
+  "tts-setup",
+  "scene"
+];
+var MediaRequestError = class extends Error {
+};
+var MIME_EXTENSIONS = {
+  "video/mp4": ".mp4",
+  "audio/wav": ".wav",
+  "audio/mp4": ".m4a",
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "application/x-subrip": ".srt",
+  "application/json": ".json",
+  "text/html": ".html"
+};
+var EXTENSION_MIME = {
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".webm": "video/webm",
+  ".m4a": "audio/mp4",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".aiff": "audio/aiff",
+  ".aac": "audio/aac",
+  ".flac": "audio/flac",
+  ".ogg": "audio/ogg",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp"
+};
+function object9(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    throw new MediaRequestError("媒体请求必须是对象");
+  return raw;
+}
+function safeRelative(value) {
+  if (typeof value !== "string" || value.length > 512 || !value || value.split("/").some(
+    (part2) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(part2) || part2 === "." || part2 === ".."
+  ) || /[\\:\0]/.test(value))
+    throw new MediaRequestError("素材须使用任务目录内的文件名");
+  return value;
+}
+async function regularWithin(root, value) {
+  safeRelative(value);
+  let path = root;
+  for (const part2 of value.split("/")) {
+    path = join23(path, part2);
+    if ((await lstat6(path)).isSymbolicLink())
+      throw new MediaRequestError("媒体文件不能使用符号链接");
+  }
+  const canonical = await realpath5(path), info = await stat18(canonical);
+  if (!canonical.startsWith(root + sep5) || !info.isFile())
+    throw new MediaRequestError("素材不在当前任务目录内");
+  return canonical;
+}
+async function hashFile2(path, signal) {
+  const hash4 = createHash13("sha256");
+  for await (const chunk of createReadStream10(path)) {
+    if (signal.aborted) throw mediaAbortError();
+    hash4.update(chunk);
+  }
+  return hash4.digest("hex");
+}
+function publicMessage(error) {
+  if (error instanceof MediaRequestError) return error.message;
+  const message = redactHomePath(error instanceof Error ? error.message : String(error));
+  if (!message || message.length > 350 || /(?:\/Users\/|\/home\/|\/tmp\/|\/private\/|[A-Z]:\\|https?:\/\/|Traceback|exited with code|ENOENT|EACCES|ENOSPC)/.test(
+    message
+  ))
+    return "媒体处理未完成，请检查本地依赖、素材和可用空间后重试";
+  return message;
+}
+function validateMediaRequest(raw) {
+  const value = object9(raw);
+  if (Object.keys(value).some(
+    (key) => !["action", "params", "inputs", "publicConnections"].includes(key)
+  ) || !MEDIA_ACTIONS.includes(value.action))
+    throw new MediaRequestError("不支持的媒体任务");
+  const params = value.params === void 0 ? {} : object9(value.params);
+  const inputs = value.inputs === void 0 ? {} : object9(value.inputs);
+  if (Object.keys(inputs).length > 1e3) throw new MediaRequestError("一次任务的素材过多");
+  for (const [id7, file] of Object.entries(inputs)) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(id7))
+      throw new MediaRequestError("素材标识无效");
+    safeRelative(file);
+  }
+  if (value.publicConnections !== void 0 && value.action !== "status" && value.action !== "voices")
+    throw new MediaRequestError("生成任务不能使用公开连接配置替代授权连接");
+  return {
+    action: value.action,
+    params,
+    inputs,
+    ...value.publicConnections === void 0 ? {} : { publicConnections: value.publicConnections }
+  };
+}
+function safeConnectionDescription(connection) {
+  const d = connection.description;
+  return {
+    id: d.id,
+    name: d.name,
+    provider: d.provider,
+    available: d.available,
+    ...d.reason ? { reason: d.reason } : {},
+    voices: d.voices.map((v) => ({ id: v.id, name: v.name, language: v.language })),
+    defaultVoiceId: d.defaultVoiceId,
+    maxTextLength: d.maxTextLength,
+    supportsInstructions: d.supportsInstructions,
+    mode: "online"
+  };
+}
+function validateMediaConnections(raw) {
+  if (!Array.isArray(raw) || raw.length > 100) throw new MediaRequestError("配音连接配置无效");
+  const ids3 = /* @__PURE__ */ new Set();
+  for (const value of raw) {
+    const c = object9(value), d = object9(c.description);
+    if ([c.connectionId, c.model, c.baseUrl, c.apiKey, d.id, d.name, d.provider].some(
+      (v) => typeof v !== "string" || v.length > 8192
+    ) || !d.id || ids3.has(d.id) || !Array.isArray(d.voices) || d.voices.length > 2e3 || d.voices.some(
+      (v) => !v || [v.id, v.name, v.language].some((s) => typeof s !== "string" || s.length > 256)
+    ) || !Number.isInteger(d.maxTextLength) || d.maxTextLength < 1 || d.maxTextLength > 4096 || typeof d.supportsInstructions !== "boolean" || typeof d.available !== "boolean" || !Number.isFinite(c.defaultRate) || c.defaultRate < 0.5 || c.defaultRate > 2)
+      throw new MediaRequestError("配音连接配置无效");
+    ids3.add(d.id);
+  }
+  return raw;
+}
+async function resolveMediaTools(tools = {}, directories) {
+  const resolved = { ...tools };
+  for (const [key, name] of [
+    ["ffmpegPath", "ffmpeg"],
+    ["ffprobePath", "ffprobe"],
+    ["whisperPath", "whisper"],
+    ["uvPath", "uv"]
+  ]) {
+    if (resolved[key]) continue;
+    const found = await findExecutable(name, void 0, directories);
+    if (found) resolved[key] = found;
+  }
+  return resolved;
+}
+async function runMediaRequest(raw, options2) {
+  const request = validateMediaRequest(raw), params = request.params ?? {};
+  if (options2.signal.aborted) throw mediaAbortError();
+  if (!/^[a-f0-9]{64}$/.test(options2.scopeKey) || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(options2.jobId))
+    throw new MediaRequestError("媒体任务标识无效");
+  const jobInfo = await lstat6(options2.jobDir);
+  if (!jobInfo.isDirectory() || jobInfo.isSymbolicLink())
+    throw new MediaRequestError("媒体任务目录无效");
+  const root = await realpath5(options2.jobDir);
+  await mkdir16(options2.runtimeDir, { recursive: true, mode: 448 });
+  if ((await lstat6(options2.runtimeDir)).isSymbolicLink())
+    throw new MediaRequestError("媒体运行目录无效");
+  const runtime = await realpath5(options2.runtimeDir);
+  options2 = {
+    ...options2,
+    tools: await resolveMediaTools(options2.tools, options2.toolSearchDirectories)
+  };
+  const context2 = {
+    scope: { appId: "video-studio", projectPath: options2.scopeKey },
+    jobId: options2.jobId,
+    attempt: 1,
+    workDir: join23(root, "work"),
+    outputDir: join23(root, "outputs"),
+    cacheDir: join23(runtime, "cache", options2.scopeKey),
+    signal: options2.signal,
+    reportProgress: async (progress2) => {
+      if (options2.signal.aborted) throw mediaAbortError();
+      await options2.reportProgress({
+        ...progress2,
+        ...progress2.message ? { message: publicMessage(new Error(progress2.message)) } : {}
+      });
+    }
+  };
+  for (const path of [context2.workDir, context2.outputDir, context2.cacheDir]) {
+    await mkdir16(path, { recursive: true, mode: 448 });
+    if ((await lstat6(path)).isSymbolicLink()) throw new MediaRequestError("媒体工作目录无效");
+  }
+  const inputs = /* @__PURE__ */ new Map(), artifacts = [];
+  const assets = /* @__PURE__ */ new Map();
+  const caption = new MediaCaptionRenderer({ browserPath: options2.tools?.browserPath });
+  let succeeded = false;
+  try {
+    for (const [id7, file] of Object.entries(request.inputs ?? {})) {
+      const path = await regularWithin(root, file);
+      if (/^asset-[a-f0-9]{64}$/.test(id7) && id7 !== `asset-${await hashFile2(path, context2.signal)}`)
+        throw new MediaRequestError("素材内容已变化，请重新导入");
+      inputs.set(id7, path);
+    }
+    const resolveAssetPath = async (_scope, id7) => {
+      const path = inputs.get(id7);
+      if (!path) throw new MediaRequestError("缺少本次任务授权的素材");
+      return path;
+    };
+    const publish2 = async (path, mimeType, role = "artifact", name) => {
+      if (context2.signal.aborted) throw mediaAbortError();
+      const canonical = await realpath5(path);
+      if (![root, runtime].some((r) => canonical.startsWith(r + sep5)) || !(await stat18(canonical)).isFile())
+        throw new MediaRequestError("媒体结果不在工具目录内");
+      const sha2562 = await hashFile2(canonical, context2.signal), bytes = (await stat18(canonical)).size;
+      if (bytes < 1 || bytes > 20 * 1024 ** 3) throw new MediaRequestError("媒体结果大小无效");
+      const id7 = `asset-${sha2562}`;
+      if (assets.has(id7)) return assets.get(id7);
+      const suffix = MIME_EXTENSIONS[mimeType] ?? (/^\.[a-zA-Z0-9]{1,8}$/.test(extname(canonical)) ? extname(canonical) : ".bin");
+      const target = join23(context2.outputDir, `${sha2562}${suffix}`);
+      if (target !== canonical) await copyFile8(canonical, target);
+      const asset2 = {
+        id: id7,
+        name: name ?? basename4(canonical),
+        mimeType,
+        bytes,
+        sha256: sha2562,
+        createdAt: Date.now()
+      };
+      assets.set(id7, asset2);
+      inputs.set(id7, target);
+      artifacts.push({
+        file: relative5(root, target).split(sep5).join("/"),
+        role,
+        mimeType,
+        bytes,
+        sha256: sha2562,
+        assetId: id7
+      });
+      return asset2;
+    };
+    const processorOptions = {
+      ...options2.tools,
+      resolveAssetPath,
+      publishArtifact: (_scope, path, mimeType) => publish2(path, mimeType),
+      renderCaptionPng: (request2, ctx) => caption.render(request2, ctx)
+    };
+    const processors = createMediaJobProcessors(processorOptions);
+    const managed = createManagedTtsProviders({
+      runtimeDir: join23(runtime, "tts"),
+      ...options2.tools
+    });
+    const voiceRuntime = resolve6(runtime, "..");
+    const cloneProviders = {
+      "audio8-tts": createAudio8TtsProvider({ runtimeDir: voiceRuntime, ...options2.tools }),
+      "qwen3-tts": createQwenTtsProvider({ runtimeDir: voiceRuntime, ...options2.tools })
+    };
+    const queued = async (id7, work) => {
+      const release2 = await acquireVoiceQueue(
+        join23(voiceRuntime, ".queues", id7),
+        context2.signal,
+        () => context2.reportProgress({ stage: "waiting", message: "等待上一段本地配音完成" })
+      );
+      try {
+        return await work();
+      } finally {
+        await release2();
+      }
+    };
+    const connections = validateMediaConnections(options2.connections ?? []);
+    const publicConfig = request.publicConnections === void 0 ? { connections, defaultModelId: options2.defaultModelId } : resolveMediaConnections(request.publicConnections, { publicOnly: true });
+    const tool2 = async (command) => runMediaProcess(command, ["-version"], {
+      signal: context2.signal,
+      maxStdoutBytes: 65536
+    }).then(
+      () => true,
+      () => false
+    );
+    const toolsAvailable = async () => (await Promise.all([
+      tool2(options2.tools?.ffmpegPath ?? "ffmpeg"),
+      tool2(options2.tools?.ffprobePath ?? "ffprobe")
+    ])).every(Boolean);
+    const voices2 = async () => {
+      const local = await detectLocalTts({ ...options2.tools, signal: context2.signal });
+      const audioTools = await toolsAvailable();
+      const models = [
+        {
+          id: "macos-say",
+          name: "macOS 系统配音",
+          provider: "macOS",
+          available: local.available,
+          reason: local.reason ? publicMessage(new Error(local.reason)) : void 0,
+          voices: local.voices,
+          defaultVoiceId: local.defaultVoiceId,
+          maxTextLength: 6e3,
+          supportsInstructions: false,
+          mode: "offline"
+        }
+      ];
+      for (const id7 of ["edge-tts", "kokoro"]) {
+        const found = await managed.status(id7, context2.signal);
+        models.push({
+          ...found,
+          provider: id7 === "edge-tts" ? "Microsoft Edge 在线语音" : "Kokoro 本地模型",
+          available: found.available && audioTools,
+          reason: audioTools ? found.reason : "需要 FFmpeg 和 ffprobe 保存音频",
+          installable: found.state !== "unavailable",
+          maxTextLength: 6e3,
+          supportsInstructions: false
+        });
+      }
+      for (const [id7, provider] of Object.entries(cloneProviders)) {
+        const found = await provider.status(context2.signal);
+        models.push({
+          ...found,
+          provider: "video-studio",
+          available: found.available && audioTools,
+          reason: audioTools ? found.reason : "需要 FFmpeg 和 ffprobe 保存音频",
+          installable: found.state !== "unavailable",
+          maxTextLength: 2e3,
+          supportsInstructions: false,
+          supportsVoiceCloning: true
+        });
+      }
+      models.push(
+        ...publicConfig.connections.map(safeConnectionDescription).map((c) => ({
+          ...c,
+          available: c.available && audioTools,
+          ...!audioTools ? { reason: "在线配音需要 FFmpeg 和 ffprobe" } : {}
+        }))
+      );
+      const defaultModelId = [
+        publicConfig.defaultModelId,
+        ...publicConfig.connections.map((c) => c.description.id),
+        "edge-tts",
+        "kokoro",
+        "macos-say"
+      ].find((id7) => models.some((m) => m.id === id7 && m.available)) ?? "macos-say";
+      return {
+        ...local,
+        reason: local.reason ? publicMessage(new Error(local.reason)) : void 0,
+        available: models.some((m) => m.available),
+        models,
+        defaultModelId
+      };
+    };
+    let result;
+    if (request.action === "status") {
+      const [ffmpeg, speech, hf, browser] = await Promise.all([
+        toolsAvailable(),
+        voices2(),
+        detectHyperframesRuntime(options2.tools),
+        options2.tools?.browserPath ?? findCaptionBrowser()
+      ]);
+      const whisperModel = options2.tools?.whisperModelPath ?? join23(homedir5(), ".cache/whisper/base.pt");
+      const whisperExecutable = await findExecutable(
+        "whisper",
+        options2.tools?.whisperPath,
+        options2.toolSearchDirectories
+      );
+      const whisperModelReady = await access4(whisperModel).then(
+        () => true,
+        () => false
+      );
+      let whisperReason;
+      let whisperAvailable = false;
+      if (!whisperExecutable && whisperModelReady) whisperReason = "executable-missing";
+      else if (whisperExecutable && !whisperModelReady) whisperReason = "model-missing";
+      else if (whisperExecutable)
+        whisperAvailable = await runMediaProcess(whisperExecutable, ["--help"], {
+          signal: context2.signal,
+          maxStdoutBytes: 65536
+        }).then(
+          () => true,
+          () => {
+            whisperReason = "executable-failed";
+            return false;
+          }
+        );
+      result = {
+        apiVersion: 1,
+        persistent: true,
+        processors: [...MEDIA_ACTIONS],
+        ffmpeg: { available: ffmpeg },
+        transcription: {
+          available: whisperAvailable,
+          engine: "local-whisper",
+          model: basename4(whisperModel, ".pt"),
+          ...whisperReason ? { reason: whisperReason } : {}
+        },
+        hyperframes: {
+          available: hf.available,
+          version: hf.version,
+          checks: hf.checks.map((c) => ({
+            name: c.name,
+            ok: c.ok,
+            detail: c.name === "Chrome" && c.ok ? "已安装" : publicMessage(new Error(c.detail))
+          }))
+        },
+        captions: { available: Boolean(browser) },
+        tts: {
+          available: speech.available,
+          engine: speech.engine,
+          defaultModelId: speech.defaultModelId,
+          defaultVoiceId: speech.defaultVoiceId,
+          reason: speech.reason
+        }
+      };
+    } else if (request.action === "voices") result = await voices2();
+    else if (request.action === "tts-setup") {
+      const id7 = params.providerId;
+      if (!["edge-tts", "kokoro", "audio8-tts", "qwen3-tts"].includes(String(id7)))
+        throw new MediaRequestError("请选择支持安装的声音引擎");
+      result = await queued(
+        id7,
+        () => id7 === "audio8-tts" || id7 === "qwen3-tts" ? cloneProviders[id7].setup(context2) : managed.setup(id7, context2)
+      );
+    } else if (request.action === "tts" || request.action === "tts-clone") {
+      const modelId = params.modelId ?? "macos-say";
+      let rendered, input;
+      if (request.action === "tts-clone" && modelId !== "audio8-tts" && modelId !== "qwen3-tts")
+        throw new MediaRequestError("请选择支持本人声音的模型");
+      if (modelId === "audio8-tts" || modelId === "qwen3-tts") {
+        if (params.voiceId !== void 0 && params.voiceId !== "reference")
+          throw new MediaRequestError("本人声音须使用参考录音音色");
+        if (params.instructions) throw new MediaRequestError("本人声音模型不支持额外风格指令");
+        const referencePath = await resolveAssetPath(
+          context2.scope,
+          String(params.referenceAssetId)
+        );
+        input = {
+          text: params.text,
+          referenceText: params.referenceText,
+          referenceAssetId: params.referenceAssetId,
+          rate: params.rate ?? 1,
+          voiceId: "reference"
+        };
+        rendered = await queued(
+          modelId,
+          () => cloneProviders[modelId].generate(
+            {
+              text: input.text,
+              referenceText: input.referenceText,
+              referencePath,
+              rate: input.rate
+            },
+            context2
+          )
+        );
+      } else if (modelId === "macos-say") {
+        input = validateLocalTtsInput2({
+          text: params.text,
+          voiceId: params.voiceId,
+          rate: params.rate
+        });
+        rendered = await generateLocalTts(input, context2, options2.tools);
+        input.voiceId = rendered.voice.id;
+      } else if (modelId === "edge-tts" || modelId === "kokoro") {
+        input = { text: params.text, voiceId: params.voiceId, rate: params.rate ?? 1 };
+        rendered = await queued(
+          modelId,
+          () => managed.generate({ ...input, providerId: modelId }, context2)
+        );
+        input.voiceId = rendered.voice.id;
+      } else {
+        const selected3 = connections.find(
+          (c) => c.description.id === modelId && c.description.available
+        );
+        if (!selected3) throw new MediaRequestError("此配音连接已更改或不可用，请重新选择");
+        const text7 = typeof params.text === "string" ? params.text.replace(/\r\n?/g, "\n").trim() : "";
+        if (!text7 || Array.from(text7).length > selected3.description.maxTextLength || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text7))
+          throw new MediaRequestError("配音文稿超出模型限制或包含无效字符");
+        const voiceId = params.voiceId ?? selected3.description.defaultVoiceId, instructions = params.instructions ?? selected3.defaultInstructions;
+        if (!selected3.description.voices.some((voice) => voice.id === voiceId))
+          throw new MediaRequestError("请选择此模型支持的声音");
+        if (instructions !== void 0 && (typeof instructions !== "string" || instructions.length > 2e3 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(instructions) || instructions.trim() && !selected3.description.supportsInstructions))
+          throw new MediaRequestError("此模型不支持所填朗读风格指令");
+        input = {
+          text: text7,
+          voiceId,
+          rate: params.rate ?? selected3.defaultRate,
+          ...instructions ? { instructions } : {}
+        };
+        rendered = await generateOpenAiTts({ ...input, model: selected3.model }, context2, {
+          baseUrl: selected3.baseUrl,
+          apiKey: selected3.apiKey,
+          ...options2.tools
+        });
+      }
+      const name = `配音-${Array.from(input.text).slice(0, 24).join("").replace(/[\\/:*?"<>|\r\n]/g, " ")}.wav`;
+      const asset2 = await publish2(rendered.path, "audio/wav", "speech", name);
+      result = {
+        asset: asset2,
+        inspection: await inspectMediaFile(rendered.path, context2, processorOptions),
+        speech: { ...input, modelId, engine: rendered.engine }
+      };
+    } else if (request.action === "audio-extract" || request.action === "audio-enhance") {
+      const factory = request.action === "audio-extract" ? createAudioExtractProcessor : createAudioEnhanceProcessor;
+      result = await factory({
+        ...options2.tools,
+        resolveAssetPath,
+        publishArtifact: (_scope, path, mimeType) => publish2(
+          path,
+          mimeType,
+          request.action,
+          request.action === "audio-extract" ? "本人声音参考片段.wav" : "优化后的原声.wav"
+        )
+      }).run(params, context2);
+    } else if (request.action === "prepare") {
+      const first2 = await processors.inspect.run(params, context2);
+      result = { assetId: first2.assetId, inspection: first2.inspection, preparedAt: Date.now() };
+      const info = first2.inspection;
+      const kinds = [
+        "thumbnail",
+        ...info.kind !== "image" ? ["proxy"] : [],
+        ...info.audio ? ["waveform", "silence"] : [],
+        ...info.kind === "video" ? ["scenes"] : [],
+        ...params.transcribe && info.audio ? ["transcribe"] : []
+      ];
+      for (const [index2, kind] of kinds.entries()) {
+        const value = await processors[kind].run(
+          { assetId: params.assetId },
+          {
+            ...context2,
+            reportProgress: (p) => context2.reportProgress({
+              ...p,
+              stage: kind,
+              fraction: (index2 + (p.fraction ?? 0)) / kinds.length
+            })
+          }
+        );
+        result[kind === "transcribe" ? "transcription" : kind] = kind === "proxy" || kind === "thumbnail" ? value[kind] : value;
+      }
+    } else if (request.action === "import") {
+      const imported2 = [];
+      for (const [id7, path] of inputs) {
+        const inspection = await inspectMediaFile(path, context2, processorOptions);
+        const name = typeof params.names?.[id7] === "string" ? basename4(params.names[id7]) : basename4(path);
+        const asset2 = await publish2(
+          path,
+          EXTENSION_MIME[extname(name).toLowerCase()] ?? (inspection.kind === "image" ? "image/png" : inspection.kind === "audio" ? "audio/wav" : "video/mp4"),
+          "source",
+          name
+        );
+        imported2.push(asset2);
+      }
+      result = { assets: imported2 };
+    } else if (request.action === "scene") {
+      const sceneParams = object9(params.params ?? params);
+      const adapter = createHyperframesAdapter({
+        ...options2.tools,
+        workspaceRoot: join23(context2.workDir, "scenes"),
+        cacheRoot: join23(runtime, "scenes", options2.scopeKey)
+      });
+      const hfContext = {
+        signal: context2.signal,
+        onProgress: (p) => context2.reportProgress({ stage: p.phase, message: p.message, fraction: p.progress })
+      };
+      const scene = await adapter.createScene(sceneParams, hfContext), output = await adapter.render(scene, { ...hfContext, fps: 30 });
+      const asset2 = await publish2(
+        output.artifactPath,
+        "video/mp4",
+        "scene",
+        `${sceneParams.title}.mp4`
+      );
+      const source3 = await publish2(output.sourcePath, "text/html", "scene-source", "index.html"), config = await publish2(
+        output.paramsPath,
+        "application/json",
+        "scene-parameters",
+        "scene.json"
+      );
+      result = {
+        asset: asset2,
+        scene: {
+          params: sceneParams,
+          contentHash: output.contentHash,
+          cached: output.cached,
+          rendererVersion: output.rendererVersion,
+          source: source3,
+          config
+        },
+        durationSeconds: output.durationSeconds,
+        width: output.width,
+        height: output.height
+      };
+    } else result = await processors[request.action].run(params, context2);
+    const convert = async (value, role = "artifact") => {
+      if (!value || typeof value !== "object") return value;
+      if (Array.isArray(value)) return Promise.all(value.map((v) => convert(v, role)));
+      if (typeof value.path === "string" && typeof value.mimeType === "string") {
+        const asset2 = await publish2(value.path, value.mimeType, role);
+        return {
+          asset: asset2,
+          file: artifacts.find((a) => a.assetId === asset2.id).file,
+          mimeType: value.mimeType,
+          available: true
+        };
+      }
+      const output = {};
+      for (const [key, child] of Object.entries(value)) {
+        if (/^(?:path|artifactPath|sourcePath|projectDir|paramsPath|apiKey|baseUrl)$/.test(key))
+          continue;
+        output[key] = typeof child === "string" && ["reason", "message", "detail"].includes(key) ? publicMessage(new Error(child)) : await convert(child, key);
+      }
+      return output;
+    };
+    const publicResult = await convert(result);
+    if (context2.signal.aborted) throw mediaAbortError();
+    await context2.reportProgress({ fraction: 1, stage: "complete" });
+    if (context2.signal.aborted) throw mediaAbortError();
+    succeeded = true;
+    return { result: publicResult, artifacts };
+  } catch (error) {
+    if (context2.signal.aborted || error instanceof Error && error.name === "AbortError")
+      throw mediaAbortError();
+    throw new Error(publicMessage(error), { cause: error });
+  } finally {
+    await caption.close(context2.jobId);
+    await rm20(context2.workDir, { recursive: true, force: true }).catch(() => {
+    });
+    if (!succeeded) await rm20(context2.outputDir, { recursive: true, force: true }).catch(() => {
+    });
+  }
+}
+
+// native/project-store.ts
+import { constants as constants7 } from "node:fs";
+import { createHash as createHash14, randomUUID as randomUUID19 } from "node:crypto";
+import { dirname as dirname6, isAbsolute as isAbsolute12, join as join24, resolve as resolve7 } from "node:path";
+import {
+  copyFile as copyFile9,
+  link as link6,
+  lstat as lstat7,
+  mkdir as mkdir17,
+  open as open8,
+  realpath as realpath6,
+  rename as rename15,
+  rm as rm21,
+  rmdir,
+  unlink
+} from "node:fs/promises";
 var PROJECT_FILE = "video-studio-cli.json";
+var MEDIA_FILE = "video-studio-media.json";
 var DOCUMENT_BYTES = 32 * 1024 * 1024;
 var REQUEST_BYTES = 256 * 1024;
 var OUTPUT_BYTES = 64 * 1024;
 var cliError = (code, message) => Object.assign(new Error(message), { code });
-var contentRevision = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+var contentRevision = (bytes) => `sha256:${createHash14("sha256").update(bytes).digest("hex")}`;
 async function readJsonFile(path, limit) {
-  const file = await open(
+  const file = await open8(
     path,
-    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
+    constants7.O_RDONLY | (constants7.O_NOFOLLOW ?? 0) | (constants7.O_NONBLOCK ?? 0)
   );
   try {
     const info = await file.stat();
@@ -7596,35 +21395,35 @@ async function readJsonFile(path, limit) {
   }
 }
 async function createProjectStore(project) {
-  const supplied = resolve(project), suppliedInfo = await lstat(supplied);
+  const supplied = resolve7(project), suppliedInfo = await lstat7(supplied);
   if (!suppliedInfo.isDirectory() || suppliedInfo.isSymbolicLink())
     throw cliError("UNSAFE_PATH", "CLI 项目须为真实目录，不能是符号链接");
-  const root = await realpath(supplied), identity2 = await lstat(root);
+  const root = await realpath6(supplied), identity2 = await lstat7(root);
   const checkRoot = async () => {
-    const current = await lstat(root);
-    if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== identity2.dev || current.ino !== identity2.ino || await realpath(root) !== root)
+    const current = await lstat7(root);
+    if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== identity2.dev || current.ino !== identity2.ino || await realpath6(root) !== root)
       throw cliError("UNSAFE_PATH", "CLI 项目目录已改变");
   };
   const pathFor = async (path, createParents = false) => {
     await checkRoot();
-    if (typeof path !== "string" || !path || path.length > 512 || isAbsolute(path) || /[\\\x00:]/u.test(path))
+    if (typeof path !== "string" || !path || path.length > 512 || isAbsolute12(path) || /[\\\x00:]/u.test(path))
       throw cliError("UNSAFE_PATH", "输出须为项目内的相对路径");
     const parts = path.split("/");
     if (parts.some((part2) => !part2 || part2.startsWith(".")))
       throw cliError("UNSAFE_PATH", "不允许隐藏路径、空路径或越界路径");
     let current = root;
     for (const [index2, part2] of parts.entries()) {
-      current = join(current, part2);
+      current = join24(current, part2);
       let info;
       try {
-        info = await lstat(current);
+        info = await lstat7(current);
       } catch (error) {
         if (error.code !== "ENOENT") throw error;
         if (createParents && index2 < parts.length - 1) {
-          await mkdir(current, { mode: 448 }).catch(async (failure2) => {
+          await mkdir17(current, { mode: 448 }).catch(async (failure2) => {
             if (failure2.code !== "EEXIST") throw failure2;
           });
-          info = await lstat(current);
+          info = await lstat7(current);
         }
       }
       if (info?.isSymbolicLink() || info && index2 < parts.length - 1 && !info.isDirectory())
@@ -7643,15 +21442,15 @@ async function createProjectStore(project) {
       return null;
     }
   };
-  const lock = join(root, ".video-studio-cli-write.lock");
+  const lock = join24(root, ".video-studio-cli-write.lock");
   const withLock = async (operation) => {
     const deadline = Date.now() + 5e3;
     let owned;
     for (; ; ) {
       await checkRoot();
       try {
-        await mkdir(lock, { mode: 448 });
-        owned = await lstat(lock);
+        await mkdir17(lock, { mode: 448 });
+        owned = await lstat7(lock);
         if (!owned.isDirectory() || owned.isSymbolicLink())
           throw cliError("UNSAFE_PATH", "CLI 写入锁无效");
         break;
@@ -7662,7 +21461,7 @@ async function createProjectStore(project) {
         await new Promise((done) => setTimeout(done, 25));
       }
     }
-    let result, failed, release;
+    let result, failed, release2;
     try {
       await checkRoot();
       result = await operation();
@@ -7671,36 +21470,36 @@ async function createProjectStore(project) {
     }
     try {
       await checkRoot();
-      const current = await lstat(lock);
+      const current = await lstat7(lock);
       if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== owned.dev || current.ino !== owned.ino)
         throw cliError("UNSAFE_PATH", "CLI 写入锁所有者已改变，保留该锁");
       await rmdir(lock);
     } catch (error) {
-      release = error;
+      release2 = error;
     }
-    if (failed && release) throw new AggregateError([failed, release], "操作与写入锁释放均未完成");
+    if (failed && release2) throw new AggregateError([failed, release2], "操作与写入锁释放均未完成");
     if (failed) throw failed;
-    if (release) throw release;
+    if (release2) throw release2;
     return result;
   };
-  const publish = async (path, content, expected2, replace) => {
+  const publish2 = async (path, content, expected2, replace) => {
     if (Buffer.byteLength(content) > DOCUMENT_BYTES)
       throw cliError("INPUT_LIMIT", "工程超过 32 MiB");
-    const destination = await pathFor(path, true), parent = dirname(destination), parentIdentity = await lstat(parent);
-    const check = async () => {
+    const destination = await pathFor(path, true), parent = dirname6(destination), parentIdentity = await lstat7(parent);
+    const check2 = async () => {
       await pathFor(path);
-      const info = await lstat(parent);
+      const info = await lstat7(parent);
       if (info.dev !== parentIdentity.dev || info.ino !== parentIdentity.ino)
         throw cliError("UNSAFE_PATH", "输出父目录已改变");
       if (replace && ((await read())?.revision ?? null) !== expected2)
         throw cliError("REVISION_CONFLICT", "工程已变化，请重新读取并重新规划");
     };
-    const temporary = join(parent, `.video-studio-${randomUUID()}.tmp`);
+    const temporary = join24(parent, `.video-studio-${randomUUID19()}.tmp`);
     let ownedTemporary = false;
     try {
-      const file = await open(
+      const file = await open8(
         temporary,
-        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+        constants7.O_WRONLY | constants7.O_CREAT | constants7.O_EXCL | (constants7.O_NOFOLLOW ?? 0),
         384
       );
       ownedTemporary = true;
@@ -7710,11 +21509,11 @@ async function createProjectStore(project) {
       } finally {
         await file.close();
       }
-      await check();
-      if (replace && expected2 !== null) await rename(temporary, destination);
+      await check2();
+      if (replace && expected2 !== null) await rename15(temporary, destination);
       else {
         try {
-          await link(temporary, destination);
+          await link6(temporary, destination);
         } catch (error) {
           if (error.code === "EEXIST")
             throw cliError("REVISION_CONFLICT", "输出已存在，保留原文件");
@@ -7724,27 +21523,917 @@ async function createProjectStore(project) {
       }
       return { path, revision: contentRevision(content), bytes: Buffer.byteLength(content) };
     } finally {
-      if (ownedTemporary) await rm(temporary, { force: true });
+      if (ownedTemporary) await rm21(temporary, { force: true });
+    }
+  };
+  const publishFile = async (path, source3) => {
+    if (path === PROJECT_FILE || path === MEDIA_FILE)
+      throw cliError("INVALID_INPUT", "输出路径不能覆盖 CLI 工程文件");
+    const destination = await pathFor(path, true), parent = dirname6(destination), temporary = join24(parent, `.video-studio-${randomUUID19()}.tmp`);
+    try {
+      await copyFile9(source3, temporary, constants7.COPYFILE_EXCL | constants7.COPYFILE_FICLONE);
+      await pathFor(path);
+      try {
+        await link6(temporary, destination);
+      } catch (error) {
+        if (error.code === "EEXIST")
+          throw cliError("OUTPUT_EXISTS", `${path} 已存在，保留原文件；请换一个输出路径`);
+        throw error;
+      }
+      return destination;
+    } finally {
+      await rm21(temporary, { force: true });
+    }
+  };
+  const existingFile = async (path) => {
+    const resolved = await pathFor(path), info = await lstat7(resolved).catch(() => void 0);
+    if (!info?.isFile()) throw cliError("INVALID_INPUT", `${path} 不是项目内的文件`);
+    return resolved;
+  };
+  const assertFree = async (path) => {
+    if (path === PROJECT_FILE || path === MEDIA_FILE)
+      throw cliError("INVALID_INPUT", "输出路径不能覆盖 CLI 工程文件");
+    const resolved = await pathFor(path);
+    if (await lstat7(resolved).then(() => true, () => false))
+      throw cliError("OUTPUT_EXISTS", `${path} 已存在，保留原文件；请换一个输出路径`);
+  };
+  const readMedia = async () => {
+    const path = await pathFor(MEDIA_FILE);
+    try {
+      return (await readJsonFile(path, DOCUMENT_BYTES)).data;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      return void 0;
+    }
+  };
+  const writeMedia = async (data) => {
+    const destination = await pathFor(MEDIA_FILE), temporary = join24(dirname6(destination), `.video-studio-${randomUUID19()}.tmp`);
+    try {
+      const file = await open8(
+        temporary,
+        constants7.O_WRONLY | constants7.O_CREAT | constants7.O_EXCL | (constants7.O_NOFOLLOW ?? 0),
+        384
+      );
+      try {
+        await file.writeFile(`${JSON.stringify(data, null, 2)}
+`, "utf8");
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      await pathFor(MEDIA_FILE);
+      await rename15(temporary, destination);
+    } finally {
+      await rm21(temporary, { force: true });
     }
   };
   return {
     root,
     read,
     withLock,
-    write: (data, expected2) => publish(PROJECT_FILE, `${JSON.stringify(data)}
+    publishFile,
+    existingFile,
+    assertFree,
+    readMedia,
+    writeMedia,
+    write: (data, expected2) => publish2(PROJECT_FILE, `${JSON.stringify(data)}
 `, expected2, true),
     export: (path, data) => {
-      if (path === PROJECT_FILE) throw cliError("INVALID_INPUT", "导出路径不能覆盖 CLI 工程文件");
-      return publish(path, `${JSON.stringify(data, null, 2)}
+      if (path === PROJECT_FILE || path === MEDIA_FILE)
+        throw cliError("INVALID_INPUT", "导出路径不能覆盖 CLI 工程文件");
+      return publish2(path, `${JSON.stringify(data, null, 2)}
 `, null, false);
     }
   };
 }
 
-// native/project-cli.ts
+// native/project-media.ts
 var plain = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+var sha = (value) => createHash15("sha256").update(value).digest("hex");
+var seconds2 = (tick2) => Math.round(ticksToSeconds(tick2) * 1e3) / 1e3;
+var text6 = (value, label3, max = 512) => {
+  if (typeof value !== "string" || !value.trim() || value.length > max)
+    throw cliError("INVALID_INPUT", `${label3}须为 1 至 ${max} 个字符`);
+  return value;
+};
+var finiteSeconds = (value, label3, min = 0, max = 24 * 3600) => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max)
+    throw cliError("INVALID_INPUT", `${label3}须为 ${min} 至 ${max} 之间的秒数`);
+  return value;
+};
+var revisionOf = (value) => {
+  if (typeof value !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value))
+    throw cliError("INVALID_INPUT", "写入需要 inspect 返回的 expectedRevision");
+  return value;
+};
+async function cliHome() {
+  const configured = process.env.VIDEO_STUDIO_CLI_HOME;
+  if (configured !== void 0 && !isAbsolute13(configured))
+    throw cliError("INVALID_ARGUMENT", "VIDEO_STUDIO_CLI_HOME 须为绝对路径");
+  const home = configured ?? join25(homedir6(), ".cache", "video-studio-cli");
+  await mkdir18(home, { recursive: true, mode: 448 });
+  const info = await lstat8(home);
+  if (!info.isDirectory() || info.isSymbolicLink())
+    throw cliError("UNSAFE_PATH", "CLI 运行目录须为真实目录");
+  return realpath7(home);
+}
+async function privateDirectory(path) {
+  await mkdir18(path, { recursive: true, mode: 448 });
+  const info = await lstat8(path);
+  if (!info.isDirectory() || info.isSymbolicLink())
+    throw cliError("UNSAFE_PATH", "CLI 运行目录无效");
+  return realpath7(path);
+}
+async function withJob(home, work) {
+  const jobs = await privateDirectory(join25(home, "jobs"));
+  const jobDir = await mkdtemp3(join25(jobs, "job-"));
+  try {
+    return await work(jobDir, `cli-${randomUUID20()}`);
+  } finally {
+    await rm22(jobDir, { recursive: true, force: true });
+  }
+}
+async function tool(name) {
+  const path = await findExecutable(name);
+  if (!path)
+    throw cliError(
+      "MISSING_DEPENDENCY",
+      name === "whisper" ? "需要本机 Whisper（pip install openai-whisper）才能转写" : `需要本机 ${name}（例如 brew install ffmpeg）`
+    );
+  return path;
+}
+var MEDIA_FORMAT = "codeshell.video-studio.cli-media";
+async function readRegistry(store) {
+  const raw = await store.readMedia();
+  const registry = /* @__PURE__ */ new Map();
+  if (raw === void 0) return registry;
+  if (!plain(raw) || raw.format !== MEDIA_FORMAT || raw.version !== 1 || !plain(raw.media))
+    throw cliError("INVALID_PROJECT", "素材登记文件格式无效");
+  for (const [id7, entry] of Object.entries(raw.media)) {
+    if (!/^external-[a-f0-9]{64}$/.test(id7) || !plain(entry) || typeof entry.path !== "string" || typeof entry.name !== "string" || !Number.isSafeInteger(entry.bytes) || typeof entry.sha256 !== "string" || id7 !== `external-${entry.sha256}` || typeof entry.mtimeMs !== "number")
+      throw cliError("INVALID_PROJECT", `素材登记条目无效：${id7}`);
+    registry.set(id7, entry);
+  }
+  return registry;
+}
+function registryData(registry) {
+  return {
+    format: MEDIA_FORMAT,
+    version: 1,
+    media: Object.fromEntries([...registry].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))
+  };
+}
+function storedPath(root, path) {
+  const inside2 = relative6(root, path);
+  return inside2 && !inside2.startsWith(`..${sep6}`) && inside2 !== ".." && !isAbsolute13(inside2) ? inside2.split(sep6).join("/") : path;
+}
+async function locate(root, id7, entry, signal) {
+  const path = isAbsolute13(entry.path) ? entry.path : join25(root, ...entry.path.split("/"));
+  let real, info;
+  try {
+    real = await realpath7(path);
+    info = await stat19(real);
+  } catch {
+    throw cliError("SOURCE_MISSING", `素材「${entry.name}」找不到了，请重新 add-media`);
+  }
+  if (!info.isFile()) throw cliError("SOURCE_MISSING", `素材「${entry.name}」不是文件`);
+  if (info.size !== entry.bytes)
+    throw cliError("SOURCE_CHANGED", `素材「${entry.name}」已变化，请重新 add-media`);
+  if (info.mtimeMs !== entry.mtimeMs) {
+    const { sha256: sha2562 } = await hashFile3(real, signal);
+    if (`external-${sha2562}` !== id7)
+      throw cliError("SOURCE_CHANGED", `素材「${entry.name}」已变化，请重新 add-media`);
+  }
+  return { path: real, bytes: info.size };
+}
+async function hashFile3(path, signal) {
+  const { createReadStream: createReadStream11 } = await import("node:fs");
+  const hash4 = createHash15("sha256");
+  for await (const chunk of createReadStream11(path)) {
+    if (signal.aborted) throw cliError("CANCELLED", "已取消");
+    hash4.update(chunk);
+  }
+  return { sha256: hash4.digest("hex") };
+}
+async function inspectFile2(path, name, root, signal) {
+  let real, info;
+  try {
+    real = await realpath7(path);
+    info = await stat19(real);
+  } catch {
+    throw cliError("INVALID_INPUT", `找不到素材文件：${basename5(path)}`);
+  }
+  if (!info.isFile()) throw cliError("INVALID_INPUT", `不是普通文件：${basename5(path)}`);
+  const inspected = await inspectEditorSource(
+    real,
+    `external-${"0".repeat(64)}`,
+    await tool("ffprobe"),
+    signal
+  );
+  const resourceId2 = `external-${inspected.sha256}`, label3 = name?.trim() || basename5(real);
+  return {
+    path: real,
+    name: label3,
+    resourceId: resourceId2,
+    entry: {
+      path: storedPath(root, real),
+      name: label3,
+      bytes: inspected.bytes,
+      sha256: inspected.sha256,
+      mtimeMs: info.mtimeMs
+    },
+    asset: {
+      name: label3,
+      kind: inspected.kind,
+      duration: inspected.duration,
+      ...inspected.width === void 0 ? {} : { width: inspected.width, height: inspected.height },
+      resourceId: resourceId2,
+      fingerprint: inspected.sha256,
+      metadata: {
+        mimeType: inspected.mimeType,
+        size: inspected.bytes,
+        bytes: inspected.bytes,
+        lastModified: Math.max(0, Math.floor(info.mtimeMs)),
+        editorInspection: structuredClone(inspected.inspection)
+      }
+    }
+  };
+}
+async function addInspected(context2, expected2, files, placement, imageDuration) {
+  return context2.store.withLock(async () => {
+    const stored = await context2.store.read();
+    if (!stored) throw cliError("PROJECT_NOT_INITIALIZED", "当前项目缺少工程，请先执行 init");
+    if (stored.revision !== expected2)
+      throw cliError("REVISION_CONFLICT", "工程已变化，请重新读取并重新规划");
+    const document2 = validateEditorDocument(stored.data), registry = await readRegistry(context2.store);
+    let draft = document2;
+    const operations = [], receipts = [];
+    const step = (ops) => {
+      draft = applyEditorOperations(draft, ops, draft.revision);
+      operations.push(...ops);
+    };
+    for (const file of files) {
+      registry.set(file.resourceId, file.entry);
+      const existing = draft.assets.find((asset3) => asset3.resourceId === file.resourceId);
+      const asset2 = existing ?? { id: `asset-${randomUUID20()}`, ...file.asset };
+      if (!existing) step([{ type: "asset.add", asset: asset2 }]);
+      const receipt = {
+        assetId: asset2.id,
+        resourceId: file.resourceId,
+        name: asset2.name,
+        kind: asset2.kind,
+        durationSeconds: seconds2(asset2.duration),
+        ...asset2.width === void 0 ? {} : { width: asset2.width, height: asset2.height },
+        reused: Boolean(existing)
+      };
+      if (placement.mode !== "none") {
+        const sequence5 = draft.sequences.find((item) => item.id === draft.activeSequenceId), duration2 = asset2.kind === "image" ? imageDuration : asset2.duration, lane = asset2.kind === "audio" ? "audio" : "video", ids3 = () => `track-${randomUUID20()}`;
+        if (!duration2) throw cliError("INVALID_INPUT", `素材「${asset2.name}」没有可放置的时长`);
+        let start, trackId;
+        if (placement.mode === "append") {
+          const planned = planAppendPlacement(sequence5, lane, ids3);
+          step(planned.operations);
+          ({ start, trackId } = planned);
+        } else {
+          start = placement.start;
+          if (placement.trackId) {
+            const track3 = sequence5.tracks.find((item) => item.id === placement.trackId);
+            if (!track3 || track3.kind !== lane || track3.locked)
+              throw cliError("INVALID_INPUT", "目标轨道不存在、已锁定或与素材类型不符");
+            trackId = track3.id;
+          } else {
+            const free = findFreeTrack(sequence5, lane, start, duration2, ids3);
+            step(free.operations);
+            trackId = free.trackId;
+          }
+        }
+        const clip3 = {
+          id: `clip-${randomUUID20()}`,
+          kind: "media",
+          assetId: asset2.id,
+          trackId,
+          label: asset2.name,
+          start,
+          duration: duration2,
+          timeMap: asset2.kind === "image" ? freezeTimeMap(0, duration2) : constantTimeMap(0, duration2, 1).timeMap,
+          audio: defaultAudioMix(),
+          transform: defaultTransform(),
+          color: defaultColorAdjustment(),
+          blendMode: "normal"
+        };
+        step([{ type: "clip.add", sequenceId: sequence5.id, clip: clip3 }]);
+        receipt.clip = {
+          clipId: clip3.id,
+          trackId,
+          startSeconds: seconds2(start),
+          durationSeconds: seconds2(duration2)
+        };
+      }
+      receipts.push(receipt);
+    }
+    const once = operations.length ? applyEditorOperations(document2, operations, document2.revision) : document2, annotations = reconcileEditorProduction(document2, once), after = annotations.length ? applyEditorOperations(document2, [...operations, ...annotations], document2.revision) : once;
+    await context2.store.writeMedia(registryData(registry));
+    const saved = operations.length ? await context2.store.write(after, stored.revision) : { revision: stored.revision };
+    return { revision: saved.revision, documentRevision: after.revision, assets: receipts };
+  });
+}
+function placementOf(input, fallback) {
+  if (input.at !== void 0) {
+    if (input.place !== void 0)
+      throw cliError("INVALID_INPUT", "at 与 place 只能提供一个");
+    return {
+      mode: "at",
+      start: secondsToTicks(finiteSeconds(input.at, "at")),
+      ...input.trackId === void 0 ? {} : { trackId: text6(input.trackId, "trackId", 256) }
+    };
+  }
+  if (input.trackId !== void 0) throw cliError("INVALID_INPUT", "trackId 需要同时提供 at");
+  const mode = input.place ?? fallback;
+  if (mode !== "append" && mode !== "none")
+    throw cliError("INVALID_INPUT", "place 须为 append 或 none");
+  return { mode };
+}
+async function currentRevision(store, expected2) {
+  const stored = await store.read();
+  if (!stored) throw cliError("PROJECT_NOT_INITIALIZED", "当前项目缺少工程，请先执行 init");
+  const revision2 = revisionOf(expected2);
+  if (stored.revision !== revision2)
+    throw cliError("REVISION_CONFLICT", "工程已变化，请重新读取并重新规划");
+  return { revision: revision2, document: validateEditorDocument(stored.data) };
+}
+async function addMedia(input, context2) {
+  const { revision: revision2 } = await currentRevision(context2.store, input.expectedRevision);
+  if (!Array.isArray(input.files) || !input.files.length || input.files.length > 50)
+    throw cliError("INVALID_INPUT", "files 须为 1 至 50 个 {path,name?}");
+  const imageDuration = secondsToTicks(
+    input.imageSeconds === void 0 ? 5 : finiteSeconds(input.imageSeconds, "imageSeconds", 0.04, 3600)
+  );
+  const placement = placementOf(input, "append");
+  const inspected = [];
+  for (const [index2, file] of input.files.entries()) {
+    if (!plain(file) || Object.keys(file).some((key) => !["path", "name"].includes(key)))
+      throw cliError("INVALID_INPUT", "files 每项须为 {path,name?}");
+    context2.progress("inspect", index2 / input.files.length);
+    inspected.push(
+      await inspectFile2(
+        resolve8(context2.cwd, text6(file.path, "path", 4096)),
+        file.name === void 0 ? void 0 : text6(file.name, "name", 256),
+        context2.store.root,
+        context2.signal
+      )
+    );
+  }
+  context2.progress("inspect", 1);
+  return addInspected(context2, revision2, inspected, placement, imageDuration);
+}
+function exportSettings(document2, input) {
+  if (input.profile !== void 0 && input.profileId !== void 0)
+    throw cliError("INVALID_INPUT", "profile 与 profileId 只能提供一个");
+  const sequenceId = input.sequenceId ?? document2.activeSequenceId, sequence5 = document2.sequences.find((item) => item.id === sequenceId);
+  if (!sequence5) throw cliError("INVALID_INPUT", "导出序列不存在");
+  const profileValue = input.profile ?? (input.profileId === void 0 ? document2.exportProfiles[0] : document2.exportProfiles.find((item) => item.id === input.profileId));
+  if (!profileValue)
+    throw cliError("INVALID_INPUT", "导出配置不存在，请提供完整 profile 或当前 profileId");
+  const profile = validateExportProfile(profileValue), fullDuration = sequenceDuration(sequence5);
+  const range = validateExportRange(input.range ?? { start: 0, duration: fullDuration }, fullDuration);
+  return { sequenceId: sequence5.id, sequence: sequence5, profile, range, fullDuration };
+}
+async function render(input, context2) {
+  const stored = await context2.store.read();
+  if (!stored) throw cliError("PROJECT_NOT_INITIALIZED", "当前项目缺少工程，请先执行 init");
+  if (input.expectedRevision !== void 0 && revisionOf(input.expectedRevision) !== stored.revision)
+    throw cliError("REVISION_CONFLICT", "工程已变化，请重新读取并重新规划");
+  const document2 = validateEditorDocument(stored.data), output = text6(input.output, "output");
+  const { sequenceId, profile, range, fullDuration } = exportSettings(document2, input);
+  if (!fullDuration) throw cliError("INVALID_INPUT", "序列为空，先用 add-media 或 edit 放入片段");
+  if (extname2(output).toLowerCase() !== `.${profile.container}`)
+    throw cliError("INVALID_INPUT", `output 须以 .${profile.container} 结尾，与导出配置一致`);
+  await context2.store.assertFree(output);
+  let selected3;
+  try {
+    selected3 = editorTaskDocument(document2, sequenceId);
+  } catch (error) {
+    throw cliError("MEDIA_NOT_REGISTERED", error instanceof Error ? error.message : String(error));
+  }
+  const registry = await readRegistry(context2.store), originals = /* @__PURE__ */ new Map();
+  const unknown = selected3.resourceIds.filter((id7) => !registry.has(id7));
+  if (unknown.length) {
+    const names = selected3.document.assets.filter((asset2) => unknown.includes(asset2.resourceId)).map((asset2) => asset2.name).slice(0, 5);
+    throw cliError(
+      "MEDIA_NOT_REGISTERED",
+      `序列用到的素材不在本项目的素材登记中：${names.join("、")}；请用 add-media 加入本地文件`
+    );
+  }
+  for (const [index2, id7] of selected3.resourceIds.entries()) {
+    context2.progress("verify-media", index2 / selected3.resourceIds.length);
+    originals.set(`original-${id7}`, await locate(context2.store.root, id7, registry.get(id7), context2.signal));
+  }
+  const browserPath = process.env.VIDEO_STUDIO_BROWSER;
+  if (browserPath !== void 0 && !isAbsolute13(browserPath))
+    throw cliError("INVALID_ARGUMENT", "VIDEO_STUDIO_BROWSER 须为浏览器可执行文件的绝对路径");
+  const home = await cliHome(), runtimeDir = await privateDirectory(join25(home, "editor-runtime")), scopeKey = sha(context2.store.root), transferId = `editor-${randomUUID20()}`, bytes = Buffer.from(JSON.stringify(selected3.document)), documentHash = createHash15("sha256").update(bytes).digest("hex");
+  const call = (request, keep) => withJob(home, async (jobDir, jobId) => {
+    const response = await runEditorRequest(request, {
+      jobDir,
+      runtimeDir,
+      scopeKey,
+      jobId,
+      signal: context2.signal,
+      runtimeSource: source2,
+      runtimeSha: sha256,
+      builtinNarrationPath: fileURLToPath(new URL("../demo-narration.mp3", import.meta.url)),
+      originals,
+      ...browserPath ? { tools: { browserPath } } : {},
+      reportProgress: (value) => context2.progress(value.stage ?? String(request.action), value.fraction)
+    });
+    return keep ? keep(jobDir, response) : response;
+  });
+  try {
+    if (selected3.resourceIds.length)
+      await call({ action: "stage-resources", transferId, resourceIds: selected3.resourceIds });
+    const chunk = 512 * 1024, chunkCount = Math.ceil(bytes.length / chunk);
+    for (let index2 = 0; index2 < chunkCount; index2++)
+      await call({
+        action: "stage-document",
+        transferId,
+        documentHash,
+        chunkIndex: index2,
+        chunkCount,
+        dataBase64: bytes.subarray(index2 * chunk, (index2 + 1) * chunk).toString("base64")
+      });
+    await call({
+      action: "commit",
+      transferId,
+      documentHash,
+      sequenceId,
+      chunkCount,
+      byteLength: bytes.length
+    });
+    const isFull = range.start === 0 && range.duration === fullDuration;
+    return await call(
+      {
+        action: "render",
+        transferId,
+        documentHash,
+        sequenceId,
+        profile,
+        ...isFull ? {} : { range }
+      },
+      async (jobDir, response) => {
+        const video = response.artifacts.find((item) => item.role === "editor-video");
+        if (!video) throw cliError("RENDER_FAILED", "渲染没有产出视频");
+        await context2.store.publishFile(output, join25(jobDir, video.file));
+        return {
+          rendered: true,
+          verified: response.result.verified === true,
+          output,
+          bytes: video.bytes,
+          sha256: video.sha256,
+          sequenceId,
+          profile: {
+            id: profile.id,
+            name: profile.name,
+            container: profile.container,
+            width: profile.width,
+            height: profile.height,
+            frameRate: profile.frameRate
+          },
+          range: { startSeconds: seconds2(range.start), durationSeconds: seconds2(range.duration) },
+          frameCount: response.result.frameCount,
+          durationSeconds: response.result.durationSeconds,
+          reusedAudio: response.result.reusedAudio === true,
+          ...response.result.audioMix?.warning ? { audioWarning: response.result.audioMix.warning } : {}
+        };
+      }
+    );
+  } finally {
+    await call({ action: "discard", transferId, documentHash, sequenceId }).catch(() => {
+    });
+  }
+}
+async function media(params, action, context2) {
+  const home = await cliHome(), runtimeDir = await privateDirectory(join25(home, "media-runtime"));
+  return withJob(home, async (jobDir, jobId) => {
+    const response = await runMediaRequest(
+      { action, params },
+      {
+        jobDir,
+        runtimeDir,
+        scopeKey: sha(context2.store.root),
+        jobId,
+        signal: context2.signal,
+        reportProgress: (value) => context2.progress(value.stage ?? action, value.fraction)
+      }
+    );
+    return { response, jobDir };
+  });
+}
+async function voices(input, context2) {
+  const language = input.language === void 0 ? void 0 : text6(input.language, "language", 32);
+  const home = await cliHome(), runtimeDir = await privateDirectory(join25(home, "media-runtime"));
+  const result = await withJob(
+    home,
+    async (jobDir, jobId) => (await runMediaRequest(
+      { action: "voices" },
+      {
+        jobDir,
+        runtimeDir,
+        scopeKey: sha(context2.store.root),
+        jobId,
+        signal: context2.signal,
+        reportProgress: () => {
+        }
+      }
+    )).result
+  );
+  const models = result.models.filter((model) => input.modelId === void 0 || model.id === input.modelId).map((model) => {
+    const all = (model.voices ?? []).filter(
+      (voice) => !language || String(voice.language ?? "").toLowerCase().startsWith(language.toLowerCase())
+    );
+    return {
+      id: model.id,
+      name: model.name,
+      provider: model.provider,
+      available: model.available === true,
+      ...model.reason ? { reason: model.reason } : {},
+      ...model.installable ? { installable: true } : {},
+      defaultVoiceId: model.defaultVoiceId,
+      voiceCount: all.length,
+      voices: all.slice(0, 40).map((voice) => ({
+        id: voice.id,
+        name: voice.name,
+        ...voice.language ? { language: voice.language } : {}
+      }))
+    };
+  });
+  return {
+    defaultModelId: result.defaultModelId,
+    models,
+    next: "未安装的引擎用 setup-voice {providerId}；生成用 voiceover {text,modelId,voiceId}"
+  };
+}
+async function setupVoice(input, context2) {
+  if (!["edge-tts", "kokoro"].includes(input.providerId))
+    throw cliError("INVALID_INPUT", "providerId 须为 edge-tts 或 kokoro");
+  const { response } = await media({ providerId: input.providerId }, "tts-setup", context2);
+  const result = response.result ?? {};
+  return {
+    providerId: input.providerId,
+    available: result.available === true,
+    ...result.reason ? { reason: result.reason } : {},
+    ...result.version ? { version: result.version } : {}
+  };
+}
+async function voiceover(input, context2) {
+  const { revision: revision2 } = await currentRevision(context2.store, input.expectedRevision);
+  const words = text6(input.text, "text", 6e3), placement = placementOf(input, "none");
+  if (input.rate !== void 0 && (typeof input.rate !== "number" || !(input.rate >= 0.5 && input.rate <= 2)))
+    throw cliError("INVALID_INPUT", "rate 须为 0.5 至 2 之间的语速倍数");
+  const output = input.output === void 0 ? `media/voiceover-${sha(`${words}\0${input.modelId ?? ""}\0${input.voiceId ?? ""}\0${input.rate ?? 1}`).slice(0, 12)}.wav` : text6(input.output, "output");
+  if (extname2(output).toLowerCase() !== ".wav") throw cliError("INVALID_INPUT", "output 须以 .wav 结尾");
+  await context2.store.assertFree(output);
+  const { speech, published } = await (async () => {
+    const home = await cliHome(), runtimeDir = await privateDirectory(join25(home, "media-runtime"));
+    return withJob(home, async (jobDir, jobId) => {
+      const response = await runMediaRequest(
+        {
+          action: "tts",
+          params: {
+            text: words,
+            ...input.modelId === void 0 ? {} : { modelId: text6(input.modelId, "modelId", 128) },
+            ...input.voiceId === void 0 ? {} : { voiceId: text6(input.voiceId, "voiceId", 256) },
+            ...input.rate === void 0 ? {} : { rate: input.rate }
+          }
+        },
+        {
+          jobDir,
+          runtimeDir,
+          scopeKey: sha(context2.store.root),
+          jobId,
+          signal: context2.signal,
+          reportProgress: (value) => context2.progress(value.stage ?? "tts", value.fraction)
+        }
+      );
+      const artifact = response.artifacts.find((item) => item.mimeType === "audio/wav");
+      if (!artifact) throw cliError("TTS_FAILED", "配音没有产出音频");
+      return {
+        speech: response.result.speech,
+        published: await context2.store.publishFile(output, join25(jobDir, artifact.file))
+      };
+    });
+  })();
+  const inspected = await inspectFile2(
+    published,
+    input.name === void 0 ? `配音 · ${Array.from(words).slice(0, 16).join("")}` : text6(input.name, "name", 256),
+    context2.store.root,
+    context2.signal
+  );
+  const added = await addInspected(context2, revision2, [inspected], placement, 0);
+  return {
+    ...added,
+    output,
+    speech: { modelId: speech?.modelId, voiceId: speech?.voiceId, engine: speech?.engine, rate: speech?.rate }
+  };
+}
+async function sourceFile(input, context2) {
+  if (input.assetId === void 0 === (input.path === void 0))
+    throw cliError("INVALID_INPUT", "assetId 与 path 须且只能提供一个");
+  if (input.path !== void 0) {
+    const path = await context2.store.existingFile(text6(input.path, "path"));
+    return { path, label: basename5(path, extname2(path)) };
+  }
+  const stored = await context2.store.read();
+  if (!stored) throw cliError("PROJECT_NOT_INITIALIZED", "当前项目缺少工程，请先执行 init");
+  const document2 = validateEditorDocument(stored.data), asset2 = document2.assets.find((item) => item.id === input.assetId);
+  if (!asset2) throw cliError("INVALID_INPUT", "素材不存在");
+  const entry = asset2.resourceId ? (await readRegistry(context2.store)).get(asset2.resourceId) : void 0;
+  if (!entry || !asset2.resourceId)
+    throw cliError("MEDIA_NOT_REGISTERED", `素材「${asset2.name}」不在本项目的素材登记中`);
+  const located = await locate(context2.store.root, asset2.resourceId, entry, context2.signal);
+  return { path: located.path, label: asset2.name.replace(/\.[^.]+$/, ""), asset: asset2 };
+}
+var safeStem = (value) => value.replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "media";
+async function transcribe(input, context2) {
+  const { path, label: label3 } = await sourceFile(input, context2);
+  const language = input.language === void 0 ? void 0 : text6(input.language, "language", 8);
+  const model = input.model ?? "base";
+  if (!/^[a-z0-9.-]{1,32}$/.test(model)) throw cliError("INVALID_INPUT", "model 须为 Whisper 模型名，如 base、small");
+  const modelPath = join25(homedir6(), ".cache", "whisper", `${model}.pt`);
+  const directory2 = input.output === void 0 ? "transcripts" : text6(input.output, "output");
+  const stem = `${safeStem(label3)}-${sha(path).slice(0, 8)}`, jsonOutput = `${directory2}/${stem}.json`, srtOutput = `${directory2}/${stem}.srt`;
+  await context2.store.assertFree(jsonOutput);
+  await context2.store.assertFree(srtOutput);
+  const [ffmpegPath, ffprobePath, whisperPath] = await Promise.all([
+    tool("ffmpeg"),
+    tool("ffprobe"),
+    tool("whisper")
+  ]);
+  const home = await cliHome(), runtimeDir = await privateDirectory(join25(home, "media-runtime"));
+  return withJob(home, async (jobDir, jobId) => {
+    const processors = createMediaJobProcessors({
+      ffmpegPath,
+      ffprobePath,
+      whisperPath,
+      whisperModelPath: modelPath,
+      resolveAssetPath: async () => path
+    });
+    const workDir = await privateDirectory(join25(jobDir, "work")), outputDir = await privateDirectory(join25(jobDir, "outputs")), cacheDir = await privateDirectory(join25(runtimeDir, "cache", sha(context2.store.root)));
+    const result = await processors.transcribe.run(
+      { assetId: "cli-source", ...language ? { language } : {} },
+      {
+        scope: { appId: "video-studio", projectPath: sha(context2.store.root) },
+        jobId,
+        attempt: 1,
+        signal: context2.signal,
+        workDir,
+        outputDir,
+        cacheDir,
+        reportProgress: async (value) => context2.progress(value.stage ?? "transcribe", value.fraction)
+      }
+    );
+    const transcript = JSON.parse(
+      await (await import("node:fs/promises")).readFile(result.transcript.path, "utf8")
+    );
+    await context2.store.publishFile(jsonOutput, result.transcript.path);
+    if (result.subtitles?.path) await context2.store.publishFile(srtOutput, result.subtitles.path);
+    const all = String(transcript.text ?? "").trim();
+    return {
+      language: result.language,
+      model: result.model,
+      durationSeconds: result.durationSeconds,
+      segmentCount: result.segmentCount,
+      wordCount: result.wordCount,
+      time: "source seconds of this media file, not sequence time",
+      files: { json: jsonOutput, ...result.subtitles?.path ? { srt: srtOutput } : {} },
+      textPreview: all.length > 2e3 ? `${all.slice(0, 2e3)}…` : all,
+      segments: transcript.segments.slice(0, 60).map((segment) => ({
+        start: Math.round(segment.start * 1e3) / 1e3,
+        end: Math.round(segment.end * 1e3) / 1e3,
+        text: String(segment.text).trim()
+      })),
+      ...transcript.segments.length > 60 ? { segmentsTruncated: true } : {}
+    };
+  });
+}
+async function frames(input, context2) {
+  const { path } = await sourceFile(input, context2);
+  if (!Array.isArray(input.times) || !input.times.length || input.times.length > 36)
+    throw cliError("INVALID_INPUT", "times 须为 1 至 36 个秒数");
+  const times = input.times.map((value) => finiteSeconds(value, "times"));
+  const width = input.width === void 0 ? 640 : input.width;
+  if (!Number.isSafeInteger(width) || width < 160 || width > 1920)
+    throw cliError("INVALID_INPUT", "width 须为 160 至 1920 的整数");
+  const directory2 = text6(input.output, "output"), sheet = input.sheet !== false, names = times.map(
+    (time2, index2) => `${directory2}/frame-${String(index2 + 1).padStart(2, "0")}-${time2.toFixed(2)}s.jpg`
+  );
+  for (const name of [...names, ...sheet ? [`${directory2}/sheet.jpg`] : []])
+    await context2.store.assertFree(name);
+  const ffmpeg = await tool("ffmpeg"), home = await cliHome();
+  return withJob(home, async (jobDir) => {
+    for (const [index2, time2] of times.entries()) {
+      context2.progress("frames", index2 / times.length);
+      await runMediaProcess(
+        ffmpeg,
+        [
+          "-hide_banner",
+          "-nostdin",
+          "-loglevel",
+          "error",
+          "-y",
+          "-ss",
+          String(time2),
+          "-i",
+          path,
+          "-frames:v",
+          "1",
+          "-vf",
+          `scale=${width}:-2`,
+          "-q:v",
+          "3",
+          join25(jobDir, `frame-${String(index2 + 1).padStart(3, "0")}.jpg`)
+        ],
+        { signal: context2.signal, cwd: jobDir }
+      );
+    }
+    const extracted = (await readdir6(jobDir)).filter((name) => /^frame-\d{3}\.jpg$/.test(name)).sort();
+    if (extracted.length !== times.length)
+      throw cliError("FRAMES_FAILED", "部分时间点没有画面（可能超出素材时长）");
+    for (const [index2, name] of extracted.entries())
+      await context2.store.publishFile(names[index2], join25(jobDir, name));
+    let sheetFile;
+    if (sheet) {
+      const columns = Math.min(4, times.length), rows = Math.ceil(times.length / columns);
+      await runMediaProcess(
+        ffmpeg,
+        [
+          "-hide_banner",
+          "-nostdin",
+          "-loglevel",
+          "error",
+          "-y",
+          "-framerate",
+          "1",
+          "-i",
+          join25(jobDir, "frame-%03d.jpg"),
+          "-vf",
+          `tile=${columns}x${rows}:padding=6:margin=6:color=0x111111`,
+          "-frames:v",
+          "1",
+          "-q:v",
+          "3",
+          join25(jobDir, "sheet.jpg")
+        ],
+        { signal: context2.signal, cwd: jobDir }
+      );
+      await context2.store.publishFile(`${directory2}/sheet.jpg`, join25(jobDir, "sheet.jpg"));
+      sheetFile = `${directory2}/sheet.jpg`;
+    }
+    context2.progress("frames", 1);
+    return {
+      frames: times.map((time2, index2) => ({ seconds: time2, file: names[index2] })),
+      ...sheetFile ? { sheet: sheetFile, sheetOrder: "left to right, top to bottom" } : {}
+    };
+  });
+}
+var revisionSchema = { type: "string", pattern: "^sha256:[a-f0-9]{64}$" };
+var object10 = (properties, required = []) => ({
+  type: "object",
+  properties,
+  required,
+  additionalProperties: false
+});
+var sourceSchema = { assetId: { type: "string" }, path: { type: "string" } };
+var placeSchema = {
+  place: { enum: ["append", "none"] },
+  at: { type: "number", minimum: 0, description: "Sequence seconds; places on a free track" },
+  trackId: { type: "string", description: "Only with at" }
+};
+var mediaCommands = [
+  {
+    name: "add-media",
+    readOnly: false,
+    long: false,
+    fields: ["expectedRevision", "files", "place", "at", "trackId", "imageSeconds"],
+    inputSchema: object10(
+      {
+        expectedRevision: revisionSchema,
+        files: {
+          type: "array",
+          minItems: 1,
+          maxItems: 50,
+          items: object10({ path: { type: "string" }, name: { type: "string" } }, ["path"])
+        },
+        ...placeSchema,
+        imageSeconds: { type: "number", minimum: 0.04, maximum: 3600 }
+      },
+      ["expectedRevision", "files"]
+    ),
+    description: "Register local video/audio/image files (read in place, never copied) and add them as assets; place defaults to append on the main picture or first audio track."
+  },
+  {
+    name: "render",
+    readOnly: false,
+    long: true,
+    fields: ["expectedRevision", "sequenceId", "profileId", "profile", "range", "output"],
+    inputSchema: object10(
+      {
+        expectedRevision: revisionSchema,
+        sequenceId: { type: "string" },
+        profileId: { type: "string" },
+        profile: { type: "object" },
+        range: object10({ start: { type: "integer" }, duration: { type: "integer" } }, ["start", "duration"]),
+        output: { type: "string", description: "New project-relative file, e.g. renders/cut.mp4" }
+      },
+      ["output"]
+    ),
+    description: "Render the sequence to a real, verified video file with the panel's own renderer (FFmpeg + Chrome). Never overwrites."
+  },
+  {
+    name: "voices",
+    readOnly: true,
+    long: false,
+    fields: ["modelId", "language"],
+    inputSchema: object10({ modelId: { type: "string" }, language: { type: "string" } }),
+    description: "List voice models (macOS say, Edge, Kokoro) and their voices; language filters voices, e.g. zh."
+  },
+  {
+    name: "setup-voice",
+    readOnly: false,
+    long: true,
+    fields: ["providerId"],
+    inputSchema: object10({ providerId: { enum: ["edge-tts", "kokoro"] } }, ["providerId"]),
+    description: "Install and verify a voice engine on this device (needs uv); shared by all CLI projects."
+  },
+  {
+    name: "voiceover",
+    readOnly: false,
+    long: true,
+    fields: ["expectedRevision", "text", "modelId", "voiceId", "rate", "output", "name", "place", "at", "trackId"],
+    inputSchema: object10(
+      {
+        expectedRevision: revisionSchema,
+        text: { type: "string", minLength: 1, maxLength: 6e3 },
+        modelId: { type: "string" },
+        voiceId: { type: "string" },
+        rate: { type: "number", minimum: 0.5, maximum: 2 },
+        output: { type: "string", description: "New .wav below the project; default media/voiceover-<hash>.wav" },
+        name: { type: "string" },
+        ...placeSchema
+      },
+      ["expectedRevision", "text"]
+    ),
+    description: "Synthesize narration into a .wav in the project and add it as an asset; at places it on a free audio track (default: not placed)."
+  },
+  {
+    name: "transcribe",
+    readOnly: false,
+    long: true,
+    fields: ["assetId", "path", "language", "model", "output"],
+    inputSchema: object10(
+      {
+        ...sourceSchema,
+        language: { type: "string", description: "e.g. zh, en; default auto" },
+        model: { type: "string", description: "Whisper model in ~/.cache/whisper, default base" },
+        output: { type: "string", description: "Project directory, default transcripts" }
+      }
+    ),
+    description: "Local Whisper transcript of a registered asset or project file: writes .json and .srt (source-time seconds) and returns segments."
+  },
+  {
+    name: "frames",
+    readOnly: false,
+    long: false,
+    fields: ["assetId", "path", "times", "width", "output", "sheet"],
+    inputSchema: object10(
+      {
+        ...sourceSchema,
+        times: { type: "array", minItems: 1, maxItems: 36, items: { type: "number", minimum: 0 } },
+        width: { type: "integer", minimum: 160, maximum: 1920 },
+        output: { type: "string", description: "New project directory for the JPEGs" },
+        sheet: { type: "boolean", description: "Also write sheet.jpg, default true" }
+      },
+      ["times", "output"]
+    ),
+    description: "Extract JPEG frames (and a contact sheet) from a rendered file or asset so the result can be looked at."
+  }
+];
+var runners = {
+  "add-media": addMedia,
+  render,
+  voices,
+  "setup-voice": setupVoice,
+  voiceover,
+  transcribe,
+  frames
+};
+function runMediaCommand(command, input, context2) {
+  return runners[command](input, context2);
+}
+
+// native/project-cli.ts
+var plain2 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
 function fields(value, allowed) {
-  if (!plain(value) || Object.keys(value).some((key) => !allowed.includes(key)))
+  if (!plain2(value) || Object.keys(value).some((key) => !allowed.includes(key)))
     throw cliError("INVALID_INPUT", "请求须为仅包含当前操作字段的 JSON 对象");
   return value;
 }
@@ -7753,12 +22442,12 @@ function expected(value) {
     throw cliError("INVALID_INPUT", "写入需要 inspect 返回的 expectedRevision");
   return value;
 }
-function bounded(value) {
+function bounded2(value) {
   if (Buffer.byteLength(JSON.stringify(value)) > OUTPUT_BYTES)
     throw cliError("OUTPUT_LIMIT", "CLI 结果超过 64 KiB；请使用 inspect 分页读取");
   return value;
 }
-var revisionSchema = { type: "string", pattern: "^sha256:[a-f0-9]{64}$" };
+var revisionSchema2 = { type: "string", pattern: "^sha256:[a-f0-9]{64}$" };
 var objectSchema = (properties, required = []) => ({
   type: "object",
   properties,
@@ -7785,7 +22474,7 @@ var commands = [
     name: "inspect",
     readOnly: true,
     inputSchema: objectSchema({
-      expectedRevision: revisionSchema,
+      expectedRevision: revisionSchema2,
       view: { enum: ["document", "defaults"] },
       path: { type: "string" },
       offset: { type: "integer", minimum: 0 },
@@ -7805,7 +22494,7 @@ var commands = [
     readOnly: false,
     inputSchema: objectSchema(
       {
-        expectedRevision: revisionSchema,
+        expectedRevision: revisionSchema2,
         label: { type: "string", minLength: 1, maxLength: 200 },
         steps: {
           type: "array",
@@ -7847,7 +22536,7 @@ var commands = [
     name: "plan",
     readOnly: true,
     inputSchema: objectSchema({
-      expectedRevision: revisionSchema,
+      expectedRevision: revisionSchema2,
       sequenceId: stringSchema,
       profileId: stringSchema,
       profile: {
@@ -7864,7 +22553,7 @@ var commands = [
   {
     name: "import",
     readOnly: false,
-    inputSchema: objectSchema({ expectedRevision: revisionSchema, documentFile: stringSchema }, [
+    inputSchema: objectSchema({ expectedRevision: revisionSchema2, documentFile: stringSchema }, [
       "expectedRevision",
       "documentFile"
     ]),
@@ -7873,30 +22562,52 @@ var commands = [
   {
     name: "export",
     readOnly: false,
-    inputSchema: objectSchema({ expectedRevision: revisionSchema, output: stringSchema }, [
+    inputSchema: objectSchema({ expectedRevision: revisionSchema2, output: stringSchema }, [
       "output"
     ]),
-    description: "Create a schema-2 project JSON file below this project without overwriting files; this is not video rendering or a media-inclusive .mimiproject bundle."
-  }
+    description: "Create a schema-2 project JSON file below this project without overwriting files; this is not video rendering (use render) or a media-inclusive .mimiproject bundle."
+  },
+  ...mediaCommands.map(({ name, readOnly, inputSchema, description }) => ({
+    name,
+    readOnly,
+    inputSchema,
+    description
+  }))
 ];
-function summary(document) {
+var media2 = new Map(
+  mediaCommands.map((command) => [command.name, command])
+);
+function progressReporter(command) {
+  let lastStage = "", lastLine = "", last = 0;
+  return (stage, fraction) => {
+    const percent = fraction === void 0 ? "" : ` ${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`;
+    const line = `video-studio ${command}: ${stage}${percent}`, now = Date.now();
+    if (line === lastLine || stage === lastStage && fraction !== 1 && now - last < 1e3) return;
+    lastStage = stage;
+    lastLine = line;
+    last = now;
+    process.stderr.write(`${line}
+`);
+  };
+}
+function summary(document2) {
   return {
-    id: document.id,
-    name: document.name,
-    documentRevision: document.revision,
-    schemaVersion: document.schemaVersion,
-    timebase: document.timebase,
-    activeSequenceId: document.activeSequenceId,
-    assetCount: document.assets.length,
-    sequenceCount: document.sequences.length
+    id: document2.id,
+    name: document2.name,
+    documentRevision: document2.revision,
+    schemaVersion: document2.schemaVersion,
+    timebase: document2.timebase,
+    activeSequenceId: document2.activeSequenceId,
+    assetCount: document2.assets.length,
+    sequenceCount: document2.sequences.length
   };
 }
 function initialDocument(input) {
-  const sequenceId = `sequence-${randomUUID2()}`;
+  const sequenceId = `sequence-${randomUUID21()}`;
   return validateEditorDocument({
     schemaVersion: 2,
     timebase: 24e4,
-    id: `project-${randomUUID2()}`,
+    id: `project-${randomUUID21()}`,
     name: input.name ?? "视频工程",
     revision: 0,
     assets: [],
@@ -7911,9 +22622,9 @@ function initialDocument(input) {
         background: "#000000",
         timelineMode: "free",
         tracks: [
-          createTrack(`track-${randomUUID2()}`, "video"),
-          createTrack(`track-${randomUUID2()}`, "audio"),
-          createTrack(`track-${randomUUID2()}`, "text")
+          createTrack(`track-${randomUUID21()}`, "video"),
+          createTrack(`track-${randomUUID21()}`, "audio"),
+          createTrack(`track-${randomUUID21()}`, "text")
         ],
         clips: [],
         transitions: [],
@@ -7928,23 +22639,25 @@ function parse(argv) {
   if (command !== "ops" && !commands.some((item) => item.name === command))
     throw cliError(
       "INVALID_ARGUMENT",
-      "用法：video-studio.mjs ops | init|inspect|validate|edit|apply|plan|import|export --project <dir> [--input-file <json>]"
+      "用法：video-studio.mjs ops | init|inspect|validate|edit|apply|plan|import|export|add-media|render|voices|setup-voice|voiceover|transcribe|frames --project <dir> [--input-file <json>]"
     );
-  const options = {};
+  const options2 = {};
   while (remaining.length) {
     const flag = remaining.shift(), value = remaining.shift();
-    if (!["--project", "--input-file"].includes(flag) || options[flag] || !value || value.startsWith("--"))
+    if (!["--project", "--input-file"].includes(flag) || options2[flag] || !value || value.startsWith("--"))
       throw cliError("INVALID_ARGUMENT", `参数无效：${flag}`);
-    options[flag] = value;
+    options2[flag] = value;
   }
-  if (command === "ops" && Object.keys(options).length)
+  if (command === "ops" && Object.keys(options2).length)
     throw cliError("INVALID_ARGUMENT", "ops 不接受项目或请求文件参数");
-  if (["edit", "import", "export"].includes(command) && !options["--input-file"])
+  if (["edit", "import", "export", ...[...media2.keys()].filter((name) => name !== "voices")].includes(
+    command
+  ) && !options2["--input-file"])
     throw cliError("INVALID_ARGUMENT", `${command} 需要 --input-file`);
-  return { command, options };
+  return { command, options: options2 };
 }
 async function runProjectCli(argv, cwd = process.cwd()) {
-  const { command, options } = parse(argv);
+  const { command, options: options2 } = parse(argv);
   if (command === "ops")
     return {
       ok: true,
@@ -7960,7 +22673,8 @@ async function runProjectCli(argv, cwd = process.cwd()) {
           outputBytes: OUTPUT_BYTES
         },
         persistence: "Independent CLI file; explicit schema-2 import/export exchanges data with the panel. No Host storage, task IDs or resource grants are inferred.",
-        time: "240000 ticks/second; frameRate is {numerator,denominator}.",
+        time: "240000 ticks/second; frameRate is {numerator,denominator}. Media commands take seconds.",
+        media: "add-media registers local files read in place (video-studio-media.json); render/voiceover/transcribe/frames run on this device with FFmpeg, Chrome, voice engines and Whisper. Device state lives in VIDEO_STUDIO_CLI_HOME or ~/.cache/video-studio-cli.",
         editExample: {
           expectedRevision: "<inspect revision>",
           label: "重命名",
@@ -7970,7 +22684,7 @@ async function runProjectCli(argv, cwd = process.cwd()) {
         }
       }
     };
-  const raw = options["--input-file"] ? (await readJsonFile(resolve2(cwd, options["--input-file"]), REQUEST_BYTES)).data : {};
+  const raw = options2["--input-file"] ? (await readJsonFile(resolve9(cwd, options2["--input-file"]), REQUEST_BYTES)).data : {};
   const allowed = {
     init: ["name", "width", "height", "frameRate"],
     inspect: ["expectedRevision", "view", "path", "offset", "limit", "format"],
@@ -7978,19 +22692,39 @@ async function runProjectCli(argv, cwd = process.cwd()) {
     edit: ["expectedRevision", "label", "steps"],
     plan: ["expectedRevision", "sequenceId", "profileId", "profile", "range"],
     import: ["expectedRevision", "documentFile"],
-    export: ["expectedRevision", "output"]
+    export: ["expectedRevision", "output"],
+    ...Object.fromEntries(mediaCommands.map((item) => [item.name, [...item.fields]]))
   };
   const input = fields(raw, allowed[command]);
   if (command === "validate" && input.documentFile !== void 0) {
     if (typeof input.documentFile !== "string" || !input.documentFile)
       throw cliError("INVALID_INPUT", "documentFile 须为明确指定的 JSON 文件路径");
-    const document = validateEditorDocument(
-      (await readJsonFile(resolve2(cwd, input.documentFile), DOCUMENT_BYTES)).data
+    const document2 = validateEditorDocument(
+      (await readJsonFile(resolve9(cwd, input.documentFile), DOCUMENT_BYTES)).data
     );
-    return { ok: true, result: { valid: true, ...summary(document), mediaChecked: false } };
+    return { ok: true, result: { valid: true, ...summary(document2), mediaChecked: false } };
   }
-  const store = await createProjectStore(resolve2(cwd, options["--project"] ?? "."));
-  const result = (value) => bounded({ ok: true, project: store.root, projectFile: PROJECT_FILE, result: value });
+  const store = await createProjectStore(resolve9(cwd, options2["--project"] ?? "."));
+  const result = (value) => bounded2({ ok: true, project: store.root, projectFile: PROJECT_FILE, result: value });
+  if (media2.has(command)) {
+    const controller = new AbortController(), cancel = () => controller.abort();
+    process.once("SIGINT", cancel);
+    process.once("SIGTERM", cancel);
+    try {
+      return result(
+        await runMediaCommand(command, input, {
+          store,
+          cwd,
+          signal: controller.signal,
+          progress: command === "voices" ? () => {
+          } : progressReporter(command)
+        })
+      );
+    } finally {
+      process.removeListener("SIGINT", cancel);
+      process.removeListener("SIGTERM", cancel);
+    }
+  }
   if (command === "init")
     return store.withLock(async () => {
       const existing = await store.read();
@@ -8000,22 +22734,22 @@ async function runProjectCli(argv, cwd = process.cwd()) {
           revision: existing.revision,
           ...summary(validateEditorDocument(existing.data))
         });
-      const document = initialDocument(input), receipt = { initialized: true, ...summary(document) };
-      bounded(receipt);
-      const saved = await store.write(document, null);
+      const document2 = initialDocument(input), receipt = { initialized: true, ...summary(document2) };
+      bounded2(receipt);
+      const saved = await store.write(document2, null);
       return result({ ...receipt, revision: saved.revision });
     });
   const execute = async () => {
     const stored = await store.read();
     if (!stored)
       throw cliError("PROJECT_NOT_INITIALIZED", `当前项目缺少 ${PROJECT_FILE}，请先执行 init`);
-    const document = validateEditorDocument(stored.data);
+    const document2 = validateEditorDocument(stored.data);
     if (input.expectedRevision !== void 0 && expected(input.expectedRevision) !== stored.revision)
       throw cliError("REVISION_CONFLICT", "工程已变化，请重新读取并重新规划");
     if (command === "inspect") {
       const { expectedRevision: _, ...request } = input;
       const session = await EditorSession.open({
-        read: async () => ({ data: document, revision: 1 }),
+        read: async () => ({ data: document2, revision: 1 }),
         write: async () => {
           throw new Error("只读");
         },
@@ -8031,7 +22765,7 @@ async function runProjectCli(argv, cwd = process.cwd()) {
           }
         });
         const read = tools.read_editor_project(request);
-        return result({ revision: stored.revision, ...summary(document), page: read.page });
+        return result({ revision: stored.revision, ...summary(document2), page: read.page });
       } finally {
         await session.close();
       }
@@ -8040,7 +22774,7 @@ async function runProjectCli(argv, cwd = process.cwd()) {
       return result({
         valid: true,
         revision: stored.revision,
-        ...summary(document),
+        ...summary(document2),
         mediaChecked: false
       });
     if (command === "edit") {
@@ -8048,17 +22782,17 @@ async function runProjectCli(argv, cwd = process.cwd()) {
       if (typeof input.label !== "string" || !input.label.trim() || input.label.length > 200)
         throw cliError("INVALID_INPUT", "编辑说明须为 1 至 200 个字符");
       const operations = compileEditorSteps(
-        document,
+        document2,
         input.steps,
-        (kind) => `${kind}-${randomUUID2()}`
-      ), draft = applyEditorOperations(document, operations, document.revision), annotations = reconcileEditorProduction(document, draft), after = annotations.length ? applyEditorOperations(document, [...operations, ...annotations], document.revision) : draft;
+        (kind) => `${kind}-${randomUUID21()}`
+      ), draft = applyEditorOperations(document2, operations, document2.revision), annotations = reconcileEditorProduction(document2, draft), after = annotations.length ? applyEditorOperations(document2, [...operations, ...annotations], document2.revision) : draft;
       const receipt = {
         label: input.label,
         operationCount: operations.length,
         productionInvalidated: annotations.length > 0,
         ...summary(after)
       };
-      bounded(receipt);
+      bounded2(receipt);
       const saved = await store.write(after, stored.revision);
       return result({ ...receipt, revision: saved.revision });
     }
@@ -8067,9 +22801,9 @@ async function runProjectCli(argv, cwd = process.cwd()) {
       if (typeof input.documentFile !== "string" || !input.documentFile)
         throw cliError("INVALID_INPUT", "documentFile 须为明确指定的 JSON 文件路径");
       const imported2 = validateEditorDocument(
-        (await readJsonFile(resolve2(cwd, input.documentFile), DOCUMENT_BYTES)).data
+        (await readJsonFile(resolve9(cwd, input.documentFile), DOCUMENT_BYTES)).data
       ), receipt = { imported: true, ...summary(imported2), mediaCopied: false };
-      bounded(receipt);
+      bounded2(receipt);
       const saved = await store.write(imported2, stored.revision);
       return result({ ...receipt, revision: saved.revision });
     }
@@ -8079,11 +22813,11 @@ async function runProjectCli(argv, cwd = process.cwd()) {
       const receipt = {
         exported: true,
         mediaIncluded: false,
-        ...summary(document),
+        ...summary(document2),
         revision: stored.revision
       };
-      bounded({ ...receipt, output: input.output });
-      const saved = await store.export(input.output, document);
+      bounded2({ ...receipt, output: input.output });
+      const saved = await store.export(input.output, document2);
       return result({
         ...receipt,
         output: saved.path,
@@ -8091,17 +22825,7 @@ async function runProjectCli(argv, cwd = process.cwd()) {
         bytes: saved.bytes
       });
     }
-    if (input.profile !== void 0 && input.profileId !== void 0)
-      throw cliError("INVALID_INPUT", "profile 与 profileId 只能提供一个");
-    const sequenceId = input.sequenceId ?? document.activeSequenceId, sequence5 = document.sequences.find((item) => item.id === sequenceId);
-    if (!sequence5) throw cliError("INVALID_INPUT", "导出序列不存在");
-    const profileValue = input.profile ?? (input.profileId === void 0 ? document.exportProfiles[0] : document.exportProfiles.find((item) => item.id === input.profileId));
-    if (!profileValue)
-      throw cliError("INVALID_INPUT", "导出配置不存在，请提供完整 profile 或当前 profileId");
-    const profile = validateExportProfile(profileValue), fullDuration = sequenceDuration(sequence5), range = validateExportRange(
-      input.range ?? { start: 0, duration: fullDuration },
-      fullDuration
-    ), audio2 = compileAudioPlan(document, sequence5.id), frameCount = ticksToFrame(range.duration, profile.frameRate, "ceil");
+    const { sequenceId, sequence: sequence5, profile, range } = exportSettings(document2, input), audio2 = compileAudioPlan(document2, sequence5.id), frameCount = ticksToFrame(range.duration, profile.frameRate, "ceil");
     return result({
       planned: true,
       rendered: false,
@@ -8123,7 +22847,7 @@ async function runProjectCli(argv, cwd = process.cwd()) {
         fullSequenceLaneCount: audio2.lanes.length,
         fullSequenceDuckingCount: audio2.ducking.length
       },
-      next: "实际媒体导出使用已授权面板流程；CLI export 只导出工程 JSON。"
+      next: "用 render {output} 在本机渲染成片；CLI export 只导出工程 JSON。"
     });
   };
   return ["edit", "import", "export"].includes(command) ? store.withLock(execute) : execute();
@@ -8132,7 +22856,7 @@ try {
   const [major, minor] = process.versions.node.split(".").map(Number);
   if (major < 20 || major === 20 && minor < 10)
     throw cliError("NODE_VERSION", "Video Studio CLI 需要 Node.js 20.10 或更新版本");
-  process.stdout.write(`${JSON.stringify(bounded(await runProjectCli(process.argv.slice(2))))}
+  process.stdout.write(`${JSON.stringify(bounded2(await runProjectCli(process.argv.slice(2))))}
 `);
 } catch (error) {
   const rawCode = error?.code, code = typeof rawCode === "string" ? rawCode.slice(0, 100) : "OPERATION_FAILED";
@@ -8140,7 +22864,7 @@ try {
     `${JSON.stringify({ ok: false, error: { code, message: error instanceof Error ? error.message.slice(0, 1e3) : "CLI 操作未完成" } })}
 `
   );
-  process.exitCode = ["INVALID_INPUT", "INVALID_ARGUMENT", "INPUT_LIMIT"].includes(code) ? 2 : code === "REVISION_CONFLICT" ? 3 : code === "PROJECT_BUSY" ? 4 : 1;
+  process.exitCode = ["INVALID_INPUT", "INVALID_ARGUMENT", "INPUT_LIMIT"].includes(code) ? 2 : code === "REVISION_CONFLICT" || code === "OUTPUT_EXISTS" ? 3 : code === "PROJECT_BUSY" ? 4 : 1;
 }
 export {
   runProjectCli

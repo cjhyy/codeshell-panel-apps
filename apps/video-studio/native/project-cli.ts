@@ -3,17 +3,13 @@ import { resolve } from "node:path";
 import { createEditorAgentTools, compileEditorSteps } from "../src/editor/agent-tools.js";
 import { compileAudioPlan } from "../src/editor/audio-plan.js";
 import { createTrack } from "../src/editor/defaults.js";
-import {
-  createExportPresets,
-  requiredExportEncoders,
-  validateExportProfile,
-} from "../src/editor/export-settings.js";
-import { validateExportRange } from "../src/editor/export-range.js";
+import { createExportPresets, requiredExportEncoders } from "../src/editor/export-settings.js";
 import { applyEditorOperations } from "../src/editor/operations.js";
 import { reconcileEditorProduction } from "../src/editor/production-guard.js";
 import { EditorSession } from "../src/editor/session.js";
 import { ticksToFrame, ticksToSeconds } from "../src/editor/time.js";
-import { sequenceDuration, validateEditorDocument } from "../src/editor/validation.js";
+import { validateEditorDocument } from "../src/editor/validation.js";
+import { exportSettings, mediaCommands, runMediaCommand } from "./project-media.js";
 import {
   cliError,
   createProjectStore,
@@ -163,9 +159,36 @@ const commands = [
       "output",
     ]),
     description:
-      "Create a schema-2 project JSON file below this project without overwriting files; this is not video rendering or a media-inclusive .mimiproject bundle.",
+      "Create a schema-2 project JSON file below this project without overwriting files; this is not video rendering (use render) or a media-inclusive .mimiproject bundle.",
   },
+  ...mediaCommands.map(({ name, readOnly, inputSchema, description }) => ({
+    name,
+    readOnly,
+    inputSchema,
+    description,
+  })),
 ];
+const media = new Map<string, (typeof mediaCommands)[number]>(
+  mediaCommands.map((command) => [command.name, command]),
+);
+/** Long media work reports progress on stderr; stdout keeps its one JSON receipt. */
+function progressReporter(command: string) {
+  let lastStage = "",
+    lastLine = "",
+    last = 0;
+  return (stage: string, fraction?: number) => {
+    const percent =
+      fraction === undefined ? "" : ` ${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`;
+    const line = `video-studio ${command}: ${stage}${percent}`,
+      now = Date.now();
+    // A new stage or a finished one shows at once; otherwise at most one line per second.
+    if (line === lastLine || (stage === lastStage && fraction !== 1 && now - last < 1000)) return;
+    lastStage = stage;
+    lastLine = line;
+    last = now;
+    process.stderr.write(`${line}\n`);
+  };
+}
 
 function summary(document: ReturnType<typeof validateEditorDocument>) {
   return {
@@ -217,7 +240,7 @@ function parse(argv: string[]) {
   if (command !== "ops" && !commands.some((item) => item.name === command))
     throw cliError(
       "INVALID_ARGUMENT",
-      "用法：video-studio.mjs ops | init|inspect|validate|edit|apply|plan|import|export --project <dir> [--input-file <json>]",
+      "用法：video-studio.mjs ops | init|inspect|validate|edit|apply|plan|import|export|add-media|render|voices|setup-voice|voiceover|transcribe|frames --project <dir> [--input-file <json>]",
     );
   const options: Record<string, string> = {};
   while (remaining.length) {
@@ -234,7 +257,12 @@ function parse(argv: string[]) {
   }
   if (command === "ops" && Object.keys(options).length)
     throw cliError("INVALID_ARGUMENT", "ops 不接受项目或请求文件参数");
-  if (["edit", "import", "export"].includes(command) && !options["--input-file"])
+  if (
+    ["edit", "import", "export", ...[...media.keys()].filter((name) => name !== "voices")].includes(
+      command,
+    ) &&
+    !options["--input-file"]
+  )
     throw cliError("INVALID_ARGUMENT", `${command} 需要 --input-file`);
   return { command, options };
 }
@@ -257,7 +285,9 @@ export async function runProjectCli(argv: string[], cwd = process.cwd()): Promis
         },
         persistence:
           "Independent CLI file; explicit schema-2 import/export exchanges data with the panel. No Host storage, task IDs or resource grants are inferred.",
-        time: "240000 ticks/second; frameRate is {numerator,denominator}.",
+        time: "240000 ticks/second; frameRate is {numerator,denominator}. Media commands take seconds.",
+        media:
+          "add-media registers local files read in place (video-studio-media.json); render/voiceover/transcribe/frames run on this device with FFmpeg, Chrome, voice engines and Whisper. Device state lives in VIDEO_STUDIO_CLI_HOME or ~/.cache/video-studio-cli.",
         editExample: {
           expectedRevision: "<inspect revision>",
           label: "重命名",
@@ -278,6 +308,7 @@ export async function runProjectCli(argv: string[], cwd = process.cwd()): Promis
     plan: ["expectedRevision", "sequenceId", "profileId", "profile", "range"],
     import: ["expectedRevision", "documentFile"],
     export: ["expectedRevision", "output"],
+    ...Object.fromEntries(mediaCommands.map((item) => [item.name, [...item.fields]])),
   };
   const input = fields(raw, allowed[command]);
   if (command === "validate" && input.documentFile !== undefined) {
@@ -291,6 +322,25 @@ export async function runProjectCli(argv: string[], cwd = process.cwd()): Promis
   const store = await createProjectStore(resolve(cwd, options["--project"] ?? "."));
   const result = (value: unknown) =>
     bounded({ ok: true, project: store.root, projectFile: PROJECT_FILE, result: value });
+  if (media.has(command)) {
+    const controller = new AbortController(),
+      cancel = () => controller.abort();
+    process.once("SIGINT", cancel);
+    process.once("SIGTERM", cancel);
+    try {
+      return result(
+        await runMediaCommand(command, input, {
+          store,
+          cwd,
+          signal: controller.signal,
+          progress: command === "voices" ? () => {} : progressReporter(command),
+        }),
+      );
+    } finally {
+      process.removeListener("SIGINT", cancel);
+      process.removeListener("SIGTERM", cancel);
+    }
+  }
   if (command === "init")
     return store.withLock(async () => {
       const existing = await store.read();
@@ -401,24 +451,7 @@ export async function runProjectCli(argv: string[], cwd = process.cwd()): Promis
         bytes: saved.bytes,
       });
     }
-    if (input.profile !== undefined && input.profileId !== undefined)
-      throw cliError("INVALID_INPUT", "profile 与 profileId 只能提供一个");
-    const sequenceId = input.sequenceId ?? document.activeSequenceId,
-      sequence = document.sequences.find((item) => item.id === sequenceId);
-    if (!sequence) throw cliError("INVALID_INPUT", "导出序列不存在");
-    const profileValue =
-      input.profile ??
-      (input.profileId === undefined
-        ? document.exportProfiles[0]
-        : document.exportProfiles.find((item) => item.id === input.profileId));
-    if (!profileValue)
-      throw cliError("INVALID_INPUT", "导出配置不存在，请提供完整 profile 或当前 profileId");
-    const profile = validateExportProfile(profileValue),
-      fullDuration = sequenceDuration(sequence),
-      range = validateExportRange(
-        input.range ?? { start: 0, duration: fullDuration },
-        fullDuration,
-      ),
+    const { sequenceId, sequence, profile, range } = exportSettings(document, input),
       audio = compileAudioPlan(document, sequence.id),
       frameCount = ticksToFrame(range.duration, profile.frameRate, "ceil");
     return result({
@@ -444,7 +477,7 @@ export async function runProjectCli(argv: string[], cwd = process.cwd()): Promis
         fullSequenceLaneCount: audio.lanes.length,
         fullSequenceDuckingCount: audio.ducking.length,
       },
-      next: "实际媒体导出使用已授权面板流程；CLI export 只导出工程 JSON。",
+      next: "用 render {output} 在本机渲染成片；CLI export 只导出工程 JSON。",
     });
   };
   return ["edit", "import", "export"].includes(command) ? store.withLock(execute) : execute();
@@ -463,7 +496,7 @@ try {
   );
   process.exitCode = ["INVALID_INPUT", "INVALID_ARGUMENT", "INPUT_LIMIT"].includes(code)
     ? 2
-    : code === "REVISION_CONFLICT"
+    : code === "REVISION_CONFLICT" || code === "OUTPUT_EXISTS"
       ? 3
       : code === "PROJECT_BUSY"
         ? 4

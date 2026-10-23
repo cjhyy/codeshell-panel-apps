@@ -110,7 +110,22 @@ test("relocated installed CLI discovers commands and Skill without a project, cr
   assert.equal(result.result.format, "codeshell.video-studio.cli");
   assert.deepEqual(
     result.result.commands.map((item) => item.name),
-    ["init", "inspect", "validate", "edit", "plan", "import", "export"],
+    [
+      "init",
+      "inspect",
+      "validate",
+      "edit",
+      "plan",
+      "import",
+      "export",
+      "add-media",
+      "render",
+      "voices",
+      "setup-voice",
+      "voiceover",
+      "transcribe",
+      "frames",
+    ],
   );
   assert.deepEqual(await readdir(f.project), []);
   const manifest = JSON.parse(

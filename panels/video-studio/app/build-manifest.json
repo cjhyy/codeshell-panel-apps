@@ -3,10 +3,10 @@
   "builder": "esbuild@0.28.2",
   "entry": "src/main.ts",
   "files": {
-    ".codeshell-panel/panel.json": "0c13ba394a4f7483b2ee362fc199a417939043ea71298dfe57191b15b5414fa1",
+    ".codeshell-panel/panel.json": "26c47c5b40524baab2a2393fd64121d4c58bafd8a7f74b426dfe3cf34b6df70e",
     "agent/skills/editor-v2/SKILL.md": "21812b375d4994d18162ba4087ec0c8a00b1c01f191285ca09aeabf056fac7fa",
     "agent/skills/narration-workflow/SKILL.md": "23c63ea09d8055246608601cb068d4489e03e91a74924ab541288760b66c4b78",
-    "agent/skills/project-runtime/SKILL.md": "171892e697f76da93310bd9370a160f632ada487aa006dec6cbb00d6c768f884",
+    "agent/skills/project-runtime/SKILL.md": "f9f95ec07d2f0c382f1bd2c1784a13e6d987fc80fa906aa96f3dbaa1a9c59813",
     "agent/skills/tts-setup/SKILL.md": "8ab87da83a5b38641e6f2f5422f2dff7bfd5ac0d1a4f6f7b2c3a06f8484a1038",
     "agent/skills/video-init/references/material-review.md": "744ad764246e8a15a23d35701103a1fd23052ba72dfceb92cc7a5ff497e89a68",
     "agent/skills/video-init/references/workflow-state.md": "ffacf4cd991f6db15ecc0a0bf799dfb8179c927f4f3c7ff1fde90e80ff7f050d",
@@ -39,9 +39,9 @@
     "app/tools/editor-runtime.mjs": "a92b080494538c69ae59825673eec0f1bc1167d8ea3568d774af7d8fea1755f1",
     "app/tools/editor-sync.mjs": "a2a10cc438fb83244f14a8e7ee2979be640132358d5cff7b787cbfb3e4df70c5",
     "app/tools/folder-scan.mjs": "524b085b5cbb4c5750ba7345b22711fb314ea5338a67822752a95cc150613d25",
-    "app/tools/media-runtime.mjs": "39f2986284855f78cf7c89ab4b7f67e8d2ad92f003ced8e69e36a2a890d45f90",
-    "app/tools/video-studio.mjs": "29997ecc46a397d8a66c6a6b4e7df219c4a7c7287a206d8dd87178397a7b3bb1",
+    "app/tools/media-runtime.mjs": "6e5a9dc0b910fdc0bb1e45684f4d3194c2502927bcc25e8c0e6e3b9fb46811cb",
+    "app/tools/video-studio.mjs": "8718986e6707b9790b947c2f3db37ead6bf1591e2fd0834172231eb1fe1633b7",
     "app/tools/voice-runtime.mjs": "43229bc9c285484b3fed83866110f3bd121964ec27c9d954eae3e9392f4546d6",
-    "README.md": "5bf399e8d7a62df5f1bc86b5a08302fa5ab1cfbbb23b9968378e67d68220457f"
+    "README.md": "e4e8aa51d073695977a4837860af30baf101bf80a4546d1d64c4ed7d96b1e496"
   }
 }
