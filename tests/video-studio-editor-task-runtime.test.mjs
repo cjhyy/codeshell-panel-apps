@@ -11,6 +11,7 @@ import {
   symlink,
   realpath,
   chmod,
+  stat,
   utimes,
 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
@@ -183,8 +184,16 @@ async function call(request, inputs = [], extra = {}) {
   const jobDir = await mkdtemp(join(temp, "job-"));
   await mkdir(join(jobDir, "inputs"));
   for (let i = 0; i < inputs.length; i++)
-    await copyFile(inputs[i], join(jobDir, "inputs", `resource-${i}.bin`));
-  const child = spawn(process.execPath, [cli, "--job-dir", jobDir, "--runtime-dir", runtimeDir], {
+    if (inputs[i]) await copyFile(inputs[i], join(jobDir, "inputs", `resource-${i}.bin`));
+  const args = [cli, "--job-dir", jobDir, "--runtime-dir", runtimeDir];
+  if (extra.originals) {
+    const originals = Object.fromEntries(await Promise.all([...extra.originals].map(async ([id, path]) =>
+      [`original-${id}`, { path, bytes: (await stat(path)).size }])));
+    const manifest = join(jobDir, "originals.json");
+    await writeFile(manifest, JSON.stringify({ originals }), { mode: 0o600 });
+    args.push("--originals", manifest);
+  }
+  const child = spawn(process.execPath, args, {
     stdio: ["pipe", "pipe", "pipe"],
   });
   let stdout = "",
@@ -231,15 +240,16 @@ async function call(request, inputs = [], extra = {}) {
     error: messages.find((item) => item.type === "error"),
   };
 }
-async function stage(d, paths = new Map()) {
-  const selected = api.editorTaskDocument(d, "main"),
+async function stage(d, paths = new Map(), extra = {}) {
+  const selected = extra.project ? api.editorProjectDocument(d) : api.editorTaskDocument(d, "main"),
     bytes = Buffer.from(JSON.stringify(selected.document)),
     documentHash = sha(bytes),
     transferId = `editor-${randomUUID()}`;
   if (selected.resourceIds.length)
     await call(
       { action: "stage-resources", transferId, resourceIds: selected.resourceIds },
-      selected.resourceIds.map((id) => paths.get(id)),
+      selected.resourceIds.map((id) => extra.originals?.has(id) ? undefined : paths.get(id)),
+      extra,
     );
   const chunkCount = Math.ceil(bytes.length / (512 * 1024));
   for (let i = 0; i < chunkCount; i++)
@@ -252,17 +262,88 @@ async function stage(d, paths = new Map()) {
       dataBase64: bytes.subarray(i * 512 * 1024, (i + 1) * 512 * 1024).toString("base64"),
     });
   await call({
-    action: "commit",
+    action: extra.project ? "commit-project" : "commit",
     transferId,
     documentHash,
     sequenceId: "main",
     chunkCount,
     byteLength: bytes.length,
-  });
+  }, [], extra);
   return { transferId, documentHash, sequenceId: "main" };
 }
 const artifactPath = (result, role) =>
   join(result.jobDir, result.response.artifacts.find((a) => a.role === role).file);
+test("native mix reuses sound across visual revisions and returns a current snapshot receipt", { timeout: 120000 }, async () => {
+  const d = document(), toneId = `asset-${sha(await readFile(tone))}`;
+  d.id = `sound-cache-${randomUUID()}`;
+  d.assets.push({ id: "tone", name: "Tone", kind: "audio", duration: 480000, resourceId: toneId });
+  d.sequences[0].clips = [clip("demo-intro", "video", 240000), clip("tone", "audio", 240000)];
+  const paths = new Map([[toneId, tone]]);
+  const firstSnapshot = await stage(d, paths);
+  const first = await call({ action: "prepare-audio", ...firstSnapshot });
+  d.revision++;
+  d.name = "Renamed without changing sound";
+  d.sequences[0].background = "#225577";
+  d.sequences[0].clips[0].transform.opacity = .4;
+  const nextSnapshot = await stage(d, paths);
+  const next = await call({ action: "prepare-audio", ...nextSnapshot });
+  assert.equal(next.result.reused, true);
+  assert.equal(next.result.audio.id, first.result.audio.id);
+  assert.equal(next.result.preparedAudio.recipeHash, first.result.preparedAudio.recipeHash);
+  assert.equal(next.result.preparedAudio.documentHash, nextSnapshot.documentHash);
+  assert.notEqual(nextSnapshot.documentHash, firstSnapshot.documentHash);
+  const stale = await call({ action: "render", ...nextSnapshot, profile: profile(),
+    preparedAudio: first.result.preparedAudio }, [], { fail: true });
+  assert.equal(stale.error.code, "MIX_MISMATCH", "Content reuse never admits an old document receipt");
+  d.revision++;
+  d.sequences[0].clips[1].audio.volume = .2;
+  const changed = await call({ action: "prepare-audio", ...await stage(d, paths) });
+  assert.equal(changed.result.reused, false);
+  assert.notEqual(changed.result.preparedAudio.recipeHash, first.result.preparedAudio.recipeHash);
+  assert.notEqual(changed.result.audio.id, first.result.audio.id);
+});
+test("sealed direct originals support inspection, proxies, sound and portable export without staged copies", { timeout: 120000 }, async () => {
+  const source = join(temp, "我的 原片.mov"), voice = join(temp, "我的 声音.wav");
+  await copyFile(prores, source); await copyFile(tone, voice);
+  const videoId = `external-${"1".repeat(64)}`, audioId = `external-${"2".repeat(64)}`,
+    originals = new Map([[videoId, source], [audioId, voice]]), extra = { originals }, d = document();
+  const before = new Map(await Promise.all([...originals].map(async ([id, path]) => [id, sha(await readFile(path))])));
+  d.assets = [
+    { id: "source", name: "原片", kind: "video", duration: 240000, width: 64, height: 48, resourceId: videoId },
+    { id: "voice", name: "声音", kind: "audio", duration: 480000, resourceId: audioId },
+  ];
+  d.sequences[0].clips = [clip("source", "video", 240000), clip("voice", "audio", 240000)];
+  const inspected = await call({ action: "inspect-source", transferId: `editor-${randomUUID()}`, resourceIds: [videoId] }, [], extra);
+  assert.equal(inspected.result.sha256, before.get(videoId));
+  const snapshot = await stage(d, originals, extra),
+    transfer = join(runtimeDir, "scopes", scope, "transfers", snapshot.transferId),
+    names = await readdir(join(transfer, "resources"));
+  assert.ok(names.every((name) => name.endsWith(".json")), `original bytes must stay in place: ${names}`);
+  const manifest = JSON.parse(await readFile(join(transfer, "manifest.json"), "utf8"));
+  assert.ok(manifest.bindings.every((binding) => binding.access === "read"));
+  assert.ok(!JSON.stringify(manifest).includes(temp), "native paths never enter persistent receipts");
+  const video = await call({ action: "prepare-video", ...snapshot, assetIds: ["source"] }, [], extra);
+  assert.equal(video.result.sources[0].recipe.sourceHash, before.get(videoId));
+  const audio = await call({ action: "prepare-audio", ...snapshot }, [], extra);
+  assert.equal(audio.result.sampleCount, 48000);
+  assert.ok(audio.result.peak > 0.01);
+  const waveform = await call({ action: "analyze-waveform", transferId: `editor-${randomUUID()}`, resourceIds: [audioId], sourceDuration: 480000 }, [], extra);
+  assert.equal(waveform.result.sourceHash, before.get(audioId));
+  const packedSnapshot = await stage(d, originals, { ...extra, project: true });
+  const packed = await call({ action: "export-project", ...packedSnapshot }, [], extra);
+  assert.equal(packed.result.mediaCount, 2);
+  assert.ok(packed.response.artifacts.some((artifact) => artifact.role === "portable-project"));
+  for (const [id, path] of originals) assert.equal(sha(await readFile(path)), before.get(id));
+  const unsealed = await call({ action: "prepare-audio", ...snapshot }, [], { fail: true });
+  assert.equal(unsealed.error.code, "INCOMPLETE_STAGE");
+  const changed = await readFile(voice); changed[changed.length - 1] ^= 1; await writeFile(voice, changed);
+  const stale = await call({ action: "prepare-audio", ...snapshot }, [], { ...extra, fail: true });
+  assert.equal(stale.error.code, "SOURCE_CHANGED", "same-size original mutation cannot reuse prepared media");
+  const link = join(temp, "original-link.mov"); await symlink(source, link);
+  const linked = await call({ action: "inspect-source", transferId: `editor-${randomUUID()}`, resourceIds: [videoId] }, [],
+    { originals: new Map([[videoId, link]]), fail: true });
+  assert.equal(linked.error.code, "SOURCE_CHANGED");
+});
 test("native short-range export bounds preparation and isolates range WAV receipts from full preview audio", { timeout: 120000 }, async () => {
   const d = document(), seq = d.sequences[0], T = 240000,
     toneId = `asset-${sha(await readFile(tone))}`, videoId = `asset-${sha(await readFile(prores))}`;

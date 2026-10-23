@@ -121,6 +121,11 @@ import {
   type PreparedEditorAudio,
 } from "./editor/task-bridge";
 import { compileAudioPlan } from "./editor/audio-plan";
+import {
+  editorAudioContentKey,
+  editorSourceContentKey,
+  editorVideoSourceKey,
+} from "./editor/playback-cache";
 import { loadEditorPreviewAudio } from "./editor/resource-audio";
 import { EditorExportJobs } from "./editor/jobs-ui";
 import { EditorImportUI } from "./editor/import-ui";
@@ -433,16 +438,18 @@ let preparedNative:
   | undefined;
 const exportTransfers = new Map<string, { transferId: string; snapshot?: EditorTaskSnapshot }>();
 const editorProxyResources = new Map<string, { sourceKey: string; resourceId: string }>();
+let preparedVideoSources: { key: string; identity: SessionIdentity } | undefined;
+function invalidateNativePreviewSources(): void {
+  preparedVideoSources = undefined;
+  preparedNative = undefined;
+  editorProxyResources.clear();
+  editorSourcePreviews?.dispose();
+  editorSourcePreviews = editorTasks ? new EditorSourcePreviews(editorTasks) : undefined;
+}
+// A native task snapshot is version-bound even when its media outputs are reusable.
 const editorDocumentKey = (doc: EditorDocument, sequenceId: string) =>
   `${doc.id}:${doc.revision}:${sequenceId}`;
-const editorSourceKey = (asset: EditorDocument["assets"][number]) =>
-  JSON.stringify([
-    asset.resourceId ?? asset.id,
-    asset.fingerprint ?? "",
-    asset.duration,
-    asset.width,
-    asset.height,
-  ]);
+const editorSourceKey = editorSourceContentKey;
 let legacyView: LegacyProjectView | undefined;
 let editorVisible = true;
 let legacySignature = "";
@@ -1472,9 +1479,19 @@ async function restoreManagedMedia(): Promise<void> {
       aiMessage = userFacingError(error);
     });
   }
-  if (currentGeneration === generation) editorWorkspace?.refreshMedia();
+  if (currentGeneration === generation) {
+    invalidateNativePreviewSources();
+    editorWorkspace?.refreshMedia();
+  }
   if (currentGeneration === generation && !playback && !document.querySelector("dialog[open]"))
     render();
+}
+function managedMediaSourcesKey(value: Project): string {
+  return JSON.stringify(value.assets.map((asset) => [
+    asset.id, asset.kind, asset.mediaId, asset.proxyId, asset.thumbnailId,
+    asset.durationFrames, asset.size, asset.lastModified, asset.sourcePath,
+    isDemoNarration(asset),
+  ]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
 }
 
 /** View-only: swaps the narrow layout's side panel without rebuilding the shell. */
@@ -3576,6 +3593,7 @@ async function importMedia(
       }
       if (importGeneration !== generation) throw new Error("工程已切换，未关联原工程的素材");
       commit(next, true);
+      invalidateNativePreviewSources();
       editorWorkspace?.refreshMedia();
     } catch (error) {
       releaseBatch();
@@ -3917,6 +3935,8 @@ async function action(name: string, id?: string): Promise<void> {
         stop();
         await library.connectManaged(source, { reload: true });
         if (ownGeneration !== generation) break;
+        invalidateNativePreviewSources();
+        editorWorkspace?.refreshMedia();
         render();
         toast("已重新连接原文件，保留段和成片剪辑仍在");
         break;
@@ -6156,7 +6176,11 @@ function mountEditorWorkspace(): void {
           }
         : undefined,
     },
-    prepareAudio: async (doc, sequenceId, signal, onProgress, purpose) => {
+    prepareAudio: async (requestedDoc, sequenceId, signal, onProgress, purpose) => {
+      let doc = requestedDoc;
+      const identity = editorSession!.getState().identity;
+      const current = () => !signal.aborted &&
+        sameIdentity(identity, editorSession!.getState().identity, false);
       // Finish the first playback preparation before requesting optional timeline
       // waveforms. Both paths may need to stage the same original video.
       const activateTimelineMedia = () => {
@@ -6164,26 +6188,29 @@ function mountEditorWorkspace(): void {
         editorNativePreviewsActive = true;
         editorWorkspace?.refreshTimelineMedia();
       };
-      const plan = compileAudioPlan(doc, sequenceId);
+      let plan = compileAudioPlan(doc, sequenceId);
+      const audioKey = editorAudioContentKey(doc, sequenceId);
+      const videoKey = editorVideoSourceKey(doc, sequenceId);
       const video = doc.assets.some((asset) => asset.kind === "video");
       if (!plan.lanes.length && !video) return undefined;
       if (!editorTasks || !panel)
         throw new Error("请在 CodeShell 桌面视频面板中准备声音和视频预览");
       // View-only audition snapshots share project revision, but must never reuse its mix.
-      const documentKey = editorDocumentKey(doc, sequenceId),
-        key = documentKey + (purpose === "audition" ? `:audition:${JSON.stringify(doc)}` : "");
+      let key = editorDocumentKey(doc, sequenceId) +
+        (purpose === "audition" ? `:audition:${JSON.stringify(doc)}` : "");
       let snapshot = preparedNative?.key === key ? preparedNative.snapshot : undefined;
       const progress = (item: { phase: string; completed: number; total: number }) => {
         if (signal.aborted) return;
-        // Unfinished resources mean the Host is copying originals inside task start,
-        // which reports no progress until every file of the batch is copied.
+        // Resource admission may copy material on older Hosts. Direct reads still
+        // verify source bytes before the batch can report completion.
         const message =
           item.phase === "resources" && item.completed < item.total
-            ? `正在把原始素材交给本地任务 · 已就绪 ${item.completed}/${item.total}；首次使用的素材需要完整复制一次原片，较大的视频可能需要几分钟…`
+            ? `正在读取和校验原始素材 · 已就绪 ${item.completed}/${item.total}；首次校验较大素材可能需要一些时间…`
             : `正在准备预览 · ${item.phase === "resources" ? "素材" : item.phase === "document" ? "工程" : "校验"} ${item.completed}/${item.total}`;
         onProgress?.(message);
       };
-      if (video) {
+      if (video && !(preparedVideoSources?.key === videoKey &&
+        sameIdentity(preparedVideoSources.identity, identity, false))) {
         onProgress?.("正在读取和校验视频素材，准备播放画面…");
         const prepared = await editorTasks.prepareVideoForPreview(doc, sequenceId, {
           snapshot,
@@ -6197,7 +6224,7 @@ function mountEditorWorkspace(): void {
           },
         });
         snapshot = prepared.snapshot;
-        if (signal.aborted) return undefined;
+        if (!current()) return undefined;
         const dimensions: EditorOperation[] = [];
         for (const source of prepared.sources) {
           const asset = doc.assets.find((asset) => asset.id === source.assetId)!;
@@ -6214,15 +6241,33 @@ function mountEditorWorkspace(): void {
             });
         }
         if (dimensions.length) {
-          if (editorDocumentKey(editorSession!.read(), sequenceId) !== documentKey) return undefined;
+          const latest = editorSession!.read();
+          if (editorVideoSourceKey(latest, sequenceId) !== videoKey) return undefined;
           editorSession!.dispatch(
             dimensions,
             editorSession!.getState().identity,
             "校正源素材显示尺寸",
           );
-          toast("已按源文件校正画面尺寸，请再次点击播放完成预览准备");
-          return undefined;
+          if (!current()) return undefined;
+          const corrected = editorSession!.read();
+          // Solo/audition mutes belong only to this request. Apply geometry to
+          // the saved document, then carry those temporary mutes into its mix.
+          doc = purpose === "audition"
+            ? { ...doc, revision: corrected.revision,
+                assets: doc.assets.map((asset) => {
+                  const source = corrected.assets.find((item) => item.id === asset.id);
+                  return source ? { ...asset, width: source.width, height: source.height } : asset;
+                }) }
+            : corrected;
+          if (editorAudioContentKey(doc, sequenceId) !== audioKey) return undefined;
+          plan = compileAudioPlan(doc, sequenceId);
+          key = editorDocumentKey(doc, sequenceId) +
+            (purpose === "audition" ? `:audition:${JSON.stringify(doc)}` : "");
+          // The old manifest describes pre-correction metadata; stage the new
+          // document while retaining the already verified video proxies.
+          snapshot = undefined;
         }
+        preparedVideoSources = { key: videoKey, identity };
       }
       if (!plan.lanes.length) {
         if (snapshot) preparedNative = { key, snapshot };
@@ -6235,7 +6280,7 @@ function mountEditorWorkspace(): void {
         signal,
         onProgress: progress,
       });
-      if (signal.aborted) return undefined;
+      if (!current()) return undefined;
       preparedNative = { key, snapshot: result.snapshot, audio: result.preparedAudio };
       onProgress?.("正在加载声音，即将开始播放…");
       const audio = await loadEditorPreviewAudio(
@@ -6244,9 +6289,13 @@ function mountEditorWorkspace(): void {
         { documentId: doc.id, revision: doc.revision, sequenceId, sampleCount: plan.sampleCount },
         signal,
       );
+      if (!current()) { audio.stream?.dispose(); return undefined; }
       activateTimelineMedia();
       return {
         ...audio,
+        // Workspace validates the original request before rebasing a preserved
+        // play intent onto a dimension-only or other sound-equivalent edit.
+        revision: requestedDoc.revision,
         mix: {
           sampleCount: result.sampleCount,
           peak: result.peak,
@@ -6472,6 +6521,7 @@ async function boot(): Promise<void> {
       refreshEditorSaveStatus();
       const previous = legacySignature;
       const previousAssets = JSON.stringify(project.assets);
+      const previousSources = managedMediaSourcesKey(project);
       const doc = synchronizeLegacyView();
       updateSave();
       // Save-state-only notifications do not change any document-derived controls.
@@ -6498,7 +6548,8 @@ async function boot(): Promise<void> {
         }
         if (previousAssets !== JSON.stringify(project.assets)) {
           if (!pendingMediaDeletion) refreshMediaLibrary();
-          void restoreManagedMedia().catch(fail);
+          if (previousSources !== managedMediaSourcesKey(project))
+            void restoreManagedMedia().catch(fail);
         }
       }
       if (

@@ -1162,7 +1162,7 @@ test("a running staging job's progress is never shown as the fast-preview percen
   assert.doesNotMatch(status, /快速预览|42%/);
   await page.locator('[data-ew-action="play"]').click();
 });
-test("Play explains the Host's copy of new originals instead of claiming preview frames are being made", async (t) => {
+test("Play reports original admission separately from preview frame generation", async (t) => {
   const page = await openCopyWait(t, true);
   await page.waitForFunction(() =>
     window.__mainHost.calls.some(
@@ -1172,8 +1172,8 @@ test("Play explains the Host's copy of new originals instead of claiming preview
   );
   await settle(page);
   const status = await page.locator("[data-ew-preview-error]").textContent();
-  assert.match(status, /正在把原始素材交给本地任务 · 已就绪 0\/1/);
-  assert.match(status, /首次使用的素材需要完整复制一次原片/);
+  assert.match(status, /正在读取和校验原始素材 · 已就绪 0\/1/);
+  assert.match(status, /首次校验较大素材/);
   assert.doesNotMatch(status, /快速预览|42%/);
   await page.locator('[data-ew-action="play"]').click();
   assert.equal(await page.locator("[data-ew-preview-error]").isVisible(), false);
@@ -4709,14 +4709,42 @@ test("main keeps full, solo and unit-gain audition snapshots isolated from expor
   assert.deepEqual(result.after, result.original, "Same-id/revision reopen and audition do not change the saved mix");
 });
 
-test("main first solo playback corrects source dimensions without saving the audition mix", async (t) => {
+test("main first solo playback corrects dimensions and continues the same play intent without saving solo mutes", async (t) => {
   const initial = structuredClone(realMediaSeed);
   initial.id = "solo-source-dimensions";
   initial.assets[0].kind = "video";
+  initial.assets[0].duration = T;
+  initial.sequences[0].clips = initial.sequences[0].clips.filter((clip) => clip.kind === "media")
+    .map((clip) => ({ ...clip, start: 0, duration: T,
+      timeMap: { points: [{ time: 0, source: 0 }, { time: T, source: T }] } }));
   const page = await openPage(t, { seed: initial, nativeTasks: true });
   await page.evaluate(() => {
     const audit = __mainAuditionAudit;
-    globalThis.__soloDimensions = { before: __mainReadAudit.session().read(), cached: audit.prepared(), videos: [], audioCalls: 0 };
+    globalThis.__soloDimensions = { before: __mainReadAudit.session().read(), cached: audit.prepared(), videos: [], audioCalls: 0, playCalls: 0 };
+    const workspace = audit.workspace();
+    workspace.preview.seek = async () => {};
+    workspace.preview.play = async (audio) => {
+      if (audio.revision !== __mainReadAudit.session().read().revision) throw new Error("Stale playback identity");
+      __soloDimensions.playCalls++;
+      workspace.preview.isPlaying = true;
+    };
+    const wave = new Uint8Array(44 + 48000 * 8), view = new DataView(wave.buffer);
+    const text = (at, value) => { for (let i = 0; i < value.length; i++) wave[at + i] = value.charCodeAt(i); };
+    text(0, "RIFF"); view.setUint32(4, wave.length - 8, true); text(8, "WAVEfmt ");
+    view.setUint32(16, 16, true); view.setUint16(20, 3, true); view.setUint16(22, 2, true);
+    view.setUint32(24, 48000, true); view.setUint32(28, 384000, true); view.setUint16(32, 8, true); view.setUint16(34, 32, true);
+    text(36, "data"); view.setUint32(40, wave.length - 44, true);
+    const hash = "a".repeat(64), id = `asset-${hash}`;
+    const context = codeshellPanel.getContext.bind(codeshellPanel), call = codeshellPanel.call.bind(codeshellPanel);
+    codeshellPanel.getContext = async () => {
+      const value = await context(); return { ...value, availableMethods: [...value.availableMethods, "resources.read"] };
+    };
+    codeshellPanel.call = (method, args) => {
+      if (method !== "resources.read" || args.assetId !== id) return call(method, args);
+      const part = wave.subarray(args.offset, args.offset + args.length);
+      return Promise.resolve({ assetId: id, offset: args.offset, totalBytes: wave.length,
+        dataBase64: btoa(String.fromCharCode(...part)), eof: args.offset + part.length === wave.length });
+    };
     audit.setTasks({
       dispose() {},
       async prepareVideoForPreview(doc, sequenceId, options) {
@@ -4725,9 +4753,14 @@ test("main first solo playback corrects source dimensions without saving the aud
           assetId: "camera", recipe: { width: 1280, height: 720 }, proxy: { id: `asset-${"d".repeat(64)}` },
         }] };
       },
-      async prepareAudioForPreview() {
+      async prepareAudioForPreview(doc, sequenceId, options) {
         __soloDimensions.audioCalls++;
-        throw new Error("The corrected source must be saved before preparing a mix");
+        __soloDimensions.audioDocument = structuredClone(doc);
+        if (doc.assets[0].width !== 1280 || options.snapshot) throw new Error("Audio requires a corrected snapshot");
+        return { snapshot: { documentHash: hash, sequenceId },
+          preparedAudio: { documentHash: hash, sequenceId, assetId: id, recipeHash: hash },
+          audioResource: { id, bytes: wave.length, mimeType: "audio/wav", sha256: hash },
+          sampleCount: 48000, peak: 0, samplesOverFullScale: 0 };
       },
     });
   });
@@ -4745,10 +4778,13 @@ test("main first solo playback corrects source dimensions without saving the aud
   assert.equal(result.after.revision, result.before.revision + 1);
   assert.deepEqual(result.after.sequences, result.before.sequences, "Solo's temporary mutes are never saved with the source correction");
   assert.deepEqual(durable, result.after);
-  assert.equal(result.audioCalls, 0);
-  assert.deepEqual(result.prepared, result.cached, "A dimension-only audition response cannot publish a reusable snapshot or mix");
-  assert.equal(result.playing, false);
-  assert.match(result.toast, /已按源文件校正画面尺寸.*再次点击播放/);
+  assert.equal(result.audioCalls, 1);
+  assert.equal(result.audioDocument.revision, result.after.revision);
+  assert.equal(result.audioDocument.sequences[0].tracks.find((track) => track.id === "v2").muted, true);
+  assert.match(result.prepared.key, /:audition:/, "Solo preparation remains separate from canonical export receipts");
+  assert.equal(result.playCalls, 1);
+  assert.equal(result.playing, true);
+  assert.doesNotMatch(result.toast, /再次点击播放/);
 });
 
 test("main late solo source dimensions cannot correct a same-id reopened successor", async (t) => {
@@ -4791,4 +4827,105 @@ test("main late solo source dimensions cannot correct a same-id reopened success
   assert.equal(result.audioCalls, 0);
   assert.deepEqual(result.prepared, result.cached);
   assert.equal(result.playing, false);
+});
+
+
+for (const boundary of ["cancel", "seek"]) test(`main ${boundary} during video preparation discards late source dimensions`, async (t) => {
+  const initial = structuredClone(realMediaSeed);
+  initial.id = `cancelled-video-dimensions-${boundary}`;
+  initial.assets[0].kind = "video";
+  const page = await openPage(t, { seed: initial, nativeTasks: true });
+  const before = await waitSaved(page);
+  await page.evaluate(() => {
+    const audit = __mainAuditionAudit;
+    globalThis.__cancelledVideoDimensions = { audioCalls: 0, cached: audit.prepared() };
+    audit.setTasks({
+      dispose() {},
+      async prepareVideoForPreview(doc, sequenceId, options) {
+        __cancelledVideoDimensions.signal = options.signal;
+        await new Promise((resolve) => { __cancelledVideoDimensions.release = resolve; });
+        return { snapshot: { documentHash: "c".repeat(64), sequenceId }, sources: [{
+          assetId: "camera", recipe: { width: 1280, height: 720 }, proxy: { id: `asset-${"c".repeat(64)}` },
+        }] };
+      },
+      async prepareAudioForPreview() {
+        __cancelledVideoDimensions.audioCalls++;
+        throw new Error("Cancelled playback cannot prepare its audio");
+      },
+    });
+    __cancelledVideoDimensions.playback = audit.workspace().togglePlayback();
+  });
+  await page.waitForFunction(() => Boolean(__cancelledVideoDimensions.release));
+  const result = await page.evaluate(async (boundary) => {
+    const state = __cancelledVideoDimensions, workspace = __mainAuditionAudit.workspace();
+    if (boundary === "cancel") await workspace.togglePlayback();
+    else await workspace.seek(8000, true);
+    const aborted = state.signal.aborted;
+    state.release();
+    await state.playback;
+    return { aborted, audioCalls: state.audioCalls, cached: state.cached,
+      prepared: __mainAuditionAudit.prepared(), after: __mainReadAudit.session().read(),
+      playing: workspace.playing, preparing: Boolean(workspace.preparing), time: workspace.getPlayhead() };
+  }, boundary);
+  assert.ok(result.aborted);
+  assert.equal(result.audioCalls, 0);
+  assert.equal(result.playing, false);
+  assert.equal(result.preparing, false);
+  if (boundary === "seek") assert.equal(result.time, 8000);
+  assert.deepEqual(result.prepared, result.cached, "Late video work cannot publish a cache after its owner was cancelled");
+  assert.deepEqual(result.after, before, "Late dimension correction cannot change the saved document");
+  assert.deepEqual(await waitSaved(page), before);
+});
+
+test("main reuses prepared video sources after picture edits and invalidates changed source or generation", async (t) => {
+  const initial = structuredClone(realMediaSeed);
+  initial.id = "video-source-content-cache";
+  initial.assets[0].kind = "video";
+  const page = await openPage(t, { seed: initial, nativeTasks: true });
+  await waitSaved(page);
+  const result = await page.evaluate(async () => {
+    const audit = __mainAuditionAudit, session = __mainReadAudit.session(), workspace = audit.workspace();
+    const videoCalls = [], audioCalls = [], counts = [];
+    audit.setTasks({
+      dispose() {},
+      async prepareVideoForPreview(doc, sequenceId, options) {
+        videoCalls.push({ document: structuredClone(doc), snapshot: options.snapshot?.documentHash });
+        return { snapshot: { documentHash: "f".repeat(64), sequenceId }, sources: [{
+          assetId: "camera", recipe: { width: 640, height: 360 }, proxy: { id: `asset-${"f".repeat(64)}` },
+        }] };
+      },
+      async prepareAudioForPreview(doc) {
+        audioCalls.push({ revision: doc.revision, fingerprint: doc.assets[0].fingerprint });
+        // Stop at the audio boundary: this assertion is about the production provider's
+        // video work and does not require a synthetic decoder or native audio artifact.
+        throw new Error("video-cache-audio-boundary");
+      },
+    });
+    const run = async () => {
+      const doc = session.read();
+      try { await workspace.options.prepareAudio(doc, doc.activeSequenceId, new AbortController().signal); }
+      catch (error) { if (error.message !== "video-cache-audio-boundary") throw error; }
+      counts.push(videoCalls.length);
+    };
+    await run();
+    session.dispatch([{ type: "clip.update", sequenceId: "main", clipId: "camera-main",
+      patch: { transform: { ...session.read().sequences[0].clips.find((clip) => clip.id === "camera-main").transform, x: .15 } } }],
+      session.getState().identity, "移动已准备的画面");
+    await run();
+    session.dispatch([{ type: "asset.update", assetId: "camera", patch: { fingerprint: "b".repeat(64) } }],
+      session.getState().identity, "更换源素材内容");
+    await run();
+    const current = session.read(), generation = session.getState().identity.generation;
+    await session.replace({ ...current, id: "source-cache-other-project" });
+    await session.replace(current);
+    await run();
+    return { counts, videoCalls, audioCalls, generationChanged: session.getState().identity.generation !== generation,
+      after: session.read(), current };
+  });
+  assert.deepEqual(result.counts, [1, 1, 2, 3], "Picture edits reuse sources; changed bytes and reopened generations require verification");
+  assert.equal(result.audioCalls.length, 4);
+  assert.equal(result.videoCalls[0].document.assets[0].fingerprint, undefined);
+  assert.equal(result.videoCalls[1].document.assets[0].fingerprint, "b".repeat(64));
+  assert.ok(result.generationChanged);
+  assert.deepEqual(result.after, result.current, "Preparation never changes the applied edit");
 });

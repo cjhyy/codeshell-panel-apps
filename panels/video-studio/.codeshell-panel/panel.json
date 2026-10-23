@@ -23,6 +23,7 @@
     "media.capture",
     "process",
     "resources",
+    "resources.directRead",
     "credentials.connections"
   ],
   "agent": {
@@ -6755,15 +6756,15 @@
     },
     "editor-runtime": {
       "entry": "app/tools/editor-runtime.mjs",
-      "sha256": "d44199872e0f09f464ff034e670fee447be5ee30f8753777dc02315f5df3a916"
+      "sha256": "f28447f8eae7327cc2dc78cbb225ef69c676bc0ab09c29078600009bfba8659f"
     },
     "editor-sync": {
       "entry": "app/tools/editor-sync.mjs",
-      "sha256": "26d6dc166a69b87865d919716154853d57af3a5d1d5017c7f872ea3b5869e2e1"
+      "sha256": "4881ee6cb4275693f4277b1d0ffc13f74871f0dfa305c993d5aa5c4487d5bb74"
     },
     "audio-separation": {
       "entry": "app/tools/audio-separation.mjs",
-      "sha256": "02cb4ee6f88e585c0ea338498785f6b262c2d60e8c16c544134e3d0cffb40470"
+      "sha256": "87617222a59745343ac2f7863bf57c13e54ca2f6a9655479e4c7b14d2aea6451"
     }
   }
 }

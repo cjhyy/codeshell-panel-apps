@@ -3507,13 +3507,13 @@ import {
 } from "node:fs";
 import { link, lstat as lstat2, open as open2, rm as rm2 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, isAbsolute, join as join2, relative as relative2, sep as sep2 } from "node:path";
+import { dirname, isAbsolute as isAbsolute2, join as join2, relative as relative2, sep as sep2 } from "node:path";
 var yauzl = __toESM(require_yauzl(), 1);
 var yazl = __toESM(require_yazl(), 1);
 
 // native/editor-runtime/files.ts
 import { copyFile, lstat, mkdir, open, realpath, rename, rm, stat } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 // src/editor/waveform.ts
 var WAVEFORM_LIMITS = Object.freeze({
@@ -3581,6 +3581,12 @@ async function regular(root, parts) {
     throw new EditorTaskError("INVALID_FILE", "任务材料不在授权目录内");
   return canonical;
 }
+async function originalFile(original) {
+  const info = await lstat(original.path);
+  if (!info.isFile() || info.isSymbolicLink() || info.size !== original.bytes || await realpath(original.path) !== original.path)
+    throw new EditorTaskError("SOURCE_CHANGED", "已授权原始素材发生变化");
+  return original.path;
+}
 
 // native/editor-runtime/bundle.ts
 /*! Bundled ZIP dependencies: yauzl / yazl (Copyright (c) 2014 Josh Wolfe),
@@ -3635,11 +3641,13 @@ async function rootsFor(options2) {
     roots: await Promise.all(options2.sourceRoots.map(sealed))
   };
 }
-async function sourcePath(path, roots) {
-  if (!isAbsolute(path)) fail("INVALID_FILE", "材料路径必须由 Host 物化");
+async function sourcePath(path, roots, originals) {
+  if (!isAbsolute2(path)) fail("INVALID_FILE", "材料路径必须由 Host 物化");
+  const original = originals?.get(path);
+  if (original) return originalFile(original);
   for (const root of roots) {
     const part = relative2(root, path);
-    if (part && !isAbsolute(part) && part !== ".." && !part.startsWith(`..${sep2}`))
+    if (part && !isAbsolute2(part) && part !== ".." && !part.startsWith(`..${sep2}`))
       return regular(root, part.split(sep2));
   }
   return fail("INVALID_FILE", "材料路径不在 Host 授权目录中");

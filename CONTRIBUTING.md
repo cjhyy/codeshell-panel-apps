@@ -51,7 +51,7 @@ previous package and include a deterministic SHA-256 file inventory. Browser
 modules use inline source maps; standalone `.map` and `.ts` runtime assets are
 not supported by the Host.
 
-`@cjhyy/code-shell-core@0.9.11` is pinned as a development dependency for the
+`@cjhyy/code-shell-core@0.9.23` is pinned as a development dependency for the
 published Host's manifest schema and read-only installation preflight. It is
 used only by package checks and is not bundled into the installed Panel runtime.
 

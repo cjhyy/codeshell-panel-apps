@@ -22,20 +22,12 @@ import type { Tick } from "./time";
 import type { EditorAsset, EditorDocument } from "./types";
 import type { MulticamAlignment, MulticamAlignmentOptions } from "./multicam-edits";
 import { validateAudioMixReport } from "./audio-mix-report";
+import { isEditorDemoNarration } from "./playback-cache";
+export { isEditorDemoNarration } from "./playback-cache";
 
 /** Fixed installed example audio; ordinary resources always take precedence. */
 export const EDITOR_DEMO_NARRATION_SHA =
   "a57af26cc6bec773097f739da61e222548d72a5edc4fcaf377276696e7da3d40";
-export function isEditorDemoNarration(asset: EditorAsset): boolean {
-  return (
-    asset.id === "demo-narration-v1" &&
-    asset.name === "示例旁白 · 从想法，到成片。" &&
-    asset.kind === "audio" &&
-    asset.duration === 24 * 240000 &&
-    asset.metadata?.mimeType === "audio/mpeg" &&
-    !asset.resourceId
-  );
-}
 
 export const EDITOR_TASK_LIMITS = Object.freeze({
   resourcesPerTask: 128,
@@ -55,6 +47,8 @@ export interface EditorTaskSnapshot {
   byteLength: number;
   chunkCount: number;
   resourceIds: string[];
+  /** Bounded external references reauthorized by the Host for every native launch. */
+  directReadResourceIds?: string[];
   /** Browser-side project binding; never used as a filesystem authority. */
   workspaceKey: string;
 }
@@ -258,11 +252,17 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
     key: string,
     signal?: AbortSignal,
     beforeSubmit?: () => void,
+    directReadResourceIds?: string[],
   ): Promise<RuntimeJob> {
     await sdk.requireMethods(required);
     await same(key);
     if (signal?.aborted) throw runtimeCancelled();
     const context = await sdk.discover();
+    const direct = context.capabilities?.tasks?.directRead === true && request.action !== "import-project"
+      ? new Set(directReadResourceIds ?? resourceIds.filter((id) => id.startsWith("external-")))
+      : new Set<string>();
+    if (directReadResourceIds?.length && direct.size !== directReadResourceIds.length)
+      throw new Error("原始素材读取授权已变化，请重新准备工程预览");
     const maximum = Math.min(
       EDITOR_TASK_LIMITS.inputBytes,
       Number(context.capabilities?.tasks?.maxInputBytes) || EDITOR_TASK_LIMITS.inputBytes,
@@ -278,8 +278,10 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         request,
         resources: resourceIds.map((assetId, index) => ({
           assetId,
-          path: `inputs/resource-${index}.bin`,
+          path: direct.has(assetId) ? `original-${assetId}` : `inputs/resource-${index}.bin`,
+          ...(direct.has(assetId) ? { access: "read" } : {}),
         })),
+        ...(direct.size ? { originalsArgument: "--originals" } : {}),
         directoryArguments: [
           { argumentName: "--job-dir", directory: "job" },
           { argumentName: "--runtime-dir", directory: "app-data", path: "runtime/editor-v2" },
@@ -310,8 +312,9 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
     resourceIds: string[],
     key: string,
     options: EditorStageOptions = {},
+    directReadResourceIds?: string[],
   ) {
-    let job = await start(request, resourceIds, key, options.signal);
+    let job = await start(request, resourceIds, key, options.signal, undefined, directReadResourceIds);
     if (
       options.retryFailedTasks &&
       ["failed", "cancelled"].includes(job.status) &&
@@ -385,6 +388,10 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
       resourceIds: selected.resourceIds,
       workspaceKey: key,
     };
+    const externalIds = snapshot.resourceIds.filter((id) => id.startsWith("external-"));
+    const directRead = (await sdk.discover()).capabilities?.tasks?.directRead === true &&
+      externalIds.length <= EDITOR_TASK_LIMITS.resourcesPerTask;
+    if (directRead && externalIds.length) snapshot.directReadResourceIds = externalIds;
     options.onSnapshot?.(structuredClone(snapshot));
     let chunks: number[] = [];
     for (
@@ -405,9 +412,10 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
           resourceIds: batch,
           ...(confirmedReferences.length ? { confirmedReferences } : {}),
         },
-        [],
+        directRead ? batch.filter((id) => id.startsWith("external-")) : [],
         key,
         options,
+        directRead ? batch.filter((id) => id.startsWith("external-")) : [],
       );
       if (
         !Array.isArray(status?.resourceIds) ||
@@ -433,7 +441,8 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         throw new Error("工程数据块状态无效");
       chunks = status.chunks;
       const missing = batch.filter((id) => !status.resourceIds.includes(id));
-      // The Host copies every missing original inside tasks.start, before any job exists.
+      // Copy fallback materializes inputs inside tasks.start; direct originals are
+      // admitted through the sealed manifest and verified by the native task.
       if (missing.length)
         options.onProgress?.({
           phase: "resources",
@@ -446,6 +455,7 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
           missing,
           key,
           options,
+          directRead ? missing.filter((id) => id.startsWith("external-")) : [],
         );
       options.onProgress?.({
         phase: "resources",
@@ -484,9 +494,10 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         chunkCount: snapshot.chunkCount,
         byteLength: snapshot.byteLength,
       },
-      [],
+      snapshot.directReadResourceIds ?? [],
       key,
       options,
+      snapshot.directReadResourceIds ?? [],
     );
     if (
       committed?.documentHash !== snapshot.documentHash ||
@@ -506,6 +517,8 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
   ) {
     transferId(snapshot.transferId);
     await same(snapshot.workspaceKey);
+    // Releasing staging must remain possible after an original is moved or its grant is revoked.
+    const directReadResourceIds = action === "discard" ? [] : snapshot.directReadResourceIds ?? [];
     return start(
       {
         action,
@@ -514,10 +527,11 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         sequenceId: snapshot.sequenceId,
         ...extra,
       },
-      [],
+      directReadResourceIds,
       snapshot.workspaceKey,
       signal,
       beforeSubmit,
+      directReadResourceIds,
     );
   }
   async function selectedSnapshot(
@@ -528,6 +542,9 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
     if (!options.snapshot) return stage(value, sequenceId, options);
     const snapshot = options.snapshot;
     await same(snapshot.workspaceKey);
+    if (snapshot.directReadResourceIds?.length &&
+        (await sdk.discover()).capabilities?.tasks?.directRead !== true)
+      return stage(value, sequenceId, { ...options, transferId: undefined });
     const selected = editorTaskDocument(value, sequenceId);
     const documentHash = await editorSha256(
       new TextEncoder().encode(JSON.stringify(selected.document)),
@@ -1410,8 +1427,10 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
           documentHash: snapshot.documentHash,
           resourceIds,
         },
-        [],
+        (snapshot.directReadResourceIds ?? []).filter((id) => resourceIds.includes(id)),
         snapshot.workspaceKey,
+        {},
+        (snapshot.directReadResourceIds ?? []).filter((id) => resourceIds.includes(id)),
       );
     },
     async discard(snapshot: EditorTaskSnapshot) {

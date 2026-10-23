@@ -2332,7 +2332,7 @@ var sha256 = "86be9ad761be48857604a0bc05237ae3a40fb1901c23713e41649a051dfbbfd4";
 
 // native/editor-runtime/cli.ts
 import { fileURLToPath } from "node:url";
-import { isAbsolute as isAbsolute6 } from "node:path";
+import { isAbsolute as isAbsolute7 } from "node:path";
 
 // native/editor-runtime/runtime.ts
 import { copyFile as copyFile3, link as hardLink, lstat as lstat4, readdir as readdir2, rename as rename4, rm as rm9, stat as stat10, utimes } from "node:fs/promises";
@@ -3781,65 +3781,6 @@ function audioMixWarning(value) {
   return `混音峰值 ${level}，声音叠加或音量过高可能导致失真。请降低音轨或片段音量后重新播放或导出。`;
 }
 
-// src/editor/task-bridge.ts
-var EDITOR_DEMO_NARRATION_SHA = "a57af26cc6bec773097f739da61e222548d72a5edc4fcaf377276696e7da3d40";
-function isEditorDemoNarration(asset2) {
-  return asset2.id === "demo-narration-v1" && asset2.name === "示例旁白 · 从想法，到成片。" && asset2.kind === "audio" && asset2.duration === 24 * 24e4 && asset2.metadata?.mimeType === "audio/mpeg" && !asset2.resourceId;
-}
-var EDITOR_TASK_LIMITS = Object.freeze({
-  resourcesPerTask: 128,
-  inputBytes: 2 * 1024 * 1024,
-  documentBytes: 32 * 1024 * 1024,
-  chunkBytes: 512 * 1024,
-  snapshotResources: 1e4,
-  proxiesPerTask: 120
-});
-function editorTaskDocument(value, sequenceId) {
-  const document2 = validateEditorDocument(value), sequences = new Map(document2.sequences.map((sequence2) => [sequence2.id, sequence2]));
-  if (!sequences.has(sequenceId)) throw new Error("所选导出序列不存在");
-  const sequenceIds = /* @__PURE__ */ new Set(), assetIds = /* @__PURE__ */ new Set();
-  const visit = (id3) => {
-    if (sequenceIds.has(id3)) return;
-    sequenceIds.add(id3);
-    for (const clip2 of sequences.get(id3).clips) {
-      if (clip2.kind === "sequence") visit(clip2.sequenceId);
-      else if (clip2.kind === "media") assetIds.add(clip2.assetId);
-      else if (clip2.kind === "multicam")
-        clip2.angles.forEach((angle) => assetIds.add(angle.assetId));
-    }
-  };
-  visit(sequenceId);
-  document2.sequences = document2.sequences.filter((sequence2) => sequenceIds.has(sequence2.id));
-  document2.assets = document2.assets.filter((asset2) => assetIds.has(asset2.id));
-  document2.activeSequenceId = sequenceId;
-  const resourceIds = /* @__PURE__ */ new Set();
-  for (const asset2 of document2.assets) {
-    if (asset2.kind === "demo" || isEditorDemoNarration(asset2)) continue;
-    const id3 = asset2.resourceId ?? asset2.id;
-    if (!isResourceId(id3)) throw new Error(`素材「${asset2.name}」尚未保存为可用于本地任务的资源`);
-    asset2.resourceId = id3;
-    resourceIds.add(id3);
-  }
-  if (resourceIds.size > EDITOR_TASK_LIMITS.snapshotResources)
-    throw new Error(
-      `单个导出快照最多包含 ${EDITOR_TASK_LIMITS.snapshotResources} 个资源，请拆分序列`
-    );
-  return { document: document2, resourceIds: [...resourceIds].sort() };
-}
-function editorProjectDocument(value) {
-  const document2 = validateEditorDocument(value), resources = /* @__PURE__ */ new Set();
-  if (document2.assets.length > EDITOR_TASK_LIMITS.snapshotResources)
-    throw new Error("完整工程最多包含 10000 个素材");
-  for (const asset2 of document2.assets) {
-    if (asset2.kind === "demo" || isEditorDemoNarration(asset2)) continue;
-    const id3 = asset2.resourceId ?? asset2.id;
-    if (!isResourceId(id3))
-      throw new Error(`素材「${asset2.name}」缺少已保存的原始资源，无法生成完整工程包`);
-    resources.add(id3);
-  }
-  return { document: document2, resourceIds: [...resources].sort() };
-}
-
 // src/editor/audio-plan.ts
 var AUDIO_SAMPLE_RATE = 48e3;
 var TICKS_PER_AUDIO_SAMPLE = 5;
@@ -4092,6 +4033,67 @@ function compileAudioPlan(value, sequenceId, options2 = {}) {
   walk(selected, part("sequence", sequenceId), []);
   plan.ducking = [...requests.values()];
   return freeze(plan);
+}
+
+// src/editor/playback-cache.ts
+function isEditorDemoNarration(asset2) {
+  return asset2.id === "demo-narration-v1" && asset2.name === "示例旁白 · 从想法，到成片。" && asset2.kind === "audio" && asset2.duration === 24 * 24e4 && asset2.metadata?.mimeType === "audio/mpeg" && !asset2.resourceId;
+}
+
+// src/editor/task-bridge.ts
+var EDITOR_DEMO_NARRATION_SHA = "a57af26cc6bec773097f739da61e222548d72a5edc4fcaf377276696e7da3d40";
+var EDITOR_TASK_LIMITS = Object.freeze({
+  resourcesPerTask: 128,
+  inputBytes: 2 * 1024 * 1024,
+  documentBytes: 32 * 1024 * 1024,
+  chunkBytes: 512 * 1024,
+  snapshotResources: 1e4,
+  proxiesPerTask: 120
+});
+function editorTaskDocument(value, sequenceId) {
+  const document2 = validateEditorDocument(value), sequences = new Map(document2.sequences.map((sequence2) => [sequence2.id, sequence2]));
+  if (!sequences.has(sequenceId)) throw new Error("所选导出序列不存在");
+  const sequenceIds = /* @__PURE__ */ new Set(), assetIds = /* @__PURE__ */ new Set();
+  const visit = (id3) => {
+    if (sequenceIds.has(id3)) return;
+    sequenceIds.add(id3);
+    for (const clip2 of sequences.get(id3).clips) {
+      if (clip2.kind === "sequence") visit(clip2.sequenceId);
+      else if (clip2.kind === "media") assetIds.add(clip2.assetId);
+      else if (clip2.kind === "multicam")
+        clip2.angles.forEach((angle) => assetIds.add(angle.assetId));
+    }
+  };
+  visit(sequenceId);
+  document2.sequences = document2.sequences.filter((sequence2) => sequenceIds.has(sequence2.id));
+  document2.assets = document2.assets.filter((asset2) => assetIds.has(asset2.id));
+  document2.activeSequenceId = sequenceId;
+  const resourceIds = /* @__PURE__ */ new Set();
+  for (const asset2 of document2.assets) {
+    if (asset2.kind === "demo" || isEditorDemoNarration(asset2)) continue;
+    const id3 = asset2.resourceId ?? asset2.id;
+    if (!isResourceId(id3)) throw new Error(`素材「${asset2.name}」尚未保存为可用于本地任务的资源`);
+    asset2.resourceId = id3;
+    resourceIds.add(id3);
+  }
+  if (resourceIds.size > EDITOR_TASK_LIMITS.snapshotResources)
+    throw new Error(
+      `单个导出快照最多包含 ${EDITOR_TASK_LIMITS.snapshotResources} 个资源，请拆分序列`
+    );
+  return { document: document2, resourceIds: [...resourceIds].sort() };
+}
+function editorProjectDocument(value) {
+  const document2 = validateEditorDocument(value), resources = /* @__PURE__ */ new Set();
+  if (document2.assets.length > EDITOR_TASK_LIMITS.snapshotResources)
+    throw new Error("完整工程最多包含 10000 个素材");
+  for (const asset2 of document2.assets) {
+    if (asset2.kind === "demo" || isEditorDemoNarration(asset2)) continue;
+    const id3 = asset2.resourceId ?? asset2.id;
+    if (!isResourceId(id3))
+      throw new Error(`素材「${asset2.name}」缺少已保存的原始资源，无法生成完整工程包`);
+    resources.add(id3);
+  }
+  return { document: document2, resourceIds: [...resources].sort() };
 }
 
 // native/media/editor-audio-renderer.ts
@@ -5582,7 +5584,7 @@ async function findExecutable(name, explicit, directories = executableSearchDire
 import { constants as constants4 } from "node:fs";
 import { copyFile as copyFile2, lstat, mkdir as mkdir5, open, realpath as realpath2, rename as rename2, rm as rm5, stat as stat5 } from "node:fs/promises";
 import { createHash as createHash2, randomUUID as randomUUID3 } from "node:crypto";
-import { join as join6, relative as relative2, sep as sep2 } from "node:path";
+import { isAbsolute as isAbsolute5, join as join6, relative as relative2, sep as sep2 } from "node:path";
 
 // native/editor-runtime/protocol.ts
 var EditorTaskError = class extends Error {
@@ -5866,6 +5868,34 @@ async function regular(root, parts) {
     throw new EditorTaskError("INVALID_FILE", "任务材料不在授权目录内");
   return canonical;
 }
+async function readHostOriginals(path) {
+  if (!isAbsolute5(path)) throw new EditorTaskError("INVALID_FILE", "原始素材授权清单无效");
+  const file = await open(path, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0));
+  let value;
+  try {
+    const info = await file.stat();
+    if (!info.isFile() || info.size > 256 * 1024 || process.platform !== "win32" && info.mode & 63)
+      throw new EditorTaskError("INVALID_FILE", "原始素材授权清单无效");
+    value = JSON.parse(await file.readFile("utf8"));
+  } finally {
+    await file.close();
+  }
+  if (!value || Object.keys(value).some((key) => key !== "originals") || !value.originals || typeof value.originals !== "object" || Array.isArray(value.originals) || Object.keys(value.originals).length > 128)
+    throw new EditorTaskError("INVALID_FILE", "原始素材授权清单无效");
+  const originals = /* @__PURE__ */ new Map();
+  for (const [key, entry] of Object.entries(value.originals)) {
+    if (!/^original-external-[a-f0-9]{64}$/.test(key) || !entry || Object.keys(entry).some((field2) => !["path", "bytes"].includes(field2)) || typeof entry.path !== "string" || !isAbsolute5(entry.path) || !Number.isSafeInteger(entry.bytes) || entry.bytes < 1 || entry.bytes > 20 * 1024 ** 3)
+      throw new EditorTaskError("INVALID_FILE", "原始素材授权条目无效");
+    originals.set(key, { path: entry.path, bytes: entry.bytes });
+  }
+  return originals;
+}
+async function originalFile(original) {
+  const info = await lstat(original.path);
+  if (!info.isFile() || info.isSymbolicLink() || info.size !== original.bytes || await realpath2(original.path) !== original.path)
+    throw new EditorTaskError("SOURCE_CHANGED", "已授权原始素材发生变化");
+  return original.path;
+}
 async function fileHash(path, signal) {
   abort(signal);
   const hash2 = createHash2("sha256"), file = await open(path, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0)), stream = file.createReadStream();
@@ -5893,8 +5923,8 @@ async function readBytes(root, parts, maximum) {
     await file.close();
   }
 }
-async function readPrefix(root, parts, length = 32) {
-  const path = await regular(root, parts), file = await open(path, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0));
+async function readSourcePrefix(path, length = 32) {
+  const file = await open(path, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0));
   try {
     const result = Buffer.alloc(length), { bytesRead } = await file.read(result, 0, length, 0);
     return result.subarray(0, bytesRead);
@@ -5961,7 +5991,7 @@ import {
 } from "node:fs";
 import { link as link2, lstat as lstat2, open as open2, rm as rm6 } from "node:fs/promises";
 import { createHash as createHash3, randomUUID as randomUUID4 } from "node:crypto";
-import { dirname as dirname4, isAbsolute as isAbsolute5, join as join7, relative as relative3, sep as sep3 } from "node:path";
+import { dirname as dirname4, isAbsolute as isAbsolute6, join as join7, relative as relative3, sep as sep3 } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 /*! Bundled ZIP dependencies: yauzl / yazl (Copyright (c) 2014 Josh Wolfe),
@@ -6017,19 +6047,21 @@ async function rootsFor(options2) {
     roots: await Promise.all(options2.sourceRoots.map(sealed))
   };
 }
-async function sourcePath(path, roots) {
-  if (!isAbsolute5(path)) fail("INVALID_FILE", "材料路径必须由 Host 物化");
+async function sourcePath(path, roots, originals) {
+  if (!isAbsolute6(path)) fail("INVALID_FILE", "材料路径必须由 Host 物化");
+  const original = originals?.get(path);
+  if (original) return originalFile(original);
   for (const root of roots) {
     const part2 = relative3(root, path);
-    if (part2 && !isAbsolute5(part2) && part2 !== ".." && !part2.startsWith(`..${sep3}`))
+    if (part2 && !isAbsolute6(part2) && part2 !== ".." && !part2.startsWith(`..${sep3}`))
       return regular(root, part2.split(sep3));
   }
   return fail("INVALID_FILE", "材料路径不在 Host 授权目录中");
 }
 async function outputPath(path, root) {
-  if (!isAbsolute5(path)) fail("INVALID_FILE", "输出路径必须位于任务目录");
+  if (!isAbsolute6(path)) fail("INVALID_FILE", "输出路径必须位于任务目录");
   const part2 = relative3(root, path);
-  if (!part2 || isAbsolute5(part2) || part2 === ".." || part2.startsWith(`..${sep3}`))
+  if (!part2 || isAbsolute6(part2) || part2 === ".." || part2.startsWith(`..${sep3}`))
     fail("INVALID_FILE", "输出路径不在任务目录内");
   const parts = part2.split(sep3), name = parts.pop();
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) fail("INVALID_FILE", "输出文件名无效");
@@ -6087,7 +6119,7 @@ async function exportPortableProject(options2) {
     try {
       const source2 = await options2.resolveAsset(structuredClone(asset2), options2.signal);
       abort2(options2.signal);
-      const path = await sourcePath(source2.path, roots), actual = await inspectFile(path, limits.maxFileBytes, options2.signal);
+      const path = await sourcePath(source2.path, roots, options2.originalSources), actual = await inspectFile(path, limits.maxFileBytes, options2.signal);
       if (source2.bytes !== void 0 && source2.bytes !== actual.bytes || source2.sha256 !== void 0 && source2.sha256 !== actual.sha256 || asset2.fingerprint && asset2.fingerprint !== actual.sha256)
         fail("HASH_MISMATCH", "原始素材已变化或摘要不符");
       const previous = blobs.get(actual.sha256);
@@ -6164,7 +6196,7 @@ async function exportPortableProject(options2) {
         (provide) => {
           void (async () => {
             abort2(options2.signal);
-            const path = await sourcePath(file.path, roots), hash2 = createHash3("sha256");
+            const path = await sourcePath(file.path, roots, options2.originalSources), hash2 = createHash3("sha256");
             let size = 0;
             const handle = await open2(path, constants5.O_RDONLY | constants5.O_NOFOLLOW);
             const source2 = handle.createReadStream({ highWaterMark: 128 * 1024 });
@@ -6720,10 +6752,10 @@ async function analyzeEditorWaveform(options2) {
     const origin = Number(probe.format?.start_time ?? 0), end = Number(audio2.start_time ?? origin) - origin + Number(audio2.duration);
     if (Number.isFinite(end) && end > WAVEFORM_LIMITS.seconds)
       throw new EditorTaskError("LIMIT_EXCEEDED", "波形分析最多支持 24 小时音频");
-    const basename3 = `${editorSourcePcmCacheKey(sourceHash, options2.sourceDuration, version)}.f32`;
+    const basename2 = `${editorSourcePcmCacheKey(sourceHash, options2.sourceDuration, version)}.f32`;
     let pcm;
     try {
-      const candidate = await regular(options2.pcmCacheDir, [basename3]), size = (await lstat3(candidate)).size;
+      const candidate = await regular(options2.pcmCacheDir, [basename2]), size = (await lstat3(candidate)).size;
       if (Number.isFinite(end) && end > 0 && size % 8 === 0 && size / 8 >= Math.ceil(end * RATE2) - 1 && options2.sourceDuration / 24e4 + 1 > end && size / 8 <= MAX_SAMPLES)
         pcm = candidate;
     } catch (error) {
@@ -7379,7 +7411,6 @@ async function prepareEditorProxy(path, sourceHash, context, purpose = "export")
 }
 
 // native/editor-runtime/inspect.ts
-import { dirname as dirname5, basename as basename2 } from "node:path";
 var inputOptions = [
   "-protocol_whitelist",
   "file,pipe",
@@ -7455,7 +7486,7 @@ async function inspectEditorSource(path, resourceId2, ffprobePath, signal) {
     (s) => s.codec_type === "video" && !s.disposition?.attached_pic
   ), audio2 = probe.streams.find((s) => s.codec_type === "audio");
   if (!video && !audio2) throw new EditorTaskError("INVALID_MEDIA", "素材没有可解析的画面或声音");
-  const magic = await readPrefix(dirname5(path), [basename2(path)]), format = field(probe.format?.format_name);
+  const magic = await readSourcePrefix(path), format = field(probe.format?.format_name);
   const imageMime = magic.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? "image/png" : magic[0] === 255 && magic[1] === 216 ? "image/jpeg" : magic.subarray(0, 3).toString() === "GIF" ? "image/gif" : magic.subarray(8, 12).toString() === "WEBP" ? "image/webp" : magic.subarray(4, 12).toString().includes("ftypavif") ? "image/avif" : magic.subarray(0, 2).toString() === "BM" ? "image/bmp" : magic.subarray(0, 4).equals(Buffer.from([73, 73, 42, 0])) || magic.subarray(0, 4).equals(Buffer.from([77, 77, 0, 42])) ? "image/tiff" : void 0;
   const kind = imageMime && video ? "image" : video ? "video" : "audio";
   const selected = [video, audio2].filter(Boolean);
@@ -7686,8 +7717,13 @@ async function runEditorRequest(raw, context) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(context.jobId))
     throw new EditorTaskError("INVALID_REQUEST", "主程序任务编号无效");
   const root = await sealed(context.jobDir), runtime = await sealed(context.runtimeDir);
+  const directOriginal = (id3) => context.originals?.get(`original-${id3}`);
+  const inputSource = async (id3, index) => {
+    const source2 = directOriginal(id3);
+    return source2 ? originalFile(source2) : regular(root, ["inputs", `resource-${index}.bin`]);
+  };
   if (request.action === "inspect-source") {
-    const id3 = request.resourceIds[0], input = await regular(root, ["inputs", "resource-0.bin"]);
+    const id3 = request.resourceIds[0], input = await inputSource(id3, 0);
     await context.reportProgress({ fraction: 0, stage: "inspect-source" });
     const result = await inspectEditorSource(
       input,
@@ -7726,7 +7762,14 @@ async function runEditorRequest(raw, context) {
     return add2(path, "json", "application/json", "editor-report");
   };
   const material = async (binding) => {
-    const id3 = resourceId(binding.resourceId), path = await regular(resources, [`${id3}.bin`]);
+    record(binding, ["resourceId", "sha256", "bytes", "access"], "原始素材绑定");
+    const id3 = resourceId(binding.resourceId);
+    if (binding.access !== void 0 && (binding.access !== "read" || !id3.startsWith("external-")))
+      throw new EditorTaskError("INVALID_FILE", "原始素材读取授权无效");
+    const source2 = binding.access === "read" ? directOriginal(id3) : void 0;
+    if (binding.access === "read" && !source2)
+      throw new EditorTaskError("INCOMPLETE_STAGE", "原始素材读取授权缺失，请重新准备工程");
+    const path = source2 ? await originalFile(source2) : await regular(resources, [`${id3}.bin`]);
     if (await fileHash(path, context.signal) !== hash(binding.sha256) || (await stat10(path)).size !== binding.bytes)
       throw new EditorTaskError("SOURCE_CHANGED", "已准备素材内容发生变化，请重新建立快照");
     return path;
@@ -7835,7 +7878,7 @@ async function runEditorRequest(raw, context) {
     if (request.action === "align-multicam") {
       const settings = request.alignment, sources = [];
       for (const [index, resourceId2] of request.resourceIds.entries()) {
-        const path = await regular(root, ["inputs", `resource-${index}.bin`]), sha = await fileHash(path, context.signal);
+        const path = await inputSource(resourceId2, index), sha = await fileHash(path, context.signal);
         if (resourceId2.startsWith("asset-") && resourceId2 !== `asset-${sha}` || settings.sourceHashes?.[index] && settings.sourceHashes[index] !== sha)
           throw new EditorTaskError("SOURCE_CHANGED", "机位素材内容与资源编号或工程指纹不匹配");
         sources.push({ resourceId: resourceId2, path, duration: settings.sourceDurations[index] });
@@ -7860,7 +7903,7 @@ async function runEditorRequest(raw, context) {
       };
     }
     if (request.action === "prepare-source-video") {
-      const id3 = request.resourceIds[0], input = await regular(root, ["inputs", "resource-0.bin"]), sourceHash = await fileHash(input, context.signal);
+      const id3 = request.resourceIds[0], input = await inputSource(id3, 0), sourceHash = await fileHash(input, context.signal);
       if (id3.startsWith("asset-") && id3 !== `asset-${sourceHash}`)
         throw new EditorTaskError("SOURCE_CHANGED", "素材内容与资源编号不匹配");
       await progress2(0, "prepare-source-video");
@@ -7882,7 +7925,7 @@ async function runEditorRequest(raw, context) {
       return { result: { resourceId: id3, sourceHash, proxy: artifact, recipe }, artifacts };
     }
     if (request.action === "analyze-waveform") {
-      const id3 = request.resourceIds[0], input = await regular(root, ["inputs", "resource-0.bin"]);
+      const id3 = request.resourceIds[0], input = await inputSource(id3, 0);
       await progress2(0, "analyze-waveform");
       const analysis = await analyzeEditorWaveform({
         input,
@@ -7937,7 +7980,7 @@ async function runEditorRequest(raw, context) {
       for (const [index, id3] of request.resourceIds.entries()) {
         const binding = await optionalJson(resources, [`${id3}.json`]);
         if (binding) await material(binding);
-        if (binding || await reuse(id3, confirmed)) present.push(id3);
+        if (binding || !directOriginal(id3) && await reuse(id3, confirmed)) present.push(id3);
         await progress2((index + 1) / request.resourceIds.length, "stage-status");
       }
       const chunks = [], documentDir = await directory(transfer, ["documents", request.documentHash]);
@@ -7976,19 +8019,21 @@ async function runEditorRequest(raw, context) {
       const staged = [];
       for (let index = 0; index < request.resourceIds.length; index++) {
         const id3 = request.resourceIds[index];
-        const path = await regular(root, ["inputs", `resource-${index}.bin`]);
+        const direct = directOriginal(id3), path = await inputSource(id3, index);
         const bytes = (await stat10(path)).size;
         if (bytes < 1 || bytes > 20 * 1024 ** 3)
           throw new EditorTaskError("LIMIT_EXCEEDED", "素材超过当前 20GiB 资源大小限制");
         const sha2562 = await fileHash(path, context.signal);
         if (id3.startsWith("asset-") && id3 !== `asset-${sha2562}`)
           throw new EditorTaskError("SOURCE_CHANGED", "主程序素材内容校验失败");
-        const binding = { resourceId: id3, sha256: sha2562, bytes };
+        const binding = { resourceId: id3, sha256: sha2562, bytes, ...direct ? { access: "read" } : {} };
         const previous = await optionalJson(resources, [`${id3}.json`]);
         if (previous && (previous.sha256 !== sha2562 || previous.bytes !== bytes))
           throw new EditorTaskError("SOURCE_CHANGED", "同一快照中的原文件已变化，请创建新快照");
         if (previous) await material(previous);
-        else {
+        else if (direct) {
+          await atomic(join12(resources, `${id3}.json`), Buffer.from(JSON.stringify(binding)));
+        } else {
           const temporary = join12(resources, `${id3}.${randomUUID7()}.tmp`);
           try {
             await copyFile3(path, temporary);
@@ -8001,7 +8046,7 @@ async function runEditorRequest(raw, context) {
             await rm9(temporary, { force: true });
           }
         }
-        await remember(binding, join12(resources, `${id3}.bin`));
+        if (!direct) await remember(binding, join12(resources, `${id3}.bin`));
         staged.push(binding);
         await progress2((index + 1) / request.resourceIds.length, "stage-resources");
       }
@@ -8217,6 +8262,7 @@ async function runEditorRequest(raw, context) {
         document: selected.document,
         workDir: work,
         sourceRoots: [resources],
+        originalSources: new Map([...byResource.values()].filter((item) => item.binding.access === "read").map((item) => [item.path, { path: item.path, bytes: item.binding.bytes }])),
         outputPath: join12(work, "project.mimiproject"),
         signal: context.signal,
         resolveAsset: async (asset2) => {
@@ -8294,15 +8340,17 @@ async function runEditorRequest(raw, context) {
         artifacts
       };
     }
+    const audioPlan = compileAudioPlan(selected.document, manifest.sequenceId);
     const fullRecipeHash = digest2({
-      recipe: "editor-audio-v2-timestamps",
-      builtinNarration: installedNarration?.binding,
-      documentHash: manifest.documentHash,
-      sequenceId: manifest.sequenceId,
-      bindings: manifest.bindings,
+      recipe: "editor-audio-v3-content",
+      plan: audioPlan,
+      sources: [...new Set(audioPlan.lanes.map((lane) => lane.assetId))].sort().map((assetId) => {
+        const binding = original(assetId).binding;
+        return { assetId, sha256: binding.sha256, bytes: binding.bytes };
+      }),
       ffmpegVersion
     });
-    const expected = request.preparedAudio, fullMixes = await directory(cache, ["mixes", fullRecipeHash]), fullMix = await optionalJson(fullMixes, ["receipt.json"]), preparation = request.range && (expected?.range || !expected && !fullMix) ? editorRangeAudioPreparation(compileAudioPlan(selected.document, manifest.sequenceId), request.range) : {}, audioRange = preparation.range, recipeHash = audioRange ? digest2({ recipe: "editor-audio-range-v1", fullRecipeHash, range: audioRange }) : fullRecipeHash, mixes = audioRange ? await directory(cache, ["mixes", recipeHash]) : fullMixes;
+    const expected = request.preparedAudio, fullMixes = await directory(cache, ["mixes", fullRecipeHash]), fullMix = await optionalJson(fullMixes, ["receipt.json"]), preparation = request.range && (expected?.range || !expected && !fullMix) ? editorRangeAudioPreparation(audioPlan, request.range) : {}, audioRange = preparation.range, recipeHash = audioRange ? digest2({ recipe: "editor-audio-range-v1", fullRecipeHash, range: audioRange }) : fullRecipeHash, mixes = audioRange ? await directory(cache, ["mixes", recipeHash]) : fullMixes;
     let mix = audioRange ? await optionalJson(mixes, ["receipt.json"]) : fullMix;
     if (expected && (expected.recipeHash !== recipeHash || expected.documentHash !== manifest.documentHash || expected.sequenceId !== manifest.sequenceId || !sameExportRange(expected.range, audioRange)))
       throw new EditorTaskError("MIX_MISMATCH", "声音处理配方或源素材已变化，请重新准备声音");
@@ -8310,7 +8358,7 @@ async function runEditorRequest(raw, context) {
       throw new EditorTaskError("MIX_UNAVAILABLE", "已准备声音缓存已释放，请重新准备声音");
     let reused = Boolean(mix);
     if (mix) {
-      if (mix.recipeHash !== recipeHash || mix.documentHash !== manifest.documentHash || mix.sequenceId !== manifest.sequenceId || !sameExportRange(mix.range, audioRange) || expected && expected.assetId !== mix.assetId)
+      if (mix.recipeHash !== recipeHash || mix.sequenceId !== manifest.sequenceId || !sameExportRange(mix.range, audioRange) || expected && expected.assetId !== mix.assetId)
         throw new EditorTaskError("MIX_MISMATCH", "已准备声音回执不匹配");
       const audioPath = await regular(mixes, ["audio.wav"]);
       if (`asset-${await fileHash(audioPath, context.signal)}` !== mix.assetId || await fileHash(await regular(mixes, ["report.json"]), context.signal) !== mix.reportHash)
@@ -8351,7 +8399,7 @@ async function runEditorRequest(raw, context) {
       await atomic(join12(mixes, "receipt.json"), Buffer.from(JSON.stringify(mix)));
     }
     const preparedAudio = {
-      documentHash: mix.documentHash,
+      documentHash: manifest.documentHash,
       sequenceId: mix.sequenceId,
       recipeHash: mix.recipeHash,
       assetId: mix.assetId,
@@ -8407,7 +8455,7 @@ async function runEditorRequest(raw, context) {
         const proxy = await video(asset2.id, true);
         mediaFiles.set(asset2.id, { path: proxy.path, mimeType: proxy.mimeType });
       } else if (asset2.kind === "image") {
-        const input = original(asset2.id), magic = await readPrefix(resources, [`${input.binding.resourceId}.bin`]);
+        const input = original(asset2.id), magic = await readSourcePrefix(input.path);
         const mimeType2 = magic.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? "image/png" : magic[0] === 255 && magic[1] === 216 ? "image/jpeg" : magic.subarray(0, 3).toString() === "GIF" ? "image/gif" : magic.subarray(8, 12).toString() === "WEBP" ? "image/webp" : magic.subarray(4, 12).toString().includes("ftypavif") ? "image/avif" : void 0;
         if (!mimeType2)
           throw new EditorTaskError(
@@ -8521,15 +8569,17 @@ async function runEditorCli(runtime) {
   };
   try {
     const args = process.argv.slice(2);
-    if (args.length !== 4 || (/* @__PURE__ */ new Set([args[0], args[2]])).size !== 2 || [args[0], args[2]].some((flag) => !["--job-dir", "--runtime-dir"].includes(flag)))
+    const flags = args.filter((_, index) => index % 2 === 0);
+    if (![4, 6].includes(args.length) || new Set(flags).size !== flags.length || !flags.includes("--job-dir") || !flags.includes("--runtime-dir") || flags.some((flag) => !["--job-dir", "--runtime-dir", "--originals"].includes(flag)))
       throw new EditorTaskError("INVALID_DIRECTORY", "此入口必须由主程序提供授权任务和运行目录");
     const argument = async (flag) => {
       const path = args[args.indexOf(flag) + 1];
-      if (!path || !isAbsolute6(path))
+      if (!path || !isAbsolute7(path))
         throw new EditorTaskError("INVALID_DIRECTORY", "授权运行目录无效");
       return sealed(path);
     };
     const jobDir = await argument("--job-dir"), runtimeDir = await argument("--runtime-dir");
+    const originals = flags.includes("--originals") ? await readHostOriginals(args[args.indexOf("--originals") + 1]) : void 0;
     const chunks = [];
     let count = 0;
     for await (const chunk of process.stdin) {
@@ -8574,6 +8624,7 @@ async function runEditorCli(runtime) {
       builtinNarrationPath: fileURLToPath(new URL("../demo-narration.mp3", import.meta.url)),
       jobDir,
       runtimeDir,
+      originals,
       scopeKey,
       jobId,
       signal,

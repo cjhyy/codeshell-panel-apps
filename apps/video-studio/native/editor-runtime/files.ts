@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { copyFile, lstat, mkdir, open, realpath, rename, rm, stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { join, relative, sep } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { EditorTaskError } from "./protocol.js";
 import { mediaAbortError } from "../process-runner.js";
 
@@ -46,6 +46,66 @@ export async function regular(root: string, parts: string[]): Promise<string> {
     throw new EditorTaskError("INVALID_FILE", "任务材料不在授权目录内");
   return canonical;
 }
+export interface EditorOriginal {
+  path: string;
+  bytes: number;
+}
+export type EditorOriginals = ReadonlyMap<string, EditorOriginal>;
+/** Only the Host's sealed launch argument supplies originals; never read this from task JSON. */
+export async function readHostOriginals(path: string): Promise<EditorOriginals> {
+  if (!isAbsolute(path)) throw new EditorTaskError("INVALID_FILE", "原始素材授权清单无效");
+  const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  let value: any;
+  try {
+    const info = await file.stat();
+    if (
+      !info.isFile() ||
+      info.size > 256 * 1024 ||
+      (process.platform !== "win32" && (info.mode & 0o077))
+    )
+      throw new EditorTaskError("INVALID_FILE", "原始素材授权清单无效");
+    value = JSON.parse(await file.readFile("utf8"));
+  } finally {
+    await file.close();
+  }
+  if (
+    !value ||
+    Object.keys(value).some((key) => key !== "originals") ||
+    !value.originals ||
+    typeof value.originals !== "object" ||
+    Array.isArray(value.originals) ||
+    Object.keys(value.originals).length > 128
+  )
+    throw new EditorTaskError("INVALID_FILE", "原始素材授权清单无效");
+  const originals = new Map<string, EditorOriginal>();
+  for (const [key, entry] of Object.entries(value.originals) as Array<[string, any]>) {
+    if (
+      !/^original-external-[a-f0-9]{64}$/.test(key) ||
+      !entry ||
+      Object.keys(entry).some((field) => !["path", "bytes"].includes(field)) ||
+      typeof entry.path !== "string" ||
+      !isAbsolute(entry.path) ||
+      !Number.isSafeInteger(entry.bytes) ||
+      entry.bytes < 1 ||
+      entry.bytes > 20 * 1024 ** 3
+    )
+      throw new EditorTaskError("INVALID_FILE", "原始素材授权条目无效");
+    originals.set(key, { path: entry.path, bytes: entry.bytes });
+  }
+  return originals;
+}
+/** Explicit read-only source path. Generated files continue to use regular() containment. */
+export async function originalFile(original: EditorOriginal): Promise<string> {
+  const info = await lstat(original.path);
+  if (
+    !info.isFile() ||
+    info.isSymbolicLink() ||
+    info.size !== original.bytes ||
+    (await realpath(original.path)) !== original.path
+  )
+    throw new EditorTaskError("SOURCE_CHANGED", "已授权原始素材发生变化");
+  return original.path;
+}
 export async function fileHash(path: string, signal: AbortSignal): Promise<string> {
   abort(signal);
   const hash = createHash("sha256"),
@@ -77,8 +137,11 @@ export async function readBytes(root: string, parts: string[], maximum: number):
   }
 }
 export async function readPrefix(root: string, parts: string[], length = 32): Promise<Buffer> {
-  const path = await regular(root, parts),
-    file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  return readSourcePrefix(await regular(root, parts), length);
+}
+/** The caller must obtain this source from regular() or originalFile(), never task JSON. */
+export async function readSourcePrefix(path: string, length = 32): Promise<Buffer> {
+  const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const result = Buffer.alloc(length),
       { bytesRead } = await file.read(result, 0, length, 0);

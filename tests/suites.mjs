@@ -292,6 +292,7 @@ export const suites = [
         "tests/video-studio-process-input.test.ts",
         "tests/video-studio-editor-session.test.ts",
         "tests/video-studio-editor-audio.test.ts",
+        "tests/video-studio-editor-playback-cache.test.ts",
         "tests/video-studio-editor-legacy-adapter.test.ts",
         "tests/video-studio-editor-legacy-reasons.test.ts",
         "tests/video-studio-editor-resource-audio.test.ts",

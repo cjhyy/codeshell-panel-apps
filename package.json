@@ -33,7 +33,7 @@
     "test:desktop": "node scripts/check-panel-desktop.mjs"
   },
   "devDependencies": {
-    "@cjhyy/code-shell-core": "0.9.11",
+    "@cjhyy/code-shell-core": "0.9.23",
     "@grida/canvas-wasm": "0.91.0-canary.22",
     "canvaskit-wasm": "0.42.0",
     "es-module-lexer": "2.0.0",
