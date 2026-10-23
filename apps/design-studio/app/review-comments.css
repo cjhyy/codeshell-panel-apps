@@ -161,9 +161,6 @@
   font-size: 11px;
 }
 @media (max-width: 680px) {
-  #open-review-comments {
-    display: none;
-  }
   .review-comments-card {
     padding: 18px;
   }

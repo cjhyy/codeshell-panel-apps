@@ -44,15 +44,10 @@ export function mountPrototypeEditor({
   openButton.id = "open-prototype-editor";
   openButton.type = "button";
   openButton.className = "button";
-  openButton.textContent = "原型";
+  openButton.textContent = "交互原型";
   openButton.title = "页面跳转、返回、响应断点与离线原型";
-  const toolbar = document.querySelector(".top-actions");
-  if (toolbar) toolbar.insertBefore(openButton, toolbar.querySelector("#open-ai"));
-  const compact = document.createElement("button");
-  compact.type = "button";
-  compact.textContent = "交互原型";
-  compact.dataset.toolbarAction = openButton.id;
-  document.querySelector(".compact-actions-list")?.append(compact);
+  const menu = document.querySelector(".compact-actions-list");
+  if (menu) menu.insertBefore(openButton, menu.querySelector("#run-audit"));
   const dialog = document.createElement("dialog");
   dialog.id = "prototype-editor-dialog";
   dialog.setAttribute("aria-labelledby", "prototype-editor-title");
@@ -118,7 +113,6 @@ export function mountPrototypeEditor({
   function availability() {
     const enabled = usable();
     openButton.disabled = !enabled;
-    compact.disabled = !enabled;
     for (const control of dialog.querySelectorAll(
       "button:not(#prototype-editor-close),input,select",
     ))
@@ -487,7 +481,6 @@ export function mountPrototypeEditor({
       generation++;
       dialog.remove();
       openButton.remove();
-      compact.remove();
     },
   };
 }

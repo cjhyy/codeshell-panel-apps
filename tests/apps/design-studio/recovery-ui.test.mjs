@@ -13,10 +13,20 @@ import {
   serializeDesignDocument,
 } from "../../../apps/design-studio/app/document.mjs";
 
+async function openToolbarMenu(page, method = "click") {
+  if (await page.locator("#compact-actions").getAttribute("open") === null) {
+    await page.locator("#compact-actions summary")[method]();
+  }
+}
+async function toolbarAction(page, selector, method = "click") {
+  await openToolbarMenu(page, method);
+  await page.locator(selector)[method]();
+}
+
 const root = resolve(fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
 const hash = (value) =>
   `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
-async function fixture(t) {
+async function fixture(t, { failPrimaryWrites = false } = {}) {
   const files = new Map();
   const records = new Map(),
     calls = [],
@@ -122,6 +132,11 @@ async function fixture(t) {
         return deliver(scope, method, { content, modifiedAt: 1, revision: hash(content) });
       }
       if (method === "workspace.writeText") {
+        // Draft-only recovery cases retain their original unsaved premise even
+        // while the real autosave coordinator attempts a primary publication.
+        if (failPrimaryWrites && params.path.endsWith(".codesign.json")) {
+          throw Error("Fixture primary write rejected before publication");
+        }
         const path = `${scope}:${params.path}`;
         if (params.expectedModifiedAt === null && files.has(path)) throw Error("file exists");
         files.set(path, params.content);
@@ -221,7 +236,7 @@ async function fixture(t) {
 }
 
 test("actual design windows preserve conflicting drafts, download backups and explicitly reload the latest recovery", async (t) => {
-  const f = await fixture(t),
+  const f = await fixture(t, { failPrimaryWrites: true }),
     a = await f.page(),
     b = await f.page();
   await a.locator("#add-page").click();
@@ -234,6 +249,16 @@ test("actual design windows preserve conflicting drafts, download backups and ex
   }
   const recoveryKey = [...f.records.keys()].find((k) => k.includes("recovery"));
   assert.ok(recoveryKey);
+  await a.locator("#save-state").filter({ hasText: "自动保存失败" }).waitFor();
+  // The failed primary attempt resolves the no-source binding to explicit null;
+  // take the competing-journal baseline only after that complete record exists.
+  while (!Object.prototype.hasOwnProperty.call(f.records.get(recoveryKey), "figmaBinding")) {
+    assert.ok(Date.now() < deadline, "failed-save recovery journal is incomplete");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(f.records.get(recoveryKey).figmaBinding, null);
+  assert(f.calls.some(call => call.method === "workspace.writeText" && call.path.endsWith(".codesign.json")));
+  assert.equal(f.files.has("/project/A:designs/design.codesign.json"), false);
   const saved = structuredClone(f.records.get(recoveryKey));
   await b.locator("#add-page").click();
   await b.locator("#recovery-message").filter({ hasText: "其他窗口" }).waitFor();
@@ -248,6 +273,8 @@ test("actual design windows preserve conflicting drafts, download backups and ex
   await b.locator("#recovery-reload").click();
   await b.waitForFunction(() => document.querySelectorAll("#active-page option").length === 3);
   assert.deepEqual(f.records.get(recoveryKey), saved);
+  assert(f.calls.some(call => call.method === "workspace.writeText" && call.path.endsWith(".codesign.json")));
+  assert.equal(f.files.has("/project/A:designs/design.codesign.json"), false);
 });
 
 test(
@@ -470,7 +497,7 @@ test("editing stays unavailable while the new same-path project is loading and b
 });
 
 async function downloadComplete(page) {
-  await page.locator("#portable-backup-open").click();
+  await toolbarAction(page, "#portable-backup-open");
   const pending = page.waitForEvent("download");
   await page.locator("#portable-backup-export").click();
   const result = await readFile(await (await pending).path());
@@ -478,7 +505,7 @@ async function downloadComplete(page) {
   return result;
 }
 async function selectComplete(page, buffer) {
-  await page.locator("#portable-backup-open").click();
+  await toolbarAction(page, "#portable-backup-open");
   await page
     .locator("#portable-backup-file")
     .setInputFiles({ name: "complete.json", mimeType: "application/json", buffer });
@@ -586,7 +613,7 @@ test("a legacy backup lets the user choose a valid draft after a damaged entry a
   await page.locator("#recovery-backup").click();
   const backup = JSON.parse(await readFile(await (await pending).path()));
   backup.drafts.unshift({ format: "damaged", retained: "keep original" });
-  await page.locator("#portable-backup-open").click();
+  await toolbarAction(page, "#portable-backup-open");
   await page
     .locator("#portable-backup-file")
     .setInputFiles({
@@ -632,6 +659,7 @@ test("a save-as draft reopens with its original file baseline and writes only th
   f.files.set(`/project/A:${initialPath}`, originalBytes);
   const page = await f.page({ initialPath });
   await page.locator("#add-page").click();
+  await openToolbarMenu(page);
   await page.locator("#document-path").fill("designs/copy.codesign.json");
   await page.locator("#document-path").press("Tab");
   const deadline = Date.now() + 5000;
@@ -646,7 +674,7 @@ test("a save-as draft reopens with its original file baseline and writes only th
   const reopened = await f.page({ initialPath });
   assert.equal(await reopened.locator("#active-page option").count(), 3);
   assert.equal(await reopened.locator("#document-path").inputValue(), "designs/copy.codesign.json");
-  await reopened.locator("#save").click();
+  await toolbarAction(reopened, "#save");
   await reopened.locator("#save-state").filter({ hasText: "已保存" }).waitFor();
   assert.equal(JSON.parse(f.files.get("/project/A:designs/copy.codesign.json")).pages.length, 3);
   assert.equal(f.files.get(`/project/A:${initialPath}`), originalBytes);
@@ -669,6 +697,7 @@ test("save-as recovery refuses a changed original baseline and retains both the 
   f.files.set("/project/A:designs/existing.codesign.json", "keep destination bytes");
   const page = await f.page({ initialPath });
   await page.locator("#add-page").click();
+  await openToolbarMenu(page);
   await page.locator("#document-path").fill("designs/existing.codesign.json");
   await page.locator("#document-path").press("Tab");
   const deadline = Date.now() + 5000;
@@ -690,7 +719,7 @@ test("save-as recovery refuses a changed original baseline and retains both the 
 });
 
 test("an unsaved draft keeps its embedded baseline through repeated recovery and editing", async (t) => {
-  const f = await fixture(t),
+  const f = await fixture(t, { failPrimaryWrites: true }),
     a = await f.page();
   await a.locator("#add-page").click();
   const waitForPages = async (count) => {
@@ -714,6 +743,8 @@ test("an unsaved draft keeps its embedded baseline through repeated recovery and
   const saved = [...f.records.values()].find((v) => v?.record);
   assert.ok(saved.baseDocument);
   assert.equal(saved.baseRevision, null);
+  assert(f.calls.some(call => call.method === "workspace.writeText" && call.path.endsWith(".codesign.json")));
+  assert.equal(f.files.has("/project/A:designs/design.codesign.json"), false);
 });
 
 test("late agent save failure cannot roll the new project back to the old canvas", async (t) => {
@@ -849,7 +880,7 @@ for (const indexed of [false, true]) {
     const page = await f.page({ initialPath });
     await page.locator("#add-page").click();
     const hold = f.pauseResponse("/project/A", "workspace.writeText");
-    await page.locator("#save").click();
+    await toolbarAction(page, "#save");
     await hold.entered;
     await page.locator("#add-page").click();
     hold.release();
@@ -869,7 +900,7 @@ for (const indexed of [false, true]) {
     }
     const reopened = await f.page({ initialPath });
     assert.equal(await reopened.locator("#active-page option").count(), 3);
-    await reopened.locator("#save").click();
+    await toolbarAction(reopened, "#save");
     await reopened.locator("#save-state").filter({ hasText: "已保存" }).waitFor();
     const final = await f.page({ initialPath });
     assert.equal(await final.locator("#active-page option").count(), 3);
@@ -901,7 +932,7 @@ test("a page loaded and renamed during an indexed save survives recovery and the
   for (const part of plan.parts) f.files.set(`/project/A:${part.path}`, part.content);
   const page = await f.page({ initialPath });
   const hold = f.pauseResponse("/project/A", "workspace.writeText");
-  await page.locator("#save").click();
+  await toolbarAction(page, "#save");
   await hold.entered;
   await page.locator("#manage-pages").click();
   const name = page.getByRole("textbox", { name: "Page 12 页面名称", exact: true });
@@ -928,7 +959,7 @@ test("a page loaded and renamed during an indexed save survives recovery and the
     await reopened.locator('#active-page option[value="page-12"]').textContent(),
     "Changed while saving",
   );
-  await reopened.locator("#save").click();
+  await toolbarAction(reopened, "#save");
   await reopened.locator("#save-state").filter({ hasText: "已保存" }).waitFor();
   const final = await f.page({ initialPath });
   assert.equal(
@@ -1115,9 +1146,9 @@ for (const action of ["svg", "agent", "frontend", "comparison", "audit"]) {
         ? "workspace.writeText"
         : "workspace.readText";
       const hold = f.pauseResponse("/project/A", method);
-      if (action === "svg") await page.locator("#export-svg").click();
+      if (action === "svg") await toolbarAction(page, "#export-svg");
       else if (action === "audit") {
-        await page.locator("#run-audit").click();
+        await toolbarAction(page, "#run-audit");
         await page.locator("#save-audit-report").click();
       } else if (action === "agent") {
         await page.locator("#open-ai").click();
@@ -1197,7 +1228,7 @@ test(
     const submission = f.calls.find((call) => call.method === "agent.submitPrompt");
     assert.equal(submission.scope, "/project/A");
     assert.match(submission.prompt, /designs\/design.codesign.json/);
-    await page.locator("#export-svg").click();
+    await toolbarAction(page, "#export-svg");
     await page.waitForFunction(() => !document.querySelector("#export-svg").disabled);
     assert.match(f.files.get("/project/A:designs/design.svg"), /<svg/);
     assert.equal((await page.evaluate(() => window.tools.get_design_metadata())).dirty, false);

@@ -92,6 +92,8 @@ export const suites = [
         "tests/apps/design-studio/legacy-backup.test.mjs",
         "tests/apps/design-studio/portable-backup.test.mjs",
         "tests/apps/design-studio/recovery-session.test.mjs",
+        "tests/apps/design-studio/document-autosave.test.mjs",
+        "tests/apps/design-studio/file-navigation.test.mjs",
         "tests/apps/design-studio/recovery-ui.test.mjs",
         "tests/apps/design-studio/renderer-controller.test.mjs",
         "tests/apps/design-studio/canvas-interaction.test.mjs",
@@ -125,6 +127,9 @@ export const suites = [
       [
         "--test",
         "--test-concurrency=1",
+        "tests/apps/design-studio/autosave-ui.test.mjs",
+        "tests/apps/design-studio/file-switcher-ui.test.mjs",
+        "tests/apps/design-studio/toolbar-ui.test.mjs",
         "tests/apps/design-studio/touch-ui.test.mjs",
         "tests/apps/design-studio/connection-ui.test.mjs",
         "tests/apps/design-studio/polish-ui.test.mjs",

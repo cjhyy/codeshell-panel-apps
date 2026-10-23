@@ -13,6 +13,16 @@ import {
   clickWorld,
 } from "./fixtures/canvas-test-observations.mjs";
 
+async function openToolbarMenu(page, method = "click") {
+  if (await page.locator("#compact-actions").getAttribute("open") === null) {
+    await page.locator("#compact-actions summary")[method]();
+  }
+}
+async function toolbarAction(page, selector, method = "click") {
+  await openToolbarMenu(page, method);
+  await page.locator(selector)[method]();
+}
+
 const root = fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url));
 const fileValue = {
   name: "Figma UI fixture",
@@ -79,10 +89,7 @@ async function fixture(t, { mobile = false } = {}) {
   await page.goto("https://panel.test/index.html");
   await page.waitForFunction(() => !document.querySelector(".workspace").inert);
   const open = async () => {
-    if (mobile) {
-      await page.locator("#compact-actions summary").click();
-      await page.locator('[data-toolbar-action="open-figma-workflow"]').click();
-    } else await page.locator("#open-figma-workflow").click();
+    await toolbarAction(page, "#open-figma-workflow");
     const frame = await page.locator("#figma-workflow-dialog").boundingBox();
     const title = await page.locator("#figma-workflow-title").boundingBox();
     assert.ok(
