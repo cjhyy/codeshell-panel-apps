@@ -389,6 +389,9 @@ for (const failure of ["directory error", "incomplete dependency"]) {
     assert.doesNotMatch(await page.locator("#setup-progress").textContent(), /下载环境复检完成/);
     if (failure === "directory error")
       assert.match(await page.locator("#setup-help").textContent(), /Invalid Panel directory bookmarks/);
-    else assert.match(await page.locator("#setup-status").textContent(), /缺少 ffmpeg/);
+    else {
+      assert.match(await page.locator("#setup-status").textContent(), /ffmpeg 检查失败/);
+      assert.doesNotMatch(await page.locator("#setup-status").textContent(), /缺少|未安装/);
+    }
   });
 }
