@@ -45,6 +45,8 @@ import {
 
 export interface EditorTimelineContext {
   media?: EditorTimelineMediaOptions;
+  /** Host-owned controls kept at the start of the toolbar across every render. */
+  toolbarLead?: HTMLElement;
   read(): EditorDocument;
   identity?(): SessionIdentity;
   /** Explicitly opts a session-owned context into immutable timeline media snapshots. */
@@ -243,6 +245,8 @@ const timelineIcons: Record<string, string> = {
   audio: '<path d="M9 18V5l11-2v13M9 8l11-2"/><ellipse cx="6" cy="18" rx="3" ry="3"/><ellipse cx="17" cy="16" rx="3" ry="3"/>',
   title: '<path d="M4 5h16M12 5v15M8 20h8M4 5v3m16-3v3"/>',
   up: '<path d="m6 14 6-6 6 6"/>',
+  follow: '<path d="M12 3v18M8 3h8M4 12h4m-2-2 2 2-2 2m14-2h-4m2-2-2 2 2 2"/>',
+  height: '<rect x="3" y="7" width="18" height="10" rx="2"/><path d="M12 2v3m-2-1 2-2 2 2M12 22v-3m-2 1 2 2 2-2"/>',
 };
 /** Text and caption clips read as their first line of wording; other clips keep their name. */
 function clipLabel(clip: EditorClip): string {
@@ -661,8 +665,8 @@ export class EditorTimeline {
     const addTrack = (action: string, label: string, icon: string) =>
       `<button type="button" data-et-action="${action}" class="et-tool" aria-label="${label}" title="${label}">${timelineIcon("plus", 10)}${timelineIcon(icon, 13)}<span class="et-add-label">${label}</span></button>`;
     const markup = `<div class="et-toolbar" role="toolbar" aria-label="时间轴工具">
-        <button type="button" class="et-tool et-follow" data-et-follow aria-label="播放跟随" aria-pressed="${this.followPlayback}"><span>播放跟随</span></button>
-        <button type="button" class="et-tool" data-et-track-height aria-label="加高轨道" aria-pressed="${this.trackHeight === 80}"${this.trackHeightBlocked() ? " disabled" : ""}>加高轨道</button>
+        <button type="button" class="et-tool et-follow" data-et-follow aria-label="播放跟随" aria-pressed="${this.followPlayback}">${timelineIcon("follow")}<span>播放跟随</span></button>
+        <button type="button" class="et-tool" data-et-track-height aria-label="加高轨道" aria-pressed="${this.trackHeight === 80}"${this.trackHeightBlocked() ? " disabled" : ""}>${timelineIcon("height")}<span>加高轨道</span></button>
         ${this.context.addText ? `<div class="et-tool-group" role="group" aria-label="添加">${button("add-text", "添加文字", "title", false, undefined, true)}</div>` : ""}
         <div class="et-tool-group" role="group" aria-label="片段编辑">${button("split", "切分", "cut", !selected.size, "S", false, "先选择一个片段", true)}${button("delete", "删除", "trash", !selected.size, "⌫", false, needSelection, true)}</div>
         <div class="et-tool-group" role="group" aria-label="复制与分组">${button("copy", "复制", "copy", !selected.size || this.clipboardPending, "⌘/Ctrl C", false, this.clipboardPending ? "正在保存剪贴板操作" : needSelection)}${button("cut", "剪切", "cut", !selected.size || this.clipboardPending, "⌘/Ctrl X", false, this.clipboardPending ? "正在保存剪贴板操作" : needSelection)}${button("paste", "粘贴", "paste", !this.clipboard || this.clipboardPending, "⌘/Ctrl V · 粘贴到播放头；跨序列按第 N 条同类轨道对应", false, this.clipboardPending ? "正在保存剪贴板操作" : "先复制片段")}${button("duplicate", "原位复制", "duplicate", !selected.size || this.clipboardPending, "⌘/Ctrl D · 为副本新建平行轨", false, this.clipboardPending ? "正在保存剪贴板操作" : needSelection)}${button("group", "分组", "group", selected.size < 2, "⌘/Ctrl G", false, "至少选择两个片段")}${button("ungroup", "解组", "ungroup", !selected.size, "⇧ ⌘/Ctrl G", false, needSelection)}</div>
@@ -797,7 +801,9 @@ export class EditorTimeline {
       documentId: project.id, revision: project.revision, generation: renderIdentity?.generation,
       sequenceId: sequence.id, clipId: control.closest<HTMLElement>("[data-et-clip]")!.dataset.etClip!,
     });
-    this.container.querySelector(".et-toolbar")!.after(this.notice);
+    const toolbar = this.container.querySelector(".et-toolbar")!;
+    if (this.context.toolbarLead) toolbar.prepend(this.context.toolbarLead);
+    toolbar.after(this.notice);
     this.notice.after(this.dragReadout);
     const scroll = this.viewport();
     scroll.scrollLeft = this.scrollPosition;

@@ -4282,7 +4282,7 @@ test("main freezes distinguishable sequence export titles through range export, 
   await page.locator("#project-name").press("Tab");
   await waitSaved(page);
   const dialog = page.locator("#editor-workspace .ew-dialog[open]");
-  await page.locator('[data-ew-action="sequence-settings"]').click();
+  await clickEditorAction(page, "sequence-settings");
   await dialog.locator('[name="name"]').fill(firstName);
   await dialog.locator('[type="submit"]').click();
   await dialog.waitFor({ state: "detached" });
@@ -4342,7 +4342,7 @@ test("main freezes distinguishable sequence export titles through range export, 
   await page.locator("#project-name").fill("继续编辑工程");
   await page.locator("#project-name").press("Tab");
   await waitSaved(page);
-  await page.locator('[data-ew-action="sequence-settings"]').click();
+  await clickEditorAction(page, "sequence-settings");
   await dialog.locator('[name="name"]').fill("继续编辑序列");
   await dialog.locator('[type="submit"]').click();
   await dialog.waitFor({ state: "detached" });

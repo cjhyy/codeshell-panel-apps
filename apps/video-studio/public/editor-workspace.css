@@ -894,18 +894,45 @@
   overflow-x: hidden;
   scrollbar-gutter: stable;
 }
-.editor-workspace-embedded > .ew-tools {
+/* Project and sequence tools lead the timeline's toolbar: one row above the tracks. */
+.editor-workspace-embedded .et-toolbar > .ew-tools {
   position: relative;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   overflow: visible;
-  grid-column: 2 / -1;
-  grid-row: 2;
   min-width: 0;
-  min-height: 36px;
-  padding: 3px 10px;
-  gap: 6px;
-  border-top: 1px solid var(--ew-border);
-  background: #191b1e;
+  padding: 0 10px 0 0;
+  gap: 4px;
+  border: 0;
+  border-right: 1px solid var(--ew-border);
+  background: transparent;
+}
+.editor-workspace-embedded .et-toolbar > .ew-tools > .ew-spacer {
+  display: none;
+}
+/* The timeline clips anything above its toolbar, so the menu opens down over the tracks. */
+.editor-workspace-embedded .et-toolbar > .ew-tools .ew-more-actions {
+  z-index: 40;
+  top: calc(100% + 6px);
+  right: auto;
+  bottom: auto;
+  left: 0;
+}
+/* In the shared row, labeled tools show their icon; names stay on aria-label and title. */
+.editor-workspace-embedded .et-toolbar :is(.et-follow, [data-et-track-height], .et-tool-labeled, .et-snap) > span {
+  display: none;
+}
+.editor-workspace-embedded .et-toolbar :is(.et-follow, [data-et-track-height], .et-tool-labeled) {
+  min-width: 28px;
+  padding-inline: 6px;
+}
+.editor-workspace.editor-workspace-embedded .et-toolbar > .ew-tools > label {
+  gap: 0;
+  padding-inline: 4px;
+  border-left: 0;
+  font-size: 0;
+}
+.editor-workspace-embedded .et-zoom input {
+  width: 72px;
 }
 .editor-workspace-embedded > [data-ew-timeline] {
   grid-column: 2 / -1;
@@ -1047,9 +1074,11 @@
 .editor-workspace-embedded .editor-timeline {
   font: inherit;
 }
+/* Wraps rather than scrolls, so the tools menu opening above it is never clipped. */
 .editor-workspace-embedded .et-toolbar {
-  flex-wrap: nowrap;
-  overflow-x: auto;
+  flex-wrap: wrap;
+  overflow: visible;
+  row-gap: 4px;
 }
 .editor-workspace-embedded .et-toolbar > * {
   flex-shrink: 0;
@@ -1353,11 +1382,6 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr));
     gap: 10px;
-  }
-  .workspace.editor-mode .editor-workspace-embedded > .ew-tools {
-    grid-column: 2;
-    grid-row: 3;
-    padding-inline: 8px;
   }
   .workspace.editor-mode .editor-workspace-embedded > [data-ew-timeline] {
     grid-column: 2;

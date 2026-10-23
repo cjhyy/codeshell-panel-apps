@@ -19,6 +19,12 @@ const paneOf = (target: EventTarget | null): Pane | undefined => {
     ? value
     : undefined;
 };
+/** The editor's own tool row, unless it already sits inside the timeline's toolbar. */
+const toolRowHeight = (host: HTMLElement) => {
+  const tools = host.querySelector<HTMLElement>(".ew-tools");
+  if (!tools) return 44;
+  return tools.closest(".editor-timeline") ? 0 : tools.getBoundingClientRect().height;
+};
 const finite = (value: unknown, fallback: number) =>
   typeof value === "number" && Number.isFinite(value) ? value : fallback;
 const clamp = (value: number, low: number, high: number) =>
@@ -40,7 +46,7 @@ export function createWorkspaceLayout(studio: HTMLElement, store: LayoutStore) {
     const width = host.getBoundingClientRect().width;
     if (pane === "library") return [180, Math.min(500, width - rail - sizes.inspector - 320)];
     if (pane === "inspector") return [220, Math.min(500, width - rail - sizes.library - 320)];
-    const toolbar = host.querySelector<HTMLElement>(".ew-tools")?.getBoundingClientRect().height ?? 44;
+    const toolbar = toolRowHeight(host);
     return [200, Math.min(720, host.getBoundingClientRect().height - toolbar - 260)];
   };
   const apply = () => {
@@ -50,7 +56,7 @@ export function createWorkspaceLayout(studio: HTMLElement, store: LayoutStore) {
     const width = host.getBoundingClientRect().width;
     const library = clamp(sizes.library, 180, Math.min(500, width - rail - 320 - 220));
     const inspector = clamp(sizes.inspector, 220, Math.min(500, width - rail - library - 320));
-    const toolbar = host.querySelector<HTMLElement>(".ew-tools")?.getBoundingClientRect().height ?? 44;
+    const toolbar = toolRowHeight(host);
     const timeline = clamp(sizes.timeline, 200, Math.min(720, host.getBoundingClientRect().height - toolbar - 260));
     host.style.setProperty("--studio-library-width", `${library}px`);
     host.style.setProperty("--studio-inspector-width", `${inspector}px`);

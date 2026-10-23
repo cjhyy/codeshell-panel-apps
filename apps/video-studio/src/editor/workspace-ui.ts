@@ -241,6 +241,8 @@ export class EditorWorkspace {
       summary.textContent = "更多工具";
       const contents = document.createElement("div");
       contents.className = "ew-more-actions";
+      for (const action of ["sequence-settings", "sequences", "multicam"])
+        contents.append(this.get(`[data-ew-action="${action}"]`));
       contents.append(this.get(".ew-create"));
       for (const action of [
         "captions",
@@ -318,6 +320,8 @@ export class EditorWorkspace {
       onError: options.onError,
     });
     this.timeline = new EditorTimeline(this.get("[data-ew-timeline]"), {
+      // Embedded: project and sequence tools share the timeline's one toolbar row.
+      ...(options.layout === "embedded" ? { toolbarLead: this.get(".ew-tools") } : {}),
       beforeGesture: (signal) => this.inspector.finishFocusedField(signal) ?? true,
       soloTracks: () => this.soloTracks,
       toggleSolo: (trackId) => this.toggleSolo(trackId),

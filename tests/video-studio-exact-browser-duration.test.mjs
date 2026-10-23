@@ -157,6 +157,8 @@ test(
     assert.equal((await readSavedEditorDocument(page)).assets[0].duration, 56056);
     await page.reload();
     await enterLegacyProduction(page);
+    // The embedded editor keeps 画布与帧率 in its 更多工具 menu.
+    await page.locator("#editor-workspace .ew-more > summary").click();
     await page.getByRole("button", { name: "画布与帧率", exact: true }).click();
     await page.locator('dialog[open] select[name="rate"]').selectOption("30000/1001");
     await page.locator("dialog[open]").getByRole("button", { name: "保存", exact: true }).click();
