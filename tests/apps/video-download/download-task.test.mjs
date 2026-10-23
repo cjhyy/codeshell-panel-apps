@@ -179,6 +179,28 @@ test("partial provider failure never publishes stale files as success or leaks s
   );
 });
 
+test("native failures classify split and unterminated stderr without publishing media or secrets", async (t) => {
+  for (const [diagnostic, code] of [
+    ["HTTP Error 412: Precondition Failed", "SOURCE_HTTP_412"],
+    ["HTTP Error 429: Too Many Requests", "SOURCE_HTTP_429"],
+    ["Sign in to confirm you're not a bot", "SOURCE_LOGIN_REQUIRED"],
+  ]) {
+    const root = await fixture(t),
+      updates = [];
+    const fake = fakeSpawn(async (child) => {
+      child.stderr.write("private token=supersecret\nERROR: " + diagnostic.slice(0, 8));
+      child.stderr.write(diagnostic.slice(8));
+      child.emit("close", 1);
+    });
+    await assert.rejects(
+      runDownload(request, { jobDir: root, spawnProcess: fake.spawn, progress: (value) => updates.push(value) }),
+      (error) => error.code === code && error.retryable === true && !error.message.includes("supersecret"),
+    );
+    assert.doesNotMatch(JSON.stringify(updates), /supersecret/);
+    assert.ok(!updates.some((update) => update.stage === "complete"));
+  }
+});
+
 test("cancellation waits for the subprocess exit and does not publish its output", async (t) => {
   const root = await fixture(t),
     controller = new AbortController();

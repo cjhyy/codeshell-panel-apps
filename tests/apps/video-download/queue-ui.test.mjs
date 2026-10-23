@@ -33,6 +33,7 @@ before(async () => {
           {
             ".html": "text/html",
             ".js": "text/javascript",
+            ".mjs": "text/javascript",
             ".css": "text/css",
             ".png": "image/png",
           }[extname(path)] || "application/octet-stream",

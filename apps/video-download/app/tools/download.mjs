@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { link, lstat, mkdir, open, readdir, realpath, rm } from "node:fs/promises";
 import { extname, isAbsolute, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { classifyYtDlpFailure } from "./download-errors.mjs";
 
 export const MAX_REQUEST_BYTES = 32 * 1024;
 const MAX_FILE_BYTES = 20 * 1024 ** 3;
@@ -544,6 +545,7 @@ export async function runDownload(
     const pending = { stdout: "", stderr: "" };
     let stderrBytes = 0,
       failure,
+      sourceFailure,
       killTimer;
     let lastProgress = 0;
     const stop = () => {
@@ -564,6 +566,7 @@ export async function runDownload(
         const end = pending[stream].indexOf("\n"),
           line = pending[stream].slice(0, end).trim();
         pending[stream] = pending[stream].slice(end + 1);
+        if (stream === "stderr") sourceFailure ||= classifyYtDlpFailure(line);
         const match = /^progress:\s*(\d+(?:\.\d+)?)%$/.exec(line);
         if (match && Date.now() - lastProgress >= 750) {
           lastProgress = Date.now();
@@ -604,6 +607,8 @@ export async function runDownload(
       signal.removeEventListener("abort", stop);
       if (signal.aborted) reject(signal.reason ?? new Error("下载已取消。"));
       else if (failure) reject(failure);
+      else if (code !== 0 && (sourceFailure ||= classifyYtDlpFailure(pending.stderr)))
+        reject(Object.assign(new Error(sourceFailure.message), sourceFailure));
       else if (code !== 0)
         reject(
           Object.assign(new Error("下载未完成，请检查视频可用性、网络或账号授权后重试。"), {

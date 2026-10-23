@@ -160,6 +160,7 @@ export const suites = [
           "cookie-runtime",
           "download-library",
           "download-task",
+          "download-errors",
           "durable-downloads",
           "library-native",
           "package",

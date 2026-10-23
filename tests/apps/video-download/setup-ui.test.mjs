@@ -21,8 +21,12 @@ before(async () => {
       const body = await readFile(path);
       response.writeHead(200, {
         "Content-Type":
-          { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" }[extname(path)] ||
-          "application/octet-stream",
+          {
+            ".html": "text/html",
+            ".js": "text/javascript",
+            ".mjs": "text/javascript",
+            ".css": "text/css",
+          }[extname(path)] || "application/octet-stream",
       });
       response.end(body);
     } catch {

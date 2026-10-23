@@ -53,6 +53,8 @@ if (args.includes('--version')) { console.log('2026.10.15'); process.exit(0); }
 if (args.includes('--help')) { console.log(process.env.MIMI_TEST_OLD_YTDLP?'old version help':'--js-runtimes RUNTIME[:PATH]'); process.exit(0); }
 if (process.env.MIMI_TEST_ARGS_FILE) fs.appendFileSync(process.env.MIMI_TEST_ARGS_FILE,JSON.stringify(args)+'\\n');
 const target = args.at(-1);
+const sourceFailures = {'http-412':'Unable to download webpage: HTTP Error 412: Precondition Failed','http-429':'HTTP Error 429: Too Many Requests','login-required':"Sign in to confirm you're not a bot"};
+for(const [key,message] of Object.entries(sourceFailures)) if(target.includes(key)){console.error('ERROR: '+message+'\\nCookie: SESSDATA=never-persist-this https://media.invalid/?token=private-token');process.exit(1);}
 if (args.includes('--dump-single-json')) {
   if (target.startsWith('ytsearch') || target.startsWith('bilisearch')) {
     const youtube = target.startsWith('ytsearch');
@@ -460,6 +462,30 @@ test(
     assert.equal((await getCliJob(f.project, failed.json.result.id)).status, "failed");
   },
 );
+
+test("CLI inspection and shared Chat records retain safe source failure reasons", { skip: !supported }, async (t) => {
+  const f = await fixture(t);
+  for (const [key, code] of [
+    ["http-412", "SOURCE_HTTP_412"],
+    ["http-429", "SOURCE_HTTP_429"],
+    ["login-required", "SOURCE_LOGIN_REQUIRED"],
+  ]) {
+    const input = await f.request({ url: `https://example.invalid/${key}` });
+    const inspect = await f.invoke(["inspect", "--project", f.project, "--input-file", input], { expected: 1 });
+    assert.equal(inspect.json.error.code, code);
+    const failed = await f.invoke([
+      "download", "--project", f.project, "--input-file", input, "--source", "chat",
+    ], { expected: 1 });
+    const record = await getCliJob(f.project, failed.json.result.id);
+    assert.equal(record.status, "failed");
+    assert.equal(record.source, "chat");
+    assert.equal(record.error.code, code);
+    assert.equal(record.error.message, inspect.json.error.message);
+    assert.deepEqual(record.files, []);
+    assert.doesNotMatch(JSON.stringify({ record, inspect, failed }), /never-persist-this|private-token|media\.invalid/);
+  }
+  assert.deepEqual(await readdir(f.home), []);
+});
 
 test(
   "task stores reject symlink directories/inputs and listing remains read-only",

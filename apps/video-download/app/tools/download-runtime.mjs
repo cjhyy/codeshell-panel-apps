@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { parseDownloadRequest, runDownload } from "./download.mjs";
 import { searchExternalSources } from "./search.mjs";
 import { getEnvironment, findRuntimeExecutable } from "./environment.mjs";
+import { classifyYtDlpFailure } from "./download-errors.mjs";
 import {
   cliError,
   cliJobId,
@@ -293,11 +294,14 @@ async function capture(
         return;
       }
       if (failure) reject(failure);
-      else if (code !== 0)
+      else if (code !== 0) {
+        const sourceFailure = classifyYtDlpFailure(stderr);
         reject(
-          cliError("PROCESS_FAILED", "依赖程序未成功完成，请检查网络、视频访问条件和依赖版本。"),
+          sourceFailure
+            ? Object.assign(new Error(sourceFailure.message), sourceFailure)
+            : cliError("PROCESS_FAILED", "依赖程序未成功完成，请检查网络、视频访问条件和依赖版本。"),
         );
-      else resolveCapture({ stdout, stderr });
+      } else resolveCapture({ stdout, stderr });
     });
   });
 }

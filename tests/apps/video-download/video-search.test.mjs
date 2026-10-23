@@ -194,7 +194,8 @@ before(async () => {
     try {
       response.writeHead(200, {
         "Content-Type":
-          { ".js": "text/javascript", ".css": "text/css" }[extname(file)] ||
+          { ".js": "text/javascript",
+              ".mjs": "text/javascript", ".css": "text/css" }[extname(file)] ||
           "application/octet-stream",
       });
       response.end(await readFile(file));

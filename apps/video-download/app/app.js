@@ -25,6 +25,7 @@ import {
   downloadSourceLabel,
 } from "./download-records.js";
 import { createEnvironmentClient } from "./environment-client.js";
+import { classifyYtDlpFailure } from "./tools/download-errors.mjs";
 import { mountVideoSearch, normalizeVideoSearchUrl } from "./video-search.js";
 import {
   compareYtDlpVersions,
@@ -755,12 +756,12 @@ function renderVersionInfo() {
     !dependenciesChecked || versionRefreshPending
       ? "正在检查"
       : !dependencyReady(runtime.ytDlp)
-        ? runtime.ytDlp?.error
-          ? "下载器检查失败"
+        ? dependencyCheckFailed(runtime.ytDlp)
+          ? `下载器${dependencyCheckLabel(runtime.ytDlp)}`
           : "需要安装"
         : !dependencyReady(runtime.ffmpeg)
-          ? runtime.ffmpeg?.error
-            ? "转换工具检查失败"
+          ? dependencyCheckFailed(runtime.ffmpeg)
+            ? `转换工具${dependencyCheckLabel(runtime.ffmpeg)}`
             : "缺少转换工具"
           : comparison === -1
             ? "有更新"
@@ -769,8 +770,8 @@ function renderVersionInfo() {
               : "✓ 可以下载";
   elements.installedYtDlpVersion.textContent = !dependencyReady(runtime.ytDlp)
     ? dependenciesChecked
-      ? runtime.ytDlp?.error
-        ? "检查失败"
+      ? dependencyCheckFailed(runtime.ytDlp)
+        ? dependencyCheckLabel(runtime.ytDlp)
         : "未安装"
       : "检查中…"
     : installed || (versionRefreshPending ? "检查中…" : "暂不可用");
@@ -2464,17 +2465,21 @@ function renderSetupCard() {
 
   elements.setupStatus.textContent = dependencyRefreshPending
     ? "正在重新检查下载环境…"
-    : missingYtDlp && missingFfmpeg
-      ? "缺少 yt-dlp 和 ffmpeg"
-      : missingYtDlp
-        ? "缺少 yt-dlp，暂时无法下载"
-        : missingFfmpeg
-          ? "缺少 ffmpeg，音频提取和格式合并受限"
-          : updateAvailable
-            ? `yt-dlp 有新版本：${runtime.ytDlp.version} → ${runtime.latestYtDlpVersion}`
-            : setupNeeded
-              ? "下载环境可以重新检查"
-              : "下载环境已就绪";
+    : dependencyCheckFailed(runtime.ytDlp)
+      ? `yt-dlp ${dependencyCheckLabel(runtime.ytDlp)}，请点击“刷新环境”复检。`
+      : dependencyCheckFailed(runtime.ffmpeg)
+        ? `ffmpeg ${dependencyCheckLabel(runtime.ffmpeg)}，请点击“刷新环境”复检。`
+        : missingYtDlp && missingFfmpeg
+          ? "缺少 yt-dlp 和 ffmpeg"
+          : missingYtDlp
+            ? "缺少 yt-dlp，暂时无法下载"
+            : missingFfmpeg
+              ? "缺少 ffmpeg，音频提取和格式合并受限"
+              : updateAvailable
+                ? `yt-dlp 有新版本：${runtime.ytDlp.version} → ${runtime.latestYtDlpVersion}`
+                : setupNeeded
+                  ? "下载环境可以重新检查"
+                  : "下载环境已就绪";
   const processBusy = Boolean(
     hasRunningDownloads() ||
     inspectionJob?.running ||
@@ -2491,11 +2496,13 @@ function renderSetupCard() {
     ? "取消安装 / 更新"
     : dependencyRefreshPending
       ? "正在复检…"
-      : missingYtDlp || missingFfmpeg
-        ? "一键安装"
-        : updateAvailable
-          ? "一键更新"
-          : "重新检查";
+      : dependencyCheckFailed(runtime.ytDlp) || dependencyCheckFailed(runtime.ffmpeg)
+        ? "一键修复"
+        : missingYtDlp || missingFfmpeg
+          ? "一键安装"
+          : updateAvailable
+            ? "一键更新"
+            : "重新检查";
   elements.setupAiButton.disabled =
     directSetupRunning ||
     (!setupTaskId &&
@@ -2915,6 +2922,8 @@ function consumeOutput(stream, text, job = currentJob) {
 }
 
 function friendlyYtDlpError(stderr, operation = "下载", exitCode = null) {
+  const sourceFailure = classifyYtDlpFailure(stderr);
+  if (sourceFailure) return sourceFailure.message;
   const cleaned = String(stderr || "").replace(/\u001b\[[0-9;]*m/g, "");
   const lower = cleaned.toLowerCase();
   if (lower.includes("http error 403") || lower.includes("403 forbidden")) {
@@ -6147,6 +6156,14 @@ function dependencyReady(dependency) {
   return Boolean(dependency?.handle) && dependency.verified !== false;
 }
 
+function dependencyCheckFailed(dependency) {
+  return Boolean(dependency?.error) && dependency.errorCode !== "not-found";
+}
+
+function dependencyCheckLabel(dependency) {
+  return dependency?.errorCode === "timeout" ? "检查超时" : "检查失败";
+}
+
 function renderDependencyHealth() {
   const ytReady = dependencyReady(runtime.ytDlp);
   const ffReady = dependencyReady(runtime.ffmpeg);
@@ -6154,13 +6171,17 @@ function renderDependencyHealth() {
     elements.ytdlpDot,
     elements.ytdlpStatus,
     ytReady,
-    runtime.ytDlp?.error ? "检查失败" : runtime.ytDlp?.version || (ytReady ? "Ready" : "Missing"),
+    dependencyCheckFailed(runtime.ytDlp)
+      ? dependencyCheckLabel(runtime.ytDlp)
+      : runtime.ytDlp?.version || (ytReady ? "Ready" : "Missing"),
   );
   setDependency(
     elements.ffmpegDot,
     elements.ffmpegStatus,
     ffReady,
-    runtime.ffmpeg?.error ? "检查失败" : runtime.ffmpeg?.version || (ffReady ? "Ready" : "Limited"),
+    dependencyCheckFailed(runtime.ffmpeg)
+      ? dependencyCheckLabel(runtime.ffmpeg)
+      : runtime.ffmpeg?.version || (ffReady ? "Ready" : "Limited"),
   );
   setRuntimeBadge(
     !ytReady ? "error" : ffReady ? "ready" : "loading",
@@ -6182,14 +6203,17 @@ async function probeLocalDependencies() {
         name === "yt-dlp"
           ? parseYtDlpVersionOutput(result.stdout)
           : /^ffmpeg version\s+(\S+)/m.exec(result.stdout)?.[1];
-      if (result.timedOut) throw new Error(`${name} 运行检查超时，请复检依赖`);
+      if (result.timedOut)
+        throw Object.assign(new Error(`${name} 运行检查超时，请复检依赖`), { code: "timeout" });
       if (result.code !== 0 || !version) throw new Error(`${name} 无法正常运行，请修复后复检`);
       dependency.version = version;
       dependency.verified = true;
       dependency.error = "";
+      dependency.errorCode = "";
     } catch (error) {
       dependency.version = null;
       dependency.verified = false;
+      dependency.errorCode = error.code === "timeout" ? "timeout" : "probe-failed";
       dependency.error = error instanceof Error ? error.message : String(error);
       errors.push(dependency.error);
     }
@@ -6207,6 +6231,7 @@ function applyEnvironmentSnapshot(snapshot) {
     if (!runtime[key]) continue;
     runtime[key].version = dependency?.version || null;
     runtime[key].verified = dependency?.available === true && Boolean(dependency.version);
+    runtime[key].errorCode = dependency?.error || "";
     runtime[key].error = dependency?.error
       ? `${name}：${
           {

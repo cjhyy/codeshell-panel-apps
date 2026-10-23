@@ -29,6 +29,7 @@ before(async () => {
           {
             ".html": "text/html",
             ".js": "text/javascript",
+            ".mjs": "text/javascript",
             ".css": "text/css",
             ".png": "image/png",
           }[extname(path)] || "application/octet-stream",
@@ -506,6 +507,25 @@ test("failed batch inspections identify every attempted link", async (t) => {
     true,
     "Inspection failures must stay beside the links",
   );
+});
+
+test("inspection shows source rejections and login recovery instead of a misleading timeout", async (t) => {
+  const page = await openPanel(t);
+  for (const [diagnostic, message] of [
+    ["ERROR: Unable to download webpage: HTTP Error 412: Precondition Failed", /HTTP 412.*浏览器确认视频可播放.*登录账号/],
+    ["ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests", /HTTP 429.*暂停请求/],
+    ["ERROR: Unable to download webpage: Sign in to confirm you're not a bot", /站点要求登录或账号验证.*登录账号/],
+  ]) {
+    await page.evaluate(({ url, diagnostic }) => {
+      window.__inspectionFailureByUrl[url] = diagnostic;
+    }, { url: otherSiteUrl, diagnostic });
+    await page.locator("#url-input").fill(otherSiteUrl);
+    await page.locator("#inspect-button").click();
+    await page.waitForFunction(() => document.querySelector("#inspect-status").dataset.state === "error");
+    const row = await page.locator("#inspect-status").textContent();
+    assert.match(row, message);
+    assert.doesNotMatch(row, /连接中断或超时/);
+  }
 });
 
 test("retrying failed metadata preserves successful links and only rechecks failures", async (t) => {

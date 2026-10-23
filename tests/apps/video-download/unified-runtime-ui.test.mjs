@@ -30,6 +30,7 @@ before(async () => {
             {
               ".html": "text/html",
               ".js": "text/javascript",
+              ".mjs": "text/javascript",
               ".css": "text/css",
               ".png": "image/png",
             }[extname(path)] || "application/octet-stream",
@@ -350,11 +351,13 @@ async function openPanel(t, { width = 1100, height = 1000 } = {}) {
                   checkedAt: "2026-10-15T08:00:00.000Z",
                   ready: true,
                   dependencies: {
-                    "yt-dlp": {
-                      available: true,
-                      version: "2026.09.17",
-                      path: "/fixture/bin/yt-dlp",
-                    },
+                    "yt-dlp": window.__environmentFailure
+                      ? { available: false, version: null, error: window.__environmentFailure }
+                      : {
+                          available: true,
+                          version: "2026.09.17",
+                          path: "/fixture/bin/yt-dlp",
+                        },
                     ffmpeg: { available: true, version: "8.1.1", path: "/fixture/bin/ffmpeg" },
                   },
                   ...(input.includeLatest
@@ -466,6 +469,29 @@ const sharedCalls = (page, action) =>
   );
 const hostCalls = (page, method) =>
   page.evaluate((method) => window.__calls.filter((call) => call.method === method), method);
+
+test("a timed-out version check is distinct from a missing tool and refresh can recover", async (t) => {
+  const page = await openPanel(t);
+  await page.locator("#environment-details > summary").click();
+  for (const [failure, status, setup] of [
+    ["timeout", "下载器检查超时", /yt-dlp 检查超时.*刷新环境/],
+    ["not-found", "需要安装", /缺少 yt-dlp/],
+  ]) {
+    await page.evaluate((failure) => { window.__environmentFailure = failure; }, failure);
+    await page.locator("#refresh-versions").click();
+    await page.waitForFunction((status) => document.querySelector("#environment-status").textContent === status, status);
+    assert.match(await page.locator("#setup-status").textContent(), setup);
+    if (failure === "timeout") {
+      assert.equal(await page.locator("#installed-ytdlp-version").textContent(), "检查超时");
+      assert.doesNotMatch(await page.locator("#setup-status").textContent(), /缺少|未安装/);
+    }
+  }
+  await page.evaluate(() => { window.__environmentFailure = ""; });
+  await page.locator("#refresh-versions").click();
+  await ready(page);
+  assert.equal(await page.locator("#environment-status").textContent(), "✓ 最新稳定版");
+  assert.ok(await page.evaluate(() => window.__environmentCalls.some((input) => input.action === "refresh")));
+});
 
 for (const width of [390, 1280])
   test(`Chat tasks appear automatically in the shared task list and history at ${width}px`, async (t) => {
