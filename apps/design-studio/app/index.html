@@ -274,6 +274,7 @@
         </aside>
 
         <section id="stage-wrap" class="stage-wrap" aria-label="设计画布">
+          <div id="browser-surface" aria-hidden="true" hidden></div>
           <canvas id="gpu-canvas" aria-hidden="true" hidden></canvas>
           <canvas id="stage" role="img" aria-label="Design canvas" tabindex="0"></canvas>
           <div id="renderer-message" class="renderer-message" role="status">
@@ -281,6 +282,10 @@
             <button id="retry-renderer" type="button" hidden>重试 GPU 画布</button>
           </div>
           <div class="canvas-meta">
+            <select id="renderer-mode" aria-label="画布渲染器">
+              <option value="gpu">CanvasKit</option>
+              <option value="browser">浏览器 HTML/CSS</option>
+            </select>
             <span id="renderer-state" role="status" aria-live="polite">GPU 加载中</span>
             <span class="meta-divider"></span>
             <button id="zoom-out" type="button" aria-label="缩小">−</button>
@@ -540,6 +545,9 @@
                     ><span>行高</span
                     ><input id="prop-line-height" type="number" min="0.7" max="3" step="0.05"
                   /></label>
+                  <label><span>行高单位</span><select id="prop-line-height-unit">
+                    <option value="ratio">倍数</option><option value="pixels">px</option>
+                  </select></label>
                   <label
                     ><span>字距</span
                     ><input id="prop-letter-spacing" type="number" min="-20" max="100" step="0.1"
@@ -684,7 +692,7 @@
                   <div class="property-grid">
                     <label
                       ><span>统一间距</span
-                      ><input id="prop-layout-gap" type="number" min="0" max="2000"
+                      ><input id="prop-layout-gap" type="number" min="-2000" max="2000"
                     /></label>
                     <label
                       ><span>内边距</span
@@ -727,7 +735,7 @@
                           ><input
                             id="prop-layout-row-gap"
                             type="number"
-                            min="0"
+                            min="-2000"
                             max="2000"
                             placeholder="统一"
                         /></label>
@@ -736,7 +744,7 @@
                           ><input
                             id="prop-layout-column-gap"
                             type="number"
-                            min="0"
+                            min="-2000"
                             max="2000"
                             placeholder="统一"
                         /></label>
@@ -937,6 +945,21 @@
                     <input id="prop-stroke-color" type="color" aria-label="选择图层描边色" />
                     <input id="prop-stroke" spellcheck="false" aria-label="图层描边色值" />
                   </div>
+                  <div id="stroke-inactive-controls" class="property-grid" hidden>
+                  <label id="stroke-align-field" hidden><span>描边对齐</span>
+                    <select id="prop-stroke-align" aria-label="描边对齐">
+                      <option value="">请选择对齐</option><option value="inside">内侧</option>
+                      <option value="center">居中</option><option value="outside">外侧</option>
+                    </select>
+                  </label>
+                  <label id="stroke-layout-field" hidden><span>描边布局</span>
+                    <select id="prop-stroke-layout" aria-label="描边是否参与布局">
+                      <option value="">请选择布局方式</option><option value="included">参与布局</option>
+                      <option value="excluded">不参与布局</option>
+                    </select>
+                  </label>
+                  </div>
+                  <button id="prop-stroke-remove" class="button" type="button">移除描边</button>
                   <div class="property-grid">
                     <label id="radius-field"
                       ><span>圆角</span><input id="prop-radius" type="number" min="0"
@@ -962,13 +985,22 @@
                 <div class="section-label">效果</div>
                 <label class="checkbox-field">
                   <input id="prop-shadow-enabled" type="checkbox" />
-                  <span>投影</span>
+                  <span>阴影</span>
                 </label>
+                <div id="shadow-stack-tools" hidden>
+                  <select id="prop-shadow-layer" aria-label="CSS 阴影层"></select>
+                  <button id="shadow-layer-add" type="button">添加 CSS 阴影</button>
+                  <button id="shadow-layer-remove" type="button">移除当前层</button>
+                  <button id="shadow-layer-up" type="button" aria-label="阴影层前移">↑</button>
+                  <button id="shadow-layer-down" type="button" aria-label="阴影层后移">↓</button>
+                  <label><input id="prop-shadow-inner" type="checkbox"/>内阴影</label>
+                  <label><input id="prop-shadow-visible" type="checkbox"/>显示当前层</label>
+                </div>
                 <div id="shadow-controls" class="layout-controls" hidden>
                   <div class="color-field">
                     <span>颜色</span>
-                    <input id="prop-shadow-color-picker" type="color" aria-label="选择投影颜色" />
-                    <input id="prop-shadow-color" spellcheck="false" aria-label="投影颜色值" />
+                    <input id="prop-shadow-color-picker" type="color" aria-label="选择阴影颜色" />
+                    <input id="prop-shadow-color" spellcheck="false" aria-label="阴影颜色值" />
                   </div>
                   <div class="property-grid">
                     <label
@@ -979,7 +1011,7 @@
                         min="-500"
                         max="500"
                         step="1"
-                        aria-label="投影 X 偏移"
+                        aria-label="阴影 X 偏移"
                     /></label>
                     <label
                       ><span>Y</span
@@ -989,7 +1021,7 @@
                         min="-500"
                         max="500"
                         step="1"
-                        aria-label="投影 Y 偏移"
+                        aria-label="阴影 Y 偏移"
                     /></label>
                     <label
                       ><span>模糊</span

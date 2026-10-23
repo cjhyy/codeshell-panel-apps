@@ -4,6 +4,36 @@ Design Studio **0.22.0** 提供 HTML → DesignNode → v3 导入、Figma JSON �
 多页 HTML 原型和项目评审。原生设计仍使用 v3 `.codesign.json`；16 个声明式 Agent
 工具与可视编辑器共用同一份设计、来源和评审数据。本版沿用现有 Host 权限。
 
+文字可选 `textRanges` v1 在同一个 Text 中保存颜色、装饰和链接区间，按完整
+`textSource ?? text` 的 UTF16 索引和精确内容签名绑定；不创建绝对定位的文字碎片。
+最多64个不重叠区间、32KiB；保留真实空格、NBSP、显式换行，并单独映射显示软换行。
+`use_design` 的 `edit_text` 用源索引和明确的插入亲和性更新内容及区间；整段
+`update_node` 改文字须带匹配区间，或显式 `textRanges:null` 清除。保存、完整备份、
+撤销和重新打开保留同一状态。旧稿未带区间时沿用原有行为。
+`textSource` 仍是可选字段；范围文字首次进入响应式自动布局时保留其完整来源，
+Hug 内容编辑会重算尺寸。已知空来源按一行行高和1px宽度下限排版，现有最小宽度
+仍生效；每个显式换行保留一个真实分行。
+
+这项核心合同尚未开启 HTML 混合行内文字提升。SVG 已验证纯色/链接区间的流式排版；
+自定义下划线厚度、偏移和 skip-ink 会明确拒绝，避免 SVG 将它们当作 auto 输出。
+范围文字暂不接收基础渐变/paint stack 或省略截断；各渲染器和原生出口仍须通过自身
+能力检查，不能仅把区间写入元数据后声称绘制或往返成功。
+
+原生范围规划器是共享纯函数：它为同一个 Text 输出完整来源字符及包含继承
+空隙的填色/链接区间，软换行不进入原生字符。首个子集只接受不透明六位十六进制纯色、
+无装饰，以及保守的绝对 HTTP(S) 或裸 ASCII mailto 地址；片段链接（包括实际原生 API
+拒绝的 #）、tel、IPv6 和 mailto 查询参数均明确拒绝。空文字返回零区间，最多64个
+输入范围生成129个范围与空隙。显式相同覆盖保持自己的边界；原稿和来源字节不变。
+新页面创建复用这份完整计划，增量导回继续受独立的原生范围边界约束。
+
+原生新页面创建已接入纯色、无装饰、完整 HTTP(S)/简单 mailto 链接的单一 Text 写入；
+候选在全部父子 AL 尺寸完成后，完整读取并复核当前来源，再保存作者意图快照；实机
+完整写入、导出恢复和往返验收仍待完成。增量补丁（包括清除区间）和独立 HTML
+插件原始输入仍提前拒绝 `textRanges`，完整保留设计文档中的范围数据。自定义下划线、
+删除线、渐变/paint stack 和未支持的链接在页面、字体或文字写入之前拒绝。
+只读 SDK 范围观察器已具备完整 UTF16 边界、原始值和整包预算检查；目前尚未接入
+导出流程，不表示原生范围来源或往返已完成。
+
 ## 0.22：CanvasKit GPU 画布
 
 画布统一使用 CanvasKit 0.42.0（Skia C++ → WebAssembly → WebGL2）。全图概览、
@@ -309,7 +339,7 @@ surface: sixteen declared design/delivery tools plus a repository-design Skill.
   distribution, snapping, rotation, zoom, pan, undo, and redo.
 - A Figma-like three-column workspace: persistent pages and layers on the left, canvas in the
   center, and **设计 / 开发 / 文件** inspector tabs on the right.
-- A PRD delivery flow that reads workspace Markdown/MDX/text into goals, users, stable requirement
+- A PRD delivery flow that reads workspace Markdown/MDX/text into goals, users, authored requirement
   IDs, screens, acceptance criteria, and constraints before handing the structured brief to the
   current Agent.
 - Deterministic Design v3 → HTML generation. Auto Layout becomes Flex/Grid/Wrap, dual-axis
@@ -403,6 +433,39 @@ alignment, and distribution cannot bypass flow ownership. Agent-created
 nodes require a stable lowercase, hyphen-separated semantic id so transactions are
 reproducible and later operations can address every new node explicitly.
 
+## PRD requirement IDs
+
+Start a requirement list item with `[id:req-name]` to keep its ID when inserting,
+reordering, translating or editing other requirements. The declaration comes before
+an optional priority; its exact ID enters the existing brief `id` field.
+
+```markdown
+## Requirements
+- [ ] [id:req-sign-in] P0 Sign in with email acceptance: Reach Home.
+- [id:req-orders-view] P1 查看订单详情 验收：显示订单编号。
+```
+
+An optional leading task checkbox (`[ ]`, `[x]` or `[X]`) can immediately precede
+the ID declaration. Toggling it keeps the same authored ID. Unannotated task items
+retain their existing ID, statement and priority bytes for compatibility.
+
+IDs contain 1–64 ASCII lowercase letters, digits or hyphens and start with a letter.
+Keep the ID unchanged when editing the requirement's description. Invalid IDs,
+missing descriptions, duplicate declarations and collisions with generated IDs
+stop parsing with an error. The brief prompt carries these IDs for the Agent to
+retain in layer `notes`; saving and reopening the design preserves those notes.
+
+Unannotated requirements retain the existing `req-<ordinal>-<slug>` algorithm.
+Those IDs can change after insertion, reordering or wording changes. Existing PRDs
+and design notes are not migrated automatically. To make an existing reference
+explicit, the author can copy its exact old ID into `[id:...]` after checking for
+collisions. Screen IDs continue to use the existing positional algorithm.
+
+This syntax is shared by the Panel's PRD submission and the installed CLI `brief`
+operation. The current fresh Figma reimport does not restore `codeshellNotes` into
+canonical notes; the separate raw source binding preserves unknown metadata. Native
+prototype reactions and that notes roundtrip remain separate gaps.
+
 ## Install
 
 Open **Extensions → Panel Apps → From folder**, then select this directory.
@@ -434,8 +497,22 @@ node "<selected-package>/app/tools/design-studio.mjs" run inspect \
 ```
 
 An inspect request is `{ "path": "designs/design.codesign.json" }`. Operations
-include `inspect`, bounded `read`, all-page `validate`, `svg`, static HTML
-`frontend`, PRD `brief`, saved-design `compare`, `create`, and `edit`. Create
+include `inspect`, bounded `read`, all-page `validate`, `svg`, HTML
+`frontend`, PRD `brief`, saved-design `compare`, `create`, and `edit`. Frontend
+defaults to one static page; explicit `prototype: true` exports all pages using
+the saved `.prototype.json` companion and verified design resources. It cannot
+be combined with `page_id`. A missing primary companion uses the same default
+as the Panel: the active page starts an all-page prototype with no authored
+links. The receipt marks `status: "absent"` and `defaulted: true`; no companion
+is created. Present malformed, incomplete or dangling companions refuse
+prototype export. `prototype` accepts only a JSON boolean.
+
+`validate` reports the companion's `absent`, `valid` or `invalid` status and up
+to100 prototype diagnostics, alongside existing all-page design issues. Invalid
+references or unreadable metadata contribute to the error/blocking counts and
+make `valid: false`; they never silently become a link-free default. Raw and
+reconstructed prototype data are limited to2MiB through the shared bounded
+project reader, including verified multipart companions. Create
 accepts a complete v3 `document`; edit also requires the exact saved-file
 `expected_revision` returned by a read. Both use the shared document codec and
 resource verification. They persist actual project source and the same page
@@ -455,7 +532,9 @@ Host file commits use owned directory locks with a five-second wait; a crash
 may leave a lock requiring verification that no writer is active before removal.
 
 Complete-document edits preserve companion files but do not reconcile comments,
-prototype targets or Figma mappings after ID changes. They accept materialized
+prototype targets or Figma mappings after ID changes. Validate the saved source
+after editing; prototype diagnostics expose dangling page/node references.
+These operations do not rewrite IDs or repair companions. They accept materialized
 geometry and do not execute the live editor's Auto Layout operations or undo.
 Open the Panel for those workflows, live screenshots, HTML capture/import,
 Figma exchange and resource insertion. The CLI reads saved files; unsaved live
@@ -481,6 +560,29 @@ save through Design Studio so the primary index changes only after every changed
 is available.
 
 ## HTML fidelity fixture
+
+The production fidelity harness (`npm run test:fidelity:production`) requests report-only
+capture-local flow obligations. It binds actual source Element identities to canonical nodes
+while the capture iframe is alive, then audits each imported/relayout/narrow candidate against
+that immutable evidence. Ordinary in-flow relationships must retain an Auto Layout ancestry
+path, including only wrapper IDs proven by that capture; NONE hops fail even when SVG pixels
+are unchanged. Actual absolute/fixed source children are excluded from their outer flow
+relationship, and image/SVG/empty leaves need no child layout. Ambiguous identities and
+unsupported inline/table/transform/other source flows remain separately reported as PARTIAL,
+so an empty issue list cannot certify complete flow coverage. The evidence is archived as
+`flow-obligations.json` and per-mode `flowAudits`, never saved as document admission metadata.
+The existing atomic fixed two-column table recovery publishes its exact live Element/original
+node relationships only after the complete table commits. This covers real rows, cells, P
+frames and their original Text; only the exact validated BR tokens become text line breaks.
+Unpromoted/AUTO tables, failed drafts or ID-only metadata cannot supply this proof. Existing
+capture factory callbacks remain the sole authority for intermediate synthetic wrappers.
+Successful rational-float plans also publish exact original row/column relationships after
+final Grid validation. Only a successful float/block plan's verified empty `::after` clearfix
+can discharge that generated-content detail; other floats, paint and generated text remain
+unverified. Each resized candidate is still checked against the immutable source obligations.
+No pixel thresholds are changed. Callers may request this diagnostic with
+`captureWorkspaceHtmlResult({ ...options, includeFlowAudit: true })`; ordinary import behavior
+is unchanged when the option is absent.
 
 Use the top-bar **HTML** action to convert a workspace-relative `.html` file, or call the
 revision-guarded `import_html` Agent tool. Version 0.20 uses `app/html-import.mjs`, the pinned
@@ -554,20 +656,117 @@ The product importer captures the visible first viewport rather than the root's 
 height. Partially visible layers retain their measured geometry behind an intentional root clip;
 fully offscreen descendants are not serialized. Choose a tighter root selector when the desired
 design is one visible region instead of the complete viewport.
+Document-root auto/scroll overflow can retain ordinary viewport Auto Layout when
+standards-mode measurements prove zero scroll offset, no horizontal overflow and
+no consumed scrollbar gutter. Independent ancestor clips, classic gutters and
+stable gutters retain measured geometry with diagnostics.
 Flex rows/columns map reverse direction, Wrap/Wrap Reverse, axis gaps, four-side padding, Baseline,
 Min/Max, alignment, distribution, and Fill/Fixed sizing into v3. Grid maps equal computed columns
 and row/column spans; direct absolute/fixed children are excluded from flow and retain measured
 Constraints. Opaque uniform borders remain editable decorations without forcing a manual-layout
-fallback. Unequal Flex grow, floats, unequal Grid tracks, and decoration-heavy controls keep
+fallback. Unequal Flex grow, unsupported floats, unequal Grid tracks, and decoration-heavy controls keep
 measured manual geometry.
 It is not an HTML parser and does not promise fidelity for unsupported visual primitives such as
 raster images, SVG paths, gradients, pseudo-elements, multiple shadows, or four independently
 editable corner radii.
 
+Isolated same-direction percentage float columns can recover a bounded single
+native Grid row (at most 24 tracks), with Fill widths and ordinary inner Auto
+Layout. Mixed text/shape wrapping and unsupported constraints retain measured
+geometry with diagnostics. Every recovered row reports that media queries and
+float wrapping are not retained; recapture after a source CSS breakpoint changes.
+See `docs/todo/design-studio-floated-columns-2026-10-21.md` for strict source
+fixtures and the separate native negative-bleed/viewport limitations.
+
+Plain single-text block/inline-block frames can retain vertical Auto Layout with
+exact capture-local source binding even when class selectors repeat. Original
+NBSP and ASCII whitespace provenance stay distinct. Ambiguous sources, table or
+complex inline content and generated controls retain measured geometry with
+diagnostics; see `docs/todo/design-studio-plain-text-flow-2026-10-21.md`.
+
+Ordinary empty blocks retain vertical Auto Layout and physical padding when live
+DOM capture proves there is no text, generated content, control or list marker.
+They keep their original nodes and can participate in Fill sizing without spacer
+layers. Replaced elements, aspect ratios, relative padding/size limits and size
+containment retain measured geometry with explicit conversion boundaries.
+
 ## Package boundary
+
+Figma source bindings reject conflicting duplicate raw node IDs before planning
+original-node changes. Identical ancestor/selected-child overlap retains the first
+original raw object; full descendants, unknown styles, metadata and observed
+parent/order context must agree. See the
+[source overlap contract](../../docs/todo/design-studio-figma-source-overlap-2026-10-21.md).
 
 Renderable code lives under `app/`. The declarative Agent contribution lives
 under `agent/`: the manifest declares every callable tool, handlers execute
 inside the panel sandbox, and the bundled Skill is read-only Markdown. The
 installer still rejects traditional plugin backends, hooks, commands, and MCP
 configuration, so one install does not collapse the runtime isolation.
+
+
+Solid CSS borders can retain four bounded editable side paints and inside alignment
+without adding decorative child layers. Effective border insets count once in Auto
+Layout padding and HTML export. Legacy centered strokes keep their existing semantics.
+Native Figma supports independent weights with one shared RGB/alpha paint; multicolor
+native transfer, unequal rounded side joins and adjacent sides with different alpha
+are explicitly rejected or diagnosed. Collapsed table borders retain a diagnosed
+measured approximation. Strict border evidence and remaining antialiasing limits are
+recorded in `docs/todo/design-studio-css-border-sides-2026-10-21.md`.
+
+The staged pure `native-text-range-hint.mjs` helper preserves author range intent
+that effective native styles cannot distinguish, including explicit same-color
+overrides and an unused base color beneath a full-source override.
+`buildNativeTextRangeHint({rest, source, authorNode, pluginId, key})` requires a
+complete independently bound final native source and an equal effective
+paint/link setter plan. `restoreNativeTextRangeHint({rest, source,
+canonicalNode, hint, pluginId, key})` returns only an owned `{fill, textRanges}`
+patch after the complete current snapshot and effective plan both agree.
+Stored metadata never overrides native characters, typography or identity.
+It records author intent, not cryptographic proof of historical unused colors
+or explicit same-style boundaries; equivalent hints cannot change live paint.
+Raw unknown getter observations remain in the snapshot; known segment values
+must independently prove the effective style. Hints have a 64 KiB UTF-8 JSON
+limit and include plugin ID/key overhead in the 100,000-byte storage-entry
+budget. Stale, partial, unsupported or oversized inputs refuse atomically.
+Line-height units and font axes remain exact. PERCENT metrics accept the exact
+requested value or the SDK's exact Float32-ratio transport; PIXELS has no
+quantization allowance. No epsilon, scalar fitting or raw rewrite is used.
+The creation candidate now uses this helper through final SDK capture
+and plugin-data writes; export and author-hint restoration remain unhooked.
+
+Native text source binding compares REST character overrides in Unicode scalar
+order against SDK UTF16 segments and accepts the exact Float32 serialization of
+native percentage line heights. Raw observations and snapshot comparisons remain
+unchanged. See the
+[actual SDK projection evidence](../../docs/todo/design-studio-native-text-rest-projection-2026-10-21.md)
+for historical failures and Unicode controls, and the
+[exact canonical transport contract](../../docs/todo/design-studio-native-percent-transport-2026-10-21.md)
+for current metric admission and remaining complete-writer/native-pixel limits.
+
+The staged pure `native-text-range-compare.mjs` helper compares complete historical
+and current native text evidence, each validated against its own REST node.
+It preserves exact raw observations and separately compares resolved REST styles,
+including unknown keys and style references. Equivalent override ID renumbering
+passes; missing history explicitly requires a snapshot. It does not activate
+original-node writes or replace geometry/source checks. See the
+[comparison contract and controls](../../docs/todo/design-studio-native-text-source-compare-2026-10-21.md).
+
+The `figma-plugin/text-range-state.mjs` finalizer combines complete SDK
+capture with author-hint validation after final layout. It stages all hints and
+rechecks every owned Text after the last awaited export before writing metadata;
+the new-page factory supplies actual bounded ancestry and subtree checks, then
+rechecks final image sizes before exposing the result. Empty or normalized-away
+range payloads create ordinary Text without a nonempty intent hint. Explicit
+empty authored responsive content remains valid. Original-node range updates
+and the standalone HTML plugin remain blocked.
+
+Post-await mutations validate the highest enabled Auto Layout ancestor so that
+native reflow cannot resize a user-inserted foreign descendant. Rollback removes
+only newly owned pages whose current descendants are all owned; a page with an
+inserted external layer is retained with an explicit failure. Owned layers moved
+outside those pages are preserved, and cleanup does not reset external page
+navigation or selections. Complete-field SDK mocks cover staging, source races,
+storage failure across pages and foreign-layer preservation. These are VM
+checks, not actual native or cross-renderer pixel acceptance. Native complete
+writer, percentage transport and final factory acceptance remain pending.

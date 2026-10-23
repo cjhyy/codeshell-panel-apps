@@ -4,8 +4,7 @@ import { MAX_EDITOR_TICK } from "../../src/editor/validation.js";
 import { runMediaProcess } from "../process-runner.js";
 import { EditorTaskError } from "./protocol.js";
 import { describeEditorVideo } from "./proxy.js";
-import { readPrefix, fileHash } from "./files.js";
-import { dirname, basename } from "node:path";
+import { readSourcePrefix, fileHash } from "./files.js";
 
 const inputOptions = [
   "-protocol_whitelist",
@@ -97,7 +96,7 @@ export async function inspectEditorSource(
     ),
     audio = probe.streams.find((s: any) => s.codec_type === "audio");
   if (!video && !audio) throw new EditorTaskError("INVALID_MEDIA", "素材没有可解析的画面或声音");
-  const magic = await readPrefix(dirname(path), [basename(path)]),
+  const magic = await readSourcePrefix(path),
     format = field(probe.format?.format_name);
   const imageMime = magic.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
     ? "image/png"

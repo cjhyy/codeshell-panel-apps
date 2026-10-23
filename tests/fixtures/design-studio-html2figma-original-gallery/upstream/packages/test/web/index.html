@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Html2Figma Demo</title>
+    <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+    <div class="app">
+
+        <main class="main">
+            <!-- Input Section -->
+            <section class="input-section">
+                <div class="input-tabs">
+                    <button class="tab-btn active" data-tab="html">HTML Input</button>
+                    <button class="tab-btn" data-tab="url">URL Input</button>
+                </div>
+
+                <!-- HTML Input Tab -->
+                <div class="tab-content active" id="html-tab">
+                    <div class="input-group">
+                        <label for="template-search">Choose Template (Optional):</label>
+                        <div id="template-selector" style="position: relative; width: 100%; margin-bottom: 10px;">
+                            <input id="template-search" type="text" placeholder="Search templates..." autocomplete="off"
+                                style="width: 100%; padding: 8px; border: 2px solid #e9ecef; border-radius: 6px; box-sizing: border-box; font-size: 14px;">
+                            <div id="template-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; max-height: 300px; overflow-y: auto; background: #fff; border: 2px solid #e9ecef; border-top: none; border-radius: 0 0 6px 6px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.1);"></div>
+                        </div>
+                        <!-- Hidden select for backward compatibility -->
+                        <select id="template-select" style="display: none;">
+                            <option value="">Custom HTML</option>
+                        </select>
+                    </div>
+                    <div class="input-group">
+                        <label for="html-input">Enter HTML Code:</label>
+                        <textarea 
+                            id="html-input" 
+                            placeholder="Enter your HTML code here..."
+                            rows="10"
+                        ></textarea>
+                    </div>
+                    <div class="controls">
+                        <button id="render-html-btn" class="btn btn-primary">Render HTML</button>
+                        <button id="convert-html-btn" class="btn btn-secondary">Convert to Figma JSON</button>
+                        <button id="convert-and-sync-btn" class="btn btn-primary">Sync to Figma</button>
+                        <button id="clear-html-btn" class="btn btn-outline">Clear</button>
+                        <button id="toggle-source-btn" class="btn btn-small" style="margin-left: auto; background: #28a745; color: white; font-size: 11px;" title="Source: HMR-friendly, uses source code directly. Standalone: uses built IIFE bundle.">Source</button>
+                        <button id="download-log-btn" class="btn btn-small" style="background: #6f42c1; color: white; font-size: 11px;" title="Download conversion logs">Download Log</button>
+                    </div>
+
+                    <!-- Batch & Test Controls -->
+                    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #e9ecef;">
+                        <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+                            <label style="font-size: 12px;">Category:</label>
+                            <select id="batch-category-select" style="padding: 4px 8px; border: 1px solid #e9ecef; border-radius: 4px; font-size: 12px;">
+                                <option value="">All</option>
+                                <option value="basic">Basic</option>
+                                <option value="layout">Layout</option>
+                                <option value="components">Components</option>
+                                <option value="advanced">Advanced</option>
+                            </select>
+                        </div>
+                        <div style="display: flex; gap: 8px;">
+                            <button id="batch-render-btn" class="btn btn-secondary" style="font-size: 13px; padding: 6px 12px;">Batch Render</button>
+                            <button id="run-tests-btn" class="btn btn-outline" style="font-size: 13px; padding: 6px 12px;">Run Tests</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- URL Input Tab -->
+                <div class="tab-content" id="url-tab">
+                    <div class="input-group">
+                        <label for="url-input">Enter URL:</label>
+                        <input 
+                            type="url" 
+                            id="url-input" 
+                            placeholder="https://example.com"
+                        />
+                    </div>
+                    <div class="controls">
+                        <button id="load-url-btn" class="btn btn-primary">Load URL</button>
+                        <button id="convert-url-btn" class="btn btn-secondary">Convert to Figma JSON</button>
+                    </div>
+                    <div class="url-note">
+                        <small>Note: Due to CORS restrictions, only same-origin URLs or CORS-enabled sites will work.</small>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Preview Section -->
+            <section class="preview-section">
+                <div class="section-header">
+                    <h2>Live Preview</h2>
+                    <div class="preview-controls">
+                        <button id="select-element-btn" class="btn btn-small">Select Element</button>
+                        <button id="clear-preview-btn" class="btn btn-small btn-outline">Clear Preview</button>
+                    </div>
+                </div>
+                <div class="preview-container">
+                    <div id="preview-content" class="preview-content">
+                        <div class="placeholder">
+                            <p>Enter HTML code or URL above to see the preview</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Output Section -->
+            <section class="output-section">
+                <div class="section-header">
+                    <h2>Figma JSON Output</h2>
+                    <div class="output-controls">
+                        <button id="copy-json-btn" class="btn btn-small">Copy JSON</button>
+                        <button id="download-json-btn" class="btn btn-small">Download JSON</button>
+                        <button id="clear-output-btn" class="btn btn-small btn-outline">Clear</button>
+                    </div>
+                </div>
+                <div class="output-container">
+                    <pre id="json-output" class="json-output">
+                        <div class="placeholder">
+                            Figma JSON will appear here after conversion
+                        </div>
+                    </pre>
+                </div>
+            </section>
+
+            <!-- Render Tree Section (NEW) -->
+            <section class="render-tree-section">
+                <div class="section-header">
+                    <h2>DOM Render Tree</h2>
+                    <div class="output-controls">
+                        <button id="copy-render-tree-json-btn" class="btn btn-small">Copy JSON</button>
+                        <button id="copy-render-tree-raw-btn" class="btn btn-small">Copy Raw</button>
+                        <button id="clear-render-tree-btn" class="btn btn-small btn-outline">Clear</button>
+                    </div>
+                </div>
+                <div class="output-container">
+                    <pre id="render-tree-output" class="json-output">
+                        <div class="placeholder">
+                            DOM Render Tree will appear here after conversion
+                        </div>
+                    </pre>
+                </div>
+            </section>
+
+            <!-- Render Node to Figma Section (NEW) -->
+            <section class="render-node-figma-section">
+                <div class="section-header">
+                    <h2>Render Node to Figma Output</h2>
+                    <div class="output-controls">
+                        <select id="image-mode-select" title="Image processing mode" style="font-size:12px;padding:2px 4px;border-radius:4px;border:1px solid #ccc;">
+                            <option value="base64">Images: Base64</option>
+                            <option value="upload">Images: Upload</option>
+                        </select>
+                        <button id="sync-to-figma-btn" class="btn btn-small btn-primary">Sync to Figma</button>
+                        <button id="copy-render-node-figma-btn" class="btn btn-small">Copy JSON</button>
+                        <button id="clear-render-node-figma-btn" class="btn btn-small btn-outline">Clear</button>
+                    </div>
+                </div>
+                <div class="output-container">
+                    <pre id="render-node-figma-output" class="json-output">
+                        <div class="placeholder">
+                            Render Node to Figma output will appear here after conversion
+                        </div>
+                    </pre>
+                </div>
+            </section>
+
+            <!-- JSON Analysis Section -->
+            <section class="analysis-section">
+                <div class="section-header">
+                    <h2>JSON Structure Analysis</h2>
+                    <div class="analysis-controls">
+                        <button id="expand-all-btn" class="btn btn-small">Expand All</button>
+                        <button id="collapse-all-btn" class="btn btn-small">Collapse All</button>
+                        <button id="clear-analysis-btn" class="btn btn-small btn-outline">Clear</button>
+                    </div>
+                </div>
+                <div class="analysis-container">
+                    <div id="analysis-content" class="analysis-content">
+                        <div class="placeholder">
+                            JSON structure analysis will appear here after conversion
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Conversion Options -->
+            <section class="options-section">
+                <details class="options-details">
+                    <summary>Conversion Options</summary>
+                    <div class="options-grid">
+                        <div class="option-group">
+                            <label for="scale-input">Scale Factor:</label>
+                            <input type="number" id="scale-input" value="1" min="0.1" max="5" step="0.1">
+                        </div>
+                        <div class="option-group">
+                            <label for="frame-name-input">Root Frame Name:</label>
+                            <input type="text" id="frame-name-input" value="HTML Import">
+                        </div>
+                        <div class="option-group">
+                            <label>
+                                <input type="checkbox" id="capture-images-checkbox" checked>
+                                Capture Images
+                            </label>
+                        </div>
+                        <div class="option-group">
+                            <label>
+                                <input type="checkbox" id="include-invisible-checkbox">
+                                Include Invisible Elements
+                            </label>
+                        </div>
+                        <div class="option-group">
+                            <label for="max-depth-input">Max Depth:</label>
+                            <input type="number" id="max-depth-input" value="50" min="1" max="100">
+                        </div>
+                    </div>
+                </details>
+            </section>
+
+            <!-- Batch & Test Results Section -->
+            <section id="batch-test-section" class="batch-test-section" style="display:none;">
+                <div class="section-header">
+                    <h2 id="batch-test-title">Results</h2>
+                    <button id="close-batch-test-btn" class="btn btn-small btn-outline">Close</button>
+                </div>
+                <div id="batch-test-panel"></div>
+            </section>
+        </main>
+
+        <!-- Status Bar -->
+        <div class="status-bar">
+            <div class="status-info">
+                <span id="status-text">Ready</span>
+            </div>
+            <div class="conversion-stats">
+                <span id="conversion-stats"></span>
+            </div>
+        </div>
+
+        <!-- Loading Overlay -->
+        <div id="loading-overlay" class="loading-overlay hidden">
+            <div class="loading-spinner"></div>
+            <p>Processing...</p>
+        </div>
+    </div>
+
+    <!-- Element Selection Overlay -->
+    <div id="selection-overlay" class="selection-overlay hidden">
+        <div class="selection-info">
+            <p>Click on any element in the preview to select it for conversion</p>
+            <button id="cancel-selection-btn" class="btn btn-outline">Cancel Selection</button>
+        </div>
+    </div>
+
+    <!-- Load standalone bundle -->
+    <script src="./asset/standalone.iife.js?v=20260308-2"></script>
+    <script type="module" src="./main.ts"></script>
+</body>
+</html>

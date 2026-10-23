@@ -30,10 +30,12 @@ import {
   optionalJson,
   publish,
   readBytes,
-  readPrefix,
+  readSourcePrefix,
+  originalFile,
   regular,
   sealed,
   type EditorArtifact,
+  type EditorOriginals,
 } from "./files.js";
 import { EditorTaskError, hash, record, resourceId, validateEditorRequest } from "./protocol.js";
 import { exportPortableProject } from "./bundle.js";
@@ -61,11 +63,14 @@ export interface EditorRuntimeContext {
   tools?: { ffmpegPath?: string; ffprobePath?: string; browserPath?: string };
   /** Test-only override of the shared executable search directories. */
   toolSearchDirectories?: string[];
+  /** Read only Host-sealed originals; never constructed from request JSON or persisted. */
+  originals?: EditorOriginals;
 }
 interface Binding {
   resourceId: string;
   sha256: string;
   bytes: number;
+  access?: "read";
 }
 interface Manifest {
   kind?: "project";
@@ -116,9 +121,14 @@ export async function runEditorRequest(
     throw new EditorTaskError("INVALID_REQUEST", "主程序任务编号无效");
   const root = await sealed(context.jobDir),
     runtime = await sealed(context.runtimeDir);
+  const directOriginal = (id: string) => context.originals?.get(`original-${id}`);
+  const inputSource = async (id: string, index: number): Promise<string> => {
+    const source = directOriginal(id);
+    return source ? originalFile(source) : regular(root, ["inputs", `resource-${index}.bin`]);
+  };
   if (request.action === "inspect-source") {
     const id = request.resourceIds![0]!,
-      input = await regular(root, ["inputs", "resource-0.bin"]);
+      input = await inputSource(id, 0);
     await context.reportProgress({ fraction: 0, stage: "inspect-source" });
     const result = await inspectEditorSource(
       input,
@@ -157,8 +167,14 @@ export async function runEditorRequest(
     return add(path, "json", "application/json", "editor-report");
   };
   const material = async (binding: Binding): Promise<string> => {
-    const id = resourceId(binding.resourceId),
-      path = await regular(resources, [`${id}.bin`]);
+    record(binding, ["resourceId", "sha256", "bytes", "access"], "原始素材绑定");
+    const id = resourceId(binding.resourceId);
+    if (binding.access !== undefined && (binding.access !== "read" || !id.startsWith("external-")))
+      throw new EditorTaskError("INVALID_FILE", "原始素材读取授权无效");
+    const source = binding.access === "read" ? directOriginal(id) : undefined;
+    if (binding.access === "read" && !source)
+      throw new EditorTaskError("INCOMPLETE_STAGE", "原始素材读取授权缺失，请重新准备工程");
+    const path = source ? await originalFile(source) : await regular(resources, [`${id}.bin`]);
     if (
       (await fileHash(path, context.signal)) !== hash(binding.sha256) ||
       (await stat(path)).size !== binding.bytes
@@ -300,7 +316,7 @@ export async function runEditorRequest(
       const settings = request.alignment!,
         sources = [];
       for (const [index, resourceId] of request.resourceIds!.entries()) {
-        const path = await regular(root, ["inputs", `resource-${index}.bin`]),
+        const path = await inputSource(resourceId, index),
           sha = await fileHash(path, context.signal);
         if (
           (resourceId.startsWith("asset-") && resourceId !== `asset-${sha}`) ||
@@ -330,7 +346,7 @@ export async function runEditorRequest(
     }
     if (request.action === "prepare-source-video") {
       const id = request.resourceIds![0]!,
-        input = await regular(root, ["inputs", "resource-0.bin"]),
+        input = await inputSource(id, 0),
         sourceHash = await fileHash(input, context.signal);
       if (id.startsWith("asset-") && id !== `asset-${sourceHash}`)
         throw new EditorTaskError("SOURCE_CHANGED", "素材内容与资源编号不匹配");
@@ -358,7 +374,7 @@ export async function runEditorRequest(
     }
     if (request.action === "analyze-waveform") {
       const id = request.resourceIds![0]!,
-        input = await regular(root, ["inputs", "resource-0.bin"]);
+        input = await inputSource(id, 0);
       await progress(0, "analyze-waveform");
       const analysis = await analyzeEditorWaveform({
         input,
@@ -415,7 +431,7 @@ export async function runEditorRequest(
       for (const [index, id] of request.resourceIds!.entries()) {
         const binding = await optionalJson(resources, [`${id}.json`]);
         if (binding) await material(binding);
-        if (binding || (await reuse(id, confirmed))) present.push(id);
+        if (binding || (!directOriginal(id) && await reuse(id, confirmed))) present.push(id);
         // Hashing large saved originals takes a while; show it moving.
         await progress((index + 1) / request.resourceIds!.length, "stage-status");
       }
@@ -458,19 +474,21 @@ export async function runEditorRequest(
       const staged: Binding[] = [];
       for (let index = 0; index < request.resourceIds!.length; index++) {
         const id = request.resourceIds![index]!;
-        const path = await regular(root, ["inputs", `resource-${index}.bin`]);
+        const direct = directOriginal(id), path = await inputSource(id, index);
         const bytes = (await stat(path)).size;
         if (bytes < 1 || bytes > 20 * 1024 ** 3)
           throw new EditorTaskError("LIMIT_EXCEEDED", "素材超过当前 20GiB 资源大小限制");
         const sha256 = await fileHash(path, context.signal);
         if (id.startsWith("asset-") && id !== `asset-${sha256}`)
           throw new EditorTaskError("SOURCE_CHANGED", "主程序素材内容校验失败");
-        const binding: Binding = { resourceId: id, sha256, bytes };
+        const binding: Binding = { resourceId: id, sha256, bytes, ...(direct ? { access: "read" as const } : {}) };
         const previous = await optionalJson(resources, [`${id}.json`]);
         if (previous && (previous.sha256 !== sha256 || previous.bytes !== bytes))
           throw new EditorTaskError("SOURCE_CHANGED", "同一快照中的原文件已变化，请创建新快照");
         if (previous) await material(previous);
-        else {
+        else if (direct) {
+          await atomic(join(resources, `${id}.json`), Buffer.from(JSON.stringify(binding)));
+        } else {
           const temporary = join(resources, `${id}.${randomUUID()}.tmp`);
           try {
             await copyFile(path, temporary);
@@ -483,7 +501,7 @@ export async function runEditorRequest(
             await rm(temporary, { force: true });
           }
         }
-        await remember(binding, join(resources, `${id}.bin`));
+        if (!direct) await remember(binding, join(resources, `${id}.bin`));
         staged.push(binding);
         await progress((index + 1) / request.resourceIds!.length, "stage-resources");
       }
@@ -742,6 +760,8 @@ export async function runEditorRequest(
         document: selected.document,
         workDir: work,
         sourceRoots: [resources],
+        originalSources: new Map([...byResource.values()].filter((item) => item.binding.access === "read")
+          .map((item) => [item.path, { path: item.path, bytes: item.binding.bytes }])),
         outputPath: join(work, "project.mimiproject"),
         signal: context.signal,
         resolveAsset: async (asset) => {
@@ -832,19 +852,26 @@ export async function runEditorRequest(
         artifacts,
       };
     }
+    // Picture edits do not alter the mix. Bind the cache to the compiled sound
+    // and its verified source bytes; snapshots/returned receipts still bind to
+    // the exact document being processed by this job.
+    const audioPlan = compileAudioPlan(selected.document, manifest.sequenceId);
     const fullRecipeHash = digest({
-      recipe: "editor-audio-v2-timestamps",
-      builtinNarration: installedNarration?.binding,
-      documentHash: manifest.documentHash,
-      sequenceId: manifest.sequenceId,
-      bindings: manifest.bindings,
+      recipe: "editor-audio-v3-content",
+      plan: audioPlan,
+      sources: [...new Set(audioPlan.lanes.map((lane) => lane.assetId))]
+        .sort()
+        .map((assetId) => {
+          const binding = original(assetId).binding;
+          return { assetId, sha256: binding.sha256, bytes: binding.bytes };
+        }),
       ffmpegVersion,
     });
     const expected = request.preparedAudio,
       fullMixes = await directory(cache, ["mixes", fullRecipeHash]),
       fullMix = (await optionalJson(fullMixes, ["receipt.json"])) as MixReceipt | undefined,
       preparation = request.range && (expected?.range || (!expected && !fullMix))
-        ? editorRangeAudioPreparation(compileAudioPlan(selected.document, manifest.sequenceId), request.range)
+        ? editorRangeAudioPreparation(audioPlan, request.range)
         : {},
       audioRange = preparation.range,
       recipeHash = audioRange ? digest({ recipe: "editor-audio-range-v1", fullRecipeHash, range: audioRange }) : fullRecipeHash,
@@ -864,7 +891,6 @@ export async function runEditorRequest(
     if (mix) {
       if (
         mix.recipeHash !== recipeHash ||
-        mix.documentHash !== manifest.documentHash ||
         mix.sequenceId !== manifest.sequenceId ||
         !sameExportRange(mix.range, audioRange) ||
         (expected && expected.assetId !== mix.assetId)
@@ -913,7 +939,7 @@ export async function runEditorRequest(
       await atomic(join(mixes, "receipt.json"), Buffer.from(JSON.stringify(mix)));
     }
     const preparedAudio: PreparedEditorAudio = {
-      documentHash: mix.documentHash,
+      documentHash: manifest.documentHash,
       sequenceId: mix.sequenceId,
       recipeHash: mix.recipeHash,
       assetId: mix.assetId,
@@ -975,7 +1001,7 @@ export async function runEditorRequest(
         mediaFiles.set(asset.id, { path: proxy.path, mimeType: proxy.mimeType });
       } else if (asset.kind === "image") {
         const input = original(asset.id),
-          magic = await readPrefix(resources, [`${input.binding.resourceId}.bin`]);
+          magic = await readSourcePrefix(input.path);
         const mimeType = magic.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
           ? "image/png"
           : magic[0] === 255 && magic[1] === 216

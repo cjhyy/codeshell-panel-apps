@@ -1,3 +1,9 @@
+import { validateShadowStack, shadowStackOutsets } from "./shadow-stack.mjs";
+import { validateTextRanges, validateTextRangeNodePatch, replaceTextRange, replaceTextValue } from "./text-ranges.mjs";
+import { textLineHeightCss, textLineHeightPixels, validTextLineHeight } from "./text-line-height.mjs";
+import { validateLayoutSpacing } from "./layout-spacing.mjs";
+import { GRID_CONTAINER_FIELDS, GRID_CHILD_FIELDS, gridPlacements } from "./grid.mjs";
+import { designStrokeOutset, editDesignStrokeColor, editDesignStrokeWidth, editDesignStrokeAlignment, applyDesignStrokeEdits, inactiveStrokeWidth, strokeAlignment, validateDesignStroke, clearInvalidStrokeLayoutExclusion } from "./stroke.mjs";
 /* Design Studio Panel App runtime. */
 /* global document, localStorage, requestAnimationFrame, window */
 import { projectContextChanged } from "./project-context.mjs";
@@ -101,7 +107,8 @@ import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
 import { designPaintSvg } from "./paint.mjs";
 import { repairDesignQuality } from "./quality-repair.mjs";
 import { resourceDataUrlsFromPlans } from "./builtin-fonts.mjs";
-import { designFontFamilyCss } from "./font-css.mjs";
+import { designFontFamilyCss, designResourceFontFamilyCss, designTextFontResourceIds } from "./font-css.mjs";
+import { createOwnedFontManager } from "./owned-fonts.mjs";
 import { groupAuditIssues, pageAuditIssues } from "./audit-review.mjs";
 import {
   captureWorkspaceHtml,
@@ -113,6 +120,7 @@ import { compareDesignDocuments, comparisonMarkdown } from "./design-compare.mjs
 import { exportDesignFrontend, isSafeFrontendPath } from "./frontend-export.mjs";
 import {
   applyAutoLayouts,
+  applyAllAutoLayouts,
   createComponentInstance,
   isAutoLayoutContainer,
   isContainerNode,
@@ -152,6 +160,8 @@ const elements = {
   stage: document.querySelector("#stage"),
   stageWrap: document.querySelector("#stage-wrap"),
   gpuCanvas: document.querySelector("#gpu-canvas"),
+  browserSurface: document.querySelector("#browser-surface"),
+  rendererMode: document.querySelector("#renderer-mode"),
   rendererState: document.querySelector("#renderer-state"),
   rendererMessage: document.querySelector("#renderer-message"),
   rendererMessageText: document.querySelector("#renderer-message-text"),
@@ -288,6 +298,7 @@ const propertyInputs = {
   fontFamily: document.querySelector("#prop-font-family"),
   fontStyle: document.querySelector("#prop-font-style"),
   lineHeight: document.querySelector("#prop-line-height"),
+  lineHeightUnit: document.querySelector("#prop-line-height-unit"),
   letterSpacing: document.querySelector("#prop-letter-spacing"),
   textDecoration: document.querySelector("#prop-text-decoration"),
   textAlign: document.querySelector("#prop-text-align"),
@@ -296,6 +307,9 @@ const propertyInputs = {
   stroke: document.querySelector("#prop-stroke"),
   strokeColor: document.querySelector("#prop-stroke-color"),
   strokeWidth: document.querySelector("#prop-stroke-width"),
+  strokeAlign: document.querySelector("#prop-stroke-align"),
+  strokeLayout: document.querySelector("#prop-stroke-layout"),
+  strokeRemove: document.querySelector("#prop-stroke-remove"),
   cornerRadius: document.querySelector("#prop-radius"),
   opacity: document.querySelector("#prop-opacity"),
   rotation: document.querySelector("#prop-rotation"),
@@ -426,9 +440,20 @@ const resourceDataUrls = new Map();
 let localHtmlFiles = new Map();
 let lastHtmlImportReport = null;
 let htmlImportGeneration = 0;
-const loadedFontResourceIds = new Set();
+const ownedFonts = createOwnedFontManager({
+  fontSet: document.fonts,
+  createFace: typeof globalThis.FontFace === "function"
+    ? (family, source, descriptors) => new FontFace(family, source, descriptors)
+    : undefined,
+});
+let fontResourcesReady = true;
+let fontPageHidden = false;
+let fontPageLifecycle = 0;
+let fontPageRestorable = false;
 let liveRenderRevision = 0;
 let canvasHandles = [];
+let rendererMode = "gpu";
+let rendererPreferenceGeneration = 0;
 const decodedRendererResources = new Map();
 const gpuRenderer = createRendererController({
   canvas: elements.gpuCanvas,
@@ -439,29 +464,88 @@ const gpuRenderer = createRendererController({
       createRenderer: (options) => createRenderer({ ...options, background: "transparent" }),
     };
   },
-  onState(state) {
-    elements.gpuCanvas.hidden = !state.active;
-    elements.stageWrap.dataset.gpuActive = String(state.active);
+  onState(state) { rendererStateChanged("gpu", state); },
+});
+const browserRenderer = createRendererController({
+  mode: "browser",
+  canvas: elements.browserSurface,
+  capability: true,
+  loadRenderer: async () => {
+    const { createBrowserRenderer } = await import("./canvas/browser-renderer.mjs");
+    return { createRenderer: ({canvas}) => createBrowserRenderer({container:canvas}) };
+  },
+  onState(state) { rendererStateChanged("browser", state); },
+});
+function selectedRenderer() { return rendererMode === "browser" ? browserRenderer : gpuRenderer; }
+function rendererStateChanged(mode, state) {
+    const surface = mode === "browser" ? elements.browserSurface : elements.gpuCanvas;
+    surface.hidden = mode !== rendererMode || !state.active;
+    if (mode !== rendererMode) return;
+    const textRangeFailure = !state.active && typeof state.reason === "string" &&
+      state.reason.includes("TEXT_RANGES_UNSUPPORTED:");
+    const instanceSizingFailure = !state.active && mode === "browser" && typeof state.reason === "string" && state.reason.includes("BROWSER_INSTANCE_SIZING_UNSUPPORTED:");
+    const instanceEffectFailure = !state.active && mode === "browser" && typeof state.reason === "string" && state.reason.includes("BROWSER_INSTANCE_EFFECT_UNSUPPORTED:");
+    elements.stageWrap.dataset.gpuActive = String(mode === "gpu" && state.active);
+    elements.stageWrap.dataset.browserActive = String(mode === "browser" && state.active);
+    elements.stageWrap.dataset.rendererMode = mode;
     elements.stageWrap.dataset.rendererStatus = state.status;
     elements.rendererState.textContent = state.active
-      ? "CanvasKit GPU"
+      ? mode === "browser" ? "浏览器 HTML/CSS" : "CanvasKit GPU"
+      : textRangeFailure
+        ? "范围文字不支持"
+      : instanceSizingFailure
+        ? "实例尺寸不支持"
+      : instanceEffectFailure
+        ? "实例效果不支持"
       : state.loading
-        ? "GPU 加载中"
-        : "GPU 不可用";
-    elements.rendererState.title = state.reason || "CanvasKit · WebGL2";
+        ? mode === "browser" ? "浏览器加载中" : "GPU 加载中"
+        : mode === "browser" ? "浏览器不可用" : "GPU 不可用";
+    elements.rendererState.title = state.reason || (mode === "browser" ? "规范场景 · 浏览器 Flex/Grid" : "CanvasKit · WebGL2");
     elements.rendererMessage.hidden = state.active;
     elements.retryRenderer.hidden = state.loading;
     elements.rendererMessageText.textContent = state.loading
-      ? "正在准备 GPU 画布…"
+      ? mode === "browser" ? "正在准备浏览器画布…" : "正在准备 GPU 画布…"
+      : textRangeFailure
+        ? state.reason.split("TEXT_RANGES_UNSUPPORTED:").slice(1).join("TEXT_RANGES_UNSUPPORTED:").slice(0, 400)
+      : instanceSizingFailure
+        ? state.reason.split("BROWSER_INSTANCE_SIZING_UNSUPPORTED:").slice(1).join("BROWSER_INSTANCE_SIZING_UNSUPPORTED:").slice(0,400)
+      : instanceEffectFailure
+        ? state.reason.split("BROWSER_INSTANCE_EFFECT_UNSUPPORTED:").slice(1).join("BROWSER_INSTANCE_EFFECT_UNSUPPORTED:").slice(0,400)
       : state.status === "unavailable"
         ? "当前宿主不支持 GPU 画布，请更新 CodeShell 后重试。"
-        : "GPU 画布暂时不可用，设计数据已保留。请点击重试。";
-  },
-});
+        : mode === "browser" ? "浏览器画布暂时不可用，设计数据已保留。请点击重试。" : "GPU 画布暂时不可用，设计数据已保留。请点击重试。";
+    elements.retryRenderer.textContent = mode === "browser" ? "重试浏览器画布" : "重试 GPU 画布";
+    if (state.active && mode === "browser") { renderSceneOverlays(); updateInlineTextEditorPosition(); }
+}
+
+function chooseRenderer(next, {persist = true} = {}) {
+  if (!["gpu", "browser"].includes(next)) return;
+  rendererPreferenceGeneration += 1;
+  if (next !== rendererMode) {
+    finishInlineTextEdit();
+    void selectedRenderer().suspend("renderer-inactive");
+    rendererMode = next;
+    elements.gpuCanvas.hidden = true; elements.browserSurface.hidden = true;
+    void selectedRenderer().resume();
+  }
+  elements.rendererMode.value = next;
+  syncGpuRenderer();
+  if (persist) void hostCall("storage.set", {key:scopedStorageKey("rendererMode"),value:next}).catch(() => undefined);
+}
+
+async function loadRendererPreference(expectedEpoch = workspaceEpoch) {
+  const ticket = rendererPreferenceGeneration, key = scopedStorageKey("rendererMode");
+  const value = await hostCall("storage.get", {key}).catch(() => null);
+  if (expectedEpoch !== workspaceEpoch || ticket !== rendererPreferenceGeneration) return;
+  chooseRenderer(["gpu", "browser"].includes(value) ? value : "gpu", {persist:false});
+}
 
 function advanceDocumentEpoch() {
   documentEpoch += 1;
+  ownedFonts.invalidatePending();
+  fontResourcesReady = false;
   void gpuRenderer.update({ design: null, suspended: true });
+  void browserRenderer.update({ design: null, suspended: true });
 }
 
 function rendererResources() {
@@ -488,7 +572,7 @@ function rendererResources() {
 function syncGpuRenderer() {
   const bounds = elements.stage.getBoundingClientRect();
   elements.stageWrap.dataset.grid = String(showGrid);
-  const renderDesign = inlineTextEdit
+  const renderDesign = inlineTextEdit && rendererMode === "gpu"
     ? {
         ...design,
         nodes: design.nodes.map((node) =>
@@ -496,15 +580,16 @@ function syncGpuRenderer() {
         ),
       }
     : design;
-  void gpuRenderer.update({
+  void selectedRenderer().update({
     key: `${workspaceEpoch}/${documentEpoch}/${design.activePageId}`,
     revision: `${designStateSequence}/${liveRenderRevision}/${resourceDataUrls.size}/${inlineTextEdit?.nodeId ?? ""}`,
     design: renderDesign,
     getResources: rendererResources,
-    capable: !window.codeshellPanel?.call
+    viewOptions: {hiddenNodeIds:rendererMode === "browser" && inlineTextEdit ? [inlineTextEdit.nodeId] : []},
+    capable: rendererMode === "browser" || (!window.codeshellPanel?.call
       ? typeof WebAssembly === "object"
-      : context.capabilities?.packageAssets?.wasm === true,
-    suspended: workspaceLoading,
+      : context.capabilities?.packageAssets?.wasm === true),
+    suspended: workspaceLoading || fontPageHidden || !fontResourcesReady,
     viewport: {
       width: bounds.width,
       height: bounds.height,
@@ -728,7 +813,7 @@ function referencedDesignResourceIds(value = design) {
   const referencedIds = new Set();
   for (const node of allDesignNodes(value)) {
     if (node.type === "image" && node.imageRef) referencedIds.add(node.imageRef);
-    if (node.type === "text" && node.fontRef) referencedIds.add(node.fontRef);
+    for (const resourceId of designTextFontResourceIds(node,value.resources ?? [])) referencedIds.add(resourceId);
   }
   return referencedIds;
 }
@@ -745,29 +830,35 @@ function captureDocumentScope() {
 
 async function loadReferencedDesignResources() {
   const assertScope = captureDocumentScope();
-  if (!currentResourceCache) return;
+  const cache = currentResourceCache;
   const referencedIds = referencedDesignResourceIds();
-  await Promise.all(
-    [...referencedIds].map(async (resourceId) => {
-      const resource = await currentResourceCache.load(resourceId);
-      assertScope();
-      resourceDataUrls.set(resourceId, resource.dataUrl);
-      if (
-        resource.descriptor.kind === "font" &&
-        !loadedFontResourceIds.has(resourceId) &&
-        typeof globalThis.FontFace === "function"
-      ) {
-        const fontFace = new FontFace(resource.descriptor.family, `url(${resource.dataUrl})`, {
-          weight: String(resource.descriptor.weight),
-          style: resource.descriptor.style,
-        });
-        await fontFace.load();
-        assertScope();
-        document.fonts.add(fontFace);
-        loadedFontResourceIds.add(resourceId);
-      }
-    }),
-  );
+  const referencedOrder = [...referencedIds];
+  const resourceSignature = () => JSON.stringify((design.resources ?? []).filter((resource) => referencedIds.has(resource.id)));
+  const signature = resourceSignature();
+  const operation = ownedFonts.begin(() => {
+    assertScope();
+    if (cache !== currentResourceCache)
+      throw new Error("设计资源已在字体加载期间变化；旧操作已取消");
+  });
+  const assertResourceReferences = () => {
+    ownedFonts.assertCurrent(operation);
+    const currentIds = referencedDesignResourceIds();
+    if (signature !== resourceSignature() ||
+      currentIds.size !== referencedIds.size || [...currentIds].some((id, index) => id !== referencedOrder[index]))
+      throw new Error("设计资源已在字体加载期间变化；旧操作已取消");
+  };
+  fontResourcesReady = false;
+  const resources = cache ? await Promise.all([...referencedIds].map(async (resourceId) => {
+    const resource = await cache.load(resourceId);
+    ownedFonts.assertCurrent(operation);
+    return resource;
+  })) : [];
+  assertResourceReferences();
+  const prepared = await ownedFonts.prepare(operation, resources);
+  assertResourceReferences();
+  ownedFonts.commit(operation, prepared);
+  for (const resource of resources) resourceDataUrls.set(resource.descriptor.id, resource.dataUrl);
+  fontResourcesReady = true;
 }
 
 async function ensureDesignPageLoaded(pageId) {
@@ -862,6 +953,8 @@ async function compactIndexedPageRuntime() {
   for (const resourceId of resourceDataUrls.keys()) {
     if (!retainedResourceIds.has(resourceId)) resourceDataUrls.delete(resourceId);
   }
+  await loadReferencedDesignResources();
+  assertScope();
 }
 
 async function activateDesignPage(pageId) {
@@ -998,6 +1091,38 @@ function selectedTransformNodes() {
 function visualDeltaForNode(node, delta, movingIds) {
   const inheritedRotation = inheritedNodeRotation(design.nodes, node, movingIds);
   return inheritedRotation ? rotateVector(delta, -inheritedRotation) : delta;
+}
+
+function browserReorderState(node, point) {
+  if (rendererMode !== "browser" || selectedIds.size !== 1 || !isAutoLayoutPositionOwned(node)) return null;
+  const parent = nodeById(node.parentId);
+  if (!["horizontal", "vertical"].includes(parent.layout) || parent.layoutReverse || ["wrap","wrap-reverse"].includes(parent.layoutWrap) ||
+      node.rotation || inheritedNodeRotation(design.nodes, node) !== 0) return null;
+  const geometry = browserRenderer.geometry();
+  const siblings = design.nodes.filter(candidate => candidate.parentId === parent.id &&
+    candidate.id !== node.id && candidate.layoutPositioning !== "absolute" && candidate.visible !== false);
+  if (!geometry?.has(node.id) || siblings.some(candidate => !geometry.has(candidate.id))) return null;
+  return {kind:"reorder",nodeId:node.id,parentId:parent.id,start:point,axis:parent.layout === "horizontal" ? "x" : "y",
+    siblings:siblings.map(candidate => ({id:candidate.id,...geometry.get(candidate.id)})),
+    originalOrder:[...design.nodes],moved:false,guides:[]};
+}
+
+function moveBrowserReorder(state, point) {
+  if (Math.hypot(point.x-state.start.x,point.y-state.start.y) < 3/zoom) return;
+  const axis = state.axis, size = axis === "x" ? "width" : "height";
+  const before = state.siblings.find(sibling => point[axis] < sibling[axis]+sibling[size]/2);
+  const movingIds = new Set([state.nodeId,...descendantIds(design.nodes,new Set([state.nodeId]))]);
+  const tree = design.nodes.filter(node => movingIds.has(node.id));
+  const remaining = design.nodes.filter(node => !movingIds.has(node.id));
+  let at = before ? remaining.findIndex(node => node.id === before.id) : -1;
+  if (at < 0) {
+    const lastSibling = state.siblings.at(-1);
+    const lastIds = lastSibling ? new Set([lastSibling.id,...descendantIds(remaining,new Set([lastSibling.id]))]) : new Set([state.parentId]);
+    at = remaining.reduce((last,node,index) => lastIds.has(node.id) ? index+1 : last,0);
+  }
+  remaining.splice(at,0,...tree);
+  design.nodes.splice(0,design.nodes.length,...remaining);
+  state.moved = design.nodes.some((node,index) => node !== state.originalOrder[index]);
 }
 
 function containingFrame(point) {
@@ -1556,7 +1681,7 @@ function scheduleInteractionRender() {
   if (interactionRenderFrame) return;
   interactionRenderFrame = requestAnimationFrame(() => {
     interactionRenderFrame = 0;
-    if (["move", "resize", "create"].includes(interaction?.kind)) liveRenderRevision += 1;
+    if (["move", "resize", "create", "reorder"].includes(interaction?.kind)) liveRenderRevision += 1;
     renderScene();
     renderProperties();
   });
@@ -1573,8 +1698,9 @@ function renderScene() {
 
 function renderSceneOverlays() {
   const bounds = elements.stage.getBoundingClientRect();
+  const viewDesign = interactionDesign();
   canvasHandles = drawCanvasInteraction(elements.stage, {
-    design,
+    design: viewDesign,
     selectedIds,
     pan,
     zoom,
@@ -1584,13 +1710,37 @@ function renderSceneOverlays() {
     activeTool,
     interaction,
     isLocked: isEffectivelyLocked,
+    allowResize: node => rendererMode !== "browser" || !nodeOrAncestorRotated(nodeById(node.id)),
+    selectionGeometry: rendererMode === "browser" ? browserRenderer.geometry() : null,
   });
-  const index = new Map(design.nodes.map((node) => [node.id, node]));
-  renderSelectionSize(selectedNodes().filter((node) => isDesignNodeVisible(design, node, index)));
+  const index = new Map(viewDesign.nodes.map((node) => [node.id, node]));
+  renderSelectionSize(viewDesign.nodes.filter(node => selectedIds.has(node.id) && isDesignNodeVisible(viewDesign, node, index)), viewDesign.nodes);
 }
 
-function renderSelectionSize(nodes) {
-  const bounds = visualSelectionBounds(nodes, design.nodes);
+function interactionDesign() {
+  const geometry = rendererMode === "browser" ? browserRenderer.geometry() : null;
+  if (!geometry) return rendererMode === "browser" ? {...design,nodes:[]} : design;
+  return {...design,nodes:design.nodes.map(node => {
+    const box = geometry.get(node.id);
+    return box ? {...node,x:box.x,y:box.y,width:box.width,height:box.height,rotation:0} : node;
+  })};
+}
+
+function nodeOrAncestorRotated(node) {
+  const seen = new Set();
+  while (node && !seen.has(node.id)) { if (node.rotation) return true; seen.add(node.id); node = nodeById(node.parentId); }
+  return false;
+}
+
+function canvasHit(point) {
+  const viewDesign = interactionDesign();
+  const label = hitTestCanvasLabel(viewDesign, point, zoom, selectedIds, elements.stage.getContext("2d"));
+  if (label) return nodeById(label.id);
+  return rendererMode === "browser" ? nodeById(browserRenderer.hitTest(point)) : hitTestCanvasNode(design, point);
+}
+
+function renderSelectionSize(nodes, allNodes = design.nodes) {
+  const bounds = visualSelectionBounds(nodes, allNodes);
   if (!bounds) {
     elements.selectionSize.hidden = true;
     return;
@@ -1607,7 +1757,20 @@ function renderSelectionSize(nodes) {
   elements.selectionSize.hidden = false;
 }
 
-function setTextNodeValue(node, value) {
+const textInputSelections = new WeakMap();
+function setTextNodeValue(node, value, { draft, affinity = "before", selection } = {}) {
+  if (node.textRanges !== undefined) {
+    const contentKeys = ["text", "textSource", "textRanges", "textMetrics", "textMeasurement", "textFlow", "textOverflow", "textFlowWidth"];
+    const next = draft ? { ...node } : replaceTextValue(node, value, affinity, selection);
+    if (draft) for (const key of contentKeys) {
+      if (Object.hasOwn(draft, key)) next[key] = draft[key]; else delete next[key];
+    }
+    validateTextRanges(next);
+    for (const key of Object.keys(node)) if (!Object.hasOwn(next, key)) delete node[key];
+    Object.assign(node, next);
+    reflowParent(node);
+    return;
+  }
   node.text = value.slice(0, 4000);
   if (Object.hasOwn(node, "textSource")) node.textSource = node.text;
   delete node.textFlowWidth;
@@ -1634,11 +1797,12 @@ function finishInlineTextEdit({ cancel = false, focusStage = false } = {}) {
   ) {
     if (
       String(edit.node.text ?? "") !== edit.originalText ||
-      edit.node.textSource !== edit.originalSource
+      edit.node.textSource !== edit.originalSource ||
+      JSON.stringify(edit.node.textRanges) !== edit.originalRanges
     ) {
       notify("图层文字在编辑期间已变化；未覆盖较新的文字，请核对后重试", "error");
     } else {
-      setTextNodeValue(edit.node, value);
+      setTextNodeValue(edit.node, value, { draft: edit.draft });
       commitHistory();
       markChanged();
     }
@@ -1655,18 +1819,20 @@ function updateInlineTextEditorPosition() {
     return;
   }
   const node = edit.node;
-  const matrix = canvasNodeMatrix(node, design.nodes, pan, zoom);
+  const box = rendererMode === "browser" ? browserRenderer.geometry()?.get(node.id) : null;
+  const matrix = box ? [box.matrix[0]*zoom,box.matrix[1]*zoom,box.matrix[2]*zoom,box.matrix[3]*zoom,pan.x+box.matrix[4]*zoom,pan.y+box.matrix[5]*zoom]
+    : canvasNodeMatrix(node, design.nodes, pan, zoom);
   const font = design.resources?.find((resource) => resource.id === node.fontRef);
   Object.assign(elements.inlineTextEditor.style, {
-    width: `${Math.max(28, node.width)}px`,
-    height: `${Math.max(24, node.height)}px`,
-    fontFamily: designFontFamilyCss(
-      font?.family ?? node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
-    ),
+    width: `${Math.max(28, box?.boxWidth ?? node.width)}px`,
+    height: `${Math.max(24, box?.boxHeight ?? node.height)}px`,
+    fontFamily: box?.fontFamily ?? (font
+      ? designResourceFontFamilyCss(node.fontFamily, font.family)
+      : designFontFamilyCss(node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif")),
     fontSize: `${node.fontSize}px`,
     fontWeight: String(node.fontWeight),
     fontStyle: node.fontStyle ?? "normal",
-    lineHeight: String(node.lineHeight ?? 1.2),
+    lineHeight: textLineHeightCss(node),
     letterSpacing: `${node.letterSpacing ?? 0}px`,
     textAlign: node.textAlign ?? "left",
     transform: `matrix(${matrix.join(",")})`,
@@ -1692,6 +1858,8 @@ function beginInlineTextEdit(node) {
     nodeId: node.id,
     originalText: String(node.text ?? ""),
     originalSource: node.textSource,
+    originalRanges: JSON.stringify(node.textRanges),
+    ...(node.textRanges !== undefined ? { draft: clone(node) } : {}),
     originalValue: String(node.textSource ?? node.text ?? ""),
     workspaceEpoch,
     documentEpoch,
@@ -1803,7 +1971,15 @@ function renderProperties() {
   propertyInputs.height.value = String(round(single.height));
   propertyInputs.fill.value = single.fill;
   propertyInputs.stroke.value = single.stroke;
-  propertyInputs.strokeWidth.value = String(round(single.strokeWidth));
+  const strokeWidth = inactiveStrokeWidth(single);
+  propertyInputs.strokeWidth.value = Number.isFinite(strokeWidth) ? String(round(strokeWidth)) : "";
+  propertyInputs.strokeAlign.value = single.nativeStrokeInactive && !single.nativeStrokeInactive.strokeAlign ? "" : strokeAlignment(single);
+  document.getElementById("stroke-inactive-controls").hidden = !single.nativeStrokeInactive;
+  document.getElementById("stroke-align-field").hidden = !single.nativeStrokeInactive;
+  const inactiveIncluded = single.nativeStrokeInactive?.strokesIncludedInLayout ?? single.nativeStrokeInactive?.strokesIncludedInLayoutDefault;
+  propertyInputs.strokeLayout.value = inactiveIncluded === undefined ? "" : inactiveIncluded ? "included" : "excluded";
+  document.getElementById("stroke-layout-field").hidden = !single.nativeStrokeInactive || !["frame", "component"].includes(single.type) || !["horizontal", "vertical", "grid"].includes(single.layout);
+  propertyInputs.strokeRemove.disabled = single.stroke === "transparent" && !single.strokeSides;
   propertyInputs.cornerRadius.value = String(round(single.cornerRadius));
   propertyInputs.opacity.value = String(Math.round(single.opacity * 100));
   propertyInputs.rotation.value = String(round(single.rotation));
@@ -1940,15 +2116,27 @@ function renderProperties() {
   propertyInputs.notes.value = single.notes ?? "";
   const shadowSupported = single.type !== "group";
   elements.shadowSection.hidden = !shadowSupported;
-  propertyInputs.shadowEnabled.checked = Boolean(single.shadow);
-  elements.shadowControls.hidden = !single.shadow;
-  if (single.shadow) {
-    propertyInputs.shadowColor.value = single.shadow.color;
-    propertyInputs.shadowColorPicker.value = single.shadow.color;
-    propertyInputs.shadowX.value = String(round(single.shadow.x));
-    propertyInputs.shadowY.value = String(round(single.shadow.y));
-    propertyInputs.shadowBlur.value = String(round(single.shadow.blur));
-    propertyInputs.shadowOpacity.value = String(Math.round(single.shadow.opacity * 100));
+  if(shadowLayerNodeId!==single.id){shadowLayerIndex=0;shadowLayerNodeId=single.id;}
+  shadowLayerIndex=Math.min(shadowLayerIndex,(single.shadowStack?.layers.length??1)-1);
+  const selectedShadow=single.shadowStack?.layers[shadowLayerIndex]??single.shadow;
+  const stackTools=document.getElementById("shadow-stack-tools"),stackSelect=document.getElementById("prop-shadow-layer");
+  stackTools.hidden=!["frame","rectangle","component"].includes(single.type);
+  stackSelect.replaceChildren();
+  for(const [index,layer] of (single.shadowStack?.layers??[]).entries()){const option=document.createElement("option");option.value=index;option.textContent=`${index+1}. ${layer.kind==="inner"?"内阴影":"外阴影"}${layer.visible?"":"（隐藏）"}`;stackSelect.append(option);}
+  stackSelect.value=String(shadowLayerIndex);stackSelect.hidden=!single.shadowStack;
+  document.getElementById("shadow-layer-add").disabled=isEffectivelyLocked(single) || (single.shadowStack?.layers.length??0)>=8;
+  document.getElementById("prop-shadow-inner").checked=selectedShadow?.kind==="inner";
+  document.getElementById("prop-shadow-visible").checked=selectedShadow?.visible!==false;
+  for(const id of ["prop-shadow-inner","prop-shadow-visible","shadow-layer-remove","shadow-layer-up","shadow-layer-down"])document.getElementById(id).disabled=!single.shadowStack || isEffectivelyLocked(single);
+  propertyInputs.shadowEnabled.checked = Boolean(selectedShadow);
+  elements.shadowControls.hidden = !selectedShadow;
+  if (selectedShadow) {
+    propertyInputs.shadowColor.value = selectedShadow.color;
+    propertyInputs.shadowColorPicker.value = selectedShadow.color;
+    propertyInputs.shadowX.value = String(round(selectedShadow.x));
+    propertyInputs.shadowY.value = String(round(selectedShadow.y));
+    propertyInputs.shadowBlur.value = String(round(selectedShadow.blur));
+    propertyInputs.shadowOpacity.value = String(Math.round(selectedShadow.opacity * 100));
   }
 
   const isText = single.type === "text";
@@ -1962,6 +2150,10 @@ function renderProperties() {
       single.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif";
     propertyInputs.fontStyle.value = single.fontStyle ?? "normal";
     propertyInputs.lineHeight.value = String(single.lineHeight);
+    propertyInputs.lineHeightUnit.value = single.lineHeightUnit ?? "ratio";
+    propertyInputs.lineHeight.min = single.lineHeightUnit === "pixels" ? "4.2" : "0.7";
+    propertyInputs.lineHeight.max = single.lineHeightUnit === "pixels" ? "720" : "3";
+    propertyInputs.lineHeight.step = single.lineHeightUnit === "pixels" ? "0.1" : "0.05";
     propertyInputs.letterSpacing.value = String(single.letterSpacing ?? 0);
     propertyInputs.textDecoration.value = single.textDecoration ?? "none";
     propertyInputs.textAlign.value = single.textAlign;
@@ -2446,7 +2638,7 @@ function documentPoint(event) {
 }
 
 function pointerDown(event) {
-  if (interaction || !gpuRenderer.state().active || (event.button !== 0 && event.button !== 1))
+  if (interaction || !selectedRenderer().state().active || (event.button !== 0 && event.button !== 1))
     return;
   const before = {
     selectedId,
@@ -2460,10 +2652,7 @@ function pointerDown(event) {
     zoom,
     window.matchMedia("(pointer: coarse)").matches,
   );
-  const targetId = (
-    hitTestCanvasLabel(design, point, zoom, selectedIds, elements.stage.getContext("2d")) ??
-    hitTestCanvasNode(design, point)
-  )?.id;
+  const targetId = canvasHit(point)?.id;
   const shouldPan = activeTool === "hand" || spacePressed || event.button === 1;
 
   // Recognize completed stationary taps across pointer-capture transitions.
@@ -2509,12 +2698,14 @@ function pointerDown(event) {
     };
   } else if (handle && selectedNodes().length === 1 && selectedNode()) {
     const node = selectedNode();
+    const box = rendererMode === "browser" ? browserRenderer.geometry()?.get(node.id) : null;
     interaction = {
       kind: "resize",
       nodeId: node.id,
       handle,
       start: point,
-      bounds: { x: node.x, y: node.y, width: node.width, height: node.height },
+      bounds: box ? {x:box.x,y:box.y,width:box.width,height:box.height} : { x: node.x, y: node.y, width: node.width, height: node.height },
+      ...(box ? {browser:true,original:Object.fromEntries(["x","y","width","height","layoutSizingHorizontal","layoutSizingVertical"].map(key=>[key,node[key]]))} : {}),
     };
   } else if (activeTool === "select") {
     if (!targetId) {
@@ -2536,12 +2727,17 @@ function pointerDown(event) {
       if (!selectedIds.has(targetId)) selectOnly(targetId);
       const node = design.nodes.find((candidate) => candidate.id === targetId);
       const movableNodes = selectedTransformNodes();
-      if (node && !isEffectivelyLocked(node) && movableNodes.length > 0) {
+      const reorder = node && !isEffectivelyLocked(node) ? browserReorderState(node,point) : null;
+      if (reorder) interaction = reorder;
+      else if (node && !isEffectivelyLocked(node) && movableNodes.length > 0) {
         const movingIds = new Set(movableNodes.map((candidate) => candidate.id));
+        const viewDesign = interactionDesign(), viewNodes = viewDesign.nodes.filter(candidate=>movingIds.has(candidate.id));
+        const viewAnchor = viewNodes.find(candidate=>candidate.id===selectedId) ?? viewNodes[0];
         interaction = {
           kind: "move",
           start: point,
-          bounds: visualSelectionBounds(movableNodes, design.nodes),
+          bounds: visualSelectionBounds(viewNodes, viewDesign.nodes),
+          snapAnchor: viewAnchor ? {x:viewAnchor.x,y:viewAnchor.y} : null,
           origins: new Map(
             movableNodes.map((candidate) => [candidate.id, { x: candidate.x, y: candidate.y }]),
           ),
@@ -2626,15 +2822,16 @@ function pointerMove(event) {
   }
   const nodeIndex = new Map(design.nodes.map((node) => [node.id, node]));
   if (interaction.kind === "marquee") {
+    const viewDesign = interactionDesign(), viewIndex = new Map(viewDesign.nodes.map(node => [node.id,node]));
     interaction.current = point;
     const left = Math.min(interaction.start.x, point.x);
     const top = Math.min(interaction.start.y, point.y);
     const right = Math.max(interaction.start.x, point.x);
     const bottom = Math.max(interaction.start.y, point.y);
-    const enclosed = design.nodes
+    const enclosed = viewDesign.nodes
       .filter((node) => {
-        if (!isDesignNodeVisible(design, node, nodeIndex)) return false;
-        const bounds = transformedNodeBoundsInTree(design.nodes, node, nodeIndex);
+        if (!isDesignNodeVisible(viewDesign, node, viewIndex)) return false;
+        const bounds = transformedNodeBoundsInTree(viewDesign.nodes, node, viewIndex);
         return (
           bounds &&
           bounds.x >= left &&
@@ -2649,9 +2846,11 @@ function pointerMove(event) {
     renderAll();
     return;
   }
-  if (interaction.kind === "move") {
+  if (interaction.kind === "reorder") {
+    moveBrowserReorder(interaction, point);
+  } else if (interaction.kind === "move") {
     const anchorOrigin =
-      interaction.origins.get(selectedId) ?? interaction.origins.values().next().value;
+      interaction.snapAnchor ?? interaction.origins.get(selectedId) ?? interaction.origins.values().next().value;
     let deltaX = point.x - interaction.start.x;
     let deltaY = point.y - interaction.start.y;
     if (snapEnabled && !event.altKey && anchorOrigin && !interaction.inheritsRotation) {
@@ -2659,11 +2858,12 @@ function pointerMove(event) {
       deltaY = snapValue(anchorOrigin.y + deltaY) - anchorOrigin.y;
     }
     if (snapEnabled && !event.altKey && interaction.bounds && !interaction.inheritsRotation) {
-      const stationaryNodes = design.nodes.filter(
+      const viewDesign = interactionDesign(), viewIndex = new Map(viewDesign.nodes.map(candidate=>[candidate.id,candidate]));
+      const stationaryNodes = viewDesign.nodes.filter(
         (node) => !interaction.origins.has(node.id) && isDesignNodeVisible(design, node, nodeIndex),
       );
       const stationaryBounds = stationaryNodes.map((node) => ({
-        ...transformedNodeBoundsInTree(design.nodes, node, nodeIndex),
+        ...transformedNodeBoundsInTree(viewDesign.nodes, node, viewIndex),
         id: node.id,
       }));
       const snapped = snapBoundsToNodes(
@@ -2712,7 +2912,16 @@ function pointerMove(event) {
   } else if (interaction.kind === "resize") {
     const node = nodeById(interaction.nodeId);
     if (!node) return;
-    resizeNode(node, snapPoint(point, event.altKey), interaction, event.shiftKey);
+    if (interaction.browser) {
+      const resized = {...interaction.bounds};
+      resizeNode(resized, snapPoint(point,event.altKey), interaction,event.shiftKey);
+      node.width=resized.width; node.height=resized.height;
+      node.layoutSizingHorizontal="fixed"; node.layoutSizingVertical="fixed";
+      if (!isAutoLayoutPositionOwned(node)) {
+        node.x=round(interaction.original.x+resized.x-interaction.bounds.x);
+        node.y=round(interaction.original.y+resized.y-interaction.bounds.y);
+      }
+    } else resizeNode(node, snapPoint(point, event.altKey), interaction, event.shiftKey);
   }
   updateDirtyState();
   scheduleInteractionRender();
@@ -2789,7 +2998,7 @@ function finishInteraction(pointerId = null) {
   const changed =
     finished.kind === "create" ||
     finished.kind === "resize" ||
-    (finished.kind === "move" && finished.moved);
+    (["move","reorder"].includes(finished.kind) && finished.moved);
   if (changed) {
     if (node) {
       reflowParent(node);
@@ -2804,7 +3013,7 @@ function finishInteraction(pointerId = null) {
 
 function pointerUp(event) {
   if (lastTextPointer?.pointerId === event.pointerId && interactionIsCurrent(lastTextPointer)) {
-    lastTextPointer.completed = interaction?.kind === "move" && !interaction.moved;
+    lastTextPointer.completed = ["move","reorder"].includes(interaction?.kind) && !interaction.moved;
   }
   finishInteraction(event.pointerId);
 }
@@ -2821,9 +3030,13 @@ function cancelInteraction(pointerId = null) {
       const node = nodeById(nodeId);
       if (node) Object.assign(node, origin);
     }
+  } else if (cancelled.kind === "reorder") {
+    design.nodes.splice(0,design.nodes.length,...cancelled.originalOrder);
   } else if (cancelled.kind === "resize") {
     const node = nodeById(cancelled.nodeId);
-    if (node) Object.assign(node, cancelled.bounds);
+    if (node) for (const [key,value] of Object.entries(cancelled.original ?? cancelled.bounds)) {
+      if (value === undefined) delete node[key]; else node[key] = value;
+    }
   } else if (cancelled.kind === "pan") {
     Object.assign(pan, cancelled.startPan);
   }
@@ -2844,6 +3057,7 @@ function cancelInteraction(pointerId = null) {
   }
   syncActivePageNodes();
   updateDirtyState();
+  liveRenderRevision += 1;
   renderAll();
 }
 
@@ -3880,6 +4094,8 @@ async function openDocument(path, { discardChanges = false, onOpened = () => {} 
   const operationStateRevision = currentDesignStateRevision();
   clearTimeout(recoveryTimer);
   setSaveState("打开中…", "idle");
+  const before = captureImportRollback();
+  let appliedDocumentEpoch = null, appliedStateRevision = null;
   try {
     const result = await hostCall("workspace.readText", { path });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
@@ -3904,7 +4120,6 @@ async function openDocument(path, { discardChanges = false, onOpened = () => {} 
     currentPageCache = resolved.pageCache ?? null;
     currentResourceCache = resolved.resourceCache ?? null;
     resourceDataUrls.clear();
-    loadedFontResourceIds.clear();
     recoveryBaseDocument = null;
     currentPersistenceMode = resolved.mode;
     elements.path.value = path;
@@ -3912,6 +4127,8 @@ async function openDocument(path, { discardChanges = false, onOpened = () => {} 
     resetHistory();
     updateDirtyState();
     onOpened();
+    appliedDocumentEpoch = documentEpoch;
+    appliedStateRevision = currentDesignStateRevision();
     await loadReferencedDesignResources();
     setRepoLinkState("Repo · 已打开", "linked");
     renderAll();
@@ -3928,6 +4145,11 @@ async function openDocument(path, { discardChanges = false, onOpened = () => {} 
     return true;
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) throw error;
+    if (appliedDocumentEpoch === documentEpoch && appliedStateRevision === currentDesignStateRevision() &&
+      designPublicationSequence === before.publicationSequence) {
+      try { restoreImportRollback(before); }
+      catch (rollbackError) { throw new AggregateError([error, rollbackError], "打开设计失败，恢复先前状态时也发生错误"); }
+    }
     const message = error instanceof Error ? error.message : "打开失败";
     if (dirty && !discardChanges) queueRecovery();
     setSaveState("打开失败", "error");
@@ -3978,6 +4200,7 @@ async function checkExternalChange({ force = false } = {}) {
     }
     const externalVersion = disk.revision ?? `mtime:${disk.modifiedAt}`;
     if (!dirty) {
+      let before = null, appliedDocumentEpoch = null, appliedStateRevision = null;
       try {
         const resolved = await resolveWorkspaceDesignSource(disk, operationWorkspaceEpoch);
         const nextDesign = resolved.pageCache
@@ -3993,6 +4216,7 @@ async function checkExternalChange({ force = false } = {}) {
         ) {
           return false;
         }
+        before = captureImportRollback();
         cancelInteraction();
         design = nextDesign;
         advanceDocumentEpoch();
@@ -4005,19 +4229,23 @@ async function checkExternalChange({ force = false } = {}) {
         currentPageCache = resolved.pageCache ?? null;
         currentResourceCache = resolved.resourceCache ?? null;
         resourceDataUrls.clear();
-        loadedFontResourceIds.clear();
         recoveryBaseDocument = null;
         currentPersistenceMode = resolved.mode;
         warnedExternalVersion = null;
         savedSnapshot = serializeEditorState();
         resetHistory();
         updateDirtyState();
+        appliedDocumentEpoch = documentEpoch;
+        appliedStateRevision = currentDesignStateRevision();
         await loadReferencedDesignResources();
         renderAll();
         setRepoLinkState("Repo 已同步", "linked");
         notify(`已同步 Agent 对 ${sourcePath} 的修改`);
         return true;
       } catch (error) {
+        if (before && workspaceEpoch === operationWorkspaceEpoch && appliedDocumentEpoch === documentEpoch &&
+          appliedStateRevision === currentDesignStateRevision() && designPublicationSequence === before.publicationSequence)
+          restoreImportRollback(before);
         warnedExternalVersion = externalVersion;
         setSaveState("Repo 文件无效", "error");
         notify(error instanceof Error ? error.message : "Repo 中的设计文件无效", "error");
@@ -4685,7 +4913,8 @@ function captureImportRollback() {
     publicationSequence: designPublicationSequence,
     path: elements.path.value,
     resourceDataUrls: new Map(resourceDataUrls),
-    loadedFontResourceIds: new Set(loadedFontResourceIds),
+    fontLease: ownedFonts.captureLease(),
+    fontResourcesReady,
   };
 }
 
@@ -4720,8 +4949,8 @@ function restoreImportRollback(before) {
   elements.path.value = before.path;
   resourceDataUrls.clear();
   for (const [id, value] of before.resourceDataUrls) resourceDataUrls.set(id, value);
-  loadedFontResourceIds.clear();
-  for (const id of before.loadedFontResourceIds) loadedFontResourceIds.add(id);
+  const fontsRestored = ownedFonts.restoreLease(before.fontLease);
+  fontResourcesReady = fontsRestored && before.fontResourcesReady && !fontPageHidden;
   updateDirtyState();
   renderAll();
   if (dirty) queueRecovery();
@@ -4805,18 +5034,18 @@ async function replaceDesignWithHtmlImport(
     sha256Bytes,
   });
   resourceDataUrls.clear();
-  loadedFontResourceIds.clear();
   advanceDocumentEpoch();
   clearSelection();
   collapsedLayerIds.clear();
   commitHistory();
   if (targetPath) elements.path.value = targetPath;
   onReplaced();
-  markChanged();
+  markChanged(false);
   const importedDocumentEpoch = documentEpoch;
   const importedStateRevision = currentDesignStateRevision();
   let savedResult = null;
   try {
+    await loadReferencedDesignResources();
     await afterReplaced();
     assertWorkspaceEpoch(operationWorkspaceEpoch);
     if (currentDesignStateRevision() !== importedStateRevision)
@@ -4856,6 +5085,7 @@ async function replaceDesignWithHtmlImport(
       changedNodeIds: [...changedNodeIds],
     };
   }
+  renderAll();
   requestAnimationFrame(fitCanvas);
   return {
     path: elements.path.value.trim(),
@@ -5224,7 +5454,8 @@ function newDocument({
   currentPageCache = null;
   currentResourceCache = null;
   resourceDataUrls.clear();
-  loadedFontResourceIds.clear();
+  ownedFonts.clear();
+  fontResourcesReady = true;
   currentPersistenceMode = "single";
   elements.path.value = path;
   savedSnapshot = "";
@@ -5420,6 +5651,7 @@ function buildAgentTargetContext(target) {
       "gap",
       "padding",
       "gridColumns",
+      ...GRID_CONTAINER_FIELDS,
     ])
       if (node[key] !== undefined) value[key] = node[key];
     if (node.type === "text")
@@ -5578,13 +5810,32 @@ function bindPropertyInput(input, update, eventName = "input", layoutEffect = "n
   input.addEventListener(eventName, () => {
     const node = selectedNode();
     if (!node || isEffectivelyLocked(node)) return;
-    update(node, input.value);
+    const before = isContainerNode(node) ? { ...node } : node.textRanges !== undefined ? clone(node) : null;
+    try {
+      update(node, input.value);
+      validateTextRanges(node);
+    } catch (error) {
+      if (!before) throw error;
+      for (const key of Object.keys(node)) if (!Object.hasOwn(before, key)) delete node[key];
+      Object.assign(node, before);
+      notify(error.message, "error"); renderProperties(); return;
+    }
+    clearInvalidStrokeLayoutExclusion(node);
+    if (before) try { validateLayoutSpacing(node); } catch (error) {
+      for (const key of Object.keys(node)) if (!(key in before)) delete node[key];
+      Object.assign(node, before);
+      notify(error.message, "error");
+      renderProperties();
+      return;
+    }
     if (layoutEffect === "size" && isContainerNode(node)) {
       applyAutoLayouts(design.nodes, new Set([node.id, ...(node.parentId ? [node.parentId] : [])]));
     } else if (layoutEffect === "size") {
       reflowParent(node);
     } else if (layoutEffect === "container" && isContainerNode(node)) {
-      applyAutoLayouts(design.nodes, new Set([node.id]));
+      applyAutoLayouts(design.nodes, new Set([node.id, ...(node.parentId ? [node.parentId] : [])]));
+    } else if (layoutEffect === "typography" && node.type === "text") {
+      applyAutoLayouts(design.nodes, new Set(node.parentId ? [node.parentId] : []));
     }
     markChanged();
   });
@@ -5622,7 +5873,9 @@ function bindColorTextInput(input, currentValue, update, allowTransparent = fals
   });
 }
 
+let shadowLayerIndex = 0, shadowLayerNodeId = null;
 function ensureNodeShadow(node) {
+  if(node?.shadowStack)return node.shadowStack.layers[shadowLayerIndex];
   if (!node || node.type === "group") return null;
   if (!node.shadow) {
     node.shadow = {
@@ -5681,36 +5934,58 @@ bindPropertyInput(propertyInputs.notes, (node, value) => {
   else delete node.notes;
 });
 bindPropertyInput(propertyInputs.text, (node, value) => {
-  if (node.type === "text") setTextNodeValue(node, value);
+  const selection = textInputSelections.get(propertyInputs.text);
+  textInputSelections.delete(propertyInputs.text);
+  if (node.type === "text") setTextNodeValue(node, value, { affinity: selection?.affinity ?? "before", selection });
+});
+propertyInputs.text.addEventListener("beforeinput", () => {
+  const start = propertyInputs.text.selectionStart, end = propertyInputs.text.selectionEnd;
+  textInputSelections.set(propertyInputs.text, { start, end, affinity: start === end ? "before" : "after" });
 });
 bindPropertyInput(propertyInputs.fontSize, (node, value) => {
   if (node.type === "text") node.fontSize = clamp(Number(value) || 6, 6, 240);
-});
+}, "input", "typography");
 bindPropertyInput(
   propertyInputs.fontWeight,
   (node, value) => {
     if (node.type === "text") node.fontWeight = Number(value);
   },
   "change",
+  "typography",
 );
 bindPropertyInput(propertyInputs.fontFamily, (node, value) => {
   if (node.type !== "text") return;
   const family = value.trim().slice(0, 120);
   if (family) node.fontFamily = family;
-});
+}, "input", "typography");
 bindPropertyInput(
   propertyInputs.fontStyle,
   (node, value) => {
     if (node.type === "text" && ["normal", "italic"].includes(value)) node.fontStyle = value;
   },
   "change",
+  "typography",
 );
 bindPropertyInput(propertyInputs.lineHeight, (node, value) => {
-  if (node.type === "text") node.lineHeight = clamp(finiteOr(value, 1.2), 0.7, 3);
-});
+  if (node.type === "text") node.lineHeight = node.lineHeightUnit === "pixels"
+    ? clamp(finiteOr(value, 20), 4.2, 720)
+    : clamp(finiteOr(value, 1.2), 0.7, 3);
+}, "input", "typography");
+bindPropertyInput(propertyInputs.lineHeightUnit, (node, value) => {
+  if (node.type !== "text" || !["ratio", "pixels"].includes(value)) return;
+  const pixels = textLineHeightPixels(node);
+  const next = { ...node, lineHeight: value === "pixels" ? pixels : pixels / node.fontSize,
+    lineHeightUnit: value === "pixels" ? "pixels" : undefined };
+  if (!validTextLineHeight(next)) {
+    notify("当前行高不能在受支持范围内转换单位；已保留原值", "error"); renderProperties(); return;
+  }
+  node.lineHeight = next.lineHeight;
+  if (next.lineHeightUnit) node.lineHeightUnit = next.lineHeightUnit;
+  else delete node.lineHeightUnit;
+}, "change", "typography");
 bindPropertyInput(propertyInputs.letterSpacing, (node, value) => {
   if (node.type === "text") node.letterSpacing = clamp(finiteOr(value, 0), -20, 100);
-});
+}, "input", "typography");
 bindPropertyInput(
   propertyInputs.textDecoration,
   (node, value) => {
@@ -5746,15 +6021,38 @@ bindColorTextInput(
   () => selectedNode()?.stroke ?? "transparent",
   (value) => {
     const node = selectedNode();
-    if (node && !isEffectivelyLocked(node)) node.stroke = value;
+    if (node && !isEffectivelyLocked(node)) {
+      try{editDesignStrokeColor(node,value,{nodes:design.nodes,parent:nodeById(node.parentId)});applyAllAutoLayouts(design.nodes);}catch(error){notify(error.message,"error");}
+    }
   },
   true,
 );
 bindPropertyInput(propertyInputs.cornerRadius, (node, value) => {
-  node.cornerRadius = clamp(Number(value) || 0, 0, 9999);
+  const radius=clamp(Number(value) || 0, 0, 9999);
+  try {const next={...node,cornerRadius:radius,cornerRadii:undefined};validateDesignStroke(next);validateShadowStack(next);}
+  catch(error){propertyInputs.cornerRadius.value=String(node.cornerRadius);notify(error.message,"error");return;}
+  node.cornerRadius = radius;
+  delete node.cornerRadii;
 });
 bindPropertyInput(propertyInputs.strokeWidth, (node, value) => {
-  node.strokeWidth = clamp(finiteOr(value, 0), 0, 100);
+  try{editDesignStrokeWidth(node,clamp(finiteOr(value, 0), 0, 100),{nodes:design.nodes,parent:nodeById(node.parentId)});}
+  catch(error){propertyInputs.strokeWidth.value=String(inactiveStrokeWidth(node) ?? "");notify(error.message,"error");}
+}, "input", "size");
+bindPropertyInput(propertyInputs.strokeAlign, (node, value) => {
+  try { editDesignStrokeAlignment(node, value, {nodes:design.nodes,parent:nodeById(node.parentId)}); }
+  catch(error) { notify(error.message,"error"); renderProperties(); }
+}, "change", "size");
+bindPropertyInput(propertyInputs.strokeLayout, (node, value) => {
+  if (!value) return;
+  try { applyDesignStrokeEdits(node, { strokeLayoutExcluded: value === "excluded" ? true : null }, { nodes: design.nodes, parent: nodeById(node.parentId) }); }
+  catch(error) { notify(error.message,"error"); renderProperties(); }
+}, "change", "size");
+propertyInputs.strokeRemove.addEventListener("click", () => {
+  const node=selectedNode(); if(!node || isEffectivelyLocked(node))return;
+  try {
+    editDesignStrokeColor(node,"transparent",{nodes:design.nodes,parent:nodeById(node.parentId)});
+    applyAllAutoLayouts(design.nodes); commitHistory(); markChanged(); renderProperties();
+  } catch(error) { notify(error.message,"error"); }
 });
 bindPropertyInput(propertyInputs.opacity, (node, value) => {
   node.opacity = clamp((Number(value) || 0) / 100, 0, 1);
@@ -5762,17 +6060,28 @@ bindPropertyInput(propertyInputs.opacity, (node, value) => {
 bindPropertyInput(propertyInputs.rotation, (node, value) => {
   node.rotation = clamp(finiteOr(value, 0), -360, 360);
 });
+function editShadowLayers(edit) {
+  const node=selectedNode();if(!node || isEffectivelyLocked(node))return;
+  try{const candidate=structuredClone(node);edit(candidate);validateShadowStack(candidate);Object.assign(node,candidate);if(!candidate.shadow)delete node.shadow;if(!candidate.shadowStack)delete node.shadowStack;commitHistory();markChanged();renderProperties();}
+  catch(error){notify(error.message,"error");}
+}
+document.getElementById("prop-shadow-layer").addEventListener("change",event=>{shadowLayerIndex=Number(event.target.value);renderProperties();});
+document.getElementById("shadow-layer-add").addEventListener("click",()=>editShadowLayers(node=>{delete node.shadow;node.shadowStack??={basis:"css-box",layers:[]};if(node.shadowStack.layers.length>=8)throw Error("最多 8 个 CSS 阴影层");node.shadowStack.layers.push({kind:"inner",color:"#000000",opacity:.2,x:0,y:2,blur:8,spread:0,visible:true});shadowLayerIndex=node.shadowStack.layers.length-1;}));
+document.getElementById("shadow-layer-remove").addEventListener("click",()=>editShadowLayers(node=>{node.shadowStack.layers.splice(shadowLayerIndex,1);if(!node.shadowStack.layers.length)delete node.shadowStack;shadowLayerIndex=Math.max(0,shadowLayerIndex-1);}));
+for(const [id,step] of [["shadow-layer-up",-1],["shadow-layer-down",1]])document.getElementById(id).addEventListener("click",()=>editShadowLayers(node=>{const next=shadowLayerIndex+step;if(next<0||next>=node.shadowStack.layers.length)return;[node.shadowStack.layers[next],node.shadowStack.layers[shadowLayerIndex]]=[node.shadowStack.layers[shadowLayerIndex],node.shadowStack.layers[next]];shadowLayerIndex=next;}));
+document.getElementById("prop-shadow-inner").addEventListener("change",event=>editShadowLayers(node=>{node.shadowStack.layers[shadowLayerIndex].kind=event.target.checked?"inner":"outer";}));
+document.getElementById("prop-shadow-visible").addEventListener("change",event=>editShadowLayers(node=>{node.shadowStack.layers[shadowLayerIndex].visible=event.target.checked;}));
 propertyInputs.shadowEnabled.addEventListener("change", () => {
   const node = selectedNode();
   if (!node || node.type === "group" || isEffectivelyLocked(node)) return;
   if (propertyInputs.shadowEnabled.checked) ensureNodeShadow(node);
-  else delete node.shadow;
+  else {delete node.shadow;delete node.shadowStack;}
   commitHistory();
   markChanged();
 });
 bindColorTextInput(
   propertyInputs.shadowColor,
-  () => selectedNode()?.shadow?.color ?? "#000000",
+  () => selectedNode()?.shadowStack?.layers[shadowLayerIndex]?.color ?? selectedNode()?.shadow?.color ?? "#000000",
   (value) => {
     const node = selectedNode();
     if (!node || isEffectivelyLocked(node)) return;
@@ -5839,7 +6148,14 @@ propertyInputs.layoutReverse.addEventListener("change", () => {
   const node = selectedNode();
   if (!isContainerNode(node) || isEffectivelyLocked(node)) return;
   ensureDesignV3();
+  const previous = node.layoutReverse;
   node.layoutReverse = propertyInputs.layoutReverse.checked;
+  try { validateLayoutSpacing(node); } catch (error) {
+    node.layoutReverse = previous;
+    propertyInputs.layoutReverse.checked = Boolean(previous);
+    notify(error.message, "error");
+    return;
+  }
   applyAutoLayouts(design.nodes, new Set([node.id]));
   commitHistory();
   markChanged();
@@ -5849,7 +6165,7 @@ bindPropertyInput(
   (node, value) => {
     if (!isContainerNode(node)) return;
     ensureDesignV3();
-    node.gap = clamp(finiteOr(value, 0), 0, 2000);
+    node.gap = clamp(finiteOr(value, 0), -2000, 2000);
   },
   "input",
   "container",
@@ -5864,7 +6180,7 @@ for (const [input, property] of [
       if (!isContainerNode(node)) return;
       ensureDesignV3();
       if (value === "") delete node[property];
-      else node[property] = clamp(finiteOr(value, node.gap ?? 0), 0, 2000);
+      else node[property] = clamp(finiteOr(value, node.gap ?? 0), -2000, 2000);
     },
     "input",
     "container",
@@ -5928,12 +6244,46 @@ bindPropertyInput(
   "change",
   "container",
 );
+function canApplyManualGridChange(node, changes) {
+  const container = Object.hasOwn(changes, "gridColumns")
+    ? node
+    : design.nodes.find((candidate) => candidate.id === node.parentId);
+  if (container?.layout !== "grid" || container.gridItemsPositioning !== "manual") return true;
+  try {
+    const children = design.nodes
+      .filter((child) => child.parentId === container.id)
+      .map((child) => (child === node ? { ...child, ...changes } : child));
+    const placed = gridPlacements(
+      children, changes.gridColumns ?? container.gridColumns ?? 1, container,
+    );
+    if (
+      container.gridAutoTracks !== "rows" &&
+      container.gridRows !== undefined &&
+      placed.rowCount > container.gridRows
+    )
+      throw new Error("跨度超过网格行数；请先增加行数。");
+    return true;
+  } catch (error) {
+    notify(`无法修改网格：${error.message}`, "error");
+    return false;
+  }
+}
 bindPropertyInput(
   propertyInputs.gridColumns,
   (node, value) => {
     if (!isContainerNode(node)) return;
     ensureDesignV3();
-    node.gridColumns = Math.round(clamp(finiteOr(value, 2), 1, 24));
+    const columns = Math.round(clamp(finiteOr(value, 2), 1, 24));
+    if (!canApplyManualGridChange(node, { gridColumns: columns })) {
+      propertyInputs.gridColumns.value = String(node.gridColumns ?? 1);
+      return;
+    }
+    node.gridColumns = columns;
+    if (node.gridColumnSizes)
+      node.gridColumnSizes = Array.from({ length: node.gridColumns }, (_, index) =>
+        node.gridColumnSizes[index] ??
+        (node.layoutSizingHorizontal === "hug" ? { type: "hug" } : { type: "flex", value: 1 }),
+      );
   },
   "input",
   "container",
@@ -5946,6 +6296,11 @@ for (const [input, property] of [
     input,
     (node, value) => {
       ensureDesignV3();
+      if (isContainerNode(node)) try { validateLayoutSpacing({ ...node, [property]: value }); } catch (error) {
+        input.value = node[property] ?? "fixed";
+        notify(error.message, "error");
+        return;
+      }
       node[property] = value;
       reflowParent(node);
       if (isContainerNode(node)) applyAutoLayouts(design.nodes, new Set([node.id]));
@@ -5996,7 +6351,12 @@ for (const [input, property] of [
     input,
     (node, value) => {
       ensureDesignV3();
-      node[property] = Math.round(clamp(finiteOr(value, 1), 1, 24));
+      const span = Math.round(clamp(finiteOr(value, 1), 1, 24));
+      if (!canApplyManualGridChange(node, { [property]: span })) {
+        input.value = String(node[property] ?? 1);
+        return;
+      }
+      node[property] = span;
       reflowParent(node);
     },
     "input",
@@ -6022,8 +6382,17 @@ bindPropertyInput(
 bindPropertyInput(
   propertyInputs.strokeColor,
   (node, value) => {
-    node.stroke = value;
-    if (node.strokeWidth === 0) node.strokeWidth = 1;
+    try {
+      // The legacy color picker also offers a first 1px stroke. Validate that
+      // whole choice before touching live state, retaining inactive intent/padding.
+      const next={...node},hadInactive=!!node.nativeStrokeInactive;
+      const options={nodes:design.nodes,parent:nodeById(node.parentId)};
+      editDesignStrokeColor(next,value,options);
+      if (!hadInactive && next.strokeWidth === 0) editDesignStrokeWidth(next,1,options);
+      for(const key of Object.keys(node))if(!Object.hasOwn(next,key))delete node[key];
+      Object.assign(node,next);
+      applyAllAutoLayouts(design.nodes);
+    }catch(error){notify(error.message,"error");}
   },
   "input",
 );
@@ -6143,10 +6512,7 @@ elements.stage.addEventListener("lostpointercapture", (event) =>
 elements.stage.addEventListener("dblclick", (event) => {
   if (activeTool !== "select") return;
   const point = documentPoint(event);
-  let id = (
-    hitTestCanvasLabel(design, point, zoom, selectedIds, elements.stage.getContext("2d")) ??
-    hitTestCanvasNode(design, point)
-  )?.id;
+  let id = canvasHit(point)?.id;
   if (
     !id &&
     lastTextPointer &&
@@ -6165,6 +6531,23 @@ elements.inlineTextEditor.addEventListener("keydown", (event) => {
   }
 });
 elements.inlineTextEditor.addEventListener("blur", () => finishInlineTextEdit());
+elements.inlineTextEditor.addEventListener("beforeinput", () => {
+  if (inlineTextEdit) {
+    const start = elements.inlineTextEditor.selectionStart, end = elements.inlineTextEditor.selectionEnd;
+    inlineTextEdit.selection = { start, end, affinity: start === end ? "before" : "after" };
+  }
+});
+elements.inlineTextEditor.addEventListener("input", () => {
+  if (!inlineTextEdit?.draft) return;
+  try {
+    const selection = inlineTextEdit.selection;
+    inlineTextEdit.selection = undefined;
+    inlineTextEdit.draft = replaceTextValue(inlineTextEdit.draft, elements.inlineTextEditor.value, selection?.affinity ?? "before", selection);
+  } catch (error) {
+    elements.inlineTextEditor.value = inlineTextEdit.draft.textSource ?? inlineTextEdit.draft.text;
+    notify(error.message, "error");
+  }
+});
 document
   .getElementById("edit-text-selection")
   .addEventListener("click", () => beginInlineTextEdit(selectedNode()));
@@ -6183,8 +6566,9 @@ elements.stage.addEventListener(
   { passive: false },
 );
 elements.zoomOut.addEventListener("click", () => setZoom(zoom / 1.2));
+elements.rendererMode.addEventListener("change", () => chooseRenderer(elements.rendererMode.value));
 elements.retryRenderer.addEventListener("click", () => {
-  void gpuRenderer.setMode("gpu");
+  void selectedRenderer().setMode(rendererMode);
   syncGpuRenderer();
 });
 elements.zoomIn.addEventListener("click", () => setZoom(zoom * 1.2));
@@ -6597,7 +6981,43 @@ window.addEventListener("blur", () => {
 });
 window.addEventListener("resize", () => scheduleViewportRender(true));
 new ResizeObserver(() => scheduleViewportRender(true)).observe(elements.stageWrap);
-window.addEventListener("pagehide", () => gpuRenderer.dispose());
+window.addEventListener("pagehide", (event) => {
+  fontPageLifecycle += 1;
+  fontPageHidden = true;
+  fontPageRestorable = event.persisted === true;
+  fontResourcesReady = false;
+  try { ownedFonts.suspend(); }
+  finally {
+    if (event.persisted) {
+      void gpuRenderer.suspend("page-hidden");
+      void browserRenderer.suspend("page-hidden");
+    } else {
+      void gpuRenderer.dispose();
+      void browserRenderer.dispose();
+    }
+  }
+});
+window.addEventListener("pageshow", (event) => {
+  if (!event.persisted || !fontPageHidden || !fontPageRestorable) return;
+  const lifecycle = ++fontPageLifecycle;
+  const expectedWorkspaceEpoch = workspaceEpoch, expectedDocumentEpoch = documentEpoch;
+  fontPageHidden = false;
+  ownedFonts.resume();
+  void (async () => {
+    try {
+      await loadReferencedDesignResources();
+      if (fontPageHidden || lifecycle !== fontPageLifecycle || expectedWorkspaceEpoch !== workspaceEpoch || expectedDocumentEpoch !== documentEpoch) return;
+      liveRenderRevision += 1;
+      // Only the chosen renderer resumes; the other remains inactive.
+      await selectedRenderer().resume();
+      if (fontPageHidden || lifecycle !== fontPageLifecycle || expectedWorkspaceEpoch !== workspaceEpoch || expectedDocumentEpoch !== documentEpoch) return;
+      renderAll();
+    } catch (error) {
+      if (!fontPageHidden && lifecycle === fontPageLifecycle && expectedWorkspaceEpoch === workspaceEpoch && expectedDocumentEpoch === documentEpoch)
+        notify(error instanceof Error ? error.message : "页面恢复时字体加载失败，请重新打开设计", "error");
+    }
+  })();
+});
 window.addEventListener("focus", () => void checkExternalChange());
 window.addEventListener("beforeunload", (event) => {
   finishInlineTextEdit();
@@ -6637,7 +7057,8 @@ function updateContext(next) {
     currentPageCache = null;
     currentResourceCache = null;
     resourceDataUrls.clear();
-    loadedFontResourceIds.clear();
+    ownedFonts.reset();
+    fontResourcesReady = false;
     currentPersistenceMode = "single";
     warnedExternalVersion = null;
     fileDiscoveryCache = null;
@@ -6655,6 +7076,10 @@ function updateContext(next) {
     elements.path.disabled = false;
   }
   context = nextContext;
+  if (workspaceChanged) {
+    chooseRenderer("gpu", {persist:false});
+    void loadRendererPreference(workspaceEpoch);
+  }
   syncGpuRenderer();
   contextInitialized = true;
   reviewCommentsUI?.update();
@@ -6835,7 +7260,6 @@ async function restoreRecovery(
       sha256Bytes,
     });
   resourceDataUrls.clear();
-  loadedFontResourceIds.clear();
   advanceDocumentEpoch();
   clearSelection();
   const targetsBaseline = recovery.path === baselinePath;
@@ -6901,6 +7325,15 @@ async function restoreRecovery(
       }
     : null;
   designStateSequence += 1;
+  // Recovery operations can replace the baseline's entire resource registry.
+  // Resolve the replayed descriptors through the same validated scoped cache.
+  currentResourceCache = new DesignResourceCache({
+    resources: design.resources ?? [],
+    readText: (path) => bundleHostCall("workspace.readText", { path }, expectedWorkspaceEpoch),
+    sha256Bytes,
+  });
+  await loadReferencedDesignResources();
+  checkRecoveryScope();
   updateDirtyState();
   renderAll();
   requestAnimationFrame(fitCanvas);
@@ -6944,7 +7377,8 @@ function resetToRepoBlankDocument() {
   currentPageCache = null;
   currentResourceCache = null;
   resourceDataUrls.clear();
-  loadedFontResourceIds.clear();
+  ownedFonts.clear();
+  fontResourcesReady = true;
   currentPersistenceMode = "single";
   warnedExternalVersion = null;
   elements.path.value = DEFAULT_PATH;
@@ -7160,15 +7594,15 @@ function renderedNodeEffectBounds(
     node.type === "instance"
       ? renderedDesignInstanceEffectOutsets(documentValue, node, instanceStack, availableNodes)
       : zeroEffectOutsets();
+  const stackOutsets=shadowStackOutsets(node,(node.rotation??0)+inheritedNodeRotation(nodes,node));
+  const hasStackEffect=Object.values(stackOutsets).some(value=>value>0);
   const hasInstanceEffect = Object.values(instanceEffectOutsets).some((value) => value > 0);
   const strokeOutset =
-    !["group", "instance"].includes(node.type) &&
-    node.stroke !== "transparent" &&
-    node.strokeWidth > 0
-      ? node.strokeWidth / 2
+    !["group", "instance"].includes(node.type)
+      ? designStrokeOutset(node)
       : 0;
   const visibleShadow = node.shadow?.opacity > 0 ? node.shadow : null;
-  if (!visibleShadow && !hasInstanceEffect && strokeOutset <= 0) {
+  if (!visibleShadow && !hasInstanceEffect && !hasStackEffect && strokeOutset <= 0) {
     return clipNodeBoundsToClippingAncestors(nodes, node);
   }
   const shadowOutset = visibleShadow?.blur * 1.5 || 0;
@@ -7179,6 +7613,7 @@ function renderedNodeEffectBounds(
   const rotatedInstanceOutset =
     totalRotation % 360 === 0 ? 0 : Math.max(...Object.values(instanceEffectOutsets));
   const leftOutset = Math.max(
+    stackOutsets.left,
     rotatedInstanceOutset || instanceEffectOutsets.left,
     strokeOutset,
     visibleShadow
@@ -7186,6 +7621,7 @@ function renderedNodeEffectBounds(
       : 0,
   );
   const topOutset = Math.max(
+    stackOutsets.top,
     rotatedInstanceOutset || instanceEffectOutsets.top,
     strokeOutset,
     visibleShadow
@@ -7193,11 +7629,13 @@ function renderedNodeEffectBounds(
       : 0,
   );
   const rightOutset = Math.max(
+    stackOutsets.right,
     rotatedInstanceOutset || instanceEffectOutsets.right,
     strokeOutset,
     visibleShadow ? strokeOutset + shadowOutset + (rotatedShadowOffset || Math.max(0, shadowX)) : 0,
   );
   const bottomOutset = Math.max(
+    stackOutsets.bottom,
     rotatedInstanceOutset || instanceEffectOutsets.bottom,
     strokeOutset,
     visibleShadow ? strokeOutset + shadowOutset + (rotatedShadowOffset || Math.max(0, shadowY)) : 0,
@@ -7306,6 +7744,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "name",
   "notes",
   "shadow",
+  "shadowStack",
   "effectClipping",
   "contentClipping",
   "x",
@@ -7316,9 +7755,14 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "fillPaints",
   "stroke",
   "strokeWidth",
+  "nativeStrokeInactive",
+  "strokeSides",
+  "strokeAlign",
+  "strokeLayoutExcluded",
   "opacity",
   "rotation",
   "cornerRadius",
+  "cornerRadii",
   "visible",
   "locked",
   "clipContent",
@@ -7328,14 +7772,17 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "fontFamily",
   "fontStyle",
   "lineHeight",
+  "lineHeightUnit",
   "letterSpacing",
   "textDecoration",
+  "textRanges",
   "textMeasurement",
   "textSource",
   "textFlow",
   "textOverflow",
   "textFlowWidth",
   "layoutBaselineOffset",
+  "layoutBaselineSource",
   "fontRef",
   "textAlign",
   "imageRef",
@@ -7355,6 +7802,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "justifyContent",
   "alignContent",
   "gridColumns",
+  ...GRID_CONTAINER_FIELDS,
   "minWidth",
   "maxWidth",
   "minHeight",
@@ -7366,6 +7814,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "layoutMarginBefore",
   "gridColumnSpan",
   "gridRowSpan",
+  ...GRID_CHILD_FIELDS,
   "constraintHorizontal",
   "constraintVertical",
   "constraintBaseWidth",
@@ -7380,6 +7829,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
 const AGENT_OPERATION_FIELDS = new Map([
   ["create_node", new Set(["op", "type", "id", "parent_id", "before_id", "properties"])],
   ["update_node", new Set(["op", "node_id", "changes"])],
+  ["edit_text", new Set(["op", "node_id", "start", "end", "text", "affinity", "expectedSourceSignature"])],
   ["move_node", new Set(["op", "node_id", "parent_id", "before_id"])],
   ["delete_node", new Set(["op", "node_id"])],
   ["set_document", new Set(["op", "changes"])],
@@ -7395,16 +7845,28 @@ const AGENT_PAGE_OPERATIONS = new Set([
   "set_active_page",
   "delete_page",
 ]);
-const AGENT_NODE_OPERATIONS = new Set(["create_node", "update_node", "move_node", "delete_node"]);
+const AGENT_NODE_OPERATIONS = new Set(["create_node", "update_node", "edit_text", "move_node", "delete_node"]);
 
 function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
   if (!changes || typeof changes !== "object" || Array.isArray(changes)) {
     throw new Error("changes 必须是对象");
   }
+  for (const key of Object.keys(changes))
+    if (!AGENT_NODE_PATCH_FIELDS.has(key))
+      throw new Error(`Agent 不可直接修改图层字段：${key}`);
+  validateTextRangeNodePatch(node, changes);
+  const strokeKeys = ["stroke", "strokeWidth", "strokeAlign", "strokeSides", "strokeLayoutExcluded", "nativeStrokeInactive"];
+  const strokeHandled = strokeKeys.some(key => Object.hasOwn(changes, key)) &&
+    applyDesignStrokeEdits(node, changes, { nodes: design.nodes, parent: nodeById(node.parentId) });
   for (const [key, value] of Object.entries(changes)) {
     if (!AGENT_NODE_PATCH_FIELDS.has(key)) {
       throw new Error(`Agent 不可直接修改图层字段：${key}`);
     }
+    // An explicit manual offset retires only the new HTML refresh contract.
+    // Native provenance keeps its existing editing behavior.
+    if (key === "layoutBaselineOffset" && node.layoutBaselineSource === "html")
+      delete node.layoutBaselineSource;
+    if (strokeHandled && (strokeKeys.includes(key) || /^padding(?:Top|Right|Bottom|Left)$/u.test(key))) continue;
     if (moveTree && ["x", "y"].includes(key) && Number.isFinite(value)) {
       setNodeTreePosition(design.nodes, node.id, key, value);
     } else if (
@@ -7412,13 +7874,21 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
       [
         "notes",
         "shadow",
+        "shadowStack",
         "fillPaints",
+        "strokeSides",
+        "nativeStrokeInactive",
+        "strokeAlign",
+        "strokeLayoutExcluded",
         "contentClipping",
+        "lineHeightUnit",
         "textSource",
+        "textRanges",
         "textFlow",
         "textOverflow",
         "textFlowWidth",
         "layoutBaselineOffset",
+        "layoutBaselineSource",
         "fontRef",
         "imageRef",
         "objectFit",
@@ -7429,6 +7899,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
         "columnGap",
         "alignContent",
         "gridColumns",
+        ...GRID_CONTAINER_FIELDS,
         "minWidth",
         "maxWidth",
         "minHeight",
@@ -7440,6 +7911,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
         "layoutMarginBefore",
         "gridColumnSpan",
         "gridRowSpan",
+        ...GRID_CHILD_FIELDS,
         "constraintHorizontal",
         "constraintVertical",
         "constraintBaseWidth",
@@ -7455,8 +7927,28 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
       node[key] = value;
     }
   }
+  if (
+    node.type === "text" && Object.hasOwn(changes, "text") && !Object.hasOwn(changes, "textSource")
+  ) {
+    // A text-only tool edit authors the same content as an inspector/inline edit.
+    // Otherwise reflow would restore the previous captured source over this edit.
+    if (Object.hasOwn(node, "textSource")) node.textSource = node.text;
+    delete node.textFlowWidth;
+    delete node.textMeasurement;
+    if (typeof node.text === "string" && !node.text.trim()) {
+      delete node.textFlow;
+      delete node.textOverflow;
+    }
+  }
   if (Object.hasOwn(changes, "fill") && !Object.hasOwn(changes, "fillPaints"))
     delete node.fillPaints;
+  if (!Object.hasOwn(changes, "strokeLayoutExcluded") &&
+      (Object.hasOwn(changes, "layout") || Object.hasOwn(changes, "strokeAlign")))
+    clearInvalidStrokeLayoutExclusion(node);
+  if(!strokeHandled && !Object.hasOwn(changes,"strokeSides")) {
+    if(typeof changes.stroke === "string")editDesignStrokeColor(node,node.stroke);
+    if(typeof changes.strokeWidth === "number")editDesignStrokeWidth(node,node.strokeWidth);
+  }
   if (node.clipContent !== true) delete node.contentClipping;
 }
 
@@ -7591,7 +8083,7 @@ async function applyAgentDesignOperations(args) {
         }
       }
       if (
-        ["update_node", "move_node", "delete_node"].includes(operation.op) &&
+        ["update_node", "edit_text", "move_node", "delete_node"].includes(operation.op) &&
         !isAgentNodeReference(operation.node_id)
       ) {
         throw new Error(`操作 ${index + 1} 的 node_id 必须是 1–160 个安全字符`);
@@ -7658,6 +8150,15 @@ async function applyAgentDesignOperations(args) {
         requestParentReflow(node.parentId);
         if (isAutoLayoutContainer(node)) layoutContainerIds.add(node.id);
         changedIds.add(node.id);
+      } else if (operation.op === "edit_text") {
+        const node = nodeById(operation.node_id);
+        if (!node) throw new Error(`图层不存在：${operation.node_id}`);
+        const { op: _op, node_id: _nodeId, ...edit } = operation;
+        const next = replaceTextRange(node, edit);
+        for (const key of Object.keys(node)) if (!Object.hasOwn(next, key)) delete node[key];
+        Object.assign(node, next);
+        requestParentReflow(node.parentId);
+        changedIds.add(node.id);
       } else if (operation.op === "update_node") {
         const node = nodeById(operation.node_id);
         if (!node) throw new Error(`图层不存在：${operation.node_id}`);
@@ -7704,6 +8205,7 @@ async function applyAgentDesignOperations(args) {
               "justifyContent",
               "alignContent",
               "gridColumns",
+              ...GRID_CONTAINER_FIELDS,
               "minWidth",
               "maxWidth",
               "minHeight",
@@ -7719,6 +8221,16 @@ async function applyAgentDesignOperations(args) {
           isAutoLayoutContainer(parent) &&
           [...changedFields].some((field) =>
             [
+              "layout",
+              "padding",
+              "paddingTop",
+              "paddingRight",
+              "paddingBottom",
+              "paddingLeft",
+              "strokeWidth",
+              "strokeSides",
+              "strokeAlign",
+              "strokeLayoutExcluded",
               "width",
               "height",
               "minWidth",
@@ -7732,6 +8244,7 @@ async function applyAgentDesignOperations(args) {
               "layoutAlignSelf",
               "gridColumnSpan",
               "gridRowSpan",
+              ...GRID_CHILD_FIELDS,
             ].includes(field),
           )
         ) {
@@ -8708,6 +9221,8 @@ function registerAgentTools(ready) {
         autoLayoutOwnsDirectFlowChildPositions: true,
         autoLayoutFlowChildCoordinates: "resolved-fallback",
         autoLayoutChildSizingAppliesToContainers: true,
+        mainAxisFillDistribution: "equal-content-plus-own-insets",
+        nativeExcludedInsideStrokeField: "strokeLayoutExcluded",
         asymmetricPaddingFields: ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"],
         independentGapFields: ["rowGap", "columnGap"],
         independentSizingFields: ["layoutSizingHorizontal", "layoutSizingVertical"],
@@ -9353,6 +9868,8 @@ async function initialize() {
 
   initialContextPending = false;
   const initializationWorkspaceEpoch = workspaceEpoch;
+  await loadRendererPreference(initializationWorkspaceEpoch);
+  if (initializationWorkspaceEpoch !== workspaceEpoch) return;
   const uiPreferences = await hostCall("storage.get", { key: "uiPreferences" }).catch(() => null);
   if (initializationWorkspaceEpoch !== workspaceEpoch) return;
   if (uiPreferences && typeof uiPreferences === "object") {

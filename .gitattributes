@@ -1,3 +1,4 @@
 # Preserve the pinned third-party source byte-for-byte, including upstream whitespace.
 third-party/html2figma/upstream/** -text -whitespace
 third-party/html2figma-plugin/upstream/** -text -whitespace
+tests/fixtures/design-studio-html2figma-original-gallery/upstream/** -text -whitespace

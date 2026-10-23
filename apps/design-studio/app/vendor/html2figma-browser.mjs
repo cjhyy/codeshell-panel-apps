@@ -5210,8 +5210,8 @@ var html2figmaCore = (() => {
     }
     const border = li.border;
     if (border) {
-      const sides = [border.top, border.right, border.bottom, border.left];
-      for (const side of sides) {
+      const sides2 = [border.top, border.right, border.bottom, border.left];
+      for (const side of sides2) {
         if (side && side.width > 0 && side.color) {
           const { a } = side.color;
           if (a > 0.01) return true;
@@ -5248,10 +5248,642 @@ var html2figmaCore = (() => {
     }
   }
 
+  // third-party/html2figma/integration/grid.ts
+  function renderPreservingGrid(tree, options) {
+    const grids = /* @__PURE__ */ new Map();
+    const prune = (node) => {
+      if (node.nodeType === "element" && ["grid", "inline-grid"].includes(node.computedStyle?.display ?? "") && node.metadata?.semantic) {
+        grids.set(node.metadata.semantic, node);
+        return { ...node, children: [] };
+      }
+      return { ...node, children: node.children.map(prune) };
+    };
+    const result = renderToDesignDSL(prune(tree), options);
+    const restore = (node) => {
+      if (node.nodeType !== "container") return;
+      const original = node.semantic && grids.get(node.semantic);
+      if (original) {
+        const rect = original.boundingRect;
+        const local = buildContainerNode(original, rect?.left ?? 0, rect?.top ?? 0, false);
+        node.children = original.children.flatMap((child) => {
+          const converted = child.nodeType === "text" ? buildTextNode(
+            child,
+            original,
+            child.boundingRect?.left ?? 0,
+            child.boundingRect?.top ?? 0,
+            options.includeRawStyles
+          ) : renderPreservingGrid(child, options);
+          if (!converted) return [];
+          if (converted.nodeType === "text" && !converted.content) return [];
+          converted.bounds.x += (child.boundingRect?.left ?? 0) - (rect?.left ?? 0) - local.bounds.x;
+          converted.bounds.y += (child.boundingRect?.top ?? 0) - (rect?.top ?? 0) - local.bounds.y;
+          return [converted];
+        });
+        const flow = node.children.filter((child) => !["absolute", "fixed"].includes(child.positioning.mode)).sort((left, right) => (left.flexItem?.order ?? 0) - (right.flexItem?.order ?? 0));
+        let index = 0;
+        node.children = node.children.map(
+          (child) => ["absolute", "fixed"].includes(child.positioning.mode) ? child : flow[index++]
+        );
+      } else for (const child of node.children) restore(child);
+    };
+    if (result) restore(result);
+    return result;
+  }
+
+  // third-party/html2figma/integration/svg.ts
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var XLINK_NS = "http://www.w3.org/1999/xlink";
+  var XMLNS_NS = "http://www.w3.org/2000/xmlns/";
+  var MAX_ELEMENTS = 2e3;
+  var MAX_REFERENCES = 256;
+  var MAX_DEPTH = 32;
+  var MAX_BYTES = 1024 * 1024;
+  var allowed = new Set(
+    "svg g path rect circle ellipse line polyline polygon defs clipPath mask linearGradient radialGradient stop pattern text tspan title desc metadata filter feGaussianBlur feOffset feBlend feColorMatrix feComposite feFlood feMerge feMergeNode feMorphology feTurbulence feDisplacementMap use symbol".toLowerCase().split(" ")
+  );
+  var fragment = /^#([a-z0-9_.:-]+)$/iu;
+  function captureStandaloneSvg(source) {
+    const ownerDocument = source.ownerDocument;
+    const view = ownerDocument.defaultView;
+    if (!view || source.namespaceURI !== SVG_NS || source.localName !== "svg")
+      throw Error("SVG \u6355\u83B7\u9700\u8981\u6D3B\u52A8\u6587\u6863\u5185\u7684 SVG \u6839\u8282\u70B9");
+    const clones = /* @__PURE__ */ new Map();
+    const ids = /* @__PURE__ */ new Map();
+    const completed = /* @__PURE__ */ new Set();
+    const active = /* @__PURE__ */ new Set();
+    let elementCount = 0;
+    let referenceCount = 0;
+    let bytes = 0;
+    const account = (value) => {
+      bytes += new TextEncoder().encode(value).length;
+      if (bytes > MAX_BYTES) throw Error("\u72EC\u7ACB SVG \u8D85\u8FC7 1 MiB \u4E0A\u9650");
+    };
+    const reference = (value) => {
+      const match = fragment.exec(value.trim());
+      if (!match) throw Error("SVG \u5F15\u7528\u5FC5\u987B\u662F\u540C\u4E00\u6587\u6863\u5185\u7684 #id\uFF0C\u4E0D\u80FD\u52A0\u8F7D\u5916\u90E8\u8D44\u6E90");
+      return match[1];
+    };
+    const references = (element) => {
+      const ids2 = [];
+      for (const attribute of [...element.attributes]) {
+        const name = attribute.name.toLowerCase();
+        if (name.startsWith("on") || name === "src" || name === "xml:base")
+          throw Error(`SVG \u4E0D\u5141\u8BB8 ${attribute.name} \u5C5E\u6027`);
+        if (name === "href" || name === "xlink:href") ids2.push(reference(attribute.value));
+        for (const url of attribute.value.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\s*\)/giu))
+          ids2.push(reference(url[1] ?? url[2] ?? url[3]));
+        if (/\\|@import|(?:javascript|vbscript|data|file)\s*:/iu.test(attribute.value))
+          throw Error("SVG \u4E0D\u5141\u8BB8\u6D3B\u52A8\u6837\u5F0F\u6216\u5916\u90E8\u8D44\u6E90");
+      }
+      if (element.localName === "use" && !element.hasAttribute("href") && !element.hasAttributeNS(XLINK_NS, "href"))
+        throw Error("SVG use \u7F3A\u5C11\u540C\u4E00\u6587\u6863\u5185\u7684 #id \u5F15\u7528");
+      return ids2;
+    };
+    const cloneTree = (original, depth = 0) => {
+      const existing = clones.get(original);
+      if (existing) return existing;
+      if (depth > MAX_DEPTH || ++elementCount > MAX_ELEMENTS)
+        throw Error("\u72EC\u7ACB SVG \u6700\u591A 2000 \u4E2A\u5143\u7D20\u53CA 32 \u5C42\u5D4C\u5957");
+      if (original.namespaceURI !== SVG_NS || !allowed.has(original.localName.toLowerCase()))
+        throw Error(`SVG \u4E0D\u5141\u8BB8 ${original.localName} \u5143\u7D20`);
+      references(original);
+      const id = original.getAttribute("id");
+      if (id && ids.has(id) && ids.get(id) !== original) throw Error(`SVG ID \u91CD\u590D\uFF1A${id}`);
+      if (id) ids.set(id, original);
+      const clone = original.cloneNode(false);
+      clones.set(original, clone);
+      account(original.localName);
+      for (const attribute of [...original.attributes]) account(attribute.name + attribute.value);
+      for (const child of [...original.childNodes]) {
+        if (child.nodeType === 1) clone.append(cloneTree(child, depth + 1));
+        else if (child.nodeType === 3) {
+          account(child.textContent ?? "");
+          clone.append(child.cloneNode(false));
+        }
+      }
+      return clone;
+    };
+    const root = cloneTree(source);
+    root.setAttributeNS(XMLNS_NS, "xmlns", SVG_NS);
+    root.setAttributeNS(XMLNS_NS, "xmlns:xlink", XLINK_NS);
+    const defs = ownerDocument.createElementNS(SVG_NS, "defs");
+    const attachDefinitions = () => {
+      if (!defs.childNodes.length || defs.parentNode) return;
+      if (++elementCount > MAX_ELEMENTS) throw Error("\u72EC\u7ACB SVG \u6700\u591A 2000 \u4E2A\u5143\u7D20");
+      root.prepend(defs);
+    };
+    const resolve = (id, depth) => {
+      if (active.has(id)) throw Error(`SVG \u5F15\u7528\u5305\u542B\u5FAA\u73AF\uFF1A#${id}`);
+      if (completed.has(id)) return;
+      if (depth > MAX_DEPTH || ++referenceCount > MAX_REFERENCES)
+        throw Error("\u72EC\u7ACB SVG \u6700\u591A 256 \u9879\u5F15\u7528\u53CA 32 \u5C42\u5F15\u7528\u94FE");
+      const original = ownerDocument.getElementById(id);
+      if (!original) throw Error(`SVG \u7F3A\u5C11\u540C\u4E00\u6587\u6863\u5185\u7684\u5F15\u7528\uFF1A#${id}`);
+      active.add(id);
+      if (!clones.has(original)) defs.append(cloneTree(original));
+      inspect(original, depth);
+      active.delete(id);
+      completed.add(id);
+    };
+    const inspect = (original, depth) => {
+      for (const id of references(original)) resolve(id, depth + 1);
+      for (const child of [...original.children]) inspect(child, depth);
+    };
+    inspect(source, 0);
+    attachDefinitions();
+    const properties = [
+      "color",
+      "fill",
+      "fill-opacity",
+      "fill-rule",
+      "stroke",
+      "stroke-opacity",
+      "stroke-width",
+      "stroke-linecap",
+      "stroke-linejoin",
+      "stroke-miterlimit",
+      "stroke-dasharray",
+      "stroke-dashoffset",
+      "clip-rule",
+      "clip-path",
+      "mask"
+    ];
+    const freeze = (original, insideDefinition) => {
+      const definition = insideDefinition || ["defs", "symbol"].includes(original.localName);
+      if (!definition) {
+        const clone = clones.get(original);
+        const computed = view.getComputedStyle(original);
+        for (const property of properties) {
+          const value = computed.getPropertyValue(property);
+          if (!value) continue;
+          clone.style.removeProperty(property);
+          clone.setAttribute(property, value);
+        }
+        references(clone);
+      }
+      for (const child of [...original.children]) freeze(child, definition);
+    };
+    freeze(source, false);
+    for (const clone of [...clones.values()]) for (const id of references(clone)) resolve(id, 0);
+    attachDefinitions();
+    for (const [original, clone] of clones) {
+      clone.style.removeProperty("opacity");
+      if (original === source) clone.removeAttribute("opacity");
+      else clone.setAttribute("opacity", view.getComputedStyle(original).opacity);
+    }
+    const serialized = new realm.XMLSerializer().serializeToString(root);
+    if (new TextEncoder().encode(serialized).length > MAX_BYTES)
+      throw Error("\u72EC\u7ACB SVG \u8D85\u8FC7 1 MiB \u4E0A\u9650");
+    return serialized;
+  }
+
+  // third-party/html2figma/integration/table-borders.ts
+  var sides = ["top", "right", "bottom", "left"];
+  function captureTableBottomBorders(tree) {
+    const nodes = /* @__PURE__ */ new Map();
+    const collect = (node) => {
+      if (node.nodeType === "element" && node.domNode instanceof realm.Element)
+        nodes.set(node.domNode, node);
+      node.children.forEach(collect);
+    };
+    collect(tree);
+    const borders = /* @__PURE__ */ new Map();
+    const border = (style) => resolveBorder(Object.fromEntries(
+      sides.flatMap((side) => ["width", "style", "color"].map((part) => {
+        const key = `border-${side}-${part}`;
+        return [key, style.getPropertyValue(key)];
+      }))
+    ));
+    const visible = (element) => {
+      const node = nodes.get(element), style = node?.computedStyle;
+      return node?.visible && node.metadata?.semantic && style && style.visibility === "visible" && style.opacity === "1" && style.transform === "none" && ["", "normal", "1"].includes(style.getPropertyValue("zoom")) && ["rotate", "scale", "translate"].every((key) => ["", "none"].includes(style.getPropertyValue(key))) && ["::before", "::after"].every((pseudo) => ["none", "normal"].includes(
+        element.ownerDocument.defaultView.getComputedStyle(element, pseudo).content
+      ));
+    };
+    const unbordered = (element) => {
+      const style = nodes.get(element)?.computedStyle;
+      return visible(element) && style && style.borderImageSource === "none" && sides.every((side) => style.getPropertyValue(`border-${side}-style`) !== "hidden" && border(style)[side].width === 0);
+    };
+    for (const [element, node] of nodes) {
+      if (node.tag !== "table" || !node.metadata?.semantic || !unbordered(element)) continue;
+      const style = node.computedStyle;
+      if (!["table", "inline-table"].includes(style.display) || style.borderCollapse !== "collapse" || element.querySelector("table") || element.parentElement?.closest("table")) continue;
+      let transformed = false;
+      for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+        const ancestorStyle = element.ownerDocument.defaultView.getComputedStyle(ancestor);
+        if (ancestorStyle.transform !== "none" || !["", "normal", "1"].includes(ancestorStyle.getPropertyValue("zoom")) || ["rotate", "scale", "translate"].some((key) => !["", "none"].includes(ancestorStyle.getPropertyValue(key)))) transformed = true;
+      }
+      if (transformed) continue;
+      const rows = [];
+      let supported = true;
+      for (const child of element.children) {
+        if (child.tagName === "TR") rows.push(child);
+        else if (["THEAD", "TBODY", "TFOOT"].includes(child.tagName) && unbordered(child) && nodes.get(child)?.computedStyle?.display === {
+          THEAD: "table-header-group",
+          TBODY: "table-row-group",
+          TFOOT: "table-footer-group"
+        }[child.tagName]) {
+          for (const row of child.children) {
+            if (row.tagName !== "TR") supported = false;
+            else rows.push(row);
+          }
+        } else supported = false;
+      }
+      const candidates = [];
+      let columns = 0;
+      for (const row of rows) {
+        if (!unbordered(row) || nodes.get(row)?.computedStyle?.display !== "table-row" || !row.children.length) supported = false;
+        if (!columns) columns = row.children.length;
+        if (row.children.length !== columns) supported = false;
+        for (const cell of row.children) {
+          const source = nodes.get(cell), cellStyle = source?.computedStyle;
+          if (!["TD", "TH"].includes(cell.tagName) || !visible(cell) || !cellStyle || cellStyle.display !== "table-cell" || ["colspan", "rowspan"].some((key) => ![null, "1"].includes(cell.getAttribute(key))) || cellStyle.borderImageSource !== "none" || sides.some((side) => cellStyle.getPropertyValue(`border-${side}-style`) === "hidden") || ["top-left", "top-right", "bottom-right", "bottom-left"].some((corner) => Number.parseFloat(cellStyle.getPropertyValue(`border-${corner}-radius`)) !== 0)) {
+            supported = false;
+            continue;
+          }
+          const original = border(cellStyle), bottom = original.bottom;
+          if ([original.top, original.right, original.left].some((side) => side.width !== 0) || !Number.isFinite(bottom.width) || bottom.width <= 0 || bottom.width > 100 || bottom.style !== "solid" || bottom.color.a !== 1) supported = false;
+          candidates.push([source.metadata.semantic, bottom]);
+        }
+      }
+      if (supported && rows.length && candidates.length)
+        for (const [semantic, bottom] of candidates) borders.set(semantic, bottom);
+    }
+    return (node) => {
+      if (node.nodeType !== "container" || !node.semantic || !["td", "th"].includes(node.tag)) return;
+      const bottom = borders.get(node.semantic);
+      if (bottom) node.cssTableBottomBorder = { ...bottom, color: { ...bottom.color } };
+    };
+  }
+
+  // third-party/html2figma/integration/image-box.ts
+  function captureImageBoxes(tree) {
+    const boxes = /* @__PURE__ */ new Map();
+    const visit = (node) => {
+      if (node.nodeType === "element" && node.tag === "img" && node.metadata?.semantic && node.domNode instanceof realm.HTMLImageElement && node.computedStyle && !node.metadata.isPseudoElement && !node.metadata.isFormContent) {
+        const style = node.computedStyle;
+        const facts = {
+          naturalWidth: String(node.domNode.naturalWidth),
+          naturalHeight: String(node.domNode.naturalHeight),
+          complete: String(node.domNode.complete)
+        };
+        const view = node.domNode.ownerDocument.defaultView;
+        let ancestorGeometry = Boolean(view);
+        let depth = 0;
+        for (let ancestor = node.domNode.parentElement; ancestor && ancestorGeometry; ancestor = ancestor.parentElement) {
+          if (++depth > 100) {
+            ancestorGeometry = false;
+            break;
+          }
+          const computed = view.getComputedStyle(ancestor);
+          ancestorGeometry = ["transform", "rotate", "scale", "translate"].every((key) => computed.getPropertyValue(key) === "none") && ["1", "normal"].includes(computed.getPropertyValue("zoom"));
+        }
+        facts.ancestorGeometry = ancestorGeometry ? "ordinary" : "unsupported";
+        for (const property of [
+          "object-fit",
+          "object-position",
+          "transform",
+          "rotate",
+          "scale",
+          "translate",
+          "zoom",
+          "filter",
+          "backdrop-filter",
+          "mix-blend-mode",
+          "box-shadow",
+          "outline-style",
+          "clip-path",
+          "mask-image",
+          "background-image",
+          "background-color",
+          "border-image-source",
+          "padding-top",
+          "padding-right",
+          "padding-bottom",
+          "padding-left",
+          "border-top-width",
+          "border-right-width",
+          "border-bottom-width",
+          "border-left-width",
+          "border-top-style",
+          "border-right-style",
+          "border-bottom-style",
+          "border-left-style",
+          "border-top-color",
+          "border-right-color",
+          "border-bottom-color",
+          "border-left-color"
+        ])
+          facts[property] = style.getPropertyValue(property);
+        boxes.set(node.metadata.semantic, facts);
+      }
+      for (const child of node.children) visit(child);
+    };
+    visit(tree);
+    return (node) => {
+      if (node.nodeType === "image" && node.semantic && boxes.has(node.semantic))
+        node.cssImageBox = boxes.get(node.semantic);
+    };
+  }
+
+  // third-party/html2figma/integration/geometry-precision.ts
+  function captureGeometryPrecision(tree) {
+    const records = /* @__PURE__ */ new Map();
+    const properties = [
+      "width",
+      "height",
+      "min-width",
+      "max-width",
+      "min-height",
+      "max-height",
+      "flex-basis",
+      "row-gap",
+      "column-gap",
+      "padding-top",
+      "padding-right",
+      "padding-bottom",
+      "padding-left"
+    ];
+    const visit = (node) => {
+      if (node.nodeType === "element" && node.tag && node.metadata?.semantic && node.domNode instanceof realm.Element && node.computedStyle && !node.metadata.isPseudoElement && !node.metadata.isFormContent && !node.metadata.listMarker) {
+        const values = {};
+        try {
+          const style = node.domNode.computedStyleMap?.();
+          for (const property of properties) {
+            const typed = style?.get(property), projection = Number.parseFloat(node.computedStyle.getPropertyValue(property));
+            if (typed?.unit === "px" && typeof typed.value === "number" && Number.isFinite(typed.value) && Number.isFinite(projection))
+              values[property] = { value: Object.is(typed.value, -0) ? 0 : typed.value, projection };
+          }
+        } catch {
+        }
+        records.set(node.metadata.semantic, { tag: node.tag, values });
+      }
+      for (const child of node.children) visit(child);
+    };
+    visit(tree);
+    return (node) => {
+      const record = node.semantic && records.get(node.semantic);
+      if (!record || node.nodeType === "text" || node.tag !== record.tag) return;
+      node.cssGeometry = record.values;
+      if (node.cssLayout) node.cssLayout = {
+        ...node.cssLayout,
+        ...Object.fromEntries(Object.entries(record.values).map(([key, { value }]) => [key, `${value}px`]))
+      };
+    };
+  }
+
+  // third-party/html2figma/integration/text-whitespace.ts
+  var collapseAscii = (value) => value.replace(/[\t\n\f\r ]+/gu, " ").replace(/^ | $/gu, "");
+  var noPaintPseudo = (node, element) => {
+    const style = node.computedStyle;
+    if (!style || node.domNode !== element || node.nodeType !== "element" || node.metadata?.isPseudoElement !== true || !["::before", "::after"].includes(node.tag ?? "") || !['""', "''"].includes(style.content) || node.textContent || node.children.length || !["absolute", "fixed"].includes(style.position) || style.display !== "block" || style.appearance !== "none" || style.textDecorationLine !== "none" || style.overflowX !== "visible" || style.overflowY !== "visible" || style.resize !== "none") return false;
+    return ["transparent", "rgba(0, 0, 0, 0)"].includes(style.backgroundColor) && style.backgroundImage === "none" && style.boxShadow === "none" && style.textShadow === "none" && ["Top", "Right", "Bottom", "Left"].every((side) => style[`border${side}Style`] === "none" && style[`border${side}Width`] === "0px") && style.borderImageSource === "none" && style.outlineStyle === "none" && style.filter === "none" && style.backdropFilter === "none" && style.clip === "auto" && style.clipPath === "none" && style.maskImage === "none" && style.getPropertyValue("-webkit-box-reflect") === "none" && style.transform === "none" && style.mixBlendMode === "normal" && style.visibility === "visible" && style.opacity === "1";
+  };
+  function recoverCollapsedTextWhitespace(tree) {
+    const recovered = /* @__PURE__ */ new Map();
+    const visit = (source) => {
+      const node = { ...source, children: source.children.map(visit) };
+      const element = node.domNode;
+      const style = node.computedStyle;
+      if (node.nodeType !== "element" || !(element instanceof realm.Element) || element.namespaceURI !== "http://www.w3.org/1999/xhtml" || !node.metadata?.semantic || node.metadata.isPseudoElement || node.metadata.isFormContent || node.metadata.listMarker || !style || element.childNodes.length !== 1 || !(element.firstChild instanceof realm.Text) || element.matches("button,input,select,textarea,option,svg,canvas,video,audio,object,embed,iframe") || !["normal", "nowrap"].includes(style.whiteSpace) || style.direction !== "ltr" || style.writingMode !== "horizontal-tb" || style.visibility !== "visible" || style.textTransform !== "none" || !["normal", "0px"].includes(style.wordSpacing) || style.fontFamily.length > 256) return node;
+      const textNode = element.firstChild;
+      const rawSource = textNode.data;
+      if (!rawSource || rawSource.length > 1e3 || JSON.stringify(rawSource).length > 1e3 || /\s/u.test(rawSource.replace(/[\t\n\f\r ]/gu, "")) || /[\u200b\u200c\u200d]/u.test(rawSource)) return node;
+      const text = node.children.filter((child) => child.nodeType === "text" && child.domNode === textNode && !child.metadata?.isPseudoElement && !child.metadata?.isFormContent && !child.metadata?.isTextSegment);
+      if (text.length !== 1 || node.children.some((child) => child !== text[0] && !noPaintPseudo(child, element))) return node;
+      const view = element.ownerDocument.defaultView;
+      if (!view || !["::before", "::after"].every((pseudo) => {
+        const current = view.getComputedStyle(element, pseudo);
+        return ["none", "normal"].includes(current.content) || current.display === "none" || node.children.some((child) => child.tag === pseudo && noPaintPseudo(child, element));
+      })) return node;
+      const receipt = {
+        whiteSpace: style.whiteSpace,
+        rawSource
+      };
+      const omitted = node.children.filter((child) => child !== text[0]);
+      let nextText = text[0];
+      const suffix = /[\t\n\f\r ]+$/u.exec(rawSource);
+      if (suffix && text[0].textContent?.endsWith("\xA0") && collapseAscii(text[0].textContent.replace(/\u00a0/gu, " ")) === collapseAscii(rawSource)) {
+        try {
+          const range = element.ownerDocument.createRange();
+          range.setStart(textNode, suffix.index);
+          range.setEnd(textNode, rawSource.length);
+          const rects = Array.from(range.getClientRects());
+          if (rects.length > 0 && rects.every((rect) => rect.width === 0) && range.getBoundingClientRect().width === 0 && !text[0].textContent.slice(0, -1).endsWith("\n")) {
+            nextText = { ...text[0], textContent: text[0].textContent.slice(0, -1) };
+            receipt.removedTrailingNbsp = true;
+          }
+        } catch {
+        }
+      }
+      if (omitted.length) receipt.omittedPseudos = omitted.map((child) => child.tag);
+      if (!receipt.removedTrailingNbsp && !receipt.omittedPseudos) return node;
+      recovered.set(node.metadata.semantic, receipt);
+      return { ...node, children: [nextText] };
+    };
+    return { tree: visit(tree), recovered };
+  }
+
   // third-party/html2figma/integration/entry.ts
+  function captureLayoutValues(tree) {
+    const values = /* @__PURE__ */ new Map();
+    const visit = (node) => {
+      if (node.nodeType === "element" && node.metadata?.semantic) {
+        try {
+          const style = node.domNode.computedStyleMap?.();
+          if (style) {
+            const properties = [
+              "width",
+              "border-collapse",
+              "table-layout",
+              "border-spacing",
+              "border-image-source",
+              "height",
+              "min-width",
+              "max-width",
+              "min-height",
+              "max-height",
+              "flex-basis",
+              "margin-top",
+              "margin-right",
+              "margin-bottom",
+              "margin-left",
+              "grid-template-columns",
+              "grid-template-rows",
+              "grid-template-areas",
+              "grid-auto-columns",
+              "grid-auto-rows",
+              "grid-auto-flow",
+              "grid-column-start",
+              "grid-column-end",
+              "grid-row-start",
+              "grid-row-end",
+              "justify-items",
+              "align-items",
+              "justify-self",
+              "align-self",
+              "justify-content",
+              "align-content",
+              "writing-mode",
+              "direction",
+              "order",
+              "z-index",
+              "aspect-ratio",
+              "row-gap",
+              "column-gap",
+              "box-sizing",
+              "padding-top",
+              "padding-right",
+              "padding-bottom",
+              "padding-left",
+              "contain",
+              "contain-intrinsic-size",
+              "content-visibility",
+              "display",
+              "position",
+              "top",
+              "right",
+              "bottom",
+              "left",
+              "float",
+              "shape-outside",
+              "clear",
+              "column-count"
+            ];
+            const record = {};
+            for (const property of properties) {
+              const value = style.get(property)?.toString();
+              if (value) record[property] = value;
+            }
+            values.set(node.metadata.semantic, record);
+          }
+        } catch {
+        }
+        if (["grid", "inline-grid"].includes(node.computedStyle?.display ?? "") && !values.get(node.metadata.semantic)?.["grid-template-columns"])
+          values.set(node.metadata.semantic, { "--codeshell-grid-intent": "unavailable" });
+      }
+      for (const child of node.children) visit(child);
+    };
+    visit(tree);
+    return values;
+  }
   function convert(root, options) {
-    const tree = traverseDOM(root, { maxDepth: options.maxDepth });
-    return tree ? renderToDesignDSL(tree, options) : null;
+    const capturedTree = traverseDOM(root, { maxDepth: options.maxDepth });
+    if (!capturedTree) return null;
+    const { tree, recovered: textWhitespace } = recoverCollapsedTextWhitespace(capturedTree);
+    const values = captureLayoutValues(tree);
+    const attachTableBorder = captureTableBottomBorders(tree);
+    const attachImageBox = captureImageBoxes(tree);
+    const attachGeometryPrecision = captureGeometryPrecision(tree);
+    const svgResources = /* @__PURE__ */ new Map();
+    const backgrounds = /* @__PURE__ */ new Map();
+    const gridSources = /* @__PURE__ */ new Set();
+    const corners = /* @__PURE__ */ new Map();
+    const textIntents = /* @__PURE__ */ new Map();
+    const lineHeights = /* @__PURE__ */ new Map();
+    const emptyBlocks = /* @__PURE__ */ new Set();
+    const captureSvg = (node) => {
+      if (node.nodeType === "element" && node.metadata?.semantic && node.domNode instanceof realm.Element && node.computedStyle && !node.metadata.isPseudoElement && !node.metadata.isFormContent && !node.metadata.listMarker) {
+        const fontSize = Number.parseFloat(node.computedStyle.fontSize);
+        let evidence = { kind: "unavailable", fontSize };
+        try {
+          const value = node.domNode.computedStyleMap?.().get("line-height");
+          if (value?.unit === "number" && typeof value.value === "number") {
+            const view = node.domNode.ownerDocument.defaultView;
+            const style = node.computedStyle;
+            const ordinary = view && ["::before", "::after"].every((pseudo) => ["none", "normal"].includes(view.getComputedStyle(node.domNode, pseudo).content)) && ["::first-line", "::first-letter"].every((pseudo) => {
+              const variant = view.getComputedStyle(node.domNode, pseudo);
+              return ["fontFamily", "fontSize", "fontWeight", "fontStyle", "lineHeight", "letterSpacing"].every((key) => variant[key] === style[key]);
+            });
+            evidence = ordinary ? { kind: "number", value: value.value, fontSize } : { kind: "unsupported", fontSize };
+          } else if (value?.unit === "px") evidence = { kind: "resolved-length", fontSize };
+          else if (value?.toString() === "normal") evidence = { kind: "normal", fontSize };
+          else if (value) evidence = { kind: "unsupported", fontSize };
+        } catch {
+        }
+        lineHeights.set(node.metadata.semantic, evidence);
+      }
+      if (node.nodeType === "element" && node.metadata?.semantic && node.domNode instanceof realm.Element && !node.metadata.isPseudoElement && !node.metadata.isFormContent)
+        options.onElement?.(node.metadata.semantic.semanticId ?? "", node.domNode);
+      if (node.nodeType === "element" && node.metadata?.semantic && node.domNode instanceof realm.Element && node.computedStyle && !node.metadata.isPseudoElement && !node.metadata.isFormContent && !node.metadata.listMarker && ["block", "flow-root"].includes(node.computedStyle.display) && node.domNode.childElementCount === 0 && !/[^\t\n\f\r ]/u.test(node.domNode.textContent ?? "") && ["normal", "nowrap"].includes(node.computedStyle.whiteSpace)) {
+        const element = node.domNode;
+        const window2 = element.ownerDocument.defaultView;
+        if (window2 && ["::before", "::after"].every((pseudo) => ["none", "normal"].includes(window2.getComputedStyle(element, pseudo).content)))
+          emptyBlocks.add(node.metadata.semantic);
+      }
+      if (node.metadata?.semantic && ["grid", "inline-grid"].includes(node.computedStyle?.display ?? ""))
+        gridSources.add(node.metadata.semantic);
+      if (node.tag === "svg" && node.metadata?.semantic && node.domNode instanceof realm.Element)
+        svgResources.set(node.metadata.semantic, captureStandaloneSvg(node.domNode));
+      if (node.nodeType === "element" && node.metadata?.semantic && node.computedStyle)
+        corners.set(node.metadata.semantic, ["border-top-left-radius", "border-top-right-radius", "border-bottom-right-radius", "border-bottom-left-radius"].map((property) => node.computedStyle.getPropertyValue(property)));
+      if (node.nodeType === "element" && node.metadata?.semantic && node.computedStyle && node.domNode instanceof realm.Element && (node.domNode.childElementCount === 0 && ["nowrap", "pre"].includes(node.computedStyle.whiteSpace) || node.computedStyle.textOverflow !== "clip")) {
+        const style = node.computedStyle;
+        textIntents.set(node.metadata.semantic, {
+          rawSource: node.domNode.textContent ?? "",
+          whiteSpace: style.whiteSpace,
+          childElements: String(node.domNode.childElementCount),
+          generatedContent: String(Boolean(node.metadata.listMarker || node.children.some((child) => child.metadata?.isPseudoElement || child.metadata?.isFormContent))),
+          textOverflow: style.textOverflow,
+          overflowX: style.overflowX,
+          overflowY: style.overflowY,
+          writingMode: style.writingMode,
+          direction: style.direction,
+          lineHeight: style.lineHeight,
+          textIndent: style.textIndent,
+          wordSpacing: style.wordSpacing,
+          textTransform: style.textTransform
+        });
+      }
+      if (node.nodeType === "element" && node.metadata?.semantic && node.computedStyle?.getPropertyValue("background-image").includes("gradient(")) {
+        const background = {};
+        for (const property of [
+          "background-image",
+          "background-color",
+          "background-size",
+          "background-position",
+          "background-repeat",
+          "background-origin",
+          "background-clip",
+          "background-blend-mode",
+          "background-attachment",
+          "border-top-width",
+          "border-right-width",
+          "border-bottom-width",
+          "border-left-width"
+        ]) background[property] = node.computedStyle.getPropertyValue(property);
+        backgrounds.set(node.metadata.semantic, background);
+      }
+      for (const child of node.children) captureSvg(child);
+    };
+    captureSvg(tree);
+    const result = options.preserveGrid ? renderPreservingGrid(tree, options) : renderToDesignDSL(tree, options);
+    const attach = (node) => {
+      attachTableBorder(node);
+      attachImageBox(node);
+      if (node.semantic && textWhitespace.has(node.semantic))
+        node.cssTextWhitespace = textWhitespace.get(node.semantic);
+      if (node.nodeType === "text" && node.semantic && lineHeights.has(node.semantic))
+        node.cssLineHeight = lineHeights.get(node.semantic);
+      const cssLayout = node.nodeType !== "text" && node.semantic && values.get(node.semantic);
+      if (cssLayout && Object.keys(cssLayout).length > 0) node.cssLayout = cssLayout;
+      attachGeometryPrecision(node);
+      if (!options.preserveGrid && node.nodeType === "container" && node.semantic && gridSources.has(node.semantic))
+        node.cssLayout = { ...node.cssLayout, "--codeshell-grid-legacy": "synthetic" };
+      if (node.nodeType === "container" && node.semantic && textIntents.has(node.semantic))
+        node.cssText = textIntents.get(node.semantic);
+      if (node.nodeType === "container" && node.semantic && emptyBlocks.has(node.semantic))
+        node.cssEmptyBlock = true;
+      if (node.nodeType !== "text" && node.semantic && corners.has(node.semantic))
+        node.cssBorderRadii = corners.get(node.semantic);
+      if (node.nodeType !== "text" && node.semantic && backgrounds.has(node.semantic))
+        node.cssBackground = backgrounds.get(node.semantic);
+      if (node.nodeType === "svg" && node.semantic && svgResources.has(node.semantic))
+        node.svgContent = svgResources.get(node.semantic);
+      if (node.nodeType === "container") for (const child of node.children) attach(child);
+    };
+    if (result) attach(result);
+    return result;
   }
   return __toCommonJS(entry_exports);
 })();
@@ -5259,7 +5891,7 @@ var html2figmaCore = (() => {
 return html2figmaCore;
 }
 
-export const HTML2FIGMA_PROVENANCE = Object.freeze({"engine":"html2figma","upstreamCommit":"ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c","sourceTreeSha256":"d633595f846eb0b645988568914f269a0d19743d09348ad02a0275f0eb6d48f2","integrationVersion":1});
+export const HTML2FIGMA_PROVENANCE = Object.freeze({"engine":"html2figma","upstreamCommit":"ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c","sourceTreeSha256":"d633595f846eb0b645988568914f269a0d19743d09348ad02a0275f0eb6d48f2","integrationVersion":2,"gridCaptureDefault":"original-items","legacyGridOption":"preserveGrid:false"});
 
 export function convertToDesignDSL(root, options = {}) {
   const realm = root?.ownerDocument?.defaultView;
@@ -5270,6 +5902,10 @@ export function convertToDesignDSL(root, options = {}) {
   const maxDepth = options.maxDepth ?? 100;
   if (!Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 100)
     throw new RangeError("html2figma maxDepth must be an integer from 0 to 100");
+  if (options.preserveGrid !== undefined && typeof options.preserveGrid !== "boolean")
+    throw new TypeError("html2figma preserveGrid must be a boolean");
+  if (options.onElement !== undefined && typeof options.onElement !== "function")
+    throw new TypeError("html2figma onElement must be a function");
   const runtime = createRuntime(realm);
-  return runtime.convert(root, { includeRawStyles: options.includeRawStyles !== false, maxDepth });
+  return runtime.convert(root, { includeRawStyles: options.includeRawStyles !== false, maxDepth, preserveGrid: options.preserveGrid !== false, onElement: options.onElement });
 }

@@ -369,3 +369,31 @@ test("dispose during an asynchronous scene build never activates it and removes 
   assert.equal(h.states.length, states);
   assert.equal(h.count("dispose"), 1);
 });
+
+test("explicit browser surfaces require their own successful draw and ignore unrelated WebGL loss", async () => {
+  const scene=deferred(), h=harness({options:{mode:"browser",capability:false},setScene:()=>scene.promise,
+    create:instance=>{instance.geometry=()=>new Map([["A",{x:1,width:20}]]);instance.hitTest=()=>"A";}});
+  const pending=h.update("A",{viewOptions:{hiddenNodeIds:["A"]}});await turn();
+  assert.equal(h.controller.state().mode,"browser");assert.equal(h.controller.geometry(),null);assert.equal(h.controller.hitTest({x:1,y:1}),null);
+  h.canvas.dispatchEvent(new Event("webglcontextlost"));scene.resolve();await pending;
+  assert.equal(h.controller.state().active,true);assert.equal(h.controller.state().fallback,false);assert.equal(h.controller.hitTest({x:1,y:1}),"A");assert.equal(h.controller.geometry().get("A").width,20);
+  assert.throws(()=>h.controller.setMode("gpu"),/Only browser/u);
+  await h.controller.suspend("renderer-inactive");assert.equal(h.controller.geometry(),null);assert.equal(h.controller.hitTest({x:1,y:1}),null);
+  await h.controller.dispose();assert.throws(()=>createRendererController({mode:"automatic"}),/Unknown explicit/u);
+});
+
+test("browser revision supersession cancels pending preparation before accepting the latest scene",async()=>{
+  const pending=deferred();let cancellations=0;
+  const h=harness({options:{mode:"browser"},setScene:snapshot=>snapshot.name==="A"?pending.promise:undefined,
+    create:instance=>{instance.cancelPreparation=()=>{cancellations++;pending.resolve(false);};}});
+  const old=h.update("A");await turn();assert.equal(h.count("setScene"),1);
+  const fresh=h.update("A",{revision:2,design:design("B")});await Promise.all([old,fresh]);
+  assert.equal(cancellations,1);assert.equal(h.count("create"),1);assert.equal(h.count("setScene"),2);assert.equal(h.count("render"),1);assert.equal(h.controller.state().revision,2);assert.equal(h.controller.state().active,true);
+  await h.controller.dispose();
+});
+
+test("browser controller disposal retires an in-flight preparation without waiting for its original edge",async()=>{
+  const pending=deferred();const h=harness({options:{mode:"browser"},setScene:()=>pending.promise,dispose:()=>pending.resolve(false)});
+  const old=h.update("A");await turn();const disposed=h.controller.dispose();
+  assert.equal(h.count("dispose"),1);await Promise.all([old,disposed]);assert.equal(h.count("render"),0);assert.equal(h.controller.state().reason,"disposed");
+});

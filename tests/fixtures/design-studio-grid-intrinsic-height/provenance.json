@@ -1,0 +1,10 @@
+{
+  "kind": "actual-native-rest-plus-live-Grid-supplement",
+  "run": "native-grid-height-2026-10-20T20-18-22.755Z-289e088a",
+  "officialFile": "01-initial-630-height40.official.json",
+  "officialSha256": "28c5c473250811d5739c7a715c8181863fe29a5ac674895ded3744be9ad4b9b5",
+  "rawResultSha256": "366413dabd6a3604270de8f4421c760a71681f3695813b2b1cb417bd68bb6f97",
+  "supplement": "Exact live Grid fields matching production preserveNativeGrid; no raw geometry changed. JSON_REST_V1 omits track arrays.",
+  "nativeProbeSha256": "cff504fac5011a4197951cefa702d78041a4a65958e27a77c289cb174dc6121d",
+  "pixelEvidence": "Seven independent CSS/native comparisons:0,0,0,240,660,0,0 changed pixels; fractional failures preserved outside fixture. This is native research, not website capture."
+}

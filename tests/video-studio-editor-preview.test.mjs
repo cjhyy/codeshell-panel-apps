@@ -868,6 +868,39 @@ test(
         assert.deepEqual(result.errors, []);
       },
     );
+    await t.test("visual edits reuse real decoder resources and PCM while showing the latest document", async (t) => {
+      const page = await realWorkspace(t, { endurance: true });
+      const result = await page.evaluate(async () => {
+        const f = mediaFixture;
+        await f.workspace.togglePlayback();
+        await f.workspace.togglePlayback();
+        const before = f.counts(), oldRevision = f.session.read().revision;
+        const clip = f.session.read().sequences[0].clips[0];
+        f.session.dispatch([
+          { type: "project.rename", name: "Renamed without reloading media" },
+          { type: "clip.update", sequenceId: "main", clipId: "clip", patch: {
+            color: { ...clip.color, brightness: -0.1 }, transform: { ...clip.transform, scaleX: 0.75 } } },
+          { type: "asset.update", assetId: "video", patch: { width: 1920, height: 1080 } },
+        ], f.session.getState().identity, "只改变画面与显示尺寸");
+        await f.workspace.preview.frameWork;
+        await f.workspace.togglePlayback();
+        await f.workspace.togglePlayback();
+        return {
+          before, after: f.counts(), oldRevision, revision: f.session.read().revision,
+          previewRevision: f.workspace.preview.document.revision,
+          audioRevision: f.workspace.audio.revision, disposed: f.resources().disposedStreams,
+          brightness: f.workspace.preview.document.sequences[0].clips[0].color.brightness,
+          errors: f.errors,
+        };
+      });
+      assert.deepEqual(result.after, result.before);
+      assert.equal(result.revision, result.oldRevision + 1);
+      assert.equal(result.previewRevision, result.revision);
+      assert.equal(result.audioRevision, result.revision);
+      assert.equal(result.brightness, -0.1);
+      assert.deepEqual(result.disposed, [0]);
+      assert.deepEqual(result.errors, []);
+    });
     await t.test(
       "first preparation reloads a newly bound proxy before drawing its pixels",
       async (t) => {

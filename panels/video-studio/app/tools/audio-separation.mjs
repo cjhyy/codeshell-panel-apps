@@ -1,7 +1,7 @@
 import { createRequire as __panelCreateRequire } from "node:module"; const require = __panelCreateRequire(import.meta.url);
 
 // native/audio-separation.ts
-import { isAbsolute } from "node:path";
+import { isAbsolute as isAbsolute2 } from "node:path";
 
 // ../../shared/model-observability.mjs
 import { randomUUID } from "node:crypto";
@@ -356,7 +356,7 @@ async function runMediaProcess(executable, args, options) {
 import { constants } from "node:fs";
 import { copyFile, lstat, mkdir, open, realpath, rename, rm, stat } from "node:fs/promises";
 import { createHash, randomUUID as randomUUID2 } from "node:crypto";
-import { join, relative, sep } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 // src/editor/time.ts
 var TICKS_PER_SECOND = 24e4;
@@ -961,7 +961,7 @@ try {
     throw new Error("请从视频面板启动分离任务");
   const dir = (flag) => {
     const path = args[args.indexOf(flag) + 1];
-    if (!path || !isAbsolute(path)) throw new Error("授权任务目录无效");
+    if (!path || !isAbsolute2(path)) throw new Error("授权任务目录无效");
     return path;
   };
   const chunks = [];

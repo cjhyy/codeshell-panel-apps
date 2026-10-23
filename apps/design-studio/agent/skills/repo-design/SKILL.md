@@ -216,7 +216,14 @@ When a container uses `layout: "horizontal"`, `"vertical"`, or `"grid"`, it owns
 children’s positions. Configure `padding`, optional `rowGap`/`columnGap`, `alignItems`,
 `justifyContent`, and `alignContent`. Horizontal/vertical containers may set
 `layoutWrap` to `wrap` or `wrap-reverse` and `layoutReverse: true`; Grid uses `gridColumns` and
-child `gridColumnSpan`/`gridRowSpan`. Use `alignItems: "baseline"` for mixed-size text rows.
+child `gridColumnSpan`/`gridRowSpan`. Native Grid interchange may additionally use `gridRows`,
+`gridColumnSizes`/`gridRowSizes` arrays of `{type: "fixed", value: px}`, `{type: "flex", value: fr}`,
+or `{type: "hug"}` with one track per declared row/column (1–24). `gridItemsPositioning` is
+`manual` or `row-auto-flow`; manual child `gridRowAnchorIndex`/`gridColumnAnchorIndex` are zero-based.
+`gridAutoTracks` is `none` or `rows`. Child `gridChildHorizontalAlign`/`gridChildVerticalAlign`
+independently accept `auto`, `start`, `center`, `end`. FLEX tracks cannot share a HUG container axis.
+Grid track/placement edits require a new-page Figma conversion; source-bound patches diagnose them.
+Use `alignItems: "baseline"` for mixed-size text rows.
 Set each child's `layoutSizingHorizontal` and `layoutSizingVertical` independently to `fixed`,
 `hug`, or `fill`. Hug resizes an Auto Layout container to visible flow content; Fill consumes its
 available parent axis. A Fill child under a Hug parent on the same axis uses its current intrinsic

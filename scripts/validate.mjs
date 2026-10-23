@@ -6728,8 +6728,11 @@ const gridLayoutNodes = [
 ];
 designLayout.applyAllAutoLayouts(gridLayoutNodes);
 assert.equal(gridLayoutNodes[1].x, 10);
-assert.equal(gridLayoutNodes[1].width, 196.67);
-assert.equal(gridLayoutNodes[2].x, 216.67);
+// Flexible Grid tracks resolve at a Float32 endpoint; retain the exact derived
+// span rather than applying the former two-decimal geometry quantizer.
+const gridFlexibleTrack = Math.fround(280 / 3);
+assert.equal(gridLayoutNodes[1].width, gridFlexibleTrack * 2 + 10);
+assert.equal(gridLayoutNodes[2].x, Math.fround(10 + 2 * (gridFlexibleTrack + 10)));
 assert.equal(gridLayoutNodes[3].y, 50);
 const manualOnlyNodes = Array.from({ length: 12 }, (_, index) => ({
   ...baseNode(`manual-frame-${index + 1}`, "frame", `Manual frame ${index + 1}`),

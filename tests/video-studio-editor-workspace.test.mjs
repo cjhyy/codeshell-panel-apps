@@ -813,6 +813,12 @@ async function fixture(t, options = {}) {
           "外部编辑",
           "agent",
         ),
+      soundEdit: () => {
+        const clip = session.read().sequences[0].clips.find((clip) => clip.id === "sound");
+        session.dispatch([{ type: "clip.update", sequenceId: "main", clipId: "sound",
+          patch: { audio: { ...clip.audio, volume: clip.audio.volume === 1 ? 0.5 : 1 } } }],
+          session.getState().identity, "修改声音", "agent");
+      },
       replaceProject: async () => {
         const next = session.read();
         next.id = "replacement-document";
@@ -2661,6 +2667,110 @@ test("cancelled native audio completion never plays or contaminates the next pre
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });
 
+test("harmless visual revisions retain a verified paused PCM reader and rebase only its identity wrapper", async (t) => {
+  const page = await fixture(t, { audio: true });
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.evaluate(() => fixture.resolveAudio(0, true));
+  await page.waitForFunction(() => fixture.playing());
+  await action(page, "play").click();
+  await page.evaluate(() => {
+    fixture.externalEdit();
+    const doc = fixture.read(), clip = doc.sequences[0].clips.find((clip) => clip.id === "a");
+    fixture.dispatch([
+      { type: "clip.update", sequenceId: "main", clipId: "a", patch: {
+        transform: { ...clip.transform, x: 0.25 }, color: { ...clip.color, brightness: 0.1 } } },
+      { type: "asset.update", assetId: "demo", patch: { width: 640, height: 360 } },
+    ], "只修改画面");
+  });
+  await settle(page);
+  assert.equal(await page.evaluate(() => fixture.audio()[0].disposed), 0);
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.audio.revision), (await documentState(page)).revision);
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.playing());
+  assert.equal(await page.evaluate(() => fixture.audio().length), 1);
+  await action(page, "play").click();
+  await page.evaluate(() => fixture.soundEdit());
+  assert.equal(await page.evaluate(() => fixture.audio()[0].disposed), 1);
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 2);
+  await page.evaluate(() => fixture.resolveAudio(1, true));
+  await page.waitForFunction(() => fixture.playing());
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("one pending play continues after harmless revisions and rejects a genuinely stale provider identity", async (t) => {
+  const page = await fixture(t, { audio: true });
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.evaluate(() => {
+    fixture.externalEdit();
+    fixture.dispatch([{ type: "asset.update", assetId: "demo", patch: { width: 640, height: 360 } }], "校正显示尺寸");
+  });
+  await settle(page);
+  assert.equal(await page.evaluate(() => fixture.audio()[0].aborted), false);
+  await page.evaluate(() => fixture.resolveAudio(0, true));
+  await page.waitForFunction(() => fixture.playing());
+  assert.equal(await page.evaluate(() => fixture.audio().length), 1);
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.audio.revision), (await documentState(page)).revision);
+  await action(page, "play").click();
+  await page.evaluate(() => fixture.soundEdit());
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 2);
+  await page.evaluate(() => { fixture.externalEdit(); fixture.resolveAudio(1, true, true); });
+  await page.waitForFunction(() => fixture.errors.length === 1);
+  assert.match(await page.locator("[data-ew-preview-error]").textContent(), /版本不一致/);
+  assert.equal(await page.evaluate(() => fixture.audio()[1].disposed), 1);
+  assert.equal(await page.evaluate(() => fixture.playing()), false);
+});
+
+test("a harmless revision during an awaited audio start retries the same play intent with the current wrapper", async (t) => {
+  const page = await fixture(t, { audio: true });
+  await page.evaluate(() => {
+    const workspace = fixture.internals.workspace, prepare = workspace.options.prepareAudio;
+    workspace.options.prepareAudio = async (...args) => {
+      const audio = await prepare(...args), read = audio.stream.read;
+      let held = false;
+      audio.stream.read = async (...args) => {
+        if (!held) {
+          held = true;
+          await new Promise((resolve) => globalThis.releaseFirstPcmRead = resolve);
+        }
+        return read(...args);
+      };
+      return audio;
+    };
+  });
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.evaluate(() => fixture.resolveAudio(0, true));
+  await page.waitForFunction(() => !!globalThis.releaseFirstPcmRead);
+  await page.evaluate(() => { fixture.externalEdit(); releaseFirstPcmRead(); });
+  await page.waitForFunction(() => fixture.playing());
+  assert.equal(await page.evaluate(() => fixture.audio().length), 1);
+  assert.equal(await page.evaluate(() => fixture.audio()[0].disposed), 0);
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.audio.revision), (await documentState(page)).revision);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("source replacement and same-document generation changes fence pending play despite matching clip timing", async (t) => {
+  const page = await fixture(t, { audio: true });
+  for (const change of ["source", "generation"]) {
+    const index = await page.evaluate(() => fixture.audio().length);
+    await action(page, "play").click();
+    await page.waitForFunction((index) => fixture.audio().length === index + 1, index);
+    await page.evaluate(async (change) => {
+      if (change === "source") fixture.dispatch([{ type: "asset.update", assetId: "audio", patch: { resourceId: "new-source" } }], "替换原声音");
+      else await fixture.replaceGeneration();
+    }, change);
+    assert.equal(await page.evaluate((index) => fixture.audio()[index].aborted, index), true);
+    await page.evaluate((index) => fixture.resolveAudio(index, true), index);
+    await page.waitForFunction((index) => fixture.audio()[index].disposed === 1, index);
+    assert.equal(await page.evaluate(() => fixture.playing()), false);
+  }
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
 test("a wrong audio identity is released instead of being cached for the next resume", async (t) => {
   const page = await fixture(t, { audio: true });
   await action(page, "play").click();
@@ -2714,7 +2824,7 @@ test("same-revision media refresh releases a cached mix and fences a pending rep
   assert.equal(await page.evaluate(() => fixture.audio()[2].disposed), 1);
 });
 
-test("audio overload remains visible while paused and clears for revisions, sequences and document generations", async (t) => {
+test("audio overload remains visible while paused and clears for audio edits, sequences and document generations", async (t) => {
   const page = await fixture(t, { audio: true, sequenceCount: 2 });
   const warning = page.locator("[data-ew-audio-warning]");
   const prepare = async (index, report = { peak: 1.2, samplesOverFullScale: 100 }) => {
@@ -2748,7 +2858,7 @@ test("audio overload remains visible while paused and clears for revisions, sequ
   await page.waitForFunction(() => fixture.playing());
   await action(page, "play").click();
   assert.equal(await warning.isVisible(), true);
-  await page.evaluate(() => fixture.externalEdit());
+  await page.evaluate(() => fixture.soundEdit());
   assert.equal(await warning.isVisible(), false);
   await prepare(1, { peak: 0.4, samplesOverFullScale: 0 });
   assert.equal(await warning.isVisible(), false, "A safe corrected mix has no warning");
@@ -2782,7 +2892,7 @@ test("cancelled, failed, invalid and stale audio reports never appear as current
   assert.equal(await warning.isVisible(), false);
   await action(page, "play").click();
   await page.waitForFunction(() => fixture.audio().length === 2);
-  await page.evaluate(() => fixture.externalEdit());
+  await page.evaluate(() => fixture.soundEdit());
   await action(page, "play").click();
   await page.waitForFunction(() => fixture.audio().length === 3);
   await page.evaluate((mix) => fixture.resolveAudio(1, true, false, mix), overload);
@@ -2815,7 +2925,7 @@ test("cancelled, failed, invalid and stale audio reports never appear as current
   }
 });
 
-test("workspace releases abandoned streamed readers and retains a paused current reader until the next edit", async (t) => {
+test("workspace releases abandoned streamed readers and retains a paused current reader until the next sound edit", async (t) => {
   const page = await fixture(t, { audio: true });
   await action(page, "play").click();
   await page.waitForFunction(() => fixture.audio().length === 1);
@@ -2831,6 +2941,8 @@ test("workspace releases abandoned streamed readers and retains a paused current
   await action(page, "play").click();
   assert.equal(await page.evaluate(() => fixture.audio()[1].disposed), 0);
   await page.evaluate(() => fixture.externalEdit());
+  assert.equal(await page.evaluate(() => fixture.audio()[1].disposed), 0);
+  await page.evaluate(() => fixture.soundEdit());
   assert.equal(await page.evaluate(() => fixture.audio()[1].disposed), 1);
   await page.evaluate(() => fixture.dispose());
   assert.equal(await page.evaluate(() => fixture.audio()[1].disposed), 1);
@@ -2859,7 +2971,7 @@ test("a stale audio request resolving after its replacement cannot cancel or rep
   const page = await fixture(t, { audio: true });
   await action(page, "play").click();
   await page.waitForFunction(() => fixture.audio().length === 1);
-  await page.evaluate(() => fixture.externalEdit());
+  await page.evaluate(() => fixture.soundEdit());
   await settle(page);
   assert.equal(await page.evaluate(() => fixture.audio()[0].aborted), true);
   await action(page, "play").click();

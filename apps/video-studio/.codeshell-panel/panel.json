@@ -23,6 +23,7 @@
     "media.capture",
     "process",
     "resources",
+    "resources.directRead",
     "credentials.connections"
   ],
   "agent": {

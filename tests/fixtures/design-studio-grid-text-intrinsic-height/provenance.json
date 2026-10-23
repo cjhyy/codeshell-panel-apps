@@ -1,0 +1,284 @@
+{
+  "researchOnly": true,
+  "nativeRun": "native-grid-text-height-2026-10-20T20-42-49.714Z-a4e5dd91",
+  "rawResultSha256": "6dd1cc6d09c5f5d0bd391d538a6255fef61fecadf263cf3f597eb0d072c931d6",
+  "officialFile": "01-initial-630-original-copy.official.json",
+  "officialSha256": "2f925bb113a5a8158ff2f6c16ba7244a1a2d46d2e780994cf97bb8ec48f88e59",
+  "derivedSourceSha256": "331187c2a57a69cf9f66518916ba5f7fc81e812cdd156fe87b135a47271e8d76",
+  "transformation": "Only production-equivalent preserveNativeGrid live fields; no geometry/text/style/mode values changed. Raw JSON_REST omits exact track arrays and anchor indexes.",
+  "supplementedFields": {
+    "62:865": [
+      "gridColumnCount",
+      "gridRowCount",
+      "gridColumnSizes",
+      "gridRowSizes",
+      "gridColumnGap",
+      "gridRowGap",
+      "gridItemsPositioning",
+      "gridAutoTracks"
+    ],
+    "62:866": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:868": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:870": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:872": [
+      "gridColumnCount",
+      "gridRowCount",
+      "gridColumnSizes",
+      "gridRowSizes",
+      "gridColumnGap",
+      "gridRowGap",
+      "gridItemsPositioning",
+      "gridAutoTracks"
+    ],
+    "62:873": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:875": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:877": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:879": [
+      "gridColumnCount",
+      "gridRowCount",
+      "gridColumnSizes",
+      "gridRowSizes",
+      "gridColumnGap",
+      "gridRowGap",
+      "gridItemsPositioning",
+      "gridAutoTracks"
+    ],
+    "62:880": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:882": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:884": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:886": [
+      "gridColumnCount",
+      "gridRowCount",
+      "gridColumnSizes",
+      "gridRowSizes",
+      "gridColumnGap",
+      "gridRowGap",
+      "gridItemsPositioning",
+      "gridAutoTracks"
+    ],
+    "62:887": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:889": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:891": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:893": [
+      "gridColumnCount",
+      "gridRowCount",
+      "gridColumnSizes",
+      "gridRowSizes",
+      "gridColumnGap",
+      "gridRowGap",
+      "gridItemsPositioning",
+      "gridAutoTracks"
+    ],
+    "62:894": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:896": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:898": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:900": [
+      "gridColumnCount",
+      "gridRowCount",
+      "gridColumnSizes",
+      "gridRowSizes",
+      "gridColumnGap",
+      "gridRowGap",
+      "gridItemsPositioning",
+      "gridAutoTracks"
+    ],
+    "62:901": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:903": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:905": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:907": [
+      "gridColumnCount",
+      "gridRowCount",
+      "gridColumnSizes",
+      "gridRowSizes",
+      "gridColumnGap",
+      "gridRowGap",
+      "gridItemsPositioning",
+      "gridAutoTracks"
+    ],
+    "62:908": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:910": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:912": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:914": [
+      "gridColumnCount",
+      "gridRowCount",
+      "gridColumnSizes",
+      "gridRowSizes",
+      "gridColumnGap",
+      "gridRowGap",
+      "gridItemsPositioning",
+      "gridAutoTracks"
+    ],
+    "62:915": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:917": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ],
+    "62:919": [
+      "gridColumnAnchorIndex",
+      "gridRowAnchorIndex",
+      "gridColumnSpan",
+      "gridRowSpan",
+      "gridChildHorizontalAlign",
+      "gridChildVerticalAlign"
+    ]
+  },
+  "nativePixelComparison": "NOT_RUN; native font bytes/version unavailable; research only, not HTML-source production acceptance."
+}

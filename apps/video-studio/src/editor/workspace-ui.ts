@@ -50,6 +50,7 @@ import { audioMixWarning } from "./audio-mix-report";
 import type { PreviewResolution } from "./compositor";
 import { trackAuditionDocument, clipGainAuditionDocument } from "./audio-audition";
 import { resolvePlayheadPosition } from "./playhead-position";
+import { editorAudioContentKey, editorVisualSourceKey } from "./playback-cache";
 
 export interface EditorWorkspaceOptions {
   layout?: "standalone" | "embedded";
@@ -185,6 +186,8 @@ export class EditorWorkspace {
   private gainSeeking?: ExportOpeningOwner;
   /** Includes the session generation, so restoring the same revision cannot reuse old media. */
   private preparedRevision = "";
+  private audioContentKey = "";
+  private visualSourceKey = "";
   private dialog?: HTMLDialogElement;
   private dialogAbort?: AbortController;
   private pendingExport = false;
@@ -657,6 +660,7 @@ export class EditorWorkspace {
     if (signature === this.revision) return;
     this.releaseTimelineMedia();
     this.revision = signature;
+    const previousSequenceId = this.sequenceId;
     const documentIdentity = JSON.stringify([state.identity.documentId, state.identity.generation]),
       opened = this.documentIdentity !== documentIdentity;
     this.documentIdentity = documentIdentity;
@@ -672,13 +676,29 @@ export class EditorWorkspace {
     this.frameCaptureSize = { width: sequence.width, height: sequence.height, duration: sequenceDuration(sequence) };
     this.updateFrameCaptureControl();
     this.selected = this.selected.filter((id) => sequence.clips.some((clip) => clip.id === id));
+    const auditionDocument = this.auditionDocument(doc),
+      audioContentKey = editorAudioContentKey(auditionDocument, sequence.id),
+      visualSourceKey = editorVisualSourceKey(auditionDocument, sequence.id),
+      sameScope = !opened && previousSequenceId === sequence.id,
+      sameAudio = sameScope && audioContentKey === this.audioContentKey,
+      sameSources = sameScope && visualSourceKey === this.visualSourceKey,
+      preservePreparation = sameAudio && sameSources && !this.gainAudition;
     this.clearGainAudition(true);
-    this.cancelPreparation();
-    this.audio?.stream?.dispose();
-    this.audio = undefined;
-    this.preparedRevision = "";
-    this.clearAudioWarning();
-    this.preview.setDocument(this.auditionDocument(doc), sequence.id);
+    if (!preservePreparation) this.cancelPreparation();
+    if (!sameAudio) {
+      this.audio?.stream?.dispose();
+      this.audio = undefined;
+    } else if (this.audio) {
+      // Content equality, within this open generation, permits a new identity wrapper only.
+      this.audio = { ...this.audio, revision: doc.revision };
+    }
+    if (!sameAudio || !sameSources) {
+      this.preparedRevision = "";
+      this.clearAudioWarning();
+    }
+    this.audioContentKey = audioContentKey;
+    this.visualSourceKey = visualSourceKey;
+    this.preview.setDocument(auditionDocument, sequence.id, { preserveMedia: sameSources });
     this.updateAuditionControls();
     this.playhead = Math.min(this.playhead, Math.max(0, sequenceDuration(sequence) - 1));
     const name = this.get<HTMLInputElement>("[data-ew-project-name]");
@@ -704,7 +724,7 @@ export class EditorWorkspace {
     this.timeline.render();
     this.canvasEditor.render();
     this.updateTime();
-    if (this.visible && !this.sourcePreview) this.run(() => this.frameCapture?.finishing || this.exportOpening?.finishing || this.gainOpening?.finishing
+    if (this.visible && !this.sourcePreview && !(preservePreparation && this.preparing)) this.run(() => this.frameCapture?.finishing || this.exportOpening?.finishing || this.gainOpening?.finishing
       ? this.preview.seek(this.playhead, { exact: this.exactPlayhead }) : this.seek(this.playhead));
   }
 
@@ -851,7 +871,9 @@ export class EditorWorkspace {
     return this.soloTracks.size ? trackAuditionDocument(document, this.sequenceId, this.soloTracks) : document;
   }
   private playbackSignature(): string {
-    return `${this.revision}:${JSON.stringify([...this.soloTracks].sort())}`;
+    const identity = this.options.session.getState().identity;
+    return JSON.stringify([identity.documentId, identity.generation, this.sequenceId,
+      this.audioContentKey, this.visualSourceKey, [...this.soloTracks].sort()]);
   }
   private updateAuditionControls(): void {
     if (this.disposed) return;
@@ -884,7 +906,9 @@ export class EditorWorkspace {
     else if (this.soloTracks.has(trackId)) this.soloTracks.delete(trackId);
     else this.soloTracks.add(trackId);
     this.audio?.stream?.dispose(); this.audio = undefined; this.preparedRevision = "";
-    this.preview.setDocument(this.auditionDocument(), this.sequenceId);
+    const doc = this.auditionDocument();
+    this.audioContentKey = editorAudioContentKey(doc, this.sequenceId);
+    this.preview.setDocument(doc, this.sequenceId, { preserveMedia: true });
     this.timeline.render();
     this.updateAuditionControls();
     this.run(() => this.seek(this.playhead));
@@ -973,21 +997,34 @@ export class EditorWorkspace {
       if (!preparedCurrent) this.clearAudioWarning();
       const prepared = preparedCurrent
         ? this.audio
-        : (this.audio ??
-          (await this.options.prepareAudio?.(doc, sequenceId, controller.signal, (message) =>
+        : (await this.options.prepareAudio?.(doc, sequenceId, controller.signal, (message) =>
             this.preparationStatus(controller, message),
             this.soloTracks.size ? "audition" : undefined,
-          )));
+          ));
       if (
         controller.signal.aborted ||
         signature !== this.playbackSignature() ||
         this.disposed ||
         !this.visible
       ) {
-        if (prepared !== this.audio) prepared?.stream?.dispose();
+        if (prepared?.stream !== this.audio?.stream) prepared?.stream?.dispose();
         return;
       }
-      this.audio = prepared;
+      // The provider must still return the identity it was asked to prepare. Only this
+      // owner may rebase that verified result after harmless edits during preparation.
+      if (prepared && (prepared.documentId !== doc.id || prepared.revision !== doc.revision ||
+          prepared.sequenceId !== sequenceId)) {
+        if (prepared.stream !== this.audio?.stream) prepared.stream?.dispose();
+        throw new Error("声音预览与当前工程版本不一致，请重新准备声音");
+      }
+      const latest = this.auditionDocument();
+      if (editorAudioContentKey(latest, sequenceId) !== this.audioContentKey ||
+          editorVisualSourceKey(latest, sequenceId) !== this.visualSourceKey) {
+        if (prepared?.stream !== this.audio?.stream) prepared?.stream?.dispose();
+        return;
+      }
+      if (this.audio?.stream !== prepared?.stream) this.audio?.stream?.dispose();
+      this.audio = prepared ? { ...prepared, revision: latest.revision } : undefined;
       if (audition && !audition.audio) {
         const candidate = clipGainAuditionDocument(doc, sequenceId, audition.clipId);
         const stem = await this.options.prepareAudio?.(candidate.document, sequenceId, controller.signal,
@@ -1011,7 +1048,7 @@ export class EditorWorkspace {
       const ended = this.playhead >= sequenceDuration(this.sequence());
       // Resource preparation may replace an incompatible source with a verified preview proxy.
       // Once that preparation played successfully, pause/resume keeps its decoders and mix.
-      if (!preparedCurrent) this.preview.setDocument(doc, sequenceId);
+      if (!preparedCurrent) this.preview.setDocument(latest, sequenceId);
       const target = ended ? 0 : this.playhead;
       if (this.preview.time !== target)
         await this.preview.seek(target, { exact: !ended && this.exactPlayhead });
@@ -1022,7 +1059,14 @@ export class EditorWorkspace {
         !this.visible
       )
         return;
-      await this.preview.play(this.audio, audition?.audio ? { audio: audition.audio, gain: audition.delta ?? 0 } : undefined);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const playbackRevision = this.revision;
+        await this.preview.play(this.audio, audition?.audio ? { audio: audition.audio, gain: audition.delta ?? 0 } : undefined);
+        // A harmless refresh may abort an awaited decoder/audio start. The same play
+        // owner can retry with the refreshed document and its verified audio wrapper.
+        if (this.preview.playing || playbackRevision === this.revision || controller.signal.aborted ||
+            signature !== this.playbackSignature() || this.disposed || !this.visible) break;
+      }
       if (
         !controller.signal.aborted &&
         signature === this.playbackSignature() &&

@@ -106,7 +106,7 @@ test("installed package discovers CLI schemas without a webview, dependencies or
   assert.deepEqual(await readdir(f.project), []);
 });
 
-test("create, read, CAS edit and zero-warning validation persist actual reopenable v3 source", async (t) => {
+test("create/read/CAS preserve companions and report malformed metadata before zero-warning validation", async (t) => {
   const f = await fixture(t);
   const created = await f.run("create", { path, document: document() });
   assert.equal(created.code, 0);
@@ -134,6 +134,18 @@ test("create, read, CAS edit and zero-warning validation persist actual reopenab
     await readFile(join(f.project, "designs/design.prototype.json"), "utf8"),
     "preserved companion",
   );
+  const malformed = await f.run("validate", { path });
+  assert.equal(malformed.value.result.valid, false);
+  assert.equal(malformed.value.result.issueCount, 1);
+  assert.equal(malformed.value.result.errorCount, 1);
+  assert.equal(malformed.value.result.prototype.status, "invalid");
+  assert.equal(malformed.value.result.issues[0].code, "prototype.invalid-sidecar");
+  assert.equal(malformed.value.result.canonical, true);
+  assert.equal(await readFile(join(f.project, "designs/design.prototype.json"), "utf8"), "preserved companion");
+  // A distinct, explicitly authored valid companion is the positive fixture.
+  await f.put("designs/design.prototype.json", JSON.stringify({
+    format: "codeshell.design.prototype", version: 1, startPageId: "page-one", links: [],
+  }));
   const audit = await f.run("validate", { path });
   assert.equal(audit.value.result.valid, true);
   assert.equal(audit.value.result.issueCount, 0);
@@ -176,6 +188,46 @@ test("SVG/HTML exports, PRD parsing and saved-design comparison use the shared d
   const comparison = await f.run("compare", { path, actual_path: "designs/changed.codesign.json" });
   assert.equal(comparison.value.result.passed, false);
   assert.equal(comparison.value.result.maximumGeometryDelta, 20);
+});
+
+test("installed PRD brief preserves authored requirement references and rejects invalid or conflicting IDs without writes", async (t) => {
+  const f = await fixture(t);
+  const source = await readFile(new URL("../../fixtures/design-studio-product-brief/checkout.md", import.meta.url), "utf8");
+  await f.put("docs/PRD.md", source);
+  const first = await f.run("brief", { path: "docs/PRD.md" });
+  assert.equal(first.code, 0);
+  const ids = first.value.result.requirements.slice(0, 2).map((item) => item.id);
+  assert.deepEqual(ids, ["req-sign-in", "req-orders-view"]);
+  const notes = `docs/PRD.md: ${ids.join(", ")}`;
+  await f.run("create", { path, document: document("Requirements", [rectangle("card", { notes })]) });
+  const saved = await readFile(join(f.project, path), "utf8");
+  for (const checkbox of ["[ ]", "[x]", "[X]"]) {
+    const reordered = `# 产品\n## 需求\n- ${checkbox} [id:req-orders-view] 订单详情\n- A new item\n- ${checkbox} [id:req-sign-in] P2 邮箱登录\n`;
+    await f.put("docs/PRD.md", reordered);
+    const second = await f.run("brief", { path: "docs/PRD.md" });
+    assert.equal(second.code, 0);
+    assert.ok(ids.every((id) => second.value.result.requirements.some((item) => item.id === id)));
+  }
+  const reopened = await f.run("read", { path, node_id: "card" });
+  assert.equal(reopened.value.result.node.notes, notes);
+  for (const items of [
+    "- [id:Invalid] Statement",
+    "- [id:req-login] First\n- [id:req-login] Second",
+    "- [id:req-02-p1-view-orders] Sign in\n- P1 View orders",
+    "- [ ] [id:Invalid] Statement",
+    "- [x] [id:req-login] First\n- [ ] [id:req-login] Second",
+    "- [X] [id:req-02-p1-view-orders] Sign in\n- P1 View orders",
+  ]) {
+    const invalid = `# Product\n## Requirements\n${items}\n`;
+    await f.put("docs/PRD.md", invalid);
+    const result = await f.run("brief", { path: "docs/PRD.md" });
+    assert.equal(result.code, 1);
+    assert.equal(result.value.ok, false);
+    assert.equal(result.value.error.code, "OPERATION_FAILED");
+    assert.match(result.value.error.message, /显式需求 ID|重复|冲突/u);
+    assert.equal(await readFile(join(f.project, "docs/PRD.md"), "utf8"), invalid);
+    assert.equal(await readFile(join(f.project, path), "utf8"), saved);
+  }
 });
 
 test("concurrent creators and editors have one winner and preserve the committed JSON", async (t) => {

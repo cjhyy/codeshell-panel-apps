@@ -1,3 +1,4 @@
+import { roundedRectOutline } from "./corner-radii.mjs";
 /* Geometry engine used only by the Design Studio Panel App. */
 const CONTAINER_NODE_TYPES = ["frame", "group", "component"];
 
@@ -304,10 +305,6 @@ function clipConvexPolygon(subject, clip) {
 function nodeClipOutlineInTree(nodes, node, nodeIndex) {
   if (!validBounds(node) || node.width <= 0 || node.height <= 0) return [];
   const points = [];
-  const radius =
-    node.type === "ellipse"
-      ? Math.min(node.width, node.height) / 2
-      : Math.min(node.cornerRadius ?? 0, node.width / 2, node.height / 2);
   if (node.type === "ellipse") {
     for (let index = 0; index < 64; index += 1) {
       const angle = (index / 64) * Math.PI * 2;
@@ -316,34 +313,7 @@ function nodeClipOutlineInTree(nodes, node, nodeIndex) {
         y: node.y + node.height / 2 + Math.sin(angle) * (node.height / 2),
       });
     }
-  } else if (radius > 0) {
-    const corners = [
-      { x: node.x + node.width - radius, y: node.y + radius, start: -Math.PI / 2 },
-      {
-        x: node.x + node.width - radius,
-        y: node.y + node.height - radius,
-        start: 0,
-      },
-      { x: node.x + radius, y: node.y + node.height - radius, start: Math.PI / 2 },
-      { x: node.x + radius, y: node.y + radius, start: Math.PI },
-    ];
-    for (const corner of corners) {
-      for (let index = 0; index <= 8; index += 1) {
-        const angle = corner.start + (index / 8) * (Math.PI / 2);
-        points.push({
-          x: corner.x + Math.cos(angle) * radius,
-          y: corner.y + Math.sin(angle) * radius,
-        });
-      }
-    }
-  } else {
-    points.push(
-      { x: node.x, y: node.y },
-      { x: node.x + node.width, y: node.y },
-      { x: node.x + node.width, y: node.y + node.height },
-      { x: node.x, y: node.y + node.height },
-    );
-  }
+  } else points.push(...roundedRectOutline(node));
   return points.map((point) => pointFromNodeSpace(nodes, node, point, nodeIndex)).filter(Boolean);
 }
 
@@ -723,18 +693,19 @@ export function distributeNodeTrees(nodes, selectedIds, axis) {
   return true;
 }
 
-export function setNodeTreePosition(nodes, nodeId, axis, value) {
+export function setNodeTreePosition(nodes, nodeId, axis, value, { preservePrecision = false } = {}) {
   if (!Array.isArray(nodes) || !["x", "y"].includes(axis) || !Number.isFinite(value)) return false;
   const root = nodes.find((node) => node.id === nodeId);
   if (!root) return false;
   const delta = value - root[axis];
   if (delta === 0) return false;
-  root[axis] = round(value);
+  const position = preservePrecision ? value => Object.is(value, -0) ? 0 : value : round;
+  root[axis] = position(value);
   if (isContainerNode(root)) {
     const descendants = descendantIds(nodes, new Set([root.id]));
     for (const node of nodes) {
       if (!descendants.has(node.id)) continue;
-      node[axis] = round(node[axis] + delta);
+      node[axis] = position(node[axis] + delta);
     }
   }
   return true;

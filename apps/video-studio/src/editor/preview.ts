@@ -5,6 +5,7 @@ import { frameToTicks, ticksToFrame, ticksToSeconds, secondsToTicks, type Tick }
 import type { EditorDocument, EditorSequence } from "./types";
 import { sequenceDuration, validateEditorDocument } from "./validation";
 import { StreamingPreviewAudio, type PreviewPcmStream } from "./stream-audio";
+import { editorVisualSourceKey } from "./playback-cache";
 import type { EditorAudioMixReport } from "./audio-mix-report";
 import {
   editorFontWarnings,
@@ -110,13 +111,16 @@ export class EditorPreview {
   }
 
   /** Replace a frozen snapshot after every committed edit; old decode results cannot overwrite it. */
-  setDocument(value: EditorDocument, sequenceId = value.activeSequenceId): void {
+  setDocument(value: EditorDocument, sequenceId = value.activeSequenceId, options: { preserveMedia?: boolean } = {}): void {
     this.active();
     const valid = validateEditorDocument(value);
     const sequence = valid.sequences.find((item) => item.id === sequenceId);
     if (!sequence) throw new Error("预览序列不存在");
+    const preserveMedia = options.preserveMedia && this.document?.id === valid.id &&
+      this.sequence?.id === sequenceId &&
+      editorVisualSourceKey(this.document, sequenceId) === editorVisualSourceKey(valid, sequenceId);
     this.pause();
-    this.pool.reset();
+    if (!preserveMedia) this.pool.reset();
     this.renderedTime = undefined;
     this.document = valid;
     this.sequence = sequence;

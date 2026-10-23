@@ -1,6 +1,6 @@
 ---
 name: project-runtime
-description: Inspect, read, audit, create and edit saved CodeShell Design v3 documents, export SVG or HTML, parse PRDs and compare saved designs using the selected Design Studio package without opening the panel.
+description: Inspect, read, audit, create and edit saved CodeShell Design v3 documents, export SVG or static/multipage prototype HTML, parse PRDs and compare saved designs using the selected Design Studio package without opening the panel.
 ---
 
 # Project Runtime
@@ -54,8 +54,9 @@ any Host concurrently using that project must still support the shared protocol.
 | --- | --- |
 | `inspect` | `path`; saved primary-file SHA-256 `revision`, canvas, tokens, resources and page catalog. |
 | `read` | `path`, optional `page_id` or `node_id`; a complete saved v3 document, page or node subtree. For a node, optional `max_depth` is 0–32. `descendantsTruncated` marks omitted descendants. |
-| `validate` | `path`; shared document validation and all-page audit, with counts plus up to 400 issues. |
-| `svg` / `frontend` | `path`, optional `page_id`, optional `output`; one saved page's SVG or editable static HTML. Without `output`, content is returned in JSON. |
+| `validate` | `path`; shared document/all-page audit and existing prototype companion diagnostics. Invalid companions contribute to error/blocking counts. Up to400 issues plus100 companion diagnostics are returned with truncation counts. |
+| `svg` | `path`, optional `page_id`, optional `output`; one saved page's SVG. Without `output`, content is returned in JSON. |
+| `frontend` | `path`, optional `page_id`, optional `output`, optional strict boolean `prototype`; defaults to single-page static HTML. `prototype:true` exports all saved pages with the saved prototype companion and verified resources, and cannot be combined with `page_id`. |
 | `brief` | `path` to a project-local Markdown, MDX or text PRD; structured goals, requirements and acceptance criteria. |
 | `compare` | `path`, `actual_path`, optional `page_id` / `actual_page_id`; geometry and style comparison of two saved design pages. This does not measure pixels. |
 | `create` | `path`, `document`; create a missing source from a complete Design v3 repository document. |
@@ -69,6 +70,15 @@ most 64 MiB total, reconstructed designs and request files at most 16 MiB, and
 stdout results at most 1 MiB. On `RESULT_TOO_LARGE`, narrow `read` by page/node
 and `max_depth`, or export into a new artifact. PRDs are limited to 512 KiB.
 
+Prototype companions are limited to2MiB raw/reconstructed data and use the same
+project path, symlink, verified multipart and aggregate read-budget checks.
+Only a missing primary `.prototype.json` uses the Panel's default: current active
+page as start, all pages available, no authored links. Its receipt explicitly
+reports `status: "absent"` / `defaulted: true`. Malformed or oversized metadata,
+missing/corrupt parts and dangling targets are invalid; prototype export refuses
+them. Validation reports the status and bounded diagnostics without changing
+the design, IDs or companion. Export never creates a prototype sidecar.
+
 Create/edit use the Panel's exact v3 codec, so `document.pages[].children` is
 nested, while node `x/y` remains absolute canvas geometry. Start with `read`,
 preserve stable page/node IDs and all unaffected content, and construct the
@@ -77,8 +87,9 @@ operations, undo/rollback or Auto Layout mutation engine: supply already
 materialized geometry and validate it. Color values must be consistent with
 their intended tokens. Do not create placeholder screens merely to pass audit.
 For bounded incremental layout work, live screenshots, HTML capture/import,
-Figma exchange, comments, prototypes or resource insertion, use the Panel's
-`repo-design` workflow. Static SVG/HTML output does not establish visual fidelity;
+Figma exchange, comments, prototype authoring or resource insertion, use the Panel's
+`repo-design` workflow. Prototype export reads saved configuration; it does not
+create native Figma reactions. SVG/HTML output does not establish visual fidelity;
 inspect the actual artifact when making a visual claim.
 
 Use the exact `revision` returned by the latest saved-file read as
@@ -94,7 +105,8 @@ leave unreferenced immutable parts; later saves may reuse identical parts.
 
 Existing companion files are preserved, but a complete-document edit does not
 reconcile changed IDs in comments/prototypes or update Figma source mappings.
-Retain IDs when those relationships matter and use the Panel for their edits.
+Retain IDs when those relationships matter, run `validate` after edits, and use
+the Panel to repair prototype links explicitly.
 The CLI never reads private Host storage. CLI writers serialize operations using
 project-root `.design-studio-write.lock`, and all file commits use the Host's
 `.codeshell-workspace-write-<sha256(NFC-lowercase-filename)>.lock` in the file's

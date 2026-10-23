@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { isAbsolute } from "node:path";
 import { runEditorRequest, type EditorRuntimeContext } from "./runtime.js";
 import { EditorTaskError, record } from "./protocol.js";
-import { sealed } from "./files.js";
+import { readHostOriginals, sealed } from "./files.js";
 import { combineAbortSignals } from "../signals.js";
 
 /** Host seals both directories and supplies jobId/scopeKey; JSON supplies no paths or executable code. */
@@ -26,10 +26,13 @@ export async function runEditorCli(
   };
   try {
     const args = process.argv.slice(2);
+    const flags = args.filter((_, index) => index % 2 === 0);
     if (
-      args.length !== 4 ||
-      new Set([args[0], args[2]]).size !== 2 ||
-      [args[0], args[2]].some((flag) => !["--job-dir", "--runtime-dir"].includes(flag))
+      ![4, 6].includes(args.length) ||
+      new Set(flags).size !== flags.length ||
+      !flags.includes("--job-dir") ||
+      !flags.includes("--runtime-dir") ||
+      flags.some((flag) => !["--job-dir", "--runtime-dir", "--originals"].includes(flag))
     )
       throw new EditorTaskError("INVALID_DIRECTORY", "此入口必须由主程序提供授权任务和运行目录");
     const argument = async (flag: string) => {
@@ -40,6 +43,9 @@ export async function runEditorCli(
     };
     const jobDir = await argument("--job-dir"),
       runtimeDir = await argument("--runtime-dir");
+    const originals = flags.includes("--originals")
+      ? await readHostOriginals(args[args.indexOf("--originals") + 1]!)
+      : undefined;
     const chunks: Buffer[] = [];
     let count = 0;
     for await (const chunk of process.stdin) {
@@ -84,6 +90,7 @@ export async function runEditorCli(
       builtinNarrationPath: fileURLToPath(new URL("../demo-narration.mp3", import.meta.url)),
       jobDir,
       runtimeDir,
+      originals,
       scopeKey,
       jobId,
       signal,

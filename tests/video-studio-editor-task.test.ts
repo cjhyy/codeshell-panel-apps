@@ -101,7 +101,7 @@ function document(count = 1): EditorDocument {
     ],
   };
 }
-function mock(references = new Map<string, unknown>()) {
+function mock(references = new Map<string, unknown>(), directRead = false) {
   let cwd = "/project",
     counter = 0;
   const calls: any[] = [],
@@ -120,7 +120,7 @@ function mock(references = new Map<string, unknown>()) {
         "resources.get",
       ],
       capabilities: {
-        tasks: { maxInputBytes: 2 * 1024 * 1024 },
+        tasks: { maxInputBytes: 2 * 1024 * 1024, ...(directRead ? { directRead: true } : {}) },
         bridge: { maxCallsPerWindow: 10000 },
       },
     }),
@@ -390,6 +390,46 @@ test("high-level preview exposes resource audio and shares frozen snapshot with 
   );
   m.setCwd("/elsewhere");
   await assert.rejects(bridge.prepareAudio(audio.snapshot), { name: "AbortError" });
+  bridge.dispose();
+});
+test("direct originals remain sealed per launch while library resources and old Hosts use copies", async () => {
+  const external = `external-${"e".repeat(64)}`;
+  for (const enabled of [true, false]) {
+    const m = mock(new Map([[external, { id: external, bytes: 123, state: "available" }]]), enabled),
+      bridge = createEditorTaskBridge(m.raw), d = document(2);
+    d.assets[0]!.resourceId = external;
+    const audio = await bridge.prepareAudioForPreview(d, "main");
+    await bridge.prepareVideoForPreview(d, "main", { snapshot: audio.snapshot });
+    await bridge.render(audio.snapshot, createExportPresets()[0]!);
+    await bridge.discard(audio.snapshot);
+    const starts = m.calls.filter((item) => item.method === "tasks.start").map((item) => item.params.input);
+    for (const input of starts) {
+      const reads = input.resources.filter((item: any) => item.access === "read");
+      assert.equal(input.originalsArgument, reads.length ? "--originals" : undefined);
+      assert.ok(reads.every((item: any) => item.assetId === external && item.path === `original-${external}`));
+      assert.ok(input.resources.filter((item: any) => item.assetId.startsWith("asset-")).every((item: any) => !item.access));
+      assert.ok(!JSON.stringify(input).includes("/absolute/"));
+    }
+    for (const action of ["commit", "prepare-audio", "prepare-video", "render"]) {
+      const input = starts.find((item) => item.request.action === action)!;
+      assert.equal(input.resources.some((item: any) => item.access === "read"), enabled, action);
+    }
+    const staged = starts.find((item) => item.request.action === "stage-resources")!;
+    assert.ok(staged.resources.some((item: any) => item.assetId.startsWith("asset-") && !item.access));
+    assert.deepEqual(audio.snapshot.directReadResourceIds, enabled ? [external] : undefined);
+    const discarded = starts.find((item) => item.request.action === "discard")!;
+    assert.deepEqual(discarded.resources, [], "cleanup remains independent of moved or revoked originals");
+    assert.equal(discarded.originalsArgument, undefined);
+    bridge.dispose();
+  }
+});
+test("a closure above the Host direct-read resource limit keeps copied staging", async () => {
+  const m = mock(new Map(), true), bridge = createEditorTaskBridge(m.raw), d = document(129);
+  d.assets.forEach((asset, index) => { asset.resourceId = `external-${index.toString(16).padStart(64, "0")}`; });
+  const snapshot = await bridge.stage(d, "main");
+  assert.equal(snapshot.directReadResourceIds, undefined);
+  assert.ok(m.calls.filter((item) => item.method === "tasks.start").every((item) =>
+    !item.params.input.originalsArgument && item.params.input.resources.every((resource: any) => !resource.access)));
   bridge.dispose();
 });
 test("preview staging says originals are being copied before the Host copy, and only the video job is the preview task", async () => {

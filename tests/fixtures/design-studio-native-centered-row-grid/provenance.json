@@ -1,0 +1,547 @@
+{
+  "researchOnly": true,
+  "nativeRun": "native-css-collapsed-half-edge-2026-10-20T22-01-13.815Z-f4568ae6",
+  "rawSha256": "49804fa2410d78f924c4eb6a4b720d5d54e658729e936d8abb3e3c3a26057ddf",
+  "officialSha256": "a91ef0e5faed45c5048a532b07277fa5d15991dbc1d4a1baeb8c11b76c1d5016",
+  "firstExactAnalysisSha256": "ddddb638c05870d7a91e5306f5fea30206b6562e06b7d0801fd062eff15f1d03",
+  "independentAnalysisSha256": "c34d3f28e95542c3c6b5b6750a1f85a96584ac9daad042beb67bd927ba020db2",
+  "sourceSha256": "acc0f293fef7f54b6f8625e04c95cf1aecffd33839feca3bdc115a68476b3e89",
+  "stagesSha256": "494d2d6596fed357eb34a9c0f16bdfce4ec9e3659e6cc43ff41c98ecee3c7749",
+  "productionSupplementFunctionSha256": "d8096bec95f90eb5b9395c4bbeeb233bc1edf857f62f6ddc8a70044a9a26cfef",
+  "productionSupplementExecutableSha256": "59380698eb62a0f11234d0003316853353c1191ab5a4306d56147204f10c1a4d",
+  "transformation": "Exact production preserveNativeGrid + original archived live SDK getters. IDs/boxes/characters/styles/hierarchy unchanged; raw requested/Float32 getters not normalized. Stage boxes retain exact x/y/width/height only; complete original receipts remain archived.",
+  "supplementedFields": [
+    {
+      "id": "65:1253",
+      "addedOrChanged": [
+        "strokeWeight"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1255",
+      "addedOrChanged": [
+        "itemSpacing"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1256",
+      "addedOrChanged": [
+        "layoutPositioning",
+        "gridRowSizes",
+        "gridColumnSizes"
+      ],
+      "removed": [
+        "strokeWeight"
+      ]
+    },
+    {
+      "id": "65:1257",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1258",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1259",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1260",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1261",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1262",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1263",
+      "addedOrChanged": [
+        "layoutPositioning",
+        "gridRowSizes",
+        "gridColumnSizes"
+      ],
+      "removed": [
+        "strokeWeight"
+      ]
+    },
+    {
+      "id": "65:1264",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1265",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1266",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1267",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1268",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1269",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1270",
+      "addedOrChanged": [
+        "layoutPositioning",
+        "gridRowSizes",
+        "gridColumnSizes"
+      ],
+      "removed": [
+        "strokeWeight"
+      ]
+    },
+    {
+      "id": "65:1271",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1272",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1273",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1274",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1275",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1276",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1277",
+      "addedOrChanged": [
+        "itemSpacing"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1278",
+      "addedOrChanged": [
+        "layoutPositioning",
+        "gridRowSizes",
+        "gridColumnSizes"
+      ],
+      "removed": [
+        "strokeWeight"
+      ]
+    },
+    {
+      "id": "65:1279",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1280",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1281",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1282",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1283",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1284",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1285",
+      "addedOrChanged": [
+        "layoutPositioning",
+        "gridRowSizes",
+        "gridColumnSizes"
+      ],
+      "removed": [
+        "strokeWeight"
+      ]
+    },
+    {
+      "id": "65:1286",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1287",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1288",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1289",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1290",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1291",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1292",
+      "addedOrChanged": [
+        "layoutPositioning",
+        "gridRowSizes",
+        "gridColumnSizes"
+      ],
+      "removed": [
+        "strokeWeight"
+      ]
+    },
+    {
+      "id": "65:1293",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1294",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1295",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1296",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1297",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1298",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1299",
+      "addedOrChanged": [
+        "itemSpacing"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1300",
+      "addedOrChanged": [
+        "layoutPositioning",
+        "gridRowSizes",
+        "gridColumnSizes"
+      ],
+      "removed": [
+        "strokeWeight"
+      ]
+    },
+    {
+      "id": "65:1301",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1302",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1303",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1304",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1305",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1306",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1307",
+      "addedOrChanged": [
+        "layoutPositioning",
+        "gridRowSizes",
+        "gridColumnSizes"
+      ],
+      "removed": [
+        "strokeWeight"
+      ]
+    },
+    {
+      "id": "65:1308",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1309",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1310",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1311",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1312",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1313",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1314",
+      "addedOrChanged": [
+        "layoutPositioning",
+        "gridRowSizes",
+        "gridColumnSizes"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1315",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1316",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1317",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1318",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1319",
+      "addedOrChanged": [
+        "itemSpacing",
+        "layoutPositioning"
+      ],
+      "removed": []
+    },
+    {
+      "id": "65:1320",
+      "addedOrChanged": [
+        "layoutPositioning"
+      ],
+      "removed": []
+    }
+  ],
+  "ruleBandsSha256": "8751fb2790bf2b08c9364d78da89a63a7b26dd07cfcb37cd9af452bccfaf7bb0",
+  "ruleBandsProjection": "Only actual target rule scanline and exact per-column RGBA/counts retained; full neighboring bands remain in immutable external first analysis."
+}

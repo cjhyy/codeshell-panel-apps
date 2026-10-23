@@ -47,7 +47,7 @@ import {
   type PortableMedia,
   type PortableProjectManifest,
 } from "../../src/editor/portable-project.js";
-import { directory, regular, sealed } from "./files.js";
+import { directory, originalFile, regular, sealed, type EditorOriginals } from "./files.js";
 
 export interface PortableBundleLimits {
   maxManifestBytes: number;
@@ -82,6 +82,8 @@ interface CommonOptions {
   onProgress?: (progress: PortableBundleProgress) => void;
 }
 export interface ExportPortableProjectOptions extends CommonOptions {
+  /** Exact Host-sealed originals; authorizes reads of these files, never their parent directories. */
+  originalSources?: EditorOriginals;
   document: unknown;
   outputPath: string;
   resolveAsset: (
@@ -165,8 +167,10 @@ async function rootsFor(options: CommonOptions): Promise<{ root: string; roots: 
     roots: await Promise.all(options.sourceRoots.map(sealed)),
   };
 }
-async function sourcePath(path: string, roots: string[]): Promise<string> {
+async function sourcePath(path: string, roots: string[], originals?: EditorOriginals): Promise<string> {
   if (!isAbsolute(path)) fail("INVALID_FILE", "材料路径必须由 Host 物化");
+  const original = originals?.get(path);
+  if (original) return originalFile(original);
   for (const root of roots) {
     const part = relative(root, path);
     if (part && !isAbsolute(part) && part !== ".." && !part.startsWith(`..${sep}`))
@@ -252,7 +256,7 @@ export async function exportPortableProject(options: ExportPortableProjectOption
     try {
       const source = await options.resolveAsset(structuredClone(asset), options.signal);
       abort(options.signal);
-      const path = await sourcePath(source.path, roots),
+      const path = await sourcePath(source.path, roots, options.originalSources),
         actual = await inspectFile(path, limits.maxFileBytes, options.signal);
       if (
         (source.bytes !== undefined && source.bytes !== actual.bytes) ||
@@ -337,7 +341,7 @@ export async function exportPortableProject(options: ExportPortableProjectOption
         (provide) => {
           void (async () => {
             abort(options.signal);
-            const path = await sourcePath(file.path, roots),
+            const path = await sourcePath(file.path, roots, options.originalSources),
               hash = createHash("sha256");
             let size = 0;
             const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);

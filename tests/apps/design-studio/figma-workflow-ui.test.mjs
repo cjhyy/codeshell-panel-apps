@@ -1,3 +1,4 @@
+import { nativeGridSource } from "../../fixtures/design-studio-native-grid/source.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
@@ -263,4 +264,71 @@ test("the standalone HTML plugin downloads with its own Figma-assigned id and at
   assert.match((await f.download('[data-html-plugin-file="README.md"]')).text, /Figma/);
   assert.match((await f.download('[data-html-plugin-file="code.js"]')).text, /html2figma/);
   assert.match((await f.download('[data-html-plugin-file="ui.html"]')).text, /HTML/);
+});
+
+test("native Grid import stays editable and invalid manual column/span changes leave a valid design", async (t) => {
+  const f = await fixture(t);
+  await f.open();
+  await f.choose(nativeGridSource());
+  await f.page.locator("#figma-import-apply").click();
+  await f.page.waitForFunction(() => document.querySelector("#figma-workflow-status").textContent.includes("已导入"));
+  await f.page.locator("#figma-workflow-close").click();
+  await gpuActive(f.page);
+  await clickWorld(f.page, { x: 450, y: 145 });
+  assert.equal((await readNode(f.page, "figma-21-1")).layout, "grid");
+  await f.page.locator(".layout-advanced summary").click();
+  await f.page.locator("#prop-grid-columns").fill("2");
+  assert.equal((await readNode(f.page, "figma-21-1")).gridColumns, 3);
+  assert.equal(await f.page.locator("#prop-grid-columns").inputValue(), "3");
+  await f.page.locator("#prop-grid-columns").fill("4");
+  const frame = await readNode(f.page, "figma-21-1");
+  assert.equal(frame.gridColumns, 4);
+  assert.equal(frame.gridColumnSizes.length, 4);
+  await clickWorld(f.page, { x: 200, y: 50 });
+  await f.page.locator("#prop-grid-column-span").fill("4");
+  assert.equal((await readNode(f.page, "figma-21-2")).gridColumnSpan, 2);
+  assert.deepEqual(f.errors, []);
+});
+
+test("native root, manual and Auto Layout text inspector typography edits refresh hanging baselines", async (t) => {
+  const f = await fixture(t);
+  const text = (id, y, copy) => ({ id, type: "TEXT", name: id, characters: copy, absoluteBoundingBox: { x: 20, y, width: 560, height: 48 }, fills: [{ type: "SOLID", color: { r: 0, g: 0, b: 0 } }], style: { fontFamily: "Arial", fontSize: 20, fontWeight: 400, lineHeightPx: 24, textAutoResize: "HEIGHT" } });
+  const flow = text("1:5", 300, "Editable native flow changes its wrapped lines when typography changes and keeps every source character.");
+  Object.assign(flow, { layoutSizingHorizontal: "FILL", layoutSizingVertical: "HUG" });
+  const input = { type: "CANVAS", id: "0:1", name: "Native inspector", children: [
+    { id: "1:1", type: "FRAME", name: "Manual", absoluteBoundingBox: { x: 0, y: 0, width: 600, height: 200 }, fills: [], children: [text("1:2", 30, "Manual native Hg pq")] },
+    text("1:3", 240, "Root native Hg pq"),
+    { id: "1:4", type: "FRAME", name: "Flow", absoluteBoundingBox: { x: 20, y: 300, width: 560, height: 200 }, layoutMode: "VERTICAL", layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED", fills: [], children: [flow] },
+  ] };
+  await f.open(); await f.choose(input);
+  await f.page.locator("#figma-import-apply").click();
+  await f.page.waitForFunction(() => document.querySelector("#figma-workflow-status").textContent.includes("已导入"));
+  await f.page.locator("#figma-workflow-close").click();
+  await gpuActive(f.page);
+  for (const id of ["figma-1-2", "figma-1-3", "figma-1-5"]) {
+    await f.page.locator(`.layer-row[data-id="${id}"]`).click();
+    const before = await readNode(f.page, id), logicalY = before.y - before.layoutBaselineOffset;
+    for (const [selector, value, select] of [
+      ["#prop-font-family", "Courier New"], ["#prop-font-size", "24"], ["#prop-line-height", "1.5"],
+      ["#prop-font-weight", "700", true], ["#prop-font-style", "italic", true], ["#prop-letter-spacing", "1.25"],
+    ]) {
+      if (select) await f.page.locator(selector).selectOption(value);
+      else await f.page.locator(selector).fill(value);
+      const node = await readNode(f.page, id);
+      const expected = await f.page.evaluate(async (node) => {
+        const { createBrowserTextMeasurer, currentTextMetrics } = await import("/text-metrics.mjs");
+        const measurement = createBrowserTextMeasurer();
+        try { measurement.configure(node); return { offset: measurement.lineBoxOffset(node), receipt: !!currentTextMetrics(node) }; }
+        finally { measurement.close(); }
+      }, node);
+      assert.ok(Math.abs(node.y - node.layoutBaselineOffset - logicalY) < 0.0001, `${id} ${selector} preserves logical top`);
+      assert.ok(Math.abs(node.layoutBaselineOffset - expected.offset) < 0.011, `${id} ${selector} remeasures current font`);
+      if (id === "figma-1-5") assert.equal(expected.receipt, true, `${selector} refreshes flow glyph receipts`);
+    }
+    const after = await readNode(f.page, id);
+    assert.equal(after.layoutBaselineSource, "native");
+    assert.notEqual(after.layoutBaselineOffset, before.layoutBaselineOffset);
+    assert.equal(after.textSource, before.textSource);
+  }
+  assert.deepEqual(f.errors, []);
 });

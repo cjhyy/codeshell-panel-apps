@@ -5707,6 +5707,15 @@ async function ensureFfmpeg(platform, arch, directory) {
   throw new Error(`当前平台没有可验证的 ffmpeg 自动安装路线：${platform}/${arch}`);
 }
 
+function setupRecheckFailure(result) {
+  if (result.ready) return "";
+  if (result.error) return `下载环境复检失败：${result.error}`;
+  const missing = [!result.ytDlp ? "yt-dlp" : "", !result.ffmpeg ? "ffmpeg" : ""]
+    .filter(Boolean)
+    .join("、");
+  return `下载环境复检未通过：${missing || "依赖"} 尚未就绪，请修复后重试。`;
+}
+
 async function requestDirectSetup() {
   if (directSetupRunning) {
     directSetupCancelled = true;
@@ -5753,7 +5762,9 @@ async function requestDirectSetup() {
     if (directSetupCancelled) throw new Error("安装 / 更新已取消");
     await ensureFfmpeg(system.platform, system.arch, managedBin);
     if (directSetupCancelled) throw new Error("安装 / 更新已取消");
-    await refreshRuntimeDependencies();
+    const recheck = await refreshRuntimeDependencies({ force: true });
+    const recheckError = setupRecheckFailure(recheck);
+    if (recheckError) throw new Error(recheckError);
     const ytDlpSummary = ytDlp.skipped
       ? `未能查询 yt-dlp 最新版，保留当前 ${runtime.ytDlp?.version || "可用版本"}，可稍后重试`
       : `yt-dlp ${runtime.ytDlp?.version || "已验证"}`;
@@ -6021,24 +6032,24 @@ async function handleAgentTaskChanged(task) {
       setupRequestError = "";
     } else {
       if (setupTaskId === task.id) setupTaskId = "";
+      const terminalError = agentTaskFailure(task, "初始化 Task 失败");
+      const recheck = await refreshRuntimeDependencies({ force: true });
+      setupRequestError = [terminalError, setupRecheckFailure(recheck)].filter(Boolean).join("；");
       setupTaskResult =
-        typeof task.result?.text === "string" && task.result.text.trim()
+        !setupRequestError && typeof task.result?.text === "string" && task.result.text.trim()
           ? task.result.text.trim()
           : "";
-      const terminalError = agentTaskFailure(task, "初始化 Task 失败");
       if (
-        terminalError &&
+        setupRequestError &&
         !setupTaskActivity.some(
-          (item) => item?.status === "failed" && item?.message === terminalError,
+          (item) => item?.status === "failed" && item?.message === setupRequestError,
         )
       ) {
         setupTaskActivity = [
           ...setupTaskActivity,
-          { kind: "error", status: "failed", message: terminalError, at: Date.now() },
+          { kind: "error", status: "failed", message: setupRequestError, at: Date.now() },
         ].slice(-12);
       }
-      await refreshRuntimeDependencies();
-      setupRequestError = terminalError;
     }
     updateActionAvailability();
     return;
@@ -6393,6 +6404,8 @@ async function refreshRuntimeDependencies({ force = false } = {}) {
     };
   }
 
+  // An earlier setup receipt cannot attest to this new environment check.
+  setupTaskActivity = setupTaskActivity.filter((item) => item?.message !== "下载环境复检完成");
   dependencyRefreshPending = true;
   setRuntimeBadge("loading", "Checking");
   setDependency(elements.ytdlpDot, elements.ytdlpStatus, dependencyReady(runtime.ytDlp), "检测中…");
@@ -6434,8 +6447,10 @@ async function refreshRuntimeDependencies({ force = false } = {}) {
       // Remote update discovery has an independent cache and never blocks local readiness.
       void refreshVersionInfo();
     } else versions = await refreshVersionInfo();
+    const ready = runtime.ytDlp?.verified === true && runtime.ffmpeg?.verified === true;
+    if (!ready) setupTaskResult = "";
     return {
-      ready: runtime.ytDlp?.verified === true && runtime.ffmpeg?.verified === true,
+      ready,
       ytDlp: dependencyReady(runtime.ytDlp),
       ffmpeg: dependencyReady(runtime.ffmpeg),
       versions,
@@ -6448,6 +6463,14 @@ async function refreshRuntimeDependencies({ force = false } = {}) {
     );
     dependenciesChecked = true;
     setupRequestError = message;
+    setupTaskResult = "";
+    for (const dependency of [runtime.ytDlp, runtime.ffmpeg]) {
+      if (dependency) {
+        dependency.verified = false;
+        dependency.version = null;
+        dependency.error = message;
+      }
+    }
     setRuntimeBadge("error", "Unavailable");
     setDependency(elements.ytdlpDot, elements.ytdlpStatus, false, "Unavailable");
     setDependency(elements.ffmpegDot, elements.ffmpegStatus, false, "Unavailable");

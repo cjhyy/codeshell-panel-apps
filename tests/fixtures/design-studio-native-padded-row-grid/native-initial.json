@@ -1,0 +1,777 @@
+[
+  {
+    "name": "01-initial630-copy2",
+    "requested": {
+      "kind": "initial",
+      "width": 630,
+      "copyKey": "original"
+    },
+    "cases": [
+      {
+        "name": "govuk-affine-cellvpad0-rowstroke0",
+        "parentId": "64:1161",
+        "rowGridIds": [
+          "64:1162",
+          "64:1169",
+          "64:1176"
+        ],
+        "cellIds": [
+          "64:1163",
+          "64:1165",
+          "64:1167",
+          "64:1170",
+          "64:1172",
+          "64:1174",
+          "64:1177",
+          "64:1179",
+          "64:1181"
+        ],
+        "textIds": [
+          "64:1164",
+          "64:1166",
+          "64:1168",
+          "64:1171",
+          "64:1173",
+          "64:1175",
+          "64:1178",
+          "64:1180",
+          "64:1182"
+        ],
+        "nodeIds": [
+          "64:1161",
+          "64:1162",
+          "64:1163",
+          "64:1164",
+          "64:1165",
+          "64:1166",
+          "64:1167",
+          "64:1168",
+          "64:1169",
+          "64:1170",
+          "64:1171",
+          "64:1172",
+          "64:1173",
+          "64:1174",
+          "64:1175",
+          "64:1176",
+          "64:1177",
+          "64:1178",
+          "64:1179",
+          "64:1180",
+          "64:1181",
+          "64:1182"
+        ],
+        "nodes": [
+          {
+            "id": "64:1161",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 40,
+              "width": 630,
+              "height": 160
+            }
+          },
+          {
+            "id": "64:1162",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 40,
+              "width": 630,
+              "height": 40
+            }
+          },
+          {
+            "id": "64:1163",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 40,
+              "width": 209,
+              "height": 40
+            }
+          },
+          {
+            "id": "64:1164",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 40,
+              "width": 189,
+              "height": 40
+            }
+          },
+          {
+            "id": "64:1165",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 40,
+              "width": 295,
+              "height": 40
+            }
+          },
+          {
+            "id": "64:1166",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 40,
+              "width": 275,
+              "height": 20
+            }
+          },
+          {
+            "id": "64:1167",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 40,
+              "width": 126,
+              "height": 40
+            }
+          },
+          {
+            "id": "64:1168",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 40,
+              "width": 126,
+              "height": 20
+            }
+          },
+          {
+            "id": "64:1169",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 80,
+              "width": 630,
+              "height": 80
+            }
+          },
+          {
+            "id": "64:1170",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 80,
+              "width": 209,
+              "height": 80
+            }
+          },
+          {
+            "id": "64:1171",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 80,
+              "width": 189,
+              "height": 80
+            }
+          },
+          {
+            "id": "64:1172",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 80,
+              "width": 295,
+              "height": 80
+            }
+          },
+          {
+            "id": "64:1173",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 80,
+              "width": 275,
+              "height": 20
+            }
+          },
+          {
+            "id": "64:1174",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 80,
+              "width": 126,
+              "height": 80
+            }
+          },
+          {
+            "id": "64:1175",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 80,
+              "width": 126,
+              "height": 20
+            }
+          },
+          {
+            "id": "64:1176",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 160,
+              "width": 630,
+              "height": 40
+            }
+          },
+          {
+            "id": "64:1177",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 160,
+              "width": 209,
+              "height": 40
+            }
+          },
+          {
+            "id": "64:1178",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 160,
+              "width": 189,
+              "height": 40
+            }
+          },
+          {
+            "id": "64:1179",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 160,
+              "width": 295,
+              "height": 40
+            }
+          },
+          {
+            "id": "64:1180",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 160,
+              "width": 275,
+              "height": 20
+            }
+          },
+          {
+            "id": "64:1181",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 160,
+              "width": 126,
+              "height": 40
+            }
+          },
+          {
+            "id": "64:1182",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 160,
+              "width": 126,
+              "height": 20
+            }
+          }
+        ]
+      },
+      {
+        "name": "govuk-affine-cellvpad10-rowstroke0",
+        "parentId": "64:1183",
+        "rowGridIds": [
+          "64:1184",
+          "64:1191",
+          "64:1198"
+        ],
+        "cellIds": [
+          "64:1185",
+          "64:1187",
+          "64:1189",
+          "64:1192",
+          "64:1194",
+          "64:1196",
+          "64:1199",
+          "64:1201",
+          "64:1203"
+        ],
+        "textIds": [
+          "64:1186",
+          "64:1188",
+          "64:1190",
+          "64:1193",
+          "64:1195",
+          "64:1197",
+          "64:1200",
+          "64:1202",
+          "64:1204"
+        ],
+        "nodeIds": [
+          "64:1183",
+          "64:1184",
+          "64:1185",
+          "64:1186",
+          "64:1187",
+          "64:1188",
+          "64:1189",
+          "64:1190",
+          "64:1191",
+          "64:1192",
+          "64:1193",
+          "64:1194",
+          "64:1195",
+          "64:1196",
+          "64:1197",
+          "64:1198",
+          "64:1199",
+          "64:1200",
+          "64:1201",
+          "64:1202",
+          "64:1203",
+          "64:1204"
+        ],
+        "nodes": [
+          {
+            "id": "64:1183",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 380,
+              "width": 630,
+              "height": 220
+            }
+          },
+          {
+            "id": "64:1184",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 380,
+              "width": 630,
+              "height": 60
+            }
+          },
+          {
+            "id": "64:1185",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 380,
+              "width": 209,
+              "height": 60
+            }
+          },
+          {
+            "id": "64:1186",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 390,
+              "width": 189,
+              "height": 40
+            }
+          },
+          {
+            "id": "64:1187",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 380,
+              "width": 295,
+              "height": 60
+            }
+          },
+          {
+            "id": "64:1188",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 390,
+              "width": 275,
+              "height": 20
+            }
+          },
+          {
+            "id": "64:1189",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 380,
+              "width": 126,
+              "height": 60
+            }
+          },
+          {
+            "id": "64:1190",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 390,
+              "width": 126,
+              "height": 20
+            }
+          },
+          {
+            "id": "64:1191",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 440,
+              "width": 630,
+              "height": 100
+            }
+          },
+          {
+            "id": "64:1192",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 440,
+              "width": 209,
+              "height": 100
+            }
+          },
+          {
+            "id": "64:1193",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 450,
+              "width": 189,
+              "height": 80
+            }
+          },
+          {
+            "id": "64:1194",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 440,
+              "width": 295,
+              "height": 100
+            }
+          },
+          {
+            "id": "64:1195",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 450,
+              "width": 275,
+              "height": 20
+            }
+          },
+          {
+            "id": "64:1196",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 440,
+              "width": 126,
+              "height": 100
+            }
+          },
+          {
+            "id": "64:1197",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 450,
+              "width": 126,
+              "height": 20
+            }
+          },
+          {
+            "id": "64:1198",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 540,
+              "width": 630,
+              "height": 60
+            }
+          },
+          {
+            "id": "64:1199",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 540,
+              "width": 209,
+              "height": 60
+            }
+          },
+          {
+            "id": "64:1200",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 550,
+              "width": 189,
+              "height": 40
+            }
+          },
+          {
+            "id": "64:1201",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 540,
+              "width": 295,
+              "height": 60
+            }
+          },
+          {
+            "id": "64:1202",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 550,
+              "width": 275,
+              "height": 20
+            }
+          },
+          {
+            "id": "64:1203",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 540,
+              "width": 126,
+              "height": 60
+            }
+          },
+          {
+            "id": "64:1204",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 550,
+              "width": 126,
+              "height": 20
+            }
+          }
+        ]
+      },
+      {
+        "name": "govuk-affine-cellvpad10-rowbottom1-included",
+        "parentId": "64:1205",
+        "rowGridIds": [
+          "64:1206",
+          "64:1213",
+          "64:1220"
+        ],
+        "cellIds": [
+          "64:1207",
+          "64:1209",
+          "64:1211",
+          "64:1214",
+          "64:1216",
+          "64:1218",
+          "64:1221",
+          "64:1223",
+          "64:1225"
+        ],
+        "textIds": [
+          "64:1208",
+          "64:1210",
+          "64:1212",
+          "64:1215",
+          "64:1217",
+          "64:1219",
+          "64:1222",
+          "64:1224",
+          "64:1226"
+        ],
+        "nodeIds": [
+          "64:1205",
+          "64:1206",
+          "64:1207",
+          "64:1208",
+          "64:1209",
+          "64:1210",
+          "64:1211",
+          "64:1212",
+          "64:1213",
+          "64:1214",
+          "64:1215",
+          "64:1216",
+          "64:1217",
+          "64:1218",
+          "64:1219",
+          "64:1220",
+          "64:1221",
+          "64:1222",
+          "64:1223",
+          "64:1224",
+          "64:1225",
+          "64:1226"
+        ],
+        "nodes": [
+          {
+            "id": "64:1205",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 720,
+              "width": 630,
+              "height": 223
+            }
+          },
+          {
+            "id": "64:1206",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 720,
+              "width": 630,
+              "height": 61
+            }
+          },
+          {
+            "id": "64:1207",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 720,
+              "width": 209,
+              "height": 60
+            }
+          },
+          {
+            "id": "64:1208",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 730,
+              "width": 189,
+              "height": 40
+            }
+          },
+          {
+            "id": "64:1209",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 720,
+              "width": 295,
+              "height": 60
+            }
+          },
+          {
+            "id": "64:1210",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 730,
+              "width": 275,
+              "height": 20
+            }
+          },
+          {
+            "id": "64:1211",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 720,
+              "width": 126,
+              "height": 60
+            }
+          },
+          {
+            "id": "64:1212",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 730,
+              "width": 126,
+              "height": 20
+            }
+          },
+          {
+            "id": "64:1213",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 781,
+              "width": 630,
+              "height": 101
+            }
+          },
+          {
+            "id": "64:1214",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 781,
+              "width": 209,
+              "height": 100
+            }
+          },
+          {
+            "id": "64:1215",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 791,
+              "width": 189,
+              "height": 80
+            }
+          },
+          {
+            "id": "64:1216",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 781,
+              "width": 295,
+              "height": 100
+            }
+          },
+          {
+            "id": "64:1217",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 791,
+              "width": 275,
+              "height": 20
+            }
+          },
+          {
+            "id": "64:1218",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 781,
+              "width": 126,
+              "height": 100
+            }
+          },
+          {
+            "id": "64:1219",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 791,
+              "width": 126,
+              "height": 20
+            }
+          },
+          {
+            "id": "64:1220",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 882,
+              "width": 630,
+              "height": 61
+            }
+          },
+          {
+            "id": "64:1221",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 882,
+              "width": 209,
+              "height": 60
+            }
+          },
+          {
+            "id": "64:1222",
+            "absoluteBoundingBox": {
+              "x": 40,
+              "y": 892,
+              "width": 189,
+              "height": 40
+            }
+          },
+          {
+            "id": "64:1223",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 882,
+              "width": 295,
+              "height": 60
+            }
+          },
+          {
+            "id": "64:1224",
+            "absoluteBoundingBox": {
+              "x": 249,
+              "y": 892,
+              "width": 275,
+              "height": 20
+            }
+          },
+          {
+            "id": "64:1225",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 882,
+              "width": 126,
+              "height": 60
+            }
+          },
+          {
+            "id": "64:1226",
+            "absoluteBoundingBox": {
+              "x": 544,
+              "y": 892,
+              "width": 126,
+              "height": 20
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -11,7 +11,24 @@ import {
 } from "../../../apps/design-studio/app/figma-binding.mjs";
 import { prepareFigmaImport } from "../../../apps/design-studio/app/figma-bridge.mjs";
 import { longFigmaSource } from "./fixtures/long-canvas.mjs";
+import { createNativeNotesExportCapture } from "../../../apps/design-studio/app/figma-plugin/notes-runtime.mjs";
 const sha256 = async (value) => createHash("sha256").update(value).digest("hex");
+
+function sourceWithMockObservedNotes(source) {
+  // Explicit SDK mocks for the pure patch-shape positive controls below.
+  // Legacy missing metadata is tested separately and is never inferred absent.
+  const parent = { id: "0:0", type: "DOCUMENT", children: [], parent: null };
+  const make = (raw, owner) => {
+    const node = { id: raw.id, type: raw.type === "CANVAS" ? "PAGE" : raw.type, parent: owner,
+      children: [], getPluginData: () => "" };
+    node.children = (raw.children ?? []).map(child => make(child, node)); return node;
+  };
+  const rawRoots = Object.values(source.nodes).map(entry => entry.document), roots = rawRoots.map(raw => make(raw, parent));
+  parent.children = roots;
+  const capture = createNativeNotesExportCapture({ roots, pluginId: "binding-notes-sdk-mock" });
+  roots.forEach((root, index) => capture.add(rawRoots[index], root));
+  return { ...source, nativeNotes: capture.finalize() };
+}
 
 async function translationFixture(sourcePatch = () => {}) {
   const box = (x, y, width, height) => ({ x, y, width, height });
@@ -160,6 +177,8 @@ test("only update snapshots omit descendants; deletes retain the complete origin
   assert.equal(update.before.id, "1:1");
   assert.equal(update.before.type, "FRAME");
   current.nodes.splice(0);
+  assert.throws(() => createFigmaPatch(binding, current), error => error.code === "NATIVE_NOTES_BASELINE_REQUIRED");
+  binding.source = sourceWithMockObservedNotes(binding.source);
   const deletion = createFigmaPatch(binding, current).operations.find((op) => op.op === "delete");
   assert.equal(deletion.before.children[0].children[0].id, "1:3");
 });
@@ -250,6 +269,8 @@ test("explicit creates and mapped deletes never treat unrepresented source nodes
   const f = fixture(),
     current = structuredClone(f.document);
   current.pages[0].children = [rectangle("new-card", 40)];
+  assert.throws(() => createFigmaPatch(f.binding, current), error => error.code === "NATIVE_NOTES_BASELINE_REQUIRED");
+  f.binding.source = sourceWithMockObservedNotes(f.binding.source);
   const patch = createFigmaPatch(f.binding, current);
   assert.deepEqual(
     patch.operations.map((op) => op.op),
