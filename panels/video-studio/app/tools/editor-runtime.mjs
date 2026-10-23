@@ -5597,6 +5597,11 @@ var EditorTaskError = class extends Error {
   code;
   retryable;
 };
+function publicEditorErrorMessage(candidate) {
+  return candidate.length < 350 && candidate && !/(?:\/Users\/|\/home\/|\/tmp\/|\/private\/|\/var\/|\/Volumes\/|\/media\/|\/mnt\/|'\/|[A-Z]:\\|https?:|ENOENT|EACCES|EPERM|exited with code)/.test(
+    candidate
+  ) ? candidate : void 0;
+}
 function record(value, keys, label2) {
   if (!value || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Reflect.ownKeys(value).some((key) => typeof key !== "string" || !keys.includes(key)))
     throw new EditorTaskError("INVALID_REQUEST", `${label2}包含无效或不支持的字段`);
@@ -5891,9 +5896,14 @@ async function readHostOriginals(path) {
   return originals;
 }
 async function originalFile(original) {
-  const info = await lstat(original.path);
-  if (!info.isFile() || info.isSymbolicLink() || info.size !== original.bytes || await realpath2(original.path) !== original.path)
-    throw new EditorTaskError("SOURCE_CHANGED", "已授权原始素材发生变化");
+  let unchanged;
+  try {
+    const info = await lstat(original.path);
+    unchanged = info.isFile() && !info.isSymbolicLink() && info.size === original.bytes && await realpath2(original.path) === original.path;
+  } catch {
+    throw new EditorTaskError("SOURCE_CHANGED", "已授权原始素材已移动、断开或无法读取，请重新连接原文件");
+  }
+  if (!unchanged) throw new EditorTaskError("SOURCE_CHANGED", "已授权原始素材发生变化");
   return original.path;
 }
 async function fileHash(path, signal) {
@@ -8644,9 +8654,7 @@ async function runEditorCli(runtime) {
     const cancelled2 = controller.signal.aborted || error instanceof Error && error.name === "AbortError";
     const code = cancelled2 ? "CANCELLED" : known2 ? error.code : error?.code === "ENOENT" ? "MISSING_DEPENDENCY_OR_INPUT" : "EDITOR_TASK_FAILED";
     const candidate = error instanceof Error ? error.message : "";
-    const message = cancelled2 ? "编辑器任务已取消" : known2 ? error.message : candidate.length < 350 && candidate && !/(?:\/Users\/|\/home\/|\/tmp\/|\/private\/|[A-Z]:\\|https?:|ENOENT|EACCES|exited with code)/.test(
-      candidate
-    ) ? candidate : "编辑器处理未完成，请检查运行依赖、素材和任务状态后重试";
+    const message = cancelled2 ? "编辑器任务已取消" : known2 ? error.message : publicEditorErrorMessage(candidate) ?? "编辑器处理未完成，请检查运行依赖、素材和任务状态后重试";
     emit({
       type: "error",
       code,
