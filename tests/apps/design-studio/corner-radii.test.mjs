@@ -142,3 +142,64 @@ test("nonuniform CSS scaling diagnoses elliptical corners instead of averaging t
   assert.ok(result.report.warnings.some((warning) => warning.code === "unsupported-corner-radii"));
   assert.equal(normalizeDesignDocument(result.document).nodes[0].cornerRadius, 0);
 });
+
+test("computed percentage corners resolve only with a finite border box and equal horizontal/vertical used radii", () => {
+  const square = { width: 34, height: 34 };
+  assert.deepEqual(cssCornerRadii(Array(4).fill("50%"), square), [17, 17, 17, 17]);
+  assert.deepEqual(cssCornerRadii(["25% 10px", "10px 25%", "0%", "0px"], { width: 40, height: 40 }), [10, 10, 0, 0]);
+  assert.deepEqual(cssCornerRadii(Array(4).fill("0%"), { width: 80, height: 40 }), [0, 0, 0, 0]);
+  for (const box of [undefined, { width: 0, height: 0 }, { width: Infinity, height: 34 }, { width: 80, height: 40 }])
+    assert.throws(() => cssCornerRadii(Array(4).fill("50%"), box));
+  assert.throws(() => cssCornerRadii(["calc(5px + 1%)", "0px", "0px", "0px"], square));
+});
+
+test("legacy HTML capture converts percentage circles exactly like their equivalent pixel radii and border inset", async (t) => {
+  const browser = await chromium.launch(); t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 160, height: 100 }, deviceScaleFactor: 1 });
+  const root = new URL("../../../apps/design-studio/app/", import.meta.url);
+  const html = await readFile(new URL("../../fixtures/design-studio-html-capture/percentage-circle.html", import.meta.url), "utf8");
+  const oldRoot = process.env.DESIGN_STUDIO_CORNERS_OLD_ROOT;
+  await page.route("https://percentage-corners.test/**", async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/") return route.fulfill({ contentType: "text/html", body: html });
+    try {
+      const base = oldRoot && ["/corner-radii.mjs", "/html-capture.mjs"].includes(path)
+        ? new URL(`file://${oldRoot.replace(/\/$/u, "")}/`) : root;
+      await route.fulfill({ contentType: "text/javascript", body: await readFile(new URL(`.${path}`, base)) });
+    } catch { await route.fulfill({ status: 404, body: "missing" }); }
+  });
+  await page.goto("https://percentage-corners.test/");
+  const source = PNG.sync.read(await page.screenshot());
+  const capture = () => page.evaluate(async () => {
+    const { captureHtmlToDesign } = await import("/html-capture.mjs");
+    const { normalizeDesignDocument, exportDesignSvg } = await import("/document.mjs");
+    const converted = normalizeDesignDocument(await captureHtmlToDesign(document.querySelector("#fixture")));
+    return { nodes: converted.nodes, svg: exportDesignSvg(converted) };
+  });
+  const result = await capture();
+  assert.equal(result.nodes.find(node => node.name === "status-dot").cornerRadius, 3.5);
+  assert.equal(result.nodes.find(node => node.name === "bordered-circle").cornerRadius, 17);
+  assert.equal(result.nodes.find(node => node.name === "bordered-circle border").cornerRadius, 16);
+  assert.equal(result.nodes.find(node => node.name === "mixed-circle").cornerRadius, 10);
+  await page.evaluate(() => {
+    document.querySelector("#status-dot").style.borderRadius = "3.5px";
+    document.querySelector("#bordered-circle").style.borderRadius = "17px";
+    document.querySelector("#mixed-circle").style.borderRadius = "10px";
+  });
+  const pixelSource = PNG.sync.read(await page.screenshot());
+  assert.deepEqual(pixelSource.data, source.data, "the source control is physically identical to the authored percentages");
+  const pixelCapture = await capture();
+  assert.deepEqual(result.nodes, pixelCapture.nodes, "percentage resolution does not change any captured geometry or paint");
+  await page.setContent(`<style>body{margin:0}</style>${result.svg}`);
+  const output = PNG.sync.read(await page.screenshot());
+  await page.setContent(`<style>body{margin:0}</style>${pixelCapture.svg}`);
+  const pixelOutput = PNG.sync.read(await page.screenshot());
+  assert.deepEqual(output.data, pixelOutput.data, "percentage captures preserve every pixel of the equivalent supported px capture");
+  for (const [left, right] of [[0, 30], [85, 135]]) {
+    for (let y = 0; y < source.height; y++) for (let x = left; x < right; x++) {
+      const index = (y * source.width + x) * 4;
+      assert.deepEqual(output.data.subarray(index, index + 4), source.data.subarray(index, index + 4),
+        `unbordered circle pixel ${x},${y}`);
+    }
+  }
+});

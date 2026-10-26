@@ -1,3 +1,4 @@
+import { settleLoadedFont, recordFontPixelMismatch, loadedFontBrowserArgs } from "./fixtures/loaded-font.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
@@ -132,7 +133,7 @@ test("width context refuses unsupported or fabricated ancestry atomically and re
 
 test("CPU loaded-font frontend follows only the outer width and nested copy without canonical height repairs", async (t) => {
   const { chromium } = await import("playwright"), { PNG } = await import("pngjs");
-  const browser = await chromium.launch({ args: ["--disable-gpu"] });
+  const browser = await chromium.launch({ args: loadedFontBrowserArgs() });
   t.after(() => browser.close());
   const context = await browser.newContext({ viewport: { width: 1360, height: 600 }, deviceScaleFactor: 1 });
   const root = resolve("apps/design-studio/app"), blocked = [], errors = [];
@@ -178,8 +179,10 @@ test("CPU loaded-font frontend follows only the outer width and nested copy with
     await page.locator(`[data-codeshell-source-id="${exported.phoneId}"]`).evaluate((node, copy) => { node.textContent = copy; }, copy);
     await page.evaluate(() => document.fonts.ready);
     await referencePage.setContent(reference(width, copy));
-    await referencePage.evaluate(() => document.fonts.ready);
-    assert(PNG.sync.read(await page.screenshot()).data.equals(PNG.sync.read(await referencePage.screenshot()).data), `${width}/${JSON.stringify(copy)} strict independent frontend pixels`);
+    await Promise.all([settleLoadedFont(page), settleLoadedFont(referencePage)]);
+    const actualBytes = await page.screenshot(), expectedBytes = await referencePage.screenshot();
+    await recordFontPixelMismatch(page, referencePage, actualBytes, expectedBytes, `fill-context-${width}-${copy.length}`);
+    assert(PNG.sync.read(actualBytes).data.equals(PNG.sync.read(expectedBytes).data), `${width}/${JSON.stringify(copy)} strict independent frontend pixels`);
     const positions = await page.locator('.cs-node').evaluateAll((nodes) => nodes.slice(1).map((node) => getComputedStyle(node).position));
     assert(positions.every((value) => value !== "absolute"), "every preserved ordinary descendant remains in real browser flow");
   }

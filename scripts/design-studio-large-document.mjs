@@ -23,6 +23,12 @@ import { createDesignResourcePersistencePlan } from "../apps/design-studio/app/r
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = resolve(SCRIPT_DIR, "..");
 const DESIGN_PATH = "designs/large-document.codesign.json";
+async function saveFromToolbar(page) {
+  if (await page.locator("#compact-actions").getAttribute("open") === null) {
+    await page.locator("#compact-actions summary").click();
+  }
+  await page.locator("#save").click();
+}
 const MIME_TYPES = new Map([
   [".css", "text/css; charset=utf-8"],
   [".html", "text/html; charset=utf-8"],
@@ -220,7 +226,7 @@ try {
     DESIGN_PATH,
   );
   await waitForCanvas(page);
-  await page.locator("#save").click();
+  await saveFromToolbar(page);
   await page.waitForFunction(
     (path) => {
       const source = localStorage.getItem(`codeshell-design-studio:file:${path}`);
@@ -284,7 +290,7 @@ try {
   const primaryModifiedAtBeforeSecondSave = await page.evaluate((path) =>
     localStorage.getItem(`codeshell-design-studio:mtime:${path}`),
   DESIGN_PATH);
-  await page.locator("#save").click();
+  await saveFromToolbar(page);
   await page.waitForFunction(
     ({ path, previousModifiedAt }) =>
       localStorage.getItem(`codeshell-design-studio:mtime:${path}`) !==

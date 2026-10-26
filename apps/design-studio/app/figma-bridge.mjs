@@ -19,10 +19,11 @@ import {
   cssLinearNeedsNativeWarning,
   designPaintsToFigma,
 } from "./paint.mjs";
-/* Deliberately bounded Figma JSON bridge. Figma binary files are not supported. */
+/* Figma JSON bridge with bounded payload and layer budgets; no binary files. */
 import {
   MAX_DESIGN_NODES_PER_PAGE,
   MAX_DESIGN_CANVAS_SIZE,
+  designCoordinateLimit,
   MAX_DESIGN_PAGES,
   isDesignNodeVisible,
   normalizeDesignDocument,
@@ -287,7 +288,7 @@ function rotatePoint(point, node, degrees) {
   };
 }
 
-function geometry(source, ancestors, report) {
+function geometry(source, ancestors, report, coordinateLimit = MAX_DESIGN_CANVAS_SIZE) {
   const bounds = object(source.absoluteBoundingBox) ? source.absoluteBoundingBox : null;
   const matrix = source.relativeTransform;
   const hasMatrix =
@@ -370,8 +371,8 @@ function geometry(source, ancestors, report) {
     };
   }
   return {
-    x: number(center.x - width / 2, 0, -20000, 20000, source, "x", report),
-    y: number(center.y - height / 2, 0, -20000, 20000, source, "y", report),
+    x: number(center.x - width / 2, 0, -coordinateLimit, coordinateLimit, source, "x", report),
+    y: number(center.y - height / 2, 0, -coordinateLimit, coordinateLimit, source, "y", report),
     width,
     height,
     rotation: round(((((rotation + 180) % 360) + 360) % 360) - 180),
@@ -741,7 +742,7 @@ export function importFigmaJson(input, options = {}) {
 
 function importFigmaJsonWithReport(
   input,
-  { resources = [], imageRefs = new Map(), previews = {} },
+  { resources = [], imageRefs = new Map(), previews = {}, canvasMode },
   report,
 ) {
   const rawValue = readJson(input),
@@ -754,6 +755,8 @@ function importFigmaJsonWithReport(
       if (owners.get(id)?.type !== "TEXT")
         throw Object.assign(Error("原生范围文字补充记录没有唯一匹配的 TEXT 来源。"), { code: "NATIVE_TEXT_IMPORT_TABLE_OWNER" });
   }
+  if (canvasMode !== undefined && canvasMode !== "infinite") throw new Error('canvasMode 只能是 "infinite"');
+  const coordinateLimit = designCoordinateLimit({ mode: canvasMode });
   if (!pages.length || pages.length > MAX_DESIGN_PAGES)
     throw new Error(`Figma 页面数量必须为 1–${MAX_DESIGN_PAGES}。`);
   const ids = new Set(),
@@ -875,7 +878,7 @@ function importFigmaJsonWithReport(
         id: allocateId(source, `node-${visited}`),
         type: "image",
         name: cleanName(source.name, source.type),
-        ...geometry(previewSource, ancestors, report),
+        ...geometry(previewSource, ancestors, report, coordinateLimit),
         imageRef: previewRef,
         objectFit: "fill",
         fill: "transparent",
@@ -918,6 +921,7 @@ function importFigmaJsonWithReport(
           : source,
         ancestors,
         report,
+        coordinateLimit,
       ),
       fill: imagePaint
         ? "transparent"
@@ -1268,7 +1272,7 @@ function importFigmaJsonWithReport(
       children: page.children.map((source) => convert(source, [], 0, counter)).filter(Boolean),
     };
   });
-  // Size the finite canvas from visible content. Clipped or hidden offscreen
+  // Size the legacy finite canvas from visible content. Clipped or hidden offscreen
   // descendants still retain their geometry and source mapping for round trips.
   let extentX = 1440,
     extentY = 960;
@@ -1317,8 +1321,8 @@ function importFigmaJsonWithReport(
       .filter(Boolean);
     const minX = bounds.length ? Math.min(...bounds.map((box) => box.x)) : 0,
       minY = bounds.length ? Math.min(...bounds.map((box) => box.y)) : 0;
-    const offsetX = minX < 0 || minX >= MAX_DESIGN_CANVAS_SIZE ? -minX : 0;
-    const offsetY = minY < 0 || minY >= MAX_DESIGN_CANVAS_SIZE ? -minY : 0;
+    const offsetX = canvasMode !== "infinite" && (minX < 0 || minX >= MAX_DESIGN_CANVAS_SIZE) ? -minX : 0;
+    const offsetY = canvasMode !== "infinite" && (minY < 0 || minY >= MAX_DESIGN_CANVAS_SIZE) ? -minY : 0;
     if (offsetX || offsetY) {
       const translate = (nodes) => {
         for (const node of nodes) {
@@ -1351,7 +1355,7 @@ function importFigmaJsonWithReport(
   }
   const width = clamp(Math.ceil(extentX), 100, MAX_DESIGN_CANVAS_SIZE);
   const height = clamp(Math.ceil(extentY), 100, MAX_DESIGN_CANVAS_SIZE);
-  if (extentX > MAX_DESIGN_CANVAS_SIZE || extentY > MAX_DESIGN_CANVAS_SIZE)
+  if (canvasMode !== "infinite" && (extentX > MAX_DESIGN_CANVAS_SIZE || extentY > MAX_DESIGN_CANVAS_SIZE))
     report.warn(
       "canvas-extent",
       null,
@@ -1361,7 +1365,7 @@ function importFigmaJsonWithReport(
     format: "codeshell.design",
     version: 3,
     name: cleanName(value.name ?? value.document?.name, "Figma Import"),
-    canvas: { width, height, background: color(pages[0].backgroundColor, "#f5f5f2") },
+    canvas: { width, height, background: color(pages[0].backgroundColor, "#f5f5f2"), ...(canvasMode === "infinite" ? { mode: "infinite" } : {}) },
     tokens: { colors: [] },
     resources,
     activePageId: convertedPages[0].id,
@@ -1385,14 +1389,14 @@ function importFigmaJsonWithReport(
 /** Import local images and preserve the complete official source alongside the editable document. */
 export async function prepareFigmaImport(
   input,
-  { sha256Bytes, textMeasurer, browserDocument, readFontBytes } = {},
+  { sha256Bytes, textMeasurer, browserDocument, readFontBytes, canvasMode } = {},
 ) {
   const source = normalizeFigmaSource(input);
   const assets = await prepareFigmaAssets(source, { sha256Bytes });
   const report = reporter();
   const result = importFigmaJsonWithReport(
     source,
-    { resources: assets.resources, imageRefs: assets.byAssetId, previews: source.previews },
+    { resources: assets.resources, imageRefs: assets.byAssetId, previews: source.previews, canvasMode },
     report,
   );
   let fonts = { resourcePlans: [], faces: [] };

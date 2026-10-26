@@ -616,13 +616,19 @@ export function exportDesignPrototype(
         `@font-face{font-family:${cssString(resource.family)};src:url(${cssString(resources.get(resource.id))});font-style:${resource.style === "italic" ? "italic" : "normal"};font-weight:${Number(resource.weight) || 400};font-display:swap;}`,
     )
     .join("\n");
+  // Infinite pages receive independent content dimensions and origins from
+  // renderDesignFrontendPage; they do not share a document-sized viewport.
+  const pageViewportCss =
+    document.canvas.mode === "infinite"
+      ? ""
+      : `width:min(100%,${document.canvas.width}px);height:${document.canvas.height}px;`;
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(title ?? `${document.name} · 可交互原型`)}</title>
 <style>${fonts}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:ui-sans-serif,system-ui,sans-serif}body{background:${document.canvas.background};padding-top:52px}[hidden]{display:none!important}
 .prototype-toolbar{position:fixed;inset:0 0 auto;z-index:10000;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:8px 12px;min-height:52px;background:#fff;color:#222;border-bottom:1px solid #ddd;font-size:13px}.prototype-toolbar button,.prototype-toolbar select{font:inherit;padding:6px 10px}.prototype-toolbar strong{flex:1;min-width:80px}.prototype-toolbar label{display:flex;align-items:center;gap:4px}
-.cs-page{position:relative;width:min(100%,${document.canvas.width}px);min-width:0;height:${document.canvas.height}px;margin:0 auto;overflow:hidden;background:${document.canvas.background}}.cs-node{min-width:0}.cs-text{margin:0}.cs-image,.cs-prototype-image{display:block}.cs-instance-content{pointer-events:none}.cs-page:focus{outline:none}
+.cs-page{position:relative;${pageViewportCss}min-width:0;margin:0 auto;overflow:hidden;background:${document.canvas.background}}.cs-node{min-width:0}.cs-text{margin:0}.cs-image,.cs-prototype-image{display:block}.cs-instance-content{pointer-events:none}.cs-page:focus{outline:none}
 .cs-prototype-hotspot{position:absolute;inset:0;z-index:1;cursor:pointer;text-decoration:none;color:inherit}.cs-prototype-hotspot:focus-visible{outline:3px solid #2563eb;outline-offset:-3px;background:#2563eb10}.cs-prototype-review-pin{display:none;position:absolute;top:0;left:0;z-index:3;border:2px solid #fff;border-radius:50%;min-width:26px;height:26px;background:#1d4ed8;color:#fff;font-weight:700;cursor:pointer}.prototype-review-mode .cs-prototype-review-pin{display:block}#prototype-review-details{position:fixed;right:12px;top:64px;width:min(360px,calc(100vw - 24px));max-height:70vh;overflow:auto;background:#fff;border:1px solid #ddd;border-radius:10px;box-shadow:0 8px 40px #0002;z-index:10001;padding:16px}#prototype-review-text{white-space:pre-wrap;overflow-wrap:anywhere}#prototype-review-close{float:right}@media(max-width:560px){.prototype-toolbar{gap:6px}.prototype-toolbar strong{display:none}.prototype-toolbar select{max-width:45vw}}
 </style></head><body>
 <nav class="prototype-toolbar" aria-label="原型导航"><button id="prototype-back" type="button" disabled>返回</button><strong id="prototype-current-page" aria-live="polite"></strong><label>页面<select id="prototype-page-picker">${document.pages.map((page) => `<option value="${escapeHtml(page.id)}">${escapeHtml(page.name)}</option>`).join("")}</select></label><label${threads.length ? "" : " hidden"}><input id="prototype-review-toggle" type="checkbox">评审 ${threads.length}</label></nav>

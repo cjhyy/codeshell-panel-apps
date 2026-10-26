@@ -63,9 +63,6 @@
   overflow-wrap: anywhere;
 }
 @media (max-width: 680px) {
-  #open-figma-workflow {
-    display: none;
-  }
   .figma-workflow-card {
     padding: 16px;
   }
@@ -128,9 +125,4 @@
 #save-as-status {
   overflow-wrap: anywhere;
   line-height: 1.6;
-}
-@media (max-width: 680px) {
-  .top-actions #save-as {
-    display: none;
-  }
 }

@@ -3810,12 +3810,18 @@
       throw new Error("cornerRadii \u5FC5\u987B\u662F\u56DB\u4E2A 0\u20139999 \u7684\u6709\u9650\u5706\u5F62\u50CF\u7D20\u534A\u5F84\uFF08\u5DE6\u4E0A\u3001\u53F3\u4E0A\u3001\u53F3\u4E0B\u3001\u5DE6\u4E0B\uFF09");
     return [...value];
   }
-  function cssCornerRadii(values) {
+  function cssCornerRadii(values, borderBox) {
     return normalizeCornerRadii(values.map((value) => {
       const parts = String(value).trim().split(/\s+/u);
-      if (parts.length < 1 || parts.length > 2 || parts.some((part) => !/^(?:(?:\d+(?:\.\d+)?|\.\d+)px|0(?:\.0+)?)$/u.test(part)))
-        throw new Error("CSS \u5706\u89D2\u53EA\u652F\u6301\u5706\u5F62 px \u534A\u5F84\uFF1B\u767E\u5206\u6BD4\u3001\u692D\u5706\u548C\u590D\u6742\u8868\u8FBE\u5F0F\u6682\u4E0D\u80FD\u4FDD\u7559");
-      const radii = parts.map(Number.parseFloat);
+      if (parts.length < 1 || parts.length > 2 || parts.some((part) => !/^(?:(?:\d+(?:\.\d+)?|\.\d+)(?:px|%)|0(?:\.0+)?)$/u.test(part)))
+        throw new Error("CSS \u5706\u89D2\u53EA\u652F\u6301\u5706\u5F62 px \u534A\u5F84\u6216\u5DF2\u77E5\u8FB9\u6846\u76D2\u4E2D\u7684\u5706\u5F62\u767E\u5206\u6BD4\uFF1B\u692D\u5706\u548C\u590D\u6742\u8868\u8FBE\u5F0F\u6682\u4E0D\u80FD\u4FDD\u7559");
+      const radii = [parts[0], parts[1] ?? parts[0]].map((part, axis) => {
+        if (!part.endsWith("%")) return Number.parseFloat(part);
+        const edge = axis === 0 ? borderBox?.width : borderBox?.height;
+        if (!Number.isFinite(edge) || edge <= 0)
+          throw new Error("CSS \u767E\u5206\u6BD4\u5706\u89D2\u9700\u8981\u6709\u9650\u6B63\u5C3A\u5BF8\u7684\u539F\u59CB\u8FB9\u6846\u76D2");
+        return Number.parseFloat(part) / 100 * edge;
+      });
       if (radii.length === 2 && radii[0] !== radii[1])
         throw new Error("CSS \u692D\u5706\u5706\u89D2\u6682\u4E0D\u80FD\u4FDD\u7559\uFF1B\u8BF7\u4F7F\u7528\u76F8\u7B49\u7684\u6C34\u5E73\u548C\u5782\u76F4 px \u534A\u5F84");
       return radii[0];

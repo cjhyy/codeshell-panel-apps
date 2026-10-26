@@ -9,6 +9,13 @@ import { launchCanvasBrowser, canvasCsp, canvasContentType, observeCanvasPage, a
 import { normalizeDesignDocument, serializeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
 import { createDesignIndexPersistencePlan } from "../../../apps/design-studio/app/document-index.mjs";
 
+async function toolbarAction(page, selector) {
+  if (await page.locator("#compact-actions").getAttribute("open") === null) {
+    await page.locator("#compact-actions summary").click();
+  }
+  await page.locator(selector).click();
+}
+
 const root = resolve(fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
 const manifest = JSON.parse(await readFile(new URL("../../../apps/design-studio/.codeshell-panel/panel.json", import.meta.url)));
 const path = "designs/polish.codesign.json";
@@ -207,7 +214,7 @@ test("inline canvas text commits once, cancels without changing the document, an
   await clickCanvasNode(f.page, "heading", { double: true });
   await editor.fill("Discard this"); await editor.press("Escape");
   assert.equal((await canvasNode(f.page, "heading")).text, "Updated\nheading");
-  await f.page.locator("#save").click();
+  await toolbarAction(f.page, "#save");
   await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "已保存");
   const saved = normalizeDesignDocument(JSON.parse(f.files.get(`A:${path}`))).nodes.find(node => node.id === "heading");
   assert.equal(saved.text, "Updated\nheading"); assert.equal(saved.textSource, saved.text);
@@ -244,7 +251,7 @@ test("editing imported ellipsis uses the complete source and clearing it remains
   await editor.fill("A complete imported heading!"); await editor.press("Control+Enter");
   assert.equal((await canvasNode(f.page, "heading")).text, "A complete imported heading!");
   await f.page.locator("#edit-text-selection").click(); await editor.fill(""); await editor.press("Control+Enter");
-  await f.page.locator("#save").click(); await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "已保存");
+  await toolbarAction(f.page, "#save"); await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "已保存");
   const saved = normalizeDesignDocument(JSON.parse(f.files.get(`A:${path}`))).nodes.find(node => node.id === "heading");
   assert.equal(saved.text, ""); assert.equal(saved.textOverflow, undefined);
   assert.deepEqual(f.errors, []);
@@ -376,7 +383,7 @@ test("the visual layout controls use the existing model, support undo and stay d
   assert.equal(await f.page.locator("#layout-status-chip").textContent(), "水平");
   await f.page.locator('[data-layout-align="center:end"]').click();
   await f.page.locator("#layout-space-between").click();
-  await f.page.locator("#save").click(); await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "已保存");
+  await toolbarAction(f.page, "#save"); await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "已保存");
   let model = normalizeDesignDocument(JSON.parse(f.files.get(`A:${path}`))), card = model.nodes.find(node => node.id === "card");
   assert.equal(card.layout, "horizontal"); assert.equal(card.justifyContent, "space-between"); assert.equal(card.alignItems, "end");
   assert.equal(model.nodes.find(node => node.id === "body").x, card.x + card.width - card.padding - 180);
@@ -418,7 +425,7 @@ test("pixel line-height inspector edits retain units through font changes, undo,
   await f.page.locator("#duplicate-layer").click();
   const duplicate = (await canvasNodes(f.page)).find(node => node.id !== "body" && node.name === "Body 副本");
   assert(duplicate); assert.equal(duplicate.lineHeightUnit, "pixels"); assert.equal(duplicate.lineHeight, 20);
-  await f.page.locator("#save").click(); await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "已保存");
+  await toolbarAction(f.page, "#save"); await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "已保存");
   await f.page.reload(); await waitForCanvas(f.page); await f.select(duplicate.id);
   const reopened = await canvasNode(f.page, duplicate.id); assert.equal(reopened.lineHeight, 20); assert.equal(reopened.lineHeightUnit, "pixels");
   assert.equal(await f.page.locator("#prop-line-height-unit").inputValue(), "pixels");

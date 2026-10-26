@@ -76,6 +76,15 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run check
+        env:
+          CODESHELL_NATIVE_LINE_BOXES_EVIDENCE_DIR: artifacts/design-studio-ci/native-line-boxes
+      - name: Retain Design Studio font comparison failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: design-studio-font-comparisons
+          path: artifacts/design-studio-ci
+          if-no-files-found: ignore
 
   video-ui:
     name: Video Studio UI
@@ -140,6 +149,54 @@ jobs:
       - run: npm run test:large-doc
       - run: npm run test:fidelity
       - run: npm run test:fidelity:cases
+
+  design-font-edits:
+    name: Design Studio font and recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # These fixtures carry their own Inter bytes. Probe the runner's runtime
+      # libraries directly; the full offline/fidelity jobs retain --with-deps.
+      - run: npx playwright install chromium
+      - name: Probe the pinned Chromium runtime
+        run: |
+          node --input-type=module <<'JS'
+          import { chromium } from 'playwright';
+          const browser = await chromium.launch({ args: ['--disable-gpu'] });
+          try {
+            const page = await browser.newPage();
+            await page.goto('about:blank');
+            console.log(JSON.stringify({ version: browser.version(), url: page.url() }));
+          } finally {
+            await browser.close();
+          }
+          JS
+      - name: Check loaded-font edits and recovery with exact pixels
+        env:
+          DESIGN_STUDIO_FONT_RASTER_MODE: grayscale
+          DESIGN_STUDIO_FONT_CAPTURE_LABELS: '["authored-wrap-390-129","fill-context-768-7","integer-grid-equal-HUG-cellFILL-390-22","linked-ranges-6-630-24","padded-grid-govuk-affine-cellvpad0-rowstroke0 preserved V row owner-390"]'
+        run: >-
+          node --test --test-concurrency=1
+          --test-name-pattern="frontend wrap uses|CPU loaded-font frontend|real loaded-font Text wrapping|padded separate row Grid|frontend source ranges keep|fixture font barrier waits|an unsaved draft keeps|a late denied autosave journal"
+          tests/apps/design-studio/frontend-responsive-text-source.test.mjs
+          tests/apps/design-studio/grid-fill-width-context.test.mjs
+          tests/apps/design-studio/grid-text-intrinsic-height.test.mjs
+          tests/apps/design-studio/native-padded-row-grid.test.mjs
+          tests/apps/design-studio/text-ranges-renderer.test.mjs
+          tests/apps/design-studio/recovery-ui.test.mjs
+      - name: Retain focused regression inputs and results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: design-studio-focused-regressions
+          path: artifacts/design-studio-ci
+          if-no-files-found: ignore
 
   quant-lab:
     name: Validate Quant Lab

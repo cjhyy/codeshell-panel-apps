@@ -1,3 +1,4 @@
+import { settleLoadedFont, recordFontPixelMismatch, loadedFontBrowserArgs } from "./fixtures/loaded-font.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
@@ -93,7 +94,7 @@ test("unproven width owners, cell padding/content and row stroke models do not q
 
 test("padded separate row Grid stays strict in real font CSS, SVG, frontend, source edits and reopen", async (t) => {
   const { chromium } = await import("playwright"), { PNG } = await import("pngjs"), { resolve, sep } = await import("node:path");
-  const browser = await chromium.launch({ args: ["--disable-gpu"] });
+  const browser = await chromium.launch({ args: loadedFontBrowserArgs() });
   t.after(() => browser.close());
   const context = await browser.newContext({ viewport: { width: 760, height: 450 }, deviceScaleFactor: 1 });
   const root = resolve("apps/design-studio/app"), font = await readFile(resolve(root, "fonts/InterVariable.woff2"));
@@ -165,8 +166,10 @@ test("padded separate row Grid stays strict in real font CSS, SVG, frontend, sou
         await page.locator(`[data-codeshell-source-id="${record.ownerId}"]`).evaluate((node,w) => {node.style.width=`${w}px`;},width);
         await page.locator(`[data-codeshell-source-id="${record.textId}"]`).evaluate((node) => {node.textContent="Alpha\nBeta";});
         const reference = records.find((r) => r.name===record.name && r.width===width && r.copy==="Alpha\nBeta");
-        await referencePage.setContent(reference.reference); await Promise.all([page.evaluate(() => document.fonts.ready),referencePage.evaluate(() => document.fonts.ready)]);
-        const pxA=PNG.sync.read(await page.screenshot()),pxB=PNG.sync.read(await referencePage.screenshot());
+        await referencePage.setContent(reference.reference); await Promise.all([settleLoadedFont(page),settleLoadedFont(referencePage)]);
+        const actualBytes=await page.screenshot(),expectedBytes=await referencePage.screenshot();
+        await recordFontPixelMismatch(page,referencePage,actualBytes,expectedBytes,`padded-grid-${record.name}-${width}`);
+        const pxA=PNG.sync.read(actualBytes),pxB=PNG.sync.read(expectedBytes);
         assert(pxA.data.equals(pxB.data),`${record.name}/${width}/direct exported edit strict pixels`);
       }
     } finally {await referencePage.close();}

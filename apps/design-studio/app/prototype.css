@@ -114,9 +114,6 @@
   display: none !important;
 }
 @media (max-width: 680px) {
-  #open-prototype-editor {
-    display: none;
-  }
   .prototype-editor-card {
     width: 100%;
     padding: 16px;

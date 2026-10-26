@@ -6,6 +6,16 @@ import { fileURLToPath } from "node:url";
 import { launchCanvasBrowser, canvasCsp, canvasContentType, observeCanvasPage, assertCanvasClean,
   waitForCanvas, canvasNodes, assertCanvasNodePainted } from "./canvas-ui-fixture.mjs";
 
+async function openToolbarMenu(page, method = "click") {
+  if (await page.locator("#compact-actions").getAttribute("open") === null) {
+    await page.locator("#compact-actions summary")[method]();
+  }
+}
+async function toolbarAction(page, selector, method = "click") {
+  await openToolbarMenu(page, method);
+  await page.locator(selector)[method]();
+}
+
 const root = fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url));
 const manifest = JSON.parse(await readFile(new URL("../../../apps/design-studio/.codeshell-panel/panel.json", import.meta.url)));
 
@@ -67,14 +77,12 @@ test("mobile browser design still creates, saves, exports SVG and downloads comp
   await cdp.send("Input.synthesizeScrollGesture", { x: stage.x + 70, y: stage.y + 140, xDistance: 100, yDistance: 80, gestureSourceType: "touch", preventFling: true });
   assert.equal((await canvasNodes(f.page)).length, 1);
   await assertCanvasNodePainted(f.page, (await canvasNodes(f.page))[0]);
-  await f.page.locator("#save").tap();
+  await toolbarAction(f.page, "#save", "tap");
   await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "已保存");
-  await f.page.locator("#compact-actions summary").tap();
-  await f.page.locator('[data-toolbar-action="export-svg"]').tap();
+  await toolbarAction(f.page, "#export-svg", "tap");
   await f.page.waitForFunction(() => document.querySelector("#toast").textContent.includes("SVG 已导出"));
   assert.match(await f.page.evaluate(() => localStorage.getItem("codeshell-design-studio:file:designs/design.svg")), /<svg/);
-  await f.page.locator("#compact-actions summary").tap();
-  await f.page.locator('[data-toolbar-action="portable-backup-open"]').tap();
+  await toolbarAction(f.page, "#portable-backup-open", "tap");
   const downloading = f.page.waitForEvent("download");
   await f.page.locator("#portable-backup-export").tap();
   const backup = JSON.parse(await readFile(await (await downloading).path(), "utf8"));

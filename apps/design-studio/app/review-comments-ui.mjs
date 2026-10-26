@@ -38,14 +38,11 @@ export function mountReviewComments({
     style.dataset.reviewCommentsStyle = "";
     document.head.append(style);
   }
-  const openButton = button("讨论");
+  const openButton = button("设计讨论与评论");
   openButton.id = "open-review-comments";
   openButton.title = "查看与保存设计评审评论";
-  const toolbar = document.querySelector(".top-actions");
-  toolbar?.insertBefore(openButton, toolbar.querySelector("#portable-backup-open, #open-ai"));
-  const compactButton = button("设计讨论与评论", "");
-  compactButton.dataset.toolbarAction = "open-review-comments";
-  document.querySelector(".compact-actions-list")?.append(compactButton);
+  const menu = document.querySelector(".compact-actions-list");
+  if (menu) menu.insertBefore(openButton, menu.querySelector("#run-audit"));
 
   const dialog = element("dialog", "review-comments-dialog");
   dialog.id = "review-comments-dialog";
@@ -271,7 +268,6 @@ export function mountReviewComments({
   function renderAvailability() {
     const available = usable();
     openButton.disabled = !available;
-    compactButton.disabled = !available;
     refreshButton.disabled = busy || !available;
     submit.disabled =
       busy || !available || !loaded || !currentDraft().target || !input.value.trim();
@@ -289,7 +285,7 @@ export function mountReviewComments({
     const threads = loaded?.threads ?? [],
       values = threads.filter((thread) => filter.value === "all" || thread.status === filter.value);
     const openCount = threads.filter((thread) => thread.status === "open").length;
-    openButton.textContent = openCount ? `讨论 ${openCount}` : "讨论";
+    openButton.textContent = openCount ? `设计讨论与评论 ${openCount}` : "设计讨论与评论";
     list.replaceChildren();
     if (!values.length)
       list.append(
@@ -621,7 +617,7 @@ export function mountReviewComments({
       busy = false;
       wasReady = false;
       list.replaceChildren();
-      openButton.textContent = "讨论";
+      openButton.textContent = "设计讨论与评论";
       stateText("项目已切换，旧操作已停止。草稿会在返回原设计时恢复。");
     },
     destroy() {
@@ -630,7 +626,6 @@ export function mountReviewComments({
       generation++;
       dialog.remove();
       openButton.remove();
-      compactButton.remove();
     },
   };
 }

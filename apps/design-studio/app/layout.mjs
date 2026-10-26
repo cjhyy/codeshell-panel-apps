@@ -15,6 +15,7 @@ import {
   textMetricsSignature,
   textSourceMetricsSignature,
 } from "./text-metrics.mjs";
+import { designCoordinateLimit } from "./document.mjs";
 
 export const CONTAINER_NODE_TYPES = Object.freeze(["frame", "group", "component"]);
 
@@ -804,7 +805,7 @@ function textLayoutMeasurer(nodes, supplied) {
 
 // Canonical y is a hanging origin; manual/native line-box geometry stays fixed.
 // Provenance lives outside glyph receipts so Node-only reflow cannot erase it.
-function refreshTextBaselines(nodes, measurement) {
+function refreshTextBaselines(nodes, measurement, canvas) {
   if (!measurement?.lineBoxOffset) return false;
   let changed = false;
   for (const node of nodes) {
@@ -816,7 +817,7 @@ function refreshTextBaselines(nodes, measurement) {
     measurement.configure(node);
     const logicalY = node.y - finite(node.layoutBaselineOffset);
     const nextY = round(logicalY + measurement.lineBoxOffset(node));
-    if (nextY < -20000 || nextY > 20000) throw Error("文字基线映射会超过设计坐标范围");
+    if (Math.abs(nextY) > designCoordinateLimit(canvas)) throw Error("文字基线映射会超过设计坐标范围");
     const offset = round(nextY - logicalY, 4);
     changed = assignNumber(node, "y", nextY) || changed;
     if (node.layoutBaselineOffset !== offset) {
@@ -949,7 +950,7 @@ function applyContainerSizeLimits(nodes, container) {
   return changed;
 }
 
-export function applyAutoLayout(nodes, containerId, { textMeasurer } = {}) {
+export function applyAutoLayout(nodes, containerId, { textMeasurer, canvas } = {}) {
   if (!Array.isArray(nodes) || typeof containerId !== "string") return false;
   nodes.forEach(validateTextRanges);
   const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -968,7 +969,7 @@ export function applyAutoLayout(nodes, containerId, { textMeasurer } = {}) {
   changed = applyAbsoluteConstraints(nodes, container) || changed;
   const measurement = textLayoutMeasurer(nodes, textMeasurer);
   try {
-    changed = refreshTextBaselines(nodes, measurement) || changed;
+    changed = refreshTextBaselines(nodes, measurement, canvas) || changed;
     changed = applyResponsiveText(nodes, new Set([container.id]), measurement) || changed;
   } finally {
     if (textMeasurer === undefined) measurement?.close?.();
@@ -996,7 +997,7 @@ function nodeDepth(nodes, node) {
  * children. Auto layout is therefore an explicit geometry owner, not a document-wide normalization
  * pass: manual-layout containers keep the x/y values supplied by people and Agents.
  */
-export function applyAutoLayouts(nodes, containerIds, { textMeasurer } = {}) {
+export function applyAutoLayouts(nodes, containerIds, { textMeasurer, canvas } = {}) {
   if (!Array.isArray(nodes) || !containerIds) return false;
   nodes.forEach(validateTextRanges);
   const requested = new Set(containerIds);
@@ -1031,7 +1032,7 @@ export function applyAutoLayouts(nodes, containerIds, { textMeasurer } = {}) {
   let changed = false;
   const measurement = textLayoutMeasurer(nodes, textMeasurer);
   try {
-    changed = refreshTextBaselines(nodes, measurement) || changed;
+    changed = refreshTextBaselines(nodes, measurement, canvas) || changed;
     for (let iteration = 0; containers.length && iteration < 8; iteration += 1) {
       let iterationChanged = false;
       for (const node of [...containers].reverse()) {
@@ -1078,6 +1079,15 @@ export function createComponentInstance(component, id, offset = 32, canvas = nul
     { x: component.x - component.width - offset, y: component.y },
     { x: component.x, y: component.y - component.height - offset },
   ];
+  if (canvas?.mode === "infinite") {
+    const limit = designCoordinateLimit(canvas);
+    const position = candidates.find((candidate) =>
+      Math.abs(candidate.x) <= limit && Math.abs(candidate.y) <= limit) ?? {
+      x: Math.min(limit, Math.max(-limit, component.x + offset)),
+      y: Math.min(limit, Math.max(-limit, component.y + offset)),
+    };
+    return componentInstanceAt(component, id, position);
+  }
   const fitsCanvas = (candidate) =>
     canvas &&
     candidate.x >= 0 &&
@@ -1093,6 +1103,10 @@ export function createComponentInstance(component, id, offset = 32, canvas = nul
         ),
       })
     : candidates[0];
+  return componentInstanceAt(component, id, position);
+}
+
+function componentInstanceAt(component, id, position) {
   return {
     id,
     type: "instance",

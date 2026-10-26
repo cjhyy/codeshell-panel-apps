@@ -288,10 +288,15 @@ export function drawCanvasInteraction(
       ctx.lineWidth = 1 / zoom;
       ctx.setLineDash([4 / zoom, 3 / zoom]);
       ctx.beginPath();
-      ctx.moveTo(guide.axis === "x" ? guide.value : 0, guide.axis === "y" ? guide.value : 0);
+      const infinite = design.canvas.mode === "infinite";
+      const left = infinite ? -pan.x / zoom : 0;
+      const top = infinite ? -pan.y / zoom : 0;
+      const right = infinite ? (width - pan.x) / zoom : design.canvas.width;
+      const bottom = infinite ? (height - pan.y) / zoom : design.canvas.height;
+      ctx.moveTo(guide.axis === "x" ? guide.value : left, guide.axis === "y" ? guide.value : top);
       ctx.lineTo(
-        guide.axis === "x" ? guide.value : design.canvas.width,
-        guide.axis === "y" ? guide.value : design.canvas.height,
+        guide.axis === "x" ? guide.value : right,
+        guide.axis === "y" ? guide.value : bottom,
       );
       ctx.stroke();
     }

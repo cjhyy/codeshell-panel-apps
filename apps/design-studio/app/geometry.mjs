@@ -547,6 +547,7 @@ export function releaseFrame(nodes, frameId) {
 
 export function alignNodes(nodes, alignment, canvas) {
   if (!Array.isArray(nodes) || nodes.length === 0) return false;
+  if (nodes.length === 1 && canvas?.mode === "infinite") return false;
   const bounds =
     nodes.length === 1
       ? {
@@ -556,22 +557,35 @@ export function alignNodes(nodes, alignment, canvas) {
           height: canvas.height,
         }
       : selectionBounds(nodes);
-  for (const node of nodes) {
-    if (alignment === "left") node.x = bounds.x;
-    else if (alignment === "center") node.x = round(bounds.x + (bounds.width - node.width) / 2);
-    else if (alignment === "right") node.x = round(bounds.x + bounds.width - node.width);
-    else if (alignment === "top") node.y = bounds.y;
-    else if (alignment === "middle") node.y = round(bounds.y + (bounds.height - node.height) / 2);
-    else if (alignment === "bottom") node.y = round(bounds.y + bounds.height - node.height);
-    else return false;
-  }
+  if (!["left", "center", "right", "top", "middle", "bottom"].includes(alignment)) return false;
+  const positions = nodes.map((node) => {
+    const next = { x: node.x, y: node.y };
+    if (alignment === "left") next.x = bounds.x;
+    else if (alignment === "center") next.x = round(bounds.x + (bounds.width - node.width) / 2);
+    else if (alignment === "right") next.x = round(bounds.x + bounds.width - node.width);
+    else if (alignment === "top") next.y = bounds.y;
+    else if (alignment === "middle") next.y = round(bounds.y + (bounds.height - node.height) / 2);
+    else if (alignment === "bottom") next.y = round(bounds.y + bounds.height - node.height);
+    return next;
+  });
+  if (canvas?.mode === "infinite" && positions.some((position) => !infinitePositionFits(position)))
+    return false;
+  nodes.forEach((node, index) => Object.assign(node, positions[index]));
   return true;
 }
 
 function selectedTreeRoots(nodes, selectedIds) {
-  return nodes.filter(
-    (node) => selectedIds.has(node.id) && (!node.parentId || !selectedIds.has(node.parentId)),
-  );
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  return nodes.filter((node) => {
+    if (!selectedIds.has(node.id)) return false;
+    const seen = new Set([node.id]);
+    for (let parentId = node.parentId; parentId && !seen.has(parentId);) {
+      if (selectedIds.has(parentId)) return false;
+      seen.add(parentId);
+      parentId = byId.get(parentId)?.parentId;
+    }
+    return true;
+  });
 }
 
 function visualBoundsForNode(nodes, node) {
@@ -595,6 +609,27 @@ function moveNodeTreeByVisualDelta(nodes, root, delta) {
   return true;
 }
 
+// Keep this geometry-only check independent of the document codec, which imports
+// geometry. It mirrors the infinite document coordinate budget (not node size).
+function infinitePositionFits(position) {
+  return (
+    Number.isFinite(position.x) && Number.isFinite(position.y) &&
+    Math.abs(position.x) <= 1_000_000 && Math.abs(position.y) <= 1_000_000
+  );
+}
+
+function infiniteTreeMoveFits(nodes, root, delta) {
+  const rotation = inheritedNodeRotation(nodes, root);
+  const localDelta = rotation ? rotateVector(delta, -rotation) : delta;
+  if (!infinitePositionFits({ x: round(root.x + localDelta.x), y: round(root.y + localDelta.y) }))
+    return false;
+  if (!isContainerNode(root)) return true;
+  const ids = descendantIds(nodes, new Set([root.id]));
+  return nodes.every((node) =>
+    (node.id !== root.id && !ids.has(node.id)) ||
+    infinitePositionFits({ x: round(node.x + localDelta.x), y: round(node.y + localDelta.y) }));
+}
+
 export function alignNodeTrees(nodes, selectedIds, alignment, canvas) {
   if (!Array.isArray(nodes) || !(selectedIds instanceof Set) || selectedIds.size === 0) {
     return false;
@@ -604,10 +639,21 @@ export function alignNodeTrees(nodes, selectedIds, alignment, canvas) {
   if (roots.length === 0) return false;
   const entries = roots.map((node) => ({ node, bounds: visualBoundsForNode(nodes, node) }));
   if (entries.some((entry) => !entry.bounds)) return false;
-  const singleParent =
+  let singleParent =
     roots.length === 1 && roots[0].parentId
       ? nodes.find((candidate) => candidate.id === roots[0].parentId && isContainerNode(candidate))
       : null;
+  if (roots.length === 1 && canvas?.mode === "infinite") {
+    // Groups organize content; only an enclosing Frame/component supplies an
+    // alignment boundary on an unbounded page. Root content has no page edge.
+    const seen = new Set();
+    while (singleParent && !["frame", "component"].includes(singleParent.type)) {
+      if (seen.has(singleParent.id)) return false;
+      seen.add(singleParent.id);
+      singleParent = nodes.find((candidate) => candidate.id === singleParent.parentId) ?? null;
+    }
+    if (!singleParent) return false;
+  }
   const target =
     roots.length === 1
       ? singleParent
@@ -622,7 +668,7 @@ export function alignNodeTrees(nodes, selectedIds, alignment, canvas) {
   if (!target || ![target.x, target.y, target.width, target.height].every(Number.isFinite)) {
     return false;
   }
-  for (const entry of entries) {
+  const movements = entries.map((entry) => {
     const { bounds } = entry;
     const delta = { x: 0, y: 0 };
     if (alignment === "left") delta.x = target.x - bounds.x;
@@ -636,8 +682,11 @@ export function alignNodeTrees(nodes, selectedIds, alignment, canvas) {
     } else if (alignment === "bottom") {
       delta.y = target.y + target.height - (bounds.y + bounds.height);
     }
-    moveNodeTreeByVisualDelta(nodes, entry.node, delta);
-  }
+    return { node: entry.node, delta };
+  });
+  if (canvas?.mode === "infinite" &&
+    movements.some(({ node, delta }) => !infiniteTreeMoveFits(nodes, node, delta))) return false;
+  for (const { node, delta } of movements) moveNodeTreeByVisualDelta(nodes, node, delta);
   return true;
 }
 
@@ -661,7 +710,7 @@ export function distributeNodes(nodes, axis) {
   return true;
 }
 
-export function distributeNodeTrees(nodes, selectedIds, axis) {
+export function distributeNodeTrees(nodes, selectedIds, axis, canvas = null) {
   if (!Array.isArray(nodes) || !(selectedIds instanceof Set) || selectedIds.size === 0) {
     return false;
   }
@@ -681,15 +730,14 @@ export function distributeNodeTrees(nodes, selectedIds, axis) {
   const occupied = entries.reduce((total, entry) => total + entry.bounds[size], 0);
   const gap = (lastEdge - first - occupied) / (entries.length - 1);
   let cursor = first;
-  for (const entry of entries) {
+  const movements = entries.map((entry) => {
     const delta = cursor - entry.bounds[position];
-    moveNodeTreeByVisualDelta(
-      nodes,
-      entry.node,
-      horizontal ? { x: delta, y: 0 } : { x: 0, y: delta },
-    );
     cursor += entry.bounds[size] + gap;
-  }
+    return { node: entry.node, delta: horizontal ? { x: delta, y: 0 } : { x: 0, y: delta } };
+  });
+  if (canvas?.mode === "infinite" &&
+    movements.some(({ node, delta }) => !infiniteTreeMoveFits(nodes, node, delta))) return false;
+  for (const { node, delta } of movements) moveNodeTreeByVisualDelta(nodes, node, delta);
   return true;
 }
 

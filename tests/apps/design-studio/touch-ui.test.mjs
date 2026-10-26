@@ -216,8 +216,11 @@ async function fixture(t, width = 390, touch = true) {
   });
   const design = () => page.evaluate(() => window.tools.get_design_context({}));
   const menu = async action => {
-    await tapForAttribute(page, "#compact-actions summary", "open", "", "#compact-actions");
-    await page.locator(`[data-toolbar-action="${action}"]`).tap();
+    if (!["open-files", "open-delivery"].includes(action) &&
+        await page.locator("#compact-actions").getAttribute("open") === null) {
+      await tapForAttribute(page, "#compact-actions summary", "open", "", "#compact-actions");
+    }
+    await page.locator(`#${action}`).tap();
   };
   return { page, files, filesForSession, errors, sendTouch, dragTouch, design, menu };
 }
@@ -424,6 +427,9 @@ test("changing pages restores a pending move on its original page before switchi
   await f.page.locator("#add-page").evaluate(button => button.click());
   await f.page.waitForFunction(() => document.querySelector("#active-page").value === "page-2");
   await f.sendTouch("touchCancel");
+  if (!await f.page.locator("#active-page").isVisible()) {
+    await tapForAttribute(f.page, "#toggle-layers", "aria-expanded", "true");
+  }
   await f.page.locator("#active-page").selectOption("page-1");
   const after = await f.design();
   assert.deepEqual(after.document.pages[0], before.document.pages[0]);
@@ -433,10 +439,18 @@ test("changing pages restores a pending move on its original page before switchi
 
 test("desktop keeps its visible tools and mouse gestures also roll back on lost capture", async t => {
   const f = await fixture(t, 1280, false);
-  for (const selector of ["#open-files", "#open-html-import", "#open-delivery", "#export-svg", "#layers-sidebar", "#inspector"]) {
+  for (const selector of ["#open-files", "#open-delivery", "#open-ai", "#layers-sidebar", "#inspector"]) {
     assert.equal(await f.page.locator(selector).isVisible(), true);
   }
-  assert.equal(await f.page.locator("#compact-actions").isVisible(), false);
+  assert.equal(await f.page.locator("#compact-actions").isVisible(), true);
+  for (const selector of ["#open-html-import", "#export-svg"]) {
+    assert.equal(await f.page.locator(selector).isVisible(), false);
+  }
+  await f.page.locator("#compact-actions summary").click();
+  for (const selector of ["#open-html-import", "#export-svg"]) {
+    assert.equal(await f.page.locator(selector).isVisible(), true);
+  }
+  await f.page.locator("#compact-actions summary").click();
   assert.equal(await f.page.locator("#toggle-layers").isVisible(), false);
   await f.page.locator('[data-tool="rectangle"]').click();
   const stage = await f.page.locator("#stage").boundingBox();

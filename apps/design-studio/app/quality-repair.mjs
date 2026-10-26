@@ -2,6 +2,7 @@ import { effectiveCornerRadii } from "./corner-radii.mjs";
 import { designStrokeOutset } from "./stroke.mjs";
 import { auditDesignPages, readableTextContrast, summarizeAudit } from "./audit.mjs";
 import {
+  designCoordinateLimit,
   isDesignNodeVisible,
   normalizeDesignState,
   renderedDesignInstanceEffectOutsets,
@@ -151,11 +152,18 @@ export function repairDesignQuality(input) {
           next.height - parent.height > Math.max(64, parent.height * 0.5))
       )
         continue;
-      if (next.width > 20000 || next.height > 20000 || Math.abs(x) > 20000 || Math.abs(y) > 20000)
+      const coordinateLimit = designCoordinateLimit(document.canvas);
+      if (
+        next.width > 20000 || next.height > 20000 ||
+        Math.abs(x) > coordinateLimit || Math.abs(y) > coordinateLimit
+      )
         continue;
-      // A container-only repair cannot fix content outside the canvas. Leave that
-      // issue explicit rather than introducing another overflowing painted frame.
-      if (x < 0 || y < 0 || right > document.canvas.width || bottom > document.canvas.height)
+      // Bounded exports retain their page edge. Infinite pages keep only the
+      // node coordinate/size budget and their explicit Frame clip boundaries.
+      if (
+        document.canvas.mode !== "infinite" &&
+        (x < 0 || y < 0 || right > document.canvas.width || bottom > document.canvas.height)
+      )
         continue;
       if (Object.entries(next).every(([key, value]) => Math.abs(parent[key] - value) <= 0.5))
         continue;

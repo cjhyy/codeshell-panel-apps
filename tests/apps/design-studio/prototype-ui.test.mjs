@@ -67,11 +67,11 @@ async function fixture(t, { mobile = false, commentsCallback = false } = {}) {
         contentType: "text/html",
         body: `<!doctype html><html lang="zh"><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="./style.css"></head><body><header class="topbar"><div class="top-actions"><button id="open-ai">Agent</button><details id="compact-actions"><summary>更多</summary><div class="compact-actions-list"></div></details></div></header><script type="module">
       import { mountPrototypeEditor } from './prototype-ui.mjs';
+      import './toolbar-menu.mjs';
       window.prototypeUI = mountPrototypeEditor({getSnapshot:()=>window.prototypeSnapshot,
         capture:async (_,check)=>{check();return {document:window.prototypeDocument,resourceDataUrls:new Map()}},
         captureComments:window.prototypeUseCommentsCallback?window.prototypeCaptureComments:undefined,
         call:window.prototypeCall,sha256:async text=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text)))].map(v=>v.toString(16).padStart(2,'0')).join('')});
-      document.querySelector('.compact-actions-list').addEventListener('click',event=>{const id=event.target.closest('[data-toolbar-action]')?.dataset.toolbarAction;if(id)document.getElementById(id).click()});
     </script></body></html>`,
       });
     const path = resolve(root, `.${url.pathname}`);
@@ -168,10 +168,8 @@ async function fixture(t, { mobile = false, commentsCallback = false } = {}) {
   await page.goto("https://panel.test/prototype-harness.html");
   await page.waitForFunction(() => Boolean(window.prototypeUI));
   async function open() {
-    if (mobile) {
-      await page.locator("#compact-actions summary").click();
-      await page.locator('[data-toolbar-action="open-prototype-editor"]').click();
-    } else await page.locator("#open-prototype-editor").click();
+    await page.locator("#compact-actions summary").click();
+    await page.locator("#open-prototype-editor").click();
     await page.waitForFunction(
       () =>
         document.querySelector("#prototype-editor-dialog").getAttribute("aria-busy") === "false" &&

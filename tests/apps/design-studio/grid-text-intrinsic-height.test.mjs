@@ -1,5 +1,6 @@
+import { settleLoadedFont, recordFontPixelMismatch, loadedFontBrowserArgs } from "./fixtures/loaded-font.mjs";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { test } from "node:test";
 import {
@@ -37,6 +38,47 @@ const nestedRow = (document, name) => {
   return find(value.pages[0].children).find((node) => node.name === name);
 };
 const originals = { original: "Alpha\nBeta", expanded: "Alpha\nBeta\nGamma\nDelta" };
+
+async function retainEditedGridGeometry(page, referencePage, details) {
+  const inspect = (target, selector) => target.locator(selector).evaluate(element => {
+    const style = getComputedStyle(element), bounds = element.getBoundingClientRect();
+    const canvas = document.createElement("canvas"), context = canvas.getContext("2d");
+    context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    context.fontKerning = style.fontKerning;
+    const textNode = [...element.childNodes].find(node => node.nodeType === Node.TEXT_NODE);
+    const lines = [];
+    if (textNode) for (let index = 0; index < textNode.length; index++) {
+      const range = document.createRange(); range.setStart(textNode, index); range.setEnd(textNode, index + 1);
+      const rect = range.getBoundingClientRect(), previous = lines.at(-1);
+      if (previous && previous.y === rect.y) {
+        previous.text += textNode.textContent[index]; previous.right = Math.max(previous.right, rect.right);
+      } else lines.push({ text: textNode.textContent[index], x: rect.x, y: rect.y, right: rect.right, height: rect.height });
+    }
+    const prefixes = (element.textContent ?? "").split(" ").map((_, index, words) => words.slice(0, index + 1).join(" "));
+    return { text: element.textContent, language: document.documentElement.lang, devicePixelRatio,
+      font: style.font, fontFamily: style.fontFamily, fontSize: style.fontSize, fontWeight: style.fontWeight,
+      fontStretch: style.fontStretch, fontStyle: style.fontStyle, fontKerning: style.fontKerning,
+      fontOpticalSizing: style.fontOpticalSizing, fontVariationSettings: style.fontVariationSettings,
+      fontFeatureSettings: style.fontFeatureSettings, letterSpacing: style.letterSpacing, lineHeight: style.lineHeight,
+      whiteSpace: style.whiteSpace, overflowWrap: style.overflowWrap,
+      bounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
+      lineCount: lines.length, lines, canvasFont: context.font,
+      advances: prefixes.map(text => ({ text, width: context.measureText(text).width })),
+      faces: [...document.fonts].map(face => ({ family: face.family, status: face.status, weight: face.weight, style: face.style })) };
+  });
+  const label = `grid-source-oracle-${details.name}-${details.width}-${details.copy.length}`;
+  const directory = resolve("artifacts/design-studio-ci/font-geometry", `${label}-${Date.now()}-${process.pid}`);
+  await mkdir(directory, { recursive: true });
+  const report = { ...details, label, rasterMode: process.env.DESIGN_STUDIO_FONT_RASTER_MODE ?? "grayscale",
+    browserArgs: loadedFontBrowserArgs(), browserVersion: page.context().browser()?.version(), directory,
+    actual: await inspect(page, `[data-codeshell-source-id="${details.contentId}"]`),
+    independentReference: await inspect(referencePage, ".a .copy") };
+  for (const [name, bytes] of [["actual.html", await page.content()], ["reference.html", await referencePage.content()],
+    ["actual.png", await page.screenshot()], ["reference.png", await referencePage.screenshot()],
+    ["report.json", JSON.stringify(report, null, 2) + "\n"]]) await writeFile(resolve(directory, name), bytes, { flag: "wx" });
+  return report;
+}
+
 
 test("actual native Text Grid fixture preserves every real layer, source character and sizing mode", async () => {
   const imported = importFigmaJson(actual),
@@ -321,7 +363,7 @@ test("raw mixed/paragraph/truncated text cannot silently qualify after single-st
 test("real loaded-font Text wrapping, scoped edits, reopen and SVG/frontend remain strict at integer Grid widths", async (t) => {
   const { chromium } = await import("playwright"),
     { PNG } = await import("pngjs");
-  const browser = await chromium.launch({ args: ["--disable-gpu"] });
+  const browser = await chromium.launch({ args: loadedFontBrowserArgs() });
   t.after(() => browser.close());
   const context = await browser.newContext({
     viewport: { width: 760, height: 240 },
@@ -468,7 +510,7 @@ test("real loaded-font Text wrapping, scoped edits, reopen and SVG/frontend rema
     await page.locator(".a .copy").evaluate((node, copy) => {
       node.textContent = copy;
     }, record.copy);
-    await page.evaluate(() => document.fonts.ready);
+    await settleLoadedFont(page);
     const domHeight = await page
       .locator(".row")
       .evaluate((node) => node.getBoundingClientRect().height);
@@ -499,9 +541,16 @@ test("real loaded-font Text wrapping, scoped edits, reopen and SVG/frontend rema
     try {
       for (const [width, copy, expectedHeight] of [
         [390, originals.expanded, 80],
+        [630, originals.expanded, 80],
         [390, originals.original, 40],
-        [390, record.copy, name.startsWith("equal") ? 120 : 140],
-        [630, record.copy, 80],
+        [390, "A\nB\nC\nD\nE\nF", 120],
+        [390, "A\nB\nC\nD\nE\nF\nG", 140],
+        // Natural wrap is platform-dependent even with the exact same Inter
+        // bytes: equal/630 is 60px on Linux and 80px on macOS; affine/390 is
+        // 120px on Linux and 140px on macOS. Both independent sources prove it.
+        // Authored newlines above still pin exact 40/80/120/140px row heights.
+        [390, record.copy, null],
+        [630, record.copy, null],
       ]) {
         await page
           .locator(`[data-codeshell-source-id="${record.rowId}"]`)
@@ -513,18 +562,7 @@ test("real loaded-font Text wrapping, scoped edits, reopen and SVG/frontend rema
           .evaluate((node, copy) => {
             node.textContent = copy;
           }, copy);
-        await page.evaluate(() => document.fonts.ready);
-        const boxes = await page
-          .locator(`[data-codeshell-source-id="${record.rowId}"]`)
-          .evaluate((node) => ({
-            height: node.getBoundingClientRect().height,
-            cells: [...node.children].map((cell) => cell.getBoundingClientRect().height),
-          }));
-        assert.deepEqual(
-          boxes,
-          { height: expectedHeight, cells: [expectedHeight, expectedHeight, expectedHeight] },
-          `${name}/exported source edit`,
-        );
+        const loadedFont = await settleLoadedFont(page);
         await referencePage.setContent(
           record.reference.replace(
             `width:${record.width}px;display:grid`,
@@ -534,11 +572,41 @@ test("real loaded-font Text wrapping, scoped edits, reopen and SVG/frontend rema
         await referencePage.locator(".a .copy").evaluate((node, copy) => {
           node.textContent = copy;
         }, copy);
-        await referencePage.evaluate(() => document.fonts.ready);
+        const referenceFont = await settleLoadedFont(referencePage);
+        const sourceBoxes = await referencePage.locator(".row").evaluate(node => ({
+          height: node.getBoundingClientRect().height,
+          cells: [...node.children].map(cell => cell.getBoundingClientRect().height),
+        }));
+        const boxes = await page
+          .locator(`[data-codeshell-source-id="${record.rowId}"]`)
+          .evaluate((node) => ({
+            height: node.getBoundingClientRect().height,
+            cells: [...node.children].map((cell) => cell.getBoundingClientRect().height),
+          }));
+        const matchesSource = JSON.stringify(boxes) === JSON.stringify(sourceBoxes);
+        if (!matchesSource || expectedHeight === null ||
+          boxes.height !== expectedHeight || boxes.cells.some(height => height !== expectedHeight) ||
+          process.env.DESIGN_STUDIO_GRID_GEOMETRY_EVIDENCE === "1" && width === 630 && copy === record.copy) {
+          t.diagnostic(JSON.stringify(await retainEditedGridGeometry(page, referencePage, {
+            name, width, copy, contentId: record.contentId, expectedHeight, boxes, sourceBoxes, loadedFont, referenceFont,
+            geometryOracle: expectedHeight === null ? "independent-source" : "fixed-height-and-independent-source",
+          })));
+        }
+        assert.deepEqual(boxes, sourceBoxes, `${name}/${width}/exported edit matches independent source geometry exactly`);
+        if (expectedHeight !== null) {
+          assert.deepEqual(
+            boxes,
+            { height: expectedHeight, cells: [expectedHeight, expectedHeight, expectedHeight] },
+            `${name}/exported source edit`,
+          );
+        }
+        await Promise.all([settleLoadedFont(page), settleLoadedFont(referencePage)]);
+        const actualBytes = await page.screenshot(), expectedBytes = await referencePage.screenshot();
+        await recordFontPixelMismatch(page, referencePage, actualBytes, expectedBytes, `integer-grid-${name}-${width}-${copy.length}`);
         assert(
           PNG.sync
-            .read(await page.screenshot())
-            .data.equals(PNG.sync.read(await referencePage.screenshot()).data),
+            .read(actualBytes)
+            .data.equals(PNG.sync.read(expectedBytes).data),
           `${name}/${width}/edited frontend strict pixels`,
         );
       }

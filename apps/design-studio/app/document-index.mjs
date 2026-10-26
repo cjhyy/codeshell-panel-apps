@@ -177,7 +177,10 @@ export function normalizeDesignIndexManifest(value) {
     throw new Error("设计索引必须引用 CodeShell Design v3");
   }
   assertSafeName(value.name, "设计索引名称");
-  assertExactKeys(value.canvas, new Set(["width", "height", "background"]), "设计索引 canvas");
+  assertExactKeys(value.canvas, new Set(["width", "height", "background", "mode"]), "设计索引 canvas");
+  if (value.canvas.mode !== undefined && value.canvas.mode !== "infinite") {
+    throw new Error('设计索引 canvas.mode 只能是 "infinite"');
+  }
   if (
     typeof value.canvas.width !== "number" ||
     !Number.isFinite(value.canvas.width) ||
@@ -240,6 +243,7 @@ export function normalizeDesignIndexManifest(value) {
       width: value.canvas.width,
       height: value.canvas.height,
       background: value.canvas.background.toLowerCase(),
+      ...(value.canvas.mode === "infinite" ? { mode: "infinite" } : {}),
     },
     tokens: { colors },
     resources: normalizeDesignResources(value.resources ?? []),

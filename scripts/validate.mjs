@@ -248,7 +248,7 @@ async function validatePackage(packagePath) {
     );
     assert.equal(
       manifest.version,
-      "0.22.0",
+      "0.23.0",
       `${packagePath}: Design Studio import workflow version mismatch`,
     );
     assert.deepEqual(

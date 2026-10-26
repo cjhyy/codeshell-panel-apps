@@ -1,3 +1,4 @@
+import { settleLoadedFont, recordFontPixelMismatch, loadedFontBrowserArgs } from "./fixtures/loaded-font.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
@@ -9,7 +10,7 @@ const common={stroke:"transparent",strokeWidth:0,opacity:1,rotation:0,cornerRadi
 
 test("frontend wrap uses authored text without cached soft breaks through real DOM width and copy edits",async(t)=>{
   const {chromium}=await import("playwright"),{PNG}=await import("pngjs");
-  const browser=await chromium.launch({args:["--disable-gpu"]});t.after(()=>browser.close());
+  const browser=await chromium.launch({args:loadedFontBrowserArgs()});t.after(()=>browser.close());
   const context=await browser.newContext({viewport:{width:760,height:350},deviceScaleFactor:1});
   const page=await context.newPage(),reference=await context.newPage();
   const font=await readFile(new URL("../../../apps/design-studio/app/fonts/InterVariable.woff2",import.meta.url));
@@ -23,8 +24,10 @@ test("frontend wrap uses authored text without cached soft breaks through real D
     await page.locator('[data-codeshell-source-id="copy"]').evaluate((node,copy)=>{node.textContent=copy;},copy);
     await reference.setContent(`<!doctype html><style>${fontCss}html,body{margin:0;background:white}.owner{position:absolute;left:20px;top:20px;width:${width}px;background:#e2e8f0;display:flex;flex-direction:column}.copy{width:100%;font:400 16px/20px Inter;color:#334155;white-space:pre-wrap;overflow-wrap:anywhere}</style><div class="owner"><div class="copy"></div></div>`);
     await reference.locator('.copy').evaluate((node,copy)=>{node.textContent=copy;},copy);
-    await Promise.all([page.evaluate(()=>document.fonts.ready),reference.evaluate(()=>document.fonts.ready)]);
-    const actual=PNG.sync.read(await page.screenshot()),expected=PNG.sync.read(await reference.screenshot());
+    await Promise.all([settleLoadedFont(page),settleLoadedFont(reference)]);
+    const actualBytes=await page.screenshot(),expectedBytes=await reference.screenshot();
+    await recordFontPixelMismatch(page,reference,actualBytes,expectedBytes,`authored-wrap-${width}-${copy.length}`);
+    const actual=PNG.sync.read(actualBytes),expected=PNG.sync.read(expectedBytes);
     assert(actual.data.equals(expected.data),`${width}/${JSON.stringify(copy)} strict pixels after direct DOM edit`);
     assert.equal(await page.locator('[data-codeshell-source-id="copy"]').textContent(),copy);
   }

@@ -16,6 +16,7 @@ import {
 import { applyAllAutoLayouts } from "../../../apps/design-studio/app/layout.mjs";
 import { editDesignStrokeColor, editDesignStrokeAlignment, editDesignStrokeWidth } from "../../../apps/design-studio/app/stroke.mjs";
 import { longFigmaSource } from "./fixtures/long-canvas.mjs";
+import { distantFigmaSource } from "./fixtures/infinite-canvas.mjs";
 import { measuredWrap, textMetricsSignature, textSourceMetricsSignature } from "../../../apps/design-studio/app/text-metrics.mjs";
 import { plainFixture } from "./fixtures/figma-plugin-v3.mjs";
 import { installNativeTextRangeSdkMock } from "./fixtures/native-text-sdk.mjs";
@@ -3734,4 +3735,41 @@ test("notes-only pure updates read back single multiple and cleared values befor
       if (shape === "multiple") assert.equal(target.getPluginData("codeshellNotes"), second.notes);
     }
   }
+});
+
+test("infinite artboards import through the actual plugin validator at distant and negative world positions", async () => {
+  const result = await prepareFigmaImport(distantFigmaSource(), { canvasMode: "infinite" });
+  const transfer = createFigmaTransfer(result.document);
+  const runtime = harness();
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "imported", runtime.messages.at(-1).message);
+  const created = runtime.figma.root.children.at(-1);
+  assert.deepEqual(created.children.map((node) => node.relativeTransform[0][2]), [-800000, 800000]);
+  assert.equal(created.children[0].children[0].relativeTransform[0][2], 20);
+  const before = runtime.figma.root.children.map(runtime.snapshot);
+  delete transfer.canvas.mode;
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
+  transfer.canvas.mode = "infinite";
+  transfer.pages[0].children[0].x = -1000001;
+  await runtime.send({ type: "import-transfer", content: JSON.stringify(transfer) });
+  assert.equal(runtime.messages.at(-1).type, "error");
+  assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
+});
+
+test("infinite patch preflight validates operation geometry using its transfer canvas mode", async () => {
+  const source = page([rect()]);
+  const transfer = patchTransfer(source, (node, document) => {
+    document.canvas.mode = "infinite";
+    node.x = -800000;
+  }, ["x"]);
+  const runtime = harness(source);
+  await runtime.send({ type: "preview-patch", content: JSON.stringify(transfer) });
+  const preview = runtime.messages.at(-1);
+  assert.equal(preview.type, "patch-preview", preview.message);
+  assert.deepEqual(preview.conflicts, []);
+  await runtime.send({ type: "apply-patch", token: preview.token });
+  assert.equal(runtime.messages.at(-1).type, "patched", runtime.messages.at(-1).message);
+  assert.equal(runtime.all.get("1:2").relativeTransform[0][2], -800000);
 });

@@ -64,6 +64,7 @@ async function fixture(
       <details id="compact-actions"><summary>更多</summary><div class="compact-actions-list"></div></details></div></header>
       <script type="module">
         import { mountReviewComments } from './review-comments-ui.mjs';
+        import './toolbar-menu.mjs';
         window.reviewUI = mountReviewComments({ getSnapshot: () => window.reviewSnapshot,
           call: window.reviewCall, focusTarget: async target => {
             window.reviewFocused.push(target); return !window.reviewMissingTarget;
@@ -74,10 +75,6 @@ async function fixture(
             if (window.reviewDelayHandoff) await new Promise(resolve => { window.reviewReleaseHandoff = resolve; });
             check(); window.reviewAgentSubmissions.push({thread, snapshot});
           } });
-        document.querySelector('.compact-actions-list').addEventListener('click', event => {
-          const id = event.target.closest('[data-toolbar-action]')?.dataset.toolbarAction;
-          if (id) document.getElementById(id)?.click();
-        });
         window.switchReviewProject = target => {
           window.reviewUI.contextChanged();
           window.reviewSnapshot.context.projectScope.projectId = target;
@@ -217,10 +214,8 @@ async function fixture(
     readErrors,
     records,
     async open() {
-      if (mobile) {
-        await page.locator("#compact-actions summary").click();
-        await page.locator('[data-toolbar-action="open-review-comments"]').click();
-      } else await page.locator("#open-review-comments").click();
+      await page.locator("#compact-actions summary").click();
+      await page.locator("#open-review-comments").click();
       await page.waitForFunction(
         () =>
           document.querySelector("#review-comments-dialog").getAttribute("aria-busy") === "false",
