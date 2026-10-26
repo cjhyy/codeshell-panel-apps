@@ -1,7 +1,8 @@
 # Release ZIP/tag 本地只读核对：2026-10-26
 
-当前状态（2026-10-27）：来源已获原 CC 二轮 PASS 52/0，现为组合候选，待原 CC
-`3e34f601-e67b-4de4-a43f-eba9cf0283f3` 最终组合验收；未合 main、未推送、未发布。
+当前状态（2026-10-27）：原 CC `3e34f601-e67b-4de4-a43f-eba9cf0283f3` 最终独立
+组合验收 PASS，完整 check 52/0/0、三 ZIP equal，无 Critical / Important。
+受审候选已快进合入本地 main；源码未变，未推送、未发布或执行原生验收。
 以下基线与独立实施记录保留为来源历史。
 基线 `84348855be8ae4e5a31936b3c2b0d1d21410bd64`，分支
 `codex/panel-shared/verify-release-zip-20261026`；全部未提交。未选择六包新版本，
@@ -198,5 +199,20 @@ HOME/XDG/TMP、清凭据、npm offline，串行执行 `npm run check -- --suite 
 本轮全部日志、精确 argv、UTC 与依赖克隆回执在本目标 ignored
 `artifacts/release-zip-integration-20261027/`；check 日志为
 `check-release-zip.log`，三个只读 JSON 回执为 `<panel-id>-verification.log`。
-本轮仅任务提交供最终 CC review，不选择版本、不运行远程验收或正式安装、不发版。
-来源 worktree 完整未提交保留，等待主代理 resume 后再决定已授权的最终合并步骤。
+候选冻结阶段仅提交供最终 CC review，不选择版本、不运行远程验收或正式安装、不发版。
+该阶段的来源保护与等待 resume 状态保留为历史；当前交付见下节。
+
+## 最终 CC PASS 与本地合并交付
+
+2026-10-27，主代理转交原 CC 最终独立组合验收 PASS：本仓完整
+`npm run check -- --suite release-zip` 为52/0/0，三真实 ZIP equal，无 Critical / Important。
+刷新 origin 后仍为 `84348855be8ae4e5a31936b3c2b0d1d21410bd64`；合并前 root clean、main 为
+`d15a35bec1910c0a55be7b737a5343314635d4a2`，已实际执行
+`git merge --ff-only c6dbba4272a7e15de58c46a0624e774c17264aed` 并成功快进本地 main。
+基线包含5个其他本地提交，全部保留，因此未 push 任何分支。
+
+本节仅在任务分支提交后再快进 main；最终 main/文档提交 SHA 见外部交付报告。
+与受审候选相比只改本文，工具、测试、suite、历史 evidence JSON、apps/panels/templates
+均不变，不重复 check，不重建生成包。旧 evidence 的 `integration20261027` 保留为受审
+冻结回执。集成 worktree 待主代理退出后处理；dirty 来源 worktree、三个真实 ZIP 与
+原始日志/核对回执继续完整保留，未 checkpoint 或清理，未发版或做正式安装验收。
