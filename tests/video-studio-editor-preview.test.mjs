@@ -329,6 +329,54 @@ test("preview seek follows sequence frame ticks and evaluates the same animated 
   assert.equal(result.time, 88000);
 });
 
+test("a picture still being prepared pauses the clock and playback continues from that frame", async (t) => {
+  const page = await pageFixture(t);
+  await page.evaluate(async () => {
+    await preview.dispose();
+    const seq = doc.sequences[0];
+    doc.assets = [{ id: "image", name: "准备中的图片", kind: "image", duration: 0, width: 128, height: 64 }];
+    seq.clips[0].duration = 48000;
+    seq.clips[0].transform = { ...seq.clips[0].transform, x: 0 };
+    seq.clips.push({
+      id: "picture", label: "图片", kind: "media", assetId: "image", trackId: "video",
+      start: 48000, duration: 48000,
+      timeMap: { points: [{ time: 0, source: 0 }, { time: 48000, source: 0 }] },
+      audio: api.defaultAudioMix(), transform: api.defaultTransform(),
+      color: api.defaultColorAdjustment(), blendMode: "normal",
+    });
+    globalThis.requests = [];
+    globalThis.buffering = [];
+    globalThis.preview = new api.EditorPreview(document.querySelector("canvas"), {
+      resolveAsset: (_id, signal) => new Promise((resolve) => requests.push({ resolve, signal })),
+      onFrame: (time) => frames.push(time),
+      onPlaybackChange: (playing) => states.push(playing),
+      onBuffering: (value, reason) => buffering.push([value, reason ?? null]),
+      onError: (error) => errors.push(String(error)),
+    });
+    preview.setDocument(doc);
+    await preview.play();
+  });
+  await page.waitForFunction(() => requests.length === 1 && buffering.length === 1);
+  const held = await page.evaluate(() => preview.time);
+  await page.waitForTimeout(400);
+  assert.equal(await page.evaluate(() => preview.time), held);
+  assert.deepEqual(await page.evaluate(() => buffering), [[true, "video"]]);
+  await page.evaluate(() => {
+    globalThis.released = frames.length;
+    requests[0].resolve(
+      "data:image/svg+xml," +
+        encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="128" height="64"><rect width="128" height="64" fill="blue"/></svg>'),
+    );
+  });
+  await page.waitForFunction(() => !preview.playing && preview.time === 96000);
+  const result = await page.evaluate(() => ({ buffering, errors, after: frames.slice(released) }));
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.buffering, [[true, "video"], [false, null]]);
+  // The clock resumes where the picture was missing instead of skipping the waiting time.
+  assert(result.after.filter((time) => time > 48000 && time < 96000).length >= 3, String(result.after));
+  await page.evaluate(() => preview.dispose());
+});
+
 test("master-clock playback reaches its final frame, replays, and pauses without hidden timers", async (t) => {
   const page = await pageFixture(t);
   await page.evaluate(() => preview.play());

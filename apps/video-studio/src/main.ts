@@ -130,7 +130,7 @@ import {
 import { loadEditorPreviewAudio } from "./editor/resource-audio";
 import { EditorExportJobs } from "./editor/jobs-ui";
 import { EditorImportUI } from "./editor/import-ui";
-import { EditorSourcePreviews } from "./editor/source-previews";
+import { EditorSourcePreviews, type SourcePreviewPriority } from "./editor/source-previews";
 import { EditorPortableUI } from "./editor/portable-ui";
 import { EditorSyncUI } from "./editor/sync-ui";
 import { createCaptionController, type CaptionController } from "./editor/caption-controller";
@@ -6067,7 +6067,11 @@ function mountEditorAgentTools(): void {
     sdk.dispose();
   };
 }
-async function resolveEditorAsset(assetId: string, signal: AbortSignal) {
+async function resolveEditorAsset(
+  assetId: string,
+  signal: AbortSignal,
+  priority: SourcePreviewPriority = "background",
+) {
   const source = editorSession!.read().assets.find((asset) => asset.id === assetId);
   const proxy = editorProxyResources.get(assetId);
   if (source && proxy?.sourceKey === editorSourceKey(source))
@@ -6080,7 +6084,7 @@ async function resolveEditorAsset(assetId: string, signal: AbortSignal) {
     editorSourcePreviews
   ) {
     const identity = editorSession!.getState().identity;
-    const prepared = await editorSourcePreviews.prepare(source, signal);
+    const prepared = await editorSourcePreviews.prepare(source, signal, priority);
     if (signal.aborted) throw new DOMException("取消预览", "AbortError");
     const currentIdentity = editorSession!.getState().identity;
     const current = editorSession!.read().assets.find((asset) => asset.id === source.id);
@@ -6145,7 +6149,8 @@ function mountEditorWorkspace(): void {
     showComposition: showEditorWorkspace,
     session: editorSession,
     assertEditable: assertEditorEditable,
-    resolveAsset: resolveEditorAsset,
+    // The player waits on the frame it is about to show; timeline strips queue behind it.
+    resolveAsset: (assetId, signal) => resolveEditorAsset(assetId, signal, "playback"),
     alignMulticamSources: editorTasks
       ? (assetIds, referenceAssetId, options) =>
           editorTasks!.alignMulticamSources(
@@ -6279,7 +6284,7 @@ function mountEditorWorkspace(): void {
         for (const asset of videoPlan.upcoming) {
           if (!asset.resourceId ||
               editorProxyResources.get(asset.id)?.sourceKey === editorSourceKey(asset)) continue;
-          void editorSourcePreviews.prepare(asset, signal).then((prepared) => {
+          void editorSourcePreviews.prepare(asset, signal, "playback").then((prepared) => {
             if (!current()) return;
             const latest = editorSession!.read().assets.find((item) => item.id === asset.id);
             if (!latest || editorSourceKey(latest) !== editorSourceKey(asset) ||

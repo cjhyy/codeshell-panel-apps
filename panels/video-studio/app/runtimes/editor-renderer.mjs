@@ -2233,6 +2233,7 @@
   }
 
   // src/editor/media-pool.ts
+  var PREVIEW_PREPARATION_TIMEOUT_MS = 6 * 60 * 6e4;
   var MediaPoolError = class extends Error {
     constructor(code, message, options) {
       super(message, options);
@@ -2463,10 +2464,17 @@
       if (typeof options.resolveAsset !== "function") throw new Error("必须提供素材资源解析器");
       this.maxInstances = boundedInteger(options.maxInstances ?? 32, 1, 256, "同时解码实例上限");
       this.timeoutMs = boundedInteger(options.timeoutMs ?? 15e3, 1, 12e4, "媒体等待时限");
+      this.resolveTimeoutMs = boundedInteger(
+        options.resolveTimeoutMs ?? this.timeoutMs,
+        1,
+        24 * 60 * 6e4,
+        "素材准备时限"
+      );
     }
     options;
     maxInstances;
     timeoutMs;
+    resolveTimeoutMs;
     instances = /* @__PURE__ */ new Map();
     resources = /* @__PURE__ */ new Map();
     urlLifetimes = /* @__PURE__ */ new Map();
@@ -2546,7 +2554,7 @@
       return waitFor(
         promise,
         request.controller.signal,
-        this.timeoutMs,
+        this.resolveTimeoutMs,
         `素材资源解析超时：${assetId}`
       );
     }

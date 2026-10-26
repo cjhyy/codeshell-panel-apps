@@ -13,10 +13,13 @@ interface SourcePreviewTasks {
     options: EditorStageOptions & { sourceDuration: number },
   ): Promise<SourceVideoPreview>;
 }
+/** The player waits on a visible frame; timeline strips only decorate the view. */
+export type SourcePreviewPriority = "playback" | "background";
 interface Work {
   controller: AbortController;
   consumers: number;
   promise: Promise<SourceVideoPreview>;
+  priority: SourcePreviewPriority;
 }
 const cancelled = () => new DOMException("取消素材预览准备", "AbortError");
 /** The player and visible timeline strips share source proxies. One leaving consumer must
@@ -24,11 +27,11 @@ const cancelled = () => new DOMException("取消素材预览准备", "AbortError
 export class EditorSourcePreviews {
   private readonly pending = new Map<string, Work>();
   private readonly cache = new Map<string, SourceVideoPreview>();
-  private readonly queue: Array<() => void> = [];
+  private readonly queue: Array<{ start: () => void; owner: Work }> = [];
   private running = 0;
   private disposed = false;
   constructor(private readonly tasks: SourcePreviewTasks) {}
-  private async slot<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  private async slot<T>(work: () => Promise<T>, signal: AbortSignal, owner: Work): Promise<T> {
     await new Promise<void>((resolve, reject) => {
       const start = () => {
         cleanup();
@@ -41,7 +44,7 @@ export class EditorSourcePreviews {
       };
       const abort = () => {
         cleanup();
-        const index = this.queue.indexOf(start);
+        const index = this.queue.findIndex((item) => item.start === start);
         if (index >= 0) this.queue.splice(index, 1);
         reject(cancelled());
       };
@@ -49,16 +52,22 @@ export class EditorSourcePreviews {
       signal.addEventListener("abort", abort, { once: true });
       if (signal.aborted || this.disposed) abort();
       else if (this.running < 2) start();
-      else this.queue.push(start);
+      else this.queue.push({ start, owner });
     });
     try {
       return await work();
     } finally {
       this.running--;
-      this.queue.shift()?.();
+      // Playback requests leave the queue first, in request order; strips keep theirs.
+      const next = Math.max(0, this.queue.findIndex((item) => item.owner.priority === "playback"));
+      this.queue.splice(next, 1)[0]?.start();
     }
   }
-  prepare(asset: EditorAsset, signal: AbortSignal): Promise<SourceVideoPreview> {
+  prepare(
+    asset: EditorAsset,
+    signal: AbortSignal,
+    priority: SourcePreviewPriority = "background",
+  ): Promise<SourceVideoPreview> {
     if (this.disposed || signal.aborted) return Promise.reject(cancelled());
     if (asset.kind !== "video" || !asset.resourceId)
       return Promise.reject(new Error("视频源尚未连接"));
@@ -74,11 +83,12 @@ export class EditorSourcePreviews {
     let entry = this.pending.get(key);
     if (!entry || entry.controller.signal.aborted) {
       const controller = new AbortController();
-      const created: Work = { controller, consumers: 0, promise: undefined! };
+      const created: Work = { controller, consumers: 0, promise: undefined!, priority };
       created.promise = this.slot(
         () =>
           this.tasks.prepareSourceVideo(resourceId, { sourceDuration, signal: controller.signal }),
         controller.signal,
+        created,
       )
         .then((result) => {
           if (!controller.signal.aborted && !this.disposed) {
@@ -94,6 +104,19 @@ export class EditorSourcePreviews {
       entry = created;
     }
     const current = entry;
+    if (priority === "playback" && current.priority !== "playback") {
+      // A strip already queued this source; the player now waits on it too.
+      current.priority = "playback";
+      const index = this.queue.findIndex((item) => item.owner === current);
+      if (index >= 0) {
+        const [item] = this.queue.splice(index, 1);
+        let after = 0;
+        this.queue.forEach((queued, i) => {
+          if (queued.owner.priority === "playback") after = i + 1;
+        });
+        this.queue.splice(after, 0, item!);
+      }
+    }
     current.consumers++;
     return new Promise((resolve, reject) => {
       let finished = false;

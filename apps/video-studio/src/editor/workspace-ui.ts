@@ -435,12 +435,14 @@ export class EditorWorkspace {
         this.timeline.setPlaybackActive(playing);
         this.updatePlayButton(playing);
       },
-      onBuffering: (buffering) => {
+      onBuffering: (buffering, reason) => {
         if (this.disposed || this.preparing) return;
         const output = this.get("[data-ew-preview-error]");
         if (buffering) {
           output.dataset.audioBuffering = "true";
-          output.textContent = "正在缓冲声音，画面会在声音就绪后继续";
+          output.textContent = reason === "video"
+            ? "正在准备画面，声音和画面会在画面就绪后一起继续"
+            : "正在缓冲声音，画面会在声音就绪后继续";
           output.hidden = false;
         } else if (output.dataset.audioBuffering) {
           delete output.dataset.audioBuffering;

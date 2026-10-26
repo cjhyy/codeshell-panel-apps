@@ -14,7 +14,14 @@ export interface EditorMediaPoolOptions {
   ): string | ResolvedMediaResource | Promise<string | ResolvedMediaResource>;
   maxInstances?: number;
   timeoutMs?: number;
+  /** Resolution may prepare a native preview with its own progress and cancellation.
+   * Defaults to `timeoutMs`; decoding the resolved source keeps the short deadline. */
+  resolveTimeoutMs?: number;
 }
+/** Interactive surfaces resolve through native preview preparation, which reports its own
+ * progress and is cancelled with the request. A short deadline would cancel long first
+ * preparations every time and they would never finish. */
+export const PREVIEW_PREPARATION_TIMEOUT_MS = 6 * 60 * 60_000;
 export class MediaPoolError extends Error {
   constructor(
     readonly code:
@@ -344,6 +351,7 @@ export function seekVideo(
 export class EditorMediaPool {
   private readonly maxInstances: number;
   private readonly timeoutMs: number;
+  private readonly resolveTimeoutMs: number;
   private instances = new Map<string, Instance>();
   private resources = new Map<string, Resource>();
   private urlLifetimes = new Map<string, { references: number; owned: boolean }>();
@@ -355,6 +363,9 @@ export class EditorMediaPool {
     if (typeof options.resolveAsset !== "function") throw new Error("必须提供素材资源解析器");
     this.maxInstances = boundedInteger(options.maxInstances ?? 32, 1, 256, "同时解码实例上限");
     this.timeoutMs = boundedInteger(options.timeoutMs ?? 15_000, 1, 120_000, "媒体等待时限");
+    this.resolveTimeoutMs = boundedInteger(
+      options.resolveTimeoutMs ?? this.timeoutMs, 1, 24 * 60 * 60_000, "素材准备时限",
+    );
   }
 
   private releaseInstance(instanceId: string): void {
@@ -449,7 +460,7 @@ export class EditorMediaPool {
     return waitFor(
       promise,
       request.controller.signal,
-      this.timeoutMs,
+      this.resolveTimeoutMs,
       `素材资源解析超时：${assetId}`,
     );
   }

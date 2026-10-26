@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "video-studio",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "title": {
     "default": "视频工作台",
     "en": "Video Studio",
@@ -6740,7 +6740,7 @@
   "nativeEntries": {
     "video-studio": {
       "entry": "app/tools/video-studio.mjs",
-      "sha256": "45778173b0f302a42b8282330d777e8d12da13865dc1c158ca99f62b73e3e0f6"
+      "sha256": "831ea83b54a2cfd88ae1e5f5023a2f93fc2be08438b8c5777f0514d459c8894f"
     },
     "folder-scan": {
       "entry": "app/tools/folder-scan.mjs",
@@ -6756,7 +6756,7 @@
     },
     "editor-runtime": {
       "entry": "app/tools/editor-runtime.mjs",
-      "sha256": "8cb630f3046b00f1f85d7cb00eb2af3159aea0d761be0a9945fc9065c7869217"
+      "sha256": "7dc524fa7e1595b6fb89814a9b3710adbd526e961ef1e16e315608903fefc3f5"
     },
     "editor-sync": {
       "entry": "app/tools/editor-sync.mjs",

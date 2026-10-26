@@ -1,6 +1,10 @@
 import { FrameCompositor, type PreviewResolution } from "./compositor";
 import { prepareEvaluator } from "./evaluate";
-import { EditorMediaPool, type EditorMediaPoolOptions } from "./media-pool";
+import {
+  EditorMediaPool,
+  PREVIEW_PREPARATION_TIMEOUT_MS,
+  type EditorMediaPoolOptions,
+} from "./media-pool";
 import { frameToTicks, ticksToFrame, ticksToSeconds, secondsToTicks, type Tick } from "./time";
 import type { EditorDocument, EditorSequence } from "./types";
 import { sequenceDuration, validateEditorDocument } from "./validation";
@@ -28,7 +32,8 @@ export type PreviewAudio = {
 export interface EditorPreviewOptions extends EditorMediaPoolOptions {
   onFrame?(time: Tick): void;
   onPlaybackChange?(playing: boolean): void;
-  onBuffering?(buffering: boolean): void;
+  /** `video` means a picture source is still being prepared; both clocks hold until it is ready. */
+  onBuffering?(buffering: boolean, reason?: "audio" | "video"): void;
   onError?(error: unknown): void;
   /** Non-blocking, heuristic local-font warnings; an empty list clears the previous warning. */
   onWarning?(warnings: EditorFontWarning[]): void;
@@ -68,7 +73,7 @@ export class EditorPreview {
   private audioSource?: AudioBufferSourceNode;
   private audioStream?: StreamingPreviewAudio;
   private auditionGain?: GainNode;
-  private buffering = false;
+  private buffering?: "audio" | "video";
   private request?: AbortController;
   private generation = 0;
   private disposed = false;
@@ -89,7 +94,10 @@ export class EditorPreview {
     private readonly canvas: HTMLCanvasElement,
     private readonly options: EditorPreviewOptions,
   ) {
-    this.pool = new EditorMediaPool(options);
+    this.pool = new EditorMediaPool({
+      ...options,
+      resolveTimeoutMs: options.resolveTimeoutMs ?? PREVIEW_PREPARATION_TIMEOUT_MS,
+    });
     document.fonts?.addEventListener("loadingdone", this.fontsLoaded);
   }
   private checkFonts(): void {
@@ -105,6 +113,11 @@ export class EditorPreview {
   }
   get time(): Tick {
     return this.playhead;
+  }
+  private setBuffering(reason?: "audio" | "video"): void {
+    if (reason === this.buffering) return;
+    this.buffering = reason;
+    this.options.onBuffering?.(reason !== undefined, reason);
   }
   private active(): void {
     if (this.disposed) throw new Error("预览已关闭");
@@ -278,7 +291,7 @@ export class EditorPreview {
       if (request.signal.aborted || generation !== this.generation) return;
       const clock = audio ? () => this.audioContext!.currentTime : () => performance.now() / 1000;
       // The audio and image clock share this origin; decoder currentTime is never a clock.
-      const origin = clock();
+      let origin = clock();
       if (audio?.buffer && !correction) {
         this.audioSource = this.audioContext!.createBufferSource();
         this.audioSource.buffer = audio.buffer;
@@ -326,11 +339,7 @@ export class EditorPreview {
             ? duration
             : start + (stream.sample - startSample) * 5
           : start + secondsToTicks(Math.max(0, clock() - origin));
-        const buffering = stream?.buffering ?? false;
-        if (buffering !== this.buffering) {
-          this.buffering = buffering;
-          this.options.onBuffering?.(buffering);
-        }
+        this.setBuffering(stream?.buffering ? "audio" : undefined);
         if (elapsed >= duration) {
           this.frameWork = (async () => {
             await this.draw(this.snap(duration - 1, sequence), request.signal, generation);
@@ -348,7 +357,27 @@ export class EditorPreview {
         const target = this.snap(elapsed, sequence);
         const work = async () => {
           if (target !== last) {
-            await this.draw(target, request.signal, generation);
+            // A source still being prepared holds both clocks; sound must not run ahead of
+            // the picture, and the waiting time must not be skipped when it arrives.
+            const drawStarted = clock();
+            let stalled = false;
+            const stall = setTimeout(() => {
+              if (request.signal.aborted || generation !== this.generation) return;
+              stalled = true;
+              // Sound already heard cannot be taken back; it stays the master clock.
+              if (audio) void this.audioContext!.suspend();
+              this.setBuffering("video");
+            }, 400);
+            try {
+              await this.draw(target, request.signal, generation);
+            } finally {
+              clearTimeout(stall);
+              if (stalled && !request.signal.aborted && generation === this.generation) {
+                if (audio) await this.audioContext!.resume();
+                else origin += clock() - drawStarted;
+                this.setBuffering(undefined);
+              }
+            }
             last = target;
           }
           if (!request.signal.aborted && generation === this.generation)
@@ -382,10 +411,7 @@ export class EditorPreview {
     this.audioStream = undefined;
     this.auditionGain?.disconnect();
     this.auditionGain = undefined;
-    if (this.buffering) {
-      this.buffering = false;
-      this.options.onBuffering?.(false);
-    }
+    this.setBuffering(undefined);
     const wasPlaying = this.isPlaying;
     this.isPlaying = false;
     if (wasPlaying) this.options.onPlaybackChange?.(false);

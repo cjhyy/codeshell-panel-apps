@@ -111,6 +111,28 @@ test("native preparation concurrency is bounded and a cancelled queued source ne
   await Promise.all(requests.filter((_, i) => i !== 2));
   cache.dispose();
 });
+test("player preparation overtakes queued timeline strips and promotes a shared strip request", async () => {
+  const { cache, calls } = fixture(),
+    signal = () => new AbortController().signal;
+  const strips = [0, 1, 2, 3].map((i) => cache.prepare(asset(`strip-${i}`), signal()));
+  await turn();
+  assert.equal(calls.length, 2);
+  const player = cache.prepare(asset("player"), signal(), "playback");
+  const promoted = cache.prepare(asset("strip-3"), signal(), "playback");
+  calls[0]!.finish();
+  await turn();
+  assert.equal(calls[2]!.resourceId, "resource-player");
+  calls[1]!.finish();
+  await turn();
+  assert.equal(calls[3]!.resourceId, "resource-strip-3");
+  calls[2]!.finish();
+  calls[3]!.finish();
+  await turn();
+  assert.equal(calls[4]!.resourceId, "resource-strip-2");
+  calls[4]!.finish();
+  await Promise.all([...strips, player, promoted]);
+  cache.dispose();
+});
 test("duration or resource changes require new preparation and dispose rejects queued consumers", async () => {
   const { cache, calls } = fixture();
   const first = cache.prepare(asset(), new AbortController().signal);
