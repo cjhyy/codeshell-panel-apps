@@ -137,13 +137,13 @@ export function createBrowserRenderer({ container, document = container?.ownerDo
           error.code="BROWSER_INSTANCE_SIZING_UNSUPPORTED";throw error;
         }
       };
-      const css = styles(designFrontendCss(withoutFontRules, {resourceDataUrls:urls}));
+      const css = styles(designFrontendCss(withoutFontRules, {resourceDataUrls:urls,preserveWorldOrigin:true}));
       host = document.createElement("div");
       preparation.host=host;
       host.style.cssText = `all:initial;position:fixed;left:-100000px;top:0;width:${design.canvas.width}px;opacity:0;pointer-events:none;contain:layout style`;
       const staging = host.attachShadow({mode:"closed"}), style = document.createElement("style"), candidate = document.createElement("div");
       style.textContent = css; candidate.className = "browser-world"; candidate.style.width = `${design.canvas.width}px`; candidate.style.height = `${design.canvas.height}px`;
-      candidate.innerHTML = renderDesignFrontendPage(design, {resourceDataUrls:urls,runtimeFontFamily,onRenderNode,renderBudget:{maxNodes:20000,maxBytes:16*1024*1024}});
+      candidate.innerHTML = renderDesignFrontendPage(design, {resourceDataUrls:urls,runtimeFontFamily,onRenderNode,preserveWorldOrigin:true,renderBudget:{maxNodes:20000,maxBytes:16*1024*1024}});
       staging.append(style,candidate); document.body.append(host);
       for (const node of nodes) if (node.type === "image") assert(assets.has(node.imageRef), `Missing owned image bytes for ${node.id}`);
       for (const element of candidate.querySelectorAll('[data-codeshell-node-type="image"]'))

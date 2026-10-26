@@ -31,6 +31,16 @@ import {
   DESIGN_SIDECAR_PART_BYTES,
 } from "../../../apps/design-studio/app/design-sidecar.mjs";
 
+async function openToolbarMenu(page, method = "click") {
+  if (await page.locator("#compact-actions").getAttribute("open") === null) {
+    await page.locator("#compact-actions summary")[method]();
+  }
+}
+async function toolbarAction(page, selector, method = "click") {
+  await openToolbarMenu(page, method);
+  await page.locator(selector)[method]();
+}
+
 const root = resolve(fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
 const manifest = JSON.parse(
   await readFile(
@@ -301,9 +311,21 @@ async function fixture(t, { image = false } = {}) {
     { permissions: manifest.permissions },
   );
   async function loaded() {
-    await page.waitForFunction(
-      () => !document.querySelector(".workspace").inert && Boolean(window.tools.exchange_figma),
-    );
+    try {
+      await page.waitForFunction(
+        () => !document.querySelector(".workspace").inert && Boolean(window.tools.exchange_figma),
+      );
+    } catch (error) {
+      const visibleState = await page.evaluate(() => ({
+        inert: document.querySelector(".workspace")?.inert,
+        repository: document.querySelector("#repo-link-state")?.textContent,
+        save: document.querySelector("#save-state")?.textContent,
+        toast: document.querySelector("#toast")?.textContent,
+        toolNames: Object.keys(window.tools ?? {}),
+      }));
+      error.message += `\nInitialization: ${JSON.stringify({ visibleState, errors, calls: calls.slice(-10) })}`;
+      throw error;
+    }
     return page.evaluate(() => window.tools.get_design_metadata({}));
   }
   await page.goto("https://panel.test/index.html");
@@ -527,6 +549,10 @@ for (const action of ["edit", "new-document"])
         loadedFigmaBinding: null,
         warnedExternalVersion: null,
         designPublicationSequence: 0,
+        unconfirmedSavePath: false,
+        importPublicationDepth: 0,
+        dirty: true,
+        documentAutosave: { cancel() {}, schedule() {} },
         pristineBlankSnapshot: null,
         clone: structuredClone,
         normalizeDocument: (value) => value,
@@ -623,7 +649,7 @@ test("local HTML folder becomes editable v3, survives save/reopen and restores i
     "body{margin:0}#card{width:500px;height:300px;padding:20px;background:#ffffff;display:flex;flex-direction:column;gap:16px}h1{font:24px/1.2 Arial;margin:0;color:#123456}img{width:80px;height:60px;object-fit:contain}",
   );
   await writeFile(resolve(directory, "pixel.png"), Buffer.from(pixel, "base64"));
-  await f.page.locator("#open-html-import").click();
+  await toolbarAction(f.page, "#open-html-import");
   await f.page.locator("#html-import-files").setInputFiles(directory);
   await f.page.locator("#html-import-width").fill("600");
   await f.page.locator("#html-import-height").fill("400");
@@ -646,7 +672,7 @@ test("local HTML folder becomes editable v3, survives save/reopen and restores i
   assert.ok(metadata.layers.some((node) => node.id === heading.id));
   assert.match(f.files.get(`A:${designPath}`), /Edited HTML product/);
   await assertRenderedImage(f);
-  await f.page.locator("#portable-backup-open").click();
+  await toolbarAction(f.page, "#portable-backup-open");
   const pending = f.page.waitForEvent("download");
   await f.page.locator("#portable-backup-export").click();
   const text = await readFile(await (await pending).path(), "utf8"),
@@ -840,7 +866,7 @@ test("persistent thread handoff saves current edits before submitting the stable
     ],
   });
   const start = f.calls.length;
-  await f.page.locator("#open-review-comments").click();
+  await toolbarAction(f.page, "#open-review-comments");
   await f.page.locator("[data-agent-thread]").click();
   await f.page.waitForFunction(() =>
     document.querySelector("#review-comments-status").textContent.includes("已将讨论交给"),
@@ -864,7 +890,7 @@ test("persistent thread handoff saves current edits before submitting the stable
       { op: "update_node", node_id: "heading", changes: { text: "A late handoff edit" } },
     ],
   });
-  await f.page.locator("#open-review-comments").click();
+  await toolbarAction(f.page, "#open-review-comments");
   const pause = f.pause("workspace.writeText");
   await f.page.locator("[data-agent-thread]").click();
   await pause.entered;
@@ -901,7 +927,7 @@ test("image source bindings survive reopen and complete backup keeps original so
     text: "Keep photo and source",
     expected_state_revision: metadata.stateRevision,
   });
-  await f.page.locator("#portable-backup-open").click();
+  await toolbarAction(f.page, "#portable-backup-open");
   const pending = f.page.waitForEvent("download");
   await f.page.locator("#portable-backup-export").click();
   const text = await readFile(await (await pending).path(), "utf8"),
@@ -1078,12 +1104,12 @@ test("saving an undone import records no-source provenance and remains editable 
   await f.import();
   await f.page.keyboard.press("Control+z");
   assert.equal((await f.metadata()).name, "A original");
-  await f.page.locator("#save").click();
+  await toolbarAction(f.page, "#save");
   await f.page.waitForFunction(
     () => document.querySelector("#save-state").textContent === "已保存",
   );
   await f.reload();
-  await f.page.locator("#save").click();
+  await toolbarAction(f.page, "#save");
   await f.page.waitForFunction(
     () => document.querySelector("#save-state").textContent === "已保存",
   );
@@ -1152,7 +1178,7 @@ test("an unsaved imported source survives recovery, reopen and its first later s
       (entry) => entry.sourceId === "1:2",
     ),
   );
-  await f.page.locator("#save").click();
+  await toolbarAction(f.page, "#save");
   await f.page.waitForFunction(
     () => document.querySelector("#save-state").textContent === "已保存",
   );
@@ -1313,7 +1339,7 @@ test("Agent imports multipart Figma sources and exports verified multipart trans
       .filter((call) => call.method === "workspace.writeText")
       .every((call) => Buffer.byteLength(call.content) <= 384 * 1024),
   );
-  await f.page.locator("#open-figma-workflow").click();
+  await toolbarAction(f.page, "#open-figma-workflow");
   const pending = f.page.waitForEvent("download");
   await f.page.locator("#figma-transfer-download").click();
   const download = JSON.parse(await readFile(await (await pending).path(), "utf8"));
@@ -1343,7 +1369,7 @@ test("large SVG export downloads complete fonts and images without exceeding Hos
   const f = await fixture(t, { image: true });
   await f.import();
   const downloadEvent = f.page.waitForEvent("download");
-  await f.page.locator("#export-svg").click();
+  await toolbarAction(f.page, "#export-svg");
   const download = await downloadEvent;
   assert.equal(download.suggestedFilename(), "exchange.svg");
   const svg = await readFile(await download.path(), "utf8");
@@ -1407,7 +1433,7 @@ test("small SVG export keeps the existing repository compare-and-set behavior", 
   f.files.set(`A:${path}`, previous);
   let downloads = 0;
   f.page.on("download", () => (downloads += 1));
-  await f.page.locator("#export-svg").click();
+  await toolbarAction(f.page, "#export-svg");
   await f.page.waitForFunction(() => !document.querySelector("#export-svg").disabled);
   const write = f.calls.find((call) => call.method === "workspace.writeText" && call.path === path);
   assert.ok(write);
@@ -1616,6 +1642,26 @@ test("audit UI and tools expose all grouped issues with filtered pagination", as
   }));
   f.files.set(`A:${inputPath}`, JSON.stringify(source));
   await f.import();
+  const importedMetadata = await f.metadata();
+  assert.equal(importedMetadata.canvas.mode, "infinite");
+  const infiniteAudit = await f.tool("validate_design", {
+    code: "layout.canvas-overflow",
+    limit: 50,
+  });
+  assert.equal(infiniteAudit.page.total, 0);
+
+  // Pagination still covers all 125 real overflow issues in an explicit legacy
+  // fixed document. Figma's infinite workspace no longer has a global boundary.
+  const boundedPath = "designs/audit-fixed-legacy.codesign.json";
+  const boundedDocument = JSON.parse(f.files.get(`A:${importedMetadata.path}`));
+  delete boundedDocument.canvas.mode;
+  f.files.set(`A:${boundedPath}`, JSON.stringify(boundedDocument));
+  await f.tool("save_design", {
+    action: "open",
+    path: boundedPath,
+    expected_state_revision: (await f.metadata()).stateRevision,
+  });
+  assert.equal((await f.metadata()).canvas.mode, undefined);
   const audit = await f.tool("validate_design", { code: "layout.canvas-overflow", limit: 50 });
   assert.equal(audit.page.total, 125);
   assert.equal(audit.issues.length, 50);
@@ -1624,7 +1670,7 @@ test("audit UI and tools expose all grouped issues with filtered pagination", as
     audit.issueGroups.find((group) => group.code === "layout.canvas-overflow").count,
     125,
   );
-  await f.page.locator("#run-audit").click();
+  await toolbarAction(f.page, "#run-audit");
   await f.page.getByLabel("问题类型", { exact: true }).selectOption("layout.canvas-overflow");
   assert.equal(await f.page.locator("#audit-results .audit-issue").count(), 50);
   await f.page.getByRole("button", { name: "下一页问题" }).click();
@@ -1640,7 +1686,7 @@ test("audit UI and tools expose all grouped issues with filtered pagination", as
 test("Save As UI creates a new file through the same guarded file workflow", async (t) => {
   const f = await fixture(t),
     original = f.files.get(`A:${designPath}`);
-  await f.page.locator("#save-as").click();
+  await toolbarAction(f.page, "#save-as");
   await f.page.locator("#save-as-path").fill("designs/from-ui.codesign.json");
   await f.page.locator("#save-as-confirm").click();
   await f.page.waitForFunction(() => !document.querySelector("#save-as-dialog").open);
@@ -1815,7 +1861,7 @@ test("the quality repair button preserves locked descendants and one undo restor
   await f.reload();
   const before = await f.metadata();
   assert.equal((await f.tool("validate_design")).issueCount, 2);
-  await f.page.locator("#run-audit").click();
+  await toolbarAction(f.page, "#run-audit");
   await f.page.locator("#repair-quality").click();
   await f.page.waitForFunction(() => !document.body.inert);
   const free = await f.tool("get_design_context", { node_id: "free-heading" });

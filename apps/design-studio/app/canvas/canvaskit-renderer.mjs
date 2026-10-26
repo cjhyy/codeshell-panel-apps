@@ -1,7 +1,7 @@
 import { validateShadowStack, shadowMaskGeometry, roundedShadowPath, visibleShadowLayers, shadowStackOutsets } from "../shadow-stack.mjs";
 import { effectiveCornerRadii } from "../corner-radii.mjs";
 /* Retained CanvasKit renderer. The document and editing state remain owned by Design Studio. */
-import { effectiveDesignNodeOpacity, isDesignNodeVisible } from "../document.mjs";
+import { designPageBounds, effectiveDesignNodeOpacity, isDesignNodeVisible } from "../document.mjs";
 import { designFillPaints, gradientMatrix } from "../paint.mjs";
 import { hasDesignStroke, designStrokePaths, designStrokeOutset } from "../stroke.mjs";
 import { transformedNodeBoundsInTree } from "../geometry.mjs";
@@ -453,16 +453,24 @@ export async function createRenderer({
         seenUnsupported.clear();
         const recorder = new CK.PictureRecorder();
         try {
-          // A generous cull rect permits out-of-artboard nodes/shadows without allocating a giant bitmap.
+          // Recording uses world bounds rather than an allocated world bitmap.
+          // Infinite pages may contain content well beyond the legacy ±100000 cull.
+          const pageBounds = design.canvas.mode === "infinite" ? designPageBounds(design) : null;
+          const recordingBounds = pageBounds
+            ? CK.LTRBRect(pageBounds.x - 64, pageBounds.y - 64,
+                pageBounds.x + pageBounds.width + 64, pageBounds.y + pageBounds.height + 64)
+            : CK.LTRBRect(-100000, -100000, 100000, 100000);
           // CanvasKit's computeBounds flag builds Skia's R-tree for viewport culling.
           const target = recorder.beginRecording(
-            CK.LTRBRect(-100000, -100000, 100000, 100000),
+            recordingBounds,
             true,
           );
-          const background = new CK.Paint();
-          background.setColor(canvasKitColor(CK, design.canvas.background));
-          target.drawRect(CK.XYWHRect(0, 0, design.canvas.width, design.canvas.height), background);
-          background.delete();
+          if (design.canvas.mode !== "infinite") {
+            const background = new CK.Paint();
+            background.setColor(canvasKitColor(CK, design.canvas.background));
+            target.drawRect(CK.XYWHRect(0, 0, design.canvas.width, design.canvas.height), background);
+            background.delete();
+          }
 
           const rawCounterKeys = [
             "nativeTextNodes",

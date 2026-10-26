@@ -1,8 +1,10 @@
 # Design Studio Panel App
 
-Design Studio **0.22.0** 提供 HTML → DesignNode → v3 导入、Figma JSON 导入、可编辑设计、带来源校验的增量导回、
+Design Studio **0.23.0** 提供 HTML → DesignNode → v3 导入、Figma JSON 导入、可编辑设计、带来源校验的增量导回、
 多页 HTML 原型和项目评审。原生设计仍使用 v3 `.codesign.json`；16 个声明式 Agent
 工具与可视编辑器共用同一份设计、来源和评审数据。本版沿用现有 Host 权限。
+
+## 文字区间与原生范围
 
 文字可选 `textRanges` v1 在同一个 Text 中保存颜色、装饰和链接区间，按完整
 `textSource ?? text` 的 UTF16 索引和精确内容签名绑定；不创建绝对定位的文字碎片。
@@ -33,6 +35,39 @@ Hug 内容编辑会重算尺寸。已知空来源按一行行高和1px宽度下�
 删除线、渐变/paint stack 和未支持的链接在页面、字体或文字写入之前拒绝。
 只读 SDK 范围观察器已具备完整 UTF16 边界、原始值和整包预算检查；目前尚未接入
 导出流程，不表示原生范围来源或往返已完成。
+## 0.23：无限工作区与多个画板
+
+新建稿默认使用无限工作区；按 `F` 在任意位置创建独立 Frame 画板，按空格拖动或使用
+滚轮平移，`⌘/Ctrl+滚轮` 缩放。点击缩放比例可适应全部内容，选中画板后可以连同子树
+一起移动。无限模式不再显示整个文档的宽高，右侧尺寸只用于选中的画板或图层。
+
+旧稿保留原来的固定画布语义。在未选中图层时点击 **改为无限画布**，即可启用；转换
+只增加 `canvas.mode: "infinite"`，保留所有坐标、层级、图层 ID 和 Figma 来源，支持撤销。
+画板仍有各自的背景、尺寸和裁切；画板中的文字、布局和溢出检查继续生效。
+
+无限工作区按可见内容和效果范围导出 SVG、HTML、离线原型及截图，包含负坐标与远处
+画板，不再按文档宽高裁掉内容。每页使用自己的范围；截图继续受像素与传输预算约束。
+工作区没有文档宽高边界，数值安全预算为位置 ±1,000,000、单画板尺寸最多 20,000；
+低缩放下创建、缩放或移动也保持可保存的合法几何。
+
+实现和稳定 case 见[无限画布回归记录](../../docs/acceptance/design-studio-infinite-canvas-20261023.md)。
+
+## 工作台、文件切换与自动保存
+
+顶栏显示当前文件名和保存状态，常驻操作为 **交付、AI、更多**。页面切换和管理位于
+左侧栏；立即保存、另存为、HTML/Figma 导入、导出、备份、讨论与原型集中在 **更多**。
+原来的快捷键继续可用：`⌘/Ctrl+O` 打开文件，`⌘/Ctrl+S` 立即保存。
+
+点击左上文件名可以搜索文件名或完整路径，最近打开的文件优先显示；最近记录按项目
+隔离。搜索框按下方向键可以进入文件列表，Enter 打开；失败后保留当前稿件和选择窗口。
+
+普通编辑停顿 800ms 后自动保存主 `.codesign.json` 文件；切换文件或新建设计前会先
+保存当前修改，包括保存过程中继续发生的编辑。保存失败会保留当前稿件并停止切换。
+恢复草稿继续单独保留，恢复草稿写入成功不会被显示成主文件保存成功。手动修改保存
+路径后，需要从 **更多 → 立即保存** 或快捷键明确确认；自动保存不会代为确认新路径。
+浏览器预览保存在当前浏览器，连接 CodeShell 的面板保存在当前项目。
+
+稳定 case、旧失败基线和验收范围见[工作台回归记录](../../docs/acceptance/design-studio-workspace-20261023.md)。
 
 ## 0.22：CanvasKit GPU 画布
 
@@ -319,7 +354,7 @@ Agent 编辑、HTML 导入、资源写入及回滚绑定发起时的项目。等
 并发、重启、项目隔离、撤销和条件删除；只创建并清理自己的临时项目，不启动服务。
 该检查需要支持版本存储接口的 Host，不以旧公开包或内存模拟代替实际验收。
 
-Design Studio 0.19 is an Agent-native CodeShell Desktop Panel App. One reviewed
+Design Studio 0.23.0 is an Agent-native CodeShell Desktop Panel App. One reviewed
 installation contributes both its sandboxed visual editor and a narrow Agent
 surface: sixteen declared design/delivery tools plus a repository-design Skill.
 

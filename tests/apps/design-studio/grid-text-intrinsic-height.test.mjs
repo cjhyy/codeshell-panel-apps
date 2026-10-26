@@ -1,3 +1,4 @@
+import { settleLoadedFont, recordFontPixelMismatch } from "./fixtures/loaded-font.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
@@ -534,11 +535,13 @@ test("real loaded-font Text wrapping, scoped edits, reopen and SVG/frontend rema
         await referencePage.locator(".a .copy").evaluate((node, copy) => {
           node.textContent = copy;
         }, copy);
-        await referencePage.evaluate(() => document.fonts.ready);
+        await Promise.all([settleLoadedFont(page), settleLoadedFont(referencePage)]);
+        const actualBytes = await page.screenshot(), expectedBytes = await referencePage.screenshot();
+        await recordFontPixelMismatch(page, referencePage, actualBytes, expectedBytes, `integer-grid-${name}-${width}-${copy.length}`);
         assert(
           PNG.sync
-            .read(await page.screenshot())
-            .data.equals(PNG.sync.read(await referencePage.screenshot()).data),
+            .read(actualBytes)
+            .data.equals(PNG.sync.read(expectedBytes).data),
           `${name}/${width}/edited frontend strict pixels`,
         );
       }

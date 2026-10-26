@@ -1,7 +1,7 @@
 import { shadowStackCss } from "./shadow-stack.mjs";
 import { textLineHeightCss } from "./text-line-height.mjs";
 import { mainAxisGap } from "./layout-spacing.mjs";
-import { repositoryDesignPage } from "./document.mjs";
+import { designPageBounds, repositoryDesignPage } from "./document.mjs";
 import {
   cssGridTrack,
   gridPlacements,
@@ -401,7 +401,29 @@ function transformDeclarations(node) {
   return transforms.length > 0 ? [["transform", transforms.join(" ")]] : [];
 }
 
-function nodeStyle(node, parent, canvas, parentOf, fontFamilyOverride) {
+function nodeStyle(sourceNode, parent, context) {
+  const { canvas, pageBounds, preserveWorldOrigin, gridParentOf: parentOf } = context;
+  const fontFamilyOverride = sourceNode.type === "text" && context.runtimeFontFamily
+    ? context.runtimeFontFamily(sourceNode)
+    : context.fontFamilyOverrides?.get(sourceNode.id);
+  // A root on the infinite workspace has no parent Frame to stretch against.
+  // Offset only this exported root; descendants keep their real Frame geometry.
+  const node =
+    !parent && canvas.mode === "infinite"
+      ? {
+          ...sourceNode,
+          x: sourceNode.x - (preserveWorldOrigin ? 0 : pageBounds.x),
+          y: sourceNode.y - (preserveWorldOrigin ? 0 : pageBounds.y),
+          layoutSizingHorizontal: "fixed",
+          layoutSizingVertical: "fixed",
+          constraintHorizontal: "start",
+          constraintVertical: "start",
+          constraintLeft: undefined,
+          constraintRight: undefined,
+          constraintTop: undefined,
+          constraintBottom: undefined,
+        }
+      : sourceNode;
   const parentUsesLayout =
     CONTAINER_TYPES.has(parent?.type) && ["horizontal", "vertical", "grid"].includes(parent.layout);
   const declarations = [
@@ -536,7 +558,7 @@ function renderNodeMarkup(node, parent, context) {
     `data-codeshell-source-id="${escapeHtml(node.id)}"`,
     `data-codeshell-node-type="${escapeHtml(node.type)}"`,
     `data-codeshell-name="${escapeHtml(node.name)}"`,
-    `style="${escapeHtml(nodeStyle(node, parent, context.canvas, context.gridParentOf, node.type === "text" && context.runtimeFontFamily ? context.runtimeFontFamily(node) : context.fontFamilyOverrides?.get(node.id)))}"`,
+    `style="${escapeHtml(nodeStyle(node, parent, context))}"`,
   ];
   if (node.notes) attributes.push(`title="${escapeHtml(node.notes)}"`);
   const link = context.idPrefix === "" ? context.prototypeLinks?.get(node.id) : null;
@@ -554,7 +576,7 @@ function renderNodeMarkup(node, parent, context) {
     if (source) {
       const imageAttributes = attributes.filter((attribute) => !attribute.startsWith("style="));
       imageAttributes.push(
-        `style="${escapeHtml(`${nodeStyle(node, parent, context.canvas, context.gridParentOf)};object-fit:${node.objectFit ?? "cover"}`)}"`,
+        `style="${escapeHtml(`${nodeStyle(node, parent, context)};object-fit:${node.objectFit ?? "cover"}`)}"`,
       );
       if (context.prototypeMode) {
         return `<div ${attributes.join(" ")}>${hotspot}<img class="cs-prototype-image" src="${escapeHtml(source)}" alt="${escapeHtml(node.name)}" style="width:100%;height:100%;object-fit:${escapeHtml(node.objectFit ?? "cover")}"></div>`;
@@ -598,6 +620,7 @@ export function renderDesignFrontendPage(
     runtimeFontFamily,
     onRenderNode,
     renderBudget,
+    preserveWorldOrigin = false,
   } = {},
 ) {
   if (!design || design.format !== "codeshell.design" || design.version !== 3) {
@@ -606,6 +629,7 @@ export function renderDesignFrontendPage(
   const page = design.pages?.find((candidate) => candidate.id === pageId);
   if (!page) throw new Error(`设计页面不存在：${pageId}`);
   const canvas = design.canvas ?? { width: 1440, height: 900, background: "#ffffff" };
+  const pageBounds = designPageBounds(design, { pageId });
   const roots = pageChildren(page, design);
   const components = new Map(
     design.pages
@@ -618,6 +642,8 @@ export function renderDesignFrontendPage(
     gridParents,
     gridParentOf: (node) => gridParents.get(node),
     canvas,
+    pageBounds,
+    preserveWorldOrigin,
     components,
     resourceDataUrls:
       resourceDataUrls instanceof Map
@@ -633,7 +659,12 @@ export function renderDesignFrontendPage(
     renderBudget: renderBudget ? {nodes:0,bytes:0,maxNodes:renderBudget.maxNodes,maxBytes:renderBudget.maxBytes} : null,
   };
   const body = roots.map((node) => renderNode(node, null, context)).join("\n");
-  return `<main class="cs-page" data-codeshell-page-id="${escapeHtml(page.id)}" data-codeshell-name="${escapeHtml(page.name)}">
+  const origin = preserveWorldOrigin ? { x: 0, y: 0 } : pageBounds;
+  const workspaceAttributes =
+    canvas.mode === "infinite"
+      ? ` data-codeshell-origin-x="${origin.x}" data-codeshell-origin-y="${origin.y}" style="width:${cssNumber(pageBounds.width)};height:${cssNumber(pageBounds.height)}${preserveWorldOrigin ? ";margin:0;overflow:visible;background:transparent" : ""}"`
+      : "";
+  return `<main class="cs-page" data-codeshell-page-id="${escapeHtml(page.id)}" data-codeshell-name="${escapeHtml(page.name)}"${workspaceAttributes}>
 ${body}
     </main>`;
 }
@@ -644,7 +675,6 @@ export function exportDesignFrontend(
 ) {
   const pageMarkup = renderDesignFrontendPage(design, { pageId, resourceDataUrls });
   const page = design.pages.find((candidate) => candidate.id === pageId);
-  const canvas = design.canvas ?? { width: 1440, height: 900, background: "#ffffff" };
   const documentTitle = title || `${design.name} · ${page.name}`;
   return `<!doctype html>
 <html lang="zh-CN">
@@ -653,7 +683,7 @@ export function exportDesignFrontend(
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${escapeHtml(documentTitle)}</title>
     <style>
-${designFrontendCss(design, { resourceDataUrls })}
+${designFrontendCss(design, { pageId, resourceDataUrls })}
     </style>
   </head>
   <body>
@@ -664,21 +694,27 @@ ${designFrontendCss(design, { resourceDataUrls })}
 }
 
 /** Shared canonical layout CSS for portable export and the live browser surface. */
-export function designFrontendCss(design, { resourceDataUrls = new Map() } = {}) {
+export function designFrontendCss(
+  design,
+  { pageId = design?.activePageId, resourceDataUrls = new Map(), preserveWorldOrigin = false } = {},
+) {
   const canvas = design.canvas ?? { width: 1440, height: 900, background: "#ffffff" };
+  const pageBounds = designPageBounds(design, { pageId });
+  const liveInfinite = preserveWorldOrigin && canvas.mode === "infinite";
+  const background = liveInfinite ? "transparent" : cssColor(canvas.background, "#ffffff");
   return `      ${designFontFaceCss(design.resources, resourceDataUrls)}
       :root { color-scheme: light; }
       * { box-sizing: border-box; }
       html, body { min-height: 100%; margin: 0; }
-      body { background: ${cssColor(canvas.background, "#ffffff")}; }
+      body { background: ${background}; }
       .cs-page {
         position: relative;
-        width: min(100%, ${cssNumber(canvas.width)});
+        width: ${canvas.mode === "infinite" ? cssNumber(pageBounds.width) : `min(100%, ${cssNumber(canvas.width)})`};
         min-width: 0;
-        height: ${cssNumber(canvas.height)};
-        margin: 0 auto;
-        overflow: hidden;
-        background: ${cssColor(canvas.background, "#ffffff")};
+        height: ${cssNumber(pageBounds.height)};
+        margin: ${liveInfinite ? "0" : "0 auto"};
+        overflow: ${liveInfinite ? "visible" : "hidden"};
+        background: ${background};
       }
       .cs-node { min-width: 0; }
       .cs-text { margin: 0; }

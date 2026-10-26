@@ -11,13 +11,22 @@ export function normalizeCornerRadii(value) {
   return [...value];
 }
 
-export function cssCornerRadii(values) {
+export function cssCornerRadii(values, borderBox) {
   return normalizeCornerRadii(values.map((value) => {
     const parts = String(value).trim().split(/\s+/u);
     if (parts.length < 1 || parts.length > 2 ||
-        parts.some((part) => !/^(?:(?:\d+(?:\.\d+)?|\.\d+)px|0(?:\.0+)?)$/u.test(part)))
-      throw new Error("CSS 圆角只支持圆形 px 半径；百分比、椭圆和复杂表达式暂不能保留");
-    const radii = parts.map(Number.parseFloat);
+        parts.some((part) => !/^(?:(?:\d+(?:\.\d+)?|\.\d+)(?:px|%)|0(?:\.0+)?)$/u.test(part)))
+      throw new Error("CSS 圆角只支持圆形 px 半径或已知边框盒中的圆形百分比；椭圆和复杂表达式暂不能保留");
+    // Computed CSS keeps percentages unresolved. Resolve each axis against the
+    // original border box before checking circular representability; 50% on a
+    // rectangle is an ellipse and must never be averaged into a circular radius.
+    const radii = [parts[0], parts[1] ?? parts[0]].map((part, axis) => {
+      if (!part.endsWith("%")) return Number.parseFloat(part);
+      const edge = axis === 0 ? borderBox?.width : borderBox?.height;
+      if (!Number.isFinite(edge) || edge <= 0)
+        throw new Error("CSS 百分比圆角需要有限正尺寸的原始边框盒");
+      return Number.parseFloat(part) / 100 * edge;
+    });
     if (radii.length === 2 && radii[0] !== radii[1])
       throw new Error("CSS 椭圆圆角暂不能保留；请使用相等的水平和垂直 px 半径");
     return radii[0];

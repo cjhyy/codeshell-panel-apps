@@ -76,6 +76,15 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run check
+        env:
+          CODESHELL_NATIVE_LINE_BOXES_EVIDENCE_DIR: artifacts/design-studio-ci/native-line-boxes
+      - name: Retain Design Studio font comparison failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: design-studio-font-comparisons
+          path: artifacts/design-studio-ci
+          if-no-files-found: ignore
 
   video-ui:
     name: Video Studio UI

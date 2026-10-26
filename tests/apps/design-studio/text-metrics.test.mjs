@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFile } from "node:fs/promises";
-import { resolve, sep } from "node:path";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
+import { resolve, sep, join } from "node:path";
 import { chromium } from "playwright";
 import { PNG } from "pngjs";
 import { prepareFigmaImport } from "../../../apps/design-studio/app/figma-bridge.mjs";
@@ -489,6 +489,14 @@ test("native line boxes use measured font baselines across families, sizes, line
     { family: "system-ui", size: 18, height: 18, weight: 400, copy: "System font with a tight line box: Hg pq." },
   ];
   const output = await page.evaluate(async (cases) => {
+    // Georgia is a real system-face specimen, not a bundled fixture. Probe its
+    // local face independently without registering or substituting any font.
+    let georgiaAvailable = false;
+    try {
+      const probe = new FontFace("Codeshell Georgia availability probe", 'local("Georgia")');
+      await probe.load();
+      georgiaAvailable = probe.status === "loaded";
+    } catch { /* A missing local Georgia face must produce the exact fallback diagnostic. */ }
     const { prepareFigmaImport } = await import("/figma-bridge.mjs");
     const { exportDesignSvg, serializeDesignDocument, normalizeDesignDocument } = await import("/document.mjs");
     const { createFigmaBinding, createFigmaPatch } = await import("/figma-binding.mjs");
@@ -514,6 +522,7 @@ test("native line boxes use measured font baselines across families, sizes, line
     const movedPatch = createFigmaPatch(binding, moved);
     const nodes = imported.document.nodes;
     const textNodes = nodes.filter((node) => node.type === "text");
+    const measuredFonts = textNodes.map((node) => ({ family: node.fontFamily, available: node.textMetrics?.fontAvailable }));
     const initial = serializeDesignDocument(imported.document);
     const sources = new Map(input.children[0].children.map((node) => [node.id, node]));
     await measureFigmaTextDocument(imported.document, { nativeLineBoxes: true, sourceNodes: sources, sourceIds: new Map(imported.mapping.map((entry) => [entry.designId, entry.sourceId])) });
@@ -538,9 +547,22 @@ test("native line boxes use measured font baselines across families, sizes, line
       records.push({ width, edited, typography, expected, canonical, svg, reference, stable: sortedJson(JSON.parse(serializeDesignDocument(clone))) === sortedJson(JSON.parse(serializeDesignDocument(imported.document))) });
     }
     root.remove();
-    return { records, warnings: imported.warnings, noOp, movedPatch, idempotent };
+    return { records, warnings: imported.warnings, noOp, movedPatch, idempotent, georgiaAvailable, measuredFonts };
   }, cases);
-  assert.deepEqual(output.warnings, []);
+  if (process.env.CODESHELL_NATIVE_LINE_BOXES_EVIDENCE_DIR) {
+    await mkdir(process.env.CODESHELL_NATIVE_LINE_BOXES_EVIDENCE_DIR, { recursive: true });
+    await writeFile(join(process.env.CODESHELL_NATIVE_LINE_BOXES_EVIDENCE_DIR, "native-line-boxes.json"),
+      JSON.stringify({ platform: process.platform, cases, output }, null, 2) + "\n");
+  }
+  assert.deepEqual(output.measuredFonts.map(({ family }) => family), cases.map(({ family }) => family));
+  for (const font of output.measuredFonts)
+    assert.equal(font.available, font.family === "Georgia" ? output.georgiaAvailable : true,
+      `${font.family}: measured availability must match the local face contract`);
+  const expectedWarnings = output.georgiaAvailable ? [] : [{
+    code: "font-fallback",
+    message: "字体 Georgia 不可用，已实测浏览器实际回退字体；安装原字体后请重新导入。",
+  }];
+  assert.deepEqual(output.warnings, expectedWarnings);
   assert.equal(output.noOp.operations.length, 0);
   assert.equal(output.movedPatch.operations.length, 1, "parent drag retains one source geometry update");
   assert.equal(output.movedPatch.operations[0].designId, "figma-1-1");

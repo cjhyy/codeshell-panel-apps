@@ -15,14 +15,9 @@ export function mountFigmaWorkflow({
   button.id = "open-figma-workflow";
   button.className = "button";
   button.type = "button";
-  button.textContent = "Figma";
+  button.textContent = "Figma 导入与导回";
   button.title = "Figma JSON 导入、导回与 HTML 原型";
   document.querySelector("#open-html-import").before(button);
-  const compact = document.createElement("button");
-  compact.type = "button";
-  compact.textContent = "Figma 导入与导回";
-  compact.dataset.toolbarAction = button.id;
-  document.querySelector(".compact-actions-list").append(compact);
 
   const dialog = document.createElement("dialog");
   dialog.id = "figma-workflow-dialog";

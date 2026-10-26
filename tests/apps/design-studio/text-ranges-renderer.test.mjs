@@ -1,3 +1,4 @@
+import { settleLoadedFont, recordFontPixelMismatch } from "./fixtures/loaded-font.mjs";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
@@ -107,6 +108,43 @@ async function cpuBrowser(t) {
   return browser.newContext({ viewport: { width: 760, height: 350 }, deviceScaleFactor: 1 });
 }
 
+test("fixture font barrier waits for a delayed owned face after an earlier fonts.ready resolved", async t => {
+  const context = await cpuBrowser(t), page = await context.newPage();
+  const font = await readFile(resolve(app, "fonts/InterVariable.woff2"));
+  let requestFont, releaseFont;
+  const requested = new Promise(resolve => { requestFont = resolve; });
+  const released = new Promise(resolve => { releaseFont = resolve; });
+  t.after(releaseFont);
+  await context.route("**/*", async route => {
+    if (route.request().url() === "https://font-barrier.test/owned.woff2") {
+      requestFont(); await released;
+      return route.fulfill({ contentType: "font/woff2", body: font });
+    }
+    if (route.request().url() === "https://font-barrier.test/") {
+      return route.fulfill({ contentType: "text/html", body: '<!doctype html><body><div id="copy">Before linked copy after.\nNBSP&nbsp;keeps  spaces</div></body>' });
+    }
+    return route.abort();
+  });
+  await page.goto("https://font-barrier.test/");
+  const previous = await page.evaluate(async () => {
+    const previousReady = document.fonts.ready;
+    const style = document.createElement("style");
+    style.textContent = '@font-face{font-family:Inter;src:url(/owned.woff2);font-weight:100 900;font-display:block}#copy{font:400 24px/1.25 Inter;white-space:pre-wrap}';
+    document.head.append(style);
+    await previousReady;
+    return [...document.fonts].map(face => ({ family: face.family, status: face.status }));
+  });
+  assert(previous.some(face => face.family === "Inter" && face.status !== "loaded"));
+  let complete = false;
+  const settled = settleLoadedFont(page).then(result => { complete = true; return result; });
+  await requested;
+  assert.equal(complete, false, "the real font response remains required");
+  releaseFont();
+  const loaded = await settled;
+  assert(loaded.length > 0 && loaded.every(request => request.faces.every(face => face.status === "loaded")));
+  assert.equal(await page.locator("#copy").textContent(), "Before linked copy after.\nNBSP\u00a0keeps  spaces");
+});
+
 test("frontend source ranges keep authored LF/NBSP, exact CSS underline and links through direct width/copy/font edits", async t => {
   const context = await cpuBrowser(t), page = await context.newPage(), reference = await context.newPage();
   const font = await readFile(resolve(app, "fonts/InterVariable.woff2"));
@@ -131,8 +169,9 @@ test("frontend source ranges keep authored LF/NBSP, exact CSS underline and link
     await page.locator("a").evaluate((element, text) => { element.textContent = text; }, linkText);
     await reference.setContent(`<!doctype html><style>${fontCss}*{box-sizing:border-box}html,body{margin:0;background:white}.owner{position:absolute;left:20px;top:20px;width:${width}px;display:flex;flex-direction:column}.copy{width:100%;color:${color};font:400 ${size}px/1.25 Inter;white-space:pre-wrap;overflow-wrap:anywhere}a{color:#1a65a6;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:.1578em;text-decoration-skip-ink:auto}</style><div class="owner"><div class="copy">Before <a href="#"></a> after.\nNBSP\u00a0keeps  spaces</div></div>`);
     await reference.locator("a").evaluate((element, text) => { element.textContent = text; }, linkText);
-    await Promise.all([page.evaluate(() => document.fonts.ready), reference.evaluate(() => document.fonts.ready)]);
+    await Promise.all([settleLoadedFont(page), settleLoadedFont(reference)]);
     const actualPng = await page.screenshot(), expectedPng = await reference.screenshot();
+    await recordFontPixelMismatch(page, reference, actualPng, expectedPng, `linked-ranges-${stage}-${width}-${size}`);
     const actual = PNG.sync.read(actualPng), expected = PNG.sync.read(expectedPng);
     const prefix = `frontend-${stage++}-${width}-${size}`;
     await retainEvidence(`${prefix}-exported.png`, actualPng);

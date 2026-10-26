@@ -458,7 +458,7 @@ export function createFigmaPatch(bindingValue, currentDocument) {
     translationChains.set(designId, result);
     return result;
   }
-  if (JSON.stringify(binding.baseline.canvas) !== JSON.stringify(current.canvas))
+  if (["width", "height", "background"].some((key) => binding.baseline.canvas[key] !== current.canvas[key]))
     diagnostics.push({
       designId: null,
       message:

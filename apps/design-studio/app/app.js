@@ -7,6 +7,7 @@ import { designStrokeOutset, editDesignStrokeColor, editDesignStrokeWidth, editD
 /* Design Studio Panel App runtime. */
 /* global document, localStorage, requestAnimationFrame, window */
 import { projectContextChanged } from "./project-context.mjs";
+import { createDocumentAutosave } from "./document-autosave.mjs";
 import { createRendererController } from "./renderer-controller.mjs";
 import {
   canvasNodeMatrix,
@@ -39,6 +40,8 @@ import {
 } from "./geometry.mjs";
 import {
   designNodeRemovalIds,
+  designCoordinateLimit,
+  designPageBounds,
   effectiveDesignNodeOpacity,
   externalComponentInstancesForPage,
   exportDesignSvg,
@@ -103,6 +106,7 @@ import { mountPrototypeEditor } from "./prototype-ui.mjs";
 import { exportDesignPrototype, normalizePrototype } from "./prototype.mjs";
 import { createRecoverySession } from "./recovery-session.mjs";
 import { chooseRepoDesignFile, DEFAULT_DESIGN_PATH } from "./repository.mjs";
+import { designFileName, recentDesignPaths, rememberDesignPath, visibleDesignFiles } from "./file-navigation.mjs";
 import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
 import { designPaintSvg } from "./paint.mjs";
 import { repairDesignQuality } from "./quality-repair.mjs";
@@ -119,8 +123,8 @@ import { selectedHtmlFiles, readSelectedHtmlAsset } from "./html-import-assets.m
 import { compareDesignDocuments, comparisonMarkdown } from "./design-compare.mjs";
 import { exportDesignFrontend, isSafeFrontendPath } from "./frontend-export.mjs";
 import {
-  applyAutoLayouts,
-  applyAllAutoLayouts,
+  applyAutoLayouts as applyDocumentAutoLayouts,
+  applyAllAutoLayouts as applyAllDocumentAutoLayouts,
   createComponentInstance,
   isAutoLayoutContainer,
   isContainerNode,
@@ -245,6 +249,10 @@ const elements = {
   multiSelection: document.querySelector("#multi-selection"),
   multiSelectionCount: document.querySelector("#multi-selection-count"),
   canvasProperties: document.querySelector("#canvas-properties"),
+  canvasDimensions: document.querySelector("#canvas-dimensions"),
+  canvasMode: document.querySelector("#canvas-mode"),
+  enableInfiniteCanvas: document.querySelector("#enable-infinite-canvas"),
+  infiniteCanvasHint: document.querySelector("#infinite-canvas-hint"),
   selectionProperties: document.querySelector("#selection-properties"),
   parentField: document.querySelector("#prop-parent-field"),
   frameSection: document.querySelector("#frame-section"),
@@ -413,6 +421,9 @@ let lastExternalCheckAt = 0;
 let warnedExternalVersion = null;
 let fileDiscoveryCache = null;
 let fileDiscoveryCachedAt = 0;
+let fileDialogInventory = null;
+let fileSwitchPending = null;
+const recentlyOpenedDesigns = new Map();
 let workspaceEpoch = 0;
 let contextInitialized = false;
 let initialContextPending = true;
@@ -428,6 +439,8 @@ let prototypeUI = null;
 let stagedFigmaBinding = null;
 let loadedFigmaBinding = null;
 let saveInFlight = null;
+let unconfirmedSavePath = false;
+let importPublicationDepth = 0;
 let recoveryFailureWarned = false;
 let recoverySession = null;
 let recoveryIssue = "";
@@ -451,6 +464,16 @@ let fontPageHidden = false;
 let fontPageLifecycle = 0;
 let fontPageRestorable = false;
 let liveRenderRevision = 0;
+const documentAutosave = createDocumentAutosave({
+  readState: currentAutosaveState,
+  save: () => saveDocument({ quiet: true, automatic: true }),
+  onError(error) {
+    setSaveState(error?.designPublicationUnknown ? "保存状态待核对" : "自动保存失败 · 更多中重试保存", "error");
+  },
+  onBlocked() {
+    if (!warnedExternalVersion) setSaveState("待保存 · 更多中确认保存路径", "dirty");
+  },
+});
 let canvasHandles = [];
 let rendererMode = "gpu";
 let rendererPreferenceGeneration = 0;
@@ -541,6 +564,8 @@ async function loadRendererPreference(expectedEpoch = workspaceEpoch) {
 }
 
 function advanceDocumentEpoch() {
+  documentAutosave.cancel();
+  unconfirmedSavePath = false;
   documentEpoch += 1;
   ownedFonts.invalidatePending();
   fontResourcesReady = false;
@@ -718,7 +743,8 @@ function createBlankDocument(name = "Repo design") {
     canvas: {
       width: 1280,
       height: 820,
-      background: "#f7f7f3",
+      background: "#e8e8e8",
+      mode: "infinite",
     },
     tokens: {
       colors: clone(DEFAULT_COLOR_TOKENS),
@@ -1125,6 +1151,39 @@ function moveBrowserReorder(state, point) {
   state.moved = design.nodes.some((node,index) => node !== state.originalOrder[index]);
 }
 
+function applyAutoLayouts(nodes, containerIds, options = {}) {
+  return applyDocumentAutoLayouts(nodes, containerIds, { canvas: design.canvas, ...options });
+}
+
+function applyAllAutoLayouts(nodes, options = {}) {
+  return applyAllDocumentAutoLayouts(nodes, { canvas: design.canvas, ...options });
+}
+
+function positionWithinDesignBudget(position) {
+  const limit = designCoordinateLimit(design.canvas);
+  return [position.x, position.y].every((value) => Number.isFinite(value) && Math.abs(value) <= limit);
+}
+
+function geometryWithinDesignBudget(node) {
+  return positionWithinDesignBudget(node) &&
+    [node.width, node.height].every((value) => Number.isFinite(value) && value >= 1 && value <= 20000);
+}
+
+function applyPositionChangesSafely(changes) {
+  if (changes.some((change) => !positionWithinDesignBudget(change))) return false;
+  for (const { node, x, y } of changes) Object.assign(node, { x, y });
+  return true;
+}
+
+function setTreePositionSafely(node, axis, value) {
+  const previous = design.nodes.map((entry) => ({ node: entry, x: entry.x, y: entry.y }));
+  if (!setNodeTreePosition(design.nodes, node.id, axis, value)) return false;
+  if (design.nodes.every(positionWithinDesignBudget)) return true;
+  for (const { node: entry, x, y } of previous) Object.assign(entry, { x, y });
+  notify("移动后的子图层超出坐标范围，已保留原位置", "error");
+  return false;
+}
+
 function containingFrame(point) {
   return (
     [...design.nodes]
@@ -1247,11 +1306,14 @@ function setSaveState(message, kind = "idle") {
 }
 
 function setRepoLinkState(message, kind = "idle") {
+  updateDocumentTitle();
   if (!elements.repoLinkState) return;
-  elements.repoLinkState.textContent = message;
+  elements.repoLinkState.textContent = window.codeshellPanel?.call ? message : message.replace(/Repo/g, "浏览器本地");
   elements.repoLinkState.dataset.kind = kind;
   const root = context.cwd ?? workspaceInfo?.root;
-  elements.repoLinkState.title = root ? `当前 Repo：${root}` : "尚未连接 Repo";
+  elements.repoLinkState.title = window.codeshellPanel?.call
+    ? root ? `当前 Repo：${root}` : "尚未连接 Repo"
+    : "设计文件保存在当前浏览器；连接 CodeShell 后保存到项目";
 }
 
 function updateRepoLinkState() {
@@ -1456,10 +1518,34 @@ function queueRecovery() {
   }, 500);
 }
 
+function currentAutosaveState() {
+  const path = elements.path.value.trim();
+  const pristine =
+    currentSourcePath === null &&
+    pristineBlankSnapshot?.documentEpoch === documentEpoch &&
+    pristineBlankSnapshot.path === elements.path.value &&
+    pristineBlankSnapshot.source === serializeDesign();
+  return {
+    scope: JSON.stringify([workspaceEpoch, documentEpoch, path]),
+    dirty: dirty && !pristine,
+    deferred: workspaceLoading || agentMutationActive || importPublicationDepth > 0 || Boolean(interaction) || Boolean(inlineTextEdit),
+    blockedReason: context.trusted !== true
+      ? "工作区尚未信任；请连接项目后保存"
+      : !safeDesignPath(path)
+        ? "路径需位于 designs/，并以 .codesign.json 结尾；请先确认保存路径"
+        : unconfirmedSavePath || (currentSourcePath && path !== currentSourcePath)
+          ? "保存路径已改变；请先点击保存或另存为确认，再切换文件"
+          : warnedExternalVersion
+            ? "源文件也已变化；请先核对或另存副本，再切换文件"
+            : null,
+  };
+}
+
 function markChanged(render = true) {
   liveRenderRevision += 1;
   updateDirtyState();
   queueRecovery();
+  documentAutosave.schedule();
   if (render) renderAll();
 }
 
@@ -1672,9 +1758,30 @@ function renderViewport() {
   if (viewportRenderFrame) cancelAnimationFrame(viewportRenderFrame);
   viewportRenderFrame = 0;
   renderSceneOverlays();
-  elements.zoomValue.textContent = `${Math.round(zoom * 100)}%`;
+  elements.zoomValue.textContent = zoomLabel();
+  renderWorkspaceBackground();
   updateInlineTextEditorPosition();
   syncGpuRenderer();
+}
+
+function zoomLabel() {
+  const percent = zoom * 100;
+  return `${percent < 1 ? Number(percent.toFixed(2)) : percent < 10 ? Number(percent.toFixed(1)) : Math.round(percent)}%`;
+}
+
+function renderWorkspaceBackground() {
+  const infinite = design.canvas.mode === "infinite";
+  elements.stageWrap.dataset.canvasMode = infinite ? "infinite" : "bounded";
+  elements.stageWrap.style.backgroundColor = infinite ? design.canvas.background : "";
+  elements.infiniteCanvasHint.hidden = !infinite || design.nodes.length > 0;
+  if (infinite) {
+    const spacing = 16 * zoom * 2 ** Math.max(0, Math.ceil(Math.log2(0.5 / zoom)));
+    elements.stageWrap.style.backgroundSize = `${spacing}px ${spacing}px`;
+    elements.stageWrap.style.backgroundPosition = `${pan.x}px ${pan.y}px`;
+  } else {
+    elements.stageWrap.style.backgroundSize = "";
+    elements.stageWrap.style.backgroundPosition = "";
+  }
 }
 
 function scheduleInteractionRender() {
@@ -1697,6 +1804,7 @@ function renderScene() {
 }
 
 function renderSceneOverlays() {
+  renderWorkspaceBackground();
   const bounds = elements.stage.getBoundingClientRect();
   const viewDesign = interactionDesign();
   canvasHandles = drawCanvasInteraction(elements.stage, {
@@ -1956,6 +2064,10 @@ function renderProperties() {
     return;
   }
   if (!single) {
+    const infinite = design.canvas.mode === "infinite";
+    elements.canvasDimensions.hidden = infinite;
+    elements.canvasMode.textContent = infinite ? "无限工作区" : "固定画布 · 旧稿";
+    elements.enableInfiniteCanvas.hidden = infinite;
     canvasInputs.name.value = design.name;
     canvasInputs.width.value = String(round(design.canvas.width));
     canvasInputs.height.value = String(round(design.canvas.height));
@@ -2347,6 +2459,7 @@ function renderTokens() {
       token.name = candidate;
       updateDirtyState();
       queueRecovery();
+      documentAutosave.schedule();
     });
     name.addEventListener("change", () => {
       const candidate = name.value.slice(0, 80).trim();
@@ -2377,6 +2490,7 @@ function renderTokens() {
       apply.style.background = token.value;
       updateDirtyState();
       queueRecovery();
+      documentAutosave.schedule();
       renderScene();
       renderProperties();
     });
@@ -2584,6 +2698,7 @@ function renderPageManager() {
 }
 
 function renderAll() {
+  updateDocumentTitle();
   renderPages();
   renderScene();
   renderProperties();
@@ -2592,7 +2707,7 @@ function renderAll() {
   renderAuditStatus();
   updateLayoutControlState();
   updateInlineTextEditorPosition();
-  elements.zoomValue.textContent = `${Math.round(zoom * 100)}%`;
+  elements.zoomValue.textContent = zoomLabel();
   elements.stageWrap.dataset.grid = String(showGrid);
   elements.toggleGrid.classList.toggle("active", showGrid);
   elements.toggleGrid.setAttribute("aria-pressed", String(showGrid));
@@ -2756,6 +2871,10 @@ function pointerDown(event) {
     const parent = activeTool === "frame" ? null : containingFrame(point);
     const localPoint = pointToParentSpace(point, parent) ?? point;
     const origin = snapPoint(localPoint, event.altKey);
+    if (!positionWithinDesignBudget(origin)) {
+      notify("当前位置超出设计坐标范围，请移回内容附近创建", "error");
+      return;
+    }
     const node = baseNode(activeTool, {
       x: round(origin.x),
       y: round(origin.y),
@@ -2878,12 +2997,17 @@ function pointerMove(event) {
     } else {
       interaction.guides = [];
     }
+    const changes = [];
     for (const [nodeId, origin] of interaction.origins) {
       const node = nodeById(nodeId);
       if (!node) continue;
       const nodeDelta = visualDeltaForNode(node, { x: deltaX, y: deltaY }, interaction.movingIds);
-      node.x = round(origin.x + nodeDelta.x);
-      node.y = round(origin.y + nodeDelta.y);
+      changes.push({ node, x: round(origin.x + nodeDelta.x), y: round(origin.y + nodeDelta.y) });
+    }
+    if (!applyPositionChangesSafely(changes)) {
+      interaction.guides = [];
+      scheduleInteractionRender();
+      return;
     }
     interaction.moved =
       interaction.moved ||
@@ -2905,23 +3029,36 @@ function pointerMove(event) {
       endX = interaction.start.x + (endX < interaction.start.x ? -size : size);
       endY = interaction.start.y + (endY < interaction.start.y ? -size : size);
     }
-    node.x = round(Math.min(endX, interaction.start.x));
-    node.y = round(Math.min(endY, interaction.start.y));
-    node.width = round(Math.max(1, Math.abs(endX - interaction.start.x)));
-    node.height = round(Math.max(1, Math.abs(endY - interaction.start.y)));
+    endX = interaction.start.x + clamp(endX - interaction.start.x, -20000, 20000);
+    endY = interaction.start.y + clamp(endY - interaction.start.y, -20000, 20000);
+    const next = {
+      x: round(Math.min(endX, interaction.start.x)),
+      y: round(Math.min(endY, interaction.start.y)),
+      width: round(Math.max(1, Math.abs(endX - interaction.start.x))),
+      height: round(Math.max(1, Math.abs(endY - interaction.start.y))),
+    };
+    if (!geometryWithinDesignBudget(next)) return;
+    Object.assign(node, next);
   } else if (interaction.kind === "resize") {
     const node = nodeById(interaction.nodeId);
     if (!node) return;
+    const next = { ...node };
     if (interaction.browser) {
-      const resized = {...interaction.bounds};
-      resizeNode(resized, snapPoint(point,event.altKey), interaction,event.shiftKey);
-      node.width=resized.width; node.height=resized.height;
-      node.layoutSizingHorizontal="fixed"; node.layoutSizingVertical="fixed";
+      const resized = { ...interaction.bounds };
+      resizeNode(resized, snapPoint(point, event.altKey), interaction, event.shiftKey);
+      next.width = resized.width;
+      next.height = resized.height;
+      next.layoutSizingHorizontal = "fixed";
+      next.layoutSizingVertical = "fixed";
       if (!isAutoLayoutPositionOwned(node)) {
-        node.x=round(interaction.original.x+resized.x-interaction.bounds.x);
-        node.y=round(interaction.original.y+resized.y-interaction.bounds.y);
+        next.x = round(interaction.original.x + resized.x - interaction.bounds.x);
+        next.y = round(interaction.original.y + resized.y - interaction.bounds.y);
       }
-    } else resizeNode(node, snapPoint(point, event.altKey), interaction, event.shiftKey);
+    } else {
+      resizeNode(next, snapPoint(point, event.altKey), interaction, event.shiftKey);
+    }
+    if (!geometryWithinDesignBudget(next)) return;
+    Object.assign(node, next);
   }
   updateDirtyState();
   scheduleInteractionRender();
@@ -2941,6 +3078,9 @@ function resizeNode(node, point, state, preserveAspect) {
     let height = Math.max(minimum, Math.abs(point.y - anchorY));
     if (width / height > aspect) height = width / aspect;
     else width = height * aspect;
+    const scale = Math.min(1, 20000 / Math.max(width, height));
+    width = Math.max(1, width * scale);
+    height = Math.max(1, height * scale);
     node.width = round(width);
     node.height = round(height);
     node.x = round(directionX < 0 ? anchorX - width : anchorX);
@@ -2948,18 +3088,18 @@ function resizeNode(node, point, state, preserveAspect) {
     return;
   }
   if (state.handle.includes("w")) {
-    node.x = round(Math.min(point.x, right - minimum));
-    node.width = round(Math.max(minimum, right - point.x));
+    node.x = round(clamp(point.x, right - 20000, right - minimum));
+    node.width = round(clamp(right - point.x, minimum, 20000));
   }
   if (state.handle.includes("e")) {
-    node.width = round(Math.max(minimum, point.x - state.bounds.x));
+    node.width = round(clamp(point.x - state.bounds.x, minimum, 20000));
   }
   if (state.handle.includes("n")) {
-    node.y = round(Math.min(point.y, bottom - minimum));
-    node.height = round(Math.max(minimum, bottom - point.y));
+    node.y = round(clamp(point.y, bottom - 20000, bottom - minimum));
+    node.height = round(clamp(bottom - point.y, minimum, 20000));
   }
   if (state.handle.includes("s")) {
-    node.height = round(Math.max(minimum, point.y - state.bounds.y));
+    node.height = round(clamp(point.y - state.bounds.y, minimum, 20000));
   }
 }
 
@@ -3000,9 +3140,37 @@ function finishInteraction(pointerId = null) {
     finished.kind === "resize" ||
     (["move","reorder"].includes(finished.kind) && finished.moved);
   if (changed) {
+    const previousNodes = design.canvas.mode === "infinite" ? clone(design.nodes) : null;
     if (node) {
       reflowParent(node);
       if (isContainerNode(node)) applyAutoLayouts(design.nodes, new Set([node.id]));
+    }
+    if (previousNodes && !design.nodes.every(geometryWithinDesignBudget)) {
+      design.nodes = previousNodes;
+      if (finished.kind === "create") {
+        design.nodes = design.nodes.filter((entry) => entry.id !== finished.nodeId);
+      } else if (finished.kind === "resize") {
+        const resized = nodeById(finished.nodeId);
+        if (resized) for (const [key, value] of Object.entries(finished.original ?? finished.bounds)) {
+          if (value === undefined) delete resized[key]; else resized[key] = value;
+        }
+      } else if (finished.kind === "move") {
+        for (const [nodeId, origin] of finished.origins) {
+          const moved = nodeById(nodeId);
+          if (moved) Object.assign(moved, origin);
+        }
+      } else if (finished.kind === "reorder") {
+        const originalNodes = new Map(design.nodes.map((entry) => [entry.id, entry]));
+        design.nodes = finished.originalOrder.map((entry) => originalNodes.get(entry.id));
+      }
+      selectedId = finished.before.selectedId;
+      selectedIds = new Set(finished.before.selectedIds);
+      setActiveTool(finished.before.tool);
+      syncActivePageNodes();
+      updateDirtyState();
+      renderAll();
+      notify("布局后的图层超出坐标或尺寸范围，已撤销此次操作", "error");
+      return;
     }
     commitHistory();
     markChanged(false);
@@ -3396,13 +3564,13 @@ function distributeSelected(axis) {
     return node && (!node.parentId || !ids.has(node.parentId));
   }).length;
   if (rootCount < 3) return notify("等距分布至少需要 3 个独立的未锁定图层");
-  if (!distributeNodeTrees(design.nodes, ids, axis)) return;
+  if (!distributeNodeTrees(design.nodes, ids, axis, design.canvas)) return;
   commitHistory();
   markChanged();
 }
 
 function setZoom(next, focalClient) {
-  const nextZoom = clamp(next, 0.1, 4);
+  const nextZoom = clamp(next, design.canvas.mode === "infinite" ? 0.0001 : 0.1, design.canvas.mode === "infinite" ? 16 : 4);
   const rect = elements.stage.getBoundingClientRect();
   const focal = focalClient ?? {
     x: rect.left + elements.stage.clientWidth / 2,
@@ -3416,18 +3584,58 @@ function setZoom(next, focalClient) {
   scheduleViewportRender(true);
 }
 
+let pendingBrowserFit = null;
+function fitDesignWhenReady(kind) {
+  if (pendingBrowserFit?.frame) cancelAnimationFrame(pendingBrowserFit.frame);
+  pendingBrowserFit = null;
+  if (rendererMode !== "browser") return design;
+  if (browserRenderer.geometry()) return interactionDesign();
+  const pending = {
+    workspaceEpoch, documentEpoch, pageId: design.activePageId,
+    preferenceGeneration: rendererPreferenceGeneration,
+    pan: { ...pan }, zoom, selected: [...selectedIds].sort().join("\n"),
+    deadline: performance.now() + 16000,
+  };
+  pendingBrowserFit = pending;
+  const resume = () => {
+    if (pendingBrowserFit !== pending) return;
+    const stale = pending.workspaceEpoch !== workspaceEpoch || pending.documentEpoch !== documentEpoch ||
+      pending.pageId !== design.activePageId || rendererMode !== "browser" ||
+      pending.preferenceGeneration !== rendererPreferenceGeneration ||
+      pending.zoom !== zoom || pending.pan.x !== pan.x || pending.pan.y !== pan.y ||
+      (kind === "selection" && pending.selected !== [...selectedIds].sort().join("\n"));
+    if (stale || performance.now() > pending.deadline || ["error", "disposed", "unavailable"].includes(browserRenderer.state().status)) {
+      pendingBrowserFit = null;
+      return;
+    }
+    if (browserRenderer.geometry()) {
+      pendingBrowserFit = null;
+      if (kind === "selection") fitSelection(); else fitCanvas();
+      return;
+    }
+    pending.frame = requestAnimationFrame(resume);
+  };
+  pending.frame = requestAnimationFrame(resume);
+  return null;
+}
+
 function fitCanvas() {
+  const fitDesign = fitDesignWhenReady("canvas");
+  if (!fitDesign) return;
   const padding = 62;
   const width = Math.max(100, elements.stage.clientWidth - padding * 2);
   const height = Math.max(100, elements.stage.clientHeight - padding * 2);
-  zoom = clamp(Math.min(width / design.canvas.width, height / design.canvas.height), 0.1, 2);
-  pan.x = (elements.stage.clientWidth - design.canvas.width * zoom) / 2;
-  pan.y = (elements.stage.clientHeight - design.canvas.height * zoom) / 2;
+  const bounds = designPageBounds(fitDesign);
+  zoom = clamp(Math.min(width / bounds.width, height / bounds.height), design.canvas.mode === "infinite" ? 0.0001 : 0.1, 2);
+  pan.x = elements.stage.clientWidth / 2 - (bounds.x + bounds.width / 2) * zoom;
+  pan.y = elements.stage.clientHeight / 2 - (bounds.y + bounds.height / 2) * zoom;
   renderViewport(true);
 }
 
 function fitSelection() {
-  const bounds = visualSelectionBounds(selectedNodes(), design.nodes);
+  const fitDesign = fitDesignWhenReady("selection");
+  if (!fitDesign) return;
+  const bounds = visualSelectionBounds(fitDesign.nodes.filter(node => selectedIds.has(node.id)), fitDesign.nodes);
   if (!bounds) {
     fitCanvas();
     return;
@@ -3437,7 +3645,7 @@ function fitSelection() {
   const height = Math.max(100, elements.stage.clientHeight - padding * 2);
   zoom = clamp(
     Math.min(width / Math.max(1, bounds.width), height / Math.max(1, bounds.height)),
-    0.1,
+    design.canvas.mode === "infinite" ? 0.0001 : 0.1,
     4,
   );
   pan.x = elements.stage.clientWidth / 2 - (bounds.x + bounds.width / 2) * zoom;
@@ -3725,7 +3933,7 @@ async function writeRepoText(
   return result;
 }
 
-function captureSaveDocument({ quiet = false } = {}) {
+function captureSaveDocument({ quiet = false, automatic = false } = {}) {
   finishInlineTextEdit();
   const operationWorkspaceEpoch = workspaceEpoch;
   const operationWorkspaceIdentity = context.cwd ?? null;
@@ -3782,6 +3990,7 @@ function captureSaveDocument({ quiet = false } = {}) {
           : undefined,
     sourcePath: currentSourcePath,
     quiet,
+    automatic,
   };
 }
 
@@ -3797,12 +4006,24 @@ async function performSaveDocument(request) {
     pageRecords,
     previousIndexManifest,
     quiet,
+    automatic,
   } = request;
-  assertWorkspaceEpoch(operationWorkspaceEpoch);
+  const checkSaveScope = () => {
+    assertWorkspaceEpoch(operationWorkspaceEpoch);
+    if (automatic && (request.documentEpoch !== documentEpoch || elements.path.value.trim() !== path))
+      throw new Error("设计或保存路径已切换；已取消旧稿的自动保存");
+  };
+  const saveCall = async (method, params, epoch = operationWorkspaceEpoch) => {
+    checkSaveScope();
+    const result = await bundleHostCall(method, params, epoch);
+    checkSaveScope();
+    return result;
+  };
+  checkSaveScope();
   clearTimeout(recoveryTimer);
   elements.save.disabled = true;
   elements.path.disabled = true;
-  setSaveState("保存中…", "idle");
+  setSaveState(automatic ? "正在自动保存…" : "保存中…", "idle");
   try {
     const contentBytes = new TextEncoder().encode(content).length;
     const persistence = pageRecords
@@ -3826,7 +4047,7 @@ async function performSaveDocument(request) {
       for (const part of persistence.parts) {
         assertWorkspaceEpoch(operationWorkspaceEpoch);
         try {
-          await bundleHostCall(
+          await saveCall(
             "workspace.writeText",
             {
               path: part.path,
@@ -3838,7 +4059,7 @@ async function performSaveDocument(request) {
           assertWorkspaceEpoch(operationWorkspaceEpoch);
         } catch {
           assertWorkspaceEpoch(operationWorkspaceEpoch);
-          const existing = await bundleHostCall(
+          const existing = await saveCall(
             "workspace.readText",
             { path: part.path },
             operationWorkspaceEpoch,
@@ -3851,10 +4072,9 @@ async function performSaveDocument(request) {
       }
     }
     assertWorkspaceEpoch(operationWorkspaceEpoch);
-    const checkSaveScope = () => assertWorkspaceEpoch(operationWorkspaceEpoch);
     let sourceBinding = request.figmaBinding;
     if (sourceBinding === undefined && request.sourcePath) {
-      const original = await bundleHostCall(
+      const original = await saveCall(
         "workspace.readText",
         { path: request.sourcePath },
         operationWorkspaceEpoch,
@@ -3863,7 +4083,7 @@ async function performSaveDocument(request) {
       sourceBinding = await readFigmaBinding({
         path: request.sourcePath,
         sourceContent: original.content,
-        call: (method, params) => bundleHostCall(method, params, operationWorkspaceEpoch),
+        call: saveCall,
         check: checkSaveScope,
         sha256: sha256Text,
       });
@@ -3873,7 +4093,7 @@ async function performSaveDocument(request) {
         path,
         sourceContent: persistence.primarySource,
         binding: sourceBinding,
-        call: (method, params) => bundleHostCall(method, params, operationWorkspaceEpoch),
+        call: saveCall,
         check: checkSaveScope,
         sha256: sha256Text,
       });
@@ -3888,7 +4108,7 @@ async function performSaveDocument(request) {
     const replacesCurrentSource = path === currentSourcePath;
     let result;
     try {
-      result = await bundleHostCall(
+      result = await saveCall(
         "workspace.writeText",
         {
           path,
@@ -3902,9 +4122,16 @@ async function performSaveDocument(request) {
       );
     } catch (writeError) {
       assertWorkspaceEpoch(operationWorkspaceEpoch);
+      if (automatic && request.sourcePath === null &&
+        /EEXIST|exists|changed since|conflict|已存在|冲突/iu.test(`${writeError?.code ?? ""} ${writeError?.message ?? ""}`)) {
+        // An explicit create-only conflict belongs to the competing creator,
+        // even when its bytes happen to equal our snapshot. Do not adopt that
+        // file as a baseline for the next automatic overwrite.
+        throw writeError;
+      }
       let observed;
       try {
-        observed = await bundleHostCall("workspace.readText", { path }, operationWorkspaceEpoch);
+        observed = await saveCall("workspace.readText", { path }, operationWorkspaceEpoch);
         assertWorkspaceEpoch(operationWorkspaceEpoch);
       } catch (readError) {
         assertWorkspaceEpoch(operationWorkspaceEpoch);
@@ -3926,6 +4153,7 @@ async function performSaveDocument(request) {
     const stillTargetsSavedPath =
       elements.path.value.trim() === path && documentEpoch === request.documentEpoch;
     if (stillTargetsSavedPath) {
+      unconfirmedSavePath = false;
       currentModifiedAt = result.modifiedAt;
       currentRevision = result.revision;
       warnedExternalVersion = null;
@@ -3988,10 +4216,10 @@ async function performSaveDocument(request) {
         key: scopedStorageKey("lastPath", operationWorkspaceRoot),
         value: { workspaceRoot: operationWorkspaceIdentity, path },
       }).catch(() => undefined);
-      assertWorkspaceEpoch(operationWorkspaceEpoch);
+      checkSaveScope();
       if (dirty) queueRecovery();
       else await clearRecovery(operationWorkspaceEpoch, operationRecoverySession);
-      assertWorkspaceEpoch(operationWorkspaceEpoch);
+      checkSaveScope();
     } else {
       updateDirtyState();
       setSaveState(dirty ? "有修改" : "另存为", dirty ? "dirty" : "idle");
@@ -4016,7 +4244,8 @@ async function performSaveDocument(request) {
       changedPageCount: persistence.changedPageCount ?? 0,
     };
   } catch (error) {
-    if (workspaceEpoch !== operationWorkspaceEpoch) throw error;
+    if (workspaceEpoch !== operationWorkspaceEpoch ||
+      (automatic && (documentEpoch !== request.documentEpoch || elements.path.value.trim() !== path))) throw error;
     const message = error instanceof Error ? error.message : "保存失败";
     queueRecovery();
     setSaveState(error?.designPublicationUnknown ? "保存状态待核对" : "保存失败", "error");
@@ -4077,38 +4306,65 @@ async function settlePendingSaves() {
 
 async function openDocument(path, { discardChanges = false, onOpened = () => {} } = {}) {
   finishInlineTextEdit();
+  cancelInteraction();
+  resetPolishTargets();
   const operationWorkspaceEpoch = workspaceEpoch;
   const operationRecoverySession = recoverySession;
-  await settlePendingSaves().catch(() => undefined);
+  if (!discardChanges) {
+    try {
+      await settlePendingSaves();
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
+      await documentAutosave.flush();
+    } catch (error) {
+      if (workspaceEpoch === operationWorkspaceEpoch) {
+        setSaveState(error?.designPublicationUnknown ? "保存状态待核对" : "自动保存失败 · 更多中重试保存", "error");
+        notify(error instanceof Error ? error.message : "保存失败；已保留当前设计", "error");
+      }
+      throw error;
+    }
+  } else {
+    documentAutosave.cancel();
+    await settlePendingSaves().catch(() => undefined);
+  }
   assertWorkspaceEpoch(operationWorkspaceEpoch);
   const operationWorkspaceIdentity = context.cwd ?? null;
   const operationWorkspaceRoot = operationWorkspaceIdentity ?? "preview";
-  if (
-    !discardChanges &&
-    dirty &&
-    !window.confirm("当前设计有未保存修改。确定要放弃这些修改并打开另一个文件吗？")
-  ) {
-    return false;
-  }
-  cancelInteraction();
+  const operationDocumentEpoch = documentEpoch;
+  const operationSourcePath = currentSourcePath;
+  const operationInputPath = elements.path.value;
   const operationStateRevision = currentDesignStateRevision();
+  const assertOpeningState = () => {
+    assertWorkspaceEpoch(operationWorkspaceEpoch);
+    if (
+      documentEpoch !== operationDocumentEpoch ||
+      currentSourcePath !== operationSourcePath ||
+      elements.path.value !== operationInputPath ||
+      currentDesignStateRevision() !== operationStateRevision
+    ) {
+      throw new Error("画布在打开文件期间发生了变化；已保留较新的本地状态");
+    }
+  };
   clearTimeout(recoveryTimer);
   setSaveState("打开中…", "idle");
   const before = captureImportRollback();
   let appliedDocumentEpoch = null, appliedStateRevision = null;
+  let assertOpenedDocument = null;
   try {
     const result = await hostCall("workspace.readText", { path });
-    assertWorkspaceEpoch(operationWorkspaceEpoch);
-    if (currentDesignStateRevision() !== operationStateRevision) {
-      throw new Error("画布在打开文件期间发生了变化；已保留较新的本地状态");
-    }
+    assertOpeningState();
     const resolved = await resolveWorkspaceDesignSource(result, operationWorkspaceEpoch);
-    assertWorkspaceEpoch(operationWorkspaceEpoch);
+    assertOpeningState();
     cancelInteraction();
     design = resolved.pageCache
       ? resolved.document
       : normalizeDocument(resolved.document ?? JSON.parse(resolved.source));
     advanceDocumentEpoch();
+    const openedDocumentEpoch = documentEpoch;
+    assertOpenedDocument = () => {
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
+      if (documentEpoch !== openedDocumentEpoch || currentSourcePath !== path || elements.path.value.trim() !== path)
+        throw new Error("设计或保存路径已在打开期间切换；已保留当前稿件");
+    };
     clearSelection();
     currentModifiedAt = result.modifiedAt;
     currentRevision = result.revision;
@@ -4130,6 +4386,7 @@ async function openDocument(path, { discardChanges = false, onOpened = () => {} 
     appliedDocumentEpoch = documentEpoch;
     appliedStateRevision = currentDesignStateRevision();
     await loadReferencedDesignResources();
+    assertOpenedDocument();
     setRepoLinkState("Repo · 已打开", "linked");
     renderAll();
     requestAnimationFrame(fitCanvas);
@@ -4137,23 +4394,30 @@ async function openDocument(path, { discardChanges = false, onOpened = () => {} 
       key: scopedStorageKey("lastPath", operationWorkspaceRoot),
       value: { workspaceRoot: operationWorkspaceIdentity, path },
     }).catch(() => undefined);
-    assertWorkspaceEpoch(operationWorkspaceEpoch);
-    await clearRecovery(operationWorkspaceEpoch, operationRecoverySession);
-    assertWorkspaceEpoch(operationWorkspaceEpoch);
+    assertOpenedDocument();
+    if (dirty) queueRecovery();
+    else await clearRecovery(operationWorkspaceEpoch, operationRecoverySession);
+    assertOpenedDocument();
+    await rememberOpenedDesign(path, operationWorkspaceEpoch).catch(() => undefined);
+    assertOpenedDocument();
     notify(`已打开 ${path}`);
     void refreshRepoFilesPanel();
     return true;
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) throw error;
+    if (assertOpenedDocument) {
+      try { assertOpenedDocument(); }
+      catch { throw error; }
+    }
     if (appliedDocumentEpoch === documentEpoch && appliedStateRevision === currentDesignStateRevision() &&
       designPublicationSequence === before.publicationSequence) {
-      try { restoreImportRollback(before); }
+      try { restoreImportRollback(before); assertOpenedDocument = null; }
       catch (rollbackError) { throw new AggregateError([error, rollbackError], "打开设计失败，恢复先前状态时也发生错误"); }
     }
     const message = error instanceof Error ? error.message : "打开失败";
     if (dirty && !discardChanges) queueRecovery();
-    setSaveState("打开失败", "error");
-    notify(message, "error");
+    setSaveState(assertOpenedDocument ? "已打开 · 资源加载失败" : "打开失败", "error");
+    notify(assertOpenedDocument ? `已打开 ${path}，但资源未完成加载；当前设计已保留。${message}` : message, "error");
     throw error;
   }
 }
@@ -4329,16 +4593,68 @@ function repoFilesSummary(workspace, discovery) {
   return `${repository}${branch}${trust} · ${count} 个设计${truncated}`;
 }
 
-function renderDesignFileRows(container, files, { closeDialog = false } = {}) {
+function updateDocumentTitle() {
+  const title = document.querySelector("#document-title");
+  const path = currentSourcePath ?? elements.path.value.trim();
+  if (title) title.textContent = designFileName(path);
+  elements.openFiles.title = `${path || "未命名设计"} · 点击切换文件 (⌘O)`;
+}
+
+function recentDesignScope() {
+  return context.cwd ?? "preview";
+}
+
+async function rememberOpenedDesign(path, expectedEpoch) {
+  assertWorkspaceEpoch(expectedEpoch);
+  const scope = recentDesignScope();
+  await loadRecentDesigns(expectedEpoch);
+  assertWorkspaceEpoch(expectedEpoch);
+  const paths = rememberDesignPath(recentlyOpenedDesigns.get(scope), path);
+  recentlyOpenedDesigns.set(scope, paths);
+  await hostCall("storage.set", {
+    key: scopedStorageKey("recentDesignPaths", scope),
+    value: { workspaceRoot: context.cwd ?? null, paths },
+  });
+  assertWorkspaceEpoch(expectedEpoch);
+}
+
+async function loadRecentDesigns(expectedEpoch) {
+  const scope = recentDesignScope();
+  if (recentlyOpenedDesigns.has(scope)) return;
+  const record = await hostCall("storage.get", { key: scopedStorageKey("recentDesignPaths", scope) }).catch(() => null);
+  assertWorkspaceEpoch(expectedEpoch);
+  if (!recentlyOpenedDesigns.has(scope)) recentlyOpenedDesigns.set(scope,
+    record?.workspaceRoot === (context.cwd ?? null) ? recentDesignPaths(record.paths) : []);
+}
+
+function fileSwitchStatus(message, kind = "idle") {
+  const status = document.querySelector("#file-switch-status");
+  status.textContent = message;
+  status.dataset.kind = kind;
+}
+
+function renderFileDialogInventory() {
+  if (!fileDialogInventory || fileDialogInventory.epoch !== workspaceEpoch) return;
+  const query = document.querySelector("#design-file-search")?.value ?? "";
+  const files = visibleDesignFiles(fileDialogInventory.files, {
+    query,
+    activePath: currentSourcePath ?? elements.path.value.trim(),
+    recent: recentlyOpenedDesigns.get(recentDesignScope()),
+  });
+  renderDesignFileRows(elements.filesList, files, { closeDialog: true, filtered: Boolean(query.trim()) });
+  fileSwitchStatus(query.trim() ? `${files.length} 个匹配文件` : "最近打开的文件优先；切换前会保存当前修改。");
+}
+
+function renderDesignFileRows(container, files, { closeDialog = false, filtered = false } = {}) {
   container.replaceChildren();
   if (!files.length) {
     const empty = document.createElement("div");
     empty.className = "files-empty";
-    empty.textContent = "还没有设计文件。保存当前画布即可创建第一个。";
+    empty.textContent = filtered ? "没有匹配的设计文件，试试文件名或目录。" : "还没有设计文件。编辑画布后会自动保存。";
     container.append(empty);
     return;
   }
-  const activePath = elements.path.value.trim();
+  const activePath = currentSourcePath ?? elements.path.value.trim();
   for (const file of files) {
     const active = file.path === activePath;
     const button = document.createElement("button");
@@ -4373,11 +4689,32 @@ function renderDesignFileRows(container, files, { closeDialog = false } = {}) {
       `${formatBytes(logicalBytes)}${storageLabel}`;
     button.append(icon, copy, size);
     button.addEventListener("click", () => {
-      if (active) return;
-      if (closeDialog && elements.filesDialog.open) elements.filesDialog.close();
+      if (fileSwitchPending?.epoch === workspaceEpoch) return;
+      if (active) {
+        if (closeDialog) elements.filesDialog.close();
+        return;
+      }
+      const expectedEpoch = workspaceEpoch;
+      const transition = { epoch: expectedEpoch };
+      fileSwitchPending = transition;
+      container.setAttribute("aria-busy", "true");
+      for (const row of container.querySelectorAll("button")) row.disabled = true;
+      if (closeDialog) fileSwitchStatus("正在保存当前修改并切换文件…");
       void openDocument(file.path)
-        .then(() => refreshRepoFilesPanel())
-        .catch(() => undefined);
+        .then((opened) => {
+          if (expectedEpoch !== workspaceEpoch || !opened) return;
+          if (closeDialog && elements.filesDialog.open) elements.filesDialog.close();
+          return refreshRepoFilesPanel();
+        })
+        .catch((error) => {
+          if (expectedEpoch === workspaceEpoch && closeDialog) fileSwitchStatus(error instanceof Error ? error.message : "切换失败，当前设计已保留", "error");
+        })
+        .finally(() => {
+          if (fileSwitchPending === transition) fileSwitchPending = null;
+          if (expectedEpoch !== workspaceEpoch) return;
+          container.removeAttribute("aria-busy");
+          for (const row of container.querySelectorAll("button")) row.disabled = false;
+        });
     });
     container.append(button);
   }
@@ -4394,6 +4731,8 @@ async function loadDesignFileInventory({ force = false } = {}) {
     discoverDesignFiles(),
   ]);
   assertWorkspaceEpoch(operationWorkspaceEpoch);
+  await loadRecentDesigns(operationWorkspaceEpoch);
+  assertWorkspaceEpoch(operationWorkspaceEpoch);
   return { workspace, discovery, summary: repoFilesSummary(workspace, discovery) };
 }
 
@@ -4405,7 +4744,10 @@ async function refreshRepoFilesPanel({ force = false } = {}) {
     const inventory = await loadDesignFileInventory({ force });
     if (workspaceEpoch !== operationWorkspaceEpoch) return;
     elements.repoFilesSummary.textContent = inventory.summary;
-    renderDesignFileRows(elements.repoFilesList, inventory.discovery.files);
+    renderDesignFileRows(elements.repoFilesList, visibleDesignFiles(inventory.discovery.files, {
+      activePath: currentSourcePath ?? elements.path.value.trim(),
+      recent: recentlyOpenedDesigns.get(recentDesignScope()),
+    }));
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) return;
     elements.repoFilesSummary.textContent = "无法读取 Repo 设计文件";
@@ -4419,13 +4761,20 @@ async function refreshRepoFilesPanel({ force = false } = {}) {
 async function showFiles() {
   const operationWorkspaceEpoch = workspaceEpoch;
   elements.filesList.replaceChildren();
+  elements.filesList.removeAttribute("aria-busy");
   elements.workspaceSummary.textContent = "正在读取工作区…";
+  const search = document.querySelector("#design-file-search");
+  if (search) search.value = "";
+  fileDialogInventory = null;
+  fileSwitchStatus("正在读取文件…");
   elements.filesDialog.showModal();
+  search?.focus();
   try {
-    const inventory = await loadDesignFileInventory();
+    const inventory = await loadDesignFileInventory({ force: true });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
     elements.workspaceSummary.textContent = inventory.summary;
-    renderDesignFileRows(elements.filesList, inventory.discovery.files, { closeDialog: true });
+    fileDialogInventory = { epoch: operationWorkspaceEpoch, files: inventory.discovery.files };
+    renderFileDialogInventory();
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) {
       if (elements.filesDialog.open) elements.filesDialog.close();
@@ -4905,6 +5254,7 @@ function captureImportRollback() {
     currentPersistenceMode,
     savedSnapshot,
     savedOperationState,
+    unconfirmedSavePath,
     recoveryBaseDocument,
     pristineBlankSnapshot,
     stagedFigmaBinding,
@@ -4941,6 +5291,7 @@ function restoreImportRollback(before) {
   currentPersistenceMode = before.currentPersistenceMode;
   savedSnapshot = before.savedSnapshot;
   savedOperationState = before.savedOperationState;
+  unconfirmedSavePath = before.unconfirmedSavePath;
   recoveryBaseDocument = before.recoveryBaseDocument;
   pristineBlankSnapshot = before.pristineBlankSnapshot;
   stagedFigmaBinding = before.stagedFigmaBinding;
@@ -4953,10 +5304,23 @@ function restoreImportRollback(before) {
   fontResourcesReady = fontsRestored && before.fontResourcesReady && !fontPageHidden;
   updateDirtyState();
   renderAll();
-  if (dirty) queueRecovery();
+  if (dirty) {
+    queueRecovery();
+    documentAutosave.schedule();
+  }
 }
 
-async function replaceDesignWithHtmlImport(
+async function replaceDesignWithHtmlImport(...args) {
+  importPublicationDepth += 1;
+  try {
+    return await performDesignWithHtmlImport(...args);
+  } finally {
+    importPublicationDepth -= 1;
+    if (dirty) documentAutosave.schedule();
+  }
+}
+
+async function performDesignWithHtmlImport(
   imported,
   {
     save = false,
@@ -5171,6 +5535,7 @@ async function importHtmlFromWorkspace({
     sha256Bytes,
   });
   check();
+  captured.document.canvas.mode = "infinite";
   for (const plan of captured.resourcePlans ?? []) {
     for (const part of plan.parts) {
       check();
@@ -5426,6 +5791,31 @@ async function saveAuditReport() {
       }
       elements.saveAuditReport.disabled = context.trusted !== true;
     }
+  }
+}
+
+async function newDocumentFromPanel() {
+  finishInlineTextEdit();
+  cancelInteraction();
+  resetPolishTargets();
+  const operationWorkspaceEpoch = workspaceEpoch;
+  const operationDocumentEpoch = documentEpoch;
+  const operationPath = elements.path.value;
+  const assertCurrentDocument = () => {
+    assertWorkspaceEpoch(operationWorkspaceEpoch);
+    if (documentEpoch !== operationDocumentEpoch || elements.path.value !== operationPath)
+      throw new Error("设计或保存路径已切换；已取消新建设计");
+  };
+  try {
+    await settlePendingSaves();
+    assertCurrentDocument();
+    await documentAutosave.flush();
+    assertCurrentDocument();
+    newDocument({ discardChanges: true });
+  } catch (error) {
+    if (workspaceEpoch !== operationWorkspaceEpoch) return;
+    fileSwitchStatus(error instanceof Error ? error.message : "保存失败；已保留当前设计", "error");
+    notify(error instanceof Error ? error.message : "保存失败；已保留当前设计", "error");
   }
 }
 
@@ -5810,6 +6200,7 @@ function bindPropertyInput(input, update, eventName = "input", layoutEffect = "n
   input.addEventListener(eventName, () => {
     const node = selectedNode();
     if (!node || isEffectivelyLocked(node)) return;
+    const previousNodes = design.canvas.mode === "infinite" ? clone(design.nodes) : null;
     const before = isContainerNode(node) ? { ...node } : node.textRanges !== undefined ? clone(node) : null;
     try {
       update(node, input.value);
@@ -5837,8 +6228,18 @@ function bindPropertyInput(input, update, eventName = "input", layoutEffect = "n
     } else if (layoutEffect === "typography" && node.type === "text") {
       applyAutoLayouts(design.nodes, new Set(node.parentId ? [node.parentId] : []));
     }
+    if (previousNodes && !design.nodes.every(geometryWithinDesignBudget)) {
+      design.nodes = previousNodes;
+      const page = activeDesignPage();
+      if (page) page.nodes = previousNodes;
+      renderAll();
+      notify("此次修改会使图层超出坐标或尺寸范围，已保留原设计", "error");
+      return;
+    }
     markChanged();
   });
+  // Empty operation records are ignored, while a valid intermediate input in
+  // the same focus session still needs its own undo record after a rejection.
   input.addEventListener("change", commitHistory);
 }
 
@@ -5893,10 +6294,10 @@ bindPropertyInput(propertyInputs.name, (node, value) => {
   node.name = value.slice(0, 120) || node.type;
 });
 bindPropertyInput(propertyInputs.x, (node, value) => {
-  setNodeTreePosition(design.nodes, node.id, "x", round(Number(value) || 0));
+  setTreePositionSafely(node, "x", round(clamp(finiteOr(value, 0), -designCoordinateLimit(design.canvas), designCoordinateLimit(design.canvas))));
 });
 bindPropertyInput(propertyInputs.y, (node, value) => {
-  setNodeTreePosition(design.nodes, node.id, "y", round(Number(value) || 0));
+  setTreePositionSafely(node, "y", round(clamp(finiteOr(value, 0), -designCoordinateLimit(design.canvas), designCoordinateLimit(design.canvas))));
 });
 bindPropertyInput(
   propertyInputs.width,
@@ -6400,6 +6801,16 @@ bindPropertyInput(
 bindCanvasInput(canvasInputs.name, (value) => {
   design.name = value.slice(0, 120);
 });
+elements.enableInfiniteCanvas.addEventListener("click", () => {
+  finishInlineTextEdit();
+  cancelInteraction();
+  if (design.canvas.mode === "infinite") return;
+  design.canvas.mode = "infinite";
+  commitHistory();
+  markChanged();
+  requestAnimationFrame(fitCanvas);
+  notify("已切换到无限工作区；图层坐标和来源保持不变");
+});
 bindCanvasInput(canvasInputs.width, (value) => {
   design.canvas.width = clamp(finiteOr(value, 1280), 100, MAX_DESIGN_CANVAS_SIZE);
 });
@@ -6636,11 +7047,29 @@ elements.repairQuality.addEventListener("click", () => {
 });
 elements.exportSvg.addEventListener("click", () => void exportSvg());
 elements.openFiles.addEventListener("click", () => void showFiles());
+document.querySelector("#design-file-search")?.addEventListener("input", renderFileDialogInventory);
+document.querySelector("#design-file-search")?.addEventListener("keydown", (event) => {
+  if (!["ArrowDown", "Enter"].includes(event.key)) return;
+  event.preventDefault();
+  const first = elements.filesList.querySelector(".file-row:not(:disabled)");
+  if (event.key === "Enter") first?.click();
+  else first?.focus();
+});
+elements.filesList.addEventListener("keydown", (event) => {
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+  const rows = [...elements.filesList.querySelectorAll(".file-row:not(:disabled)")];
+  if (!rows.length) return;
+  event.preventDefault();
+  const index = rows.indexOf(event.target.closest(".file-row"));
+  const next = event.key === "Home" ? 0 : event.key === "End" ? rows.length - 1
+    : Math.max(0, Math.min(rows.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)));
+  rows[next]?.focus();
+});
 elements.refreshRepoFiles.addEventListener(
   "click",
   () => void refreshRepoFilesPanel({ force: true }),
 );
-elements.repoNewDocument.addEventListener("click", newDocument);
+elements.repoNewDocument.addEventListener("click", newDocumentFromPanel);
 elements.openHtmlImport.addEventListener("click", () => {
   setHtmlImportStatus(
     lastHtmlImportReport?.warnings?.length
@@ -6683,7 +7112,7 @@ elements.htmlImportDialog.addEventListener("close", () => {
   htmlImportGeneration += 1;
 });
 elements.openShortcuts.addEventListener("click", () => elements.shortcutsDialog.showModal());
-elements.newDocument.addEventListener("click", newDocument);
+elements.newDocument.addEventListener("click", newDocumentFromPanel);
 elements.openAi.addEventListener("click", openAgentDialog);
 elements.openDelivery.addEventListener("click", () => {
   const deliveryTab = document.querySelector('[data-tab="delivery"]');
@@ -6794,9 +7223,11 @@ for (const button of document.querySelectorAll("[data-layout-align], #layout-spa
   });
 }
 elements.path.addEventListener("change", () => {
+  documentAutosave.cancel();
   figmaWorkflowUI?.contextChanged();
   reviewCommentsUI?.update();
   const path = elements.path.value.trim();
+  unconfirmedSavePath = path !== currentSourcePath;
   if (path !== currentSourcePath) warnedExternalVersion = null;
   currentModifiedAt = path === currentSourcePath ? currentSourceModifiedAt : null;
   currentRevision = path === currentSourcePath ? currentSourceRevision : null;
@@ -6949,7 +7380,7 @@ window.addEventListener("keydown", (event) => {
     event.preventDefault();
     const amount = event.shiftKey ? 10 : 1;
     const movingIds = new Set(transformNodes.map((node) => node.id));
-    for (const node of transformNodes) {
+    const changes = transformNodes.map((node) => {
       const delta = visualDeltaForNode(
         node,
         {
@@ -6958,9 +7389,9 @@ window.addEventListener("keydown", (event) => {
         },
         movingIds,
       );
-      node.x = round(node.x + delta.x);
-      node.y = round(node.y + delta.y);
-    }
+      return { node, x: round(node.x + delta.x), y: round(node.y + delta.y) };
+    });
+    if (!applyPositionChangesSafely(changes)) return;
     commitHistory();
     markChanged();
   }
@@ -7040,6 +7471,7 @@ function updateContext(next) {
       : { busy: false, trusted: false };
   const workspaceChanged = contextInitialized && projectContextChanged(context, nextContext);
   if (workspaceChanged) {
+    documentAutosave.cancel();
     finishInlineTextEdit();
     resetPolishTargets();
     setWorkspaceLoading(true);
@@ -7673,10 +8105,7 @@ function designScreenshotSource(nodeId, pageId) {
   };
   if (typeof nodeId !== "string" || !nodeId) {
     return {
-      x: 0,
-      y: 0,
-      width: screenshotDesign.canvas.width,
-      height: screenshotDesign.canvas.height,
+      ...designPageBounds(screenshotDesign),
       nodeId: null,
       pageId: page.id,
       pageName: page.name,
@@ -7715,13 +8144,14 @@ function designScreenshotSource(nodeId, pageId) {
     24,
     Math.max(8, Math.min(effectBounds.width, effectBounds.height) * 0.04),
   );
-  const left = Math.max(0, effectBounds.x - padding);
-  const top = Math.max(0, effectBounds.y - padding);
-  const right = Math.min(
+  const infinite = screenshotDesign.canvas.mode === "infinite";
+  const left = infinite ? effectBounds.x - padding : Math.max(0, effectBounds.x - padding);
+  const top = infinite ? effectBounds.y - padding : Math.max(0, effectBounds.y - padding);
+  const right = infinite ? effectBounds.x + effectBounds.width + padding : Math.min(
     screenshotDesign.canvas.width,
     effectBounds.x + effectBounds.width + padding,
   );
-  const bottom = Math.min(
+  const bottom = infinite ? effectBounds.y + effectBounds.height + padding : Math.min(
     screenshotDesign.canvas.height,
     effectBounds.y + effectBounds.height + padding,
   );
@@ -8941,7 +9371,7 @@ function registerAgentTools(ready) {
           throw Error("Figma 输入已在预检后变化；请重新 prepare");
         const prepared =
           cached?.prepared ??
-          reviewPreparedFigma(await prepareFigmaImport(source.content, { sha256Bytes }));
+          reviewPreparedFigma(await prepareFigmaImport(source.content, { sha256Bytes, canvasMode: "infinite" }));
         checkExchangeScope(scope);
         if (args.action === "prepare") {
           const id = `figma-prepare-${++figmaPreparationSequence}-${sourceHash.slice(0, 12)}`;
@@ -9696,7 +10126,11 @@ function registerAgentTools(ready) {
     let width = Math.max(1, Math.round(source.width * scale));
     let height = Math.max(1, Math.round(source.height * scale));
     await loadReferencedDesignResources();
-    const svg = exportDesignSvg(source.document, { resourceDataUrls, maxBytes: 4 * 1024 * 1024 });
+    const bounds = { x: source.x, y: source.y, width: source.width, height: source.height };
+    const svg = exportDesignSvg(source.document, { resourceDataUrls, maxBytes: 4 * 1024 * 1024, bounds });
+    const svgRoot = new window.DOMParser().parseFromString(svg, "image/svg+xml").documentElement;
+    svgRoot.setAttribute("width", String(width));
+    svgRoot.setAttribute("height", String(height));
     const image = new window.Image();
     await new Promise((resolve, reject) => {
       const timer = window.setTimeout(
@@ -9719,7 +10153,7 @@ function registerAgentTools(ready) {
         },
         { once: true },
       );
-      image.src = `data:image/svg+xml;base64,${utf8Base64(svg)}`;
+      image.src = `data:image/svg+xml;base64,${utf8Base64(new window.XMLSerializer().serializeToString(svgRoot))}`;
     });
     const canvas = document.createElement("canvas");
     let dataUrl;
@@ -9732,10 +10166,6 @@ function registerAgentTools(ready) {
       if (!context) throw new Error("浏览器不支持设计预览");
       context.drawImage(
         image,
-        source.x,
-        source.y,
-        source.width,
-        source.height,
         0,
         0,
         width,
@@ -9769,6 +10199,7 @@ function registerAgentTools(ready) {
       nodeId: source.nodeId,
       pageId: source.pageId,
       pageName: source.pageName,
+      bounds,
       path: elements.path.value.trim(),
       revision: screenshotRevision,
       stateRevision: screenshotStateRevision,
@@ -10206,11 +10637,6 @@ saveAsDialog.querySelector("#save-as-confirm").addEventListener("click", async (
     saveAsStatus.textContent = error instanceof Error ? error.message : "另存失败";
   }
 });
-const compactSaveAs = document.createElement("button");
-compactSaveAs.type = "button";
-compactSaveAs.dataset.toolbarAction = "save-as";
-compactSaveAs.textContent = "另存设计文件";
-document.querySelector(".compact-actions-list").append(compactSaveAs);
 
 figmaWorkflowUI = mountFigmaWorkflow({
   getScope: captureExchangeScope,
@@ -10222,7 +10648,7 @@ figmaWorkflowUI = mountFigmaWorkflow({
     return snapshot;
   },
   prepareImport: async (input) => {
-    const prepared = reviewPreparedFigma(await prepareFigmaImport(input, { sha256Bytes }));
+    const prepared = reviewPreparedFigma(await prepareFigmaImport(input, { sha256Bytes, canvasMode: "infinite" }));
     const resourceDataUrls = resourceDataUrlsFromPlans(prepared.resourcePlans ?? []);
     const previewSvg = exportDesignSvg(normalizeDesignState(prepared.document), {
       resourceDataUrls,

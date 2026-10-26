@@ -11,7 +11,7 @@ permission; their application logic belongs to the Panel package.
 
 | App                | Subdirectory          | Purpose                                                                                                                            |
 | ------------------ | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Design Studio 0.19 | `apps/design-studio`  | Figma JSON exchange, editable repo design, interactive HTML prototypes, project review comments and measured frontend comparison   |
+| Design Studio 0.23.0 | `apps/design-studio`  | Figma JSON exchange, editable repo design, interactive HTML prototypes, project review comments and measured frontend comparison   |
 | Job Hunt HQ        | `apps/job-hunt-hq`    | Project/session-bound job discovery, company research, resume, and interview visualization                                         |
 | Quant Lab          | `apps/quant-lab`      | Local-first investment desk with portfolio rules, linked plain-text notes, Today, reminders, opt-in news/SEC filings, and research |
 | Video Download     | `apps/video-download` | Local yt-dlp downloads plus isolated setup and error-analysis Tasks                                                                |
@@ -173,7 +173,9 @@ dependencies; voice initialization downloads the selected models. See the
 recordings, real previews, and export. GitHub installation itself does not
 compile the source or install models.
 
-Design Studio 0.19 adds Figma JSON import → editable design → reviewed original-node updates
+Design Studio 0.23.0 adds an infinite workspace with independently positioned artboards,
+content-bound exports, searchable recent files and automatic primary-file saving.
+Figma JSON import → editable design → reviewed original-node updates
 or new-page copies through its bundled development plugin. Source mappings and local image
 bytes survive saves, reopen, undo/redo and recovery; complex layers retain their original data
 with visible preview fallbacks. Explicit page links, back/URL actions and responsive page routes

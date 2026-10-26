@@ -236,15 +236,15 @@ export function parseCssBoxShadow(value) {
   };
 }
 
-function capturedCornerProperties(style, inset = 0) {
+function capturedCornerProperties(style, borderBox, inset = 0) {
   const radii = cssCornerRadii([
     style.borderTopLeftRadius, style.borderTopRightRadius,
     style.borderBottomRightRadius, style.borderBottomLeftRadius,
-  ]).map((radius) => round(Math.max(0, radius - inset)));
+  ], borderBox).map((radius) => round(Math.max(0, radius - inset)));
   return { cornerRadius: radii[0], ...(radii.some((radius) => radius !== radii[0]) ? { cornerRadii: radii } : {}) };
 }
-function representativeCornerRadius(style) {
-  return capturedCornerProperties(style).cornerRadius;
+function representativeCornerRadius(style, borderBox) {
+  return capturedCornerProperties(style, borderBox).cornerRadius;
 }
 
 function isVisibleElement(element, style, rect) {
@@ -695,7 +695,7 @@ function elementNeedsFrame(element, style, forceFrame = false) {
 
 function appendSurfaceLayers(frame, style, rect, nextId) {
   const fill = parseCssColor(style.backgroundColor);
-  const radius = representativeCornerRadius(style);
+  const radius = representativeCornerRadius(style, rect);
   const shadow = parseCssBoxShadow(style.boxShadow);
   let hasManualLayers = false;
   if (fill?.alpha === 1) {
@@ -710,7 +710,7 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
       rectangleNode(nextId("surface"), `${frame.name} surface`, rect, {
         fill: fill?.alpha > 0 ? fill.hex : "transparent",
         opacity: fill?.alpha > 0 ? round(fill.alpha, 4) : 1,
-        ...capturedCornerProperties(style),
+        ...capturedCornerProperties(style, rect),
         layoutPositioning: "absolute",
         constraintHorizontal: "stretch",
         constraintVertical: "stretch",
@@ -750,7 +750,7 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
           stroke: border.color.hex,
           strokeWidth: round(border.width),
           opacity: round(border.color.alpha, 4),
-          ...capturedCornerProperties(style, border.width / 2),
+          ...capturedCornerProperties(style, rect, border.width / 2),
           layoutPositioning: "absolute",
           constraintHorizontal: "stretch",
           constraintVertical: "stretch",
@@ -1235,7 +1235,7 @@ export async function captureHtmlToDesign(root, options = {}) {
     const holder = needsFrame
       ? frameNode(nextId(explicitId || name, { preserve: Boolean(explicitId) }), name, rect, {
           opacity: round(clamp(Number.parseFloat(style.opacity || "1"), 0, 1), 4),
-          ...capturedCornerProperties(style),
+          ...capturedCornerProperties(style, rect),
           padding: 0,
           paddingTop: round(measuredInsets.top),
           paddingRight: round(measuredInsets.right),
