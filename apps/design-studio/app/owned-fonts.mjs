@@ -1,6 +1,36 @@
 // Only faces constructed here belong to this manager. Resource IDs/family names
 // never authorize deletion from the shared document FontFaceSet.
 import { inspectFontCapabilities, fontCapabilitiesFromDataUrl, fontFaceWeight } from "./font-capabilities.mjs";
+import { parseDesignFontFamily } from "./font-family.mjs";
+
+/** A named family used only later in a glyph chain keeps its authored CSS face. */
+export function designFontResourceRoles(nodes = [], resources = []) {
+  const roles = new Map(), fonts = resources.filter(resource => resource.kind === "font");
+  const families = parts => {
+    for (const [index, part] of (parts ?? []).entries()) {
+      if (part.generic) continue;
+      for (const resource of fonts) {
+        if (resource.family.toLowerCase() !== part.name.toLowerCase()) continue;
+        if (index === 0 || !roles.has(resource.id))
+          roles.set(resource.id, index === 0 ? "selected" : "glyph-fallback");
+      }
+    }
+  };
+  for (const node of nodes) {
+    if (node.type !== "text") continue;
+    const selected = fonts.find(resource => resource.id === node.fontRef);
+    if (selected) roles.set(selected.id, "selected");
+    const base = parseDesignFontFamily(node.fontFamily);
+    const overridden = selected && (!base || base[0].generic || base[0].name.toLowerCase() !== selected.family.toLowerCase());
+    if (!overridden) families(base);
+    for (const range of node.textRanges?.ranges ?? []) {
+      if (range.fontFamily === undefined || overridden && range.fontFamily === node.fontFamily) continue;
+      families(parseDesignFontFamily(range.fontFamily));
+    }
+  }
+  return roles;
+}
+
 export function createOwnedFontManager({ fontSet, createFace } = {}) {
   let lifecycle = 0, revision = 0, suspended = false;
   let active = new Map();
@@ -14,9 +44,9 @@ export function createOwnedFontManager({ fontSet, createFace } = {}) {
     operation.check();
     return operation;
   }
-  function sameResource(entry, resource) {
+  function sameResource(entry, resource, role) {
     const a = entry.descriptor, b = resource.descriptor;
-    return entry.dataUrl === resource.dataUrl && a.id === b.id && a.sha256 === b.sha256 &&
+    return entry.role === role && entry.dataUrl === resource.dataUrl && a.id === b.id && a.sha256 === b.sha256 &&
       a.bytes === b.bytes && a.mime === b.mime && a.family === b.family &&
       a.weight === b.weight && a.style === b.style;
   }
@@ -76,22 +106,23 @@ export function createOwnedFontManager({ fontSet, createFace } = {}) {
       return token;
     },
     assertCurrent: assertOperation,
-    async prepare(token, resources) {
+    async prepare(token, resources, { roles = new Map() } = {}) {
       assertOperation(token);
       let entries;
       try {
         entries = await Promise.all(resources.filter((resource) => resource.descriptor.kind === "font").map(async (resource) => {
           assertOperation(token);
           if (!createFace || !fontSet) return;
+          const role = roles.get(resource.descriptor.id) === "glyph-fallback" ? "glyph-fallback" : "selected";
           const old = active.get(resource.descriptor.id);
-          if (old && sameResource(old, resource)) return [resource.descriptor.id, old];
+          if (old && sameResource(old, resource, role)) return [resource.descriptor.id, old];
           const capabilities = resource.bytes ? inspectFontCapabilities(resource.bytes) : fontCapabilitiesFromDataUrl(resource.dataUrl);
           const face = createFace(resource.descriptor.family, `url(${resource.dataUrl})`, {
-            weight: fontFaceWeight(capabilities, resource.descriptor), style: resource.descriptor.style,
+            weight: role === "glyph-fallback" ? String(resource.descriptor.weight ?? 400) : fontFaceWeight(capabilities, resource.descriptor), style: resource.descriptor.style,
           });
           await face.load();
           assertOperation(token);
-          return [resource.descriptor.id, { descriptor: { ...resource.descriptor }, dataUrl: resource.dataUrl, face }];
+          return [resource.descriptor.id, { descriptor: { ...resource.descriptor }, dataUrl: resource.dataUrl, role, face }];
         }));
         assertOperation(token);
       } catch (error) {

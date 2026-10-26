@@ -153,3 +153,76 @@ The new direct formal UI log, downloaded before/after backups and refusal
 receipt are in `native-export-ui-formal-2026-10-22T09-37-00.829+00-00`.
 See the [cross-repository evidence report](/Users/admin/Documents/个人学习/代码学习/html2figma/docs/design-workbench-native-export-evidence-2026-10-22.md) for exact paths and
 acceptance limits.
+
+
+## 2026-10-26 integration correction — native container/world agreement
+
+Independent review froze a contradictory packet from the same two-node fixture:
+only child `absoluteTransform[0][2]` changed from 1200 to 1700, while parent
+absolute x1060, child local x140 and child bounds x1200 stayed unchanged.
+Normalization, synchronous import and asynchronous preparation accepted it;
+the canonical child stayed x1200 while the retained source claimed x1700.
+The original input and observed result remain in
+`peer-native-world-contradiction.{input,observed}.json` under the integration
+artifact directory. This is an admission defect, not an observed native layout
+change or permission to repair the coordinates.
+
+The receiver now rejects a disagreement with
+`NATIVE_EXPORT_TRANSFORM_INCONSISTENT` when an exported known container proves
+its child's local-to-world relationship. FRAME, COMPONENT and INSTANCE create
+a container anchor; Group/Boolean operations retain the previous anchor.
+Unknown container semantics stop that inference. Each selected root keeps its
+own absolute anchor because its external container may not be exported.
+This follows Figma's [container-parent transform semantics](https://developers.figma.com/docs/plugins/api/properties/nodes-relativetransform/),
+which explicitly skip Group/Boolean parents.
+
+The comparison retains the existing fixed 0.001 matrix epsilon, rather than a
+coordinate-relative tolerance. Exact float32 round-to-nearest output is also
+accepted; the synthetic far-coordinate control demonstrates this without
+claiming that every SDK implementation has that precision. Arbitrary nearby
+translations still refuse. No coordinate or matrix is rewritten. Render bounds
+are not layout geometry: Figma distinguishes [ordinary and rendered bounds](https://developers.figma.com/docs/plugins/api/node-properties/),
+and the existing overflow/stroke fixture must keep its 160px layout frame.
+This focused check does not infer arbitrary vector paint bounds or native pixels.
+
+The existing native-export regression file adds four public-entry refusal cases,
+retained-object and deep-descendant controls, Group/Boolean skipping, a new Frame
+beneath a Group, selected Group outside-container behavior, counter-rotation at
+negative infinite coordinates, outside-stroke/render overflow and null bounds
+plus a float32 control. The initial run had 7 failing refusal cases and 36
+passing controls; after the guard the full file passes 43/43. Original production
+fixture bytes and all preexisting assertions remain unchanged. Frozen pre-source,
+RED, GREEN and related regression logs are under
+`artifacts/design-studio-draft-integration-20261026/native-transform-consistency/`.
+
+## 2026-10-26 integration correction — native Group projection
+
+The transform admission controls exposed a separate projection defect. In a
+valid Frame → 90° Group → child packet, the SDK child matrix also contains that
+90° rotation because its container is the Frame. Canonical geometry composes
+every immediate parent, so copying the SDK child rotation produced a second
+90° turn. The frozen input should paint at x1170/y20 with a 30×60 extent;
+`transformedNodeBoundsInTree(nodes, child)` instead measured x1155/y35 and 60×30.
+The corrected independent observation is `observed.v2.json`; the earlier
+`observed.json` used the helper arguments in the wrong order and remains only
+a harness diagnostic.
+
+For report-backed native imports, the receiver now derives a temporary direct
+parent matrix as `inverse(parent.absoluteTransform) × child.absoluteTransform`.
+Each selected root independently uses its actual absolute transform. The
+temporary geometry view uses measured width/height and does not substitute a
+bounding-box center. The SDK relative/absolute matrices, null or non-null bounds,
+report and all original source observations remain unchanged in the binding.
+REST and raw-plugin projection rules are unchanged. This is an automatic
+conversion correction; no canonical node is manually repaired afterward.
+
+Five focused cases first failed and now pass: full-tree and selected-Group
+imports with ordinary or null bounds, plus an observation-only bounding extent
+that must not replace matrix-and-size layout. The Group cases cover raw and
+retained packets, exact transformed extents, save/reopen, report/matrix/bounds
+retention and an empty source patch after reopening. The existing far/negative,
+counter-rotation, render-overflow, binding and ordinary JSON cases remain in the
+related CPU group: **170/170** pass across eleven files. These are geometry and
+persistence assertions, not a new native Figma pixel comparison. Frozen source,
+RED/GREEN logs, input and independent observation remain under
+`artifacts/design-studio-draft-integration-20261026/native-group-projection/`.

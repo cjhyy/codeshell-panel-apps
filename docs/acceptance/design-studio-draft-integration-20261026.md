@@ -43,6 +43,20 @@ patch，再从刷新后的 `origin/main`（`8e8917f`）建立
 更新快照消除差异。未激活的 mixed-inline planner 仍有自己的保守准入边界，未接入
 转换流程，也没有将另一条 promotion 实验的失败 case 当作已通过。
 
+## 完整门禁发现的后续修复
+
+首个冻结提交 `fb88857` 的完整检查确实失败，日志与前后源码 SHA 保留在
+`gates/20261026T062954Z/`，对应 GitHub 失败日志保留在 `ci-fb88857/`。
+后续修复单独提交、重新冻结验收，不覆盖该失败基线。
+
+| 问题与触发 | 预期与修复 | 固定回归/证据 |
+| --- | --- | --- |
+| 完整 UI 检查中 fallback-only 字体被统一扩成变量字重范围，公开 family 与私有 glyph fallback 选中了不同实例 | 仅作缺字后备的资源保持原 authored 400；主字体、无 fontRef 主字体与范围主字体仍使用字节证明的变量范围。用途纳入缓存与异步作用域，角色改变重建 face，事务与 lease 恢复保留 | `font-fallback-repair/`；原严格宽度断言保留，actual/reference 均为 344.6127624511719；新增角色切换与 lease 零像素差控制。exchange 从旧单一 400 字符串假设改为精确 Inter SHA、变量范围、loaded face 与原资源来源，保留恢复和首次保存重开断言 |
+| report-backed 原生输入的 child absoluteTransform 与已导出 FRAME 容器链冲突，却被当作有效来源 | 拒绝整批并返回 NATIVE_EXPORT_TRANSFORM_INCONSISTENT；按 SDK container parent 规则跳过 Group/Boolean，外部未导出的容器不猜测。保留原固定 0.001 epsilon 和精确 float32 舍入，未引入随坐标放大的容差 | `native-transform-consistency/`、`peer-native-world-contradiction.*`；真实冻结输入与远坐标、嵌套/独立根控制 |
+| SDK Group 子节点的 relativeTransform 相对 container，直接按 canonical immediate parent 组合会二次旋转 | 仅 report-backed native 分支从实际绝对矩阵推导临时 immediate-parent 投影；layout 使用实际矩阵与 width/height，原 SDK 矩阵、边界、source/report 逐字保留 | `native-group-projection/`；5 个 RED→GREEN case：世界边界由错误的 (1155,35,60,30) 恢复为 (1170,20,30,60)，含 selected Group、null bounds、保存重开与绑定 no-op；11 文件 CPU 170/170 |
+| 大文档门禁仍读旧 localStorage，已迁移 IDB 后等待永远不成立 | 保留原 448396-byte legacy seed 作为真实迁移输入，用真实 browser-store/IDB 验证 principal、分片 revision/mtime 和 recovery；原 LS 文本与 mtime 保持不变 | `large-document-backend/`；702 节点、352/350 分页、原重建/延迟加载/图片字体 GPU/Undo/Redo 断言保留，最终返回 passed:true |
+| 新增 IDB 异步探针直接传 page.waitForFunction，首个 Promise resolved false 会提前返回 | 30s 原时限内显式 await 每次 browser probe 的值，捕获实际已提交 recovery 记录，再断言 operations 而非 whole-design | 同目录 v1/v2/v3 与 failed logs 单独保留为验收脚本诊断，不计作产品 RED；async-predicate-control.json 记录实际 Playwright 1.60.0 首次返回 false、attempts=1；第四轮正式大文档检查成功 |
+
 ## 实际验收和证据层次
 
 定点浏览器操作都使用私有测试 origin/context，原用户 4190 和旧 IANA 失败数据没有

@@ -112,7 +112,7 @@ import { designPaintSvg } from "./paint.mjs";
 import { repairDesignQuality } from "./quality-repair.mjs";
 import { resourceDataUrlsFromPlans } from "./builtin-fonts.mjs";
 import { designFontFamilyCss, designResourceFontFamilyCss, designTextFontResourceIds } from "./font-css.mjs";
-import { createOwnedFontManager } from "./owned-fonts.mjs";
+import { createOwnedFontManager, designFontResourceRoles } from "./owned-fonts.mjs";
 import { createBrowserStore, BROWSER_STORAGE_METHODS } from "./browser-store.mjs";
 import { groupAuditIssues, pageAuditIssues } from "./audit-review.mjs";
 import {
@@ -860,7 +860,12 @@ async function loadReferencedDesignResources() {
   const cache = currentResourceCache;
   const referencedIds = referencedDesignResourceIds();
   const referencedOrder = [...referencedIds];
-  const resourceSignature = () => JSON.stringify((design.resources ?? []).filter((resource) => referencedIds.has(resource.id)));
+  const fontRoles = () => designFontResourceRoles(allDesignNodes(), design.resources ?? []);
+  const roles = fontRoles();
+  const resourceSignature = () => JSON.stringify({
+    resources: (design.resources ?? []).filter((resource) => referencedIds.has(resource.id)),
+    fontRoles: [...fontRoles()],
+  });
   const signature = resourceSignature();
   const operation = ownedFonts.begin(() => {
     assertScope();
@@ -881,7 +886,7 @@ async function loadReferencedDesignResources() {
     return resource;
   })) : [];
   assertResourceReferences();
-  const prepared = await ownedFonts.prepare(operation, resources);
+  const prepared = await ownedFonts.prepare(operation, resources, { roles });
   assertResourceReferences();
   ownedFonts.commit(operation, prepared);
   for (const resource of resources) resourceDataUrls.set(resource.descriptor.id, resource.dataUrl);

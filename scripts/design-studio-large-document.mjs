@@ -29,6 +29,18 @@ async function saveFromToolbar(page) {
   }
   await page.locator("#save").click();
 }
+// IDB probes return Promises: poll their resolved values explicitly. A
+// Promise itself is truthy even when a page wait's first result resolves false.
+async function waitForBrowserValue(page, probe, argument) {
+  const deadline = Date.now() + 30000;
+  let last;
+  while (Date.now() < deadline) {
+    last = await page.evaluate(probe, argument);
+    if (last) return last;
+    await page.waitForTimeout(25);
+  }
+  throw new Error(`Browser persistence probe timed out: ${JSON.stringify(last)}`);
+}
 const MIME_TYPES = new Map([
   [".css", "text/css; charset=utf-8"],
   [".html", "text/html; charset=utf-8"],
@@ -200,6 +212,24 @@ try {
   await page.addInitScript(
     ({ path, source, resourceParts }) => {
       if (window.top !== window) return;
+      // Probe the same public browser backend used by the app. Keep the LS
+      // seed as an actual old-package migration input; never rewrite it.
+      let store;
+      globalThis.__largeDocumentReadText = async path => {
+        store ??= import("/apps/design-studio/app/browser-store.mjs").then(api => api.createBrowserStore());
+        return (await store).call("workspace.readText", { path });
+      };
+      globalThis.__largeDocumentRecords = () => new Promise((resolve, reject) => {
+        const request = indexedDB.open("codeshell-design-studio-v1", 1);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const db = request.result, tx = db.transaction("records", "readonly"), read = tx.objectStore("records").getAll(IDBKeyRange.bound("storage:recovery.", "storage:recovery.\uffff"));
+          let records;
+          read.onsuccess = () => { records = read.result; };
+          tx.oncomplete = () => { db.close(); resolve(records.filter(record => !record.deleted)); };
+          tx.onabort = () => { db.close(); reject(tx.error); };
+        };
+      });
       const prefix = "codeshell-design-studio:";
       if (localStorage.getItem(`${prefix}file:${path}`) == null) {
         localStorage.setItem(`${prefix}file:${path}`, source);
@@ -227,35 +257,29 @@ try {
   );
   await waitForCanvas(page);
   await saveFromToolbar(page);
-  await page.waitForFunction(
-    (path) => {
-      const source = localStorage.getItem(`codeshell-design-studio:file:${path}`);
-      if (!source) return false;
-      try {
-        return JSON.parse(source).format === "codeshell.design.index";
-      } catch {
-        return false;
-      }
+  await waitForBrowserValue(page,
+    async (path) => {
+      if (document.querySelector("#save-state")?.dataset.kind !== "saved") return false;
+      try { return JSON.parse((await __largeDocumentReadText(path)).content).format === "codeshell.design.index"; }
+      catch { return false; }
     },
     DESIGN_PATH,
   );
-  const persisted = await page.evaluate(({ path, expectedSource }) => {
+  const persisted = await page.evaluate(async ({ path, expectedSource }) => {
     const prefix = "codeshell-design-studio:";
-    const primary = localStorage.getItem(`${prefix}file:${path}`);
-    const manifest = JSON.parse(primary);
+    if (localStorage.getItem(`${prefix}file:${path}`) !== expectedSource || localStorage.getItem(`${prefix}mtime:${path}`) !== "1000")
+      throw Error("Migration changed the original legacy source or mtime");
+    const primary = await __largeDocumentReadText(path);
+    const manifest = JSON.parse(primary.content);
     const partPath = (sha256, index) =>
       `designs/codesign-data/pages/${sha256.slice(0, 16)}/${sha256}-${String(index + 1).padStart(4, "0")}.txt`;
-    const pageRecords = manifest.pages.map((descriptor) => {
-      const parts = Array.from({ length: descriptor.partCount }, (_, index) => {
-        const path = partPath(descriptor.sha256, index);
-        return {
-          path,
-          content: localStorage.getItem(`${prefix}file:${path}`),
-          modifiedAt: localStorage.getItem(`${prefix}mtime:${path}`),
-        };
-      });
+    const pageRecords = await Promise.all(manifest.pages.map(async (descriptor) => {
+      const parts = await Promise.all(Array.from({ length: descriptor.partCount }, async (_, index) => {
+        const path = partPath(descriptor.sha256, index), record = await __largeDocumentReadText(path);
+        return { path, content: record.content, modifiedAt: record.modifiedAt, revision: record.revision };
+      }));
       return { descriptor, parts, page: JSON.parse(parts.map((part) => part.content).join("")) };
-    });
+    }));
     const reconstructed = `${JSON.stringify(
       {
         format: "codeshell.design",
@@ -280,31 +304,28 @@ try {
       totalNodeCount: manifest.pages.reduce((sum, item) => sum + item.nodeCount, 0),
       partCount: pageRecords.reduce((sum, item) => sum + item.parts.length, 0),
       partModifiedAt: pageRecords.flatMap((item) =>
-        item.parts.map((part) => [part.path, part.modifiedAt]),
+        item.parts.map((part) => [part.path, part.modifiedAt, part.revision]),
       ),
       reconstructed: reconstructed === expectedSource,
     };
   }, { path: DESIGN_PATH, expectedSource: documentSource });
   if (!persisted.reconstructed) throw new Error("Saved design index did not reconstruct exactly");
   await page.waitForTimeout(20);
-  const primaryModifiedAtBeforeSecondSave = await page.evaluate((path) =>
-    localStorage.getItem(`codeshell-design-studio:mtime:${path}`),
-  DESIGN_PATH);
+  const primaryBeforeSecondSave = await page.evaluate(path => __largeDocumentReadText(path), DESIGN_PATH);
   await saveFromToolbar(page);
-  await page.waitForFunction(
-    ({ path, previousModifiedAt }) =>
-      localStorage.getItem(`codeshell-design-studio:mtime:${path}`) !==
-        previousModifiedAt &&
-      document.querySelector("#save-state")?.dataset.kind === "saved",
-    { path: DESIGN_PATH, previousModifiedAt: primaryModifiedAtBeforeSecondSave },
+  await waitForBrowserValue(page,
+    async ({ path, previous }) => {
+      if (document.querySelector("#save-state")?.dataset.kind !== "saved") return false;
+      const current = await __largeDocumentReadText(path);
+      return current.modifiedAt !== previous.modifiedAt && current.revision !== previous.revision;
+    },
+    { path: DESIGN_PATH, previous: primaryBeforeSecondSave },
   );
-  const unchangedPartsReused = await page.evaluate((previousEntries) => {
-    const prefix = "codeshell-design-studio:";
-    return previousEntries.every(
-      ([path, modifiedAt]) =>
-        localStorage.getItem(`${prefix}mtime:${path}`) === modifiedAt,
-    );
-  }, persisted.partModifiedAt);
+  const unchangedPartsReused = await page.evaluate(async (previousEntries) =>
+    (await Promise.all(previousEntries.map(async ([path, modifiedAt, revision]) => {
+      const current = await __largeDocumentReadText(path);
+      return current.modifiedAt === modifiedAt && current.revision === revision;
+    }))).every(Boolean), persisted.partModifiedAt);
   if (!unchangedPartsReused) {
     throw new Error("Unchanged indexed pages were rewritten");
   }
@@ -316,9 +337,8 @@ try {
     DESIGN_PATH,
   );
   await waitForCanvas(page);
-  const lazyOpen = await page.evaluate((path) => {
-    const prefix = "codeshell-design-studio:";
-    const manifest = JSON.parse(localStorage.getItem(`${prefix}file:${path}`));
+  const lazyOpen = await page.evaluate(async (path) => {
+    const manifest = JSON.parse((await __largeDocumentReadText(path)).content);
     const descriptor = manifest.pages.find((page) => page.id === "page-2");
     if (!descriptor?.sha256) {
       return {
@@ -435,35 +455,26 @@ try {
   await page.locator("#prop-name").fill("Recovered layer 351");
   await page.locator("#prop-name").blur();
   await page.waitForFunction(() => document.querySelector("#save-state")?.dataset.kind === "dirty");
-  await page.waitForFunction(() => {
-    for (let index = 0; index < localStorage.length; index += 1) {
-      const key = localStorage.key(index);
-      if (!key?.includes("storage:recovery.")) continue;
-      const value = JSON.parse(localStorage.getItem(key));
-      return (
-        value?.format === "codeshell.design.recovery" &&
-        value.design === undefined &&
-        value.record?.operations?.length > 0
-      );
+  const recoveryObservation = await waitForBrowserValue(page, async () => {
+    for (const record of await __largeDocumentRecords()) {
+      if (!record.key.startsWith("storage:recovery.")) continue;
+      const value = JSON.parse(record.content);
+      if (value?.format === "codeshell.design.recovery" && value.design === undefined && value.record?.operations?.length > 0) {
+        return { key: record.key, source: record.content };
+      }
     }
     return false;
   });
-  const recoveryLog = await page.evaluate(() => {
-    for (let index = 0; index < localStorage.length; index += 1) {
-      const key = localStorage.key(index);
-      if (!key?.includes("storage:recovery.")) continue;
-      const source = localStorage.getItem(key);
-      const value = JSON.parse(source);
-      if (value?.format === "codeshell.design.recovery") {
-        return {
-          bytes: new TextEncoder().encode(source).length,
-          operationCount: value.record.operations.length,
-          containsWholeDesign: Object.hasOwn(value, "design"),
-        };
-      }
-    }
-    return null;
-  });
+  // Retain the exact committed record returned by the predicate, rather than
+  // racing autosave with a second database read or sharing poll-world globals.
+  if (typeof recoveryObservation?.source !== "string")
+    throw new Error(`Missing recovery observation: ${JSON.stringify(recoveryObservation)}`);
+  const recoveryValue = JSON.parse(recoveryObservation.source);
+  const recoveryLog = {
+    bytes: new TextEncoder().encode(recoveryObservation.source).length,
+    operationCount: recoveryValue.record.operations.length,
+    containsWholeDesign: Object.hasOwn(recoveryValue, "design"),
+  };
   if (!recoveryLog || recoveryLog.containsWholeDesign) {
     throw new Error("Recovery persisted a whole-document snapshot instead of operations");
   }

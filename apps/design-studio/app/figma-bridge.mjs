@@ -555,6 +555,27 @@ function geometry(source, ancestors, report, coordinateLimit = MAX_DESIGN_CANVAS
   };
 }
 
+// Native SDK matrices use container parents, while canonical Group rotations
+// compose through every immediate parent. Derive that local basis from actual
+// world matrices without rewriting any retained native source observation.
+function nativeGeometrySource(source, parentSource) {
+  let relativeTransform = source.absoluteTransform;
+  if (parentSource) {
+    const [[a, b, x], [c, d, y]] = parentSource.absoluteTransform;
+    const [[e, f, u], [g, h, v]] = source.absoluteTransform;
+    const determinant = a * d - b * c;
+    relativeTransform = [
+      [(d * e - b * g) / determinant, (d * f - b * h) / determinant,
+        (d * (u - x) - b * (v - y)) / determinant],
+      [(a * g - c * e) / determinant, (a * h - c * f) / determinant,
+        (a * (v - y) - c * (u - x)) / determinant],
+    ];
+  }
+  // The admitted actual matrix and measured width/height own layout. Bounds
+  // remain source observations, not a replacement origin or painted size.
+  return { ...source, relativeTransform, size: { x: source.width, y: source.height }, absoluteBoundingBox: null };
+}
+
 function layoutSizing(source, node, parent) {
   const inferred = {};
   const primary = { HORIZONTAL: "Horizontal", VERTICAL: "Vertical" }[source.layoutMode];
@@ -1070,7 +1091,7 @@ function importFigmaJsonWithReport(
     ids.add(id);
     return id;
   };
-  const convert = (source, ancestors, depth, counter) => {
+  const convert = (source, ancestors, depth, counter, parentSource = null) => {
     if (!object(source)) throw new Error("Figma 图层必须是对象。");
     if (depth > MAX_DEPTH) throw new Error(`Figma 图层嵌套最多 ${MAX_DEPTH} 层。`);
     if (seen.has(source)) throw new Error("Figma JSON 包含循环或重复对象引用。");
@@ -1168,8 +1189,10 @@ function importFigmaJsonWithReport(
       type,
       name: cleanName(source.name, source.type),
       ...geometry(
-        !ancestors.length && value.selection?.roots?.[source.id]
-          ? {
+        value.exportReport
+          ? nativeGeometrySource(source, parentSource)
+          : !ancestors.length && value.selection?.roots?.[source.id]
+            ? {
               ...source,
               relativeTransform: value.selection.roots[source.id].absoluteTransform,
               size: {
@@ -1177,8 +1200,6 @@ function importFigmaJsonWithReport(
                 y: value.selection.roots[source.id].height,
               },
             }
-          : !ancestors.length && value.exportReport
-            ? { ...source, relativeTransform: source.absoluteTransform }
             : source,
         ancestors,
         report,
@@ -1395,7 +1416,7 @@ function importFigmaJsonWithReport(
         delete node.columnGap;
       }
       node.children = (source.children ?? [])
-        .map((child) => convert(child, [...ancestors, node], depth + 1, counter))
+        .map((child) => convert(child, [...ancestors, node], depth + 1, counter, source))
         .filter(Boolean);
       if (node.layout === "grid") {
         try {

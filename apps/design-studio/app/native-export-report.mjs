@@ -36,6 +36,27 @@ function rigidMatrix(value) {
     Math.abs(b * b + d * d - 1) <= 0.001;
 }
 
+// SDK relativeTransform skips Group/Boolean parents. Only an exported known
+// container proves the next local-to-world relationship; each selected root
+// keeps its own absolute anchor when the outside container was not exported.
+// https://developers.figma.com/docs/plugins/api/properties/nodes-relativetransform/
+const transformContainers = new Set(["FRAME", "COMPONENT", "INSTANCE"]);
+const transformGroups = new Set(["GROUP", "BOOLEAN_OPERATION"]);
+function consistentWorldTransform(container, node) {
+  const [a, b] = container.absoluteTransform, [c, d] = node.relativeTransform;
+  const expected = [
+    [a[0] * c[0] + a[1] * d[0], a[0] * c[1] + a[1] * d[1], a[0] * c[2] + a[1] * d[2] + a[2]],
+    [b[0] * c[0] + b[1] * d[0], b[0] * c[1] + b[1] * d[1], b[0] * c[2] + b[1] * d[2] + b[2]],
+  ];
+  return expected.every((row, i) => row.every((value, j) => {
+    const observed = node.absoluteTransform[i][j];
+    // Keep the existing fixed transform epsilon, never a coordinate-relative
+    // tolerance. Exact float32 output rounding is also valid at far positions;
+    // it does not authorize arbitrary nearby translations or rewrite a value.
+    return Math.abs(value - observed) <= 0.001 || observed === Math.fround(value);
+  }));
+}
+
 /** SDK local/world transforms are retained; unsupported transforms are never approximated here. */
 export function isNativeExportGeometry(node) {
   return object(node) && typeof node.id === "string" && node.id.trim().length > 0 && typeof node.type === "string" &&
@@ -71,15 +92,19 @@ export function assertCompleteNativeExportReport(input) {
     ? Object.values(input.nodes).map(entry => entry?.document) : null;
   if (!roots || roots.length !== nodes.selected) invalid();
   let count = 0;
-  const seen = new WeakSet(), ids = new Set(), inspect = (node, depth) => {
+  const seen = new WeakSet(), ids = new Set(), inspect = (node, depth, container = null) => {
     if (!object(node) || seen.has(node) || depth > 32 || ++count > 50000 || Object.hasOwn(node, "exportReport")) invalid();
     if (!isNativeExportGeometry(node)) throw Object.assign(Error("html2figma 原生导出图层几何无效：需要一致尺寸及受支持的局部和绝对变换矩阵。"),
       { code: "NATIVE_EXPORT_GEOMETRY_INVALID" });
+    if (container && !consistentWorldTransform(container, node))
+      throw Object.assign(Error("html2figma 原生导出绝对变换与已导出容器的局部变换链不一致；已阻止导入，未改写坐标。"),
+        { code: "NATIVE_EXPORT_TRANSFORM_INCONSISTENT" });
     if (ids.has(node.id)) throw Object.assign(Error("html2figma 原生导出图层 ID 重复；不能作为完整来源重新编号。"),
       { code: "NATIVE_EXPORT_NODE_ID_INVALID" });
     ids.add(node.id);
     seen.add(node);
-    for (const child of node.children === undefined ? [] : array(node.children)) inspect(child, depth + 1);
+    const nextContainer = transformContainers.has(node.type) ? node : transformGroups.has(node.type) ? container : null;
+    for (const child of node.children === undefined ? [] : array(node.children)) inspect(child, depth + 1, nextContainer);
   };
   roots.forEach(node => inspect(node, 0));
   if (count !== nodes.serialized) invalid();

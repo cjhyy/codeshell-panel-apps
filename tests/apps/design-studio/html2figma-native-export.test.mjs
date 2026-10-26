@@ -209,3 +209,192 @@ test("native export and infinite canvas preserve far world placement and the ori
   assert.deepEqual(binding.source.exportReport, source.exportReport);
   assert.deepEqual(createFigmaPatch(binding, reopened).operations, []);
 });
+
+
+const nestedNativeFrame = () => {
+  const source = clone(), child = source.nodes[0].children[0];
+  child.type = "FRAME";
+  child.children = [{ ...structuredClone(child), id: "nested-native-leaf", type: "RECTANGLE", x: 4, y: 5,
+    width: 10, height: 10, relativeTransform: [[1, 0, 4], [0, 1, 5]],
+    absoluteTransform: [[1, 0, 1204], [0, 1, 25]],
+    absoluteBoundingBox: { x: 1204, y: 25, width: 10, height: 10 } }];
+  delete child.children[0].children; delete child.children[0].absoluteRenderBounds;
+  source.exportReport.nodes.serialized = 3;
+  return source;
+};
+const contradictoryNativeWorld = () => {
+  const source = clone(); source.nodes[0].children[0].absoluteTransform[0][2] = 1700; return source;
+};
+const nativeGeometryCode = { code: "NATIVE_EXPORT_TRANSFORM_INCONSISTENT" };
+
+for (const [entry, invoke] of [
+  ["plugin normalization", value => normalizeHtml2FigmaJson(value)],
+  ["source normalization", value => normalizeFigmaSource(value)],
+  ["synchronous import", value => importFigmaJson(value)],
+  ["async preparation", value => prepareFigmaImport(value)],
+]) test(`contradictory child absolute transform is refused by ${entry} without changing the source`, async () => {
+  const source = contradictoryNativeWorld(), before = structuredClone(source);
+  if (entry === "async preparation") await assert.rejects(invoke(source), nativeGeometryCode);
+  else assert.throws(() => invoke(source), nativeGeometryCode);
+  assert.deepEqual(source, before);
+});
+
+test("retained nodes-object native source cannot bypass container/world transform consistency", () => {
+  const source = normalizeFigmaSource(normalizeHtml2FigmaJson(clone()));
+  Object.values(source.nodes)[0].document.children[0].absoluteTransform[0][2] = 1700;
+  assert.throws(() => normalizeFigmaSource(source), nativeGeometryCode);
+  assert.throws(() => importFigmaJson(source), nativeGeometryCode);
+});
+
+test("deep native descendants and linear transform components use the same exported-container chain", () => {
+  const descendant = nestedNativeFrame();
+  descendant.nodes[0].children[0].children[0].absoluteTransform[1][2] = 26;
+  assert.throws(() => normalizeHtml2FigmaJson(descendant), nativeGeometryCode);
+  const orientation = clone();
+  orientation.nodes[0].children[0].absoluteTransform = [[0, -1, 1200], [1, 0, 20]];
+  assert.throws(() => importFigmaJson(orientation), nativeGeometryCode);
+});
+
+for (const groupingType of ["GROUP", "BOOLEAN_OPERATION"]) test(`${groupingType} does not become the SDK relative-transform container`, () => {
+  const source = clone(), root = source.nodes[0], child = root.children[0];
+  root.children = [{ id: "native-group", name: "Native grouping", type: groupingType, x: 140, y: 20,
+    width: 60, height: 30, relativeTransform: [[1, 0, 140], [0, 1, 20]],
+    absoluteTransform: [[1, 0, 1200], [0, 1, 20]],
+    absoluteBoundingBox: { x: 1200, y: 20, width: 60, height: 30 }, children: [child] }];
+  source.exportReport.nodes.serialized = 3;
+  const before = structuredClone(source), normalized = normalizeFigmaSource(normalizeHtml2FigmaJson(source));
+  assert.deepEqual(source, before);
+  const retained = Object.values(normalized.nodes)[0].document;
+  assert.deepEqual(retained.children[0].children[0].relativeTransform, child.relativeTransform);
+  assert.deepEqual(retained.children[0].children[0].absoluteTransform, child.absoluteTransform);
+});
+
+test("an exported frame nested beneath a group establishes its own child transform container", () => {
+  const source = nestedNativeFrame(), root = source.nodes[0], inner = root.children[0];
+  root.children = [{ id: "native-group", name: "Grouping", type: "GROUP", x: 140, y: 20,
+    width: 60, height: 30, relativeTransform: [[1, 0, 140], [0, 1, 20]],
+    absoluteTransform: [[1, 0, 1200], [0, 1, 20]],
+    absoluteBoundingBox: { x: 1200, y: 20, width: 60, height: 30 }, children: [inner] }];
+  source.exportReport.nodes.serialized = 4;
+  assert.doesNotThrow(() => normalizeHtml2FigmaJson(source));
+  inner.children[0].absoluteTransform[0][2] += 1;
+  assert.throws(() => normalizeHtml2FigmaJson(source), nativeGeometryCode);
+});
+
+test("a selected group keeps an unknown external container instead of composing through its own absolute matrix", async () => {
+  const source = clone(), child = source.nodes[0].children[0];
+  source.nodes[0] = { id: "selected-group", name: "Selected grouping", type: "GROUP", x: 140, y: 20,
+    width: 60, height: 30, relativeTransform: [[1, 0, 140], [0, 1, 20]],
+    absoluteTransform: [[1, 0, 1200], [0, 1, 20]],
+    absoluteBoundingBox: { x: 1200, y: 20, width: 60, height: 30 }, children: [child] };
+  const prepared = await prepareFigmaImport(source, { canvasMode: "infinite" });
+  assert.deepEqual(prepared.document.nodes.map(node => [node.x, node.y]), [[1200, 20], [1200, 20]]);
+  const retained = Object.values(prepared.source.nodes)[0].document;
+  assert.deepEqual(retained.relativeTransform, child.relativeTransform);
+  assert.deepEqual(retained.children[0].relativeTransform, child.relativeTransform);
+});
+
+test("counter-rotated descendants use a selected root's world anchor at negative infinite coordinates", async () => {
+  const source = clone(), root = source.nodes[0], child = root.children[0];
+  Object.assign(root, { x: 10, y: 20, relativeTransform: [[1, 0, 10], [0, 1, 20]],
+    absoluteTransform: [[0, -1, 65000], [1, 0, -35000]],
+    absoluteBoundingBox: { x: 64920, y: -35000, width: 80, height: 160 } });
+  Object.assign(child, { x: 10, y: 20, rotation: 90, relativeTransform: [[0, 1, 10], [-1, 0, 20]],
+    absoluteTransform: [[1, 0, 64980], [0, 1, -34990]],
+    absoluteBoundingBox: { x: 64980, y: -34990, width: 60, height: 30 } });
+  delete root.absoluteRenderBounds; delete child.absoluteRenderBounds;
+  const before = structuredClone(source), prepared = await prepareFigmaImport(source, { canvasMode: "infinite" });
+  assert.deepEqual(source, before);
+  assert.equal(prepared.document.canvas.mode, "infinite");
+  assert.deepEqual(transformedNodeBoundsInTree(prepared.document.nodes, prepared.document.nodes[0]), root.absoluteBoundingBox);
+  assert.deepEqual(transformedNodeBoundsInTree(prepared.document.nodes, prepared.document.nodes[1]), child.absoluteBoundingBox);
+  assert.deepEqual(Object.values(prepared.source.nodes)[0].document.relativeTransform, root.relativeTransform);
+});
+
+test("render overflow and outside strokes never replace the native layout transform box", () => {
+  const source = clone(), child = source.nodes[0].children[0];
+  child.strokes = [{ type: "SOLID", color: { r: 0, g: 0, b: 1 } }];
+  child.strokeWeight = child.strokeTopWeight = child.strokeRightWeight = child.strokeBottomWeight = child.strokeLeftWeight = 20;
+  child.strokeAlign = "OUTSIDE";
+  child.absoluteRenderBounds = { x: 1180, y: 0, width: 100, height: 70 };
+  source.nodes[0].absoluteRenderBounds = { x: 1060, y: 0, width: 220, height: 80 };
+  const before = structuredClone(source), imported = importFigmaJson(source);
+  assert.deepEqual(source, before);
+  assert.deepEqual(imported.document.nodes.map(node => [node.x, node.y, node.width, node.height]),
+    [[1060, 0, 160, 80], [1200, 20, 60, 30]]);
+});
+
+test("native null layout bounds and an exact float32 world transform remain supported", () => {
+  const noBounds = clone(); noBounds.nodes[0].absoluteBoundingBox = noBounds.nodes[0].children[0].absoluteBoundingBox = null;
+  assert.doesNotThrow(() => normalizeHtml2FigmaJson(noBounds));
+  const source = clone(), root = source.nodes[0], child = root.children[0], c = 0.7071067690849304;
+  root.absoluteTransform = [[c, -c, 65000], [c, c, -35000]];
+  child.absoluteTransform = [[c, -c, 65084.8515625], [c, c, -34886.86328125]];
+  const box = node => {
+    const [[a,b,x],[d,e,y]] = node.absoluteTransform;
+    const corners = [[0,0],[node.width,0],[0,node.height],[node.width,node.height]].map(([u,v]) => [a*u+b*v+x,d*u+e*v+y]);
+    const minX=Math.min(...corners.map(p=>p[0])), minY=Math.min(...corners.map(p=>p[1]));
+    return { x:minX,y:minY,width:Math.max(...corners.map(p=>p[0]))-minX,height:Math.max(...corners.map(p=>p[1]))-minY };
+  };
+  root.absoluteBoundingBox = box(root); child.absoluteBoundingBox = box(child);
+  delete root.absoluteRenderBounds; delete child.absoluteRenderBounds;
+  assert.doesNotThrow(() => normalizeHtml2FigmaJson(source));
+  child.absoluteTransform[0][2] += 0.01;
+  assert.throws(() => normalizeHtml2FigmaJson(source), nativeGeometryCode,
+    "float32 round-trip support must not become a coordinate-relative tolerance");
+});
+
+
+const nativeQuarterTurnGroup = (selectedGroup = false, missingBounds = false) => {
+  const source = clone(), frame = source.nodes[0], child = frame.children[0];
+  Object.assign(child, { relativeTransform: [[0, -1, 140], [1, 0, 20]],
+    absoluteTransform: [[0, -1, 1200], [1, 0, 20]],
+    absoluteBoundingBox: missingBounds ? null : { x: 1170, y: 20, width: 30, height: 60 } });
+  delete child.absoluteRenderBounds;
+  const group = { id: "native-rotated-group", name: "Observed SDK grouping basis", type: "GROUP",
+    x: 140, y: 20, width: 60, height: 30,
+    relativeTransform: [[0, -1, 140], [1, 0, 20]],
+    absoluteTransform: [[0, -1, 1200], [1, 0, 20]],
+    absoluteBoundingBox: missingBounds ? null : { x: 1170, y: 20, width: 30, height: 60 }, children: [child] };
+  if (selectedGroup) source.nodes = [group];
+  else frame.children = [group];
+  source.exportReport.nodes.serialized = selectedGroup ? 2 : 3;
+  return source;
+};
+
+for (const selectedGroup of [false, true]) for (const missingBounds of [false, true])
+  test(`native Group projection uses the immediate canonical parent basis, selected=${selectedGroup}, nullBounds=${missingBounds}`, async () => {
+    const source = nativeQuarterTurnGroup(selectedGroup, missingBounds), before = structuredClone(source);
+    for (const packet of [source, normalizeFigmaSource(normalizeHtml2FigmaJson(source))]) {
+      const prepared = await prepareFigmaImport(packet, { canvasMode: "infinite" }), document = prepared.document;
+      const group = document.nodes.find(node => node.type === "group"), child = document.nodes.find(node => node.type === "rectangle");
+      assert.equal(group.rotation, 90);
+      assert.equal(child.rotation, 0, "SDK child rotation already includes Group rotation relative to the Frame container");
+      assert.deepEqual(transformedNodeBoundsInTree(document.nodes, group), { x: 1170, y: 20, width: 30, height: 60 });
+      assert.deepEqual(transformedNodeBoundsInTree(document.nodes, child), { x: 1170, y: 20, width: 30, height: 60 });
+      const reopened = normalizeDesignDocument(JSON.parse(serializeDesignDocument(document)));
+      assert.deepEqual(reopened.nodes, document.nodes);
+      const binding = parseFigmaBinding(JSON.stringify(createFigmaBinding(prepared)));
+      assert.deepEqual(binding.source.exportReport, source.exportReport);
+      const retainedRoot = Object.values(binding.source.nodes)[0].document;
+      const retainedGroup = selectedGroup ? retainedRoot : retainedRoot.children[0];
+      assert.deepEqual(retainedGroup.relativeTransform, [[0, -1, 140], [1, 0, 20]]);
+      assert.deepEqual(retainedGroup.absoluteTransform, [[0, -1, 1200], [1, 0, 20]]);
+      assert.deepEqual(retainedGroup.children[0].relativeTransform, retainedGroup.relativeTransform);
+      assert.deepEqual(retainedGroup.children[0].absoluteTransform, retainedGroup.absoluteTransform);
+      assert.deepEqual(retainedGroup.absoluteBoundingBox, missingBounds ? null : { x: 1170, y: 20, width: 30, height: 60 });
+      assert.deepEqual(retainedGroup.children[0].absoluteBoundingBox, missingBounds ? null : { x: 1170, y: 20, width: 30, height: 60 });
+      assert.deepEqual(createFigmaPatch(binding, reopened).operations, []);
+    }
+    assert.deepEqual(source, before, "native source matrices and bounding observations are never rewritten for layout");
+  });
+
+test("native layout uses the actual world matrix and measured size without adopting contradictory bounding extents", async () => {
+  const source = clone();
+  source.nodes[0].absoluteBoundingBox = { x: 5000, y: 6000, width: 300, height: 400 };
+  const before = structuredClone(source), prepared = await prepareFigmaImport(source, { canvasMode: "infinite" });
+  assert.deepEqual(prepared.document.nodes.map(node => [node.x, node.y, node.width, node.height]),
+    [[1060, 0, 160, 80], [1200, 20, 60, 30]]);
+  assert.deepEqual(Object.values(prepared.source.nodes)[0].document.absoluteBoundingBox, source.nodes[0].absoluteBoundingBox);
+  assert.deepEqual(source, before);
+});

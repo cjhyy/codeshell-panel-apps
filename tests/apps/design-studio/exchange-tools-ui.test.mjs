@@ -1128,6 +1128,18 @@ test("saving an undone import records no-source provenance and remains editable 
 test("an unsaved imported source survives recovery, reopen and its first later save", async (t) => {
   const f = await fixture(t),
     metadata = await f.metadata();
+  const observeResourceFontSources = () => {
+    const NativeFace = window.FontFace;
+    window.resourceFontSourceProofs = [];
+    window.FontFace = class extends NativeFace {
+      constructor(family, source, descriptors) {
+        super(family, source, descriptors);
+        window.resourceFontSourceProofs.push({ family, source, face: this });
+      }
+    };
+  };
+  await f.page.addInitScript(observeResourceFontSources);
+  await f.page.evaluate(observeResourceFontSources);
   await f.tool("exchange_figma", {
     action: "import",
     path: inputPath,
@@ -1135,19 +1147,30 @@ test("an unsaved imported source survives recovery, reopen and its first later s
     expected_state_revision: metadata.stateRevision,
   });
   const fontProof = () => f.page.evaluate(async () => {
+    const { DesignResourceCache } = await import("/resource-store.mjs");
+    const { inspectFontCapabilities, fontFaceWeight } = await import("/font-capabilities.mjs");
     const metadata = await tools.get_design_metadata(), faces = [...document.fonts];
-    return metadata.resources.filter(resource => resource.kind === "font").map(resource => {
+    const cache = new DesignResourceCache({ resources: metadata.resources,
+      readText: path => codeshellPanel.call("workspace.readText", { path }),
+      sha256Bytes: async bytes => [...new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))].map(value=>value.toString(16).padStart(2,"0")).join(""),
+    });
+    return Promise.all(metadata.resources.filter(resource => resource.kind === "font").map(async resource => {
+      const loaded = await cache.load(resource.id), capabilities = inspectFontCapabilities(loaded.bytes);
+      const weight = fontFaceWeight(capabilities, resource);
       const context = document.createElement("canvas").getContext("2d");
       context.font = `${resource.style} ${resource.weight} 32px ${JSON.stringify(resource.family)}, serif`;
       return {
         id: resource.id, sha256: resource.sha256, family: resource.family,
-        registered: faces.some(face => face.family === resource.family && face.weight === String(resource.weight) && face.style === resource.style && face.status === "loaded"),
+        style: resource.style, declaredWeight: resource.weight, registeredWeight: weight, proof: capabilities.proof,
+        registered: window.resourceFontSourceProofs.some(({family,source,face}) => family === resource.family && source === `url(${loaded.dataUrl})` && faces.includes(face) && face.family === resource.family && face.weight === weight && face.style === resource.style && face.status === "loaded"),
         width: context.measureText("iiii WWWW 0123456789 Hamburgefontsiv").width,
       };
-    });
+    }));
   });
   const importedFonts = await fontProof();
   assert(importedFonts.length > 0, "the imported fixture must require actual resource fonts");
+  const expectedFontSha256 = hash(await readFile(resolve(root,"fonts/InterVariable.woff2")));
+  assert(importedFonts.every(font => font.family === "Inter" && font.style === "normal" && font.sha256 === expectedFontSha256 && font.proof === "pinned-sha256" && font.registeredWeight === "100 900"), "the primary Inter resource must retain its byte-proven variable range and exact resource binding");
   assert(importedFonts.every(font => font.registered), "import must install the decoded resource faces");
   let recovery;
   for (let attempt = 0; attempt < 150; attempt++) {
@@ -1183,6 +1206,7 @@ test("an unsaved imported source survives recovery, reopen and its first later s
     () => document.querySelector("#save-state").textContent === "已保存",
   );
   const saved = await f.reload();
+  assert.deepEqual(await fontProof(), importedFonts, "the first later save must reopen the same bound and loaded variable resource faces");
   const next = await f.tool("exchange_figma", {
     action: "export",
     path: "designs/recovered-saved.figma-transfer.json",
