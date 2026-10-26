@@ -12,7 +12,10 @@ import {
 import type { EditorDocument } from "../../src/editor/types.js";
 import { sequenceDuration } from "../../src/editor/validation.js";
 import { sameExportRange, validateExportRange } from "../../src/editor/export-range.js";
-import { compileAudioPlan } from "../../src/editor/audio-plan.js";
+import { audioLaneNeedsSource, compileAudioPlan } from "../../src/editor/audio-plan.js";
+import {
+  editorPreviewResourceIds, validateEditorPreviewScope, type EditorPreviewScope,
+} from "../../src/editor/preview-resources.js";
 import { audioMixWarning, validateAudioMixReport } from "../../src/editor/audio-mix-report.js";
 import { renderEditorAudio } from "../media/editor-audio-renderer.js";
 import { editorRangeAudioPreparation, editorRangeVisualAssets } from "../media/editor-range-preparation.js";
@@ -74,6 +77,7 @@ interface Binding {
 }
 interface Manifest {
   kind?: "project";
+  previewScope?: EditorPreviewScope;
   documentHash: string;
   sequenceId: string;
   document: EditorDocument;
@@ -464,6 +468,7 @@ export async function runEditorRequest(
                 committedDocumentHash: manifest.documentHash,
                 sequenceId: manifest.sequenceId,
                 ...(manifest.kind ? { kind: manifest.kind } : {}),
+                ...(manifest.previewScope ? { previewScope: manifest.previewScope } : {}),
               }
             : {}),
         },
@@ -550,7 +555,8 @@ export async function runEditorRequest(
         previous &&
         (previous.documentHash !== request.documentHash ||
           previous.sequenceId !== request.sequenceId ||
-          (previous.kind === "project") !== project)
+          (previous.kind === "project") !== project ||
+          JSON.stringify(previous.previewScope) !== JSON.stringify(request.previewScope))
       )
         throw new EditorTaskError("SNAPSHOT_MISMATCH", "快照已提交，请为新修改建立新的快照");
       const doc = await directory(transfer, ["documents", request.documentHash!]);
@@ -581,7 +587,10 @@ export async function runEditorRequest(
       if (bytesHash(Buffer.from(JSON.stringify(selected.document))) !== request.documentHash)
         throw new EditorTaskError("SNAPSHOT_MISMATCH", "工程快照不是规范化的依赖闭包");
       const bindings: Binding[] = [];
-      for (const id of selected.resourceIds) {
+      const requiredResourceIds = request.previewScope
+        ? editorPreviewResourceIds(selected.document, request.sequenceId!, request.previewScope)
+        : selected.resourceIds;
+      for (const id of requiredResourceIds) {
         const binding = await json(resources, [`${id}.json`]);
         await material(binding);
         bindings.push(binding);
@@ -589,6 +598,7 @@ export async function runEditorRequest(
       if (selected.document.assets.some(isEditorDemoNarration)) await builtin();
       const manifest: Manifest = {
         ...(project ? { kind: "project" as const } : {}),
+        ...(request.previewScope ? { previewScope: request.previewScope } : {}),
         documentHash: request.documentHash!,
         sequenceId: request.sequenceId!,
         document: selected.document,
@@ -605,6 +615,7 @@ export async function runEditorRequest(
           revision: manifest.document.revision,
           resourceCount: bindings.length,
           ...(project ? { kind: "project" } : {}),
+          ...(manifest.previewScope ? { previewScope: manifest.previewScope } : {}),
         },
         artifacts,
       };
@@ -622,9 +633,16 @@ export async function runEditorRequest(
       ["manifest.json"],
       EDITOR_TASK_LIMITS.documentBytes + 2 * 1024 * 1024,
     )) as Manifest;
-    record(manifest, ["kind", "documentHash", "sequenceId", "document", "bindings"], "工程快照");
+    record(manifest, ["kind", "previewScope", "documentHash", "sequenceId", "document", "bindings"], "工程快照");
     if (manifest.kind !== undefined && manifest.kind !== "project")
       throw new EditorTaskError("SNAPSHOT_MISMATCH", "工程快照类型无效");
+    if (manifest.previewScope) {
+      const scope = validateEditorPreviewScope(manifest.previewScope);
+      if (manifest.kind || scope.kind === "audio" && request.action !== "prepare-audio" ||
+          scope.kind === "video" && (request.action !== "prepare-video" ||
+            request.assetIds!.some((id) => !scope.assetIds.includes(id))))
+        throw new EditorTaskError("SNAPSHOT_MISMATCH", "预览专用快照不能用于其他媒体任务或完整导出");
+    }
     if ((manifest.kind === "project") !== (request.action === "export-project"))
       throw new EditorTaskError("SNAPSHOT_MISMATCH", "完整工程包需要独立的完整工程快照");
     if (
@@ -651,14 +669,17 @@ export async function runEditorRequest(
         );
       }
     }
+    const requiredResourceIds = manifest.previewScope
+      ? editorPreviewResourceIds(selected.document, manifest.sequenceId, manifest.previewScope)
+      : selected.resourceIds;
     if (
       !Array.isArray(manifest.bindings) ||
-      manifest.bindings.length !== selected.resourceIds.length
+      manifest.bindings.length !== requiredResourceIds.length
     )
       throw new EditorTaskError("INCOMPLETE_STAGE", "工程素材绑定不完整");
     const byResource = new Map<string, { binding: Binding; path: string }>();
     for (const binding of manifest.bindings) {
-      if (!selected.resourceIds.includes(binding.resourceId) || byResource.has(binding.resourceId))
+      if (!requiredResourceIds.includes(binding.resourceId) || byResource.has(binding.resourceId))
         throw new EditorTaskError("INCOMPLETE_STAGE", "工程素材绑定存在无效项");
       byResource.set(binding.resourceId, { binding, path: await material(binding) });
     }
@@ -857,9 +878,9 @@ export async function runEditorRequest(
     // the exact document being processed by this job.
     const audioPlan = compileAudioPlan(selected.document, manifest.sequenceId);
     const fullRecipeHash = digest({
-      recipe: "editor-audio-v3-content",
+      recipe: "editor-audio-v4-audible-content",
       plan: audioPlan,
-      sources: [...new Set(audioPlan.lanes.map((lane) => lane.assetId))]
+      sources: [...new Set(audioPlan.lanes.filter(audioLaneNeedsSource).map((lane) => lane.assetId))]
         .sort()
         .map((assetId) => {
           const binding = original(assetId).binding;

@@ -40,7 +40,7 @@ before(async () => {
   // Expose the bundled class only in this isolated test output for real-session read budgets.
   const modulePath = resolve(output, "main.mjs");
   await writeFile(modulePath, (await readFile(modulePath, "utf8")) +
-    "\nglobalThis.__mainReadSession = EditorSession; globalThis.__mainReadAudit = { session: () => editorSession, project: () => structuredClone(project), remountWorkspace: async () => { const options = editorWorkspace.options; await editorWorkspace.dispose(); editorWorkspace = new EditorWorkspace(editorRoot, options); } }; globalThis.__mainAuditionAudit = { workspace: () => editorWorkspace, setTasks: (value) => { editorTasks = value; }, prepared: () => structuredClone(preparedNative), export: submitEditorExport };\n");
+    "\nglobalThis.__mainReadSession = EditorSession; globalThis.__mainReadAudit = { session: () => editorSession, project: () => structuredClone(project), remountWorkspace: async () => { const options = editorWorkspace.options; await editorWorkspace.dispose(); editorWorkspace = new EditorWorkspace(editorRoot, options); } }; globalThis.__mainAuditionAudit = { workspace: () => editorWorkspace, setTasks: (value) => { editorTasks = value; }, setSourcePreviews: (value) => { editorSourcePreviews = value; }, prepared: () => structuredClone(preparedNative), export: submitEditorExport };\n");
   server = createServer(async (request, response) => {
     const path = resolve(
       output,
@@ -4833,4 +4833,66 @@ test("main reuses prepared video sources after picture edits and invalidates cha
   assert.equal(result.videoCalls[1].document.assets[0].fingerprint, "b".repeat(64));
   assert.ok(result.generationChanged);
   assert.deepEqual(result.after, result.current, "Preparation never changes the applied edit");
+});
+
+for (const opening of ["demo", "video"]) test(`main prepares only visible ${opening} opening and plays while later video warms`, async (t) => {
+  const initial = structuredClone(realMediaSeed);
+  initial.id = `opening-before-later-video-${opening}`;
+  initial.assets[0] = { ...initial.assets[0], kind: opening, duration: T,
+    ...(opening === "video" ? { resourceId: `asset-${"1".repeat(64)}` } : {}) };
+  initial.assets.push({ id: "later", name: "稍后的4K素材", kind: "video", duration: T,
+    width: 3840, height: 2160, resourceId: `asset-${"2".repeat(64)}` });
+  initial.sequences[0].clips = [picture("opening", "v1", 0, T),
+    { ...picture("later-clip", "v1", T, T), assetId: "later" }];
+  const page = await openPage(t, { seed: initial, nativeTasks: true });
+  await waitSaved(page);
+  const result = await page.evaluate(async () => {
+    const audit = __mainAuditionAudit, workspace = audit.workspace(), before = __mainReadAudit.session().read(),
+      videos = [], warm = [], hash = "a".repeat(64), id = `asset-${hash}`;
+    const wave = new Uint8Array(44 + 96000 * 8), view = new DataView(wave.buffer),
+      text = (at, value) => { for (let i = 0; i < value.length; i++) wave[at + i] = value.charCodeAt(i); };
+    text(0, "RIFF"); view.setUint32(4, wave.length - 8, true); text(8, "WAVEfmt ");
+    view.setUint32(16, 16, true); view.setUint16(20, 3, true); view.setUint16(22, 2, true);
+    view.setUint32(24, 48000, true); view.setUint32(28, 384000, true); view.setUint16(32, 8, true); view.setUint16(34, 32, true);
+    text(36, "data"); view.setUint32(40, wave.length - 44, true);
+    const call = codeshellPanel.call.bind(codeshellPanel), context = codeshellPanel.getContext.bind(codeshellPanel);
+    codeshellPanel.getContext = async () => {
+      const value = await context(); return { ...value, availableMethods: [...value.availableMethods, "resources.read"] };
+    };
+    codeshellPanel.call = (method, args) => {
+      if (method !== "resources.read" || args.assetId !== id) return call(method, args);
+      const part = wave.subarray(args.offset, args.offset + args.length);
+      return Promise.resolve({ assetId: id, offset: args.offset, totalBytes: wave.length,
+        dataBase64: btoa(String.fromCharCode(...part)), eof: args.offset + part.length === wave.length });
+    };
+    audit.setSourcePreviews({ prepare(asset) { warm.push(asset.id); return new Promise(() => {}); }, dispose() {} });
+    audit.setTasks({
+      dispose() {},
+      async prepareVideoForPreview(doc, sequenceId, options) {
+        videos.push(options.assetIds);
+        return { snapshot: { documentHash: hash, sequenceId }, sources: options.assetIds.map((assetId) => ({
+          assetId, recipe: { width: 640, height: 360 }, proxy: { id: `asset-${hash}` },
+        })) };
+      },
+      async prepareAudioForPreview(doc, sequenceId) {
+        return { snapshot: { documentHash: hash, sequenceId },
+          preparedAudio: { documentHash: hash, sequenceId, assetId: id, recipeHash: hash },
+          audioResource: { id, bytes: wave.length, mimeType: "audio/wav", sha256: hash },
+          sampleCount: 96000, peak: 0, samplesOverFullScale: 0 };
+      },
+    });
+    workspace.preview.seek = async () => {};
+    workspace.preview.play = async (audio) => {
+      if (audio.buffer.length !== 96000) throw new Error("The complete exact mix remains required");
+      workspace.preview.isPlaying = true;
+    };
+    await workspace.togglePlayback();
+    return { videos, warm, playing: workspace.playing, preparing: Boolean(workspace.preparing),
+      before, after: __mainReadAudit.session().read() };
+  });
+  assert.deepEqual(result.videos, opening === "video" ? [["camera"]] : []);
+  assert.deepEqual(result.warm, ["later"], "Later source preparation starts without blocking this play request");
+  assert.equal(result.playing, true);
+  assert.equal(result.preparing, false);
+  assert.deepEqual(result.after, result.before, "Optional background work cannot change the user's timeline");
 });

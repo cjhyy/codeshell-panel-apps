@@ -60,6 +60,14 @@ export interface AudioPlan {
 }
 
 const clamp = (n: number, low: number, high: number) => Math.max(low, Math.min(high, n));
+/** A permanently muted lane contributes neither sound nor a dry sidechain signal.
+ * Animated gain remains eligible: a zero value at the playhead proves nothing. */
+export function audioLaneNeedsSource(lane: AudioPlanLane): boolean {
+  return !lane.stages.some((stage) =>
+    stage.track.muted || stage.track.volume === 0 || stage.audio.volume === 0,
+  ) && lane.spans.some((span) => span.playbackRate !== 0);
+}
+
 const part = (kind: string, id: string) => `${kind}:${encodeURIComponent(id)}`;
 const trackPath = (stage: AudioPlanStage) =>
   `${stage.sequencePath}/${part("track", stage.track.id)}`;

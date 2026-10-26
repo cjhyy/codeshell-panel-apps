@@ -1,4 +1,6 @@
 import { compileAudioPlan } from "./audio-plan";
+import { prepareEvaluator, type EvaluatedLayer } from "./evaluate";
+import { sequenceDuration } from "./validation";
 import type { EditorAsset, EditorDocument } from "./types";
 
 /** Fixed installed example audio; ordinary resources always take precedence. */
@@ -57,6 +59,47 @@ function referencedSourceKey(document: EditorDocument, sequenceId: string, video
 /** All referenced video sources, including nested sequences and alternate multicam angles. */
 export function editorVideoSourceKey(document: EditorDocument, sequenceId: string): string {
   return referencedSourceKey(document, sequenceId, true);
+}
+
+/** Only visible video endpoints block a play request. A bounded look ahead at
+ * upcoming clip boundaries warms likely next sources without scanning the library. */
+export function editorPreviewVideoPlan(
+  document: EditorDocument,
+  sequenceId: string,
+  time: number,
+): { current: EditorAsset[]; upcoming: EditorAsset[] } {
+  const sequence = document.sequences.find((item) => item.id === sequenceId);
+  if (!sequence) throw new Error(`Unknown preview sequence: ${sequenceId}`);
+  const evaluator = prepareEvaluator(document),
+    assets = new Map(document.assets.map((asset) => [asset.id, asset]));
+  const at = (tick: number) => {
+    const ids = new Set<string>();
+    const visit = (layer: EvaluatedLayer) => {
+      if (layer.kind === "group") layer.layers.forEach(visit);
+      else if (layer.kind === "transition") {
+        if (layer.from) visit(layer.from);
+        if (layer.to) visit(layer.to);
+      } else if (layer.kind === "media" && layer.assetKind === "video") ids.add(layer.assetId);
+    };
+    evaluator.evaluate(sequenceId, tick).layers.forEach(visit);
+    return [...ids].map((id) => assets.get(id)!);
+  };
+  const duration = sequenceDuration(sequence),
+    currentTime = time >= duration ? 0 : time,
+    current = duration ? at(currentTime) : [],
+    seen = new Set(current.map((asset) => asset.id)),
+    upcoming: EditorAsset[] = [];
+  const boundaries = [...new Set(sequence.clips.map((clip) => clip.start))]
+    .filter((tick) => tick > currentTime && tick < duration).sort((a, b) => a - b).slice(0, 256);
+  for (const tick of boundaries) {
+    for (const asset of at(tick)) {
+      if (seen.has(asset.id)) continue;
+      seen.add(asset.id);
+      upcoming.push(asset);
+      if (upcoming.length === 2) return { current, upcoming };
+    }
+  }
+  return { current, upcoming };
 }
 
 /** The media pool also owns images and demo surfaces, so its reuse check includes those sources. */

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTextStyle, defaultTransform } from "../apps/video-studio/src/editor/defaults";
-import { editorAudioContentKey, editorSourceContentKey, editorVideoSourceKey, editorVisualSourceKey } from "../apps/video-studio/src/editor/playback-cache";
+import { editorAudioContentKey, editorPreviewVideoPlan, editorSourceContentKey, editorVideoSourceKey, editorVisualSourceKey } from "../apps/video-studio/src/editor/playback-cache";
 import { trackAuditionDocument } from "../apps/video-studio/src/editor/audio-audition";
 import { constantTimeMap } from "../apps/video-studio/src/editor/time";
 import type { EditorDocument, MediaClip, MulticamClip, SequenceClip } from "../apps/video-studio/src/editor/types";
@@ -29,6 +29,38 @@ function document(): EditorDocument {
     }],
   };
 }
+
+test("playback prepares only visible video and warms at most two upcoming sources", () => {
+  const doc = document(), sequence = doc.sequences[0]!;
+  const current = sequence.clips[0]!, second = media("second", "alternate"), third = media("third", "unused");
+  second.start = 240000;
+  third.start = 480000;
+  sequence.clips.push(second, third);
+  const names = (time: number) => {
+    const plan = editorPreviewVideoPlan(doc, "main", time);
+    return { current: plan.current.map((asset) => asset.id), upcoming: plan.upcoming.map((asset) => asset.id) };
+  };
+  assert.deepEqual(names(0), { current: ["source"], upcoming: ["alternate", "unused"] });
+  assert.deepEqual(names(240000), { current: ["alternate"], upcoming: ["unused"] });
+  assert.deepEqual(names(720000), names(0), "Replay from the sequence end prepares its opening frame");
+  current.assetId = "image";
+  current.timeMap = { points: [{ time: 0, source: 0 }, { time: current.duration, source: 0 }] };
+  assert.deepEqual(names(0), { current: [], upcoming: ["alternate", "unused"] });
+  sequence.tracks[0]!.hidden = true;
+  assert.deepEqual(names(0), { current: [], upcoming: [] });
+});
+
+test("playback preparation follows visible nested and transition video endpoints", () => {
+  const doc = document(), main = doc.sequences[0]!, child = structuredClone(main);
+  child.id = "child";
+  const { assetId: _assetId, ...base } = media("nested", "source");
+  main.clips = [{ ...base, kind: "sequence", sequenceId: "child" }];
+  doc.sequences.push(child);
+  assert.deepEqual(editorPreviewVideoPlan(doc, "main", 0).current.map((asset) => asset.id), ["source"]);
+  main.clips = [media("first", "source"), { ...media("second", "alternate"), start: 192000 }];
+  main.transitions = [{ id: "mix", fromClipId: "first", toClipId: "second", start: 192000, duration: 48000, kind: "dissolve" }];
+  assert.deepEqual(editorPreviewVideoPlan(doc, "main", 216000).current.map((asset) => asset.id).sort(), ["alternate", "source"]);
+});
 
 test("playback keys ignore visual edits and labels while source identity remains stable", () => {
   const before = document(), after = structuredClone(before), sequence = after.sequences[0]!, clip = sequence.clips[0]!;

@@ -23,6 +23,7 @@ import type { EditorAsset, EditorDocument } from "./types";
 import type { MulticamAlignment, MulticamAlignmentOptions } from "./multicam-edits";
 import { validateAudioMixReport } from "./audio-mix-report";
 import { isEditorDemoNarration } from "./playback-cache";
+import { editorPreviewResourceIds, type EditorPreviewScope } from "./preview-resources";
 export { isEditorDemoNarration } from "./playback-cache";
 
 /** Fixed installed example audio; ordinary resources always take precedence. */
@@ -39,6 +40,7 @@ export const EDITOR_TASK_LIMITS = Object.freeze({
 });
 export interface EditorTaskSnapshot {
   kind?: "project";
+  previewScope?: EditorPreviewScope;
   transferId: string;
   documentHash: string;
   documentId: string;
@@ -369,6 +371,7 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
     sequenceId: string,
     options: EditorStageOptions = {},
     project = false,
+    previewScope?: EditorPreviewScope,
   ): Promise<EditorTaskSnapshot> {
     options = { ...defaults, ...options };
     const key = await workspace(),
@@ -378,6 +381,7 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
       throw new Error("编辑器快照超过 32MiB，请拆分序列后导出");
     const snapshot: EditorTaskSnapshot = {
       ...(project ? { kind: "project" as const } : {}),
+      ...(previewScope ? { previewScope: structuredClone(previewScope) } : {}),
       transferId: transferId(options.transferId ?? `editor-${randomId()}`),
       documentHash: await editorSha256(bytes),
       documentId: selected.document.id,
@@ -385,7 +389,9 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
       sequenceId,
       byteLength: bytes.length,
       chunkCount: Math.ceil(bytes.length / EDITOR_TASK_LIMITS.chunkBytes),
-      resourceIds: selected.resourceIds,
+      resourceIds: previewScope
+        ? editorPreviewResourceIds(selected.document, sequenceId, previewScope)
+        : selected.resourceIds,
       workspaceKey: key,
     };
     const externalIds = snapshot.resourceIds.filter((id) => id.startsWith("external-"));
@@ -493,6 +499,7 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         sequenceId,
         chunkCount: snapshot.chunkCount,
         byteLength: snapshot.byteLength,
+        ...(previewScope ? { previewScope } : {}),
       },
       snapshot.directReadResourceIds ?? [],
       key,
@@ -517,6 +524,12 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
   ) {
     transferId(snapshot.transferId);
     await same(snapshot.workspaceKey);
+    const scope = snapshot.previewScope;
+    if (scope && action !== "discard" &&
+        (scope.kind === "audio" ? action !== "prepare-audio" :
+          action !== "prepare-video" || !Array.isArray(extra.assetIds) ||
+            extra.assetIds.some((id) => !scope.assetIds.includes(id))))
+      throw new Error("预览专用快照不能用于其他媒体任务或完整导出，请重新准备");
     // Releasing staging must remain possible after an original is moved or its grant is revoked.
     const directReadResourceIds = action === "discard" ? [] : snapshot.directReadResourceIds ?? [];
     return start(
@@ -538,13 +551,16 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
     value: unknown,
     sequenceId: string,
     options: EditorPrepareOptions,
+    previewScope?: EditorPreviewScope,
   ) {
-    if (!options.snapshot) return stage(value, sequenceId, options);
+    if (!options.snapshot) return stage(value, sequenceId, options, false, previewScope);
     const snapshot = options.snapshot;
     await same(snapshot.workspaceKey);
+    if (snapshot.previewScope && JSON.stringify(snapshot.previewScope) !== JSON.stringify(previewScope))
+      return stage(value, sequenceId, { ...options, transferId: undefined }, false, previewScope);
     if (snapshot.directReadResourceIds?.length &&
         (await sdk.discover()).capabilities?.tasks?.directRead !== true)
-      return stage(value, sequenceId, { ...options, transferId: undefined });
+      return stage(value, sequenceId, { ...options, transferId: undefined }, false, previewScope);
     const selected = editorTaskDocument(value, sequenceId);
     const documentHash = await editorSha256(
       new TextEncoder().encode(JSON.stringify(selected.document)),
@@ -1267,7 +1283,7 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
       sequenceId: string,
       options: EditorPrepareOptions = {},
     ): Promise<EditorAudioResult> {
-      const snapshot = await selectedSnapshot(value, sequenceId, options);
+      const snapshot = await selectedSnapshot(value, sequenceId, options, { kind: "audio" });
       const job = await waitOwned(
           await snapshotRequest(snapshot, "prepare-audio", {}, options.signal),
           snapshot,
@@ -1322,18 +1338,21 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
     async prepareVideoForPreview(
       value: unknown,
       sequenceId: string,
-      options: EditorPrepareOptions = {},
+      options: EditorPrepareOptions & { assetIds?: string[] } = {},
     ): Promise<{ snapshot: EditorTaskSnapshot; sources: EditorVideoSource[] }> {
+      const available = editorTaskDocument(value, sequenceId)
+          .document.assets.filter((asset) => asset.kind === "video").map((asset) => asset.id),
+        ids = options.assetIds ?? available;
+      if (!Array.isArray(ids) || new Set(ids).size !== ids.length ||
+          ids.some((id) => !available.includes(id)))
+        throw new Error("请选择当前序列中引用的视频素材准备预览");
       // onTask/onJobChanged describe the video jobs; staging reports through onProgress.
       const snapshot = await selectedSnapshot(value, sequenceId, {
         ...options,
         onTask: undefined,
         onJobChanged: undefined,
-      });
-      const ids = editorTaskDocument(value, sequenceId)
-          .document.assets.filter((asset) => asset.kind === "video")
-          .map((asset) => asset.id),
-        sources: EditorVideoSource[] = [];
+      }, ids.length ? { kind: "video", assetIds: ids } : undefined);
+      const sources: EditorVideoSource[] = [];
       for (let index = 0; index < ids.length; index += EDITOR_TASK_LIMITS.proxiesPerTask) {
         const batch = ids.slice(index, index + EDITOR_TASK_LIMITS.proxiesPerTask),
           job = await waitOwned(

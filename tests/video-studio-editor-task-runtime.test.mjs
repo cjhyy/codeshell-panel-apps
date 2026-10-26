@@ -79,7 +79,7 @@ before(async () => {
   await build({
     stdin: {
       resolveDir: root,
-      contents: `export * from './apps/video-studio/src/editor/defaults.ts';export * from './apps/video-studio/src/editor/time.ts';export * from './apps/video-studio/src/editor/task-bridge.ts';export * from './apps/video-studio/src/editor/export-settings.ts';export * from './apps/video-studio/native/editor-runtime/runtime.ts';export * from './apps/video-studio/native/editor-runtime/proxy.ts';export * from './apps/video-studio/native/media/editor-frame-renderer.ts';`,
+      contents: `export * from './apps/video-studio/src/editor/defaults.ts';export * from './apps/video-studio/src/editor/time.ts';export * from './apps/video-studio/src/editor/task-bridge.ts';export * from './apps/video-studio/src/editor/preview-resources.ts';export * from './apps/video-studio/src/editor/export-settings.ts';export * from './apps/video-studio/native/editor-runtime/runtime.ts';export * from './apps/video-studio/native/editor-runtime/proxy.ts';export * from './apps/video-studio/native/media/editor-frame-renderer.ts';`,
     },
     bundle: true,
     platform: "node",
@@ -246,10 +246,13 @@ async function stage(d, paths = new Map(), extra = {}) {
     bytes = Buffer.from(JSON.stringify(selected.document)),
     documentHash = sha(bytes),
     transferId = `editor-${randomUUID()}`;
-  if (selected.resourceIds.length)
+  const resourceIds = extra.previewScope
+    ? api.editorPreviewResourceIds(selected.document, "main", extra.previewScope)
+    : selected.resourceIds;
+  if (resourceIds.length)
     await call(
-      { action: "stage-resources", transferId, resourceIds: selected.resourceIds },
-      selected.resourceIds.map((id) => extra.originals?.has(id) ? undefined : paths.get(id)),
+      { action: "stage-resources", transferId, resourceIds },
+      resourceIds.map((id) => extra.originals?.has(id) ? undefined : paths.get(id)),
       extra,
     );
   const chunkCount = Math.ceil(bytes.length / (512 * 1024));
@@ -269,9 +272,38 @@ async function stage(d, paths = new Map(), extra = {}) {
     sequenceId: "main",
     chunkCount,
     byteLength: bytes.length,
+    ...(extra.previewScope ? { previewScope: extra.previewScope } : {}),
   }, [], extra);
   return { transferId, documentHash, sequenceId: "main" };
 }
+test("native audio preview omits silent future originals and cannot become a full export", { timeout: 120000 }, async () => {
+  const d = document(), toneId = `asset-${sha(await readFile(tone))}`,
+    videoId = `asset-${sha(await readFile(prores))}`;
+  d.id = `preview-scope-${randomUUID()}`;
+  d.assets.push({ id: "tone", name: "Tone", kind: "audio", duration: 480000, resourceId: toneId },
+    { id: "later", name: "Later silent picture", kind: "video", duration: 240000,
+      width: 64, height: 48, resourceId: videoId });
+  d.sequences[0].clips = [clip("demo-intro", "video", 240000), clip("tone", "audio", 240000),
+    { ...clip("later", "video", 240000), start: 240000, audio: { ...api.defaultAudioMix(), volume: 0 } }];
+  // The future video is deliberately not supplied to the audio preview job.
+  const snapshot = await stage(d, new Map([[toneId, tone]]), { previewScope: { kind: "audio" } });
+  const first = await call({ action: "prepare-audio", ...snapshot });
+  assert.equal(first.result.sampleCount, 96000);
+  assert.ok(first.result.peak > .01);
+  const manifest = JSON.parse(await readFile(join(runtimeDir, "scopes", scope, "transfers", snapshot.transferId, "manifest.json")));
+  assert.deepEqual(manifest.previewScope, { kind: "audio" });
+  assert.deepEqual(manifest.bindings.map((binding) => binding.resourceId), [toneId]);
+  const failed = await call({ action: "render", ...snapshot, profile: profile() }, [], { fail: true });
+  assert.equal(failed.error.code, "SNAPSHOT_MISMATCH");
+  assert.equal(failed.response, undefined);
+  const bytes = Buffer.from(JSON.stringify(api.editorTaskDocument(d, "main").document));
+  const promoted = await call({ action: "commit", ...snapshot, chunkCount: 1, byteLength: bytes.length }, [], { fail: true });
+  assert.equal(promoted.error.code, "SNAPSHOT_MISMATCH", "A committed preview cannot silently acquire full-export authority");
+  const full = await stage(d, new Map([[toneId, tone], [videoId, prores]]));
+  const next = await call({ action: "prepare-audio", ...full });
+  assert.equal(next.result.audio.sha256, first.result.audio.sha256, "Scoped preparation retains the exact full-sequence PCM");
+  assert.equal(next.result.reused, true);
+});
 const artifactPath = (result, role) =>
   join(result.jobDir, result.response.artifacts.find((a) => a.role === role).file);
 test("native mix reuses sound across visual revisions and returns a current snapshot receipt", { timeout: 120000 }, async () => {
