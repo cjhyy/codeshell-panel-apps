@@ -10712,7 +10712,7 @@ function validateEditorRequest(value) {
 }
 
 // native/editor-runtime/proxy.ts
-import { rename as rename2, rm as rm2 } from "node:fs/promises";
+import { readFile, rename as rename2, rm as rm2 } from "node:fs/promises";
 import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 import { join as join2 } from "node:path";
 
@@ -10923,6 +10923,79 @@ async function timeline(path, streamIndex, origin, context2, onFrame) {
   if (!count) throw new EditorTaskError("INVALID_MEDIA", "源视频没有可解码画面");
   return { hash: hash4.digest("hex"), count, firstTick: firstTick2, endTick };
 }
+async function packetTimeline(path, streamIndex, origin, context2, onPacket) {
+  let pending = "", usable = true, count = 0;
+  const frames2 = [];
+  const consume = (chunk) => {
+    const lines = (pending + chunk.toString("utf8")).split(/\r?\n/);
+    pending = lines.pop();
+    if (pending.length > 4096) usable = false;
+    for (const line of lines) {
+      if (!usable || !line.trim()) continue;
+      const fields2 = Object.fromEntries(line.trim().split("|").map((field2) => field2.split("=")));
+      const seconds3 = Number(fields2.pts_time), duration2 = Number(fields2.duration_time), tick2 = Math.round((seconds3 - origin) * 24e4), end = Math.round((seconds3 - origin + duration2) * 24e4);
+      if (/[DC]/.test(fields2.flags ?? "") || !Number.isFinite(seconds3) || !Number.isFinite(duration2) || duration2 <= 0 || !Number.isSafeInteger(tick2) || tick2 < 0 || end > 86400 * 24e4)
+        usable = false;
+      else frames2.push([tick2, end]);
+      onPacket?.(++count);
+    }
+  };
+  await runMediaProcess(
+    context2.ffprobePath,
+    [
+      "-v",
+      "error",
+      ...safety,
+      "-select_streams",
+      String(streamIndex),
+      "-show_entries",
+      "packet=pts_time,duration_time,flags",
+      "-of",
+      "compact=p=0:nk=0",
+      path
+    ],
+    { signal: context2.signal, onStdout: consume }
+  );
+  consume(Buffer.from("\n"));
+  if (!usable || !frames2.length) return void 0;
+  frames2.sort((a, b) => a[0] - b[0]);
+  const hash4 = createHash2("sha256"), ticks3 = [];
+  for (const [index2, [tick2]] of frames2.entries()) {
+    if (index2 && tick2 <= frames2[index2 - 1][0]) return void 0;
+    hash4.update(`${tick2}
+`);
+    ticks3.push(tick2);
+  }
+  if (frames2[0][0] !== 0) return void 0;
+  return { hash: hash4.digest("hex"), count: frames2.length, firstTick: 0, endTick: frames2.at(-1)[1], ticks: ticks3 };
+}
+var encoderStatistics = /* @__PURE__ */ new Map();
+function supportsEncoderStatistics(context2) {
+  const key = `${context2.ffmpegPath}\0${context2.ffmpegVersion}`;
+  let known2 = encoderStatistics.get(key);
+  if (!known2) {
+    known2 = runMediaProcess(context2.ffmpegPath, ["-hide_banner", "-h", "long"], { signal: context2.signal }).then(({ stdout }) => {
+      const help = stdout.toString();
+      return /^-stats_enc_pre\b/m.test(help) && /^-stats_enc_pre_fmt\b/m.test(help);
+    }).catch(() => {
+      encoderStatistics.delete(key);
+      return false;
+    });
+    encoderStatistics.set(key, known2);
+  }
+  return known2;
+}
+async function encodedTicks(path) {
+  const ticks3 = [];
+  for (const line of (await readFile(path, "utf8")).split("\n")) {
+    if (!line.trim()) continue;
+    const tick2 = Number(line);
+    if (!Number.isSafeInteger(tick2)) return [];
+    ticks3.push(tick2);
+  }
+  return ticks3;
+}
+var sameTicks = (a, b) => a.length === b.length && a.every((tick2, index2) => tick2 === b[index2]);
 function describeEditorVideo(stream) {
   const trc = known(stream.color_transfer), primaries = known(stream.color_primaries), matrix = known(stream.color_space), range = known(stream.color_range);
   if (["smpte2084", "arib-std-b67"].includes(trc ?? "") || ["bt2020", "smpte431", "smpte432"].includes(primaries ?? "") || ["bt2020nc", "bt2020c"].includes(matrix ?? ""))
@@ -11037,19 +11110,32 @@ async function prepareEditorProxy(path, sourceHash, context2, purpose = "export"
       context2.onProgress?.(fraction);
     }
   };
+  const begin = (fraction) => {
+    if (fraction > reported) {
+      reported = fraction;
+      context2.onProgress?.(fraction);
+    }
+  };
   const durationSeconds = Number(stream.duration) || Number(probe.format?.duration) || 0, [rateNumerator, rateDenominator] = String(stream.avg_frame_rate || stream.r_frame_rate).split("/").map(Number), expectedFrames = Number(stream.nb_frames) || Math.round(durationSeconds * rateNumerator / (rateDenominator || 1)) || 0;
   const scanned = (start, span) => (count) => {
     if (expectedFrames > 0) report2(start + span * Math.min(1, count / expectedFrames));
   };
-  const original = await timeline(path, stream.index, sourceOriginSeconds, context2, scanned(0, 0.6));
-  if (original.firstTick !== 0)
-    throw new EditorTaskError(
-      "UNSUPPORTED_TIMESTAMPS",
-      "当前合成器尚不支持晚于素材起点出现的第一帧，请先整理画面起点"
-    );
-  const output = join2(context2.workDir, `proxy-${randomUUID2()}.mp4`);
+  const packets = await supportsEncoderStatistics(context2) ? await packetTimeline(path, stream.index, sourceOriginSeconds, context2, scanned(0, 0.05)) : void 0;
+  const scan = async (start, span) => {
+    const decoded = await timeline(path, stream.index, sourceOriginSeconds, context2, scanned(start, span));
+    if (decoded.firstTick !== 0)
+      throw new EditorTaskError(
+        "UNSUPPORTED_TIMESTAMPS",
+        "当前合成器尚不支持晚于素材起点出现的第一帧，请先整理画面起点"
+      );
+    return decoded;
+  };
+  let original = packets ?? await scan(0.05, 0.55);
+  const encodeStart = packets ? 0.05 : 0.6, encodeEnd = packets ? 0.95 : 0.85;
+  const output = join2(context2.workDir, `proxy-${randomUUID2()}.mp4`), encoderInput = join2(context2.workDir, `proxy-${randomUUID2()}.frames`);
   const filter = `scale=${encodedWidth}:${encodedHeight}:flags=${purpose === "preview" ? "bilinear" : "lanczos"},setsar=1,colorspace=ispace=${inputMatrix}:iprimaries=${inputPrimaries}:itrc=${inputTransfer}:irange=${inputRange}:space=bt709:primaries=bt709:trc=bt709:range=tv:format=${purpose === "preview" ? "yuv420p" : "yuv444p"}:dither=fsb`;
   try {
+    begin(encodeStart);
     await runMediaProcess(
       context2.ffmpegPath,
       [
@@ -11105,6 +11191,7 @@ async function prepareEditorProxy(path, sourceHash, context2, purpose = "export"
         "-nostats",
         "-progress",
         "pipe:1",
+        ...packets ? ["-stats_enc_pre", encoderInput, "-stats_enc_pre_fmt", "{pts}"] : [],
         output
       ],
       {
@@ -11112,12 +11199,17 @@ async function prepareEditorProxy(path, sourceHash, context2, purpose = "export"
         durationSeconds,
         onStdout: () => {
         },
-        onProgress: ({ fraction }) => report2(0.6 + 0.25 * (fraction ?? 0))
+        onProgress: ({ fraction }) => report2(encodeStart + (encodeEnd - encodeStart) * (fraction ?? 0))
       }
     );
-    report2(0.85);
-    const actual = await timeline(output, 0, 0, context2, scanned(0.85, 0.149));
-    if (actual.hash !== original.hash || actual.count !== original.count || actual.endTick !== original.endTick)
+    begin(encodeEnd);
+    if (packets && !sameTicks(packets.ticks, await encodedTicks(encoderInput)))
+      original = await scan(encodeEnd, (1 - encodeEnd) / 2);
+    const verifyStart = Math.max(encodeEnd, reported), verify = scanned(verifyStart, 0.999 - verifyStart);
+    const matches = (value) => value.hash === original.hash && value.count === original.count && value.endTick === original.endTick;
+    let actual = await packetTimeline(output, 0, 0, context2, verify);
+    if (!actual || !matches(actual)) actual = await timeline(output, 0, 0, context2, verify);
+    if (!matches(actual))
       throw new EditorTaskError(
         "PROXY_TIMING_MISMATCH",
         "兼容视频的帧时间与原素材不一致，已停止输出"
@@ -11149,6 +11241,7 @@ async function prepareEditorProxy(path, sourceHash, context2, purpose = "export"
     return result;
   } finally {
     await rm2(output, { force: true });
+    await rm2(encoderInput, { force: true });
   }
 }
 
@@ -13571,7 +13664,7 @@ function portableTaskError(error) {
 
 // native/editor-runtime/waveform.ts
 import { createReadStream as createReadStream3 } from "node:fs";
-import { lstat as lstat3, readFile } from "node:fs/promises";
+import { lstat as lstat3, readFile as readFile2 } from "node:fs/promises";
 import { join as join10 } from "node:path";
 var RATE2 = 48e3;
 var MAX_SAMPLES = RATE2 * WAVEFORM_LIMITS.seconds;
@@ -13661,7 +13754,7 @@ async function analyzeEditorWaveform(options2) {
     const cached = await regular(options2.cacheDir, [`${recipeHash}.json`]);
     if ((await lstat3(cached)).size > WAVEFORM_LIMITS.bytes)
       throw new EditorTaskError("INVALID_CACHE", "波形缓存超出大小限制");
-    const waveform2 = decodeEditorWaveform(JSON.parse(await readFile(cached, "utf8")));
+    const waveform2 = decodeEditorWaveform(JSON.parse(await readFile2(cached, "utf8")));
     if (waveform2.sourceHash !== sourceHash)
       throw new EditorTaskError("INVALID_CACHE", "波形缓存与素材不匹配");
     return { path, sourceHash, recipeHash, reused: true, reusedPcm: false };
@@ -13760,7 +13853,7 @@ async function analyzeEditorWaveform(options2) {
 
 // native/editor-runtime/multicam.ts
 import { createReadStream as createReadStream4 } from "node:fs";
-import { readFile as readFile2, stat as stat9 } from "node:fs/promises";
+import { readFile as readFile3, stat as stat9 } from "node:fs/promises";
 import { join as join11 } from "node:path";
 
 // src/editor/audio-correlation.ts
@@ -13925,7 +14018,7 @@ async function alignEditorMulticam(options2) {
     try {
       const cached = await regular(options2.cacheDir, [`${key}.json`]);
       if ((await stat9(cached)).size > 1024 * 1024) throw new Error("机位缓存超过范围");
-      const value = JSON.parse(await readFile2(cached, "utf8"));
+      const value = JSON.parse(await readFile3(cached, "utf8"));
       if (value.sourceHash !== sourceHash || !Array.isArray(value.features) || value.features.length < 400 || value.features.length > 36e3 || !value.features.every(
         (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v < 30
       ))
@@ -15059,7 +15152,7 @@ import {
   copyFile as copyFile4,
   link as link4,
   mkdir as mkdir6,
-  readFile as readFile3,
+  readFile as readFile4,
   realpath as realpath3,
   rename as rename5,
   stat as stat11,
@@ -15388,7 +15481,7 @@ function createMediaJobProcessors(options2) {
         });
         const whisperExecutable = await executablePath(options2.whisperPath ?? "whisper");
         const executableInfo = await stat11(whisperExecutable);
-        const shebang = (await readFile3(whisperExecutable, "utf8")).split("\n")[0] ?? "";
+        const shebang = (await readFile4(whisperExecutable, "utf8")).split("\n")[0] ?? "";
         const python = /^#!(\/[^\r\n ]*python[\d.]*)\s*$/.exec(shebang)?.[1];
         const version = python ? (await runMediaProcess(
           python,
@@ -15430,7 +15523,7 @@ function createMediaJobProcessors(options2) {
       });
       const cachePath = join13(cacheDirectory, `${kind}-${key}.json`);
       try {
-        const cached = JSON.parse(await readFile3(cachePath, "utf8"));
+        const cached = JSON.parse(await readFile4(cachePath, "utf8"));
         if (cached.version === 1 && await cachedArtifactsExist(cached.result, context2)) {
           check(context2);
           const result2 = await materializeCached(cached.result, context2);
@@ -15820,7 +15913,7 @@ function createMediaJobProcessors(options2) {
           { signal: context2.signal, cwd: context2.workDir }
         );
         const raw2 = JSON.parse(
-          await readFile3(join13(context2.outputDir, "transcribe-source.json"), "utf8")
+          await readFile4(join13(context2.outputDir, "transcribe-source.json"), "utf8")
         );
         if (!Array.isArray(raw2.segments))
           throw new Error("Whisper did not produce a timestamped transcript");
@@ -16139,7 +16232,7 @@ import {
   link as link5,
   mkdir as mkdir7,
   open as open4,
-  readFile as readFile4,
+  readFile as readFile5,
   readdir as readdir3,
   rename as rename6,
   rm as rm10,
@@ -16615,7 +16708,7 @@ function validateAudio8TtsInput(raw) {
 var SCRIPT_HASH = createHash7("sha256").update(AUDIO8_SCRIPT).digest("hex");
 async function readJson(path) {
   if ((await stat12(path)).size > 16 * 1024) throw new Error("Runtime metadata exceeds its budget");
-  return JSON.parse(await readFile4(path, "utf8"));
+  return JSON.parse(await readFile5(path, "utf8"));
 }
 async function saveJson(path, value) {
   const partial = `${path}-${randomUUID10()}.partial`;
@@ -16744,7 +16837,7 @@ function createAudio8TtsProvider(options2) {
       return { ...base, state: "installing", reason: "正在准备并验证本地声音克隆" };
     try {
       const manifest = await readJson(manifestPath);
-      if (!base.installed || manifest.scriptHash !== SCRIPT_HASH || manifest.revision !== AUDIO8_REVISION || manifest.commit !== AUDIO8_COMMIT || JSON.stringify(manifest.packages) !== JSON.stringify(PACKAGES) || await readFile4(script2, "utf8") !== AUDIO8_SCRIPT)
+      if (!base.installed || manifest.scriptHash !== SCRIPT_HASH || manifest.revision !== AUDIO8_REVISION || manifest.commit !== AUDIO8_COMMIT || JSON.stringify(manifest.packages) !== JSON.stringify(PACKAGES) || await readFile5(script2, "utf8") !== AUDIO8_SCRIPT)
         throw new Error("Incomplete runtime");
       for (const item of AUDIO8_RESOURCES)
         if ((await stat12(join14(dir, item.kind, item.path))).size !== item.bytes)
@@ -17345,7 +17438,7 @@ function createAudio8TtsProvider(options2) {
 // native/providers/qwen.ts
 import { createHash as createHash8, randomUUID as randomUUID11 } from "node:crypto";
 import { createReadStream as createReadStream6 } from "node:fs";
-import { mkdir as mkdir8, open as open5, readFile as readFile5, rename as rename7, rm as rm11, stat as stat13, statfs as statfs2, writeFile as writeFile4 } from "node:fs/promises";
+import { mkdir as mkdir8, open as open5, readFile as readFile6, rename as rename7, rm as rm11, stat as stat13, statfs as statfs2, writeFile as writeFile4 } from "node:fs/promises";
 import { totalmem as totalmem2 } from "node:os";
 import { isAbsolute as isAbsolute9, join as join15, resolve as resolve3 } from "node:path";
 import { StringDecoder as StringDecoder2 } from "node:string_decoder";
@@ -17566,7 +17659,7 @@ else:
 var SCRIPT_HASH2 = createHash8("sha256").update(SCRIPT).digest("hex");
 async function readJson2(path) {
   if ((await stat13(path)).size > 16 * 1024) throw new Error("Runtime metadata exceeds its budget");
-  return JSON.parse(await readFile5(path, "utf8"));
+  return JSON.parse(await readFile6(path, "utf8"));
 }
 async function saveJson2(path, value) {
   const partial = `${path}-${randomUUID11()}.partial`;
@@ -17641,7 +17734,7 @@ function createQwenTtsProvider(options2) {
       return { ...base, state: "installing", reason: "正在准备并验证本地声音克隆" };
     try {
       const manifest = await readJson2(manifestPath);
-      if (!base.installed || manifest.scriptHash !== SCRIPT_HASH2 || manifest.revision !== REVISION || JSON.stringify(manifest.packages) !== JSON.stringify(PACKAGES2) || await readFile5(script2, "utf8") !== SCRIPT)
+      if (!base.installed || manifest.scriptHash !== SCRIPT_HASH2 || manifest.revision !== REVISION || JSON.stringify(manifest.packages) !== JSON.stringify(PACKAGES2) || await readFile6(script2, "utf8") !== SCRIPT)
         throw new Error("Incomplete runtime");
       for (const item of RESOURCES)
         if ((await stat13(join15(modelPath, item.path))).size !== item.bytes)
@@ -18159,7 +18252,7 @@ function createQwenTtsProvider(options2) {
 
 // native/queue.ts
 import { randomUUID as randomUUID12 } from "node:crypto";
-import { mkdir as mkdir9, readFile as readFile6, readdir as readdir4, rename as rename8, rm as rm12, writeFile as writeFile5 } from "node:fs/promises";
+import { mkdir as mkdir9, readFile as readFile7, readdir as readdir4, rename as rename8, rm as rm12, writeFile as writeFile5 } from "node:fs/promises";
 import { join as join16 } from "node:path";
 function alive(pid) {
   try {
@@ -18211,7 +18304,7 @@ async function acquireVoiceQueue(root, signal, waiting) {
       if (match[3] === "choosing") entry.choosing = true;
       if (match[3] === "ticket") {
         try {
-          const value = await readFile6(join16(root, name), "utf8");
+          const value = await readFile7(join16(root, name), "utf8");
           if (value.length > 32) throw new Error("invalid ticket");
           entry.ticket = Number(value);
           if (!Number.isSafeInteger(entry.ticket) || entry.ticket < 1)
@@ -18674,7 +18767,7 @@ import {
   copyFile as copyFile6,
   mkdir as mkdir13,
   open as open6,
-  readFile as readFile8,
+  readFile as readFile9,
   rename as rename12,
   rm as rm17,
   stat as stat15,
@@ -18812,7 +18905,7 @@ async function releaseManagedTtsSetupResources(lock, lockPath, sample2, primaryF
 // native/media/media-tts.ts
 import { createHash as createHash10, randomUUID as randomUUID15 } from "node:crypto";
 import { createReadStream as createReadStream7 } from "node:fs";
-import { copyFile as copyFile5, mkdir as mkdir12, readFile as readFile7, rename as rename11, rm as rm16, stat as stat14, writeFile as writeFile6 } from "node:fs/promises";
+import { copyFile as copyFile5, mkdir as mkdir12, readFile as readFile8, rename as rename11, rm as rm16, stat as stat14, writeFile as writeFile6 } from "node:fs/promises";
 import { release } from "node:os";
 import { join as join19 } from "node:path";
 var CACHE_VERSION2 = 1;
@@ -18960,7 +19053,7 @@ async function generateLocalTts(raw, context2, options2 = {}) {
     let cachedMetadata;
     try {
       if ((await stat14(cacheJson)).size > 4096) throw new Error("Oversized speech cache metadata");
-      const cached = JSON.parse(await readFile7(cacheJson, "utf8"));
+      const cached = JSON.parse(await readFile8(cacheJson, "utf8"));
       const metadata2 = await inspectWav(cacheWav, signal, options2);
       if (cached.version !== CACHE_VERSION2 || cached.cacheKey !== cacheKey || cached.bytes !== metadata2.bytes || cached.durationSeconds !== metadata2.durationSeconds || cached.sha256 !== await digestFile(cacheWav, signal))
         throw new Error("Stale speech cache");
@@ -19129,7 +19222,7 @@ async function digest5(path, signal) {
 }
 async function jsonFile(path, maxBytes = 256 * 1024) {
   if ((await stat15(path)).size > maxBytes) throw new Error("Runtime metadata exceeds its budget");
-  return JSON.parse(await readFile8(path, "utf8"));
+  return JSON.parse(await readFile9(path, "utf8"));
 }
 async function atomicJson(path, value) {
   const temporary = `${path}-${randomUUID16()}.partial`;
@@ -19266,7 +19359,7 @@ function createManagedTtsProviders(options2) {
       return { ...result, state: "installing", reason: "正在准备并验证声音资源" };
     try {
       const manifest = await loadManifest2(id7);
-      if (!result.installed || await readFile8(script2(id7), "utf8") !== MANAGED_TTS_SCRIPT)
+      if (!result.installed || await readFile9(script2(id7), "utf8") !== MANAGED_TTS_SCRIPT)
         throw new Error("Incomplete runtime");
       if (id7 === "kokoro") {
         for (const resource of RESOURCES2)
@@ -20062,7 +20155,7 @@ import {
   copyFile as copyFile7,
   lstat as lstat5,
   mkdir as mkdir15,
-  readFile as readFile9,
+  readFile as readFile10,
   readdir as readdir5,
   realpath as realpath4,
   rename as rename14,
@@ -20378,7 +20471,7 @@ async function inspectDirectory(projectDir, kind) {
   const sourcePath2 = join22(projectDir, "index.html");
   if ((await stat17(sourcePath2)).size > 8 * 1024 * 1024)
     throw new Error("HyperFrames index.html exceeds 8 MiB");
-  const html = await readFile9(sourcePath2, "utf8");
+  const html = await readFile10(sourcePath2, "utf8");
   const root = /<[a-z][^>]*\bdata-composition-id\s*=\s*["'][^"']+["'][^>]*>/i.exec(html)?.[0];
   if (!root) throw new Error("index.html does not contain a HyperFrames composition root");
   const attr = (name) => {
@@ -20390,12 +20483,12 @@ async function inspectDirectory(projectDir, kind) {
   for (const file of files.filter(
     (file2) => /\.(html|css|js|mjs)$/i.test(file2.path) && file2.size <= 8 * 1024 * 1024
   )) {
-    const source3 = await readFile9(join22(projectDir, file.path), "utf8");
+    const source3 = await readFile10(join22(projectDir, file.path), "utf8");
     for (const match of source3.matchAll(/https?:\/\/[^\s"'<>`)]+/g)) externalUrls.add(match[0]);
   }
   let pkg = {};
   try {
-    pkg = JSON.parse(await readFile9(join22(projectDir, "package.json"), "utf8"));
+    pkg = JSON.parse(await readFile10(join22(projectDir, "package.json"), "utf8"));
   } catch {
   }
   const pin = Object.values(pkg.scripts ?? {}).join(" ").match(/hyperframes@(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)/)?.[1];
@@ -20606,7 +20699,7 @@ function createHyperframesAdapter(options2) {
     const directory2 = join22(cacheRoot, "renders", key), artifactPath = join22(directory2, "scene.mp4"), manifestPath = join22(directory2, "render.json");
     if (!current.externalUrls.length) {
       try {
-        const stored = JSON.parse(await readFile9(manifestPath, "utf8"));
+        const stored = JSON.parse(await readFile10(manifestPath, "utf8"));
         if (stored.artifactHash === await digestFile2(artifactPath)) {
           const video = await probeVideo(found, artifactPath, ctx.signal);
           report(ctx, {

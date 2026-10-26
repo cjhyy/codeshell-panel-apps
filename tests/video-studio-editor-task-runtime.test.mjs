@@ -945,14 +945,55 @@ test("fast preview preparation reports progress while it scans, encodes and veri
     .flatMap((flags, index) => flags.startsWith("K") ? [index] : []);
   assert.deepEqual(keyframes, [0, 30, 60, 90]);
   // A 4K original can take minutes; the panel needs movement long before the final receipt.
-  assert.ok(fractions.some((f) => f > 0 && f < 0.6), `source scan: ${fractions}`);
-  assert.ok(fractions.some((f) => f >= 0.6 && f < 0.85), `encode: ${fractions}`);
-  assert.ok(fractions.some((f) => f >= 0.85 && f < 1), `verification: ${fractions}`);
+  // Clean sources read their clock from packets, so encoding now carries most of the weight.
+  assert.ok(fractions.some((f) => f > 0 && f < 0.05), `source scan: ${fractions}`);
+  assert.ok(fractions.some((f) => f >= 0.05 && f < 0.95), `encode: ${fractions}`);
+  assert.ok(fractions.some((f) => f >= 0.95 && f < 1), `verification: ${fractions}`);
   assert.equal(fractions.at(-1), 1);
   assert.deepEqual([...fractions].sort((a, b) => a - b), fractions);
   fractions.length = 0;
   await api.prepareEditorProxy(source, sha(await readFile(source)), context, "preview");
   assert.deepEqual(fractions, [1], "A cached preview finishes at once");
+});
+test("clean sources are verified from packets and encoder input without decoding scans; edit lists fall back", { timeout: 60000 }, async () => {
+  const dir = await mkdtemp(join(temp, "one-pass-")),
+    log = join(dir, "ffprobe.log"),
+    probe = join(dir, "ffprobe");
+  // Record every probe the preparation runs, then delegate to the real ffprobe.
+  await writeFile(probe, `#!/bin/sh\necho "$*" >> "${log}"\nexec ffprobe "$@"\n`, { mode: 0o755 });
+  const clean = join(dir, "clean.mp4"), cut = join(dir, "cut.mp4");
+  // B-frames make decode order differ from presentation order.
+  ff([...["-f", "lavfi", "-i", "testsrc2=size=64x48:rate=30:d=2"],
+    ...["-c:v", "libx264", "-g", "30", "-bf", "2", "-pix_fmt", "yuv420p", clean]]);
+  // A stream-copied cut keeps leading packets that the decoder discards through the edit list.
+  ff(["-ss", "0.5", "-i", clean, "-c", "copy", cut]);
+  // FFmpeg 5.1 lacks encoder input statistics and rejects the option outright.
+  const legacy = join(dir, "ffmpeg-5.1");
+  await writeFile(legacy, `#!/bin/sh
+for arg in "$@"; do case "$arg" in -stats_enc_pre*) echo "Unrecognized option '\${arg#-}'." >&2; exit 8;; esac; done
+if [ "$2" = "-h" ]; then ffmpeg "$@" | grep -v stats_enc; exit 0; fi
+exec ffmpeg "$@"
+`, { mode: 0o755 });
+  const prepare = async (source, purpose, ffmpegPath = "ffmpeg") => {
+    await writeFile(log, "");
+    const proxy = await api.prepareEditorProxy(source, sha(await readFile(source)), {
+      ffmpegPath, ffprobePath: probe, ffmpegVersion: `one-pass-test ${ffmpegPath}`,
+      cacheDir: await mkdtemp(join(dir, "cache-")), workDir: await mkdtemp(join(dir, "work-")),
+      signal: new AbortController().signal,
+    }, purpose);
+    return { proxy, scans: (await readFile(log, "utf8")).split("\n").filter((line) => line.includes("frame=")).length };
+  };
+  for (const purpose of ["preview", "export"]) {
+    const fast = await prepare(clean, purpose);
+    assert.equal(fast.proxy.frameCount, 60);
+    assert.equal(fast.scans, 0, `${purpose}: no decoding scan for a clean source`);
+  }
+  const fallback = await prepare(cut, "preview");
+  assert.equal(fallback.proxy.frameCount, 45);
+  assert.ok(fallback.scans >= 1, "discarded packets require the decoded frame scan");
+  const older = await prepare(clean, "preview", legacy);
+  assert.equal(older.proxy.frameCount, 60);
+  assert.ok(older.scans >= 1, "without encoder statistics the decoded frame scan remains the authority");
 });
 test("staging rejects changed material, invalid directories, unsupported JSON fields and corrupt documents", async () => {
   const transferId = `editor-${randomUUID()}`,

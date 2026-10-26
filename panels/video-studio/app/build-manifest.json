@@ -3,7 +3,7 @@
   "builder": "esbuild@0.28.2",
   "entry": "src/main.ts",
   "files": {
-    ".codeshell-panel/panel.json": "d0f0dfd7092e58a6164f6cc06b19a34ee8c351a55b267d675efba3cc195fd396",
+    ".codeshell-panel/panel.json": "294630be768d8645559aaca51cf2d34d873d48e9ee49550dacf691f6e620d1f3",
     "agent/skills/editor-v2/SKILL.md": "21812b375d4994d18162ba4087ec0c8a00b1c01f191285ca09aeabf056fac7fa",
     "agent/skills/narration-workflow/SKILL.md": "23c63ea09d8055246608601cb068d4489e03e91a74924ab541288760b66c4b78",
     "agent/skills/project-runtime/SKILL.md": "f9f95ec07d2f0c382f1bd2c1784a13e6d987fc80fa906aa96f3dbaa1a9c59813",
@@ -36,12 +36,12 @@
     "app/runtimes/editor-renderer.mjs": "86be9ad761be48857604a0bc05237ae3a40fb1901c23713e41649a051dfbbfd4",
     "app/style.css": "dd323d78ca9439f87c962727a08ae31ed8ab9e8a0251ba45a610467ff75d90dd",
     "app/tools/audio-separation.mjs": "87617222a59745343ac2f7863bf57c13e54ca2f6a9655479e4c7b14d2aea6451",
-    "app/tools/editor-runtime.mjs": "c77505d7fefdb8f6e4582b8c3ed0634df52bb65969620308907e2c4f1cefb003",
+    "app/tools/editor-runtime.mjs": "8cb630f3046b00f1f85d7cb00eb2af3159aea0d761be0a9945fc9065c7869217",
     "app/tools/editor-sync.mjs": "a2a10cc438fb83244f14a8e7ee2979be640132358d5cff7b787cbfb3e4df70c5",
     "app/tools/folder-scan.mjs": "524b085b5cbb4c5750ba7345b22711fb314ea5338a67822752a95cc150613d25",
     "app/tools/media-runtime.mjs": "6e5a9dc0b910fdc0bb1e45684f4d3194c2502927bcc25e8c0e6e3b9fb46811cb",
-    "app/tools/video-studio.mjs": "3f2a830ab2c6a2072bca1d2dfe1f74bce7648135e29f8cc50d93bc476a59ebdf",
+    "app/tools/video-studio.mjs": "45778173b0f302a42b8282330d777e8d12da13865dc1c158ca99f62b73e3e0f6",
     "app/tools/voice-runtime.mjs": "43229bc9c285484b3fed83866110f3bd121964ec27c9d954eae3e9392f4546d6",
-    "README.md": "b2889f622592970c38366e27287afbfb3045600b33c5ffa282a3760778ad2504"
+    "README.md": "1e7a66d5dda8dd4ae8ff5e990e5f185a2107e377e7fa0be3c6c159748b0da545"
   }
 }

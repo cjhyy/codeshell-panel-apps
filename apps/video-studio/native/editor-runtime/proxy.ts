@@ -1,4 +1,4 @@
-import { stat, rename, rm } from "node:fs/promises";
+import { readFile, stat, rename, rm } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { runMediaProcess } from "../process-runner.js";
@@ -119,6 +119,99 @@ async function timeline(
   if (!count) throw new EditorTaskError("INVALID_MEDIA", "源视频没有可解码画面");
   return { hash: hash.digest("hex"), count, firstTick, endTick };
 }
+
+type Timeline = Awaited<ReturnType<typeof timeline>>;
+
+/** The same frame clock read from demuxed packets, without decoding. Undefined whenever
+ * packets cannot stand in for decoded pictures; callers then run the decoding scan,
+ * which also owns every user-facing timestamp error. */
+async function packetTimeline(
+  path: string,
+  streamIndex: number,
+  origin: number,
+  context: ProxyContext,
+  onPacket?: (count: number) => void,
+): Promise<(Timeline & { ticks: number[] }) | undefined> {
+  let pending = "",
+    usable = true,
+    count = 0;
+  const frames: Array<[tick: number, end: number]> = [];
+  const consume = (chunk: Buffer) => {
+    const lines = (pending + chunk.toString("utf8")).split(/\r?\n/);
+    pending = lines.pop()!;
+    if (pending.length > 4096) usable = false;
+    for (const line of lines) {
+      if (!usable || !line.trim()) continue;
+      const fields = Object.fromEntries(line.trim().split("|").map((field) => field.split("=")));
+      const seconds = Number(fields.pts_time),
+        duration = Number(fields.duration_time),
+        tick = Math.round((seconds - origin) * 240000),
+        end = Math.round((seconds - origin + duration) * 240000);
+      // Discarded (edit list) or corrupt packets are not presented as decoded frames.
+      if (/[DC]/.test(fields.flags ?? "") || !Number.isFinite(seconds) || !Number.isFinite(duration) ||
+          duration <= 0 || !Number.isSafeInteger(tick) || tick < 0 || end > 86400 * 240000)
+        usable = false;
+      else frames.push([tick, end]);
+      onPacket?.(++count);
+    }
+  };
+  await runMediaProcess(
+    context.ffprobePath,
+    [
+      "-v", "error", ...safety, "-select_streams", String(streamIndex),
+      "-show_entries", "packet=pts_time,duration_time,flags", "-of", "compact=p=0:nk=0", path,
+    ],
+    { signal: context.signal, onStdout: consume },
+  );
+  consume(Buffer.from("\n"));
+  if (!usable || !frames.length) return undefined;
+  // Packets arrive in decode order; B-frames present in a different order.
+  frames.sort((a, b) => a[0] - b[0]);
+  const hash = createHash("sha256"),
+    ticks: number[] = [];
+  for (const [index, [tick]] of frames.entries()) {
+    if (index && tick <= frames[index - 1]![0]) return undefined;
+    hash.update(`${tick}\n`);
+    ticks.push(tick);
+  }
+  if (frames[0]![0] !== 0) return undefined;
+  return { hash: hash.digest("hex"), count: frames.length, firstTick: 0, endTick: frames.at(-1)![1], ticks };
+}
+
+const encoderStatistics = new Map<string, Promise<boolean>>();
+/** FFmpeg 6.0 added encoder input statistics; 5.x rejects the options as unknown. */
+function supportsEncoderStatistics(context: ProxyContext): Promise<boolean> {
+  const key = `${context.ffmpegPath}\0${context.ffmpegVersion}`;
+  let known = encoderStatistics.get(key);
+  if (!known) {
+    known = runMediaProcess(context.ffmpegPath, ["-hide_banner", "-h", "long"], { signal: context.signal })
+      .then(({ stdout }) => {
+        const help = stdout.toString();
+        return /^-stats_enc_pre\b/m.test(help) && /^-stats_enc_pre_fmt\b/m.test(help);
+      })
+      .catch(() => {
+        // A cancelled probe says nothing about the binary; ask again next time.
+        encoderStatistics.delete(key);
+        return false;
+      });
+    encoderStatistics.set(key, known);
+  }
+  return known;
+}
+
+/** Presentation times the encoder actually received, on the 1/240000 encoder time base. */
+async function encodedTicks(path: string): Promise<number[]> {
+  const ticks: number[] = [];
+  for (const line of (await readFile(path, "utf8")).split("\n")) {
+    if (!line.trim()) continue;
+    const tick = Number(line);
+    if (!Number.isSafeInteger(tick)) return [];
+    ticks.push(tick);
+  }
+  return ticks;
+}
+const sameTicks = (a: number[], b: number[]) =>
+  a.length === b.length && a.every((tick, index) => tick === b[index]);
 
 /** One shared compatibility policy for native inspection and actual source preparation. */
 export function describeEditorVideo(stream: any) {
@@ -268,10 +361,16 @@ export async function prepareEditorProxy(
     }
     throw new EditorTaskError("CACHE_CHANGED", "已准备视频内容发生变化，请清理该任务缓存后重试");
   }
-  // Scanning every source frame dominates on 4K originals, so it carries most of the weight.
   let reported = -1;
   const report = (fraction: number) => {
     if (fraction >= 1 || fraction - reported >= 0.01) {
+      reported = fraction;
+      context.onProgress?.(fraction);
+    }
+  };
+  // Phase starts are always visible, even after a fast scan ends just below the 1% step.
+  const begin = (fraction: number) => {
+    if (fraction > reported) {
       reported = fraction;
       context.onProgress?.(fraction);
     }
@@ -287,15 +386,30 @@ export async function prepareEditorProxy(
   const scanned = (start: number, span: number) => (count: number) => {
     if (expectedFrames > 0) report(start + span * Math.min(1, count / expectedFrames));
   };
-  const original = await timeline(path, stream.index, sourceOriginSeconds, context, scanned(0, 0.6));
-  if (original.firstTick !== 0)
-    throw new EditorTaskError(
-      "UNSUPPORTED_TIMESTAMPS",
-      "当前合成器尚不支持晚于素材起点出现的第一帧，请先整理画面起点",
-    );
-  const output = join(context.workDir, `proxy-${randomUUID()}.mp4`);
+  // Decoding the whole source only to read its frame clock dominated 4K preparation.
+  // Packets give the same clock when the encoder later receives exactly those frames;
+  // without encoder statistics there is nothing to confirm that against.
+  const packets = (await supportsEncoderStatistics(context))
+    ? await packetTimeline(path, stream.index, sourceOriginSeconds, context, scanned(0, 0.05))
+    : undefined;
+  const scan = async (start: number, span: number) => {
+    const decoded = await timeline(path, stream.index, sourceOriginSeconds, context, scanned(start, span));
+    if (decoded.firstTick !== 0)
+      throw new EditorTaskError(
+        "UNSUPPORTED_TIMESTAMPS",
+        "当前合成器尚不支持晚于素材起点出现的第一帧，请先整理画面起点",
+      );
+    return decoded;
+  };
+  // An unusable packet clock keeps the previous order: reject bad timing before encoding.
+  let original: Timeline = packets ?? (await scan(0.05, 0.55));
+  const encodeStart = packets ? 0.05 : 0.6,
+    encodeEnd = packets ? 0.95 : 0.85;
+  const output = join(context.workDir, `proxy-${randomUUID()}.mp4`),
+    encoderInput = join(context.workDir, `proxy-${randomUUID()}.frames`);
   const filter = `scale=${encodedWidth}:${encodedHeight}:flags=${purpose === "preview" ? "bilinear" : "lanczos"},setsar=1,colorspace=ispace=${inputMatrix}:iprimaries=${inputPrimaries}:itrc=${inputTransfer}:irange=${inputRange}:space=bt709:primaries=bt709:trc=bt709:range=tv:format=${purpose === "preview" ? "yuv420p" : "yuv444p"}:dither=fsb`;
   try {
+    begin(encodeStart);
     await runMediaProcess(
       context.ffmpegPath,
       [
@@ -343,22 +457,28 @@ export async function prepareEditorProxy(
         "-nostats",
         "-progress",
         "pipe:1",
+        ...(packets ? ["-stats_enc_pre", encoderInput, "-stats_enc_pre_fmt", "{pts}"] : []),
         output,
       ],
       {
         signal: context.signal,
         durationSeconds,
         onStdout: () => {},
-        onProgress: ({ fraction }) => report(0.6 + 0.25 * (fraction ?? 0)),
+        onProgress: ({ fraction }) => report(encodeStart + (encodeEnd - encodeStart) * (fraction ?? 0)),
       },
     );
-    report(0.85);
-    const actual = await timeline(output, 0, 0, context, scanned(0.85, 0.149));
-    if (
-      actual.hash !== original.hash ||
-      actual.count !== original.count ||
-      actual.endTick !== original.endTick
-    )
+    begin(encodeEnd);
+    // Demuxed packets stand in for decoded frames only when the decoder produced exactly them.
+    if (packets && !sameTicks(packets.ticks, await encodedTicks(encoderInput)))
+      original = await scan(encodeEnd, (1 - encodeEnd) / 2);
+    const verifyStart = Math.max(encodeEnd, reported),
+      verify = scanned(verifyStart, 0.999 - verifyStart);
+    const matches = (value: Timeline) =>
+      value.hash === original.hash && value.count === original.count && value.endTick === original.endTick;
+    let actual: Timeline | undefined = await packetTimeline(output, 0, 0, context, verify);
+    // Only decoded proxy frames can prove a mismatch.
+    if (!actual || !matches(actual)) actual = await timeline(output, 0, 0, context, verify);
+    if (!matches(actual))
       throw new EditorTaskError(
         "PROXY_TIMING_MISMATCH",
         "兼容视频的帧时间与原素材不一致，已停止输出",
@@ -390,5 +510,6 @@ export async function prepareEditorProxy(
     return result;
   } finally {
     await rm(output, { force: true });
+    await rm(encoderInput, { force: true });
   }
 }

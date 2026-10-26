@@ -7168,7 +7168,7 @@ async function alignEditorMulticam(options2) {
 import { stat as stat9 } from "node:fs/promises";
 
 // native/editor-runtime/proxy.ts
-import { rename as rename3, rm as rm8 } from "node:fs/promises";
+import { readFile as readFile3, rename as rename3, rm as rm8 } from "node:fs/promises";
 import { createHash as createHash4, randomUUID as randomUUID6 } from "node:crypto";
 import { join as join11 } from "node:path";
 var safety3 = [
@@ -7238,6 +7238,79 @@ async function timeline(path, streamIndex, origin, context, onFrame) {
   if (!count) throw new EditorTaskError("INVALID_MEDIA", "源视频没有可解码画面");
   return { hash: hash2.digest("hex"), count, firstTick: firstTick2, endTick };
 }
+async function packetTimeline(path, streamIndex, origin, context, onPacket) {
+  let pending = "", usable = true, count = 0;
+  const frames = [];
+  const consume = (chunk) => {
+    const lines = (pending + chunk.toString("utf8")).split(/\r?\n/);
+    pending = lines.pop();
+    if (pending.length > 4096) usable = false;
+    for (const line of lines) {
+      if (!usable || !line.trim()) continue;
+      const fields = Object.fromEntries(line.trim().split("|").map((field2) => field2.split("=")));
+      const seconds = Number(fields.pts_time), duration = Number(fields.duration_time), tick2 = Math.round((seconds - origin) * 24e4), end = Math.round((seconds - origin + duration) * 24e4);
+      if (/[DC]/.test(fields.flags ?? "") || !Number.isFinite(seconds) || !Number.isFinite(duration) || duration <= 0 || !Number.isSafeInteger(tick2) || tick2 < 0 || end > 86400 * 24e4)
+        usable = false;
+      else frames.push([tick2, end]);
+      onPacket?.(++count);
+    }
+  };
+  await runMediaProcess(
+    context.ffprobePath,
+    [
+      "-v",
+      "error",
+      ...safety3,
+      "-select_streams",
+      String(streamIndex),
+      "-show_entries",
+      "packet=pts_time,duration_time,flags",
+      "-of",
+      "compact=p=0:nk=0",
+      path
+    ],
+    { signal: context.signal, onStdout: consume }
+  );
+  consume(Buffer.from("\n"));
+  if (!usable || !frames.length) return void 0;
+  frames.sort((a, b) => a[0] - b[0]);
+  const hash2 = createHash4("sha256"), ticks2 = [];
+  for (const [index, [tick2]] of frames.entries()) {
+    if (index && tick2 <= frames[index - 1][0]) return void 0;
+    hash2.update(`${tick2}
+`);
+    ticks2.push(tick2);
+  }
+  if (frames[0][0] !== 0) return void 0;
+  return { hash: hash2.digest("hex"), count: frames.length, firstTick: 0, endTick: frames.at(-1)[1], ticks: ticks2 };
+}
+var encoderStatistics = /* @__PURE__ */ new Map();
+function supportsEncoderStatistics(context) {
+  const key = `${context.ffmpegPath}\0${context.ffmpegVersion}`;
+  let known2 = encoderStatistics.get(key);
+  if (!known2) {
+    known2 = runMediaProcess(context.ffmpegPath, ["-hide_banner", "-h", "long"], { signal: context.signal }).then(({ stdout }) => {
+      const help = stdout.toString();
+      return /^-stats_enc_pre\b/m.test(help) && /^-stats_enc_pre_fmt\b/m.test(help);
+    }).catch(() => {
+      encoderStatistics.delete(key);
+      return false;
+    });
+    encoderStatistics.set(key, known2);
+  }
+  return known2;
+}
+async function encodedTicks(path) {
+  const ticks2 = [];
+  for (const line of (await readFile3(path, "utf8")).split("\n")) {
+    if (!line.trim()) continue;
+    const tick2 = Number(line);
+    if (!Number.isSafeInteger(tick2)) return [];
+    ticks2.push(tick2);
+  }
+  return ticks2;
+}
+var sameTicks = (a, b) => a.length === b.length && a.every((tick2, index) => tick2 === b[index]);
 function describeEditorVideo(stream) {
   const trc = known(stream.color_transfer), primaries = known(stream.color_primaries), matrix = known(stream.color_space), range = known(stream.color_range);
   if (["smpte2084", "arib-std-b67"].includes(trc ?? "") || ["bt2020", "smpte431", "smpte432"].includes(primaries ?? "") || ["bt2020nc", "bt2020c"].includes(matrix ?? ""))
@@ -7352,19 +7425,32 @@ async function prepareEditorProxy(path, sourceHash, context, purpose = "export")
       context.onProgress?.(fraction);
     }
   };
+  const begin = (fraction) => {
+    if (fraction > reported) {
+      reported = fraction;
+      context.onProgress?.(fraction);
+    }
+  };
   const durationSeconds = Number(stream.duration) || Number(probe.format?.duration) || 0, [rateNumerator, rateDenominator] = String(stream.avg_frame_rate || stream.r_frame_rate).split("/").map(Number), expectedFrames = Number(stream.nb_frames) || Math.round(durationSeconds * rateNumerator / (rateDenominator || 1)) || 0;
   const scanned = (start, span) => (count) => {
     if (expectedFrames > 0) report(start + span * Math.min(1, count / expectedFrames));
   };
-  const original = await timeline(path, stream.index, sourceOriginSeconds, context, scanned(0, 0.6));
-  if (original.firstTick !== 0)
-    throw new EditorTaskError(
-      "UNSUPPORTED_TIMESTAMPS",
-      "当前合成器尚不支持晚于素材起点出现的第一帧，请先整理画面起点"
-    );
-  const output = join11(context.workDir, `proxy-${randomUUID6()}.mp4`);
+  const packets = await supportsEncoderStatistics(context) ? await packetTimeline(path, stream.index, sourceOriginSeconds, context, scanned(0, 0.05)) : void 0;
+  const scan = async (start, span) => {
+    const decoded = await timeline(path, stream.index, sourceOriginSeconds, context, scanned(start, span));
+    if (decoded.firstTick !== 0)
+      throw new EditorTaskError(
+        "UNSUPPORTED_TIMESTAMPS",
+        "当前合成器尚不支持晚于素材起点出现的第一帧，请先整理画面起点"
+      );
+    return decoded;
+  };
+  let original = packets ?? await scan(0.05, 0.55);
+  const encodeStart = packets ? 0.05 : 0.6, encodeEnd = packets ? 0.95 : 0.85;
+  const output = join11(context.workDir, `proxy-${randomUUID6()}.mp4`), encoderInput = join11(context.workDir, `proxy-${randomUUID6()}.frames`);
   const filter = `scale=${encodedWidth}:${encodedHeight}:flags=${purpose === "preview" ? "bilinear" : "lanczos"},setsar=1,colorspace=ispace=${inputMatrix}:iprimaries=${inputPrimaries}:itrc=${inputTransfer}:irange=${inputRange}:space=bt709:primaries=bt709:trc=bt709:range=tv:format=${purpose === "preview" ? "yuv420p" : "yuv444p"}:dither=fsb`;
   try {
+    begin(encodeStart);
     await runMediaProcess(
       context.ffmpegPath,
       [
@@ -7420,6 +7506,7 @@ async function prepareEditorProxy(path, sourceHash, context, purpose = "export")
         "-nostats",
         "-progress",
         "pipe:1",
+        ...packets ? ["-stats_enc_pre", encoderInput, "-stats_enc_pre_fmt", "{pts}"] : [],
         output
       ],
       {
@@ -7427,12 +7514,17 @@ async function prepareEditorProxy(path, sourceHash, context, purpose = "export")
         durationSeconds,
         onStdout: () => {
         },
-        onProgress: ({ fraction }) => report(0.6 + 0.25 * (fraction ?? 0))
+        onProgress: ({ fraction }) => report(encodeStart + (encodeEnd - encodeStart) * (fraction ?? 0))
       }
     );
-    report(0.85);
-    const actual = await timeline(output, 0, 0, context, scanned(0.85, 0.149));
-    if (actual.hash !== original.hash || actual.count !== original.count || actual.endTick !== original.endTick)
+    begin(encodeEnd);
+    if (packets && !sameTicks(packets.ticks, await encodedTicks(encoderInput)))
+      original = await scan(encodeEnd, (1 - encodeEnd) / 2);
+    const verifyStart = Math.max(encodeEnd, reported), verify = scanned(verifyStart, 0.999 - verifyStart);
+    const matches = (value) => value.hash === original.hash && value.count === original.count && value.endTick === original.endTick;
+    let actual = await packetTimeline(output, 0, 0, context, verify);
+    if (!actual || !matches(actual)) actual = await timeline(output, 0, 0, context, verify);
+    if (!matches(actual))
       throw new EditorTaskError(
         "PROXY_TIMING_MISMATCH",
         "兼容视频的帧时间与原素材不一致，已停止输出"
@@ -7464,6 +7556,7 @@ async function prepareEditorProxy(path, sourceHash, context, purpose = "export")
     return result;
   } finally {
     await rm8(output, { force: true });
+    await rm8(encoderInput, { force: true });
   }
 }
 
