@@ -395,6 +395,74 @@ test("high-level preview exposes resource audio and shares frozen snapshot with 
   await assert.rejects(bridge.prepareAudio(audio.snapshot), { name: "AbortError" });
   bridge.dispose();
 });
+test("video preview can prepare only the selected visible sources", async () => {
+  const m = mock(), bridge = createEditorTaskBridge(m.raw), doc = document(3);
+  const result = await bridge.prepareVideoForPreview(doc, "main", { assetIds: ["source-1"] });
+  assert.deepEqual(result.sources.map((source) => source.assetId), ["source-1"]);
+  assert.deepEqual(result.snapshot.resourceIds, [resource(1)], "Future video is not admitted for the current picture");
+  assert.deepEqual(m.calls.filter((call) => call.params?.input?.request?.action === "prepare-video")
+    .map((call) => call.params.input.request.assetIds), [["source-1"]]);
+  const before = m.calls.length;
+  await assert.rejects(bridge.prepareVideoForPreview(doc, "main", { assetIds: ["unknown"] }), /当前序列/);
+  await assert.rejects(bridge.prepareVideoForPreview(doc, "main", { assetIds: ["source-0", "source-0"] }), /当前序列/);
+  assert.equal(m.calls.length, before, "Invalid source selection is refused before task admission");
+  bridge.dispose();
+});
+test("audio preview never stages permanently silent future video and full export restages its closure", { timeout: 2000 }, async () => {
+  const m = mock(), doc = document(2), originalCall = m.raw.call;
+  let futureAdmissionRequested = false;
+  m.raw.call = (method, params: any) => {
+    if (method === "tasks.start" && ["stage-status", "stage-resources"].includes(params.input.request.action) &&
+        params.input.request.resourceIds.includes(resource(1))) {
+      futureAdmissionRequested = true;
+      // Model the user's large original still blocked in admission. The opening
+      // audio must complete without ever entering this read/copy operation.
+      return new Promise(() => {});
+    }
+    return originalCall(method, params);
+  };
+  const bridge = createEditorTaskBridge(m.raw);
+  (doc.sequences[0]!.clips[1] as MediaClip).audio.volume = 0;
+  const audio = await bridge.prepareAudioForPreview(doc, "main");
+  assert.deepEqual(audio.snapshot.previewScope, { kind: "audio" });
+  assert.deepEqual(audio.snapshot.resourceIds, [resource(0)]);
+  assert.equal(futureAdmissionRequested, false);
+  const staged = () => m.calls.filter((call) => call.params?.input?.request?.action === "stage-resources")
+    .flatMap((call) => call.params.input.request.resourceIds);
+  assert.deepEqual(staged(), [resource(0)]);
+  await assert.rejects(bridge.render(audio.snapshot, createExportPresets()[0]!), /预览专用/);
+  m.raw.call = originalCall;
+  const full = await bridge.startExport(doc, "main", createExportPresets()[0]!, {
+    snapshot: audio.snapshot, preparedAudio: audio.preparedAudio,
+  });
+  assert.equal(full.snapshot.previewScope, undefined);
+  assert.deepEqual(full.snapshot.resourceIds, [resource(0), resource(1)]);
+  assert.deepEqual(staged(), [resource(0), resource(1)]);
+  const render = m.calls.find((call) => call.params?.input?.request?.action === "render")!.params.input.request;
+  assert.deepEqual(render.preparedAudio, audio.preparedAudio, "A verified exact mix keeps its original document hash");
+  bridge.dispose();
+});
+test("audio preview preserves animated gain and nested audible source dependencies", async () => {
+  const m = mock(), bridge = createEditorTaskBridge(m.raw), doc = document(2);
+  (doc.sequences[0]!.clips[1] as MediaClip).audio.volume = {
+    keyframes: [{ time: 0, value: 0 }, { time: 240000, value: 1 }],
+  };
+  const result = await bridge.prepareAudioForPreview(doc, "main");
+  assert.deepEqual(result.snapshot.resourceIds, [resource(0), resource(1)]);
+  bridge.dispose();
+});
+test("preview scopes are strict commit-only requests", () => {
+  const request = { action: "commit", transferId: "editor-00000000-0000-0000-0000-000000000000",
+    documentHash: "a".repeat(64), sequenceId: "main", chunkCount: 1, byteLength: 1 };
+  for (const previewScope of [{ kind: "audio" }, { kind: "video", assetIds: ["source-0"] }])
+    assert.deepEqual(validateEditorRequest({ ...request, previewScope }).previewScope, previewScope);
+  for (const previewScope of [null, { kind: "unknown" }, { kind: "audio", assetIds: [] },
+    { kind: "video", assetIds: [] }, { kind: "video", assetIds: ["source-0", "source-0"] },
+    { kind: "audio", resourceIds: [resource(0)] }])
+    assert.throws(() => validateEditorRequest({ ...request, previewScope }), /范围/);
+  assert.throws(() => validateEditorRequest({ action: "prepare-audio", transferId: request.transferId,
+    documentHash: request.documentHash, sequenceId: "main", previewScope: { kind: "audio" } }), /无效|字段/);
+});
 test("direct originals remain sealed per launch while library resources and old Hosts use copies", async () => {
   const external = `external-${"e".repeat(64)}`;
   for (const enabled of [true, false]) {
@@ -403,7 +471,7 @@ test("direct originals remain sealed per launch while library resources and old 
     d.assets[0]!.resourceId = external;
     const audio = await bridge.prepareAudioForPreview(d, "main");
     await bridge.prepareVideoForPreview(d, "main", { snapshot: audio.snapshot });
-    await bridge.render(audio.snapshot, createExportPresets()[0]!);
+    await bridge.startExport(d, "main", createExportPresets()[0]!, { snapshot: audio.snapshot });
     await bridge.discard(audio.snapshot);
     const starts = m.calls.filter((item) => item.method === "tasks.start").map((item) => item.params.input);
     for (const input of starts) {

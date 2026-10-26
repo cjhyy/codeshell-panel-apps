@@ -1,6 +1,7 @@
 import { validateExportProfile } from "../../src/editor/export-settings.js";
 import { sameExportRange, validateExportRange, type ExportRange } from "../../src/editor/export-range.js";
 import { EDITOR_TASK_LIMITS, type PreparedEditorAudio } from "../../src/editor/task-bridge.js";
+import { validateEditorPreviewScope, type EditorPreviewScope } from "../../src/editor/preview-resources.js";
 
 export class EditorTaskError extends Error {
   constructor(
@@ -63,6 +64,7 @@ export interface EditorRequest {
   batchIndex?: number;
   documentHash?: string;
   sequenceId?: string;
+  previewScope?: EditorPreviewScope;
   resourceIds?: string[];
   /** External references the panel just confirmed with the Host as available, with their size. */
   confirmedReferences?: Array<{ resourceId: string; bytes: number }>;
@@ -126,6 +128,7 @@ export function validateEditorRequest(value: unknown): EditorRequest {
       "transferId",
       "documentHash",
       "sequenceId",
+      "previewScope",
       "resourceIds",
       "confirmedReferences",
       "assetIds",
@@ -152,7 +155,7 @@ export function validateEditorRequest(value: unknown): EditorRequest {
     "stage-status": ["documentHash", "resourceIds", "confirmedReferences"],
     "stage-resources": ["resourceIds"],
     "stage-document": ["documentHash", "chunkIndex", "chunkCount", "dataBase64"],
-    commit: ["documentHash", "sequenceId", "chunkCount", "byteLength"],
+    commit: ["documentHash", "sequenceId", "chunkCount", "byteLength", "previewScope"],
     "commit-project": ["documentHash", "sequenceId", "chunkCount", "byteLength"],
     "export-project": ["documentHash", "sequenceId"],
     "import-project": ["resourceIds"],
@@ -171,6 +174,10 @@ export function validateEditorRequest(value: unknown): EditorRequest {
   if (typeof input.transferId !== "string" || !/^editor-[a-f0-9-]{36}$/.test(input.transferId))
     throw new EditorTaskError("INVALID_REQUEST", "编辑器传输编号无效");
   const result: EditorRequest = { action, transferId: input.transferId };
+  if (input.previewScope !== undefined) {
+    try { result.previewScope = validateEditorPreviewScope(input.previewScope); }
+    catch { throw new EditorTaskError("INVALID_REQUEST", "预览资源范围无效"); }
+  }
   if (actions[action].includes("bundleHash")) result.bundleHash = hash(input.bundleHash);
   if (action === "publish-project-media")
     result.batchIndex = integer(

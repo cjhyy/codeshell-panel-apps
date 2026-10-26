@@ -61,6 +61,7 @@ export async function runEditorCli(
         "transferId",
         "documentHash",
         "sequenceId",
+        "previewScope",
         "resourceIds",
         "confirmedReferences",
         "assetIds",

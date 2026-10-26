@@ -143,7 +143,7 @@ type TrackInputOwner = {
   kind: EditorTrack["kind"];
 };
 type GesturePointer = Pick<PointerEvent, "pointerId" | "clientX" | "clientY" | "altKey">;
-type ViewPan = { pointerId: number; x: number; y: number; left: number; top: number; scope: string };
+type ViewPan = { pointerId: number; x: number; y: number; left: number; top: number; scope: string; navigation?: boolean };
 type GestureIntent = {
   pointer: GesturePointer;
   kind: Drag["kind"];
@@ -470,6 +470,10 @@ export class EditorTimeline {
   private viewport() {
     return this.container.querySelector<HTMLElement>(".et-scroll")!;
   }
+  /** Preserve the browser-owned scrollbar and touchpad gesture across virtualization. */
+  private replaceViewportContent(next: HTMLElement): void {
+    this.viewport().replaceChildren(...next.querySelector(".et-scroll")!.childNodes);
+  }
   private trackInputCurrent(input: HTMLInputElement): boolean {
     const owner = this.trackInputs.get(input);
     if (this.destroyed || !owner || !this.currentTrackInputs.has(input) || !this.container.contains(input)) return false;
@@ -522,7 +526,7 @@ export class EditorTimeline {
     for (const child of [...oldHeads.childNodes]) if (child !== oldHead) child.remove();
     for (const child of children.slice(0, pivot)) oldHeads.insertBefore(child, oldHead);
     for (const child of children.slice(pivot + 1)) oldHeads.append(child);
-    this.container.querySelector(".et-scroll")!.replaceWith(next.querySelector(".et-scroll")!);
+    this.replaceViewportContent(next);
     if (!preserveToolbar)
       this.container.querySelector(".et-toolbar")!.replaceWith(next.querySelector(".et-toolbar")!);
     if (nextInput.disabled)
@@ -735,7 +739,8 @@ export class EditorTimeline {
         )
         .join(
           "",
-        )}<div class="et-playhead" style="left:${ticksToSeconds(this.context.time()) * this.scale}px"><i></i></div></div></div></div>`;
+        )}<div class="et-playhead" style="left:${ticksToSeconds(this.context.time()) * this.scale}px"><i></i></div></div></div></div>
+      <div class="et-navigation"><input type="range" data-et-position min="0" max="${Math.max(0, width - viewportWidth)}" step="1" value="${this.scrollPosition}" aria-label="时间轴横向位置" title="左右移动时间轴 · Shift + 滚轮"${width <= viewportWidth ? " disabled" : ""}></div>`;
     const focusedTrack = focused instanceof HTMLInputElement && focused.matches(TRACK_INPUTS) &&
       this.trackInputCurrent(focused) ? focused : undefined,
       oldHeads = this.container.querySelector<HTMLElement>(".et-track-heads"),
@@ -750,11 +755,12 @@ export class EditorTimeline {
         retainedTrack = this.retainTrackInput(markup, focusedTrack, !!options.preserveToolbar);
       if (!retainedTrack) {
         if (options.preserveToolbar && this.container.querySelector(".et-toolbar")) {
-          // A native range drag must keep its original input and pointer ownership alive.
-          // Only the time viewport changes during zoom; toolbar state is unchanged.
+          // Keep both the toolbar input and the native scroll containers connected.
+          // Replacing either scroller interrupts an active scrollbar/trackpad gesture.
           const next = globalThis.document.createElement("div");
           next.innerHTML = markup;
-          this.container.querySelector(".et-body")!.replaceWith(next.querySelector(".et-body")!);
+          this.container.querySelector(".et-track-heads")!.replaceWith(next.querySelector(".et-track-heads")!);
+          this.replaceViewportContent(next);
         } else this.container.innerHTML = markup;
       }
       if (options.preserveToolbar)
@@ -809,20 +815,9 @@ export class EditorTimeline {
     scroll.scrollLeft = this.scrollPosition;
     // Store the browser's clamped, rounded position before its queued scroll event.
     this.scrollPosition = scroll.scrollLeft;
+    this.updateHorizontalPosition();
     this.container.querySelector<HTMLElement>(".et-body")!.scrollTop = this.verticalPosition;
-    scroll.addEventListener(
-      "scroll",
-      () => {
-        // A scroll event queued for a scroller this render replaced still fires after it is
-        // detached, where scrollLeft reads 0. Rendering for it would queue the next stale event.
-        if (scroll !== this.viewport() || scroll.scrollLeft === this.scrollPosition) return;
-        this.clearTextClick();
-        if (this.playbackActive) this.suspendPlaybackFollow();
-        this.scrollPosition = scroll.scrollLeft;
-        if (!this.drag) this.render({ preserveToolbar: true });
-      },
-      { passive: true },
-    );
+    scroll.addEventListener("scroll", this.syncHorizontalScroll, { passive: true });
     this.container
       .querySelector<HTMLElement>(".et-body")!
       .addEventListener("scroll", this.syncVerticalScroll, { passive: true });
@@ -837,6 +832,25 @@ export class EditorTimeline {
         : undefined;
       (next ?? this.container).focus({ preventScroll: true });
     }
+  }
+  private syncHorizontalScroll = (event: Event): void => {
+    const scroll = event.currentTarget as HTMLElement;
+    // A queued event from a full document redraw must not reset the current view.
+    if (this.destroyed || scroll !== this.viewport() || scroll.scrollLeft === this.scrollPosition) return;
+    this.clearTextClick();
+    if (this.playbackActive) this.suspendPlaybackFollow();
+    this.scrollPosition = scroll.scrollLeft;
+    if (!this.drag) this.render({ preserveToolbar: true });
+    else this.updateHorizontalPosition();
+  };
+  private updateHorizontalPosition(): void {
+    const viewport = this.viewport(),
+      input = this.container.querySelector<HTMLInputElement>("[data-et-position]")!;
+    const maximum = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
+    input.max = String(maximum);
+    input.value = String(viewport.scrollLeft);
+    input.disabled = !maximum;
+    input.setAttribute("aria-valuetext", `${stamp(secondsToTicks(viewport.scrollLeft / this.scale))} 起`);
   }
   private syncVerticalScroll = (): void => {
     const body = this.container.querySelector<HTMLElement>(".et-body");
@@ -1265,6 +1279,10 @@ export class EditorTimeline {
   }
   private input = (event: Event): void => {
     const target = event.target;
+    if (target instanceof HTMLInputElement && target.matches("[data-et-position]")) {
+      this.viewport().scrollLeft = Number(target.value);
+      return;
+    }
     if (target instanceof HTMLInputElement && target.matches("[data-et-zoom]"))
       this.zoom(10 ** Number(target.value));
   };
@@ -2367,17 +2385,24 @@ export class EditorTimeline {
     return delta;
   }
   private pointerdown = (event: PointerEvent) => {
+    // Native scrollbar input targets the scrolling box itself. Let the browser
+    // keep its thumb drag instead of starting a captured marquee selection.
+    const navigation = event.target instanceof HTMLInputElement && event.target.matches("[data-et-position]");
+    if (event.target instanceof Element &&
+      ((event.button === 0 && event.target.matches(".et-scroll,.et-body")) ||
+        (event.target.closest(".et-navigation") && !navigation))) return;
     if (this.textNavigation) this.cancelTextNavigation();
     const textTarget = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(".et-text") : undefined,
       textClick = event.isPrimary && event.button === 0 && event.pointerType === "mouse" && !!textTarget &&
         !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey &&
         !(event.target as HTMLElement).closest("[data-et-edge],[data-et-fade],[data-et-gain]");
     if (!textClick) this.clearTextClick();
-    if (event.button === 1 && event.pointerType === "mouse" && event.isPrimary &&
-        event.target instanceof Element && event.target.closest(".et-scroll") && !editableTarget(event.target)) {
+    if (event.isPrimary && ((navigation && event.button === 0) ||
+        (event.button === 1 && event.pointerType === "mouse" && event.target instanceof Element &&
+          event.target.closest(".et-scroll") && !editableTarget(event.target)))) {
       // A view-only gesture keeps the original input focused, including invalid/IME drafts.
       event.preventDefault();
-      this.panRelease = event.pointerId;
+      if (!navigation) this.panRelease = event.pointerId;
       if (this.destroyed || this.viewPan || this.audioEdit || this.textNavigation || this.drag || this.pendingControl || this.pendingTrackGesture ||
           this.trackControlPending || this.canvasFieldFinish || this.fadePending || this.clipboardPending ||
           this.menu || globalThis.document.querySelector("dialog[open]")) return;
@@ -2385,15 +2410,16 @@ export class EditorTimeline {
         const viewport = this.viewport(), pan: ViewPan = {
           pointerId: event.pointerId, x: event.clientX, y: event.clientY,
           left: viewport.scrollLeft, top: this.container.querySelector<HTMLElement>(".et-body")!.scrollTop,
-          scope: this.panScope(),
+          scope: this.panScope(), navigation,
         };
         if (this.destroyed || !this.container.isConnected || this.viewPan || this.audioEdit || this.textNavigation) return;
         this.viewPan = pan;
         this.container.classList.add("et-panning");
         this.updateTrackHeightControl();
-        // The container survives virtual-window redraws; its inner scroller does not.
+        // Keep gesture ownership above the virtualized clips.
         try { this.container.setPointerCapture(event.pointerId); }
         catch (error) { this.cancelPan(pan); throw error; }
+        if (navigation) this.panTo(event);
       });
       return;
     }
@@ -2500,6 +2526,14 @@ export class EditorTimeline {
     const pan = this.viewPan;
     if (!pan) return;
     if (!this.panCurrent(pan)) { this.cancelPan(pan); return; }
+    if (pan.navigation) {
+      const input = this.container.querySelector<HTMLInputElement>("[data-et-position]")!,
+        bounds = input.getBoundingClientRect(),
+        // Leave half the range thumb at either end, matching the native range's travel.
+        ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left - 8) / Math.max(1, bounds.width - 16)));
+      this.viewport().scrollLeft = ratio * Number(input.max);
+      return;
+    }
     this.viewport().scrollLeft = pan.left + pan.x - event.clientX;
     this.container.querySelector<HTMLElement>(".et-body")!.scrollTop = pan.top + pan.y - event.clientY;
   }
@@ -3056,7 +3090,7 @@ export class EditorTimeline {
   }
   private pointermove = (event: PointerEvent) => {
     if (this.viewPan?.pointerId === event.pointerId) {
-      if (!(event.buttons & 4)) this.cancelPan();
+      if (!(event.buttons & (this.viewPan.navigation ? 1 : 4))) this.cancelPan();
       else this.run(() => this.panTo(event));
       return;
     }

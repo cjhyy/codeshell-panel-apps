@@ -123,6 +123,7 @@ import {
 import { compileAudioPlan } from "./editor/audio-plan";
 import {
   editorAudioContentKey,
+  editorPreviewVideoPlan,
   editorSourceContentKey,
   editorVideoSourceKey,
 } from "./editor/playback-cache";
@@ -6191,7 +6192,8 @@ function mountEditorWorkspace(): void {
       let plan = compileAudioPlan(doc, sequenceId);
       const audioKey = editorAudioContentKey(doc, sequenceId);
       const videoKey = editorVideoSourceKey(doc, sequenceId);
-      const video = doc.assets.some((asset) => asset.kind === "video");
+      const videoPlan = editorPreviewVideoPlan(doc, sequenceId, editorWorkspace?.getPlayhead() ?? 0),
+        video = videoPlan.current.length > 0;
       if (!plan.lanes.length && !video) return undefined;
       if (!editorTasks || !panel)
         throw new Error("请在 CodeShell 桌面视频面板中准备声音和视频预览");
@@ -6209,11 +6211,14 @@ function mountEditorWorkspace(): void {
             : `正在准备预览 · ${item.phase === "resources" ? "素材" : item.phase === "document" ? "工程" : "校验"} ${item.completed}/${item.total}`;
         onProgress?.(message);
       };
-      if (video && !(preparedVideoSources?.key === videoKey &&
-        sameIdentity(preparedVideoSources.identity, identity, false))) {
+      if (video && !(preparedVideoSources &&
+        sameIdentity(preparedVideoSources.identity, identity, false) &&
+        videoPlan.current.every((asset) =>
+          editorProxyResources.get(asset.id)?.sourceKey === editorSourceKey(asset)))) {
         onProgress?.("正在读取和校验视频素材，准备播放画面…");
         const prepared = await editorTasks.prepareVideoForPreview(doc, sequenceId, {
           snapshot,
+          assetIds: videoPlan.current.map((asset) => asset.id),
           signal,
           onProgress: progress,
           onTask: () => onProgress?.("正在生成快速预览画面，首次播放需要处理原片…"),
@@ -6269,8 +6274,32 @@ function mountEditorWorkspace(): void {
         }
         preparedVideoSources = { key: videoKey, identity };
       }
+      const warmUpcomingVideo = () => {
+        if (!current() || !editorSourcePreviews) return;
+        for (const asset of videoPlan.upcoming) {
+          if (!asset.resourceId ||
+              editorProxyResources.get(asset.id)?.sourceKey === editorSourceKey(asset)) continue;
+          void editorSourcePreviews.prepare(asset, signal).then((prepared) => {
+            if (!current()) return;
+            const latest = editorSession!.read().assets.find((item) => item.id === asset.id);
+            if (!latest || editorSourceKey(latest) !== editorSourceKey(asset) ||
+                (latest.fingerprint && /^[a-f0-9]{64}$/.test(latest.fingerprint) &&
+                  latest.fingerprint !== prepared.sourceHash) ||
+                latest.width !== prepared.recipe.width || latest.height !== prepared.recipe.height) return;
+            // Background work never edits dimensions or history. The ordinary
+            // visible-source resolver performs any required geometry correction.
+            editorProxyResources.set(asset.id, {
+              sourceKey: editorSourceKey(latest), resourceId: prepared.proxy.id,
+            });
+            while (editorProxyResources.size > 128)
+              editorProxyResources.delete(editorProxyResources.keys().next().value!);
+            preparedVideoSources = { key: videoKey, identity };
+          }).catch(() => { /* Optional warmup errors are reported if the source is actually needed. */ });
+        }
+      };
       if (!plan.lanes.length) {
         if (snapshot) preparedNative = { key, snapshot };
+        warmUpcomingVideo();
         activateTimelineMedia();
         return undefined;
       }
@@ -6282,6 +6311,7 @@ function mountEditorWorkspace(): void {
       });
       if (!current()) return undefined;
       preparedNative = { key, snapshot: result.snapshot, audio: result.preparedAudio };
+      warmUpcomingVideo();
       onProgress?.("正在加载声音，即将开始播放…");
       const audio = await loadEditorPreviewAudio(
         panel,

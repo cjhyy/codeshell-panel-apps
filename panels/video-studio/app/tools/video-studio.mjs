@@ -6177,6 +6177,11 @@ function planUnpackCompound(document2, sequenceId, clipId, options2 = {}) {
 var AUDIO_SAMPLE_RATE = 48e3;
 var TICKS_PER_AUDIO_SAMPLE = 5;
 var clamp2 = (n, low, high) => Math.max(low, Math.min(high, n));
+function audioLaneNeedsSource(lane) {
+  return !lane.stages.some(
+    (stage) => stage.track.muted || stage.track.volume === 0 || stage.audio.volume === 0
+  ) && lane.spans.some((span) => span.playbackRate !== 0);
+}
 var part = (kind, id7) => `${kind}:${encodeURIComponent(id7)}`;
 var trackPath = (stage) => `${stage.sequencePath}/${part("track", stage.track.id)}`;
 function rateAt(map2, tick2) {
@@ -10183,6 +10188,24 @@ function isEditorDemoNarration(asset2) {
   return asset2.id === "demo-narration-v1" && asset2.name === "示例旁白 · 从想法，到成片。" && asset2.kind === "audio" && asset2.duration === 24 * 24e4 && asset2.metadata?.mimeType === "audio/mpeg" && !asset2.resourceId;
 }
 
+// src/editor/preview-resources.ts
+function validateEditorPreviewScope(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
+    throw new Error("预览资源范围无效");
+  const scope2 = value, keys3 = Reflect.ownKeys(scope2);
+  if (scope2.kind === "audio" && keys3.length === 1) return { kind: "audio" };
+  if (scope2.kind !== "video" || keys3.some((key) => key !== "kind" && key !== "assetIds") || !Array.isArray(scope2.assetIds) || !scope2.assetIds.length || scope2.assetIds.length > 1e4 || new Set(scope2.assetIds).size !== scope2.assetIds.length || scope2.assetIds.some((id7) => typeof id7 !== "string" || !id7 || id7.length > 128))
+    throw new Error("预览资源范围无效");
+  return { kind: "video", assetIds: [...scope2.assetIds] };
+}
+function editorPreviewResourceIds(document2, sequenceId, scope2) {
+  scope2 = validateEditorPreviewScope(scope2);
+  const ids3 = scope2.kind === "audio" ? new Set(compileAudioPlan(document2, sequenceId).lanes.filter(audioLaneNeedsSource).map((lane) => lane.assetId)) : new Set(scope2.assetIds);
+  if (scope2.kind === "video" && scope2.assetIds.some((id7) => !document2.assets.some((asset2) => asset2.id === id7 && asset2.kind === "video")))
+    throw new Error("预览视频不属于当前序列的素材闭包");
+  return [...new Set(document2.assets.filter((asset2) => ids3.has(asset2.id)).flatMap((asset2) => asset2.resourceId ? [asset2.resourceId] : []))].sort();
+}
+
 // src/editor/task-bridge.ts
 var EDITOR_DEMO_NARRATION_SHA = "a57af26cc6bec773097f739da61e222548d72a5edc4fcaf377276696e7da3d40";
 var EDITOR_TASK_LIMITS = Object.freeze({
@@ -10491,6 +10514,7 @@ function validateEditorRequest(value) {
       "transferId",
       "documentHash",
       "sequenceId",
+      "previewScope",
       "resourceIds",
       "confirmedReferences",
       "assetIds",
@@ -10517,7 +10541,7 @@ function validateEditorRequest(value) {
     "stage-status": ["documentHash", "resourceIds", "confirmedReferences"],
     "stage-resources": ["resourceIds"],
     "stage-document": ["documentHash", "chunkIndex", "chunkCount", "dataBase64"],
-    commit: ["documentHash", "sequenceId", "chunkCount", "byteLength"],
+    commit: ["documentHash", "sequenceId", "chunkCount", "byteLength", "previewScope"],
     "commit-project": ["documentHash", "sequenceId", "chunkCount", "byteLength"],
     "export-project": ["documentHash", "sequenceId"],
     "import-project": ["resourceIds"],
@@ -10536,6 +10560,13 @@ function validateEditorRequest(value) {
   if (typeof input.transferId !== "string" || !/^editor-[a-f0-9-]{36}$/.test(input.transferId))
     throw new EditorTaskError("INVALID_REQUEST", "编辑器传输编号无效");
   const result = { action, transferId: input.transferId };
+  if (input.previewScope !== void 0) {
+    try {
+      result.previewScope = validateEditorPreviewScope(input.previewScope);
+    } catch {
+      throw new EditorTaskError("INVALID_REQUEST", "预览资源范围无效");
+    }
+  }
   if (actions[action].includes("bundleHash")) result.bundleHash = hash2(input.bundleHash);
   if (action === "publish-project-media")
     result.batchIndex = integer5(
@@ -11604,7 +11635,7 @@ async function renderEditorAudio(options2) {
   }))
     if (!isAbsolute2(path)) throw new Error(`${name} must be an absolute authorized path`);
   const plan2 = compileAudioPlan(options2.document, options2.sequenceId);
-  const preparation = options2.range === void 0 ? {} : editorRangeAudioPreparation(plan2, options2.range), range = preparation.range, mixStart = range ? Math.ceil(range.start / TICKS_PER_AUDIO_SAMPLE) : 0, mixEnd = range ? Math.ceil((range.start + range.duration) / TICKS_PER_AUDIO_SAMPLE) : plan2.sampleCount, sampleCount = mixEnd - mixStart, lanes = plan2.lanes.map((lane) => ({ ...lane, spans: lane.spans.filter(
+  const preparation = options2.range === void 0 ? {} : editorRangeAudioPreparation(plan2, options2.range), range = preparation.range, mixStart = range ? Math.ceil(range.start / TICKS_PER_AUDIO_SAMPLE) : 0, mixEnd = range ? Math.ceil((range.start + range.duration) / TICKS_PER_AUDIO_SAMPLE) : plan2.sampleCount, sampleCount = mixEnd - mixStart, lanes = plan2.lanes.filter(audioLaneNeedsSource).map((lane) => ({ ...lane, spans: lane.spans.filter(
     (span) => span.startSample < mixEnd && span.endSample > mixStart
   ) })).filter((lane) => lane.spans.length > 0);
   const budget = options2.maxPcmBytes ?? 64 * 1024 ** 3;
@@ -14323,7 +14354,8 @@ async function runEditorRequest(raw, context2) {
           ...manifest2 ? {
             committedDocumentHash: manifest2.documentHash,
             sequenceId: manifest2.sequenceId,
-            ...manifest2.kind ? { kind: manifest2.kind } : {}
+            ...manifest2.kind ? { kind: manifest2.kind } : {},
+            ...manifest2.previewScope ? { previewScope: manifest2.previewScope } : {}
           } : {}
         },
         artifacts
@@ -14401,7 +14433,7 @@ async function runEditorRequest(raw, context2) {
         ["manifest.json"],
         EDITOR_TASK_LIMITS.documentBytes + 2 * 1024 * 1024
       );
-      if (previous && (previous.documentHash !== request.documentHash || previous.sequenceId !== request.sequenceId || previous.kind === "project" !== project))
+      if (previous && (previous.documentHash !== request.documentHash || previous.sequenceId !== request.sequenceId || previous.kind === "project" !== project || JSON.stringify(previous.previewScope) !== JSON.stringify(request.previewScope)))
         throw new EditorTaskError("SNAPSHOT_MISMATCH", "快照已提交，请为新修改建立新的快照");
       const doc = await directory(transfer, ["documents", request.documentHash]);
       const metadata = await json2(doc, ["chunks.json"]);
@@ -14426,7 +14458,8 @@ async function runEditorRequest(raw, context2) {
       if (bytesHash(Buffer.from(JSON.stringify(selected4.document))) !== request.documentHash)
         throw new EditorTaskError("SNAPSHOT_MISMATCH", "工程快照不是规范化的依赖闭包");
       const bindings = [];
-      for (const id7 of selected4.resourceIds) {
+      const requiredResourceIds2 = request.previewScope ? editorPreviewResourceIds(selected4.document, request.sequenceId, request.previewScope) : selected4.resourceIds;
+      for (const id7 of requiredResourceIds2) {
         const binding = await json2(resources, [`${id7}.json`]);
         await material(binding);
         bindings.push(binding);
@@ -14434,6 +14467,7 @@ async function runEditorRequest(raw, context2) {
       if (selected4.document.assets.some(isEditorDemoNarration)) await builtin();
       const manifest2 = {
         ...project ? { kind: "project" } : {},
+        ...request.previewScope ? { previewScope: request.previewScope } : {},
         documentHash: request.documentHash,
         sequenceId: request.sequenceId,
         document: selected4.document,
@@ -14449,7 +14483,8 @@ async function runEditorRequest(raw, context2) {
           documentId: manifest2.document.id,
           revision: manifest2.document.revision,
           resourceCount: bindings.length,
-          ...project ? { kind: "project" } : {}
+          ...project ? { kind: "project" } : {},
+          ...manifest2.previewScope ? { previewScope: manifest2.previewScope } : {}
         },
         artifacts
       };
@@ -14467,9 +14502,14 @@ async function runEditorRequest(raw, context2) {
       ["manifest.json"],
       EDITOR_TASK_LIMITS.documentBytes + 2 * 1024 * 1024
     );
-    record5(manifest, ["kind", "documentHash", "sequenceId", "document", "bindings"], "工程快照");
+    record5(manifest, ["kind", "previewScope", "documentHash", "sequenceId", "document", "bindings"], "工程快照");
     if (manifest.kind !== void 0 && manifest.kind !== "project")
       throw new EditorTaskError("SNAPSHOT_MISMATCH", "工程快照类型无效");
+    if (manifest.previewScope) {
+      const scope3 = validateEditorPreviewScope(manifest.previewScope);
+      if (manifest.kind || scope3.kind === "audio" && request.action !== "prepare-audio" || scope3.kind === "video" && (request.action !== "prepare-video" || request.assetIds.some((id7) => !scope3.assetIds.includes(id7))))
+        throw new EditorTaskError("SNAPSHOT_MISMATCH", "预览专用快照不能用于其他媒体任务或完整导出");
+    }
     if (manifest.kind === "project" !== (request.action === "export-project"))
       throw new EditorTaskError("SNAPSHOT_MISMATCH", "完整工程包需要独立的完整工程快照");
     if (manifest.documentHash !== request.documentHash || manifest.sequenceId !== request.sequenceId)
@@ -14490,11 +14530,12 @@ async function runEditorRequest(raw, context2) {
         );
       }
     }
-    if (!Array.isArray(manifest.bindings) || manifest.bindings.length !== selected3.resourceIds.length)
+    const requiredResourceIds = manifest.previewScope ? editorPreviewResourceIds(selected3.document, manifest.sequenceId, manifest.previewScope) : selected3.resourceIds;
+    if (!Array.isArray(manifest.bindings) || manifest.bindings.length !== requiredResourceIds.length)
       throw new EditorTaskError("INCOMPLETE_STAGE", "工程素材绑定不完整");
     const byResource = /* @__PURE__ */ new Map();
     for (const binding of manifest.bindings) {
-      if (!selected3.resourceIds.includes(binding.resourceId) || byResource.has(binding.resourceId))
+      if (!requiredResourceIds.includes(binding.resourceId) || byResource.has(binding.resourceId))
         throw new EditorTaskError("INCOMPLETE_STAGE", "工程素材绑定存在无效项");
       byResource.set(binding.resourceId, { binding, path: await material(binding) });
     }
@@ -14656,9 +14697,9 @@ async function runEditorRequest(raw, context2) {
     }
     const audioPlan = compileAudioPlan(selected3.document, manifest.sequenceId);
     const fullRecipeHash = digest({
-      recipe: "editor-audio-v3-content",
+      recipe: "editor-audio-v4-audible-content",
       plan: audioPlan,
-      sources: [...new Set(audioPlan.lanes.map((lane) => lane.assetId))].sort().map((assetId) => {
+      sources: [...new Set(audioPlan.lanes.filter(audioLaneNeedsSource).map((lane) => lane.assetId))].sort().map((assetId) => {
         const binding = original(assetId).binding;
         return { assetId, sha256: binding.sha256, bytes: binding.bytes };
       }),

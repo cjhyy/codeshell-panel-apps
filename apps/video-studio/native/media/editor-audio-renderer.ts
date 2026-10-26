@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { setImmediate as yieldTask } from "node:timers/promises";
 import {
   AUDIO_SAMPLE_RATE,
+  audioLaneNeedsSource,
   compileAudioPlan,
   sampleAudioLane,
   TICKS_PER_AUDIO_SAMPLE,
@@ -237,7 +238,7 @@ export async function renderEditorAudio(
     mixStart = range ? Math.ceil(range.start / TICKS_PER_AUDIO_SAMPLE) : 0,
     mixEnd = range ? Math.ceil((range.start + range.duration) / TICKS_PER_AUDIO_SAMPLE) : plan.sampleCount,
     sampleCount = mixEnd - mixStart,
-    lanes = plan.lanes.map((lane) => ({ ...lane, spans: lane.spans.filter((span) =>
+    lanes = plan.lanes.filter(audioLaneNeedsSource).map((lane) => ({ ...lane, spans: lane.spans.filter((span) =>
       span.startSample < mixEnd && span.endSample > mixStart,
     ) })).filter((lane) => lane.spans.length > 0);
   const budget = options.maxPcmBytes ?? 64 * 1024 ** 3;

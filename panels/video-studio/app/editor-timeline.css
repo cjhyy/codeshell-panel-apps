@@ -391,6 +391,29 @@
   scrollbar-width: thin;
   scrollbar-color: #4d5056 #1b1c1e;
 }
+.et-navigation {
+  flex: 0 0 22px;
+  height: 22px;
+  padding: 3px 12px 3px 176px;
+  border-top: 1px solid var(--et-border);
+  background: #1b1c1e;
+}
+.et-navigation input[type="range"] {
+  display: block;
+  width: 100%;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  accent-color: #858b94;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.et-navigation input:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
 .et-content {
   position: relative;
   min-height: 100%;
