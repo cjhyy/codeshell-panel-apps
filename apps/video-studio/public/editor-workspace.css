@@ -823,7 +823,7 @@
 .workspace.editor-mode {
   position: relative;
   grid-template-columns: 66px var(--studio-library-width, 260px) minmax(320px, 1fr) var(--studio-inspector-width, 270px);
-  grid-template-rows: minmax(260px, 1fr) auto var(--studio-timeline-height, 340px);
+  grid-template-rows: minmax(260px, 1fr) auto var(--studio-timeline-height, 362px);
 }
 /* With its navigation in the top bar, the first column stays as an empty track so every
    panel keeps its column number. */

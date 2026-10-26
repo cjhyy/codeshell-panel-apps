@@ -6740,7 +6740,7 @@
   "nativeEntries": {
     "video-studio": {
       "entry": "app/tools/video-studio.mjs",
-      "sha256": "8718986e6707b9790b947c2f3db37ead6bf1591e2fd0834172231eb1fe1633b7"
+      "sha256": "1052ec2ed20267872734fe8dfa1a82aeb36200383bc2540704691686e5345d55"
     },
     "folder-scan": {
       "entry": "app/tools/folder-scan.mjs",
@@ -6756,11 +6756,11 @@
     },
     "editor-runtime": {
       "entry": "app/tools/editor-runtime.mjs",
-      "sha256": "a92b080494538c69ae59825673eec0f1bc1167d8ea3568d774af7d8fea1755f1"
+      "sha256": "1b371ff07638bfe3c78a000e91d7cf96dbe59a94a3b82d2835cd88039f07f763"
     },
     "editor-sync": {
       "entry": "app/tools/editor-sync.mjs",
-      "sha256": "a2a10cc438fb83244f14a8e7ee2979be640132358d5cff7b787cbfb3e4df70c5"
+      "sha256": "166e0872f1a4a2d7022dbb8dfe585da1c1e9e38dbb1b4679191f5ed820e5e6ee"
     },
     "audio-separation": {
       "entry": "app/tools/audio-separation.mjs",

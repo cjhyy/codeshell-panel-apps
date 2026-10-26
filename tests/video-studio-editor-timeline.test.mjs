@@ -2744,7 +2744,8 @@ test("Tab-focused clips support Enter and Space with additive group toggles whil
     ],
   });
   await page.locator("#outside").click();
-  for (let index = 0; index < 3; index++) await page.keyboard.press("Shift+Tab");
+  // The horizontal position control is the timeline's final keyboard stop.
+  for (let index = 0; index < 4; index++) await page.keyboard.press("Shift+Tab");
   assert.equal(await page.evaluate(() => document.activeElement.dataset.etClip), "c");
   await page.keyboard.press("Space");
   await settle(page);
@@ -3252,6 +3253,77 @@ test("Escape cancels an unfinished drag and stale document gestures fail without
   assert.equal(await clip(page, "a").evaluate((element) => element.style.transform), "");
 });
 
+test("continuous horizontal wheel scrolling retains its native viewport and editing context", async (t) => {
+  const page = await fixture(t, {
+    clips: [
+      { id: "a", trackId: "v1", start: 1, duration: 2 },
+      { id: "late", trackId: "v1", start: 120, duration: 3 },
+    ],
+  });
+  await clickClip(page, "a");
+  const before = await state(page), target = await center(page.locator(".et-scroll"));
+  await page.evaluate(() => { globalThis.nativeViewport = document.querySelector(".et-scroll"); });
+  await page.mouse.move(target.x, target.y);
+  for (const delta of [160, 160, 160, -120, -120]) {
+    const left = await page.locator(".et-scroll").evaluate((node) => node.scrollLeft);
+    await page.mouse.wheel(delta, 0);
+    await page.waitForFunction((expected) => document.querySelector(".et-scroll").scrollLeft === expected, left + delta);
+    assert.equal(await page.evaluate(() => nativeViewport === document.querySelector(".et-scroll")), true,
+      "Virtualization must preserve the element owning a native scrolling gesture");
+    assert.equal(Number(await page.getByLabel("时间轴横向位置").inputValue()), left + delta);
+  }
+  const after = await state(page);
+  assert.deepEqual(after.document, before.document);
+  assert.deepEqual(after.selected, before.selected);
+  assert.equal(after.time, before.time);
+});
+
+test("horizontal position control stays visible with tall tracks and keeps a held drag live", async (t) => {
+  const page = await fixture(t, {
+    tracks: Array.from({ length: 16 }, (_, index) => `v${index + 1}`),
+    clips: [
+      { id: "a", trackId: "v1", start: 1, duration: 2 },
+      { id: "late", trackId: "v1", start: 120, duration: 3 },
+    ],
+  });
+  const before = await state(page), control = page.getByLabel("时间轴横向位置");
+  await control.scrollIntoViewIfNeeded();
+  const box = await control.boundingBox();
+  await page.evaluate(() => { globalThis.positionControl = document.querySelector("[data-et-position]"); });
+  await page.mouse.move(box.x + 8, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.25, box.y + box.height / 2, { steps: 5 });
+  await page.waitForFunction(() => document.querySelector(".et-scroll").scrollLeft > 1000);
+  const first = await page.locator(".et-scroll").evaluate((node) => node.scrollLeft);
+  await page.mouse.move(box.x + box.width * 0.7, box.y + box.height / 2, { steps: 5 });
+  await settle(page);
+  assert.ok(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft) > first + 1000);
+  assert.equal(await page.evaluate(() => positionControl === document.querySelector("[data-et-position]")), true);
+  await page.mouse.up();
+  await control.focus();
+  await page.keyboard.press("Home");
+  await page.waitForFunction(() => document.querySelector(".et-scroll").scrollLeft === 0);
+  assert.deepEqual((await state(page)).document, before.document);
+});
+
+test("horizontal navigation preserves valid and invalid focused track drafts without saving them", async (t) => {
+  for (const draft of ["50", "450"]) {
+    const page = await fixture(t, { clips: [{ id: "a", trackId: "v1", start: 1, duration: 120 }] });
+    const before = await state(page), input = page.getByLabel("v1 音量百分比", { exact: true });
+    await input.fill(draft);
+    const box = await page.getByLabel("时间轴横向位置").boundingBox();
+    await page.mouse.move(box.x + 8, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForFunction(() => document.querySelector(".et-scroll").scrollLeft > 1000);
+    assert.equal(await input.inputValue(), draft);
+    assert.equal(await input.evaluate((node) => node === document.activeElement), true);
+    assert.deepEqual((await state(page)).document, before.document);
+    assert.deepEqual((await state(page)).errors, []);
+  }
+});
+
 test("long sequence wheel scroll and real zoom controls stay responsive with bounded ruler rendering", async (t) => {
   const page = await fixture(t, {
     clips: [
@@ -3263,6 +3335,7 @@ test("long sequence wheel scroll and real zoom controls stay responsive with bou
     globalThis.renders = 0;
     new MutationObserver(() => renders++).observe(document.querySelector("#timeline"), {
       childList: true,
+      subtree: true,
     });
   });
   const target = await center(page.locator(".et-scroll"));

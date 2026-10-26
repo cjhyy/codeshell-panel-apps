@@ -35,9 +35,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// ../../node_modules/pend/index.js
+// ../../../../../../Documents/个人学习/代码学习/codeshell-panel-apps/node_modules/pend/index.js
 var require_pend = __commonJS({
-  "../../node_modules/pend/index.js"(exports, module) {
+  "../../../../../../Documents/个人学习/代码学习/codeshell-panel-apps/node_modules/pend/index.js"(exports, module) {
     module.exports = Pend;
     function Pend() {
       this.pending = 0;
@@ -90,9 +90,9 @@ var require_pend = __commonJS({
   }
 });
 
-// ../../node_modules/yauzl/fd-slicer.js
+// ../../../../../../Documents/个人学习/代码学习/codeshell-panel-apps/node_modules/yauzl/fd-slicer.js
 var require_fd_slicer = __commonJS({
-  "../../node_modules/yauzl/fd-slicer.js"(exports) {
+  "../../../../../../Documents/个人学习/代码学习/codeshell-panel-apps/node_modules/yauzl/fd-slicer.js"(exports) {
     var fs = __require("fs");
     var util = __require("util");
     var stream = __require("stream");
@@ -247,9 +247,9 @@ var require_fd_slicer = __commonJS({
   }
 });
 
-// ../../node_modules/yauzl/crc32.js
+// ../../../../../../Documents/个人学习/代码学习/codeshell-panel-apps/node_modules/yauzl/crc32.js
 var require_crc32 = __commonJS({
-  "../../node_modules/yauzl/crc32.js"(exports, module) {
+  "../../../../../../Documents/个人学习/代码学习/codeshell-panel-apps/node_modules/yauzl/crc32.js"(exports, module) {
     var CRC_TABLE = new Int32Array([
       0,
       1996959894,
@@ -519,9 +519,9 @@ var require_crc32 = __commonJS({
   }
 });
 
-// ../../node_modules/yauzl/index.js
+// ../../../../../../Documents/个人学习/代码学习/codeshell-panel-apps/node_modules/yauzl/index.js
 var require_yauzl = __commonJS({
-  "../../node_modules/yauzl/index.js"(exports) {
+  "../../../../../../Documents/个人学习/代码学习/codeshell-panel-apps/node_modules/yauzl/index.js"(exports) {
     var fs = __require("fs");
     var zlib = __require("zlib");
     var fd_slicer = require_fd_slicer();
@@ -1378,9 +1378,9 @@ var require_yauzl = __commonJS({
   }
 });
 
-// ../../node_modules/buffer-crc32/dist/index.cjs
+// ../../../../../../Documents/个人学习/代码学习/codeshell-panel-apps/node_modules/buffer-crc32/dist/index.cjs
 var require_dist = __commonJS({
-  "../../node_modules/buffer-crc32/dist/index.cjs"(exports, module) {
+  "../../../../../../Documents/个人学习/代码学习/codeshell-panel-apps/node_modules/buffer-crc32/dist/index.cjs"(exports, module) {
     "use strict";
     function getDefaultExportFromCjs(x) {
       return x && x.__esModule && Object.prototype.hasOwnProperty.call(x, "default") ? x["default"] : x;
@@ -1686,9 +1686,9 @@ var require_dist = __commonJS({
   }
 });
 
-// ../../node_modules/yazl/index.js
+// ../../../../../../Documents/个人学习/代码学习/codeshell-panel-apps/node_modules/yazl/index.js
 var require_yazl = __commonJS({
-  "../../node_modules/yazl/index.js"(exports) {
+  "../../../../../../Documents/个人学习/代码学习/codeshell-panel-apps/node_modules/yazl/index.js"(exports) {
     var fs = __require("fs");
     var Transform2 = __require("stream").Transform;
     var PassThrough = __require("stream").PassThrough;
@@ -3785,6 +3785,11 @@ function audioMixWarning(value) {
 var AUDIO_SAMPLE_RATE = 48e3;
 var TICKS_PER_AUDIO_SAMPLE = 5;
 var clamp = (n, low, high) => Math.max(low, Math.min(high, n));
+function audioLaneNeedsSource(lane) {
+  return !lane.stages.some(
+    (stage) => stage.track.muted || stage.track.volume === 0 || stage.audio.volume === 0
+  ) && lane.spans.some((span) => span.playbackRate !== 0);
+}
 var part = (kind, id3) => `${kind}:${encodeURIComponent(id3)}`;
 var trackPath = (stage) => `${stage.sequencePath}/${part("track", stage.track.id)}`;
 function rateAt(map, tick2) {
@@ -4038,6 +4043,24 @@ function compileAudioPlan(value, sequenceId, options2 = {}) {
 // src/editor/playback-cache.ts
 function isEditorDemoNarration(asset2) {
   return asset2.id === "demo-narration-v1" && asset2.name === "示例旁白 · 从想法，到成片。" && asset2.kind === "audio" && asset2.duration === 24 * 24e4 && asset2.metadata?.mimeType === "audio/mpeg" && !asset2.resourceId;
+}
+
+// src/editor/preview-resources.ts
+function validateEditorPreviewScope(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
+    throw new Error("预览资源范围无效");
+  const scope = value, keys = Reflect.ownKeys(scope);
+  if (scope.kind === "audio" && keys.length === 1) return { kind: "audio" };
+  if (scope.kind !== "video" || keys.some((key) => key !== "kind" && key !== "assetIds") || !Array.isArray(scope.assetIds) || !scope.assetIds.length || scope.assetIds.length > 1e4 || new Set(scope.assetIds).size !== scope.assetIds.length || scope.assetIds.some((id3) => typeof id3 !== "string" || !id3 || id3.length > 128))
+    throw new Error("预览资源范围无效");
+  return { kind: "video", assetIds: [...scope.assetIds] };
+}
+function editorPreviewResourceIds(document2, sequenceId, scope) {
+  scope = validateEditorPreviewScope(scope);
+  const ids = scope.kind === "audio" ? new Set(compileAudioPlan(document2, sequenceId).lanes.filter(audioLaneNeedsSource).map((lane) => lane.assetId)) : new Set(scope.assetIds);
+  if (scope.kind === "video" && scope.assetIds.some((id3) => !document2.assets.some((asset2) => asset2.id === id3 && asset2.kind === "video")))
+    throw new Error("预览视频不属于当前序列的素材闭包");
+  return [...new Set(document2.assets.filter((asset2) => ids.has(asset2.id)).flatMap((asset2) => asset2.resourceId ? [asset2.resourceId] : []))].sort();
 }
 
 // src/editor/task-bridge.ts
@@ -4495,7 +4518,7 @@ async function renderEditorAudio(options2) {
   }))
     if (!isAbsolute(path)) throw new Error(`${name} must be an absolute authorized path`);
   const plan = compileAudioPlan(options2.document, options2.sequenceId);
-  const preparation = options2.range === void 0 ? {} : editorRangeAudioPreparation(plan, options2.range), range = preparation.range, mixStart = range ? Math.ceil(range.start / TICKS_PER_AUDIO_SAMPLE) : 0, mixEnd = range ? Math.ceil((range.start + range.duration) / TICKS_PER_AUDIO_SAMPLE) : plan.sampleCount, sampleCount = mixEnd - mixStart, lanes = plan.lanes.map((lane) => ({ ...lane, spans: lane.spans.filter(
+  const preparation = options2.range === void 0 ? {} : editorRangeAudioPreparation(plan, options2.range), range = preparation.range, mixStart = range ? Math.ceil(range.start / TICKS_PER_AUDIO_SAMPLE) : 0, mixEnd = range ? Math.ceil((range.start + range.duration) / TICKS_PER_AUDIO_SAMPLE) : plan.sampleCount, sampleCount = mixEnd - mixStart, lanes = plan.lanes.filter(audioLaneNeedsSource).map((lane) => ({ ...lane, spans: lane.spans.filter(
     (span) => span.startSample < mixEnd && span.endSample > mixStart
   ) })).filter((lane) => lane.spans.length > 0);
   const budget = options2.maxPcmBytes ?? 64 * 1024 ** 3;
@@ -5643,6 +5666,7 @@ function validateEditorRequest(value) {
       "transferId",
       "documentHash",
       "sequenceId",
+      "previewScope",
       "resourceIds",
       "confirmedReferences",
       "assetIds",
@@ -5669,7 +5693,7 @@ function validateEditorRequest(value) {
     "stage-status": ["documentHash", "resourceIds", "confirmedReferences"],
     "stage-resources": ["resourceIds"],
     "stage-document": ["documentHash", "chunkIndex", "chunkCount", "dataBase64"],
-    commit: ["documentHash", "sequenceId", "chunkCount", "byteLength"],
+    commit: ["documentHash", "sequenceId", "chunkCount", "byteLength", "previewScope"],
     "commit-project": ["documentHash", "sequenceId", "chunkCount", "byteLength"],
     "export-project": ["documentHash", "sequenceId"],
     "import-project": ["resourceIds"],
@@ -5688,6 +5712,13 @@ function validateEditorRequest(value) {
   if (typeof input.transferId !== "string" || !/^editor-[a-f0-9-]{36}$/.test(input.transferId))
     throw new EditorTaskError("INVALID_REQUEST", "编辑器传输编号无效");
   const result = { action, transferId: input.transferId };
+  if (input.previewScope !== void 0) {
+    try {
+      result.previewScope = validateEditorPreviewScope(input.previewScope);
+    } catch {
+      throw new EditorTaskError("INVALID_REQUEST", "预览资源范围无效");
+    }
+  }
   if (actions[action].includes("bundleHash")) result.bundleHash = hash(input.bundleHash);
   if (action === "publish-project-media")
     result.batchIndex = integer3(
@@ -8019,7 +8050,8 @@ async function runEditorRequest(raw, context) {
           ...manifest2 ? {
             committedDocumentHash: manifest2.documentHash,
             sequenceId: manifest2.sequenceId,
-            ...manifest2.kind ? { kind: manifest2.kind } : {}
+            ...manifest2.kind ? { kind: manifest2.kind } : {},
+            ...manifest2.previewScope ? { previewScope: manifest2.previewScope } : {}
           } : {}
         },
         artifacts
@@ -8097,7 +8129,7 @@ async function runEditorRequest(raw, context) {
         ["manifest.json"],
         EDITOR_TASK_LIMITS.documentBytes + 2 * 1024 * 1024
       );
-      if (previous && (previous.documentHash !== request.documentHash || previous.sequenceId !== request.sequenceId || previous.kind === "project" !== project))
+      if (previous && (previous.documentHash !== request.documentHash || previous.sequenceId !== request.sequenceId || previous.kind === "project" !== project || JSON.stringify(previous.previewScope) !== JSON.stringify(request.previewScope)))
         throw new EditorTaskError("SNAPSHOT_MISMATCH", "快照已提交，请为新修改建立新的快照");
       const doc = await directory(transfer, ["documents", request.documentHash]);
       const metadata = await json(doc, ["chunks.json"]);
@@ -8122,7 +8154,8 @@ async function runEditorRequest(raw, context) {
       if (bytesHash(Buffer.from(JSON.stringify(selected2.document))) !== request.documentHash)
         throw new EditorTaskError("SNAPSHOT_MISMATCH", "工程快照不是规范化的依赖闭包");
       const bindings = [];
-      for (const id3 of selected2.resourceIds) {
+      const requiredResourceIds2 = request.previewScope ? editorPreviewResourceIds(selected2.document, request.sequenceId, request.previewScope) : selected2.resourceIds;
+      for (const id3 of requiredResourceIds2) {
         const binding = await json(resources, [`${id3}.json`]);
         await material(binding);
         bindings.push(binding);
@@ -8130,6 +8163,7 @@ async function runEditorRequest(raw, context) {
       if (selected2.document.assets.some(isEditorDemoNarration)) await builtin();
       const manifest2 = {
         ...project ? { kind: "project" } : {},
+        ...request.previewScope ? { previewScope: request.previewScope } : {},
         documentHash: request.documentHash,
         sequenceId: request.sequenceId,
         document: selected2.document,
@@ -8145,7 +8179,8 @@ async function runEditorRequest(raw, context) {
           documentId: manifest2.document.id,
           revision: manifest2.document.revision,
           resourceCount: bindings.length,
-          ...project ? { kind: "project" } : {}
+          ...project ? { kind: "project" } : {},
+          ...manifest2.previewScope ? { previewScope: manifest2.previewScope } : {}
         },
         artifacts
       };
@@ -8163,9 +8198,14 @@ async function runEditorRequest(raw, context) {
       ["manifest.json"],
       EDITOR_TASK_LIMITS.documentBytes + 2 * 1024 * 1024
     );
-    record(manifest, ["kind", "documentHash", "sequenceId", "document", "bindings"], "工程快照");
+    record(manifest, ["kind", "previewScope", "documentHash", "sequenceId", "document", "bindings"], "工程快照");
     if (manifest.kind !== void 0 && manifest.kind !== "project")
       throw new EditorTaskError("SNAPSHOT_MISMATCH", "工程快照类型无效");
+    if (manifest.previewScope) {
+      const scope2 = validateEditorPreviewScope(manifest.previewScope);
+      if (manifest.kind || scope2.kind === "audio" && request.action !== "prepare-audio" || scope2.kind === "video" && (request.action !== "prepare-video" || request.assetIds.some((id3) => !scope2.assetIds.includes(id3))))
+        throw new EditorTaskError("SNAPSHOT_MISMATCH", "预览专用快照不能用于其他媒体任务或完整导出");
+    }
     if (manifest.kind === "project" !== (request.action === "export-project"))
       throw new EditorTaskError("SNAPSHOT_MISMATCH", "完整工程包需要独立的完整工程快照");
     if (manifest.documentHash !== request.documentHash || manifest.sequenceId !== request.sequenceId)
@@ -8186,11 +8226,12 @@ async function runEditorRequest(raw, context) {
         );
       }
     }
-    if (!Array.isArray(manifest.bindings) || manifest.bindings.length !== selected.resourceIds.length)
+    const requiredResourceIds = manifest.previewScope ? editorPreviewResourceIds(selected.document, manifest.sequenceId, manifest.previewScope) : selected.resourceIds;
+    if (!Array.isArray(manifest.bindings) || manifest.bindings.length !== requiredResourceIds.length)
       throw new EditorTaskError("INCOMPLETE_STAGE", "工程素材绑定不完整");
     const byResource = /* @__PURE__ */ new Map();
     for (const binding of manifest.bindings) {
-      if (!selected.resourceIds.includes(binding.resourceId) || byResource.has(binding.resourceId))
+      if (!requiredResourceIds.includes(binding.resourceId) || byResource.has(binding.resourceId))
         throw new EditorTaskError("INCOMPLETE_STAGE", "工程素材绑定存在无效项");
       byResource.set(binding.resourceId, { binding, path: await material(binding) });
     }
@@ -8352,9 +8393,9 @@ async function runEditorRequest(raw, context) {
     }
     const audioPlan = compileAudioPlan(selected.document, manifest.sequenceId);
     const fullRecipeHash = digest2({
-      recipe: "editor-audio-v3-content",
+      recipe: "editor-audio-v4-audible-content",
       plan: audioPlan,
-      sources: [...new Set(audioPlan.lanes.map((lane) => lane.assetId))].sort().map((assetId) => {
+      sources: [...new Set(audioPlan.lanes.filter(audioLaneNeedsSource).map((lane) => lane.assetId))].sort().map((assetId) => {
         const binding = original(assetId).binding;
         return { assetId, sha256: binding.sha256, bytes: binding.bytes };
       }),
@@ -8605,6 +8646,7 @@ async function runEditorCli(runtime) {
         "transferId",
         "documentHash",
         "sequenceId",
+        "previewScope",
         "resourceIds",
         "confirmedReferences",
         "assetIds",
