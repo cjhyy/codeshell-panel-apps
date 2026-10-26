@@ -1,4 +1,4 @@
-import { settleLoadedFont, recordFontPixelMismatch } from "./fixtures/loaded-font.mjs";
+import { settleLoadedFont, recordFontPixelMismatch, loadedFontBrowserArgs } from "./fixtures/loaded-font.mjs";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
@@ -103,7 +103,7 @@ test("range capability failure reaches actual app status text through the contro
 });
 
 async function cpuBrowser(t) {
-  const browser = await chromium.launch({ args: ["--disable-gpu"] });
+  const browser = await chromium.launch({ args: loadedFontBrowserArgs() });
   t.after(() => browser.close());
   return browser.newContext({ viewport: { width: 760, height: 350 }, deviceScaleFactor: 1 });
 }

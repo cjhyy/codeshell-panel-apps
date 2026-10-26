@@ -1,4 +1,4 @@
-import { settleLoadedFont, recordFontPixelMismatch } from "./fixtures/loaded-font.mjs";
+import { settleLoadedFont, recordFontPixelMismatch, loadedFontBrowserArgs } from "./fixtures/loaded-font.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
@@ -10,7 +10,7 @@ const common={stroke:"transparent",strokeWidth:0,opacity:1,rotation:0,cornerRadi
 
 test("frontend wrap uses authored text without cached soft breaks through real DOM width and copy edits",async(t)=>{
   const {chromium}=await import("playwright"),{PNG}=await import("pngjs");
-  const browser=await chromium.launch({args:["--disable-gpu"]});t.after(()=>browser.close());
+  const browser=await chromium.launch({args:loadedFontBrowserArgs()});t.after(()=>browser.close());
   const context=await browser.newContext({viewport:{width:760,height:350},deviceScaleFactor:1});
   const page=await context.newPage(),reference=await context.newPage();
   const font=await readFile(new URL("../../../apps/design-studio/app/fonts/InterVariable.woff2",import.meta.url));

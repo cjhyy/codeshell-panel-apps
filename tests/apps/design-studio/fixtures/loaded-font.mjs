@@ -2,6 +2,15 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { PNG } from "pngjs";
 
+/** Controlled Linux rasterization experiment; unset preserves the old launch. */
+export function loadedFontBrowserArgs() {
+  const mode = process.env.DESIGN_STUDIO_FONT_RASTER_MODE ?? "browser-default";
+  if (!["browser-default", "grayscale"].includes(mode)) throw new Error(`Unknown fixture raster mode: ${mode}`);
+  const args = ["--disable-gpu", ...(mode === "grayscale" ? ["--disable-lcd-text"] : [])];
+  if (process.env.DESIGN_STUDIO_FONT_RASTER_MODE) console.log(`Fixture font rasterization: ${JSON.stringify({ mode, args })}`);
+  return args;
+}
+
 /** Wait for the fixture's actual face after fresh markup or direct typography edits. */
 export async function settleLoadedFont(page, family = "Inter") {
   return page.evaluate(async (family) => {
@@ -34,7 +43,8 @@ export async function settleLoadedFont(page, family = "Inter") {
 /** Retain exact failed pixels and font/layout state without changing acceptance. */
 export async function recordFontPixelMismatch(page, referencePage, actualBytes, expectedBytes, label) {
   const actual = PNG.sync.read(actualBytes), expected = PNG.sync.read(expectedBytes);
-  if (actual.width === expected.width && actual.height === expected.height && actual.data.equals(expected.data)) return;
+  const captureLabels = JSON.parse(process.env.DESIGN_STUDIO_FONT_CAPTURE_LABELS ?? "[]");
+  if (actual.width === expected.width && actual.height === expected.height && actual.data.equals(expected.data) && !captureLabels.includes(label)) return;
   let pixels = 0, maxDelta = 0, left = Infinity, top = Infinity, right = -1, bottom = -1;
   if (actual.width === expected.width && actual.height === expected.height) {
     for (let index = 0; index < actual.data.length; index += 4) {
@@ -62,7 +72,8 @@ export async function recordFontPixelMismatch(page, referencePage, actualBytes, 
   }));
   const directory = resolve("artifacts/design-studio-ci/font-pixels", `${label.replace(/[^a-zA-Z0-9.-]+/gu, "-").slice(0, 100)}-${Date.now()}-${process.pid}`);
   await mkdir(directory, { recursive: true });
-  const report = { label, actualSize: [actual.width, actual.height], expectedSize: [expected.width, expected.height],
+  const report = { label, rasterMode: process.env.DESIGN_STUDIO_FONT_RASTER_MODE ?? "browser-default",
+    actualSize: [actual.width, actual.height], expectedSize: [expected.width, expected.height],
     pixelsDifferent: pixels, maximumChannelDelta: maxDelta,
     differenceBounds: pixels ? { x: left, y: top, width: right - left + 1, height: bottom - top + 1 } : null,
     actual: await state(page), expected: await state(referencePage), directory };
@@ -71,5 +82,5 @@ export async function recordFontPixelMismatch(page, referencePage, actualBytes, 
     ["report.json", JSON.stringify(report, null, 2) + "\n"]]) {
     await writeFile(resolve(directory, name), value, { flag: "wx" });
   }
-  console.log(`Font pixel mismatch: ${JSON.stringify(report)}`);
+  console.log(`Font pixel comparison: ${JSON.stringify(report)}`);
 }

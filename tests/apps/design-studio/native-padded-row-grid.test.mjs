@@ -1,4 +1,4 @@
-import { settleLoadedFont, recordFontPixelMismatch } from "./fixtures/loaded-font.mjs";
+import { settleLoadedFont, recordFontPixelMismatch, loadedFontBrowserArgs } from "./fixtures/loaded-font.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
@@ -94,7 +94,7 @@ test("unproven width owners, cell padding/content and row stroke models do not q
 
 test("padded separate row Grid stays strict in real font CSS, SVG, frontend, source edits and reopen", async (t) => {
   const { chromium } = await import("playwright"), { PNG } = await import("pngjs"), { resolve, sep } = await import("node:path");
-  const browser = await chromium.launch({ args: ["--disable-gpu"] });
+  const browser = await chromium.launch({ args: loadedFontBrowserArgs() });
   t.after(() => browser.close());
   const context = await browser.newContext({ viewport: { width: 760, height: 450 }, deviceScaleFactor: 1 });
   const root = resolve("apps/design-studio/app"), font = await readFile(resolve(root, "fonts/InterVariable.woff2"));

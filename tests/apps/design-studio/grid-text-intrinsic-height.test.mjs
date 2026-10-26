@@ -1,4 +1,4 @@
-import { settleLoadedFont, recordFontPixelMismatch } from "./fixtures/loaded-font.mjs";
+import { settleLoadedFont, recordFontPixelMismatch, loadedFontBrowserArgs } from "./fixtures/loaded-font.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
@@ -322,7 +322,7 @@ test("raw mixed/paragraph/truncated text cannot silently qualify after single-st
 test("real loaded-font Text wrapping, scoped edits, reopen and SVG/frontend remain strict at integer Grid widths", async (t) => {
   const { chromium } = await import("playwright"),
     { PNG } = await import("pngjs");
-  const browser = await chromium.launch({ args: ["--disable-gpu"] });
+  const browser = await chromium.launch({ args: loadedFontBrowserArgs() });
   t.after(() => browser.close());
   const context = await browser.newContext({
     viewport: { width: 760, height: 240 },
