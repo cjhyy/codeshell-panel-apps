@@ -84,10 +84,17 @@ embedded baseline、null baseRevision 断言保留并加强，最后正常保存
 60px、3 行、593px 全文字宽，逐行文字/位置和每词 advance 相同。整幅 760×240 PNG
 按原始 RGBA 比较，差异像素/通道和最大差均为 0；原 80px 是平台相关的错误预期，
 不能据此给导出稿补固定高度。保留原段落及旧失败，只有该自然换行点改为精确对比
-独立原网页几何；其他 40/80/120/140 固定断言继续执行，每个点另加 sourceBoxes
-严格相等检查。两种宽度、两类 Grid 均保留显式四个作者换行的 80px 控制，RGBA
+独立原网页几何；显式作者换行的固定高度断言继续执行，每个点另加 sourceBoxes
+严格相等检查。两种宽度、两类 Grid 均保留显式四个作者行的 80px 控制，RGBA
 仍要求零差。`ci-geometry-2e576a0/rgba-receipt.json` 与完整报告、PNG/HTML 和 SHA
 保留这一预期变化的依据；没有修改产品布局或缩小文本。
+
+`eb75fb7` 随后的 Linux case 到达 affine 390px 的自然段落：独立原网页和导出同为
+120px、6 行、117px 可用文字宽度，全文 advance 仍为 593px；旧 macOS 预期是
+140px。完整 760×240 RGBA 再次零差，报告与原始 PNG/HTML、artifact ZIP SHA 和
+逐通道比对留在 `ci-final-eb75fb7/geometry-receipt.json`。所有自然换行点因此统一
+以独立原网页的精确几何和零像素差验收；作者硬换行仍以明确固定行高控制，另补
+显式七行 140px 控制，保留其高度覆盖。没有将错误的跨平台常量应用到产品布局。
 
 首个候选 `2491172` 的本地完整门禁及 Linux fidelity job 发现新增像素行高 UI case
 仍点击旧常驻 `#save`；大文档脚本也保留相同旧入口。两处改为正常打开“更多”菜单

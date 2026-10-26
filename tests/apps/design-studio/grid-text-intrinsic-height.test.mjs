@@ -543,11 +543,13 @@ test("real loaded-font Text wrapping, scoped edits, reopen and SVG/frontend rema
         [390, originals.expanded, 80],
         [630, originals.expanded, 80],
         [390, originals.original, 40],
-        [390, record.copy, name.startsWith("equal") ? 120 : 140],
+        [390, "A\nB\nC\nD\nE\nF", 120],
+        [390, "A\nB\nC\nD\nE\nF\nG", 140],
         // Natural wrap is platform-dependent even with the exact same Inter
-        // bytes: the retained Linux source/reference is 3 lines (60px), while
-        // macOS is 4 (80px). Use the independent CSS source, not a fixed count.
-        // The explicit four authored lines above still require exactly 80px.
+        // bytes: equal/630 is 60px on Linux and 80px on macOS; affine/390 is
+        // 120px on Linux and 140px on macOS. Both independent sources prove it.
+        // Authored newlines above still pin exact 40/80/120/140px row heights.
+        [390, record.copy, null],
         [630, record.copy, null],
       ]) {
         await page
