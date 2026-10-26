@@ -939,6 +939,11 @@ test("fast preview preparation reports progress while it scans, encodes and veri
     };
   const proxy = await api.prepareEditorProxy(source, sha(await readFile(source)), context, "preview");
   assert.equal(proxy.frameCount, 120);
+  // The player seeks every frame; Chromium restarts decoding at the preceding keyframe.
+  const keyframes = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries",
+    "packet=flags", "-of", "csv=p=0", proxy.path]).stdout.toString().trim().split("\n")
+    .flatMap((flags, index) => flags.startsWith("K") ? [index] : []);
+  assert.deepEqual(keyframes, [0, 30, 60, 90]);
   // A 4K original can take minutes; the panel needs movement long before the final receipt.
   assert.ok(fractions.some((f) => f > 0 && f < 0.6), `source scan: ${fractions}`);
   assert.ok(fractions.some((f) => f >= 0.6 && f < 0.85), `encode: ${fractions}`);

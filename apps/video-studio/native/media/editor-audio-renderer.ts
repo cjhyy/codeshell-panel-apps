@@ -131,10 +131,16 @@ function writeAll(fd: number, buffer: Buffer): void {
   while (offset < buffer.length) offset += writeSync(fd, buffer, offset, buffer.length - offset);
 }
 
+function finite(value: number): number {
+  if (!Number.isFinite(value)) throw new Error("Audio PCM contains a non-finite sample");
+  return value;
+}
+
 /** Bounded random access supports reverse playback without loading entire source files into RAM. */
 class PcmStore {
   private files = new Map<string, { fd: number; samples: number }>();
   private blocks = new Map<string, Buffer>();
+  private last?: { path: string; block: number; samples: number; view: DataView };
   private readonly blockSamples = 8192;
   private file(path: string): { fd: number; samples: number } {
     const saved = this.files.get(path);
@@ -161,10 +167,15 @@ class PcmStore {
     return fraction ? first + (this.integer(path, lo + 1, channel) - first) * fraction : first;
   }
   private integer(path: string, sample: number, channel: number): number {
+    const block = Math.floor(sample / this.blockSamples),
+      last = this.last;
+    // Mixing walks one lane's span sample by sample. Serve the current block without
+    // rebuilding its key or reordering both LRU maps on every read.
+    if (last && last.path === path && last.block === block && sample >= 0 && sample < last.samples)
+      return finite(last.view.getFloat32((sample % this.blockSamples) * BYTES + channel * 4, true));
     const file = this.file(path);
     if (sample < 0 || sample >= file.samples) return 0;
-    const block = Math.floor(sample / this.blockSamples),
-      key = `${path}\0${block}`;
+    const key = `${path}\0${block}`;
     let bytes = this.blocks.get(key);
     if (bytes) {
       this.blocks.delete(key);
@@ -188,14 +199,19 @@ class PcmStore {
       }
       this.blocks.set(key, bytes);
     }
-    const value = bytes.readFloatLE((sample % this.blockSamples) * BYTES + channel * 4);
-    if (!Number.isFinite(value)) throw new Error("Audio PCM contains a non-finite sample");
-    return value;
+    this.last = {
+      path,
+      block,
+      samples: file.samples,
+      view: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+    };
+    return finite(bytes.readFloatLE((sample % this.blockSamples) * BYTES + channel * 4));
   }
   dispose(): void {
     for (const file of this.files.values()) closeSync(file.fd);
     this.files.clear();
     this.blocks.clear();
+    this.last = undefined;
   }
 }
 

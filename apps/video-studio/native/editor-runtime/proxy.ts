@@ -243,7 +243,7 @@ export async function prepareEditorProxy(
   const encodedHeight =
     purpose === "preview" ? Math.max(2, Math.round((height * previewScale) / 2) * 2) : height;
   const recipeHash = digest({
-    version: purpose === "preview" ? "editor-sdr-preview-v1" : "editor-sdr-proxy-v2-duration",
+    version: purpose === "preview" ? "editor-sdr-preview-v2-gop30" : "editor-sdr-proxy-v2-duration",
     sourceHash,
     ffmpeg: context.ffmpegVersion,
     stream: stream.index,
@@ -321,7 +321,8 @@ export async function prepareEditorProxy(
         "-c:v",
         purpose === "preview" ? "libx264" : "libvpx-vp9",
         ...(purpose === "preview"
-          ? ["-crf", "23", "-preset", "ultrafast", "-pix_fmt", "yuv420p"]
+          ? // The player seeks every frame, and Chromium decodes from the preceding keyframe.
+            ["-crf", "23", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "30"]
           : [
               "-lossless", "1", "-pix_fmt", "yuv444p", "-deadline", "good",
               "-cpu-used", "4", "-row-mt", "1",

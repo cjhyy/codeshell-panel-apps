@@ -367,7 +367,7 @@ export async function runEditorRequest(
         cacheDir: cache,
         workDir: work,
         signal: context.signal,
-      });
+      }, "preview");
       if ((await fileHash(input, context.signal)) !== sourceHash)
         throw new EditorTaskError("SOURCE_CHANGED", "素材在兼容画面准备时发生变化");
       const artifact = await add(proxy.path, "mp4", "video/mp4", "editor-video-source"),

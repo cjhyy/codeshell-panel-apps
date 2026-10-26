@@ -491,7 +491,8 @@ test("single-resource preparation converts actual ProRes and reuses the exact sh
     output,
   ]);
   assert.equal(probe.status, 0, probe.stderr.toString());
-  assert.equal(JSON.parse(probe.stdout).streams[0].codec_name, "vp9");
+  // Interactive surfaces receive the fast preview, never the lossless export intermediate.
+  assert.equal(JSON.parse(probe.stdout).streams[0].codec_name, "h264");
   const scope = join(runtimeDir, "scopes", "f".repeat(64));
   const transfers = await readdir(join(scope, "transfers"));
   for (const transfer of transfers)

@@ -11005,7 +11005,7 @@ async function prepareEditorProxy(path, sourceHash, context2, purpose = "export"
   const encodedWidth = purpose === "preview" ? Math.max(2, Math.round(width * previewScale / 2) * 2) : width;
   const encodedHeight = purpose === "preview" ? Math.max(2, Math.round(height * previewScale / 2) * 2) : height;
   const recipeHash = digest({
-    version: purpose === "preview" ? "editor-sdr-preview-v1" : "editor-sdr-proxy-v2-duration",
+    version: purpose === "preview" ? "editor-sdr-preview-v2-gop30" : "editor-sdr-proxy-v2-duration",
     sourceHash,
     ffmpeg: context2.ffmpegVersion,
     stream: stream.index,
@@ -11074,7 +11074,10 @@ async function prepareEditorProxy(path, sourceHash, context2, purpose = "export"
         "1:240000",
         "-c:v",
         purpose === "preview" ? "libx264" : "libvpx-vp9",
-        ...purpose === "preview" ? ["-crf", "23", "-preset", "ultrafast", "-pix_fmt", "yuv420p"] : [
+        ...purpose === "preview" ? (
+          // The player seeks every frame, and Chromium decodes from the preceding keyframe.
+          ["-crf", "23", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "30"]
+        ) : [
           "-lossless",
           "1",
           "-pix_fmt",
@@ -11546,9 +11549,14 @@ function writeAll(fd, buffer) {
   let offset = 0;
   while (offset < buffer.length) offset += writeSync(fd, buffer, offset, buffer.length - offset);
 }
+function finite2(value) {
+  if (!Number.isFinite(value)) throw new Error("Audio PCM contains a non-finite sample");
+  return value;
+}
 var PcmStore = class {
   files = /* @__PURE__ */ new Map();
   blocks = /* @__PURE__ */ new Map();
+  last;
   blockSamples = 8192;
   file(path) {
     const saved = this.files.get(path);
@@ -11574,9 +11582,12 @@ var PcmStore = class {
     return fraction ? first2 + (this.integer(path, lo + 1, channel) - first2) * fraction : first2;
   }
   integer(path, sample2, channel) {
+    const block = Math.floor(sample2 / this.blockSamples), last = this.last;
+    if (last && last.path === path && last.block === block && sample2 >= 0 && sample2 < last.samples)
+      return finite2(last.view.getFloat32(sample2 % this.blockSamples * BYTES + channel * 4, true));
     const file = this.file(path);
     if (sample2 < 0 || sample2 >= file.samples) return 0;
-    const block = Math.floor(sample2 / this.blockSamples), key = `${path}\0${block}`;
+    const key = `${path}\0${block}`;
     let bytes = this.blocks.get(key);
     if (bytes) {
       this.blocks.delete(key);
@@ -11600,14 +11611,19 @@ var PcmStore = class {
       }
       this.blocks.set(key, bytes);
     }
-    const value = bytes.readFloatLE(sample2 % this.blockSamples * BYTES + channel * 4);
-    if (!Number.isFinite(value)) throw new Error("Audio PCM contains a non-finite sample");
-    return value;
+    this.last = {
+      path,
+      block,
+      samples: file.samples,
+      view: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    };
+    return finite2(bytes.readFloatLE(sample2 % this.blockSamples * BYTES + channel * 4));
   }
   dispose() {
     for (const file of this.files.values()) closeSync(file.fd);
     this.files.clear();
     this.blocks.clear();
+    this.last = void 0;
   }
 };
 function tempoFilters(factor) {
@@ -14261,7 +14277,7 @@ async function runEditorRequest(raw, context2) {
         cacheDir: cache,
         workDir: work,
         signal: context2.signal
-      });
+      }, "preview");
       if (await fileHash(input, context2.signal) !== sourceHash)
         throw new EditorTaskError("SOURCE_CHANGED", "素材在兼容画面准备时发生变化");
       const artifact = await add2(proxy.path, "mp4", "video/mp4", "editor-video-source"), { path: _path, ...recipe } = proxy;
