@@ -121,6 +121,7 @@ import {
   type PreparedEditorAudio,
 } from "./editor/task-bridge";
 import { compileAudioPlan } from "./editor/audio-plan";
+import { liveAudioUnsupported, resolveLivePreviewAudio } from "./editor/live-audio";
 import {
   editorAudioContentKey,
   editorPreviewVideoPlan,
@@ -6117,8 +6118,12 @@ async function resolveEditorAsset(
     }
     return { url: await resourcePreviewUrl(panel, prepared.proxy.id, signal), owned: false };
   }
-  if (source?.resourceId)
-    return { url: await resourcePreviewUrl(panel, source.resourceId, signal), owned: false };
+  return { url: await editorOriginalMediaUrl(assetId, signal), owned: false };
+}
+/** The original media an editor asset plays from, for sound as well as pictures. */
+async function editorOriginalMediaUrl(assetId: string, signal: AbortSignal): Promise<string> {
+  const source = editorSession!.read().assets.find((asset) => asset.id === assetId);
+  if (source?.resourceId) return resourcePreviewUrl(panel, source.resourceId, signal);
   let item = library.items.get(assetId);
   if (!item) {
     const asset = project.assets.find((asset) => asset.id === assetId);
@@ -6133,7 +6138,7 @@ async function resolveEditorAsset(
   }
   if (signal.aborted) throw new DOMException("取消预览", "AbortError");
   if (!item) throw new Error("素材无法读取，请重新连接原文件");
-  return { url: item.url, owned: false };
+  return item.url;
 }
 function mountEditorWorkspace(): void {
   if (!editorSession || editorWorkspace) return;
@@ -6307,6 +6312,18 @@ function mountEditorWorkspace(): void {
         warmUpcomingVideo();
         activateTimelineMedia();
         return undefined;
+      }
+      // Like HyperFrames, ordinary clips mix while playing; nothing is rendered first.
+      if (purpose === undefined && !liveAudioUnsupported(plan)) {
+        onProgress?.("正在载入声音素材…");
+        const live = await resolveLivePreviewAudio(plan, editorOriginalMediaUrl, signal);
+        if (!current()) return undefined;
+        if (live) {
+          if (snapshot) preparedNative = { key, snapshot };
+          warmUpcomingVideo();
+          activateTimelineMedia();
+          return { documentId: doc.id, revision: requestedDoc.revision, sequenceId, live };
+        }
       }
       onProgress?.("正在读取声音素材并准备预览混音…");
       const result = await editorTasks.prepareAudioForPreview(doc, sequenceId, {

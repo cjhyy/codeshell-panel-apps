@@ -72,7 +72,8 @@ export interface EditorWorkspaceOptions {
     sequenceId: string,
     signal: AbortSignal,
     onProgress?: (message: string) => void,
-    purpose?: "audition",
+    /** `audition` mixes temporary mutes; `prerendered` keeps PCM for gain audition. */
+    purpose?: "audition" | "prerendered",
   ): Promise<PreviewAudio | undefined>;
   exportSequence?(
     document: EditorDocument,
@@ -1003,13 +1004,15 @@ export class EditorWorkspace {
       sequenceId = this.sequenceId,
       signature = this.playbackSignature(), audition = this.gainAudition;
     try {
-      const preparedCurrent = this.preparedRevision === signature;
+      // A live mix cannot carry a gain-audition stem; prepare PCM for that playback.
+      const preparedCurrent = this.preparedRevision === signature && !(audition && this.audio?.live);
       if (!preparedCurrent) this.clearAudioWarning();
       const prepared = preparedCurrent
         ? this.audio
         : (await this.options.prepareAudio?.(doc, sequenceId, controller.signal, (message) =>
             this.preparationStatus(controller, message),
-            this.soloTracks.size ? "audition" : undefined,
+            // Gain audition plays a PCM correction stem against the full mix.
+            this.soloTracks.size ? "audition" : audition ? "prerendered" : undefined,
           ));
       if (
         controller.signal.aborted ||

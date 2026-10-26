@@ -9,6 +9,7 @@ import { frameToTicks, ticksToFrame, ticksToSeconds, secondsToTicks, type Tick }
 import type { EditorDocument, EditorSequence } from "./types";
 import { sequenceDuration, validateEditorDocument } from "./validation";
 import { StreamingPreviewAudio, type PreviewPcmStream } from "./stream-audio";
+import { LiveAudioMixer, type LivePreviewAudio } from "./live-audio";
 import { editorVisualSourceKey } from "./playback-cache";
 import type { EditorAudioMixReport } from "./audio-mix-report";
 import {
@@ -26,8 +27,17 @@ export type PreviewAudio = {
   | {
       /** Short full-sequence PCM from the shared audio renderer. */ buffer: AudioBuffer;
       stream?: never;
+      live?: never;
     }
-  | { /** Long PCM is read only near the playhead. */ stream: PreviewPcmStream; buffer?: never }
+  | {
+      /** Long PCM is read only near the playhead. */ stream: PreviewPcmStream;
+      buffer?: never;
+      live?: never;
+    }
+  | { /** Mixed while playing from the sources; nothing is prepared. */ live: LivePreviewAudio;
+      buffer?: never;
+      stream?: never;
+    }
 );
 export interface EditorPreviewOptions extends EditorMediaPoolOptions {
   onFrame?(time: Tick): void;
@@ -72,6 +82,7 @@ export class EditorPreview {
   private audioContext?: AudioContext;
   private audioSource?: AudioBufferSourceNode;
   private audioStream?: StreamingPreviewAudio;
+  private liveMixer?: LiveAudioMixer;
   private auditionGain?: GainNode;
   private buffering?: "audio" | "video";
   private request?: AbortController;
@@ -261,21 +272,25 @@ export class EditorPreview {
     if (!duration) throw new Error("时间轴没有可播放的内容");
     this.pause();
     const needsAudio = hasPotentialAudio(document, sequence);
+    const shape = (value: PreviewAudio) => value.live
+      ? { rate: 48000, channels: 2, seconds: value.live.plan.sampleCount / 48000, sequenceId: value.live.plan.sequenceId }
+      : { rate: (value.buffer ?? value.stream).sampleRate, channels: (value.buffer ?? value.stream).numberOfChannels,
+          seconds: value.buffer?.duration ?? value.stream!.sampleCount / 48000, sequenceId: value.sequenceId };
     if (
       [audio, correction?.audio].some((audio) => audio &&
       (audio.documentId !== document.id ||
         audio.revision !== document.revision ||
         audio.sequenceId !== sequence.id ||
-        (audio.buffer ?? audio.stream).sampleRate !== 48000 ||
-        (audio.buffer ?? audio.stream).numberOfChannels !== 2 ||
-        Math.abs(
-          (audio.buffer?.duration ?? audio.stream!.sampleCount / 48000) - ticksToSeconds(duration),
-        ) >
-          1 / 48000 + 0.000001))
+        shape(audio).sequenceId !== sequence.id ||
+        shape(audio).rate !== 48000 ||
+        shape(audio).channels !== 2 ||
+        Math.abs(shape(audio).seconds - ticksToSeconds(duration)) > 1 / 48000 + 0.000001))
     )
       throw new Error("声音预览与当前工程版本不一致，请重新准备声音");
     if (correction && (!audio || !Number.isFinite(correction.gain) || Math.abs(correction.gain) > 4))
       throw new Error("调音试听声音无效");
+    if (correction && (audio?.live || correction.audio.live))
+      throw new Error("调音试听需要预渲染的声音，请重新开始试听");
     if (needsAudio && !audio) throw new Error("请先完成当前工程的声音预览准备");
     const request = new AbortController();
     const generation = this.generation;
@@ -287,7 +302,14 @@ export class EditorPreview {
         if (this.audioContext.state !== "running") throw new Error("请点击播放按钮启用声音");
       }
       const start = this.playhead >= duration ? 0 : this.snap(this.playhead, sequence);
-      if (this.renderedTime !== start) await this.draw(start, request.signal, generation);
+      const startSample = Math.floor(ticksToSeconds(start) * 48000);
+      // Sources heard at the start load while the first frame draws.
+      const mixer = audio?.live ? new LiveAudioMixer(this.audioContext!, audio.live) : undefined;
+      this.liveMixer = mixer;
+      await Promise.all([
+        this.renderedTime !== start ? this.draw(start, request.signal, generation) : undefined,
+        mixer?.prepare(startSample, request.signal),
+      ]);
       if (request.signal.aborted || generation !== this.generation) return;
       const clock = audio ? () => this.audioContext!.currentTime : () => performance.now() / 1000;
       // The audio and image clock share this origin; decoder currentTime is never a clock.
@@ -298,12 +320,13 @@ export class EditorPreview {
         this.audioSource.connect(this.audioContext!.destination);
         this.audioSource.start(origin, ticksToSeconds(start));
       }
-      const startSample = Math.floor(ticksToSeconds(start) * 48000);
+      mixer?.start(origin, startSample);
+      // Live audio never reaches here: it has no PCM and is rejected with an audition.
       const asStream = (value: PreviewAudio): PreviewPcmStream => value.stream ?? {
-        sampleRate: 48000, numberOfChannels: 2, sampleCount: value.buffer.length,
+        sampleRate: 48000, numberOfChannels: 2, sampleCount: value.buffer!.length,
         read: async (offset, count, signal) => {
           if (signal.aborted) throw new DOMException("声音播放已取消", "AbortError");
-          return [value.buffer.getChannelData(0).slice(offset, offset + count), value.buffer.getChannelData(1).slice(offset, offset + count)];
+          return [value.buffer!.getChannelData(0).slice(offset, offset + count), value.buffer!.getChannelData(1).slice(offset, offset + count)];
         }, dispose() {},
       };
       if (correction) {
@@ -366,6 +389,7 @@ export class EditorPreview {
               stalled = true;
               // Sound already heard cannot be taken back; it stays the master clock.
               if (audio) void this.audioContext!.suspend();
+              this.liveMixer?.hold();
               this.setBuffering("video");
             }, 400);
             try {
@@ -375,6 +399,7 @@ export class EditorPreview {
               if (stalled && !request.signal.aborted && generation === this.generation) {
                 if (audio) await this.audioContext!.resume();
                 else origin += clock() - drawStarted;
+                this.liveMixer?.resume();
                 this.setBuffering(undefined);
               }
             }
@@ -409,6 +434,8 @@ export class EditorPreview {
     }
     this.audioStream?.stop();
     this.audioStream = undefined;
+    this.liveMixer?.stop();
+    this.liveMixer = undefined;
     this.auditionGain?.disconnect();
     this.auditionGain = undefined;
     this.setBuffering(undefined);

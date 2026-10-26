@@ -195,7 +195,7 @@ rAF:
 | --- | --- | --- | --- |
 | **M0 测量** | 给现有路径加分段计时（§1 的 1–6 步、每帧 `draw` 耗时）；在 5 个夹具工程上记录基线；验证面板沙箱里 Worker、AudioWorklet、`blob:` 模块能否加载；实测 Chromium 连续寻帧的成本 | 1 天 | **基线已测**（2026-10-26），见 [`video-studio-playback-baseline.md`](video-studio-playback-baseline.md)；沙箱加载验证仍待做 |
 | **M1 视频直放** | Mediabunny 接入；`SourceDecoder` 帧缓存、精确取帧、切点预热；`PlaybackScheduler` 不再逐帧等待；源选择与旧播放路径兜底；`prepareVideoForPreview` 只对 `proxy-required` 素材调用 | 1–1.5 周 | §2 中视频相关指标达标；逐帧一致性测试通过 |
-| **M2 实时混音** | AudioWorklet 混音器；实时层与预渲染层；编辑即时生效；`prepareAudio` 退化为只准备预渲染声道 | 1.5–2 周 | 声道级对比测试通过；调音即时生效 |
+| **M2 实时混音**（0.9.0 已完成普通片段：媒体元素 + Web Audio 增益图，对标 HyperFrames；变速、倒放、变调、闪避仍走预渲染） | AudioWorklet 混音器；实时层与预渲染层；编辑即时生效；`prepareAudio` 退化为只准备预渲染声道 | 1.5–2 周 | 声道级对比测试通过；调音即时生效 |
 | **M3 后台就绪** | `ReadinessTracker` 与状态条；指纹校验和导出可行性检查移到后台；代理生成提速 | 1 周 | 不兼容素材只影响它所在的时间段 |
 | **M4 性能深化（按 M0–M3 数据决定）** | 解码与 PCM 供给移入 Worker；调色和混合模式改为 GPU（WebGL2）实现，只在预览使用时须给出与导出的像素差上限 | 视数据而定 | — |
 | **M5 导出共用（可选）** | 见 §9 | 1–2 周 | golden 逐帧比对通过 |
