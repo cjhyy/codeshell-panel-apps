@@ -65,6 +65,12 @@ SHA `7fd50b7e7c35af5751cbcbb36b5fe1e29bb6d38293eeee32854fd2d5d66edf25`
 用例改为真实 Save 完成后建立非空 principal+完整附件基线；原 metadata、backup
 字节及全部 IDB records 深相等断言保留，没有过滤 binding、删断言或用 sleep 修通过。
 
+本机 12 核默认并发批次先后在未改动的 flex reverse、CSS border、empty block
+旧 case 出现 Chromium Page.captureScreenshot 协议错误；一次完整组合已通过，另两轮
+失败日志均保留。将 Design 普通批次并发明确限制为 2，实际 GPU 批次仍为 1；不删除
+case、不增加自动重试、不改像素阈值/超时。完整目录顺序和 case 数前后核对一致，
+相关失败原用例与最终全仓门禁重跑，证据在 `screenshot-concurrency/` 与各轮 `gates/`。
+
 ## 实际验收和证据层次
 
 定点浏览器操作都使用私有测试 origin/context，原用户 4190 和旧 IANA 失败数据没有

@@ -85,9 +85,12 @@ export const suites = [
   {
     id: "design-studio",
     label: "Design Studio project recovery and editor interactions",
+    // Bound software browser screenshot workers too; a many-core host must
+    // not overload Chromium capture services. Keep all cases and pixel gates.
     commands: [
       [
         "--test",
+        "--test-concurrency=2",
         "tests/apps/design-studio/headless-cli.test.mjs",
         "tests/apps/design-studio/headless-prototype.test.mjs",
         "tests/apps/design-studio/product-brief.test.mjs",
