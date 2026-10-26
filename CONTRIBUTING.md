@@ -320,6 +320,24 @@ an unverified live process retains that directory and fails the gate. Fallback
 termination uses only that captured child handle. Final reports are written only
 after verified shutdown and successful directory cleanup.
 
+## Read-only release ZIP verification
+
+Run `node scripts/verify-release-zip.mjs --tag <panel-id-vX.Y.Z> --zip <local.zip>
+--dir <package-path>`. `--dir` is an exact repository-relative **installable**
+directory at that tag (`apps/video-download`, `panels/video-studio`, or
+`templates/starter`), not a checkout, extraction destination or source-built
+`apps/video-studio`. The CLI always reads Git objects from this repository.
+It never downloads, extracts, executes, installs or rebuilds the package.
+
+Stdout is one JSON receipt: equal contents = exit 0, differences or incomplete
+tag-generated output = exit 1, invalid/unsupported input = exit 2. It compares
+uncompressed file SHA-256, records the original ZIP SHA-256 separately, and
+checks manifest ID/version against the exact tag. A missing generated inventory
+or missing/hash-mismatched inventory files cannot produce complete equality.
+See [supported layouts, budgets and real receipts](docs/acceptance/panel-release-zip-20261026.md).
+Run `npm test -- --suite release-zip` with a private HOME/XDG/TMPDIR and cleared
+credentials; the handoff includes the exact isolation recipe, gate history and corrected result.
+
 ## Pull requests
 
 Explain the user-visible behavior, list requested Host permissions, and include

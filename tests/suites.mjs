@@ -2,6 +2,11 @@
 // while their application ownership is explicit here.
 export const suites = [
   {
+    id: "release-zip",
+    label: "Read-only release ZIP/tag content verification",
+    commands: [["--test", "tests/verify-release-zip.test.mjs"]],
+  },
+  {
     id: "panel-cli",
     label: "Installed Panel CLI and Runtime Skill contracts",
     commands: [["--test", "tests/panel-cli-contract.test.mjs"]],

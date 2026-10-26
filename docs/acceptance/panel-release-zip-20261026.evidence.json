@@ -1,0 +1,2557 @@
+{
+  "observedDate": "2026-10-26",
+  "panelBaseline": "84348855be8ae4e5a31936b3c2b0d1d21410bd64",
+  "method": "Existing Release API metadata queried before gh release download; local read-only verification, no extraction, execution or publication.",
+  "results": [
+    {
+      "releaseUrl": "https://github.com/cjhyy/codeshell-panel-apps/releases/tag/video-download-v0.24.1",
+      "assetUrl": "https://github.com/cjhyy/codeshell-panel-apps/releases/download/video-download-v0.24.1/video-download-0.24.1.zip",
+      "assetApiUrl": "https://api.github.com/repos/cjhyy/codeshell-panel-apps/releases/assets/644085592",
+      "publishedAssetDigest": "sha256:2000d17bc416944e9176e8c7891cea5644d03ac0a5ae9a38354d73250bc69a4e",
+      "report": {
+        "format": "codeshell.panel-release-zip-verification",
+        "schemaVersion": 1,
+        "status": "equal",
+        "exitCode": 0,
+        "tag": "video-download-v0.24.1",
+        "tagObject": "0ca464667d5c2c68a4e31e5d9bd77678bbecc24b",
+        "tagCommit": "09fd3bd3b0b9c6bb286b54e2f2d7c47a4ac0520c",
+        "dir": "apps/video-download",
+        "assetSha256": "2000d17bc416944e9176e8c7891cea5644d03ac0a5ae9a38354d73250bc69a4e",
+        "archiveBytes": 222767,
+        "comparison": "SHA-256 of uncompressed regular-file contents, not ZIP container byte identity or rebuilt-source equivalence",
+        "scope": {
+          "complete": true,
+          "rule": "installable-v1: .codeshell-panel/** + agent/** + app/** + README.md",
+          "reason": "Committed installable files only; no rebuild or source-to-bundle equivalence claimed.",
+          "generatedIssues": [],
+          "excludedTagPaths": []
+        },
+        "limits": {
+          "maxArchiveBytes": 67108864,
+          "maxEntries": 4096,
+          "maxFileBytes": 67108864,
+          "maxCompressedFileBytes": 33554432,
+          "maxTotalBytes": 268435456,
+          "maxCompressedTotalBytes": 67108864,
+          "maxManifestBytes": 1048576,
+          "maxMetadataBytes": 2097152,
+          "maxRatio": 200
+        },
+        "zipRoot": "video-download/",
+        "directories": [
+          "video-download/",
+          ".codeshell-panel/",
+          "agent/",
+          "agent/skills/",
+          "agent/skills/video-download-cli/",
+          "agent/skills/video-download-setup/",
+          "agent/skills/video-download-setup/references/",
+          "app/",
+          "app/assets/",
+          "app/tools/"
+        ],
+        "manifest": {
+          "tag": {
+            "id": "video-download",
+            "version": "0.24.1",
+            "entry": "app/index.html"
+          },
+          "zip": {
+            "id": "video-download",
+            "version": "0.24.1",
+            "entry": "app/index.html"
+          }
+        },
+        "manifestMismatches": [],
+        "files": [
+          {
+            "path": ".codeshell-panel/panel.json",
+            "kind": "equal",
+            "tagBytes": 9178,
+            "zipBytes": 9178,
+            "tagSha256": "9025bbd429bb0a326a253a878d000c5cc5ce1cace6372f0925a86268e63e5877",
+            "zipSha256": "9025bbd429bb0a326a253a878d000c5cc5ce1cace6372f0925a86268e63e5877"
+          },
+          {
+            "path": "README.md",
+            "kind": "equal",
+            "tagBytes": 11221,
+            "zipBytes": 11221,
+            "tagSha256": "d83b1c23b9469405a25ea586149c53e05feab5ae72807b67ed77f85e665db129",
+            "zipSha256": "d83b1c23b9469405a25ea586149c53e05feab5ae72807b67ed77f85e665db129"
+          },
+          {
+            "path": "agent/skills/video-download-cli/SKILL.md",
+            "kind": "equal",
+            "tagBytes": 5063,
+            "zipBytes": 5063,
+            "tagSha256": "f7f7026a8a984524a8babe5049ebd6faaf2dbbc2abe214d40fba983a24ddd454",
+            "zipSha256": "f7f7026a8a984524a8babe5049ebd6faaf2dbbc2abe214d40fba983a24ddd454"
+          },
+          {
+            "path": "agent/skills/video-download-setup/SKILL.md",
+            "kind": "equal",
+            "tagBytes": 4691,
+            "zipBytes": 4691,
+            "tagSha256": "8d36af4c01e59493dfeb2ec76eaf38876b0508003f9896e87740b417fe699c43",
+            "zipSha256": "8d36af4c01e59493dfeb2ec76eaf38876b0508003f9896e87740b417fe699c43"
+          },
+          {
+            "path": "agent/skills/video-download-setup/references/github-release.md",
+            "kind": "equal",
+            "tagBytes": 4176,
+            "zipBytes": 4176,
+            "tagSha256": "fea79331b27543729fc0f7e1a3f9dd66425a3a17d878a34c1be14aecd66b0215",
+            "zipSha256": "fea79331b27543729fc0f7e1a3f9dd66425a3a17d878a34c1be14aecd66b0215"
+          },
+          {
+            "path": "agent/skills/video-download-setup/references/platform-install.md",
+            "kind": "equal",
+            "tagBytes": 3695,
+            "zipBytes": 3695,
+            "tagSha256": "44b5b35b652f4742515fed7f29bfb1aa986b6f59e9e65506248ff89aa66f89b1",
+            "zipSha256": "44b5b35b652f4742515fed7f29bfb1aa986b6f59e9e65506248ff89aa66f89b1"
+          },
+          {
+            "path": "app/app.js",
+            "kind": "equal",
+            "tagBytes": 278775,
+            "zipBytes": 278775,
+            "tagSha256": "bd8af1cfce8bd7c0b038f05cd01c05de8e8a6e4a998ac8c3e53df8310cd39ce7",
+            "zipSha256": "bd8af1cfce8bd7c0b038f05cd01c05de8e8a6e4a998ac8c3e53df8310cd39ce7"
+          },
+          {
+            "path": "app/assets/electron-video-dog.png",
+            "kind": "equal",
+            "tagBytes": 21671,
+            "zipBytes": 21671,
+            "tagSha256": "b8e3260fd9a74bec84c818fa492b8d16d720b2ec9cd64943018625c7c1d87f7a",
+            "zipSha256": "b8e3260fd9a74bec84c818fa492b8d16d720b2ec9cd64943018625c7c1d87f7a"
+          },
+          {
+            "path": "app/download-library.js",
+            "kind": "equal",
+            "tagBytes": 13397,
+            "zipBytes": 13397,
+            "tagSha256": "ca8c422474bdaaf3c51a813f5ec685494c3acfcb8f61a8f1a747c2f52a2db5cd",
+            "zipSha256": "ca8c422474bdaaf3c51a813f5ec685494c3acfcb8f61a8f1a747c2f52a2db5cd"
+          },
+          {
+            "path": "app/download-records.js",
+            "kind": "equal",
+            "tagBytes": 5654,
+            "zipBytes": 5654,
+            "tagSha256": "ec8b279ac429bbc853826df3f3d70893b0db7ab67d755fb2d05a699cef48a465",
+            "zipSha256": "ec8b279ac429bbc853826df3f3d70893b0db7ab67d755fb2d05a699cef48a465"
+          },
+          {
+            "path": "app/download-service.js",
+            "kind": "equal",
+            "tagBytes": 13418,
+            "zipBytes": 13418,
+            "tagSha256": "c39e80e2befbfe0b2ef5355ae147b6c5e8c10cd37e2640a32fa637a2d20f772f",
+            "zipSha256": "c39e80e2befbfe0b2ef5355ae147b6c5e8c10cd37e2640a32fa637a2d20f772f"
+          },
+          {
+            "path": "app/durable-downloads.js",
+            "kind": "equal",
+            "tagBytes": 11402,
+            "zipBytes": 11402,
+            "tagSha256": "bec84c9c6c71312c0c9c6b92a42cc53e0ada9d5dd13b6664d83adce177b05301",
+            "zipSha256": "bec84c9c6c71312c0c9c6b92a42cc53e0ada9d5dd13b6664d83adce177b05301"
+          },
+          {
+            "path": "app/environment-client.js",
+            "kind": "equal",
+            "tagBytes": 2317,
+            "zipBytes": 2317,
+            "tagSha256": "8ba4b0d3bc8c3dd7b4ac3340bd4db85f3c54bb19674027cd26b934327ecffe14",
+            "zipSha256": "8ba4b0d3bc8c3dd7b4ac3340bd4db85f3c54bb19674027cd26b934327ecffe14"
+          },
+          {
+            "path": "app/ids.js",
+            "kind": "equal",
+            "tagBytes": 820,
+            "zipBytes": 820,
+            "tagSha256": "884ab9b8867e90099d65b4c6b9dc9407ad86792815cbc4b296e33feea413b538",
+            "zipSha256": "884ab9b8867e90099d65b4c6b9dc9407ad86792815cbc4b296e33feea413b538"
+          },
+          {
+            "path": "app/index.html",
+            "kind": "equal",
+            "tagBytes": 32357,
+            "zipBytes": 32357,
+            "tagSha256": "ae43a2849ce09e7538b9200f2f1315b3ba057f77045d4aed0fb91b409dbde155",
+            "zipSha256": "ae43a2849ce09e7538b9200f2f1315b3ba057f77045d4aed0fb91b409dbde155"
+          },
+          {
+            "path": "app/library-process.js",
+            "kind": "equal",
+            "tagBytes": 10384,
+            "zipBytes": 10384,
+            "tagSha256": "4e658898014562dbf2ee9c9717d27af7cdb0c3a6cdcc78f27f83863cb8dfc97c",
+            "zipSha256": "4e658898014562dbf2ee9c9717d27af7cdb0c3a6cdcc78f27f83863cb8dfc97c"
+          },
+          {
+            "path": "app/panel-select.css",
+            "kind": "equal",
+            "tagBytes": 3051,
+            "zipBytes": 3051,
+            "tagSha256": "33fdaafa5b361003b553c86e1b18b41a36e9ec3d9dd80e2e7fab6020bcf7bae2",
+            "zipSha256": "33fdaafa5b361003b553c86e1b18b41a36e9ec3d9dd80e2e7fab6020bcf7bae2"
+          },
+          {
+            "path": "app/panel-select.js",
+            "kind": "equal",
+            "tagBytes": 9807,
+            "zipBytes": 9807,
+            "tagSha256": "761d4ba289275ae7deeefee2804c0c995dbb01e2d1e302e1ad4ac2d34bdb29d6",
+            "zipSha256": "761d4ba289275ae7deeefee2804c0c995dbb01e2d1e302e1ad4ac2d34bdb29d6"
+          },
+          {
+            "path": "app/project-binding.js",
+            "kind": "equal",
+            "tagBytes": 5460,
+            "zipBytes": 5460,
+            "tagSha256": "6f74a6488449dad0f0c89ab0fe5cd4d8ba9f2dd381e40230742df76d243dd558",
+            "zipSha256": "6f74a6488449dad0f0c89ab0fe5cd4d8ba9f2dd381e40230742df76d243dd558"
+          },
+          {
+            "path": "app/project-storage.js",
+            "kind": "equal",
+            "tagBytes": 6242,
+            "zipBytes": 6242,
+            "tagSha256": "bb4f32e0667c86ce17f19693cbe840fcede93b41284b2f567fc978d5cc928cc4",
+            "zipSha256": "bb4f32e0667c86ce17f19693cbe840fcede93b41284b2f567fc978d5cc928cc4"
+          },
+          {
+            "path": "app/style.css",
+            "kind": "equal",
+            "tagBytes": 38674,
+            "zipBytes": 38674,
+            "tagSha256": "381ec1fda2fb4a8499e01d4fd040de02216d7340b9d72193012ccdd19a7cff6b",
+            "zipSha256": "381ec1fda2fb4a8499e01d4fd040de02216d7340b9d72193012ccdd19a7cff6b"
+          },
+          {
+            "path": "app/tools/cli-store.mjs",
+            "kind": "equal",
+            "tagBytes": 27358,
+            "zipBytes": 27358,
+            "tagSha256": "8bed5d8ad61a80ed0c8e7f3351bae71b57dac73986b4690b6f20c2497ecc06ed",
+            "zipSha256": "8bed5d8ad61a80ed0c8e7f3351bae71b57dac73986b4690b6f20c2497ecc06ed"
+          },
+          {
+            "path": "app/tools/download-runtime.mjs",
+            "kind": "equal",
+            "tagBytes": 43691,
+            "zipBytes": 43691,
+            "tagSha256": "dbe8fb1afc3305b0ee4159d3f65f2da726c039db31e60e8ac890ea4a18f2978d",
+            "zipSha256": "dbe8fb1afc3305b0ee4159d3f65f2da726c039db31e60e8ac890ea4a18f2978d"
+          },
+          {
+            "path": "app/tools/download.mjs",
+            "kind": "equal",
+            "tagBytes": 25375,
+            "zipBytes": 25375,
+            "tagSha256": "98f105048a75261e7e1f04c68915d58ad090eee11372df4818a86293923e7880",
+            "zipSha256": "98f105048a75261e7e1f04c68915d58ad090eee11372df4818a86293923e7880"
+          },
+          {
+            "path": "app/tools/environment.mjs",
+            "kind": "equal",
+            "tagBytes": 23482,
+            "zipBytes": 23482,
+            "tagSha256": "d08fe89a67844091eb19c7da37d9ce099753e6147939c21b27bb32f4f58ae744",
+            "zipSha256": "d08fe89a67844091eb19c7da37d9ce099753e6147939c21b27bb32f4f58ae744"
+          },
+          {
+            "path": "app/tools/library.mjs",
+            "kind": "equal",
+            "tagBytes": 12160,
+            "zipBytes": 12160,
+            "tagSha256": "c030ef48a7ff09de1912a7c6fec7df7453e80a649cd7f2a49c4aff132ac455fd",
+            "zipSha256": "c030ef48a7ff09de1912a7c6fec7df7453e80a649cd7f2a49c4aff132ac455fd"
+          },
+          {
+            "path": "app/tools/search.mjs",
+            "kind": "equal",
+            "tagBytes": 9107,
+            "zipBytes": 9107,
+            "tagSha256": "6922fd6d45ca73b1b567448a06eaad19d21190fa4c30bc3bc334cbe15d51dd67",
+            "zipSha256": "6922fd6d45ca73b1b567448a06eaad19d21190fa4c30bc3bc334cbe15d51dd67"
+          },
+          {
+            "path": "app/tools/service.mjs",
+            "kind": "equal",
+            "tagBytes": 2152,
+            "zipBytes": 2152,
+            "tagSha256": "99083f289df006d77ba32160e7a2bfe660d14fbd5920eac82b6b4e3cb019e953",
+            "zipSha256": "99083f289df006d77ba32160e7a2bfe660d14fbd5920eac82b6b4e3cb019e953"
+          },
+          {
+            "path": "app/tools/video-download.mjs",
+            "kind": "equal",
+            "tagBytes": 1843,
+            "zipBytes": 1843,
+            "tagSha256": "e209ec8f539bd97581182432fbf8a3e218d455d53a1696e694a5bc4450897728",
+            "zipSha256": "e209ec8f539bd97581182432fbf8a3e218d455d53a1696e694a5bc4450897728"
+          },
+          {
+            "path": "app/version.js",
+            "kind": "equal",
+            "tagBytes": 2334,
+            "zipBytes": 2334,
+            "tagSha256": "ca0a9361d09fadf4757893b71abf4b60c29fe2c8a8596b7a50ac3d74ff9440c2",
+            "zipSha256": "ca0a9361d09fadf4757893b71abf4b60c29fe2c8a8596b7a50ac3d74ff9440c2"
+          },
+          {
+            "path": "app/video-search-archive.js",
+            "kind": "equal",
+            "tagBytes": 2886,
+            "zipBytes": 2886,
+            "tagSha256": "b53945836f45498e8c7c3c7b27d0cc69bf28de42d7bd66bd4643a741f28009e7",
+            "zipSha256": "b53945836f45498e8c7c3c7b27d0cc69bf28de42d7bd66bd4643a741f28009e7"
+          },
+          {
+            "path": "app/video-search.css",
+            "kind": "equal",
+            "tagBytes": 5296,
+            "zipBytes": 5296,
+            "tagSha256": "5fe259387ba78c965963ab7bd43d75038b497b2672769ddbf7a46f6e4e9f9309",
+            "zipSha256": "5fe259387ba78c965963ab7bd43d75038b497b2672769ddbf7a46f6e4e9f9309"
+          },
+          {
+            "path": "app/video-search.js",
+            "kind": "equal",
+            "tagBytes": 49955,
+            "zipBytes": 49955,
+            "tagSha256": "67617fa0c7643196a4e1cbf5321cffba92b22347a737594e88e2cc5f3c2b1bb3",
+            "zipSha256": "67617fa0c7643196a4e1cbf5321cffba92b22347a737594e88e2cc5f3c2b1bb3"
+          },
+          {
+            "path": "app/workspace.css",
+            "kind": "equal",
+            "tagBytes": 37843,
+            "zipBytes": 37843,
+            "tagSha256": "34b781a3086418c1a540d5daa60b7af7c5410835dc6fd3f84d2d993f989af3b2",
+            "zipSha256": "34b781a3086418c1a540d5daa60b7af7c5410835dc6fd3f84d2d993f989af3b2"
+          }
+        ],
+        "differences": []
+      }
+    },
+    {
+      "releaseUrl": "https://github.com/cjhyy/codeshell-panel-apps/releases/tag/video-studio-v0.8.0",
+      "assetUrl": "https://github.com/cjhyy/codeshell-panel-apps/releases/download/video-studio-v0.8.0/video-studio-0.8.0.zip",
+      "assetApiUrl": "https://api.github.com/repos/cjhyy/codeshell-panel-apps/releases/assets/668575955",
+      "publishedAssetDigest": "sha256:7d21e60a3ce56549c8c21a11c7bc922705ceac1e01695a9c993b92b9035af0a8",
+      "report": {
+        "format": "codeshell.panel-release-zip-verification",
+        "schemaVersion": 1,
+        "status": "equal",
+        "exitCode": 0,
+        "tag": "video-studio-v0.8.0",
+        "tagObject": "d9f987c63a088e88a74674b0e41385c0f310a00a",
+        "tagCommit": "7850d680686d62ddc35d539319bf88353a7dc54f",
+        "dir": "panels/video-studio",
+        "assetSha256": "7d21e60a3ce56549c8c21a11c7bc922705ceac1e01695a9c993b92b9035af0a8",
+        "archiveBytes": 3072278,
+        "comparison": "SHA-256 of uncompressed regular-file contents, not ZIP container byte identity or rebuilt-source equivalence",
+        "scope": {
+          "complete": true,
+          "rule": "installable-v1: .codeshell-panel/** + agent/** + app/** + README.md",
+          "reason": "Committed installable files only; no rebuild or source-to-bundle equivalence claimed.",
+          "generatedIssues": [],
+          "excludedTagPaths": []
+        },
+        "limits": {
+          "maxArchiveBytes": 67108864,
+          "maxEntries": 4096,
+          "maxFileBytes": 67108864,
+          "maxCompressedFileBytes": 33554432,
+          "maxTotalBytes": 268435456,
+          "maxCompressedTotalBytes": 67108864,
+          "maxManifestBytes": 1048576,
+          "maxMetadataBytes": 2097152,
+          "maxRatio": 200
+        },
+        "zipRoot": ".",
+        "directories": [],
+        "manifest": {
+          "tag": {
+            "id": "video-studio",
+            "version": "0.8.0",
+            "entry": "app/index.html"
+          },
+          "zip": {
+            "id": "video-studio",
+            "version": "0.8.0",
+            "entry": "app/index.html"
+          }
+        },
+        "manifestMismatches": [],
+        "files": [
+          {
+            "path": ".codeshell-panel/panel.json",
+            "kind": "equal",
+            "tagBytes": 311686,
+            "zipBytes": 311686,
+            "tagSha256": "0c13ba394a4f7483b2ee362fc199a417939043ea71298dfe57191b15b5414fa1",
+            "zipSha256": "0c13ba394a4f7483b2ee362fc199a417939043ea71298dfe57191b15b5414fa1"
+          },
+          {
+            "path": "README.md",
+            "kind": "equal",
+            "tagBytes": 84396,
+            "zipBytes": 84396,
+            "tagSha256": "5bf399e8d7a62df5f1bc86b5a08302fa5ab1cfbbb23b9968378e67d68220457f",
+            "zipSha256": "5bf399e8d7a62df5f1bc86b5a08302fa5ab1cfbbb23b9968378e67d68220457f"
+          },
+          {
+            "path": "agent/skills/editor-v2/SKILL.md",
+            "kind": "equal",
+            "tagBytes": 27327,
+            "zipBytes": 27327,
+            "tagSha256": "21812b375d4994d18162ba4087ec0c8a00b1c01f191285ca09aeabf056fac7fa",
+            "zipSha256": "21812b375d4994d18162ba4087ec0c8a00b1c01f191285ca09aeabf056fac7fa"
+          },
+          {
+            "path": "agent/skills/narration-workflow/SKILL.md",
+            "kind": "equal",
+            "tagBytes": 10290,
+            "zipBytes": 10290,
+            "tagSha256": "23c63ea09d8055246608601cb068d4489e03e91a74924ab541288760b66c4b78",
+            "zipSha256": "23c63ea09d8055246608601cb068d4489e03e91a74924ab541288760b66c4b78"
+          },
+          {
+            "path": "agent/skills/project-runtime/SKILL.md",
+            "kind": "equal",
+            "tagBytes": 6197,
+            "zipBytes": 6197,
+            "tagSha256": "171892e697f76da93310bd9370a160f632ada487aa006dec6cbb00d6c768f884",
+            "zipSha256": "171892e697f76da93310bd9370a160f632ada487aa006dec6cbb00d6c768f884"
+          },
+          {
+            "path": "agent/skills/tts-setup/SKILL.md",
+            "kind": "equal",
+            "tagBytes": 5495,
+            "zipBytes": 5495,
+            "tagSha256": "8ab87da83a5b38641e6f2f5422f2dff7bfd5ac0d1a4f6f7b2c3a06f8484a1038",
+            "zipSha256": "8ab87da83a5b38641e6f2f5422f2dff7bfd5ac0d1a4f6f7b2c3a06f8484a1038"
+          },
+          {
+            "path": "agent/skills/video-init/SKILL.md",
+            "kind": "equal",
+            "tagBytes": 11439,
+            "zipBytes": 11439,
+            "tagSha256": "a2846ee8a9104aee03c87abe6fde79ae800ee4cf0fb1324b504fc2c9f17071bb",
+            "zipSha256": "a2846ee8a9104aee03c87abe6fde79ae800ee4cf0fb1324b504fc2c9f17071bb"
+          },
+          {
+            "path": "agent/skills/video-init/references/material-review.md",
+            "kind": "equal",
+            "tagBytes": 4721,
+            "zipBytes": 4721,
+            "tagSha256": "744ad764246e8a15a23d35701103a1fd23052ba72dfceb92cc7a5ff497e89a68",
+            "zipSha256": "744ad764246e8a15a23d35701103a1fd23052ba72dfceb92cc7a5ff497e89a68"
+          },
+          {
+            "path": "agent/skills/video-init/references/workflow-state.md",
+            "kind": "equal",
+            "tagBytes": 8073,
+            "zipBytes": 8073,
+            "tagSha256": "ffacf4cd991f6db15ecc0a0bf799dfb8179c927f4f3c7ff1fde90e80ff7f050d",
+            "zipSha256": "ffacf4cd991f6db15ecc0a0bf799dfb8179c927f4f3c7ff1fde90e80ff7f050d"
+          },
+          {
+            "path": "agent/skills/video-production/SKILL.md",
+            "kind": "equal",
+            "tagBytes": 14830,
+            "zipBytes": 14830,
+            "tagSha256": "711d8d8f784ce11dbb8cd07d86463149098fd466c2efeb655e4c75234b2e6a13",
+            "zipSha256": "711d8d8f784ce11dbb8cd07d86463149098fd466c2efeb655e4c75234b2e6a13"
+          },
+          {
+            "path": "agent/skills/video-production/references/editing.md",
+            "kind": "equal",
+            "tagBytes": 4826,
+            "zipBytes": 4826,
+            "tagSha256": "020a02f01c443c2ab9241ae26edcd2e782d33ed6aabfa4ba00d55bd22bdb62ef",
+            "zipSha256": "020a02f01c443c2ab9241ae26edcd2e782d33ed6aabfa4ba00d55bd22bdb62ef"
+          },
+          {
+            "path": "agent/skills/video-production/references/panel-tools.md",
+            "kind": "equal",
+            "tagBytes": 10491,
+            "zipBytes": 10491,
+            "tagSha256": "17a93b7d45d607e5f77d688adcb67401640c1e86849f856e3563986a4be0a0fb",
+            "zipSha256": "17a93b7d45d607e5f77d688adcb67401640c1e86849f856e3563986a4be0a0fb"
+          },
+          {
+            "path": "agent/skills/video-workflow/SKILL.md",
+            "kind": "equal",
+            "tagBytes": 10920,
+            "zipBytes": 10920,
+            "tagSha256": "2d468ffd937367c38cedd7fbd56c592ced6331b80286caaa062c2406eaf0c197",
+            "zipSha256": "2d468ffd937367c38cedd7fbd56c592ced6331b80286caaa062c2406eaf0c197"
+          },
+          {
+            "path": "agent/skills/video-workflow/references/content-routes.md",
+            "kind": "equal",
+            "tagBytes": 5195,
+            "zipBytes": 5195,
+            "tagSha256": "d05137d1506d96059fb3fe459e92d889db2438b798ed1ab3c46bde70c73f2185",
+            "zipSha256": "d05137d1506d96059fb3fe459e92d889db2438b798ed1ab3c46bde70c73f2185"
+          },
+          {
+            "path": "app/build-manifest.json",
+            "kind": "equal",
+            "tagBytes": 4277,
+            "zipBytes": 4277,
+            "tagSha256": "710a2a41f6901ce20d1d4fd2a44daae08c5996e62379af2898259d94cc2aa9f6",
+            "zipSha256": "710a2a41f6901ce20d1d4fd2a44daae08c5996e62379af2898259d94cc2aa9f6"
+          },
+          {
+            "path": "app/demo-narration.mp3",
+            "kind": "equal",
+            "tagBytes": 384865,
+            "zipBytes": 384865,
+            "tagSha256": "a57af26cc6bec773097f739da61e222548d72a5edc4fcaf377276696e7da3d40",
+            "zipSha256": "a57af26cc6bec773097f739da61e222548d72a5edc4fcaf377276696e7da3d40"
+          },
+          {
+            "path": "app/editor-audio-enhancement.css",
+            "kind": "equal",
+            "tagBytes": 1732,
+            "zipBytes": 1732,
+            "tagSha256": "f1452c57a51bf5939d860f4f2721e3aa3538c90d6fc4674a6ad6ffa17a6593da",
+            "zipSha256": "f1452c57a51bf5939d860f4f2721e3aa3538c90d6fc4674a6ad6ffa17a6593da"
+          },
+          {
+            "path": "app/editor-captions.css",
+            "kind": "equal",
+            "tagBytes": 6972,
+            "zipBytes": 6972,
+            "tagSha256": "855bdc8b52bfbe5d424cad85b5b9241d6f0fe9b126411dd95a122d0809938721",
+            "zipSha256": "855bdc8b52bfbe5d424cad85b5b9241d6f0fe9b126411dd95a122d0809938721"
+          },
+          {
+            "path": "app/editor-inspector.css",
+            "kind": "equal",
+            "tagBytes": 6513,
+            "zipBytes": 6513,
+            "tagSha256": "5d13d36704c0cda33dccb8e337d4f1ee5713eac40f08777e5c0808df33bd5ba6",
+            "zipSha256": "5d13d36704c0cda33dccb8e337d4f1ee5713eac40f08777e5c0808df33bd5ba6"
+          },
+          {
+            "path": "app/editor-markers.css",
+            "kind": "equal",
+            "tagBytes": 1322,
+            "zipBytes": 1322,
+            "tagSha256": "c3ae158f2fbe3fdf01b2ba0c3e22b1d4bcdcd418df7e389d5409dceb2c9238ee",
+            "zipSha256": "c3ae158f2fbe3fdf01b2ba0c3e22b1d4bcdcd418df7e389d5409dceb2c9238ee"
+          },
+          {
+            "path": "app/editor-multicam.css",
+            "kind": "equal",
+            "tagBytes": 3464,
+            "zipBytes": 3464,
+            "tagSha256": "33026fe2ef22db4dda753c021d4867379ec7da3fbf9ce63dd3abd1523f4f9a9d",
+            "zipSha256": "33026fe2ef22db4dda753c021d4867379ec7da3fbf9ce63dd3abd1523f4f9a9d"
+          },
+          {
+            "path": "app/editor-separation.css",
+            "kind": "equal",
+            "tagBytes": 1383,
+            "zipBytes": 1383,
+            "tagSha256": "a161cd123542e8562fd926755a1003f20618565f97eb9fdb5746fd5ddba68a09",
+            "zipSha256": "a161cd123542e8562fd926755a1003f20618565f97eb9fdb5746fd5ddba68a09"
+          },
+          {
+            "path": "app/editor-sequences.css",
+            "kind": "equal",
+            "tagBytes": 2928,
+            "zipBytes": 2928,
+            "tagSha256": "356e15089554f276b96b1a6f43f01cfeca1f35d3d1bca0eb17cc5a032b6b31ad",
+            "zipSha256": "356e15089554f276b96b1a6f43f01cfeca1f35d3d1bca0eb17cc5a032b6b31ad"
+          },
+          {
+            "path": "app/editor-timeline.css",
+            "kind": "equal",
+            "tagBytes": 19153,
+            "zipBytes": 19153,
+            "tagSha256": "3216983c46780b5153af77c1eb13b99da6a00f5fbfa3a9fcb44fafbf74eb1d42",
+            "zipSha256": "3216983c46780b5153af77c1eb13b99da6a00f5fbfa3a9fcb44fafbf74eb1d42"
+          },
+          {
+            "path": "app/editor-timing.css",
+            "kind": "equal",
+            "tagBytes": 3392,
+            "zipBytes": 3392,
+            "tagSha256": "a2d08830d059916e41aaa2bc9dce94d0be3c89d22e1db1c33a2fd2e30f1cf3ea",
+            "zipSha256": "a2d08830d059916e41aaa2bc9dce94d0be3c89d22e1db1c33a2fd2e30f1cf3ea"
+          },
+          {
+            "path": "app/editor-workspace.css",
+            "kind": "equal",
+            "tagBytes": 36551,
+            "zipBytes": 36551,
+            "tagSha256": "957a814d390e3e2c36ec6d65d2cdd6a931ce2e56a8d87fd1e74ae4ba56614db7",
+            "zipSha256": "957a814d390e3e2c36ec6d65d2cdd6a931ce2e56a8d87fd1e74ae4ba56614db7"
+          },
+          {
+            "path": "app/index.html",
+            "kind": "equal",
+            "tagBytes": 1609,
+            "zipBytes": 1609,
+            "tagSha256": "d8a6e7c3a8cca976c3040430f35f2d64c43b15d317cc449ffab040f6cd1af334",
+            "zipSha256": "d8a6e7c3a8cca976c3040430f35f2d64c43b15d317cc449ffab040f6cd1af334"
+          },
+          {
+            "path": "app/main.css",
+            "kind": "equal",
+            "tagBytes": 6453,
+            "zipBytes": 6453,
+            "tagSha256": "cbad0ccc7e4b88a16b50c6a195d6aef19d592be9793ae90d54f83db1ebd3743d",
+            "zipSha256": "cbad0ccc7e4b88a16b50c6a195d6aef19d592be9793ae90d54f83db1ebd3743d"
+          },
+          {
+            "path": "app/main.mjs",
+            "kind": "equal",
+            "tagBytes": 9035959,
+            "zipBytes": 9035959,
+            "tagSha256": "4573b67f6e47a920ad1ed1e433f1347ff677a89abde45be363fc18382a12a0a0",
+            "zipSha256": "4573b67f6e47a920ad1ed1e433f1347ff677a89abde45be363fc18382a12a0a0"
+          },
+          {
+            "path": "app/panel-select.css",
+            "kind": "equal",
+            "tagBytes": 3051,
+            "zipBytes": 3051,
+            "tagSha256": "33fdaafa5b361003b553c86e1b18b41a36e9ec3d9dd80e2e7fab6020bcf7bae2",
+            "zipSha256": "33fdaafa5b361003b553c86e1b18b41a36e9ec3d9dd80e2e7fab6020bcf7bae2"
+          },
+          {
+            "path": "app/panel-select.js",
+            "kind": "equal",
+            "tagBytes": 9807,
+            "zipBytes": 9807,
+            "tagSha256": "761d4ba289275ae7deeefee2804c0c995dbb01e2d1e302e1ad4ac2d34bdb29d6",
+            "zipSha256": "761d4ba289275ae7deeefee2804c0c995dbb01e2d1e302e1ad4ac2d34bdb29d6"
+          },
+          {
+            "path": "app/rough-cut.css",
+            "kind": "equal",
+            "tagBytes": 15263,
+            "zipBytes": 15263,
+            "tagSha256": "b70a117467b919bf5c27cc93db53c569a8b58d6bd8f1646c19f67e846c29c6af",
+            "zipSha256": "b70a117467b919bf5c27cc93db53c569a8b58d6bd8f1646c19f67e846c29c6af"
+          },
+          {
+            "path": "app/runtimes/editor-renderer.mjs",
+            "kind": "equal",
+            "tagBytes": 122934,
+            "zipBytes": 122934,
+            "tagSha256": "86be9ad761be48857604a0bc05237ae3a40fb1901c23713e41649a051dfbbfd4",
+            "zipSha256": "86be9ad761be48857604a0bc05237ae3a40fb1901c23713e41649a051dfbbfd4"
+          },
+          {
+            "path": "app/style.css",
+            "kind": "equal",
+            "tagBytes": 61141,
+            "zipBytes": 61141,
+            "tagSha256": "dd323d78ca9439f87c962727a08ae31ed8ab9e8a0251ba45a610467ff75d90dd",
+            "zipSha256": "dd323d78ca9439f87c962727a08ae31ed8ab9e8a0251ba45a610467ff75d90dd"
+          },
+          {
+            "path": "app/tools/audio-separation.mjs",
+            "kind": "equal",
+            "tagBytes": 38475,
+            "zipBytes": 38475,
+            "tagSha256": "87617222a59745343ac2f7863bf57c13e54ca2f6a9655479e4c7b14d2aea6451",
+            "zipSha256": "87617222a59745343ac2f7863bf57c13e54ca2f6a9655479e4c7b14d2aea6451"
+          },
+          {
+            "path": "app/tools/editor-runtime.mjs",
+            "kind": "equal",
+            "tagBytes": 487653,
+            "zipBytes": 487653,
+            "tagSha256": "a92b080494538c69ae59825673eec0f1bc1167d8ea3568d774af7d8fea1755f1",
+            "zipSha256": "a92b080494538c69ae59825673eec0f1bc1167d8ea3568d774af7d8fea1755f1"
+          },
+          {
+            "path": "app/tools/editor-sync.mjs",
+            "kind": "equal",
+            "tagBytes": 178465,
+            "zipBytes": 178465,
+            "tagSha256": "a2a10cc438fb83244f14a8e7ee2979be640132358d5cff7b787cbfb3e4df70c5",
+            "zipSha256": "a2a10cc438fb83244f14a8e7ee2979be640132358d5cff7b787cbfb3e4df70c5"
+          },
+          {
+            "path": "app/tools/folder-scan.mjs",
+            "kind": "equal",
+            "tagBytes": 8943,
+            "zipBytes": 8943,
+            "tagSha256": "524b085b5cbb4c5750ba7345b22711fb314ea5338a67822752a95cc150613d25",
+            "zipSha256": "524b085b5cbb4c5750ba7345b22711fb314ea5338a67822752a95cc150613d25"
+          },
+          {
+            "path": "app/tools/media-runtime.mjs",
+            "kind": "equal",
+            "tagBytes": 283724,
+            "zipBytes": 283724,
+            "tagSha256": "39f2986284855f78cf7c89ab4b7f67e8d2ad92f003ced8e69e36a2a890d45f90",
+            "zipSha256": "39f2986284855f78cf7c89ab4b7f67e8d2ad92f003ced8e69e36a2a890d45f90"
+          },
+          {
+            "path": "app/tools/video-studio.mjs",
+            "kind": "equal",
+            "tagBytes": 351734,
+            "zipBytes": 351734,
+            "tagSha256": "29997ecc46a397d8a66c6a6b4e7df219c4a7c7287a206d8dd87178397a7b3bb1",
+            "zipSha256": "29997ecc46a397d8a66c6a6b4e7df219c4a7c7287a206d8dd87178397a7b3bb1"
+          },
+          {
+            "path": "app/tools/voice-runtime.mjs",
+            "kind": "equal",
+            "tagBytes": 113751,
+            "zipBytes": 113751,
+            "tagSha256": "43229bc9c285484b3fed83866110f3bd121964ec27c9d954eae3e9392f4546d6",
+            "zipSha256": "43229bc9c285484b3fed83866110f3bd121964ec27c9d954eae3e9392f4546d6"
+          }
+        ],
+        "differences": []
+      }
+    },
+    {
+      "releaseUrl": "https://github.com/cjhyy/codeshell-panel-apps/releases/tag/design-studio-v0.23.0",
+      "assetUrl": "https://github.com/cjhyy/codeshell-panel-apps/releases/download/design-studio-v0.23.0/design-studio-0.23.0.zip",
+      "assetApiUrl": "https://api.github.com/repos/cjhyy/codeshell-panel-apps/releases/assets/676995864",
+      "publishedAssetDigest": "sha256:c8e7790c87e24899aadb7fc78c8a9afe0c54b27660965d083ed421faa633a0d5",
+      "report": {
+        "format": "codeshell.panel-release-zip-verification",
+        "schemaVersion": 1,
+        "status": "equal",
+        "exitCode": 0,
+        "tag": "design-studio-v0.23.0",
+        "tagObject": "7e65aaab39200785c4b7412795094771a004b873",
+        "tagCommit": "2202581190b5b5abe3e1a8124e2a6c36a95b7e4e",
+        "dir": "apps/design-studio",
+        "assetSha256": "c8e7790c87e24899aadb7fc78c8a9afe0c54b27660965d083ed421faa633a0d5",
+        "archiveBytes": 5590778,
+        "comparison": "SHA-256 of uncompressed regular-file contents, not ZIP container byte identity or rebuilt-source equivalence",
+        "scope": {
+          "complete": true,
+          "rule": "installable-v1: .codeshell-panel/** + agent/** + app/** + README.md",
+          "reason": "Committed installable files only; no rebuild or source-to-bundle equivalence claimed.",
+          "generatedIssues": [],
+          "excludedTagPaths": []
+        },
+        "limits": {
+          "maxArchiveBytes": 67108864,
+          "maxEntries": 4096,
+          "maxFileBytes": 67108864,
+          "maxCompressedFileBytes": 33554432,
+          "maxTotalBytes": 268435456,
+          "maxCompressedTotalBytes": 67108864,
+          "maxManifestBytes": 1048576,
+          "maxMetadataBytes": 2097152,
+          "maxRatio": 200
+        },
+        "zipRoot": "design-studio/",
+        "directories": [],
+        "manifest": {
+          "tag": {
+            "id": "design-studio",
+            "version": "0.23.0",
+            "entry": "app/index.html"
+          },
+          "zip": {
+            "id": "design-studio",
+            "version": "0.23.0",
+            "entry": "app/index.html"
+          }
+        },
+        "manifestMismatches": [],
+        "files": [
+          {
+            "path": ".codeshell-panel/panel.json",
+            "kind": "equal",
+            "tagBytes": 79299,
+            "zipBytes": 79299,
+            "tagSha256": "2a7643a985d02a9e9058fb9135de0d3658ffa2e900f834fa9470855b6304ff3d",
+            "zipSha256": "2a7643a985d02a9e9058fb9135de0d3658ffa2e900f834fa9470855b6304ff3d"
+          },
+          {
+            "path": "README.md",
+            "kind": "equal",
+            "tagBytes": 58967,
+            "zipBytes": 58967,
+            "tagSha256": "a163046d0d9b3c31807e77d79b291b79fcaa82c1fb82d664517fe15ac45a9928",
+            "zipSha256": "a163046d0d9b3c31807e77d79b291b79fcaa82c1fb82d664517fe15ac45a9928"
+          },
+          {
+            "path": "agent/skills/project-runtime/SKILL.md",
+            "kind": "equal",
+            "tagBytes": 7887,
+            "zipBytes": 7887,
+            "tagSha256": "5fc1b09379da8216330e3cb4aa5b81e04528441328beb3d77aa53e708751a544",
+            "zipSha256": "5fc1b09379da8216330e3cb4aa5b81e04528441328beb3d77aa53e708751a544"
+          },
+          {
+            "path": "agent/skills/repo-design/SKILL.md",
+            "kind": "equal",
+            "tagBytes": 33658,
+            "zipBytes": 33658,
+            "tagSha256": "bdcbf80746a78020b4432817c11a0c2f75abbf6853aaadfb975e761e51857c4e",
+            "zipSha256": "bdcbf80746a78020b4432817c11a0c2f75abbf6853aaadfb975e761e51857c4e"
+          },
+          {
+            "path": "agent/skills/repo-design/references/audit-codes.md",
+            "kind": "equal",
+            "tagBytes": 1723,
+            "zipBytes": 1723,
+            "tagSha256": "7683c00c056dcc09275cb1490ba64b0ce64cfb72285c3bc923680582a9c55ea5",
+            "zipSha256": "7683c00c056dcc09275cb1490ba64b0ce64cfb72285c3bc923680582a9c55ea5"
+          },
+          {
+            "path": "agent/skills/repo-design/references/html-fidelity.md",
+            "kind": "equal",
+            "tagBytes": 2988,
+            "zipBytes": 2988,
+            "tagSha256": "a4120ad0e86a4b3188d6de79706691b38a2686c047b07ec91dae480a4cdf7846",
+            "zipSha256": "a4120ad0e86a4b3188d6de79706691b38a2686c047b07ec91dae480a4cdf7846"
+          },
+          {
+            "path": "agent/skills/repo-design/references/product-delivery-loop.md",
+            "kind": "equal",
+            "tagBytes": 5864,
+            "zipBytes": 5864,
+            "tagSha256": "58e38d3c5935f12c65b3d4fd2efd907f78bc5e6b9db76c8e5d355d694aa83fa5",
+            "zipSha256": "58e38d3c5935f12c65b3d4fd2efd907f78bc5e6b9db76c8e5d355d694aa83fa5"
+          },
+          {
+            "path": "app/app.js",
+            "kind": "equal",
+            "tagBytes": 413163,
+            "zipBytes": 413163,
+            "tagSha256": "a6db4105d069afb1ab05899897a3fad0e4be8eb52ea55f3fa84a8edc79eb4337",
+            "zipSha256": "a6db4105d069afb1ab05899897a3fad0e4be8eb52ea55f3fa84a8edc79eb4337"
+          },
+          {
+            "path": "app/audit-review.mjs",
+            "kind": "equal",
+            "tagBytes": 2543,
+            "zipBytes": 2543,
+            "tagSha256": "ae75e403fe1aa76ad0c455ec355f94869ac2b9bf4cdf4b3f8bc00a2e8c535d99",
+            "zipSha256": "ae75e403fe1aa76ad0c455ec355f94869ac2b9bf4cdf4b3f8bc00a2e8c535d99"
+          },
+          {
+            "path": "app/audit.mjs",
+            "kind": "equal",
+            "tagBytes": 39827,
+            "zipBytes": 39827,
+            "tagSha256": "8619b0bb07e2488eb1a6dc310f2834348cef81885fe924b067fa1b83bcbbc884",
+            "zipSha256": "8619b0bb07e2488eb1a6dc310f2834348cef81885fe924b067fa1b83bcbbc884"
+          },
+          {
+            "path": "app/builtin-font-catalog.mjs",
+            "kind": "equal",
+            "tagBytes": 2928,
+            "zipBytes": 2928,
+            "tagSha256": "f0f64aa3f7aa3c74e6895f973100542fac20bad5cc11b6e67adac1cd7bbab552",
+            "zipSha256": "f0f64aa3f7aa3c74e6895f973100542fac20bad5cc11b6e67adac1cd7bbab552"
+          },
+          {
+            "path": "app/builtin-fonts.mjs",
+            "kind": "equal",
+            "tagBytes": 6514,
+            "zipBytes": 6514,
+            "tagSha256": "7ad02b5cf0cd2790c6c3b359c424a4cabf1ae29c6a718c93215f01a8d54b580b",
+            "zipSha256": "7ad02b5cf0cd2790c6c3b359c424a4cabf1ae29c6a718c93215f01a8d54b580b"
+          },
+          {
+            "path": "app/canvas-interaction.mjs",
+            "kind": "equal",
+            "tagBytes": 9641,
+            "zipBytes": 9641,
+            "tagSha256": "358cac806bb4d606f4d5b3a12b219cad0241f705daae87a03104b1dee53ee1a1",
+            "zipSha256": "358cac806bb4d606f4d5b3a12b219cad0241f705daae87a03104b1dee53ee1a1"
+          },
+          {
+            "path": "app/canvas/browser-renderer.mjs",
+            "kind": "equal",
+            "tagBytes": 19088,
+            "zipBytes": 19088,
+            "tagSha256": "3921c318d0bc470dfe810844b367dc3657377e5e37d25739d92a3a2df2cf12b3",
+            "zipSha256": "3921c318d0bc470dfe810844b367dc3657377e5e37d25739d92a3a2df2cf12b3"
+          },
+          {
+            "path": "app/canvas/canvaskit-renderer.mjs",
+            "kind": "equal",
+            "tagBytes": 40178,
+            "zipBytes": 40178,
+            "tagSha256": "b54bbd598eb2a97a30a5f2a0d45083e6a57c5648f715e8eab755b7d6344b52ac",
+            "zipSha256": "b54bbd598eb2a97a30a5f2a0d45083e6a57c5648f715e8eab755b7d6344b52ac"
+          },
+          {
+            "path": "app/canvas/canvaskit-text.mjs",
+            "kind": "equal",
+            "tagBytes": 31238,
+            "zipBytes": 31238,
+            "tagSha256": "22aeeae256fadc32c56af089bc1d1bef269a8b7af973f3c7c7ec970e0b712c7a",
+            "zipSha256": "22aeeae256fadc32c56af089bc1d1bef269a8b7af973f3c7c7ec970e0b712c7a"
+          },
+          {
+            "path": "app/canvas/vendor/LICENSE.md",
+            "kind": "equal",
+            "tagBytes": 1635,
+            "zipBytes": 1635,
+            "tagSha256": "d27678cba0d529e77201e2d2a053628143e986aad8f1e77f7039ad4366c8f978",
+            "zipSha256": "d27678cba0d529e77201e2d2a053628143e986aad8f1e77f7039ad4366c8f978"
+          },
+          {
+            "path": "app/canvas/vendor/canvaskit.js",
+            "kind": "equal",
+            "tagBytes": 120877,
+            "zipBytes": 120877,
+            "tagSha256": "443777592179808354031cf411d8d43cac9f6b98d1227123c5c22d401b0fbf7f",
+            "zipSha256": "443777592179808354031cf411d8d43cac9f6b98d1227123c5c22d401b0fbf7f"
+          },
+          {
+            "path": "app/canvas/vendor/canvaskit.wasm",
+            "kind": "equal",
+            "tagBytes": 7317345,
+            "zipBytes": 7317345,
+            "tagSha256": "25ebed8e60158c5854f8dc807b936daca21354f8bfb6a2231266b0a93812f301",
+            "zipSha256": "25ebed8e60158c5854f8dc807b936daca21354f8bfb6a2231266b0a93812f301"
+          },
+          {
+            "path": "app/canvas/vendor/runtime.json",
+            "kind": "equal",
+            "tagBytes": 376,
+            "zipBytes": 376,
+            "tagSha256": "5f5efa160e64c5b225f30f248d0a9539fb97a230df92d4078a8f8dd6d7a12666",
+            "zipSha256": "5f5efa160e64c5b225f30f248d0a9539fb97a230df92d4078a8f8dd6d7a12666"
+          },
+          {
+            "path": "app/corner-radii.mjs",
+            "kind": "equal",
+            "tagBytes": 4541,
+            "zipBytes": 4541,
+            "tagSha256": "0f2ce91ad389d49b9d9c0d4694697e427dd24b42c8e992746dd7d133b43dd59b",
+            "zipSha256": "0f2ce91ad389d49b9d9c0d4694697e427dd24b42c8e992746dd7d133b43dd59b"
+          },
+          {
+            "path": "app/css-linear-gradient.mjs",
+            "kind": "equal",
+            "tagBytes": 8645,
+            "zipBytes": 8645,
+            "tagSha256": "106aafa98cc3461cf51bfa902ac40669b501fd26424d06955e681722eaa5f78d",
+            "zipSha256": "106aafa98cc3461cf51bfa902ac40669b501fd26424d06955e681722eaa5f78d"
+          },
+          {
+            "path": "app/design-compare.mjs",
+            "kind": "equal",
+            "tagBytes": 11076,
+            "zipBytes": 11076,
+            "tagSha256": "de434df8cb52393cfef0a3334ed73c747f15cb74f4edb294df2b731b8b7b3f2d",
+            "zipSha256": "de434df8cb52393cfef0a3334ed73c747f15cb74f4edb294df2b731b8b7b3f2d"
+          },
+          {
+            "path": "app/design-node-adapter.mjs",
+            "kind": "equal",
+            "tagBytes": 74703,
+            "zipBytes": 74703,
+            "tagSha256": "05863f13ee2fc911f01fce1e7f9d98d6a053cabd1c30c94071b8340c562a3687",
+            "zipSha256": "05863f13ee2fc911f01fce1e7f9d98d6a053cabd1c30c94071b8340c562a3687"
+          },
+          {
+            "path": "app/design-sidecar.mjs",
+            "kind": "equal",
+            "tagBytes": 5462,
+            "zipBytes": 5462,
+            "tagSha256": "4b35f4532713d7841f55fa6468aaa6203f21cb8d5b2084fdfccbdc929c2893c8",
+            "zipSha256": "4b35f4532713d7841f55fa6468aaa6203f21cb8d5b2084fdfccbdc929c2893c8"
+          },
+          {
+            "path": "app/document-autosave.mjs",
+            "kind": "equal",
+            "tagBytes": 2523,
+            "zipBytes": 2523,
+            "tagSha256": "dda494f067cb6777c86afc75e1e2e8c899fd44891914c45758733760c26bd8a1",
+            "zipSha256": "dda494f067cb6777c86afc75e1e2e8c899fd44891914c45758733760c26bd8a1"
+          },
+          {
+            "path": "app/document-bundle.mjs",
+            "kind": "equal",
+            "tagBytes": 7674,
+            "zipBytes": 7674,
+            "tagSha256": "a3b95d67d5c4169ca55419d38a3b44345eb58fce36b736f305bb425141427a4d",
+            "zipSha256": "a3b95d67d5c4169ca55419d38a3b44345eb58fce36b736f305bb425141427a4d"
+          },
+          {
+            "path": "app/document-index.mjs",
+            "kind": "equal",
+            "tagBytes": 21357,
+            "zipBytes": 21357,
+            "tagSha256": "835f18fffe5de06b1e21eee621f5a68791f8d73404be3b6b7f739cabc9070703",
+            "zipSha256": "835f18fffe5de06b1e21eee621f5a68791f8d73404be3b6b7f739cabc9070703"
+          },
+          {
+            "path": "app/document.mjs",
+            "kind": "equal",
+            "tagBytes": 72677,
+            "zipBytes": 72677,
+            "tagSha256": "f538826c4730142a3306532f001cd7ca2b116feee0c715319688b38bc5b4f438",
+            "zipSha256": "f538826c4730142a3306532f001cd7ca2b116feee0c715319688b38bc5b4f438"
+          },
+          {
+            "path": "app/figma-assets.mjs",
+            "kind": "equal",
+            "tagBytes": 9942,
+            "zipBytes": 9942,
+            "tagSha256": "b4fe2416c9ab4fccc97f3b7eda340d93ae5f1e3f3879fef07f573aadd11c8b1c",
+            "zipSha256": "b4fe2416c9ab4fccc97f3b7eda340d93ae5f1e3f3879fef07f573aadd11c8b1c"
+          },
+          {
+            "path": "app/figma-binding.mjs",
+            "kind": "equal",
+            "tagBytes": 31024,
+            "zipBytes": 31024,
+            "tagSha256": "ef7ca55ac3e2620fbef31b5c5b2fd5188215bae11abc9b62afb57e0382d18f8b",
+            "zipSha256": "ef7ca55ac3e2620fbef31b5c5b2fd5188215bae11abc9b62afb57e0382d18f8b"
+          },
+          {
+            "path": "app/figma-bridge.mjs",
+            "kind": "equal",
+            "tagBytes": 74794,
+            "zipBytes": 74794,
+            "tagSha256": "f964c3247c3eca16637fc1d9a1be44ff6e77f9afce283b7819ac4e7c2831e772",
+            "zipSha256": "f964c3247c3eca16637fc1d9a1be44ff6e77f9afce283b7819ac4e7c2831e772"
+          },
+          {
+            "path": "app/figma-plugin/README.md",
+            "kind": "equal",
+            "tagBytes": 13515,
+            "zipBytes": 13515,
+            "tagSha256": "67c9ce2125bfdb32ac28d39bad0a8cf3bb575825c4c0b2d91e725b47ff14d9fa",
+            "zipSha256": "67c9ce2125bfdb32ac28d39bad0a8cf3bb575825c4c0b2d91e725b47ff14d9fa"
+          },
+          {
+            "path": "app/figma-plugin/code.js",
+            "kind": "equal",
+            "tagBytes": 235334,
+            "zipBytes": 235334,
+            "tagSha256": "63a677373c11ec6817e342ce19ff1342ee61b1631b7d83ccc70fe1a1ddced525",
+            "zipSha256": "63a677373c11ec6817e342ce19ff1342ee61b1631b7d83ccc70fe1a1ddced525"
+          },
+          {
+            "path": "app/figma-plugin/existing-update-runtime.mjs",
+            "kind": "equal",
+            "tagBytes": 21540,
+            "zipBytes": 21540,
+            "tagSha256": "9c68252459ef662f0725996aa8d3c49ce29844672830d0f3c755f799644cc487",
+            "zipSha256": "9c68252459ef662f0725996aa8d3c49ce29844672830d0f3c755f799644cc487"
+          },
+          {
+            "path": "app/figma-plugin/grid-runtime.mjs",
+            "kind": "equal",
+            "tagBytes": 141,
+            "zipBytes": 141,
+            "tagSha256": "56e2f998d13c424f7e9f2990396e759eac8ed89f3064aa64e7c0d59efcfd6591",
+            "zipSha256": "56e2f998d13c424f7e9f2990396e759eac8ed89f3064aa64e7c0d59efcfd6591"
+          },
+          {
+            "path": "app/figma-plugin/manifest.json",
+            "kind": "equal",
+            "tagBytes": 212,
+            "zipBytes": 212,
+            "tagSha256": "7438d5b530e75ffd99d1b4c475287e55af78cff8a069f2990114b97ee0514958",
+            "zipSha256": "7438d5b530e75ffd99d1b4c475287e55af78cff8a069f2990114b97ee0514958"
+          },
+          {
+            "path": "app/figma-plugin/notes-runtime.mjs",
+            "kind": "equal",
+            "tagBytes": 14685,
+            "zipBytes": 14685,
+            "tagSha256": "e3560e84f90a9b93bfb805e9d20668f72b0be0f9883ed8a8d9c80d6d4adababf",
+            "zipSha256": "e3560e84f90a9b93bfb805e9d20668f72b0be0f9883ed8a8d9c80d6d4adababf"
+          },
+          {
+            "path": "app/figma-plugin/paint-runtime.mjs",
+            "kind": "equal",
+            "tagBytes": 496,
+            "zipBytes": 496,
+            "tagSha256": "b094855e318b8035a806a9eff93066dd21dce3364f3d481d0d205f34e2794e0c",
+            "zipSha256": "b094855e318b8035a806a9eff93066dd21dce3364f3d481d0d205f34e2794e0c"
+          },
+          {
+            "path": "app/figma-plugin/spacing-runtime.mjs",
+            "kind": "equal",
+            "tagBytes": 120,
+            "zipBytes": 120,
+            "tagSha256": "aa06f82c1f361cf2610ec1fde3a1ea42a9f33c186ab7034c79390e7efc837e07",
+            "zipSha256": "aa06f82c1f361cf2610ec1fde3a1ea42a9f33c186ab7034c79390e7efc837e07"
+          },
+          {
+            "path": "app/figma-plugin/text-range-capture.mjs",
+            "kind": "equal",
+            "tagBytes": 9306,
+            "zipBytes": 9306,
+            "tagSha256": "0d1cbd822bed328699d0daa49b2a722f0be74a83b56cd4c1c9a20b5cc0673bd4",
+            "zipSha256": "0d1cbd822bed328699d0daa49b2a722f0be74a83b56cd4c1c9a20b5cc0673bd4"
+          },
+          {
+            "path": "app/figma-plugin/text-range-state.mjs",
+            "kind": "equal",
+            "tagBytes": 3767,
+            "zipBytes": 3767,
+            "tagSha256": "af96a71ea0a4685a59d33cfea46b6d2f0cecc170cf31adb2867a4d991af6f25c",
+            "zipSha256": "af96a71ea0a4685a59d33cfea46b6d2f0cecc170cf31adb2867a4d991af6f25c"
+          },
+          {
+            "path": "app/figma-plugin/text-range-write.mjs",
+            "kind": "equal",
+            "tagBytes": 1362,
+            "zipBytes": 1362,
+            "tagSha256": "a011b50dd6fad6fcf56a8ee0f0a517f6369cbc32059cec1c7a4a9e621cd846f1",
+            "zipSha256": "a011b50dd6fad6fcf56a8ee0f0a517f6369cbc32059cec1c7a4a9e621cd846f1"
+          },
+          {
+            "path": "app/figma-plugin/text-runtime.mjs",
+            "kind": "equal",
+            "tagBytes": 722,
+            "zipBytes": 722,
+            "tagSha256": "8ef39f742f149193d30cbcc97f5b4632c30ebf0559b61a405119a79963e64df5",
+            "zipSha256": "8ef39f742f149193d30cbcc97f5b4632c30ebf0559b61a405119a79963e64df5"
+          },
+          {
+            "path": "app/figma-plugin/text-source-export.mjs",
+            "kind": "equal",
+            "tagBytes": 13732,
+            "zipBytes": 13732,
+            "tagSha256": "300a44d156a58cebe440b95042b7d88fbbfa8a94e60396d353f7ddd932108366",
+            "zipSha256": "300a44d156a58cebe440b95042b7d88fbbfa8a94e60396d353f7ddd932108366"
+          },
+          {
+            "path": "app/figma-plugin/ui.html",
+            "kind": "equal",
+            "tagBytes": 140703,
+            "zipBytes": 140703,
+            "tagSha256": "2dbc13d8441dfb65070293d0d4e58b53b88ae8fb8c9be18e9f01ee6338407357",
+            "zipSha256": "2dbc13d8441dfb65070293d0d4e58b53b88ae8fb8c9be18e9f01ee6338407357"
+          },
+          {
+            "path": "app/figma-plugin/v3-input.mjs",
+            "kind": "equal",
+            "tagBytes": 9332,
+            "zipBytes": 9332,
+            "tagSha256": "33410af537cefe9d7c34104c1b5a2d56edb13f2f588b102b1385b3ca451034ae",
+            "zipSha256": "33410af537cefe9d7c34104c1b5a2d56edb13f2f588b102b1385b3ca451034ae"
+          },
+          {
+            "path": "app/figma-workflow.css",
+            "kind": "equal",
+            "tagBytes": 2301,
+            "zipBytes": 2301,
+            "tagSha256": "a0ac0aa19aacc95d6beac8914be14182488b8eb53e08d9fe15798ce0c2d4e4ff",
+            "zipSha256": "a0ac0aa19aacc95d6beac8914be14182488b8eb53e08d9fe15798ce0c2d4e4ff"
+          },
+          {
+            "path": "app/figma-workflow.mjs",
+            "kind": "equal",
+            "tagBytes": 16379,
+            "zipBytes": 16379,
+            "tagSha256": "0ca0218148e8619e3d2dab9ab68046d1a8b934d1823336ad8fb1a80d412a23ae",
+            "zipSha256": "0ca0218148e8619e3d2dab9ab68046d1a8b934d1823336ad8fb1a80d412a23ae"
+          },
+          {
+            "path": "app/file-navigation.mjs",
+            "kind": "equal",
+            "tagBytes": 1487,
+            "zipBytes": 1487,
+            "tagSha256": "35db3fc811f2152e27a376a64c495cd0bcfbcf05cbfe9baa03a44b69c6690a08",
+            "zipSha256": "35db3fc811f2152e27a376a64c495cd0bcfbcf05cbfe9baa03a44b69c6690a08"
+          },
+          {
+            "path": "app/file-switcher.css",
+            "kind": "equal",
+            "tagBytes": 938,
+            "zipBytes": 938,
+            "tagSha256": "42c5087cc6efc1a1576a11d24b81ea2555792a0e30c8da9b26321925bbaace78",
+            "zipSha256": "42c5087cc6efc1a1576a11d24b81ea2555792a0e30c8da9b26321925bbaace78"
+          },
+          {
+            "path": "app/font-css.mjs",
+            "kind": "equal",
+            "tagBytes": 5924,
+            "zipBytes": 5924,
+            "tagSha256": "eee9143560fe5da1b78b80e648dccbe20a6421530e9e4e6d5db279f553aee1c1",
+            "zipSha256": "eee9143560fe5da1b78b80e648dccbe20a6421530e9e4e6d5db279f553aee1c1"
+          },
+          {
+            "path": "app/font-family.mjs",
+            "kind": "equal",
+            "tagBytes": 4667,
+            "zipBytes": 4667,
+            "tagSha256": "6cf69bd04b5e7ed685eaa767c29177895b483b567d88799f429b44b1d5c859a2",
+            "zipSha256": "6cf69bd04b5e7ed685eaa767c29177895b483b567d88799f429b44b1d5c859a2"
+          },
+          {
+            "path": "app/fonts/Font-Awesome-LICENSE.md",
+            "kind": "equal",
+            "tagBytes": 7427,
+            "zipBytes": 7427,
+            "tagSha256": "9b914eae88817d63b576eab5aafde7068c7a1abae125d7cdfb034f1da43a9afc",
+            "zipSha256": "9b914eae88817d63b576eab5aafde7068c7a1abae125d7cdfb034f1da43a9afc"
+          },
+          {
+            "path": "app/fonts/Inter-LICENSE.md",
+            "kind": "equal",
+            "tagBytes": 4380,
+            "zipBytes": 4380,
+            "tagSha256": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a",
+            "zipSha256": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a"
+          },
+          {
+            "path": "app/fonts/InterVariable-Italic.woff2",
+            "kind": "equal",
+            "tagBytes": 387976,
+            "zipBytes": 387976,
+            "tagSha256": "e564f652916db6c139570fefb9524a77c4d48f30c92928de9db19b6b5c7a262a",
+            "zipSha256": "e564f652916db6c139570fefb9524a77c4d48f30c92928de9db19b6b5c7a262a"
+          },
+          {
+            "path": "app/fonts/InterVariable.woff2",
+            "kind": "equal",
+            "tagBytes": 352240,
+            "zipBytes": 352240,
+            "tagSha256": "693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3",
+            "zipSha256": "693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3"
+          },
+          {
+            "path": "app/fonts/README.md",
+            "kind": "equal",
+            "tagBytes": 2197,
+            "zipBytes": 2197,
+            "tagSha256": "8e1638424fb6c6d87e525f23f58f013a0b71d1832ea73a479a486c0ad8ab2e76",
+            "zipSha256": "8e1638424fb6c6d87e525f23f58f013a0b71d1832ea73a479a486c0ad8ab2e76"
+          },
+          {
+            "path": "app/fonts/Roboto-Italic-Variable.ttf",
+            "kind": "equal",
+            "tagBytes": 530944,
+            "zipBytes": 530944,
+            "tagSha256": "9725a847af6b460ffca162ae66d20dad48b01876137947180b42d7dcd7887182",
+            "zipSha256": "9725a847af6b460ffca162ae66d20dad48b01876137947180b42d7dcd7887182"
+          },
+          {
+            "path": "app/fonts/Roboto-OFL.md",
+            "kind": "equal",
+            "tagBytes": 4394,
+            "zipBytes": 4394,
+            "tagSha256": "061402327a96aadb0bfb694a960ed289ecd38d383e396243831ab81feb109c41",
+            "zipSha256": "061402327a96aadb0bfb694a960ed289ecd38d383e396243831ab81feb109c41"
+          },
+          {
+            "path": "app/fonts/Roboto-Variable.ttf",
+            "kind": "equal",
+            "tagBytes": 488584,
+            "zipBytes": 488584,
+            "tagSha256": "d7598e12c5dbef095ff8272cfc55da0250bd07fbdecbac8a530b9b277872a134",
+            "zipSha256": "d7598e12c5dbef095ff8272cfc55da0250bd07fbdecbac8a530b9b277872a134"
+          },
+          {
+            "path": "app/fonts/fa-brands-400.woff2",
+            "kind": "equal",
+            "tagBytes": 118680,
+            "zipBytes": 118680,
+            "tagSha256": "b10a049b201da5518120d35dc74ad7f5ef328ca1e8b7f9d3f6ad11bc76115eeb",
+            "zipSha256": "b10a049b201da5518120d35dc74ad7f5ef328ca1e8b7f9d3f6ad11bc76115eeb"
+          },
+          {
+            "path": "app/fonts/fa-regular-400.woff2",
+            "kind": "equal",
+            "tagBytes": 25472,
+            "zipBytes": 25472,
+            "tagSha256": "dc9e5038a1401446549f7eb3c23911cfac844b3b4a3a3b76c33c34962ee652cb",
+            "zipSha256": "dc9e5038a1401446549f7eb3c23911cfac844b3b4a3a3b76c33c34962ee652cb"
+          },
+          {
+            "path": "app/fonts/fa-solid-900.woff2",
+            "kind": "equal",
+            "tagBytes": 158220,
+            "zipBytes": 158220,
+            "tagSha256": "6a3b4536c389c82a2a2e160e7ab15f6c8acef77f42e04d4c697f1cbfa9e90026",
+            "zipSha256": "6a3b4536c389c82a2a2e160e7ab15f6c8acef77f42e04d4c697f1cbfa9e90026"
+          },
+          {
+            "path": "app/formats/codeshell-design-v3.schema.json",
+            "kind": "equal",
+            "tagBytes": 42515,
+            "zipBytes": 42515,
+            "tagSha256": "7682de4f1049739f55af9da88f33017f1dcafe97ef117af95f6c2f86c5ee2527",
+            "zipSha256": "7682de4f1049739f55af9da88f33017f1dcafe97ef117af95f6c2f86c5ee2527"
+          },
+          {
+            "path": "app/formats/design-format.md",
+            "kind": "equal",
+            "tagBytes": 26026,
+            "zipBytes": 26026,
+            "tagSha256": "4ccae642804281a31c4e37d31a82c37deab9cba9a1214d88c720094201a62b3b",
+            "zipSha256": "4ccae642804281a31c4e37d31a82c37deab9cba9a1214d88c720094201a62b3b"
+          },
+          {
+            "path": "app/frontend-export.mjs",
+            "kind": "equal",
+            "tagBytes": 33345,
+            "zipBytes": 33345,
+            "tagSha256": "3515305ed1491acaab1eafe87516d12165653d1a13db0201c4ab4e8abc9ca405",
+            "zipSha256": "3515305ed1491acaab1eafe87516d12165653d1a13db0201c4ab4e8abc9ca405"
+          },
+          {
+            "path": "app/geometry.mjs",
+            "kind": "equal",
+            "tagBytes": 34203,
+            "zipBytes": 34203,
+            "tagSha256": "ec85419552675fe62c1ede42cea41b057aa2a0207e9861c9197627c3c270f995",
+            "zipSha256": "ec85419552675fe62c1ede42cea41b057aa2a0207e9861c9197627c3c270f995"
+          },
+          {
+            "path": "app/grid.mjs",
+            "kind": "equal",
+            "tagBytes": 26022,
+            "zipBytes": 26022,
+            "tagSha256": "216f376a569b88e1de0d36208ae660346fa1906e303e81b809777deeb06f6f49",
+            "zipSha256": "216f376a569b88e1de0d36208ae660346fa1906e303e81b809777deeb06f6f49"
+          },
+          {
+            "path": "app/html-auto-margin-distribution.mjs",
+            "kind": "equal",
+            "tagBytes": 13509,
+            "zipBytes": 13509,
+            "tagSha256": "0b036c77b2af6ea8b2ed27925d8a68e8e6483dcd9eca56a64a59da56824f674c",
+            "zipSha256": "0b036c77b2af6ea8b2ed27925d8a68e8e6483dcd9eca56a64a59da56824f674c"
+          },
+          {
+            "path": "app/html-block-flow.mjs",
+            "kind": "equal",
+            "tagBytes": 16347,
+            "zipBytes": 16347,
+            "tagSha256": "8b893638d0ac6b6aab19817061d979a757a38f135fbd4d02caff897cec15a57a",
+            "zipSha256": "8b893638d0ac6b6aab19817061d979a757a38f135fbd4d02caff897cec15a57a"
+          },
+          {
+            "path": "app/html-block-insets.mjs",
+            "kind": "equal",
+            "tagBytes": 6967,
+            "zipBytes": 6967,
+            "tagSha256": "8145813eb6d317479cf5cffd706595b99652336bf5a4546844b61e4711ef9d7d",
+            "zipSha256": "8145813eb6d317479cf5cffd706595b99652336bf5a4546844b61e4711ef9d7d"
+          },
+          {
+            "path": "app/html-capture-links.mjs",
+            "kind": "equal",
+            "tagBytes": 872,
+            "zipBytes": 872,
+            "tagSha256": "cfe058216e5c902abcd0bece80545bdbe995d97481ee60148e5583cdc50389ad",
+            "zipSha256": "cfe058216e5c902abcd0bece80545bdbe995d97481ee60148e5583cdc50389ad"
+          },
+          {
+            "path": "app/html-capture.mjs",
+            "kind": "equal",
+            "tagBytes": 48441,
+            "zipBytes": 48441,
+            "tagSha256": "aa1af76e2f75238388fe4295fa19ed6b5386c79e9cbb5edb65f4c3cd536e8d1a",
+            "zipSha256": "aa1af76e2f75238388fe4295fa19ed6b5386c79e9cbb5edb65f4c3cd536e8d1a"
+          },
+          {
+            "path": "app/html-fixed-table-flow.mjs",
+            "kind": "equal",
+            "tagBytes": 25287,
+            "zipBytes": 25287,
+            "tagSha256": "c4727a1b878ff86c4be45c9e8191fc7f7a84802907e799d6e86a152f483a3d85",
+            "zipSha256": "c4727a1b878ff86c4be45c9e8191fc7f7a84802907e799d6e86a152f483a3d85"
+          },
+          {
+            "path": "app/html-float-columns.mjs",
+            "kind": "equal",
+            "tagBytes": 11103,
+            "zipBytes": 11103,
+            "tagSha256": "6ad4662289d47e89d95860ae26a4d75711fca298ce4affdae52837fa45ab8c03",
+            "zipSha256": "6ad4662289d47e89d95860ae26a4d75711fca298ce4affdae52837fa45ab8c03"
+          },
+          {
+            "path": "app/html-flow-audit.mjs",
+            "kind": "equal",
+            "tagBytes": 31216,
+            "zipBytes": 31216,
+            "tagSha256": "895298f5296f75f3767310a00617343d0772dc6c7e23f0f15d30a6f7c5561070",
+            "zipSha256": "895298f5296f75f3767310a00617343d0772dc6c7e23f0f15d30a6f7c5561070"
+          },
+          {
+            "path": "app/html-font-family.mjs",
+            "kind": "equal",
+            "tagBytes": 9885,
+            "zipBytes": 9885,
+            "tagSha256": "27d65f0edbd598fb15f0c060b6d74374426588e50b215df9770702ca775dab96",
+            "zipSha256": "27d65f0edbd598fb15f0c060b6d74374426588e50b215df9770702ca775dab96"
+          },
+          {
+            "path": "app/html-grid.mjs",
+            "kind": "equal",
+            "tagBytes": 15339,
+            "zipBytes": 15339,
+            "tagSha256": "200444d3d9790b730496ae826bcd062daa3ca3c382567ac5926db67d25831126",
+            "zipSha256": "200444d3d9790b730496ae826bcd062daa3ca3c382567ac5926db67d25831126"
+          },
+          {
+            "path": "app/html-image-border-box.mjs",
+            "kind": "equal",
+            "tagBytes": 4256,
+            "zipBytes": 4256,
+            "tagSha256": "73e966e6e9576f0416966e7fee01aff3c789be9a0d76ade5c2d0e2bad660a04d",
+            "zipSha256": "73e966e6e9576f0416966e7fee01aff3c789be9a0d76ade5c2d0e2bad660a04d"
+          },
+          {
+            "path": "app/html-import-assets.mjs",
+            "kind": "equal",
+            "tagBytes": 8473,
+            "zipBytes": 8473,
+            "tagSha256": "3c81de093d568e6de9a887badc8b75f6913794116e7c0d7b37a41414a00e4203",
+            "zipSha256": "3c81de093d568e6de9a887badc8b75f6913794116e7c0d7b37a41414a00e4203"
+          },
+          {
+            "path": "app/html-import.mjs",
+            "kind": "equal",
+            "tagBytes": 30831,
+            "zipBytes": 30831,
+            "tagSha256": "3b32956473542ec37b52f02901d152956a37648cd5b1b1bbe45212959355b1aa",
+            "zipSha256": "3b32956473542ec37b52f02901d152956a37648cd5b1b1bbe45212959355b1aa"
+          },
+          {
+            "path": "app/html-line-height.mjs",
+            "kind": "equal",
+            "tagBytes": 2124,
+            "zipBytes": 2124,
+            "tagSha256": "5022a3fc98b6db566ef07564355dcd2052cf93efa1e1ada851f73b4d25657444",
+            "zipSha256": "5022a3fc98b6db566ef07564355dcd2052cf93efa1e1ada851f73b4d25657444"
+          },
+          {
+            "path": "app/html-text-overflow.mjs",
+            "kind": "equal",
+            "tagBytes": 4812,
+            "zipBytes": 4812,
+            "tagSha256": "9a304d2e0dcc75c7d9fafa4c74548d85ddbe1ae4c6882bd3040631265a4c6cd0",
+            "zipSha256": "9a304d2e0dcc75c7d9fafa4c74548d85ddbe1ae4c6882bd3040631265a4c6cd0"
+          },
+          {
+            "path": "app/html-to-figma-plugin/NOTICE.md",
+            "kind": "equal",
+            "tagBytes": 3897,
+            "zipBytes": 3897,
+            "tagSha256": "7fd45dff9add4434d26b25a87d8ced5076e8c692a469d75a8e15bbb5a95c955d",
+            "zipSha256": "7fd45dff9add4434d26b25a87d8ced5076e8c692a469d75a8e15bbb5a95c955d"
+          },
+          {
+            "path": "app/html-to-figma-plugin/README.md",
+            "kind": "equal",
+            "tagBytes": 6738,
+            "zipBytes": 6738,
+            "tagSha256": "e7b92fcdac6e3838049e919766d07712b65cce0f7008b3b396fc93c93ac4ad9d",
+            "zipSha256": "e7b92fcdac6e3838049e919766d07712b65cce0f7008b3b396fc93c93ac4ad9d"
+          },
+          {
+            "path": "app/html-to-figma-plugin/build.json",
+            "kind": "equal",
+            "tagBytes": 5459,
+            "zipBytes": 5459,
+            "tagSha256": "da149d13776ed313b7a2c570b4da8ae11137338253e1a12c141dbfb8885b79da",
+            "zipSha256": "da149d13776ed313b7a2c570b4da8ae11137338253e1a12c141dbfb8885b79da"
+          },
+          {
+            "path": "app/html-to-figma-plugin/code.js",
+            "kind": "equal",
+            "tagBytes": 234008,
+            "zipBytes": 234008,
+            "tagSha256": "c82a730510e0ddd11010443895d811809df3cbbd76be2b0bd3be3581b918da08",
+            "zipSha256": "c82a730510e0ddd11010443895d811809df3cbbd76be2b0bd3be3581b918da08"
+          },
+          {
+            "path": "app/html-to-figma-plugin/manifest.json",
+            "kind": "equal",
+            "tagBytes": 238,
+            "zipBytes": 238,
+            "tagSha256": "b1bad7f6725d479826b500c91b127809648267c0ba5465d426167dc94edb8190",
+            "zipSha256": "b1bad7f6725d479826b500c91b127809648267c0ba5465d426167dc94edb8190"
+          },
+          {
+            "path": "app/html-to-figma-plugin/ui.html",
+            "kind": "equal",
+            "tagBytes": 373852,
+            "zipBytes": 373852,
+            "tagSha256": "60a04a55ac48a75a8b5cea2988fa2a591dbb3e063b29ec72cd4b056147f54a10",
+            "zipSha256": "60a04a55ac48a75a8b5cea2988fa2a591dbb3e063b29ec72cd4b056147f54a10"
+          },
+          {
+            "path": "app/html-viewport-flow.mjs",
+            "kind": "equal",
+            "tagBytes": 17319,
+            "zipBytes": 17319,
+            "tagSha256": "3a922c781b8c222aa4680c03df9112be24ebdb51ff12ef6b119936b49052c459",
+            "zipSha256": "3a922c781b8c222aa4680c03df9112be24ebdb51ff12ef6b119936b49052c459"
+          },
+          {
+            "path": "app/html-zero-flow-token.mjs",
+            "kind": "equal",
+            "tagBytes": 15136,
+            "zipBytes": 15136,
+            "tagSha256": "b750628f7502dc7a021fe21b30e3a38711a66233f4953a45c44f768f6657c7f4",
+            "zipSha256": "b750628f7502dc7a021fe21b30e3a38711a66233f4953a45c44f768f6657c7f4"
+          },
+          {
+            "path": "app/image-dimensions.mjs",
+            "kind": "equal",
+            "tagBytes": 5256,
+            "zipBytes": 5256,
+            "tagSha256": "b467f4a4d3361811bdd5ec7ee4aa926f24a7f764480468efacb71d08631611a3",
+            "zipSha256": "b467f4a4d3361811bdd5ec7ee4aa926f24a7f764480468efacb71d08631611a3"
+          },
+          {
+            "path": "app/image-mime.mjs",
+            "kind": "equal",
+            "tagBytes": 899,
+            "zipBytes": 899,
+            "tagSha256": "c6875709c64e2ae2e486b12a780132c3c8212897f98cd47b6d919557b163c498",
+            "zipSha256": "c6875709c64e2ae2e486b12a780132c3c8212897f98cd47b6d919557b163c498"
+          },
+          {
+            "path": "app/index.html",
+            "kind": "equal",
+            "tagBytes": 65140,
+            "zipBytes": 65140,
+            "tagSha256": "bf46e776e0ecf7d43069b01a2af80df8635e27f70465afd8299934163cfe2941",
+            "zipSha256": "bf46e776e0ecf7d43069b01a2af80df8635e27f70465afd8299934163cfe2941"
+          },
+          {
+            "path": "app/layout-spacing.mjs",
+            "kind": "equal",
+            "tagBytes": 3048,
+            "zipBytes": 3048,
+            "tagSha256": "412f1d09249301c3c9dac37b02c0f853931f9539aba09ce73e747c0161034cc0",
+            "zipSha256": "412f1d09249301c3c9dac37b02c0f853931f9539aba09ce73e747c0161034cc0"
+          },
+          {
+            "path": "app/layout.mjs",
+            "kind": "equal",
+            "tagBytes": 44464,
+            "zipBytes": 44464,
+            "tagSha256": "31ad31703ae7bf3de9fbd249711c1cc8f1fa6777930075cad1935c62d445421d",
+            "zipSha256": "31ad31703ae7bf3de9fbd249711c1cc8f1fa6777930075cad1935c62d445421d"
+          },
+          {
+            "path": "app/legacy-backup.mjs",
+            "kind": "equal",
+            "tagBytes": 10200,
+            "zipBytes": 10200,
+            "tagSha256": "e94101a503818953416b377148a6d707632ed6e07f828b40d47b238663dfd2b7",
+            "zipSha256": "e94101a503818953416b377148a6d707632ed6e07f828b40d47b238663dfd2b7"
+          },
+          {
+            "path": "app/linear-gradient-geometry.mjs",
+            "kind": "equal",
+            "tagBytes": 6943,
+            "zipBytes": 6943,
+            "tagSha256": "bb714de75567c6e719be25ea32e61a80e8862b2c2192055d73257e81b3cf69b0",
+            "zipSha256": "bb714de75567c6e719be25ea32e61a80e8862b2c2192055d73257e81b3cf69b0"
+          },
+          {
+            "path": "app/native-notes.mjs",
+            "kind": "equal",
+            "tagBytes": 9071,
+            "zipBytes": 9071,
+            "tagSha256": "2d981a438442f359ed96a2531de47f53648004d9565d7374a128c6d34dce2f20",
+            "zipSha256": "2d981a438442f359ed96a2531de47f53648004d9565d7374a128c6d34dce2f20"
+          },
+          {
+            "path": "app/native-stroke-inactive.mjs",
+            "kind": "equal",
+            "tagBytes": 13144,
+            "zipBytes": 13144,
+            "tagSha256": "75136228015d68f4116ccd7907cf5e76024b0db9e6a7d1edc6baa54b8f7fe67d",
+            "zipSha256": "75136228015d68f4116ccd7907cf5e76024b0db9e6a7d1edc6baa54b8f7fe67d"
+          },
+          {
+            "path": "app/native-text-import.mjs",
+            "kind": "equal",
+            "tagBytes": 15848,
+            "zipBytes": 15848,
+            "tagSha256": "9cfa96ff076f555253fa8eeab6800dc60c7d8124e73798a02e7ed799941d9c71",
+            "zipSha256": "9cfa96ff076f555253fa8eeab6800dc60c7d8124e73798a02e7ed799941d9c71"
+          },
+          {
+            "path": "app/native-text-range-compare.mjs",
+            "kind": "equal",
+            "tagBytes": 10680,
+            "zipBytes": 10680,
+            "tagSha256": "fd99eeed3d88e0841a530e2ed7a2f16921a55f4385f5856294130796f55deb67",
+            "zipSha256": "fd99eeed3d88e0841a530e2ed7a2f16921a55f4385f5856294130796f55deb67"
+          },
+          {
+            "path": "app/native-text-range-hint.mjs",
+            "kind": "equal",
+            "tagBytes": 8899,
+            "zipBytes": 8899,
+            "tagSha256": "6d30bffd17a3ac3a2f66902cfdd1b1d668ab0cf6a5cc8a8ffc6cdcf1e2ffc333",
+            "zipSha256": "6d30bffd17a3ac3a2f66902cfdd1b1d668ab0cf6a5cc8a8ffc6cdcf1e2ffc333"
+          },
+          {
+            "path": "app/native-text-range-plan.mjs",
+            "kind": "equal",
+            "tagBytes": 8496,
+            "zipBytes": 8496,
+            "tagSha256": "8c7acaabf63906c6a64b55a62dd76cc4d4e467fae423fee2f27791f6a469c0c1",
+            "zipSha256": "8c7acaabf63906c6a64b55a62dd76cc4d4e467fae423fee2f27791f6a469c0c1"
+          },
+          {
+            "path": "app/native-text-ranges-source.mjs",
+            "kind": "equal",
+            "tagBytes": 26066,
+            "zipBytes": 26066,
+            "tagSha256": "bc1c34da3be5c26c2c7811e59557326a68c8350ac73f3d538913a1913d5775d7",
+            "zipSha256": "bc1c34da3be5c26c2c7811e59557326a68c8350ac73f3d538913a1913d5775d7"
+          },
+          {
+            "path": "app/native-text-ranges.mjs",
+            "kind": "equal",
+            "tagBytes": 1594,
+            "zipBytes": 1594,
+            "tagSha256": "99bc945e7fc79cfe62e0af02cb8316467d902e82ef07bf71f1ae70317f699820",
+            "zipSha256": "99bc945e7fc79cfe62e0af02cb8316467d902e82ef07bf71f1ae70317f699820"
+          },
+          {
+            "path": "app/operation-log.mjs",
+            "kind": "equal",
+            "tagBytes": 8973,
+            "zipBytes": 8973,
+            "tagSha256": "5e86093c08439ddbaee1c505f9ca9e8db916e061dfa8e63360e7baba2df0a65f",
+            "zipSha256": "5e86093c08439ddbaee1c505f9ca9e8db916e061dfa8e63360e7baba2df0a65f"
+          },
+          {
+            "path": "app/owned-fonts.mjs",
+            "kind": "equal",
+            "tagBytes": 5658,
+            "zipBytes": 5658,
+            "tagSha256": "7189fb4d69c19f24d471682535134ad73ef17dc37c3e3eaa2e1cf9496e161863",
+            "zipSha256": "7189fb4d69c19f24d471682535134ad73ef17dc37c3e3eaa2e1cf9496e161863"
+          },
+          {
+            "path": "app/page-runtime.mjs",
+            "kind": "equal",
+            "tagBytes": 8551,
+            "zipBytes": 8551,
+            "tagSha256": "2c6c463311bdf6604927768acfe4fe1d710e3c5856e7e61b2a7045abee259f9d",
+            "zipSha256": "2c6c463311bdf6604927768acfe4fe1d710e3c5856e7e61b2a7045abee259f9d"
+          },
+          {
+            "path": "app/paint.mjs",
+            "kind": "equal",
+            "tagBytes": 17951,
+            "zipBytes": 17951,
+            "tagSha256": "c93d2509739ef20f323c098c5d25ea6128b38911ea70eb0483758369ceb60ce2",
+            "zipSha256": "c93d2509739ef20f323c098c5d25ea6128b38911ea70eb0483758369ceb60ce2"
+          },
+          {
+            "path": "app/panel-select.css",
+            "kind": "equal",
+            "tagBytes": 3051,
+            "zipBytes": 3051,
+            "tagSha256": "33fdaafa5b361003b553c86e1b18b41a36e9ec3d9dd80e2e7fab6020bcf7bae2",
+            "zipSha256": "33fdaafa5b361003b553c86e1b18b41a36e9ec3d9dd80e2e7fab6020bcf7bae2"
+          },
+          {
+            "path": "app/panel-select.js",
+            "kind": "equal",
+            "tagBytes": 9807,
+            "zipBytes": 9807,
+            "tagSha256": "761d4ba289275ae7deeefee2804c0c995dbb01e2d1e302e1ad4ac2d34bdb29d6",
+            "zipSha256": "761d4ba289275ae7deeefee2804c0c995dbb01e2d1e302e1ad4ac2d34bdb29d6"
+          },
+          {
+            "path": "app/portable-backup-ui.mjs",
+            "kind": "equal",
+            "tagBytes": 8377,
+            "zipBytes": 8377,
+            "tagSha256": "63af12b089d0b3ac28f87fdd8b3c88326ac4c727ecf9562e14723576575b4ab1",
+            "zipSha256": "63af12b089d0b3ac28f87fdd8b3c88326ac4c727ecf9562e14723576575b4ab1"
+          },
+          {
+            "path": "app/portable-backup.mjs",
+            "kind": "equal",
+            "tagBytes": 13855,
+            "zipBytes": 13855,
+            "tagSha256": "0c1000933fa18b46629f2a83f6e8af76a05c617504deffc198e2bb35f81174f7",
+            "zipSha256": "0c1000933fa18b46629f2a83f6e8af76a05c617504deffc198e2bb35f81174f7"
+          },
+          {
+            "path": "app/product-brief.mjs",
+            "kind": "equal",
+            "tagBytes": 8549,
+            "zipBytes": 8549,
+            "tagSha256": "6bd643e45e9339b331ce8c39265cd1af22a1e9ba8eacb2a92b8c0b1612b3d4d0",
+            "zipSha256": "6bd643e45e9339b331ce8c39265cd1af22a1e9ba8eacb2a92b8c0b1612b3d4d0"
+          },
+          {
+            "path": "app/project-context.mjs",
+            "kind": "equal",
+            "tagBytes": 1117,
+            "zipBytes": 1117,
+            "tagSha256": "8416835c12cf6ced01ccc72bc6bf8b908bddc5e26a2043d79558134670b2ae35",
+            "zipSha256": "8416835c12cf6ced01ccc72bc6bf8b908bddc5e26a2043d79558134670b2ae35"
+          },
+          {
+            "path": "app/prototype-ui.mjs",
+            "kind": "equal",
+            "tagBytes": 18910,
+            "zipBytes": 18910,
+            "tagSha256": "9483382551535b3494f1d0419eb3f509ddf6045d4cf5a35091827ac98de6965f",
+            "zipSha256": "9483382551535b3494f1d0419eb3f509ddf6045d4cf5a35091827ac98de6965f"
+          },
+          {
+            "path": "app/prototype.css",
+            "kind": "equal",
+            "tagBytes": 2402,
+            "zipBytes": 2402,
+            "tagSha256": "afce591d07b3ea9050d9cefef77be8c4a4457028a16eb96130bc4dc9c6509637",
+            "zipSha256": "afce591d07b3ea9050d9cefef77be8c4a4457028a16eb96130bc4dc9c6509637"
+          },
+          {
+            "path": "app/prototype.mjs",
+            "kind": "equal",
+            "tagBytes": 25223,
+            "zipBytes": 25223,
+            "tagSha256": "0301ed6d24357e16fbb2e95c53dc05c44fdbd6fc13b9e09a6b199a9296358433",
+            "zipSha256": "0301ed6d24357e16fbb2e95c53dc05c44fdbd6fc13b9e09a6b199a9296358433"
+          },
+          {
+            "path": "app/quality-repair.mjs",
+            "kind": "equal",
+            "tagBytes": 9380,
+            "zipBytes": 9380,
+            "tagSha256": "5657637775fb2901e0ddec20926734443bac35b11bc6505e024b1f29c7593531",
+            "zipSha256": "5657637775fb2901e0ddec20926734443bac35b11bc6505e024b1f29c7593531"
+          },
+          {
+            "path": "app/recovery-session.mjs",
+            "kind": "equal",
+            "tagBytes": 4254,
+            "zipBytes": 4254,
+            "tagSha256": "efbbcc4a714d407ec9a5dafcc4a0849961bf23757d2aa93da14b4810f6fd759f",
+            "zipSha256": "efbbcc4a714d407ec9a5dafcc4a0849961bf23757d2aa93da14b4810f6fd759f"
+          },
+          {
+            "path": "app/recovery-store.mjs",
+            "kind": "equal",
+            "tagBytes": 2932,
+            "zipBytes": 2932,
+            "tagSha256": "690534b70c1896179ff06fc90ee2b578aefb3212257a1cedfdb2d973c32e5b31",
+            "zipSha256": "690534b70c1896179ff06fc90ee2b578aefb3212257a1cedfdb2d973c32e5b31"
+          },
+          {
+            "path": "app/renderer-controller.mjs",
+            "kind": "equal",
+            "tagBytes": 13109,
+            "zipBytes": 13109,
+            "tagSha256": "d195c7626c2563787ccc5c27dee460c3399cb6f8bb786986eadef7115a337582",
+            "zipSha256": "d195c7626c2563787ccc5c27dee460c3399cb6f8bb786986eadef7115a337582"
+          },
+          {
+            "path": "app/repository.mjs",
+            "kind": "equal",
+            "tagBytes": 547,
+            "zipBytes": 547,
+            "tagSha256": "f8c74edd5bbedcb0d2be88e4df9f2d5dffb98b1b09a9dbde28dd9fc520face52",
+            "zipSha256": "f8c74edd5bbedcb0d2be88e4df9f2d5dffb98b1b09a9dbde28dd9fc520face52"
+          },
+          {
+            "path": "app/resource-store.mjs",
+            "kind": "equal",
+            "tagBytes": 8013,
+            "zipBytes": 8013,
+            "tagSha256": "39f046c0ebf6ef5b0e258393943df1bc0690ccb632b0f4f7d888bdbe02ba177e",
+            "zipSha256": "39f046c0ebf6ef5b0e258393943df1bc0690ccb632b0f4f7d888bdbe02ba177e"
+          },
+          {
+            "path": "app/review-comments-ui.mjs",
+            "kind": "equal",
+            "tagBytes": 22689,
+            "zipBytes": 22689,
+            "tagSha256": "f240661eb29be6d37e54713302ac03e253290e7d48a0c2244a1c88098f72dae3",
+            "zipSha256": "f240661eb29be6d37e54713302ac03e253290e7d48a0c2244a1c88098f72dae3"
+          },
+          {
+            "path": "app/review-comments.css",
+            "kind": "equal",
+            "tagBytes": 3595,
+            "zipBytes": 3595,
+            "tagSha256": "b9c11bf3f4debbf905c5255ade524a50e2de77d56af6cfbe25307c402645ef30",
+            "zipSha256": "b9c11bf3f4debbf905c5255ade524a50e2de77d56af6cfbe25307c402645ef30"
+          },
+          {
+            "path": "app/review-comments.mjs",
+            "kind": "equal",
+            "tagBytes": 14337,
+            "zipBytes": 14337,
+            "tagSha256": "c526d999c60e9b3fd4df3d612b07df1a20cf218344e46b6ef7223bd1157c6c5b",
+            "zipSha256": "c526d999c60e9b3fd4df3d612b07df1a20cf218344e46b6ef7223bd1157c6c5b"
+          },
+          {
+            "path": "app/shadow-stack.mjs",
+            "kind": "equal",
+            "tagBytes": 8542,
+            "zipBytes": 8542,
+            "tagSha256": "5c78cb61717e48163ee6f4e0778e033dd3ac70453a57c0fab588f809e1b4da37",
+            "zipSha256": "5c78cb61717e48163ee6f4e0778e033dd3ac70453a57c0fab588f809e1b4da37"
+          },
+          {
+            "path": "app/stroke.mjs",
+            "kind": "equal",
+            "tagBytes": 16497,
+            "zipBytes": 16497,
+            "tagSha256": "c5ad2b9d7cea306314c90a041208cecc62fa49586440f26d91af02d6ae282be5",
+            "zipSha256": "c5ad2b9d7cea306314c90a041208cecc62fa49586440f26d91af02d6ae282be5"
+          },
+          {
+            "path": "app/style.css",
+            "kind": "equal",
+            "tagBytes": 43596,
+            "zipBytes": 43596,
+            "tagSha256": "43a629c3a942e802c5ca7e6bc10b3a10bc1c19c7493dd0e2a251bd427d4edf9d",
+            "zipSha256": "43a629c3a942e802c5ca7e6bc10b3a10bc1c19c7493dd0e2a251bd427d4edf9d"
+          },
+          {
+            "path": "app/text-content.mjs",
+            "kind": "equal",
+            "tagBytes": 2528,
+            "zipBytes": 2528,
+            "tagSha256": "2b306bded621af6ec59c93e47a2308a7a36c7dd0df50e0ca68ced74cced1dbc4",
+            "zipSha256": "2b306bded621af6ec59c93e47a2308a7a36c7dd0df50e0ca68ced74cced1dbc4"
+          },
+          {
+            "path": "app/text-line-height.mjs",
+            "kind": "equal",
+            "tagBytes": 1293,
+            "zipBytes": 1293,
+            "tagSha256": "ff053207a9d8cc2377f8eb9bfe07f6335dbc629d99b45779f094fe3d5e8674bc",
+            "zipSha256": "ff053207a9d8cc2377f8eb9bfe07f6335dbc629d99b45779f094fe3d5e8674bc"
+          },
+          {
+            "path": "app/text-metrics.mjs",
+            "kind": "equal",
+            "tagBytes": 17304,
+            "zipBytes": 17304,
+            "tagSha256": "7c217f9b0cc31bf1147d76e3aa9801513f6861bd2566bbb04e423e9553bc57a4",
+            "zipSha256": "7c217f9b0cc31bf1147d76e3aa9801513f6861bd2566bbb04e423e9553bc57a4"
+          },
+          {
+            "path": "app/text-ranges.mjs",
+            "kind": "equal",
+            "tagBytes": 18365,
+            "zipBytes": 18365,
+            "tagSha256": "ca9b23df256955f7dce822c9fec3a9e627eac1087aafad56153e243424fb81d3",
+            "zipSha256": "ca9b23df256955f7dce822c9fec3a9e627eac1087aafad56153e243424fb81d3"
+          },
+          {
+            "path": "app/toolbar-menu.mjs",
+            "kind": "equal",
+            "tagBytes": 2796,
+            "zipBytes": 2796,
+            "tagSha256": "0e1d4fa3e548821c67380d4b11d07a5269be837c5d4a2067d6f7f181f8c13fe6",
+            "zipSha256": "0e1d4fa3e548821c67380d4b11d07a5269be837c5d4a2067d6f7f181f8c13fe6"
+          },
+          {
+            "path": "app/tools/check-design.mjs",
+            "kind": "equal",
+            "tagBytes": 6877,
+            "zipBytes": 6877,
+            "tagSha256": "f1fb0079fa246430d73197534af91138ac04777663a356b1da63e734c4184d14",
+            "zipSha256": "f1fb0079fa246430d73197534af91138ac04777663a356b1da63e734c4184d14"
+          },
+          {
+            "path": "app/tools/design-studio.mjs",
+            "kind": "equal",
+            "tagBytes": 20359,
+            "zipBytes": 20359,
+            "tagSha256": "c79ab72e6ced90404b3cebde1ac74b5387d899bd5a8c2f648f489e63dbc600de",
+            "zipSha256": "c79ab72e6ced90404b3cebde1ac74b5387d899bd5a8c2f648f489e63dbc600de"
+          },
+          {
+            "path": "app/tools/node-project.mjs",
+            "kind": "equal",
+            "tagBytes": 8404,
+            "zipBytes": 8404,
+            "tagSha256": "2e8e9e7c88f905b13954a6ebbe634763629ee68aa6f9cea6f22bd861ca5fc00c",
+            "zipSha256": "2e8e9e7c88f905b13954a6ebbe634763629ee68aa6f9cea6f22bd861ca5fc00c"
+          },
+          {
+            "path": "app/tools/prepare-figma.README.md",
+            "kind": "equal",
+            "tagBytes": 2956,
+            "zipBytes": 2956,
+            "tagSha256": "5efe5a464fa0f20117346908bebfc79e218823df0efcffd82c26ebeeb5c44381",
+            "zipSha256": "5efe5a464fa0f20117346908bebfc79e218823df0efcffd82c26ebeeb5c44381"
+          },
+          {
+            "path": "app/tools/prepare-figma.mjs",
+            "kind": "equal",
+            "tagBytes": 11661,
+            "zipBytes": 11661,
+            "tagSha256": "4d53ca7f27b2432dba00afb52e5c8f633db03fe49690d25c71e0a3084a64392a",
+            "zipSha256": "4d53ca7f27b2432dba00afb52e5c8f633db03fe49690d25c71e0a3084a64392a"
+          },
+          {
+            "path": "app/tools/prototype-source.mjs",
+            "kind": "equal",
+            "tagBytes": 2603,
+            "zipBytes": 2603,
+            "tagSha256": "41e5dee542b8cea838610e8e5e063f4b1affadbf320915aee6abfd5605894b67",
+            "zipSha256": "41e5dee542b8cea838610e8e5e063f4b1affadbf320915aee6abfd5605894b67"
+          },
+          {
+            "path": "app/vendor/html2figma-NOTICE.md",
+            "kind": "equal",
+            "tagBytes": 11718,
+            "zipBytes": 11718,
+            "tagSha256": "893bbbfd172dac0d5c59004268280ca1630286c1e94d09fe0d9a8f8cd1f73d72",
+            "zipSha256": "893bbbfd172dac0d5c59004268280ca1630286c1e94d09fe0d9a8f8cd1f73d72"
+          },
+          {
+            "path": "app/vendor/html2figma-browser.mjs",
+            "kind": "equal",
+            "tagBytes": 227286,
+            "zipBytes": 227286,
+            "tagSha256": "c07e461725d2ea44c2dd2ae761d5a6a357635514d1ae29f2308554205d3ce2e9",
+            "zipSha256": "c07e461725d2ea44c2dd2ae761d5a6a357635514d1ae29f2308554205d3ce2e9"
+          }
+        ],
+        "differences": []
+      }
+    }
+  ],
+  "candidateComparisons": [
+    {
+      "dir": "apps/design-studio",
+      "candidateCommit": "84348855be8ae4e5a31936b3c2b0d1d21410bd64",
+      "tag": "design-studio-v0.23.0",
+      "status": "directory-comparison-only",
+      "changes": [
+        {
+          "path": ".codeshell-panel/panel.json",
+          "kind": "changed",
+          "tagSha256": "2a7643a985d02a9e9058fb9135de0d3658ffa2e900f834fa9470855b6304ff3d",
+          "candidateSha256": "a9c1c0827bc02ee099a2a244d7cbad3238f01dcec9020b0ee9571f33ede18d51"
+        },
+        {
+          "path": "README.md",
+          "kind": "changed",
+          "tagSha256": "a163046d0d9b3c31807e77d79b291b79fcaa82c1fb82d664517fe15ac45a9928",
+          "candidateSha256": "58bc968d477880d5e2509df61d07e914bc098d5d3655972858dc176150223270"
+        },
+        {
+          "path": "app/app.js",
+          "kind": "changed",
+          "tagSha256": "a6db4105d069afb1ab05899897a3fad0e4be8eb52ea55f3fa84a8edc79eb4337",
+          "candidateSha256": "f626d212db616d2756d1c04b6c80dbf49b2ebdd7fcf7377c438fd92c126ccf2a"
+        },
+        {
+          "path": "app/browser-store.mjs",
+          "kind": "added",
+          "tagSha256": null,
+          "candidateSha256": "3dfbd9d49d8553f45cce4c0d4de94c50d6a89e584012d864e32936c2259e557f"
+        },
+        {
+          "path": "app/builtin-fonts.mjs",
+          "kind": "changed",
+          "tagSha256": "7ad02b5cf0cd2790c6c3b359c424a4cabf1ae29c6a718c93215f01a8d54b580b",
+          "candidateSha256": "887c26f8115f92e25dbcba8a51347b210f2e83c8be008154ad82094e562410d5"
+        },
+        {
+          "path": "app/canvas/browser-renderer.mjs",
+          "kind": "changed",
+          "tagSha256": "3921c318d0bc470dfe810844b367dc3657377e5e37d25739d92a3a2df2cf12b3",
+          "candidateSha256": "50bbf14a23bcc960be739b49bc41b80a6ec30f4765569f12cdbb1bdc1302cecb"
+        },
+        {
+          "path": "app/canvas/canvaskit-renderer.mjs",
+          "kind": "changed",
+          "tagSha256": "b54bbd598eb2a97a30a5f2a0d45083e6a57c5648f715e8eab755b7d6344b52ac",
+          "candidateSha256": "a740f6a0c1f40148b716f380f743016eab0999a04eee1bdad7a1e4c50f81335d"
+        },
+        {
+          "path": "app/canvas/canvaskit-text.mjs",
+          "kind": "changed",
+          "tagSha256": "22aeeae256fadc32c56af089bc1d1bef269a8b7af973f3c7c7ec970e0b712c7a",
+          "candidateSha256": "124a29b0f4a51e40ffa7848b40800b0f01ee73712af9da40a2b21e775ff9c469"
+        },
+        {
+          "path": "app/canvas/image-decode.mjs",
+          "kind": "added",
+          "tagSha256": null,
+          "candidateSha256": "5d8c53b1ec650d60e07690135785ecaff16b0d93baeb51c4d5cfe381d2a2fc74"
+        },
+        {
+          "path": "app/conversion-report.mjs",
+          "kind": "added",
+          "tagSha256": null,
+          "candidateSha256": "9bdca6f9f77e4d09537ce227720c57e4727ddf0755ad749a63fbb59e25a92dad"
+        },
+        {
+          "path": "app/design-node-adapter.mjs",
+          "kind": "changed",
+          "tagSha256": "05863f13ee2fc911f01fce1e7f9d98d6a053cabd1c30c94071b8340c562a3687",
+          "candidateSha256": "170b189b0d793d8a64f61ceeb5ab4676fcaac7b864b1eed49ad925b773cc2f25"
+        },
+        {
+          "path": "app/document.mjs",
+          "kind": "changed",
+          "tagSha256": "f538826c4730142a3306532f001cd7ca2b116feee0c715319688b38bc5b4f438",
+          "candidateSha256": "2b24cb9977928fe6473440e2f7658fafb48eb372338ac47e2920158c96407df3"
+        },
+        {
+          "path": "app/figma-assets.mjs",
+          "kind": "changed",
+          "tagSha256": "b4fe2416c9ab4fccc97f3b7eda340d93ae5f1e3f3879fef07f573aadd11c8b1c",
+          "candidateSha256": "cc35c5ae39e269b941dd0c4d5903a90d7742e812b8fe513ef919f2d4d2ef5567"
+        },
+        {
+          "path": "app/figma-binding.mjs",
+          "kind": "changed",
+          "tagSha256": "ef7ca55ac3e2620fbef31b5c5b2fd5188215bae11abc9b62afb57e0382d18f8b",
+          "candidateSha256": "7bc24f8e09f44a3305892bff4d289be44c39964450143ecca9c7e60a2d55f8d7"
+        },
+        {
+          "path": "app/figma-bridge.mjs",
+          "kind": "changed",
+          "tagSha256": "f964c3247c3eca16637fc1d9a1be44ff6e77f9afce283b7819ac4e7c2831e772",
+          "candidateSha256": "7ab053b5c8706ea8d7471c597a771492681a3d2feb9390836424df22ad03efa1"
+        },
+        {
+          "path": "app/figma-plugin/README.md",
+          "kind": "changed",
+          "tagSha256": "67c9ce2125bfdb32ac28d39bad0a8cf3bb575825c4c0b2d91e725b47ff14d9fa",
+          "candidateSha256": "df6ea92eda236162ea0b4de0d99d29bba67da2005295776f16522e5b365acf8e"
+        },
+        {
+          "path": "app/figma-plugin/code.js",
+          "kind": "changed",
+          "tagSha256": "63a677373c11ec6817e342ce19ff1342ee61b1631b7d83ccc70fe1a1ddced525",
+          "candidateSha256": "68e4849436cf4beb3fe2ee3b27364238f0f0866022086b48032e813bb72fcda4"
+        },
+        {
+          "path": "app/figma-plugin/text-range-write.mjs",
+          "kind": "changed",
+          "tagSha256": "a011b50dd6fad6fcf56a8ee0f0a517f6369cbc32059cec1c7a4a9e621cd846f1",
+          "candidateSha256": "f981af36ba4dad4136aba1e1796f4fce9a6f726ffa0b8fc493f009d3303422ce"
+        },
+        {
+          "path": "app/figma-plugin/text-runtime.mjs",
+          "kind": "changed",
+          "tagSha256": "8ef39f742f149193d30cbcc97f5b4632c30ebf0559b61a405119a79963e64df5",
+          "candidateSha256": "4fe5c674ff441b9d43094aef42fa98d180bb2feb0bdecb4fe9600c7f5ee2e7fb"
+        },
+        {
+          "path": "app/figma-plugin/ui.html",
+          "kind": "changed",
+          "tagSha256": "2dbc13d8441dfb65070293d0d4e58b53b88ae8fb8c9be18e9f01ee6338407357",
+          "candidateSha256": "4ae64e212ca0510cc1e0238d51826e86405c96eda3cecf55fdd61a6b112ddb14"
+        },
+        {
+          "path": "app/font-capabilities.mjs",
+          "kind": "added",
+          "tagSha256": null,
+          "candidateSha256": "a1d5b5595169f610acb17d0cdbc23efafc7123185a10e25d6658f3e9ffa02f0c"
+        },
+        {
+          "path": "app/font-css.mjs",
+          "kind": "changed",
+          "tagSha256": "eee9143560fe5da1b78b80e648dccbe20a6421530e9e4e6d5db279f553aee1c1",
+          "candidateSha256": "175c877c45b7875f6274da0159702cf8820e03141a1ce23968dd153e19ed502d"
+        },
+        {
+          "path": "app/formats/codeshell-design-v3.schema.json",
+          "kind": "changed",
+          "tagSha256": "7682de4f1049739f55af9da88f33017f1dcafe97ef117af95f6c2f86c5ee2527",
+          "candidateSha256": "9bc658f09d00164e424ac19a60b214d5d23190ddd22500dcd8056e84146903b5"
+        },
+        {
+          "path": "app/formats/design-format.md",
+          "kind": "changed",
+          "tagSha256": "4ccae642804281a31c4e37d31a82c37deab9cba9a1214d88c720094201a62b3b",
+          "candidateSha256": "18c9636ec764173ccb95511c70757e429108351c0f38d2d7d1ac72bac520bf05"
+        },
+        {
+          "path": "app/frontend-export.mjs",
+          "kind": "changed",
+          "tagSha256": "3515305ed1491acaab1eafe87516d12165653d1a13db0201c4ab4e8abc9ca405",
+          "candidateSha256": "73433785ef70b2e65a43b72ae5415ad88b16553a676d2664ed7cfec576cf86df"
+        },
+        {
+          "path": "app/html-capture.mjs",
+          "kind": "changed",
+          "tagSha256": "aa1af76e2f75238388fe4295fa19ed6b5386c79e9cbb5edb65f4c3cd536e8d1a",
+          "candidateSha256": "bb7a96df5a3d40c929d750c526af11ef1e095decf26ca4964438c08f94823360"
+        },
+        {
+          "path": "app/html-inline-text-plan.mjs",
+          "kind": "added",
+          "tagSha256": null,
+          "candidateSha256": "91fc762ec9078a8eb06af989514f2077d34cfe3be5d24fc88088fb6a9e8a84d7"
+        },
+        {
+          "path": "app/html-negative-row-plan.mjs",
+          "kind": "added",
+          "tagSha256": null,
+          "candidateSha256": "e41cacfb48b2907ed197dbe022514660cc5259a0e447d70ed4582f93da2acd64"
+        },
+        {
+          "path": "app/html-to-figma-plugin/build.json",
+          "kind": "changed",
+          "tagSha256": "da149d13776ed313b7a2c570b4da8ae11137338253e1a12c141dbfb8885b79da",
+          "candidateSha256": "24e97c83ec72113daee2fdc2500fe0306ae7e169beee5185b6f3f45753a05402"
+        },
+        {
+          "path": "app/html-to-figma-plugin/code.js",
+          "kind": "changed",
+          "tagSha256": "c82a730510e0ddd11010443895d811809df3cbbd76be2b0bd3be3581b918da08",
+          "candidateSha256": "6f61aa21e145bc736b4c717b4166005309bd1af3339ad7d8abf73313ca37a7ce"
+        },
+        {
+          "path": "app/html-to-figma-plugin/ui.html",
+          "kind": "changed",
+          "tagSha256": "60a04a55ac48a75a8b5cea2988fa2a591dbb3e063b29ec72cd4b056147f54a10",
+          "candidateSha256": "907342744430d08bb0e12f464cc2b42cfc131681136c0bcbfdd4477095edd312"
+        },
+        {
+          "path": "app/index.html",
+          "kind": "changed",
+          "tagSha256": "bf46e776e0ecf7d43069b01a2af80df8635e27f70465afd8299934163cfe2941",
+          "candidateSha256": "901945624237f1ad9aa3057ec393e884a2af25284662bb91c880e7bdf02eb081"
+        },
+        {
+          "path": "app/layout.mjs",
+          "kind": "changed",
+          "tagSha256": "31ad31703ae7bf3de9fbd249711c1cc8f1fa6777930075cad1935c62d445421d",
+          "candidateSha256": "0ab4b64c98330e99b3ae1b9565aeb415ea571fdaa74c1c25da784214e68d4749"
+        },
+        {
+          "path": "app/native-export-report.mjs",
+          "kind": "added",
+          "tagSha256": null,
+          "candidateSha256": "b7cf75ea3a1da1be63850b29c2dcf7ef99abf83a5edd0b03c88490ada3257a12"
+        },
+        {
+          "path": "app/native-text-font.mjs",
+          "kind": "added",
+          "tagSha256": null,
+          "candidateSha256": "34068cb00fa1eb78397ddfbd9e853152a0267d3821d2a46deff4a5c3bef692df"
+        },
+        {
+          "path": "app/native-text-import.mjs",
+          "kind": "changed",
+          "tagSha256": "9cfa96ff076f555253fa8eeab6800dc60c7d8124e73798a02e7ed799941d9c71",
+          "candidateSha256": "bb99117edd46ce1f67b23f0ffa57c4d863d72c92a6085d06e0f5aee1e2881b68"
+        },
+        {
+          "path": "app/native-text-range-hint.mjs",
+          "kind": "changed",
+          "tagSha256": "6d30bffd17a3ac3a2f66902cfdd1b1d668ab0cf6a5cc8a8ffc6cdcf1e2ffc333",
+          "candidateSha256": "653594349e734f90f1c17ed483be61526e3cc4076d5e4f001d7a99c2d6eb7eb5"
+        },
+        {
+          "path": "app/native-text-range-plan.mjs",
+          "kind": "changed",
+          "tagSha256": "8c7acaabf63906c6a64b55a62dd76cc4d4e467fae423fee2f27791f6a469c0c1",
+          "candidateSha256": "15102e087e244142f1830e62f0b9c997f75d1d85ba9e91e8f08e4b7be35f5201"
+        },
+        {
+          "path": "app/native-text-ranges-source.mjs",
+          "kind": "changed",
+          "tagSha256": "bc1c34da3be5c26c2c7811e59557326a68c8350ac73f3d538913a1913d5775d7",
+          "candidateSha256": "8da5163fdac2b377d5edd4dc550ac0d1347ecd183213fe8c910fb5eec5c83a66"
+        },
+        {
+          "path": "app/native-text-ranges.mjs",
+          "kind": "changed",
+          "tagSha256": "99bc945e7fc79cfe62e0af02cb8316467d902e82ef07bf71f1ae70317f699820",
+          "candidateSha256": "2539c7cb955453bdb02af0394b95b0fe6cd7cf7a881e115294dafa236228975d"
+        },
+        {
+          "path": "app/owned-fonts.mjs",
+          "kind": "changed",
+          "tagSha256": "7189fb4d69c19f24d471682535134ad73ef17dc37c3e3eaa2e1cf9496e161863",
+          "candidateSha256": "d15dc0a671b3402ed965b1a7398416b12217ef703ab66fd62392e0529d9caad8"
+        },
+        {
+          "path": "app/svg-resource.mjs",
+          "kind": "added",
+          "tagSha256": null,
+          "candidateSha256": "a293335d52f0dec8a3e5a1ba6b090d12e56169c0ec8fd5abf08317e1a4d5bfa8"
+        },
+        {
+          "path": "app/text-line-height.mjs",
+          "kind": "changed",
+          "tagSha256": "ff053207a9d8cc2377f8eb9bfe07f6335dbc629d99b45779f094fe3d5e8674bc",
+          "candidateSha256": "e597f113bfe5d8e89a7284d995648010a0a78d2d2d38fa08d49300baf7df6edb"
+        },
+        {
+          "path": "app/text-metrics.mjs",
+          "kind": "changed",
+          "tagSha256": "7c217f9b0cc31bf1147d76e3aa9801513f6861bd2566bbb04e423e9553bc57a4",
+          "candidateSha256": "c5360b3991ed2aa156b3a56e0b4a5c52b9767ae777276049da8d5e43dbbd6c5f"
+        },
+        {
+          "path": "app/text-ranges.mjs",
+          "kind": "changed",
+          "tagSha256": "ca9b23df256955f7dce822c9fec3a9e627eac1087aafad56153e243424fb81d3",
+          "candidateSha256": "f9c9f90fdfb36ca292b96f2b76e253bfc8db3044def43fecc86b8c6028e9838e"
+        },
+        {
+          "path": "app/tools/prepare-figma.README.md",
+          "kind": "changed",
+          "tagSha256": "5efe5a464fa0f20117346908bebfc79e218823df0efcffd82c26ebeeb5c44381",
+          "candidateSha256": "66c2debba50bdb1c2da2a04098dbbfd9863bb57e77c55898ebb87703441fb6a7"
+        },
+        {
+          "path": "app/tools/prepare-figma.mjs",
+          "kind": "changed",
+          "tagSha256": "4d53ca7f27b2432dba00afb52e5c8f633db03fe49690d25c71e0a3084a64392a",
+          "candidateSha256": "98898d79865bc0ea03d6450ad8516481bfb8c05c22582bd3d7094cc081b5f957"
+        }
+      ],
+      "tagCommit": "2202581190b5b5abe3e1a8124e2a6c36a95b7e4e"
+    },
+    {
+      "dir": "apps/job-hunt-hq",
+      "candidateCommit": "84348855be8ae4e5a31936b3c2b0d1d21410bd64",
+      "tag": "job-hunt-hq-v5.1.0",
+      "status": "no-local-tag",
+      "changes": []
+    },
+    {
+      "dir": "apps/quant-lab",
+      "candidateCommit": "84348855be8ae4e5a31936b3c2b0d1d21410bd64",
+      "tag": "quant-lab-v0.47.0",
+      "status": "no-local-tag",
+      "changes": []
+    },
+    {
+      "dir": "apps/video-download",
+      "candidateCommit": "84348855be8ae4e5a31936b3c2b0d1d21410bd64",
+      "tag": "video-download-v0.24.1",
+      "status": "directory-comparison-only",
+      "changes": [
+        {
+          "path": ".codeshell-panel/panel.json",
+          "kind": "changed",
+          "tagSha256": "9025bbd429bb0a326a253a878d000c5cc5ce1cace6372f0925a86268e63e5877",
+          "candidateSha256": "161ceea791949fc315bb347b32e6d56214ca61205eb22a2964d81fe0fa9e24a0"
+        },
+        {
+          "path": "app/app.js",
+          "kind": "changed",
+          "tagSha256": "bd8af1cfce8bd7c0b038f05cd01c05de8e8a6e4a998ac8c3e53df8310cd39ce7",
+          "candidateSha256": "9383d29b36619ab4649ed5b7b43ad37d0d4a2a4c6b2bf26f5bc6140e5f51d583"
+        },
+        {
+          "path": "app/tools/download-errors.mjs",
+          "kind": "added",
+          "tagSha256": null,
+          "candidateSha256": "4300ba52c4936da2dd9e59b7c8bc553e4d77b45c2a923df0700decbb8ba51f1f"
+        },
+        {
+          "path": "app/tools/download-runtime.mjs",
+          "kind": "changed",
+          "tagSha256": "dbe8fb1afc3305b0ee4159d3f65f2da726c039db31e60e8ac890ea4a18f2978d",
+          "candidateSha256": "2f0498b916546d262fa5f03f7da3572bdbb78954ec69ab015b8681e704474a69"
+        },
+        {
+          "path": "app/tools/download.mjs",
+          "kind": "changed",
+          "tagSha256": "98f105048a75261e7e1f04c68915d58ad090eee11372df4818a86293923e7880",
+          "candidateSha256": "dacd8243d8b8a46e510a551aaa56d6264c02c62ef9c99975581091b30593a178"
+        }
+      ],
+      "tagCommit": "09fd3bd3b0b9c6bb286b54e2f2d7c47a4ac0520c"
+    },
+    {
+      "dir": "panels/video-studio",
+      "candidateCommit": "84348855be8ae4e5a31936b3c2b0d1d21410bd64",
+      "tag": "video-studio-v0.8.0",
+      "status": "directory-comparison-only",
+      "changes": [
+        {
+          "path": ".codeshell-panel/panel.json",
+          "kind": "changed",
+          "tagSha256": "0c13ba394a4f7483b2ee362fc199a417939043ea71298dfe57191b15b5414fa1",
+          "candidateSha256": "f87c4081d815643fd01fca65e7b145b5946eeea29ecd1e23f4383ce9d8ecfea8"
+        },
+        {
+          "path": "README.md",
+          "kind": "changed",
+          "tagSha256": "5bf399e8d7a62df5f1bc86b5a08302fa5ab1cfbbb23b9968378e67d68220457f",
+          "candidateSha256": "0963d3b48dbd0def44ca6037e3dd01e51576914beb3a86f4dfa0fdc2d4c70562"
+        },
+        {
+          "path": "agent/skills/project-runtime/SKILL.md",
+          "kind": "changed",
+          "tagSha256": "171892e697f76da93310bd9370a160f632ada487aa006dec6cbb00d6c768f884",
+          "candidateSha256": "f9f95ec07d2f0c382f1bd2c1784a13e6d987fc80fa906aa96f3dbaa1a9c59813"
+        },
+        {
+          "path": "app/build-manifest.json",
+          "kind": "changed",
+          "tagSha256": "710a2a41f6901ce20d1d4fd2a44daae08c5996e62379af2898259d94cc2aa9f6",
+          "candidateSha256": "6ce941edf9b255c4d918e2e49d0a147264d0d9072160e8308e6a4a845ec142d4"
+        },
+        {
+          "path": "app/editor-timeline.css",
+          "kind": "changed",
+          "tagSha256": "3216983c46780b5153af77c1eb13b99da6a00f5fbfa3a9fcb44fafbf74eb1d42",
+          "candidateSha256": "5c452cfbb4bc9cc34ad554e633858fdd5d78522dfcd7bf504a0f1513622cd7e4"
+        },
+        {
+          "path": "app/editor-workspace.css",
+          "kind": "changed",
+          "tagSha256": "957a814d390e3e2c36ec6d65d2cdd6a931ce2e56a8d87fd1e74ae4ba56614db7",
+          "candidateSha256": "16e8b5bfd0013401be12cdaf7510b5b7f17699f22fb089af85035d3374811cd3"
+        },
+        {
+          "path": "app/main.mjs",
+          "kind": "changed",
+          "tagSha256": "4573b67f6e47a920ad1ed1e433f1347ff677a89abde45be363fc18382a12a0a0",
+          "candidateSha256": "4215e45e155edad14a9377f0e5da7139dd851b4c7c1d1fcfc90c3af6cd4b7b93"
+        },
+        {
+          "path": "app/tools/editor-runtime.mjs",
+          "kind": "changed",
+          "tagSha256": "a92b080494538c69ae59825673eec0f1bc1167d8ea3568d774af7d8fea1755f1",
+          "candidateSha256": "5e0535730155778b4f31de7ed33052979c6b90649f2f6ef0c941484e6a7a0b52"
+        },
+        {
+          "path": "app/tools/media-runtime.mjs",
+          "kind": "changed",
+          "tagSha256": "39f2986284855f78cf7c89ab4b7f67e8d2ad92f003ced8e69e36a2a890d45f90",
+          "candidateSha256": "6e5a9dc0b910fdc0bb1e45684f4d3194c2502927bcc25e8c0e6e3b9fb46811cb"
+        },
+        {
+          "path": "app/tools/video-studio.mjs",
+          "kind": "changed",
+          "tagSha256": "29997ecc46a397d8a66c6a6b4e7df219c4a7c7287a206d8dd87178397a7b3bb1",
+          "candidateSha256": "b5f9abd5db00d2f9ec27b1e57110df43be510aa5cf357170a6a5a53f4c619cf3"
+        }
+      ],
+      "tagCommit": "7850d680686d62ddc35d539319bf88353a7dc54f"
+    },
+    {
+      "dir": "templates/starter",
+      "candidateCommit": "84348855be8ae4e5a31936b3c2b0d1d21410bd64",
+      "tag": "starter-panel-v0.1.1",
+      "status": "directory-comparison-only",
+      "changes": [
+        {
+          "path": ".codeshell-panel/panel.json",
+          "kind": "changed",
+          "tagSha256": "ffb483588ac962b97ca391ad0a324b04a63560623879d1ecfd73984f30fe991c",
+          "candidateSha256": "91887f9fe48cf1c1103e480a839c4a5a359dc1894b93dd0b4b121a33478d188a"
+        },
+        {
+          "path": "README.md",
+          "kind": "changed",
+          "tagSha256": "326636a5d5a89a7b9b545fe372ff35d9b45836f7c1a78fb2f28b39cc70099342",
+          "candidateSha256": "461b86253c83e3d47477e073dd58f6d77dee4af112f31cfee4a1dd0324248891"
+        },
+        {
+          "path": "agent/skills/project-runtime/SKILL.md",
+          "kind": "added",
+          "tagSha256": null,
+          "candidateSha256": "7df8d444eb0657e2a7659168aa902aec65c7605aaa0cfbe7394831803f1c436f"
+        },
+        {
+          "path": "app/app.js",
+          "kind": "changed",
+          "tagSha256": "f60fcd8cb0437f40a37e54e586d854145c24b868d839c1405ad0c20d360d1909",
+          "candidateSha256": "78f8ca213cf6b33293bba3e36033c0230df3491e8cbc5ffa2cea1559bf69a16e"
+        },
+        {
+          "path": "app/counter.mjs",
+          "kind": "added",
+          "tagSha256": null,
+          "candidateSha256": "dba10d407f124ef237504122ffaff93680eb78db2fc37b9f87d5bee9e80e01d9"
+        },
+        {
+          "path": "app/tools/starter.mjs",
+          "kind": "added",
+          "tagSha256": null,
+          "candidateSha256": "a8adb967610ee405c62069f3d0ff841ae30f784af5fbfd089eea45b9c42e100b"
+        }
+      ],
+      "tagCommit": "754315421cd4169dc67443c467026af728493687"
+    }
+  ],
+  "verificationTool": {
+    "path": "scripts/verify-release-zip.mjs",
+    "sha256": "8bee2717015b624f8a7cf6c5b0d6163f629dca7975b11ee324ed273cb2e8c0b9",
+    "node": "25.8.1",
+    "npm": "11.11.0",
+    "focusedTests": {
+      "command": "npm test -- --suite release-zip",
+      "passed": 52,
+      "failed": 0,
+      "skipped": 0,
+      "isolatedHome": true
+    },
+    "packageValidationExitCode": 0,
+    "check": {
+      "command": "npm run check -- --suite release-zip",
+      "exitCode": 0,
+      "stoppedBeforeTests": false,
+      "passed": 52,
+      "failed": 0,
+      "skipped": 0,
+      "isolatedHome": true,
+      "reason": "Independent worktree-local cp -cR dependency clone removes realpath module-comment false differences. All pre-suite checks passed; Video deterministic committed package matches source; selected release-zip suite passed.",
+      "log": "artifacts/verify-release-zip-20261026/i1-independent-dependencies-20261027/check-release-zip-independent.log",
+      "logSha256": "e7f9b736a8733b2c0f4a2f8b33b4bf7eaa02812f2370737a06cc02cb7d47618e",
+      "completedAt": "2026-10-26T12:43:41.776146+00:00",
+      "allDomainSuitesRun": false
+    },
+    "checkHistory": [
+      {
+        "command": "npm run check -- --suite release-zip",
+        "exitCode": 1,
+        "stoppedBeforeTests": true,
+        "log": "artifacts/verify-release-zip-20261026/check-release-zip.log",
+        "logSha256": "57db43876e91f45777d16fc804e774a23ecbc463ee7e7ebd7784971a1e977e68",
+        "originalDiagnosis": "Existing video-studio committed generated package differs from source rebuild; no package changed by this task.",
+        "originalDiagnosisWasIncorrect": true,
+        "correctedDiagnosis": "Task-created node_modules symlink changed esbuild realpath-derived module comments and dependent digests; this was an environment false difference, not stale committed Video output. No Video rebuild is needed.",
+        "reportedPaths": [
+          ".codeshell-panel/panel.json",
+          "app/build-manifest.json",
+          "app/tools/editor-runtime.mjs",
+          "app/tools/editor-sync.mjs",
+          "app/tools/video-studio.mjs"
+        ],
+        "rawLogPreserved": true
+      }
+    ]
+  },
+  "i1EnvironmentCorrection": {
+    "issue": "I1",
+    "observedAt": "2026-10-26T12:43:41.776146+00:00",
+    "ccBaselineReproduction": {
+      "source": "CC independent controlled reproduction communicated in user instruction; not rerun by this task",
+      "baseline": "84348855be8ae4e5a31936b3c2b0d1d21410bd64",
+      "command": "node scripts/build-panels.mjs --check --app video-studio",
+      "independentCpCloneExitCode": 0,
+      "symlinkExitCode": 1,
+      "symlinkReportedSameFivePaths": true
+    },
+    "taskRepair": {
+      "removedOnlyTaskCreatedSymlink": true,
+      "oldLinkTarget": "../../node_modules",
+      "cloneCommand": "/bin/cp -cR <Panel-primary-checkout>/node_modules <this-worktree>/node_modules",
+      "cloneExitCode": 0,
+      "destinationIsSymlink": false,
+      "independentInodesVerifiedFor": [
+        "esbuild/package.json",
+        "yauzl/package.json",
+        "typescript/package.json"
+      ],
+      "sharedDependencyTargetModified": false,
+      "protectedFilesUnchanged": true,
+      "protectedFileSha256": {
+        "scripts/verify-release-zip.mjs": "8bee2717015b624f8a7cf6c5b0d6163f629dca7975b11ee324ed273cb2e8c0b9",
+        "tests/verify-release-zip.test.mjs": "15982870dc6f150db83f6876f64790ce4d7e8ed2ed9b2b7f6ec25863b61cf86b",
+        "tests/suites.mjs": "f4c1b70abd08c5229877cea4ce39f37b6b4c82da3ec056a9c27bc0064beaaff8",
+        "CONTRIBUTING.md": "9d1ec5844602383a62e1d79feed9e149c3a1c7daea0675b6883619d397e7518a",
+        "package.json": "179d9001009b532427ad7580f1a9f6832bdd0233fd7932d2d480198cf18f847d",
+        "package-lock.json": "9619bbbf3f51c087aca913bb9daa85d9637fd50251ec1c18fd3323e5cdb7fd52"
+      },
+      "businessSourceOrGeneratedPackageGitDiff": "",
+      "toolSourceChanged": false,
+      "receipts": [
+        "artifacts/verify-release-zip-20261026/i1-independent-dependencies-20261027/dependency-clone-receipt.json",
+        "artifacts/verify-release-zip-20261026/i1-independent-dependencies-20261027/check-receipt.json"
+      ],
+      "committedGeneratedPackageUpdated": false,
+      "temporaryBuildForCheckOnly": true
+    }
+  },
+  "integration20261027": {
+    "baseline": "d15a35bec1910c0a55be7b737a5343314635d4a2",
+    "branch": "codex/panel-shared/release-zip-integration-20261027",
+    "sourceBaseline": "84348855be8ae4e5a31936b3c2b0d1d21410bd64",
+    "sourceCcHistory": {
+      "pass": 52,
+      "fail": 0
+    },
+    "check": {
+      "command": [
+        "npm",
+        "run",
+        "check",
+        "--",
+        "--suite",
+        "release-zip"
+      ],
+      "exitCode": 0,
+      "pass": 52,
+      "fail": 0,
+      "skip": 0,
+      "log": "artifacts/release-zip-integration-20261027/check-release-zip.log",
+      "sha256": "39c3f7125b6225ccf3b8365b350550be746e09009f6812ef7814e9b37b78ff3e"
+    },
+    "dependencyClone": {
+      "method": "cp -cR",
+      "nodeModulesIsSymlink": false,
+      "independentInode": true
+    },
+    "appsPanelsTemplatesDiff": "empty versus d15a35bec1910c0a55be7b737a5343314635d4a2",
+    "zipReverification": [
+      {
+        "tag": "video-download-v0.24.1",
+        "tagObject": "0ca464667d5c2c68a4e31e5d9bd77678bbecc24b",
+        "tagCommit": "09fd3bd3b0b9c6bb286b54e2f2d7c47a4ac0520c",
+        "status": "equal",
+        "files": 34,
+        "differences": 0,
+        "assetSha256": "2000d17bc416944e9176e8c7891cea5644d03ac0a5ae9a38354d73250bc69a4e",
+        "receiptSha256": "504bfa5581fd0776abb29b7a7b4b39e90af0d874376d4e5901eea2d8fb0d8c26"
+      },
+      {
+        "tag": "video-studio-v0.8.0",
+        "tagObject": "d9f987c63a088e88a74674b0e41385c0f310a00a",
+        "tagCommit": "7850d680686d62ddc35d539319bf88353a7dc54f",
+        "status": "equal",
+        "files": 41,
+        "differences": 0,
+        "assetSha256": "7d21e60a3ce56549c8c21a11c7bc922705ceac1e01695a9c993b92b9035af0a8",
+        "receiptSha256": "04243e3b4ad300d366c5bb7bd8f4f38d05f7184c5c79a9b523a8544f556bf265"
+      },
+      {
+        "tag": "design-studio-v0.23.0",
+        "tagObject": "7e65aaab39200785c4b7412795094771a004b873",
+        "tagCommit": "2202581190b5b5abe3e1a8124e2a6c36a95b7e4e",
+        "status": "equal",
+        "files": 145,
+        "differences": 0,
+        "assetSha256": "c8e7790c87e24899aadb7fc78c8a9afe0c54b27660965d083ed421faa633a0d5",
+        "receiptSha256": "c9014686261455a98a688d86319e490a9d4aeae63ec82ef0e8466c63a09cda55"
+      }
+    ],
+    "status": "local task candidate; pending original CC final combined review; not merged or pushed; no release or native acceptance"
+  }
+}
