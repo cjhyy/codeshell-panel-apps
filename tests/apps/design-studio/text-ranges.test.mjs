@@ -30,7 +30,7 @@ test("strict range rejection covers stale source, unknown fields, sparse arrays,
   for (const mutate of [
     x => x.textRanges.sourceSignature = "[\"stale\"]",
     x => x.textRanges.other = true,
-    x => x.textRanges.ranges[0].fontSize = 12,
+    x => x.textRanges.ranges[0].futureFontOption = 12,
     x => x.textRanges.ranges = Array(1),
     x => x.textRanges.ranges = [{start:1,end:3,fill:"#123456"},{start:2,end:4,fill:"#123456"}],
     x => x.textRanges.ranges[0].start = 47.5,

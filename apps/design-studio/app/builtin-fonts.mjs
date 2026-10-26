@@ -1,5 +1,7 @@
 import { BUILTIN_DESIGN_FONTS } from "./builtin-font-catalog.mjs";
 import { createDesignResourcePersistencePlan, designResourcePartPath } from "./resource-store.mjs";
+import { projectTextRanges, textRangeTypography } from "./text-ranges.mjs";
+import { inspectFontCapabilities, fontFaceWeight } from "./font-capabilities.mjs";
 
 const loadedFaces = new WeakMap();
 const textNodes = (document) => {
@@ -69,7 +71,12 @@ export async function prepareBuiltinDesignFontResources(
     plans = new Map(),
     faces = [],
     parts = new Set();
-  for (const node of textNodes(document)) {
+  const owners = textNodes(document);
+  const rangeFonts = owners.flatMap(node => textRangeTypography(node).length
+    ? projectTextRanges({ ...node, text: node.textSource ?? node.text }).filter(run => run.style &&
+      (!node.fontRef || node.fontRef.startsWith("builtin-") || run.style.fontFamily !== node.fontFamily))
+      .map(run => ({ type: "text", ...run.style })) : []);
+  for (const node of [...owners, ...rangeFonts]) {
     if (node.fontRef) continue;
     const font = builtinDesignFontForNode(node);
     if (!font) continue;
@@ -147,7 +154,7 @@ export async function ensureBuiltinDesignFonts(
         const face = new FontFaceConstructor(
           descriptor.family,
           bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
-          { weight: String(descriptor.weight), style: descriptor.style },
+          { weight: fontFaceWeight(inspectFontCapabilities(bytes), descriptor), style: descriptor.style },
         );
         await face.load();
         fontSet.add(face);

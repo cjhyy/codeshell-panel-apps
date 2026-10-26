@@ -14,6 +14,18 @@ Complete backups (shown as **完整备份**, the complete design file; `codeshel
 
 New-page imports validate the entire transfer and preflight all text fonts before creating nodes, then remove only their newly created pages if construction fails. Font Awesome Free uses Solid or Regular and Brands uses Regular. Missing icon fonts and fonts used by Unicode private-use characters (including supplementary planes) fail explicitly without an Inter substitution. Other missing font family/style combinations fall back to Inter Regular and appear in the result report; an unavailable fallback font fails the import. Original-design updates require the source file to match when its file key is available, exact source IDs, and unchanged snapshots for the properties being edited. The plugin repeats this check immediately before applying. Deletes require an unchanged complete subtree. Failures request undo of this plugin's partial update; successful updates are committed as an undoable action. No cloud comments or external libraries are written.
 
+Explicit canonical text ranges may override one literal font family, size1–240,
+weight100–900 in hundred steps, and normal/italic style in new-page copies.
+The complete source-indexed runs include inherited gaps. Every required face is
+loaded before page creation, then written with native range font/size setters;
+an unavailable range face fails explicitly instead of substituting another face.
+Final live SDK and official REST observations must prove the effective typography
+before the plugin saves its author hint. The hint retains an unused base font
+tuple so clearing a fully covered range can restore that base. Existing-node
+range writes remain blocked. Legacy color/link-only ranges keep their prior
+behavior; mixed native source admission and cross-renderer pixels remain subject
+to their separate checks and are not established by these CPU/VM tests.
+
 Design Studio's bundled `builtin-fa-*-5-*` resources contain complete Font Awesome 6.7.2 bytes under the original FA5 family aliases. New native copies of those nodes explicitly require Font Awesome 6 Free or Brands, preserving newer glyphs such as `U+E586`; an installed older FA5 font cannot substitute for this requirement. Their original family and characters remain unchanged in the transfer and source binding. External FA5 font resources keep their original family. Original-design patch edits also retain the requested original family.
 
 The editable subset includes frames, rectangles, ellipses, plain text, local image fills, solid fills, legacy centered strokes, bounded solid independent side weights with inside/center/outside alignment, a single drop shadow, clipping, horizontal/vertical Auto Layout, native Grid, spacing, padding, constraints, and supported sizing modes. Image bytes travel in a separate bounded asset table and become verified external resources in the design repository. SVG and WebP resources are converted locally to PNG in the plugin UI before importing into Figma. Organizational groups and components are recreated as frames in copies; reverse layouts retain fixed geometry.

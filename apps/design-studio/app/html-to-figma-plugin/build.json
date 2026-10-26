@@ -5,12 +5,15 @@
   "gridCapture": "legacy-synthetic-with-diagnostics",
   "esbuildVersion": "0.28.2",
   "runtimeInputs": [
+    "apps/design-studio/app/builtin-font-catalog.mjs",
+    "apps/design-studio/app/conversion-report.mjs",
     "apps/design-studio/app/corner-radii.mjs",
     "apps/design-studio/app/css-linear-gradient.mjs",
     "apps/design-studio/app/design-node-adapter.mjs",
     "apps/design-studio/app/document-bundle.mjs",
     "apps/design-studio/app/document.mjs",
     "apps/design-studio/app/figma-assets.mjs",
+    "apps/design-studio/app/font-capabilities.mjs",
     "apps/design-studio/app/font-css.mjs",
     "apps/design-studio/app/font-family.mjs",
     "apps/design-studio/app/geometry.mjs",
@@ -35,8 +38,10 @@
     "apps/design-studio/app/image-mime.mjs",
     "apps/design-studio/app/layout-spacing.mjs",
     "apps/design-studio/app/linear-gradient-geometry.mjs",
+    "apps/design-studio/app/native-export-report.mjs",
     "apps/design-studio/app/native-notes.mjs",
     "apps/design-studio/app/native-stroke-inactive.mjs",
+    "apps/design-studio/app/native-text-font.mjs",
     "apps/design-studio/app/native-text-import.mjs",
     "apps/design-studio/app/native-text-range-hint.mjs",
     "apps/design-studio/app/native-text-range-plan.mjs",
@@ -46,6 +51,7 @@
     "apps/design-studio/app/resource-store.mjs",
     "apps/design-studio/app/shadow-stack.mjs",
     "apps/design-studio/app/stroke.mjs",
+    "apps/design-studio/app/svg-resource.mjs",
     "apps/design-studio/app/text-line-height.mjs",
     "apps/design-studio/app/text-metrics.mjs",
     "apps/design-studio/app/text-ranges.mjs",
@@ -88,13 +94,13 @@
     },
     {
       "path": "code.js",
-      "bytes": 234008,
-      "sha256": "c82a730510e0ddd11010443895d811809df3cbbd76be2b0bd3be3581b918da08"
+      "bytes": 238350,
+      "sha256": "6f61aa21e145bc736b4c717b4166005309bd1af3339ad7d8abf73313ca37a7ce"
     },
     {
       "path": "ui.html",
-      "bytes": 373852,
-      "sha256": "60a04a55ac48a75a8b5cea2988fa2a591dbb3e063b29ec72cd4b056147f54a10"
+      "bytes": 378194,
+      "sha256": "907342744430d08bb0e12f464cc2b42cfc131681136c0bcbfdd4477095edd312"
     },
     {
       "path": "README.md",

@@ -34,6 +34,9 @@ Starter 是同仓模板。同级 CodeShell Host、Services 和 html2figma 不是
 
 ## 保留中的开发工作
 
+本节是首次全仓合并时的保留边界。用户随后明确授权继续整理其中的 81 文件开发稿；
+后续整合与验收见 [专门记录](design-studio-draft-integration-20261026.md)，不回写本轮历史基线。
+
 - `codex/design-studio/html-inline-promotion-20261021` 的 `2ec13ee` 是明确 WIP：
   两个 strict-zero-pixel case 仍失败，生命周期、字体和资源竞态验证未完成。
   保留原分支/源/失败基线，不把它当作通过验收的转换功能。

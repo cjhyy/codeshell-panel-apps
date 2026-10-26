@@ -1,8 +1,10 @@
 import { textLineHeightPixels } from "../text-line-height.mjs";
 import { designFillPaints, gradientMatrix } from "../paint.mjs";
 import { designFontFamilyCss, designNamedFontFamilyCss, designResourceFontFamilyCss } from "../font-css.mjs";
-import { currentTextMetrics } from "../text-metrics.mjs";
+import { currentTextMetrics, textDisplayLineMetrics } from "../text-metrics.mjs";
 import { projectTextRanges, validateTextRanges } from "../text-ranges.mjs";
+import { parseDesignFontFamily } from "../font-family.mjs";
+import { inspectFontCapabilities, fontFaceWeight, fontWeightAxis, selectFontEntry } from "../font-capabilities.mjs";
 
 export function canvasKitTextRangePlan(node, { suppliedFont = true, missingGlyphs = 0 } = {}) {
   const payload = validateTextRanges(node);
@@ -58,6 +60,7 @@ export async function createCanvasKitText({
 }) {
   const provider = CK.TypefaceFontProvider.Make(),
     faces = new Map(),
+    fontFamilies = new Map(),
     aliasFamilies = new Map(),
     domFaces = [];
   let counters = initialCounters,
@@ -86,6 +89,8 @@ export async function createCanvasKitText({
   const urlFonts =
     fallbackFontUrls instanceof Map ? fallbackFontUrls : new Map(Object.entries(fallbackFontUrls));
   const fetched = new Map();
+  const fontSelections = new Map();
+  let omittedFontSelections = 0;
   try {
     for (const node of design.nodes.filter((n) => n.type === "text")) {
       if (!node.fontRef && urlFonts.has(node.fontFamily) && !fetched.has(node.fontFamily)) {
@@ -117,12 +122,17 @@ export async function createCanvasKitText({
         continue;
       const face = CK.Typeface.MakeFreeTypeFaceFromData(resource.bytes);
       if (!face) continue;
-      const alias = `${fontPrefix}-${faces.size}`;
+      const familyKey = String(descriptor.family ?? id).toLowerCase();
+      const group = fontFamilies.get(familyKey) ?? { alias: `${fontPrefix}-${fontFamilies.size}`, entries: [] };
+      fontFamilies.set(familyKey, group);
+      const alias = group.alias;
       provider.registerFont(resource.bytes, alias);
-      faces.set(id, { face, alias, family: descriptor.family });
+      const capabilities = inspectFontCapabilities(resource.bytes);
+      const entry = { id, face, alias, family: descriptor.family, weight: descriptor.weight ?? 400, style: descriptor.style ?? "normal", capabilities };
+      faces.set(id, entry); group.entries.push(entry);
       if (typeof descriptor.family === "string") aliasFamilies.set(alias, descriptor.family);
       const domFace = new FontFace(alias, resource.bytes, {
-        weight: "1 1000",
+        weight: fontFaceWeight(capabilities, descriptor),
         style: descriptor.style || "normal",
       });
       await domFace.load();
@@ -135,6 +145,46 @@ export async function createCanvasKitText({
     for (const face of domFaces) document.fonts.delete(face);
     provider.delete();
     throw error;
+  }
+
+  function resolvedFont(node, style) {
+    const selected = faces.get(node.fontRef) ?? faces.get(node.fontFamily);
+    const family = style.fontFamily === (node.fontFamily ?? "Inter") && selected
+      ? selected.family : parseDesignFontFamily(style.fontFamily)?.[0]?.name;
+    const group = fontFamilies.get(String(family).toLowerCase());
+    // Preserve existing unbound static-text fallback semantics. A byte-proven
+    // variable face may resolve a new primary instance without rewriting fontRef;
+    // range faces still resolve all complete exact/variable supplied resources.
+    const candidates = style === node && !selected ? (group?.entries ?? []).filter(entry => fontWeightAxis(entry.capabilities)) : group?.entries ?? [];
+    const entry = selectFontEntry(candidates, { family, weight: style.fontWeight, style: style.fontStyle ?? "normal", preferredId: selected?.id });
+    const key = JSON.stringify([node.id, style.fontFamily, style.fontWeight, style.fontStyle ?? "normal"]);
+    if (fontSelections.has(key) || fontSelections.size < 256) fontSelections.set(key, {
+      nodeId: node.id, requestedFamily: style.fontFamily, requestedWeight: style.fontWeight, requestedStyle: style.fontStyle ?? "normal",
+      resourceId: entry?.id ?? null, declaredWeight: entry?.weight ?? null,
+      selection: entry ? fontWeightAxis(entry.capabilities) ? "variable-instance" : "exact-face" : "unavailable",
+      proof: entry?.capabilities.proof ?? "none",
+    }); else omittedFontSelections++;
+    return entry;
+  }
+  function rangeFont(node, style) {
+    const entry = resolvedFont(node, style);
+    if (!entry) {
+      const error = new Error(`TEXT_RANGES_UNSUPPORTED: ${String(node.id).slice(0,100)} · 缺少范围字体 ${style.fontFamily} ${style.fontWeight} ${style.fontStyle} 的完整字库`);
+      error.code = "TEXT_RANGES_UNSUPPORTED"; throw error;
+    }
+    return entry;
+  }
+
+  function rangeStyle(node, style) {
+    const entry = rangeFont(node, style);
+    return new CK.TextStyle({
+      fontFamilies: [entry.alias], fontSize: style.fontSize,
+      fontStyle: { weight: CK.FontWeight[weightKey(style.fontWeight)], width: CK.FontWidth.Normal,
+        slant: style.fontStyle === "italic" ? CK.FontSlant.Italic : CK.FontSlant.Upright },
+      fontVariations: fontWeightAxis(entry.capabilities) ? [{ axis: "wght", value: style.fontWeight }] : [], letterSpacing: node.letterSpacing || 0,
+      decoration: style.textDecoration === "underline" ? CK.UnderlineDecoration :
+        style.textDecoration === "line-through" ? CK.LineThroughDecoration : CK.NoDecoration,
+    });
   }
 
   function configure(node, alias) {
@@ -413,7 +463,29 @@ export async function createCanvasKitText({
     const signature = JSON.stringify(node),
       cached = contentBoundsCache.get(node.id);
     if (cached?.signature === signature) return cached.bounds;
-    const entry = faces.get(node.fontRef) ?? faces.get(node.fontFamily);
+    if (node.textRanges !== undefined) {
+      const runs = canvasKitTextRangePlan(node), lineLayout = textDisplayLineMetrics(node);
+      let left = node.x, top = node.y, right = node.x + node.width, bottom = node.y + node.height;
+      for (const [index] of String(node.text).split("\n").entries()) {
+        const fragments = runs.filter(run => run.lineIndex === index && run.kind === "source" && run.text !== "\n");
+        if (!fragments.length) continue;
+        const builder = CK.ParagraphBuilder.MakeFromFontProvider(new CK.ParagraphStyle({ textStyle: rangeStyle(node, fragments[0].style), maxLines: 1 }), provider);
+        let paragraph;
+        try {
+          for (const run of fragments) { builder.pushStyle(rangeStyle(node, run.style)); builder.addText(run.text); builder.pop(); }
+          paragraph = builder.build(); paragraph.layout(1048576);
+          const width = paragraph.getLongestLine(), x = alignedX(node, width);
+          const base = faces.get(node.fontRef) ?? faces.get(node.fontFamily);
+          const y = node.y + lineLayout.offsets[index] + hangingOffset(node, base?.alias) - paragraph.getAlphabeticBaseline();
+          const pad = Math.max(node.fontSize, ...fragments.map(run => run.style.fontSize));
+          left = Math.min(left, x - pad); right = Math.max(right, x + width + pad);
+          top = Math.min(top, y - pad); bottom = Math.max(bottom, y + paragraph.getHeight() + pad);
+        } finally { paragraph?.delete(); builder.delete(); }
+      }
+      const bounds = { x: left, y: top, width: right - left, height: bottom - top };
+      contentBoundsCache.set(node.id, { signature, bounds }); return bounds;
+    }
+    const entry = resolvedFont(node, node);
     configure(node, entry?.alias);
     let left = node.x,
       right = node.x + node.width,
@@ -531,19 +603,8 @@ export async function createCanvasKitText({
   }
 
   function drawTextRanges(canvas, node, alias, lines, runs, baseline, metrics) {
-    const styleFor = (decoration) => new CK.TextStyle({
-      fontFamilies: [alias],
-      fontSize: node.fontSize,
-      fontStyle: {
-        weight: CK.FontWeight[weightKey(node.fontWeight)],
-        width: CK.FontWidth.Normal,
-        slant: node.fontStyle === "italic" ? CK.FontSlant.Italic : CK.FontSlant.Upright,
-      },
-      fontVariations: [{ axis: "wght", value: node.fontWeight }],
-      letterSpacing: node.letterSpacing || 0,
-      decoration: decoration === "underline" ? CK.UnderlineDecoration :
-        decoration === "line-through" ? CK.LineThroughDecoration : CK.NoDecoration,
-    });
+    const baseStyle = { fontFamily: node.fontFamily ?? "Inter", fontSize: node.fontSize, fontWeight: node.fontWeight,
+      fontStyle: node.fontStyle ?? "normal", textDecoration: node.textDecoration ?? "none" };
     for (let index = 0; index < lines.length; index++) {
       const line = lines[index];
       const fragments = runs.filter((run) => run.lineIndex === index && run.text !== "\n");
@@ -553,27 +614,26 @@ export async function createCanvasKitText({
       const paints = [];
       try {
         builder = CK.ParagraphBuilder.MakeFromFontProvider(
-          new CK.ParagraphStyle({ textStyle: styleFor(node.textDecoration), maxLines: 1 }), provider,
+          new CK.ParagraphStyle({ textStyle: rangeStyle(node, baseStyle), maxLines: 1 }), provider,
         );
         const background = new CK.Paint();
         background.setAlphaf(0);
         paints.push(background);
-        for (const run of fragments.length ? fragments : [{ text: " ", style: { fill: node.fill, textDecoration: node.textDecoration } }]) {
+        for (const run of fragments.length ? fragments : [{ text: " ", style: { ...baseStyle, fill: node.fill } }]) {
           const foreground = makePaint(node, { type: "SOLID", color: run.style.fill, opacity: 1 });
           paints.push(foreground);
-          builder.pushPaintStyle(styleFor(run.style.textDecoration), foreground, background);
+          builder.pushPaintStyle(rangeStyle(node, run.style), foreground, background);
           builder.addText(run.text);
           builder.pop();
         }
-        // All paint runs share one builder/line and identical typography. Never
-        // shape substrings or place independent run Text/Canvas2D fragments.
+        // Every typography/paint run shares one builder and one shaped line.
         paragraph = builder.build();
         paragraph.layout(1048576);
         const width = paragraph.getLongestLine();
         if (metrics)
           maxWidthDelta = Math.max(maxWidthDelta, Math.abs(width - metrics.lineWidths[index]));
         canvas.drawParagraph(paragraph, alignedX(node, width),
-          node.y + index * textLineHeightPixels(node) + baseline - paragraph.getAlphabeticBaseline());
+          node.y + textDisplayLineMetrics(node).offsets[index] + baseline - paragraph.getAlphabeticBaseline());
       } finally {
         paragraph?.delete();
         builder?.delete();
@@ -587,7 +647,7 @@ export async function createCanvasKitText({
     unsupportedNode = nextUnsupported;
     missingByNode.delete(node.id);
     unrenderedByNode.delete(node.id);
-    const entry = faces.get(node.fontRef) ?? faces.get(node.fontFamily);
+    const entry = resolvedFont(node, node);
     const rangePayload = node.textRanges === undefined ? undefined : validateTextRanges(node);
     const lines = String(node.text).split("\n"),
       metrics = currentTextMetrics(node);
@@ -614,14 +674,17 @@ export async function createCanvasKitText({
       );
       return;
     }
-    const probe = new CK.Font(entry.face, node.fontSize);
-    const glyphs = probe.getGlyphIDs(
-      node.text.replaceAll("\n", ""),
-      [...node.text.replaceAll("\n", "")].length,
-    );
-    const missing = [...glyphs].filter((glyph) => glyph === 0).length;
-    probe.delete();
-    const rangeRuns = rangePayload ? canvasKitTextRangePlan(node, { missingGlyphs: missing }) : null;
+    const rangeRuns = rangePayload ? canvasKitTextRangePlan(node) : null;
+    let missing = 0;
+    const probes = rangeRuns ? rangeRuns.filter(run => run.kind === "source").map(run => ({
+      text: run.text.replaceAll("\n", ""), entry: rangeFont(node, run.style), size: run.style.fontSize,
+    })) : [{ text: node.text.replaceAll("\n", ""), entry, size: node.fontSize }];
+    for (const run of probes) {
+      const probe = new CK.Font(run.entry.face, run.size);
+      try { missing += [...probe.getGlyphIDs(run.text, [...run.text].length)].filter(glyph => glyph === 0).length; }
+      finally { probe.delete(); }
+    }
+    if (rangeRuns && missing) canvasKitTextRangePlan(node, { missingGlyphs: missing });
     if (missing) {
       missingByNode.set(node.id, missing);
       counters.rasterTextNodes++;
@@ -657,7 +720,7 @@ export async function createCanvasKitText({
           width: CK.FontWidth.Normal,
           slant: node.fontStyle === "italic" ? CK.FontSlant.Italic : CK.FontSlant.Upright,
         },
-        fontVariations: [{ axis: "wght", value: node.fontWeight }],
+        fontVariations: fontWeightAxis(entry.capabilities) ? [{ axis: "wght", value: node.fontWeight }] : [],
         letterSpacing: node.letterSpacing || 0,
         decoration:
           node.textDecoration === "underline"
@@ -723,6 +786,9 @@ export async function createCanvasKitText({
     contentBounds,
     stats: () => ({
       loadedFontResources: faces.size,
+      fontCapabilities: [...faces.values()].map(entry => ({ resourceId: entry.id, family: entry.family, declaredWeight: entry.weight, style: entry.style, ...entry.capabilities })),
+      fontSelections: [...fontSelections.values()],
+      omittedFontSelections,
       nativeMissingGlyphs: [...missingByNode.values()].reduce((sum, value) => sum + value, 0),
       unrenderedTextLines: [...unrenderedByNode.values()].reduce((sum, value) => sum + value, 0),
       maxNativeTextWidthDelta: maxWidthDelta,

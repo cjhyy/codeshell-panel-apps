@@ -163,7 +163,7 @@ export function admitNativeTextImport(input) {
     if (!plain(font) || typeof font.family !== "string" || !font.family.length ||
         font.family !== font.family.trim() || font.family.length > 120 || /[\u0000-\u001f\u007f,"'\\]/u.test(font.family) ||
         genericFamilies.has(font.family.toLowerCase()) ||
-        !Number.isFinite(size) || size < 6 || size > 240 ||
+        !Number.isFinite(size) || size < 1 || size > 240 ||
         ![100,200,300,400,500,600,700,800,900].includes(weight) ||
         !["REGULAR", "ITALIC"].includes(style) ||
         !["Regular", "Bold", "Italic", "Bold Italic"].includes(font.style) ||

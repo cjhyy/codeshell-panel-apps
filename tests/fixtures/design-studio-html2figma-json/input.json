@@ -1,0 +1,137 @@
+{
+  "type": "FRAME",
+  "id": "plugin-root",
+  "name": "html2figma JSON fidelity",
+  "x": 40,
+  "y": 50,
+  "width": 500,
+  "height": 300,
+  "fills": [
+    {
+      "type": "SOLID",
+      "color": {
+        "r": 1,
+        "g": 1,
+        "b": 1
+      }
+    }
+  ],
+  "children": [
+    {
+      "type": "FRAME",
+      "id": "plugin-card",
+      "name": "Nested card",
+      "x": 20,
+      "y": 20,
+      "width": 460,
+      "height": 260,
+      "fills": [
+        {
+          "type": "SOLID",
+          "color": {
+            "r": 0.94,
+            "g": 0.96,
+            "b": 1
+          }
+        }
+      ],
+      "cornerRadius": 16,
+      "children": [
+        {
+          "type": "TEXT",
+          "id": "plugin-title",
+          "name": "Editable title",
+          "x": 24,
+          "y": 24,
+          "width": 400,
+          "height": 40,
+          "characters": "HTML → Figma → CodeShell",
+          "fontName": {
+            "family": "Inter",
+            "style": "Bold"
+          },
+          "fontSize": 24,
+          "lineHeight": {
+            "unit": "PIXELS",
+            "value": 30
+          },
+          "fills": [
+            {
+              "type": "SOLID",
+              "color": {
+                "r": 0,
+                "g": 0,
+                "b": 0
+              }
+            }
+          ],
+          "styledTextSegments": [
+            {
+              "start": 15,
+              "end": 24,
+              "fills": [
+                {
+                  "type": "SOLID",
+                  "color": {
+                    "r": 0,
+                    "g": 0.25,
+                    "b": 1
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "TEXT",
+          "id": "plugin-body",
+          "name": "Editable body",
+          "x": 24,
+          "y": 84,
+          "width": 400,
+          "height": 60,
+          "characters": "Nested coordinates, fonts, colors and spacing stay editable.",
+          "fontName": {
+            "family": "Inter",
+            "style": "Regular"
+          },
+          "fontSize": 16,
+          "lineHeight": {
+            "unit": "PIXELS",
+            "value": 24
+          },
+          "fills": [
+            {
+              "type": "SOLID",
+              "color": {
+                "r": 0.2,
+                "g": 0.2,
+                "b": 0.2
+              }
+            }
+          ]
+        },
+        {
+          "type": "RECTANGLE",
+          "id": "plugin-marker",
+          "name": "Blue marker",
+          "x": 24,
+          "y": 170,
+          "width": 120,
+          "height": 48,
+          "cornerRadius": 8,
+          "fills": [
+            {
+              "type": "SOLID",
+              "color": {
+                "r": 0,
+                "g": 0.25,
+                "b": 1
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

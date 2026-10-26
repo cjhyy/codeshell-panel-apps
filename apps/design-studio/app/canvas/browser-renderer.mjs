@@ -3,6 +3,8 @@ import { createDesignRuntimeFontFamily, designTextFontResourceIds } from "../fon
 import { inertDesignSvg } from "../design-node-adapter.mjs";
 import { insideRoundedRect } from "../corner-radii.mjs";
 import { normalizeDesignResources, normalizeDesignResourceDescriptor } from "../resource-store.mjs";
+import { inspectFontCapabilities, fontFaceWeight, fontWeightAxis, selectFontEntry } from "../font-capabilities.mjs";
+import { parseDesignFontFamily } from "../font-family.mjs";
 
 const MAX_BYTES = 16 * 1024 * 1024;
 const MAX_NODES = 10000;
@@ -96,28 +98,49 @@ export function createBrowserRenderer({ container, document = container?.ownerDo
         if (asset.descriptor.kind !== "font") continue;
         assert(faces.size < 32, "Browser font resource count exceeds 32");
         const descriptor = asset.descriptor, key = descriptor.family.toLowerCase();
+        const capabilities = inspectFontCapabilities(asset.bytes), weight = fontFaceWeight(capabilities, descriptor);
         const fallbackAlias = families.get(key)?.alias ?? `csbr${id}-${token}-family-${families.size}`;
         // Give the browser the actual faces of each family, including nearest
         // weight/style selection and synthesis for later glyph fallbacks.
+        // Secondary glyph fallbacks retain their CSS face declarations. Primary
+        // and range selections below use a separate byte-validated alias.
         const face = new window.FontFace(fallbackAlias, asset.bytes, {weight:String(descriptor.weight),style:descriptor.style ?? "normal"});
         await prepared(face.load(),"font"); if (!alive(token)) return false;
         pendingFaces.push(face); families.set(key,{name:descriptor.family,alias:fallbackAlias});
         const alias = `csbr${id}-${token}-resource-${faces.size}`;
-        const selectedFace = new window.FontFace(alias, asset.bytes, {weight:"1 1000",style:descriptor.style ?? "normal"});
+        const selectedFace = new window.FontFace(alias, asset.bytes, {weight,style:descriptor.style ?? "normal"});
         await prepared(selectedFace.load(),"selected font"); if (!alive(token)) return false;
         pendingFaces.push(selectedFace);
         assert(pendingFaces.length <= 64, "Browser private font face count exceeds 64");
-        faces.set(resourceId, {alias,descriptor});
+        faces.set(resourceId, {alias,descriptor,capabilities});
       }
       if (!alive(token)) return false;
       for (const face of pendingFaces) document.fonts.add(face);
-      const runtimeFontFamily = node => {
+      const fontSelections = [];
+      let omittedFontSelections = 0;
+      const runtimeFontFamily = (node, request = node) => {
         for (const resourceId of designTextFontResourceIds(node,design.resources))
           assert(faces.has(resourceId), `Missing supplied named fallback font bytes for ${node.id}`);
         const selected = node.fontRef ? faces.get(node.fontRef) : null;
         if (node.fontRef) assert(selected, `Missing supplied font bytes for ${node.id}`);
+        let resolved;
+        {
+          const family = selected && request.fontFamily === node.fontFamily ? selected.descriptor.family : parseDesignFontFamily(request.fontFamily)?.[0]?.name;
+          const weight = request.fontWeight, style = request.fontStyle ?? "normal";
+          const supplied = [...faces.values()].filter(entry => entry.descriptor.family.toLowerCase() === String(family).toLowerCase());
+          const entry = selectFontEntry(supplied, {family,weight,style,preferredId:selected?.descriptor.id});
+          resolved = entry;
+          if (supplied.length && !entry) {
+            const error = Error(`BROWSER_FONT_UNSUPPORTED: ${String(node.id).slice(0,100)} · 已提供的字体不覆盖 ${family} ${weight} ${style}；未合成或替代字重。`);
+            error.code = "BROWSER_FONT_UNSUPPORTED"; throw error;
+          }
+          if (fontSelections.length < 256) fontSelections.push({nodeId:node.id,requestedFamily:request.fontFamily,requestedWeight:weight,requestedStyle:style,
+            resourceId:entry?.descriptor.id ?? null,declaredWeight:entry?.descriptor.weight ?? null,
+            selection:entry ? fontWeightAxis(entry.capabilities) ? "variable-instance" : "exact-face" : "browser-family",proof:entry?.capabilities.proof ?? "none"});
+          else omittedFontSelections++;
+        }
         const aliases = [...families.values()];
-        return createDesignRuntimeFontFamily(node.fontFamily, {aliases,...(selected ? {resourceFamily:selected.descriptor.family,resourceAlias:selected.alias} : {})});
+        return createDesignRuntimeFontFamily(request.fontFamily, {aliases,...(resolved ? {resourceFamily:resolved.descriptor.family,resourceAlias:resolved.alias} : {})});
       };
       const urls = new Map([...assets].map(([resourceId, asset]) => [resourceId, dataUrl(asset.bytes, asset.mime, window)]));
       const withoutFontRules = { ...design, resources:(design.resources ?? []).filter(resource => resource.kind !== "font") };
@@ -158,7 +181,8 @@ export function createBrowserRenderer({ container, document = container?.ownerDo
       // Force the real font/style request before waiting for FontFaceSet.ready.
       candidate.getBoundingClientRect(); await prepared(document.fonts.ready,"font layout");
       if (!alive(token)) return false;
-      const measured = measure(candidate, nodes), nextStats = { renderer:"browser", inputNodes:nodes.length, flowNodes:0, absoluteNodes:0, layoutReads:measured.size, loadedFontResources:faces.size, loadedFontFaces:pendingFaces.length };
+      const measured = measure(candidate, nodes), nextStats = { renderer:"browser", inputNodes:nodes.length, flowNodes:0, absoluteNodes:0, layoutReads:measured.size, loadedFontResources:faces.size, loadedFontFaces:pendingFaces.length,
+        fontCapabilities:[...faces.values()].map(entry => ({resourceId:entry.descriptor.id,family:entry.descriptor.family,declaredWeight:entry.descriptor.weight,style:entry.descriptor.style,...entry.capabilities})),fontSelections,omittedFontSelections };
       const hiddenIds = viewOptions.hiddenNodeIds ?? [];
       assert(Array.isArray(hiddenIds) && hiddenIds.length <= MAX_NODES && hiddenIds.every(value => typeof value === "string" && measured.has(value)), "Invalid browser-only paint suppression");
       for (const nodeId of hiddenIds) measured.get(nodeId).element.style.visibility = "hidden";

@@ -1,5 +1,6 @@
 // Only faces constructed here belong to this manager. Resource IDs/family names
 // never authorize deletion from the shared document FontFaceSet.
+import { inspectFontCapabilities, fontCapabilitiesFromDataUrl, fontFaceWeight } from "./font-capabilities.mjs";
 export function createOwnedFontManager({ fontSet, createFace } = {}) {
   let lifecycle = 0, revision = 0, suspended = false;
   let active = new Map();
@@ -84,8 +85,9 @@ export function createOwnedFontManager({ fontSet, createFace } = {}) {
           if (!createFace || !fontSet) return;
           const old = active.get(resource.descriptor.id);
           if (old && sameResource(old, resource)) return [resource.descriptor.id, old];
+          const capabilities = resource.bytes ? inspectFontCapabilities(resource.bytes) : fontCapabilitiesFromDataUrl(resource.dataUrl);
           const face = createFace(resource.descriptor.family, `url(${resource.dataUrl})`, {
-            weight: String(resource.descriptor.weight), style: resource.descriptor.style,
+            weight: fontFaceWeight(capabilities, resource.descriptor), style: resource.descriptor.style,
           });
           await face.load();
           assertOperation(token);

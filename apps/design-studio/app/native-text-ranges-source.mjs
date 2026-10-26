@@ -1,6 +1,7 @@
 /** Read-only native text evidence. No SDK, DOM, mutation, or CSS/native underline conversion. */
 import { textRangeSourceSignature, validateTextRanges, isSafeTextRangeHref } from "./text-ranges.mjs";
 import { nativeTextLineHeight, validTextLineHeight } from "./text-line-height.mjs";
+import { nativeTextFontName } from "./native-text-font.mjs";
 
 export const MAX_NATIVE_TEXT_RANGE_SOURCE_BYTES = 256 * 1024;
 export const MAX_NATIVE_TEXT_RANGE_SEGMENTS = 256;
@@ -312,20 +313,33 @@ export function importNativeTextRanges(input) {
       if (requireValue(context, field) !== expected) fail(`Native ${field} applicability is unsupported`, "NATIVE_TEXT_RANGES_UNSUPPORTED_METRICS");
     if ({LEFT:"left",CENTER:"center",RIGHT:"right"}[requireValue(context, "textAlignHorizontal")] !== (canonicalNode.textAlign ?? "left"))
       fail("Canonical text alignment differs from native", "NATIVE_TEXT_RANGES_UNSUPPORTED_METRICS");
+    const fontKeys = ["fontFamily", "fontSize", "fontWeight", "fontStyle"];
+    // Creation can prove the newly authored typography subset. This opt-in does
+    // not supply observed values: every returned override still comes from the
+    // independently bound live/REST run, and the hint compares effective plans.
+    const allowTypography = canonicalNode.textRanges?.ranges?.some(range => fontKeys.some(key => own(range, key)));
     const baseMetrics = live.segments[0]?.values, ranges = [];
     for (const segment of live.segments) {
       const v = segment.values; plainMetrics(v);
-      for (const key of METRICS) if (!same(valueOf(v, key), valueOf(baseMetrics, key)))
+      for (const key of allowTypography ? ["lineHeight", "letterSpacing"] : METRICS) if (!same(valueOf(v, key), valueOf(baseMetrics, key)))
         fail("Native metric variants cannot be split into paint ranges", "NATIVE_TEXT_RANGES_UNSUPPORTED_METRICS");
       const font = requireValue(v, "fontName"), line = requireValue(v, "lineHeight"), spacing = requireValue(v, "letterSpacing");
-      if (!plain(font) || font.family !== canonicalNode.fontFamily || valueOf(v, "fontSize") !== canonicalNode.fontSize ||
-          requireValue(v, "fontWeight") !== canonicalNode.fontWeight || requireValue(v, "fontStyle") !== (canonicalNode.fontStyle === "italic" ? "ITALIC" : "REGULAR") ||
+      if (!plain(font) || !allowTypography && (font.family !== canonicalNode.fontFamily || valueOf(v, "fontSize") !== canonicalNode.fontSize ||
+          requireValue(v, "fontWeight") !== canonicalNode.fontWeight || requireValue(v, "fontStyle") !== (canonicalNode.fontStyle === "italic" ? "ITALIC" : "REGULAR")) ||
           !matchesNativeLineHeight(line, canonicalNode) ||
           !plain(spacing) || !(spacing.value === 0 && canonicalNode.letterSpacing === 0 || spacing.unit === "PIXELS" && spacing.value === canonicalNode.letterSpacing))
         fail("Canonical font metrics differ from native", "NATIVE_TEXT_RANGES_UNSUPPORTED_METRICS");
-      if (!keys(font, ["family", "style", "variationSettings"]) || !["Regular", "Bold", "Italic", "Bold Italic"].includes(font.style) ||
+      const nativeTypography = allowTypography ? { fontFamily: font.family, fontSize: requireValue(v, "fontSize"),
+        fontWeight: requireValue(v, "fontWeight"), fontStyle: requireValue(v, "fontStyle") === "ITALIC" ? "italic" : "normal" } : null;
+      if (allowTypography && (!Number.isFinite(nativeTypography.fontSize) || nativeTypography.fontSize < 1 || nativeTypography.fontSize > 240 ||
+          !["REGULAR", "ITALIC"].includes(requireValue(v, "fontStyle"))))
+        fail("Native font tuple is outside supported range metrics", "NATIVE_TEXT_RANGES_UNSUPPORTED_METRICS");
+      const expectedStyle = allowTypography ? nativeTextFontName(nativeTypography).style : null;
+      if (!keys(font, ["family", "style", "variationSettings"]) ||
+          !(allowTypography ? font.style === expectedStyle || font.style === "Regular" && font.variationSettings?.wght === nativeTypography.fontWeight && nativeTypography.fontStyle === "normal"
+            : ["Regular", "Bold", "Italic", "Bold Italic"].includes(font.style)) ||
           own(font, "variationSettings") && (!plain(font.variationSettings) || Object.entries(font.variationSettings).some(([axis, number]) =>
-            axis === "wght" ? number !== canonicalNode.fontWeight : axis === "slnt" ? number !== 0 : true)))
+            axis === "wght" ? number !== (nativeTypography?.fontWeight ?? canonicalNode.fontWeight) : axis === "slnt" ? number !== 0 : true)))
         fail("Native font axis/style is outside canonical uniform metrics", "NATIVE_TEXT_RANGES_UNSUPPORTED_METRICS");
       const fill = exactColor(requireValue(v, "fills")), decoration = requireValue(v, "textDecoration");
       if (!["NONE", "UNDERLINE", "STRIKETHROUGH"].includes(decoration)) fail("Native decoration is unsupported", "NATIVE_TEXT_RANGES_UNSUPPORTED_DECORATION");
@@ -335,6 +349,9 @@ export function importNativeTextRanges(input) {
       if (target === undefined || typeof target === "string" && (target.startsWith("#") || !isSafeTextRangeHref(target)))
         fail("Native hyperlink target is unsupported; raw value retained", "NATIVE_TEXT_RANGES_UNSUPPORTED_HYPERLINK");
       const range = { start: segment.start, end: segment.end };
+      if (nativeTypography) for (const key of fontKeys)
+        if (nativeTypography[key] !== (canonicalNode[key] ?? (key === "fontFamily" ? "Inter" : key === "fontWeight" ? 400 : key === "fontStyle" ? "normal" : undefined)))
+          range[key] = nativeTypography[key];
       const textDecoration = {NONE:"none",UNDERLINE:"underline",STRIKETHROUGH:"line-through"}[decoration];
       if (fill !== canonicalNode.fill?.toLowerCase()) range.fill = fill;
       if (textDecoration !== (canonicalNode.textDecoration ?? "none")) range.textDecoration = textDecoration;
@@ -343,7 +360,7 @@ export function importNativeTextRanges(input) {
     }
     const textRanges = validateTextRanges({ ...canonicalNode, textRanges: { version: 1,
       sourceSignature: textRangeSourceSignature(live.characters), ranges } });
-    notes.push(issue("NATIVE_TEXT_RANGES_PIXELS_UNVERIFIED", "Native paint/link/decoration intent recovered; cross-renderer pixels are not verified"));
+    notes.push(issue("NATIVE_TEXT_RANGES_PIXELS_UNVERIFIED", "Native color/link/decoration/font intent recovered; cross-renderer pixels are not verified"));
     return { status: textRanges ? "admitted-intent" : "uniform", ...(textRanges ? { textRanges } : {}), diagnostics: notes, pixelsVerified: false };
   } catch (error) { return unsupported(error); }
 }

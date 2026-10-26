@@ -25,7 +25,8 @@ export function installNativeTextRangeSdkMock(target, { mixed, toRuntime = copy 
     .map(([field, observation]) => [field, copy(observation.value)]));
   const segmentDefaults = readDefaults(actual.segments[0].values), scalarDefaults = readDefaults(actual.scalars);
   const originals = new Map(), history = [], bases = {};
-  for (const field of ["fills", "textDecoration", "hyperlink"]) {
+  const fontRanges = typeof target.setRangeFontName === "function" && typeof target.setRangeFontSize === "function";
+  for (const field of ["fills", "textDecoration", "hyperlink", ...(fontRanges ? ["fontName", "fontSize"] : [])]) {
     const descriptor = Object.getOwnPropertyDescriptor(target, field);
     if (descriptor && !descriptor.configurable) throw new Error(`Mock cannot replace ${field}`);
     bases[field] = copy(target[field] ?? scalarDefaults[field]);
@@ -51,7 +52,7 @@ export function installNativeTextRangeSdkMock(target, { mixed, toRuntime = copy 
     if (field === "fontWeight") {
       let explicit;
       Object.defineProperty(target, field, { configurable: true, enumerable: true,
-        get: () => explicit ?? (/Bold/u.test(target.fontName?.style ?? "") ? 700 : 400), set: value => { explicit = value; },
+        get: () => explicit ?? (fontRanges ? cloneOutput(uniform("fontWeight", 0, target.characters.length)) : /Bold/u.test(target.fontName?.style ?? "") ? 700 : 400), set: value => { explicit = value; },
       });
       continue;
     }
@@ -66,8 +67,13 @@ export function installNativeTextRangeSdkMock(target, { mixed, toRuntime = copy 
           return history[position].value;
       return bases[field];
     }
-    if (field === "fontWeight") return target.fontWeight ?? (/Bold/u.test(target.fontName?.style ?? "") ? 700 : 400);
-    if (field === "fontStyle") return /Italic/u.test(target.fontName?.style ?? "") ? "ITALIC" : "REGULAR";
+    if (field === "fontWeight") {
+      const font = at("fontName", index);
+      return fontRanges ? font.variationSettings?.wght ?? ({ Thin:100, "Extra Light":200, Light:300, Regular:400,
+        Italic:400, Medium:500, "Semi Bold":600, Bold:700, "Extra Bold":800, Black:900 }[font.style.replace(/ Italic$/u, "")] ?? 400)
+        : target.fontWeight ?? (/Bold/u.test(font?.style ?? "") ? 700 : 400);
+    }
+    if (field === "fontStyle") return /Italic/u.test(at("fontName", index)?.style ?? "") ? "ITALIC" : "REGULAR";
     if (["fontName", "fontSize", "lineHeight", "letterSpacing"].includes(field)) return target[field];
     return segmentDefaults[field];
   }
@@ -89,7 +95,8 @@ export function installNativeTextRangeSdkMock(target, { mixed, toRuntime = copy 
     const first = at(field, indices[0]);
     return indices.every(index => same(at(field, index), first)) ? copy(first) : mixed;
   }
-  for (const [method, field] of [["setRangeHyperlink", "hyperlink"], ["setRangeFills", "fills"], ["setRangeTextDecoration", "textDecoration"]]) {
+  for (const [method, field] of [["setRangeHyperlink", "hyperlink"], ["setRangeFills", "fills"], ["setRangeTextDecoration", "textDecoration"],
+    ...(fontRanges ? [["setRangeFontName", "fontName"], ["setRangeFontSize", "fontSize"]] : [])]) {
     const original = target[method];
     if (typeof original !== "function") throw new Error(`Synthetic SDK setter ${method} is missing`);
     originals.set(method, original);

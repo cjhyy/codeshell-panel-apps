@@ -8,6 +8,7 @@ import {
   parseFigmaBinding,
   readFigmaBinding,
   registerFigmaBinding,
+  persistFigmaBinding,
 } from "../../../apps/design-studio/app/figma-binding.mjs";
 import { prepareFigmaImport } from "../../../apps/design-studio/app/figma-bridge.mjs";
 import { longFigmaSource } from "./fixtures/long-canvas.mjs";
@@ -264,6 +265,36 @@ test("a source binding retains unknown vectors, gradients and variables while a 
   assert.equal(patch.operations[0].before.boundVariables.fill.id, "variable:1");
   assert.equal(f.binding.source.nodes["0:1"].document.children[1].type, "VECTOR");
   assert.deepEqual(f.binding.source, f.source);
+});
+
+test("a failed new binding create preserves its write error when the reconciliation read is missing", async () => {
+  for (const large of [false, true]) {
+    const { binding } = fixture();
+    if (large) binding.source.retainedFixtureData = "x".repeat(400000);
+    const failure = Object.assign(Error("browser storage quota reached"), { code: "BROWSER_STORAGE_QUOTA" });
+    await assert.rejects(persistFigmaBinding({ binding, check() {}, sha256,
+      call: async method => {
+        if (method === "workspace.writeText") throw failure;
+        throw Object.assign(Error("file not found"), { code: "ENOENT" });
+      },
+    }), error => error === failure);
+  }
+});
+
+test("an immutable binding still recovers a successful write with a lost receipt", async () => {
+  const { binding } = fixture(), files = new Map();
+  let writes = 0;
+  const ref = await persistFigmaBinding({ binding, check() {}, sha256,
+    call: async (method, params) => {
+      if (method === "workspace.writeText") {
+        writes++; files.set(params.path, params.content); throw Error("lost write receipt");
+      }
+      return { content: files.get(params.path) };
+    },
+  });
+  assert.equal(writes, 1);
+  assert.equal(ref.sha256, await sha256(JSON.stringify(binding)));
+  assert.equal(files.get(ref.path), JSON.stringify(binding));
 });
 test("explicit creates and mapped deletes never treat unrepresented source nodes as deleted", () => {
   const f = fixture(),

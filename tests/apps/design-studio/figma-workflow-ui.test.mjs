@@ -12,6 +12,8 @@ import {
   readNode,
   observeLocalTools,
   clickWorld,
+  worldPixel,
+  nearColor,
 } from "./fixtures/canvas-test-observations.mjs";
 
 async function openToolbarMenu(page, method = "click") {
@@ -176,6 +178,39 @@ test("a changed design path or malformed input cannot apply a previously reviewe
   assert.deepEqual(f.errors, []);
 });
 
+test("html2figma plugin JSON imports through the real UI with nested geometry, typography and editable ranges", async (t) => {
+  const f = await fixture(t);
+  const fontBytes = await readFile(new URL("../../../apps/design-studio/app/fonts/InterVariable.woff2", import.meta.url));
+  await f.open();
+  await f.choose({ nodes: [{ type: "FRAME", id: "plugin-root", name: "Plugin wire input", x: 40, y: 50, width: 500, height: 300,
+    fills: [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }], children: [
+      { type: "RECTANGLE", id: "plugin-shape", name: "Red marker", x: 20, y: 100, width: 120, height: 80,
+        fills: [{ type: "SOLID", color: { r: 1, g: 0, b: 0 } }] },
+      { type: "TEXT", id: "plugin-text", name: "Plugin label", x: 20, y: 20, width: 380, height: 40,
+        characters: "Plugin text", fontName: { family: "Supplied Inter", style: "Bold" }, fontSize: 24,
+        lineHeight: { unit: "PIXELS", value: 30 }, fills: [{ type: "SOLID", color: { r: 0, g: 0, b: 0 } }],
+        styledTextSegments: [{ start: 0, end: 6, fills: [{ type: "SOLID", color: { r: 0, g: 0, b: 1 } }] }] },
+    ] }], fontAssets: { "explicit-inter": { family: "Supplied Inter", weight: 700, style: "normal", mime: "font/woff2", base64: fontBytes.toString("base64") } } });
+  assert.match(await f.page.locator("#figma-import-preview").textContent(), /3 个可编辑图层/);
+  assert.equal(await f.page.locator("#figma-import-apply").isDisabled(), false);
+  await f.page.locator("#figma-import-apply").click();
+  await f.page.waitForFunction(() => document.querySelector("#figma-workflow-status").textContent.includes("已导入"));
+  await f.page.locator("#figma-workflow-close").click();
+  await gpuActive(f.page);
+  const label = await readNode(f.page, "figma-node-plugin-text");
+  assert.deepEqual([label.x, label.y - label.layoutBaselineOffset, label.fontFamily, label.fontSize, label.fontWeight, label.lineHeight, label.lineHeightUnit],
+    [60, 70, "Supplied Inter", 24, 700, 30, "pixels"]);
+  assert.equal(label.fontRef, "html2figma-explicit-inter");
+  assert.equal(label.textRanges.ranges[0].fill, "#0000ff");
+  nearColor(await worldPixel(f.page, { x: 100, y: 190 }), [255, 0, 0, 255]);
+  if (process.env.DESIGN_STUDIO_QA_DIR) {
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(process.env.DESIGN_STUDIO_QA_DIR, { recursive: true });
+    await f.page.screenshot({ path: resolve(process.env.DESIGN_STUDIO_QA_DIR, "html2figma-json-import.png") });
+  }
+  assert.deepEqual(f.errors, []);
+});
+
 test("mobile menu opens conversion without overflow, and each plugin file can be downloaded", async (t) => {
   const f = await fixture(t, { mobile: true });
   await f.open();
@@ -216,9 +251,10 @@ test("the canvas comment tool records a persistent anchored discussion without r
   await f.page.waitForFunction(
     () => document.querySelector("#review-comments-status").dataset.kind === "saved",
   );
-  const saved = await f.page.evaluate(() =>
-    JSON.parse(localStorage.getItem("codeshell-design-studio:file:designs/design.comments.json")),
-  );
+  const saved = await f.page.evaluate(async () => {
+    const {createBrowserStore}=await import("/browser-store.mjs");
+    return JSON.parse((await createBrowserStore().call("workspace.readText",{path:"designs/design.comments.json"})).content);
+  });
   assert.equal(saved.threads[0].nodeId, "figma-1-2");
   assert.equal(saved.threads[0].text, "标题在手机上需要更明显");
   await f.page.locator("[data-resolve-thread]").click();
@@ -255,6 +291,61 @@ test("new imports expose a separate target, real audit and a rendered preview", 
     document.querySelector("#figma-workflow-status").textContent.includes("已导入"),
   );
   assert.equal(await f.page.locator("#document-path").inputValue(), "designs/figma.codesign.json");
+  assert.deepEqual(f.errors, []);
+});
+
+test("browser-local quota failures preserve a new import, explain Save As limits, allow a complete backup and retry", async t => {
+  const f = await fixture(t), target = "designs/quota-import.codesign.json";
+  await f.open(); await f.choose();
+  await f.page.locator("#figma-import-target").fill(target);
+  await f.page.locator("#figma-import-apply").click();
+  await f.page.waitForFunction(() => document.querySelector("#figma-workflow-status").textContent.includes("已导入"));
+  await f.page.locator("#figma-workflow-close").click();
+  const before = await metadata(f.page);
+  // Inject a real IndexedDB transaction failure, without filling or deleting
+  // legacy/user localStorage. Whole-document publication must roll back.
+  await f.page.evaluate(() => {
+    localStorage.setItem("quota-fixture-old-data", "preserve this existing data");
+    window.quotaFixtureNativePut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function(value, ...args) {
+      if (this.name === "records" && value.key?.startsWith("file:") && value.key.endsWith(".codesign.json"))
+        throw new DOMException("injected real transaction quota failure", "QuotaExceededError");
+      return window.quotaFixtureNativePut.call(this, value, ...args);
+    };
+  });
+  await toolbarAction(f.page, "#save");
+  await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "保存失败");
+  assert.match(await f.page.locator("#toast").textContent(), /本地存储空间已满/);
+  assert.equal(await f.page.evaluate(async path => { const {createBrowserStore}=await import("/browser-store.mjs"); try { return (await createBrowserStore().call("workspace.readText",{path})).content; } catch(error) { if(error.code === "ENOENT") return null; throw error; } }, target), null);
+  assert.equal((await metadata(f.page)).stateRevision, before.stateRevision);
+  assert.equal((await readNode(f.page, "figma-1-2")).text, "Editable Figma title");
+
+  await toolbarAction(f.page, "#save-as");
+  await f.page.locator("#save-as-path").fill("designs/quota-copy.codesign.json");
+  await f.page.locator("#save-as-confirm").click();
+  await f.page.waitForFunction(() => document.querySelector("#save-as-status").textContent.includes("空间已满"));
+  assert.match(await f.page.locator("#save-as-status").textContent(), /文件尚未确认保存.*完整备份/u);
+  assert.equal(await f.page.locator("#document-path").inputValue(), target);
+  await f.page.locator("#save-as-cancel").click();
+
+  await toolbarAction(f.page, "#portable-backup-open");
+  const downloaded = f.page.waitForEvent("download");
+  await f.page.locator("#portable-backup-export").click();
+  const backup = JSON.parse(await readFile(await (await downloaded).path(), "utf8"));
+  assert.equal(backup.format, "codeshell.design.portable-backup");
+  assert.match(JSON.stringify(backup.document), /Editable Figma title/);
+  assert(backup.attachments.some(attachment => attachment.kind === "figma-binding"));
+  await f.page.keyboard.press("Escape");
+  await f.page.evaluate(() => { IDBObjectStore.prototype.put = window.quotaFixtureNativePut; });
+  await toolbarAction(f.page, "#save");
+  await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "已保存");
+  assert.equal(await f.page.evaluate(() => localStorage.getItem("quota-fixture-old-data")), "preserve this existing data");
+  assert(await f.page.evaluate(async path => { const {createBrowserStore}=await import("/browser-store.mjs"); try { return (await createBrowserStore().call("workspace.readText",{path})).content; } catch(error) { if(error.code === "ENOENT") return null; throw error; } }, target));
+  await f.page.reload();
+  await f.page.waitForFunction(() => !document.querySelector(".workspace").inert);
+  assert.equal(await f.page.locator("#document-path").inputValue(), target);
+  assert.equal((await readNode(f.page, "figma-1-2")).text, "Editable Figma title");
+  assert.equal((await metadata(f.page)).dirty, false);
   assert.deepEqual(f.errors, []);
 });
 

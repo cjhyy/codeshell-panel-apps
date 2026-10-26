@@ -427,6 +427,8 @@
   // apps/design-studio/app/text-ranges.mjs
   var MAX_TEXT_RANGES = 64;
   var MAX_TEXT_RANGES_BYTES = 32 * 1024;
+  var TEXT_RANGE_FONT_KEYS = Object.freeze(["fontSize", "fontFamily", "fontWeight", "fontStyle"]);
+  var STYLE_KEYS = [...TEXT_RANGE_FONT_KEYS, "fill", "textDecoration", "textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk", "href"];
 
   // apps/design-studio/app/linear-gradient-geometry.mjs
   var object = (v) => v && typeof v === "object" && !Array.isArray(v);
@@ -623,6 +625,156 @@
   var DESIGN_RESOURCE_KINDS = Object.freeze(["image", "font"]);
   var MAX_DESIGN_RESOURCE_BYTES = 64 * 1024 * 1024;
 
+  // apps/design-studio/app/builtin-font-catalog.mjs
+  var BUILTIN_DESIGN_FONTS = Object.freeze([
+    {
+      id: "roboto",
+      file: "fonts/Roboto-Variable.ttf",
+      mime: "font/ttf",
+      families: ["Roboto"],
+      style: "normal",
+      variable: true,
+      bytes: 488584,
+      sha256: "d7598e12c5dbef095ff8272cfc55da0250bd07fbdecbac8a530b9b277872a134",
+      source: "https://raw.githubusercontent.com/google/fonts/bf7c667ae010c0ffb39944ae85097021478cb91d/ofl/roboto/Roboto%5Bwdth,wght%5D.ttf"
+    },
+    {
+      id: "roboto-italic",
+      file: "fonts/Roboto-Italic-Variable.ttf",
+      mime: "font/ttf",
+      families: ["Roboto"],
+      style: "italic",
+      variable: true,
+      bytes: 530944,
+      sha256: "9725a847af6b460ffca162ae66d20dad48b01876137947180b42d7dcd7887182",
+      source: "https://raw.githubusercontent.com/google/fonts/bf7c667ae010c0ffb39944ae85097021478cb91d/ofl/roboto/Roboto-Italic%5Bwdth,wght%5D.ttf"
+    },
+    {
+      id: "inter",
+      file: "fonts/InterVariable.woff2",
+      mime: "font/woff2",
+      families: ["Inter"],
+      style: "normal",
+      variable: true,
+      bytes: 352240,
+      sha256: "693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3",
+      source: "https://raw.githubusercontent.com/rsms/inter/v4.1/docs/font-files/InterVariable.woff2"
+    },
+    {
+      id: "inter-italic",
+      file: "fonts/InterVariable-Italic.woff2",
+      mime: "font/woff2",
+      families: ["Inter"],
+      style: "italic",
+      variable: true,
+      bytes: 387976,
+      sha256: "e564f652916db6c139570fefb9524a77c4d48f30c92928de9db19b6b5c7a262a",
+      source: "https://raw.githubusercontent.com/rsms/inter/v4.1/docs/font-files/InterVariable-Italic.woff2"
+    },
+    {
+      id: "fa-solid",
+      file: "fonts/fa-solid-900.woff2",
+      mime: "font/woff2",
+      families: ["Font Awesome 5 Free", "Font Awesome 6 Free"],
+      style: "normal",
+      variable: false,
+      bytes: 158220,
+      sha256: "6a3b4536c389c82a2a2e160e7ab15f6c8acef77f42e04d4c697f1cbfa9e90026",
+      source: "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/6.7.2/webfonts/fa-solid-900.woff2"
+    },
+    {
+      id: "fa-regular",
+      file: "fonts/fa-regular-400.woff2",
+      mime: "font/woff2",
+      families: ["Font Awesome 5 Free", "Font Awesome 6 Free"],
+      style: "normal",
+      variable: false,
+      bytes: 25472,
+      sha256: "dc9e5038a1401446549f7eb3c23911cfac844b3b4a3a3b76c33c34962ee652cb",
+      source: "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/6.7.2/webfonts/fa-regular-400.woff2"
+    },
+    {
+      id: "fa-brands",
+      file: "fonts/fa-brands-400.woff2",
+      mime: "font/woff2",
+      families: ["Font Awesome 5 Brands", "Font Awesome 6 Brands"],
+      style: "normal",
+      variable: false,
+      bytes: 118680,
+      sha256: "b10a049b201da5518120d35dc74ad7f5ef328ca1e8b7f9d3f6ad11bc76115eeb",
+      source: "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/6.7.2/webfonts/fa-brands-400.woff2"
+    }
+  ]);
+
+  // apps/design-studio/app/font-capabilities.mjs
+  var MAX_BYTES = 16 * 1024 * 1024;
+  var K = new Uint32Array([
+    1116352408,
+    1899447441,
+    3049323471,
+    3921009573,
+    961987163,
+    1508970993,
+    2453635748,
+    2870763221,
+    3624381080,
+    310598401,
+    607225278,
+    1426881987,
+    1925078388,
+    2162078206,
+    2614888103,
+    3248222580,
+    3835390401,
+    4022224774,
+    264347078,
+    604807628,
+    770255983,
+    1249150122,
+    1555081692,
+    1996064986,
+    2554220882,
+    2821834349,
+    2952996808,
+    3210313671,
+    3336571891,
+    3584528711,
+    113926993,
+    338241895,
+    666307205,
+    773529912,
+    1294757372,
+    1396182291,
+    1695183700,
+    1986661051,
+    2177026350,
+    2456956037,
+    2730485921,
+    2820302411,
+    3259730800,
+    3345764771,
+    3516065817,
+    3600352804,
+    4094571909,
+    275423344,
+    430227734,
+    506948616,
+    659060556,
+    883997877,
+    958139571,
+    1322822218,
+    1537002063,
+    1747873779,
+    1955562222,
+    2024104815,
+    2227730452,
+    2361852424,
+    2428436474,
+    2756734187,
+    3204031479,
+    3329325298
+  ]);
+
   // apps/design-studio/app/document.mjs
   var MAX_SVG_EXPORT_BYTES = 384 * 1024;
   var MAX_LOCAL_SVG_EXPORT_BYTES = 4 * 1024 * 1024;
@@ -685,7 +837,10 @@
     "textDecoration",
     ...geometry,
     "textOverflow",
-    "fontSize"
+    "fontSize",
+    "fontFamily",
+    "fontWeight",
+    "fontStyle"
   ];
 
   // apps/design-studio/app/native-text-range-hint.mjs
@@ -707,6 +862,28 @@
   var MAX_FIGMA_ASSET_BYTES = 8 * 1024 * 1024;
   var MAX_FIGMA_ASSET_TOTAL_BYTES = 12 * 1024 * 1024;
   var MAX_FIGMA_SOURCE_BYTES = 16 * 1024 * 1024;
+
+  // apps/design-studio/app/svg-resource.mjs
+  var svgElements = new Set(
+    "svg g path rect circle ellipse line polyline polygon defs clipPath mask linearGradient radialGradient stop pattern text tspan title desc metadata filter feGaussianBlur feOffset feBlend feColorMatrix feComposite feFlood feMerge feMergeNode feMorphology feTurbulence feDisplacementMap use symbol".toLowerCase().split(" ")
+  );
+  function inertDesignSvg(value) {
+    if (typeof value !== "string" || new TextEncoder().encode(value).length > 1024 * 1024)
+      throw new Error("SVG \u5FC5\u987B\u662F\u6700\u591A 1 MiB \u7684\u6587\u672C");
+    const source = value.replace(/^\uFEFF/u, "").replace(/^\s*<\?xml[^?]*\?>/u, "").trim();
+    if (!/^<svg[\s>]/iu.test(source) || /<!|<\?|&(?!(?:amp|lt|gt|quot|apos);)/iu.test(source))
+      throw new Error("SVG \u5305\u542B\u58F0\u660E\u3001\u5B9E\u4F53\u6216\u4E0D\u652F\u6301\u7684\u6807\u8BB0");
+    for (const tag of source.matchAll(/<\/?\s*([\w:-]+)\b([^<>]*)>/gu)) {
+      if (!svgElements.has(tag[1].toLowerCase())) throw new Error(`SVG \u4E0D\u5141\u8BB8 ${tag[1]} \u5143\u7D20`);
+      if (/\bon[\w:-]+\s*=|\b(?:src|xml:base)\s*=/iu.test(tag[2]))
+        throw new Error("SVG \u4E0D\u5141\u8BB8\u4E8B\u4EF6\u6216\u5916\u90E8\u8D44\u6E90\u5C5E\u6027");
+      for (const href of tag[2].matchAll(/\b(?:xlink:)?href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s]+))/giu))
+        if (!/^#[a-z0-9_.:-]+$/iu.test(href[1] ?? href[2] ?? href[3])) throw new Error("SVG \u5F15\u7528\u5FC5\u987B\u662F\u5185\u90E8 ID");
+    }
+    if (/<(?:script|style|foreignObject)\b|\\|@import|(?:javascript|vbscript|data|file)\s*:|url\(\s*(?!['"]?#[a-z0-9_.:-]+['"]?\s*\))/iu.test(source))
+      throw new Error("SVG \u4E0D\u5141\u8BB8\u811A\u672C\u3001\u6837\u5F0F\u8868\u6216\u5916\u90E8 URL");
+    return source;
+  }
 
   // apps/design-studio/app/html-block-flow.mjs
   var intrinsicEmptyTags = new Set("input textarea select button option optgroup fieldset legend canvas img svg iframe object embed video audio meter progress details summary dialog table caption colgroup col thead tbody tfoot tr th td".split(" "));
@@ -858,35 +1035,6 @@
     }
     if (!paints.length || paints.length > 8) fail("\u80CC\u666F\u7ED8\u5236\u5C42\u6570\u8D85\u51FA 1\u20138 \u5C42\u8303\u56F4");
     return paints;
-  }
-
-  // apps/design-studio/app/design-node-adapter.mjs
-  var textBytes = (value) => new TextEncoder().encode(value);
-  var svgElements = new Set(
-    "svg g path rect circle ellipse line polyline polygon defs clipPath mask linearGradient radialGradient stop pattern text tspan title desc metadata filter feGaussianBlur feOffset feBlend feColorMatrix feComposite feFlood feMerge feMergeNode feMorphology feTurbulence feDisplacementMap use symbol".toLowerCase().split(" ")
-  );
-  function inertDesignSvg(value) {
-    if (typeof value !== "string" || textBytes(value).length > 1024 * 1024)
-      throw new Error("SVG \u5FC5\u987B\u662F\u6700\u591A 1 MiB \u7684\u6587\u672C");
-    const source = value.replace(/^\uFEFF/u, "").replace(/^\s*<\?xml[^?]*\?>/u, "").trim();
-    if (!/^<svg[\s>]/iu.test(source) || /<!|<\?|&(?!(?:amp|lt|gt|quot|apos);)/iu.test(source))
-      throw new Error("SVG \u5305\u542B\u58F0\u660E\u3001\u5B9E\u4F53\u6216\u4E0D\u652F\u6301\u7684\u6807\u8BB0");
-    for (const tag of source.matchAll(/<\/?\s*([\w:-]+)\b([^<>]*)>/gu)) {
-      if (!svgElements.has(tag[1].toLowerCase())) throw new Error(`SVG \u4E0D\u5141\u8BB8 ${tag[1]} \u5143\u7D20`);
-      if (/\bon[\w:-]+\s*=|\b(?:src|xml:base)\s*=/iu.test(tag[2]))
-        throw new Error("SVG \u4E0D\u5141\u8BB8\u4E8B\u4EF6\u6216\u5916\u90E8\u8D44\u6E90\u5C5E\u6027");
-      for (const href of tag[2].matchAll(
-        /\b(?:xlink:)?href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s]+))/giu
-      )) {
-        if (!/^#[a-z0-9_.:-]+$/iu.test(href[1] ?? href[2] ?? href[3]))
-          throw new Error("SVG \u5F15\u7528\u5FC5\u987B\u662F\u5185\u90E8 ID");
-      }
-    }
-    if (/<(?:script|style|foreignObject)\b|\\|@import|(?:javascript|vbscript|data|file)\s*:|url\(\s*(?!['"]?#[a-z0-9_.:-]+['"]?\s*\))/iu.test(
-      source
-    ))
-      throw new Error("SVG \u4E0D\u5141\u8BB8\u811A\u672C\u3001\u6837\u5F0F\u8868\u6216\u5916\u90E8 URL");
-    return source;
   }
 
   // apps/design-studio/app/html-capture-links.mjs

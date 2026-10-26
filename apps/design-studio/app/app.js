@@ -113,6 +113,7 @@ import { repairDesignQuality } from "./quality-repair.mjs";
 import { resourceDataUrlsFromPlans } from "./builtin-fonts.mjs";
 import { designFontFamilyCss, designResourceFontFamilyCss, designTextFontResourceIds } from "./font-css.mjs";
 import { createOwnedFontManager } from "./owned-fonts.mjs";
+import { createBrowserStore, BROWSER_STORAGE_METHODS } from "./browser-store.mjs";
 import { groupAuditIssues, pageAuditIssues } from "./audit-review.mjs";
 import {
   captureWorkspaceHtml,
@@ -1308,12 +1309,12 @@ function setSaveState(message, kind = "idle") {
 function setRepoLinkState(message, kind = "idle") {
   updateDocumentTitle();
   if (!elements.repoLinkState) return;
-  elements.repoLinkState.textContent = window.codeshellPanel?.call ? message : message.replace(/Repo/g, "浏览器本地");
+  elements.repoLinkState.textContent = window.codeshellPanel?.call ? message : message.replace(/^Repo\b/u, "浏览器本地");
   elements.repoLinkState.dataset.kind = kind;
   const root = context.cwd ?? workspaceInfo?.root;
   elements.repoLinkState.title = window.codeshellPanel?.call
     ? root ? `当前 Repo：${root}` : "尚未连接 Repo"
-    : "设计文件保存在当前浏览器；连接 CodeShell 后保存到项目";
+    : "保存到此浏览器的 IndexedDB；未写入 CodeShell 或真实仓库文件。请保留完整备份。";
 }
 
 function updateRepoLinkState() {
@@ -2552,13 +2553,20 @@ function renderAuditStatus() {
 }
 
 function renderPages() {
-  const signature = `${design.activePageId}\u0000${design.pages
-    .map((page) => `${page.id}\u0000${page.name}`)
+  const pages = design.pages.map((page) => ({
+    page,
+    nodeCount:
+      page.id === design.activePageId
+        ? design.nodes.length
+        : (page.nodes?.length ?? page.nodeCount ?? 0),
+  }));
+  const signature = `${design.activePageId}\u0000${pages
+    .map(({ page, nodeCount }) => `${page.id}\u0000${page.name}\u0000${nodeCount}`)
     .join("\u0001")}`;
   if (signature !== renderedPagesSignature) {
     elements.activePage.replaceChildren();
     elements.sidebarPagesList.replaceChildren();
-    for (const page of design.pages) {
+    for (const { page, nodeCount } of pages) {
       const option = document.createElement("option");
       option.value = page.id;
       option.textContent = page.name;
@@ -2579,7 +2587,7 @@ function renderPages() {
       name.textContent = page.name;
       const count = document.createElement("span");
       count.className = "sidebar-page-count";
-      count.textContent = String(page.nodeCount ?? page.nodes?.length ?? 0);
+      count.textContent = String(nodeCount);
       row.append(dot, name, count);
       row.addEventListener("click", () => {
         void activateDesignPage(page.id)
@@ -3690,104 +3698,17 @@ function safeDesignResourceSourcePath(value) {
   );
 }
 
-function mockHostCall(method, params = {}) {
-  const prefix = "codeshell-design-studio:";
-  if (method === "storage.get") {
-    return Promise.resolve(
-      JSON.parse(localStorage.getItem(`${prefix}storage:${params.key}`) || "null"),
-    );
-  }
-  if (method === "storage.set") {
-    localStorage.setItem(`${prefix}storage:${params.key}`, JSON.stringify(params.value));
-    return Promise.resolve(true);
-  }
-  if (method === "storage.delete") {
-    localStorage.removeItem(`${prefix}storage:${params.key}`);
-    return Promise.resolve(true);
-  }
-  if (method === "workspace.info") {
-    return Promise.resolve({
-      name: "codeshell",
-      root: "/preview/codeshell",
-      trusted: true,
-      gitBranch: "preview",
-    });
-  }
-  if (method === "workspace.list") {
-    const entriesByPath = new Map();
-    for (let index = 0; index < localStorage.length; index += 1) {
-      const key = localStorage.key(index);
-      if (!key?.startsWith(`${prefix}file:`)) continue;
-      const path = key.slice(`${prefix}file:`.length);
-      if (!path.startsWith(`${params.path}/`)) continue;
-      const remainder = path.slice(`${params.path}/`.length);
-      if (remainder.includes("/")) {
-        const directoryName = remainder.split("/")[0];
-        const directoryPath = `${params.path}/${directoryName}`;
-        entriesByPath.set(directoryPath, {
-          name: directoryName,
-          path: directoryPath,
-          kind: "directory",
-        });
-        continue;
-      }
-      const content = localStorage.getItem(key) || "";
-      entriesByPath.set(path, {
-        name: path.split("/").pop(),
-        path,
-        kind: "file",
-        size: content.length,
-        modifiedAt: Date.now(),
-      });
-    }
-    return Promise.resolve({
-      path: params.path,
-      entries: [...entriesByPath.values()].sort((left, right) =>
-        left.name.localeCompare(right.name),
-      ),
-      truncated: false,
-    });
-  }
+let browserStore;
+function browserLocalStore() {
+  return browserStore ??= createBrowserStore();
+}
+
+async function mockHostCall(method, params = {}) {
   if (method === "workspace.readText") {
     globalThis.__designStudioMockReads ??= [];
     globalThis.__designStudioMockReads.push(params.path);
-    const content = localStorage.getItem(`${prefix}file:${params.path}`);
-    if (content == null) return Promise.reject(new Error("file not found"));
-    const modifiedAt = Number(localStorage.getItem(`${prefix}mtime:${params.path}`)) || Date.now();
-    return Promise.resolve({
-      path: params.path,
-      content,
-      size: content.length,
-      modifiedAt,
-      revision: `preview:${modifiedAt}`,
-    });
   }
-  if (method === "workspace.writeText") {
-    const existing = localStorage.getItem(`${prefix}file:${params.path}`);
-    const existingModifiedAt =
-      existing == null
-        ? null
-        : Number(localStorage.getItem(`${prefix}mtime:${params.path}`)) || null;
-    const existingRevision = existingModifiedAt == null ? null : `preview:${existingModifiedAt}`;
-    const conflicts =
-      params.expectedRevision !== undefined
-        ? params.expectedRevision !== existingRevision
-        : params.expectedModifiedAt === null
-          ? existing != null
-          : typeof params.expectedModifiedAt === "number" &&
-            params.expectedModifiedAt !== existingModifiedAt;
-    if (conflicts) return Promise.reject(new Error("workspace file changed since it was opened"));
-    const modifiedAt = Date.now();
-    localStorage.setItem(`${prefix}file:${params.path}`, params.content);
-    localStorage.setItem(`${prefix}mtime:${params.path}`, String(modifiedAt));
-    return Promise.resolve({
-      path: params.path,
-      size: params.content.length,
-      modifiedAt,
-      revision: `preview:${modifiedAt}`,
-    });
-  }
-  return Promise.reject(new Error("浏览器本地模式未连接此功能，请连接 CodeShell 后重试"));
+  return browserLocalStore().call(method, params);
 }
 
 function agentSubmissionAvailable() {
@@ -4013,9 +3934,13 @@ async function performSaveDocument(request) {
     if (automatic && (request.documentEpoch !== documentEpoch || elements.path.value.trim() !== path))
       throw new Error("设计或保存路径已切换；已取消旧稿的自动保存");
   };
+  let browserBatch;
   const saveCall = async (method, params, epoch = operationWorkspaceEpoch) => {
     checkSaveScope();
-    const result = await bundleHostCall(method, params, epoch);
+    assertWorkspaceEpoch(epoch);
+    const result = browserBatch
+      ? await browserBatch.call(method, params)
+      : await bundleHostCall(method, params, epoch);
     checkSaveScope();
     return result;
   };
@@ -4025,6 +3950,9 @@ async function performSaveDocument(request) {
   elements.path.disabled = true;
   setSaveState(automatic ? "正在自动保存…" : "保存中…", "idle");
   try {
+    // A browser save publishes its source index and principal in one batch.
+    // Retain the automatic-save scope guard through the actual IDB commit.
+    browserBatch = window.codeshellPanel?.call ? null : browserLocalStore().begin({ check: checkSaveScope });
     const contentBytes = new TextEncoder().encode(content).length;
     const persistence = pageRecords
       ? await createIncrementalDesignIndexPersistencePlan({
@@ -4099,7 +4027,7 @@ async function performSaveDocument(request) {
       });
       checkSaveScope();
     }
-    if (documentEpoch === request.documentEpoch)
+    if (!browserBatch && documentEpoch === request.documentEpoch)
       loadedFigmaBinding = {
         workspaceEpoch: operationWorkspaceEpoch,
         documentEpoch: request.documentEpoch,
@@ -4147,7 +4075,21 @@ async function performSaveDocument(request) {
       result = { ...observed, writeReceiptRecovered: true };
     }
     assertWorkspaceEpoch(operationWorkspaceEpoch);
-    designPublicationSequence += 1;
+    if (browserBatch) {
+      try { await browserBatch.commit(); }
+      catch (error) {
+        if (error?.designPublicationUnknown) designPublicationSequence += 1;
+        throw error;
+      }
+      // Count the completed publication before checking the current view: a
+      // late document/path switch cannot turn a committed write into a refusal
+      // that import/open transactions may roll back.
+      designPublicationSequence += 1;
+      checkSaveScope();
+      if (documentEpoch === request.documentEpoch) loadedFigmaBinding = {
+        workspaceEpoch: operationWorkspaceEpoch, documentEpoch: request.documentEpoch, value: sourceBinding ?? null,
+      };
+    } else designPublicationSequence += 1;
     fileDiscoveryCache = null;
     recoveryFailureWarned = false;
     const stillTargetsSavedPath =
@@ -4248,6 +4190,7 @@ async function performSaveDocument(request) {
       (automatic && (documentEpoch !== request.documentEpoch || elements.path.value.trim() !== path))) throw error;
     const message = error instanceof Error ? error.message : "保存失败";
     queueRecovery();
+    if (error?.designPublicationUnknown) renderAll();
     setSaveState(error?.designPublicationUnknown ? "保存状态待核对" : "保存失败", "error");
     notify(
       message.includes("changed since")
@@ -6344,7 +6287,7 @@ propertyInputs.text.addEventListener("beforeinput", () => {
   textInputSelections.set(propertyInputs.text, { start, end, affinity: start === end ? "before" : "after" });
 });
 bindPropertyInput(propertyInputs.fontSize, (node, value) => {
-  if (node.type === "text") node.fontSize = clamp(Number(value) || 6, 6, 240);
+  if (node.type === "text") node.fontSize = clamp(Number(value) || 6, 1, 240);
 }, "input", "typography");
 bindPropertyInput(
   propertyInputs.fontWeight,
@@ -10291,7 +10234,7 @@ async function initialize() {
   try {
     const initialContext = window.codeshellPanel?.getContext
       ? await window.codeshellPanel.getContext()
-      : { trusted: true, busy: false, cwd: "/preview/codeshell" };
+      : { trusted: true, busy: false, cwd: "/preview/codeshell", ...(window.codeshellPanel?.call ? {} : {availableMethods:BROWSER_STORAGE_METHODS}) };
     if (!receivedContextEvent) updateContext(initialContext);
   } catch {
     if (!receivedContextEvent) updateContext({ trusted: false, busy: false });

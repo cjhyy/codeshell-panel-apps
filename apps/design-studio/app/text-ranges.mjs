@@ -1,8 +1,10 @@
-/** Content-bound paint/link ranges. This module never measures or fragments a scene Text. */
+/** Content-bound typography/paint/link ranges. A scene Text stays one editable paragraph. */
+import { parseDesignFontFamily } from "./font-family.mjs";
 export const MAX_TEXT_RANGES = 64;
 export const MAX_TEXT_RANGES_BYTES = 32 * 1024;
 const MAX_TEXT = 4000;
-const STYLE_KEYS = ["fill", "textDecoration", "textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk", "href"];
+export const TEXT_RANGE_FONT_KEYS = Object.freeze(["fontSize", "fontFamily", "fontWeight", "fontStyle"]);
+const STYLE_KEYS = [...TEXT_RANGE_FONT_KEYS, "fill", "textDecoration", "textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk", "href"];
 const plain = (value) => value !== null && typeof value === "object" &&
   [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const fail = (message, code = "TEXT_RANGES_INVALID") => {
@@ -84,14 +86,26 @@ function normalizeStyle(value, fontSize) {
   for (const key of STYLE_KEYS) {
     if (!own(value, key)) continue;
     const entry = value[key];
-    if (key === "fill") {
+    if (key === "fontSize") {
+      if (!Number.isFinite(entry) || entry < 1 || entry > 240) fail("文字范围字号必须是1到240的有限数字");
+      style[key] = entry;
+    } else if (key === "fontFamily") {
+      if (!parseDesignFontFamily(entry)) fail("文字范围字体必须是有效的CSS字族，最多120个字符");
+      style[key] = entry;
+    } else if (key === "fontWeight") {
+      if (![100,200,300,400,500,600,700,800,900].includes(entry)) fail("文字范围字重必须是100到900的百位整数");
+      style[key] = entry;
+    } else if (key === "fontStyle") {
+      if (!["normal", "italic"].includes(entry)) fail("文字范围字体样式必须是normal或italic");
+      style[key] = entry;
+    } else if (key === "fill") {
       if (typeof entry !== "string" || !/^#[0-9a-f]{6}$/iu.test(entry)) fail("文字范围填色必须是不透明六位十六进制颜色");
       style.fill = entry.toLowerCase();
     } else if (key === "textDecoration") {
       if (!["none", "underline", "line-through"].includes(entry)) fail("文字范围装饰无效");
       style[key] = entry;
     } else if (key === "textDecorationThickness" || key === "textUnderlineOffset") {
-      style[key] = lengthValue(entry, fontSize, key === "textDecorationThickness");
+      style[key] = lengthValue(entry, value.fontSize ?? fontSize, key === "textDecorationThickness");
     } else if (key === "textDecorationSkipInk") {
       if (!["auto", "none"].includes(entry)) fail("文字范围 skip-ink 无效");
       style[key] = entry;
@@ -190,7 +204,8 @@ export function projectTextRanges(node, suppliedMap) {
         newline >= source ? newline === source ? source + 1 : newline : segment.sourceEnd);
       const displayStart = segment.displayStart + source - segment.sourceStart;
       const text = map.sourceText.slice(source, sourceEnd), present = range ? overrides(range) : {};
-      const style = { fill: node.fill, textDecoration: node.textDecoration ?? "none", ...present };
+      const style = { fontFamily: node.fontFamily ?? "Inter", fontSize: node.fontSize, fontWeight: node.fontWeight ?? 400,
+        fontStyle: node.fontStyle ?? "normal", fill: node.fill, textDecoration: node.textDecoration ?? "none", ...present };
       delete style.href;
       if (style.textDecoration === "underline" && style.textDecorationSkipInk === undefined) style.textDecorationSkipInk = "auto";
       result.push({ kind: "source", sourceStart: source, sourceEnd, displayStart, displayEnd: displayStart + text.length,
@@ -200,6 +215,14 @@ export function projectTextRanges(node, suppliedMap) {
     }
   }
   return result;
+}
+
+/** Only metric-affecting overrides participate in text measurement receipts. */
+export function textRangeTypography(node, validate = true) {
+  return (validate ? validateTextRanges(node)?.ranges ?? [] : node.textRanges?.ranges ?? []).flatMap(range => {
+    const style = Object.fromEntries(TEXT_RANGE_FONT_KEYS.filter(key => own(range, key)).map(key => [key, range[key]]));
+    return Object.keys(style).length ? [{ start: range.start, end: range.end, ...style }] : [];
+  });
 }
 function editBounds(node, edit, allowEmpty = true) {
   validateTextRanges(node);
@@ -284,11 +307,15 @@ export function setTextRangeStyle(node, edit) {
     }
     if (Object.keys(style).length) output.push({ start, end, ...normalizeStyle(style, node.fontSize) });
   }
-  // Style-only edits preserve display bytes and font measurement receipts.
+  // Paint/link edits preserve font receipts. Typography edits invalidate both
+  // intrinsic widths and source wrapping; stale metrics must not survive.
   const result = clone(node), normalized = coalesce(output);
   if (normalized.length) result.textRanges = { version: 1, sourceSignature: textRangeSourceSignature(source), ranges: normalized };
   else delete result.textRanges;
   validateTextRanges(result);
+  if (!same(textRangeTypography(node), textRangeTypography(result))) {
+    delete result.textMetrics; delete result.textMeasurement; delete result.textFlowWidth;
+  }
   return result;
 }
 

@@ -81,7 +81,7 @@ test("mobile browser design still creates, saves, exports SVG and downloads comp
   await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "已保存");
   await toolbarAction(f.page, "#export-svg", "tap");
   await f.page.waitForFunction(() => document.querySelector("#toast").textContent.includes("SVG 已导出"));
-  assert.match(await f.page.evaluate(() => localStorage.getItem("codeshell-design-studio:file:designs/design.svg")), /<svg/);
+  assert.match(await f.page.evaluate(async () => { const {createBrowserStore}=await import("/browser-store.mjs"); return (await createBrowserStore().call("workspace.readText",{path:"designs/design.svg"})).content; }), /<svg/);
   await toolbarAction(f.page, "#portable-backup-open", "tap");
   const downloading = f.page.waitForEvent("download");
   await f.page.locator("#portable-backup-export").tap();

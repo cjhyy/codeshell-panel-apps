@@ -39,7 +39,7 @@ const rect = (id = "1:2", properties = {}) => ({
 });
 const page = (children) => ({ id: "0:1", type: "CANVAS", name: "Home", children });
 
-function harness(source = page([rect()]), { nativeTextLayout = false, nativeStrokes = false, nativeTextRanges = false, nativeImageLayout = false, nativeExistingUpdateProof = false } = {}) {
+function harness(source = page([rect()]), { nativeTextLayout = false, nativeStrokes = false, nativeTextRanges = false, nativeFontRanges = false, nativeImageLayout = false, nativeExistingUpdateProof = false } = {}) {
   const all = new Map(),
     nativeRangeMocks = new WeakMap(), mixed = Symbol("mixed"),
     messages = [],
@@ -155,10 +155,11 @@ function harness(source = page([rect()]), { nativeTextLayout = false, nativeStro
     if (node.type === "TEXT") {
       if (nativeTextRanges) {
         node.rangeWrites = [];
-        for (const method of ["setRangeHyperlink", "setRangeFills", "setRangeTextDecoration"])
+        for (const method of ["setRangeHyperlink", "setRangeFills", "setRangeTextDecoration", ...(nativeFontRanges ? ["setRangeFontName", "setRangeFontSize"] : [])])
           node[method] = (...args) => {
             calls.push([method, node.id]);
             if (method === failRangeName) throw new Error("Native range setter failed");
+            if (method === "setRangeFontName" && !fonts.has(JSON.stringify(args[2]))) throw new Error("Native range font was not preloaded");
             node.rangeWrites.push([method, ...clone(args)]);
           };
       }
@@ -717,6 +718,39 @@ test("a range setter failure rolls back only owned new pages and leaves the orig
   assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot), before);
   assert.equal(runtime.figma.currentPage, pageBefore);
   assert(runtime.calls.some(call => call[0] === "setRangeHyperlink"));
+});
+
+test("production factory preloads mixed range fonts and proves actual small size/weight runs", async () => {
+  const transfer=rangeTransfer(), source=transfer.pages[0].children[0].children[0];
+  source.fontSize=6; source.lineHeight=24; source.lineHeightUnit="pixels";
+  source.textRanges.ranges[0]={...source.textRanges.ranges[0],fontSize:4,fontWeight:700,fontStyle:"italic"};
+  const runtime=harness(undefined,{nativeTextRanges:true,nativeFontRanges:true});
+  const before=runtime.figma.root.children.map(runtime.snapshot);
+  await runtime.send({type:"import-transfer",content:JSON.stringify(transfer)});
+  assert.equal(runtime.messages.at(-1).type,"imported",runtime.messages.at(-1).message);
+  const target=runtime.figma.root.children.at(-1).children[0].children[0];
+  const runs=target.getStyledTextSegments(["fontName","fontSize","fontWeight"]);
+  assert.deepEqual(clone(runs).map(run=>[run.start,run.end,run.fontName.style,run.fontSize,run.fontWeight]),[
+    [0,4,"Regular",6,400],[4,10,"Bold Italic",4,700],[10,14,"Regular",6,400],
+  ]);
+  assert(runtime.calls.some(call=>call[0]==="font"&&call[2]==="Bold Italic"));
+  const hint=JSON.parse(target.pluginData.codeshellTextRangeIntent);
+  assert.equal(hint.fontBase.fontSize,6);
+  assert.deepEqual(hint.textRanges,source.textRanges);
+  assert.deepEqual(runtime.figma.root.children.slice(0,-1).map(runtime.snapshot),before);
+});
+
+test("production range font preflight rejects a missing face before creating any page", async () => {
+  const transfer=rangeTransfer(), source=transfer.pages[0].children[0].children[0];
+  source.textRanges.ranges[0].fontWeight=700;
+  const runtime=harness(undefined,{nativeTextRanges:true,nativeFontRanges:true});
+  const before=runtime.figma.root.children.map(runtime.snapshot), load=runtime.figma.loadFontAsync;
+  runtime.figma.loadFontAsync=async font=>{if(font.style==="Bold")throw Error("Unavailable face");await load(font);};
+  await runtime.send({type:"import-transfer",content:JSON.stringify(transfer)});
+  assert.equal(runtime.messages.at(-1).type,"error");
+  assert.match(runtime.messages.at(-1).message,/Inter Bold.*范围字体不能无声回退/u);
+  assert.deepEqual(runtime.figma.root.children.map(runtime.snapshot),before);
+  assert.equal(runtime.all.size,2);
 });
 
 test("final native metadata is staged for every ranged Text and storage failure rolls back all owned pages", async () => {

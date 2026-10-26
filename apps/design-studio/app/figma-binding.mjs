@@ -700,7 +700,15 @@ export async function persistFigmaBinding({ binding, call, check, sha256 }) {
     await writeDesignSidecar({ path, content, expectedModifiedAt: null, call, check, sha256 });
   } catch (error) {
     check();
-    const existing = await readDesignSidecar({ path, call, check, sha256 });
+    let existing;
+    try {
+      existing = await readDesignSidecar({ path, call, check, sha256 });
+    } catch {
+      check();
+      // A failed create can leave no file. Keep its actual cause (for example
+      // browser storage quota), rather than replacing it with the probe's ENOENT.
+      throw error;
+    }
     if (existing.content !== content) throw error;
   }
   return { sha256: digest, path };

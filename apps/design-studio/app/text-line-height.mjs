@@ -1,6 +1,6 @@
-// The pixel envelope derives from the existing font-size6–240 × ratio0.7–3 limits.
+// The pixel envelope derives from font-size1–240 × ratio0.7–3 limits.
 // An absent unit keeps the original v3 ratio semantics and serialized shape.
-export const MIN_TEXT_LINE_HEIGHT_PIXELS = 4.2;
+export const MIN_TEXT_LINE_HEIGHT_PIXELS = 0.7;
 export const MAX_TEXT_LINE_HEIGHT_PIXELS = 720;
 
 export function validTextLineHeight(node) {

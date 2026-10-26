@@ -166,6 +166,45 @@ async function upload(page, design) {
     await renderer.setScene(design, { resources });
   }, design);
 }
+
+for (const dpr of [1, 2]) test(`retained canvas renderer recreation keeps CSS geometry at DPR ${dpr}`, async (t) => {
+  const width = 900, height = 600, page = await harness(t, { width, height, dpr });
+  const design = { canvas: { width: 1409, height: 1233, background: "#ffffff" }, resources: [], nodes: [
+    base("page", "frame", 0, 0, 1409, 1233, { fill: "#ffffff", layout: "none" }),
+    base("table", "frame", 106, 0, 1198, 1233, { fill: "transparent", parentId: "page", layout: "none" }),
+    base("header", "rectangle", 106, 0, 600, 24, { fill: "#ff6600", parentId: "table" }),
+  ] };
+  const viewport = { pan: { x: 60, y: 40 }, zoom: 0.38 };
+  await page.evaluate(async ({ design, viewport }) => { await renderer.setScene(design); renderer.render(viewport); }, { design, viewport });
+  const initial = PNG.sync.read(await page.screenshot({ scale: "css" }));
+  const geometry = await page.evaluate(async ({ design, viewport, width, height, dpr }) => {
+    const canvas = document.querySelector("canvas"), before = canvas.getBoundingClientRect().toJSON();
+    renderer.dispose();
+    const { createRenderer } = await import("/canvas/canvaskit-renderer.mjs");
+    window.renderer = await createRenderer({ canvas, assetsBaseUrl: "/canvas/vendor/" });
+    renderer.resize(width, height, dpr);
+    await renderer.setScene(design); renderer.render(viewport);
+    return { before, after: canvas.getBoundingClientRect().toJSON(), backing: { width: canvas.width, height: canvas.height }, stats: renderer.stats() };
+  }, { design, viewport, width, height, dpr });
+  const recreated = PNG.sync.read(await page.screenshot({ scale: "css" }));
+  function orangeBounds(image) {
+    let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+    for (let y = 0; y < image.height; y++) for (let x = 0; x < image.width; x++) {
+      const offset = (y * image.width + x) * 4, [r, g, b] = image.data.subarray(offset, offset + 3);
+      if (r > 230 && g > 75 && g < 130 && b < 35) { left = Math.min(left, x); top = Math.min(top, y); right = Math.max(right, x); bottom = Math.max(bottom, y); }
+    }
+    return { left, top, width: right - left + 1, height: bottom - top + 1 };
+  }
+  const first = orangeBounds(initial), after = orangeBounds(recreated);
+  t.diagnostic(JSON.stringify({ dpr, css: geometry.after, backing: geometry.backing, first, after }));
+  assert.equal(geometry.after.width, width, "CSS width is independent of the retained backing store");
+  assert.equal(geometry.after.height, height);
+  assert.deepEqual(geometry.backing, { width: width * dpr, height: height * dpr });
+  for (const [key, expected] of Object.entries({ left: viewport.pan.x + 106 * viewport.zoom, top: viewport.pan.y, width: 600 * viewport.zoom, height: 24 * viewport.zoom })) {
+    assert.ok(Math.abs(first[key] - expected) < 1.1, `initial ${key}: ${first[key]} vs ${expected}`);
+    assert.ok(Math.abs(after[key] - expected) < 1.1, `recreated ${key}: ${after[key]} vs ${expected}`);
+  }
+});
 async function draw(page, viewport) {
   await page.evaluate((viewport) => renderer.render(viewport), viewport);
   return PNG.sync.read(await page.screenshot({ scale: "css" }));

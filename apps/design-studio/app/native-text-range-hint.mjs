@@ -1,5 +1,6 @@
 import { validateTextRanges } from "./text-ranges.mjs";
 import { nativeTextRangePlan } from "./native-text-range-plan.mjs";
+import { nativeTextFontName } from "./native-text-font.mjs";
 import { validateNativeTextRangeSource, importNativeTextRanges, nativeTextRangeSnapshot } from "./native-text-ranges-source.mjs";
 
 export const MAX_NATIVE_TEXT_RANGE_HINT_BYTES = 64 * 1024;
@@ -84,11 +85,13 @@ function storage(value, pluginId, key) {
     fail("NATIVE_TEXT_RANGE_HINT_BUDGET", "The complete native author hint or plugin-data entry exceeds its byte budget.");
   return text;
 }
-function effective(plan) {
+function effective(plan, base, typography) {
   const runs = [];
-  for (const run of plan.runs) {
+  for (const original of plan.runs) {
+    const run = typography ? { ...original, fontName: original.fontName ?? nativeTextFontName(base), fontSize: original.fontSize ?? base.fontSize } : original;
     const previous = runs.at(-1);
     if (previous && previous.end === run.start && previous.fill === run.fill &&
+        JSON.stringify(previous.fontName) === JSON.stringify(run.fontName) && previous.fontSize === run.fontSize &&
         JSON.stringify(previous.hyperlink) === JSON.stringify(run.hyperlink)) previous.end = run.end;
     else runs.push({ ...run, hyperlink: run.hyperlink && { ...run.hyperlink } });
   }
@@ -102,16 +105,17 @@ function proof(restInput, sourceInput, canonicalInput) {
   const canonical = project(canonicalInput, nodeFields, true);
   const imported = importNativeTextRanges({ rest, source: checked.source, canonicalNode: canonical });
   if (!["uniform", "admitted-intent"].includes(imported.status))
-    fail("NATIVE_TEXT_RANGE_HINT_EFFECTIVE", "Current native text cannot independently prove the supported effective paint/link plan.");
+    fail("NATIVE_TEXT_RANGE_HINT_EFFECTIVE", "Current native text cannot independently prove the supported color/link/font plan.");
   // Never leave a caller-supplied range in the independent native proof.
   delete canonical.textRanges;
   if (imported.textRanges) canonical.textRanges = imported.textRanges;
   const plan = nativeTextRangePlan(canonical);
-  return { rest, source: checked.source, plan, snapshot: nativeTextRangeSnapshot(checked.source) };
+  return { rest, source: checked.source, plan, canonical, snapshot: nativeTextRangeSnapshot(checked.source) };
 }
 function samePlan(author, current) {
-  if (effective(nativeTextRangePlan(author)) !== effective(current))
-    fail("NATIVE_TEXT_RANGE_HINT_EFFECTIVE", "The hinted author state would change current native characters, colors, or links.");
+  const authorPlan = nativeTextRangePlan(author), typography = [...authorPlan.runs, ...current.plan.runs].some(run => run.fontName);
+  if (effective(authorPlan, author, typography) !== effective(current.plan, current.canonical, typography))
+    fail("NATIVE_TEXT_RANGE_HINT_EFFECTIVE", "The hinted author state would change current native characters, colors, links, or fonts.");
 }
 function boundary(fn) {
   try { return fn(); }
@@ -129,8 +133,13 @@ export function buildNativeTextRangeHint(input) {
     const ranges = validateTextRanges(author);
     if (!ranges) fail("NATIVE_TEXT_RANGE_HINT_NO_INTENT", "Only a nonempty explicit canonical range payload needs an author hint.");
     const current = proof(args.rest, args.source, author);
-    samePlan(author, current.plan);
+    samePlan(author, current);
     const hint = { version: 1, nodeId: current.rest.id, fill: author.fill.toLowerCase(), textRanges: ranges, snapshot: current.snapshot };
+    if (ranges.ranges.some(range => ["fontFamily", "fontSize", "fontWeight", "fontStyle"].some(key => own(range, key)))) {
+      hint.fontBase = { fontFamily: author.fontFamily ?? "Inter", fontSize: author.fontSize,
+        fontWeight: author.fontWeight ?? 400, fontStyle: author.fontStyle ?? "normal" };
+      nativeTextFontName(hint.fontBase);
+    }
     storage(hint, args.pluginId, args.key);
     return hint;
   });
@@ -142,17 +151,23 @@ export function restoreNativeTextRangeHint(input) {
     const args = record(input, ["rest", "source", "canonicalNode", "hint", "pluginId", "key"]);
     const raw = typeof args.hint === "string" ? args.hint : clone(args.hint);
     storage(raw, args.pluginId, args.key);
-    const hint = record(typeof raw === "string" ? JSON.parse(raw) : raw, ["version", "nodeId", "fill", "textRanges", "snapshot"]);
-    if (Object.keys(hint).length !== 5 || hint.version !== 1 || typeof hint.nodeId !== "string" ||
+    const hint = record(typeof raw === "string" ? JSON.parse(raw) : raw, ["version", "nodeId", "fill", "textRanges", "snapshot", "fontBase"]);
+    if (Object.keys(hint).length !== (own(hint, "fontBase") ? 6 : 5) || hint.version !== 1 || typeof hint.nodeId !== "string" ||
         typeof hint.fill !== "string" || typeof hint.snapshot !== "string") invalid();
     const canonical = project(args.canonicalNode, nodeFields, true);
     const current = proof(args.rest, args.source, canonical);
     if (hint.nodeId !== current.rest.id || hint.snapshot !== current.snapshot)
       fail("NATIVE_TEXT_RANGE_HINT_STALE", "The author hint does not match this complete current native text snapshot.");
-    const author = { ...canonical, fill: hint.fill, textRanges: hint.textRanges };
+    let fontBase = {};
+    if (own(hint, "fontBase")) {
+      fontBase = record(hint.fontBase, ["fontFamily", "fontSize", "fontWeight", "fontStyle"]);
+      if (Object.keys(fontBase).length !== 4 || !Number.isFinite(fontBase.fontSize) || fontBase.fontSize < 1 || fontBase.fontSize > 240) invalid();
+      nativeTextFontName(fontBase);
+    }
+    const author = { ...canonical, ...fontBase, fill: hint.fill, textRanges: hint.textRanges };
     const ranges = validateTextRanges(author);
     if (!ranges) fail("NATIVE_TEXT_RANGE_HINT_NO_INTENT", "An author hint cannot restore an empty or partial range payload.");
-    samePlan(author, current.plan);
-    return { fill: hint.fill.toLowerCase(), textRanges: ranges };
+    samePlan(author, current);
+    return { ...fontBase, fill: hint.fill.toLowerCase(), textRanges: ranges };
   });
 }

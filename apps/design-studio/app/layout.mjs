@@ -11,9 +11,11 @@ import {
   createBrowserTextMeasurer,
   currentTextMetrics,
   measuredWrap,
+  measuredWrapSource,
   measuredEllipsis,
   textMetricsSignature,
   textSourceMetricsSignature,
+  measuredRangeLineGeometry,
 } from "./text-metrics.mjs";
 import { designCoordinateLimit } from "./document.mjs";
 
@@ -810,8 +812,7 @@ function refreshTextBaselines(nodes, measurement, canvas) {
   let changed = false;
   for (const node of nodes) {
     if (node.type !== "text" || !["native", "html"].includes(node.layoutBaselineSource) || node.rotation) continue;
-    const key = JSON.stringify([node.fontFamily, node.fontRef, node.fontSize, node.fontWeight,
-      node.fontStyle, node.letterSpacing, node.lineHeight, node.lineHeightUnit]);
+    const key = textSourceMetricsSignature(node);
     const cached = textBaselineStates.get(node);
     if (cached?.key === key && cached.offset === node.layoutBaselineOffset) continue;
     measurement.configure(node);
@@ -875,22 +876,22 @@ function applyResponsiveText(nodes, containerIds, measurement) {
     }
     measurement?.configure(node);
     const widthOf = measurement
-      ? (value) => measurement.measure(value).width
+      ? (value, start = 0) => measurement.measure(value, start).width
       : (value) => estimatedTextWidth(node, value);
     const intrinsic = node.textFlow !== "wrap" && node.textOverflow !== "ellipsis";
+    const wrapped = node.textOverflow === "ellipsis" ? null
+      : measuredWrapSource(node.textSource, intrinsic ? Infinity : available, (value, start) => ({ width: widthOf(value, start) }));
     const lines =
       node.textOverflow === "ellipsis"
         ? [ellipsizeTextValue(node, node.textSource, available, widthOf)]
-        : intrinsic
-          ? node.textSource.split("\n")
-          : measuredWrap(node.textSource, available, (value) => ({ width: widthOf(value) }));
+        : wrapped.displayText.split("\n");
     const nextText = lines.join("\n");
     if (nextText.length > 4000) throw Error(`文字 ${node.id} 换行后超过 4000 字符；请拆分文字图层`);
     if (node.text !== nextText) {
       node.text = nextText;
       changed = true;
     }
-    const widest = Math.max(1, ...lines.map(widthOf));
+    const widest = Math.max(1, ...lines.map((line, index) => widthOf(line, wrapped?.lines[index].sourceStart ?? 0)));
     const nextWidth = intrinsic
       ? widest
       : axisSizing(node, "horizontal") === "fill"
@@ -904,17 +905,21 @@ function applyResponsiveText(nodes, containerIds, measurement) {
       Math.max(1, lines.length * textLineHeightPixels(node)))) || changed;
     changed = assignNumber(node, "textFlowWidth", available) || changed;
     if (measurement) {
-      const metrics = lines.map((line) => measurement.measure(line));
+      const metrics = lines.map((line, index) => measurement.measure(line, wrapped?.lines[index].sourceStart ?? 0));
+      const lineGeometry = measuredRangeLineGeometry(node, metrics);
+      if (lineGeometry.lineHeights)
+        changed = assignNumber(node, "height", limitedAxisSize(node, "vertical", Math.max(1, lineGeometry.lineHeights.reduce((sum, height) => sum + height, 0)))) || changed;
       const nextMetrics = {
         version: 1,
         signature: textMetricsSignature(node),
         sourceSignature: signature,
         lineWidths: metrics.map((metric) => metric.width),
         lineInkBounds: metrics.map((metric) => metric.ink),
+        ...lineGeometry,
         height: Math.max(
           0,
           ...metrics.map(
-            (metric, index) => metric.bottom + index * textLineHeightPixels(node),
+            (metric, index) => metric.bottom + (lineGeometry.lineOffsets?.[index] ?? index * textLineHeightPixels(node)),
           ),
         ),
         fontAvailable: measurement.fontAvailable(node),

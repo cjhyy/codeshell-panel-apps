@@ -1,0 +1,242 @@
+{
+  "nodes": [
+    {
+      "id": "106:6433",
+      "name": "H2F QA007 capture explicit off-frame paint v1",
+      "type": "FRAME",
+      "x": 1060,
+      "y": 0,
+      "width": 160,
+      "height": 80,
+      "rotation": 0,
+      "visible": true,
+      "locked": false,
+      "opacity": 1,
+      "blendMode": "PASS_THROUGH",
+      "relativeTransform": [
+        [
+          1,
+          0,
+          1060
+        ],
+        [
+          0,
+          1,
+          0
+        ]
+      ],
+      "absoluteTransform": [
+        [
+          1,
+          0,
+          1060
+        ],
+        [
+          0,
+          1,
+          0
+        ]
+      ],
+      "absoluteBoundingBox": {
+        "x": 1060,
+        "y": 0,
+        "width": 160,
+        "height": 80
+      },
+      "absoluteRenderBounds": {
+        "x": 1060,
+        "y": 0,
+        "width": 200,
+        "height": 80
+      },
+      "fills": [
+        {
+          "type": "SOLID",
+          "visible": true,
+          "opacity": 1,
+          "blendMode": "NORMAL",
+          "color": {
+            "r": 1,
+            "g": 1,
+            "b": 1
+          },
+          "boundVariables": {}
+        }
+      ],
+      "strokes": [],
+      "effects": [],
+      "strokeWeight": 1,
+      "strokeTopWeight": 1,
+      "strokeRightWeight": 1,
+      "strokeBottomWeight": 1,
+      "strokeLeftWeight": 1,
+      "strokeAlign": "INSIDE",
+      "dashPattern": [],
+      "strokeJoin": "MITER",
+      "strokeCap": "NONE",
+      "strokeMiterLimit": 4,
+      "cornerRadius": 0,
+      "topLeftRadius": 0,
+      "topRightRadius": 0,
+      "bottomRightRadius": 0,
+      "bottomLeftRadius": 0,
+      "cornerSmoothing": 0,
+      "clipsContent": false,
+      "overflowDirection": "NONE",
+      "layoutMode": "NONE",
+      "primaryAxisAlignItems": "MIN",
+      "counterAxisAlignItems": "MIN",
+      "paddingLeft": 0,
+      "paddingRight": 0,
+      "paddingTop": 0,
+      "paddingBottom": 0,
+      "itemSpacing": 0,
+      "counterAxisSpacing": 0,
+      "layoutWrap": "NO_WRAP",
+      "counterAxisAlignContent": "AUTO",
+      "primaryAxisSizingMode": "AUTO",
+      "counterAxisSizingMode": "FIXED",
+      "layoutAlign": "INHERIT",
+      "layoutGrow": 0,
+      "layoutPositioning": "AUTO",
+      "layoutSizingHorizontal": "FIXED",
+      "layoutSizingVertical": "FIXED",
+      "constraints": {
+        "horizontal": "MIN",
+        "vertical": "MIN"
+      },
+      "constrainProportions": false,
+      "isMask": false,
+      "maskType": "ALPHA",
+      "layoutGrids": [],
+      "strokeDashPattern": [],
+      "children": [
+        {
+          "id": "106:6434",
+          "name": "visible red right overflow",
+          "type": "RECTANGLE",
+          "x": 140,
+          "y": 20,
+          "width": 60,
+          "height": 30,
+          "rotation": 0,
+          "visible": true,
+          "locked": false,
+          "opacity": 1,
+          "blendMode": "PASS_THROUGH",
+          "relativeTransform": [
+            [
+              1,
+              0,
+              140
+            ],
+            [
+              0,
+              1,
+              20
+            ]
+          ],
+          "absoluteTransform": [
+            [
+              1,
+              0,
+              1200
+            ],
+            [
+              0,
+              1,
+              20
+            ]
+          ],
+          "absoluteBoundingBox": {
+            "x": 1200,
+            "y": 20,
+            "width": 60,
+            "height": 30
+          },
+          "absoluteRenderBounds": {
+            "x": 1200,
+            "y": 20,
+            "width": 60,
+            "height": 30
+          },
+          "fills": [
+            {
+              "type": "SOLID",
+              "visible": true,
+              "opacity": 1,
+              "blendMode": "NORMAL",
+              "color": {
+                "r": 1,
+                "g": 0,
+                "b": 0
+              },
+              "boundVariables": {}
+            }
+          ],
+          "strokes": [],
+          "effects": [],
+          "strokeWeight": 1,
+          "strokeTopWeight": 1,
+          "strokeRightWeight": 1,
+          "strokeBottomWeight": 1,
+          "strokeLeftWeight": 1,
+          "strokeAlign": "INSIDE",
+          "dashPattern": [],
+          "strokeJoin": "MITER",
+          "strokeCap": "NONE",
+          "strokeMiterLimit": 4,
+          "cornerRadius": 0,
+          "topLeftRadius": 0,
+          "topRightRadius": 0,
+          "bottomRightRadius": 0,
+          "bottomLeftRadius": 0,
+          "cornerSmoothing": 0,
+          "layoutAlign": "INHERIT",
+          "layoutGrow": 0,
+          "layoutPositioning": "AUTO",
+          "layoutSizingHorizontal": "FIXED",
+          "layoutSizingVertical": "FIXED",
+          "constraints": {
+            "horizontal": "MIN",
+            "vertical": "MIN"
+          },
+          "constrainProportions": false,
+          "isMask": false,
+          "maskType": "ALPHA",
+          "strokeDashPattern": []
+        }
+      ]
+    }
+  ],
+  "exportReport": {
+    "ready": true,
+    "partial": false,
+    "nodes": {
+      "selected": 1,
+      "serialized": 2,
+      "unsupported": 0
+    },
+    "images": {
+      "references": 0,
+      "resources": 0,
+      "embedded": 0,
+      "failed": 0,
+      "bytes": 0,
+      "payloadBytes": 0
+    },
+    "json": {
+      "bytes": 3283,
+      "budget": 104857600
+    },
+    "errors": [],
+    "warnings": [
+      {
+        "code": "STROKE_LAYOUT_NOT_APPLICABLE",
+        "nodeId": "106:6433",
+        "path": "nodes[0].strokesIncludedInLayout",
+        "message": "Native manual FRAME strokesIncludedInLayout=false is not applicable in layoutMode NONE; omitted from portable JSON without changing layout mode or writing the native property. Raw snapshots retain the actual false getter."
+      }
+    ]
+  }
+}

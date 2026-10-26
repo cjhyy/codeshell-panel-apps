@@ -1,5 +1,7 @@
 import { normalizeNativeTextSupplement, copyNativeTextEnvelope } from "./native-text-import.mjs";
 import { normalizeNativeNotesSupplement, validateNativeNotesSource } from "./native-notes.mjs";
+import { assertCompleteConversionReports } from "./conversion-report.mjs";
+import { assertCompleteNativeExportReport } from "./native-export-report.mjs";
 /* Local asset tables for the Figma bridge. Binary bytes never enter the design schema. */
 import { createDesignResourcePersistencePlan, MAX_DESIGN_RESOURCES } from "./resource-store.mjs";
 import { imageMimeFromBytes } from "./image-mime.mjs";
@@ -53,6 +55,8 @@ export function normalizeFigmaSource(input) {
     }
   } else {
     let content;
+    assertCompleteConversionReports(input);
+    assertCompleteNativeExportReport(input);
     try {
       // A source carrying native observations must not execute a toJSON or
       // accessor hook before its complete16MiB budget is measured.
@@ -69,6 +73,8 @@ export function normalizeFigmaSource(input) {
     value = JSON.parse(content);
   }
   if (!object(value)) throw new Error("Figma 来源必须是 JSON 对象。");
+  assertCompleteConversionReports(value);
+  assertCompleteNativeExportReport(value);
   if (
     value.format !== undefined &&
     (value.format !== "codeshell.figma.source" || value.version !== 1)
@@ -167,6 +173,8 @@ export function normalizeFigmaSource(input) {
     name: typeof value.name === "string" ? value.name : (root?.name ?? "Figma Import"),
     ...(typeof value.fileKey === "string" ? { fileKey: value.fileKey.slice(0, 256) } : {}),
     nodes,
+    ...(Object.hasOwn(value, "conversionReport") ? { conversionReport: value.conversionReport } : {}),
+    ...(Object.hasOwn(value, "exportReport") ? { exportReport: value.exportReport } : {}),
     assets,
     previews,
     ...(nativeTextRanges ? { nativeTextRanges } : {}),

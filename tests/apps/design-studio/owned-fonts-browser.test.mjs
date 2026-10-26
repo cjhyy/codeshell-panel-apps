@@ -18,8 +18,8 @@ test("real CPU FontFace decoding stages atomically, restores exact leases and re
     const url=new URL(route.request().url());
     assert.equal(url.origin,"https://owned-fonts.test");
     if(url.pathname==="/") return route.fulfill({body:'<!doctype html><style>body{margin:0;background:white}#probe{font:32px "ProbeDocumentFont20261021",serif;white-space:pre;color:#111}</style><div id="probe">iiii WWWW 0123456789 Hamburgefontsiv</div>',contentType:"text/html"});
-    assert.equal(url.pathname,"/owned-fonts.mjs");
-    return route.fulfill({body:await readFile(resolve(app,"owned-fonts.mjs")),contentType:"text/javascript"});
+    assert(["/owned-fonts.mjs","/font-capabilities.mjs","/builtin-font-catalog.mjs"].includes(url.pathname));
+    return route.fulfill({body:await readFile(resolve(app,"."+url.pathname)),contentType:"text/javascript"});
   });
   await page.goto("https://owned-fonts.test/");
   const inter=await readFile(resolve(app,"fonts/InterVariable.woff2")), roboto=await readFile(resolve(app,"fonts/Roboto-Variable.ttf"));

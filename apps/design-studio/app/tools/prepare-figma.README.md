@@ -33,7 +33,13 @@ node/root counts, and created/reused chunk counts. Errors contain `ok: false`
 and `error.code`/`error.message`. No file contents are printed.
 
 Accepted input is complete Figma REST JSON (`document` or `nodes`), a supported
-raw official node, or a `codeshell.figma.source` package. Explicit successful
+raw official node, html2figma plugin FigmaJSON (one node, a root array, or
+`{ "nodes": [...] }`), or a `codeshell.figma.source` package. Plugin JSON keeps
+parent-relative geometry and top-level typography; the importer normalizes it
+when creating the editable document. Optional `sourceUrl` resolves relative
+links. An explicit `fontAssets` table can carry locally supplied complete fonts
+with `family`, `weight`, `style`, `mime`, and canonical `base64` per face; system
+font availability alone does not provide those bytes. Explicit successful
 Figma `LinkAction` result envelopes are unwrapped to their complete `data`.
 The existing source validator checks structure and the 16 MiB/50,000-node/depth
 bounds; missing node trees, malformed UTF-8, and marked truncation are rejected.

@@ -6,6 +6,7 @@ import { designFillPaints, gradientMatrix } from "../paint.mjs";
 import { hasDesignStroke, designStrokePaths, designStrokeOutset } from "../stroke.mjs";
 import { transformedNodeBoundsInTree } from "../geometry.mjs";
 import { createCanvasKitText } from "./canvaskit-text.mjs";
+import { decodeCanvasKitImage, MAX_SVG_IMAGE_PIXELS } from "./image-decode.mjs";
 
 export const CANVASKIT_VERSION = "0.42.0";
 const modules = new Map();
@@ -277,6 +278,7 @@ export async function createRenderer({
   let sceneStats = {},
     owned = [],
     sceneImages = new Map(),
+    sceneImageErrors = new Map(), sceneSvgPixels = new Map(),
     resourceKey = null;
   let nodePictures = new Map(),
     currentDesign = null,
@@ -324,6 +326,7 @@ export async function createRenderer({
     sceneState?.dispose();
     sceneState = null;
     sceneImages = new Map();
+    sceneImageErrors = new Map(); sceneSvgPixels = new Map();
     resourceKey = null;
     clearNodePictures();
     clearTiles();
@@ -337,6 +340,10 @@ export async function createRenderer({
       h = Math.ceil(height * pixelRatio);
     if (w > 8192 || h > 8192 || w * h > MAX_PIXELS)
       throw new Error("CanvasKit viewport exceeds the bounded pixel budget");
+    // CSS size can change while the physical backing size stays identical,
+    // including when a new renderer reuses an already-sized HiDPI canvas.
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
     if (surface && canvas.width === w && canvas.height === h) {
       dpr = pixelRatio;
       cssWidth = width;
@@ -347,8 +354,6 @@ export async function createRenderer({
     surface = null;
     canvas.width = w;
     canvas.height = h;
-    canvas.style.width = `${width}px`;
-    canvas.style.height = `${height}px`;
     surface = CK.MakeOnScreenGLSurface(context, w, h, CK.ColorSpace.SRGB);
     if (!surface) throw new Error("CanvasKit cannot create a GPU surface");
     cssWidth = width;
@@ -393,6 +398,8 @@ export async function createRenderer({
     const reuseResources = Boolean(sceneState && resourceKey === nextResourceKey);
     const nextOwned = reuseResources ? owned : [],
       images = reuseResources ? sceneImages : new Map();
+    const imageErrors = reuseResources ? sceneImageErrors : new Map(),
+      svgPixels = reuseResources ? sceneSvgPixels : new Map();
     const nextNodePictures = reuseResources ? nodePictures : new Map();
     const text = reuseResources
       ? sceneState
@@ -416,13 +423,20 @@ export async function createRenderer({
         for (const [id, resource] of resources) {
           const descriptor = resource.descriptor ?? design.resources?.find((r) => r.id === id);
           if (descriptor?.kind !== "image" && !resource.mimeType?.startsWith("image/")) continue;
-          const image = CK.MakeImageFromEncoded(resource.bytes);
-          if (image) {
-            images.set(id, image);
-            nextOwned.push(image);
-            counters.decodedImages++;
-          }
+          try {
+            const decoded = await decodeCanvasKitImage(CK, { ...resource, descriptor }, canvas.ownerDocument, {
+              remainingSvgPixels: MAX_SVG_IMAGE_PIXELS - [...svgPixels.values()].reduce((sum, value) => sum + value, 0),
+            });
+            if (decoded.image) {
+              images.set(id, decoded.image); nextOwned.push(decoded.image);
+              if (decoded.svgPixels) svgPixels.set(id, decoded.svgPixels);
+            }
+          } catch (error) { imageErrors.set(id, String(error.message).slice(0, 500)); }
         }
+      if (disposed || current !== generation) {
+        if (!reuseResources) { nextOwned.forEach(value => value.delete()); text.dispose(); }
+        return;
+      }
       counters.decodedImages = images.size;
       text.beginScene?.(design);
       const pageNodes = design.pages?.length
@@ -505,7 +519,7 @@ export async function createRenderer({
               if (image) drawImage(CK, destination, node, image);
               else {
                 if (resources.has(node.imageRef))
-                  unsupportedNode(node, "image-decode", "Image bytes could not be decoded");
+                  unsupportedNode(node, "image-decode", imageErrors.get(node.imageRef) ?? "Image bytes could not be decoded");
                 counters.missingImages++;
                 drawMissing(CK, destination, node);
               }
@@ -717,6 +731,7 @@ export async function createRenderer({
       nextPicture = null;
       owned = nextOwned;
       sceneImages = images;
+      sceneImageErrors = imageErrors; sceneSvgPixels = svgPixels;
       resourceKey = nextResourceKey;
       sceneState = text;
       nodePictures = nextNodePictures;
@@ -742,6 +757,8 @@ export async function createRenderer({
         sceneStats = {
           ...counters,
           ...text.stats(),
+          svgDecodedImages: svgPixels.size,
+          svgDecodedPixels: [...svgPixels.values()].reduce((sum, value) => sum + value, 0),
           unsupported: [...unsupported],
           unsupportedCount: unsupported.length,
           pictureBytes: picture.approximateBytesUsed(),

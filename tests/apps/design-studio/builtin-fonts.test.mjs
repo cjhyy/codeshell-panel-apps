@@ -152,7 +152,7 @@ test("portable SVG/HTML contains real font bytes; Host SVG budget stays strict a
     maxBytes: MAX_LOCAL_SVG_EXPORT_BYTES,
   });
   assert.ok(Buffer.byteLength(svg) < MAX_LOCAL_SVG_EXPORT_BYTES);
-  assert.match(svg, /font-weight:400 700/u);
+  assert.match(svg, /font-weight:100 900/u);
   assert.equal((svg.match(/@font-face/gu) ?? []).length, 5);
   assert.match(svg, /Font Awesome 5 Free/u);
   assert.match(svg, /data:font\/ttf;base64,/u);

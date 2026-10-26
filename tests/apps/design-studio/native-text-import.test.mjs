@@ -52,6 +52,34 @@ test("retained actual4 SDK sources project native metrics through exact save/reo
   }
 });
 
+test("complete uniform native source retains small 1px and 4px sizes through save/reopen without clamping", () => {
+  // Synthetic size variants of a retained complete capture, not new SDK receipts.
+  const sizedSource = size => {
+    const rest = copy(fixture.cases[0].rest), observations = copy(fixture.cases[0].capture.observations);
+    rest.style.fontSize = size;
+    rest.style.lineHeightPx = size * observations.scalars.lineHeight.value.value / 100;
+    observations.scalars.fontSize.value = size;
+    for (const segment of observations.segments) segment.values.fontSize.value = size;
+    const built = buildNativeTextRangeSource({ rest, ...observations });
+    assert.equal(built.status, "bound", JSON.stringify(built));
+    return { rest, source: built.source };
+  };
+  for (const size of [1, 4, 6, 240]) {
+    const input = sizedSource(size), before = JSON.stringify(input);
+    const result = admitNativeTextImport(input);
+    assert.equal(result.status, "uniform", `${size}px: ${JSON.stringify(result.diagnostics)}`);
+    assert.equal(result.patch.fontSize, size);
+    const normalized = document(result.patch), saved = serializeDesignDocument(normalized);
+    assert.equal(normalizeDesignDocument(JSON.parse(saved)).nodes[0].fontSize, size);
+    assert.equal(JSON.stringify(input), before);
+  }
+  for (const size of [0.9999, 240.0001]) {
+    const input = sizedSource(size), before = JSON.stringify(input);
+    assert.equal(admitNativeTextImport(input).status, "unsupported");
+    assert.equal(JSON.stringify(input), before);
+  }
+});
+
 test("bound partial catalogs and getter checks cannot mint production admission", () => {
   for (const mutate of [
     value => delete value.source.scalars.textStyleId,

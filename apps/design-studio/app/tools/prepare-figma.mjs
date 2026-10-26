@@ -6,6 +6,7 @@ import { link, lstat, mkdir, mkdtemp, open, realpath, rmdir, unlink } from "node
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeFigmaSource, MAX_FIGMA_SOURCE_BYTES } from "../figma-assets.mjs";
+import { normalizeHtml2FigmaJson } from "../figma-bridge.mjs";
 import { isSafeDesignPath } from "../document.mjs";
 import { createDesignSidecarPlan, DESIGN_SIDECAR_PART_BYTES } from "../design-sidecar.mjs";
 
@@ -69,7 +70,7 @@ function validateSource(source) {
   }
   let normalized;
   try {
-    normalized = normalizeFigmaSource(source);
+    normalized = normalizeFigmaSource(normalizeHtml2FigmaJson(source));
   } catch (error) {
     throw fail("INVALID_SOURCE", error.message);
   }

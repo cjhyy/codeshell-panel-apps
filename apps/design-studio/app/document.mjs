@@ -1,6 +1,6 @@
 import { normalizeShadowStack, validateShadowStack, shadowStackSvg, shadowStackOutsets } from "./shadow-stack.mjs";
 import { validTextLineHeight, textLineHeightPixels } from "./text-line-height.mjs";
-import { validateTextRanges, projectTextRanges } from "./text-ranges.mjs";
+import { validateTextRanges, projectTextRanges, textRangeTypography } from "./text-ranges.mjs";
 import { validateLayoutSpacing } from "./layout-spacing.mjs";
 import { normalizeCornerRadii, roundedRectSvgGeometry } from "./corner-radii.mjs";
 import { normalizeStrokeSides, validateDesignStroke, hasDesignStroke, designStrokeSvg, designStrokeOutset, designStrokeSides } from "./stroke.mjs";
@@ -20,7 +20,7 @@ import {
   transformedNodeBoundsInTree,
 } from "./geometry.mjs";
 import { normalizeDesignResources } from "./resource-store.mjs";
-import { measuredTextInkBounds, validTextMetrics } from "./text-metrics.mjs";
+import { measuredTextInkBounds, validTextMetrics, currentTextMetrics, textDisplayLineMetrics } from "./text-metrics.mjs";
 import { designFontFaceCss, designFontFamilyCss, designResourceFontFamilyCss } from "./font-css.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -507,7 +507,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       candidate.text.length > 4000 ||
       typeof candidate.fontSize !== "number" ||
       !Number.isFinite(candidate.fontSize) ||
-      candidate.fontSize < 6 ||
+      candidate.fontSize < 1 ||
       candidate.fontSize > 240 ||
       ![100, 200, 300, 400, 500, 600, 700, 800, 900].includes(candidate.fontWeight) ||
       !validTextLineHeight(candidate) ||
@@ -1575,6 +1575,12 @@ function exportNodeSvg(
     const textDecoration = node.textDecoration ?? "none";
     if (node.textRanges !== undefined) {
       const runs = projectTextRanges(node);
+      const typography = textRangeTypography(node).length > 0;
+      const alphabeticBaseline = typography ? currentTextMetrics(node)?.alphabeticBaseline : 0;
+      if (typography && !Number.isFinite(alphabeticBaseline)) {
+        const error = new Error("混合字体SVG需要当前字体的真实浏览器基线测量；文字及样式仍完整保留");
+        error.code = "TEXT_RANGES_SVG_UNMEASURED_TYPOGRAPHY"; throw error;
+      }
       if (runs.some((run) => run.overrides && ["textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk"].some((key) => Object.hasOwn(run.overrides, key)))) {
         const error = new Error("SVG 文字尚不能保留范围自定义下划线厚度、偏移或 skip-ink；未输出近似样式");
         error.code = "TEXT_RANGES_SVG_UNSUPPORTED_DECORATION";
@@ -1584,10 +1590,14 @@ function exportNodeSvg(
         const spans = runs.filter((run) => run.lineIndex === index && run.kind === "source" && run.text !== "\n").map((run) => {
           const style = run.style;
           const declarations = [`fill:${style.fill}`, `color:${style.fill}`, `text-decoration-line:${style.textDecoration}`, `text-decoration-color:${style.fill}`];
+          if (run.overrides.fontFamily !== undefined) declarations.push(`font-family:${designFontFamilyCss(style.fontFamily)}`);
+          if (run.overrides.fontSize !== undefined) declarations.push(`font-size:${style.fontSize}px`);
+          if (run.overrides.fontWeight !== undefined) declarations.push(`font-weight:${style.fontWeight}`);
+          if (run.overrides.fontStyle !== undefined) declarations.push(`font-style:${style.fontStyle}`);
           const span = `<tspan style="${escapeXml(declarations.join(";"))}">${escapeXml(run.text)}</tspan>`;
           return run.href === undefined ? span : `<a href="${escapeXml(run.href)}" style="fill:inherit;text-decoration:none">${span}</a>`;
         }).join("");
-        return `    <text x="${round(textX)}" y="${round(node.y + index * textLineHeightPixels(node))}" stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="none" text-anchor="${anchor}" dominant-baseline="hanging" xml:space="preserve">${spans || " "}</text>`;
+        return `    <text x="${round(textX)}" y="${round(node.y + textDisplayLineMetrics(node).offsets[index] + alphabeticBaseline)}" stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="none" text-anchor="${anchor}" dominant-baseline="${typography ? "alphabetic" : "hanging"}" xml:space="preserve">${spans || " "}</text>`;
       }).join("\n");
       return clipped(`  <g${metadata}${opacity}${filter}${transform}>\n${lines}\n  </g>`);
     }

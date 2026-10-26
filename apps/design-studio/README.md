@@ -9,6 +9,9 @@ Design Studio **0.23.0** 提供 HTML → DesignNode → v3 导入、Figma JSON �
 文字可选 `textRanges` v1 在同一个 Text 中保存颜色、装饰和链接区间，按完整
 `textSource ?? text` 的 UTF16 索引和精确内容签名绑定；不创建绝对定位的文字碎片。
 最多64个不重叠区间、32KiB；保留真实空格、NBSP、显式换行，并单独映射显示软换行。
+html2figma 的原始 `styledTextSegments` 另有512段、256KiB输入预算；逐段校验后，
+仅无损合并相邻且完整可支持样式相同的区间，再检查上述64段、32KiB规范范围预算。
+规范化来源仍保留完整原始区间；没有丢样式、拆分Text或栅格化来绕过预算。
 `use_design` 的 `edit_text` 用源索引和明确的插入亲和性更新内容及区间；整段
 `update_node` 改文字须带匹配区间，或显式 `textRanges:null` 清除。保存、完整备份、
 撤销和重新打开保留同一状态。旧稿未带区间时沿用原有行为。
@@ -252,6 +255,8 @@ v2 完整设计备份包含评论、回复、来源映射、原型与资源；�
 与完整备份下载。Agent 提交要求实际 Host 能力与可提交的当前会话；缺少能力时显示
 原因并禁用提交，不再模拟成功。支持能力发现的 Host 更新授权后可重新启用提交；
 旧 Host 沿用原调用行为。
+本地存储已满时保留画布和现有文件，明确提示下载完整备份并连接 CodeShell 保存；
+同一浏览器来源下的“另存为”仍共用该配额，不能绕过空间不足。
 
 历史验收：`node --test tests/apps/design-studio/connection-ui.test.mjs` 在手机尺寸以真实
 Chromium 触摸创建设计，完成保存、SVG 写入、完整备份下载与重开，另覆盖受限 Host

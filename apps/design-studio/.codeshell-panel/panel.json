@@ -244,6 +244,10 @@
                         "type": "string",
                         "pattern": "^#[0-9a-fA-F]{6}$"
                       },
+                      "fontSize": { "type": "number", "minimum": 1, "maximum": 240 },
+                      "fontFamily": { "type": "string", "minLength": 1, "maxLength": 120 },
+                      "fontWeight": { "enum": [100,200,300,400,500,600,700,800,900] },
+                      "fontStyle": { "enum": ["normal", "italic"] },
                       "textDecoration": {
                         "enum": [
                           "none",
@@ -452,7 +456,7 @@
             "nodePatch": {
               "allOf": [
                 { "if": { "required": ["lineHeightUnit"], "properties": { "lineHeightUnit": { "const": "pixels" } } },
-                  "then": { "properties": { "lineHeight": { "minimum": 4.2, "maximum": 720 } } } },
+                  "then": { "properties": { "lineHeight": { "minimum": 0.7, "maximum": 720 } } } },
                 { "if": { "required": ["lineHeightUnit"], "properties": { "lineHeightUnit": { "type": "null" } } },
                   "then": { "properties": { "lineHeight": { "minimum": 0.7, "maximum": 3 } } } }
               ],
@@ -840,7 +844,7 @@
                 },
                 "fontSize": {
                   "type": "number",
-                  "minimum": 6,
+                  "minimum": 1,
                   "maximum": 240
                 },
                 "fontWeight": {
@@ -865,11 +869,11 @@
                   "enum": ["normal", "italic"]
                 },
                 "lineHeight": {
-                  "oneOf": [
+                  "anyOf": [
                     { "type": "number", "minimum": 0.7, "maximum": 3 },
-                    { "type": "number", "minimum": 4.2, "maximum": 720 }
+                    { "type": "number", "minimum": 0.7, "maximum": 720 }
                   ],
-                  "description": "Legacy ratio0.7–3, or physical4.2–720px when the final Text has lineHeightUnit:pixels."
+                  "description": "Legacy ratio0.7–3, or physical0.7–720px when the final Text has lineHeightUnit:pixels."
                 },
                 "lineHeightUnit": { "enum": ["pixels", null], "description": "Optional physical pixel line height; null restores legacy ratio semantics. Change lineHeight coherently when switching units." },
                 "letterSpacing": {
@@ -881,7 +885,7 @@
                   "type": "string",
                   "enum": ["none", "underline", "line-through"]
                 },
-                "textRanges": { "anyOf": [{ "$ref": "#/$defs/textRanges" }, { "type": "null" }], "description": "Content-bound paint/link overrides. Content edits need a coherent final payload, or explicit null to clear." },
+                "textRanges": { "anyOf": [{ "$ref": "#/$defs/textRanges" }, { "type": "null" }], "description": "Content-bound typography/paint/link overrides. Content edits need a coherent final payload, or explicit null to clear." },
                 "textMeasurement": {
                   "type": "string",
                   "enum": ["browser"],

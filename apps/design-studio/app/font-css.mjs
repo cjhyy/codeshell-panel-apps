@@ -1,4 +1,5 @@
 import { parseDesignFontFamily } from "./font-family.mjs";
+import { fontCapabilitiesFromDataUrl, fontFaceWeight, fontWeightAxis } from "./font-capabilities.mjs";
 const runtimeFamilies = new WeakMap();
 
 const escapeCss = (value) =>
@@ -86,8 +87,9 @@ export function designTextFontResourceIds(node, resources = []) {
   if (node?.type !== "text") return [];
   const ids = new Set(node.fontRef ? [node.fontRef] : []);
   const parsed = parseDesignFontFamily(node.fontFamily), selected = resources.find(resource => resource.id === node.fontRef);
-  if (!parsed || selected && (parsed[0].generic || parsed[0].name.toLowerCase() !== selected.family.toLowerCase())) return [...ids];
-  const names = new Set(parsed.filter(part => !part.generic).map(part => part.name.toLowerCase()));
+  const baseFamilies = !parsed || selected && (parsed[0].generic || parsed[0].name.toLowerCase() !== selected.family.toLowerCase()) ? [] : parsed;
+  const ranges = (node.textRanges?.ranges ?? []).flatMap(range => range.fontFamily === undefined ? [] : parseDesignFontFamily(range.fontFamily) ?? []);
+  const names = new Set([...baseFamilies, ...ranges].filter(part => !part.generic).map(part => part.name.toLowerCase()));
   for (const resource of resources) if (resource.kind === "font" && names.has(resource.family.toLowerCase())) ids.add(resource.id);
   return [...ids];
 }
@@ -99,7 +101,8 @@ export function designFontFaceCss(resources = [], resourceDataUrls = new Map()) 
   const groups = new Map();
   for (const resource of resources) {
     if (resource.kind !== "font" || !urls.has(resource.id)) continue;
-    const variable = /^builtin-(?:roboto|inter)(?:-italic)?-/u.test(resource.id);
+    const capabilities = fontCapabilitiesFromDataUrl(urls.get(resource.id));
+    const variable = Boolean(fontWeightAxis(capabilities));
     const key = JSON.stringify([
       resource.family,
       resource.style,
@@ -111,14 +114,15 @@ export function designFontFaceCss(resources = [], resourceDataUrls = new Map()) 
       weights: [],
       url: urls.get(resource.id),
       variable,
+      weight: fontFaceWeight(capabilities, resource),
     };
     group.weights.push(resource.weight);
     groups.set(key, group);
   }
   return [...groups.values()]
     .map(
-      ({ resource, url, weights, variable }) =>
-        `@font-face{font-family:"${escapeCss(resource.family)}";src:url("${escapeCss(url)}");font-weight:${variable ? `${Math.min(...weights)} ${Math.max(...weights)}` : resource.weight};font-style:${resource.style};font-display:block;}`,
+      ({ resource, url, weight }) =>
+        `@font-face{font-family:"${escapeCss(resource.family)}";src:url("${escapeCss(url)}");font-weight:${weight};font-style:${resource.style};font-display:block;}`,
     )
     .join("\n");
 }

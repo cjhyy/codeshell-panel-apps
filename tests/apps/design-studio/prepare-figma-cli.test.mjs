@@ -20,6 +20,7 @@ import {
   prepareFigmaInput,
   HOST_READ_TEXT_BYTES,
 } from "../../../apps/design-studio/app/tools/prepare-figma.mjs";
+import { prepareFigmaImport } from "../../../apps/design-studio/app/figma-bridge.mjs";
 import {
   createDesignSidecarPlan,
   DESIGN_SIDECAR_PART_BYTES,
@@ -86,6 +87,20 @@ function runCli(args, { stdin = "", cwd } = {}) {
     child.stdin.end(stdin);
   });
 }
+
+test("plugin wire JSON survives CLI preparation byte-for-byte and imports relative geometry and typography", async (t) => {
+  const raw = { sourceUrl: "https://example.com/", nodes: [{ type: "FRAME", id: "plugin-root", name: "Raw plugin", x: 40, y: 50,
+    width: 500, height: 300, children: [{ type: "TEXT", id: "plugin-label", name: "Label", x: 20, y: 30, width: 200, height: 40,
+      characters: "Hello plugin", fontName: { family: "Inter", style: "Bold" }, fontSize: 24, lineHeight: { unit: "PIXELS", value: 30 } }] }] };
+  const source = JSON.stringify(raw, null, 2) + "\n", f = await fixture(t, source);
+  const response = await runCli(["--project", f.project, "--input", f.input, "--output", f.output]);
+  assert.equal(response.code, 0);
+  const preserved = await restored(f.project, f.output);
+  assert.equal(preserved.content, source);
+  const imported = await prepareFigmaImport(preserved.content, { sha256Bytes: async bytes => createHash("sha256").update(bytes).digest("hex") });
+  const label = imported.document.nodes.find(node => node.type === "text");
+  assert.deepEqual([label.x, label.y, label.fontSize, label.fontWeight, label.lineHeight], [60, 80, 24, 700, 30]);
+});
 
 test("a UTF-8 source above the Host 480 KiB limit round-trips every byte through SHA checked 350 KiB parts", async (t) => {
   const source = largeSource();

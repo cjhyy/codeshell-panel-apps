@@ -23,6 +23,7 @@ export function nativeTextRangeCreationPlan(node) {
       TEXT_RANGES_NATIVE_UNSUPPORTED_LINK: "范围文字的原生链接目前只支持完整 HTTP(S) 地址和简单 mailto 地址",
       TEXT_RANGES_NATIVE_UNSUPPORTED_DECORATION: "范围文字的原生装饰仍待验证；请先移除下划线和删除线",
       TEXT_RANGES_NATIVE_UNSUPPORTED_PAINT: "范围文字的原生填充目前只支持不透明纯色",
+      TEXT_RANGES_NATIVE_UNSUPPORTED_FONT: "范围文字的原生字体需要单个明确字体名、100–900字重、normal/italic和1–240字号",
     };
     const code = typeof cause?.code === "string" ? cause.code : "TEXT_RANGES_NATIVE_INVALID_SOURCE";
     const error = new Error(messages[code] ?? "范围文字的完整来源或区间无效，已阻止创建副本");

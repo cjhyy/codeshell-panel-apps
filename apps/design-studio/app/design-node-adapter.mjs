@@ -16,6 +16,8 @@ import { consumeHtmlZeroFlowTokenPlan } from "./html-zero-flow-token.mjs";
 import { normalizeDesignDocument, MAX_DESIGN_NODES_PER_PAGE } from "./document.mjs";
 import { createDesignResourcePersistencePlan, MAX_DESIGN_RESOURCES } from "./resource-store.mjs";
 import { normalizeFigmaAsset } from "./figma-assets.mjs";
+import { inertDesignSvg } from "./svg-resource.mjs";
+export { inertDesignSvg } from "./svg-resource.mjs";
 import { planHtmlBlockFlow, htmlBlockHorizontalBleed } from "./html-block-flow.mjs";
 import { applyHtmlBlockInsets } from "./html-block-insets.mjs";
 import { planHtmlViewportFlow } from "./html-viewport-flow.mjs";
@@ -78,42 +80,6 @@ const mainAutoMarginBefore = (source, parent) =>
   !parent.layoutReverse &&
   ["horizontal", "vertical"].includes(parent.layout) &&
   cssLayoutValue(source, parent.layout === "horizontal" ? "margin-left" : "margin-top") === "auto";
-const svgElements = new Set(
-  "svg g path rect circle ellipse line polyline polygon defs clipPath mask linearGradient radialGradient stop pattern text tspan title desc metadata filter feGaussianBlur feOffset feBlend feColorMatrix feComposite feFlood feMerge feMergeNode feMorphology feTurbulence feDisplacementMap use symbol"
-    .toLowerCase()
-    .split(" "),
-);
-
-/** Accept inert self-contained SVG only; unsupported active/external content is rejected. */
-export function inertDesignSvg(value) {
-  if (typeof value !== "string" || textBytes(value).length > 1024 * 1024)
-    throw new Error("SVG 必须是最多 1 MiB 的文本");
-  const source = value
-    .replace(/^\uFEFF/u, "")
-    .replace(/^\s*<\?xml[^?]*\?>/u, "")
-    .trim();
-  if (!/^<svg[\s>]/iu.test(source) || /<!|<\?|&(?!(?:amp|lt|gt|quot|apos);)/iu.test(source))
-    throw new Error("SVG 包含声明、实体或不支持的标记");
-  for (const tag of source.matchAll(/<\/?\s*([\w:-]+)\b([^<>]*)>/gu)) {
-    if (!svgElements.has(tag[1].toLowerCase())) throw new Error(`SVG 不允许 ${tag[1]} 元素`);
-    if (/\bon[\w:-]+\s*=|\b(?:src|xml:base)\s*=/iu.test(tag[2]))
-      throw new Error("SVG 不允许事件或外部资源属性");
-    for (const href of tag[2].matchAll(
-      /\b(?:xlink:)?href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s]+))/giu,
-    )) {
-      if (!/^#[a-z0-9_.:-]+$/iu.test(href[1] ?? href[2] ?? href[3]))
-        throw new Error("SVG 引用必须是内部 ID");
-    }
-  }
-  if (
-    /<(?:script|style|foreignObject)\b|\\|@import|(?:javascript|vbscript|data|file)\s*:|url\(\s*(?!['"]?#[a-z0-9_.:-]+['"]?\s*\))/iu.test(
-      source,
-    )
-  )
-    throw new Error("SVG 不允许脚本、样式表或外部 URL");
-  return source;
-}
-
 /**
  * The upstream final renderToDesignDSL pass returns parent-relative bounds.
  * V3 stores page coordinates, with rotations around the node's center.
@@ -1182,7 +1148,7 @@ export async function designNodeToV3(tree, options = {}) {
         throw new Error(`文字 ${id} 超过 v3 的 4000 字符上限；请拆分源文本`);
       node.text = content;
       node.textSource = content;
-      node.fontSize = number(style.fontSize, 16, 6, 240, id, "fontSize");
+      node.fontSize = number(style.fontSize, 16, 1, 240, id, "fontSize");
       node.fontWeight = weightValue(style.fontWeight);
       if (typeof style.fontWeight === "number" && node.fontWeight !== style.fontWeight)
         warn("font-weight-rounded", id, "可变字重已取最接近的百位字重。");

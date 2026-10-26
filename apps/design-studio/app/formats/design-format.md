@@ -100,6 +100,14 @@ fallback.
 Newline-delimited text renders as explicit, independently positioned SVG lines so native preview
 renderers preserve the live canvas layout. Text fill and optional stroke render consistently in the
 live canvas and SVG preview.
+Content-bound `textRanges` may override `fontSize` (1–240px), `fontFamily`,
+`fontWeight` (100–900 in steps of 100), and `fontStyle` (`normal` or `italic`),
+as well as supported paint, decoration and links. The Text stays editable as one
+paragraph. Font overrides participate in source-indexed wrapping and measurement
+receipts; paint/link edits preserve typography receipts. Browser measurements may
+record per-line `lineHeights` and `lineOffsets` for mixed fonts. CanvasKit shapes
+the complete line in one Paragraph using supplied faces for each font run; missing
+range fonts are reported instead of silently substituting a face.
 Text does not paint a containing box, so its required `cornerRadius` remains `0`.
 
 ## Images and fonts

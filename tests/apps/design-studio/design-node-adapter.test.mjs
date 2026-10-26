@@ -714,3 +714,29 @@ test("real Chromium HTML → pinned original DesignNode → v3 retains nested po
       `${key}: ${visual[key]} vs browser ${rotated.measured[key]}`,
     );
 });
+
+
+test("HTML capture preserves a four-pixel authored font through canonical save and Figma transfer", async () => {
+  const source = text("Tiny author text", {
+    textStyle: { ...text().textStyle, fontSize: 4, lineHeight: { unit: "px", value: 4.8 } },
+  });
+  const before = structuredClone(source), result = await designNodeToV3(source, options);
+  assert.deepEqual(source, before);
+  assert(!result.report.warnings.some(warning => warning.code === "bounded-number" && warning.message.startsWith("fontSize")));
+  const document = normalizeDesignDocument(result.document), label = document.nodes[0];
+  assert.deepEqual([label.fontSize, label.lineHeight, label.lineHeightUnit], [4, 1.2, undefined]);
+  const reopened = normalizeDesignDocument(JSON.parse(serializeDesignDocument(document)));
+  assert.equal(reopened.nodes[0].fontSize, 4);
+  assert.equal(createFigmaTransfer(reopened).pages[0].children[0].fontSize, 4);
+});
+
+
+test("sub-one-pixel HTML font size keeps the adapter's explicit bounded-number diagnostic", async () => {
+  const source = text("Unsupported tiny text", {
+    textStyle: { ...text().textStyle, fontSize: 0.5, lineHeight: { unit: "px", value: 1 } },
+  });
+  const result = await designNodeToV3(source, options);
+  assert.equal(allNodes(result)[0].fontSize, 1);
+  assert(result.report.warnings.some(warning => warning.code === "bounded-number" && warning.message.startsWith("fontSize")));
+  assert.equal(source.textStyle.fontSize, 0.5);
+});

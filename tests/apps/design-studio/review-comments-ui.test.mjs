@@ -426,8 +426,8 @@ test("browser preview uses the same local workspace keys and survives reopening"
   );
   assert.equal(
     await page.evaluate(
-      (path) =>
-        JSON.parse(localStorage.getItem(`codeshell-design-studio:file:${path}`)).threads[0].text,
+      async (path) => { const {createBrowserStore}=await import("/browser-store.mjs");
+        return JSON.parse((await createBrowserStore().call("workspace.readText",{path})).content).threads[0].text; },
       commentsPath,
     ),
     "Browser preview discussion",

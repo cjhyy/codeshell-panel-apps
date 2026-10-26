@@ -1,8 +1,11 @@
 import { textLineHeightPixels } from "./text-line-height.mjs";
-import { validateTextRanges } from "./text-ranges.mjs";
+import { validateTextRanges, projectTextRanges, textRangeTypography } from "./text-ranges.mjs";
 /* Browser measurements are receipts for specific text and typography, not audit exemptions. */
 import { designFontFamilyCss } from "./font-css.mjs";
+import { parseDesignFontFamily } from "./font-family.mjs";
+import { inspectFontCapabilities, selectFontEntry, fontWeightAxis } from "./font-capabilities.mjs";
 export function textMetricsSignature(node) {
+  const typography = textRangeTypography(node, false);
   return JSON.stringify([
     node.text,
     node.fontFamily ?? "",
@@ -13,6 +16,7 @@ export function textMetricsSignature(node) {
     node.letterSpacing ?? 0,
     node.lineHeight,
     ...(node.lineHeightUnit === undefined ? [] : [node.lineHeightUnit]),
+    ...(typography.length ? [{ typography }] : []),
   ]);
 }
 
@@ -32,15 +36,16 @@ export function validTextMetrics(metrics) {
         "sourceSignature",
         "lineWidths",
         "lineInkBounds",
+        "lineHeights", "lineOffsets", "alphabeticBaseline",
         "height",
         "fontAvailable",
       ].includes(key),
     ) &&
     metrics.version === 1 &&
     typeof metrics.signature === "string" &&
-    metrics.signature.length <= 8500 &&
+    metrics.signature.length <= 49152 &&
     (metrics.sourceSignature === undefined ||
-      (typeof metrics.sourceSignature === "string" && metrics.sourceSignature.length <= 8500)) &&
+      (typeof metrics.sourceSignature === "string" && metrics.sourceSignature.length <= 49152)) &&
     Array.isArray(metrics.lineWidths) &&
     metrics.lineWidths.length >= 1 &&
     metrics.lineWidths.length <= 4001 &&
@@ -61,6 +66,10 @@ export function validTextMetrics(metrics) {
         bounds.width >= 0 &&
         bounds.height >= 0,
     ) &&
+    ["lineHeights", "lineOffsets"].every(key => metrics[key] === undefined ||
+      Array.isArray(metrics[key]) && metrics[key].length === metrics.lineWidths.length &&
+      metrics[key].every(value => Number.isFinite(value) && Math.abs(value) <= 1_000_000 && (key !== "lineHeights" || value > 0))) &&
+    (metrics.alphabeticBaseline === undefined || Number.isFinite(metrics.alphabeticBaseline) && Math.abs(metrics.alphabeticBaseline) <= 1000) &&
     Number.isFinite(metrics.height) &&
     metrics.height >= 0 &&
     metrics.height <= 1_000_000 &&
@@ -81,7 +90,7 @@ export function measuredTextInkBounds(node) {
             : 0;
       return {
         x: box.x + offset,
-        y: box.y + index * textLineHeightPixels(node),
+        y: box.y + textDisplayLineMetrics(node).offsets[index],
         width: box.width,
         height: box.height,
       };
@@ -106,6 +115,30 @@ export function currentTextMetrics(node) {
     node.textMetrics.lineWidths.length === String(node.text).split("\n").length
     ? node.textMetrics
     : null;
+}
+
+/** Real browser line boxes when available; a typography-aware bound otherwise. */
+export function textDisplayLineMetrics(node) {
+  const lines = String(node.text).split("\n"), metrics = currentTextMetrics(node);
+  if (metrics?.lineHeights && metrics.lineOffsets)
+    return { heights: [...metrics.lineHeights], offsets: [...metrics.lineOffsets], height: metrics.lineHeights.reduce((sum, value) => sum + value, 0) };
+  const heights = lines.map(() => textLineHeightPixels(node));
+  if (node.textRanges !== undefined && node.lineHeightUnit !== "pixels") {
+    for (const run of projectTextRanges(node)) if (run.style)
+      heights[run.lineIndex] = Math.max(heights[run.lineIndex], run.style.fontSize * (node.lineHeight ?? 1.2));
+  }
+  let offset = 0;
+  const offsets = heights.map(height => { const current = offset; offset += height; return current; });
+  return { heights, offsets, height: offset };
+}
+
+export function measuredRangeLineGeometry(node, metrics) {
+  if (!textRangeTypography(node, false).length || !metrics.every(metric => Number.isFinite(metric.lineHeight) && Number.isFinite(metric.baselineOffset))) return {};
+  let position = 0;
+  const baseline = metrics[0]?.baselineOffset ?? 0;
+  return { alphabeticBaseline: metrics[0].alphabeticBaseline, lineHeights: metrics.map(metric => round(metric.lineHeight)), lineOffsets: metrics.map(metric => {
+    const offset = round(position + metric.baselineOffset - baseline); position += metric.lineHeight; return offset;
+  }) };
 }
 
 const round = (value) => Math.round(value * 10000) / 10000;
@@ -134,10 +167,32 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
     lineBox.remove();
     throw Error("浏览器无法测量文字");
   }
-  let actualInkAvailable = true;
+  let actualInkAvailable = true, configuredNode, typographyRuns = [], alphabeticBaseline = 0;
   let wrapWidth = Infinity;
+  function populate(value, sourceStart = 0) {
+    if (!typographyRuns.length) { text.textContent = value || " "; lineBox.textContent = value || " "; return; }
+    const source = configuredNode.textSource ?? configuredNode.text;
+    if (source.slice(sourceStart, sourceStart + value.length) !== value)
+      throw Error("范围文字测量需要精确的来源偏移，不能按重复子串猜测样式");
+    text.replaceChildren(); lineBox.replaceChildren();
+    for (const run of typographyRuns) {
+      const start = Math.max(sourceStart, run.sourceStart), end = Math.min(sourceStart + value.length, run.sourceEnd);
+      if (start >= end) continue;
+      const content = source.slice(start, end), svgRun = documentValue.createElementNS(svg.namespaceURI, "tspan"), htmlRun = documentValue.createElement("span");
+      for (const element of [svgRun, htmlRun]) {
+        Object.assign(element.style, { fontFamily: designFontFamilyCss(run.style.fontFamily), fontSize: `${run.style.fontSize}px`,
+          fontWeight: String(run.style.fontWeight), fontStyle: run.style.fontStyle });
+        element.textContent = content;
+      }
+      text.append(svgRun); lineBox.append(htmlRun);
+    }
+    if (!value) { text.textContent = " "; lineBox.textContent = " "; }
+  }
   return {
     configure(node) {
+      configuredNode = node;
+      typographyRuns = textRangeTypography(node).length
+        ? projectTextRanges({ ...node, text: node.textSource ?? node.text }).filter(run => run.kind === "source") : [];
       wrapWidth = node.textFlow === "wrap" ? node.width : Infinity;
       for (const [name, value] of Object.entries({
         "font-family": designFontFamilyCss(
@@ -153,12 +208,25 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
       text.style.whiteSpace = "pre";
       context.font = `${node.fontStyle ?? "normal"} ${node.fontWeight} ${node.fontSize}px ${designFontFamilyCss(node.fontFamily ?? "Inter")}`;
       context.textBaseline = "hanging";
+      const hanging = context.measureText("Hg");
+      context.textBaseline = "alphabetic";
+      const alphabetic = context.measureText("Hg");
+      alphabeticBaseline = alphabetic.actualBoundingBoxAscent - hanging.actualBoundingBoxAscent;
+      context.textBaseline = "hanging";
+      // All SVG runs share the parent's alphabetic baseline. A hanging parent
+      // would align smaller runs to their own hanging table and lift domains.
+      text.setAttribute("dominant-baseline", typographyRuns.length ? "alphabetic" : "hanging");
+      text.setAttribute("y", String(typographyRuns.length ? alphabeticBaseline : 0));
       actualInkAvailable = !node.letterSpacing || "letterSpacing" in context;
       if ("letterSpacing" in context) context.letterSpacing = `${node.letterSpacing ?? 0}px`;
+      Object.assign(lineBox.style, {
+        fontFamily: designFontFamilyCss(node.fontFamily), fontSize: `${node.fontSize}px`, fontWeight: String(node.fontWeight),
+        fontStyle: node.fontStyle ?? "normal", letterSpacing: `${node.letterSpacing ?? 0}px`,
+        lineHeight: !typographyRuns.length || node.lineHeightUnit === "pixels" ? `${textLineHeightPixels(node)}px` : String(node.lineHeight ?? 1.2),
+      });
     },
     lineBoxOffset(node) {
-      const key = JSON.stringify([node.fontFamily, node.fontRef, node.fontSize,
-        node.fontWeight, node.fontStyle, node.letterSpacing, node.lineHeight, node.lineHeightUnit]);
+      const key = textSourceMetricsSignature(node);
       if (baselineOffsets.has(key)) return baselineOffsets.get(key);
       Object.assign(lineBox.style, {
         fontFamily: designFontFamilyCss(node.fontFamily),
@@ -166,12 +234,14 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
         fontWeight: String(node.fontWeight),
         fontStyle: node.fontStyle ?? "normal",
         letterSpacing: `${node.letterSpacing ?? 0}px`,
-        lineHeight: `${textLineHeightPixels(node)}px`,
+        lineHeight: !typographyRuns.length || node.lineHeightUnit === "pixels" ? `${textLineHeightPixels(node)}px` : String(node.lineHeight ?? 1.2),
       });
       // Native TEXT bounds start at the line box. Browser Range bounds start
       // at its font box, whereas SVG/Canvas hanging text starts lower within
       // that font box. Measure both pieces with the actual loaded font.
-      text.textContent = "Hg";
+      const source = node.textSource ?? node.text;
+      populate(typographyRuns.length ? source.split("\n")[0] : "Hg");
+      range.selectNodeContents(lineBox);
       const offset = range.getBoundingClientRect().top - lineBox.getBoundingClientRect().top -
         text.getBoundingClientRect().top;
       if (!Number.isFinite(offset) || Math.abs(offset) > 100)
@@ -179,19 +249,19 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
       baselineOffsets.set(key, offset);
       return offset;
     },
-    measure(value) {
-      text.textContent = value || " ";
+    measure(value, sourceStart = 0) {
+      populate(value, sourceStart);
       const bounds = text.getBBox();
       const actual = context.measureText(value);
       let advance = value ? text.getComputedTextLength() : 0;
       if (advance > wrapWidth + 0.01 && /\S/u.test(value) && / +$/u.test(value)) {
-        text.textContent = value.replace(/ +$/u, "");
+        populate(value.replace(/ +$/u, ""), sourceStart);
         const fittingAdvance = text.getComputedTextLength();
-        text.textContent = value;
+        populate(value, sourceStart);
         if (fittingAdvance <= wrapWidth + 0.01) advance = fittingAdvance;
       }
       const measuredInk =
-        actualInkAvailable &&
+        !typographyRuns.length && actualInkAvailable &&
         [
           actual.actualBoundingBoxLeft,
           actual.actualBoundingBoxRight,
@@ -207,6 +277,12 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
           : bounds;
       return {
         width: round(advance),
+        ...(typographyRuns.length ? (() => {
+          range.selectNodeContents(lineBox);
+          return { lineHeight: lineBox.getBoundingClientRect().height,
+            alphabeticBaseline,
+            baselineOffset: range.getBoundingClientRect().top - lineBox.getBoundingClientRect().top - text.getBoundingClientRect().top };
+        })() : {}),
         bottom: value ? round(Math.max(0, measuredInk.y + measuredInk.height)) : 0,
         ink: value
           ? {
@@ -233,8 +309,11 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
 
 // Preserve every original character; line breaks are layout, and textSource retains the source.
 function measuredWrapLines(source, width, measure) {
+  let paragraphStart = 0;
   return source.split("\n").flatMap((paragraph) => {
-    if (!paragraph || measure(paragraph).width <= width + 0.01) return [paragraph];
+    let lineStart = paragraphStart;
+    paragraphStart += paragraph.length + 1;
+    if (!paragraph || measure(paragraph, lineStart).width <= width + 0.01) return [paragraph];
     const lines = [];
     let line = "";
     for (const token of paragraph.match(/\S+\s*|\s+/gu) ?? []) {
@@ -243,15 +322,17 @@ function measuredWrapLines(source, width, measure) {
       // exact bytes in the previous line and in textSource.
       const trailingSpaces = /\S/u.test(token) ? / +$/u.exec(token)?.[0].length ?? 0 : 0;
       const fittingToken = trailingSpaces ? token.slice(0, -trailingSpaces) : token;
-      if (line && measure(line + fittingToken).width > width + 0.01) {
+      if (line && measure(line + fittingToken, lineStart).width > width + 0.01) {
         lines.push(line);
+        lineStart += line.length;
         line = "";
       }
       const characters = Array.from(token);
       for (const [index, character] of characters.entries()) {
         if (index < characters.length - trailingSpaces &&
-            line && measure(line + character).width > width + 0.01) {
+            line && measure(line + character, lineStart).width > width + 0.01) {
           lines.push(line);
+          lineStart += line.length;
           line = "";
         }
         line += character;
@@ -305,6 +386,7 @@ export async function measureFigmaTextDocument(
     browserDocument = globalThis.document,
     measurer,
     nativeLineBoxes = false,
+    fontFaces = [],
   } = {},
 ) {
   for (const page of documentValue.pages ?? [documentValue])
@@ -313,6 +395,8 @@ export async function measureFigmaTextDocument(
     return { measured: 0, unavailableFonts: [], geometryChangedIds: [] };
   await browserDocument?.fonts?.ready;
   const measurement = measurer ?? createBrowserTextMeasurer(browserDocument);
+  const suppliedFonts = fontFaces.map(face => ({ ...face, capabilities: inspectFontCapabilities(face.bytes) }));
+  const unsupportedFontRequests = [], fontSelections = [];
   const warnings = new Set(),
     changed = new Set(),
     unsupportedBaselines = [],
@@ -323,6 +407,26 @@ export async function measureFigmaTextDocument(
     for (const page of pages)
       for (const node of page.nodes ?? []) {
         if (node.type !== "text") continue;
+        const selected = suppliedFonts.find(face => face.descriptor.id === node.fontRef), seen = new Set();
+        let unsupportedFont = false;
+        for (const request of [node, ...(node.textRanges ? projectTextRanges(node).filter(run => run.kind === "source").map(run => run.style) : [])]) {
+          const family = selected && request.fontFamily === node.fontFamily ? selected.descriptor.family : parseDesignFontFamily(request.fontFamily)?.[0]?.name;
+          const weight = request.fontWeight, style = request.fontStyle ?? "normal", key = JSON.stringify([family, weight, style]);
+          if (seen.has(key)) continue; seen.add(key);
+          const supplied = suppliedFonts.filter(face => face.descriptor.family.toLowerCase() === String(family).toLowerCase());
+          if (!supplied.length) continue;
+          const face = selectFontEntry(supplied, {family,weight,style,preferredId:selected?.descriptor.id});
+          if (fontSelections.length < 256) fontSelections.push({nodeId:node.id,requestedFamily:request.fontFamily,requestedWeight:weight,requestedStyle:style,
+            resourceId:face?.descriptor.id ?? null,declaredWeight:face?.descriptor.weight ?? null,
+            selection:face ? fontWeightAxis(face.capabilities) ? "variable-instance" : "exact-face" : "unavailable",proof:face?.capabilities.proof ?? "none"});
+          if (!face) {
+            unsupportedFont = true;
+            if (unsupportedFontRequests.length < 256) unsupportedFontRequests.push({nodeId:node.id,family,weight,style});
+          }
+        }
+        // A synthesized or nearest-weight measurement must not rewrite source
+        // text geometry or become a seemingly valid textMetrics receipt.
+        if (unsupportedFont) continue;
         const source = sourceNodes.get(sourceIds.get(node.id));
         const autoResize = source?.style?.textAutoResize;
         measurement.configure(node.textOverflow === "ellipsis"
@@ -345,26 +449,28 @@ export async function measureFigmaTextDocument(
         const originalText = node.textSource ?? node.text;
         if (node.textOverflow === "ellipsis" && /[\r\n]/u.test(originalText))
           unsupportedTruncations.push({ nodeId: node.id, reason: "单行截断包含显式换行；暂以首行省略号预览，完整来源保留，请核对原生效果" });
-        const lines =
+        const wrapped =
           node.textOverflow === "ellipsis"
-            ? [measuredEllipsis(originalText, node.width, (value) => measurement.measure(value))]
-            : autoResize === "WIDTH_AND_HEIGHT"
-            ? originalText.split("\n")
-            : measuredWrap(originalText, node.width, (value) => measurement.measure(value));
+            ? null : measuredWrapSource(originalText, autoResize === "WIDTH_AND_HEIGHT" ? Infinity : node.width,
+              (value, start) => measurement.measure(value, start));
+        const lines = wrapped ? wrapped.displayText.split("\n")
+          : [measuredEllipsis(originalText, node.width, (value) => measurement.measure(value))];
         const text = lines.join("\n");
         if (text.length > 4000) throw Error(`文字 ${node.id} 换行后超过 4000 字符；请拆分文字图层`);
         node.text = text;
-        const metrics = lines.map((line) => measurement.measure(line));
+        const metrics = lines.map((line, index) => measurement.measure(line, wrapped?.lines[index].sourceStart ?? 0));
         const width = Math.max(
           0,
           ...metrics.map((metric) =>
             Math.max(metric.width, metric.ink.width, metric.ink.x + metric.ink.width),
           ),
         );
+        const lineGeometry = measuredRangeLineGeometry(node, metrics);
+        const lineOffsets = lineGeometry.lineOffsets ?? metrics.map((_, index) => index * textLineHeightPixels(node));
         const height = Math.max(
           0,
           ...metrics.map(
-            (metric, index) => metric.bottom + index * textLineHeightPixels(node),
+            (metric, index) => metric.bottom + lineOffsets[index],
           ),
         );
         if (autoResize === "WIDTH_AND_HEIGHT" && width > node.width) {
@@ -389,6 +495,7 @@ export async function measureFigmaTextDocument(
           sourceSignature: textSourceMetricsSignature(node),
           lineWidths: metrics.map((metric) => metric.width),
           lineInkBounds: metrics.map((metric) => metric.ink),
+          ...lineGeometry,
           height: round(height),
           fontAvailable,
         };
@@ -401,5 +508,5 @@ export async function measureFigmaTextDocument(
   if (documentValue.pages)
     documentValue.nodes =
       documentValue.pages.find((page) => page.id === documentValue.activePageId)?.nodes ?? [];
-  return { measured, unavailableFonts: [...warnings], geometryChangedIds: [...changed], unsupportedBaselines, unsupportedTruncations };
+  return { measured, unavailableFonts: [...warnings], geometryChangedIds: [...changed], unsupportedBaselines, unsupportedTruncations, unsupportedFontRequests, fontSelections };
 }

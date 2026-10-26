@@ -170,8 +170,9 @@ async function assertRetained(page) {
     builds: window.viewportSceneBuilds - window.viewportInitialBuilds,
     creates: window.viewportRendererCreates - window.viewportInitialCreates,
     mutations: window.viewportMutations,
-    saved: localStorage.getItem("codeshell-design-studio:file:designs/viewport.codesign.json"),
+
   }));
+  state.saved = await page.evaluate(async () => { const {createBrowserStore}=await import("/browser-store.mjs"); return (await createBrowserStore().call("workspace.readText",{path:"designs/viewport.codesign.json"})).content; });
   assert.equal(state.sameVisual, true);
   assert.equal(state.sameRow, true);
   assert.equal(state.sameOverlay, true);

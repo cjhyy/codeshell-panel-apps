@@ -105,6 +105,10 @@
                 "type": "string",
                 "pattern": "^#[0-9a-fA-F]{6}$"
               },
+              "fontSize": { "type": "number", "minimum": 1, "maximum": 240 },
+              "fontFamily": { "type": "string", "minLength": 1, "maxLength": 120 },
+              "fontWeight": { "enum": [100,200,300,400,500,600,700,800,900] },
+              "fontStyle": { "enum": ["normal", "italic"] },
               "textDecoration": {
                 "enum": [
                   "none",
@@ -722,7 +726,7 @@
         "locked": { "type": "boolean" },
         "clipContent": { "type": "boolean" },
         "text": { "type": "string", "maxLength": 4000 },
-        "fontSize": { "type": "number", "minimum": 6, "maximum": 240 },
+        "fontSize": { "type": "number", "minimum": 1, "maximum": 240 },
         "fontWeight": { "enum": [100, 200, 300, 400, 500, 600, 700, 800, 900] },
         "fontFamily": {
           "type": "string",
@@ -750,8 +754,11 @@
           ],
           "properties": {
             "version": { "const": 1 },
-            "signature": { "type": "string", "maxLength": 8500 },
-            "sourceSignature": { "type": "string", "maxLength": 8500 },
+            "signature": { "type": "string", "maxLength": 49152 },
+            "sourceSignature": { "type": "string", "maxLength": 49152 },
+            "alphabeticBaseline": { "type": "number", "minimum": -1000, "maximum": 1000 },
+            "lineHeights": { "type": "array", "minItems": 1, "maxItems": 4001, "items": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000000 } },
+            "lineOffsets": { "type": "array", "minItems": 1, "maxItems": 4001, "items": { "type": "number", "minimum": -1000000, "maximum": 1000000 } },
             "lineWidths": {
               "type": "array",
               "minItems": 1,
@@ -1092,7 +1099,7 @@
             "properties": { "cornerRadius": { "const": 0 } },
             "allOf": [{
               "if": { "required": ["lineHeightUnit"] },
-              "then": { "properties": { "lineHeight": { "minimum": 4.2, "maximum": 720 } } },
+              "then": { "properties": { "lineHeight": { "minimum": 0.7, "maximum": 720 } } },
               "else": { "properties": { "lineHeight": { "minimum": 0.7, "maximum": 3 } } }
             }]
           },

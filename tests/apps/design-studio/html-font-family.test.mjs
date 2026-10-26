@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { chromium } from "playwright";
 import { normalizeDesignDocument, serializeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
 import { createFigmaTransfer } from "../../../apps/design-studio/app/figma-bridge.mjs";
@@ -177,4 +178,49 @@ test('production pre recovery preserves current full family and raw bytes throug
   assert.equal(p.text.textSource,raw);assert.equal(p.reopened.textSource,raw);assert.equal(p.reopened.fontFamily,p.text.fontFamily);
   assert.equal(JSON.parse(p.text.textMetrics.sourceSignature)[1],p.text.fontFamily);
   assert(!p.warnings.some(w=>w.code==='html-font-family-unverified'));
+});
+
+
+async function legacySizeCapture(page, size, control) {
+  const value = control ? "Tiny control value" : "Tiny paragraph text";
+  const html = `<!doctype html><meta charset="utf-8"><style>
+    @font-face{font-family:Inter;font-weight:400;src:url(data:font/woff2;base64,${font.base64})}
+    *{box-sizing:border-box}html,body{margin:0}#fixture{width:640px;min-height:240px;padding:20px;font:400 16px/1.5 Inter}
+    #copy{display:block;margin:0;padding:0;border:0;font:inherit;font-size:${size ? `${size}px` : ""};line-height:1.5}
+    input#copy{width:240px;height:30px}
+    </style><main id="fixture">${control ? `<input id="copy" value="${value}">` : `<p id="copy">${value}</p>`}</main>`;
+  await page.setContent(html);
+  await page.evaluate(async () => { await document.fonts.load("400 16px Inter"); await document.fonts.ready; });
+  const observed = await page.evaluate(async expected => {
+    const { captureHtmlToDesign } = await import("/app/html-capture.mjs");
+    const { normalizeDesignDocument, serializeDesignDocument } = await import("/app/document.mjs");
+    const root = document.querySelector("#fixture"), element = document.querySelector("#copy"), before = root.outerHTML;
+    const computedFontSize = parseFloat(getComputedStyle(element).fontSize);
+    const captured = await captureHtmlToDesign(root, { viewportWidth: 640, viewportHeight: 240 });
+    const state = normalizeDesignDocument(captured), node = state.nodes.find(node => node.type === "text" && (node.textSource ?? node.text) === expected);
+    if (!node) throw Error("The real legacy capture did not preserve the test text");
+    const saved = serializeDesignDocument(state), reopened = normalizeDesignDocument(JSON.parse(saved));
+    return { computedFontSize, fontSize: node.fontSize, text: node.text, sourceText: node.textSource ?? node.text, inputUnchanged: before === root.outerHTML,
+      reopenedFontSize: reopened.nodes.find(candidate => candidate.id === node.id).fontSize, saved };
+  }, value);
+  if (process.env.DESIGN_STUDIO_LEGACY_FONT_EVIDENCE_DIR) {
+    const directory = resolve(process.env.DESIGN_STUDIO_LEGACY_FONT_EVIDENCE_DIR);
+    await mkdir(directory, { recursive: true });
+    const label = `${control ? "input" : "paragraph"}-${size || "empty"}`;
+    await writeFile(resolve(directory, `${label}.html`), html, { flag: "wx" });
+    await writeFile(resolve(directory, `${label}.json`), JSON.stringify(observed, null, 2) + "\n", { flag: "wx" });
+  }
+  return observed;
+}
+
+for (const control of [false, true]) test(`legacy capture preserves 1px and 4px ${control ? "form values" : "paragraphs"} without changing fallback or upper bound`, async t => {
+  const page = await setup(t);
+  for (const [size, expected, computed] of [["1", 1, 1], ["4", 4, 4], ["6", 6, 6], ["300", 240, 300], ["not-a-size", 16, 16], ["", 16, 16]]) {
+    const observed = await legacySizeCapture(page, size, control);
+    assert.equal(observed.computedFontSize, computed);
+    assert.equal(observed.fontSize, expected, `${control ? "input" : "paragraph"}/${size || "empty"}: the capture must preserve the supported CSS size`);
+    assert.equal(observed.sourceText, control ? "Tiny control value" : "Tiny paragraph text");
+    assert.equal(observed.reopenedFontSize, expected);
+    assert.equal(observed.inputUnchanged, true);
+  }
 });

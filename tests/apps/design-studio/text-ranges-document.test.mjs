@@ -28,7 +28,7 @@ test("strict normalizer/schema/public range payload preserve full authored state
   assert.deepEqual(value,before);
   for(const mutate of [
     x=>x.pages[0].children[0].textRanges=x.pages[0].children[0].children[0].textRanges,
-    x=>x.pages[0].children[0].children[0].textRanges.ranges[0].fontWeight=700,
+    x=>x.pages[0].children[0].children[0].textRanges.ranges[0].fontWeight=750,
     x=>x.pages[0].children[0].children[0].textRanges.ranges[0].textDecoration="none",
     x=>x.pages[0].children[0].children[0].textRanges.ranges[0].textUnderlineOffset={unit:"rem",value:1},
   ]){const candidate=raw();mutate(candidate);assert.equal(validate(candidate),false);assert.throws(()=>normalizeDesignDocument(candidate));}

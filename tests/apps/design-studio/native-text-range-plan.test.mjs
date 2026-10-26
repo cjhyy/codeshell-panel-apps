@@ -100,7 +100,7 @@ test("unsupported decorations/paints/truncation and malformed/stale content fail
     value => value.textOverflow = "ellipsis",
     value => value.textRanges.sourceSignature = '["stale"]',
     value => value.textSource = "other", value => value.textSource = 1,
-    value => value.textRanges.ranges[0].fontWeight = 700,
+    value => value.textRanges.ranges[0].fontWeight = 750,
     value => value.textRanges.ranges[0].start = .5,
     value => value.textRanges.ranges = Array(1),
     value => value.textRanges.ranges.push({ start: 2, end: 4, fill: "#123456" }),

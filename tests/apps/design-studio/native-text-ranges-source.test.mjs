@@ -189,9 +189,11 @@ test("portable pure helper uses no TextEncoder/URL/structuredClone and fixed fie
   assert.ok(NATIVE_TEXT_RANGE_SCALAR_ONLY_FIELDS.includes("hasMissingFont"));
   assert.ok(!NATIVE_TEXT_RANGE_FIELDS.includes("hasMissingFont"));assert.ok(!NATIVE_TEXT_RANGE_FIELDS.includes("variationSettings"));
   const module=(await readFile(moduleUrl,"utf8")).replace(/^import .*;$/gm, "").replaceAll(/^export /gm, "");
-  const core=(await readFile(new URL("../../../apps/design-studio/app/text-ranges.mjs", import.meta.url),"utf8")).replaceAll(/^export /gm, "");
+  const family=(await readFile(new URL("../../../apps/design-studio/app/font-family.mjs", import.meta.url),"utf8")).replaceAll(/^export /gm, "");
+  const core=(await readFile(new URL("../../../apps/design-studio/app/text-ranges.mjs", import.meta.url),"utf8")).replace(/^import .*;$/gm, "").replaceAll(/^export /gm, "");
   const line=(await readFile(new URL("../../../apps/design-studio/app/text-line-height.mjs", import.meta.url),"utf8")).replaceAll(/^export /gm, "");
   const context=vm.createContext({});
+  vm.runInContext(`Object.assign(this,(()=>{${family};return {parseDesignFontFamily};})());`,context);
   vm.runInContext(`Object.assign(this,(()=>{${core};return {textRangeSourceSignature,validateTextRanges,isSafeTextRangeHref};})());`,context);
   vm.runInContext(`Object.assign(this,(()=>{${line};return {nativeTextLineHeight,validTextLineHeight};})());`,context);
   vm.runInContext(module+"\nthis.api={buildNativeTextRangeSource,validateNativeTextRangeSource,nativeTextRangeSnapshot,importNativeTextRanges};",context);

@@ -87,14 +87,14 @@ test("pixel bounds derive from legacy font/ratio envelope and absence keeps exac
       ),
     ),
   );
-  for (const lineHeight of [4.2, 20, 720]) {
+  for (const lineHeight of [0.7, 4.2, 20, 720]) {
     const raw = plainFixture();
     Object.assign(leaf(raw), { lineHeight, lineHeightUnit: "pixels" });
     assert.equal(validate(raw), true, JSON.stringify(validate.errors));
     assert.doesNotThrow(() => normalizeDesignDocument(raw));
   }
   for (const change of [
-    { lineHeight: 4.1999, lineHeightUnit: "pixels" },
+    { lineHeight: 0.6999, lineHeightUnit: "pixels" },
     { lineHeight: 720.001, lineHeightUnit: "pixels" },
     { lineHeight: 20 },
     { lineHeight: 1.2, lineHeightUnit: "ratio" },
@@ -185,13 +185,14 @@ test("raw pixel units do not depend on rounded ratios and the public partial pat
   for (const changes of [
     { lineHeight: 20, lineHeightUnit: "pixels" },
     { lineHeight: 4.2, lineHeightUnit: "pixels" },
+    { lineHeight: 1.25, lineHeightUnit: "pixels" },
     { lineHeight: 720, lineHeightUnit: "pixels" },
     { lineHeight: 1.25, lineHeightUnit: null },
     { lineHeight: 20 },
   ])
     assert.equal(validateToolArgsStrict("use_design", request(changes), schema), null);
   for (const changes of [
-    { lineHeight: 1.25, lineHeightUnit: "pixels" },
+    { lineHeight: 0.6999, lineHeightUnit: "pixels" },
     { lineHeight: 721, lineHeightUnit: "pixels" },
     { lineHeight: 20, lineHeightUnit: null },
     { lineHeightUnit: "ratio" },

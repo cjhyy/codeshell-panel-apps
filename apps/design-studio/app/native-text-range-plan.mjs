@@ -1,4 +1,5 @@
 import { MAX_TEXT_RANGES, isSafeTextRangeHref, mapTextDisplay, validateTextRanges } from "./text-ranges.mjs";
+import { nativeTextFontName } from "./native-text-font.mjs";
 
 export const MAX_NATIVE_TEXT_RANGE_RUNS = MAX_TEXT_RANGES * 2 + 1;
 const geometry = ["textDecorationThickness", "textUnderlineOffset", "textDecorationSkipInk"];
@@ -12,7 +13,7 @@ const sourceErrors = new Set([
 ]);
 const fields = [
   "type", "text", "textSource", "textFlow", "textRanges", "fill", "fillPaints",
-  "textDecoration", ...geometry, "textOverflow", "fontSize",
+  "textDecoration", ...geometry, "textOverflow", "fontSize", "fontFamily", "fontWeight", "fontStyle",
 ];
 
 // The shared canonical validator receives owned data, never foreign accessors
@@ -131,6 +132,16 @@ function plan(node) {
   if (node.textOverflow !== undefined)
     fail("TEXT_RANGES_UNSUPPORTED_TRUNCATION", "Native range planning does not support truncated text.");
   const { characters, ranges } = sourcePlan(node);
+  const fontKeys = ["fontSize", "fontFamily", "fontWeight", "fontStyle"];
+  const hasTypography = ranges.some(range => fontKeys.some(key => own(range, key)));
+  const typography = range => {
+    if (!hasTypography) return {};
+    const effective = { ...node, ...range };
+    if (!Number.isFinite(effective.fontSize) || effective.fontSize < 1 || effective.fontSize > 240)
+      fail("TEXT_RANGES_NATIVE_UNSUPPORTED_FONT", "Native range font sizes must be within1..240.");
+    try { return { fontName: nativeTextFontName(effective), fontSize: effective.fontSize }; }
+    catch { fail("TEXT_RANGES_NATIVE_UNSUPPORTED_FONT", "Native range fonts require one literal supported family/weight/style tuple."); }
+  };
   const fill = node.fill.toLowerCase();
   const runs = [];
   let cursor = 0;
@@ -138,13 +149,13 @@ function plan(node) {
     if ((range.textDecoration !== undefined && range.textDecoration !== "none") || geometry.some(key => own(range, key)))
       fail("TEXT_RANGES_NATIVE_UNSUPPORTED_DECORATION", "Native range planning currently supports no text decoration or CSS underline geometry.");
     if (cursor < range.start)
-      runs.push({ start: cursor, end: range.start, fill, hyperlink: null });
+      runs.push({ start: cursor, end: range.start, fill, hyperlink: null, ...typography({}) });
     runs.push({ start: range.start, end: range.end, fill: range.fill ?? fill,
-      hyperlink: range.href === undefined ? null : nativeHyperlink(range.href) });
+      hyperlink: range.href === undefined ? null : nativeHyperlink(range.href), ...typography(range) });
     cursor = range.end;
   }
   if (cursor < characters.length)
-    runs.push({ start: cursor, end: characters.length, fill, hyperlink: null });
+    runs.push({ start: cursor, end: characters.length, fill, hyperlink: null, ...typography({}) });
   return { characters, runs };
 }
 

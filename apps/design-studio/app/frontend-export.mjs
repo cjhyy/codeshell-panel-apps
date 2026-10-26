@@ -498,7 +498,7 @@ function renderInstance(node, context) {
 const rangeLengthCss = (length) => length?.unit === "auto" ? "auto" :
   length ? `${length.value}${length.unit}` : undefined;
 
-function renderTextRanges(node) {
+function renderTextRanges(node, runtimeFontFamily) {
   if (node.fillPaints?.length || node.strokeWidth > 0 && !["none", "transparent"].includes(node.stroke)) {
     const error = new Error("TEXT_RANGES_UNSUPPORTED: 范围文字的多层填色或描边尚不能准确导出前端");
     error.code = "TEXT_RANGES_UNSUPPORTED";
@@ -523,6 +523,11 @@ function renderTextRanges(node) {
     .map((run) => {
       const style = styleText([
         ["font", "inherit"],
+        ["font-family", runtimeFontFamily ? designRuntimeFontFamilyCss(runtimeFontFamily(node, run.style)) :
+          run.overrides.fontFamily === undefined ? undefined : designFontFamilyCss(run.style.fontFamily)],
+        ["font-size", run.overrides.fontSize === undefined ? undefined : `${run.style.fontSize}px`],
+        ["font-weight", run.overrides.fontWeight === undefined ? undefined : String(run.style.fontWeight)],
+        ["font-style", run.overrides.fontStyle === undefined ? undefined : run.style.fontStyle],
         ["color", run.overrides.fill === undefined ? "inherit" : run.style.fill],
         ["text-decoration-line", run.style.textDecoration],
         ["text-decoration-style", "solid"],
@@ -567,7 +572,7 @@ function renderNodeMarkup(node, parent, context) {
     : "";
   if (node.type === "text") {
     const ranges = validateTextRanges(node);
-    const content = ranges ? renderTextRanges(node) :
+    const content = ranges ? renderTextRanges(node, context.runtimeFontFamily) :
       escapeHtml(node.textOverflow === "ellipsis" || node.textFlow === "wrap" ? nativeTextContent(node) : node.text);
     return `<div ${attributes.join(" ")}>${hotspot}${content}</div>`;
   }

@@ -870,7 +870,7 @@ function appendTextLayers(frame, node, style, rootRect, nextId, captureBounds = 
   const color =
     parseCssColor(node.parentElement?.namespaceURI === SVG_NS ? style.fill : style.color) ??
     { hex: "#000000", alpha: 1 };
-  const size = clamp(pixelValue(style.fontSize, 16), 6, 240);
+  const size = clamp(pixelValue(style.fontSize, 16), 1, 240);
   const lineHeightPixels =
     style.lineHeight === "normal" ? size * 1.2 : pixelValue(style.lineHeight, size * 1.2);
   const spacing = style.letterSpacing === "normal" ? 0 : pixelValue(style.letterSpacing);
@@ -1035,7 +1035,7 @@ function appendFormControlTextLayer(frame, element, style, rect, nextId) {
   const value = formControlValue(element).replace(/\s+/gu, " ").trim();
   if (!value) return;
   const color = parseCssColor(style.color) ?? { hex: "#000000", alpha: 1 };
-  const size = clamp(pixelValue(style.fontSize, 16), 6, 240);
+  const size = clamp(pixelValue(style.fontSize, 16), 1, 240);
   const lineHeightPixels =
     style.lineHeight === "normal" ? size * 1.2 : pixelValue(style.lineHeight, size * 1.2);
   const spacing = style.letterSpacing === "normal" ? 0 : pixelValue(style.letterSpacing);

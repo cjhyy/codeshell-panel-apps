@@ -221,12 +221,14 @@ test("whole nodes including ignored fields share an exact UTF8 budget and protot
 
 test("the complete comparison executes in a native-like VM without DOM, URL, TextEncoder or structuredClone", async () => {
   const root = new URL("../../../apps/design-studio/app/", import.meta.url);
-  const core = (await readFile(new URL("text-ranges.mjs", root), "utf8")).replaceAll(/^export /gm, "");
+  const family = (await readFile(new URL("font-family.mjs", root), "utf8")).replaceAll(/^export /gm, "");
+  const core = (await readFile(new URL("text-ranges.mjs", root), "utf8")).replace(/^import .*;$/gm, "").replaceAll(/^export /gm, "");
   const source = (await readFile(new URL("native-text-ranges-source.mjs", root), "utf8"))
     .replace(/^import .*;\n/gmu, "").replaceAll(/^export /gm, "");
   const module = (await readFile(new URL("native-text-range-compare.mjs", root), "utf8"))
     .replace(/^import [\s\S]*?;\n/u, "").replaceAll(/^export /gm, "");
   const context = vm.createContext({ inputJson: JSON.stringify({ expectedRest: entry(), currentRest: entry() }) });
+  vm.runInContext(`Object.assign(this,(()=>{${family};return {parseDesignFontFamily};})());`, context);
   vm.runInContext(`Object.assign(this,(()=>{${core};return {textRangeSourceSignature,validateTextRanges,isSafeTextRangeHref};})());`, context);
   vm.runInContext(`Object.assign(this,(()=>{${source};return {MAX_NATIVE_TEXT_RANGE_SOURCE_BYTES,NATIVE_TEXT_RANGE_FIELDS,NATIVE_TEXT_RANGE_SCALAR_ONLY_FIELDS,validateNativeTextRangeSource,nativeTextRangeSnapshot};})());`, context);
   vm.runInContext(`(()=>{${module};this.result=compareNativeTextRangeSources(JSON.parse(inputJson));})();`, context);

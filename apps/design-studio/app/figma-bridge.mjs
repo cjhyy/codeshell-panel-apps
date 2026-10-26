@@ -1,6 +1,6 @@
 import { admitNativeTextImport, nativeTextImportIntentSnapshot } from "./native-text-import.mjs";
 import { importNativeTextRanges } from "./native-text-ranges-source.mjs";
-import { validateTextRanges } from "./text-ranges.mjs";
+import { MAX_TEXT_RANGES, textRangeSourceSignature, validateTextRanges, isSafeTextRangeHref } from "./text-ranges.mjs";
 import { figmaSourceNodes } from "./figma-binding.mjs";
 import { normalizeShadowStack, nativeShadowStackEffects } from "./shadow-stack.mjs";
 import { validTextLineHeight } from "./text-line-height.mjs";
@@ -39,11 +39,18 @@ import {
   normalizeFigmaAsset,
 } from "./figma-assets.mjs";
 import { prepareBuiltinDesignFontResources, ensureBuiltinDesignFonts } from "./builtin-fonts.mjs";
+import { createDesignResourcePersistencePlan } from "./resource-store.mjs";
+import { assertCompleteConversionReports } from "./conversion-report.mjs";
+import { assertCompleteNativeExportReport, isNativeExportGeometry } from "./native-export-report.mjs";
 
 export const MAX_FIGMA_JSON_BYTES = 16 * 1024 * 1024;
 export const MAX_FIGMA_TOTAL_NODES = 50_000;
 const MAX_DEPTH = 32;
 const MAX_WARNINGS = 200;
+// Raw syntax tokens have a separate admission budget. The canonical editable
+// payload keeps its existing 64-range/32KiB contract after lossless coalescing.
+const MAX_HTML2FIGMA_STYLED_SEGMENTS = 512;
+const MAX_HTML2FIGMA_STYLED_SEGMENTS_BYTES = 256 * 1024;
 const nativeTextAdmissionContexts = new WeakMap();
 function verifyNativeTextAdmissions(document, contexts) {
   if (!contexts?.size) return;
@@ -87,6 +94,10 @@ const cleanName = (value, fallback) =>
         .trim()
         .slice(0, 120)
     : "") || fallback;
+const pluginFontWeight = (style) => /black|heavy/iu.test(style) ? 900 : /extra.?bold|ultra.?bold/iu.test(style) ? 800
+  : /semi.?bold|demi/iu.test(style) ? 600 : /bold/iu.test(style) ? 700
+    : /medium/iu.test(style) ? 500 : /extra.?light|ultra.?light/iu.test(style) ? 200
+      : /light/iu.test(style) ? 300 : /thin/iu.test(style) ? 100 : 400;
 
 const LOSS_WARNINGS = new Set([
   "unsupported-paint",
@@ -184,8 +195,173 @@ function readJson(input) {
       throw new Error("Figma JSON 无法解析；不支持二进制 .fig 文件。");
     }
   }
-  if (!object(input)) throw new Error("请输入 Figma REST 或 JSON_REST_V1 对象。");
+  if (!object(input) && !Array.isArray(input)) throw new Error("请输入 Figma REST、html2figma FigmaJSON 或 JSON_REST_V1 对象。");
   return input;
+}
+
+// html2figma's plugin input is a different wire format from REST: positions
+// are parent-relative, rotations are counter-clockwise degrees, and typography
+// lives on the Text itself. Admit only that complete geometry shape; official
+// REST nodes (including ones carrying x/y as extra fields) keep their contract.
+export function normalizeHtml2FigmaJson(input) {
+  const value = readJson(input);
+  assertCompleteConversionReports(value);
+  assertCompleteNativeExportReport(value);
+  const pluginNode = (node) => object(node) && typeof node.type === "string" &&
+    !Object.hasOwn(node, "absoluteBoundingBox") && !Object.hasOwn(node, "relativeTransform") &&
+    ["x", "y", "width", "height"].every((key) => finite(node[key]));
+  const roots = Array.isArray(value) ? value : Array.isArray(value.nodes) ? value.nodes
+    : pluginNode(value) ? [value] : null;
+  if (!roots) return value;
+  const nativeExport = !Array.isArray(value) && Object.hasOwn(value, "exportReport");
+  const admittedNode = nativeExport ? isNativeExportGeometry : pluginNode;
+  if (!roots.length || roots.length > 10000 || roots.some((node) => !admittedNode(node)))
+    throw new Error("html2figma FigmaJSON 必须包含具有完整相对几何的根图层。");
+  let serialized;
+  try { serialized = JSON.stringify(value); }
+  catch { throw new Error("html2figma FigmaJSON 包含循环或不可序列化数据。"); }
+  if (new TextEncoder().encode(serialized).byteLength > MAX_FIGMA_JSON_BYTES)
+    throw new Error("Figma JSON 最多 16 MiB；请分页面导出。");
+  const copy = JSON.parse(serialized),
+    copiedRoots = Array.isArray(copy) ? copy : Array.isArray(copy.nodes) ? copy.nodes : [copy],
+    assets = {}, warnings = [], assetIds = new Map();
+  assertCompleteConversionReports(copy);
+  assertCompleteNativeExportReport(copy);
+  let sourceUrl;
+  if (copy.sourceUrl !== undefined) {
+    try { sourceUrl = new URL(copy.sourceUrl); }
+    catch { throw new Error("html2figma sourceUrl 必须是完整 HTTP(S) 网页地址。"); }
+    if (!["https:", "http:"].includes(sourceUrl.protocol))
+      throw new Error("html2figma sourceUrl 必须是完整 HTTP(S) 网页地址。");
+  }
+  let count = 0;
+  const addAsset = (dataUrl) => {
+    if (typeof dataUrl !== "string" || !/^data:image\/[a-z0-9.+-]+;base64,/iu.test(dataUrl)) return null;
+    if (assetIds.has(dataUrl)) return assetIds.get(dataUrl);
+    const id = `html2figma-image-${assetIds.size + 1}`;
+    assetIds.set(dataUrl, id);
+    assets[id] = dataUrl;
+    return id;
+  };
+  const convert = (node, depth) => {
+    if (!admittedNode(node) || depth > MAX_DEPTH || ++count > MAX_FIGMA_TOTAL_NODES)
+      throw new Error("html2figma FigmaJSON 图层几何无效、过深或超过 50,000 图层。");
+    if (node.children !== undefined && !Array.isArray(node.children))
+      throw new Error("html2figma FigmaJSON children 必须是数组。");
+    if (!nativeExport) {
+      const radians = -(node.rotation ?? 0) * Math.PI / 180;
+      if (!finite(radians)) throw new Error("html2figma FigmaJSON rotation 必须为有限角度。");
+      node.relativeTransform = [[Math.cos(radians), -Math.sin(radians), node.x],
+        [Math.sin(radians), Math.cos(radians), node.y]];
+    }
+    if (!nativeExport || node.size === undefined) node.size = { x: node.width, y: node.height };
+    node.codeshellHtml2Figma = true;
+    if (node.type === "TEXT") {
+      if (sourceUrl && Array.isArray(node.styledTextSegments))
+        for (const segment of node.styledTextSegments) {
+          if (segment.hyperlink?.type === "URL" && typeof segment.hyperlink.value === "string") {
+            try { segment.hyperlink.value = new URL(segment.hyperlink.value, sourceUrl).href; }
+            catch { /* The range validator reports unsupported targets below. */ }
+          }
+        }
+      const weight = Number(node.fontWeight),
+        fontStyle = node.fontName?.style ?? "Regular",
+        weightFromStyle = pluginFontWeight(fontStyle);
+      node.style = { ...node.style,
+        fontFamily: node.fontName?.family ?? node.style?.fontFamily,
+        fontSize: node.fontSize ?? node.style?.fontSize,
+        fontWeight: finite(weight) ? weight : weightFromStyle,
+        italic: /italic|oblique/iu.test(fontStyle),
+        ...Object.fromEntries(["textAlignHorizontal", "textAlignVertical", "textDecoration", "textAutoResize", "textTruncation", "maxLines"]
+          .filter((key) => node[key] !== undefined).map((key) => [key, node[key]])),
+      };
+      if (node.lineHeight?.unit === "PIXELS")
+        Object.assign(node.style, { lineHeightUnit: "PIXELS", lineHeightPx: node.lineHeight.value });
+      else if (node.lineHeight?.unit === "PERCENT")
+        Object.assign(node.style, { lineHeightUnit: "FONT_SIZE_%", lineHeightPercentFontSize: node.lineHeight.value });
+      else if (node.lineHeight && node.lineHeight.unit !== "AUTO")
+        warnings.push(`${node.name ?? node.id}: 不支持的 html2figma 行高单位，保留原始来源。`);
+      if (node.letterSpacing) {
+        if (["PERCENT", "PIXELS"].includes(node.letterSpacing.unit))
+          node.style.letterSpacing = node.letterSpacing.unit === "PERCENT"
+            ? node.letterSpacing.value * (node.style.fontSize ?? 16) / 100 : node.letterSpacing.value;
+        else warnings.push(`${node.name ?? node.id}: 不支持的 html2figma 字距单位，保留原始来源。`);
+      }
+    }
+    if (node.type === "SVG" && typeof node.svgContent === "string") {
+      // Keep the full self-contained vector resource; the editor's image node
+      // preserves its appearance and resize behavior without inventing paths.
+      const bytes = new TextEncoder().encode(node.svgContent);
+      let binary = "";
+      for (const byte of bytes) binary += String.fromCharCode(byte);
+      const asset = addAsset(`data:image/svg+xml;base64,${btoa(binary)}`);
+      node.type = "RECTANGLE";
+      node.fills = [{ type: "IMAGE", imageRef: asset, scaleMode: "FILL" }];
+      warnings.push(`${node.name ?? node.id}: SVG 以自包含图片资源保留外观；路径保留在来源中。`);
+    }
+    for (const fill of node.fills ?? []) {
+      if (fill.type !== "IMAGE" || fill.imageRef) continue;
+      const asset = addAsset(fill._imageMetadata?.base64 ?? node.imageMetadata?.base64 ?? fill._pendingImageUrl);
+      if (asset) fill.imageRef = asset;
+    }
+    for (const child of node.children ?? []) convert(child, depth + 1);
+    return node;
+  };
+  const converted = copiedRoots.map((node) => convert(node, 0));
+  // Fonts are an explicit optional input. Browser/system font availability is
+  // never permission to read, substitute or distribute the original font bytes.
+  // Keep this source table once on the first root, so source bindings and full
+  // backups retain its provenance without repeating it on every Text.
+  if (copy.fontAssets !== undefined) {
+    converted[0].codeshellHtml2FigmaFontAssets = copy.fontAssets;
+    if (converted[0] === copy) delete converted[0].fontAssets;
+  }
+  return {
+    ...(nativeExport ? copy : {}),
+    name: typeof value.name === "string" ? value.name : converted[0].name ?? "html2figma Import",
+    ...(Array.isArray(copy.nodes) && Object.hasOwn(copy, "conversionReport") ? { conversionReport: copy.conversionReport } : {}),
+    nodes: Object.fromEntries(converted.map((node, index) => [`html2figma-root-${index + 1}`, { document: node }])),
+    assets, warnings: [...warnings, ...(nativeExport ? copy.exportReport.warnings.map(warning => warning.message) : [])],
+  };
+}
+
+async function prepareHtml2FigmaFontResources(source, document, { sha256Bytes } = {}) {
+  const tables = sourcePages(source).flatMap((page) => page.children ?? [])
+    .filter((node) => node.codeshellHtml2Figma && node.codeshellHtml2FigmaFontAssets !== undefined)
+    .map((node) => node.codeshellHtml2FigmaFontAssets);
+  const resourcePlans = [], faces = [], candidates = [];
+  const seen = new Set();
+  let totalBytes = 0;
+  for (const table of tables) {
+    if (!object(table) || Object.keys(table).length > 32)
+      throw new Error("html2figma fontAssets 必须是最多 32 项的完整字体表。");
+    for (const [id, font] of Object.entries(table)) {
+      if (!/^[a-z][a-z0-9-]{0,51}$/u.test(id) || seen.has(id) || !object(font) ||
+          Object.keys(font).some((key) => !["family", "weight", "style", "mime", "base64"].includes(key)))
+        throw new Error("html2figma fontAssets 字体 ID、字段或重复项无效。");
+      seen.add(id);
+      const plan = await createDesignResourcePersistencePlan({ id: `html2figma-${id}`, kind: "font",
+        mime: font.mime, family: font.family, weight: font.weight ?? 400, style: font.style ?? "normal",
+        base64: font.base64, ...(sha256Bytes ? { sha256Bytes } : {}) });
+      totalBytes += plan.descriptor.bytes;
+      if (totalBytes > 12 * 1024 * 1024 || seen.size > 32)
+        throw new Error("html2figma 完整字体超过 32 项或 12 MiB 资源预算。");
+      const binary = atob(font.base64), bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      resourcePlans.push(plan); faces.push({ descriptor: plan.descriptor, bytes });
+      candidates.push(plan.descriptor);
+    }
+  }
+  const assignments = [];
+  for (const page of document.pages)
+    for (const node of page.nodes) {
+      if (node.type !== "text" || node.fontRef) continue;
+      const font = candidates.find((font) => font.family === node.fontFamily &&
+        font.weight === node.fontWeight && font.style === (node.fontStyle ?? "normal"));
+      if (font) assignments.push([node, font.id]);
+    }
+  document.resources.push(...candidates);
+  for (const [node, id] of assignments) node.fontRef = id;
+  return { resourcePlans, faces };
 }
 
 function sourcePages(input, depth = 0) {
@@ -584,7 +760,7 @@ function text(source, node, report, nativeAdmission) {
     node.textSource = source.characters;
   if (source.characters?.length > 4000)
     report.warn("text-truncated", source, "文字超过 4000 字符，已截断。");
-  node.fontSize = number(style.fontSize, 16, 6, 240, source, "fontSize", report);
+  node.fontSize = number(style.fontSize, 16, 1, 240, source, "fontSize", report);
   node.fontWeight =
     Math.round(number(style.fontWeight, 400, 100, 900, source, "fontWeight", report) / 100) * 100;
   if (finite(style.fontWeight) && node.fontWeight !== style.fontWeight)
@@ -643,6 +819,89 @@ function text(source, node, report, nativeAdmission) {
     report.warn("rich-text", source, "混合文字样式已统一为图层基本样式。");
   if (style.textAlignVertical && style.textAlignVertical !== "TOP")
     report.warn("vertical-text", source, "文字垂直对齐暂按顶部对齐导入。");
+  if (source.codeshellHtml2Figma && source.styledTextSegments !== undefined) {
+    const segments = source.styledTextSegments;
+    if (!Array.isArray(segments) || segments.length > MAX_HTML2FIGMA_STYLED_SEGMENTS)
+      throw new Error("html2figma styledTextSegments 原始输入必须是最多 512 个有序文字区间。");
+    if (new TextEncoder().encode(JSON.stringify(segments)).byteLength > MAX_HTML2FIGMA_STYLED_SEGMENTS_BYTES)
+      throw new Error("html2figma styledTextSegments 原始输入最多 256 KiB；未截断或丢弃文字区间。");
+    const ranges = [];
+    const sourceSignature = textRangeSourceSignature(source.characters);
+    let previousEnd = 0, previousStyleKey, unsupported = false, unsupportedLink = false;
+    for (const segment of segments) {
+      if (!object(segment) || !Number.isInteger(segment.start) || !Number.isInteger(segment.end) ||
+          segment.start < previousEnd || segment.start < 0 || segment.end <= segment.start ||
+          segment.end > (source.characters?.length ?? 0))
+        throw new Error("html2figma styledTextSegments 必须有序、不重叠并位于完整文字内。");
+      previousEnd = segment.end;
+      const range = { start: segment.start, end: segment.end };
+      if (segment.fills !== undefined) {
+        const paints = figmaFillPaints(segment.fills);
+        if (paints?.length === 1 && paints[0].type === "SOLID" && paints[0].opacity === 1) {
+          if (paints[0].color !== node.fill) range.fill = paints[0].color;
+        }
+        else unsupported = true;
+      }
+      if (segment.textDecoration !== undefined) {
+        const decoration = { NONE: "none", UNDERLINE: "underline", STRIKETHROUGH: "line-through" }[segment.textDecoration];
+        if (decoration) {
+          if (decoration !== node.textDecoration) range.textDecoration = decoration;
+        }
+        else unsupported = true;
+      }
+      if (segment.hyperlink !== undefined) {
+        if (segment.hyperlink?.type === "URL" && isSafeTextRangeHref(segment.hyperlink.value))
+          range.href = segment.hyperlink.value;
+        else unsupportedLink = true;
+      }
+      if (segment.fontName?.family !== undefined && segment.fontName.family !== node.fontFamily)
+        range.fontFamily = segment.fontName.family;
+      if (segment.fontName?.style !== undefined) {
+        const style = /italic|oblique/iu.test(segment.fontName.style) ? "italic" : "normal";
+        if (style !== node.fontStyle) range.fontStyle = style;
+      }
+      const weight = segment.fontWeight !== undefined ? Number(segment.fontWeight)
+        : segment.fontName?.style !== undefined ? pluginFontWeight(segment.fontName.style) : node.fontWeight;
+      if (weight !== node.fontWeight) {
+        const rounded = Math.round(weight / 100) * 100;
+        range.fontWeight = rounded;
+        if (rounded !== weight) report.warn("font-weight-rounded", source,
+          "区间字重已映射到最接近的百位字重；原始值保留在来源中。");
+      }
+      if (segment.fontSize !== undefined && segment.fontSize !== node.fontSize)
+        range.fontSize = segment.fontSize;
+      if ((segment.lineHeight && JSON.stringify(segment.lineHeight) !== JSON.stringify(source.lineHeight)) ||
+          (segment.letterSpacing && JSON.stringify(segment.letterSpacing) !== JSON.stringify(source.letterSpacing)))
+        unsupported = true;
+      // Validate every raw range before merging: Unicode boundaries and every
+      // admitted style field must be valid, including late/identical tokens.
+      const probe = { ...node, text: source.characters, textSource: source.characters,
+        textRanges: { version: 1, sourceSignature, ranges: [range] } };
+      delete probe.fillPaints; delete probe.textOverflow;
+      const admitted = validateTextRanges(probe)?.ranges[0];
+      if (admitted) {
+        const { start, end, ...style } = admitted, styleKey = JSON.stringify(style), previous = ranges.at(-1);
+        if (previous?.end === start && previousStyleKey === styleKey) previous.end = end;
+        else ranges.push(admitted);
+        previousStyleKey = styleKey;
+      }
+    }
+    if (ranges.length) {
+      if (ranges.length > MAX_TEXT_RANGES)
+        throw Object.assign(new Error(`html2figma styledTextSegments 无损合并后仍超过 ${MAX_TEXT_RANGES} 个可编辑区间；未丢弃区间样式。`),
+          { code: "TEXT_RANGES_INVALID" });
+      if (node.textOverflow || node.fillPaints || source.characters.length > 4000) unsupported = true;
+      else {
+        node.textRanges = validateTextRanges({ ...node, textRanges: { version: 1, sourceSignature, ranges } });
+      }
+    }
+    if (unsupported) report.warn("rich-text", source,
+      "html2figma 区间行高、字距、透明/渐变绘制或截断尚不能完整表示；已保留可支持的字体、颜色、装饰、链接及完整原始区间。请核对文字外观。");
+    if (unsupportedLink) report.warn("html2figma-link", source,
+      "区间链接缺少可验证的完整地址；请在 html2figma 输入包中提供 sourceUrl，原始链接保留在来源中。");
+    return unsupported;
+  }
+  return false;
 }
 
 /** Import a REST GET file response, DOCUMENT/CANVAS, selected node, or JSON_REST_V1 nodes response. */
@@ -745,7 +1004,7 @@ function importFigmaJsonWithReport(
   { resources = [], imageRefs = new Map(), previews = {}, canvasMode },
   report,
 ) {
-  const rawValue = readJson(input),
+  const rawValue = normalizeHtml2FigmaJson(input),
     value = Object.hasOwn(rawValue, "nativeTextRanges") || Object.hasOwn(rawValue, "nativeNotes") ? normalizeFigmaSource(rawValue) : rawValue,
     pages = sourcePages(value);
   const textSupplement = value.nativeTextRanges, nativeAdmissions = new Map();
@@ -918,7 +1177,9 @@ function importFigmaJsonWithReport(
                 y: value.selection.roots[source.id].height,
               },
             }
-          : source,
+          : !ancestors.length && value.exportReport
+            ? { ...source, relativeTransform: source.absoluteTransform }
+            : source,
         ancestors,
         report,
         coordinateLimit,
@@ -1023,7 +1284,10 @@ function importFigmaJsonWithReport(
       if (imagePaint.opacity !== undefined && imagePaint.opacity !== 1)
         node.opacity = round(node.opacity * clamp(imagePaint.opacity, 0, 1));
     }
-    if (imagePaint && source.fills.filter((entry) => entry?.visible !== false).length > 1)
+    if (imagePaint && source.fills.filter((entry) => object(entry) && entry.visible !== false && entry.opacity !== 0 &&
+        !(typeof entry.type === "string" && entry.type.startsWith("GRADIENT_") && entry.gradientStops?.length &&
+          entry.gradientStops.every((stop) => stop.color?.a === 0)) &&
+        !(entry.type === "SOLID" && entry.color?.a === 0)).length > 1)
       report.warn(
         "multiple-paints",
         source,
@@ -1220,7 +1484,8 @@ function importFigmaJsonWithReport(
       }
     } else if (source.children?.length) throw new Error("基础 Figma 图层不能包含 children。");
     if (type === "text") {
-      text(source, node, report, nativeAdmission);
+      const unsupportedPluginText = text(source, node, report, nativeAdmission);
+      if (unsupportedPluginText) unsupportedGridText.add(node);
       if (nativeAdmission?.patch) {
         Object.assign(node, nativeAdmission.patch);
         if (nativeAdmission.patch.lineHeightUnit === undefined) delete node.lineHeightUnit;
@@ -1391,7 +1656,7 @@ export async function prepareFigmaImport(
   input,
   { sha256Bytes, textMeasurer, browserDocument, readFontBytes, canvasMode } = {},
 ) {
-  const source = normalizeFigmaSource(input);
+  const source = normalizeFigmaSource(normalizeHtml2FigmaJson(input));
   const assets = await prepareFigmaAssets(source, { sha256Bytes });
   const report = reporter();
   const result = importFigmaJsonWithReport(
@@ -1399,13 +1664,14 @@ export async function prepareFigmaImport(
     { resources: assets.resources, imageRefs: assets.byAssetId, previews: source.previews, canvasMode },
     report,
   );
+  const embeddedFonts = await prepareHtml2FigmaFontResources(source, result.document, { sha256Bytes });
   let fonts = { resourcePlans: [], faces: [] };
   if (readFontBytes || (globalThis.document?.fonts && typeof globalThis.FontFace === "function")) {
     fonts = await prepareBuiltinDesignFontResources(result.document, {
       ...(readFontBytes ? { readBytes: readFontBytes } : {}),
       sha256Bytes,
     });
-    await ensureBuiltinDesignFonts(result.document, { faces: fonts.faces });
+    await ensureBuiltinDesignFonts(result.document, { faces: [...embeddedFonts.faces, ...fonts.faces] });
   }
   const sourceNodes = new Map();
   const collect = (node) => {
@@ -1415,6 +1681,7 @@ export async function prepareFigmaImport(
   for (const page of sourcePages(source)) collect(page);
   const textMeasurement = await measureFigmaTextDocument(result.document, {
     nativeLineBoxes: true,
+    fontFaces: [...embeddedFonts.faces, ...fonts.faces],
     sourceNodes,
     sourceIds: new Map(result.mapping.map((entry) => [entry.designId, entry.sourceId])),
     ...(textMeasurer ? { measurer: textMeasurer } : {}),
@@ -1431,6 +1698,8 @@ export async function prepareFigmaImport(
   }
   for (const issue of textMeasurement.unsupportedBaselines ?? [])
     report.warn("text-baseline-mapping", { id: issue.nodeId }, `${issue.reason}；已保留来源几何，请核对文字位置。`);
+  for (const issue of textMeasurement.unsupportedFontRequests ?? [])
+    report.warn("font-resource-unsupported", { id: issue.nodeId }, `已提供的字体不覆盖 ${issue.family} ${issue.weight} ${issue.style}；未使用合成测量修改来源文字或几何。`);
   for (const issue of textMeasurement.unsupportedTruncations ?? [])
     report.warn("text-truncation", { id: issue.nodeId }, issue.reason);
   result.document = normalizeDesignState(result.document);
@@ -1440,7 +1709,7 @@ export async function prepareFigmaImport(
   result.warningGroups = report.warningGroups;
   return {
     ...result,
-    resourcePlans: [...assets.resourcePlans, ...fonts.resourcePlans],
+    resourcePlans: [...assets.resourcePlans, ...embeddedFonts.resourcePlans, ...fonts.resourcePlans],
     source,
     textMeasurement,
   };
