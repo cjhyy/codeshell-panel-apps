@@ -541,9 +541,14 @@ test("real loaded-font Text wrapping, scoped edits, reopen and SVG/frontend rema
     try {
       for (const [width, copy, expectedHeight] of [
         [390, originals.expanded, 80],
+        [630, originals.expanded, 80],
         [390, originals.original, 40],
         [390, record.copy, name.startsWith("equal") ? 120 : 140],
-        [630, record.copy, 80],
+        // Natural wrap is platform-dependent even with the exact same Inter
+        // bytes: the retained Linux source/reference is 3 lines (60px), while
+        // macOS is 4 (80px). Use the independent CSS source, not a fixed count.
+        // The explicit four authored lines above still require exactly 80px.
+        [630, record.copy, null],
       ]) {
         await page
           .locator(`[data-codeshell-source-id="${record.rowId}"]`)
@@ -576,17 +581,23 @@ test("real loaded-font Text wrapping, scoped edits, reopen and SVG/frontend rema
             height: node.getBoundingClientRect().height,
             cells: [...node.children].map((cell) => cell.getBoundingClientRect().height),
           }));
-        if (boxes.height !== expectedHeight || boxes.cells.some(height => height !== expectedHeight) ||
+        const matchesSource = JSON.stringify(boxes) === JSON.stringify(sourceBoxes);
+        if (!matchesSource || expectedHeight === null ||
+          boxes.height !== expectedHeight || boxes.cells.some(height => height !== expectedHeight) ||
           process.env.DESIGN_STUDIO_GRID_GEOMETRY_EVIDENCE === "1" && width === 630 && copy === record.copy) {
           t.diagnostic(JSON.stringify(await retainEditedGridGeometry(page, referencePage, {
             name, width, copy, contentId: record.contentId, expectedHeight, boxes, sourceBoxes, loadedFont, referenceFont,
+            geometryOracle: expectedHeight === null ? "independent-source" : "fixed-height-and-independent-source",
           })));
         }
-        assert.deepEqual(
-          boxes,
-          { height: expectedHeight, cells: [expectedHeight, expectedHeight, expectedHeight] },
-          `${name}/exported source edit`,
-        );
+        assert.deepEqual(boxes, sourceBoxes, `${name}/${width}/exported edit matches independent source geometry exactly`);
+        if (expectedHeight !== null) {
+          assert.deepEqual(
+            boxes,
+            { height: expectedHeight, cells: [expectedHeight, expectedHeight, expectedHeight] },
+            `${name}/exported source edit`,
+          );
+        }
         await Promise.all([settleLoadedFont(page), settleLoadedFont(referencePage)]);
         const actualBytes = await page.screenshot(), expectedBytes = await referencePage.screenshot();
         await recordFontPixelMismatch(page, referencePage, actualBytes, expectedBytes, `integer-grid-${name}-${width}-${copy.length}`);
