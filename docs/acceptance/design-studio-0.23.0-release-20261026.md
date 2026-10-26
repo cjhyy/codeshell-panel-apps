@@ -60,11 +60,21 @@ Design Studio fidelity 的百分比圆角转换异常，以及 offline job 的�
 
 本机定点通过不代替 Linux 缺字体分支与像素验收；候选分支仍须经过真实远端 CI。
 
+首个候选 `2491172` 的本地完整门禁及 Linux fidelity job 发现新增像素行高 UI case
+仍点击旧常驻 `#save`；大文档脚本也保留相同旧入口。两处改为正常打开“更多”菜单
+再保存，原内容/重开断言不变。`toolbar-entry/` 保留原脚本、隐藏按钮实际失败和
+定点成功日志；702 节点、分片重开、内容地址图片/字体及操作日志恢复全部通过。
+
 ## 发布门禁与资产
 
 发布前运行仓库要求的 `npm run check`、包校验与受影响的 Design Studio fidelity 检查。
 从通过检查的干净合并提交打包，保留 `release.json` 的源提交和逐文件 SHA；正式目录和
 面板 ZIP 使用官方 Core 的只读 preflight，发布后重新下载资产核对摘要。
+
+预检使用官方已发布 Core `0.9.46`，不使用未发布 Host 源替代。目录与 ZIP 的 id、
+版本、7 项权限、16 个工具、2 个 Skill 及 `reviewToken` 一致。仓库旧开发依赖
+`0.9.23` 尚不允许 `.wasm` 资产，不能把它的预检结果当作本版安装兼容证明；
+本版仍要求支持包内 Wasm 的 Host，没有隐藏扩展名或绕过安装器规则。
 
 GitHub 资产为 Design Studio 面板 ZIP、HTML to Figma 开发插件 ZIP、`release.json` 和
 `SHA256SUMS`。本次 GitHub 发布不等于 Figma Community 上架，也不修改用户已安装的

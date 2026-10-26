@@ -425,7 +425,7 @@ test("pixel line-height inspector edits retain units through font changes, undo,
   await f.page.locator("#duplicate-layer").click();
   const duplicate = (await canvasNodes(f.page)).find(node => node.id !== "body" && node.name === "Body 副本");
   assert(duplicate); assert.equal(duplicate.lineHeightUnit, "pixels"); assert.equal(duplicate.lineHeight, 20);
-  await f.page.locator("#save").click(); await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "已保存");
+  await toolbarAction(f.page, "#save"); await f.page.waitForFunction(() => document.querySelector("#save-state").textContent === "已保存");
   await f.page.reload(); await waitForCanvas(f.page); await f.select(duplicate.id);
   const reopened = await canvasNode(f.page, duplicate.id); assert.equal(reopened.lineHeight, 20); assert.equal(reopened.lineHeightUnit, "pixels");
   assert.equal(await f.page.locator("#prop-line-height-unit").inputValue(), "pixels");
