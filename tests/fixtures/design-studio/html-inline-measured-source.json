@@ -1,0 +1,846 @@
+{
+  "scope": "ACTUAL_CAPTURED_MEASURED_FRAGMENTS_FOR_PURE_OWNERSHIP_CONTROLS_NOT_LIVE_OR_PIXEL_ADMISSION",
+  "sourcePlannerCommit": "0e7c14e28f80665768ea6e20b34ca4120ed98a58",
+  "cases": [
+    {
+      "case": "govuk-notification-banner",
+      "width": 1280,
+      "provenance": {
+        "file": "/Users/admin/.codex/worktrees/design-studio-figma-24h-20261021/evidence/html-inline-text-planner/live-validation/run-2026-10-21T01-01-42-318Z-ab28a2/govuk-notification-banner/1280/planner-result.json",
+        "sha256": "68f69247d2fbf75dbb02c38caccd5e5a0abdda7fffe7bcb9e498a83348aa26aa"
+      },
+      "paragraphId": "html-0-0-1-0-1l3rcma",
+      "textId": "html-0-0-1-0-0",
+      "rawDomOwners": [
+        "\n    You have 7 days left to send your application.\n    ",
+        "View application",
+        ".\n  "
+      ],
+      "fontSize": 24,
+      "fontWeight": 700,
+      "lineHeightTyped": {
+        "cssText": "1.25",
+        "unit": "number",
+        "value": 1.25
+      },
+      "computedLineHeight": "30px",
+      "linkColor": "rgb(26, 101, 166)",
+      "sourceText": {
+        "nodeType": "text",
+        "content": "You have 7 days left to send your application.  View\napplication. ",
+        "styledSegments": [
+          {
+            "start": 0,
+            "end": 48,
+            "text": "You have 7 days left to send your application.  ",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 24,
+              "fontWeight": "700",
+              "fontStyle": "normal",
+              "color": {
+                "r": 11,
+                "g": 12,
+                "b": 12,
+                "a": 1,
+                "raw": "rgb(11, 12, 12)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "none",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 30,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "p"
+          },
+          {
+            "start": 48,
+            "end": 64,
+            "text": "View\napplication",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 24,
+              "fontWeight": "700",
+              "fontStyle": "normal",
+              "color": {
+                "r": 26,
+                "g": 101,
+                "b": 166,
+                "a": 1,
+                "raw": "rgb(26, 101, 166)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "underline",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 30,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "a",
+            "href": "#"
+          },
+          {
+            "start": 64,
+            "end": 66,
+            "text": ". ",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 24,
+              "fontWeight": "700",
+              "fontStyle": "normal",
+              "color": {
+                "r": 11,
+                "g": 12,
+                "b": 12,
+                "a": 1,
+                "raw": "rgb(11, 12, 12)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "none",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 30,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "p"
+          }
+        ]
+      },
+      "computedOffset": "3.7872px"
+    },
+    {
+      "case": "govuk-notification-banner",
+      "width": 400,
+      "provenance": {
+        "file": "/Users/admin/.codex/worktrees/design-studio-figma-24h-20261021/evidence/html-inline-text-planner/live-validation/run-2026-10-21T01-01-42-318Z-ab28a2/govuk-notification-banner/400/planner-result.json",
+        "sha256": "ddf9e7d9f3925af8a583eee1e1e7dacbf2a58d2ba6666f97616c8add67ce779c"
+      },
+      "paragraphId": "html-0-0-1-0-1l3rcma",
+      "textId": "html-0-0-1-0-0",
+      "rawDomOwners": [
+        "\n    You have 7 days left to send your application.\n    ",
+        "View application",
+        ".\n  "
+      ],
+      "fontSize": 21,
+      "fontWeight": 700,
+      "lineHeightTyped": {
+        "cssText": "1.19048",
+        "unit": "number",
+        "value": 1.1904762268066407
+      },
+      "computedLineHeight": "25px",
+      "linkColor": "rgb(26, 101, 166)",
+      "sourceText": {
+        "nodeType": "text",
+        "content": "You have 7 days left to send \nyour application.  View\napplication. ",
+        "styledSegments": [
+          {
+            "start": 0,
+            "end": 30,
+            "text": "You have 7 days left to send \n",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 21,
+              "fontWeight": "700",
+              "fontStyle": "normal",
+              "color": {
+                "r": 11,
+                "g": 12,
+                "b": 12,
+                "a": 1,
+                "raw": "rgb(11, 12, 12)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "none",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 25,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "p"
+          },
+          {
+            "start": 30,
+            "end": 49,
+            "text": "your application.  ",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 21,
+              "fontWeight": "700",
+              "fontStyle": "normal",
+              "color": {
+                "r": 11,
+                "g": 12,
+                "b": 12,
+                "a": 1,
+                "raw": "rgb(11, 12, 12)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "none",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 25,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "p"
+          },
+          {
+            "start": 49,
+            "end": 65,
+            "text": "View\napplication",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 21,
+              "fontWeight": "700",
+              "fontStyle": "normal",
+              "color": {
+                "r": 26,
+                "g": 101,
+                "b": 166,
+                "a": 1,
+                "raw": "rgb(26, 101, 166)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "underline",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 25,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "a",
+            "href": "#"
+          },
+          {
+            "start": 65,
+            "end": 67,
+            "text": ". ",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 21,
+              "fontWeight": "700",
+              "fontStyle": "normal",
+              "color": {
+                "r": 11,
+                "g": 12,
+                "b": 12,
+                "a": 1,
+                "raw": "rgb(11, 12, 12)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "none",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 25,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "p"
+          }
+        ]
+      },
+      "computedOffset": "3.3138px"
+    },
+    {
+      "case": "govuk-notification-banner",
+      "width": 768,
+      "provenance": {
+        "file": "/Users/admin/.codex/worktrees/design-studio-figma-24h-20261021/evidence/html-inline-text-planner/live-validation/run-2026-10-21T01-01-42-318Z-ab28a2/govuk-notification-banner/768/planner-result.json",
+        "sha256": "891b834e2e130d35bc5fee8f378d27097f7b1df794965e381061aae165ff9ccf"
+      },
+      "paragraphId": "html-0-0-1-0-1l3rcma",
+      "textId": "html-0-0-1-0-0",
+      "rawDomOwners": [
+        "\n    You have 7 days left to send your application.\n    ",
+        "View application",
+        ".\n  "
+      ],
+      "fontSize": 24,
+      "fontWeight": 700,
+      "lineHeightTyped": {
+        "cssText": "1.25",
+        "unit": "number",
+        "value": 1.25
+      },
+      "computedLineHeight": "30px",
+      "linkColor": "rgb(26, 101, 166)",
+      "sourceText": {
+        "nodeType": "text",
+        "content": "You have 7 days left to send your application.  View\napplication. ",
+        "styledSegments": [
+          {
+            "start": 0,
+            "end": 48,
+            "text": "You have 7 days left to send your application.  ",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 24,
+              "fontWeight": "700",
+              "fontStyle": "normal",
+              "color": {
+                "r": 11,
+                "g": 12,
+                "b": 12,
+                "a": 1,
+                "raw": "rgb(11, 12, 12)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "none",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 30,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "p"
+          },
+          {
+            "start": 48,
+            "end": 64,
+            "text": "View\napplication",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 24,
+              "fontWeight": "700",
+              "fontStyle": "normal",
+              "color": {
+                "r": 26,
+                "g": 101,
+                "b": 166,
+                "a": 1,
+                "raw": "rgb(26, 101, 166)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "underline",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 30,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "a",
+            "href": "#"
+          },
+          {
+            "start": 64,
+            "end": 66,
+            "text": ". ",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 24,
+              "fontWeight": "700",
+              "fontStyle": "normal",
+              "color": {
+                "r": 11,
+                "g": 12,
+                "b": 12,
+                "a": 1,
+                "raw": "rgb(11, 12, 12)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "none",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 30,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "p"
+          }
+        ]
+      },
+      "computedOffset": "3.7872px"
+    },
+    {
+      "case": "govuk-notification-banner-success",
+      "width": 1280,
+      "provenance": {
+        "file": "/Users/admin/.codex/worktrees/design-studio-figma-24h-20261021/evidence/html-inline-text-planner/live-validation/run-2026-10-21T01-01-42-318Z-ab28a2/govuk-notification-banner-success/1280/planner-result.json",
+        "sha256": "a75776005e7f2d30db634c755e485ffc6dcde7f962562a8b0cfbc38d3f9acd52"
+      },
+      "paragraphId": "html-0-0-1-1-1hroow0",
+      "textId": "html-0-0-1-1-0",
+      "rawDomOwners": ["Contact ", "example@department.gov.uk", " if you think there’s a problem."],
+      "fontSize": 19,
+      "fontWeight": 400,
+      "lineHeightTyped": {
+        "cssText": "1.31579",
+        "unit": "number",
+        "value": 1.3157894897460938
+      },
+      "computedLineHeight": "25px",
+      "linkColor": "rgb(15, 122, 82)",
+      "sourceText": {
+        "nodeType": "text",
+        "content": "Contact  example@department.gov.uk if you think there’s a problem.",
+        "styledSegments": [
+          {
+            "start": 0,
+            "end": 9,
+            "text": "Contact  ",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 19,
+              "fontWeight": "400",
+              "fontStyle": "normal",
+              "color": {
+                "r": 11,
+                "g": 12,
+                "b": 12,
+                "a": 1,
+                "raw": "rgb(11, 12, 12)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "none",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 25,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "p"
+          },
+          {
+            "start": 9,
+            "end": 34,
+            "text": "example@department.gov.uk",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 19,
+              "fontWeight": "400",
+              "fontStyle": "normal",
+              "color": {
+                "r": 15,
+                "g": 122,
+                "b": 82,
+                "a": 1,
+                "raw": "rgb(15, 122, 82)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "underline",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 25,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "a",
+            "href": "#"
+          },
+          {
+            "start": 34,
+            "end": 66,
+            "text": " if you think there’s a problem.",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 19,
+              "fontWeight": "400",
+              "fontStyle": "normal",
+              "color": {
+                "r": 11,
+                "g": 12,
+                "b": 12,
+                "a": 1,
+                "raw": "rgb(11, 12, 12)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "none",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 25,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "p"
+          }
+        ]
+      },
+      "computedOffset": "2.9982px"
+    },
+    {
+      "case": "govuk-notification-banner-success",
+      "width": 400,
+      "provenance": {
+        "file": "/Users/admin/.codex/worktrees/design-studio-figma-24h-20261021/evidence/html-inline-text-planner/live-validation/run-2026-10-21T01-01-42-318Z-ab28a2/govuk-notification-banner-success/400/planner-result.json",
+        "sha256": "30fb4d12680eef577dc83c2834cadb4665716a5c0fdc0c2129b0badc48c992fb"
+      },
+      "paragraphId": "html-0-0-1-1-1hroow0",
+      "textId": "html-0-0-1-1-0",
+      "rawDomOwners": ["Contact ", "example@department.gov.uk", " if you think there’s a problem."],
+      "fontSize": 19,
+      "fontWeight": 400,
+      "lineHeightTyped": {
+        "cssText": "1.31579",
+        "unit": "number",
+        "value": 1.3157894897460938
+      },
+      "computedLineHeight": "25px",
+      "linkColor": "rgb(15, 122, 82)",
+      "sourceText": {
+        "nodeType": "text",
+        "content": "Contact  \nexample@department.gov.uk if you \nthink there’s a problem.",
+        "styledSegments": [
+          {
+            "start": 0,
+            "end": 10,
+            "text": "Contact  \n",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 19,
+              "fontWeight": "400",
+              "fontStyle": "normal",
+              "color": {
+                "r": 11,
+                "g": 12,
+                "b": 12,
+                "a": 1,
+                "raw": "rgb(11, 12, 12)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "none",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 25,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "p"
+          },
+          {
+            "start": 10,
+            "end": 35,
+            "text": "example@department.gov.uk",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 19,
+              "fontWeight": "400",
+              "fontStyle": "normal",
+              "color": {
+                "r": 15,
+                "g": 122,
+                "b": 82,
+                "a": 1,
+                "raw": "rgb(15, 122, 82)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "underline",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 25,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "a",
+            "href": "#"
+          },
+          {
+            "start": 35,
+            "end": 44,
+            "text": " if you \n",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 19,
+              "fontWeight": "400",
+              "fontStyle": "normal",
+              "color": {
+                "r": 11,
+                "g": 12,
+                "b": 12,
+                "a": 1,
+                "raw": "rgb(11, 12, 12)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "none",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 25,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "p"
+          },
+          {
+            "start": 44,
+            "end": 68,
+            "text": "think there’s a problem.",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 19,
+              "fontWeight": "400",
+              "fontStyle": "normal",
+              "color": {
+                "r": 11,
+                "g": 12,
+                "b": 12,
+                "a": 1,
+                "raw": "rgb(11, 12, 12)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "none",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 25,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "p"
+          }
+        ]
+      },
+      "computedOffset": "2.9982px"
+    },
+    {
+      "case": "govuk-notification-banner-success",
+      "width": 768,
+      "provenance": {
+        "file": "/Users/admin/.codex/worktrees/design-studio-figma-24h-20261021/evidence/html-inline-text-planner/live-validation/run-2026-10-21T01-01-42-318Z-ab28a2/govuk-notification-banner-success/768/planner-result.json",
+        "sha256": "9782c06c52299dc8ccc20eda55e7605437ad877ca4287cfbce1e4cf9e9bdee54"
+      },
+      "paragraphId": "html-0-0-1-1-1hroow0",
+      "textId": "html-0-0-1-1-0",
+      "rawDomOwners": ["Contact ", "example@department.gov.uk", " if you think there’s a problem."],
+      "fontSize": 19,
+      "fontWeight": 400,
+      "lineHeightTyped": {
+        "cssText": "1.31579",
+        "unit": "number",
+        "value": 1.3157894897460938
+      },
+      "computedLineHeight": "25px",
+      "linkColor": "rgb(15, 122, 82)",
+      "sourceText": {
+        "nodeType": "text",
+        "content": "Contact  example@department.gov.uk if you think there’s a problem.",
+        "styledSegments": [
+          {
+            "start": 0,
+            "end": 9,
+            "text": "Contact  ",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 19,
+              "fontWeight": "400",
+              "fontStyle": "normal",
+              "color": {
+                "r": 11,
+                "g": 12,
+                "b": 12,
+                "a": 1,
+                "raw": "rgb(11, 12, 12)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "none",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 25,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "p"
+          },
+          {
+            "start": 9,
+            "end": 34,
+            "text": "example@department.gov.uk",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 19,
+              "fontWeight": "400",
+              "fontStyle": "normal",
+              "color": {
+                "r": 15,
+                "g": 122,
+                "b": 82,
+                "a": 1,
+                "raw": "rgb(15, 122, 82)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "underline",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 25,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "a",
+            "href": "#"
+          },
+          {
+            "start": 34,
+            "end": 66,
+            "text": " if you think there’s a problem.",
+            "style": {
+              "fontFamily": "GDS Transport",
+              "fontSize": 19,
+              "fontWeight": "400",
+              "fontStyle": "normal",
+              "color": {
+                "r": 11,
+                "g": 12,
+                "b": 12,
+                "a": 1,
+                "raw": "rgb(11, 12, 12)"
+              },
+              "textAlign": "left",
+              "verticalAlign": "baseline",
+              "textDecoration": "none",
+              "textTransform": "none",
+              "lineHeight": {
+                "value": 25,
+                "unit": "px"
+              },
+              "letterSpacing": {
+                "value": 0,
+                "unit": "px"
+              },
+              "wordBreak": "normal",
+              "textOverflow": "clip"
+            },
+            "tag": "p"
+          }
+        ]
+      },
+      "computedOffset": "2.9982px"
+    }
+  ]
+}

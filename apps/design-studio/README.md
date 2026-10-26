@@ -619,6 +619,16 @@ No pixel thresholds are changed. Callers may request this diagnostic with
 `captureWorkspaceHtmlResult({ ...options, includeFlowAudit: true })`; ordinary import behavior
 is unchanged when the option is absent.
 
+Mixed-inline HTML promotion remains disabled. The isolated `html-inline-text-plan.mjs`
+planner stages only an owned Text+A+Text paragraph draft, preserving the existing P/first
+Text IDs and all mappings. Its live source/UTF16 proof is not saved admission metadata;
+whole-paragraph measurement, shared range validation, renderer/native capability and atomic
+capture/audit integration must pass before any importer can use it. Unproved authored CSS
+underline units remain explicit px snapshots with diagnostics.
+Measured line fragments are checked against their complete original UTF16 snapshot and
+current logical DOM owners; their count and manufactured soft-break offsets never define
+authored ranges. Typographic pseudo guards apply to their block containers and ancestors.
+
 Use the top-bar **HTML** action to convert a workspace-relative `.html` file, or call the
 revision-guarded `import_html` Agent tool. Version 0.20 uses `app/html-import.mjs`, the pinned
 html2figma runtime and `design-node-adapter.mjs`. The independent measured reference helper
