@@ -197,7 +197,18 @@ test("actual native export standard UI saves to IndexedDB, opens blank, and reop
 test("partial native export is refused by standard file import without changing existing canvas or source backup", async t => {
   const f = await fixture(t), target = "designs/native-export-ui-existing.codesign.json";
   await f.importOriginal(target);
+  // A complete import queues recovery before its first explicit save. Establish
+  // a committed baseline so its legitimate timer cannot be blamed on refusal.
+  await toolbarAction(f.page, "#save");
+  await f.page.waitForFunction(() => document.querySelector("#save-state").dataset.kind === "saved");
   const before = await metadata(f.page), backupBefore = await f.backup(), filesBefore = await idbFileRecords(f.page);
+  assert.equal(before.dirty, false, "the preceding complete import must finish saving before refusal is observed");
+  const attachment = assertOriginalBackup(backupBefore.value, target);
+  const principal = filesBefore.find(row => row.key === "file:" + target);
+  assert.ok(principal?.revision && principal.modifiedAt > 0, "the committed baseline must contain the real principal");
+  assert.deepEqual(JSON.parse(principal.content), backupBefore.value.document);
+  assert.ok(filesBefore.some(row => row.key === `file:designs/codesign-data/figma/${attachment.sha256}.json` && row.content === attachment.content),
+    "the complete source attachment must already be committed in the baseline");
   const partial = structuredClone(original);
   partial.exportReport.ready = false;
   partial.exportReport.partial = true;

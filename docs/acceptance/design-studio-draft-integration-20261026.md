@@ -57,6 +57,14 @@ patch，再从刷新后的 `origin/main`（`8e8917f`）建立
 | 大文档门禁仍读旧 localStorage，已迁移 IDB 后等待永远不成立 | 保留原 448396-byte legacy seed 作为真实迁移输入，用真实 browser-store/IDB 验证 principal、分片 revision/mtime 和 recovery；原 LS 文本与 mtime 保持不变 | `large-document-backend/`；702 节点、352/350 分页、原重建/延迟加载/图片字体 GPU/Undo/Redo 断言保留，最终返回 passed:true |
 | 新增 IDB 异步探针直接传 page.waitForFunction，首个 Promise resolved false 会提前返回 | 30s 原时限内显式 await 每次 browser probe 的值，捕获实际已提交 recovery 记录，再断言 operations 而非 whole-design | 同目录 v1/v2/v3 与 failed logs 单独保留为验收脚本诊断，不计作产品 RED；async-predicate-control.json 记录实际 Playwright 1.60.0 首次返回 false、attempts=1；第四轮正式大文档检查成功 |
 
+CI 候选 `c3297df` 又揭示 partial 拒绝用例的基线竞态：完整导入后尚未显式保存，
+`filesBefore=[]` 与旧完整来源的 500ms recovery 写入相交。CI 唯一新增 binding
+SHA `7fd50b7e7c35af5751cbcbb36b5fe1e29bb6d38293eeee32854fd2d5d66edf25`
+逐字匹配完整输入（ready=true/partial=false），不是被拒绝的 partial。完整失败日志和
+控制性 550ms 探针保存在 `ci-c3297df/` 与 `native-refusal-baseline/`。
+用例改为真实 Save 完成后建立非空 principal+完整附件基线；原 metadata、backup
+字节及全部 IDB records 深相等断言保留，没有过滤 binding、删断言或用 sleep 修通过。
+
 ## 实际验收和证据层次
 
 定点浏览器操作都使用私有测试 origin/context，原用户 4190 和旧 IANA 失败数据没有
