@@ -4,10 +4,10 @@ import { PNG } from "pngjs";
 
 /** Controlled Linux rasterization experiment; unset preserves the old launch. */
 export function loadedFontBrowserArgs() {
-  const mode = process.env.DESIGN_STUDIO_FONT_RASTER_MODE ?? "browser-default";
+  const mode = process.env.DESIGN_STUDIO_FONT_RASTER_MODE ?? "grayscale";
   if (!["browser-default", "grayscale"].includes(mode)) throw new Error(`Unknown fixture raster mode: ${mode}`);
   const args = ["--disable-gpu", ...(mode === "grayscale" ? ["--disable-lcd-text"] : [])];
-  if (process.env.DESIGN_STUDIO_FONT_RASTER_MODE) console.log(`Fixture font rasterization: ${JSON.stringify({ mode, args })}`);
+  console.log(`Fixture font rasterization: ${JSON.stringify({ mode, args })}`);
   return args;
 }
 
@@ -40,7 +40,7 @@ export async function settleLoadedFont(page, family = "Inter") {
   }, family);
 }
 
-/** Retain exact failed pixels and font/layout state without changing acceptance. */
+/** Retain exact failed pixels and explicitly requested controls without changing acceptance. */
 export async function recordFontPixelMismatch(page, referencePage, actualBytes, expectedBytes, label) {
   const actual = PNG.sync.read(actualBytes), expected = PNG.sync.read(expectedBytes);
   const captureLabels = JSON.parse(process.env.DESIGN_STUDIO_FONT_CAPTURE_LABELS ?? "[]");
@@ -72,7 +72,8 @@ export async function recordFontPixelMismatch(page, referencePage, actualBytes, 
   }));
   const directory = resolve("artifacts/design-studio-ci/font-pixels", `${label.replace(/[^a-zA-Z0-9.-]+/gu, "-").slice(0, 100)}-${Date.now()}-${process.pid}`);
   await mkdir(directory, { recursive: true });
-  const report = { label, rasterMode: process.env.DESIGN_STUDIO_FONT_RASTER_MODE ?? "browser-default",
+  const report = { label, rasterMode: process.env.DESIGN_STUDIO_FONT_RASTER_MODE ?? "grayscale",
+    browserArgs: loadedFontBrowserArgs(), browserVersion: page.context().browser()?.version(),
     actualSize: [actual.width, actual.height], expectedSize: [expected.width, expected.height],
     pixelsDifferent: pixels, maximumChannelDelta: maxDelta,
     differenceBounds: pixels ? { x: left, y: top, width: right - left + 1, height: bottom - top + 1 } : null,

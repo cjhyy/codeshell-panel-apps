@@ -469,7 +469,7 @@ test("real loaded-font Text wrapping, scoped edits, reopen and SVG/frontend rema
     await page.locator(".a .copy").evaluate((node, copy) => {
       node.textContent = copy;
     }, record.copy);
-    await page.evaluate(() => document.fonts.ready);
+    await settleLoadedFont(page);
     const domHeight = await page
       .locator(".row")
       .evaluate((node) => node.getBoundingClientRect().height);
@@ -514,13 +514,17 @@ test("real loaded-font Text wrapping, scoped edits, reopen and SVG/frontend rema
           .evaluate((node, copy) => {
             node.textContent = copy;
           }, copy);
-        await page.evaluate(() => document.fonts.ready);
+        const loadedFont = await settleLoadedFont(page);
         const boxes = await page
           .locator(`[data-codeshell-source-id="${record.rowId}"]`)
           .evaluate((node) => ({
             height: node.getBoundingClientRect().height,
             cells: [...node.children].map((cell) => cell.getBoundingClientRect().height),
           }));
+        if (boxes.height !== expectedHeight || boxes.cells.some(height => height !== expectedHeight)) {
+          t.diagnostic(JSON.stringify({ name, width, copy, expectedHeight, boxes, loadedFont,
+            rasterMode: process.env.DESIGN_STUDIO_FONT_RASTER_MODE ?? "browser-default" }));
+        }
         assert.deepEqual(
           boxes,
           { height: expectedHeight, cells: [expectedHeight, expectedHeight, expectedHeight] },

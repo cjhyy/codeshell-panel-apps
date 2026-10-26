@@ -60,6 +60,26 @@ Design Studio fidelity 的百分比圆角转换异常，以及 offline job 的�
 
 本机定点通过不代替 Linux 缺字体分支与像素验收；候选分支仍须经过真实远端 CI。
 
+Linux `19c74e1` 证明加载屏障并不是五个像素失败的充分解释：字体已加载、几何一致，
+残余是字形边界外的彩色 LCD fringe。`7f50260` 的同机 A/B 使用原 RGBA 断言：原模式
+五项失败；加 Chromium 官方 `--disable-lcd-text` 后，保留的五处差异均归零，并继续
+到达此前被首个失败挡住的后续检查。其中 Grid 的 source-edit 几何检查在显式加载
+字体前读到 60px；补齐测量前的字体/布局等待，原 80px 等几何断言保持不变。
+五个像素 fixture 固定为同一灰阶文字栅格化条件，仍可用
+`DESIGN_STUDIO_FONT_RASTER_MODE=browser-default` 重放原平台条件；产品 CSS、文字内容、
+转换逻辑和像素阈值没有因此改动。开关定义见
+[Chromium switches](https://chromium.googlesource.com/chromium/src/+/lkgr/content/public/common/content_switches.cc)。
+`ci-candidate-19c74e1/` 与 `ci-raster-7f50260/` 保存完整 Linux PNG/HTML、字体/几何、
+启动参数与 A/B 日志；新独立 CI job 对字体编辑和恢复进行严格快速验收。
+
+同一 Linux 轮次的连续恢复 case 还暴露了场景混用：旧窗口在新窗口读取初版 journal
+后，因自动保存拒绝而补写已确认的 `figmaBinding:null`，改变 recovery revision；
+新窗口按正确的 CAS 规则拒绝陈旧写入。用实际 Host 调用顺序确定性重放了原失败，
+不增加 5 秒期限。连续恢复成功路径明确关闭旧窗口再重新打开；另新增晚到写入控制，
+验证本地页面和操作保留、旧成功记录不被覆盖及精确版本冲突。原 page2/page3、
+embedded baseline、null baseRevision 断言保留并加强，最后正常保存并清空 journal。
+这轮只调整测试场景，没有改变产品的并发恢复规则；证据位于 `recovery-unsaved/`。
+
 首个候选 `2491172` 的本地完整门禁及 Linux fidelity job 发现新增像素行高 UI case
 仍点击旧常驻 `#save`；大文档脚本也保留相同旧入口。两处改为正常打开“更多”菜单
 再保存，原内容/重开断言不变。`toolbar-entry/` 保留原脚本、隐藏按钮实际失败和
