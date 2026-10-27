@@ -86,6 +86,8 @@ test("speed changes, reverse, pitch and ducking keep the prerendered mix", () =>
   bed.trackId = "music";
   bed.audio.ducking = { sidechainTrackIds: ["sound"], thresholdDb: -24, attenuationDb: 12, attack: 100, release: 200 };
   assert.match(liveAudioUnsupported(plan(plain("voice"), bed))!, /压低背景声/);
+  // With the packaged detector available, ducking also plays live.
+  assert.equal(liveAudioUnsupported(plan(plain("voice"), bed), { ducking: true }), undefined);
 });
 
 test("live sources resolve once per audible asset and any unavailable source keeps the prepared mix", async () => {

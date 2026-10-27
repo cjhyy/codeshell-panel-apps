@@ -1,4 +1,5 @@
 import { applyColorToRgba, hasColorAdjustment } from "./color";
+import { GpuColorGrader } from "./gpu-color";
 import type {
   EvaluatedFrame,
   EvaluatedGroupLayer,
@@ -109,9 +110,15 @@ export class FrameCompositor {
   private allocatedPixels = 0;
   private drawing = false;
   private resolution: PreviewResolution = 1;
+  /** Interactive preview grades on the GPU; offline export keeps the exact CPU path. */
+  private readonly grader?: GpuColorGrader;
+  constructor(options: { gpuColor?: boolean } = {}) {
+    if (options.gpuColor) this.grader = new GpuColorGrader();
+  }
 
   dispose(): void {
     if (this.drawing) throw new Error("正在合成画面，暂时无法释放合成器");
+    this.grader?.dispose();
     for (const item of this.free) {
       item.canvas.width = 1;
       item.canvas.height = 1;
@@ -319,7 +326,7 @@ export class FrameCompositor {
         fittedHeight,
       );
       ctx.restore();
-      if (hasColorAdjustment(layer.color)) {
+      if (hasColorAdjustment(layer.color) && !this.grader?.grade(ctx, layer.color)) {
         let pixels: ImageData;
         try {
           pixels = ctx.getImageData(0, 0, picture.canvas.width, picture.canvas.height);

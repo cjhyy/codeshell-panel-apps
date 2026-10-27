@@ -6,6 +6,7 @@ import {
   type AudioPlanLane,
 } from "./audio-plan";
 import { ticksToSeconds } from "./time";
+import { DUCKING_PROCESSOR, duckingCoefficients } from "./ducking";
 
 /** A preview mix played from the sources themselves: no prepared PCM, so edits need no
  * native task. Export keeps the native renderer; both read gain and pan from the plan. */
@@ -13,14 +14,25 @@ export interface LivePreviewAudio {
   plan: AudioPlan;
   /** Same-origin playable source URL for every audible asset. */
   sources: ReadonlyMap<string, string>;
+  /** Packaged AudioWorklet module running the shared ducking detector, when loadable. */
+  duckingModule?: string;
 }
 
 const MAX_LIVE_LANES = 24;
 const unity = (rate: number) => Math.abs(rate - 1) < 1e-9;
+/** A forward unit-rate clip with an open source keeps its element even while silent, so
+ * raising its level during playback needs no load or seek. */
+const voiced = (lane: AudioPlanLane, sources: ReadonlyMap<string, string>) =>
+  sources.has(lane.assetId) &&
+  lane.spans.some((span) => span.playbackRate !== 0) &&
+  lane.spans.every((span) => span.playbackRate === 0 || unity(span.playbackRate));
 
 /** Media elements play forward at their own rate. Anything else keeps the prerendered mix. */
-export function liveAudioUnsupported(plan: AudioPlan): string | undefined {
-  if (plan.ducking.length) return "自动压低背景声需要预渲染混音";
+export function liveAudioUnsupported(
+  plan: AudioPlan,
+  options: { ducking?: boolean } = {},
+): string | undefined {
+  if (plan.ducking.length && !options.ducking) return "自动压低背景声需要预渲染混音";
   const lanes = plan.lanes.filter(audioLaneNeedsSource);
   if (lanes.length > MAX_LIVE_LANES) return "同时发声的片段过多，需要预渲染混音";
   for (const lane of lanes) {
@@ -58,6 +70,17 @@ export function canPlayLiveAudio(url: string, signal: AbortSignal, timeoutMs = 8
   });
 }
 
+/** An edited plan can keep playing live only with sources that are already open. */
+export function liveAudioWithSources(
+  plan: AudioPlan,
+  sources: ReadonlyMap<string, string>,
+  duckingModule?: string,
+): LivePreviewAudio | undefined {
+  if (liveAudioUnsupported(plan, { ducking: !!duckingModule })) return undefined;
+  if (plan.lanes.filter(audioLaneNeedsSource).some((lane) => !sources.has(lane.assetId))) return undefined;
+  return { plan, sources, ...(duckingModule ? { duckingModule } : {}) };
+}
+
 /** A live mix needs every audible source to open in this browser; any miss keeps the
  * prepared mix. Muted, silent and held clips need no source. */
 export async function resolveLivePreviewAudio(
@@ -65,8 +88,9 @@ export async function resolveLivePreviewAudio(
   resolveUrl: (assetId: string, signal: AbortSignal) => Promise<string>,
   signal: AbortSignal,
   canPlay: (url: string, signal: AbortSignal) => Promise<boolean> = canPlayLiveAudio,
+  duckingModule?: string,
 ): Promise<LivePreviewAudio | undefined> {
-  if (liveAudioUnsupported(plan)) return undefined;
+  if (liveAudioUnsupported(plan, { ducking: !!duckingModule })) return undefined;
   const sources = new Map<string, string>();
   for (const assetId of new Set(plan.lanes.filter(audioLaneNeedsSource).map((lane) => lane.assetId))) {
     let url: string;
@@ -78,7 +102,20 @@ export async function resolveLivePreviewAudio(
     if (signal.aborted || !(await canPlay(url, signal))) return undefined;
     sources.set(assetId, url);
   }
-  return { plan, sources };
+  return { plan, sources, ...(duckingModule ? { duckingModule } : {}) };
+}
+
+const duckingModules = new Map<string, Promise<boolean>>();
+/** Whether this page may load the packaged ducking worklet; checked once per URL. */
+export function canLoadDuckingModule(url: string): Promise<boolean> {
+  let known = duckingModules.get(url);
+  if (!known) {
+    known = new OfflineAudioContext(1, 128, AUDIO_SAMPLE_RATE).audioWorklet
+      .addModule(url)
+      .then(() => true, () => false);
+    duckingModules.set(url, known);
+  }
+  return known;
 }
 
 // Media sync follows HyperFrames: small drift is inaudible, moderate drift is corrected by
@@ -97,8 +134,16 @@ interface Voice {
   source: MediaElementAudioSourceNode;
   gain: GainNode;
   panner: StereoPannerNode;
+  /** Ducking gains and sidechain weights owned by this voice's current wiring. */
+  ducks: AudioNode[];
   span: number;
 }
+interface Detector {
+  key: string;
+  input: GainNode;
+  node: AudioWorkletNode;
+}
+const loadedModules = new WeakMap<BaseAudioContext, Map<string, Promise<void>>>();
 const cancelled = () => new DOMException("声音播放已取消", "AbortError");
 
 function ready(element: HTMLAudioElement, seconds: number, signal: AbortSignal, timeoutMs: number) {
@@ -137,33 +182,123 @@ export class LiveAudioMixer {
   private startSample = 0;
   private timer?: ReturnType<typeof setInterval>;
   private stopped = false;
+  private detectors = new Map<string, Detector>();
   constructor(
     private readonly context: AudioContext,
-    private readonly live: LivePreviewAudio,
+    private live: LivePreviewAudio,
     private readonly destination: AudioNode = context.destination,
   ) {}
+
+  private voice(lane: AudioPlanLane): Voice {
+    const url = this.live.sources.get(lane.assetId);
+    if (!url) throw new Error(`声音素材暂不可用：${lane.assetId}`);
+    const element = new Audio();
+    element.crossOrigin = "anonymous";
+    element.preload = "auto";
+    element.src = url;
+    const source = this.context.createMediaElementSource(element),
+      gain = this.context.createGain(),
+      panner = this.context.createStereoPanner();
+    gain.gain.value = 0;
+    source.connect(gain).connect(panner);
+    return { lane, element, source, gain, panner, ducks: [], span: -1 };
+  }
+  private release(voice: Voice): void {
+    voice.element.pause();
+    try { voice.source.disconnect(); } catch {}
+    try { voice.gain.disconnect(); } catch {}
+    try { voice.panner.disconnect(); } catch {}
+    for (const node of voice.ducks) try { node.disconnect(); } catch {}
+    voice.element.removeAttribute("src");
+    voice.element.load();
+  }
 
   private spanAt(lane: AudioPlanLane, sample: number): number {
     return lane.spans.findIndex((span) => sample >= span.startSample && sample < span.endSample);
   }
 
+  private async loadDucking(signal: AbortSignal): Promise<void> {
+    const url = this.live.duckingModule;
+    if (!url) {
+      if (this.live.plan.ducking.length) throw new Error("自动压低背景声需要预渲染混音");
+      return;
+    }
+    let modules = loadedModules.get(this.context);
+    if (!modules) loadedModules.set(this.context, (modules = new Map()));
+    let loading = modules.get(url);
+    if (!loading) modules.set(url, (loading = this.context.audioWorklet.addModule(url)));
+    await loading;
+    if (signal.aborted || this.stopped) throw cancelled();
+  }
+
+  /** Voice → [ducking gains] → destination; ducked by detectors fed from the sidechain
+   * voices before their own ducking, as the native renderer's dry buses are. */
+  private wire(): void {
+    const context = this.context,
+      requests = this.live.plan.ducking,
+      next = new Map<string, Detector>();
+    for (const request of requests) {
+      const coefficients = duckingCoefficients(request),
+        key = JSON.stringify(coefficients),
+        kept = this.detectors.get(request.id);
+      if (kept && kept.key === key) {
+        kept.node.disconnect();
+        next.set(request.id, kept);
+        continue;
+      }
+      if (kept) { kept.input.disconnect(); kept.node.disconnect(); }
+      const input = context.createGain(),
+        node = new AudioWorkletNode(context, DUCKING_PROCESSOR, {
+          numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+          channelCount: 2, channelCountMode: "explicit", processorOptions: coefficients,
+        });
+      input.connect(node);
+      next.set(request.id, { key, input, node });
+    }
+    for (const [id, detector] of this.detectors)
+      if (!next.has(id)) { detector.input.disconnect(); detector.node.disconnect(); }
+    this.detectors = next;
+    for (const voice of this.voices) {
+      voice.panner.disconnect();
+      for (const node of voice.ducks) node.disconnect();
+      voice.ducks = [];
+      let output: AudioNode = voice.panner;
+      for (const id of voice.lane.duckingIds) {
+        const detector = this.detectors.get(id);
+        if (!detector) continue;
+        const ducked = context.createGain();
+        ducked.gain.value = 0;
+        detector.node.connect(ducked.gain);
+        output.connect(ducked);
+        voice.ducks.push(ducked);
+        output = ducked;
+      }
+      output.connect(this.destination);
+      for (const request of requests) {
+        // A clip on several sidechain buses of one request counts once per bus.
+        const buses = request.sidechainTrackInstanceIds.filter((id) => voice.lane.trackInstancePath.includes(id)).length;
+        if (!buses) continue;
+        const input = this.detectors.get(request.id)!.input;
+        if (buses === 1) voice.panner.connect(input);
+        else {
+          const weight = context.createGain();
+          weight.gain.value = buses;
+          voice.panner.connect(weight).connect(input);
+          voice.ducks.push(weight);
+        }
+      }
+    }
+  }
+
   /** Only sources heard at the start delay playback; later clips load while playing. */
   async prepare(startSample: number, signal: AbortSignal, timeoutMs = 15_000): Promise<void> {
     if (this.voices.length || this.stopped) throw new Error("实时混音只能准备一次");
-    for (const lane of this.live.plan.lanes.filter(audioLaneNeedsSource)) {
-      const url = this.live.sources.get(lane.assetId);
-      if (!url) throw new Error(`声音素材暂不可用：${lane.assetId}`);
-      const element = new Audio();
-      element.crossOrigin = "anonymous";
-      element.preload = "auto";
-      element.src = url;
-      const source = this.context.createMediaElementSource(element),
-        gain = this.context.createGain(),
-        panner = this.context.createStereoPanner();
-      gain.gain.value = 0;
-      source.connect(gain).connect(panner).connect(this.destination);
-      this.voices.push({ lane, element, source, gain, panner, span: -1 });
+    for (const lane of this.live.plan.lanes) {
+      if (voiced(lane, this.live.sources)) this.voices.push(this.voice(lane));
+      else if (audioLaneNeedsSource(lane)) throw new Error(`声音素材暂不可用：${lane.assetId}`);
     }
+    await this.loadDucking(signal);
+    this.wire();
     await Promise.all(
       this.voices.map((voice) => {
         const state = sampleAudioLane(voice.lane, startSample);
@@ -240,18 +375,47 @@ export class LiveAudioMixer {
     this.timer = setInterval(this.tick, TICK_MS);
   }
 
+  /** Applies an edited plan while playing. A clip instance keeps its element and, when
+   * its source mapping is unchanged, its position: a level change must not seek. */
+  update(live: LivePreviewAudio): void {
+    if (this.stopped) throw cancelled();
+    if (live.plan.ducking.length && (!live.duckingModule || live.duckingModule !== this.live.duckingModule ||
+        !loadedModules.get(this.context)?.has(live.duckingModule)))
+      throw new Error("自动压低背景声需要重新开始播放");
+    const previous = this.live;
+    this.live = live;
+    const existing = new Map(this.voices.map((voice) => [voice.lane.instanceId, voice])),
+      next: Voice[] = [];
+    try {
+      for (const lane of live.plan.lanes) {
+        if (!voiced(lane, live.sources)) continue;
+        const voice = existing.get(lane.instanceId);
+        if (voice && voice.lane.assetId === lane.assetId &&
+            live.sources.get(lane.assetId) === previous.sources.get(lane.assetId)) {
+          existing.delete(lane.instanceId);
+          if (JSON.stringify(voice.lane.spans) !== JSON.stringify(lane.spans)) voice.span = -1;
+          voice.lane = lane;
+          next.push(voice);
+        } else next.push(this.voice(lane));
+      }
+    } catch (error) {
+      for (const voice of next) if (!this.voices.includes(voice)) this.release(voice);
+      this.live = previous;
+      throw error;
+    }
+    for (const voice of existing.values()) this.release(voice);
+    this.voices = next;
+    this.wire();
+    if (this.timer) this.tick();
+  }
+
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
     clearInterval(this.timer);
-    for (const voice of this.voices) {
-      voice.element.pause();
-      try { voice.source.disconnect(); } catch {}
-      try { voice.gain.disconnect(); } catch {}
-      try { voice.panner.disconnect(); } catch {}
-      voice.element.removeAttribute("src");
-      voice.element.load();
-    }
+    for (const voice of this.voices) this.release(voice);
     this.voices = [];
+    for (const detector of this.detectors.values()) { detector.input.disconnect(); detector.node.disconnect(); }
+    this.detectors.clear();
   }
 }

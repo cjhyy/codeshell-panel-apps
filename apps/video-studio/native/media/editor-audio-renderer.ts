@@ -12,6 +12,7 @@ import {
   type AudioPlanLane,
   type AudioPlanSpan,
 } from "../../src/editor/audio-plan.js";
+import { duckingCoefficients, duckingStep } from "../../src/editor/ducking.js";
 import { mediaAbortError, runMediaProcess } from "./media-process-runner.js";
 import { editorRangeAudioPreparation } from "./editor-range-preparation.js";
 import type { ExportRange } from "../../src/editor/export-range.js";
@@ -518,7 +519,6 @@ export async function renderEditorAudio(
 
     const dryBuses = new Set(plan.ducking.flatMap((request) => request.sidechainTrackInstanceIds));
     const detector = new Map(plan.ducking.map((request) => [request.id, { power: 0, gain: 1 }]));
-    const rmsCoefficient = Math.exp(-1 / (RATE * 0.01));
     const cursors = new Map(lanes.map((lane) => [lane, 0]));
     const raw = join(temporary, "mix.f32"),
       fd = openSync(raw, "wx");
@@ -591,11 +591,8 @@ export async function renderEditorAudio(
         const envelopes = new Map<string, Float64Array>();
         for (const request of plan.ducking) {
           const state = detector.get(request.id)!,
-            envelope = allocate(count);
-          const threshold = 10 ** (request.thresholdDb / 10),
-            attenuation = 10 ** (-request.attenuationDb / 20);
-          const attack = request.attack ? Math.exp(-TICKS_PER_AUDIO_SAMPLE / request.attack) : 0;
-          const release = request.release ? Math.exp(-TICKS_PER_AUDIO_SAMPLE / request.release) : 0;
+            envelope = allocate(count),
+            coefficients = duckingCoefficients(request);
           for (let i = 0; i < count; i++) {
             let l = 0,
               r = 0;
@@ -606,12 +603,7 @@ export async function renderEditorAudio(
                 r += bus[i * CHANNELS + 1]!;
               }
             }
-            state.power =
-              rmsCoefficient * state.power + ((1 - rmsCoefficient) * (l * l + r * r)) / 2;
-            const target = state.power >= threshold ? attenuation : 1;
-            const coefficient = target < state.gain ? attack : release;
-            state.gain = target + coefficient * (state.gain - target);
-            envelope[i] = state.gain;
+            envelope[i] = duckingStep(state, l, r, coefficients);
           }
           envelopes.set(request.id, envelope);
         }

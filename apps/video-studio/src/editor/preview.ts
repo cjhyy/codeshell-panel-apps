@@ -75,7 +75,7 @@ function hasPotentialAudio(
 /** The playhead belongs to the sequence clock, independent of every decoder. */
 export class EditorPreview {
   private readonly pool: EditorMediaPool;
-  private readonly compositor = new FrameCompositor();
+  private readonly compositor = new FrameCompositor({ gpuColor: true });
   private document?: EditorDocument;
   private sequence?: EditorSequence;
   private evaluator?: ReturnType<typeof prepareEvaluator>;
@@ -151,6 +151,44 @@ export class EditorPreview {
     this.evaluator = prepareEvaluator(valid);
     this.checkFonts();
     this.playhead = Math.min(this.playhead, Math.max(0, sequenceDuration(sequence) - 1));
+  }
+  /** Applies a committed edit without stopping playback. The picture sources, canvas,
+   * frame rate and duration must be unchanged; a sound edit needs a live mix whose
+   * sources are already playing. Returns false when playback has to restart. */
+  updatePlayback(value: EditorDocument, sequenceId: string, audio?: PreviewAudio): boolean {
+    if (!this.isPlaying || !this.document || !this.sequence || this.disposed) return false;
+    const valid = validateEditorDocument(value),
+      sequence = valid.sequences.find((item) => item.id === sequenceId),
+      current = this.sequence;
+    if (
+      !sequence ||
+      valid.id !== this.document.id ||
+      sequence.id !== current.id ||
+      sequence.width !== current.width ||
+      sequence.height !== current.height ||
+      sequence.frameRate.numerator !== current.frameRate.numerator ||
+      sequence.frameRate.denominator !== current.frameRate.denominator ||
+      sequenceDuration(sequence) !== sequenceDuration(current) ||
+      editorVisualSourceKey(valid, sequenceId) !== editorVisualSourceKey(this.document, sequenceId)
+    )
+      return false;
+    if (audio) {
+      if (!this.liveMixer || !audio.live || audio.documentId !== valid.id ||
+          audio.revision !== valid.revision || audio.live.plan.sequenceId !== sequenceId ||
+          audio.live.plan.sampleCount !== Math.ceil(sequenceDuration(sequence) / 5))
+        return false;
+      try {
+        this.liveMixer.update(audio.live);
+      } catch {
+        return false;
+      }
+    }
+    this.document = valid;
+    this.sequence = sequence;
+    this.evaluator = prepareEvaluator(valid);
+    this.renderedTime = undefined;
+    this.checkFonts();
+    return true;
   }
   private snapshot() {
     this.active();

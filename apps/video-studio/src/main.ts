@@ -121,7 +121,11 @@ import {
   type PreparedEditorAudio,
 } from "./editor/task-bridge";
 import { compileAudioPlan } from "./editor/audio-plan";
-import { liveAudioUnsupported, resolveLivePreviewAudio } from "./editor/live-audio";
+import {
+  canLoadDuckingModule,
+  liveAudioUnsupported,
+  resolveLivePreviewAudio,
+} from "./editor/live-audio";
 import {
   editorAudioContentKey,
   editorPreviewVideoPlan,
@@ -6314,9 +6318,15 @@ function mountEditorWorkspace(): void {
         return undefined;
       }
       // Like HyperFrames, ordinary clips mix while playing; nothing is rendered first.
-      if (purpose === undefined && !liveAudioUnsupported(plan)) {
+      // The packaged worklet runs the same ducking detector as the native renderer.
+      const duckingModule = plan.ducking.length
+        ? new URL("runtimes/audio-ducking.mjs", document.baseURI).href
+        : undefined;
+      const ducking = !!duckingModule && (await canLoadDuckingModule(duckingModule));
+      if (purpose === undefined && !liveAudioUnsupported(plan, { ducking })) {
         onProgress?.("正在载入声音素材…");
-        const live = await resolveLivePreviewAudio(plan, editorOriginalMediaUrl, signal);
+        const live = await resolveLivePreviewAudio(plan, editorOriginalMediaUrl, signal, undefined,
+          ducking ? duckingModule : undefined);
         if (!current()) return undefined;
         if (live) {
           if (snapshot) preparedNative = { key, snapshot };

@@ -4,6 +4,8 @@ import { EditorMarkers } from "./marker-ui";
 import { EditorInspector } from "./inspector-ui";
 import { EditorTimeline } from "./timeline-ui";
 import { EditorPreview, type PreviewAudio } from "./preview";
+import { compileAudioPlan } from "./audio-plan";
+import { liveAudioWithSources } from "./live-audio";
 import {
   EditorSession,
   sameIdentity,
@@ -694,22 +696,38 @@ export class EditorWorkspace {
       sameAudio = sameScope && audioContentKey === this.audioContentKey,
       sameSources = sameScope && visualSourceKey === this.visualSourceKey,
       preservePreparation = sameAudio && sameSources && !this.gainAudition;
+    // An edit made while playing continues in place when nothing has to be prepared: the
+    // same picture sources, and either the same sound or a live mix of sources already open.
+    const playing = this.preview.playing && sameSources && !this.gainAudition && !this.preparing,
+      current = this.audio,
+      live = playing && !sameAudio && current?.live
+        ? liveAudioWithSources(compileAudioPlan(auditionDocument, sequence.id), current.live.sources,
+            current.live.duckingModule)
+        : undefined,
+      edited: PreviewAudio | undefined = live && current
+        ? { documentId: current.documentId, revision: doc.revision, sequenceId: current.sequenceId, live }
+        : undefined,
+      continued = playing && (sameAudio || !!edited) &&
+        this.preview.updatePlayback(auditionDocument, sequence.id, edited);
     this.clearGainAudition(true);
-    if (!preservePreparation) this.cancelPreparation();
-    if (!sameAudio) {
+    if (!preservePreparation && !continued) this.cancelPreparation();
+    if (continued) {
+      this.audio = edited ?? (current && { ...current, revision: doc.revision });
+    } else if (!sameAudio) {
       this.audio?.stream?.dispose();
       this.audio = undefined;
     } else if (this.audio) {
       // Content equality, within this open generation, permits a new identity wrapper only.
       this.audio = { ...this.audio, revision: doc.revision };
     }
-    if (!sameAudio || !sameSources) {
+    if (!continued && (!sameAudio || !sameSources)) {
       this.preparedRevision = "";
       this.clearAudioWarning();
     }
     this.audioContentKey = audioContentKey;
     this.visualSourceKey = visualSourceKey;
-    this.preview.setDocument(auditionDocument, sequence.id, { preserveMedia: sameSources });
+    if (continued) this.preparedRevision = this.playbackSignature();
+    else this.preview.setDocument(auditionDocument, sequence.id, { preserveMedia: sameSources });
     this.updateAuditionControls();
     this.playhead = Math.min(this.playhead, Math.max(0, sequenceDuration(sequence) - 1));
     const name = this.get<HTMLInputElement>("[data-ew-project-name]");
@@ -735,7 +753,8 @@ export class EditorWorkspace {
     this.timeline.render();
     this.canvasEditor.render();
     this.updateTime();
-    if (this.visible && !this.sourcePreview && !(preservePreparation && this.preparing)) this.run(() => this.frameCapture?.finishing || this.exportOpening?.finishing || this.gainOpening?.finishing
+    // Continued playback draws its next frame itself; a seek would stop it.
+    if (this.visible && !this.sourcePreview && !continued && !(preservePreparation && this.preparing)) this.run(() => this.frameCapture?.finishing || this.exportOpening?.finishing || this.gainOpening?.finishing
       ? this.preview.seek(this.playhead, { exact: this.exactPlayhead }) : this.seek(this.playhead));
   }
 
