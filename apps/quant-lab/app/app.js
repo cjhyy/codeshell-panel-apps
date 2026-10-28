@@ -2683,7 +2683,7 @@ holdingsController = createHoldingsController({
   },
   onPortfolioState({ hasPositions }) {
     hasPortfolioPositions = hasPositions;
-    if (hasPositions && context.trusted === true && bootstrap.has("watch")) {
+    if (hasPositions && context.trusted === true) {
       const epoch = workspaceEpoch;
       const { ledger, holdings } = holdingsController.noteContext();
       void aShareSelectionController.syncPortfolio(ledger, holdings).then(({ skipped }) => {

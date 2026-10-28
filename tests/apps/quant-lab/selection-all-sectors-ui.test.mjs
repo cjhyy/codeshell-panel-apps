@@ -166,7 +166,7 @@ class MockElement {
   click() { this.listeners.get("click")?.({ target: this }); }
 }
 
-async function withController(run, { persistent = true, holdContinuation = false, snapshotInput = fixture(), initialNow = generatedAt, storageInput = null, versioned = false } = {}) {
+async function withController(run, { persistent = true, holdContinuation = false, snapshotInput = fixture(), initialNow = generatedAt, storageInput = null, versioned = false, autoStart = true, scopedStorage = false } = {}) {
   const originals = { window: globalThis.window, document: globalThis.document };
   const timers = new Map();
   let nextTimer = 0;
@@ -186,6 +186,7 @@ async function withController(run, { persistent = true, holdContinuation = false
   let stored = structuredClone(storageInput), epoch = 0;
   let readError = false, writeError = false, loseWriteReply = false;
   let holdWrite = null;
+  let holdRead = null;
   const storageSnapshot = () => ({
     exists: stored !== null,
     value: structuredClone(stored),
@@ -202,7 +203,9 @@ async function withController(run, { persistent = true, holdContinuation = false
     }
     if (["storage.get", "storage.getSnapshot"].includes(method)) {
       if (readError) throw Error("offline read");
-      return method === "storage.getSnapshot" ? storageSnapshot() : structuredClone(stored);
+      const result = method === "storage.getSnapshot" ? storageSnapshot() : structuredClone(stored);
+      if (holdRead) await holdRead;
+      return result;
     }
     if (["storage.set", "storage.compareAndSet"].includes(method)) {
       if (holdWrite) await holdWrite;
@@ -228,8 +231,8 @@ async function withController(run, { persistent = true, holdContinuation = false
   };
   let controller;
   try {
-    controller = createAShareSelectionController({ hostCall, onHostEvent(name, callback) { events.set(name, callback); return () => events.delete(name); }, notify(message, tone) { notifications.push({ message, tone }); }, onUpdate(value) { updates.push(value); }, storageKey: () => "selection.global", currentEpoch: () => epoch, getContext: () => ({ availableMethods: versioned ? ["storage.getSnapshot", "storage.compareAndSet"] : [] }), now: () => new Date(currentNow), elements });
-    await controller.start();
+    controller = createAShareSelectionController({ hostCall, onHostEvent(name, callback) { events.set(name, callback); return () => events.delete(name); }, notify(message, tone) { notifications.push({ message, tone }); }, onUpdate(value) { updates.push(value); }, storageKey: () => scopedStorage ? `selection.global.${epoch}` : "selection.global", currentEpoch: () => epoch, getContext: () => ({ availableMethods: versioned ? ["storage.getSnapshot", "storage.compareAndSet"] : [] }), now: () => new Date(currentNow), elements });
+    if (autoStart) await controller.start();
     const tickContinuation = async () => {
       const entry = [...timers].find(([, timer]) => timer.delay === 5_000);
       assert(entry, "a five-second continuation should be scheduled");
@@ -240,6 +243,7 @@ async function withController(run, { persistent = true, holdContinuation = false
       setStored(value) { stored = structuredClone(value); }, stored: () => structuredClone(stored),
       failReads(value) { readError = value; }, failWrites(value) { writeError = value; },
       loseReply() { loseWriteReply = true; }, holdWrites(promise) { holdWrite = promise; },
+      holdReads(promise) { holdRead = promise; },
       switchProject() { epoch++; controller.reset(); }, setNow(value) { currentNow = value; }, finishHeld() { held.shift()?.(); } });
   } finally {
     controller?.dispose();
@@ -745,7 +749,7 @@ test("a pending long-term watch save cannot publish success or start scans in th
 });
 
 test("portfolio synchronization cannot silently claim success after a conflicting save", async () => {
-  await withController(async ({ controller, elements, setStored, stored }) => {
+  await withController(async ({ controller, elements, calls, setStored, stored }) => {
     setStored({ stocks: [{ symbol: "SH600036", name: "other" }], sectors: [] });
     await assert.rejects(controller.syncPortfolio(
       { instruments: [{ id: "stock", market: "cn", symbol: "SH600519", name: "holding" }] },
@@ -754,7 +758,77 @@ test("portfolio synchronization cannot silently claim success after a conflictin
     assert.equal(stored().stocks[0].symbol, "SH600036");
     assert.equal(controller.watch.stocks[0].symbol, "SH600519");
     assert.equal(elements.watchStockAdd.disabled, true);
+    const afterConflict = calls.length;
+    await assert.rejects(controller.syncPortfolio(
+      { instruments: [{ id: "stock", market: "cn", symbol: "SH600519", name: "holding" }] },
+      { positionsByAccount: [{ instrumentId: "stock", quantity: 1 }] },
+    ), /未保存/);
+    assert.equal(calls.length, afterConflict, "automatic follow must not reload or retry a conflicted draft");
   }, { versioned: true });
+});
+
+test("cold portfolio follows persist without opening Watch or starting a collector", async () => {
+  await withController(async ({ controller, calls, timers, stored }) => {
+    const ledger = { instruments: [{ id: "holding", market: "cn", symbol: "SH600519", name: "holding" }] };
+    const holdings = { positionsByAccount: [{ instrumentId: "holding", quantity: "100" }] };
+    await Promise.all([controller.syncPortfolio(ledger, holdings), controller.syncPortfolio(ledger, holdings)]);
+    assert.deepEqual(stored().stocks.map(stock => stock.symbol), ["SH600036", "SH600519"]);
+    assert.equal(stored().stocks[1].source, "portfolio");
+    assert.equal(stored().unknownField, "preserved");
+    assert.equal(calls.filter(call => call.method === "storage.getSnapshot").length, 1);
+    assert.equal(calls.filter(call => call.method === "storage.compareAndSet").length, 1);
+    assert.equal(calls.some(call => call.method.startsWith("process.") || call.method === "filesystem.getKnownDirectory"), false);
+    assert.equal(timers.size, 0, "reading watch storage does not activate scan scheduling");
+  }, { autoStart: false, versioned: true, storageInput: { stocks: [{ symbol: "SH600036", name: "manual" }], sectors: [], unknownField: "preserved" } });
+});
+
+test("Watch load joins the initial portfolio read; only explicit reload replaces its saved merge", async () => {
+  await withController(async ({ controller, elements, calls, holdReads, setStored, stored }) => {
+    let release;
+    holdReads(new Promise(resolve => { release = resolve; }));
+    const sync = controller.syncPortfolio(
+      { instruments: [{ id: "holding", market: "cn", symbol: "SH600519", name: "holding" }] },
+      { positionsByAccount: [{ instrumentId: "holding", quantity: "100" }] },
+    );
+    const load = controller.load({ backgroundOnly: true });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls.filter(call => call.method === "storage.getSnapshot").length, 1);
+    release();
+    await Promise.all([sync, load]);
+    assert.equal(stored().stocks.filter(stock => stock.symbol === "SH600519").length, 1);
+    await controller.load({ backgroundOnly: true });
+    assert.equal(calls.filter(call => call.method === "storage.getSnapshot").length, 1);
+    setStored({ stocks: [{ symbol: "SZ000001", name: "external" }], sectors: [] });
+    elements.watchStorageReload.click();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(controller.watch.stocks.map(stock => stock.symbol), ["SZ000001"]);
+    assert.equal(calls.filter(call => call.method === "storage.getSnapshot").length, 2);
+  }, { autoStart: false, versioned: true });
+});
+
+test("late initial portfolio reads cannot overwrite or write the next project's watch storage", async () => {
+  await withController(async ({ controller, calls, holdReads, switchProject, setStored, stored }) => {
+    let release;
+    holdReads(new Promise(resolve => { release = resolve; }));
+    const stale = assert.rejects(controller.syncPortfolio(
+      { instruments: [{ id: "old", market: "cn", symbol: "SH600519", name: "old project" }] },
+      { positionsByAccount: [{ instrumentId: "old", quantity: "100" }] },
+    ), /项目已切换/);
+    await new Promise(resolve => setImmediate(resolve));
+    switchProject();
+    setStored({ stocks: [{ symbol: "SZ000001", name: "next project manual" }], sectors: [] });
+    holdReads(null);
+    await controller.syncPortfolio(
+      { instruments: [{ id: "next", market: "cn", symbol: "SH600036", name: "next project holding" }] },
+      { positionsByAccount: [{ instrumentId: "next", quantity: "100" }] },
+    );
+    release();
+    await stale;
+    assert.deepEqual(stored().stocks.map(stock => stock.symbol), ["SZ000001", "SH600036"]);
+    assert.deepEqual(controller.watch.stocks.map(stock => stock.symbol), ["SZ000001", "SH600036"]);
+    assert.deepEqual(calls.filter(call => call.method === "storage.compareAndSet").map(call => call.args.key), ["selection.global.1"]);
+    assert.equal(calls.some(call => call.method === "process.spawn"), false);
+  }, { autoStart: false, scopedStorage: true, versioned: true });
 });
 
 test("unsupported long-term watch records cannot be replaced by an empty default", async () => {
