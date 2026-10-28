@@ -4536,6 +4536,9 @@ function updateContext(next) {
       name: "合成演示行情",
       source: "系统生成样本",
     };
+    // Clear the prior project's saved-data labels immediately; restoring the
+    // new project's Research configuration remains lazy and performs no reads.
+    renderDataset();
     watchlist = [];
     watchlistStorageValue = { items: [] };
     watchMigrationBlocked = false;
