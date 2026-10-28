@@ -1046,6 +1046,46 @@ test("probe requests create no permanent intent or recipe records", async () => 
   } finally { f.dispose(); }
 });
 
+test("failed read-only probes preserve their original cause without inventing an intent or resubmitting", async () => {
+  for (const [method, params] of [
+    ["media.status", { fresh: true }],
+    ["media.tts.voices", {}],
+    ["media.assets.get", { id: sourceId }],
+  ] as const) {
+    const f = fixture(), original = f.raw.call.bind(f.raw);
+    const failure = Object.assign(new Error(`native unavailable: ${method}`), { code: "NATIVE_UNAVAILABLE" });
+    let submissions = 0;
+    f.raw.call = async (name, args) => {
+      if (name === "tasks.start") { submissions++; throw failure; }
+      return original(name, args);
+    };
+    try {
+      await assert.rejects(f.bridge.call(method, params), error => error === failure);
+      assert.equal(submissions, 1);
+      assert.equal(f.calls.filter(call => call.method === "media.document.set").length, 0);
+      assert.equal(f.documents.size, 0);
+      // A later explicit read can retry; the failed call itself never does.
+      await assert.rejects(f.bridge.call(method, params), error => error === failure);
+      assert.equal(submissions, 2);
+    } finally { f.dispose(); }
+  }
+});
+
+test("a lost read-only probe receipt reattaches to the accepted task without a permanent intent", async () => {
+  const f = fixture(), original = f.raw.call.bind(f.raw);
+  let submissions = 0;
+  f.raw.call = async (method, params) => {
+    const value = await original(method, params);
+    if (method === "tasks.start") { submissions++; throw new Error("probe receipt lost"); }
+    return value;
+  };
+  try {
+    assert.equal((await f.bridge.call("media.status", { fresh: true }) as any).persistent, true);
+    assert.equal(submissions, 1);
+    assert.equal(f.documents.size, 0);
+  } finally { f.dispose(); }
+});
+
 test("a competing intent CAS queries the winner without deleting its record", async () => {
   const f = fixture(), original = f.raw.call.bind(f.raw), other = createMediaTaskBridge(f.raw);
   let reads = 0, writes = 0, releaseReads!: () => void, firstStarted!: () => void;

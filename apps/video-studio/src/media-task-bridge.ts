@@ -401,6 +401,10 @@ export function createMediaTaskBridge(raw: PanelBridge, options: {
       await same(scope);
       if (existing) job = taskValue(existing);
       else {
+        // Read-only probes have no persisted intent. Preserve their actionable
+        // native error after checking for an accepted receipt; never claim that
+        // an intent was saved or silently submit a replacement in this call.
+        if (hidden) throw error;
         // Only explicit pre-admission validation/capacity errors prove rejection.
         // Transport/timeout/revocation messages never authorize another attempt.
         const rejected = ["PARAMS_TOO_LARGE", "TASK_QUEUE_FULL", "TASK_CAPACITY"].includes(error?.code) ||

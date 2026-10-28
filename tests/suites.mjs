@@ -383,6 +383,7 @@ export const suites = [
       ["--test", "apps/video-studio/native/tests/voice-runtime.test.mjs"],
       ["--test", "tests/video-studio-workspace-storage.test.mjs"],
       ["--test", "tests/video-studio-project-cli.test.mjs"],
+      ["--test", "tests/helpers/video-studio-generic-task.test.mjs"],
     ],
   },
 ];
