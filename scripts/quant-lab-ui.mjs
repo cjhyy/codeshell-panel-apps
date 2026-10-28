@@ -1549,7 +1549,7 @@ async function installHostStub(
         cwd: expectedWorkspaceRoot,
         trusted: true,
         busy: false,
-        availableMethods: ["storage.getSnapshot", "storage.compareAndSet", "storage.get", "storage.set", "process.find", "process.resolveEntry", "process.spawn", "process.cancel", "tasks.start", "tasks.find", "tasks.get", "tasks.cancel", "filesystem.getKnownDirectory", "workspace.list", "workspace.readText", "workspace.writeText", "agent.submitPrompt", "agent.task.start", "agent.task.get", "automations.list", "automations.create", "automations.update", "automations.delete", "external.open", "notifications.send", ...(fixtureVersionedStorage ? ["automations.createUnique", "automations.updateIfRevision", "automations.deleteIfRevision"] : [])],
+        availableMethods: ["storage.get", "storage.set", "process.find", "process.resolveEntry", "process.spawn", "process.cancel", "tasks.start", "tasks.find", "tasks.get", "tasks.cancel", "filesystem.getKnownDirectory", "workspace.list", "workspace.readText", "workspace.writeText", "agent.submitPrompt", "agent.task.start", "agent.task.get", "automations.list", "automations.create", "automations.update", "automations.delete", "external.open", "notifications.send", ...(fixtureVersionedStorage ? ["storage.getSnapshot", "storage.compareAndSet", "automations.createUnique", "automations.updateIfRevision", "automations.deleteIfRevision"] : [])],
         sessionId: "quant-ui-fixture-session",
       };
       window.__contextChangedHandlers = new Set();
