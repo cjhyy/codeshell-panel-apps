@@ -1070,7 +1070,7 @@ export function createHoldingsController({
       retained.add(key);
       const existingRow = rows.get(key);
       const row = document.createElement("article");
-      const signature = JSON.stringify([position, quoteDisplayValue(quote), latest, detailsReady, quoteState.failed === true, instrument.name, noteLinkCount({ type: "instrument", symbol: instrument.symbol, market: instrument.market })]);
+      const signature = JSON.stringify([position, securitiesValue, quoteDisplayValue(quote), latest, detailsReady, quoteState.failed === true, instrument.name, noteLinkCount({ type: "instrument", symbol: instrument.symbol, market: instrument.market })]);
       if (existingRow?.dataset.signature === signature) continue;
       row.dataset.signature = signature;
       row.className = "portfolio-position";
