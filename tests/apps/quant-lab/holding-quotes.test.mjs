@@ -86,6 +86,7 @@ test("native process events before spawn returns are collected, and listeners ar
     onHostEvent: (name, fn) => { listeners.set(name, fn); return () => listeners.delete(name); },
     hostCall: async (method) => {
       if (method === "process.find") return { available: true, handle: "node" };
+      if (method === "process.resolveEntry") return { handle: "reviewed-holding-quotes" };
       if (method === "filesystem.getKnownDirectory") return { handle: "data" };
       if (method === "process.spawn") {
         listeners.get("process.output")({ processId: "p", stream: "stdout", text: JSON.stringify(packet([quote()])) });
@@ -97,4 +98,16 @@ test("native process events before spawn returns are collected, and listeners ar
   });
   assert.equal((await request.fetch(items)).quotes[0].price, "10.10");
   assert.equal(listeners.size, 0);
+});
+
+test('cancellation while resolving selected-package entry prevents spawn',async()=>{
+ let enter,release;const entered=new Promise(r=>enter=r),blocked=new Promise(r=>release=r);let spawns=0;
+ const request=createHoldingQuoteRequest({onHostEvent:()=>()=>{},hostCall:async(method)=>{
+  if(method==='process.find')return{available:true,handle:'node'};
+  if(method==='filesystem.getKnownDirectory')return{handle:'data'};
+  if(method==='process.resolveEntry'){enter();await blocked;return{handle:'entry'};}
+  if(method==='process.spawn'){spawns++;return{processId:'unexpected'};}
+  return{};
+ }});
+ const pending=request.fetch(items);await entered;request.cancel();release();await assert.rejects(pending,/已停止/u);assert.equal(spawns,0);
 });

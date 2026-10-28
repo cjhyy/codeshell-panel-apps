@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { prepareHistoryUniverse } from "../stock-screener.mjs";
@@ -13,6 +14,7 @@ import {
   A_SHARE_RESEARCH_PRICE_CONTRACT,
   A_SHARE_HISTORY_SCHEMA_VERSION,
   acquireHistoryRunState,
+  assertHistoryRunState,
   createRawFactorPriceBundle,
   heartbeatHistoryRunState,
   isAShareHistorySource,
@@ -123,9 +125,10 @@ export function historyManifestRecordsForScope(records, selectedSymbols, scope) 
 }
 
 export function compactHistoryBridgeSummary(value) {
-  const { records, excludedSymbols, recovered: _recovered, ...summary } = value;
+  const { records, excludedSymbols, batch, recovered: _recovered, ...summary } = value;
   return Object.freeze({
     ...summary,
+    ...(batch ? { batch: { marketDate: batch.marketDate, completed: batch.checked.length, total: value.total, pending: Math.max(0, value.total - batch.checked.length), checkpoint: createHash("sha256").update(JSON.stringify(batch)).digest("hex") } } : {}),
     excludedCount: Array.isArray(excludedSymbols) ? excludedSymbols.length : 0,
     latestDateDistribution: latestHistoryDateDistribution(records, value?.marketDate),
   });
@@ -149,13 +152,17 @@ export function normalizeHistoryInitializationOptions(argv = []) {
   let stdout = false;
   let help = false;
   let status = false;
+  let repair = false;
+  let maxItems = null;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--scope") scope = String(argv[++index] ?? "");
     else if (argument === "--source") source = String(argv[++index] ?? "");
     else if (argument === "--incremental-only") incrementalOnly = true;
     else if (argument === "--stdout") stdout = true;
-    else if (argument === "--status") status = true;
+    else if (argument === "--status" || argument === "--lock-status") status = true;
+    else if (argument === "--repair") repair = true;
+    else if (argument === "--max-items") maxItems = Number(argv[++index]);
     else if (argument === "--help") help = true;
     else throw new HistoryInitializationError("ARGUMENT_UNKNOWN", `unknown argument: ${argument}`);
   }
@@ -168,6 +175,7 @@ export function normalizeHistoryInitializationOptions(argv = []) {
       "source must support auditable A-share raw prices and adjustment factors (tencent-ifzq, eastmoney-kline, or tushare-pro)",
     );
   }
+  if (maxItems != null && (!Number.isInteger(maxItems) || maxItems < 1 || maxItems > 100)) throw new HistoryInitializationError("BATCH_INVALID", "max-items must be 1..100");
   return Object.freeze({
     scope,
     source,
@@ -176,7 +184,7 @@ export function normalizeHistoryInitializationOptions(argv = []) {
     incrementalOnly,
     stdout,
     help,
-    status,
+    status, repair, maxItems,
   });
 }
 
@@ -311,11 +319,11 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
   const root = resolve(dependencies.root ?? process.cwd());
   const now = dependencies.now instanceof Date ? dependencies.now : new Date();
   if (!Number.isFinite(now.getTime())) throw new HistoryInitializationError("NOW_INVALID", "valid current time required");
-  if (options.status) {
+  if (options.status || options.repair) {
     let manifest = await readHistoryManifest(root);
     if (!manifest) throw new HistoryInitializationError("HISTORY_LIBRARY_MISSING", "history library is not initialized");
     let activeRun = await readActiveHistoryRunState(root);
-    if (!activeRun) {
+    if (options.repair && !activeRun) {
       const localLock = await acquireHistoryRunState({
         scope: manifest.scope,
         source: manifest.source,
@@ -331,6 +339,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
           await releaseHistoryRunState(localLock.state, root);
         }
       } else {
+        if (localLock.code) throw new HistoryInitializationError(localLock.code, localLock.message);
         activeRun = localLock.state;
       }
     }
@@ -357,8 +366,8 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
   }, root);
   if (!runLock.acquired) {
     throw new HistoryInitializationError(
-      "HISTORY_ALREADY_RUNNING",
-      "A 股历史基础库正在另一个窗口或刷新前的后台任务中初始化，请等待当前任务完成后再操作",
+      runLock.code ?? "HISTORY_ALREADY_RUNNING",
+      runLock.message ?? "A 股历史基础库正在另一个窗口或刷新前的后台任务中初始化，请等待当前任务完成后再操作",
     );
   }
   try {
@@ -528,7 +537,8 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
     .filter((record) => selectedSymbols.has(record.symbol))
     .filter((record) => recordUsableForResearch(record, marketDate, options.source))
     .map((record) => record.symbol));
-  const workItems = [...preparation.selected].sort((left, right) => {
+  const batchChecked = new Set(options.maxItems != null && previousManifest?.batch?.marketDate === marketDate && previousManifest.batch.source === options.source ? previousManifest.batch.checked.filter((symbol) => selectedSymbols.has(symbol)) : []);
+  const workItems = [...preparation.selected].filter((item) => !batchChecked.has(item.symbol)).sort((left, right) => {
     const leftRecord = existingRecords.get(left.symbol);
     const rightRecord = existingRecords.get(right.symbol);
     const priority = (record) => {
@@ -662,7 +672,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
     const legacyVendorAdjusted = records.length - rawFactorReady;
     const dates = records.flatMap((record) => [record.from, record.to]).filter(Boolean).sort();
     const outcomes = historyOutcomeCounts(failures);
-    const networkPassComplete = completed === preparation.selected.length &&
+    const networkPassComplete = (options.maxItems != null ? batchChecked.size === preparation.selected.length : completed === preparation.selected.length) &&
       !sourcePaused &&
       !failures.some((failure) => RETRYABLE_SOURCE_ERRORS.has(failure.errorCode));
     const auditEvent = Object.freeze({
@@ -707,6 +717,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
       ready: selectedReady.size,
       remaining: Math.max(0, preparation.selected.length - selectedReady.size),
       attempted: completed,
+      ...(options.maxItems != null ? { batch: { marketDate, source: options.source, checked: [...batchChecked].sort() } } : {}),
       paused: sourcePaused,
       resumeAfter: sourcePaused ? sourceResumeAfter : null,
       cached: records.length,
@@ -757,8 +768,9 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
       completed % pacing.checkpointEvery !== 0 ||
       completed >= preparation.selected.length
     ) return;
+    await assertHistoryRunState(runLock.state);
+    if (!await heartbeatHistoryRunState(runLock.state, root, new Date())) throw new Error("HISTORY_OWNER_LOST");
     await writeHistoryManifest(buildManifest(), root);
-    await heartbeatHistoryRunState(runLock.state, root, new Date());
     progress(emitProgress, {
       stage: "checkpoint",
       completed,
@@ -771,10 +783,11 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
   }
 
   async function worker() {
-    while (nextIndex < workItems.length && !sourcePaused) {
+    while (nextIndex < workItems.length && !sourcePaused && (options.maxItems == null || nextIndex < options.maxItems)) {
       const index = nextIndex;
       nextIndex += 1;
       const quote = workItems[index];
+      let checkedForBatch = false;
       const queuedRecord = existingRecords.get(quote.symbol);
       const queuedForNetwork = !queuedRecord ||
         queuedRecord.source !== options.source ||
@@ -853,6 +866,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
               `${quote.symbol} has fewer than 60 valid daily bars`,
             );
           }
+          await assertHistoryRunState(runLock.state);
           const saved = await writeHistorySeries(series, root);
           series = saved.series;
           existingRecords.set(quote.symbol, recordFor(series, saved.bytes));
@@ -871,6 +885,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
         if (updated) loaded += 1;
         else skipped += 1;
         if (basisRebuilt) rebuilt += 1;
+        checkedForBatch = true;
       } catch (error) {
         const fallback = await readHistorySeries(quote.symbol, root).catch(() => null);
         if (fallback?.source === options.source && usableForResearch(fallback, marketDate)) {
@@ -879,12 +894,14 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
           selectedReady.add(quote.symbol);
         }
         const errorCode = String(error?.code ?? "HISTORY_FETCH_ERROR").slice(0, 80);
+        checkedForBatch = errorCode === "HISTORY_NOT_USABLE" || TEMPORARILY_UNAVAILABLE_ERRORS.has(errorCode);
         failures.push({
           symbol: quote.symbol,
           name: quote.name,
           errorCode: TEMPORARILY_UNAVAILABLE_ERRORS.has(errorCode) ? "HISTORY_NOT_USABLE" : errorCode,
         });
       } finally {
+        if (checkedForBatch) batchChecked.add(quote.symbol);
         completed += 1;
         if (!options.incrementalOnly || queuedForNetwork || completed % 100 === 0 || completed === workItems.length) {
           progress(emitProgress, {
@@ -909,6 +926,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
   ));
 
   const manifest = buildManifest();
+  await assertHistoryRunState(runLock.state);
   await writeHistoryManifest(manifest, root);
   progress(emitProgress, {
     stage: "complete",

@@ -1,3 +1,4 @@
+import { acquireOwnerLock } from "./owner-lock.mjs";
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, resolve, sep } from "node:path";
 
@@ -31,19 +32,19 @@ function snapshotIdentity(snapshot) {
   return { marketDate, phase };
 }
 
-async function safeDirectory(root, stream, scope) {
+async function safeDirectory(root, stream, scope, namespace = "snapshots-v2", create = true) {
   const rootPath = await realpath(resolve(root));
   const requested = resolve(
     rootPath,
-    "snapshots",
+    namespace,
     safeSegment(stream, STREAM_PATTERN, "snapshot stream"),
     safeSegment(scope, SCOPE_PATTERN, "snapshot scope"),
   );
   if (!requested.startsWith(`${rootPath}${sep}`)) {
     throw new LocalSnapshotError("LOCAL_SNAPSHOT_PATH_INVALID", "snapshot path escaped local data root");
   }
-  await mkdir(requested, { recursive: true, mode: 0o700 });
-  const resolved = await realpath(requested);
+  if (create) await mkdir(requested, { recursive: true, mode: 0o700 });
+  const resolved = await realpath(requested).catch((error) => { if (!create && error.code === "ENOENT") return requested; throw error; });
   if (resolved !== requested || !resolved.startsWith(`${rootPath}${sep}`)) {
     throw new LocalSnapshotError("LOCAL_SNAPSHOT_PATH_INVALID", "snapshot directory is not local");
   }
@@ -62,12 +63,14 @@ async function atomicWrite(path, content) {
   }
   try {
     await rename(temporary, path);
+    const directoryHandle = await open(directory, "r");
+    try { await directoryHandle.sync(); } finally { await directoryHandle.close(); }
   } finally {
     await rm(temporary, { force: true }).catch(() => undefined);
   }
 }
 
-export async function writeLocalSnapshot({ root = process.cwd(), stream, scope = "global", snapshot }) {
+export async function writeLocalSnapshot({ root = process.cwd(), stream, scope = "global", snapshot, hooks = {} }) {
   const { marketDate, phase } = snapshotIdentity(snapshot);
   const content = `${JSON.stringify(snapshot)}\n`;
   if (Buffer.byteLength(content, "utf8") > MAX_SNAPSHOT_BYTES) {
@@ -82,16 +85,33 @@ export async function writeLocalSnapshot({ root = process.cwd(), stream, scope =
   }
   const latestPath = resolve(directory, "latest.json");
   const historyPath = resolve(historyDirectory, `${marketDate}-${phase}.json`);
-  await atomicWrite(historyPath, content);
-  // Commit latest last: a failed archive write must never advertise a newer
-  // latest snapshot that has no matching daily history entry.
-  await atomicWrite(latestPath, content);
-  return Object.freeze({ latestPath, historyPath, bytes: Buffer.byteLength(content, "utf8") });
+  const lock = await acquireOwnerLock(resolve(directory, "publish.lock"), { hooks });
+  if (!lock.acquired) throw new LocalSnapshotError("LOCAL_SNAPSHOT_BUSY", "another snapshot publisher owns the stream");
+  try {
+    const rank = (value) => [value.marketDate, value.session?.phase === "intraday" ? 0 : 1, Date.parse(value.asOf ?? value.generatedAt ?? value.updatedAt ?? "") || 0];
+    const newer = (left, right) => {
+      const a = rank(left), b = rank(right);
+      for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) return a[i] > b[i]; }
+      return false;
+    };
+    const current = await readFile(latestPath, "utf8").then(JSON.parse).catch((error) => { if (error.code === "ENOENT") return null; throw error; });
+    const archived = await readFile(historyPath, "utf8").then(JSON.parse).catch((error) => { if (error.code === "ENOENT") return null; throw error; });
+    await hooks.beforePublish?.();
+    await lock.assertOwned();
+    if (!archived || newer(snapshot, archived)) await atomicWrite(historyPath, content);
+    // Latest is the publication point. A crash after archive is safe: readers
+    // continue to see the previous latest, and neither file can regress.
+    const published = !current || newer(snapshot, current);
+    if (published) await atomicWrite(latestPath, content);
+    return Object.freeze({ latestPath, historyPath, bytes: Buffer.byteLength(content, "utf8"), published });
+  } finally { await lock.release(); }
+
 }
 
 export async function readLocalSnapshot({ root = process.cwd(), stream, scope = "global" }) {
-  const directory = await safeDirectory(root, stream, scope);
-  const path = resolve(directory, "latest.json");
+  const directory = await safeDirectory(root, stream, scope, "snapshots-v2", false);
+  let path = resolve(directory, "latest.json");
+  if (!await lstat(path).catch((error) => { if (error.code === "ENOENT") return null; throw error; })) path = resolve(await safeDirectory(root, stream, scope, "snapshots", false), "latest.json");
   let metadata;
   try {
     metadata = await lstat(path);
@@ -122,23 +142,17 @@ export async function readLocalSnapshot({ root = process.cwd(), stream, scope = 
 
 export async function readLocalSnapshotHistory({ root = process.cwd(), stream, scope = "global", limit = 40 }) {
   const maximum = Number.isInteger(limit) ? Math.min(120, Math.max(1, limit)) : 40;
-  const directory = await safeDirectory(root, stream, scope);
-  const historyDirectory = resolve(directory, "history");
-  let entries;
-  try {
-    entries = await readdir(historyDirectory, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return Object.freeze([]);
-    throw error;
+  const entriesByName = new Map();
+  for (const namespace of ["snapshots", "snapshots-v2"]) {
+    const directory = await safeDirectory(root, stream, scope, namespace, false);
+    const historyDirectory = resolve(directory, "history");
+    const entries = await readdir(historyDirectory, { withFileTypes: true }).catch((error) => { if (error.code === "ENOENT") return []; throw error; });
+    for (const entry of entries) if (entry.isFile() && /^\d{4}-\d{2}-\d{2}-(?:intraday|close|previous-close)\.json$/u.test(entry.name)) entriesByName.set(entry.name, resolve(historyDirectory, entry.name));
   }
-  const names = entries
-    .filter((entry) => entry.isFile() && /^\d{4}-\d{2}-\d{2}-(?:intraday|close|previous-close)\.json$/u.test(entry.name))
-    .map((entry) => entry.name)
-    .sort((left, right) => right.localeCompare(left))
-    .slice(0, maximum);
+  const names = [...entriesByName.keys()].sort((left, right) => right.localeCompare(left)).slice(0, maximum);
   const snapshots = [];
   for (const name of names) {
-    const path = resolve(historyDirectory, name);
+    const path = entriesByName.get(name);
     const metadata = await lstat(path);
     if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_SNAPSHOT_BYTES) continue;
     const before = await stat(path);

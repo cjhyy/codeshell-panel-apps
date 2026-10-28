@@ -111,7 +111,7 @@ assert.deepEqual(normalizeHistoryInitializationOptions(["--scope", "core", "--st
   incrementalOnly: false,
   stdout: true,
   help: false,
-  status: false,
+  status: false, repair: false, maxItems: null,
 });
 assert.deepEqual(historyInitializationPacing("full"), {
   concurrency: 1,
@@ -236,7 +236,7 @@ assert.deepEqual(normalizeHistoryInitializationOptions(["--scope", "full", "--st
   incrementalOnly: false,
   stdout: true,
   help: false,
-  status: false,
+  status: false, repair: false, maxItems: null,
 });
 assert.equal(
   normalizeHistoryInitializationOptions(["--source", "tushare-pro", "--stdout"]).source,
@@ -251,12 +251,12 @@ assert.throws(
   () => normalizeHistoryInitializationOptions(["--source", "alpha-vantage"]),
   /A-share raw prices and adjustment factors/u,
 );
-assert(historyLibraryRuntimeArgs("node", "core").includes("--input-type=module"));
+assert.equal(historyLibraryRuntimeArgs("node", "core").includes("--eval"), false);
 assert.equal(historyLibraryRuntimeArgs("bun", "broad").includes("--input-type=module"), false);
 assert(historyLibraryRuntimeArgs("node", "full").includes("full"));
 assert(historyLibraryRuntimeArgs("node", "core", "initialize", "tushare-pro").includes("tushare-pro"));
 assert(historyLibraryRuntimeArgs("node", "core", "initialize", "eastmoney-kline").includes("eastmoney-kline"));
-assert(historyLibraryRuntimeArgs("node", "full", "autofill").includes("autofill"));
+assert(historyLibraryRuntimeArgs("node", "full", "autofill").includes("--incremental-only"));
 assert.equal(
   normalizeHistoryInitializationOptions(["--scope", "full", "--incremental-only", "--stdout"]).incrementalOnly,
   true,
@@ -433,7 +433,7 @@ try {
       })),
     },
   });
-  const recoveredStatus = await runCli(["--status", "--stdout"], {
+  const recoveredStatus = await runCli(["--repair", "--stdout"], {
     root: recoveryTemporary,
     stdout: () => undefined,
   });
@@ -461,7 +461,7 @@ try {
     false,
     "a retained file outside a complete current-universe snapshot must not inflate status recovery",
   );
-  const repeatedRecoveryStatus = await runCli(["--status", "--stdout"], {
+  const repeatedRecoveryStatus = await runCli(["--repair", "--stdout"], {
     root: recoveryTemporary,
     stdout: () => undefined,
   });
@@ -605,7 +605,7 @@ try {
       },
     });
   }
-  const backfilled = await runCli(["--status", "--stdout"], {
+  const backfilled = await runCli(["--repair", "--stdout"], {
     root: snapshotBackfillTemporary,
     now: new Date("2026-09-03T10:00:00.000Z"),
     stdout: () => undefined,
@@ -639,7 +639,7 @@ try {
   assert.equal(parsedBackfill.snapshotBackfillDeferred, 1);
   assert.equal(parsedBackfill.auditTrail.at(-1).kind, "snapshot-fill");
   const persistedBeforeRepeat = await readHistoryManifest(snapshotBackfillTemporary);
-  const repeated = await runCli(["--status", "--stdout"], {
+  const repeated = await runCli(["--repair", "--stdout"], {
     root: snapshotBackfillTemporary,
     now: new Date("2026-09-03T10:05:00.000Z"),
     stdout: () => undefined,
@@ -731,7 +731,7 @@ try {
       quotes: [quote],
     },
   });
-  const gapStatus = await runCli(["--status", "--stdout"], {
+  const gapStatus = await runCli(["--repair", "--stdout"], {
     root: snapshotGapTemporary,
     now: new Date("2026-09-03T10:00:00.000Z"),
     stdout: () => undefined,
@@ -815,6 +815,18 @@ try {
     requestIntervalMs: 0,
     retryDelaysMs: [0],
   };
+  const batchRoot = await mkdtemp(join(tmpdir(), "quant-history-batches-"));
+  try {
+    const batchDependencies = { ...dependencies, root: batchRoot, stdout() {}, fetchBars: async () => allBars };
+    const batchOne = await runCli(["--scope", "core", "--stdout", "--max-items", "5"], batchDependencies);
+    assert.equal(batchOne.attempted, 5);
+    assert.equal(batchOne.batch.checked.length, 5);
+    const batchTwo = await runCli(["--scope", "core", "--stdout", "--max-items", "5"], batchDependencies);
+    assert.equal(batchTwo.attempted, 5);
+    assert.equal(batchTwo.batch.checked.length, 10, "resumed bounded task advances instead of rechecking first batch");
+    assert.equal(compactHistoryBridgeSummary(batchTwo).batch.pending, 10);
+    assert.notEqual(compactHistoryBridgeSummary(batchOne).batch.checkpoint, compactHistoryBridgeSummary(batchTwo).batch.checkpoint);
+  } finally { await rm(batchRoot, { recursive: true, force: true }); }
   const first = await runCli(
     ["--scope", "core", "--source", "tushare-pro", "--stdout"],
     dependencies,
@@ -850,7 +862,7 @@ try {
   assert.equal(usable?.adjustmentFactors.length, 75);
   const storedPriceFile = JSON.parse(await readFile(join(
     temporary,
-    "a-share-history/v1/series",
+    "a-share-history/v2/series",
     `${quotes[0].symbol}.json`,
   ), "utf8"));
   assert.equal(storedPriceFile.bars, undefined, "derived qfq bars must be generated on read, not duplicated on disk");

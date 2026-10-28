@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { runCollector } from "./collector-lock.mjs";
 
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,7 +42,7 @@ function parseArgs(argv) {
   return options;
 }
 
-async function fetchJson(url) {
+async function fetchJson(url, signal) {
   const parsed = new URL(url);
   if (parsed.origin !== YAHOO_ORIGIN || parsed.protocol !== "https:" || parsed.username || parsed.password) {
     throw new UsStockFetchError("SOURCE_URL_UNSAFE", "unexpected Yahoo source URL");
@@ -52,7 +53,7 @@ async function fetchJson(url) {
     const response = await fetch(parsed, {
       headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
       redirect: "error",
-      signal: controller.signal,
+      signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
     });
     if (!response.ok) throw new UsStockFetchError("SOURCE_HTTP", `Yahoo Finance 返回 HTTP ${response.status}`);
     if (new URL(response.url).origin !== YAHOO_ORIGIN) throw new UsStockFetchError("SOURCE_REDIRECT", "Yahoo source escaped allowlist");
@@ -93,10 +94,10 @@ async function resolveQuery(query) {
   return resolveYahooStockSuggestion(payload, query);
 }
 
-export async function fetchYahooHoldingQuote(symbol) {
+export async function fetchYahooHoldingQuote(symbol, { signal } = {}) {
   const url = yahooChartUrl(symbol);
   url.searchParams.set("range", "1d");
-  const payload = await fetchJson(url);
+  const payload = await fetchJson(url, signal);
   const meta = payload?.chart?.result?.[0]?.meta;
   if (meta?.symbol !== symbol || meta?.currency !== "USD" ||
       !Number.isFinite(meta.regularMarketPrice) || meta.regularMarketPrice <= 0 ||
@@ -112,7 +113,7 @@ export async function buildUsStockSnapshot(query, nowInput = new Date()) {
   return buildUsStockDetailSnapshot(payload, identity, nowInput);
 }
 
-export async function runCli(argv = process.argv.slice(2), nowInput = new Date()) {
+async function runCliUnlocked(argv = process.argv.slice(2), nowInput = new Date()) {
   const options = parseArgs(argv);
   if (options.help) {
     process.stdout.write("Usage: node fetch-us-stock.mjs --query <name-or-ticker> --stdout [--persist-local|--read-local]\n");
@@ -130,6 +131,10 @@ export async function runCli(argv = process.argv.slice(2), nowInput = new Date()
   if (options.persistLocal) await writeLocalSnapshot({ stream: "us-stock", scope: `US-${snapshot.stock.symbol}`, snapshot });
   process.stdout.write(`${JSON.stringify(snapshot)}\n`);
   return snapshot;
+}
+
+export async function runCli(argv = process.argv.slice(2), ...rest) {
+  return runCollector("fetch-us-stock", argv, () => runCliUnlocked(argv, ...rest));
 }
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

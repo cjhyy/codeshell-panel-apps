@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { runCollector } from "./collector-lock.mjs";
 import { liveQuoteNumber } from "../live-quote-contract.mjs";
 // Deterministic A-share market pulse. The Agent only launches this frozen tool;
 // market breadth, index regimes, sector strength and news associations are all
@@ -670,7 +671,7 @@ export async function writeReportCreateOnly(path, content) {
   await unlink(temporary).catch(() => undefined);
 }
 
-export async function runCli(argv = process.argv.slice(2), nowInput = new Date()) {
+async function runCliUnlocked(argv = process.argv.slice(2), nowInput = new Date()) {
   const options = parseArgs(argv);
   if (options.help) {
     process.stdout.write([
@@ -892,6 +893,10 @@ export async function runCli(argv = process.argv.slice(2), nowInput = new Date()
   };
   process.stdout.write(`${JSON.stringify(summary)}\n`);
   return summary;
+}
+
+export async function runCli(argv = process.argv.slice(2), ...rest) {
+  return runCollector("build-market-pulse", argv, () => runCliUnlocked(argv, ...rest));
 }
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

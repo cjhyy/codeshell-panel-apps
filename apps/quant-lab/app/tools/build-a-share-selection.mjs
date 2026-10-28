@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { runCollector } from "./collector-lock.mjs";
 // Deterministic A-share selection snapshot. The tool keeps arithmetic, source
 // timestamps, sector membership, stock history, announcements and news in one
 // bounded output. The UI only renders the validated result.
@@ -385,7 +386,7 @@ export async function buildSelectionSnapshot(options = {}, nowInput = new Date()
   return { ...enriched, elapsedMs: Date.now() - startedAt };
 }
 
-export async function runCli(argv = process.argv.slice(2), nowInput = new Date()) {
+async function runCliUnlocked(argv = process.argv.slice(2), nowInput = new Date()) {
   const options = parseArgs(argv);
   if (options.help) {
     process.stdout.write([
@@ -444,6 +445,10 @@ export async function runCli(argv = process.argv.slice(2), nowInput = new Date()
 }
 
 export { announcementUrl, parseWatchArgument };
+
+export async function runCli(argv = process.argv.slice(2), ...rest) {
+  return runCollector("build-a-share-selection", argv, () => runCliUnlocked(argv, ...rest));
+}
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {

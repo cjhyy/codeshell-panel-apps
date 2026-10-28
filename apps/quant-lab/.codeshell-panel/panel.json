@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "quant-lab",
-  "version": "0.47.0",
+  "version": "0.50.0",
   "title": {
     "default": "投资工作台",
     "en": "Investment Desk",
@@ -24,7 +24,8 @@
     "agent.task",
     "automations.manage",
     "notifications.send",
-    "process"
+    "process",
+    "background.services"
   ],
   "agent": {
     "tools": [
@@ -180,5 +181,55 @@
       "agent/skills/portfolio-management/SKILL.md",
       "agent/skills/project-runtime/SKILL.md"
     ]
+  },
+  "backgroundServices": {
+    "market-feed": {
+      "entry": "quant-market-service",
+      "channels": {
+        "quotes": {
+          "maxBytes": 262144
+        }
+      },
+      "maxLifetimeMs": 21600000,
+      "idleGraceMs": 60000
+    }
+  },
+  "nativeEntries": {
+    "fetch-holding-quotes": {
+      "entry": "app/tools/fetch-holding-quotes.mjs",
+      "sha256": "79675b510646d70d8fde2c15c26ddf46c0b5a8fb527ed57996e0cc89398e8826"
+    },
+    "build-market-pulse": {
+      "entry": "app/tools/build-market-pulse.mjs",
+      "sha256": "c04ea588277b4e65d275b3d870fc94f4e29d039bd54cd5cfd66c5959eacef723"
+    },
+    "build-a-share-selection": {
+      "entry": "app/tools/build-a-share-selection.mjs",
+      "sha256": "f60dd64b2e3eb1a306be737f5d3f2e6bbab22b5f07445af64e02390afc34a9e5"
+    },
+    "fetch-us-stock": {
+      "entry": "app/tools/fetch-us-stock.mjs",
+      "sha256": "eb537644832fe7e8812fe1097a61d4effa03c1f49b1198caf4f7b6c099b7ccbb"
+    },
+    "fetch-a-share-stock": {
+      "entry": "app/tools/fetch-a-share-stock.mjs",
+      "sha256": "ea6e54c1707c95549a2b9be0a3bf9df17ce8afcaa4ddc7b64177ac4aa5c54d02"
+    },
+    "fetch-market-data": {
+      "entry": "app/tools/fetch-market-data.mjs",
+      "sha256": "141d0ec7b9c7eeb57d79451d81342cf48e3843b025b5282521f1516a253ca7da"
+    },
+    "initialize-a-share-history": {
+      "entry": "app/tools/initialize-a-share-history.mjs",
+      "sha256": "9cd922512956f6477d229e9421bc58197bdeaa7b6c61795188ec189a7a976f05"
+    },
+    "quant-market-service": {
+      "entry": "app/tools/market-service.mjs",
+      "sha256": "d26865e81fd4124492ffa8ac9ad8478e5b0dc25bcc751779f72f251085a0af25"
+    },
+    "quant-history-batch": {
+      "entry": "app/tools/history-batch.mjs",
+      "sha256": "7dffecc49075d0143caa379fcfe0b6fb7ffee945e56ba602f19fe0045420440a"
+    }
   }
 }
