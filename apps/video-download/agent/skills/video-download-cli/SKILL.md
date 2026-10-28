@@ -92,3 +92,11 @@ confirmed the original full process tree ended. Recovery changes only the exact
 matching slot, never kills an unknown process, and leaves the task interrupted
 for explicit retry. Automatic running-slot recovery requires a verified OS boot
 identity change; unknown identities and Windows are manual only.
+
+For queued CLI work saving outside the project, ordinary project-only continuation
+shows `OUTPUT_AUTHORIZATION_REQUIRED`. After the user confirms those output paths,
+run `pump --project ... --allow-outside-project` (or `resume` with that flag). Never
+add this flag merely to hide an authorization warning. `doctor --slots` also lists
+legacy worker locks without a slot; their exact id/attempt/token can be passed to
+`recover-slot` only after confirming the old process tree ended. Live or unknown
+PIDs are never reclaimed, including after a boot identity change.

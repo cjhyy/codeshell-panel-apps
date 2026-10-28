@@ -445,7 +445,9 @@ function renderSharedQueue() {
       ? "恢复队列"
       : "暂停队列";
     document.querySelector("#shared-queue-pump").disabled = queue.paused;
-    document.querySelector("#shared-queue-state").textContent = queue.stalled
+    document.querySelector("#shared-queue-state").textContent = queue.warnings?.length
+      ? queue.warnings.map(warning => warning.message || warning.code).join(" · ")
+      : queue.stalled
       ? `${queue.stalled} 个执行槽位停滞（stalled）；请运行 doctor --slots 核查并按精确 token 恢复，继续队列不会自动释放未知进程。`
       : queue.paused
       ? "队列已暂停 · 当前下载继续，新任务等待"

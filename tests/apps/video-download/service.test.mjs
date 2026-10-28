@@ -13,7 +13,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -1050,4 +1050,143 @@ setInterval(()=>{},1000);
   await f.call({ action: "configure", expectedRevision: 2, paused: true, maxConcurrent: 2 });
   for (const job of jobs) await f.call({ action: "cancel", id: job.id });
   for (const job of jobs) assert.equal((await f.finish(job.id)).status, "cancelled");
+});
+
+async function legacyWaiter(root, record, token, workers) {
+  const module = new URL("../../fixtures/video-download-0.24.1/cli-store.mjs", import.meta.url).href;
+  assert.equal(createHash("sha256").update(await readFile(new URL(module))).digest("hex"), "8bed5d8ad61a80ed0c8e7f3351bae71b57dac73986b4690b6f20c2497ecc06ed", "immutable actual 0.24.1 source");
+  const source = `import { createCliStore } from ${JSON.stringify(module)};
+const store = await createCliStore(${JSON.stringify(root)}), id=${JSON.stringify(record.id)}, token=${JSON.stringify(token)};
+const release = await store.claimWorker(id,1,token);
+process.on('message',async command=>{try {
+ if(command==='admit') process.send({type:'admitted',value:await store.admitWorker(id,1,token)});
+ if(command==='release'){await store.releaseSlot(id,1,token);await release();process.send({type:'released'});process.disconnect();}
+}catch(error){process.send({type:'error',code:error.code,message:error.message});}});
+process.send({type:'ready',pid:process.pid});`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", source], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  const exited = new Promise(resolveExit => child.once("exit", resolveExit));
+  workers.push({ child, exited });
+  const ready = await new Promise((resolveReady, reject) => {
+    child.once("message", resolveReady); child.once("error", reject);
+    child.once("exit", () => reject(new Error("legacy fixture exited before ready")));
+  });
+  assert.equal(ready.type, "ready");
+  return { child, exited, send: command => new Promise(resolveMessage => { child.once("message", resolveMessage); child.send(command); }) };
+}
+
+test("0.24.1 waiting workers read new starting slots, keep capacity, and exact orphan recovery unblocks retry", { timeout: 20_000 }, async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "mimi-old-waiter-"))), workers = [];
+  t.after(async () => { for (const owned of workers) { if (owned.child.exitCode === null && owned.child.signalCode === null) owned.child.kill("SIGKILL"); await owned.exited; } await rm(root, { recursive: true, force: true }); });
+  const store = await createCliStore(root, { create: true });
+  const request = index => ({ action: "download", url: `https://example.invalid/upgrade-${index}`, configuration: {} });
+  const old = await store.create(request(0), join(root, "downloads")), token = randomUUID();
+  await store.update(old.id, record => ({ ...record, workerToken: token }));
+  const waiter = await legacyWaiter(root, old, token, workers);
+  for (let i = 1; i < 10; i++) await store.create(request(i), join(root, "downloads"));
+  const reservations = [];
+  await store.pump(async (record, slot) => reservations.push({ record, slot }));
+  assert.equal(reservations.length, 1, "the existing legacy waiter consumes the other FIFO slot without another spawn");
+  assert.deepEqual(await waiter.send("admit"), { type: "admitted", value: true }, "real 0.24.1 parser accepts the new starting slot instead of INVALID_QUEUE");
+  assert.equal((await store.getQueue()).active, 2);
+  assert.deepEqual(await waiter.send("release"), { type: "released" });
+  await waiter.exited;
+  await store.update(old.id, ({ workerToken, ...record }) => ({ ...record, status: "completed" }));
+  await store.pump(async (record, slot) => reservations.push({ record, slot }));
+  assert.equal(reservations.length, 2);
+  const orphan = await store.create(request(10), join(root, "downloads")), orphanToken = randomUUID();
+  await store.update(orphan.id, record => ({ ...record, workerToken: orphanToken }));
+  const orphanWaiter = await legacyWaiter(root, orphan, orphanToken, workers);
+  const diagnostic = await store.diagnoseSlots();
+  assert.equal(diagnostic.orphanWorkers[0].pidState, "present");
+  assert.equal(diagnostic.orphanWorkers[0].token, orphanToken);
+  assert.deepEqual(await orphanWaiter.send("admit"), { type: "admitted", value: false });
+  await assert.rejects(store.recoverSlot({ id: orphan.id, attempt: 1, token: orphanToken, confirmed: true }), { code: "JOB_BUSY" });
+  orphanWaiter.child.kill("SIGKILL"); await orphanWaiter.exited;
+  const before = await readFile(join(store.jobsDirectory, orphan.id, ".worker.lock", "owner.json"));
+  assert.equal((await store.diagnoseSlots()).orphanWorkers[0].pidState, "absent");
+  assert.deepEqual(await readFile(join(store.jobsDirectory, orphan.id, ".worker.lock", "owner.json")), before, "doctor is pure read");
+  await assert.rejects(store.recoverSlot({ id: orphan.id, attempt: 1, token: randomUUID(), confirmed: true }), { code: "SLOT_CONFLICT" });
+  await store.recoverSlot({ id: orphan.id, attempt: 1, token: orphanToken, confirmed: true });
+  await store.verifyNoWorker(orphan.id);
+  assert.equal((await store.read(orphan.id)).status, "interrupted");
+  assert.equal((await store.diagnoseSlots()).orphanWorkers.length, 0);
+  assert.equal((await store.getQueue()).active, 2, "recovering an orphan never releases somebody else's slots");
+});
+
+test("changed boot identity never clears a live PID or its worker lock, but confirmed death can recover", { timeout: 15_000 }, async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "mimi-boot-live-"))), workers = [];
+  t.after(async () => { for (const owned of workers) { if (owned.child.exitCode === null && owned.child.signalCode === null) owned.child.kill("SIGKILL"); await owned.exited; } await rm(root, { recursive: true, force: true }); });
+  const store = await createCliStore(root, { create: true });
+  const record = await store.create({ action: "download", url: "https://example.invalid/boot", configuration: {} }, join(root, "downloads"));
+  let child, exited, ready;
+  await store.pump(async (record, slot) => {
+    child = spawn(process.execPath, [fileURLToPath(new URL("../../helpers/download-slot-worker.mjs", import.meta.url)), root, record.id, "1", slot.token, "boot-old"], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+    exited = new Promise(resolveExit => child.once("exit", resolveExit)); workers.push({ child, exited });
+    ready = new Promise(resolveReady => child.once("message", resolveReady));
+  }, { bootId: "boot-old" });
+  await ready;
+  const queuePath = join(store.directory, "queue.json"), lockPath = join(store.jobsDirectory, record.id, ".worker.lock", "owner.json");
+  const queueBefore = await readFile(queuePath), lockBefore = await readFile(lockPath);
+  await store.pump(async () => assert.fail("must not spawn"), { bootId: "boot-new" });
+  assert.deepEqual(await readFile(queuePath), queueBefore);
+  assert.deepEqual(await readFile(lockPath), lockBefore);
+  child.kill("SIGKILL"); await exited;
+  await store.pump(async () => assert.fail("interrupted work requires explicit retry"), { bootId: "boot-new" });
+  assert.equal((await store.getQueue()).active, 0);
+  assert.equal((await store.read(record.id)).status, "interrupted");
+  await store.verifyNoWorker(record.id);
+});
+
+test("one malformed or unreadable slot stays occupied while unrelated free capacity progresses", async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "mimi-isolated-slot-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = await createCliStore(root, { create: true });
+  const bad = { id: "bad-owner", note: "retain evidence" };
+  await writeFile(join(store.directory, "queue.json"), JSON.stringify({ schemaVersion: 1, revision: 0, paused: false, maxConcurrent: 2, slots: [bad] }), { mode: 0o600 });
+  await store.create({ action: "download", url: "https://example.invalid/good", configuration: {} }, join(root, "downloads"));
+  let started = 0;
+  const result = await store.pump(async () => { started++; });
+  assert.equal(started, 1);
+  assert.equal(result.active, 2);
+  assert.equal(result.warnings[0].code, "INVALID_SLOT");
+  assert.deepEqual(JSON.parse(await readFile(join(store.directory, "queue.json"), "utf8")).slots[0], bad);
+  assert.equal((await store.diagnoseSlots()).slots[0].invalid, true);
+});
+
+test("project-external queued work is visible and resumes only through explicit CLI output authorization", { timeout: 15_000 }, async t => {
+  const f = await fixture(t, { delay: 20 }), outside = join(f.root, "external-output");
+  await mkdir(outside);
+  const store = await createCliStore(f.project, { create: true });
+  const record = await store.create(parseDownloadRequest({ action: "download", url: "https://example.invalid/external-resume", configuration: {} }), outside);
+  const listed = await f.call({ action: "list" });
+  assert.equal(listed.result.queue.warnings[0].id, record.id);
+  assert.equal(listed.result.queue.warnings[0].code, "OUTPUT_AUTHORIZATION_REQUIRED");
+  const limited = await main(["pump", "--project", f.project], { env: f.env });
+  assert.equal(limited.result.warnings[0].code, "OUTPUT_AUTHORIZATION_REQUIRED");
+  assert.equal((await store.read(record.id)).workerToken, undefined);
+  await main(["pump", "--project", f.project, "--allow-outside-project"], { env: f.env });
+  await until(() => getCliJob(f.project, record.id), value => value.status === "completed");
+  assert.equal((await f.log()).filter(event => event.kind === "start").length, 1);
+  await until(() => store.getQueue(), queue => queue.active === 0);
+});
+
+test("competing pumps serialize on the real queue lock without manual-recovery errors or duplicate reservations", { timeout: 15_000 }, async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "mimi-pump-compete-")));
+  const store = await createCliStore(root, { create: true });
+  await store.configureQueue({ expectedRevision: 0, paused: false, maxConcurrent: 1 });
+  await store.create({ action: "download", url: "https://example.invalid/compete", configuration: {} }, join(root, "downloads"));
+  const module = new URL("../../../apps/video-download/app/tools/cli-store.mjs", import.meta.url).href;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", `import {createCliStore} from ${JSON.stringify(module)};
+const store=await createCliStore(${JSON.stringify(root)});
+await store.pump(async()=>{process.send('reserved');await new Promise(resolve=>process.once('message',resolve));});
+process.send('done',()=>process.disconnect());`], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  const exited = new Promise(resolveExit => child.once("exit", resolveExit));
+  t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await exited; await rm(root, { recursive: true, force: true }); });
+  assert.equal(await new Promise(resolveReady => child.once("message", resolveReady)), "reserved");
+  let extraSpawns = 0;
+  const competing = store.pump(async () => { extraSpawns++; });
+  child.send("release");
+  assert.equal((await competing).active, 1);
+  assert.equal(extraSpawns, 0);
+  await exited;
 });

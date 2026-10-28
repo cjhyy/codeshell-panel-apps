@@ -118,7 +118,9 @@ function arrayResult(value: any): any[] {
 }
 
 /** Panel-owned media workflows over domain-neutral durable tasks and immutable resources. */
-export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; dispose(): void } {
+export function createMediaTaskBridge(raw: PanelBridge, options: {
+  confirmRecovery?(message: string): Promise<boolean>;
+} = {}): { bridge: PanelBridge; dispose(): void } {
   const sdk = createPanelRuntime(raw),
     listeners = new Set<(value: any) => void>();
   let disposed = false,
@@ -251,7 +253,9 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
         statusCache = undefined;
       }
     }
-    return { ...job, type, ...(result === undefined ? {} : { result }) } as MediaJob;
+    return { ...job, type,
+      reviewRequired: ["failed", "cancelled"].includes(job.status) && (job.recovery === "manual" || job.error?.retryable === false),
+      ...(result === undefined ? {} : { result }) } as MediaJob;
   }
   async function publicConnections() {
     const capabilities = await sdk.discover();
@@ -305,52 +309,114 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
       if (connectionIds.length !== 1) throw new Error("配音连接已变化，请刷新模型列表后重新选择");
     }
     await same(scope);
-    const hash = await mediaRequestHash({ action, request, resources, connectionIds }),
-      requestKey = `media-v1:${hash}`,
-      intentKey = `media-intent-${hash}`,
-      recovery = connectionIds.length ? "manual" : "retry";
-    request.jobId ??= `media-${hash}`;
-    // The create-only intent precedes any possible execution. A lost write or
-    // start reply is unknown, never evidence that a paid operation did not run.
-    const intent = (await sdk.call("media.document.get", { key: intentKey })) as any;
-    if (intent.data !== null && (intent.data?.schemaVersion !== 1 ||
-        intent.data.requestKey !== requestKey || intent.data.recovery !== recovery))
-      throw new Error("媒体任务意图记录无效，已保留原记录；请检查后再操作");
-    let existing = await sdk.call("tasks.find", { requestKey });
+    const hash = await mediaRequestHash({ action, request, resources, connectionIds });
+    const executionRevision = String((await sdk.discover()).capabilities?.tasks?.executionRevision ?? "legacy-unknown");
+    const revisionHash = (await mediaRequestHash(executionRevision)).slice(0, 16);
+    const intentKey = `media-intent-${hash}`, recovery = connectionIds.length ? "manual" : "retry";
+    let intent: any, intentRevision = 0;
+    let requestKey = `media-probe:${hash}`;
+    const unknown = () => new Error("上次媒体请求回执尚未确认，未重复发起，不能自动重试。请检查任务列表及远端结果后恢复；重新打开后仍会先查询原请求。");
+    async function findIntent(value: any) {
+      let found = await sdk.call("tasks.find", { requestKey: value.requestKey });
+      // find is revision-scoped, but get can read a retained old-revision receipt.
+      if (!found && value.jobId) found = await sdk.call("tasks.get", { id: value.jobId }).catch(() => null);
+      await same(scope);
+      if (found && (found as any).requestKey !== value.requestKey)
+        throw new Error("媒体回执与原请求不匹配，已保留意图，未重复执行");
+      return found;
+    }
+    async function confirm(message: string) {
+      if (!await options.confirmRecovery?.(message)) throw unknown();
+      await same(scope);
+    }
+    if (!hidden) {
+      // A single CAS record retains the latest attempt. Never delete an intent:
+      // unknown/manual outcomes require the user to inspect results explicitly.
+      for (let collision = 0; collision < 3; collision++) {
+        const saved = await sdk.call("media.document.get", { key: intentKey }) as any;
+        await same(scope);
+        const old = saved.data;
+        if (old !== null) {
+          const valid = old.recovery === recovery && (old.schemaVersion === 1
+            ? old.requestKey === `media-v1:${hash}` && Object.keys(old).every(key => ["schemaVersion", "requestKey", "recovery"].includes(key))
+            : old.schemaVersion === 2 && Number.isSafeInteger(old.attempt) && old.attempt > 0 && old.attempt < Number.MAX_SAFE_INTEGER &&
+              typeof old.executionRevision === "string" && old.executionRevision.length > 0 && old.executionRevision.length <= 1024 &&
+              ["pending", "accepted", "rejected"].includes(old.phase) &&
+              (old.jobId === undefined || typeof old.jobId === "string") &&
+              old.requestKey === `media-v2:${(await mediaRequestHash(old.executionRevision)).slice(0, 16)}:${hash}:${old.attempt}`);
+          if (!valid) throw new Error("媒体任务意图记录无效，已保留原记录；请检查后再操作");
+        }
+        const existing: any = old ? await findIntent(old) : await sdk.call("tasks.find", { requestKey: `media-v1:${hash}` });
+        await same(scope);
+        if (existing && !["failed", "cancelled", "interrupted"].includes(existing.status))
+          return normalize(existing, scope, false);
+        if (existing && (recovery === "manual" || existing.error?.retryable === false))
+          await confirm("原媒体任务已经结束。请先检查已有结果及远端计费；确认要创建一个新的处理请求吗？这可能再次计费。");
+        else if (old && !existing && old.phase !== "rejected") {
+          // A revision change or retention expiry is not proof that paid work did
+          // not run. A normal Host receipt may be gone; explicit recovery remains.
+          await confirm("未找到上次媒体请求回执（面板可能已升级或任务记录已过期）。请先核查任务列表、已有产物和远端结果。确认原请求不会再执行，并创建新请求吗？这可能再次计费。");
+        }
+        const attempt = Number.isSafeInteger(old?.attempt) ? old.attempt + 1 : old ? 2 : 1;
+        requestKey = `media-v2:${revisionHash}:${hash}:${attempt}`;
+        intent = { schemaVersion: 2, requestKey, recovery, executionRevision, attempt, phase: "pending" };
+        try {
+          const committed = await sdk.call("media.document.set", { key: intentKey, baseRevision: saved.revision,
+            data: intent, label: "媒体任务意图" }) as any;
+          intentRevision = committed.revision;
+          break;
+        } catch (error) {
+          // A conflict/lost CAS receipt belongs to the winner. Query it; never
+          // overwrite or remove the other window's intent to force admission.
+          const actual = await sdk.call("media.document.get", { key: intentKey }) as any;
+          await same(scope);
+          if (actual.data?.requestKey === requestKey && actual.revision > saved.revision) {
+            const found = await findIntent(actual.data);
+            if (found) return normalize(found, scope, false);
+            throw unknown();
+          }
+          if (actual.revision === saved.revision) throw error;
+          const found = actual.data ? await findIntent(actual.data) : null;
+          if (found) return normalize(found, scope, false);
+          throw unknown();
+        }
+      }
+    }
     await same(scope);
-    if (existing) return normalize(existing, scope, false);
-    if (intent.data !== null)
-      throw new Error("上次媒体请求回执尚未确认，未重复发起。请检查任务列表及远端结果后恢复；重新打开后仍会先查询原请求。");
-    await sdk.call("media.document.set", {
-      key: intentKey, baseRevision: 0,
-      data: { schemaVersion: 1, requestKey, recovery }, label: "媒体任务意图",
-    });
-    await same(scope);
+    request.jobId ??= `media-${hash}-${intent?.attempt ?? 1}`;
     let job;
     try {
       job = await sdk.start({
-      entry: "media-runtime",
-      requestKey,
-      input: {
-        request,
-        resources,
-        directoryArguments: [
-          { argumentName: "--job-dir", directory: "job" },
-          { argumentName: "--runtime-dir", directory: "app-data", path: "runtime/media" },
-        ],
-        ...(connectionIds.length
-          ? { connectionIds, connectionArgument: "--connections-file" }
-          : {}),
-      },
-      recovery,
+        entry: "media-runtime", requestKey,
+        input: { request, resources,
+          directoryArguments: [
+            { argumentName: "--job-dir", directory: "job" },
+            { argumentName: "--runtime-dir", directory: "app-data", path: "runtime/media" },
+          ],
+          ...(connectionIds.length ? { connectionIds, connectionArgument: "--connections-file" } : {}),
+        }, recovery,
       });
-    } catch (error) {
-      // The Host may have committed before transport failure. Query once; an
-      // unavailable lookup leaves the intent intact for the next open.
-      existing = await sdk.call("tasks.find", { requestKey }).catch(() => null);
-      if (!existing) throw new Error("媒体任务回执未确认，意图已保存，未自动重发；请检查任务列表及远端结果", { cause: error });
-      job = taskValue(existing);
+    } catch (error: any) {
+      const existing = await sdk.call("tasks.find", { requestKey }).catch(() => null);
+      await same(scope);
+      if (existing) job = taskValue(existing);
+      else {
+        // Only explicit pre-admission validation/capacity errors prove rejection.
+        // Transport/timeout/revocation messages never authorize another attempt.
+        const rejected = ["PARAMS_TOO_LARGE", "TASK_QUEUE_FULL", "TASK_CAPACITY"].includes(error?.code) ||
+          ["too many queued tool jobs for this workspace", "tool job capacity reached with unfinished tasks"].includes(error?.message);
+        if (!hidden && rejected) await sdk.call("media.document.set", { key: intentKey, baseRevision: intentRevision,
+          data: { ...intent, phase: "rejected", rejection: String(error.code ?? error.message) }, label: "媒体请求已拒绝" }).catch(() => {});
+        if (rejected) throw error;
+        throw new Error("媒体任务回执未确认，意图已保存，未自动重发；请检查任务列表及远端结果", { cause: error });
+      }
     }
+    if (hidden) return normalize(job, scope, false);
+    // If this acknowledgement write is lost, the original requestKey still finds
+    // the task. A CAS conflict must never modify another attempt's record.
+    await sdk.call("media.document.set", { key: intentKey, baseRevision: intentRevision,
+      data: { ...intent, phase: "accepted", jobId: job.id }, label: "媒体任务回执" }).catch(() => {});
+    await same(scope);
     const recipe = { id: job.id, action, type: hidden ? "internal" : mediaType(action, params) };
     try {
       await remember(scope, recipe);
@@ -701,8 +767,11 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
         await same(scope);
         if (method === "media.jobs.cancel") native = await sdk.cancel(params.id);
         if (method === "media.jobs.retry") {
-          if (native.recovery === "manual" || native.error?.retryable === false)
-            throw new Error("此任务需要先检查已有结果，再重新创建，不能自动重试");
+          if (!isCanonicalRenderTask(native) && (native.recovery === "manual" || native.error?.retryable === false || native.status === "cancelled")) {
+            const request = taskRequest(native);
+            if (!request || isCanonicalRenderTask(native)) throw new Error("请核查已有结果后重新创建此任务");
+            return start(request.action, request.params);
+          }
           native = await sdk.retry(params.id);
         }
         if (!taskRequest(native) || !(native as any).entry)

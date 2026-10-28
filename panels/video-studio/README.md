@@ -570,3 +570,16 @@ resource mapping and selected connection IDs. A project document CAS saves the
 intent before `tasks.start`; a lost receipt or reopened window queries the same
 key first. An unresolved intent never automatically resubmits, including paid
 manual-recovery requests. The Editor's own request protocol is unchanged.
+
+### Media request recovery (0.10.2)
+
+Ordinary requests persist a project-scoped intent with the Host execution revision
+and a monotonically increasing attempt before submission. Existing active or
+successful receipts are reused. Failed/cancelled local requests can start a new
+attempt; paid/manual requests require explicit confirmation after checking results.
+If a receipt is unknown, retired by Host retention, or belongs to an older package,
+reopening first queries it (including the retained task id). The recovery dialog
+lets the user keep the original intent or confirm a new request; no automatic paid
+replay occurs. Known pre-admission size/queue rejection leaves a rejected receipt
+that permits a later attempt. CAS losers query the winner and never delete its
+intent. Status/voice probes leave no permanent intent or recipe documents.

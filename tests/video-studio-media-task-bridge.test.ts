@@ -66,7 +66,7 @@ function fixture(legacyMethods: string[] = []) {
       availableMethods: available ? methods : [],
       capabilities: {
         bridge: { maxCallsPerWindow: 10000 },
-        tasks: { maxInputBytes: 2 * 1024 * 1024 + 8192 },
+        tasks: { maxInputBytes: 2 * 1024 * 1024 + 8192, executionRevision: "fixture-revision-1" },
       },
     }),
     registerTool: () => () => {},
@@ -868,7 +868,7 @@ test("media intent precedes submission; lost receipts and a reopened window find
   f.raw.call = async (method, params) => {
     if (method === "tasks.start") {
       submissions++;
-      const intent = f.documents.get(`/project-a:media-intent-${params.requestKey.slice(9)}`);
+      const intent = [...f.documents.values()].find(value => value.data?.requestKey === params.requestKey);
       assert.equal(intent.data.requestKey, params.requestKey);
       await original(method, params);
       throw new Error("receipt dropped after Host commit");
@@ -884,7 +884,7 @@ test("media intent precedes submission; lost receipts and a reopened window find
     const again = await reopened.bridge.call("media.tts", { voiceId: "alloy", text: request.text, modelId }) as any;
     assert.equal(again.id, first.id);
     assert.equal(submissions, 1);
-    assert.match(f.calls.find((c) => c.method === "tasks.start").params.requestKey, /^media-v1:[a-f0-9]{64}$/);
+    assert.match(f.calls.find((c) => c.method === "tasks.start").params.requestKey, /^media-v2:[a-f0-9]{16}:[a-f0-9]{64}:1$/);
   } finally { reopened.dispose(); }
 });
 
@@ -949,4 +949,130 @@ test("canonical media keys isolate projects and selected credential connection I
     const keys = f.calls.filter((call) => call.method === "tasks.start").map((call) => call.params.requestKey);
     assert.equal(new Set(keys).size, 3);
   } finally { f.dispose(); }
+});
+
+test("failed and cancelled ordinary requests create a new deterministic attempt; success and active tasks still attach", async () => {
+  const f = fixture();
+  const request = { modelId: "macos-say", text: "retry terminal", voiceId: "fixture" };
+  try {
+    const one: any = await f.bridge.call("media.tts", request);
+    f.jobs.get(one.id).status = "failed";
+    const two: any = await f.bridge.call("media.tts", request);
+    assert.notEqual(two.id, one.id);
+    assert.match(two.requestKey, /:2$/);
+    f.jobs.get(two.id).status = "cancelled";
+    const three: any = await f.bridge.call("media.jobs.retry", { id: two.id });
+    assert.notEqual(three.id, two.id);
+    assert.match(three.requestKey, /:3$/);
+    f.jobs.get(three.id).status = "running";
+    assert.equal((await f.bridge.call("media.tts", request) as any).id, three.id);
+    assert.equal(f.calls.filter(call => call.method === "tasks.start").length, 3);
+  } finally { f.dispose(); }
+});
+
+test("manual terminal retry and an expired unknown receipt require explicit reviewed recovery", async () => {
+  const f = fixture();
+  Object.assign(f.connection, { fingerprint: "f".repeat(32) });
+  const request = { modelId: `speech-${"f".repeat(32)}`, text: "paid recovery", voiceId: "fixture" };
+  let confirmations = 0;
+  const reviewed = createMediaTaskBridge(f.raw, { confirmRecovery: async message => {
+    assert.match(message, /核查|检查/); confirmations++; return true;
+  } });
+  try {
+    const one: any = await f.bridge.call("media.tts", request);
+    Object.assign(f.jobs.get(one.id), { status: "failed", recovery: "manual" });
+    await assert.rejects(f.bridge.call("media.jobs.retry", { id: one.id }), /不能自动重试/);
+    const two: any = await reviewed.bridge.call("media.jobs.retry", { id: one.id });
+    assert.notEqual(two.id, one.id);
+    assert.equal(confirmations, 1);
+    f.jobs.clear(); // actual Host retention can remove the old terminal receipt
+    await assert.rejects(f.bridge.call("media.tts", request), /未重复发起/);
+    const three: any = await reviewed.bridge.call("media.tts", request);
+    assert.match(three.requestKey, /:3$/);
+    assert.equal(confirmations, 2);
+    assert.equal(f.calls.filter(call => call.method === "tasks.start").length, 3);
+  } finally { f.dispose(); reviewed.dispose(); }
+});
+
+test("revision-scoped find falls back to retained job id and unknown upgrade needs confirmation", async () => {
+  const f = fixture(), original = f.raw.call.bind(f.raw), context = f.raw.getContext.bind(f.raw);
+  const request = { modelId: "macos-say", text: "upgrade", voiceId: "fixture" };
+  try {
+    const one: any = await f.bridge.call("media.tts", request);
+    f.raw.getContext = async () => { const value = await context(); value.capabilities.tasks.executionRevision = "fixture-revision-2"; return value; };
+    f.raw.call = async (method, params) => method === "tasks.find" ? null : original(method, params);
+    const reopened = createMediaTaskBridge(f.raw);
+    try { assert.equal((await reopened.bridge.call("media.tts", request) as any).id, one.id); }
+    finally { reopened.dispose(); }
+    f.jobs.clear();
+    const recovered = createMediaTaskBridge(f.raw, { confirmRecovery: async () => true });
+    try {
+      const two: any = await recovered.bridge.call("media.tts", request);
+      assert.notEqual(two.requestKey.split(":")[1], one.requestKey.split(":")[1]);
+      const intent = [...f.documents.values()].find(value => value.data?.requestKey === two.requestKey);
+      assert.equal(intent.data.executionRevision, "fixture-revision-2");
+      assert.equal(intent.data.attempt, 2);
+    } finally { recovered.dispose(); }
+  } finally { f.dispose(); }
+});
+
+test("explicit pre-admission rejection allows later attempts; unknown transport does not", async () => {
+  for (const error of [Object.assign(new Error("too large"), { code: "PARAMS_TOO_LARGE" }), new Error("too many queued tool jobs for this workspace")]) {
+    const f = fixture(), original = f.raw.call.bind(f.raw);
+    let reject = true;
+    f.raw.call = async (method, params) => {
+      if (method === "tasks.start" && reject) throw error;
+      return original(method, params);
+    };
+    try {
+      const request = { modelId: "macos-say", text: "retry rejected", voiceId: "fixture" };
+      await assert.rejects(f.bridge.call("media.tts", request), error);
+      assert.equal([...f.documents.values()].find(value => value.data?.phase)?.data.phase, "rejected");
+      reject = false;
+      const retried: any = await f.bridge.call("media.tts", request);
+      assert.match(retried.requestKey, /:2$/);
+    } finally { f.dispose(); }
+  }
+});
+
+test("probe requests create no permanent intent or recipe records", async () => {
+  const f = fixture();
+  try {
+    await f.bridge.call("media.status", { fresh: true });
+    await f.bridge.call("media.status", { fresh: true });
+    await f.bridge.call("media.tts.voices");
+    assert.equal(f.calls.filter(call => call.method === "media.document.set").length, 0);
+    assert.equal(f.documents.size, 0);
+  } finally { f.dispose(); }
+});
+
+test("a competing intent CAS queries the winner without deleting its record", async () => {
+  const f = fixture(), original = f.raw.call.bind(f.raw), other = createMediaTaskBridge(f.raw);
+  let reads = 0, writes = 0, releaseReads!: () => void, firstStarted!: () => void;
+  const bothRead = new Promise<void>(resolve => { releaseReads = resolve; });
+  const accepted = new Promise<void>(resolve => { firstStarted = resolve; });
+  f.raw.call = async (method, params) => {
+    if (method === "media.document.get" && params.key.startsWith("media-intent-") && reads < 2) {
+      const value = await original(method, params);
+      if (++reads === 2) releaseReads();
+      await bothRead;
+      return value;
+    }
+    if (method === "media.document.set" && params.key.startsWith("media-intent-") && params.baseRevision === 0 && ++writes === 2) {
+      await accepted;
+      throw Object.assign(new Error("CAS conflict"), { code: "DOCUMENT_CONFLICT" });
+    }
+    const value = await original(method, params);
+    if (method === "tasks.start") firstStarted();
+    return value;
+  };
+  try {
+    const request = { modelId: "macos-say", text: "CAS race", voiceId: "fixture" };
+    const [a, b]: any[] = await Promise.all([f.bridge.call("media.tts", request), other.bridge.call("media.tts", request)]);
+    assert.equal(a.id, b.id);
+    assert.equal(f.calls.filter(call => call.method === "tasks.start").length, 1);
+    const intent = [...f.documents.values()].find(value => value.data?.requestKey === a.requestKey);
+    assert.equal(intent.data.jobId, a.id);
+    assert.equal(intent.data.attempt, 1);
+  } finally { f.dispose(); other.dispose(); }
 });

@@ -2439,3 +2439,16 @@ test("durable video recording rejects missing dimensions and a mismatched inspec
     assert.equal(f.published.length, 0);
   }
 });
+
+test("manual failed receipts offer review-before-recreate and cancelled tasks remain retryable", async () => {
+  const host = new FakeHost();
+  const { controller } = await fixture(host);
+  const manual: MediaJob = { ...host.add("tts-online", "failed"), reviewRequired: true,
+    error: { code: "INTERRUPTED", message: "先核查远端结果", retryable: false } };
+  const cancelled: MediaJob = { ...host.add("tts", "cancelled") };
+  const markup = renderProductionJobs({ status: controller.status, jobs: [manual, cancelled],
+    auto: null, error: "", preparations: new Map(), delivery: controller.delivery });
+  assert.match(markup, /核查后重新创建/);
+  assert.match(markup, /重试任务/);
+  assert.equal((markup.match(/data-job-action="retry"/g) ?? []).length, 2);
+});

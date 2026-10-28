@@ -57,7 +57,7 @@ function argumentsFor(argv) {
   const options = {};
   for (let i = 0; i < rest.length; i++) {
     const flag = rest[i];
-    if (["--background", "--refresh", "--latest", "--slots", "--confirm"].includes(flag)) {
+    if (["--background", "--refresh", "--latest", "--slots", "--confirm", "--allow-outside-project"].includes(flag)) {
       const name = flag.slice(2);
       if (options[name]) throw cliError("INVALID_ARGUMENT", "参数重复。");
       options[name] = true;
@@ -111,6 +111,7 @@ function argumentsFor(argv) {
     allowed.add("slots");
   }
   if (command === "queue") allowed.add("input-file");
+  if (["pump", "resume"].includes(command)) allowed.add("allow-outside-project");
   if (command === "recover-slot") {
     allowed.add("attempt"); allowed.add("token"); allowed.add("confirm");
   }
@@ -930,7 +931,7 @@ export async function runTaskOperation(
     onProgress = () => {},
     options = {},
     background = true,
-    restrictedOutput = false,
+    restrictedOutput = options.restrictedOutput === true,
     requireAttempt = false,
   } = {},
 ) {
@@ -942,7 +943,10 @@ export async function runTaskOperation(
       limit: operation.limit ?? 100,
       includeArchived: operation.includeArchived ?? false,
     });
-    return { ...listed, queue: await (await createCliStore(root)).getQueue() };
+    const queue = await (await createCliStore(root)).getQueue();
+    const blocked = listed.jobs.filter(record => record.status === "queued" && record.outputDirectory !== root && !record.outputDirectory.startsWith(root + sep));
+    return { ...listed, queue: { ...queue, warnings: [...(queue.warnings ?? []), ...blocked.map(record => ({ id: record.id,
+      code: "OUTPUT_AUTHORIZATION_REQUIRED", message: "项目外保存任务仍在等待授权；请在 CLI 核查后运行 pump --allow-outside-project 明确继续。" }))] } };
   }
   if (operation.action === "status") return getCliJob(root, operation.id);
   if (operation.action === "cancel") {
@@ -959,8 +963,7 @@ export async function runTaskOperation(
       const queue = await store.getQueue();
       await store.configureQueue({ expectedRevision: queue.revision, paused: false, maxConcurrent: queue.maxConcurrent });
     }
-    await pump(store, { ...options, background: true, restrictedOutput }, { env });
-    return store.getQueue();
+    return pump(store, { ...options, background: true, restrictedOutput }, { env });
   }
   if (operation.action === "submit") {
     const outputDirectory = await validateOutputDirectory(
@@ -1137,7 +1140,7 @@ export async function main(
         schemaVersion: 1,
         commands: COMMANDS,
         usage:
-          "node video-download.mjs <command> --project /absolute/project [--input-file request.json] [--job UUID] [--background] [--bin-dir /absolute/bin] [--request-key stable-key] [--source cli|chat|panel] [--expected-attempt N] [doctor: --refresh --latest | --slots] [recover-slot: --attempt N --token UUID --confirm]",
+          "node video-download.mjs <command> --project /absolute/project [--input-file request.json] [--job UUID] [--background] [--bin-dir /absolute/bin] [--request-key stable-key] [--source cli|chat|panel] [--expected-attempt N] [doctor: --refresh --latest | --slots] [recover-slot: --attempt N --token UUID --confirm] [pump/resume: --allow-outside-project]",
         inputs: {
           inspect: { url: "HTTP(S) URL", playlist: false },
           search: { query: "keywords", platform: "both", limit: 8 },
@@ -1151,13 +1154,14 @@ export async function main(
           defaultMaxConcurrent: 2,
           maxConcurrent: "1–4",
           configureInput: { expectedRevision: 0, paused: false, maxConcurrent: 2 },
-          pump: "Explicitly continue queued work; read commands never spawn workers",
+          pump: "Explicitly continue queued work; read commands never spawn workers; external outputs require reviewed CLI --allow-outside-project",
           recovery: "doctor --slots; recover-slot requires exact id/attempt/token and --confirm; then retry",
         },
         note: "公共 CLI 与面板服务共享项目 .mimi-download-cli/任务和队列；Host账号任务与资源库仍由Host管理。后台进程仍需要运行设备保持在线。",
       },
     };
   const project = await checkedDirectory(options.project);
+  if (["pump", "resume"].includes(command)) options.restrictedOutput = options["allow-outside-project"] !== true;
   if (options["bin-dir"]) {
     const binDirectory = await checkedDirectory(options["bin-dir"]);
     env = {
