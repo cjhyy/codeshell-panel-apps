@@ -8,22 +8,28 @@ export async function runQuoteRound(items, { fetchQuote, cursor = 0, roundId = 1
   const ordered = unique.length ? [...unique.slice(cursor % unique.length), ...unique.slice(0, cursor % unique.length)] : [];
   const started = now();
   const quotes = [], errors = [];
-  let visited = 0;
+  let visited = 0, interrupted = 0;
   // Removing the final subscription must commit an empty snapshot too; otherwise
   // the Host would retain the last subscribed symbols indefinitely.
   if (!ordered.length && !signal?.aborted) await onBatch({ quotes: [], errors: [], round: { roundId, cursor: 0, pending: 0, succeeded: 0, failed: 0 } });
   for (let offset = 0; offset < ordered.length && now() - started < roundBudgetMs && !signal?.aborted; offset += batchSize) {
     const batch = ordered.slice(offset, offset + Math.min(4, Math.max(1, batchSize)));
-    const budget = Math.min(perSourceMs, batchDeadlineMs, roundBudgetMs - (now() - started));
+    const remaining = roundBudgetMs - (now() - started);
+    const sourceDeadline = Math.min(perSourceMs, batchDeadlineMs);
+    const budget = Math.min(sourceDeadline, remaining);
     const results = await Promise.all(batch.map(async (item) => {
       try { return { quote: await deadline((requestSignal) => fetchQuote(item, requestSignal), budget, signal) }; }
-      catch (error) { return { error: { symbol: item.symbol, market: item.market, message: String(error?.message ?? error).slice(0, 240) } }; }
+      catch (error) {
+        const code = error?.code ?? error?.message;
+        if (code === "QUOTE_ABORTED" || code === "QUOTE_DEADLINE" && remaining < sourceDeadline) return { pending: true };
+        return { error: { symbol: item.symbol, market: item.market, message: String(error?.message ?? error).slice(0, 240) } };
+      }
     }));
-    for (const result of results) { if (result.quote) quotes.push(result.quote); else errors.push(result.error); }
+    for (const result of results) { if (result.quote) quotes.push(result.quote); else if (result.pending) interrupted++; else errors.push(result.error); }
     visited += batch.length;
-    await onBatch({ quotes: [...quotes], errors: [...errors], round: { roundId, cursor: unique.length ? (cursor + visited) % unique.length : 0, pending: ordered.length - visited, succeeded: quotes.length, failed: errors.length } });
+    await onBatch({ quotes: [...quotes], errors: [...errors], round: { roundId, cursor: unique.length ? (cursor + visited) % unique.length : 0, pending: ordered.length - visited + interrupted, succeeded: quotes.length, failed: errors.length } });
   }
-  return { quotes, errors, round: { roundId, cursor: unique.length ? (cursor + visited) % unique.length : 0, pending: ordered.length - visited, succeeded: quotes.length, failed: errors.length } };
+  return { quotes, errors, round: { roundId, cursor: unique.length ? (cursor + visited) % unique.length : 0, pending: ordered.length - visited + interrupted, succeeded: quotes.length, failed: errors.length } };
 }
 export function timed(work, ms, signal) {
   const controller = new AbortController();

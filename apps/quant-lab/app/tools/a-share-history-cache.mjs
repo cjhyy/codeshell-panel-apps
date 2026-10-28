@@ -1,3 +1,4 @@
+import { nativeDataRoot } from "./native-data-context.mjs";
 import { mkdir, open, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -160,7 +161,7 @@ export function createRawFactorPriceBundle({
   });
 }
 
-function cacheRoot(root = process.cwd()) {
+function cacheRoot(root = nativeDataRoot()) {
   return resolve(root, A_SHARE_HISTORY_DIRECTORY);
 }
 
@@ -169,11 +170,11 @@ function seriesPath(symbol, root) {
   return resolve(cacheRoot(root), "series", `${symbol}.json`);
 }
 
-export function historyManifestPath(root = process.cwd()) {
+export function historyManifestPath(root = nativeDataRoot()) {
   return resolve(cacheRoot(root), "manifest.json");
 }
 
-export function historyRunStatePath(root = process.cwd()) {
+export function historyRunStatePath(root = nativeDataRoot()) {
   return resolve(cacheRoot(root), "initializing.json");
 }
 
@@ -203,7 +204,7 @@ async function atomicWrite(path, content) {
   try { await directory.sync(); } finally { await directory.close(); }
 }
 
-export async function readActiveHistoryRunState(root = process.cwd()) {
+export async function readActiveHistoryRunState(root = nativeDataRoot()) {
   const owner = await inspectOwnerLock(historyRunStatePath(root));
   if (owner) return ownerConfirmedDead(owner) ? null : owner;
   // Diagnostics never remove or rewrite the legacy wx file, including a stale
@@ -215,12 +216,12 @@ export async function readActiveHistoryRunState(root = process.cwd()) {
   } catch (error) { if (error.code === "ENOENT") return null; throw error; }
 }
 
-export async function acquireHistoryRunState(input, root = process.cwd()) {
+export async function acquireHistoryRunState(input, root = nativeDataRoot()) {
   // Legacy writers can pause between checking and creating their wx lock.
   // Even an absent lock cannot prove quiescence. Refuse mixed protocol roots;
   // legacy data remains readable and a separate empty root can use v2 safely.
   const legacy = await stat(resolve(root, "a-share-history/v1")).catch((error) => { if (error.code === "ENOENT") return null; throw error; });
-  if (legacy) return Object.freeze({ acquired: false, state: null, code: "HISTORY_LEGACY_PROTOCOL", message: "旧版历史库保持只读：无法证明旧写入程序已停用。请在停用旧包后使用独立数据目录；不会自动清理现场锁或混用写入协议。" });
+  if (legacy) return Object.freeze({ acquired: false, state: null, code: "HISTORY_LEGACY_PROTOCOL", message: "旧版历史库保持只读：无法证明旧写入程序已停用。请在历史数据页选择‘使用本项目隔离历史库’后继续；旧数据保留，新库与旧写入协议隔离。" });
   const lock = await acquireOwnerLock(historyRunStatePath(root), { metadata: {
     scope: input.scope, source: input.source, heartbeatAt: input.now.toISOString(),
     schemaVersion: A_SHARE_HISTORY_SCHEMA_VERSION, kind: A_SHARE_HISTORY_RUN_KIND,
@@ -229,7 +230,7 @@ export async function acquireHistoryRunState(input, root = process.cwd()) {
   return Object.freeze({ acquired: lock.acquired, state: lock.owner });
 }
 
-export async function heartbeatHistoryRunState(state, _root = process.cwd(), now = new Date()) {
+export async function heartbeatHistoryRunState(state, _root = nativeDataRoot(), now = new Date()) {
   const lock = activeLocks.get(state?.token);
   if (!lock) return false;
   await lock.assertOwned();
@@ -405,7 +406,7 @@ export function parseHistorySeries(value, expectedSymbol = null) {
   });
 }
 
-export async function readHistorySeries(symbol, root = process.cwd()) {
+export async function readHistorySeries(symbol, root = nativeDataRoot()) {
   try {
     const parsed = JSON.parse(await readCompatible(seriesPath(symbol, root)));
     return parseHistorySeries(parsed, symbol);
@@ -417,7 +418,7 @@ export async function readHistorySeries(symbol, root = process.cwd()) {
   }
 }
 
-export async function writeHistorySeries(input, root = process.cwd()) {
+export async function writeHistorySeries(input, root = nativeDataRoot()) {
   const parsed = parseHistorySeries(input, input?.symbol);
   const content = parsed.priceModel.kind === "raw-factor"
     ? `${JSON.stringify(Object.fromEntries(Object.entries(parsed).filter(([key]) => key !== "bars")))}\n`
@@ -586,14 +587,14 @@ export function mergeRawFactorPriceBundles(previousSeries, incrementalBundle, ge
   });
 }
 
-export async function writeHistoryManifest(manifest, root = process.cwd()) {
+export async function writeHistoryManifest(manifest, root = nativeDataRoot()) {
   const content = `${JSON.stringify(manifest, null, 2)}\n`;
   const path = historyManifestPath(root);
   await atomicWrite(path, content);
   return Object.freeze({ path, bytes: Buffer.byteLength(content) });
 }
 
-export async function readHistoryManifest(root = process.cwd()) {
+export async function readHistoryManifest(root = nativeDataRoot()) {
   try {
     const value = JSON.parse(await readCompatible(historyManifestPath(root)));
     const source = value?.source == null
@@ -626,7 +627,7 @@ export async function readHistoryManifest(root = process.cwd()) {
   }
 }
 
-export async function seriesBytes(symbol, root = process.cwd()) {
+export async function seriesBytes(symbol, root = nativeDataRoot()) {
   try {
     return (await stat(seriesPath(symbol, root))).size;
   } catch (error) {
@@ -660,7 +661,7 @@ function usableManifestRecord(record, marketDate, source) {
   return record?.source === source && Number(record?.bars) >= 60 && age >= 0 && age <= 10;
 }
 
-export async function recoverHistoryManifestFromSeries(manifest, root = process.cwd(), now = new Date()) {
+export async function recoverHistoryManifestFromSeries(manifest, root = nativeDataRoot(), now = new Date()) {
   if (!manifest || manifest.scope !== "full") return manifest;
   const excludedSymbols = new Set(
     (Array.isArray(manifest.excludedSymbols) ? manifest.excludedSymbols : [])

@@ -133,8 +133,17 @@ async function runCliUnlocked(argv = process.argv.slice(2), nowInput = new Date(
   return snapshot;
 }
 
+export function collectorRequestIdentity(argv) {
+  const options = parseArgs(argv);
+  // Live resolution always searches the cleaned query, including punctuation.
+  // canonicalUsSymbol is only the read-local lookup contract; BRK/B must not
+  // silently become the different Yahoo search request BRK-B.
+  return { mode: options.help ? "help" : options.readLocal ? "read-local" : "collect",
+    query: options.readLocal ? canonicalUsSymbol(options.query) : options.query };
+}
+
 export async function runCli(argv = process.argv.slice(2), ...rest) {
-  return runCollector("fetch-us-stock", argv, () => runCliUnlocked(argv, ...rest));
+  return runCollector("fetch-us-stock", argv, (args) => runCliUnlocked(args, ...rest), { normalizeRequest: collectorRequestIdentity });
 }
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

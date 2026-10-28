@@ -1,3 +1,4 @@
+import { nativeDataRoot } from "./native-data-context.mjs";
 import { acquireOwnerLock } from "./owner-lock.mjs";
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, resolve, sep } from "node:path";
@@ -70,7 +71,7 @@ async function atomicWrite(path, content) {
   }
 }
 
-export async function writeLocalSnapshot({ root = process.cwd(), stream, scope = "global", snapshot, hooks = {} }) {
+export async function writeLocalSnapshot({ root = nativeDataRoot(), stream, scope = "global", snapshot, hooks = {} }) {
   const { marketDate, phase } = snapshotIdentity(snapshot);
   const content = `${JSON.stringify(snapshot)}\n`;
   if (Buffer.byteLength(content, "utf8") > MAX_SNAPSHOT_BYTES) {
@@ -108,7 +109,7 @@ export async function writeLocalSnapshot({ root = process.cwd(), stream, scope =
 
 }
 
-export async function readLocalSnapshot({ root = process.cwd(), stream, scope = "global" }) {
+export async function readLocalSnapshot({ root = nativeDataRoot(), stream, scope = "global" }) {
   const directory = await safeDirectory(root, stream, scope, "snapshots-v2", false);
   let path = resolve(directory, "latest.json");
   if (!await lstat(path).catch((error) => { if (error.code === "ENOENT") return null; throw error; })) path = resolve(await safeDirectory(root, stream, scope, "snapshots", false), "latest.json");
@@ -140,7 +141,7 @@ export async function readLocalSnapshot({ root = process.cwd(), stream, scope = 
   return snapshot;
 }
 
-export async function readLocalSnapshotHistory({ root = process.cwd(), stream, scope = "global", limit = 40 }) {
+export async function readLocalSnapshotHistory({ root = nativeDataRoot(), stream, scope = "global", limit = 40 }) {
   const maximum = Number.isInteger(limit) ? Math.min(120, Math.max(1, limit)) : 40;
   const entriesByName = new Map();
   for (const namespace of ["snapshots", "snapshots-v2"]) {

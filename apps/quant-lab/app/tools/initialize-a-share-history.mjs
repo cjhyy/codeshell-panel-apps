@@ -3,6 +3,7 @@
 import { resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { resolveLibraryRoot } from "./native-data-context.mjs";
 
 import { prepareHistoryUniverse } from "../stock-screener.mjs";
 import { historySourceLabel } from "../market-data-sources.mjs";
@@ -154,13 +155,17 @@ export function normalizeHistoryInitializationOptions(argv = []) {
   let status = false;
   let repair = false;
   let maxItems = null;
+  let libraryId = null;
+  let lockStatus = false;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--scope") scope = String(argv[++index] ?? "");
     else if (argument === "--source") source = String(argv[++index] ?? "");
     else if (argument === "--incremental-only") incrementalOnly = true;
     else if (argument === "--stdout") stdout = true;
-    else if (argument === "--status" || argument === "--lock-status") status = true;
+    else if (argument === "--status") status = true;
+    else if (argument === "--lock-status") lockStatus = true;
+    else if (argument === "--library-id") libraryId = String(argv[++index] ?? "");
     else if (argument === "--repair") repair = true;
     else if (argument === "--max-items") maxItems = Number(argv[++index]);
     else if (argument === "--help") help = true;
@@ -176,6 +181,8 @@ export function normalizeHistoryInitializationOptions(argv = []) {
     );
   }
   if (maxItems != null && (!Number.isInteger(maxItems) || maxItems < 1 || maxItems > 100)) throw new HistoryInitializationError("BATCH_INVALID", "max-items must be 1..100");
+  if (libraryId !== null && !/^[a-f0-9]{32}$/u.test(libraryId)) throw new HistoryInitializationError("HISTORY_LIBRARY_ID_INVALID", "library-id must be 32 lowercase hexadecimal characters");
+  if ([status, lockStatus, repair].filter(Boolean).length > 1) throw new HistoryInitializationError("MODE_INVALID", "status, lock-status and repair are mutually exclusive");
   return Object.freeze({
     scope,
     source,
@@ -184,7 +191,7 @@ export function normalizeHistoryInitializationOptions(argv = []) {
     incrementalOnly,
     stdout,
     help,
-    status, repair, maxItems,
+    status, repair, maxItems, libraryId, lockStatus,
   });
 }
 
@@ -305,6 +312,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
       "Usage: node initialize-a-share-history.mjs --scope <core|broad|full> --stdout",
       "       [--source <tencent-ifzq|eastmoney-kline|tushare-pro>]",
       "       [--max-items <1..100>] [--status | --lock-status | --repair]",
+      "       [--library-id <32 lowercase hex characters>]",
       "",
       "  core   initialize 120 high-liquidity A shares",
       "  broad  initialize 300 high-liquidity A shares",
@@ -313,15 +321,22 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
       "  --incremental-only updates missing/lagging sessions without migrating current legacy files",
       "  research qfq prices are generated locally; --status and --lock-status never write",
       "  --repair explicitly reconciles local data; Host background batches are limited to 20 items",
-      "  writes use v2 only; an existing v1 directory refuses new writers until old-package custody is resolved",
+      "  --lock-status reports owner diagnostics without requiring an initialized library or changing files",
+      "  writes use v2 only; use an explicit library-id for an isolated library below the authorized data directory",
     ].join("\n") + "\n");
     return { ok: true, help: true };
   }
   if (!options.stdout) throw new HistoryInitializationError("STDOUT_REQUIRED", "--stdout is required");
 
-  const root = resolve(dependencies.root ?? process.cwd());
+  const root = await resolveLibraryRoot(resolve(dependencies.root ?? process.cwd()), options.libraryId, { create: !options.status && !options.lockStatus });
   const now = dependencies.now instanceof Date ? dependencies.now : new Date();
   if (!Number.isFinite(now.getTime())) throw new HistoryInitializationError("NOW_INVALID", "valid current time required");
+  if (options.lockStatus) {
+    const owner = await readActiveHistoryRunState(root);
+    const result = { kind: "a-share-history-lock-status", libraryId: options.libraryId, running: Boolean(owner), owner };
+    (dependencies.stdout ?? ((line) => process.stdout.write(line)))(`${JSON.stringify(result)}\n`);
+    return result;
+  }
   if (options.status || options.repair) {
     let manifest = await readHistoryManifest(root);
     if (!manifest) throw new HistoryInitializationError("HISTORY_LIBRARY_MISSING", "history library is not initialized");
@@ -540,8 +555,10 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
     .filter((record) => selectedSymbols.has(record.symbol))
     .filter((record) => recordUsableForResearch(record, marketDate, options.source))
     .map((record) => record.symbol));
-  const batchChecked = new Set(options.maxItems != null && previousManifest?.batch?.marketDate === marketDate && previousManifest.batch.source === options.source ? previousManifest.batch.checked.filter((symbol) => selectedSymbols.has(symbol)) : []);
-  const workItems = [...preparation.selected].filter((item) => !batchChecked.has(item.symbol)).sort((left, right) => {
+  const sameBatch = options.maxItems != null && previousManifest?.batch?.marketDate === marketDate && previousManifest.batch.source === options.source;
+  const batchChecked = new Set(sameBatch && Array.isArray(previousManifest.batch.checked) ? previousManifest.batch.checked.filter((symbol) => selectedSymbols.has(symbol)) : []);
+  let batchCursor = sameBatch ? previousManifest.batch.cursorSymbol ?? null : null;
+  let workItems = [...preparation.selected].filter((item) => !batchChecked.has(item.symbol)).sort((left, right) => {
     const leftRecord = existingRecords.get(left.symbol);
     const rightRecord = existingRecords.get(right.symbol);
     const priority = (record) => {
@@ -561,6 +578,13 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
     const dateDifference = String(leftRecord?.to ?? "").localeCompare(String(rightRecord?.to ?? ""));
     return dateDifference || left.symbol.localeCompare(right.symbol);
   });
+  // A durable cursor advances for every admitted item, including failures. A
+  // permanently bad first batch cannot starve the rest of the universe.
+  if (options.maxItems != null && batchCursor) {
+    workItems.sort((left, right) => left.symbol.localeCompare(right.symbol));
+    const pivot = workItems.findIndex((item) => item.symbol > batchCursor);
+    if (pivot > 0) workItems = [...workItems.slice(pivot), ...workItems.slice(0, pivot)];
+  }
   const failures = [];
   let completed = 0;
   let loaded = 0;
@@ -720,7 +744,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
       ready: selectedReady.size,
       remaining: Math.max(0, preparation.selected.length - selectedReady.size),
       attempted: completed,
-      ...(options.maxItems != null ? { batch: { marketDate, source: options.source, checked: [...batchChecked].sort() } } : {}),
+      ...(options.maxItems != null ? { batch: { marketDate, source: options.source, checked: [...batchChecked].sort(), cursorSymbol: batchCursor } } : {}),
       paused: sourcePaused,
       resumeAfter: sourcePaused ? sourceResumeAfter : null,
       cached: records.length,
@@ -790,6 +814,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
       const index = nextIndex;
       nextIndex += 1;
       const quote = workItems[index];
+      batchCursor = quote.symbol;
       let checkedForBatch = false;
       const queuedRecord = existingRecords.get(quote.symbol);
       const queuedForNetwork = !queuedRecord ||
@@ -897,7 +922,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
           selectedReady.add(quote.symbol);
         }
         const errorCode = String(error?.code ?? "HISTORY_FETCH_ERROR").slice(0, 80);
-        checkedForBatch = errorCode === "HISTORY_NOT_USABLE" || TEMPORARILY_UNAVAILABLE_ERRORS.has(errorCode);
+        checkedForBatch = errorCode === "HISTORY_NOT_USABLE";
         failures.push({
           symbol: quote.symbol,
           name: quote.name,

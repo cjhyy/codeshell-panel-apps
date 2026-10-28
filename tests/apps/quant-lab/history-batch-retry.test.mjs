@@ -68,3 +68,48 @@ test("a bounded history batch persists retryable failures as pending until a lat
   assert.equal(extraRequests, 0, "a completed same-day batch remains idempotent");
   assert.equal(stable.networkCheckedThrough, "2026-09-11");
 });
+
+test("twenty persistent failures advance the durable cursor and SOURCE_EMPTY remains pending", async t => {
+  const root = await mkdtemp(join(tmpdir(), "quant-history-fair-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const universe = Array.from({ length: 60 }, (_, index) => ({ ...quotes[index % 20], symbol: `SH${600000 + index}`, amount: 900000000 - index * 1000000 }));
+  for (let batch = 0; batch < 3; batch++) await runCli(argv, dependencies(root, "2026-09-07", { fetchAllQuotes: async () => universe }));
+  const visited = [];
+  const fixture = dependencies(root, "2026-09-11", {
+    fetchAllQuotes: async () => universe,
+    fetchBars: async ({ symbol }) => { visited.push(symbol); throw Object.assign(Error("empty fixture"), { code: "SOURCE_EMPTY" }); },
+  });
+  for (let batch = 0; batch < 3; batch++) {
+    const result = await runCli(argv, fixture);
+    assert.equal(result.batch.checked.length, 0, "temporary empty data is not a completed check");
+    assert.equal(result.batch.cursorSymbol, universe[batch * 20 + 19].symbol);
+  }
+  assert.deepEqual(visited, universe.map(item => item.symbol), "each 20-item failure batch yields to the next 20");
+  await runCli(argv, fixture);
+  assert.deepEqual(visited.slice(60), universe.slice(0, 20).map(item => item.symbol), "cursor wraps so failures are eventually retried");
+});
+
+test("legacy writers remain isolated while an explicitly selected library completes a bounded batch", async t => {
+  const { mkdir, readFile, writeFile, readdir, symlink } = await import("node:fs/promises");
+  const { resolveLibraryRoot } = await import("../../../apps/quant-lab/app/tools/native-data-context.mjs");
+  const { runHistoryBatch } = await import("../../../apps/quant-lab/app/tools/history-batch.mjs");
+  const root = await mkdtemp(join(tmpdir(), "quant-history-library-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const legacy = join(root, "a-share-history/v1");
+  await mkdir(legacy, { recursive: true });
+  await writeFile(join(legacy, "initializing.json"), "live-old-protocol-fixture");
+  const libraryId = "a".repeat(32);
+  assert.deepEqual(await readdir(root), ["a-share-history"]);
+  await assert.rejects(runCli(["--stdout", "--status", "--library-id", libraryId], { root }), { code: "HISTORY_LIBRARY_MISSING" });
+  const status = await runCli(["--stdout", "--lock-status", "--library-id", libraryId], { root, stdout() {} });
+  assert.equal(status.running, false);
+  assert.deepEqual(await readdir(root), ["a-share-history"], "both queries remain pure before initialization");
+  const result = await runHistoryBatch({ source: "tushare-pro", scope: "core", libraryId }, dependencies(root, "2026-09-11"));
+  assert.equal(result.ready, 20);
+  assert.equal((await readHistoryManifest(await resolveLibraryRoot(root, libraryId))).ready, 20);
+  assert.equal(await readFile(join(legacy, "initializing.json"), "utf8"), "live-old-protocol-fixture");
+  await assert.rejects(runHistoryBatch({ libraryId: "../legacy" }, { root }), { code: "HISTORY_LIBRARY_ID_INVALID" });
+  const malicious = "b".repeat(32);
+  await symlink(legacy, join(root, "quant-history-libraries/v2", malicious));
+  await assert.rejects(resolveLibraryRoot(root, malicious, { create: true }), /HISTORY_LIBRARY_PATH_UNSAFE/);
+});

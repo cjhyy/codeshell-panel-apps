@@ -1,6 +1,6 @@
 // Read-only quotes for the actual portfolio; never writes the transaction ledger.
 import { fetchTencentStockQuote } from "./fetch-a-share-stock.mjs";
-import { syncPortfolioData } from "./fetch-portfolio-data.mjs";
+import { canonicalSymbol, syncPortfolioData } from "./fetch-portfolio-data.mjs";
 import { fetchYahooHoldingQuote } from "./fetch-us-stock.mjs";
 
 import { normalizeQuoteV2 } from "../quote-contract.mjs";
@@ -9,8 +9,12 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCollector } from "./collector-lock.mjs";
 
-export async function fetchHoldingQuotes(items, { cn = fetchTencentStockQuote, us = fetchYahooHoldingQuote, now = () => new Date(), ...roundOptions } = {}) {
+function validateHoldingItems(items) {
   if (!Array.isArray(items) || items.length > 200 || items.some((item) => !item || !["cn", "us"].includes(item.market) || !(item.market === "cn" ? /^(SH|SZ)\d{6}$/u : /^[A-Z][A-Z0-9.-]{0,14}$/u).test(item.symbol))) throw new Error("持仓行情代码无效");
+}
+
+export async function fetchHoldingQuotes(items, { cn = fetchTencentStockQuote, us = fetchYahooHoldingQuote, now = () => new Date(), ...roundOptions } = {}) {
+  validateHoldingItems(items);
   const result = await runQuoteRound(items, { ...roundOptions, fetchQuote: async (item, signal) => {
     const quote = await (item.market === "cn" ? cn(item.symbol, { attempts: 1, signal }) : us(item.symbol, { signal }));
     return normalizeQuoteV2(quote, { ...item, now: now() });
@@ -18,8 +22,21 @@ export async function fetchHoldingQuotes(items, { cn = fetchTencentStockQuote, u
   return { kind: "holding-quotes", contract: 2, ...result, fetchedAt: now().toISOString() };
 }
 
+export function collectorRequestIdentity(argv) {
+  const input = JSON.parse(argv[0] ?? "[]");
+  if (input?.mode === "history") {
+    if (!Array.isArray(input.symbols) || input.symbols.length !== 1) throw new Error("每次补齐一个标的的历史行情");
+    return { mode: "history", symbol: canonicalSymbol(input.symbols[0]).symbol,
+      from: input.from === undefined ? "2015-01-01" : input.from,
+      to: input.to === undefined ? new Date().toISOString().slice(0, 10) : input.to };
+  }
+  validateHoldingItems(input);
+  const identities = [...new Map(input.map(({ market, symbol }) => [`${market}:${symbol}`, { market, symbol }])).values()];
+  return { mode: "quotes", items: identities.sort((a, b) => `${a.market}:${a.symbol}`.localeCompare(`${b.market}:${b.symbol}`)) };
+}
+
 export async function runCli(argv = process.argv.slice(2)) {
-  return runCollector("holding-quotes", argv, () => runCliUnlocked(argv));
+  return runCollector("holding-quotes", argv, (args) => runCliUnlocked(args), { normalizeRequest: collectorRequestIdentity });
 }
 async function runCliUnlocked(argv) {
   const input = JSON.parse(argv[0] ?? "[]");

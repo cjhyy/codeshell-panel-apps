@@ -1,3 +1,4 @@
+import { nativeDataRoot } from "./native-data-context.mjs";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -110,7 +111,7 @@ export async function collectSelectionAnnouncements({
   provisional,
   persistent = true,
   continueScan = false,
-  root = process.cwd(),
+  root = nativeDataRoot(),
   now = new Date(),
   fetchAnnouncements,
   deadlineMs = Date.now() + 30_000,

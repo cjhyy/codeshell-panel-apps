@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { nativeDataRoot } from "./native-data-context.mjs";
 import { runCollector } from "./collector-lock.mjs";
 import { liveQuoteNumber } from "../live-quote-contract.mjs";
 // Deterministic A-share market pulse. The Agent only launches this frozen tool;
@@ -6,7 +7,6 @@ import { liveQuoteNumber } from "../live-quote-contract.mjs";
 // calculated here and written as one strict market-overview report.
 
 import { open, mkdir, link, unlink } from "node:fs/promises";
-import { homedir, platform } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -83,46 +83,11 @@ function parseArgs(argv) {
   return options;
 }
 
-export function defaultPanelDataRoot(input = {}) {
-  const operatingSystem = input.platform ?? platform();
-  const userHome = input.home ?? homedir();
-  if (!userHome) throw new PulseError("PANEL_DATA_ROOT_MISSING", "user home is unavailable");
-  if (operatingSystem === "darwin") {
-    return resolve(userHome, "Library", "Application Support", "code-shell", "panel-app-data", "quant-lab");
-  }
-  if (operatingSystem === "win32") {
-    return resolve(
-      input.appData || resolve(userHome, "AppData", "Roaming"),
-      "code-shell",
-      "panel-app-data",
-      "quant-lab",
-    );
-  }
-  return resolve(
-    input.xdgConfig || resolve(userHome, ".config"),
-    "code-shell",
-    "panel-app-data",
-    "quant-lab",
-  );
-}
-
-function isInstalledPanelTool() {
-  return resolve(fileURLToPath(import.meta.url)) === resolve(
-    homedir(),
-    ".code-shell",
-    "panel-apps",
-    "quant-lab",
-    "app",
-    "tools",
-    "build-market-pulse.mjs",
-  );
-}
-
 export function validateMarketPulseOutputPath(path) {
   if (!/^data\/market-insights\/\d{8}T\d{9}Z-market-overview\.json$/u.test(path)) {
     throw new PulseError("OUTPUT_PATH_UNSAFE", `unsafe market-pulse output path: ${path}`);
   }
-  return resolve(process.cwd(), path);
+  return resolve(nativeDataRoot(), path);
 }
 
 async function responseBytes(response) {
@@ -681,7 +646,7 @@ async function runCliUnlocked(argv = process.argv.slice(2), nowInput = new Date(
       "  --dry-run     fetch and calculate without writing",
       "  --stdout      emit a validated live snapshot as JSON without writing",
       "  --persist-local  retain latest and daily live snapshots below the process working directory",
-      "  --persist-panel-data  retain daily snapshots in CodeShell's private Quant Lab data directory",
+      "  --persist-panel-data  retain daily snapshots in the authorized current data directory",
       "  --read-local     emit the latest retained live snapshot without network access",
     ].join("\n") + "\n");
     return { ok: true, help: true };
@@ -689,7 +654,7 @@ async function runCliUnlocked(argv = process.argv.slice(2), nowInput = new Date(
   if (options.readLocal) {
     if (!options.stdout) throw new PulseError("STDOUT_REQUIRED", "--read-local requires --stdout");
     const snapshot = await readLocalSnapshot({
-      root: options.persistPanelData ? defaultPanelDataRoot() : process.cwd(),
+      root: nativeDataRoot(),
       stream: "live-market",
       scope: "global",
     });
@@ -701,19 +666,17 @@ async function runCliUnlocked(argv = process.argv.slice(2), nowInput = new Date(
   const output = options.out || `data/market-insights/${filenameStamp(now)}-market-overview.json`;
   const outputPath = validateMarketPulseOutputPath(output);
   const startedAt = Date.now();
-  const persistPanelData = options.persistPanelData || (
-    isInstalledPanelTool() && !options.stdout && !options.dryRun && !options.readLocal
-  );
+  const persistPanelData = options.persistPanelData;
   const marketHistory = persistPanelData
     ? await readLocalSnapshotHistory({
-      root: defaultPanelDataRoot(),
+      root: nativeDataRoot(),
       stream: "a-share-realtime",
       scope: "global",
       limit: 60,
     }).catch(() => [])
     : [];
   const [marketTimestamp, quotes] = await Promise.all([fetchMarketTimestamp(), fetchAllQuotes({
-    root: persistPanelData || options.persistPanelData ? defaultPanelDataRoot() : process.cwd(),
+    root: nativeDataRoot(),
     // Re-enumerate periodically so cached identities do not permanently omit
     // new listings; other refreshes reuse the known universe for batch quotes.
     preferLocalUniverse: now.getUTCMinutes() % 30 >= 3,
@@ -841,7 +804,7 @@ async function runCliUnlocked(argv = process.argv.slice(2), nowInput = new Date(
       report,
     };
     if (options.persistLocal || persistPanelData) {
-      const snapshotRoot = persistPanelData ? defaultPanelDataRoot() : process.cwd();
+      const snapshotRoot = nativeDataRoot();
       await mkdir(snapshotRoot, { recursive: true, mode: 0o700 });
       const dailyRealtimeSnapshot = buildDailyRealtimeSnapshot({
         quotes,
@@ -895,8 +858,13 @@ async function runCliUnlocked(argv = process.argv.slice(2), nowInput = new Date(
   return summary;
 }
 
+export function collectorRequestIdentity(argv) {
+  const options = parseArgs(argv);
+  return { ...options, mode: options.help ? "help" : options.readLocal ? "read-local" : "collect" };
+}
+
 export async function runCli(argv = process.argv.slice(2), ...rest) {
-  return runCollector("build-market-pulse", argv, () => runCliUnlocked(argv, ...rest));
+  return runCollector("build-market-pulse", argv, (args) => runCliUnlocked(args, ...rest), { normalizeRequest: collectorRequestIdentity });
 }
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

@@ -340,8 +340,14 @@ async function runCliUnlocked(argv = process.argv.slice(2), nowInput = new Date(
   return snapshot;
 }
 
+export function collectorRequestIdentity(argv) {
+  const options = parseArgs(argv);
+  return { mode: options.help ? "help" : options.readLocal ? "read-local" : "collect",
+    query: canonicalSymbol(options.query) ?? options.query };
+}
+
 export async function runCli(argv = process.argv.slice(2), ...rest) {
-  return runCollector("fetch-a-share-stock", argv, () => runCliUnlocked(argv, ...rest));
+  return runCollector("fetch-a-share-stock", argv, (args) => runCliUnlocked(args, ...rest), { normalizeRequest: collectorRequestIdentity });
 }
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

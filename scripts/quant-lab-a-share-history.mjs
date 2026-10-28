@@ -111,7 +111,7 @@ assert.deepEqual(normalizeHistoryInitializationOptions(["--scope", "core", "--st
   incrementalOnly: false,
   stdout: true,
   help: false,
-  status: false, repair: false, maxItems: null,
+  status: false, repair: false, maxItems: null, libraryId: null, lockStatus: false,
 });
 assert.deepEqual(historyInitializationPacing("full"), {
   concurrency: 1,
@@ -236,7 +236,7 @@ assert.deepEqual(normalizeHistoryInitializationOptions(["--scope", "full", "--st
   incrementalOnly: false,
   stdout: true,
   help: false,
-  status: false, repair: false, maxItems: null,
+  status: false, repair: false, maxItems: null, libraryId: null, lockStatus: false,
 });
 assert.equal(
   normalizeHistoryInitializationOptions(["--source", "tushare-pro", "--stdout"]).source,

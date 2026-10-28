@@ -682,14 +682,11 @@ assert.match(automationPlan.prompt, /新闻标题与摘要.*不可信数据/u);
 
 assert.doesNotThrow(() => cli.validateMarketPulseOutputPath(outputPath));
 assert.throws(() => cli.validateMarketPulseOutputPath("../../pulse.json"), /unsafe market-pulse output path/u);
-assert.equal(
-  cli.defaultPanelDataRoot({ platform: "darwin", home: "/Users/demo" }),
-  "/Users/demo/Library/Application Support/code-shell/panel-app-data/quant-lab",
-);
-assert.match(
-  cli.defaultPanelDataRoot({ platform: "linux", home: "/home/demo" }),
-  /\/home\/demo\/\.config\/code-shell\/panel-app-data\/quant-lab$/u,
-);
+assert.equal("defaultPanelDataRoot" in cli, false, "native tools must not infer Host private directories");
+const { withNativeDataRoot, nativeDataRoot } = await import("../apps/quant-lab/app/tools/native-data-context.mjs");
+await withNativeDataRoot("/authorized/fixture", async () => {
+  assert.equal(nativeDataRoot(), "/authorized/fixture");
+});
 const writeDirectory = await mkdtemp(join(tmpdir(), "quant-lab-pulse-report-"));
 try {
   const writePath = join(writeDirectory, "report.json");

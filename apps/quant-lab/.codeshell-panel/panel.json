@@ -197,23 +197,23 @@
   "nativeEntries": {
     "fetch-holding-quotes": {
       "entry": "app/tools/fetch-holding-quotes.mjs",
-      "sha256": "79675b510646d70d8fde2c15c26ddf46c0b5a8fb527ed57996e0cc89398e8826"
+      "sha256": "d99037258455d91f732d2b862841e8585437916586438ce622a4d49767bd7bfa"
     },
     "build-market-pulse": {
       "entry": "app/tools/build-market-pulse.mjs",
-      "sha256": "c04ea588277b4e65d275b3d870fc94f4e29d039bd54cd5cfd66c5959eacef723"
+      "sha256": "cdae7c786e45065bbbc547363e4820d3c16db74ff95a10408e19d63c53b8df35"
     },
     "build-a-share-selection": {
       "entry": "app/tools/build-a-share-selection.mjs",
-      "sha256": "f60dd64b2e3eb1a306be737f5d3f2e6bbab22b5f07445af64e02390afc34a9e5"
+      "sha256": "9f7235099786c39a276912b468cf1a83f10d85b8ecbfa1989694b9dde404fc20"
     },
     "fetch-us-stock": {
       "entry": "app/tools/fetch-us-stock.mjs",
-      "sha256": "eb537644832fe7e8812fe1097a61d4effa03c1f49b1198caf4f7b6c099b7ccbb"
+      "sha256": "1cec57dc9651dd7d619699291693994221c84f125358de7798254f40abd9cb5c"
     },
     "fetch-a-share-stock": {
       "entry": "app/tools/fetch-a-share-stock.mjs",
-      "sha256": "ea6e54c1707c95549a2b9be0a3bf9df17ce8afcaa4ddc7b64177ac4aa5c54d02"
+      "sha256": "dfc93d7552eb38e61c587d73ea514b1ddf20b8f97f93e051e4dd7f4314184301"
     },
     "fetch-market-data": {
       "entry": "app/tools/fetch-market-data.mjs",
@@ -221,15 +221,15 @@
     },
     "initialize-a-share-history": {
       "entry": "app/tools/initialize-a-share-history.mjs",
-      "sha256": "cc385e5fb79d644a031f8c719a673d01a56ad69a79744c0936fd3eb5db6f1d32"
+      "sha256": "9c0eb952d32078d488266228f44d846f0eb560f18c35f1e7873b938b30001946"
     },
     "quant-market-service": {
       "entry": "app/tools/market-service.mjs",
-      "sha256": "d26865e81fd4124492ffa8ac9ad8478e5b0dc25bcc751779f72f251085a0af25"
+      "sha256": "ea0ee924130c2bef69631a33568e4b78978a830e05357b508203b43c2832ca18"
     },
     "quant-history-batch": {
       "entry": "app/tools/history-batch.mjs",
-      "sha256": "7dffecc49075d0143caa379fcfe0b6fb7ffee945e56ba602f19fe0045420440a"
+      "sha256": "04d5f9f5ef4348049679fc52b7a777f128df138c5e29da9bdfe2b5014a23f8e0"
     }
   }
 }

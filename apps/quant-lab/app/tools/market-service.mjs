@@ -7,12 +7,12 @@ import { isQuoteV2 } from "../quote-contract.mjs";
 
 export function marketServiceConfig(input) {
   if (input?.format !== "quant.market-feed.config/1" || !Array.isArray(input.subscriptions) || input.subscriptions.length > 200) throw new Error("MARKET_CONFIG_INVALID");
-  const subscriptions = [...new Map(input.subscriptions.map((item) => {
-    if (!item || !["cn", "us"].includes(item.market) || !(item.market === "cn" ? /^(SH|SZ)\d{6}$/u : /^[A-Z][A-Z0-9.-]{0,14}$/u).test(item.symbol)) throw new Error("MARKET_SUBSCRIPTION_INVALID");
+  const valid = input.subscriptions.filter((item) => item && ["cn", "us"].includes(item.market) && typeof item.symbol === "string" && (item.market === "cn" ? /^(SH|SZ)\d{6}$/u : /^[A-Z][A-Z0-9.-]{0,14}$/u).test(item.symbol));
+  const subscriptions = [...new Map(valid.map((item) => {
     // Only public symbol identities enter config; no ledger, credential or account.
     return [`${item.market}:${item.symbol}`, { market: item.market, symbol: item.symbol }];
   })).values()];
-  return { format: input.format, subscriptions, cadenceMs: Math.min(300000, Math.max(15000, Number(input.cadence?.open) || 15000)), closedCadenceMs: Math.min(900000, Math.max(300000, Number(input.cadence?.closed) || 300000)) };
+  return { format: input.format, subscriptions, ignoredSubscriptions: input.subscriptions.length - valid.length, cadenceMs: Math.min(300000, Math.max(15000, Number(input.cadence?.open) || 15000)), closedCadenceMs: Math.min(900000, Math.max(300000, Number(input.cadence?.closed) || 300000)) };
 }
 export function serviceCadence(config, now) {
   const isOpen = (market) => {
@@ -74,9 +74,10 @@ export function createMarketService({ send, collect = fetchHoldingQuotes, schedu
           roundId = Number.isSafeInteger(last.round?.roundId) ? last.round.roundId : 0;
         }
         await send({ t: "ready" });
+        if (config.ignoredSubscriptions) await send({ t: "progress", message: `已忽略 ${config.ignoredSubscriptions} 个无效订阅；有效订阅继续更新。` });
         void run().catch(fail);
       } else if (!hello) throw new Error("MARKET_HELLO_REQUIRED");
-      else if (message.t === "config") { config = marketServiceConfig(message.config); unschedule(timer); void run().catch(fail); }
+      else if (message.t === "config") { config = marketServiceConfig(message.config); if (config.ignoredSubscriptions) await send({ t: "progress", message: `已忽略 ${config.ignoredSubscriptions} 个无效订阅；有效订阅继续更新。` }); unschedule(timer); void run().catch(fail); }
       else if (message.t === "poke") { unschedule(timer); void run().catch(fail); }
       else if (message.t === "drain") await close();
       else throw new Error("MARKET_MESSAGE_INVALID");

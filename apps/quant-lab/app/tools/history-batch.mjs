@@ -4,11 +4,12 @@ import { fileURLToPath } from "node:url";
 import { runCli, compactHistoryBridgeSummary } from "./initialize-a-share-history.mjs";
 
 export async function runHistoryBatch(request, { root, ...dependencies } = {}) {
-  if (!request || Object.keys(request).some((key) => !["scope", "source", "maxItems", "repair", "jobId", "scopeKey"].includes(key)) || !root) throw new Error("HISTORY_BATCH_INPUT_INVALID");
+  if (!request || Object.keys(request).some((key) => !["scope", "source", "maxItems", "repair", "jobId", "scopeKey", "libraryId"].includes(key)) || !root) throw new Error("HISTORY_BATCH_INPUT_INVALID");
   const maxItems = request.maxItems ?? 20;
   if (!Number.isInteger(maxItems) || maxItems < 1 || maxItems > 20) throw new Error("HISTORY_BATCH_LIMIT_INVALID");
   const argv = ["--stdout", "--scope", request.scope ?? "core", "--source", request.source ?? "tencent-ifzq", "--max-items", String(maxItems)];
   if (request.repair === true) argv.push("--repair");
+  if (request.libraryId != null) argv.push("--library-id", request.libraryId);
   const result = await runCli(argv, { ...dependencies, root, stdout: () => {}, progress: dependencies.progress ?? (() => {}) });
   return { ...compactHistoryBridgeSummary(result), batchLimit: maxItems };
 }
