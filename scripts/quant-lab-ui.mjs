@@ -3319,9 +3319,13 @@ await page.waitForFunction(
   ([key]) => window.__storage.get(key)?.watchlistMigrationVersion === 1,
   [watchlistKey],
 );
-assert.equal(await page.locator("#fast-period").inputValue(), "17");
-assert.equal(await page.locator("#slow-period").inputValue(), "61");
-assert.equal(await page.locator("#data-path").inputValue(), "data/market/TEST.csv");
+assert.equal(
+  await page.evaluate((key) => window.__hostCalls.some((call) =>
+    ["storage.get", "storage.getSnapshot"].includes(call.method) && call.params.key === key
+  ), configurationKey),
+  false,
+  "unvisited Research must not read configuration during another module's startup",
+);
 const migratedStorage = await page.evaluate(
   ([watchKey, configKey, futureKey, tabKey]) => ({
     watchlist: window.__storage.get(watchKey),
@@ -3417,6 +3421,10 @@ assert(
 );
 await page.click('[data-cockpit-step="history"]');
 assert.equal(await page.locator('[data-module-tab="research"]').getAttribute("aria-selected"), "true");
+await page.waitForFunction(() => document.querySelector("#backtest-storage-status")?.textContent.includes("回测参数已与项目记录一致"));
+assert.equal(await page.locator("#fast-period").inputValue(), "17");
+assert.equal(await page.locator("#slow-period").inputValue(), "61");
+assert.equal(await page.locator("#data-path").inputValue(), "data/market/TEST.csv");
 assert.equal(await page.locator("#history-bootstrap").isVisible(), true);
 assert.equal((await page.locator("#history-data-title").textContent()).trim(), "A 股量化选股基础库");
 assert.equal((await page.locator("#history-bootstrap-title").textContent()).trim(), "A 股历史基础库 · 自动补齐");
@@ -4653,6 +4661,7 @@ async function openScenario(storageSeed, options) {
   await p.waitForFunction(key => window.__pendingStorageWrites.has(key), configurationKey);
   await p.fill("#fast-period", "19");
   await p.evaluate(root => window.__switchWorkspace(root), secondRoot);
+  await p.click('[data-module-tab="research"]');
   await p.waitForFunction(() => document.querySelector("#fast-period").value === "9");
   await p.evaluate(key => window.__pendingStorageWrites.get(key)(), configurationKey);
   await p.waitForFunction(key => window.__storage.get(key).strategy.fast === 18, configurationKey);
@@ -4669,6 +4678,7 @@ async function openScenario(storageSeed, options) {
   await p.waitForFunction(key => window.__pendingStorageReads.has(key), configurationKey);
   assert.equal(await p.locator("#fast-period").isDisabled(), true);
   await p.evaluate(root => window.__switchWorkspace(root), secondRoot);
+  await p.click('[data-module-tab="research"]');
   await p.waitForFunction(() => document.querySelector("#fast-period").value === "9");
   await p.evaluate(key => window.__pendingStorageReads.get(key)(), configurationKey);
   assert.equal(await p.inputValue("#fast-period"), "9");
@@ -4725,6 +4735,7 @@ for (const versionedStorage of [true, false]) {
   await button.click();
   await p.waitForFunction(path => window.__pendingFileReads.has(path), path);
   await p.evaluate(root => window.__switchWorkspace(root), secondRoot);
+  await p.click('[data-module-tab="research"]');
   await p.waitForFunction(() => document.querySelector("#fast-period").value === "9");
   await p.evaluate(path => window.__pendingFileReads.get(path)(), path);
   // Cross an event-loop boundary so the delayed read's handler has actually run.
@@ -4976,7 +4987,7 @@ for (const versionedStorage of [true, false]) {
       },
     });
     await scenarioPage.waitForFunction(() =>
-      document.querySelector("#portfolio-status")?.textContent.includes("交易记录已读取"),
+      document.querySelector("#portfolio-analysis-status")?.textContent.includes("项检查"),
     );
     const ageRule = scenarioPage.locator('[data-rule-id="missing-raw-data"]');
     assert.equal(
@@ -5071,7 +5082,7 @@ const freshCsv = shiftCsvToEnd(csv, "2026-08-26");
     },
   });
   await scenarioPage.waitForFunction(() =>
-    document.querySelector("#portfolio-status")?.textContent.includes("交易记录已读取"),
+    document.querySelector("#portfolio-analysis-status")?.textContent.includes("项检查"),
   );
   const emptyLedgerP0Blockers = await scenarioPage
     .locator('.portfolio-analysis-rule[data-priority="P0"]')
@@ -5460,7 +5471,7 @@ const failingSeed = [
     },
   });
   await scenarioPage.waitForFunction(() =>
-    document.querySelector("#portfolio-status")?.textContent.includes("交易记录已读取"),
+    document.querySelector("#portfolio-analysis-status")?.textContent.includes("项检查"),
   );
   const p0Cards = await scenarioPage
     .locator('.portfolio-analysis-rule[data-priority="P0"]')
@@ -5786,7 +5797,7 @@ const dualMarketWatchSeed = [
   // Refresh rebuilds from the authoritative ledger; the rejected cache is not needed.
   await scenarioPage.click("#portfolio-refresh");
   await scenarioPage.waitForFunction(
-    () => document.querySelector("#portfolio-status")?.textContent.includes("交易记录已读取"),
+    () => document.querySelector("#portfolio-analysis-status")?.textContent.includes("项检查"),
   );
   assert.match(
     await scenarioPage.locator('.portfolio-position[data-symbol="SH600519"]').textContent(),
@@ -6210,15 +6221,21 @@ const newsFiles = {
   await scenarioPage.click("#load-data");
   await scenarioPage.waitForFunction(() => document.querySelector("#dataset-badge")?.textContent === "已保存数据");
   await scenarioPage.evaluate((nextRoot) => window.__switchWorkspace(nextRoot, {}), secondWorkspaceRoot);
-  await scenarioPage.waitForFunction(() =>
-    document.querySelector("#fast-period")?.value === "9" &&
-    document.querySelector("#notes-live")?.textContent.includes("还没有笔记"),
-  );
+  await scenarioPage.waitForSelector('[data-module="today"]', { state: "visible" });
+  await scenarioPage.waitForFunction(() => document.querySelector("#portfolio-status")?.textContent === "还没有交易记录。");
+  assert.equal(await scenarioPage.evaluate(key => window.__hostCalls.some(call =>
+    ["storage.get", "storage.getSnapshot"].includes(call.method) && call.params.key === key
+  ), secondConfigurationKey), false, "restoring Today must not eagerly read hidden Research settings");
   assert.equal(await scenarioPage.locator('[data-module="today"]').isVisible(), true);
   assert.equal(await scenarioPage.locator(".watch-item").count(), 0);
   assert.equal(await scenarioPage.locator(".note-card").count(), 0);
   assert.equal(await scenarioPage.locator("#portfolio-workspace").isHidden(), true);
   assert.notEqual((await scenarioPage.locator("#dataset-badge").textContent()).trim(), "已保存数据");
+  await scenarioPage.click('[data-module-tab="notes"]');
+  await scenarioPage.waitForFunction(() => document.querySelector("#notes-live")?.textContent.includes("还没有笔记"));
+  assert.equal(await scenarioPage.locator(".note-card").count(), 0);
+  await scenarioPage.click('[data-module-tab="research"]');
+  await scenarioPage.waitForFunction(() => document.querySelector("#fast-period")?.value === "9");
   assert.equal(await scenarioPage.locator("#data-path").inputValue(), "data/market/SECOND.csv");
   assert.deepEqual(
     await scenarioPage.evaluate((key) => window.__storage.get(key), secondConfigurationKey),
@@ -6314,6 +6331,9 @@ const newsFiles = {
       "data/market/SZ300750.meta.json": `${JSON.stringify(staleProjectMeta, null, 2)}\n`,
     },
   });
+  // Exported project CSV maintenance belongs to the Research directory view.
+  // This fixture has no background opt-in; first-screen Today must not scan it.
+  await scenarioPage.click('[data-module-tab="research"]');
   await scenarioPage.waitForFunction(() => {
     const file = window.__files.get("data/market/SZ300750.meta.json");
     return file && JSON.parse(file.content).networkCheckedThrough === "2026-08-26";

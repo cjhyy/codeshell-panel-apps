@@ -1851,7 +1851,8 @@ export function createHoldingsController({
       else elements.account.focus();
     },
     noteContext() {
-      return { ledger, holdings: snapshot, rules: ruleResults };
+      return { ledger, holdings: snapshot, rules: ruleResults,
+        unavailableSources: { ledger: baseEpoch !== currentEpoch() || baseIdentity !== executionIdentity() || (!ledgerExists && ledger !== null), rules: !detailsReady } };
     },
   };
 }

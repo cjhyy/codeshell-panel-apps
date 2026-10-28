@@ -39,6 +39,7 @@ test('real holdings controller cold/hot base path reads only ledger with 50ms br
    const start=performance.now();const active=await hostCall('storage.get',{key:'activeTab'});gate.open(epoch);await gate.ensure(active,()=>controller.loadBase(epoch));
    cold.push(performance.now()-start);
    assert.equal(elements.holdingsList.children.length,20);assert.equal(controller.noteContext().holdings.positionsByAccount[0].quantity,'100');
+   assert.deepEqual(controller.noteContext().unavailableSources,{ledger:false,rules:true},'cold base makes ledger links available without claiming historical rule results');
    assert.equal(calls.filter(c=>c.method==='workspace.readText').length,1);
    assert.deepEqual(calls.filter(c=>c.method==='workspace.list').map(c=>c.params.path),['portfolio']);
    assert.equal(calls.some(c=>c.method==='process.spawn'),false);
@@ -68,6 +69,16 @@ test('semantic ledger and transaction FX control replay while ending FX only rev
  ledger.transactions[0].price='10.01';cache.derive(JSON.stringify(ledger),history,instant);assert.equal(marks(),3,'semantic ledger edit invalidates');
 });
 
+test('confirmed missing ledger and an unsaved create-form draft have distinct note-reference availability',async()=>{
+ const original=globalThis.document;globalThis.document={createElement:()=>new Element(),querySelector:()=>null};
+ const elements=new Proxy({performance:null},{get:(obj,key)=>key in obj?obj[key]:(obj[key]=new Element())});let controller;
+ try{
+  controller=createHoldingsController({elements,currentEpoch:()=>1,hostCall:async(method)=>{assert.equal(method,'workspace.list');return{entries:[]};}});
+  await controller.loadBase();assert.equal(controller.noteContext().ledger,null);assert.equal(controller.noteContext().unavailableSources.ledger,false,'the local file was confirmed absent');
+  controller.openEntry();assert.notEqual(controller.noteContext().ledger,null);assert.equal(controller.noteContext().unavailableSources.ledger,true,'an unsaved empty form must not override authoritative Notes references');
+ }finally{controller?.reset();globalThis.document=original;}
+});
+
 test('real holdings DOM retains keyed rows, accepts unknown sessions and same-value ticks replay zero transactions',async()=>{
  const original={document:globalThis.document,requestAnimationFrame:globalThis.requestAnimationFrame};
  globalThis.document={createElement:()=>new Element(),createTextNode:text=>Object.assign(new Element(),{textContent:text}),querySelector:()=>null};
@@ -90,6 +101,7 @@ test('real holdings DOM retains keyed rows, accepts unknown sessions and same-va
  try{
   controller=createHoldingsController({elements,hostCall,getContext:()=>context,onHostEvent:(name,fn)=>{events.set(name,fn);return()=>events.delete(name);},currentEpoch:()=>1,now:()=>new Date(instant)});
   await controller.loadBase();await controller.ensureDetails();controller.setActive(true);await controller.refreshQuotes();await new Promise(setImmediate);
+  assert.deepEqual(controller.noteContext().unavailableSources,{ledger:false,rules:false});
   const row=elements.holdingsList.children.find(item=>item.dataset.symbol==='SH600000');
   const details=row.children.find(item=>item.dataset.patchKey==='provenance');details.open=true;
   const button=row.children.find(item=>item.dataset.patchKey==='record-note');globalThis.document.activeElement=button;

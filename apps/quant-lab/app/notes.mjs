@@ -223,6 +223,8 @@ function linkLookup(context) {
 export function resolveNoteLinks(note, context = {}) {
   const lookup = linkLookup(context);
   const links = note.links.map((link) => {
+    const source = link.type === "news" ? "news" : link.type === "rule" ? "rules" : "ledger";
+    if (context.unavailableSources?.[source]) return { link, status: "unavailable", current: null, untrusted: link.type === "news" };
     let current = null;
     let changed = false;
     if (link.type === "instrument") current = lookup.instruments.get(`${link.market}:${link.symbol}`) ?? null;
@@ -236,7 +238,7 @@ export function resolveNoteLinks(note, context = {}) {
     }
     return { link, status: current ? (changed ? "changed" : "current") : "orphan", current, untrusted: link.type === "news" };
   });
-  return { note, links, status: links.some((item) => item.status === "orphan") ? "orphan" : links.some((item) => item.status === "changed") ? "changed" : "current" };
+  return { note, links, status: links.some((item) => item.status === "orphan") ? "orphan" : links.some((item) => item.status === "unavailable") ? "unavailable" : links.some((item) => item.status === "changed") ? "changed" : "current" };
 }
 
 function timeOf(value) {
@@ -248,7 +250,7 @@ function timeOf(value) {
   return null;
 }
 
-export function buildReviewTimeline({ notes = [], ledger = {}, holdings = null, news = null, rules = [] } = {}) {
+export function buildReviewTimeline({ notes = [], ledger = {}, holdings = null, news = null, rules = [], unavailableSources = {} } = {}) {
   const safeLedger = ledger ?? {};
   const noteByLink = new Map();
   for (const note of notes) for (const link of note.links) {
@@ -257,7 +259,7 @@ export function buildReviewTimeline({ notes = [], ledger = {}, holdings = null, 
     noteByLink.set(key, [...(noteByLink.get(key) ?? []), note.id]);
   }
   const base = (type, id, occurredAt, source, record, currentStatus, noteIds = []) => ({ type, id, occurredAt, source, record, currentStatus, noteIds });
-  const items = notes.map((note) => base("note", note.id, note.createdAt, NOTES_PATH, note, resolveNoteLinks(note, { ledger: safeLedger, holdings, news, rules }).status, [note.id]));
+  const items = notes.map((note) => base("note", note.id, note.createdAt, NOTES_PATH, note, resolveNoteLinks(note, { ledger: safeLedger, holdings, news, rules, unavailableSources }).status, [note.id]));
   for (const transaction of safeLedger.transactions ?? []) items.push(base("transaction", transaction.id, timeOf(transaction), NOTES_PATH.replace("journal", "transactions"), transaction, "current", noteByLink.get(`transaction:${transaction.id}`) ?? []));
   if (holdings) items.push(base("holding", "holdings-current", timeOf(holdings), "portfolio/holdings.json", holdings, "current", []));
   for (const item of news?.items ?? []) {

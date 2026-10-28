@@ -4051,10 +4051,14 @@ function restoreUiState(value) {
 async function ensureActiveModule() {
   const epoch = workspaceEpoch;
   const scope = context.cwd ?? null;
+  // Bootstrap invokes the loader asynchronously. Capture the selected module
+  // with its cache key so a quick tab switch cannot mark another module ready.
+  const moduleId = activeModule;
   const shared = (name, load) => bootstrap.ensure(name, load);
   const base = () => shared("holdings", () => holdingsController.loadBase(epoch));
-  return shared(activeModule, async () => {
-    switch (activeModule) {
+  return shared(moduleId, async () => {
+    if (epoch !== workspaceEpoch) return;
+    switch (moduleId) {
       case "holdings":
         await holdingsController.loadBase(epoch);
         // Subscription metadata is one lightweight project record; read it only
@@ -4082,7 +4086,7 @@ async function ensureActiveModule() {
     if (epoch !== workspaceEpoch) return;
     holdingsController.setActive(["today", "holdings"].includes(activeModule) && context.visible !== false);
     liveMarketController.setActive(activeModule === "today" && context.visible !== false);
-    if (["today", "watch"].includes(activeModule)) backgroundWatchRestored = true;
+    if (["today", "watch"].includes(moduleId)) backgroundWatchRestored = true;
     syncSelectionActivity();
     scheduleBackgroundWatchRestore();
     renderDataCapabilityMatrix();
