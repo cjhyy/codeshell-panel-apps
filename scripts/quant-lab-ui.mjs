@@ -1482,7 +1482,7 @@ async function installHostStub(
     availableRuntimes = ["node", "nodejs"],
     localDataAvailable = true,
     liveRefreshFailure = "",
-    versionedStorage = false,
+    versionedStorage = true,
   } = {},
 ) {
   await target.addInitScript(
