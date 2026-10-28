@@ -55,6 +55,30 @@ not supported by the Host.
 published Host's manifest schema and read-only installation preflight. It is
 used only by package checks and is not bundled into the installed Panel runtime.
 
+Quant 0.50.0 introduces the reviewed `background.services` permission and
+`backgroundServices` declaration. The pinned older Core intentionally rejects
+that package; never remove the permission or loosen its schema to make an old
+Host install it. During this coordinated Host/Panel change, point checks at an
+explicitly built candidate Core:
+
+```sh
+CODESHELL_PANEL_CORE_PACKAGE=/absolute/path/to/host/packages/core npm run validate
+CODESHELL_PANEL_CORE_PACKAGE=/absolute/path/to/host/packages/core npm run check
+node scripts/quant-background-upgrade.mjs /absolute/path/to/host/packages/core
+node scripts/quant-background-host.mjs /absolute/path/to/host
+```
+
+The override imports the candidate's actual `dist/index.js` schema; without it,
+checks still use the pinned dependency. Release integration must update the
+published Core dependency and npm lock once a Host with this capability is
+available. The upgrade gate proves old-Host rejection retains Quant 0.47.0 and
+candidate permission review/rollback preserves exact package identities. The
+native smoke installs the actual candidate in a private HOME, starts the reviewed
+Quant service through the real Host, checks multi-guest/closed-page/stop behavior,
+and uses empty subscriptions so no market provider is contacted. It is not an
+Electron UI or live-market acceptance test. After changing a Quant native entry,
+run `node scripts/sync-quant-native.mjs`; the default gate verifies its hashes.
+
 With Node.js 20+ and development dependencies installed, run:
 
 ```sh

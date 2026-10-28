@@ -52,7 +52,7 @@ async function pin(project, app) {
   await mkdir(join(project, ".code-shell"), { recursive: true });
   await writeFile(join(project, ".code-shell/settings.json"), JSON.stringify({
     panelAppBindings: [app.id],
-    panelAppPins: { [app.id]: { version: app.version, packageDigest: app.packageDigest } },
+    panelAppPins: { [app.id]: { version: app.version, packageDigest: app.packageDigest, pinnedAt: new Date(Math.max(Date.now(), (core.installedPanelAppUpdatedAt(app.id) ?? 0) + 1)).toISOString() } },
   }));
   const selected = (await core.listProjectPanelApps(project, app.id)).find(item => item.id === app.id);
   assert.equal(selected.packageDigest, app.packageDigest);

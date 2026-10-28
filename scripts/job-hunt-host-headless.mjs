@@ -53,7 +53,7 @@ try {
     await mkdir(join(cwd, ".code-shell"), { recursive: true });
     await writeFile(join(cwd, ".code-shell/settings.json"), JSON.stringify({
       panelAppBindings: ["job-hunt-hq"],
-      panelAppPins: { "job-hunt-hq": { version: selected.version, packageDigest: selected.packageDigest } },
+      panelAppPins: { "job-hunt-hq": { version: selected.version, packageDigest: selected.packageDigest, pinnedAt: new Date(Math.max(Date.now(), (core.installedPanelAppUpdatedAt(selected.id) ?? 0) + 1)).toISOString() } },
     }));
   };
   await pin(project, installed);
@@ -110,7 +110,7 @@ try {
     return command(["run", op, "--input-file", path, "--project", project, "--session", "headless-host-fixture"]);
   };
   const operations = await command(["ops"]);
-  assert.equal(operations.length, 4);
+  assert.deepEqual(operations.map(item => item.name).sort(), ["get_job_research_digest", "get_job_search_context", "save_candidate_context", "save_job_opportunities", "save_job_research", "save_resume_draft", "save_resume_qa_answer"]);
   assert.equal((await command(["init", "--project", project])).initialized, true);
   await run("save_candidate_context", candidateInput);
   assert.equal((await run("save_resume_draft", resumeInput)).projectSaved, true);
@@ -335,7 +335,8 @@ try {
   assert.equal(replayed.resume.candidateQuestions.find(item => item.id === "qa-decision").answer, answer);
   await assertCareerPreserved();
 
-  // A catalog update must not redirect an already pinned project's Skill/CLI.
+  // A global update supersedes old pins. Explicitly reselect retained bytes
+  // afterwards to verify the current project selection governs Skill/CLI.
   const newerSource = join(root, "newer-package");
   await cp(source, newerSource, { recursive: true });
   const manifestPath = join(newerSource, ".codeshell-panel/panel.json");
@@ -344,14 +345,15 @@ try {
   const [major, minor, patch] = manifest.version.split(".").map(Number);
   await writeFile(manifestPath, JSON.stringify({ ...manifest, version: `${major}.${minor}.${patch + 1}` }));
   const newer = await install(newerSource, true);
+  await pin(project, installed);
   core.invalidateSkillCache();
   assert.equal((await resolveRuntime(project, installed)).path, runtime.path);
-  assert.equal((await command(["ops"])).length, 4);
+  assert.equal((await command(["ops"])).length, operations.length);
   const second = join(root, "new-project");
   await pin(second, newer);
   const newerRuntime = await resolveRuntime(second, newer);
   assert.notEqual(newerRuntime.path, runtime.path);
-  assert.equal((await command(["ops"], second, newerRuntime.path)).length, 4);
+  assert.equal((await command(["ops"], second, newerRuntime.path)).length, operations.length);
   await rm(newerRuntime.path);
   core.invalidateSkillCache();
   assert.match(await skillTool({ skill: "job-hunt-hq:project-runtime" }, { cwd: second }), /not found/);
