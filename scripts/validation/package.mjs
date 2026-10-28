@@ -36,6 +36,7 @@ const allowedExtensions = new Set([
   ".woff",
   ".woff2",
   ".ttf",
+  ".wasm",
 ]);
 const allowedAgentExtensions = new Set([".md", ".json", ".png", ".jpg", ".jpeg", ".webp"]);
 async function walk(directory, root = directory) {

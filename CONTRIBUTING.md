@@ -63,15 +63,36 @@ explicitly built candidate Core:
 
 ```sh
 CODESHELL_PANEL_CORE_PACKAGE=/absolute/path/to/host/packages/core npm run validate
-CODESHELL_PANEL_CORE_PACKAGE=/absolute/path/to/host/packages/core npm run check
 node scripts/quant-background-upgrade.mjs /absolute/path/to/host/packages/core
 node scripts/quant-background-host.mjs /absolute/path/to/host
 ```
 
-The override imports the candidate's actual `dist/index.js` schema; without it,
-checks still use the pinned dependency. Release integration must update the
-published Core dependency and npm lock once a Host with this capability is
-available. The upgrade gate proves old-Host rejection retains Quant 0.47.0 and
+The override imports the candidate's actual `dist/index.js` schema for development
+validation only. `npm run check:host-contract`, the corresponding required CI job,
+and the first step of `npm run check` always use the exact published dependency;
+they deliberately ignore that override. They validate every actual installation
+layout, including native apps and source-built outputs, through the Host's strict
+manifest parser and read-only installer preview. Version, lock and registry
+integrity must match. Development validation cannot make a release gate green.
+
+This change prepares Host Core **0.9.49**; it is not a claim that this version has
+been published. The existing `0.9.23` pin rejects Quant's new capability and Design
+Studio's existing `.wasm` asset. Do not loosen either installer contract. After a
+compatible Core artifact has been published with separate authorization, verify
+its registry metadata in a private HOME, then update both exact pin and lock using
+npm (never a hand-written integrity hash):
+
+```sh
+npm view @cjhyy/code-shell-core@0.9.49 version dist.integrity dist.tarball --json
+npm install --save-dev --save-exact @cjhyy/code-shell-core@0.9.49
+npm ci
+npm run check:host-contract
+npm run check
+```
+
+Use the actual approved compatible published version if it differs from 0.9.49.
+Until that clean-install sequence passes, Panel release integration is blocked.
+These commands do not authorize publishing the Core package. The upgrade gate proves old-Host rejection retains Quant 0.47.0 and
 candidate permission review/rollback preserves exact package identities. The
 native smoke installs the actual candidate in a private HOME, starts the reviewed
 Quant service through the real Host, checks multi-guest/closed-page/stop behavior,
