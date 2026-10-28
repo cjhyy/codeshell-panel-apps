@@ -563,3 +563,10 @@ Host 私有任务。文件是正式 schema-2 编辑文档，时间为每秒 2400
 没有活跃写入者后才手工处理，不能盲清锁或并发手改工程文件。退出码为 0 成功、
 2 参数/输入限制、3 修订冲突、4 项目忙、1 其他失败。验证命令：
 `node --test tests/video-studio-project-cli.test.mjs`。
+
+Ordinary media submissions require advertised `tasks.find`. Their canonical
+SHA-256 request keys include the action, normalized request, materialized
+resource mapping and selected connection IDs. A project document CAS saves the
+intent before `tasks.start`; a lost receipt or reopened window queries the same
+key first. An unresolved intent never automatically resubmits, including paid
+manual-recovery requests. The Editor's own request protocol is unchanged.

@@ -30,6 +30,7 @@ function fixture(legacyMethods: string[] = []) {
     cwd = "/project-a";
   const methods = [
     "tasks.start",
+    "tasks.find",
     "tasks.get",
     "tasks.list",
     "tasks.cancel",
@@ -112,6 +113,7 @@ function fixture(legacyMethods: string[] = []) {
           eof: params.offset + params.length >= bytes.length,
         };
       }
+      if (method === "tasks.find") return structuredClone([...jobs.values()].find((job) => job.requestKey === params.requestKey) ?? null);
       if (method === "tasks.start") {
         const request = params.input.request;
         let result: any = {};
@@ -142,6 +144,7 @@ function fixture(legacyMethods: string[] = []) {
           attempt: 1,
           createdAt: Date.now(),
           updatedAt: Date.now(),
+          requestKey: params.requestKey,
           entry: { name: params.entry },
           input: params.input,
           result: { result, artifacts: [] },
@@ -194,6 +197,7 @@ function fixture(legacyMethods: string[] = []) {
   const wrapped = createMediaTaskBridge(raw);
   return {
     ...wrapped,
+    raw,
     calls,
     jobs,
     documents,
@@ -854,4 +858,95 @@ test("unreadable or incompatible media journals never fall back to an empty writ
       f.dispose();
     }
   }
+});
+
+
+test("media intent precedes submission; lost receipts and a reopened window find the same paid request", async () => {
+  const f = fixture();
+  const original = f.raw.call.bind(f.raw);
+  let submissions = 0;
+  f.raw.call = async (method, params) => {
+    if (method === "tasks.start") {
+      submissions++;
+      const intent = f.documents.get(`/project-a:media-intent-${params.requestKey.slice(9)}`);
+      assert.equal(intent.data.requestKey, params.requestKey);
+      await original(method, params);
+      throw new Error("receipt dropped after Host commit");
+    }
+    return original(method, params);
+  };
+  const modelId = `speech-${createHash("sha256").update(JSON.stringify([f.connection.id, f.connection.catalogId, f.connection.model, f.connection.baseUrl])).digest("hex").slice(0, 32)}`;
+  const request = { modelId, text: "one paid request", voiceId: "alloy" };
+  const first = await f.bridge.call("media.tts", request) as any;
+  f.dispose();
+  const reopened = createMediaTaskBridge(f.raw);
+  try {
+    const again = await reopened.bridge.call("media.tts", { voiceId: "alloy", text: request.text, modelId }) as any;
+    assert.equal(again.id, first.id);
+    assert.equal(submissions, 1);
+    assert.match(f.calls.find((c) => c.method === "tasks.start").params.requestKey, /^media-v1:[a-f0-9]{64}$/);
+  } finally { reopened.dispose(); }
+});
+
+test("unresolved manual intent never automatically resubmits after reopening", async () => {
+  const f = fixture();
+  const original = f.raw.call.bind(f.raw);
+  let submissions = 0;
+  f.raw.call = async (method, params) => {
+    if (method === "tasks.start") { submissions++; throw new Error("unknown transport outcome"); }
+    return original(method, params);
+  };
+  try {
+    Object.assign(f.connection, { fingerprint: "f".repeat(32) });
+    const request = { modelId: `speech-${"f".repeat(32)}`, text: "unknown", voiceId: "fixture" };
+    await assert.rejects(f.bridge.call("media.tts", request), /回执未确认/);
+    const reopened = createMediaTaskBridge(f.raw);
+    try { await assert.rejects(reopened.bridge.call("media.tts", request), /未重复发起/); }
+    finally { reopened.dispose(); }
+    assert.equal(submissions, 1);
+  } finally { f.dispose(); }
+});
+
+
+test("another window cannot submit while the first intent is waiting at the Host boundary", async () => {
+  const f = fixture();
+  const original = f.raw.call.bind(f.raw);
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>((resolve) => { enter = resolve; });
+  const barrier = new Promise<void>((resolve) => { release = resolve; });
+  let submissions = 0;
+  f.raw.call = async (method, params) => {
+    if (method === "tasks.start") { submissions++; enter(); await barrier; }
+    return original(method, params);
+  };
+  const other = createMediaTaskBridge(f.raw);
+  const request = { modelId: "macos-say", text: "barrier", voiceId: "fixture" };
+  const first = f.bridge.call("media.tts", request);
+  try {
+    await entered;
+    await assert.rejects(other.bridge.call("media.tts", request), /未重复发起/);
+    assert.equal(submissions, 1);
+    release();
+    const accepted = await first as any;
+    const reattached = await other.bridge.call("media.tts", request) as any;
+    assert.equal(reattached.id, accepted.id);
+    assert.equal(submissions, 1);
+  } finally { release(); await first; f.dispose(); other.dispose(); }
+});
+
+
+test("canonical media keys isolate projects and selected credential connection IDs", async () => {
+  const f = fixture();
+  Object.assign(f.connection, { fingerprint: "f".repeat(32) });
+  const request = { modelId: `speech-${"f".repeat(32)}`, text: "isolated", voiceId: "fixture" };
+  try {
+    const first = await f.bridge.call("media.tts", request) as any;
+    f.setCwd("/project-b");
+    const second = await f.bridge.call("media.tts", request) as any;
+    f.connection.id = "another-connection";
+    const third = await f.bridge.call("media.tts", request) as any;
+    assert.equal(new Set([first.id, second.id, third.id]).size, 3);
+    const keys = f.calls.filter((call) => call.method === "tasks.start").map((call) => call.params.requestKey);
+    assert.equal(new Set(keys).size, 3);
+  } finally { f.dispose(); }
 });

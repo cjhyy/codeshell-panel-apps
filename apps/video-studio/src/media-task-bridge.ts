@@ -51,6 +51,7 @@ function journalRecipes(stored: any): Recipe[] {
 }
 const REQUIRED = [
   "tasks.start",
+  "tasks.find",
   "tasks.get",
   "tasks.list",
   "tasks.cancel",
@@ -92,6 +93,19 @@ function ownedTask(job: any) {
   );
 }
 const clone = (value: any) => structuredClone(value);
+// JSON values only; stable object ordering makes equivalent UI requests share
+// one Host receipt across windows and reloads. Array order remains semantic.
+export function canonicalMediaRequest(value: any): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalMediaRequest(item ?? null)).join(",")}]`;
+  return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalMediaRequest(value[key])}`).join(",")}}`;
+}
+async function mediaRequestHash(value: any) {
+  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",
+    new TextEncoder().encode(canonicalMediaRequest(JSON.parse(JSON.stringify(value)))))))
+    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 function taskRequest(job: any) {
   return job.input?.request ?? job.input?.input?.request;
 }
@@ -255,14 +269,14 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
       for (const clip of [...(params.project?.clips ?? []), ...(params.project?.audioClips ?? [])])
         ids.add(assetId(params.sources?.[clip.assetId] ?? clip.assetId));
     }
-    const resources = [...ids].map((id, i) => ({ assetId: id, path: `inputs/source-${i}.bin` }));
+    const resources = [...ids].sort().map((id, i) => ({ assetId: id, path: `inputs/source-${i}.bin` }));
     const inputs = Object.fromEntries(resources.map((r) => [r.assetId, r.path]));
     const request: any = {
       action,
       params,
       inputs,
       scopeKey: scope.key,
-      jobId: `media-${randomId()}`,
+      ...(hidden ? { jobId: `media-${randomId()}` } : {}),
     };
     const connectionIds: string[] = [];
     if (action === "status" || action === "voices")
@@ -291,8 +305,32 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
       if (connectionIds.length !== 1) throw new Error("配音连接已变化，请刷新模型列表后重新选择");
     }
     await same(scope);
-    const job = await sdk.start({
+    const hash = await mediaRequestHash({ action, request, resources, connectionIds }),
+      requestKey = `media-v1:${hash}`,
+      intentKey = `media-intent-${hash}`,
+      recovery = connectionIds.length ? "manual" : "retry";
+    request.jobId ??= `media-${hash}`;
+    // The create-only intent precedes any possible execution. A lost write or
+    // start reply is unknown, never evidence that a paid operation did not run.
+    const intent = (await sdk.call("media.document.get", { key: intentKey })) as any;
+    if (intent.data !== null && (intent.data?.schemaVersion !== 1 ||
+        intent.data.requestKey !== requestKey || intent.data.recovery !== recovery))
+      throw new Error("媒体任务意图记录无效，已保留原记录；请检查后再操作");
+    let existing = await sdk.call("tasks.find", { requestKey });
+    await same(scope);
+    if (existing) return normalize(existing, scope, false);
+    if (intent.data !== null)
+      throw new Error("上次媒体请求回执尚未确认，未重复发起。请检查任务列表及远端结果后恢复；重新打开后仍会先查询原请求。");
+    await sdk.call("media.document.set", {
+      key: intentKey, baseRevision: 0,
+      data: { schemaVersion: 1, requestKey, recovery }, label: "媒体任务意图",
+    });
+    await same(scope);
+    let job;
+    try {
+      job = await sdk.start({
       entry: "media-runtime",
+      requestKey,
       input: {
         request,
         resources,
@@ -304,8 +342,15 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
           ? { connectionIds, connectionArgument: "--connections-file" }
           : {}),
       },
-      recovery: connectionIds.length ? "manual" : "retry",
-    });
+      recovery,
+      });
+    } catch (error) {
+      // The Host may have committed before transport failure. Query once; an
+      // unavailable lookup leaves the intent intact for the next open.
+      existing = await sdk.call("tasks.find", { requestKey }).catch(() => null);
+      if (!existing) throw new Error("媒体任务回执未确认，意图已保存，未自动重发；请检查任务列表及远端结果", { cause: error });
+      job = taskValue(existing);
+    }
     const recipe = { id: job.id, action, type: hidden ? "internal" : mediaType(action, params) };
     try {
       await remember(scope, recipe);
