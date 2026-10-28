@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { repositoryRoot } from "./panel-projects.mjs";
 import { dataScenario } from "./panel-upgrade-scenarios.mjs";
 import { UpgradeBrowserCustody, installUpgradeWorkerShutdown } from "./panel-upgrade-process.mjs";
+import { upgradeAppIds } from "./panel-upgrade-options.mjs";
 
 const browsers = new UpgradeBrowserCustody();
 const worker = installUpgradeWorkerShutdown(browsers);
@@ -24,15 +25,24 @@ const cases = [
   ["video-studio", "video-studio-v0.5.12", "2149c34087c5e692abe10ba36fa4082d7a416a34", "panels/video-studio"],
   ["starter-panel", "57703cbb", "57703cbb75ed44dce004215ad7075480c289becb", "templates/starter"],
 ];
-const [serverRoot, sandbox, reportPath] = process.argv.slice(2).map(value => resolve(value));
+const [serverRoot, sandbox, reportPath] = process.argv.slice(2, 5).map(value => resolve(value));
+const appId = process.argv[5];
+assert.ok(process.argv.length <= 6 && (!appId || upgradeAppIds.includes(appId)), "invalid targeted app");
 assert.ok(sandbox && process.env.HOME === join(sandbox, "home"), "run through check-panel-host-upgrade.mjs");
 const core = await import(pathToFileURL(resolve(serverRoot, "../core/dist/panel-apps/index.js")).href);
 const { readInstalledPanelAppsRegistry } = await import(pathToFileURL(resolve(serverRoot, "../core/dist/panel-apps/registry.js")).href);
 const { PanelRuntimeServices } = await import(pathToFileURL(join(serverRoot, "dist/panels/runtime-services.js")).href);
+const { createPanelManagement } = await import(pathToFileURL(join(serverRoot, "dist/panels/management.js")).href);
 const hostCheckoutManifestVersion = JSON.parse(await readFile(join(serverRoot, "package.json"), "utf8")).version;
 const dataDir = join(sandbox, "runtime-data");
 let runtime = new PanelRuntimeServices({ dataDir });
 const reports = [];
+// Every catalog mutation and reviewed project selection shares one monotonic
+// clock. Future-dated manual pins would hide the Host's global update contract.
+let ticks = 0;
+const clock = () => Date.UTC(2026, 9, 28) + ++ticks * 1000;
+const timestamp = () => new Date(clock()).toISOString();
+const owner = { ownerId: "owned-upgrade-fixture", authorize: () => true };
 const git = (...args) => {
   const result = spawnSync("git", args, { cwd: repositoryRoot, encoding: null, maxBuffer: 64 * 1024 * 1024 });
   if (result.error) throw result.error;
@@ -49,22 +59,35 @@ async function extract(commit, path, destination) {
   return join(destination, path);
 }
 async function pin(project, app) {
-  await mkdir(join(project, ".code-shell"), { recursive: true });
-  await writeFile(join(project, ".code-shell/settings.json"), JSON.stringify({
-    panelAppBindings: [app.id],
-    panelAppPins: { [app.id]: { version: app.version, packageDigest: app.packageDigest, pinnedAt: new Date(Math.max(Date.now(), (core.installedPanelAppUpdatedAt(app.id) ?? 0) + 1)).toISOString() } },
-  }));
+  await mkdir(project, { recursive: true });
+  const management = createPanelManagement({ cwd: project, projectPackages: true, allowLocalSources: true, now: clock });
+  try {
+    let selected = (await management.snapshot()).panels.find(item => item.id === app.id);
+    assert.ok(selected, `installed ${app.id} missing from project snapshot`);
+    await management.binding(owner, app.id, true, selected.revision);
+    selected = (await management.snapshot()).panels.find(item => item.id === app.id);
+    if (selected.packageDigest !== app.packageDigest) {
+      const review = await management.previewRestore(owner, app.id, app.packageDigest, selected.revision);
+      assert.equal(review.packageDigest, app.packageDigest);
+      const restored = await management.restore(owner, review.reviewToken);
+      assert.equal(restored.packageDigest, app.packageDigest);
+    }
+  } finally {
+    management.close();
+  }
   const selected = (await core.listProjectPanelApps(project, app.id)).find(item => item.id === app.id);
   assert.equal(selected.packageDigest, app.packageDigest);
   assert.equal(selected.version, app.version);
   return selected;
 }
 function context(project, selected, sourceRoot) {
+  const selection = JSON.stringify(core.projectPanelAppPackagePins(project, selected.id)[selected.id]);
+  assert.ok(selection, "context requires a reviewed project selection");
   const valid = async () => {
     // pin() already verified immutable package bytes through the real resolver.
     // Each storage operation rechecks actual project selection and installation authority.
     const pin = core.projectPanelAppPackagePins(project, selected.id)[selected.id];
-    return pin?.packageDigest === selected.packageDigest &&
+    return JSON.stringify(pin) === selection && pin?.packageDigest === selected.packageDigest &&
       (await readInstalledPanelAppsRegistry()).some(app => app.id === selected.id);
   };
   const scope = { appId: selected.id, cwd: project, projectPath: project,
@@ -85,13 +108,14 @@ async function update(id, source, packageRoot) {
   await replaceSource(source, packageRoot);
   const review = await core.previewInstalledPanelAppUpdate(id);
   assert.equal(review.id, id);
-  const app = await core.installReviewedPanelAppUpdate(id, review.reviewToken, "2026-10-12T00:00:00.000Z");
+  const app = await core.installReviewedPanelAppUpdate(id, review.reviewToken, timestamp());
   assert.equal(app.version, review.version);
   assert.deepEqual(app.permissions, review.permissions);
   return { app, review };
 }
 
 for (const [index, [id, ref, commit, packagePath]] of cases.entries()) {
+  if (appId && id !== appId) continue;
   const root = join(sandbox, `case-${index}-${id}`);
   assert.equal(String(git("rev-parse", `${ref}^{commit}`)).trim(), commit, `${ref} moved`);
   const oldRoot = await extract(commit, packagePath, join(root, "old"));
@@ -102,7 +126,7 @@ for (const [index, [id, ref, commit, packagePath]] of cases.entries()) {
   const review = await core.previewLocalPanelApp({ kind: "dir", path: source });
   assert.equal(review.id, id);
   const old = await core.installReviewedLocalPanelApp({ kind: "dir", path: source }, review.reviewToken,
-    "2026-10-11T00:00:00.000Z", { overwrite: index === 2 });
+    timestamp(), { overwrite: index === 2 });
   assert.deepEqual(old.permissions, review.permissions);
   const project = join(root, "project-A"), other = join(root, "project-B");
   const oldSelected = await pin(project, old);
@@ -117,19 +141,29 @@ for (const [index, [id, ref, commit, packagePath]] of cases.entries()) {
   const candidateRoot = join(repositoryRoot, packagePath);
   await replaceSource(source, candidateRoot);
   await assert.rejects(core.installReviewedPanelAppUpdate(id, pendingReview.reviewToken,
-    "2026-10-12T00:00:00.000Z"), core.PanelAppReviewChangedError);
+    timestamp()), core.PanelAppReviewChangedError);
   assert.equal((await core.listInstalledPanelApps(id))[0].packageDigest, old.packageDigest);
   const { app: current, review: upgradeReview } = await update(id, source, candidateRoot);
   assert.notEqual(current.packageDigest, old.packageDigest, `${id} must exercise different package bytes`);
-  // Installation never silently advances either project's reviewed selection.
-  assert.equal((await core.listProjectPanelApps(project, id))[0].packageDigest, old.packageDigest);
-  assert.equal((await core.listProjectPanelApps(other, id))[0].packageDigest, old.packageDigest);
-  await scenario.verifyEmpty(otherContext);
-  await scenario.verifyOld(oldContext);
-  const selected = await pin(project, current);
+  // A global catalog update advances both older project pins. To test the old
+  // parser against retained data we explicitly review and restore exact bytes.
+  assert.equal((await core.listProjectPanelApps(project, id))[0].packageDigest, current.packageDigest);
+  assert.equal((await core.listProjectPanelApps(other, id))[0].packageDigest, current.packageDigest);
   await assert.rejects(oldContext.assertAuthorized());
+  await assert.rejects(otherContext.assertAuthorized());
   if (old.permissions.includes("storage"))
     await assert.rejects(oldContext.call("storage.get", { key: "upgrade-authority-probe" }), /authoriz|revok|permission/i);
+  const retainedOld = context(project, await pin(project, old), oldSource);
+  assert.equal((await core.listProjectPanelApps(other, id))[0].packageDigest, current.packageDigest,
+    "project A restore leaves project B on exact candidate");
+  const retainedOther = context(other, await pin(other, old), oldSource);
+  await scenario.verifyEmpty(retainedOther);
+  await scenario.verifyOld(retainedOld);
+  await assert.rejects(oldContext.assertAuthorized(), "restoring the same digest never revives an old context");
+  const selected = await pin(project, current);
+  await assert.rejects(retainedOld.assertAuthorized());
+  assert.equal((await core.listProjectPanelApps(other, id))[0].packageDigest, old.packageDigest,
+    "project A candidate selection leaves project B's later exact restore intact");
   const currentContext = context(project, selected, candidateRoot);
   await scenario.upgrade(currentContext);
   restart();
@@ -137,6 +171,10 @@ for (const [index, [id, ref, commit, packagePath]] of cases.entries()) {
   await scenario.prepareRollback(currentContext);
   const { app: rolledBack } = await update(id, source, oldRoot);
   assert.equal(rolledBack.packageDigest, old.packageDigest, "rollback installs exact retained old bytes");
+  assert.equal((await core.listProjectPanelApps(project, id))[0].packageDigest, old.packageDigest);
+  assert.equal((await core.listProjectPanelApps(other, id))[0].packageDigest, old.packageDigest);
+  await assert.rejects(currentContext.assertAuthorized());
+  await assert.rejects(retainedOther.assertAuthorized());
   const restored = context(project, await pin(project, rolledBack), oldSource);
   restart();
   await scenario.verifyOld(restored);
@@ -146,6 +184,9 @@ for (const [index, [id, ref, commit, packagePath]] of cases.entries()) {
   assert.equal((await core.resolvePanelAppPackage(id, current.packageDigest)).packageDigest, current.packageDigest);
   const { app: upgradedAgain } = await update(id, source, candidateRoot);
   assert.equal(upgradedAgain.packageDigest, current.packageDigest);
+  assert.equal((await core.listProjectPanelApps(project, id))[0].packageDigest, current.packageDigest);
+  assert.equal((await core.listProjectPanelApps(other, id))[0].packageDigest, current.packageDigest);
+  await assert.rejects(restored.assertAuthorized());
   const reopened = context(project, await pin(project, upgradedAgain), candidateRoot);
   restart();
   await scenario.verifyReupgrade(reopened);
@@ -155,8 +196,9 @@ for (const [index, [id, ref, commit, packagePath]] of cases.entries()) {
     permissionsAdded: current.permissions.filter(value => !old.permissions.includes(value)),
     permissionsRemoved: old.permissions.filter(value => !current.permissions.includes(value)),
     reviewedPermissions: upgradeReview.permissions,
-    commonChecks: ["review token rejects changed source", "project pins remain old after global update",
-      "independent project stays empty", "old scope revoked after project update", "exact old digest rollback",
+    commonChecks: ["review token rejects changed source", "global catalog updates advance older pins to exact digest in both projects",
+      "reviewed project restore selects exact retained digest independently", "independent project stays empty",
+      "selection changes revoke old scopes without same-digest resurrection", "exact old digest rollback",
       "candidate content retained", "uninstall revokes execution authority"], checks: scenario.checks,
     rollback: "exact-old-package-and-pre-upgrade-data; upgraded-content-archived" });
   console.log(`PASS ${id} ${old.version} -> ${current.version} -> ${old.version} -> ${current.version}: ${scenario.checks.join(", ")}`);
@@ -173,7 +215,8 @@ await writeFile(reportPath, JSON.stringify({ hostCheckoutManifestVersion,
   hostRuntimeEntrySHA256: createHash("sha256").update(await readFile(join(serverRoot, "dist/panels/runtime-services.js"))).digest("hex"),
   coreInstallerEntrySHA256: createHash("sha256").update(await readFile(resolve(serverRoot, "../core/dist/panel-apps/installer.js"))).digest("hex"),
   runtime: { node: process.version, platform: process.platform, arch: process.arch },
-  candidateCommit: String(git("rev-parse", "HEAD")).trim(), cases: reports,
+  candidateCommit: String(git("rev-parse", "HEAD")).trim(),
+  selection: { appId: appId ?? null, caseCount: reports.length, completeCatalog: !appId }, cases: reports,
   boundary: "Temporary local Node Host/Core integration and domain adapters; no desktop shell, physical phone, deployed Cloud, provider requests or native download/model execution" }, null, 2) + "\n");
 
 });

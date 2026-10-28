@@ -9,7 +9,7 @@ export const suites = [
   {
     id: "upgrade-harness",
     label: "Upgrade worker browser custody and shutdown receipts",
-    commands: [["--test", "tests/panel-upgrade-process.test.mjs"]],
+    commands: [["--test", "tests/panel-upgrade-process.test.mjs", "tests/panel-upgrade-starter-assets.test.mjs", "tests/panel-upgrade-options.test.mjs"]],
   },
   {
     id: "starter",

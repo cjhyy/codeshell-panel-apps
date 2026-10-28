@@ -381,26 +381,57 @@ app.on("session-created", session => {
       assert.equal((await first.call("storage.getSnapshot", { key: markerKey })).value.value.project, "A");
     const updated = await installWhenIdle({ cwd: projectA, id, reviewToken: candidateReview.preview.reviewToken });
     assert.equal(updated.ok, true, JSON.stringify(updated));
+    assert.match(updated.packageDigest, /^[a-f0-9]{64}$/u, "reviewed update must return its exact installed payload");
     const currentA = await binding(projectA, id);
+    const currentB = await binding(projectB, id);
+    assert.equal(currentA.packageDigest, updated.packageDigest);
     assert.notEqual(currentA.packageDigest, originalA.packageDigest);
     assert.equal(currentA.version, originalA.version);
-    assert.equal((await binding(projectB, id)).packageDigest, originalB.packageDigest);
+    // Current Host contract: a catalog install/update supersedes every older
+    // project pin. A later reviewed restore pins only that selected project.
+    // Assert exact payloads on both sides of each transition, including B.
+    assert.equal(currentB.packageDigest, updated.packageDigest);
+    assert.equal(currentB.version, originalB.version);
     const current = await attach(projectA, id, "candidate-A");
+    const advancedB = await attach(projectB, id, "candidate-B");
     assert.notEqual(current.prepared.partition, first.prepared.partition);
+    assert.notEqual(advancedB.prepared.partition, second.prepared.partition);
     if (manifest.permissions.includes("storage")) {
       const revoked = await first.call("storage.get", { key: markerKey }).catch(error => ({ ok: false, destroyed: String(error) }));
       assert.equal(revoked.ok, false, "updated project's old guest kept authority");
+      const revokedB = await second.call("storage.get", { key: markerKey }).catch(error => ({ ok: false, destroyed: String(error) }));
+      assert.equal(revokedB.ok, false, "global update left the other project's old guest authorized");
       assert.equal((await current.call("storage.getSnapshot", { key: markerKey })).value.value.project, "A");
-      assert.equal((await second.call("storage.getSnapshot", { key: markerKey })).value.revision, null, "other project's retained guest was revoked or contaminated");
+      assert.equal((await advancedB.call("storage.getSnapshot", { key: markerKey })).value.revision, null, "global package update contaminated the other project's storage");
+    }
+    const restoreReviewB = await ipc("previewPanelAppRestore", projectB, id, originalB.packageDigest, currentB.revision);
+    assert.equal(restoreReviewB.packageDigest, originalB.packageDigest);
+    const restoredB = await whenIdle(id, () => ipc("restorePanelAppPackage", projectB, restoreReviewB.reviewToken));
+    assert.equal(restoredB.packageDigest, originalB.packageDigest);
+    assert.equal((await binding(projectB, id)).packageDigest, originalB.packageDigest);
+    assert.equal((await binding(projectA, id)).packageDigest, updated.packageDigest, "restoring B changed A's exact candidate selection");
+    const retainedB = await attach(projectB, id, "restored-B");
+    if (manifest.permissions.includes("storage")) {
+      const revokedB = await advancedB.call("storage.get", { key: markerKey }).catch(error => ({ ok: false, destroyed: String(error) }));
+      assert.equal(revokedB.ok, false, "B's candidate guest survived its reviewed restore");
+      assert.equal((await retainedB.call("storage.getSnapshot", { key: markerKey })).value.revision, null);
+      assert.equal((await current.call("storage.getSnapshot", { key: markerKey })).value.value.project, "A", "B's restore revoked or contaminated A");
     }
     const history = await ipc("getPanelAppPackageHistory", projectA, id, currentA.revision);
     assert.ok(history.versions.some(value => value.packageDigest === originalA.packageDigest));
     const restoreReview = await ipc("previewPanelAppRestore", projectA, id, originalA.packageDigest, currentA.revision);
+    assert.equal(restoreReview.packageDigest, originalA.packageDigest);
     const restored = await whenIdle(id, () => ipc("restorePanelAppPackage", projectA, restoreReview.reviewToken));
     assert.equal(restored.packageDigest, originalA.packageDigest);
+    assert.equal((await binding(projectA, id)).packageDigest, originalA.packageDigest);
+    assert.equal((await binding(projectB, id)).packageDigest, originalB.packageDigest);
     const rolledBack = await attach(projectA, id, "restored-A");
-    if (manifest.permissions.includes("storage"))
+    if (manifest.permissions.includes("storage")) {
+      const revokedA = await current.call("storage.get", { key: markerKey }).catch(error => ({ ok: false, destroyed: String(error) }));
+      assert.equal(revokedA.ok, false, "A's candidate guest survived its reviewed restore");
       assert.equal((await rolledBack.call("storage.getSnapshot", { key: markerKey })).value.value.project, "A");
+      assert.equal((await retainedB.call("storage.getSnapshot", { key: markerKey })).value.revision, null, "restoring A revoked or contaminated B");
+    }
     results.push({ id, version: manifest.version, permissions: manifest.permissions,
       ...(gpuCanvas ? { gpuCanvas } : {}),
       originalDigest: originalA.packageDigest, privateCandidateDigest: currentA.packageDigest,
@@ -410,11 +441,12 @@ app.on("session-created", session => {
       loadedTitle: first.globals.title, actualEntryHtmlBytes: first.globals.html,
       checks: ["review-install-ipc", "unbound-project-denied", "real-sandboxed-entry-and-package-module", "project-partition-isolation",
         manifest.permissions.includes("storage") ? "real-storage-cas-and-project-authority" : "undeclared-storage-denied",
-        "changed-review-update-rejected-old-guest-and-data-preserved", "same-version-digest-update-project-only",
+        "changed-review-update-rejected-old-guest-and-data-preserved", "same-version-global-update-exact-digest-in-both-projects",
+        "reviewed-other-project-restore-preserves-current-project-digest-and-authority",
         "staged-package-rename-eacces-preserves-old-guest-and-data",
         "exact-retained-package-restore-ipc", "chromium-http-denied",
         ...(id === "job-hunt-hq" ? ["headless-retained-package-cli-before-webview", "ui-native-cli-root-commit", "external-cli-update-focus-reload"] : [])] });
-    for (const guest of [first, second, current, rolledBack]) await guest.remove().catch(() => {});
+    for (const guest of [first, second, current, advancedB, retainedB, rolledBack]) await guest.remove().catch(() => {});
     console.log(`PASS ${id}: real Electron install/load/IPC, project isolation, rejected update, digest update and restore`);
     await fixture.assertWorker(app, { requireWorker: false });
   }
