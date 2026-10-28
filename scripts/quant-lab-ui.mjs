@@ -3567,8 +3567,7 @@ const historySyncCall = await page.evaluate(() =>
   window.__hostCalls.filter((call) => call.method === "process.spawn" && call.params.entryHandle === "entry:fetch-market-data").at(-1),
 );
 assert(historySyncCall);
-assert.deepEqual(historySyncCall.params.args.slice(-14), [
-  "panel-history-sync",
+assert.deepEqual(historySyncCall.params.args, [
   "--symbol", "MSFT",
   "--market", "us",
   "--source", "auto",
