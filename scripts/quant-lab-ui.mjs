@@ -5969,6 +5969,8 @@ const newsFiles = {
     workspaceFiles: { ...rawFiles, ...newsFiles },
     automationSeed,
   });
+  const originalM3Task = await scenarioPage.evaluate(() =>
+    window.__automations.find((item) => item.id === "m3-watch-cn"));
   await scenarioPage.click('[data-module-tab="news"]');
   await scenarioPage.waitForTimeout(500);
   assert.equal(
@@ -6040,7 +6042,7 @@ const newsFiles = {
     () => document.querySelector("#news-automation-us")?.dataset.state === "active",
   );
   const postUpdateTasks = await scenarioPage.evaluate(() => window.__automations);
-  assert.deepEqual(postUpdateTasks.find((item) => item.id === "m3-watch-cn"), m3Task, "M4 must not modify M3 watch tasks");
+  assert.deepEqual(postUpdateTasks.find((item) => item.id === "m3-watch-cn"), originalM3Task, "M4 must not modify M3 watch tasks or its revision");
   assert.equal(postUpdateTasks.filter((item) => item.name === newsUsPlan.name).length, 1);
 
   // Removing the last US watch item makes the still-running US news task an
