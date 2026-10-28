@@ -8,10 +8,10 @@ import { normalizeQuoteV2 } from '../../../apps/quant-lab/app/quote-contract.mjs
 const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; };
 function storage() {
   let snapshot = { exists: false, value: null, revision: null };
-  let lost = false;
-  return { get value() { return structuredClone(snapshot); }, lose() { lost = true; }, async call(method, input) {
+  let lost = false, comparisons = 0;
+  return { get comparisons(){return comparisons;}, get value() { return structuredClone(snapshot); }, lose() { lost = true; }, async call(method, input) {
     if (method === 'storage.getSnapshot') return structuredClone(snapshot);
-    assert.equal(method, 'storage.compareAndSet');
+    assert.equal(method, 'storage.compareAndSet'); comparisons++;
     if (snapshot.revision !== input.expectedRevision) return { updated: false, snapshot: structuredClone(snapshot) };
     snapshot = { exists: true, value: structuredClone(input.value), revision: `sha256:${createHash('sha256').update(JSON.stringify(input.value)).digest('hex')}` };
     if (lost) { lost = false; throw new Error('receipt lost'); }
@@ -23,14 +23,15 @@ const quote = normalizeQuoteV2({ market:'cn', symbol:'SH600036', price:'10', asO
 test('one CAS fences delayed publication after takeover and stop, retaining monotonic tombstones', async () => {
   for (const action of ['takeover', 'stop']) {
     const store = storage(); let now = 0; const arrived = deferred(), release = deferred();
-    const a = createQuoteCasStore({ hostCall:store.call, instanceId:'A', now:()=>now, leaseMs:10, hooks:{ beforePublish:async()=>{ arrived.resolve(); await release.promise; } } });
+    const a = createQuoteCasStore({ hostCall:store.call, instanceId:'A', now:()=>0, leaseMs:10, hooks:{ beforePublish:async()=>{ arrived.resolve(); await release.promise; } } });
     const b = createQuoteCasStore({ hostCall:store.call, instanceId:'B', now:()=>now, leaseMs:10 });
     await a.acquire();
     assert.equal(await b.acquire(), null);
     const pending = a.publish({ quotes:[quote] }); await arrived.promise;
     if (action === 'takeover') { now=11; await b.acquire(); } else await b.stop('stop-1');
     const authoritative = store.value;
-    release.resolve(); assert.equal(await pending, null);
+    const attempts=store.comparisons;release.resolve(); assert.equal(await pending, null);
+    assert.equal(store.comparisons,attempts+1,"old owner still considers lease live and reaches the actual CAS rejection");
     assert.deepEqual(store.value, authoritative);
     assert.ok(store.value.value.generation >= 2);
   }
@@ -63,6 +64,17 @@ test('bootstrap restores navigation before module loads and coalesces each epoch
   await gate.ensure('holdings',()=>count++);assert.equal(count,0);gate.open(1);
   await Promise.all([gate.ensure('holdings',()=>count++),gate.ensure('holdings',()=>count++)]);assert.equal(count,1);
   epoch=2;gate.close();gate.open(1);assert.equal(gate.isOpen(),false);gate.open(2);await gate.ensure('holdings',()=>count++);assert.equal(count,2);
+});
+
+test('optional restore readiness waits for the current page and rejects invalidated completion',async()=>{
+  const gate=createPanelBootstrap({currentEpoch:()=>1});gate.open(1);
+  const entered=deferred(),release=deferred();
+  const old=gate.ensure('holdings',async()=>{entered.resolve();await release.promise;});
+  await entered.promise;assert.equal(gate.has('holdings'),true);assert.equal(gate.isReady('holdings'),false);
+  gate.invalidate('holdings');release.resolve();await old;
+  assert.equal(gate.isReady('holdings'),false,'an obsolete completion cannot start optional watch work');
+  await gate.ensure('holdings',async()=>{});assert.equal(gate.isReady('holdings'),true);
+  gate.close();assert.equal(gate.isReady('holdings'),false);
 });
 
 test('critical bridge request bypasses queued optional work; aborted old intents are removed',async()=>{
@@ -155,4 +167,43 @@ test('late quote packets within one CAS generation cannot regress each symbol as
  // Ordering inside a single response is also irrelevant: its newest quote wins.
  await owner.publish({quotes:[newer,quote]});
  assert.deepEqual(store.value.value.items['cn:SH600036'],newer);
+});
+
+
+test('migrated tombstones reject stop and resume, and conflicting stop retries its original identity',async()=>{
+ const store=storage(),owner=createQuoteCasStore({hostCall:store.call});await owner.acquire();
+ const before=store.value;await store.call('storage.compareAndSet',{expectedRevision:before.revision,value:{...before.value,control:{state:'migrated',stopRequestKey:null,migratedTo:'quant.quotes.v3'}}});
+ const migrated=store.value;await assert.rejects(owner.stop('same-stop'),/迁移/u);await assert.rejects(owner.resume(),/迁移/u);assert.deepEqual(store.value,migrated);
+ const second=storage();let raced=false;const attempts=[];
+ const contender=createQuoteCasStore({hostCall:async(method,params)=>{
+  if(method==='storage.compareAndSet'&&params.value.control.state==='stopped'){
+   attempts.push(params.value.control.stopRequestKey);
+   if(!raced){raced=true;const prev=second.value;await second.call(method,{expectedRevision:prev.revision,value:{...prev.value,commit:prev.value.commit+1}});}
+  }return second.call(method,params);
+ }});
+ await contender.acquire();await contender.stop('original-stop');assert.deepEqual(attempts,['original-stop','original-stop']);assert.equal(second.value.value.control.stopRequestKey,'original-stop');
+});
+
+test('inactive fallback releases exact ownership and polls at four times the active cadence',async()=>{
+ const store=storage(),timers=new Map();let next=0,fetches=0;
+ const controller=createSharedMarketController({hostCall:store.call,getContext:()=>({availableMethods:['storage.getSnapshot','storage.compareAndSet','process.resolveEntry']}),symbols:()=>[{market:'cn',symbol:'SH600036'}],
+  request:{cancel(){},async fetch(){fetches++;return{contract:2,quotes:[quote]};}},onUpdate(){},schedule:(fn,ms)=>{const id=++next;timers.set(id,{fn,ms});return id;},unschedule:id=>timers.delete(id)});
+ controller.setActive(true);await controller.refresh();assert.ok(store.value.value.holder);assert.equal([...timers.values()].at(-1).ms,15000);
+ controller.setActive(false);await new Promise(setImmediate);assert.equal(store.value.value.holder,null);assert.equal([...timers.values()].at(-1).ms,60000);
+ const other=createQuoteCasStore({hostCall:store.call,instanceId:'visible-follower'});assert.ok(await other.acquire(),'visible follower need not wait 70 seconds');
+ const count=fetches;await [...timers.values()].at(-1).fn();await controller.refresh();assert.equal(fetches,count,'hidden follower cannot collect over live owner');controller.dispose();
+});
+
+test('disposing during an acquired but unacknowledged lease waits to release without launching a collector',async()=>{
+ const store=storage(),entered=deferred(),ack=deferred(),released=deferred();let fetches=0;
+ const controller=createSharedMarketController({hostCall:async(method,params)=>{
+  const result=await store.call(method,params);
+  if(method==='storage.compareAndSet'&&params.value.holder){entered.resolve();await ack.promise;}
+  if(method==='storage.compareAndSet'&&!params.value.holder)released.resolve();
+  return result;
+ },getContext:()=>({availableMethods:['storage.getSnapshot','storage.compareAndSet','process.resolveEntry']}),symbols:()=>[{market:'cn',symbol:'SH600036'}],
+ request:{cancel(){},async fetch(){fetches++;return{contract:2,quotes:[quote]};}},onUpdate(){},schedule:()=>1,unschedule(){}});
+ controller.setActive(true);await entered.promise;assert.ok(store.value.value.holder);
+ controller.dispose();ack.resolve();await released.promise;
+ assert.equal(fetches,0);assert.equal(store.value.value.holder,null);assert.equal(store.value.value.generation,1);
 });

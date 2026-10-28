@@ -1,6 +1,7 @@
 import {
   deriveHoldings,
   createHoldingsReplay,
+  holdingsReplayInputs,
   fingerprintInputs,
   parseHoldings,
   parseTransactions,
@@ -87,22 +88,23 @@ export function deriveHoldingsSnapshot(sourceText, inputs, derivedAt) {
 export function createHoldingsSnapshotCache() {
   let key = null;
   let replay = null;
-  let ledgerFingerprint = null;
+
   return {
     derive(sourceText, inputs = {}, derivedAt) {
       const parsed = parseTransactions(sourceText);
-      const nextKey = JSON.stringify(["portfolio-replay/1", parsed.fingerprint, inputs.checkpointFx ?? {}]);
+      const historicalInputs = holdingsReplayInputs(parsed.ledger, inputs);
+      const nextKey = fingerprintInputs({ engine: "portfolio-replay/2", ledger: parsed.ledger, ...historicalInputs });
       if (nextKey !== key) {
         globalThis.performance?.mark?.("quant-lab:replayHoldings");
-        replay = createHoldingsReplay(parsed.ledger, inputs);
+        replay = createHoldingsReplay(parsed.ledger, historicalInputs);
         key = nextKey;
-        ledgerFingerprint = parsed.fingerprint;
+
       }
       return { format: "codeshell.portfolio-holdings", version: 1, derivedAt,
-        transactionsFingerprint: ledgerFingerprint, inputsFingerprint: fingerprintInputs(inputs),
+        transactionsFingerprint: parsed.fingerprint, inputsFingerprint: fingerprintInputs(inputs),
         baseCurrency: parsed.ledger.baseCurrency, ...replay.value(inputs) };
     },
-    clear() { key = null; replay = null; ledgerFingerprint = null; },
+    clear() { key = null; replay = null; },
   };
 }
 

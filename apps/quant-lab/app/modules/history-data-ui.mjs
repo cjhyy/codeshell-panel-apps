@@ -1,3 +1,4 @@
+import { createHistoryLibrarySelection } from "./history-library-selection.mjs";
 import { createHistoryBatchClient } from "./history-batch-client.mjs";
 import { reviewedEntry } from "./reviewed-entry.mjs";
 import {
@@ -746,6 +747,15 @@ function textElement(tagName, text, className = "") {
 export function createHistoryDataController(options) {
   const { elements, hostCall, currentEpoch, contextState, onLoadDataset, notify, now } = options;
   const onHostEvent = options.onHostEvent;
+  const librarySelection = createHistoryLibrarySelection({ hostCall, currentEpoch });
+  const historyStatusKey = () => `${HISTORY_LIBRARY_STATUS_KEY}${librarySelection.id ? `.${librarySelection.id}` : ""}`;
+  const libraryRequest = () => librarySelection.id ? { libraryId: librarySelection.id } : {};
+  const restoreLibrary = async () => {
+    if (!contextState().availableMethods?.includes("storage.getSnapshot")) return null;
+    const selected = await librarySelection.restore();
+    if (elements.libraryLocation) elements.libraryLocation.textContent = selected ? "当前使用本项目隔离历史库；原 v1 库保持只读。" : "当前使用原历史库。若旧写协议仍存在，可选择本项目隔离库继续补齐。";
+    return selected;
+  };
   const resolveAShare = options.resolveAShare ?? ((value) => ({ symbol: value }));
   const onHistorySummary = options.onHistorySummary ?? (() => undefined);
   const monotonicNow = options.monotonicNow ?? (() => performance.now());
@@ -1362,7 +1372,7 @@ export function createHistoryDataController(options) {
     if (historySummaryLoaded) return;
     historySummaryLoaded = true;
     try {
-      const saved = await epochCall(epoch, "storage.get", { key: HISTORY_LIBRARY_STATUS_KEY });
+      const saved = await epochCall(epoch, "storage.get", { key: historyStatusKey() });
       if (saved) {
         historySummary = parseHistoryLibrarySummary(saved);
         syncBootstrapScopeToSummary();
@@ -1440,7 +1450,7 @@ export function createHistoryDataController(options) {
     return lines.find((line) => line.length < 300) ?? "历史基础库初始化失败";
   }
 
-  const historyBatch = createHistoryBatchClient({ hostCall, onHostEvent, contextState, currentEpoch,
+  const historyBatch = createHistoryBatchClient({ hostCall, onHostEvent, contextState, currentEpoch: () => JSON.stringify([currentEpoch(), librarySelection.id]),
     onTask(task) {
       if (task.progress) historyProgress = { ...task.progress, message: task.progress.message ?? "后台历史批次处理中（每批最多 20 项）" };
       renderHistoryBootstrap();
@@ -1467,14 +1477,15 @@ export function createHistoryDataController(options) {
         ? elements.bootstrapScope.value
         : "core";
       const source = historyLibrarySource(elements.bootstrapSource.value);
-      const task = await historyBatch.run({ scope, source: source.id, maxItems: 20 });
+      await restoreLibrary(); checkEpoch(epoch);
+      const task = await historyBatch.run({ scope, source: source.id, maxItems: 20, ...libraryRequest() });
       if (epoch !== currentEpoch()) return;
       if (historyCancelled) { historyMessage = "历史批次已停止；已提交的数据会在下一批复用。"; return; }
-      if (task.status !== "succeeded") throw new Error(task.error?.message ?? "历史批次未完成，请检查任务状态后显式继续");
+      if (task.status !== "succeeded") throw new Error(`${task.error?.code ? `${task.error.code}: ` : ""}${task.error?.message ?? "历史批次未完成，请检查任务状态后显式继续"}`);
       const summary = parseHistoryLibrarySummary(task.result?.result ?? task.result);
       historySummary = summary;
       syncBootstrapScopeToSummary();
-      await epochCall(epoch, "storage.set", { key: HISTORY_LIBRARY_STATUS_KEY, value: summary }).catch(() => undefined);
+      await epochCall(epoch, "storage.set", { key: historyStatusKey(), value: summary }).catch(() => undefined);
       checkEpoch(epoch);
       const onlyUnavailable = historyOnlyUnavailable(summary);
       historyMessageTone = summary.remaining > 0 || summary.failed > 0 ? "warning" : "idle";
@@ -1493,6 +1504,7 @@ export function createHistoryDataController(options) {
       if (epoch === currentEpoch() && !historyCancelled) {
         historyMessageTone = "error";
         historyMessage = error instanceof Error ? error.message : "历史基础库初始化失败";
+        if (/HISTORY_LEGACY_PROTOCOL|旧.*协议|旧版.*历史/u.test(historyMessage)) historyMessage += " 点击「使用本项目隔离历史库」即可继续补齐；原库保留只读，不混写或删除。";
       }
     } finally {
       if (epoch === currentEpoch()) {
@@ -1513,6 +1525,7 @@ export function createHistoryDataController(options) {
       renderHistoryBootstrap();
       let processId = null;
       try {
+        await restoreLibrary(); checkEpoch(epoch);
         const runtime = await ensureHistoryRuntime();
         checkEpoch(epoch);
         const entryHandle = await reviewedEntry(hostCall, "initialize-a-share-history", runtime.executableHandle);
@@ -1521,12 +1534,12 @@ export function createHistoryDataController(options) {
           executableHandle: runtime.executableHandle,
           entryHandle,
           directoryHandle: runtime.directoryHandle,
-          args: historyLibraryRuntimeArgs(
+          args: [...historyLibraryRuntimeArgs(
             runtime.name,
             historySummary?.scope ?? "core",
             "status",
             historySummary?.source ?? HISTORY_LIBRARY_DEFAULT_SOURCE,
-          ),
+          ), ...(librarySelection.id ? ["--library-id", librarySelection.id] : [])],
         });
         if (typeof started?.processId !== "string") return historySummary;
         processId = started.processId;
@@ -1538,7 +1551,7 @@ export function createHistoryDataController(options) {
         historySummary = parseHistoryLibrarySummary(record.stdout);
         historyStatusRecoveryFailed = false;
         syncBootstrapScopeToSummary();
-        await epochCall(epoch, "storage.set", { key: HISTORY_LIBRARY_STATUS_KEY, value: historySummary }).catch(() => undefined);
+        await epochCall(epoch, "storage.set", { key: historyStatusKey(), value: historySummary }).catch(() => undefined);
         checkEpoch(epoch);
         historyMessage = "";
         historyMessageTone = historySummary.remaining > 0 || historySummary.failed > 0 ? "warning" : "idle";
@@ -1826,7 +1839,7 @@ export function createHistoryDataController(options) {
 
   async function load() {
     const epoch = currentEpoch();
-    void historyBatch.restore().then(task => {
+    void restoreLibrary().then(() => { checkEpoch(epoch); return historyBatch.restore(libraryRequest()); }).then(task => {
       if (epoch === currentEpoch() && task?.status === "succeeded") { historySummary = parseHistoryLibrarySummary(task.result?.result ?? task.result); renderHistoryBootstrap(); }
     }).catch(() => {});
     if (loading) return;
@@ -1836,6 +1849,7 @@ export function createHistoryDataController(options) {
     try {
       await restoreSourcePreferences(epoch);
       checkEpoch(epoch);
+      await restoreLibrary(); checkEpoch(epoch);
       await restoreHistorySummary();
       if (epoch !== currentEpoch()) return;
       // Panel storage can be scoped to the current conversation, while the
@@ -2140,10 +2154,10 @@ export function createHistoryDataController(options) {
   elements.bootstrapSource?.addEventListener("change", renderHistoryBootstrap);
   elements.bootstrapAction?.addEventListener("click", () => {
     if (historyStatusRecoveryFailed && !historySummary) {
-      void refreshHistorySummaryFromLocal().then((summary) => {
-        if (summary) void autoFillThrough(summary.marketDate, summary.sessionPhase);
+      return refreshHistorySummaryFromLocal().then((summary) => {
+        if (summary) return autoFillThrough(summary.marketDate, summary.sessionPhase);
       });
-    } else void initializeHistoryLibrary();
+    } else return initializeHistoryLibrary();
   });
   elements.list.addEventListener("click", (event) => {
     const loadButton = event.target.closest("[data-history-load]");
@@ -2167,13 +2181,31 @@ export function createHistoryDataController(options) {
     });
   });
 
+  elements.librarySelect?.addEventListener("click", async () => {
+    if (historyInitializing || historyStatusInFlight) return;
+    const epoch = currentEpoch();
+    elements.librarySelect.disabled = true;
+    try {
+      if (!historyBatch.supports()) throw new Error("隔离历史库需要已授权 storage CAS 与 tasks，请更新 CodeShell");
+      await librarySelection.select(); checkEpoch(epoch);
+      historySummary = null; historySummaryLoaded = false; historyMessage = "";
+      historyStatusRecoveryFailed = false; historyRuntime = null;
+      await restoreLibrary(); checkEpoch(epoch);
+      await refreshHistorySummaryFromLocal(); checkEpoch(epoch);
+      await initializeHistoryLibrary();
+    } catch (error) { if (epoch === currentEpoch()) { historyMessageTone = "error"; historyMessage = error.message; renderHistoryBootstrap(); } }
+    finally { if (epoch === currentEpoch()) elements.librarySelect.disabled = false; }
+  });
+
   elements.to.value = now().toISOString().slice(0, 10);
   syncMarketFields();
   renderHistoryBootstrap();
 
   return {
     load,
+    ensureLibraryId: restoreLibrary,
     reset() {
+      librarySelection.reset();
       clearHistoryCooldownTimer();
       clearHistoryBackgroundPollTimer();
       // Settle old local waiters immediately. Host cancellation remains scoped
@@ -2234,6 +2266,7 @@ export function createHistoryDataController(options) {
       historyProcessId = null;
       singleSyncProcessId = null;
     },
+    get libraryId() { return librarySelection.id; },
     get datasets() {
       return datasets;
     },

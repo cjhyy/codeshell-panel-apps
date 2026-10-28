@@ -484,14 +484,22 @@ Host 必须持久化可验证的运行身份，包括服务 incarnation、genera
 本节收敛原文未定项；第 11 节的安全约束不变。
 
 1. **Host 权威提交**采用每个 service 一个有界 JSON 记录，包含 config、state、generation、incarnation、控制回执和全部 channel。先临时文件 write → fsync → rename → 父目录 fsync，再发事件/确认回执；提交失败后协调器停止写入，必须从持久记录恢复。停用和卸载保留墓碑与代际。共享持久根以不可变 owner-token 目录锁仲裁，不能按时间抢占活 Host。
-2. **执行身份**采用 Host 启动的受控 POSIX guardian 进程组。guardian 先发 Host 私有握手 nonce；Host 持久 generation 与 custody PID/nonce 后才发送 go。包进程使用 Node permission 模式，禁止 child_process、worker、addon 等逃逸入口。当前 Host 只凭持有的真实 ChildProcess 回调发布。重启后只在原进程组明确 ESRCH 时替代，活/未知组保持 stop-unconfirmed；不凭 EOF 或重启即解锁，不杀恢复时的未知 PID。Windows 不宣告 v1 能力。没有 Node permission 支持时明确失败，不能降级成无约束后台进程。
+2. **执行身份**采用 Host 启动的受控 POSIX guardian 进程组。OS 身份包含 boot 身份及进程启动唯一身份（Darwin kernel unique ID/pidversion；Linux boot_id + start ticks），不能仅凭 nonce、PID 或秒精度时间判断复用。guardian 与 native member 启动分两阶段，Host 持久代际与可验证 custody 后才 activate。包进程使用满足修复版最低版本的 Node permission 模式，禁止 child_process、worker、addon 等逃逸入口。当前 Host 只凭持有的真实 processRef 回调发布；pending 也绑定该代际并在退出/拒绝时清除。重启先核查旧组；活/未知组保持 stop-unconfirmed。不能确认旧树退出时不启动替代者，不杀未知 PID。Windows 不宣告 v1 能力。安全运行时或 OS 身份不可用时明确失败，不降级无约束后台进程。
 3. **服务发现/线协议**保持 services.get/read/attach/detach/configure/setDesired/control，configRevision、desiredRevision 为数字 CAS，mutation 必须 requestKey；能力按 methods 和 services.version===1 判断。worker protocol=1，hello/config/poke/drain，ready/publish/progress/drained。仅 Desktop 宣告；服务独立于 durable task 的两个槽。
 4. **Quant 兼容执行**彻底删除新版 HOME launcher。所有 UI native 入口须由当前项目 process.resolveEntry 授权。无法解析时仅使用已验证缓存和升级说明。Quant 0.50.0 带 strict backgroundServices/permission；旧 Host 拒绝该包，不能裁掉权限或执行另一个安装目录。跨仓开发检查使用 CODESHELL_PANEL_CORE_PACKAGE 指向明确构建的候选 Core，默认检查仍用已发布依赖。
 5. **过渡行情**使用 quant.quotes.v2 单 CAS 记录，含 generation、commit、seq、holder、control 墓碑及 items。明确 READ/WRITE format 集合；只基于持有者最后成功 revision 发布。stop 或接管会拒绝旧发布；未知回执先查询。service 快照 quant.quotes/2 不包含账本/账户/凭据，订阅最多 200；未实施可选跨项目缓存。
-6. **历史写协议**新写入根固定为 a-share-history/v2，锁目录只有不可变 owner 文件，心跳在 token 旁路并于 release 等完在途写。v1 仍可只读导入，但只要同数据根存在 v1 目录，新 writer 明确拒绝 HISTORY_LEGACY_PROTOCOL；包括旧 writer 暂停在创建锁之前的窗口。不会通过双锁、写 fence 或删除现场文件承诺混写安全。需要继续旧库写入的用户须先停用旧包并选择独立数据目录；本版不提供无法证明旧进程退出的自动就地迁移。--status/--lock-status 纯读；--repair 是显式写操作。
+6. **历史写协议**新写入根固定为 a-share-history/v2，锁目录只有不可变 owner 文件，心跳在 token 旁路并于 release 等完在途写。v1 仍可只读导入，但只要同数据根存在 v1 目录，新 writer 明确拒绝 HISTORY_LEGACY_PROTOCOL；包括旧 writer 暂停在创建锁之前的窗口。不会通过双锁、写 fence 或删除现场文件承诺混写安全。用户可明确点击“使用本项目隔离历史库”，以项目 CAS 保存 32 位随机 libraryId，所有任务、status 和五个短采集统一读写已授权根下 quant-history-libraries/v2/<id>；冷开任意模块也先恢复此单一设置，不扫描历史。旧库不删除、不就地混写。--status 纯读摘要，--lock-status 纯读 owner 诊断且无需已初始化 manifest；--repair 是显式写操作。
 7. **本地行情快照**新发布写 snapshots-v2，旧 snapshots 只读兼容；每 stream/scope owner 锁内比较 marketDate、收盘优先级、asOf/generatedAt，旧完成不能覆盖新最新值或当日归档。旧 writer 不知道新写入命名空间。相同值保持已有发布；不以文件写入时间伪装市场时间。
-8. **有界历史任务**quant-history-batch 使用既有 tasks + directoryArguments 授权 app-data 参数，JSON 不能自选原生目录。每批最多 20 项，manifest 记录当天已检查集合及 compact checkpoint，下一批从未检查项继续；结果使用现有 NDJSON type=result。查找旧请求后才发起，关页不取消已提交批次，UI 显式继续下一批，不永久占槽。
-9. **日涨跌**QuoteV2 数值为十进制字符串；A 股使用供应商该交易日的 reference 并与供应商百分比交叉校验，referenceDate 表示该 reference 的适用交易日，不编造前一实际交易日。跨日、停牌、口径冲突、缺参考值返回 null。美股未证明前收盘口径时保持 null；不引用累计持仓盈亏。
-10. **Video Download**只有显式 pump 在锁内先持久 starting token 后 spawn；claim 成功才计运行寿命。查询纯读，slot 未确认死亡保留 stalled。bootId 取不到则只允许精确 token 手工恢复；不杀未知归属进程。VS 普通媒体任务 canonical SHA256 requestKey + 持久意图 + find 恢复，manual 不自动重发。
+8. **有界历史任务**quant-history-batch 使用既有 tasks + directoryArguments 授权 app-data 参数，JSON 不能自选原生目录。每批最多 20 项，manifest 记录当天已检查集合、每次准入持久游标及 compact checkpoint，失败批次也推进游标公平轮转；SOURCE_EMPTY 保留 pending，不当作 checked；结果使用现有 NDJSON type=result。查找旧请求后才发起，关页不取消已提交批次，UI 显式继续下一批，不永久占槽。
+9. **日涨跌**QuoteV2 数值为普通十进制字符串，拒绝 0x/指数写法；无供应商 session 时明确 unknown，不编造 regular；零涨跌为中性。A 股使用供应商该交易日的 reference 并与供应商百分比交叉校验，referenceDate 表示该 reference 的适用交易日，不编造前一实际交易日。跨日、停牌、口径冲突、缺参考值返回 null。美股未证明前收盘口径时保持 null；不引用累计持仓盈亏。
+10. **Video Download**只有显式 pump 在锁内先持久 starting token 后 spawn；claim 成功才计运行寿命。查询纯读，slot 未确认死亡保留 stalled。bootId 取不到则只允许精确 token 手工恢复；不杀未知归属进程。VS 普通媒体任务 canonical SHA256 requestKey + executionRevision/attempt 持久意图 + find/jobId 恢复；failed/cancelled 允许明确新 attempt，未知/manual 要先核查再确认，不能自动重发。探测不写永久意图，CAS 冲突查询 winner。VD 兼容真实 0.24.1 waiting worker，starting slot 保留旧 parser 必需字段；稳定 boot UUID 变化仍要求 PID 确认死亡，坏 slot 局部保守占槽，项目外任务显示授权恢复提示。
 
 实际 fixture、执行命令、失败项、环境限制与 CC 必验点记录在实施根 HANDOFF.json。以上裁决不是“所有门禁已通过”的声明。
+
+## 13. CC 首轮返修与门禁边界
+
+- 首轮验收的全部发现见实施根 `CC-ACCEPTANCE-20261028.md`，本轮命令、逐 ID 证据与剩余环境/发布阻断在 `HANDOFF-REPAIR.json`。首次 `HANDOFF.json` 及旧性能证据保留，不复用为新候选绿灯。
+- 短 native 采集按各工具真实 parser 的规范化请求去重，别名 last-wins、重复持仓与无效附加字段不能绕过；另有独立四槽池，不串死不同标的/项目，也不占 durable tasks 两槽。
+- Host 每服务恢复失败隔离，背景恢复失败不跳过媒体/task/cookie 恢复。磁盘故障停受管进程且保留监管/独占状态；完整持久恢复和结构验证成功前保持 fail-closed。暂时 I/O 或 describe 故障不把用户 desired 永久关闭。
+- 首屏仅等待当前执行身份的基础账本；工具 ready 每次跟随该 epoch。当前页完成后才恢复用户已启用的背景关注，onApply 受 bootstrap/可见性约束。语义账本指纹统一；末端 FX 仅重估，历史交易 FX 正确失效；同值 tick 不 replay，DOM 细节/焦点保持。
+- 默认 validate 对所有真实安装布局严格调用 Host parser/preview；`check:host-contract`、对应 CI 与 `npm check` 必须使用固定的正式 Core，并明确忽略开发覆盖变量。当前 0.9.23 拒绝新服务与已有 wasm；候选验证通过不代表正式依赖门禁通过。预期 Core 0.9.49 的本地版本生成、正式 artifact 发布与 Panel exact pin/lock 切换依次完成；发布未获本轮授权，不能自行发布或声称已有兼容发布。

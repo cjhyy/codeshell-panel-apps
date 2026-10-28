@@ -1,10 +1,11 @@
-const KEY = "quant.history.batch.v1";
+const keyFor = request => `quant.history.batch.v1${request?.libraryId ? `.${request.libraryId}` : ""}`;
 const terminal = task => ["succeeded", "failed", "cancelled", "interrupted"].includes(task?.status);
 const requestValue = value => value && typeof value === "object" && !Array.isArray(value)
   && ["core", "broad", "full"].includes(value.scope)
   && typeof value.source === "string" && value.source.length > 0 && value.source.length <= 64
   && Number.isSafeInteger(value.maxItems) && value.maxItems > 0 && value.maxItems <= 20
-  && Object.keys(value).every(key => ["scope", "source", "maxItems"].includes(key));
+  && (value.libraryId == null || typeof value.libraryId === "string" && /^[a-f0-9]{32}$/u.test(value.libraryId))
+  && Object.keys(value).every(key => ["scope", "source", "maxItems", "libraryId"].includes(key));
 function intentValue(value) {
   if (!value || value.format !== "quant.history.batch/1" || !Number.isSafeInteger(value.sequence) || value.sequence < 1
     || typeof value.requestKey !== "string" || !value.requestKey || value.requestKey.length > 128 || !requestValue(value.request)
@@ -54,23 +55,24 @@ export function createHistoryBatchClient({ hostCall, onHostEvent, contextState, 
   }
   return {
     supports,
-    async restore() {
+    async restore(request = {}) {
       if (!supports()) return null;
       const epoch = currentEpoch();
-      const snapshot = snapshotValue(await call(epoch, "storage.getSnapshot", { key: KEY }));
+      const snapshot = snapshotValue(await call(epoch, "storage.getSnapshot", { key: keyFor(request) }));
       return snapshot.exists ? find(snapshot.value, epoch) : null;
     },
     async run(request) {
       if (!supports()) throw new Error("有界后台历史批次需要更新 CodeShell 并授权 tasks；已保留本地历史数据");
       const epoch = currentEpoch();
       if (!requestValue(request)) throw new Error("历史批次请求无效；每批必须限制在 20 项以内");
+      const KEY = keyFor(request);
       const previous = snapshotValue(await call(epoch, "storage.getSnapshot", { key: KEY }));
       let task = previous.exists ? await find(previous.value, epoch) : null;
       if (task && !terminal(task)) return wait(task, epoch);
       // Explicit resume reuses an existing unresolved intent after querying it.
       // The Host requestKey atomically deduplicates a lost-start acknowledgement.
       const unresolved = previous.exists && !task ? previous.value : null;
-      if (unresolved && ["scope", "source", "maxItems"].some(key => unresolved.request[key] !== request[key]))
+      if (unresolved && ["scope", "source", "maxItems", "libraryId"].some(key => unresolved.request[key] !== request[key]))
         throw new Error("上次历史批次回执尚未确认，请先恢复相同来源与范围的批次");
       const sequence = (previous.value?.sequence ?? 0) + 1;
       if (!unresolved && !Number.isSafeInteger(sequence)) throw new Error("历史批次代际已达上限，请更新面板");

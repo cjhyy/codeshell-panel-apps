@@ -4100,10 +4100,11 @@ export function createAShareSelectionController({
   render();
 
   return {
-    async load() {
+    async load({ backgroundOnly = false } = {}) {
       const loadGeneration = generation, loadEpoch = currentEpoch();
       await readWatch();
       if (loadGeneration !== generation || loadEpoch !== currentEpoch()) return watch;
+      if (backgroundOnly && watch.stocks.length === 0 && watch.sectors.length === 0) return watch;
       const cached = await fetchSnapshot("read-local").catch(() => null);
       if (loadGeneration !== generation || loadEpoch !== currentEpoch()) return watch;
       if (cached) {

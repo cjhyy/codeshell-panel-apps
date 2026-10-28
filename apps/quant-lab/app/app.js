@@ -1,3 +1,6 @@
+import { createPortfolioBaseReady } from "./modules/portfolio-tool-ready.mjs";
+import { createCollectorScopeBridge } from "./modules/reviewed-entry.mjs";
+import { selectionActivity, canApplySelectionSource } from "./modules/selection-activation.mjs";
 import { createPanelBootstrap } from "./modules/panel-bootstrap.mjs";
 import { buildResearchReport, parseResearchMetadata, RESEARCH_PRESETS, researchPreset } from "./research-report.mjs";
 import { createProjectSetting } from "./modules/project-setting.mjs";
@@ -633,6 +636,13 @@ let toastTimer;
 let workspaceEpoch = 0;
 let contextInitialized = false;
 let initialContextPending = true;
+let resolveInitialIdentity;
+const initialIdentityReady = new Promise(resolve => { resolveInitialIdentity = resolve; });
+let workspaceRequests = new AbortController();
+let backgroundWatchRestoreTimer = null;
+let backgroundWatchRestoreFlight = null;
+let backgroundWatchRestored = false;
+let backgroundWatchRevision = 0;
 let activeModule = "today";
 let moduleNavigationRevision = 0;
 let lastMarketProbeAt = null;
@@ -673,6 +683,7 @@ let alertsController = null;
 let newsController = null;
 let socialRadarController = null;
 let notesController = null;
+let collectorScopeBridge = null;
 let panelHostCallScheduler = null;
 let notesDecisionFacts = {
   status: "unavailable",
@@ -697,6 +708,38 @@ let portfolioTodayState = {
 };
 
 const bootstrap = createPanelBootstrap({ currentEpoch: () => workspaceEpoch });
+
+function selectionState() {
+  return { ready: bootstrap.isOpen(), visible: context.visible !== false && document.visibilityState !== "hidden", module: activeModule, backgroundRestored: backgroundWatchRestored };
+}
+function syncSelectionActivity() {
+  const state = selectionActivity(selectionState());
+  aShareSelectionController?.setActive(state.active, { backgroundWatch: state.backgroundWatch });
+}
+function scheduleBackgroundWatchRestore() {
+  if (!bootstrap.isOpen() || !bootstrap.isReady(activeModule) || context.visible === false || document.visibilityState === "hidden" || backgroundWatchRestored || backgroundWatchRestoreTimer != null || backgroundWatchRestoreFlight) return;
+  const epoch = workspaceEpoch, revision = backgroundWatchRevision;
+  backgroundWatchRestoreTimer = setTimeout(async () => {
+    backgroundWatchRestoreTimer = null;
+    if (epoch !== workspaceEpoch || revision !== backgroundWatchRevision || !bootstrap.isOpen() || context.visible === false || document.visibilityState === "hidden") return;
+    const flight = { epoch, revision };
+    backgroundWatchRestoreFlight = flight;
+    try {
+      // User-maintained long-term watches are restored after the current page.
+      // Empty watches cause no native snapshot read or full-market scan.
+      await aShareSelectionController.load({ backgroundOnly: true });
+      if (epoch !== workspaceEpoch || revision !== backgroundWatchRevision) return;
+      backgroundWatchRestored = true;
+      syncSelectionActivity();
+    } catch (error) { if (epoch === workspaceEpoch && revision === backgroundWatchRevision) notify(error.message, "error"); }
+    finally { if (backgroundWatchRestoreFlight === flight) backgroundWatchRestoreFlight = null; }
+  }, 0);
+}
+
+document.addEventListener("visibilitychange", () => {
+  syncSelectionActivity();
+  if (document.visibilityState !== "hidden") scheduleBackgroundWatchRestore();
+});
 
 function currentInstant() {
   const override = window.__quantLabNow;
@@ -1293,11 +1336,11 @@ function activateModule(moduleId, { focusTarget = "tab", persist = true } = {}) 
   }
   holdingsController?.setActive(bootstrap.isOpen() && ["holdings", "today"].includes(nextModule) && context.visible !== false);
   liveMarketController?.setActive(bootstrap.isOpen() && nextModule === "today" && context.visible !== false);
-  aShareSelectionController?.setActive(bootstrap.isOpen() && ["today", "watch"].includes(nextModule) && context.visible !== false, { backgroundWatch: bootstrap.isOpen() && ["today", "watch"].includes(activeModule) && context.visible !== false });
+  syncSelectionActivity();
   if (nextModule !== "today" && context.visible !== false && marketProbeDue()) {
     void runBackgroundMarketProbe();
   } else scheduleBackgroundMarketProbe();
-  if (bootstrap.isOpen()) void ensureActiveModule().catch(error => notify(error.message, "error"));
+  if (bootstrap.isOpen()) void ensureActiveModule().then(scheduleBackgroundWatchRestore).catch(error => notify(error.message, "error"));
   if (nextModule === "research") {
     renderDataCapabilityMatrix();
   }
@@ -1775,7 +1818,12 @@ function hostCall(method, params, intent) {
     currentScope: () => workspaceEpoch,
     ...(window.__quantLabTestHostCallLimits ?? {}),
   });
-  return panelHostCallScheduler.call(method, params, intent);
+  collectorScopeBridge ??= createCollectorScopeBridge({
+    invoke: (nextMethod, nextParams, nextIntent) => panelHostCallScheduler.call(nextMethod, nextParams, nextIntent),
+    getContext: () => context, currentEpoch: () => workspaceEpoch,
+    ensureLibraryId: () => historyDataController?.ensureLibraryId(),
+  });
+  return collectorScopeBridge(method, params, { owner: `workspace:${workspaceEpoch}`, signal: workspaceRequests.signal, ...intent });
 }
 
 function todayWatchResults() {
@@ -2575,6 +2623,8 @@ historyDataController = createHistoryDataController({
     bootstrapNext: elements.historyBootstrapNext,
     bootstrapProgress: elements.historyBootstrapProgress,
     bootstrapStatus: elements.historyBootstrapStatus,
+    librarySelect: document.querySelector("#history-library-select"),
+    libraryLocation: document.querySelector("#history-library-location"),
   },
 });
 
@@ -4032,8 +4082,9 @@ async function ensureActiveModule() {
     if (epoch !== workspaceEpoch) return;
     holdingsController.setActive(["today", "holdings"].includes(activeModule) && context.visible !== false);
     liveMarketController.setActive(activeModule === "today" && context.visible !== false);
-    aShareSelectionController.setActive(["today", "watch"].includes(activeModule) && context.visible !== false,
-      { backgroundWatch: ["today", "watch"].includes(activeModule) && context.visible !== false });
+    if (["today", "watch"].includes(activeModule)) backgroundWatchRestored = true;
+    syncSelectionActivity();
+    scheduleBackgroundWatchRestore();
     renderDataCapabilityMatrix();
   });
 }
@@ -4044,6 +4095,7 @@ async function restoreWorkspaceState(workspaceIdentity, storageRoot, epoch) {
   if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
   bootstrap.open(epoch);
   await ensureActiveModule();
+  scheduleBackgroundWatchRestore();
 }
 
 function updateChartTooltip(event) {
@@ -4461,8 +4513,12 @@ function updateContext(next) {
     ? { ...next, busy: next.busy === true, trusted: next.trusted === true }
     : { busy: false, trusted: false };
   const nextWorkspaceRoot = typeof nextContext.cwd === "string" ? nextContext.cwd : null;
-  const workspaceChanged = contextInitialized && projectContextChanged(context, nextContext);
+  const workspaceChanged = contextInitialized && (projectContextChanged(context, nextContext) || context.executionId !== nextContext.executionId);
   if (workspaceChanged) {
+    workspaceRequests.abort();
+    workspaceRequests = new AbortController();
+    clearTimeout(backgroundWatchRestoreTimer); backgroundWatchRestoreTimer = null;
+    backgroundWatchRestored = false; backgroundWatchRevision++; backgroundWatchRestoreFlight = null;
     bootstrap.close();
     clearPlainResearch();
     // The Host has already switched projects: do not submit an old-project write.
@@ -4542,7 +4598,8 @@ function updateContext(next) {
   contextInitialized = true;
   holdingsController?.setActive(bootstrap.isOpen() && ["holdings", "today"].includes(activeModule) && context.visible !== false);
   liveMarketController?.setActive(bootstrap.isOpen() && activeModule === "today" && context.visible !== false);
-  aShareSelectionController?.setActive(bootstrap.isOpen() && ["today", "watch"].includes(activeModule) && context.visible !== false, { backgroundWatch: bootstrap.isOpen() && ["today", "watch"].includes(activeModule) && context.visible !== false });
+  syncSelectionActivity();
+  scheduleBackgroundWatchRestore();
   const isVisible = context.visible !== false;
   if (
     !wasVisible &&
@@ -6048,6 +6105,7 @@ async function initialize() {
     if (!receivedContextEvent) updateContext({ busy: false, trusted: false });
   }
   initialContextPending = false;
+  resolveInitialIdentity();
   const initializationWorkspaceEpoch = workspaceEpoch;
   const initializationWorkspaceIdentity = context.cwd ?? null;
   const initializationWorkspaceRoot = initializationWorkspaceIdentity ?? "preview";
@@ -6065,19 +6123,30 @@ dataSourcesController = createDataSourcesController({
   async onApply() {
     const epoch = workspaceEpoch;
     aShareSelectionController.reset();
+    backgroundWatchRestored = false; backgroundWatchRevision++; backgroundWatchRestoreFlight = null;
+    clearTimeout(backgroundWatchRestoreTimer); backgroundWatchRestoreTimer = null;
+    bootstrap.invalidate("today"); bootstrap.invalidate("watch");
+    if (!canApplySelectionSource(selectionState())) return { deferred: true };
     await aShareSelectionController.load();
-    if (epoch !== workspaceEpoch) return;
-    aShareSelectionController.setActive(true, { backgroundWatch: true });
+    if (epoch !== workspaceEpoch || !canApplySelectionSource(selectionState())) return { deferred: true };
+    backgroundWatchRestored = true;
+    syncSelectionActivity();
     return aShareSelectionController.refresh();
   },
   onHistory() { activateModule("research"); document.querySelector(".history-data-center")?.scrollIntoView({ block: "start" }); },
 });
-const portfolioToolsReady = initialize();
+void initialize().catch(error => notify(error.message, "error"));
+
+const portfolioBaseReady = createPortfolioBaseReady({
+  identityReady: initialIdentityReady,
+  getIdentity: () => ({ epoch: workspaceEpoch, executionId: context.executionId ?? null }),
+  loadBase: epoch => holdingsController.loadBase(epoch),
+});
 
 registerPortfolioTools({
   registerTool: window.codeshellPanel?.registerTool,
   hostCall,
-  ready: portfolioToolsReady,
+  ready: portfolioBaseReady,
   currentEpoch: () => workspaceEpoch,
   refresh: (epoch) => holdingsController.load(epoch),
   displayedPositions: () => holdingsController.noteContext().holdings?.positionsByAccount ?? [],

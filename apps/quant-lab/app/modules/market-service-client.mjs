@@ -15,6 +15,11 @@ function documentValue(value) {
     throw new Error("行情快照格式不受支持，请更新面板；已停止写入");
   return value;
 }
+export function quoteDisplayValue(quote) {
+  if (!quote) return quote;
+  const { fetchedAt, ...display } = quote;
+  return display;
+}
 function quotesFrom(value, symbols) {
   const expected = new Set(symbols.map(item => `${item.market}:${item.symbol}`));
   return new Map(Object.entries(documentValue(value).items)
@@ -94,15 +99,22 @@ export function createQuoteCasStore({ hostCall, instanceId = id(), now = Date.no
       return owned;
     },
     async stop(requestKey = id()) {
-      const previous = await read();
-      const value = previous.exists ? previous.value : empty();
-      if (value.control.stopRequestKey === requestKey) return previous;
-      const next = { ...value, generation: value.generation + 1, commit: value.commit + 1,
-        holder: null, control: { ...value.control, state: "stopped", stopRequestKey: requestKey } };
-      const stopped = await commit(previous, next);
-      owned = null;
-      if (!stopped) throw new Error("其他页面已修改行情控制状态，请读取最新状态后重试");
-      return stopped;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const previous = await read();
+        const value = previous.exists ? previous.value : empty();
+        if (value.control.state === "migrated") throw new Error("行情协议已迁移，请更新面板；旧墓碑保持只读");
+        if (value.control.stopRequestKey === requestKey && value.control.state === "stopped") return previous;
+        const next = { ...value, generation: value.generation + 1, commit: value.commit + 1,
+          holder: null, control: { ...value.control, state: "stopped", stopRequestKey: requestKey } };
+        const stopped = await commit(previous, next);
+        owned = null;
+        if (stopped) return stopped;
+        // A concurrent publish/control may have won. Query and retry the SAME
+        // stop identity; never manufacture another operation after a lost reply.
+      }
+      const actual = await read();
+      if (actual.value?.control.state === "stopped" && actual.value.control.stopRequestKey === requestKey) return actual;
+      throw new Error("其他页面持续修改行情控制状态，请读取最新状态后重试");
     },
     async resume() {
       const previous = await read(); const value = previous.exists ? previous.value : empty();
@@ -121,7 +133,7 @@ export function createQuoteCasStore({ hostCall, instanceId = id(), now = Date.no
 
 export function createSharedMarketController({ hostCall, getContext, onHostEvent, request, symbols, onUpdate,
   now = () => new Date(), schedule = setTimeout, unschedule = clearTimeout }) {
-  let active = false, timer = null, flight = null, token = 0, attachId = null, seq = -1;
+  let active = false, connected = false, activity = 0, timer = null, flight = null, token = 0, attachId = null, seq = -1;
   let serviceState = null, configSignature = null, fingerprint = null;
   const check = generation => { if (generation !== token) throw new Error("行情连接已切换，旧回执未应用"); };
   async function call(generation, method, params) {
@@ -136,7 +148,7 @@ export function createSharedMarketController({ hostCall, getContext, onHostEvent
   const clear = () => { if (timer != null) unschedule(timer); timer = null; };
   function update(value, state = {}) {
     const quotes = quotesFrom(value, symbols());
-    const next = JSON.stringify([...quotes]);
+    const next = JSON.stringify([...quotes].map(([symbol, quote]) => [symbol, quoteDisplayValue(quote)]));
     if (next === fingerprint && !state.message) return;
     fingerprint = next;
     onUpdate(quotes, { ...state, background: serviceState?.desired === "always", phase: serviceState?.phase,
@@ -179,7 +191,7 @@ export function createSharedMarketController({ hostCall, getContext, onHostEvent
   }
   async function refresh({ poke = false } = {}) {
     if (flight) return flight;
-    clear(); const generation = token;
+    clear(); const generation = token, activityAtStart = activity;
     flight = (async () => {
       try {
         if (service()) {
@@ -193,11 +205,12 @@ export function createSharedMarketController({ hostCall, getContext, onHostEvent
           if (cached.exists) update(cached.value);
           if (!["storage.compareAndSet", "process.resolveEntry"].every(name => methods.includes(name)))
             throw new Error("当前 CodeShell 不支持已授权共享采集；仅显示已验证缓存，请更新 CodeShell");
-          if (!active || generation !== token || !symbols().length) return;
+          if (!connected || generation !== token || !symbols().length) return;
           if (await cas.acquire()) {
             check(generation);
+            if (activityAtStart !== activity) return;
             const packet = await request.fetch(symbols());
-            if (generation !== token) return;
+            if (generation !== token || activityAtStart !== activity) return;
             if (packet.contract !== 2) throw new Error("报价契约不兼容，请更新面板");
             const published = await cas.publish({ ...packet, subscriptions: symbols() });
             if (published) update(published.value); else request.cancel();
@@ -206,7 +219,7 @@ export function createSharedMarketController({ hostCall, getContext, onHostEvent
       } catch (error) {
         if (generation === token) onUpdate(new Map(), { failed: true, preserve: true, message: error.message });
       } finally {
-        if (generation === token) { flight = null; if (active) timer = schedule(() => void refresh(), service() ? 60_000 : 15_000); }
+        if (generation === token) { flight = null; if (connected) timer = schedule(() => void refresh(), service() ? 60_000 : active ? 15_000 : 60_000); }
       }
     })();
     return flight;
@@ -217,11 +230,22 @@ export function createSharedMarketController({ hostCall, getContext, onHostEvent
     if (!event.channel || event.channel === "quotes") void readService().catch(() => {});
   });
   return {
-    refresh: () => refresh({ poke: true }),
+    refresh: () => { if (active) connected = true; return refresh({ poke: true }); },
     setActive(value) {
       const changed = active !== value; active = value;
-      if (!value) clear();
-      else if (changed || (!timer && !flight)) void refresh();
+      if (value) connected = true;
+      if (!changed && (timer || flight || !connected)) return;
+      activity++;
+      clear();
+      if (!value) {
+        request.cancel();
+        const generation = token, prior = cas;
+        void Promise.resolve(flight).then(async () => {
+          if (generation !== token) return;
+          if (!service()) await prior.release();
+          if (generation === token && connected && !active) { clear(); timer = schedule(() => void refresh(), 60_000); }
+        }).catch(() => {});
+      } else if (!flight) void refresh();
     },
     async pause(paused) {
       const generation = token;
@@ -251,13 +275,25 @@ export function createSharedMarketController({ hostCall, getContext, onHostEvent
       if (enabled) await refresh();
     },
     reset() {
-      token++; clear(); flight = null; request.cancel();
+      token++; activity++; connected = false; clear(); flight = null; request.cancel();
       attachId = null; seq = -1; configSignature = null; fingerprint = null; serviceState = null;
       // Reset may follow a project switch: never release via the new project's
       // bridge. The old bounded lease expires; any late CAS publish is rejected.
       cas = makeCas(token);
     },
-    dispose() { token++; active = false; clear(); unsubscribe?.(); request.cancel();
-      if (attachId) void hostCall("services.detach", { attachId }).catch(() => {}); },
+    dispose() {
+      const generation = token, prior = cas;
+      active = false; connected = false; activity++; clear(); unsubscribe?.(); request.cancel();
+      if (service()) {
+        token++;
+        if (attachId) void hostCall("services.detach", { attachId }).catch(() => {});
+      } else {
+        // Let an already-issued acquire receipt settle before releasing its
+        // exact revision. activity prevents that pending round from fetching or
+        // publishing after closure; reset still fences a changed workspace.
+        void Promise.resolve(flight).then(() => { if (generation === token) return prior.release(); })
+          .catch(() => {}).finally(() => { if (generation === token) token++; });
+      }
+    },
   };
 }

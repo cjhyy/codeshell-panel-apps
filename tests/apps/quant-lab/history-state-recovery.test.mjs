@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHistoryDataController, historyAutofillNeeded, historyCoveragePresentation, parseHistoryLibrarySummary } from "../../../apps/quant-lab/app/modules/history-data-ui.mjs";
+import { createCollectorScopeBridge } from "../../../apps/quant-lab/app/modules/reviewed-entry.mjs";
 
 function contractedUniverse() {
   return {
@@ -156,4 +157,60 @@ test("history reset drops runtime/status from the old project and fences pending
   } finally {
     controller?.dispose?.(); globalThis.window = original.window; globalThis.document = original.document;
   }
+});
+
+
+test("legacy history rejection offers an isolated library and routes both task and status to it", async () => {
+ const original={window:globalThis.window,document:globalThis.document};let id=0;const timers=new Map();
+ globalThis.window={setTimeout(fn){timers.set(++id,fn);return id;},clearTimeout(key){timers.delete(key);}};
+ globalThis.document={createElement:()=>new Element(),createTextNode:text=>({textContent:text})};
+ const elements=new Proxy({}, {get(target,key){return target[key]??=new Element();}});elements.market.value='cn';elements.bootstrapSource.value='tencent-ifzq';elements.bootstrapScope.value='core';
+ const events=new Map(),records=new Map(),calls=[];let controller;
+ const methods=['storage.getSnapshot','storage.compareAndSet','tasks.find','tasks.start','tasks.get','tasks.cancel'];
+ try {
+  controller=createHistoryDataController({elements,currentEpoch:()=>1,contextState:()=>({trusted:true,availableMethods:methods}),notify(){},now:()=>new Date('2026-09-12T16:00:00Z'),onHostEvent(name,fn){events.set(name,fn);return()=>events.delete(name);},
+   async hostCall(method,params){calls.push({method,params});
+    if(method==='storage.getSnapshot')return structuredClone(records.get(params.key)??{exists:false,value:null,revision:null});
+    if(method==='storage.compareAndSet'){const old=records.get(params.key)??{revision:null};if(old.revision!==params.expectedRevision)return{updated:false,snapshot:old};const next={exists:true,value:params.value,revision:`r${++id}`};records.set(params.key,next);return{updated:true,snapshot:structuredClone(next)};}
+    if(method==='storage.set'){records.set(params.key,{exists:true,value:params.value,revision:`r${++id}`});return{};}
+    if(method==='process.find')return{available:true,handle:'node'};
+    if(method==='filesystem.getKnownDirectory')return{handle:'app-data'};
+    if(method==='process.resolveEntry')return{handle:'entry'};
+    if(method==='process.spawn'){const processId=`p${++id}`;setImmediate(()=>{events.get('process.output')({processId,stream:'stdout',text:JSON.stringify(contractedUniverse())});events.get('process.exit')({processId,code:0});});return{processId};}
+    if(method==='tasks.find')return null;
+    if(method==='tasks.start')return params.input.request.libraryId?{id:'isolated',status:'succeeded',result:contractedUniverse()}:{id:'legacy',status:'failed',error:{code:'HISTORY_LEGACY_PROTOCOL',message:'旧历史协议不可混写'}};
+    return{};
+   }});
+  await controller.refreshHistorySummaryFromLocal();await elements.bootstrapAction.listeners.get('click')();
+  assert.match(elements.bootstrapStatus.textContent,/使用本项目隔离历史库/u);
+  await elements.librarySelect.listeners.get('click')();const libraryId=controller.libraryId;assert.match(libraryId,/^[a-f0-9]{32}$/u);
+  const tasks=calls.filter(call=>call.method==='tasks.start');assert.equal(tasks.length,2);assert.equal(tasks[1].params.input.request.libraryId,libraryId);
+  assert.ok(calls.some(call=>call.method==='process.spawn'&&call.params.args.includes('--library-id')&&call.params.args.includes(libraryId)));
+  assert.match(elements.libraryLocation.textContent,/本项目隔离/u);assert.doesNotMatch(elements.bootstrapStatus.textContent,/HISTORY_LEGACY_PROTOCOL/u);
+ } finally {controller?.dispose();globalThis.window=original.window;globalThis.document=original.document;}
+});
+
+test("cold Watch, Stock, Holdings and probe collectors restore only the selected library record before spawning", async () => {
+ const original={window:globalThis.window,document:globalThis.document};
+ globalThis.window={setTimeout(){return 1;},clearTimeout(){}};
+ globalThis.document={createElement:()=>new Element(),createTextNode:text=>({textContent:text})};
+ const libraryId='c'.repeat(32),calls=[],elements=new Proxy({}, {get(target,key){return target[key]??=new Element();}});
+ elements.market.value='cn';const context={trusted:true,cwd:'/fixture/project',availableMethods:['storage.getSnapshot']};let controller;
+ try {
+  const invoke=async(method,params)=>{calls.push({method,params});
+   if(method==='storage.getSnapshot')return{exists:true,revision:'chosen',value:{format:'quant.history.library/1',libraryId}};
+   if(method==='process.resolveEntry')return{handle:`entry:${params.name}`};
+   if(method==='process.spawn')return{processId:'p'};throw Error(`unexpected ${method}`);
+  };
+  controller=createHistoryDataController({elements,hostCall:invoke,currentEpoch:()=>1,contextState:()=>context,notify(){},now:()=>new Date('2026-10-28T02:00:00Z')});
+  assert.equal(controller.libraryId,null);
+  const bridge=createCollectorScopeBridge({invoke,getContext:()=>context,currentEpoch:()=>1,ensureLibraryId:()=>controller.ensureLibraryId()});
+  for(const name of ['build-a-share-selection','fetch-a-share-stock','fetch-us-stock','fetch-holding-quotes','build-market-pulse']){
+   const entry=await bridge('process.resolveEntry',{name,executableHandle:'node'});
+   await bridge('process.spawn',{entryHandle:entry.handle,args:['fixture']});
+   assert.deepEqual(calls.at(-1).params.args.slice(-2),['--library-id',libraryId]);
+  }
+  assert.equal(calls.filter(call=>call.method==='storage.getSnapshot').length,1,'cached single-record restore never scans history');
+  assert.equal(calls.some(call=>/workspace|tasks|process.find/u.test(call.method)),false);
+ }finally{controller?.dispose();globalThis.window=original.window;globalThis.document=original.document;}
 });

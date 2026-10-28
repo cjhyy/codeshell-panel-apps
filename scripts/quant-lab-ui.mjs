@@ -1677,7 +1677,7 @@ async function installHostStub(
               !params.args.includes("--read-local"),
             );
             const output = launcher.includes("fetch-holding-quotes.mjs")
-              ? JSON.stringify(JSON.parse(params.args.at(-1))?.mode === "history"
+              ? JSON.stringify(JSON.parse(params.args[0])?.mode === "history"
                 ? window.__holdingHistory ?? { kind: "holding-history", results: [] }
                 : { ...(window.__holdingQuotes ?? { kind: "holding-quotes", quotes: [], errors: [] }), contract: 2,
                     quotes: (window.__holdingQuotes?.quotes ?? []).map(quote => ({...quote, currency: quote.market === "cn" ? "CNY" : "USD", marketDate: quote.asOf.slice(0,10), session: "regular", priceBasis: "raw", previousClose: null, referenceDate: null, referenceBasis: null, dayChange: null, dayChangePct: null, source: "fixture", fetchedAt: quote.asOf, status: "ok", reason: "reference-unavailable" })) })

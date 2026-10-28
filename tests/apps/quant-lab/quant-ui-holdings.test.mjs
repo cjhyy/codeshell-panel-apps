@@ -53,23 +53,27 @@ test('real holdings controller cold/hot base path reads only ledger with 50ms br
  }finally{last?.reset();globalThis.document=original;}
 });
 
-test('quote-only valuation reuses decimal replay, checkpoint FX and ledger changes invalidate it',()=>{
- const source=JSON.stringify(fixture());const cache=createHoldingsSnapshotCache();const inputs={endingDate:'2026-10-28',endingPrices:Object.fromEntries(fixture().instruments.map(i=>[i.id,'11'])),checkpointFx:{}};
- performance.clearMarks('quant-lab:replayHoldings');
- const first=cache.derive(source,inputs,instant);const marks=()=>performance.getEntriesByName('quant-lab:replayHoldings').length;
- assert.equal(marks(),1);assert.deepEqual(first,deriveHoldingsSnapshot(source,inputs,instant));
- const next={...inputs,endingPrices:{...inputs.endingPrices,'cn-0':'12'}};
- assert.deepEqual(cache.derive(source,next,instant),deriveHoldingsSnapshot(source,next,instant));assert.equal(marks(),1);
- cache.derive(source,{...next,checkpointFx:{'2026-10-27':{date:'2026-10-27',USD:'7.2'}}},instant);assert.equal(marks(),2);
- const changed=fixture();changed.transactions[0].price='10.01';cache.derive(JSON.stringify(changed),inputs,instant);assert.equal(marks(),3);
+test('semantic ledger and transaction FX control replay while ending FX only revalues',()=>{
+ const ledger={format:'codeshell.portfolio-transactions',version:1,baseCurrency:'CNY',accounts:[{id:'us',name:'Fixture',broker:'fixture',currencies:['USD']}],
+  instruments:[{id:'aapl',type:'stock',market:'us',currency:'USD',symbol:'AAPL',name:'Apple',aliases:[]}],
+  transactions:[{id:'buy',type:'buy',accountId:'us',instrumentId:'aapl',tradeDate:'2026-10-26',quantity:'1',price:'10.00',commission:'0.00',tax:'0.00',otherFees:'0.00',createdAt:'2026-10-26T15:00:00Z'}]};
+ const source=JSON.stringify(ledger),cache=createHoldingsSnapshotCache();
+ const inputs={endingDate:'2026-10-28',endingPrices:{aapl:'12'},checkpointFx:{'2026-10-27':{USD:'7'},'2026-10-28':{USD:'7.2'}}};
+ performance.clearMarks('quant-lab:replayHoldings'); const marks=()=>performance.getEntriesByName('quant-lab:replayHoldings').length;
+ assert.deepEqual(cache.derive(source,inputs,instant),deriveHoldingsSnapshot(source,inputs,instant));assert.equal(marks(),1);
+ const ending={...inputs,checkpointFx:{...inputs.checkpointFx,'2026-10-28':{USD:'7.3'}}};
+ assert.deepEqual(cache.derive(JSON.stringify(ledger,null,2)+'\n',ending,instant),deriveHoldingsSnapshot(JSON.stringify(ledger,null,2)+'\n',ending,instant));assert.equal(marks(),1,'text formatting and ending FX never replay');
+ const history={...ending,checkpointFx:{...ending.checkpointFx,'2026-10-27':{USD:'7.1'}}};
+ assert.deepEqual(cache.derive(source,history,instant),deriveHoldingsSnapshot(source,history,instant));assert.equal(marks(),2,'transaction checkpoint FX invalidates');
+ ledger.transactions[0].price='10.01';cache.derive(JSON.stringify(ledger),history,instant);assert.equal(marks(),3,'semantic ledger edit invalidates');
 });
 
-test('real holdings DOM retains keyed rows and same-value service ticks replay zero transactions',async()=>{
+test('real holdings DOM retains keyed rows, accepts unknown sessions and same-value ticks replay zero transactions',async()=>{
  const original={document:globalThis.document,requestAnimationFrame:globalThis.requestAnimationFrame};
  globalThis.document={createElement:()=>new Element(),createTextNode:text=>Object.assign(new Element(),{textContent:text}),querySelector:()=>null};
  globalThis.requestAnimationFrame=fn=>{queueMicrotask(fn);return 1;};
  const source=JSON.stringify(fixture()),events=new Map();let seq=1;
- const quote={market:'cn',symbol:'SH600000',currency:'CNY',price:'12',asOf:instant,marketDate:'2026-10-28',session:'regular',priceBasis:'raw',previousClose:'11',referenceDate:'2026-10-28',referenceBasis:'supplier-session-reference',dayChange:'1',dayChangePct:'9.09090909',source:'fixture',fetchedAt:instant,status:'ok',reason:null};
+ const quote={market:'cn',symbol:'SH600000',currency:'CNY',price:'12',asOf:instant,marketDate:'2026-10-28',session:'unknown',priceBasis:'raw',previousClose:'11',referenceDate:'2026-10-28',referenceBasis:'supplier-session-reference',dayChange:'1',dayChangePct:'9.09090909',source:'fixture',fetchedAt:instant,status:'ok',reason:null};
  const doc={format:'quant.quotes/2',items:{'cn:SH600000':quote}};
  const context={availableMethods:['get','read','attach','detach','configure','control','setDesired'].map(n=>`services.${n}`),capabilities:{services:{version:1}}};
  const elements=new Proxy({performance:null},{get:(obj,key)=>key in obj?obj[key]:(obj[key]=new Element())});
@@ -87,12 +91,39 @@ test('real holdings DOM retains keyed rows and same-value service ticks replay z
   controller=createHoldingsController({elements,hostCall,getContext:()=>context,onHostEvent:(name,fn)=>{events.set(name,fn);return()=>events.delete(name);},currentEpoch:()=>1,now:()=>new Date(instant)});
   await controller.loadBase();await controller.ensureDetails();controller.setActive(true);await controller.refreshQuotes();await new Promise(setImmediate);
   const row=elements.holdingsList.children.find(item=>item.dataset.symbol==='SH600000');
+  const details=row.children.find(item=>item.dataset.patchKey==='provenance');details.open=true;
+  const button=row.children.find(item=>item.dataset.patchKey==='record-note');globalThis.document.activeElement=button;
   assert.ok(row);const marks=()=>performance.getEntriesByName('quant-lab:replayHoldings').length;const before=marks();
+  doc.items['cn:SH600000']={...quote,fetchedAt:'2026-10-28T02:00:15Z'};
   seq++;events.get('services.changed')({name:'market-feed',channel:'quotes',seq});await new Promise(setImmediate);
   assert.equal(marks(),before);assert.equal(elements.holdingsList.children.find(item=>item.dataset.symbol==='SH600000'),row);
+  assert.equal(row.children.find(item=>item.dataset.patchKey==='provenance'),details);assert.equal(details.open,true);assert.equal(globalThis.document.activeElement,button);
   doc.items['cn:SH600000']={...quote,price:'13',dayChange:'2',dayChangePct:'18.18181818'};seq++;events.get('services.changed')({name:'market-feed',channel:'quotes',seq});await new Promise(setImmediate);
   assert.equal(marks(),before,'new ending price revalues without replay');assert.equal(elements.holdingsList.children.find(item=>item.dataset.symbol==='SH600000'),row);
+  assert.equal(row.children.find(item=>item.dataset.patchKey==='provenance'),details);assert.equal(details.open,true);assert.equal(row.children.find(item=>item.dataset.patchKey==='record-note'),button);
   const labels=row.children.find(item=>item.className==='portfolio-position-metrics').children;
   assert.equal(labels.find(item=>item.children[0].textContent==='日涨跌 · 本币').children[1].textContent,'2 CNY');
+  doc.items['cn:SH600000']={...quote,price:'11',dayChange:'0',dayChangePct:'0'};seq++;events.get('services.changed')({name:'market-feed',channel:'quotes',seq});await new Promise(setImmediate);
+  const zero=row.children.find(item=>item.className==='portfolio-position-metrics').children.find(item=>item.children[0].textContent==='日涨跌 · 本币').children[1];
+  assert.equal(zero.textContent,'0 CNY');assert.doesNotMatch(zero.className??'',/positive|negative/u,'flat price is neutral');
  }finally{controller?.reset();globalThis.document=original.document;globalThis.requestAnimationFrame=original.requestAnimationFrame;}
+});
+
+
+test('base and details use abortable owned requests and execution identity fences late results', async()=>{
+ const original=globalThis.document;globalThis.document={createElement:()=>new Element(),createTextNode:text=>Object.assign(new Element(),{textContent:text}),querySelector:()=>null};
+ let executionId='one',release,entered;const ready=new Promise(resolve=>entered=resolve),barrier=new Promise(resolve=>release=resolve);const calls=[];
+ const elements=new Proxy({performance:null},{get:(obj,key)=>key in obj?obj[key]:(obj[key]=new Element())});let controller;
+ try{
+  controller=createHoldingsController({elements,currentEpoch:()=>1,getContext:()=>({executionId}),now:()=>new Date(instant),hostCall:async(method,params,intent)=>{
+   calls.push({method,params,intent});if(method==='workspace.list'&&params.path==='portfolio')return{entries:[{kind:'file',path:'portfolio/transactions.json'}]};
+   if(method==='workspace.readText')return{content:JSON.stringify(fixture())};
+   if(method==='workspace.list'){entered();await barrier;return{entries:[]};}throw Error(method);
+  }});
+  await controller.loadBase();const details=controller.ensureDetails();await ready;
+  const request=calls.find(call=>call.intent?.owner==='portfolio-details');assert.ok(request.intent.signal);assert.equal(request.intent.signal.aborted,false);
+  executionId='two';controller.reset();assert.equal(request.intent.signal.aborted,true);release();await details;
+  await controller.loadBase();assert.equal(calls.filter(call=>call.params.path==='portfolio').length,2);assert.match(elements.baseState.textContent,/待详情/u);
+  assert.ok(calls.filter(call=>call.params.path==='portfolio').every(call=>call.intent.owner==='portfolio-base'&&call.intent.signal));
+ }finally{controller?.reset();globalThis.document=original;}
 });

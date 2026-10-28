@@ -233,16 +233,20 @@ export function registerPortfolioTools({
 }) {
   if (typeof registerTool !== "function") return;
   let running = false;
+  async function readyEpoch() {
+    const prepared = typeof ready === "function" ? await ready() : await ready;
+    const epoch = prepared?.epoch ?? currentEpoch();
+    if (epoch !== currentEpoch()) throw new Error("持仓工具执行身份已切换，请重新发起");
+    return epoch;
+  }
   registerTool("get_portfolio_context", async () => {
-    await ready;
-    const expected = currentEpoch();
+    const expected = await readyEpoch();
     return readPortfolioContext(hostCall, { epochToken: { expected, current: currentEpoch } });
   });
   registerTool("import_portfolio_snapshot", async (input) => {
-    await ready;
+    const expectedEpoch = await readyEpoch();
     if (running) throw new Error("另一笔持仓导入正在执行，请等待完成");
     running = true;
-    const expectedEpoch = currentEpoch();
     try {
       const result = await importPortfolioSnapshot(hostCall, input, {
         expectedEpoch,

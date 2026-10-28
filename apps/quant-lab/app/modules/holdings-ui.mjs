@@ -1,3 +1,5 @@
+import { quoteDisplayValue } from "./market-service-client.mjs";
+import { patchHoldingsNode } from "./holdings-dom-patch.mjs";
 import { createPortfolioPerformanceView } from "./portfolio-performance-ui.mjs";
 import { createHoldingQuoteController, createHoldingQuoteRequest, holdingQuoteDelay } from "./holding-quotes.mjs";
 import {
@@ -614,6 +616,11 @@ export function createHoldingsController({
   let transactionLimit = 100;
   const rows = new Map();
   let ledger = null;
+  let ledgerSourceText = null;
+  let baseIdentity = null;
+  let baseAbort = new AbortController();
+  let detailsAbort = new AbortController();
+  const executionIdentity = () => JSON.stringify([getContext().executionId ?? null, currentEpoch()]);
   let snapshot = null;
   let market = null;
   let analysis = null;
@@ -672,7 +679,7 @@ export function createHoldingsController({
         endingPrices[instrument.id] = quote.price;
         liveQuotes.set(instrument.symbol, quote);
       }
-      liveSnapshot = holdingsCache.derive(JSON.stringify(ledger),
+      liveSnapshot = holdingsCache.derive(ledgerSourceText,
         { ...market.derivationInputs, endingPrices }, now().toISOString());
       if (detailsReady) computeRules();
       if (!quotesActive || renderFrame != null) return;
@@ -1061,16 +1068,16 @@ export function createHoldingsController({
       const quote = liveQuotes.get(instrument.symbol);
       const key = `${position.accountId}\0${position.instrumentId}`;
       retained.add(key);
-      const row = rows.get(key) ?? document.createElement("article");
-      rows.set(key, row);
-      const signature = JSON.stringify([position, quote, latest, detailsReady, noteLinkCount({ type: "instrument", symbol: instrument.symbol, market: instrument.market })]);
-      if (row.dataset.signature === signature) { elements.holdingsList.append(row); continue; }
+      const existingRow = rows.get(key);
+      const row = document.createElement("article");
+      const signature = JSON.stringify([position, quoteDisplayValue(quote), latest, detailsReady, quoteState.failed === true, instrument.name, noteLinkCount({ type: "instrument", symbol: instrument.symbol, market: instrument.market })]);
+      if (existingRow?.dataset.signature === signature) continue;
       row.dataset.signature = signature;
-      row.replaceChildren();
       row.className = "portfolio-position";
       row.dataset.symbol = instrument.symbol;
       const head = document.createElement("div");
       head.className = "portfolio-position-head";
+      head.dataset.patchKey = "head";
       const name = document.createElement("div");
       name.className = "portfolio-position-name";
       appendText(name, "b", instrument.name || instrument.symbol);
@@ -1087,8 +1094,10 @@ export function createHoldingsController({
 
       const metrics = document.createElement("div");
       metrics.className = "portfolio-position-metrics";
+      metrics.dataset.patchKey = "metrics";
       const metric = (label, value, tone) => {
         const wrapper = document.createElement("div");
+        wrapper.dataset.patchKey = label;
         appendText(wrapper, "span", label);
         const output = appendText(wrapper, "b", value);
         if (tone) output.dataset.tone = tone;
@@ -1119,16 +1128,16 @@ export function createHoldingsController({
       );
       const day = quote?.contract === 2 || quote?.marketDate ? quote : null;
       metric("日涨跌 · 本币", day?.dayChange == null ? "—" : `${day.dayChange} ${instrument.currency}`,
-        day?.dayChange == null ? null : Number(day.dayChange) < 0 ? "negative" : "positive");
+        day?.dayChange == null ? null : Number(day.dayChange) < 0 ? "negative" : Number(day.dayChange) > 0 ? "positive" : null);
       metric("日涨跌幅", day?.dayChangePct == null ? "—" : `${Number(day.dayChangePct).toFixed(2)}%`);
       metric("持仓收益率", pnl == null || Number(position.costBasisLocal) <= 0 ? "—"
         : `${(Number(pnl) / Number(position.costBasisLocal) * 100).toFixed(2)}%`);
       row.append(metrics);
-      if (day?.marketDate) appendText(row, "p", `交易日 ${day.marketDate} · 参考日 ${day.referenceDate ?? "缺失"} · ${day.priceBasis ?? "未知口径"}；日涨跌按前收盘参考价计算，缺失不估算。`, "portfolio-source");
+      if (day?.marketDate) appendText(row, "p", `交易日 ${day.marketDate} · 参考日 ${day.referenceDate ?? "缺失"} · ${day.priceBasis ?? "未知口径"}；日涨跌按前收盘参考价计算，缺失不估算。`, "portfolio-source").dataset.patchKey = "day-reference";
       const quoteTime = quote?.asOf ?? latest?.availableAt;
       appendText(row, "p", quoteTime
         ? `${quote ? quote.source : "历史行情"} · 行情时间 ${new Date(quoteTime).toLocaleString("zh-CN", { hour12: false })}${quoteState.failed ? " · 本次未完全更新" : ""}`
-        : "等待行情", "portfolio-quote-time");
+        : "等待行情", "portfolio-quote-time").dataset.patchKey = "quote-time";
 
       const source = sourceStatus(raw);
       const provenance = document.createElement("p");
@@ -1147,22 +1156,35 @@ export function createHoldingsController({
       }
       const provenanceDetails = document.createElement("details");
       provenanceDetails.className = "portfolio-data-details portfolio-position-details";
+      provenanceDetails.dataset.patchKey = "provenance";
       appendText(provenanceDetails, "summary", "查看行情来源与时点");
       provenanceDetails.append(provenance);
       row.append(provenanceDetails);
       const noteLink = { type: "instrument", symbol: instrument.symbol, market: instrument.market };
       const record = appendText(row, "button", `记录笔记 · ${noteLinkCount(noteLink)}`, "ghost-button record-note-button");
       record.type = "button";
+      record.dataset.patchKey = "record-note";
       record.addEventListener("click", () => onRecordNote(noteLink));
       const opening = ledger.transactions.find((item) => item.accountId === position.accountId &&
         item.instrumentId === position.instrumentId && item.source?.kind === "holding-snapshot");
       if (opening) {
         appendText(row, "p", opening.source.marketDate
           ? `期初持仓 · 来源日期 ${opening.source.marketDate} · ${opening.source.reference}`
-          : `期初持仓 · 建账日 ${opening.valuationDate} · 截图行情日期未知 · ${opening.source.reference}`, "portfolio-source");
+          : `期初持仓 · 建账日 ${opening.valuationDate} · 截图行情日期未知 · ${opening.source.reference}`, "portfolio-source").dataset.patchKey = "opening-source";
       }
-      elements.holdingsList.append(row);
+      const patched = existingRow ? patchHoldingsNode(existingRow, row) : row;
+      rows.set(key, patched);
+      if (!existingRow) elements.holdingsList.append(patched);
     }
+    // Only move a row if its actual order changed; appending focused rows on
+    // every render can blur interactive descendants in a real webview.
+    [...retained].forEach((key, index) => {
+      const row = rows.get(key);
+      if (elements.holdingsList.children[index] !== row) {
+        if (elements.holdingsList.insertBefore) elements.holdingsList.insertBefore(row, elements.holdingsList.children[index] ?? null);
+        else elements.holdingsList.append(row);
+      }
+    });
     for (const [key, row] of rows) if (!retained.has(key)) { row.remove(); rows.delete(key); }
     return positions.length;
   }
@@ -1417,14 +1439,15 @@ export function createHoldingsController({
 
   async function rebuildView(expectedEpoch) {
     const generation = loadGeneration;
-    const identity = ledger;
-    const nextMarket = await loadMarketInputs(hostCall, identity, now);
-    if (currentEpoch() !== expectedEpoch || generation !== loadGeneration || identity !== ledger) return;
+    const identity = { ledger, source: ledgerSourceText, execution: executionIdentity() };
+    const signal = detailsAbort.signal;
+    const nextMarket = await loadMarketInputs((method, params) => hostCall(method, params, { owner: "portfolio-details", signal, priority: "background" }), identity.ledger, now);
+    if (currentEpoch() !== expectedEpoch || generation !== loadGeneration || identity.ledger !== ledger || identity.source !== ledgerSourceText || identity.execution !== executionIdentity() || signal.aborted) return;
     liveSnapshot = null;
     market = nextMarket;
     detailsReady = true;
     snapshot = holdingsCache.derive(
-      `${JSON.stringify(ledger, null, 2)}\n`,
+      ledgerSourceText,
       market.derivationInputs,
       now().toISOString(),
     );
@@ -1461,14 +1484,18 @@ export function createHoldingsController({
   async function performBaseLoad(expectedEpoch) {
     reset();
     const generation = loadGeneration;
+    const identity = executionIdentity();
+    const signal = baseAbort.signal;
     showStatus("正在读取持仓账本…");
     try {
       const stored = await readWorkspaceJson(
-        (method, params) => hostCall(method, params, { priority: "critical", owner: "portfolio-base" }),
+        (method, params) => hostCall(method, params, { priority: "critical", owner: "portfolio-base", signal }),
         "portfolio/transactions.json",
         epochToken(expectedEpoch),
       );
-      if (currentEpoch() !== expectedEpoch || generation !== loadGeneration) return;
+      if (currentEpoch() !== expectedEpoch || generation !== loadGeneration || identity !== executionIdentity()) throw new Error("持仓执行身份已切换");
+      baseEpoch = expectedEpoch;
+      baseIdentity = identity;
       ledgerExists = stored.exists;
       if (!stored.exists) {
         ledger = null;
@@ -1478,6 +1505,7 @@ export function createHoldingsController({
       }
       const parsed = parseTransactions(stored.content);
       ledger = parsed.ledger;
+      ledgerSourceText = stored.content;
       const endingDate = todayShanghai(now);
       market = { endingDate, derivationInputs: { endingDate, checkpointFx: {}, endingPrices: {} },
         endingPriceTimes: {}, rawByInstrument: new Map(), sourceStatusByInstrument: {},
@@ -1491,7 +1519,8 @@ export function createHoldingsController({
       if (quotesActive) void quoteController.refresh();
       setTimeout(() => { if (generation === loadGeneration && quotesActive) void ensureDetails(); }, 0);
     } catch (error) {
-      if (currentEpoch() !== expectedEpoch || generation !== loadGeneration) return;
+      if (currentEpoch() !== expectedEpoch || generation !== loadGeneration || identity !== executionIdentity()) throw error;
+      baseEpoch = null; baseIdentity = null;
       elements.empty.hidden = true;
       elements.workspace.hidden = true;
       showStatus(error instanceof Error ? error.message : "持仓读取失败", "error");
@@ -1510,13 +1539,15 @@ export function createHoldingsController({
           provisional: false,
         },
       });
+      throw error;
     }
   }
 
   function loadBase(expectedEpoch = currentEpoch(), { reload = false } = {}) {
-    if (!reload && baseEpoch === expectedEpoch) return Promise.resolve(snapshot);
-    if (!reload && baseFlight) return baseFlight;
+    if (!reload && baseEpoch === expectedEpoch && baseIdentity === executionIdentity()) return Promise.resolve(snapshot);
+    if (!reload && baseFlight && baseFlight.identity === executionIdentity()) return baseFlight;
     const flight = performBaseLoad(expectedEpoch).finally(() => { if (baseFlight === flight) baseFlight = null; });
+    flight.identity = executionIdentity();
     baseFlight = flight;
     return flight;
   }
@@ -1524,7 +1555,8 @@ export function createHoldingsController({
   function ensureDetails() {
     if (detailsReady || !ledger) return Promise.resolve();
     if (!detailsFlight) {
-      const flight = rebuildView(currentEpoch()).catch(error => showStatus(`基础持仓可用；详情读取失败：${error.message}`, "warning"))
+      const identity = executionIdentity(), signal = detailsAbort.signal;
+      const flight = rebuildView(currentEpoch()).catch(error => { if (identity === executionIdentity() && !signal.aborted) showStatus(`基础持仓可用；详情读取失败：${error.message}`, "warning"); })
         .finally(() => { if (detailsFlight === flight) detailsFlight = null; });
       detailsFlight = flight;
     }
@@ -1651,6 +1683,7 @@ export function createHoldingsController({
       quoteState = {};
       ledgerExists = result.committed === true;
       ledger = result.ledger;
+      ledgerSourceText = `${JSON.stringify(result.ledger, null, 2)}\n`;
       snapshot = result.snapshot;
       market = nextMarket;
       ledgerFingerprintState = result.cacheStale
@@ -1706,6 +1739,11 @@ export function createHoldingsController({
   }
 
   function reset() {
+    baseAbort.abort(); detailsAbort.abort();
+    baseAbort = new AbortController(); detailsAbort = new AbortController();
+    baseIdentity = null;
+    baseFlight = null;
+    ledgerSourceText = null;
     loadGeneration++;
     baseEpoch = null;
     detailsReady = false;
