@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, rename, rm, rmdir } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 
@@ -11,6 +13,32 @@ const STATUSES = new Set(["pending", "queued", "running", ...TERMINAL_STATUSES])
 const MAX_RECORD_BYTES = 128 * 1024;
 export const cliError = (code, message) => Object.assign(new Error(message), { code });
 const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
+
+// Only an OS boot identity proves all processes from a previous boot are gone.
+// No uptime estimate, environment override or dead-PID inference is accepted.
+export async function currentBootId() {
+  try {
+    if (process.platform === "linux") {
+      const value = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
+      return /^[a-f0-9-]{36}$/.test(value) ? `linux:${value}` : null;
+    }
+    if (process.platform === "darwin") {
+      const { stdout } = await promisify(execFile)("/usr/sbin/sysctl", ["-n", "kern.boottime"], { timeout: 2000, maxBuffer: 4096 });
+      const match = stdout.match(/sec = (\d+), usec = (\d+)/);
+      return match ? `darwin:${match[1]}:${match[2]}` : null;
+    }
+  } catch { /* Unknown means manual recovery only. */ }
+  return null;
+}
+function processState(pid) {
+  if (!Number.isSafeInteger(pid) || pid === 0) return "unknown";
+  try { process.kill(pid, 0); return "present"; }
+  catch (error) { return error.code === "ESRCH" ? "absent" : "unknown"; }
+}
+function slotState(slot) {
+  return { ...slot, pidState: processState(slot.pid),
+    pgidState: slot.detachedGroup && slot.pgid ? processState(-slot.pgid) : "unknown" };
+}
 
 export function cliJobId(value) {
   if (typeof value !== "string" || !UUID.test(value))
@@ -130,6 +158,8 @@ async function atomicJson(directory, name, value) {
     if (existing && (!existing.isFile() || existing.isSymbolicLink() || existing.nlink !== 1))
       throw cliError("UNSAFE_RECORD", "任务目标不是独立普通文件。");
     await rename(temporary, target);
+    const parent = await open(directory, constants.O_RDONLY);
+    try { await parent.sync(); } finally { await parent.close(); }
   } finally {
     await handle.close();
     await rm(temporary, { force: true });
@@ -161,6 +191,9 @@ async function recoverLock(path, expected, verifyOwner) {
     await rm(join(retired, "owner.json"));
     await rmdir(retired);
     return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
   } finally {
     if (!same(recoveryIdentity, await lstat(recovery)))
       throw cliError("LOCK_CHANGED", "恢复锁已改变，未删除其他进程的锁。");
@@ -254,7 +287,7 @@ function validateRecord(record, id) {
 
 function visibleRecord(record, now = Date.now()) {
   const heartbeat = record.heartbeatAt || record.updatedAt;
-  return ["queued", "running"].includes(record.status) && now - heartbeat > HEARTBEAT_TIMEOUT_MS
+  return (record.status === "running" || record.status === "queued" && record.workerToken) && now - heartbeat > HEARTBEAT_TIMEOUT_MS
     ? {
         ...record,
         status: "interrupted",
@@ -357,8 +390,11 @@ function validateQueue(value) {
         !UUID.test(slot.token) ||
         !Number.isSafeInteger(slot.attempt) ||
         slot.attempt < 1 ||
-        !Number.isSafeInteger(slot.pid) ||
-        slot.pid < 1,
+        (slot.state !== undefined && !["starting", "running"].includes(slot.state)) ||
+        (slot.bootId !== undefined && slot.bootId !== null && (typeof slot.bootId !== "string" || slot.bootId.length > 128)) ||
+        (slot.state === "starting"
+          ? !Number.isFinite(slot.reservedAt)
+          : !Number.isSafeInteger(slot.pid) || slot.pid < 1),
     )
   )
     throw cliError("INVALID_QUEUE", "项目下载队列记录无效，未覆盖原记录。");
@@ -373,6 +409,8 @@ function publicQueue(value) {
     paused: value.paused,
     maxConcurrent: value.maxConcurrent,
     active: value.slots.length,
+    stalled: value.slots.filter((slot) => slot.state === "starting"
+      ? Date.now() - slot.reservedAt > 60_000 : processState(slot.pid) === "absent").length,
   };
 }
 
@@ -458,7 +496,19 @@ export async function createCliStore(project, { create = false } = {}) {
     await atomicJson(task, "task.json", record);
     return record;
   }
-  return {
+  async function clearWorkerLock(slot) {
+    const path = join(await taskDirectory(slot.id), ".worker.lock");
+    const owner = await jsonFile(join(path, "owner.json")).catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!owner) return;
+    if (owner.attempt !== slot.attempt || owner.token !== slot.token)
+      throw cliError("SLOT_CONFLICT", "Worker 锁归属已变化，未删除。");
+    await rm(join(path, "owner.json"));
+    await rmdir(path);
+  }
+  const store = {
     project: root,
     directory,
     jobsDirectory,
@@ -489,63 +539,97 @@ export async function createCliStore(project, { create = false } = {}) {
         return publicQueue(next);
       });
     },
-    async admitWorker(id, attempt, token) {
-      cliJobId(id);
+    // Reservation and spawn are serialized by the real on-disk queue lock.
+    // A worker can do no business work before a matching starting-token claim.
+    async pump(spawnWorker, { bootId, now = Date.now(), eligible = async () => true } = {}) {
+      bootId ??= await currentBootId();
       return queueOperation(async (queue) => {
-        const slot = queue.slots.find((value) => value.id === id);
-        if (slot) {
-          if (slot.attempt !== attempt || slot.token !== token || slot.pid !== process.pid)
-            throw cliError("JOB_BUSY", "任务仍占有旧执行槽位，请核查原 worker。");
-          return true;
+        // A boot change is the only automatic running-slot recovery proof.
+        for (const slot of [...queue.slots]) {
+          const rebooted = bootId && slot.bootId && bootId !== slot.bootId;
+          const cancellation = slot.state === "starting" && (await read(slot.id)).cancelRequestedAt;
+          const expired = slot.state === "starting" && (now - slot.reservedAt > 60_000 || cancellation);
+          if (!rebooted && !expired) continue;
+          if (rebooted) await clearWorkerLock(slot);
+          // Persist revocation before touching task state or allowing replacement.
+          queue = { ...queue, slots: queue.slots.filter((value) => value !== slot) };
+          await atomicJson(directory, "queue.json", queue);
+          await store.update(slot.id, (record) => {
+            if (record.attempt !== slot.attempt || record.workerToken !== slot.token) return null;
+            const { workerToken, ...rest } = record;
+            return { ...rest, status: rebooted ? "interrupted" : record.cancelRequestedAt ? "cancelled" : "queued", updatedAt: now,
+              ...(rebooted ? { error: { code: "BOOT_CHANGED", message: "设备已重启；请明确重试下载。" } } : {}) };
+          });
         }
-        if (queue.paused || queue.slots.length >= queue.maxConcurrent) return false;
-        const own = await read(id);
-        if (
-          own.attempt !== attempt ||
-          own.workerToken !== token ||
-          own.status !== "queued" ||
-          own.archivedAt ||
-          own.cancelRequestedAt
-        )
-          throw cliError("WORKER_REJECTED", "等待中的任务已改变，不能开始执行。");
-        const entries = await readdir(jobsDirectory, { withFileTypes: true });
-        if (entries.length > 1000)
-          throw cliError("OUTPUT_LIMIT", "项目任务过多，请先归档或整理旧任务。");
+        if (queue.paused) return publicQueue(queue);
         const candidates = [];
+        const entries = await readdir(jobsDirectory, { withFileTypes: true });
+        if (entries.length > 1000) throw cliError("OUTPUT_LIMIT", "项目任务过多，请先整理旧任务。");
         for (const entry of entries) {
           if (!UUID.test(entry.name)) continue;
           let record;
-          try {
-            record = await read(entry.name);
-          } catch {
-            // A concurrent create can expose its directory before task.json is
-            // committed; corrupt history must not poison unrelated admission.
-            // listCliJobs reports these records as warnings. Existing slots
-            // remain counted independently and are never reclaimed here.
-            continue;
-          }
-          if (
-            record.status === "queued" &&
-            record.workerToken &&
-            !queue.slots.some((slot) => slot.id === record.id) &&
-            !record.cancelRequestedAt &&
-            !record.archivedAt &&
-            Date.now() - (record.heartbeatAt || record.updatedAt) <= HEARTBEAT_TIMEOUT_MS
-          )
+          try { record = await read(entry.name); } catch { continue; }
+          if (record.status === "queued" && !record.workerToken && !record.cancelRequestedAt &&
+              !record.archivedAt && !queue.slots.some((slot) => slot.id === record.id) && await eligible(record))
             candidates.push(record);
         }
-        candidates.sort(
-          (a, b) =>
-            (a.queuedAt ?? a.createdAt) - (b.queuedAt ?? b.createdAt) || a.id.localeCompare(b.id),
-        );
-        const available = queue.maxConcurrent - queue.slots.length;
-        if (!candidates.slice(0, available).some((value) => value.id === id)) return false;
-        const next = {
-          ...queue,
-          slots: [...queue.slots, { id, attempt, token, pid: process.pid }],
-        };
-        await atomicJson(directory, "queue.json", next);
+        candidates.sort((a, b) => (a.queuedAt ?? a.createdAt) - (b.queuedAt ?? b.createdAt) || a.id.localeCompare(b.id));
+        for (const candidate of candidates) {
+          if (queue.slots.length >= queue.maxConcurrent) break;
+          const token = randomUUID(), slot = { id: candidate.id, attempt: candidate.attempt,
+            token, state: "starting", reservedAt: now, bootId };
+          queue = { ...queue, slots: [...queue.slots, slot] };
+          await atomicJson(directory, "queue.json", queue);
+          const record = await store.update(candidate.id, (current) => {
+            if (current.attempt !== slot.attempt || current.status !== "queued" || current.workerToken || current.cancelRequestedAt)
+              throw cliError("WORKER_REJECTED", "排队任务已改变，预约已保守保留。");
+            return { ...current, workerToken: token, heartbeatAt: now, updatedAt: now };
+          });
+          await spawnWorker(record, slot);
+        }
+        return publicQueue(queue);
+      });
+    },
+    async admitWorker(id, attempt, token, { detachedGroup = false, bootId } = {}) {
+      bootId ??= await currentBootId();
+      return queueOperation(async (queue) => {
+        const slot = queue.slots.find((value) => value.id === id);
+        if (!slot || slot.attempt !== attempt || slot.token !== token || slot.state !== "starting")
+          throw cliError("WORKER_REJECTED", "启动预约已过期或被替换，未开始下载。");
+        const own = await read(id);
+        if (own.attempt !== attempt || own.workerToken !== token || own.status !== "queued" || own.cancelRequestedAt)
+          throw cliError("WORKER_REJECTED", "任务已改变，未开始下载。");
+        await atomicJson(directory, "queue.json", { ...queue, slots: queue.slots.map((value) => value === slot
+          ? { ...slot, state: "running", pid: process.pid, pgid: detachedGroup ? process.pid : null,
+              detachedGroup, bootId, claimedAt: Date.now() } : value) });
         return true;
+      });
+    },
+    async diagnoseSlots() {
+      const queue = await readQueue();
+      return { ...publicQueue(queue), bootId: await currentBootId(), slots: queue.slots.map(slotState),
+        warning: "PID/进程组存在不代表归属；setsid 逃逸的后代无法验证。恢复前必须自行确认全部原后代已结束，工具不会杀进程。" };
+    },
+    async recoverSlot({ id, attempt, token, confirmed }) {
+      if (!UUID.test(id) || !UUID.test(token) || !Number.isSafeInteger(attempt) || confirmed !== true)
+        throw cliError("INVALID_ARGUMENT", "恢复需要精确 id、attempt、token 和 confirmed=true，确认原进程树已结束。");
+      return queueOperation(async (queue) => {
+        const slot = queue.slots.find((value) => value.id === id);
+        if (!slot || slot.attempt !== attempt || slot.token !== token)
+          throw cliError("SLOT_CONFLICT", "槽位已变化，未恢复任何任务。");
+        const state = slotState(slot);
+        if (slot.state !== "starting" && (state.pidState !== "absent" || state.pgidState === "present"))
+          throw cliError("JOB_BUSY", "原 PID/进程组仍存在或无法核验，未恢复槽位，也未发送信号。");
+        await clearWorkerLock(slot);
+        await atomicJson(directory, "queue.json", { ...queue, slots: queue.slots.filter((value) => value !== slot) });
+        await store.update(id, (record) => {
+          if (record.attempt !== attempt || record.workerToken && record.workerToken !== token)
+            throw cliError("SLOT_CONFLICT", "任务代际已改变。");
+          const { workerToken, ...rest } = record;
+          return { ...rest, status: "interrupted", updatedAt: Date.now(),
+            error: { code: "SLOT_RECOVERED", message: "已按精确槽位确认恢复；请明确重试。" } };
+        });
+        return publicQueue(await readQueue());
       });
     },
     // Only the worker owning this exact receipt calls this after confirming its
@@ -674,6 +758,7 @@ export async function createCliStore(project, { create = false } = {}) {
       );
     },
   };
+  return store;
 }
 
 // Pure read APIs used by the Panel's authorized-directory bridge. Never create,

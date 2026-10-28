@@ -292,6 +292,9 @@ export function createDownloadService({
       }
       return refresh();
     },
+    pump() {
+      return mutate({ action: "pump" }, { queueResult: true });
+    },
     getQueue() {
       return serialize(async () => {
         const result = await readQueue();

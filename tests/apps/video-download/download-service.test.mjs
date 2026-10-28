@@ -435,3 +435,16 @@ test("missing Node can be repaired and invalid actions never reach a native proc
     await assert.rejects(action(), { code: "INVALID_ARGUMENT" });
   assert.equal(app.runs.length, 1);
 });
+
+
+test("only an explicit pump mutation continues the queue and keeps the stalled count", async (t) => {
+  const app = fixture({ run: ({ input }) => response(input.action === "list"
+    ? { jobs: [job()], queue: queue({ stalled: 1 }) } : queue({ stalled: 1 })) });
+  t.after(() => app.service.destroy());
+  await app.service.refresh();
+  await app.service.getQueue();
+  assert.equal(app.runs.some(({ input }) => input.action === "pump"), false);
+  const result = await app.service.pump();
+  assert.equal(result.stalled, 1);
+  assert.equal(app.runs.filter(({ input }) => input.action === "pump").length, 1);
+});

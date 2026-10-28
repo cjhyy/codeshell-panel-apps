@@ -40,7 +40,10 @@ before(async () => {
       response.writeHead(404).end();
     }
   });
-  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  await new Promise((done, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => { server.removeListener("error", reject); done(); });
+  });
   baseUrl = `http://127.0.0.1:${server.address().port}`;
   browser = await chromium.launch({ headless: true });
 });
@@ -163,7 +166,7 @@ async function openPanel(t, { width = 1100, height = 1000 } = {}) {
           };
           return envelope(result);
         }
-        if (input.action === "queue") return envelope(window.__queue);
+        if (input.action === "queue" || input.action === "pump") return envelope(window.__queue);
         if (input.action === "configure") {
           assertQueueRevision(input.expectedRevision);
           window.__queue = {
@@ -818,7 +821,7 @@ test("shared queue changes from another caller refresh controls and never alter 
     window.__queue = { revision: 5, paused: true, maxConcurrent: 4, active: 0 };
   });
   await page.waitForFunction(() => document.querySelector("#shared-concurrency").value === "4");
-  assert.equal(await page.locator("#shared-queue-toggle").textContent(), "继续队列");
+  assert.equal(await page.locator("#shared-queue-toggle").textContent(), "恢复队列");
   await page.locator("#shared-queue-toggle").click();
   await page.waitForFunction(() => window.__queue.paused === false);
   assert.equal((await sharedCalls(page, "configure"))[0].expectedRevision, 5);
@@ -994,4 +997,17 @@ test("startup reuses queue state from the initial shared list", async (t) => {
     0,
     "opening the panel must not spawn a redundant queue helper",
   );
+});
+
+
+test("continuing the shared queue is an explicit pump and preserves stalled diagnostics", async (t) => {
+  const page = await openPanel(t);
+  await page.evaluate(() => { window.__addChatJob(); window.__queue.stalled = 1; });
+  await page.locator('[data-tab="task"]').click();
+  await page.waitForFunction(() => document.querySelector("#shared-queue-state").textContent.includes("stalled"));
+  assert.equal((await sharedCalls(page, "pump")).length, 0);
+  await page.locator("#shared-queue-pump").click();
+  await page.waitForFunction(() => window.__serviceCalls.some((call) => call.action === "pump"));
+  assert.equal((await sharedCalls(page, "pump")).length, 1);
+  assert.equal((await hostCalls(page, "tasks.start")).length, 0);
 });

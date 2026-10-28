@@ -442,9 +442,12 @@ function renderSharedQueue() {
   if (queue) {
     document.querySelector("#shared-concurrency").value = String(queue.maxConcurrent);
     document.querySelector("#shared-queue-toggle").textContent = queue.paused
-      ? "继续队列"
+      ? "恢复队列"
       : "暂停队列";
-    document.querySelector("#shared-queue-state").textContent = queue.paused
+    document.querySelector("#shared-queue-pump").disabled = queue.paused;
+    document.querySelector("#shared-queue-state").textContent = queue.stalled
+      ? `${queue.stalled} 个执行槽位停滞（stalled）；请运行 doctor --slots 核查并按精确 token 恢复，继续队列不会自动释放未知进程。`
+      : queue.paused
       ? "队列已暂停 · 当前下载继续，新任务等待"
       : "聊天、终端和面板的任务自动同步";
     document.querySelector("#queue-settings-summary").textContent =
@@ -6911,6 +6914,9 @@ async function configureSharedQueue(change) {
   }
   renderSharedQueue();
 }
+document.querySelector("#shared-queue-pump").addEventListener("click", () => {
+  void downloadService?.pump().then(refreshSharedQueue).catch((error) => showError(error.message));
+});
 document.querySelector("#shared-queue-toggle").addEventListener("click", () => {
   void configureSharedQueue({ paused: !downloadService?.queue?.paused });
 });

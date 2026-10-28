@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.24.1 provides one project download runtime for Chat, the Node CLI
+Mimi Download 0.24.2 provides one project download runtime for Chat, the Node CLI
 and the panel. Public downloads saved inside the project share task IDs,
 configuration, queue settings, progress and files. Opening a panel observes those
 records; it does not own or keep the worker alive.
@@ -186,3 +186,24 @@ Run `npm test -- --suite video-download`, `node scripts/validate.mjs`, and
 network fixtures. Browser tests load the actual installed app assets through an
 authorized Host fixture. These tests do not establish every external website,
 real account, deployed Cloud or physical device combination.
+
+### Queue admission and recovery (0.24.2)
+
+Waiting records do not have workers. `pump` reserves FIFO slots atomically, then
+launches at most the configured concurrency; each worker must claim its exact
+starting token before any download or six-hour execution deadline begins.
+`start`, `retry`, `cancel`, resume/configure and confirmed worker completion pump
+the queue. The shared queue's **继续队列** button and `pump --project /absolute/path`
+are explicit recovery triggers; `jobs`, `status`, `queue`, `ops` and
+`doctor --slots --project /absolute/path` remain read-only.
+
+An unclaimed reservation expires after 60 seconds and its old token is rejected.
+A running worker's missing PID never frees its slot: the queue reports `stalled`.
+Automatic recovery requires a changed Linux kernel boot UUID or macOS kernel
+boot time. Unknown boot identity and Windows require manual recovery. `doctor
+--slots` reports exact `(id, attempt, token)`, PID and process-group observations;
+escaped `setsid` descendants cannot be verified. After independently confirming
+all descendants exited, use `recover-slot --project /absolute/path --job UUID
+--attempt N --token UUID --confirm`, then explicitly `retry`. Recovery checks the
+exact receipt and never signals an unverified process. Legacy running slots have
+no boot identity and are retained for manual recovery.
