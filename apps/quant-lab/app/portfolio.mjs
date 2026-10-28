@@ -1203,6 +1203,14 @@ function publicHoldings(state, options = {}) {
   };
 }
 
+// Replay once for an immutable ledger/checkpoint-FX epoch. Ending quotes and
+// ending FX revalue the captured decimal state without replaying transactions.
+// publicHoldings may annotate missing FX, so each valuation gets a private copy.
+export function createHoldingsReplay(ledger, options = {}) {
+  const state = replayLedger(ledger, options);
+  return Object.freeze({ value: (valuation = options) => publicHoldings(structuredClone(state), valuation) });
+}
+
 export function deriveHoldings(ledger, options = {}) {
   if (!ledger || ledger.format !== "codeshell.portfolio-transactions" || ledger.version !== 1) {
     throw new PortfolioValidationError([

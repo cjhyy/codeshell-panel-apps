@@ -90,6 +90,7 @@ test("unreadable local status is diagnosed explicitly and recovery preserves exi
     controller = createHistoryDataController({ elements, currentEpoch: () => 0, contextState: () => ({ trusted: true }), notify() {}, now: () => new Date("2026-09-12T16:00:00Z"),
       onHostEvent(name, listener) { events.set(name, listener); return () => events.delete(name); },
       async hostCall(method) {
+        if (method === "process.resolveEntry") return { handle: "reviewed-entry" };
         if (method === "process.find") return { available: true, handle: "node" };
         if (method === "filesystem.getKnownDirectory") return { handle: "app-data" };
         if (method === "process.spawn") {
@@ -112,5 +113,47 @@ test("unreadable local status is diagnosed explicitly and recovery preserves exi
     controller?.dispose?.();
     globalThis.window = original.window;
     globalThis.document = original.document;
+  }
+});
+
+
+test("history reset drops runtime/status from the old project and fences pending discovery", async () => {
+  const original = { window: globalThis.window, document: globalThis.document };
+  const timers = new Map(); let id = 0, epoch = 1, enteredResolve, releaseResolve, blocking = false;
+  const entered = new Promise(resolve => { enteredResolve = resolve; });
+  const release = new Promise(resolve => { releaseResolve = resolve; });
+  globalThis.window = { setTimeout(fn) { timers.set(++id, fn); return id; }, clearTimeout(key) { timers.delete(key); } };
+  globalThis.document = { createElement: () => new Element(), createTextNode: text => ({ textContent: text }) };
+  const elements = new Proxy({}, { get(target, key) { return target[key] ??= new Element(); } });
+  elements.market.value = "cn"; elements.bootstrapSource.value = "tencent-ifzq";
+  const events = new Map(), calls = []; let controller;
+  try {
+    controller = createHistoryDataController({ elements, currentEpoch: () => epoch, contextState: () => ({ trusted: true }), notify() {}, now: () => new Date("2026-09-12T16:00:00Z"),
+      onHostEvent(name, listener) { events.set(name, listener); return () => events.delete(name); },
+      async hostCall(method) {
+        calls.push({ method, epoch });
+        if (method === "process.find") { if (blocking) { enteredResolve(); await release; } return { available: true, handle: `node-${epoch}` }; }
+        if (method === "process.resolveEntry") return { handle: "reviewed-entry" };
+        if (method === "filesystem.getKnownDirectory") return { handle: "app-data" };
+        if (method === "process.spawn") {
+          const processId = `p${++id}`;
+          setImmediate(() => { events.get("process.output")?.({ processId, stream: "stdout", text: JSON.stringify(contractedUniverse()) }); events.get("process.exit")?.({ processId, code: 0 }); });
+          return { processId };
+        }
+        return {};
+      },
+    });
+    await controller.refreshHistorySummaryFromLocal();
+    assert.equal(elements.bootstrapCoverage.textContent.includes("状态暂不可读"), false);
+    epoch = 2; controller.reset();
+    assert.equal(elements.bootstrapBadge.textContent, "检查本地基础库");
+    blocking = true;
+    const pending = controller.refreshHistorySummaryFromLocal(); await entered;
+    const count = calls.length; epoch = 3; controller.reset(); releaseResolve();
+    assert.equal(await pending, null);
+    assert.equal(calls.length, count, "old discovery cannot request a directory or spawn after switching");
+    assert.equal(calls.filter(call => call.method === "process.find").length, 2, "new project resolves its own runtime");
+  } finally {
+    controller?.dispose?.(); globalThis.window = original.window; globalThis.document = original.document;
   }
 });

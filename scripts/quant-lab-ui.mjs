@@ -93,7 +93,7 @@ const seededStorage = [
 ];
 
 assert.equal(manifest.id, "quant-lab");
-assert.equal(manifest.version, "0.47.0");
+assert.equal(manifest.version, "0.50.0");
 assert.equal(manifest.schemaVersion, 2);
 assert.deepEqual(manifest.agent.tools.map((tool) => [tool.name, tool.readOnly]), [["get_portfolio_context", true], ["import_portfolio_snapshot", false]]);
 assert.deepEqual(manifest.agent.skills, ["agent/skills/investment-research/SKILL.md", "agent/skills/portfolio-management/SKILL.md", "agent/skills/project-runtime/SKILL.md"]);
@@ -1535,6 +1535,7 @@ async function installHostStub(
       window.__nextAutomationRevision = () => (++automationVersion).toString(16).padStart(64, "0");
       window.__automations = structuredClone(seededAutomations).map(task => fixtureVersionedStorage ? {...task,revision:window.__nextAutomationRevision()} : task);
       window.__agentTasks = [];
+      window.__historyTasks = new Map();
       window.__rejectAutomationNames = new Set(rejectedAutomationNames);
       window.__rejectAutomationDeleteIds = new Set(rejectedAutomationDeleteIds);
       window.__availableRuntimes = new Set(fixtureRuntimeNames);
@@ -1548,7 +1549,8 @@ async function installHostStub(
         cwd: expectedWorkspaceRoot,
         trusted: true,
         busy: false,
-        ...(fixtureVersionedStorage ? { availableMethods: ["storage.getSnapshot", "storage.compareAndSet", "storage.get", "storage.set", "automations.createUnique", "automations.updateIfRevision", "automations.deleteIfRevision"] } : {}),
+        availableMethods: ["storage.getSnapshot", "storage.compareAndSet", "storage.get", "storage.set", "process.find", "process.resolveEntry", "process.spawn", "process.cancel", "tasks.start", "tasks.find", "tasks.get", "tasks.cancel", "filesystem.getKnownDirectory", "workspace.list", "workspace.readText", "workspace.writeText", "agent.submitPrompt", "agent.task.start", "agent.task.get", "automations.list", "automations.create", "automations.update", "automations.delete", "external.open", "notifications.send", ...(fixtureVersionedStorage ? ["automations.createUnique", "automations.updateIfRevision", "automations.deleteIfRevision"] : [])],
+        sessionId: "quant-ui-fixture-session",
       };
       window.__contextChangedHandlers = new Set();
       window.__panelEventHandlers = new Map();
@@ -1620,9 +1622,20 @@ async function installHostStub(
               name: params.name === "app-data" ? "quant-lab" : "Downloads",
             });
           }
+          if (method === "tasks.find") return Promise.resolve(structuredClone(window.__historyTasks.get(params.requestKey) ?? null));
+          if (method === "tasks.get") return Promise.resolve(structuredClone([...window.__historyTasks.values()].find(task => task.id === params.id)));
+          if (method === "tasks.cancel") return Promise.resolve({ id: params.id, status: "cancelled" });
+          if (method === "tasks.start") {
+            if (params.entry !== "quant-history-batch") throw new Error("unexpected task entry");
+            if (window.__historyTasks.has(params.requestKey)) return Promise.resolve(structuredClone(window.__historyTasks.get(params.requestKey)));
+            const task = { id: `history-${window.__historyTasks.size + 1}`, status: "succeeded", attempt: 1, result: JSON.parse(window.__historyLibrarySummary) };
+            window.__historyTasks.set(params.requestKey, task);
+            return Promise.resolve(structuredClone(task));
+          }
+          if (method === "process.resolveEntry") return Promise.resolve({ handle: `entry:${params.name}`, name: params.name, sha256: "a".repeat(64) });
           if (method === "process.spawn") {
             const processId = `market-process-${++window.__processCounter}`;
-            const launcher = params.args?.find((argument) => typeof argument === "string" && argument.includes(".mjs")) ?? "";
+            const launcher = `${params.entryHandle?.replace("entry:", "")}.mjs`;
             const processArgument = (name) => {
               const index = params.args.indexOf(name);
               return index >= 0 ? params.args[index + 1] : null;
@@ -1661,17 +1674,18 @@ async function installHostStub(
             const liveRefreshRejected = Boolean(
               fixtureLiveRefreshFailure &&
               launcher.includes("build-market-pulse.mjs") &&
-              !params.args.includes("read-local"),
+              !params.args.includes("--read-local"),
             );
             const output = launcher.includes("fetch-holding-quotes.mjs")
               ? JSON.stringify(JSON.parse(params.args.at(-1))?.mode === "history"
                 ? window.__holdingHistory ?? { kind: "holding-history", results: [] }
-                : window.__holdingQuotes ?? { kind: "holding-quotes", quotes: [], errors: [] })
+                : { ...(window.__holdingQuotes ?? { kind: "holding-quotes", quotes: [], errors: [] }), contract: 2,
+                    quotes: (window.__holdingQuotes?.quotes ?? []).map(quote => ({...quote, currency: quote.market === "cn" ? "CNY" : "USD", marketDate: quote.asOf.slice(0,10), session: "regular", priceBasis: "raw", previousClose: null, referenceDate: null, referenceBasis: null, dayChange: null, dayChangePct: null, source: "fixture", fetchedAt: quote.asOf, status: "ok", reason: "reference-unavailable" })) })
               : launcher.includes("fetch-market-data.mjs")
               ? historySyncOutput()
               : launcher.includes("initialize-a-share-history.mjs")
               ? window.__historyLibrarySummary
-              : launcher.includes("fetch-us-stock.mjs") && params.args.includes("us")
+              : launcher.includes("fetch-us-stock.mjs")
                 ? fixtureUsStockDetailSnapshot
               : launcher.includes("fetch-a-share-stock.mjs")
               ? fixtureStockDetailSnapshot
@@ -1684,7 +1698,7 @@ async function installHostStub(
                 window.__emitPanelEvent("process.exit", { processId, code: 1, signal: null });
                 return;
               }
-              if (launcher.includes("initialize-a-share-history.mjs") && !params.args.includes("status")) {
+              if (launcher.includes("initialize-a-share-history.mjs") && !params.args.includes("--status")) {
                 window.__emitPanelEvent("process.output", {
                   processId,
                   stream: "stderr",
@@ -2073,9 +2087,8 @@ const localSnapshotCalls = await page.evaluate(() => ({
   directories: window.__hostCalls
     .filter((call) => call.method === "filesystem.getKnownDirectory")
     .map((call) => call.params.name),
-  processArgs: window.__hostCalls
-    .filter((call) => call.method === "process.spawn")
-    .map((call) => call.params.args),
+  processes: window.__hostCalls.filter(call => call.method === "process.spawn").map(call => call.params),
+  processArgs: window.__hostCalls.filter(call => call.method === "process.spawn").map(call => call.params.args),
 }));
 assert.equal(
   localSnapshotCalls.directories.length,
@@ -2083,13 +2096,11 @@ assert.equal(
   "history, selection and live-market restore should reuse the same app-data directory handle",
 );
 assert(localSnapshotCalls.directories.every((name) => name === "app-data"));
-assert(localSnapshotCalls.processArgs.some((args) => args.includes("read-local")));
-assert(localSnapshotCalls.processArgs.some((args) => args.includes("refresh-local")));
-const initialSelectionProcessArgs = localSnapshotCalls.processArgs.filter((args) =>
-  args.some((arg) => typeof arg === "string" && arg.includes("build-a-share-selection.mjs"))
-);
+assert(localSnapshotCalls.processArgs.some((args) => args.includes("--read-local")));
+assert(localSnapshotCalls.processArgs.some((args) => (args.includes("--persist-local") || args.includes("--persist-panel-data"))));
+const initialSelectionProcessArgs = localSnapshotCalls.processes.filter(params => params.entryHandle === "entry:build-a-share-selection").map(params => params.args);
 assert.equal(initialSelectionProcessArgs.length, 1, "restored close review must not be replaced on page entry");
-assert(initialSelectionProcessArgs[0].includes("read-local"));
+assert(initialSelectionProcessArgs[0].includes("--read-local"));
 assert.match(await page.locator("#selection-status").textContent(), /已恢复.*收盘复盘.*不会自动覆盖/u);
 await page.click("#selection-refresh");
 await page.waitForFunction(() => document.querySelector("#selection-status")?.textContent.includes("已完成 2 个主题方向"));
@@ -2101,17 +2112,13 @@ assert.equal(await page.locator("#selection-scan-coverage").isVisible(), true);
 assert.equal((await page.locator("#selection-scan-market").textContent()).trim(), "5,208 只");
 assert.equal((await page.locator("#selection-scan-samples").textContent()).trim(), "12 / 12 只");
 const refreshedSelectionProcessArgs = await page.evaluate(() => window.__hostCalls
-  .filter((call) => call.method === "process.spawn" && call.params.args.some(
-    (arg) => typeof arg === "string" && arg.includes("build-a-share-selection.mjs"),
-  ))
+  .filter((call) => call.method === "process.spawn" && call.params.entryHandle === "entry:build-a-share-selection")
   .map((call) => call.params.args));
-assert(refreshedSelectionProcessArgs.some((args) => args.includes("refresh-local")));
+assert(refreshedSelectionProcessArgs.some((args) => (args.includes("--persist-local") || args.includes("--persist-panel-data"))));
 const quickSelectionMode = await page.locator("#quick-stock-selection").getAttribute("data-mode");
 assert(["run", "result"].includes(quickSelectionMode));
 const selectionCallsBeforeQuickEntry = await page.evaluate(() => window.__hostCalls.filter(
-  (call) => call.method === "process.spawn" && call.params.args.some(
-    (arg) => typeof arg === "string" && arg.includes("build-a-share-selection.mjs"),
-  ),
+  (call) => call.method === "process.spawn" && call.params.entryHandle === "entry:build-a-share-selection",
 ).length);
 await page.click('[data-module-tab="stock"]');
 assert.equal(await page.locator('[data-module="stock"]').isVisible(), true);
@@ -2122,17 +2129,13 @@ assert.equal(await page.locator('button[data-home-section="opportunity"]').getAt
 assert.equal(await page.locator("#a-share-selection-workbench").isVisible(), true);
 if (quickSelectionMode === "run") {
   await page.waitForFunction((previousCount) => window.__hostCalls.filter(
-    (call) => call.method === "process.spawn" && call.params.args.some(
-      (arg) => typeof arg === "string" && arg.includes("build-a-share-selection.mjs"),
-    ),
+    (call) => call.method === "process.spawn" && call.params.entryHandle === "entry:build-a-share-selection",
   ).length > previousCount, selectionCallsBeforeQuickEntry);
   await page.waitForFunction(() => document.querySelector("#selection-status")?.textContent.includes("已完成 2 个主题方向"));
 } else {
   assert.equal(
     await page.evaluate(() => window.__hostCalls.filter(
-      (call) => call.method === "process.spawn" && call.params.args.some(
-        (arg) => typeof arg === "string" && arg.includes("build-a-share-selection.mjs"),
-      ),
+      (call) => call.method === "process.spawn" && call.params.entryHandle === "entry:build-a-share-selection",
     ).length),
     selectionCallsBeforeQuickEntry,
     "已有当日结果时，全局入口不应重复联网",
@@ -2269,9 +2272,7 @@ assert.match(await page.locator("#selection-watch-filters").textContent(), /全�
 assert.match(await page.locator("#selection-watch-list").textContent(), /普通关注.*1 项.*平均 \+2\.3%.*上涨 1 \/ 下跌 0.*时机确认.*现价.*今日.*20 日.*量比.*趋势回踩/us);
 await page.waitForFunction(() => document.querySelector("#a-share-selection-workbench")?.getAttribute("aria-busy") === "false");
 const selectionRefreshesBeforePriority = await page.evaluate(() => window.__hostCalls.filter((call) =>
-  call.method === "process.spawn" && call.params.args.some(
-    (argument) => typeof argument === "string" && argument.includes("build-a-share-selection.mjs"),
-  ),
+  call.method === "process.spawn" && call.params.entryHandle === "entry:build-a-share-selection",
 ).length);
 await page.locator('[data-selection-priority-stock="SZ300750"]').click();
 await page.waitForFunction(
@@ -2282,9 +2283,7 @@ assert.equal((await page.locator("#selection-watch-count").textContent()).trim()
 assert.match(await page.locator("#selection-watch-list").textContent(), /重点关注.*1 项.*平均 \+2\.3%.*上涨 1 \/ 下跌 0.*重点个股.*宁德时代/us);
 assert.match(await page.locator("#selection-cockpit-tracking-note").textContent(), /1 重点.*0 个板块.*1 只个股/u);
 assert.equal(await page.evaluate(() => window.__hostCalls.filter((call) =>
-  call.method === "process.spawn" && call.params.args.some(
-    (argument) => typeof argument === "string" && argument.includes("build-a-share-selection.mjs"),
-  ),
+  call.method === "process.spawn" && call.params.entryHandle === "entry:build-a-share-selection",
 ).length), selectionRefreshesBeforePriority, "changing local watch priority must not refresh market data");
 await page.click('[data-selection-watch-filter="focus"]');
 assert.match(await page.locator("#selection-watch-list").textContent(), /重点个股.*宁德时代/us);
@@ -2450,8 +2449,8 @@ const marketRestoreIndex = initialHostCalls.findIndex(
 const portfolioRestoreIndex = initialHostCalls.findIndex(
   (call) => call.method === "workspace.list" && call.params.path === "portfolio",
 );
-assert(marketRestoreIndex >= 0 && portfolioRestoreIndex >= 0 && marketRestoreIndex < portfolioRestoreIndex,
-  "默认行情页的已保存快报应先于较重的持仓恢复");
+assert(marketRestoreIndex >= 0 && portfolioRestoreIndex >= 0,
+  "当前页需要的快报与基础持仓可独立并行恢复");
 await page.evaluate(() => {
   window.__panelContext = { ...window.__panelContext, trusted: false };
   for (const handler of window.__contextChangedHandlers) handler(structuredClone(window.__panelContext));
@@ -2474,9 +2473,8 @@ await page.evaluate(() => {
   window.__panelContext = { ...window.__panelContext, trusted: true };
   for (const handler of window.__contextChangedHandlers) handler(structuredClone(window.__panelContext));
 });
-await page.waitForFunction((before) => window.__hostCalls.filter((call) =>
-  call.method === "workspace.list" && call.params.path === "data/market"
-).length > before, historyListsBeforeRetrust);
+assert.equal(await page.evaluate(() => window.__hostCalls.filter(call => call.method === "workspace.list" && call.params.path === "data/market").length), historyListsBeforeRetrust,
+  "尚未进入研究页时恢复信任不得扫描全部历史元数据");
 assert.equal(await page.locator('#stock-diagnosis-form button[type="submit"]').isEnabled(), true);
 assert.equal(await page.locator(".market-insight-item-action").first().isEnabled(), true);
 assert.equal(await page.locator("#candidate-refresh").isEnabled(), true);
@@ -2856,10 +2854,10 @@ if (process.env.QUANT_LAB_STOCK_SCREENSHOT) {
 }
 assert.match(await page.locator("#market-command-state").textContent(), /快照已保存到 CodeShell 本地数据目录/u);
 const stockProcessCalls = await page.evaluate(() => window.__hostCalls
-  .filter((call) => call.method === "process.spawn" && call.params.args.some((arg) => typeof arg === "string" && arg.includes("fetch-a-share-stock.mjs")))
+  .filter((call) => call.method === "process.spawn" && call.params.entryHandle === "entry:fetch-a-share-stock")
   .map((call) => call.params.args));
-assert(stockProcessCalls.some((args) => args.includes("read-local") && args.includes("SH600519")));
-assert(stockProcessCalls.some((args) => args.includes("refresh-local") && args.includes("SH600519")));
+assert(stockProcessCalls.some((args) => args.includes("--read-local") && args.includes("SH600519")));
+assert(stockProcessCalls.some((args) => (args.includes("--persist-local") || args.includes("--persist-panel-data")) && args.includes("SH600519")));
 assert.equal(await page.locator("#stock-diagnosis-symbol").inputValue(), "SH600519 贵州茅台");
 const sessionSubmitsBeforeStockReport = await page.evaluate(() =>
   window.__hostCalls.filter((call) => call.method === "agent.submitPrompt").length
@@ -3160,9 +3158,9 @@ assert.match(await page.locator("#stock-detail-freshness").textContent(), /股�
 assert.equal(await page.locator("#stock-detail-follow").isHidden(), true);
 assert.equal(await page.locator("#stock-detail-deep-research").isEnabled(), true);
 const usProcessCalls = await page.evaluate(() => window.__hostCalls
-  .filter((call) => call.method === "process.spawn" && call.params.args.some((arg) => typeof arg === "string" && arg.includes("fetch-us-stock.mjs")))
+  .filter((call) => call.method === "process.spawn" && call.params.entryHandle === "entry:fetch-us-stock")
   .map((call) => call.params.args));
-assert(usProcessCalls.some((args) => args.includes("refresh-local") && args.includes("us") && args.includes("Apple")));
+assert(usProcessCalls.some((args) => (args.includes("--persist-local") || args.includes("--persist-panel-data")) && args.includes("Apple")));
 
 const sessionSubmitsBeforeDeepResearch = await page.evaluate(() =>
   window.__hostCalls.filter((call) => call.method === "agent.submitPrompt").length
@@ -3365,16 +3363,12 @@ assert.equal(
 // canonical symbol into the alert form without silently creating a rule.
 await page.click('button[data-home-section="research"]');
 const selectionProcessCallsBeforeRefresh = await page.evaluate(() => window.__hostCalls.filter(
-  (call) => call.method === "process.spawn" && call.params.args.some(
-    (argument) => typeof argument === "string" && argument.includes("build-a-share-selection.mjs"),
-  ),
+  (call) => call.method === "process.spawn" && call.params.entryHandle === "entry:build-a-share-selection",
 ).length);
 await page.click("#candidate-refresh");
 await page.waitForFunction(
   (before) => window.__hostCalls.filter(
-    (call) => call.method === "process.spawn" && call.params.args.some(
-      (argument) => typeof argument === "string" && argument.includes("build-a-share-selection.mjs"),
-    ),
+    (call) => call.method === "process.spawn" && call.params.entryHandle === "entry:build-a-share-selection",
   ).length > before,
   selectionProcessCallsBeforeRefresh,
 );
@@ -3416,8 +3410,8 @@ assert.match(await page.locator("#history-library-shortcut").textContent(), /执
 assert(
   await page.evaluate(() => window.__hostCalls.some((call) =>
     call.method === "process.spawn" &&
-    call.params.args.includes("status") &&
-    call.params.args.some((argument) => typeof argument === "string" && argument.includes("initialize-a-share-history.mjs"))
+    call.params.args.includes("--status") &&
+    call.params.entryHandle === "entry:initialize-a-share-history"
   )),
   "a fresh conversation must discover the shared local history library without relying on conversation storage",
 );
@@ -3479,13 +3473,12 @@ assert.equal(
   "history initialization must run the reviewed local tool directly instead of opening an Agent task",
 );
 const historyInitializationCall = await page.evaluate(() => window.__hostCalls.find((call) =>
-  call.method === "process.spawn" && call.params.args.some(
-    (argument) => typeof argument === "string" && argument.includes("initialize-a-share-history.mjs"),
-  ) && !call.params.args.includes("status")
+  call.method === "tasks.start" && call.params.entry === "quant-history-batch"
 ));
 assert(historyInitializationCall);
-assert(historyInitializationCall.params.args.includes("core"));
-assert(historyInitializationCall.params.args.includes("tencent-ifzq"));
+assert.equal(historyInitializationCall.params.input.request.scope, "core");
+assert.equal(historyInitializationCall.params.input.request.source, "tencent-ifzq");
+assert.equal(historyInitializationCall.params.input.request.maxItems, 20);
 assert.equal(
   await page.evaluate(() => window.__storage.get("a-share-history-library-status:v1")?.ready),
   120,
@@ -3563,9 +3556,7 @@ assert.equal(
   "single-stock history export must execute directly without an Agent request",
 );
 const historySyncCall = await page.evaluate(() =>
-  window.__hostCalls.filter((call) => call.method === "process.spawn" && call.params.args.some(
-    (argument) => typeof argument === "string" && argument.includes("fetch-market-data.mjs"),
-  )).at(-1),
+  window.__hostCalls.filter((call) => call.method === "process.spawn" && call.params.entryHandle === "entry:fetch-market-data").at(-1),
 );
 assert(historySyncCall);
 assert.deepEqual(historySyncCall.params.args.slice(-14), [
@@ -4840,12 +4831,12 @@ for (const versionedStorage of [true, false]) {
     .flatMap((value) => value?.stocks ?? []).filter((stock) => stock.symbol === "SH603298"));
   assert.equal(entries.length, 1, "Repeated imports must not duplicate automatic follows");
   await scenarioPage.waitForFunction(() => window.__hostCalls.some((call) =>
-    call.method === "process.spawn" && call.params.args.some((arg) => String(arg).includes("build-a-share-selection.mjs")) &&
+    call.method === "process.spawn" && call.params.entryHandle === "entry:build-a-share-selection" &&
     call.params.args.some((arg) => String(arg).includes("SH603298"))));
   const automaticFollows = await scenarioPage.evaluate(() => window.__hostCalls.filter((call) =>
-    call.method === "process.spawn" && call.params.args.some((arg) => String(arg).includes("build-a-share-selection.mjs")) &&
+    call.method === "process.spawn" && call.params.entryHandle === "entry:build-a-share-selection" &&
     call.params.args.some((arg) => String(arg).includes("SH603298"))));
-  assert(automaticFollows.every((call) => call.params.args.includes("continue-local")),
+  assert(automaticFollows.every((call) => call.params.args.includes("--continue-scan")),
     "Automatic holdings updates must preserve source retry budgets");
   await scenarioPage.reload();
   await scenarioPage.waitForFunction(() => document.querySelector("#selection-watch-list")?.textContent.includes("持仓导入样本"));
@@ -6258,7 +6249,8 @@ const newsFiles = {
   );
   const bunSpawn = runtimeCalls.find((call) => call.method === "process.spawn");
   assert.equal(bunSpawn.params.executableHandle, "exe-bun");
-  assert.equal(bunSpawn.params.args[0], "--eval");
+  assert.match(bunSpawn.params.entryHandle, /^entry:/u);
+  assert.equal(bunSpawn.params.args.includes("--eval"), false);
   assert.equal(bunSpawn.params.args.includes("--input-type=module"), false);
   await scenarioContext.close();
 }
@@ -6328,7 +6320,7 @@ const newsFiles = {
   });
   const automaticProjectCalls = await scenarioPage.evaluate(() => window.__hostCalls.filter((call) =>
     call.method === "process.spawn" &&
-    call.params.args.some((argument) => typeof argument === "string" && argument.includes("fetch-market-data.mjs")) &&
+    call.params.entryHandle === "entry:fetch-market-data" &&
     call.params.args.includes("SZ300750")
   ));
   assert.equal(automaticProjectCalls.length, 1);
@@ -6399,14 +6391,10 @@ const newsFiles = {
     historyLibrarySummary: laggingHistoryLibrarySummaryFixture,
   });
   await scenarioPage.waitForFunction(() => window.__hostCalls.some((call) =>
-    call.method === "process.spawn" &&
-    call.params.args.includes("autofill") &&
-    call.params.args.some((argument) => typeof argument === "string" && argument.includes("initialize-a-share-history.mjs"))
+    call.method === "tasks.start" && call.params.entry === "quant-history-batch" && call.params.input.request.maxItems === 20
   ));
   assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.filter((call) =>
-    call.method === "process.spawn" &&
-    call.params.args.includes("autofill") &&
-    call.params.args.some((argument) => typeof argument === "string" && argument.includes("initialize-a-share-history.mjs"))
+    call.method === "tasks.start" && call.params.entry === "quant-history-batch" && call.params.input.request.maxItems === 20
   ).length), 1, "concurrent page and market checks must join one automatic history launch");
   assert.equal(await scenarioPage.locator('[data-module-tab="research"]').getAttribute("aria-selected"), "true");
   assert.equal(
@@ -6438,12 +6426,10 @@ const newsFiles = {
   await scenarioPage.waitForFunction(() => document.querySelector("#history-bootstrap")?.dataset.state === "partial");
   await scenarioPage.evaluate(() => { window.__quantLabNow = "2026-08-26T13:30:01.000Z"; });
   await scenarioPage.waitForFunction(() => window.__hostCalls.some((call) =>
-    call.method === "process.spawn" &&
-    call.params.args.includes("autofill") &&
-    call.params.args.some((argument) => typeof argument === "string" && argument.includes("initialize-a-share-history.mjs"))
+    call.method === "tasks.start" && call.params.entry === "quant-history-batch" && call.params.input.request.maxItems === 20
   ));
   assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.filter((call) =>
-    call.method === "process.spawn" && call.params.args.includes("autofill")
+    call.method === "tasks.start" && call.params.entry === "quant-history-batch"
   ).length), 1, "an expired source cooldown must resume exactly one incremental pass");
   assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.some((call) =>
     call.method === "agent.submitPrompt" || call.method === "agent.task.start"
@@ -6451,57 +6437,20 @@ const newsFiles = {
   await scenarioContext.close();
 }
 
-// Restoring a hidden panel directly into Research must not prevent the first
-// visible frame of a new day from discovering the latest market date. This is
-// a one-shot fixed-process probe, not an Agent task or hidden periodic poll.
+// A saved Research page never starts unrelated market/selection collectors,
+// including visibility changes and a new trading day.
 {
-  const { scenarioContext, scenarioPage } = await openScenario([
-    ...seededStorage,
-    [activeTabKey, "research"],
-  ], {
-    workspaceFiles: rawFiles,
-  });
+  const { scenarioContext, scenarioPage } = await openScenario([...seededStorage, [activeTabKey, "research"]], { workspaceFiles: rawFiles });
   await scenarioPage.waitForFunction(() => document.querySelector('[data-module-tab="research"]')?.getAttribute("aria-selected") === "true");
-  await scenarioPage.waitForFunction(() => document.querySelector("#live-market-board")?.dataset.state === "ready");
+  await scenarioPage.waitForFunction(() => document.querySelector("#history-data-count")?.textContent.includes("份"));
   await scenarioPage.evaluate(() => {
     window.__panelContext = { ...window.__panelContext, visible: false };
     for (const handler of window.__contextChangedHandlers) handler(structuredClone(window.__panelContext));
     window.__quantLabNow = "2026-08-27T01:00:00.000Z";
-  });
-  const callsBeforeVisibleRestore = await scenarioPage.evaluate(() => window.__hostCalls.filter((call) =>
-    call.method === "process.spawn" &&
-    call.params.args.includes("refresh-local") &&
-    call.params.args.some((argument) => typeof argument === "string" && argument.includes("build-market-pulse.mjs"))
-  ).length);
-  await scenarioPage.evaluate(() => {
     window.__panelContext = { ...window.__panelContext, visible: true };
     for (const handler of window.__contextChangedHandlers) handler(structuredClone(window.__panelContext));
   });
-  await scenarioPage.waitForFunction((before) => window.__hostCalls.filter((call) =>
-    call.method === "process.spawn" &&
-    call.params.args.includes("refresh-local") &&
-    call.params.args.some((argument) => typeof argument === "string" && argument.includes("build-market-pulse.mjs"))
-  ).length > before, callsBeforeVisibleRestore);
-  await scenarioPage.waitForFunction(() => document.querySelector("#live-market-board")?.dataset.state === "ready");
-
-  // Staying visible on Research across 15:12 must also produce one close
-  // probe; users should not need to change tabs or reopen the app each day.
-  await scenarioPage.evaluate(() => { window.__quantLabNow = "2026-08-27T07:11:59.800Z"; });
-  await scenarioPage.click('[data-module-tab="today"]');
-  await scenarioPage.click('[data-module-tab="research"]');
-  const callsBeforeScheduledClose = await scenarioPage.evaluate(() => window.__hostCalls.filter((call) =>
-    call.method === "process.spawn" &&
-    call.params.args.includes("refresh-local") &&
-    call.params.args.some((argument) => typeof argument === "string" && argument.includes("build-market-pulse.mjs"))
-  ).length);
-  await scenarioPage.waitForFunction((before) => window.__hostCalls.filter((call) =>
-    call.method === "process.spawn" &&
-    call.params.args.includes("refresh-local") &&
-    call.params.args.some((argument) => typeof argument === "string" && argument.includes("build-market-pulse.mjs"))
-  ).length > before, callsBeforeScheduledClose);
-  assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.some((call) =>
-    call.method === "agent.submitPrompt" || call.method === "agent.task.start"
-  )), false);
+  assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method === "process.spawn" && ["entry:build-market-pulse", "entry:build-a-share-selection"].includes(call.params.entryHandle)).length), 0);
   await scenarioContext.close();
 }
 
@@ -6574,8 +6523,8 @@ const newsFiles = {
   assert.equal((await scenarioPage.locator("#quick-stock-selection b").textContent()).trim(), "查看已有结果");
   const statusCallsBeforeBackgroundCompletion = await scenarioPage.evaluate(() => window.__hostCalls.filter((call) =>
     call.method === "process.spawn" &&
-    call.params.args.includes("status") &&
-    call.params.args.some((argument) => typeof argument === "string" && argument.includes("initialize-a-share-history.mjs"))
+    call.params.args.includes("--status") &&
+    call.params.entryHandle === "entry:initialize-a-share-history"
   ).length);
   await scenarioPage.evaluate((summary) => {
     window.__historyLibrarySummary = summary;
@@ -6601,8 +6550,8 @@ const newsFiles = {
   }));
   await scenarioPage.waitForFunction((previousCount) => window.__hostCalls.filter((call) =>
     call.method === "process.spawn" &&
-    call.params.args.includes("status") &&
-    call.params.args.some((argument) => typeof argument === "string" && argument.includes("initialize-a-share-history.mjs"))
+    call.params.args.includes("--status") &&
+    call.params.entryHandle === "entry:initialize-a-share-history"
   ).length > previousCount && document.querySelector("#selection-cockpit-history")?.textContent.includes("08/31 已核对"), statusCallsBeforeBackgroundCompletion, { timeout: 20_000 });
   assert.equal(await scenarioPage.locator("#selection-cockpit").getAttribute("data-stage"), "selection");
   assert.match(await scenarioPage.locator("#selection-cockpit-summary").textContent(), /历史库已收齐 5114\/5207 只可用序列.*93 只新股、短历史或来源暂不可用/u);
@@ -6628,30 +6577,22 @@ const newsFiles = {
   assert(localCalls.some((call) => call.method === "filesystem.getKnownDirectory" && call.params.name === "app-data"));
   assert(localCalls.some((call) => call.method === "filesystem.getKnownDirectory" && call.params.name === "downloads"));
   assert(localCalls
-    .filter((call) => call.method === "process.spawn" && call.params.args.some(
-      (argument) => typeof argument === "string" &&
-        (argument.includes("build-market-pulse.mjs") || argument.includes("build-a-share-selection.mjs")),
-    ))
-    .every((call) => call.params.args.includes("refresh-volatile")));
+    .filter(call => call.method === "process.spawn" && ["entry:build-market-pulse", "entry:build-a-share-selection"].includes(call.params.entryHandle))
+    .every(call => !call.params.args.includes("--persist-local") && !call.params.args.includes("--persist-panel-data")));
   await scenarioPage.click('[data-module-tab="research"]');
   await scenarioPage.waitForFunction(() => document.querySelector("#history-bootstrap")?.dataset.state === "ready");
   await scenarioPage.click("#history-bootstrap-action");
-  await scenarioPage.waitForFunction(() => document.querySelector("#history-bootstrap-status")?.textContent.includes("本机下载目录"));
-  const fallbackHistorySpawn = await scenarioPage.evaluate(() => window.__hostCalls.find((call) =>
-    call.method === "process.spawn" &&
-    call.params.directoryHandle === "downloads-handle" &&
-    call.params.args.some((argument) => typeof argument === "string" && argument.includes("initialize-a-share-history.mjs")) &&
-    !call.params.args.includes("status")
-  ));
-  assert(fallbackHistorySpawn, "old Hosts must initialize the history library in the reviewed downloads fallback");
+  await scenarioPage.waitForFunction(() => window.__hostCalls.some(call => call.method === "tasks.start" && call.params.entry === "quant-history-batch"));
+  assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.some(call => call.method === "process.spawn" && call.params.entryHandle === "entry:initialize-a-share-history" && !call.params.args.includes("--status"))), false,
+    "历史写入始终走有界后台批次，不恢复旧长期webview writer");
   const selectionSpawnsBeforeNext = await scenarioPage.evaluate(() => window.__hostCalls.filter((call) =>
     call.method === "process.spawn" &&
-    call.params.args.some((argument) => typeof argument === "string" && argument.includes("build-a-share-selection.mjs"))
+    call.params.entryHandle === "entry:build-a-share-selection"
   ).length);
   await scenarioPage.click("#history-bootstrap-next");
   await scenarioPage.waitForFunction((before) => window.__hostCalls.filter((call) =>
     call.method === "process.spawn" &&
-    call.params.args.some((argument) => typeof argument === "string" && argument.includes("build-a-share-selection.mjs"))
+    call.params.entryHandle === "entry:build-a-share-selection"
   ).length > before, selectionSpawnsBeforeNext);
   assert.equal(await scenarioPage.locator('[data-module="today"]').isVisible(), true);
   await scenarioContext.close();

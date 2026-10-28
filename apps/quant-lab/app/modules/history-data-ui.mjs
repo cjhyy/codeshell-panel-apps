@@ -1,3 +1,5 @@
+import { createHistoryBatchClient } from "./history-batch-client.mjs";
+import { reviewedEntry } from "./reviewed-entry.mjs";
 import {
   AUTO_DATA_SOURCE_ID,
   HISTORY_DATA_SOURCES,
@@ -31,32 +33,7 @@ const LEGACY_INTERRUPTION_ERRORS = new Set([
   "SOURCE_TIMEOUT",
 ]);
 
-const HISTORY_NODE_LAUNCHER = [
-  'import { join } from "node:path";',
-  'import { pathToFileURL } from "node:url";',
-  'const home = process.env.HOME || process.env.USERPROFILE;',
-  'if (!home) throw new Error("user-home-unavailable");',
-  'const tool = join(home, ".code-shell", "panel-apps", "quant-lab", "app", "tools", "initialize-a-share-history.mjs");',
-  'const module = await import(pathToFileURL(tool).href);',
-  'const mode = process.argv.at(-3) || "initialize";',
-  'const scope = process.argv.at(-2) || "core";',
-  'const source = process.argv.at(-1) || "tencent-ifzq";',
-  'const args = mode === "status" ? ["--status", "--stdout"] : ["--scope", scope, "--source", source, "--stdout"];',
-  'if (mode === "autofill") args.push("--incremental-only");',
-  'await module.runCli(args);',
-].join("\n");
 
-const HISTORY_DATA_NODE_LAUNCHER = [
-  'import { join } from "node:path";',
-  'import { pathToFileURL } from "node:url";',
-  'const home = process.env.HOME || process.env.USERPROFILE;',
-  'if (!home) throw new Error("user-home-unavailable");',
-  'const marker = process.argv.indexOf("panel-history-sync");',
-  'if (marker < 0) throw new Error("history-sync-arguments-missing");',
-  'const tool = join(home, ".code-shell", "panel-apps", "quant-lab", "app", "tools", "fetch-market-data.mjs");',
-  'const module = await import(pathToFileURL(tool).href);',
-  'await module.runCli(process.argv.slice(marker + 1));',
-].join("\n");
 
 const HISTORY_RUNTIME_SPECS = Object.freeze([
   Object.freeze({ name: "node", label: "Node.js" }),
@@ -204,17 +181,13 @@ export function historyLibraryRuntimeArgs(
   if (!["core", "broad", "full"].includes(scope)) throw new Error("历史基础库范围无效");
   if (!["initialize", "autofill", "status"].includes(mode)) throw new Error("历史基础库模式无效");
   historyLibrarySource(source);
-  if (name === "node" || name === "nodejs") {
-    return Object.freeze(["--input-type=module", "--eval", HISTORY_NODE_LAUNCHER, mode, scope, source]);
-  }
-  if (name === "bun") return Object.freeze(["--eval", HISTORY_NODE_LAUNCHER, mode, scope, source]);
-  throw new Error("历史基础库运行时不受支持");
+  if (!["node", "nodejs", "bun"].includes(name)) throw new Error("历史基础库运行时不受支持");
+  return Object.freeze(mode === "status" ? ["--status", "--stdout"] : ["--scope", scope, "--source", source, "--stdout", ...(mode === "autofill" ? ["--incremental-only"] : [])]);
 }
 
 export function historyDataRuntimeArgs(name, input) {
   const request = normalizeHistoryRequest(input);
   const args = [
-    "panel-history-sync",
     "--symbol", request.symbol,
     "--market", request.market,
     "--source", request.source,
@@ -223,11 +196,8 @@ export function historyDataRuntimeArgs(name, input) {
     "--to", request.to,
     "--stdout-bundle",
   ];
-  if (name === "node" || name === "nodejs") {
-    return Object.freeze(["--input-type=module", "--eval", HISTORY_DATA_NODE_LAUNCHER, ...args]);
-  }
-  if (name === "bun") return Object.freeze(["--eval", HISTORY_DATA_NODE_LAUNCHER, ...args]);
-  throw new Error("单股回测数据运行时不受支持");
+  if (!["node", "nodejs", "bun"].includes(name)) throw new Error("单股回测数据运行时不受支持");
+  return Object.freeze(args);
 }
 
 export function parseHistoryLibrarySummary(value) {
@@ -515,7 +485,16 @@ export function parseHistoryLibrarySummary(value) {
     snapshotDates.add(date);
     return Object.freeze({ date, count, phase });
   }).sort((left, right) => left.date.localeCompare(right.date)));
+  let batch = null;
+  if (value.batch != null) {
+    const candidate = value.batch;
+    if (!candidate || !isoDate(candidate.marketDate) || !/^[a-f0-9]{64}$/u.test(candidate.checkpoint) ||
+      ![candidate.completed, candidate.total, candidate.pending].every(number => Number.isSafeInteger(number) && number >= 0 && number <= 10000) ||
+      candidate.completed + candidate.pending !== candidate.total) throw new Error("历史批次断点无效");
+    batch = Object.freeze({ ...candidate });
+  }
   return Object.freeze({
+    ...(batch ? { batch } : {}),
     scope,
     source,
     adjust: "qfq",
@@ -947,10 +926,12 @@ export function createHistoryDataController(options) {
       }
       return;
     }
+    const epoch = currentEpoch();
     historyBackgroundPollTimer = window.setTimeout(() => {
       historyBackgroundPollTimer = null;
       void (async () => {
         const summary = await refreshHistorySummaryFromLocal();
+        if (epoch !== currentEpoch()) return;
         if (summary?.running === true) {
           syncHistoryBackgroundPollTimer();
           return;
@@ -960,6 +941,7 @@ export function createHistoryDataController(options) {
         historyMessage = summary.remaining > 0 || summary.failed > 0
           ? `后台自动补齐已结束；已核对 ${summary.ready}/${summary.total} 只，${summary.remaining} 只暂不可用，下一交易日会自动再查。`
           : `后台自动补齐已完成；${summary.ready}/${summary.total} 只历史数据已就绪。`;
+        if (summary.batch?.pending > 0) historyMessage += ` 本批最多 20 项已完成，剩余 ${summary.batch.pending} 项；点击继续下一批，关闭面板时当前批次仍会完成。`;
         renderHistoryBootstrap();
         notify(summary.remaining > 0 || summary.failed > 0
           ? "历史数据已核对，个别股票暂不可用"
@@ -1298,6 +1280,7 @@ export function createHistoryDataController(options) {
             : historySummary.legacyVendorAdjusted > 0
               ? `增量更新并迁移 ${historySummary.scope === "full" ? "全市场" : `${historySummary.limit} 只`}`
               : `增量更新 ${historySummary.scope === "full" ? "全市场" : `${historySummary.limit} 只`}`;
+    if (historySummary.batch?.pending > 0 && !coolingDown) elements.bootstrapAction.textContent = `继续下一批（最多 20 项，待处理 ${historySummary.batch.pending} 项）`;
     elements.bootstrapStatus.textContent = historyMessage || [
       `来源 ${historySourceLabel(historySummary.source)}`,
       coolingDown
@@ -1363,16 +1346,29 @@ export function createHistoryDataController(options) {
     );
   }
 
+  function checkEpoch(epoch) {
+    if (epoch !== currentEpoch()) throw new Error("项目已切换；历史请求已停止提交");
+  }
+
+  async function epochCall(epoch, method, params) {
+    checkEpoch(epoch);
+    const result = await hostCall(method, params);
+    checkEpoch(epoch);
+    return result;
+  }
+
   async function restoreHistorySummary() {
+    const epoch = currentEpoch();
     if (historySummaryLoaded) return;
     historySummaryLoaded = true;
     try {
-      const saved = await hostCall("storage.get", { key: HISTORY_LIBRARY_STATUS_KEY });
+      const saved = await epochCall(epoch, "storage.get", { key: HISTORY_LIBRARY_STATUS_KEY });
       if (saved) {
         historySummary = parseHistoryLibrarySummary(saved);
         syncBootstrapScopeToSummary();
       }
     } catch (error) {
+      if (epoch !== currentEpoch()) return;
       historyMessageTone = "warning";
       historyMessage = `历史库状态缓存未通过校验：${error instanceof Error ? error.message : "缓存解析失败"}。正在从本地历史库恢复，已有数据不会被删除。`;
     }
@@ -1381,10 +1377,11 @@ export function createHistoryDataController(options) {
 
   async function ensureHistoryRuntime() {
     if (historyRuntime) return historyRuntime;
+    const epoch = currentEpoch();
     if (typeof onHostEvent !== "function") throw new Error("历史基础库需在 CodeShell 投资工作台内运行");
     let selected = null;
     for (const spec of HISTORY_RUNTIME_SPECS) {
-      const executable = await hostCall("process.find", { name: spec.name });
+      const executable = await epochCall(epoch, "process.find", { name: spec.name });
       if (executable?.available && typeof executable.handle === "string") {
         selected = { executable, spec };
         break;
@@ -1394,11 +1391,11 @@ export function createHistoryDataController(options) {
     let directory = null;
     let storageMode = "app-data";
     try {
-      directory = await hostCall("filesystem.getKnownDirectory", { name: "app-data" });
+      directory = await epochCall(epoch, "filesystem.getKnownDirectory", { name: "app-data" });
     } catch {
       storageMode = "downloads";
       try {
-        directory = await hostCall("filesystem.getKnownDirectory", { name: "downloads" });
+        directory = await epochCall(epoch, "filesystem.getKnownDirectory", { name: "downloads" });
       } catch {
         throw new Error("当前 CodeShell 无法提供历史基础库保存目录，请更新桌面端后重试");
       }
@@ -1443,12 +1440,18 @@ export function createHistoryDataController(options) {
     return lines.find((line) => line.length < 300) ?? "历史基础库初始化失败";
   }
 
+  const historyBatch = createHistoryBatchClient({ hostCall, onHostEvent, contextState, currentEpoch,
+    onTask(task) {
+      if (task.progress) historyProgress = { ...task.progress, message: task.progress.message ?? "后台历史批次处理中（每批最多 20 项）" };
+      renderHistoryBootstrap();
+    } });
+
   async function initializeHistoryLibrary({ automatic = false } = {}) {
     if (historyStatusChecking) return;
     if (historyInitializing) {
       historyCancelled = true;
       renderHistoryBootstrap();
-      if (historyProcessId) await hostCall("process.cancel", { processId: historyProcessId }).catch(() => undefined);
+      await historyBatch.cancel().catch(() => undefined);
       return;
     }
     historyInitializing = true;
@@ -1458,32 +1461,21 @@ export function createHistoryDataController(options) {
     historyMessage = "";
     historyMessageTone = "idle";
     renderHistoryBootstrap();
-    let processId = null;
+    const epoch = currentEpoch();
     try {
       const scope = ["broad", "full"].includes(elements.bootstrapScope.value)
         ? elements.bootstrapScope.value
         : "core";
       const source = historyLibrarySource(elements.bootstrapSource.value);
-      const runtime = await ensureHistoryRuntime();
-      const started = await hostCall("process.spawn", {
-        executableHandle: runtime.executableHandle,
-        directoryHandle: runtime.directoryHandle,
-        args: historyLibraryRuntimeArgs(runtime.name, scope, automatic ? "autofill" : "initialize", source.id),
-      });
-      if (typeof started?.processId !== "string") throw new Error("历史基础库程序未能启动");
-      processId = started.processId;
-      historyProcessId = processId;
-      const record = await waitForHistoryExit(processId);
-      if (historyCancelled) {
-        historyMessageTone = "warning";
-        historyMessage = "初始化已停止；已经写入的股票会在下次运行时直接复用，不会从头重来。";
-        return;
-      }
-      if (record.exit?.code !== 0) throw new Error(historyProcessError(record.stderr));
-      const summary = parseHistoryLibrarySummary(record.stdout);
+      const task = await historyBatch.run({ scope, source: source.id, maxItems: 20 });
+      if (epoch !== currentEpoch()) return;
+      if (historyCancelled) { historyMessage = "历史批次已停止；已提交的数据会在下一批复用。"; return; }
+      if (task.status !== "succeeded") throw new Error(task.error?.message ?? "历史批次未完成，请检查任务状态后显式继续");
+      const summary = parseHistoryLibrarySummary(task.result?.result ?? task.result);
       historySummary = summary;
       syncBootstrapScopeToSummary();
-      await hostCall("storage.set", { key: HISTORY_LIBRARY_STATUS_KEY, value: summary }).catch(() => undefined);
+      await epochCall(epoch, "storage.set", { key: HISTORY_LIBRARY_STATUS_KEY, value: summary }).catch(() => undefined);
+      checkEpoch(epoch);
       const onlyUnavailable = historyOnlyUnavailable(summary);
       historyMessageTone = summary.remaining > 0 || summary.failed > 0 ? "warning" : "idle";
       historyMessage = summary.paused
@@ -1493,29 +1485,28 @@ export function createHistoryDataController(options) {
             ? `${historySourceLabel(summary.source)}基础库已核对 ${summary.ready}/${summary.total} 只；另有 ${summary.unavailable} 只新股、短历史或来源暂不可用，下一交易日自动再查。`
             : `${historySourceLabel(summary.source)}基础库已准备 ${summary.ready}/${summary.total} 只，待后续核验 ${summary.remaining} 只；已写入数据会直接复用。`
         : `${historySourceLabel(summary.source)}基础库已准备 ${summary.ready}/${summary.total} 只；${automatic ? "缺失交易日已自动补齐。" : "后续增量更新会沿用该来源。"}`;
-      if (runtime.storageMode === "downloads") {
-        historyMessage += " 当前桌面端暂不支持面板私有目录，数据已兼容保存到本机下载目录的 a-share-history 文件夹。";
-      }
+      if (summary.batch?.pending > 0) historyMessage += ` 本批最多 20 项已完成，剩余 ${summary.batch.pending} 项；点击继续下一批，关闭面板时当前批次仍会完成。`;
       notify(summary.remaining > 0 || summary.failed > 0
         ? onlyUnavailable ? "历史数据已核对，个别股票暂不可用" : "历史基础库部分完成，可继续核验"
         : automatic ? "A 股历史基础库已自动补齐" : "A 股历史基础库初始化完成");
     } catch (error) {
-      if (!historyCancelled) {
+      if (epoch === currentEpoch() && !historyCancelled) {
         historyMessageTone = "error";
         historyMessage = error instanceof Error ? error.message : "历史基础库初始化失败";
       }
     } finally {
-      if (processId) historyProcessRecords.delete(processId);
-      historyProcessId = null;
-      historyInitializing = false;
-      historyStartedAt = null;
-      renderHistoryBootstrap();
+      if (epoch === currentEpoch()) {
+        historyInitializing = false;
+        historyStartedAt = null;
+        renderHistoryBootstrap();
+      }
     }
   }
 
   async function refreshHistorySummaryFromLocal() {
     if (historyInitializing) return historySummary;
     if (historyStatusPromise) return historyStatusPromise;
+    const epoch = currentEpoch();
     const task = (async () => {
       historyStatusInFlight = true;
       historyStatusChecking = true;
@@ -1523,8 +1514,12 @@ export function createHistoryDataController(options) {
       let processId = null;
       try {
         const runtime = await ensureHistoryRuntime();
+        checkEpoch(epoch);
+        const entryHandle = await reviewedEntry(hostCall, "initialize-a-share-history", runtime.executableHandle);
+        if (epoch !== currentEpoch()) return null;
         const started = await hostCall("process.spawn", {
           executableHandle: runtime.executableHandle,
+          entryHandle,
           directoryHandle: runtime.directoryHandle,
           args: historyLibraryRuntimeArgs(
             runtime.name,
@@ -1535,27 +1530,33 @@ export function createHistoryDataController(options) {
         });
         if (typeof started?.processId !== "string") return historySummary;
         processId = started.processId;
+        if (epoch !== currentEpoch()) { void hostCall("process.cancel", { processId }).catch(() => {}); return null; }
         historyProcessId = processId;
         const record = await waitForHistoryExit(processId);
+        if (epoch !== currentEpoch()) return null;
         if (record.exit?.code !== 0) throw new Error(historyProcessError(record.stderr));
         historySummary = parseHistoryLibrarySummary(record.stdout);
         historyStatusRecoveryFailed = false;
         syncBootstrapScopeToSummary();
-        await hostCall("storage.set", { key: HISTORY_LIBRARY_STATUS_KEY, value: historySummary }).catch(() => undefined);
+        await epochCall(epoch, "storage.set", { key: HISTORY_LIBRARY_STATUS_KEY, value: historySummary }).catch(() => undefined);
+        checkEpoch(epoch);
         historyMessage = "";
         historyMessageTone = historySummary.remaining > 0 || historySummary.failed > 0 ? "warning" : "idle";
         return historySummary;
       } catch (error) {
+        if (epoch !== currentEpoch()) return null;
         historyStatusRecoveryFailed = true;
         historyMessageTone = "error";
         historyMessage = `本地历史库状态恢复失败：${error instanceof Error ? error.message : "状态解析失败"}。已保留已有文件，请重新读取状态；这不代表历史库未初始化。`;
         return historySummary;
       } finally {
         if (processId) historyProcessRecords.delete(processId);
-        historyProcessId = null;
-        historyStatusInFlight = false;
-        historyStatusChecking = false;
-        renderHistoryBootstrap();
+        if (epoch === currentEpoch()) {
+          historyProcessId = null;
+          historyStatusInFlight = false;
+          historyStatusChecking = false;
+          renderHistoryBootstrap();
+        }
       }
     })();
     historyStatusPromise = task;
@@ -1581,8 +1582,10 @@ export function createHistoryDataController(options) {
     if (!cooldownExplicitlyExpired && checkedAt - previousAttemptAt < HISTORY_AUTOFILL_RECHECK_MS) {
       return historySummary;
     }
+    const epoch = currentEpoch();
     const task = (async () => {
       const summary = await refreshHistorySummaryFromLocal();
+      if (epoch !== currentEpoch()) return null;
       if (
         !summary ||
         summary.running ||
@@ -1822,13 +1825,17 @@ export function createHistoryDataController(options) {
   }
 
   async function load() {
-    if (loading) return;
     const epoch = currentEpoch();
+    void historyBatch.restore().then(task => {
+      if (epoch === currentEpoch() && task?.status === "succeeded") { historySummary = parseHistoryLibrarySummary(task.result?.result ?? task.result); renderHistoryBootstrap(); }
+    }).catch(() => {});
+    if (loading) return;
     let autofillTarget = null;
     loading = true;
     elements.refresh.disabled = true;
     try {
       await restoreSourcePreferences(epoch);
+      checkEpoch(epoch);
       await restoreHistorySummary();
       if (epoch !== currentEpoch()) return;
       // Panel storage can be scoped to the current conversation, while the
@@ -1904,14 +1911,14 @@ export function createHistoryDataController(options) {
           if (autofillTarget) {
             await autoFillThrough(autofillTarget.marketDate, autofillTarget.sessionPhase);
           }
-          await autoFillProjectDatasets(latestKnownProjectDate());
+          if (epoch === currentEpoch()) await autoFillProjectDatasets(latestKnownProjectDate());
         })();
       }
     }
   }
 
-  async function existingDatasetFiles(request) {
-    const listing = await hostCall("workspace.list", { path: DATA_DIRECTORY });
+  async function existingDatasetFiles(request, epoch) {
+    const listing = await epochCall(epoch, "workspace.list", { path: DATA_DIRECTORY });
     const entries = Array.isArray(listing?.entries) ? listing.entries : [];
     const metaPath = request.csvPath.replace(/\.csv$/u, META_SUFFIX);
     const csvEntry = entries.find((entry) => entry?.kind === "file" && entry.path === request.csvPath) ?? null;
@@ -1921,8 +1928,8 @@ export function createHistoryDataController(options) {
     }
     if (!csvEntry) return { csv: null, meta: null, parsed: null };
     const [csv, meta] = await Promise.all([
-      hostCall("workspace.readText", { path: request.csvPath }),
-      hostCall("workspace.readText", { path: metaPath }),
+      epochCall(epoch, "workspace.readText", { path: request.csvPath }),
+      epochCall(epoch, "workspace.readText", { path: metaPath }),
     ]);
     const parsed = parseHistoryDatasetMeta(meta.content, metaPath, new Set([request.csvPath]));
     if (parsed.adjust !== request.adjust) {
@@ -1931,23 +1938,23 @@ export function createHistoryDataController(options) {
     return { csv, meta, parsed };
   }
 
-  async function writeVerifiedProjectFile(path, content, existing) {
-    const written = await hostCall("workspace.writeText", {
+  async function writeVerifiedProjectFile(path, content, existing, epoch) {
+    const written = await epochCall(epoch, "workspace.writeText", {
       path,
       content,
       expectedModifiedAt: existing?.modifiedAt ?? null,
       ...(existing?.revision ? { expectedRevision: existing.revision } : {}),
     });
-    const reread = await hostCall("workspace.readText", { path });
+    const reread = await epochCall(epoch, "workspace.readText", { path });
     if (reread?.content !== content) throw new Error(`${path} 写入后校验失败`);
     return written;
   }
 
-  async function writeVerifiedProjectBundle(request, bundle, existing) {
+  async function writeVerifiedProjectBundle(request, bundle, existing, epoch) {
     const metaPath = request.csvPath.replace(/\.csv$/u, META_SUFFIX);
-    const writtenMeta = await writeVerifiedProjectFile(metaPath, bundle.metaText, existing.meta);
+    const writtenMeta = await writeVerifiedProjectFile(metaPath, bundle.metaText, existing.meta, epoch);
     try {
-      await writeVerifiedProjectFile(request.csvPath, bundle.csv, existing.csv);
+      await writeVerifiedProjectFile(request.csvPath, bundle.csv, existing.csv, epoch);
     } catch (error) {
       // Updating an existing pair is recoverable: if the CSV loses a revision
       // race after the sidecar was written, restore the prior sidecar with the
@@ -1955,7 +1962,7 @@ export function createHistoryDataController(options) {
       // loadable and lets the next startup retry cleanly.
       if (existing.meta?.content) {
         try {
-          await writeVerifiedProjectFile(metaPath, existing.meta.content, writtenMeta);
+          await writeVerifiedProjectFile(metaPath, existing.meta.content, writtenMeta, epoch);
         } catch {
           throw new Error(`${request.symbol} CSV 写入失败，且元数据回滚失败；请检查项目文件冲突`);
         }
@@ -1995,24 +2002,29 @@ export function createHistoryDataController(options) {
     render();
     let processId = null;
     try {
-      const existing = await existingDatasetFiles(request);
+      const existing = await existingDatasetFiles(request, epoch);
       const effectiveRequest = request.source === AUTO_DATA_SOURCE_ID && existing.parsed
         ? { ...request, source: existing.parsed.source }
         : request;
       const runtime = await ensureHistoryRuntime();
+      checkEpoch(epoch);
+      const entryHandle = await reviewedEntry(hostCall, "fetch-market-data", runtime.executableHandle);
+      if (epoch !== currentEpoch()) return;
       const started = await hostCall("process.spawn", {
         executableHandle: runtime.executableHandle,
+        entryHandle,
         directoryHandle: runtime.directoryHandle,
         args: historyDataRuntimeArgs(runtime.name, effectiveRequest),
       });
       if (typeof started?.processId !== "string") throw new Error("单股回测数据程序未能启动");
       processId = started.processId;
+      if (epoch !== currentEpoch()) { void hostCall("process.cancel", { processId }).catch(() => {}); return; }
       singleSyncProcessId = processId;
       const record = await waitForHistoryExit(processId);
       if (record.exit?.code !== 0) throw new Error(historyProcessError(record.stderr));
       const bundle = parseHistorySyncBundle(record.stdout, effectiveRequest);
       if (epoch !== currentEpoch()) return;
-      await writeVerifiedProjectBundle(request, bundle, existing);
+      await writeVerifiedProjectBundle(request, bundle, existing, epoch);
       if (epoch !== currentEpoch()) return;
       setState(
         automaticProject
@@ -2032,7 +2044,7 @@ export function createHistoryDataController(options) {
     } finally {
       if (processId) historyProcessRecords.delete(processId);
       if (singleSyncProcessId === processId) singleSyncProcessId = null;
-      singleSyncInFlight = false;
+      if (epoch === currentEpoch()) singleSyncInFlight = false;
       if (automaticProject && projectFillSymbols.get(request.symbol) === epoch) {
         projectFillSymbols.delete(request.symbol);
       }
@@ -2078,6 +2090,7 @@ export function createHistoryDataController(options) {
       }
       if (epoch !== currentEpoch()) return null;
       if (updated > 0) await load();
+      if (epoch !== currentEpoch()) return null;
       if (failed > 0) {
         setState(`项目回测数据自动补齐：完成 ${updated} 份，失败 ${failed} 份；下次打开会继续核对。`, "error");
         notify(`项目回测数据已补齐 ${updated} 份，${failed} 份待下次重试`, "error");
@@ -2161,24 +2174,44 @@ export function createHistoryDataController(options) {
   return {
     load,
     reset() {
-      if (singleSyncProcessId) {
-        const abandonedProcessId = singleSyncProcessId;
-        void hostCall("process.cancel", { processId: abandonedProcessId }).catch(() => undefined);
-        // Keep the pending record until process.exit arrives. Removing it here
-        // would make the exit listener create a different record and strand
-        // the original wait promise forever. The epoch guard below submit()
-        // still prevents the cancelled result from writing into either repo.
-        singleSyncProcessId = null;
+      clearHistoryCooldownTimer();
+      clearHistoryBackgroundPollTimer();
+      // Settle old local waiters immediately. Host cancellation remains scoped
+      // to its owned process handle, and durable history tasks continue there.
+      for (const processId of [historyProcessId, singleSyncProcessId].filter(Boolean)) {
+        void hostCall("process.cancel", { processId }).catch(() => undefined);
+        const record = historyProcessRecords.get(processId);
+        if (record) { record.exit = { code: null, signal: "workspace-changed" }; record.resolve?.(record); }
       }
+      historyProcessId = null;
+      singleSyncProcessId = null;
+      historyRuntime = null;
+      historyStatusPromise = null;
+      historyStatusChecking = true;
+      historyStatusInFlight = false;
+      historyStatusRecoveryFailed = false;
+      historySummary = null;
+      historySummaryLoaded = false;
+      historyInitializing = false;
+      historyProgress = null;
+      historyMessage = "";
+      historyMessageTone = "idle";
+      historyCancelled = false;
+      historyStartedAt = null;
       singleSyncInFlight = false;
+      loading = false;
+      automaticFillInFlight = null;
       automaticProjectFillInFlight = null;
+      sourcePreferences = { cn: AUTO_DATA_SOURCE_ID, us: AUTO_DATA_SOURCE_ID };
+      sourcePreferencesLoaded = false;
       datasets = [];
       skippedDatasets = 0;
       automaticFillAttempts.clear();
-      historyStatusRecoveryFailed = false;
       automaticProjectFillAttempts.clear();
       projectFillSymbols.clear();
+      syncMarketFields();
       render();
+      renderHistoryBootstrap();
       setState("工作区已切换，正在读取历史数据目录。");
     },
     setBusy(disabled) {

@@ -2,6 +2,7 @@ import { createPortfolioPerformanceView } from "./portfolio-performance-ui.mjs";
 import { createHoldingQuoteController, createHoldingQuoteRequest, holdingQuoteDelay } from "./holding-quotes.mjs";
 import {
   deriveHoldingsSnapshot,
+  createHoldingsSnapshotCache,
   appendTransaction,
   readWorkspaceJson,
 } from "../portfolio-store.mjs";
@@ -590,6 +591,8 @@ function positionByKey(snapshot, accountId, instrumentId) {
 
 export function createHoldingsController({
   hostCall,
+  getContext = () => ({}),
+  additionalQuoteSymbols = () => [],
   onHostEvent,
   elements,
   currentEpoch,
@@ -601,6 +604,15 @@ export function createHoldingsController({
   noteLinkCount = () => 0,
   resolveAShare = (value) => ({ symbol: value, name: "" }),
 }) {
+  const holdingsCache = createHoldingsSnapshotCache();
+  let loadGeneration = 0;
+  let baseFlight = null;
+  let baseEpoch = null;
+  let detailsFlight = null;
+  let detailsReady = false;
+  let renderFrame = null;
+  let transactionLimit = 100;
+  const rows = new Map();
   let ledger = null;
   let snapshot = null;
   let market = null;
@@ -633,8 +645,9 @@ export function createHoldingsController({
       .map(({ symbol, market }) => ({ symbol, market }));
   };
   const quoteController = createHoldingQuoteController({
+    hostCall, getContext, onHostEvent,
     request: createHoldingQuoteRequest({ hostCall, onHostEvent }),
-    symbols: heldSymbols,
+    symbols: () => [...new Map([...heldSymbols(), ...additionalQuoteSymbols()].map(item => [`${item.market}:${item.symbol}`, item])).values()].slice(0, 200),
     now,
     onUpdate(quotes, state) {
       if (!ledger || !snapshot || !market) return;
@@ -647,6 +660,9 @@ export function createHoldingsController({
         return;
       }
       quoteState = state;
+      const backgroundToggle = document.querySelector("#portfolio-background-updates");
+      if (backgroundToggle && typeof state.background === "boolean") backgroundToggle.checked = state.background;
+      if (state.preserve) { if (quotesActive) renderSummary(); return; }
       const endingPrices = { ...market.derivationInputs.endingPrices };
       liveQuotes = new Map();
       for (const instrument of ledger.instruments) {
@@ -656,14 +672,18 @@ export function createHoldingsController({
         endingPrices[instrument.id] = quote.price;
         liveQuotes.set(instrument.symbol, quote);
       }
-      liveSnapshot = deriveHoldingsSnapshot(JSON.stringify(ledger),
+      liveSnapshot = holdingsCache.derive(JSON.stringify(ledger),
         { ...market.derivationInputs, endingPrices }, now().toISOString());
-      computeRules();
-      renderSummary();
-      renderHoldings();
-      renderAnalysis();
-      renderPerformance();
-      publishViewState();
+      if (detailsReady) computeRules();
+      if (!quotesActive || renderFrame != null) return;
+      const paint = () => {
+        renderFrame = null;
+        if (!quotesActive || !snapshot) return;
+        renderSummary(); renderHoldings();
+        if (detailsReady) { renderAnalysis(); renderPerformance(); }
+        publishViewState();
+      };
+      renderFrame = (globalThis.requestAnimationFrame ?? (fn => setTimeout(fn, 0)))(paint);
     },
   });
 
@@ -850,6 +870,7 @@ export function createHoldingsController({
   }
 
   function openDataDetails() {
+    void ensureDetails();
     if (!elements.analysisDetails) return;
     elements.analysisDetails.open = true;
     elements.analysisDetails.focus();
@@ -1002,7 +1023,8 @@ export function createHoldingsController({
   }
 
   function renderHoldings() {
-    elements.holdingsList.replaceChildren();
+    const retained = new Set();
+    for (const empty of elements.holdingsList.querySelectorAll(".portfolio-empty-line")) empty.remove();
     const displayed = liveSnapshot ?? snapshot;
     const positions = displayed
       ? displayed.positionsByAccount.filter((position) => Number(position.quantity) > 0)
@@ -1037,7 +1059,14 @@ export function createHoldingsController({
       const latest = raw?.status === "available"
         ? raw.bars.find((bar) => bar.availableAt === market.endingPriceTimes[instrument.id]) : null;
       const quote = liveQuotes.get(instrument.symbol);
-      const row = document.createElement("article");
+      const key = `${position.accountId}\0${position.instrumentId}`;
+      retained.add(key);
+      const row = rows.get(key) ?? document.createElement("article");
+      rows.set(key, row);
+      const signature = JSON.stringify([position, quote, latest, detailsReady, noteLinkCount({ type: "instrument", symbol: instrument.symbol, market: instrument.market })]);
+      if (row.dataset.signature === signature) { elements.holdingsList.append(row); continue; }
+      row.dataset.signature = signature;
+      row.replaceChildren();
       row.className = "portfolio-position";
       row.dataset.symbol = instrument.symbol;
       const head = document.createElement("div");
@@ -1084,13 +1113,18 @@ export function createHoldingsController({
       );
       metric(
         "人民币成本",
-        position.costBasisBase == null
+        !detailsReady ? "待详情" : position.costBasisBase == null
           ? "暂不可用 · 缺少汇率"
           : `${money(Number(position.costBasisBase))} CNY`,
       );
+      const day = quote?.contract === 2 || quote?.marketDate ? quote : null;
+      metric("日涨跌 · 本币", day?.dayChange == null ? "—" : `${day.dayChange} ${instrument.currency}`,
+        day?.dayChange == null ? null : Number(day.dayChange) < 0 ? "negative" : "positive");
+      metric("日涨跌幅", day?.dayChangePct == null ? "—" : `${Number(day.dayChangePct).toFixed(2)}%`);
       metric("持仓收益率", pnl == null || Number(position.costBasisLocal) <= 0 ? "—"
         : `${(Number(pnl) / Number(position.costBasisLocal) * 100).toFixed(2)}%`);
       row.append(metrics);
+      if (day?.marketDate) appendText(row, "p", `交易日 ${day.marketDate} · 参考日 ${day.referenceDate ?? "缺失"} · ${day.priceBasis ?? "未知口径"}；日涨跌按前收盘参考价计算，缺失不估算。`, "portfolio-source");
       const quoteTime = quote?.asOf ?? latest?.availableAt;
       appendText(row, "p", quoteTime
         ? `${quote ? quote.source : "历史行情"} · 行情时间 ${new Date(quoteTime).toLocaleString("zh-CN", { hour12: false })}${quoteState.failed ? " · 本次未完全更新" : ""}`
@@ -1129,6 +1163,7 @@ export function createHoldingsController({
       }
       elements.holdingsList.append(row);
     }
+    for (const [key, row] of rows) if (!retained.has(key)) { row.remove(); rows.delete(key); }
     return positions.length;
   }
 
@@ -1140,7 +1175,7 @@ export function createHoldingsController({
       appendText(elements.transactionsList, "p", "尚无交易流水。", "portfolio-empty-line");
       return;
     }
-    for (const transaction of [...transactions].reverse()) {
+    for (const transaction of [...transactions].reverse().slice(0, transactionLimit)) {
       const instrument = ledger.instruments.find((item) => item.id === transaction.instrumentId);
       const row = document.createElement("article");
       row.className = "portfolio-transaction";
@@ -1157,6 +1192,10 @@ export function createHoldingsController({
       record.type = "button";
       record.addEventListener("click", () => onRecordNote(noteLink));
       elements.transactionsList.append(row);
+    }
+    if (transactions.length > transactionLimit) {
+      const more = appendText(elements.transactionsList, "button", `显示更多（已显示 ${transactionLimit}/${transactions.length}）`, "ghost-button");
+      more.addEventListener("click", () => { transactionLimit += 100; renderTransactions(); });
     }
   }
 
@@ -1287,7 +1326,7 @@ export function createHoldingsController({
     elements.totalBase.dataset.state = total == null ? "unavailable" : "complete";
     elements.localState.textContent = "可用 · 账本原币种";
     const base = snapshot?.availability?.base;
-    elements.baseState.textContent =
+    elements.baseState.textContent = !detailsReady ? "待详情 · 历史汇率尚未读取" :
       base?.status === "complete"
         ? "可用"
         : `暂不可用 · ${reasonLabel(base?.reason ?? "missing-fx")}`;
@@ -1332,8 +1371,8 @@ export function createHoldingsController({
     elements.empty.hidden = true;
     elements.workspace.hidden = false;
     renderSummary();
-    renderPerformance();
-    renderAnalysis();
+    if (detailsReady) { renderPerformance(); renderAnalysis(); }
+    else { elements.analysisStatus.textContent = "基础持仓已就绪；历史收益与汇率详情正在分层读取。"; }
     const positionCount = renderHoldings();
     renderTransactions();
     showStatus(
@@ -1377,10 +1416,14 @@ export function createHoldingsController({
   }
 
   async function rebuildView(expectedEpoch) {
+    const generation = loadGeneration;
+    const identity = ledger;
+    const nextMarket = await loadMarketInputs(hostCall, identity, now);
+    if (currentEpoch() !== expectedEpoch || generation !== loadGeneration || identity !== ledger) return;
     liveSnapshot = null;
-    market = await loadMarketInputs(hostCall, ledger, now);
-    if (currentEpoch() !== expectedEpoch) return;
-    snapshot = deriveHoldingsSnapshot(
+    market = nextMarket;
+    detailsReady = true;
+    snapshot = holdingsCache.derive(
       `${JSON.stringify(ledger, null, 2)}\n`,
       market.derivationInputs,
       now().toISOString(),
@@ -1415,16 +1458,17 @@ export function createHoldingsController({
     }
   }
 
-  async function load(expectedEpoch = currentEpoch()) {
+  async function performBaseLoad(expectedEpoch) {
     reset();
+    const generation = loadGeneration;
     showStatus("正在读取持仓账本…");
     try {
       const stored = await readWorkspaceJson(
-        hostCall,
+        (method, params) => hostCall(method, params, { priority: "critical", owner: "portfolio-base" }),
         "portfolio/transactions.json",
         epochToken(expectedEpoch),
       );
-      if (currentEpoch() !== expectedEpoch) return;
+      if (currentEpoch() !== expectedEpoch || generation !== loadGeneration) return;
       ledgerExists = stored.exists;
       if (!stored.exists) {
         ledger = null;
@@ -1434,11 +1478,20 @@ export function createHoldingsController({
       }
       const parsed = parseTransactions(stored.content);
       ledger = parsed.ledger;
-      ledgerFingerprintState = await inspectHoldingsFingerprint(expectedEpoch, parsed.fingerprint);
-      if (currentEpoch() !== expectedEpoch) return;
-      await rebuildView(expectedEpoch);
+      const endingDate = todayShanghai(now);
+      market = { endingDate, derivationInputs: { endingDate, checkpointFx: {}, endingPrices: {} },
+        endingPriceTimes: {}, rawByInstrument: new Map(), sourceStatusByInstrument: {},
+        fx: { status: "unavailable", reason: "details-pending" }, analysisInputs: null };
+      snapshot = holdingsCache.derive(stored.content, market.derivationInputs, now().toISOString());
+      ledgerFingerprintState = { status: "verified", currentFingerprint: parsed.fingerprint,
+        holdingsFingerprint: parsed.fingerprint, mismatchObserved: false };
+      baseEpoch = expectedEpoch;
+      render();
+      globalThis.performance?.mark?.("quant-lab:portfolioBaseReady", { detail: { epoch: expectedEpoch, fingerprint: parsed.fingerprint } });
+      if (quotesActive) void quoteController.refresh();
+      setTimeout(() => { if (generation === loadGeneration && quotesActive) void ensureDetails(); }, 0);
     } catch (error) {
-      if (currentEpoch() !== expectedEpoch) return;
+      if (currentEpoch() !== expectedEpoch || generation !== loadGeneration) return;
       elements.empty.hidden = true;
       elements.workspace.hidden = true;
       showStatus(error instanceof Error ? error.message : "持仓读取失败", "error");
@@ -1459,6 +1512,26 @@ export function createHoldingsController({
       });
     }
   }
+
+  function loadBase(expectedEpoch = currentEpoch(), { reload = false } = {}) {
+    if (!reload && baseEpoch === expectedEpoch) return Promise.resolve(snapshot);
+    if (!reload && baseFlight) return baseFlight;
+    const flight = performBaseLoad(expectedEpoch).finally(() => { if (baseFlight === flight) baseFlight = null; });
+    baseFlight = flight;
+    return flight;
+  }
+
+  function ensureDetails() {
+    if (detailsReady || !ledger) return Promise.resolve();
+    if (!detailsFlight) {
+      const flight = rebuildView(currentEpoch()).catch(error => showStatus(`基础持仓可用；详情读取失败：${error.message}`, "warning"))
+        .finally(() => { if (detailsFlight === flight) detailsFlight = null; });
+      detailsFlight = flight;
+    }
+    return detailsFlight;
+  }
+
+  function load(expectedEpoch = currentEpoch()) { return loadBase(expectedEpoch, { reload: true }); }
 
   function showCreateForm() {
     if (!ledger) ledger = structuredClone(EMPTY_LEDGER);
@@ -1633,6 +1706,14 @@ export function createHoldingsController({
   }
 
   function reset() {
+    loadGeneration++;
+    baseEpoch = null;
+    detailsReady = false;
+    detailsFlight = null;
+    holdingsCache.clear();
+    rows.clear();
+    elements.holdingsList.replaceChildren();
+    transactionLimit = 100;
     if (elements.analysisDetails) elements.analysisDetails.open = false;
     if (elements.dataNotice) elements.dataNotice.hidden = true;
     historyGeneration++;
@@ -1668,6 +1749,24 @@ export function createHoldingsController({
     onPortfolioState({ hasPositions: false });
   }
 
+  const stopQuotes = document.querySelector("#portfolio-quote-stop");
+  let quotesPaused = false;
+  stopQuotes?.addEventListener("click", async () => {
+    stopQuotes.disabled = true;
+    try { await quoteController.pause?.(!quotesPaused); quotesPaused = !quotesPaused;
+      stopQuotes.textContent = quotesPaused ? "继续行情" : "暂停行情"; }
+    catch (error) { showStatus(error.message, "warning"); }
+    finally { stopQuotes.disabled = false; }
+  });
+  const backgroundToggle = document.querySelector("#portfolio-background-updates");
+  backgroundToggle?.addEventListener("change", async () => {
+    backgroundToggle.disabled = true;
+    try { await quoteController.setBackground?.(backgroundToggle.checked); }
+    catch (error) { backgroundToggle.checked = false; showStatus(error.message, "warning"); }
+    finally { backgroundToggle.disabled = false; }
+  });
+  globalThis.addEventListener?.("pagehide", () => quoteController.dispose?.());
+  elements.analysisDetails?.addEventListener("toggle", () => { if (elements.analysisDetails.open) void ensureDetails(); });
   elements.dataNoticeDetails?.addEventListener("click", openDataDetails);
   elements.historySync?.addEventListener("click", () => void syncHistory());
   elements.create.addEventListener("click", showCreateForm);
@@ -1679,12 +1778,15 @@ export function createHoldingsController({
 
   return {
     load,
+    loadBase,
+    ensureDetails,
+    refreshQuotes: () => quoteController.refresh(),
     reset,
     openDataDetails,
     setActive(value) {
       quotesActive = value;
       quoteController.setActive(value);
-      if (snapshot) { renderSummary(); if (value) renderPerformance(); }
+      if (snapshot && value) { renderSummary(); renderHoldings(); if (detailsReady) renderPerformance(); else void ensureDetails(); }
       if (value && elements.performance && needsHistory()) {
         void syncHistory({ automatic: true });
       }
@@ -1702,7 +1804,7 @@ export function createHoldingsController({
     },
     openEntry: showCreateForm,
     refreshRules() {
-      if (!ledger || !snapshot || !market) return;
+      if (!ledger || !snapshot || !market || !detailsReady) return;
       computeRules();
       render();
     },

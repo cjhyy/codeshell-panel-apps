@@ -15,6 +15,8 @@ const INTERACTIVE_METHODS = new Set([
   "automations.deleteIfRevision",
   "notifications.send",
   "process.cancel",
+  "services.setDesired",
+  "services.control",
   "workspace.writeText",
   "storage.compareAndSet",
 ]);
@@ -77,8 +79,10 @@ export function createPanelHostCallScheduler(options) {
   }
 
   function availableIndex(timestamp) {
+    const critical = queue.findIndex(item => item.priority === "critical" && item.notBefore <= timestamp);
+    if (critical >= 0 && callTimes.length < maxCalls) return critical;
     const interactive = queue.findIndex(
-      (item) => item.priority === "interactive" && item.notBefore <= timestamp,
+      (item) => ["critical", "interactive"].includes(item.priority) && item.notBefore <= timestamp,
     );
     if (interactive >= 0 && callTimes.length < maxCalls) return interactive;
     if (callTimes.length >= backgroundCalls) return -1;
@@ -89,7 +93,7 @@ export function createPanelHostCallScheduler(options) {
     if (!queue.length) return null;
     const delays = [];
     const readyInteractive = queue.some(
-      (item) => item.priority === "interactive" && item.notBefore <= timestamp,
+      (item) => ["critical", "interactive"].includes(item.priority) && item.notBefore <= timestamp,
     );
     const readyBackground = queue.some(
       (item) => item.priority === "background" && item.notBefore <= timestamp,
@@ -110,6 +114,7 @@ export function createPanelHostCallScheduler(options) {
   }
 
   function complete(item, value) {
+    if (item.signal?.aborted) { fail(item, new Error("请求已取消")); return; }
     if (item.scope !== currentScope()) {
       fail(item, new Error("项目已切换，旧项目请求的结果未应用。"));
       return;
@@ -126,7 +131,7 @@ export function createPanelHostCallScheduler(options) {
 
   function fail(item, error) {
     if (
-      item.scope === currentScope() &&
+      !item.signal?.aborted && item.scope === currentScope() &&
       RATE_LIMIT_PATTERN.test(error instanceof Error ? error.message : String(error ?? "")) &&
       item.attempts < 1
     ) {
@@ -144,6 +149,7 @@ export function createPanelHostCallScheduler(options) {
     callTimes.push(timestamp);
     Promise.resolve()
       .then(() => {
+        if (item.signal?.aborted) throw new Error("请求已取消");
         if (item.scope !== currentScope()) throw new Error("项目已切换，已取消尚未发出的请求。");
         return invoke(item.method, item.params);
       })
@@ -159,6 +165,13 @@ export function createPanelHostCallScheduler(options) {
       if (timer != null) {
         cancelSchedule(timer);
         timer = null;
+      }
+      for (let i = queue.length - 1; i >= 0; i--) {
+        if (queue[i].scope !== currentScope() || queue[i].signal?.aborted) {
+          const [stale] = queue.splice(i, 1);
+          if (stale.cacheKey) cache.delete(stale.cacheKey);
+          stale.reject(new Error("项目已切换或请求已取消，已取消尚未发出的请求。"));
+        }
       }
       let timestamp = now();
       prune(timestamp);
@@ -177,7 +190,8 @@ export function createPanelHostCallScheduler(options) {
     }
   }
 
-  function call(method, params) {
+  function call(method, params, intent = {}) {
+    if (intent.signal?.aborted) return Promise.reject(new Error("请求已取消"));
     const scope = currentScope();
     const methodKey = panelHostCallCacheKey(method, params);
     const cacheKey = methodKey ? JSON.stringify([scope, methodKey]) : "";
@@ -197,7 +211,9 @@ export function createPanelHostCallScheduler(options) {
       method,
       params,
       scope,
-      priority: panelHostCallPriority(method),
+      priority: intent.priority ?? panelHostCallPriority(method),
+      owner: intent.owner ?? null,
+      signal: intent.signal,
       notBefore: timestamp,
       attempts: 0,
       cacheKey,
@@ -206,12 +222,23 @@ export function createPanelHostCallScheduler(options) {
     };
     if (cacheKey) cache.set(cacheKey, { promise, expiresAt: Number.POSITIVE_INFINITY });
     queue.push(item);
+    const abort = () => pump();
+    intent.signal?.addEventListener("abort", abort, { once: true });
+    void promise.finally(() => intent.signal?.removeEventListener("abort", abort)).catch(() => {});
     pump();
     return promise;
   }
 
   return {
     call,
+    cancelOwner(owner) {
+      for (let i = queue.length - 1; i >= 0; i--) if (queue[i].owner === owner) {
+        const [item] = queue.splice(i, 1);
+        if (item.cacheKey) cache.delete(item.cacheKey);
+        item.reject(new Error("请求已取消"));
+      }
+      pump();
+    },
     snapshot() {
       const timestamp = now();
       prune(timestamp);

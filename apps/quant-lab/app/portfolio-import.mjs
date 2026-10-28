@@ -229,6 +229,7 @@ export function registerPortfolioTools({
   currentEpoch,
   refresh,
   displayedPositions,
+  displayedFingerprint,
 }) {
   if (typeof registerTool !== "function") return;
   let running = false;
@@ -256,6 +257,7 @@ export function registerPortfolioTools({
           );
           result.panelVerified =
             currentEpoch() === expectedEpoch &&
+            (!displayedFingerprint || displayedFingerprint() === result.snapshot.transactionsFingerprint) &&
             expected.every((item) =>
               displayed.some(
                 (candidate) =>

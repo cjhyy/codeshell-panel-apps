@@ -626,10 +626,10 @@ assert.equal(
 );
 assert.equal(liveMarket.LIVE_MARKET_REFRESH_POLICY.openMs, 3 * 60 * 1_000);
 assert.equal(liveMarket.LIVE_MARKET_REFRESH_POLICY.closedMs, 15 * 60 * 1_000);
-assert.deepEqual(liveMarket.liveMarketRuntimeArgs("node").slice(0, 2), ["--input-type=module", "--eval"]);
-assert.deepEqual(liveMarket.liveMarketRuntimeArgs("bun").slice(0, 1), ["--eval"]);
-assert(liveMarket.liveMarketRuntimeArgs("node", "refresh-local").includes("refresh-local"));
-assert(liveMarket.liveMarketRuntimeArgs("node", "read-local").includes("read-local"));
+assert.deepEqual(liveMarket.liveMarketRuntimeArgs("node"), ["--stdout"]);
+assert.deepEqual(liveMarket.liveMarketRuntimeArgs("bun"), ["--stdout"]);
+assert(liveMarket.liveMarketRuntimeArgs("node", "refresh-local").includes("--persist-panel-data"));
+assert(liveMarket.liveMarketRuntimeArgs("node", "read-local").includes("--read-local"));
 assert(
   liveMarket.liveMarketRuntimeArgs("node", "refresh-local").some((value) => value.includes("--persist-panel-data")),
   "automatic market refreshes must persist the complete daily archive in private panel data",

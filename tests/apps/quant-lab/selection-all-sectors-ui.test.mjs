@@ -118,10 +118,10 @@ test("watch-only history batches continue after industries finish, without claim
 test("continuation modes are separate from manual retry modes", () => {
   for (const runtime of ["node", "nodejs", "bun"]) {
     const continued = selectionRuntimeArgs(runtime, "%7B%7D", "global", "continue-local");
-    assert(continued.includes("continue-local"));
-    assert.match(continued.find((item) => item.includes("--continue-scan")), /args\.push\("--continue-scan"\)/u);
-    assert(selectionRuntimeArgs(runtime, "%7B%7D", "global", "refresh-local").includes("refresh-local"));
-    assert(selectionRuntimeArgs(runtime, "%7B%7D", "global", "continue-volatile").includes("continue-volatile"));
+    assert(continued.includes("--continue-scan"));
+    assert(continued.includes("--persist-local"));
+    assert(selectionRuntimeArgs(runtime, "%7B%7D", "global", "refresh-local").includes("--persist-local"));
+    assert(selectionRuntimeArgs(runtime, "%7B%7D", "global", "continue-volatile").includes("--continue-scan"));
   }
 });
 
@@ -194,7 +194,8 @@ async function withController(run, { persistent = true, holdContinuation = false
   const elements = new Proxy({}, { get(target, key) { return target[key] ??= new MockElement(); } });
   const hostCall = async (method, args) => {
     calls.push({ method, args });
-    if (method === "process.find") return { available: true, handle: "node" };
+    if (method === "process.resolveEntry") return { handle: "reviewed-entry" };
+        if (method === "process.find") return { available: true, handle: "node" };
     if (method === "filesystem.getKnownDirectory") {
       if (!persistent && args.name === "app-data") throw new Error("unsupported");
       return { handle: "data" };
@@ -219,7 +220,7 @@ async function withController(run, { persistent = true, holdContinuation = false
         events.get("process.output")?.({ processId, stream: "stdout", text: JSON.stringify(snapshotInput) });
         events.get("process.exit")?.({ processId, code: 0 });
       };
-      if (holdContinuation && spawned > 1 && args.args.includes("continue-local")) held.push(finish);
+      if (holdContinuation && spawned > 1 && args.args.includes("--continue-scan")) held.push(finish);
       else queueMicrotask(finish);
       return { processId };
     }
@@ -293,7 +294,7 @@ test("automatic continuation stops on pause, inactive page and hidden document",
     assert.equal(timers.size, 0);
     assert.equal(controller.snapshot, latest);
     await controller.resumeScan();
-    assert(calls.some((call) => call.method === "process.spawn" && call.args.args.includes("continue-local")));
+    assert(calls.some((call) => call.method === "process.spawn" && call.args.args.includes("--continue-scan")));
     controller.setActive(false);
     assert.equal(timers.size, 0);
     controller.setActive(true);
@@ -324,10 +325,10 @@ test("a legacy host without persistent data cannot enter an infinite continuatio
     assert.equal(elements.scanToggle.disabled, true);
     assert.match(elements.scanProgress.textContent, /不支持跨批次本地续扫/u);
     assert.equal(calls.filter((call) => call.method === "process.spawn").length, 1);
-    assert(calls.find((call) => call.method === "process.spawn").args.args.includes("refresh-volatile"));
+    assert(calls.find((call) => call.method === "process.spawn").args.args.includes("--stdout"));
     await controller.refresh({ manual: true });
     await controller.refresh();
-    assert(calls.filter((call) => call.method === "process.spawn").every((call) => call.args.args.includes("refresh-volatile")), "a volatile process has no checkpoint or retry budget to continue");
+    assert(calls.filter((call) => call.method === "process.spawn").every((call) => call.args.args.includes("--stdout")), "a volatile process has no checkpoint or retry budget to continue");
     assert(![...timers.values()].some((timer) => timer.delay === 5_000));
   }, { persistent: false });
 });
@@ -453,7 +454,7 @@ test("watch additions during a running batch are refreshed after that batch rath
     timers.delete(queued[0]); queued[1].callback();
     for (let index = 0; index < 14; index += 1) await Promise.resolve();
     const last = calls.filter((call) => call.method === "process.spawn").at(-1);
-    assert(last.args.args.includes("continue-local"), "watch changes must preserve existing retry budgets");
+    assert(last.args.args.includes("--continue-scan"), "watch changes must preserve existing retry budgets");
     assert.match(decodeURIComponent(last.args.args.at(-2)), /SH600000/u);
   }, { holdContinuation: true });
 });
@@ -477,13 +478,13 @@ test("visible background watch maintenance updates an old close without continui
 test("automatic freshness preserves retry budgets while explicit manual refresh resets them", async () => {
   await withController(async ({ controller, calls }) => {
     const first = calls.find((call) => call.method === "process.spawn");
-    assert(first.args.args.includes("continue-local"));
+    assert(first.args.args.includes("--continue-scan"));
     await controller.refresh({ manual: true });
     const manual = calls.filter((call) => call.method === "process.spawn").at(-1);
-    assert(manual.args.args.includes("refresh-local"));
+    assert(manual.args.args.includes("--persist-local"));
     await controller.refresh();
     const automatic = calls.filter((call) => call.method === "process.spawn").at(-1);
-    assert(automatic.args.args.includes("continue-local"));
+    assert(automatic.args.args.includes("--continue-scan"));
   });
 });
 

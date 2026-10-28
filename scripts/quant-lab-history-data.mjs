@@ -178,8 +178,7 @@ const syncRequest = normalizeHistoryRequest({
 });
 assert.equal(syncRequest.csvPath, "data/market/SH600519.csv");
 const runtimeArgs = historyDataRuntimeArgs("node", syncRequest);
-assert.deepEqual(runtimeArgs.slice(-14), [
-  "panel-history-sync",
+assert.deepEqual(runtimeArgs, [
   "--symbol", "SH600519",
   "--market", "cn",
   "--source", "auto",
@@ -188,7 +187,7 @@ assert.deepEqual(runtimeArgs.slice(-14), [
   "--to", "2026-08-26",
   "--stdout-bundle",
 ]);
-assert(runtimeArgs.some((argument) => argument.includes("fetch-market-data.mjs")));
+assert.equal(runtimeArgs.includes("--eval"), false);
 assert.throws(() => historyDataRuntimeArgs("python", syncRequest), /运行时/u);
 
 const metaPath = "data/market/SH600519.meta.json";
