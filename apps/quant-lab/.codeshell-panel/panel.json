@@ -221,7 +221,7 @@
     },
     "initialize-a-share-history": {
       "entry": "app/tools/initialize-a-share-history.mjs",
-      "sha256": "9cd922512956f6477d229e9421bc58197bdeaa7b6c61795188ec189a7a976f05"
+      "sha256": "cc385e5fb79d644a031f8c719a673d01a56ad69a79744c0936fd3eb5db6f1d32"
     },
     "quant-market-service": {
       "entry": "app/tools/market-service.mjs",

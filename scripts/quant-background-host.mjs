@@ -3,19 +3,118 @@ import { spawn } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { repositoryRoot } from "./panel-projects.mjs";
+
+// The real durable task stack transports the same request/directoryArguments shape
+// as history-batch-client. repair:true only reconciles a seeded local library.
+async function historyTask(host, selected, projectPath, root, signal, cleanupState) {
+  const scope = { appId: selected.id, projectPath, revision: selected.packageDigest };
+  const owners = new Map();
+  let nextOwner = 100, executions = 0, directoryGrants = 0, stdout = "";
+  const authorize = async requested => {
+    assert.deepEqual(requested, scope);
+    const current = (await cleanupState.core.listProjectPanelApps(projectPath, selected.id)).find(app => app.id === selected.id);
+    assert.equal(current?.packageDigest, selected.packageDigest, "task must retain the reviewed project selection");
+    assert(current.permissions.includes("process"));
+  };
+  const appData = join(root, "authorized-app-data", selected.id);
+  await mkdir(appData, { recursive: true });
+  const cache = await import(pathToFileURL(join(selected.installPath, "app/tools/a-share-history-cache.mjs")));
+  await cache.writeHistoryManifest({ schemaVersion: 1, kind: "a-share-history-library", scope: "core", limit: 120,
+    source: "tencent-ifzq", adjust: "qfq", updatedAt: "2026-10-28T00:00:00Z", marketDate: "2026-10-28",
+    total: 120, ready: 0, failed: 0, bars: 0, storageBytes: 0, records: [] }, appData);
+  const processes = new host.PanelAppProcessService({
+    env: { PATH: process.env.PATH, HOME: process.env.HOME }, extraPathDirectories: () => [dirname(process.execPath)],
+    confirmExecution: async approval => { assert.equal(approval.appId, scope.appId); assert.equal(owners.get(approval.guestId)?.revision, scope.revision); return true; },
+    isOwnerAuthorized: async owner => { if (!owners.has(owner.guestId)) return false; await authorize(scope); return true; },
+    resolvePackageEntry: async (owner, name) => {
+      assert(owners.has(owner.guestId)); await authorize(scope);
+      assert.equal(name, "quant-history-batch");
+      const native = selected.nativeEntries[name];
+      return { path: join(selected.installPath, native.entry), sha256: native.sha256 };
+    },
+  });
+  const resources = new host.PanelResourceService({ rootDirectory: join(root, "history-resources"),
+    isScopeAuthorized: async requested => { await authorize(requested); return true; } });
+  let jobs;
+  cleanupState.started = true;
+  try {
+    const executor = host.createPanelToolExecutor({
+      processes, resources, sealedRoot: join(root, "history-sealed"), authorize,
+      authorizeConnections: async () => { throw new Error("No account access in offline history smoke"); },
+      owner: (job, send) => {
+        assert.deepEqual(job.scope, scope); executions++;
+        const owner = { guestId: nextOwner++, appId: scope.appId, revision: scope.revision, appTitle: selected.title,
+          send(event, payload) {
+            if (event === "process.output" && payload.stream === "stdout") {
+              stdout += payload.text; assert(Buffer.byteLength(stdout) < 128 * 1024);
+            }
+            send(event, payload);
+          } };
+        owners.set(owner.guestId, owner); return owner;
+      },
+      releaseOwner: owner => { owners.delete(owner.guestId); },
+      appDataDirectory: async requested => { await authorize(requested); directoryGrants++; return appData; },
+    });
+    jobs = new host.PanelToolJobService({ rootDir: join(root, "history-jobs"), ...executor,
+      isAuthorized: async requested => { await authorize(requested); return true; },
+      describePackage: async requested => { await authorize(requested); return { version: selected.version, packageDigest: selected.packageDigest }; },
+    });
+    let complete, fail;
+    const finished = new Promise((resolveTask, reject) => { complete = resolveTask; fail = reject; });
+    const onAbort = () => fail(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    const unsubscribe = jobs.subscribe(scope, task => { if (["succeeded", "failed", "cancelled", "interrupted"].includes(task.status)) complete(task); });
+    try {
+      signal.throwIfAborted();
+      const request = { entry: { name: "quant-history-batch", sha256: selected.nativeEntries["quant-history-batch"].sha256 },
+        requestKey: "offline-history-repair", recovery: "retry",
+        input: { request: { scope: "core", source: "tencent-ifzq", maxItems: 20, repair: true },
+          directoryArguments: [{ argumentName: "--data-dir", directory: "app-data" }] } };
+      const [started, terminal] = await Promise.all([jobs.start(scope, request, signal), finished]);
+      assert.equal(terminal.id, started.id);
+      assert.equal(terminal.status, "succeeded", JSON.stringify(terminal.error));
+      const receipt = await jobs.get(scope, started.id);
+      assert.equal(receipt.result.batchLimit, 20);
+      assert.equal(receipt.result.scope, "core");
+      assert.equal(receipt.result.source, "tencent-ifzq");
+      assert.equal(receipt.result.running, false);
+      const lines = stdout.trim().split("\n").map(line => JSON.parse(line));
+      assert.equal(lines.length, 1);
+      assert.equal(lines[0].type, "result");
+      assert.deepEqual(lines[0].result, receipt.result);
+      assert.equal((await jobs.find(scope, request.requestKey)).id, started.id);
+      assert.equal((await jobs.start(scope, request)).id, started.id, "lost-start retry must reuse the durable receipt");
+      assert.equal(executions, 1);
+      assert.equal(directoryGrants, 1);
+      assert.equal(owners.size, 0, "task completion must retire its process owner");
+      const persisted = await cache.readHistoryManifest(appData);
+      assert.equal(persisted.scope, "core");
+      return { entry: request.entry.name, status: receipt.status, batchLimit: receipt.result.batchLimit,
+        ndjsonResults: lines.length, requestKeyReused: true, executions, authorizedDirectoryGrants: directoryGrants };
+    } finally { unsubscribe(); signal.removeEventListener("abort", onAbort); }
+  } finally {
+    await jobs?.shutdown();
+    await processes.close();
+    await resources.shutdown();
+    cleanupState.confirmed = true;
+  }
+}
 
 // Actual reviewed package + Host coordinator + permission-constrained native Node.
 // Empty subscriptions exercise the full stream without contacting a supplier.
 async function worker(hostRoot, root, nonce) {
   let service, scope, gate, initialized = false, cleanupConfirmed = false, failure;
   let abortReason;
+  const abortController = new AbortController();
+  const historyCleanup = { started: false, confirmed: false };
   const waiters = new Set();
   const events = [];
   const abort = () => {
     abortReason ??= new Error("QUANT_HOST_SMOKE_ABORTED");
+    abortController.abort(abortReason);
     for (const waiter of waiters) waiter.reject(abortReason);
     waiters.clear();
   };
@@ -107,7 +206,9 @@ async function worker(hostRoot, root, nonce) {
     assert.equal(stopped.phase, "stopped");
     assert.equal(stopped.desired, "off");
     assert.equal(executors().length, 0, "the guardian process group must be confirmed exited");
-    report = { app: selected.id, version: selected.version, packageDigest: selected.packageDigest,
+    historyCleanup.core = core;
+    const history = await historyTask(host, selected, projectPath, root, abortController.signal, historyCleanup);
+    report = { historyTask: history, app: selected.id, version: selected.version, packageDigest: selected.packageDigest,
       nativeEntry: definition.entry, nativeSha256: native.sha256, generation: enabled.generation,
       seqBeforeClose: before.seq, seqWithoutGuests: after.seq, roundBeforeClose: before.value.round.roundId,
       roundWithoutGuests: after.value.round.roundId, maxExecutors: 1, stopped: stopped.phase };
@@ -121,6 +222,7 @@ async function worker(hostRoot, root, nonce) {
         await service.shutdown();
         assert.equal(gate.blockers(() => true).length, 0);
       }
+      assert(!historyCleanup.started || historyCleanup.confirmed, "history task native cleanup must be confirmed");
       cleanupConfirmed = true;
     } catch (error) {
       failure = failure ? new AggregateError([failure, error], "Smoke and native cleanup failed") : error;

@@ -304,13 +304,16 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
     process.stdout.write([
       "Usage: node initialize-a-share-history.mjs --scope <core|broad|full> --stdout",
       "       [--source <tencent-ifzq|eastmoney-kline|tushare-pro>]",
+      "       [--max-items <1..100>] [--status | --lock-status | --repair]",
       "",
       "  core   initialize 120 high-liquidity A shares",
       "  broad  initialize 300 high-liquidity A shares",
       "  full   initialize every valid currently quoted Shanghai/Shenzhen A share",
       "  source selects the raw-price/factor provider and is recorded for later updates",
       "  --incremental-only updates missing/lagging sessions without migrating current legacy files",
-      "  research qfq prices are generated locally; legacy vendor-qfq files migrate gradually",
+      "  research qfq prices are generated locally; --status and --lock-status never write",
+      "  --repair explicitly reconciles local data; Host background batches are limited to 20 items",
+      "  writes use v2 only; an existing v1 directory refuses new writers until old-package custody is resolved",
     ].join("\n") + "\n");
     return { ok: true, help: true };
   }
