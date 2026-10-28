@@ -11,11 +11,29 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { PNG } from "pngjs";
 import { cleanupPanelDesktopFixture, closeOwnedPanelElectron } from "./panel-desktop-cleanup.mjs";
+import { preparePanelDesktopNativeFixture, waitForPanelDesktopIdle } from "./panel-desktop-native-fixture.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const [hostArgument, reportArgument, ...extra] = process.argv.slice(2);
-assert.ok(hostArgument && extra.length === 0,
-  "usage: node scripts/check-panel-desktop.mjs <built-host-checkout> [new-report.json]");
+const [hostArgument, ...arguments_] = process.argv.slice(2);
+let reportArgument, selectedApp;
+for (let index = 0; index < arguments_.length; index++) {
+  const value = arguments_[index];
+  if (value === "--app") {
+    assert.ok(!selectedApp && arguments_[index + 1], "--app requires one Panel id");
+    selectedApp = arguments_[++index];
+  } else {
+    assert.ok(!value.startsWith("--") && !reportArgument, `unexpected argument: ${value}`);
+    reportArgument = value;
+  }
+}
+assert.ok(hostArgument, "usage: node scripts/check-panel-desktop.mjs <built-host-checkout> [new-report.json] [--app <panel-id>]");
+const packageCases = ["apps/design-studio", "apps/job-hunt-hq", "apps/quant-lab", "apps/video-download", "panels/video-studio", "templates/starter"];
+const cases = [];
+for (const packagePath of packageCases) {
+  const manifest = JSON.parse(await readFile(join(repository, packagePath, ".codeshell-panel/panel.json"), "utf8"));
+  if (!selectedApp || manifest.id === selectedApp) cases.push({ packagePath, manifest });
+}
+assert.ok(cases.length, `unknown --app: ${selectedApp}`);
 const hostRoot = resolve(hostArgument);
 const appDir = join(hostRoot, "packages/desktop");
 const hostModule = path => import(pathToFileURL(join(hostRoot, path)).href);
@@ -34,21 +52,18 @@ const panelCommit = gitHead(repository), hostSourceCommit = gitHead(hostRoot);
 const runnerSha256 = sha256(await readFile(fileURLToPath(import.meta.url)));
 const hostSourceManifestVersion = JSON.parse(await readFile(join(appDir, "package.json"), "utf8")).version;
 const directory = await mkdtemp(join(tmpdir(), "panel-desktop-ipc-"));
-let app, ownedChildProcess, win, report, cleanupReceipt, failure, launchStarted = false, stage = "initialize";
-const results = [], rendererErrors = [];
+let app, ownedChildProcess, win, report, cleanupReceipt, failure, nativeFixture, launchStarted = false, stage = "initialize";
+const results = [], rendererErrors = [], busyRejections = [], readRateRejections = [];
 try {
   // Scrub arbitrary inherited provider credentials before loading any Host module.
   const { createBunTestEnvironment } = await hostModule("scripts/bun-test-completion.mjs");
   const environment = createBunTestEnvironment(process.env, directory);
-  // Download performs native version probes on startup. Owned CLI fixtures prevent
-  // curl/wget/yt-dlp from reaching a live provider outside the JavaScript guard.
-  // The Host still discovers, authorizes and runs these actual subprocesses.
+  // Host safeProcessEnv deliberately excludes NODE_OPTIONS. Its real NativeEntry
+  // executable must enforce the OS boundary itself, including for descendants.
   const fixtureBin = join(environment.HOME, "fixture-bin");
-  await mkdir(fixtureBin);
-  for (const name of ["curl", "wget", "yt-dlp"]) {
-    const version = name === "yt-dlp" ? `case "$*" in *--version*) echo 2026.10.12; exit 0;; esac\n` : "";
-    await writeFile(join(fixtureBin, name), `#!/bin/sh\n${version}echo 'Desktop acceptance denies live native network clients' >&2\nexit 77\n`, { mode: 0o700 });
-  }
+  nativeFixture = await preparePanelDesktopNativeFixture({ directory, binDirectory: fixtureBin,
+    nodeExecutable: process.execPath, environment });
+  console.log(`NativeEntry OS network self-test: ${JSON.stringify(nativeFixture.selfTest)}`);
   environment.PATH = `${fixtureBin}:${environment.PATH}`;
   for (const key of ["DBUS_SESSION_BUS_ADDRESS", "GNOME_KEYRING_CONTROL", "SECURITYSESSIONID"])
     if (process.env[key]) environment[key] = process.env[key];
@@ -114,26 +129,23 @@ app.on("session-created", session => {
   await fixture.assertWorker(app, { requireWorker: false });
 
   const ipc = (method, ...args) => win.evaluate(({ method, args }) => window.codeshell[method](...args), { method, args });
-  const busyRejections = [], readRateRejections = [];
   async function whenIdle(id, operation) {
-    const deadline = Date.now() + 30_000;
-    for (;;) {
-      const result = await operation().catch(error => {
-        if (!/还有正在提交、排队或运行的任务/.test(String(error))) throw error;
-        return { ok: false, error: String(error) };
-      });
-      if (result.ok || !/还有正在提交、排队或运行的任务/.test(result.error)) return result;
-      const previous = busyRejections.find(value => value.id === id);
-      if (previous) previous.attempts++;
-      else {
-        busyRejections.push({ id, error: result.error, attempts: 1 });
-        // A lazy worker remains corked until its exact process receipt is verified.
-        await fixture.assertWorker(app, { requireWorker: false });
-      }
-      if (Date.now() >= deadline) throw new Error(`${id} native startup probes did not settle`);
-      // Reuse the exact review token: never re-review changed bytes just to retry.
-      await new Promise(done => setTimeout(done, 100));
-    }
+    // Reuse the exact token and preserve refusal fields. An exception is not a
+    // structured undispatched BUSY receipt and must never be replayed.
+    return waitForPanelDesktopIdle({ id, operation,
+      nativeReceipts: async () => (await nativeFixture.receipts()).slice(-24),
+      onBusy: async observation => {
+        const signature = JSON.stringify(observation.result);
+        const previous = busyRejections.find(value => value.id === id && value.stage === stage && value.signature === signature);
+        if (previous) { previous.attempts++; previous.lastAt = observation.at; }
+        else {
+          busyRejections.push({ id, stage, signature, firstAt: observation.at, lastAt: observation.at,
+            attempts: 1, result: observation.result, nativeReceipts: observation.nativeReceipts });
+          console.log(`Panel change BUSY: ${JSON.stringify({ stage, ...observation })}`);
+          await fixture.assertWorker(app, { requireWorker: false });
+        }
+      },
+    });
   }
   const untilGuest = async (guest, source) => {
     const deadline = Date.now() + 30_000;
@@ -207,9 +219,7 @@ app.on("session-created", session => {
     return { view, execute, call, remove, context, globals, panel, prepared };
   }
 
-  const cases = ["apps/design-studio", "apps/job-hunt-hq", "apps/quant-lab", "apps/video-download", "panels/video-studio", "templates/starter"];
-  for (const packagePath of cases) {
-    const manifest = JSON.parse(await readFile(join(repository, packagePath, ".codeshell-panel/panel.json"), "utf8"));
+  for (const { packagePath, manifest } of cases) {
     const id = manifest.id, [projectA, projectB] = projects;
     stage = `${id}: reviewed install`;
     console.log(stage);
@@ -237,7 +247,7 @@ app.on("session-created", session => {
       jobHuntCli = (operation, input, revision) => {
         const request = { operation, input, ...(revision === undefined ? {} : { expectedRevision: revision }) };
         const cli = join(isolated.codeShellHome, "panel-apps/.versions", id, originalA.packageDigest, "app/tools/job-hunt-cli.mjs");
-        const child = spawnSync(process.execPath, [cli, "--project", projectA], { input: JSON.stringify(request), encoding: "utf8", timeout: 30_000, env: environment });
+        const child = spawnSync(nativeFixture.wrapper, [cli, "--project", projectA], { input: JSON.stringify(request), encoding: "utf8", timeout: 30_000, env: environment });
         assert.equal(child.status, 0, child.stderr + child.stdout);
         const receipt = JSON.parse(child.stdout);
         assert.equal(receipt.ok, true, child.stdout);
@@ -457,15 +467,36 @@ app.on("session-created", session => {
   const keychainReceipt = JSON.parse(await readFile(join(isolated.home, "electron-keychain-context.json"), "utf8"));
   const runtime = await app.evaluate(() => ({ electron: process.versions.electron, node: process.versions.node, platform: process.platform, arch: process.arch }));
   await closeOwnedPanelElectron({ app, ownedChildProcess }); app = undefined;
+  const nativeReceipts = await nativeFixture.receipts();
+  for (const started of nativeReceipts.filter(value => value.event === "entry-start")) {
+    assert.equal(started.nodeOptionsPresent, false, "NativeEntry unexpectedly depended on inherited NODE_OPTIONS");
+    assert.ok(nativeReceipts.some(value => value.event === "entry-exit" && value.pid === started.pid),
+      `NativeEntry lacks an exit receipt: ${JSON.stringify(started)}`);
+    const selected = cases.find(({ manifest }) => [join(isolated.codeShellHome, "panel-apps/.versions", manifest.id), join(isolated.codeShellHome, "panel-apps", manifest.id)]
+      .some(prefix => started.entry?.startsWith(prefix + "/")));
+    if (selected) assert.ok(Object.values(selected.manifest.nativeEntries ?? {}).some(entry => started.entry.endsWith(`/${entry.entry}`) && entry.sha256 === started.entrySha256),
+      `Executed installed NativeEntry differs from reviewed bytes: ${JSON.stringify(started)}`);
+  }
+  for (const child of nativeReceipts.filter(value => value.event === "child-start"))
+    assert.ok(nativeReceipts.some(value => value.event === "child-exit" && value.pid === child.pid && value.childPid === child.childPid),
+      `Observed native child lacks a close receipt: ${JSON.stringify(child)}`);
+  if (cases.some(({ manifest }) => manifest.id === "video-download"))
+    for (const name of ["service.mjs", "environment.mjs"])
+      assert.ok(nativeReceipts.some(value => value.event === "entry-start" && value.entry?.endsWith(`/app/tools/${name}`)), `Video Download did not execute its actual ${name} through the network sandbox`);
   const inspectorReceipts = (await readFile(inspectorLog, "utf8")).trim().split("\n").map(JSON.parse);
   for (const path of files) assert.equal(sha256(await readFile(join(hostRoot, path))), buildHashes[path], `shared build changed: ${path}`);
   report = { schemaVersion: 1, panelCommit, runnerSha256, hostSourceCommit, hostSourceManifestVersion,
     hostBuildProvenance: "Record the independently established build commit alongside these file hashes; source HEAD/version do not identify existing outputs.",
-    buildHashes, runtime, actualNativePaths, guardReceipts, inspectorReceipts, keychainReceipt, busyRejections, readRateRejections, results,
-    limitations: ["controlled synthetic Desktop acceptance only", "no physical phone or deployed Cloud", "no real provider/account/native media work", "owned curl/wget/yt-dlp CLI fixtures deny live native network clients; Quant uses visible:false to suppress live collectors", "JS HTTP guard and Chromium request denial are not an OS sandbox", "package update candidate differs only by a private HTML comment; full historical domain migrations are a separate gate"] };
+    buildHashes, runtime, actualNativePaths, guardReceipts, inspectorReceipts, keychainReceipt, busyRejections, readRateRejections,
+    selectedApp: selectedApp ?? null, selectedCaseCount: cases.length,
+    nativeBoundary: nativeFixture.boundary, nativeNetworkSelfTest: nativeFixture.selfTest, nativeReceipts, results,
+    limitations: ["controlled synthetic Desktop acceptance only", "no physical phone or deployed Cloud", "no real provider/account/native media work", "owned curl/wget/yt-dlp/ffmpeg fixtures; NativeEntry Node and descendants use verified macOS deny(network*) wrapper; Quant uses visible:false to suppress live collectors", "Main JS guard and Chromium request denial remain separate from the NativeEntry OS network boundary", "package update candidate differs only by a private HTML comment; full historical domain migrations are a separate gate"] };
 } catch (error) {
   failure = { error };
   console.error(`Desktop acceptance failed at ${stage}:`, error);
+  console.error(`Desktop fixture diagnostics: ${JSON.stringify({ stage, selectedApp: selectedApp ?? null, busyRejections,
+    nativeBoundary: nativeFixture?.boundary, nativeNetworkSelfTest: nativeFixture?.selfTest,
+    nativeReceipts: await nativeFixture?.receipts() })}`);
   console.error(await win?.locator("body").innerText().catch(() => "renderer unavailable"));
 } finally {
   cleanupReceipt = await cleanupPanelDesktopFixture({ app, ownedChildProcess, launchStarted, directory, failure });
@@ -473,4 +504,4 @@ app.on("session-created", session => {
 report.completedAt = new Date().toISOString();
 report.cleanup = cleanupReceipt;
 if (reportArgument) await writeFile(resolve(reportArgument), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-console.log(`PASS: ${results.length}/6 real installed Panel Desktop IPC scenarios; owned Electron exit and HOME cleanup verified`);
+console.log(`PASS: ${results.length}/${cases.length} selected real installed Panel Desktop IPC scenarios${selectedApp ? ` (${selectedApp} only)` : " (all six packages)"}; owned Electron exit and HOME cleanup verified`);
