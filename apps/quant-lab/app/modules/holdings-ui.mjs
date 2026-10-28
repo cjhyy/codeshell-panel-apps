@@ -1686,6 +1686,9 @@ export function createHoldingsController({
       ledgerSourceText = `${JSON.stringify(result.ledger, null, 2)}\n`;
       snapshot = result.snapshot;
       market = nextMarket;
+      // Save already loaded history/FX for this exact committed ledger. Publish
+      // its computed diagnostics even when the initial empty view had no details.
+      detailsReady = true;
       ledgerFingerprintState = result.cacheStale
         ? {
             status: "unavailable",
