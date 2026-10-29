@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { PNG } from "pngjs";
 import { cleanupPanelDesktopFixture, closeOwnedPanelElectron } from "./panel-desktop-cleanup.mjs";
 import { preparePanelDesktopNativeFixture, waitForPanelDesktopIdle } from "./panel-desktop-native-fixture.mjs";
+import { prepareManagedNodeNetworkFixture } from "./panel-desktop-managed-node-fixture.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const [hostArgument, ...arguments_] = process.argv.slice(2);
@@ -40,6 +41,7 @@ const hostModule = path => import(pathToFileURL(join(hostRoot, path)).href);
 const sha256 = value => createHash("sha256").update(value).digest("hex");
 const files = ["packages/desktop/out/main/index.mjs", "packages/desktop/out/preload/index.cjs",
   "packages/desktop/out/preload/panel-app.cjs", "packages/desktop/out/renderer/index.html",
+  "packages/desktop/out/managed-runtimes/node/bin/node",
   "packages/core/dist/panel-apps/installer.js", "packages/server/dist/panels/runtime-services.js"];
 const buildHashes = Object.fromEntries(await Promise.all(files.map(async path =>
   [path, sha256(await readFile(join(hostRoot, path)))])));
@@ -52,7 +54,7 @@ const panelCommit = gitHead(repository), hostSourceCommit = gitHead(hostRoot);
 const runnerSha256 = sha256(await readFile(fileURLToPath(import.meta.url)));
 const hostSourceManifestVersion = JSON.parse(await readFile(join(appDir, "package.json"), "utf8")).version;
 const directory = await mkdtemp(join(tmpdir(), "panel-desktop-ipc-"));
-let app, ownedChildProcess, win, report, cleanupReceipt, failure, nativeFixture, launchStarted = false, stage = "initialize";
+let app, ownedChildProcess, win, report, cleanupReceipt, failure, nativeFixture, managedFixture, launchStarted = false, stage = "initialize";
 const results = [], rendererErrors = [], busyRejections = [], readRateRejections = [];
 try {
   // Scrub arbitrary inherited provider credentials before loading any Host module.
@@ -64,6 +66,8 @@ try {
   nativeFixture = await preparePanelDesktopNativeFixture({ directory, binDirectory: fixtureBin,
     nodeExecutable: process.execPath, environment });
   console.log(`NativeEntry OS network self-test: ${JSON.stringify(nativeFixture.selfTest)}`);
+  managedFixture = await prepareManagedNodeNetworkFixture({ directory,
+    executable: join(appDir, "out/managed-runtimes/node/bin/node") });
   environment.PATH = `${fixtureBin}:${environment.PATH}`;
   for (const key of ["DBUS_SESSION_BUS_ADDRESS", "GNOME_KEYRING_CONTROL", "SECURITYSESSIONID"])
     if (process.env[key]) environment[key] = process.env[key];
@@ -97,6 +101,11 @@ try {
   let bootstrap = await readFile(fixture.mainEntry, "utf8");
   const mainImport = `await import(${JSON.stringify(pathToFileURL(join(appDir, "out/main/index.mjs")).href)});`;
   assert.ok(bootstrap.includes(mainImport), "Host fixture bootstrap contract changed");
+  // Install inside Main before the existing confined fixture captures spawn.
+  // Its worker guard then calls this OS seam with the original Node argv.
+  const captureSpawn = "const spawn = children.spawn;";
+  assert.equal(bootstrap.split(captureSpawn).length, 2, "Host fixture spawn seam changed");
+  bootstrap = bootstrap.replace(captureSpawn, managedFixture.bootstrap + captureSpawn);
   bootstrap = bootstrap.replace(mainImport, `for (const [name, path] of Object.entries(${JSON.stringify(nativePaths)})) app.setPath(name, path);
 app.on("session-created", session => {
   session.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*"] }, (_details, done) => done({ cancel: true }));
@@ -468,6 +477,15 @@ app.on("session-created", session => {
   const runtime = await app.evaluate(() => ({ electron: process.versions.electron, node: process.versions.node, platform: process.platform, arch: process.arch }));
   await closeOwnedPanelElectron({ app, ownedChildProcess }); app = undefined;
   const nativeReceipts = await nativeFixture.receipts();
+  const managedReceipts = await managedFixture.receipts();
+  for (const launch of managedReceipts.filter(value => value.event === "spawn")) {
+    assert.ok(managedReceipts.some(value => value.event === "close" && value.pid === launch.pid),
+      `Managed Node guardian lacks its captured close receipt: ${JSON.stringify(launch)}`);
+    for (const value of managedReceipts.filter(value => value.event === "custody" && value.pid === launch.pid)) {
+      if (value.frame.t === "custody") assert.equal(value.frame.pid, launch.pid, "sandbox exec changed guardian PID");
+      if (value.frame.t === "member") assert.notEqual(value.frame.pid, launch.pid);
+    }
+  }
   for (const started of nativeReceipts.filter(value => value.event === "entry-start")) {
     assert.equal(started.nodeOptionsPresent, false, "NativeEntry unexpectedly depended on inherited NODE_OPTIONS");
     assert.ok(nativeReceipts.some(value => value.event === "entry-exit" && value.pid === started.pid),
@@ -489,14 +507,16 @@ app.on("session-created", session => {
     hostBuildProvenance: "Record the independently established build commit alongside these file hashes; source HEAD/version do not identify existing outputs.",
     buildHashes, runtime, actualNativePaths, guardReceipts, inspectorReceipts, keychainReceipt, busyRejections, readRateRejections,
     selectedApp: selectedApp ?? null, selectedCaseCount: cases.length,
-    nativeBoundary: nativeFixture.boundary, nativeNetworkSelfTest: nativeFixture.selfTest, nativeReceipts, results,
-    limitations: ["controlled synthetic Desktop acceptance only", "no physical phone or deployed Cloud", "no real provider/account/native media work", "owned curl/wget/yt-dlp/ffmpeg fixtures; NativeEntry Node and descendants use verified macOS deny(network*) wrapper; Quant uses visible:false to suppress live collectors", "Main JS guard and Chromium request denial remain separate from the NativeEntry OS network boundary", "package update candidate differs only by a private HTML comment; full historical domain migrations are a separate gate"] };
+    nativeBoundary: nativeFixture.boundary, nativeNetworkSelfTest: nativeFixture.selfTest, nativeReceipts,
+    managedNodeBoundary: managedFixture.spec, managedReceipts, results,
+    limitations: ["controlled synthetic Desktop acceptance only", "no physical phone or deployed Cloud", "no real provider/account/native media work", "owned curl/wget/yt-dlp/ffmpeg fixtures; NativeEntry Node and descendants use verified macOS deny(network*) wrapper; Quant uses visible:false to suppress live collectors", "Main JS guard and Chromium request denial are separate; both process.find NativeEntry and actual managed Node spawns receive kernel network denial", "package update candidate differs only by a private HTML comment; full historical domain migrations are a separate gate"] };
 } catch (error) {
   failure = { error };
   console.error(`Desktop acceptance failed at ${stage}:`, error);
   console.error(`Desktop fixture diagnostics: ${JSON.stringify({ stage, selectedApp: selectedApp ?? null, busyRejections,
     nativeBoundary: nativeFixture?.boundary, nativeNetworkSelfTest: nativeFixture?.selfTest,
-    nativeReceipts: await nativeFixture?.receipts() })}`);
+    nativeReceipts: await nativeFixture?.receipts(), managedNodeBoundary: managedFixture?.spec,
+    managedReceipts: await managedFixture?.receipts() })}`);
   console.error(await win?.locator("body").innerText().catch(() => "renderer unavailable"));
 } finally {
   cleanupReceipt = await cleanupPanelDesktopFixture({ app, ownedChildProcess, launchStarted, directory, failure });
