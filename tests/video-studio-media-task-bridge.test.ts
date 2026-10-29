@@ -28,6 +28,12 @@ function fixture(legacyMethods: string[] = []) {
     events = new Map<string, Set<(data: any) => void>>();
   let available = true,
     cwd = "/project-a";
+  const scopes = new Map<string, { cwd: string; revision: string; digest: string }>();
+  const preparing = new Map<string, { digest: string; result: Promise<any> }>();
+  let prepare: (params: any) => Promise<void> = async () => {};
+  const digest = (params: any) => createHash("sha256").update(JSON.stringify({
+    entry: params.entry, input: params.input, recovery: params.recovery,
+  })).digest("hex");
   const methods = [
     "tasks.start",
     "tasks.find",
@@ -113,8 +119,29 @@ function fixture(legacyMethods: string[] = []) {
           eof: params.offset + params.length >= bytes.length,
         };
       }
-      if (method === "tasks.find") return structuredClone([...jobs.values()].find((job) => job.requestKey === params.requestKey) ?? null);
+      if (method === "tasks.find") {
+        const revision = (await raw.getContext()).capabilities.tasks.executionRevision;
+        return structuredClone([...jobs.values()].find((job) => job.requestKey === params.requestKey &&
+          scopes.get(job.id)?.cwd === cwd && scopes.get(job.id)?.revision === revision) ?? null);
+      }
       if (method === "tasks.start") {
+        // Match Host ToolJobService: scope+key and exact JSON digest protect both
+        // committed jobs and in-flight preparation. find deliberately omits the latter.
+        const scope = { cwd, revision: (await raw.getContext()).capabilities.tasks.executionRevision, digest: digest(params) };
+        const key = JSON.stringify([scope.cwd, scope.revision, params.requestKey]);
+        const existing = [...jobs.values()].find(job => job.requestKey === params.requestKey &&
+          scopes.get(job.id)?.cwd === scope.cwd && scopes.get(job.id)?.revision === scope.revision);
+        if (existing) {
+          assert.equal(scopes.get(existing.id)?.digest, scope.digest, "tool job request key was already used for different input");
+          return structuredClone(existing);
+        }
+        const pending = preparing.get(key);
+        if (pending) {
+          assert.equal(pending.digest, scope.digest, "tool job request key was already used for different input");
+          return structuredClone(await pending.result);
+        }
+        const result = Promise.resolve().then(async () => {
+        await prepare(params);
         const request = params.input.request;
         let result: any = {};
         if (request.action === "status")
@@ -145,12 +172,18 @@ function fixture(legacyMethods: string[] = []) {
           createdAt: Date.now(),
           updatedAt: Date.now(),
           requestKey: params.requestKey,
+          recovery: params.recovery,
           entry: { name: params.entry },
           input: params.input,
           result: { result, artifacts: [] },
         };
         jobs.set(job.id, job);
-        return structuredClone(job);
+        scopes.set(job.id, scope);
+        return job;
+        });
+        preparing.set(key, { digest: scope.digest, result });
+        try { return structuredClone(await result); }
+        finally { preparing.delete(key); }
       }
       if (method === "tasks.get") {
         if (!jobs.has(params.id)) throw new Error("not found");
@@ -201,6 +234,8 @@ function fixture(legacyMethods: string[] = []) {
     calls,
     jobs,
     documents,
+    preparing,
+    onPrepare(callback: (params: any) => Promise<void>) { prepare = callback; },
     emit(name: string, value: any) {
       events.get(name)?.forEach((listener) => listener(value));
     },
@@ -910,21 +945,24 @@ test("unresolved manual intent never automatically resubmits after reopening", a
 
 test("another window cannot submit while the first intent is waiting at the Host boundary", async () => {
   const f = fixture();
-  const original = f.raw.call.bind(f.raw);
   let enter!: () => void, release!: () => void;
   const entered = new Promise<void>((resolve) => { enter = resolve; });
   const barrier = new Promise<void>((resolve) => { release = resolve; });
-  let submissions = 0;
-  f.raw.call = async (method, params) => {
-    if (method === "tasks.start") { submissions++; enter(); await barrier; }
-    return original(method, params);
-  };
-  const other = createMediaTaskBridge(f.raw);
-  const request = { modelId: "macos-say", text: "barrier", voiceId: "fixture" };
+  let submissions = 0, confirmations = 0;
+  f.onPrepare(async () => { submissions++; enter(); await barrier; });
+  const other = createMediaTaskBridge(f.raw, { confirmRecovery: async () => { confirmations++; return true; } });
+  Object.assign(f.connection, { fingerprint: "f".repeat(32) });
+  const request = { modelId: `speech-${"f".repeat(32)}`, text: "barrier", voiceId: "fixture" };
   const first = f.bridge.call("media.tts", request);
   try {
     await entered;
-    await assert.rejects(other.bridge.call("media.tts", request), /未重复发起/);
+    assert.equal(f.preparing.size, 1);
+    assert.equal(f.jobs.size, 0, "preparing is not a committed Host receipt");
+    const before = structuredClone([...f.documents.values()].find(value => value.data?.phase === "pending"));
+    assert.ok(Number.isSafeInteger(before.data.createdAt));
+    await assert.rejects(other.bridge.call("media.tts", request), /原媒体请求可能仍在提交/);
+    assert.equal(confirmations, 0, "even a user willing to confirm cannot duplicate a pending paid request");
+    assert.deepEqual([...f.documents.values()].find(value => value.data?.phase === "pending"), before);
     assert.equal(submissions, 1);
     release();
     const accepted = await first as any;
@@ -1115,4 +1153,165 @@ test("a competing intent CAS queries the winner without deleting its record", as
     assert.equal(intent.data.jobId, a.id);
     assert.equal(intent.data.attempt, 1);
   } finally { f.dispose(); other.dispose(); }
+});
+
+test("Host-shaped fixture separates preparing from find and enforces scope plus exact input digest", async () => {
+  const f = fixture();
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  let preparations = 0;
+  f.onPrepare(async () => { preparations++; enter(); await barrier; });
+  const request = { entry: "media-runtime", recovery: "manual", requestKey: "strict-fixture",
+    input: { request: { action: "tts", params: { text: "one" } } } };
+  const first = f.raw.call("tasks.start", request);
+  try {
+    await entered;
+    assert.equal(await f.raw.call("tasks.find", { requestKey: request.requestKey }), null);
+    const follower = f.raw.call("tasks.start", structuredClone(request));
+    await assert.rejects(f.raw.call("tasks.start", { ...request, input: { request: { action: "tts", params: { text: "two" } } } }), /different input/);
+    assert.equal(preparations, 1);
+    release();
+    const [a, b] = await Promise.all([first, follower]);
+    assert.equal(a.id, b.id);
+    assert.equal((await f.raw.call("tasks.find", { requestKey: request.requestKey })).id, a.id);
+    f.setCwd("/project-b");
+    assert.equal(await f.raw.call("tasks.find", { requestKey: request.requestKey }), null);
+    assert.notEqual((await f.raw.call("tasks.start", request)).id, a.id);
+  } finally { release(); await first; f.dispose(); }
+});
+
+test("pending unknown intents never expire into a new attempt even after revision changes and confirmation", async () => {
+  const f = fixture(), original = f.raw.call.bind(f.raw), getContext = f.raw.getContext.bind(f.raw);
+  let confirmations = 0, starts = 0;
+  f.raw.call = async (method, params) => {
+    if (method === "tasks.start") { starts++; throw new Error("transport outcome unknown"); }
+    return original(method, params);
+  };
+  const request = { modelId: "macos-say", text: "still unknown", voiceId: "fixture" };
+  try {
+    await assert.rejects(f.bridge.call("media.tts", request), /回执未确认/);
+    const record: any = [...f.documents.values()].find(value => value.data?.phase === "pending");
+    record.data.createdAt = 1;
+    f.raw.getContext = async () => { const value = await getContext(); value.capabilities.tasks.executionRevision = "next-revision"; return value; };
+    const reopened = createMediaTaskBridge(f.raw, { confirmRecovery: async () => { confirmations++; return true; } });
+    try {
+      await assert.rejects(reopened.bridge.call("media.tts", request), /原媒体请求可能仍在提交/);
+      assert.equal(confirmations, 0);
+      assert.equal(starts, 1);
+      assert.equal(record.data.attempt, 1);
+      assert.equal(record.data.phase, "pending");
+    } finally { reopened.dispose(); }
+  } finally { f.dispose(); }
+});
+
+test("successful setup is explicitly repeatable within one revision; cancelled confirmation preserves its receipt", async () => {
+  const f = fixture();
+  const request = { providerId: "kokoro" };
+  let approve = false, confirmations = 0;
+  const reviewed = createMediaTaskBridge(f.raw, { confirmRecovery: async message => {
+    assert.match(message, /重新检查、修复并验证引擎/);
+    assert.doesNotMatch(message, /计费/);
+    confirmations++; return approve;
+  } });
+  try {
+    const first: any = await f.bridge.call("media.tts.setup", request);
+    await assert.rejects(reviewed.bridge.call("media.tts.setup", request), /未再次运行/);
+    assert.equal(f.calls.filter(call => call.method === "tasks.start").length, 1);
+    approve = true;
+    const second: any = await reviewed.bridge.call("media.tts.setup", request);
+    assert.notEqual(second.id, first.id);
+    assert.match(second.requestKey, /:2$/);
+    assert.equal(second.requestKey.split(":")[1], first.requestKey.split(":")[1]);
+    assert.equal(confirmations, 2);
+    f.jobs.get(second.id).status = "running";
+    assert.equal((await reviewed.bridge.call("media.tts.setup", request) as any).id, second.id);
+    assert.equal(confirmations, 2, "an active repair attaches without offering another installation");
+  } finally { f.dispose(); reviewed.dispose(); }
+});
+
+test("setup with a lost acknowledgement first recovers its successful receipt before a new confirmed operation", async () => {
+  const f = fixture(), original = f.raw.call.bind(f.raw);
+  const request = { providerId: "kokoro" };
+  let confirmations = 0;
+  const reviewed = createMediaTaskBridge(f.raw, { confirmRecovery: async () => { confirmations++; return true; } });
+  f.raw.call = async (method, params) => {
+    if (method === "media.document.set" && params.data?.phase === "accepted") throw new Error("acknowledgement storage lost");
+    return original(method, params);
+  };
+  try {
+    const first: any = await f.bridge.call("media.tts.setup", request);
+    assert.equal([...f.documents.values()].find(value => value.data?.requestKey === first.requestKey)?.data.phase, "pending");
+    f.raw.call = original;
+    const recovered: any = await reviewed.bridge.call("media.tts.setup", request);
+    assert.equal(recovered.id, first.id);
+    assert.equal(confirmations, 0);
+    assert.equal([...f.documents.values()].find(value => value.data?.requestKey === first.requestKey)?.data.phase, "accepted");
+    const rerun: any = await reviewed.bridge.call("media.tts.setup", request);
+    assert.notEqual(rerun.id, first.id);
+    assert.equal(confirmations, 1);
+    assert.equal(f.calls.filter(call => call.method === "tasks.start").length, 2);
+  } finally { f.dispose(); reviewed.dispose(); }
+});
+
+test("concurrent confirmed maintenance reruns share one CAS winner and preserve the published attempt", async () => {
+  const f = fixture();
+  let release!: () => void, confirmations = 0;
+  const bothConfirmed = new Promise<void>(resolve => { release = resolve; });
+  const confirmRecovery = async () => { if (++confirmations === 2) release(); await bothConfirmed; return true; };
+  const a = createMediaTaskBridge(f.raw, { confirmRecovery }), b = createMediaTaskBridge(f.raw, { confirmRecovery });
+  try {
+    const first: any = await f.bridge.call("media.tts.setup", { providerId: "kokoro" });
+    const outcomes = await Promise.allSettled([a.bridge.call("media.tts.setup", { providerId: "kokoro" }), b.bridge.call("media.tts.setup", { providerId: "kokoro" })]);
+    const fulfilled = outcomes.filter(item => item.status === "fulfilled") as PromiseFulfilledResult<any>[];
+    const rejected = outcomes.filter(item => item.status === "rejected") as PromiseRejectedResult[];
+    assert.ok(fulfilled.length >= 1);
+    for (const item of rejected) assert.match(item.reason.message, /未重复发起/);
+    for (const item of fulfilled) assert.match(item.value.requestKey, /:2$/);
+    assert.equal(f.calls.filter(call => call.method === "tasks.start").length, 2);
+    const saved: any = [...f.documents.values()].find(value => value.data?.attempt === 2);
+    assert.equal(saved.data.jobId, fulfilled[0].value.id);
+    assert.notEqual(saved.data.jobId, first.id);
+  } finally { release(); f.dispose(); a.dispose(); b.dispose(); }
+});
+
+
+test("a CAS loser reaching Host while the winner is preparing cannot confirm another paid request", async () => {
+  const f = fixture(), original = f.raw.call.bind(f.raw);
+  let releaseReads!: () => void, enter!: () => void, releasePreparation!: () => void;
+  const bothRead = new Promise<void>(resolve => { releaseReads = resolve; });
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const preparation = new Promise<void>(resolve => { releasePreparation = resolve; });
+  let reads = 0, writes = 0, confirmations = 0;
+  f.onPrepare(async () => { enter(); await preparation; });
+  f.raw.call = async (method, params) => {
+    if (method === "media.document.get" && params.key.startsWith("media-intent-") && reads < 2) {
+      const saved = await original(method, params);
+      if (++reads === 2) releaseReads();
+      await bothRead;
+      return saved;
+    }
+    if (method === "media.document.set" && params.key.startsWith("media-intent-") && params.baseRevision === 0 && ++writes === 2)
+      await entered;
+    return original(method, params);
+  };
+  const other = createMediaTaskBridge(f.raw, { confirmRecovery: async () => { confirmations++; return true; } });
+  Object.assign(f.connection, { fingerprint: "f".repeat(32) });
+  const request = { modelId: `speech-${"f".repeat(32)}`, text: "CAS preparing", voiceId: "fixture" };
+  const operations = [f.bridge.call("media.tts", request), other.bridge.call("media.tts", request)]
+    .map(operation => operation.then(value => ({ ok: true, value }), error => ({ ok: false, error })));
+  try {
+    await entered;
+    const loser: any = await Promise.race(operations);
+    assert.equal(loser.ok, false);
+    assert.match(loser.error.message, /原媒体请求可能仍在提交/);
+    assert.equal(confirmations, 0);
+    assert.equal(f.preparing.size, 1);
+    assert.equal(f.calls.filter(call => call.method === "tasks.start").length, 1);
+    const pending: any = [...f.documents.values()].find(value => value.data?.phase === "pending");
+    assert.equal(pending.data.attempt, 1);
+    releasePreparation();
+    const outcomes = await Promise.all(operations);
+    assert.equal(outcomes.filter(item => item.ok).length, 1);
+  } finally { releaseReads(); releasePreparation(); await Promise.all(operations); f.dispose(); other.dispose(); }
 });

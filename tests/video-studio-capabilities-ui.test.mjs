@@ -194,6 +194,14 @@ async function installMockHost(page) {
         window.__jobInputs[job.id] = structuredClone(input);
         return structuredClone(job);
       };
+      window.__completeSetup = () => {
+        const job = Object.values(jobs).find(job => job.type === "tts-setup" && job.status === "queued");
+        if (!job) throw Error("Expected one queued engine setup");
+        job.status = "succeeded";
+        job.updatedAt = Date.now();
+        job.result = { providerId: window.__jobInputs[job.id].providerId, available: true };
+        window.__events["media.job.changed"]?.(structuredClone(job));
+      };
       window.__completeSpeech = () => {
         const job = Object.values(jobs).find(
           (job) => job.type === "tts-managed" && job.status === "queued",
@@ -917,4 +925,37 @@ test("opening and reopening the panel restores the project without requesting a 
   } finally {
     await context.close();
   }
+});
+
+
+test("a removed engine can be installed again only after the wired maintenance confirmation", { timeout: 25_000 }, async () => {
+  const { page, context } = await isolatedPage(true);
+  try {
+    await loadDemo(page);
+    const openSetup = async () => {
+      await page.locator('[data-tab="voiceover"]').click();
+      await page.locator("#voiceover-model").selectOption("edge-tts");
+      await click(page, "安装并验证引擎");
+    };
+    const setupCount = () => page.evaluate(() => window.__calls.filter(call => call.method === "media.tts.setup").length);
+    await openSetup();
+    await page.waitForFunction(() => window.__calls.filter(call => call.method === "media.tts.setup").length === 1);
+    await page.evaluate(() => window.__completeSetup());
+    // The fixture still reports the engine missing, as after deleting local model files.
+    await openSetup();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByText("重新检查、修复并验证引擎", { exact: false }).waitFor();
+    assert.equal(await setupCount(), 1);
+    await dialog.getByRole("button", { name: "保留原请求，不重发", exact: true }).click();
+    await dialog.waitFor({ state: "hidden" });
+    assert.equal(await setupCount(), 1);
+    await click(page, "安装并验证引擎");
+    await dialog.getByRole("button", { name: "已核查，创建新请求", exact: true }).click();
+    await page.waitForFunction(() => window.__calls.filter(call => call.method === "media.tts.setup").length === 2);
+    const keys = await page.evaluate(() => window.__genericHostCalls.filter(call => call.method === "tasks.start" && call.args.input?.request?.action === "tts-setup").map(call => call.args.requestKey));
+    assert.equal(keys.length, 2);
+    assert.match(keys[0], /:1$/);
+    assert.match(keys[1], /:2$/);
+    assert.equal(keys[0].split(":")[1], keys[1].split(":")[1]);
+  } finally { await context.close(); }
 });

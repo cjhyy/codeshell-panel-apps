@@ -92,6 +92,10 @@ function ownedTask(job: any) {
     (job?.entry?.name === "media-runtime" && MEDIA_ACTIONS.has(taskRequest(job)?.action))
   );
 }
+// Setup mutates an installed runtime; its old success is not proof that the
+// model still exists. Other ordinary actions publish immutable media/analysis
+// results, which remain reusable. Library/CLI operations use separate protocols.
+const REPEATABLE_MAINTENANCE = new Set(["tts-setup"]);
 const clone = (value: any) => structuredClone(value);
 // JSON values only; stable object ordering makes equivalent UI requests share
 // one Host receipt across windows and reloads. Array order remains semantic.
@@ -315,6 +319,7 @@ export function createMediaTaskBridge(raw: PanelBridge, options: {
     const intentKey = `media-intent-${hash}`, recovery = connectionIds.length ? "manual" : "retry";
     let intent: any, intentRevision = 0;
     let requestKey = `media-probe:${hash}`;
+    const pendingUnknown = () => new Error("原媒体请求可能仍在提交，回执尚未确认，未重复发起；请稍后查询任务。时间经过或再次确认不会创建新请求。");
     const unknown = () => new Error("上次媒体请求回执尚未确认，未重复发起，不能自动重试。请检查任务列表及远端结果后恢复；重新打开后仍会先查询原请求。");
     async function findIntent(value: any) {
       let found = await sdk.call("tasks.find", { requestKey: value.requestKey });
@@ -325,8 +330,8 @@ export function createMediaTaskBridge(raw: PanelBridge, options: {
         throw new Error("媒体回执与原请求不匹配，已保留意图，未重复执行");
       return found;
     }
-    async function confirm(message: string) {
-      if (!await options.confirmRecovery?.(message)) throw unknown();
+    async function confirm(message: string, declined = unknown()) {
+      if (!await options.confirmRecovery?.(message)) throw declined;
       await same(scope);
     }
     if (!hidden) {
@@ -342,24 +347,44 @@ export function createMediaTaskBridge(raw: PanelBridge, options: {
             : old.schemaVersion === 2 && Number.isSafeInteger(old.attempt) && old.attempt > 0 && old.attempt < Number.MAX_SAFE_INTEGER &&
               typeof old.executionRevision === "string" && old.executionRevision.length > 0 && old.executionRevision.length <= 1024 &&
               ["pending", "accepted", "rejected"].includes(old.phase) &&
+              (old.createdAt === undefined || Number.isSafeInteger(old.createdAt) && old.createdAt >= 0) &&
               (old.jobId === undefined || typeof old.jobId === "string") &&
               old.requestKey === `media-v2:${(await mediaRequestHash(old.executionRevision)).slice(0, 16)}:${hash}:${old.attempt}`);
           if (!valid) throw new Error("媒体任务意图记录无效，已保留原记录；请检查后再操作");
         }
         const existing: any = old ? await findIntent(old) : await sdk.call("tasks.find", { requestKey: `media-v1:${hash}` });
         await same(scope);
-        if (existing && !["failed", "cancelled", "interrupted"].includes(existing.status))
-          return normalize(existing, scope, false);
-        if (existing && (recovery === "manual" || existing.error?.retryable === false))
+        if (existing && !["failed", "cancelled", "interrupted"].includes(existing.status)) {
+          // A pending intent with a newly found receipt is acknowledgement recovery,
+          // including a setup that finished while its start response was lost.
+          // Recover this operation before offering a distinct maintenance attempt.
+          if (old?.phase === "pending") {
+            await sdk.call("media.document.set", { key: intentKey, baseRevision: saved.revision,
+              data: { ...old, phase: "accepted", jobId: existing.id }, label: "媒体任务回执" }).catch(() => {});
+            await same(scope);
+            return normalize(existing, scope, false);
+          }
+          if (existing.status !== "succeeded" || !REPEATABLE_MAINTENANCE.has(action))
+            return normalize(existing, scope, false);
+          await confirm("上次配音引擎安装已成功。本次将重新检查、修复并验证引擎，可能重新下载模型。确认再次运行吗？",
+            new Error("已保留原安装回执，未再次运行"));
+        }
+        else if (existing && (recovery === "manual" || existing.error?.retryable === false))
           await confirm("原媒体任务已经结束。请先检查已有结果及远端计费；确认要创建一个新的处理请求吗？这可能再次计费。");
         else if (old && !existing && old.phase !== "rejected") {
+          // find() only sees committed Host jobs, not preparing reservations.
+          // Neither elapsed time, a revision change nor user confirmation proves
+          // that an unacknowledged start cannot still execute. Keep its exact key;
+          // a later call can attach once find/get exposes the original receipt.
+          if (old.phase === "pending" || old.schemaVersion === 1)
+            throw pendingUnknown();
           // A revision change or retention expiry is not proof that paid work did
           // not run. A normal Host receipt may be gone; explicit recovery remains.
           await confirm("未找到上次媒体请求回执（面板可能已升级或任务记录已过期）。请先核查任务列表、已有产物和远端结果。确认原请求不会再执行，并创建新请求吗？这可能再次计费。");
         }
         const attempt = Number.isSafeInteger(old?.attempt) ? old.attempt + 1 : old ? 2 : 1;
         requestKey = `media-v2:${revisionHash}:${hash}:${attempt}`;
-        intent = { schemaVersion: 2, requestKey, recovery, executionRevision, attempt, phase: "pending" };
+        intent = { schemaVersion: 2, requestKey, recovery, executionRevision, attempt, phase: "pending", createdAt: Date.now() };
         try {
           const committed = await sdk.call("media.document.set", { key: intentKey, baseRevision: saved.revision,
             data: intent, label: "媒体任务意图" }) as any;
@@ -373,12 +398,12 @@ export function createMediaTaskBridge(raw: PanelBridge, options: {
           if (actual.data?.requestKey === requestKey && actual.revision > saved.revision) {
             const found = await findIntent(actual.data);
             if (found) return normalize(found, scope, false);
-            throw unknown();
+            throw actual.data.phase === "pending" ? pendingUnknown() : unknown();
           }
           if (actual.revision === saved.revision) throw error;
           const found = actual.data ? await findIntent(actual.data) : null;
           if (found) return normalize(found, scope, false);
-          throw unknown();
+          throw actual.data?.phase === "pending" ? pendingUnknown() : unknown();
         }
       }
     }
