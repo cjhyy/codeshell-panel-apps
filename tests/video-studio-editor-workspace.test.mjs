@@ -631,6 +631,19 @@ async function fixture(t, options = {}) {
           imageRequests.push({ assetId, signal, resolve });
         }),
       prepareAudio,
+      originalState: options.originals
+        ? async (resourceId) => {
+            events.push(`state:${resourceId.slice(-4)}`);
+            return (globalThis.originalStates ??= {})[resourceId];
+          }
+        : undefined,
+      reconnectOriginal: options.originals
+        ? async (assetId) => {
+            events.push(`reconnect:${assetId}`);
+            for (const id of Object.keys(globalThis.originalStates ?? {}))
+              globalThis.originalStates[id] = "available";
+          }
+        : undefined,
       importMedia: () => {
         events.push("import");
         session.dispatch(
@@ -1915,6 +1928,36 @@ test("workspace imports into its session and adds asset plus required track as o
   await page.getByRole("searchbox", { name: "搜索素材" }).fill("导入");
   assert.equal(await page.locator("[data-ew-asset]").count(), 1);
   assert.equal(await page.locator("[data-ew-asset]").getAttribute("data-ew-asset"), "imported");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("a moved original is flagged in the library and reconnects in place", async (t) => {
+  const page = await fixture(t, { originals: true });
+  const resourceId = "external-" + "c".repeat(64);
+  await page.evaluate((resourceId) => {
+    globalThis.originalStates = { [resourceId]: "missing" };
+    fixture.dispatch(
+      [
+        {
+          type: "asset.add",
+          asset: { id: "moved", name: "DJI_0007.MP4", kind: "demo", duration: 240000, width: 320, height: 180, resourceId },
+        },
+      ],
+      "导入素材",
+    );
+  }, resourceId);
+  const warning = page.locator('[data-ew-asset="moved"] .ew-asset-unavailable');
+  await warning.waitFor();
+  assert.equal(await warning.innerText(), "原文件已移动或缺失");
+  await page.getByRole("button", { name: "重新连接原文件：DJI_0007.MP4" }).click();
+  await warning.waitFor({ state: "detached" });
+  assert.equal(await page.locator("[data-ew-reconnect]").count(), 0);
+  assert.ok((await page.evaluate(() => fixture.events)).includes("reconnect:moved"));
+  // Other references were not asked about; only the new external asset is checked.
+  assert.deepEqual(
+    (await page.evaluate(() => fixture.events)).filter((event) => event.startsWith("state:")),
+    ["state:cccc", "state:cccc"],
+  );
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });
 

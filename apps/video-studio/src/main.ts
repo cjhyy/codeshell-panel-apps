@@ -6370,6 +6370,24 @@ function mountEditorWorkspace(): void {
           await submitEditorExport(doc, sequenceId, profile, signal, "editor", undefined, range);
         }
       : undefined,
+    originalState: panel
+      ? async (resourceId) =>
+          (await externalMedia.available()) ? (await externalMedia.get(resourceId)).state : undefined
+      : undefined,
+    reconnectOriginal: panel
+      ? async (assetId) => {
+          assertEditorEditable();
+          const asset = editorSession?.read().assets.find((item) => item.id === assetId);
+          if (!isExternalMedia(asset?.resourceId))
+            throw new Error("这个素材不是引用的原文件，无需重新连接");
+          // The Host keeps the reference ID and only accepts the same moved file.
+          const references = await externalMedia.pick(asset.resourceId);
+          if (!references.length) return;
+          invalidateNativePreviewSources();
+          editorWorkspace?.refreshMedia();
+          toast("已重新连接原文件，时间轴上的片段保持不变");
+        }
+      : undefined,
     importMedia: () => {
       if (editorImportUI) {
         folderImport.assertImportReady();
