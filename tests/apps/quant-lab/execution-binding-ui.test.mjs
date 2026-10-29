@@ -98,6 +98,10 @@ async function fixture(t, { offline = false, deferInitial = false, width = 390, 
     }, { permissions: manifest.permissions, deferInitial, scoped });
   }
   await page.goto(`${origin}/index.html`);
+  // Research is intentionally lazy: enter it through the real tab before
+  // waiting for its configuration and demo backtest. Held restores below
+  // retain their own explicit navigation/release barriers.
+  if (!deferInitial && holdModuleRestore !== "A") await page.locator('[data-module-tab="research"]').tap();
   if (!deferInitial && holdModuleRestore !== "A") await page.waitForFunction(() => document.querySelector("#run-state").textContent === "已完成", null, { timeout: 10000 }).catch(error => {
     error.message += `\nInitialization errors: ${JSON.stringify(errors)}; latest calls: ${JSON.stringify(calls.slice(-8))}`;
     throw error;
@@ -145,6 +149,7 @@ test("Host project identity isolates same-path same-session parameters and their
   await pending.ready;
   await f.page.locator("#fast-period").fill("19");
   await f.page.evaluate(() => window.switchExecution("chat-A", "B"));
+  await f.page.locator('[data-module-tab="research"]').tap();
   await parameter(f.page, 9);
   pending.release();
   await f.page.locator('[data-module-tab="research"]').tap();
@@ -161,6 +166,7 @@ test("Host project identity isolates same-path same-session parameters and their
   await f.page.waitForFunction(() => document.querySelector("#toast").textContent.includes("请选择当前项目"));
   assert.equal(configWrites(f).length, 1, "a same-path backup with a different project proof cannot overwrite B");
   await f.page.evaluate(() => window.switchExecution("chat-A", "A"));
+  await f.page.locator('[data-module-tab="research"]').tap();
   await parameter(f.page, 19);
   assert.match(await f.page.locator("#backtest-storage-status").textContent(), /未确认草稿/);
   assert.deepEqual(f.errors, []);
@@ -175,6 +181,7 @@ test("same-path execution switches detach queued writes and retain downloadable 
   await pending.ready;
   await f.page.locator("#fast-period").fill("19");
   await f.page.evaluate(() => window.switchExecution("chat-B", "B"));
+  await f.page.locator('[data-module-tab="research"]').tap();
   await parameter(f.page, 9);
   pending.release();
   await f.page.locator('[data-module-tab="research"]').tap();
@@ -193,12 +200,15 @@ test("same-path execution switches detach queued writes and retain downloadable 
   assert.equal(JSON.parse(retainedBackup).sessionId, "chat-A");
   assert.equal(configWrites(f).length, 1, "the queued second old-chat edit must never reach the new binding");
   await f.page.evaluate(() => window.switchExecution("chat-C", "A"));
+  await f.page.locator('[data-module-tab="research"]').tap();
   await parameter(f.page, 18);
   assert.equal(configWrites(f).length, 1, "a new chat reopens the same committed project settings without rewriting");
   await f.page.evaluate(() => window.switchExecution("chat-A", "A"));
+  await f.page.locator('[data-module-tab="research"]').tap();
   await parameter(f.page, 19);
   assert.match(await f.page.locator("#backtest-storage-status").textContent(), /未确认草稿/);
   await f.page.evaluate(() => window.switchExecution(null, "A"));
+  await f.page.locator('[data-module-tab="research"]').tap();
   await parameter(f.page, 18);
   assert.equal(configWrites(f).length, 1, "omitting the cleared session must detach its unconfirmed draft");
   assert.equal(new Set(f.calls.filter(call => call.params.key?.startsWith("configuration.")).map(call => call.params.key)).size, 1);
@@ -220,6 +230,7 @@ test("late CSV responses cannot replace the next same-path project's dataset or 
   await f.page.locator("#load-data").tap();
   await pending.ready;
   await f.page.evaluate(() => window.switchExecution("chat-B", "B"));
+  await f.page.locator('[data-module-tab="research"]').tap();
   await parameter(f.page, 9);
   pending.release({ content: "date,open,high,low,close,volume\n2025-01-02,10,11,9,10,100\n", modifiedAt: 1 });
   await f.page.locator('[data-module-tab="research"]').tap();
@@ -232,6 +243,7 @@ test("new context events win over a stale initial getContext even when cwd is id
   const f = await fixture(t, { deferInitial: true });
   await f.page.waitForFunction(() => Boolean(window.releaseInitial));
   await f.page.evaluate(() => { window.switchExecution("chat-B", "B"); window.switchExecution("chat-C", "B"); window.releaseInitial(); });
+  await f.page.locator('[data-module-tab="research"]').tap();
   await parameter(f.page, 9);
   await f.page.waitForFunction(() => document.querySelector("#run-state").textContent === "已完成");
   const reads = f.calls.filter(call => call.method === "storage.getSnapshot" && call.params.key.startsWith("configuration."));
@@ -247,11 +259,11 @@ test("a late same-path execution tab restore cannot hide the user's research dra
   await write.ready;
   await f.page.locator("#fast-period").fill("19");
   await f.page.evaluate(() => window.switchExecution("chat-B", "B"));
-  await parameter(f.page, 9);
   write.release();
   await f.moduleRestore.ready;
   await f.page.locator('[data-module-tab="research"]').tap();
   f.moduleRestore.release();
+  await parameter(f.page, 9);
   await f.page.waitForFunction(() => document.querySelector("#run-state").textContent === "已完成");
   assert.equal(await f.page.locator('[data-module-tab="research"]').getAttribute("aria-selected"), "true");
   assert.equal(await f.page.locator("#backtest-storage-backup").isVisible(), true);
@@ -270,10 +282,10 @@ test("a late same-path execution tab restore cannot hide the user's research dra
 
 test("a late initial tab restore preserves user navigation and cold reopening still restores the saved tab", { timeout: 20000 }, async t => {
   const f = await fixture(t, { holdModuleRestore: "A" });
-  await parameter(f.page, 17);
   await f.moduleRestore.ready;
   await f.page.locator('[data-module-tab="research"]').tap();
   f.moduleRestore.release();
+  await parameter(f.page, 17);
   await f.page.waitForFunction(() => document.querySelector("#run-state").textContent === "已完成");
   assert.equal(await f.page.locator('[data-module-tab="research"]').getAttribute("aria-selected"), "true");
   await f.page.reload();
