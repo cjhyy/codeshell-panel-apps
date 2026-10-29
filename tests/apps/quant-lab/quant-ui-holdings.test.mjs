@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { createHoldingsController } from '../../../apps/quant-lab/app/modules/holdings-ui.mjs';
 import { createHoldingsSnapshotCache, deriveHoldingsSnapshot } from '../../../apps/quant-lab/app/portfolio-store.mjs';
+import { registerPortfolioTools } from '../../../apps/quant-lab/app/portfolio-import.mjs';
+import { buildTodayModel, formatTodayPortfolioSummary } from '../../../apps/quant-lab/app/today-model.mjs';
 import { createPanelBootstrap } from '../../../apps/quant-lab/app/modules/panel-bootstrap.mjs';
 
 class Element {
@@ -177,6 +179,13 @@ test('details inspect the actual holdings cache in the background; missing, corr
     assert.match(elements.totalBase.textContent,/待详情/u);assert.equal(elements.totalBase.dataset.state,'pending');
     assert.match(elements.pnlBase.textContent,/待详情/u);assert.match(elements.fxSource.textContent,/待详情/u);
     assert.match(elements.summaryNote.textContent,/正在计算/u);
+    const pending=states.at(-1);
+    assert.equal(pending.summary.state,'pending');assert.equal(pending.dataStatus.status,'pending');
+    assert.doesNotMatch(pending.dataStatus.message,/0 项/u,'rules have not run yet');
+    const todayPending=buildTodayModel({now:instant,portfolio:pending,dataStatus:pending.dataStatus});
+    assert.equal(todayPending.summaries.find(item=>item.id==='portfolio').state,'pending');
+    assert.equal(todayPending.summaries.find(item=>item.id==='data').state,'pending');
+    assert.equal(formatTodayPortfolioSummary(todayPending.summaries[0],true),'待详情 · 估值计算中');
     assert.doesNotMatch([nodeText(elements.holdingsList),elements.summaryNote.textContent,elements.totalBase.textContent,elements.pnlBase.textContent,elements.fxSource.textContent].join(' '),/缺少汇率|暂无法计算|暂不可用/u,'base cannot diagnose FX before the details read');
     release.resolve();await details;
     const rule=controller.noteContext().rules.find(item=>item.id==='ledger-fingerprint-mismatch');
@@ -187,6 +196,10 @@ test('details inspect the actual holdings cache in the background; missing, corr
     assert.equal(controller.noteContext().unavailableSources.rules,false);
     assert.match(nodeText(elements.holdingsList),/缺少汇率/u,'after inspection actual missing FX remains visible');
     assert.equal(elements.totalBase.dataset.state,'unavailable');
+    const todayReady=buildTodayModel({now:instant,portfolio:states.at(-1),dataStatus:states.at(-1).dataStatus});
+    assert.equal(todayReady.summaries[0].state,'available');
+    assert.equal(formatTodayPortfolioSummary(todayReady.summaries[0],true),'缺少行情或汇率 · 暂无法估值');
+    assert.equal(todayReady.summaries.find(item=>item.id==='data').state,'attention');
     assert.ok(calls.filter(call=>call.intent.owner==='portfolio-details').every(call=>call.intent.priority==='background'&&call.intent.signal));
    }finally{release.resolve();controller?.reset();}
   }
@@ -214,4 +227,141 @@ test('a late holdings-cache inspection cannot publish into a replacement executi
   assert.equal(latest.rules.find(item=>item.id==='ledger-fingerprint-mismatch').status,'positive');
   release.resolve();await oldDetails;assert.equal(states.length,count);assert.equal(states.at(-1),latest);
  }finally{release.resolve();controller?.reset();globalThis.document=original;}
+});
+
+function mutableHoldingsFixture() {
+ const source=JSON.stringify(smallUsdLedger());
+ const files=new Map([
+  ['portfolio/transactions.json',{content:source,revision:'1'}],
+  ['portfolio/holdings.json',{content:JSON.stringify(deriveHoldingsSnapshot(source,{},instant)),revision:'1'}],
+ ]);
+ const elements=new Proxy({performance:null},{get:(obj,key)=>key in obj?obj[key]:(obj[key]=new Element())});
+ const states=[],calls=[],identity={executionId:'original',epoch:1};let intercept=async()=>{};
+ const hostCall=async(method,params,intent)=>{
+  const call={method,params,intent};calls.push(call);
+  const response=method==='workspace.readText'?structuredClone(files.get(params.path)):null;
+  await intercept({...call,response});
+  if(method==='workspace.list')return{entries:params.path==='portfolio'?[...files.keys()].map(path=>({kind:'file',path})):[]};
+  if(method==='workspace.readText')return response;
+  if(method==='workspace.writeText'){
+   const previous=files.get(params.path);
+   assert.equal(params.expectedRevision,previous?.revision,'writes retain the actual Host conflict token');
+   const next={content:params.content,revision:String(Number(previous?.revision??0)+1)};files.set(params.path,next);return next;
+  }
+  throw Error(method);
+ };
+ const controller=createHoldingsController({elements,hostCall,currentEpoch:()=>identity.epoch,getContext:()=>identity,now:()=>new Date(instant),onViewState:state=>states.push(state)});
+ const save=()=>{
+  Object.assign(elements.account,{value:'us'});Object.assign(elements.market,{value:'us'});Object.assign(elements.currency,{value:'USD'});
+  for(const [key,value] of Object.entries({symbol:'AAPL',date:'2026-10-28',quantity:'1',price:'12.00',commission:'0.00',tax:'0.00',otherFees:'0.00',side:'buy'}))elements[key].value=value;
+  return elements.form.listeners.get('submit')({preventDefault(){}});
+ };
+ return {controller,hostCall,elements,files,states,calls,identity,save,intercept:value=>{intercept=value;}};
+}
+
+for(const ordering of ['save completes before the waiting refresh','refresh and old details start before save completes']){
+ test(`save/load barrier: ${ordering}; commit once and reload the authoritative ledger`,async()=>{
+  const original=globalThis.document;globalThis.document={createElement:()=>new Element(),createTextNode:text=>Object.assign(new Element(),{textContent:text}),querySelector:()=>null};
+  const f=mutableHoldingsFixture(),writeEntered=deferred(),writeRelease=deferred(),readEntered=deferred(),readRelease=deferred();
+  let heldRead=false,oldDetails;
+  try{
+   await f.controller.loadBase();await f.controller.ensureDetails();
+   f.intercept(async call=>{
+    if(call.method==='workspace.writeText'&&call.params.path==='portfolio/transactions.json'){writeEntered.resolve();await writeRelease.promise;}
+    const waitingBase=ordering==='save completes before the waiting refresh'&&call.intent?.owner==='portfolio-base'&&call.params.path==='portfolio/transactions.json';
+    const waitingDetails=ordering!=='save completes before the waiting refresh'&&call.intent?.owner==='portfolio-details'&&call.params.path==='portfolio/holdings.json';
+    if(!heldRead&&(waitingBase||waitingDetails)){heldRead=true;readEntered.resolve();await readRelease.promise;}
+   });
+   const saving=f.save();await writeEntered.promise;
+   const loading=f.controller.load().then(()=>null,error=>error);
+   if(ordering!=='save completes before the waiting refresh'){
+    assert.equal(await loading,null);oldDetails=f.controller.ensureDetails();
+   }
+   await readEntered.promise;
+   await f.save();assert.equal(f.elements.save.disabled,true,'refresh cannot release the existing save lock');
+   writeRelease.resolve();await saving;
+   assert.equal(f.elements.save.disabled,false);assert.match(f.elements.status.textContent,/交易已保存/u);
+   assert.equal(f.controller.noteContext().holdings.positionsByAccount[0].quantity,'3');
+   assert.equal(f.states.at(-1).summary.state,'pending','the committed ledger is reloaded as base before details');
+   assert.equal(f.controller.noteContext().unavailableSources.rules,true);
+   const freshDetails=f.controller.ensureDetails();assert.notEqual(freshDetails,oldDetails);
+   await freshDetails;
+   const latest=f.states.at(-1),published=f.states.length;
+   assert.equal(latest.summary.state,'available');
+   const fingerprintRule=latest.rules.find(item=>item.id==='ledger-fingerprint-mismatch');
+   assert.equal(fingerprintRule.status,'positive');assert.equal(fingerprintRule.actual.equal,true);
+   readRelease.resolve();
+   if(oldDetails)await oldDetails;
+   else assert.match((await loading).message,/持仓执行身份已切换/u,'an obsolete base response cannot replace the reloaded ledger');
+   assert.equal(f.states.length,published);assert.equal(f.states.at(-1),latest);
+   assert.equal(f.controller.noteContext().holdings.positionsByAccount[0].quantity,'3');
+   const stored=JSON.parse(f.files.get('portfolio/transactions.json').content);
+   assert.equal(stored.transactions.length,2);assert.equal(new Set(stored.transactions.map(item=>item.id)).size,2);
+   assert.equal(f.calls.filter(call=>call.method==='workspace.writeText'&&call.params.path==='portfolio/transactions.json').length,1);
+   assert.equal(f.elements.quantity.value,'');
+  }finally{writeRelease.resolve();readRelease.resolve();f.controller.reset();globalThis.document=original;}
+ });
+}
+
+test('a completed save aborts older detail inspection instead of publishing its stale fingerprint',async()=>{
+ const original=globalThis.document;globalThis.document={createElement:()=>new Element(),createTextNode:text=>Object.assign(new Element(),{textContent:text}),querySelector:()=>null};
+ const f=mutableHoldingsFixture(),entered=deferred(),release=deferred();let detailSignal;
+ try{
+  await f.controller.loadBase();
+  f.intercept(async call=>{
+   if(call.intent?.owner==='portfolio-details'&&call.params.path==='portfolio/holdings.json'){detailSignal=call.intent.signal;entered.resolve();await release.promise;}
+  });
+  const details=f.controller.ensureDetails();await entered.promise;
+  await f.save();assert.equal(detailSignal.aborted,true);
+  assert.equal(f.controller.noteContext().holdings.positionsByAccount[0].quantity,'3');
+  const latest=f.states.at(-1),count=f.states.length;
+  assert.equal(latest.rules.find(item=>item.id==='ledger-fingerprint-mismatch').status,'positive');
+  release.resolve();await details;
+  assert.equal(f.states.length,count);assert.equal(f.states.at(-1),latest);
+ }finally{release.resolve();f.controller.reset();globalThis.document=original;}
+});
+
+test('save inputs are bound to execution identity even when the workspace epoch has not changed',async()=>{
+ const original=globalThis.document;globalThis.document={createElement:()=>new Element(),createTextNode:text=>Object.assign(new Element(),{textContent:text}),querySelector:()=>null};
+ const f=mutableHoldingsFixture(),entered=deferred(),release=deferred();
+ try{
+  await f.controller.loadBase();
+  f.intercept(async call=>{if(!call.intent&&call.params.path==='data/market-raw'){entered.resolve();await release.promise;}});
+  const saving=f.save();await entered.promise;
+  f.identity.executionId='replacement';await f.controller.load();
+  const latest=f.states.at(-1),count=f.states.length;
+  release.resolve();await saving;
+  assert.equal(f.calls.some(call=>call.method==='workspace.writeText'),false);
+  assert.equal(f.states.length,count);assert.equal(f.states.at(-1),latest);
+  assert.equal(f.controller.noteContext().holdings.positionsByAccount[0].quantity,'2');
+ }finally{release.resolve();f.controller.reset();globalThis.document=original;}
+});
+
+test('import panelVerified follows the real controller target fingerprint, not only matching positions after reload',async()=>{
+ const original=globalThis.document;globalThis.document={createElement:()=>new Element(),createTextNode:text=>Object.assign(new Element(),{textContent:text}),querySelector:()=>null};
+ try{
+  for(const changedDuringRefresh of [false,true]){
+   const f=mutableHoldingsFixture(),handlers=new Map();
+   try{
+    await f.controller.loadBase();
+    registerPortfolioTools({registerTool:(name,handler)=>handlers.set(name,handler),hostCall:f.hostCall,ready:()=>f.controller.loadBase(),currentEpoch:()=>1,
+     refresh:async()=>{
+      if(changedDuringRefresh){
+       const previous=f.files.get('portfolio/transactions.json'),changed=JSON.parse(previous.content);
+       changed.transactions[0].price='11.00';
+       f.files.set('portfolio/transactions.json',{content:JSON.stringify(changed),revision:String(Number(previous.revision)+1)});
+      }
+      await f.controller.load();
+     },displayedPositions:()=>f.controller.noteContext().holdings.positionsByAccount,
+     displayedFingerprint:()=>f.controller.noteContext().holdings.transactionsFingerprint});
+    const result=await handlers.get('import_portfolio_snapshot')({mode:'commit',expectedFingerprint:f.controller.noteContext().holdings.transactionsFingerprint,
+     account:{id:'new-cn',name:'Fixture',broker:'fixture'},valuationDate:'2026-10-28',source:{reference:'fixture/snapshot.png',marketDate:null},
+     positions:[{symbol:'SH600000',name:'Fixture',quantity:'5',costBasis:'50.00',marketValue:'55.00'}]});
+    assert.equal(result.committed,true);assert.equal(result.panelVerified,!changedDuringRefresh);
+    assert.equal(f.controller.noteContext().holdings.positionsByAccount.find(item=>item.accountId==='new-cn').quantity,'5');
+    assert.equal(f.states.at(-1).summary.state,'pending','import refresh keeps the base/details split');
+    assert.equal(JSON.parse(f.files.get('portfolio/transactions.json').content).transactions.length,2,'the import appends once');
+   }finally{f.controller.reset();}
+  }
+ }finally{globalThis.document=original;}
 });

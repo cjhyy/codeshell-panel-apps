@@ -1416,6 +1416,7 @@ export function createHoldingsController({
       ledgerExists,
       hasPositions: positionCount > 0,
       summary: {
+        state: detailsReady ? "available" : "pending",
         totalBase: (liveSnapshot ?? snapshot)?.valuation?.totalBase ?? null,
         source: liveQuotes.size ? "holding-quotes" : "portfolio-analysis",
         availableAt: liveQuotes.size
@@ -1427,7 +1428,7 @@ export function createHoldingsController({
       analysis,
       rules: ruleResults,
       dataStatus: {
-        status: ruleResults.some(
+        status: !detailsReady ? "pending" : ruleResults.some(
           (rule) => rule.priority === "P0" && ["warning", "unavailable"].includes(rule.status),
         )
           ? "attention"
@@ -1436,7 +1437,7 @@ export function createHoldingsController({
         availableAt: ruleResults[0]?.asOf ?? now().toISOString(),
         stale: ruleResults.some((rule) => rule.data?.stale === true),
         provisional: ruleResults.some((rule) => rule.data?.provisional === true),
-        message: `${ruleResults.filter((rule) => rule.priority === "P0" && ["warning", "unavailable"].includes(rule.status)).length} 项关键数据待查看`,
+        message: !detailsReady ? "待详情 · 行情、汇率与规则正在计算" : `${ruleResults.filter((rule) => rule.priority === "P0" && ["warning", "unavailable"].includes(rule.status)).length} 项关键数据待查看`,
       },
     });
   }
@@ -1513,6 +1514,12 @@ export function createHoldingsController({
         return;
       }
       const parsed = parseTransactions(stored.content);
+      // This response may have waited while a save completed. A base snapshot
+      // never inherits a previous ledger's completed or in-flight details.
+      detailsAbort.abort();
+      detailsAbort = new AbortController();
+      detailsReady = false;
+      detailsFlight = null;
       ledger = parsed.ledger;
       ledgerSourceText = stored.content;
       const endingDate = todayShanghai(now);
@@ -1664,53 +1671,75 @@ export function createHoldingsController({
     elements.save.disabled = true;
     setFormError();
     const expectedEpoch = currentEpoch();
+    const identity = { generation: loadGeneration, execution: executionIdentity(), ledger, source: ledgerSourceText, exists: ledgerExists };
+    const sameExecution = () => currentEpoch() === expectedEpoch && executionIdentity() === identity.execution;
+    const saveCall = (method, params) => {
+      if (!sameExecution()) throw new Error("持仓执行身份已切换");
+      return hostCall(method, params);
+    };
+    let committed = false;
     try {
       const draft = draftFromForm();
-      const prospective = structuredClone(ledger ?? EMPTY_LEDGER);
+      const prospective = structuredClone(identity.ledger ?? EMPTY_LEDGER);
       if (draft.account) prospective.accounts.push(draft.account);
       if (draft.instrument) prospective.instruments.push(draft.instrument);
       prospective.transactions.push(draft.transaction);
       // Parse before any Host write, then load raw/FX inputs for the exact next
       // ledger so local quote fields can refresh immediately after commit.
       const parsedProspective = parseTransactions(`${JSON.stringify(prospective)}\n`).ledger;
-      const nextMarket = await loadMarketInputs(hostCall, parsedProspective, now);
-      if (currentEpoch() !== expectedEpoch) return;
-      const result = await appendTransaction(hostCall, {
+      const nextMarket = await loadMarketInputs(saveCall, parsedProspective, now);
+      if (!sameExecution()) return;
+      const result = await appendTransaction(saveCall, {
         ...draft,
-        ...(!ledgerExists ? { initialLedger: ledger ?? EMPTY_LEDGER } : {}),
+        ...(!identity.exists ? { initialLedger: identity.ledger ?? EMPTY_LEDGER } : {}),
       }, {
         expectedEpoch,
-        currentEpoch,
+        currentEpoch: () => sameExecution() ? expectedEpoch : null,
         derivedAt: now().toISOString(),
         derivationInputs: nextMarket.derivationInputs,
       });
-      if (currentEpoch() !== expectedEpoch) return;
-      quoteController.reset();
-      liveSnapshot = null;
-      liveQuotes = new Map();
-      quoteState = {};
-      ledgerExists = result.committed === true;
-      ledger = result.ledger;
-      ledgerSourceText = `${JSON.stringify(result.ledger, null, 2)}\n`;
-      snapshot = result.snapshot;
-      market = nextMarket;
-      // Save already loaded history/FX for this exact committed ledger. Publish
-      // its computed diagnostics even when the initial empty view had no details.
-      detailsReady = true;
-      ledgerFingerprintState = result.cacheStale
-        ? {
-            status: "unavailable",
-            reason: result.cacheWarning?.code ?? "holdings-cache-write-failed",
-          }
-        : {
-            status: "verified",
-            currentFingerprint: result.fingerprint,
-            holdingsFingerprint: result.snapshot.transactionsFingerprint,
-            mismatchObserved: false,
-          };
-      computeRules();
-      render();
-      if (quotesActive) void quoteController.refresh();
+      if (!sameExecution()) return;
+      committed = result.committed === true;
+      elements.symbol.value = "";
+      elements.name.value = "";
+      elements.quantity.value = "";
+      elements.price.value = "";
+      if (loadGeneration !== identity.generation || ledger !== identity.ledger || ledgerSourceText !== identity.source) {
+        // The append committed once against disk. Read it back through a new
+        // base generation instead of overwriting a newer load/details view.
+        await load(expectedEpoch);
+        if (!sameExecution()) return;
+      } else {
+        detailsAbort.abort();
+        detailsAbort = new AbortController();
+        detailsFlight = null;
+        quoteController.reset();
+        liveSnapshot = null;
+        liveQuotes = new Map();
+        quoteState = {};
+        ledgerExists = result.committed === true;
+        ledger = result.ledger;
+        ledgerSourceText = `${JSON.stringify(result.ledger, null, 2)}\n`;
+        snapshot = result.snapshot;
+        market = nextMarket;
+        // Save already loaded history/FX for this exact committed ledger. Publish
+        // its computed diagnostics even when the initial empty view had no details.
+        detailsReady = true;
+        ledgerFingerprintState = result.cacheStale
+          ? {
+              status: "unavailable",
+              reason: result.cacheWarning?.code ?? "holdings-cache-write-failed",
+            }
+          : {
+              status: "verified",
+              currentFingerprint: result.fingerprint,
+              holdingsFingerprint: result.snapshot.transactionsFingerprint,
+              mismatchObserved: false,
+            };
+        computeRules();
+        render();
+        if (quotesActive) void quoteController.refresh();
+      }
       // committed and cacheStale are reported separately: the authoritative
       // ledger write is done either way, so the user must never resubmit.
       const baseReason = result.snapshot?.availability?.base?.reason;
@@ -1724,13 +1753,13 @@ export function createHoldingsController({
           ? "warning"
           : "idle",
       );
-      elements.symbol.value = "";
-      elements.name.value = "";
-      elements.quantity.value = "";
-      elements.price.value = "";
       elements.symbol.focus();
     } catch (error) {
-      if (currentEpoch() !== expectedEpoch) return;
+      if (!sameExecution()) return;
+      if (committed) {
+        showStatus("交易已保存；持仓重新读取失败，请刷新查看，请勿重复提交。", "warning");
+        return;
+      }
       const message = error?.issues?.length
         ? error.issues.map((issue) => `${issue.path}: ${issue.message}`).join("；")
         : error instanceof Error
@@ -1788,7 +1817,6 @@ export function createHoldingsController({
       reason: "holdings-cache-not-inspected",
     };
     ledgerExists = false;
-    saveInFlight = false;
     elements.empty.hidden = true;
     elements.workspace.hidden = true;
     elements.analysisList.replaceChildren();
@@ -1819,7 +1847,7 @@ export function createHoldingsController({
   elements.dataNoticeDetails?.addEventListener("click", openDataDetails);
   elements.historySync?.addEventListener("click", () => void syncHistory());
   elements.create.addEventListener("click", showCreateForm);
-  elements.form.addEventListener("submit", (event) => void save(event));
+  elements.form.addEventListener("submit", save);
   elements.market.addEventListener("change", syncCurrency);
   elements.refresh.addEventListener("click", () => void load());
   elements.analysisAgent.addEventListener("click", () => void submitRuleEvidence());

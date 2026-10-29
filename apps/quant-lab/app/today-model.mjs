@@ -321,6 +321,12 @@ function chooseAction(portfolio, watchResults, dataStatus, nowParts) {
   );
 }
 
+export function formatTodayPortfolioSummary(summary, ledgerExists) {
+  if (summary.state === "pending") return "待详情 · 估值计算中";
+  if (summary.value == null) return ledgerExists ? "缺少行情或汇率 · 暂无法估值" : "尚未录入持仓";
+  return `${Number(summary.value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} CNY`;
+}
+
 export function buildTodayModel(input) {
   const nowInstant = toInstant(input?.now ?? new Date(), "today model now");
   const nowParts = beijingParts(nowInstant);
@@ -345,7 +351,7 @@ export function buildTodayModel(input) {
     {
       id: "portfolio",
       label: "持仓",
-      state: portfolio.ledgerExists === true ? "available" : "unavailable",
+      state: portfolio.ledgerExists === true ? (portfolio.summary?.state ?? "available") : "unavailable",
       value: portfolio.summary?.totalBase ?? null,
       reason: portfolio.ledgerExists === true ? null : "ledger-not-found",
       evidence: evidence({

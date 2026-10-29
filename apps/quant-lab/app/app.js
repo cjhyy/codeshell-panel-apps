@@ -29,7 +29,7 @@ import {
   validateAlertRule,
   walkForward,
 } from "./engine.mjs";
-import { buildTodayModel, marketStatusAt } from "./today-model.mjs";
+import { buildTodayModel, formatTodayPortfolioSummary, marketStatusAt } from "./today-model.mjs";
 import { createAlertsController } from "./modules/alerts-ui.mjs";
 import {
   aShareResolutionMessage,
@@ -1916,15 +1916,14 @@ function renderToday() {
     label.textContent = summary.label;
     const detail = document.createElement("span");
     const emptyCopy = {
-      portfolio: portfolioTodayState.ledgerExists ? "缺少行情或汇率 · 暂无法估值" : "尚未录入持仓",
       watch: watchlist.length ? `${watchlist.length} 项提醒 · 暂无有效检查结果` : "尚未添加价格与技术提醒",
       data: "录入持仓后可检查数据",
     };
-    detail.textContent = summary.value == null
+    detail.textContent = summary.id === "portfolio"
+      ? formatTodayPortfolioSummary(summary, portfolioTodayState.ledgerExists)
+      : summary.value == null
       ? (emptyCopy[summary.id] ?? "暂无可用数据")
-      : summary.id === "portfolio"
-        ? `${Number(summary.value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} CNY`
-        : String(summary.value);
+      : String(summary.value);
     const action = document.createElement("span");
     action.className = "today-summary-action";
     action.textContent = summary.id === "watch"
