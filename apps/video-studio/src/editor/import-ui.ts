@@ -1,8 +1,20 @@
 import type { RuntimeBridge } from "../sdk/panel-runtime";
 import { userFacingError } from "./legacy-reasons";
-import { createEditorMediaImporter, type EditorImportResult } from "./import-media";
+import {
+  createEditorMediaImporter,
+  type EditorImportResource,
+  type EditorImportResult,
+} from "./import-media";
 import { sameIdentity, type EditorSession } from "./session";
 import type { EditorOperation } from "./operations";
+
+export interface EditorImportUIOptions {
+  /**
+   * Returns a Host picker for in-place originals, or undefined to copy through
+   * the file chooser. Decided synchronously so the chooser keeps user activation.
+   */
+  pickReferences?(): (() => Promise<EditorImportResource[]>) | undefined;
+}
 
 /** Native metadata import with a retained publish proposal when project persistence fails. */
 export class EditorImportUI {
@@ -18,12 +30,15 @@ export class EditorImportUI {
   private pending?: EditorImportResult;
   private controller?: AbortController;
   private disposed = false;
+  private picking = false;
+  private referenced = false;
   private readonly unsubscribe: () => void;
 
   constructor(
     private readonly session: EditorSession,
     panel: RuntimeBridge,
     container: HTMLElement,
+    private readonly options: EditorImportUIOptions = {},
   ) {
     this.input.type = "file";
     this.input.multiple = true;
@@ -79,9 +94,34 @@ export class EditorImportUI {
       this.root.scrollIntoView({ block: "nearest" });
       return;
     }
-    this.input.click();
+    const pick = this.options.pickReferences?.();
+    if (!pick) {
+      this.input.click();
+      return;
+    }
+    if (this.picking) return;
+    this.picking = true;
+    void (async () => {
+      let references: EditorImportResource[];
+      try {
+        references = await pick();
+      } catch (error) {
+        this.picking = false;
+        if (this.disposed) return;
+        window.clearTimeout(this.hideTimer);
+        this.root.hidden = false;
+        this.cancel.hidden = true;
+        this.retry.hidden = true;
+        this.close.hidden = false;
+        this.details.replaceChildren();
+        this.message.textContent = `导入失败：${userFacingError(error)}`;
+        return;
+      }
+      this.picking = false;
+      if (references.length && !this.disposed) await this.import(references);
+    })();
   }
-  private async import(files: File[]): Promise<void> {
+  private async import(files: File[] | EditorImportResource[]): Promise<void> {
     if (this.controller || this.pending || this.disposed) return;
     const controller = new AbortController();
     this.controller = controller;
@@ -91,8 +131,14 @@ export class EditorImportUI {
     this.cancel.hidden = false;
     this.retry.hidden = true;
     this.details.replaceChildren();
+    this.referenced = !(files[0] instanceof File);
     try {
-      this.pending = await this.importer.importFiles(files, { signal: controller.signal });
+      this.pending =
+        files[0] instanceof File
+          ? await this.importer.importFiles(files as File[], { signal: controller.signal })
+          : await this.importer.importResources(files as EditorImportResource[], {
+              signal: controller.signal,
+            });
       if (!controller.signal.aborted && !this.disposed) {
         this.details.replaceChildren(
           ...this.pending.errors.map((error) => {
@@ -152,7 +198,7 @@ export class EditorImportUI {
         controller.signal,
       );
       if (this.disposed) return;
-      this.message.textContent = `已导入 ${operations.length} 个素材${pending.errors.length ? `，${pending.errors.length} 个文件未导入，详情如下` : ""}。`;
+      this.message.textContent = `${this.referenced ? "已引用" : "已导入"} ${operations.length} 个素材${this.referenced ? "（原地读取，未复制原片）" : ""}${pending.errors.length ? `，${pending.errors.length} 个文件未导入，详情如下` : ""}。`;
       this.pending = undefined;
       this.retry.hidden = true;
       // A clean import needs no further attention; failures stay until the user closes them.

@@ -6371,7 +6371,10 @@ function mountEditorWorkspace(): void {
         }
       : undefined,
     importMedia: () => {
-      if (editorImportUI) editorImportUI.choose();
+      if (editorImportUI) {
+        folderImport.assertImportReady();
+        editorImportUI.choose();
+      }
       else $("#media-input").click();
     },
     openProject: () => {
@@ -6417,7 +6420,26 @@ function mountEditorWorkspace(): void {
     const importHost = document.createElement("div");
     importHost.className = "ew-import-host";
     root.append(importHost);
-    editorImportUI = new EditorImportUI(editorSession, panel, importHost);
+    // Known before the click: a chooser opened after an await loses user activation.
+    let referencePickAvailable = false;
+    void externalMedia
+      .available()
+      .then((available) => {
+        referencePickAvailable = available;
+      })
+      .catch(() => {});
+    editorImportUI = new EditorImportUI(editorSession, panel, importHost, {
+      // Originals stay where they are; copying is the explicit folder-import choice.
+      pickReferences: () =>
+        folderImport.importMode === "reference" && referencePickAvailable
+          ? async () =>
+              (await externalMedia.pick()).map((ref) => ({
+                id: ref.id,
+                name: ref.name,
+                lastModified: ref.lastModified,
+              }))
+          : undefined,
+    });
   }
   mountEditorCaptions(root);
   mountEditorSeparation(root);
