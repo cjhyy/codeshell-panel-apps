@@ -4,15 +4,13 @@ import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import { fetchHoldingQuotes } from "./fetch-holding-quotes.mjs";
 import { isQuoteV2 } from "../quote-contract.mjs";
+import { normalizeQuoteSubscriptions } from "../quote-round-core.mjs";
 
 export function marketServiceConfig(input) {
   if (input?.format !== "quant.market-feed.config/1" || !Array.isArray(input.subscriptions) || input.subscriptions.length > 200) throw new Error("MARKET_CONFIG_INVALID");
-  const valid = input.subscriptions.filter((item) => item && ["cn", "us"].includes(item.market) && typeof item.symbol === "string" && (item.market === "cn" ? /^(SH|SZ)\d{6}$/u : /^[A-Z][A-Z0-9.-]{0,14}$/u).test(item.symbol));
-  const subscriptions = [...new Map(valid.map((item) => {
-    // Only public symbol identities enter config; no ledger, credential or account.
-    return [`${item.market}:${item.symbol}`, { market: item.market, symbol: item.symbol }];
-  })).values()];
-  return { format: input.format, subscriptions, ignoredSubscriptions: input.subscriptions.length - valid.length, cadenceMs: Math.min(300000, Math.max(15000, Number(input.cadence?.open) || 15000)), closedCadenceMs: Math.min(900000, Math.max(300000, Number(input.cadence?.closed) || 300000)) };
+  // The same public-only identity rules apply to the service and fallback rounds.
+  const { subscriptions, errors } = normalizeQuoteSubscriptions(input.subscriptions);
+  return { format: input.format, subscriptions, ignoredSubscriptions: errors.length, cadenceMs: Math.min(300000, Math.max(15000, Number(input.cadence?.open) || 15000)), closedCadenceMs: Math.min(900000, Math.max(300000, Number(input.cadence?.closed) || 300000)) };
 }
 export function serviceCadence(config, now) {
   const isOpen = (market) => {

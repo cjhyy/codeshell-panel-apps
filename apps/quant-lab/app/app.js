@@ -4063,7 +4063,9 @@ async function ensureActiveModule() {
         await holdingsController.loadBase(epoch);
         // Subscription metadata is one lightweight project record; read it only
         // after base holdings are usable, without starting Watch/Selection.
-        setTimeout(() => { if (epoch === workspaceEpoch) void shared("watchlist", loadWatchlist).then(() => holdingsController.refreshQuotes()); }, 0);
+        setTimeout(() => { if (epoch === workspaceEpoch) void shared("watchlist", loadWatchlist).then(() => {
+          if (epoch === workspaceEpoch && activeModule === "holdings") return holdingsController.refreshQuotes();
+        }); }, 0);
         break;
       case "today":
         await Promise.all([base(), shared("watchlist", loadWatchlist), dataSourcesController.load(), marketInsightsController.load(), historyDataController.refreshHistorySummaryFromLocal()]);

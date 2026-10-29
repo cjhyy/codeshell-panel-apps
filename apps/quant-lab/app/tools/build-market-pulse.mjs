@@ -813,10 +813,10 @@ async function runCliUnlocked(argv = process.argv.slice(2), nowInput = new Date(
         generatedAt: report.generatedAt,
         session: snapshot.session,
       });
-      // Commit the complete-universe archive first. The compact live-market
-      // snapshot remains the advertised latest view only after both writes
-      // succeed, so readers never mistake a partial archive for a saved day.
-      await writeLocalSnapshot({
+      // Keep the complete universe independent of the compact live view. Lock
+      // contention retains the collected stdout and explicitly reports that
+      // this call did not save its archive.
+      const archiveReceipt = await writeLocalSnapshot({
         root: snapshotRoot,
         stream: "a-share-realtime",
         scope: "global",
@@ -828,7 +828,7 @@ async function runCliUnlocked(argv = process.argv.slice(2), nowInput = new Date(
         scope: "global",
         snapshot,
       });
-      dailyArchiveSaved = true;
+      dailyArchiveSaved = archiveReceipt.archivePublished;
     }
     if (options.stdout) {
       process.stdout.write(`${JSON.stringify(snapshot)}\n`);

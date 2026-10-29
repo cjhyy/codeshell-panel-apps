@@ -31,18 +31,22 @@ if(process.argv[5] === 'old') {
 } else {
   const next = await core.previewLocalPanelApp({kind:'dir',path:nextPath});
   assert(next.permissions.includes('background.services'));
+  assert(next.permissions.includes('resources'));
+  assert(!before.permissions.includes('resources'));
+  const preConsent = (await core.listInstalledPanelApps()).find(app => app.id==='quant-lab');
+  assert.equal(preConsent.packageDigest,before.packageDigest,'previewing added resources grant cannot replace the current package');
   assert(!before.permissions.includes('background.services'));
   const installed = await core.installReviewedLocalPanelApp({kind:'dir',path:nextPath},next.reviewToken,'2026-10-28T00:00:00.000Z',{overwrite:true});
-  assert.equal(installed.version,'0.50.0'); assert(installed.backgroundServices['market-feed']);
+  assert.equal(installed.version,'0.51.0'); assert(installed.backgroundServices['market-feed']);
   const rollback = await core.previewLocalPanelApp({kind:'dir',path:oldPath});
   const restored = await core.installReviewedLocalPanelApp({kind:'dir',path:oldPath},rollback.reviewToken,'2026-10-28T01:00:00.000Z',{overwrite:true});
-  assert.equal(restored.packageDigest,before.packageDigest); assert(!restored.permissions.includes('background.services'));
+  assert.equal(restored.packageDigest,before.packageDigest); assert(!restored.permissions.includes('background.services')); assert(!restored.permissions.includes('resources'));
   console.log('PASS candidate reviewed permission upgrade and reviewed package rollback preserve exact identities');
 }
 `);
   for (const [label, module] of [["old", join(repositoryRoot, "node_modules/@cjhyy/code-shell-core/dist/index.js")], ["candidate", join(candidateCore, "dist/index.js")]]) {
     const home = join(root, `home-${label}`); await mkdir(home);
-    const child = spawnSync(process.execPath, [script, pathToFileURL(module).href, join(old, "apps/quant-lab"), join(repositoryRoot, "apps/quant-lab"), label], { cwd: root, env: { PATH: process.env.PATH, HOME: home, TMPDIR: home, LANG: "C.UTF-8" }, encoding: "utf8", timeout: 60000 });
+    const child = spawnSync(process.execPath, [script, pathToFileURL(module).href, join(old, "apps/quant-lab"), join(repositoryRoot, "apps/quant-lab"), label], { cwd: root, env: { PATH: process.env.PATH, HOME: home, TMPDIR: home, LANG: "C.UTF-8", ...(process.env.NODE_OPTIONS ? { NODE_OPTIONS: process.env.NODE_OPTIONS } : {}) }, encoding: "utf8", timeout: 60000 });
     process.stdout.write(child.stdout ?? ""); process.stderr.write(child.stderr ?? "");
     assert.equal(child.status, 0, `${label} upgrade failed`);
   }

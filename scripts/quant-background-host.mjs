@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { repositoryRoot } from "./panel-projects.mjs";
+import { verifyQuantHistoryHostCapabilities } from "./quant-history-host-contract.mjs";
+import { prepareManagedNodeNetworkFixture, installManagedNodeNetworkBoundary } from "./panel-desktop-managed-node-fixture.mjs";
 
 // The real durable task stack transports the same request/directoryArguments shape
 // as history-batch-client. repair:true only reconciles a seeded local library.
@@ -18,6 +20,7 @@ async function historyTask(host, selected, projectPath, root, signal, cleanupSta
     const current = (await cleanupState.core.listProjectPanelApps(projectPath, selected.id)).find(app => app.id === selected.id);
     assert.equal(current?.packageDigest, selected.packageDigest, "task must retain the reviewed project selection");
     assert(current.permissions.includes("process"));
+    assert(current.permissions.includes("resources"));
   };
   const appData = join(root, "authorized-app-data", selected.id);
   await mkdir(appData, { recursive: true });
@@ -105,7 +108,8 @@ async function historyTask(host, selected, projectPath, root, signal, cleanupSta
 
 // Actual reviewed package + Host coordinator + permission-constrained native Node.
 // Empty subscriptions exercise the full stream without contacting a supplier.
-async function worker(hostRoot, root, nonce) {
+async function worker(hostRoot, root, nonce, denyNativeNetwork) {
+  let networkFixture, restoreNetwork;
   let service, scope, gate, initialized = false, cleanupConfirmed = false, failure;
   let abortReason;
   const abortController = new AbortController();
@@ -140,6 +144,12 @@ async function worker(hostRoot, root, nonce) {
   };
   let report;
   try {
+    if (denyNativeNetwork) {
+      // Reuse the existing test-only OS boundary without changing signed Node,
+      // production permissions, custody FD handling or the Desktop runner.
+      networkFixture = await prepareManagedNodeNetworkFixture({ directory: root, executable: process.execPath });
+      restoreNetwork = installManagedNodeNetworkBoundary(networkFixture.spec);
+    }
     const core = await import(pathToFileURL(join(hostRoot, "packages/core/dist/index.js")));
     const host = await import(pathToFileURL(join(hostRoot, "packages/server/dist/index.panels.js")));
     assert.equal(typeof host.PanelBackgroundService, "function", "build the candidate Host server exports first");
@@ -147,11 +157,13 @@ async function worker(hostRoot, root, nonce) {
     const candidate = { kind: "dir", path: join(repositoryRoot, "apps/quant-lab") };
     const preview = await core.previewLocalPanelApp(candidate);
     assert(preview.permissions.includes("background.services"));
+    assert(preview.permissions.includes("resources"), "new history task resource grant must be shown in installation review");
     const installed = await core.installReviewedLocalPanelApp(candidate, preview.reviewToken, new Date().toISOString());
     const projectPath = join(root, "project");
     await mkdir(projectPath);
     const selected = (await core.listProjectPanelApps(projectPath, "quant-lab")).find(app => app.id === "quant-lab");
     assert.equal(selected?.packageDigest, installed.packageDigest);
+    const historyCapabilities = await verifyQuantHistoryHostCapabilities(hostRoot, selected.permissions);
     const packageRoot = await realpath(selected.installPath);
     assert(packageRoot.startsWith(`${await realpath(process.env.HOME)}${sep}`), "only the private reviewed installation may execute");
     const definition = selected.backgroundServices["market-feed"];
@@ -208,7 +220,12 @@ async function worker(hostRoot, root, nonce) {
     assert.equal(executors().length, 0, "the guardian process group must be confirmed exited");
     historyCleanup.core = core;
     const history = await historyTask(host, selected, projectPath, root, abortController.signal, historyCleanup);
-    report = { historyTask: history, app: selected.id, version: selected.version, packageDigest: selected.packageDigest,
+    const networkReceipts = networkFixture ? await networkFixture.receipts() : [];
+    if (networkFixture) {
+      assert(networkReceipts.filter(item => item.event === "spawn").length >= 2, "OS denial must cover both native service and history task");
+      assert(networkReceipts.some(item => item.event === "custody" && item.frame.t === "member"), "native member must start beneath the confined guardian");
+    }
+    report = { nativeNetworkBoundary: networkFixture ? { spec: networkFixture.spec, receipts: networkReceipts } : { osDenied: false, inputOnly: "empty subscriptions and seeded local repair" }, historyCapabilities, historyTask: history, app: selected.id, version: selected.version, packageDigest: selected.packageDigest,
       nativeEntry: definition.entry, nativeSha256: native.sha256, generation: enabled.generation,
       seqBeforeClose: before.seq, seqWithoutGuests: after.seq, roundBeforeClose: before.value.round.roundId,
       roundWithoutGuests: after.value.round.roundId, maxExecutors: 1, stopped: stopped.phase };
@@ -227,6 +244,7 @@ async function worker(hostRoot, root, nonce) {
     } catch (error) {
       failure = failure ? new AggregateError([failure, error], "Smoke and native cleanup failed") : error;
     }
+    restoreNetwork?.();
     process.removeListener("message", onMessage);
     process.removeListener("SIGTERM", abort);
     process.removeListener("SIGINT", abort);
@@ -239,16 +257,16 @@ async function worker(hostRoot, root, nonce) {
   console.log(`PASS real Quant native/Host lifecycle ${JSON.stringify(report)}`);
 }
 
-async function parent(hostPath) {
-  if (!hostPath) throw new Error("Usage: node scripts/quant-background-host.mjs /absolute/path/to/built/host");
+async function parent(hostPath, denyNativeNetwork) {
+  if (!hostPath) throw new Error("Usage: node scripts/quant-background-host.mjs /absolute/path/to/built/host [--deny-native-network]");
   const hostRoot = await realpath(resolve(hostPath));
   const root = await realpath(await mkdtemp(join(tmpdir(), "quant-background-host-")));
   const home = join(root, "home");
   await mkdir(home);
   const nonce = randomUUID();
   let receipt = false, timedOut = false, escalation, force;
-  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "--worker", hostRoot, root, nonce], {
-    cwd: root, env: { PATH: process.env.PATH, HOME: home, TMPDIR: home, LANG: "C.UTF-8" },
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "--worker", hostRoot, root, nonce, ...(denyNativeNetwork ? ["--deny-native-network"] : [])], {
+    cwd: root, env: { PATH: process.env.PATH, HOME: home, TMPDIR: home, LANG: "C.UTF-8", ...(process.env.NODE_OPTIONS ? { NODE_OPTIONS: process.env.NODE_OPTIONS } : {}) },
     stdio: ["ignore", "inherit", "inherit", "ipc"],
   });
   child.on("message", message => {
@@ -282,7 +300,7 @@ async function parent(hostPath) {
 }
 
 if (process.argv[2] === "--worker") {
-  await worker(process.argv[3], process.argv[4], process.argv[5]).catch(error => {
+  await worker(process.argv[3], process.argv[4], process.argv[5], process.argv[6] === "--deny-native-network").catch(error => {
     console.error(error); process.exitCode = 1;
   });
-} else await parent(process.argv[2]);
+} else await parent(process.argv[2], process.argv[3] === "--deny-native-network");

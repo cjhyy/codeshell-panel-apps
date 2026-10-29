@@ -55,14 +55,17 @@ not supported by the Host.
 published Host's manifest schema and read-only installation preflight. It is
 used only by package checks and is not bundled into the installed Panel runtime.
 
-Quant 0.50.0 introduces the reviewed `background.services` permission and
-`backgroundServices` declaration. The pinned older Core intentionally rejects
+Quant 0.51.0 (an unpublished candidate) declares the reviewed `background.services` permission and
+`backgroundServices` declaration, plus `resources` alongside `process` for bounded
+history tasks. The normal Host installation/update review must show the new grant.
+The pinned older Core intentionally rejects
 that package; never remove the permission or loosen its schema to make an old
 Host install it. During this coordinated Host/Panel change, point checks at an
 explicitly built candidate Core:
 
 ```sh
 CODESHELL_PANEL_CORE_PACKAGE=/absolute/path/to/host/packages/core npm run validate
+node scripts/quant-history-host-contract.mjs /absolute/path/to/host
 node scripts/quant-background-upgrade.mjs /absolute/path/to/host/packages/core
 node scripts/quant-background-host.mjs /absolute/path/to/host
 ```

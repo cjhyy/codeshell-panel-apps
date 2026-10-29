@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { nativeDataRoot } from "./native-data-context.mjs";
+import { nativeDataRoot, resolveLibraryRoot } from "./native-data-context.mjs";
 // Deterministic A-share candidate scan. Zero dependencies.
 //
 // Stage 1 reads the current Shanghai/Shenzhen quote universe and applies fixed
@@ -354,8 +354,17 @@ function scaledQuoteNumber(value, multiplier) {
   return Number.isFinite(number) ? number * multiplier : null;
 }
 
-export async function readLocalQuoteUniverse(root = nativeDataRoot()) {
+export async function readLocalQuoteUniverse(root = nativeDataRoot(), { libraryId = null } = {}) {
+  root = await resolveLibraryRoot(root, libraryId);
   const candidates = [
+    {
+      path: resolve(root, "snapshots-v2", "a-share-realtime", "global", "latest.json"),
+      symbols: (payload) => Array.isArray(payload?.quotes) ? payload.quotes.map((item) => item?.symbol) : [],
+    },
+    {
+      path: resolve(root, "a-share-history", "v2", "manifest.json"),
+      symbols: (payload) => Array.isArray(payload?.records) ? payload.records.map((item) => item?.symbol) : [],
+    },
     {
       path: resolve(root, "snapshots", "a-share-realtime", "global", "latest.json"),
       symbols: (payload) => Array.isArray(payload?.quotes) ? payload.quotes.map((item) => item?.symbol) : [],
@@ -421,7 +430,7 @@ async function fetchTencentQuoteBatch(symbols) {
 export async function fetchAllTencentQuotes(options = {}) {
   const universe = Array.isArray(options.universe)
     ? [...new Set(options.universe.map(canonicalQuoteSymbol).filter(Boolean))]
-    : await readLocalQuoteUniverse(options.root ?? nativeDataRoot());
+    : await readLocalQuoteUniverse(options.root ?? nativeDataRoot(), { libraryId: options.libraryId });
   if (universe.length < 4_000) {
     throw new ScreenFetchError("QUOTE_UNIVERSE_LOW", `local quote universe contains only ${universe.length} symbols`);
   }
@@ -514,7 +523,7 @@ async function fetchAllEastmoneyQuotes() {
 export async function fetchAllQuotes(options = {}) {
   let localUniverse = options.universe;
   if (options.preferLocalUniverse && !localUniverse) {
-    localUniverse = await readLocalQuoteUniverse(options.root ?? nativeDataRoot()).catch(() => null);
+    localUniverse = await readLocalQuoteUniverse(options.root ?? nativeDataRoot(), { libraryId: options.libraryId }).catch(() => null);
   }
   const tencent = ["tencent", options.fetchTencentQuotes ?? (() => fetchAllTencentQuotes({ ...options, universe: localUniverse }))];
   const sina = ["sina", options.fetchSinaQuotes ?? fetchAllSinaQuotes];

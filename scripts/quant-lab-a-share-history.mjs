@@ -447,7 +447,10 @@ try {
   assert.equal(recoveredStatus.rawFactorReady + recoveredStatus.legacyVendorAdjusted, recoveredStatus.cached);
   // Repair manifests already written by an older recovery, even with no new files.
   const staleCounters = { ...recoveredManifest, rawFactorReady: 0, legacyVendorAdjusted: 0 };
-  const repaired = await recoverHistoryManifestFromSeries(staleCounters, recoveryTemporary);
+  const repairLock = await acquireHistoryRunState({ scope: "full", source: recoveredManifest.source, now: new Date() }, recoveryTemporary);
+  assert.equal(repairLock.acquired, true);
+  const repaired = await recoverHistoryManifestFromSeries(staleCounters, recoveryTemporary, new Date(), { runState: repairLock.state });
+  await releaseHistoryRunState(repairLock.state);
   assert.equal(repaired.rawFactorReady + repaired.legacyVendorAdjusted, repaired.cached);
   assert.doesNotThrow(() => parseHistoryLibrarySummary(compactHistoryBridgeSummary(repaired)));
   const unchanged = await recoverHistoryManifestFromSeries(repaired, recoveryTemporary);

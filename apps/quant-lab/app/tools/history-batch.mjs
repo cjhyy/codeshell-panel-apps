@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runCli, compactHistoryBridgeSummary } from "./initialize-a-share-history.mjs";
+import { runCli, compactHistoryBridgeSummary, normalizeHistoryInitializationOptions } from "./initialize-a-share-history.mjs";
+import { resolveLibraryRoot, withNativeDataRoot } from "./native-data-context.mjs";
 
 export async function runHistoryBatch(request, { root, ...dependencies } = {}) {
   if (!request || Object.keys(request).some((key) => !["scope", "source", "maxItems", "repair", "jobId", "scopeKey", "libraryId"].includes(key)) || !root) throw new Error("HISTORY_BATCH_INPUT_INVALID");
@@ -10,7 +11,11 @@ export async function runHistoryBatch(request, { root, ...dependencies } = {}) {
   const argv = ["--stdout", "--scope", request.scope ?? "core", "--source", request.source ?? "tencent-ifzq", "--max-items", String(maxItems)];
   if (request.repair === true) argv.push("--repair");
   if (request.libraryId != null) argv.push("--library-id", request.libraryId);
-  const result = await runCli(argv, { ...dependencies, root, stdout: () => {}, progress: dependencies.progress ?? (() => {}) });
+  const options = normalizeHistoryInitializationOptions(argv);
+  const selectedRoot = await resolveLibraryRoot(root, options.libraryId, { create: true });
+  const result = await withNativeDataRoot(selectedRoot, () => runCli(argv, {
+    ...dependencies, root, stdout: () => {}, progress: dependencies.progress ?? (() => {}),
+  }));
   return { ...compactHistoryBridgeSummary(result), batchLimit: maxItems };
 }
 async function main() {

@@ -2,7 +2,7 @@ import { nativeDataRoot } from "./native-data-context.mjs";
 import { mkdir, open, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { acquireOwnerLock, inspectOwnerLock, ownerConfirmedDead } from "./owner-lock.mjs";
+import { acquireOwnerLock, diagnoseOwnerLock, inspectOwnerLock, ownerConfirmedDead } from "./owner-lock.mjs";
 
 import { historyDataSource } from "../market-data-sources.mjs";
 
@@ -206,7 +206,7 @@ async function atomicWrite(path, content) {
 
 export async function readActiveHistoryRunState(root = nativeDataRoot()) {
   const owner = await inspectOwnerLock(historyRunStatePath(root));
-  if (owner) return ownerConfirmedDead(owner) ? null : owner;
+  if (owner) return await ownerConfirmedDead(owner) ? null : owner;
   // Diagnostics never remove or rewrite the legacy wx file, including a stale
   // or malformed record. Its presence means old-protocol ownership is uncertain.
   try {
@@ -214,6 +214,13 @@ export async function readActiveHistoryRunState(root = nativeDataRoot()) {
     try { return { ...JSON.parse(legacy), legacyProtocol: true }; }
     catch { return { unknown: true, legacyProtocol: true }; }
   } catch (error) { if (error.code === "ENOENT") return null; throw error; }
+}
+
+export async function diagnoseHistoryRunState(root = nativeDataRoot()) {
+  const current = await diagnoseOwnerLock(historyRunStatePath(root));
+  if (current.owner) return current;
+  const legacy = await readActiveHistoryRunState(root);
+  return legacy ? { owner: legacy, status: "unknown", reason: "legacy-protocol-unverified" } : current;
 }
 
 export async function acquireHistoryRunState(input, root = nativeDataRoot()) {
@@ -661,7 +668,7 @@ function usableManifestRecord(record, marketDate, source) {
   return record?.source === source && Number(record?.bars) >= 60 && age >= 0 && age <= 10;
 }
 
-export async function recoverHistoryManifestFromSeries(manifest, root = nativeDataRoot(), now = new Date()) {
+export async function recoverHistoryManifestFromSeries(manifest, root = nativeDataRoot(), now = new Date(), { runState } = {}) {
   if (!manifest || manifest.scope !== "full") return manifest;
   const excludedSymbols = new Set(
     (Array.isArray(manifest.excludedSymbols) ? manifest.excludedSymbols : [])
@@ -730,6 +737,7 @@ export async function recoverHistoryManifestFromSeries(manifest, root = nativeDa
     recovered,
     records,
   });
+  await assertHistoryRunState(runState);
   await writeHistoryManifest(next, root);
   return next;
 }

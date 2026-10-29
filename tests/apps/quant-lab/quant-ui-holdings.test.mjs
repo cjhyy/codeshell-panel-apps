@@ -83,7 +83,7 @@ test('real holdings DOM retains keyed rows, accepts unknown sessions and same-va
  const original={document:globalThis.document,requestAnimationFrame:globalThis.requestAnimationFrame};
  globalThis.document={createElement:()=>new Element(),createTextNode:text=>Object.assign(new Element(),{textContent:text}),querySelector:()=>null};
  globalThis.requestAnimationFrame=fn=>{queueMicrotask(fn);return 1;};
- const source=JSON.stringify(fixture()),events=new Map();let seq=1;
+ const source=JSON.stringify(fixture()),events=new Map(),configured=[];let seq=1;
  const quote={market:'cn',symbol:'SH600000',currency:'CNY',price:'12',asOf:instant,marketDate:'2026-10-28',session:'unknown',priceBasis:'raw',previousClose:'11',referenceDate:'2026-10-28',referenceBasis:'supplier-session-reference',dayChange:'1',dayChangePct:'9.09090909',source:'fixture',fetchedAt:instant,status:'ok',reason:null};
  const doc={format:'quant.quotes/2',items:{'cn:SH600000':quote}};
  const context={availableMethods:['get','read','attach','detach','configure','control','setDesired'].map(n=>`services.${n}`),capabilities:{services:{version:1}}};
@@ -94,13 +94,18 @@ test('real holdings DOM retains keyed rows, accepts unknown sessions and same-va
   if(method==='services.get')return{desired:'always',desiredRevision:1,configRevision:0,phase:'running'};
   if(method==='services.read')return{seq,generation:1,value:structuredClone(doc)};
   if(method==='services.attach')return{attachId:'one'};
-  if(method==='services.configure'||method==='services.control'||method==='services.detach')return{};
+  if(method==='services.configure'){configured.push(params.config);return{};}
+  if(method==='services.control'||method==='services.detach')return{};
   throw Error(method);
  };
  let controller;
  try{
-  controller=createHoldingsController({elements,hostCall,getContext:()=>context,onHostEvent:(name,fn)=>{events.set(name,fn);return()=>events.delete(name);},currentEpoch:()=>1,now:()=>new Date(instant)});
+  controller=createHoldingsController({elements,hostCall,getContext:()=>context,onHostEvent:(name,fn)=>{events.set(name,fn);return()=>events.delete(name);},currentEpoch:()=>1,now:()=>new Date(instant),
+   additionalQuoteSymbols:()=>[{market:'us',symbol:'0700.HK'},{market:'us',symbol:'BRK:B'},{market:'us',symbol:'BRK.B'}]});
   await controller.loadBase();await controller.ensureDetails();controller.setActive(true);await controller.refreshQuotes();await new Promise(setImmediate);
+  assert.equal(configured.at(-1).subscriptions.length,21,'held symbols and a supported watch entry remain subscribed');
+  assert.ok(configured.at(-1).subscriptions.some(item=>item.symbol==='BRK.B'));
+  assert.ok(configured.at(-1).subscriptions.every(item=>!['0700.HK','BRK:B'].includes(item.symbol)),'invalid watch symbols never enter either quote mode');
   assert.deepEqual(controller.noteContext().unavailableSources,{ledger:false,rules:false});
   const row=elements.holdingsList.children.find(item=>item.dataset.symbol==='SH600000');
   const details=row.children.find(item=>item.dataset.patchKey==='provenance');details.open=true;
@@ -117,7 +122,7 @@ test('real holdings DOM retains keyed rows, accepts unknown sessions and same-va
   assert.equal(labels.find(item=>item.children[0].textContent==='日涨跌 · 本币').children[1].textContent,'2 CNY');
   doc.items['cn:SH600000']={...quote,price:'11',dayChange:'0',dayChangePct:'0'};seq++;events.get('services.changed')({name:'market-feed',channel:'quotes',seq});await new Promise(setImmediate);
   const zero=row.children.find(item=>item.className==='portfolio-position-metrics').children.find(item=>item.children[0].textContent==='日涨跌 · 本币').children[1];
-  assert.equal(zero.textContent,'0 CNY');assert.doesNotMatch(zero.className??'',/positive|negative/u,'flat price is neutral');
+  assert.equal(zero.textContent,'0 CNY');assert.ok(!zero.dataset.tone || zero.dataset.tone==='neutral','flat price is neutral in the actual tone attribute');
  }finally{controller?.reset();globalThis.document=original.document;globalThis.requestAnimationFrame=original.requestAnimationFrame;}
 });
 
@@ -135,7 +140,78 @@ test('base and details use abortable owned requests and execution identity fence
   await controller.loadBase();const details=controller.ensureDetails();await ready;
   const request=calls.find(call=>call.intent?.owner==='portfolio-details');assert.ok(request.intent.signal);assert.equal(request.intent.signal.aborted,false);
   executionId='two';controller.reset();assert.equal(request.intent.signal.aborted,true);release();await details;
-  await controller.loadBase();assert.equal(calls.filter(call=>call.params.path==='portfolio').length,2);assert.match(elements.baseState.textContent,/待详情/u);
-  assert.ok(calls.filter(call=>call.params.path==='portfolio').every(call=>call.intent.owner==='portfolio-base'&&call.intent.signal));
+  await controller.loadBase();assert.equal(calls.filter(call=>call.params.path==='portfolio'&&call.intent.owner==='portfolio-base').length,2);assert.match(elements.baseState.textContent,/待详情/u);
+  assert.ok(calls.filter(call=>call.params.path==='portfolio').every(call=>['portfolio-base','portfolio-details'].includes(call.intent.owner)&&call.intent.signal));
  }finally{controller?.reset();globalThis.document=original;}
+});
+
+function smallUsdLedger() {
+ return {format:'codeshell.portfolio-transactions',version:1,baseCurrency:'CNY',accounts:[{id:'us',name:'Fixture',broker:'fixture',currencies:['USD']}],
+  instruments:[{id:'aapl',type:'stock',market:'us',currency:'USD',symbol:'AAPL',name:'Apple',aliases:[]}],
+  transactions:[{id:'buy',type:'buy',accountId:'us',instrumentId:'aapl',tradeDate:'2026-10-26',quantity:'2',price:'10.00',commission:'0.00',tax:'0.00',otherFees:'0.00',createdAt:'2026-10-26T15:00:00Z'}]};
+}
+const deferred = () => { let resolve;const promise=new Promise(done=>resolve=done);return{promise,resolve}; };
+const nodeText = node => [node.textContent,...node.children.map(nodeText)].join(' ');
+
+test('details inspect the actual holdings cache in the background; missing, corrupt, stale and matching states remain distinguishable',async()=>{
+ const original=globalThis.document;globalThis.document={createElement:()=>new Element(),createTextNode:text=>Object.assign(new Element(),{textContent:text}),querySelector:()=>null};
+ const ledger=smallUsdLedger(),source=JSON.stringify(ledger),old=structuredClone(ledger);old.transactions[0].price='9.00';
+ const stored=JSON.stringify(deriveHoldingsSnapshot(source,{},instant)),stale=JSON.stringify(deriveHoldingsSnapshot(JSON.stringify(old),{},instant));
+ try{
+  for(const [content,status,reason] of [[null,'unavailable','holdings-cache-not-found'],['{','unavailable','holdings-cache-invalid'],[stale,'warning',null],[stored,'positive',null]]){
+   const elements=new Proxy({performance:null},{get:(obj,key)=>key in obj?obj[key]:(obj[key]=new Element())}),calls=[],states=[];
+   const entered=deferred(),release=deferred();let controller;
+   try{
+    controller=createHoldingsController({elements,currentEpoch:()=>1,now:()=>new Date(instant),onViewState:state=>states.push(state),hostCall:async(method,params,intent)=>{
+     calls.push({method,params,intent});
+     if(method==='workspace.list'&&params.path==='portfolio'){
+      if(intent.owner==='portfolio-details'){entered.resolve();await release.promise;}
+      return{entries:[{kind:'file',path:'portfolio/transactions.json'},...(content===null?[]:[{kind:'file',path:'portfolio/holdings.json'}])]};
+     }
+     if(method==='workspace.readText')return{content:params.path==='portfolio/transactions.json'?source:content};
+     if(method==='workspace.list')return{entries:[]};throw Error(method);
+    }});
+    await controller.loadBase();assert.equal(calls.length,2,'base reads only the authoritative ledger');
+    assert.equal(controller.noteContext().unavailableSources.rules,true);assert.deepEqual(controller.noteContext().rules,[]);
+    const details=controller.ensureDetails();await entered.promise;
+    assert.match(elements.totalBase.textContent,/待详情/u);assert.equal(elements.totalBase.dataset.state,'pending');
+    assert.match(elements.pnlBase.textContent,/待详情/u);assert.match(elements.fxSource.textContent,/待详情/u);
+    assert.match(elements.summaryNote.textContent,/正在计算/u);
+    assert.doesNotMatch([nodeText(elements.holdingsList),elements.summaryNote.textContent,elements.totalBase.textContent,elements.pnlBase.textContent,elements.fxSource.textContent].join(' '),/缺少汇率|暂无法计算|暂不可用/u,'base cannot diagnose FX before the details read');
+    release.resolve();await details;
+    const rule=controller.noteContext().rules.find(item=>item.id==='ledger-fingerprint-mismatch');
+    assert.equal(rule.status,status);
+    if(reason)assert.equal(rule.unavailable.reason,reason);
+    if(status==='warning')assert.equal(rule.actual.equal,false);
+    assert.deepEqual(states.at(-1).rules,controller.noteContext().rules,'Agent and Today receive the inspected rule result');
+    assert.equal(controller.noteContext().unavailableSources.rules,false);
+    assert.match(nodeText(elements.holdingsList),/缺少汇率/u,'after inspection actual missing FX remains visible');
+    assert.equal(elements.totalBase.dataset.state,'unavailable');
+    assert.ok(calls.filter(call=>call.intent.owner==='portfolio-details').every(call=>call.intent.priority==='background'&&call.intent.signal));
+   }finally{release.resolve();controller?.reset();}
+  }
+ }finally{globalThis.document=original;}
+});
+
+test('a late holdings-cache inspection cannot publish into a replacement execution or ledger',async()=>{
+ const original=globalThis.document;globalThis.document={createElement:()=>new Element(),createTextNode:text=>Object.assign(new Element(),{textContent:text}),querySelector:()=>null};
+ const ledger=smallUsdLedger(),source=JSON.stringify(ledger),old=structuredClone(ledger);old.transactions[0].price='9.00';
+ const stale=JSON.stringify(deriveHoldingsSnapshot(JSON.stringify(old),{},instant)),matching=JSON.stringify(deriveHoldingsSnapshot(source,{},instant));
+ const entered=deferred(),release=deferred();let executionId='old',controller;const calls=[],states=[];
+ const elements=new Proxy({performance:null},{get:(obj,key)=>key in obj?obj[key]:(obj[key]=new Element())});
+ try{
+  controller=createHoldingsController({elements,currentEpoch:()=>1,getContext:()=>({executionId}),now:()=>new Date(instant),onViewState:state=>states.push(state),hostCall:async(method,params,intent)=>{
+   calls.push({method,params,intent});
+   if(method==='workspace.list')return{entries:params.path==='portfolio'?[{kind:'file',path:'portfolio/transactions.json'},{kind:'file',path:'portfolio/holdings.json'}]:[]};
+   if(params.path==='portfolio/transactions.json')return{content:source};
+   if(params.path==='portfolio/holdings.json'){if(executionId==='old'){entered.resolve();await release.promise;return{content:stale};}return{content:matching};}
+   throw Error(method);
+  }});
+  await controller.loadBase();const oldDetails=controller.ensureDetails();await entered.promise;
+  const oldRead=calls.find(call=>call.params.path==='portfolio/holdings.json');
+  executionId='new';controller.reset();assert.equal(oldRead.intent.signal.aborted,true);
+  await controller.loadBase();await controller.ensureDetails();const latest=states.at(-1),count=states.length;
+  assert.equal(latest.rules.find(item=>item.id==='ledger-fingerprint-mismatch').status,'positive');
+  release.resolve();await oldDetails;assert.equal(states.length,count);assert.equal(states.at(-1),latest);
+ }finally{release.resolve();controller?.reset();globalThis.document=original;}
 });

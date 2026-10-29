@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "quant-lab",
-  "version": "0.50.0",
+  "version": "0.51.0",
   "title": {
     "default": "投资工作台",
     "en": "Investment Desk",
@@ -25,6 +25,7 @@
     "automations.manage",
     "notifications.send",
     "process",
+    "resources",
     "background.services"
   ],
   "agent": {
@@ -197,11 +198,11 @@
   "nativeEntries": {
     "fetch-holding-quotes": {
       "entry": "app/tools/fetch-holding-quotes.mjs",
-      "sha256": "d99037258455d91f732d2b862841e8585437916586438ce622a4d49767bd7bfa"
+      "sha256": "c2c2963d1ce1811c77b14508fcda14f0a72873bb541839b85eb4f76829057606"
     },
     "build-market-pulse": {
       "entry": "app/tools/build-market-pulse.mjs",
-      "sha256": "cdae7c786e45065bbbc547363e4820d3c16db74ff95a10408e19d63c53b8df35"
+      "sha256": "7790403b1a5b864009cc1520187c8947d21ad993e3c9a278fc299c10808630ba"
     },
     "build-a-share-selection": {
       "entry": "app/tools/build-a-share-selection.mjs",
@@ -221,15 +222,15 @@
     },
     "initialize-a-share-history": {
       "entry": "app/tools/initialize-a-share-history.mjs",
-      "sha256": "9c0eb952d32078d488266228f44d846f0eb560f18c35f1e7873b938b30001946"
+      "sha256": "5f4812996bc537c293c41fd3acba0d70121d44a369700c863b1f8b02f5a54d53"
     },
     "quant-market-service": {
       "entry": "app/tools/market-service.mjs",
-      "sha256": "ea0ee924130c2bef69631a33568e4b78978a830e05357b508203b43c2832ca18"
+      "sha256": "21df5348247a65640e26d816548fe50b51189021013105e52ee1f1a776753a47"
     },
     "quant-history-batch": {
       "entry": "app/tools/history-batch.mjs",
-      "sha256": "04d5f9f5ef4348049679fc52b7a777f128df138c5e29da9bdfe2b5014a23f8e0"
+      "sha256": "f5d6aaef2a4b473e7d8fc1bf2cbe1e02454692b1162feaaa684838201d099878"
     }
   }
 }

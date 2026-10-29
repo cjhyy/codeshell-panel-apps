@@ -16,6 +16,7 @@ import {
   A_SHARE_HISTORY_SCHEMA_VERSION,
   acquireHistoryRunState,
   assertHistoryRunState,
+  diagnoseHistoryRunState,
   createRawFactorPriceBundle,
   heartbeatHistoryRunState,
   isAShareHistorySource,
@@ -332,8 +333,9 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
   const now = dependencies.now instanceof Date ? dependencies.now : new Date();
   if (!Number.isFinite(now.getTime())) throw new HistoryInitializationError("NOW_INVALID", "valid current time required");
   if (options.lockStatus) {
-    const owner = await readActiveHistoryRunState(root);
-    const result = { kind: "a-share-history-lock-status", libraryId: options.libraryId, running: Boolean(owner), owner };
+    const diagnostic = await diagnoseHistoryRunState(root);
+    const result = { kind: "a-share-history-lock-status", libraryId: options.libraryId,
+      running: ["alive", "unknown"].includes(diagnostic.status), ...diagnostic };
     (dependencies.stdout ?? ((line) => process.stdout.write(line)))(`${JSON.stringify(result)}\n`);
     return result;
   }
@@ -351,8 +353,8 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
         try {
           // Re-read under the existing library lock before repairing persisted counters.
           manifest = await readHistoryManifest(root) ?? manifest;
-          manifest = await recoverHistoryManifestFromSeries(manifest, root, now);
-          manifest = await reconcileAShareHistorySnapshots({ root, manifest, now });
+          manifest = await recoverHistoryManifestFromSeries(manifest, root, now, { runState: localLock.state });
+          manifest = await reconcileAShareHistorySnapshots({ root, manifest, now, runState: localLock.state });
         } finally {
           await releaseHistoryRunState(localLock.state, root);
         }
@@ -404,7 +406,7 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
   );
   let previousManifest = await readHistoryManifest(root).catch(() => null);
   if (previousManifest?.scope === "full") {
-    previousManifest = await recoverHistoryManifestFromSeries(previousManifest, root);
+    previousManifest = await recoverHistoryManifestFromSeries(previousManifest, root, new Date(), { runState: runLock.state });
   }
   if (previousManifest && previousManifest.source !== options.source) {
     throw new HistoryInitializationError(

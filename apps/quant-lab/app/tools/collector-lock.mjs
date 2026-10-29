@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { acquireOwnerLock } from "./owner-lock.mjs";
+import { acquireOwnerLock, diagnoseOwnerLock } from "./owner-lock.mjs";
 import { collectorArguments, resolveLibraryRoot, withNativeDataRoot } from "./native-data-context.mjs";
 
 function canonical(value) {
@@ -14,17 +14,26 @@ export function collectorRequestKey(key, request, scope = "cli", libraryId = nul
 
 // Reviewed short-lived collectors share process authority even when callers
 // belong to different webviews. Querying a committed snapshot is always read-only.
-export async function runCollector(key, argv, work, { root = process.cwd(), hooks, maxConcurrent = 4, normalizeRequest = args => ({ mode: "collect", args }) } = {}) {
+export async function runCollector(key, argv, work, { root = process.cwd(), hooks, maxConcurrent = 4,
+  stdout = value => process.stdout.write(value), normalizeRequest = args => ({ mode: "collect", args }) } = {}) {
   const { args, scope, libraryId } = collectorArguments(argv);
   // The owning CLI parser decides aliases, defaults and read-only mode. A flag
   // used as another flag's value must never bypass mutual exclusion or the pool.
-  const request = normalizeRequest(args);
-  const readOnly = ["read-local", "help"].includes(request.mode);
+  const diagnostic = args.includes("--collector-lock-status");
+  const request = normalizeRequest(args.filter(value => value !== "--collector-lock-status"));
+  const readOnly = diagnostic || ["read-local", "help"].includes(request.mode);
   const selectedRoot = await resolveLibraryRoot(root, libraryId, { create: !readOnly });
   const execute = () => withNativeDataRoot(selectedRoot, () => work(args));
-  if (readOnly) return execute();
   if (!/^[a-z][a-z0-9-]{0,63}$/u.test(key)) throw new Error("COLLECTOR_KEY_INVALID");
   const base = resolve(root, ".quant-collector-locks-v3");
+  if (diagnostic) {
+    const result = { kind: "quant-collector-lock-status", key, scope, libraryId: libraryId ?? null,
+      request: await diagnoseOwnerLock(resolve(base, "requests", collectorRequestKey(key, request, scope, libraryId))),
+      slots: await Promise.all(Array.from({ length: 4 }, (_, index) => diagnoseOwnerLock(resolve(base, "slots", String(index))))) };
+    stdout(`${JSON.stringify(result)}\n`);
+    return result;
+  }
+  if (readOnly) return execute();
   const lock = await acquireOwnerLock(resolve(base, "requests", collectorRequestKey(key, request, scope, libraryId)), { hooks });
   if (!lock.acquired) throw Object.assign(new Error("另一个窗口正在更新相同请求，已保留快照，请稍后读取共享结果。"), { code: "QUANT_COLLECTOR_BUSY" });
   let slot;

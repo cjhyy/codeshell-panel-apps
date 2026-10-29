@@ -1,4 +1,5 @@
 import { quoteDisplayValue } from "./market-service-client.mjs";
+import { quoteSubscription } from "../quote-round-core.mjs";
 import { patchHoldingsNode } from "./holdings-dom-patch.mjs";
 import { createPortfolioPerformanceView } from "./portfolio-performance-ui.mjs";
 import { createHoldingQuoteController, createHoldingQuoteRequest, holdingQuoteDelay } from "./holding-quotes.mjs";
@@ -554,6 +555,7 @@ function reasonLabel(reason) {
 
 function sourceStateLabel(state) {
   return {
+    pending: "待详情",
     complete: "已核验",
     provisional: "暂定",
     stale: "需要更新",
@@ -654,7 +656,7 @@ export function createHoldingsController({
   const quoteController = createHoldingQuoteController({
     hostCall, getContext, onHostEvent,
     request: createHoldingQuoteRequest({ hostCall, onHostEvent }),
-    symbols: () => [...new Map([...heldSymbols(), ...additionalQuoteSymbols()].map(item => [`${item.market}:${item.symbol}`, item])).values()].slice(0, 200),
+    symbols: () => [...new Map([...heldSymbols(), ...additionalQuoteSymbols()].map(quoteSubscription).filter(Boolean).map(item => [`${item.market}:${item.symbol}`, item])).values()].slice(0, 200),
     now,
     onUpdate(quotes, state) {
       if (!ledger || !snapshot || !market) return;
@@ -1085,11 +1087,11 @@ export function createHoldingsController({
       head.append(name);
       const baseState = document.createElement("span");
       baseState.className = "portfolio-base-badge";
-      baseState.textContent = position.baseUnavailable
+      baseState.textContent = !detailsReady ? "待详情 · 人民币估值计算中" : position.baseUnavailable
         ? `人民币估值暂不可用 · ${reasonLabel(position.baseUnavailable.reason)}`
         : "人民币估值可用";
-      baseState.title = position.baseUnavailable?.reason ?? "base-complete";
-      if (position.baseUnavailable) head.append(baseState);
+      baseState.title = !detailsReady ? "details-pending" : position.baseUnavailable?.reason ?? "base-complete";
+      if (!detailsReady || position.baseUnavailable) head.append(baseState);
       row.append(head);
 
       const metrics = document.createElement("div");
@@ -1104,7 +1106,7 @@ export function createHoldingsController({
         metrics.append(wrapper);
       };
       const positionValue = positionValues.get(position);
-      metric("持仓市值 · 人民币", positionValue == null ? "—" : `${money(positionValue)} CNY`);
+      metric("持仓市值 · 人民币", !detailsReady ? "待详情" : positionValue == null ? "—" : `${money(positionValue)} CNY`);
       metric("占持仓市值", securitiesValue > 0 && positionValue != null
         ? `${(positionValue / securitiesValue * 100).toFixed(2)}%` : "—");
       metric("数量", position.quantity);
@@ -1139,7 +1141,9 @@ export function createHoldingsController({
         ? `${quote ? quote.source : "历史行情"} · 行情时间 ${new Date(quoteTime).toLocaleString("zh-CN", { hour12: false })}${quoteState.failed ? " · 本次未完全更新" : ""}`
         : "等待行情", "portfolio-quote-time").dataset.patchKey = "quote-time";
 
-      const source = sourceStatus(raw);
+      const source = !detailsReady
+        ? { state: "pending", source: "待详情", adjust: "待详情", fingerprint: "尚未检查", timing: "历史行情尚未读取" }
+        : sourceStatus(raw);
       const provenance = document.createElement("p");
       provenance.className = "portfolio-source";
       provenance.dataset.state = source.state;
@@ -1328,9 +1332,9 @@ export function createHoldingsController({
     const valuation = displayed?.valuation ?? null;
     const pnl = holdingsUnrealizedSummary(displayed);
     if (elements.pnlBase) {
-      elements.pnlBase.textContent = pnl.pnlBase == null ? "待补行情或汇率" : `${money(Number(pnl.pnlBase))} CNY`;
-      elements.pnlBase.dataset.tone = pnl.pnlBase == null ? "" : Number(pnl.pnlBase) < 0 ? "negative" : Number(pnl.pnlBase) > 0 ? "positive" : "";
-      elements.returnPercent.textContent = pnl.returnPercent == null ? "—" : `${pnl.returnPercent.toFixed(2)}%`;
+      elements.pnlBase.textContent = !detailsReady ? "待详情" : pnl.pnlBase == null ? "待补行情或汇率" : `${money(Number(pnl.pnlBase))} CNY`;
+      elements.pnlBase.dataset.tone = !detailsReady || pnl.pnlBase == null ? "" : Number(pnl.pnlBase) < 0 ? "negative" : Number(pnl.pnlBase) > 0 ? "positive" : "";
+      elements.returnPercent.textContent = !detailsReady || pnl.returnPercent == null ? "—" : `${pnl.returnPercent.toFixed(2)}%`;
     }
     if (elements.quoteStatus) {
       const times = [...liveQuotes.values()].map((quote) => Date.parse(quote.asOf));
@@ -1342,29 +1346,29 @@ export function createHoldingsController({
     }
     const total = valuation?.totalBase ?? null;
     elements.totalBase.textContent =
-      total == null
+      !detailsReady ? "计算中 · 待详情" : total == null
         ? `暂无法计算${valuation?.unavailable ? ` · ${reasonLabel(valuation.unavailable.code)}` : ""}`
         : `${money(Number(total))} CNY`;
-    elements.totalBase.dataset.state = total == null ? "unavailable" : "complete";
+    elements.totalBase.dataset.state = !detailsReady ? "pending" : total == null ? "unavailable" : "complete";
     elements.localState.textContent = "可用 · 账本原币种";
     const base = snapshot?.availability?.base;
     elements.baseState.textContent = !detailsReady ? "待详情 · 历史汇率尚未读取" :
       base?.status === "complete"
         ? "可用"
         : `暂不可用 · ${reasonLabel(base?.reason ?? "missing-fx")}`;
-    elements.baseState.dataset.state = base?.status ?? "unavailable";
+    elements.baseState.dataset.state = !detailsReady ? "pending" : base?.status ?? "unavailable";
     elements.summaryNote.textContent =
-      total == null
+      !detailsReady ? "基础持仓已就绪；人民币估值与收益正在计算，等待历史行情和汇率详情。" : total == null
         ? `总资产暂未显示：至少一个现价或汇率不可用；原币种交易记录仍可查看和录入。`
         : liveQuotes.size > 0 ? "总资产随最新报价估算；汇率沿用已核验记录。持仓盈亏不含已卖出收益。"
         : `总资产按 ${valuation.endingDate} 可获得的未复权行情与汇率计算；不同市场的收盘时点可能不一致。`;
     const fxSource = sourceStatus(market?.fx);
     elements.fxSource.textContent =
-      market?.fx?.reason === "not-required"
+      !detailsReady ? "汇率数据 · 待详情" : market?.fx?.reason === "not-required"
         ? "无需汇率（当前没有美元交易或持仓）"
         : `汇率数据 · 来源 ${fxSource.source} · 口径 ${fxSource.adjust} · 指纹 ${fxSource.fingerprint} · ${sourceStateLabel(fxSource.state)} · ${fxSource.timing}`;
-    elements.fxSource.title = market?.fx?.reason ?? fxSource.fingerprint;
-    elements.fxSource.dataset.state = fxSource.state;
+    elements.fxSource.title = !detailsReady ? "details-pending" : market?.fx?.reason ?? fxSource.fingerprint;
+    elements.fxSource.dataset.state = !detailsReady ? "pending" : fxSource.state;
   }
 
   function render() {
@@ -1441,10 +1445,15 @@ export function createHoldingsController({
     const generation = loadGeneration;
     const identity = { ledger, source: ledgerSourceText, execution: executionIdentity() };
     const signal = detailsAbort.signal;
-    const nextMarket = await loadMarketInputs((method, params) => hostCall(method, params, { owner: "portfolio-details", signal, priority: "background" }), identity.ledger, now);
+    const detailsCall = (method, params) => hostCall(method, params, { owner: "portfolio-details", signal, priority: "background" });
+    const [nextMarket, nextFingerprintState] = await Promise.all([
+      loadMarketInputs(detailsCall, identity.ledger, now),
+      inspectHoldingsFingerprint(detailsCall, expectedEpoch, snapshot.transactionsFingerprint),
+    ]);
     if (currentEpoch() !== expectedEpoch || generation !== loadGeneration || identity.ledger !== ledger || identity.source !== ledgerSourceText || identity.execution !== executionIdentity() || signal.aborted) return;
     liveSnapshot = null;
     market = nextMarket;
+    ledgerFingerprintState = nextFingerprintState;
     detailsReady = true;
     snapshot = holdingsCache.derive(
       ledgerSourceText,
@@ -1459,10 +1468,10 @@ export function createHoldingsController({
     }
   }
 
-  async function inspectHoldingsFingerprint(expectedEpoch, currentFingerprint) {
+  async function inspectHoldingsFingerprint(detailsCall, expectedEpoch, currentFingerprint) {
     try {
       const stored = await readWorkspaceJson(
-        hostCall,
+        detailsCall,
         "portfolio/holdings.json",
         epochToken(expectedEpoch),
       );
@@ -1511,8 +1520,7 @@ export function createHoldingsController({
         endingPriceTimes: {}, rawByInstrument: new Map(), sourceStatusByInstrument: {},
         fx: { status: "unavailable", reason: "details-pending" }, analysisInputs: null };
       snapshot = holdingsCache.derive(stored.content, market.derivationInputs, now().toISOString());
-      ledgerFingerprintState = { status: "verified", currentFingerprint: parsed.fingerprint,
-        holdingsFingerprint: parsed.fingerprint, mismatchObserved: false };
+      ledgerFingerprintState = { status: "unavailable", reason: "holdings-cache-not-inspected" };
       baseEpoch = expectedEpoch;
       render();
       globalThis.performance?.mark?.("quant-lab:portfolioBaseReady", { detail: { epoch: expectedEpoch, fingerprint: parsed.fingerprint } });

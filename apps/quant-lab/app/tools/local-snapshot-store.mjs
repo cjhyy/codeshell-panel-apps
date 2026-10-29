@@ -87,9 +87,14 @@ export async function writeLocalSnapshot({ root = nativeDataRoot(), stream, scop
   const latestPath = resolve(directory, "latest.json");
   const historyPath = resolve(historyDirectory, `${marketDate}-${phase}.json`);
   const lock = await acquireOwnerLock(resolve(directory, "publish.lock"), { hooks });
-  if (!lock.acquired) throw new LocalSnapshotError("LOCAL_SNAPSHOT_BUSY", "another snapshot publisher owns the stream");
+  // Collection is already complete. A contending publisher must not discard
+  // its stdout result, block the active owner, or claim an unwritten path.
+  if (!lock.acquired) return Object.freeze({ latestPath: null, historyPath: null,
+    bytes: 0, published: false, archivePublished: false, reason: "publisher-busy" });
   try {
-    const rank = (value) => [value.marketDate, value.session?.phase === "intraday" ? 0 : 1, Date.parse(value.asOf ?? value.generatedAt ?? value.updatedAt ?? "") || 0];
+    const timestamp = value => { const parsed = Date.parse(value ?? ""); return Number.isFinite(parsed) ? parsed : 0; };
+    const rank = (value) => [value.marketDate, value.session?.phase === "intraday" ? 0 : 1,
+      timestamp(value.asOf), timestamp(value.generatedAt)];
     const newer = (left, right) => {
       const a = rank(left), b = rank(right);
       for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) return a[i] > b[i]; }
@@ -99,12 +104,15 @@ export async function writeLocalSnapshot({ root = nativeDataRoot(), stream, scop
     const archived = await readFile(historyPath, "utf8").then(JSON.parse).catch((error) => { if (error.code === "ENOENT") return null; throw error; });
     await hooks.beforePublish?.();
     await lock.assertOwned();
-    if (!archived || newer(snapshot, archived)) await atomicWrite(historyPath, content);
+    const archivePublished = !archived || newer(snapshot, archived);
+    if (archivePublished) await atomicWrite(historyPath, content);
     // Latest is the publication point. A crash after archive is safe: readers
     // continue to see the previous latest, and neither file can regress.
     const published = !current || newer(snapshot, current);
     if (published) await atomicWrite(latestPath, content);
-    return Object.freeze({ latestPath, historyPath, bytes: Buffer.byteLength(content, "utf8"), published });
+    return Object.freeze({ latestPath: published ? latestPath : null, historyPath: archivePublished ? historyPath : null,
+      bytes: published || archivePublished ? Buffer.byteLength(content, "utf8") : 0, published, archivePublished,
+      reason: published ? null : "not-newer" });
   } finally { await lock.release(); }
 
 }

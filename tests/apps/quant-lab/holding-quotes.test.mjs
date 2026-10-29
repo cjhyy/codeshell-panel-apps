@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fetchHoldingQuotes } from "../../../apps/quant-lab/app/tools/fetch-holding-quotes.mjs";
+import { fetchHoldingQuotes, collectorRequestIdentity } from "../../../apps/quant-lab/app/tools/fetch-holding-quotes.mjs";
+import { marketServiceConfig } from "../../../apps/quant-lab/app/tools/market-service.mjs";
 import { createHoldingQuoteController, createHoldingQuoteRequest, holdingQuoteDelay } from "../../../apps/quant-lab/app/modules/holding-quotes.mjs";
 import { holdingsUnrealizedSummary } from "../../../apps/quant-lab/app/portfolio.mjs";
 
@@ -19,7 +20,29 @@ test("request only held symbols, deduplicate accounts, isolate individual provid
   assert.deepEqual(calls, ["SH600036"]);
   assert.equal(result.quotes[0].price, "10.1");
   assert.equal(result.errors[0].symbol, "AAPL");
-  await assert.rejects(fetchHoldingQuotes([{ symbol: "../bad", market: "cn" }]), /代码无效/u);
+  const invalid = await fetchHoldingQuotes([{ symbol: "../bad", market: "cn" }]);
+  assert.equal(invalid.quotes.length, 0);
+  assert.equal(invalid.errors[0].code, "QUOTE_SUBSCRIPTION_INVALID");
+});
+
+test("service and fallback share per-symbol validation; invalid watch symbols cannot poison held quotes", async () => {
+  const subscriptions = [...items, { market: "us", symbol: "0700.HK" }, { market: "us", symbol: "BRK:B" },
+    { market: "us", symbol: "BRK.B", privateAccount: "never-forward" }, null, ...items];
+  const calls = [], batches = [];
+  const result = await fetchHoldingQuotes(subscriptions, { now,
+    cn: async symbol => { calls.push(symbol); return { ...quote(), symbol }; },
+    us: async symbol => { calls.push(symbol); return { ...quote(), market: "us", symbol }; },
+    onBatch: value => batches.push(value),
+  });
+  const config = marketServiceConfig({ format: "quant.market-feed.config/1", subscriptions });
+  assert.deepEqual(calls, ["SH600036", "BRK.B"]);
+  assert.deepEqual(config.subscriptions, [...items, { market: "us", symbol: "BRK.B" }]);
+  assert.equal(config.ignoredSubscriptions, 3);
+  assert.deepEqual(result.errors.map(item => item.symbol), ["0700.HK", "BRK:B", null]);
+  assert.equal(result.round.failed, 3); assert.equal(result.round.succeeded, 2);
+  assert.equal(batches.at(-1).quotes.length, 2);
+  assert.deepEqual(collectorRequestIdentity([JSON.stringify(subscriptions)]),
+    collectorRequestIdentity([JSON.stringify(config.subscriptions)]), "invalid/private fields cannot create a distinct collector identity");
 });
 
 test("portfolio totals use decimal arithmetic, preserve zero and withhold partial currency totals", () => {

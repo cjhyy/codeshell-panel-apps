@@ -4,17 +4,12 @@ import { canonicalSymbol, syncPortfolioData } from "./fetch-portfolio-data.mjs";
 import { fetchYahooHoldingQuote } from "./fetch-us-stock.mjs";
 
 import { normalizeQuoteV2 } from "../quote-contract.mjs";
-import { runQuoteRound } from "../quote-round-core.mjs";
+import { normalizeQuoteSubscriptions, runQuoteRound } from "../quote-round-core.mjs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCollector } from "./collector-lock.mjs";
 
-function validateHoldingItems(items) {
-  if (!Array.isArray(items) || items.length > 200 || items.some((item) => !item || !["cn", "us"].includes(item.market) || !(item.market === "cn" ? /^(SH|SZ)\d{6}$/u : /^[A-Z][A-Z0-9.-]{0,14}$/u).test(item.symbol))) throw new Error("持仓行情代码无效");
-}
-
 export async function fetchHoldingQuotes(items, { cn = fetchTencentStockQuote, us = fetchYahooHoldingQuote, now = () => new Date(), ...roundOptions } = {}) {
-  validateHoldingItems(items);
   const result = await runQuoteRound(items, { ...roundOptions, fetchQuote: async (item, signal) => {
     const quote = await (item.market === "cn" ? cn(item.symbol, { attempts: 1, signal }) : us(item.symbol, { signal }));
     return normalizeQuoteV2(quote, { ...item, now: now() });
@@ -30,8 +25,7 @@ export function collectorRequestIdentity(argv) {
       from: input.from === undefined ? "2015-01-01" : input.from,
       to: input.to === undefined ? new Date().toISOString().slice(0, 10) : input.to };
   }
-  validateHoldingItems(input);
-  const identities = [...new Map(input.map(({ market, symbol }) => [`${market}:${symbol}`, { market, symbol }])).values()];
+  const { subscriptions: identities } = normalizeQuoteSubscriptions(input);
   return { mode: "quotes", items: identities.sort((a, b) => `${a.market}:${a.symbol}`.localeCompare(`${b.market}:${b.symbol}`)) };
 }
 
