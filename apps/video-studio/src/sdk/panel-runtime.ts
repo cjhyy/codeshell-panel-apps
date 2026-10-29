@@ -134,7 +134,7 @@ export function createPanelRuntime(bridge: RuntimeBridge) {
       throw error;
     }
   }
-  async function call(method: string, params?: unknown, signal?: AbortSignal) {
+  async function call(method: string, params?: unknown, signal?: AbortSignal, beforeInvoke?: () => Promise<void>) {
     const current = await discover(),
       limits = current.capabilities?.bridge ?? current.capabilities?.limits ?? {};
     if (disposed || signal?.aborted) throw runtimeCancelled();
@@ -187,6 +187,9 @@ export function createPanelRuntime(bridge: RuntimeBridge) {
     else ordinaryAdmission = reserve;
     await reserve;
     if (disposed || signal?.aborted) throw runtimeCancelled();
+    // A task's project/revision can change while waiting for local admission.
+    // Check at dispatch, after every SDK queue/discovery await.
+    if (beforeInvoke) await beforeInvoke();
     return invoke(method, params);
   }
   async function wait(
@@ -222,9 +225,9 @@ export function createPanelRuntime(bridge: RuntimeBridge) {
     discover,
     requireMethods,
     wait,
-    async start(input: unknown) {
+    async start(input: unknown, beforeInvoke?: () => Promise<void>) {
       await requireMethods(["tasks.start", "tasks.get", "resources.get"]);
-      return taskValue(await call("tasks.start", input));
+      return taskValue(await call("tasks.start", input, undefined, beforeInvoke));
     },
     async cancel(id: string) {
       return taskValue(await call("tasks.cancel", { id }));

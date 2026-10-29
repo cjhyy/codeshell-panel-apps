@@ -29,7 +29,7 @@
     "app/editor-workspace.css": "16e8b5bfd0013401be12cdaf7510b5b7f17699f22fb089af85035d3374811cd3",
     "app/index.html": "d8a6e7c3a8cca976c3040430f35f2d64c43b15d317cc449ffab040f6cd1af334",
     "app/main.css": "cbad0ccc7e4b88a16b50c6a195d6aef19d592be9793ae90d54f83db1ebd3743d",
-    "app/main.mjs": "40f9860097855729386e3b02f49ed8469102143a1febacb196b6b9d108982cb8",
+    "app/main.mjs": "b9a8037fac76ac60574092ea73fe13737be09544012709b03eae8bf7b20fbdce",
     "app/panel-select.css": "33fdaafa5b361003b553c86e1b18b41a36e9ec3d9dd80e2e7fab6020bcf7bae2",
     "app/panel-select.js": "761d4ba289275ae7deeefee2804c0c995dbb01e2d1e302e1ad4ac2d34bdb29d6",
     "app/rough-cut.css": "b70a117467b919bf5c27cc93db53c569a8b58d6bd8f1646c19f67e846c29c6af",
@@ -42,6 +42,6 @@
     "app/tools/media-runtime.mjs": "6e5a9dc0b910fdc0bb1e45684f4d3194c2502927bcc25e8c0e6e3b9fb46811cb",
     "app/tools/video-studio.mjs": "b5f9abd5db00d2f9ec27b1e57110df43be510aa5cf357170a6a5a53f4c619cf3",
     "app/tools/voice-runtime.mjs": "43229bc9c285484b3fed83866110f3bd121964ec27c9d954eae3e9392f4546d6",
-    "README.md": "8106036fa2504f3bd7eb7975a4c86cff6fb0ef3715ea183446994b4a022617e0"
+    "README.md": "7c10a1e86a4aad3bdb210aef5391e4687ccbd35e00dc81fb05f09be8582084b5"
   }
 }
