@@ -39,5 +39,21 @@ export function classifyYtDlpFailure(output) {
       retryable: true,
     };
   }
+  if (httpStatus(403, "forbidden")) {
+    return {
+      code: "SOURCE_HTTP_403",
+      message:
+        "站点拒绝了下载器的访问（HTTP 403），可能要求站点验证或限制自动下载。网页可播放不代表下载器获准访问。请使用站点提供的官方下载方式或其他允许下载的来源，不要连续重试。",
+      retryable: false,
+    };
+  }
+  if (/\bcloudflare anti-bot challenge\b/u.test(text)) {
+    return {
+      code: "SOURCE_ACCESS_CHALLENGE",
+      message:
+        "站点对下载器提出了站点验证要求，当前下载器无法完成。请使用站点提供的官方下载方式或其他允许下载的来源，不要连续重试。",
+      retryable: false,
+    };
+  }
   return null;
 }

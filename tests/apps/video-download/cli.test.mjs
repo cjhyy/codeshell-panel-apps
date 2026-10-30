@@ -53,7 +53,7 @@ if (args.includes('--version')) { console.log('2026.10.15'); process.exit(0); }
 if (args.includes('--help')) { console.log(process.env.MIMI_TEST_OLD_YTDLP?'old version help':'--js-runtimes RUNTIME[:PATH]'); process.exit(0); }
 if (process.env.MIMI_TEST_ARGS_FILE) fs.appendFileSync(process.env.MIMI_TEST_ARGS_FILE,JSON.stringify(args)+'\\n');
 const target = args.at(-1);
-const sourceFailures = {'http-412':'Unable to download webpage: HTTP Error 412: Precondition Failed','http-429':'HTTP Error 429: Too Many Requests','login-required':"Sign in to confirm you're not a bot"};
+const sourceFailures = {'http-412':'Unable to download webpage: HTTP Error 412: Precondition Failed','http-429':'HTTP Error 429: Too Many Requests','login-required':"Sign in to confirm you're not a bot",'http-403':'[generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge','access-challenge':'Cloudflare anti-bot challenge'};
 for(const [key,message] of Object.entries(sourceFailures)) if(target.includes(key)){console.error('ERROR: '+message+'\\nCookie: SESSDATA=never-persist-this https://media.invalid/?token=private-token');process.exit(1);}
 if (args.includes('--dump-single-json')) {
   if (target.startsWith('ytsearch') || target.startsWith('bilisearch')) {
@@ -469,6 +469,8 @@ test("CLI inspection and shared Chat records retain safe source failure reasons"
     ["http-412", "SOURCE_HTTP_412"],
     ["http-429", "SOURCE_HTTP_429"],
     ["login-required", "SOURCE_LOGIN_REQUIRED"],
+    ["http-403", "SOURCE_HTTP_403"],
+    ["access-challenge", "SOURCE_ACCESS_CHALLENGE"],
   ]) {
     const input = await f.request({ url: `https://example.invalid/${key}` });
     const inspect = await f.invoke(["inspect", "--project", f.project, "--input-file", input], { expected: 1 });
