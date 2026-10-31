@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.24.1 provides one project download runtime for Chat, the Node CLI
+Mimi Download 0.24.2 provides one project download runtime for Chat, the Node CLI
 and the panel. Public downloads saved inside the project share task IDs,
 configuration, queue settings, progress and files. Opening a panel observes those
 records; it does not own or keep the worker alive.
@@ -186,3 +186,12 @@ Run `npm test -- --suite video-download`, `node scripts/validate.mjs`, and
 network fixtures. Browser tests load the actual installed app assets through an
 authorized Host fixture. These tests do not establish every external website,
 real account, deployed Cloud or physical device combination.
+
+### Execution confirmation
+
+If Node execution is declined or its confirmation expires, automatic shared-task
+and environment checks pause for this panel instance. Existing task and history
+records remain visible; queued downloads are not resumed. Use **手动重试** in
+the Tasks page (or the environment refresh button) to request confirmation again.
+Reopening the panel starts a new observation attempt. Network and ordinary helper
+errors are not treated as a refusal of execution permission.

@@ -289,7 +289,26 @@ const auxiliary = createLibraryProcess(panel, {
   },
 });
 // Shared commands use their own receipts; observing a page never owns a worker.
-const serviceProcesses = createLibraryProcess(panel);
+let serviceConfirmationError = null;
+const serviceProcesses = createLibraryProcess(panel, {
+  beforeStart() {
+    // Also stop already queued automatic environment reads after list refusal.
+    if (serviceConfirmationError) throw serviceConfirmationError;
+  },
+  onExecutionNotConfirmed(error) {
+    serviceConfirmationError = error;
+    downloadService.pauseObserving();
+    renderServiceConfirmationNotice();
+  },
+});
+function renderServiceConfirmationNotice() {
+  document.querySelector("#shared-refresh").textContent = serviceConfirmationError
+    ? "手动重试"
+    : "刷新任务";
+  if (serviceConfirmationError)
+    document.querySelector("#shared-service-status").textContent =
+      "运行未获确认，自动刷新已暂停。已知任务与历史保留；点击「手动重试」重新发起确认。";
+}
 let sharedServiceReady = false;
 let sharedQueue = null;
 let sharedListNotice = "";
@@ -387,10 +406,12 @@ const downloadService = panel
         setControlsBusy(false);
         document.querySelector("#shared-service-status").textContent =
           "与聊天、终端自动同步 · 关闭面板仍继续下载。" + sharedListNotice;
+        renderServiceConfirmationNotice();
       },
       onError(error) {
         document.querySelector("#shared-service-status").textContent =
           `下载任务同步失败：${error.message}。请刷新后核对，不要重复提交。`;
+        renderServiceConfirmationNotice();
       },
     })
   : null;
@@ -6665,6 +6686,7 @@ async function initializeRuntime() {
       } catch (error) {
         document.querySelector("#shared-service-status").textContent =
           `共享任务暂不可用：${error.message}；账号与旧版任务保留。`;
+        renderServiceConfirmationNotice();
       }
     }
     await refreshRuntimeDependencies();
@@ -6794,7 +6816,8 @@ elements.restoreDirectory.addEventListener("click", restorePreferredDirectory);
 elements.downloadButton.addEventListener("click", () => void startDownload());
 elements.enqueueButton.addEventListener("click", () => void startDownload({ start: false }));
 elements.refreshVersions.addEventListener("click", () => {
-  void refreshRuntimeDependencies({ force: true });
+  if (serviceConfirmationError) void retryServiceObservation();
+  else void refreshRuntimeDependencies({ force: true });
 });
 elements.setupUpdateButton.addEventListener("click", requestDirectSetup);
 elements.setupAiButton.addEventListener("click", requestAiSetup);
@@ -6883,11 +6906,26 @@ function handleDownloadAction(event) {
     void retryQueuedDownload(item);
   }
 }
+async function retryServiceObservation() {
+  const button = document.querySelector("#shared-refresh");
+  if (button.disabled || !downloadService) return;
+  button.disabled = true;
+  const wasPaused = Boolean(serviceConfirmationError);
+  serviceConfirmationError = null;
+  renderServiceConfirmationNotice();
+  try {
+    await downloadService.startObserving();
+    await refreshSharedQueue();
+    if (wasPaused) await refreshRuntimeDependencies({ force: true });
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    button.disabled = false;
+    renderServiceConfirmationNotice();
+  }
+}
 document.querySelector("#shared-refresh").addEventListener("click", () => {
-  void downloadService
-    ?.refresh()
-    .then(refreshSharedQueue)
-    .catch((error) => showError(error.message));
+  void retryServiceObservation();
 });
 document.querySelector("#shared-start-pending").addEventListener("click", async (event) => {
   event.currentTarget.disabled = true;

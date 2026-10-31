@@ -1,6 +1,9 @@
 // Auxiliary read-only processes use retained receipts so output emitted before
 // spawn resolves can never be mistaken for a download's progress.
-export function createLibraryProcess(panel, { onBusy = () => {}, beforeStart = () => {} } = {}) {
+export function createLibraryProcess(
+  panel,
+  { onBusy = () => {}, beforeStart = () => {}, onExecutionNotConfirmed = () => {} } = {},
+) {
   const ids = new Set();
   let active = 0,
     pendingStarts = 0;
@@ -56,6 +59,9 @@ export function createLibraryProcess(panel, { onBusy = () => {}, beforeStart = (
       for (let attempt = 0; ; attempt++) {
         if (!cleanup && signal?.aborted) throw new Error("已取消");
         try {
+          // A concurrent helper may have been refused while this spawn waited
+          // for rate capacity. Recheck the panel's local pause before retrying.
+          if (method === "process.spawn") beforeStart();
           return await panel.call(method, params);
         } catch (error) {
           const retryAfter = error?.retryAfterMs;
@@ -99,6 +105,21 @@ export function createLibraryProcess(panel, { onBusy = () => {}, beforeStart = (
         id = started.processId;
         ids.add(id);
         if (ids.size > 500) ids.delete(ids.values().next().value);
+      } catch (cause) {
+        // Current Hosts share this exact pre-spawn rejection for refusal and
+        // confirmation expiry. Other operation/network errors are not consent.
+        if (
+          cause?.message === "User denied running node" &&
+          (cause.code === "OPERATION_FAILED" || cause.code === undefined)
+        ) {
+          const error = Object.assign(new Error("运行未获确认，请手动重试。", { cause }), {
+            code: "EXECUTION_NOT_CONFIRMED",
+            confirmed: true,
+          });
+          onExecutionNotConfirmed(error);
+          throw error;
+        }
+        throw cause;
       } finally {
         pendingStarts--;
       }
