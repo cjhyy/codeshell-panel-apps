@@ -189,6 +189,7 @@ export function createDownloadService({
   }
 
   function report(failure) {
+    if (failure.code === "EXECUTION_NOT_CONFIRMED") pauseObserving();
     if (failure.code === "PROJECT_CHANGED") {
       invalidated = true;
       clearInterval(observingTimer);
@@ -196,6 +197,11 @@ export function createDownloadService({
     }
     if (!closed) onError(failure);
     return failure;
+  }
+
+  function pauseObserving() {
+    clearInterval(observingTimer);
+    observingTimer = undefined;
   }
 
   function refresh() {
@@ -280,6 +286,7 @@ export function createDownloadService({
       return queue ? { ...queue } : null;
     },
     refresh,
+    pauseObserving,
     startObserving({ intervalMs = 5000 } = {}) {
       if (!Number.isFinite(intervalMs) || intervalMs < 1)
         return Promise.reject(error("INVALID_ARGUMENT", "刷新间隔无效。"));

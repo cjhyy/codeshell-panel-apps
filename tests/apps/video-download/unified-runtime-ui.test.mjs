@@ -49,7 +49,7 @@ after(async () => {
   if (server) await new Promise((done) => server.close(done));
 });
 
-async function openPanel(t, { width = 1100, height = 1000 } = {}) {
+async function openPanel(t, { width = 1100, height = 1000, denyNode = false } = {}) {
   const context = await browser.newContext({ viewport: { width, height } });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -71,7 +71,7 @@ async function openPanel(t, { width = 1100, height = 1000 } = {}) {
     assert.deepEqual(errors, [], "The real panel must not throw or contact external services");
   });
   await page.addInitScript(
-    ({ chatId, hostId, videoUrl }) => {
+    ({ chatId, hostId, videoUrl, denyNode }) => {
       const handlers = {},
         processes = new Map();
       let nextProcess = 0,
@@ -81,6 +81,7 @@ async function openPanel(t, { width = 1100, height = 1000 } = {}) {
       window.setInterval = (callback, delay, ...args) =>
         originalInterval(callback, delay === 5000 ? 300 : delay, ...args);
       window.__calls = [];
+      window.__denyNode = denyNode;
       window.__serviceCalls = [];
       window.__environmentCalls = [];
       window.__tools = {};
@@ -307,6 +308,10 @@ async function openPanel(t, { width = 1100, height = 1000 } = {}) {
             return { handle: `entry-${args.name}` };
           }
           if (method === "process.spawn") {
+            if (window.__denyNode)
+              throw Object.assign(new Error("User denied running node"), {
+                code: "OPERATION_FAILED",
+              });
             if (!args.entryHandle || args.stdin !== "pipe")
               throw new Error("Unexpected direct process execution");
             const processId = `helper-${++nextProcess}`;
@@ -441,10 +446,14 @@ async function openPanel(t, { width = 1100, height = 1000 } = {}) {
         },
       };
     },
-    { chatId, hostId, videoUrl },
+    { chatId, hostId, videoUrl, denyNode },
   );
   await page.goto(baseUrl);
-  await ready(page);
+  if (denyNode)
+    await page.waitForFunction(
+      () => document.querySelector("#shared-refresh")?.textContent === "手动重试",
+    );
+  else await ready(page);
   return page;
 }
 
@@ -477,20 +486,31 @@ test("a timed-out version check is distinct from a missing tool and refresh can 
     ["timeout", "下载器检查超时", /yt-dlp 检查超时.*刷新环境/],
     ["not-found", "需要安装", /缺少 yt-dlp/],
   ]) {
-    await page.evaluate((failure) => { window.__environmentFailure = failure; }, failure);
+    await page.evaluate((failure) => {
+      window.__environmentFailure = failure;
+    }, failure);
     await page.locator("#refresh-versions").click();
-    await page.waitForFunction((status) => document.querySelector("#environment-status").textContent === status, status);
+    await page.waitForFunction(
+      (status) => document.querySelector("#environment-status").textContent === status,
+      status,
+    );
     assert.match(await page.locator("#setup-status").textContent(), setup);
     if (failure === "timeout") {
       assert.equal(await page.locator("#installed-ytdlp-version").textContent(), "检查超时");
       assert.doesNotMatch(await page.locator("#setup-status").textContent(), /缺少|未安装/);
     }
   }
-  await page.evaluate(() => { window.__environmentFailure = ""; });
+  await page.evaluate(() => {
+    window.__environmentFailure = "";
+  });
   await page.locator("#refresh-versions").click();
   await ready(page);
   assert.equal(await page.locator("#environment-status").textContent(), "✓ 最新稳定版");
-  assert.ok(await page.evaluate(() => window.__environmentCalls.some((input) => input.action === "refresh")));
+  assert.ok(
+    await page.evaluate(() =>
+      window.__environmentCalls.some((input) => input.action === "refresh"),
+    ),
+  );
 });
 
 for (const width of [390, 1280])
@@ -994,4 +1014,59 @@ test("startup reuses queue state from the initial shared list", async (t) => {
     0,
     "opening the panel must not spawn a redundant queue helper",
   );
+});
+
+test("declining startup Node confirmation pauses all automatic shared checks until manual retry", async (t) => {
+  const page = await openPanel(t, { width: 390, height: 844, denyNode: true });
+  await page.waitForTimeout(1000); // More than three actual polling intervals in this fixture.
+  assert.equal((await hostCalls(page, "process.spawn")).length, 1);
+  assert.deepEqual(await page.evaluate(() => window.__environmentCalls), []);
+  assert.match(await page.locator("#shared-service-status").innerText(), /自动刷新已暂停/);
+  await page.locator('[data-tab="task"]').click();
+  await page.locator("#shared-refresh").click(); // A second explicit refusal stays paused.
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#shared-refresh").textContent === "手动重试" &&
+      !document.querySelector("#shared-refresh").disabled,
+  );
+  await page.waitForTimeout(700);
+  assert.equal((await hostCalls(page, "process.spawn")).length, 2);
+  await page.evaluate(() => {
+    window.__denyNode = false;
+    window.__addChatJob({ status: "pending" });
+    window.__queue.paused = true;
+  });
+  await page.locator("#shared-refresh").click();
+  await ready(page);
+  const reads = (await sharedCalls(page, "list")).length;
+  await page.waitForFunction(
+    (count) => window.__serviceCalls.filter((entry) => entry.action === "list").length > count,
+    reads,
+  );
+  assert((await page.evaluate(() => window.__environmentCalls.length)) >= 1);
+  assert.equal(await page.evaluate(() => window.__queue.paused), true);
+  assert.equal(await page.evaluate((id) => window.__jobs[id].status, chatId), "pending");
+  assert.deepEqual(await sharedCalls(page, "start"), []);
+  assert.deepEqual(await sharedCalls(page, "configure"), []);
+  assert.deepEqual(await sharedCalls(page, "submit"), []);
+  assert.deepEqual(await hostCalls(page, "tasks.start"), []);
+  assert.deepEqual(await hostCalls(page, "process.cancel"), []);
+
+  // A later refusal preserves already displayed records, even across timer ticks.
+  await page.evaluate(() => {
+    window.__denyNode = true;
+  });
+  await page.waitForFunction(
+    () => document.querySelector("#shared-refresh").textContent === "手动重试",
+  );
+  const stopped = (await hostCalls(page, "process.spawn")).length;
+  await page.waitForTimeout(700);
+  assert.equal((await hostCalls(page, "process.spawn")).length, stopped);
+  assert.match(await page.locator("#task-overview-list").innerText(), /Chat fixture video/);
+  await page.reload(); // The pause is per panel instance, never a persisted permission.
+  await page.waitForFunction(
+    () => document.querySelector("#shared-refresh").textContent === "手动重试",
+  );
+  assert.equal((await hostCalls(page, "process.spawn")).length, 1);
+  assert.equal(await page.evaluate((id) => window.__jobs[id].status, chatId), "pending");
 });

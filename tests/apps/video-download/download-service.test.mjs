@@ -435,3 +435,59 @@ test("missing Node can be repaired and invalid actions never reach a native proc
     await assert.rejects(action(), { code: "INVALID_ARGUMENT" });
   assert.equal(app.runs.length, 1);
 });
+
+test("unconfirmed execution pauses polling, preserves known records and resumes only explicitly", async (t) => {
+  let denied = false;
+  const app = fixture({
+    run: () => {
+      if (denied)
+        throw Object.assign(new Error("not confirmed"), {
+          code: "EXECUTION_NOT_CONFIRMED",
+          confirmed: true,
+        });
+      return response({ jobs: [job()], queue: queue({ paused: true }) });
+    },
+  });
+  t.after(() => app.service.destroy());
+  await app.service.startObserving({ intervalMs: 5 });
+  denied = true;
+  await until(() => app.errors.length === 1);
+  const count = app.runs.length;
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  assert.equal(app.runs.length, count, "multiple polling intervals must not spawn again");
+  assert.deepEqual(app.service.records, [job()]);
+  assert.deepEqual(app.service.queue, queue({ paused: true }));
+  denied = false;
+  await app.service.startObserving({ intervalMs: 5 });
+  await until(() => app.runs.length > count + 1);
+  assert(app.runs.every(({ input }) => input.action === "list"));
+});
+
+test("network failures remain retryable and unconfirmed mutations never trigger a second helper", async (t) => {
+  let unavailable = true;
+  const app = fixture({
+    run: () => {
+      if (unavailable)
+        throw Object.assign(new Error("network unavailable"), { code: "OPERATION_FAILED" });
+      return response({ jobs: [], queue: queue() });
+    },
+  });
+  t.after(() => app.service.destroy());
+  await assert.rejects(app.service.startObserving({ intervalMs: 5 }), /network/);
+  unavailable = false;
+  await until(() => app.changes.length === 1);
+  const denied = fixture({
+    run: () => {
+      throw Object.assign(new Error("not confirmed"), {
+        code: "EXECUTION_NOT_CONFIRMED",
+        confirmed: true,
+      });
+    },
+  });
+  t.after(() => denied.service.destroy());
+  await assert.rejects(denied.service.start(id, 1), { code: "EXECUTION_NOT_CONFIRMED" });
+  assert.deepEqual(
+    denied.runs.map(({ input }) => input.action),
+    ["start"],
+  );
+});
