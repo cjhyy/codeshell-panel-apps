@@ -163,6 +163,9 @@ async function walk(directory, root = directory) {
 }
 
 async function validatePackage(packagePath) {
+  // Every installable layout must pass the actual Host contract. The additional
+  // application checks below cannot substitute for strict manifest/preflight.
+  await validateSourcePackage(packagePath);
   const root = join(repositoryRoot, packagePath);
   const rootRealPath = await realpath(root);
   const manifestPath = join(root, ".codeshell-panel", "panel.json");

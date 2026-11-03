@@ -1,14 +1,6 @@
+import { reviewedEntry } from "./reviewed-entry.mjs";
+import { createSharedMarketController } from "./market-service-client.mjs";
 import { chinaMarketClock } from "./a-share-session.mjs";
-
-const LAUNCHER = [
-  'import { join } from "node:path";',
-  'import { pathToFileURL } from "node:url";',
-  'const home = process.env.HOME || process.env.USERPROFILE;',
-  'if (!home) throw new Error("user-home-unavailable");',
-  'const tool = join(home, ".code-shell", "panel-apps", "quant-lab", "app", "tools", "fetch-holding-quotes.mjs");',
-  'const module = await import(pathToFileURL(tool).href);',
-  'await module.runCli([process.argv.at(-1)]);',
-].join("\n");
 
 // Follow the existing Quant Lab read-only quote runtime, with listeners scoped
 // to this request, a hard output bound, cancellation and late-result rejection.
@@ -63,10 +55,13 @@ export function createHoldingQuoteRequest({ hostCall, onHostEvent, maxOutputChar
         if (!runtime) throw new Error("未找到行情运行环境");
         const directory = await hostCall("filesystem.getKnownDirectory", { name: "app-data" });
         if (stopped) throw new Error("已停止持仓行情刷新");
+        const entryHandle = await reviewedEntry(hostCall, "fetch-holding-quotes", runtime.handle);
+        if (stopped) throw new Error("已停止持仓行情刷新");
         const started = await hostCall("process.spawn", {
           executableHandle: runtime.handle,
           directoryHandle: directory.handle,
-          args: [...(runtime.name === "bun" ? [] : ["--input-type=module"]), "--eval", LAUNCHER, JSON.stringify(items)],
+          entryHandle,
+          args: [JSON.stringify(items)],
         });
         processId = started?.processId;
         if (!processId) throw new Error("持仓行情程序未能启动");
@@ -96,8 +91,9 @@ export function holdingQuoteDelay(items, now) {
   return items.some((item) => item.market === "cn" ? cnOpen : usOpen) ? 15_000 : 5 * 60_000;
 }
 
-export function createHoldingQuoteController({ request, symbols, onUpdate, now = () => new Date(),
+export function createHoldingQuoteController({ request, symbols, onUpdate, hostCall, getContext, onHostEvent, now = () => new Date(),
   schedule = setTimeout, unschedule = clearTimeout }) {
+  if (hostCall && getContext) return createSharedMarketController({ request, symbols, onUpdate, hostCall, getContext, onHostEvent, now, schedule, unschedule });
   let active = false;
   let timer = null;
   let generation = 0;

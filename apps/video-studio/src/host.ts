@@ -27,6 +27,7 @@ export interface PanelBridge {
     theme?: string;
     visible?: boolean;
     availableMethods?: string[];
+    capabilities?: { tasks?: { executionRevision?: string } };
   }>;
   call(method: string, params?: unknown): Promise<unknown>;
   callResult?(method: string, params?: unknown): Promise<BridgeResult>;

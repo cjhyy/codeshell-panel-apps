@@ -1,4 +1,4 @@
-# Video Studio · 视频工作台 0.10.2
+# Video Studio · 视频工作台 0.11.0（未发布候选）
 
 ## 0.10.2：编辑器里直接重连原文件
 
@@ -601,3 +601,57 @@ Host 私有任务。文件是正式 schema-2 编辑文档，时间为每秒 2400
 没有活跃写入者后才手工处理，不能盲清锁或并发手改工程文件。退出码为 0 成功、
 2 参数/输入限制、3 修订冲突、4 项目忙、1 其他失败。验证命令：
 `node --test tests/video-studio-project-cli.test.mjs`。
+
+Ordinary media submissions require advertised `tasks.find`. Their canonical
+SHA-256 request keys include the action, normalized request, materialized
+resource mapping and selected connection IDs. A project document CAS saves the
+intent before `tasks.start`; a lost receipt or reopened window queries the same
+key first. A `sent` intent with an unknown result never automatically resubmits;
+paid manual-recovery requests remain blocked. The Editor's own request protocol is unchanged.
+
+### 0.11.0 — unreleased candidate: media request recovery
+
+Ordinary requests persist a project-scoped intent with the Host execution revision
+and a monotonically increasing attempt before submission. Existing active
+receipts and successfully published media assets are reused.
+A successful engine setup can be explicitly run again through the existing
+“安装并验证引擎 / 重新检查并修复引擎” action after a confirmation dialog; this
+creates a new attempt even within the same package revision. A pending setup
+whose acknowledgement was lost first recovers that receipt instead.
+Failed/cancelled local requests can start a new
+attempt; paid/manual requests require explicit confirmation after checking results.
+Reopening first queries the original request key (including a retained task id).
+Before dispatch, the intent records `ready` plus the digest of the exact canonical
+Host input (including resources, connection identities and stable job id). A
+separate CAS claim records `sent`; a project/revision check runs again after SDK
+admission and immediately before dispatch. An interrupted `ready` intent can
+resume with the original request key and identical input. Lost CAS acknowledgements
+are queried, never treated as permission to replace a competing claim. Known
+pre-admission size/queue rejection restores that same request to `ready`; one failed
+proof write is retried without changing its attempt.
+
+Host input preparation is invisible to `tasks.find`. It deduplicates identical
+scope/key/input while preparing or while the receipt exists, but may evict terminal
+receipts at its 2000-job limit, with no guaranteed retention period. Therefore a
+missing receipt does **not** prove that a request was never executed. An unknown
+`sent` local request with no paid connection can be explicitly recovered at most
+twice, using the same revision, key and input. The confirmation explains that local
+work may run again if its receipt was evicted. Unknown paid requests, legacy intents
+without the exact input digest, mismatched input and cross-revision pending requests
+remain blocked; time and confirmation do not authorize a replacement paid request.
+Generic Host preparation errors cannot be distinguished from transport loss after
+acceptance. If no non-admission proof was persisted (including a crash after claim
+but before dispatch), check retained tasks and results; reopening or waiting alone
+cannot safely release that paid intent.
+
+A previously acknowledged receipt retired by Host retention may be recovered only
+after the user checks results and confirms a new request; no automatic paid replay
+occurs. CAS losers query the winner and never delete its intent. Status/voice probes
+leave no permanent intent or recipe documents. The real Host contract fixture is
+`scripts/video-studio-host-request-contract.mjs <built-host-root>`; it includes the
+receipt-eviction counterexample and uses no provider or real credentials.
+
+This 0.11.0 candidate is based on the shared task branch from origin/main
+`84348855be8ae4e5a31936b3c2b0d1d21410bd64`; it is not a record of a published
+0.10.2 release. Separate unpublished local 0.9.0/0.10.0 work is not included in
+this candidate and must be integrated and verified independently.

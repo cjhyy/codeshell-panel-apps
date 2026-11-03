@@ -1,3 +1,4 @@
+import { reviewedEntry } from "./reviewed-entry.mjs";
 import { liveQuoteNumber } from "../live-quote-contract.mjs";
 import { parseMarketInsight } from "./market-insights-ui.mjs";
 import { chinaMarketClock, displayedAShareSessionPhase } from "./a-share-session.mjs";
@@ -24,17 +25,6 @@ const INDEX_SPECS = new Map([
   ["指数 000300", "沪深300"],
 ]);
 
-const NODE_LAUNCHER = [
-  'import { join } from "node:path";',
-  'import { pathToFileURL } from "node:url";',
-  'const home = process.env.HOME || process.env.USERPROFILE;',
-  'if (!home) throw new Error("user-home-unavailable");',
-  'const tool = join(home, ".code-shell", "panel-apps", "quant-lab", "app", "tools", "build-market-pulse.mjs");',
-  'const module = await import(pathToFileURL(tool).href);',
-  'const mode = process.argv.at(-1) || "refresh-volatile";',
-  'const args = mode === "read-local" ? ["--stdout", "--read-local", "--persist-panel-data"] : mode === "refresh-local" ? ["--stdout", "--persist-panel-data"] : ["--stdout"];',
-  'try { await module.runCli(args); } catch (error) { process.stderr.write(JSON.stringify({ ok: false, errorCode: error?.code ?? error?.cause?.code ?? "MARKET_PULSE_ERROR", message: error instanceof Error ? error.message : "market pulse failed", sourceFailures: error?.sourceFailures }) + "\\n"); process.exitCode = 1; }',
-].join("\n");
 
 const LIVE_RUNTIME_SPECS = Object.freeze([
   Object.freeze({ name: "node", label: "Node.js" }),
@@ -46,11 +36,9 @@ export function liveMarketRuntimeArgs(name, mode = "refresh-volatile") {
   if (!new Set(["refresh-volatile", "refresh-local", "read-local"]).has(mode)) {
     throw new Error("行情本地模式不受支持");
   }
-  if (name === "node" || name === "nodejs") {
-    return Object.freeze(["--input-type=module", "--eval", NODE_LAUNCHER, mode]);
-  }
-  if (name === "bun") return Object.freeze(["--eval", NODE_LAUNCHER, mode]);
-  throw new Error("行情运行时不受支持");
+  if (!["node", "nodejs", "bun"].includes(name)) throw new Error("行情运行时不受支持");
+  return Object.freeze(mode === "read-local" ? ["--stdout", "--read-local", "--persist-panel-data"]
+    : mode === "refresh-local" ? ["--stdout", "--persist-panel-data"] : ["--stdout"]);
 }
 
 function cleanText(value, maximum = 300) {
@@ -1162,12 +1150,19 @@ export function createLiveMarketController({
 
   async function ensureRuntime() {
     if (runtime) return runtime;
+    const runtimeGeneration = generation;
+    const runtimeCall = async (method, params) => {
+      if (runtimeGeneration !== generation) throw new Error("项目或请求已切换");
+      const result = await hostCall(method, params);
+      if (runtimeGeneration !== generation) throw new Error("项目或请求已切换");
+      return result;
+    };
     if (typeof onHostEvent !== "function") throw new Error("实时行情需在 CodeShell 投资工作台内运行");
     let selected = null;
     for (const spec of LIVE_RUNTIME_SPECS) {
       let executable;
       try {
-        executable = await hostCall("process.find", { name: spec.name });
+        executable = await runtimeCall("process.find", { name: spec.name });
       } catch {
         throw new Error(
           "当前 CodeShell 会话尚未加载新版行情运行权限，请完全退出并重新打开 CodeShell",
@@ -1186,10 +1181,10 @@ export function createLiveMarketController({
     let directory = null;
     let persistent = false;
     try {
-      directory = await hostCall("filesystem.getKnownDirectory", { name: "app-data" });
+      directory = await runtimeCall("filesystem.getKnownDirectory", { name: "app-data" });
       persistent = true;
     } catch {
-      directory = await hostCall("filesystem.getKnownDirectory", { name: "downloads" });
+      directory = await runtimeCall("filesystem.getKnownDirectory", { name: "downloads" });
     }
     if (typeof directory?.handle !== "string") throw new Error("无法取得受限的行情运行目录");
     runtime = {
@@ -1220,20 +1215,26 @@ export function createLiveMarketController({
   }
 
   async function fetchSnapshot(mode = "refresh") {
+    const fetchGeneration = generation;
     const handles = await ensureRuntime();
+    if (fetchGeneration !== generation) throw new Error("项目或请求已切换");
     if (mode === "read-local" && !handles.persistent) throw new Error("当前 CodeShell 不支持面板本地数据目录");
     const runtimeMode = mode === "read-local"
       ? "read-local"
       : handles.persistent
         ? "refresh-local"
         : "refresh-volatile";
+    const entryHandle = await reviewedEntry(hostCall, "build-market-pulse", handles.executableHandle);
+    if (fetchGeneration !== generation) throw new Error("项目或请求已切换");
     const started = await hostCall("process.spawn", {
       executableHandle: handles.executableHandle,
+      entryHandle,
       directoryHandle: handles.directoryHandle,
       args: liveMarketRuntimeArgs(handles.name, runtimeMode),
     });
     if (typeof started?.processId !== "string") throw new Error("行情程序未能启动");
     const processId = started.processId;
+    if (fetchGeneration !== generation) { void hostCall("process.cancel", { processId }).catch(() => {}); throw new Error("项目或请求已切换"); }
     activeProcessId = processId;
     let record;
     try {
@@ -1269,6 +1270,7 @@ export function createLiveMarketController({
           render();
         }
       }
+      if (loadGeneration !== generation) return snapshot;
       const next = await fetchSnapshot();
       if (loadGeneration !== generation) return snapshot;
       const futureMs = Date.parse(next.asOf) - now().getTime();
@@ -1278,6 +1280,7 @@ export function createLiveMarketController({
       retryDelayMs = Object.values(next.sourceErrors).some((message) => /频率限制/u.test(message)) ? CLOSED_REFRESH_MS : 0;
       lastRefreshFailed = false;
       const localPersistence = (await ensureRuntime()).persistent;
+      if (loadGeneration !== generation) return snapshot;
       const degraded = Object.values(next.sourceStatus).some((available) => !available) || next.validationWarnings.length > 0;
       const nextDisplayPhase = displayedAShareSessionPhase(next, now());
       elements.status.dataset.tone = degraded ? "warning" : "active";
@@ -1427,6 +1430,7 @@ export function createLiveMarketController({
       }
     },
     reset() {
+      runtime = null;
       generation += 1;
       clearRefreshTimer();
       if (activeProcessId) {

@@ -166,6 +166,75 @@ async function openPage(t, options = {}) {
         attempted = [],
         tools = {},
         events = {};
+      // These native fixtures model Host request admission too: a repeated key
+      // retrieves the original receipt, including after a cold page reload.
+      const nativeTasks = JSON.parse(localStorage.getItem("editor-main-native-tasks") ?? "{}");
+      const pendingNativeTasks = new Map();
+      const nativeScope = () => ({
+        appId: window.__projectContext.appId ?? "video-studio",
+        projectPath: window.__projectContext.cwd ?? "/isolated/editor-main",
+        revision: window.__projectContext.capabilities?.tasks?.executionRevision ?? "editor-main-task-v1",
+      });
+      const sameNativeScope = (a, b, revision = true) => a?.appId === b.appId &&
+        a.projectPath === b.projectPath && (!revision || a.revision === b.revision);
+      const canonical = (value) => value === null || typeof value !== "object"
+        ? JSON.stringify(value)
+        : Array.isArray(value)
+          ? `[${value.map((item) => canonical(item ?? null)).join(",")}]`
+          : `{${Object.keys(value).filter((key) => value[key] !== undefined).sort()
+            .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+      const validNativeKey = (key) => {
+        if (typeof key !== "string" || !key || key.length > 160)
+          throw Error("Invalid native fixture request key");
+      };
+      const nativeTask = (id) => {
+        const record = nativeTasks[id], scope = nativeScope();
+        if (!record || !sameNativeScope(record.scope, scope, false)) throw Error("Task not found");
+        return { ...structuredClone(record.job), readOnly: !sameNativeScope(record.scope, scope) };
+      };
+      const findNativeTask = (key) => {
+        validNativeKey(key);
+        const scope = nativeScope();
+        const found = Object.values(nativeTasks).find((record) =>
+          sameNativeScope(record.scope, scope) && record.job.requestKey === key);
+        return found ? nativeTask(found.job.id) : null;
+      };
+      const listNativeTasks = (args) => Object.values(nativeTasks)
+        .filter((record) => sameNativeScope(record.scope, nativeScope(), false))
+        .map((record) => nativeTask(record.job.id))
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(args.offset ?? 0, (args.offset ?? 0) + (args.limit ?? 50));
+      const startNativeTask = async (input, create) => {
+        const args = structuredClone(input), scope = nativeScope();
+        if (args.requestKey !== undefined) validNativeKey(args.requestKey);
+        if (!["manual", "retry"].includes(args.recovery)) throw Error("Invalid native fixture recovery");
+        const digest = canonical({ entry: args.entry, input: args.input, recovery: args.recovery });
+        const key = args.requestKey === undefined ? null : canonical([scope, args.requestKey]);
+        const existing = key && Object.values(nativeTasks).find((record) =>
+          sameNativeScope(record.scope, scope) && record.job.requestKey === args.requestKey);
+        const pending = key && pendingNativeTasks.get(key);
+        if (existing || pending) {
+          if ((existing ?? pending).digest !== digest)
+            throw Error("Native fixture request key already used for different input");
+          return existing ? nativeTask(existing.job.id) : pending.result;
+        }
+        const result = Promise.resolve().then(create).then((value) => {
+          const job = {
+            ...value,
+            entry: { name: args.entry },
+            input: args.input,
+            recovery: args.recovery,
+            scope,
+            ...(args.requestKey === undefined ? {} : { requestKey: args.requestKey }),
+          };
+          nativeTasks[job.id] = { scope, digest, job };
+          localStorage.setItem("editor-main-native-tasks", JSON.stringify(nativeTasks));
+          return nativeTask(job.id);
+        });
+        if (key) pendingNativeTasks.set(key, { digest, result });
+        try { return await result; }
+        finally { if (key && pendingNativeTasks.get(key)?.result === result) pendingNativeTasks.delete(key); }
+      };
       const persist = () => {
         localStorage.setItem("editor-main-host", JSON.stringify(records));
         localStorage.setItem("editor-main-preferences", JSON.stringify(preferences));
@@ -201,6 +270,7 @@ async function openPage(t, options = {}) {
             theme: "dark",
             visible: true,
             capabilities: {
+              tasks: { executionRevision: nativeScope().revision },
               bridge: {
                 maxCallsPerWindow: 10000,
                 maxTransferCallsPerWindow: 10000,
@@ -219,6 +289,7 @@ async function openPage(t, options = {}) {
               ...(options.fullNativeAccess
                 ? [
                     "tasks.start",
+                    "tasks.find",
                     "tasks.get",
                     "tasks.list",
                     "tasks.cancel",
@@ -245,6 +316,7 @@ async function openPage(t, options = {}) {
                     "resources.open",
                     "resources.read",
                     "tasks.start",
+                    "tasks.find",
                     "tasks.get",
                     "tasks.list",
                     "tasks.cancel",
@@ -269,6 +341,8 @@ async function openPage(t, options = {}) {
         },
         call: async (method, args = {}) => {
           calls.push({ method, args: structuredClone(args) });
+          if (method === "tasks.find" && (options.fullNativeAccess || options.hostRecording))
+            return findNativeTask(args.requestKey);
           if (options.hostRecording) {
             const asset = options.hostRecording.asset;
             if (method === "resources.recordVideo.capabilities")
@@ -298,43 +372,45 @@ async function openPage(t, options = {}) {
                 offset: 0,
                 eof: true,
               };
-            if (method === "tasks.list") return Object.values(window.__recordingJobs ?? {});
-            if (method === "tasks.get") return window.__recordingJobs[args.id];
+            if (method === "tasks.list") return listNativeTasks(args);
+            if (method === "tasks.get") return nativeTask(args.id);
             if (method === "tasks.start") {
-              const request = args.input.request;
-              if (!["inspect", "status", "voices"].includes(request.action))
-                throw Error(`Unsupported recording fixture task ${request.action}`);
-              const result =
-                request.action === "inspect"
-                  ? {
-                      assetId: asset.id,
-                      inspection: options.hostRecording.inspection ?? {
-                        kind: "audio",
-                        durationSeconds: options.hostRecording.durationSeconds ?? 1,
-                        hasAudio: true,
-                      },
-                    }
-                  : request.action === "voices"
-                    ? { available: false, models: [], voices: [] }
-                    : {
-                        persistent: true,
-                        ffmpeg: { available: false },
-                        transcription: { available: false },
-                        tts: { available: false },
-                        hyperframes: { available: false },
-                      };
-              const job = {
-                id: crypto.randomUUID(),
-                entry: { name: args.entry },
-                input: args.input,
-                status: "succeeded",
-                attempt: 1,
-                createdAt: Date.now(),
-                updatedAt: Date.now(),
-                result: { result },
-              };
-              (window.__recordingJobs ??= {})[job.id] = job;
-              return job;
+              return startNativeTask(args, () => {
+                const request = args.input.request;
+                if (!["inspect", "status", "voices"].includes(request.action))
+                  throw Error(`Unsupported recording fixture task ${request.action}`);
+                const result =
+                  request.action === "inspect"
+                    ? {
+                        assetId: asset.id,
+                        inspection: options.hostRecording.inspection ?? {
+                          kind: "audio",
+                          durationSeconds: options.hostRecording.durationSeconds ?? 1,
+                          hasAudio: true,
+                        },
+                      }
+                    : request.action === "voices"
+                      ? { available: false, models: [], voices: [] }
+                      : {
+                          persistent: true,
+                          ffmpeg: { available: false },
+                          transcription: { available: false },
+                          tts: { available: false },
+                          hyperframes: { available: false },
+                        };
+                const job = {
+                  id: crypto.randomUUID(),
+                  entry: { name: args.entry },
+                  input: args.input,
+                  status: "succeeded",
+                  attempt: 1,
+                  createdAt: Date.now(),
+                  updatedAt: Date.now(),
+                  result: { result },
+                };
+                (window.__recordingJobs ??= {})[job.id] = job;
+                return job;
+              });
             }
           }
           if (method === "tasks.list" && window.__productionReleased)
@@ -349,29 +425,31 @@ async function openPage(t, options = {}) {
             return structuredClone(found);
           }
           if (method === "tasks.list" && (options.nativeTasks || options.fullNativeAccess))
-            return [];
+            return options.fullNativeAccess ? listNativeTasks(args) : [];
           if (method === "tasks.start" && options.holdNativeStart)
-            return new Promise(() => {});
+            return startNativeTask(args, () => new Promise(() => {}));
           // The real Host copies each original inside tasks.start(stage-resources) and only
           // then returns a job; model a copy that is still running after a fresh status read.
           if (options.holdNativeCopy && method === "tasks.start") {
-            if (args.input.request.action !== "stage-status") return new Promise(() => {});
-            const job = {
-              id: `status-${calls.length}`,
-              // "status" keeps the fresh status read running, as a slow hash of saved originals.
-              status: options.holdNativeCopy === "status" ? "running" : "succeeded",
-              attempt: 1,
-              createdAt: Date.now(),
-              updatedAt: Date.now(),
-              // A staging job's progress must never be shown as the preview percentage.
-              progress: { stage: "prepare-video", fraction: 0.42 },
-              result: { result: { resourceIds: [], chunks: [] } },
-            };
-            (window.__nativeJobs ??= {})[job.id] = job;
-            return structuredClone(job);
+            return startNativeTask(args, () => {
+              if (args.input.request.action !== "stage-status") return new Promise(() => {});
+              const job = {
+                id: `status-${crypto.randomUUID()}`,
+                // "status" keeps the fresh status read running, as a slow hash of saved originals.
+                status: options.holdNativeCopy === "status" ? "running" : "succeeded",
+                attempt: 1,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                // A staging job's progress must never be shown as the preview percentage.
+                progress: { stage: "prepare-video", fraction: 0.42 },
+                result: { result: { resourceIds: [], chunks: [] } },
+              };
+              (window.__nativeJobs ??= {})[job.id] = job;
+              return structuredClone(job);
+            });
           }
           if (options.holdNativeCopy && method === "tasks.get")
-            return structuredClone(window.__nativeJobs[args.id]);
+            return nativeTask(args.id);
           if (method === "media.jobs.list" && options.fullNativeAccess) return { jobs: [] };
           if (method === "resources.get" && options.fullNativeAccess) {
             if (Object.keys(args).length !== 1 || typeof args.id !== "string")
@@ -953,6 +1031,73 @@ test("a delayed valid preference with a later clock cannot defeat a manual choic
   await page.reload(); await page.locator("#editor-workspace").waitFor({ state: "visible" });
   await page.evaluate(() => releaseMainQualityLoad());
   await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.25");
+});
+
+test("native editor fixture finds durable request receipts and isolates projects and execution revisions", async (t) => {
+  const page = await openPage(t, { fullNativeAccess: true, holdNativeCopy: true });
+  const input = {
+    entry: "editor-runtime",
+    requestKey: "editor-main-native-protocol",
+    input: { request: { action: "stage-status", documentHash: "a".repeat(64) } },
+    recovery: "retry",
+  };
+  const admitted = await page.evaluate(async (input) => {
+    const [first, duplicate] = await Promise.all([
+      window.codeshellPanel.call("tasks.start", input),
+      window.codeshellPanel.call("tasks.start", structuredClone(input)),
+    ]);
+    return { first, duplicate, found: await window.codeshellPanel.call("tasks.find", {
+      requestKey: input.requestKey,
+    }) };
+  }, input);
+  assert.equal(admitted.first.status, "succeeded");
+  assert.equal(admitted.duplicate.id, admitted.first.id, "Concurrent admission reuses the original receipt");
+  assert.equal(admitted.found.id, admitted.first.id, "find returns the admitted task");
+  assert.equal(admitted.found.requestKey, input.requestKey);
+  assert.deepEqual(admitted.found.input, input.input);
+  assert.equal(admitted.found.recovery, input.recovery);
+  await assert.rejects(page.evaluate((input) => window.codeshellPanel.call("tasks.start", {
+    ...input,
+    input: { request: { ...input.input.request, documentHash: "b".repeat(64) } },
+  }), input), /request key already used for different input/);
+
+  await page.evaluate(() => { window.__projectContext = { cwd: "/isolated/other-editor-main" }; });
+  assert.equal(await page.evaluate((requestKey) => window.codeshellPanel.call("tasks.find", {
+    requestKey,
+  }), input.requestKey), null, "Another project cannot find this receipt");
+  await assert.rejects(page.evaluate((id) => window.codeshellPanel.call("tasks.get", { id }),
+    admitted.first.id), /Task not found/);
+  const otherProject = await page.evaluate((input) => window.codeshellPanel.call("tasks.start", input), input);
+  assert.notEqual(otherProject.id, admitted.first.id, "The other project owns a separate admission");
+
+  await page.evaluate(() => {
+    window.__projectContext = { capabilities: { tasks: { executionRevision: "editor-main-task-v2" } } };
+  });
+  assert.equal(await page.evaluate((requestKey) => window.codeshellPanel.call("tasks.find", {
+    requestKey,
+  }), input.requestKey), null, "Another execution revision cannot find this receipt");
+  const retained = await page.evaluate((id) => window.codeshellPanel.call("tasks.get", { id }), admitted.first.id);
+  assert.equal(retained.id, admitted.first.id);
+  assert.equal(retained.readOnly, true, "The retained old revision remains readable");
+  const newRevision = await page.evaluate((input) => window.codeshellPanel.call("tasks.start", input), input);
+  assert.notEqual(newRevision.id, admitted.first.id, "The new revision owns a separate admission");
+
+  await page.reload();
+  await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  const reopened = await page.evaluate(async (input) => ({
+    found: await window.codeshellPanel.call("tasks.find", { requestKey: input.requestKey }),
+    duplicate: await window.codeshellPanel.call("tasks.start", input),
+  }), input);
+  assert.equal(reopened.found.id, admitted.first.id, "Cold reopening retains the original receipt");
+  assert.equal(reopened.found.readOnly, false);
+  assert.equal(reopened.duplicate.id, admitted.first.id, "Cold reopening does not execute the request again");
+  const newAdmission = await page.evaluate((input) => window.codeshellPanel.call("tasks.start", {
+    ...input, requestKey: `${input.requestKey}-after-reload`,
+  }), input);
+  assert.notEqual(newAdmission.id, admitted.first.id, "New admissions cannot overwrite retained task IDs");
+  assert.equal((await page.evaluate((requestKey) => window.codeshellPanel.call("tasks.find", {
+    requestKey,
+  }), input.requestKey)).id, admitted.first.id);
 });
 
 test("saved video and audio reopen without starting native proxies, waveforms or voice probes", async (t) => {

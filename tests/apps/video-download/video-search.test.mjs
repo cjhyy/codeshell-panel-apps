@@ -203,7 +203,10 @@ before(async () => {
       response.writeHead(404).end();
     }
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise((done, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => { server.removeListener("error", reject); done(); });
+  });
   baseUrl = `http://127.0.0.1:${server.address().port}`;
   browser = await chromium.launch({ headless: true });
 });

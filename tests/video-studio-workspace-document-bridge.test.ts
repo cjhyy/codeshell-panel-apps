@@ -33,6 +33,7 @@ function cloud() {
           "workspace.readText",
           "workspace.writeText",
           "tasks.start",
+          "tasks.find",
           "tasks.get",
           "tasks.list",
           "tasks.cancel",
@@ -85,6 +86,7 @@ function cloud() {
         throw new Error("Unsupported Host method: " + method);
       }
       if (method === "credentials.connections.list") return { connections: [] };
+      if (method === "tasks.find") return structuredClone([...jobs.values()].find((job) => job.requestKey === p.requestKey) ?? null);
       if (method === "tasks.start") {
         const request = p.input.request;
         const job = {
@@ -93,6 +95,7 @@ function cloud() {
           attempt: 1,
           createdAt: 1,
           updatedAt: 1,
+          requestKey: p.requestKey,
           entry: { name: p.entry },
           input: p.input,
           result: {

@@ -1,3 +1,7 @@
+import { createPortfolioBaseReady } from "./modules/portfolio-tool-ready.mjs";
+import { createCollectorScopeBridge } from "./modules/reviewed-entry.mjs";
+import { selectionActivity, canApplySelectionSource } from "./modules/selection-activation.mjs";
+import { createPanelBootstrap } from "./modules/panel-bootstrap.mjs";
 import { buildResearchReport, parseResearchMetadata, RESEARCH_PRESETS, researchPreset } from "./research-report.mjs";
 import { createProjectSetting } from "./modules/project-setting.mjs";
 import { projectContextChanged, projectContextKey, projectIdentity } from "./project-context.mjs";
@@ -25,7 +29,7 @@ import {
   validateAlertRule,
   walkForward,
 } from "./engine.mjs";
-import { buildTodayModel, marketStatusAt } from "./today-model.mjs";
+import { buildTodayModel, formatTodayPortfolioSummary, marketStatusAt } from "./today-model.mjs";
 import { createAlertsController } from "./modules/alerts-ui.mjs";
 import {
   aShareResolutionMessage,
@@ -632,6 +636,13 @@ let toastTimer;
 let workspaceEpoch = 0;
 let contextInitialized = false;
 let initialContextPending = true;
+let resolveInitialIdentity;
+const initialIdentityReady = new Promise(resolve => { resolveInitialIdentity = resolve; });
+let workspaceRequests = new AbortController();
+let backgroundWatchRestoreTimer = null;
+let backgroundWatchRestoreFlight = null;
+let backgroundWatchRestored = false;
+let backgroundWatchRevision = 0;
 let activeModule = "today";
 let moduleNavigationRevision = 0;
 let lastMarketProbeAt = null;
@@ -672,6 +683,7 @@ let alertsController = null;
 let newsController = null;
 let socialRadarController = null;
 let notesController = null;
+let collectorScopeBridge = null;
 let panelHostCallScheduler = null;
 let notesDecisionFacts = {
   status: "unavailable",
@@ -695,6 +707,40 @@ let portfolioTodayState = {
   },
 };
 
+const bootstrap = createPanelBootstrap({ currentEpoch: () => workspaceEpoch });
+
+function selectionState() {
+  return { ready: bootstrap.isOpen(), visible: context.visible !== false && document.visibilityState !== "hidden", module: activeModule, backgroundRestored: backgroundWatchRestored };
+}
+function syncSelectionActivity() {
+  const state = selectionActivity(selectionState());
+  aShareSelectionController?.setActive(state.active, { backgroundWatch: state.backgroundWatch });
+}
+function scheduleBackgroundWatchRestore() {
+  if (!bootstrap.isOpen() || !bootstrap.isReady(activeModule) || context.visible === false || document.visibilityState === "hidden" || backgroundWatchRestored || backgroundWatchRestoreTimer != null || backgroundWatchRestoreFlight) return;
+  const epoch = workspaceEpoch, revision = backgroundWatchRevision;
+  backgroundWatchRestoreTimer = setTimeout(async () => {
+    backgroundWatchRestoreTimer = null;
+    if (epoch !== workspaceEpoch || revision !== backgroundWatchRevision || !bootstrap.isOpen() || context.visible === false || document.visibilityState === "hidden") return;
+    const flight = { epoch, revision };
+    backgroundWatchRestoreFlight = flight;
+    try {
+      // User-maintained long-term watches are restored after the current page.
+      // Empty watches cause no native snapshot read or full-market scan.
+      await aShareSelectionController.load({ backgroundOnly: true });
+      if (epoch !== workspaceEpoch || revision !== backgroundWatchRevision) return;
+      backgroundWatchRestored = true;
+      syncSelectionActivity();
+    } catch (error) { if (epoch === workspaceEpoch && revision === backgroundWatchRevision) notify(error.message, "error"); }
+    finally { if (backgroundWatchRestoreFlight === flight) backgroundWatchRestoreFlight = null; }
+  }, 0);
+}
+
+document.addEventListener("visibilitychange", () => {
+  syncSelectionActivity();
+  if (document.visibilityState !== "hidden") scheduleBackgroundWatchRestore();
+});
+
 function currentInstant() {
   const override = window.__quantLabNow;
   const value = override ? new Date(override) : new Date();
@@ -702,6 +748,7 @@ function currentInstant() {
 }
 
 function marketProbeDue(instant = currentInstant()) {
+  if (!bootstrap.isOpen() || !bootstrap.has("today")) return false;
   if (!Number.isFinite(lastMarketProbeAt)) return true;
   const current = chinaMarketClock(instant);
   const previous = chinaMarketClock(new Date(lastMarketProbeAt));
@@ -717,7 +764,7 @@ function clearBackgroundMarketProbe() {
 
 function scheduleBackgroundMarketProbe(delayOverride = null) {
   clearBackgroundMarketProbe();
-  if (context.visible === false || activeModule === "today" || !liveMarketController) return;
+  if (!bootstrap.isOpen() || !bootstrap.has("today") || context.visible === false || activeModule === "today" || !liveMarketController) return;
   const instant = currentInstant();
   const delay = Number.isFinite(delayOverride)
     ? Math.max(250, delayOverride)
@@ -730,6 +777,7 @@ function scheduleBackgroundMarketProbe(delayOverride = null) {
 
 async function runBackgroundMarketProbe() {
   if (
+    !bootstrap.isOpen() || !bootstrap.has("today") ||
     context.visible === false ||
     activeModule === "today" ||
     !liveMarketController ||
@@ -1286,14 +1334,14 @@ function activateModule(moduleId, { focusTarget = "tab", persist = true } = {}) 
   for (const [candidate, panel] of modulePanels) {
     panel.hidden = candidate !== nextModule;
   }
-  holdingsController?.setActive(["holdings", "today"].includes(nextModule) && context.visible !== false);
-  liveMarketController?.setActive(nextModule === "today" && context.visible !== false);
-  aShareSelectionController?.setActive(["today", "watch"].includes(nextModule) && context.visible !== false, { backgroundWatch: context.visible !== false });
+  holdingsController?.setActive(bootstrap.isOpen() && ["holdings", "today"].includes(nextModule) && context.visible !== false);
+  liveMarketController?.setActive(bootstrap.isOpen() && nextModule === "today" && context.visible !== false);
+  syncSelectionActivity();
   if (nextModule !== "today" && context.visible !== false && marketProbeDue()) {
     void runBackgroundMarketProbe();
   } else scheduleBackgroundMarketProbe();
+  if (bootstrap.isOpen()) void ensureActiveModule().then(scheduleBackgroundWatchRestore).catch(error => notify(error.message, "error"));
   if (nextModule === "research") {
-    void historyDataController?.refreshHistorySummaryFromLocal();
     renderDataCapabilityMatrix();
   }
   const selectedTab = moduleTabs.find((tab) => tab.dataset.moduleTab === nextModule);
@@ -1761,7 +1809,7 @@ function agentSubmissionAvailable() {
     (!Array.isArray(context.availableMethods) || Boolean(context.sessionId));
 }
 
-function hostCall(method, params) {
+function hostCall(method, params, intent) {
   if (method === "agent.submitPrompt" && !agentSubmissionAvailable())
     return Promise.reject(new Error("当前未连接可提交的 Agent 会话；请求未发送，可连接 CodeShell 后重试"));
   if (!window.codeshellPanel?.call) return mockHostCall(method, params);
@@ -1770,7 +1818,12 @@ function hostCall(method, params) {
     currentScope: () => workspaceEpoch,
     ...(window.__quantLabTestHostCallLimits ?? {}),
   });
-  return panelHostCallScheduler.call(method, params);
+  collectorScopeBridge ??= createCollectorScopeBridge({
+    invoke: (nextMethod, nextParams, nextIntent) => panelHostCallScheduler.call(nextMethod, nextParams, nextIntent),
+    getContext: () => context, currentEpoch: () => workspaceEpoch,
+    ensureLibraryId: () => historyDataController?.ensureLibraryId(),
+  });
+  return collectorScopeBridge(method, params, { owner: `workspace:${workspaceEpoch}`, signal: workspaceRequests.signal, ...intent });
 }
 
 function todayWatchResults() {
@@ -1863,15 +1916,14 @@ function renderToday() {
     label.textContent = summary.label;
     const detail = document.createElement("span");
     const emptyCopy = {
-      portfolio: portfolioTodayState.ledgerExists ? "缺少行情或汇率 · 暂无法估值" : "尚未录入持仓",
       watch: watchlist.length ? `${watchlist.length} 项提醒 · 暂无有效检查结果` : "尚未添加价格与技术提醒",
       data: "录入持仓后可检查数据",
     };
-    detail.textContent = summary.value == null
+    detail.textContent = summary.id === "portfolio"
+      ? formatTodayPortfolioSummary(summary, portfolioTodayState.ledgerExists)
+      : summary.value == null
       ? (emptyCopy[summary.id] ?? "暂无可用数据")
-      : summary.id === "portfolio"
-        ? `${Number(summary.value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} CNY`
-        : String(summary.value);
+      : String(summary.value);
     const action = document.createElement("span");
     action.className = "today-summary-action";
     action.textContent = summary.id === "watch"
@@ -2570,11 +2622,15 @@ historyDataController = createHistoryDataController({
     bootstrapNext: elements.historyBootstrapNext,
     bootstrapProgress: elements.historyBootstrapProgress,
     bootstrapStatus: elements.historyBootstrapStatus,
+    librarySelect: document.querySelector("#history-library-select"),
+    libraryLocation: document.querySelector("#history-library-location"),
   },
 });
 
 holdingsController = createHoldingsController({
   hostCall,
+  getContext: () => context,
+  additionalQuoteSymbols: () => watchlist.map(item => ({ symbol: item.symbol, market: /^(?:SH|SZ)\d{6}$/u.test(item.symbol) ? "cn" : "us" })),
   onHostEvent: typeof window.codeshellPanel?.on === "function"
     ? (event, listener) => window.codeshellPanel.on(event, listener) : null,
   currentEpoch: () => workspaceEpoch,
@@ -2766,7 +2822,7 @@ function clearRunResult() {
 function applyRunResult(nextResult) {
   result = nextResult;
   const trace = backtestRunTrace();
-  elements.backtestRunVersion.textContent = `结果编号 · ${trace.resultId}`;
+  elements.backtestRunVersion.textContent = `结果编号 · ${trace.resultId} · 执行于 ${currentInstant().toLocaleString("zh-CN", { hour12: false })} · ${dataset.kind === "demo" ? "合成演示" : "历史行情模拟"}`;
   elements.backtestRunVersion.title = `引擎 ${trace.engineVersion} · 参数 ${trace.configurationFingerprint} · 数据 ${trace.datasetFingerprint}`;
   renderMetrics();
   renderChart();
@@ -3991,49 +4047,60 @@ function restoreUiState(value) {
   updateParameterVisibility();
 }
 
+async function ensureActiveModule() {
+  const epoch = workspaceEpoch;
+  const scope = context.cwd ?? null;
+  // Bootstrap invokes the loader asynchronously. Capture the selected module
+  // with its cache key so a quick tab switch cannot mark another module ready.
+  const moduleId = activeModule;
+  const shared = (name, load) => bootstrap.ensure(name, load);
+  const base = () => shared("holdings", () => holdingsController.loadBase(epoch));
+  return shared(moduleId, async () => {
+    if (epoch !== workspaceEpoch) return;
+    switch (moduleId) {
+      case "holdings":
+        await holdingsController.loadBase(epoch);
+        // Subscription metadata is one lightweight project record; read it only
+        // after base holdings are usable, without starting Watch/Selection.
+        setTimeout(() => { if (epoch === workspaceEpoch) void shared("watchlist", loadWatchlist).then(() => {
+          if (epoch === workspaceEpoch && activeModule === "holdings") return holdingsController.refreshQuotes();
+        }); }, 0);
+        break;
+      case "today":
+        await Promise.all([base(), shared("watchlist", loadWatchlist), dataSourcesController.load(), marketInsightsController.load(), historyDataController.refreshHistorySummaryFromLocal()]);
+        if (epoch !== workspaceEpoch) return;
+        await Promise.all([aShareSelectionController.load(), selectionSignalLabController.load()]);
+        break;
+      case "watch":
+        await Promise.all([shared("watchlist", loadWatchlist), dataSourcesController.load(), aShareSelectionController.load(), alertsController.load()]);
+        break;
+      case "news": await Promise.all([newsController.load(epoch), socialRadarController.load(epoch)]); break;
+      case "notes": await notesController.load(epoch); break;
+      case "stock": await marketInsightsController.load(); break;
+      case "research":
+        await loadConfiguration(scope, scope ?? "preview", epoch);
+        if (epoch !== workspaceEpoch) return;
+        updateParameterVisibility(); renderDataset(); run({ persist: false });
+        await Promise.all([dataSourcesController.load(), historyDataController.load()]);
+        break;
+    }
+    if (epoch !== workspaceEpoch) return;
+    holdingsController.setActive(["today", "holdings"].includes(activeModule) && context.visible !== false);
+    liveMarketController.setActive(activeModule === "today" && context.visible !== false);
+    if (["today", "watch"].includes(moduleId)) backgroundWatchRestored = true;
+    syncSelectionActivity();
+    scheduleBackgroundWatchRestore();
+    renderDataCapabilityMatrix();
+  });
+}
+
 async function restoreWorkspaceState(workspaceIdentity, storageRoot, epoch) {
-  // A user may navigate while the current project's other records are loading.
   const navigationRevision = moduleNavigationRevision;
-  await loadConfiguration(workspaceIdentity, storageRoot, epoch);
-  if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
-  await loadWatchlist();
-  if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
-  // The default screen is the market dashboard: restore its saved research
-  // before the heavier portfolio/news/note views so first paint becomes useful
-  // even when those other project files take longer to read.
-  // The history library itself is Panel-local rather than conversation-local,
-  // so reconcile it before rendering the rest of the dashboard in a new chat.
-  await dataSourcesController.load();
-  if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
-  await historyDataController.load();
-  if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
-  await aShareSelectionController.load();
-  if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
-  await selectionSignalLabController.load();
-  if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
-  if (activeModule === "today" && context.visible !== false) void liveMarketController.start();
-  aShareSelectionController.setActive(["today", "watch"].includes(activeModule) && context.visible !== false, { backgroundWatch: context.visible !== false });
-  if (["today", "watch"].includes(activeModule) && context.visible !== false) void aShareSelectionController.start();
-  await marketInsightsController.load();
-  if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
-  await holdingsController.load(epoch);
-  if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
-  await newsController.load(epoch);
-  if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
-  await socialRadarController.load(epoch);
-  renderDataCapabilityMatrix();
-  if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
-  await notesController.load(epoch);
-  if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
-  holdingsController.refreshRules();
-  notesController.render();
   await restoreActiveModule(storageRoot, epoch, navigationRevision);
   if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
-  await alertsController.load();
-  if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
-  updateParameterVisibility();
-  renderDataset();
-  run({ persist: false });
+  bootstrap.open(epoch);
+  await ensureActiveModule();
+  scheduleBackgroundWatchRestore();
 }
 
 function updateChartTooltip(event) {
@@ -4451,8 +4518,13 @@ function updateContext(next) {
     ? { ...next, busy: next.busy === true, trusted: next.trusted === true }
     : { busy: false, trusted: false };
   const nextWorkspaceRoot = typeof nextContext.cwd === "string" ? nextContext.cwd : null;
-  const workspaceChanged = contextInitialized && projectContextChanged(context, nextContext);
+  const workspaceChanged = contextInitialized && (projectContextChanged(context, nextContext) || context.executionId !== nextContext.executionId);
   if (workspaceChanged) {
+    workspaceRequests.abort();
+    workspaceRequests = new AbortController();
+    clearTimeout(backgroundWatchRestoreTimer); backgroundWatchRestoreTimer = null;
+    backgroundWatchRestored = false; backgroundWatchRevision++; backgroundWatchRestoreFlight = null;
+    bootstrap.close();
     clearPlainResearch();
     // The Host has already switched projects: do not submit an old-project write.
     if (configurationSession?.dirty) rememberConfigurationDraft();
@@ -4465,6 +4537,9 @@ function updateContext(next) {
       name: "合成演示行情",
       source: "系统生成样本",
     };
+    // Clear the prior project's saved-data labels immediately; restoring the
+    // new project's Research configuration remains lazy and performs no reads.
+    renderDataset();
     watchlist = [];
     watchlistStorageValue = { items: [] };
     watchMigrationBlocked = false;
@@ -4529,9 +4604,10 @@ function updateContext(next) {
   }
   context = nextContext;
   contextInitialized = true;
-  holdingsController?.setActive(["holdings", "today"].includes(activeModule) && context.visible !== false);
-  liveMarketController?.setActive(activeModule === "today" && context.visible !== false);
-  aShareSelectionController?.setActive(["today", "watch"].includes(activeModule) && context.visible !== false, { backgroundWatch: context.visible !== false });
+  holdingsController?.setActive(bootstrap.isOpen() && ["holdings", "today"].includes(activeModule) && context.visible !== false);
+  liveMarketController?.setActive(bootstrap.isOpen() && activeModule === "today" && context.visible !== false);
+  syncSelectionActivity();
+  scheduleBackgroundWatchRestore();
   const isVisible = context.visible !== false;
   if (
     !wasVisible &&
@@ -4592,7 +4668,7 @@ function updateContext(next) {
     // untrusted. Once trust is granted, re-read the project data directory so
     // an old A-share CSV joins the same automatic maintenance chain without
     // requiring a tab switch or app restart.
-    void historyDataController.load();
+    if (bootstrap.has("research")) void historyDataController.load();
   }
   if (
     wasBusy &&
@@ -6037,6 +6113,7 @@ async function initialize() {
     if (!receivedContextEvent) updateContext({ busy: false, trusted: false });
   }
   initialContextPending = false;
+  resolveInitialIdentity();
   const initializationWorkspaceEpoch = workspaceEpoch;
   const initializationWorkspaceIdentity = context.cwd ?? null;
   const initializationWorkspaceRoot = initializationWorkspaceIdentity ?? "preview";
@@ -6054,22 +6131,34 @@ dataSourcesController = createDataSourcesController({
   async onApply() {
     const epoch = workspaceEpoch;
     aShareSelectionController.reset();
+    backgroundWatchRestored = false; backgroundWatchRevision++; backgroundWatchRestoreFlight = null;
+    clearTimeout(backgroundWatchRestoreTimer); backgroundWatchRestoreTimer = null;
+    bootstrap.invalidate("today"); bootstrap.invalidate("watch");
+    if (!canApplySelectionSource(selectionState())) return { deferred: true };
     await aShareSelectionController.load();
-    if (epoch !== workspaceEpoch) return;
-    aShareSelectionController.setActive(true, { backgroundWatch: true });
+    if (epoch !== workspaceEpoch || !canApplySelectionSource(selectionState())) return { deferred: true };
+    backgroundWatchRestored = true;
+    syncSelectionActivity();
     return aShareSelectionController.refresh();
   },
   onHistory() { activateModule("research"); document.querySelector(".history-data-center")?.scrollIntoView({ block: "start" }); },
 });
-const portfolioToolsReady = initialize();
+void initialize().catch(error => notify(error.message, "error"));
+
+const portfolioBaseReady = createPortfolioBaseReady({
+  identityReady: initialIdentityReady,
+  getIdentity: () => ({ epoch: workspaceEpoch, executionId: context.executionId ?? null }),
+  loadBase: epoch => holdingsController.loadBase(epoch),
+});
 
 registerPortfolioTools({
   registerTool: window.codeshellPanel?.registerTool,
   hostCall,
-  ready: portfolioToolsReady,
+  ready: portfolioBaseReady,
   currentEpoch: () => workspaceEpoch,
   refresh: (epoch) => holdingsController.load(epoch),
   displayedPositions: () => holdingsController.noteContext().holdings?.positionsByAccount ?? [],
+  displayedFingerprint: () => holdingsController.noteContext().holdings?.transactionsFingerprint,
 });
 
 function clearPlainResearch() {

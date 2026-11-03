@@ -382,6 +382,12 @@ export async function runQuantLab(command, input, { project = process.cwd() } = 
         aliases,
         inputSchemas: schemas,
         inputExamples,
+        workflow: {
+          input: "Select an existing project CSV and an explicit strategy/configuration; demo=true is labeled synthetic data.",
+          output: "Dataset interval, execution time, return/drawdown and sample/out-of-sample evidence; no trading orders.",
+          next: "Inspect data quality, then backtest; compare parameter-sweep and walk-forward risk before saving a research note.",
+          observation: "observe plan persists intent only; an external caller must invoke tick for each bounded update. It does not start an OS scheduler.",
+        },
         limits: {
           inputBytes: INPUT_BYTES,
           dataBytes: DATA_BYTES,

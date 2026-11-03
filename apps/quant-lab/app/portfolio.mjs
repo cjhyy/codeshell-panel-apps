@@ -1034,6 +1034,21 @@ function applyPhase(state, phase, options) {
   }
 }
 
+// Only FX observations actually read while applying transaction/corporate-action
+// phases belong to replay identity. Ending valuation FX is intentionally absent
+// unless that date also contains a transaction requiring the same currency.
+export function holdingsReplayInputs(ledger, options = {}) {
+  const instruments = instrumentMap(ledger);
+  const checkpointFx = {};
+  for (const phase of transactionPhases(ledger)) {
+    const currency = instruments.get(transactionInstrumentId(phase.transaction))?.currency ?? phase.transaction.currency;
+    if (!currency || currency === "CNY") continue;
+    const source = options.checkpointFx?.[phase.date];
+    (checkpointFx[phase.date] ??= {})[currency] = (plainObject(source) ? source[currency] : source) ?? null;
+  }
+  return { checkpointFx };
+}
+
 function replayLedger(ledger, options = {}, throughDate = null) {
   const state = createState(ledger);
   for (const phase of transactionPhases(ledger)) {
@@ -1201,6 +1216,14 @@ function publicHoldings(state, options = {}) {
     },
     ...(valuation ? { valuation } : {}),
   };
+}
+
+// Replay once for an immutable ledger/checkpoint-FX epoch. Ending quotes and
+// ending FX revalue the captured decimal state without replaying transactions.
+// publicHoldings may annotate missing FX, so each valuation gets a private copy.
+export function createHoldingsReplay(ledger, options = {}) {
+  const state = replayLedger(ledger, options);
+  return Object.freeze({ value: (valuation = options) => publicHoldings(structuredClone(state), valuation) });
 }
 
 export function deriveHoldings(ledger, options = {}) {

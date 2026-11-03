@@ -51,9 +51,55 @@ previous package and include a deterministic SHA-256 file inventory. Browser
 modules use inline source maps; standalone `.map` and `.ts` runtime assets are
 not supported by the Host.
 
-`@cjhyy/code-shell-core@0.9.23` is pinned as a development dependency for the
+`@cjhyy/code-shell-core@0.9.52` is pinned as a development dependency for the
 published Host's manifest schema and read-only installation preflight. It is
 used only by package checks and is not bundled into the installed Panel runtime.
+
+Quant 0.51.0 (an unpublished candidate) declares the reviewed `background.services` permission and
+`backgroundServices` declaration, plus `resources` alongside `process` for bounded
+history tasks. The normal Host installation/update review must show the new grant.
+Cores older than 0.9.49 intentionally reject
+that package; never remove the permission or loosen its schema to make an old
+Host install it. During a coordinated Host/Panel change, point checks at an
+explicitly built candidate Core:
+
+```sh
+CODESHELL_PANEL_CORE_PACKAGE=/absolute/path/to/host/packages/core npm run validate
+node scripts/quant-history-host-contract.mjs /absolute/path/to/host
+node scripts/quant-background-upgrade.mjs /absolute/path/to/host/packages/core
+node scripts/quant-background-host.mjs /absolute/path/to/host
+```
+
+The override imports the candidate's actual `dist/index.js` schema for development
+validation only. `npm run check:host-contract`, the corresponding required CI job,
+and the first step of `npm run check` always use the exact published dependency;
+they deliberately ignore that override. They validate every actual installation
+layout, including native apps and source-built outputs, through the Host's strict
+manifest parser and read-only installer preview. Version, lock and registry
+integrity must match. Development validation cannot make a release gate green.
+
+The pin is the published Host Core **0.9.52**, which accepts Quant's new capability
+and Design Studio's existing `.wasm` asset (the former `0.9.23` pin rejected both).
+Do not loosen either installer contract. To move the pin to a later compatible
+published Core, verify its registry metadata in a private HOME, then update both
+exact pin and lock using npm (never a hand-written integrity hash):
+
+```sh
+npm view @cjhyy/code-shell-core@<version> version dist.integrity dist.tarball --json
+npm install --save-dev --save-exact @cjhyy/code-shell-core@<version>
+npm ci
+npm run check:host-contract
+npm run check
+```
+
+Until that clean-install sequence passes, Panel release integration is blocked.
+These commands do not authorize publishing the Core package. The upgrade gate proves old-Host rejection retains Quant 0.47.0 and
+candidate permission review/rollback preserves exact package identities. The
+native smoke installs the actual candidate in a private HOME, starts the reviewed
+Quant service through the real Host, checks multi-guest/closed-page/stop behavior,
+and uses empty subscriptions so no market provider is contacted. It is not an
+Electron UI or live-market acceptance test. After changing a Quant native entry,
+run `node scripts/sync-quant-native.mjs`; the default gate verifies its hashes.
 
 With Node.js 20+ and development dependencies installed, run:
 

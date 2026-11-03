@@ -14,7 +14,7 @@ export const suites = [
   {
     id: "upgrade-harness",
     label: "Upgrade worker browser custody and shutdown receipts",
-    commands: [["--test", "tests/panel-upgrade-process.test.mjs"]],
+    commands: [["--test", "tests/panel-upgrade-process.test.mjs", "tests/panel-upgrade-starter-assets.test.mjs", "tests/panel-upgrade-options.test.mjs"]],
   },
   {
     id: "starter",
@@ -75,7 +75,7 @@ export const suites = [
   {
     id: "desktop-harness",
     label: "Desktop acceptance process custody and cleanup failures",
-    commands: [["--test", "tests/panel-desktop-cleanup.test.mjs"]],
+    commands: [["--test", "tests/panel-desktop-cleanup.test.mjs", "tests/panel-desktop-native-fixture.test.mjs"]],
   },
   {
     id: "packages",
@@ -389,6 +389,7 @@ export const suites = [
       ["--test", "apps/video-studio/native/tests/voice-runtime.test.mjs"],
       ["--test", "tests/video-studio-workspace-storage.test.mjs"],
       ["--test", "tests/video-studio-project-cli.test.mjs"],
+      ["--test", "tests/helpers/video-studio-generic-task.test.mjs"],
     ],
   },
 ];

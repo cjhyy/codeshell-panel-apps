@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { repositoryRoot } from "../panel-projects.mjs";
-import { PanelAppManifest, previewLocalPanelApp } from "@cjhyy/code-shell-core";
+import { pathToFileURL } from "node:url";
+// Cross-repository capability work must be validated against the actual built
+// candidate schema, not a looser local copy. Normal release checks stay pinned.
+const corePackage = process.env.CODESHELL_PANEL_CORE_PACKAGE;
+const { PanelAppManifest, previewLocalPanelApp } = await import(corePackage
+  ? pathToFileURL(resolve(corePackage, "dist/index.js")).href
+  : "@cjhyy/code-shell-core");
 
 const forbiddenNames = new Set([
   ".claude-plugin",
@@ -30,6 +36,7 @@ const allowedExtensions = new Set([
   ".woff",
   ".woff2",
   ".ttf",
+  ".wasm",
 ]);
 const allowedAgentExtensions = new Set([".md", ".json", ".png", ".jpg", ".jpeg", ".webp"]);
 async function walk(directory, root = directory) {

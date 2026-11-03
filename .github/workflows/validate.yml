@@ -64,6 +64,18 @@ jobs:
           NODE
       - run: node --test tests/apps/job-hunt-hq/resume-pdf-native.test.mjs
 
+  host-install-contract:
+    name: Pinned published Host installation contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check:host-contract
+
   validate:
     name: Package and offline checks
     runs-on: ubuntu-latest

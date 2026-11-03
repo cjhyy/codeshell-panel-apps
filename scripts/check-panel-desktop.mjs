@@ -5,23 +5,44 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmod, cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { PNG } from "pngjs";
 import { cleanupPanelDesktopFixture, closeOwnedPanelElectron } from "./panel-desktop-cleanup.mjs";
+import { preparePanelDesktopNativeFixture, waitForPanelDesktopIdle } from "./panel-desktop-native-fixture.mjs";
+import { prepareManagedNodeNetworkFixture } from "./panel-desktop-managed-node-fixture.mjs";
+import { prepareNativeEntryParentObservation, verifyNativeEntryExit } from "./panel-desktop-native-parent.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const [hostArgument, reportArgument, ...extra] = process.argv.slice(2);
-assert.ok(hostArgument && extra.length === 0,
-  "usage: node scripts/check-panel-desktop.mjs <built-host-checkout> [new-report.json]");
+const [hostArgument, ...arguments_] = process.argv.slice(2);
+let reportArgument, selectedApp;
+for (let index = 0; index < arguments_.length; index++) {
+  const value = arguments_[index];
+  if (value === "--app") {
+    assert.ok(!selectedApp && arguments_[index + 1], "--app requires one Panel id");
+    selectedApp = arguments_[++index];
+  } else {
+    assert.ok(!value.startsWith("--") && !reportArgument, `unexpected argument: ${value}`);
+    reportArgument = value;
+  }
+}
+assert.ok(hostArgument, "usage: node scripts/check-panel-desktop.mjs <built-host-checkout> [new-report.json] [--app <panel-id>]");
+const packageCases = ["apps/design-studio", "apps/job-hunt-hq", "apps/quant-lab", "apps/video-download", "panels/video-studio", "templates/starter"];
+const cases = [];
+for (const packagePath of packageCases) {
+  const manifest = JSON.parse(await readFile(join(repository, packagePath, ".codeshell-panel/panel.json"), "utf8"));
+  if (!selectedApp || manifest.id === selectedApp) cases.push({ packagePath, manifest });
+}
+assert.ok(cases.length, `unknown --app: ${selectedApp}`);
 const hostRoot = resolve(hostArgument);
 const appDir = join(hostRoot, "packages/desktop");
 const hostModule = path => import(pathToFileURL(join(hostRoot, path)).href);
 const sha256 = value => createHash("sha256").update(value).digest("hex");
 const files = ["packages/desktop/out/main/index.mjs", "packages/desktop/out/preload/index.cjs",
   "packages/desktop/out/preload/panel-app.cjs", "packages/desktop/out/renderer/index.html",
+  "packages/desktop/out/managed-runtimes/node/bin/node",
   "packages/core/dist/panel-apps/installer.js", "packages/server/dist/panels/runtime-services.js"];
 const buildHashes = Object.fromEntries(await Promise.all(files.map(async path =>
   [path, sha256(await readFile(join(hostRoot, path)))])));
@@ -34,21 +55,20 @@ const panelCommit = gitHead(repository), hostSourceCommit = gitHead(hostRoot);
 const runnerSha256 = sha256(await readFile(fileURLToPath(import.meta.url)));
 const hostSourceManifestVersion = JSON.parse(await readFile(join(appDir, "package.json"), "utf8")).version;
 const directory = await mkdtemp(join(tmpdir(), "panel-desktop-ipc-"));
-let app, ownedChildProcess, win, report, cleanupReceipt, failure, launchStarted = false, stage = "initialize";
-const results = [], rendererErrors = [];
+let app, ownedChildProcess, win, report, cleanupReceipt, failure, nativeFixture, nativeParentFixture, managedFixture, launchStarted = false, stage = "initialize";
+const results = [], rendererErrors = [], busyRejections = [], readRateRejections = [];
 try {
   // Scrub arbitrary inherited provider credentials before loading any Host module.
   const { createBunTestEnvironment } = await hostModule("scripts/bun-test-completion.mjs");
   const environment = createBunTestEnvironment(process.env, directory);
-  // Download performs native version probes on startup. Owned CLI fixtures prevent
-  // curl/wget/yt-dlp from reaching a live provider outside the JavaScript guard.
-  // The Host still discovers, authorizes and runs these actual subprocesses.
+  // Host safeProcessEnv deliberately excludes NODE_OPTIONS. Its real NativeEntry
+  // executable must enforce the OS boundary itself, including for descendants.
   const fixtureBin = join(environment.HOME, "fixture-bin");
-  await mkdir(fixtureBin);
-  for (const name of ["curl", "wget", "yt-dlp"]) {
-    const version = name === "yt-dlp" ? `case "$*" in *--version*) echo 2026.10.12; exit 0;; esac\n` : "";
-    await writeFile(join(fixtureBin, name), `#!/bin/sh\n${version}echo 'Desktop acceptance denies live native network clients' >&2\nexit 77\n`, { mode: 0o700 });
-  }
+  nativeFixture = await preparePanelDesktopNativeFixture({ directory, binDirectory: fixtureBin,
+    nodeExecutable: process.execPath, environment });
+  console.log(`NativeEntry OS network self-test: ${JSON.stringify(nativeFixture.selfTest)}`);
+  managedFixture = await prepareManagedNodeNetworkFixture({ directory,
+    executable: join(appDir, "out/managed-runtimes/node/bin/node") });
   environment.PATH = `${fixtureBin}:${environment.PATH}`;
   for (const key of ["DBUS_SESSION_BUS_ADDRESS", "GNOME_KEYRING_CONTROL", "SECURITYSESSIONID"])
     if (process.env[key]) environment[key] = process.env[key];
@@ -60,6 +80,16 @@ try {
     [name, name === "home" ? isolated.home : join(isolated.home, `fixture-${name}`)]));
   for (const path of Object.values(nativePaths)) await mkdir(path, { recursive: true, mode: 0o700 });
   await cp(fixtureBin, join(isolated.userDataDir, "bin"), { recursive: true });
+  const nativeNamespace = join(isolated.codeShellHome, "panel-apps");
+  await mkdir(nativeNamespace, { recursive: true, mode: 0o700 });
+  nativeParentFixture = await prepareNativeEntryParentObservation({ directory, receiptFile: nativeFixture.receiptFile,
+    executablePaths: [nativeFixture.wrapper, join(isolated.userDataDir, "bin/node")], namespaceRoot: nativeNamespace,
+    packageContentModule: pathToFileURL(join(hostRoot, "packages/core/dist/panel-apps/package-content.js")).href,
+    entries: (await Promise.all(cases.map(async ({ packagePath, manifest }) => {
+      const manifestSha256 = sha256(await readFile(join(repository, packagePath, ".codeshell-panel/panel.json")));
+      return Object.values(manifest.nativeEntries ?? {}).map(entry =>
+        ({ appId: manifest.id, entry: entry.entry, sha256: entry.sha256, manifestSha256 }));
+    }))).flat() });
   const { prepareConfinedElectronFixture } = await hostModule("packages/desktop/scripts/confined-electron-fixture.mjs");
   const { prepareOwnedElectronControl } = await hostModule("packages/desktop/scripts/owned-electron-control.mjs");
   const { launchCodeShellElectron, findCodeShellWindow } = await hostModule("packages/desktop/scripts/electron-harness.mjs");
@@ -82,6 +112,11 @@ try {
   let bootstrap = await readFile(fixture.mainEntry, "utf8");
   const mainImport = `await import(${JSON.stringify(pathToFileURL(join(appDir, "out/main/index.mjs")).href)});`;
   assert.ok(bootstrap.includes(mainImport), "Host fixture bootstrap contract changed");
+  // Install inside Main before the existing confined fixture captures spawn.
+  // Its worker guard then calls this OS seam with the original Node argv.
+  const captureSpawn = "const spawn = children.spawn;";
+  assert.equal(bootstrap.split(captureSpawn).length, 2, "Host fixture spawn seam changed");
+  bootstrap = bootstrap.replace(captureSpawn, nativeParentFixture.bootstrap + managedFixture.bootstrap + captureSpawn);
   bootstrap = bootstrap.replace(mainImport, `for (const [name, path] of Object.entries(${JSON.stringify(nativePaths)})) app.setPath(name, path);
 app.on("session-created", session => {
   session.webRequest.onBeforeRequest({ urls: ["http://*/*", "https://*/*"] }, (_details, done) => done({ cancel: true }));
@@ -114,26 +149,23 @@ app.on("session-created", session => {
   await fixture.assertWorker(app, { requireWorker: false });
 
   const ipc = (method, ...args) => win.evaluate(({ method, args }) => window.codeshell[method](...args), { method, args });
-  const busyRejections = [], readRateRejections = [];
   async function whenIdle(id, operation) {
-    const deadline = Date.now() + 30_000;
-    for (;;) {
-      const result = await operation().catch(error => {
-        if (!/还有正在提交、排队或运行的任务/.test(String(error))) throw error;
-        return { ok: false, error: String(error) };
-      });
-      if (result.ok || !/还有正在提交、排队或运行的任务/.test(result.error)) return result;
-      const previous = busyRejections.find(value => value.id === id);
-      if (previous) previous.attempts++;
-      else {
-        busyRejections.push({ id, error: result.error, attempts: 1 });
-        // A lazy worker remains corked until its exact process receipt is verified.
-        await fixture.assertWorker(app, { requireWorker: false });
-      }
-      if (Date.now() >= deadline) throw new Error(`${id} native startup probes did not settle`);
-      // Reuse the exact review token: never re-review changed bytes just to retry.
-      await new Promise(done => setTimeout(done, 100));
-    }
+    // Reuse the exact token and preserve refusal fields. An exception is not a
+    // structured undispatched BUSY receipt and must never be replayed.
+    return waitForPanelDesktopIdle({ id, operation,
+      nativeReceipts: async () => (await nativeFixture.receipts()).slice(-24),
+      onBusy: async observation => {
+        const signature = JSON.stringify(observation.result);
+        const previous = busyRejections.find(value => value.id === id && value.stage === stage && value.signature === signature);
+        if (previous) { previous.attempts++; previous.lastAt = observation.at; }
+        else {
+          busyRejections.push({ id, stage, signature, firstAt: observation.at, lastAt: observation.at,
+            attempts: 1, result: observation.result, nativeReceipts: observation.nativeReceipts });
+          console.log(`Panel change BUSY: ${JSON.stringify({ stage, ...observation })}`);
+          await fixture.assertWorker(app, { requireWorker: false });
+        }
+      },
+    });
   }
   const untilGuest = async (guest, source) => {
     const deadline = Date.now() + 30_000;
@@ -207,9 +239,7 @@ app.on("session-created", session => {
     return { view, execute, call, remove, context, globals, panel, prepared };
   }
 
-  const cases = ["apps/design-studio", "apps/job-hunt-hq", "apps/quant-lab", "apps/video-download", "panels/video-studio", "templates/starter"];
-  for (const packagePath of cases) {
-    const manifest = JSON.parse(await readFile(join(repository, packagePath, ".codeshell-panel/panel.json"), "utf8"));
+  for (const { packagePath, manifest } of cases) {
     const id = manifest.id, [projectA, projectB] = projects;
     stage = `${id}: reviewed install`;
     console.log(stage);
@@ -237,7 +267,7 @@ app.on("session-created", session => {
       jobHuntCli = (operation, input, revision) => {
         const request = { operation, input, ...(revision === undefined ? {} : { expectedRevision: revision }) };
         const cli = join(isolated.codeShellHome, "panel-apps/.versions", id, originalA.packageDigest, "app/tools/job-hunt-cli.mjs");
-        const child = spawnSync(process.execPath, [cli, "--project", projectA], { input: JSON.stringify(request), encoding: "utf8", timeout: 30_000, env: environment });
+        const child = spawnSync(nativeFixture.wrapper, [cli, "--project", projectA], { input: JSON.stringify(request), encoding: "utf8", timeout: 30_000, env: environment });
         assert.equal(child.status, 0, child.stderr + child.stdout);
         const receipt = JSON.parse(child.stdout);
         assert.equal(receipt.ok, true, child.stdout);
@@ -255,7 +285,7 @@ app.on("session-created", session => {
     const first = await attach(projectA, id, "original-A");
     const second = await attach(projectB, id, "original-B");
     assert.notEqual(first.prepared.partition, second.prepared.partition, "projects reused guest partition");
-    let gpuCanvas;
+    let gpuCanvas, emptyManagedService, historyGuestTask;
     if (id === "design-studio") {
       stage = "design-studio: installed CanvasKit under production cspanel CSP";
       assert.equal(first.context.capabilities?.packageAssets?.wasm, true);
@@ -320,6 +350,162 @@ app.on("session-created", session => {
       await first.execute("document.querySelector('[data-career-kind=qa]').click()");
       assert.equal(await first.execute("document.querySelector('#career-list').textContent.includes('CLI update after UI')"), true);
     }
+    if (id === "quant-lab") {
+      stage = "quant-lab: actual managed service with empty subscriptions";
+      assert.equal(first.context.capabilities?.services?.version, 1);
+      assert.ok(first.context.availableMethods?.includes("services.setDesired"));
+      const serviceCall = async (method, params) => {
+        const receipt = await first.call(`services.${method}`, { name: "market-feed", ...params });
+        assert.equal(receipt.ok, true, JSON.stringify(receipt));
+        return receipt.value;
+      };
+      // The normal worker config has no symbols, so its quote round cannot
+      // invoke a provider. desired=always deliberately exercises service drain
+      // during the unchanged publication failure/update/exact restore sequence.
+      const before = await serviceCall("get", {});
+      const config = { format: "quant.market-feed.config/1", subscriptions: [],
+        cadence: { open: 15000, closed: 300000 },
+        budgets: { batch: 4, batchDeadlineMs: 8000, perSourceMs: 6000, roundBudgetMs: 30000 } };
+      const configured = await serviceCall("configure", { config,
+        expectedConfigRevision: before.configRevision, requestKey: "desktop-empty-config" });
+      const attached = await serviceCall("attach", {});
+      assert.equal(typeof attached.attachId, "string");
+      await first.execute(`(() => {
+        window.__desktopEmptyService = { state: null };
+        window.__desktopEmptyService.unsubscribe = window.codeshellPanel.on("services.changed", event => {
+          if (event.name === "market-feed") window.__desktopEmptyService.state = event.state;
+        });
+        return true;
+      })()`);
+      const desired = await serviceCall("setDesired", { desired: "always",
+        expectedRevision: before.desiredRevision, requestKey: "desktop-empty-always" });
+      await untilGuest(first, 'window.__desktopEmptyService.state?.phase === "running"');
+      const running = await first.execute(`(() => {
+        const value = window.__desktopEmptyService;
+        value.unsubscribe(); delete window.__desktopEmptyService;
+        return value.state;
+      })()`);
+      assert.equal(running.desired, "always");
+      assert.ok(running.generation > 0);
+      emptyManagedService = { config, before, configured, attached, desired, running };
+
+      stage = "quant-lab: real Guest bounded local history repair task";
+      // Use B's existing Guest so this extra task proof has its own real call
+      // budget while A retains the always service and the original assertions.
+      const historyGuest = second, historyProject = projectB;
+      for (const permission of ["process", "resources", "storage"])
+        assert.ok(manifest.permissions.includes(permission), `reviewed Quant is missing ${permission}`);
+      const requiredMethods = ["filesystem.getKnownDirectory", "tasks.start", "tasks.find", "tasks.get", "tasks.list", "tasks.cancel",
+        "storage.getSnapshot", "storage.compareAndSet"];
+      for (const method of requiredMethods)
+        assert.ok(historyGuest.context.availableMethods.includes(method), `real Quant Guest is missing ${method}`);
+      const directoryReceipt = await historyGuest.call("filesystem.getKnownDirectory", { name: "app-data" });
+      assert.equal(directoryReceipt.ok, true, JSON.stringify(directoryReceipt));
+      assert.equal(typeof directoryReceipt.value.handle, "string");
+      // Only the actual Guest authority supplies this path. Never infer the
+      // Host's app-data layout, even inside a private fixture.
+      const dataRoot = await realpath(directoryReceipt.value.path);
+      const userDataRoot = await realpath(actualNativePaths.userData);
+      const insideUserData = relative(userDataRoot, dataRoot);
+      assert.ok(insideUserData && insideUserData !== ".." && !insideUserData.startsWith(`..${sep}`) && !isAbsolute(insideUserData),
+        "Guest app-data grant escaped the actual private Electron userData");
+      const core = await hostModule("packages/core/dist/index.js");
+      const selected = (await core.listProjectPanelApps(historyProject, id)).find(value => value.id === id);
+      assert.equal(selected?.packageDigest, originalB.packageDigest);
+      const cacheModule = join(selected.installPath, "app/tools/a-share-history-cache.mjs");
+      const cache = await import(pathToFileURL(cacheModule).href);
+      const { resolveLibraryRoot } = await import(pathToFileURL(join(selected.installPath, "app/tools/native-data-context.mjs")).href);
+      // A fresh Panel-owned library keeps the repair separate from the default
+      // library and startup observers. No symbol or provider input is seeded.
+      const libraryId = sha256(`desktop-offline-history:${directory}`).slice(0, 32);
+      const libraryRoot = await resolveLibraryRoot(dataRoot, libraryId, { create: true });
+      assert.equal(await cache.readHistoryManifest(libraryRoot), null);
+      assert.equal(await cache.readActiveHistoryRunState(libraryRoot), null);
+      const seedManifest = { schemaVersion: 1, kind: "a-share-history-library", scope: "core", limit: 120,
+        source: "tencent-ifzq", adjust: "qfq", updatedAt: "2026-10-28T00:00:00Z", marketDate: "2026-10-28",
+        total: 120, ready: 0, failed: 0, bars: 0, storageBytes: 0, records: [] };
+      const seedReceipt = await cache.writeHistoryManifest(seedManifest, libraryRoot);
+      const client = await historyGuest.execute(`(async () => {
+        const { createHistoryBatchClient } = await import(new URL("./modules/history-batch-client.mjs", location.href).href);
+        const context = await window.codeshellPanel.getContext(), calls = [];
+        const history = createHistoryBatchClient({ contextState: () => context, currentEpoch: () => 1,
+          hostCall: async (method, params) => {
+            calls.push({ method, params });
+            const receipt = await window.codeshellPanel.callResult(method, params);
+            if (!receipt.ok) throw new Error(JSON.stringify(receipt));
+            return receipt.value;
+          } });
+        const supported = history.supports();
+        const restored = await history.restore({ libraryId: ${JSON.stringify(libraryId)} });
+        const state = window.__desktopHistoryTask = { events: [], startedId: null };
+        state.unsubscribe = window.codeshellPanel.on("tasks.changed", event => {
+          if (event.entry?.name === "quant-history-batch") state.events.push(event);
+        });
+        return { supported, restored, calls };
+      })()`);
+      assert.equal(client.supported, true, "actual history client rejected the real Guest capabilities");
+      assert.equal(client.restored, null, "fresh local repair library already had a task intent");
+      assert.deepEqual(client.calls.map(value => value.method), ["storage.getSnapshot"]);
+      const taskCall = async (method, params) => {
+        const receipt = await historyGuest.call(`tasks.${method}`, params);
+        assert.equal(receipt.ok, true, JSON.stringify(receipt));
+        return receipt.value;
+      };
+      const request = { entry: "quant-history-batch", requestKey: `desktop-offline-history:${libraryId}`, recovery: "retry",
+        input: { request: { scope: "core", source: "tencent-ifzq", maxItems: 20, repair: true, libraryId },
+          directoryArguments: [{ argumentName: "--data-dir", directory: "app-data" }] } };
+      assert.equal(await taskCall("find", { requestKey: request.requestKey }), null);
+      const historyStarts = async () => (await nativeFixture.receipts()).filter(value =>
+        value.event === "entry-start" && value.entry?.endsWith("/app/tools/history-batch.mjs"));
+      const startsBefore = await historyStarts();
+      const started = await taskCall("start", request);
+      assert.equal(typeof started.id, "string");
+      await historyGuest.execute(`window.__desktopHistoryTask.startedId = ${JSON.stringify(started.id)}; true`);
+      await untilGuest(historyGuest, 'window.__desktopHistoryTask.events.some(event => event.id === window.__desktopHistoryTask.startedId && ["succeeded", "failed", "cancelled", "interrupted"].includes(event.status))');
+      const terminal = await taskCall("get", { id: started.id });
+      assert.equal(terminal.status, "succeeded", JSON.stringify(terminal));
+      assert.equal(terminal.attempt, 1);
+      assert.ok(Number.isFinite(terminal.completedAt));
+      assert.equal(terminal.error, undefined);
+      assert.deepEqual(terminal.scope, { appId: id, projectPath: historyProject, revision: historyGuest.panel.revision });
+      assert.deepEqual(terminal.package, { version: manifest.version, packageDigest: originalB.packageDigest });
+      assert.deepEqual(terminal.entry, { name: request.entry, sha256: manifest.nativeEntries[request.entry].sha256 });
+      assert.equal(terminal.input.request.repair, true);
+      assert.equal(terminal.result.batchLimit, 20);
+      assert.equal(terminal.result.scope, "core");
+      assert.equal(terminal.result.source, "tencent-ifzq");
+      assert.equal(terminal.result.running, false);
+      const found = await taskCall("find", { requestKey: request.requestKey });
+      const reused = await taskCall("start", request);
+      for (const receipt of [started, terminal, found, reused]) {
+        assert.equal(receipt.id, started.id);
+        assert.equal(receipt.requestKey, request.requestKey);
+      }
+      assert.equal(reused.status, "succeeded");
+      assert.equal(reused.attempt, 1);
+      const listed = await taskCall("list", { limit: 50 });
+      assert.equal(listed.filter(value => value.requestKey === request.requestKey).length, 1);
+      const startsAfter = await historyStarts();
+      assert.equal(startsAfter.length, startsBefore.length + 1, "same requestKey spawned another NativeEntry");
+      const execution = startsAfter.at(-1);
+      assert.equal(execution.entrySha256, terminal.entry.sha256);
+      const exit = (await nativeFixture.receipts()).find(value => value.event === "entry-exit" && value.pid === execution.pid);
+      assert.equal(exit?.code, 0, "successful Guest task lacks its actual NativeEntry exit receipt");
+      const persisted = await cache.readHistoryManifest(libraryRoot);
+      assert.equal(persisted.scope, "core");
+      assert.deepEqual(persisted.records, []);
+      assert.equal(persisted.bars, 0);
+      assert.equal(await cache.readActiveHistoryRunState(libraryRoot), null);
+      const events = await historyGuest.execute(`(() => {
+        const value = window.__desktopHistoryTask;
+        value.unsubscribe(); delete window.__desktopHistoryTask;
+        return value.events;
+      })()`);
+      historyGuestTask = { requiredMethods, directoryReceipt, actualUserData: actualNativePaths.userData, libraryId,
+        seedManifest, seedReceipt, seedModuleSha256: sha256(await readFile(cacheModule)), client, request,
+        started, terminal, found, reused, listed, events, execution, exit, nativeExecutions: 1,
+        limitation: "Actual client supports/empty restore and Guest tasks repair only; client.run/maintenance UI and online initialization are not exercised" };
+    }
     const markerKey = "desktop-acceptance-marker";
     if (manifest.permissions.includes("storage")) {
       const saved = await first.call("storage.compareAndSet", { key: markerKey, expectedRevision: null, value: { project: "A", synthetic: true }, cwd: projectB, projectPath: projectB });
@@ -381,40 +567,80 @@ app.on("session-created", session => {
       assert.equal((await first.call("storage.getSnapshot", { key: markerKey })).value.value.project, "A");
     const updated = await installWhenIdle({ cwd: projectA, id, reviewToken: candidateReview.preview.reviewToken });
     assert.equal(updated.ok, true, JSON.stringify(updated));
+    assert.match(updated.packageDigest, /^[a-f0-9]{64}$/u, "reviewed update must return its exact installed payload");
     const currentA = await binding(projectA, id);
+    const currentB = await binding(projectB, id);
+    assert.equal(currentA.packageDigest, updated.packageDigest);
     assert.notEqual(currentA.packageDigest, originalA.packageDigest);
     assert.equal(currentA.version, originalA.version);
-    assert.equal((await binding(projectB, id)).packageDigest, originalB.packageDigest);
+    // Current Host contract: a catalog install/update supersedes every older
+    // project pin. A later reviewed restore pins only that selected project.
+    // Assert exact payloads on both sides of each transition, including B.
+    assert.equal(currentB.packageDigest, updated.packageDigest);
+    assert.equal(currentB.version, originalB.version);
     const current = await attach(projectA, id, "candidate-A");
+    const advancedB = await attach(projectB, id, "candidate-B");
     assert.notEqual(current.prepared.partition, first.prepared.partition);
+    assert.notEqual(advancedB.prepared.partition, second.prepared.partition);
     if (manifest.permissions.includes("storage")) {
       const revoked = await first.call("storage.get", { key: markerKey }).catch(error => ({ ok: false, destroyed: String(error) }));
       assert.equal(revoked.ok, false, "updated project's old guest kept authority");
+      const revokedB = await second.call("storage.get", { key: markerKey }).catch(error => ({ ok: false, destroyed: String(error) }));
+      assert.equal(revokedB.ok, false, "global update left the other project's old guest authorized");
       assert.equal((await current.call("storage.getSnapshot", { key: markerKey })).value.value.project, "A");
-      assert.equal((await second.call("storage.getSnapshot", { key: markerKey })).value.revision, null, "other project's retained guest was revoked or contaminated");
+      assert.equal((await advancedB.call("storage.getSnapshot", { key: markerKey })).value.revision, null, "global package update contaminated the other project's storage");
+    }
+    const restoreReviewB = await ipc("previewPanelAppRestore", projectB, id, originalB.packageDigest, currentB.revision);
+    assert.equal(restoreReviewB.packageDigest, originalB.packageDigest);
+    const restoredB = await whenIdle(id, () => ipc("restorePanelAppPackage", projectB, restoreReviewB.reviewToken));
+    assert.equal(restoredB.ok, true, JSON.stringify(restoredB));
+    assert.equal(restoredB.id, id);
+    assert.equal(restoredB.packageDigest, originalB.packageDigest);
+    assert.equal((await binding(projectB, id)).packageDigest, originalB.packageDigest);
+    assert.equal((await binding(projectA, id)).packageDigest, updated.packageDigest, "restoring B changed A's exact candidate selection");
+    const retainedB = await attach(projectB, id, "restored-B");
+    if (manifest.permissions.includes("storage")) {
+      const revokedB = await advancedB.call("storage.get", { key: markerKey }).catch(error => ({ ok: false, destroyed: String(error) }));
+      assert.equal(revokedB.ok, false, "B's candidate guest survived its reviewed restore");
+      assert.equal((await retainedB.call("storage.getSnapshot", { key: markerKey })).value.revision, null);
+      assert.equal((await current.call("storage.getSnapshot", { key: markerKey })).value.value.project, "A", "B's restore revoked or contaminated A");
     }
     const history = await ipc("getPanelAppPackageHistory", projectA, id, currentA.revision);
     assert.ok(history.versions.some(value => value.packageDigest === originalA.packageDigest));
     const restoreReview = await ipc("previewPanelAppRestore", projectA, id, originalA.packageDigest, currentA.revision);
+    assert.equal(restoreReview.packageDigest, originalA.packageDigest);
     const restored = await whenIdle(id, () => ipc("restorePanelAppPackage", projectA, restoreReview.reviewToken));
+    assert.equal(restored.ok, true, JSON.stringify(restored));
+    assert.equal(restored.id, id);
     assert.equal(restored.packageDigest, originalA.packageDigest);
+    assert.equal((await binding(projectA, id)).packageDigest, originalA.packageDigest);
+    assert.equal((await binding(projectB, id)).packageDigest, originalB.packageDigest);
     const rolledBack = await attach(projectA, id, "restored-A");
-    if (manifest.permissions.includes("storage"))
+    if (manifest.permissions.includes("storage")) {
+      const revokedA = await current.call("storage.get", { key: markerKey }).catch(error => ({ ok: false, destroyed: String(error) }));
+      assert.equal(revokedA.ok, false, "A's candidate guest survived its reviewed restore");
       assert.equal((await rolledBack.call("storage.getSnapshot", { key: markerKey })).value.value.project, "A");
+      assert.equal((await retainedB.call("storage.getSnapshot", { key: markerKey })).value.revision, null, "restoring A revoked or contaminated B");
+    }
     results.push({ id, version: manifest.version, permissions: manifest.permissions,
       ...(gpuCanvas ? { gpuCanvas } : {}),
+      ...(emptyManagedService ? { emptyManagedService } : {}),
+      ...(historyGuestTask ? { historyGuestTask } : {}),
       originalDigest: originalA.packageDigest, privateCandidateDigest: currentA.packageDigest,
+      restoreReceipts: { projectA: restored, projectB: restoredB },
       rejectedUpdateError: rejected.error,
       stagedPublicationError: diskFailure.error,
       hostVisibleContext: id !== "quant-lab",
       loadedTitle: first.globals.title, actualEntryHtmlBytes: first.globals.html,
       checks: ["review-install-ipc", "unbound-project-denied", "real-sandboxed-entry-and-package-module", "project-partition-isolation",
         manifest.permissions.includes("storage") ? "real-storage-cas-and-project-authority" : "undeclared-storage-denied",
-        "changed-review-update-rejected-old-guest-and-data-preserved", "same-version-digest-update-project-only",
+        "changed-review-update-rejected-old-guest-and-data-preserved", "same-version-global-update-exact-digest-in-both-projects",
+        "reviewed-other-project-restore-preserves-current-project-digest-and-authority",
         "staged-package-rename-eacces-preserves-old-guest-and-data",
         "exact-retained-package-restore-ipc", "chromium-http-denied",
+        ...(historyGuestTask ? ["real-guest-reviewed-history-repair-task-and-request-key-reuse"] : []),
         ...(id === "job-hunt-hq" ? ["headless-retained-package-cli-before-webview", "ui-native-cli-root-commit", "external-cli-update-focus-reload"] : [])] });
-    for (const guest of [first, second, current, rolledBack]) await guest.remove().catch(() => {});
+    for (const guest of [first, second, current, advancedB, retainedB, rolledBack]) await guest.remove().catch(() => {});
     console.log(`PASS ${id}: real Electron install/load/IPC, project isolation, rejected update, digest update and restore`);
     await fixture.assertWorker(app, { requireWorker: false });
   }
@@ -425,15 +651,68 @@ app.on("session-created", session => {
   const keychainReceipt = JSON.parse(await readFile(join(isolated.home, "electron-keychain-context.json"), "utf8"));
   const runtime = await app.evaluate(() => ({ electron: process.versions.electron, node: process.versions.node, platform: process.platform, arch: process.arch }));
   await closeOwnedPanelElectron({ app, ownedChildProcess }); app = undefined;
+  const nativeReceipts = await nativeFixture.receipts();
+  const managedReceipts = await managedFixture.receipts();
+  const managedSpawns = managedReceipts.filter(value => value.event === "spawn");
+  const managedCustody = managedReceipts.filter(value => value.event === "custody" && value.frame.t === "custody");
+  const managedMembers = managedReceipts.filter(value => value.event === "custody" && value.frame.t === "member");
+  const managedCloses = managedReceipts.filter(value => value.event === "close");
+  if (cases.some(({ manifest }) => manifest.id === "quant-lab")) {
+    for (const [name, values] of Object.entries({ managedSpawns, managedCustody, managedMembers, managedCloses }))
+      assert.ok(values.length > 0, `${name} must exercise an actual managed guardian, not only Node probes`);
+  }
+  for (const value of managedMembers) {
+    assert.ok(managedCustody.some(guardian => guardian.pid === value.pid && guardian.frame.pid === value.pid));
+    let absent = false;
+    try { process.kill(value.frame.pid, 0); } catch (error) { if (error.code === "ESRCH") absent = true; else throw error; }
+    assert.equal(absent, true, `Managed member PID remains live or unverified after Electron shutdown: ${value.frame.pid}`);
+  }
+  const managedExecutionEvidence = { spawns: managedSpawns.length, custody: managedCustody.length,
+    members: managedMembers.length, closes: managedCloses.length, membersAbsentAfterShutdown: true };
+  for (const launch of managedReceipts.filter(value => value.event === "spawn")) {
+    assert.ok(managedReceipts.some(value => value.event === "close" && value.pid === launch.pid),
+      `Managed Node guardian lacks its captured close receipt: ${JSON.stringify(launch)}`);
+    for (const value of managedReceipts.filter(value => value.event === "custody" && value.pid === launch.pid)) {
+      if (value.frame.t === "custody") assert.equal(value.frame.pid, launch.pid, "sandbox exec changed guardian PID");
+      if (value.frame.t === "member") assert.notEqual(value.frame.pid, launch.pid);
+    }
+  }
+  stage = "final NativeEntry parent-close and OS-exit verification";
+  const nativeExitEvidence = [];
+  for (const started of nativeReceipts.filter(value => value.event === "entry-start")) {
+    assert.equal(started.nodeOptionsPresent, false, "NativeEntry unexpectedly depended on inherited NODE_OPTIONS");
+    const evidence = verifyNativeEntryExit({ started, receipts: nativeReceipts, observation: nativeParentFixture.spec,
+      mainPid: ownedChildProcess.pid, selfTest: { pid: nativeFixture.selfTest.pid, entrySha256: nativeFixture.boundary.selfTestScriptSha256 } });
+    assert.ok(evidence.exit || evidence.proof === "parent-signal-close", `NativeEntry lacks an exit receipt: ${JSON.stringify(started)}`);
+    nativeExitEvidence.push(evidence);
+    const selected = cases.find(({ manifest }) => [join(isolated.codeShellHome, "panel-apps/.versions", manifest.id), join(isolated.codeShellHome, "panel-apps", manifest.id)]
+      .some(prefix => started.entry?.startsWith(prefix + "/")));
+    if (selected) assert.ok(Object.values(selected.manifest.nativeEntries ?? {}).some(entry => started.entry.endsWith(`/${entry.entry}`) && entry.sha256 === started.entrySha256),
+      `Executed installed NativeEntry differs from reviewed bytes: ${JSON.stringify(started)}`);
+  }
+  for (const child of nativeReceipts.filter(value => value.event === "child-start"))
+    assert.ok(nativeReceipts.some(value => value.event === "child-exit" && value.pid === child.pid && value.childPid === child.childPid),
+      `Observed native child lacks a close receipt: ${JSON.stringify(child)}`);
+  if (cases.some(({ manifest }) => manifest.id === "video-download"))
+    for (const name of ["service.mjs", "environment.mjs"])
+      assert.ok(nativeReceipts.some(value => value.event === "entry-start" && value.entry?.endsWith(`/app/tools/${name}`)), `Video Download did not execute its actual ${name} through the network sandbox`);
   const inspectorReceipts = (await readFile(inspectorLog, "utf8")).trim().split("\n").map(JSON.parse);
   for (const path of files) assert.equal(sha256(await readFile(join(hostRoot, path))), buildHashes[path], `shared build changed: ${path}`);
   report = { schemaVersion: 1, panelCommit, runnerSha256, hostSourceCommit, hostSourceManifestVersion,
     hostBuildProvenance: "Record the independently established build commit alongside these file hashes; source HEAD/version do not identify existing outputs.",
-    buildHashes, runtime, actualNativePaths, guardReceipts, inspectorReceipts, keychainReceipt, busyRejections, readRateRejections, results,
-    limitations: ["controlled synthetic Desktop acceptance only", "no physical phone or deployed Cloud", "no real provider/account/native media work", "owned curl/wget/yt-dlp CLI fixtures deny live native network clients; Quant uses visible:false to suppress live collectors", "JS HTTP guard and Chromium request denial are not an OS sandbox", "package update candidate differs only by a private HTML comment; full historical domain migrations are a separate gate"] };
+    buildHashes, runtime, actualNativePaths, guardReceipts, inspectorReceipts, keychainReceipt, busyRejections, readRateRejections,
+    selectedApp: selectedApp ?? null, selectedCaseCount: cases.length,
+    nativeBoundary: nativeFixture.boundary, nativeNetworkSelfTest: nativeFixture.selfTest, nativeReceipts,
+    nativeParentBoundary: nativeParentFixture.spec, nativeExitEvidence,
+    managedNodeBoundary: managedFixture.spec, managedReceipts, managedExecutionEvidence, results,
+    limitations: ["controlled synthetic Desktop acceptance only", "no physical phone or deployed Cloud", "no real provider/account/native media work", "owned curl/wget/yt-dlp/ffmpeg fixtures; NativeEntry Node and descendants use verified macOS deny(network*) wrapper; Quant uses visible:false to suppress live collectors", "Main JS guard and Chromium request denial are separate; both process.find NativeEntry and actual managed Node spawns receive kernel network denial", "package update candidate differs only by a private HTML comment; full historical domain migrations are a separate gate"] };
 } catch (error) {
   failure = { error };
   console.error(`Desktop acceptance failed at ${stage}:`, error);
+  console.error(`Desktop fixture diagnostics: ${JSON.stringify({ stage, selectedApp: selectedApp ?? null, busyRejections, completedResults: results,
+    nativeBoundary: nativeFixture?.boundary, nativeNetworkSelfTest: nativeFixture?.selfTest,
+    nativeReceipts: await nativeFixture?.receipts(), nativeParentBoundary: nativeParentFixture?.spec, managedNodeBoundary: managedFixture?.spec,
+    managedReceipts: await managedFixture?.receipts() })}`);
   console.error(await win?.locator("body").innerText().catch(() => "renderer unavailable"));
 } finally {
   cleanupReceipt = await cleanupPanelDesktopFixture({ app, ownedChildProcess, launchStarted, directory, failure });
@@ -441,4 +720,4 @@ app.on("session-created", session => {
 report.completedAt = new Date().toISOString();
 report.cleanup = cleanupReceipt;
 if (reportArgument) await writeFile(resolve(reportArgument), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-console.log(`PASS: ${results.length}/6 real installed Panel Desktop IPC scenarios; owned Electron exit and HOME cleanup verified`);
+console.log(`PASS: ${results.length}/${cases.length} selected real installed Panel Desktop IPC scenarios${selectedApp ? ` (${selectedApp} only)` : " (all six packages)"}; owned Electron exit and HOME cleanup verified`);

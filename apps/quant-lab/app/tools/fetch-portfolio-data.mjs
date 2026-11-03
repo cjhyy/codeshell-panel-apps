@@ -92,7 +92,7 @@ export function fingerprintPortfolioBars(bars) {
   );
 }
 
-function canonicalSymbol(value) {
+export function canonicalSymbol(value) {
   if (typeof value !== "string") {
     throw new PortfolioDataError("symbol must be a string", "INVALID_SYMBOL");
   }

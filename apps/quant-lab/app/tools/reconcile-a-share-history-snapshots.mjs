@@ -1,6 +1,7 @@
 import {
   A_SHARE_HISTORY_BASIS_VERSION,
   A_SHARE_RESEARCH_PRICE_CONTRACT,
+  assertHistoryRunState,
   createRawFactorPriceBundle,
   readHistorySeries,
   sanitizeHistoryBars,
@@ -208,6 +209,7 @@ export async function reconcileAShareHistorySnapshots({
   manifest,
   now = new Date(),
   snapshotLimit = SNAPSHOT_HISTORY_LIMIT,
+  runState,
 } = {}) {
   if (!manifest || !Number.isFinite(now.getTime())) return manifest;
   const snapshots = normalizedCloseSnapshots(await readLocalSnapshotHistory({
@@ -270,6 +272,7 @@ export async function reconcileAShareHistorySnapshots({
       return;
     }
     if (!result.series) return;
+    await assertHistoryRunState(runState);
     const saved = await writeHistorySeries(result.series, root);
     nextRecords.set(record.symbol, manifestRecordFor(saved.series, saved.bytes));
     backfilledSeries += 1;
@@ -345,6 +348,7 @@ export async function reconcileAShareHistorySnapshots({
     auditTrail: [...previousAudit, auditEvent],
     records: sortedRecords,
   });
+  await assertHistoryRunState(runState);
   await writeHistoryManifest(next, root);
   return next;
 }

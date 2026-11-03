@@ -80,3 +80,23 @@ worker locks and queue slots prevent overlapping downloads. Do not clear them or
 signal a stored PID blindly. Explain the interruption and preserve partial files
 for confirmed recovery and an explicit retry. Workers need a live machine and
 execution environment; there is no persistent login daemon or automatic restart.
+
+Queue continuation is explicit: `pump --project ...` (or the panel's **继续队列**)
+reserves free FIFO slots; it does not create a worker for every waiting item.
+`resume --project ...` also unpauses the queue. Ordinary reads never pump.
+When a queue reports `stalled`, run read-only `doctor --slots --project ...`.
+It prints exact slot IDs, attempts and tokens, plus PID/group observations.
+A missing leader cannot establish that escaped descendants ended. Do not use
+`recover-slot --job ... --attempt ... --token ... --confirm` until the user has
+confirmed the original full process tree ended. Recovery changes only the exact
+matching slot, never kills an unknown process, and leaves the task interrupted
+for explicit retry. Automatic running-slot recovery requires a verified OS boot
+identity change; unknown identities and Windows are manual only.
+
+For queued CLI work saving outside the project, ordinary project-only continuation
+shows `OUTPUT_AUTHORIZATION_REQUIRED`. After the user confirms those output paths,
+run `pump --project ... --allow-outside-project` (or `resume` with that flag). Never
+add this flag merely to hide an authorization warning. `doctor --slots` also lists
+legacy worker locks without a slot; their exact id/attempt/token can be passed to
+`recover-slot` only after confirming the old process tree ended. Live or unknown
+PIDs are never reclaimed, including after a boot identity change.

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { runCollector } from "./collector-lock.mjs";
 
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,7 +65,7 @@ function parseArgs(argv) {
   return options;
 }
 
-async function fetchBoundedText(url, expectedOrigin, encoding, headers = {}) {
+async function fetchBoundedText(url, expectedOrigin, encoding, headers = {}, signal) {
   const parsed = new URL(url);
   if (parsed.origin !== expectedOrigin || parsed.protocol !== "https:" || parsed.username || parsed.password) {
     throw new StockDetailFetchError("SOURCE_URL_UNSAFE", `unexpected source origin: ${parsed.origin}`);
@@ -75,7 +76,7 @@ async function fetchBoundedText(url, expectedOrigin, encoding, headers = {}) {
     const response = await fetch(parsed, {
       headers: { "User-Agent": USER_AGENT, Accept: "text/plain,application/json,*/*", ...headers },
       redirect: "error",
-      signal: controller.signal,
+      signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
     });
     if (!response.ok) {
       throw new StockDetailFetchError("SOURCE_HTTP", `HTTP ${response.status} from ${parsed.hostname}`, { status: response.status });
@@ -165,6 +166,7 @@ export async function fetchTencentStockQuote(symbol, options = {}) {
     TENCENT_QUOTE_ORIGIN,
     "gbk",
     { Referer: "https://finance.qq.com/", "Cache-Control": "no-cache" },
+    options.signal,
   ));
   const wait = options.wait ?? ((milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)));
   let lastError;
@@ -309,7 +311,7 @@ export async function buildStockDetailSnapshot(query, nowInput = new Date()) {
   });
 }
 
-export async function runCli(argv = process.argv.slice(2), nowInput = new Date()) {
+async function runCliUnlocked(argv = process.argv.slice(2), nowInput = new Date()) {
   const options = parseArgs(argv);
   if (options.help) {
     process.stdout.write([
@@ -336,6 +338,16 @@ export async function runCli(argv = process.argv.slice(2), nowInput = new Date()
   }
   process.stdout.write(`${JSON.stringify(snapshot)}\n`);
   return snapshot;
+}
+
+export function collectorRequestIdentity(argv) {
+  const options = parseArgs(argv);
+  return { mode: options.help ? "help" : options.readLocal ? "read-local" : "collect",
+    query: canonicalSymbol(options.query) ?? options.query };
+}
+
+export async function runCli(argv = process.argv.slice(2), ...rest) {
+  return runCollector("fetch-a-share-stock", argv, (args) => runCliUnlocked(args, ...rest), { normalizeRequest: collectorRequestIdentity });
 }
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
