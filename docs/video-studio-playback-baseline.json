@@ -1,0 +1,816 @@
+{
+ "date": "2026-10-26",
+ "baseline": "codeshell-panel-apps e2b391f",
+ "machine": "Apple M4 Pro, 24 GB, macOS 15 (Darwin 24.6)",
+ "browser": [
+  {
+   "kind": "env",
+   "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.191 Electron/33.4.11 Safari/537.36"
+  },
+  {
+   "kind": "color1080p",
+   "n": 12,
+   "mean": 112.1,
+   "p50": 124.5,
+   "p95": 127.9,
+   "max": 127.9
+  },
+  {
+   "kind": "seekStep",
+   "name": "orig:a-h264-1080p-300s",
+   "load": 209,
+   "jump": 13,
+   "step": {
+    "n": 90,
+    "mean": 15.1,
+    "p50": 15.1,
+    "p95": 24.1,
+    "max": 25.7
+   },
+   "achievedFps": 66.4,
+   "realtimeRatio": 2.21
+  },
+  {
+   "kind": "play",
+   "name": "orig:a-h264-1080p-300s",
+   "firstFrameMs": 85,
+   "presentedFps": 30.3,
+   "mediaAdvance": 4,
+   "dropped": 0
+  },
+  {
+   "kind": "webcodecs",
+   "name": "orig:a-h264-1080p-300s",
+   "codec": "avc1.640028",
+   "open": 14,
+   "randomAccess": 30,
+   "decodedFps": 1595.7,
+   "realtimeRatio": 53.19,
+   "frames": 120
+  },
+  {
+   "kind": "seekStep",
+   "name": "orig:b-hevc-4k-60s",
+   "load": 18,
+   "jump": 30,
+   "step": {
+    "n": 90,
+    "mean": 20.4,
+    "p50": 20.4,
+    "p95": 27.9,
+    "max": 32
+   },
+   "achievedFps": 49.1,
+   "realtimeRatio": 2.05
+  },
+  {
+   "kind": "play",
+   "name": "orig:b-hevc-4k-60s",
+   "firstFrameMs": 84,
+   "presentedFps": 24.3,
+   "mediaAdvance": 4,
+   "dropped": 0
+  },
+  {
+   "kind": "webcodecs",
+   "name": "orig:b-hevc-4k-60s",
+   "codec": "hev1.1.6.L156.B0",
+   "open": 7,
+   "randomAccess": 40,
+   "decodedFps": 424.7,
+   "realtimeRatio": 17.51,
+   "frames": 97
+  },
+  {
+   "kind": "seekStep",
+   "name": "orig:c-av1-4k-134s",
+   "load": 58,
+   "jump": 144,
+   "step": {
+    "n": 90,
+    "mean": 113.3,
+    "p50": 137.4,
+    "p95": 193.6,
+    "max": 199.2
+   },
+   "achievedFps": 8.8,
+   "realtimeRatio": 0.37
+  },
+  {
+   "kind": "play",
+   "name": "orig:c-av1-4k-134s",
+   "firstFrameMs": 198,
+   "presentedFps": 24.3,
+   "mediaAdvance": 4,
+   "dropped": 0
+  },
+  {
+   "kind": "webcodecs",
+   "name": "orig:c-av1-4k-134s",
+   "codec": "av01.0.12M.08",
+   "open": 5,
+   "randomAccess": 145,
+   "decodedFps": 206.6,
+   "realtimeRatio": 8.52,
+   "frames": 97
+  },
+  {
+   "kind": "seekStep",
+   "name": "orig:d-hevc-1080sq-132s",
+   "load": 23,
+   "jump": 73,
+   "step": {
+    "n": 90,
+    "mean": 9.1,
+    "p50": 9.1,
+    "p95": 15.2,
+    "max": 16.1
+   },
+   "achievedFps": 109.4,
+   "realtimeRatio": 2.51
+  },
+  {
+   "kind": "play",
+   "name": "orig:d-hevc-1080sq-132s",
+   "firstFrameMs": 126,
+   "presentedFps": 47.8,
+   "mediaAdvance": 4,
+   "dropped": 0
+  },
+  {
+   "kind": "webcodecs",
+   "name": "orig:d-hevc-1080sq-132s",
+   "codec": "hev1.1.6.L150",
+   "open": 8,
+   "randomAccess": 93,
+   "decodedFps": 1569.4,
+   "realtimeRatio": 32.87,
+   "frames": 191
+  },
+  {
+   "kind": "seekStep",
+   "name": "previewProxy:a-h264-1080p-300s",
+   "load": 12,
+   "jump": 62,
+   "step": {
+    "n": 90,
+    "mean": 77.7,
+    "p50": 78,
+    "p95": 92.4,
+    "max": 94.2
+   },
+   "achievedFps": 12.9,
+   "realtimeRatio": 0.43
+  },
+  {
+   "kind": "play",
+   "name": "previewProxy:a-h264-1080p-300s",
+   "firstFrameMs": 86,
+   "presentedFps": 30.5,
+   "mediaAdvance": 4.03,
+   "dropped": 0
+  },
+  {
+   "kind": "webcodecs",
+   "name": "previewProxy:a-h264-1080p-300s",
+   "codec": "avc1.42c028",
+   "open": 5,
+   "randomAccess": 75,
+   "decodedFps": 967.7,
+   "realtimeRatio": 32.26,
+   "frames": 120
+  },
+  {
+   "kind": "seekStep",
+   "name": "previewProxy:b-hevc-4k-60s",
+   "load": 7,
+   "jump": 122,
+   "step": {
+    "n": 90,
+    "mean": 55.5,
+    "p50": 27.6,
+    "p95": 132.4,
+    "max": 157.7
+   },
+   "achievedFps": 18,
+   "realtimeRatio": 0.75
+  },
+  {
+   "kind": "play",
+   "name": "previewProxy:b-hevc-4k-60s",
+   "firstFrameMs": 158,
+   "presentedFps": 24.5,
+   "mediaAdvance": 4.05,
+   "dropped": 0
+  },
+  {
+   "kind": "webcodecs",
+   "name": "previewProxy:b-hevc-4k-60s",
+   "codec": "avc1.42c028",
+   "open": 2,
+   "randomAccess": 127,
+   "decodedFps": 496.7,
+   "realtimeRatio": 20.48,
+   "frames": 97
+  },
+  {
+   "kind": "seekStep",
+   "name": "previewProxy:c-av1-4k-134s",
+   "load": 8,
+   "jump": 122,
+   "step": {
+    "n": 90,
+    "mean": 55.2,
+    "p50": 27.8,
+    "p95": 132.7,
+    "max": 134.6
+   },
+   "achievedFps": 18.1,
+   "realtimeRatio": 0.76
+  },
+  {
+   "kind": "play",
+   "name": "previewProxy:c-av1-4k-134s",
+   "firstFrameMs": 155,
+   "presentedFps": 24.3,
+   "mediaAdvance": 4,
+   "dropped": 0
+  },
+  {
+   "kind": "webcodecs",
+   "name": "previewProxy:c-av1-4k-134s",
+   "codec": "avc1.42c028",
+   "open": 4,
+   "randomAccess": 134,
+   "decodedFps": 499.2,
+   "realtimeRatio": 20.59,
+   "frames": 97
+  },
+  {
+   "kind": "seekStep",
+   "name": "previewProxy:d-hevc-1080sq-132s",
+   "load": 6,
+   "jump": 29,
+   "step": {
+    "n": 90,
+    "mean": 34.9,
+    "p50": 34.3,
+    "p95": 43,
+    "max": 44.4
+   },
+   "achievedFps": 28.6,
+   "realtimeRatio": 0.66
+  },
+  {
+   "kind": "play",
+   "name": "previewProxy:d-hevc-1080sq-132s",
+   "firstFrameMs": 41,
+   "presentedFps": 48,
+   "mediaAdvance": 4,
+   "dropped": 0
+  },
+  {
+   "kind": "webcodecs",
+   "name": "previewProxy:d-hevc-1080sq-132s",
+   "codec": "avc1.42c02a",
+   "open": 4,
+   "randomAccess": 49,
+   "decodedFps": 2265.7,
+   "realtimeRatio": 47.45,
+   "frames": 191
+  },
+  {
+   "kind": "env",
+   "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.191 Electron/33.4.11 Safari/537.36"
+  },
+  {
+   "kind": "color1080p",
+   "n": 12,
+   "mean": 111.3,
+   "p50": 124.2,
+   "p95": 128.3,
+   "max": 128.3
+  },
+  {
+   "kind": "seekStep",
+   "name": "proxy-ultrafast-g250",
+   "load": 77,
+   "jump": 63,
+   "step": {
+    "n": 90,
+    "mean": 77.6,
+    "p50": 77.7,
+    "p95": 92.5,
+    "max": 94
+   },
+   "achievedFps": 12.9,
+   "realtimeRatio": 0.43
+  },
+  {
+   "kind": "play",
+   "name": "proxy-ultrafast-g250",
+   "firstFrameMs": 94,
+   "presentedFps": 30.5,
+   "mediaAdvance": 4.03,
+   "dropped": 0
+  },
+  {
+   "kind": "webcodecs",
+   "name": "proxy-ultrafast-g250",
+   "codec": "avc1.42c028",
+   "open": 13,
+   "randomAccess": 78,
+   "decodedFps": 969.3,
+   "realtimeRatio": 32.31,
+   "frames": 120
+  },
+  {
+   "kind": "seekStep",
+   "name": "proxy-ultrafast-g30",
+   "load": 7,
+   "jump": 5,
+   "step": {
+    "n": 90,
+    "mean": 8.8,
+    "p50": 8.8,
+    "p95": 14.3,
+    "max": 14.5
+   },
+   "achievedFps": 113.5,
+   "realtimeRatio": 3.78
+  },
+  {
+   "kind": "play",
+   "name": "proxy-ultrafast-g30",
+   "firstFrameMs": 40,
+   "presentedFps": 30.5,
+   "mediaAdvance": 4.03,
+   "dropped": 0
+  },
+  {
+   "kind": "webcodecs",
+   "name": "proxy-ultrafast-g30",
+   "codec": "avc1.42c028",
+   "open": 9,
+   "randomAccess": 12,
+   "decodedFps": 1721.7,
+   "realtimeRatio": 57.39,
+   "frames": 120
+  },
+  {
+   "kind": "seekStep",
+   "name": "proxy-videotoolbox-g30",
+   "load": 8,
+   "jump": 6,
+   "step": {
+    "n": 90,
+    "mean": 9.6,
+    "p50": 9.4,
+    "p95": 15.6,
+    "max": 16.3
+   },
+   "achievedFps": 104.6,
+   "realtimeRatio": 3.49
+  },
+  {
+   "kind": "play",
+   "name": "proxy-videotoolbox-g30",
+   "firstFrameMs": 28,
+   "presentedFps": 30.3,
+   "mediaAdvance": 4,
+   "dropped": 0
+  },
+  {
+   "kind": "webcodecs",
+   "name": "proxy-videotoolbox-g30",
+   "codec": "avc1.640028",
+   "open": 4,
+   "randomAccess": 16,
+   "decodedFps": 1536.5,
+   "realtimeRatio": 51.22,
+   "frames": 120
+  },
+  {
+   "kind": "env",
+   "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.191 Electron/33.4.11 Safari/537.36"
+  },
+  {
+   "kind": "color1080p",
+   "n": 12,
+   "mean": 113.3,
+   "p50": 124.4,
+   "p95": 128.2,
+   "max": 128.2
+  },
+  {
+   "kind": "seekStep",
+   "name": "exportProxy:b-hevc-4k-60s",
+   "load": 105,
+   "jump": 1862,
+   "step": {
+    "n": 90,
+    "mean": 1792.2,
+    "p50": 1987.3,
+    "p95": 3192.2,
+    "max": 3392.8
+   },
+   "achievedFps": 0.6,
+   "realtimeRatio": 0.02
+  },
+  {
+   "kind": "play",
+   "name": "exportProxy:b-hevc-4k-60s",
+   "firstFrameMs": 2170,
+   "presentedFps": 24,
+   "mediaAdvance": 4,
+   "dropped": 1
+  },
+  {
+   "kind": "webcodecs",
+   "name": "exportProxy:b-hevc-4k-60s",
+   "codec": "vp09.01.50.08.03.01.01.01.00",
+   "open": 10,
+   "randomAccess": 2005,
+   "decodedFps": 16.3,
+   "realtimeRatio": 0.67,
+   "frames": 97
+  }
+ ],
+ "ffmpeg": "8.1.1 (Homebrew)",
+ "demuxer": "mediabunny 1.61.3",
+ "nativeProxy": [
+  {
+   "file": "a-h264-1080p-300s.mp4",
+   "purpose": "preview",
+   "hash1": 0.03,
+   "scan": 11.89,
+   "encode": 5.19,
+   "rescanAndHash": 6.14,
+   "hash2": 0.02,
+   "total": 23.34,
+   "proxyMB": 109.2,
+   "frames": 9000,
+   "w": 1920,
+   "h": 1080
+  },
+  {
+   "file": "b-hevc-4k-60s.mp4",
+   "purpose": "preview",
+   "hash1": 0.16,
+   "scan": 43.62,
+   "encode": 7.69,
+   "rescanAndHash": 2.45,
+   "hash2": 0.15,
+   "total": 54.14,
+   "proxyMB": 65,
+   "frames": 1439,
+   "w": 3840,
+   "h": 2160
+  },
+  {
+   "file": "c-av1-4k-134s.mp4",
+   "purpose": "preview",
+   "hash1": 0.1,
+   "scan": 60.47,
+   "encode": 9.71,
+   "rescanAndHash": 5.29,
+   "hash2": 0.08,
+   "total": 75.7,
+   "proxyMB": 147,
+   "frames": 3216,
+   "w": 3840,
+   "h": 2160
+  },
+  {
+   "file": "d-hevc-1080sq-132s.mp4",
+   "purpose": "preview",
+   "hash1": 0.02,
+   "scan": 7.6,
+   "encode": 2.13,
+   "rescanAndHash": 3.98,
+   "hash2": 0.01,
+   "total": 13.79,
+   "proxyMB": 95.4,
+   "frames": 5764,
+   "w": 1080,
+   "h": 1080
+  },
+  {
+   "file": "b-hevc-4k-60s.mp4",
+   "purpose": "export",
+   "hash1": 0.17,
+   "scan": 44.85,
+   "encode": 520.94,
+   "rescanAndHash": 179.5,
+   "hash2": 0.16,
+   "total": 745.66,
+   "proxyMB": 2628.2,
+   "frames": 1439,
+   "w": 3840,
+   "h": 2160
+  }
+ ],
+ "audioMix": [
+  {
+   "label": "5min talk+bgm",
+   "seconds": 300,
+   "cold": {
+    "total": 22.87,
+    "stages": {
+     "decode-audio": 0.68,
+     "retime-audio": 0.01,
+     "mix-audio": 22.11,
+     "audio-ready": 0
+    },
+    "samples": 14400000
+   },
+   "volumeEdit": {
+    "total": 22.84,
+    "stages": {
+     "decode-audio": 0.21,
+     "retime-audio": 0,
+     "mix-audio": 22.54,
+     "audio-ready": 0
+    },
+    "samples": 14400000
+   }
+  },
+  {
+   "label": "30min talk+bgm",
+   "seconds": 1800,
+   "cold": {
+    "total": 141.09,
+    "stages": {
+     "decode-audio": 3.39,
+     "retime-audio": 0.02,
+     "mix-audio": 137.57,
+     "audio-ready": 0.03
+    },
+    "samples": 86400000
+   },
+   "volumeEdit": {
+    "total": 137.26,
+    "stages": {
+     "decode-audio": 0.47,
+     "retime-audio": 0,
+     "mix-audio": 136.68,
+     "audio-ready": 0.02
+    },
+    "samples": 86400000
+   }
+  }
+ ],
+ "afterQuickFixes": {
+  "branch": "claude/video-studio/playback-quick-fixes-20261026",
+  "nativeProxy": [
+   {
+    "file": "a-h264-1080p-300s.mp4",
+    "purpose": "preview",
+    "hash1": 0.03,
+    "scan": 11.7,
+    "encode": 5.14,
+    "rescanAndHash": 6.49,
+    "hash2": 0.02,
+    "total": 23.43,
+    "proxyMB": 144.3,
+    "frames": 9000,
+    "w": 1920,
+    "h": 1080
+   },
+   {
+    "file": "b-hevc-4k-60s.mp4",
+    "purpose": "preview",
+    "hash1": 0.17,
+    "scan": 42.34,
+    "encode": 5.44,
+    "rescanAndHash": 2.42,
+    "hash2": 0.14,
+    "total": 50.56,
+    "proxyMB": 67,
+    "frames": 1439,
+    "w": 3840,
+    "h": 2160
+   },
+   {
+    "file": "c-av1-4k-134s.mp4",
+    "purpose": "preview",
+    "hash1": 0.11,
+    "scan": 61.16,
+    "encode": 10.5,
+    "rescanAndHash": 5.82,
+    "hash2": 0.15,
+    "total": 77.77,
+    "proxyMB": 151.1,
+    "frames": 3216,
+    "w": 3840,
+    "h": 2160
+   },
+   {
+    "file": "d-hevc-1080sq-132s.mp4",
+    "purpose": "preview",
+    "hash1": 0.01,
+    "scan": 8.21,
+    "encode": 2.82,
+    "rescanAndHash": 4.09,
+    "hash2": 0.01,
+    "total": 15.18,
+    "proxyMB": 101.2,
+    "frames": 5764,
+    "w": 1080,
+    "h": 1080
+   }
+  ],
+  "audioMix": [
+   {
+    "label": "5min talk+bgm",
+    "seconds": 300,
+    "cold": {
+     "total": 6.83,
+     "stages": {
+      "decode-audio": 0.69,
+      "retime-audio": 0.01,
+      "mix-audio": 6.07,
+      "audio-ready": 0
+     },
+     "samples": 14400000
+    },
+    "volumeEdit": {
+     "total": 6.56,
+     "stages": {
+      "decode-audio": 0.22,
+      "retime-audio": 0,
+      "mix-audio": 6.22,
+      "audio-ready": 0
+     },
+     "samples": 14400000
+    }
+   },
+   {
+    "label": "30min talk+bgm",
+    "seconds": 1800,
+    "cold": {
+     "total": 40.44,
+     "stages": {
+      "decode-audio": 3.32,
+      "retime-audio": 0.02,
+      "mix-audio": 36.98,
+      "audio-ready": 0.02
+     },
+     "samples": 86400000
+    },
+    "volumeEdit": {
+     "total": 37.74,
+     "stages": {
+      "decode-audio": 0.44,
+      "retime-audio": 0,
+      "mix-audio": 37.18,
+      "audio-ready": 0.02
+     },
+     "samples": 86400000
+    }
+   }
+  ],
+  "browser": [
+   {
+    "kind": "color1080p",
+    "n": 12,
+    "mean": 114.1,
+    "p50": 126.4,
+    "p95": 130.6,
+    "max": 130.6
+   },
+   {
+    "kind": "seekStep",
+    "name": "previewProxyGop30:a-h264-1080p-300s",
+    "load": 100,
+    "jump": 6,
+    "step": {
+     "n": 90,
+     "mean": 8.8,
+     "p50": 8.8,
+     "p95": 14.1,
+     "max": 14.4
+    },
+    "achievedFps": 113.7,
+    "realtimeRatio": 3.79
+   },
+   {
+    "kind": "play",
+    "name": "previewProxyGop30:a-h264-1080p-300s",
+    "firstFrameMs": 43,
+    "presentedFps": 30.3,
+    "mediaAdvance": 4,
+    "dropped": 0
+   },
+   {
+    "kind": "webcodecs",
+    "name": "previewProxyGop30:a-h264-1080p-300s",
+    "codec": "avc1.42c028",
+    "open": 9,
+    "randomAccess": 17,
+    "decodedFps": 1746.7,
+    "realtimeRatio": 58.22,
+    "frames": 120
+   },
+   {
+    "kind": "seekStep",
+    "name": "previewProxyGop30:b-hevc-4k-60s",
+    "load": 9,
+    "jump": 26,
+    "step": {
+     "n": 90,
+     "mean": 11.4,
+     "p50": 11.1,
+     "p95": 21,
+     "max": 23.5
+    },
+    "achievedFps": 87.5,
+    "realtimeRatio": 3.65
+   },
+   {
+    "kind": "play",
+    "name": "previewProxyGop30:b-hevc-4k-60s",
+    "firstFrameMs": 53,
+    "presentedFps": 24.3,
+    "mediaAdvance": 4,
+    "dropped": 0
+   },
+   {
+    "kind": "webcodecs",
+    "name": "previewProxyGop30:b-hevc-4k-60s",
+    "codec": "avc1.42c028",
+    "open": 5,
+    "randomAccess": 33,
+    "decodedFps": 1007.3,
+    "realtimeRatio": 41.54,
+    "frames": 97
+   },
+   {
+    "kind": "seekStep",
+    "name": "previewProxyGop30:c-av1-4k-134s",
+    "load": 8,
+    "jump": 22,
+    "step": {
+     "n": 90,
+     "mean": 11.5,
+     "p50": 11.1,
+     "p95": 21.2,
+     "max": 23.8
+    },
+    "achievedFps": 87.2,
+    "realtimeRatio": 3.64
+   },
+   {
+    "kind": "play",
+    "name": "previewProxyGop30:c-av1-4k-134s",
+    "firstFrameMs": 52,
+    "presentedFps": 24.3,
+    "mediaAdvance": 4,
+    "dropped": 0
+   },
+   {
+    "kind": "webcodecs",
+    "name": "previewProxyGop30:c-av1-4k-134s",
+    "codec": "avc1.42c028",
+    "open": 2,
+    "randomAccess": 30,
+    "decodedFps": 1015.7,
+    "realtimeRatio": 41.88,
+    "frames": 97
+   },
+   {
+    "kind": "seekStep",
+    "name": "previewProxyGop30:d-hevc-1080sq-132s",
+    "load": 7,
+    "jump": 5,
+    "step": {
+     "n": 90,
+     "mean": 5.3,
+     "p50": 5.3,
+     "p95": 8.5,
+     "max": 9.2
+    },
+    "achievedFps": 189.9,
+    "realtimeRatio": 4.36
+   },
+   {
+    "kind": "play",
+    "name": "previewProxyGop30:d-hevc-1080sq-132s",
+    "firstFrameMs": 16,
+    "presentedFps": 48.3,
+    "mediaAdvance": 4.02,
+    "dropped": 0
+   },
+   {
+    "kind": "webcodecs",
+    "name": "previewProxyGop30:d-hevc-1080sq-132s",
+    "codec": "avc1.42c02a",
+    "open": 4,
+    "randomAccess": 13,
+    "decodedFps": 2989,
+    "realtimeRatio": 62.6,
+    "frames": 191
+   }
+  ]
+ }
+}

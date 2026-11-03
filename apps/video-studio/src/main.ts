@@ -123,6 +123,11 @@ import {
 } from "./editor/task-bridge";
 import { compileAudioPlan } from "./editor/audio-plan";
 import {
+  canLoadDuckingModule,
+  liveAudioUnsupported,
+  resolveLivePreviewAudio,
+} from "./editor/live-audio";
+import {
   editorAudioContentKey,
   editorPreviewVideoPlan,
   editorSourceContentKey,
@@ -131,7 +136,7 @@ import {
 import { loadEditorPreviewAudio } from "./editor/resource-audio";
 import { EditorExportJobs } from "./editor/jobs-ui";
 import { EditorImportUI } from "./editor/import-ui";
-import { EditorSourcePreviews } from "./editor/source-previews";
+import { EditorSourcePreviews, type SourcePreviewPriority } from "./editor/source-previews";
 import { EditorPortableUI } from "./editor/portable-ui";
 import { EditorSyncUI } from "./editor/sync-ui";
 import { createCaptionController, type CaptionController } from "./editor/caption-controller";
@@ -6068,7 +6073,11 @@ function mountEditorAgentTools(): void {
     sdk.dispose();
   };
 }
-async function resolveEditorAsset(assetId: string, signal: AbortSignal) {
+async function resolveEditorAsset(
+  assetId: string,
+  signal: AbortSignal,
+  priority: SourcePreviewPriority = "background",
+) {
   const source = editorSession!.read().assets.find((asset) => asset.id === assetId);
   const proxy = editorProxyResources.get(assetId);
   if (source && proxy?.sourceKey === editorSourceKey(source))
@@ -6081,7 +6090,7 @@ async function resolveEditorAsset(assetId: string, signal: AbortSignal) {
     editorSourcePreviews
   ) {
     const identity = editorSession!.getState().identity;
-    const prepared = await editorSourcePreviews.prepare(source, signal);
+    const prepared = await editorSourcePreviews.prepare(source, signal, priority);
     if (signal.aborted) throw new DOMException("取消预览", "AbortError");
     const currentIdentity = editorSession!.getState().identity;
     const current = editorSession!.read().assets.find((asset) => asset.id === source.id);
@@ -6114,8 +6123,12 @@ async function resolveEditorAsset(assetId: string, signal: AbortSignal) {
     }
     return { url: await resourcePreviewUrl(panel, prepared.proxy.id, signal), owned: false };
   }
-  if (source?.resourceId)
-    return { url: await resourcePreviewUrl(panel, source.resourceId, signal), owned: false };
+  return { url: await editorOriginalMediaUrl(assetId, signal), owned: false };
+}
+/** The original media an editor asset plays from, for sound as well as pictures. */
+async function editorOriginalMediaUrl(assetId: string, signal: AbortSignal): Promise<string> {
+  const source = editorSession!.read().assets.find((asset) => asset.id === assetId);
+  if (source?.resourceId) return resourcePreviewUrl(panel, source.resourceId, signal);
   let item = library.items.get(assetId);
   if (!item) {
     const asset = project.assets.find((asset) => asset.id === assetId);
@@ -6130,7 +6143,7 @@ async function resolveEditorAsset(assetId: string, signal: AbortSignal) {
   }
   if (signal.aborted) throw new DOMException("取消预览", "AbortError");
   if (!item) throw new Error("素材无法读取，请重新连接原文件");
-  return { url: item.url, owned: false };
+  return item.url;
 }
 function mountEditorWorkspace(): void {
   if (!editorSession || editorWorkspace) return;
@@ -6146,7 +6159,8 @@ function mountEditorWorkspace(): void {
     showComposition: showEditorWorkspace,
     session: editorSession,
     assertEditable: assertEditorEditable,
-    resolveAsset: resolveEditorAsset,
+    // The player waits on the frame it is about to show; timeline strips queue behind it.
+    resolveAsset: (assetId, signal) => resolveEditorAsset(assetId, signal, "playback"),
     alignMulticamSources: editorTasks
       ? (assetIds, referenceAssetId, options) =>
           editorTasks!.alignMulticamSources(
@@ -6280,7 +6294,7 @@ function mountEditorWorkspace(): void {
         for (const asset of videoPlan.upcoming) {
           if (!asset.resourceId ||
               editorProxyResources.get(asset.id)?.sourceKey === editorSourceKey(asset)) continue;
-          void editorSourcePreviews.prepare(asset, signal).then((prepared) => {
+          void editorSourcePreviews.prepare(asset, signal, "playback").then((prepared) => {
             if (!current()) return;
             const latest = editorSession!.read().assets.find((item) => item.id === asset.id);
             if (!latest || editorSourceKey(latest) !== editorSourceKey(asset) ||
@@ -6303,6 +6317,24 @@ function mountEditorWorkspace(): void {
         warmUpcomingVideo();
         activateTimelineMedia();
         return undefined;
+      }
+      // Like HyperFrames, ordinary clips mix while playing; nothing is rendered first.
+      // The packaged worklet runs the same ducking detector as the native renderer.
+      const duckingModule = plan.ducking.length
+        ? new URL("runtimes/audio-ducking.mjs", document.baseURI).href
+        : undefined;
+      const ducking = !!duckingModule && (await canLoadDuckingModule(duckingModule));
+      if (purpose === undefined && !liveAudioUnsupported(plan, { ducking })) {
+        onProgress?.("正在载入声音素材…");
+        const live = await resolveLivePreviewAudio(plan, editorOriginalMediaUrl, signal, undefined,
+          ducking ? duckingModule : undefined);
+        if (!current()) return undefined;
+        if (live) {
+          if (snapshot) preparedNative = { key, snapshot };
+          warmUpcomingVideo();
+          activateTimelineMedia();
+          return { documentId: doc.id, revision: requestedDoc.revision, sequenceId, live };
+        }
       }
       onProgress?.("正在读取声音素材并准备预览混音…");
       const result = await editorTasks.prepareAudioForPreview(doc, sequenceId, {
@@ -6339,8 +6371,29 @@ function mountEditorWorkspace(): void {
           await submitEditorExport(doc, sequenceId, profile, signal, "editor", undefined, range);
         }
       : undefined,
+    originalState: panel
+      ? async (resourceId) =>
+          (await externalMedia.available()) ? (await externalMedia.get(resourceId)).state : undefined
+      : undefined,
+    reconnectOriginal: panel
+      ? async (assetId) => {
+          assertEditorEditable();
+          const asset = editorSession?.read().assets.find((item) => item.id === assetId);
+          if (!isExternalMedia(asset?.resourceId))
+            throw new Error("这个素材不是引用的原文件，无需重新连接");
+          // The Host keeps the reference ID and only accepts the same moved file.
+          const references = await externalMedia.pick(asset.resourceId);
+          if (!references.length) return;
+          invalidateNativePreviewSources();
+          editorWorkspace?.refreshMedia();
+          toast("已重新连接原文件，时间轴上的片段保持不变");
+        }
+      : undefined,
     importMedia: () => {
-      if (editorImportUI) editorImportUI.choose();
+      if (editorImportUI) {
+        folderImport.assertImportReady();
+        editorImportUI.choose();
+      }
       else $("#media-input").click();
     },
     openProject: () => {
@@ -6386,7 +6439,26 @@ function mountEditorWorkspace(): void {
     const importHost = document.createElement("div");
     importHost.className = "ew-import-host";
     root.append(importHost);
-    editorImportUI = new EditorImportUI(editorSession, panel, importHost);
+    // Known before the click: a chooser opened after an await loses user activation.
+    let referencePickAvailable = false;
+    void externalMedia
+      .available()
+      .then((available) => {
+        referencePickAvailable = available;
+      })
+      .catch(() => {});
+    editorImportUI = new EditorImportUI(editorSession, panel, importHost, {
+      // Originals stay where they are; copying is the explicit folder-import choice.
+      pickReferences: () =>
+        folderImport.importMode === "reference" && referencePickAvailable
+          ? async () =>
+              (await externalMedia.pick()).map((ref) => ({
+                id: ref.id,
+                name: ref.name,
+                lastModified: ref.lastModified,
+              }))
+          : undefined,
+    });
   }
   mountEditorCaptions(root);
   mountEditorSeparation(root);

@@ -19,6 +19,7 @@ before(async () => {
         export { EditorSession, EditorStorageConflictError } from './apps/video-studio/src/editor/session';
         export * from './apps/video-studio/src/editor/defaults';
         export { sequenceDuration } from './apps/video-studio/src/editor/validation';
+        export { compileAudioPlan } from './apps/video-studio/src/editor/audio-plan';
       `,
       resolveDir: fileURLToPath(new URL("../", import.meta.url)),
     },
@@ -630,6 +631,19 @@ async function fixture(t, options = {}) {
           imageRequests.push({ assetId, signal, resolve });
         }),
       prepareAudio,
+      originalState: options.originals
+        ? async (resourceId) => {
+            events.push(`state:${resourceId.slice(-4)}`);
+            return (globalThis.originalStates ??= {})[resourceId];
+          }
+        : undefined,
+      reconnectOriginal: options.originals
+        ? async (assetId) => {
+            events.push(`reconnect:${assetId}`);
+            for (const id of Object.keys(globalThis.originalStates ?? {}))
+              globalThis.originalStates[id] = "available";
+          }
+        : undefined,
       importMedia: () => {
         events.push("import");
         session.dispatch(
@@ -804,6 +818,22 @@ async function fixture(t, options = {}) {
                   sampleRate: 48000,
                 }),
               }),
+        });
+      },
+      // A playable silent WAV, so the live mixer can open a real same-origin source.
+      resolveLiveAudio: (index) => {
+        const request = audioRequests[index], rate = 8000,
+          frames = Math.ceil((request.duration / 240000) * rate) + rate,
+          bytes = new DataView(new ArrayBuffer(44 + frames * 2)),
+          text = (at, value) => [...value].forEach((char, i) => bytes.setUint8(at + i, char.charCodeAt(0)));
+        text(0, "RIFF"); bytes.setUint32(4, 36 + frames * 2, true); text(8, "WAVEfmt ");
+        bytes.setUint32(16, 16, true); bytes.setUint16(20, 1, true); bytes.setUint16(22, 1, true);
+        bytes.setUint32(24, rate, true); bytes.setUint32(28, rate * 2, true); bytes.setUint16(32, 2, true);
+        bytes.setUint16(34, 16, true); text(36, "data"); bytes.setUint32(40, frames * 2, true);
+        const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+        request.resolve({
+          documentId: request.documentId, revision: request.revision, sequenceId: request.sequenceId,
+          live: { plan: editor.compileAudioPlan(request.doc, request.sequenceId), sources: new Map([["audio", url]]) },
         });
       },
       externalEdit: () =>
@@ -1901,6 +1931,36 @@ test("workspace imports into its session and adds asset plus required track as o
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });
 
+test("a moved original is flagged in the library and reconnects in place", async (t) => {
+  const page = await fixture(t, { originals: true });
+  const resourceId = "external-" + "c".repeat(64);
+  await page.evaluate((resourceId) => {
+    globalThis.originalStates = { [resourceId]: "missing" };
+    fixture.dispatch(
+      [
+        {
+          type: "asset.add",
+          asset: { id: "moved", name: "DJI_0007.MP4", kind: "demo", duration: 240000, width: 320, height: 180, resourceId },
+        },
+      ],
+      "导入素材",
+    );
+  }, resourceId);
+  const warning = page.locator('[data-ew-asset="moved"] .ew-asset-unavailable');
+  await warning.waitFor();
+  assert.equal(await warning.innerText(), "原文件已移动或缺失");
+  await page.getByRole("button", { name: "重新连接原文件：DJI_0007.MP4" }).click();
+  await warning.waitFor({ state: "detached" });
+  assert.equal(await page.locator("[data-ew-reconnect]").count(), 0);
+  assert.ok((await page.evaluate(() => fixture.events)).includes("reconnect:moved"));
+  // Other references were not asked about; only the new external asset is checked.
+  assert.deepEqual(
+    (await page.evaluate(() => fixture.events)).filter((event) => event.startsWith("state:")),
+    ["state:cccc", "state:cccc"],
+  );
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
 test("material + appends to the end of the main picture track even with the playhead at 0", async (t) => {
   const page = await fixture(t);
   assert.equal(await page.evaluate(() => fixture.playhead()), 0);
@@ -2664,6 +2724,28 @@ test("cancelled native audio completion never plays or contaminates the next pre
     () => document.querySelector('[data-ew-action="play"]').textContent === "暂停",
   );
   await action(page, "play").click();
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("a sound edit while a live mix plays applies in place without stopping or preparing again", async (t) => {
+  const page = await fixture(t, { audio: true });
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.evaluate(() => fixture.resolveLiveAudio(0));
+  await page.waitForFunction(() => fixture.playing());
+  const before = await page.evaluate(() => fixture.playhead());
+  await page.evaluate(() => fixture.soundEdit());
+  await settle(page);
+  const after = await page.evaluate(() => ({
+    playing: fixture.playing(),
+    requests: fixture.audio().length,
+    volume: fixture.internals.workspace.audio.live.plan.lanes[0].stages[0].audio.volume,
+    revision: fixture.internals.workspace.audio.revision,
+  }));
+  assert.deepEqual(after, { playing: true, requests: 1, volume: 0.5, revision: (await documentState(page)).revision });
+  await page.waitForFunction((start) => fixture.playhead() > start, before);
+  await action(page, "play").click();
+  assert.equal(await page.evaluate(() => fixture.playing()), false);
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });
 

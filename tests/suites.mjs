@@ -2,6 +2,11 @@
 // while their application ownership is explicit here.
 export const suites = [
   {
+    id: "release-zip",
+    label: "Read-only release ZIP/tag content verification",
+    commands: [["--test", "tests/verify-release-zip.test.mjs"]],
+  },
+  {
     id: "panel-cli",
     label: "Installed Panel CLI and Runtime Skill contracts",
     commands: [["--test", "tests/panel-cli-contract.test.mjs"]],
@@ -360,6 +365,7 @@ export const suites = [
         "tests/video-studio-editor-voiceover-publication.test.ts",
         "tests/video-studio-editor-markers.test.ts",
         "tests/video-studio-editor-asset-removal.test.ts",
+        "tests/video-studio-editor-live-audio.test.ts",
         "tests/video-studio-audio-split.test.ts",
         "tests/video-studio-timeline-controls.test.ts",
         "tests/video-studio-free-timeline.test.ts",

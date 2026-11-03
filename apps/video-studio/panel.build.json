@@ -1,7 +1,8 @@
 {
   "entry": "src/main.ts",
   "browserEntries": {
-    "editor-renderer": "src/editor/render-entry.ts"
+    "editor-renderer": "src/editor/render-entry.ts",
+    "audio-ducking": "src/editor/ducking-worklet.ts"
   },
   "nativeEntries": {
     "video-studio": "native/project-cli.ts",

@@ -512,3 +512,74 @@ test("native stdin contains only path and stable metadata, never cached state or
     files: [{ path: "video.mp4", bytes: 10, modifiedAt: 100 }],
   });
 });
+
+test("only an exact Node spawn refusal is classified as not confirmed, without retry or cleanup", async () => {
+  for (const code of ["OPERATION_FAILED", undefined]) {
+    const denied = Object.assign(new Error("User denied running node"), code ? { code } : {});
+    const app = fixture({
+      "process.spawn": () => {
+        throw denied;
+      },
+    });
+    await assert.rejects(
+      app.process.run(args),
+      (error) =>
+        error.code === "EXECUTION_NOT_CONFIRMED" &&
+        error.confirmed === true &&
+        error.cause === denied,
+    );
+    assert.deepEqual(
+      app.calls.map(({ method }) => method),
+      ["process.spawn"],
+    );
+    assert.equal(app.process.busy, false);
+  }
+  for (const [code, message, method] of [
+    ["OPERATION_FAILED", "Network unavailable", "process.spawn"],
+    ["REVOKED", "User denied running node", "process.spawn"],
+    ["TIMEOUT", "User denied running node", "process.spawn"],
+    ["OPERATION_FAILED", "User denied running ffmpeg", "process.spawn"],
+    ["OPERATION_FAILED", "User denied running node", "process.end"],
+  ]) {
+    const original = Object.assign(new Error(message), { code });
+    const app = fixture({
+      [method]: () => {
+        throw original;
+      },
+    });
+    await assert.rejects(app.process.run({ ...args, input: {} }), (error) => error === original);
+  }
+});
+
+test("a rate-delayed spawn rechecks a concurrent refusal before retrying", async () => {
+  let spawnCalls = 0,
+    paused;
+  const reachedRateLimit = deferred();
+  const process = createLibraryProcess(
+    {
+      async call(method) {
+        assert.equal(method, "process.spawn");
+        spawnCalls++;
+        if (spawnCalls === 1) {
+          reachedRateLimit.resolve();
+          throw rateLimited(40);
+        }
+        throw Object.assign(new Error("User denied running node"), { code: "OPERATION_FAILED" });
+      },
+    },
+    {
+      beforeStart() {
+        if (paused) throw paused;
+      },
+      onExecutionNotConfirmed(error) {
+        paused = error;
+      },
+    },
+  );
+  const first = assert.rejects(process.run(args), { code: "EXECUTION_NOT_CONFIRMED" });
+  await reachedRateLimit.promise;
+  await assert.rejects(process.run(args), { code: "EXECUTION_NOT_CONFIRMED" });
+  await first;
+  assert.equal(spawnCalls, 2, "the waiting run cannot open a third confirmation");
+  assert.equal(process.busy, false);
+});

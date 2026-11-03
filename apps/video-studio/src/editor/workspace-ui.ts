@@ -4,6 +4,8 @@ import { EditorMarkers } from "./marker-ui";
 import { EditorInspector } from "./inspector-ui";
 import { EditorTimeline } from "./timeline-ui";
 import { EditorPreview, type PreviewAudio } from "./preview";
+import { compileAudioPlan } from "./audio-plan";
+import { liveAudioWithSources } from "./live-audio";
 import {
   EditorSession,
   sameIdentity,
@@ -72,7 +74,8 @@ export interface EditorWorkspaceOptions {
     sequenceId: string,
     signal: AbortSignal,
     onProgress?: (message: string) => void,
-    purpose?: "audition",
+    /** `audition` mixes temporary mutes; `prerendered` keeps PCM for gain audition. */
+    purpose?: "audition" | "prerendered",
   ): Promise<PreviewAudio | undefined>;
   exportSequence?(
     document: EditorDocument,
@@ -82,6 +85,10 @@ export interface EditorWorkspaceOptions {
     range?: ExportRange,
   ): Promise<void>;
   importMedia(): void | Promise<void>;
+  /** Host state of an in-place original (external reference); undefined when unknown. */
+  originalState?(resourceId: string): Promise<"available" | "missing" | "changed" | undefined>;
+  /** Let the user point a moved original back at its reference. */
+  reconnectOriginal?(assetId: string): void | Promise<void>;
   openProject(): void | Promise<void>;
   newProject(): void | Promise<void>;
   downloadProject(document: EditorDocument): void | Promise<void>;
@@ -168,6 +175,9 @@ export class EditorWorkspace {
   /** The playhead sits on an exact clip start (not a frame boundary) that re-seeks keep. */
   private exactPlayhead = false;
   private search = "";
+  /** External reference states, refreshed while the library is rendered. */
+  private readonly originalStates = new Map<string, { state?: string; checkedAt: number }>();
+  private checkingOriginals = false;
   private visible = true;
   private sourcePreview = false;
   private loopPlayback = false;
@@ -435,12 +445,14 @@ export class EditorWorkspace {
         this.timeline.setPlaybackActive(playing);
         this.updatePlayButton(playing);
       },
-      onBuffering: (buffering) => {
+      onBuffering: (buffering, reason) => {
         if (this.disposed || this.preparing) return;
         const output = this.get("[data-ew-preview-error]");
         if (buffering) {
           output.dataset.audioBuffering = "true";
-          output.textContent = "正在缓冲声音，画面会在声音就绪后继续";
+          output.textContent = reason === "video"
+            ? "正在准备画面，声音和画面会在画面就绪后一起继续"
+            : "正在缓冲声音，画面会在声音就绪后继续";
           output.hidden = false;
         } else if (output.dataset.audioBuffering) {
           delete output.dataset.audioBuffering;
@@ -691,22 +703,38 @@ export class EditorWorkspace {
       sameAudio = sameScope && audioContentKey === this.audioContentKey,
       sameSources = sameScope && visualSourceKey === this.visualSourceKey,
       preservePreparation = sameAudio && sameSources && !this.gainAudition;
+    // An edit made while playing continues in place when nothing has to be prepared: the
+    // same picture sources, and either the same sound or a live mix of sources already open.
+    const playing = this.preview.playing && sameSources && !this.gainAudition && !this.preparing,
+      current = this.audio,
+      live = playing && !sameAudio && current?.live
+        ? liveAudioWithSources(compileAudioPlan(auditionDocument, sequence.id), current.live.sources,
+            current.live.duckingModule)
+        : undefined,
+      edited: PreviewAudio | undefined = live && current
+        ? { documentId: current.documentId, revision: doc.revision, sequenceId: current.sequenceId, live }
+        : undefined,
+      continued = playing && (sameAudio || !!edited) &&
+        this.preview.updatePlayback(auditionDocument, sequence.id, edited);
     this.clearGainAudition(true);
-    if (!preservePreparation) this.cancelPreparation();
-    if (!sameAudio) {
+    if (!preservePreparation && !continued) this.cancelPreparation();
+    if (continued) {
+      this.audio = edited ?? (current && { ...current, revision: doc.revision });
+    } else if (!sameAudio) {
       this.audio?.stream?.dispose();
       this.audio = undefined;
     } else if (this.audio) {
       // Content equality, within this open generation, permits a new identity wrapper only.
       this.audio = { ...this.audio, revision: doc.revision };
     }
-    if (!sameAudio || !sameSources) {
+    if (!continued && (!sameAudio || !sameSources)) {
       this.preparedRevision = "";
       this.clearAudioWarning();
     }
     this.audioContentKey = audioContentKey;
     this.visualSourceKey = visualSourceKey;
-    this.preview.setDocument(auditionDocument, sequence.id, { preserveMedia: sameSources });
+    if (continued) this.preparedRevision = this.playbackSignature();
+    else this.preview.setDocument(auditionDocument, sequence.id, { preserveMedia: sameSources });
     this.updateAuditionControls();
     this.playhead = Math.min(this.playhead, Math.max(0, sequenceDuration(sequence) - 1));
     const name = this.get<HTMLInputElement>("[data-ew-project-name]");
@@ -732,7 +760,8 @@ export class EditorWorkspace {
     this.timeline.render();
     this.canvasEditor.render();
     this.updateTime();
-    if (this.visible && !this.sourcePreview && !(preservePreparation && this.preparing)) this.run(() => this.frameCapture?.finishing || this.exportOpening?.finishing || this.gainOpening?.finishing
+    // Continued playback draws its next frame itself; a seek would stop it.
+    if (this.visible && !this.sourcePreview && !continued && !(preservePreparation && this.preparing)) this.run(() => this.frameCapture?.finishing || this.exportOpening?.finishing || this.gainOpening?.finishing
       ? this.preview.seek(this.playhead, { exact: this.exactPlayhead }) : this.seek(this.playhead));
   }
 
@@ -744,16 +773,57 @@ export class EditorWorkspace {
       );
     this.get("[data-ew-assets]").innerHTML = assets.length
       ? assets
-          .map(
-            (asset) =>
-              `<button type="button" data-ew-asset="${esc(asset.id)}" title="加入时间轴：${esc(asset.name)}"><span class="ew-asset-kind">${({ video: "视频", audio: "音频", image: "图片", demo: "示例" } as const)[asset.kind]}</span><strong>${esc(asset.name)}</strong><small>${asset.kind === "image" ? "静态画面" : timeLabel(asset.duration)} · 点击加入</small>${assetLimitations(
-                asset,
-              )
-                .map((message) => `<small class="ew-asset-limitation">${esc(message)}</small>`)
-                .join("")}</button>`,
-          )
+          .map((asset) => {
+            const state = asset.resourceId
+              ? this.originalStates.get(asset.resourceId)?.state
+              : undefined;
+            const unavailable = state === "missing" || state === "changed";
+            return `<button type="button" data-ew-asset="${esc(asset.id)}" title="加入时间轴：${esc(asset.name)}"${unavailable ? ' class="is-unavailable"' : ""}><span class="ew-asset-kind">${({ video: "视频", audio: "音频", image: "图片", demo: "示例" } as const)[asset.kind]}</span><strong>${esc(asset.name)}</strong><small>${asset.kind === "image" ? "静态画面" : timeLabel(asset.duration)} · 点击加入</small>${unavailable ? `<small class="ew-asset-unavailable">${state === "missing" ? "原文件已移动或缺失" : "原文件已被修改"}</small>` : ""}${assetLimitations(
+              asset,
+            )
+              .map((message) => `<small class="ew-asset-limitation">${esc(message)}</small>`)
+              .join("")}</button>${unavailable && this.options.reconnectOriginal ? `<button type="button" class="ew-asset-reconnect" data-ew-reconnect="${esc(asset.id)}" aria-label="重新连接原文件：${esc(asset.name)}">重新连接原文件</button>` : ""}`;
+          })
           .join("")
       : '<p class="ew-empty">导入视频、音频或图片后，点击素材加入当前序列。</p>';
+    void this.checkOriginals();
+  }
+  /** Ask the Host about in-place originals at most every 15 s; re-render only on change. */
+  private async checkOriginals(): Promise<void> {
+    const check = this.options.originalState;
+    if (!check || this.checkingOriginals || this.disposed) return;
+    const now = Date.now();
+    const due = [
+      ...new Set(
+        this.options.session
+          .read()
+          .assets.flatMap((asset) =>
+            asset.resourceId?.startsWith("external-") ? [asset.resourceId] : [],
+          ),
+      ),
+    ].filter((id) => now - (this.originalStates.get(id)?.checkedAt ?? 0) >= 15_000);
+    if (!due.length) return;
+    this.checkingOriginals = true;
+    let changed = false;
+    try {
+      for (const id of due) {
+        const state = await check(id).catch(() => undefined);
+        if (this.disposed) return;
+        if (this.originalStates.get(id)?.state !== state) changed = true;
+        this.originalStates.set(id, { state, checkedAt: Date.now() });
+      }
+    } finally {
+      this.checkingOriginals = false;
+    }
+    if (changed) this.renderAssets();
+  }
+  private async reconnectOriginal(assetId: string): Promise<void> {
+    const asset = this.options.session.read().assets.find((item) => item.id === assetId);
+    if (!asset?.resourceId || !this.options.reconnectOriginal) return;
+    await this.options.reconnectOriginal(assetId);
+    if (this.disposed) return;
+    this.originalStates.delete(asset.resourceId);
+    this.renderAssets();
   }
   private updateTime(): void {
     const control = this.get("[data-ew-time]"),
@@ -1001,13 +1071,15 @@ export class EditorWorkspace {
       sequenceId = this.sequenceId,
       signature = this.playbackSignature(), audition = this.gainAudition;
     try {
-      const preparedCurrent = this.preparedRevision === signature;
+      // A live mix cannot carry a gain-audition stem; prepare PCM for that playback.
+      const preparedCurrent = this.preparedRevision === signature && !(audition && this.audio?.live);
       if (!preparedCurrent) this.clearAudioWarning();
       const prepared = preparedCurrent
         ? this.audio
         : (await this.options.prepareAudio?.(doc, sequenceId, controller.signal, (message) =>
             this.preparationStatus(controller, message),
-            this.soloTracks.size ? "audition" : undefined,
+            // Gain audition plays a PCM correction stem against the full mix.
+            this.soloTracks.size ? "audition" : audition ? "prerendered" : undefined,
           ));
       if (
         controller.signal.aborted ||
@@ -1407,9 +1479,13 @@ export class EditorWorkspace {
   }
   private click = (event: MouseEvent) => {
     const target = (event.target as Element).closest<HTMLElement>(
-      "[data-ew-action],[data-ew-asset]",
+      "[data-ew-action],[data-ew-asset],[data-ew-reconnect]",
     );
     if (!target) return;
+    if (target.dataset.ewReconnect) {
+      this.run(() => this.reconnectOriginal(target.dataset.ewReconnect!));
+      return;
+    }
     const menu = target.closest<HTMLDetailsElement>(".ew-more");
     if (menu) menu.open = false;
     if (target.dataset.ewAsset) {

@@ -180,10 +180,16 @@ test("partial provider failure never publishes stale files as success or leaks s
 });
 
 test("native failures classify split and unterminated stderr without publishing media or secrets", async (t) => {
-  for (const [diagnostic, code] of [
+  for (const [diagnostic, code, retryable = true] of [
     ["HTTP Error 412: Precondition Failed", "SOURCE_HTTP_412"],
     ["HTTP Error 429: Too Many Requests", "SOURCE_HTTP_429"],
     ["Sign in to confirm you're not a bot", "SOURCE_LOGIN_REQUIRED"],
+    [
+      "[generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge",
+      "SOURCE_HTTP_403",
+      false,
+    ],
+    ["Cloudflare anti-bot challenge", "SOURCE_ACCESS_CHALLENGE", false],
   ]) {
     const root = await fixture(t),
       updates = [];
@@ -193,8 +199,15 @@ test("native failures classify split and unterminated stderr without publishing 
       child.emit("close", 1);
     });
     await assert.rejects(
-      runDownload(request, { jobDir: root, spawnProcess: fake.spawn, progress: (value) => updates.push(value) }),
-      (error) => error.code === code && error.retryable === true && !error.message.includes("supersecret"),
+      runDownload(request, {
+        jobDir: root,
+        spawnProcess: fake.spawn,
+        progress: (value) => updates.push(value),
+      }),
+      (error) =>
+        error.code === code &&
+        error.retryable === retryable &&
+        !error.message.includes("supersecret"),
     );
     assert.doesNotMatch(JSON.stringify(updates), /supersecret/);
     assert.ok(!updates.some((update) => update.stage === "complete"));

@@ -26,7 +26,7 @@ before(async () => {
               namespace: "fixture",
             }));
             build.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({
-              contents: `export function createEditorMediaImporter(_panel, options) { return { async importFiles(files,{signal}) { const identity=options.getIdentity(); window.fixture.uploads++; options.onProgress({index:0,total:files.length,name:files[0].name,phase:'inspect'}); return new Promise((resolve,reject) => { window.fixture.finish = (errors=[]) => resolve({identity,errors,assets:[{id:'new-source',name:files[0].name,kind:'video',duration:56056,width:320,height:180,resourceId:'asset-'+ 'a'.repeat(64)}]}); signal.addEventListener('abort',()=>reject(new DOMException('cancelled','AbortError')),{once:true}); }); },dispose(){window.fixture.disposed=true;} }; }`,
+              contents: `export function createEditorMediaImporter(_panel, options) { return { async importFiles(files,{signal}) { const identity=options.getIdentity(); window.fixture.uploads++; options.onProgress({index:0,total:files.length,name:files[0].name,phase:'inspect'}); return new Promise((resolve,reject) => { window.fixture.finish = (errors=[]) => resolve({identity,errors,assets:[{id:'new-source',name:files[0].name,kind:'video',duration:56056,width:320,height:180,resourceId:'asset-'+ 'a'.repeat(64)}]}); signal.addEventListener('abort',()=>reject(new DOMException('cancelled','AbortError')),{once:true}); }); }, async importResources(resources) { const identity=options.getIdentity(); window.fixture.referenced.push(...resources.map((item)=>item.id)); return {identity,errors:[],assets:resources.map((item)=>({id:'ref-'+item.id.slice(-4),name:item.name,kind:'video',duration:56056,width:320,height:180,resourceId:item.id}))}; },dispose(){window.fixture.disposed=true;} }; }`,
               loader: "js",
             }));
           },
@@ -39,7 +39,7 @@ before(async () => {
 after(async () => {
   await browser?.close();
 });
-async function fixture(t) {
+async function fixture(t, references) {
   const page = await browser.newPage();
   const uncaught = [];
   page.on("pageerror", (error) => uncaught.push(error.message));
@@ -53,10 +53,10 @@ async function fixture(t) {
   );
   await page.goto("http://127.0.0.1:41789/import");
   await page.addScriptTag({ content: source });
-  await page.evaluate(async () => {
+  await page.evaluate(async (references) => {
     let document = editor.migrateLegacyProject(editor.createDemoProject()),
       storageRevision = 4;
-    window.fixture = { uploads: 0, fail: false, writes: 0 };
+    window.fixture = { uploads: 0, fail: false, writes: 0, referenced: [], picks: 0, chooser: 0 };
     const session = await editor.EditorSession.open(
       {
         read: async () => ({ data: document, revision: storageRevision }),
@@ -76,7 +76,19 @@ async function fixture(t) {
       },
       { autosaveDelayMs: 60000 },
     );
-    const ui = new editor.EditorImportUI(session, {}, window.document.querySelector("main"));
+    const ui = new editor.EditorImportUI(session, {}, window.document.querySelector("main"), {
+      pickReferences: () =>
+        references === "copy"
+          ? undefined
+          : references
+            ? async () => {
+                fixture.picks++;
+                if (references === "fail") throw new Error("系统文件窗口打不开");
+                return [{ id: "external-" + "b".repeat(64), name: "DJI_0001.MP4", lastModified: 7 }];
+              }
+            : undefined,
+    });
+    window.document.querySelector("[data-editor-media-input]").click = () => fixture.chooser++;
     Object.assign(fixture, {
       read: () => session.read(),
       state: () => session.getState(),
@@ -94,8 +106,9 @@ async function fixture(t) {
       replace: () => session.replace({ ...session.read(), id: "another" }),
       undo: () => session.undo(),
       dispose: () => ui.dispose(),
+      choose: () => ui.choose(),
     });
-  });
+  }, references);
   return page;
 }
 async function choose(page) {
@@ -268,3 +281,44 @@ for (const action of ["cancel", "dispose", "replace"]) {
     assert.equal(await page.evaluate(() => fixture.writes), action === "replace" ? 2 : 1);
   });
 }
+
+test("import references originals in place without the copy chooser or any upload", async (t) => {
+  const page = await fixture(t, "reference");
+  await page.evaluate(() => {
+    fixture.choose();
+    fixture.choose();
+  });
+  await page.waitForFunction(() =>
+    fixture.read().assets.some((a) => a.resourceId === "external-" + "b".repeat(64)),
+  );
+  const value = await page.evaluate(() => ({
+    picks: fixture.picks,
+    chooser: fixture.chooser,
+    uploads: fixture.uploads,
+    referenced: fixture.referenced,
+    stored: fixture.stored().assets.some((a) => a.resourceId === "external-" + "b".repeat(64)),
+  }));
+  assert.deepEqual(value, {
+    picks: 1,
+    chooser: 0,
+    uploads: 0,
+    referenced: ["external-" + "b".repeat(64)],
+    stored: true,
+  });
+  assert.match(await page.locator(".editor-import-status").innerText(), /已引用 1 个素材.*未复制原片/);
+});
+test("the copy chooser opens only when the Host cannot reference originals", async (t) => {
+  const page = await fixture(t, "copy");
+  await page.evaluate(() => fixture.choose());
+  assert.deepEqual(await page.evaluate(() => [fixture.chooser, fixture.picks]), [1, 0]);
+});
+test("a failed reference picker reports the error and leaves the project unchanged", async (t) => {
+  const page = await fixture(t, "fail"),
+    before = await page.evaluate(() => fixture.read());
+  await page.evaluate(() => fixture.choose());
+  await page.getByRole("status").filter({ hasText: "系统文件窗口打不开" }).waitFor();
+  assert.deepEqual(await page.evaluate(() => fixture.read()), before);
+  assert.equal(await page.evaluate(() => fixture.chooser), 0);
+  await page.evaluate(() => fixture.choose());
+  await page.waitForFunction(() => fixture.picks === 2);
+});

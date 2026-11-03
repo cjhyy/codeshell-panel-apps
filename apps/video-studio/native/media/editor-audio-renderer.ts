@@ -12,6 +12,7 @@ import {
   type AudioPlanLane,
   type AudioPlanSpan,
 } from "../../src/editor/audio-plan.js";
+import { duckingCoefficients, duckingStep } from "../../src/editor/ducking.js";
 import { mediaAbortError, runMediaProcess } from "./media-process-runner.js";
 import { editorRangeAudioPreparation } from "./editor-range-preparation.js";
 import type { ExportRange } from "../../src/editor/export-range.js";
@@ -131,10 +132,16 @@ function writeAll(fd: number, buffer: Buffer): void {
   while (offset < buffer.length) offset += writeSync(fd, buffer, offset, buffer.length - offset);
 }
 
+function finite(value: number): number {
+  if (!Number.isFinite(value)) throw new Error("Audio PCM contains a non-finite sample");
+  return value;
+}
+
 /** Bounded random access supports reverse playback without loading entire source files into RAM. */
 class PcmStore {
   private files = new Map<string, { fd: number; samples: number }>();
   private blocks = new Map<string, Buffer>();
+  private last?: { path: string; block: number; samples: number; view: DataView };
   private readonly blockSamples = 8192;
   private file(path: string): { fd: number; samples: number } {
     const saved = this.files.get(path);
@@ -161,10 +168,15 @@ class PcmStore {
     return fraction ? first + (this.integer(path, lo + 1, channel) - first) * fraction : first;
   }
   private integer(path: string, sample: number, channel: number): number {
+    const block = Math.floor(sample / this.blockSamples),
+      last = this.last;
+    // Mixing walks one lane's span sample by sample. Serve the current block without
+    // rebuilding its key or reordering both LRU maps on every read.
+    if (last && last.path === path && last.block === block && sample >= 0 && sample < last.samples)
+      return finite(last.view.getFloat32((sample % this.blockSamples) * BYTES + channel * 4, true));
     const file = this.file(path);
     if (sample < 0 || sample >= file.samples) return 0;
-    const block = Math.floor(sample / this.blockSamples),
-      key = `${path}\0${block}`;
+    const key = `${path}\0${block}`;
     let bytes = this.blocks.get(key);
     if (bytes) {
       this.blocks.delete(key);
@@ -188,14 +200,19 @@ class PcmStore {
       }
       this.blocks.set(key, bytes);
     }
-    const value = bytes.readFloatLE((sample % this.blockSamples) * BYTES + channel * 4);
-    if (!Number.isFinite(value)) throw new Error("Audio PCM contains a non-finite sample");
-    return value;
+    this.last = {
+      path,
+      block,
+      samples: file.samples,
+      view: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+    };
+    return finite(bytes.readFloatLE((sample % this.blockSamples) * BYTES + channel * 4));
   }
   dispose(): void {
     for (const file of this.files.values()) closeSync(file.fd);
     this.files.clear();
     this.blocks.clear();
+    this.last = undefined;
   }
 }
 
@@ -502,7 +519,6 @@ export async function renderEditorAudio(
 
     const dryBuses = new Set(plan.ducking.flatMap((request) => request.sidechainTrackInstanceIds));
     const detector = new Map(plan.ducking.map((request) => [request.id, { power: 0, gain: 1 }]));
-    const rmsCoefficient = Math.exp(-1 / (RATE * 0.01));
     const cursors = new Map(lanes.map((lane) => [lane, 0]));
     const raw = join(temporary, "mix.f32"),
       fd = openSync(raw, "wx");
@@ -575,11 +591,8 @@ export async function renderEditorAudio(
         const envelopes = new Map<string, Float64Array>();
         for (const request of plan.ducking) {
           const state = detector.get(request.id)!,
-            envelope = allocate(count);
-          const threshold = 10 ** (request.thresholdDb / 10),
-            attenuation = 10 ** (-request.attenuationDb / 20);
-          const attack = request.attack ? Math.exp(-TICKS_PER_AUDIO_SAMPLE / request.attack) : 0;
-          const release = request.release ? Math.exp(-TICKS_PER_AUDIO_SAMPLE / request.release) : 0;
+            envelope = allocate(count),
+            coefficients = duckingCoefficients(request);
           for (let i = 0; i < count; i++) {
             let l = 0,
               r = 0;
@@ -590,12 +603,7 @@ export async function renderEditorAudio(
                 r += bus[i * CHANNELS + 1]!;
               }
             }
-            state.power =
-              rmsCoefficient * state.power + ((1 - rmsCoefficient) * (l * l + r * r)) / 2;
-            const target = state.power >= threshold ? attenuation : 1;
-            const coefficient = target < state.gain ? attack : release;
-            state.gain = target + coefficient * (state.gain - target);
-            envelope[i] = state.gain;
+            envelope[i] = duckingStep(state, l, r, coefficients);
           }
           envelopes.set(request.id, envelope);
         }

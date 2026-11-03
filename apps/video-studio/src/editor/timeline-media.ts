@@ -1,4 +1,8 @@
-import { EditorMediaPool, type EditorMediaPoolOptions } from "./media-pool";
+import {
+  EditorMediaPool,
+  PREVIEW_PREPARATION_TIMEOUT_MS,
+  type EditorMediaPoolOptions,
+} from "./media-pool";
 import { FrameCompositor } from "./compositor";
 import {
   prepareEvaluator,
@@ -190,6 +194,7 @@ export class EditorTimelineMedia {
           throw new Error("尚未连接素材预览");
         }),
       maxInstances: 32,
+      resolveTimeoutMs: PREVIEW_PREPARATION_TIMEOUT_MS,
     });
   }
   get stats() {

@@ -221,3 +221,12 @@ After reviewing their output locations, use `pump --project /absolute/project
 --allow-outside-project` (or `resume` with the same flag) to authorize continuation
 from the CLI. This flag is not accepted by the project-only Panel service. Queue
 lock contention asks for a refresh/retry and does not request slot recovery.
+
+### Execution confirmation
+
+If Node execution is declined or its confirmation expires, automatic shared-task
+and environment checks pause for this panel instance. Existing task and history
+records remain visible; queued downloads are not resumed. Use **手动重试** in
+the Tasks page (or the environment refresh button) to request confirmation again.
+Reopening the panel starts a new observation attempt. Network and ordinary helper
+errors are not treated as a refusal of execution permission.

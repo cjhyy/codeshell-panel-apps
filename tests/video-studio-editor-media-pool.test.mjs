@@ -186,6 +186,32 @@ test(
     }
 
     await t.test(
+      "native preparation inside resolution has its own deadline instead of the decode deadline",
+      async () => {
+        const result = await pageTest((page) =>
+          page.evaluate(async () => {
+            const { EditorMediaPool, layer, frame } = window.poolTest;
+            // A first proxy preparation can take far longer than decoding one frame.
+            const slow = () => new Promise((resolve) => setTimeout(() => resolve("/video"), 900));
+            const outcome = async (options) => {
+              const pool = new EditorMediaPool({ resolveAsset: slow, timeoutMs: 450, ...options });
+              try {
+                await pool.prepare(frame([layer("one", 0.25)]));
+                return "ready";
+              } catch (error) {
+                return error.code;
+              } finally {
+                pool.dispose();
+              }
+            };
+            return { defaults: await outcome({}), prepared: await outcome({ resolveTimeoutMs: 5000 }) };
+          }),
+        );
+        assert.deepEqual(result, { defaults: "timeout", prepared: "ready" });
+      },
+    );
+
+    await t.test(
       "same source has independent decoders and concurrently draw-ready different times",
       async () => {
         const result = await pageTest((page) =>
