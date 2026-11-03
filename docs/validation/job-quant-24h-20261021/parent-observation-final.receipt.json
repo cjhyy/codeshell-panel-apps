@@ -1,0 +1,11 @@
+{
+  "command": [
+    "node",
+    "--test",
+    "tests/observation-runner.test.mjs"
+  ],
+  "startedAt": "2026-10-21T03:53:23.093Z",
+  "completedAt": "2026-10-21T03:53:23.956Z",
+  "exitCode": 0,
+  "signal": null
+}

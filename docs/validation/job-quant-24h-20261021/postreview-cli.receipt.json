@@ -1,0 +1,8 @@
+{
+  "name": "postreview-cli",
+  "command": "npm test -- --suite panel-cli",
+  "exitCode": 0,
+  "completedAt": "2026-10-21T04:03:36.935Z",
+  "receiptSource": "Actual parent exec completion exit0",
+  "log": "postreview-cli.log"
+}

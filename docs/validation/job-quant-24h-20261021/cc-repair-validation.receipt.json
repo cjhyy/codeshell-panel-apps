@@ -1,0 +1,11 @@
+{
+  "command": "node --test tests/apps/job-hunt-hq/job-research-ops.test.mjs",
+  "exitCode": 0,
+  "completedAt": "2026-10-21T04:12:17.342Z",
+  "counts": {
+    "tests": 9,
+    "pass": 9,
+    "fail": 0
+  },
+  "purpose": "Validate actual Codex repair of CC P1 finding"
+}

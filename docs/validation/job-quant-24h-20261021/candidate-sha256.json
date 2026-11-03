@@ -1,0 +1,24 @@
+{
+  "generatedAt": "2026-10-21T04:00:24.886Z",
+  "branch": "codex/panel-shared/job-quant-24h-20261021",
+  "files": {
+    "apps/job-hunt-hq/.codeshell-panel/panel.json": "8a114bb7ec1d3cc713035705c5f910440a989586af1fa393dc86ce9842859b15",
+    "apps/job-hunt-hq/app/ops/jobs.mjs": "94d853acc7855332a2b35c03da122d0814df05e815ce2c6b2475237a2a4f0b82",
+    "apps/job-hunt-hq/app/job-research-digest.mjs": "55e7ffa05037b0500ac3368ea65dfb14630f905fd312453a4d0d6ab8c104c020",
+    "apps/job-hunt-hq/app/tools/job-hunt.mjs": "8c159582ee8bd8bbe7a7826577ff2418119f827408a8739ac51973ced88771bc",
+    "apps/job-hunt-hq/app/app.js": "e0fa314880a052048be3f7274b17984c3d05f37fb0df2661f93f9aac2a7cd8c3",
+    "apps/quant-lab/.codeshell-panel/panel.json": "347cfc79091034eb48381762ad850b5cbb4d668c7ce2a41ec9737509bfe78d51",
+    "apps/quant-lab/app/research-report.mjs": "5da0ad96d1018dd50ade5f5bedbd493b1fb9a011ab4a5798f6bfc964844a21f5",
+    "apps/quant-lab/app/tools/quant-lab.mjs": "261135cf9cc97f49627b33723c3408926c99351e3d43ff691d72951108730257",
+    "apps/quant-lab/app/app.js": "1b2581b46043bfcca0e26a9bca3c737b32492893147747fb5d5a3b8efd44638e",
+    "shared/observation-runner.mjs": "00baf794e5b1620659ca3a24a1396e70593d6856526ad7e59760121f6c76d0a9",
+    "apps/job-hunt-hq/app/tools/observation-runner.mjs": "00baf794e5b1620659ca3a24a1396e70593d6856526ad7e59760121f6c76d0a9",
+    "apps/quant-lab/app/tools/observation-runner.mjs": "00baf794e5b1620659ca3a24a1396e70593d6856526ad7e59760121f6c76d0a9",
+    "tests/apps/job-hunt-hq/job-research-ops.test.mjs": "96a0281a4fab3d79da4c4adb27d61df174f0b72089df6aef98d66c5a75a75de5",
+    "tests/apps/job-hunt-hq/headless-parity.test.mjs": "e29915f0c38a21a12e0cc64a8e0efb36bb321453916fc39ca9cc2dde9c299cb9",
+    "tests/apps/quant-lab/research-report.test.mjs": "13a9e138349399f2d289e9654b1a4cb62adb34cb199395bab059d834441d17f6",
+    "tests/observation-runner.test.mjs": "a83cd62551bbe9f003276678e37f2b4e4e7dfd32efa1fbd24f18ae6ca6f78d18",
+    "scripts/quant-lab-ui.mjs": "61a9cbb2cfd221483709ce4b7d00621624bd3bb4c9f03914930492d0fece1cfc",
+    "apps/job-hunt-hq/app/job-opportunities.mjs": "ea70e65083f6292ad65c5ce56c11edf22ccaf009810c64bec5057e76f6b17486"
+  }
+}

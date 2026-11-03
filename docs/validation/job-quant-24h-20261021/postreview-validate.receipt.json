@@ -1,0 +1,8 @@
+{
+  "name": "postreview-validate",
+  "command": "node scripts/validate.mjs",
+  "exitCode": 0,
+  "completedAt": "2026-10-21T04:03:36.935Z",
+  "receiptSource": "Actual parent exec completion exit0",
+  "log": "postreview-validate.log"
+}

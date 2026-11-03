@@ -1,0 +1,8 @@
+{
+  "name": "parent-postreview-final",
+  "command": "node --test observation-runner + Job research/ops + Quant CLI/report tests",
+  "exitCode": 0,
+  "completedAt": "2026-10-21T04:03:36.934Z",
+  "receiptSource": "Actual parent exec completion exit0",
+  "log": "parent-postreview-final.log"
+}

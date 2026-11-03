@@ -1,0 +1,8 @@
+{
+  "command": [
+    "node",
+    "scripts/validate.mjs"
+  ],
+  "exitCode": 0,
+  "seconds": 4.948
+}

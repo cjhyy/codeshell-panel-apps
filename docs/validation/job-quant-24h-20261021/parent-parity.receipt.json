@@ -1,0 +1,7 @@
+{
+  "command": "node --test tests/apps/job-hunt-hq/headless-parity.test.mjs",
+  "exitCode": 1,
+  "completedAt": "2026-10-21T03:40:31.519Z",
+  "phase": "implementation-in-progress-parent-check",
+  "note": "Not certification of later edits; verify source changes after this receipt."
+}

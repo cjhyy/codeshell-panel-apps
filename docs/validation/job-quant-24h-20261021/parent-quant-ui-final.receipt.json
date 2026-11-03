@@ -1,0 +1,7 @@
+{
+  "command": "node scripts/quant-lab-ui.mjs",
+  "startedAt": "2026-10-21T03:51:30.385Z",
+  "completedAt": "2026-10-21T03:52:20.373Z",
+  "exitCode": 0,
+  "signal": null
+}

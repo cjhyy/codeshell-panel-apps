@@ -1,0 +1,11 @@
+{
+  "command": [
+    "npm",
+    "test",
+    "--",
+    "--suite",
+    "job-hunt-hq"
+  ],
+  "exitCode": 1,
+  "seconds": 19.717
+}

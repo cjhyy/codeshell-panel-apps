@@ -1,0 +1,13 @@
+{
+  "command": [
+    "npm",
+    "test",
+    "--",
+    "--suite",
+    "job-hunt-hq"
+  ],
+  "startedAt": "2026-10-21T03:50:22.585Z",
+  "completedAt": "2026-10-21T03:51:16.815Z",
+  "exitCode": 0,
+  "signal": null
+}
