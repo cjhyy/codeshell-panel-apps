@@ -189,6 +189,7 @@ export interface MediaJob {
   attempt: number;
   progress?: { fraction?: number; stage?: string; message?: string };
   error?: { code: string; message: string; retryable: boolean };
+  reviewRequired?: boolean;
   result?: unknown;
 }
 export interface PreparedMedia {

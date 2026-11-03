@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { chromium } from "playwright";
+import { routeStarterPackageAsset } from "./panel-upgrade-starter-assets.mjs";
 
 const sha = value => createHash("sha256").update(value).digest("hex");
 const methods = ["storage.get", "storage.set", "storage.getSnapshot", "storage.compareAndSet"];
@@ -420,18 +421,20 @@ async function starter(old) {
     await ctx.browsers.withBrowser(() => chromium.launch({ headless: true, executablePath: process.env.PANEL_TEST_CHROMIUM_EXECUTABLE,
       args: ["--disable-background-networking"] }), async browser => {
       const context = await browser.newContext({ serviceWorkers: "block" });
-      await context.route("**/*", async route => {
-        const url = new URL(route.request().url());
-        const file = url.pathname.slice(1) || "index.html";
-        if (url.origin !== "https://starter.test" || !["index.html", "style.css", "app.js"].includes(file)) return route.abort();
-        await route.fulfill({ body: await readFile(join(ctx.selected.installPath, "app", file)),
-          contentType: file.endsWith(".js") ? "text/javascript" : file.endsWith(".css") ? "text/css" : "text/html" });
-      });
+      await context.route("**/*", route => routeStarterPackageAsset(route, ctx.selected.installPath));
       const page = await context.newPage();
+      const diagnostics = [];
+      const note = value => { if (diagnostics.length < 20) diagnostics.push(String(value).slice(0, 1000)); };
+      page.on("pageerror", error => note(`pageerror: ${error.message}`));
+      page.on("requestfailed", request => note(`requestfailed: ${request.url()} ${request.failure()?.errorText}`));
       await page.exposeFunction("__hostContext", async () => { await ctx.assertAuthorized(); return { cwd: ctx.project, trusted: true }; });
       await page.addInitScript(() => { window.codeshellPanel = { getContext: () => window.__hostContext(), on: () => () => {} }; });
-      await page.goto("https://starter.test");
-      await page.waitForFunction(project => document.querySelector("#workspace").textContent === project, ctx.project);
+      try {
+        await page.goto("https://starter.test");
+        await page.waitForFunction(project => document.querySelector("#workspace").textContent === project, ctx.project);
+      } catch (cause) {
+        throw new Error(`Installed Starter ${ctx.selected.version} did not render its authorized project: ${diagnostics.join("; ") || "no browser diagnostic"}`, { cause });
+      }
       await page.locator("#increment").click();
       assert.equal(await page.locator("#count").textContent(), "1 次点击");
     });

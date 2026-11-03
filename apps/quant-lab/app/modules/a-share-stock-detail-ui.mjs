@@ -1,3 +1,4 @@
+import { reviewedEntry } from "./reviewed-entry.mjs";
 import { displayedAShareSessionPhase } from "./a-share-session.mjs";
 
 const SNAPSHOT_SCHEMA_VERSION = 1;
@@ -9,18 +10,6 @@ const MAX_SNAPSHOT_BYTES = 1_500_000;
 const MAX_PROCESS_OUTPUT_CHARS = 2_000_000;
 const PROCESS_TIMEOUT_MS = 35_000;
 
-const NODE_LAUNCHER = [
-  'import { join } from "node:path";',
-  'import { pathToFileURL } from "node:url";',
-  'const home = process.env.HOME || process.env.USERPROFILE;',
-  'if (!home) throw new Error("user-home-unavailable");',
-  'const [market = "cn", mode = "refresh-volatile", query = ""] = process.argv.slice(-3);',
-  'const toolName = market === "us" ? "fetch-us-stock.mjs" : "fetch-a-share-stock.mjs";',
-  'const tool = join(home, ".code-shell", "panel-apps", "quant-lab", "app", "tools", toolName);',
-  'const module = await import(pathToFileURL(tool).href);',
-  'const args = mode === "read-local" ? ["--query", query, "--stdout", "--read-local"] : mode === "refresh-local" ? ["--query", query, "--stdout", "--persist-local"] : ["--query", query, "--stdout"];',
-  'try { await module.runCli(args); } catch (error) { process.stderr.write(JSON.stringify({ ok: false, errorCode: error?.code ?? error?.cause?.code ?? "STOCK_DETAIL_ERROR", message: error instanceof Error ? error.message : "stock detail failed" }) + "\\n"); process.exitCode = 1; }',
-].join("\n");
 
 const RUNTIME_SPECS = Object.freeze([
   Object.freeze({ name: "node", label: "Node.js" }),
@@ -36,11 +25,8 @@ export function stockDetailRuntimeArgs(name, queryInput, mode = "refresh-volatil
   if (!new Set(["refresh-volatile", "refresh-local", "read-local"]).has(mode)) throw new Error("个股本地模式不受支持");
   if (mode === "read-local" && market === "cn" && !/^(?:SH|SZ)\d{6}$/u.test(query)) throw new Error("读取本地个股数据需要股票代码");
   if (mode === "read-local" && market === "us" && !/^[A-Z][A-Z0-9.-]{0,14}$/u.test(query)) throw new Error("读取本地美股数据需要股票代码");
-  if (name === "node" || name === "nodejs") {
-    return Object.freeze(["--input-type=module", "--eval", NODE_LAUNCHER, market, mode, query]);
-  }
-  if (name === "bun") return Object.freeze(["--eval", NODE_LAUNCHER, market, mode, query]);
-  throw new Error("个股行情运行时不受支持");
+  if (!["node", "nodejs", "bun"].includes(name)) throw new Error("个股行情运行时不受支持");
+  return Object.freeze(["--query", query, "--stdout", ...(mode === "read-local" ? ["--read-local"] : mode === "refresh-local" ? ["--persist-local"] : [])]);
 }
 
 function cleanText(value, maximum = 300) {
@@ -613,10 +599,17 @@ export function createAShareStockDetailController({
 
   async function ensureRuntime() {
     if (runtime) return runtime;
+    const runtimeGeneration = generation;
+    const runtimeCall = async (method, params) => {
+      if (runtimeGeneration !== generation) throw new Error("项目或请求已切换");
+      const result = await hostCall(method, params);
+      if (runtimeGeneration !== generation) throw new Error("项目或请求已切换");
+      return result;
+    };
     if (typeof onHostEvent !== "function") throw new Error("个股行情需在 CodeShell 投资工作台内运行");
     let selected = null;
     for (const spec of RUNTIME_SPECS) {
-      const executable = await hostCall("process.find", { name: spec.name }).catch(() => null);
+      const executable = await runtimeCall("process.find", { name: spec.name }).catch(() => null);
       if (executable?.available && typeof executable.handle === "string") {
         selected = { executable, spec };
         break;
@@ -626,10 +619,10 @@ export function createAShareStockDetailController({
     let directory;
     let persistent = false;
     try {
-      directory = await hostCall("filesystem.getKnownDirectory", { name: "app-data" });
+      directory = await runtimeCall("filesystem.getKnownDirectory", { name: "app-data" });
       persistent = true;
     } catch {
-      directory = await hostCall("filesystem.getKnownDirectory", { name: "downloads" });
+      directory = await runtimeCall("filesystem.getKnownDirectory", { name: "downloads" });
     }
     if (typeof directory?.handle !== "string") throw new Error("无法取得受限的个股行情运行目录");
     runtime = { executableHandle: selected.executable.handle, directoryHandle: directory.handle, name: selected.spec.name, persistent };
@@ -654,16 +647,22 @@ export function createAShareStockDetailController({
   }
 
   async function fetchSnapshot(query, mode = "refresh", market = activeMarket) {
+    const fetchGeneration = generation;
     const handles = await ensureRuntime();
+    if (fetchGeneration !== generation) throw new Error("项目或请求已切换");
     if (mode === "read-local" && !handles.persistent) throw new Error("当前 CodeShell 不支持面板本地数据目录");
     const runtimeMode = mode === "read-local" ? "read-local" : handles.persistent ? "refresh-local" : "refresh-volatile";
+    const entryHandle = await reviewedEntry(hostCall, market === "us" ? "fetch-us-stock" : "fetch-a-share-stock", handles.executableHandle);
+    if (fetchGeneration !== generation) throw new Error("项目或请求已切换");
     const started = await hostCall("process.spawn", {
       executableHandle: handles.executableHandle,
+      entryHandle,
       directoryHandle: handles.directoryHandle,
       args: stockDetailRuntimeArgs(handles.name, query, runtimeMode, market),
     });
     if (typeof started?.processId !== "string") throw new Error("个股行情程序未能启动");
     const processId = started.processId;
+    if (fetchGeneration !== generation) { void hostCall("process.cancel", { processId }).catch(() => {}); throw new Error("项目或请求已切换"); }
     activeProcessId = processId;
     let record;
     try {
@@ -1237,6 +1236,7 @@ export function createAShareStockDetailController({
     render();
     try {
       const handles = await ensureRuntime();
+      if (searchGeneration !== generation) return snapshot;
       if (knownSymbol && handles.persistent) {
         const cached = await fetchSnapshot(knownSymbol, "read-local", activeMarket).catch(() => null);
         if (cached && searchGeneration === generation) {
@@ -1248,6 +1248,7 @@ export function createAShareStockDetailController({
           render();
         }
       }
+      if (searchGeneration !== generation) return snapshot;
       const next = await fetchSnapshot(query, "refresh", activeMarket);
       if (searchGeneration !== generation) return snapshot;
       if (Date.parse(next.asOf) - now().getTime() > 60 * 60 * 1_000) throw new Error("个股行情时点晚于当前时间");
@@ -1255,6 +1256,7 @@ export function createAShareStockDetailController({
       snapshot = next;
       onResolved(next);
       const localPersistence = (await ensureRuntime()).persistent;
+      if (searchGeneration !== generation) return snapshot;
       const requiredSources = next.market === "cn"
         ? ["history", "announcements", "news", "financials"]
         : ["history", "announcements", "news"];
@@ -1349,6 +1351,7 @@ export function createAShareStockDetailController({
   return {
     search,
     reset() {
+      runtime = null;
       generation += 1;
       if (activeProcessId) void hostCall("process.cancel", { processId: activeProcessId }).catch(() => undefined);
       activeProcessId = null;

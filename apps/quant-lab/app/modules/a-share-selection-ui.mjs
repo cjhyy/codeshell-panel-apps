@@ -1,3 +1,4 @@
+import { reviewedEntry } from "./reviewed-entry.mjs";
 import { createProjectSetting } from "./project-setting.mjs";
 import { readSelectionWatchDocument, selectionWatchDocument } from "./selection-watch-document.mjs";
 import {
@@ -22,19 +23,6 @@ const CONTINUATION_DELAY_MS = 5_000;
 const SOURCE_RETRY_MS = 15 * 60 * 1_000;
 const SECTOR_PAGE_SIZE = 20;
 
-const NODE_LAUNCHER = [
-  'import { join } from "node:path";',
-  'import { pathToFileURL } from "node:url";',
-  'const home = process.env.HOME || process.env.USERPROFILE;',
-  'if (!home) throw new Error("user-home-unavailable");',
-  'const tool = join(home, ".code-shell", "panel-apps", "quant-lab", "app", "tools", "build-a-share-selection.mjs");',
-  'const module = await import(pathToFileURL(tool).href);',
-  'const [mode = "refresh-volatile", scope = "global", encodedWatch = "%7B%7D", dataSources = ""] = process.argv.slice(-4);',
-  'const args = mode === "read-local" ? ["--stdout", "--read-local", "--cache-scope", scope] : ["refresh-local", "continue-local"].includes(mode) ? ["--stdout", "--persist-local", "--cache-scope", scope, "--watch", encodedWatch] : ["--stdout", "--watch", encodedWatch];',
-  'if (dataSources) args.push("--data-sources", dataSources);',
-  'if (["continue-local", "continue-volatile"].includes(mode)) args.push("--continue-scan");',
-  'try { await module.runCli(args); } catch (error) { process.stderr.write(JSON.stringify({ ok: false, errorCode: error?.code ?? error?.cause?.code ?? "SELECTION_ERROR", message: error instanceof Error ? error.message : "selection snapshot failed" }) + "\\n"); process.exitCode = 1; }',
-].join("\n");
 
 const RUNTIME_SPECS = Object.freeze([
   Object.freeze({ name: "node", label: "Node.js" }),
@@ -47,11 +35,13 @@ export function selectionRuntimeArgs(name, encodedWatch, cacheScope = "global", 
   if (!new Set(["refresh-volatile", "refresh-local", "continue-volatile", "continue-local", "read-local"]).has(mode)) {
     throw new Error("选股本地模式不受支持");
   }
-  if (name === "node" || name === "nodejs") {
-    return Object.freeze(["--input-type=module", "--eval", NODE_LAUNCHER, mode, cacheScope, encodedWatch, dataSources]);
-  }
-  if (name === "bun") return Object.freeze(["--eval", NODE_LAUNCHER, mode, cacheScope, encodedWatch, dataSources]);
-  throw new Error("选股运行时不受支持");
+  if (!["node", "nodejs", "bun"].includes(name)) throw new Error("选股运行时不受支持");
+  const args = mode === "read-local" ? ["--stdout", "--read-local", "--cache-scope", cacheScope]
+    : ["refresh-local", "continue-local"].includes(mode) ? ["--stdout", "--persist-local", "--cache-scope", cacheScope, "--watch", encodedWatch]
+    : ["--stdout", "--watch", encodedWatch];
+  if (dataSources) args.push("--data-sources", dataSources);
+  if (["continue-local", "continue-volatile"].includes(mode)) args.push("--continue-scan");
+  return Object.freeze(args);
 }
 
 function cleanText(value, maximum = 300) {
@@ -1673,6 +1663,8 @@ export function createAShareSelectionController({
   let watchStorageError = "";
   let watchSaving = false;
   let watchReading = false;
+  let watchReadFlight = null;
+  let portfolioSyncTail = Promise.resolve();
   let loading = false;
   let active = false;
   let backgroundWatchActive = false;
@@ -1811,10 +1803,17 @@ export function createAShareSelectionController({
 
   async function ensureRuntime() {
     if (runtime) return runtime;
+    const runtimeGeneration = generation;
+    const runtimeCall = async (method, params) => {
+      if (runtimeGeneration !== generation) throw new Error("项目或请求已切换");
+      const result = await hostCall(method, params);
+      if (runtimeGeneration !== generation) throw new Error("项目或请求已切换");
+      return result;
+    };
     if (typeof onHostEvent !== "function") throw new Error("今日选股需在 CodeShell 投资工作台内运行");
     let selected = null;
     for (const spec of RUNTIME_SPECS) {
-      const executable = await hostCall("process.find", { name: spec.name }).catch(() => null);
+      const executable = await runtimeCall("process.find", { name: spec.name }).catch(() => null);
       if (executable?.available && typeof executable.handle === "string") {
         selected = { executable, spec };
         break;
@@ -1824,10 +1823,10 @@ export function createAShareSelectionController({
     let directory = null;
     let persistent = false;
     try {
-      directory = await hostCall("filesystem.getKnownDirectory", { name: "app-data" });
+      directory = await runtimeCall("filesystem.getKnownDirectory", { name: "app-data" });
       persistent = true;
     } catch {
-      directory = await hostCall("filesystem.getKnownDirectory", { name: "downloads" });
+      directory = await runtimeCall("filesystem.getKnownDirectory", { name: "downloads" });
     }
     if (typeof directory?.handle !== "string") throw new Error("无法取得受限的选股运行目录");
     runtime = {
@@ -1866,8 +1865,11 @@ export function createAShareSelectionController({
       : handles.persistent
         ? continuation ? "continue-local" : "refresh-local"
         : "refresh-volatile";
+    const entryHandle = await reviewedEntry(hostCall, "build-a-share-selection", handles.executableHandle);
+    if (fetchGeneration !== generation) throw new Error("项目或请求已切换");
     const started = await hostCall("process.spawn", {
       executableHandle: handles.executableHandle,
+      entryHandle,
       directoryHandle: handles.directoryHandle,
       args: selectionRuntimeArgs(handles.name, encodedWatch(), cacheScope(), runtimeMode, dataSources() ? encodeURIComponent(JSON.stringify(dataSources())) : ""),
     });
@@ -3702,8 +3704,11 @@ export function createAShareSelectionController({
     return true;
   }
 
-  async function readWatch() {
-    if (watchSaving || watchReading) return false;
+  function readWatch({ reload = false } = {}) {
+    if (watchReadFlight) return watchReadFlight;
+    if (!reload && (watchStorageError || watchStore?.blocked)) return Promise.resolve(false);
+    if (!reload && watchStorageReady) return Promise.resolve(true);
+    if (watchSaving) return Promise.resolve(false);
     const operationGeneration = watchGeneration, epoch = currentEpoch();
     const current = () => operationGeneration === watchGeneration && epoch === currentEpoch();
     const store = createProjectSetting({
@@ -3714,36 +3719,40 @@ export function createAShareSelectionController({
     watchReading = true;
     clearTimer();
     renderWatchStorage();
-    try {
-      const record = await store.load();
-      if (!current()) return false;
-      const parsed = readSelectionWatchDocument(record, parseSelectionWatchStorage);
-      watchRecord = record;
-      watch = parsed;
-      watchStore = store;
-      watchStorageReady = true;
-      watchStorageError = "";
-      watchRefreshPending = false;
-      selectedSectorId = watch.selectedSectorId;
-      render();
-      onUpdate(snapshot);
-      return true;
-    } catch (error) {
-      if (current()) {
-        watchStorageError = `长期关注读取失败：${error.message}。已保留当前内容，暂停保存与扫描。`;
-        watchStorageReady = false;
+    const flight = (async () => {
+      try {
+        const record = await store.load();
+        if (!current()) return false;
+        const parsed = readSelectionWatchDocument(record, parseSelectionWatchStorage);
+        watchRecord = record;
+        watch = parsed;
+        watchStore = store;
+        watchStorageReady = true;
+        watchStorageError = "";
+        watchRefreshPending = false;
+        selectedSectorId = watch.selectedSectorId;
+        render();
+        onUpdate(snapshot);
+        return true;
+      } catch (error) {
+        if (current()) {
+          watchStorageError = `长期关注读取失败：${error.message}。已保留当前内容，暂停保存与扫描。`;
+          watchStorageReady = false;
+        }
+        return false;
+      } finally {
+        if (current()) {
+          watchReading = false;
+          renderWatchStorage();
+        }
       }
-      return false;
-    } finally {
-      if (current()) {
-        watchReading = false;
-        renderWatchStorage();
-      }
-    }
+    })().finally(() => { if (watchReadFlight === flight) watchReadFlight = null; });
+    watchReadFlight = flight;
+    return flight;
   }
 
   elements.watchStorageReload?.addEventListener("click", () => {
-    void readWatch().then((loaded) => { if (loaded) schedule(); });
+    void readWatch({ reload: true }).then((loaded) => { if (loaded) schedule(); });
   });
   elements.watchStorageBackup?.addEventListener("click", () => {
     const value = selectionWatchDocument(watchRecord, watch, parseSelectionWatchStorage);
@@ -3820,6 +3829,7 @@ export function createAShareSelectionController({
       }
       if (resultsChanged) onStockDirectory(next.stockDirectory);
       const localPersistence = (await ensureRuntime()).persistent;
+      if (loadGeneration !== generation || loadEpoch !== currentEpoch()) return snapshot;
       const degraded = Object.values(next.sourceStatus).some((available) => !available);
       elements.status.dataset.tone = degraded ? "warning" : "active";
       const nextDisplayPhase = displayedAShareSessionPhase(next, now());
@@ -4099,10 +4109,11 @@ export function createAShareSelectionController({
   render();
 
   return {
-    async load() {
+    async load({ backgroundOnly = false } = {}) {
       const loadGeneration = generation, loadEpoch = currentEpoch();
-      await readWatch();
-      if (loadGeneration !== generation || loadEpoch !== currentEpoch()) return watch;
+      const loaded = await readWatch();
+      if (!loaded || loadGeneration !== generation || loadEpoch !== currentEpoch()) return watch;
+      if (backgroundOnly && watch.stocks.length === 0 && watch.sectors.length === 0) return watch;
       const cached = await fetchSnapshot("read-local").catch(() => null);
       if (loadGeneration !== generation || loadEpoch !== currentEpoch()) return watch;
       if (cached) {
@@ -4164,16 +4175,26 @@ export function createAShareSelectionController({
       renderCandidates();
       return true;
     },
-    async syncPortfolio(ledger, holdings) {
-      if (!canSaveWatch()) throw new Error(watchStorageError || "长期关注尚未完成读取或保存");
-      const merged = mergePortfolioWatch(watch, ledger, holdings);
-      if (!merged.added) return merged;
-      if (!(await updateWatch(merged.value, "", { refreshSnapshot: false }))) {
-        throw new Error("持仓自动关注尚未保存，请先核对长期关注记录");
-      }
-      watchRefreshPending = true;
-      schedule();
-      return merged;
+    syncPortfolio(ledger, holdings) {
+      const operationGeneration = watchGeneration, epoch = currentEpoch();
+      const current = () => operationGeneration === watchGeneration && epoch === currentEpoch();
+      const synchronized = portfolioSyncTail.catch(() => {}).then(async () => {
+        if (!current()) throw new Error("项目已切换，已取消旧持仓自动关注");
+        const loaded = await readWatch();
+        if (!current()) throw new Error("项目已切换，已取消旧持仓自动关注");
+        if (!loaded || !canSaveWatch()) throw new Error(watchStorageError || "长期关注尚未完成读取或保存");
+        const merged = mergePortfolioWatch(watch, ledger, holdings);
+        if (!merged.added) return merged;
+        if (!(await updateWatch(merged.value, "", { refreshSnapshot: false }))) {
+          throw new Error("持仓自动关注尚未保存，请先核对长期关注记录");
+        }
+        if (!current()) throw new Error("项目已切换，已取消旧持仓自动关注");
+        watchRefreshPending = true;
+        schedule();
+        return merged;
+      });
+      portfolioSyncTail = synchronized;
+      return synchronized;
     },
     async followStock(symbolInput, nameInput = "") {
       const symbol = canonicalStock(symbolInput);
@@ -4193,8 +4214,8 @@ export function createAShareSelectionController({
       const operationGeneration = generation, epoch = currentEpoch();
       active = true;
       restored = true;
-      if (!watchStorageReady && !watchStorageError && !watchReading) await readWatch();
-      if (operationGeneration !== generation || epoch !== currentEpoch()) return snapshot;
+      const loaded = await readWatch();
+      if (!loaded || operationGeneration !== generation || epoch !== currentEpoch()) return snapshot;
       if (document.visibilityState === "hidden") return Promise.resolve(snapshot);
       if (!snapshot) return refresh();
       if (!scanPaused && freshnessNeedsRefresh()) return refresh();
@@ -4212,6 +4233,7 @@ export function createAShareSelectionController({
       else if (!loading) schedule();
     },
     reset() {
+      runtime = null;
       generation += 1;
       watchGeneration += 1;
       clearTimer();
@@ -4249,6 +4271,8 @@ export function createAShareSelectionController({
       watchStorageError = "";
       watchSaving = false;
       watchReading = false;
+      watchReadFlight = null;
+      portfolioSyncTail = Promise.resolve();
       elements.status.dataset.tone = "active";
       elements.status.textContent = "工作区已切换，正在读取新的长期关注与选股数据。";
       render();

@@ -83,6 +83,7 @@ import { cachedMediaFile } from "./recording-cache";
 import { persistMediaFile } from "./media-file-storage";
 import { syncNarrationDraftUI } from "./narration-ui";
 import { createMediaTaskBridge } from "./media-task-bridge";
+import { confirmMediaRequestRecovery } from "./media-request-confirmation";
 import { createExternalMediaAccess, isExternalMedia, isResourceId } from "./external-media";
 import { RoughCutAIController, type RoughCutAISnapshot } from "./rough-cut-ai";
 import type { EditReceipt } from "./editor/history";
@@ -224,7 +225,7 @@ if (panel) {
   const traffic = createBridgeTraffic(panel, { beforeDispatch: (method) => checkBinding(method) });
   const documents = createWorkspaceDocumentBridge(traffic.bridge);
   checkBinding = documents.assertActive;
-  const mediaBridge = createMediaTaskBridge(documents);
+  const mediaBridge = createMediaTaskBridge(documents, { confirmRecovery: confirmMediaRequestRecovery });
   setPanelBridge(mediaBridge.bridge);
   window.addEventListener("pagehide", () => {
     traffic.dispose();

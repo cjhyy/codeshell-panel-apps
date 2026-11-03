@@ -24,7 +24,9 @@ function run(arguments_) {
 }
 
 if (!testsOnly) {
+  run(["scripts/check-published-core.mjs"]);
   console.log("Checking source types and committed build output");
+  run(["scripts/sync-quant-native.mjs", "--check"]);
   run(["scripts/sync-panel-select.mjs", "--check"]);
   run(["scripts/sync-project-context.mjs", "--check"]);
   run(["scripts/sync-model-observability.mjs", "--check"]);

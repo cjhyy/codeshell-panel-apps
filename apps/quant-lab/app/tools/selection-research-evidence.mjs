@@ -1,7 +1,4 @@
 import { spawn } from "node:child_process";
-import { access } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
 
 import { parseSelectionResearchEvidence } from "../modules/selection-evidence-ui.mjs";
 
@@ -13,17 +10,15 @@ function unavailable(reason) {
   return { version: 1, status: "unavailable", reason, providers: {}, stocks: [] };
 }
 
-export async function selectionPythonPath(environment = process.env, home = homedir()) {
-  if (environment.QUANT_LAB_PYTHON) return environment.QUANT_LAB_PYTHON;
-  const local = process.platform === "win32"
-    ? join(home, ".code-shell", "runtimes", "quant-lab-python", "Scripts", "python.exe")
-    : join(home, ".code-shell", "runtimes", "quant-lab-python", "bin", "python");
-  try {
-    await access(local);
-    return local;
-  } catch {
-    return process.platform === "win32" ? "python" : "python3";
+export async function selectionPythonPath(environment = process.env) {
+  // An explicit reviewed runtime configuration or normal executable lookup;
+  // never reconstruct a private Host runtime directory from HOME.
+  const configured = environment.QUANT_LAB_PYTHON;
+  if (configured !== undefined) {
+    if (typeof configured !== "string" || !configured.trim() || configured.includes("\0")) throw new Error("SELECTION_PYTHON_CONFIG_INVALID");
+    return configured;
   }
+  return process.platform === "win32" ? "python" : "python3";
 }
 
 // Fixed program and JSON stdin; no shell, user code, package installation, or

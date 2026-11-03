@@ -1,5 +1,7 @@
 import {
   deriveHoldings,
+  createHoldingsReplay,
+  holdingsReplayInputs,
   fingerprintInputs,
   parseHoldings,
   parseTransactions,
@@ -78,6 +80,31 @@ export function deriveHoldingsSnapshot(sourceText, inputs, derivedAt) {
     inputsFingerprint: fingerprintInputs(inputs),
     baseCurrency: ledger.baseCurrency,
     ...holdings,
+  };
+}
+
+// Bounded per-controller cache. Fingerprinting the complete ledger includes
+// corporate actions and their effective dates; checkpoint FX invalidates replay.
+export function createHoldingsSnapshotCache() {
+  let key = null;
+  let replay = null;
+
+  return {
+    derive(sourceText, inputs = {}, derivedAt) {
+      const parsed = parseTransactions(sourceText);
+      const historicalInputs = holdingsReplayInputs(parsed.ledger, inputs);
+      const nextKey = fingerprintInputs({ engine: "portfolio-replay/2", ledger: parsed.ledger, ...historicalInputs });
+      if (nextKey !== key) {
+        globalThis.performance?.mark?.("quant-lab:replayHoldings");
+        replay = createHoldingsReplay(parsed.ledger, historicalInputs);
+        key = nextKey;
+
+      }
+      return { format: "codeshell.portfolio-holdings", version: 1, derivedAt,
+        transactionsFingerprint: parsed.fingerprint, inputsFingerprint: fingerprintInputs(inputs),
+        baseCurrency: parsed.ledger.baseCurrency, ...replay.value(inputs) };
+    },
+    clear() { key = null; replay = null; },
   };
 }
 

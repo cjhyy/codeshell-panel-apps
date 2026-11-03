@@ -138,7 +138,9 @@ export function createDataSourcesController({
         "配置已保存。正在读取该来源的选股数据，连接结果会显示在下方。";
       const snapshot = await onApply();
       if (current())
-        el("sources-state").textContent = snapshot
+        el("sources-state").textContent = snapshot?.deferred
+          ? "配置已保存；回到可见的今日或关注页时再读取选股数据。"
+          : snapshot
           ? "配置已应用。以下显示本次取得的数据和仍未恢复的来源。"
           : "配置已保存；本次选股读取未完成，请查看选股页的具体错误后重试。";
     } catch (error) {

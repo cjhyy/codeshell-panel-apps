@@ -534,10 +534,10 @@ assert.deepEqual(selectionTool.parseWatchArgument(encodedWatch), {
   stocks: [{ symbol: "SH600519", name: "贵州茅台" }],
 });
 assert.equal(selectionTool.announcementUrl("SH600519").searchParams.get("stock_list"), "600519");
-assert.deepEqual(selectionUi.selectionRuntimeArgs("node", encodedWatch).slice(0, 2), ["--input-type=module", "--eval"]);
-assert.equal(selectionUi.selectionRuntimeArgs("bun", encodedWatch)[0], "--eval");
-assert(selectionUi.selectionRuntimeArgs("node", encodedWatch, "0123456789abcdef", "refresh-local").includes("refresh-local"));
-assert(selectionUi.selectionRuntimeArgs("node", encodedWatch, "0123456789abcdef", "read-local").includes("read-local"));
+assert.deepEqual(selectionUi.selectionRuntimeArgs("node", encodedWatch).slice(0, 2), ["--stdout", "--watch"]);
+assert.equal(selectionUi.selectionRuntimeArgs("bun", encodedWatch)[0], "--stdout");
+assert(selectionUi.selectionRuntimeArgs("node", encodedWatch, "0123456789abcdef", "refresh-local").includes("--persist-local"));
+assert(selectionUi.selectionRuntimeArgs("node", encodedWatch, "0123456789abcdef", "read-local").includes("--read-local"));
 assert.throws(() => selectionUi.selectionRuntimeArgs("node", encodedWatch, "unsafe"), /范围无效/u);
 assert.throws(() => selectionUi.selectionRuntimeArgs("python", encodedWatch), /不受支持/u);
 
@@ -690,7 +690,7 @@ try {
     scope: "0123456789abcdef",
     snapshot,
   });
-  assert.match(written.latestPath, /snapshots\/a-share-selection\/0123456789abcdef\/latest\.json$/u);
+  assert.match(written.latestPath, /snapshots-v2\/a-share-selection\/0123456789abcdef\/latest\.json$/u);
   assert.match(written.historyPath, new RegExp(`${snapshot.marketDate}-${snapshot.session.phase}\\.json$`, "u"));
   assert.deepEqual(
     await localSnapshots.readLocalSnapshot({

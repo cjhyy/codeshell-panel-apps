@@ -90,6 +90,18 @@ establish whether those references remain current. Use the existing collectors
 only when the task authorizes their data sources and writes. Their persisted
 local snapshots and Host task records remain separate protocols.
 
+Collector lock diagnostics are read-only: append `--collector-lock-status` to
+the same collector command and request arguments (including its
+`--collector-scope` and `--library-id`, if any). The JSON reports the matching
+request owner and four resource slots as `alive`, `dead`, `unknown`, or
+`unlocked`; it never reclaims, starts a provider, or creates a directory. For
+history use `initialize-a-share-history.mjs --stdout --lock-status` with the same
+library selection. Normal completion releases its exact token. After a crash,
+the next writer reclaims only an owner proven dead by local machine/boot and
+kernel process identity. Old records without this evidence remain conservative
+when the hostname changed or a PID is present; age alone is never permission to
+delete a lock, and diagnostics never kill an owner.
+
 
 ## Beginner research report (0.47 candidate)
 

@@ -1,5 +1,6 @@
 import { buildDecisionFacts, buildReviewTimeline, resolveNoteLinks } from "../notes.mjs";
 import { NotesStoreConflictError, commitNoteChange, loadNotes } from "../notes-store.mjs";
+import { readNoteReferences } from "./notes-references.mjs";
 
 function appendText(parent, tag, text, className) {
   const node = document.createElement(tag);
@@ -20,6 +21,7 @@ const LINK_STATUS_LABELS = {
   current: "关联有效",
   changed: "关联内容有更新",
   orphan: "原关联已不存在",
+  unavailable: "关联暂不可核对",
 };
 
 const TIMELINE_TYPE_LABELS = {
@@ -70,13 +72,29 @@ export function createNotesController({
     filterInstrument: byId("notes-filter-instrument"), filterTag: byId("notes-filter-tag"), filterLink: byId("notes-filter-link"),
   };
   const state = { file: null, document: null, draftLinks: [], saving: false, readError: null };
-  const sourceContext = () => context?.() ?? {};
+  let referenceAbort = new AbortController();
+  let references = {}, referenceBase = {};
+  const sourceContext = () => {
+    const live = context?.() ?? {};
+    const result = { ...live, unavailableSources: { ...live.unavailableSources, ...references.unavailableSources } };
+    for (const key of ["ledger", "news"]) {
+      // A later loaded/edited module may supply a newer local value. Until
+      // then, the Notes read is authoritative, including a confirmed absence.
+      const available = live.unavailableSources?.[key] === false ||
+        (live.unavailableSources?.[key] !== true && live[key] != null);
+      if (live[key] !== referenceBase[key] && available) delete result.unavailableSources[key];
+      else if (Object.hasOwn(references, key)) { result[key] = references[key]; delete result.unavailableSources[key]; }
+    }
+    return result;
+  };
   const setLive = (text, tone = "idle") => { elements.live.textContent = text; elements.live.dataset.tone = tone; };
   const setError = (text = "") => { elements.error.textContent = text; };
 
   function facts() {
     if (!state.document) return { status: "unavailable", reason: state.readError ? "notes-read-failed" : "notes-not-created", source: "portfolio/journal.json" };
-    return buildDecisionFacts(state.document.entries, sourceContext().ledger?.transactions ?? [], now());
+    const ctx = sourceContext();
+    if (ctx.unavailableSources?.ledger) return { status: "unavailable", reason: "ledger-not-available", source: "portfolio/transactions.json" };
+    return buildDecisionFacts(state.document.entries, ctx.ledger?.transactions ?? [], now());
   }
 
   function renderDraftLinks() {
@@ -146,9 +164,9 @@ export function createNotesController({
     elements.list.replaceChildren();
     const entries = filteredEntries().slice().sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || a.id.localeCompare(b.id));
     const completeness = state.document ? facts() : null;
-    elements.count.textContent = completeness
+    elements.count.textContent = completeness?.status === "available"
       ? `${entries.length} 条 · ${completeness.linkedTransactions} 笔交易有笔记 / ${completeness.unlinkedTransactions} 笔无关联笔记`
-      : `${entries.length} 条`;
+      : `${entries.length} 条${completeness ? " · 交易关联待核对" : ""}`;
     elements.empty.hidden = entries.length > 0;
     for (const note of entries) {
       const resolved = resolveNoteLinks(note, sourceContext());
@@ -309,21 +327,27 @@ export function createNotesController({
 
   async function load(expectedEpoch = currentEpoch()) {
     reset();
+    const signal = referenceAbort.signal;
+    referenceBase = context?.() ?? {};
     setLive("正在读取本地笔记…");
     try {
       const result = await loadNotes(hostCall, { expectedEpoch, currentEpoch });
-      if (expectedEpoch !== currentEpoch()) return;
+      if (expectedEpoch !== currentEpoch() || signal.aborted) return;
+      const linked = await readNoteReferences(result.document?.entries ?? [], { hostCall, expectedEpoch, currentEpoch, signal });
+      if (expectedEpoch !== currentEpoch() || signal.aborted) return;
+      references = linked.context;
       state.file = result.file;
       state.document = result.document;
       setLive(
         result.document
-          ? `已读取 ${result.document.entries.length} 条笔记。`
+          ? `已读取 ${result.document.entries.length} 条笔记。${linked.errors.length ? `部分关联暂不可核对：${linked.errors.join("；")}` : ""}`
           : "还没有笔记；保存第一条后会在当前项目建立本地笔记文件。",
+        linked.errors.length ? "warning" : "idle",
       );
       render();
       onChange(facts());
     } catch (error) {
-      if (expectedEpoch !== currentEpoch()) return;
+      if (expectedEpoch !== currentEpoch() || signal.aborted) return;
       state.readError = error instanceof Error ? error.message : "notes read failed";
       setLive(`笔记读取失败；已冻结写入：${state.readError}`, "error");
       onChange(facts());
@@ -331,6 +355,8 @@ export function createNotesController({
   }
 
   function reset() {
+    referenceAbort.abort(); referenceAbort = new AbortController();
+    references = {}; referenceBase = {};
     state.file = null;
     state.document = null;
     state.draftLinks = [];

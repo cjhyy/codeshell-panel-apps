@@ -7,10 +7,10 @@ import { pathToFileURL } from "node:url";
 import { chromium } from "playwright";
 import { repositoryRoot } from "./panel-projects.mjs";
 import { cleanupUpgradeFixture, runOwnedUpgradeWorker } from "./panel-upgrade-process.mjs";
+import { parseUpgradeOptions } from "./panel-upgrade-options.mjs";
 
-if (process.argv.length < 3 || process.argv.length > 4)
-  throw Error("Usage: node scripts/check-panel-host-upgrade.mjs <built-server-package-directory> [report.json]");
-const serverRoot = resolve(process.argv[2]);
+const options = parseUpgradeOptions(process.argv.slice(2));
+const serverRoot = resolve(options.serverRoot);
 assert.equal(JSON.parse(await readFile(join(serverRoot, "package.json"), "utf8")).name, "@cjhyy/code-shell-server");
 await readFile(join(serverRoot, "dist/panels/runtime-services.js"));
 await readFile(resolve(serverRoot, "../core/dist/panel-apps/index.js"));
@@ -38,7 +38,8 @@ syncBuiltinESMExports();
   await mkdir(home);
   const report = join(sandbox, "report.json");
   worker = await runOwnedUpgradeWorker({ args: ["--import", pathToFileURL(guard).href,
-    join(repositoryRoot, "scripts/panel-host-upgrade.mjs"), serverRoot, sandbox, report],
+    join(repositoryRoot, "scripts/panel-host-upgrade.mjs"), serverRoot, sandbox, report,
+    ...(options.appId ? [options.appId] : [])],
     cwd: repositoryRoot,
     // No real Host state, provider credentials or Git credential environment.
     env: { PATH: process.env.PATH, HOME: home, TMPDIR: home, LANG: "C.UTF-8",
@@ -50,7 +51,7 @@ syncBuiltinESMExports();
   if (worker.errors.length === 0) {
     reportContents = JSON.parse(await readFile(report, "utf8"));
     reportContents.gateScriptsSHA256 = Object.fromEntries(await Promise.all([
-      "check-panel-host-upgrade.mjs", "panel-host-upgrade.mjs", "panel-upgrade-scenarios.mjs", "panel-upgrade-process.mjs",
+      "check-panel-host-upgrade.mjs", "panel-host-upgrade.mjs", "panel-upgrade-scenarios.mjs", "panel-upgrade-process.mjs", "panel-upgrade-starter-assets.mjs", "panel-upgrade-options.mjs",
     ].map(async file => [file, createHash("sha256").update(await readFile(join(repositoryRoot, "scripts", file))).digest("hex")])));
   }
 } catch (error) {
@@ -62,9 +63,9 @@ syncBuiltinESMExports();
   shutdown = await cleanupUpgradeFixture({ sandbox, worker, failure });
 }
 reportContents.workerShutdown = shutdown;
-if (process.argv[3]) {
-  await writeFile(resolve(process.argv[3]), JSON.stringify(reportContents, null, 2) + "\n", { flag: "wx" });
-  console.log(`Report: ${resolve(process.argv[3])}`);
+if (options.reportPath) {
+  await writeFile(resolve(options.reportPath), JSON.stringify(reportContents, null, 2) + "\n", { flag: "wx" });
+  console.log(`Report: ${resolve(options.reportPath)}`);
 }
 console.log(`PASS: owned worker ${shutdown.pid} exited after closing ${shutdown.browsersClosed}/${shutdown.browsersOpened} Chromium instances; private HOME removed`);
-console.log("PASS: reviewed old-package install, pinned project upgrade and rollback for all six Panels (controlled local Host)");
+console.log(`PASS: reviewed old-package install, global update, project restore and rollback for ${options.appId ? `${options.appId} only (${reportContents.cases.length} historical cases; partial catalog)` : "all six Panels"} (controlled local Host)`);

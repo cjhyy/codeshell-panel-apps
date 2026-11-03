@@ -256,8 +256,8 @@ const parsedNewStock = detailUi.parseAShareStockDetailSnapshot(JSON.stringify(ne
 assert.equal(parsedNewStock.historyAdjust, "none");
 assert.equal(parsedNewStock.metrics.historyBars, 19);
 
-assert.deepEqual(detailUi.stockDetailRuntimeArgs("node", "SH600519", "read-local").slice(0, 2), ["--input-type=module", "--eval"]);
-assert.equal(detailUi.stockDetailRuntimeArgs("bun", "贵州茅台", "refresh-local")[0], "--eval");
+assert.deepEqual(detailUi.stockDetailRuntimeArgs("node", "SH600519", "read-local").slice(0, 2), ["--query", "SH600519"]);
+assert.equal(detailUi.stockDetailRuntimeArgs("bun", "贵州茅台", "refresh-local")[0], "--query");
 assert.throws(() => detailUi.stockDetailRuntimeArgs("node", "贵州茅台", "read-local"), /需要股票代码/u);
 assert.throws(() => detailUi.stockDetailRuntimeArgs("python", "600519"), /不受支持/u);
 assert.equal(detailTool.stockSuggestionUrl("贵州茅台").origin, "https://smartbox.gtimg.cn");
@@ -273,7 +273,7 @@ try {
     scope: "SH600519",
     snapshot,
   });
-  assert.match(written.latestPath, /snapshots\/a-share-stock\/SH600519\/latest\.json$/u);
+  assert.match(written.latestPath, /snapshots-v2\/a-share-stock\/SH600519\/latest\.json$/u);
   assert.deepEqual(await localSnapshots.readLocalSnapshot({
     root: localRoot,
     stream: "a-share-stock",

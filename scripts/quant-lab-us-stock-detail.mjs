@@ -81,7 +81,7 @@ assert.equal(parsed.market, "us");
 assert.equal(parsed.stock.exchange, "NasdaqGS");
 assert.equal(parsed.metrics.historyBars, 121);
 assert.equal(parsed.historyAdjust, "adj");
-assert.equal(detailUi.stockDetailRuntimeArgs("node", "AAPL", "read-local", "us").at(-3), "us");
+assert.equal(detailUi.stockDetailRuntimeArgs("node", "AAPL", "read-local", "us").at(-1), "--read-local");
 assert.throws(() => detailUi.stockDetailRuntimeArgs("node", "Apple", "read-local", "us"), /需要股票代码/u);
 assert.equal(detailTool.yahooSearchUrl("Apple").origin, "https://query1.finance.yahoo.com");
 assert.match(detailTool.yahooChartUrl("BRK-B").pathname, /BRK-B$/u);
@@ -89,7 +89,7 @@ assert.match(detailTool.yahooChartUrl("BRK-B").pathname, /BRK-B$/u);
 const localRoot = await mkdtemp(join(tmpdir(), "quant-lab-us-stock-"));
 try {
   const written = await localSnapshots.writeLocalSnapshot({ root: localRoot, stream: "us-stock", scope: "US-AAPL", snapshot });
-  assert.match(written.latestPath, /snapshots\/us-stock\/US-AAPL\/latest\.json$/u);
+  assert.match(written.latestPath, /snapshots-v2\/us-stock\/US-AAPL\/latest\.json$/u);
   const restored = await localSnapshots.readLocalSnapshot({ root: localRoot, stream: "us-stock", scope: "US-AAPL" });
   assert.equal(restored.stock.symbol, "AAPL");
 } finally {

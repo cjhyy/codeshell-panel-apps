@@ -1,5 +1,12 @@
 # 投资工作台 Panel App
 
+0.51.0（未发布候选）加入 Host 共享行情后台服务：开启“后台更新”后，CodeShell 运行期间关闭全部面板仍更新；Host 退出可以停止，重启先确认旧执行者退出再恢复。订阅按最后一次打开面板的账本同步，关页期间 CLI 改账本需重开后同步。没有 services 能力的兼容模式只在页面存活时更新；没有当前项目 reviewed entry 能力时只显示缓存。新 strict manifest 需要支持后台服务的 Host，旧 Host 应保留当前可用安装，不会运行 HOME 中猜出的其它包。
+
+本候选新增 `resources` 权限，与 `process` 一起开放 Host 有界历史任务。安装或升级时由 Host 的既有权限审阅流程展示并确认；未授权时保留本地数据，不绕过任务授权。历史初始化、补齐及隔离历史库共用这一能力。
+历史新写入使用 v2 单 owner 协议，旧 v1 保持只读。若数据根仍有 v1 库则拒绝混协议写入；请先停用旧包后选择独立数据目录，不要手工删除现场锁。状态查询不会修复/重写库；修复是显式操作。有界历史批次使用 Host task，每次最多 20 个标的，关页不取消，下一批显式继续。
+
+行情快照保存交易日、币种和参考口径。日涨跌缺参考/跨日/口径不符时显示缺失；供应商 referenceDate 是参考值适用交易日，美股未验证前收盘口径时不计算。日涨跌与累计持仓盈亏分别展示。
+
 ## 无界面 CLI
 
 安装包内的 `app/tools/quant-lab.mjs` 提供本地 CSV 检查、回测、参数扫描、滚动
@@ -339,10 +346,10 @@ evidence（JSON 标记为数据、非指令），并明确禁止重算和动作�
 
 用户可在行情首页明确开启独立留档任务 `投资工作台 · A股市场脉搏`，工作日北京时间 10:10 与 15:10
 各保存一次项目快报；它不负责页面行情刷新。关闭任务不会删除历史报告。任务依赖当前设备、会话和网络可用，创建或更新后
-会再次读取 Host 状态校验，不会只凭按钮点击假定成功。手动运行等价于：
+会再次读取 Host 状态校验，不会只凭按钮点击假定成功。手动执行前须从当前项目的 `quant-lab:project-runtime` 审查记录取得实际包路径并设置 `QUANT_REVIEWED_PACKAGE`，在授权项目目录运行；不得从 HOME 推导安装路径。手动运行等价于：
 
 ```bash
-node "$HOME/.code-shell/panel-apps/quant-lab/app/tools/build-market-pulse.mjs" \
+node "$QUANT_REVIEWED_PACKAGE/app/tools/build-market-pulse.mjs" \
   --out data/market-insights/<STAMP>-market-overview.json
 ```
 
@@ -362,7 +369,7 @@ ST/退市风险名、低价、低成交额、低流通市值和极端换手；�
 旧版候选快报的兼容工具仍可手动运行，但面板选股入口不再通过 Agent 代跑它：
 
 ```bash
-node "$HOME/.code-shell/panel-apps/quant-lab/app/tools/screen-a-shares.mjs" \
+node "$QUANT_REVIEWED_PACKAGE/app/tools/screen-a-shares.mjs" \
   --out data/market-insights/<STAMP>-candidates.json \
   --top 10 \
   --history-limit 120
@@ -595,9 +602,9 @@ markets that currently have watch symbols, as two independent Host jobs:
 Both jobs explicitly use `Asia/Shanghai`, reuse `fetch-market-data.mjs` and the existing
 `evaluateWatchItem` / `rankWatchResults` contract, and notify only when a persisted engine result
 has `triggered === true`. Their prompts are market-separated and forbid estimates, invented numbers,
-and action advice. The prompt addresses the bundled fetcher at its real POSIX install location,
-`$HOME/.code-shell/panel-apps/quant-lab/app/tools/fetch-market-data.mjs`; the Host does not expand a
-`<panel>` placeholder. If that file is missing or unreadable, the run records
+and action advice. The prompt resolves `app/tools/fetch-market-data.mjs` using the current project’s
+`quant-lab:project-runtime` reviewed package record. It never guesses an installation path from HOME.
+If that authorized entry is missing or unreadable, the run records
 `bundled-fetch-tool-not-found / unavailable` and sends no trigger notification instead of guessing a
 path or value. The fetch step never passes `--force`: it reuses the `adjust` recorded in the symbol's
 existing `.meta.json` and reports `adjust-basis-conflict / unavailable` instead of rewriting your research
@@ -851,3 +858,9 @@ node "<选中包>/app/tools/quant-lab.mjs" research --project "<项目>" --input
 观察记录放项目 `observations/<runId>/`，带版本化计划、单实例锁、日志、轮次上限、失败退避、
 停止标记与每份计划自创建起最多24小时的绝对截止。没有行情自动抓取、实时监控或OS定时器安装。
 `ops`列出观察 schema 与只读命令列表。观察日志不代替策略验证，也不表示已跑完24小时。
+
+### 旧历史库与本项目隔离库
+
+旧 v1 库保持只读。历史数据页的“使用本项目隔离历史库”将项目私有随机标识保存在 Host storage，之后所有历史批次及短采集在已授权 app-data 下的 `quant-history-libraries/v2/<id>` 读写。旧目录不迁移、不删除，旧包晚完成也无法覆盖新库。CLI 使用相同授权工作目录和 `--library-id <32位小写十六进制>`；`--status` 读摘要，`--lock-status` 只读 owner 诊断（库尚未初始化也可用），两者均不创建目录。
+
+研究增强可通过受信任的本机运行配置 `QUANT_LAB_PYTHON` 指定 Python；未配置时仅使用 PATH 中的 `python3`（Windows 为 `python`）。程序不会从 HOME 猜测 Host 私有 Python，也不会自行安装依赖。不可用时显示增强核验不可用，基础研究仍可用。

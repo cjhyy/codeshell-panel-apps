@@ -16045,3 +16045,5 @@ button.stock-financial-history-row:focus-visible {
 .plain-research-summary-grid p { margin: 0; }
 .plain-research-report { white-space: normal; }
 .plain-research-full-report { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+
+#history-library-select { min-height: 44px; margin-bottom: 12px; }

@@ -38,6 +38,9 @@ const COMMANDS = [
   "archive",
   "start",
   "queue",
+  "pump",
+  "resume",
+  "recover-slot",
 ];
 const plain = (value) => value && typeof value === "object" && !Array.isArray(value);
 const fields = (value, allowed) => {
@@ -54,7 +57,7 @@ function argumentsFor(argv) {
   const options = {};
   for (let i = 0; i < rest.length; i++) {
     const flag = rest[i];
-    if (["--background", "--refresh", "--latest"].includes(flag)) {
+    if (["--background", "--refresh", "--latest", "--slots", "--confirm", "--allow-outside-project"].includes(flag)) {
       const name = flag.slice(2);
       if (options[name]) throw cliError("INVALID_ARGUMENT", "参数重复。");
       options[name] = true;
@@ -91,10 +94,10 @@ function argumentsFor(argv) {
   if (!options.project || !isAbsolute(options.project))
     throw cliError("INVALID_ARGUMENT", "必须显式提供 --project 完整项目目录。");
   const allowed = new Set(["project"]);
-  if (["doctor", "inspect", "search", "download", "retry", "start", "_worker"].includes(command))
+  if (["doctor", "inspect", "search", "download", "retry", "start", "pump", "resume", "recover-slot", "_worker"].includes(command))
     allowed.add("bin-dir");
   if (["inspect", "search", "download"].includes(command)) allowed.add("input-file");
-  if (["status", "cancel", "retry", "check", "archive", "start", "_worker"].includes(command))
+  if (["status", "cancel", "retry", "check", "archive", "start", "recover-slot", "_worker"].includes(command))
     allowed.add("job");
   if (["download", "retry", "start"].includes(command)) allowed.add("background");
   if (["retry", "start"].includes(command)) allowed.add("expected-attempt");
@@ -105,8 +108,13 @@ function argumentsFor(argv) {
   if (command === "doctor") {
     allowed.add("refresh");
     allowed.add("latest");
+    allowed.add("slots");
   }
   if (command === "queue") allowed.add("input-file");
+  if (["pump", "resume"].includes(command)) allowed.add("allow-outside-project");
+  if (command === "recover-slot") {
+    allowed.add("attempt"); allowed.add("token"); allowed.add("confirm");
+  }
   if (command === "_worker") {
     allowed.add("attempt");
     allowed.add("token");
@@ -117,7 +125,7 @@ function argumentsFor(argv) {
     throw cliError("INVALID_ARGUMENT", "此命令不支持提供的参数。");
   if (["inspect", "search", "download"].includes(command) && !options["input-file"])
     throw cliError("INVALID_ARGUMENT", "必须提供 --input-file JSON 文件。");
-  if (["status", "cancel", "retry", "check", "archive", "start", "_worker"].includes(command))
+  if (["status", "cancel", "retry", "check", "archive", "start", "recover-slot", "_worker"].includes(command))
     cliJobId(options.job);
   if (options["request-key"] !== undefined) cliRequestKey(options["request-key"]);
   if (options.source !== undefined && !["cli", "chat", "panel"].includes(options.source))
@@ -591,6 +599,7 @@ async function worker(
       /* If group ownership cannot be verified, crash recovery stays conservative. */
     }
   }
+  await store.admitWorker(id, attempt, token, { detachedGroup });
   const release = await store.claimWorker(id, attempt, token, { detachedGroup });
   const controller = new AbortController();
   const stop = () => controller.abort(cliError("CANCELLED", "CLI 下载已取消。"));
@@ -600,8 +609,7 @@ async function worker(
     () => controller.abort(cliError("TIMEOUT", "下载超过六小时上限，请检查后明确重试。")),
     6 * 60 * 60 * 1000,
   );
-  let admitted = false,
-    pollTail = Promise.resolve(),
+  let pollTail = Promise.resolve(),
     progress = initial.progress,
     lastWrite = 0;
   const poll = () => {
@@ -624,7 +632,7 @@ async function worker(
             lastWrite = Date.now();
             return {
               ...current,
-              status: admitted ? "running" : "queued",
+              status: "running",
               heartbeatAt: lastWrite,
               updatedAt: lastWrite,
               progress,
@@ -647,12 +655,6 @@ async function worker(
     poll();
     await pollTail;
     controller.signal.throwIfAborted();
-    while (!(await store.admitWorker(id, attempt, token))) {
-      await new Promise((resolveWait) => setTimeout(resolveWait, 250));
-      await pollTail;
-      controller.signal.throwIfAborted();
-    }
-    admitted = true;
     await store.update(id, (record) => {
       if (record.attempt !== attempt || record.workerToken !== token || record.cancelRequestedAt)
         throw cliError("WORKER_REJECTED", "任务已改变，未开始下载。");
@@ -757,65 +759,50 @@ async function worker(
   } finally {
     if (treeConfirmed) {
       await store.releaseSlot(id, attempt, token);
-      await release();
+      // Retain the owned lock until the completion pump finishes all writes.
+      // A terminal receipt alone does not mean the worker has left the project.
+      try { await pump(store, { ...options, background: true, restrictedOutput }, { env }); }
+      finally { await release(); }
     }
   }
   return getCliJob(project, id);
 }
 
-async function launch(store, record, options, context) {
-  const token = randomUUID();
-  options = { ...options, executionDigest: executionDigest(record) };
-  await store.update(record.id, (current) => {
-    if (
-      current.attempt !== record.attempt ||
-      current.status !== "queued" ||
-      current.workerToken ||
-      current.cancelRequestedAt ||
-      current.archivedAt
-    )
-      throw cliError("SUBMISSION_UNCERTAIN", "此任务已改变或已启动，请查询状态，不能重复启动。");
-    return { ...current, workerToken: token };
-  });
-  if (!options.background)
-    return worker(store.project, record.id, record.attempt, token, options, context);
-  try {
-    const child = spawn(
-      process.execPath,
-      [
-        ENTRY,
-        "_worker",
-        "--project",
-        store.project,
-        "--job",
-        record.id,
-        "--attempt",
-        String(record.attempt),
-        "--token",
-        token,
-        "--request-digest",
-        options.executionDigest,
+// The only worker-spawn path. Reservations are durable before spawn; workers
+// claim the exact token, so a delayed launch cannot consume a replacement slot.
+export async function pump(store, options = {}, context = {}, foregroundId) {
+  let foreground;
+  const queue = await store.pump(async (record, slot) => {
+    const launchOptions = { ...options, executionDigest: executionDigest(record) };
+    if (!options.background && record.id === foregroundId) {
+      foreground = { record, slot, launchOptions };
+      return;
+    }
+    try {
+      const child = spawn(process.execPath, [ENTRY, "_worker", "--project", store.project,
+        "--job", record.id, "--attempt", String(record.attempt), "--token", slot.token,
+        "--request-digest", launchOptions.executionDigest,
         ...(options.restrictedOutput ? ["--restricted-output", "project"] : []),
-        ...(options["bin-dir"] ? ["--bin-dir", options["bin-dir"]] : []),
-      ],
-      { detached: true, stdio: "ignore", shell: false, env: context.env || process.env },
-    );
-    await new Promise((resolveSpawn, reject) => {
-      child.once("spawn", resolveSpawn);
-      child.once("error", reject);
-    });
-    child.unref();
-    return { ...(await getCliJob(store.project, record.id)), background: true };
-  } catch {
-    // The record is deliberately retained: inspect this ID before another start.
-    throw Object.assign(
-      cliError(
-        "SUBMISSION_UNCERTAIN",
-        "无法确认后台 worker 是否已启动。请用返回的任务 ID 检查状态，不要重新下载。",
-      ),
-      { jobId: record.id },
-    );
+        ...(options["bin-dir"] ? ["--bin-dir", options["bin-dir"]] : [])],
+        { detached: true, stdio: "ignore", shell: false, env: context.env || process.env });
+      await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+      child.unref();
+    } catch {
+      throw Object.assign(cliError("SUBMISSION_UNCERTAIN", "无法确认 worker 启动；请查询任务或显式继续队列，未重复提交。"), { jobId: record.id });
+    }
+  }, { eligible: async (record) => {
+    try { await validateOutputDirectory(store.project, record.outputDirectory, options.restrictedOutput === true); return true; }
+    catch { return false; }
+  } });
+  if (foreground) {
+    const { record, slot, launchOptions } = foreground;
+    await worker(store.project, record.id, record.attempt, slot.token, launchOptions, context);
   }
+  return queue;
+}
+async function launch(store, record, options, context) {
+  await pump(store, options, context, record.id);
+  return { ...(await getCliJob(store.project, record.id)), ...(options.background ? { background: true } : {}) };
 }
 
 function validateTaskInput(input, { requireAttempt = false } = {}) {
@@ -855,8 +842,15 @@ function validateTaskInput(input, { requireAttempt = false } = {}) {
       throw cliError("INVALID_ARGUMENT", "列表参数无效。");
     return input;
   }
-  if (action === "queue") {
+  if (["queue", "pump", "resume"].includes(action)) {
     fields(input, ["action"]);
+    return input;
+  }
+  if (action === "recover-slot") {
+    fields(input, ["action", "id", "attempt", "token", "confirmed"]);
+    cliJobId(input.id); cliJobId(input.token);
+    if (!Number.isSafeInteger(input.attempt) || input.attempt < 1 || input.confirmed !== true)
+      throw cliError("INVALID_ARGUMENT", "恢复需要精确 attempt/token 和明确 confirmed=true。");
     return input;
   }
   if (action === "configure") {
@@ -937,7 +931,7 @@ export async function runTaskOperation(
     onProgress = () => {},
     options = {},
     background = true,
-    restrictedOutput = false,
+    restrictedOutput = options.restrictedOutput === true,
     requireAttempt = false,
   } = {},
 ) {
@@ -949,13 +943,28 @@ export async function runTaskOperation(
       limit: operation.limit ?? 100,
       includeArchived: operation.includeArchived ?? false,
     });
-    return { ...listed, queue: await (await createCliStore(root)).getQueue() };
+    const queue = await (await createCliStore(root)).getQueue();
+    const blocked = listed.jobs.filter(record => record.status === "queued" && record.outputDirectory !== root && !record.outputDirectory.startsWith(root + sep));
+    return { ...listed, queue: { ...queue, warnings: [...(queue.warnings ?? []), ...blocked.map(record => ({ id: record.id,
+      code: "OUTPUT_AUTHORIZATION_REQUIRED", message: "项目外保存任务仍在等待授权；请在 CLI 核查后运行 pump --allow-outside-project 明确继续。" }))] } };
   }
   if (operation.action === "status") return getCliJob(root, operation.id);
-  if (operation.action === "cancel") return requestCliCancellation(root, operation.id);
+  if (operation.action === "cancel") {
+    const result = await requestCliCancellation(root, operation.id);
+    await pump(await createCliStore(root), { ...options, background: true, restrictedOutput }, { env });
+    return result;
+  }
   if (operation.action === "queue") return (await createCliStore(root)).getQueue();
-  if (operation.action === "configure")
-    return (await createCliStore(root, { create: true })).configureQueue(operation);
+  if (["configure", "pump", "resume", "recover-slot"].includes(operation.action)) {
+    const store = await createCliStore(root, { create: true });
+    if (operation.action === "recover-slot") return store.recoverSlot(operation);
+    if (operation.action === "configure") await store.configureQueue(operation);
+    if (operation.action === "resume") {
+      const queue = await store.getQueue();
+      await store.configureQueue({ expectedRevision: queue.revision, paused: false, maxConcurrent: queue.maxConcurrent });
+    }
+    return pump(store, { ...options, background: true, restrictedOutput }, { env });
+  }
   if (operation.action === "submit") {
     const outputDirectory = await validateOutputDirectory(
       root,
@@ -1131,7 +1140,7 @@ export async function main(
         schemaVersion: 1,
         commands: COMMANDS,
         usage:
-          "node video-download.mjs <command> --project /absolute/project [--input-file request.json] [--job UUID] [--background] [--bin-dir /absolute/bin] [--request-key stable-key] [--source cli|chat|panel] [--expected-attempt N] [doctor: --refresh --latest]",
+          "node video-download.mjs <command> --project /absolute/project [--input-file request.json] [--job UUID] [--background] [--bin-dir /absolute/bin] [--request-key stable-key] [--source cli|chat|panel] [--expected-attempt N] [doctor: --refresh --latest | --slots] [recover-slot: --attempt N --token UUID --confirm] [pump/resume: --allow-outside-project]",
         inputs: {
           inspect: { url: "HTTP(S) URL", playlist: false },
           search: { query: "keywords", platform: "both", limit: 8 },
@@ -1145,11 +1154,14 @@ export async function main(
           defaultMaxConcurrent: 2,
           maxConcurrent: "1–4",
           configureInput: { expectedRevision: 0, paused: false, maxConcurrent: 2 },
+          pump: "Explicitly continue queued work; read commands never spawn workers; external outputs require reviewed CLI --allow-outside-project",
+          recovery: "doctor --slots; recover-slot requires exact id/attempt/token and --confirm; then retry",
         },
         note: "公共 CLI 与面板服务共享项目 .mimi-download-cli/任务和队列；Host账号任务与资源库仍由Host管理。后台进程仍需要运行设备保持在线。",
       },
     };
   const project = await checkedDirectory(options.project);
+  if (["pump", "resume"].includes(command)) options.restrictedOutput = options["allow-outside-project"] !== true;
   if (options["bin-dir"]) {
     const binDirectory = await checkedDirectory(options["bin-dir"]);
     env = {
@@ -1160,7 +1172,9 @@ export async function main(
     };
   }
   if (command === "doctor")
-    return { ok: true, result: await doctor(project, options, env, signal, fetcher) };
+    return { ok: true, result: options.slots
+      ? await (await createCliStore(project)).diagnoseSlots()
+      : await doctor(project, options, env, signal, fetcher) };
   if (command === "inspect")
     return {
       ok: true,
@@ -1205,7 +1219,10 @@ export async function main(
       fields(input, ["expectedRevision", "paused", "maxConcurrent"]);
       operation = { action: "configure", ...input };
     } else operation = { action: "queue" };
-  } else if (command === "jobs") operation = { action: "list" };
+  } else if (["pump", "resume"].includes(command)) operation = { action: command };
+  else if (command === "recover-slot") operation = { action: command, id: options.job,
+    attempt: Number(options.attempt), token: options.token, confirmed: options.confirm === true };
+  else if (command === "jobs") operation = { action: "list" };
   else
     operation = {
       action: command,

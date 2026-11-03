@@ -1,5 +1,8 @@
+import { nativeDataRoot } from "./native-data-context.mjs";
 import { mkdir, open, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
+
+import { acquireOwnerLock, diagnoseOwnerLock, inspectOwnerLock, ownerConfirmedDead } from "./owner-lock.mjs";
 
 import { historyDataSource } from "../market-data-sources.mjs";
 
@@ -7,12 +10,13 @@ export const A_SHARE_HISTORY_SCHEMA_VERSION = 1;
 export const A_SHARE_HISTORY_KIND = "a-share-history-series";
 export const A_SHARE_HISTORY_MANIFEST_KIND = "a-share-history-library";
 export const A_SHARE_HISTORY_RUN_KIND = "a-share-history-run";
-export const A_SHARE_HISTORY_DIRECTORY = "a-share-history/v1";
+// New writers never touch v1: old executables cannot participate in this lock protocol.
+export const A_SHARE_HISTORY_DIRECTORY = "a-share-history/v2";
 export const A_SHARE_HISTORY_DEFAULT_SOURCE = "tencent-ifzq";
 export const A_SHARE_HISTORY_BASIS_VERSION = 1;
 export const A_SHARE_RESEARCH_PRICE_VERSION = 1;
 export const A_SHARE_RESEARCH_PRICE_CONTRACT = "canonical:cn:1d:qfq:raw-factor:v1";
-const HISTORY_RUN_STALE_MS = 13 * 60 * 60 * 1_000;
+const activeLocks = new Map();
 const HISTORY_PRICE_FIELDS = Object.freeze(["open", "high", "low", "close"]);
 const HISTORY_PRICE_RELATIVE_TOLERANCE = 0.0001;
 
@@ -157,7 +161,7 @@ export function createRawFactorPriceBundle({
   });
 }
 
-function cacheRoot(root = process.cwd()) {
+function cacheRoot(root = nativeDataRoot()) {
   return resolve(root, A_SHARE_HISTORY_DIRECTORY);
 }
 
@@ -166,12 +170,23 @@ function seriesPath(symbol, root) {
   return resolve(cacheRoot(root), "series", `${symbol}.json`);
 }
 
-export function historyManifestPath(root = process.cwd()) {
+export function historyManifestPath(root = nativeDataRoot()) {
   return resolve(cacheRoot(root), "manifest.json");
 }
 
-export function historyRunStatePath(root = process.cwd()) {
+export function historyRunStatePath(root = nativeDataRoot()) {
   return resolve(cacheRoot(root), "initializing.json");
+}
+
+// v1 is an immutable import source for this version. No shared lock, manifest,
+// series or snapshot is ever written by both protocols. Copy-on-write v2 takes
+// precedence permanently, so a late legacy completion cannot overwrite v2.
+async function readCompatible(path) {
+  try { return await readFile(path, "utf8"); }
+  catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return readFile(path.replace("/a-share-history/v2/", "/a-share-history/v1/"), "utf8");
+  }
 }
 
 async function atomicWrite(path, content) {
@@ -185,132 +200,62 @@ async function atomicWrite(path, content) {
     await handle.close();
   }
   await rename(temporary, path);
+  const directory = await open(resolve(path, ".."), "r");
+  try { await directory.sync(); } finally { await directory.close(); }
 }
 
-function parseHistoryRunState(value) {
-  if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    value.schemaVersion !== A_SHARE_HISTORY_SCHEMA_VERSION ||
-    value.kind !== A_SHARE_HISTORY_RUN_KIND ||
-    !Number.isInteger(value.pid) ||
-    value.pid <= 0 ||
-    typeof value.token !== "string" ||
-    value.token.length < 8 ||
-    value.token.length > 160 ||
-    !["core", "broad", "full"].includes(value.scope) ||
-    !isAShareHistorySource(value.source) ||
-    !Number.isFinite(Date.parse(value.startedAt)) ||
-    !Number.isFinite(Date.parse(value.heartbeatAt))
-  ) return null;
-  return Object.freeze({
-    schemaVersion: A_SHARE_HISTORY_SCHEMA_VERSION,
-    kind: A_SHARE_HISTORY_RUN_KIND,
-    pid: value.pid,
-    token: value.token,
-    scope: value.scope,
-    source: value.source,
-    startedAt: new Date(value.startedAt).toISOString(),
-    heartbeatAt: new Date(value.heartbeatAt).toISOString(),
-  });
-}
-
-function processAlive(pid) {
+export async function readActiveHistoryRunState(root = nativeDataRoot()) {
+  const owner = await inspectOwnerLock(historyRunStatePath(root));
+  if (owner) return await ownerConfirmedDead(owner) ? null : owner;
+  // Diagnostics never remove or rewrite the legacy wx file, including a stale
+  // or malformed record. Its presence means old-protocol ownership is uncertain.
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code === "EPERM";
-  }
+    const legacy = await readFile(resolve(root, "a-share-history/v1/initializing.json"), "utf8");
+    try { return { ...JSON.parse(legacy), legacyProtocol: true }; }
+    catch { return { unknown: true, legacyProtocol: true }; }
+  } catch (error) { if (error.code === "ENOENT") return null; throw error; }
 }
 
-export async function readActiveHistoryRunState(root = process.cwd(), now = new Date()) {
-  const path = historyRunStatePath(root);
-  let state = null;
-  let file = null;
-  try {
-    const content = await readFile(path, "utf8");
-    state = parseHistoryRunState(JSON.parse(content));
-    file = await stat(path);
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    if (!(error instanceof SyntaxError)) throw error;
-    file = await stat(path).catch((statError) => statError?.code === "ENOENT" ? null : Promise.reject(statError));
-  }
-  const nowMs = now instanceof Date ? now.getTime() : Number.NaN;
-  const active = state &&
-    Number.isFinite(nowMs) &&
-    nowMs - Date.parse(state.heartbeatAt) <= HISTORY_RUN_STALE_MS &&
-    processAlive(state.pid);
-  if (active) return state;
-  const incompleteRecentWrite = !state && file && Number.isFinite(nowMs) && nowMs - file.mtimeMs < 5_000;
-  if (incompleteRecentWrite) return null;
-  if (file) {
-    await unlink(path).catch((error) => {
-      if (error?.code !== "ENOENT") throw error;
-    });
-  }
-  return null;
+export async function diagnoseHistoryRunState(root = nativeDataRoot()) {
+  const current = await diagnoseOwnerLock(historyRunStatePath(root));
+  if (current.owner) return current;
+  const legacy = await readActiveHistoryRunState(root);
+  return legacy ? { owner: legacy, status: "unknown", reason: "legacy-protocol-unverified" } : current;
 }
 
-export async function acquireHistoryRunState(input, root = process.cwd()) {
-  const path = historyRunStatePath(root);
-  await mkdir(resolve(path, ".."), { recursive: true, mode: 0o700 });
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const existing = await readActiveHistoryRunState(root, input.now);
-    if (existing) return Object.freeze({ acquired: false, state: existing });
-    const startedAt = input.now.toISOString();
-    const state = Object.freeze({
-      schemaVersion: A_SHARE_HISTORY_SCHEMA_VERSION,
-      kind: A_SHARE_HISTORY_RUN_KIND,
-      pid: process.pid,
-      token: `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      scope: input.scope,
-      source: input.source,
-      startedAt,
-      heartbeatAt: startedAt,
-    });
-    let handle = null;
-    try {
-      handle = await open(path, "wx", 0o600);
-      await handle.writeFile(`${JSON.stringify(state, null, 2)}\n`, "utf8");
-      await handle.sync();
-      return Object.freeze({ acquired: true, state });
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-    } finally {
-      await handle?.close();
-    }
-  }
-  const existing = await readActiveHistoryRunState(root, input.now);
-  return Object.freeze({ acquired: false, state: existing });
+export async function acquireHistoryRunState(input, root = nativeDataRoot()) {
+  // Legacy writers can pause between checking and creating their wx lock.
+  // Even an absent lock cannot prove quiescence. Refuse mixed protocol roots;
+  // legacy data remains readable and a separate empty root can use v2 safely.
+  const legacy = await stat(resolve(root, "a-share-history/v1")).catch((error) => { if (error.code === "ENOENT") return null; throw error; });
+  if (legacy) return Object.freeze({ acquired: false, state: null, code: "HISTORY_LEGACY_PROTOCOL", message: "旧版历史库保持只读：无法证明旧写入程序已停用。请在历史数据页选择‘使用本项目隔离历史库’后继续；旧数据保留，新库与旧写入协议隔离。" });
+  const lock = await acquireOwnerLock(historyRunStatePath(root), { metadata: {
+    scope: input.scope, source: input.source, heartbeatAt: input.now.toISOString(),
+    schemaVersion: A_SHARE_HISTORY_SCHEMA_VERSION, kind: A_SHARE_HISTORY_RUN_KIND,
+  }, hooks: input.hooks });
+  if (lock.acquired) activeLocks.set(lock.owner.token, lock);
+  return Object.freeze({ acquired: lock.acquired, state: lock.owner });
 }
 
-export async function heartbeatHistoryRunState(state, root = process.cwd(), now = new Date()) {
-  const current = await readActiveHistoryRunState(root, now);
-  if (!current || current.token !== state?.token) return false;
-  await atomicWrite(historyRunStatePath(root), `${JSON.stringify({
-    ...current,
-    heartbeatAt: now.toISOString(),
-  }, null, 2)}\n`);
-  return true;
+export async function heartbeatHistoryRunState(state, _root = nativeDataRoot(), now = new Date()) {
+  const lock = activeLocks.get(state?.token);
+  if (!lock) return false;
+  await lock.assertOwned();
+  return lock.heartbeat(now.toISOString());
 }
 
-export async function releaseHistoryRunState(state, root = process.cwd()) {
-  const path = historyRunStatePath(root);
-  let current = null;
-  try {
-    current = parseHistoryRunState(JSON.parse(await readFile(path, "utf8")));
-  } catch (error) {
-    if (error?.code === "ENOENT" || error instanceof SyntaxError) return false;
-    throw error;
-  }
-  if (!current || current.token !== state?.token) return false;
-  await unlink(path).catch((error) => {
-    if (error?.code !== "ENOENT") throw error;
-  });
-  return true;
+export async function assertHistoryRunState(state) {
+  const lock = activeLocks.get(state?.token);
+  if (!lock) throw new Error("HISTORY_OWNER_LOST");
+  await lock.assertOwned();
+}
+
+export async function releaseHistoryRunState(state) {
+  const lock = activeLocks.get(state?.token);
+  if (!lock) return false;
+  const result = await lock.release();
+  activeLocks.delete(state.token);
+  return result;
 }
 
 export function parseHistorySeries(value, expectedSymbol = null) {
@@ -468,9 +413,9 @@ export function parseHistorySeries(value, expectedSymbol = null) {
   });
 }
 
-export async function readHistorySeries(symbol, root = process.cwd()) {
+export async function readHistorySeries(symbol, root = nativeDataRoot()) {
   try {
-    const parsed = JSON.parse(await readFile(seriesPath(symbol, root), "utf8"));
+    const parsed = JSON.parse(await readCompatible(seriesPath(symbol, root)));
     return parseHistorySeries(parsed, symbol);
   } catch (error) {
     if (error?.code === "ENOENT") return null;
@@ -480,7 +425,7 @@ export async function readHistorySeries(symbol, root = process.cwd()) {
   }
 }
 
-export async function writeHistorySeries(input, root = process.cwd()) {
+export async function writeHistorySeries(input, root = nativeDataRoot()) {
   const parsed = parseHistorySeries(input, input?.symbol);
   const content = parsed.priceModel.kind === "raw-factor"
     ? `${JSON.stringify(Object.fromEntries(Object.entries(parsed).filter(([key]) => key !== "bars")))}\n`
@@ -649,16 +594,16 @@ export function mergeRawFactorPriceBundles(previousSeries, incrementalBundle, ge
   });
 }
 
-export async function writeHistoryManifest(manifest, root = process.cwd()) {
+export async function writeHistoryManifest(manifest, root = nativeDataRoot()) {
   const content = `${JSON.stringify(manifest, null, 2)}\n`;
   const path = historyManifestPath(root);
   await atomicWrite(path, content);
   return Object.freeze({ path, bytes: Buffer.byteLength(content) });
 }
 
-export async function readHistoryManifest(root = process.cwd()) {
+export async function readHistoryManifest(root = nativeDataRoot()) {
   try {
-    const value = JSON.parse(await readFile(historyManifestPath(root), "utf8"));
+    const value = JSON.parse(await readCompatible(historyManifestPath(root)));
     const source = value?.source == null
       ? A_SHARE_HISTORY_DEFAULT_SOURCE
       : String(value.source);
@@ -689,7 +634,7 @@ export async function readHistoryManifest(root = process.cwd()) {
   }
 }
 
-export async function seriesBytes(symbol, root = process.cwd()) {
+export async function seriesBytes(symbol, root = nativeDataRoot()) {
   try {
     return (await stat(seriesPath(symbol, root))).size;
   } catch (error) {
@@ -723,7 +668,7 @@ function usableManifestRecord(record, marketDate, source) {
   return record?.source === source && Number(record?.bars) >= 60 && age >= 0 && age <= 10;
 }
 
-export async function recoverHistoryManifestFromSeries(manifest, root = process.cwd(), now = new Date()) {
+export async function recoverHistoryManifestFromSeries(manifest, root = nativeDataRoot(), now = new Date(), { runState } = {}) {
   if (!manifest || manifest.scope !== "full") return manifest;
   const excludedSymbols = new Set(
     (Array.isArray(manifest.excludedSymbols) ? manifest.excludedSymbols : [])
@@ -792,6 +737,7 @@ export async function recoverHistoryManifestFromSeries(manifest, root = process.
     recovered,
     records,
   });
+  await assertHistoryRunState(runState);
   await writeHistoryManifest(next, root);
   return next;
 }

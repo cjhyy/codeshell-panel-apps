@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { nativeDataRoot } from "./native-data-context.mjs";
+import { runCollector } from "./collector-lock.mjs";
 // Deterministic A-share selection snapshot. The tool keeps arithmetic, source
 // timestamps, sector membership, stock history, announcements and news in one
 // bounded output. The UI only renders the validated result.
@@ -184,7 +186,7 @@ export async function loadSelectionHistory(symbol, marketDate, {
   provisional = false,
   readCached = readUsableHistory,
   fetchFresh = fetchHistory,
-  root = process.cwd(),
+  root = nativeDataRoot(),
 } = {}) {
   const cached = await readCached(symbol, marketDate, {
     minimumBars: 61,
@@ -208,7 +210,7 @@ export async function buildSelectionSnapshot(options = {}, nowInput = new Date()
   const watch = options.watch ?? { sectors: [], stocks: [] };
   const startedAt = Date.now();
   const persistent = options.persistLocal === true;
-  const root = options.root ?? process.cwd();
+  const root = options.root ?? nativeDataRoot();
   const [timestampResult, newsResult] = await Promise.allSettled([
     (dependencies.fetchMarketTimestamp ?? fetchMarketTimestamp)(),
     (dependencies.fetchMarketNews ?? fetchMarketNews)(now),
@@ -385,7 +387,7 @@ export async function buildSelectionSnapshot(options = {}, nowInput = new Date()
   return { ...enriched, elapsedMs: Date.now() - startedAt };
 }
 
-export async function runCli(argv = process.argv.slice(2), nowInput = new Date()) {
+async function runCliUnlocked(argv = process.argv.slice(2), nowInput = new Date()) {
   const options = parseArgs(argv);
   if (options.help) {
     process.stdout.write([
@@ -444,6 +446,19 @@ export async function runCli(argv = process.argv.slice(2), nowInput = new Date()
 }
 
 export { announcementUrl, parseWatchArgument };
+
+export function collectorRequestIdentity(argv) {
+  const options = parseArgs(argv);
+  return { mode: options.help ? "help" : options.readLocal ? "read-local" : "collect",
+    watch: options.watch, dataSources: options.dataSources ?? null,
+    cacheScope: options.cacheScope, continueScan: options.continueScan,
+    // This changes which retained history participates in the calculation.
+    persistLocal: options.persistLocal };
+}
+
+export async function runCli(argv = process.argv.slice(2), ...rest) {
+  return runCollector("build-a-share-selection", argv, (args) => runCliUnlocked(args, ...rest), { normalizeRequest: collectorRequestIdentity });
+}
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {

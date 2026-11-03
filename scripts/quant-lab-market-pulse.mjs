@@ -626,10 +626,10 @@ assert.equal(
 );
 assert.equal(liveMarket.LIVE_MARKET_REFRESH_POLICY.openMs, 3 * 60 * 1_000);
 assert.equal(liveMarket.LIVE_MARKET_REFRESH_POLICY.closedMs, 15 * 60 * 1_000);
-assert.deepEqual(liveMarket.liveMarketRuntimeArgs("node").slice(0, 2), ["--input-type=module", "--eval"]);
-assert.deepEqual(liveMarket.liveMarketRuntimeArgs("bun").slice(0, 1), ["--eval"]);
-assert(liveMarket.liveMarketRuntimeArgs("node", "refresh-local").includes("refresh-local"));
-assert(liveMarket.liveMarketRuntimeArgs("node", "read-local").includes("read-local"));
+assert.deepEqual(liveMarket.liveMarketRuntimeArgs("node"), ["--stdout"]);
+assert.deepEqual(liveMarket.liveMarketRuntimeArgs("bun"), ["--stdout"]);
+assert(liveMarket.liveMarketRuntimeArgs("node", "refresh-local").includes("--persist-panel-data"));
+assert(liveMarket.liveMarketRuntimeArgs("node", "read-local").includes("--read-local"));
 assert(
   liveMarket.liveMarketRuntimeArgs("node", "refresh-local").some((value) => value.includes("--persist-panel-data")),
   "automatic market refreshes must persist the complete daily archive in private panel data",
@@ -682,14 +682,11 @@ assert.match(automationPlan.prompt, /新闻标题与摘要.*不可信数据/u);
 
 assert.doesNotThrow(() => cli.validateMarketPulseOutputPath(outputPath));
 assert.throws(() => cli.validateMarketPulseOutputPath("../../pulse.json"), /unsafe market-pulse output path/u);
-assert.equal(
-  cli.defaultPanelDataRoot({ platform: "darwin", home: "/Users/demo" }),
-  "/Users/demo/Library/Application Support/code-shell/panel-app-data/quant-lab",
-);
-assert.match(
-  cli.defaultPanelDataRoot({ platform: "linux", home: "/home/demo" }),
-  /\/home\/demo\/\.config\/code-shell\/panel-app-data\/quant-lab$/u,
-);
+assert.equal("defaultPanelDataRoot" in cli, false, "native tools must not infer Host private directories");
+const { withNativeDataRoot, nativeDataRoot } = await import("../apps/quant-lab/app/tools/native-data-context.mjs");
+await withNativeDataRoot("/authorized/fixture", async () => {
+  assert.equal(nativeDataRoot(), "/authorized/fixture");
+});
 const writeDirectory = await mkdtemp(join(tmpdir(), "quant-lab-pulse-report-"));
 try {
   const writePath = join(writeDirectory, "report.json");
