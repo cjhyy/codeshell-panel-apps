@@ -1,0 +1,183 @@
+{
+  "capturedAt": "2026-10-21T03:52:58.499Z",
+  "note": "See parent-findings for later source changes requiring targeted revalidation. These are actual completed subprocess receipts, not implementer claims.",
+  "results": [
+    {
+      "name": "parent-job-final",
+      "command": [
+        "npm",
+        "test",
+        "--",
+        "--suite",
+        "job-hunt-hq"
+      ],
+      "startedAt": "2026-10-21T03:50:22.585Z",
+      "completedAt": "2026-10-21T03:51:16.815Z",
+      "exitCode": 0,
+      "signal": null
+    },
+    {
+      "name": "parent-quant-final",
+      "command": [
+        "npm",
+        "run",
+        "test:quant-lab"
+      ],
+      "startedAt": "2026-10-21T03:50:22.585Z",
+      "completedAt": "2026-10-21T03:50:43.032Z",
+      "exitCode": 0,
+      "signal": null
+    },
+    {
+      "name": "parent-quant-ui-final",
+      "command": "node scripts/quant-lab-ui.mjs",
+      "startedAt": "2026-10-21T03:51:30.385Z",
+      "completedAt": "2026-10-21T03:52:20.373Z",
+      "exitCode": 0,
+      "signal": null
+    },
+    {
+      "name": "parent-parity-rerun",
+      "command": "node --test tests/apps/job-hunt-hq/headless-parity.test.mjs",
+      "exitCode": 0,
+      "completedAt": "2026-10-21T03:50:22.481Z",
+      "counts": {
+        "tests": 10,
+        "pass": 10,
+        "fail": 0
+      },
+      "phase": "post-visible-navigation-fix",
+      "note": "New assertions may have been added after this run; final full suite follows."
+    },
+    {
+      "name": "parent-observation-final",
+      "command": [
+        "node",
+        "--test",
+        "tests/observation-runner.test.mjs"
+      ],
+      "startedAt": "2026-10-21T03:53:23.093Z",
+      "completedAt": "2026-10-21T03:53:23.956Z",
+      "exitCode": 0,
+      "signal": null
+    }
+  ],
+  "validation": {
+    "command": "node scripts/validate.mjs",
+    "exitCode": 0,
+    "completedAt": "2026-10-21T03:53:48.527Z",
+    "receiptSource": "parent exec 37064 completed exit0; output includes all packages native-entry preflight"
+  },
+  "latestFinalChanges": {
+    "changes": [
+      "Reusable observation plan <=24h from createdAt; current controller deadline stays fixed",
+      "Bound legacy digest fields and related history, mark omitted fields; preserve source snapshot"
+    ],
+    "receipts": [
+      {
+        "name": "parent-postreview-final",
+        "command": "node --test observation-runner + Job research/ops + Quant CLI/report tests",
+        "exitCode": 0,
+        "completedAt": "2026-10-21T04:03:36.934Z",
+        "receiptSource": "Actual parent exec completion exit0",
+        "log": "parent-postreview-final.log"
+      },
+      {
+        "name": "parent-parity-final",
+        "command": "node --test tests/apps/job-hunt-hq/headless-parity.test.mjs",
+        "exitCode": 0,
+        "completedAt": "2026-10-21T04:03:36.935Z",
+        "receiptSource": "Actual parent exec completion exit0",
+        "log": "parent-parity-final.log"
+      },
+      {
+        "name": "parent-digest-last",
+        "command": "node --test tests/apps/job-hunt-hq/job-research-ops.test.mjs",
+        "exitCode": 0,
+        "completedAt": "2026-10-21T04:03:36.935Z",
+        "receiptSource": "Actual parent exec completion exit0",
+        "log": "parent-digest-last.log"
+      },
+      {
+        "name": "postreview-validate",
+        "command": "node scripts/validate.mjs",
+        "exitCode": 0,
+        "completedAt": "2026-10-21T04:03:36.935Z",
+        "receiptSource": "Actual parent exec completion exit0",
+        "log": "postreview-validate.log"
+      },
+      {
+        "name": "postreview-cli",
+        "command": "npm test -- --suite panel-cli",
+        "exitCode": 0,
+        "completedAt": "2026-10-21T04:03:36.935Z",
+        "receiptSource": "Actual parent exec completion exit0",
+        "log": "postreview-cli.log"
+      }
+    ]
+  },
+  "ccRequestedRepair": {
+    "finding": "P1-digest-legacy-verification-unbounded",
+    "command": "node --test tests/apps/job-hunt-hq/job-research-ops.test.mjs",
+    "exitCode": 0,
+    "completedAt": "2026-10-21T04:12:17.342Z",
+    "counts": {
+      "tests": 9,
+      "pass": 9,
+      "fail": 0
+    },
+    "purpose": "Validate actual Codex repair of CC P1 finding"
+  },
+  "ccBudgetRepair": {
+    "capturedAt": "2026-10-21T04:23:37.096Z",
+    "findings": [
+      "P1-digest-no-aggregate-budget",
+      "digest-format-arg-ignored"
+    ],
+    "receipts": [
+      {
+        "command": "node --test tests/apps/job-hunt-hq/job-research-ops.test.mjs tests/apps/job-hunt-hq/headless-ops.test.mjs tests/observation-runner.test.mjs",
+        "exitCode": 0,
+        "counts": {
+          "tests": 34,
+          "pass": 34,
+          "fail": 0
+        },
+        "receiptSource": "Actual parent session 62027 completed exit 0",
+        "log": "cc-budget-repair-validation.log"
+      },
+      {
+        "command": "node --test tests/apps/job-hunt-hq/headless-parity.test.mjs",
+        "exitCode": 0,
+        "counts": {
+          "tests": 10,
+          "pass": 10,
+          "fail": 0
+        },
+        "receiptSource": "Actual parent session 99464 completed exit 0",
+        "log": "cc-budget-parity.log"
+      }
+    ]
+  },
+  "ccFinalValidation": {
+    "capturedAt": "2026-10-21T04:24:51.378Z",
+    "sourceCommit": "beb31fb",
+    "receipts": [
+      {
+        "command": "npm test -- --suite job-hunt-hq",
+        "exitCode": 0,
+        "receiptSource": "Actual parent exec session 90590 completed exit 0",
+        "log": "cc-final-job-suite.log"
+      },
+      {
+        "command": "npm test -- --suite panel-cli; node scripts/validate.mjs",
+        "exitCode": 0,
+        "receiptSource": "Actual parent exec session 67139 completed exit 0; CLI summary 6 passed/0 failed; validate completed",
+        "logs": [
+          "cc-final-cli.log",
+          "cc-final-preflight.log"
+        ]
+      }
+    ]
+  }
+}

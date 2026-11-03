@@ -1,0 +1,14 @@
+{
+  "command": [
+    "node",
+    "--test",
+    "tests/apps/job-hunt-hq/job-research-ops.test.mjs",
+    "tests/observation-runner.test.mjs",
+    "tests/apps/quant-lab/research-report.test.mjs",
+    "tests/apps/quant-lab/headless-cli.test.mjs",
+    "tests/apps/job-hunt-hq/headless-ops.test.mjs"
+  ],
+  "exitCode": 0,
+  "completedAt": "2026-10-21T03:59:40.003Z",
+  "note": "Latest 43/43 rerun includes syncedAt validation, bounded company summary, and terminal-time observation fixes."
+}

@@ -1,0 +1,11 @@
+{
+  "command": [
+    "npm",
+    "run",
+    "test:quant-lab"
+  ],
+  "startedAt": "2026-10-21T03:50:22.585Z",
+  "completedAt": "2026-10-21T03:50:43.032Z",
+  "exitCode": 0,
+  "signal": null
+}

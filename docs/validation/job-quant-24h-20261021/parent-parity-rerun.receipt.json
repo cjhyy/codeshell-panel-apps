@@ -1,0 +1,12 @@
+{
+  "command": "node --test tests/apps/job-hunt-hq/headless-parity.test.mjs",
+  "exitCode": 0,
+  "completedAt": "2026-10-21T03:50:22.481Z",
+  "counts": {
+    "tests": 10,
+    "pass": 10,
+    "fail": 0
+  },
+  "phase": "post-visible-navigation-fix",
+  "note": "New assertions may have been added after this run; final full suite follows."
+}

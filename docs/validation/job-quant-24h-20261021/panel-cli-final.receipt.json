@@ -1,0 +1,11 @@
+{
+  "command": [
+    "npm",
+    "test",
+    "--",
+    "--suite",
+    "panel-cli"
+  ],
+  "exitCode": 0,
+  "seconds": 4.9
+}

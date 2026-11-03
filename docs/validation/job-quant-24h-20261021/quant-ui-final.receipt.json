@@ -1,0 +1,9 @@
+{
+  "command": [
+    "npm",
+    "run",
+    "test:ui:quant-lab"
+  ],
+  "exitCode": 1,
+  "seconds": 1.007
+}
