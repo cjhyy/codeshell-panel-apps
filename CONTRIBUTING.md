@@ -51,16 +51,16 @@ previous package and include a deterministic SHA-256 file inventory. Browser
 modules use inline source maps; standalone `.map` and `.ts` runtime assets are
 not supported by the Host.
 
-`@cjhyy/code-shell-core@0.9.23` is pinned as a development dependency for the
+`@cjhyy/code-shell-core@0.9.52` is pinned as a development dependency for the
 published Host's manifest schema and read-only installation preflight. It is
 used only by package checks and is not bundled into the installed Panel runtime.
 
 Quant 0.51.0 (an unpublished candidate) declares the reviewed `background.services` permission and
 `backgroundServices` declaration, plus `resources` alongside `process` for bounded
 history tasks. The normal Host installation/update review must show the new grant.
-The pinned older Core intentionally rejects
+Cores older than 0.9.49 intentionally reject
 that package; never remove the permission or loosen its schema to make an old
-Host install it. During this coordinated Host/Panel change, point checks at an
+Host install it. During a coordinated Host/Panel change, point checks at an
 explicitly built candidate Core:
 
 ```sh
@@ -78,22 +78,20 @@ layout, including native apps and source-built outputs, through the Host's stric
 manifest parser and read-only installer preview. Version, lock and registry
 integrity must match. Development validation cannot make a release gate green.
 
-This change prepares Host Core **0.9.49**; it is not a claim that this version has
-been published. The existing `0.9.23` pin rejects Quant's new capability and Design
-Studio's existing `.wasm` asset. Do not loosen either installer contract. After a
-compatible Core artifact has been published with separate authorization, verify
-its registry metadata in a private HOME, then update both exact pin and lock using
-npm (never a hand-written integrity hash):
+The pin is the published Host Core **0.9.52**, which accepts Quant's new capability
+and Design Studio's existing `.wasm` asset (the former `0.9.23` pin rejected both).
+Do not loosen either installer contract. To move the pin to a later compatible
+published Core, verify its registry metadata in a private HOME, then update both
+exact pin and lock using npm (never a hand-written integrity hash):
 
 ```sh
-npm view @cjhyy/code-shell-core@0.9.49 version dist.integrity dist.tarball --json
-npm install --save-dev --save-exact @cjhyy/code-shell-core@0.9.49
+npm view @cjhyy/code-shell-core@<version> version dist.integrity dist.tarball --json
+npm install --save-dev --save-exact @cjhyy/code-shell-core@<version>
 npm ci
 npm run check:host-contract
 npm run check
 ```
 
-Use the actual approved compatible published version if it differs from 0.9.49.
 Until that clean-install sequence passes, Panel release integration is blocked.
 These commands do not authorize publishing the Core package. The upgrade gate proves old-Host rejection retains Quant 0.47.0 and
 candidate permission review/rollback preserves exact package identities. The
