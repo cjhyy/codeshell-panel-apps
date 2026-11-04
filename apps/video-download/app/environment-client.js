@@ -7,7 +7,7 @@ export function createEnvironmentClient({ panel, processes, assertCurrent = () =
     assertCurrent();
     if (closed) throw new Error("项目页面已关闭。");
   }
-  async function read({ refresh = false, includeLatest = false } = {}) {
+  async function read({ refresh = false, includeLatest = false, onPhase } = {}) {
     const operation = tail
       .catch(() => {})
       .then(async () => {
@@ -33,6 +33,7 @@ export function createEnvironmentClient({ panel, processes, assertCurrent = () =
           directoryHandle: directory.handle,
           input: { action: refresh ? "refresh" : "get", includeLatest },
           timeout: 70_000,
+          ...(onPhase ? { onPhase } : {}),
         });
         current();
         let envelope;

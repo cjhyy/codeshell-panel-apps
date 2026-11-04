@@ -52,7 +52,10 @@ after(async () => {
   if (server) await new Promise((done) => server.close(done));
 });
 
-async function openPanel(t, { width = 1100, height = 1000, denyNode = false } = {}) {
+async function openPanel(
+  t,
+  { width = 1100, height = 1000, denyNode = false, startupFault = null, waitForReady = true } = {},
+) {
   const context = await browser.newContext({ viewport: { width, height } });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -74,7 +77,7 @@ async function openPanel(t, { width = 1100, height = 1000, denyNode = false } = 
     assert.deepEqual(errors, [], "The real panel must not throw or contact external services");
   });
   await page.addInitScript(
-    ({ chatId, hostId, videoUrl, denyNode }) => {
+    ({ chatId, hostId, videoUrl, denyNode, startupFault }) => {
       const handlers = {},
         processes = new Map();
       let nextProcess = 0,
@@ -102,6 +105,27 @@ async function openPanel(t, { width = 1100, height = 1000, denyNode = false } = 
       window.__lostSubmit = false;
       window.__hideJobsReads = 0;
       window.__holdList = false;
+      window.__startupFault = startupFault;
+      window.__startupWaiting = 0;
+      const startupWaiters = [];
+      window.__releaseStartup = (failure) => {
+        window.__startupFault = null;
+        for (const { resolve, reject } of startupWaiters.splice(0)) {
+          if (failure) reject(Object.assign(new Error(failure.message), { code: failure.code }));
+          else resolve();
+        }
+      };
+      async function startupGate(method, args = {}) {
+        const fault = window.__startupFault;
+        const entry = args.entryHandle || processes.get(args.processId)?.args.entryHandle;
+        if (!fault || fault.method !== method || (fault.entry && fault.entry !== entry)) return;
+        if (fault.mode === "reject")
+          throw Object.assign(new Error(fault.message || "fixture startup failure"), {
+            code: fault.code || "OPERATION_FAILED",
+          });
+        window.__startupWaiting++;
+        await new Promise((resolve, reject) => startupWaiters.push({ resolve, reject }));
+      }
       const persist = () => {
         localStorage.setItem("fixture.shared.jobs", JSON.stringify(window.__jobs));
         localStorage.setItem("fixture.shared.queue", JSON.stringify(window.__queue));
@@ -242,6 +266,7 @@ async function openPanel(t, { width = 1100, height = 1000, denyNode = false } = 
       ];
       window.codeshellPanel = {
         async getContext() {
+          await startupGate("context.get");
           return {
             apiVersion: 14,
             cwd: "/fixture/project",
@@ -276,6 +301,7 @@ async function openPanel(t, { width = 1100, height = 1000, denyNode = false } = 
         },
         async call(method, args = {}) {
           window.__calls.push({ method, args: structuredClone(args) });
+          await startupGate(method, args);
           if (method === "agent.task.models") return { models: [], defaultModel: "" };
           if (method === "agent.task.list") return [];
           if (method === "storage.get") return structuredClone(window.__storage[args.key] || null);
@@ -402,8 +428,13 @@ async function openPanel(t, { width = 1100, height = 1000, denyNode = false } = 
               sequence: record.events.length,
             };
           }
-          if (method === "process.cancel")
+          if (method === "process.cancel") {
+            if (
+              startupFault?.method === "process.get" &&
+              processes.get(args.processId)?.args.entryHandle === "entry-download-environment"
+            ) return { cancelled: true };
             throw new Error("The view must never cancel shared workers");
+          }
           if (method === "tasks.queue.get") return structuredClone(window.__hostQueue);
           if (method === "tasks.queue.set") {
             window.__hostQueue = {
@@ -449,9 +480,10 @@ async function openPanel(t, { width = 1100, height = 1000, denyNode = false } = 
         },
       };
     },
-    { chatId, hostId, videoUrl, denyNode },
+    { chatId, hostId, videoUrl, denyNode, startupFault },
   );
   await page.goto(baseUrl);
+  if (!waitForReady) return page;
   if (denyNode)
     await page.waitForFunction(
       () => document.querySelector("#shared-refresh")?.textContent === "手动重试",
@@ -481,6 +513,136 @@ const sharedCalls = (page, action) =>
   );
 const hostCalls = (page, method) =>
   page.evaluate((method) => window.__calls.filter((call) => call.method === method), method);
+
+test("mobile startup names pending Host, task and record reads without claiming missing tools", async (t) => {
+  for (const [method, label] of [
+    ["context.get", "正在连接宿主…"],
+    ["agent.task.list", "正在读取任务状态…"],
+    ["storage.get", "正在读取下载记录…"],
+  ]) {
+    const page = await openPanel(t, {
+      width: 390,
+      height: 844,
+      startupFault: { method },
+      waitForReady: false,
+    });
+    await page.waitForFunction(() => window.__startupWaiting > 0);
+    await page.waitForFunction(
+      (label) => document.querySelector("#environment-status").textContent === label,
+      label,
+    );
+    await page.locator('[data-tab="task"]').click();
+    assert.equal(await page.locator(".app-shell").getAttribute("data-active-tab"), "task");
+    assert.equal(await page.locator("#installed-ytdlp-version").textContent(), "尚未确认");
+    assert.equal(await page.locator("#refresh-versions").isDisabled(), true);
+    await page.evaluate(() => window.__releaseStartup());
+    await ready(page);
+    await page.close();
+  }
+});
+
+test("a pending AI model list does not block the download environment", async (t) => {
+  const page = await openPanel(t, {
+    width: 390,
+    height: 844,
+    startupFault: { method: "agent.task.models" },
+  });
+  assert((await page.evaluate(() => window.__startupWaiting)) > 0);
+  assert.equal(await page.locator("#environment-status").textContent(), "✓ 最新稳定版");
+  await page.evaluate(() => window.__releaseStartup());
+});
+
+test("a failed bootstrap stays unverified and one explicit retry restores initialization", async (t) => {
+  const page = await openPanel(t, {
+    width: 390,
+    height: 844,
+    startupFault: { method: "agent.task.list", mode: "reject", message: "任务状态暂不可用" },
+    waitForReady: false,
+  });
+  await page.waitForFunction(() => document.querySelector("#refresh-versions").textContent === "重试检查");
+  assert.equal(await page.locator("#environment-status").textContent(), "检查未完成");
+  assert.equal(await page.locator("#installed-ytdlp-version").textContent(), "尚未确认");
+  assert.match(await page.locator("#download-readiness").textContent(), /任务状态暂不可用/);
+  assert.deepEqual(await hostCalls(page, "process.spawn"), []);
+  await page.evaluate(() => window.__releaseStartup());
+  await page.locator("#environment-details > summary").click();
+  await page.locator("#refresh-versions").click();
+  await ready(page);
+  assert.equal(await page.locator("#form-error").isHidden(), true);
+  assert.equal((await page.evaluate(() => window.__environmentCalls)).filter((x) => !x.includeLatest).length, 1);
+});
+
+test("pending native startup names the request and rejection requires a visible manual retry", async (t) => {
+  for (const entry of ["entry-download-service", "entry-download-environment"]) {
+    const page = await openPanel(t, {
+      width: 390,
+      height: 844,
+      startupFault: { method: "process.spawn", entry },
+      waitForReady: false,
+    });
+    await page.waitForFunction(() => window.__startupWaiting > 0);
+    assert.equal(await page.locator("#environment-status").textContent(), "正在请求运行…");
+    assert.match(await page.locator("#download-readiness").textContent(), /如有确认，请在宿主界面完成/);
+    assert.equal(await page.locator("#refresh-versions").isDisabled(), true);
+    const before = (await hostCalls(page, "process.spawn")).length;
+    await page.evaluate(() => window.__tools.refresh_video_download_dependencies({}));
+    assert.equal((await hostCalls(page, "process.spawn")).length, before);
+    await page.evaluate(() => window.__releaseStartup({ code: "OPERATION_FAILED", message: "User denied running node" }));
+    await page.waitForFunction(() => !document.querySelector("#refresh-versions").disabled);
+    assert.equal(await page.locator("#refresh-versions").textContent(), "重试检查");
+    await page.waitForTimeout(700);
+    assert.equal((await hostCalls(page, "process.spawn")).length, before);
+    if (!(await page.locator("#environment-details").evaluate((node) => node.open)))
+      await page.locator("#environment-details > summary").click();
+    await page.locator("#refresh-versions").click();
+    await ready(page);
+    await page.close();
+  }
+});
+
+test("initialization retry shares a coordinator refresh already started by a task event", async (t) => {
+  const page = await openPanel(t, {
+    startupFault: { method: "tasks.queue.get", mode: "reject" },
+    waitForReady: false,
+  });
+  await page.waitForFunction(() => document.querySelector("#refresh-versions").textContent === "重试检查");
+  await page.evaluate(() => {
+    window.__startupFault = { method: "tasks.queue.get" };
+    window.__emit("tasks.changed", {
+      id: "observed-task",
+      entry: { name: "download-runtime" },
+      status: "running",
+    });
+  });
+  await page.waitForFunction(() => window.__startupWaiting === 1);
+  await page.locator("#environment-details > summary").click();
+  await page.locator("#refresh-versions").click();
+  await page.waitForFunction(() => document.querySelector("#environment-status").textContent === "正在读取下载记录…");
+  await page.waitForTimeout(600); // Beyond the coordinator's normal 450ms call spacing.
+  assert.equal(await page.evaluate(() => window.__startupWaiting), 1);
+  await page.evaluate(() => window.__releaseStartup());
+  await ready(page);
+  assert.deepEqual(await hostCalls(page, "tasks.start"), []);
+});
+
+test("an accepted environment process shows checking and a Host timeout clears that state", async (t) => {
+  const page = await openPanel(t, {
+    width: 390,
+    height: 844,
+    startupFault: { method: "process.get", entry: "entry-download-environment" },
+    waitForReady: false,
+  });
+  await page.waitForFunction(() => window.__startupWaiting > 0);
+  assert.equal(await page.locator("#environment-status").textContent(), "正在检测 yt-dlp 与 ffmpeg…");
+  await page.evaluate(() => window.__releaseStartup({ code: "TIMEOUT", message: "Host request timed out" }));
+  await page.waitForFunction(() => !document.querySelector("#refresh-versions").disabled);
+  assert.equal(await page.locator("#environment-status").textContent(), "检查未完成");
+  assert.equal((await hostCalls(page, "process.cancel")).length, 1);
+  if (!(await page.locator("#environment-details").evaluate((node) => node.open)))
+    await page.locator("#environment-details > summary").click();
+  await page.locator("#refresh-versions").click();
+  await ready(page);
+});
 
 test("a timed-out version check is distinct from a missing tool and refresh can recover", async (t) => {
   const page = await openPanel(t);
@@ -832,6 +994,42 @@ test("Cookie downloads retain the authorized Host task channel alongside shared 
   assert.equal((await sharedCalls(page, "submit")).length, 0);
   await page.locator('[data-tab="task"]').click();
   assert.equal(await page.locator(".task-overview-item").count(), 2);
+});
+
+test("restoring a running Host download defers detection without leaving startup loading", async (t) => {
+  const page = await openPanel(t, { width: 390, height: 844 });
+  await page.evaluate(() => {
+    window.__cookies = [
+      { id: "youtube-account", label: "Fixture YouTube", revision: "a".repeat(64), cookieCount: 4 },
+    ];
+  });
+  await page.locator("#url-input").fill(videoUrl);
+  await page.locator("#download-options > summary").click();
+  await page.locator("#cookie-refresh").click();
+  await page.locator("#cookie-select").selectOption("youtube-account");
+  await page.locator("#download-button").click();
+  await page.waitForFunction(
+    () => window.__storage["video-download.library.v2"]?.queue.some((item) => item.nativeTaskId),
+  );
+  await page.evaluate((id) => {
+    window.__hostJobs[id].status = "running";
+    window.__hostJobs[id].sequence++;
+    localStorage.setItem("fixture.host.jobs", JSON.stringify(window.__hostJobs));
+  }, hostId);
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector("#environment-status").textContent === "检查未完成");
+  assert.match(await page.locator("#download-readiness").textContent(), /当前有任务正在执行/);
+  assert.equal(await page.locator("#refresh-versions").textContent(), "重试检查");
+  assert.equal(await page.locator("#refresh-versions").isDisabled(), false);
+  assert.deepEqual(await page.evaluate(() => window.__environmentCalls), []);
+  assert.deepEqual(await hostCalls(page, "tasks.cancel"), []);
+  await page.evaluate((id) => {
+    window.__hostJobs[id].status = "failed";
+    window.__hostJobs[id].sequence++;
+    localStorage.setItem("fixture.host.jobs", JSON.stringify(window.__hostJobs));
+  }, hostId);
+  await page.reload();
+  await ready(page);
 });
 
 test("shared queue changes from another caller refresh controls and never alter the Host queue", async (t) => {
