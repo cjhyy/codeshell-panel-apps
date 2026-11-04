@@ -190,6 +190,11 @@ let durableTimer = null;
 let dependenciesChecked = false;
 let dependencyRefreshPending = false;
 let dependencyErrorActive = false;
+let initializationPromise;
+let initializationPending = false;
+let initializationFailed = false;
+let environmentProgress = null;
+let environmentCheckError = "";
 let setupSubmissionPending = false;
 let directSetupRunning = false;
 let directSetupProcessJob = null;
@@ -291,6 +296,16 @@ const auxiliary = createLibraryProcess(panel, {
 // Shared commands use their own receipts; observing a page never owns a worker.
 let serviceConfirmationError = null;
 const serviceProcesses = createLibraryProcess(panel, {
+  onPhase(phase) {
+    if (environmentProgress?.kind !== "service") return;
+    setEnvironmentProgress(
+      "service",
+      phase === "starting" ? "正在请求运行…" : "正在读取下载任务…",
+      phase === "starting"
+        ? "正在请求运行下载任务查询；如有确认，请在宿主界面完成。"
+        : "正在读取下载任务与队列状态…",
+    );
+  },
   beforeStart() {
     // Also stop already queued automatic environment reads after list refusal.
     if (serviceConfirmationError) throw serviceConfirmationError;
@@ -763,6 +778,40 @@ function setRuntimeBadge(state, label) {
 function setDependency(dot, label, available, detail) {
   dot.dataset.state = available ? "ready" : "error";
   label.textContent = detail;
+}
+
+function setEnvironmentProgress(kind, label, detail = label) {
+  environmentProgress = { kind, label, detail };
+  updateActionAvailability();
+}
+
+function renderEnvironmentProgress() {
+  if (!environmentProgress && !environmentCheckError) return;
+  const failed = !environmentProgress;
+  const label = environmentProgress?.label || "检查未完成";
+  const detail = environmentProgress?.detail || `${environmentCheckError}。请点击“重试检查”。`;
+  const summary = document.querySelector("#environment-status");
+  summary.dataset.state = failed ? "error" : "checking";
+  summary.textContent = label;
+  setRuntimeBadge(failed ? "error" : "loading", label);
+  for (const [dot, status] of [
+    [elements.ytdlpDot, elements.ytdlpStatus],
+    [elements.ffmpegDot, elements.ffmpegStatus],
+  ]) {
+    dot.dataset.state = failed ? "error" : "loading";
+    status.textContent = failed ? "检查未完成" : label;
+  }
+  elements.installedYtDlpVersion.textContent = runtime.ytDlp?.version || "尚未确认";
+  elements.versionComparison.dataset.state = failed ? "error" : "checking";
+  elements.versionComparison.textContent = detail;
+  document.querySelector("#download-readiness").textContent = detail;
+  elements.refreshVersions.disabled = initializationPending || dependencyRefreshPending || !failed;
+  elements.refreshVersions.textContent = failed ? "重试检查" : label;
+  // A pending or failed check is not evidence that an executable is missing.
+  if (
+    !setupTaskId && !directSetupRunning && !setupSubmissionPending &&
+    !setupTaskActivity.length && !setupTaskResult
+  ) elements.setupCard.hidden = true;
 }
 
 function renderVersionInfo() {
@@ -2744,6 +2793,7 @@ function updateActionAvailability() {
   renderSetupCard();
   renderVersionInfo();
   updateQueueControls();
+  renderEnvironmentProgress();
   if (projectBinding?.invalidated) {
     document.querySelector("#download-readiness").textContent =
       document.querySelector("#project-binding-notice").textContent;
@@ -6405,7 +6455,7 @@ async function refreshVersionInfo({ force = false } = {}) {
   };
 }
 
-async function refreshRuntimeDependencies({ force = false } = {}) {
+async function refreshRuntimeDependencies({ force = false, initialization = false } = {}) {
   if (previewMode) {
     dependenciesChecked = true;
     const versions = await refreshVersionInfo();
@@ -6413,6 +6463,7 @@ async function refreshRuntimeDependencies({ force = false } = {}) {
     return { ready: true, ytDlp: true, ffmpeg: true, versions, preview: true };
   }
   if (
+    (initializationPending && !initialization) ||
     dependencyRefreshPending ||
     versionRefreshPending ||
     dependencyProbeJob?.running ||
@@ -6422,17 +6473,24 @@ async function refreshRuntimeDependencies({ force = false } = {}) {
     (Number(context.apiVersion) < 14 && auxiliaryBusy) ||
     completionPending
   ) {
+    const message = "当前有任务正在执行，完成后再复检依赖。";
+    if (initialization) {
+      environmentProgress = null;
+      environmentCheckError = message;
+    }
     return {
       ready: false,
       ytDlp: dependencyReady(runtime.ytDlp),
       ffmpeg: dependencyReady(runtime.ffmpeg),
-      error: "当前有任务正在执行，完成后再复检依赖。",
+      error: message,
     };
   }
 
   // An earlier setup receipt cannot attest to this new environment check.
   setupTaskActivity = setupTaskActivity.filter((item) => item?.message !== "下载环境复检完成");
   dependencyRefreshPending = true;
+  environmentCheckError = "";
+  setEnvironmentProgress("tools", "正在查找下载工具…");
   setRuntimeBadge("loading", "Checking");
   setDependency(elements.ytdlpDot, elements.ytdlpStatus, dependencyReady(runtime.ytDlp), "检测中…");
   setDependency(
@@ -6467,7 +6525,18 @@ async function refreshRuntimeDependencies({ force = false } = {}) {
     }
     let versions;
     if (context.availableMethods?.includes("process.resolveEntry")) {
-      const snapshot = await environmentClient.read({ refresh: force });
+      const snapshot = await environmentClient.read({
+        refresh: force,
+        onPhase(phase) {
+          setEnvironmentProgress(
+            "tools",
+            phase === "starting" ? "正在请求运行…" : "正在检测 yt-dlp 与 ffmpeg…",
+            phase === "starting"
+              ? "正在请求运行下载环境检查；如有确认，请在宿主界面完成。"
+              : "正在检测 yt-dlp 与 ffmpeg 的运行结果…",
+          );
+        },
+      });
       applyEnvironmentSnapshot(snapshot);
       versions = { installed: runtime.ytDlp?.version || null, latest: runtime.latestYtDlpVersion };
       // Remote update discovery has an independent cache and never blocks local readiness.
@@ -6487,6 +6556,7 @@ async function refreshRuntimeDependencies({ force = false } = {}) {
       error instanceof Error ? error.message : String(error),
       500,
     );
+    environmentCheckError = message;
     dependenciesChecked = true;
     setupRequestError = message;
     setupTaskResult = "";
@@ -6511,6 +6581,9 @@ async function refreshRuntimeDependencies({ force = false } = {}) {
     };
   } finally {
     dependencyRefreshPending = false;
+    environmentProgress = null;
+    renderDependencyHealth();
+    if (!runtime.directory?.handle) setRuntimeBadge("loading", "Choose folder");
     updateActionAvailability();
     void runNextDownload();
   }
@@ -6563,7 +6636,21 @@ function registerAgentTools() {
   );
 }
 
-async function initializeRuntime() {
+function initializeRuntime() {
+  if (initializationPromise) return initializationPromise;
+  initializationPromise = initializeRuntimeOnce().finally(() => {
+    initializationPending = false;
+    initializationPromise = null;
+    updateActionAvailability();
+  });
+  return initializationPromise;
+}
+
+async function initializeRuntimeOnce() {
+  initializationPending = !previewMode;
+  if (initializationFailed) showError("");
+  initializationFailed = false;
+  environmentCheckError = "";
   renderHistory();
   renderQueue();
   if (previewMode) {
@@ -6584,18 +6671,27 @@ async function initializeRuntime() {
     return;
   }
   try {
+    setEnvironmentProgress("host", "正在连接宿主…");
     const initialContext = await getInitialPanelContext();
     updateSessionContext(initialContext);
     if (Number(initialContext.apiVersion) < 8) {
       throw new Error("Mimi Download requires CodeShell Panel API v8 or newer.");
     }
-    await loadTaskModels();
+    // Model discovery is optional for downloading. Restoring an existing setup
+    // task remains ordered before environment checks so its ownership is kept.
+    void loadTaskModels().catch((error) => {
+      taskModelsLoading = false;
+      taskModelsError = sanitizeDiagnosticText(error?.message || String(error), 300);
+      renderTaskModelPickers();
+    });
+    setEnvironmentProgress("tasks", "正在读取任务状态…");
     const tasks = await panel.call("agent.task.list");
     if (Array.isArray(tasks)) {
       const activeSetup = tasks.find((task) => task?.key === "setup" && taskIsActive(task));
       if (activeSetup) await handleAgentTaskChanged(activeSetup);
     }
     try {
+      setEnvironmentProgress("directory", "正在连接项目目录…");
       const directory = await panel.call("filesystem.getKnownDirectory", { name: "project" });
       setDestination({ ...directory, kind: "project" });
     } catch (error) {
@@ -6607,7 +6703,7 @@ async function initializeRuntime() {
         : "无法使用当前项目目录，请确认项目已信任，或点击“更改”选择保存位置。";
       showError(elements.destinationPath.textContent);
     }
-    if (supportsDurableDownloads(context)) {
+    if (supportsDurableDownloads(context) && !durableDownloads) {
       durableDownloads = createDurableDownloads({
         panel,
         items: () => downloadQueue,
@@ -6674,8 +6770,10 @@ async function initializeRuntime() {
         },
       });
     }
+    setEnvironmentProgress("library", "正在读取下载记录…");
     await loadLibrary();
     if (durableDownloads) {
+      clearInterval(durableTimer);
       await durableDownloads.refresh();
       durableTimer = setInterval(
         () => void durableDownloads.refresh().catch((error) => showError(error.message)),
@@ -6684,6 +6782,7 @@ async function initializeRuntime() {
     }
     if (context.availableMethods?.includes("process.resolveEntry")) {
       try {
+        setEnvironmentProgress("service", "正在准备下载任务查询…");
         // The initial list already includes queue state. Observe once rather
         // than starting three native helpers during the first bridge window.
         await downloadService.startObserving();
@@ -6694,10 +6793,13 @@ async function initializeRuntime() {
         renderServiceConfirmationNotice();
       }
     }
-    await refreshRuntimeDependencies();
+    await refreshRuntimeDependencies({ initialization: true });
     await refreshCookieAccounts();
   } catch (error) {
-    dependenciesChecked = true;
+    initializationFailed = true;
+    environmentProgress = null;
+    environmentCheckError = sanitizeDiagnosticText(error?.message || String(error), 500);
+    dependenciesChecked = false;
     setRuntimeBadge("error", "Unavailable");
     setDependency(elements.ytdlpDot, elements.ytdlpStatus, false, "Unavailable");
     setDependency(elements.ffmpegDot, elements.ffmpegStatus, false, "Unavailable");
@@ -6821,7 +6923,9 @@ elements.restoreDirectory.addEventListener("click", restorePreferredDirectory);
 elements.downloadButton.addEventListener("click", () => void startDownload());
 elements.enqueueButton.addEventListener("click", () => void startDownload({ start: false }));
 elements.refreshVersions.addEventListener("click", () => {
-  if (serviceConfirmationError) void retryServiceObservation();
+  if (initializationPending) return;
+  if (initializationFailed) void initializeRuntime();
+  else if (serviceConfirmationError) void retryServiceObservation();
   else void refreshRuntimeDependencies({ force: true });
 });
 elements.setupUpdateButton.addEventListener("click", requestDirectSetup);
@@ -6913,20 +7017,26 @@ function handleDownloadAction(event) {
 }
 async function retryServiceObservation() {
   const button = document.querySelector("#shared-refresh");
-  if (button.disabled || !downloadService) return;
+  if (button.disabled || !downloadService || initializationPending || environmentProgress) return;
   button.disabled = true;
   const wasPaused = Boolean(serviceConfirmationError);
   serviceConfirmationError = null;
+  environmentCheckError = "";
+  setEnvironmentProgress("service", "正在准备下载任务查询…");
   renderServiceConfirmationNotice();
   try {
     await downloadService.startObserving();
     await refreshSharedQueue();
+    environmentProgress = null;
     if (wasPaused) await refreshRuntimeDependencies({ force: true });
   } catch (error) {
+    environmentCheckError = sanitizeDiagnosticText(error?.message || String(error), 500);
     showError(error.message);
   } finally {
+    if (environmentProgress?.kind === "service") environmentProgress = null;
     button.disabled = false;
     renderServiceConfirmationNotice();
+    updateActionAvailability();
   }
 }
 document.querySelector("#shared-refresh").addEventListener("click", () => {

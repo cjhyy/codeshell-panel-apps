@@ -59,6 +59,15 @@ the Host explicitly rejects them with `RATE_LIMITED`; unknown replies are never
 replayed. Failed commands await a bounded stop request, and the Host retains
 execution custody until the actual process has exited.
 
+The panel distinguishes connecting to the Host, restoring tasks and records,
+requesting a helper process, and checking tool results. A pending process request
+asks the user to complete any confirmation shown by the Host; it does not claim
+that a confirmation has already appeared. AI model discovery runs separately from
+download readiness. A failed startup remains unverified, rather than reporting
+that yt-dlp is missing, and exposes a manual retry. Pending requests are not
+restarted automatically. An existing running download can defer environment
+detection until the work finishes.
+
 The official yt-dlp latest-release query has its own 24-hour cache and runs
 separately from local readiness. Network failure does not mark working local
 tools unusable. Use **Refresh dependencies** or `doctor --refresh` after repair;

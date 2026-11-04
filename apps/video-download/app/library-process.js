@@ -2,7 +2,12 @@
 // spawn resolves can never be mistaken for a download's progress.
 export function createLibraryProcess(
   panel,
-  { onBusy = () => {}, beforeStart = () => {}, onExecutionNotConfirmed = () => {} } = {},
+  {
+    onBusy = () => {},
+    beforeStart = () => {},
+    onExecutionNotConfirmed = () => {},
+    onPhase = () => {},
+  } = {},
 ) {
   const ids = new Set();
   let active = 0,
@@ -39,6 +44,7 @@ export function createLibraryProcess(
     input,
     signal,
     timeout = 90_000,
+    onPhase: reportPhase = onPhase,
   }) {
     beforeStart();
     changed(1);
@@ -94,6 +100,7 @@ export function createLibraryProcess(
       pendingStarts++;
       let started;
       try {
+        reportPhase("starting");
         started = await lifecycle("process.spawn", {
           executableHandle,
           directoryHandle,
@@ -105,6 +112,7 @@ export function createLibraryProcess(
         id = started.processId;
         ids.add(id);
         if (ids.size > 500) ids.delete(ids.values().next().value);
+        reportPhase("running");
       } catch (cause) {
         // Current Hosts share this exact pre-spawn rejection for refusal and
         // confirmation expiry. Other operation/network errors are not consent.
