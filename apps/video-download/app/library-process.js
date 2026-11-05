@@ -219,6 +219,7 @@ export function createLibraryProcess(
   }
   return {
     run,
+    assertAvailable: beforeStart,
     get busy() {
       return active > 0;
     },
@@ -290,6 +291,9 @@ export function createLibraryProcess(
       )
         throw new Error(response?.error || "CLI 任务结果不完整");
       return response;
+    },
+    async prepareSearch() {
+      return entry("video-search");
     },
     async search(directory, platform, query, limit, signal) {
       const handles = await entry("video-search");

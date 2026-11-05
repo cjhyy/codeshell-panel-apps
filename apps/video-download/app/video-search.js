@@ -203,6 +203,7 @@ export function mountVideoSearch({
   panel,
   container,
   searchCandidates,
+  prepareSearch,
   onQueue,
   onPreview,
   onError,
@@ -285,7 +286,7 @@ export function mountVideoSearch({
     removers.push(() => target.removeEventListener(name, handler));
   };
   const busy = () =>
-    ["planning", "searching", "ranking", "cancelling", "cancel-error"].includes(state.status);
+    ["preparing", "planning", "searching", "ranking", "cancelling", "cancel-error"].includes(state.status);
   const report = (message, status = state.status) => {
     state.message = message;
     state.status = status;
@@ -735,8 +736,18 @@ export function mountVideoSearch({
   }
   async function runSearch(runGeneration, existing = null) {
     const valid = () => !destroyed && generation === runGeneration && !controller?.signal.aborted;
+    let failureStage = "查询准备";
+    const prepare = async () => {
+      report("正在检查查询能力、项目目录与检索工具…", "preparing");
+      return prepareSearch?.({ platforms: state.platforms, signal: controller.signal });
+    };
     try {
+      // A recovered task already owns a model request. Reattach first, then
+      // refresh source handles before searching; never create a second planner.
+      let prepared = existing ? undefined : await prepare();
+      if (!valid()) return;
       if (!state.plan) {
+        failureStage = "AI 理解需求";
         report("AI 正在把需求拆成平台检索词…", "planning");
         const text = await awaitTask(
           plannerPrompt(state.query, state.platforms),
@@ -747,10 +758,16 @@ export function mountVideoSearch({
         if (!valid()) return;
         state.plan = parseVideoSearchPlan(text, state.platforms);
       }
+      if (existing) {
+        failureStage = "查询准备";
+        prepared = await prepare();
+        if (!valid()) return;
+      }
       renderPlan();
       const warnings = [];
       // Always re-fetch platform evidence after recovery; persisted AI text is never proof.
       report("正在实时检索平台视频…", "searching");
+      failureStage = "平台检索";
       state.phase = "searching";
       persist();
       const rows = [];
@@ -763,6 +780,7 @@ export function mountVideoSearch({
             platforms: [query.platform],
             limit: 8,
             signal: controller.signal,
+            prepared,
           });
           if (!valid()) return;
           rows.push(
@@ -791,6 +809,7 @@ export function mountVideoSearch({
         return;
       }
       const retrieved = state.candidates;
+      failureStage = "AI 筛选";
       report(`已取得 ${retrieved.length} 条真实平台结果，AI 正在筛选…`, "ranking");
       let summary = "";
       try {
@@ -809,7 +828,7 @@ export function mountVideoSearch({
         if (!valid()) return;
         state.candidates = retrieved;
         warnings.push(
-          `AI 筛选未完成，保留真实平台结果供你选择：${cleanText(error.message || String(error))}`,
+          `${failureStage}未完成，保留真实平台结果供你选择：${cleanText(error.message || String(error))}`,
         );
       }
       if (!valid()) return;
@@ -824,7 +843,7 @@ export function mountVideoSearch({
     } catch (error) {
       if (!valid()) return;
       clearPendingStorage();
-      report(cleanText(error.message || String(error)), "error");
+      report(`${failureStage}失败：${cleanText(error.message || String(error))}`, "error");
       void recordSearch("error", error.message || String(error));
     }
   }
