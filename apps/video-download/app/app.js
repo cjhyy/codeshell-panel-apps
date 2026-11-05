@@ -27,6 +27,7 @@ import {
 import { createEnvironmentClient } from "./environment-client.js";
 import { classifyYtDlpFailure } from "./tools/download-errors.mjs";
 import { mountVideoSearch, normalizeVideoSearchUrl } from "./video-search.js";
+import { prepareVideoSearchSource, searchVideoPlatforms } from "./video-search-source.js";
 import {
   compareYtDlpVersions,
   parseGitHubLatestRelease,
@@ -239,10 +240,6 @@ let directoryPreference = null;
 let searchScopeReadyResolve;
 const searchScopeReady = new Promise((resolve) => {
   searchScopeReadyResolve = resolve;
-});
-let resolveSearchExecutables;
-const searchExecutablesReady = new Promise((resolve) => {
-  resolveSearchExecutables = resolve;
 });
 let completionPending = 0;
 let auxiliaryBusy = false;
@@ -4739,146 +4736,19 @@ function compactIndices(indices) {
     .join(",");
 }
 
+async function prepareSearch({ signal }) {
+  await searchScopeReady;
+  return prepareVideoSearchSource({ context, runtime, panel, auxiliary, signal });
+}
+
 async function searchCandidates(options) {
-  // Planning can run immediately; only the native lookup needs executable handles.
-  await searchExecutablesReady;
   if (options.signal?.aborted) throw new Error("已取消");
   holdAuxiliaryGroup();
   try {
-    return await searchPlatformCandidates(options);
+    return await searchVideoPlatforms(options, options.prepared, auxiliary, friendlyYtDlpError);
   } finally {
     releaseAuxiliaryGroup();
   }
-}
-
-async function searchPlatformCandidates({ query, platforms, limit = 8, signal }) {
-  if (previewMode) throw new Error("请在 CodeShell 中使用平台实时搜索。");
-  if (Number(context.apiVersion) < 14) throw new Error("AI 找视频需要更新 CodeShell。");
-  if (!dependencyReady(runtime.ytDlp) || !runtime.directory?.handle)
-    throw new Error("请先在下载页安装 yt-dlp 并选择保存目录。");
-  const candidates = [],
-    warnings = [];
-  const count = Math.max(1, Math.min(8, Number(limit) || 8));
-  async function localSearch(platform) {
-    const prefix = platform === "youtube" ? "ytsearch" : "bilisearch";
-    const result = await auxiliary.run({
-      executableHandle: runtime.ytDlp.handle,
-      directoryHandle: runtime.directory.handle,
-      args: [
-        "--ignore-config",
-        "--no-cache-dir",
-        "--skip-download",
-        "--flat-playlist",
-        "--dump-single-json",
-        "--socket-timeout",
-        "10",
-        "--retries",
-        "0",
-        "--extractor-retries",
-        "0",
-        "--",
-        `${prefix}${count}:${String(query).slice(0, 300)}`,
-      ],
-      signal,
-      timeout: 25_000,
-    });
-    if (result.code !== 0)
-      throw new Error(friendlyYtDlpError(result.stderr, "平台检索", result.code));
-    const raw = JSON.parse(result.stdout);
-    const rows = Array.isArray(raw.entries) ? raw.entries.slice(0, count) : [];
-    async function resolveRow(row) {
-      if (signal?.aborted) throw new Error("已取消");
-      if (!row) return null;
-      let metadata = row;
-      const url =
-        row.webpage_url ||
-        row.url ||
-        (platform === "youtube" && row.id ? `https://www.youtube.com/watch?v=${row.id}` : "");
-      if (normalizeVideoSearchUrl(url)?.platform !== platform) return null;
-      if (!row.title && platform === "bilibili") {
-        try {
-          const detail = await auxiliary.run({
-            executableHandle: runtime.ytDlp.handle,
-            directoryHandle: runtime.directory.handle,
-            args: [
-              "--ignore-config",
-              "--no-cache-dir",
-              "--skip-download",
-              "--no-playlist",
-              "--dump-single-json",
-              "--socket-timeout",
-              "8",
-              "--retries",
-              "0",
-              "--extractor-retries",
-              "0",
-              "--",
-              url,
-            ],
-            signal,
-            timeout: 12_000,
-          });
-          if (detail.code !== 0) return null;
-          metadata = JSON.parse(detail.stdout);
-        } catch (error) {
-          if (signal?.aborted) throw new Error("已取消");
-          return null;
-        }
-      }
-      return metadata.title
-        ? {
-            title: metadata.title,
-            url,
-            platform,
-            author: metadata.uploader || metadata.channel || "",
-            duration: metadata.duration,
-            evidence: "platform-search",
-          }
-        : null;
-    }
-    const found = [];
-    for (let index = 0; index < rows.length; index += 2) {
-      const batch = await Promise.all(rows.slice(index, index + 2).map(resolveRow));
-      found.push(...batch.filter(Boolean));
-    }
-    return found;
-  }
-  async function alternativeSearch(platform) {
-    const result = await auxiliary.search(
-      runtime.directory,
-      platform,
-      String(query).slice(0, 300),
-      count,
-      signal,
-    );
-    if (result.candidates.length && result.source === "search-index")
-      warnings.push(
-        `${platform === "youtube" ? "YouTube" : "B站"}直连暂不可用；以下链接来自公开搜索索引，页面是否仍可访问请打开原始页面确认。`,
-      );
-    return result.candidates;
-  }
-  for (const platform of platforms) {
-    if (signal?.aborted) throw new Error("已取消");
-    if (!["youtube", "bilibili"].includes(platform)) continue;
-    const errors = [];
-    const attempts =
-      platform === "youtube" ? [alternativeSearch, localSearch] : [localSearch, alternativeSearch];
-    let found = [];
-    for (const attempt of attempts) {
-      if (signal?.aborted) throw new Error("已取消");
-      try {
-        found = await attempt(platform);
-        if (found.length) break;
-      } catch (error) {
-        if (signal?.aborted) throw new Error("已取消");
-        errors.push(error instanceof Error ? error.message : String(error));
-      }
-    }
-    candidates.push(...found);
-    if (!found.length && errors.length)
-      warnings.push(`${platform === "youtube" ? "YouTube" : "B站"}：${errors.join("；")}`);
-  }
-  return { candidates, warnings: [...new Set(warnings)] };
 }
 
 async function chooseDirectory() {
@@ -6507,7 +6377,6 @@ async function refreshRuntimeDependencies({ force = false, initialization = fals
     ]);
     runtime.ytDlp = ytDlp.available ? ytDlp : null;
     runtime.ffmpeg = ffmpeg.available ? ffmpeg : null;
-    resolveSearchExecutables();
     invalidateCookieAuthorization();
     renderQualityOptions(inspectedVideo);
     dependenciesChecked = true;
@@ -7224,6 +7093,7 @@ const videoSearch = mountVideoSearch({
   panel,
   container: document.querySelector("#video-search-root"),
   searchCandidates,
+  prepareSearch,
   pendingStorage: createProjectStorage({
     panel,
     key: "video-download.search-pending.v2",
@@ -7426,7 +7296,7 @@ if (panel) {
 registerAgentTools();
 activateTab(storedTab(), { persist: false });
 updateConditionalOptions();
-initializeRuntime().finally(resolveSearchExecutables);
+void initializeRuntime();
 
 window.addEventListener("pagehide", () => {
   downloadService?.destroy();

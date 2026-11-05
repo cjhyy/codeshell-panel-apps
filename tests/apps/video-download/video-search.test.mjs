@@ -194,9 +194,9 @@ before(async () => {
     try {
       response.writeHead(200, {
         "Content-Type":
-          { ".js": "text/javascript",
-              ".mjs": "text/javascript", ".css": "text/css" }[extname(file)] ||
-          "application/octet-stream",
+          { ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css" }[
+            extname(file)
+          ] || "application/octet-stream",
       });
       response.end(await readFile(file));
     } catch {
@@ -205,7 +205,10 @@ before(async () => {
   });
   await new Promise((done, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => { server.removeListener("error", reject); done(); });
+    server.listen(0, "127.0.0.1", () => {
+      server.removeListener("error", reject);
+      done();
+    });
   });
   baseUrl = `http://127.0.0.1:${server.address().port}`;
   browser = await chromium.launch({ headless: true });
@@ -294,6 +297,47 @@ async function openSearch(t, options = {}) {
             return {};
           }
           if (method === "external.open") return {};
+          if (options.nodeOnly) {
+            if (method === "process.find")
+              return args.name === "node"
+                ? { available: true, handle: "node-fixture" }
+                : { available: false };
+            if (method === "process.resolveEntry") return { handle: "search-entry" };
+            if (method === "process.spawn") {
+              window.sourceInput = "";
+              return { processId: "source-process" };
+            }
+            if (method === "process.write") {
+              window.sourceInput += args.text;
+              return {};
+            }
+            if (method === "process.end") return {};
+            if (method === "process.get")
+              return {
+                found: true,
+                processId: "source-process",
+                status: "exited",
+                code: 0,
+                hasMore: false,
+                events: [
+                  {
+                    sequence: 1,
+                    event: "process.output",
+                    payload: {
+                      stream: "stdout",
+                      text: JSON.stringify({
+                        source: "search-index",
+                        candidates: candidates
+                          .filter(
+                            (item) => item.platform === JSON.parse(window.sourceInput).platform,
+                          )
+                          .map((item) => ({ ...item, evidence: "search-index" })),
+                      }),
+                    },
+                  },
+                ],
+              };
+          }
           throw new Error(`Unexpected ${method}`);
         },
       };
@@ -301,6 +345,15 @@ async function openSearch(t, options = {}) {
       window.mountOptions = {
         panel: window.panelMock,
         container: document.querySelector("#search"),
+        async prepareSearch() {
+          window.calls.push({ method: "search.preflight" });
+          if (options.holdPreflight)
+            await new Promise((resolve) => {
+              window.releasePreflight = resolve;
+            });
+          if (options.preflightFailure) throw new Error("没有可用的检索工具");
+          return { source: "owned-fixture" };
+        },
         archiveStorage: {
           async load() {
             return { scope: "/fixture/project", value: window.archiveSnapshot };
@@ -341,6 +394,37 @@ async function openSearch(t, options = {}) {
           window.previewed.push(candidate);
         },
       };
+      if (options.nodeOnly) {
+        const { prepareVideoSearchSource, searchVideoPlatforms } =
+          await import("/video-search-source.js");
+        const { createLibraryProcess } = await import("/library-process.js");
+        const auxiliary = createLibraryProcess(window.panelMock);
+        const context = {
+          availableMethods: [
+            "agent.task.models",
+            "agent.task.start",
+            "agent.task.get",
+            "agent.task.cancel",
+            "process.find",
+            "process.resolveEntry",
+            "process.spawn",
+            "process.get",
+            "process.cancel",
+            "process.write",
+            "process.end",
+          ],
+        };
+        window.mountOptions.prepareSearch = ({ signal }) =>
+          prepareVideoSearchSource({
+            panel: window.panelMock,
+            context,
+            auxiliary,
+            signal,
+            runtime: { ytDlp: null, directory: { handle: "project-directory" } },
+          });
+        window.mountOptions.searchCandidates = (request) =>
+          searchVideoPlatforms(request, request.prepared, auxiliary);
+      }
       if (options.hostPending) {
         window.pendingSnapshot = null;
         window.pendingWrites = [];
@@ -388,6 +472,14 @@ test("two AI stages use zero tools and result actions preserve real platform evi
     window.calls.filter((call) => call.method === "agent.task.start"),
   );
   assert.equal(starts.length, 2);
+  assert.equal(
+    await page.evaluate(() => {
+      const calls = window.calls.map((call) => call.method);
+      return calls.indexOf("search.preflight") < calls.indexOf("agent.task.start");
+    }),
+    true,
+    "source preflight must finish before the first model request",
+  );
   for (const call of starts) assert.deepEqual(call.args.toolNames, []);
   assert.deepEqual(await page.evaluate(() => window.lookupCalls.map((call) => call.platforms)), [
     ["youtube"],
@@ -410,6 +502,67 @@ test("two AI stages use zero tools and result actions preserve real platform evi
     await page.locator("[data-search-status]").textContent(),
     /1 条已在队列中.*1 条已存在文件/,
   );
+});
+
+test("unavailable search tools fail preflight without starting a model task", async (t) => {
+  const page = await openSearch(t, { preflightFailure: true });
+  await page.locator("[data-search-start]").click();
+  await page.waitForFunction(() => window.search.getState().status === "error");
+  assert.match(
+    await page.locator("[data-search-status]").textContent(),
+    /查询准备失败.*没有可用的检索工具/,
+  );
+  assert.equal(
+    await page.evaluate(
+      () => window.calls.filter((call) => call.method === "agent.task.start").length,
+    ),
+    0,
+  );
+  assert.equal(await page.evaluate(() => window.lookupCalls.length), 0);
+  assert.equal(await page.locator("[data-search-start]").isDisabled(), false);
+});
+
+test("the UI completes both AI stages using Node-only sources without yt-dlp", async (t) => {
+  const page = await openSearch(t, { nodeOnly: true });
+  await page.locator("[data-search-start]").click();
+  await page.waitForFunction(() => window.search.getState().status === "ready");
+  assert.equal(await page.locator(".video-search-result").count(), 2);
+  const calls = await page.evaluate(() => window.calls);
+  assert.equal(calls.filter((call) => call.method === "agent.task.start").length, 2);
+  const starts = calls.filter((call) => call.method === "process.spawn");
+  assert.equal(starts.length, 2);
+  assert.ok(
+    starts.every(
+      (call) =>
+        call.args.executableHandle === "node-fixture" && call.args.entryHandle === "search-entry",
+    ),
+  );
+  assert.ok(
+    calls.findIndex((call) => call.method === "process.resolveEntry") <
+      calls.findIndex((call) => call.method === "agent.task.start"),
+  );
+  assert.ok(
+    (await page.evaluate(() => window.search.getState().candidates)).every(
+      (item) => item.evidence === "search-index",
+    ),
+  );
+});
+
+test("cancelling pending source discovery cannot start AI when discovery resolves late", async (t) => {
+  const page = await openSearch(t, { holdPreflight: true });
+  await page.locator("[data-search-start]").click();
+  await page.waitForFunction(() => window.search.getState().status === "preparing");
+  assert.equal(await page.locator("[data-search-start]").isDisabled(), true);
+  await page.locator("[data-search-cancel]").click();
+  await page.evaluate(() => window.releasePreflight());
+  await page.waitForFunction(() => window.search.getState().status === "cancelled");
+  assert.equal(
+    await page.evaluate(
+      () => window.calls.filter((call) => call.method === "agent.task.start").length,
+    ),
+    0,
+  );
+  assert.equal(await page.evaluate(() => window.lookupCalls.length), 0);
 });
 
 test("indexed links are labeled unverified in the live search and history", async (t) => {

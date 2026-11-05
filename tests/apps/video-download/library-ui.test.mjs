@@ -151,6 +151,10 @@ async function openPanel(t, { width = 1100, colorScheme = "light", concurrency =
     window.codeshellPanel = {
       getContext: async () => ({
         apiVersion: 14,
+        ...(localStorage.getItem("fixture.ai") ? { availableMethods: [
+          "agent.task.models", "agent.task.start", "agent.task.get", "agent.task.cancel",
+          "process.find", "process.spawn", "process.get", "process.cancel",
+        ] } : {}),
         ...(localStorage.getItem("fixture.browserPreview") ? { availableMethods: ["resources.open", "resources.capture"] } : {}),
         theme: "light",
         workspace: { root: "/fixture/project", trusted: true },
