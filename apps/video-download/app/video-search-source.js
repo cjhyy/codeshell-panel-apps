@@ -1,4 +1,8 @@
 import { normalizeVideoSearchUrl } from "./video-search.js";
+import {
+  ENVIRONMENT_NOT_CONFIRMED_MESSAGE,
+  EXECUTION_NOT_CONFIRMED_MESSAGE,
+} from "./library-process.js";
 
 const TASK_METHODS = [
   "agent.task.models",
@@ -135,7 +139,12 @@ export async function prepareVideoSearchSource({
   if (ytDlp) ytDlp = { ...ytDlp };
   const localAvailable = Boolean(ytDlp?.handle) && ytDlp.verified !== false;
   if (Object.keys(selectedAccounts).length && !localAvailable)
-    throw new Error("带账号查询需要可用的 yt-dlp；不会自动改为匿名检索。");
+    throw new Error(
+      // Structured result of the panel's environment check: unverified, not missing.
+      ytDlp?.errorCode === "execution-not-confirmed"
+        ? ENVIRONMENT_NOT_CONFIRMED_MESSAGE
+        : "带账号查询需要可用的 yt-dlp；不会自动改为匿名检索。",
+    );
   let nodeAvailable = false;
   if (NODE_METHODS.every((method) => methods.has(method))) {
     try {
@@ -327,6 +336,7 @@ export async function searchVideoPlatforms(
     );
     if (!attempts.length) throw new Error("没有可用的检索工具，请重新检查查询环境。");
     let found = [];
+    let notConfirmed = false;
     for (const attempt of attempts) {
       if (signal?.aborted) throw new Error("已取消");
       try {
@@ -334,10 +344,13 @@ export async function searchVideoPlatforms(
         if (found.length) break;
       } catch (error) {
         if (signal?.aborted) throw new Error("已取消");
-        errors.push(error instanceof Error ? error.message : String(error));
+        // Missing consent is one shared cause, not a per-platform tool failure.
+        if (error?.code === "EXECUTION_NOT_CONFIRMED") notConfirmed = true;
+        else errors.push(error instanceof Error ? error.message : String(error));
       }
     }
     candidates.push(...found);
+    if (!found.length && notConfirmed) warnings.push(EXECUTION_NOT_CONFIRMED_MESSAGE);
     if (!found.length && errors.length)
       warnings.push(
         `${platform === "youtube" ? "YouTube" : "B站"}：${errors.join("；")}${
