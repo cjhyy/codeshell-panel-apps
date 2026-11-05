@@ -598,7 +598,9 @@ test("invalid AI ranking retains real candidates and never fabricated IDs", asyn
   const page = await openSearch(t, { badRank: true, width: 320 });
   await page.locator("[data-search-start]").click();
   await page.waitForFunction(() => window.search.getState().status === "ready");
-  assert.match(await page.locator("[data-search-status]").textContent(), /保留真实平台结果/);
+  const status = await page.locator("[data-search-status]").textContent();
+  assert.match(status, /AI 筛选未完成，保留真实平台结果/);
+  assert.doesNotMatch(status, /平台检索(?:失败|未完成)/);
   assert.equal(await page.locator(".video-search-result").count(), 2);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 320);
 });

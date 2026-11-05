@@ -809,6 +809,7 @@ export function mountVideoSearch({
         return;
       }
       const retrieved = state.candidates;
+      failureStage = "AI 筛选";
       report(`已取得 ${retrieved.length} 条真实平台结果，AI 正在筛选…`, "ranking");
       let summary = "";
       try {
@@ -827,7 +828,7 @@ export function mountVideoSearch({
         if (!valid()) return;
         state.candidates = retrieved;
         warnings.push(
-          `AI 筛选未完成，保留真实平台结果供你选择：${cleanText(error.message || String(error))}`,
+          `${failureStage}未完成，保留真实平台结果供你选择：${cleanText(error.message || String(error))}`,
         );
       }
       if (!valid()) return;
