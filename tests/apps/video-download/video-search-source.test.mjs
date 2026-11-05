@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createLibraryProcess } from "../../../apps/video-download/app/library-process.js";
+import { normalizeVideoSearchUrl } from "../../../apps/video-download/app/video-search.js";
 import {
   prepareVideoSearchSource,
   searchVideoPlatforms,
@@ -25,6 +26,99 @@ const candidate = {
   platform: "youtube",
   evidence: "search-index",
 };
+
+test("real-shaped flat Bilibili HTTP entries fetch missing titles only over canonical HTTPS", async () => {
+  // Shape recorded from yt-dlp 2026.08.19 bilisearch2; titles are intentionally absent.
+  const entries = [
+    { url: "http://www.bilibili.com/video/av114703728709136", id: "114703728709136" },
+    { url: "http://www.bilibili.com/video/av528990022", id: "528990022" },
+  ];
+  const detailUrls = [];
+  const result = await searchVideoPlatforms(
+    { query: "Blender 中文 入门 教程", platforms: ["bilibili"], limit: 2 },
+    {
+      directory: { handle: "directory" },
+      ytDlp: { handle: "yt-dlp" },
+      nodeAvailable: false,
+    },
+    {
+      async run({ args }) {
+        if (args.at(-1).startsWith("bilisearch"))
+          return { code: 0, stdout: JSON.stringify({ entries }) };
+        detailUrls.push(args.at(-1));
+        assert.ok(args.includes("--skip-download"));
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            title: `Fixture title ${detailUrls.length}`,
+            uploader: "Fixture author",
+            duration: 120,
+          }),
+        };
+      },
+      async search() {
+        assert.fail("successful local results must not use the fallback");
+      },
+    },
+  );
+  const canonical = entries.map(({ id }) => `https://www.bilibili.com/video/av${id}/`);
+  assert.deepEqual(detailUrls, canonical);
+  assert.deepEqual(
+    result.candidates.map(({ url }) => url),
+    canonical,
+  );
+  assert.deepEqual(
+    result.candidates.map(({ title }) => title),
+    ["Fixture title 1", "Fixture title 2"],
+  );
+  assert.ok(result.candidates.every(({ evidence }) => evidence === "platform-search"));
+  assert.deepEqual(result.warnings, []);
+  for (const { url } of entries)
+    assert.equal(
+      normalizeVideoSearchUrl(url),
+      null,
+      "public and AI URL validation must remain HTTPS-only",
+    );
+});
+
+test("HTTP normalization in the yt-dlp adapter rejects foreign hosts, credentials, ports and non-video paths", async () => {
+  const urls = [
+    "http://www.bilibili.com.evil.example/video/av528990022",
+    "http://www.bilibili.com@evil.example/video/av528990022",
+    "http://user:secret@www.bilibili.com/video/av528990022",
+    "http://www.bilibili.com:8080/video/av528990022",
+    "http://www.bilibili.com:80/video/av528990022",
+    "http://%77ww.bilibili.com/video/av528990022",
+    "http://www.bilibili.com./video/av528990022",
+    "http://www.bilibili.com/bangumi/play/ep123",
+    "http://www.bilibili.com/video/av528990022/extra",
+    "http://www.bilibili.com/video/not-a-video",
+    "http://www.bilibili.com/other/../video/av528990022",
+    "http://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "http://www.bilibili.com\\@evil.example/video/av528990022",
+    "http://www.bili\nbili.com/video/av528990022",
+    "http://127.0.0.1/video/av528990022",
+  ];
+  for (const url of urls) {
+    let calls = 0;
+    const result = await searchVideoPlatforms(
+      { query: "owned fixture", platforms: ["bilibili"], limit: 1 },
+      {
+        directory: { handle: "directory" },
+        ytDlp: { handle: "yt-dlp" },
+        nodeAvailable: false,
+      },
+      {
+        async run() {
+          assert.equal(++calls, 1, `must not request metadata for ${url}`);
+          return { code: 0, stdout: JSON.stringify({ entries: [{ url, id: "528990022" }] }) };
+        },
+      },
+    );
+    assert.deepEqual(result.candidates, [], url);
+    assert.equal(calls, 1);
+  }
+});
 
 test("Node source searches without yt-dlp through real auxiliary process receipts", async () => {
   const calls = [],

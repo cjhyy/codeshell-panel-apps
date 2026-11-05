@@ -13,6 +13,33 @@ function checkAbort(signal) {
   if (signal?.aborted) throw new Error("已取消");
 }
 
+// yt-dlp's flat Bilibili search returns legacy HTTP /video/ URLs without titles.
+// Only this process-result adapter may upgrade them; public/AI URLs stay HTTPS-only.
+function ytDlpSearchTarget(value, platform) {
+  const target = normalizeVideoSearchUrl(value);
+  if (target) return target.platform === platform ? target : null;
+  if (
+    platform !== "bilibili" ||
+    typeof value !== "string" ||
+    value.length > 4096 ||
+    /[\u0000-\u0020\u007f\\]/.test(value)
+  )
+    return null;
+  const authority = value.match(/^http:\/\/([^/?#]+)\//i)?.[1]?.toLowerCase();
+  if (!["bilibili.com", "www.bilibili.com", "m.bilibili.com"].includes(authority)) return null;
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" || parsed.username || parsed.password || parsed.port) return null;
+  const rawPath = value.match(/^http:\/\/[^/?#]+(\/[^?#]*)/i)?.[1];
+  if (parsed.pathname !== rawPath) return null;
+  const id = parsed.pathname.match(/^\/video\/(BV[A-Za-z0-9]{10}|av\d+)\/?$/)?.[1];
+  return id ? normalizeVideoSearchUrl(`https://www.bilibili.com/video/${id}/`) : null;
+}
+
 /** Discover read-only search sources before spending a model request. No process is started. */
 export async function prepareVideoSearchSource({ context, runtime, panel, auxiliary, signal }) {
   checkAbort(signal);
@@ -98,11 +125,13 @@ export async function searchVideoPlatforms(
       if (signal?.aborted) throw new Error("已取消");
       if (!row) return null;
       let metadata = row;
-      const url =
+      const rawUrl =
         row.webpage_url ||
         row.url ||
         (platform === "youtube" && row.id ? `https://www.youtube.com/watch?v=${row.id}` : "");
-      if (normalizeVideoSearchUrl(url)?.platform !== platform) return null;
+      const target = ytDlpSearchTarget(rawUrl, platform);
+      if (!target) return null;
+      const url = target.url;
       if (!row.title && platform === "bilibili") {
         try {
           const detail = await auxiliary.run({
