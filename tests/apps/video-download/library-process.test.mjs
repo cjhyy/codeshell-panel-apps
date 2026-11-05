@@ -433,6 +433,61 @@ test("video search runs only the reviewed native entry with bounded query input"
   );
 });
 
+test("Cookie handles go only to the requested spawn and are never inherited by a Node search", async () => {
+  const response = { source: "search-index", candidates: [] };
+  const app = fixture({
+    "process.get": () => receipt([event(1, "stdout", JSON.stringify(response))]),
+  });
+  const fileArgumentHandles = ["authorized-cookie-handle"];
+  await app.process.run({
+    executableHandle: "yt-dlp-handle",
+    directoryHandle: "directory-handle",
+    args: ["--ignore-config", "--", "bilisearch1:owned query"],
+    fileArgumentHandles,
+  });
+  await app.process.search({ handle: "directory-handle" }, "bilibili", "owned query", 1);
+  const spawns = app.calls.filter(({ method }) => method === "process.spawn");
+  assert.equal(spawns.length, 2);
+  assert.deepEqual(spawns[0].params, {
+    executableHandle: "yt-dlp-handle",
+    directoryHandle: "directory-handle",
+    args: ["--ignore-config", "--", "bilisearch1:owned query"],
+    fileArgumentHandles: ["authorized-cookie-handle"],
+  });
+  assert.ok(!spawns[1].params.fileArgumentHandles?.length);
+  assert.equal(spawns[1].params.entryHandle, "entry-handle");
+  const input = app.calls
+    .filter(({ method }) => method === "process.write")
+    .map(({ params }) => params.text)
+    .join("");
+  assert.deepEqual(JSON.parse(input), { platform: "bilibili", query: "owned query", limit: 1 });
+  assert.doesNotMatch(input, /authorized-cookie-handle/);
+});
+
+test("simultaneous auxiliary processes keep their platform Cookie grants separate", async () => {
+  const spawns = [];
+  const process = createLibraryProcess({
+    async call(method, params) {
+      if (method === "process.spawn") {
+        spawns.push(params);
+        return { processId: `helper-${spawns.length}` };
+      }
+      assert.equal(method, "process.get");
+      return receipt([], { processId: params.processId });
+    },
+  });
+  await Promise.all([
+    process.run({ ...args, fileArgumentHandles: ["bilibili-cookie-handle"] }),
+    process.run({ ...args, fileArgumentHandles: ["youtube-cookie-handle"] }),
+    process.run(args),
+  ]);
+  assert.deepEqual(
+    spawns.map(({ fileArgumentHandles }) => fileArgumentHandles || []),
+    [["bilibili-cookie-handle"], ["youtube-cookie-handle"], []],
+  );
+  assert.equal(process.busy, false);
+});
+
 test("a failed native entry lookup can be retried instead of caching its rejection", async () => {
   let finds = 0;
   const app = fixture({

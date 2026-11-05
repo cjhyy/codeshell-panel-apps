@@ -35,6 +35,25 @@ File opening and playback recheck actual files and use an authorized directory;
 a path in task JSON is never a directory grant. External CLI outputs require the
 original directory to be selected before panel file actions.
 
+## AI search accounts
+
+AI search defaults to anonymous lookup. Its YouTube and Bilibili account selectors
+are independent of the download form and never select a saved account automatically.
+Select an account explicitly, or leave a platform anonymous. Before starting an AI
+request, the panel checks the selected account's saved revision and asks the Host
+to authorize it for yt-dlp. Both platform search and video metadata lookup receive
+only sealed file argument handles; Cookie contents never enter the panel, model
+prompts or the Node/Bing search fallback.
+
+An account lookup requires a compatible Host and yt-dlp. A changed account,
+cancelled authorization or failed authenticated lookup does not fall back to
+anonymous search. A saved account is not proof that the website still accepts the
+login: if necessary, log in and save it again from the download page where supported,
+or from the Desktop Host executing this project for remote Web entry points. Then
+refresh the search account list and explicitly select the new login. Recovery retains only
+the selected account ID and revision and requests fresh authorization. Anonymous
+search remains available on older Hosts without account-query support.
+
 ## Runtime and environment state
 
 Installed CLI commands are available without an open panel. Workers start only

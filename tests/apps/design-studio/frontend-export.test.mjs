@@ -11,6 +11,7 @@ import { normalizeDesignDocument, serializeDesignDocument } from "../../../apps/
 import { exportDesignFrontend, renderDesignFrontendPage } from "../../../apps/design-studio/app/frontend-export.mjs";
 import { applyAllAutoLayouts } from "../../../apps/design-studio/app/layout.mjs";
 import { comparePixels } from "../../../scripts/design-studio-production-fidelity.mjs";
+import { loadedFontBrowserArgs } from "./fixtures/loaded-font.mjs";
 
 const node = (id, type, extra = {}) => ({ id, type, name: id, x: 0, y: 0, width: 100, height: 30,
   fill: "#2563eb", stroke: "transparent", strokeWidth: 0, opacity: 1, rotation: 0, cornerRadius: 0,
@@ -102,7 +103,7 @@ test("actual CLI frontend file keeps editable nested flow through resize and sav
 });
 
 test("canonical Text shadows use glyph CSS and retain the unresolved zero-blur edge boundary through DOM edits", async t => {
-  const browser = await chromium.launch({ args: ["--disable-gpu"] }); t.after(() => browser.close());
+  const browser = await chromium.launch({ args: loadedFontBrowserArgs() }); t.after(() => browser.close());
   const page = await browser.newPage({ deviceScaleFactor: 1 }), referencePage = await browser.newPage({ deviceScaleFactor: 1 });
   const appRoot = fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url));
   await page.route("**/*", async route => {

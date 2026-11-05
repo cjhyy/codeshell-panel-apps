@@ -27,7 +27,11 @@ import {
 import { createEnvironmentClient } from "./environment-client.js";
 import { classifyYtDlpFailure } from "./tools/download-errors.mjs";
 import { mountVideoSearch, normalizeVideoSearchUrl } from "./video-search.js";
-import { prepareVideoSearchSource, searchVideoPlatforms } from "./video-search-source.js";
+import {
+  listVideoSearchAccounts,
+  prepareVideoSearchSource,
+  searchVideoPlatforms,
+} from "./video-search-source.js";
 import {
   compareYtDlpVersions,
   parseGitHubLatestRelease,
@@ -4736,9 +4740,17 @@ function compactIndices(indices) {
     .join(",");
 }
 
-async function prepareSearch({ signal }) {
+async function prepareSearch({ signal, platforms, accounts }) {
   await searchScopeReady;
-  return prepareVideoSearchSource({ context, runtime, panel, auxiliary, signal });
+  return prepareVideoSearchSource({
+    context,
+    runtime,
+    panel,
+    auxiliary,
+    signal,
+    platforms,
+    accounts,
+  });
 }
 
 async function searchCandidates(options) {
@@ -7094,6 +7106,13 @@ const videoSearch = mountVideoSearch({
   container: document.querySelector("#video-search-root"),
   searchCandidates,
   prepareSearch,
+  async listSearchAccounts(platform) {
+    await searchScopeReady;
+    return {
+      ...(await listVideoSearchAccounts({ context, panel, platform })),
+      canLogin: context.availableMethods?.includes("credentials.cookies.loginAndSave") === true,
+    };
+  },
   pendingStorage: createProjectStorage({
     panel,
     key: "video-download.search-pending.v2",
