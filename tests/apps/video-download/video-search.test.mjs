@@ -258,6 +258,10 @@ async function openSearch(t, options = {}) {
       };
       window.taskNumber = 0;
       window.archiveSnapshot = null;
+      window.accountCatalog = {
+        youtube: [{ id: "youtube-account", label: "YouTube 已保存账号", revision: "a".repeat(64) }],
+        bilibili: [{ id: "bilibili-account", label: "B 站已保存账号", revision: "b".repeat(64) }],
+      };
       window.panelMock = {
         async call(method, args) {
           window.calls.push({ method, args });
@@ -297,6 +301,22 @@ async function openSearch(t, options = {}) {
             return {};
           }
           if (method === "external.open") return {};
+          if (options.accounts) {
+            if (method === "credentials.cookies.listForTask")
+              return {
+                accounts:
+                  window.accountCatalog[args.url.includes("bilibili") ? "bilibili" : "youtube"],
+              };
+            if (method === "credentials.cookies.authorizeProcess") {
+              if (options.holdAuthorization)
+                await new Promise((resolve) => {
+                  window.releaseAuthorization = resolve;
+                });
+              return options.denyAuthorization
+                ? { authorized: false, cancelled: true }
+                : { authorized: true, fileArgumentHandle: `sealed-${args.credentialId}` };
+            }
+          }
           if (options.nodeOnly) {
             if (method === "process.find")
               return args.name === "node"
@@ -425,6 +445,43 @@ async function openSearch(t, options = {}) {
         window.mountOptions.searchCandidates = (request) =>
           searchVideoPlatforms(request, request.prepared, auxiliary);
       }
+      if (options.accounts) {
+        const { prepareVideoSearchSource, listVideoSearchAccounts } =
+          await import("/video-search-source.js");
+        const context = {
+          availableMethods: [
+            "agent.task.models",
+            "agent.task.start",
+            "agent.task.get",
+            "agent.task.cancel",
+            "process.find",
+            "process.spawn",
+            "process.get",
+            "process.cancel",
+            "credentials.cookies.listForTask",
+            "credentials.cookies.authorizeProcess",
+          ],
+          capabilities: {
+            tasks: { cookieCredentials: true },
+            process: { cookieCredentials: true },
+          },
+        };
+        window.mountOptions.listSearchAccounts = async (platform) => ({
+          ...(await listVideoSearchAccounts({ context, panel: window.panelMock, platform })),
+          canLogin: options.canLogin === true,
+        });
+        window.mountOptions.prepareSearch = (request) =>
+          prepareVideoSearchSource({
+            ...request,
+            context,
+            panel: window.panelMock,
+            auxiliary: {},
+            runtime: {
+              ytDlp: { handle: "yt-dlp-fixture" },
+              directory: { handle: "project-directory" },
+            },
+          });
+      }
       if (options.hostPending) {
         window.pendingSnapshot = null;
         window.pendingWrites = [];
@@ -458,6 +515,184 @@ async function openSearch(t, options = {}) {
   await page.locator("[data-search-query]").fill("Blender 中文入门教程，20分钟左右");
   return page;
 }
+
+test("mobile search explicitly selects per-platform accounts and authorizes before AI without exposing account metadata", async (t) => {
+  const page = await openSearch(t, { accounts: true, hostPending: true, width: 390 });
+  assert.equal(await page.locator('[data-search-account="bilibili"]').inputValue(), "");
+  assert.equal(await page.locator('[data-search-account="youtube"]').inputValue(), "");
+  assert.match(
+    await page.locator("[data-search-account-help]").textContent(),
+    /执行此项目的桌面 Host/,
+  );
+  await page.locator("[data-search-scope]").selectOption("bilibili");
+  assert.equal(await page.locator('[data-search-account-row="youtube"]').isVisible(), false);
+  await page.locator('[data-search-account="bilibili"]').selectOption({ label: "B 站已保存账号" });
+  await page.locator("[data-search-start]").click();
+  await page.waitForFunction(() => window.search.getState().status === "ready");
+  const calls = await page.evaluate(() => window.calls);
+  const authorization = calls.find(
+    (call) => call.method === "credentials.cookies.authorizeProcess",
+  );
+  assert.deepEqual(authorization.args, {
+    credentialId: "bilibili-account",
+    revision: "b".repeat(64),
+    url: "https://www.bilibili.com/",
+    executableHandle: "yt-dlp-fixture",
+  });
+  assert.ok(
+    calls.indexOf(authorization) < calls.findIndex((call) => call.method === "agent.task.start"),
+  );
+  const requests = calls.filter((call) => call.method === "agent.task.start");
+  assert.equal(requests.length, 2);
+  assert.doesNotMatch(JSON.stringify(requests), /bilibili-account|sealed-|bbbbbbbb/);
+  assert.deepEqual(await page.evaluate(() => window.lookupCalls.map((call) => call.platforms)), [
+    ["bilibili"],
+  ]);
+  const writes = await page.evaluate(() => window.pendingWrites.filter(Boolean));
+  assert.ok(writes.some((saved) => saved.accounts.bilibili?.id === "bilibili-account"));
+  assert.doesNotMatch(JSON.stringify(writes), /sealed-/);
+  assert.doesNotMatch(
+    await page.evaluate(() => JSON.stringify(window.archiveSnapshot)),
+    /bilibili-account|sealed-/,
+  );
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+});
+
+test("refused account authorization stops before AI and requires explicit anonymous selection to retry", async (t) => {
+  const page = await openSearch(t, { accounts: true, denyAuthorization: true, canLogin: true });
+  assert.match(
+    await page.locator("[data-search-account-help]").textContent(),
+    /下载页重新登录并保存/,
+  );
+  await page.locator("[data-search-scope]").selectOption("bilibili");
+  await page.locator('[data-search-account="bilibili"]').selectOption({ label: "B 站已保存账号" });
+  await page.locator("[data-search-start]").click();
+  await page.waitForFunction(() => window.search.getState().status === "error");
+  assert.match(await page.locator("[data-search-status]").textContent(), /未获准.*不会改为匿名/);
+  assert.equal(await page.evaluate(() => window.taskNumber), 0);
+  assert.equal(await page.evaluate(() => window.lookupCalls.length), 0);
+  assert.notEqual(await page.locator('[data-search-account="bilibili"]').inputValue(), "");
+  await page.locator('[data-search-account="bilibili"]').selectOption("");
+  await page.locator("[data-search-start]").click();
+  await page.waitForFunction(() => window.search.getState().status === "ready");
+  assert.equal(await page.evaluate(() => window.taskNumber), 2);
+});
+
+test("account refresh never silently adopts a replaced login and preflight requires reselection", async (t) => {
+  const page = await openSearch(t, { accounts: true });
+  await page.locator("[data-search-scope]").selectOption("bilibili");
+  await page.locator('[data-search-account="bilibili"]').selectOption({ label: "B 站已保存账号" });
+  const oldSelection = await page.locator('[data-search-account="bilibili"]').inputValue();
+  await page.evaluate(() => {
+    window.accountCatalog.bilibili[0].revision = "c".repeat(64);
+  });
+  await page.locator("[data-search-account-refresh]").click();
+  await page.waitForFunction(
+    () => !document.querySelector("[data-search-account-refresh]").disabled,
+  );
+  assert.equal(await page.locator('[data-search-account="bilibili"]').inputValue(), oldSelection);
+  await page.locator("[data-search-start]").click();
+  await page.waitForFunction(() => window.search.getState().status === "error");
+  assert.match(
+    await page.locator("[data-search-status]").textContent(),
+    /账号已变化或不可用.*先刷新并重新选择/,
+  );
+  assert.equal(await page.evaluate(() => window.taskNumber), 0);
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.calls.filter((call) => call.method === "credentials.cookies.authorizeProcess")
+          .length,
+    ),
+    0,
+  );
+  await page.locator('[data-search-account="bilibili"]').selectOption({ label: "B 站已保存账号" });
+  await page.locator("[data-search-start]").click();
+  await page.waitForFunction(() => window.search.getState().status === "ready");
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.calls.find((call) => call.method === "credentials.cookies.authorizeProcess").args
+          .revision,
+    ),
+    "c".repeat(64),
+  );
+});
+
+test("cancelling while account confirmation is pending ignores a late grant without AI or lookup", async (t) => {
+  const page = await openSearch(t, { accounts: true, holdAuthorization: true });
+  await page.locator('[data-search-account="bilibili"]').selectOption({ label: "B 站已保存账号" });
+  await page.locator("[data-search-start]").click();
+  await page.waitForFunction(() => typeof window.releaseAuthorization === "function");
+  assert.equal(await page.locator('[data-search-account="bilibili"]').isDisabled(), true);
+  await page.locator("[data-search-cancel]").click();
+  await page.evaluate(() => window.releaseAuthorization());
+  await page.waitForFunction(() => window.search.getState().status === "cancelled");
+  assert.equal(await page.evaluate(() => window.taskNumber), 0);
+  assert.equal(await page.evaluate(() => window.lookupCalls.length), 0);
+});
+
+test("planning recovery retains account identity but gets a fresh authorization before platform lookup", async (t) => {
+  const page = await openSearch(t, { accounts: true, hold: "planning", hostPending: true });
+  await page.locator("[data-search-scope]").selectOption("bilibili");
+  await page.locator('[data-search-account="bilibili"]').selectOption({ label: "B 站已保存账号" });
+  await page.locator("[data-search-start]").click();
+  await page.waitForFunction(
+    () => Boolean(window.search.getState().taskId) && window.pendingSnapshot?.taskId,
+  );
+  await page.evaluate(async () => {
+    const active = window.lastTask;
+    window.search.destroy();
+    const call = window.panelMock.call;
+    window.panelMock.call = async (method, args) =>
+      method === "agent.task.list" ? [active] : call(method, args);
+    const { mountVideoSearch } = await import("/video-search.js");
+    window.search = mountVideoSearch(window.mountOptions);
+    await window.search.ready;
+    window.search.handleTaskChanged({ ...active, status: "completed", updatedAt: Date.now() + 1 });
+  });
+  await page.waitForFunction(() => window.search.getState().status === "ready");
+  const calls = await page.evaluate(() => window.calls);
+  assert.equal(calls.filter((call) => call.method === "agent.task.start").length, 2);
+  const authorizations = calls.filter(
+    (call) => call.method === "credentials.cookies.authorizeProcess",
+  );
+  assert.equal(authorizations.length, 2);
+  assert.deepEqual(authorizations[1].args, authorizations[0].args);
+  assert.deepEqual(await page.evaluate(() => window.search.getState().accounts), {
+    bilibili: { id: "bilibili-account", revision: "b".repeat(64) },
+  });
+});
+
+test("malformed pending platforms with account metadata cannot leave search initialization disabled", async (t) => {
+  for (const platforms of [42, {}]) {
+    const page = await openSearch(t, { accounts: true, hostPending: true });
+    await page.evaluate(async (platforms) => {
+      window.search.destroy();
+      window.pendingSnapshot = {
+        query: "old query",
+        platforms,
+        accounts: { bilibili: { id: "bilibili-account", revision: "b".repeat(64) } },
+      };
+      const { mountVideoSearch } = await import("/video-search.js");
+      window.search = mountVideoSearch(window.mountOptions);
+      await window.search.ready;
+    }, platforms);
+    await page.locator("[data-search-query]").fill("新的公开视频查询");
+    assert.equal(await page.locator("[data-search-start]").isDisabled(), false);
+    assert.equal(await page.locator('[data-search-account="bilibili"]').inputValue(), "");
+    await page.locator("[data-search-start]").click();
+    await page.waitForFunction(() => window.search.getState().status === "ready");
+    assert.equal(
+      await page.evaluate(
+        () =>
+          window.calls.filter((call) => call.method === "credentials.cookies.authorizeProcess")
+            .length,
+      ),
+      0,
+    );
+  }
+});
 
 test("two AI stages use zero tools and result actions preserve real platform evidence", async (t) => {
   const page = await openSearch(t, { pendingQueue: true });

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { createLibraryProcess } from "../../../apps/video-download/app/library-process.js";
 import { normalizeVideoSearchUrl } from "../../../apps/video-download/app/video-search.js";
 import {
+  listVideoSearchAccounts,
   prepareVideoSearchSource,
   searchVideoPlatforms,
 } from "../../../apps/video-download/app/video-search-source.js";
@@ -26,6 +27,346 @@ const candidate = {
   platform: "youtube",
   evidence: "search-index",
 };
+
+const cookieMethods = ["credentials.cookies.listForTask", "credentials.cookies.authorizeProcess"];
+const selectedAccounts = {
+  bilibili: { id: "bilibili-account", revision: "a".repeat(64) },
+  youtube: { id: "youtube-account", revision: "b".repeat(64) },
+};
+const cookieUrls = {
+  bilibili: "https://www.bilibili.com/",
+  youtube: "https://www.youtube.com/",
+};
+
+function cookieSourceFixture() {
+  const calls = [];
+  const input = {
+    context: {
+      availableMethods: [...methods, ...cookieMethods],
+      capabilities: {
+        tasks: { cookieCredentials: true },
+        process: { cookieCredentials: true },
+      },
+    },
+    runtime: { ytDlp: { handle: "yt-dlp" }, directory: { handle: "directory" } },
+    accounts: structuredClone(selectedAccounts),
+    panel: {
+      async call(method, args) {
+        calls.push({ method, args });
+        const platform = Object.keys(cookieUrls).find((key) => cookieUrls[key] === args.url);
+        assert.ok(platform, "account requests must use a fixed platform root URL");
+        if (method === "credentials.cookies.listForTask")
+          return { accounts: [{ ...selectedAccounts[platform], health: "ready" }] };
+        if (method === "credentials.cookies.authorizeProcess")
+          return { authorized: true, fileArgumentHandle: `${platform}-cookie-handle` };
+        assert.fail(`unexpected preflight request: ${method}`);
+      },
+    },
+    auxiliary: {
+      async prepareSearch() {},
+      async run() {
+        assert.fail("preflight must not spawn a process");
+      },
+      async search() {
+        assert.fail("preflight must not query a source");
+      },
+    },
+  };
+  return { input, calls };
+}
+
+test("search account discovery exposes only bounded metadata and omits unusable credentials", async () => {
+  const { input } = cookieSourceFixture();
+  const account = {
+    ...selectedAccounts.bilibili,
+    health: "ready",
+    label: "账号".repeat(100),
+    cookies: "private-cookie-value",
+    path: "/private/cookies.txt",
+    fileArgumentHandle: "not-authorized-for-this-query",
+  };
+  input.panel.call = async (method, args) => {
+    assert.equal(method, "credentials.cookies.listForTask");
+    assert.deepEqual(args, { url: cookieUrls.bilibili });
+    return {
+      accounts: [
+        account,
+        { ...account, id: "corrupted", health: "corrupted" },
+        { ...account, id: "bad-revision", revision: "invalid" },
+        { ...account, id: "" },
+        { ...account, id: "x".repeat(257) },
+      ],
+    };
+  };
+  assert.deepEqual(await listVideoSearchAccounts({ ...input, platform: "bilibili" }), {
+    supported: true,
+    accounts: [{ ...selectedAccounts.bilibili, label: account.label.slice(0, 160) }],
+  });
+  assert.deepEqual(
+    await listVideoSearchAccounts({
+      ...input,
+      context: { availableMethods: methods },
+      platform: "bilibili",
+      panel: {
+        call() {
+          assert.fail("old Hosts must not receive Cookie requests");
+        },
+      },
+    }),
+    { supported: false, accounts: [] },
+  );
+});
+
+test("platform account discovery uses www origins so saved bare-domain and www-domain logins both match", async () => {
+  const { input } = cookieSourceFixture();
+  for (const platform of ["youtube", "bilibili"]) {
+    const root = `${platform}.com`;
+    input.panel.call = async (method, { url }) => {
+      assert.equal(method, "credentials.cookies.listForTask");
+      assert.equal(url, `https://www.${root}/`);
+      // Match the Host vault's domain-bound account discovery.
+      const host = new URL(url).hostname;
+      return {
+        accounts: [root, `www.${root}`]
+          .filter((domain) => host === domain || host.endsWith(`.${domain}`))
+          .map((domain) => ({ id: domain, label: domain, revision: "a".repeat(64) })),
+      };
+    };
+    const listed = await listVideoSearchAccounts({ ...input, platform });
+    assert.deepEqual(
+      listed.accounts.map(({ id }) => id),
+      [root, `www.${root}`],
+    );
+  }
+});
+
+test("selected search accounts authorize each exact revision and platform before any process", async () => {
+  const { input, calls } = cookieSourceFixture();
+  const prepared = await prepareVideoSearchSource(input);
+  assert.deepEqual(prepared.fileArgumentHandles, {
+    bilibili: ["bilibili-cookie-handle"],
+    youtube: ["youtube-cookie-handle"],
+  });
+  for (const platform of Object.keys(selectedAccounts)) {
+    assert.deepEqual(
+      calls.filter(({ args }) => args.url === cookieUrls[platform]),
+      [
+        { method: "credentials.cookies.listForTask", args: { url: cookieUrls[platform] } },
+        {
+          method: "credentials.cookies.authorizeProcess",
+          args: {
+            credentialId: selectedAccounts[platform].id,
+            url: cookieUrls[platform],
+            revision: selectedAccounts[platform].revision,
+            executableHandle: "yt-dlp",
+          },
+        },
+      ],
+    );
+  }
+  assert.equal(calls.length, 4);
+});
+
+test("only selected platforms authorize accounts and anonymous old Hosts still prepare", async () => {
+  const { input, calls } = cookieSourceFixture();
+  await assert.rejects(prepareVideoSearchSource({ ...input, platforms: ["bilibili"] }));
+  assert.deepEqual(calls, []);
+  const prepared = await prepareVideoSearchSource({
+    ...input,
+    platforms: ["bilibili"],
+    accounts: { bilibili: input.accounts.bilibili },
+  });
+  assert.deepEqual(prepared.fileArgumentHandles, { bilibili: ["bilibili-cookie-handle"] });
+  assert.ok(calls.every(({ args }) => args.url === cookieUrls.bilibili));
+  const anonymous = await prepareVideoSearchSource({
+    ...input,
+    context: { availableMethods: methods },
+    accounts: {},
+    panel: {
+      call() {
+        assert.fail("anonymous lookup must not request Cookie grants");
+      },
+    },
+  });
+  assert.equal(anonymous.ytDlp.handle, "yt-dlp");
+  assert.equal(anonymous.nodeAvailable, true);
+  assert.ok(!anonymous.fileArgumentHandles || !Object.keys(anonymous.fileArgumentHandles).length);
+});
+
+test("selected accounts require versioned Host capabilities and a usable yt-dlp", async () => {
+  for (const missing of cookieMethods) {
+    const { input, calls } = cookieSourceFixture();
+    input.context.availableMethods = input.context.availableMethods.filter(
+      (name) => name !== missing,
+    );
+    await assert.rejects(prepareVideoSearchSource(input));
+    assert.deepEqual(calls, []);
+  }
+  for (const kind of ["tasks", "process"]) {
+    const { input, calls } = cookieSourceFixture();
+    input.context.capabilities[kind].cookieCredentials = false;
+    await assert.rejects(prepareVideoSearchSource(input));
+    assert.deepEqual(calls, []);
+  }
+  for (const ytDlp of [null, { handle: "yt-dlp", verified: false }]) {
+    const { input } = cookieSourceFixture();
+    input.runtime.ytDlp = ytDlp;
+    let authorizations = 0;
+    input.panel.call = async (method) => {
+      if (method === "process.find") return { available: false };
+      authorizations++;
+      assert.fail("a missing local search tool cannot authorize an account");
+    };
+    await assert.rejects(prepareVideoSearchSource(input), /yt-dlp|下载器|检索工具/);
+    assert.equal(authorizations, 0);
+  }
+});
+
+test("missing, changed, corrupted and malformed account revisions fail before authorization", async () => {
+  const variants = [
+    [],
+    [{ ...selectedAccounts.bilibili, id: "another-account", health: "ready" }],
+    [{ ...selectedAccounts.bilibili, revision: "c".repeat(64), health: "ready" }],
+    [{ ...selectedAccounts.bilibili, revision: "invalid", health: "ready" }],
+    [{ ...selectedAccounts.bilibili, health: "corrupted" }],
+  ];
+  for (const accounts of variants) {
+    const { input } = cookieSourceFixture();
+    input.platforms = ["bilibili"];
+    input.accounts = { bilibili: input.accounts.bilibili };
+    input.panel.call = async (method) => {
+      assert.equal(method, "credentials.cookies.listForTask");
+      return { accounts };
+    };
+    await assert.rejects(prepareVideoSearchSource(input));
+  }
+  for (const revision of [undefined, "invalid", "A".repeat(64)]) {
+    const { input, calls } = cookieSourceFixture();
+    input.platforms = ["bilibili"];
+    input.accounts = { bilibili: input.accounts.bilibili };
+    input.accounts.bilibili.revision = revision;
+    await assert.rejects(prepareVideoSearchSource(input));
+    assert.ok(calls.every(({ method }) => method !== "credentials.cookies.authorizeProcess"));
+  }
+});
+
+test("refused or invalid account authorization cannot silently become an anonymous search", async () => {
+  for (const authorization of [
+    { authorized: false },
+    { authorized: false, invalid: true },
+    { authorized: true },
+    { authorized: true, fileArgumentHandle: "" },
+  ]) {
+    const { input } = cookieSourceFixture();
+    input.platforms = ["bilibili"];
+    input.accounts = { bilibili: input.accounts.bilibili };
+    const call = input.panel.call;
+    input.panel.call = (method, args) =>
+      method === "credentials.cookies.authorizeProcess" ? authorization : call(method, args);
+    await assert.rejects(prepareVideoSearchSource(input));
+  }
+});
+
+test("cancellation rejects a late account grant and cannot authorize another platform", async () => {
+  const { input } = cookieSourceFixture();
+  const controller = new AbortController();
+  let resolveAuthorization, authorizationStarted;
+  const pending = new Promise((resolve) => {
+    resolveAuthorization = resolve;
+  });
+  const started = new Promise((resolve) => {
+    authorizationStarted = resolve;
+  });
+  let authorizations = 0;
+  const call = input.panel.call;
+  input.panel.call = (method, args) => {
+    if (method !== "credentials.cookies.authorizeProcess") return call(method, args);
+    assert.equal(++authorizations, 1);
+    authorizationStarted();
+    return pending;
+  };
+  const prepared = prepareVideoSearchSource({ ...input, signal: controller.signal });
+  const assertion = assert.rejects(prepared, /已取消/);
+  await started;
+  controller.abort();
+  resolveAuthorization({ authorized: true, fileArgumentHandle: "late-cookie-handle" });
+  await assertion;
+  assert.equal(authorizations, 1);
+});
+
+test("account search and Bilibili missing-title details receive only their platform Cookie handle", async () => {
+  const { input } = cookieSourceFixture();
+  const prepared = await prepareVideoSearchSource(input);
+  const runs = [];
+  const result = await searchVideoPlatforms(
+    { query: "owned query", platforms: ["youtube", "bilibili"], limit: 1 },
+    prepared,
+    {
+      async run(request) {
+        runs.push(request);
+        const url = request.args.at(-1);
+        if (url.startsWith("ytsearch"))
+          return {
+            code: 0,
+            stdout: JSON.stringify({ entries: [{ id: "dQw4w9WgXcQ", title: "YouTube title" }] }),
+          };
+        if (url.startsWith("bilisearch"))
+          return {
+            code: 0,
+            stdout: JSON.stringify({
+              entries: [{ url: "http://www.bilibili.com/video/av528990022" }],
+            }),
+          };
+        assert.equal(url, "https://www.bilibili.com/video/av528990022/");
+        return { code: 0, stdout: JSON.stringify({ title: "Bilibili title" }) };
+      },
+      async search() {
+        assert.fail("a selected account must never use anonymous Node lookup");
+      },
+    },
+  );
+  assert.equal(result.candidates.length, 2);
+  assert.deepEqual(result.warnings, []);
+  assert.deepEqual(
+    runs.map(({ fileArgumentHandles }) => fileArgumentHandles),
+    [["youtube-cookie-handle"], ["bilibili-cookie-handle"], ["bilibili-cookie-handle"]],
+  );
+  for (const { args } of runs) {
+    assert.ok(!args.includes("--cookies"), "only the Host may materialize the Cookie file");
+    assert.doesNotMatch(JSON.stringify(args), /cookie-handle|account/);
+  }
+});
+
+test("failed account searches never fall back anonymously while another anonymous platform can", async () => {
+  for (const localResult of [
+    { code: 1, stderr: "fixture failure" },
+    { code: 0, stdout: JSON.stringify({ entries: [] }) },
+  ]) {
+    const fallbackPlatforms = [];
+    const result = await searchVideoPlatforms(
+      { query: "owned query", platforms: ["bilibili", "youtube"] },
+      {
+        directory: { handle: "directory" },
+        ytDlp: { handle: "yt-dlp" },
+        nodeAvailable: true,
+        fileArgumentHandles: { bilibili: ["bilibili-cookie-handle"] },
+      },
+      {
+        async run(request) {
+          assert.match(request.args.at(-1), /^bilisearch/);
+          assert.deepEqual(request.fileArgumentHandles, ["bilibili-cookie-handle"]);
+          return localResult;
+        },
+        async search(_directory, platform) {
+          fallbackPlatforms.push(platform);
+          return { source: "search-index", candidates: [candidate] };
+        },
+      },
+    );
+    assert.deepEqual(fallbackPlatforms, ["youtube"]);
+    assert.deepEqual(result.candidates, [candidate]);
+  }
+});
 
 test("real-shaped flat Bilibili HTTP entries fetch missing titles only over canonical HTTPS", async () => {
   // Shape recorded from yt-dlp 2026.08.19 bilisearch2; titles are intentionally absent.

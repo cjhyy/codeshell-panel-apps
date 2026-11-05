@@ -40,6 +40,7 @@ export function createLibraryProcess(
     executableHandle,
     entryHandle,
     directoryHandle,
+    fileArgumentHandles,
     args = [],
     input,
     signal,
@@ -105,6 +106,7 @@ export function createLibraryProcess(
           executableHandle,
           directoryHandle,
           ...(entryHandle ? { entryHandle } : {}),
+          ...(fileArgumentHandles === undefined ? {} : { fileArgumentHandles }),
           args,
           ...(input === undefined ? {} : { stdin: "pipe" }),
         });

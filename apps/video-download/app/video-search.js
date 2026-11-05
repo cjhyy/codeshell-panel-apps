@@ -204,6 +204,7 @@ export function mountVideoSearch({
   container,
   searchCandidates,
   prepareSearch,
+  listSearchAccounts,
   onQueue,
   onPreview,
   onError,
@@ -219,6 +220,8 @@ export function mountVideoSearch({
       <div class="video-search-examples" aria-label="试试这些需求"><button type="button" data-search-example="适合入门的 Blender 中文建模教程，20 分钟以内">Blender 入门</button><button type="button" data-search-example="讲解 AI 辅助视频剪辑的实操教程，中文，包含完整操作流程">AI 剪辑工作流</button><button type="button" data-search-example="旅行摄影构图教程，适合新手，10 分钟左右">旅行摄影</button></div>
       <div class="video-search-controls"><label><span>搜索范围</span><select data-search-scope><option value="both">YouTube + B 站</option><option value="youtube">YouTube</option><option value="bilibili">B 站</option></select></label><label><span>AI 服务</span><select data-search-provider aria-label="选择 AI Provider" disabled><option>正在读取连接…</option></select></label><label><span>模型</span><select data-search-model aria-label="查询使用的 AI 模型" disabled><option>正在读取模型…</option></select></label></div>
       <p class="video-search-provider-help">支持 CodeShell 中已配置的服务，包括自定义 Provider。可随时切换模型。</p>
+      <div class="video-search-controls video-search-account-controls"><label data-search-account-row="youtube"><span>YouTube 查询账号</span><select data-search-account="youtube" aria-label="YouTube 查询账号"><option value="">匿名查询</option></select><small data-search-account-status="youtube"></small></label><label data-search-account-row="bilibili"><span>B 站查询账号</span><select data-search-account="bilibili" aria-label="B 站查询账号"><option value="">匿名查询</option></select><small data-search-account-status="bilibili"></small></label></div>
+      <p class="video-search-provider-help">账号仅用于对应平台的本次检索，不会交给 AI 或公开搜索索引。<span data-search-account-help>保存的登录态可能过期；需要时请在执行此项目的桌面 Host 中登录并保存，再回到此页刷新账号。</span><button type="button" class="text-button" data-search-account-refresh>刷新账号</button></p>
       <div class="video-search-actions"><button type="button" class="secondary-button" data-search-start disabled>AI 找视频</button><button type="button" class="text-button" data-search-cancel hidden>取消查询</button><button type="button" class="text-button" data-search-model-refresh>刷新模型</button><button type="button" class="text-button" data-search-new>重新找视频</button></div>
       <ol class="search-stages" data-search-stages aria-label="查询进度" hidden><li data-stage="planning">理解需求</li><li data-stage="searching">检索平台</li><li data-stage="ranking">筛选结果</li></ol>
       <p class="video-search-status" data-search-status role="status" aria-live="polite">正在准备查询…</p>
@@ -242,6 +245,8 @@ export function mountVideoSearch({
       "start",
       "cancel",
       "model-refresh",
+      "account-refresh",
+      "account-help",
       "status",
       "plan",
       "toolbar",
@@ -264,6 +269,16 @@ export function mountVideoSearch({
   let initializationPending = true;
   let queuePending = false;
   let modelLoadGeneration = 0;
+  let accountsLoading = false;
+  const accountChoices = { youtube: [], bilibili: [] };
+  const accountSupported = { youtube: false, bilibili: false };
+  const selectedAccounts = {};
+  const accountSelects = Object.fromEntries(
+    [...PLATFORMS].map((platform) => [
+      platform,
+      container.querySelector(`[data-search-account="${platform}"]`),
+    ]),
+  );
   let records = [];
   let archiveScope = "";
   let activeRecordId = "";
@@ -279,6 +294,7 @@ export function mountVideoSearch({
     message: "",
     taskId: "",
     model: "",
+    accounts: {},
   };
   const removers = [];
   const listen = (target, name, handler) => {
@@ -286,7 +302,9 @@ export function mountVideoSearch({
     removers.push(() => target.removeEventListener(name, handler));
   };
   const busy = () =>
-    ["preparing", "planning", "searching", "ranking", "cancelling", "cancel-error"].includes(state.status);
+    ["preparing", "planning", "searching", "ranking", "cancelling", "cancel-error"].includes(
+      state.status,
+    );
   const report = (message, status = state.status) => {
     state.message = message;
     state.status = status;
@@ -316,6 +334,72 @@ export function mountVideoSearch({
   };
   const providerIdOf = (model) =>
     cleanText(model?.providerId || model?.provider || "configured", 256);
+  const accountKey = (account) => JSON.stringify([account.id, account.revision]);
+  function renderAccounts(platform) {
+    const select = accountSelects[platform];
+    select.replaceChildren();
+    const anonymous = document.createElement("option");
+    anonymous.value = "";
+    anonymous.textContent = "匿名查询";
+    select.append(anonymous);
+    for (const account of accountChoices[platform]) {
+      const option = document.createElement("option");
+      option.value = accountKey(account);
+      option.textContent = cleanText(account.label, 160) || "已保存账号";
+      select.append(option);
+    }
+    const selected = selectedAccounts[platform];
+    if (
+      selected &&
+      !accountChoices[platform].some((account) => accountKey(account) === accountKey(selected))
+    ) {
+      const missing = document.createElement("option");
+      missing.value = accountKey(selected);
+      missing.textContent = "先前账号已变化或不可用，请重新选择";
+      missing.disabled = true;
+      select.append(missing);
+    }
+    select.value = selected ? accountKey(selected) : "";
+  }
+  async function refreshAccounts() {
+    if (accountsLoading || busy()) return;
+    accountsLoading = true;
+    syncControls();
+    await Promise.all(
+      [...PLATFORMS].map(async (platform) => {
+        const status = container.querySelector(`[data-search-account-status="${platform}"]`);
+        status.textContent = "正在读取已保存账号…";
+        try {
+          const result = await listSearchAccounts?.(platform);
+          if (destroyed) return;
+          accountSupported[platform] = result?.supported === true;
+          elements["account-help"].textContent = result?.canLogin
+            ? "保存的登录态可能过期；需要时请在下载页重新登录并保存，再刷新账号。"
+            : "保存的登录态可能过期；需要时请在执行此项目的桌面 Host 中登录并保存，再回到此页刷新账号。";
+          accountChoices[platform] = (
+            Array.isArray(result?.accounts) ? result.accounts : []
+          ).filter(
+            (account) =>
+              typeof account?.id === "string" &&
+              account.id &&
+              /^[a-f0-9]{64}$/.test(account.revision || ""),
+          );
+          status.textContent = !accountSupported[platform]
+            ? "当前 Host 不支持带账号查询，匿名查询仍可用。"
+            : accountChoices[platform].length
+              ? "请明确选择账号；查询前会确认授权。"
+              : "没有可用的已保存账号，可匿名查询或重新登录后刷新。";
+        } catch (error) {
+          if (destroyed) return;
+          accountChoices[platform] = [];
+          status.textContent = `读取账号失败：${cleanText(error.message || String(error))}`;
+        }
+        renderAccounts(platform);
+      }),
+    );
+    accountsLoading = false;
+    syncControls();
+  }
   function renderModelChoices(providerId, preferredId = "") {
     elements.model.replaceChildren();
     const choices = models.filter((model) => providerIdOf(model) === providerId);
@@ -459,6 +543,16 @@ export function mountVideoSearch({
   function syncControls() {
     if (destroyed) return;
     const working = busy();
+    for (const platform of PLATFORMS) {
+      container.querySelector(`[data-search-account-row="${platform}"]`).hidden =
+        elements.scope.value !== "both" && elements.scope.value !== platform;
+      accountSelects[platform].disabled =
+        working ||
+        accountsLoading ||
+        initializationPending ||
+        (!accountSupported[platform] && !selectedAccounts[platform]);
+    }
+    elements["account-refresh"].disabled = working || accountsLoading;
     for (const name of ["query", "scope", "provider", "model"])
       elements[name].disabled =
         working ||
@@ -468,6 +562,7 @@ export function mountVideoSearch({
       working ||
       queuePending ||
       initializationPending ||
+      accountsLoading ||
       !panel ||
       typeof searchCandidates !== "function" ||
       !models.length ||
@@ -519,6 +614,8 @@ export function mountVideoSearch({
       query: state.query,
       platforms: [...state.platforms],
       model: state.model || elements.model.value,
+      // Only account identity/version survive recovery, never a sealed process handle.
+      accounts: structuredClone(state.accounts),
     });
   }
   function clearPendingStorage() {
@@ -739,7 +836,11 @@ export function mountVideoSearch({
     let failureStage = "查询准备";
     const prepare = async () => {
       report("正在检查查询能力、项目目录与检索工具…", "preparing");
-      return prepareSearch?.({ platforms: state.platforms, signal: controller.signal });
+      return prepareSearch?.({
+        platforms: state.platforms,
+        accounts: structuredClone(state.accounts),
+        signal: controller.signal,
+      });
     };
     try {
       // A recovered task already owns a model request. Reattach first, then
@@ -848,7 +949,7 @@ export function mountVideoSearch({
     }
   }
   async function start() {
-    if (destroyed || busy() || queuePending || initializationPending) return;
+    if (destroyed || busy() || queuePending || initializationPending || accountsLoading) return;
     const query = cleanText(elements.query.value, 1200);
     if (!query) {
       report("先写下你想找的视频主题或条件。", "error");
@@ -872,6 +973,11 @@ export function mountVideoSearch({
       candidates: [],
       selected: new Set(),
     });
+    state.accounts = Object.fromEntries(
+      state.platforms
+        .filter((platform) => selectedAccounts[platform])
+        .map((platform) => [platform, { ...selectedAccounts[platform] }]),
+    );
     activeRecordId = "";
     renderPlan();
     renderResults();
@@ -928,6 +1034,22 @@ export function mountVideoSearch({
     }
   }
   listen(elements.query, "input", syncControls);
+  listen(elements.scope, "change", syncControls);
+  listen(elements["account-refresh"], "click", () => {
+    void refreshAccounts();
+  });
+  for (const platform of PLATFORMS) {
+    listen(accountSelects[platform], "change", () => {
+      if (busy()) return;
+      const account = accountChoices[platform].find(
+        (item) => accountKey(item) === accountSelects[platform].value,
+      );
+      if (account) selectedAccounts[platform] = { id: account.id, revision: account.revision };
+      else delete selectedAccounts[platform];
+      renderAccounts(platform);
+      syncControls();
+    });
+  }
   listen(elements.provider, "change", () => {
     renderModelChoices(elements.provider.value);
     void saveArchive().catch(() => undefined);
@@ -1054,7 +1176,7 @@ export function mountVideoSearch({
     void saveArchive().catch(() => undefined);
   });
   const ready = (async () => {
-    await refreshModels();
+    await Promise.all([refreshModels(), refreshAccounts()]);
     if (archiveStorage) {
       try {
         const loaded = await archiveStorage.load();
@@ -1078,13 +1200,33 @@ export function mountVideoSearch({
     } catch (error) {
       recoveryError(error);
     }
+    const savedAccounts = saved?.accounts ?? {};
+    const validSavedAccounts =
+      savedAccounts &&
+      typeof savedAccounts === "object" &&
+      !Array.isArray(savedAccounts) &&
+      Object.entries(savedAccounts).every(
+        ([platform, account]) =>
+          PLATFORMS.has(platform) &&
+          Array.isArray(saved?.platforms) &&
+          saved.platforms.includes(platform) &&
+          typeof account?.id === "string" &&
+          account.id &&
+          account.id.length <= 256 &&
+          /^[a-f0-9]{64}$/.test(account.revision || ""),
+      );
     const recoverable =
+      validSavedAccounts &&
       saved &&
       typeof saved.query === "string" &&
       Array.isArray(saved.platforms) &&
       saved.platforms.length &&
       saved.platforms.every((platform) => PLATFORMS.has(platform));
     if (recoverable) {
+      for (const [platform, account] of Object.entries(savedAccounts)) {
+        selectedAccounts[platform] = { id: account.id, revision: account.revision };
+        renderAccounts(platform);
+      }
       elements.query.value = cleanText(saved.query, 1200);
       elements.scope.value = saved.platforms.length === 2 ? "both" : saved.platforms[0];
       if (models.some((model) => model.id === saved.model)) renderProviders(saved.model);
@@ -1114,6 +1256,7 @@ export function mountVideoSearch({
           state.query = cleanText(saved.query, 1200);
           state.model = saved.model || previous.model || elements.model.value;
           state.platforms = [...new Set(saved.platforms)];
+          state.accounts = structuredClone(savedAccounts);
           state.plan = null;
           elements.query.value = state.query;
           elements.scope.value = state.platforms.length === 2 ? "both" : state.platforms[0];
