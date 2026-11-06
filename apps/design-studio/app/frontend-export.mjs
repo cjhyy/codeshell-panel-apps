@@ -12,7 +12,7 @@ import {
 import { designPaintCssImage } from "./paint.mjs";
 import { nativeTextContent } from "./text-content.mjs";
 import { mapTextDisplay, projectTextRanges, validateTextRanges } from "./text-ranges.mjs";
-import { hasDesignStroke, designStrokeSides, strokeLayoutBasisExtra } from "./stroke.mjs";
+import { hasDesignStroke, designStrokeSides, designStrokeOutset, strokeLayoutBasisExtra } from "./stroke.mjs";
 /* Deterministic CodeShell Design v3 to editable HTML/CSS export. */
 import { designFontFaceCss, designFontFamilyCss, designRuntimeFontFamilyCss } from "./font-css.mjs";
 
@@ -399,7 +399,11 @@ function paintDeclarations(node) {
   if (node.type === "ellipse") declarations.push(["border-radius", "50%"]);
   if (node.shadowStack) shadows.push(shadowStackCss(node));
   if (node.shadow) {
-    const shadow = `${cssRoundedNumber(node.shadow.x)} ${cssRoundedNumber(node.shadow.y)} ${cssRoundedNumber(node.shadow.blur)} rgba(${Number.parseInt(node.shadow.color.slice(1, 3), 16)},${Number.parseInt(node.shadow.color.slice(3, 5), 16)},${Number.parseInt(node.shadow.color.slice(5, 7), 16)},${node.shadow.opacity})`;
+    // SVG/Skia drop shadows include the visible stroke in their alpha mask.
+    // CSS shadows start at the border box, so centered/outside paint needs
+    // the same outward extent. Glyph shadows have no CSS spread parameter.
+    const spread = node.type === "text" ? "" : ` ${cssRoundedNumber(designStrokeOutset(node))}`;
+    const shadow = `${cssRoundedNumber(node.shadow.x)} ${cssRoundedNumber(node.shadow.y)} ${cssRoundedNumber(node.shadow.blur)}${spread} rgba(${Number.parseInt(node.shadow.color.slice(1, 3), 16)},${Number.parseInt(node.shadow.color.slice(3, 5), 16)},${Number.parseInt(node.shadow.color.slice(5, 7), 16)},${node.shadow.opacity})`;
     if (node.type === "text") declarations.push(["text-shadow", shadow]);
     else shadows.push(shadow);
   }
@@ -579,6 +583,13 @@ function renderNodeMarkup(node, parent, context) {
     `data-codeshell-name="${escapeHtml(node.name)}"`,
     `style="${escapeHtml(nodeStyle(node, parent, context))}"`,
   ];
+  // This finite hint only disambiguates a generated stroke from ordinary CSS
+  // shadows. Capture also verifies the complete computed pair before using it.
+  if (["frame", "rectangle", "component"].includes(node.type) &&
+      !["inside", "outside"].includes(node.strokeAlign) &&
+      designStrokeSides(node).every(side => side.width > 0 && side.opacity > 0)) {
+    attributes.push(`data-codeshell-stroke="${hasDesignStroke(node) ? "center" : "legacy"}-shadow-v1"`);
+  }
   if (node.notes) attributes.push(`title="${escapeHtml(node.notes)}"`);
   const link = context.idPrefix === "" ? context.prototypeLinks?.get(node.id) : null;
   const hotspot = link

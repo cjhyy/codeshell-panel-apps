@@ -90,12 +90,48 @@ export function strokeScan(image, { x, y, axis = "y", halfWindow = 8, foreground
   }
   return mass > .01 ? { width: mass, centroid: moment / mass } : null;
 }
-export function textGeometryFailures(delta, { scale = 1, align = "left", centroid = true } = {}) {
+export function textGeometryFailures(delta, { scale = 1, align = "left" } = {}) {
   if (!delta.measurable) return ["ink not measurable"];
   const vertical = scale >= 2 ? 2 : 1, edge = align === "left" ? "left" : align === "right" ? "right" : "centroidX";
   const failures = [];
   for (const key of ["top", "bottom"]) if (Math.abs(delta[key]) > vertical) failures.push(`${key} ${delta[key]} > ${vertical}`);
   if (Math.abs(delta[edge]) > (align === "left" ? 1 : 1.5)) failures.push(`${edge} ${delta[edge]} exceeds alignment threshold`);
-  if (centroid && Math.abs(delta.centroidY) > .75) failures.push(`centroidY ${delta.centroidY} > 0.75`);
+  if (Math.abs(delta.centroidY) > .75) failures.push(`centroidY ${delta.centroidY} > 0.75`);
   return failures;
+}
+
+/** Scan four flat sides at three independent positions. Only the contiguous
+ * coverage segment nearest the authored stroke center is used, so an adjacent
+ * same-color interior rule cannot inflate the measured width or centroid. */
+export function strokeEdgeScans(image, { bounds, strokeWidth, strokeAlign = "center", cornerRadius = 0, foreground = [0,0,0], background = [255,255,255], outsideBackground = background }) {
+  const probes=[],unavailable=[];
+  const halfWindow=Math.ceil(strokeWidth+3),inside=strokeAlign==="inside"?strokeWidth/2:strokeAlign==="outside"?-strokeWidth/2:0;
+  for(const edge of ["top","right","bottom","left"]){
+    const horizontal=edge==="top"||edge==="bottom",length=horizontal?bounds.width:bounds.height;
+    const margin=Math.max(cornerRadius+2,3),usable=length-2*margin;
+    if(usable<2){unavailable.push({edge,reasonCode:"STROKE_NO_FLAT_EDGE"});continue;}
+    const normal=edge==="top"?bounds.y+inside:edge==="bottom"?bounds.y+bounds.height-inside:edge==="left"?bounds.x+inside:bounds.x+bounds.width-inside;
+    for(const fraction of [.25,.5,.75]){
+      const along=(horizontal?bounds.x:bounds.y)+margin+usable*fraction,samples=[];
+      for(let coordinate=Math.floor(normal-halfWindow);coordinate<=Math.ceil(normal+halfWindow);coordinate++){
+        let alpha=0,valid=true;
+        for(let across=-1;across<=1;across++){
+          const x=horizontal?Math.floor(along)+across:coordinate,y=horizontal?coordinate:Math.floor(along)+across;
+          if(x<0||y<0||x>=image.width||y>=image.height){valid=false;continue;}
+          const outside=edge==="top"?y+.5<bounds.y:edge==="bottom"?y+.5>bounds.y+bounds.height:edge==="left"?x+.5<bounds.x:x+.5>bounds.x+bounds.width;
+          const index=(y*image.width+x)*4;alpha+=coverage(image.data.subarray(index,index+3),foreground,outside?outsideBackground:background)/3;
+        }
+        samples.push({coordinate,alpha,valid});
+      }
+      const segments=[];let current=[];
+      for(const sample of samples){if(sample.alpha>1/255){current.push(sample);}else if(current.length){segments.push(current);current=[];}}
+      if(current.length)segments.push(current);
+      segments.sort((a,b)=>Math.min(...a.map(s=>Math.abs(s.coordinate+.5-normal)))-Math.min(...b.map(s=>Math.abs(s.coordinate+.5-normal))));
+      const segment=segments[0];
+      if(!segment||segment.some(sample=>!sample.valid)||Math.min(...segment.map(sample=>Math.abs(sample.coordinate+.5-normal)))>strokeWidth/2+2){unavailable.push({edge,fraction,reasonCode:"STROKE_EDGE_INK_NOT_FOUND"});continue;}
+      const width=segment.reduce((sum,sample)=>sum+sample.alpha,0),centroid=segment.reduce((sum,sample)=>sum+(sample.coordinate+.5)*sample.alpha,0)/width;
+      probes.push({edge,fraction,width,centroid,expectedCenter:normal});
+    }
+  }
+  return {measurable:unavailable.length===0&&probes.length===12,probes,unavailable,method:"four edges × three flat positions; nearest contiguous coverage component"};
 }

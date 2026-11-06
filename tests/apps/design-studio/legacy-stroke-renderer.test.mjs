@@ -45,7 +45,7 @@ test("legacy centered stroke is painted before its existing outer shadow", () =>
   const html = exportDesignFrontend(strokeDocument([strokeNode("shape", "rectangle", {
     cornerRadius: 12, shadow: { color: "#000000", opacity: .25, x: 3, y: 5, blur: 8 },
   })]));
-  assert.match(styleFor(html, "shape"), /box-shadow:0 0 0 2px #dc2626,inset 0 0 0 2px #dc2626,3px 5px 8px rgba\(0,0,0,0\.25\)/u);
+  assert.match(styleFor(html, "shape"), /box-shadow:0 0 0 2px #dc2626,inset 0 0 0 2px #dc2626,3px 5px 8px 2px rgba\(0,0,0,0\.25\)/u);
 });
 
 test("legacy text stroke outlines glyphs and keeps text shadow on glyphs", () => {

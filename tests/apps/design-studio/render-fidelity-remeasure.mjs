@@ -25,7 +25,7 @@ for(const path of process.argv.slice(2)){
     report.failures=report.failures.filter(failure=>!(failure.matrix===record.matrix&&failure.page===record.page&&failure.tileIndex===record.tileIndex&&failure.id===entry.id));
     for(const [route,value]of Object.entries(entry.measurements)){
       const before=value.delta;value.delta=geometryDifference(entry.measurements.html.ink,value.ink);value.primaryAvailable=Boolean(value.ink);
-      value.failures=[...textGeometryFailures(value.delta,{scale,align:source.textAlign,centroid:!/[gjpqy]/u.test(source.text)}),...value.failures.filter(reason=>reason.startsWith("pixel"))];
+      value.failures=[...textGeometryFailures(value.delta,{scale,align:source.textAlign}),...value.failures.filter(reason=>reason.startsWith("pixel"))];
       value.gateFailures=value.gating==="coarse-secondary"?value.failures.filter(reason=>reason.startsWith("pixel")):value.gating==="diagnostic"?[]:value.failures;
       changes.push({matrix:record.matrix,page:record.page,id:entry.id,route,before,after:value.delta});
       if(value.gateFailures.length)report.failures.push({matrix:record.matrix,page:record.page,tileIndex:record.tileIndex,id:entry.id,route,failures:value.gateFailures});

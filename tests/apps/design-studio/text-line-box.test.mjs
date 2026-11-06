@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { textHasLineBoxOrigin, textLineBoxAlphabeticOffset, textSvgLineBox } from "../../../apps/design-studio/app/text-line-box.mjs";
+import { textHasLineBoxOrigin, textLineBoxAlphabeticOffset, textLineBoxBaselineY, textSvgLineBox } from "../../../apps/design-studio/app/text-line-box.mjs";
 import { canvasKitTextFontVariations } from "../../../apps/design-studio/app/canvas/canvaskit-text.mjs";
 import { textRangeSourceSignature } from "../../../apps/design-studio/app/text-ranges.mjs";
 import { textMetricsSignature, currentTextMetrics, measuredTextInkBounds } from "../../../apps/design-studio/app/text-metrics.mjs";
@@ -14,7 +14,7 @@ test("line-box font metrics distribute leading without changing authored coordin
   assert.equal(textLineBoxAlphabeticOffset(node, {ascent:19,descent:5}),23);
   assert.equal(textLineBoxAlphabeticOffset({...node,lineHeight:1},{ascent:19,descent:5}),17);
   assert.equal(textLineBoxAlphabeticOffset({...node,lineHeight:43,lineHeightUnit:"pixels"},{ascent:19,descent:5}),28);
-  assert.deepEqual(textSvgLineBox(node,1,{ascent:19,descent:5}),{y:75.25,baseline:"alphabetic"});
+  assert.deepEqual(textSvgLineBox(node,1,{ascent:19,descent:5}),{y:75,baseline:"alphabetic"});
   assert.throws(()=>textLineBoxAlphabeticOffset(node,{ascent:NaN,descent:0}),/finite/);
   assert.deepEqual(node,before);
 });
@@ -34,7 +34,7 @@ test("origin signature invalidates old hanging receipts without changing finite 
   assert.equal(currentTextMetrics({...node,textMetrics}),null);
   assert.equal(currentTextMetrics({...node,layoutBaselineOffset:0,textMetrics}),textMetrics);
   const current={...node,textMetrics:{...textMetrics,signature:textMetricsSignature(node),alphabeticBaseline:23}};
-  assert.deepEqual(measuredTextInkBounds(current),{x:0,y:2,width:70,height:50});
+  assert.deepEqual(measuredTextInkBounds(current),{x:0,y:1.75,width:70,height:50});
 });
 
 test("offline SVG accepts explicit metrics and marks unmeasured fallback rather than certifying it", () => {
@@ -43,8 +43,30 @@ test("offline SVG accepts explicit metrics and marks unmeasured fallback rather 
   assert.match(fallback,/data-text-line-box="unmeasured"/);
   assert.deepEqual(diagnostics,[{code:"TEXT_LINE_BOX_SVG_UNMEASURED",nodeId:"copy"}]);
   const exact=exportDesignSvg(design,{textLineBoxMetrics:new Map([["copy",{ascent:19,descent:5}]])});
-  assert.match(exact,/y="43.25"[^>]*dominant-baseline="alphabetic"/);
+  assert.match(exact,/y="43"[^>]*dominant-baseline="alphabetic"/);
   assert(!exact.includes("unmeasured"));
+});
+
+test("paint baselines follow measured Blink CSS origin and multiline layout quantization", () => {
+  const probe={...node,y:20.5,fontSize:13,lineHeight:1.6};
+  assert.equal(textLineBoxBaselineY(probe,0,15),36);
+  assert.equal(textLineBoxBaselineY(probe,5,15),139,"20.8px line-height accumulates as 20.796875 CSS px");
+  assert.equal(textLineBoxBaselineY({...probe,y:20.499},0,15),35,"layout top truncation must precede paint rounding");
+  assert.equal(textLineBoxBaselineY({...probe,y:0},5,15,{originY:20.5}),118.5,"local pictures retain the original world phase");
+  for(const layoutBaselineOffset of [-12,0,3.25])
+    assert.equal(textLineBoxBaselineY({...probe,layoutBaselineOffset},5,7),131.5,"finite offsets retain their raw line step and origin");
+  assert.equal(probe.y,20.5);
+});
+
+test("derived ink bounds include snapped multiline paint without mutating logical receipts or finite offsets", () => {
+  const probe = {...node,y:20.5,fontSize:13,lineHeight:1.6,text:Array(6).fill("HMI").join("\n")};
+  const receipt = value => ({...value,textMetrics:{version:1,signature:textMetricsSignature(value),
+    lineWidths:Array(6).fill(20),lineInkBounds:Array.from({length:6},()=>({x:0,y:2,width:20,height:10})),
+    alphabeticBaseline:15,height:124.8,fontAvailable:true}});
+  const painted = receipt(probe), before = JSON.stringify(painted);
+  assert.deepEqual(measuredTextInkBounds(painted),{x:0,y:2.5,width:20,height:113});
+  assert.equal(JSON.stringify(painted),before,"paint geometry must not rewrite measurement receipts");
+  assert.deepEqual(measuredTextInkBounds(receipt({...probe,layoutBaselineOffset:0})),{x:0,y:2,width:20,height:114});
 });
 
 

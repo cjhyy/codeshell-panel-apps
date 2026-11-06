@@ -1,6 +1,6 @@
 /* CSS geometric masks. Native painted-alpha effects are deliberately distinct. */
 import { effectiveCornerRadii } from "./corner-radii.mjs";
-import { designStrokeSides } from "./stroke.mjs";
+import { designStrokeSides, designStrokeOutset } from "./stroke.mjs";
 const object = value => value && typeof value === "object" && !Array.isArray(value);
 const keys = (value, allowed) => Object.keys(value).every(key => allowed.includes(key));
 const finite = (value, min, max) => typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
@@ -60,7 +60,8 @@ export function shadowMaskGeometry(node) {
 export function shadowStackCss(node) {
   return (node.shadowStack?.layers ?? []).filter(layer => layer.visible).map(layer => {
     const rgb = [1, 3, 5].map(i => Number.parseInt(layer.color.slice(i, i + 2), 16));
-    return `${layer.kind === "inner" ? "inset " : ""}${layer.x}px ${layer.y}px ${layer.blur}px 0px rgba(${rgb.join(",")},${layer.opacity})`;
+    const spread = layer.kind === "inner" ? 0 : designStrokeOutset(node);
+    return `${layer.kind === "inner" ? "inset " : ""}${layer.x}px ${layer.y}px ${layer.blur}px ${fmt(spread)}px rgba(${rgb.join(",")},${layer.opacity})`;
   }).join(",");
 }
 export function shadowStackSvg(node, id) {

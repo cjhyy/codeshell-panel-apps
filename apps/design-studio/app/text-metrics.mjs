@@ -1,5 +1,5 @@
 import { textLineHeightPixels } from "./text-line-height.mjs";
-import { textHasLineBoxOrigin, textLineBoxAlphabeticOffset } from "./text-line-box.mjs";
+import { textHasLineBoxOrigin, textLineBoxAlphabeticOffset, textLineBoxBaselineY } from "./text-line-box.mjs";
 import { validateTextRanges, projectTextRanges, textRangeTypography } from "./text-ranges.mjs";
 /* Browser measurements are receipts for specific text and typography, not audit exemptions. */
 import { designFontFamilyCss } from "./font-css.mjs";
@@ -82,6 +82,8 @@ export function validTextMetrics(metrics) {
 export function measuredTextInkBounds(node) {
   const metrics = currentTextMetrics(node);
   if (!metrics) return null;
+  const lineOffsets = textDisplayLineMetrics(node).offsets;
+  const snapped = textHasLineBoxOrigin(node) && Number.isFinite(metrics.alphabeticBaseline) && !textRangeTypography(node, false).length;
   const boxes = metrics.lineInkBounds
     .map((box, index) => {
       const offset =
@@ -92,7 +94,11 @@ export function measuredTextInkBounds(node) {
             : 0;
       return {
         x: box.x + offset,
-        y: box.y + textDisplayLineMetrics(node).offsets[index],
+        // Receipts stay in the logical line box. Consumers of this derived
+        // union (SVG page bounds and explicit repair) need the painted extent.
+        y: box.y + (snapped
+          ? textLineBoxBaselineY(node, index, metrics.alphabeticBaseline) - node.y - metrics.alphabeticBaseline
+          : lineOffsets[index]),
         width: box.width,
         height: box.height,
       };
@@ -164,7 +170,6 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
   documentValue.body.append(lineBox);
   const range = documentValue.createRange();
   range.selectNodeContents(lineBox);
-  const baselineOffsets = new Map(), fontBoxMetrics = new Map();
   const context = documentValue.createElement("canvas").getContext("2d");
   if (!context) {
     svg.remove();
@@ -218,13 +223,9 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
       alphabeticBaseline = alphabetic.actualBoundingBoxAscent - hanging.actualBoundingBoxAscent;
       const lineBoxOrigin = textHasLineBoxOrigin(node) && !typographyRuns.length;
       if (lineBoxOrigin) {
-        const key = context.font;
-        let metrics = fontBoxMetrics.get(key);
-        if (!metrics) {
-          metrics = { ascent: alphabetic.fontBoundingBoxAscent, descent: alphabetic.fontBoundingBoxDescent };
-          textLineBoxAlphabeticOffset(node, metrics);
-          fontBoxMetrics.set(key, metrics);
-        }
+        // measureText already ran above. Reuse its current loaded-font metrics,
+        // not an earlier fallback retained under the same CSS font shorthand.
+        const metrics = { ascent: alphabetic.fontBoundingBoxAscent, descent: alphabetic.fontBoundingBoxDescent };
         alphabeticBaseline = textLineBoxAlphabeticOffset(node, metrics);
       }
       context.textBaseline = lineBoxOrigin ? "alphabetic" : "hanging";
@@ -241,8 +242,9 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
       });
     },
     lineBoxOffset(node) {
-      const key = textSourceMetricsSignature(node);
-      if (baselineOffsets.has(key)) return baselineOffsets.get(key);
+      // FontFace.load()/FontFaceSet.add() can replace a fallback without a
+      // loadingdone event. Read the current DOM geometry instead of retaining
+      // a fallback result under a font-independent source signature.
       Object.assign(lineBox.style, {
         fontFamily: designFontFamilyCss(node.fontFamily),
         fontSize: `${node.fontSize}px`,
@@ -266,7 +268,6 @@ export function createBrowserTextMeasurer(documentValue = globalThis.document) {
       text.setAttribute("dominant-baseline", savedBaseline); text.setAttribute("y", savedY);
       if (!Number.isFinite(offset) || Math.abs(offset) > 100)
         throw Error("浏览器文字行框与 hanging 基线差值超过支持范围");
-      baselineOffsets.set(key, offset);
       return offset;
     },
     measure(value, sourceStart = 0) {

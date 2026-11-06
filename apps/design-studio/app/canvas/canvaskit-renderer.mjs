@@ -573,7 +573,10 @@ export async function createRenderer({
             delete local.shadow;
             delete local.name;
             delete local.locked;
-            const signature = JSON.stringify([local, text.rasterScaleForNode?.(node) ?? 2, text.rasterSamplingForNode?.(node)]);
+            const originPhase = node.type === "text" && !Number.isFinite(node.layoutBaselineOffset)
+              ? [node.y - Math.floor(node.y), node.y < 0,
+                  node.textAlign === "center" ? Math.trunc(node.x * 64) / 64 - node.x : null] : null;
+            const signature = JSON.stringify([local, originPhase, text.rasterScaleForNode?.(node) ?? 2, text.rasterSamplingForNode?.(node)]);
             let entry = nextNodePictures.get(node.id);
             if (entry?.signature === signature) {
               nodePictureHits++;
@@ -744,7 +747,7 @@ export async function createRenderer({
         ? design.nodes.filter((node) => node.type === "text" &&
             isDesignNodeVisible(design, node, index) &&
             ![...ancestors(node, index), node].some((item) => item.rotation))
-          .map((node) => ({ id: node.id, bounds: text.contentBounds(node),
+          .map((node) => ({ id: node.id, legacyOrigin: Number.isFinite(node.layoutBaselineOffset), bounds: text.contentBounds(node),
             pad: 0, origin: { x: node.x - Math.floor(node.x), y: node.y - Math.floor(node.y) } }))
         : [];
       deviceCandidateOrigins = new Map(deviceTextCandidates.map((candidate) => [candidate.id, candidate.origin]));
@@ -879,7 +882,7 @@ export async function createRenderer({
     // Match Skia's float32 matrix composition, including tiny residues left by
     // public wheel controls even when the effective device transform is exact.
     const physicalScale = Math.fround(Math.fround(zoom) * Math.fround(dpr));
-    const deviceEligible = deviceTextSampling && !hasInstances && physicalScale === 1 &&
+    const deviceEligible = deviceTextSampling && !hasInstances && Number.isInteger(physicalScale) && physicalScale >= 1 &&
       Number.isInteger(Math.fround(Math.fround(pan.x) * Math.fround(dpr))) &&
       Number.isInteger(Math.fround(Math.fround(pan.y) * Math.fround(dpr)));
     const qualityNeeded = zoom * dpr > 2 || hasInstances;
@@ -896,8 +899,8 @@ export async function createRenderer({
       const visibleNodeIds = new Set(),
         nodeScales = new Map(),
         deviceOrigins = new Map();
-      // Native pixel coverage is meaningful only at physical 1x with an integer
-      // device translation. All other transforms retain the high-resolution
+      // Native coverage is sampled on the current integer physical grid with an
+      // integer device translation. Other transforms retain the high-resolution
       // master. A shared component picture can also be used by scaled/rotated
       // instances, so scenes containing instances conservatively use masters.
       const overlaps = (bounds, pad = 0) =>
@@ -907,9 +910,14 @@ export async function createRenderer({
         bounds.y - pad < viewport.y + viewport.height &&
         bounds.y + bounds.height + pad > viewport.y;
       if (deviceEligible) for (const candidate of deviceTextCandidates)
-        if (overlaps(candidate.bounds, candidate.pad)) deviceOrigins.set(candidate.id, candidate.origin);
+        // Finite imported offsets preserve their historical master pixels at >1x.
+        if ((!candidate.legacyOrigin || physicalScale === 1) && overlaps(candidate.bounds, candidate.pad)) deviceOrigins.set(candidate.id, candidate.origin);
       if (qualityNeeded) for (const node of nodes) {
         if (node.type !== "text" || !isDesignNodeVisible(currentDesign, node, index)) continue;
+        // Eligible integer-scale variants are optional and use the exact
+        // physical scale. Do not first force a larger power-of-two master:
+        // that allocation could throw before the bounded fallback is tried.
+        if (deviceOrigins.has(node.id)) continue;
         const bounds = transformedNodeBoundsInTree(sceneNodes, node, index),
           pad = node.fontSize * 2;
         if (overlaps(bounds, pad)) {
@@ -955,6 +963,7 @@ export async function createRenderer({
         sceneState.setRasterScale(zoom * dpr, { visibleNodeIds, nodeScales });
       const samplingChanged = sceneState.setDeviceSampling?.(deviceOrigins, {
         retainOffscreen: deviceEligible, eligibleOrigins: deviceCandidateOrigins,
+        scale: deviceEligible ? physicalScale : 1,
       });
       if (qualityChanged || samplingChanged) recordCurrentScene(Boolean(qualityChanged));
     }
@@ -990,6 +999,9 @@ export async function createRenderer({
       backend: "WebGL2",
       gpuRenderer,
       ...sceneStats,
+      // Optional device allocations may all fall back without changing the
+      // display list. Their live budget diagnostics still belong in this frame.
+      ...sceneState?.stats?.(),
       pictureBuilds: builds,
       sceneRevision,
       resourceBuilds,

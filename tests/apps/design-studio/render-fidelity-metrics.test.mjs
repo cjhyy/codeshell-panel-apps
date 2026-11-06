@@ -49,3 +49,14 @@ test("missing requested fonts are explicit fallback-only omissions, while unused
   assert.deepEqual(fidelityFontOmissions([{family:"PingFang SC",available:false},{family:"Arial",available:true},{family:"Fidelity Inter",available:false}],pages),[{family:"PingFang SC",cases:[{page:"lines",id:"cjk"}],status:"fallback-only; requested font not certified"}]);
   assert.deepEqual(fidelityFontOmissions([{family:"PingFang SC",available:true},{family:"Arial",available:true}],pages),[]);
 });
+
+test("centroid threshold is mandatory for every text, including legacy opt-out callers and descenders", () => {
+  const aligned={measurable:true,left:0,top:0,right:0,bottom:0,centroidX:0,centroidY:0};
+  for(const text of ["HMI", "gypqj", "中文 gypqj", ""]){
+    for(const centroidY of [-.8,.8]){
+      const failures=textGeometryFailures({...aligned,centroidY},{text,centroid:false});
+      assert.deepEqual(failures,[`centroidY ${centroidY} > 0.75`],"legacy callers cannot silently waive the shared centroid threshold");
+    }
+  }
+  assert.deepEqual(textGeometryFailures({...aligned,centroidY:.75},{centroid:false}),[],"the existing inclusive threshold is unchanged");
+});
