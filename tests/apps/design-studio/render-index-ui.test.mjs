@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   launchCanvasBrowser,
   canvasMime,
   gpuActive,
+  frames,
   metadata,
   viewport,
   readNode,
@@ -104,10 +105,10 @@ function documentFixture() {
   });
 }
 
-async function fixture(t, document, { instrument = false } = {}) {
+async function fixture(t, document, { instrument = false, dpr = 1 } = {}) {
   const browser = await launchCanvasBrowser();
   t.after(() => browser.close());
-  const page = await browser.newPage({ viewport: { width: 1500, height: 960 } });
+  const page = await browser.newPage({ viewport: { width: 1500, height: 960 }, deviceScaleFactor: dpr });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.route("**/*", async (route) => {
@@ -266,7 +267,7 @@ test("a render-local index preserves ancestor rotation, clipping, opacity and lo
 });
 
 test("a detached cross-page component uses its own index and excludes the source's outside ancestors", async (t) => {
-  const { page, errors } = await fixture(t, documentFixture());
+  const { page, errors } = await fixture(t, documentFixture(), { dpr: 2 });
   const ancestor = await readNode(page, "source-ancestor");
   assert.equal(ancestor.visible, false);
   assert.equal(ancestor.locked, true);
@@ -276,6 +277,53 @@ test("a detached cross-page component uses its own index and excludes the source
   await clickWorld(page, renderedCenter);
   assert.deepEqual((await metadata(page)).selection, ["instance"]);
   assert.equal(await page.locator("#prop-x").isDisabled(), false);
+  await page.evaluate(() => {
+    window.addEventListener("wheel", (event) => {
+      window.__instanceWheel = { deltaX: event.deltaX, isTrusted: event.isTrusted };
+    }, { capture: true });
+    const strokeRect = CanvasRenderingContext2D.prototype.strokeRect;
+    CanvasRenderingContext2D.prototype.strokeRect = function (x, y, width, height) {
+      if (this.canvas.id === "stage" && this.strokeStyle === "#4f7cff") {
+        const m = this.getTransform();
+        window.__instanceOverlay = {
+          x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f,
+          width: m.a * width, height: m.d * height,
+        };
+      }
+      return strokeRect.call(this, x, y, width, height);
+    };
+  });
+  const before = await viewport(page);
+  const pointer = await canvasPoint(page, renderedCenter);
+  await page.mouse.move(pointer.x, pointer.y);
+  // Chromium scales the CDP wheel input by DPR; assert the actual trusted DOM event.
+  await page.mouse.wheel(3.25 * 2, 0);
+  await page.waitForFunction((x) => Math.abs(
+    document.querySelector("#stage").getContext("2d").getTransform().e / devicePixelRatio - x + 3.25,
+  ) < 0.01, before.pan.x);
+  await frames(page);
+  await clickWorld(page, renderedCenter);
+  await frames(page);
+  nearColor(await worldPixel(page, renderedCenter), [136, 136, 136]);
+  assert.deepEqual((await metadata(page)).selection, ["instance"]);
+  const after = await viewport(page);
+  const proof = await page.evaluate(() => ({ wheel: window.__instanceWheel, overlay: window.__instanceOverlay }));
+  assert.deepEqual(proof.wheel, { deltaX: 3.25, isTrusted: true });
+  assert.ok(Math.abs(after.pan.x - before.pan.x + 3.25) < 0.01);
+  const expected = {
+    x: (500 * after.zoom + after.pan.x) * 2,
+    y: (100 * after.zoom + after.pan.y) * 2,
+    width: 200 * after.zoom * 2, height: 100 * after.zoom * 2,
+  };
+  assert.ok(proof.overlay, "selected instance must draw an overlay");
+  const maximumDeviceDelta = Math.max(...Object.keys(expected).map((key) => Math.abs(expected[key] - proof.overlay[key])));
+  assert.ok(maximumDeviceDelta <= 0.5, JSON.stringify({ ...proof, expected, maximumDeviceDelta }));
+  if (process.env.DESIGN_INSTANCE_EVIDENCE) {
+    const folder = resolve(process.env.DESIGN_INSTANCE_EVIDENCE);
+    await mkdir(folder, { recursive: true });
+    await page.screenshot({ path: resolve(folder, "dpr2-fractional-instance-gui.png") });
+    await writeFile(resolve(folder, "report.json"), JSON.stringify({ before, after, ...proof, expected, maximumDeviceDelta }, null, 2));
+  }
   assert.deepEqual(errors, []);
 });
 

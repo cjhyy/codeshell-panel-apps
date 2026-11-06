@@ -15,7 +15,7 @@ export function renderFidelityFixture({ textRangeSourceSignature } = {}) {
   const samples=[{label:"latin",value:"HELLO HMI",family:"Arial"},{label:"cjk",value:"中文渲染保真",family:'"PingFang SC", sans-serif'},{label:"mixed",value:"中文 Hello 123",family:'system-ui, sans-serif'}];
   const lines=lineHeights.flatMap((lineHeight,row)=>samples.map((sample,column)=>text(`${sample.label}-lh-${row}`,20+column*212,18+row*80,188,56,sample.value,{fontFamily:sample.family,lineHeight,...(row===4?{lineHeightUnit:"pixels",lineHeight:30}:{})})));
   const variations=[
-    text("inter-bytes",20,20,270,44,"Inter HMI 123",{fontFamily:"Fidelity Inter",fontRef:"fidelity-inter",fontWeight:600,lineHeight:1.6}),
+    text("inter-bytes",20,20,270,44,"Inter HMI 123",{fontFamily:"Fidelity Inter",fontRef:"fidelity-inter",fontWeight:600,fontSize:32,lineHeight:1.15}),
     text("fallback",340,20,290,44,"中文 fallback HMI",{fontFamily:'"Absent Fidelity Font", Arial, sans-serif'}),
     text("center-spacing",20,85,280,52,"HMI AV W",{fontWeight:700,letterSpacing:1.25,textAlign:"center",lineHeight:2}),
     text("right-spacing",340,85,280,52,"HMI AV W",{fontWeight:500,letterSpacing:.75,textAlign:"right",lineHeight:1.2}),
@@ -25,6 +25,7 @@ export function renderFidelityFixture({ textRangeSourceSignature } = {}) {
     text("opacity-text",340,235,280,60,"HMI OPACITY",{opacity:.6,fontWeight:700}),
     text("multi-line",20,325,290,90,"First HMI\nSecond HMI\nThird HMI",{lineHeight:1.2}),
     text("finite-offset-negative",340,325,280,66,"Legacy HMI",{layoutBaselineOffset:-3,lineHeight:2}),
+    text("default-inter",20,403,300,38,"Default Inter HMI",{fontFamily:"Inter",fontSize:32,fontWeight:600,lineHeight:1.15}),
     text("finite-offset-native",340,403,280,28,"Native HMI",{fontFamily:"Fidelity Inter",fontRef:"fidelity-inter",fontSize:16,fontWeight:600,layoutBaselineOffset:3.5,lineHeight:1.2}),
   ];
   const shapes=[
@@ -40,6 +41,9 @@ export function renderFidelityFixture({ textRangeSourceSignature } = {}) {
     fidelityNode("shadow","rectangle",505,250,115,70,{fill:"#eeeeee",stroke:"#111111",strokeWidth:2,shadow:{color:"#000000",opacity:.25,x:4,y:6,blur:8}}),
     fidelityNode("shadow-stack","rectangle",20,355,200,60,{fill:"#eeeeee",shadowStack:{basis:"css-box",layers:[{kind:"outer",color:"#000000",opacity:.25,x:3,y:4,blur:4,spread:0,visible:true},{kind:"inner",color:"#000000",opacity:.2,x:2,y:2,blur:3,spread:0,visible:true}]}}),
     fidelityNode("opacity","rectangle",350,355,120,60,{fill:"#2266cc",opacity:.5}),
+    fidelityNode("stop-square","rectangle",260.375,365.25,12.25,12.5,{fill:"#2266cc"}),
+    fidelityNode("fill-ellipse","ellipse",290.25,365.375,18.5,12.25,{fill:"#2266cc"}),
+    fidelityNode("round-icon","rectangle",505.25,355.375,24,24,{fill:"#ffffff",stroke:"#111111",strokeWidth:2,cornerRadius:12}),
   ];
   return {format:"codeshell.design",version:3,name:"Render fidelity B0 matrix",canvas:{width:640,height:440,background:"#ffffff"},tokens:{colors:[]},resources:[],activePageId:"lines",pages:[{id:"lines",name:"Line boxes",children:lines},{id:"variants",name:"Text variants",children:variations},{id:"geometry",name:"Stroke and geometry",children:shapes}]};
 }

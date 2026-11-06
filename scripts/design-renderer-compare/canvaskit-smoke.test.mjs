@@ -244,8 +244,10 @@ test("CanvasKit GPU display list preserves clipping, opacity, rotation, gradient
     const stats = await page.evaluate(() => renderer.stats());
     assert.equal(stats.backend, "WebGL2");
     assert.equal(stats.missingImages, 2);
-    assert.equal(stats.nativeTextNodes, 1);
-    assert.equal(stats.rasterTextNodes, 1);
+    // Plain supplied fonts now use the same browser raster as ordinary system
+    // text. The gradient test below keeps the native glyph-paint path covered.
+    assert.equal(stats.nativeTextNodes, 0);
+    assert.equal(stats.rasterTextNodes, 2);
     assert.equal(stats.textLines, 3);
     assert.equal(stats.nativeMissingGlyphs, 0);
     assert.equal(stats.unrenderedTextLines, 0);

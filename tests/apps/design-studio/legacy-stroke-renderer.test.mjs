@@ -41,11 +41,19 @@ test("legacy centered strokes never create a CSS border or change the containing
   assert.equal(JSON.stringify(document), before, "rendering must not rewrite saved geometry");
 });
 
-test("legacy centered stroke is painted before its existing outer shadow", () => {
-  const html = exportDesignFrontend(strokeDocument([strokeNode("shape", "rectangle", {
-    cornerRadius: 12, shadow: { color: "#000000", opacity: .25, x: 3, y: 5, blur: 8 },
-  })]));
-  assert.match(styleFor(html, "shape"), /box-shadow:0 0 0 2px #dc2626,inset 0 0 0 2px #dc2626,3px 5px 8px 2px rgba\(0,0,0,0\.25\)/u);
+test("legacy centered stroke retains its outer shadow on square and rounded leaves", () => {
+  for (const cornerRadius of [0, 12]) {
+    const html = exportDesignFrontend(strokeDocument([strokeNode("shape", "rectangle", {
+      cornerRadius, shadow: { color: "#000000", opacity: .25, x: 3, y: 5, blur: 8 },
+    })]));
+    const style = styleFor(html, "shape");
+    if (cornerRadius) {
+      assert.match(style, /outline:4px solid #dc2626;outline-offset:-2px/u);
+      assert.match(style, /box-shadow:3px 5px 8px 2px rgba\(0,0,0,0\.25\)/u);
+    } else {
+      assert.match(style, /box-shadow:0 0 0 2px #dc2626,inset 0 0 0 2px #dc2626,3px 5px 8px 2px rgba\(0,0,0,0\.25\)/u);
+    }
+  }
 });
 
 test("legacy text stroke outlines glyphs and keeps text shadow on glyphs", () => {

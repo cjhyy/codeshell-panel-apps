@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { resolve, join, extname, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { chromium } from "playwright";
 import { PNG } from "pngjs";
 import { fidelityFontOmissions, renderFidelityFixture } from "./render-fidelity.fixture.mjs";
-import { FIDELITY_THRESHOLDS, geometryDifference, inkGeometry, parseRgb, strokeEdgeScans, symmetricPixelDifference, textGeometryFailures } from "./render-fidelity.metrics.mjs";
-import { compareGeometryProbe } from "./render-fidelity-geometry.mjs";
+import { FIDELITY_THRESHOLDS, geometryDifference, inkGeometry, parseRgb, strokeContourScans, shapeGeometryFailures, shapePixelQualification, symmetricPixelDifference, textGeometryFailures } from "./render-fidelity.metrics.mjs";
+import { compareGeometryProbe, compareRotationGeometry } from "./render-fidelity-geometry.mjs";
 import { isolateFidelityDesign, selectUniqueMeasurements, classifyHtmlPixelSnap, fidelityCounts, stitchFidelityTiles, fidelityIsolationPlan } from "./render-fidelity-attribution.mjs";
 
 // The baseline directory must be an exact git archive. Both Node exports and
@@ -22,12 +22,13 @@ const { textRangeSourceSignature } = await load("text-ranges.mjs");
 const { createDesignResourcePersistencePlan } = await load("resource-store.mjs");
 const { createDesignIndexPersistencePlan } = await load("document-index.mjs");
 const { applyAllAutoLayouts } = await load("layout.mjs");
+const { prepareBuiltinDesignFontResources } = await load("builtin-fonts.mjs");
 const origin = "https://render-fidelity.test", sourcePath = "designs/render-fidelity.codesign.json";
-const output = resolve(process.env.DESIGN_FIDELITY_EVIDENCE ?? ".tmp/render-fidelity-r002/current");
+const output = resolve(process.env.DESIGN_FIDELITY_EVIDENCE ?? ".tmp/render-fidelity-r003/current");
 const diagnostic = process.env.DESIGN_FIDELITY_MODE === "diagnostic";
 const isolateAllText = process.env.DESIGN_FIDELITY_ISOLATE_TEXT === "1";
 const hash = value => createHash("sha256").update(typeof value === "string" || ArrayBuffer.isView(value) ? value : JSON.stringify(value)).digest("hex");
-const matrix = [ {id:"dpr1-zoom1",dpr:1,zoom:1}, {id:"dpr2-zoom1",dpr:2,zoom:1}, {id:"dpr1-zoom2",dpr:1,zoom:2}, {id:"dpr1-zoom05",dpr:1,zoom:.5} ]
+const matrix = [ {id:"dpr1-zoom1",dpr:1,zoom:1}, {id:"dpr2-zoom1",dpr:2,zoom:1}, {id:"dpr1-zoom2",dpr:1,zoom:2}, {id:"dpr1-zoom05",dpr:1,zoom:.5}, {id:"dpr2-zoom1-fractionalpan",dpr:2,zoom:1,deltaX:3.25}, {id:"dpr1-fit-view",dpr:1,zoom:1,fitView:true,diagnostic:true} ]
   .filter(item => !process.env.DESIGN_FIDELITY_MATRIX || process.env.DESIGN_FIDELITY_MATRIX.split(",").includes(item.id));
 const frames = page => page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
 
@@ -53,6 +54,9 @@ async function dataset() {
     // Author the synthetic source in its canonical layout once. Every route
     // then receives these same coordinates, including the fake Host's GPU path.
     for(const page of design.pages)applyAllAutoLayouts(page.nodes);
+    const builtin=await prepareBuiltinDesignFontResources(design,{readBytes:url=>readFile(url),sha256Bytes:hash});
+    for(const plan of builtin.resourcePlans)parts.push(...plan.parts);
+    for(const face of builtin.faces)dataUrls.set(face.descriptor.id,`data:${face.descriptor.mime};base64,${Buffer.from(face.bytes).toString("base64")}`);
   }
   const serialized = serializeDesignDocument(design);
   assert.equal(serializeDesignDocument(normalizeDesignDocument(JSON.parse(serialized))),serialized,"opening/serializing without edits is stable");
@@ -105,6 +109,9 @@ async function editor(browser, item, data) {
     throw Error(`Unsupported fake Host method ${method}`);
   });
   await page.addInitScript(()=>{
+    window.addEventListener("wheel",event=>{window.__fidelityWheel={deltaX:event.deltaX,deltaY:event.deltaY,isTrusted:event.isTrusted,deltaMode:event.deltaMode};},{capture:true});
+    const originalStrokeRect=CanvasRenderingContext2D.prototype.strokeRect;
+    CanvasRenderingContext2D.prototype.strokeRect=function(x,y,width,height){if(this.canvas.id==="stage"&&this.strokeStyle==="#4f7cff"){const m=this.getTransform();window.__fidelityOverlay={x:m.a*x+m.c*y+m.e,y:m.b*x+m.d*y+m.f,width:m.a*width,height:m.d*height,matrix:{a:m.a,b:m.b,c:m.c,d:m.d,e:m.e,f:m.f}};}return originalStrokeRect.call(this,x,y,width,height);};
     window.tools={}; window.codeshellPanel={getContext:async()=>({trusted:true,busy:false,cwd:"/render-fixture",sessionId:"render-fixture",capabilities:{packageAssets:{wasm:true,fetch:"package"}},availableMethods:["workspace.info","workspace.list","workspace.readText","workspace.writeText","storage.get","storage.set","storage.delete","storage.getSnapshot","storage.compareAndSet"]}),on(){},registerTool(name,callback){window.tools[name]=callback;},call:(method,params)=>window.hostBridge(method,params)};
   });
   await page.goto(`${origin}/index.html`);
@@ -160,12 +167,17 @@ function backgroundFor(node,nodes,canvas) {
   }
   return parseRgb(canvas.background)??[255,255,255];
 }
+const isFillShape=node=>["frame","component","group","rectangle","ellipse"].includes(node.type)&&!(node.strokeWidth>0)&&!node.strokeSides&&Boolean(parseRgb(node.fill));
+const isFillLeaf=(node,nodes)=>isFillShape(node)&&!nodes.some(child=>child.parentId===node.id);
+const hasTextDescendants=(node,nodes)=>{const index=new Map(nodes.map(entry=>[entry.id,entry]));return nodes.some(child=>{if(child.type!=="text"||child.visible===false||child.opacity===0)return false;for(let parent=index.get(child.parentId),seen=new Set();parent&&!seen.has(parent.id);parent=index.get(parent.parentId)){if(parent.id===node.id)return true;seen.add(parent.id);}return false;});};
+const isRequested=(node,nodes)=>node.visible!==false&&(node.type==="text"||node.strokeWidth>0||node.strokeSides||isFillShape(node));
 function compareNodes(images,nodes,tile,item,canvas,real,{targetId}={}) {
   const scale=item.dpr*item.zoom,rows=[];
   for(const node of nodes){
     if(targetId&&node.id!==targetId)continue;
-    if(node.visible===false||!(node.type==="text"||node.strokeWidth>0||node.strokeSides||["radius","rotation","shadow","shadow-stack","opacity","button-edge","selector-edge","clipped-child"].includes(node.id)))continue;
-    const inset=8,clearance=Math.min(node.x-inset-tile.x,node.y-inset-tile.y,tile.x+tile.width-node.x-node.width-inset,tile.y+tile.height-node.y-node.height-inset),complete=clearance>=-1e-6;
+    if(!isRequested(node,nodes)&&!["radius","rotation","shadow","shadow-stack","opacity","button-edge","selector-edge","clipped-child"].includes(node.id))continue;
+    const fillLeaf=isFillShape(node);
+    const angle=(node.rotation??0)*Math.PI/180,inset=Math.max(8,(Math.abs(node.width*Math.cos(angle))+Math.abs(node.height*Math.sin(angle))-node.width)/2+4,(Math.abs(node.width*Math.sin(angle))+Math.abs(node.height*Math.cos(angle))-node.height)/2+4),clearance=Math.min(node.x-inset-tile.x,node.y-inset-tile.y,tile.x+tile.width-node.x-node.width-inset,tile.y+tile.height-node.y-node.height-inset),complete=clearance>=-1e-6;
     if(node.x+node.width<=tile.x||node.x>=tile.x+tile.width||node.y+node.height<=tile.y||node.y>=tile.y+tile.height)continue;
     const left=Math.max(node.x-inset,tile.x),top=Math.max(node.y-inset,tile.y),right=Math.min(node.x+node.width+inset,tile.x+tile.width),bottom=Math.min(node.y+node.height+inset,tile.y+tile.height);
     const roi={x:(left-tile.x)*scale,y:(top-tile.y)*scale,width:(right-left)*scale,height:(bottom-top)*scale},background=backgroundFor(node,nodes,canvas);
@@ -173,7 +185,7 @@ function compareNodes(images,nodes,tile,item,canvas,real,{targetId}={}) {
     if(node.type==="text"&&node.strokeWidth>0&&foreground&&background&&foreground.every((v,i)=>v===background[i]))foreground=parseRgb(node.stroke);
     const diagnosticReasons=[];
     if(Number.isFinite(node.layoutBaselineOffset))diagnosticReasons.push("FINITE_OFFSET_COMPATIBILITY_ONLY");
-    if(node.rotation)diagnosticReasons.push("ROTATED_AXIS_ALIGNED_INK_ROI");
+    if(node.rotation&&!fillLeaf)diagnosticReasons.push("ROTATED_AXIS_ALIGNED_INK_ROI");
     const measurements={};
     for(const route of ["gpu","browser","svg","html"]){
       const image=images[route];
@@ -182,8 +194,9 @@ function compareNodes(images,nodes,tile,item,canvas,real,{targetId}={}) {
       const ink=foreground&&background?inkGeometry(image,{roi,foreground,foregrounds,background}):null;
       const value=measurements[route]={ink,pixel,cropSha256:hash(crop(image,roi)),unavailableReasonCodes:[]};
       value.geometryProbe=compareGeometryProbe(images.html,image,{node,tile,scale});
+      if(fillLeaf&&node.rotation)value.geometryProbe={kind:"rotation",...compareRotationGeometry(images.html,image,{roi,foreground,background})};
       if(node.strokeWidth>0&&node.type!=="text"&&!node.rotation){
-        value.strokeEdges=strokeEdgeScans(image,{bounds:{x:(node.x-tile.x)*scale,y:(node.y-tile.y)*scale,width:node.width*scale,height:node.height*scale},strokeWidth:node.strokeWidth*scale,strokeAlign:node.strokeAlign,cornerRadius:(node.cornerRadius??0)*scale,
+        value.strokeEdges=strokeContourScans(image,{shape:node.type,bounds:{x:(node.x-tile.x)*scale,y:(node.y-tile.y)*scale,width:node.width*scale,height:node.height*scale},strokeWidth:node.strokeWidth*scale,strokeAlign:node.strokeAlign,cornerRadius:(node.cornerRadius??0)*scale,
           foreground:parseRgb(node.stroke)??[0,0,0],background:parseRgb(node.fill)??background??[255,255,255],outsideBackground:background??[255,255,255]});
       }
     }
@@ -203,27 +216,37 @@ function compareNodes(images,nodes,tile,item,canvas,real,{targetId}={}) {
         if(!value.unavailableReasonCodes.length)value.unavailableReasonCodes.push("INK_NOT_FOUND");
         value.unavailableReasonCodes=[...new Set(value.unavailableReasonCodes)];
       }
+      if(node.strokeSides&&!(node.strokeWidth>0)){value.primaryAvailable=false;value.unavailableReasonCodes.push("ASYMMETRIC_STROKE_CONTOUR_UNSUPPORTED");}
       if(node.type==="text"&&!diagnosticReasons.length)value.failures.push(...textGeometryFailures(value.delta,{scale,align:node.textAlign}));
+      if(fillLeaf&&!node.rotation)value.failures.push(...shapeGeometryFailures(value.delta));
       if(value.strokeEdges&&measurements.html.strokeEdges){
         value.strokeDeltas=value.strokeEdges.probes.flatMap(probe=>{const reference=measurements.html.strokeEdges.probes.find(other=>other.edge===probe.edge&&other.fraction===probe.fraction);return reference?[{edge:probe.edge,fraction:probe.fraction,centroid:probe.centroid-reference.centroid,width:probe.width-reference.width}]:[];});
+        const actualIndexes=value.strokeEdges.probes.map(probe=>probe.index),referenceIndexes=measurements.html.strokeEdges.probes.map(probe=>probe.index);
+        value.strokeContourCoverage={matched:value.strokeDeltas.length,referenceVisible:referenceIndexes.length,actualVisible:actualIndexes.length,excludedReference:measurements.html.strokeEdges.unavailable,excludedActual:value.strokeEdges.unavailable};
+        if(value.strokeDeltas.length<16||actualIndexes.some(index=>!referenceIndexes.includes(index))||referenceIndexes.some(index=>!actualIndexes.includes(index))){value.primaryAvailable=false;value.unavailableReasonCodes.push("STROKE_CONTOUR_VISIBILITY_MISMATCH_OR_TOO_FEW_MATCHED");}
         for(const delta of value.strokeDeltas){
           if(Math.abs(delta.centroid)>.35)value.failures.push(`stroke ${delta.edge}@${delta.fraction} centroid ${delta.centroid} > .35`);
           if(Math.abs(delta.width)>.35)value.failures.push(`stroke ${delta.edge}@${delta.fraction} width ${delta.width} > .35`);
         }
         if(strokeClassification&&["gpu","svg"].includes(route))value.strokeClassification=strokeClassification;
       }
+      const geometryFailures=[...value.failures];value.geometryFailures=geometryFailures;
+      value.geometryScope=node.strokeSides&&!(node.strokeWidth>0)?"unsupported-asymmetric-stroke":fillLeaf?(isFillLeaf(node,nodes)?"own-fill-leaf":"visible-composite-fill-with-descendant-occlusion"):value.strokeEdges?"visible-stroke-contour":value.geometryProbe?.kind??"unmeasured";
+      const completeShapeGeometry=value.geometryScope!=="unmeasured"&&value.geometryScope!=="unsupported-asymmetric-stroke";
+      if(node.type!=="text")value.pixelQualification=shapePixelQualification(images.html,images[route],{roi,geometryPassed:completeShapeGeometry&&value.primaryAvailable&&geometryFailures.length===0,containsText:hasTextDescendants(node,nodes)});
+      const testedPixel=value.pixelQualification?.qualified?value.pixelQualification.refined:value.pixel;
       const maximum=node.type==="text"?.005:.001,pixelFailures=[];
-      if(value.pixel.mismatchRatio>maximum)pixelFailures.push(`pixel mismatch ${value.pixel.mismatchRatio} > ${maximum}`);
-      if(value.pixel.largestCluster>6)pixelFailures.push(`pixel cluster ${value.pixel.largestCluster} > 6`);
+      if(testedPixel.mismatchRatio>maximum)pixelFailures.push(`pixel mismatch ${testedPixel.mismatchRatio} > ${maximum}`);
+      if(testedPixel.largestCluster>6)pixelFailures.push(`pixel cluster ${testedPixel.largestCluster} > 6`);
       value.failures.push(...pixelFailures);
       // CC permits SVG text pixels and every half-zoom metric as diagnostics;
       // SVG text geometry at the three primary matrices remains strict.
-      value.gating=item.zoom===.5||diagnosticReasons.length&&!value.geometryProbe?.measurable?"diagnostic":"primary-and-secondary";
+      value.gating=item.diagnostic||item.zoom===.5||diagnosticReasons.length&&!value.geometryProbe?.measurable?"diagnostic":"primary-and-secondary";
       value.gateFailures=value.gating==="diagnostic"?[]:route==="svg"&&node.type==="text"?value.failures.filter(reason=>!reason.startsWith("pixel")):value.failures;
       if(value.gating==="diagnostic")value.diagnosticFailures=[...value.failures];
       else if(route==="svg"&&node.type==="text")value.diagnosticFailures=pixelFailures;
     }
-    rows.push({id:node.id,type:node.type,complete,clearance,partialReasonCode:complete?null:"TILE_TRUNCATED",geometry:{x:node.x,y:node.y,width:node.width,height:node.height},diagnosticReasons,measurements});
+    rows.push({id:node.id,type:node.type,fillRole:fillLeaf?(isFillLeaf(node,nodes)?"painted-fill-leaf":"painted-fill-container-with-descendants"):null,complete,clearance,partialReasonCode:complete?null:"TILE_TRUNCATED",geometry:{x:node.x,y:node.y,width:node.width,height:node.height},diagnosticReasons,measurements});
   }
   return rows;
 }
@@ -243,13 +266,46 @@ async function measuredSvg(f,design,data) {
 const chromeSelectors=[".canvas-meta","#infinite-canvas-hint","#renderer-message","#selection-size","#inline-text-editor"];
 async function captureRecord({f,design,data,item,tile,tileIndex,folder,svg,stageStyle,bounds,isolation=null,gui=false}) {
   await mkdir(folder,{recursive:true});
-  const record={matrix:item.id,page:design.activePageId,tileIndex,tile,scale:item.dpr*item.zoom,paths:{},routeErrors:[],calibration:{},isolation};
+  const record={matrix:item.id,page:design.activePageId,tileIndex,tile,scale:item.dpr*item.zoom,actualFitView:item.actualFitView??null,paths:{},routeErrors:[],calibration:{},isolation};
   const images={},clip={x:32,y:32,width:Math.round(tile.width*item.zoom),height:Math.round(tile.height*item.zoom)},page=f.page;
+  let measuredTile=tile;
   for(const mode of ["gpu","browser"]){
     try{
       await page.locator("#renderer-mode").selectOption(mode);await rendererReady(page,mode);
-      if(gui){await f.chromeStyle.evaluate(element=>element.remove());await frames(page);await page.screenshot({path:join(folder,`${mode}-editor-gui.png`)});f.chromeStyle=await page.addStyleTag({content:stageStyle});await frames(page);}
+      if(gui){
+        await f.chromeStyle.evaluate(element=>element.remove());await frames(page);
+        // GUI receipts must show the named scale in the normal workbench.
+        // The metric capture below still performs its original independent
+        // alignment and trusted fractional challenge without any relaxed gate.
+        if(item.fitView){await page.locator("#zoom-value").click();await frames(page);}
+        else await align(page,tile,item.zoom);
+        let challenge=null;
+        if(item.deltaX){
+          const before=await page.locator("#stage").evaluate(canvas=>canvas.getContext("2d").getTransform().e/devicePixelRatio);
+          const box=await page.locator("#stage").boundingBox();await page.mouse.move(box.x+Math.min(200,box.width/2),box.y+Math.min(200,box.height/2));
+          await page.mouse.wheel(item.deltaX*item.dpr,0);
+          await page.waitForFunction(({before,delta})=>Math.abs(document.querySelector("#stage").getContext("2d").getTransform().e/devicePixelRatio-before+delta)<.01,{before,delta:item.deltaX});await frames(page);
+          challenge={beforePanX:before,requestedDomDeltaX:item.deltaX,event:await page.evaluate(()=>window.__fidelityWheel),noPostChallengeAlignment:true};
+          assert(challenge.event.isTrusted&&challenge.event.deltaX===item.deltaX,"GUI must retain the real fractional wheel challenge");
+        }
+        const view=await page.locator("#stage").evaluate(canvas=>{const m=canvas.getContext("2d").getTransform(),box=canvas.getBoundingClientRect();return{zoom:m.a/devicePixelRatio,panX:m.e/devicePixelRatio,panY:m.f/devicePixelRatio,left:box.left,top:box.top,width:box.width,height:box.height,dpr:devicePixelRatio};});
+        const receipt={matrix:item.id,page:design.activePageId,route:mode,requestedZoom:item.fitView?null:item.zoom,view,challenge,
+          source:item.fitView?"actual fit button in normal workbench":"named matrix zoom in normal workbench; optional trusted wheel applied last",path:join(folder,`${mode}-editor-gui.png`)};
+        (record.guiViews??={})[mode]=receipt;
+        await page.screenshot({path:receipt.path});await writeFile(join(folder,`${mode}-editor-gui.metadata.json`),JSON.stringify(receipt,null,2)+"\n");
+        f.chromeStyle=await page.addStyleTag({content:stageStyle});await frames(page);
+      }
       record.view=await align(page,tile,item.zoom);
+      if(item.deltaX){
+        const before={...record.view};await page.mouse.move(400,400);await page.mouse.wheel(item.deltaX*item.dpr,0);await page.waitForFunction(({before,delta})=>Math.abs(document.querySelector("#stage").getContext("2d").getTransform().e/devicePixelRatio-before+delta)<.01,{before:before.panX,delta:item.deltaX},{timeout:1500}).catch(()=>{});await frames(page);
+        record.view=await page.locator("#stage").evaluate(canvas=>{const m=canvas.getContext("2d").getTransform(),box=canvas.getBoundingClientRect();return{zoom:m.a/devicePixelRatio,panX:m.e/devicePixelRatio,panY:m.f/devicePixelRatio,left:box.left,top:box.top};});
+        (record.trackpad??={})[mode]={requestedDomDeltaX:item.deltaX,cdpInputDeltaX:item.deltaX*item.dpr,event:await page.evaluate(()=>window.__fidelityWheel),before,after:record.view,actualDeltaX:before.panX-record.view.panX,noPostChallengeAlignment:true};
+        assert(record.trackpad[mode].event.isTrusted&&record.trackpad[mode].event.deltaX===item.deltaX,"trusted DOM wheel must contain the requested CSS delta");
+        assert(Math.abs(record.view.panX-before.panX+item.deltaX)<.01,`real fractional wheel input must survive without corrective alignment: ${JSON.stringify(record.trackpad[mode])}`);
+      }
+      measuredTile={...tile,x:(32-record.view.panX)/item.zoom,y:(32-record.view.panY)/item.zoom};record.tile=measuredTile;
+      (record.routeViews??={})[mode]={...record.view};
+      if(mode==="browser"&&record.routeViews.gpu)assert(["zoom","panX","panY"].every(key=>Math.abs(record.routeViews.gpu[key]-record.view[key])<1e-6),"actual GPU/browser transforms must be identical");
       // The actual mounted editor renderer receives the exact same transformed
       // document as the exports. Resource bytes are its existing owned resources.
       await page.evaluate(async({mode,design,view})=>{
@@ -257,6 +313,19 @@ async function captureRecord({f,design,data,item,tile,tileIndex,folder,svg,stage
         window[mode==="gpu"?"__fidelityGpuRender":"__fidelityBrowserRender"]({pan:{x:view.panX,y:view.panY},zoom:view.zoom});
         await document.fonts.ready;
       },{mode,design,view:record.view});await frames(page);
+      if((item.deltaX||item.fitView)&&!isolation&&gui){
+        const target=design.nodes.find(node=>node.type==="text"&&!node.rotation&&!node.parentId&&node.x>=measuredTile.x&&node.y>=measuredTile.y&&node.x+node.width<measuredTile.x+measuredTile.width&&node.y+node.height<measuredTile.y+measuredTile.height);
+        if(target){
+          await page.evaluate(()=>{window.__fidelityOverlay=null;});
+          await page.mouse.click(record.view.left+record.view.panX+(target.x+target.width/2)*item.zoom,record.view.top+record.view.panY+(target.y+target.height/2)*item.zoom);await frames(page);
+          const proof=await page.evaluate(async()=>({selection:(await tools.get_design_metadata({})).selection,overlay:window.__fidelityOverlay}));
+          const expected={x:(record.view.panX+target.x*item.zoom)*item.dpr,y:(record.view.panY+target.y*item.zoom)*item.dpr,width:target.width*item.zoom*item.dpr,height:target.height*item.zoom*item.dpr};
+          proof.targetId=target.id;proof.expected=expected;proof.maximumDeviceDelta=proof.overlay?Math.max(...Object.keys(expected).map(key=>Math.abs(expected[key]-proof.overlay[key]))):null;
+          proof.passed=proof.selection.includes(target.id)&&proof.maximumDeviceDelta!==null&&proof.maximumDeviceDelta<=.5;
+          const overlayStyle=await page.addStyleTag({content:"#stage{opacity:1!important}"});await page.screenshot({path:join(folder,`${mode}-fractional-selection.png`)});await overlayStyle.evaluate(element=>element.remove());
+          (record.interactionProof??={})[mode]=proof;if(!proof.passed)record.routeErrors.push({route:mode,reasonCode:"FRACTIONAL_INTERACTION_MISMATCH",error:JSON.stringify(proof)});
+        }else (record.interactionProof??={})[mode]={passed:false,reasonCode:"NO_TOP_LEVEL_TEXT_INTERACTION_TARGET",explicitlyUncovered:true};
+      }
       await page.locator("#stage-wrap").evaluate(element=>{element.dataset.fidelityCapture="true";});await frames(page);
       try{
         const chromeProof=await page.evaluate(({selectors,mode})=>({controls:selectors.map(selector=>({selector,visibility:getComputedStyle(document.querySelector(`#stage-wrap > ${selector}`)).visibility})),contentVisible:getComputedStyle(document.querySelector(mode==="gpu"?"#gpu-canvas":"#browser-surface")).visibility==="visible",interactionOverlayOpacity:getComputedStyle(document.querySelector("#stage")).opacity}),{selectors:chromeSelectors,mode});
@@ -277,7 +346,7 @@ async function captureRecord({f,design,data,item,tile,tileIndex,folder,svg,stage
     const ref=await f.context.newPage();
     try{
       const content=route==="html"?html:svg.replace("<svg ",`<svg style="position:absolute;left:${bounds.x}px;top:${bounds.y}px" `),styles=route==="html"?css:designFontFaceCss(design.resources,data.dataUrls),url=`/fidelity-${route}.html`;
-      f.routes.set(url,`<!doctype html><meta charset="utf-8"><style>${styles}\nhtml,body{margin:0;background:${design.canvas.background};overflow:hidden}#export-world{position:absolute;left:32px;top:32px;width:${Math.max(design.canvas.width,bounds.width)}px;transform-origin:0 0;transform:scale(${item.zoom}) translate(${-tile.x}px,${-tile.y}px)}.cs-page{margin:0!important;overflow:visible!important}</style><div id="export-world">${content}</div>`);
+      f.routes.set(url,`<!doctype html><meta charset="utf-8"><style>${styles}\nhtml,body{margin:0;background:${design.canvas.background};overflow:hidden}#export-world{position:absolute;left:32px;top:32px;width:${Math.max(design.canvas.width,bounds.width)}px;transform-origin:0 0;transform:scale(${item.zoom}) translate(${-measuredTile.x}px,${-measuredTile.y}px)}.cs-page{margin:0!important;overflow:visible!important}</style><div id="export-world">${content}</div>`);
       await ref.goto(origin+url);await ref.evaluate(()=>document.fonts.ready);await frames(ref);
       const bytes=await ref.screenshot({clip,path:join(folder,`${route}.png`)});images[route]=PNG.sync.read(bytes);record.paths[route]=join(folder,`${route}.png`);
       if(route==="html"){
@@ -286,10 +355,10 @@ async function captureRecord({f,design,data,item,tile,tileIndex,folder,svg,stage
       }
     }catch(error){record.routeErrors.push({route,reasonCode:"ROUTE_CAPTURE_FAILED",error:String(error)});}finally{await ref.close();}
   }
-  record.nodes=compareNodes(images,design.nodes,tile,item,design.canvas,data.real,{targetId:isolation?.targetId});
+  record.nodes=compareNodes(images,design.nodes,measuredTile,item,design.canvas,data.real,{targetId:isolation?.targetId});
   if(images.html){
-    const sheetLeft=Math.max(bounds.x,tile.x),sheetTop=Math.max(bounds.y,tile.y),sheetRight=Math.min(bounds.x+bounds.width,tile.x+tile.width),sheetBottom=Math.min(bounds.y+bounds.height,tile.y+tile.height),scale=item.dpr*item.zoom;
-    record.wholeImageRoi={x:(sheetLeft-tile.x)*scale,y:(sheetTop-tile.y)*scale,width:(sheetRight-sheetLeft)*scale,height:(sheetBottom-sheetTop)*scale};
+    const sheetLeft=Math.max(bounds.x,measuredTile.x),sheetTop=Math.max(bounds.y,measuredTile.y),sheetRight=Math.min(bounds.x+bounds.width,measuredTile.x+measuredTile.width),sheetBottom=Math.min(bounds.y+bounds.height,measuredTile.y+measuredTile.height),scale=item.dpr*item.zoom;
+    record.wholeImageRoi={x:(sheetLeft-measuredTile.x)*scale,y:(sheetTop-measuredTile.y)*scale,width:(sheetRight-sheetLeft)*scale,height:(sheetBottom-sheetTop)*scale};
     if(!isolation)record.wholeImage=Object.fromEntries(Object.entries(images).map(([route,image])=>[route,symmetricPixelDifference(images.html,image,{roi:record.wholeImageRoi})]));
   }
   await writeFile(join(folder,"metrics.json"),JSON.stringify(record,null,2)+"\n");return record;
@@ -307,7 +376,7 @@ async function captureIsolation(options) {
   if(segments.length===1)return {record:await captureRecord(options),tileRecords:[]};
   const tileRecords=[];
   for(const [index,tile]of segments.entries())tileRecords.push(await captureRecord({...options,tile,tileIndex:`${options.tileIndex}-tile-${index}`,folder:join(folder,`tile-${index}`)}));
-  const first=tileRecords[0],scale=item.dpr*item.zoom,record={matrix:item.id,page:design.activePageId,tileIndex:options.tileIndex,tile:full,scale,
+  const first=tileRecords[0],scale=item.dpr*item.zoom,effectiveFull={...full,x:full.x+first.tile.x-segments[0].x,y:full.y+first.tile.y-segments[0].y},record={matrix:item.id,page:design.activePageId,tileIndex:options.tileIndex,tile:effectiveFull,scale,
     isolation,paths:{},view:first.view,dom:first.dom,gpu:first.gpu,chromeProof:first.chromeProof,
     routeErrors:tileRecords.flatMap((entry,tileIndex)=>entry.routeErrors.map(error=>({...error,tileIndex}))),
     calibration:{rawTiles:tileRecords.map(entry=>({tileIndex:entry.tileIndex,...entry.calibration}))},
@@ -320,36 +389,67 @@ async function captureIsolation(options) {
         if(!entry.paths[route])throw Object.assign(Error(`Missing ${route} raw isolation tile`),{code:"COMPOSITE_ROUTE_TILE_MISSING"});
         const bytes=await readFile(entry.paths[route]);sources.push({image:PNG.sync.read(bytes),tile:entry.tile,source:entry.paths[route],sourceSha256:hash(bytes)});
       }
-      const stitched=stitchFidelityTiles(sources,{bounds:full,scale}),png=new PNG({width:stitched.image.width,height:stitched.image.height});png.data=Buffer.from(stitched.image.data);
+      const stitched=stitchFidelityTiles(sources,{bounds:effectiveFull,scale}),png=new PNG({width:stitched.image.width,height:stitched.image.height});png.data=Buffer.from(stitched.image.data);
       const bytes=PNG.sync.write(png),path=join(folder,`derived-composite-${route}.png`);await writeFile(path,bytes);
       record.paths[route]=path;record.composite.routes[route]={...stitched.provenance,outputSha256:hash(bytes),outputPath:path};images[route]=png;
     }catch(error){record.routeErrors.push({route,reasonCode:error.code??"COMPOSITE_BUILD_FAILED",error:String(error)});}
   }
-  record.nodes=compareNodes(images,design.nodes,full,item,design.canvas,options.data.real,{targetId:isolation.targetId});
+  record.nodes=compareNodes(images,design.nodes,effectiveFull,item,design.canvas,options.data.real,{targetId:isolation.targetId});
   await writeFile(join(folder,"metrics.json"),JSON.stringify(record,null,2)+"\n");return {record,tileRecords};
+}
+
+// Six real pages retain raw, isolated and unique receipts. Serialize the large
+// top-level arrays one entry at a time so a report never requires one enormous
+// JavaScript string. Values and receipt order are unchanged.
+async function writeFidelityReport(path,report) {
+  const file=await open(path,"w");
+  try{
+    await file.writeFile("{\n");
+    const entries=Object.entries(report);
+    for(const [index,[key,value]]of entries.entries()){
+      await file.writeFile(`${index?",\n":""}  ${JSON.stringify(key)}: `);
+      if(Array.isArray(value)){
+        await file.writeFile("[\n");
+        for(const [itemIndex,item]of value.entries())await file.writeFile(`${itemIndex?",\n":""}${JSON.stringify(item)}`);
+        await file.writeFile("\n  ]");
+      }else await file.writeFile(JSON.stringify(value));
+    }
+    await file.writeFile("\n}\n");
+  }finally{await file.close();}
 }
 
 test("B0 four-route actual-editor fidelity matrix (strict by default)",{timeout:3600000},async t=>{
   await mkdir(output,{recursive:true});const data=await dataset(),report={schema:2,mode:diagnostic?"diagnostic":"strict",capturePolicy:{isolateAllText},sourceApp:app,real:data.real,inputSha256:data.inputHash,serializedSha256:data.serializedHash,thresholds:FIDELITY_THRESHOLDS,matrix,viewport:{width:1600,height:1000},launchArgs:["--enable-webgl","--enable-unsafe-swiftshader","--use-angle=swiftshader"],records:[],isolationRecords:[],isolationTileRecords:[],uniqueRecords:[],failures:[],unmeasured:[],partialNodes:[],finiteCompatibility:[],fontAvailability:[],fontOmissions:[],environment:{platform:process.platform,arch:process.arch,node:process.version}};
+  report.fillInventory=data.design.pages.map(page=>{const candidates=page.nodes.filter(node=>node.type!=="text"&&!(node.strokeWidth>0)&&!node.strokeSides);return{page:page.id,noStrokeNontext:candidates.length,paintedLeaves:candidates.filter(node=>isFillLeaf(node,page.nodes)).map(node=>node.id),paintedContainers:candidates.filter(node=>isFillShape(node)&&!isFillLeaf(node,page.nodes)).map(node=>node.id),noOwnSolidFill:candidates.filter(node=>!isFillShape(node)).map(node=>({id:node.id,type:node.type,fill:node.fill,reason:"no own solid fill ink; structural container/descendant semantics are not a fabricated fill metric"}))};});
   const browser=await chromium.launch({headless:true,args:report.launchArgs});report.environment.chromium=browser.version();
   try{
     for(const item of matrix){
       const f=await editor(browser,item,data),page=f.page;
       try{
-        const fonts=await page.evaluate(async()=>{await document.fonts.ready;const ctx=document.createElement("canvas").getContext("2d"),sample="HMI 中文 AV";const width=family=>{ctx.font=`20px ${family}`;return ctx.measureText(sample).width;};return Promise.all(["Arial","PingFang SC","system-ui","Fidelity Inter"].map(async family=>{let localFace=false,localName=null;for(const name of [family,...(family==="PingFang SC"?["PingFangSC-Regular"]:[])])try{await new FontFace("AvailabilityProbe",`local("${name}")`).load();localFace=true;localName=name;break;}catch{}return{family,fontCheck:document.fonts.check(`20px "${family}"`),localFace,localName,width:width(`"${family}",monospace`),fallbackWidth:width("monospace"),available:family==="system-ui"||localFace};}));});
+        const fonts=await page.evaluate(async()=>{await document.fonts.ready;const ctx=document.createElement("canvas").getContext("2d"),sample="HMI 中文 AV";const width=family=>{ctx.font=`20px ${family}`;return ctx.measureText(sample).width;};return Promise.all(["Arial","PingFang SC","system-ui","Fidelity Inter","Inter"].map(async family=>{let localFace=false,localName=null;for(const name of [family,...(family==="PingFang SC"?["PingFangSC-Regular"]:[])])try{await new FontFace("AvailabilityProbe",`local("${name}")`).load();localFace=true;localName=name;break;}catch{}return{family,fontCheck:document.fonts.check(`20px "${family}"`),localFace,localName,width:width(`"${family}",monospace`),fallbackWidth:width("monospace"),available:family==="system-ui"||localFace};}));});
         for(const font of fonts)if(data.design.resources.some(resource=>resource.kind==="font"&&resource.family===font.family)){font.resourceProvided=true;font.available=true;}
         report.fontAvailability.push({matrix:item.id,fonts});
         report.fontOmissions.push(...fidelityFontOmissions(fonts,data.design.pages.filter(page=>!process.env.DESIGN_FIDELITY_PAGES||process.env.DESIGN_FIDELITY_PAGES.split(",").includes(page.id))).map(omission=>({matrix:item.id,...omission})));
         await page.screenshot({path:join(output,`${item.id}-editor-gui.png`)});
         report.chromeExclusion="Comparison crops reserve a 1600x1000 stage, hide #stage interaction/labels with opacity:0, and use canvas.background behind the transparent GPU surface. Only while capturing comparison PNGs, direct-child canvas-meta, infinite-canvas-hint, renderer-message, selection-size and inline-text-editor have visibility:hidden. Actual GUI screenshots and renderer controls restore all editor chrome. No design content is hidden.";
-        report.isolationContract="Only isolationRecords apply the same immutable scene transform through actual GPU and browser setScene and both exports. Non-target paint is hidden via opacity-zero layout placeholders, with ancestor fills, original opacity, clip, transforms and layout retained. Raw full-scene PNGs and records are preserved.";
+        report.isolationContract="Only isolationRecords apply the same immutable scene transform through actual GPU and browser setScene and both exports. Non-target sibling paint is hidden via opacity-zero layout placeholders; target descendants retain their paint/occlusion, with ancestor fills, original opacity, clip, transforms and layout retained. Raw full-scene PNGs and records are preserved.";
         const captureSelectors=chromeSelectors.map(selector=>`#stage-wrap[data-fidelity-capture="true"] > ${selector}`).join(","),stageStyle=`#stage-wrap{position:fixed!important;inset:0!important;width:1600px!important;height:1000px!important;z-index:10000!important;border:0!important;border-radius:0!important;background:${data.design.canvas.background}!important}#stage{opacity:0!important}${captureSelectors}{visibility:hidden!important}`;
         f.chromeStyle=await page.addStyleTag({content:stageStyle});await frames(page);
         for(const pageInfo of data.design.pages){
           if(process.env.DESIGN_FIDELITY_PAGES&&!process.env.DESIGN_FIDELITY_PAGES.split(",").includes(pageInfo.id))continue;
           await page.locator("#active-page").selectOption(pageInfo.id);await page.waitForFunction(async id=>(await tools.get_design_metadata({})).activePageId===id,pageInfo.id);
           const design=normalizeDesignDocument(JSON.parse(serializeDesignDocument(data.design)));design.activePageId=pageInfo.id;design.nodes=design.pages.find(p=>p.id===pageInfo.id).nodes;
-          const bounds=designPageBounds(design),captureBounds={x:Math.floor(bounds.x)-12,y:Math.floor(bounds.y)-12,width:Math.ceil(bounds.x+bounds.width)-Math.floor(bounds.x)+24,height:Math.ceil(bounds.y+bounds.height)-Math.floor(bounds.y)+24},pageTiles=tiles(captureBounds,item.zoom);
+          const bounds=designPageBounds(design),captureBounds={x:Math.floor(bounds.x)-12,y:Math.floor(bounds.y)-12,width:Math.ceil(bounds.x+bounds.width)-Math.floor(bounds.x)+24,height:Math.ceil(bounds.y+bounds.height)-Math.floor(bounds.y)+24},pageItem={...item};
+          let pageTiles=tiles(captureBounds,item.zoom);
+          if(item.fitView){
+            await f.chromeStyle.evaluate(element=>element.remove());await frames(page);
+            await page.locator("#renderer-mode").selectOption("gpu");await rendererReady(page,"gpu");await page.locator("#zoom-value").click();await frames(page);
+            const view=await page.locator("#stage").evaluate(canvas=>{const m=canvas.getContext("2d").getTransform(),box=canvas.getBoundingClientRect();return{zoom:m.a/devicePixelRatio,panX:m.e/devicePixelRatio,panY:m.f/devicePixelRatio,width:box.width,height:box.height};});
+            const paths={};for(const mode of ["gpu","browser"]){await page.locator("#renderer-mode").selectOption(mode);await rendererReady(page,mode);paths[mode]=join(output,`${item.id}-${pageInfo.id}-${mode}-actual-fit-gui.png`);await page.screenshot({path:paths[mode]});}
+            (report.fitViews??=[]).push({matrix:item.id,page:pageInfo.id,view,paths,source:"actual fitCanvas button in normal editor layout; no alignment before GUI capture",diagnostic:true});
+            pageItem.zoom=view.zoom;pageItem.actualFitView=view;pageTiles=[{x:-view.panX/view.zoom,y:-view.panY/view.zoom,width:Math.min(1536,view.width)/view.zoom,height:Math.min(936,view.height)/view.zoom}];
+            f.chromeStyle=await page.addStyleTag({content:stageStyle});await frames(page);
+          }
           let svg;try{svg=await measuredSvg(f,design,data);}catch(error){report.failures.push({matrix:item.id,page:pageInfo.id,route:"svg",reasonCode:"SVG_EXPORT_FAILED",error:String(error)});}
           if(svg)for(const node of design.nodes.filter(n=>Number.isFinite(n.layoutBaselineOffset))){
             const parsed=await page.evaluate(({svg,id})=>{const doc=new DOMParser().parseFromString(svg,"image/svg+xml");return doc.querySelector(`[data-node-id="${CSS.escape(id)}"]`)?.outerHTML??null;},{svg,id:node.id});
@@ -357,19 +457,19 @@ test("B0 four-route actual-editor fidelity matrix (strict by default)",{timeout:
           }
           const raw=[];
           for(const [tileIndex,tile]of pageTiles.entries()){
-            const key=`${item.id}-${pageInfo.id}-${tileIndex}`,record=await captureRecord({f,design,data,item,tile,tileIndex,folder:join(output,key),svg,stageStyle,bounds,gui:tileIndex===0});
+            const key=`${item.id}-${pageInfo.id}-${tileIndex}`,record=await captureRecord({f,design,data,item:pageItem,tile,tileIndex,folder:join(output,key),svg,stageStyle,bounds,gui:tileIndex===0});
             raw.push(record);report.records.push(record);t.diagnostic(`${key}: raw ${record.nodes.length} nodes, ${record.routeErrors.length} route errors`);
           }
-          const unique=selectUniqueMeasurements(raw),requested=design.nodes.filter(node=>node.visible!==false&&(node.type==="text"||node.strokeWidth>0||node.strokeSides)),isolationPlan=fidelityIsolationPlan(unique,requested,{isolateAllText}),targets=new Set(isolationPlan.map(entry=>entry.id));
+          const unique=selectUniqueMeasurements(raw),requested=design.nodes.filter(node=>isRequested(node,design.nodes)),isolationPlan=item.fitView||raw.some(record=>record.routeErrors.length)?[]:fidelityIsolationPlan(unique,requested,{isolateAllText}),targets=new Set(isolationPlan.map(entry=>entry.id));
           // Isolate every failed/unavailable raw target using a shared scene;
           // this is mandatory, not a switch which can silently certify raw ROIs.
           for(const [index,id]of [...targets].entries()){
-            const isolated=isolateFidelityDesign(design,id),node=isolated.design.nodes.find(node=>node.id===id),tile=isolationBounds(node,item.zoom),isolatedBounds=designPageBounds(isolated.design);
+            const isolated=isolateFidelityDesign(design,id),node=isolated.design.nodes.find(node=>node.id===id),tile=isolationBounds(node,pageItem.zoom),isolatedBounds=designPageBounds(isolated.design);
             let isolatedSvg;try{isolatedSvg=await measuredSvg(f,isolated.design,data);}catch(error){isolated.metadata.svgError=String(error);}
-            const {record,tileRecords}=await captureIsolation({f,design:isolated.design,data,item,tile,tileIndex:`isolation-${index}`,folder:join(output,`${item.id}-${pageInfo.id}-isolation-${encodeURIComponent(id)}`),svg:isolatedSvg,stageStyle,bounds:isolatedBounds,isolation:{...isolated.metadata,triggerReasons:isolationPlan.find(entry=>entry.id===id).reasonCodes}});
+            const {record,tileRecords}=await captureIsolation({f,design:isolated.design,data,item:pageItem,tile,tileIndex:`isolation-${index}`,folder:join(output,`${item.id}-${pageInfo.id}-isolation-${encodeURIComponent(id)}`),svg:isolatedSvg,stageStyle,bounds:isolatedBounds,isolation:{...isolated.metadata,triggerReasons:isolationPlan.find(entry=>entry.id===id).reasonCodes}});
             report.isolationTileRecords.push(...tileRecords);
             const rawDom=raw.find(entry=>entry.dom?.some(node=>node.id===id));
-            const worldBox=(entry,dom)=>({x:(dom.x-32)/item.zoom+entry.tile.x,y:(dom.y-32)/item.zoom+entry.tile.y,width:dom.width/item.zoom,height:dom.height/item.zoom});
+            const worldBox=(entry,dom)=>({x:(dom.x-32)/pageItem.zoom+entry.tile.x,y:(dom.y-32)/pageItem.zoom+entry.tile.y,width:dom.width/pageItem.zoom,height:dom.height/pageItem.zoom});
             record.isolationDomProof=[id,...isolated.metadata.ancestorIds].map(nodeId=>{
               const before=rawDom?.dom.find(node=>node.id===nodeId),after=record.dom?.find(node=>node.id===nodeId);
               if(!before||!after)return{id:nodeId,preserved:false,reasonCode:"DOM_GEOMETRY_UNAVAILABLE"};
@@ -389,7 +489,7 @@ test("B0 four-route actual-editor fidelity matrix (strict by default)",{timeout:
   }finally{
     await browser.close();if(data.real)assert.equal(hash(await readFile(process.env.DESIGN_FIDELITY_REAL_FIXTURE)),data.inputHash,"private source bytes unchanged");
     report.rawUniqueRecords=selectUniqueMeasurements(report.records);report.uniqueRecords=selectUniqueMeasurements([...report.records,...report.isolationRecords]);
-    report.countDefinitions={unit:"one (page,node,route,matrix), including the HTML reference self-comparison",truefail:"all unique rows with gateFailures, including html-pixel-snap exceptions",unclassifiedFail:"unique rows with gateFailures lacking sufficient html-pixel-snap classification; no raw failure is removed",htmlPixelSnap:"sufficient four-edge evidence for the named stroke geometry exception, never a pass; pixel failures remain",full:"complete chosen ROI, including isolation-full and explicitly derived isolation-full-composite",isolation:"chosen measurement came from the same four-route isolation transform; oversize nodes use raw same-scale tiles and a coverage-proven derived composite with copy-only provenance",unavailable:"primaryAvailable is false; inspect unavailableReasonCodes",raw:"unmodified tile PNGs and per-tile metrics in records; rawUniqueRecords chooses full tiles without applying isolation"};
+    report.countDefinitions={unit:"one (page,node,route,matrix), including the HTML reference self-comparison",truefail:"all unique rows with gateFailures, including html-pixel-snap exceptions",unclassifiedFail:"unique rows with gateFailures lacking sufficient html-pixel-snap classification; no raw failure is removed",htmlPixelSnap:"sufficient four-edge evidence for the named stroke geometry exception, never a pass; pixel failures remain",full:"complete chosen ROI, including isolation-full and explicitly derived isolation-full-composite",isolation:"chosen measurement came from the same four-route isolation transform; oversize nodes use raw same-scale tiles and a coverage-proven derived composite with copy-only provenance",unavailable:"primaryAvailable is false; inspect unavailableReasonCodes",aaQualified:"geometry-pass shapes which fail raw pixels but pass explicit [1,2,1]/4 device AA refinement; never raw pass",rawPixelFail:"shape rows whose unchanged raw pixel gate fails, even if qualified by the secondary refinement",raw:"unmodified tile PNGs and per-tile metrics in records; rawUniqueRecords chooses full tiles without applying isolation"};
     report.rawSummary=fidelityCounts(report.rawUniqueRecords);report.rawSummary.tileMeasurements=report.records.reduce((sum,record)=>sum+(record.nodes??[]).reduce((total,node)=>total+Object.keys(node.measurements).length,0),0);
     const routeFailures=[...report.records,...report.isolationRecords].flatMap(record=>record.routeErrors.map(error=>({matrix:record.matrix,page:record.page,tileIndex:record.tileIndex,...error})));
     report.failures.push(...routeFailures,...report.uniqueRecords.filter(row=>row.value.gateFailures.length).map(row=>({matrix:row.matrix,page:row.page,id:row.id,route:row.route,coverage:row.coverage,failures:row.value.gateFailures})));
@@ -398,7 +498,7 @@ test("B0 four-route actual-editor fidelity matrix (strict by default)",{timeout:
     report.summary={...counts,comparisons:report.records.length,isolationCaptures:report.isolationRecords.length,isolationRawTileCaptures:report.isolationTileRecords.length,compositeIsolations:report.isolationRecords.filter(record=>record.composite).length,failingChecks:report.failures.length,diagnosticFailures:counts.diagnosticFailures,diagnosticComparisons:counts.diagnostic,unavailablePrimary:counts.unavailable,unmeasured:report.unmeasured.length,partialNodes:report.partialNodes.length,fontOmissions:report.fontOmissions.length,allMeasuredThresholdsPassed:report.failures.length===0&&counts.diagnostic===0&&counts.unavailable===0&&report.unmeasured.length===0&&counts.partial===0&&counts.htmlPixelSnap===0&&report.fontOmissions.length===0,diagnosticModeDoesNotMeanPass:diagnostic};
     report.byMatrix=Object.fromEntries(matrix.map(item=>[item.id,fidelityCounts(report.uniqueRecords.filter(row=>row.matrix===item.id))]));
     report.byRoute=Object.fromEntries(["gpu","browser","svg","html"].map(route=>[route,fidelityCounts(report.uniqueRecords.filter(row=>row.route===route))]));
-    await writeFile(join(output,"report.json"),JSON.stringify(report,null,2)+"\n");t.diagnostic(`EVIDENCE ${join(output,"report.json")} ${JSON.stringify(report.summary)}`);
+    await writeFidelityReport(join(output,"report.json"),report);t.diagnostic(`EVIDENCE ${join(output,"report.json")} ${JSON.stringify(report.summary)}`);
   }
   if(!diagnostic){assert.equal(report.failures.length,0,`Fidelity candidate has ${report.failures.length} unique threshold/route failures; see ${join(output,"report.json")}`);assert.equal(report.unmeasured.length,0,"all requested text/stroke nodes require measurements");assert.equal(report.partialNodes.length,0,"partial tile geometry cannot establish complete-node parity");assert.equal(report.summary.unavailablePrimary,0,"unavailable primary metrics cannot establish parity");assert.equal(report.summary.diagnosticComparisons,0,"unresolved diagnostic comparisons cannot establish full parity");assert.equal(report.fontOmissions.length,0,"fallback diagnostics cannot certify an unavailable requested font");}
 });

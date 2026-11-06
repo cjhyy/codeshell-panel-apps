@@ -25,6 +25,8 @@ export function fidelityCounts(rows) {
     truefail:rows.filter(row=>row.value.gateFailures?.length).length,
     unclassifiedFail:rows.filter(row=>row.value.gateFailures?.length&&row.value.strokeClassification?.kind!=="html-pixel-snap").length,
     htmlPixelSnap:rows.filter(row=>row.value.strokeClassification?.kind==="html-pixel-snap").length,
+    aaQualified:rows.filter(row=>row.value.pixelQualification?.status==="qualified-aa-pass").length,
+    rawPixelFail:rows.filter(row=>row.value.pixelQualification?.rawPass===false).length,
     diagnostic:rows.filter(row=>row.value.gating==="diagnostic").length,
     diagnosticFailures:rows.filter(row=>row.value.diagnosticFailures?.length||row.value.gating==="diagnostic"&&row.value.failures?.length).length};
 }
@@ -33,9 +35,10 @@ export function isolateFidelityDesign(input,targetId) {
   if(!target)throw Error(`Unknown isolation target ${targetId}`);
   const ancestorIds=[];
   for(let node=index.get(target.parentId);node&&!ancestorIds.includes(node.id);node=index.get(node.parentId))ancestorIds.push(node.id);
-  const ancestors=new Set(ancestorIds),hiddenIds=[];
+  const ancestors=new Set(ancestorIds),descendants=new Set(),hiddenIds=[];
+  for(const candidate of design.nodes){for(let parent=index.get(candidate.parentId),seen=new Set();parent&&!seen.has(parent.id);parent=index.get(parent.parentId)){if(parent.id===targetId){descendants.add(candidate.id);break;}seen.add(parent.id);}}
   for(const node of design.nodes){
-    if(node.id===targetId)continue;
+    if(node.id===targetId||descendants.has(node.id))continue;
     if(ancestors.has(node.id)){
       // Fill is the target's paint backdrop. All structural semantics, including
       // layout placeholders, clipping, rotation and nested opacity stay intact.
@@ -45,7 +48,7 @@ export function isolateFidelityDesign(input,targetId) {
     }else{node.opacity=0;hiddenIds.push(node.id);}
   }
   for(const page of design.pages??[])page.nodes=page.id===design.activePageId?design.nodes:(page.nodes??[]).map(node=>({...node,opacity:0}));
-  return {design,metadata:{version:1,targetId,ancestorIds,hiddenIds,method:"same immutable document transform on GPU/browser/SVG/HTML; opacity-zero flow placeholders; ancestor fills and structural semantics preserved"}};
+  return {design,metadata:{version:2,targetId,ancestorIds,descendantIds:[...descendants],hiddenIds,method:"same immutable document transform on GPU/browser/SVG/HTML; opacity-zero sibling flow placeholders; target descendants retain opaque paint/clip semantics; ancestor fills and structural semantics preserved"}};
 }
 export function classifyHtmlPixelSnap({node,scale,measurements}) {
   const width=Number(node.strokeWidth)||0,outset=node.strokeAlign==="inside"?0:node.strokeAlign==="outside"?width:width/2;
@@ -64,7 +67,7 @@ export function classifyHtmlPixelSnap({node,scale,measurements}) {
   }
   if(gpuSvg>.1+1e-9||gpuHtml>1+1e-9||gpuHtml<=.35)return null;
   return {kind:"html-pixel-snap",pass:false,fractionalDeviceEdges:edges.filter(value=>Math.abs(value-Math.round(value))>1e-6),
-    maximumGpuSvg:gpuSvg,maximumGpuHtml:gpuHtml,basis:"12 matched probes across all four edges; geometry exception only; pixel failures retained"};
+    maximumGpuSvg:gpuSvg,maximumGpuHtml:gpuHtml,basis:gpu.every(probe=>probe.edge==="contour")?`${gpu.length} matched center-contour normals; geometry exception only; pixel failures retained`:"12 matched probes across all four edges; geometry exception only; pixel failures retained"};
 }
 
 /** Derived evidence, not a screenshot: copy each pixel from exactly one raw

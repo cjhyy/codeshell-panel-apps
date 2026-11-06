@@ -135,3 +135,99 @@ export function strokeEdgeScans(image, { bounds, strokeWidth, strokeAlign = "cen
   }
   return {measurable:unavailable.length===0&&probes.length===12,probes,unavailable,method:"four edges × three flat positions; nearest contiguous coverage component"};
 }
+
+export function shapeGeometryFailures(delta, { edge = .5, centroid = .5 } = {}) {
+  if (!delta.measurable) return ["shape ink not measurable"];
+  const failures=["left","top","right","bottom"].filter(key=>Math.abs(delta[key])>edge).map(key=>`shape ${key} ${delta[key]} > ${edge}`);
+  const distance=Math.hypot(delta.centroidX,delta.centroidY);
+  if(distance>centroid)failures.push(`shape centroid ${distance} > ${centroid}`);
+  return failures;
+}
+
+/** A secondary AA diagnostic only. Never use these filtered pixels for primary
+ * geometry, text, stored screenshots, or claims of raw pixel equality. */
+export function deviceAaBlur(image) {
+  const temporary=new Float64Array(image.data.length),data=new Float64Array(image.data.length),weights=[1,2,1];
+  for(let y=0;y<image.height;y++)for(let x=0;x<image.width;x++)for(let channel=0;channel<4;channel++){
+    let value=0;for(let offset=-1;offset<=1;offset++)value+=image.data[(y*image.width+Math.min(image.width-1,Math.max(0,x+offset)))*4+channel]*weights[offset+1]/4;
+    temporary[(y*image.width+x)*4+channel]=value;
+  }
+  for(let y=0;y<image.height;y++)for(let x=0;x<image.width;x++)for(let channel=0;channel<4;channel++){
+    let value=0;for(let offset=-1;offset<=1;offset++)value+=temporary[(Math.min(image.height-1,Math.max(0,y+offset))*image.width+x)*4+channel]*weights[offset+1]/4;
+    data[(y*image.width+x)*4+channel]=value;
+  }
+  return {width:image.width,height:image.height,data};
+}
+export function shapePixelQualification(reference,actual,{roi,geometryPassed=false,containsText=false}={}) {
+  const raw=symmetricPixelDifference(reference,actual,{roi}),passes=value=>value.mismatchRatio<=.001&&value.largestCluster<=6;
+  let refined=null;
+  if(geometryPassed&&!containsText){
+    // Blur only a bounded ROI plus the exact two-pixel blur/search support.
+    // This is byte-copy cropping, never resampling, and avoids full-page caches.
+    const box=region(reference,roi),left=Math.max(0,box.left-2),top=Math.max(0,box.top-2),right=Math.min(reference.width,box.right+2),bottom=Math.min(reference.height,box.bottom+2);
+    const extract=image=>{const width=right-left,height=bottom-top,data=new Uint8Array(width*height*4);for(let y=0;y<height;y++)data.set(image.data.subarray(((y+top)*image.width+left)*4,((y+top)*image.width+right)*4),y*width*4);return {width,height,data};};
+    refined=symmetricPixelDifference(deviceAaBlur(extract(reference)),deviceAaBlur(extract(actual)),{roi:{x:box.left-left,y:box.top-top,width:box.right-box.left,height:box.bottom-box.top}});
+  }
+  return {raw,rawPass:passes(raw),refined,qualified:geometryPassed&&!containsText&&passes(refined),
+    geometryPassed,containsText,method:"device separable [1,2,1]/4; existing symmetric pixel thresholds",
+    status:containsText?"ineligible-text-descendants":!geometryPassed?"ineligible-geometry":passes(raw)?"raw-pass":passes(refined)?"qualified-aa-pass":"fail"};
+}
+
+function contourPoints({bounds,strokeWidth,strokeAlign="center",cornerRadius=0,shape="rectangle",count=32}) {
+  const inset=strokeAlign==="inside"?strokeWidth/2:strokeAlign==="outside"?-strokeWidth/2:0;
+  const left=bounds.x+inset,top=bounds.y+inset,width=bounds.width-2*inset,height=bounds.height-2*inset;
+  if(width<=0||height<=0)return [];
+  if(shape==="ellipse")return Array.from({length:count},(_,index)=>{
+    const angle=(index+.5)*Math.PI*2/count,rx=bounds.width/2,ry=bounds.height/2;
+    const normalX=Math.cos(angle)/rx,normalY=Math.sin(angle)/ry,length=Math.hypot(normalX,normalY),nx=normalX/length,ny=normalY/length;
+    return {x:bounds.x+rx+rx*Math.cos(angle)-inset*nx,y:bounds.y+ry+ry*Math.sin(angle)-inset*ny,nx,ny,index};
+  });
+  const radius=Math.max(0,Math.min(cornerRadius-inset,width/2,height/2));
+  const segments=[];
+  const line=(x,y,dx,dy,length,nx,ny)=>{if(length>0)segments.push({length,at:t=>({x:x+dx*t,y:y+dy*t,nx,ny})});};
+  const arc=(cx,cy,start)=>{if(radius>0)segments.push({length:Math.PI*radius/2,at:t=>{const angle=start+t/radius;return{x:cx+radius*Math.cos(angle),y:cy+radius*Math.sin(angle),nx:Math.cos(angle),ny:Math.sin(angle)};}});};
+  line(left+radius,top,1,0,width-2*radius,0,-1);arc(left+width-radius,top+radius,-Math.PI/2);
+  line(left+width,top+radius,0,1,height-2*radius,1,0);arc(left+width-radius,top+height-radius,0);
+  line(left+width-radius,top+height,-1,0,width-2*radius,0,1);arc(left+radius,top+height-radius,Math.PI/2);
+  line(left,top+height-radius,0,-1,height-2*radius,-1,0);arc(left+radius,top+radius,Math.PI);
+  const perimeter=segments.reduce((sum,segment)=>sum+segment.length,0);
+  return Array.from({length:count},(_,index)=>{let distance=(index+.5)*perimeter/count;for(const segment of segments){if(distance<=segment.length)return {...segment.at(distance),index};distance-=segment.length;}return {...segments.at(-1).at(segments.at(-1).length),index};});
+}
+
+/** Integrate coverage along 32 normal rays around the actual center contour.
+ * Curved icons do not require a fictitious flat edge. Opaque/clip-obscured rays
+ * remain explicitly reported; at least 16 matched rays are required. */
+export function strokeContourScans(image,options) {
+  const {strokeWidth,foreground=[0,0,0],background=[255,255,255],outsideBackground=background,strokeAlign="center"}=options;
+  const points=contourPoints(options),probes=[],unavailable=[],step=.25,halfWindow=Math.ceil(strokeWidth+3);
+  const inset=strokeAlign==="inside"?strokeWidth/2:strokeAlign==="outside"?-strokeWidth/2:0;
+  const alphaAt=(x,y,outside)=>{
+    const px=x-.5,py=y-.5,left=Math.floor(px),top=Math.floor(py),fx=px-left,fy=py-top;
+    if(left<0||top<0||left+1>=image.width||top+1>=image.height)return null;
+    let alpha=0;
+    for(let dy=0;dy<=1;dy++)for(let dx=0;dx<=1;dx++){
+      const i=((top+dy)*image.width+left+dx)*4;
+      alpha+=coverage(image.data.subarray(i,i+3),foreground,outside?outsideBackground:background)*(dx?fx:1-fx)*(dy?fy:1-fy);
+    }
+    return alpha;
+  };
+  for(const point of points){
+    const centerX=options.bounds.x+options.bounds.width/2,centerY=options.bounds.y+options.bounds.height/2;
+    const medialDistance=Math.min(...[[point.x-centerX,point.nx],[point.y-centerY,point.ny]].filter(([position,normal])=>Math.abs(normal)>1e-8&&position/normal>0).map(([position,normal])=>position/normal));
+    const inwardLimit=Math.min(halfWindow,medialDistance),samples=[];let outsideImage=false;
+    for(let offset=-Math.floor(inwardLimit/step)*step;offset<=halfWindow;offset+=step){
+      const alpha=alphaAt(point.x+point.nx*offset,point.y+point.ny*offset,offset>inset);
+      if(alpha===null)outsideImage=true;samples.push({offset,alpha:alpha??0});
+    }
+    const segments=[];let current=[];
+    for(const sample of samples){if(sample.alpha>1/255)current.push(sample);else if(current.length){segments.push(current);current=[];}}
+    if(current.length)segments.push(current);
+    segments.sort((a,b)=>Math.min(...a.map(s=>Math.abs(s.offset)))-Math.min(...b.map(s=>Math.abs(s.offset))));
+    const segment=segments[0];
+    if(outsideImage||!segment||Math.min(...segment.map(sample=>Math.abs(sample.offset)))>strokeWidth/2+2){unavailable.push({index:point.index,reasonCode:outsideImage?"STROKE_CONTOUR_OUTSIDE_CAPTURE":"STROKE_CONTOUR_OCCLUDED_OR_NO_INK"});continue;}
+    if((inwardLimit===halfWindow&&segment[0].offset===-halfWindow)||segment.at(-1).offset===halfWindow){unavailable.push({index:point.index,reasonCode:"STROKE_CONTOUR_UNBOUNDED_INK"});continue;}
+    const width=segment.reduce((sum,sample)=>sum+sample.alpha*step,0),centroid=segment.reduce((sum,sample)=>sum+sample.offset*sample.alpha*step,0)/width;
+    probes.push({edge:"contour",fraction:point.index/points.length,index:point.index,x:point.x,y:point.y,nx:point.nx,ny:point.ny,width,centroid,expectedCenter:0,medialDistance});
+  }
+  return {measurable:probes.length>=16,probes,unavailable,requested:points.length,minimumMatched:16,method:"32 center-contour normals; quarter-device-pixel bilinear coverage integration; nearest contiguous component split at authored medial axis; >=16 visible rays"};
+}

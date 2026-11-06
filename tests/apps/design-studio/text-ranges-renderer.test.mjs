@@ -223,7 +223,10 @@ test("software CanvasKit supplied Paragraph preserves AV/fi/combining shaping ac
     const bytes = new Uint8Array(await (await fetch("/fonts/InterVariable.woff2")).arrayBuffer());
     const make = (text, ranges) => ({ id: "copy", name: "copy", type: "text", x: 20, y: 20, width: 600, height: 100,
       text, fill: "#123456", stroke: "transparent", strokeWidth: 0, fontFamily: "Inter", fontRef: "inter", fontSize: 24,
-      fontWeight: 400, lineHeight: 1.25, textAlign: "left", ...(ranges ? { textRanges: { version: 1, sourceSignature: textRangeSourceSignature(text), ranges } } : {}) });
+      // Keep this shaping oracle on the historical native path for both inputs;
+      // ordinary no-offset resource text has its separate browser-raster oracle.
+      fontWeight: 400, lineHeight: 1.25, textAlign: "left", layoutBaselineOffset: 0,
+      ...(ranges ? { textRanges: { version: 1, sourceSignature: textRangeSourceSignature(text), ranges } } : {}) });
     const rows = [];
     for (const [text, start, end] of [["AVATAR", 1, 2], ["office", 2, 3], ["e\u0301lan", 1, 2], ["A\u00a0V\nExplicit LF", 2, 5]]) {
       const nodes = [make(text), make(text, [{ start, end, fill: "#123456" }]), make(text, [{ start, end, fill: "#991122" }])];

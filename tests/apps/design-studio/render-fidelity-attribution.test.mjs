@@ -17,16 +17,18 @@ test("partial and unavailable retain reason codes; isolated full replaces raw on
   const rows=selectUniqueMeasurements([...raw,isolated]);assert.equal(rows.length,1);assert.equal(rows[0].coverage,"isolation-full");assert.equal(JSON.stringify(raw),before);
   assert.equal(selectUniqueMeasurements([record(0,true),{...record(1,false),isolation:{targetId:"n",version:1}}])[0].coverage,"full","partial isolation cannot override a complete raw tile");
   assert.equal(selectUniqueMeasurements([{...isolated,composite:{singleScreenshot:false}}])[0].coverage,"isolation-full-composite","derived full coverage must never be presented as a single screenshot");
-  assert.deepEqual(fidelityCounts(rows),{unique:1,full:1,isolation:1,partial:0,unavailable:0,truefail:0,unclassifiedFail:0,htmlPixelSnap:0,diagnostic:0,diagnosticFailures:0});
+  assert.deepEqual(fidelityCounts(rows),{unique:1,full:1,isolation:1,partial:0,unavailable:0,truefail:0,unclassifiedFail:0,htmlPixelSnap:0,aaQualified:0,rawPixelFail:0,diagnostic:0,diagnosticFailures:0});
 });
-test("isolation hides sibling and descendant paint without removing flow; ancestors retain fill, clip, opacity and transform", () => {
+test("isolation hides siblings without removing flow; target descendants retain occlusion, clip and layout semantics", () => {
   const nodes=[{id:"a",type:"frame",fill:"#eeeeee",opacity:.6,rotation:13,clipContent:true,layout:"horizontal",strokeWidth:4,shadow:{blur:5},x:10,y:20}, {id:"target",parentId:"a",type:"frame",opacity:.4,layout:"vertical",x:20,y:30}, {id:"sibling",parentId:"a",opacity:.8,x:3,y:4}, {id:"child",parentId:"target",opacity:1}];
   const design={activePageId:"p",nodes,pages:[{id:"p",nodes}],canvas:{width:200,height:100}};const before=JSON.stringify(design);
   const isolated=isolateFidelityDesign(design,"target");const byId=new Map(isolated.design.nodes.map(n=>[n.id,n]));
   assert.equal(JSON.stringify(design),before);assert.deepEqual(byId.get("target"),nodes[1]);
   for(const field of ["fill","opacity","rotation","clipContent","layout","x","y"])assert.equal(byId.get("a")[field],nodes[0][field]);
   assert.equal(byId.get("a").strokeWidth,4);assert.equal(byId.get("a").stroke,"transparent");assert.equal(byId.get("a").shadow,undefined);
-  for(const id of ["sibling","child"]){assert.equal(byId.get(id).opacity,0);assert.notEqual(byId.get(id).visible,false,"flow placeholders remain in native layout");}
+  assert.equal(byId.get("sibling").opacity,0);assert.notEqual(byId.get("sibling").visible,false,"flow placeholders remain in native layout");
+  assert.deepEqual(byId.get("child"),nodes[3],"opaque children must continue occluding the same stroke/fill pixels");
+  assert.deepEqual(isolated.metadata.descendantIds,["child"]);
   assert.deepEqual(isolated.metadata.ancestorIds,["a"]);assert.deepEqual(isolated.design.pages[0].nodes,isolated.design.nodes);
   assert.throws(()=>isolateFidelityDesign(design,"missing"),/Unknown isolation target/u);
 });

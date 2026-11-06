@@ -238,10 +238,27 @@ export function parseCssBoxShadow(value) {
 
 function capturedFrontendStroke(element, style) {
   const hint = element.getAttribute("data-codeshell-stroke");
-  if (!["legacy-shadow-v1", "center-shadow-v1"].includes(hint) ||
+  if (!["legacy-shadow-v1", "center-shadow-v1", "legacy-outline-v1", "center-outline-v1"].includes(hint) ||
       !["frame", "rectangle", "component"].includes(element.getAttribute("data-codeshell-node-type")) ||
-      !element.hasAttribute("data-codeshell-id") || borderSides(style).length ||
-      (style.outlineStyle !== "none" && pixelValue(style.outlineWidth) > 0)) return null;
+      !element.hasAttribute("data-codeshell-id") || borderSides(style).length) return null;
+  if (hint.endsWith("-outline-v1")) {
+    const width = pixelValue(style.outlineWidth), offset = pixelValue(style.outlineOffset), color = parseCssColor(style.outlineColor);
+    const radii = [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomRightRadius, style.borderBottomLeftRadius];
+    // The hint contains no coordinates. Accept only the same bounded single
+    // ring emitted above; ordinary or edited outlines retain normal capture.
+    if (style.outlineStyle !== "solid" || !(width > 0 && width <= 100) || !Number.isInteger(width / 2) ||
+        offset !== -width / 2 || !color || !(color.alpha > 0) ||
+        (hint === "legacy-outline-v1" && color.alpha !== 1) ||
+        !radii.every(radius => /^\d+(?:\.\d+)?px$/u.test(radius) && radius === radii[0] && pixelValue(radius) >= width / 2) ||
+        element.children.length) return null;
+    const stroke = { stroke: color.hex, strokeWidth: width };
+    if (hint === "center-outline-v1") {
+      stroke.strokeAlign = "center";
+      if (color.alpha !== 1) stroke.strokeSides = Array.from({ length: 4 }, () => ({ width, color: color.hex, opacity: color.alpha }));
+    }
+    return { stroke, boxShadow: style.boxShadow };
+  }
+  if (style.outlineStyle !== "none" && pixelValue(style.outlineWidth) > 0) return null;
   const layers = style.boxShadow.split(/,(?![^()]*\))/u);
   if (layers.length < 2) return null;
   const pair = layers.slice(0, 2).map(layer => {

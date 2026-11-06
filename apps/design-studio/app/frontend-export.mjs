@@ -353,7 +353,20 @@ function layoutDeclarations(node) {
   ];
 }
 
-function paintDeclarations(node) {
+function usesCenteredOutline(node, context) {
+  const sides = designStrokeSides(node), side = sides[0];
+  // Blink rounds outline-offset to whole CSS pixels. Only even widths retain
+  // the centered contour. An outline paints above descendants, unlike shadows,
+  // so restrict the single ring to leaves and leave child paint order intact.
+  return ["frame", "rectangle", "component"].includes(node.type) &&
+    !["inside", "outside"].includes(node.strokeAlign) && !node.children?.length &&
+    !(context?.idPrefix === "" && context.prototypeLinks?.has(node.id)) &&
+    !node.cornerRadii && Number(node.cornerRadius) >= side.width / 2 &&
+    side.width > 0 && side.width <= 100 && Number.isInteger(side.width / 2) &&
+    sides.every(s => s.width === side.width && s.color === side.color && s.opacity === side.opacity && s.opacity > 0);
+}
+
+function paintDeclarations(node, context) {
   if (PAINTLESS_TYPES.has(node.type)) return [];
   const declarations = [
     ["background", node.fillPaints ? designPaintCssImage(node) : cssColor(node.fill)],
@@ -373,6 +386,9 @@ function paintDeclarations(node) {
     const rgba=`rgba(${[1,3,5].map(offset=>parseInt(side.color.slice(offset,offset+2),16)).join(",")},${side.opacity})`;
     if (node.strokeAlign === "outside") {
       declarations.push(["outline", `${cssRoundedNumber(side.width)} solid ${rgba}`]);
+    } else if (usesCenteredOutline(node, context)) {
+      declarations.push(["outline", `${cssRoundedNumber(side.width)} solid ${rgba}`],
+        ["outline-offset", cssRoundedNumber(-side.width / 2)]);
     } else {
       // Chromium quantizes fractional outline widths (3px centered became
       // 1px outside + 1.5px inside). Shadows retain both exact half widths.
@@ -382,6 +398,9 @@ function paintDeclarations(node) {
   } else if (Number(node.strokeWidth) > 0 && cssColor(node.stroke) !== "transparent") {
     if (node.type === "text") {
       declarations.push(["-webkit-text-stroke", `${cssRoundedNumber(node.strokeWidth)} ${cssColor(node.stroke)}`]);
+    } else if (usesCenteredOutline(node, context)) {
+      declarations.push(["outline", `${cssRoundedNumber(node.strokeWidth)} solid ${cssColor(node.stroke)}`],
+        ["outline-offset", cssRoundedNumber(-node.strokeWidth / 2)]);
     } else {
       // Legacy strokes are centered on the authored outline. A CSS border
       // would move absolute children and consume flex/grid space. The two
@@ -448,7 +467,7 @@ function nodeStyle(sourceNode, parent, context) {
     ...positionDeclarations(node, parent, parentUsesLayout, canvas),
     ...sizingDeclarations(node, parent, parentOf),
     ...layoutDeclarations(node),
-    ...paintDeclarations(node),
+    ...paintDeclarations(node, context),
     ...transformDeclarations(node),
     ["box-sizing", "border-box"],
     ["opacity", String(Number.isFinite(Number(node.opacity)) ? Number(node.opacity) : 1)],
@@ -583,12 +602,12 @@ function renderNodeMarkup(node, parent, context) {
     `data-codeshell-name="${escapeHtml(node.name)}"`,
     `style="${escapeHtml(nodeStyle(node, parent, context))}"`,
   ];
-  // This finite hint only disambiguates a generated stroke from ordinary CSS
-  // shadows. Capture also verifies the complete computed pair before using it.
+  // This finite hint only disambiguates a generated stroke from ordinary CSS.
+  // Capture also verifies its complete computed paint before using it.
   if (["frame", "rectangle", "component"].includes(node.type) &&
       !["inside", "outside"].includes(node.strokeAlign) &&
       designStrokeSides(node).every(side => side.width > 0 && side.opacity > 0)) {
-    attributes.push(`data-codeshell-stroke="${hasDesignStroke(node) ? "center" : "legacy"}-shadow-v1"`);
+    attributes.push(`data-codeshell-stroke="${hasDesignStroke(node) ? "center" : "legacy"}-${usesCenteredOutline(node, context) ? "outline" : "shadow"}-v1"`);
   }
   if (node.notes) attributes.push(`title="${escapeHtml(node.notes)}"`);
   const link = context.idPrefix === "" ? context.prototypeLinks?.get(node.id) : null;
