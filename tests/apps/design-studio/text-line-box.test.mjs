@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { textHasLineBoxOrigin, textLineBoxAlphabeticOffset, textLineBoxBaselineY, textSvgLineBox } from "../../../apps/design-studio/app/text-line-box.mjs";
+import { textHasLineBoxOrigin, textLineBoxAlphabeticOffset, textLineBoxBaselineY, textFiniteBaselineY, textSvgLineBox } from "../../../apps/design-studio/app/text-line-box.mjs";
 import { canvasKitTextFontVariations } from "../../../apps/design-studio/app/canvas/canvaskit-text.mjs";
 import { textRangeSourceSignature } from "../../../apps/design-studio/app/text-ranges.mjs";
 import { textMetricsSignature, currentTextMetrics, measuredTextInkBounds } from "../../../apps/design-studio/app/text-metrics.mjs";
@@ -26,6 +26,20 @@ test("every finite imported offset keeps its original hanging origin including z
     assert.deepEqual(textSvgLineBox(imported,1,{ascent:19,descent:5}),{y:52.25,baseline:"hanging"});
     assert(!textMetricsSignature(imported).includes("line-box-v1"));
   }
+});
+
+test("measured finite paint transports exact hanging geometry through CSS LayoutUnits", () => {
+  const metrics = { ascent: 12, descent: 3, hangingToAlphabetic: 9.6 };
+  for (const offset of [-12, 0, 3.25]) {
+    const imported = { ...node, y: 20.499, fontSize: 13, lineHeight: 1.6, layoutBaselineOffset: offset };
+    const before = structuredClone(imported);
+    assert.equal(textFiniteBaselineY(imported, 0, metrics), 30);
+    assert.equal(textFiniteBaselineY(imported, 5, metrics), 134, "leading accumulates as 20.796875 CSS px");
+    assert.equal(textFiniteBaselineY({ ...imported, y: 0 }, 5, metrics, { originY: imported.y }), 113.501);
+    assert.deepEqual(textSvgLineBox(imported, 0, metrics), { y: 30, baseline: "alphabetic" });
+    assert.deepEqual(imported, before);
+  }
+  assert.throws(() => textFiniteBaselineY(node, 0, { ascent: 12, descent: 3 }), /measured hanging/);
 });
 
 test("origin signature invalidates old hanging receipts without changing finite receipts", () => {

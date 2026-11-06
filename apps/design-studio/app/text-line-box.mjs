@@ -33,12 +33,26 @@ export function textLineBoxBaselineY(node, index, alphabeticOffset, { originY = 
   return Math.round(layoutTop + index * layoutHeight + alphabeticOffset) + (node.y - originY);
 }
 
+/** Transport the historical hanging origin through the same CSS line box as
+ * HTML. The logical hanging position stays exact; only the paint baseline is
+ * quantized. Leading accumulates in LayoutUnits before CSS-pixel rounding. */
+export function textFiniteBaselineY(node, index, metrics, { originY = node.y } = {}) {
+  const alpha = Number.isFinite(metrics.alphabeticBaseline)
+    ? metrics.alphabeticBaseline : textLineBoxAlphabeticOffset(node, metrics);
+  if (!Number.isFinite(metrics.hangingToAlphabetic)) throw Error("Finite text requires a measured hanging baseline");
+  const top = Math.trunc((originY + metrics.hangingToAlphabetic - alpha) * 64) / 64;
+  const height = Math.round(textLineHeightPixels(node) * 64) / 64;
+  return Math.round(top + index * height + alpha) + (node.y - originY);
+}
+
 /** SVG uses the same alphabetic offset when actual font metrics are available.
  * The portable unmeasured fallback remains explicitly distinguishable so it
  * cannot be presented as verified font geometry by offline callers. */
 export function textSvgLineBox(node, index = 0, metrics) {
   const top = node.y + index * textLineHeightPixels(node);
-  if (!textHasLineBoxOrigin(node)) return { y: top, baseline: "hanging" };
+  if (!textHasLineBoxOrigin(node)) return Number.isFinite(metrics?.hangingToAlphabetic)
+    ? { y: textFiniteBaselineY(node, index, metrics), baseline: "alphabetic" }
+    : { y: top, baseline: "hanging" };
   if (metrics) {
     const offset = Number.isFinite(metrics.alphabeticBaseline)
       ? metrics.alphabeticBaseline : textLineBoxAlphabeticOffset(node, metrics);

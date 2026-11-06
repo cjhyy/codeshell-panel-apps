@@ -85,13 +85,28 @@ export function classifySvgPreciseSnap({node,snappedNode,scale,measurements,tile
     }
   }else{
     if(!svg.delta?.measurable||svg.geometryScope!=="own-fill-leaf")return null;
-    for(const edge of ["left","top","right","bottom"]){const observed=svg.delta[edge];if(!Number.isFinite(observed))return null;residuals.push({field:edge,observed,predicted:shift[edge],error:Math.abs(observed-shift[edge])});}
-    for(const [field,predicted]of [["centroidX",(shift.left+shift.right)/2],["centroidY",(shift.top+shift.bottom)/2]]){const observed=svg.delta[field];if(!Number.isFinite(observed))return null;residuals.push({field,observed,predicted,error:Math.abs(observed-predicted)});}
+    // Integer ink extrema only establish raster consistency. Fractional box
+    // displacement is tested against coverage moments and integrated width.
+    const coverage=svg.coverageGeometry,reference=html.coverageGeometry;
+    if(!coverage||!reference)return null;
+    const areaOverHeight=box=>node.type==="ellipse"?Math.PI*box.width*scale/4:
+      box.width*scale-(4-Math.PI)*Math.min(node.cornerRadius??0,box.width/2,box.height/2)**2*scale/box.height;
+    const predictedWidth=areaOverHeight(node)-areaOverHeight(snappedNode);
+    for(const [field,observed,predicted]of [
+      ["centroidX",coverage.centroidX-reference.centroidX,(shift.left+shift.right)/2],
+      ["centroidY",coverage.centroidY-reference.centroidY,(shift.top+shift.bottom)/2],
+      ["areaOverHeight",coverage.mass/(node.height*scale)-reference.mass/(snappedNode.height*scale),predictedWidth]]){
+      if(!Number.isFinite(observed))return null;
+      residuals.push({field,observed,predicted,error:Math.abs(observed-predicted)});
+    }
+    for(const edge of ["left","top","right","bottom"]){
+      const observed=svg.delta[edge];if(!Number.isFinite(observed)||Math.abs(observed-shift[edge])>1)return null;
+    }
   }
   const maximumResidual=Math.max(...residuals.map(entry=>entry.error));
   if(maximumResidual>.1)return null;
   return {kind:"svg-precise-vs-html-snap",pass:false,maximumResidualDevicePx:maximumResidual,limitDevicePx:.1,
-    predictedEdgeDisplacementDevicePx:shift,residuals,basis:"independent GPU/HTML geometry and pixels pass; all measured SVG displacements match precise-minus-snapped box prediction"};
+    predictedEdgeDisplacementDevicePx:shift,integerBboxConsistencyLimitDevicePx:1,residuals,basis:"independent GPU/HTML geometry and pixels pass; all measured SVG displacements match precise-minus-snapped box prediction"};
 }
 export function selectUniqueMeasurements(records) {
   const selected = new Map();
@@ -100,7 +115,7 @@ export function selectUniqueMeasurements(records) {
       const isolation=record.isolation?.targetId===node.id;
       const row={matrix:record.matrix,page:record.page,id:node.id,type:node.type,route,recordIndex,tileIndex:record.tileIndex,
         coverage:isolation?(node.complete?(record.composite?"isolation-full-composite":"isolation-full"):"isolation-partial"):(node.complete?"full":"partial"),
-        complete:node.complete,clearance:node.clearance??0,reasonCode:node.complete?null:"NO_COMPLETE_TILE",
+        geometry:node.geometry,referenceInk:node.measurements.html?.ink,tile:record.tile,scale:record.scale,complete:node.complete,clearance:node.clearance??0,reasonCode:node.complete?null:"NO_COMPLETE_TILE",
         isolation:isolation?record.isolation:null,value,diagnosticReasons:node.diagnosticReasons??[],paths:record.paths};
       const key=fidelityMeasurementKey(row),previous=selected.get(key);
       // An isolated result is authoritative even if it exposes a failure. It
@@ -127,7 +142,7 @@ export function fidelityCounts(rows) {
     diagnostic:rows.filter(row=>row.value.gating==="diagnostic").length,
     diagnosticFailures:rows.filter(row=>row.value.diagnosticFailures?.length||row.value.gating==="diagnostic"&&row.value.failures?.length).length};
 }
-export function isolateFidelityDesign(input,targetId) {
+export function isolateFidelityDesign(input,targetId,{strokeOnly=false}={}) {
   const design=structuredClone(input),index=new Map(design.nodes.map(node=>[node.id,node])),target=index.get(targetId);
   if(!target)throw Error(`Unknown isolation target ${targetId}`);
   const ancestorIds=[];
@@ -144,8 +159,9 @@ export function isolateFidelityDesign(input,targetId) {
       delete node.shadow;delete node.shadowStack;
     }else{node.opacity=0;hiddenIds.push(node.id);}
   }
+  if(strokeOnly){delete target.shadow;delete target.shadowStack;}
   for(const page of design.pages??[])page.nodes=page.id===design.activePageId?design.nodes:(page.nodes??[]).map(node=>({...node,opacity:0}));
-  return {design,metadata:{version:2,targetId,ancestorIds,descendantIds:[...descendants],hiddenIds,method:"same immutable document transform on GPU/browser/SVG/HTML; opacity-zero sibling flow placeholders; target descendants retain opaque paint/clip semantics; ancestor fills and structural semantics preserved"}};
+  return {design,metadata:{version:3,targetId,strokeOnly,ancestorIds,descendantIds:[...descendants],hiddenIds,method:"same immutable document transform on GPU/browser/SVG/HTML; opacity-zero sibling flow placeholders; target descendants retain opaque paint/clip semantics; ancestor fills and structural semantics preserved"}};
 }
 export function classifyHtmlPixelSnap({node,scale,measurements}) {
   const width=Number(node.strokeWidth)||0,outset=node.strokeAlign==="inside"?0:node.strokeAlign==="outside"?width:width/2;
@@ -224,6 +240,44 @@ export function fidelityIsolationPlan(rows,requested,{isolateAllText=false}={}) 
   for(const node of requested){
     if(!rows.some(row=>row.id===node.id))add(node.id,["NO_CAPTURE_INTERSECTION"]);
     if(isolateAllText&&node.type==="text")add(node.id,["ALL_TEXT_ISOLATION_AUDIT"]);
+    if(node.rotation)add(node.id,["ROTATED_OWN_FILL_ISOLATION_REQUIRED"]);
+    if(node.strokeWidth>0&&(node.shadow||node.shadowStack))add(node.id,["STROKE_SHADOW_SEPARATION_REQUIRED"]);
   }
   return [...plan].map(([id,reasons])=>({id,reasonCodes:[...reasons]}));
+}
+
+
+/** Every raw composite mismatch must lie in a genuinely failing descendant's
+ * actual rotated bbox, expanded by exactly two device pixels. No pixel is
+ * removed: the complete mismatch runs and coverage counts stay reviewable. */
+export function attributeFrameComposite({value,node,nodes,rows,page,matrix,route,tile,scale}) {
+  const raw=value.rawCompositePixel;
+  if(!raw||(raw.mismatchRatio<=.001&&raw.largestCluster<=6))return null;
+  const index=new Map(nodes.map(entry=>[entry.id,entry]));
+  const descendants=nodes.filter(candidate=>{
+    for(let parent=index.get(candidate.parentId),seen=new Set();parent&&!seen.has(parent.id);parent=index.get(parent.parentId)){
+      if(parent.id===node.id)return true;seen.add(parent.id);
+    }return false;
+  });
+  const failed=descendants.flatMap(candidate=>{
+    const row=rows.find(entry=>entry.page===page&&entry.matrix===matrix&&entry.route===route&&entry.id===candidate.id);
+    if(!row?.value.gateFailures?.length||row.value.geometryScope==="visible-composite-fill-with-descendant-occlusion"||
+      row.value.gateFailures.every(reason=>reason.startsWith("frame composite contains")))return [];
+    const actualInk=row.value.ink,referenceInk=row.referenceInk??actualInk;
+    if(!actualInk||!referenceInk||!row.tile||!(row.scale>0))return [];
+    const ink={left:Math.min(actualInk.left,referenceInk.left),top:Math.min(actualInk.top,referenceInk.top),right:Math.max(actualInk.right,referenceInk.right),bottom:Math.max(actualInk.bottom,referenceInk.bottom)};
+    return [{id:candidate.id,failures:[...row.value.gateFailures],basis:"union of reference/actual observed ink bboxes from chosen descendant capture",sourceTile:row.tile,sourceScale:row.scale,
+      bounds:{x:(row.tile.x+ink.left/row.scale-tile.x)*scale-2,y:(row.tile.y+ink.top/row.scale-tile.y)*scale-2,
+        width:(ink.right-ink.left+1)/row.scale*scale+4,height:(ink.bottom-ink.top+1)/row.scale*scale+4}}];
+  });
+  let coveredPixels=0,totalPixels=0;
+  for(const [y,start,end]of raw.mismatchMask?.runs??[])for(let x=start;x<end;x++){
+    totalPixels++;if(failed.some(({bounds:b})=>x+.5>=b.x&&x+.5<b.x+b.width&&y+.5>=b.y&&y+.5<b.y+b.height))coveredPixels++;
+  }
+  const complete=Boolean(raw.mismatchMask)&&totalPixels===raw.mismatchPixels;
+  const attributed=complete&&totalPixels>0&&coveredPixels===totalPixels;
+  return {kind:attributed?"DESCENDANT_ATTRIBUTED":"FRAME_COMPOSITE_UNATTRIBUTED",pass:false,
+    expansionDevicePx:2,totalMismatchPixels:raw.mismatchPixels,maskMismatchPixels:totalPixels,
+    coveredMismatchPixels:coveredPixels,uncoveredMismatchPixels:totalPixels-coveredPixels,maskComplete:complete,failedDescendants:failed,
+    reason:attributed?"all original mismatch pixels lie inside failed descendants plus 2 device px":"frame composite has unexplained mismatch pixels or no complete mismatch mask"};
 }

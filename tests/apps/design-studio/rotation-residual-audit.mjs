@@ -1,0 +1,34 @@
+// Read-only R005 rotation audit. Never edits old evidence or changes its gates.
+import assert from 'node:assert/strict';
+import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import {resolve,dirname} from 'node:path';
+import {createHash} from 'node:crypto';
+import {PNG} from 'pngjs';
+import {parseRgb,inkGeometry,geometryDifference} from './render-fidelity.metrics.mjs';
+import {rotationMomentRoi} from './rotation-moment-roi.mjs';
+import {compareRotationGeometry} from './render-fidelity-geometry.mjs';
+const oldRoot=resolve(process.argv[2]??'/Users/admin/.codex/worktrees/panels-design-render-fidelity-r005/.tmp/render-fidelity-r005');
+const sourcePath='/Users/admin/.codex/worktrees/codeshell-cross-platform-design-20261106/designs/codeshell-web-refined.backup.json';
+const output=resolve(process.env.DESIGN_ROTATION_EVIDENCE??'.tmp/render-fidelity-r006/rotation');await mkdir(output,{recursive:true});
+const oldPath=resolve(oldRoot,'final-real/residual-index.json'),oldBytes=await readFile(oldPath),sourceBytes=await readFile(sourcePath),old=JSON.parse(oldBytes).rotated77;
+const flatten=(nodes,parentId)=>nodes.flatMap(node=>[{...node,parentId:node.parentId??parentId},...flatten(node.children??[],node.id)]);
+const portable=JSON.parse(sourceBytes),pages=new Map(portable.document.pages.map(p=>[p.id,new Map(flatten(p.children??p.nodes).map(n=>[n.id,n]))]));
+const cache=new Map();const load=async path=>{if(!cache.has(path))cache.set(path,path.endsWith('.png')?PNG.sync.read(await readFile(path)):JSON.parse(await readFile(path)));return cache.get(path);};
+const rows=[];
+for(const row of old.rows){const m=await load(resolve(dirname(row.routePath),'metrics.json')),index=pages.get(row.page),node=index.get(row.id);let background;
+ for(let p=index.get(node.parentId);p;p=index.get(p.parentId)){background=parseRgb(p.fill);if(background)break;}background??=parseRgb(portable.document.canvas?.background)??[255,255,255];
+ const scale=m.scale,inset=Math.max(8,(Math.abs(node.width*Math.cos(node.rotation*Math.PI/180))+Math.abs(node.height*Math.sin(node.rotation*Math.PI/180))-node.width)/2+4,(Math.abs(node.width*Math.sin(node.rotation*Math.PI/180))+Math.abs(node.height*Math.cos(node.rotation*Math.PI/180))-node.height)/2+4);
+ const wideRoi={x:(Math.max(node.x-inset,m.tile.x)-m.tile.x)*scale,y:(Math.max(node.y-inset,m.tile.y)-m.tile.y)*scale,width:(Math.min(node.x+node.width+inset,m.tile.x+m.tile.width)-Math.max(node.x-inset,m.tile.x))*scale,height:(Math.min(node.y+node.height+inset,m.tile.y+m.tile.height)-Math.max(node.y-inset,m.tile.y))*scale};
+ const actual=await load(row.routePath),reference=await load(row.referenceHtmlPath),wideOptions={roi:wideRoi,foreground:parseRgb(node.fill),background};
+ const roi=rotationMomentRoi({node,tile:m.tile,scale,referenceInk:inkGeometry(reference,wideOptions),actualInk:inkGeometry(actual,wideOptions)}),options={...wideOptions,roi};
+ assert(roi,'Primary ink remains available');
+ const bounded=compareRotationGeometry(reference,actual,options),ink=geometryDifference(inkGeometry(reference,options),inkGeometry(actual,options));
+ assert(bounded.measurable,`${row.page}/${row.id}/${row.route}/${row.matrix} bounded geometry`);
+ const bboxMax=Math.max(...['left','top','right','bottom'].map(k=>Math.abs(ink[k]))),inkCentroid=Math.hypot(ink.centroidX,ink.centroidY);
+ const oldOver=row.geometry.recordedOneDevicePxConditions.rotatedBBoxAndBothCentroids===false;
+ rows.push({page:row.page,id:row.id,route:row.route,matrix:row.matrix,source:row.sourceNode,coverage:row.coverage,wideRoi,roi,background,oldOver,old:{bbox:row.geometry.bbox,ink:row.geometry.inkCentroidDelta,rotation:row.geometry.rotation,referenceMoments:row.measurement.geometryProbe.reference,actualMoments:row.measurement.geometryProbe.actual},bounded:{...bounded,ink,bboxMax,inkCentroid,areaRatio:bounded.actual.mass/bounded.reference.mass,exceptionPass:bounded.centroid<=1&&Math.abs(bounded.angleDegrees)<=.5,registeredOneDevicePxWithin:bboxMax<=1&&inkCentroid<=1&&bounded.centroid<=1},paths:{reference:row.referenceHtmlPath,actual:row.routePath}});
+}
+const count=(items,f)=>items.reduce((a,r)=>(a[f(r)]=(a[f(r)]??0)+1,a),{}),over=rows.filter(r=>r.oldOver);
+const component=r=>[r.old.bbox.maximumEdgeDevicePx>1?'bbox':'',r.old.ink.magnitude>1?'ink':'',r.old.rotation.centroidDevicePx>1?'rotation':''].filter(Boolean).join('+');
+const summary={rows:rows.length,oldOver:over.length,oldOverByRoute:count(over,r=>r.route),oldOverByMatrix:count(over,r=>r.matrix),oldOverByComponent:count(over,component),oldOverByDimensions:count(over,r=>`${r.source.savedBox.width.toFixed(2)}x${r.source.savedBox.height.toFixed(2)}`),oldOverStillBoundedOnePx:over.filter(r=>!r.bounded.registeredOneDevicePxWithin).length,oldOverBoundedExceptionFail:over.filter(r=>!r.bounded.exceptionPass).length,boundedAllOnePxExceeded:rows.filter(r=>!r.bounded.registeredOneDevicePxWithin).length,boundedAllExceptionFail:rows.filter(r=>!r.bounded.exceptionPass).length,rawReferenceAngleOver5DegFromSaved:rows.filter(r=>Math.abs(r.old.referenceMoments.angleDegrees-r.source.rotationDegrees)>5).length,boundedReferenceAngleOver5DegFromSaved:rows.filter(r=>Math.abs(r.bounded.reference.angleDegrees-r.source.rotationDegrees)>5).length,maxBoundedCentroid:Math.max(...rows.map(r=>r.bounded.centroid)),maxBoundedAngle:Math.max(...rows.map(r=>Math.abs(r.bounded.angleDegrees))),boundedIsolatedOnePxExceeded:rows.filter(r=>r.coverage==='isolation-full'&&!r.bounded.registeredOneDevicePxWithin).length,boundedIsolatedExceptionFail:rows.filter(r=>r.coverage==='isolation-full'&&!r.bounded.exceptionPass).length,fullUnisolatedCannotEstablishPerNodeDirection:rows.filter(r=>r.coverage!=='isolation-full').length,oldOverUnisolated:over.filter(r=>r.coverage!=='isolation-full').length,changedBackground:0};
+const sha=b=>createHash('sha256').update(b).digest('hex');await writeFile(resolve(output,'old-rotation-bounded-union-audit.json'),JSON.stringify({policy:'Read-only diagnostics. Original old gates unchanged; bounded own-fill moments expose background/ROI sensitivity. No new exemptions.',provenance:{oldPath,oldSha256:sha(oldBytes),sourcePath,sourceSha256:sha(sourceBytes)},summary,rows},null,2));console.log(JSON.stringify(summary,null,2));

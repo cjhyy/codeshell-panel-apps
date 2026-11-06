@@ -27,7 +27,7 @@ export function largestConnectedCluster(mask, width, height) {
   }
   return largest;
 }
-export function symmetricPixelDifference(reference, actual, { roi, includePixel, channel = 24, radius = 1 } = {}) {
+export function symmetricPixelDifference(reference, actual, { roi, includePixel, channel = 24, radius = 1, retainMask = false } = {}) {
   if (reference.width !== actual.width || reference.height !== actual.height) throw Error("Pixel images have different dimensions");
   const box = region(reference, roi), width = box.right - box.left, height = box.bottom - box.top;
   const mask = new Uint8Array(width * height); let mismatchPixels = 0, absoluteError = 0, pixels = 0;
@@ -52,6 +52,7 @@ export function symmetricPixelDifference(reference, actual, { roi, includePixel,
   }
   return { pixels, mismatchPixels, mismatchRatio: mismatchPixels / (pixels || 1),
     largestCluster: largestConnectedCluster(mask, width, height), meanAbsoluteChannelError: absoluteError / (pixels * 4 || 1),
+    ...(retainMask ? {mismatchMask:{bounds:box,width,height,runs:Array.from({length:height},(_,y)=>{const runs=[];for(let x=0;x<width;){if(!mask[y*width+x]){x++;continue;}const start=x;while(x<width&&mask[y*width+x])x++;runs.push([y+box.top,start+box.left,x+box.left]);}return runs;}).flat()}} : {}),
     method: `symmetric 3x3 RGBA; union mask; 8-connected components; ${includePixel?"contour-ring":"ROI"} pixel denominator`, channel, radius };
 }
 

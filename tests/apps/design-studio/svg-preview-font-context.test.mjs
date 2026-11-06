@@ -77,6 +77,24 @@ test("finite hanging offsets retain metadata-free compatibility and cannot borro
   }
 });
 
+test("measured finite preview replays paint context and rejects stale or modified baselines", () => {
+  const document = design([text({ y: 20.25, layoutBaselineOffset: -3 })]), before = serializeDesignDocument(document);
+  const finiteMetrics = new Map([["copy", { ascent: 19, descent: 5, hangingToAlphabetic: 15.2 }]]);
+  const svg = exportDesignSvg(document, { textLineBoxMetrics: finiteMetrics });
+  assert.match(svg, /data-text-finite-baseline="23" data-text-hanging-offset="15.2"/);
+  assert.match(svg, /y="35"[^>]*dominant-baseline="alphabetic"/);
+  assert.equal(isDesignPreviewCurrent(document, svg), true);
+  for (const mutation of [
+    value => value.replace('y="35"', 'y="36"'),
+    value => value.replace('data-text-hanging-offset="15.2"', 'data-text-hanging-offset="NaN"'),
+    value => value.replace('data-text-finite-baseline="23"', 'data-text-finite-baseline="023"'),
+    value => value.replace('data-text-metrics-signature="', 'data-text-metrics-signature="stale'),
+  ]) assert.equal(isDesignPreviewCurrent(document, mutation(svg)), false);
+  assert.equal(serializeDesignDocument(document), before);
+  document.nodes[0].lineHeight = 2;
+  assert.equal(isDesignPreviewCurrent(document, svg), false);
+});
+
 test("repeated component instances replay identical source-text metadata and reject conflicting repeats", () => {
   const shape = { fill: "transparent", stroke: "transparent", strokeWidth: 0, opacity: 1, rotation: 0, cornerRadius: 0, visible: true, locked: false };
   const document = design([

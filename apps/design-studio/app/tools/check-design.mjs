@@ -71,6 +71,18 @@ export function isDesignPreviewCurrent(document, svgSource, resourceDataUrls = n
     if (previous && previous.alphabeticBaseline !== baseline) return false;
     textLineBoxMetrics.set(id, { alphabeticBaseline: baseline });
   }
+  const finiteNodes = new Map(nodes.filter(node => node.type === "text" && !textHasLineBoxOrigin(node) && node.textRanges === undefined)
+    .map(node => [escapeXml(node.id), node]));
+  const finiteMetadata = /<g data-node-id="([^"]+)" data-text-finite-baseline="([^"]+)" data-text-hanging-offset="([^"]+)" data-text-metrics-signature="([^"]+)"/gu;
+  for (const match of svgSource.matchAll(finiteMetadata)) {
+    const node = finiteNodes.get(match[1]), alphabeticBaseline = Number(match[2]), hangingToAlphabetic = Number(match[3]);
+    if (!node || ![alphabeticBaseline, hangingToAlphabetic].every((value, index) =>
+      Number.isFinite(value) && Math.abs(value) <= 1000 && String(value) === match[index + 2])) return false;
+    if (match[4] !== escapeXml(textMetricsSignature(node))) return false;
+    const previous = textLineBoxMetrics.get(node.id);
+    if (previous && (previous.alphabeticBaseline !== alphabeticBaseline || previous.hangingToAlphabetic !== hangingToAlphabetic)) return false;
+    textLineBoxMetrics.set(node.id, { alphabeticBaseline, hangingToAlphabetic });
+  }
   return svgSource === exportDesignSvg(document, { resourceDataUrls, textLineBoxMetrics });
 }
 

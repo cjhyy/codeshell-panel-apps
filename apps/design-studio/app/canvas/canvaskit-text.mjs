@@ -1,5 +1,5 @@
 import { textLineHeightPixels } from "../text-line-height.mjs";
-import { textHasLineBoxOrigin, textLineBoxAlphabeticOffset, textLineBoxBaselineY } from "../text-line-box.mjs";
+import { textHasLineBoxOrigin, textLineBoxAlphabeticOffset, textLineBoxBaselineY, textFiniteBaselineY } from "../text-line-box.mjs";
 import { designFillPaints, gradientMatrix } from "../paint.mjs";
 import { designFontFamilyCss, designNamedFontFamilyCss, designResourceFontFamilyCss } from "../font-css.mjs";
 import { currentTextMetrics, textDisplayLineMetrics } from "../text-metrics.mjs";
@@ -230,12 +230,13 @@ export async function createCanvasKitText({
     });
   }
 
+  function finitePaint(node) { return !textHasLineBoxOrigin(node) && node.textRanges === undefined; }
   function configure(node, alias) {
     const family = alias === undefined ? designFontFamilyCss(node.fontFamily) :
       aliasFamilies.has(alias) ? designResourceFontFamilyCss(node.fontFamily, aliasFamilies.get(alias), alias) :
         designNamedFontFamilyCss(alias);
     measure.font = `${node.fontStyle || "normal"} ${node.fontWeight} ${node.fontSize}px ${family}`;
-    measure.textBaseline = textHasLineBoxOrigin(node) ? "alphabetic" : "hanging";
+    measure.textBaseline = textHasLineBoxOrigin(node) || finitePaint(node) ? "alphabetic" : "hanging";
     measure.textAlign = "left";
     // Canvas "auto" can disable pairs that the editable SVG text still kerns.
     if ("fontKerning" in measure) measure.fontKerning = "normal";
@@ -250,8 +251,21 @@ export async function createCanvasKitText({
     measure.textBaseline = "hanging";
     return alphabetic.actualBoundingBoxAscent - hanging.actualBoundingBoxAscent;
   }
-  const browserFontMetrics = new Map(), nativeFontMetrics = new Map();
-  function paintBaseline(node, index, offset) {
+  const browserFontMetrics = new Map(), nativeFontMetrics = new Map(), finiteFontMetrics = new Map();
+  function paintBaseline(node, index, offset, alias) {
+    if (finitePaint(node)) {
+      configure(node, alias);
+      const key = measure.font;
+      let metrics = finiteFontMetrics.get(key);
+      if (!metrics) {
+        const measured = measure.measureText("Hg");
+        metrics = { ascent: measured.fontBoundingBoxAscent, descent: measured.fontBoundingBoxDescent,
+          hangingToAlphabetic: hangingOffset(node, alias) };
+        finiteFontMetrics.set(key, metrics);
+        configure(node, alias);
+      }
+      return textFiniteBaselineY(node, index, metrics, { originY: currentNodes.get(node.id)?.y ?? node.y });
+    }
     if (textRangeTypography(node, false).length)
       return node.y + textDisplayLineMetrics(node).offsets[index] + offset;
     return textLineBoxBaselineY(node, index, offset, { originY: currentNodes.get(node.id)?.y ?? node.y });
@@ -356,7 +370,7 @@ export async function createCanvasKitText({
     return String(node.text)
       .split("\n")
       .reduce((sum, line, i) => {
-        const { w, h } = lineGeometry(node, line, paintBaseline(node, i, rasterBaseline(node, alias)), scale, alias, origin);
+        const { w, h } = lineGeometry(node, line, paintBaseline(node, i, rasterBaseline(node, alias), alias), scale, alias, origin);
         return sum + w * h;
       }, 0);
   }
@@ -385,7 +399,7 @@ export async function createCanvasKitText({
       node.lineHeight,
       node.lineHeightUnit,
       textHasLineBoxOrigin(node),
-      ...(textHasLineBoxOrigin(node) ? [paintBaseline(node, 0, 0) - node.y] : []),
+      ...((textHasLineBoxOrigin(node) || finitePaint(node)) ? [paintBaseline(node, 0, 0, alias) - node.y] : []),
       ...(textHasLineBoxOrigin(node) && node.textAlign === "center" ? [rasterOriginXCorrection(node)] : []),
       node.letterSpacing,
       node.textAlign,
@@ -398,7 +412,7 @@ export async function createCanvasKitText({
       node.strokeWidth,
       alias,
     ]);
-  function prepareRasterPlan(node, alias) {
+  function prepareRasterPlan(node, alias, deviceOnly = false) {
     const signature = rasterSignature(node, alias);
     let plan = rasterPlans.get(node.id);
     if (!plan || plan.signature !== signature) {
@@ -408,6 +422,7 @@ export async function createCanvasKitText({
       plan = {
         node,
         alias,
+        deviceOnly,
         signature,
         scale,
         pixels: estimatePixels(node, scale, alias),
@@ -441,12 +456,12 @@ export async function createCanvasKitText({
     if (!retainOffscreen) activeDeviceIds = new Set();
     else for (const id of activeDeviceIds) {
       const eligible = eligibleOrigins.get(id), cached = devicePlans.get(id)?.origin;
-      if (!eligible || !cached || eligible.x !== cached.x || eligible.y !== cached.y || devicePlans.get(id).scale !== scale)
+      if ((rasterPlans.get(id)?.deviceOnly && scale <= 1) || !eligible || !cached || eligible.x !== cached.x || eligible.y !== cached.y || devicePlans.get(id).scale !== scale)
         activeDeviceIds.delete(id);
     }
     for (const [id, origin] of origins) {
       const master = rasterPlans.get(id);
-      if (!master) continue; // Native SkParagraph text never acquires bitmap variants.
+      if (!master || master.deviceOnly && scale <= 1) continue;
       let plan = devicePlans.get(id);
       if (!plan || plan.scale !== scale || plan.origin.x !== origin.x || plan.origin.y !== origin.y) {
         dropNodeImages(id, "device");
@@ -465,7 +480,7 @@ export async function createCanvasKitText({
       activeDeviceIds.add(id);
     }
     trimDevicePlans([...rasterPlans.values()].reduce((sum, plan) => sum + plan.pixels, 0), new Set(origins.keys()));
-    for (const id of origins.keys()) if (rasterPlans.has(id) && !activeDeviceIds.has(id) && !deviceFallbacks.some(entry => entry.nodeId === id))
+    for (const id of origins.keys()) if (rasterPlans.has(id) && !(rasterPlans.get(id).deviceOnly && scale <= 1) && !activeDeviceIds.has(id) && !deviceFallbacks.some(entry => entry.nodeId === id))
       deviceFallbacks.push({ nodeId: id, scale, reason: "device-scene-raster-budget" });
     deviceRequestKey = requestKey;
     deviceEligibility = eligibleOrigins;
@@ -483,7 +498,7 @@ export async function createCanvasKitText({
       const plan = rasterPlans.get(id);
       const required = nodeScales.get(id) ?? requestedScale;
       const desired = Math.max(2, 2 ** Math.ceil(Math.log2(required)));
-      if (!plan || plan.scale >= desired) continue;
+      if (!plan || plan.deviceOnly || plan.scale >= desired) continue;
       const pixels = estimatePixels(plan.node, desired, plan.alias);
       changes.set(id, { scale: desired, pixels });
       total += pixels - plan.pixels;
@@ -516,7 +531,7 @@ export async function createCanvasKitText({
       for (const entry of rasterImages.values()) entry.image.delete();
       rasterImages.clear(); rasterPlans.clear(); devicePlans.clear(); activeDeviceIds.clear();
       rasterPixels = 0; deviceRequestKey = null;
-      availableFamilies.clear(); browserFontMetrics.clear(); nativeFontMetrics.clear(); contentBoundsCache.clear();
+      availableFamilies.clear(); browserFontMetrics.clear(); nativeFontMetrics.clear(); finiteFontMetrics.clear(); contentBoundsCache.clear();
       resourceRasterFallbacks.clear();
     }
     const nodes = nextDesign.pages?.length
@@ -613,7 +628,7 @@ export async function createCanvasKitText({
       .forEach((line, i) => {
         const metric = measure.measureText(line || " "),
           x = alignedX(node, metric.width);
-        const y = paintBaseline(node, i, baseline);
+        const y = paintBaseline(node, i, baseline, entry?.alias);
         left = Math.min(left, x - metric.actualBoundingBoxLeft);
         right = Math.max(right, x + metric.width, x + metric.actualBoundingBoxRight);
         top = Math.min(top, y - metric.actualBoundingBoxAscent);
@@ -648,7 +663,7 @@ export async function createCanvasKitText({
       ctx.scale(scale, scale);
       ctx.translate(-offsetX, -offsetY);
       ctx.font = measure.font;
-      ctx.textBaseline = textHasLineBoxOrigin(node) ? "alphabetic" : "hanging";
+      ctx.textBaseline = textHasLineBoxOrigin(node) || finitePaint(node) ? "alphabetic" : "hanging";
       if ("fontKerning" in ctx) ctx.fontKerning = "normal";
       if ("letterSpacing" in ctx) ctx.letterSpacing = `${node.letterSpacing || 0}px`;
       for (const fill of designFillPaints(node)) {
@@ -812,9 +827,26 @@ export async function createCanvasKitText({
         `${missing} glyphs absent from supplied font; browser same-family raster cache`,
       );
       lines.forEach((line, i) =>
-        rasterLine(canvas, node, line, paintBaseline(node, i, rasterBaseline(node, entry.alias)), entry.alias),
+        rasterLine(canvas, node, line, paintBaseline(node, i, rasterBaseline(node, entry.alias), entry.alias), entry.alias),
       );
       return;
+    }
+    // Imported resource text keeps its historical native pixels at <=1x.
+    // Above 1x a bounded same-family device image avoids a native/browser
+    // font-metric and coverage phase mismatch without resampling a master.
+    let finiteDevice = finitePaint(node) && canvasKitResourceTextRasterEligible({ ...node, layoutBaselineOffset: undefined });
+    if (finiteDevice) {
+      try { prepareRasterPlan(node, entry.alias, true); }
+      catch (error) {
+        if (!/bounded .*raster budget/u.test(error.message)) throw error;
+        finiteDevice = false;
+        resourceRasterFallbacks.set(node.id, { nodeId: node.id, reason: "finite-device-raster-budget", detail: String(error.message).slice(0, 180) });
+      }
+      if (activeDeviceIds.has(node.id)) {
+        counters.rasterTextNodes++;
+        lines.forEach((line, i) => rasterLine(canvas, node, line, paintBaseline(node, i, 0, entry.alias), entry.alias));
+        return;
+      }
     }
     if (canvasKitResourceTextRasterEligible(node)) {
       let rasterReady = false;
@@ -831,11 +863,11 @@ export async function createCanvasKitText({
       if (rasterReady) {
         resourceRasterFallbacks.delete(node.id);
         counters.rasterTextNodes++;
-        lines.forEach((line, i) => rasterLine(canvas, node, line, paintBaseline(node, i, rasterBaseline(node, entry.alias)), entry.alias));
+        lines.forEach((line, i) => rasterLine(canvas, node, line, paintBaseline(node, i, rasterBaseline(node, entry.alias), entry.alias), entry.alias));
         return;
       }
-    } else resourceRasterFallbacks.delete(node.id);
-    if (rasterPlans.has(node.id)) {
+    }
+    if (rasterPlans.has(node.id) && !finiteDevice) {
       dropNodeImages(node.id);
       rasterPlans.delete(node.id);
       deviceRequestKey = null;
@@ -883,7 +915,8 @@ export async function createCanvasKitText({
         shape.layout(1048576);
         const width = shape.getLongestLine();
         x = alignedX(node, width);
-        y = paintBaseline(node, i, baseline) - shape.getAlphabeticBaseline();
+        y = (finitePaint(node) ? node.y + i * textLineHeightPixels(node) + baseline
+          : paintBaseline(node, i, baseline, entry.alias)) - shape.getAlphabeticBaseline();
         shape.delete();
         if (metrics)
           maxWidthDelta = Math.max(maxWidthDelta, Math.abs(width - metrics.lineWidths[i]));

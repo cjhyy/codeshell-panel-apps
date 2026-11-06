@@ -1572,10 +1572,13 @@ function exportNodeSvg(
       node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
     );
     const fontFamily = escapeXml(fontFamilyCss);
-    const lineBoxMetrics = textHasLineBoxOrigin(node) && !textRangeTypography(node, false).length
+    const lineBoxMetrics = (textHasLineBoxOrigin(node) || node.textRanges === undefined) && !textRangeTypography(node, false).length
       ? options.resolveTextLineBoxMetrics?.(node, fontFamilyCss) : undefined;
     const unmeasuredLineBox = textHasLineBoxOrigin(node) && !textRangeTypography(node, false).length && !lineBoxMetrics;
-    const lineBoxMetadata = unmeasuredLineBox ? ' data-text-line-box="unmeasured"' : lineBoxMetrics
+    const finiteMetrics = !textHasLineBoxOrigin(node) && Number.isFinite(lineBoxMetrics?.hangingToAlphabetic);
+    const lineBoxMetadata = finiteMetrics
+      ? ` data-text-finite-baseline="${Number.isFinite(lineBoxMetrics.alphabeticBaseline) ? lineBoxMetrics.alphabeticBaseline : textLineBoxAlphabeticOffset(node, lineBoxMetrics)}" data-text-hanging-offset="${lineBoxMetrics.hangingToAlphabetic}" data-text-metrics-signature="${escapeXml(textMetricsSignature(node))}"`
+      : unmeasuredLineBox ? ' data-text-line-box="unmeasured"' : textHasLineBoxOrigin(node) && lineBoxMetrics
       ? ` data-text-line-box="alphabetic" data-text-baseline-offset="${Number.isFinite(lineBoxMetrics.alphabeticBaseline) ? lineBoxMetrics.alphabeticBaseline : textLineBoxAlphabeticOffset(node, lineBoxMetrics)}" data-text-metrics-signature="${escapeXml(textMetricsSignature(node))}"` : "";
     if (unmeasuredLineBox) options.diagnostics?.push({ code: "TEXT_LINE_BOX_SVG_UNMEASURED", nodeId: node.id });
     const fontStyle = node.fontStyle ?? "normal";
@@ -1810,8 +1813,12 @@ export function exportDesignSvg(document, options = {}) {
       if (!fontMetrics.has(font)) {
         fontContext.font = font; fontContext.textBaseline = "alphabetic";
         const measured = fontContext.measureText("Hg");
-        if (Number.isFinite(measured.fontBoundingBoxAscent) && Number.isFinite(measured.fontBoundingBoxDescent))
-          fontMetrics.set(font, { ascent: measured.fontBoundingBoxAscent, descent: measured.fontBoundingBoxDescent });
+        if (Number.isFinite(measured.fontBoundingBoxAscent) && Number.isFinite(measured.fontBoundingBoxDescent)) {
+          fontContext.textBaseline = "hanging";
+          const hanging = fontContext.measureText("Hg");
+          fontMetrics.set(font, { ascent: measured.fontBoundingBoxAscent, descent: measured.fontBoundingBoxDescent,
+            hangingToAlphabetic: measured.actualBoundingBoxAscent - hanging.actualBoundingBoxAscent });
+        }
       }
       if (fontMetrics.has(font)) return fontMetrics.get(font);
     }

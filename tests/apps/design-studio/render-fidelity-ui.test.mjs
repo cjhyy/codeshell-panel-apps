@@ -8,8 +8,9 @@ import { chromium } from "playwright";
 import { PNG } from "pngjs";
 import { fidelityFontOmissions, renderFidelityFixture } from "./render-fidelity.fixture.mjs";
 import { FIDELITY_THRESHOLDS, geometryDifference, inkGeometry, parseRgb, strokeContourScans, strokeRingPixelRegion, shapeGeometryFailures, shapePixelQualification, symmetricPixelDifference, textGeometryFailures } from "./render-fidelity.metrics.mjs";
-import { compareGeometryProbe, compareRotationGeometry } from "./render-fidelity-geometry.mjs";
-import { isolateFidelityDesign, selectUniqueMeasurements, classifyHtmlPixelSnap, classifyUnobservableOwnFill, classifySvgPreciseSnap, sameFloat32View, fidelityCounts, stitchFidelityTiles, fidelityIsolationPlan } from "./render-fidelity-attribution.mjs";
+import { rotationMomentRoi } from "./rotation-moment-roi.mjs";
+import { compareGeometryProbe, compareRotationGeometry, coverageGeometry } from "./render-fidelity-geometry.mjs";
+import { isolateFidelityDesign, selectUniqueMeasurements, classifyHtmlPixelSnap, classifyUnobservableOwnFill, classifySvgPreciseSnap, sameFloat32View, fidelityCounts, stitchFidelityTiles, fidelityIsolationPlan, attributeFrameComposite } from "./render-fidelity-attribution.mjs";
 
 // The baseline directory must be an exact git archive. Both Node exports and
 // browser modules are resolved there: a mixed old/new renderer is not a baseline.
@@ -193,15 +194,18 @@ function compareNodes(images,nodes,tile,item,canvas,real,{targetId,sourceNodes=n
     const observability=sourceNode?classifyUnobservableOwnFill(sourceNode,sourceNodes,canvas):null;
     const ring=["frame","component","group"].includes(node.type)&&node.strokeWidth>0&&!node.rotation?
       strokeRingPixelRegion({bounds:{x:(node.x-tile.x)*scale,y:(node.y-tile.y)*scale,width:node.width*scale,height:node.height*scale},strokeWidth:node.strokeWidth*scale,strokeAlign:node.strokeAlign,cornerRadius:(node.cornerRadius??0)*scale}):null;
+    const compositeContainer=["frame","component","group"].includes(node.type)&&nodes.some(child=>child.parentId===node.id);
     const measurements={};
     for(const route of ["gpu","browser","svg","html"]){
       const image=images[route];
       if(!image||!images.html){measurements[route]={ink:null,primaryAvailable:false,unavailableReasonCodes:[!image?"ROUTE_CAPTURE_FAILED":"HTML_REFERENCE_MISSING"],failures:[],gateFailures:[],gating:"unavailable"};continue;}
-      const rawCompositePixel=symmetricPixelDifference(images.html,image,{roi}),pixel=ring?symmetricPixelDifference(images.html,image,{roi,includePixel:ring.includePixel}):rawCompositePixel,foregrounds=[foreground,...(node.textRanges?.ranges??[]).map(range=>parseRgb(range.fill))].filter(Boolean);
+      const rawCompositePixel=symmetricPixelDifference(images.html,image,{roi,retainMask:Boolean(ring||compositeContainer)}),pixel=ring?symmetricPixelDifference(images.html,image,{roi,includePixel:ring.includePixel}):rawCompositePixel,foregrounds=[foreground,...(node.textRanges?.ranges??[]).map(range=>parseRgb(range.fill))].filter(Boolean);
       const ink=foreground&&background?inkGeometry(image,{roi,foreground,foregrounds,background}):null;
       const value=measurements[route]={ink,pixel,cropSha256:hash(crop(image,roi)),unavailableReasonCodes:[]};
-      if(ring){value.rawCompositePixel=rawCompositePixel;value.pixelRegion=ring.metadata;}
-      value.geometryProbe=compareGeometryProbe(images.html,image,{node,tile,scale});
+      if(fillLeaf)value.coverageGeometry=foreground&&background?coverageGeometry(image,{roi,foreground,background}):null;
+      if(ring||compositeContainer)value.rawCompositePixel=rawCompositePixel;
+      if(ring)value.pixelRegion=ring.metadata;
+      value.geometryProbe=["shadow","shadow-stack"].includes(node.id)&&!node.shadow&&!node.shadowStack?null:compareGeometryProbe(images.html,image,{node,tile,scale});
       if(fillLeaf&&node.rotation)value.geometryProbe={kind:"rotation",...compareRotationGeometry(images.html,image,{roi,foreground,background})};
       if(node.strokeWidth>0&&node.type!=="text"&&!node.rotation){
         value.strokeEdges=strokeContourScans(image,{shape:node.type,bounds:{x:(node.x-tile.x)*scale,y:(node.y-tile.y)*scale,width:node.width*scale,height:node.height*scale},strokeWidth:node.strokeWidth*scale,strokeAlign:node.strokeAlign,cornerRadius:(node.cornerRadius??0)*scale,
@@ -212,6 +216,12 @@ function compareNodes(images,nodes,tile,item,canvas,real,{targetId,sourceNodes=n
     for(const [route,value]of Object.entries(measurements)){
       if(!value.pixel)continue;
       value.delta=geometryDifference(measurements.html.ink,value.ink);value.failures=[];value.diagnosticFailures=[];
+      if(fillLeaf&&node.rotation){
+        value.rawWideRotationGeometry=value.geometryProbe;
+        value.rotationMomentRoi=rotationMomentRoi({node,tile,scale,referenceInk:measurements.html.ink,actualInk:value.ink});
+        value.geometryProbe=value.rotationMomentRoi?{kind:"rotation",...compareRotationGeometry(images.html,images[route],{roi:value.rotationMomentRoi,foreground,background})}:
+          {kind:"rotation",measurable:false,failures:["bounded rotation ROI requires both primary ink bboxes"]};
+      }
       if(value.geometryProbe)value.failures.push(...value.geometryProbe.failures);
       value.primaryAvailable=value.geometryProbe?value.geometryProbe.measurable:node.type==="text"?value.delta.measurable:node.strokeWidth>0?Boolean(value.strokeEdges?.measurable&&measurements.html.strokeEdges?.measurable):Boolean(value.ink);
       if(!value.primaryAvailable){
@@ -499,6 +509,31 @@ test("B0 four-route actual-editor fidelity matrix (strict by default)",{timeout:
             }
             let isolatedSvg;try{isolatedSvg=await measuredSvg(f,isolated.design,data);}catch(error){isolated.metadata.svgError=String(error);}
             const {record,tileRecords}=await captureIsolation({f,design:isolated.design,data,item:pageItem,tile,tileIndex:`isolation-${index}`,folder:join(output,`${item.id}-${pageInfo.id}-isolation-${encodeURIComponent(id)}`),svg:isolatedSvg,stageStyle,bounds:isolatedBounds,isolation:{...isolated.metadata,triggerReasons:isolationPlan.find(entry=>entry.id===id).reasonCodes}});
+            // Stroke/shadow separation is an additional render of the same
+            // isolated scene. Original pixels and the independent shadow probe
+            // remain authoritative for the combined image.
+            if(node.strokeWidth>0&&(node.shadow||node.shadowStack)){
+              const strokeScene=isolateFidelityDesign(design,id,{strokeOnly:true});
+              const strokeSvg=await measuredSvg(f,strokeScene.design,data);
+              const strokeFolder=join(output,`${item.id}-${pageInfo.id}-isolation-${encodeURIComponent(id)}`,"stroke-only");
+              const strokeCapture=await captureIsolation({f,design:strokeScene.design,data,item:pageItem,tile,tileIndex:`stroke-only-${index}`,folder:strokeFolder,svg:strokeSvg,stageStyle,bounds:designPageBounds(strokeScene.design),isolation:strokeScene.metadata});
+              record.strokeOnly={metrics:join(strokeFolder,"metrics.json"),paths:strokeCapture.record.paths,routeErrors:strokeCapture.record.routeErrors,shadowRemovedOnlyFromAdditionalCapture:true};
+              record.routeErrors.push(...strokeCapture.record.routeErrors);
+              for(const entry of record.nodes)for(const [route,value]of Object.entries(entry.measurements)){
+                const stroke=strokeCapture.record.nodes.find(other=>other.id===entry.id)?.measurements[route];
+                if(!stroke)continue;
+                value.originalCombinedStroke={strokeEdges:value.strokeEdges,strokeDeltas:value.strokeDeltas,strokeContourCoverage:value.strokeContourCoverage,primaryAvailable:value.primaryAvailable,unavailableReasonCodes:[...value.unavailableReasonCodes],geometryFailures:[...value.geometryFailures]};
+                for(const field of ["strokeEdges","strokeDeltas","strokeContourCoverage"])value[field]=stroke[field];
+                const strokeFailures=(stroke.geometryFailures??[]).filter(reason=>reason.startsWith("stroke "));
+                value.geometryFailures=[...(value.geometryProbe?.failures??[]),...strokeFailures];
+                value.failures=[...value.geometryFailures,...value.failures.filter(reason=>reason.startsWith("pixel"))];
+                value.primaryAvailable=Boolean(stroke.primaryAvailable&&(!value.geometryProbe||value.geometryProbe.measurable));
+                value.unavailableReasonCodes=value.primaryAvailable?[]:[...new Set([...(stroke.unavailableReasonCodes??[]),...(!value.geometryProbe?.measurable&&value.geometryProbe?["GEOMETRY_PROBE_UNAVAILABLE"]:[])])];
+                value.strokeOnlyEvidence={metrics:record.strokeOnly.metrics,route,shadowMetricRetained:Boolean(value.geometryProbe),combinedPixelsRetained:true};
+                value.gateFailures=value.gating==="diagnostic"?[]:[...value.failures];
+                if(value.gating==="diagnostic")value.diagnosticFailures=[...value.failures];
+              }
+            }
             report.isolationTileRecords.push(...tileRecords);
             const rawDom=raw.find(entry=>entry.dom?.some(node=>node.id===id));
             const worldBox=(entry,dom)=>({x:(dom.x-32)/pageItem.zoom+entry.tile.x,y:(dom.y-32)/pageItem.zoom+entry.tile.y,width:dom.width/pageItem.zoom,height:dom.height/pageItem.zoom});
@@ -523,6 +558,25 @@ test("B0 four-route actual-editor fidelity matrix (strict by default)",{timeout:
     }
   }finally{
     await browser.close();if(data.real)assert.equal(hash(await readFile(process.env.DESIGN_FIDELITY_REAL_FIXTURE)),data.inputHash,"private source bytes unchanged");
+    const allRecords=[...report.records,...report.isolationRecords];
+    const descendantRows=selectUniqueMeasurements(allRecords).map(row=>({...row,value:{...row.value,gateFailures:[...(row.value.gateFailures??[])]}}));
+    for(const record of allRecords)for(const entry of record.nodes??[])for(const [route,value]of Object.entries(entry.measurements)){
+      if(!value.rawCompositePixel)continue;
+      const nodes=data.design.pages.find(page=>page.id===record.page)?.nodes??data.design.nodes,node=nodes.find(candidate=>candidate.id===entry.id);
+      const classification=attributeFrameComposite({value,node,nodes,rows:descendantRows,page:record.page,matrix:record.matrix,route,tile:record.tile,scale:record.scale});
+      if(!classification)continue;
+      value.frameCompositeAttribution=classification;
+      if(classification.kind==="DESCENDANT_ATTRIBUTED"&&!value.pixelRegion&&value.primaryAvailable&&value.geometryFailures.length===0){
+        value.preDescendantAttribution={failures:[...value.failures],gateFailures:[...value.gateFailures],geometryFailures:[...value.geometryFailures]};
+        value.diagnosticFailures=[...new Set([...value.diagnosticFailures,...value.failures])];
+        value.failures=[];value.gateFailures=[];value.geometryFailures=[];
+        value.gating="descendant-attributed";
+      }
+      if(classification.kind==="FRAME_COMPOSITE_UNATTRIBUTED"){
+        const reason="frame composite contains mismatches outside failed descendant bounds + 2 device px";
+        value.failures=[...value.failures,reason];if(value.gating==="diagnostic")value.diagnosticFailures=[...value.diagnosticFailures,reason];else value.gateFailures=[...new Set([...value.gateFailures,reason])];
+      }
+    }
     report.rawUniqueRecords=selectUniqueMeasurements(report.records);report.uniqueRecords=selectUniqueMeasurements([...report.records,...report.isolationRecords]);
     report.countDefinitions={unit:"one (page,node,route,matrix), including the HTML reference self-comparison",truefail:"all unique rows with gateFailures; raw own-fill unavailable failures retained",effectiveTruefail:"gate failures after excluding only exact OWN_FILL_UNOBSERVABLE; excluded rows never pass",effectiveDenominator:"unique minus ownFillUnobservable; no unavailable row is converted to pass",unclassifiedFail:"unique rows with gateFailures lacking sufficient html-pixel-snap classification; no raw failure is removed",htmlPixelSnap:"historical geometry attribution only; never an accepted pass",svgPreciseSnap:"GPU/HTML pass and every SVG displacement explained within .1 device px by precise-minus-snapped box prediction; diagnostic, never raw pass",full:"complete chosen ROI, including isolation-full and explicitly derived isolation-full-composite",isolation:"chosen measurement came from the same four-route isolation transform; oversize nodes use raw same-scale tiles and a coverage-proven derived composite with copy-only provenance",unavailable:"raw primaryAvailable is false; inspect unavailableReasonCodes",effectiveUnavailable:"unavailable excluding ownFillUnobservable only",aaQualified:"geometry-pass shapes which fail raw pixels but pass explicit [1,2,1]/4 device AA refinement; never raw pass",rawPixelFail:"shape gate pixel metric fails; frame strokes use contour ring while rawCompositePixel retains full ROI",raw:"unmodified tile PNGs and per-tile metrics in records; rawUniqueRecords chooses full tiles without applying isolation"};
     report.rawSummary=fidelityCounts(report.rawUniqueRecords);report.rawSummary.tileMeasurements=report.records.reduce((sum,record)=>sum+(record.nodes??[]).reduce((total,node)=>total+Object.keys(node.measurements).length,0),0);

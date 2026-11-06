@@ -357,7 +357,7 @@ test("live scene revisions reuse font providers and local node pictures while in
   assert.equal(after.drawnNodes, design.nodes.length);
 });
 
-test("visible system-font text gains physical zoom resolution without rebuilding native glyphs; context loss throws", async (t) => {
+test("visible text gains physical zoom resolution with finite resource device variants; context loss throws", async (t) => {
   const page = await harness(t, { width: 700, height: 400, dpr: 2 });
   const design = fixture(); delete design.nodes.find(node => node.id === "system-text").layoutBaselineOffset;
   await upload(page, design);
@@ -367,7 +367,10 @@ test("visible system-font text gains physical zoom resolution without rebuilding
   const after = await page.evaluate(() => renderer.stats());
   assert.equal(after.resourceBuilds, 1);
   assert.equal(after.textQualityBuilds, 0);
-  assert.equal(after.nodePictureBuilds, before.nodePictureBuilds + 1);
+  assert.equal(after.nodePictureBuilds, before.nodePictureBuilds + 2,
+    "system text and the conservatively visible finite resource each gain an 8x device picture");
+  assert.equal(before.deviceRasterNodeScales.some((entry) => entry.nodeId === "native-text"), false);
+  assert.equal(after.deviceRasterNodeScales.find((entry) => entry.nodeId === "native-text").scale, 8);
   assert.equal(after.rasterNodeScales.find((entry) => entry.nodeId === "system-text").scale, 2);
   assert.equal(after.deviceRasterNodeScales.find((entry) => entry.nodeId === "system-text").scale, 8);
   assert.ok(after.rasterTextCacheBytes > before.rasterTextCacheBytes);
@@ -683,7 +686,10 @@ test("device glyph phases follow canonical moves while rotations fall back per n
   const native = await page.evaluate(() => renderer.stats());
   assert.equal(native.nativeTextNodes, 1);
   assert.equal(native.deviceTextNodes, 1, "only the system font uses a device variant");
-  assert.equal(native.rasterNodeScales.some((entry) => entry.nodeId === "native"), false);
+  assert.equal(native.rasterNodeScales.find((entry) => entry.nodeId === "native").scale, 2,
+    "finite resource text registers a bounded candidate plan for optional >1x device coverage");
+  assert.equal(native.deviceRasterNodeScales.some((entry) => entry.nodeId === "native"), false,
+    "the candidate stays native at 1x without an active device variant");
   for (const kind of ["rotation", "instance"]) {
     const guarded = phaseFixture();
     const parent = base("parent", kind === "instance" ? "component" : "frame", 0, 0, 300, 200, { fill: "transparent", rotation: kind === "rotation" ? 15 : 0 });

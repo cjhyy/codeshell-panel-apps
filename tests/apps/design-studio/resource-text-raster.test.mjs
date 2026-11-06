@@ -76,3 +76,25 @@ test("resource raster deduplicates font loads, invalidates late fonts, and falls
   assert.equal(after.resourceTextRasterFallbacks[0].nodeId, "huge");
   assert(after.rasterTextCacheBytes <= after.rasterTextCacheBudgetBytes);
 });
+
+test("finite resource text uses device coverage above 1x and restores native pixels at 1x", async t => {
+  const finite = node({ layoutBaselineOffset: -3 }), huge = node({ id: "huge-finite", layoutBaselineOffset: 0, fontSize: 20000 });
+  const h = await harness(t, [finite, huge]), before = JSON.stringify(h.design);
+  h.text.draw(h.canvas, finite);
+  assert.equal(h.counters.nativeTextNodes, 1);
+  assert.equal(h.counters.rasterTextNodes, 0);
+  const origins = new Map([[finite.id, { x: .25, y: .25 }]]);
+  h.text.setDeviceSampling(origins, { scale: 1 });
+  h.text.draw(h.canvas, finite);
+  assert.equal(h.counters.nativeTextNodes, 2, "native <=1x baseline stays unchanged");
+  h.text.setDeviceSampling(origins, { scale: 2 });
+  h.text.draw(h.canvas, finite);
+  assert.equal(h.counters.rasterTextNodes, 1, "same-family device image replaces native coverage above 1x");
+  h.text.setDeviceSampling(origins, { scale: 1, retainOffscreen: true });
+  h.text.draw(h.canvas, finite);
+  assert.equal(h.counters.nativeTextNodes, 3, "returning to 1x removes the optional device variant");
+  h.text.draw(h.canvas, huge);
+  assert.equal(h.counters.nativeTextNodes, 4, "oversized optional finite device images preserve native fallback");
+  assert.equal(h.text.stats().resourceTextRasterFallbacks[0].reason, "finite-device-raster-budget");
+  assert.equal(JSON.stringify(h.design), before);
+});

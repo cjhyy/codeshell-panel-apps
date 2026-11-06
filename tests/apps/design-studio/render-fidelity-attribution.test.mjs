@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isolateFidelityDesign, selectUniqueMeasurements, classifyHtmlPixelSnap, classifyUnobservableOwnFill, classifySvgPreciseSnap, sameFloat32View, fidelityCounts } from "./render-fidelity-attribution.mjs";
-import { strokeEdgeScans } from "./render-fidelity.metrics.mjs";
+import { isolateFidelityDesign, selectUniqueMeasurements, classifyHtmlPixelSnap, classifyUnobservableOwnFill, classifySvgPreciseSnap, sameFloat32View, fidelityCounts, attributeFrameComposite } from "./render-fidelity-attribution.mjs";
+import { coverageGeometry } from "./render-fidelity-geometry.mjs";
+import { geometryDifference, inkGeometry, strokeEdgeScans } from "./render-fidelity.metrics.mjs";
 const value = (failures = []) => ({ primaryAvailable: true, failures, gateFailures: failures, gating: "primary-and-secondary" });
 const record = (tileIndex, complete, measurement = value()) => ({ page: "p", matrix: "m", tileIndex, tile: {x:tileIndex,y:0,width:100,height:100}, nodes:[{id:"n",complete,clearance:tileIndex,measurements:{gpu:measurement}}] });
 test("unique attribution selects a complete tile before a larger partial and never selects by outcome", () => {
@@ -120,16 +121,16 @@ test("same effective own fill is unobservable, preserves all colors and cannot c
 
 test("SVG precise/snap diagnostic requires independently passing GPU and predicted displacement within .1 device px", () => {
   const node={type:"rectangle",x:10.5,y:12,width:20,height:10},snappedNode={...node,x:11},scale=2;
-  const pass={primaryAvailable:true,geometryFailures:[],gateFailures:[],pixel:{mismatchRatio:0,largestCluster:0}},svg={...pass,geometryScope:"own-fill-leaf",gateFailures:["pixel mismatch"],delta:{measurable:true,left:-1,top:0,right:-1,bottom:0,centroidX:-1,centroidY:0}};
+  const pass={primaryAvailable:true,geometryFailures:[],gateFailures:[],pixel:{mismatchRatio:0,largestCluster:0},coverageGeometry:{centroidX:42,centroidY:34,mass:800}},svg={...pass,coverageGeometry:{centroidX:41,centroidY:34,mass:800},geometryScope:"own-fill-leaf",gateFailures:["pixel mismatch"],delta:{measurable:true,left:-1,top:0,right:-1,bottom:0,centroidX:-1,centroidY:0}};
   const measurements={gpu:pass,html:pass,svg};
   const result=classifySvgPreciseSnap({node,snappedNode,scale,measurements});
   assert.equal(result.kind,"svg-precise-vs-html-snap");assert.equal(result.pass,false);assert.equal(result.maximumResidualDevicePx,0);
   assert.equal(classifySvgPreciseSnap({node,snappedNode,scale,measurements:{...measurements,gpu:{...pass,gateFailures:["real pixel failure"]}}}),null);
-  assert.equal(classifySvgPreciseSnap({node,snappedNode,scale,measurements:{...measurements,svg:{...svg,delta:{...svg.delta,left:-.899}}}}),null);
+  assert.equal(classifySvgPreciseSnap({node,snappedNode,scale,measurements:{...measurements,svg:{...svg,delta:{...svg.delta,left:.01}}}}),null);
   assert.equal(classifySvgPreciseSnap({node,snappedNode,scale,measurements:{...measurements,svg:{...svg,primaryAvailable:false}}}),null);
   assert.equal(classifySvgPreciseSnap({node,snappedNode:{...node},scale,measurements}),null);
   assert.equal(classifySvgPreciseSnap({node:{...node,type:"image"},snappedNode,scale,measurements}),null,"box displacement cannot explain an image's internal pixels");
-  assert.equal(classifySvgPreciseSnap({node,snappedNode,scale,measurements:{...measurements,svg:{...svg,delta:{...svg.delta,centroidX:-.8}}}}),null,"matching bounds cannot conceal unexplained interior mass");
+  assert.equal(classifySvgPreciseSnap({node,snappedNode,scale,measurements:{...measurements,svg:{...svg,coverageGeometry:{...svg.coverageGeometry,centroidX:41.2}}}}),null,"matching bounds cannot conceal unexplained interior mass");
 });
 
 test("isolation backdrop cannot establish an unobservable own fill in the original scene", () => {
@@ -141,4 +142,58 @@ test("isolation backdrop cannot establish an unobservable own fill in the origin
   assert(classifyUnobservableOwnFill(isolated.nodes.find(node=>node.id==="target"),isolated.nodes,source.canvas),"the isolated flat backdrop alone cannot reveal the hidden sibling");
   assert.equal(classifyUnobservableOwnFill(source.nodes.find(node=>node.id==="target"),source.nodes,source.canvas),null,"attribution must evaluate the original source scene where the white fill covers a black sibling");
   assert.equal(source.nodes.find(node=>node.id==="behind").opacity,1,"the original source backdrop is retained for attribution");
+});
+
+
+test("SVG fractional snap accepts coverage prediction despite integer bbox quantization, but rejects .5/1px shifts and width defects", () => {
+  const node={type:"rectangle",x:10.34375,y:12,width:20.234375,height:10},snappedNode={...node,x:10,width:21};
+  const pass={primaryAvailable:true,geometryFailures:[],gateFailures:[],pixel:{mismatchRatio:0,largestCluster:0},coverageGeometry:{centroidX:20.5,centroidY:17,mass:210}};
+  const svg={...pass,geometryScope:"own-fill-leaf",gateFailures:["pixel mismatch"],delta:{measurable:true,left:0,top:0,right:0,bottom:0},coverageGeometry:{centroidX:node.x+node.width/2,centroidY:17,mass:node.width*10}};
+  const classify=entry=>classifySvgPreciseSnap({node,snappedNode,scale:1,measurements:{gpu:pass,html:pass,svg:entry}});
+  assert.equal(classify(svg)?.kind,"svg-precise-vs-html-snap");
+  for(const delta of [.5,1])for(const axis of ["centroidX","centroidY"])
+    assert.equal(classify({...svg,coverageGeometry:{...svg.coverageGeometry,[axis]:svg.coverageGeometry[axis]+delta}}),null);
+  assert.equal(classify({...svg,coverageGeometry:{...svg.coverageGeometry,mass:svg.coverageGeometry.mass+5}}),null,"half-pixel integrated width defect is rejected");
+  assert.equal(classify({...svg,delta:{...svg.delta,left:2}}),null,"integer bbox consistency still applies");
+});
+
+test("frame composite attribution requires every original mismatch within actually failed descendants plus 2px", () => {
+  const frame={id:"f",type:"frame",x:0,y:0,width:100,height:100},child={id:"c",parentId:"f",x:10,y:10,width:10,height:10};
+  const rows=[{page:"p",matrix:"m",route:"gpu",id:"c",tile:{x:0,y:0},scale:1,value:{gateFailures:["actual child failure"],ink:{left:10,top:10,right:19,bottom:19}}}];
+  const raw={mismatchRatio:.1,largestCluster:8,mismatchPixels:3,mismatchMask:{runs:[[10,8,11]]}};
+  const options={node:frame,nodes:[frame,child],rows,page:"p",matrix:"m",route:"gpu",tile:{x:0,y:0},scale:1};
+  assert.equal(attributeFrameComposite({...options,value:{rawCompositePixel:raw}}).kind,"DESCENDANT_ATTRIBUTED");
+  const escaped={...raw,mismatchMask:{runs:[[10,7,10]]}};
+  const result=attributeFrameComposite({...options,value:{rawCompositePixel:escaped}});
+  assert.equal(result.kind,"FRAME_COMPOSITE_UNATTRIBUTED");assert.equal(result.uncoveredMismatchPixels,1);
+  assert.equal(attributeFrameComposite({...options,rows:[],value:{rawCompositePixel:raw}}).kind,"FRAME_COMPOSITE_UNATTRIBUTED");
+  for(const change of [{geometryScope:"visible-composite-fill-with-descendant-occlusion"},{gateFailures:["frame composite contains unexplained pixels"]}])
+    assert.equal(attributeFrameComposite({...options,rows:[{...rows[0],value:{...rows[0].value,...change}}],value:{rawCompositePixel:raw}}).kind,"FRAME_COMPOSITE_UNATTRIBUTED","composite-only containers cannot explain an ancestor by their large ink bbox");
+  assert.equal(attributeFrameComposite({...options,value:{rawCompositePixel:{...raw,mismatchMask:undefined}}}).maskComplete,false);
+});
+
+test("stroke-only isolation removes only target shadow while retaining original scene bytes and required separation plan", async () => {
+  const {fidelityIsolationPlan}=await import("./render-fidelity-attribution.mjs");
+  const node={id:"s",type:"rectangle",x:10,y:10,width:30,height:20,fill:"#eeeeee",stroke:"#111111",strokeWidth:2,shadow:{blur:8}},input={nodes:[node],pages:[]};
+  const before=JSON.stringify(input),isolated=isolateFidelityDesign(input,"s",{strokeOnly:true});
+  assert.equal(JSON.stringify(input),before);assert.equal(isolated.design.nodes[0].shadow,undefined);
+  assert.deepEqual(isolated.design.nodes[0],Object.fromEntries(Object.entries(node).filter(([key])=>key!=="shadow")));
+  assert.equal(isolated.metadata.strokeOnly,true);
+  assert.deepEqual(fidelityIsolationPlan([{id:"s",complete:true,value:value()}],[node]),[{id:"s",reasonCodes:["STROKE_SHADOW_SEPARATION_REQUIRED"]}]);
+});
+
+
+test("SVG coverage classifier detects injected half and one device pixel shifts in raster data", () => {
+  const node={type:"rectangle",x:10.34375,y:12.25,width:20.234375,height:10.5},snappedNode={...node,x:10,y:12,width:21,height:11};
+  const raster=(box,dx=0,dy=0)=>{
+    const width=50,height=40,data=new Uint8Array(width*height*4).fill(255);
+    for(let y=0;y<height;y++)for(let x=0;x<width;x++){
+      const alpha=Math.max(0,Math.min(x+1,box.x+box.width+dx)-Math.max(x,box.x+dx))*Math.max(0,Math.min(y+1,box.y+box.height+dy)-Math.max(y,box.y+dy));
+      for(let c=0;c<3;c++)data[(y*width+x)*4+c]=Math.round(255*(1-alpha));
+    }return {width,height,data};
+  };
+  const reference=raster(snappedNode),pass={primaryAvailable:true,geometryFailures:[],gateFailures:[],pixel:{mismatchRatio:0,largestCluster:0},coverageGeometry:coverageGeometry(reference)};
+  const classify=(dx=0,dy=0)=>{const image=raster(node,dx,dy);return classifySvgPreciseSnap({node,snappedNode,scale:1,measurements:{gpu:pass,html:pass,svg:{...pass,geometryScope:"own-fill-leaf",gateFailures:["pixel mismatch"],coverageGeometry:coverageGeometry(image),delta:geometryDifference(inkGeometry(reference),inkGeometry(image))}}});};
+  assert(classify(),"a fractionally phased shape matches integrated coverage prediction");
+  for(const delta of [.5,1]){assert.equal(classify(delta,0),null);assert.equal(classify(0,delta),null);}
 });

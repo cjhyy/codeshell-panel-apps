@@ -44,6 +44,10 @@ function weightedMoments(image, { roi, excludeBounds, foreground = black, backgr
     covarianceYY: y2 / mass - centroidY ** 2 };
 }
 
+export function coverageGeometry(image, options) {
+  return weightedMoments(image, options);
+}
+
 export function rotationGeometry(image, options) {
   const moments = weightedMoments(image, options);
   if (!moments) return null;
