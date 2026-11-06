@@ -92,6 +92,10 @@ test("all-text isolation audit adds every requested text without changing ordina
 test("view guard accepts only finite float32 representation equality, without a visual tolerance", () => {
   const gpu={zoom:1,panX:28.750001907348633,panY:-638},html={zoom:1,panX:28.75,panY:-638};
   assert(!sameFloat32View(gpu,html),"the frozen R003 pair is adjacent float32 values, not equivalent");
+  // Four R004 delivery pairs account for its seven refused browser captures.
+  // Separate trusted sends caused these differences; an epsilon would hide it.
+  for(const [actual,expected]of [[13.750000953674316,13.75],[-.2500000298023224,-.25],[6.749999523162842,6.75],[-.24999994039535522,-.25]])
+    assert(!sameFloat32View({...gpu,panX:actual},{...gpu,panX:expected}),`R004 adjacent float32 camera pair ${actual}/${expected} remains refused`);
   assert(sameFloat32View({...gpu,panX:28.7500001},html),"ordinary double/float32 serialization roundoff is equivalent");
   assert(!sameFloat32View(gpu,{...html,panX:28.750004}));
   assert(!sameFloat32View(gpu,{...html,panX:NaN}));

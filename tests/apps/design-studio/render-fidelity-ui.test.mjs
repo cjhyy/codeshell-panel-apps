@@ -16,7 +16,7 @@ import { isolateFidelityDesign, selectUniqueMeasurements, classifyHtmlPixelSnap,
 const app = resolve(process.env.DESIGN_FIDELITY_APP_DIR ?? "apps/design-studio/app");
 const load = name => import(pathToFileURL(join(app, name)));
 const { normalizeDesignDocument, serializeDesignDocument, designPageBounds } = await load("document.mjs");
-const { renderDesignFrontendPage, designFrontendCss } = await load("frontend-export.mjs");
+const { designFrontendCss } = await load("frontend-export.mjs");
 const { designFontFaceCss } = await load("font-css.mjs");
 const { textRangeSourceSignature } = await load("text-ranges.mjs");
 const { createDesignResourcePersistencePlan } = await load("resource-store.mjs");
@@ -111,7 +111,7 @@ async function editor(browser, item, data) {
     throw Error(`Unsupported fake Host method ${method}`);
   });
   await page.addInitScript(()=>{
-    window.addEventListener("wheel",event=>{window.__fidelityWheel={deltaX:event.deltaX,deltaY:event.deltaY,isTrusted:event.isTrusted,deltaMode:event.deltaMode};},{capture:true});
+    window.addEventListener("wheel",event=>{window.__fidelityWheel={deltaX:event.deltaX,deltaY:event.deltaY,isTrusted:event.isTrusted,deltaMode:event.deltaMode};if(event.isTrusted)window.__fidelityTrustedWheelCount=(window.__fidelityTrustedWheelCount??0)+1;},{capture:true});
     const originalStrokeRect=CanvasRenderingContext2D.prototype.strokeRect;
     CanvasRenderingContext2D.prototype.strokeRect=function(x,y,width,height){if(this.canvas.id==="stage"&&this.strokeStyle==="#4f7cff"){const m=this.getTransform();window.__fidelityOverlay={x:m.a*x+m.c*y+m.e,y:m.b*x+m.d*y+m.f,width:m.a*width,height:m.d*height,matrix:{a:m.a,b:m.b,c:m.c,d:m.d,e:m.e,f:m.f}};}return originalStrokeRect.call(this,x,y,width,height);};
     window.tools={}; window.codeshellPanel={getContext:async()=>({trusted:true,busy:false,cwd:"/render-fixture",sessionId:"render-fixture",capabilities:{packageAssets:{wasm:true,fetch:"package"}},availableMethods:["workspace.info","workspace.list","workspace.readText","workspace.writeText","storage.get","storage.set","storage.delete","storage.getSnapshot","storage.compareAndSet"]}),on(){},registerTool(name,callback){window.tools[name]=callback;},call:(method,params)=>window.hostBridge(method,params)};
@@ -276,46 +276,47 @@ async function measuredSvg(f,design,data) {
   }finally{await page.close();}
 }
 const chromeSelectors=[".canvas-meta","#infinite-canvas-hint","#renderer-message","#selection-size","#inline-text-editor"];
+const cameraView=page=>page.locator("#stage").evaluate(canvas=>{const m=canvas.getContext("2d").getTransform(),box=canvas.getBoundingClientRect();return{zoom:m.a/devicePixelRatio,panX:m.e/devicePixelRatio,panY:m.f/devicePixelRatio,left:box.left,top:box.top,width:box.width,height:box.height,dpr:devicePixelRatio};});
 async function captureRecord({f,design,data,item,tile,tileIndex,folder,svg,stageStyle,bounds,isolation=null,gui=false}) {
   await mkdir(folder,{recursive:true});
   const record={matrix:item.id,page:design.activePageId,tileIndex,tile,scale:item.dpr*item.zoom,actualFitView:item.actualFitView??null,paths:{},routeErrors:[],calibration:{},isolation};
   const images={},clip={x:32,y:32,width:Math.round(tile.width*item.zoom),height:Math.round(tile.height*item.zoom)},page=f.page;
+  // Establish one camera before switching routes. CDP may internally deliver
+  // adjacent float32 wheel deltas on separate sends even when DOM reports 3.25.
+  // Every page/matrix therefore owns one trusted challenge. Later tiles and
+  // paint-only isolation reuse its measured displacement; they never resend it.
+  await page.locator("#renderer-mode").selectOption("gpu");await rendererReady(page,"gpu");
+  if(gui){await f.chromeStyle.evaluate(element=>element.remove());await frames(page);}
+  const priorChallenge=f.cameraChallenge;
+  record.view=await align(page,priorChallenge?{...tile,x:tile.x+priorChallenge.actualDeltaX/item.zoom}:tile,item.zoom);
+  if(item.deltaX&&!priorChallenge){
+    const before={...record.view},box=await page.locator("#stage").boundingBox();
+    await page.mouse.move(box.x+Math.min(200,box.width/2),box.y+Math.min(200,box.height/2));await page.mouse.wheel(item.deltaX*item.dpr,0);
+    await page.waitForFunction(({before,delta})=>Math.abs(document.querySelector("#stage").getContext("2d").getTransform().e/devicePixelRatio-before+delta)<.01,{before:before.panX,delta:item.deltaX},{timeout:1500});await frames(page);
+    record.view=await cameraView(page);
+    f.cameraChallenge={requestedDomDeltaX:item.deltaX,cdpInputDeltaX:item.deltaX*item.dpr,event:await page.evaluate(()=>window.__fidelityWheel),before,after:record.view,actualDeltaX:before.panX-record.view.panX,noPostChallengeAlignment:true,sourceTileIndex:tileIndex};
+    assert(f.cameraChallenge.event.isTrusted&&f.cameraChallenge.event.deltaX===item.deltaX,"trusted DOM wheel must contain the requested CSS delta");
+    assert(Math.abs(record.view.panX-before.panX+item.deltaX)<.01,`real fractional wheel input must survive without corrective alignment: ${JSON.stringify(f.cameraChallenge)}`);
+  }
+  if(gui){
+    for(const mode of ["gpu","browser"]){
+      await page.locator("#renderer-mode").selectOption(mode);await rendererReady(page,mode);await page.waitForTimeout(175);await frames(page);
+      const view=await cameraView(page),challenge=f.cameraChallenge;
+      const receipt={matrix:item.id,page:design.activePageId,route:mode,requestedZoom:item.fitView?null:item.zoom,view,challenge,
+        source:item.fitView?"actual fit scale with shared metric-tile camera in normal workbench":"named matrix zoom and one shared trusted wheel in normal workbench",path:join(folder,`${mode}-editor-gui.png`)};
+      (record.guiViews??={})[mode]=receipt;
+      if(mode==="browser")assert(sameFloat32View(record.guiViews.gpu.view,view),"GUI GPU/browser cameras must be float32-equivalent");
+      await page.screenshot({path:receipt.path});await writeFile(join(folder,`${mode}-editor-gui.metadata.json`),JSON.stringify(receipt,null,2)+"\n");
+    }
+    f.chromeStyle=await page.addStyleTag({content:stageStyle});await frames(page);
+  }
+  record.cameraPolicy={trustedChallengeReused:Boolean(priorChallenge),trustedWheelSentHere:Boolean(item.deltaX&&!priorChallenge),sameEditorLoad:true};
   let measuredTile=tile;
   for(const mode of ["gpu","browser"]){
     try{
       await page.locator("#renderer-mode").selectOption(mode);await rendererReady(page,mode);
-      if(gui){
-        await f.chromeStyle.evaluate(element=>element.remove());await frames(page);
-        // GUI receipts must show the named scale in the normal workbench.
-        // The metric capture below still performs its original independent
-        // alignment and trusted fractional challenge without any relaxed gate.
-        if(item.fitView){await page.locator("#zoom-value").click();await frames(page);}
-        else await align(page,tile,item.zoom);
-        let challenge=null;
-        if(item.deltaX){
-          const before=await page.locator("#stage").evaluate(canvas=>canvas.getContext("2d").getTransform().e/devicePixelRatio);
-          const box=await page.locator("#stage").boundingBox();await page.mouse.move(box.x+Math.min(200,box.width/2),box.y+Math.min(200,box.height/2));
-          await page.mouse.wheel(item.deltaX*item.dpr,0);
-          await page.waitForFunction(({before,delta})=>Math.abs(document.querySelector("#stage").getContext("2d").getTransform().e/devicePixelRatio-before+delta)<.01,{before,delta:item.deltaX});await frames(page);
-          challenge={beforePanX:before,requestedDomDeltaX:item.deltaX,event:await page.evaluate(()=>window.__fidelityWheel),noPostChallengeAlignment:true};
-          assert(challenge.event.isTrusted&&challenge.event.deltaX===item.deltaX,"GUI must retain the real fractional wheel challenge");
-          await page.waitForTimeout(175);await frames(page);
-        }
-        const view=await page.locator("#stage").evaluate(canvas=>{const m=canvas.getContext("2d").getTransform(),box=canvas.getBoundingClientRect();return{zoom:m.a/devicePixelRatio,panX:m.e/devicePixelRatio,panY:m.f/devicePixelRatio,left:box.left,top:box.top,width:box.width,height:box.height,dpr:devicePixelRatio};});
-        const receipt={matrix:item.id,page:design.activePageId,route:mode,requestedZoom:item.fitView?null:item.zoom,view,challenge,
-          source:item.fitView?"actual fit button in normal workbench":"named matrix zoom in normal workbench; optional trusted wheel applied last",path:join(folder,`${mode}-editor-gui.png`)};
-        (record.guiViews??={})[mode]=receipt;
-        await page.screenshot({path:receipt.path});await writeFile(join(folder,`${mode}-editor-gui.metadata.json`),JSON.stringify(receipt,null,2)+"\n");
-        f.chromeStyle=await page.addStyleTag({content:stageStyle});await frames(page);
-      }
-      record.view=await align(page,tile,item.zoom);
-      if(item.deltaX){
-        const before={...record.view};await page.mouse.move(400,400);await page.mouse.wheel(item.deltaX*item.dpr,0);await page.waitForFunction(({before,delta})=>Math.abs(document.querySelector("#stage").getContext("2d").getTransform().e/devicePixelRatio-before+delta)<.01,{before:before.panX,delta:item.deltaX},{timeout:1500}).catch(()=>{});await frames(page);
-        record.view=await page.locator("#stage").evaluate(canvas=>{const m=canvas.getContext("2d").getTransform(),box=canvas.getBoundingClientRect();return{zoom:m.a/devicePixelRatio,panX:m.e/devicePixelRatio,panY:m.f/devicePixelRatio,left:box.left,top:box.top};});
-        (record.trackpad??={})[mode]={requestedDomDeltaX:item.deltaX,cdpInputDeltaX:item.deltaX*item.dpr,event:await page.evaluate(()=>window.__fidelityWheel),before,after:record.view,actualDeltaX:before.panX-record.view.panX,noPostChallengeAlignment:true};
-        assert(record.trackpad[mode].event.isTrusted&&record.trackpad[mode].event.deltaX===item.deltaX,"trusted DOM wheel must contain the requested CSS delta");
-        assert(Math.abs(record.view.panX-before.panX+item.deltaX)<.01,`real fractional wheel input must survive without corrective alignment: ${JSON.stringify(record.trackpad[mode])}`);
-      }
+      record.view=await cameraView(page);
+      if(item.deltaX)(record.trackpad??={})[mode]={...f.cameraChallenge,reusedForTile:Boolean(priorChallenge),captureView:record.view};
       measuredTile={...tile,x:(32-record.view.panX)/item.zoom,y:(32-record.view.panY)/item.zoom};record.tile=measuredTile;
       (record.routeViews??={})[mode]={...record.view};
       if(mode==="browser"&&record.routeViews.gpu)assert(sameFloat32View(record.routeViews.gpu,record.view),"actual GPU/browser transforms must be float32-equivalent");
@@ -353,14 +354,21 @@ async function captureRecord({f,design,data,item,tile,tileIndex,folder,svg,stage
       }finally{await page.locator("#stage-wrap").evaluate(element=>{delete element.dataset.fidelityCapture;});await frames(page);}
     }catch(error){record.routeErrors.push({route:mode,reasonCode:"ROUTE_CAPTURE_FAILED",error:String(error)});}
   }
-  const css=designFrontendCss(design,{resourceDataUrls:data.dataUrls,preserveWorldOrigin:true}),html=renderDesignFrontendPage(design,{resourceDataUrls:data.dataUrls,preserveWorldOrigin:true});
+  const css=designFrontendCss(design,{resourceDataUrls:data.dataUrls,preserveWorldOrigin:true});
   for(const route of ["html","svg"]){
     if(route==="svg"&&!svg){record.routeErrors.push({route,reasonCode:"SVG_EXPORT_FAILED"});continue;}
     const ref=await f.context.newPage();
     try{
-      const content=route==="html"?html:svg.replace("<svg ",`<svg style="position:absolute;left:${bounds.x}px;top:${bounds.y}px" `),styles=route==="html"?css:designFontFaceCss(design.resources,data.dataUrls),url=`/fidelity-${route}.html`;
+      const content=route==="html"?"":svg.replace("<svg ",`<svg style="position:absolute;left:${bounds.x}px;top:${bounds.y}px" `),styles=route==="html"?css:designFontFaceCss(design.resources,data.dataUrls),url=`/fidelity-${route}.html`;
       f.routes.set(url,`<!doctype html><meta charset="utf-8"><style>${styles}\nhtml,body{margin:0;background:${design.canvas.background};overflow:hidden}#export-world{position:absolute;left:32px;top:32px;width:${Math.max(design.canvas.width,bounds.width)}px;transform-origin:0 0;transform:scale(${item.zoom}) translate(${-measuredTile.x}px,${-measuredTile.y}px)}.cs-page{margin:0!important;overflow:visible!important}</style><div id="export-world">${content}</div>`);
-      await ref.goto(origin+url);await ref.evaluate(()=>document.fonts.ready);await frames(ref);
+      await ref.goto(origin+url);
+      if(route==="html")await ref.evaluate(async({design,dataUrls})=>{
+        for(const node of design.nodes.filter(node=>node.type==="text"&&node.opacity!==0))await document.fonts.load(`${node.fontWeight} ${node.fontSize}px ${node.fontFamily}`,node.text);
+        await document.fonts.ready;
+        const {renderDesignFrontendPage}=await import("/frontend-export.mjs");
+        document.querySelector("#export-world").innerHTML=renderDesignFrontendPage(design,{resourceDataUrls:new Map(dataUrls),preserveWorldOrigin:true});
+      },{design,dataUrls:[...data.dataUrls]});
+      await ref.evaluate(()=>document.fonts.ready);await frames(ref);
       const bytes=await ref.screenshot({clip,path:join(folder,`${route}.png`)});images[route]=PNG.sync.read(bytes);record.paths[route]=join(folder,`${route}.png`);
       if(route==="html"){
         const repeat=PNG.sync.read(await ref.screenshot({clip,path:join(folder,"html-repeat.png")}));record.calibration.html=symmetricPixelDifference(images.html,repeat);assert.equal(record.calibration.html.mismatchPixels,0,"HTML/HTML calibration must be zero");
@@ -451,6 +459,8 @@ test("B0 four-route actual-editor fidelity matrix (strict by default)",{timeout:
         for(const pageInfo of data.design.pages){
           if(process.env.DESIGN_FIDELITY_PAGES&&!process.env.DESIGN_FIDELITY_PAGES.split(",").includes(pageInfo.id))continue;
           if(targetIds.size&&!pageInfo.nodes.some(node=>targetIds.has(node.id)))continue;
+          f.cameraChallenge=null;
+          const trustedWheelStart=await page.evaluate(()=>window.__fidelityTrustedWheelCount??0);
           await page.locator("#active-page").selectOption(pageInfo.id);await page.waitForFunction(async id=>(await tools.get_design_metadata({})).activePageId===id,pageInfo.id);
           const design=normalizeDesignDocument(JSON.parse(serializeDesignDocument(data.design)));design.activePageId=pageInfo.id;design.nodes=design.pages.find(p=>p.id===pageInfo.id).nodes;
           const bounds=designPageBounds(design),captureBounds={x:Math.floor(bounds.x)-12,y:Math.floor(bounds.y)-12,width:Math.ceil(bounds.x+bounds.width)-Math.floor(bounds.x)+24,height:Math.ceil(bounds.y+bounds.height)-Math.floor(bounds.y)+24},pageItem={...item};
@@ -503,6 +513,9 @@ test("B0 four-route actual-editor fidelity matrix (strict by default)",{timeout:
             report.isolationRecords.push(record);
             if(index%10===0||index===targets.size-1)t.diagnostic(`${item.id}-${pageInfo.id}: isolated ${index+1}/${targets.size}`);
           }
+          const trustedWheelCount=(await page.evaluate(()=>window.__fidelityTrustedWheelCount??0))-trustedWheelStart;
+          (report.cameraChallenges??=[]).push({matrix:item.id,page:pageInfo.id,trustedWheelCount,expected:item.deltaX?1:0});
+          assert.equal(trustedWheelCount,item.deltaX?1:0,"each page/matrix applies the trusted wheel once and shares its camera across renderers");
           for(const node of requested)if(!unique.some(row=>row.id===node.id)&&!report.isolationRecords.some(record=>record.matrix===item.id&&record.page===pageInfo.id&&record.nodes.some(row=>row.id===node.id)))report.unmeasured.push({matrix:item.id,page:pageInfo.id,id:node.id,reasonCode:"NO_CAPTURE_INTERSECTION",reason:"No captured tile intersects this requested node"});
         }
         assert.deepEqual(f.errors,[],"no uncaught editor exceptions");assert.deepEqual(f.blocked,[],"offline fixture must not contact external origins");assert.equal(f.calls.filter(call=>call.method==="workspace.writeText").length,0,"read-only document never saved or recovered");

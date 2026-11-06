@@ -712,7 +712,7 @@ export async function createCanvasKitText({
       image,
       CK.XYWHRect(0, 0, w, h),
       CK.XYWHRect(x + offsetX, y + offsetY, w / scale, h / scale),
-      origin && textHasLineBoxOrigin(node) ? CK.FilterMode.Nearest : CK.FilterMode.Linear,
+      CK.FilterMode.Linear,
       CK.MipmapMode.None,
       paint,
     );

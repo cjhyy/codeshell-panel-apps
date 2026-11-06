@@ -11,7 +11,8 @@ import {
 } from "./grid.mjs";
 import { designPaintCssImage } from "./paint.mjs";
 import { nativeTextContent } from "./text-content.mjs";
-import { mapTextDisplay, projectTextRanges, validateTextRanges } from "./text-ranges.mjs";
+import { mapTextDisplay, projectTextRanges, validateTextRanges, textRangeTypography } from "./text-ranges.mjs";
+import { textLineBoxAlphabeticOffset } from "./text-line-box.mjs";
 import { hasDesignStroke, designStrokeSides, designStrokeOutset, strokeLayoutBasisExtra } from "./stroke.mjs";
 /* Deterministic CodeShell Design v3 to editable HTML/CSS export. */
 import { designFontFaceCss, designFontFamilyCss, designRuntimeFontFamilyCss } from "./font-css.mjs";
@@ -93,9 +94,9 @@ function alignment(value) {
   return value || "flex-start";
 }
 
-function positionDeclarations(node, parent, parentUsesLayout, canvas) {
+function positionDeclarations(node, parent, parentUsesLayout, canvas, paintOffset = 0) {
   const flowOwned = parentUsesLayout && node.layoutPositioning !== "absolute";
-  if (flowOwned) return [["position", "relative"]];
+  if (flowOwned) return [["position", "relative"], ...(paintOffset ? [["top", cssNumber(paintOffset)]] : [])];
 
   const parentX = Number(parent?.x) || 0;
   const parentY = Number(parent?.y) || 0;
@@ -103,7 +104,7 @@ function positionDeclarations(node, parent, parentUsesLayout, canvas) {
   const localLeft = (Number(node.x) || 0) - parentX-border[3];
   const baseline = node.type === "text" && ["html", "native"].includes(node.layoutBaselineSource)
     ? Number(node.layoutBaselineOffset) || 0 : 0;
-  const localTop = (Number(node.y) || 0) - baseline - parentY-border[0];
+  const localTop = (Number(node.y) || 0) - baseline - parentY-border[0] + paintOffset;
   const parentWidth=Number(parent?.width??canvas?.width)-border[1]-border[3];
   const parentHeight=Number(parent?.height??canvas?.height)-border[0]-border[2];
   const declarations = [["position", "absolute"]];
@@ -438,6 +439,36 @@ function transformDeclarations(node) {
   return transforms.length > 0 ? [["transform", transforms.join(" ")]] : [];
 }
 
+function finiteTextPaintOffset(node, parent, parentUsesLayout, fontFamilyOverride, context) {
+  // Provenanced HTML/native coordinates already describe a CSS line box.
+  // Unprovenanced finite offsets retain the historical GPU/SVG hanging origin.
+  // Browser-only font metrics transport that paint into CSS without rewriting
+  // the saved coordinates. Node exports remain an unmeasured diagnostic.
+  if (node.type !== "text" || !Number.isFinite(node.layoutBaselineOffset) ||
+      node.layoutBaselineSource || Number(node.rotation) || textRangeTypography(node, false).length ||
+      (node.constraintVertical && node.constraintVertical !== "start") ||
+      node.constraintTop !== undefined || node.constraintBottom !== undefined ||
+      (parentUsesLayout && !["horizontal", "vertical"].includes(parent.layout)) ||
+      !globalThis.document?.createElement) return 0;
+  const measure = context.textPaintMeasure ??= globalThis.document.createElement("canvas").getContext("2d");
+  if (!measure) return 0;
+  const family = fontFamilyOverride === undefined ? designFontFamilyCss(node.fontFamily) : designRuntimeFontFamilyCss(fontFamilyOverride);
+  measure.font = `${node.fontStyle ?? "normal"} ${node.fontWeight ?? 400} ${node.fontSize ?? 16}px ${family}`;
+  if (!globalThis.document.fonts?.check(measure.font, "Hg")) return 0;
+  measure.textBaseline = "hanging";
+  const hanging = measure.measureText("Hg");
+  measure.textBaseline = "alphabetic";
+  const alphabetic = measure.measureText("Hg");
+  const metrics = {ascent:alphabetic.fontBoundingBoxAscent,descent:alphabetic.fontBoundingBoxDescent};
+  const hangingToAlphabetic = alphabetic.actualBoundingBoxAscent - hanging.actualBoundingBoxAscent;
+  if (![metrics.ascent, metrics.descent, hangingToAlphabetic].every(Number.isFinite)) return 0;
+  const flowOwned = parentUsesLayout && node.layoutPositioning !== "absolute";
+  // d = (node.y + hangingToAlphabetic) - alphabeticOffset - Tcss;
+  // absolute Tcss=node.y; a flow-owned CSS box starts at node.y-offset.
+  return hangingToAlphabetic - textLineBoxAlphabeticOffset(node, metrics) +
+    (flowOwned ? node.layoutBaselineOffset : 0);
+}
+
 function nodeStyle(sourceNode, parent, context) {
   const { canvas, pageBounds, preserveWorldOrigin, gridParentOf: parentOf } = context;
   const fontFamilyOverride = sourceNode.type === "text" && context.runtimeFontFamily
@@ -463,8 +494,9 @@ function nodeStyle(sourceNode, parent, context) {
       : sourceNode;
   const parentUsesLayout =
     CONTAINER_TYPES.has(parent?.type) && ["horizontal", "vertical", "grid"].includes(parent.layout);
+  const paintOffset = finiteTextPaintOffset(node, parent, parentUsesLayout, fontFamilyOverride, context);
   const declarations = [
-    ...positionDeclarations(node, parent, parentUsesLayout, canvas),
+    ...positionDeclarations(node, parent, parentUsesLayout, canvas, paintOffset),
     ...sizingDeclarations(node, parent, parentOf),
     ...layoutDeclarations(node),
     ...paintDeclarations(node, context),
