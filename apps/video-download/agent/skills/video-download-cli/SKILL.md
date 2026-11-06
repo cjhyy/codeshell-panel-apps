@@ -7,7 +7,8 @@ description: Search, inspect and download public videos from Chat or a terminal,
 
 Use the selected package's CLI for public-video requests. The panel and CLI share
 project download records and queue settings; opening the panel is optional.
-Saved Host-account downloads use the authorized panel workflow instead.
+Honor an explicit request to operate in the panel. Saved Host-account downloads
+use the authorized panel workflow instead.
 
 Resolve `../../..` from `${CODESHELL_SKILL_DIR}`. Confirm that package's
 `.codeshell-panel/panel.json` has id `video-download` and use its
@@ -44,10 +45,39 @@ do not claim to have watched its content.
 Download when requested. Generate one operation key and freeze its JSON request;
 retain both until submission is resolved. Use `--source chat` so its origin is
 visible in the panel. A background receipt provides a task ID, not completion.
-Query `status`/`jobs` for the actual outcome and output files. A missing or uncertain
-reply is a reason to inspect or reuse the same frozen operation and key, never to
-create a new key and repeat the download. Reusing a key with changed content is
-rejected. An incomplete original record is retained for investigation.
+Retain a task ID for each requested URL and query `status`/`jobs` until each has
+completed, explicitly failed or stopped, or reached a specific obstacle needing
+user action. Parsing, running, queued and temporary busy states require continued
+tracking; they are not final outcomes. Report completion from the task's final
+state and output files, not its launch receipt or progress percentage. If the
+user asks only to submit or queue tasks, stop after verifying each submission
+and respect any request to leave them pending.
+
+A missing or uncertain reply is a reason to inspect or reuse the same frozen
+operation and key, never to create a new key and repeat the download. Reusing a
+key with changed content is rejected. An incomplete original record is retained
+for investigation. Read a failure before considering the retry workflow below;
+do not automatically resubmit failed work.
+
+When using Panel tools, metadata inspection is optional unless the request needs
+it. `inspect_video` can return `status: "running"` after its short wait while the
+inspection continues. Poll `get_video_download_context` at `activity.pollAfterMs`
+while pending; do not repeat inspection, change the URL or call
+`start_video_download` during that inspection. Check `activity.canSubmit` and
+`activity.blockingReasons` before submitting. A temporary busy response means
+wait and query again, not repeatedly attempt submission or stop the whole task.
+After submission, retain `queueId` and pass it to `get_video_download_context`
+to follow that item to its final state. Use its `files` and `filesComplete` to
+assess outputs; `filesTruncated` means the response is only a file summary. On an
+inspection failure, read the returned error and decide whether metadata is still
+needed before retrying; a download failure must not trigger a blind resubmission.
+Panel context contains the latest observed shared tasks, not a forced worker
+query. Check `sharedObservation` for freshness, read errors, truncation and
+warnings, and `queueTruncated` for response limits. If a tracked ID disappears or
+observation fails, read the matching CLI task with `status --job <cliJobId>`
+where available; never pass the panel's `cli:` prefix as a CLI UUID. Otherwise
+report that its outcome cannot be confirmed. Missing or stale records prove
+neither failure nor completion and never justify resubmission.
 
 The queue defaults to two concurrent tasks. `queue` reads its revision; applying
 `queue --input-file` requires that `expectedRevision`, `paused` and `maxConcurrent`
