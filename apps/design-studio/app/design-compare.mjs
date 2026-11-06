@@ -116,7 +116,7 @@ function semanticProperties(node) {
       textSource: node.textSource ?? node.text,
       textFlow: node.textFlow ?? null,
       textOverflow: node.textOverflow ?? null,
-      layoutBaselineOffset: node.layoutBaselineOffset ?? 0,
+      layoutBaselineOffset: node.layoutBaselineOffset ?? null,
     });
   }
   return properties;

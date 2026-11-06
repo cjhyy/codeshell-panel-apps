@@ -40,7 +40,9 @@ test("shared frontend preserves authored geometry decimals while paint serializa
  Object.assign(n,{x:-86.78125,y:65.59,width:300.123456,height:65.59375,layout:"none",stroke:"#112233",strokeWidth:1.123456,cornerRadii:[1.123456,2.123456,3.123456,4.123456]});
  const html=renderDesignFrontendPage(doc);
  assert(html.includes("left:-86.78125px"));assert(html.includes("top:65.59px"));assert(html.includes("width:300.123456px"));assert(html.includes("height:65.59375px"));
- assert(html.includes("border-radius:1.123px 2.123px 3.123px 4.123px"));assert(html.includes("1.123px solid"));
+ assert(html.includes("border-radius:1.123px 2.123px 3.123px 4.123px"));
+ assert(html.includes("box-shadow:0 0 0 0.562px #112233,inset 0 0 0 0.562px #112233"),"legacy centered paint retains three-decimal half-width serialization");
+ assert(!html.includes("border:"),"centered legacy paint must not create a containing-block border");
  const reopened=normalizeDesignDocument(JSON.parse(serializeDesignDocument(doc)));
  assert.deepEqual([reopened.nodes[0].x,reopened.nodes[0].y,reopened.nodes[0].width,reopened.nodes[0].height],[-86.78125,65.59,300.123456,65.59375]);
 });

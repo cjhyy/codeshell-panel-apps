@@ -65,7 +65,7 @@ test("pixel bounds derive from legacy font/ratio envelope and absence keeps exac
   };
   assert.equal(
     textMetricsSignature(ratio),
-    JSON.stringify(["Alpha\nBeta", "Inter", "", 16, 400, "normal", 0, 1.25]),
+    JSON.stringify(["Alpha\nBeta", "Inter", "", 16, 400, "normal", 0, 1.25, { origin: "line-box-v1" }]),
   );
   const pixels = { ...ratio, lineHeight: 20, lineHeightUnit: "pixels" };
   for (const fontSize of [16, 24, 16]) {

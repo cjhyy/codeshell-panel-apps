@@ -371,11 +371,25 @@ function paintDeclarations(node) {
     if(sides.some(s=>s.width!==side.width || s.color!==side.color || s.opacity!==side.opacity))
       throw new Error(`${node.name}: 非内侧的独立侧边暂不能导出为等价 CSS；请保留 SVG/v3 或使用内侧边框`);
     const rgba=`rgba(${[1,3,5].map(offset=>parseInt(side.color.slice(offset,offset+2),16)).join(",")},${side.opacity})`;
-    const outside=node.strokeAlign === "outside"?side.width:side.width/2;
-    declarations.push(["outline",`${cssRoundedNumber(outside)} solid ${rgba}`]);
-    if(node.strokeAlign!=="outside")shadows.push(`inset 0 0 0 ${cssRoundedNumber(side.width/2)} ${rgba}`);
+    if (node.strokeAlign === "outside") {
+      declarations.push(["outline", `${cssRoundedNumber(side.width)} solid ${rgba}`]);
+    } else {
+      // Chromium quantizes fractional outline widths (3px centered became
+      // 1px outside + 1.5px inside). Shadows retain both exact half widths.
+      const halfWidth = cssRoundedNumber(side.width / 2);
+      shadows.push(`0 0 0 ${halfWidth} ${rgba}`, `inset 0 0 0 ${halfWidth} ${rgba}`);
+    }
   } else if (Number(node.strokeWidth) > 0 && cssColor(node.stroke) !== "transparent") {
-    declarations.push(["border", `${cssRoundedNumber(node.strokeWidth)} solid ${cssColor(node.stroke)}`]);
+    if (node.type === "text") {
+      declarations.push(["-webkit-text-stroke", `${cssRoundedNumber(node.strokeWidth)} ${cssColor(node.stroke)}`]);
+    } else {
+      // Legacy strokes are centered on the authored outline. A CSS border
+      // would move absolute children and consume flex/grid space. The two
+      // half-width shadows paint on either side without changing layout.
+      const halfWidth = cssRoundedNumber(node.strokeWidth / 2);
+      shadows.push(`0 0 0 ${halfWidth} ${cssColor(node.stroke)}`,
+        `inset 0 0 0 ${halfWidth} ${cssColor(node.stroke)}`);
+    }
   }
   if (node.cornerRadii) {
     declarations.push(["border-radius", node.cornerRadii.map(cssRoundedNumber).join(" ")]);

@@ -52,6 +52,7 @@
     "apps/design-studio/app/shadow-stack.mjs",
     "apps/design-studio/app/stroke.mjs",
     "apps/design-studio/app/svg-resource.mjs",
+    "apps/design-studio/app/text-line-box.mjs",
     "apps/design-studio/app/text-line-height.mjs",
     "apps/design-studio/app/text-metrics.mjs",
     "apps/design-studio/app/text-ranges.mjs",

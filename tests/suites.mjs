@@ -90,12 +90,12 @@ export const suites = [
   {
     id: "design-studio",
     label: "Design Studio project recovery and editor interactions",
-    // Bound software browser screenshot workers too; a many-core host must
-    // not overload Chromium capture services. Keep all cases and pixel gates.
+    // Software GPU fidelity captures share a bounded Chromium budget. Run
+    // Design Studio UI workers serially, retaining every case and pixel gate.
     commands: [
       [
         "--test",
-        "--test-concurrency=2",
+        "--test-concurrency=1",
         "tests/apps/design-studio/headless-cli.test.mjs",
         "tests/apps/design-studio/headless-prototype.test.mjs",
         "tests/apps/design-studio/product-brief.test.mjs",
@@ -145,6 +145,12 @@ export const suites = [
         "tests/apps/design-studio/flex-reverse-wrap.test.mjs",
         "tests/apps/design-studio/inactive-frame-fill.test.mjs",
         "tests/apps/design-studio/stroke-layout.test.mjs",
+        "tests/apps/design-studio/legacy-stroke-renderer.test.mjs",
+        "tests/apps/design-studio/render-fidelity-metrics.test.mjs",
+        "tests/apps/design-studio/render-fidelity-geometry.test.mjs",
+        "tests/apps/design-studio/text-origin-compatibility.test.mjs",
+        "tests/apps/design-studio/text-line-box.test.mjs",
+        "tests/apps/design-studio/svg-preview-font-context.test.mjs",
         "tests/apps/design-studio/builtin-fonts.test.mjs",
         "tests/apps/design-studio/font-family.test.mjs",
         "tests/apps/design-studio/font-family-renderer.test.mjs",
@@ -257,6 +263,7 @@ export const suites = [
         "tests/apps/design-studio/browser-renderer-ui.test.mjs",
         "tests/apps/design-studio/canvaskit-cache.test.mjs",
         "tests/apps/design-studio/text-ranges-typography.test.mjs",
+        "tests/apps/design-studio/text-line-box-ui.test.mjs",
         "tests/apps/design-studio/canvaskit-svg.test.mjs",
         "scripts/design-renderer-compare/canvaskit-smoke.test.mjs",
       ],

@@ -825,7 +825,9 @@ function refreshTextBaselines(nodes, measurement, canvas) {
       node.layoutBaselineOffset = offset;
       changed = true;
     }
-    textBaselineStates.set(node, { key, offset });
+    // Installing the first finite offset changes the receipt origin signature.
+    // Cache the resulting hanging state, not the pre-import line-box state.
+    textBaselineStates.set(node, { key: textSourceMetricsSignature(node), offset });
   }
   return changed;
 }

@@ -1,5 +1,6 @@
 import { normalizeShadowStack, validateShadowStack, shadowStackSvg, shadowStackOutsets } from "./shadow-stack.mjs";
 import { validTextLineHeight, textLineHeightPixels } from "./text-line-height.mjs";
+import { textSvgLineBox, textHasLineBoxOrigin, textLineBoxAlphabeticOffset } from "./text-line-box.mjs";
 import { validateTextRanges, projectTextRanges, textRangeTypography } from "./text-ranges.mjs";
 import { validateLayoutSpacing } from "./layout-spacing.mjs";
 import { normalizeCornerRadii, roundedRectSvgGeometry } from "./corner-radii.mjs";
@@ -20,7 +21,7 @@ import {
   transformedNodeBoundsInTree,
 } from "./geometry.mjs";
 import { normalizeDesignResources } from "./resource-store.mjs";
-import { measuredTextInkBounds, validTextMetrics, currentTextMetrics, textDisplayLineMetrics } from "./text-metrics.mjs";
+import { measuredTextInkBounds, validTextMetrics, currentTextMetrics, textDisplayLineMetrics, textMetricsSignature } from "./text-metrics.mjs";
 import { designFontFaceCss, designFontFamilyCss, designResourceFontFamilyCss } from "./font-css.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -1201,7 +1202,9 @@ function textPaintBounds(node) {
     // Font bearings and decorations can protrude beyond an estimated advance.
     // Keep this bounded font-sized margin only on unmeasured text itself.
     const pad = node.fontSize;
-    return { x: x - pad, y: index * textLineHeightPixels(node) - pad,
+    const leading = textHasLineBoxOrigin(node) && !textRangeTypography(node, false).length
+      ? (textLineHeightPixels(node) - node.fontSize) / 2 : 0;
+    return { x: x - pad, y: index * textLineHeightPixels(node) + leading - pad,
       width: width + pad * 2, height: node.fontSize + pad * 2 };
   });
   const left = Math.min(0, ...boxes.map(box => box.x));
@@ -1565,11 +1568,16 @@ function exportNodeSvg(
     const fontResource = node.fontRef
       ? document.resources?.find((resource) => resource.id === node.fontRef)
       : null;
-    const fontFamily = escapeXml(
-      fontResource ? designResourceFontFamilyCss(node.fontFamily, fontResource.family) : designFontFamilyCss(
-        node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
-      ),
+    const fontFamilyCss = fontResource ? designResourceFontFamilyCss(node.fontFamily, fontResource.family) : designFontFamilyCss(
+      node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
     );
+    const fontFamily = escapeXml(fontFamilyCss);
+    const lineBoxMetrics = textHasLineBoxOrigin(node) && !textRangeTypography(node, false).length
+      ? options.resolveTextLineBoxMetrics?.(node, fontFamilyCss) : undefined;
+    const unmeasuredLineBox = textHasLineBoxOrigin(node) && !textRangeTypography(node, false).length && !lineBoxMetrics;
+    const lineBoxMetadata = unmeasuredLineBox ? ' data-text-line-box="unmeasured"' : lineBoxMetrics
+      ? ` data-text-line-box="alphabetic" data-text-baseline-offset="${Number.isFinite(lineBoxMetrics.alphabeticBaseline) ? lineBoxMetrics.alphabeticBaseline : textLineBoxAlphabeticOffset(node, lineBoxMetrics)}" data-text-metrics-signature="${escapeXml(textMetricsSignature(node))}"` : "";
+    if (unmeasuredLineBox) options.diagnostics?.push({ code: "TEXT_LINE_BOX_SVG_UNMEASURED", nodeId: node.id });
     const fontStyle = node.fontStyle ?? "normal";
     const letterSpacing = node.letterSpacing ?? 0;
     const textDecoration = node.textDecoration ?? "none";
@@ -1597,9 +1605,13 @@ function exportNodeSvg(
           const span = `<tspan style="${escapeXml(declarations.join(";"))}">${escapeXml(run.text)}</tspan>`;
           return run.href === undefined ? span : `<a href="${escapeXml(run.href)}" style="fill:inherit;text-decoration:none">${span}</a>`;
         }).join("");
-        return `    <text x="${round(textX)}" y="${round(node.y + textDisplayLineMetrics(node).offsets[index] + alphabeticBaseline)}" stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="none" text-anchor="${anchor}" dominant-baseline="${typography ? "alphabetic" : "hanging"}" xml:space="preserve">${spans || " "}</text>`;
+        const lineBox = typography
+          ? { y: node.y + textDisplayLineMetrics(node).offsets[index] + alphabeticBaseline, baseline: "alphabetic" }
+          : textHasLineBoxOrigin(node) ? textSvgLineBox(node, index, lineBoxMetrics)
+            : { y: node.y + textDisplayLineMetrics(node).offsets[index], baseline: "hanging" };
+        return `    <text x="${round(textX)}" y="${round(lineBox.y)}" stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="none" text-anchor="${anchor}" dominant-baseline="${lineBox.baseline}" xml:space="preserve">${spans || " "}</text>`;
       }).join("\n");
-      return clipped(`  <g${metadata}${opacity}${filter}${transform}>\n${lines}\n  </g>`);
+      return clipped(`  <g${metadata}${lineBoxMetadata}${opacity}${filter}${transform}>\n${lines}\n  </g>`);
     }
     // Separate text elements are more portable than tspans: several native
     // SVG renderers ignore tspan x/y or dy and collapse every line together.
@@ -1607,10 +1619,10 @@ function exportNodeSvg(
       .split("\n")
       .map(
         (line, index) =>
-          `    <text x="${round(textX)}" y="${round(node.y + index * textLineHeightPixels(node))}" ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="${textDecoration}" text-anchor="${anchor}" dominant-baseline="hanging" xml:space="preserve">${escapeXml(line || " ")}</text>`,
+          `    <text x="${round(textX)}" y="${round(textSvgLineBox(node, index, lineBoxMetrics).y)}" ${fillAttributes} stroke="${escapeXml(node.stroke)}" stroke-width="${node.strokeWidth}" font-family="${fontFamily}" font-size="${node.fontSize}" font-weight="${node.fontWeight}" font-style="${fontStyle}" letter-spacing="${round(letterSpacing)}" text-decoration="${textDecoration}" text-anchor="${anchor}" dominant-baseline="${textSvgLineBox(node, index, lineBoxMetrics).baseline}" xml:space="preserve">${escapeXml(line || " ")}</text>`,
       )
       .join("\n");
-    return clipped(`  <g${metadata}${opacity}${filter}${transform}>\n${lines}\n  </g>`);
+    return clipped(`  <g${metadata}${lineBoxMetadata}${opacity}${filter}${transform}>\n${lines}\n  </g>`);
   }
   if (node.type === "image") {
     const href = options.resourceDataUrls?.get?.(node.imageRef);
@@ -1784,12 +1796,35 @@ export function exportDesignSvg(document, options = {}) {
     renderNodes.map((node, index) => [node.id, designPaintSvg(node, `node-fill-${index}`)]),
   );
   const paintDefinitions = [...paintFills.values()].flatMap((paint) => paint.definitions);
+  // Export in the same loaded browser font context as the workbench. This
+  // cache lasts one export, so a later font load cannot reuse stale metrics.
+  // Offline callers may inject metrics or replay a current browser receipt.
+  const fontMetrics = new Map();
+  let fontContext;
+  const resolveTextLineBoxMetrics = (node, family) => {
+    const supplied = options.textLineBoxMetrics?.get?.(node.id);
+    if (supplied) return supplied;
+    if (fontContext === undefined) fontContext = globalThis.document?.createElement?.("canvas")?.getContext?.("2d") ?? null;
+    if (fontContext) {
+      const font = `${node.fontStyle ?? "normal"} ${node.fontWeight} ${node.fontSize}px ${family}`;
+      if (!fontMetrics.has(font)) {
+        fontContext.font = font; fontContext.textBaseline = "alphabetic";
+        const measured = fontContext.measureText("Hg");
+        if (Number.isFinite(measured.fontBoundingBoxAscent) && Number.isFinite(measured.fontBoundingBoxDescent))
+          fontMetrics.set(font, { ascent: measured.fontBoundingBoxAscent, descent: measured.fontBoundingBoxDescent });
+      }
+      if (fontMetrics.has(font)) return fontMetrics.get(font);
+    }
+    const receipt = currentTextMetrics(node);
+    return Number.isFinite(receipt?.alphabeticBaseline) ? { alphabeticBaseline: receipt.alphabeticBaseline } : undefined;
+  };
   const body = document.nodes
     .map((node) =>
       exportNodeSvg(renderDocument, node, clipIds, shadowIds, componentClipIds, new Set(), {
         ...options,
         paintFills,
         shadowStacks,
+        resolveTextLineBoxMetrics,
       }),
     )
     .filter(Boolean)

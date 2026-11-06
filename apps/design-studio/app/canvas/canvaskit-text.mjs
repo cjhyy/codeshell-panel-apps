@@ -1,8 +1,9 @@
 import { textLineHeightPixels } from "../text-line-height.mjs";
+import { textHasLineBoxOrigin, textLineBoxAlphabeticOffset } from "../text-line-box.mjs";
 import { designFillPaints, gradientMatrix } from "../paint.mjs";
 import { designFontFamilyCss, designNamedFontFamilyCss, designResourceFontFamilyCss } from "../font-css.mjs";
 import { currentTextMetrics, textDisplayLineMetrics } from "../text-metrics.mjs";
-import { projectTextRanges, validateTextRanges } from "../text-ranges.mjs";
+import { projectTextRanges, validateTextRanges, textRangeTypography } from "../text-ranges.mjs";
 import { parseDesignFontFamily } from "../font-family.mjs";
 import { inspectFontCapabilities, fontFaceWeight, fontWeightAxis, selectFontEntry } from "../font-capabilities.mjs";
 
@@ -22,6 +23,16 @@ export function canvasKitTextRangePlan(node, { suppliedFont = true, missingGlyph
     .some((key) => Object.hasOwn(range, key))))
     refuse("范围下划线的自定义厚度、偏移或跳墨尚不能准确绘制；文字和样式已保留");
   return projectTextRanges(node);
+}
+
+/** Byte-proven native variation instances mirror CSS optical sizing. */
+export function canvasKitTextFontVariations(node, style, capabilities) {
+  const variations = fontWeightAxis(capabilities) ? [{ axis: "wght", value: style.fontWeight }] : [];
+  // Imported hanging text and mixed typography retain their existing pixels.
+  const optical = textHasLineBoxOrigin(node) && !textRangeTypography(node, false).length &&
+    capabilities?.status === "verified" && capabilities.axes.find(axis => axis.tag === "opsz");
+  if (optical) variations.push({ axis: "opsz", value: Math.min(optical.max, Math.max(optical.min, style.fontSize)) });
+  return variations;
 }
 
 const rgba = (hex, alpha = 1) =>
@@ -181,7 +192,7 @@ export async function createCanvasKitText({
       fontFamilies: [entry.alias], fontSize: style.fontSize,
       fontStyle: { weight: CK.FontWeight[weightKey(style.fontWeight)], width: CK.FontWidth.Normal,
         slant: style.fontStyle === "italic" ? CK.FontSlant.Italic : CK.FontSlant.Upright },
-      fontVariations: fontWeightAxis(entry.capabilities) ? [{ axis: "wght", value: style.fontWeight }] : [], letterSpacing: node.letterSpacing || 0,
+      fontVariations: canvasKitTextFontVariations(node, style, entry.capabilities), letterSpacing: node.letterSpacing || 0,
       decoration: style.textDecoration === "underline" ? CK.UnderlineDecoration :
         style.textDecoration === "line-through" ? CK.LineThroughDecoration : CK.NoDecoration,
     });
@@ -192,7 +203,7 @@ export async function createCanvasKitText({
       aliasFamilies.has(alias) ? designResourceFontFamilyCss(node.fontFamily, aliasFamilies.get(alias), alias) :
         designNamedFontFamilyCss(alias);
     measure.font = `${node.fontStyle || "normal"} ${node.fontWeight} ${node.fontSize}px ${family}`;
-    measure.textBaseline = "hanging";
+    measure.textBaseline = textHasLineBoxOrigin(node) ? "alphabetic" : "hanging";
     measure.textAlign = "left";
     // Canvas "auto" can disable pairs that the editable SVG text still kerns.
     if ("fontKerning" in measure) measure.fontKerning = "normal";
@@ -200,11 +211,44 @@ export async function createCanvasKitText({
   }
   function hangingOffset(node, alias) {
     configure(node, alias);
+    measure.textBaseline = "hanging";
     const hanging = measure.measureText("Hg");
     measure.textBaseline = "alphabetic";
     const alphabetic = measure.measureText("Hg");
     measure.textBaseline = "hanging";
     return alphabetic.actualBoundingBoxAscent - hanging.actualBoundingBoxAscent;
+  }
+  const browserFontMetrics = new Map(), nativeFontMetrics = new Map();
+  function rasterBaseline(node, alias) {
+    if (!textHasLineBoxOrigin(node)) return 0;
+    configure(node, alias);
+    const key = measure.font;
+    let metrics = browserFontMetrics.get(key);
+    if (!metrics) {
+      const measured = measure.measureText("Hg");
+      metrics = { ascent: measured.fontBoundingBoxAscent, descent: measured.fontBoundingBoxDescent };
+      // A missing font metric is an unsupported renderer capability, not a
+      // reason to silently restore the old hanging placement.
+      textLineBoxAlphabeticOffset(node, metrics);
+      browserFontMetrics.set(key, metrics);
+    }
+    return textLineBoxAlphabeticOffset(node, metrics);
+  }
+  function paragraphBaseline(node, entry) {
+    if (!textHasLineBoxOrigin(node) || textRangeTypography(node, false).length)
+      return hangingOffset(node, entry?.alias);
+    const key = JSON.stringify([entry.id, node.fontSize]);
+    let metrics = nativeFontMetrics.get(key);
+    if (!metrics) {
+      const font = new CK.Font(entry.face, node.fontSize);
+      try {
+        const measured = font.getMetrics();
+        metrics = { ascent: -measured.ascent, descent: measured.descent };
+        textLineBoxAlphabeticOffset(node, metrics);
+        nativeFontMetrics.set(key, metrics);
+      } finally { font.delete(); }
+    }
+    return textLineBoxAlphabeticOffset(node, metrics);
   }
   const availableFamilies = new Map();
   function browserFamilyAvailable(node) {
@@ -260,7 +304,7 @@ export async function createCanvasKitText({
     return String(node.text)
       .split("\n")
       .reduce((sum, line, i) => {
-        const { w, h } = lineGeometry(node, line, node.y + i * textLineHeightPixels(node), scale, alias, origin);
+        const { w, h } = lineGeometry(node, line, node.y + i * textLineHeightPixels(node) + rasterBaseline(node, alias), scale, alias, origin);
         return sum + w * h;
       }, 0);
   }
@@ -288,6 +332,7 @@ export async function createCanvasKitText({
       node.fontStyle,
       node.lineHeight,
       node.lineHeightUnit,
+      textHasLineBoxOrigin(node),
       node.letterSpacing,
       node.textAlign,
       node.textDecoration,
@@ -475,8 +520,8 @@ export async function createCanvasKitText({
           for (const run of fragments) { builder.pushStyle(rangeStyle(node, run.style)); builder.addText(run.text); builder.pop(); }
           paragraph = builder.build(); paragraph.layout(1048576);
           const width = paragraph.getLongestLine(), x = alignedX(node, width);
-          const base = faces.get(node.fontRef) ?? faces.get(node.fontFamily);
-          const y = node.y + lineLayout.offsets[index] + hangingOffset(node, base?.alias) - paragraph.getAlphabeticBaseline();
+          const base = resolvedFont(node, node) ?? rangeFont(node, fragments[0].style);
+          const y = node.y + lineLayout.offsets[index] + paragraphBaseline(node, base) - paragraph.getAlphabeticBaseline();
           const pad = Math.max(node.fontSize, ...fragments.map(run => run.style.fontSize));
           left = Math.min(left, x - pad); right = Math.max(right, x + width + pad);
           top = Math.min(top, y - pad); bottom = Math.max(bottom, y + paragraph.getHeight() + pad);
@@ -486,6 +531,7 @@ export async function createCanvasKitText({
       contentBoundsCache.set(node.id, { signature, bounds }); return bounds;
     }
     const entry = resolvedFont(node, node);
+    const baseline = rasterBaseline(node, entry?.alias);
     configure(node, entry?.alias);
     let left = node.x,
       right = node.x + node.width,
@@ -496,7 +542,7 @@ export async function createCanvasKitText({
       .forEach((line, i) => {
         const metric = measure.measureText(line || " "),
           x = alignedX(node, metric.width);
-        const y = node.y + i * textLineHeightPixels(node);
+        const y = node.y + i * textLineHeightPixels(node) + baseline;
         left = Math.min(left, x - metric.actualBoundingBoxLeft);
         right = Math.max(right, x + metric.width, x + metric.actualBoundingBoxRight);
         top = Math.min(top, y - metric.actualBoundingBoxAscent);
@@ -531,7 +577,7 @@ export async function createCanvasKitText({
       ctx.scale(scale, scale);
       ctx.translate(-offsetX, -offsetY);
       ctx.font = measure.font;
-      ctx.textBaseline = "hanging";
+      ctx.textBaseline = textHasLineBoxOrigin(node) ? "alphabetic" : "hanging";
       if ("fontKerning" in ctx) ctx.fontKerning = "normal";
       if ("letterSpacing" in ctx) ctx.letterSpacing = `${node.letterSpacing || 0}px`;
       for (const fill of designFillPaints(node)) {
@@ -670,7 +716,7 @@ export async function createCanvasKitText({
         return;
       }
       lines.forEach((line, i) =>
-        rasterLine(canvas, node, line, node.y + i * textLineHeightPixels(node)),
+        rasterLine(canvas, node, line, node.y + i * textLineHeightPixels(node) + rasterBaseline(node)),
       );
       return;
     }
@@ -694,7 +740,7 @@ export async function createCanvasKitText({
         `${missing} glyphs absent from supplied font; browser same-family raster cache`,
       );
       lines.forEach((line, i) =>
-        rasterLine(canvas, node, line, node.y + i * textLineHeightPixels(node), entry.alias),
+        rasterLine(canvas, node, line, node.y + i * textLineHeightPixels(node) + rasterBaseline(node, entry.alias), entry.alias),
       );
       return;
     }
@@ -706,7 +752,7 @@ export async function createCanvasKitText({
       activeDeviceIds.delete(node.id);
     }
     counters.nativeTextNodes++;
-    const baseline = hangingOffset(node, entry.alias);
+    const baseline = paragraphBaseline(node, entry);
     if (rangeRuns) {
       drawTextRanges(canvas, node, entry.alias, lines, rangeRuns, baseline, metrics);
       return;
@@ -720,7 +766,7 @@ export async function createCanvasKitText({
           width: CK.FontWidth.Normal,
           slant: node.fontStyle === "italic" ? CK.FontSlant.Italic : CK.FontSlant.Upright,
         },
-        fontVariations: fontWeightAxis(entry.capabilities) ? [{ axis: "wght", value: node.fontWeight }] : [],
+        fontVariations: canvasKitTextFontVariations(node, node, entry.capabilities),
         letterSpacing: node.letterSpacing || 0,
         decoration:
           node.textDecoration === "underline"
@@ -809,6 +855,8 @@ export async function createCanvasKitText({
       devicePlans.clear();
       activeDeviceIds.clear();
       contentBoundsCache.clear();
+      browserFontMetrics.clear();
+      nativeFontMetrics.clear();
       rasterPixels = 0;
       for (const { face } of faces.values()) face.delete();
       aliasFamilies.clear();

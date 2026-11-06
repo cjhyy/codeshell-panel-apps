@@ -13,6 +13,9 @@ import {
   serializeDesignIndexManifest,
 } from "../document-index.mjs";
 import { resolveDesignResource } from "../resource-store.mjs";
+import { textHasLineBoxOrigin } from "../text-line-box.mjs";
+import { textRangeTypography } from "../text-ranges.mjs";
+import { textMetricsSignature } from "../text-metrics.mjs";
 
 export function inspectDesignSource(source, path = "design.codesign.json") {
   if (typeof source !== "string") throw new Error(`${path}: source must be UTF-8 text`);
@@ -43,10 +46,32 @@ export function decodeDesignSource(bytes, path = "design.codesign.json") {
 }
 
 export function isDesignPreviewCurrent(document, svgSource, resourceDataUrls = new Map()) {
-  return (
-    typeof svgSource === "string" &&
-    svgSource === exportDesignSvg(document, { resourceDataUrls })
-  );
+  if (typeof svgSource !== "string" || new TextEncoder().encode(svgSource).length > 4 * 1024 * 1024) return false;
+  // Replay the generated preview's browser font context. This is not font
+  // provenance or visual certification: the complete regenerated SVG must
+  // still match, so changed design content, markup and partial metadata fail.
+  const nodes = document.pages?.length ? document.pages.flatMap(page =>
+    page.id === document.activePageId ? document.nodes ?? [] : page.nodes ?? []) : document.nodes ?? [];
+  const escapeXml = value => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
+  const eligible = new Map(nodes.filter(node => node.type === "text" && textHasLineBoxOrigin(node) && !textRangeTypography(node, false).length)
+    .map(node => [escapeXml(node.id), node]));
+  const textLineBoxMetrics = new Map();
+  const metadata = /<g data-node-id="([^"]+)" data-text-line-box="alphabetic" data-text-baseline-offset="([^"]+)" data-text-metrics-signature="([^"]+)"/gu;
+  for (const match of svgSource.matchAll(metadata)) {
+    const node = eligible.get(match[1]), baseline = Number(match[2]);
+    if (!node || !Number.isFinite(baseline) || Math.abs(baseline) > 1000 || String(baseline) !== match[2]) return false;
+    // Line height is absent from single-line SVG glyph attributes. Binding
+    // every metric input prevents an old baseline from hiding a source edit.
+    if (match[3] !== escapeXml(textMetricsSignature(node))) return false;
+    const id = node.id;
+    // Component instances legitimately repeat a source Text id. They must
+    // replay one identical font context; conflicting repetitions are invalid.
+    const previous = textLineBoxMetrics.get(id);
+    if (previous && previous.alphabeticBaseline !== baseline) return false;
+    textLineBoxMetrics.set(id, { alphabeticBaseline: baseline });
+  }
+  return svgSource === exportDesignSvg(document, { resourceDataUrls, textLineBoxMetrics });
 }
 
 export async function readDesignSourcePath(path, { workspaceRoot = process.cwd() } = {}) {
