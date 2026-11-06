@@ -26,7 +26,7 @@
     "tools": [
       {
         "name": "inspect_video",
-        "description": "Set an optional video URL in the panel and use local yt-dlp to inspect its metadata. Call this when the user supplies a URL or the panel has not inspected its current URL yet.",
+        "description": "Set an optional video URL and inspect metadata with local yt-dlp when titles, formats or playlist entries are needed. Inspection is optional for downloading. This can return status='running' while inspection continues: poll get_video_download_context at activity.pollAfterMs until it finishes. Do not repeat inspection, change the URL or call start_video_download while it is running. Read any final error before deciding whether to retry.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -46,10 +46,17 @@
       },
       {
         "name": "get_video_download_context",
-        "description": "Read the current URL, inspection and download status, concurrent download queue, concurrency limit and pause state, inspected video metadata, destination, available local dependencies, and download configuration.",
+        "description": "Read inspection/errors, activity.canInspect/canSubmit, blockingReasons and pollAfterMs, plus task status, terminal and bounded file summaries. Filter by queueId to track a submission. Check queueTruncated, filesTruncated and sharedObservation freshness/errors/truncation; a missing ID is not completion. Track downloads until completion, explicit failure or a specific user-action obstacle. Busy/running/queued are not final. For explicit submit-only requests, verify submission instead.",
         "inputSchema": {
           "type": "object",
-          "properties": {},
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160,
+              "description": "Optional exact queueId from start_video_download or id from this tool. Filters observed tasks only; if absent from the snapshot, read the matching CLI status rather than resubmitting."
+            }
+          },
           "additionalProperties": false
         },
         "readOnly": true
@@ -121,7 +128,7 @@
       },
       {
         "name": "start_video_download",
-        "description": "Add the current video URL to the bounded concurrent download queue with a snapshot of the configuration, selected Cookie authorization, and destination shown in the panel. The queue starts automatically unless paused. Invoke only when the user explicitly asks to download; configuration alone must never call this tool.",
+        "description": "Add the current URL with its settings, selected Cookie authorization and destination. Starts automatically unless paused. Invoke only for an explicit download request. Check get_video_download_context activity.canSubmit first; if busy, poll instead of repeatedly submitting. Retain queueId and track its final state and files. A started/queued receipt is not completion. Do not blindly resubmit an existing task.",
         "inputSchema": {
           "type": "object",
           "properties": {},

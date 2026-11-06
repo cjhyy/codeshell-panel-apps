@@ -588,6 +588,11 @@ for (const pendingSpawn of [false, true]) {
     );
     assert.equal(await page.locator("#url-input").isEnabled(), true);
     assert.equal(await page.locator("#cancel-inspect").isVisible(), false);
+    const state = await readState(page);
+    assert.equal(state.inspection.status, "cancelled");
+    assert.equal(state.activity.busy, false);
+    assert.equal(state.activity.canInspect, true);
+    assert.equal(state.activity.canSubmit, true);
     assert.equal(
       await page.evaluate(
         () =>
@@ -833,6 +838,111 @@ test("Chat can inspect a new URL while a download is running", async (t) => {
   assert.equal(result.inspected.title, `Fixture video ${secondUrl}`);
   assert.equal((await readState(page)).queue[0].status, "running");
   assert.equal((await readState(page)).runningCount, 1);
+});
+
+test("Chat context distinguishes a pending inspection from a download and exposes completed files", async (t) => {
+  const page = await openPanel(t, { concurrency: 2 });
+  await addDownload(page);
+  await page.waitForFunction(() => window.__downloads.length === 1);
+  const downloading = await readState(page);
+  assert.equal(downloading.activity.canInspect, true);
+  assert.equal(downloading.activity.canSubmit, true);
+
+  await page.evaluate((url) => {
+    window.__holdInspection = true;
+    window.__inspectionPromise = window.__panelTools.inspect_video({ url });
+  }, secondUrl);
+  await page.waitForFunction(() => window.__heldInspection);
+  const inspecting = await readState(page);
+  assert.equal(inspecting.inspection.status, "running");
+  assert.equal(inspecting.activity.status, "busy");
+  assert.equal(inspecting.activity.busy, true);
+  assert.equal(inspecting.activity.canInspect, false);
+  assert.equal(inspecting.activity.canSubmit, false);
+  assert.ok(inspecting.activity.pollAfterMs > 0);
+  assert.ok(inspecting.activity.blockingReasons.some(({ code, message }) => code && message));
+  const blocked = await page.evaluate(async () => {
+    try {
+      await window.__panelTools.start_video_download();
+      return null;
+    } catch (error) {
+      return error.message;
+    }
+  });
+  assert.match(blocked, /请等待当前操作完成/);
+  assert.equal((await downloads(page)).length, 1);
+  assert.equal((await readState(page)).queue.length, 1);
+
+  const inspected = await page.evaluate(() => {
+    const { processId, url } = window.__heldInspection;
+    window.__holdInspection = false;
+    window.__emit("process.output", {
+      processId,
+      stream: "stdout",
+      text:
+        JSON.stringify({
+          id: "second-video",
+          title: "Second inspected video",
+          webpage_url: url,
+          duration: 60,
+          formats: [],
+        }) + "\n",
+    });
+    window.__emit("process.exit", { processId, code: 0 });
+    return window.__inspectionPromise;
+  });
+  assert.equal(inspected.status, "ready");
+  const readyState = await readState(page);
+  assert.equal(readyState.inspection.status, "ready");
+  assert.equal(readyState.inspection.error, null);
+  assert.equal(readyState.activity.canSubmit, true);
+  const accepted = await page.evaluate(() => window.__panelTools.start_video_download());
+  await page.waitForFunction(() => window.__downloads.length === 2);
+  const outputPath = "/fixture/project/second-video.mp4";
+  await completeDownload(page, (await downloads(page))[1].processId, [outputPath]);
+  await page.waitForFunction(
+    (id) => document.querySelector(`.history-item[data-history-id="${id}"] .history-file small`)
+      ?.textContent.includes("存在"),
+    accepted.queueId,
+  );
+  const completed = (await readState(page)).queue.find((item) => item.id === accepted.queueId);
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.terminal, true);
+  assert.equal(completed.filesComplete, true);
+  assert.equal(completed.files[0].path, outputPath);
+  assert.equal(completed.files[0].bytes, 100);
+});
+
+test("Chat context retains failed and partial inspections until the source changes", async (t) => {
+  const page = await openPanel(t);
+  await page.evaluate((url) => {
+    window.__inspectionFailureByUrl[url] = "connection reset by peer";
+  }, firstUrl);
+  const result = await page.evaluate((url) => window.__panelTools.inspect_video({ url }), firstUrl);
+  assert.equal(result.status, "failed");
+  const failed = await readState(page);
+  assert.equal(failed.inspection.status, "failed");
+  assert.match(failed.inspection.error, /连接中断或超时/);
+  assert.equal(failed.inspection.failures[0].url, firstUrl);
+  assert.match(failed.inspection.failures[0].error, /连接中断或超时/);
+  assert.equal(failed.activity.busy, false);
+  assert.equal(failed.activity.canInspect, true);
+
+  await page.locator("#url-input").fill(secondUrl);
+  const changed = await readState(page);
+  assert.equal(changed.inspection.status, "idle");
+  assert.equal(changed.inspection.error, null);
+  assert.deepEqual(changed.inspection.failures, []);
+  await page.locator("#url-input").fill(`${secondUrl}\n${firstUrl}`);
+  await page.locator("#inspect-button").click();
+  await page.waitForFunction(
+    () => document.querySelector("#inspect-status").dataset.state === "error",
+  );
+  const partial = await readState(page);
+  assert.equal(partial.inspection.status, "partial");
+  assert.equal(partial.inspection.failures.length, 1);
+  assert.equal(partial.inspection.failures[0].url, firstUrl);
+  assert.equal(partial.inspected.title, `Fixture video ${secondUrl}`);
 });
 
 test("mixed-site batch inspection works when no Cookie account is selected", async (t) => {

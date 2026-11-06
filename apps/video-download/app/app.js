@@ -23,6 +23,7 @@ import {
   getHistoryRecords,
   normalizeCliRecord,
   downloadSourceLabel,
+  FINISHED_DOWNLOAD_STATUSES,
 } from "./download-records.js";
 import { createEnvironmentClient } from "./environment-client.js";
 import { classifyYtDlpFailure } from "./tools/download-errors.mjs";
@@ -186,6 +187,7 @@ let queueControlRevision = 0;
 let resumingQueue = false;
 let queueSubmissionPending = false;
 let inspectionJob = null;
+let inspectionResult = null;
 let inspectedVideo = null;
 let inspectedBatch = new Map();
 let inspectionFailures = new Map();
@@ -326,6 +328,10 @@ function renderServiceConfirmationNotice() {
       "运行未获确认，自动刷新已暂停。已知任务与历史保留；点击「手动重试」重新发起确认。";
 }
 let sharedServiceReady = false;
+let sharedObservationUpdatedAt = null;
+let sharedObservationError = null;
+let sharedObservationTruncated = false;
+let sharedObservationWarnings = [];
 let sharedQueue = null;
 let sharedListNotice = "";
 const pendingSubmissions = new Map();
@@ -383,6 +389,15 @@ const downloadService = panel
       assertCurrent: () => projectBinding?.assertCurrent(),
       onChanged(_records, result) {
         if (!libraryReady) return;
+        if (Array.isArray(result?.jobs)) {
+          sharedObservationUpdatedAt = Date.now();
+          sharedObservationError = null;
+          sharedObservationTruncated = result.truncated === true;
+          sharedObservationWarnings = (result.warnings || []).slice(0, 20).map((warning) => ({
+            id: typeof warning.id === "string" ? warning.id.slice(0, 160) : null,
+            code: typeof warning.code === "string" ? warning.code.slice(0, 100) : "RECORD_UNREADABLE",
+          }));
+        }
         if (Array.isArray(result?.jobs))
           sharedListNotice = [
             result.truncated ? "任务较多，列表仅显示当前范围。" : "",
@@ -425,6 +440,10 @@ const downloadService = panel
         renderServiceConfirmationNotice();
       },
       onError(error) {
+        sharedObservationError = {
+          code: error.code || "SERVICE_READ_FAILED",
+          message: error.message || String(error),
+        };
         document.querySelector("#shared-service-status").textContent =
           `下载任务同步失败：${error.message}。请刷新后核对，不要重复提交。`;
         renderServiceConfirmationNotice();
@@ -2273,6 +2292,7 @@ function renderDownloadList() {
 }
 
 function clearInspectedVideo(message = "粘贴链接后先读取标题、时长和可用清晰度") {
+  inspectionResult = null;
   inspectedVideo = null;
   inspectedBatch = new Map();
   inspectionFailures = new Map();
@@ -3149,6 +3169,16 @@ function finishInspection(succeeded, error = "", exitCode = null) {
           total,
         }
       : { status: "ready", inspected: inspectedVideoForAgent(), count, total };
+  inspectionResult = {
+    status: result.status,
+    url: job.url,
+    error: result.error || null,
+    failures: job.failures.map(({ url, detail }) => ({ url, error: detail })),
+    count,
+    total,
+    startedAt: job.startedAt,
+    finishedAt: Date.now(),
+  };
   if (job.cancelRequested) {
     elements.inspectStatus.dataset.state = "idle";
     elements.inspectStatus.textContent = `已取消获取，保留 ${count} 条已核对的信息。`;
@@ -3265,12 +3295,14 @@ async function inspectVideo({ retryFailed = false } = {}) {
     .map((value) => sanitizeMediaUrl(new URL(value), elements.playlist.checked));
   if (retryFailed) urls = urls.filter((value) => failedUrls.has(value));
   if (!urls.length) return;
+  inspectionResult = null;
   elements.videoInfo.hidden = !inspectedVideo || (allUrls.length > 1 && !inspectedVideo.isPlaylist);
   renderDownloadList();
   elements.inspectStatus.dataset.state = "loading";
   elements.inspectStatus.textContent =
     urls.length > 1 ? `正在获取第 1/${urls.length} 条视频信息…` : "正在通过本地 yt-dlp 获取信息…";
   inspectionJob = {
+    startedAt: Date.now(),
     id: null,
     url,
     urls,
@@ -4885,18 +4917,137 @@ function inspectedVideoForAgent() {
   };
 }
 
-function videoContextForAgent() {
+function inspectionForAgent() {
+  if (inspectionJob?.running) {
+    return {
+      status: "running",
+      url: inspectionJob.url,
+      currentUrl: inspectionJob.urls[inspectionJob.index],
+      startedAt: inspectionJob.startedAt,
+      finishedAt: null,
+      elapsedMs: Date.now() - inspectionJob.startedAt,
+      cancelRequested: inspectionJob.cancelRequested,
+      timedOut: inspectionJob.timedOut,
+      error: null,
+      failures: inspectionJob.failures.map(({ url, detail }) => ({ url, error: detail })),
+    };
+  }
+  if (inspectionResult)
+    return {
+      ...inspectionResult,
+      elapsedMs: inspectionResult.finishedAt - inspectionResult.startedAt,
+    };
   return {
-    url: normalizedUrl(),
-    inspected: inspectedVideoForAgent(),
-    inspection: {
-      status: inspectionJob?.running ? "running" : inspectedVideo ? "ready" : "idle",
-      url: inspectionJob?.url || inspectedVideo?.url || normalizedUrl(),
-    },
-    configuration: currentConfiguration(),
-    queue: allTasks().map((item) => ({
+    status: inspectedVideo ? "ready" : "idle",
+    url: inspectedVideo?.url || normalizedUrl(),
+    error: null,
+    failures: [],
+    startedAt: null,
+    finishedAt: null,
+    elapsedMs: null,
+  };
+}
+
+function activityForAgent() {
+  const blockingReasons = [];
+  const reason = (condition, code, message) => {
+    if (condition) blockingReasons.push({ code, message });
+  };
+  const busy = inspectionIsBusy();
+  const setupActive = Boolean(setupTaskId || directSetupRunning || setupSubmissionPending);
+  const publicNeedsService =
+    context.availableMethods?.includes("process.resolveEntry") &&
+    !elements.cookieSelect.value &&
+    projectContains(runtime.directory?.path);
+  const ready =
+    dependencyReady(runtime.ytDlp) &&
+    Boolean(runtime.directory?.handle) &&
+    (!publicNeedsService || (sharedServiceReady && !serviceConfirmationError));
+  const validUrl = Boolean(normalizedUrl());
+  reason(inspectionJob?.running, "inspection_running", "视频信息仍在获取，请继续查询状态。");
+  reason(
+    queueSubmissionPending,
+    "submission_pending",
+    "任务正在提交，请先核对回执和队列，勿重复提交。",
+  );
+  reason(auxiliaryBusy, "auxiliary_running", "文件检查或搜索仍在进行。");
+  reason(completionPending, "completion_pending", "正在核对下载结果。");
+  reason(
+    dependencyProbeJob?.running || dependencyRefreshPending || versionRefreshPending,
+    "dependencies_checking",
+    "正在检查下载环境。",
+  );
+  reason(setupActive, "setup_running", "下载环境准备中。");
+  reason(!libraryReady, "library_not_ready", "下载记录尚未准备好。");
+  reason(
+    !dependencyReady(runtime.ytDlp),
+    "downloader_unavailable",
+    "下载器尚未就绪，请读取 initialization 和 capabilities。",
+  );
+  reason(!runtime.directory?.handle, "directory_required", "保存目录需要选择或重新授权。");
+  reason(
+    publicNeedsService && !sharedServiceReady,
+    "service_unavailable",
+    "共享下载服务尚未就绪，请检查 sharedObservation。",
+  );
+  reason(
+    publicNeedsService && serviceConfirmationError,
+    "execution_not_confirmed",
+    "共享服务运行未获确认，请在任务页手动重试。",
+  );
+  reason(!validUrl, "url_required", "面板中没有有效视频链接。");
+  const canSubmit = Boolean(
+    ready &&
+    libraryReady &&
+    validUrl &&
+    !auxiliaryBusy &&
+    !completionPending &&
+    !inspectionJob?.running &&
+    !dependencyRefreshPending &&
+    !versionRefreshPending &&
+    !queueSubmissionPending &&
+    !setupActive,
+  );
+  const canInspect = Boolean(ready && validUrl && !busy);
+  return {
+    status: busy ? "busy" : blockingReasons.length ? "blocked" : "ready",
+    busy,
+    canInspect,
+    canSubmit,
+    blockingReasons,
+    pollAfterMs: busy
+      ? 1000
+      : allTasks().some((item) => !FINISHED_DOWNLOAD_STATUSES.has(item.status))
+        ? 2000
+        : 0,
+  };
+}
+
+function queueForAgent(queueId) {
+  const records = allTaskRecords().filter((item) => !queueId || item.queueId === queueId);
+  const queue = [];
+  const encoder = new TextEncoder();
+  let queueBytes = 0;
+  let fileBytes = 0;
+  for (const item of records) {
+    const files = [];
+    const allFiles = item.files || [];
+    for (const { path, bytes, status, modifiedAt } of allFiles.slice(0, 5)) {
+      const file = {
+        path,
+        ...(Number.isSafeInteger(bytes) ? { bytes } : {}),
+        status: status || "unavailable",
+        ...(Number.isFinite(modifiedAt) ? { modifiedAt } : {}),
+      };
+      const size = encoder.encode(JSON.stringify(file)).length;
+      if (fileBytes + size > 64_000) break;
+      files.push(file);
+      fileBytes += size;
+    }
+    const record = {
       backend: item.backend || (item.nativeTaskId ? "host" : "legacy"),
       id: item.queueId,
+      ...(item.cliJobId ? { cliJobId: item.cliJobId } : {}),
       url: item.url,
       title: item.title,
       status: item.status,
@@ -4905,7 +5056,40 @@ function videoContextForAgent() {
       configuration: item.configuration,
       destination: { name: item.directory.name, path: item.directory.path },
       error: item.error || null,
-    })),
+      terminal: FINISHED_DOWNLOAD_STATUSES.has(item.status),
+      finishedAt: item.finishedAt || null,
+      files,
+      fileCount: allFiles.length,
+      filesTruncated: files.length < allFiles.length,
+      filesComplete: item.filesComplete === true && files.length === allFiles.length,
+    };
+    const size = encoder.encode(JSON.stringify(record)).length;
+    if (queueBytes + size > 256_000) continue;
+    queue.push(record);
+    queueBytes += size;
+  }
+  return { queue, queueTruncated: queue.length < records.length, queueTotal: records.length };
+}
+
+function videoContextForAgent({ queueId } = {}) {
+  return {
+    observedAt: Date.now(),
+    url: normalizedUrl(),
+    inspected: inspectedVideoForAgent(),
+    inspection: inspectionForAgent(),
+    activity: activityForAgent(),
+    sharedObservation: {
+      ready: sharedServiceReady,
+      updatedAt: sharedObservationUpdatedAt,
+      refreshing: serviceProcesses.busy,
+      error: sharedObservationError,
+      truncated: sharedObservationTruncated,
+      warnings: sharedObservationWarnings,
+    },
+    configuration: currentConfiguration(),
+    // A completed shared task moves into the History tab, but must remain
+    // observable here by the same ID returned when the agent submitted it.
+    ...queueForAgent(queueId),
     queuePaused,
     maxConcurrent,
     sharedQueue: sharedQueue || downloadService?.queue || null,
@@ -5019,6 +5203,7 @@ async function inspectVideoForAgent(args = {}) {
   if (!normalizedUrl()) throw new Error("面板中没有有效链接，请提供 url");
   await inspectVideo();
   if (!inspectionJob?.running) {
+    if (inspectionResult) return { ...inspectionResult, inspected: inspectedVideoForAgent() };
     if (inspectedVideo) return { status: "ready", inspected: inspectedVideoForAgent() };
     throw new Error(elements.formError.textContent || elements.inspectStatus.textContent);
   }
@@ -5030,7 +5215,9 @@ async function inspectVideoForAgent(args = {}) {
       resolve({
         status: "running",
         url: job.url,
-        message: "视频信息仍在获取，可稍后调用 get_video_download_context 查询结果。",
+        pollAfterMs: 1000,
+        message:
+          "视频信息仍在获取。请继续调用 get_video_download_context，等待 inspection.status 结束且 activity.canSubmit 为 true 后再提交；期间不要重复解析、添加任务或更换链接。",
       });
     }, 12_000);
     const done = (result) => {
@@ -5050,6 +5237,9 @@ async function startDownloadForAgent() {
   return {
     started: item.status === "running",
     queued: item.status === "queued",
+    status: item.status,
+    terminal: FINISHED_DOWNLOAD_STATUSES.has(item.status),
+    pollAfterMs: FINISHED_DOWNLOAD_STATUSES.has(item.status) ? 0 : 2000,
     queueId: item.queueId,
     title: item.title,
     url: item.url,
@@ -6474,10 +6664,17 @@ function registerAgentTools() {
   if (!panel?.registerTool) return;
   panel.registerTool("inspect_video", inspectVideoForAgent);
   panel.registerTool("get_video_download_context", async (args = {}) => {
-    if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).length) {
-      throw new Error("get_video_download_context 不接受参数");
+    if (
+      !args ||
+      typeof args !== "object" ||
+      Array.isArray(args) ||
+      Object.keys(args).some((key) => key !== "queueId") ||
+      (args.queueId !== undefined &&
+        (typeof args.queueId !== "string" || !args.queueId.trim() || args.queueId.length > 160))
+    ) {
+      throw new Error("get_video_download_context 只接受可选的 queueId 字符串");
     }
-    return videoContextForAgent();
+    return videoContextForAgent(args);
   });
   panel.registerTool("refresh_video_download_dependencies", async (args = {}) => {
     if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).length) {

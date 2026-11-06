@@ -105,6 +105,8 @@ async function openPanel(
       window.__lostSubmit = false;
       window.__hideJobsReads = 0;
       window.__holdList = false;
+      window.__listTruncated = false;
+      window.__listWarnings = [];
       window.__startupFault = startupFault;
       window.__startupWaiting = 0;
       const startupWaiters = [];
@@ -186,7 +188,8 @@ async function openPanel(
           const jobs = Object.values(window.__jobs).filter((record) => !record.archivedAt);
           const result = {
             jobs: window.__hideJobsReads-- > 0 ? [] : jobs,
-            truncated: false,
+            truncated: window.__listTruncated,
+            warnings: window.__listWarnings,
             queue: window.__queue,
           };
           return envelope(result);
@@ -823,6 +826,125 @@ test("cancel waits for worker truth and retry/check/archive target the shared re
     0,
     "archived records do not reappear on scanning or reload",
   );
+});
+
+test("Chat context retains shared completion receipts and reads them without resubmitting work", async (t) => {
+  const page = await openPanel(t);
+  await page.evaluate(() => window.__addChatJob());
+  await page.locator(`[data-task-id="cli:${chatId}"]`).waitFor({ state: "attached" });
+  const running = await page.evaluate(() => window.__tools.get_video_download_context());
+  assert.equal(running.queue.find((item) => item.id === `cli:${chatId}`).terminal, false);
+  await page.evaluate(() =>
+    window.__addChatJob({
+      status: "completed",
+      finishedAt: 300,
+      progress: { fraction: 1, message: "下载完成。" },
+      files: [{ path: "/fixture/project/downloads/chat.mp4", bytes: 123, status: "present" }],
+      filesComplete: true,
+    }),
+  );
+  const history = page.locator(`.history-item[data-history-id="cli:${chatId}"]`);
+  await history.waitFor({ state: "attached" });
+  const observation = await page.evaluate(async () => {
+    const before = window.__serviceCalls.length;
+    const context = await window.__tools.get_video_download_context();
+    await window.__tools.get_video_download_context();
+    return { context, newCalls: window.__serviceCalls.slice(before) };
+  });
+  const completed = observation.context.queue.find((item) => item.id === `cli:${chatId}`);
+  assert.ok(completed, "completion must remain discoverable after the task moves into history");
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.terminal, true);
+  assert.equal(completed.finishedAt, 300);
+  assert.equal(completed.filesComplete, true);
+  assert.deepEqual(
+    completed.files.map(({ path, bytes, status }) => ({ path, bytes, status })),
+    [{ path: "/fixture/project/downloads/chat.mp4", bytes: 123, status: "present" }],
+  );
+  assert.equal(observation.context.sharedObservation.ready, true);
+  assert.equal(observation.context.sharedObservation.error, null);
+  assert.ok(observation.context.sharedObservation.updatedAt > 0);
+  assert.ok(
+    observation.newCalls.every(({ action }) => ["list", "queue"].includes(action)),
+    "reading context cannot submit, retry or otherwise mutate a shared task",
+  );
+  await page.evaluate((id) => {
+    window.__jobs[id].archivedAt = Date.now();
+  }, chatId);
+  await history.waitFor({ state: "detached" });
+  const archived = await page.evaluate(() => window.__tools.get_video_download_context());
+  assert.equal(
+    archived.queue.some((item) => item.id === `cli:${chatId}`),
+    false,
+  );
+});
+
+test("Chat context bounds large playlist receipts and can still select an omitted task by ID", async (t) => {
+  const page = await openPanel(t);
+  const source = await page.evaluate(() => {
+    const ids = [];
+    for (let index = 0; index < 210; index++) {
+      const id = `23456789-2345-4567-8901-${String(index + 1).padStart(12, "0")}`;
+      ids.push(id);
+      window.__jobs[id] = window.__chatJob({
+        id,
+        status: "completed",
+        title: `Playlist ${index} ${"long title ".repeat(45)}`,
+        outputDirectory: `/fixture/project/downloads/${"long-directory-".repeat(80)}/${index}`,
+        finishedAt: 300 + index,
+        filesComplete: true,
+        files: index < 10
+          ? Array.from({ length: 200 }, (_, fileIndex) => ({
+              path: `/fixture/project/downloads/${index}/${"片".repeat(500)}-${fileIndex}.mp4`,
+              bytes: 123 + fileIndex,
+              status: "present",
+            }))
+          : [],
+      });
+    }
+    window.__listTruncated = true;
+    window.__listWarnings = [{ id: "unreadable-record", code: "RECORD_TOO_LARGE" }];
+    return {
+      ids,
+      bytes: new TextEncoder().encode(JSON.stringify(Object.values(window.__jobs))).length,
+    };
+  });
+  assert.ok(source.bytes > 512 * 1024, "the full playlist inventory exceeds an agent tool receipt");
+  await page.waitForFunction(() =>
+    document.querySelectorAll(".history-item").length === 210 &&
+    document.querySelector("#shared-service-status").textContent.includes("列表仅显示当前范围"),
+  );
+  const context = await page.evaluate(() => window.__tools.get_video_download_context());
+  assert.ok(Buffer.byteLength(JSON.stringify(context)) < 512 * 1024);
+  assert.ok(Buffer.byteLength(JSON.stringify(context.queue)) <= 256 * 1024);
+  assert.ok(Buffer.byteLength(JSON.stringify(context.queue.flatMap((item) => item.files))) <= 64 * 1024);
+  assert.equal(context.queueTotal, 210);
+  assert.equal(context.queueTruncated, true);
+  assert.ok(context.queue.length < context.queueTotal);
+  assert.ok(context.queue.every((item) => item.files.length <= 5));
+  assert.equal(context.sharedObservation.truncated, true);
+  assert.deepEqual(context.sharedObservation.warnings, [{ id: "unreadable-record", code: "RECORD_TOO_LARGE" }]);
+
+  const omittedId = source.ids.find((id) => !context.queue.some((item) => item.id === `cli:${id}`));
+  assert.ok(omittedId, "the queue byte limit must omit at least one known record");
+  const selected = await page.evaluate(async ({ omittedId, playlistId }) => {
+    const before = window.__serviceCalls.length;
+    const omitted = await window.__tools.get_video_download_context({ queueId: `cli:${omittedId}` });
+    const playlist = await window.__tools.get_video_download_context({ queueId: `cli:${playlistId}` });
+    return { omitted, playlist, newCalls: window.__serviceCalls.slice(before) };
+  }, { omittedId, playlistId: source.ids[0] });
+  assert.equal(selected.omitted.queueTotal, 1);
+  assert.equal(selected.omitted.queueTruncated, false);
+  assert.equal(selected.omitted.queue.length, 1);
+  assert.equal(selected.omitted.queue[0].id, `cli:${omittedId}`);
+  assert.equal(selected.omitted.queue[0].cliJobId, omittedId);
+  const playlist = selected.playlist.queue[0];
+  assert.equal(playlist.id, `cli:${source.ids[0]}`);
+  assert.equal(playlist.fileCount, 200);
+  assert.equal(playlist.files.length, 5);
+  assert.equal(playlist.filesTruncated, true);
+  assert.ok(selected.newCalls.every(({ action }) => ["list", "queue"].includes(action)));
+  assert.equal((await sharedCalls(page, "submit")).length, 0);
 });
 
 test("Chat can cancel a shared task by ID without selecting its details", async (t) => {
