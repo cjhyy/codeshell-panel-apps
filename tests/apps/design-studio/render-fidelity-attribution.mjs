@@ -1,6 +1,98 @@
 /* Test-only attribution. Raw tile receipts are immutable evidence; unique
  * receipts choose geometry coverage before looking at any measurement result. */
 export const fidelityMeasurementKey = row => JSON.stringify([row.page,row.id,row.route,row.matrix]);
+// CanvasKit stores the view transform as float32. This is representation
+// equality, not a visual error threshold (including at large coordinates).
+export const sameFloat32View = (a,b) => ["zoom","panX","panY"].every(key=>
+  Number.isFinite(a?.[key])&&Number.isFinite(b?.[key])&&Math.fround(a[key])===Math.fround(b[key]));
+
+/** An own fill which contributes exactly no color is unobservable. It is
+ * excluded from the effective denominator, never certified as a pass. */
+export function classifyUnobservableOwnFill(node,nodes,canvas) {
+  const rgb=value=>/^#[a-f\d]{6}$/iu.test(value??"")?[1,3,5].map(i=>parseInt(value.slice(i,i+2),16)):null;
+  const singlePaint=entry=>entry.fillPaints===undefined||(entry.fillPaints.length===1&&entry.fillPaints[0].type==="SOLID"&&entry.fillPaints[0].visible!==false&&(entry.fillPaints[0].opacity??1)===1&&
+    rgb(entry.fillPaints[0].color)?.every((channel,i)=>channel===rgb(entry.fill)?.[i]));
+  if(node.type==="text"||node.strokeWidth>0||node.strokeSides||node.shadow||node.shadowStack||!singlePaint(node))return null;
+  const fill=rgb(node.fill),opacity=node.opacity??1;if(!fill||!Number.isFinite(opacity)||opacity<0||opacity>1)return null;
+  const index=new Map(nodes.map(entry=>[entry.id,entry])),chain=[],seen=new Set([node.id]);
+  for(let parent=index.get(node.parentId);parent;parent=index.get(parent.parentId)){
+    if(seen.has(parent.id))return null;seen.add(parent.id);chain.unshift(parent);
+  }
+  let background=rgb(canvas.background);if(!background)return null;
+  const validBox=entry=>[entry.x,entry.y,entry.width,entry.height].every(Number.isFinite)&&entry.width>=0&&entry.height>=0;
+  if(!validBox(node)||node.rotation)return null;
+  const related=new Set(seen);
+  for(const candidate of nodes){for(let parent=index.get(candidate.parentId),visited=new Set();parent&&!visited.has(parent.id);parent=index.get(parent.parentId)){if(parent.id===node.id){related.add(candidate.id);break;}visited.add(parent.id);}}
+  // A same-color fill can still cover another sibling. Do not infer a flat
+  // backdrop when another visible paint may intersect this target.
+  for(const candidate of nodes){
+    if(related.has(candidate.id)||candidate.visible===false||candidate.opacity===0)continue;
+    const painted=rgb(candidate.fill)||candidate.type==="image"||candidate.strokeWidth>0||candidate.strokeSides||candidate.shadow||candidate.shadowStack||candidate.fillPaints?.length;
+    if(!painted)continue;if(!validBox(candidate))return null;
+    const angle=(candidate.rotation??0)*Math.PI/180,w=Math.abs(candidate.width*Math.cos(angle))+Math.abs(candidate.height*Math.sin(angle)),h=Math.abs(candidate.width*Math.sin(angle))+Math.abs(candidate.height*Math.cos(angle));
+    const left=candidate.x+(candidate.width-w)/2,top=candidate.y+(candidate.height-h)/2;
+    if(left<node.x+node.width&&left+w>node.x&&top<node.y+node.height&&top+h>node.y)return null;
+  }
+  for(const parent of chain){
+    if(!singlePaint(parent)||parent.shadow||parent.shadowStack)return null;
+    if((parent.opacity??1)!==1)return null;
+    if(["transparent","none"].includes(parent.fill))continue;
+    const paint=rgb(parent.fill),alpha=parent.opacity??1;
+    // Group opacity with differently colored descendants cannot be inferred
+    // by a single flat-background projection; keep that evidence strict.
+    if(!paint||alpha!==1)return null;
+    if(parent.rotation)return null;
+    if(!paint.every((channel,i)=>channel===background[i])){
+      if(!validBox(parent))return null;
+      const radius=parent.cornerRadius??0;
+      if(!Number.isFinite(radius)||parent.cornerRadii)return null;
+      const hx=parent.width/2,hy=parent.height/2,r=Math.max(0,Math.min(radius,hx,hy));
+      for(const x of [node.x,node.x+node.width])for(const y of [node.y,node.y+node.height]){
+        const qx=Math.abs(x-parent.x-hx)-hx+r,qy=Math.abs(y-parent.y-hy)-hy+r;
+        if(Math.hypot(Math.max(qx,0),Math.max(qy,0))+Math.min(Math.max(qx,qy),0)-r>0)return null;
+      }
+    }
+    background=paint;
+  }
+  const effective=fill.map((channel,i)=>background[i]+opacity*(channel-background[i]));
+  if(!effective.every((channel,i)=>channel===background[i]))return null;
+  return {kind:"OWN_FILL_UNOBSERVABLE",pass:false,excludedFromEffectiveDenominator:true,
+    fill,opacity,effectiveBackground:background,effectiveFill:effective,ancestorIds:chain.map(entry=>entry.id),
+    reason:"exact effective fill/background equality; no own stroke, shadow or multiple paints",colorsChanged:false};
+}
+
+/** Only an independently passing snapped GPU/HTML pair may explain an SVG
+ * precise-box diagnostic. Every measured displacement must match prediction. */
+export function classifySvgPreciseSnap({node,snappedNode,scale,measurements,tile={x:0,y:0}}) {
+  if(!snappedNode||node.rotation||!(scale>0)||!Number.isFinite(scale))return null;
+  if(!["rectangle","ellipse","frame","component","group"].includes(node.type)||node.shadow||node.shadowStack||node.strokeSides||node.fillPaints!==undefined||(node.opacity??1)!==1)return null;
+  const {gpu,html,svg}=measurements;
+  const passes=value=>value?.primaryAvailable&&!(value.geometryFailures?.length)&&!(value.gateFailures?.length)&&
+    (value.pixelQualification?value.pixelQualification.rawPass||value.pixelQualification.qualified:value.pixel?.mismatchRatio<=.001&&value.pixel?.largestCluster<=6);
+  if(!passes(gpu)||!passes(html)||!svg?.primaryAvailable||!svg.gateFailures?.length)return null;
+  const shift={left:(node.x-snappedNode.x)*scale,top:(node.y-snappedNode.y)*scale,
+    right:(node.x+node.width-snappedNode.x-snappedNode.width)*scale,bottom:(node.y+node.height-snappedNode.y-snappedNode.height)*scale};
+  if(Object.values(shift).every(value=>value===0))return null;
+  const residuals=[];
+  if(svg.strokeDeltas?.length>=16){
+    for(const delta of svg.strokeDeltas){
+      const probe=svg.strokeEdges?.probes.find(entry=>entry.edge===delta.edge&&entry.fraction===delta.fraction);
+      if(!probe||!Number.isFinite(probe.nx)||!Number.isFinite(probe.ny))return null;
+      const fx=(probe.x-(node.x-tile.x)*scale)/(node.width*scale),fy=(probe.y-(node.y-tile.y)*scale)/(node.height*scale);
+      const predicted=(shift.left+(shift.right-shift.left)*fx)*probe.nx+(shift.top+(shift.bottom-shift.top)*fy)*probe.ny;
+      residuals.push({probe:delta.fraction,field:"centroid",observed:delta.centroid,predicted,error:Math.abs(delta.centroid-predicted)},
+        {probe:delta.fraction,field:"width",observed:delta.width,predicted:0,error:Math.abs(delta.width)});
+    }
+  }else{
+    if(!svg.delta?.measurable||svg.geometryScope!=="own-fill-leaf")return null;
+    for(const edge of ["left","top","right","bottom"]){const observed=svg.delta[edge];if(!Number.isFinite(observed))return null;residuals.push({field:edge,observed,predicted:shift[edge],error:Math.abs(observed-shift[edge])});}
+    for(const [field,predicted]of [["centroidX",(shift.left+shift.right)/2],["centroidY",(shift.top+shift.bottom)/2]]){const observed=svg.delta[field];if(!Number.isFinite(observed))return null;residuals.push({field,observed,predicted,error:Math.abs(observed-predicted)});}
+  }
+  const maximumResidual=Math.max(...residuals.map(entry=>entry.error));
+  if(maximumResidual>.1)return null;
+  return {kind:"svg-precise-vs-html-snap",pass:false,maximumResidualDevicePx:maximumResidual,limitDevicePx:.1,
+    predictedEdgeDisplacementDevicePx:shift,residuals,basis:"independent GPU/HTML geometry and pixels pass; all measured SVG displacements match precise-minus-snapped box prediction"};
+}
 export function selectUniqueMeasurements(records) {
   const selected = new Map();
   for (const [recordIndex,record] of records.entries()) for (const node of record.nodes ?? []) {
@@ -20,13 +112,18 @@ export function selectUniqueMeasurements(records) {
   return [...selected.values()].sort((a,b)=>fidelityMeasurementKey(a).localeCompare(fidelityMeasurementKey(b)));
 }
 export function fidelityCounts(rows) {
-  return {unique:rows.length,full:rows.filter(row=>row.complete).length,isolation:rows.filter(row=>row.isolation).length,
+  const effective=rows.filter(row=>!row.value.observability?.excludedFromEffectiveDenominator);
+  return {unique:rows.length,effectiveDenominator:effective.length,ownFillUnobservable:rows.length-effective.length,full:rows.filter(row=>row.complete).length,isolation:rows.filter(row=>row.isolation).length,
     partial:rows.filter(row=>!row.complete).length,unavailable:rows.filter(row=>!row.value.primaryAvailable).length,
+    effectiveUnavailable:effective.filter(row=>!row.value.primaryAvailable).length,
     truefail:rows.filter(row=>row.value.gateFailures?.length).length,
+    effectiveTruefail:effective.filter(row=>row.value.gateFailures?.length).length,
     unclassifiedFail:rows.filter(row=>row.value.gateFailures?.length&&row.value.strokeClassification?.kind!=="html-pixel-snap").length,
     htmlPixelSnap:rows.filter(row=>row.value.strokeClassification?.kind==="html-pixel-snap").length,
     aaQualified:rows.filter(row=>row.value.pixelQualification?.status==="qualified-aa-pass").length,
     rawPixelFail:rows.filter(row=>row.value.pixelQualification?.rawPass===false).length,
+    rawCompositePixelFail:rows.filter(row=>row.value.rawCompositePixel?.mismatchRatio>.001||row.value.rawCompositePixel?.largestCluster>6).length,
+    svgPreciseSnap:rows.filter(row=>row.value.svgSnapClassification?.kind==="svg-precise-vs-html-snap").length,
     diagnostic:rows.filter(row=>row.value.gating==="diagnostic").length,
     diagnosticFailures:rows.filter(row=>row.value.diagnosticFailures?.length||row.value.gating==="diagnostic"&&row.value.failures?.length).length};
 }

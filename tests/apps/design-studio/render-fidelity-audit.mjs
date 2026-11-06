@@ -41,15 +41,15 @@ export function auditRotatedFillBounds(report, sourceReport = {}) {
     return {...row,value};
   });
   const counts=fidelityCounts(uniqueRecords),failures=[...(report.failures??[]).filter(failure=>failure.reasonCode),
-    ...uniqueRecords.filter(row=>row.value.gateFailures?.length).map(row=>({matrix:row.matrix,page:row.page,id:row.id,route:row.route,coverage:row.coverage,failures:row.value.gateFailures}))];
+    ...uniqueRecords.filter(row=>!row.value.observability?.excludedFromEffectiveDenominator&&row.value.gateFailures?.length).map(row=>({matrix:row.matrix,page:row.page,id:row.id,route:row.route,coverage:row.coverage,failures:row.value.gateFailures}))];
   // Copy metadata, not large duplicated tile arrays: the source receipt remains
   // the authoritative full/raw provenance and its content hash is supplied.
   const {records,isolationRecords,isolationTileRecords,rawUniqueRecords,uniqueRecords:sourceUnique,failures:sourceFailures,summary:sourceSummary,...metadata}=report;
   return {...metadata,schema:3,sourceReport,sourceSummary,uniqueRecords,failures,
     rotatedBoundsAudit:{rule:"rotated painted-fill bounds <= 0.5 device px per edge; centroid/angle thresholds unchanged; failed bounds revoke conditional AA and restore raw pixel gate",
       rawEvidenceUnmodified:true,assessed,changed:changed.length,revokedAa,changedRows:changed,unresolvedWithoutIsolation},
-    summary:{...sourceSummary,...counts,failingChecks:failures.length,unavailablePrimary:counts.unavailable,
-      diagnosticComparisons:counts.diagnostic,allMeasuredThresholdsPassed:failures.length===0&&counts.diagnostic===0&&counts.unavailable===0&&
+    summary:{...sourceSummary,...counts,failingChecks:failures.length,unavailablePrimary:counts.effectiveUnavailable,
+      diagnosticComparisons:counts.diagnostic,allMeasuredThresholdsPassed:failures.length===0&&counts.diagnostic===0&&counts.effectiveUnavailable===0&&
         !(report.unmeasured??[]).length&&!(report.partialNodes??[]).length&&!(report.fontOmissions??[]).length&&unresolvedWithoutIsolation.length===0}};
 }
 

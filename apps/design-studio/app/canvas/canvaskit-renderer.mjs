@@ -243,6 +243,7 @@ export async function createRenderer({
   background = "#ececea",
   tileCacheEnabled = true,
   deviceTextSampling = true,
+  onError,
 }) {
   if (!canvas?.ownerDocument) throw new Error("CanvasKit renderer requires a browser canvas");
   const CK = await loadCanvasKit(assetsBaseUrl, canvas.ownerDocument);
@@ -296,6 +297,11 @@ export async function createRenderer({
     nodePictureBytes = 0,
     qualityBuilds = 0,
     deviceSamplingBuilds = 0;
+  let gestureTimer = null, gestureView = null, asynchronousRenderError = null;
+  const cancelGestureSampling = () => {
+    clearTimeout(gestureTimer);
+    gestureTimer = null; gestureView = null;
+  };
   const tileCache = new Map();
   let tileBytes = 0,
     tileBuilds = 0,
@@ -340,6 +346,7 @@ export async function createRenderer({
       h = Math.ceil(height * pixelRatio);
     if (w > 8192 || h > 8192 || w * h > MAX_PIXELS)
       throw new Error("CanvasKit viewport exceeds the bounded pixel budget");
+    cancelGestureSampling();
     // CSS size can change while the physical backing size stays identical,
     // including when a new renderer reuses an already-sized HiDPI canvas.
     canvas.style.width = `${width}px`;
@@ -364,6 +371,8 @@ export async function createRenderer({
 
   async function setScene(design, { resources = new Map() } = {}) {
     assertLive();
+    cancelGestureSampling();
+    asynchronousRenderError = null;
     const started = now(),
       current = ++generation;
     if (!Array.isArray(design?.nodes) || !design.canvas)
@@ -918,12 +927,34 @@ export async function createRenderer({
     return true;
   }
 
-  function render({ pan = { x: 0, y: 0 }, zoom = 1 } = {}) {
+  function render({ pan = { x: 0, y: 0 }, zoom = 1, interactive = false } = {}) {
     assertLive();
+    if (asynchronousRenderError) throw asynchronousRenderError;
     if (!gl || gl.isContextLost())
       throw new Error("CanvasKit WebGL context lost; this frame was not rendered");
     if (![pan.x, pan.y, zoom].every(Number.isFinite) || zoom <= 0)
       throw new Error("Invalid viewport transform");
+    // Reuse the retained picture during a camera gesture. A selection/chrome
+    // repaint also keeps deferral; the last camera receives one precise device
+    // phase after 150ms idle. No second cache or raster budget is introduced.
+    const deferSampling = interactive || gestureTimer !== null;
+    if (deferSampling && (interactive || !gestureView || zoom !== gestureView.zoom ||
+        pan.x !== gestureView.pan.x || pan.y !== gestureView.pan.y)) {
+      clearTimeout(gestureTimer);
+      gestureView = { pan: { ...pan }, zoom };
+      gestureTimer = setTimeout(() => {
+        const view = gestureView;
+        gestureTimer = null; gestureView = null;
+        if (disposed || !picture) return;
+        try { render(view); }
+        catch (error) {
+          asynchronousRenderError = error;
+          // The controller retires a failed surface. Standalone callers also
+          // see the error in stats and on their next explicit render.
+          try { onError?.(error); } catch { /* Keep the original render error. */ }
+        }
+      }, 150);
+    }
     if (sceneState?.fontsChanged?.()) recordCurrentScene?.();
     // Match Skia's float32 matrix composition, including tiny residues left by
     // public wheel controls even when the effective device transform is exact.
@@ -936,7 +967,7 @@ export async function createRenderer({
       y: phase(candidate.origin.y * physicalScale + devicePan.y),
     }]));
     const qualityNeeded = zoom * dpr > 2 || hasInstances;
-    if (picture && currentDesign && sceneState.setRasterScale &&
+    if (!deferSampling && picture && currentDesign && sceneState.setRasterScale &&
         (qualityNeeded || deviceEligible || sceneState.hasDeviceSampling?.())) {
       const nodes = currentDesign.nodes,
         index = sceneIndex;
@@ -1060,6 +1091,7 @@ export async function createRenderer({
       nodePictureHits,
       textQualityBuilds: qualityBuilds,
       deviceTextSamplingBuilds: deviceSamplingBuilds,
+      asynchronousRenderError: asynchronousRenderError?.message ?? null,
       nodePictureCacheBytes: nodePictureBytes,
       nodePictureCacheBudgetBytes: MAX_NODE_PICTURE_BYTES,
       renderMode: lastMode,
@@ -1084,6 +1116,7 @@ export async function createRenderer({
   function dispose() {
     if (disposed) return;
     disposed = true;
+    cancelGestureSampling();
     generation++;
     releaseScene();
     surface?.delete();

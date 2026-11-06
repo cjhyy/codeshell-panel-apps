@@ -27,10 +27,10 @@ export function largestConnectedCluster(mask, width, height) {
   }
   return largest;
 }
-export function symmetricPixelDifference(reference, actual, { roi, channel = 24, radius = 1 } = {}) {
+export function symmetricPixelDifference(reference, actual, { roi, includePixel, channel = 24, radius = 1 } = {}) {
   if (reference.width !== actual.width || reference.height !== actual.height) throw Error("Pixel images have different dimensions");
   const box = region(reference, roi), width = box.right - box.left, height = box.bottom - box.top;
-  const mask = new Uint8Array(width * height); let mismatchPixels = 0, absoluteError = 0;
+  const mask = new Uint8Array(width * height); let mismatchPixels = 0, absoluteError = 0, pixels = 0;
   const matches = (source, target, x, y) => {
     const start = (y * source.width + x) * 4;
     for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) {
@@ -42,15 +42,29 @@ export function symmetricPixelDifference(reference, actual, { roi, channel = 24,
     return false;
   };
   for (let y = box.top; y < box.bottom; y++) for (let x = box.left; x < box.right; x++) {
+    if(includePixel&&!includePixel(x+.5,y+.5))continue;
+    pixels++;
     const i = (y * reference.width + x) * 4;
     for (let c = 0; c < 4; c++) absoluteError += Math.abs(reference.data[i + c] - actual.data[i + c]);
     if (!matches(reference, actual, x, y) || !matches(actual, reference, x, y)) {
       mask[(y - box.top) * width + x - box.left] = 1; mismatchPixels++;
     }
   }
-  return { pixels: width * height, mismatchPixels, mismatchRatio: mismatchPixels / (width * height || 1),
-    largestCluster: largestConnectedCluster(mask, width, height), meanAbsoluteChannelError: absoluteError / (width * height * 4 || 1),
-    method: "symmetric 3x3 RGBA; union mask; 8-connected components; ROI pixel denominator", channel, radius };
+  return { pixels, mismatchPixels, mismatchRatio: mismatchPixels / (pixels || 1),
+    largestCluster: largestConnectedCluster(mask, width, height), meanAbsoluteChannelError: absoluteError / (pixels * 4 || 1),
+    method: `symmetric 3x3 RGBA; union mask; 8-connected components; ${includePixel?"contour-ring":"ROI"} pixel denominator`, channel, radius };
+}
+
+/** Device-coordinate signed distance to the rectangular rounded center
+ * contour. Only the outline band is measured; descendant pixels stay raw. */
+export function strokeRingPixelRegion({bounds,strokeWidth,strokeAlign="center",cornerRadius=0}) {
+  const inset=strokeAlign==="inside"?strokeWidth/2:strokeAlign==="outside"?-strokeWidth/2:0;
+  const halfX=bounds.width/2-inset,halfY=bounds.height/2-inset;
+  if(!(halfX>0&&halfY>0&&strokeWidth>0))return null;
+  const radius=Math.max(0,Math.min(cornerRadius-inset,halfX,halfY)),cx=bounds.x+bounds.width/2,cy=bounds.y+bounds.height/2,band=strokeWidth/2+1.5;
+  return {includePixel:(x,y)=>{const qx=Math.abs(x-cx)-halfX+radius,qy=Math.abs(y-cy)-halfY+radius;
+    return Math.abs(Math.hypot(Math.max(qx,0),Math.max(qy,0))+Math.min(Math.max(qx,qy),0)-radius)<=band;},
+    metadata:{kind:"stroke-center-contour-ring",bounds,strokeWidth,strokeAlign,cornerRadius,halfBandDevicePx:band,descendantsMeasuredSeparately:true,sourcePixelsChanged:false}};
 }
 export const parseRgb = value => /^#[a-f\d]{6}$/iu.test(value ?? "") ? [1, 3, 5].map(i => parseInt(value.slice(i, i + 2), 16)) : null;
 function coverageProjection(pixel, foreground, background) {
@@ -158,15 +172,15 @@ export function deviceAaBlur(image) {
   }
   return {width:image.width,height:image.height,data};
 }
-export function shapePixelQualification(reference,actual,{roi,geometryPassed=false,containsText=false}={}) {
-  const raw=symmetricPixelDifference(reference,actual,{roi}),passes=value=>value.mismatchRatio<=.001&&value.largestCluster<=6;
+export function shapePixelQualification(reference,actual,{roi,includePixel,geometryPassed=false,containsText=false}={}) {
+  const raw=symmetricPixelDifference(reference,actual,{roi,includePixel}),passes=value=>value.mismatchRatio<=.001&&value.largestCluster<=6;
   let refined=null;
   if(geometryPassed&&!containsText){
     // Blur only a bounded ROI plus the exact two-pixel blur/search support.
     // This is byte-copy cropping, never resampling, and avoids full-page caches.
     const box=region(reference,roi),left=Math.max(0,box.left-2),top=Math.max(0,box.top-2),right=Math.min(reference.width,box.right+2),bottom=Math.min(reference.height,box.bottom+2);
     const extract=image=>{const width=right-left,height=bottom-top,data=new Uint8Array(width*height*4);for(let y=0;y<height;y++)data.set(image.data.subarray(((y+top)*image.width+left)*4,((y+top)*image.width+right)*4),y*width*4);return {width,height,data};};
-    refined=symmetricPixelDifference(deviceAaBlur(extract(reference)),deviceAaBlur(extract(actual)),{roi:{x:box.left-left,y:box.top-top,width:box.right-box.left,height:box.bottom-box.top}});
+    refined=symmetricPixelDifference(deviceAaBlur(extract(reference)),deviceAaBlur(extract(actual)),{roi:{x:box.left-left,y:box.top-top,width:box.right-box.left,height:box.bottom-box.top},includePixel:includePixel?(x,y)=>includePixel(x+left,y+top):undefined});
   }
   return {raw,rawPass:passes(raw),refined,qualified:geometryPassed&&!containsText&&passes(refined),
     geometryPassed,containsText,method:"device separable [1,2,1]/4; existing symmetric pixel thresholds",

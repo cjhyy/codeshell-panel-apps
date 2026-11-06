@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isolateFidelityDesign, selectUniqueMeasurements, classifyHtmlPixelSnap, fidelityCounts } from "./render-fidelity-attribution.mjs";
+import { isolateFidelityDesign, selectUniqueMeasurements, classifyHtmlPixelSnap, classifyUnobservableOwnFill, classifySvgPreciseSnap, sameFloat32View, fidelityCounts } from "./render-fidelity-attribution.mjs";
 import { strokeEdgeScans } from "./render-fidelity.metrics.mjs";
 const value = (failures = []) => ({ primaryAvailable: true, failures, gateFailures: failures, gating: "primary-and-secondary" });
 const record = (tileIndex, complete, measurement = value()) => ({ page: "p", matrix: "m", tileIndex, tile: {x:tileIndex,y:0,width:100,height:100}, nodes:[{id:"n",complete,clearance:tileIndex,measurements:{gpu:measurement}}] });
@@ -17,7 +17,7 @@ test("partial and unavailable retain reason codes; isolated full replaces raw on
   const rows=selectUniqueMeasurements([...raw,isolated]);assert.equal(rows.length,1);assert.equal(rows[0].coverage,"isolation-full");assert.equal(JSON.stringify(raw),before);
   assert.equal(selectUniqueMeasurements([record(0,true),{...record(1,false),isolation:{targetId:"n",version:1}}])[0].coverage,"full","partial isolation cannot override a complete raw tile");
   assert.equal(selectUniqueMeasurements([{...isolated,composite:{singleScreenshot:false}}])[0].coverage,"isolation-full-composite","derived full coverage must never be presented as a single screenshot");
-  assert.deepEqual(fidelityCounts(rows),{unique:1,full:1,isolation:1,partial:0,unavailable:0,truefail:0,unclassifiedFail:0,htmlPixelSnap:0,aaQualified:0,rawPixelFail:0,diagnostic:0,diagnosticFailures:0});
+  assert.deepEqual(fidelityCounts(rows),{unique:1,effectiveDenominator:1,ownFillUnobservable:0,full:1,isolation:1,partial:0,unavailable:0,effectiveUnavailable:0,truefail:0,effectiveTruefail:0,unclassifiedFail:0,htmlPixelSnap:0,aaQualified:0,rawPixelFail:0,rawCompositePixelFail:0,svgPreciseSnap:0,diagnostic:0,diagnosticFailures:0});
 });
 test("isolation hides siblings without removing flow; target descendants retain occlusion, clip and layout semantics", () => {
   const nodes=[{id:"a",type:"frame",fill:"#eeeeee",opacity:.6,rotation:13,clipContent:true,layout:"horizontal",strokeWidth:4,shadow:{blur:5},x:10,y:20}, {id:"target",parentId:"a",type:"frame",opacity:.4,layout:"vertical",x:20,y:30}, {id:"sibling",parentId:"a",opacity:.8,x:3,y:4}, {id:"child",parentId:"target",opacity:1}];
@@ -87,4 +87,54 @@ test("all-text isolation audit adds every requested text without changing ordina
   assert.deepEqual(fidelityIsolationPlan(rows,requested,{isolateAllText:true}),[{id:"fail-shape",reasonCodes:["RAW_COMPARISON_FAILED"]},{id:"pass-text",reasonCodes:["ALL_TEXT_ISOLATION_AUDIT"]}]);
   const missing=fidelityIsolationPlan(rows,[...requested,{id:"missing-text",type:"text"}],{isolateAllText:true});
   assert.deepEqual(missing.find(row=>row.id==="missing-text").reasonCodes,["NO_CAPTURE_INTERSECTION","ALL_TEXT_ISOLATION_AUDIT"]);
+});
+
+test("view guard accepts only finite float32 representation equality, without a visual tolerance", () => {
+  const gpu={zoom:1,panX:28.750001907348633,panY:-638},html={zoom:1,panX:28.75,panY:-638};
+  assert(!sameFloat32View(gpu,html),"the frozen R003 pair is adjacent float32 values, not equivalent");
+  assert(sameFloat32View({...gpu,panX:28.7500001},html),"ordinary double/float32 serialization roundoff is equivalent");
+  assert(!sameFloat32View(gpu,{...html,panX:28.750004}));
+  assert(!sameFloat32View(gpu,{...html,panX:NaN}));
+  assert(!sameFloat32View({...gpu,zoom:Infinity},{...html,zoom:Infinity}));
+});
+
+test("same effective own fill is unobservable, preserves all colors and cannot count as pass", () => {
+  const box={x:0,y:0,width:20,height:20},parent={...box,id:"p",type:"frame",fill:"#ffffff",opacity:1},node={...box,id:"n",type:"frame",parentId:"p",fill:"#ffffff",opacity:.5},child={...box,id:"c",type:"rectangle",parentId:"n",fill:"#000000"};
+  const nodes=[parent,node,child],canvas={background:"#ffffff"},before=JSON.stringify(nodes);
+  const classification=classifyUnobservableOwnFill(node,nodes,canvas);
+  assert.equal(classification.kind,"OWN_FILL_UNOBSERVABLE");assert.equal(classification.pass,false);assert.equal(classification.colorsChanged,false);
+  assert.equal(JSON.stringify(nodes),before,"classification never repaints a container or its descendants");
+  const counts=fidelityCounts([{complete:true,value:{primaryAvailable:false,gateFailures:["shape ink not measurable"],observability:classification}}]);
+  assert.equal(counts.truefail,1);assert.equal(counts.unavailable,1);assert.equal(counts.effectiveDenominator,0);assert.equal(counts.effectiveTruefail,0);assert.equal(counts.effectiveUnavailable,0);assert.equal(counts.ownFillUnobservable,1);
+  for(const changes of [{fill:"#fffffe"},{strokeWidth:1},{shadow:{blur:1}},{shadowStack:{layers:[]}},{fillPaints:[]},{fillPaints:[{type:"SOLID",color:"#000000"}]},{fillPaints:[{type:"SOLID",color:"#ffffff",opacity:.5}]},{fillPaints:[{type:"SOLID",color:"#ffffff"},{type:"SOLID",color:"#ffffff"}]}])
+    assert.equal(classifyUnobservableOwnFill({...node,...changes},nodes,canvas),null,JSON.stringify(changes));
+  assert(classifyUnobservableOwnFill({...node,fillPaints:[{type:"SOLID",color:"#ffffff",opacity:1}]},nodes,canvas));
+  assert.equal(classifyUnobservableOwnFill(node,[{...parent,fill:"transparent",opacity:.5},node],canvas),null,"transparent ancestor group opacity is not a flat backdrop");
+  assert.equal(classifyUnobservableOwnFill(node,[parent,{...box,id:"behind",type:"rectangle",fill:"#000000",parentId:"p"},node],canvas),null,"same-color fill can cover a painted sibling and is then observable");
+  assert.equal(classifyUnobservableOwnFill({...node,x:19,fill:"#000000"},[{...parent,fill:"#000000"},node],canvas),null,"background cannot be inferred outside its painted ancestor");
+});
+
+test("SVG precise/snap diagnostic requires independently passing GPU and predicted displacement within .1 device px", () => {
+  const node={type:"rectangle",x:10.5,y:12,width:20,height:10},snappedNode={...node,x:11},scale=2;
+  const pass={primaryAvailable:true,geometryFailures:[],gateFailures:[],pixel:{mismatchRatio:0,largestCluster:0}},svg={...pass,geometryScope:"own-fill-leaf",gateFailures:["pixel mismatch"],delta:{measurable:true,left:-1,top:0,right:-1,bottom:0,centroidX:-1,centroidY:0}};
+  const measurements={gpu:pass,html:pass,svg};
+  const result=classifySvgPreciseSnap({node,snappedNode,scale,measurements});
+  assert.equal(result.kind,"svg-precise-vs-html-snap");assert.equal(result.pass,false);assert.equal(result.maximumResidualDevicePx,0);
+  assert.equal(classifySvgPreciseSnap({node,snappedNode,scale,measurements:{...measurements,gpu:{...pass,gateFailures:["real pixel failure"]}}}),null);
+  assert.equal(classifySvgPreciseSnap({node,snappedNode,scale,measurements:{...measurements,svg:{...svg,delta:{...svg.delta,left:-.899}}}}),null);
+  assert.equal(classifySvgPreciseSnap({node,snappedNode,scale,measurements:{...measurements,svg:{...svg,primaryAvailable:false}}}),null);
+  assert.equal(classifySvgPreciseSnap({node,snappedNode:{...node},scale,measurements}),null);
+  assert.equal(classifySvgPreciseSnap({node:{...node,type:"image"},snappedNode,scale,measurements}),null,"box displacement cannot explain an image's internal pixels");
+  assert.equal(classifySvgPreciseSnap({node,snappedNode,scale,measurements:{...measurements,svg:{...svg,delta:{...svg.delta,centroidX:-.8}}}}),null,"matching bounds cannot conceal unexplained interior mass");
+});
+
+test("isolation backdrop cannot establish an unobservable own fill in the original scene", () => {
+  const box={x:0,y:0,width:20,height:20},parent={...box,id:"p",type:"frame",fill:"#ffffff",opacity:1},
+    behind={...box,id:"behind",parentId:"p",type:"rectangle",fill:"#000000",opacity:1},
+    target={...box,id:"target",parentId:"p",type:"frame",fill:"#ffffff",opacity:1};
+  const source={nodes:[parent,behind,target],pages:[],canvas:{background:"#ffffff"}},isolated=isolateFidelityDesign(source,"target").design;
+  assert.equal(isolated.nodes.find(node=>node.id==="behind").opacity,0);
+  assert(classifyUnobservableOwnFill(isolated.nodes.find(node=>node.id==="target"),isolated.nodes,source.canvas),"the isolated flat backdrop alone cannot reveal the hidden sibling");
+  assert.equal(classifyUnobservableOwnFill(source.nodes.find(node=>node.id==="target"),source.nodes,source.canvas),null,"attribution must evaluate the original source scene where the white fill covers a black sibling");
+  assert.equal(source.nodes.find(node=>node.id==="behind").opacity,1,"the original source backdrop is retained for attribution");
 });

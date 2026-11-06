@@ -596,6 +596,8 @@ function rendererResources() {
 }
 
 function syncGpuRenderer() {
+  const interactive = viewportGesture;
+  viewportGesture = false;
   const bounds = elements.stage.getBoundingClientRect();
   elements.stageWrap.dataset.grid = String(showGrid);
   const renderDesign = inlineTextEdit && rendererMode === "gpu"
@@ -622,6 +624,7 @@ function syncGpuRenderer() {
       dpr: canvasPixelRatio(bounds),
       pan,
       zoom,
+      interactive,
     },
   });
 }
@@ -1754,6 +1757,7 @@ function shouldRenderCanvasLabel(node, options = {}) {
 
 let viewportRenderFrame = 0;
 let interactionRenderFrame = 0;
+let viewportGesture = false;
 
 function scheduleViewportRender() {
   if (viewportRenderFrame) return;
@@ -2949,6 +2953,7 @@ function pointerMove(event) {
   if (interaction.kind === "pan") {
     pan.x = interaction.startPan.x + event.clientX - interaction.startClient.x;
     pan.y = interaction.startPan.y + event.clientY - interaction.startClient.y;
+    viewportGesture = true;
     scheduleViewportRender();
     return;
   }
@@ -6914,6 +6919,7 @@ elements.stage.addEventListener(
   "wheel",
   (event) => {
     event.preventDefault();
+    viewportGesture = true;
     if (event.ctrlKey || event.metaKey) {
       setZoom(zoom * Math.exp(-event.deltaY * 0.006), { x: event.clientX, y: event.clientY });
     } else {

@@ -15,6 +15,17 @@ test("self comparisons calibrate exactly zero and diagonal pixels are 8-connecte
   assert.equal(symmetricPixelDifference(image(), image()).largestCluster, 0);
   assert.equal(largestConnectedCluster(Uint8Array.from([1,0,0,0,1,0,0,0,1]),3,3),3);
 });
+
+test("frame stroke ring excludes interior child differences and retains raw composite and shifted-outline failures", async () => {
+  const {strokeRingPixelRegion,shapePixelQualification}=await import("./render-fidelity.metrics.mjs");
+  const width=64,height=64,paint=(child,shift=0)=>{const data=new Uint8Array(width*height*4).fill(255);for(let y=8;y<56;y++)for(let x=8+shift;x<56+shift;x++)if(y<10||y>=54||x<10+shift||x>=54+shift||child&&x>24&&x<40&&y>24&&y<40){const i=(y*width+x)*4;data[i]=data[i+1]=data[i+2]=0;}return{width,height,data};};
+  const reference=paint(false),actual=paint(true),ring=strokeRingPixelRegion({bounds:{x:9,y:9,width:46,height:46},strokeWidth:2});
+  const before=actual.data.slice(),raw=symmetricPixelDifference(reference,actual),stroke=symmetricPixelDifference(reference,actual,{includePixel:ring.includePixel});
+  assert(raw.mismatchPixels>6);assert.equal(stroke.mismatchPixels,0);assert(stroke.pixels<raw.pixels);assert.deepEqual(actual.data,before);
+  const moved=shapePixelQualification(reference,paint(false,2),{includePixel:ring.includePixel,geometryPassed:true});
+  assert.equal(moved.rawPass,false);assert.equal(moved.qualified,false,"ring does not hide two-device-pixel outline displacement");
+  assert.equal(ring.metadata.halfBandDevicePx,2.5);assert.equal(ring.metadata.sourcePixelsChanged,false);
+});
 test("primary ink geometry catches a one-device-pixel shift tolerated by the 3x3 secondary metric", () => {
   const reference = image(), shifted = image(0,1), delta = geometryDifference(inkGeometry(reference), inkGeometry(shifted));
   assert.equal(delta.top,1); assert.equal(delta.bottom,1); assert(Math.abs(delta.centroidY - 1) < 1e-12);

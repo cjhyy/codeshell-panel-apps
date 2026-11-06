@@ -234,6 +234,10 @@ test("actual GPU editor improves eligible system-font pixels against its unchang
       );
       await nextFrame();
     }
+    // This oracle measures static device-phase pixels after the wheel gesture,
+    // including the unchanged master control's identical idle lifecycle.
+    await new Promise(resolve => setTimeout(resolve, 160));
+    await nextFrame();
     const matrix = current();
     return {
       zoom: matrix.a / devicePixelRatio,

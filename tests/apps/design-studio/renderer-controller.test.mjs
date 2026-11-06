@@ -397,3 +397,28 @@ test("browser controller disposal retires an in-flight preparation without waiti
   const old=h.update("A");await turn();const disposed=h.controller.dispose();
   assert.equal(h.count("dispose"),1);await Promise.all([old,disposed]);assert.equal(h.count("render"),0);assert.equal(h.controller.state().reason,"disposed");
 });
+
+test("camera interaction flags reach the retained renderer and idle render errors retire only the current surface", async () => {
+  const errors = [];
+  const h = harness({ create(_instance, options, id) { errors[id] = options.onError; } });
+  await h.update("A");
+  await h.controller.render({ ...view, interactive: true, pan: { x: 20.375, y: 30.1875 } });
+  assert.equal(h.calls.filter(([method]) => method === "render").at(-1)[2].interactive, true);
+  assert.equal(h.count("setScene"), 1);
+  errors[0](new Error("idle raster budget"));
+  await turn();
+  assert.equal(h.controller.state().active, false);
+  assert.equal(h.controller.state().reason, "render: idle raster budget");
+  assert.equal(h.count("dispose"), 1);
+  await h.controller.setMode("gpu");
+  assert.equal(h.controller.state().active, true);
+  errors[0](new Error("retired timer"));
+  await turn();
+  assert.equal(h.controller.state().active, true);
+  assert.equal(h.count("dispose"), 1);
+  errors[1](new Error("current timer"));
+  await turn();
+  assert.equal(h.controller.state().reason, "render: current timer");
+  assert.equal(h.count("dispose"), 2);
+  await h.controller.dispose();
+});

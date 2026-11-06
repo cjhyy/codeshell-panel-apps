@@ -7,6 +7,9 @@ import { chromium } from "playwright";
 import { PNG } from "pngjs";
 import { cssLinearBackgroundPaints } from "../../../apps/design-studio/app/css-linear-gradient.mjs";
 import { symmetricPixelDifference, inkGeometry, geometryDifference, textGeometryFailures } from "./render-fidelity.metrics.mjs";
+import { normalizeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
+import { importFigmaJson } from "../../../apps/design-studio/app/figma-bridge.mjs";
+import { longFigmaSource } from "./fixtures/long-canvas.mjs";
 
 const root = resolve(process.env.DESIGN_CACHE_APP_DIR ?? fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
 const origin = "https://canvaskit-cache.test";
@@ -994,4 +997,148 @@ test("presentation boxes preserve the detached master opacity contract in extern
   await upload(page,design);const pixels=await draw(page,{zoom:1});
   near(pixel(pixels,45,45),[179,179,255],2);
   near(pixel(pixels,365,45),[102,102,255],2);
+});
+
+// One sequence exercises real fractional phases; timing is reported, never gated.
+// Optional personal input is read only and is never required by the offline suite.
+test("fractional viewport gestures reuse cached text until one 150ms device-phase settle", async t => {
+  const output = resolve(process.env.DESIGN_PERF_EVIDENCE ?? ".tmp/render-fidelity-r004/perf/cache");
+  await mkdir(output, { recursive: true });
+  const small = phaseFixture();
+  small.nodes.push(base("perf-master", "component", 20.125, 110.25, 300, 70, { fill: "transparent", layout: "none" }),
+    { ...small.nodes[0], id: "perf-master-text", x: 30.375, y: 126.41, width: 280, parentId: "perf-master" },
+    base("perf-instance", "instance", 360.375, 190.75, 300, 70, { componentId: "perf-master", fill: "transparent" }));
+  const cases = [{ id: "fractional-instance", design: small }];
+  if (process.env.DESIGN_PERF_REAL_FIXTURE) {
+    const portable = JSON.parse(await readFile(process.env.DESIGN_PERF_REAL_FIXTURE, "utf8"));
+    assert.equal(portable.resources.length, 0, "this bounded performance input has no external resources");
+    const document = normalizeDesignDocument(portable.document);
+    for (const page of document.pages) cases.push({ id: `real-${page.id}`, design: { ...document, activePageId: page.id, nodes: page.nodes } });
+    const original = importFigmaJson(longFigmaSource()).document;
+    assert.equal(original.nodes.length, 1208);
+    cases.push({ id: "long-1208-original", design: original });
+    // The existing 1208-layer fixture contains no text. Preserve that control,
+    // then derive a same-count text/instance stress case to make raster counts useful.
+    const stress = structuredClone(original);
+    stress.nodes = stress.nodes.map((node, i) => i && i % 4 === 0 ? { ...node, type: "text", text: `Fractional text ${i}`, fontFamily: "Arial", fontSize: 13,
+      fontWeight: 400, fontStyle: "normal", lineHeight: 1.2, textAlign: "left", fill: "#0f172a" } : node);
+    stress.nodes[1] = { ...stress.nodes[1], type: "component", fill: "transparent", layout: "none" };
+    stress.nodes[2] = { ...stress.nodes[4], id: stress.nodes[2].id, x: stress.nodes[1].x + 3.375, y: stress.nodes[1].y + 2.41, parentId: stress.nodes[1].id };
+    stress.nodes[3] = { ...stress.nodes[3], type: "instance", componentId: stress.nodes[1].id, fill: "transparent" };
+    cases.push({ id: "long-1208-text-instance-stress", design: stress });
+  }
+  const page = await harness(t, { width: 1500, height: 1000, dpr: 2, tileCacheEnabled: false, background: "#ffffff" });
+  const rows = [];
+  for (const item of cases) {
+    await upload(page, item.design);
+    const source = JSON.stringify(item.design);
+    const row = await page.evaluate(async ({ id, design }) => {
+      const view = { zoom: 1, pan: { x: 44, y: 44 } };
+      renderer.render(view);
+      const pick = () => {
+        const s = renderer.stats();
+        return { observedAtMs: performance.now(), deviceTextSamplingBuilds: s.deviceTextSamplingBuilds, rasterTextCacheMisses: s.rasterTextCacheMisses,
+          textQualityBuilds: s.textQualityBuilds, nodePictureBuilds: s.nodePictureBuilds, deviceTextNodes: s.deviceTextNodes,
+          rasterTextCacheBytes: s.rasterTextCacheBytes, rasterTextCacheBudgetBytes: s.rasterTextCacheBudgetBytes, renderedFrames: s.renderedFrames,
+          asynchronousRenderError: s.asynchronousRenderError };
+      };
+      const initial = pick(), frames = [];
+      for (let frame = 0; frame < 80; frame++) {
+        await new Promise(requestAnimationFrame);
+        if (frame < 60) { view.pan.x -= .375; view.pan.y -= .1875; }
+        else {
+          const next = view.zoom * Math.exp(-.75 * .006), ratio = next / view.zoom;
+          view.pan.x = 400 - (400 - view.pan.x) * ratio; view.pan.y = 300 - (300 - view.pan.y) * ratio;
+          view.zoom = next;
+        }
+        const started = performance.now();
+        renderer.render({ ...view, interactive: true });
+        const renderMs = performance.now() - started;
+        // A chrome/selection repaint during the same gesture must retain deferral.
+        if (frame === 25) renderer.render(view);
+        frames.push({ frame, kind: frame < 60 ? "fractional-trackpad" : "ctrl-zoom", pan: { ...view.pan }, zoom: view.zoom, renderMs, ...pick() });
+      }
+      const beforeSettle = pick();
+      await new Promise(done => setTimeout(done, 210));
+      const settled = pick();
+      renderer.render(view);
+      const afterRedraw = pick();
+      const timings = frames.map(frame => frame.renderMs).sort((a, b) => a - b);
+      return { id, layerCount: design.nodes.length, textCount: design.nodes.filter(n => n.type === "text").length,
+        instanceCount: design.nodes.filter(n => n.type === "instance").length, dpr: 2, initial, frames, beforeSettle, settled, afterRedraw,
+        finalView: view, p50RenderMs: timings[Math.floor(timings.length * .5)], p95RenderMs: timings[Math.floor(timings.length * .95)],
+        timingScope: "synchronous renderer.render CPU time including text preparation; excludes GPU completion/presentation" };
+    }, item);
+    rows.push(row);
+    await writeFile(resolve(output, "frames.json"), JSON.stringify(rows, null, 2));
+    assert.equal(JSON.stringify(item.design), source);
+  }
+  t.diagnostic(JSON.stringify(rows.map(({ id, layerCount, textCount, instanceCount, initial, beforeSettle, settled, p50RenderMs, p95RenderMs }) =>
+    ({ id, layerCount, textCount, instanceCount, gestureBuilds: beforeSettle.deviceTextSamplingBuilds - initial.deviceTextSamplingBuilds,
+      gestureRasterMisses: beforeSettle.rasterTextCacheMisses - initial.rasterTextCacheMisses,
+      settleBuilds: settled.deviceTextSamplingBuilds - beforeSettle.deviceTextSamplingBuilds, p50RenderMs, p95RenderMs }))));
+  for (const row of rows) {
+    assert.equal(row.beforeSettle.deviceTextSamplingBuilds, row.initial.deviceTextSamplingBuilds, `${row.id}: gesture must not rebuild screen-phase pictures`);
+    assert.equal(row.beforeSettle.rasterTextCacheMisses, row.initial.rasterTextCacheMisses, `${row.id}: gesture must reuse glyph images`);
+    assert.equal(row.beforeSettle.textQualityBuilds, row.initial.textQualityBuilds, `${row.id}: instances must not upgrade masters per gesture frame`);
+    assert(row.settled.deviceTextSamplingBuilds - row.beforeSettle.deviceTextSamplingBuilds <= 1, `${row.id}: at most one settle rebuild`);
+    assert.equal(row.afterRedraw.deviceTextSamplingBuilds, row.settled.deviceTextSamplingBuilds);
+    assert.equal(row.afterRedraw.rasterTextCacheMisses, row.settled.rasterTextCacheMisses);
+    assert.equal(row.settled.asynchronousRenderError, null);
+    assert(row.frames.every(frame => frame.rasterTextCacheBytes <= frame.rasterTextCacheBudgetBytes));
+    if (row.id === "fractional-instance") assert(row.settled.deviceTextNodes >= 3, "translation-instance and ordinary text regain precise static sampling");
+  }
+  // Settled Retina output must be exactly the normal static rendering at the
+  // final view, rather than permanently retaining the motion-time resampling.
+  await upload(page, small);
+  await page.evaluate(() => { renderer.render({ zoom: 1, pan: { x: .375, y: .1875 } }); renderer.render({ zoom: 1, pan: { x: 3.625, y: 2.3125 }, interactive: true }); });
+  await page.waitForTimeout(210);
+  const settledPixels = await page.screenshot({ scale: "device", path: resolve(output, "settled-retina.png") });
+  const fresh = await harness(t, { width: 1500, height: 1000, dpr: 2, tileCacheEnabled: false, background: "#ffffff" });
+  await upload(fresh, small);
+  await fresh.evaluate(() => renderer.render({ zoom: 1, pan: { x: 3.625, y: 2.3125 } }));
+  const staticPixels = await fresh.screenshot({ scale: "device", path: resolve(output, "static-retina.png") });
+  assert.equal(Buffer.compare(settledPixels, staticPixels), 0, "settled device-phase text exactly matches a fresh Retina render");
+  await page.evaluate(() => { renderer.render({ zoom: 1.01, pan: { x: 4.125, y: 3.1875 }, interactive: true }); renderer.dispose(); });
+  await page.waitForTimeout(210);
+});
+
+test("gesture idle callbacks cancel on scene/size changes and report asynchronous raster failures", async t => {
+  const page = await harness(t, { width: 700, height: 400, dpr: 2, tileCacheEnabled: false });
+  const small = phaseFixture();
+  await upload(page, small);
+  const huge = phaseFixture();
+  huge.nodes[0].x = 0; huge.nodes[0].y = 0; huge.nodes[0].parentId = "huge-master";
+  huge.nodes.push(base("huge-master", "component", 0, 0, 700, 400, { fill: "transparent", layout: "none" }),
+    base("huge-instance", "instance", 0, 0, 70000, 40000, { fill: "transparent", componentId: "huge-master" }));
+  await page.evaluate(async huge => {
+    renderer.dispose();
+    const { createRenderer } = await import("/canvas/canvaskit-renderer.mjs");
+    window.idleErrors = [];
+    window.renderer = await createRenderer({ canvas: document.querySelector("canvas"), assetsBaseUrl: "/canvas/vendor/", tileCacheEnabled: false,
+      onError: error => idleErrors.push(error.message) });
+    renderer.resize(700, 400, 2);
+    await renderer.setScene(huge);
+    renderer.render({ interactive: true });
+  }, huge);
+  await page.waitForTimeout(210);
+  const failed = await page.evaluate(() => ({ errors: idleErrors, stats: renderer.stats() }));
+  assert.equal(failed.errors.length, 1);
+  assert.match(failed.errors[0], /bounded.*raster budget/);
+  assert.equal(failed.stats.asynchronousRenderError, failed.errors[0]);
+  assert(await page.evaluate(() => { try { renderer.render(); return false; } catch { return true; } }), "the failure cannot be read as a successful next frame");
+  await page.evaluate(async ({ huge, small }) => {
+    // A new scene clears the old failure and cancels the old camera callback.
+    await renderer.setScene(huge); renderer.render({ interactive: true });
+    await renderer.setScene(small); renderer.render();
+  }, { huge, small });
+  const sceneFrames = await page.evaluate(() => renderer.stats().renderedFrames);
+  await page.waitForTimeout(210);
+  assert.equal(await page.evaluate(() => renderer.stats().renderedFrames), sceneFrames);
+  await page.evaluate(() => { renderer.render({ zoom: 1.01, interactive: true }); renderer.resize(699, 399, 2); renderer.render(); });
+  const resizedFrames = await page.evaluate(() => renderer.stats().renderedFrames);
+  await page.waitForTimeout(210);
+  assert.equal(await page.evaluate(() => renderer.stats().renderedFrames), resizedFrames);
+  assert.equal(await page.evaluate(() => idleErrors.length), 1);
+  assert.equal(await page.evaluate(() => renderer.stats().asynchronousRenderError), null);
 });
