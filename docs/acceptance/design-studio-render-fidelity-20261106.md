@@ -193,7 +193,12 @@ Each cell below is **base → candidate failing rows**.
 
 Totals: **3233 → 1724** failing rows; GPU **1623 → 1203**, SVG **1610 → 521**,
 browser/HTML **0 → 0**. All 44 browser-versus-HTML whole-image comparisons on
-each side have zero mismatch. All repeat noise is zero; route errors are zero.
+each side have zero mismatch. All repeat calibrations have zero mismatch under
+the unchanged 3x3/channel-24 metric; route errors are zero. Raw repeat pixels are
+identical except for one channel differing by 1 at (339, 466) in the 732x512
+baseline `dpr1-zoom05-web-chat-0/html` repeat (MAE
+`6.670508879781421e-7`). Its original metrics record this difference; calibrated
+mismatch and cluster are both zero, not a claim of byte-identical repeat images.
 
 There are 7192 route/node/tile/matrix measurements per side. Unavailable primary
 measurements are **232 → 234**; diagnostics number 688, with **284 → 127**
@@ -239,6 +244,11 @@ case. The final strict line run has zero omissions. Full clean reports made
 before that extra CI guard still record all required local fonts as available.
 
 ## Deferred scope
+
+Offline SVG export without supplied font metrics or a current measurement
+receipt still uses an explicitly marked central-baseline fallback for no-offset
+text. This path has not passed pixel-fidelity acceptance; the measured browser
+SVG results above do not establish parity for that fallback.
 
 Complete mixed-typography range reconciliation and inline editor offset behavior
 remain a subsequent round. This round must preserve their prior behavior and
@@ -304,6 +314,7 @@ master 0.17968587239583333, maximum channel delta 1.
 | `npm run validate` | Exit 0, `validate-clean.log` |
 | `npm test -- --suite design-studio` | Final exit 0: 1394 total, 1389 pass, 0 fail, 5 existing opt-in skips; `design-suite-final.log` |
 | `npm run validate` (delivery rerun) | Exit 0, `validate-delivery.log` |
+| `npm run validate` (resumed evidence review, documentation clarification only) | Exit 0, `validate-resume.log`; implementation and original capture bytes retained |
 | `npm run check` | Exit 0 across the complete offline catalog and source/build/package checks, `check-final.log`; no unrelated failure or suite modification |
 | `node scripts/build-design-studio-figma-plugin.mjs --check` | Exit 0, `figma-build-verify-clean.log` |
 | `node scripts/build-design-studio-html-plugin.mjs --check` | Exit 0, `html-plugin-build-verify-clean.log` |
