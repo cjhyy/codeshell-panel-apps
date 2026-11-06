@@ -118,7 +118,7 @@ async function fixture(t, document, { instrument = false, dpr = 1, perf = false 
     try {
       let body = await readFile(file);
       if (perf && url.pathname === "/canvas/canvaskit-renderer.mjs")
-        body = body.toString().replace("return { setScene, resize, render, dispose, stats };", "window.__perfStats = stats; return { setScene, resize, render, dispose, stats };");
+        body = body.toString().replace("return { setScene, resize, render, hitTest, dispose, stats };", "window.__perfStats = stats; return { setScene, resize, render, hitTest, dispose, stats };");
       if (instrument && url.pathname === "/app.js")
         body = `${body.toString()}\nconst originalRenderSceneForTest = renderScene;
 renderScene = function (...args) {

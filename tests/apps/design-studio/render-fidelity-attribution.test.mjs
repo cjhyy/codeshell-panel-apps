@@ -126,6 +126,8 @@ test("SVG precise/snap diagnostic requires independently passing GPU and predict
   const result=classifySvgPreciseSnap({node,snappedNode,scale,measurements});
   assert.equal(result.kind,"svg-precise-vs-html-snap");assert.equal(result.pass,false);assert.equal(result.maximumResidualDevicePx,0);
   assert.equal(classifySvgPreciseSnap({node,snappedNode,scale,measurements:{...measurements,gpu:{...pass,gateFailures:["real pixel failure"]}}}),null);
+  for(const route of ["gpu","html"])for(const missing of ["geometryFailures","gateFailures"])
+    assert.equal(classifySvgPreciseSnap({node,snappedNode,scale,measurements:{...measurements,[route]:{...pass,[missing]:undefined}}}),null,"missing independent geometry/gate arrays never pass");
   assert.equal(classifySvgPreciseSnap({node,snappedNode,scale,measurements:{...measurements,svg:{...svg,delta:{...svg.delta,left:.01}}}}),null);
   assert.equal(classifySvgPreciseSnap({node,snappedNode,scale,measurements:{...measurements,svg:{...svg,primaryAvailable:false}}}),null);
   assert.equal(classifySvgPreciseSnap({node,snappedNode:{...node},scale,measurements}),null);
@@ -159,10 +161,13 @@ test("SVG fractional snap accepts coverage prediction despite integer bbox quant
 
 test("frame composite attribution requires every original mismatch within actually failed descendants plus 2px", () => {
   const frame={id:"f",type:"frame",x:0,y:0,width:100,height:100},child={id:"c",parentId:"f",x:10,y:10,width:10,height:10};
-  const rows=[{page:"p",matrix:"m",route:"gpu",id:"c",tile:{x:0,y:0},scale:1,value:{gateFailures:["actual child failure"],ink:{left:10,top:10,right:19,bottom:19}}}];
+  const rows=[{page:"p",matrix:"m",route:"gpu",id:"c",tile:{x:0,y:0},scale:1,referenceInk:{left:10,top:10,right:19,bottom:19},value:{primaryAvailable:true,gateFailures:["actual child failure"],ink:{left:10,top:10,right:19,bottom:19}}}];
   const raw={mismatchRatio:.1,largestCluster:8,mismatchPixels:3,mismatchMask:{runs:[[10,8,11]]}};
-  const options={node:frame,nodes:[frame,child],rows,page:"p",matrix:"m",route:"gpu",tile:{x:0,y:0},scale:1};
-  assert.equal(attributeFrameComposite({...options,value:{rawCompositePixel:raw}}).kind,"DESCENDANT_ATTRIBUTED");
+  const options={node:frame,nodes:[frame,child],rows,page:"p",matrix:"m",route:"gpu",tile:{x:0,y:0},scale:1},passing={primaryAvailable:true,geometryFailures:[]};
+  assert.equal(attributeFrameComposite({...options,value:{...passing,rawCompositePixel:raw}}).kind,"DESCENDANT_ATTRIBUTED");
+  for(const own of [{geometryFailures:["own edge failure"]},{primaryAvailable:false},{geometryFailures:undefined}])
+    assert.equal(attributeFrameComposite({...options,value:{...passing,...own,rawCompositePixel:raw}}).kind,"FRAME_COMPOSITE_UNATTRIBUTED","a failed or missing own geometry must never be attributed away");
+  assert.equal(attributeFrameComposite({...options,rows:[{...rows[0],referenceInk:null}],value:{...passing,rawCompositePixel:raw}}).kind,"FRAME_COMPOSITE_UNATTRIBUTED","missing descendant reference ink is not replaced by actual ink");
   const escaped={...raw,mismatchMask:{runs:[[10,7,10]]}};
   const result=attributeFrameComposite({...options,value:{rawCompositePixel:escaped}});
   assert.equal(result.kind,"FRAME_COMPOSITE_UNATTRIBUTED");assert.equal(result.uncoveredMismatchPixels,1);
@@ -196,4 +201,19 @@ test("SVG coverage classifier detects injected half and one device pixel shifts 
   const classify=(dx=0,dy=0)=>{const image=raster(node,dx,dy);return classifySvgPreciseSnap({node,snappedNode,scale:1,measurements:{gpu:pass,html:pass,svg:{...pass,geometryScope:"own-fill-leaf",gateFailures:["pixel mismatch"],coverageGeometry:coverageGeometry(image),delta:geometryDifference(inkGeometry(reference),inkGeometry(image))}}});};
   assert(classify(),"a fractionally phased shape matches integrated coverage prediction");
   for(const delta of [.5,1]){assert.equal(classify(delta,0),null);assert.equal(classify(0,delta),null);}
+});
+
+test("rotated SVG diagnostic predicts precise box versus rule e pivot and rejects missing or unexplained geometry", () => {
+  const node={type:"rectangle",x:10.3,y:12.65,width:4.2,height:1.19,rotation:40},snappedNode={...node,x:10,y:13,width:4,height:1},rotationPivot={x:10+4.1875/2,y:13+1.1875/2},scale=2;
+  const angle=node.rotation*Math.PI/180,c=Math.cos(angle),s=Math.sin(angle),dx=snappedNode.x+snappedNode.width/2-rotationPivot.x,dy=snappedNode.y+snappedNode.height/2-rotationPivot.y;
+  const reference={centroidX:(rotationPivot.x+c*dx-s*dy)*scale,centroidY:(rotationPivot.y+s*dx+c*dy)*scale,mass:snappedNode.width*snappedNode.height*scale**2};
+  const actual={centroidX:(node.x+node.width/2)*scale,centroidY:(node.y+node.height/2)*scale,mass:node.width*node.height*scale**2};
+  const pass={primaryAvailable:true,geometryFailures:[],gateFailures:[],pixel:{mismatchRatio:0,largestCluster:0}};
+  const svg={...pass,geometryScope:"own-fill-leaf",gateFailures:["pixel mismatch"],delta:{measurable:true,left:0,top:0,right:0,bottom:0},geometryProbe:{kind:"rotation",measurable:true,endpointDevicePx:.05,reference,actual}};
+  const classify=entry=>classifySvgPreciseSnap({node,snappedNode,rotationPivot,scale,measurements:{gpu:pass,html:pass,svg:entry}});
+  const result=classify(svg);assert.equal(result?.kind,"svg-precise-vs-html-rotation-rule-e");assert.equal(result.pass,false);assert.ok(result.maximumResidualDevicePx<1e-12);
+  for(const delta of [.5,1])assert.equal(classify({...svg,geometryProbe:{...svg.geometryProbe,actual:{...actual,centroidX:actual.centroidX+delta}}}),null);
+  assert.equal(classify({...svg,geometryProbe:{...svg.geometryProbe,endpointDevicePx:.6}}),null,"physical endpoint geometry stays strict");
+  assert.equal(classify({...svg,geometryProbe:null}),null,"missing moments cannot become a diagnostic pass");
+  assert.equal(classifySvgPreciseSnap({node,snappedNode,scale,measurements:{gpu:pass,html:pass,svg}}),null,"missing rule e pivot is not inferred from the rounded box");
 });

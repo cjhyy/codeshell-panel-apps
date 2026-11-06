@@ -63,13 +63,48 @@ export function classifyUnobservableOwnFill(node,nodes,canvas) {
 
 /** Only an independently passing snapped GPU/HTML pair may explain an SVG
  * precise-box diagnostic. Every measured displacement must match prediction. */
-export function classifySvgPreciseSnap({node,snappedNode,scale,measurements,tile={x:0,y:0}}) {
-  if(!snappedNode||node.rotation||!(scale>0)||!Number.isFinite(scale))return null;
+export function classifySvgPreciseSnap({node,snappedNode,rotationPivot,scale,measurements,tile={x:0,y:0}}) {
+  if(!snappedNode||!(scale>0)||!Number.isFinite(scale))return null;
   if(!["rectangle","ellipse","frame","component","group"].includes(node.type)||node.shadow||node.shadowStack||node.strokeSides||node.fillPaints!==undefined||(node.opacity??1)!==1)return null;
   const {gpu,html,svg}=measurements;
-  const passes=value=>value?.primaryAvailable&&!(value.geometryFailures?.length)&&!(value.gateFailures?.length)&&
+  const passes=value=>value?.primaryAvailable===true&&Array.isArray(value.geometryFailures)&&!value.geometryFailures.length&&
+    Array.isArray(value.gateFailures)&&!value.gateFailures.length&&
     (value.pixelQualification?value.pixelQualification.rawPass||value.pixelQualification.qualified:value.pixel?.mismatchRatio<=.001&&value.pixel?.largestCluster<=6);
-  if(!passes(gpu)||!passes(html)||!svg?.primaryAvailable||!svg.gateFailures?.length)return null;
+  if(!passes(gpu)||!passes(html)||svg?.primaryAvailable!==true||!Array.isArray(svg.geometryFailures)||!Array.isArray(svg.gateFailures)||!svg.gateFailures.length)return null;
+  if(node.rotation){
+    // Precise SVG retains the authored box; HTML rule e rounds translation and
+    // local dimensions but rotates about the LU center sidecar. Predict this
+    // independently of measured residuals; no SVG-wide blanket exclusion.
+    const probe=svg.geometryProbe;
+    if(node.strokeWidth>0||!rotationPivot||![rotationPivot.x,rotationPivot.y].every(Number.isFinite)||
+      svg.geometryScope!=="own-fill-leaf"||probe?.kind!=="rotation"||!probe.measurable||
+      !Number.isFinite(probe.endpointDevicePx)||probe.endpointDevicePx>.5||!svg.delta?.measurable)return null;
+    const angle=node.rotation*Math.PI/180,c=Math.cos(angle),s=Math.sin(angle);
+    const transformedCenter=(box,pivot)=>{const dx=box.x+box.width/2-pivot.x,dy=box.y+box.height/2-pivot.y;return{x:pivot.x+c*dx-s*dy,y:pivot.y+s*dx+c*dy};};
+    const svgCenter=transformedCenter(node,{x:node.x+node.width/2,y:node.y+node.height/2}),htmlCenter=transformedCenter(snappedNode,rotationPivot);
+    const area=box=>node.type==="ellipse"?Math.PI*box.width*box.height/4:
+      box.width*box.height-(4-Math.PI)*Math.min(node.cornerRadius??0,box.width/2,box.height/2)**2;
+    const divisor=Math.min(snappedNode.width,snappedNode.height)*scale;
+    if(!(divisor>0))return null;
+    const reference=probe.reference,actual=probe.actual;if(!reference||!actual)return null;
+    const residuals=[
+      {field:"centroidX",observed:actual.centroidX-reference.centroidX,predicted:(svgCenter.x-htmlCenter.x)*scale},
+      {field:"centroidY",observed:actual.centroidY-reference.centroidY,predicted:(svgCenter.y-htmlCenter.y)*scale},
+      {field:"areaOverSnappedShortEdge",observed:(actual.mass-reference.mass)/divisor,predicted:(area(node)-area(snappedNode))*scale**2/divisor}
+    ].map(entry=>({...entry,error:Math.abs(entry.observed-entry.predicted)}));
+    if(residuals.some(entry=>![entry.observed,entry.predicted,entry.error].every(Number.isFinite)))return null;
+    const bounds=(box,center)=>{const width=Math.abs(box.width*c)+Math.abs(box.height*s),height=Math.abs(box.width*s)+Math.abs(box.height*c);return{left:center.x-width/2,right:center.x+width/2,top:center.y-height/2,bottom:center.y+height/2};};
+    const preciseBounds=bounds(node,svgCenter),snappedBounds=bounds(snappedNode,htmlCenter),shift={};
+    for(const edge of ["left","top","right","bottom"]){
+      shift[edge]=(preciseBounds[edge]-snappedBounds[edge])*scale;
+      if(!Number.isFinite(svg.delta[edge])||Math.abs(svg.delta[edge]-shift[edge])>1)return null;
+    }
+    const maximumResidual=Math.max(...residuals.map(entry=>entry.error));if(maximumResidual>.1)return null;
+    return {kind:"svg-precise-vs-html-rotation-rule-e",pass:false,maximumResidualDevicePx:maximumResidual,limitDevicePx:.1,
+      rotationPivotCss:rotationPivot,predictedEdgeDisplacementDevicePx:shift,integerBboxConsistencyLimitDevicePx:1,
+      physicalEndpointDevicePx:probe.endpointDevicePx,physicalEndpointLimitDevicePx:.5,residuals,
+      basis:"independent GPU/HTML geometry and pixels pass; precise SVG versus rounded local box at LU pivot predicts coverage centroid and normalized area; endpoint remains strict"};
+  }
   const shift={left:(node.x-snappedNode.x)*scale,top:(node.y-snappedNode.y)*scale,
     right:(node.x+node.width-snappedNode.x-snappedNode.width)*scale,bottom:(node.y+node.height-snappedNode.y-snappedNode.height)*scale};
   if(Object.values(shift).every(value=>value===0))return null;
@@ -261,9 +296,9 @@ export function attributeFrameComposite({value,node,nodes,rows,page,matrix,route
   });
   const failed=descendants.flatMap(candidate=>{
     const row=rows.find(entry=>entry.page===page&&entry.matrix===matrix&&entry.route===route&&entry.id===candidate.id);
-    if(!row?.value.gateFailures?.length||row.value.geometryScope==="visible-composite-fill-with-descendant-occlusion"||
+    if(!row?.value.primaryAvailable||!row.value.gateFailures?.length||row.value.geometryScope==="visible-composite-fill-with-descendant-occlusion"||
       row.value.gateFailures.every(reason=>reason.startsWith("frame composite contains")))return [];
-    const actualInk=row.value.ink,referenceInk=row.referenceInk??actualInk;
+    const actualInk=row.value.ink,referenceInk=row.referenceInk;
     if(!actualInk||!referenceInk||!row.tile||!(row.scale>0))return [];
     const ink={left:Math.min(actualInk.left,referenceInk.left),top:Math.min(actualInk.top,referenceInk.top),right:Math.max(actualInk.right,referenceInk.right),bottom:Math.max(actualInk.bottom,referenceInk.bottom)};
     return [{id:candidate.id,failures:[...row.value.gateFailures],basis:"union of reference/actual observed ink bboxes from chosen descendant capture",sourceTile:row.tile,sourceScale:row.scale,
@@ -275,9 +310,11 @@ export function attributeFrameComposite({value,node,nodes,rows,page,matrix,route
     totalPixels++;if(failed.some(({bounds:b})=>x+.5>=b.x&&x+.5<b.x+b.width&&y+.5>=b.y&&y+.5<b.y+b.height))coveredPixels++;
   }
   const complete=Boolean(raw.mismatchMask)&&totalPixels===raw.mismatchPixels;
-  const attributed=complete&&totalPixels>0&&coveredPixels===totalPixels;
+  const ownGeometryPassed=value.primaryAvailable===true&&Array.isArray(value.geometryFailures)&&value.geometryFailures.length===0;
+  const attributed=ownGeometryPassed&&complete&&totalPixels>0&&coveredPixels===totalPixels;
   return {kind:attributed?"DESCENDANT_ATTRIBUTED":"FRAME_COMPOSITE_UNATTRIBUTED",pass:false,
-    expansionDevicePx:2,totalMismatchPixels:raw.mismatchPixels,maskMismatchPixels:totalPixels,
+    ownGeometryPassed,expansionDevicePx:2,totalMismatchPixels:raw.mismatchPixels,maskMismatchPixels:totalPixels,
     coveredMismatchPixels:coveredPixels,uncoveredMismatchPixels:totalPixels-coveredPixels,maskComplete:complete,failedDescendants:failed,
-    reason:attributed?"all original mismatch pixels lie inside failed descendants plus 2 device px":"frame composite has unexplained mismatch pixels or no complete mismatch mask"};
+    reason:attributed?"own geometry passes and all original mismatch pixels lie inside failed descendants plus 2 device px":
+      !ownGeometryPassed?"frame own geometry failed or is unavailable":"frame composite has unexplained mismatch pixels or no complete mismatch mask"};
 }

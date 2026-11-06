@@ -5,6 +5,7 @@ import { designPageBounds, effectiveDesignNodeOpacity, isDesignNodeVisible } fro
 import { designFillPaints, gradientMatrix } from "../paint.mjs";
 import { hasDesignStroke, designStrokePaths, designStrokeOutset } from "../stroke.mjs";
 import { transformedNodeBoundsInTree } from "../geometry.mjs";
+import { hitTestCanvasNode } from "../canvas-interaction.mjs";
 import { createCanvasKitText } from "./canvaskit-text.mjs";
 import { browserPaintBoxes } from "./browser-paint-box.mjs";
 import { decodeCanvasKitImage, MAX_SVG_IMAGE_PIXELS } from "./image-decode.mjs";
@@ -152,13 +153,13 @@ function ancestors(node, index) {
   return result;
 }
 
-function rotateChain(canvas, chain, inverse = false) {
+function rotateChain(canvas, chain, inverse = false, rotationPivots = null) {
   for (const node of inverse ? [...chain].reverse() : chain) {
     if (node.rotation)
       canvas.rotate(
         (inverse ? -1 : 1) * node.rotation,
-        node.x + node.width / 2,
-        node.y + node.height / 2,
+        rotationPivots?.get(node.id)?.x ?? node.x + node.width / 2,
+        rotationPivots?.get(node.id)?.y ?? node.y + node.height / 2,
       );
   }
 }
@@ -167,14 +168,14 @@ function roundedRect(CK, node) {
   return [...rect(CK, node), ...effectiveCornerRadii(node).flatMap((radius) => [radius, radius])];
 }
 
-function clipAncestors(CK, canvas, chain) {
+function clipAncestors(CK, canvas, chain, rotationPivots) {
   const prefix = [];
   for (const node of chain) {
     prefix.push(node);
     if (!["frame", "component"].includes(node.type) || !node.clipContent) continue;
-    rotateChain(canvas, prefix);
+    rotateChain(canvas, prefix, false, rotationPivots);
     canvas.clipRRect(roundedRect(CK, node), CK.ClipOp.Intersect, true);
-    rotateChain(canvas, prefix, true);
+    rotateChain(canvas, prefix, true, rotationPivots);
   }
 }
 
@@ -286,6 +287,7 @@ export async function createRenderer({
     currentDesign = null,
     recordCurrentScene = null;
   let sceneNodes = [],
+    scenePaintBoxes = null,
     sceneIndex = new Map(),
     sceneChildren = new Map(),
     hasInstances = false,
@@ -331,6 +333,7 @@ export async function createRenderer({
     owned = [];
     sceneState?.dispose();
     sceneState = null;
+    scenePaintBoxes = null;
     sceneImages = new Map();
     sceneImageErrors = new Map(); sceneSvgPixels = new Map();
     resourceKey = null;
@@ -686,14 +689,14 @@ export async function createRenderer({
               node = { ...node, x: box.x, y: box.y, width: box.width, height: box.height };
             target.save();
             try {
-              clipAncestors(CK, target, chain);
+              clipAncestors(CK, target, chain, paintBoxes.rotationPivots);
               if (
                 chain.some(
                   (parent) => ["frame", "component"].includes(parent.type) && parent.clipContent,
                 )
               )
                 counters.clippedNodes++;
-              rotateChain(target, [...chain, node]);
+              rotateChain(target, [...chain, node], false, paintBoxes.rotationPivots);
               if ([...chain, node].some((item) => item.rotation)) counters.rotatedNodes++;
               if(visibleShadowLayers(node).length){counters.shadowNodes++;if(visibleShadowLayers(node).some(layer=>layer.blur>0))unsupportedNode(node,"css-shadow-raster-kernel","CSS 几何阴影层保持可编辑；模糊内核的严格像素一致性尚未验证");}
               const opacity = effectiveDesignNodeOpacity({ nodes: pageNodes }, node, nodeIndex);
@@ -788,6 +791,7 @@ export async function createRenderer({
       nodePictures = nextNodePictures;
       currentDesign = design;
       sceneNodes = pageNodes;
+      scenePaintBoxes = paintBoxes;
       sceneIndex = index;
       sceneChildren = children;
       hasInstances = design.nodes.some((node) => node.type === "instance");
@@ -1125,5 +1129,11 @@ export async function createRenderer({
     context.delete();
     CK.deleteContext(contextHandle);
   }
-  return { setScene, resize, render, dispose, stats };
+  function hitTest(point) {
+    if (disposed || !currentDesign || !scenePaintBoxes) return null;
+    const nodes = currentDesign.nodes.map(node => scenePaintBoxes.nodes.get(node.id) ?? node);
+    const index = new Map([...sceneIndex].map(([id, node]) => [id, scenePaintBoxes.nodes.get(id) ?? node]));
+    return hitTestCanvasNode({ ...currentDesign, nodes }, point, index, scenePaintBoxes.rotationPivots)?.id ?? null;
+  }
+  return { setScene, resize, render, hitTest, dispose, stats };
 }

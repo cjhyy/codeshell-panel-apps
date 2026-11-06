@@ -1,6 +1,8 @@
 /* Presentation-only Blink geometry. Replay the supported CSS subset in integer
- * LayoutUnits before snapping all four paint edges. Saved layout, hit testing,
- * SVG and text origins remain owned by their existing paths. */
+ * LayoutUnits before snapping paint edges. Rotated leaves instead snap the
+ * translation/local dimensions, retaining a LayoutUnit transform-origin.
+ * All coordinates and pivots are CSS pixels, before device/view scaling.
+ * Saved layout, SVG and text origins remain owned by their existing paths. */
 const paintTypes = new Set(["rectangle", "frame", "component", "ellipse", "image"]);
 const containerTypes = new Set(["frame", "group", "component"]);
 const unit = value => Math.trunc(value * 64);
@@ -21,15 +23,17 @@ export function browserPaintBoxes(sourceNodes) {
     if (node.visible !== false && node.layoutPositioning !== "absolute") children.get(node.parentId).push(node);
   }
   const referenced = new Set(sourceNodes.filter(node => node.type === "instance").map(node => node.componentId));
+  const parents = new Set(sourceNodes.map(node => node.parentId));
   const phases = new Map(), dimensions = new Map(), visiting = new Set(), sizingNow = new Set();
-  const nodes = new Map(), fallbackReasons = new Map();
+  const nodes = new Map(), fallbackReasons = new Map(), rotationPivots = new Map();
   const stats = { input: sourceNodes.length, eligible: 0, changed: 0, fallback: 0, reasons: {} };
   const ownReason = node => {
     if (node.type === "instance") return "instance";
     if (referenced.has(node.id)) return "referenced-component";
     if (!paintTypes.has(node.type) && !["group", "text"].includes(node.type)) return "unsupported-type";
     if (![node.x, node.y, node.width, node.height].every(Number.isFinite) || node.width < 0 || node.height < 0) return "invalid-box";
-    if (node.rotation) return "rotated";
+    if (node.rotation && parents.has(node.id)) return "rotated-container";
+    if (node.rotation && !paintTypes.has(node.type)) return "rotated";
     if (node.strokeSides !== undefined) return "stroke-sides";
     if (node.strokeAlign === "inside" && node.strokeWidth > 0 && !["transparent", "none"].includes(node.stroke)) return "inside-border";
     if ([node.constraintHorizontal, node.constraintVertical].some(value => value !== undefined && value !== "start")) return "constraint";
@@ -132,11 +136,13 @@ export function browserPaintBoxes(sourceNodes) {
     }
     stats.eligible++;
     const x = Math.round(box.x / 64), y = Math.round(box.y / 64);
-    const width = Math.round((box.x + box.width) / 64) - x, height = Math.round((box.y + box.height) / 64) - y;
+    const width = node.rotation ? Math.round(box.width / 64) : Math.round((box.x + box.width) / 64) - x;
+    const height = node.rotation ? Math.round(box.height / 64) : Math.round((box.y + box.height) / 64) - y;
+    if (node.rotation) rotationPivots.set(node.id, { x: x + box.width / 128, y: y + box.height / 128 });
     const changed = x !== node.x || y !== node.y || width !== node.width || height !== node.height;
     nodes.set(node.id, changed ? { ...node, x, y, width, height } : node);
     if (changed) stats.changed++;
   }
   const layoutBoxes = new Map([...phases].map(([id, box]) => [id, box.reason ? box : Object.fromEntries(Object.entries(box).map(([key, value]) => [key, value / 64]))]));
-  return { nodes, stats, fallbackReasons, layoutBoxes };
+  return { nodes, stats, fallbackReasons, layoutBoxes, rotationPivots };
 }

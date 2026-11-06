@@ -8,6 +8,8 @@ import { renderFidelityFixture, fidelityNode } from "./render-fidelity.fixture.m
 import { inkGeometry, geometryDifference, textGeometryFailures, symmetricPixelDifference } from "./render-fidelity.metrics.mjs";
 import { normalizeDesignDocument, serializeDesignDocument, exportDesignSvg } from "../../../apps/design-studio/app/document.mjs";
 import { renderDesignFrontendPage } from "../../../apps/design-studio/app/frontend-export.mjs";
+import { canvasKitResourceTextRasterEligible } from "../../../apps/design-studio/app/canvas/canvaskit-text.mjs";
+import { textRangeSourceSignature } from "../../../apps/design-studio/app/text-ranges.mjs";
 
 const ids = new Set(["finite-offset", "finite-offset-negative", "finite-offset-native"]);
 const nodes = renderFidelityFixture().pages.find(page => page.id === "variants").children.filter(node => ids.has(node.id)).map(({fontRef, ...node}) => node);
@@ -111,4 +113,57 @@ test("Node HTML keeps finite origin diagnostic while SVG and saved coordinates r
   assert(html.includes("top:403px"));
   assert.equal(serializeDesignDocument(design),before);
   assert.equal(exportDesignSvg(design),svg);
+});
+
+test("finite multiline DOM baselines cover plain fill and link ranges without widening GPU admission", async t => {
+  const output=resolve(process.env.DESIGN_FINITE_HTML_EVIDENCE ?? ".tmp/render-fidelity-r005/finite");
+  await mkdir(output,{recursive:true});
+  const root=resolve("apps/design-studio/app"),origin="https://finite-multiline.test",browser=await chromium.launch({headless:true});
+  t.after(()=>browser.close());
+  const rows=[];
+  for(const dpr of [1,2]) {
+    const page=await browser.newPage({viewport:{width:640,height:470},deviceScaleFactor:dpr});
+    await page.route("**/*",async route=>{
+      const url=new URL(route.request().url()),path=resolve(root,`.${url.pathname}`);
+      if(url.origin!==origin)return route.abort();
+      if(url.pathname==="/")return route.fulfill({contentType:"text/html",body:"<!doctype html><style>body{margin:0}</style><body></body>"});
+      if(!path.startsWith(root+sep)||!path.endsWith(".mjs"))return route.abort();
+      return route.fulfill({contentType:"text/javascript",body:await readFile(path)});
+    });
+    await page.goto(origin);
+    for(const zoom of [1,2])for(const phase of [.499,.5])for(const kind of ["plain","fill","link"]) {
+      const text=Array(6).fill("Hgx").join("\n"),node=fidelityNode("finite-multiline","text",20,20+phase,240,160,
+        {text,fontFamily:"Arial",fontSize:13,fontWeight:400,lineHeight:1.6,textAlign:"left",fill:"#111111",layoutBaselineOffset:-3});
+      if(kind!=="plain")node.textRanges={version:1,sourceSignature:textRangeSourceSignature(text),ranges:[{start:0,end:3,...(kind==="fill"?{fill:"#123456"}:{href:"https://example.invalid/"})}]};
+      assert.equal(canvasKitResourceTextRasterEligible({...node,fontRef:"arial",layoutBaselineOffset:undefined}),kind==="plain",
+        "fill/link ranges retain the existing GPU native exclusion");
+      const result=await page.evaluate(async({node,zoom})=>{
+        const {normalizeDesignDocument,serializeDesignDocument}=await import("/document.mjs");
+        const {renderDesignFrontendPage,designFrontendCss}=await import("/frontend-export.mjs");
+        const {textFiniteBaselineY}=await import("/text-line-box.mjs");
+        const design=normalizeDesignDocument({format:"codeshell.design",version:3,name:"Finite multiline",canvas:{width:640,height:470,background:"#ffffff"},tokens:{colors:[]},resources:[],activePageId:"page",pages:[{id:"page",name:"Page",children:[node]}]}),before=serializeDesignDocument(design);
+        document.querySelector("#export-style")?.remove();
+        const style=document.createElement("style");style.id="export-style";style.textContent=designFrontendCss(design);document.head.append(style);
+        document.body.style.transform=`scale(${zoom})`;document.body.style.transformOrigin="0 0";document.body.innerHTML=renderDesignFrontendPage(design);
+        const element=document.querySelector('[data-codeshell-source-id="finite-multiline"]'),ctx=document.createElement("canvas").getContext("2d");
+        ctx.font="400 13px Arial";ctx.textBaseline="hanging";const h=ctx.measureText("Hg");ctx.textBaseline="alphabetic";const a=ctx.measureText("Hg");
+        const metrics={ascent:a.fontBoundingBoxAscent,descent:a.fontBoundingBoxDescent,hangingToAlphabetic:a.actualBoundingBoxAscent-h.actualBoundingBoxAscent};
+        const markers=[];
+        for(let line=5;line>=0;line--){
+          const walker=document.createTreeWalker(element,NodeFilter.SHOW_TEXT);let textNode,offset=line*4+3;
+          while((textNode=walker.nextNode())&&offset>textNode.length)offset-=textNode.length;
+          if(!textNode)throw Error("Missing multiline source");
+          const range=document.createRange();range.setStart(textNode,offset);range.collapse(true);
+          const marker=document.createElement("span");marker.style.cssText="display:inline-block;width:0;height:0";range.insertNode(marker);markers.unshift(marker);
+        }
+        const baselines=markers.map((marker,index)=>({index,dom:marker.getBoundingClientRect().top/zoom,paint:textFiniteBaselineY(node,index,metrics)}));
+        if(serializeDesignDocument(design)!==before)throw Error("Multiline rendering mutated saved geometry");
+        return {metrics,baselines};
+      },{node,zoom});
+      for(const line of result.baselines){assert.equal(line.paint,Math.round(line.dom),JSON.stringify({dpr,zoom,phase,kind,...line,metrics:result.metrics}));rows.push({dpr,zoom,phase,kind,...line});}
+    }
+    await page.close();
+  }
+  assert.equal(rows.length,144);
+  await writeFile(resolve(output,"multiline-range-baselines.json"),JSON.stringify({samples:rows.length,passed:true,scope:"DOM baseline transport only; GPU finite fill/link ranges remain excluded; no multiline raster parity claim",rows},null,2));
 });

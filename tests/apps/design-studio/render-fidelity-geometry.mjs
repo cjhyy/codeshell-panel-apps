@@ -59,14 +59,24 @@ export function rotationGeometry(image, options) {
 }
 
 const axisAngleDifference = (a, b) => ((a - b + 270) % 180) - 90;
+// L is the HTML paint box's snapped local long edge in CSS px. Scale already
+// includes zoom and DPR; moments and the resulting endpoint are device px.
+export function rotationEndpointDisplacement(angleDegrees,{localLongEdgeCss,scale}={}) {
+  if(!(localLongEdgeCss>0)||!(scale>0)||![angleDegrees,localLongEdgeCss,scale].every(Number.isFinite))return NaN;
+  return localLongEdgeCss*scale/2*Math.abs(Math.sin(angleDegrees*Math.PI/180));
+}
 export function compareRotationGeometry(reference, actual, options) {
   const expected = rotationGeometry(reference, options), observed = rotationGeometry(actual, options);
   if (!expected || !observed) return { measurable: false, failures: ["rotation probe has no stable principal axis"] };
   const centroid = Math.hypot(observed.centroidX - expected.centroidX, observed.centroidY - expected.centroidY);
   const angleDegrees = axisAngleDifference(observed.angleDegrees, expected.angleDegrees);
-  return { measurable: true, reference: expected, actual: observed, centroid, angleDegrees,
+  const endpointDevicePx=rotationEndpointDisplacement(angleDegrees,options);
+  if(!Number.isFinite(endpointDevicePx))return {measurable:false,reference:expected,actual:observed,centroid,angleDegrees,
+    failures:["rotation HTML snapped local long edge or physical scale unavailable"]};
+  return { measurable: true, reference: expected, actual: observed, centroid, angleDegrees,endpointDevicePx,
+    localLongEdgeCss:options.localLongEdgeCss,scale:options.scale,endpointLimitDevicePx:.5,
     failures: [...(centroid > .5 ? [`rotation centroid ${centroid} > 0.5`] : []),
-      ...(Math.abs(angleDegrees) > .5 ? [`rotation angle ${angleDegrees} > 0.5deg`] : [])] };
+      ...(endpointDevicePx > .5 ? [`rotation endpoint ${endpointDevicePx} > 0.5`] : [])] };
 }
 
 export function compareChildEdges(reference, actual, options) {
@@ -155,7 +165,8 @@ export function compareGeometryProbe(reference, actual, { node, tile = { x: 0, y
     result = compareCornerRadius(reference, actual, { bounds: expanded(outset), nominalRadius: node.cornerRadius * scale + outset,
       foreground: rgb(node.strokeWidth > 0 ? node.stroke : node.fill) });
   } else if (kind === "rotation") {
-    result = compareRotationGeometry(reference, actual, { roi: expanded(Math.max(node.width, node.height) * scale * .35), foreground: rgb(node.fill) });
+    result = compareRotationGeometry(reference, actual, { roi: expanded(Math.max(node.width, node.height) * scale * .35), foreground: rgb(node.fill),
+      localLongEdgeCss:Math.max(Math.round(Math.trunc(node.width*64)/64),Math.round(Math.trunc(node.height*64)/64)),scale });
   } else if (kind === "child") {
     result = compareChildEdges(reference, actual, { roi: expanded(4 * scale), foreground: rgb(node.fill) });
   } else if (kind === "shadow" || kind === "shadow-stack") {

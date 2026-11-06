@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { compareChildEdges, compareCornerRadius, compareRotationGeometry, compareShadowGeometry, cornerRadiusGeometry } from "./render-fidelity-geometry.mjs";
+import { compareChildEdges, compareCornerRadius, compareRotationGeometry, compareShadowGeometry, cornerRadiusGeometry, rotationEndpointDisplacement } from "./render-fidelity-geometry.mjs";
 
 function rasterize(inside, { color = [0, 0, 0], opacity = 1 } = {}) {
   const width = 100, height = 100, data = new Uint8Array(width * height * 4).fill(255), samples = 8;
@@ -22,8 +22,8 @@ const round = (radius = 14, dx = 0, dy = 0) => rasterize((x, y) => {
   return Math.hypot(Math.max(0, radius - xx, xx - (60 - radius)), Math.max(0, radius - yy, yy - (50 - radius))) <= radius;
 });
 
-test("rotation covariance detects one-pixel displacement and one-degree defects", () => {
-  const reference = rotated(), options = { foreground: [34, 102, 204] };
+test("rotation covariance detects one-device-pixel displacement and physical endpoint defects", () => {
+  const reference = rotated(), options = { foreground: [34, 102, 204], localLongEdgeCss:60, scale:1 };
   assert.deepEqual(compareRotationGeometry(reference, reference, options).failures, []);
   for (const shifted of [rotated(15, 1), rotated(15, 0, 2)]) {
     const compared = compareRotationGeometry(reference, shifted, options);
@@ -31,7 +31,20 @@ test("rotation covariance detects one-pixel displacement and one-degree defects"
   }
   const angle = compareRotationGeometry(reference, rotated(16), options);
   assert.ok(angle.angleDegrees > .9 && angle.angleDegrees < 1.1);
-  assert.ok(angle.failures.some(message => message.startsWith("rotation angle")));
+  assert.ok(angle.failures.some(message => message.startsWith("rotation endpoint")));
+});
+
+test("endpoint metric keeps raw short-bar angle while rejecting 30x1 CSS bar +2deg at DPR2", () => {
+  assert.ok(Math.abs(rotationEndpointDisplacement(2,{localLongEdgeCss:30,scale:2})-1.046984901075029)<1e-12);
+  assert.ok(rotationEndpointDisplacement(1.817906,{localLongEdgeCss:4,scale:2})<.127);
+  const bar=(degrees,dx=0)=>rasterize((x,y)=>{const angle=degrees*Math.PI/180,px=x-50-dx,py=y-50;return Math.abs(px*Math.cos(angle)+py*Math.sin(angle))<30&&Math.abs(-px*Math.sin(angle)+py*Math.cos(angle))<1;});
+  const options={localLongEdgeCss:30,scale:2},reference=bar(15),angle=compareRotationGeometry(reference,bar(17),options);
+  assert.ok(Math.abs(angle.angleDegrees-2)<.1,JSON.stringify(angle));
+  assert.ok(angle.endpointDevicePx>1&&angle.failures.some(message=>message.startsWith("rotation endpoint")),JSON.stringify(angle));
+  const shifted=compareRotationGeometry(reference,bar(15,1),options);
+  assert.ok(shifted.centroid>.99&&shifted.failures.some(message=>message.startsWith("rotation centroid")),JSON.stringify(shifted));
+  const missing=compareRotationGeometry(reference,reference);
+  assert.equal(missing.measurable,false,"a missing HTML snapped long edge cannot become a geometry pass");
 });
 
 test("radius fit is calibrated against a synthetic circle and detects 1px/2px radius errors", () => {

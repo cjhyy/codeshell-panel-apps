@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { browserPaintBoxes } from "../../../apps/design-studio/app/canvas/browser-paint-box.mjs";
+import { pointToNodeSpace, pointFromNodeSpace, transformedNodeCornersInTree } from "../../../apps/design-studio/app/geometry.mjs";
+import { hitTestCanvasNode } from "../../../apps/design-studio/app/canvas-interaction.mjs";
 
 const shape = (id, extra = {}) => ({ id, type: "rectangle", x: 20.25, y: 25.25, width: 14.4, height: 9.4,
   rotation: 0, cornerRadius: 2.4, stroke: "transparent", strokeWidth: 0, ...extra });
@@ -43,7 +45,7 @@ test("absolute children may retain a fixed positioned layout parent's CSS origin
 
 test("unsafe constraints, transforms, borders and instance ancestry retain original references with reasons", () => {
   const cases = [
-    ["rotated", { rotation: 1 }, "rotated"], ["sides", { strokeSides: [] }, "stroke-sides"],
+    ["rotated", { type: "frame", rotation: 1 }, "rotated-container"], ["sides", { strokeSides: [] }, "stroke-sides"],
     ["inside", { strokeAlign: "inside", stroke: "#111111", strokeWidth: 1 }, "inside-border"],
     ["fill", { layoutSizingHorizontal: "fill" }, "dynamic-size"],
     ["center", { constraintHorizontal: "center" }, "constraint"],
@@ -96,7 +98,7 @@ test("per-item LayoutUnit replay exactly matches all 36 frozen Blink flex boxes"
 
 test("unsupported flex semantics have explicit fallback and never rewrite saved geometry", () => {
   for (const [extra, reason] of [[{ layout: "grid" }, "grid"], [{ layoutWrap: "wrap" }, "wrap"],
-    [{ justifyContent: "space-between" }, "justify-content"], [{ rotation: 2 }, "rotated"],
+    [{ justifyContent: "space-between" }, "justify-content"], [{ rotation: 2 }, "rotated-container"],
     [{ layoutAlignSelf: "stretch" }, "self-alignment-unverified"]]) {
     const parent = shape("parent", { type: "frame", layout: "horizontal", ...extra });
     const child = shape("child", { parentId: "parent" });
@@ -110,6 +112,58 @@ test("unsupported flex semantics have explicit fallback and never rewrite saved 
   const result = browserPaintBoxes([parent, fill]);
   assert.equal(result.fallbackReasons.get(fill.id), "main-axis-flex-grow");
   assert.equal(result.nodes.get(fill.id), fill);
+});
+
+test("rotated leaves round translation and local dimensions but retain the LayoutUnit center pivot", () => {
+  const source = [shape("rotation", { x: 20.5, y: 25.3, width: 4.2, height: 1.19, rotation: -40 })];
+  const before = JSON.stringify(source), result = browserPaintBoxes(source), node = result.nodes.get("rotation");
+  assert.deepEqual([node.x, node.y, node.width, node.height], [21, 25, 4, 1]);
+  assert.deepEqual(result.layoutBoxes.get("rotation"), { x: 20.5, y: 25.296875, width: 4.1875, height: 1.1875 });
+  assert.deepEqual(result.rotationPivots.get("rotation"), { x: 23.09375, y: 25.59375 });
+  assert.equal(node.cornerRadius, source[0].cornerRadius);
+  assert.equal(JSON.stringify(source), before, "presentation geometry must never write author geometry");
+});
+
+test("rotation replay excludes leaf text, children, instances, referenced components and rotated ancestry", () => {
+  const source = [
+    shape("leaf", { rotation: 40 }),
+    shape("parent", { type: "frame", rotation: 40 }),
+    shape("nested", { parentId: "parent", rotation: -40 }),
+    shape("non-container", { rotation: 40 }),
+    shape("child", { parentId: "non-container" }),
+    shape("master", { type: "component" }),
+    shape("master-leaf", { parentId: "master", rotation: 40 }),
+    shape("instance", { type: "instance", componentId: "master", rotation: 40 }),
+    shape("text", { type: "text", rotation: 40 }),
+  ];
+  const result = browserPaintBoxes(source);
+  assert.equal(result.rotationPivots.size, 1);
+  assert(result.rotationPivots.has("leaf"));
+  for (const id of ["parent", "nested", "non-container", "child", "master", "master-leaf", "instance", "text"])
+    assert.equal(result.nodes.get(id), source.find(node => node.id === id), id);
+  assert.equal(result.fallbackReasons.get("parent"), "rotated-container");
+  assert.equal(result.fallbackReasons.get("nested"), "ancestor:rotated-container");
+  assert.equal(result.fallbackReasons.get("non-container"), "rotated-container");
+  assert.equal(result.fallbackReasons.get("master-leaf"), "ancestor:referenced-component");
+  assert.equal(result.fallbackReasons.get("text"), "rotated");
+});
+
+test("presentation rotation uses one pivot for forward/inverse corners and clipped hit testing", () => {
+  const source = [shape("clip", { type: "frame", x: 20.5, y: 20.5, width: 2, height: 8, cornerRadius: 0, clipContent: true, visible: true, opacity: 1 }),
+    shape("leaf", { parentId: "clip", x: 20.8, y: 25.3, width: 4.2, height: 1.19, rotation: -40, cornerRadius: 0, visible: true, opacity: 1 })];
+  const before = JSON.stringify(source), paint = browserPaintBoxes(source), nodes = [...paint.nodes.values()], leaf = paint.nodes.get("leaf");
+  const index = new Map(nodes.map(node => [node.id, node])), local = { x: leaf.x + .05, y: leaf.y + .05 };
+  const world = pointFromNodeSpace(nodes, leaf, local, index, paint.rotationPivots);
+  const inverse = pointToNodeSpace(nodes, leaf, world, index, paint.rotationPivots);
+  assert(Math.hypot(inverse.x - local.x, inverse.y - local.y) < 1e-12);
+  assert.equal(hitTestCanvasNode({ nodes }, world, index, paint.rotationPivots)?.id, "leaf");
+  assert.notEqual(hitTestCanvasNode({ nodes }, world, index)?.id, "leaf", "paint-box center is the wrong inverse");
+  const corners = transformedNodeCornersInTree(nodes, leaf, index, paint.rotationPivots);
+  assert.deepEqual(corners[0], pointFromNodeSpace(nodes, leaf, { x: leaf.x, y: leaf.y }, index, paint.rotationPivots));
+  const outsideClip = pointFromNodeSpace(nodes, leaf, { x: leaf.x + leaf.width - .05, y: leaf.y + .5 }, index, paint.rotationPivots);
+  assert(outsideClip.x > paint.nodes.get("clip").x + paint.nodes.get("clip").width);
+  assert.notEqual(hitTestCanvasNode({ nodes }, outsideClip, index, paint.rotationPivots)?.id, "leaf");
+  assert.equal(JSON.stringify(source), before);
 });
 
 

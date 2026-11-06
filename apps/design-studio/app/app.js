@@ -1854,7 +1854,8 @@ function canvasHit(point) {
   const viewDesign = interactionDesign();
   const label = hitTestCanvasLabel(viewDesign, point, zoom, selectedIds, elements.stage.getContext("2d"));
   if (label) return nodeById(label.id);
-  return rendererMode === "browser" ? nodeById(browserRenderer.hitTest(point)) : hitTestCanvasNode(design, point);
+  return rendererMode === "browser" ? nodeById(browserRenderer.hitTest(point))
+    : gpuRenderer.state().active ? nodeById(gpuRenderer.hitTest(point)) : hitTestCanvasNode(design, point);
 }
 
 function renderSelectionSize(nodes, allNodes = design.nodes) {

@@ -83,7 +83,7 @@ async function editor(browser, item, data) {
       if(url.pathname==="/canvas/canvaskit-renderer.mjs") {
         // Hooks exist only in these intercepted test bytes, never production
         // files. Isolation passes the same cloned scene into both real editors.
-        const marker="return { setScene, resize, render, dispose, stats };";
+        const marker="return { setScene, resize, render, hitTest, dispose, stats };";
         const entry="async function setScene(design, { resources = new Map() } = {}) {";
         assert(body.toString().includes(marker)&&body.toString().includes(entry),"GPU test hooks remain anchored");
         body=Buffer.from(body.toString().replace(entry,`let fidelityResources; ${entry} fidelityResources = resources;`).replace(marker,`globalThis.__fidelityGpuStats = stats; globalThis.__fidelityGpuScene = async design => setScene(design,{resources:fidelityResources}); globalThis.__fidelityGpuRender = render; ${marker}`));
@@ -180,7 +180,8 @@ function compareNodes(images,nodes,tile,item,canvas,real,{targetId,sourceNodes=n
     if(targetId&&node.id!==targetId)continue;
     if(!targetId&&targetIds.size&&!targetIds.has(node.id))continue;
     if(!isRequested(node,nodes)&&!["radius","rotation","shadow","shadow-stack","opacity","button-edge","selector-edge","clipped-child"].includes(node.id))continue;
-    const fillLeaf=isFillShape(node);
+    const fillLeaf=isFillShape(node),layoutBox=paintBoxes.layoutBoxes.get(node.id),rotationLocalLongEdgeCss=Math.max(
+      Math.round(layoutBox?.width??Math.trunc(node.width*64)/64),Math.round(layoutBox?.height??Math.trunc(node.height*64)/64));
     const angle=(node.rotation??0)*Math.PI/180,inset=Math.max(8,(Math.abs(node.width*Math.cos(angle))+Math.abs(node.height*Math.sin(angle))-node.width)/2+4,(Math.abs(node.width*Math.sin(angle))+Math.abs(node.height*Math.cos(angle))-node.height)/2+4),clearance=Math.min(node.x-inset-tile.x,node.y-inset-tile.y,tile.x+tile.width-node.x-node.width-inset,tile.y+tile.height-node.y-node.height-inset),complete=clearance>=-1e-6;
     if(node.x+node.width<=tile.x||node.x>=tile.x+tile.width||node.y+node.height<=tile.y||node.y>=tile.y+tile.height)continue;
     const left=Math.max(node.x-inset,tile.x),top=Math.max(node.y-inset,tile.y),right=Math.min(node.x+node.width+inset,tile.x+tile.width),bottom=Math.min(node.y+node.height+inset,tile.y+tile.height);
@@ -206,7 +207,7 @@ function compareNodes(images,nodes,tile,item,canvas,real,{targetId,sourceNodes=n
       if(ring||compositeContainer)value.rawCompositePixel=rawCompositePixel;
       if(ring)value.pixelRegion=ring.metadata;
       value.geometryProbe=["shadow","shadow-stack"].includes(node.id)&&!node.shadow&&!node.shadowStack?null:compareGeometryProbe(images.html,image,{node,tile,scale});
-      if(fillLeaf&&node.rotation)value.geometryProbe={kind:"rotation",...compareRotationGeometry(images.html,image,{roi,foreground,background})};
+      if(fillLeaf&&node.rotation)value.geometryProbe={kind:"rotation",...compareRotationGeometry(images.html,image,{roi,foreground,background,localLongEdgeCss:rotationLocalLongEdgeCss,scale})};
       if(node.strokeWidth>0&&node.type!=="text"&&!node.rotation){
         value.strokeEdges=strokeContourScans(image,{shape:node.type,bounds:{x:(node.x-tile.x)*scale,y:(node.y-tile.y)*scale,width:node.width*scale,height:node.height*scale},strokeWidth:node.strokeWidth*scale,strokeAlign:node.strokeAlign,cornerRadius:(node.cornerRadius??0)*scale,
           foreground:parseRgb(node.stroke)??[0,0,0],background:parseRgb(node.fill)??background??[255,255,255],outsideBackground:background??[255,255,255]});
@@ -219,7 +220,7 @@ function compareNodes(images,nodes,tile,item,canvas,real,{targetId,sourceNodes=n
       if(fillLeaf&&node.rotation){
         value.rawWideRotationGeometry=value.geometryProbe;
         value.rotationMomentRoi=rotationMomentRoi({node,tile,scale,referenceInk:measurements.html.ink,actualInk:value.ink});
-        value.geometryProbe=value.rotationMomentRoi?{kind:"rotation",...compareRotationGeometry(images.html,images[route],{roi:value.rotationMomentRoi,foreground,background})}:
+        value.geometryProbe=value.rotationMomentRoi?{kind:"rotation",...compareRotationGeometry(images.html,images[route],{roi:value.rotationMomentRoi,foreground,background,localLongEdgeCss:rotationLocalLongEdgeCss,scale})}:
           {kind:"rotation",measurable:false,failures:["bounded rotation ROI requires both primary ink bboxes"]};
       }
       if(value.geometryProbe)value.failures.push(...value.geometryProbe.failures);
@@ -266,7 +267,7 @@ function compareNodes(images,nodes,tile,item,canvas,real,{targetId,sourceNodes=n
       if(observability){value.observability=observability;value.unavailableReasonCodes=[...new Set([...value.unavailableReasonCodes,"OWN_FILL_UNOBSERVABLE"])];}
     }
     const snappedNode=paintBoxes.fallbackReasons.has(node.id)?null:paintBoxes.nodes.get(node.id);
-    const svgSnapClassification=classifySvgPreciseSnap({node,snappedNode,scale,measurements,tile});
+    const svgSnapClassification=classifySvgPreciseSnap({node,snappedNode,rotationPivot:paintBoxes.rotationPivots?.get(node.id),scale,measurements,tile});
     if(svgSnapClassification){const value=measurements.svg;value.preSvgSnapGateFailures=[...value.gateFailures];value.svgSnapClassification=svgSnapClassification;value.gating="diagnostic";value.gateFailures=[];value.diagnosticFailures=[...value.failures];}
     rows.push({id:node.id,type:node.type,fillRole:fillLeaf?(isFillLeaf(node,nodes)?"painted-fill-leaf":"painted-fill-container-with-descendants"):null,complete,clearance,partialReasonCode:complete?null:"TILE_TRUNCATED",geometry:{x:node.x,y:node.y,width:node.width,height:node.height},diagnosticReasons,measurements});
   }

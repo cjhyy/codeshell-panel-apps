@@ -26,23 +26,24 @@ function inside(node, point, ellipse = false) {
   return insideRoundedRect(node, point);
 }
 
-/** Hit the actual document geometry, in front-to-back order, with ancestor clips. */
+/** Hit document geometry (or supplied presentation clones), with ancestor clips. */
 export function hitTestCanvasNode(
   design,
   point,
   index = new Map(design.nodes.map((n) => [n.id, n])),
+  rotationPivots = null,
 ) {
   for (let i = design.nodes.length - 1; i >= 0; i--) {
     const node = design.nodes[i];
     if (!isDesignNodeVisible(design, node, index)) continue;
-    if (!inside(node, pointToNodeSpace(design.nodes, node, point, index), node.type === "ellipse"))
+    if (!inside(node, pointToNodeSpace(design.nodes, node, point, index, rotationPivots), node.type === "ellipse"))
       continue;
     if (
       ancestors(node, index).some(
         (parent) =>
           ["frame", "component"].includes(parent.type) &&
           parent.clipContent &&
-          !inside(parent, pointToNodeSpace(design.nodes, parent, point, index)),
+          !inside(parent, pointToNodeSpace(design.nodes, parent, point, index, rotationPivots)),
       )
     )
       continue;

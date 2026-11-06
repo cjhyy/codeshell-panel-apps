@@ -1005,6 +1005,39 @@ test("presentation boxes preserve the detached master opacity contract in extern
   near(pixel(pixels,365,45),[102,102,255],2);
 });
 
+test("rotated paint pivots update outer transforms and hits without invalidating unchanged local content", async t => {
+  const page = await harness(t, { width: 180, height: 120, dpr: 2, tileCacheEnabled: false, background: "#ffffff" });
+  const design = { canvas: { width: 180, height: 120, background: "#ffffff" }, resources: [], nodes: [
+    base("bar", "rectangle", 40.5, 40.3, 4.2, 1.19, { rotation: -40 }),
+  ] };
+  const original = JSON.stringify(design);
+  await upload(page, design); const before = await draw(page, { zoom: 1 });
+  const initial = await page.evaluate(() => renderer.stats());
+  const hits = await page.evaluate(async design => {
+    const { browserPaintBoxes } = await import("/canvas/browser-paint-box.mjs");
+    const { pointFromNodeSpace } = await import("/geometry.mjs");
+    const paint = browserPaintBoxes(design.nodes), node = paint.nodes.get("bar");
+    const world = local => pointFromNodeSpace([...paint.nodes.values()], node, local, paint.nodes, paint.rotationPivots);
+    return [renderer.hitTest(world({ x: node.x + .05, y: node.y + .05 })),
+      renderer.hitTest(world({ x: node.x - .05, y: node.y + .5 }))];
+  }, design);
+  assert.deepEqual(hits, ["bar", null]);
+  assert.equal(JSON.stringify(design), original);
+  design.nodes[0].width = 4.4; // Same local paint width, different LayoutUnit pivot.
+  await upload(page, design); const updated = await draw(page, { zoom: 1 });
+  const retained = await page.evaluate(() => renderer.stats());
+  assert.equal(retained.nodePictureBuilds, initial.nodePictureBuilds);
+  assert(retained.nodePictureHits > initial.nodePictureHits);
+  assert.notEqual(Buffer.compare(before.data, updated.data), 0, "pivot movement must update the outer picture");
+  const fresh = await harness(t, { width: 180, height: 120, dpr: 2, tileCacheEnabled: false, background: "#ffffff" });
+  await upload(fresh, design); const expected = await draw(fresh, { zoom: 1 });
+  assert.equal(Buffer.compare(updated.data, expected.data), 0, "retained and fresh pivot transforms agree exactly");
+  design.nodes[0].width = 4.6;
+  await upload(page, design); await draw(page, { zoom: 1 });
+  assert((await page.evaluate(() => renderer.stats())).nodePictureBuilds > retained.nodePictureBuilds,
+    "changing the rounded local paint size invalidates raw content");
+});
+
 // One sequence exercises real fractional phases; timing is reported, never gated.
 // Optional personal input is read only and is never required by the offline suite.
 test("fractional viewport gestures reuse cached text until one 150ms device-phase settle", async t => {

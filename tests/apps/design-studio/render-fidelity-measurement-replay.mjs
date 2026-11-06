@@ -51,7 +51,7 @@ for(const [recordIndex,group]of groups){
     }
     const previous=value.svgSnapClassification??null;
     if(previous){value.gateFailures=[...value.preSvgSnapGateFailures];value.gating='primary-and-secondary';delete value.svgSnapClassification;}
-    const classification=classifySvgPreciseSnap({node,snappedNode:paint.fallbackReasons.has(node.id)?null:paint.nodes.get(node.id),scale,measurements:pair,tile});
+    const classification=classifySvgPreciseSnap({node,snappedNode:paint.fallbackReasons.has(node.id)?null:paint.nodes.get(node.id),rotationPivot:paint.rotationPivots?.get(node.id),scale,measurements:pair,tile});
     if(classification){value.preSvgSnapGateFailures=[...value.gateFailures];value.svgSnapClassification=classification;value.gateFailures=[];value.gating='diagnostic';}
     changes.push({page:row.page,id:row.id,matrix:row.matrix,route:row.route,coverage:row.coverage,previousClassification:previous,classification,coverageGeometry:value.coverageGeometry,referenceCoverageGeometry:pair.html?.coverageGeometry,remainingGateFailures:value.gateFailures});
   }
