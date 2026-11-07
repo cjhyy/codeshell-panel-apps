@@ -30,6 +30,10 @@ const output = resolve(process.env.DESIGN_FIDELITY_EVIDENCE ?? ".tmp/render-fide
 const diagnostic = process.env.DESIGN_FIDELITY_MODE === "diagnostic";
 const isolateAllText = process.env.DESIGN_FIDELITY_ISOLATE_TEXT === "1";
 const targetIds = new Set((process.env.DESIGN_FIDELITY_TARGET_IDS??"").split(",").filter(Boolean));
+const isolationOnly = process.env.DESIGN_FIDELITY_ISOLATION_ONLY === "1";
+const captureRoutes = (process.env.DESIGN_FIDELITY_ROUTES ?? "gpu,browser,svg,html").split(",");
+assert(captureRoutes.includes("gpu") && captureRoutes.includes("html") && captureRoutes.every(route=>["gpu","browser","svg","html"].includes(route)));
+assert(!isolationOnly || targetIds.size, "isolation-only capture requires explicit targets");
 const hash = value => createHash("sha256").update(typeof value === "string" || ArrayBuffer.isView(value) ? value : JSON.stringify(value)).digest("hex");
 const matrix = [ {id:"dpr1-zoom1",dpr:1,zoom:1}, {id:"dpr2-zoom1",dpr:2,zoom:1}, {id:"dpr1-zoom2",dpr:1,zoom:2}, {id:"dpr1-zoom05",dpr:1,zoom:.5}, {id:"dpr2-zoom1-fractionalpan",dpr:2,zoom:1,deltaX:3.25}, {id:"dpr1-fit-view",dpr:1,zoom:1,fitView:true,diagnostic:true} ]
   .filter(item => !process.env.DESIGN_FIDELITY_MATRIX || process.env.DESIGN_FIDELITY_MATRIX.split(",").includes(item.id));
@@ -197,7 +201,7 @@ function compareNodes(images,nodes,tile,item,canvas,real,{targetId,sourceNodes=n
       strokeRingPixelRegion({bounds:{x:(node.x-tile.x)*scale,y:(node.y-tile.y)*scale,width:node.width*scale,height:node.height*scale},strokeWidth:node.strokeWidth*scale,strokeAlign:node.strokeAlign,cornerRadius:(node.cornerRadius??0)*scale}):null;
     const compositeContainer=["frame","component","group"].includes(node.type)&&nodes.some(child=>child.parentId===node.id);
     const measurements={};
-    for(const route of ["gpu","browser","svg","html"]){
+    for(const route of captureRoutes){
       const image=images[route];
       if(!image||!images.html){measurements[route]={ink:null,primaryAvailable:false,unavailableReasonCodes:[!image?"ROUTE_CAPTURE_FAILED":"HTML_REFERENCE_MISSING"],failures:[],gateFailures:[],gating:"unavailable"};continue;}
       const rawCompositePixel=symmetricPixelDifference(images.html,image,{roi,retainMask:Boolean(ring||compositeContainer)}),pixel=ring?symmetricPixelDifference(images.html,image,{roi,includePixel:ring.includePixel}):rawCompositePixel,foregrounds=[foreground,...(node.textRanges?.ranges??[]).map(range=>parseRgb(range.fill))].filter(Boolean);
@@ -323,7 +327,7 @@ async function captureRecord({f,design,data,item,tile,tileIndex,folder,svg,stage
   }
   record.cameraPolicy={trustedChallengeReused:Boolean(priorChallenge),trustedWheelSentHere:Boolean(item.deltaX&&!priorChallenge),sameEditorLoad:true};
   let measuredTile=tile;
-  for(const mode of ["gpu","browser"]){
+  for(const mode of ["gpu","browser"].filter(route=>captureRoutes.includes(route))){
     try{
       await page.locator("#renderer-mode").selectOption(mode);await rendererReady(page,mode);
       record.view=await cameraView(page);
@@ -366,13 +370,25 @@ async function captureRecord({f,design,data,item,tile,tileIndex,folder,svg,stage
     }catch(error){record.routeErrors.push({route:mode,reasonCode:"ROUTE_CAPTURE_FAILED",error:String(error)});}
   }
   const css=designFrontendCss(design,{resourceDataUrls:data.dataUrls,preserveWorldOrigin:true});
-  for(const route of ["html","svg"]){
+  for(const route of ["html","svg"].filter(route=>captureRoutes.includes(route))){
     if(route==="svg"&&!svg){record.routeErrors.push({route,reasonCode:"SVG_EXPORT_FAILED"});continue;}
     const ref=await f.context.newPage();
     try{
       const content=route==="html"?"":svg.replace("<svg ",`<svg style="position:absolute;left:${bounds.x}px;top:${bounds.y}px" `),styles=route==="html"?css:designFontFaceCss(design.resources,data.dataUrls),url=`/fidelity-${route}.html`;
       f.routes.set(url,`<!doctype html><meta charset="utf-8"><style>${styles}\nhtml,body{margin:0;background:${design.canvas.background};overflow:hidden}#export-world{position:absolute;left:32px;top:32px;width:${Math.max(design.canvas.width,bounds.width)}px;transform-origin:0 0;transform:scale(${item.zoom}) translate(${-measuredTile.x}px,${-measuredTile.y}px)}.cs-page{margin:0!important;overflow:visible!important}</style><div id="export-world">${content}</div>`);
       await ref.goto(origin+url);
+      if(route==="html"&&isolationOnly){
+        const original={...data.design,activePageId:design.activePageId,nodes:data.design.pages.find(page=>page.id===design.activePageId).nodes};
+        record.referenceDom=await ref.evaluate(async({original,dataUrls,css})=>{
+          const {renderDesignFrontendPage}=await import("/frontend-export.mjs");
+          const style=document.createElement("style");style.textContent=css;document.head.append(style);
+          document.querySelector("#export-world").innerHTML=renderDesignFrontendPage(original,{resourceDataUrls:new Map(dataUrls),preserveWorldOrigin:true});
+          for(const node of original.nodes.filter(node=>node.type==="text"&&node.opacity!==0))await document.fonts.load(`${node.fontWeight} ${node.fontSize}px ${node.fontFamily}`,node.text);
+          await document.fonts.ready;
+          const boxes=[...document.querySelectorAll("[data-codeshell-id]")].map(element=>{const box=element.getBoundingClientRect();return{id:element.dataset.codeshellId,x:box.x,y:box.y,width:box.width,height:box.height};});
+          style.remove();return boxes;
+        },{original,dataUrls:[...data.dataUrls],css:designFrontendCss(original,{resourceDataUrls:data.dataUrls,preserveWorldOrigin:true})});
+      }
       if(route==="html")await ref.evaluate(async({design,dataUrls})=>{
         for(const node of design.nodes.filter(node=>node.type==="text"&&node.opacity!==0))await document.fonts.load(`${node.fontWeight} ${node.fontSize}px ${node.fontFamily}`,node.text);
         await document.fonts.ready;
@@ -409,12 +425,12 @@ async function captureIsolation(options) {
   const tileRecords=[];
   for(const [index,tile]of segments.entries())tileRecords.push(await captureRecord({...options,tile,tileIndex:`${options.tileIndex}-tile-${index}`,folder:join(folder,`tile-${index}`)}));
   const first=tileRecords[0],scale=item.dpr*item.zoom,effectiveFull={...full,x:full.x+first.tile.x-segments[0].x,y:full.y+first.tile.y-segments[0].y},record={matrix:item.id,page:design.activePageId,tileIndex:options.tileIndex,tile:effectiveFull,scale,
-    isolation,paths:{},view:first.view,dom:first.dom,gpu:first.gpu,chromeProof:first.chromeProof,
+    isolation,paths:{},view:first.view,dom:first.dom,referenceDom:first.referenceDom,gpu:first.gpu,chromeProof:first.chromeProof,
     routeErrors:tileRecords.flatMap((entry,tileIndex)=>entry.routeErrors.map(error=>({...error,tileIndex}))),
     calibration:{rawTiles:tileRecords.map(entry=>({tileIndex:entry.tileIndex,...entry.calibration}))},
     composite:{kind:"derived-same-coordinate-pixel-stitch",singleScreenshot:false,sourceMetrics:segments.map((_,index)=>join(folder,`tile-${index}`,"metrics.json")),routes:{}}};
   const images={};
-  for(const route of ["gpu","browser","svg","html"]){
+  for(const route of captureRoutes){
     try{
       const sources=[];
       for(const entry of tileRecords){
@@ -451,7 +467,9 @@ async function writeFidelityReport(path,report) {
 }
 
 test("B0 four-route actual-editor fidelity matrix (strict by default)",{timeout:3600000},async t=>{
-  await mkdir(output,{recursive:true});const data=await dataset(),report={schema:4,mode:diagnostic?"diagnostic":"strict",capturePolicy:{isolateAllText,targetIds:[...targetIds]},sourceApp:app,real:data.real,inputSha256:data.inputHash,serializedSha256:data.serializedHash,thresholds:FIDELITY_THRESHOLDS,matrix,viewport:{width:1600,height:1000},launchArgs:["--enable-webgl","--enable-unsafe-swiftshader","--use-angle=swiftshader"],records:[],isolationRecords:[],isolationTileRecords:[],uniqueRecords:[],failures:[],unmeasured:[],partialNodes:[],finiteCompatibility:[],fontAvailability:[],fontOmissions:[],environment:{platform:process.platform,arch:process.arch,node:process.version}};
+  await mkdir(output,{recursive:true});const data=await dataset(),report={schema:4,mode:diagnostic?"diagnostic":"strict",capturePolicy:{isolateAllText,isolationOnly,captureRoutes,targetIds:[...targetIds]},sourceApp:app,real:data.real,inputSha256:data.inputHash,serializedSha256:data.serializedHash,thresholds:FIDELITY_THRESHOLDS,matrix,viewport:{width:1600,height:1000},launchArgs:["--enable-webgl","--enable-unsafe-swiftshader","--use-angle=swiftshader"],records:[],isolationRecords:[],isolationTileRecords:[],uniqueRecords:[],failures:[],unmeasured:[],partialNodes:[],finiteCompatibility:[],fontAvailability:[],fontOmissions:[],environment:{platform:process.platform,arch:process.arch,node:process.version}};
+  const includedIds=new Set(data.design.pages.filter(page=>!process.env.DESIGN_FIDELITY_PAGES||process.env.DESIGN_FIDELITY_PAGES.split(",").includes(page.id)).flatMap(page=>page.nodes.map(node=>node.id)));
+  assert([...targetIds].every(id=>includedIds.has(id)),"every explicit target must exist in the selected pages");
   report.fillInventory=data.design.pages.map(page=>{const candidates=page.nodes.filter(node=>node.type!=="text"&&!(node.strokeWidth>0)&&!node.strokeSides);return{page:page.id,noStrokeNontext:candidates.length,paintedLeaves:candidates.filter(node=>isFillLeaf(node,page.nodes)).map(node=>node.id),paintedContainers:candidates.filter(node=>isFillShape(node)&&!isFillLeaf(node,page.nodes)).map(node=>node.id),noOwnSolidFill:candidates.filter(node=>!isFillShape(node)).map(node=>({id:node.id,type:node.type,fill:node.fill,reason:"no own solid fill ink; structural container/descendant semantics are not a fabricated fill metric"}))};});
   const browser=await chromium.launch({headless:true,args:report.launchArgs});report.environment.chromium=browser.version();
   try{
@@ -475,7 +493,7 @@ test("B0 four-route actual-editor fidelity matrix (strict by default)",{timeout:
           await page.locator("#active-page").selectOption(pageInfo.id);await page.waitForFunction(async id=>(await tools.get_design_metadata({})).activePageId===id,pageInfo.id);
           const design=normalizeDesignDocument(JSON.parse(serializeDesignDocument(data.design)));design.activePageId=pageInfo.id;design.nodes=design.pages.find(p=>p.id===pageInfo.id).nodes;
           const bounds=designPageBounds(design),captureBounds={x:Math.floor(bounds.x)-12,y:Math.floor(bounds.y)-12,width:Math.ceil(bounds.x+bounds.width)-Math.floor(bounds.x)+24,height:Math.ceil(bounds.y+bounds.height)-Math.floor(bounds.y)+24},pageItem={...item};
-          let pageTiles=tiles(captureBounds,item.zoom);
+          let pageTiles=isolationOnly?[]:tiles(captureBounds,item.zoom);
           if(item.fitView){
             await f.chromeStyle.evaluate(element=>element.remove());await frames(page);
             await page.locator("#renderer-mode").selectOption("gpu");await rendererReady(page,"gpu");await page.locator("#zoom-value").click();await frames(page);
@@ -485,7 +503,7 @@ test("B0 four-route actual-editor fidelity matrix (strict by default)",{timeout:
             pageItem.zoom=view.zoom;pageItem.actualFitView=view;pageTiles=[{x:-view.panX/view.zoom,y:-view.panY/view.zoom,width:Math.min(1536,view.width)/view.zoom,height:Math.min(936,view.height)/view.zoom}];
             f.chromeStyle=await page.addStyleTag({content:stageStyle});await frames(page);
           }
-          let svg;try{svg=await measuredSvg(f,design,data);}catch(error){report.failures.push({matrix:item.id,page:pageInfo.id,route:"svg",reasonCode:"SVG_EXPORT_FAILED",error:String(error)});}
+          let svg;if(captureRoutes.includes("svg"))try{svg=await measuredSvg(f,design,data);}catch(error){report.failures.push({matrix:item.id,page:pageInfo.id,route:"svg",reasonCode:"SVG_EXPORT_FAILED",error:String(error)});}
           if(svg)for(const node of design.nodes.filter(n=>Number.isFinite(n.layoutBaselineOffset))){
             const parsed=await page.evaluate(({svg,id})=>{const doc=new DOMParser().parseFromString(svg,"image/svg+xml");return doc.querySelector(`[data-node-id="${CSS.escape(id)}"]`)?.outerHTML??null;},{svg,id:node.id});
             report.finiteCompatibility.push({matrix:item.id,page:pageInfo.id,id:node.id,svg:parsed,svgSha256:hash(parsed??"")});
@@ -508,7 +526,7 @@ test("B0 four-route actual-editor fidelity matrix (strict by default)",{timeout:
               tile.x=reference.x+Math.floor((tile.x-reference.x)*scale)/scale;
               tile.y=reference.y+Math.floor((tile.y-reference.y)*scale)/scale;
             }
-            let isolatedSvg;try{isolatedSvg=await measuredSvg(f,isolated.design,data);}catch(error){isolated.metadata.svgError=String(error);}
+            let isolatedSvg;if(captureRoutes.includes("svg"))try{isolatedSvg=await measuredSvg(f,isolated.design,data);}catch(error){isolated.metadata.svgError=String(error);}
             const {record,tileRecords}=await captureIsolation({f,design:isolated.design,data,item:pageItem,tile,tileIndex:`isolation-${index}`,folder:join(output,`${item.id}-${pageInfo.id}-isolation-${encodeURIComponent(id)}`),svg:isolatedSvg,stageStyle,bounds:isolatedBounds,isolation:{...isolated.metadata,triggerReasons:isolationPlan.find(entry=>entry.id===id).reasonCodes}});
             // Stroke/shadow separation is an additional render of the same
             // isolated scene. Original pixels and the independent shadow probe
@@ -536,7 +554,7 @@ test("B0 four-route actual-editor fidelity matrix (strict by default)",{timeout:
               }
             }
             report.isolationTileRecords.push(...tileRecords);
-            const rawDom=raw.find(entry=>entry.dom?.some(node=>node.id===id));
+            const rawDom=raw.find(entry=>entry.dom?.some(node=>node.id===id))??(record.referenceDom?{...record,dom:record.referenceDom}:null);
             const worldBox=(entry,dom)=>({x:(dom.x-32)/pageItem.zoom+entry.tile.x,y:(dom.y-32)/pageItem.zoom+entry.tile.y,width:dom.width/pageItem.zoom,height:dom.height/pageItem.zoom});
             record.isolationDomProof=[id,...isolated.metadata.ancestorIds].map(nodeId=>{
               const before=rawDom?.dom.find(node=>node.id===nodeId),after=record.dom?.find(node=>node.id===nodeId);
@@ -588,7 +606,9 @@ test("B0 four-route actual-editor fidelity matrix (strict by default)",{timeout:
     report.summary={...counts,comparisons:report.records.length,isolationCaptures:report.isolationRecords.length,isolationRawTileCaptures:report.isolationTileRecords.length,compositeIsolations:report.isolationRecords.filter(record=>record.composite).length,failingChecks:report.failures.length,diagnosticFailures:counts.diagnosticFailures,diagnosticComparisons:counts.diagnostic,unavailablePrimary:counts.effectiveUnavailable,unmeasured:report.unmeasured.length,partialNodes:report.partialNodes.length,fontOmissions:report.fontOmissions.length,allMeasuredThresholdsPassed:report.failures.length===0&&counts.diagnostic===0&&counts.effectiveUnavailable===0&&report.unmeasured.length===0&&counts.partial===0&&report.fontOmissions.length===0,diagnosticModeDoesNotMeanPass:diagnostic};
     report.byMatrix=Object.fromEntries(matrix.map(item=>[item.id,fidelityCounts(report.uniqueRecords.filter(row=>row.matrix===item.id))]));
     report.byRoute=Object.fromEntries(["gpu","browser","svg","html"].map(route=>[route,fidelityCounts(report.uniqueRecords.filter(row=>row.route===route))]));
+    if(isolationOnly)report.requestCoverage={expected:targetIds.size*matrix.length*captureRoutes.length,actual:report.uniqueRecords.length,missing:[...targetIds].flatMap(id=>matrix.flatMap(item=>captureRoutes.filter(route=>!report.uniqueRecords.some(row=>row.id===id&&row.matrix===item.id&&row.route===route)).map(route=>({id,matrix:item.id,route}))))};
     await writeFidelityReport(join(output,"report.json"),report);t.diagnostic(`EVIDENCE ${join(output,"report.json")} ${JSON.stringify(report.summary)}`);
   }
+  if(isolationOnly){assert.equal(report.requestCoverage.actual,report.requestCoverage.expected,"isolation capture must preserve the explicit denominator");assert.deepEqual(report.requestCoverage.missing,[],"every requested node/route/matrix requires a row");}
   if(!diagnostic){assert.equal(report.failures.length,0,`Fidelity candidate has ${report.failures.length} unique threshold/route failures; see ${join(output,"report.json")}`);assert.equal(report.unmeasured.length,0,"all requested text/stroke nodes require measurements");assert.equal(report.partialNodes.length,0,"partial tile geometry cannot establish complete-node parity");assert.equal(report.summary.unavailablePrimary,0,"unavailable primary metrics cannot establish parity");assert.equal(report.summary.diagnosticComparisons,0,"unresolved diagnostic comparisons cannot establish full parity");assert.equal(report.fontOmissions.length,0,"fallback diagnostics cannot certify an unavailable requested font");}
 });

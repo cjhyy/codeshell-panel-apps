@@ -156,6 +156,7 @@ export const suites = [
         "tests/apps/design-studio/render-fidelity-audit.test.mjs",
         "tests/apps/design-studio/render-fidelity-geometry.test.mjs",
         "tests/apps/design-studio/rotation-moment-roi.test.mjs",
+        "tests/apps/design-studio/canvaskit-shape-raster.test.mjs",
         "tests/apps/design-studio/text-origin-compatibility.test.mjs",
         "tests/apps/design-studio/text-line-box.test.mjs",
         "tests/apps/design-studio/svg-preview-font-context.test.mjs",

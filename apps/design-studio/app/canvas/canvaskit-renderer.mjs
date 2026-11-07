@@ -7,6 +7,7 @@ import { hasDesignStroke, designStrokePaths, designStrokeOutset } from "../strok
 import { transformedNodeBoundsInTree } from "../geometry.mjs";
 import { hitTestCanvasNode } from "../canvas-interaction.mjs";
 import { createCanvasKitText } from "./canvaskit-text.mjs";
+import { createCanvasKitShapeRaster, canvasKitShapeRasterEligible } from "./canvaskit-shape-raster.mjs";
 import { browserPaintBoxes } from "./browser-paint-box.mjs";
 import { decodeCanvasKitImage, MAX_SVG_IMAGE_PIXELS } from "./image-decode.mjs";
 
@@ -269,6 +270,7 @@ export async function createRenderer({
   let surface = null,
     picture = null,
     sceneState = null,
+    shapeRaster = null,
     disposed = false;
   let dpr = 1,
     cssWidth = canvas.width || 1,
@@ -291,7 +293,7 @@ export async function createRenderer({
     sceneIndex = new Map(),
     sceneChildren = new Map(),
     hasInstances = false,
-    deviceTextCandidates = [];
+    deviceTextCandidates = [], shapeRasterCandidates = [];
   let sceneRevision = 0,
     resourceBuilds = 0,
     nodePictureBuilds = 0,
@@ -331,6 +333,7 @@ export async function createRenderer({
     picture = null;
     for (const value of owned.reverse()) value.delete?.();
     owned = [];
+    shapeRaster?.dispose(); shapeRaster = null;
     sceneState?.dispose();
     sceneState = null;
     scenePaintBoxes = null;
@@ -429,6 +432,7 @@ export async function createRenderer({
       if (!reuseResources) text.dispose();
       return;
     }
+    const nextShapeRaster = reuseResources ? shapeRaster : createCanvasKitShapeRaster({ CK, document: canvas.ownerDocument, text });
     let nextPicture;
     try {
       if (!reuseResources)
@@ -497,6 +501,14 @@ export async function createRenderer({
       const samplingNodes = [...design.nodes, ...instanceTexts.values()];
       const samplingIndex = new Map(samplingNodes.map(node => [node.id, node]));
       if (text.beginScene?.({ ...design, nodes: samplingNodes })) clearNodePictures(nextNodePictures);
+      const shapeCandidates = deviceTextSampling ? design.nodes.filter(node => {
+        return canvasKitShapeRasterEligible(node, { hasChildren: Boolean(children.get(node.id)?.length) }) &&
+          isDesignNodeVisible(design, node, index);
+      }).map(node => ({ node: paintBoxes.nodes.get(node.id) ?? node,
+        pivot: paintBoxes.rotationPivots.get(node.id) ?? { x: node.x + node.width / 2, y: node.y + node.height / 2 },
+        chain: ancestors(node, index).map(parent => ({ node: paintBoxes.nodes.get(parent.id) ?? parent,
+          pivot: paintBoxes.rotationPivots.get(parent.id) ?? { x: parent.x + parent.width / 2, y: parent.y + parent.height / 2 } })) })) : [];
+      nextShapeRaster.beginScene(shapeCandidates);
       const activeIds = new Set([...pageNodes, ...instanceTexts.values()].map((node) => node.id));
       for (const [id, entry] of nextNodePictures)
         if (!activeIds.has(id)) {
@@ -696,7 +708,8 @@ export async function createRenderer({
                 )
               )
                 counters.clippedNodes++;
-              rotateChain(target, [...chain, node], false, paintBoxes.rotationPivots);
+              const sampledShape = !instanceId && nextShapeRaster.isDeviceSamplingForNode(node.id);
+              if (!sampledShape) rotateChain(target, [...chain, node], false, paintBoxes.rotationPivots);
               if ([...chain, node].some((item) => item.rotation)) counters.rotatedNodes++;
               if(visibleShadowLayers(node).length){counters.shadowNodes++;if(visibleShadowLayers(node).some(layer=>layer.blur>0))unsupportedNode(node,"css-shadow-raster-kernel","CSS 几何阴影层保持可编辑；模糊内核的严格像素一致性尚未验证");}
               const opacity = effectiveDesignNodeOpacity({ nodes: pageNodes }, node, nodeIndex);
@@ -757,7 +770,8 @@ export async function createRenderer({
                     if (descendants.has(child.id)) drawNode(child, sourceIndex, nextStack, node.id);
                   return;
                 }
-                drawCachedContent(node, instanceTexts.get(JSON.stringify([instanceId, node.id])) ?? node);
+                if (!sampledShape || !nextShapeRaster.draw(target, node))
+                  drawCachedContent(node, instanceTexts.get(JSON.stringify([instanceId, node.id])) ?? node);
               } finally {
                 if (layered) target.restore();
               }
@@ -788,6 +802,8 @@ export async function createRenderer({
       sceneImageErrors = imageErrors; sceneSvgPixels = svgPixels;
       resourceKey = nextResourceKey;
       sceneState = text;
+      shapeRaster = nextShapeRaster;
+      shapeRasterCandidates = shapeCandidates;
       nodePictures = nextNodePictures;
       currentDesign = design;
       sceneNodes = pageNodes;
@@ -841,6 +857,7 @@ export async function createRenderer({
     } catch (error) {
       nextPicture?.delete();
       if (!reuseResources) {
+        nextShapeRaster.dispose();
         nextOwned.forEach((value) => value.delete());
         text.dispose();
         clearNodePictures(nextNodePictures);
@@ -1052,6 +1069,15 @@ export async function createRenderer({
       });
       if (qualityChanged || samplingChanged) recordCurrentScene(Boolean(qualityChanged));
     }
+    if (!deferSampling && picture && shapeRaster) {
+      const viewport = { x: -pan.x / zoom, y: -pan.y / zoom, width: cssWidth / zoom, height: cssHeight / zoom };
+      const visible = deviceEligible ? shapeRasterCandidates.filter(candidate => {
+        const bounds = transformedNodeBoundsInTree(sceneNodes, candidate.node, sceneIndex);
+        return bounds.x - 2 < viewport.x + viewport.width && bounds.x + bounds.width + 2 > viewport.x &&
+          bounds.y - 2 < viewport.y + viewport.height && bounds.y + bounds.height + 2 > viewport.y;
+      }) : [];
+      if (shapeRaster.setDeviceSampling(visible, { scale: physicalScale, pan: devicePan })) recordCurrentScene(false);
+    }
     const started = now(),
       target = surface.getCanvas();
     target.clear(canvasKitColor(CK, background));
@@ -1066,7 +1092,7 @@ export async function createRenderer({
       if (
         tileCacheEnabled &&
         // A world-grid tile would resample a screen-phase glyph a second time.
-        (!sceneState.hasDeviceSampling?.() || Number.isInteger(physicalScale) && Number.isInteger(devicePan.x) && Number.isInteger(devicePan.y)) &&
+        (!(sceneState.hasDeviceSampling?.() || shapeRaster.hasDeviceSampling()) || Number.isInteger(physicalScale) && Number.isInteger(devicePan.x) && Number.isInteger(devicePan.y)) &&
         zoom * dpr <= CANVASKIT_TILE_CACHE.maxPhysicalScale &&
         drawTiles(target, pan, zoom)
       )
@@ -1089,6 +1115,7 @@ export async function createRenderer({
       // Optional device allocations may all fall back without changing the
       // display list. Their live budget diagnostics still belong in this frame.
       ...sceneState?.stats?.(),
+      ...shapeRaster?.stats?.(),
       pictureBuilds: builds,
       sceneRevision,
       resourceBuilds,

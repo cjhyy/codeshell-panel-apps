@@ -94,6 +94,21 @@ export async function createCanvasKitText({
   let activeDeviceIds = new Set(), deviceRequestKey = null, deviceEligibility = null;
   let deviceFallbacks = [];
   const maxRasterPixels = 16 * 1024 * 1024;
+  // Optional rotated-shape images share this existing text raster budget.
+  const shapeRasterReservations = new Map();
+  let releaseShapeRasters = null;
+  const shapeRasterPixels = () => [...shapeRasterReservations.values()].reduce((sum, pixels) => sum + pixels, 0);
+  const rasterCapacity = () => maxRasterPixels - shapeRasterPixels();
+  const clearShapeRasters = () => {
+    const changed = shapeRasterReservations.size > 0;
+    releaseShapeRasters?.(); shapeRasterReservations.clear(); return changed;
+  };
+  const plannedTextPixels = () => [...rasterPlans.values(), ...devicePlans.values()].reduce((sum, plan) => sum + plan.pixels, 0);
+  function reserveShapeRaster(id, pixels) {
+    if (!Number.isSafeInteger(pixels) || pixels <= 0 ||
+        Math.max(rasterPixels, plannedTextPixels()) + shapeRasterPixels() - (shapeRasterReservations.get(id) ?? 0) + pixels > maxRasterPixels) return false;
+    shapeRasterReservations.set(id, pixels); return true;
+  }
   let rasterPixels = 0,
     rasterHits = 0,
     rasterMisses = 0,
@@ -416,6 +431,7 @@ export async function createCanvasKitText({
     const signature = rasterSignature(node, alias);
     let plan = rasterPlans.get(node.id);
     if (!plan || plan.signature !== signature) {
+      clearShapeRasters();
       deviceRequestKey = null;
       const scale = 2;
       dropNodeImages(node.id);
@@ -437,7 +453,7 @@ export async function createCanvasKitText({
     const cold = [...devicePlans].sort((a, b) =>
       Number(visibleIds.has(a[0])) - Number(visibleIds.has(b[0])) || a[1].used - b[1].used);
     for (const [id, plan] of cold) {
-      if (masterPixels + devicePixels <= maxRasterPixels) break;
+      if (masterPixels + devicePixels <= rasterCapacity()) break;
       dropNodeImages(id, "device");
       devicePlans.delete(id);
       activeDeviceIds.delete(id);
@@ -479,12 +495,15 @@ export async function createCanvasKitText({
       plan.used = ++rasterUse;
       activeDeviceIds.add(id);
     }
+    // Preserve text's existing admission priority. Optional shape coverage is
+    // rebuilt afterwards and falls back to vectors when these plans need space.
+    const shapesCleared = plannedTextPixels() > rasterCapacity() && clearShapeRasters();
     trimDevicePlans([...rasterPlans.values()].reduce((sum, plan) => sum + plan.pixels, 0), new Set(origins.keys()));
     for (const id of origins.keys()) if (rasterPlans.has(id) && !(rasterPlans.get(id).deviceOnly && scale <= 1) && !activeDeviceIds.has(id) && !deviceFallbacks.some(entry => entry.nodeId === id))
       deviceFallbacks.push({ nodeId: id, scale, reason: "device-scene-raster-budget" });
     deviceRequestKey = requestKey;
     deviceEligibility = eligibleOrigins;
-    return before !== signature();
+    return shapesCleared || before !== signature();
   }
   function setRasterScale(
     requestedScale,
@@ -504,17 +523,18 @@ export async function createCanvasKitText({
       total += pixels - plan.pixels;
     }
     if (!changes.size) return false;
+    clearShapeRasters();
     deviceRequestKey = null;
     const cold = [...rasterPlans]
       .filter(([id, plan]) => !visibleNodeIds.has(id) && plan.scale > 2)
       .sort((a, b) => a[1].used - b[1].used);
     for (const [id, plan] of cold) {
-      if (total <= maxRasterPixels) break;
+      if (total <= rasterCapacity()) break;
       const pixels = estimatePixels(plan.node, 2, plan.alias);
       changes.set(id, { scale: 2, pixels });
       total += pixels - plan.pixels;
     }
-    if (total > maxRasterPixels)
+    if (total > rasterCapacity())
       throw new Error("Visible system-font text exceeds the bounded high-resolution raster budget");
     for (const [id, change] of changes) {
       const plan = rasterPlans.get(id);
@@ -527,6 +547,7 @@ export async function createCanvasKitText({
   function beginScene(nextDesign) {
     const nextFontSnapshot = fontSnapshot(), fontsChanged = nextFontSnapshot !== loadedFontSnapshot;
     if (fontsChanged) {
+      clearShapeRasters();
       loadedFontSnapshot = nextFontSnapshot; fontEpoch++;
       for (const entry of rasterImages.values()) entry.image.delete();
       rasterImages.clear(); rasterPlans.clear(); devicePlans.clear(); activeDeviceIds.clear();
@@ -545,6 +566,7 @@ export async function createCanvasKitText({
         rasterSignature(node) !== rasterSignature(currentNodes.get(node.id) ?? {}),
     );
     if (contentChanged) {
+      clearShapeRasters();
       deviceRequestKey = null;
       // New/edited masters always get the full existing budget before optional
       // device images. Otherwise a valid content revision could fail while an
@@ -654,7 +676,7 @@ export async function createCanvasKitText({
     const cacheKey = JSON.stringify([node.id, plan.signature, line, y, scale, origin]);
     let image = rasterImages.get(cacheKey)?.image;
     if (!image) {
-      if (rasterPixels + w * h > maxRasterPixels)
+      if (rasterPixels + w * h > rasterCapacity())
         throw new Error("System-font text exceeds the bounded scene raster budget");
       const raster = document.createElement("canvas");
       raster.width = w;
@@ -853,9 +875,9 @@ export async function createCanvasKitText({
       try {
         const plan = prepareRasterPlan(node, entry.alias);
         const masterPixels = [...rasterPlans.values()].reduce((sum, item) => sum + item.pixels, 0);
-        if (masterPixels > maxRasterPixels) throw Error("resource-scene-raster-budget");
+        if (masterPixels > rasterCapacity()) throw Error("resource-scene-raster-budget");
         trimDevicePlans(masterPixels);
-        rasterReady = plan.pixels <= maxRasterPixels;
+        rasterReady = plan.pixels <= rasterCapacity();
       } catch (error) {
         if (!/bounded .*raster budget|resource-scene-raster-budget/u.test(error.message)) throw error;
         resourceRasterFallbacks.set(node.id, { nodeId: node.id, reason: "resource-raster-budget", detail: String(error.message).slice(0, 180) });
@@ -955,6 +977,9 @@ export async function createCanvasKitText({
     rasterScaleForNode,
     rasterSamplingForNode,
     contentBounds,
+    reserveShapeRaster,
+    releaseShapeRaster: id => shapeRasterReservations.delete(id),
+    setShapeRasterRelease: callback => { releaseShapeRasters = callback; },
     stats: () => ({
       loadedFontResources: faces.size,
       fontCapabilities: [...faces.values()].map(entry => ({ resourceId: entry.id, family: entry.family, declaredWeight: entry.weight, style: entry.style, ...entry.capabilities })),
@@ -971,6 +996,9 @@ export async function createCanvasKitText({
       rasterTextImages: rasterImages.size,
       rasterTextCacheBytes: rasterPixels * 4,
       rasterTextCacheBudgetBytes: maxRasterPixels * 4,
+      sharedRasterCacheBytes: (rasterPixels + shapeRasterPixels()) * 4,
+      sharedRasterReservedBytes: (Math.max(rasterPixels, plannedTextPixels()) + shapeRasterPixels()) * 4,
+      sharedRasterCacheBudgetBytes: maxRasterPixels * 4,
       rasterTextCacheHits: rasterHits,
       rasterTextCacheMisses: rasterMisses,
       rasterNodeScales: [...rasterPlans].map(([nodeId, plan]) => ({ nodeId, scale: plan.scale })),
@@ -980,6 +1008,7 @@ export async function createCanvasKitText({
       deviceTextFallbacks: deviceFallbacks,
     }),
     dispose() {
+      clearShapeRasters(); releaseShapeRasters = null;
       for (const entry of rasterImages.values()) entry.image.delete();
       rasterImages.clear();
       rasterPlans.clear();

@@ -1204,3 +1204,82 @@ test("gesture idle callbacks cancel on scene/size changes and report asynchronou
   assert.equal(await page.evaluate(() => idleErrors.length), 1);
   assert.equal(await page.evaluate(() => renderer.stats().asynchronousRenderError), null);
 });
+
+test("small rotated leaf sampling shares text budget and preserves clip opacity hit geometry and gesture settling", async t => {
+  const page = await harness(t, { width: 240, height: 180, tileCacheEnabled: false, background: "#ffffff" });
+  const design = { canvas: { width: 240, height: 180, background: "#ffffff" }, resources: [], nodes: [
+    base("clip", "frame", 50, 30, 70, 80, { fill: "transparent", clipContent: true, opacity: .5 }),
+    base("leaf", "rectangle", 49.3, 50.6, 4.2, 1, { fill: "#ff0000", rotation: 40, cornerRadius: .49, parentId: "clip", opacity: .5 }),
+    base("label", "text", 30, 120, 150, 24, { text: "Shared budget", fontFamily: "Arial", fontSize: 16, fontWeight: 400, lineHeight: 1.3, textAlign: "left" }),
+  ] };
+  await upload(page, design);
+  const initial = await page.evaluate(() => { renderer.render(); return renderer.stats(); });
+  assert.equal(initial.shapeRasterCandidates, 1);
+  assert.equal(initial.shapeRasterImages, 1);
+  assert(initial.rasterTextCacheBytes > 0);
+  assert.equal(initial.sharedRasterCacheBytes, initial.rasterTextCacheBytes + initial.shapeRasterPixels * 4);
+  assert.equal(initial.sharedRasterCacheBudgetBytes, 64 * 1024 * 1024);
+  assert(initial.sharedRasterReservedBytes <= initial.sharedRasterCacheBudgetBytes);
+  assert.equal(await page.evaluate(() => renderer.hitTest({ x: 51.2, y: 51.1 })), "leaf");
+  const image = PNG.sync.read(await page.screenshot({ scale: "device" }));
+  const red = [];
+  for (let y = 40; y < 65; y++) for (let x = 40; x < 65; x++) {
+    const i = (y * image.width + x) * 4, coverage = (255 - image.data[i + 1]) / 255;
+    if (coverage > 0) { assert(x >= 50, "ancestor clip remains outside the baked leaf transform"); red.push(coverage); }
+  }
+  assert(red.length > 0);
+  assert(Math.max(...red) <= .26, "parent and leaf opacity are applied once outside shape AA");
+  const reused = await page.evaluate(() => { renderer.render({ pan: { x: 1, y: 0 } }); return renderer.stats(); });
+  assert.equal(reused.shapeRasterBuilds, initial.shapeRasterBuilds, "integer pan reuses the exact device phase");
+  const phased = await page.evaluate(() => { renderer.render({ pan: { x: .375, y: .25 } }); return renderer.stats(); });
+  assert.equal(phased.shapeRasterBuilds, initial.shapeRasterBuilds + 1);
+  const moving = await page.evaluate(() => { renderer.render({ zoom: 2, pan: { x: 1.625, y: .5 }, interactive: true }); renderer.render({ zoom: 2, pan: { x: 1.625, y: .5 } }); return renderer.stats(); });
+  assert.equal(moving.shapeRasterBuilds, phased.shapeRasterBuilds, "gesture and chrome repaint reuse the old image");
+  await page.waitForTimeout(210);
+  const settled = await page.evaluate(() => renderer.stats());
+  assert.equal(settled.shapeRasterBuilds, phased.shapeRasterBuilds + 1);
+  const settledPixels = PNG.sync.read(await page.screenshot({ scale: "device" }));
+  await upload(page, design);
+  await page.evaluate(() => renderer.render({ zoom: 2, pan: { x: 1.625, y: .5 } }));
+  const staticPixels = PNG.sync.read(await page.screenshot({ scale: "device" }));
+  assert.equal(Buffer.compare(settledPixels.data, staticPixels.data), 0, "settled output equals a static render");
+  assert.deepEqual(await page.evaluate(() => window.design), design, "author node and hit geometry stay editable");
+  const fallbackDesign = { ...design, nodes: [base("budget", "rectangle", 0, 0, 64, 64, { rotation: 45, cornerRadius: 2 })] };
+  await upload(page, fallbackDesign);
+  const fallback = await page.evaluate(() => { renderer.render({ zoom: 500 }); return renderer.stats(); });
+  assert.equal(fallback.shapeRasterImages, 0);
+  assert(fallback.shapeRasterFallbacks.some(entry => entry.nodeId === "budget" && entry.reason === "shape-shared-raster-budget"));
+  assert.equal(fallback.asynchronousRenderError, null, "oversize optional raster falls back to P0");
+  await page.evaluate(() => renderer.dispose());
+  const disposed = await page.evaluate(() => renderer.stats());
+  assert.equal(disposed.disposed, true);
+  assert.equal(disposed.sharedRasterCacheBytes ?? 0, 0);
+});
+
+test("shared raster pressure gives text device plans priority over optional rotated shapes", async t => {
+  const page = await harness(t, { width: 240, height: 180, tileCacheEnabled: false });
+  const result = await page.evaluate(async () => {
+    const CK = await CanvasKitInit({ locateFile: file => '/canvas/vendor/' + file });
+    const { createCanvasKitText } = await import('/canvas/canvaskit-text.mjs');
+    const node = { id: 'text', type: 'text', x: 20, y: 20, width: 160, height: 30, text: 'Budget priority', fill: '#000000', fontFamily: 'Arial', fontSize: 16, fontWeight: 400, lineHeight: 1.3, textAlign: 'left' };
+    const design = { nodes: [node], resources: [] }, counters = { rasterTextNodes: 0, textLines: 0 };
+    const text = await createCanvasKitText({ CK, design, resources: new Map(), document, fallbackFontUrls: {}, unsupportedNode() {}, counters, makePaint() { throw Error('unexpected native paint'); } });
+    const recorder = new CK.PictureRecorder(), target = recorder.beginRecording(CK.XYWHRect(0, 0, 240, 180));
+    try {
+      text.beginScene(design); text.draw(target, node, counters, () => {});
+      const baseline = text.stats(), available = (baseline.sharedRasterCacheBudgetBytes - baseline.sharedRasterReservedBytes) / 4;
+      let releases = 0; text.setShapeRasterRelease(() => releases++);
+      const admitted = text.reserveShapeRaster('optional-shape', available);
+      const denied = text.reserveShapeRaster('one-more', 1);
+      text.setDeviceSampling(new Map([['text', { x: .25, y: .375 }]]), { scale: 2 });
+      const after = text.stats();
+      return { baseline, admitted, denied, releases, after };
+    } finally { const picture = recorder.finishRecordingAsPicture(); picture.delete(); recorder.delete(); text.dispose(); }
+  });
+  assert.equal(result.admitted, true);
+  assert.equal(result.denied, false, "shape and text have one 64 MiB reservation");
+  assert.equal(result.releases, 1, "text device admission releases lower-priority shapes");
+  assert.equal(result.after.deviceTextNodes, 1);
+  assert.deepEqual(result.after.deviceTextFallbacks, []);
+  assert(result.after.sharedRasterReservedBytes <= result.after.sharedRasterCacheBudgetBytes);
+});
