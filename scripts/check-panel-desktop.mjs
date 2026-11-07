@@ -16,7 +16,7 @@ import { prepareManagedNodeNetworkFixture } from "./panel-desktop-managed-node-f
 import { prepareNativeEntryParentObservation, verifyNativeEntryExit } from "./panel-desktop-native-parent.mjs";
 import { createOwnedGuestCleanup, prepareFidelityGuest, runDesignStudioHostFidelity, withOwnedFidelityGuest } from "./design-studio-host-fidelity-runner.mjs";
 import { HASHED_HOST_BUILD_FILES, buildDesignStudioFidelityFixtures, buildFidelityFailurePartial, claimFidelityOutputs, copyDesignStudioSample,
-  describeOwnedCleanup, writeFidelityPartialOnce,
+  describeOwnedCleanup, desktopFixtureSettings, EXTERNAL_AGENT_RUNTIME_BOUNDARY, writeFidelityPartialOnce,
   parsePanelDesktopArguments, preflightPanelDesktopHost } from "./design-studio-host-fidelity.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -161,7 +161,9 @@ app.on("session-created", session => {
   await mkdir(join(isolated.codeShellHome, "desktop"), { recursive: true });
   await writeFile(join(isolated.codeShellHome, "desktop/recents.json"), JSON.stringify(
     projects.map(path => ({ path, name: path.split("/").at(-1), lastOpenedAt: Date.now(), pinned: true }))));
-  await writeFile(join(isolated.codeShellHome, "settings.json"), JSON.stringify({ autoUpdates: false }));
+  // Legacy gate: exactly { autoUpdates: false }. Fidelity additionally turns off the Host's
+  // own external-agent-runtime discovery (see EXTERNAL_AGENT_RUNTIME_BOUNDARY).
+  await writeFile(join(isolated.codeShellHome, "settings.json"), JSON.stringify(desktopFixtureSettings({ fidelity: Boolean(designStudioFidelity) })));
   stage = "launch production Electron";
   launchStarted = true;
   app = await launchCodeShellElectron({ appDir, ...isolated, env: fixture.env,
@@ -376,7 +378,7 @@ app.on("session-created", session => {
           fidelityReport.installedPackageDigest = selected.packageDigest;
           console.log(`Design Studio fidelity summary: ${JSON.stringify(fidelityReport.summary)}`);
         }, { requiresOwnedHostCleanup: () => Boolean(fidelityReport?.cleanup?.requiresOwnedHostCleanup) });
-        if (fidelityReport) fidelityReport.guestCleanup = guestCleanup.state();
+        if (fidelityReport) Object.assign(fidelityReport, { guestCleanup: guestCleanup.state(), boundaries: { externalAgentRuntime: EXTERNAL_AGENT_RUNTIME_BOUNDARY } });
       }
     }
     const interaction = {
@@ -783,6 +785,7 @@ app.on("session-created", session => {
   catch (error) { ownedCleanupError = error; }
   if (fidelityOutputs && (failure || ownedCleanupError)) {
     const partial = buildFidelityFailurePartial({ stage, failure: failure?.error, fidelityReport, artifacts: fidelityOutputs.artifacts(),
+      boundaries: { externalAgentRuntime: EXTERNAL_AGENT_RUNTIME_BOUNDARY },
       cleanup: describeOwnedCleanup({ receipt: cleanupReceipt, error: ownedCleanupError, primaryFailure: failure?.error }) });
     const written = await writeFidelityPartialOnce(fidelityOutputs, partial);
     console.error(`Design Studio fidelity partial report: ${JSON.stringify({ path: fidelityOutputs.reportPath, ...written })}`);

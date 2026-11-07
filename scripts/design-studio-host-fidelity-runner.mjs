@@ -85,6 +85,28 @@ export function createOwnedGuestCleanup(guest, { timeoutMs = 5_000 } = {}) {
 const TIMED_OUT = Symbol("timed-out");
 
 /**
+ * Guest DOM probes for file identity, bound to the installed app's real DOM:
+ * the design path field is <input id="document-path"> (apps/design-studio/app/
+ * index.html, app.js elements.path). Tests run these against a document built
+ * only from ids that exist in that index.html.
+ */
+const RENDERER_READY = `document.querySelector("#stage-wrap")?.dataset.rendererStatus === "active"`;
+const FILE_ROWS = `[...document.querySelectorAll("#files-list .file-row")]`;
+export const DESIGN_STUDIO_PROBES = Object.freeze({
+  currentPath: () => `document.querySelector("#document-path")?.value.trim() ?? null`,
+  fileRowListed: path => `${FILE_ROWS}.some(row => row.textContent.includes(${JSON.stringify(path)}))`,
+  clickFileRow: path => `(() => { const row = ${FILE_ROWS}.find(row => row.textContent.includes(${JSON.stringify(path)}));
+    if (!row) return false; row.click(); return true; })()`,
+  fileOpened: path => `document.querySelector("#document-path")?.value.trim() === ${JSON.stringify(path)} && ` +
+    `document.querySelector("#save-state")?.textContent !== "打开中…" && !document.querySelector("#files-dialog")?.open && ${RENDERER_READY}`,
+  reloadedFile: path => `Boolean(window.codeshellPanel) && document.querySelector("#document-path")?.value.trim() === ${JSON.stringify(path)} && ${RENDERER_READY}`,
+  openState: () => `(() => { const wrap = document.querySelector("#stage-wrap"), save = document.querySelector("#save-state");
+    return { documentPath: document.querySelector("#document-path")?.value ?? null, saveKind: save?.dataset.kind ?? null, saveText: save?.textContent ?? null,
+      filesDialogOpen: Boolean(document.querySelector("#files-dialog")?.open), rendererStatus: wrap?.dataset.rendererStatus ?? null,
+      rendererMode: wrap?.dataset.rendererMode ?? null }; })()`,
+});
+
+/**
  * Bounded pre-run setup for the fidelity guest: readiness polling and the guest
  * webContents id. Each guest call uses boundedOwnedOperation with the shared
  * guest cleanup as cancel, so a hung renderer cannot block before the caller's
@@ -295,11 +317,21 @@ export async function runDesignStudioHostFidelity(options) {
     await until(`document.querySelector("#stage-wrap")?.dataset.rendererMode === ${JSON.stringify(mode)} && ${rendererReady}`, `${mode} renderer`);
     await wait(400); // beyond the 150ms device-phase resampling idle
   };
+  // On timeout, keep the observed DOM state as evidence instead of a bare label.
+  const untilWithState = async (source, label) => {
+    try { return await until(source, label); }
+    catch (error) {
+      if (!/^timed out waiting/.test(error.message)) throw error;
+      const state = await dom(DESIGN_STUDIO_PROBES.openState()).catch(stateError => ({ unavailable: String(stateError?.message ?? stateError) }));
+      error.message += `; observed ${JSON.stringify(state)}`;
+      throw error;
+    }
+  };
   const openFile = async relativePath => {
     await dom(`document.querySelector("#open-files")?.click(), true`);
-    await until(`[...document.querySelectorAll("#files-list .file-row")].some(row => row.textContent.includes(${JSON.stringify(relativePath)}))`, `file row ${relativePath}`);
-    await dom(`[...document.querySelectorAll("#files-list .file-row")].find(row => row.textContent.includes(${JSON.stringify(relativePath)}))?.click(), true`);
-    await until(`document.querySelector("#path")?.value.trim() === ${JSON.stringify(relativePath)} && document.querySelector("#save-state")?.textContent !== "打开中…" && !document.querySelector("#files-dialog")?.open && ${rendererReady}`, `open ${relativePath}`);
+    await untilWithState(DESIGN_STUDIO_PROBES.fileRowListed(relativePath), `file row ${relativePath}`);
+    if (await dom(DESIGN_STUDIO_PROBES.clickFileRow(relativePath)) !== true) throw new Error(`file row for ${relativePath} disappeared before its click`);
+    await untilWithState(DESIGN_STUDIO_PROBES.fileOpened(relativePath), `open ${relativePath}`);
   };
   const zoomTo = async target => {
     for (let attempt = 0; attempt < 6; attempt++) {
@@ -443,7 +475,7 @@ export async function runDesignStudioHostFidelity(options) {
   // Directly after the verified edits, on the same open document (no reopen in between).
   await scenario("save-reopen-stable", async () => {
     const baselineNodes = (await documentFromFixture(P)).pages[0].nodes.map(nodeSummary);
-    const pathBeforeSave = await dom(`document.querySelector("#path")?.value.trim() ?? null`);
+    const pathBeforeSave = await dom(DESIGN_STUDIO_PROBES.currentPath());
     const save = async label => {
       await dom(`(() => { const menu = document.querySelector("#compact-actions"); if (menu && !menu.open) menu.querySelector("summary")?.click();
         document.querySelector("#save")?.click(); return true; })()`);
@@ -462,7 +494,7 @@ export async function runDesignStudioHostFidelity(options) {
     observation.diskNodesAfterFirstSave = disk.pages[0].nodes.map(nodeSummary);
     observation.canonicalSha256 = sha256(codec.serializeDesignDocument(disk));
     await guestBound("guest reload", () => guest.view.evaluate(view => view.reload()));
-    await until(`Boolean(window.codeshellPanel) && document.querySelector("#path")?.value.trim() === ${JSON.stringify(P)} && ${rendererReady}`, "reopen after reload");
+    await untilWithState(DESIGN_STUDIO_PROBES.reloadedFile(P), "reopen after reload");
     const { samples, waitedMs } = await sampleSaveStates();
     Object.assign(observation, { reopenSaveStates: samples, reopenWaitedMs: waitedMs, reopenedAfterSampling: await fileState(P), layerIdsAfterReopen: await layerIds() });
     const domAfterReload = [];

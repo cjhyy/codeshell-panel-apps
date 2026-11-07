@@ -1036,3 +1036,104 @@ test("a startup timeout plus unsettled guest cleanup keeps the original timeout 
   await assert.rejects(withOwnedFidelityGuest(createOwnedGuestCleanup(fine), async () => 1, { requiresOwnedHostCleanup: () => true }),
     error => !(error instanceof AggregateError) && /unsettled owned work/.test(error.message));
 });
+
+/* ---- Real-Host run 1 regression: selectors must exist in the installed app's real DOM ---- */
+const studioHtmlIds = async () => new Set([...(await readFile(join(repository, "apps/design-studio/app/index.html"), "utf8"))
+  .matchAll(/\sid="([^"]+)"/gu)].map(match => match[1]));
+
+test("every #id the runner queries exists in the real Design Studio index.html", async () => {
+  const ids = await studioHtmlIds();
+  assert.ok(ids.has("document-path") && !ids.has("path"), "the real path field is #document-path; #path does not exist");
+  const source = await readFile(join(repository, "scripts/design-studio-host-fidelity-runner.mjs"), "utf8");
+  const queried = new Set();
+  for (const call of source.matchAll(/querySelector(?:All)?\(\s*(["'`])((?:(?!\1).)*)\1/gu))
+    for (const id of call[2].matchAll(/#([a-z][a-z0-9-]*)/gu)) queried.add(id[1]);
+  for (const id of ["document-path", "open-files", "files-list", "files-dialog", "save-state", "stage-wrap"]) assert.ok(queried.has(id), `runner should query #${id}`);
+  const missing = [...queried].filter(id => id !== "export-world" && !ids.has(id));
+  assert.deepEqual(missing, [], `selectors absent from the real app DOM: ${missing.join(", ")}`);
+});
+
+/** A fake DOM that only knows ids that really exist in the app's index.html. */
+async function realIdDocument({ documentPath = "designs/other.codesign.json", saveText = "已保存", dialogOpen = false, rendererStatus = "active", rows = [] } = {}) {
+  const ids = await studioHtmlIds();
+  const elements = new Map([...ids].map(id => [id, { id, value: "", textContent: "", dataset: {}, open: false, clicked: 0, click() { this.clicked++; } }]));
+  elements.get("document-path").value = documentPath;
+  Object.assign(elements.get("save-state"), { textContent: saveText, dataset: { kind: "saved" } });
+  elements.get("files-dialog").open = dialogOpen;
+  elements.get("stage-wrap").dataset.rendererStatus = rendererStatus;
+  const document = {
+    querySelector: selector => /^#[a-z][a-z0-9-]*$/u.test(selector) ? elements.get(selector.slice(1)) ?? null : null,
+    querySelectorAll: selector => selector === "#files-list .file-row" ? rows : [],
+  };
+  return { document, elements, run: source => (0, eval)(`(function (document, window) { return (${source}); })`)(document, { codeshellPanel: {} }) };
+}
+
+test("file-open probes use the real DOM contract and confirm the clicked file identity", async () => {
+  const { DESIGN_STUDIO_PROBES: probes } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
+  const path = "designs/host-fidelity-interaction.codesign.json";
+  const row = { textContent: `host-fidelity-interaction ${path} 1.8 KB`, clicked: 0, click() { this.clicked++; } };
+  const dom = await realIdDocument({ documentPath: path, rows: [row] });
+  assert.equal(dom.run(probes.fileRowListed(path)), true);
+  assert.equal(dom.run(probes.clickFileRow(path)), true);
+  assert.equal(row.clicked, 1, "a real click event is dispatched on the matching row");
+  assert.equal(dom.run(probes.clickFileRow("designs/missing.codesign.json")), false, "a missing row is reported, not assumed clicked");
+  assert.equal(dom.run(probes.fileOpened(path)), true);
+  assert.equal(dom.run(probes.currentPath()), path);
+  assert.equal(dom.run(probes.reloadedFile(path)), true);
+  for (const state of [{ documentPath: "designs/other.codesign.json" }, { saveText: "打开中…" }, { dialogOpen: true }, { rendererStatus: "loading" }]) {
+    const other = await realIdDocument({ documentPath: path, ...state });
+    assert.equal(other.run(probes.fileOpened(path)), false, JSON.stringify(state));
+  }
+  const snapshot = (await realIdDocument({ documentPath: "designs/other.codesign.json", dialogOpen: true })).run(probes.openState());
+  assert.deepEqual(snapshot, { documentPath: "designs/other.codesign.json", saveKind: "saved", saveText: "已保存", filesDialogOpen: true,
+    rendererStatus: "active", rendererMode: null });
+});
+
+test("an open that never reaches the requested file is UNVERIFIED with the observed DOM state, never swallowed", async () => {
+  const { runDesignStudioHostFidelity } = await import("../scripts/design-studio-host-fidelity-runner.mjs");
+  const directory = await scratch("ds-fidelity-open-state-");
+  try {
+    const fixtures = await loadFixtures();
+    for (const fixture of fixtures) for (const file of fixture.files) {
+      await mkdir(join(directory, dirname(file.relativePath)), { recursive: true });
+      await writeFile(join(directory, file.relativePath), file.bytes, { flag: "wx" });
+    }
+    const rows = fixtures.map(fixture => ({ textContent: fixture.relativePath, click() {} }));
+    const dom = await realIdDocument({ documentPath: "designs/design.codesign.json", rows });
+    const guest = { execute: async source => dom.run(source), remove: async () => {}, view: { evaluate: async () => null } };
+    const report = await runDesignStudioHostFidelity({ enabled: true, guest, guestWebContentsId: 7, app: fakeElectron().app, projectDirectory: directory,
+      packageDirectory: join(repository, "apps/design-studio"), fixtures, wait: async () => {}, timeoutMs: 30, settleTimeoutMs: 20, onlyScenarios: ["open-without-edit"] });
+    const [result] = report.results;
+    assert.equal(result.status, "UNVERIFIED");
+    assert.match(result.reasons.join(), /timed out waiting for open designs\/host-fidelity-legacy-receipts\.codesign\.json/);
+    assert.match(result.reasons.join(), /"documentPath":"designs\/design\.codesign\.json"/, "the observed DOM state is kept as evidence");
+    assert.notEqual(report.summary.overall, "PASS");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+/* ---- Real-Host run 1: Host external-runtime model discovery is outside the fidelity contract ---- */
+test("fidelity seeds only the private Host flag that disables external agent runtime discovery; the legacy gate is unchanged", async () => {
+  const { desktopFixtureSettings, EXTERNAL_AGENT_RUNTIME_BOUNDARY } = await import("../scripts/design-studio-host-fidelity.mjs");
+  assert.deepEqual(desktopFixtureSettings({ fidelity: false }), { autoUpdates: false }, "the no-flag desktop gate keeps its exact settings");
+  assert.deepEqual(desktopFixtureSettings({ fidelity: true }), { autoUpdates: false, featureFlags: { external_agent_runtime: false } });
+  assert.equal(EXTERNAL_AGENT_RUNTIME_BOUNDARY.status, "NOT_APPLICABLE");
+  assert.match(EXTERNAL_AGENT_RUNTIME_BOUNDARY.reason, /codex app-server/);
+  assert.match(EXTERNAL_AGENT_RUNTIME_BOUNDARY.reason, /not a Design Studio/);
+  assert.match(EXTERNAL_AGENT_RUNTIME_BOUNDARY.legacyGate, /unchanged/);
+  const source = await readFile(join(repository, "scripts/check-panel-desktop.mjs"), "utf8");
+  assert.match(source, /writeFile\(join\(isolated\.codeShellHome, "settings\.json"\), JSON\.stringify\(desktopFixtureSettings\(\{ fidelity: Boolean\(designStudioFidelity\) \}\)\)\)/);
+  // The NativeEntry custody check still covers every started entry in both modes.
+  const verify = source.indexOf("verifyNativeEntryExit({ started");
+  const loop = source.lastIndexOf('for (const started of nativeReceipts.filter(value => value.event === "entry-start"))', verify);
+  assert.ok(loop > 0 && verify - loop < 400, "every entry-start is still verified");
+  assert.doesNotMatch(source.slice(loop, verify + 600), /designStudioFidelity|external_agent_runtime/, "no fidelity exemption inside the NativeEntry check");
+  assert.match(source, /externalAgentRuntime: EXTERNAL_AGENT_RUNTIME_BOUNDARY/);
+});
+
+test("the failure partial carries the fidelity responsibility boundary", async () => {
+  const { buildFidelityFailurePartial, EXTERNAL_AGENT_RUNTIME_BOUNDARY } = await import("../scripts/design-studio-host-fidelity.mjs");
+  const partial = buildFidelityFailurePartial({ stage: "x", failure: new Error("y"), fidelityReport: null, artifacts: [], cleanup: { completed: true },
+    boundaries: { externalAgentRuntime: EXTERNAL_AGENT_RUNTIME_BOUNDARY } });
+  assert.equal(partial.boundaries.externalAgentRuntime.status, "NOT_APPLICABLE");
+  assert.equal(partial.overall, "NOT_COMPLETE");
+});

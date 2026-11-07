@@ -693,10 +693,31 @@ function serializeFailure(failure, depth = 0) {
   for (const key of ["timedOut", "unsettled", "cleanup"]) if (failure[key] !== undefined) value[key] = failure[key];
   return value;
 }
-export function buildFidelityFailurePartial({ stage, failure, fidelityReport, artifacts = [], cleanup }) {
+/*
+ * Responsibility boundary found by the first real-Host run (2026-11-07): the
+ * Host renderer requests external-runtime model discovery at startup
+ * (useExternalRuntimeModels → externalRuntime:models → ExternalRuntimeModelService
+ * .list → discoverCodexModels), which spawns `codex app-server` from PATH when the
+ * user-scope feature flag external_agent_runtime (default true) is on. That is a
+ * Host provider integration, not a Design Studio rendering/persistence path, so the
+ * fidelity opt-in turns the Host's own flag off in its private CODE_SHELL_HOME.
+ * No provider is mocked and no check is skipped: NativeEntry custody still verifies
+ * every started entry, and the legacy no-flag gate keeps its settings unchanged.
+ */
+export const EXTERNAL_AGENT_RUNTIME_BOUNDARY = Object.freeze({
+  status: "NOT_APPLICABLE",
+  setting: "featureFlags.external_agent_runtime=false in the private fixture CODE_SHELL_HOME/settings.json (Host user scope)",
+  reason: "Host startup model discovery spawns `codex app-server` from PATH; external agent runtimes are a Host provider integration, not a Design Studio fidelity surface",
+  legacyGate: "the no-flag desktop gate is unchanged and still exercises (and reports) this Host behaviour",
+});
+export function desktopFixtureSettings({ fidelity = false } = {}) {
+  return fidelity ? { autoUpdates: false, featureFlags: { external_agent_runtime: false } } : { autoUpdates: false };
+}
+
+export function buildFidelityFailurePartial({ stage, failure, fidelityReport, artifacts = [], cleanup, boundaries = null }) {
   return { schemaVersion: 1, partial: true, complete: false, goalComplete: false, overall: "NOT_COMPLETE", stage: stage ?? null,
     failure: serializeFailure(failure),
-    designStudioFidelity: fidelityReport ?? { status: "NOT_RUN" }, artifacts, cleanup,
+    designStudioFidelity: fidelityReport ?? { status: "NOT_RUN" }, artifacts, cleanup, ...(boundaries ? { boundaries } : {}),
     note: "Partial evidence from a failed run: completed scenario results and artifacts only; not acceptance and not a PASS." };
 }
 export async function writeFidelityPartialOnce(outputs, partial) {

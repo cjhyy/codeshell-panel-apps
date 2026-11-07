@@ -281,3 +281,75 @@ npm run validate                                                              # 
 - 主代理告知：另一个 cwd 中有一个独立构建的 Host（`19fbe3828`），构建和 preflight 都已 PASS，但尚未启动；本 cwd 没有对它做任何核验或操作。
 - 窗口许可仍然缺失。
 - 性能 UNVERIFIED；视觉最多 EVIDENCE_ONLY；`goalComplete` 恒为 false。
+
+## 真实 Host 隔离首跑 run 1（已获用户窗口授权）与最小返修
+
+### run 1 收据（候选 Panel `16bbbedf`，未改源码）
+
+- 命令：`TMPDIR=/tmp/ds-host-harness-tmp npm run test:desktop -- /Users/admin/.codex/worktrees/codeshell-design-fidelity-host-build-20261107 --app design-studio --design-studio-fidelity`
+- 运行区间 2026-11-07T03:15:15Z → 03:18:11Z，共 176 s，exit 1。外层上限 30 min，Host watchdog 300 s，都没有触发。
+- Host 版本 `19fbe38282083c8bdc8850e19b4805dbef936a45`，0.9.52，arm64，Electron 33.4.11，managed Node 24.22.1。运行前只读 preflight 结果为 ok、`missing:[]`、`warnings:[]`。
+- 证据文件：
+  - 日志：`/tmp/ds-host-harness-tmp/run1/run.log`，SHA-256 `62d81edd95e17865c87535c8f1298b479babd3a8d21000a552d131ab6b32c031`；同目录还有 `diagnostics.json`、`exit.txt`，以及运行前后的进程快照。
+  - FD 报告：`/private/tmp/ds-host-fidelity-1794021316322-9743ca1e87dd8405.report.json`，0600，13,860 bytes，SHA-256 `ade7de0d700ef288a4acb2dc07ad678f6dc4e74eee76c8d4d6e54f4d9dc33a10`，是 partial，状态 `NOT_COMPLETE`。
+  - bundle：同名 `.artifacts.bin`，0 bytes，**一张截图都没有**。
+  - 以上文件全部保留，没有删除。
+- 通用 design-studio 闸门在真实 Electron 中通过的部分：app.paths 隔离断言（流程已越过该断言）、审阅式 IPC 安装到私有 profile、项目隔离、篡改后的更新被拒绝、digest 更新与恢复、GPU 下 CanvasKit 激活、wasm 7,317,345 bytes 有效、CSP 拒绝 eval、验收截图 2048×1440（webview 1024×720，即真实 DPR 2）。`rendererErrors` 为空；主进程和 Electron 进程的 guard 各有 7 次负向探测，均通过。
+- 6 个 fidelity 场景**全部 UNVERIFIED，没有一个产生有效证据**。open、interaction、large-text、rotation、svg 这 5 个场景都卡在 “timed out waiting for open designs/host-fidelity-….codesign.json”；save-reopen 因为前置编辑没有被验证，按设计没有保存。性能、视觉、DPR、真实交互（`sendInputEvent`、`insertText`、reload）这几项都**没有走到**。
+- 最终失败发生在 stage “final NativeEntry parent-close and OS-exit verification”：`NativeEntry escaped the owned reviewed namespace`，pid 67842，ppid 67667（owned Electron Main），entry 为 `/opt/homebrew/bin/codex`。启动后约 8 s 出现，在网络被拒绝的 wrapper 下约 150 ms 退出；child-exit 和 entry-exit 都有收据。
+- 清理情况：AggregateError 中只有 primary，所以 `describeOwnedCleanup` 给出 `completed:true`、`homeRemoved:true`（由 helper 语义推出）。另外核实：pid 67667 和 67842 已不存在，`panel-desktop-ipc-*` 临时 HOME 已删除；operator 的 Electron/CodeShell 进程集合在运行前后一致（23 个 pid，diff 为空）；Panel 和 Host 两个 checkout 的 git status 都干净。
+
+### 根因 1：runner 用了不存在的选择器（`#path`）
+
+真实 DOM 中的路径框是 `<input id="document-path">`（`apps/design-studio/app/index.html:77`，`app.js:183` 处为 `path: document.querySelector("#document-path")`）。旧 runner 在 3 个位置等待 `#path`：
+
+- `scripts/design-studio-host-fidelity-runner.mjs:302`：`openFile`
+- `scripts/design-studio-host-fidelity-runner.mjs:446`：`pathBeforeSave`
+- `scripts/design-studio-host-fidelity-runner.mjs:465`：reload 后的等待
+
+`#path` 不存在，因此每次打开都会超时 30 s。文件行等待通过了，这说明对话框和文件行本身没有问题。返修如下：
+
+- 新增 `DESIGN_STUDIO_PROBES`，把 currentPath、fileRowListed、clickFileRow、fileOpened、reloadedFile、openState 集中定义，统一使用 `#document-path`。
+- `clickFileRow` 会返回是否真的命中了对应行并派发了 click；没有命中就抛错，不再默认视为成功。
+- 等待超时时，会把观测到的 DOM 状态（documentPath、saveKind/saveText、filesDialogOpen、rendererStatus/rendererMode）附在错误中，作为证据保留。
+- 新增单测：
+  - 抽取 runner 中所有 `querySelector` 用到的 `#id`，必须都存在于真实 `index.html`；
+  - 用一个只认真实 `index.html` id 的假 document 执行各个 probe，验证打开、点击、文件身份和状态快照；
+  - 用同一个 DOM 跑 runner：打开到错误文件时，结果为 UNVERIFIED，并且带有 `"documentPath":"designs/design.codesign.json"`。
+
+### 根因 2：Host 自身的 external-runtime 模型发现（与 Design Studio 无关）
+
+调用链（只读核对 Host `19fbe3828` 源码和 `out/main/index.mjs`）：
+
+1. `renderer/App.tsx:381` `useExternalRuntimeModels` 在启动时触发（`useExternalRuntimeModels.ts:60`，此外每 5 分钟以及每次 focus 也会触发）；
+2. 通过 IPC `externalRuntime:models`（`main/index.ts:6068`）进入 `ExternalRuntimeModelService.list()`（`main/external-runtime-model-service.ts:33`）；
+3. 在 PATH 上找到 `codex` 后调用 `discoverCodexModels`；
+4. `CodexAppServerClient.start()`（`packages/coding/src/external-runtimes/codex/app-server-client.ts:112-124`）执行 `spawn(codex, ["app-server"])`。
+
+这一步是 best-effort：出错会被捕获、记日志，然后回退。私有 HOME 里没有 Codex 授权，wrapper 又禁止了网络，所以没有发生任何付费请求。开关是 Host 的 user-scope feature flag `external_agent_runtime`（默认 true，`packages/core/src/settings/feature-flags.ts:51`）；关闭后 `list()` 直接返回 `[]`，既不探测 PATH 也不 spawn。
+
+返修如下：
+
+- 仅在 fidelity 模式下，向私有 fixture 的 `CODE_SHELL_HOME/settings.json` 写入 `featureFlags.external_agent_runtime=false`（由 `desktopFixtureSettings` 生成）。
+- 报告和 partial 中记录 `boundaries.externalAgentRuntime = NOT_APPLICABLE`，并附上上面的证据说明。
+- 不带 flag 的旧闸门仍然精确写入 `{ autoUpdates: false }`，在本机上它仍会暴露这一 Host 行为，结果保留，不改成通过。
+- NativeEntry custody 仍然逐个校验每一个 entry-start，没有为 fidelity 开任何豁免（有静态测试守护）。
+- 没有 mock 任何 provider，没有调用 Codex，没有读取 operator 的授权或配置。
+
+### 返修离线运行（TMPDIR=/tmp/ds-host-harness-tmp，未启动任何窗口）
+
+- 红：`node --test --test-timeout=15000 tests/design-studio-host-fidelity.test.mjs`
+  - 选择器合同：50 tests / 47 pass / 3 fail（`.tmp/host-harness/run1-fix-red.log`）；
+  - external-runtime 边界：52 / 50 / 2（`run1-codex-red.log`）。
+- 绿：同一命令 52/52 pass（`run1-fix-final-unit.log`）。
+- `npm test -- --suite desktop-harness`：65/65 pass。
+- `npm run validate`：exit 0。
+
+### 获准后下一次真实重跑的命令（本轮未执行）
+
+```sh
+TMPDIR=/tmp/ds-host-harness-tmp npm run test:desktop -- \
+  /Users/admin/.codex/worktrees/codeshell-design-fidelity-host-build-20261107 --app design-studio --design-studio-fidelity
+```
+
+真实 Host 场景至今仍然 0 个产生有效结果。真实交互、截图、性能和 DPR 都要等重跑才知道。`goalComplete` 恒为 false。
